@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -9,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +22,8 @@ import (
 	"swarmstr/internal/agent"
 	"swarmstr/internal/config"
 	"swarmstr/internal/gateway/methods"
+	gatewayprotocol "swarmstr/internal/gateway/protocol"
+	gatewayws "swarmstr/internal/gateway/ws"
 	"swarmstr/internal/memory"
 	nostruntime "swarmstr/internal/nostr/runtime"
 	"swarmstr/internal/nostr/secure"
@@ -26,21 +31,39 @@ import (
 	"swarmstr/internal/store/state"
 )
 
+var (
+	controlAgentRuntime agent.Runtime
+	controlAgentJobs    *agentJobRegistry
+)
+
 func main() {
 	var bootstrapPath string
 	var adminAddr string
 	var adminToken string
+	var gatewayWSAddr string
+	var gatewayWSToken string
+	var gatewayWSPath string
+	var gatewayWSAllowedOrigins string
+	var gatewayWSTrustedProxies string
+	var gatewayWSAllowInsecureControlUI bool
 	flag.StringVar(&bootstrapPath, "bootstrap", "", "path to bootstrap config JSON")
 	flag.StringVar(&adminAddr, "admin-addr", "", "optional admin API listen address, e.g. 127.0.0.1:8787")
 	flag.StringVar(&adminToken, "admin-token", "", "optional bearer token for admin API")
+	flag.StringVar(&gatewayWSAddr, "gateway-ws-addr", "", "optional gateway websocket listen address, e.g. 127.0.0.1:8788")
+	flag.StringVar(&gatewayWSToken, "gateway-ws-token", "", "optional gateway websocket token")
+	flag.StringVar(&gatewayWSPath, "gateway-ws-path", "", "optional gateway websocket path (default /ws)")
+	flag.StringVar(&gatewayWSAllowedOrigins, "gateway-ws-allowed-origins", "", "optional comma-separated websocket Origin allowlist")
+	flag.StringVar(&gatewayWSTrustedProxies, "gateway-ws-trusted-proxies", "", "optional comma-separated trusted proxy CIDRs/IPs for proxy-auth mode")
+	flag.BoolVar(&gatewayWSAllowInsecureControlUI, "gateway-ws-allow-insecure-control-ui", false, "allow control-ui without device identity outside localhost")
 	flag.Parse()
 
 	cfg, err := config.LoadBootstrap(bootstrapPath)
 	if err != nil {
 		log.Fatalf("load bootstrap config: %v", err)
 	}
-	if cfg.PrivateKey == "" {
-		log.Fatal("bootstrap signer_url flow is not implemented yet; set private_key")
+	privateKey, err := config.ResolvePrivateKey(cfg)
+	if err != nil {
+		log.Fatalf("resolve signer/private key: %v", err)
 	}
 	if adminAddr == "" {
 		adminAddr = cfg.AdminListenAddr
@@ -48,23 +71,43 @@ func main() {
 	if adminToken == "" {
 		adminToken = cfg.AdminToken
 	}
+	if gatewayWSAddr == "" {
+		gatewayWSAddr = cfg.GatewayWSListenAddr
+	}
+	if gatewayWSToken == "" {
+		gatewayWSToken = cfg.GatewayWSToken
+	}
+	if gatewayWSPath == "" {
+		gatewayWSPath = cfg.GatewayWSPath
+	}
+	allowedOrigins := normalizeCSVList(gatewayWSAllowedOrigins)
+	if len(allowedOrigins) == 0 {
+		allowedOrigins = normalizeStringList(cfg.GatewayWSAllowedOrigins)
+	}
+	trustedProxies := normalizeCSVList(gatewayWSTrustedProxies)
+	if len(trustedProxies) == 0 {
+		trustedProxies = normalizeStringList(cfg.GatewayWSTrustedProxies)
+	}
+	if !gatewayWSAllowInsecureControlUI {
+		gatewayWSAllowInsecureControlUI = cfg.GatewayWSAllowInsecureControlUI
+	}
 
 	startedAt := time.Now()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	store, err := state.NewNostrStore(cfg.PrivateKey, cfg.Relays)
+	store, err := state.NewNostrStore(privateKey, cfg.Relays)
 	if err != nil {
 		log.Fatalf("init state store: %v", err)
 	}
 	defer store.Close()
 
-	pubkey, err := nostruntime.PublicKeyHex(cfg.PrivateKey)
+	pubkey, err := nostruntime.PublicKeyHex(privateKey)
 	if err != nil {
 		log.Fatalf("derive public key: %v", err)
 	}
 
-	codec, err := initEnvelopeCodec(cfg)
+	codec, err := initEnvelopeCodec(cfg, privateKey)
 	if err != nil {
 		log.Fatalf("init envelope codec: %v", err)
 	}
@@ -126,15 +169,24 @@ func main() {
 		log.Fatalf("load control checkpoint: %v", err)
 	}
 	controlTracker := newControlTracker(controlCheckpoint)
+	chatCancels := newChatAbortRegistry()
+	agentJobs := newAgentJobRegistry()
+	controlAgentRuntime = agentRuntime
+	controlAgentJobs = agentJobs
+	usageState := newUsageTracker(startedAt)
+	logBuffer := newRuntimeLogBuffer(2000)
+	channelState := newChannelRuntimeState()
 
 	bus, err := nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
-		PrivateKey: cfg.PrivateKey,
+		PrivateKey: privateKey,
 		Relays:     cfg.Relays,
 		SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
 		OnMessage: func(ctx context.Context, msg nostruntime.InboundDM) error {
 			if tracker.AlreadyProcessed(msg.EventID, msg.CreatedAt) {
 				return nil
 			}
+			usageState.RecordInbound(msg.Text)
+			logBuffer.Append("info", fmt.Sprintf("dm inbound from=%s event=%s", msg.FromPubKey, msg.EventID))
 
 			decision := policy.EvaluateIncomingDM(msg.FromPubKey, configState.Get())
 			if !decision.Allowed {
@@ -145,15 +197,27 @@ func main() {
 				return nil
 			}
 
+			// Session ID for DM conversations is the sender's pubkey (peer-to-peer session)
 			sessionID := msg.FromPubKey
 			if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, msg); err != nil {
 				log.Printf("persist inbound failed event=%s err=%v", msg.EventID, err)
 			}
 			persistMemories(ctx, docsRepo, memoryRepo, memoryIndex, memoryTracker, memory.ExtractFromTurn(sessionID, "user", msg.EventID, msg.Text, msg.CreatedAt))
 
+			turnCtx, releaseTurn := chatCancels.Begin(sessionID, ctx)
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("panic in agent process session=%s panic=%v", sessionID, r)
+				}
+				releaseTurn()
+			}()
 			turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, msg.Text, 6)
-			turnResult, err := agentRuntime.ProcessTurn(ctx, agent.Turn{SessionID: sessionID, UserText: msg.Text, Context: turnContext})
+			turnResult, err := agentRuntime.ProcessTurn(turnCtx, agent.Turn{SessionID: sessionID, UserText: msg.Text, Context: turnContext})
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					log.Printf("agent process aborted session=%s", sessionID)
+					return nil
+				}
 				log.Printf("agent process failed session=%s err=%v", sessionID, err)
 				return nil
 			}
@@ -162,8 +226,11 @@ func main() {
 			}
 			if err := msg.Reply(ctx, turnResult.Text); err != nil {
 				log.Printf("reply failed event=%s err=%v", msg.EventID, err)
+				logBuffer.Append("error", fmt.Sprintf("dm reply failed event=%s err=%v", msg.EventID, err))
 				return nil
 			}
+			usageState.RecordOutbound(turnResult.Text)
+			logBuffer.Append("info", fmt.Sprintf("dm reply sent to=%s event=%s", msg.FromPubKey, msg.EventID))
 			if err := persistAssistant(ctx, docsRepo, transcriptRepo, sessionID, turnResult.Text, msg.EventID); err != nil {
 				log.Printf("persist assistant failed session=%s err=%v", sessionID, err)
 			}
@@ -184,7 +251,7 @@ func main() {
 
 	var controlBus *nostruntime.ControlRPCBus
 	controlBus, err = nostruntime.StartControlRPCBus(ctx, nostruntime.ControlRPCBusOptions{
-		PrivateKey:        cfg.PrivateKey,
+		PrivateKey:        privateKey,
 		Relays:            cfg.Relays,
 		SinceUnix:         checkpointSinceUnix(controlCheckpoint.LastUnix),
 		MaxRequestAge:     2 * time.Minute,
@@ -193,7 +260,7 @@ func main() {
 			if controlTracker.AlreadyProcessed(in.EventID, in.CreatedAt) {
 				return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "duplicate": true}}, nil
 			}
-			return handleControlRPCRequest(ctx, in, bus, controlBus, docsRepo, transcriptRepo, memoryIndex, configState, startedAt)
+			return handleControlRPCRequest(ctx, in, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, startedAt)
 		},
 		OnHandled: func(ctx context.Context, eventID string, eventUnix int64) {
 			if err := controlTracker.MarkProcessed(ctx, docsRepo, eventID, eventUnix); err != nil {
@@ -209,6 +276,41 @@ func main() {
 	}
 	defer controlBus.Close()
 
+	if gatewayWSAddr != "" {
+		wsMethods := append([]string{}, methods.SupportedMethods()...)
+		wsMethods = append(wsMethods, gatewayws.MethodEventsList, gatewayws.MethodEventsSubscribe, gatewayws.MethodEventsUnsubscribe)
+		if _, err := gatewayws.Start(ctx, gatewayws.RuntimeOptions{
+			Addr:                   gatewayWSAddr,
+			Path:                   gatewayWSPath,
+			Token:                  gatewayWSToken,
+			Methods:                wsMethods,
+			Events:                 []string{"connect.challenge", "presence.updated"},
+			Version:                "swarmstrd",
+			HandshakeTTL:           10 * time.Second,
+			AuthRateLimitPerMin:    120,
+			UnauthorizedBurstMax:   8,
+			AllowedOrigins:         allowedOrigins,
+			TrustedProxies:         trustedProxies,
+			AllowInsecureControlUI: gatewayWSAllowInsecureControlUI,
+			HandleRequest: func(ctx context.Context, req gatewayprotocol.RequestFrame) (any, *gatewayprotocol.ErrorShape) {
+				res, err := handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{
+					FromPubKey: bus.PublicKey(),
+					Method:     strings.TrimSpace(req.Method),
+					Params:     req.Params,
+				}, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, startedAt)
+				if err != nil {
+					return nil, mapGatewayWSError(err)
+				}
+				if strings.TrimSpace(res.Error) != "" {
+					return nil, gatewayprotocol.NewError(gatewayprotocol.ErrorCodeUnavailable, res.Error, nil)
+				}
+				return res.Result, nil
+			},
+		}); err != nil {
+			log.Fatalf("start gateway ws runtime: %v", err)
+		}
+	}
+
 	if adminAddr != "" {
 		go func() {
 			err := admin.Start(ctx, admin.ServerOptions{
@@ -223,20 +325,107 @@ func main() {
 				StatusDMPolicy: func() string {
 					return configState.Get().DM.Policy
 				},
+				StatusRelays: func() []string {
+					current := configState.Get()
+					return append([]string{}, current.Relays.Read...)
+				},
 				SearchMemory: func(query string, limit int) []memory.IndexedMemory {
 					return memoryIndex.Search(query, limit)
 				},
 				GetCheckpoint: func(ctx context.Context, name string) (state.CheckpointDoc, error) {
 					return docsRepo.GetCheckpoint(ctx, name)
 				},
+				StartAgent: func(ctx context.Context, req methods.AgentRequest) (map[string]any, error) {
+					// Default session ID for agent runs is daemon's pubkey (server-side session)
+					if req.SessionID == "" {
+						req.SessionID = bus.PublicKey()
+					}
+					if agentRuntime == nil {
+						return nil, fmt.Errorf("agent runtime not configured")
+					}
+					runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
+					snapshot := agentJobs.Begin(runID, req.SessionID)
+					go executeAgentRun(runID, req, agentRuntime, agentJobs)
+					return map[string]any{"run_id": runID, "status": "accepted", "accepted_at": snapshot.StartedAt}, nil
+				},
+				WaitAgent: func(ctx context.Context, req methods.AgentWaitRequest) (map[string]any, error) {
+					snap, ok := agentJobs.Wait(ctx, req.RunID, time.Duration(req.TimeoutMS)*time.Millisecond)
+					if !ok {
+						return nil, fmt.Errorf("run not found")
+					}
+					if snap.Status == "pending" {
+						return map[string]any{"run_id": req.RunID, "status": "timeout"}, nil
+					}
+					out := map[string]any{"run_id": req.RunID, "status": snap.Status, "started_at": snap.StartedAt, "ended_at": snap.EndedAt}
+					if snap.Err != "" {
+						out["error"] = snap.Err
+					}
+					if snap.Result != "" {
+						out["result"] = snap.Result
+					}
+					return out, nil
+				},
+				AgentIdentity: func(_ context.Context, req methods.AgentIdentityRequest) (map[string]any, error) {
+					agentID := strings.TrimSpace(req.AgentID)
+					if agentID == "" {
+						agentID = "main"
+					}
+					return map[string]any{"agent_id": agentID, "display_name": "Swarmstr Agent", "session_id": req.SessionID, "pubkey": bus.PublicKey()}, nil
+				},
 				SendDM: func(ctx context.Context, to string, text string) error {
-					return bus.SendDM(ctx, to, text)
+					sendCtx, release := chatCancels.Begin(to, ctx)
+					defer release()
+					return bus.SendDM(sendCtx, to, text)
+				},
+				AbortChat: func(_ context.Context, sessionID string) (int, error) {
+					aborted := 0
+					if strings.TrimSpace(sessionID) == "" {
+						aborted = chatCancels.AbortAll()
+					} else if chatCancels.Abort(sessionID) {
+						aborted = 1
+					}
+					usageState.RecordAbort(aborted)
+					return aborted, nil
 				},
 				GetSession: func(ctx context.Context, sessionID string) (state.SessionDoc, error) {
 					return docsRepo.GetSession(ctx, sessionID)
 				},
+				PutSession: func(ctx context.Context, sessionID string, doc state.SessionDoc) error {
+					_, err := docsRepo.PutSession(ctx, sessionID, doc)
+					return err
+				},
+				ListSessions: func(ctx context.Context, limit int) ([]state.SessionDoc, error) {
+					return docsRepo.ListSessions(ctx, limit)
+				},
 				ListTranscript: func(ctx context.Context, sessionID string, limit int) ([]state.TranscriptEntryDoc, error) {
 					return transcriptRepo.ListSession(ctx, sessionID, limit)
+				},
+				TailLogs: func(_ context.Context, cursor int64, limit int, maxBytes int) (map[string]any, error) {
+					return logBuffer.Tail(cursor, limit, maxBytes), nil
+				},
+				ChannelsStatus: func(_ context.Context, req methods.ChannelsStatusRequest) (map[string]any, error) {
+					_ = req
+					current := configState.Get()
+					status := channelState.Status(bus, controlBus, current)
+					return map[string]any{"channels": []map[string]any{{
+						"id":                     "nostr",
+						"connected":              status["connected"],
+						"logged_out":             status["logged_out"],
+						"read_relays":            status["read_relays"],
+						"write_relays":           status["write_relays"],
+						"runtime_dm_relays":      status["runtime_dm_relays"],
+						"runtime_control_relays": status["runtime_ctrl_relays"],
+					}}}, nil
+				},
+				ChannelsLogout: func(_ context.Context, channel string) (map[string]any, error) {
+					return channelState.Logout(channel)
+				},
+				UsageStatus: func(_ context.Context) (map[string]any, error) {
+					return map[string]any{"ok": true, "totals": usageState.Status()}, nil
+				},
+				UsageCost: func(_ context.Context, _ methods.UsageCostRequest) (map[string]any, error) {
+					cost := usageState.Cost()
+					return map[string]any{"ok": true, "total_usd": cost["total_usd"], "estimate": cost}, nil
 				},
 				GetList: func(ctx context.Context, name string) (state.ListDoc, error) {
 					return docsRepo.GetList(ctx, strings.ToLower(strings.TrimSpace(name)))
@@ -255,6 +444,147 @@ func main() {
 					}
 					_, err := docsRepo.PutList(ctx, name, doc)
 					return err
+				},
+				ListAgents: func(ctx context.Context, req methods.AgentsListRequest) (map[string]any, error) {
+					agents, err := docsRepo.ListAgents(ctx, req.Limit)
+					if err != nil {
+						return nil, err
+					}
+					return map[string]any{"agents": agents}, nil
+				},
+				CreateAgent: func(ctx context.Context, req methods.AgentsCreateRequest) (map[string]any, error) {
+					if _, err := docsRepo.GetAgent(ctx, req.AgentID); err == nil {
+						return nil, fmt.Errorf("agent %q already exists", req.AgentID)
+					} else if !errors.Is(err, state.ErrNotFound) {
+						return nil, err
+					}
+					doc := state.AgentDoc{Version: 1, AgentID: req.AgentID, Name: req.Name, Workspace: req.Workspace, Model: req.Model, Meta: req.Meta}
+					_, err := docsRepo.PutAgent(ctx, req.AgentID, doc)
+					if err != nil {
+						return nil, err
+					}
+					return map[string]any{"ok": true, "agent": doc}, nil
+				},
+				UpdateAgent: func(ctx context.Context, req methods.AgentsUpdateRequest) (map[string]any, error) {
+					doc, err := docsRepo.GetAgent(ctx, req.AgentID)
+					if err != nil {
+						return nil, err
+					}
+					if req.Name != "" {
+						doc.Name = req.Name
+					}
+					if req.Workspace != "" {
+						doc.Workspace = req.Workspace
+					}
+					if req.Model != "" {
+						doc.Model = req.Model
+					}
+					doc.Meta = mergeSessionMeta(doc.Meta, req.Meta)
+					if doc.Version == 0 {
+						doc.Version = 1
+					}
+					_, err = docsRepo.PutAgent(ctx, req.AgentID, doc)
+					if err != nil {
+						return nil, err
+					}
+					return map[string]any{"ok": true, "agent": doc}, nil
+				},
+				DeleteAgent: func(ctx context.Context, req methods.AgentsDeleteRequest) (map[string]any, error) {
+					doc, err := docsRepo.GetAgent(ctx, req.AgentID)
+					if err != nil {
+						return nil, err
+					}
+					doc.Deleted = true
+					doc.Meta = mergeSessionMeta(doc.Meta, map[string]any{"deleted_at": time.Now().Unix()})
+					if _, err := docsRepo.PutAgent(ctx, req.AgentID, doc); err != nil {
+						return nil, err
+					}
+					return map[string]any{"ok": true, "agent_id": req.AgentID, "deleted": true}, nil
+				},
+				ListAgentFiles: func(ctx context.Context, req methods.AgentsFilesListRequest) (map[string]any, error) {
+					files, err := docsRepo.ListAgentFiles(ctx, req.AgentID, req.Limit)
+					if err != nil {
+						return nil, err
+					}
+					out := make([]map[string]any, 0, len(files))
+					for _, file := range files {
+						out = append(out, map[string]any{"name": file.Name, "size": len(file.Content)})
+					}
+					return map[string]any{"agent_id": req.AgentID, "files": out}, nil
+				},
+				GetAgentFile: func(ctx context.Context, req methods.AgentsFilesGetRequest) (map[string]any, error) {
+					file, err := docsRepo.GetAgentFile(ctx, req.AgentID, req.Name)
+					if err != nil {
+						if errors.Is(err, state.ErrNotFound) {
+							return map[string]any{"agent_id": req.AgentID, "file": map[string]any{"name": req.Name, "missing": true}}, nil
+						}
+						return nil, err
+					}
+					return map[string]any{"agent_id": req.AgentID, "file": map[string]any{"name": file.Name, "missing": false, "content": file.Content}}, nil
+				},
+				SetAgentFile: func(ctx context.Context, req methods.AgentsFilesSetRequest) (map[string]any, error) {
+					doc := state.AgentFileDoc{Version: 1, AgentID: req.AgentID, Name: req.Name, Content: req.Content}
+					if _, err := docsRepo.PutAgentFile(ctx, req.AgentID, req.Name, doc); err != nil {
+						return nil, err
+					}
+					return map[string]any{"ok": true, "agent_id": req.AgentID, "file": map[string]any{"name": req.Name, "missing": false, "content": req.Content}}, nil
+				},
+				ListModels: func(_ context.Context, _ methods.ModelsListRequest) (map[string]any, error) {
+					return map[string]any{"models": defaultModelsCatalog()}, nil
+				},
+				ToolsCatalog: func(_ context.Context, req methods.ToolsCatalogRequest) (map[string]any, error) {
+					return map[string]any{"agent_id": defaultAgentID(req.AgentID), "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(tools, req.IncludePlugins)}, nil
+				},
+				SkillsStatus: func(_ context.Context, req methods.SkillsStatusRequest) (map[string]any, error) {
+					entries := currentSkillEntries(configState.Get())
+					return map[string]any{"agent_id": defaultAgentID(req.AgentID), "skills": entries, "count": len(entries)}, nil
+				},
+				SkillsInstall: func(ctx context.Context, req methods.SkillsInstallRequest) (map[string]any, error) {
+					updated, err := applySkillInstall(ctx, docsRepo, configState, req)
+					if err != nil {
+						return nil, err
+					}
+					return map[string]any{"ok": true, "name": req.Name, "install_id": req.InstallID, "timeout_ms": req.TimeoutMS, "skills": currentSkillEntries(updated)}, nil
+				},
+				SkillsUpdate: func(ctx context.Context, req methods.SkillsUpdateRequest) (map[string]any, error) {
+					updated, entry, err := applySkillUpdate(ctx, docsRepo, configState, req)
+					if err != nil {
+						return nil, err
+					}
+					return map[string]any{"ok": true, "skill_key": req.SkillKey, "config": entry, "skills": currentSkillEntries(updated)}, nil
+				},
+				NodePairRequest: func(ctx context.Context, req methods.NodePairRequest) (map[string]any, error) {
+					return applyNodePairRequest(ctx, docsRepo, configState, req)
+				},
+				NodePairList: func(ctx context.Context, req methods.NodePairListRequest) (map[string]any, error) {
+					return applyNodePairList(ctx, configState, req)
+				},
+				NodePairApprove: func(ctx context.Context, req methods.NodePairApproveRequest) (map[string]any, error) {
+					return applyNodePairApprove(ctx, docsRepo, configState, req)
+				},
+				NodePairReject: func(ctx context.Context, req methods.NodePairRejectRequest) (map[string]any, error) {
+					return applyNodePairReject(ctx, docsRepo, configState, req)
+				},
+				NodePairVerify: func(ctx context.Context, req methods.NodePairVerifyRequest) (map[string]any, error) {
+					return applyNodePairVerify(ctx, configState, req)
+				},
+				DevicePairList: func(ctx context.Context, req methods.DevicePairListRequest) (map[string]any, error) {
+					return applyDevicePairList(ctx, configState, req)
+				},
+				DevicePairApprove: func(ctx context.Context, req methods.DevicePairApproveRequest) (map[string]any, error) {
+					return applyDevicePairApprove(ctx, docsRepo, configState, req)
+				},
+				DevicePairReject: func(ctx context.Context, req methods.DevicePairRejectRequest) (map[string]any, error) {
+					return applyDevicePairReject(ctx, docsRepo, configState, req)
+				},
+				DevicePairRemove: func(ctx context.Context, req methods.DevicePairRemoveRequest) (map[string]any, error) {
+					return applyDevicePairRemove(ctx, docsRepo, configState, req)
+				},
+				DeviceTokenRotate: func(ctx context.Context, req methods.DeviceTokenRotateRequest) (map[string]any, error) {
+					return applyDeviceTokenRotate(ctx, docsRepo, configState, req)
+				},
+				DeviceTokenRevoke: func(ctx context.Context, req methods.DeviceTokenRevokeRequest) (map[string]any, error) {
+					return applyDeviceTokenRevoke(ctx, docsRepo, configState, req)
 				},
 				GetConfig: func(ctx context.Context) (state.ConfigDoc, error) {
 					return docsRepo.GetConfig(ctx)
@@ -296,12 +626,12 @@ func main() {
 	log.Println("swarmstrd shutting down")
 }
 
-func initEnvelopeCodec(cfg config.BootstrapConfig) (secure.EnvelopeCodec, error) {
+func initEnvelopeCodec(cfg config.BootstrapConfig, privateKey string) (secure.EnvelopeCodec, error) {
 	if !cfg.EnableNIP44 {
 		codec := secure.NewPlaintextCodec()
 		return codec, nil
 	}
-	return secure.NewNIP44SelfCodec(cfg.PrivateKey)
+	return secure.NewNIP44SelfCodec(privateKey)
 }
 
 func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays []string, adminPubKey string) (state.ConfigDoc, error) {
@@ -404,6 +734,80 @@ type controlTracker struct {
 	lastUnix  int64
 }
 
+type chatAbortHandle struct {
+	id     uint64
+	cancel context.CancelFunc
+}
+
+type chatAbortRegistry struct {
+	mu       sync.Mutex
+	nextID   uint64
+	inFlight map[string]chatAbortHandle
+}
+
+func newChatAbortRegistry() *chatAbortRegistry {
+	return &chatAbortRegistry{inFlight: map[string]chatAbortHandle{}}
+}
+
+func (r *chatAbortRegistry) Begin(sessionID string, parent context.Context) (context.Context, func()) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return parent, func() {}
+	}
+	ctx, cancel := context.WithCancel(parent)
+	var previous context.CancelFunc
+	r.mu.Lock()
+	r.nextID++
+	h := chatAbortHandle{id: r.nextID, cancel: cancel}
+	if prior, ok := r.inFlight[sessionID]; ok {
+		previous = prior.cancel
+	}
+	r.inFlight[sessionID] = h
+	r.mu.Unlock()
+	if previous != nil {
+		previous()
+	}
+	return ctx, func() {
+		r.mu.Lock()
+		current, ok := r.inFlight[sessionID]
+		if ok && current.id == h.id {
+			delete(r.inFlight, sessionID)
+		}
+		r.mu.Unlock()
+	}
+}
+
+func (r *chatAbortRegistry) Abort(sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	r.mu.Lock()
+	h, ok := r.inFlight[sessionID]
+	if ok {
+		delete(r.inFlight, sessionID)
+	}
+	r.mu.Unlock()
+	if ok {
+		h.cancel()
+	}
+	return ok
+}
+
+func (r *chatAbortRegistry) AbortAll() int {
+	r.mu.Lock()
+	handles := make([]chatAbortHandle, 0, len(r.inFlight))
+	for key, h := range r.inFlight {
+		handles = append(handles, h)
+		delete(r.inFlight, key)
+	}
+	r.mu.Unlock()
+	for _, h := range handles {
+		h.cancel()
+	}
+	return len(handles)
+}
+
 func newRuntimeConfigStore(cfg state.ConfigDoc) *runtimeConfigStore {
 	return &runtimeConfigStore{cfg: cfg}
 }
@@ -459,6 +863,7 @@ func (t *ingestTracker) AlreadyProcessed(eventID string, createdAt int64) bool {
 	if createdAt < t.lastUnix {
 		return true
 	}
+	// Note: Assumes event IDs sort lexicographically by creation time within same timestamp
 	if createdAt == t.lastUnix && eventID <= t.lastEvent {
 		return true
 	}
@@ -501,6 +906,7 @@ func (t *controlTracker) AlreadyProcessed(eventID string, createdAt int64) bool 
 	if createdAt < t.lastUnix {
 		return true
 	}
+	// Note: Assumes event IDs sort lexicographically by creation time within same timestamp
 	if createdAt == t.lastUnix && eventID <= t.lastEvent {
 		return true
 	}
@@ -619,15 +1025,23 @@ func handleControlRPCRequest(
 	in nostruntime.ControlRPCInbound,
 	dmBus *nostruntime.DMBus,
 	controlBus *nostruntime.ControlRPCBus,
+	chatCancels *chatAbortRegistry,
+	usageState *usageTracker,
+	logBuffer *runtimeLogBuffer,
+	channelState *channelRuntimeState,
 	docsRepo *state.DocsRepository,
 	transcriptRepo *state.TranscriptRepository,
 	memoryIndex *memory.Index,
 	configState *runtimeConfigStore,
+	tools *agent.ToolRegistry,
 	startedAt time.Time,
 ) (nostruntime.ControlRPCResult, error) {
 	method := strings.TrimSpace(in.Method)
 	cfg := configState.Get()
 	decision := policy.EvaluateControlCall(in.FromPubKey, method, true, cfg)
+	if usageState != nil {
+		usageState.RecordControl()
+	}
 	if !decision.Allowed {
 		if strings.TrimSpace(decision.Reason) == "" {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("forbidden")
@@ -638,6 +1052,63 @@ func handleControlRPCRequest(
 	switch method {
 	case methods.MethodSupportedMethods:
 		return nostruntime.ControlRPCResult{Result: methods.SupportedMethods()}, nil
+	case methods.MethodHealth:
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+	case methods.MethodDoctorMemoryStatus:
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "index": map[string]any{"available": memoryIndex != nil}}}, nil
+	case methods.MethodLogsTail:
+		req, err := methods.DecodeLogsTailParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if logBuffer == nil {
+			return nostruntime.ControlRPCResult{Result: map[string]any{"cursor": req.Cursor, "lines": []string{}, "truncated": false, "reset": false}}, nil
+		}
+		return nostruntime.ControlRPCResult{Result: logBuffer.Tail(req.Cursor, req.Limit, req.MaxBytes)}, nil
+	case methods.MethodChannelsStatus:
+		req, err := methods.DecodeChannelsStatusParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		_ = req
+		if channelState == nil {
+			return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{{"id": "nostr", "connected": true}}}}, nil
+		}
+		status := channelState.Status(dmBus, controlBus, cfg)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{{
+			"id":                     "nostr",
+			"connected":              status["connected"],
+			"logged_out":             status["logged_out"],
+			"read_relays":            status["read_relays"],
+			"write_relays":           status["write_relays"],
+			"runtime_dm_relays":      status["runtime_dm_relays"],
+			"runtime_control_relays": status["runtime_ctrl_relays"],
+		}}}}, nil
+	case methods.MethodChannelsLogout:
+		req, err := methods.DecodeChannelsLogoutParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if channelState == nil {
+			return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "channel": req.Channel}}, nil
+		}
+		res, err := channelState.Logout(req.Channel)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: res}, nil
 	case methods.MethodStatus:
 		return nostruntime.ControlRPCResult{Result: methods.StatusResponse{
 			PubKey:        dmBus.PublicKey(),
@@ -645,6 +1116,26 @@ func handleControlRPCRequest(
 			DMPolicy:      cfg.DM.Policy,
 			UptimeSeconds: int(time.Since(startedAt).Seconds()),
 		}}, nil
+	case methods.MethodUsageStatus:
+		if usageState == nil {
+			return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "totals": map[string]any{"requests": 0, "tokens": 0}}}, nil
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "totals": usageState.Status()}}, nil
+	case methods.MethodUsageCost:
+		req, err := methods.DecodeUsageCostParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		_ = req
+		if usageState == nil {
+			return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "total_usd": 0}}, nil
+		}
+		cost := usageState.Cost()
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "total_usd": cost["total_usd"], "estimate": cost}}, nil
 	case methods.MethodMemorySearch:
 		req, err := methods.DecodeMemorySearchParams(in.Params)
 		if err != nil {
@@ -655,6 +1146,70 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.MemorySearchResponse{Results: memoryIndex.Search(req.Query, req.Limit)}}, nil
+	case methods.MethodAgent:
+		req, err := methods.DecodeAgentParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if req.SessionID == "" {
+			req.SessionID = in.FromPubKey
+		}
+		if controlAgentRuntime == nil || controlAgentJobs == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("agent runtime not configured")
+		}
+		runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
+		snapshot := controlAgentJobs.Begin(runID, req.SessionID)
+		go executeAgentRun(runID, req, controlAgentRuntime, controlAgentJobs)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"run_id": runID, "status": "accepted", "accepted_at": snapshot.StartedAt}}, nil
+	case methods.MethodAgentWait:
+		req, err := methods.DecodeAgentWaitParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlAgentJobs == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("agent runtime not configured")
+		}
+		snap, ok := controlAgentJobs.Wait(ctx, req.RunID, time.Duration(req.TimeoutMS)*time.Millisecond)
+		if !ok {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("run not found")
+		}
+		if snap.Status == "pending" {
+			return nostruntime.ControlRPCResult{Result: map[string]any{"run_id": req.RunID, "status": "timeout"}}, nil
+		}
+		out := map[string]any{"run_id": req.RunID, "status": snap.Status, "started_at": snap.StartedAt, "ended_at": snap.EndedAt}
+		if snap.Err != "" {
+			out["error"] = snap.Err
+		}
+		if snap.Result != "" {
+			out["result"] = snap.Result
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodAgentIdentityGet:
+		req, err := methods.DecodeAgentIdentityParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		agentID := strings.TrimSpace(req.AgentID)
+		if agentID == "" {
+			agentID = "main"
+		}
+		pubkey := strings.TrimSpace(in.FromPubKey)
+		if dmBus != nil {
+			pubkey = dmBus.PublicKey()
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": agentID, "display_name": "Swarmstr Agent", "session_id": req.SessionID, "pubkey": pubkey}}, nil
 	case methods.MethodChatSend:
 		req, err := methods.DecodeChatSendParams(in.Params)
 		if err != nil {
@@ -664,10 +1219,57 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		if err := dmBus.SendDM(ctx, req.To, req.Text); err != nil {
+		sendCtx := ctx
+		release := func() {}
+		if chatCancels != nil {
+			sendCtx, release = chatCancels.Begin(req.To, ctx)
+			defer release()
+		}
+		if err := dmBus.SendDM(sendCtx, req.To, req.Text); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nostruntime.ControlRPCResult{}, fmt.Errorf("chat aborted")
+			}
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+	case methods.MethodChatHistory:
+		req, err := methods.DecodeChatHistoryParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if _, err := docsRepo.GetSession(ctx, req.SessionID); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		transcript, err := transcriptRepo.ListSession(ctx, req.SessionID, req.Limit)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"session_id": req.SessionID, "entries": transcript}}, nil
+	case methods.MethodChatAbort:
+		req, err := methods.DecodeChatAbortParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		aborted := 0
+		if chatCancels != nil {
+			if strings.TrimSpace(req.SessionID) == "" {
+				aborted = chatCancels.AbortAll()
+			} else if chatCancels.Abort(req.SessionID) {
+				aborted = 1
+			}
+		}
+		if usageState != nil {
+			usageState.RecordAbort(aborted)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "aborted": aborted > 0, "aborted_count": aborted}}, nil
 	case methods.MethodSessionGet:
 		req, err := methods.DecodeSessionGetParams(in.Params)
 		if err != nil {
@@ -686,6 +1288,469 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.SessionGetResponse{Session: session, Transcript: transcript}}, nil
+	case methods.MethodSessionsList:
+		req, err := methods.DecodeSessionsListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		sessions, err := docsRepo.ListSessions(ctx, req.Limit)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"sessions": sessions}}, nil
+	case methods.MethodSessionsPreview:
+		req, err := methods.DecodeSessionsPreviewParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		session, err := docsRepo.GetSession(ctx, req.SessionID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		transcript, err := transcriptRepo.ListSession(ctx, req.SessionID, req.Limit)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"session": session, "preview": transcript}}, nil
+	case methods.MethodSessionsPatch:
+		req, err := methods.DecodeSessionsPatchParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		session, err := docsRepo.GetSession(ctx, req.SessionID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		session.Meta = mergeSessionMeta(session.Meta, req.Meta)
+		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session": session}}, nil
+	case methods.MethodSessionsReset:
+		req, err := methods.DecodeSessionsResetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		session, err := docsRepo.GetSession(ctx, req.SessionID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		session.LastInboundAt = 0
+		session.LastReplyAt = 0
+		session.Meta = map[string]any{}
+		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session": session}}, nil
+	case methods.MethodSessionsDelete:
+		req, err := methods.DecodeSessionsDeleteParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		session, err := docsRepo.GetSession(ctx, req.SessionID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		session.Meta = mergeSessionMeta(session.Meta, map[string]any{"deleted": true, "deleted_at": time.Now().Unix()})
+		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "deleted": true}}, nil
+	case methods.MethodSessionsCompact:
+		req, err := methods.DecodeSessionsCompactParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		session, err := docsRepo.GetSession(ctx, req.SessionID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		entries, err := transcriptRepo.ListSession(ctx, req.SessionID, 2000)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		dropped := len(entries) - req.Keep
+		if dropped < 0 {
+			dropped = 0
+		}
+		session.Meta = mergeSessionMeta(session.Meta, map[string]any{
+			"compacted_at":              time.Now().Unix(),
+			"compacted_keep":            req.Keep,
+			"compacted_from_entries":    len(entries),
+			"compacted_dropped_entries": dropped,
+		})
+		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped}}, nil
+	case methods.MethodAgentsList:
+		req, err := methods.DecodeAgentsListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		agents, err := docsRepo.ListAgents(ctx, req.Limit)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agents": agents}}, nil
+	case methods.MethodAgentsCreate:
+		req, err := methods.DecodeAgentsCreateParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if _, err := docsRepo.GetAgent(ctx, req.AgentID); err == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("agent %q already exists", req.AgentID)
+		} else if !errors.Is(err, state.ErrNotFound) {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		doc := state.AgentDoc{Version: 1, AgentID: req.AgentID, Name: req.Name, Workspace: req.Workspace, Model: req.Model, Meta: req.Meta}
+		if _, err := docsRepo.PutAgent(ctx, req.AgentID, doc); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "agent": doc}}, nil
+	case methods.MethodAgentsUpdate:
+		req, err := methods.DecodeAgentsUpdateParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		doc, err := docsRepo.GetAgent(ctx, req.AgentID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if req.Name != "" {
+			doc.Name = req.Name
+		}
+		if req.Workspace != "" {
+			doc.Workspace = req.Workspace
+		}
+		if req.Model != "" {
+			doc.Model = req.Model
+		}
+		doc.Meta = mergeSessionMeta(doc.Meta, req.Meta)
+		if doc.Version == 0 {
+			doc.Version = 1
+		}
+		if _, err := docsRepo.PutAgent(ctx, req.AgentID, doc); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "agent": doc}}, nil
+	case methods.MethodAgentsDelete:
+		req, err := methods.DecodeAgentsDeleteParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		doc, err := docsRepo.GetAgent(ctx, req.AgentID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		doc.Deleted = true
+		doc.Meta = mergeSessionMeta(doc.Meta, map[string]any{"deleted_at": time.Now().Unix()})
+		if _, err := docsRepo.PutAgent(ctx, req.AgentID, doc); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "agent_id": req.AgentID, "deleted": true}}, nil
+	case methods.MethodAgentsFilesList:
+		req, err := methods.DecodeAgentsFilesListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		files, err := docsRepo.ListAgentFiles(ctx, req.AgentID, req.Limit)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out := make([]map[string]any, 0, len(files))
+		for _, file := range files {
+			out = append(out, map[string]any{"name": file.Name, "size": len(file.Content)})
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": req.AgentID, "files": out}}, nil
+	case methods.MethodAgentsFilesGet:
+		req, err := methods.DecodeAgentsFilesGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		file, err := docsRepo.GetAgentFile(ctx, req.AgentID, req.Name)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": req.AgentID, "file": map[string]any{"name": req.Name, "missing": true}}}, nil
+			}
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": req.AgentID, "file": map[string]any{"name": file.Name, "missing": false, "content": file.Content}}}, nil
+	case methods.MethodAgentsFilesSet:
+		req, err := methods.DecodeAgentsFilesSetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		doc := state.AgentFileDoc{Version: 1, AgentID: req.AgentID, Name: req.Name, Content: req.Content}
+		if _, err := docsRepo.PutAgentFile(ctx, req.AgentID, req.Name, doc); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "agent_id": req.AgentID, "file": map[string]any{"name": req.Name, "missing": false, "content": req.Content}}}, nil
+	case methods.MethodModelsList:
+		req, err := methods.DecodeModelsListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"models": defaultModelsCatalog()}}, nil
+	case methods.MethodToolsCatalog:
+		req, err := methods.DecodeToolsCatalogParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": defaultAgentID(req.AgentID), "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(tools, req.IncludePlugins)}}, nil
+	case methods.MethodSkillsStatus:
+		req, err := methods.DecodeSkillsStatusParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		entries := currentSkillEntries(cfg)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": defaultAgentID(req.AgentID), "skills": entries, "count": len(entries)}}, nil
+	case methods.MethodSkillsInstall:
+		req, err := methods.DecodeSkillsInstallParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		updated, err := applySkillInstall(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "name": req.Name, "install_id": req.InstallID, "timeout_ms": req.TimeoutMS, "skills": currentSkillEntries(updated)}}, nil
+	case methods.MethodSkillsUpdate:
+		req, err := methods.DecodeSkillsUpdateParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		updated, entry, err := applySkillUpdate(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "skill_key": req.SkillKey, "config": entry, "skills": currentSkillEntries(updated)}}, nil
+	case methods.MethodNodePairRequest:
+		req, err := methods.DecodeNodePairRequestParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodePairRequest(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodePairList:
+		req, err := methods.DecodeNodePairListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodePairList(ctx, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodePairApprove:
+		req, err := methods.DecodeNodePairApproveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodePairApprove(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodePairReject:
+		req, err := methods.DecodeNodePairRejectParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodePairReject(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodePairVerify:
+		req, err := methods.DecodeNodePairVerifyParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodePairVerify(ctx, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodDevicePairList:
+		req, err := methods.DecodeDevicePairListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyDevicePairList(ctx, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodDevicePairApprove:
+		req, err := methods.DecodeDevicePairApproveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyDevicePairApprove(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodDevicePairReject:
+		req, err := methods.DecodeDevicePairRejectParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyDevicePairReject(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodDevicePairRemove:
+		req, err := methods.DecodeDevicePairRemoveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyDevicePairRemove(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodDeviceTokenRotate:
+		req, err := methods.DecodeDeviceTokenRotateParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyDeviceTokenRotate(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodDeviceTokenRevoke:
+		req, err := methods.DecodeDeviceTokenRevokeParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyDeviceTokenRevoke(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodConfigGet:
 		return nostruntime.ControlRPCResult{Result: cfg}, nil
 	case methods.MethodRelayPolicyGet:
@@ -813,9 +1878,130 @@ func handleControlRPCRequest(
 		configState.Set(req.Config)
 		applyRuntimeRelayPolicy(dmBus, controlBus, req.Config)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+	case methods.MethodConfigSet:
+		req, err := methods.DecodeConfigSetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		next, err := methods.ApplyConfigSet(cfg, req.Key, req.Value)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		next = policy.NormalizeConfig(next)
+		if err := policy.ValidateConfig(next); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if _, err := docsRepo.PutConfig(ctx, next); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		configState.Set(next)
+		applyRuntimeRelayPolicy(dmBus, controlBus, next)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+	case methods.MethodConfigApply:
+		req, err := methods.DecodeConfigApplyParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		next := policy.NormalizeConfig(req.Config)
+		if err := policy.ValidateConfig(next); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if _, err := docsRepo.PutConfig(ctx, next); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		configState.Set(next)
+		applyRuntimeRelayPolicy(dmBus, controlBus, next)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+	case methods.MethodConfigPatch:
+		req, err := methods.DecodeConfigPatchParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		next, err := methods.ApplyConfigPatch(cfg, req.Patch)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		next = policy.NormalizeConfig(next)
+		if err := policy.ValidateConfig(next); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if _, err := docsRepo.PutConfig(ctx, next); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		configState.Set(next)
+		applyRuntimeRelayPolicy(dmBus, controlBus, next)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+	case methods.MethodConfigSchema:
+		return nostruntime.ControlRPCResult{Result: methods.ConfigSchema()}, nil
 	default:
 		return nostruntime.ControlRPCResult{}, fmt.Errorf("unknown method %q", method)
 	}
+}
+
+func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runtime, jobs *agentJobRegistry) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("panic in executeAgentRun runID=%s panic=%v", runID, r)
+			if jobs != nil {
+				jobs.Finish(runID, "", fmt.Errorf("agent runtime panic: %v", r))
+			}
+		}
+	}()
+	
+	if runtime == nil || jobs == nil {
+		return
+	}
+	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	result, err := runtime.ProcessTurn(ctx, agent.Turn{SessionID: req.SessionID, UserText: req.Message, Context: req.Context})
+	if err != nil {
+		jobs.Finish(runID, "", err)
+		return
+	}
+	jobs.Finish(runID, result.Text, nil)
+}
+
+func mapGatewayWSError(err error) *gatewayprotocol.ErrorShape {
+	if err == nil {
+		return nil
+	}
+	var conflict *methods.PreconditionConflictError
+	if errors.As(err, &conflict) {
+		return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeInvalidRequest, err.Error(), map[string]any{
+			"resource":         conflict.Resource,
+			"expected_version": conflict.ExpectedVersion,
+			"current_version":  conflict.CurrentVersion,
+			"expected_event":   conflict.ExpectedEvent,
+			"current_event":    conflict.CurrentEvent,
+		})
+	}
+	if errors.Is(err, state.ErrNotFound) {
+		return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeInvalidRequest, "not found", nil)
+	}
+	msg := strings.TrimSpace(err.Error())
+	if strings.HasPrefix(msg, "unknown method") || strings.Contains(msg, "invalid") || strings.Contains(msg, "required") {
+		return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeInvalidRequest, msg, nil)
+	}
+	if strings.Contains(strings.ToLower(msg), "forbidden") || strings.Contains(strings.ToLower(msg), "auth") {
+		return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeNotLinked, msg, nil)
+	}
+	return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeUnavailable, msg, nil)
 }
 
 func assembleSessionMemoryContext(index *memory.Index, sessionID string, userText string, limit int) string {
@@ -897,6 +2083,28 @@ func persistToolTraces(
 	return firstErr
 }
 
+func normalizeCSVList(raw string) []string {
+	items := strings.Split(raw, ",")
+	return normalizeStringList(items)
+}
+
+func normalizeStringList(items []string) []string {
+	out := make([]string, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		v := strings.TrimSpace(item)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
 func truncateRunes(s string, limit int) string {
 	if limit <= 0 {
 		return ""
@@ -906,6 +2114,21 @@ func truncateRunes(s string, limit int) string {
 		return s
 	}
 	return string(r[:limit]) + "…"
+}
+
+func mergeSessionMeta(base map[string]any, patch map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range patch {
+		if v == nil {
+			delete(out, k)
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func applyRuntimeRelayPolicy(dmBus *nostruntime.DMBus, controlBus *nostruntime.ControlRPCBus, cfg state.ConfigDoc) {
@@ -919,6 +2142,766 @@ func applyRuntimeRelayPolicy(dmBus *nostruntime.DMBus, controlBus *nostruntime.C
 			log.Printf("control relay policy update failed: %v", err)
 		}
 	}
+}
+
+func defaultAgentID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "main"
+	}
+	return id
+}
+
+func defaultModelsCatalog() []map[string]any {
+	return []map[string]any{
+		{"id": "echo", "name": "Echo (built-in)", "provider": "echo", "context_window": 8192, "reasoning": false},
+		{"id": "http-default", "name": "HTTP Provider", "provider": "http", "context_window": 16384, "reasoning": true},
+	}
+}
+
+func defaultToolProfiles() []map[string]any {
+	return []map[string]any{
+		{"id": "minimal", "label": "Minimal"},
+		{"id": "coding", "label": "Coding"},
+		{"id": "messaging", "label": "Messaging"},
+		{"id": "full", "label": "Full"},
+	}
+}
+
+func buildToolCatalogGroups(registry *agent.ToolRegistry, includePlugins *bool) []map[string]any {
+	coreTools := []map[string]any{}
+	if registry != nil {
+		for _, toolName := range registry.List() {
+			coreTools = append(coreTools, map[string]any{
+				"id":               toolName,
+				"label":            toolName,
+				"description":      "Registered runtime tool",
+				"source":           "core",
+				"default_profiles": []string{"full"},
+			})
+		}
+	}
+	groups := []map[string]any{{"id": "core", "label": "Core", "source": "core", "tools": coreTools}}
+	if includePlugins != nil && !*includePlugins {
+		return groups
+	}
+	return groups
+}
+
+func extractSkillEntries(cfg state.ConfigDoc) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	if cfg.Extra == nil {
+		return out
+	}
+	rawSkills, ok := cfg.Extra["skills"].(map[string]any)
+	if !ok {
+		return out
+	}
+	rawEntries, ok := rawSkills["entries"].(map[string]any)
+	if !ok {
+		return out
+	}
+	for key, value := range rawEntries {
+		entryMap, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		copyEntry := map[string]any{}
+		for ek, ev := range entryMap {
+			copyEntry[ek] = ev
+		}
+		out[key] = copyEntry
+	}
+	return out
+}
+
+func configWithSkillEntries(cfg state.ConfigDoc, entries map[string]map[string]any) state.ConfigDoc {
+	next := cfg
+	if next.Extra == nil {
+		next.Extra = map[string]any{}
+	}
+	rawEntries := map[string]any{}
+	for key, entry := range entries {
+		entryCopy := map[string]any{}
+		for ek, ev := range entry {
+			entryCopy[ek] = ev
+		}
+		rawEntries[key] = entryCopy
+	}
+	next.Extra["skills"] = map[string]any{"entries": rawEntries}
+	return next
+}
+
+func currentSkillEntries(cfg state.ConfigDoc) []map[string]any {
+	entries := extractSkillEntries(cfg)
+	keys := make([]string, 0, len(entries))
+	for key := range entries {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]map[string]any, 0, len(keys))
+	for _, key := range keys {
+		entry := map[string]any{"skill_key": key}
+		for ek, ev := range entries[key] {
+			entry[ek] = ev
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.SkillsInstallRequest) (state.ConfigDoc, error) {
+	cfg := configState.Get()
+	entries := extractSkillEntries(cfg)
+	key := strings.ToLower(strings.TrimSpace(req.Name))
+	entry, ok := entries[key]
+	if !ok {
+		entry = map[string]any{}
+	}
+	entry["name"] = req.Name
+	entry["install_id"] = req.InstallID
+	entry["enabled"] = true
+	entry["status"] = "installed"
+	entry["updated_at"] = time.Now().Unix()
+	entries[key] = entry
+	next := configWithSkillEntries(cfg, entries)
+	if _, err := docsRepo.PutConfig(ctx, next); err != nil {
+		return state.ConfigDoc{}, err
+	}
+	configState.Set(next)
+	return next, nil
+}
+
+func applySkillUpdate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.SkillsUpdateRequest) (state.ConfigDoc, map[string]any, error) {
+	cfg := configState.Get()
+	entries := extractSkillEntries(cfg)
+	entry, ok := entries[req.SkillKey]
+	if !ok {
+		entry = map[string]any{}
+	}
+	if req.Enabled != nil {
+		entry["enabled"] = *req.Enabled
+	}
+	if req.APIKey != nil {
+		if strings.TrimSpace(*req.APIKey) == "" {
+			delete(entry, "api_key")
+		} else {
+			entry["api_key"] = strings.TrimSpace(*req.APIKey)
+		}
+	}
+	if req.Env != nil {
+		envMap := map[string]any{}
+		for key, value := range req.Env {
+			envMap[key] = value
+		}
+		entry["env"] = envMap
+	}
+	entry["updated_at"] = time.Now().Unix()
+	entries[req.SkillKey] = entry
+	next := configWithSkillEntries(cfg, entries)
+	if _, err := docsRepo.PutConfig(ctx, next); err != nil {
+		return state.ConfigDoc{}, nil, err
+	}
+	configState.Set(next)
+	entryCopy := map[string]any{}
+	for key, value := range entry {
+		entryCopy[key] = value
+	}
+	return next, entryCopy, nil
+}
+
+func pairingData(cfg state.ConfigDoc) map[string]any {
+	if cfg.Extra == nil {
+		cfg.Extra = map[string]any{}
+	}
+	pairing, _ := cfg.Extra["pairing"].(map[string]any)
+	if pairing == nil {
+		pairing = map[string]any{}
+	}
+	return pairing
+}
+
+func toRecordSlice(raw any) []map[string]any {
+	out := []map[string]any{}
+	switch arr := raw.(type) {
+	case []map[string]any:
+		for _, item := range arr {
+			out = append(out, item)
+		}
+		return out
+	case []any:
+		for _, item := range arr {
+			m, ok := item.(map[string]any)
+			if ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return out
+	}
+}
+
+func applyPairingConfigUpdate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, mutator func(map[string]any) (map[string]any, map[string]any, error)) (map[string]any, error) {
+	cfg := configState.Get()
+	pairing := pairingData(cfg)
+	nextPairing, result, err := mutator(pairing)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Extra == nil {
+		cfg.Extra = map[string]any{}
+	}
+	cfg.Extra["pairing"] = nextPairing
+	if _, err := docsRepo.PutConfig(ctx, cfg); err != nil {
+		return nil, err
+	}
+	configState.Set(cfg)
+	return result, nil
+}
+
+func randomToken() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func randomRequestID(prefix string) (string, error) {
+	tok, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s-%s", prefix, tok), nil
+}
+
+func copyRecord(record map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range record {
+		out[key] = value
+	}
+	return out
+}
+
+func getString(record map[string]any, key string) string {
+	return strings.TrimSpace(fmt.Sprintf("%v", record[key]))
+}
+
+func getStringSlice(record map[string]any, key string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	switch values := record[key].(type) {
+	case []string:
+		for _, value := range values {
+			v := strings.TrimSpace(value)
+			if v == "" {
+				continue
+			}
+			if _, ok := seen[v]; ok {
+				continue
+			}
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	case []any:
+		for _, raw := range values {
+			v := strings.TrimSpace(fmt.Sprintf("%v", raw))
+			if v == "" {
+				continue
+			}
+			if _, ok := seen[v]; ok {
+				continue
+			}
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func getInt64(record map[string]any, key string) int64 {
+	switch v := record[key].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
+func mergeUniqueStrings(values ...[]string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, list := range values {
+		for _, value := range list {
+			v := strings.TrimSpace(value)
+			if v == "" {
+				continue
+			}
+			if _, ok := seen[v]; ok {
+				continue
+			}
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func sortRecordsByKeyDesc(records []map[string]any, key string) {
+	sort.Slice(records, func(i, j int) bool {
+		return getInt64(records[i], key) > getInt64(records[j], key)
+	})
+}
+
+func scopesAllow(requested []string, allowed []string) bool {
+	if len(requested) == 0 {
+		return true
+	}
+	if len(allowed) == 0 {
+		return false
+	}
+	allowedSet := map[string]struct{}{}
+	for _, scope := range allowed {
+		allowedSet[scope] = struct{}{}
+	}
+	for _, scope := range requested {
+		if _, ok := allowedSet[scope]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func redactDeviceForList(record map[string]any) map[string]any {
+	out := copyRecord(record)
+	if tokens, ok := record["tokens"].(map[string]any); ok {
+		summaries := make([]map[string]any, 0, len(tokens))
+		for _, raw := range tokens {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			summary := map[string]any{
+				"role":          getString(entry, "role"),
+				"scopes":        getStringSlice(entry, "scopes"),
+				"created_at_ms": getInt64(entry, "created_at_ms"),
+			}
+			if ts := getInt64(entry, "rotated_at_ms"); ts > 0 {
+				summary["rotated_at_ms"] = ts
+			}
+			if ts := getInt64(entry, "revoked_at_ms"); ts > 0 {
+				summary["revoked_at_ms"] = ts
+			}
+			if ts := getInt64(entry, "last_used_at_ms"); ts > 0 {
+				summary["last_used_at_ms"] = ts
+			}
+			summaries = append(summaries, summary)
+		}
+		sort.Slice(summaries, func(i, j int) bool {
+			return fmt.Sprintf("%v", summaries[i]["role"]) < fmt.Sprintf("%v", summaries[j]["role"])
+		})
+		out["tokens"] = summaries
+	}
+	delete(out, "approved_scopes")
+	return out
+}
+
+func buildNodePendingRecord(req methods.NodePairRequest, isRepair bool, requestID string, ts int64) map[string]any {
+	record := map[string]any{
+		"request_id": requestID,
+		"node_id":    req.NodeID,
+		"silent":     req.Silent,
+		"is_repair":  isRepair,
+		"ts":         ts,
+	}
+	if req.DisplayName != "" {
+		record["display_name"] = req.DisplayName
+	}
+	if req.Platform != "" {
+		record["platform"] = req.Platform
+	}
+	if req.Version != "" {
+		record["version"] = req.Version
+	}
+	if req.CoreVersion != "" {
+		record["core_version"] = req.CoreVersion
+	}
+	if req.UIVersion != "" {
+		record["ui_version"] = req.UIVersion
+	}
+	if req.DeviceFamily != "" {
+		record["device_family"] = req.DeviceFamily
+	}
+	if req.ModelIdentifier != "" {
+		record["model_identifier"] = req.ModelIdentifier
+	}
+	if len(req.Caps) > 0 {
+		record["caps"] = req.Caps
+	}
+	if len(req.Commands) > 0 {
+		record["commands"] = req.Commands
+	}
+	if len(req.Permissions) > 0 {
+		record["permissions"] = req.Permissions
+	}
+	if req.RemoteIP != "" {
+		record["remote_ip"] = req.RemoteIP
+	}
+	return record
+}
+
+func applyNodePairRequest(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.NodePairRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		now := time.Now().UnixMilli()
+		pending := toRecordSlice(pairing["node_pending"])
+		paired := toRecordSlice(pairing["node_paired"])
+		isRepair := false
+		for _, p := range paired {
+			if getString(p, "node_id") == req.NodeID {
+				isRepair = true
+				break
+			}
+		}
+		for i, item := range pending {
+			if getString(item, "node_id") != req.NodeID {
+				continue
+			}
+			requestID := getString(item, "request_id")
+			if requestID == "" {
+				var err error
+				requestID, err = randomRequestID("node")
+				if err != nil {
+					return nil, nil, err
+				}
+			}
+			record := buildNodePendingRecord(req, isRepair, requestID, now)
+			pending[i] = record
+			pairing["node_pending"] = pending
+			return pairing, map[string]any{"status": "pending", "created": false, "request": record}, nil
+		}
+		requestID, err := randomRequestID("node")
+		if err != nil {
+			return nil, nil, err
+		}
+		record := buildNodePendingRecord(req, isRepair, requestID, now)
+		pending = append(pending, record)
+		sortRecordsByKeyDesc(pending, "ts")
+		pairing["node_pending"] = pending
+		return pairing, map[string]any{"status": "pending", "created": true, "request": record}, nil
+	})
+}
+
+func applyNodePairList(_ context.Context, configState *runtimeConfigStore, _ methods.NodePairListRequest) (map[string]any, error) {
+	pairing := pairingData(configState.Get())
+	pending := toRecordSlice(pairing["node_pending"])
+	paired := toRecordSlice(pairing["node_paired"])
+	sortRecordsByKeyDesc(pending, "ts")
+	sortRecordsByKeyDesc(paired, "approved_at_ms")
+	return map[string]any{"pending": pending, "paired": paired}, nil
+}
+
+func applyNodePairApprove(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.NodePairApproveRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		now := time.Now().UnixMilli()
+		pending := toRecordSlice(pairing["node_pending"])
+		paired := toRecordSlice(pairing["node_paired"])
+		remaining := make([]map[string]any, 0, len(pending))
+		var approved map[string]any
+		for _, item := range pending {
+			if getString(item, "request_id") == req.RequestID {
+				approved = item
+				continue
+			}
+			remaining = append(remaining, item)
+		}
+		if approved == nil {
+			return nil, nil, state.ErrNotFound
+		}
+		token, err := randomToken()
+		if err != nil {
+			return nil, nil, err
+		}
+		nodeID := getString(approved, "node_id")
+		createdAt := now
+		filtered := make([]map[string]any, 0, len(paired))
+		for _, node := range paired {
+			if getString(node, "node_id") == nodeID {
+				if prior := getInt64(node, "created_at_ms"); prior > 0 {
+					createdAt = prior
+				}
+				continue
+			}
+			filtered = append(filtered, node)
+		}
+		node := map[string]any{
+			"node_id":        nodeID,
+			"token":          token,
+			"created_at_ms":  createdAt,
+			"approved_at_ms": now,
+		}
+		for _, key := range []string{"display_name", "platform", "version", "core_version", "ui_version", "device_family", "model_identifier", "caps", "commands", "permissions", "remote_ip"} {
+			if value, ok := approved[key]; ok {
+				node[key] = value
+			}
+		}
+		filtered = append(filtered, node)
+		sortRecordsByKeyDesc(filtered, "approved_at_ms")
+		pairing["node_pending"] = remaining
+		pairing["node_paired"] = filtered
+		return pairing, map[string]any{"request_id": req.RequestID, "node": node}, nil
+	})
+}
+
+func applyNodePairReject(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.NodePairRejectRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		pending := toRecordSlice(pairing["node_pending"])
+		remaining := make([]map[string]any, 0, len(pending))
+		var nodeID string
+		for _, item := range pending {
+			if getString(item, "request_id") == req.RequestID {
+				nodeID = getString(item, "node_id")
+				continue
+			}
+			remaining = append(remaining, item)
+		}
+		if nodeID == "" {
+			return nil, nil, state.ErrNotFound
+		}
+		pairing["node_pending"] = remaining
+		return pairing, map[string]any{"request_id": req.RequestID, "node_id": nodeID}, nil
+	})
+}
+
+func applyNodePairVerify(_ context.Context, configState *runtimeConfigStore, req methods.NodePairVerifyRequest) (map[string]any, error) {
+	pairing := pairingData(configState.Get())
+	for _, item := range toRecordSlice(pairing["node_paired"]) {
+		if getString(item, "node_id") == req.NodeID && getString(item, "token") == req.Token {
+			return map[string]any{"ok": true, "node": item}, nil
+		}
+	}
+	return map[string]any{"ok": false}, nil
+}
+
+func applyDevicePairList(_ context.Context, configState *runtimeConfigStore, _ methods.DevicePairListRequest) (map[string]any, error) {
+	pairing := pairingData(configState.Get())
+	pending := toRecordSlice(pairing["device_pending"])
+	paired := toRecordSlice(pairing["device_paired"])
+	sortRecordsByKeyDesc(pending, "ts")
+	sortRecordsByKeyDesc(paired, "approved_at_ms")
+	redacted := make([]map[string]any, 0, len(paired))
+	for _, device := range paired {
+		redacted = append(redacted, redactDeviceForList(device))
+	}
+	return map[string]any{"pending": pending, "paired": redacted}, nil
+}
+
+func applyDevicePairApprove(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.DevicePairApproveRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		now := time.Now().UnixMilli()
+		pending := toRecordSlice(pairing["device_pending"])
+		paired := toRecordSlice(pairing["device_paired"])
+		remaining := make([]map[string]any, 0, len(pending))
+		var approved map[string]any
+		for _, item := range pending {
+			if getString(item, "request_id") == req.RequestID {
+				approved = item
+				continue
+			}
+			remaining = append(remaining, item)
+		}
+		if approved == nil {
+			return nil, nil, state.ErrNotFound
+		}
+		deviceID := getString(approved, "device_id")
+		if deviceID == "" {
+			return nil, nil, fmt.Errorf("invalid pending pairing record")
+		}
+		device := copyRecord(approved)
+		createdAt := now
+		approvedScopes := getStringSlice(approved, "scopes")
+		tokens := map[string]any{}
+		filtered := make([]map[string]any, 0, len(paired))
+		for _, item := range paired {
+			if getString(item, "device_id") != deviceID {
+				filtered = append(filtered, item)
+				continue
+			}
+			if prior := getInt64(item, "created_at_ms"); prior > 0 {
+				createdAt = prior
+			}
+			approvedScopes = mergeUniqueStrings(getStringSlice(item, "approved_scopes"), approvedScopes)
+			if existingTokens, ok := item["tokens"].(map[string]any); ok {
+				for key, value := range existingTokens {
+					tokens[key] = value
+				}
+			}
+		}
+		role := getString(approved, "role")
+		if role != "" {
+			existing, _ := tokens[role].(map[string]any)
+			scopes := getStringSlice(approved, "scopes")
+			if len(scopes) == 0 {
+				scopes = getStringSlice(existing, "scopes")
+			}
+			if len(scopes) == 0 {
+				scopes = approvedScopes
+			}
+			tok, err := randomToken()
+			if err != nil {
+				return nil, nil, err
+			}
+			entry := map[string]any{
+				"token":         tok,
+				"role":          role,
+				"scopes":        scopes,
+				"created_at_ms": now,
+			}
+			if existing != nil {
+				if created := getInt64(existing, "created_at_ms"); created > 0 {
+					entry["created_at_ms"] = created
+				}
+				entry["rotated_at_ms"] = now
+				if last := getInt64(existing, "last_used_at_ms"); last > 0 {
+					entry["last_used_at_ms"] = last
+				}
+			}
+			tokens[role] = entry
+		}
+		device["approved_scopes"] = approvedScopes
+		device["scopes"] = approvedScopes
+		device["tokens"] = tokens
+		device["created_at_ms"] = createdAt
+		device["approved_at_ms"] = now
+		delete(device, "request_id")
+		delete(device, "ts")
+		filtered = append(filtered, device)
+		sortRecordsByKeyDesc(filtered, "approved_at_ms")
+		pairing["device_pending"] = remaining
+		pairing["device_paired"] = filtered
+		return pairing, map[string]any{"request_id": req.RequestID, "device": redactDeviceForList(device)}, nil
+	})
+}
+
+func applyDevicePairReject(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.DevicePairRejectRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		pending := toRecordSlice(pairing["device_pending"])
+		remaining := make([]map[string]any, 0, len(pending))
+		var deviceID string
+		for _, item := range pending {
+			if getString(item, "request_id") == req.RequestID {
+				deviceID = getString(item, "device_id")
+				continue
+			}
+			remaining = append(remaining, item)
+		}
+		if deviceID == "" {
+			return nil, nil, state.ErrNotFound
+		}
+		pairing["device_pending"] = remaining
+		return pairing, map[string]any{"request_id": req.RequestID, "device_id": deviceID}, nil
+	})
+}
+
+func applyDevicePairRemove(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.DevicePairRemoveRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		paired := toRecordSlice(pairing["device_paired"])
+		remaining := make([]map[string]any, 0, len(paired))
+		removed := false
+		for _, item := range paired {
+			if getString(item, "device_id") == req.DeviceID {
+				removed = true
+				continue
+			}
+			remaining = append(remaining, item)
+		}
+		if !removed {
+			return nil, nil, state.ErrNotFound
+		}
+		pairing["device_paired"] = remaining
+		return pairing, map[string]any{"device_id": req.DeviceID}, nil
+	})
+}
+
+func applyDeviceTokenRotate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.DeviceTokenRotateRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		now := time.Now().UnixMilli()
+		paired := toRecordSlice(pairing["device_paired"])
+		for _, item := range paired {
+			if getString(item, "device_id") != req.DeviceID {
+				continue
+			}
+			tokens, _ := item["tokens"].(map[string]any)
+			if tokens == nil {
+				tokens = map[string]any{}
+			}
+			existing, _ := tokens[req.Role].(map[string]any)
+			scopes := req.Scopes
+			if len(scopes) == 0 {
+				scopes = getStringSlice(existing, "scopes")
+			}
+			if len(scopes) == 0 {
+				scopes = getStringSlice(item, "approved_scopes")
+			}
+			if !scopesAllow(scopes, getStringSlice(item, "approved_scopes")) {
+				return nil, nil, fmt.Errorf("invalid scopes for role")
+			}
+			tok, err := randomToken()
+			if err != nil {
+				return nil, nil, err
+			}
+			entry := map[string]any{
+				"token":         tok,
+				"role":          req.Role,
+				"scopes":        scopes,
+				"created_at_ms": now,
+				"rotated_at_ms": now,
+			}
+			if existing != nil {
+				if created := getInt64(existing, "created_at_ms"); created > 0 {
+					entry["created_at_ms"] = created
+				}
+				if last := getInt64(existing, "last_used_at_ms"); last > 0 {
+					entry["last_used_at_ms"] = last
+				}
+			}
+			tokens[req.Role] = entry
+			item["tokens"] = tokens
+			pairing["device_paired"] = paired
+			return pairing, map[string]any{"device_id": req.DeviceID, "role": req.Role, "token": tok, "scopes": scopes, "rotated_at_ms": now}, nil
+		}
+		return nil, nil, state.ErrNotFound
+	})
+}
+
+func applyDeviceTokenRevoke(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.DeviceTokenRevokeRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		now := time.Now().UnixMilli()
+		paired := toRecordSlice(pairing["device_paired"])
+		for _, item := range paired {
+			if getString(item, "device_id") != req.DeviceID {
+				continue
+			}
+			tokens, _ := item["tokens"].(map[string]any)
+			if tokens == nil {
+				return nil, nil, state.ErrNotFound
+			}
+			tok, ok := tokens[req.Role].(map[string]any)
+			if !ok {
+				return nil, nil, state.ErrNotFound
+			}
+			tok["revoked_at_ms"] = now
+			tokens[req.Role] = tok
+			item["tokens"] = tokens
+			pairing["device_paired"] = paired
+			return pairing, map[string]any{"device_id": req.DeviceID, "role": req.Role, "revoked_at_ms": now}, nil
+		}
+		return nil, nil, state.ErrNotFound
+	})
 }
 
 func persistMemories(

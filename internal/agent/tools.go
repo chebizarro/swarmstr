@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 )
 
@@ -45,6 +46,15 @@ func (r *ToolRegistry) Execute(ctx context.Context, call ToolCall) (string, erro
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}
 	return fn(ctx, call.Args)
+}
+
+func (r *ToolRegistry) List() []string {
+	out := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func ArgString(args map[string]any, key string) string {

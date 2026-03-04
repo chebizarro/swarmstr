@@ -53,6 +53,32 @@ func TestDispatchMethodCallStatusGet(t *testing.T) {
 	}
 }
 
+func TestDispatchMethodCallStatusGetUsesLiveRelaysProvider(t *testing.T) {
+	opts := ServerOptions{
+		Status: StatusProvider{PubKey: "pub", Relays: []string{"wss://stale"}, DMPolicy: "open", Started: time.Now().Add(-5 * time.Second)},
+		StatusRelays: func() []string {
+			return []string{"wss://live-a", "wss://live-b"}
+		},
+	}
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodStatus, nil)
+
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil {
+		t.Fatalf("dispatchMethodCall error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	res, ok := result.(methods.StatusResponse)
+	if !ok {
+		t.Fatalf("result type = %T", result)
+	}
+	if len(res.Relays) != 2 || res.Relays[0] != "wss://live-a" || res.Relays[1] != "wss://live-b" {
+		t.Fatalf("unexpected relays from live provider: %+v", res.Relays)
+	}
+}
+
 func TestDispatchMethodCallMemorySearchPositionalParams(t *testing.T) {
 	var gotQuery string
 	var gotLimit int
@@ -335,6 +361,534 @@ func TestDispatchMethodCallRelayPolicyGet(t *testing.T) {
 	view, ok := result.(methods.RelayPolicyResponse)
 	if !ok || len(view.ReadRelays) != 1 {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestDispatchMethodCallConfigSetApplyPatchSchema(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1, DM: state.DMPolicy{Policy: "pairing"}, Relays: state.RelayPolicy{Read: []string{"wss://r"}, Write: []string{"wss://r"}}}
+	opts := ServerOptions{
+		GetConfig: func(context.Context) (state.ConfigDoc, error) { return cfg, nil },
+		PutConfig: func(_ context.Context, next state.ConfigDoc) error {
+			cfg = next
+			return nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodConfigSet, map[string]any{"key": "dm.policy", "value": "open"})
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("config.set failed status=%d err=%v", status, err)
+	}
+	if cfg.DM.Policy != "open" {
+		t.Fatalf("expected dm.policy open, got %q", cfg.DM.Policy)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodConfigApply, map[string]any{"config": map[string]any{"version": 2, "dm": map[string]any{"policy": "pairing"}, "relays": map[string]any{"read": []string{"wss://r2"}, "write": []string{"wss://r2"}}}})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("config.apply failed status=%d err=%v", status, err)
+	}
+	if cfg.DM.Policy != "pairing" {
+		t.Fatalf("expected dm.policy pairing, got %q", cfg.DM.Policy)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodConfigPatch, map[string]any{"patch": map[string]any{"dm": map[string]any{"policy": "open"}}})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("config.patch failed status=%d err=%v", status, err)
+	}
+	if cfg.DM.Policy != "open" {
+		t.Fatalf("expected dm.policy open after patch, got %q", cfg.DM.Policy)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodConfigSchema, nil)
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("config.schema failed status=%d err=%v", status, err)
+	}
+	out, _ := result.(map[string]any)
+	if out["fields"] == nil {
+		t.Fatalf("unexpected config.schema result: %#v", result)
+	}
+}
+
+func TestDispatchMethodCallHealthAndSessionsListAndConfigSet(t *testing.T) {
+	opts := ServerOptions{
+		GetConfig: func(context.Context) (state.ConfigDoc, error) {
+			return state.ConfigDoc{Version: 1, DM: state.DMPolicy{Policy: "pairing"}}, nil
+		},
+		PutConfig: func(context.Context, state.ConfigDoc) error { return nil },
+		ListSessions: func(context.Context, int) ([]state.SessionDoc, error) {
+			return []state.SessionDoc{{SessionID: "s1"}}, nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodHealth, nil)
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("health failed status=%d err=%v", status, err)
+	}
+	if out, _ := result.(map[string]any); out["ok"] != true {
+		t.Fatalf("unexpected health result: %#v", result)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodSessionsList, map[string]any{"limit": 10})
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("sessions.list failed status=%d err=%v", status, err)
+	}
+	if out, _ := result.(map[string]any); out["sessions"] == nil {
+		t.Fatalf("unexpected sessions.list result: %#v", result)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodConfigSet, map[string]any{"key": "dm.policy", "value": "open"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("config.set failed status=%d err=%v", status, err)
+	}
+}
+
+func TestDispatchMethodCallRuntimeCallbacks(t *testing.T) {
+	var gotCursor int64
+	var gotLimit int
+	var gotMaxBytes int
+	var gotLogout string
+	opts := ServerOptions{
+		TailLogs: func(_ context.Context, cursor int64, limit int, maxBytes int) (map[string]any, error) {
+			gotCursor, gotLimit, gotMaxBytes = cursor, limit, maxBytes
+			return map[string]any{"cursor": cursor, "lines": []string{"a"}, "truncated": false, "reset": false}, nil
+		},
+		ChannelsStatus: func(context.Context, methods.ChannelsStatusRequest) (map[string]any, error) {
+			return map[string]any{"channels": []map[string]any{{"id": "nostr", "connected": true}}}, nil
+		},
+		ChannelsLogout: func(_ context.Context, channel string) (map[string]any, error) {
+			gotLogout = channel
+			return map[string]any{"ok": true, "channel": channel}, nil
+		},
+		UsageStatus: func(context.Context) (map[string]any, error) {
+			return map[string]any{"ok": true, "totals": map[string]any{"control_calls": int64(3)}}, nil
+		},
+		UsageCost: func(_ context.Context, req methods.UsageCostRequest) (map[string]any, error) {
+			if req.Days != 7 {
+				t.Fatalf("unexpected usage.cost days: %d", req.Days)
+			}
+			return map[string]any{"ok": true, "total_usd": 1.23}, nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodLogsTail, map[string]any{"cursor": 9, "limit": 5, "max_bytes": 99})
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("logs.tail failed status=%d err=%v", status, err)
+	}
+	if gotCursor != 9 || gotLimit != 5 || gotMaxBytes != 99 {
+		t.Fatalf("unexpected logs params cursor=%d limit=%d maxBytes=%d", gotCursor, gotLimit, gotMaxBytes)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodChannelsStatus, map[string]any{"probe": true, "timeout_ms": 123})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("channels.status failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodChannelsLogout, map[string]any{"channel": "nostr"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("channels.logout failed status=%d err=%v", status, err)
+	}
+	if gotLogout != "nostr" {
+		t.Fatalf("unexpected logout channel: %q", gotLogout)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodUsageStatus, nil)
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("usage.status failed status=%d err=%v", status, err)
+	}
+	out, _ := result.(map[string]any)
+	totals, _ := out["totals"].(map[string]any)
+	if totals["control_calls"].(int64) != 3 {
+		t.Fatalf("unexpected usage.status result: %#v", result)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodUsageCost, map[string]any{"days": 7})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("usage.cost failed status=%d err=%v", status, err)
+	}
+}
+
+func TestDispatchMethodCallChatHistoryAndSessionViews(t *testing.T) {
+	session := state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer"}
+	entries := []state.TranscriptEntryDoc{{EntryID: "1", SessionID: "s1"}, {EntryID: "2", SessionID: "s1"}}
+	opts := ServerOptions{
+		GetSession: func(context.Context, string) (state.SessionDoc, error) { return session, nil },
+		ListSessions: func(context.Context, int) ([]state.SessionDoc, error) {
+			return []state.SessionDoc{session}, nil
+		},
+		ListTranscript: func(context.Context, string, int) ([]state.TranscriptEntryDoc, error) {
+			return entries, nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodSessionsList, map[string]any{"limit": 10})
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("sessions.list failed status=%d err=%v", status, err)
+	}
+	out, _ := result.(map[string]any)
+	if len(out["sessions"].([]state.SessionDoc)) != 1 {
+		t.Fatalf("unexpected sessions.list result: %#v", result)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodSessionsPreview, map[string]any{"session_id": "s1", "limit": 5})
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("sessions.preview failed status=%d err=%v", status, err)
+	}
+	out, _ = result.(map[string]any)
+	if len(out["preview"].([]state.TranscriptEntryDoc)) != 2 {
+		t.Fatalf("unexpected sessions.preview result: %#v", result)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodChatHistory, map[string]any{"session_id": "s1", "limit": 5})
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("chat.history failed status=%d err=%v", status, err)
+	}
+	out, _ = result.(map[string]any)
+	if len(out["entries"].([]state.TranscriptEntryDoc)) != 2 {
+		t.Fatalf("unexpected chat.history result: %#v", result)
+	}
+}
+
+func TestDispatchMethodCallAgentMethods(t *testing.T) {
+	opts := ServerOptions{
+		StartAgent: func(_ context.Context, req methods.AgentRequest) (map[string]any, error) {
+			if req.Message != "hello" {
+				t.Fatalf("unexpected agent message: %q", req.Message)
+			}
+			return map[string]any{"run_id": "run-1", "status": "accepted"}, nil
+		},
+		WaitAgent: func(_ context.Context, req methods.AgentWaitRequest) (map[string]any, error) {
+			if req.RunID != "run-1" {
+				t.Fatalf("unexpected run_id: %q", req.RunID)
+			}
+			return map[string]any{"run_id": req.RunID, "status": "ok"}, nil
+		},
+		AgentIdentity: func(_ context.Context, req methods.AgentIdentityRequest) (map[string]any, error) {
+			return map[string]any{"agent_id": "main", "session_id": req.SessionID}, nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodAgent, map[string]any{"message": "hello", "session_id": "s1"})
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("agent failed status=%d err=%v", status, err)
+	}
+	out, _ := result.(map[string]any)
+	if out["status"] != "accepted" {
+		t.Fatalf("unexpected agent result: %#v", result)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodAgentWait, map[string]any{"run_id": "run-1"})
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("agent.wait failed status=%d err=%v", status, err)
+	}
+	out, _ = result.(map[string]any)
+	if out["status"] != "ok" {
+		t.Fatalf("unexpected agent.wait result: %#v", result)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodAgentIdentityGet, map[string]any{"session_id": "s1"})
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("agent.identity.get failed status=%d err=%v", status, err)
+	}
+	out, _ = result.(map[string]any)
+	if out["agent_id"] != "main" {
+		t.Fatalf("unexpected identity result: %#v", result)
+	}
+}
+
+func TestDispatchMethodCallAgentsMethods(t *testing.T) {
+	agents := map[string]state.AgentDoc{}
+	files := map[string]string{}
+	opts := ServerOptions{
+		ListAgents: func(_ context.Context, _ methods.AgentsListRequest) (map[string]any, error) {
+			out := make([]state.AgentDoc, 0, len(agents))
+			for _, doc := range agents {
+				out = append(out, doc)
+			}
+			return map[string]any{"agents": out}, nil
+		},
+		CreateAgent: func(_ context.Context, req methods.AgentsCreateRequest) (map[string]any, error) {
+			doc := state.AgentDoc{Version: 1, AgentID: req.AgentID, Name: req.Name}
+			agents[req.AgentID] = doc
+			return map[string]any{"ok": true, "agent": doc}, nil
+		},
+		UpdateAgent: func(_ context.Context, req methods.AgentsUpdateRequest) (map[string]any, error) {
+			doc, ok := agents[req.AgentID]
+			if !ok {
+				return nil, state.ErrNotFound
+			}
+			doc.Name = req.Name
+			agents[req.AgentID] = doc
+			return map[string]any{"ok": true, "agent": doc}, nil
+		},
+		DeleteAgent: func(_ context.Context, req methods.AgentsDeleteRequest) (map[string]any, error) {
+			doc, ok := agents[req.AgentID]
+			if !ok {
+				return nil, state.ErrNotFound
+			}
+			doc.Deleted = true
+			agents[req.AgentID] = doc
+			return map[string]any{"ok": true, "agent_id": req.AgentID, "deleted": true}, nil
+		},
+		ListAgentFiles: func(_ context.Context, req methods.AgentsFilesListRequest) (map[string]any, error) {
+			name, ok := files[req.AgentID]
+			if !ok {
+				return map[string]any{"agent_id": req.AgentID, "files": []map[string]any{}}, nil
+			}
+			return map[string]any{"agent_id": req.AgentID, "files": []map[string]any{{"name": name, "size": len(name)}}}, nil
+		},
+		GetAgentFile: func(_ context.Context, req methods.AgentsFilesGetRequest) (map[string]any, error) {
+			content, ok := files[req.AgentID+":"+req.Name]
+			if !ok {
+				return map[string]any{"agent_id": req.AgentID, "file": map[string]any{"name": req.Name, "missing": true}}, nil
+			}
+			return map[string]any{"agent_id": req.AgentID, "file": map[string]any{"name": req.Name, "missing": false, "content": content}}, nil
+		},
+		SetAgentFile: func(_ context.Context, req methods.AgentsFilesSetRequest) (map[string]any, error) {
+			files[req.AgentID+":"+req.Name] = req.Content
+			files[req.AgentID] = req.Name
+			return map[string]any{"ok": true, "agent_id": req.AgentID, "file": map[string]any{"name": req.Name, "missing": false, "content": req.Content}}, nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodAgentsCreate, map[string]any{"agent_id": "main", "name": "Main"})
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("agents.create failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodAgentsList, map[string]any{"limit": 10})
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("agents.list failed status=%d err=%v", status, err)
+	}
+	out, _ := result.(map[string]any)
+	listed, _ := out["agents"].([]state.AgentDoc)
+	if len(listed) != 1 {
+		t.Fatalf("unexpected agents.list payload: %#v", result)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodAgentsFilesSet, map[string]any{"agent_id": "main", "name": "instructions.md", "content": "hello"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("agents.files.set failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodAgentsFilesGet, map[string]any{"agent_id": "main", "name": "instructions.md"})
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("agents.files.get failed status=%d err=%v", status, err)
+	}
+	out, _ = result.(map[string]any)
+	file, _ := out["file"].(map[string]any)
+	if file["missing"] != false || file["content"] != "hello" {
+		t.Fatalf("unexpected agents.files.get payload: %#v", result)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodAgentsDelete, map[string]any{"agent_id": "main"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("agents.delete failed status=%d err=%v", status, err)
+	}
+}
+
+func TestDispatchMethodCallSessionMutations(t *testing.T) {
+	session := state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer", LastInboundAt: 10, LastReplyAt: 11, Meta: map[string]any{"a": "b"}}
+	opts := ServerOptions{
+		GetSession: func(context.Context, string) (state.SessionDoc, error) { return session, nil },
+		PutSession: func(_ context.Context, _ string, next state.SessionDoc) error {
+			session = next
+			return nil
+		},
+		AbortChat: func(context.Context, string) (int, error) { return 1, nil },
+		ListTranscript: func(context.Context, string, int) ([]state.TranscriptEntryDoc, error) {
+			return []state.TranscriptEntryDoc{{EntryID: "1"}, {EntryID: "2"}, {EntryID: "3"}}, nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodSessionsPatch, map[string]any{"session_id": "s1", "meta": map[string]any{"x": "y"}})
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK || session.Meta["x"] != "y" {
+		t.Fatalf("sessions.patch failed status=%d err=%v session=%+v", status, err, session)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodSessionsReset, map[string]any{"session_id": "s1"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK || session.LastInboundAt != 0 || len(session.Meta) != 0 {
+		t.Fatalf("sessions.reset failed status=%d err=%v session=%+v", status, err, session)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodSessionsDelete, map[string]any{"session_id": "s1"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK || session.Meta["deleted"] != true {
+		t.Fatalf("sessions.delete failed status=%d err=%v session=%+v", status, err, session)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodSessionsCompact, map[string]any{"session_id": "s1", "keep": 1})
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("sessions.compact failed status=%d err=%v", status, err)
+	}
+	out, _ := result.(map[string]any)
+	if out["dropped"].(int) != 2 {
+		t.Fatalf("unexpected compact result: %#v", out)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodChatAbort, map[string]any{"session_id": "s1"})
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("chat.abort failed status=%d err=%v", status, err)
+	}
+	out, _ = result.(map[string]any)
+	if out["aborted"] != true || out["aborted_count"].(int) != 1 {
+		t.Fatalf("unexpected chat.abort result: %#v", out)
+	}
+}
+
+func TestDispatchMethodCallModelsToolsSkillsMethods(t *testing.T) {
+	opts := ServerOptions{
+		ListModels: func(context.Context, methods.ModelsListRequest) (map[string]any, error) {
+			return map[string]any{"models": []map[string]any{{"id": "echo"}}}, nil
+		},
+		ToolsCatalog: func(_ context.Context, req methods.ToolsCatalogRequest) (map[string]any, error) {
+			return map[string]any{"agent_id": req.AgentID, "profiles": []map[string]any{{"id": "full"}}, "groups": []map[string]any{}}, nil
+		},
+		SkillsStatus: func(_ context.Context, req methods.SkillsStatusRequest) (map[string]any, error) {
+			return map[string]any{"agent_id": req.AgentID, "skills": []map[string]any{}}, nil
+		},
+		SkillsInstall: func(_ context.Context, req methods.SkillsInstallRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "name": req.Name, "install_id": req.InstallID}, nil
+		},
+		SkillsUpdate: func(_ context.Context, req methods.SkillsUpdateRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "skill_key": req.SkillKey}, nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodModelsList, map[string]any{})
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("models.list failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodToolsCatalog, map[string]any{"agent_id": "main"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("tools.catalog failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodSkillsStatus, map[string]any{"agent_id": "main"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("skills.status failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodSkillsInstall, map[string]any{"name": "nostr-core", "install_id": "builtin"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("skills.install failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodSkillsUpdate, map[string]any{"skill_key": "nostr-core", "enabled": true})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("skills.update failed status=%d err=%v", status, err)
+	}
+}
+
+func TestDispatchMethodCallNodeDevicePairingMethods(t *testing.T) {
+	opts := ServerOptions{
+		NodePairRequest: func(_ context.Context, req methods.NodePairRequest) (map[string]any, error) {
+			return map[string]any{"status": "pending", "request": map[string]any{"request_id": "r1", "node_id": req.NodeID}}, nil
+		},
+		NodePairList: func(context.Context, methods.NodePairListRequest) (map[string]any, error) {
+			return map[string]any{"pending": []map[string]any{}, "paired": []map[string]any{}}, nil
+		},
+		NodePairApprove: func(_ context.Context, req methods.NodePairApproveRequest) (map[string]any, error) {
+			return map[string]any{"request_id": req.RequestID}, nil
+		},
+		DevicePairList: func(context.Context, methods.DevicePairListRequest) (map[string]any, error) {
+			return map[string]any{"pending": []map[string]any{}, "paired": []map[string]any{}}, nil
+		},
+		DeviceTokenRotate: func(_ context.Context, req methods.DeviceTokenRotateRequest) (map[string]any, error) {
+			return map[string]any{"device_id": req.DeviceID, "role": req.Role, "token": "tok"}, nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodNodePairRequest, map[string]any{"node_id": "n1"})
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("node.pair.request failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodNodePairList, map[string]any{})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("node.pair.list failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodDevicePairList, map[string]any{})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("device.pair.list failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodDeviceTokenRotate, map[string]any{"device_id": "d1", "role": "node"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("device.token.rotate failed status=%d err=%v", status, err)
 	}
 }
 

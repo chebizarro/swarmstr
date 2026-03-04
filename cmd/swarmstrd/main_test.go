@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"swarmstr/internal/agent"
 	"swarmstr/internal/gateway/methods"
 	"swarmstr/internal/nostr/events"
 	nostruntime "swarmstr/internal/nostr/runtime"
@@ -20,7 +21,7 @@ func TestHandleControlRPCRequest_SupportedMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSupportedMethods,
 		Params:     json.RawMessage(`[]`),
-	}, nil, nil, nil, nil, nil, cfgState, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("handleControlRPCRequest error: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestHandleControlRPCRequest_AuthzDenied(t *testing.T) {
 		FromPubKey: "caller-b",
 		Method:     methods.MethodConfigPut,
 		Params:     json.RawMessage(`[{"dm":{"policy":"open"}}]`),
-	}, nil, nil, nil, nil, nil, cfgState, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
 	if err == nil {
 		t.Fatal("expected authorization error")
 	}
@@ -55,7 +56,7 @@ func TestHandleControlRPCRequest_ListGetAndPut(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodListPut,
 		Params:     putRaw,
-	}, nil, nil, docs, nil, nil, cfgState, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("list.put error: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestHandleControlRPCRequest_ListGetAndPut(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodListGet,
 		Params:     getRaw,
-	}, nil, nil, docs, nil, nil, cfgState, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("list.get error: %v", err)
 	}
@@ -92,12 +93,175 @@ func TestHandleControlRPCRequest_ListPutPreconditionConflict(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodListPut,
 		Params:     json.RawMessage(`{"name":"allowlist","items":["b"],"expected_version":1}`),
-	}, nil, nil, docs, nil, nil, cfgState, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
 	if err == nil {
 		t.Fatal("expected precondition conflict")
 	}
 	if !strings.Contains(err.Error(), "current_version=2") {
 		t.Fatalf("expected current version metadata in error, got: %v", err)
+	}
+}
+
+func TestMapGatewayWSError(t *testing.T) {
+	shape := mapGatewayWSError(fmt.Errorf("unknown method \"x\""))
+	if shape == nil || shape.Code != "INVALID_REQUEST" {
+		t.Fatalf("unexpected shape for unknown method: %#v", shape)
+	}
+	shape = mapGatewayWSError(fmt.Errorf("forbidden"))
+	if shape == nil || shape.Code != "NOT_LINKED" {
+		t.Fatalf("unexpected shape for forbidden: %#v", shape)
+	}
+	conflict := &methods.PreconditionConflictError{Resource: "config", ExpectedVersion: 2, CurrentVersion: 3}
+	shape = mapGatewayWSError(conflict)
+	if shape == nil || shape.Code != "INVALID_REQUEST" {
+		t.Fatalf("unexpected shape for precondition conflict: %#v", shape)
+	}
+}
+
+func TestChatAbortRegistryCancelsInFlight(t *testing.T) {
+	registry := newChatAbortRegistry()
+	ctx, release := registry.Begin("s1", context.Background())
+	defer release()
+	if !registry.Abort("s1") {
+		t.Fatal("expected abort to cancel in-flight session")
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected in-flight context cancellation")
+	}
+}
+
+func TestHandleControlRPCRequest_ChatAbortUsesRegistry(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	registry := newChatAbortRegistry()
+	_, release := registry.Begin("s1", context.Background())
+	defer release()
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodChatAbort,
+		Params:     json.RawMessage(`{"session_id":"s1"}`),
+	}, nil, nil, registry, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("chat.abort error: %v", err)
+	}
+	payload, ok := res.Result.(map[string]any)
+	if !ok || payload["aborted"] != true || payload["aborted_count"] != 1 {
+		t.Fatalf("unexpected chat.abort result: %#v", res.Result)
+	}
+}
+
+func TestHandleControlRPCRequest_OperationalSemantics(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		Relays:  state.RelayPolicy{Read: []string{"wss://read"}, Write: []string{"wss://write"}},
+	})
+	usage := newUsageTracker(time.Now().Add(-time.Minute))
+	logs := newRuntimeLogBuffer(32)
+	logs.Append("info", "first")
+	channels := newChannelRuntimeState()
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodLogsTail,
+		Params:     json.RawMessage(`{"limit":10}`),
+	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("logs.tail error: %v", err)
+	}
+	out, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected logs.tail result: %#v", res.Result)
+	}
+	lines, _ := out["lines"].([]string)
+	if len(lines) == 0 {
+		t.Fatalf("expected log lines, got: %#v", out)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodChannelsLogout,
+		Params:     json.RawMessage(`{"channel":"nostr"}`),
+	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("channels.logout error: %v", err)
+	}
+	out, _ = res.Result.(map[string]any)
+	if out["loggedOut"] != true {
+		t.Fatalf("unexpected channels.logout payload: %#v", out)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodUsageStatus,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("usage.status error: %v", err)
+	}
+	out, _ = res.Result.(map[string]any)
+	totals, _ := out["totals"].(map[string]any)
+	if totals["control_calls"].(int64) < 1 {
+		t.Fatalf("expected control call accounting, got: %#v", totals)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodUsageCost,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("usage.cost error: %v", err)
+	}
+	out, _ = res.Result.(map[string]any)
+	if _, ok := out["estimate"]; !ok {
+		t.Fatalf("expected usage estimate in payload: %#v", out)
+	}
+}
+
+func TestHandleControlRPCRequest_AgentMethods(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	controlAgentRuntime = stubAgentRuntime{}
+	controlAgentJobs = newAgentJobRegistry()
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgent,
+		Params:     json.RawMessage(`{"message":"hello","session_id":"s1"}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agent error: %v", err)
+	}
+	out, _ := res.Result.(map[string]any)
+	runID, _ := out["run_id"].(string)
+	if strings.TrimSpace(runID) == "" {
+		t.Fatalf("expected run_id, got: %#v", res.Result)
+	}
+
+	waitRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentWait,
+		Params:     json.RawMessage(fmt.Sprintf(`{"run_id":%q,"timeout_ms":1000}`, runID)),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agent.wait error: %v", err)
+	}
+	out, _ = waitRes.Result.(map[string]any)
+	if out["status"] != "ok" {
+		t.Fatalf("unexpected wait result: %#v", waitRes.Result)
+	}
+
+	identityRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentIdentityGet,
+		Params:     json.RawMessage(`{"session_id":"s1"}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agent.identity.get error: %v", err)
+	}
+	out, _ = identityRes.Result.(map[string]any)
+	if out["agent_id"] != "main" {
+		t.Fatalf("unexpected identity result: %#v", identityRes.Result)
 	}
 }
 
@@ -110,7 +274,7 @@ func TestHandleControlRPCRequest_RelayPolicyGet(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodRelayPolicyGet,
 		Params:     json.RawMessage(`[]`),
-	}, nil, nil, nil, nil, nil, cfgState, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("relay.policy.get error: %v", err)
 	}
@@ -121,6 +285,484 @@ func TestHandleControlRPCRequest_RelayPolicyGet(t *testing.T) {
 	if len(view.ReadRelays) != 1 || view.ReadRelays[0] != "wss://read" {
 		t.Fatalf("unexpected read relays: %+v", view.ReadRelays)
 	}
+}
+
+func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		DM:      state.DMPolicy{Policy: "pairing"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay"}, Write: []string{"wss://relay"}},
+	})
+
+	_, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigSet,
+		Params:     json.RawMessage(`{"key":"dm.policy","value":"open"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.set error: %v", err)
+	}
+	if got := cfgState.Get().DM.Policy; got != "open" {
+		t.Fatalf("dm.policy=%q want open", got)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigApply,
+		Params:     json.RawMessage(`{"config":{"version":2,"dm":{"policy":"pairing"},"relays":{"read":["wss://r1"],"write":["wss://r1"]}}}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.apply error: %v", err)
+	}
+	if got := cfgState.Get().DM.Policy; got != "pairing" {
+		t.Fatalf("dm.policy=%q want pairing", got)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigPatch,
+		Params:     json.RawMessage(`{"patch":{"dm":{"policy":"open"}}}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.patch error: %v", err)
+	}
+	if got := cfgState.Get().DM.Policy; got != "open" {
+		t.Fatalf("dm.policy=%q want open after patch", got)
+	}
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigSchema,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.schema error: %v", err)
+	}
+	schema, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected config.schema result type: %T", res.Result)
+	}
+	fields, ok := schema["fields"].([]string)
+	if !ok || len(fields) == 0 {
+		t.Fatalf("unexpected config.schema payload: %#v", res.Result)
+	}
+}
+
+func TestHandleControlRPCRequest_ChatHistoryAndSessionViews(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	transcript := state.NewTranscriptRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+
+	if _, err := docs.PutSession(context.Background(), "s1", state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer"}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		_, _ = transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{Version: 1, SessionID: "s1", EntryID: fmt.Sprintf("e%d", i), Role: "user", Text: "hi", Unix: time.Now().Unix() + int64(i)})
+	}
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSessionsList,
+		Params:     json.RawMessage(`{"limit":10}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("sessions.list error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	if len(payload["sessions"].([]state.SessionDoc)) != 1 {
+		t.Fatalf("unexpected sessions.list payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSessionsPreview,
+		Params:     json.RawMessage(`{"session_id":"s1","limit":5}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("sessions.preview error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if len(payload["preview"].([]state.TranscriptEntryDoc)) != 2 {
+		t.Fatalf("unexpected sessions.preview payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodChatHistory,
+		Params:     json.RawMessage(`{"session_id":"s1","limit":5}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("chat.history error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if len(payload["entries"].([]state.TranscriptEntryDoc)) != 2 {
+		t.Fatalf("unexpected chat.history payload: %#v", res.Result)
+	}
+}
+
+func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	transcript := state.NewTranscriptRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		DM:      state.DMPolicy{Policy: "pairing"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay"}, Write: []string{"wss://relay"}},
+	})
+	if _, err := docs.PutSession(context.Background(), "s1", state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer", LastInboundAt: time.Now().Unix()}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		_, _ = transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{Version: 1, SessionID: "s1", EntryID: fmt.Sprintf("e%d", i), Role: "user", Text: "hi", Unix: time.Now().Unix() + int64(i)})
+	}
+
+	_, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigSet,
+		Params:     json.RawMessage(`{"key":"dm.policy","value":"open"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.set error: %v", err)
+	}
+	if got := cfgState.Get().DM.Policy; got != "open" {
+		t.Fatalf("dm.policy=%q want open", got)
+	}
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSessionsPatch,
+		Params:     json.RawMessage(`{"session_id":"s1","meta":{"k":"v"}}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("sessions.patch error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	if payload["ok"] != true {
+		t.Fatalf("unexpected sessions.patch result: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSessionsCompact,
+		Params:     json.RawMessage(`{"session_id":"s1","keep":1}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("sessions.compact error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["dropped"].(int) < 1 {
+		t.Fatalf("unexpected sessions.compact result: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSessionsDelete,
+		Params:     json.RawMessage(`{"session_id":"s1"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("sessions.delete error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["deleted"] != true {
+		t.Fatalf("unexpected sessions.delete result: %#v", res.Result)
+	}
+}
+
+func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+
+	_, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsCreate,
+		Params:     json.RawMessage(`{"agent_id":"main","name":"Main Agent","workspace":"/tmp/main","model":"gpt-5"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.create error: %v", err)
+	}
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsList,
+		Params:     json.RawMessage(`{"limit":10}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.list error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	agents, _ := payload["agents"].([]state.AgentDoc)
+	if len(agents) != 1 || agents[0].AgentID != "main" {
+		t.Fatalf("unexpected agents.list result: %#v", res.Result)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsUpdate,
+		Params:     json.RawMessage(`{"agent_id":"main","name":"Updated Agent"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.update error: %v", err)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsFilesSet,
+		Params:     json.RawMessage(`{"agent_id":"main","name":"instructions.md","content":"hello"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.files.set error: %v", err)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsFilesGet,
+		Params:     json.RawMessage(`{"agent_id":"main","name":"instructions.md"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.files.get error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	file, _ := payload["file"].(map[string]any)
+	if file["missing"] != false || file["content"] != "hello" {
+		t.Fatalf("unexpected agents.files.get result: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsFilesList,
+		Params:     json.RawMessage(`{"agent_id":"main"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.files.list error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	files, _ := payload["files"].([]map[string]any)
+	if len(files) != 1 || files[0]["name"] != "instructions.md" {
+		t.Fatalf("unexpected agents.files.list result: %#v", res.Result)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsDelete,
+		Params:     json.RawMessage(`{"agent_id":"main"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.delete error: %v", err)
+	}
+	deleted, err := docs.GetAgent(context.Background(), "main")
+	if err != nil {
+		t.Fatalf("load deleted agent: %v", err)
+	}
+	if !deleted.Deleted {
+		t.Fatalf("expected deleted flag set, got: %+v", deleted)
+	}
+}
+
+func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	tools := agent.NewToolRegistry()
+	tools.Register("memory.search", func(context.Context, map[string]any) (string, error) {
+		return "[]", nil
+	})
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodModelsList,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("models.list error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	if len(payload["models"].([]map[string]any)) == 0 {
+		t.Fatalf("unexpected models.list payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodToolsCatalog,
+		Params:     json.RawMessage(`{"agent_id":"main"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("tools.catalog error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["agent_id"] != "main" {
+		t.Fatalf("unexpected tools.catalog payload: %#v", res.Result)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSkillsInstall,
+		Params:     json.RawMessage(`{"name":"nostr-core","install_id":"builtin"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("skills.install error: %v", err)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSkillsStatus,
+		Params:     json.RawMessage(`{"agent_id":"main"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("skills.status error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["count"].(int) < 1 {
+		t.Fatalf("unexpected skills.status payload: %#v", res.Result)
+	}
+
+	enabled := true
+	apiKey := "token"
+	_, _, err = applySkillUpdate(context.Background(), docs, cfgState, methods.SkillsUpdateRequest{SkillKey: "nostr-core", Enabled: &enabled, APIKey: &apiKey, Env: map[string]string{"A": "B"}})
+	if err != nil {
+		t.Fatalf("applySkillUpdate helper failed: %v", err)
+	}
+}
+
+func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	tools := agent.NewToolRegistry()
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodePairRequest,
+		Params:     json.RawMessage(`{"node_id":"n1","display_name":"Node One"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("node.pair.request error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	if payload["status"] != "pending" || payload["created"] != true {
+		t.Fatalf("unexpected node.pair.request payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodePairRequest,
+		Params:     json.RawMessage(`{"node_id":"n1","display_name":"Node One v2"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("node.pair.request update error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["created"] != false {
+		t.Fatalf("expected update path created=false, got: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodePairList,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("node.pair.list error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	pending, _ := payload["pending"].([]map[string]any)
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending node request, got: %#v", res.Result)
+	}
+	requestID := fmt.Sprintf("%v", pending[0]["request_id"])
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodePairApprove,
+		Params:     json.RawMessage(fmt.Sprintf(`{"request_id":%q}`, requestID)),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("node.pair.approve error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	node, _ := payload["node"].(map[string]any)
+	if fmt.Sprintf("%v", node["token"]) == "" {
+		t.Fatalf("expected approved node token, got: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodePairVerify,
+		Params:     json.RawMessage(`{"node_id":"n1","token":"wrong"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("node.pair.verify error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["ok"] != false {
+		t.Fatalf("expected failed verify payload, got: %#v", res.Result)
+	}
+
+	_, err = applyPairingConfigUpdate(context.Background(), docs, cfgState, func(p map[string]any) (map[string]any, map[string]any, error) {
+		p["device_pending"] = []map[string]any{{"request_id": "dreq-1", "device_id": "d1", "public_key": "pub", "role": "node", "scopes": []string{"operator.read"}, "ts": time.Now().UnixMilli()}}
+		return p, map[string]any{}, nil
+	})
+	if err != nil {
+		t.Fatalf("seed device pending failed: %v", err)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodDevicePairApprove,
+		Params:     json.RawMessage(`{"request_id":"dreq-1"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("device.pair.approve error: %v", err)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodDeviceTokenRotate,
+		Params:     json.RawMessage(`{"device_id":"d1","role":"node","scopes":["operator.read"]}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("device.token.rotate error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["token"] == "" {
+		t.Fatalf("expected token in rotate payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodDevicePairList,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("device.pair.list error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	paired, _ := payload["paired"].([]map[string]any)
+	if len(paired) != 1 {
+		t.Fatalf("expected one paired device, got: %#v", res.Result)
+	}
+	tokens, _ := paired[0]["tokens"].([]map[string]any)
+	if len(tokens) == 0 || tokens[0]["token"] != nil {
+		t.Fatalf("expected redacted token summaries in list payload: %#v", res.Result)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodDeviceTokenRevoke,
+		Params:     json.RawMessage(`{"device_id":"d1","role":"node"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("device.token.revoke error: %v", err)
+	}
+}
+
+type stubAgentRuntime struct{}
+
+func (stubAgentRuntime) ProcessTurn(_ context.Context, turn agent.Turn) (agent.TurnResult, error) {
+	return agent.TurnResult{Text: "ack: " + strings.TrimSpace(turn.UserText)}, nil
 }
 
 type testStore struct {
@@ -156,12 +798,37 @@ func (s *testStore) PutAppend(_ context.Context, _ state.Address, _ string, _ []
 	return state.Event{}, nil
 }
 
-func (s *testStore) ListByTag(_ context.Context, _ events.Kind, _, _ string, _ int) ([]state.Event, error) {
-	return nil, nil
+func (s *testStore) ListByTag(_ context.Context, kind events.Kind, tagName, tagValue string, limit int) ([]state.Event, error) {
+	return s.listByTag(kind, "", tagName, tagValue, limit), nil
 }
 
-func (s *testStore) ListByTagForAuthor(_ context.Context, _ events.Kind, _, _, _ string, _ int) ([]state.Event, error) {
-	return nil, nil
+func (s *testStore) ListByTagForAuthor(_ context.Context, kind events.Kind, authorPubKey, tagName, tagValue string, limit int) ([]state.Event, error) {
+	return s.listByTag(kind, authorPubKey, tagName, tagValue, limit), nil
+}
+
+func (s *testStore) listByTag(kind events.Kind, authorPubKey, tagName, tagValue string, limit int) []state.Event {
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]state.Event, 0, limit)
+	for _, evt := range s.replaceable {
+		if evt.Kind != kind {
+			continue
+		}
+		if authorPubKey != "" && evt.PubKey != authorPubKey {
+			continue
+		}
+		for _, tag := range evt.Tags {
+			if len(tag) >= 2 && tag[0] == tagName && tag[1] == tagValue {
+				out = append(out, evt)
+				break
+			}
+		}
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 func (s *testStore) key(addr state.Address) string {

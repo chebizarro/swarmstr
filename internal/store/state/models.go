@@ -83,3 +83,21 @@ type MemoryDoc struct {
 	Unix      int64          `json:"unix"`
 	Meta      map[string]any `json:"meta,omitempty"`
 }
+
+type AgentDoc struct {
+	Version   int            `json:"version"`
+	AgentID   string         `json:"agent_id"`
+	Name      string         `json:"name,omitempty"`
+	Workspace string         `json:"workspace,omitempty"`
+	Model     string         `json:"model,omitempty"`
+	Deleted   bool           `json:"deleted,omitempty"`
+	Meta      map[string]any `json:"meta,omitempty"`
+}
+
+type AgentFileDoc struct {
+	Version int            `json:"version"`
+	AgentID string         `json:"agent_id"`
+	Name    string         `json:"name"`
+	Content string         `json:"content"`
+	Meta    map[string]any `json:"meta,omitempty"`
+}

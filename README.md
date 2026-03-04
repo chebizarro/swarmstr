@@ -10,6 +10,7 @@ Implemented foundations:
 - Nostr event kind and tag taxonomy (including AI-Hub-aligned operational kinds)
 - Swarmstr Nostr state document models (config/session/list/checkpoint/transcript)
 - Bootstrap config loading (`~/.swarmstr/bootstrap.json` by default)
+  - key source supports `private_key` or `signer_url` (`env://VAR`, `file:///path`, or direct key material)
 - Minimal CLI (`swarmstr`) and daemon entrypoint (`swarmstrd`)
 
 Implemented in Phase 1:
@@ -59,6 +60,23 @@ Optional local HTTP admin API in `swarmstrd`:
 Enable via bootstrap config or CLI flags:
 - `admin_listen_addr` / `admin_token` in bootstrap JSON
 - `swarmstrd --admin-addr 127.0.0.1:8787 --admin-token <token>`
+
+## Gateway WebSocket runtime (Phase 4.2.2)
+
+Optional WS control-plane server in `swarmstrd` with strict frame validation, connect challenge+nonce binding, protocol negotiation, token auth, and presence event fanout.
+
+Enable via bootstrap config or CLI flags:
+- `gateway_ws_listen_addr` / `gateway_ws_token` / `gateway_ws_path` / `gateway_ws_allowed_origins` / `gateway_ws_trusted_proxies` / `gateway_ws_allow_insecure_control_ui` in bootstrap JSON
+- `swarmstrd --gateway-ws-addr 127.0.0.1:8788 --gateway-ws-token <token> --gateway-ws-path /ws --gateway-ws-allowed-origins https://app.example.com --gateway-ws-trusted-proxies 10.0.0.0/8 --gateway-ws-allow-insecure-control-ui`
+
+WS runtime hardening included:
+- token required for non-loopback binds
+- handshake request rate limit
+- browser `Origin` enforcement (localhost accepted by default; explicit allowlist for remote origins)
+- repeated unauthorized-request burst close
+- explicit event subscription methods: `events.subscribe`, `events.unsubscribe`, `events.list`
+- trusted-proxy auth mode for configured proxy CIDRs/IPs (`X-Swarmstr-Trusted-Auth: true`, `X-Swarmstr-Proxy-User: <id>`)
+- device identity enforcement for node role and remote control-ui clients
 
 Hardening included:
 - token required for non-loopback admin binds

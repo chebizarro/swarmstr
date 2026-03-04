@@ -47,7 +47,7 @@ func (p *HTTPProvider) Generate(ctx context.Context, turn Turn) (ProviderResult,
 	contextText := turn.Context
 	const maxContextBytes = 16 * 1024
 	if len(contextText) > maxContextBytes {
-		contextText = contextText[:maxContextBytes]
+		contextText = truncateUTF8ByBytes(contextText, maxContextBytes)
 	}
 	body, err := json.Marshal(httpRequest{SessionID: turn.SessionID, Prompt: turn.UserText, Context: contextText})
 	if err != nil {
@@ -82,6 +82,23 @@ func (p *HTTPProvider) Generate(ctx context.Context, turn Turn) (ProviderResult,
 		return ProviderResult{}, fmt.Errorf("provider returned empty response")
 	}
 	return ProviderResult{Text: out.Text, ToolCalls: out.ToolCalls}, nil
+}
+
+func truncateUTF8ByBytes(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	if cut == 0 {
+		return ""
+	}
+	return s[:cut]
 }
 
 func NewProviderFromEnv() (Provider, error) {

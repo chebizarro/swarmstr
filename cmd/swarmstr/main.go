@@ -71,14 +71,15 @@ func runDMSend(bootstrapPath string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if cfg.PrivateKey == "" {
-		return fmt.Errorf("bootstrap signer_url flow is not implemented yet; set private_key")
+	privateKey, err := config.ResolvePrivateKey(cfg)
+	if err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	eventID, err := nostruntime.SendDMOnce(ctx, cfg.PrivateKey, cfg.Relays, to, text)
+	eventID, err := nostruntime.SendDMOnce(ctx, privateKey, cfg.Relays, to, text)
 	if err != nil {
 		return err
 	}
