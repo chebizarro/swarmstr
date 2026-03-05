@@ -23,12 +23,20 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"control.legacy_token_fallback",
 			"plugins.enabled",
 			"plugins.allow",
+			"plugins.deny",
+			"plugins.load",
+			"plugins.load.paths",
 			"plugins.loadPaths",
 			"plugins.slots.memory",
 			"plugins.entries.<id>.enabled",
+			"plugins.entries.<id>.apiKey",
+			"plugins.entries.<id>.env",
 			"plugins.entries.<id>.tools",
 			"plugins.entries.<id>.gatewayMethods",
 			"plugins.entries.<id>.config",
+			"plugins.installs",
+			"plugins.installs.<id>",
+			"plugins.installs.<id>.<field>",
 		},
 	}
 	if len(cfg) > 0 {
@@ -47,9 +55,18 @@ func extensionSchemaEntries(cfg state.ConfigDoc) map[string]any {
 	out := make([]map[string]any, 0, len(pluginIDs))
 	for _, pluginID := range pluginIDs {
 		entry := entries[pluginID]
+		envMap, _ := getStringMap(entry, "env")
+		envKeys := make([]string, 0, len(envMap))
+		for key := range envMap {
+			envKeys = append(envKeys, key)
+		}
+		sort.Strings(envKeys)
+		apiKey, _ := entry["api_key"].(string)
 		out = append(out, map[string]any{
 			"id":             pluginID,
 			"enabled":        getBool(entry, "enabled"),
+			"hasApiKey":      strings.TrimSpace(apiKey) != "",
+			"env":            envKeys,
 			"tools":          getStringSlice(entry, "tools"),
 			"gatewayMethods": extensionEntryGatewayMethods(entry),
 		})
@@ -107,6 +124,18 @@ func getStringSlice(in map[string]any, key string) []string {
 		return []string{}
 	}
 	return items
+}
+
+func getStringMap(in map[string]any, key string) (map[string]string, bool) {
+	raw, ok := in[key]
+	if !ok {
+		return nil, false
+	}
+	items, err := anyToStringMap(raw)
+	if err != nil {
+		return nil, false
+	}
+	return items, true
 }
 
 func ApplyConfigSet(cfg state.ConfigDoc, key string, value any) (state.ConfigDoc, error) {
@@ -204,6 +233,9 @@ func applyConfigPatchValue(cfg state.ConfigDoc, key string, value any) (state.Co
 		return cfg, fmt.Errorf("invalid patch key")
 	}
 	if child, ok := value.(map[string]any); ok {
+		if strings.HasPrefix(key, "plugins.entries.") && strings.HasSuffix(key, ".env") {
+			return applyPluginEnvPatch(cfg, key, child)
+		}
 		for nestedKey, nestedValue := range child {
 			nextKey := strings.TrimSpace(nestedKey)
 			if nextKey == "" {
@@ -218,6 +250,67 @@ func applyConfigPatchValue(cfg state.ConfigDoc, key string, value any) (state.Co
 		return cfg, nil
 	}
 	return ApplyConfigSet(cfg, key, value)
+}
+
+func applyPluginEnvPatch(cfg state.ConfigDoc, key string, patch map[string]any) (state.ConfigDoc, error) {
+	segments := strings.Split(strings.TrimSpace(key), ".")
+	if len(segments) != 4 || segments[0] != "plugins" || segments[1] != "entries" || segments[3] != "env" {
+		return cfg, fmt.Errorf("invalid plugin env patch key %q", key)
+	}
+	entryID := strings.TrimSpace(segments[2])
+	if entryID == "" {
+		return cfg, fmt.Errorf("plugins.entries.<id>.env requires non-empty id")
+	}
+	merged := map[string]string{}
+	if cfg.Extra != nil {
+		if rawExt, ok := cfg.Extra["extensions"].(map[string]any); ok {
+			if rawEntries, ok := rawExt["entries"].(map[string]any); ok {
+				if entry, ok := rawEntries[entryID].(map[string]any); ok {
+					switch existing := entry["env"].(type) {
+					case map[string]string:
+						for k, v := range existing {
+							k = strings.TrimSpace(k)
+							v = strings.TrimSpace(v)
+							if k == "" || v == "" {
+								continue
+							}
+							merged[k] = v
+						}
+					case map[string]any:
+						for k, raw := range existing {
+							s, ok := raw.(string)
+							if !ok {
+								continue
+							}
+							k = strings.TrimSpace(k)
+							s = strings.TrimSpace(s)
+							if k == "" || s == "" {
+								continue
+							}
+							merged[k] = s
+						}
+					}
+				}
+			}
+		}
+	}
+	for key, raw := range patch {
+		value, ok := raw.(string)
+		if !ok {
+			return cfg, fmt.Errorf("plugins.entries.%s.env must be object<string,string>", entryID)
+		}
+		k := strings.TrimSpace(key)
+		if k == "" {
+			continue
+		}
+		v := strings.TrimSpace(value)
+		if v == "" {
+			delete(merged, k)
+			continue
+		}
+		merged[k] = v
+	}
+	return ApplyConfigSet(cfg, key, merged)
 }
 
 func anyToStringSlice(value any) ([]string, error) {
@@ -237,6 +330,42 @@ func anyToStringSlice(value any) ([]string, error) {
 		out = append(out, s)
 	}
 	return sanitizeStrings(out), nil
+}
+
+func anyToStringMap(value any) (map[string]string, error) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		if direct, ok := value.(map[string]string); ok {
+			out := map[string]string{}
+			for key, item := range direct {
+				k := strings.TrimSpace(key)
+				v := strings.TrimSpace(item)
+				if k == "" || v == "" {
+					continue
+				}
+				out[k] = v
+			}
+			return out, nil
+		}
+		return nil, fmt.Errorf("value must be object")
+	}
+	out := map[string]string{}
+	for key, item := range raw {
+		k := strings.TrimSpace(key)
+		if k == "" {
+			continue
+		}
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("value must be object<string,string>")
+		}
+		v := strings.TrimSpace(s)
+		if v == "" {
+			continue
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 func applyPluginConfigSet(cfg state.ConfigDoc, key string, value any) (state.ConfigDoc, bool, error) {
@@ -272,6 +401,20 @@ func applyPluginConfigSet(cfg state.ConfigDoc, key string, value any) (state.Con
 			}
 			rawExt["allow"] = items
 			return cfg, true, nil
+		case "deny":
+			items, err := anyToStringSlice(value)
+			if err != nil {
+				return cfg, true, fmt.Errorf("plugins.deny must be string array")
+			}
+			rawExt["deny"] = items
+			return cfg, true, nil
+		case "load":
+			b, ok := value.(bool)
+			if !ok {
+				return cfg, true, fmt.Errorf("plugins.load must be bool")
+			}
+			rawExt["load"] = b
+			return cfg, true, nil
 		case "loadPaths", "load_paths":
 			items, err := anyToStringSlice(value)
 			if err != nil {
@@ -279,7 +422,55 @@ func applyPluginConfigSet(cfg state.ConfigDoc, key string, value any) (state.Con
 			}
 			rawExt["load_paths"] = items
 			return cfg, true, nil
+		case "installs":
+			entryMap, ok := value.(map[string]any)
+			if !ok {
+				return cfg, true, fmt.Errorf("plugins.installs must be object")
+			}
+			rawExt["installs"] = entryMap
+			return cfg, true, nil
 		}
+	}
+	if len(segments) == 3 && segments[1] == "load" && segments[2] == "paths" {
+		items, err := anyToStringSlice(value)
+		if err != nil {
+			return cfg, true, fmt.Errorf("plugins.load.paths must be string array")
+		}
+		rawExt["load_paths"] = items
+		return cfg, true, nil
+	}
+	if len(segments) >= 3 && segments[1] == "installs" {
+		installID := strings.TrimSpace(segments[2])
+		if installID == "" {
+			return cfg, true, fmt.Errorf("plugins.installs.<id> requires non-empty id")
+		}
+		rawInstalls, _ := rawExt["installs"].(map[string]any)
+		if rawInstalls == nil {
+			rawInstalls = map[string]any{}
+			rawExt["installs"] = rawInstalls
+		}
+		if len(segments) == 3 {
+			entryMap, ok := value.(map[string]any)
+			if !ok {
+				return cfg, true, fmt.Errorf("plugins.installs.%s must be object", installID)
+			}
+			rawInstalls[installID] = entryMap
+			return cfg, true, nil
+		}
+		if len(segments) != 4 {
+			return cfg, true, fmt.Errorf("unsupported config key %q", key)
+		}
+		field := strings.TrimSpace(segments[3])
+		if field == "" {
+			return cfg, true, fmt.Errorf("plugins.installs.%s.<field> requires non-empty field", installID)
+		}
+		entry, _ := rawInstalls[installID].(map[string]any)
+		if entry == nil {
+			entry = map[string]any{}
+			rawInstalls[installID] = entry
+		}
+		entry[field] = value
+		return cfg, true, nil
 	}
 	if len(segments) == 3 && segments[1] == "slots" && segments[2] == "memory" {
 		s, ok := value.(string)
@@ -329,6 +520,27 @@ func applyPluginConfigSet(cfg state.ConfigDoc, key string, value any) (state.Con
 			return cfg, true, fmt.Errorf("plugins.entries.%s.enabled must be bool", entryID)
 		}
 		entry["enabled"] = b
+	case "apiKey", "api_key":
+		s, ok := value.(string)
+		if !ok {
+			return cfg, true, fmt.Errorf("plugins.entries.%s.apiKey must be string", entryID)
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			delete(entry, "api_key")
+		} else {
+			entry["api_key"] = s
+		}
+	case "env":
+		items, err := anyToStringMap(value)
+		if err != nil {
+			return cfg, true, fmt.Errorf("plugins.entries.%s.env must be object<string,string>", entryID)
+		}
+		if len(items) == 0 {
+			delete(entry, "env")
+		} else {
+			entry["env"] = items
+		}
 	case "tools":
 		items, err := anyToStringSlice(value)
 		if err != nil {

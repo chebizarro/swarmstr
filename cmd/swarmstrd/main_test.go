@@ -428,10 +428,55 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigPatch,
-		Params:     json.RawMessage(`{"patch":{"plugins":{"entries":{"codegen":{"enabled":true,"gatewayMethods":["ext.codegen.run"]}}}}}`),
+		Params:     json.RawMessage(`{"patch":{"plugins":{"entries":{"codegen":{"enabled":true,"gatewayMethods":["ext.codegen.run"],"env":{"OPENAI_API_KEY":"sk-1","KEEP":"y"}}}}}}`),
 	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
 	if err != nil {
 		t.Fatalf("config.patch plugins error: %v", err)
+	}
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigSet,
+		Params:     json.RawMessage(`{"key":"plugins.deny","value":["rogue-plugin"]}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.set plugins.deny error: %v", err)
+	}
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigSet,
+		Params:     json.RawMessage(`{"key":"plugins.load.paths","value":["./extensions"]}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.set plugins.load.paths error: %v", err)
+	}
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigPatch,
+		Params:     json.RawMessage(`{"patch":{"plugins":{"entries":{"codegen":{"env":{"OPENAI_API_KEY":""}}}}}}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.patch plugins env merge error: %v", err)
+	}
+	rawExt, _ := cfgState.Get().Extra["extensions"].(map[string]any)
+	rawEntries, _ := rawExt["entries"].(map[string]any)
+	codegen, _ := rawEntries["codegen"].(map[string]any)
+	envMap, err := methodsAnyToStringMapForTest(codegen["env"])
+	if err != nil {
+		t.Fatalf("unexpected plugin env map type after patch merge: %v", err)
+	}
+	if _, ok := envMap["OPENAI_API_KEY"]; ok {
+		t.Fatalf("expected OPENAI_API_KEY removed after env patch merge, got: %#v", envMap)
+	}
+	if envMap["KEEP"] != "y" {
+		t.Fatalf("expected KEEP env var to be preserved after env patch merge, got: %#v", envMap)
+	}
+	deny, _ := rawExt["deny"].([]string)
+	if len(deny) != 1 || deny[0] != "rogue-plugin" {
+		t.Fatalf("expected plugins.deny to be persisted, got: %#v", rawExt)
+	}
+	loadPaths, _ := rawExt["load_paths"].([]string)
+	if len(loadPaths) != 1 || loadPaths[0] != "./extensions" {
+		t.Fatalf("expected plugins.load.paths alias persistence, got: %#v", rawExt)
 	}
 
 	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -1602,4 +1647,26 @@ func (s *testStore) listByTag(kind events.Kind, authorPubKey, tagName, tagValue 
 
 func (s *testStore) key(addr state.Address) string {
 	return fmt.Sprintf("%d|%s|%s", addr.Kind, addr.PubKey, addr.DTag)
+}
+
+func methodsAnyToStringMapForTest(value any) (map[string]string, error) {
+	out := map[string]string{}
+	switch typed := value.(type) {
+	case map[string]string:
+		for key, item := range typed {
+			out[strings.TrimSpace(key)] = strings.TrimSpace(item)
+		}
+		return out, nil
+	case map[string]any:
+		for key, item := range typed {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("non-string env value for %q", key)
+			}
+			out[strings.TrimSpace(key)] = strings.TrimSpace(s)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unsupported map type %T", value)
+	}
 }
