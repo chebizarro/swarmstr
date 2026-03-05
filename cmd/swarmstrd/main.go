@@ -618,6 +618,18 @@ func main() {
 				DeviceTokenRevoke: func(ctx context.Context, req methods.DeviceTokenRevokeRequest) (map[string]any, error) {
 					return applyDeviceTokenRevoke(ctx, docsRepo, configState, req)
 				},
+				NodeList: func(_ context.Context, req methods.NodeListRequest) (map[string]any, error) {
+					return applyNodeList(configState, req)
+				},
+				NodeDescribe: func(_ context.Context, req methods.NodeDescribeRequest) (map[string]any, error) {
+					return applyNodeDescribe(configState, req)
+				},
+				NodeRename: func(ctx context.Context, req methods.NodeRenameRequest) (map[string]any, error) {
+					return applyNodeRename(ctx, docsRepo, configState, req)
+				},
+				NodeCanvasCapabilityRefresh: func(_ context.Context, req methods.NodeCanvasCapabilityRefreshRequest) (map[string]any, error) {
+					return applyNodeCanvasCapabilityRefresh(configState, req)
+				},
 				NodeInvoke: func(_ context.Context, req methods.NodeInvokeRequest) (map[string]any, error) {
 					return applyNodeInvoke(nodeInvocations, req)
 				},
@@ -1876,6 +1888,62 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodeList:
+		req, err := methods.DecodeNodeListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodeList(configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodeDescribe:
+		req, err := methods.DecodeNodeDescribeParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodeDescribe(configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodeRename:
+		req, err := methods.DecodeNodeRenameParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodeRename(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodeCanvasCapabilityRefresh:
+		req, err := methods.DecodeNodeCanvasCapabilityRefreshParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodeCanvasCapabilityRefresh(configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodNodeInvoke:
 		req, err := methods.DecodeNodeInvokeParams(in.Params)
 		if err != nil {
@@ -1904,7 +1972,7 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
-	case methods.MethodNodeResult:
+	case methods.MethodNodeResult, methods.MethodNodeInvokeResult:
 		req, err := methods.DecodeNodeResultParams(in.Params)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
@@ -2350,10 +2418,13 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		if req.ExpectedVersion > 0 || req.ExpectedEvent != "" {
+		if req.ExpectedVersionSet || req.ExpectedEvent != "" {
 			current, evt, err := docsRepo.GetListWithEvent(ctx, req.Name)
 			if err != nil {
 				if errors.Is(err, state.ErrNotFound) {
+					if req.ExpectedVersionSet && req.ExpectedVersion == 0 && req.ExpectedEvent == "" {
+						goto controlListPreconditionsSatisfied
+					}
 					return nostruntime.ControlRPCResult{}, &methods.PreconditionConflictError{
 						Resource:        "list:" + req.Name,
 						ExpectedVersion: req.ExpectedVersion,
@@ -2363,13 +2434,23 @@ func handleControlRPCRequest(
 				}
 				return nostruntime.ControlRPCResult{}, err
 			}
-			if req.ExpectedVersion > 0 && current.Version != req.ExpectedVersion {
-				return nostruntime.ControlRPCResult{}, &methods.PreconditionConflictError{
-					Resource:        "list:" + req.Name,
-					ExpectedVersion: req.ExpectedVersion,
-					CurrentVersion:  current.Version,
-					ExpectedEvent:   req.ExpectedEvent,
-					CurrentEvent:    evt.ID,
+			if req.ExpectedVersionSet {
+				if req.ExpectedVersion == 0 {
+					return nostruntime.ControlRPCResult{}, &methods.PreconditionConflictError{
+						Resource:        "list:" + req.Name,
+						ExpectedVersion: req.ExpectedVersion,
+						CurrentVersion:  current.Version,
+						ExpectedEvent:   req.ExpectedEvent,
+						CurrentEvent:    evt.ID,
+					}
+				} else if current.Version != req.ExpectedVersion {
+					return nostruntime.ControlRPCResult{}, &methods.PreconditionConflictError{
+						Resource:        "list:" + req.Name,
+						ExpectedVersion: req.ExpectedVersion,
+						CurrentVersion:  current.Version,
+						ExpectedEvent:   req.ExpectedEvent,
+						CurrentEvent:    evt.ID,
+					}
 				}
 			}
 			if req.ExpectedEvent != "" && evt.ID != req.ExpectedEvent {
@@ -2382,7 +2463,12 @@ func handleControlRPCRequest(
 				}
 			}
 		}
-		if _, err := docsRepo.PutList(ctx, req.Name, state.ListDoc{Version: 1, Name: req.Name, Items: req.Items}); err != nil {
+controlListPreconditionsSatisfied:
+		newVersion := 1
+		if req.ExpectedVersionSet && req.ExpectedVersion > 0 {
+			newVersion = req.ExpectedVersion + 1
+		}
+		if _, err := docsRepo.PutList(ctx, req.Name, state.ListDoc{Version: newVersion, Name: req.Name, Items: req.Items}); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
@@ -2395,10 +2481,13 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		if req.ExpectedVersion > 0 || req.ExpectedEvent != "" {
+		if req.ExpectedVersionSet || req.ExpectedEvent != "" {
 			current, evt, err := docsRepo.GetConfigWithEvent(ctx)
 			if err != nil {
 				if errors.Is(err, state.ErrNotFound) {
+					if req.ExpectedVersionSet && req.ExpectedVersion == 0 && req.ExpectedEvent == "" {
+						goto controlConfigPreconditionsSatisfied
+					}
 					return nostruntime.ControlRPCResult{}, &methods.PreconditionConflictError{
 						Resource:        "config",
 						ExpectedVersion: req.ExpectedVersion,
@@ -2408,13 +2497,23 @@ func handleControlRPCRequest(
 				}
 				return nostruntime.ControlRPCResult{}, err
 			}
-			if req.ExpectedVersion > 0 && current.Version != req.ExpectedVersion {
-				return nostruntime.ControlRPCResult{}, &methods.PreconditionConflictError{
-					Resource:        "config",
-					ExpectedVersion: req.ExpectedVersion,
-					CurrentVersion:  current.Version,
-					ExpectedEvent:   req.ExpectedEvent,
-					CurrentEvent:    evt.ID,
+			if req.ExpectedVersionSet {
+				if req.ExpectedVersion == 0 {
+					return nostruntime.ControlRPCResult{}, &methods.PreconditionConflictError{
+						Resource:        "config",
+						ExpectedVersion: req.ExpectedVersion,
+						CurrentVersion:  current.Version,
+						ExpectedEvent:   req.ExpectedEvent,
+						CurrentEvent:    evt.ID,
+					}
+				} else if current.Version != req.ExpectedVersion {
+					return nostruntime.ControlRPCResult{}, &methods.PreconditionConflictError{
+						Resource:        "config",
+						ExpectedVersion: req.ExpectedVersion,
+						CurrentVersion:  current.Version,
+						ExpectedEvent:   req.ExpectedEvent,
+						CurrentEvent:    evt.ID,
+					}
 				}
 			}
 			if req.ExpectedEvent != "" && evt.ID != req.ExpectedEvent {
@@ -2427,10 +2526,16 @@ func handleControlRPCRequest(
 				}
 			}
 		}
+	controlConfigPreconditionsSatisfied:
 		req.Config = policy.NormalizeConfig(req.Config)
 		if err := policy.ValidateConfig(req.Config); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		newVersion := 1
+		if req.ExpectedVersionSet && req.ExpectedVersion > 0 {
+			newVersion = req.ExpectedVersion + 1
+		}
+		req.Config.Version = newVersion
 		if _, err := docsRepo.PutConfig(ctx, req.Config); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
@@ -3461,6 +3566,68 @@ func applyDeviceTokenRevoke(ctx context.Context, docsRepo *state.DocsRepository,
 		}
 		return nil, nil, state.ErrNotFound
 	})
+}
+
+func applyNodeList(configState *runtimeConfigStore, req methods.NodeListRequest) (map[string]any, error) {
+	pairing := pairingData(configState.Get())
+	nodes := toRecordSlice(pairing["node_paired"])
+	sortRecordsByKeyDesc(nodes, "approved_at_ms")
+	if req.Limit > 0 && len(nodes) > req.Limit {
+		nodes = nodes[:req.Limit]
+	}
+	return map[string]any{"nodes": nodes, "count": len(nodes)}, nil
+}
+
+func applyNodeDescribe(configState *runtimeConfigStore, req methods.NodeDescribeRequest) (map[string]any, error) {
+	pairing := pairingData(configState.Get())
+	for _, node := range toRecordSlice(pairing["node_paired"]) {
+		if getString(node, "node_id") == req.NodeID {
+			return map[string]any{"node": node, "status": "paired"}, nil
+		}
+	}
+	for _, node := range toRecordSlice(pairing["node_pending"]) {
+		if getString(node, "node_id") == req.NodeID {
+			return map[string]any{"node": node, "status": "pending"}, nil
+		}
+	}
+	return nil, state.ErrNotFound
+}
+
+func applyNodeRename(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.NodeRenameRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		updated := false
+		paired := toRecordSlice(pairing["node_paired"])
+		for _, node := range paired {
+			if getString(node, "node_id") == req.NodeID {
+				node["display_name"] = req.Name
+				updated = true
+			}
+		}
+		pending := toRecordSlice(pairing["node_pending"])
+		for _, node := range pending {
+			if getString(node, "node_id") == req.NodeID {
+				node["display_name"] = req.Name
+				updated = true
+			}
+		}
+		if !updated {
+			return nil, nil, state.ErrNotFound
+		}
+		pairing["node_paired"] = paired
+		pairing["node_pending"] = pending
+		return pairing, map[string]any{"ok": true, "node_id": req.NodeID, "name": req.Name}, nil
+	})
+}
+
+func applyNodeCanvasCapabilityRefresh(configState *runtimeConfigStore, req methods.NodeCanvasCapabilityRefreshRequest) (map[string]any, error) {
+	pairing := pairingData(configState.Get())
+	for _, node := range toRecordSlice(pairing["node_paired"]) {
+		if getString(node, "node_id") == req.NodeID {
+			caps := getStringSlice(node, "caps")
+			return map[string]any{"ok": true, "node_id": req.NodeID, "caps": caps, "refreshed_at_ms": time.Now().UnixMilli()}, nil
+		}
+	}
+	return nil, state.ErrNotFound
 }
 
 func applyNodeInvoke(reg *nodeInvocationRegistry, req methods.NodeInvokeRequest) (map[string]any, error) {

@@ -3,9 +3,9 @@
   "captured_at": "2026-03-04",
   "summary": {
     "openclaw_method_count": 94,
-    "implemented": 78,
+    "implemented": 82,
     "partial": 1,
-    "missing": 15
+    "missing": 11
   },
   "entries": [
     {
@@ -430,21 +430,21 @@
     },
     {
       "method": "node.rename",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Node rename endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "node.rename",
+      "notes": ""
     },
     {
       "method": "node.list",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Node listing endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "node.list",
+      "notes": ""
     },
     {
       "method": "node.describe",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Node describe endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "node.describe",
+      "notes": ""
     },
     {
       "method": "node.invoke",
@@ -466,9 +466,9 @@
     },
     {
       "method": "node.canvas.capability.refresh",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Node canvas capability refresh endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "node.canvas.capability.refresh",
+      "notes": ""
     },
     {
       "method": "cron.list",

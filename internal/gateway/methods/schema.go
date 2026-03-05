@@ -69,9 +69,14 @@ const (
 	MethodDevicePairRemove   = "device.pair.remove"
 	MethodDeviceTokenRotate  = "device.token.rotate"
 	MethodDeviceTokenRevoke  = "device.token.revoke"
+	MethodNodeList           = "node.list"
+	MethodNodeDescribe       = "node.describe"
+	MethodNodeRename         = "node.rename"
 	MethodNodeInvoke         = "node.invoke"
+	MethodNodeInvokeResult   = "node.invoke.result"
 	MethodNodeEvent          = "node.event"
 	MethodNodeResult         = "node.result"
+	MethodNodeCanvasCapabilityRefresh = "node.canvas.capability.refresh"
 	MethodCronList           = "cron.list"
 	MethodCronStatus         = "cron.status"
 	MethodCronAdd            = "cron.add"
@@ -411,6 +416,23 @@ type DeviceTokenRotateRequest struct {
 type DeviceTokenRevokeRequest struct {
 	DeviceID string `json:"device_id"`
 	Role     string `json:"role"`
+}
+
+type NodeListRequest struct {
+	Limit int `json:"limit,omitempty"`
+}
+
+type NodeDescribeRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+type NodeRenameRequest struct {
+	NodeID string `json:"node_id"`
+	Name   string `json:"name"`
+}
+
+type NodeCanvasCapabilityRefreshRequest struct {
+	NodeID string `json:"node_id"`
 }
 
 type NodeInvokeRequest struct {
@@ -1074,6 +1096,36 @@ func (r DeviceTokenRevokeRequest) Normalize() (DeviceTokenRevokeRequest, error) 
 	return r, nil
 }
 
+func (r NodeListRequest) Normalize() (NodeListRequest, error) {
+	r.Limit = normalizeLimit(r.Limit, 100, 500)
+	return r, nil
+}
+
+func (r NodeDescribeRequest) Normalize() (NodeDescribeRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	if r.NodeID == "" {
+		return r, fmt.Errorf("node_id is required")
+	}
+	return r, nil
+}
+
+func (r NodeRenameRequest) Normalize() (NodeRenameRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	r.Name = strings.TrimSpace(r.Name)
+	if r.NodeID == "" || r.Name == "" {
+		return r, fmt.Errorf("node_id and name are required")
+	}
+	return r, nil
+}
+
+func (r NodeCanvasCapabilityRefreshRequest) Normalize() (NodeCanvasCapabilityRefreshRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	if r.NodeID == "" {
+		return r, fmt.Errorf("node_id is required")
+	}
+	return r, nil
+}
+
 func (r NodeInvokeRequest) Normalize() (NodeInvokeRequest, error) {
 	r.NodeID = strings.TrimSpace(r.NodeID)
 	r.Command = strings.TrimSpace(r.Command)
@@ -1378,9 +1430,14 @@ func SupportedMethods() []string {
 		MethodDevicePairRemove,
 		MethodDeviceTokenRotate,
 		MethodDeviceTokenRevoke,
+		MethodNodeList,
+		MethodNodeDescribe,
+		MethodNodeRename,
 		MethodNodeInvoke,
+		MethodNodeInvokeResult,
 		MethodNodeEvent,
 		MethodNodeResult,
+		MethodNodeCanvasCapabilityRefresh,
 		MethodCronList,
 		MethodCronStatus,
 		MethodCronAdd,
@@ -2565,6 +2622,95 @@ func DecodeDeviceTokenRotateParams(params json.RawMessage) (DeviceTokenRotateReq
 
 func DecodeDeviceTokenRevokeParams(params json.RawMessage) (DeviceTokenRevokeRequest, error) {
 	return decodeMethodParams[DeviceTokenRevokeRequest](params)
+}
+
+func DecodeNodeListParams(params json.RawMessage) (NodeListRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return NodeListRequest{}, nil
+	}
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return NodeListRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) > 1 {
+			return NodeListRequest{}, fmt.Errorf("invalid params")
+		}
+		req := NodeListRequest{}
+		if len(arr) == 1 {
+			switch v := arr[0].(type) {
+			case float64:
+				if math.Trunc(v) != v {
+					return NodeListRequest{}, fmt.Errorf("invalid params")
+				}
+				req.Limit = int(v)
+			case int:
+				req.Limit = v
+			default:
+				return NodeListRequest{}, fmt.Errorf("invalid params")
+			}
+		}
+		return req, nil
+	}
+	return decodeMethodParams[NodeListRequest](params)
+}
+
+func DecodeNodeDescribeParams(params json.RawMessage) (NodeDescribeRequest, error) {
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return NodeDescribeRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) != 1 {
+			return NodeDescribeRequest{}, fmt.Errorf("invalid params")
+		}
+		nodeID, ok := arr[0].(string)
+		if !ok {
+			return NodeDescribeRequest{}, fmt.Errorf("invalid params")
+		}
+		return NodeDescribeRequest{NodeID: nodeID}, nil
+	}
+	return decodeMethodParams[NodeDescribeRequest](params)
+}
+
+func DecodeNodeRenameParams(params json.RawMessage) (NodeRenameRequest, error) {
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return NodeRenameRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) != 2 {
+			return NodeRenameRequest{}, fmt.Errorf("invalid params")
+		}
+		nodeID, ok := arr[0].(string)
+		if !ok {
+			return NodeRenameRequest{}, fmt.Errorf("invalid params")
+		}
+		name, ok := arr[1].(string)
+		if !ok {
+			return NodeRenameRequest{}, fmt.Errorf("invalid params")
+		}
+		return NodeRenameRequest{NodeID: nodeID, Name: name}, nil
+	}
+	return decodeMethodParams[NodeRenameRequest](params)
+}
+
+func DecodeNodeCanvasCapabilityRefreshParams(params json.RawMessage) (NodeCanvasCapabilityRefreshRequest, error) {
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return NodeCanvasCapabilityRefreshRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) != 1 {
+			return NodeCanvasCapabilityRefreshRequest{}, fmt.Errorf("invalid params")
+		}
+		nodeID, ok := arr[0].(string)
+		if !ok {
+			return NodeCanvasCapabilityRefreshRequest{}, fmt.Errorf("invalid params")
+		}
+		return NodeCanvasCapabilityRefreshRequest{NodeID: nodeID}, nil
+	}
+	return decodeMethodParams[NodeCanvasCapabilityRefreshRequest](params)
 }
 
 func DecodeNodeInvokeParams(params json.RawMessage) (NodeInvokeRequest, error) {

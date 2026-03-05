@@ -83,6 +83,10 @@ type ServerOptions struct {
 	NodePairApprove      func(context.Context, methods.NodePairApproveRequest) (map[string]any, error)
 	NodePairReject       func(context.Context, methods.NodePairRejectRequest) (map[string]any, error)
 	NodePairVerify       func(context.Context, methods.NodePairVerifyRequest) (map[string]any, error)
+	NodeList             func(context.Context, methods.NodeListRequest) (map[string]any, error)
+	NodeDescribe         func(context.Context, methods.NodeDescribeRequest) (map[string]any, error)
+	NodeRename           func(context.Context, methods.NodeRenameRequest) (map[string]any, error)
+	NodeCanvasCapabilityRefresh func(context.Context, methods.NodeCanvasCapabilityRefreshRequest) (map[string]any, error)
 	DevicePairList       func(context.Context, methods.DevicePairListRequest) (map[string]any, error)
 	DevicePairApprove    func(context.Context, methods.DevicePairApproveRequest) (map[string]any, error)
 	DevicePairReject     func(context.Context, methods.DevicePairRejectRequest) (map[string]any, error)
@@ -1283,6 +1287,83 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil
+	case methods.MethodNodeList:
+		req, err := methods.DecodeNodeListParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodeList == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node provider not configured")
+		}
+		out, err := opts.NodeList(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodNodeDescribe:
+		req, err := methods.DecodeNodeDescribeParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodeDescribe == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node provider not configured")
+		}
+		out, err := opts.NodeDescribe(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodNodeRename:
+		req, err := methods.DecodeNodeRenameParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodeRename == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node provider not configured")
+		}
+		out, err := opts.NodeRename(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodNodeCanvasCapabilityRefresh:
+		req, err := methods.DecodeNodeCanvasCapabilityRefreshParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodeCanvasCapabilityRefresh == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node provider not configured")
+		}
+		out, err := opts.NodeCanvasCapabilityRefresh(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
 	case methods.MethodNodeInvoke:
 		req, err := methods.DecodeNodeInvokeParams(call.Params)
 		if err != nil {
@@ -1320,7 +1401,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil
-	case methods.MethodNodeResult:
+	case methods.MethodNodeResult, methods.MethodNodeInvokeResult:
 		req, err := methods.DecodeNodeResultParams(call.Params)
 		if err != nil {
 			return nil, http.StatusBadRequest, err

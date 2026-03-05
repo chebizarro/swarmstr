@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -99,6 +100,63 @@ func TestHandleControlRPCRequest_ListPutPreconditionConflict(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "current_version=2") {
 		t.Fatalf("expected current version metadata in error, got: %v", err)
+	}
+}
+
+func TestHandleControlRPCRequest_ListPutExpectedVersionZeroSemantics(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+
+	if _, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodListPut,
+		Params:     json.RawMessage(`{"name":"allowlist","items":["a"],"expected_version":0}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("expected create-if-missing for expected_version=0, got err=%v", err)
+	}
+
+	if _, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodListPut,
+		Params:     json.RawMessage(`{"name":"allowlist","items":["b"],"expected_version":0}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute)); err == nil {
+		t.Fatal("expected conflict when expected_version=0 and list exists")
+	} else {
+		var conflict *methods.PreconditionConflictError
+		if !errors.As(err, &conflict) {
+			t.Fatalf("expected precondition conflict error, got: %v", err)
+		}
+		if conflict.CurrentVersion <= 0 {
+			t.Fatalf("expected current version in conflict, got: %#v", conflict)
+		}
+	}
+
+	list, err := docs.GetList(context.Background(), "allowlist")
+	if err != nil {
+		t.Fatalf("failed to read list after create: %v", err)
+	}
+	if list.Version != 1 {
+		t.Fatalf("expected version=1 after create, got: %d", list.Version)
+	}
+
+	if _, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodListPut,
+		Params:     json.RawMessage(`{"name":"allowlist","items":["c","d"],"expected_version":1}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("expected successful update with expected_version=1, got err=%v", err)
+	}
+
+	list, err = docs.GetList(context.Background(), "allowlist")
+	if err != nil {
+		t.Fatalf("failed to read list after update: %v", err)
+	}
+	if list.Version != 2 {
+		t.Fatalf("expected version=2 after update, got: %d", list.Version)
+	}
+	if len(list.Items) != 2 || list.Items[0] != "c" || list.Items[1] != "d" {
+		t.Fatalf("expected items=[c,d] after update, got: %v", list.Items)
 	}
 }
 

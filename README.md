@@ -116,6 +116,19 @@ Configure with env vars:
 - DM plaintext is trimmed, must be non-empty, and is limited to 4096 characters (inbound/outbound)
 - transcript entry text is limited to 8192 chars; memory text is limited to 4096 chars; oversized meta payloads are rejected
 
+## Parity gate suite
+
+To run the parity CI gate locally:
+
+```bash
+bash ./scripts/ci-parity.sh
+```
+
+This suite enforces:
+- OpenClaw method parity matrix consistency
+- WS auth/rate-limit behavior guards
+- Control/admin optimistic precondition semantics parity
+
 ## Next
 
 - Complete Nostr-native request/response conformance and durability hardening

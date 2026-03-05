@@ -34,3 +34,18 @@ func TestMapNIP86Error_PreconditionData(t *testing.T) {
 		t.Fatalf("unexpected current_version: %#v", errObj.Data["current_version"])
 	}
 }
+
+func TestMapNIP86Error_AuthAndMethodMappings(t *testing.T) {
+	unauth := MapNIP86Error(http.StatusUnauthorized, errors.New("authentication required"))
+	if unauth.Code != -32001 {
+		t.Fatalf("unauthorized code = %d, want -32001", unauth.Code)
+	}
+	forbidden := MapNIP86Error(http.StatusForbidden, errors.New("forbidden"))
+	if forbidden.Code != -32001 {
+		t.Fatalf("forbidden code = %d, want -32001", forbidden.Code)
+	}
+	notFound := MapNIP86Error(http.StatusNotFound, errors.New("unknown method"))
+	if notFound.Code != -32601 {
+		t.Fatalf("not found code = %d, want -32601", notFound.Code)
+	}
+}

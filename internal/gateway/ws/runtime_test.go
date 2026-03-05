@@ -509,6 +509,35 @@ func TestAllowHandshakeRateLimit(t *testing.T) {
 	}
 }
 
+func TestHandleWSRateLimitReturnsHTTP429(t *testing.T) {
+	r := &Runtime{
+		opts:      RuntimeOptions{AuthRateLimitPerMin: 2},
+		rateState: map[string]rateWindow{},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(r.handleWS))
+	defer srv.Close()
+
+	for i := 0; i < 2; i++ {
+		res, err := http.Get(srv.URL)
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i+1, err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("unexpected early rate limit on request %d", i+1)
+		}
+	}
+
+	res, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("third request failed: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusTooManyRequests)
+	}
+}
+
 func dialWS(t *testing.T, ctx context.Context, baseURL string) *websocket.Conn {
 	t.Helper()
 	return dialWSWithHeaders(t, ctx, baseURL, nil)
