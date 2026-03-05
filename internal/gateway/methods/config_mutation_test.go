@@ -94,6 +94,9 @@ func TestApplyConfigSetAndPatch(t *testing.T) {
 	if installCodegen["source"] != "npm" || installCodegen["version"] != "1.0.1" {
 		t.Fatalf("unexpected plugins.installs.codegen: %#v", installs)
 	}
+	if installedAt, _ := installCodegen["installedAt"].(string); strings.TrimSpace(installedAt) == "" {
+		t.Fatalf("expected plugins.installs.codegen.installedAt to be set: %#v", installCodegen)
+	}
 
 	next, err = ApplyConfigPatch(next, map[string]any{
 		"plugins": map[string]any{
@@ -167,9 +170,21 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 		"plugins.entries.<id>.env":      {},
 		"plugins.entries.<id>.tools":    {},
 		"plugins.entries.<id>.gatewayMethods": {},
-		"plugins.installs":              {},
-		"plugins.installs.<id>":         {},
-		"plugins.installs.<id>.<field>": {},
+		"plugins.installs":                     {},
+		"plugins.installs.<id>":                {},
+		"plugins.installs.<id>.source":         {},
+		"plugins.installs.<id>.spec":           {},
+		"plugins.installs.<id>.sourcePath":     {},
+		"plugins.installs.<id>.installPath":    {},
+		"plugins.installs.<id>.version":        {},
+		"plugins.installs.<id>.resolvedName":   {},
+		"plugins.installs.<id>.resolvedVersion": {},
+		"plugins.installs.<id>.resolvedSpec":   {},
+		"plugins.installs.<id>.integrity":      {},
+		"plugins.installs.<id>.shasum":         {},
+		"plugins.installs.<id>.resolvedAt":     {},
+		"plugins.installs.<id>.installedAt":    {},
+		"plugins.installs.<id>.<field>":        {},
 	}
 	for _, field := range fields {
 		delete(mustHave, field)
@@ -215,6 +230,91 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 	}
 }
 
+func TestApplyConfigSetPluginsInstallsLifecycleParity(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	next, err := ApplyConfigSet(cfg, "plugins.installs.codegen", map[string]any{
+		"source":      " npm ",
+		"spec":        " @acme/codegen@1.0.0 ",
+		"install_path": " /tmp/codegen ",
+	})
+	if err != nil {
+		t.Fatalf("ApplyConfigSet plugins.installs.<id> error: %v", err)
+	}
+	rawExt, _ := next.Extra["extensions"].(map[string]any)
+	installs, _ := rawExt["installs"].(map[string]any)
+	codegen, _ := installs["codegen"].(map[string]any)
+	if codegen["source"] != "npm" || codegen["spec"] != "@acme/codegen@1.0.0" {
+		t.Fatalf("unexpected normalized install record fields: %#v", codegen)
+	}
+	if codegen["installPath"] != "/tmp/codegen" {
+		t.Fatalf("expected installPath canonicalization, got: %#v", codegen)
+	}
+	installedAt1, _ := codegen["installedAt"].(string)
+	if strings.TrimSpace(installedAt1) == "" {
+		t.Fatalf("expected installedAt to be set: %#v", codegen)
+	}
+
+	next, err = ApplyConfigSet(next, "plugins.installs.codegen.version", " 1.0.1 ")
+	if err != nil {
+		t.Fatalf("ApplyConfigSet plugins.installs.<id>.<field> error: %v", err)
+	}
+	rawExt, _ = next.Extra["extensions"].(map[string]any)
+	installs, _ = rawExt["installs"].(map[string]any)
+	codegen, _ = installs["codegen"].(map[string]any)
+	if codegen["version"] != "1.0.1" {
+		t.Fatalf("expected version trim normalization, got: %#v", codegen)
+	}
+	installedAt2, _ := codegen["installedAt"].(string)
+	if strings.TrimSpace(installedAt2) == "" {
+		t.Fatalf("expected installedAt to be present on update: %#v", codegen)
+	}
+	if installedAt2 == installedAt1 {
+		t.Fatalf("expected installedAt to refresh on record update: before=%q after=%q", installedAt1, installedAt2)
+	}
+
+	next, err = ApplyConfigSet(next, "plugins.installs.codegen.spec", "")
+	if err != nil {
+		t.Fatalf("ApplyConfigSet plugins.installs.codegen.spec clear error: %v", err)
+	}
+	rawExt, _ = next.Extra["extensions"].(map[string]any)
+	installs, _ = rawExt["installs"].(map[string]any)
+	codegen, _ = installs["codegen"].(map[string]any)
+	if _, ok := codegen["spec"]; ok {
+		t.Fatalf("expected empty spec to remove field: %#v", codegen)
+	}
+
+	next, err = ApplyConfigSet(next, "plugins.installs.codegen.source", "")
+	if err != nil {
+		t.Fatalf("ApplyConfigSet plugins.installs.codegen.source clear error: %v", err)
+	}
+	rawExt, _ = next.Extra["extensions"].(map[string]any)
+	if _, ok := rawExt["installs"]; ok {
+		t.Fatalf("expected install record removal when source is cleared: %#v", rawExt)
+	}
+}
+
+func TestApplyConfigSetPluginsInstallsSourceValidation(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	_, err := ApplyConfigSet(cfg, "plugins.installs.codegen.source", "git")
+	if err == nil {
+		t.Fatal("expected source enum validation error")
+	}
+	if !strings.Contains(err.Error(), "one of npm, archive, path") {
+		t.Fatalf("unexpected source validation error: %v", err)
+	}
+
+	next, err := ApplyConfigSet(cfg, "plugins.installs.codegen", map[string]any{"spec": "@acme/codegen@1.0.0"})
+	if err == nil {
+		t.Fatal("expected missing source validation error")
+	}
+	if !strings.Contains(err.Error(), "source is required") {
+		t.Fatalf("unexpected missing source validation error: %v", err)
+	}
+	if next.Extra != nil {
+		t.Fatalf("expected config to remain unchanged on missing source validation error: %#v", next)
+	}
+}
+
 func TestApplyConfigSetPluginsInstallsFieldValidation(t *testing.T) {
 	cfg := state.ConfigDoc{Version: 1}
 	_, err := ApplyConfigSet(cfg, "plugins.installs.codegen.", "bad")
@@ -223,6 +323,167 @@ func TestApplyConfigSetPluginsInstallsFieldValidation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "non-empty field") {
 		t.Fatalf("unexpected installs field validation error: %v", err)
+	}
+}
+
+func TestApplyPluginInstallOperation(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	next, err := ApplyPluginInstallOperation(cfg, "codegen", map[string]any{
+		"source":      "path",
+		"sourcePath":  " ./extensions/codegen ",
+		"installPath": " ./extensions/codegen ",
+		"version":     " 1.0.0 ",
+	}, true, true)
+	if err != nil {
+		t.Fatalf("ApplyPluginInstallOperation error: %v", err)
+	}
+	rawExt, _ := next.Extra["extensions"].(map[string]any)
+	rawEntries, _ := rawExt["entries"].(map[string]any)
+	entry, _ := rawEntries["codegen"].(map[string]any)
+	if enabled, _ := entry["enabled"].(bool); !enabled {
+		t.Fatalf("expected codegen entry enabled after install operation: %#v", entry)
+	}
+	rawInstalls, _ := rawExt["installs"].(map[string]any)
+	record, _ := rawInstalls["codegen"].(map[string]any)
+	if record["source"] != "path" || record["version"] != "1.0.0" {
+		t.Fatalf("unexpected normalized install record: %#v", record)
+	}
+	if installedAt, _ := record["installedAt"].(string); strings.TrimSpace(installedAt) == "" {
+		t.Fatalf("expected install operation to stamp installedAt: %#v", record)
+	}
+	loadPaths, _ := rawExt["load_paths"].([]string)
+	if len(loadPaths) != 1 || loadPaths[0] != "./extensions/codegen" {
+		t.Fatalf("expected sourcePath to be added to plugins.load_paths: %#v", rawExt)
+	}
+
+	next, err = ApplyPluginInstallOperation(next, "codegen", map[string]any{
+		"source":      "path",
+		"sourcePath":  "./extensions/codegen",
+		"installPath": "./extensions/codegen",
+		"version":     "1.0.1",
+	}, true, true)
+	if err != nil {
+		t.Fatalf("ApplyPluginInstallOperation idempotent path add error: %v", err)
+	}
+	rawExt, _ = next.Extra["extensions"].(map[string]any)
+	loadPaths, _ = rawExt["load_paths"].([]string)
+	if len(loadPaths) != 1 || loadPaths[0] != "./extensions/codegen" {
+		t.Fatalf("expected deduplicated load paths after repeated install operation: %#v", rawExt)
+	}
+}
+
+func TestApplyPluginUninstallOperation(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1, Extra: map[string]any{"extensions": map[string]any{
+		"allow":      []string{"codegen", "other"},
+		"load_paths": []string{"./extensions/codegen", "./extensions/other"},
+		"entries": map[string]any{
+			"codegen": map[string]any{"enabled": true},
+			"other":   map[string]any{"enabled": true},
+		},
+		"installs": map[string]any{
+			"codegen": map[string]any{"source": "path", "sourcePath": "./extensions/codegen", "installPath": "./extensions/codegen"},
+			"other":   map[string]any{"source": "npm", "spec": "other@1.0.0"},
+		},
+		"slots": map[string]any{"memory": "codegen"},
+	}}}
+
+	next, actions, err := ApplyPluginUninstallOperation(cfg, "codegen")
+	if err != nil {
+		t.Fatalf("ApplyPluginUninstallOperation error: %v", err)
+	}
+	if !actions.Entry || !actions.Install || !actions.Allowlist || !actions.LoadPath || !actions.MemorySlot {
+		t.Fatalf("unexpected uninstall actions: %#v", actions)
+	}
+	rawExt, _ := next.Extra["extensions"].(map[string]any)
+	rawEntries, _ := rawExt["entries"].(map[string]any)
+	if _, ok := rawEntries["codegen"]; ok {
+		t.Fatalf("expected codegen removed from entries: %#v", rawEntries)
+	}
+	rawInstalls, _ := rawExt["installs"].(map[string]any)
+	if _, ok := rawInstalls["codegen"]; ok {
+		t.Fatalf("expected codegen removed from installs: %#v", rawInstalls)
+	}
+	allow, _ := rawExt["allow"].([]string)
+	if len(allow) != 1 || allow[0] != "other" {
+		t.Fatalf("expected codegen removed from allow list: %#v", rawExt)
+	}
+	loadPaths, _ := rawExt["load_paths"].([]string)
+	if len(loadPaths) != 1 || loadPaths[0] != "./extensions/other" {
+		t.Fatalf("expected codegen sourcePath removed from load paths: %#v", rawExt)
+	}
+	rawSlots, _ := rawExt["slots"].(map[string]any)
+	if rawSlots["memory"] != "memory-core" {
+		t.Fatalf("expected memory slot reset on uninstall: %#v", rawSlots)
+	}
+}
+
+func TestApplyPluginUninstallOperationMissingPlugin(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	_, _, err := ApplyPluginUninstallOperation(cfg, "missing")
+	if err == nil {
+		t.Fatal("expected missing plugin uninstall error")
+	}
+	if !strings.Contains(err.Error(), "plugin not found") {
+		t.Fatalf("unexpected missing plugin uninstall error: %v", err)
+	}
+}
+
+func TestApplyPluginUpdateOperation(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1, Extra: map[string]any{"extensions": map[string]any{
+		"installs": map[string]any{
+			"codegen": map[string]any{"source": "npm", "spec": "@acme/codegen@latest", "version": "1.0.0", "installPath": "./extensions/codegen"},
+			"local":   map[string]any{"source": "path", "sourcePath": "./extensions/local", "installPath": "./extensions/local"},
+			"bad":     map[string]any{"source": "npm", "version": "0.0.1"},
+		},
+	}}}
+
+	runner := func(pluginID string, record map[string]any, dryRun bool) PluginUpdateResult {
+		switch pluginID {
+		case "codegen":
+			if dryRun {
+				return PluginUpdateResult{Status: PluginUpdateStatusUpdated, Message: "Would update codegen", NextVersion: "1.1.0"}
+			}
+			return PluginUpdateResult{Status: PluginUpdateStatusUpdated, Message: "Updated codegen", NextVersion: "1.1.0", InstallPath: "./extensions/codegen"}
+		default:
+			return PluginUpdateResult{Status: PluginUpdateStatusError, Message: "unexpected target"}
+		}
+	}
+
+	dryCfg, changed, outcomes := ApplyPluginUpdateOperation(cfg, nil, true, runner)
+	if changed {
+		t.Fatalf("expected no config changes in dry run")
+	}
+	if dryCfg.Extra == nil {
+		t.Fatalf("expected dry-run config to stay intact")
+	}
+	if len(outcomes) != 3 {
+		t.Fatalf("expected 3 outcomes, got %d: %#v", len(outcomes), outcomes)
+	}
+	if outcomes[0].PluginID != "bad" || outcomes[0].Status != PluginUpdateStatusSkipped {
+		t.Fatalf("expected bad plugin skip (missing spec): %#v", outcomes)
+	}
+	if outcomes[1].PluginID != "codegen" || outcomes[1].Status != PluginUpdateStatusUpdated {
+		t.Fatalf("expected codegen dry-run update outcome: %#v", outcomes)
+	}
+	if outcomes[2].PluginID != "local" || outcomes[2].Status != PluginUpdateStatusSkipped {
+		t.Fatalf("expected local plugin skip (path source): %#v", outcomes)
+	}
+
+	next, changed, outcomes := ApplyPluginUpdateOperation(cfg, []string{"codegen"}, false, runner)
+	if !changed {
+		t.Fatalf("expected config changes for non-dry-run updated plugin")
+	}
+	if len(outcomes) != 1 || outcomes[0].Status != PluginUpdateStatusUpdated {
+		t.Fatalf("expected one updated outcome: %#v", outcomes)
+	}
+	rawExt, _ := next.Extra["extensions"].(map[string]any)
+	rawInstalls, _ := rawExt["installs"].(map[string]any)
+	codegen, _ := rawInstalls["codegen"].(map[string]any)
+	if codegen["version"] != "1.1.0" {
+		t.Fatalf("expected updated install record version: %#v", codegen)
+	}
+	if installedAt, _ := codegen["installedAt"].(string); strings.TrimSpace(installedAt) == "" {
+		t.Fatalf("expected installedAt refresh after update persistence: %#v", codegen)
 	}
 }
 

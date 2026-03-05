@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"swarmstr/internal/store/state"
 )
@@ -36,6 +37,18 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"plugins.entries.<id>.config",
 			"plugins.installs",
 			"plugins.installs.<id>",
+			"plugins.installs.<id>.source",
+			"plugins.installs.<id>.spec",
+			"plugins.installs.<id>.sourcePath",
+			"plugins.installs.<id>.installPath",
+			"plugins.installs.<id>.version",
+			"plugins.installs.<id>.resolvedName",
+			"plugins.installs.<id>.resolvedVersion",
+			"plugins.installs.<id>.resolvedSpec",
+			"plugins.installs.<id>.integrity",
+			"plugins.installs.<id>.shasum",
+			"plugins.installs.<id>.resolvedAt",
+			"plugins.installs.<id>.installedAt",
 			"plugins.installs.<id>.<field>",
 		},
 	}
@@ -408,6 +421,112 @@ func anyToStringMap(value any) (map[string]string, error) {
 	return out, nil
 }
 
+func canonicalInstallField(field string) (string, bool) {
+	switch strings.TrimSpace(field) {
+	case "source":
+		return "source", true
+	case "spec":
+		return "spec", true
+	case "sourcePath", "source_path":
+		return "sourcePath", true
+	case "installPath", "install_path":
+		return "installPath", true
+	case "version":
+		return "version", true
+	case "resolvedName", "resolved_name":
+		return "resolvedName", true
+	case "resolvedVersion", "resolved_version":
+		return "resolvedVersion", true
+	case "resolvedSpec", "resolved_spec":
+		return "resolvedSpec", true
+	case "integrity":
+		return "integrity", true
+	case "shasum":
+		return "shasum", true
+	case "resolvedAt", "resolved_at":
+		return "resolvedAt", true
+	case "installedAt", "installed_at":
+		return "installedAt", true
+	default:
+		return "", false
+	}
+}
+
+func applyInstallRecordField(entry map[string]any, field string, value any) error {
+	field = strings.TrimSpace(field)
+	canonical, known := canonicalInstallField(field)
+	if !known {
+		if value == nil {
+			delete(entry, field)
+		} else {
+			entry[field] = value
+		}
+		return nil
+	}
+	if field != canonical {
+		delete(entry, field)
+	}
+	if value == nil {
+		delete(entry, canonical)
+		return nil
+	}
+	s, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("plugins.installs field %q must be string", canonical)
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		delete(entry, canonical)
+		return nil
+	}
+	if canonical == "source" {
+		s = strings.ToLower(s)
+		switch s {
+		case "npm", "archive", "path":
+		default:
+			return fmt.Errorf("plugins.installs field %q must be one of npm, archive, path", canonical)
+		}
+	}
+	entry[canonical] = s
+	return nil
+}
+
+func normalizeInstallRecord(value any) (map[string]any, error) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("value must be object")
+	}
+	entry := map[string]any{}
+	for field, fieldValue := range raw {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if err := applyInstallRecordField(entry, field, fieldValue); err != nil {
+			return nil, err
+		}
+	}
+	if _, ok := entry["source"]; !ok {
+		return nil, fmt.Errorf("plugins.installs.<id>.source is required")
+	}
+	if _, ok := entry["installedAt"]; !ok {
+		entry["installedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	return entry, nil
+}
+
+func updateInstallRecordField(entry map[string]any, field string, value any) error {
+	if err := applyInstallRecordField(entry, field, value); err != nil {
+		return err
+	}
+	canonical, known := canonicalInstallField(field)
+	if known && canonical == "installedAt" {
+		return nil
+	}
+	entry["installedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
+	return nil
+}
+
 func applyPluginConfigSet(cfg state.ConfigDoc, key string, value any) (state.ConfigDoc, bool, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -463,11 +582,30 @@ func applyPluginConfigSet(cfg state.ConfigDoc, key string, value any) (state.Con
 			rawExt["load_paths"] = items
 			return cfg, true, nil
 		case "installs":
+			if value == nil {
+				delete(rawExt, "installs")
+				return cfg, true, nil
+			}
 			entryMap, ok := value.(map[string]any)
 			if !ok {
 				return cfg, true, fmt.Errorf("plugins.installs must be object")
 			}
-			rawExt["installs"] = entryMap
+			normalized := map[string]any{}
+			for installID, installValue := range entryMap {
+				installID = strings.TrimSpace(installID)
+				if installID == "" {
+					continue
+				}
+				record, err := normalizeInstallRecord(installValue)
+				if err != nil {
+					return cfg, true, fmt.Errorf("plugins.installs.%s must be object with valid fields: %w", installID, err)
+				}
+				normalized[installID] = record
+			}
+			rawExt["installs"] = normalized
+			if len(normalized) == 0 {
+				delete(rawExt, "installs")
+			}
 			return cfg, true, nil
 		}
 	}
@@ -490,11 +628,18 @@ func applyPluginConfigSet(cfg state.ConfigDoc, key string, value any) (state.Con
 			rawExt["installs"] = rawInstalls
 		}
 		if len(segments) == 3 {
-			entryMap, ok := value.(map[string]any)
-			if !ok {
-				return cfg, true, fmt.Errorf("plugins.installs.%s must be object", installID)
+			if value == nil {
+				delete(rawInstalls, installID)
+				if len(rawInstalls) == 0 {
+					delete(rawExt, "installs")
+				}
+				return cfg, true, nil
 			}
-			rawInstalls[installID] = entryMap
+			record, err := normalizeInstallRecord(value)
+			if err != nil {
+				return cfg, true, fmt.Errorf("plugins.installs.%s must be object with valid fields: %w", installID, err)
+			}
+			rawInstalls[installID] = record
 			return cfg, true, nil
 		}
 		if len(segments) != 4 {
@@ -509,7 +654,17 @@ func applyPluginConfigSet(cfg state.ConfigDoc, key string, value any) (state.Con
 			entry = map[string]any{}
 			rawInstalls[installID] = entry
 		}
-		entry[field] = value
+		if err := updateInstallRecordField(entry, field, value); err != nil {
+			return cfg, true, fmt.Errorf("plugins.installs.%s.%s invalid: %w", installID, field, err)
+		}
+		if _, hasSource := entry["source"]; !hasSource {
+			delete(rawInstalls, installID)
+		} else if len(entry) == 0 {
+			delete(rawInstalls, installID)
+		}
+		if len(rawInstalls) == 0 {
+			delete(rawExt, "installs")
+		}
 		return cfg, true, nil
 	}
 	if len(segments) == 3 && segments[1] == "slots" && segments[2] == "memory" {
@@ -603,6 +758,266 @@ func applyPluginConfigSet(cfg state.ConfigDoc, key string, value any) (state.Con
 		return cfg, false, nil
 	}
 	return cfg, true, nil
+}
+
+type PluginUninstallActions struct {
+	Entry      bool `json:"entry"`
+	Install    bool `json:"install"`
+	Allowlist  bool `json:"allowlist"`
+	LoadPath   bool `json:"loadPath"`
+	MemorySlot bool `json:"memorySlot"`
+}
+
+type PluginUpdateStatus string
+
+const (
+	PluginUpdateStatusUpdated   PluginUpdateStatus = "updated"
+	PluginUpdateStatusUnchanged PluginUpdateStatus = "unchanged"
+	PluginUpdateStatusSkipped   PluginUpdateStatus = "skipped"
+	PluginUpdateStatusError     PluginUpdateStatus = "error"
+)
+
+type PluginUpdateOutcome struct {
+	PluginID       string             `json:"pluginId"`
+	Status         PluginUpdateStatus `json:"status"`
+	Message        string             `json:"message"`
+	CurrentVersion string             `json:"currentVersion,omitempty"`
+	NextVersion    string             `json:"nextVersion,omitempty"`
+}
+
+type PluginUpdateResult struct {
+	Status      PluginUpdateStatus
+	Message     string
+	NextVersion string
+	InstallPath string
+	RecordPatch map[string]any
+}
+
+type PluginUpdateRunner func(pluginID string, record map[string]any, dryRun bool) PluginUpdateResult
+
+func ApplyPluginUpdateOperation(cfg state.ConfigDoc, pluginIDs []string, dryRun bool, runner PluginUpdateRunner) (state.ConfigDoc, bool, []PluginUpdateOutcome) {
+	outcomes := []PluginUpdateOutcome{}
+	if runner == nil {
+		return cfg, false, append(outcomes, PluginUpdateOutcome{PluginID: "", Status: PluginUpdateStatusError, Message: "plugin update runner is required"})
+	}
+	rawExt, _ := cfg.Extra["extensions"].(map[string]any)
+	rawInstalls, _ := rawExt["installs"].(map[string]any)
+	targets := sanitizeStrings(pluginIDs)
+	if len(targets) == 0 {
+		targets = make([]string, 0, len(rawInstalls))
+		for pluginID := range rawInstalls {
+			targets = append(targets, strings.TrimSpace(pluginID))
+		}
+		sort.Strings(targets)
+	}
+	changed := false
+	nextCfg := cfg
+	for _, pluginID := range targets {
+		pluginID = strings.TrimSpace(pluginID)
+		if pluginID == "" {
+			continue
+		}
+		record, _ := rawInstalls[pluginID].(map[string]any)
+		if record == nil {
+			outcomes = append(outcomes, PluginUpdateOutcome{PluginID: pluginID, Status: PluginUpdateStatusSkipped, Message: fmt.Sprintf("No install record for %q.", pluginID)})
+			continue
+		}
+		source, _ := record["source"].(string)
+		if source != "npm" {
+			outcomes = append(outcomes, PluginUpdateOutcome{PluginID: pluginID, Status: PluginUpdateStatusSkipped, Message: fmt.Sprintf("Skipping %q (source: %s).", pluginID, source)})
+			continue
+		}
+		spec, _ := record["spec"].(string)
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			outcomes = append(outcomes, PluginUpdateOutcome{PluginID: pluginID, Status: PluginUpdateStatusSkipped, Message: fmt.Sprintf("Skipping %q (missing npm spec).", pluginID)})
+			continue
+		}
+		currentVersion, _ := record["version"].(string)
+		res := runner(pluginID, record, dryRun)
+		status := res.Status
+		if status == "" {
+			status = PluginUpdateStatusError
+		}
+		outcome := PluginUpdateOutcome{
+			PluginID:       pluginID,
+			Status:         status,
+			Message:        strings.TrimSpace(res.Message),
+			CurrentVersion: strings.TrimSpace(currentVersion),
+			NextVersion:    strings.TrimSpace(res.NextVersion),
+		}
+		if outcome.Message == "" {
+			switch outcome.Status {
+			case PluginUpdateStatusUpdated:
+				outcome.Message = fmt.Sprintf("Updated %s.", pluginID)
+			case PluginUpdateStatusUnchanged:
+				outcome.Message = fmt.Sprintf("%s is up to date.", pluginID)
+			case PluginUpdateStatusSkipped:
+				outcome.Message = fmt.Sprintf("Skipping %s.", pluginID)
+			default:
+				outcome.Message = fmt.Sprintf("Failed to update %s.", pluginID)
+			}
+		}
+		if outcome.Status == PluginUpdateStatusUpdated && !dryRun {
+			nextRecord := map[string]any{}
+			for key, value := range record {
+				nextRecord[key] = value
+			}
+			if strings.TrimSpace(res.NextVersion) != "" {
+				nextRecord["version"] = strings.TrimSpace(res.NextVersion)
+			}
+			if strings.TrimSpace(res.InstallPath) != "" {
+				nextRecord["installPath"] = strings.TrimSpace(res.InstallPath)
+			}
+			for key, value := range res.RecordPatch {
+				nextRecord[key] = value
+			}
+			updatedCfg, err := ApplyConfigSet(nextCfg, "plugins.installs."+pluginID, nextRecord)
+			if err != nil {
+				outcome.Status = PluginUpdateStatusError
+				outcome.Message = fmt.Sprintf("Failed to persist update for %s: %v", pluginID, err)
+			} else {
+				nextCfg = updatedCfg
+				rawExt, _ = nextCfg.Extra["extensions"].(map[string]any)
+				rawInstalls, _ = rawExt["installs"].(map[string]any)
+				changed = true
+			}
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	return nextCfg, changed, outcomes
+}
+
+func ApplyPluginInstallOperation(cfg state.ConfigDoc, pluginID string, installRecord map[string]any, enableEntry bool, includeLoadPath bool) (state.ConfigDoc, error) {
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return cfg, fmt.Errorf("plugin id is required")
+	}
+	if len(installRecord) == 0 {
+		return cfg, fmt.Errorf("install record is required")
+	}
+	next, err := ApplyConfigSet(cfg, "plugins.installs."+pluginID, installRecord)
+	if err != nil {
+		return cfg, err
+	}
+	if enableEntry {
+		next, err = ApplyConfigSet(next, "plugins.entries."+pluginID+".enabled", true)
+		if err != nil {
+			return cfg, err
+		}
+	}
+	if includeLoadPath {
+		rawExt, _ := next.Extra["extensions"].(map[string]any)
+		rawInstalls, _ := rawExt["installs"].(map[string]any)
+		record, _ := rawInstalls[pluginID].(map[string]any)
+		source, _ := record["source"].(string)
+		sourcePath, _ := record["sourcePath"].(string)
+		if source == "path" && strings.TrimSpace(sourcePath) != "" {
+			loadPaths := getStringSlice(rawExt, "load_paths")
+			loadPaths = append(loadPaths, sourcePath)
+			next, err = ApplyConfigSet(next, "plugins.load.paths", sanitizeStrings(loadPaths))
+			if err != nil {
+				return cfg, err
+			}
+		}
+	}
+	return next, nil
+}
+
+func ApplyPluginUninstallOperation(cfg state.ConfigDoc, pluginID string) (state.ConfigDoc, PluginUninstallActions, error) {
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return cfg, PluginUninstallActions{}, fmt.Errorf("plugin id is required")
+	}
+	if cfg.Extra == nil {
+		return cfg, PluginUninstallActions{}, fmt.Errorf("plugin not found: %s", pluginID)
+	}
+	rawExt, ok := cfg.Extra["extensions"].(map[string]any)
+	if !ok || rawExt == nil {
+		return cfg, PluginUninstallActions{}, fmt.Errorf("plugin not found: %s", pluginID)
+	}
+	actions := PluginUninstallActions{}
+
+	rawEntries, _ := rawExt["entries"].(map[string]any)
+	_, hasEntry := rawEntries[pluginID]
+	if hasEntry {
+		delete(rawEntries, pluginID)
+		actions.Entry = true
+		if len(rawEntries) == 0 {
+			delete(rawExt, "entries")
+		}
+	}
+
+	rawInstalls, _ := rawExt["installs"].(map[string]any)
+	installRecord, _ := rawInstalls[pluginID].(map[string]any)
+	_, hasInstall := rawInstalls[pluginID]
+	if hasInstall {
+		delete(rawInstalls, pluginID)
+		actions.Install = true
+		if len(rawInstalls) == 0 {
+			delete(rawExt, "installs")
+		}
+	}
+	if !hasEntry && !hasInstall {
+		return cfg, PluginUninstallActions{}, fmt.Errorf("plugin not found: %s", pluginID)
+	}
+
+	allow := getStringSlice(rawExt, "allow")
+	if len(allow) > 0 {
+		nextAllow := make([]string, 0, len(allow))
+		for _, candidate := range allow {
+			if candidate == pluginID {
+				actions.Allowlist = true
+				continue
+			}
+			nextAllow = append(nextAllow, candidate)
+		}
+		if len(nextAllow) == 0 {
+			delete(rawExt, "allow")
+		} else {
+			rawExt["allow"] = nextAllow
+		}
+	}
+
+	source, _ := installRecord["source"].(string)
+	sourcePath, _ := installRecord["sourcePath"].(string)
+	if source == "path" && strings.TrimSpace(sourcePath) != "" {
+		loadPaths := getStringSlice(rawExt, "load_paths")
+		if len(loadPaths) > 0 {
+			nextLoad := make([]string, 0, len(loadPaths))
+			for _, candidate := range loadPaths {
+				if candidate == sourcePath {
+					actions.LoadPath = true
+					continue
+				}
+				nextLoad = append(nextLoad, candidate)
+			}
+			if len(nextLoad) == 0 {
+				delete(rawExt, "load_paths")
+			} else {
+				rawExt["load_paths"] = nextLoad
+			}
+		}
+	}
+
+	rawSlots, _ := rawExt["slots"].(map[string]any)
+	if rawSlots != nil {
+		if memory, _ := rawSlots["memory"].(string); memory == pluginID {
+			rawSlots["memory"] = "memory-core"
+			actions.MemorySlot = true
+		}
+		if len(rawSlots) == 0 {
+			delete(rawExt, "slots")
+		}
+	}
+
+	if len(rawExt) == 0 {
+		delete(cfg.Extra, "extensions")
+		if len(cfg.Extra) == 0 {
+			cfg.Extra = nil
+		}
+	}
+	return cfg, actions, nil
 }
 
 func sanitizeStrings(in []string) []string {
