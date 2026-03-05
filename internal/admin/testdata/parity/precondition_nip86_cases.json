@@ -1,0 +1,38 @@
+{
+  "cases": [
+    {
+      "name": "list.put precondition conflict carries data",
+      "method": "list.put",
+      "raw_params": {
+        "name": "allowlist",
+        "items": [
+          "a"
+        ],
+        "expected_version": 1
+      },
+      "resource": "list:allowlist",
+      "expected_version": 1,
+      "current_version": 2,
+      "expected_event": "",
+      "current_event": "evt-list-current"
+    },
+    {
+      "name": "config.put precondition conflict carries data",
+      "method": "config.put",
+      "raw_params": {
+        "config": {
+          "dm": {
+            "policy": "open"
+          }
+        },
+        "expected_version": 2,
+        "expected_event": "evt-old"
+      },
+      "resource": "config",
+      "expected_version": 2,
+      "current_version": 5,
+      "expected_event": "evt-old",
+      "current_event": "evt-current"
+    }
+  ]
+}

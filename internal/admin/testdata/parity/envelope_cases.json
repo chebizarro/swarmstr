@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "name": "json-http-success-envelope",
+      "nip86": false,
+      "status": 200,
+      "ok": true,
+      "result": {"ok": true},
+      "expect_content_type": "application/json"
+    },
+    {
+      "name": "json-http-error-envelope",
+      "nip86": false,
+      "status": 400,
+      "ok": false,
+      "error": "invalid params",
+      "expect_content_type": "application/json"
+    },
+    {
+      "name": "nip86-error-envelope-invalid-params",
+      "nip86": true,
+      "status": 400,
+      "error": "invalid params",
+      "expect_error_code": -32602,
+      "expect_content_type": "application/nostr+json+rpc"
+    },
+    {
+      "name": "nip86-error-envelope-auth",
+      "nip86": true,
+      "status": 401,
+      "error": "authentication required",
+      "expect_error_code": -32001,
+      "expect_content_type": "application/nostr+json+rpc"
+    }
+  ]
+}

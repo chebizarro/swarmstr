@@ -1,8 +1,11 @@
 package methods
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -47,5 +50,36 @@ func TestMapNIP86Error_AuthAndMethodMappings(t *testing.T) {
 	notFound := MapNIP86Error(http.StatusNotFound, errors.New("unknown method"))
 	if notFound.Code != -32601 {
 		t.Fatalf("not found code = %d, want -32601", notFound.Code)
+	}
+}
+
+func TestMapNIP86Error_FixtureMappings(t *testing.T) {
+	type fixtureCase struct {
+		Name    string `json:"name"`
+		Status  int    `json:"status"`
+		Message string `json:"message"`
+		Code    int    `json:"code"`
+	}
+	type fixtureFile struct {
+		Cases []fixtureCase `json:"cases"`
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "parity", "nip86-error-mapping.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fx fixtureFile
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	for _, tc := range fx.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			got := MapNIP86Error(tc.Status, errors.New(tc.Message))
+			if got.Code != tc.Code {
+				t.Fatalf("code=%d want=%d", got.Code, tc.Code)
+			}
+			if got.Message != tc.Message {
+				t.Fatalf("message=%q want=%q", got.Message, tc.Message)
+			}
+		})
 	}
 }

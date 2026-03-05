@@ -177,24 +177,15 @@ func TestSkillsBinsNilSafety(t *testing.T) {
 	}
 
 	result := applySkillsBins(cfg, methods.SkillsBinsRequest{AgentID: "main"})
-	bins, ok := result["bins"].([]map[string]any)
+	bins, ok := result["bins"].([]string)
 	if !ok {
-		t.Fatalf("expected bins array, got %T", result["bins"])
+		t.Fatalf("expected bins []string, got %T", result["bins"])
 	}
 
 	if len(bins) != 3 {
 		t.Fatalf("expected 3 bins, got %d", len(bins))
 	}
-
-	if bins[0]["enabled"] != true {
-		t.Fatalf("expected bins[0].enabled=true, got %v", bins[0]["enabled"])
-	}
-
-	if bins[1]["enabled"] != false {
-		t.Fatalf("expected bins[1].enabled=false (missing field), got %v", bins[1]["enabled"])
-	}
-
-	if bins[2]["enabled"] != false {
-		t.Fatalf("expected bins[2].enabled=false (nil field), got %v", bins[2]["enabled"])
+	if bins[0] != "test-skill" || bins[1] != "test-skill-2" || bins[2] != "test-skill-3" {
+		t.Fatalf("unexpected bins values: %#v", bins)
 	}
 }

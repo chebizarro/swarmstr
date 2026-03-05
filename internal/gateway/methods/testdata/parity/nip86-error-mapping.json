@@ -1,0 +1,10 @@
+{
+  "cases": [
+    {"name": "bad-request", "status": 400, "message": "invalid params", "code": -32602},
+    {"name": "not-found", "status": 404, "message": "unknown method", "code": -32601},
+    {"name": "unauthorized", "status": 401, "message": "authentication required", "code": -32001},
+    {"name": "forbidden", "status": 403, "message": "forbidden", "code": -32001},
+    {"name": "conflict", "status": 409, "message": "version mismatch", "code": -32010},
+    {"name": "internal-default", "status": 500, "message": "boom", "code": -32000}
+  ]
+}

@@ -688,15 +688,61 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		t.Fatalf("skills.bins error: %v", err)
 	}
 	payload, _ = res.Result.(map[string]any)
-	if _, ok := payload["bins"]; !ok {
-		t.Fatalf("unexpected skills.bins payload: %#v", res.Result)
+	bins, ok := payload["bins"].([]string)
+	if !ok {
+		t.Fatalf("unexpected skills.bins payload shape: %#v", res.Result)
+	}
+	if len(bins) == 0 || bins[0] != "nostr-core" {
+		t.Fatalf("unexpected skills.bins payload values: %#v", res.Result)
 	}
 
 	enabled := true
 	apiKey := "token"
-	_, _, err = applySkillUpdate(context.Background(), docs, cfgState, methods.SkillsUpdateRequest{SkillKey: "nostr-core", Enabled: &enabled, APIKey: &apiKey, Env: map[string]string{"A": "B"}})
+	_, updatedEntry, err := applySkillUpdate(context.Background(), docs, cfgState, methods.SkillsUpdateRequest{SkillKey: "nostr-core", Enabled: &enabled, APIKey: &apiKey, Env: map[string]string{" A ": " B "}})
 	if err != nil {
 		t.Fatalf("applySkillUpdate helper failed: %v", err)
+	}
+	envAfter, _ := updatedEntry["env"].(map[string]any)
+	if envAfter["A"] != "B" {
+		t.Fatalf("expected trimmed env key/value, got: %#v", envAfter)
+	}
+	blank := "  "
+	_, updatedEntry, err = applySkillUpdate(context.Background(), docs, cfgState, methods.SkillsUpdateRequest{SkillKey: "nostr-core", APIKey: &blank, Env: map[string]string{"A": ""}})
+	if err != nil {
+		t.Fatalf("applySkillUpdate cleanup failed: %v", err)
+	}
+	if _, hasKey := updatedEntry["api_key"]; hasKey {
+		t.Fatalf("expected api_key to be removed on blank update, got: %#v", updatedEntry)
+	}
+	if _, hasEnv := updatedEntry["env"]; hasEnv {
+		t.Fatalf("expected env to be removed when empty after cleanup, got: %#v", updatedEntry)
+	}
+	_, _, err = applySkillUpdate(context.Background(), docs, cfgState, methods.SkillsUpdateRequest{SkillKey: "nostr-core", Env: map[string]string{" ": "X"}})
+	if err == nil || !strings.Contains(err.Error(), "env variable key cannot be blank") {
+		t.Fatalf("expected blank key error, got: %v", err)
+	}
+}
+
+func TestHandleControlRPCRequest_SkillsStatusUnknownAgent(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	_, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSkillsStatus,
+		Params:     json.RawMessage(`{"agent_id":"ghost"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "unknown agent id") {
+		t.Fatalf("expected unknown agent id error, got: %v", err)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSkillsBins,
+		Params:     json.RawMessage(`{"agent_id":"ghost"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "unknown agent id") {
+		t.Fatalf("expected unknown agent id error for skills.bins, got: %v", err)
 	}
 }
 
@@ -1001,6 +1047,50 @@ func TestHandleControlRPCRequest_OpenClawHighRiskParityFixtures(t *testing.T) {
 				if _, ok := res.Result.([]map[string]any); !ok {
 					t.Fatalf("result kind mismatch: %#v", res.Result)
 				}
+			}
+		})
+	}
+}
+
+func TestHandleControlRPCRequest_RuntimeUnavailableParityFixtures(t *testing.T) {
+	type fixtureCase struct {
+		Name          string         `json:"name"`
+		Method        string         `json:"method"`
+		Params        map[string]any `json:"params"`
+		ErrorContains string         `json:"error_contains"`
+	}
+	type fixtureFile struct {
+		Cases []fixtureCase `json:"cases"`
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "parity", "control_runtime_unavailable_cases.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fx fixtureFile
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	prevOps := controlOps
+	controlOps = newOperationsRegistry()
+	defer func() { controlOps = prevOps }()
+
+	for _, tc := range fx.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			paramsRaw, err := json.Marshal(tc.Params)
+			if err != nil {
+				t.Fatalf("marshal params: %v", err)
+			}
+			_, callErr := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+				FromPubKey: "caller",
+				Method:     tc.Method,
+				Params:     paramsRaw,
+			}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+			if callErr == nil {
+				t.Fatalf("expected runtime-unavailable error")
+			}
+			if !strings.Contains(callErr.Error(), tc.ErrorContains) {
+				t.Fatalf("error=%v want contains %q", callErr, tc.ErrorContains)
 			}
 		})
 	}

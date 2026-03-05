@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -435,6 +436,89 @@ func TestDispatchMethodCallConfigPutExpectedVersionZeroSemantics(t *testing.T) {
 	}
 	if status != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", status, http.StatusConflict)
+	}
+}
+
+func TestDispatchMethodCallNIP86PreconditionConflictDataFixtures(t *testing.T) {
+	type fixtureCase struct {
+		Name            string         `json:"name"`
+		Method          string         `json:"method"`
+		RawParams       map[string]any `json:"raw_params"`
+		Resource        string         `json:"resource"`
+		ExpectedVersion int            `json:"expected_version"`
+		CurrentVersion  int            `json:"current_version"`
+		ExpectedEvent   string         `json:"expected_event"`
+		CurrentEvent    string         `json:"current_event"`
+	}
+	type fixtureFile struct {
+		Cases []fixtureCase `json:"cases"`
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "parity", "precondition_nip86_cases.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fx fixtureFile
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+
+	for _, tc := range fx.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			opts := ServerOptions{
+				GetListWithEvent: func(_ context.Context, _ string) (state.ListDoc, state.Event, error) {
+					return state.ListDoc{Version: tc.CurrentVersion, Name: "allowlist"}, state.Event{ID: tc.CurrentEvent}, nil
+				},
+				PutList: func(_ context.Context, _ string, _ state.ListDoc) error {
+					t.Fatal("put list must not be called on precondition failure")
+					return nil
+				},
+				GetConfigWithEvent: func(_ context.Context) (state.ConfigDoc, state.Event, error) {
+					return state.ConfigDoc{Version: tc.CurrentVersion, DM: state.DMPolicy{Policy: "open"}}, state.Event{ID: tc.CurrentEvent}, nil
+				},
+				PutConfig: func(_ context.Context, _ state.ConfigDoc) error {
+					t.Fatal("put config must not be called on precondition failure")
+					return nil
+				},
+			}
+			rr := httptest.NewRecorder()
+			req := newMethodRequest(t, tc.Method, tc.RawParams)
+			_, status, callErr := dispatchMethodCall(context.Background(), rr, req, opts)
+			if callErr == nil {
+				t.Fatalf("expected precondition conflict")
+			}
+			if status != http.StatusConflict {
+				t.Fatalf("status=%d want=%d", status, http.StatusConflict)
+			}
+			env := map[string]any{"error": methods.MapNIP86Error(status, callErr)}
+			rawEnv, err := json.Marshal(env)
+			if err != nil {
+				t.Fatalf("marshal envelope: %v", err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rawEnv, &body); err != nil {
+				t.Fatalf("unmarshal envelope: %v", err)
+			}
+			errObj, _ := body["error"].(map[string]any)
+			if int(errObj["code"].(float64)) != -32010 {
+				t.Fatalf("unexpected nip86 code: %#v", errObj)
+			}
+			data, _ := errObj["data"].(map[string]any)
+			if data["resource"] != tc.Resource {
+				t.Fatalf("resource=%v want=%q", data["resource"], tc.Resource)
+			}
+			if int(data["expected_version"].(float64)) != tc.ExpectedVersion {
+				t.Fatalf("expected_version=%v want=%d", data["expected_version"], tc.ExpectedVersion)
+			}
+			if int(data["current_version"].(float64)) != tc.CurrentVersion {
+				t.Fatalf("current_version=%v want=%d", data["current_version"], tc.CurrentVersion)
+			}
+			if data["expected_event"] != tc.ExpectedEvent {
+				t.Fatalf("expected_event=%v want=%q", data["expected_event"], tc.ExpectedEvent)
+			}
+			if data["current_event"] != tc.CurrentEvent {
+				t.Fatalf("current_event=%v want=%q", data["current_event"], tc.CurrentEvent)
+			}
+		})
 	}
 }
 
@@ -1403,11 +1487,125 @@ func newRawMethodRequest(t *testing.T, raw string) *http.Request {
 	return httptest.NewRequest(http.MethodPost, "/call", bytes.NewReader([]byte(raw)))
 }
 
+func TestEnvelopeParityFixtures(t *testing.T) {
+	type fixtureCase struct {
+		Name              string         `json:"name"`
+		NIP86             bool           `json:"nip86"`
+		Status            int            `json:"status"`
+		OK                bool           `json:"ok"`
+		Result            map[string]any `json:"result"`
+		Error             string         `json:"error"`
+		ExpectErrorCode   int            `json:"expect_error_code"`
+		ExpectContentType string         `json:"expect_content_type"`
+	}
+	type fixtureFile struct {
+		Cases []fixtureCase `json:"cases"`
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "parity", "envelope_cases.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fx fixtureFile
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	for _, tc := range fx.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			if tc.NIP86 {
+				if tc.Error != "" {
+					writeNIP86JSON(rr, map[string]any{"error": methods.MapNIP86Error(tc.Status, errors.New(tc.Error))})
+				} else {
+					writeNIP86JSON(rr, map[string]any{"result": tc.Result})
+				}
+			} else {
+				if tc.Error != "" {
+					writeJSON(rr, tc.Status, methods.CallResponse{OK: false, Error: tc.Error})
+				} else {
+					writeJSON(rr, tc.Status, methods.CallResponse{OK: tc.OK, Result: tc.Result})
+				}
+			}
+			if got := rr.Header().Get("Content-Type"); got != tc.ExpectContentType {
+				t.Fatalf("content-type=%q want=%q", got, tc.ExpectContentType)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if tc.NIP86 {
+				if tc.Error != "" {
+					errObj, ok := body["error"].(map[string]any)
+					if !ok {
+						t.Fatalf("missing error object: %#v", body)
+					}
+					if int(errObj["code"].(float64)) != tc.ExpectErrorCode {
+						t.Fatalf("error code=%v want=%d", errObj["code"], tc.ExpectErrorCode)
+					}
+				} else if _, ok := body["result"]; !ok {
+					t.Fatalf("missing result object: %#v", body)
+				}
+			} else {
+				if tc.Error != "" {
+					if body["ok"] != false || body["error"] != tc.Error {
+						t.Fatalf("unexpected call error envelope: %#v", body)
+					}
+				} else {
+					if body["ok"] != tc.OK {
+						t.Fatalf("unexpected call success envelope: %#v", body)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestIsNIP86RPC(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/call", bytes.NewReader(nil))
 	req.Header.Set("Content-Type", "application/nostr+json+rpc")
 	if !isNIP86RPC(req) {
 		t.Fatal("expected NIP86 profile detection from content type")
+	}
+}
+
+func TestProviderNotConfiguredEnvelopeParityFixtures(t *testing.T) {
+	type fixtureCase struct {
+		Name             string         `json:"name"`
+		Method           string         `json:"method"`
+		Params           map[string]any `json:"params"`
+		ExpectedStatus   int            `json:"expected_status"`
+		ErrorContains    string         `json:"error_contains"`
+		ExpectedNIP86Code int           `json:"expected_nip86_code"`
+	}
+	type fixtureFile struct {
+		Cases []fixtureCase `json:"cases"`
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "parity", "provider_not_configured_cases.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fx fixtureFile
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	for _, tc := range fx.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := newMethodRequest(t, tc.Method, tc.Params)
+			_, status, callErr := dispatchMethodCall(context.Background(), rr, req, ServerOptions{})
+			if callErr == nil {
+				t.Fatalf("expected not-configured error")
+			}
+			if status != tc.ExpectedStatus {
+				t.Fatalf("status=%d want=%d", status, tc.ExpectedStatus)
+			}
+			if !strings.Contains(callErr.Error(), tc.ErrorContains) {
+				t.Fatalf("error=%v want contains %q", callErr, tc.ErrorContains)
+			}
+			nip86 := methods.MapNIP86Error(status, callErr)
+			if nip86.Code != tc.ExpectedNIP86Code {
+				t.Fatalf("nip86 code=%d want=%d", nip86.Code, tc.ExpectedNIP86Code)
+			}
+		})
 	}
 }
 

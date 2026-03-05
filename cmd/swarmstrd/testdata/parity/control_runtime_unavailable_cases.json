@@ -1,0 +1,23 @@
+{
+  "cases": [
+    {
+      "name": "send runtime unavailable",
+      "method": "send",
+      "params": {
+        "to": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "message": "hello",
+        "idempotencyKey": "idem-rt"
+      },
+      "error_contains": "send runtime not configured"
+    },
+    {
+      "name": "browser control unavailable",
+      "method": "browser.request",
+      "params": {
+        "method": "GET",
+        "path": "/status"
+      },
+      "error_contains": "browser control is disabled"
+    }
+  ]
+}

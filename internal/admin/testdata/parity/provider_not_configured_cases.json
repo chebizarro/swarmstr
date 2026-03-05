@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {
+      "name": "skills.status provider missing",
+      "method": "skills.status",
+      "params": {},
+      "expected_status": 501,
+      "error_contains": "skills provider not configured",
+      "expected_nip86_code": -32000
+    },
+    {
+      "name": "wizard.start provider missing",
+      "method": "wizard.start",
+      "params": {"mode": "local"},
+      "expected_status": 501,
+      "error_contains": "wizard provider not configured",
+      "expected_nip86_code": -32000
+    },
+    {
+      "name": "talk.config provider missing",
+      "method": "talk.config",
+      "params": {},
+      "expected_status": 501,
+      "error_contains": "talk provider not configured",
+      "expected_nip86_code": -32000
+    }
+  ]
+}

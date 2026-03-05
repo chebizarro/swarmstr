@@ -567,11 +567,17 @@ func main() {
 				ToolsCatalog: func(_ context.Context, req methods.ToolsCatalogRequest) (map[string]any, error) {
 					return map[string]any{"agent_id": defaultAgentID(req.AgentID), "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(tools, req.IncludePlugins)}, nil
 				},
-				SkillsStatus: func(_ context.Context, req methods.SkillsStatusRequest) (map[string]any, error) {
+				SkillsStatus: func(ctx context.Context, req methods.SkillsStatusRequest) (map[string]any, error) {
+					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+						return nil, err
+					}
 					entries := currentSkillEntries(configState.Get())
 					return map[string]any{"agent_id": defaultAgentID(req.AgentID), "skills": entries, "count": len(entries)}, nil
 				},
-				SkillsBins: func(_ context.Context, req methods.SkillsBinsRequest) (map[string]any, error) {
+				SkillsBins: func(ctx context.Context, req methods.SkillsBinsRequest) (map[string]any, error) {
+					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+						return nil, err
+					}
 					return applySkillsBins(configState.Get(), req), nil
 				},
 				SkillsInstall: func(ctx context.Context, req methods.SkillsInstallRequest) (map[string]any, error) {
@@ -1737,6 +1743,9 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
 		entries := currentSkillEntries(cfg)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": defaultAgentID(req.AgentID), "skills": entries, "count": len(entries)}}, nil
 	case methods.MethodSkillsBins:
@@ -1746,6 +1755,9 @@ func handleControlRPCRequest(
 		}
 		req, err = req.Normalize()
 		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: applySkillsBins(cfg, req)}, nil
@@ -2999,6 +3011,23 @@ func defaultAgentID(id string) string {
 	return id
 }
 
+func isKnownAgentID(ctx context.Context, docsRepo *state.DocsRepository, id string) error {
+	agentID := defaultAgentID(id)
+	if agentID == "main" || docsRepo == nil {
+		return nil
+	}
+	agents, err := docsRepo.ListAgents(ctx, 1000)
+	if err != nil {
+		return fmt.Errorf("failed to list agents: %w", err)
+	}
+	for _, doc := range agents {
+		if strings.EqualFold(doc.AgentID, agentID) && !doc.Deleted {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown agent id %q", agentID)
+}
+
 func defaultModelsCatalog() []map[string]any {
 	return []map[string]any{
 		{"id": "echo", "name": "Echo (built-in)", "provider": "echo", "context_window": 8192, "reasoning": false},
@@ -3098,30 +3127,42 @@ func currentSkillEntries(cfg state.ConfigDoc) []map[string]any {
 }
 
 func applySkillsBins(cfg state.ConfigDoc, req methods.SkillsBinsRequest) map[string]any {
+	_ = req
 	entries := currentSkillEntries(cfg)
-	bins := make([]map[string]any, 0, len(entries))
-	for _, entry := range entries {
-		skillKey := getString(entry, "skill_key")
-		if skillKey == "" {
-			continue
+	seen := map[string]struct{}{}
+	bins := make([]string, 0, len(entries))
+	push := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
 		}
-		bin := getString(entry, "bin")
-		if bin == "" {
-			bin = skillKey
+		if _, ok := seen[v]; ok {
+			return
 		}
-		enabled := false
-		if val, ok := entry["enabled"].(bool); ok {
-			enabled = val
-		}
-		bins = append(bins, map[string]any{
-			"skill_key": skillKey,
-			"bin":       bin,
-			"name":      getString(entry, "name"),
-			"enabled":   enabled,
-			"status":    getString(entry, "status"),
-		})
+		seen[v] = struct{}{}
+		bins = append(bins, v)
 	}
-	return map[string]any{"agent_id": defaultAgentID(req.AgentID), "bins": bins, "count": len(bins)}
+	for _, entry := range entries {
+		if binRaw, ok := entry["bin"].(string); ok {
+			push(binRaw)
+		} else if skillKey, ok := entry["skill_key"].(string); ok {
+			push(skillKey)
+		}
+		switch rawBins := entry["bins"].(type) {
+		case []string:
+			for _, b := range rawBins {
+				push(b)
+			}
+		case []any:
+			for _, raw := range rawBins {
+				if b, ok := raw.(string); ok {
+					push(b)
+				}
+			}
+		}
+	}
+	sort.Strings(bins)
+	return map[string]any{"bins": bins}
 }
 
 func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.SkillsInstallRequest) (state.ConfigDoc, error) {
@@ -3164,11 +3205,29 @@ func applySkillUpdate(ctx context.Context, docsRepo *state.DocsRepository, confi
 		}
 	}
 	if req.Env != nil {
-		envMap := map[string]any{}
-		for key, value := range req.Env {
-			envMap[key] = value
+		nextEnv := map[string]any{}
+		if currentEnv, ok := entry["env"].(map[string]any); ok {
+			for key, value := range currentEnv {
+				nextEnv[key] = value
+			}
 		}
-		entry["env"] = envMap
+		for key, value := range req.Env {
+			trimmedKey := strings.TrimSpace(key)
+			if trimmedKey == "" {
+				return state.ConfigDoc{}, nil, fmt.Errorf("env variable key cannot be blank")
+			}
+			trimmedVal := strings.TrimSpace(value)
+			if trimmedVal == "" {
+				delete(nextEnv, trimmedKey)
+				continue
+			}
+			nextEnv[trimmedKey] = trimmedVal
+		}
+		if len(nextEnv) == 0 {
+			delete(entry, "env")
+		} else {
+			entry["env"] = nextEnv
+		}
 	}
 	entry["updated_at"] = time.Now().Unix()
 	entries[req.SkillKey] = entry
