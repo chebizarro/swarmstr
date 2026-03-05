@@ -69,6 +69,37 @@ const (
 	MethodDevicePairRemove   = "device.pair.remove"
 	MethodDeviceTokenRotate  = "device.token.rotate"
 	MethodDeviceTokenRevoke  = "device.token.revoke"
+	MethodNodeInvoke         = "node.invoke"
+	MethodNodeEvent          = "node.event"
+	MethodNodeResult         = "node.result"
+	MethodCronList           = "cron.list"
+	MethodCronStatus         = "cron.status"
+	MethodCronAdd            = "cron.add"
+	MethodCronUpdate         = "cron.update"
+	MethodCronRemove         = "cron.remove"
+	MethodCronRun            = "cron.run"
+	MethodCronRuns           = "cron.runs"
+	MethodExecApprovalsGet   = "exec.approvals.get"
+	MethodExecApprovalsSet   = "exec.approvals.set"
+	MethodExecApprovalsNodeGet = "exec.approvals.node.get"
+	MethodExecApprovalsNodeSet = "exec.approvals.node.set"
+	MethodExecApprovalRequest  = "exec.approval.request"
+	MethodExecApprovalResolve  = "exec.approval.resolve"
+	MethodSecretsReload      = "secrets.reload"
+	MethodSecretsResolve     = "secrets.resolve"
+	MethodWizardStart        = "wizard.start"
+	MethodWizardNext         = "wizard.next"
+	MethodWizardCancel       = "wizard.cancel"
+	MethodWizardStatus       = "wizard.status"
+	MethodTalkConfig         = "talk.config"
+	MethodTalkMode           = "talk.mode"
+	MethodVoicewakeGet       = "voicewake.get"
+	MethodVoicewakeSet       = "voicewake.set"
+	MethodTTSStatus          = "tts.status"
+	MethodTTSProviders       = "tts.providers"
+	MethodTTSEnable          = "tts.enable"
+	MethodTTSDisable         = "tts.disable"
+	MethodTTSConvert         = "tts.convert"
 )
 
 type CallRequest struct {
@@ -380,6 +411,148 @@ type DeviceTokenRotateRequest struct {
 type DeviceTokenRevokeRequest struct {
 	DeviceID string `json:"device_id"`
 	Role     string `json:"role"`
+}
+
+type NodeInvokeRequest struct {
+	NodeID    string         `json:"node_id"`
+	Command   string         `json:"command"`
+	Args      map[string]any `json:"args,omitempty"`
+	TimeoutMS int            `json:"timeout_ms,omitempty"`
+	RunID     string         `json:"run_id,omitempty"`
+}
+
+type NodeEventRequest struct {
+	RunID   string         `json:"run_id"`
+	NodeID  string         `json:"node_id,omitempty"`
+	Type    string         `json:"type"`
+	Status  string         `json:"status,omitempty"`
+	Message string         `json:"message,omitempty"`
+	Data    map[string]any `json:"data,omitempty"`
+}
+
+type NodeResultRequest struct {
+	RunID  string `json:"run_id"`
+	NodeID string `json:"node_id,omitempty"`
+	Status string `json:"status,omitempty"`
+	Result any    `json:"result,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+type CronListRequest struct {
+	Limit int `json:"limit,omitempty"`
+}
+
+type CronStatusRequest struct {
+	ID string `json:"id"`
+}
+
+type CronAddRequest struct {
+	ID       string          `json:"id,omitempty"`
+	Schedule string          `json:"schedule"`
+	Method   string          `json:"method"`
+	Params   json.RawMessage `json:"params,omitempty"`
+	Enabled  *bool           `json:"enabled,omitempty"`
+}
+
+type CronUpdateRequest struct {
+	ID       string          `json:"id"`
+	Schedule string          `json:"schedule,omitempty"`
+	Method   string          `json:"method,omitempty"`
+	Params   json.RawMessage `json:"params,omitempty"`
+	Enabled  *bool           `json:"enabled,omitempty"`
+}
+
+type CronRemoveRequest struct {
+	ID string `json:"id"`
+}
+
+type CronRunRequest struct {
+	ID string `json:"id"`
+}
+
+type CronRunsRequest struct {
+	ID    string `json:"id,omitempty"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+type ExecApprovalsGetRequest struct{}
+
+type ExecApprovalsSetRequest struct {
+	Approvals map[string]any `json:"approvals"`
+}
+
+type ExecApprovalsNodeGetRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+type ExecApprovalsNodeSetRequest struct {
+	NodeID    string         `json:"node_id"`
+	Approvals map[string]any `json:"approvals"`
+}
+
+type ExecApprovalRequestRequest struct {
+	NodeID    string         `json:"node_id,omitempty"`
+	Command   string         `json:"command"`
+	Args      map[string]any `json:"args,omitempty"`
+	TimeoutMS int            `json:"timeout_ms,omitempty"`
+}
+
+type ExecApprovalResolveRequest struct {
+	ID       string `json:"id"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+type SecretsReloadRequest struct{}
+
+type SecretsResolveRequest struct {
+	CommandName string   `json:"commandName,omitempty"`
+	TargetIDs   []string `json:"targetIds"`
+}
+
+type WizardStartRequest struct {
+	Mode string `json:"mode,omitempty"`
+}
+
+type WizardNextRequest struct {
+	ID    string         `json:"id"`
+	Input map[string]any `json:"input,omitempty"`
+}
+
+type WizardCancelRequest struct {
+	ID string `json:"id"`
+}
+
+type WizardStatusRequest struct {
+	ID string `json:"id,omitempty"`
+}
+
+type TalkConfigRequest struct {
+	IncludeSecrets bool `json:"includeSecrets,omitempty"`
+}
+
+type TalkModeRequest struct {
+	Mode string `json:"mode"`
+}
+
+type VoicewakeGetRequest struct{}
+
+type VoicewakeSetRequest struct {
+	Triggers []string `json:"triggers"`
+}
+
+type TTSStatusRequest struct{}
+
+type TTSProvidersRequest struct{}
+
+type TTSEnableRequest struct{}
+
+type TTSDisableRequest struct{}
+
+type TTSConvertRequest struct {
+	Text     string `json:"text"`
+	Provider string `json:"provider,omitempty"`
+	Voice    string `json:"voice,omitempty"`
 }
 
 func (r MemorySearchRequest) Normalize() (MemorySearchRequest, error) {
@@ -901,6 +1074,252 @@ func (r DeviceTokenRevokeRequest) Normalize() (DeviceTokenRevokeRequest, error) 
 	return r, nil
 }
 
+func (r NodeInvokeRequest) Normalize() (NodeInvokeRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	r.Command = strings.TrimSpace(r.Command)
+	r.RunID = strings.TrimSpace(r.RunID)
+	if r.NodeID == "" || r.Command == "" {
+		return r, fmt.Errorf("node_id and command are required")
+	}
+	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 30_000, 300_000)
+	if r.Args == nil {
+		r.Args = map[string]any{}
+	}
+	return r, nil
+}
+
+func (r NodeEventRequest) Normalize() (NodeEventRequest, error) {
+	r.RunID = strings.TrimSpace(r.RunID)
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	r.Type = strings.TrimSpace(r.Type)
+	r.Status = strings.TrimSpace(r.Status)
+	r.Message = strings.TrimSpace(r.Message)
+	if r.RunID == "" || r.Type == "" {
+		return r, fmt.Errorf("run_id and type are required")
+	}
+	if r.Data == nil {
+		r.Data = map[string]any{}
+	}
+	return r, nil
+}
+
+func (r NodeResultRequest) Normalize() (NodeResultRequest, error) {
+	r.RunID = strings.TrimSpace(r.RunID)
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	r.Status = strings.TrimSpace(r.Status)
+	r.Error = strings.TrimSpace(r.Error)
+	if r.RunID == "" {
+		return r, fmt.Errorf("run_id is required")
+	}
+	if r.Status == "" {
+		r.Status = "ok"
+	}
+	return r, nil
+}
+
+func (r CronListRequest) Normalize() (CronListRequest, error) {
+	r.Limit = normalizeLimit(r.Limit, 100, 500)
+	return r, nil
+}
+
+func (r CronStatusRequest) Normalize() (CronStatusRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	if r.ID == "" {
+		return r, fmt.Errorf("id is required")
+	}
+	return r, nil
+}
+
+func (r CronAddRequest) Normalize() (CronAddRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	r.Schedule = strings.TrimSpace(r.Schedule)
+	r.Method = strings.TrimSpace(r.Method)
+	if r.Schedule == "" || r.Method == "" {
+		return r, fmt.Errorf("schedule and method are required")
+	}
+	return r, nil
+}
+
+func (r CronUpdateRequest) Normalize() (CronUpdateRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	r.Schedule = strings.TrimSpace(r.Schedule)
+	r.Method = strings.TrimSpace(r.Method)
+	if r.ID == "" {
+		return r, fmt.Errorf("id is required")
+	}
+	if r.Schedule == "" && r.Method == "" && len(r.Params) == 0 && r.Enabled == nil {
+		return r, fmt.Errorf("at least one update field is required")
+	}
+	return r, nil
+}
+
+func (r CronRemoveRequest) Normalize() (CronRemoveRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	if r.ID == "" {
+		return r, fmt.Errorf("id is required")
+	}
+	return r, nil
+}
+
+func (r CronRunRequest) Normalize() (CronRunRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	if r.ID == "" {
+		return r, fmt.Errorf("id is required")
+	}
+	return r, nil
+}
+
+func (r CronRunsRequest) Normalize() (CronRunsRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	r.Limit = normalizeLimit(r.Limit, 50, 500)
+	return r, nil
+}
+
+func (r ExecApprovalsGetRequest) Normalize() (ExecApprovalsGetRequest, error) { return r, nil }
+
+func (r ExecApprovalsSetRequest) Normalize() (ExecApprovalsSetRequest, error) {
+	if r.Approvals == nil {
+		r.Approvals = map[string]any{}
+	}
+	return r, nil
+}
+
+func (r ExecApprovalsNodeGetRequest) Normalize() (ExecApprovalsNodeGetRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	if r.NodeID == "" {
+		return r, fmt.Errorf("node_id is required")
+	}
+	return r, nil
+}
+
+func (r ExecApprovalsNodeSetRequest) Normalize() (ExecApprovalsNodeSetRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	if r.NodeID == "" {
+		return r, fmt.Errorf("node_id is required")
+	}
+	if r.Approvals == nil {
+		r.Approvals = map[string]any{}
+	}
+	return r, nil
+}
+
+func (r ExecApprovalRequestRequest) Normalize() (ExecApprovalRequestRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	r.Command = strings.TrimSpace(r.Command)
+	if r.Command == "" {
+		return r, fmt.Errorf("command is required")
+	}
+	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 120_000, 600_000)
+	if r.Args == nil {
+		r.Args = map[string]any{}
+	}
+	return r, nil
+}
+
+func (r ExecApprovalResolveRequest) Normalize() (ExecApprovalResolveRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	r.Decision = strings.TrimSpace(r.Decision)
+	r.Reason = strings.TrimSpace(r.Reason)
+	if r.ID == "" || r.Decision == "" {
+		return r, fmt.Errorf("id and decision are required")
+	}
+	return r, nil
+}
+
+func (r SecretsReloadRequest) Normalize() (SecretsReloadRequest, error) { return r, nil }
+
+func (r SecretsResolveRequest) Normalize() (SecretsResolveRequest, error) {
+	r.CommandName = strings.TrimSpace(r.CommandName)
+	clean := make([]string, 0, len(r.TargetIDs))
+	for _, id := range r.TargetIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		clean = append(clean, id)
+	}
+	r.TargetIDs = clean
+	if len(r.TargetIDs) == 0 {
+		return r, fmt.Errorf("targetIds is required")
+	}
+	return r, nil
+}
+
+func (r WizardStartRequest) Normalize() (WizardStartRequest, error) {
+	r.Mode = strings.TrimSpace(r.Mode)
+	if r.Mode == "" {
+		r.Mode = "local"
+	}
+	return r, nil
+}
+
+func (r WizardNextRequest) Normalize() (WizardNextRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	if r.ID == "" {
+		return r, fmt.Errorf("id is required")
+	}
+	if r.Input == nil {
+		r.Input = map[string]any{}
+	}
+	return r, nil
+}
+
+func (r WizardCancelRequest) Normalize() (WizardCancelRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	if r.ID == "" {
+		return r, fmt.Errorf("id is required")
+	}
+	return r, nil
+}
+
+func (r WizardStatusRequest) Normalize() (WizardStatusRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	return r, nil
+}
+
+func (r TalkConfigRequest) Normalize() (TalkConfigRequest, error) { return r, nil }
+
+func (r TalkModeRequest) Normalize() (TalkModeRequest, error) {
+	r.Mode = strings.TrimSpace(r.Mode)
+	if r.Mode == "" {
+		return r, fmt.Errorf("mode is required")
+	}
+	return r, nil
+}
+
+func (r VoicewakeGetRequest) Normalize() (VoicewakeGetRequest, error) { return r, nil }
+
+func (r VoicewakeSetRequest) Normalize() (VoicewakeSetRequest, error) {
+	clean := make([]string, 0, len(r.Triggers))
+	for _, trigger := range r.Triggers {
+		trigger = strings.TrimSpace(trigger)
+		if trigger == "" {
+			continue
+		}
+		clean = append(clean, trigger)
+	}
+	r.Triggers = clean
+	return r, nil
+}
+
+func (r TTSStatusRequest) Normalize() (TTSStatusRequest, error) { return r, nil }
+
+func (r TTSProvidersRequest) Normalize() (TTSProvidersRequest, error) { return r, nil }
+
+func (r TTSEnableRequest) Normalize() (TTSEnableRequest, error) { return r, nil }
+
+func (r TTSDisableRequest) Normalize() (TTSDisableRequest, error) { return r, nil }
+
+func (r TTSConvertRequest) Normalize() (TTSConvertRequest, error) {
+	r.Text = strings.TrimSpace(r.Text)
+	r.Provider = strings.TrimSpace(r.Provider)
+	r.Voice = strings.TrimSpace(r.Voice)
+	if r.Text == "" {
+		return r, fmt.Errorf("text is required")
+	}
+	return r, nil
+}
+
 func SupportedMethods() []string {
 	return []string{
 		MethodSupportedMethods,
@@ -959,6 +1378,37 @@ func SupportedMethods() []string {
 		MethodDevicePairRemove,
 		MethodDeviceTokenRotate,
 		MethodDeviceTokenRevoke,
+		MethodNodeInvoke,
+		MethodNodeEvent,
+		MethodNodeResult,
+		MethodCronList,
+		MethodCronStatus,
+		MethodCronAdd,
+		MethodCronUpdate,
+		MethodCronRemove,
+		MethodCronRun,
+		MethodCronRuns,
+		MethodExecApprovalsGet,
+		MethodExecApprovalsSet,
+		MethodExecApprovalsNodeGet,
+		MethodExecApprovalsNodeSet,
+		MethodExecApprovalRequest,
+		MethodExecApprovalResolve,
+		MethodSecretsReload,
+		MethodSecretsResolve,
+		MethodWizardStart,
+		MethodWizardNext,
+		MethodWizardCancel,
+		MethodWizardStatus,
+		MethodTalkConfig,
+		MethodTalkMode,
+		MethodVoicewakeGet,
+		MethodVoicewakeSet,
+		MethodTTSStatus,
+		MethodTTSProviders,
+		MethodTTSEnable,
+		MethodTTSDisable,
+		MethodTTSConvert,
 	}
 }
 
@@ -2115,6 +2565,305 @@ func DecodeDeviceTokenRotateParams(params json.RawMessage) (DeviceTokenRotateReq
 
 func DecodeDeviceTokenRevokeParams(params json.RawMessage) (DeviceTokenRevokeRequest, error) {
 	return decodeMethodParams[DeviceTokenRevokeRequest](params)
+}
+
+func DecodeNodeInvokeParams(params json.RawMessage) (NodeInvokeRequest, error) {
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return NodeInvokeRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) == 0 || len(arr) > 4 {
+			return NodeInvokeRequest{}, fmt.Errorf("invalid params")
+		}
+		nodeID, ok := arr[0].(string)
+		if !ok {
+			return NodeInvokeRequest{}, fmt.Errorf("invalid params")
+		}
+		req := NodeInvokeRequest{NodeID: nodeID}
+		if len(arr) > 1 {
+			command, ok := arr[1].(string)
+			if !ok {
+				return NodeInvokeRequest{}, fmt.Errorf("invalid params")
+			}
+			req.Command = command
+		}
+		if len(arr) > 2 {
+			args, ok := arr[2].(map[string]any)
+			if !ok {
+				return NodeInvokeRequest{}, fmt.Errorf("invalid params")
+			}
+			req.Args = args
+		}
+		if len(arr) > 3 {
+			switch v := arr[3].(type) {
+			case float64:
+				if math.Trunc(v) != v {
+					return NodeInvokeRequest{}, fmt.Errorf("invalid params")
+				}
+				req.TimeoutMS = int(v)
+			case int:
+				req.TimeoutMS = v
+			default:
+				return NodeInvokeRequest{}, fmt.Errorf("invalid params")
+			}
+		}
+		return req, nil
+	}
+	return decodeMethodParams[NodeInvokeRequest](params)
+}
+
+func DecodeNodeEventParams(params json.RawMessage) (NodeEventRequest, error) {
+	return decodeMethodParams[NodeEventRequest](params)
+}
+
+func DecodeNodeResultParams(params json.RawMessage) (NodeResultRequest, error) {
+	return decodeMethodParams[NodeResultRequest](params)
+}
+
+func DecodeCronListParams(params json.RawMessage) (CronListRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return CronListRequest{}, nil
+	}
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return CronListRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) > 1 {
+			return CronListRequest{}, fmt.Errorf("invalid params")
+		}
+		req := CronListRequest{}
+		if len(arr) == 1 {
+			switch v := arr[0].(type) {
+			case float64:
+				if math.Trunc(v) != v {
+					return CronListRequest{}, fmt.Errorf("invalid params")
+				}
+				req.Limit = int(v)
+			case int:
+				req.Limit = v
+			default:
+				return CronListRequest{}, fmt.Errorf("invalid params")
+			}
+		}
+		return req, nil
+	}
+	return decodeMethodParams[CronListRequest](params)
+}
+
+func DecodeCronStatusParams(params json.RawMessage) (CronStatusRequest, error) {
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return CronStatusRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) != 1 {
+			return CronStatusRequest{}, fmt.Errorf("invalid params")
+		}
+		id, ok := arr[0].(string)
+		if !ok {
+			return CronStatusRequest{}, fmt.Errorf("invalid params")
+		}
+		return CronStatusRequest{ID: id}, nil
+	}
+	return decodeMethodParams[CronStatusRequest](params)
+}
+
+func DecodeCronAddParams(params json.RawMessage) (CronAddRequest, error) {
+	return decodeMethodParams[CronAddRequest](params)
+}
+
+func DecodeCronUpdateParams(params json.RawMessage) (CronUpdateRequest, error) {
+	return decodeMethodParams[CronUpdateRequest](params)
+}
+
+func DecodeCronRemoveParams(params json.RawMessage) (CronRemoveRequest, error) {
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return CronRemoveRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) != 1 {
+			return CronRemoveRequest{}, fmt.Errorf("invalid params")
+		}
+		id, ok := arr[0].(string)
+		if !ok {
+			return CronRemoveRequest{}, fmt.Errorf("invalid params")
+		}
+		return CronRemoveRequest{ID: id}, nil
+	}
+	return decodeMethodParams[CronRemoveRequest](params)
+}
+
+func DecodeCronRunParams(params json.RawMessage) (CronRunRequest, error) {
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return CronRunRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) != 1 {
+			return CronRunRequest{}, fmt.Errorf("invalid params")
+		}
+		id, ok := arr[0].(string)
+		if !ok {
+			return CronRunRequest{}, fmt.Errorf("invalid params")
+		}
+		return CronRunRequest{ID: id}, nil
+	}
+	return decodeMethodParams[CronRunRequest](params)
+}
+
+func DecodeCronRunsParams(params json.RawMessage) (CronRunsRequest, error) {
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return CronRunsRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) > 2 {
+			return CronRunsRequest{}, fmt.Errorf("invalid params")
+		}
+		req := CronRunsRequest{}
+		if len(arr) > 0 {
+			id, ok := arr[0].(string)
+			if !ok {
+				return CronRunsRequest{}, fmt.Errorf("invalid params")
+			}
+			req.ID = id
+		}
+		if len(arr) > 1 {
+			switch v := arr[1].(type) {
+			case float64:
+				if math.Trunc(v) != v {
+					return CronRunsRequest{}, fmt.Errorf("invalid params")
+				}
+				req.Limit = int(v)
+			case int:
+				req.Limit = v
+			default:
+				return CronRunsRequest{}, fmt.Errorf("invalid params")
+			}
+		}
+		return req, nil
+	}
+	if len(bytes.TrimSpace(params)) == 0 {
+		return CronRunsRequest{}, nil
+	}
+	return decodeMethodParams[CronRunsRequest](params)
+}
+
+func DecodeExecApprovalsGetParams(params json.RawMessage) (ExecApprovalsGetRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return ExecApprovalsGetRequest{}, nil
+	}
+	return decodeMethodParams[ExecApprovalsGetRequest](params)
+}
+
+func DecodeExecApprovalsSetParams(params json.RawMessage) (ExecApprovalsSetRequest, error) {
+	return decodeMethodParams[ExecApprovalsSetRequest](params)
+}
+
+func DecodeExecApprovalsNodeGetParams(params json.RawMessage) (ExecApprovalsNodeGetRequest, error) {
+	return decodeMethodParams[ExecApprovalsNodeGetRequest](params)
+}
+
+func DecodeExecApprovalsNodeSetParams(params json.RawMessage) (ExecApprovalsNodeSetRequest, error) {
+	return decodeMethodParams[ExecApprovalsNodeSetRequest](params)
+}
+
+func DecodeExecApprovalRequestParams(params json.RawMessage) (ExecApprovalRequestRequest, error) {
+	return decodeMethodParams[ExecApprovalRequestRequest](params)
+}
+
+func DecodeExecApprovalResolveParams(params json.RawMessage) (ExecApprovalResolveRequest, error) {
+	return decodeMethodParams[ExecApprovalResolveRequest](params)
+}
+
+func DecodeSecretsReloadParams(params json.RawMessage) (SecretsReloadRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return SecretsReloadRequest{}, nil
+	}
+	return decodeMethodParams[SecretsReloadRequest](params)
+}
+
+func DecodeSecretsResolveParams(params json.RawMessage) (SecretsResolveRequest, error) {
+	return decodeMethodParams[SecretsResolveRequest](params)
+}
+
+func DecodeWizardStartParams(params json.RawMessage) (WizardStartRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return WizardStartRequest{}, nil
+	}
+	return decodeMethodParams[WizardStartRequest](params)
+}
+
+func DecodeWizardNextParams(params json.RawMessage) (WizardNextRequest, error) {
+	return decodeMethodParams[WizardNextRequest](params)
+}
+
+func DecodeWizardCancelParams(params json.RawMessage) (WizardCancelRequest, error) {
+	return decodeMethodParams[WizardCancelRequest](params)
+}
+
+func DecodeWizardStatusParams(params json.RawMessage) (WizardStatusRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return WizardStatusRequest{}, nil
+	}
+	return decodeMethodParams[WizardStatusRequest](params)
+}
+
+func DecodeTalkConfigParams(params json.RawMessage) (TalkConfigRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return TalkConfigRequest{}, nil
+	}
+	return decodeMethodParams[TalkConfigRequest](params)
+}
+
+func DecodeTalkModeParams(params json.RawMessage) (TalkModeRequest, error) {
+	return decodeMethodParams[TalkModeRequest](params)
+}
+
+func DecodeVoicewakeGetParams(params json.RawMessage) (VoicewakeGetRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return VoicewakeGetRequest{}, nil
+	}
+	return decodeMethodParams[VoicewakeGetRequest](params)
+}
+
+func DecodeVoicewakeSetParams(params json.RawMessage) (VoicewakeSetRequest, error) {
+	return decodeMethodParams[VoicewakeSetRequest](params)
+}
+
+func DecodeTTSStatusParams(params json.RawMessage) (TTSStatusRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return TTSStatusRequest{}, nil
+	}
+	return decodeMethodParams[TTSStatusRequest](params)
+}
+
+func DecodeTTSProvidersParams(params json.RawMessage) (TTSProvidersRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return TTSProvidersRequest{}, nil
+	}
+	return decodeMethodParams[TTSProvidersRequest](params)
+}
+
+func DecodeTTSEnableParams(params json.RawMessage) (TTSEnableRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return TTSEnableRequest{}, nil
+	}
+	return decodeMethodParams[TTSEnableRequest](params)
+}
+
+func DecodeTTSDisableParams(params json.RawMessage) (TTSDisableRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return TTSDisableRequest{}, nil
+	}
+	return decodeMethodParams[TTSDisableRequest](params)
+}
+
+func DecodeTTSConvertParams(params json.RawMessage) (TTSConvertRequest, error) {
+	return decodeMethodParams[TTSConvertRequest](params)
 }
 
 func DecodeConfigDocFromRaw(raw string) (state.ConfigDoc, error) {

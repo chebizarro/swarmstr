@@ -1119,6 +1119,110 @@ func TestDispatchMethodCallNodeDevicePairingMethods(t *testing.T) {
 	}
 }
 
+func TestDispatchMethodCallNodeInvokeAndCronMethods(t *testing.T) {
+	opts := ServerOptions{
+		NodeInvoke: func(_ context.Context, req methods.NodeInvokeRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "run_id": "node-run-1", "node_id": req.NodeID, "command": req.Command}, nil
+		},
+		NodeEvent: func(_ context.Context, req methods.NodeEventRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "run_id": req.RunID, "status": req.Status}, nil
+		},
+		NodeResult: func(_ context.Context, req methods.NodeResultRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "run_id": req.RunID, "status": req.Status}, nil
+		},
+		CronAdd: func(_ context.Context, req methods.CronAddRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "job": map[string]any{"id": "c1", "method": req.Method}}, nil
+		},
+		CronList: func(context.Context, methods.CronListRequest) (map[string]any, error) {
+			return map[string]any{"jobs": []map[string]any{{"id": "c1"}}, "count": 1}, nil
+		},
+		CronStatus: func(_ context.Context, req methods.CronStatusRequest) (map[string]any, error) {
+			return map[string]any{"job": map[string]any{"id": req.ID}}, nil
+		},
+		CronRun: func(_ context.Context, req methods.CronRunRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "run": map[string]any{"job_id": req.ID}}, nil
+		},
+		CronRuns: func(context.Context, methods.CronRunsRequest) (map[string]any, error) {
+			return map[string]any{"runs": []map[string]any{{"run_id": "r1"}}, "count": 1}, nil
+		},
+		CronUpdate: func(_ context.Context, req methods.CronUpdateRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "job": map[string]any{"id": req.ID}}, nil
+		},
+		CronRemove: func(_ context.Context, req methods.CronRemoveRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "id": req.ID, "removed": true}, nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodNodeInvoke, map[string]any{"node_id": "node-a", "command": "ping"})
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("node.invoke failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodCronAdd, map[string]any{"schedule": "* * * * *", "method": "status.get"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("cron.add failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodCronRun, map[string]any{"id": "c1"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("cron.run failed status=%d err=%v", status, err)
+	}
+}
+
+func TestDispatchMethodCallOperationalBundles(t *testing.T) {
+	opts := ServerOptions{
+		ExecApprovalsGet: func(context.Context, methods.ExecApprovalsGetRequest) (map[string]any, error) {
+			return map[string]any{"approvals": map[string]any{"allow": true}}, nil
+		},
+		ExecApprovalRequest: func(context.Context, methods.ExecApprovalRequestRequest) (map[string]any, error) {
+			return map[string]any{"id": "approval-1", "status": "accepted"}, nil
+		},
+		SecretsResolve: func(context.Context, methods.SecretsResolveRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "assignments": []map[string]any{}}, nil
+		},
+		WizardStart: func(context.Context, methods.WizardStartRequest) (map[string]any, error) {
+			return map[string]any{"session_id": "wizard-1", "status": "running"}, nil
+		},
+		TalkConfig: func(context.Context, methods.TalkConfigRequest) (map[string]any, error) {
+			return map[string]any{"config": map[string]any{}}, nil
+		},
+		VoicewakeGet: func(context.Context, methods.VoicewakeGetRequest) (map[string]any, error) {
+			return map[string]any{"triggers": []string{"openclaw"}}, nil
+		},
+		TTSConvert: func(context.Context, methods.TTSConvertRequest) (map[string]any, error) {
+			return map[string]any{"provider": "openai", "audioPath": ""}, nil
+		},
+	}
+
+	cases := []struct {
+		method string
+		params map[string]any
+	}{
+		{method: methods.MethodExecApprovalsGet, params: map[string]any{}},
+		{method: methods.MethodExecApprovalRequest, params: map[string]any{"command": "ls"}},
+		{method: methods.MethodSecretsResolve, params: map[string]any{"commandName": "memory status", "targetIds": []string{"talk.apiKey"}}},
+		{method: methods.MethodWizardStart, params: map[string]any{"mode": "local"}},
+		{method: methods.MethodTalkConfig, params: map[string]any{}},
+		{method: methods.MethodVoicewakeGet, params: map[string]any{}},
+		{method: methods.MethodTTSConvert, params: map[string]any{"text": "hello"}},
+	}
+
+	for _, tc := range cases {
+		rr := httptest.NewRecorder()
+		req := newMethodRequest(t, tc.method, tc.params)
+		_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("%s failed status=%d err=%v", tc.method, status, err)
+		}
+	}
+}
+
 func newMethodRequest(t *testing.T, method string, params any) *http.Request {
 	t.Helper()
 	payload := map[string]any{"method": method}

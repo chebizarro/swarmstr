@@ -43,57 +43,88 @@ type contextKey string
 const tokenAuthContextKey contextKey = "admin-token-authenticated"
 
 type ServerOptions struct {
-	Addr               string
-	Token              string
-	Status             StatusProvider
-	StatusDMPolicy     func() string
-	StatusRelays       func() []string
-	SearchMemory       func(query string, limit int) []memory.IndexedMemory
-	GetCheckpoint      func(context.Context, string) (state.CheckpointDoc, error)
-	StartAgent         func(context.Context, methods.AgentRequest) (map[string]any, error)
-	WaitAgent          func(context.Context, methods.AgentWaitRequest) (map[string]any, error)
-	AgentIdentity      func(context.Context, methods.AgentIdentityRequest) (map[string]any, error)
-	SendDM             func(context.Context, string, string) error
-	AbortChat          func(context.Context, string) (int, error)
-	GetSession         func(context.Context, string) (state.SessionDoc, error)
-	PutSession         func(context.Context, string, state.SessionDoc) error
-	ListSessions       func(context.Context, int) ([]state.SessionDoc, error)
-	ListTranscript     func(context.Context, string, int) ([]state.TranscriptEntryDoc, error)
-	TailLogs           func(context.Context, int64, int, int) (map[string]any, error)
-	ChannelsStatus     func(context.Context, methods.ChannelsStatusRequest) (map[string]any, error)
-	ChannelsLogout     func(context.Context, string) (map[string]any, error)
-	UsageStatus        func(context.Context) (map[string]any, error)
-	UsageCost          func(context.Context, methods.UsageCostRequest) (map[string]any, error)
-	GetList            func(context.Context, string) (state.ListDoc, error)
-	PutList            func(context.Context, string, state.ListDoc) error
-	ListAgents         func(context.Context, methods.AgentsListRequest) (map[string]any, error)
-	CreateAgent        func(context.Context, methods.AgentsCreateRequest) (map[string]any, error)
-	UpdateAgent        func(context.Context, methods.AgentsUpdateRequest) (map[string]any, error)
-	DeleteAgent        func(context.Context, methods.AgentsDeleteRequest) (map[string]any, error)
-	ListAgentFiles     func(context.Context, methods.AgentsFilesListRequest) (map[string]any, error)
-	GetAgentFile       func(context.Context, methods.AgentsFilesGetRequest) (map[string]any, error)
-	SetAgentFile       func(context.Context, methods.AgentsFilesSetRequest) (map[string]any, error)
-	ListModels         func(context.Context, methods.ModelsListRequest) (map[string]any, error)
-	ToolsCatalog       func(context.Context, methods.ToolsCatalogRequest) (map[string]any, error)
-	SkillsStatus       func(context.Context, methods.SkillsStatusRequest) (map[string]any, error)
-	SkillsInstall      func(context.Context, methods.SkillsInstallRequest) (map[string]any, error)
-	SkillsUpdate       func(context.Context, methods.SkillsUpdateRequest) (map[string]any, error)
-	NodePairRequest    func(context.Context, methods.NodePairRequest) (map[string]any, error)
-	NodePairList       func(context.Context, methods.NodePairListRequest) (map[string]any, error)
-	NodePairApprove    func(context.Context, methods.NodePairApproveRequest) (map[string]any, error)
-	NodePairReject     func(context.Context, methods.NodePairRejectRequest) (map[string]any, error)
-	NodePairVerify     func(context.Context, methods.NodePairVerifyRequest) (map[string]any, error)
-	DevicePairList     func(context.Context, methods.DevicePairListRequest) (map[string]any, error)
-	DevicePairApprove  func(context.Context, methods.DevicePairApproveRequest) (map[string]any, error)
-	DevicePairReject   func(context.Context, methods.DevicePairRejectRequest) (map[string]any, error)
-	DevicePairRemove   func(context.Context, methods.DevicePairRemoveRequest) (map[string]any, error)
-	DeviceTokenRotate  func(context.Context, methods.DeviceTokenRotateRequest) (map[string]any, error)
-	DeviceTokenRevoke  func(context.Context, methods.DeviceTokenRevokeRequest) (map[string]any, error)
-	GetConfig          func(context.Context) (state.ConfigDoc, error)
-	PutConfig          func(context.Context, state.ConfigDoc) error
-	GetListWithEvent   func(context.Context, string) (state.ListDoc, state.Event, error)
-	GetConfigWithEvent func(context.Context) (state.ConfigDoc, state.Event, error)
-	GetRelayPolicy     func(context.Context) (methods.RelayPolicyResponse, error)
+	Addr                 string
+	Token                string
+	Status               StatusProvider
+	StatusDMPolicy       func() string
+	StatusRelays         func() []string
+	SearchMemory         func(query string, limit int) []memory.IndexedMemory
+	GetCheckpoint        func(context.Context, string) (state.CheckpointDoc, error)
+	StartAgent           func(context.Context, methods.AgentRequest) (map[string]any, error)
+	WaitAgent            func(context.Context, methods.AgentWaitRequest) (map[string]any, error)
+	AgentIdentity        func(context.Context, methods.AgentIdentityRequest) (map[string]any, error)
+	SendDM               func(context.Context, string, string) error
+	AbortChat            func(context.Context, string) (int, error)
+	GetSession           func(context.Context, string) (state.SessionDoc, error)
+	PutSession           func(context.Context, string, state.SessionDoc) error
+	ListSessions         func(context.Context, int) ([]state.SessionDoc, error)
+	ListTranscript       func(context.Context, string, int) ([]state.TranscriptEntryDoc, error)
+	TailLogs             func(context.Context, int64, int, int) (map[string]any, error)
+	ChannelsStatus       func(context.Context, methods.ChannelsStatusRequest) (map[string]any, error)
+	ChannelsLogout       func(context.Context, string) (map[string]any, error)
+	UsageStatus          func(context.Context) (map[string]any, error)
+	UsageCost            func(context.Context, methods.UsageCostRequest) (map[string]any, error)
+	GetList              func(context.Context, string) (state.ListDoc, error)
+	PutList              func(context.Context, string, state.ListDoc) error
+	ListAgents           func(context.Context, methods.AgentsListRequest) (map[string]any, error)
+	CreateAgent          func(context.Context, methods.AgentsCreateRequest) (map[string]any, error)
+	UpdateAgent          func(context.Context, methods.AgentsUpdateRequest) (map[string]any, error)
+	DeleteAgent          func(context.Context, methods.AgentsDeleteRequest) (map[string]any, error)
+	ListAgentFiles       func(context.Context, methods.AgentsFilesListRequest) (map[string]any, error)
+	GetAgentFile         func(context.Context, methods.AgentsFilesGetRequest) (map[string]any, error)
+	SetAgentFile         func(context.Context, methods.AgentsFilesSetRequest) (map[string]any, error)
+	ListModels           func(context.Context, methods.ModelsListRequest) (map[string]any, error)
+	ToolsCatalog         func(context.Context, methods.ToolsCatalogRequest) (map[string]any, error)
+	SkillsStatus         func(context.Context, methods.SkillsStatusRequest) (map[string]any, error)
+	SkillsInstall        func(context.Context, methods.SkillsInstallRequest) (map[string]any, error)
+	SkillsUpdate         func(context.Context, methods.SkillsUpdateRequest) (map[string]any, error)
+	NodePairRequest      func(context.Context, methods.NodePairRequest) (map[string]any, error)
+	NodePairList         func(context.Context, methods.NodePairListRequest) (map[string]any, error)
+	NodePairApprove      func(context.Context, methods.NodePairApproveRequest) (map[string]any, error)
+	NodePairReject       func(context.Context, methods.NodePairRejectRequest) (map[string]any, error)
+	NodePairVerify       func(context.Context, methods.NodePairVerifyRequest) (map[string]any, error)
+	DevicePairList       func(context.Context, methods.DevicePairListRequest) (map[string]any, error)
+	DevicePairApprove    func(context.Context, methods.DevicePairApproveRequest) (map[string]any, error)
+	DevicePairReject     func(context.Context, methods.DevicePairRejectRequest) (map[string]any, error)
+	DevicePairRemove     func(context.Context, methods.DevicePairRemoveRequest) (map[string]any, error)
+	DeviceTokenRotate    func(context.Context, methods.DeviceTokenRotateRequest) (map[string]any, error)
+	DeviceTokenRevoke    func(context.Context, methods.DeviceTokenRevokeRequest) (map[string]any, error)
+	NodeInvoke           func(context.Context, methods.NodeInvokeRequest) (map[string]any, error)
+	NodeEvent            func(context.Context, methods.NodeEventRequest) (map[string]any, error)
+	NodeResult           func(context.Context, methods.NodeResultRequest) (map[string]any, error)
+	CronList             func(context.Context, methods.CronListRequest) (map[string]any, error)
+	CronStatus           func(context.Context, methods.CronStatusRequest) (map[string]any, error)
+	CronAdd              func(context.Context, methods.CronAddRequest) (map[string]any, error)
+	CronUpdate           func(context.Context, methods.CronUpdateRequest) (map[string]any, error)
+	CronRemove           func(context.Context, methods.CronRemoveRequest) (map[string]any, error)
+	CronRun              func(context.Context, methods.CronRunRequest) (map[string]any, error)
+	CronRuns             func(context.Context, methods.CronRunsRequest) (map[string]any, error)
+	ExecApprovalsGet     func(context.Context, methods.ExecApprovalsGetRequest) (map[string]any, error)
+	ExecApprovalsSet     func(context.Context, methods.ExecApprovalsSetRequest) (map[string]any, error)
+	ExecApprovalsNodeGet func(context.Context, methods.ExecApprovalsNodeGetRequest) (map[string]any, error)
+	ExecApprovalsNodeSet func(context.Context, methods.ExecApprovalsNodeSetRequest) (map[string]any, error)
+	ExecApprovalRequest  func(context.Context, methods.ExecApprovalRequestRequest) (map[string]any, error)
+	ExecApprovalResolve  func(context.Context, methods.ExecApprovalResolveRequest) (map[string]any, error)
+	SecretsReload        func(context.Context, methods.SecretsReloadRequest) (map[string]any, error)
+	SecretsResolve       func(context.Context, methods.SecretsResolveRequest) (map[string]any, error)
+	WizardStart          func(context.Context, methods.WizardStartRequest) (map[string]any, error)
+	WizardNext           func(context.Context, methods.WizardNextRequest) (map[string]any, error)
+	WizardCancel         func(context.Context, methods.WizardCancelRequest) (map[string]any, error)
+	WizardStatus         func(context.Context, methods.WizardStatusRequest) (map[string]any, error)
+	TalkConfig           func(context.Context, methods.TalkConfigRequest) (map[string]any, error)
+	TalkMode             func(context.Context, methods.TalkModeRequest) (map[string]any, error)
+	VoicewakeGet         func(context.Context, methods.VoicewakeGetRequest) (map[string]any, error)
+	VoicewakeSet         func(context.Context, methods.VoicewakeSetRequest) (map[string]any, error)
+	TTSStatus            func(context.Context, methods.TTSStatusRequest) (map[string]any, error)
+	TTSProviders         func(context.Context, methods.TTSProvidersRequest) (map[string]any, error)
+	TTSEnable            func(context.Context, methods.TTSEnableRequest) (map[string]any, error)
+	TTSDisable           func(context.Context, methods.TTSDisableRequest) (map[string]any, error)
+	TTSConvert           func(context.Context, methods.TTSConvertRequest) (map[string]any, error)
+	GetConfig            func(context.Context) (state.ConfigDoc, error)
+	PutConfig            func(context.Context, state.ConfigDoc) error
+	GetListWithEvent     func(context.Context, string) (state.ListDoc, state.Event, error)
+	GetConfigWithEvent   func(context.Context) (state.ConfigDoc, state.Event, error)
+	GetRelayPolicy       func(context.Context) (methods.RelayPolicyResponse, error)
 }
 
 func Start(ctx context.Context, opts ServerOptions) error {
@@ -1249,6 +1280,566 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			if errors.Is(err, state.ErrNotFound) {
 				return nil, http.StatusNotFound, fmt.Errorf("not found")
 			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodNodeInvoke:
+		req, err := methods.DecodeNodeInvokeParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodeInvoke == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node invoke provider not configured")
+		}
+		out, err := opts.NodeInvoke(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodNodeEvent:
+		req, err := methods.DecodeNodeEventParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodeEvent == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node event provider not configured")
+		}
+		out, err := opts.NodeEvent(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodNodeResult:
+		req, err := methods.DecodeNodeResultParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodeResult == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node result provider not configured")
+		}
+		out, err := opts.NodeResult(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodCronList:
+		req, err := methods.DecodeCronListParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.CronList == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
+		}
+		out, err := opts.CronList(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodCronStatus:
+		req, err := methods.DecodeCronStatusParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.CronStatus == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
+		}
+		out, err := opts.CronStatus(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodCronAdd:
+		req, err := methods.DecodeCronAddParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.CronAdd == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
+		}
+		out, err := opts.CronAdd(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodCronUpdate:
+		req, err := methods.DecodeCronUpdateParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.CronUpdate == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
+		}
+		out, err := opts.CronUpdate(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodCronRemove:
+		req, err := methods.DecodeCronRemoveParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.CronRemove == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
+		}
+		out, err := opts.CronRemove(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodCronRun:
+		req, err := methods.DecodeCronRunParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.CronRun == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
+		}
+		out, err := opts.CronRun(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodCronRuns:
+		req, err := methods.DecodeCronRunsParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.CronRuns == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
+		}
+		out, err := opts.CronRuns(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodExecApprovalsGet:
+		req, err := methods.DecodeExecApprovalsGetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.ExecApprovalsGet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("exec approvals provider not configured")
+		}
+		out, err := opts.ExecApprovalsGet(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodExecApprovalsSet:
+		req, err := methods.DecodeExecApprovalsSetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.ExecApprovalsSet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("exec approvals provider not configured")
+		}
+		out, err := opts.ExecApprovalsSet(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodExecApprovalsNodeGet:
+		req, err := methods.DecodeExecApprovalsNodeGetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.ExecApprovalsNodeGet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("exec approvals provider not configured")
+		}
+		out, err := opts.ExecApprovalsNodeGet(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodExecApprovalsNodeSet:
+		req, err := methods.DecodeExecApprovalsNodeSetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.ExecApprovalsNodeSet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("exec approvals provider not configured")
+		}
+		out, err := opts.ExecApprovalsNodeSet(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodExecApprovalRequest:
+		req, err := methods.DecodeExecApprovalRequestParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.ExecApprovalRequest == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("exec approvals provider not configured")
+		}
+		out, err := opts.ExecApprovalRequest(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodExecApprovalResolve:
+		req, err := methods.DecodeExecApprovalResolveParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.ExecApprovalResolve == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("exec approvals provider not configured")
+		}
+		out, err := opts.ExecApprovalResolve(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodSecretsReload:
+		req, err := methods.DecodeSecretsReloadParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.SecretsReload == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("secrets provider not configured")
+		}
+		out, err := opts.SecretsReload(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodSecretsResolve:
+		req, err := methods.DecodeSecretsResolveParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.SecretsResolve == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("secrets provider not configured")
+		}
+		out, err := opts.SecretsResolve(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodWizardStart:
+		req, err := methods.DecodeWizardStartParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.WizardStart == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("wizard provider not configured")
+		}
+		out, err := opts.WizardStart(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodWizardNext:
+		req, err := methods.DecodeWizardNextParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.WizardNext == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("wizard provider not configured")
+		}
+		out, err := opts.WizardNext(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodWizardCancel:
+		req, err := methods.DecodeWizardCancelParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.WizardCancel == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("wizard provider not configured")
+		}
+		out, err := opts.WizardCancel(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodWizardStatus:
+		req, err := methods.DecodeWizardStatusParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.WizardStatus == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("wizard provider not configured")
+		}
+		out, err := opts.WizardStatus(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodTalkConfig:
+		req, err := methods.DecodeTalkConfigParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.TalkConfig == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("talk provider not configured")
+		}
+		out, err := opts.TalkConfig(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodTalkMode:
+		req, err := methods.DecodeTalkModeParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.TalkMode == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("talk provider not configured")
+		}
+		out, err := opts.TalkMode(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodVoicewakeGet:
+		req, err := methods.DecodeVoicewakeGetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.VoicewakeGet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("voicewake provider not configured")
+		}
+		out, err := opts.VoicewakeGet(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodVoicewakeSet:
+		req, err := methods.DecodeVoicewakeSetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.VoicewakeSet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("voicewake provider not configured")
+		}
+		out, err := opts.VoicewakeSet(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodTTSStatus:
+		req, err := methods.DecodeTTSStatusParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.TTSStatus == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("tts provider not configured")
+		}
+		out, err := opts.TTSStatus(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodTTSProviders:
+		req, err := methods.DecodeTTSProvidersParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.TTSProviders == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("tts provider not configured")
+		}
+		out, err := opts.TTSProviders(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodTTSEnable:
+		req, err := methods.DecodeTTSEnableParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.TTSEnable == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("tts provider not configured")
+		}
+		out, err := opts.TTSEnable(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodTTSDisable:
+		req, err := methods.DecodeTTSDisableParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.TTSDisable == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("tts provider not configured")
+		}
+		out, err := opts.TTSDisable(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodTTSConvert:
+		req, err := methods.DecodeTTSConvertParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.TTSConvert == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("tts provider not configured")
+		}
+		out, err := opts.TTSConvert(ctx, req)
+		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil

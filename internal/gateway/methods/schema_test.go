@@ -637,3 +637,153 @@ func TestDecodeMethodParamsSupportsCamelCaseAliases(t *testing.T) {
 		t.Fatalf("unexpected config preconditions: %#v", cfgReq)
 	}
 }
+
+func TestDecodeNodeInvokeAndCronParams(t *testing.T) {
+	invokeReq, err := DecodeNodeInvokeParams(json.RawMessage(`{"nodeId":"n1","command":"ping","args":{"k":"v"},"timeoutMs":1234}`))
+	if err != nil {
+		t.Fatalf("node.invoke decode error: %v", err)
+	}
+	invokeReq, err = invokeReq.Normalize()
+	if err != nil {
+		t.Fatalf("node.invoke normalize error: %v", err)
+	}
+	if invokeReq.NodeID != "n1" || invokeReq.Command != "ping" || invokeReq.TimeoutMS != 1234 {
+		t.Fatalf("unexpected node.invoke request: %#v", invokeReq)
+	}
+
+	eventReq, err := DecodeNodeEventParams(json.RawMessage(`{"runId":"r1","type":"progress","status":"running"}`))
+	if err != nil {
+		t.Fatalf("node.event decode error: %v", err)
+	}
+	eventReq, err = eventReq.Normalize()
+	if err != nil {
+		t.Fatalf("node.event normalize error: %v", err)
+	}
+	if eventReq.RunID != "r1" || eventReq.Type != "progress" {
+		t.Fatalf("unexpected node.event request: %#v", eventReq)
+	}
+
+	cronReq, err := DecodeCronAddParams(json.RawMessage(`{"schedule":"* * * * *","method":"status.get","enabled":true}`))
+	if err != nil {
+		t.Fatalf("cron.add decode error: %v", err)
+	}
+	cronReq, err = cronReq.Normalize()
+	if err != nil {
+		t.Fatalf("cron.add normalize error: %v", err)
+	}
+	if cronReq.Method != "status.get" || cronReq.Schedule == "" {
+		t.Fatalf("unexpected cron.add request: %#v", cronReq)
+	}
+
+	runsReq, err := DecodeCronRunsParams(json.RawMessage(`["job-1",25]`))
+	if err != nil {
+		t.Fatalf("cron.runs decode error: %v", err)
+	}
+	runsReq, err = runsReq.Normalize()
+	if err != nil {
+		t.Fatalf("cron.runs normalize error: %v", err)
+	}
+	if runsReq.ID != "job-1" || runsReq.Limit != 25 {
+		t.Fatalf("unexpected cron.runs request: %#v", runsReq)
+	}
+}
+
+func TestDecodeExecSecretsWizardTalkVoicewakeAndTTSParams(t *testing.T) {
+	execReq, err := DecodeExecApprovalRequestParams(json.RawMessage(`{"nodeId":"n1","command":"ls","timeoutMs":5000}`))
+	if err != nil {
+		t.Fatalf("exec.approval.request decode error: %v", err)
+	}
+	execReq, err = execReq.Normalize()
+	if err != nil {
+		t.Fatalf("exec.approval.request normalize error: %v", err)
+	}
+	if execReq.NodeID != "n1" || execReq.Command != "ls" || execReq.TimeoutMS != 5000 {
+		t.Fatalf("unexpected exec approval request: %#v", execReq)
+	}
+
+	secretsReq, err := DecodeSecretsResolveParams(json.RawMessage(`{"commandName":"memory status","targetIds":["talk.apiKey"]}`))
+	if err != nil {
+		t.Fatalf("secrets.resolve decode error: %v", err)
+	}
+	secretsReq, err = secretsReq.Normalize()
+	if err != nil {
+		t.Fatalf("secrets.resolve normalize error: %v", err)
+	}
+	if secretsReq.CommandName != "memory status" || len(secretsReq.TargetIDs) != 1 {
+		t.Fatalf("unexpected secrets.resolve request: %#v", secretsReq)
+	}
+
+	wizardReq, err := DecodeWizardStartParams(json.RawMessage(`{"mode":"remote"}`))
+	if err != nil {
+		t.Fatalf("wizard.start decode error: %v", err)
+	}
+	wizardReq, err = wizardReq.Normalize()
+	if err != nil {
+		t.Fatalf("wizard.start normalize error: %v", err)
+	}
+	if wizardReq.Mode != "remote" {
+		t.Fatalf("unexpected wizard.start request: %#v", wizardReq)
+	}
+
+	voicewakeReq, err := DecodeVoicewakeSetParams(json.RawMessage(`{"triggers":[" openclaw ","swarmstr"]}`))
+	if err != nil {
+		t.Fatalf("voicewake.set decode error: %v", err)
+	}
+	voicewakeReq, err = voicewakeReq.Normalize()
+	if err != nil {
+		t.Fatalf("voicewake.set normalize error: %v", err)
+	}
+	if len(voicewakeReq.Triggers) != 2 || voicewakeReq.Triggers[0] != "openclaw" {
+		t.Fatalf("unexpected voicewake.set request: %#v", voicewakeReq)
+	}
+
+	ttsReq, err := DecodeTTSConvertParams(json.RawMessage(`{"text":"hello","provider":"openai"}`))
+	if err != nil {
+		t.Fatalf("tts.convert decode error: %v", err)
+	}
+	ttsReq, err = ttsReq.Normalize()
+	if err != nil {
+		t.Fatalf("tts.convert normalize error: %v", err)
+	}
+	if ttsReq.Text != "hello" || ttsReq.Provider != "openai" {
+		t.Fatalf("unexpected tts.convert request: %#v", ttsReq)
+	}
+}
+
+func TestSupportedMethodsIncludesOperationalBundles(t *testing.T) {
+	required := []string{
+		MethodExecApprovalsGet,
+		MethodExecApprovalsSet,
+		MethodExecApprovalsNodeGet,
+		MethodExecApprovalsNodeSet,
+		MethodExecApprovalRequest,
+		MethodExecApprovalResolve,
+		MethodSecretsReload,
+		MethodSecretsResolve,
+		MethodWizardStart,
+		MethodWizardNext,
+		MethodWizardCancel,
+		MethodWizardStatus,
+		MethodTalkConfig,
+		MethodTalkMode,
+		MethodVoicewakeGet,
+		MethodVoicewakeSet,
+		MethodTTSStatus,
+		MethodTTSProviders,
+		MethodTTSEnable,
+		MethodTTSDisable,
+		MethodTTSConvert,
+	}
+	for _, want := range required {
+		found := false
+		for _, method := range SupportedMethods() {
+			if method == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s not found in supported methods", want)
+		}
+	}
+}

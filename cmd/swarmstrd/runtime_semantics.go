@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"swarmstr/internal/gateway/methods"
 	nostruntime "swarmstr/internal/nostr/runtime"
 	"swarmstr/internal/store/state"
 )
@@ -119,12 +122,12 @@ func (b *runtimeLogBuffer) Append(level string, message string) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	// Trim before append if already at capacity to prevent unbounded growth
 	if len(b.entries) >= b.cap {
 		b.entries = b.entries[len(b.entries)-b.cap+1:]
 	}
-	
+
 	b.nextID++
 	entry := runtimeLogEntry{ID: b.nextID, TS: time.Now().UnixMilli(), Level: level, Message: message}
 	b.entries = append(b.entries, entry)
@@ -298,7 +301,7 @@ func (r *agentJobRegistry) Finish(runID string, result string, err error) {
 	}
 	h.mu.Unlock()
 	r.mu.Unlock()
-	
+
 	// Schedule cleanup after 5 minutes to prevent memory leak
 	go func() {
 		time.Sleep(5 * time.Minute)
@@ -356,6 +359,602 @@ func (r *agentJobRegistry) Wait(ctx context.Context, runID string, timeout time.
 		r.mu.Unlock()
 		return result, true
 	}
+}
+
+type nodeInvocationEvent struct {
+	Type    string         `json:"type"`
+	Status  string         `json:"status,omitempty"`
+	Message string         `json:"message,omitempty"`
+	Data    map[string]any `json:"data,omitempty"`
+	UnixMS  int64          `json:"unix_ms"`
+}
+
+type nodeInvocationRecord struct {
+	RunID     string                `json:"run_id"`
+	NodeID    string                `json:"node_id"`
+	Command   string                `json:"command"`
+	Args      map[string]any        `json:"args,omitempty"`
+	TimeoutMS int                   `json:"timeout_ms"`
+	Status    string                `json:"status"`
+	CreatedAt int64                 `json:"created_at"`
+	UpdatedAt int64                 `json:"updated_at"`
+	Result    any                   `json:"result,omitempty"`
+	Error     string                `json:"error,omitempty"`
+	Events    []nodeInvocationEvent `json:"events,omitempty"`
+}
+
+const (
+	maxNodeInvocations = 1000
+	maxCronRuns        = 500
+	maxPendingApprovals = 200
+	maxWizardSessions  = 100
+	invocationTTL      = 24 * time.Hour
+	approvalTTL        = 1 * time.Hour
+	wizardTTL          = 2 * time.Hour
+)
+
+type nodeInvocationRegistry struct {
+	mu    sync.Mutex
+	runs  map[string]nodeInvocationRecord
+	order []string
+}
+
+func newNodeInvocationRegistry() *nodeInvocationRegistry {
+	return &nodeInvocationRegistry{runs: map[string]nodeInvocationRecord{}, order: []string{}}
+}
+
+func (r *nodeInvocationRegistry) cleanup() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UnixMilli()
+	ttlMS := int64(invocationTTL.Milliseconds())
+	newOrder := make([]string, 0, len(r.order))
+	for _, runID := range r.order {
+		rec, ok := r.runs[runID]
+		if !ok {
+			continue
+		}
+		if rec.Status == "ok" || rec.Status == "error" {
+			if now-rec.UpdatedAt > ttlMS {
+				delete(r.runs, runID)
+				continue
+			}
+		}
+		newOrder = append(newOrder, runID)
+	}
+	r.order = newOrder
+	if len(r.runs) > maxNodeInvocations {
+		excess := len(r.order) - maxNodeInvocations
+		if excess > 0 {
+			for _, runID := range r.order[:excess] {
+				delete(r.runs, runID)
+			}
+			r.order = r.order[excess:]
+		}
+	}
+}
+
+func (r *nodeInvocationRegistry) Begin(req methods.NodeInvokeRequest) nodeInvocationRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UnixMilli()
+	runID := strings.TrimSpace(req.RunID)
+	if runID == "" {
+		runID = fmt.Sprintf("node-run-%d", time.Now().UnixNano())
+	}
+	_, exists := r.runs[runID]
+	rec := nodeInvocationRecord{
+		RunID:     runID,
+		NodeID:    req.NodeID,
+		Command:   req.Command,
+		Args:      req.Args,
+		TimeoutMS: req.TimeoutMS,
+		Status:    "queued",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Events:    []nodeInvocationEvent{},
+	}
+	if !exists {
+		r.order = append(r.order, runID)
+	}
+	r.runs[runID] = rec
+	return rec
+}
+
+func (r *nodeInvocationRegistry) AddEvent(req methods.NodeEventRequest) (nodeInvocationRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.runs[req.RunID]
+	if !ok {
+		return nodeInvocationRecord{}, state.ErrNotFound
+	}
+	now := time.Now().UnixMilli()
+	rec.UpdatedAt = now
+	if req.NodeID != "" {
+		rec.NodeID = req.NodeID
+	}
+	if req.Status != "" {
+		rec.Status = req.Status
+	}
+	rec.Events = append(rec.Events, nodeInvocationEvent{Type: req.Type, Status: req.Status, Message: req.Message, Data: req.Data, UnixMS: now})
+	r.runs[req.RunID] = rec
+	return rec, nil
+}
+
+func (r *nodeInvocationRegistry) SetResult(req methods.NodeResultRequest) (nodeInvocationRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.runs[req.RunID]
+	if !ok {
+		return nodeInvocationRecord{}, state.ErrNotFound
+	}
+	now := time.Now().UnixMilli()
+	rec.UpdatedAt = now
+	if req.NodeID != "" {
+		rec.NodeID = req.NodeID
+	}
+	rec.Result = req.Result
+	rec.Error = req.Error
+	if req.Status != "" {
+		rec.Status = req.Status
+	} else if req.Error != "" {
+		rec.Status = "error"
+	} else {
+		rec.Status = "ok"
+	}
+	rec.Events = append(rec.Events, nodeInvocationEvent{Type: "result", Status: rec.Status, Message: req.Error, UnixMS: now})
+	r.runs[req.RunID] = rec
+	return rec, nil
+}
+
+type cronJobRecord struct {
+	ID       string          `json:"id"`
+	Schedule string          `json:"schedule"`
+	Method   string          `json:"method"`
+	Params   json.RawMessage `json:"params,omitempty"`
+	Enabled  bool            `json:"enabled"`
+	Created  int64           `json:"created_at"`
+	Updated  int64           `json:"updated_at"`
+}
+
+type cronRunRecord struct {
+	RunID    string `json:"run_id"`
+	JobID    string `json:"job_id"`
+	Status   string `json:"status"`
+	Started  int64  `json:"started_at"`
+	Finished int64  `json:"finished_at"`
+}
+
+type cronRegistry struct {
+	mu       sync.Mutex
+	jobs     map[string]cronJobRecord
+	order    []string
+	runsByID map[string][]cronRunRecord
+}
+
+func newCronRegistry() *cronRegistry {
+	return &cronRegistry{jobs: map[string]cronJobRecord{}, order: []string{}, runsByID: map[string][]cronRunRecord{}}
+}
+
+func (r *cronRegistry) cleanup() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for jobID, runs := range r.runsByID {
+		if len(runs) > maxCronRuns {
+			r.runsByID[jobID] = runs[len(runs)-maxCronRuns:]
+		}
+	}
+}
+
+func (r *cronRegistry) List(limit int) []cronJobRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]cronJobRecord, 0, min(limit, len(r.order)))
+	for i := len(r.order) - 1; i >= 0 && len(out) < limit; i-- {
+		id := r.order[i]
+		job, ok := r.jobs[id]
+		if !ok {
+			continue
+		}
+		out = append(out, job)
+	}
+	return out
+}
+
+func (r *cronRegistry) Add(req methods.CronAddRequest) cronJobRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UnixMilli()
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		id = fmt.Sprintf("cron-%d", time.Now().UnixNano())
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	rec := cronJobRecord{ID: id, Schedule: req.Schedule, Method: req.Method, Params: req.Params, Enabled: enabled, Created: now, Updated: now}
+	if _, exists := r.jobs[id]; !exists {
+		r.order = append(r.order, id)
+	}
+	r.jobs[id] = rec
+	return rec
+}
+
+func (r *cronRegistry) Status(id string) (cronJobRecord, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	job, ok := r.jobs[id]
+	return job, ok
+}
+
+func (r *cronRegistry) Update(req methods.CronUpdateRequest) (cronJobRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	job, ok := r.jobs[req.ID]
+	if !ok {
+		return cronJobRecord{}, state.ErrNotFound
+	}
+	if req.Schedule != "" {
+		job.Schedule = req.Schedule
+	}
+	if req.Method != "" {
+		job.Method = req.Method
+	}
+	if len(req.Params) > 0 {
+		job.Params = req.Params
+	}
+	if req.Enabled != nil {
+		job.Enabled = *req.Enabled
+	}
+	job.Updated = time.Now().UnixMilli()
+	r.jobs[req.ID] = job
+	return job, nil
+}
+
+func (r *cronRegistry) Remove(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.jobs[id]; !ok {
+		return state.ErrNotFound
+	}
+	delete(r.jobs, id)
+	for idx, item := range r.order {
+		if item == id {
+			r.order = append(r.order[:idx], r.order[idx+1:]...)
+			break
+		}
+	}
+	delete(r.runsByID, id)
+	return nil
+}
+
+func (r *cronRegistry) Run(id string) (cronRunRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.jobs[id]; !ok {
+		return cronRunRecord{}, state.ErrNotFound
+	}
+	now := time.Now().UnixMilli()
+	run := cronRunRecord{RunID: fmt.Sprintf("cron-run-%d", time.Now().UnixNano()), JobID: id, Status: "ok", Started: now, Finished: now}
+	r.runsByID[id] = append(r.runsByID[id], run)
+	return run, nil
+}
+
+func (r *cronRegistry) Runs(id string, limit int) []cronRunRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if id != "" {
+		runs := r.runsByID[id]
+		if len(runs) > limit {
+			return append([]cronRunRecord{}, runs[len(runs)-limit:]...)
+		}
+		return append([]cronRunRecord{}, runs...)
+	}
+	all := make([]cronRunRecord, 0)
+	for _, runs := range r.runsByID {
+		all = append(all, runs...)
+		if len(all) > limit {
+			break
+		}
+	}
+	if len(all) > limit {
+		all = all[len(all)-limit:]
+	}
+	return all
+}
+
+type execApprovalPendingRecord struct {
+	ID         string         `json:"id"`
+	NodeID     string         `json:"node_id,omitempty"`
+	Command    string         `json:"command"`
+	Args       map[string]any `json:"args,omitempty"`
+	TimeoutMS  int            `json:"timeout_ms"`
+	Status     string         `json:"status"`
+	Decision   string         `json:"decision,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+	Requested  int64          `json:"requested_at"`
+	ResolvedAt int64          `json:"resolved_at,omitempty"`
+	ExpiresAt  int64          `json:"expires_at,omitempty"`
+}
+
+type execApprovalsRegistry struct {
+	mu        sync.Mutex
+	global    map[string]any
+	perNode   map[string]map[string]any
+	pending   map[string]execApprovalPendingRecord
+	pendingID int64
+}
+
+func newExecApprovalsRegistry() *execApprovalsRegistry {
+	return &execApprovalsRegistry{
+		global:  map[string]any{},
+		perNode: map[string]map[string]any{},
+		pending: map[string]execApprovalPendingRecord{},
+	}
+}
+
+func (r *execApprovalsRegistry) cleanup() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UnixMilli()
+	ttlMS := int64(approvalTTL.Milliseconds())
+	for id, rec := range r.pending {
+		if rec.Status == "resolved" && now-rec.ResolvedAt > ttlMS {
+			delete(r.pending, id)
+		} else if rec.ExpiresAt > 0 && now > rec.ExpiresAt {
+			delete(r.pending, id)
+		}
+	}
+	if len(r.pending) > maxPendingApprovals {
+		oldest := make([]string, 0, len(r.pending))
+		for id := range r.pending {
+			oldest = append(oldest, id)
+		}
+		excess := len(oldest) - maxPendingApprovals
+		for i := 0; i < excess; i++ {
+			delete(r.pending, oldest[i])
+		}
+	}
+}
+
+func (r *execApprovalsRegistry) GetGlobal() map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return cloneMapAny(r.global)
+}
+
+func (r *execApprovalsRegistry) SetGlobal(next map[string]any) map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.global = cloneMapAny(next)
+	return cloneMapAny(r.global)
+}
+
+func (r *execApprovalsRegistry) GetNode(nodeID string) map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	approvals := r.perNode[nodeID]
+	return cloneMapAny(approvals)
+}
+
+func (r *execApprovalsRegistry) SetNode(nodeID string, next map[string]any) map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.perNode[nodeID] = cloneMapAny(next)
+	return cloneMapAny(r.perNode[nodeID])
+}
+
+func (r *execApprovalsRegistry) Request(req methods.ExecApprovalRequestRequest) execApprovalPendingRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pendingID++
+	now := time.Now().UnixMilli()
+	id := fmt.Sprintf("approval-%d-%d", now, r.pendingID)
+	rec := execApprovalPendingRecord{
+		ID:        id,
+		NodeID:    req.NodeID,
+		Command:   req.Command,
+		Args:      req.Args,
+		TimeoutMS: req.TimeoutMS,
+		Status:    "pending",
+		Requested: now,
+		ExpiresAt: now + int64(req.TimeoutMS),
+	}
+	r.pending[id] = rec
+	return rec
+}
+
+func (r *execApprovalsRegistry) Resolve(req methods.ExecApprovalResolveRequest) (execApprovalPendingRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.pending[req.ID]
+	if !ok {
+		return execApprovalPendingRecord{}, state.ErrNotFound
+	}
+	rec.Decision = req.Decision
+	rec.Reason = req.Reason
+	rec.Status = "resolved"
+	rec.ResolvedAt = time.Now().UnixMilli()
+	r.pending[req.ID] = rec
+	return rec, nil
+}
+
+type wizardSessionRecord struct {
+	SessionID string         `json:"session_id"`
+	Mode      string         `json:"mode"`
+	Status    string         `json:"status"`
+	Error     string         `json:"error,omitempty"`
+	Step      int            `json:"step"`
+	Input     map[string]any `json:"input,omitempty"`
+	CreatedAt int64          `json:"created_at"`
+	UpdatedAt int64          `json:"updated_at"`
+}
+
+type wizardRegistry struct {
+	mu       sync.Mutex
+	sessions map[string]wizardSessionRecord
+}
+
+func newWizardRegistry() *wizardRegistry {
+	return &wizardRegistry{sessions: map[string]wizardSessionRecord{}}
+}
+
+func (r *wizardRegistry) cleanup() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UnixMilli()
+	ttlMS := int64(wizardTTL.Milliseconds())
+	for id, rec := range r.sessions {
+		if (rec.Status == "done" || rec.Status == "cancelled") && now-rec.UpdatedAt > ttlMS {
+			delete(r.sessions, id)
+		}
+	}
+	if len(r.sessions) > maxWizardSessions {
+		oldest := make([]wizardSessionRecord, 0, len(r.sessions))
+		for _, rec := range r.sessions {
+			oldest = append(oldest, rec)
+		}
+		sort.Slice(oldest, func(i, j int) bool {
+			return oldest[i].UpdatedAt < oldest[j].UpdatedAt
+		})
+		excess := len(oldest) - maxWizardSessions
+		for i := 0; i < excess; i++ {
+			delete(r.sessions, oldest[i].SessionID)
+		}
+	}
+}
+
+func (r *wizardRegistry) Start(req methods.WizardStartRequest) wizardSessionRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UnixMilli()
+	sessionID := fmt.Sprintf("wizard-%d", time.Now().UnixNano())
+	rec := wizardSessionRecord{SessionID: sessionID, Mode: req.Mode, Status: "running", Step: 0, Input: map[string]any{}, CreatedAt: now, UpdatedAt: now}
+	r.sessions[sessionID] = rec
+	return rec
+}
+
+func (r *wizardRegistry) Next(req methods.WizardNextRequest) (wizardSessionRecord, map[string]any, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.sessions[req.ID]
+	if !ok {
+		return wizardSessionRecord{}, nil, false, state.ErrNotFound
+	}
+	if rec.Status != "running" {
+		return rec, nil, true, nil
+	}
+	if len(req.Input) > 0 {
+		for k, v := range req.Input {
+			rec.Input[k] = v
+		}
+	}
+	rec.Step++
+	rec.UpdatedAt = time.Now().UnixMilli()
+	done := rec.Step >= 1
+	if done {
+		rec.Status = "done"
+		r.sessions[req.ID] = rec
+		return rec, nil, true, nil
+	}
+	step := map[string]any{"id": "mode", "type": "choice", "prompt": "Select mode", "options": []string{"local", "remote"}}
+	r.sessions[req.ID] = rec
+	return rec, step, false, nil
+}
+
+func (r *wizardRegistry) Cancel(req methods.WizardCancelRequest) (wizardSessionRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.sessions[req.ID]
+	if !ok {
+		return wizardSessionRecord{}, state.ErrNotFound
+	}
+	rec.Status = "cancelled"
+	rec.UpdatedAt = time.Now().UnixMilli()
+	r.sessions[req.ID] = rec
+	return rec, nil
+}
+
+func (r *wizardRegistry) Status(req methods.WizardStatusRequest) (wizardSessionRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.sessions[req.ID]
+	if !ok {
+		return wizardSessionRecord{}, state.ErrNotFound
+	}
+	return rec, nil
+}
+
+type operationsRegistry struct {
+	mu          sync.Mutex
+	talkMode    string
+	voicewake   []string
+	ttsEnabled  bool
+	ttsProvider string
+}
+
+func newOperationsRegistry() *operationsRegistry {
+	return &operationsRegistry{talkMode: "disabled", voicewake: []string{"openclaw", "swarmstr"}, ttsEnabled: false, ttsProvider: "openai"}
+}
+
+func (r *operationsRegistry) SetTalkMode(mode string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.talkMode = mode
+	return r.talkMode
+}
+
+func (r *operationsRegistry) TalkMode() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.talkMode
+}
+
+func (r *operationsRegistry) Voicewake() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string{}, r.voicewake...)
+}
+
+func (r *operationsRegistry) SetVoicewake(triggers []string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.voicewake = append([]string{}, triggers...)
+	return append([]string{}, r.voicewake...)
+}
+
+func (r *operationsRegistry) TTSStatus() (bool, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ttsEnabled, r.ttsProvider
+}
+
+func (r *operationsRegistry) SetTTSEnabled(enabled bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ttsEnabled = enabled
+	return r.ttsEnabled
+}
+
+func cloneMapAny(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func min(a, b int) int {

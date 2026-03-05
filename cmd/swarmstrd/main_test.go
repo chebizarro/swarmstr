@@ -759,6 +759,129 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 	}
 }
 
+func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	prevNode := controlNodeInvocations
+	prevCron := controlCronJobs
+	controlNodeInvocations = newNodeInvocationRegistry()
+	controlCronJobs = newCronRegistry()
+	defer func() {
+		controlNodeInvocations = prevNode
+		controlCronJobs = prevCron
+	}()
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodeInvoke,
+		Params:     json.RawMessage(`{"node_id":"n1","command":"ping"}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("node.invoke error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	runID, _ := payload["run_id"].(string)
+	if runID == "" {
+		t.Fatalf("expected run_id in node.invoke payload: %#v", res.Result)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodeEvent,
+		Params:     json.RawMessage(fmt.Sprintf(`{"run_id":%q,"type":"progress","status":"running"}`, runID)),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("node.event error: %v", err)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodCronAdd,
+		Params:     json.RawMessage(`{"id":"c1","schedule":"* * * * *","method":"status.get"}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("cron.add error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	job, ok := payload["job"].(cronJobRecord)
+	if !ok || job.ID != "c1" {
+		t.Fatalf("unexpected cron.add payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodCronRun,
+		Params:     json.RawMessage(`{"id":"c1"}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("cron.run error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["ok"] != true {
+		t.Fatalf("unexpected cron.run payload: %#v", res.Result)
+	}
+}
+
+func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	prevExec := controlExecApprovals
+	prevWizard := controlWizards
+	prevOps := controlOps
+	controlExecApprovals = newExecApprovalsRegistry()
+	controlWizards = newWizardRegistry()
+	controlOps = newOperationsRegistry()
+	defer func() {
+		controlExecApprovals = prevExec
+		controlWizards = prevWizard
+		controlOps = prevOps
+	}()
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalsSet, Params: json.RawMessage(`{"approvals":{"allow":true}}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("exec.approvals.set error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	if payload["ok"] != true {
+		t.Fatalf("unexpected exec.approvals.set payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"ls"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("exec.approval.request error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["status"] != "accepted" {
+		t.Fatalf("unexpected exec.approval.request payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodWizardStart, Params: json.RawMessage(`{"mode":"local"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("wizard.start error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	sessionID, _ := payload["session_id"].(string)
+	if sessionID == "" {
+		t.Fatalf("unexpected wizard.start payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodVoicewakeSet, Params: json.RawMessage(`{"triggers":["openclaw","swarmstr"]}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("voicewake.set error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if _, ok := payload["triggers"]; !ok {
+		t.Fatalf("unexpected voicewake.set payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSConvert, Params: json.RawMessage(`{"text":"hello"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("tts.convert error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["provider"] == "" {
+		t.Fatalf("unexpected tts.convert payload: %#v", res.Result)
+	}
+}
+
 type stubAgentRuntime struct{}
 
 func (stubAgentRuntime) ProcessTurn(_ context.Context, turn agent.Turn) (agent.TurnResult, error) {

@@ -32,8 +32,13 @@ import (
 )
 
 var (
-	controlAgentRuntime agent.Runtime
-	controlAgentJobs    *agentJobRegistry
+	controlAgentRuntime    agent.Runtime
+	controlAgentJobs       *agentJobRegistry
+	controlNodeInvocations *nodeInvocationRegistry
+	controlCronJobs        *cronRegistry
+	controlExecApprovals   *execApprovalsRegistry
+	controlWizards         *wizardRegistry
+	controlOps             *operationsRegistry
 )
 
 func main() {
@@ -171,11 +176,38 @@ func main() {
 	controlTracker := newControlTracker(controlCheckpoint)
 	chatCancels := newChatAbortRegistry()
 	agentJobs := newAgentJobRegistry()
+	nodeInvocations := newNodeInvocationRegistry()
+	cronJobs := newCronRegistry()
+	execApprovals := newExecApprovalsRegistry()
+	wizards := newWizardRegistry()
+	ops := newOperationsRegistry()
 	controlAgentRuntime = agentRuntime
 	controlAgentJobs = agentJobs
+	controlNodeInvocations = nodeInvocations
+	controlCronJobs = cronJobs
+	controlExecApprovals = execApprovals
+	controlWizards = wizards
+	controlOps = ops
 	usageState := newUsageTracker(startedAt)
 	logBuffer := newRuntimeLogBuffer(2000)
 	channelState := newChannelRuntimeState()
+
+	// Start background cleanup goroutines to prevent memory leaks
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				nodeInvocations.cleanup()
+				cronJobs.cleanup()
+				execApprovals.cleanup()
+				wizards.cleanup()
+			}
+		}
+	}()
 
 	bus, err := nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
 		PrivateKey: privateKey,
@@ -585,6 +617,99 @@ func main() {
 				},
 				DeviceTokenRevoke: func(ctx context.Context, req methods.DeviceTokenRevokeRequest) (map[string]any, error) {
 					return applyDeviceTokenRevoke(ctx, docsRepo, configState, req)
+				},
+				NodeInvoke: func(_ context.Context, req methods.NodeInvokeRequest) (map[string]any, error) {
+					return applyNodeInvoke(nodeInvocations, req)
+				},
+				NodeEvent: func(_ context.Context, req methods.NodeEventRequest) (map[string]any, error) {
+					return applyNodeEvent(nodeInvocations, req)
+				},
+				NodeResult: func(_ context.Context, req methods.NodeResultRequest) (map[string]any, error) {
+					return applyNodeResult(nodeInvocations, req)
+				},
+				CronList: func(_ context.Context, req methods.CronListRequest) (map[string]any, error) {
+					return applyCronList(cronJobs, req)
+				},
+				CronStatus: func(_ context.Context, req methods.CronStatusRequest) (map[string]any, error) {
+					return applyCronStatus(cronJobs, req)
+				},
+				CronAdd: func(_ context.Context, req methods.CronAddRequest) (map[string]any, error) {
+					return applyCronAdd(cronJobs, req)
+				},
+				CronUpdate: func(_ context.Context, req methods.CronUpdateRequest) (map[string]any, error) {
+					return applyCronUpdate(cronJobs, req)
+				},
+				CronRemove: func(_ context.Context, req methods.CronRemoveRequest) (map[string]any, error) {
+					return applyCronRemove(cronJobs, req)
+				},
+				CronRun: func(_ context.Context, req methods.CronRunRequest) (map[string]any, error) {
+					return applyCronRun(cronJobs, req)
+				},
+				CronRuns: func(_ context.Context, req methods.CronRunsRequest) (map[string]any, error) {
+					return applyCronRuns(cronJobs, req)
+				},
+				ExecApprovalsGet: func(_ context.Context, req methods.ExecApprovalsGetRequest) (map[string]any, error) {
+					return applyExecApprovalsGet(execApprovals, req)
+				},
+				ExecApprovalsSet: func(_ context.Context, req methods.ExecApprovalsSetRequest) (map[string]any, error) {
+					return applyExecApprovalsSet(execApprovals, req)
+				},
+				ExecApprovalsNodeGet: func(_ context.Context, req methods.ExecApprovalsNodeGetRequest) (map[string]any, error) {
+					return applyExecApprovalsNodeGet(execApprovals, req)
+				},
+				ExecApprovalsNodeSet: func(_ context.Context, req methods.ExecApprovalsNodeSetRequest) (map[string]any, error) {
+					return applyExecApprovalsNodeSet(execApprovals, req)
+				},
+				ExecApprovalRequest: func(_ context.Context, req methods.ExecApprovalRequestRequest) (map[string]any, error) {
+					return applyExecApprovalRequest(execApprovals, req)
+				},
+				ExecApprovalResolve: func(_ context.Context, req methods.ExecApprovalResolveRequest) (map[string]any, error) {
+					return applyExecApprovalResolve(execApprovals, req)
+				},
+				SecretsReload: func(_ context.Context, req methods.SecretsReloadRequest) (map[string]any, error) {
+					return applySecretsReload(req)
+				},
+				SecretsResolve: func(_ context.Context, req methods.SecretsResolveRequest) (map[string]any, error) {
+					return applySecretsResolve(req)
+				},
+				WizardStart: func(_ context.Context, req methods.WizardStartRequest) (map[string]any, error) {
+					return applyWizardStart(wizards, req)
+				},
+				WizardNext: func(_ context.Context, req methods.WizardNextRequest) (map[string]any, error) {
+					return applyWizardNext(wizards, req)
+				},
+				WizardCancel: func(_ context.Context, req methods.WizardCancelRequest) (map[string]any, error) {
+					return applyWizardCancel(wizards, req)
+				},
+				WizardStatus: func(_ context.Context, req methods.WizardStatusRequest) (map[string]any, error) {
+					return applyWizardStatus(wizards, req)
+				},
+				TalkConfig: func(_ context.Context, req methods.TalkConfigRequest) (map[string]any, error) {
+					return applyTalkConfig(configState.Get(), req)
+				},
+				TalkMode: func(_ context.Context, req methods.TalkModeRequest) (map[string]any, error) {
+					return applyTalkMode(ops, req)
+				},
+				VoicewakeGet: func(_ context.Context, req methods.VoicewakeGetRequest) (map[string]any, error) {
+					return applyVoicewakeGet(ops, req)
+				},
+				VoicewakeSet: func(_ context.Context, req methods.VoicewakeSetRequest) (map[string]any, error) {
+					return applyVoicewakeSet(ops, req)
+				},
+				TTSStatus: func(_ context.Context, req methods.TTSStatusRequest) (map[string]any, error) {
+					return applyTTSStatus(ops, req)
+				},
+				TTSProviders: func(_ context.Context, req methods.TTSProvidersRequest) (map[string]any, error) {
+					return applyTTSProviders(req)
+				},
+				TTSEnable: func(_ context.Context, req methods.TTSEnableRequest) (map[string]any, error) {
+					return applyTTSEnable(ops, req)
+				},
+				TTSDisable: func(_ context.Context, req methods.TTSDisableRequest) (map[string]any, error) {
+					return applyTTSDisable(ops, req)
+				},
+				TTSConvert: func(_ context.Context, req methods.TTSConvertRequest) (map[string]any, error) {
+					return applyTTSConvert(ops, req)
 				},
 				GetConfig: func(ctx context.Context) (state.ConfigDoc, error) {
 					return docsRepo.GetConfig(ctx)
@@ -1751,6 +1876,440 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodeInvoke:
+		req, err := methods.DecodeNodeInvokeParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodeInvoke(controlNodeInvocations, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodeEvent:
+		req, err := methods.DecodeNodeEventParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodeEvent(controlNodeInvocations, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodeResult:
+		req, err := methods.DecodeNodeResultParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyNodeResult(controlNodeInvocations, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodCronList:
+		req, err := methods.DecodeCronListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyCronList(controlCronJobs, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodCronStatus:
+		req, err := methods.DecodeCronStatusParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyCronStatus(controlCronJobs, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodCronAdd:
+		req, err := methods.DecodeCronAddParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyCronAdd(controlCronJobs, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodCronUpdate:
+		req, err := methods.DecodeCronUpdateParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyCronUpdate(controlCronJobs, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodCronRemove:
+		req, err := methods.DecodeCronRemoveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyCronRemove(controlCronJobs, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodCronRun:
+		req, err := methods.DecodeCronRunParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyCronRun(controlCronJobs, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodCronRuns:
+		req, err := methods.DecodeCronRunsParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyCronRuns(controlCronJobs, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodExecApprovalsGet:
+		req, err := methods.DecodeExecApprovalsGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyExecApprovalsGet(controlExecApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodExecApprovalsSet:
+		req, err := methods.DecodeExecApprovalsSetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyExecApprovalsSet(controlExecApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodExecApprovalsNodeGet:
+		req, err := methods.DecodeExecApprovalsNodeGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyExecApprovalsNodeGet(controlExecApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodExecApprovalsNodeSet:
+		req, err := methods.DecodeExecApprovalsNodeSetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyExecApprovalsNodeSet(controlExecApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodExecApprovalRequest:
+		req, err := methods.DecodeExecApprovalRequestParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyExecApprovalRequest(controlExecApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodExecApprovalResolve:
+		req, err := methods.DecodeExecApprovalResolveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyExecApprovalResolve(controlExecApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodSecretsReload:
+		req, err := methods.DecodeSecretsReloadParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applySecretsReload(req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodSecretsResolve:
+		req, err := methods.DecodeSecretsResolveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applySecretsResolve(req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodWizardStart:
+		req, err := methods.DecodeWizardStartParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyWizardStart(controlWizards, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodWizardNext:
+		req, err := methods.DecodeWizardNextParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyWizardNext(controlWizards, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodWizardCancel:
+		req, err := methods.DecodeWizardCancelParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyWizardCancel(controlWizards, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodWizardStatus:
+		req, err := methods.DecodeWizardStatusParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyWizardStatus(controlWizards, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodTalkConfig:
+		req, err := methods.DecodeTalkConfigParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyTalkConfig(cfg, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodTalkMode:
+		req, err := methods.DecodeTalkModeParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyTalkMode(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodVoicewakeGet:
+		req, err := methods.DecodeVoicewakeGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyVoicewakeGet(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodVoicewakeSet:
+		req, err := methods.DecodeVoicewakeSetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyVoicewakeSet(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodTTSStatus:
+		req, err := methods.DecodeTTSStatusParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyTTSStatus(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodTTSProviders:
+		req, err := methods.DecodeTTSProvidersParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyTTSProviders(req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodTTSEnable:
+		req, err := methods.DecodeTTSEnableParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyTTSEnable(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodTTSDisable:
+		req, err := methods.DecodeTTSDisableParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyTTSDisable(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodTTSConvert:
+		req, err := methods.DecodeTTSConvertParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyTTSConvert(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodConfigGet:
 		return nostruntime.ControlRPCResult{Result: cfg}, nil
 	case methods.MethodRelayPolicyGet:
@@ -1959,7 +2518,7 @@ func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runti
 			}
 		}
 	}()
-	
+
 	if runtime == nil || jobs == nil {
 		return
 	}
@@ -2902,6 +3461,310 @@ func applyDeviceTokenRevoke(ctx context.Context, docsRepo *state.DocsRepository,
 		}
 		return nil, nil, state.ErrNotFound
 	})
+}
+
+func applyNodeInvoke(reg *nodeInvocationRegistry, req methods.NodeInvokeRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("node invoke runtime not configured")
+	}
+	rec := reg.Begin(req)
+	return map[string]any{
+		"ok":         true,
+		"run_id":     rec.RunID,
+		"node_id":    rec.NodeID,
+		"command":    rec.Command,
+		"status":     rec.Status,
+		"created_at": rec.CreatedAt,
+	}, nil
+}
+
+func applyNodeEvent(reg *nodeInvocationRegistry, req methods.NodeEventRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("node invoke runtime not configured")
+	}
+	rec, err := reg.AddEvent(req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"ok":         true,
+		"run_id":     rec.RunID,
+		"node_id":    rec.NodeID,
+		"status":     rec.Status,
+		"updated_at": rec.UpdatedAt,
+		"events":     rec.Events,
+	}, nil
+}
+
+func applyNodeResult(reg *nodeInvocationRegistry, req methods.NodeResultRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("node invoke runtime not configured")
+	}
+	rec, err := reg.SetResult(req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"ok":         true,
+		"run_id":     rec.RunID,
+		"node_id":    rec.NodeID,
+		"status":     rec.Status,
+		"result":     rec.Result,
+		"error":      rec.Error,
+		"updated_at": rec.UpdatedAt,
+	}, nil
+}
+
+func applyCronList(reg *cronRegistry, req methods.CronListRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	jobs := reg.List(req.Limit)
+	return map[string]any{"jobs": jobs, "count": len(jobs)}, nil
+}
+
+func applyCronStatus(reg *cronRegistry, req methods.CronStatusRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	job, ok := reg.Status(req.ID)
+	if !ok {
+		return nil, state.ErrNotFound
+	}
+	return map[string]any{"job": job}, nil
+}
+
+func applyCronAdd(reg *cronRegistry, req methods.CronAddRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	job := reg.Add(req)
+	return map[string]any{"ok": true, "job": job}, nil
+}
+
+func applyCronUpdate(reg *cronRegistry, req methods.CronUpdateRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	job, err := reg.Update(req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "job": job}, nil
+}
+
+func applyCronRemove(reg *cronRegistry, req methods.CronRemoveRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	if err := reg.Remove(req.ID); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "id": req.ID, "removed": true}, nil
+}
+
+func applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	run, err := reg.Run(req.ID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "run": run}, nil
+}
+
+func applyCronRuns(reg *cronRegistry, req methods.CronRunsRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	runs := reg.Runs(req.ID, req.Limit)
+	return map[string]any{"runs": runs, "count": len(runs)}, nil
+}
+
+func applyExecApprovalsGet(reg *execApprovalsRegistry, _ methods.ExecApprovalsGetRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("exec approvals runtime not configured")
+	}
+	approvals := reg.GetGlobal()
+	return map[string]any{"approvals": approvals, "count": len(approvals)}, nil
+}
+
+func applyExecApprovalsSet(reg *execApprovalsRegistry, req methods.ExecApprovalsSetRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("exec approvals runtime not configured")
+	}
+	approvals := reg.SetGlobal(req.Approvals)
+	return map[string]any{"ok": true, "approvals": approvals, "count": len(approvals)}, nil
+}
+
+func applyExecApprovalsNodeGet(reg *execApprovalsRegistry, req methods.ExecApprovalsNodeGetRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("exec approvals runtime not configured")
+	}
+	approvals := reg.GetNode(req.NodeID)
+	return map[string]any{"node_id": req.NodeID, "approvals": approvals, "count": len(approvals)}, nil
+}
+
+func applyExecApprovalsNodeSet(reg *execApprovalsRegistry, req methods.ExecApprovalsNodeSetRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("exec approvals runtime not configured")
+	}
+	approvals := reg.SetNode(req.NodeID, req.Approvals)
+	return map[string]any{"ok": true, "node_id": req.NodeID, "approvals": approvals, "count": len(approvals)}, nil
+}
+
+func applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprovalRequestRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("exec approvals runtime not configured")
+	}
+	rec := reg.Request(req)
+	return map[string]any{"id": rec.ID, "status": "accepted", "requested": rec}, nil
+}
+
+func applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprovalResolveRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("exec approvals runtime not configured")
+	}
+	rec, err := reg.Resolve(req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "id": rec.ID, "decision": rec.Decision, "resolved": rec}, nil
+}
+
+func applySecretsReload(_ methods.SecretsReloadRequest) (map[string]any, error) {
+	return map[string]any{"ok": true, "warningCount": 0}, nil
+}
+
+func applySecretsResolve(req methods.SecretsResolveRequest) (map[string]any, error) {
+	assignments := make([]map[string]any, 0, len(req.TargetIDs))
+	for _, id := range req.TargetIDs {
+		segments := strings.Split(id, ".")
+		assignments = append(assignments, map[string]any{"path": id, "pathSegments": segments, "value": nil})
+	}
+	return map[string]any{"ok": true, "assignments": assignments, "diagnostics": []string{}, "inactiveRefPaths": []string{}}, nil
+}
+
+func applyWizardStart(reg *wizardRegistry, req methods.WizardStartRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("wizard runtime not configured")
+	}
+	rec := reg.Start(req)
+	return map[string]any{"session_id": rec.SessionID, "sessionId": rec.SessionID, "status": rec.Status, "done": false, "step": map[string]any{"id": "mode", "type": "choice", "prompt": "Select mode", "options": []string{"local", "remote"}}}, nil
+}
+
+func applyWizardNext(reg *wizardRegistry, req methods.WizardNextRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("wizard runtime not configured")
+	}
+	rec, step, done, err := reg.Next(req)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"session_id": rec.SessionID, "sessionId": rec.SessionID, "status": rec.Status, "done": done}
+	if step != nil {
+		out["step"] = step
+	}
+	return out, nil
+}
+
+func applyWizardCancel(reg *wizardRegistry, req methods.WizardCancelRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("wizard runtime not configured")
+	}
+	rec, err := reg.Cancel(req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": rec.Status, "error": rec.Error}, nil
+}
+
+func applyWizardStatus(reg *wizardRegistry, req methods.WizardStatusRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("wizard runtime not configured")
+	}
+	rec, err := reg.Status(req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": rec.Status, "error": rec.Error}, nil
+}
+
+func applyTalkConfig(cfg state.ConfigDoc, req methods.TalkConfigRequest) (map[string]any, error) {
+	_ = req
+	configPayload := map[string]any{}
+	if cfg.Extra != nil {
+		if talk, ok := cfg.Extra["talk"]; ok {
+			configPayload["talk"] = talk
+		}
+		if session, ok := cfg.Extra["session"]; ok {
+			configPayload["session"] = session
+		}
+		if ui, ok := cfg.Extra["ui"]; ok {
+			configPayload["ui"] = ui
+		}
+	}
+	return map[string]any{"config": configPayload}, nil
+}
+
+func applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("talk runtime not configured")
+	}
+	mode := reg.SetTalkMode(req.Mode)
+	return map[string]any{"mode": mode, "ts": time.Now().UnixMilli()}, nil
+}
+
+func applyVoicewakeGet(reg *operationsRegistry, _ methods.VoicewakeGetRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("voicewake runtime not configured")
+	}
+	return map[string]any{"triggers": reg.Voicewake()}, nil
+}
+
+func applyVoicewakeSet(reg *operationsRegistry, req methods.VoicewakeSetRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("voicewake runtime not configured")
+	}
+	return map[string]any{"triggers": reg.SetVoicewake(req.Triggers)}, nil
+}
+
+func applyTTSStatus(reg *operationsRegistry, _ methods.TTSStatusRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("tts runtime not configured")
+	}
+	enabled, provider := reg.TTSStatus()
+	return map[string]any{"enabled": enabled, "provider": provider}, nil
+}
+
+func applyTTSProviders(_ methods.TTSProvidersRequest) (map[string]any, error) {
+	return map[string]any{"providers": []map[string]any{{"id": "openai", "name": "OpenAI", "configured": false}, {"id": "elevenlabs", "name": "ElevenLabs", "configured": false}, {"id": "edge", "name": "Edge TTS", "configured": true}}, "active": "openai"}, nil
+}
+
+func applyTTSEnable(reg *operationsRegistry, _ methods.TTSEnableRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("tts runtime not configured")
+	}
+	return map[string]any{"enabled": reg.SetTTSEnabled(true)}, nil
+}
+
+func applyTTSDisable(reg *operationsRegistry, _ methods.TTSDisableRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("tts runtime not configured")
+	}
+	return map[string]any{"enabled": reg.SetTTSEnabled(false)}, nil
+}
+
+func applyTTSConvert(reg *operationsRegistry, req methods.TTSConvertRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("tts runtime not configured")
+	}
+	_, provider := reg.TTSStatus()
+	if req.Provider != "" {
+		provider = req.Provider
+	}
+	return map[string]any{"audioPath": "", "provider": provider, "outputFormat": "mp3", "voiceCompatible": true, "text": req.Text}, nil
 }
 
 func persistMemories(
