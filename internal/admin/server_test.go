@@ -36,6 +36,26 @@ func TestDispatchMethodCallSupportedMethods(t *testing.T) {
 	}
 }
 
+func TestDispatchMethodCallSupportedMethodsUsesProvider(t *testing.T) {
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodSupportedMethods, nil)
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, ServerOptions{
+		SupportedMethods: func(context.Context) ([]string, error) {
+			return []string{"ext.one", "ext.two"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("dispatchMethodCall error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	list, ok := result.([]string)
+	if !ok || len(list) != 2 || list[0] != "ext.one" || list[1] != "ext.two" {
+		t.Fatalf("unexpected provider result type/value: %#v", result)
+	}
+}
+
 func TestDispatchMethodCallStatusGet(t *testing.T) {
 	opts := ServerOptions{Status: StatusProvider{PubKey: "pub", Relays: []string{"wss://r"}, DMPolicy: "open", Started: time.Now().Add(-5 * time.Second)}}
 	rr := httptest.NewRecorder()
@@ -1115,7 +1135,8 @@ func TestDispatchMethodCallModelsToolsSkillsMethods(t *testing.T) {
 			return map[string]any{"agent_id": req.AgentID, "skills": []map[string]any{}}, nil
 		},
 		SkillsBins: func(_ context.Context, req methods.SkillsBinsRequest) (map[string]any, error) {
-			return map[string]any{"agent_id": req.AgentID, "bins": []map[string]any{}}, nil
+			_ = req
+			return map[string]any{"bins": []map[string]any{}}, nil
 		},
 		SkillsInstall: func(_ context.Context, req methods.SkillsInstallRequest) (map[string]any, error) {
 			return map[string]any{"ok": true, "name": req.Name, "install_id": req.InstallID}, nil
@@ -1147,7 +1168,7 @@ func TestDispatchMethodCallModelsToolsSkillsMethods(t *testing.T) {
 	}
 
 	rr = httptest.NewRecorder()
-	req = newMethodRequest(t, methods.MethodSkillsBins, map[string]any{"agent_id": "main"})
+	req = newMethodRequest(t, methods.MethodSkillsBins, map[string]any{})
 	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("skills.bins failed status=%d err=%v", status, err)

@@ -518,13 +518,16 @@ func TestDecodeModelsToolsSkillsParams(t *testing.T) {
 		t.Fatalf("expected normalized timeout, got: %#v", installReq)
 	}
 
-	updateReq, err := DecodeSkillsUpdateParams(json.RawMessage(`{"skill_key":"nostr-core","api_key":"  abc  ","env":{" K ":" V "}}`))
+	updateReq, err := DecodeSkillsUpdateParams(json.RawMessage(`{"skill_key":"Nostr-Core","api_key":"  abc  ","env":{" K ":" V "}}`))
 	if err != nil {
 		t.Fatalf("skills.update decode error: %v", err)
 	}
 	updateReq, err = updateReq.Normalize()
 	if err != nil {
 		t.Fatalf("skills.update normalize error: %v", err)
+	}
+	if updateReq.SkillKey != "nostr-core" {
+		t.Fatalf("unexpected skill key normalization: %#v", updateReq)
 	}
 	if updateReq.APIKey == nil || *updateReq.APIKey != "abc" {
 		t.Fatalf("unexpected api key normalization: %#v", updateReq)
@@ -833,7 +836,7 @@ func TestDecodeExecSecretsWizardTalkVoicewakeAndTTSParams(t *testing.T) {
 		t.Fatalf("unexpected tts.setProvider request: %#v", ttsSetReq)
 	}
 
-	skillsBinsReq, err := DecodeSkillsBinsParams(json.RawMessage(`{"agent_id":"main"}`))
+	skillsBinsReq, err := DecodeSkillsBinsParams(json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("skills.bins decode error: %v", err)
 	}
@@ -841,7 +844,7 @@ func TestDecodeExecSecretsWizardTalkVoicewakeAndTTSParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skills.bins normalize error: %v", err)
 	}
-	if skillsBinsReq.AgentID != "main" {
+	if skillsBinsReq != (SkillsBinsRequest{}) {
 		t.Fatalf("unexpected skills.bins request: %#v", skillsBinsReq)
 	}
 

@@ -19,7 +19,12 @@ import (
 )
 
 func TestHandleControlRPCRequest_SupportedMethods(t *testing.T) {
-	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Extra: map[string]any{
+		"extensions": map[string]any{"entries": map[string]any{
+			"codegen": map[string]any{"enabled": true, "gateway_methods": []any{"ext.codegen.run", "ext.codegen.status"}},
+			"disabled": map[string]any{"enabled": false, "gateway_methods": []any{"ext.disabled"}},
+		}},
+	}})
 	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
 		Method:     methods.MethodSupportedMethods,
@@ -31,6 +36,17 @@ func TestHandleControlRPCRequest_SupportedMethods(t *testing.T) {
 	list, ok := res.Result.([]string)
 	if !ok || len(list) == 0 {
 		t.Fatalf("unexpected result: %#v", res.Result)
+	}
+	contains := func(target string) bool {
+		for _, method := range list {
+			if method == target {
+				return true
+			}
+		}
+		return false
+	}
+	if !contains("ext.codegen.run") || !contains("ext.codegen.status") || contains("ext.disabled") {
+		t.Fatalf("unexpected extension method projection in supported methods: %#v", list)
 	}
 }
 
@@ -167,7 +183,15 @@ func TestMapGatewayWSError(t *testing.T) {
 	if shape == nil || shape.Code != "INVALID_REQUEST" {
 		t.Fatalf("unexpected shape for unknown method: %#v", shape)
 	}
-	shape = mapGatewayWSError(fmt.Errorf("forbidden"))
+	shape = mapGatewayWSError(fmt.Errorf("unknown agent id \"ghost\""))
+	if shape == nil || shape.Code != "INVALID_REQUEST" {
+		t.Fatalf("unexpected shape for unknown agent: %#v", shape)
+	}
+	shape = mapGatewayWSError(fmt.Errorf("run not found"))
+	if shape == nil || shape.Code != "INVALID_REQUEST" {
+		t.Fatalf("unexpected shape for run not found: %#v", shape)
+	}
+	shape = mapGatewayWSError(fmt.Errorf("forbidden: requires pairing"))
 	if shape == nil || shape.Code != "NOT_LINKED" {
 		t.Fatalf("unexpected shape for forbidden: %#v", shape)
 	}
@@ -175,6 +199,15 @@ func TestMapGatewayWSError(t *testing.T) {
 	shape = mapGatewayWSError(conflict)
 	if shape == nil || shape.Code != "INVALID_REQUEST" {
 		t.Fatalf("unexpected shape for precondition conflict: %#v", shape)
+	}
+}
+
+func TestDefaultAgentIDCanonicalMain(t *testing.T) {
+	if got := defaultAgentID(""); got != "main" {
+		t.Fatalf("expected empty agent id to canonicalize to main, got: %q", got)
+	}
+	if got := defaultAgentID(" MAIN "); got != "main" {
+		t.Fatalf("expected MAIN agent id to canonicalize to main, got: %q", got)
 	}
 }
 
@@ -392,6 +425,15 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 		t.Fatalf("dm.policy=%q want open after patch", got)
 	}
 
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigPatch,
+		Params:     json.RawMessage(`{"patch":{"plugins":{"entries":{"codegen":{"enabled":true,"gatewayMethods":["ext.codegen.run"]}}}}}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.patch plugins error: %v", err)
+	}
+
 	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigSchema,
@@ -407,6 +449,31 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 	fields, ok := schema["fields"].([]string)
 	if !ok || len(fields) == 0 {
 		t.Fatalf("unexpected config.schema payload: %#v", res.Result)
+	}
+	plugins, _ := schema["plugins"].(map[string]any)
+	entries, _ := plugins["entries"].([]map[string]any)
+	if len(entries) == 0 {
+		t.Fatalf("expected plugin schema entries in config.schema payload: %#v", schema)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSupportedMethods,
+		Params:     json.RawMessage(`[]`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("supported.methods error: %v", err)
+	}
+	list, _ := res.Result.([]string)
+	hasExtMethod := false
+	for _, method := range list {
+		if method == "ext.codegen.run" {
+			hasExtMethod = true
+			break
+		}
+	}
+	if !hasExtMethod {
+		t.Fatalf("expected ext.codegen.run in supported methods after plugin patch: %#v", list)
 	}
 }
 
@@ -625,7 +692,12 @@ func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
 func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 	store := newTestStore()
 	docs := state.NewDocsRepository(store, "author")
-	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Extra: map[string]any{
+		"extensions": map[string]any{"entries": map[string]any{
+			"codegen": map[string]any{"enabled": true, "tools": []any{map[string]any{"id": "codegen.apply", "label": "Codegen Apply", "optional": true}, map[string]any{"id": "apply_patch", "label": "Plugin Patch"}}},
+			"simple":  map[string]any{"enabled": true, "tools": []string{"simple.tool"}},
+		}},
+	}})
 	tools := agent.NewToolRegistry()
 	tools.Register("memory.search", func(context.Context, map[string]any) (string, error) {
 		return "[]", nil
@@ -653,17 +725,107 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		t.Fatalf("tools.catalog error: %v", err)
 	}
 	payload, _ = res.Result.(map[string]any)
-	if payload["agent_id"] != "main" {
+	if payload["agentId"] != "main" {
 		t.Fatalf("unexpected tools.catalog payload: %#v", res.Result)
 	}
+	groups, ok := payload["groups"].([]map[string]any)
+	if !ok {
+		t.Fatalf("unexpected groups shape: %#v", payload["groups"])
+	}
+	hasPlugin := false
+	hasCodegenTool := false
+	hasSimpleTool := false
+	hasConflictingPluginTool := false
+	for _, group := range groups {
+		if group["source"] != "core" && group["source"] != "plugin" {
+			t.Fatalf("unexpected non-parity group source in tools.catalog payload: %#v", group)
+		}
+		if group["source"] == "plugin" {
+			hasPlugin = true
+			if _, ok := group["pluginId"]; !ok {
+				t.Fatalf("expected pluginId field on plugin group, got: %#v", group)
+			}
+			if toolsList, ok := group["tools"].([]map[string]any); ok {
+				for _, toolEntry := range toolsList {
+					if toolEntry["id"] == "codegen.apply" {
+						hasCodegenTool = true
+						if toolEntry["pluginId"] != "codegen" {
+							t.Fatalf("expected plugin id on tool entry, got: %#v", toolEntry)
+						}
+						if _, ok := toolEntry["defaultProfiles"]; !ok {
+							t.Fatalf("expected defaultProfiles on tool entry, got: %#v", toolEntry)
+						}
+					}
+					if toolEntry["id"] == "simple.tool" {
+						hasSimpleTool = true
+					}
+					if toolEntry["id"] == "apply_patch" {
+						hasConflictingPluginTool = true
+					}
+				}
+			}
+		}
+	}
+	if !hasPlugin || !hasCodegenTool || !hasSimpleTool {
+		t.Fatalf("expected plugin tool groups with codegen.apply and simple.tool in tools.catalog payload: %#v", payload)
+	}
+	if hasConflictingPluginTool {
+		t.Fatalf("expected plugin tool ids conflicting with core catalog to be suppressed: %#v", payload)
+	}
 
-	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodToolsCatalog,
+		Params:     json.RawMessage(`{"agent_id":"main","include_plugins":false}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("tools.catalog include_plugins=false error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	groups, ok = payload["groups"].([]map[string]any)
+	if !ok {
+		t.Fatalf("unexpected groups shape (include_plugins=false): %#v", payload["groups"])
+	}
+	for _, group := range groups {
+		if group["source"] == "plugin" {
+			t.Fatalf("expected plugin groups excluded when include_plugins=false: %#v", groups)
+		}
+	}
+	hasApplyPatch := false
+	hasTTS := false
+	for _, group := range groups {
+		if group["source"] != "core" {
+			continue
+		}
+		if toolsList, ok := group["tools"].([]map[string]any); ok {
+			for _, toolEntry := range toolsList {
+				if toolEntry["id"] == "apply_patch" {
+					hasApplyPatch = true
+				}
+				if toolEntry["id"] == "tts" {
+					hasTTS = true
+				}
+			}
+		}
+	}
+	if !hasApplyPatch || !hasTTS {
+		t.Fatalf("expected core tools apply_patch and tts in tools.catalog payload: %#v", groups)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
 		Method:     methods.MethodSkillsInstall,
 		Params:     json.RawMessage(`{"name":"nostr-core","install_id":"builtin"}`),
 	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
 	if err != nil {
 		t.Fatalf("skills.install error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["message"] != "Installed" || payload["code"] != 0 {
+		t.Fatalf("unexpected skills.install payload: %#v", payload)
+	}
+	if _, ok := payload["installId"]; ok {
+		t.Fatalf("unexpected non-parity skills.install field installId: %#v", payload)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -675,14 +837,21 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		t.Fatalf("skills.status error: %v", err)
 	}
 	payload, _ = res.Result.(map[string]any)
-	if payload["count"].(int) < 1 {
+	if payload["workspaceDir"] == nil || payload["managedSkillsDir"] == nil {
 		t.Fatalf("unexpected skills.status payload: %#v", res.Result)
+	}
+	if _, ok := payload["count"]; ok {
+		t.Fatalf("unexpected non-parity count field in skills.status payload: %#v", payload)
+	}
+	skills, _ := payload["skills"].([]map[string]any)
+	if len(skills) == 0 || skills[0]["skillKey"] == nil {
+		t.Fatalf("expected OpenClaw-style skill status entries, got: %#v", payload)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
 		Method:     methods.MethodSkillsBins,
-		Params:     json.RawMessage(`{"agent_id":"main"}`),
+		Params:     json.RawMessage(`{}`),
 	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
 	if err != nil {
 		t.Fatalf("skills.bins error: %v", err)
@@ -694,6 +863,22 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 	}
 	if len(bins) == 0 || bins[0] != "nostr-core" {
 		t.Fatalf("unexpected skills.bins payload values: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSkillsUpdate,
+		Params:     json.RawMessage(`{"skill_key":"nostr-core","enabled":true}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("skills.update rpc error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["skillKey"] != "nostr-core" {
+		t.Fatalf("expected skillKey in skills.update response, got: %#v", payload)
+	}
+	if _, ok := payload["skills"]; ok {
+		t.Fatalf("unexpected non-parity skills list in skills.update response: %#v", payload)
 	}
 
 	enabled := true
@@ -717,9 +902,36 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 	if _, hasEnv := updatedEntry["env"]; hasEnv {
 		t.Fatalf("expected env to be removed when empty after cleanup, got: %#v", updatedEntry)
 	}
-	_, _, err = applySkillUpdate(context.Background(), docs, cfgState, methods.SkillsUpdateRequest{SkillKey: "nostr-core", Env: map[string]string{" ": "X"}})
-	if err == nil || !strings.Contains(err.Error(), "env variable key cannot be blank") {
-		t.Fatalf("expected blank key error, got: %v", err)
+	_, updatedEntry, err = applySkillUpdate(context.Background(), docs, cfgState, methods.SkillsUpdateRequest{SkillKey: "nostr-core", Env: map[string]string{" ": "X"}})
+	if err != nil {
+		t.Fatalf("expected blank env key to be ignored, got: %v", err)
+	}
+	if envRaw, hasEnv := updatedEntry["env"]; hasEnv {
+		envMap, _ := envRaw.(map[string]any)
+		if _, exists := envMap[" "]; exists {
+			t.Fatalf("expected blank env key to be dropped, got: %#v", envMap)
+		}
+	}
+
+	cfgWithLegacyCase := cfgState.Get()
+	entries := extractSkillEntries(cfgWithLegacyCase)
+	delete(entries, "nostr-core")
+	entries["NoStr-Core"] = map[string]any{"enabled": true}
+	cfgWithLegacyCase = configWithSkillEntries(cfgWithLegacyCase, entries)
+	if _, err := docs.PutConfig(context.Background(), cfgWithLegacyCase); err != nil {
+		t.Fatalf("seed mixed-case skill key: %v", err)
+	}
+	cfgState.Set(cfgWithLegacyCase)
+	_, _, err = applySkillUpdate(context.Background(), docs, cfgState, methods.SkillsUpdateRequest{SkillKey: "nostr-core", Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("applySkillUpdate mixed-case key migration failed: %v", err)
+	}
+	after := extractSkillEntries(cfgState.Get())
+	if _, ok := after["NoStr-Core"]; ok {
+		t.Fatalf("expected mixed-case legacy skill key to be removed: %#v", after)
+	}
+	if _, ok := after["nostr-core"]; !ok {
+		t.Fatalf("expected normalized skill key to exist: %#v", after)
 	}
 }
 
@@ -739,10 +951,40 @@ func TestHandleControlRPCRequest_SkillsStatusUnknownAgent(t *testing.T) {
 	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
 		Method:     methods.MethodSkillsBins,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("expected skills.bins to ignore agent scope and succeed, got: %v", err)
+	}
+}
+
+func TestHandleControlRPCRequest_ToolsCatalogUnknownAgent(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	_, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodToolsCatalog,
 		Params:     json.RawMessage(`{"agent_id":"ghost"}`),
 	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
 	if err == nil || !strings.Contains(err.Error(), "unknown agent id") {
-		t.Fatalf("expected unknown agent id error for skills.bins, got: %v", err)
+		t.Fatalf("expected unknown agent id error for tools.catalog, got: %v", err)
+	}
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodToolsCatalog,
+		Params:     json.RawMessage(`{"agent_id":"MAIN"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("expected case-insensitive main agent id to be accepted, got: %v", err)
+	}
+	payload, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected tools.catalog result for MAIN agent: %#v", res.Result)
+	}
+	if payload["agentId"] != "main" {
+		t.Fatalf("expected canonical main agent id in response, got: %#v", payload)
 	}
 }
 

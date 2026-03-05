@@ -140,6 +140,7 @@ type ServerOptions struct {
 	GetListWithEvent     func(context.Context, string) (state.ListDoc, state.Event, error)
 	GetConfigWithEvent   func(context.Context) (state.ConfigDoc, state.Event, error)
 	GetRelayPolicy       func(context.Context) (methods.RelayPolicyResponse, error)
+	SupportedMethods     func(context.Context) ([]string, error)
 }
 
 func Start(ctx context.Context, opts ServerOptions) error {
@@ -399,6 +400,13 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 
 	switch method {
 	case methods.MethodSupportedMethods:
+		if opts.SupportedMethods != nil {
+			list, err := opts.SupportedMethods(ctx)
+			if err != nil {
+				return nil, http.StatusInternalServerError, err
+			}
+			return list, http.StatusOK, nil
+		}
 		return methods.SupportedMethods(), http.StatusOK, nil
 	case methods.MethodHealth:
 		return map[string]any{"ok": true}, http.StatusOK, nil
@@ -2392,7 +2400,14 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		}
 		return map[string]any{"ok": true, "config": next}, http.StatusOK, nil
 	case methods.MethodConfigSchema:
-		return methods.ConfigSchema(), http.StatusOK, nil
+		if opts.GetConfig == nil {
+			return methods.ConfigSchema(), http.StatusOK, nil
+		}
+		cfg, err := opts.GetConfig(ctx)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ConfigSchema(cfg), http.StatusOK, nil
 	default:
 		return nil, http.StatusNotFound, fmt.Errorf("unknown method %q", method)
 	}

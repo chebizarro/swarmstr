@@ -176,7 +176,7 @@ func TestSkillsBinsNilSafety(t *testing.T) {
 		},
 	}
 
-	result := applySkillsBins(cfg, methods.SkillsBinsRequest{AgentID: "main"})
+	result := applySkillsBins(cfg)
 	bins, ok := result["bins"].([]string)
 	if !ok {
 		t.Fatalf("expected bins []string, got %T", result["bins"])

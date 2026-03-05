@@ -309,7 +309,7 @@ func main() {
 	defer controlBus.Close()
 
 	if gatewayWSAddr != "" {
-		wsMethods := append([]string{}, methods.SupportedMethods()...)
+		wsMethods := append([]string{}, supportedMethods(configState.Get())...)
 		wsMethods = append(wsMethods, gatewayws.MethodEventsList, gatewayws.MethodEventsSubscribe, gatewayws.MethodEventsUnsubscribe)
 		if _, err := gatewayws.Start(ctx, gatewayws.RuntimeOptions{
 			Addr:                   gatewayWSAddr,
@@ -564,35 +564,36 @@ func main() {
 				ListModels: func(_ context.Context, _ methods.ModelsListRequest) (map[string]any, error) {
 					return map[string]any{"models": defaultModelsCatalog()}, nil
 				},
-				ToolsCatalog: func(_ context.Context, req methods.ToolsCatalogRequest) (map[string]any, error) {
-					return map[string]any{"agent_id": defaultAgentID(req.AgentID), "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(tools, req.IncludePlugins)}, nil
+				ToolsCatalog: func(ctx context.Context, req methods.ToolsCatalogRequest) (map[string]any, error) {
+					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+						return nil, err
+					}
+					cfg := configState.Get()
+					agentID := defaultAgentID(req.AgentID)
+					return map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(cfg, tools, req.IncludePlugins)}, nil
 				},
 				SkillsStatus: func(ctx context.Context, req methods.SkillsStatusRequest) (map[string]any, error) {
 					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
 						return nil, err
 					}
-					entries := currentSkillEntries(configState.Get())
-					return map[string]any{"agent_id": defaultAgentID(req.AgentID), "skills": entries, "count": len(entries)}, nil
+					return buildSkillsStatusReport(configState.Get(), defaultAgentID(req.AgentID)), nil
 				},
-				SkillsBins: func(ctx context.Context, req methods.SkillsBinsRequest) (map[string]any, error) {
-					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
-						return nil, err
-					}
-					return applySkillsBins(configState.Get(), req), nil
+				SkillsBins: func(_ context.Context, req methods.SkillsBinsRequest) (map[string]any, error) {
+					_ = req
+					return applySkillsBins(configState.Get()), nil
 				},
 				SkillsInstall: func(ctx context.Context, req methods.SkillsInstallRequest) (map[string]any, error) {
-					updated, err := applySkillInstall(ctx, docsRepo, configState, req)
-					if err != nil {
+					if _, err := applySkillInstall(ctx, docsRepo, configState, req); err != nil {
 						return nil, err
 					}
-					return map[string]any{"ok": true, "name": req.Name, "install_id": req.InstallID, "timeout_ms": req.TimeoutMS, "skills": currentSkillEntries(updated)}, nil
+					return map[string]any{"ok": true, "message": "Installed", "stdout": "", "stderr": "", "code": 0}, nil
 				},
 				SkillsUpdate: func(ctx context.Context, req methods.SkillsUpdateRequest) (map[string]any, error) {
-					updated, entry, err := applySkillUpdate(ctx, docsRepo, configState, req)
+					_, entry, err := applySkillUpdate(ctx, docsRepo, configState, req)
 					if err != nil {
 						return nil, err
 					}
-					return map[string]any{"ok": true, "skill_key": req.SkillKey, "config": entry, "skills": currentSkillEntries(updated)}, nil
+					return map[string]any{"ok": true, "skillKey": strings.ToLower(strings.TrimSpace(req.SkillKey)), "config": entry}, nil
 				},
 				NodePairRequest: func(ctx context.Context, req methods.NodePairRequest) (map[string]any, error) {
 					return applyNodePairRequest(ctx, docsRepo, configState, req)
@@ -767,6 +768,9 @@ func main() {
 				},
 				GetConfigWithEvent: func(ctx context.Context) (state.ConfigDoc, state.Event, error) {
 					return docsRepo.GetConfigWithEvent(ctx)
+				},
+				SupportedMethods: func(_ context.Context) ([]string, error) {
+					return supportedMethods(configState.Get()), nil
 				},
 				GetRelayPolicy: func(context.Context) (methods.RelayPolicyResponse, error) {
 					current := configState.Get()
@@ -1219,15 +1223,19 @@ func handleControlRPCRequest(
 		usageState.RecordControl()
 	}
 	if !decision.Allowed {
-		if strings.TrimSpace(decision.Reason) == "" {
+		reason := strings.TrimSpace(decision.Reason)
+		if reason == "" {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("forbidden")
 		}
-		return nostruntime.ControlRPCResult{}, errors.New(decision.Reason)
+		if !strings.HasPrefix(strings.ToLower(reason), "forbidden") {
+			reason = "forbidden: " + reason
+		}
+		return nostruntime.ControlRPCResult{}, errors.New(reason)
 	}
 
 	switch method {
 	case methods.MethodSupportedMethods:
-		return nostruntime.ControlRPCResult{Result: methods.SupportedMethods()}, nil
+		return nostruntime.ControlRPCResult{Result: supportedMethods(cfg)}, nil
 	case methods.MethodHealth:
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
 	case methods.MethodDoctorMemoryStatus:
@@ -1733,7 +1741,11 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": defaultAgentID(req.AgentID), "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(tools, req.IncludePlugins)}}, nil
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		agentID := defaultAgentID(req.AgentID)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(cfg, tools, req.IncludePlugins)}}, nil
 	case methods.MethodSkillsStatus:
 		req, err := methods.DecodeSkillsStatusParams(in.Params)
 		if err != nil {
@@ -1746,8 +1758,8 @@ func handleControlRPCRequest(
 		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		entries := currentSkillEntries(cfg)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": defaultAgentID(req.AgentID), "skills": entries, "count": len(entries)}}, nil
+		agentID := defaultAgentID(req.AgentID)
+		return nostruntime.ControlRPCResult{Result: buildSkillsStatusReport(cfg, agentID)}, nil
 	case methods.MethodSkillsBins:
 		req, err := methods.DecodeSkillsBinsParams(in.Params)
 		if err != nil {
@@ -1757,10 +1769,8 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
-			return nostruntime.ControlRPCResult{}, err
-		}
-		return nostruntime.ControlRPCResult{Result: applySkillsBins(cfg, req)}, nil
+		_ = req
+		return nostruntime.ControlRPCResult{Result: applySkillsBins(cfg)}, nil
 	case methods.MethodSkillsInstall:
 		req, err := methods.DecodeSkillsInstallParams(in.Params)
 		if err != nil {
@@ -1770,11 +1780,10 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		updated, err := applySkillInstall(ctx, docsRepo, configState, req)
-		if err != nil {
+		if _, err := applySkillInstall(ctx, docsRepo, configState, req); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "name": req.Name, "install_id": req.InstallID, "timeout_ms": req.TimeoutMS, "skills": currentSkillEntries(updated)}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "message": "Installed", "stdout": "", "stderr": "", "code": 0}}, nil
 	case methods.MethodSkillsUpdate:
 		req, err := methods.DecodeSkillsUpdateParams(in.Params)
 		if err != nil {
@@ -1784,11 +1793,11 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		updated, entry, err := applySkillUpdate(ctx, docsRepo, configState, req)
+		_, entry, err := applySkillUpdate(ctx, docsRepo, configState, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "skill_key": req.SkillKey, "config": entry, "skills": currentSkillEntries(updated)}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "skillKey": strings.ToLower(strings.TrimSpace(req.SkillKey)), "config": entry}}, nil
 	case methods.MethodNodePairRequest:
 		req, err := methods.DecodeNodePairRequestParams(in.Params)
 		if err != nil {
@@ -2803,7 +2812,7 @@ controlListPreconditionsSatisfied:
 		applyRuntimeRelayPolicy(dmBus, controlBus, next)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
 	case methods.MethodConfigSchema:
-		return nostruntime.ControlRPCResult{Result: methods.ConfigSchema()}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ConfigSchema(cfg)}, nil
 	default:
 		return nostruntime.ControlRPCResult{}, fmt.Errorf("unknown method %q", method)
 	}
@@ -2854,10 +2863,11 @@ func mapGatewayWSError(err error) *gatewayprotocol.ErrorShape {
 		return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeInvalidRequest, "not found", nil)
 	}
 	msg := strings.TrimSpace(err.Error())
-	if strings.HasPrefix(msg, "unknown method") || strings.Contains(msg, "invalid") || strings.Contains(msg, "required") {
+	lower := strings.ToLower(msg)
+	if strings.HasPrefix(lower, "unknown method") || strings.Contains(lower, "unknown agent") || strings.Contains(lower, "not found") || strings.Contains(lower, "invalid") || strings.Contains(lower, "required") {
 		return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeInvalidRequest, msg, nil)
 	}
-	if strings.Contains(strings.ToLower(msg), "forbidden") || strings.Contains(strings.ToLower(msg), "auth") {
+	if strings.Contains(lower, "forbidden") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "not linked") {
 		return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeNotLinked, msg, nil)
 	}
 	return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeUnavailable, msg, nil)
@@ -3005,7 +3015,7 @@ func applyRuntimeRelayPolicy(dmBus *nostruntime.DMBus, controlBus *nostruntime.C
 
 func defaultAgentID(id string) string {
 	id = strings.TrimSpace(id)
-	if id == "" {
+	if id == "" || strings.EqualFold(id, "main") {
 		return "main"
 	}
 	return id
@@ -3016,16 +3026,17 @@ func isKnownAgentID(ctx context.Context, docsRepo *state.DocsRepository, id stri
 	if agentID == "main" || docsRepo == nil {
 		return nil
 	}
-	agents, err := docsRepo.ListAgents(ctx, 1000)
-	if err != nil {
-		return fmt.Errorf("failed to list agents: %w", err)
-	}
-	for _, doc := range agents {
-		if strings.EqualFold(doc.AgentID, agentID) && !doc.Deleted {
-			return nil
+	doc, err := docsRepo.GetAgent(ctx, agentID)
+	if err == nil {
+		if doc.Deleted {
+			return fmt.Errorf("unknown agent id %q", agentID)
 		}
+		return nil
 	}
-	return fmt.Errorf("unknown agent id %q", agentID)
+	if errors.Is(err, state.ErrNotFound) {
+		return fmt.Errorf("unknown agent id %q", agentID)
+	}
+	return fmt.Errorf("failed to get agent: %w", err)
 }
 
 func defaultModelsCatalog() []map[string]any {
@@ -3044,22 +3055,303 @@ func defaultToolProfiles() []map[string]any {
 	}
 }
 
-func buildToolCatalogGroups(registry *agent.ToolRegistry, includePlugins *bool) []map[string]any {
-	coreTools := []map[string]any{}
-	if registry != nil {
-		for _, toolName := range registry.List() {
-			coreTools = append(coreTools, map[string]any{
-				"id":               toolName,
-				"label":            toolName,
-				"description":      "Registered runtime tool",
-				"source":           "core",
-				"default_profiles": []string{"full"},
-			})
+func supportedMethods(cfg state.ConfigDoc) []string {
+	base := append([]string{}, methods.SupportedMethods()...)
+	seen := map[string]struct{}{}
+	for _, method := range base {
+		seen[method] = struct{}{}
+	}
+	for _, method := range extensionGatewayMethods(cfg) {
+		if _, ok := seen[method]; ok {
+			continue
+		}
+		seen[method] = struct{}{}
+		base = append(base, method)
+	}
+	sort.Strings(base)
+	return base
+}
+
+func extensionGatewayMethods(cfg state.ConfigDoc) []string {
+	if cfg.Extra == nil {
+		return nil
+	}
+	rawExt, ok := cfg.Extra["extensions"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawEntries, ok := rawExt["entries"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	methodsOut := make([]string, 0)
+	seen := map[string]struct{}{}
+	push := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		if _, ok := seen[v]; ok {
+			return
+		}
+		seen[v] = struct{}{}
+		methodsOut = append(methodsOut, v)
+	}
+	for _, rawEntry := range rawEntries {
+		entry, ok := rawEntry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if enabled, ok := entry["enabled"].(bool); ok && !enabled {
+			continue
+		}
+		for _, key := range []string{"gateway_methods", "gatewayMethods"} {
+			switch vals := entry[key].(type) {
+			case []string:
+				for _, method := range vals {
+					push(method)
+				}
+			case []any:
+				for _, raw := range vals {
+					if method, ok := raw.(string); ok {
+						push(method)
+					}
+				}
+			}
 		}
 	}
-	groups := []map[string]any{{"id": "core", "label": "Core", "source": "core", "tools": coreTools}}
+	sort.Strings(methodsOut)
+	return methodsOut
+}
+
+type coreToolSection struct {
+	ID    string
+	Label string
+}
+
+type coreToolDef struct {
+	ID          string
+	Label       string
+	Description string
+	SectionID   string
+	Profiles    []string
+}
+
+var coreToolSections = []coreToolSection{
+	{ID: "fs", Label: "Files"},
+	{ID: "runtime", Label: "Runtime"},
+	{ID: "web", Label: "Web"},
+	{ID: "memory", Label: "Memory"},
+	{ID: "sessions", Label: "Sessions"},
+	{ID: "ui", Label: "UI"},
+	{ID: "messaging", Label: "Messaging"},
+	{ID: "automation", Label: "Automation"},
+	{ID: "nodes", Label: "Nodes"},
+	{ID: "agents", Label: "Agents"},
+	{ID: "media", Label: "Media"},
+}
+
+var coreToolCatalog = []coreToolDef{
+	{ID: "read", Label: "read", Description: "Read file contents", SectionID: "fs", Profiles: []string{"coding"}},
+	{ID: "write", Label: "write", Description: "Create or overwrite files", SectionID: "fs", Profiles: []string{"coding"}},
+	{ID: "edit", Label: "edit", Description: "Make precise edits", SectionID: "fs", Profiles: []string{"coding"}},
+	{ID: "apply_patch", Label: "apply_patch", Description: "Patch files", SectionID: "fs", Profiles: []string{"coding"}},
+	{ID: "exec", Label: "exec", Description: "Run shell commands", SectionID: "runtime", Profiles: []string{"coding"}},
+	{ID: "process", Label: "process", Description: "Manage background processes", SectionID: "runtime", Profiles: []string{"coding"}},
+	{ID: "web_search", Label: "web_search", Description: "Search the web", SectionID: "web", Profiles: []string{}},
+	{ID: "web_fetch", Label: "web_fetch", Description: "Fetch web content", SectionID: "web", Profiles: []string{}},
+	{ID: "memory_search", Label: "memory_search", Description: "Semantic search", SectionID: "memory", Profiles: []string{"coding"}},
+	{ID: "memory_get", Label: "memory_get", Description: "Read memory files", SectionID: "memory", Profiles: []string{"coding"}},
+	{ID: "sessions_list", Label: "sessions_list", Description: "List sessions", SectionID: "sessions", Profiles: []string{"coding", "messaging"}},
+	{ID: "sessions_history", Label: "sessions_history", Description: "Session history", SectionID: "sessions", Profiles: []string{"coding", "messaging"}},
+	{ID: "sessions_send", Label: "sessions_send", Description: "Send to session", SectionID: "sessions", Profiles: []string{"coding", "messaging"}},
+	{ID: "sessions_spawn", Label: "sessions_spawn", Description: "Spawn sub-agent", SectionID: "sessions", Profiles: []string{"coding"}},
+	{ID: "subagents", Label: "subagents", Description: "Manage sub-agents", SectionID: "sessions", Profiles: []string{"coding"}},
+	{ID: "session_status", Label: "session_status", Description: "Session status", SectionID: "sessions", Profiles: []string{"minimal", "coding", "messaging"}},
+	{ID: "browser", Label: "browser", Description: "Control web browser", SectionID: "ui", Profiles: []string{}},
+	{ID: "canvas", Label: "canvas", Description: "Control canvases", SectionID: "ui", Profiles: []string{}},
+	{ID: "message", Label: "message", Description: "Send messages", SectionID: "messaging", Profiles: []string{"messaging"}},
+	{ID: "cron", Label: "cron", Description: "Schedule tasks", SectionID: "automation", Profiles: []string{"coding"}},
+	{ID: "gateway", Label: "gateway", Description: "Gateway control", SectionID: "automation", Profiles: []string{}},
+	{ID: "nodes", Label: "nodes", Description: "Nodes + devices", SectionID: "nodes", Profiles: []string{}},
+	{ID: "agents_list", Label: "agents_list", Description: "List agents", SectionID: "agents", Profiles: []string{}},
+	{ID: "image", Label: "image", Description: "Image understanding", SectionID: "media", Profiles: []string{"coding"}},
+	{ID: "tts", Label: "tts", Description: "Text-to-speech conversion", SectionID: "media", Profiles: []string{}},
+}
+
+func buildToolCatalogGroups(cfg state.ConfigDoc, registry *agent.ToolRegistry, includePlugins *bool) []map[string]any {
+	sectionTools := map[string][]map[string]any{}
+	seen := map[string]struct{}{}
+	addCore := func(sectionID, id, label, description string, profiles []string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		entry := map[string]any{
+			"id":              id,
+			"label":           label,
+			"description":     description,
+			"source":          "core",
+			"defaultProfiles": profiles,
+		}
+		sectionTools[sectionID] = append(sectionTools[sectionID], entry)
+	}
+	for _, tool := range coreToolCatalog {
+		addCore(tool.SectionID, tool.ID, tool.Label, tool.Description, tool.Profiles)
+	}
+	_ = registry
+	groups := make([]map[string]any, 0, len(coreToolSections)+4)
+	for _, section := range coreToolSections {
+		tools := sectionTools[section.ID]
+		if len(tools) == 0 {
+			continue
+		}
+		sort.Slice(tools, func(i, j int) bool {
+			return fmt.Sprintf("%v", tools[i]["id"]) < fmt.Sprintf("%v", tools[j]["id"])
+		})
+		groups = append(groups, map[string]any{
+			"id":     section.ID,
+			"label":  section.Label,
+			"source": "core",
+			"tools":  tools,
+		})
+	}
 	if includePlugins != nil && !*includePlugins {
 		return groups
+	}
+	for _, group := range buildPluginToolGroups(cfg, seen) {
+		groups = append(groups, group)
+	}
+	return groups
+}
+
+func buildPluginToolGroups(cfg state.ConfigDoc, seen map[string]struct{}) []map[string]any {
+	if cfg.Extra == nil {
+		return nil
+	}
+	rawExt, ok := cfg.Extra["extensions"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawEntries, ok := rawExt["entries"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	pluginIDs := make([]string, 0, len(rawEntries))
+	for pluginID := range rawEntries {
+		pluginIDs = append(pluginIDs, pluginID)
+	}
+	sort.Strings(pluginIDs)
+	groups := make([]map[string]any, 0, len(pluginIDs))
+	for _, pluginID := range pluginIDs {
+		rawEntry, ok := rawEntries[pluginID].(map[string]any)
+		if !ok {
+			continue
+		}
+		if enabled, ok := rawEntry["enabled"].(bool); ok && !enabled {
+			continue
+		}
+		tools := make([]map[string]any, 0)
+		switch rawTools := rawEntry["tools"].(type) {
+		case []string:
+			for _, t := range rawTools {
+				trimmed := strings.TrimSpace(t)
+				if trimmed == "" {
+					continue
+				}
+				if _, exists := seen[trimmed]; exists {
+					continue
+				}
+				seen[trimmed] = struct{}{}
+				tools = append(tools, map[string]any{
+					"id":              trimmed,
+					"label":           trimmed,
+					"description":     "Plugin tool",
+					"source":          "plugin",
+					"pluginId":        pluginID,
+					"defaultProfiles": []string{},
+				})
+			}
+		case []any:
+			for _, rawTool := range rawTools {
+				switch t := rawTool.(type) {
+				case string:
+					trimmed := strings.TrimSpace(t)
+					if trimmed == "" {
+						continue
+					}
+					if _, exists := seen[trimmed]; exists {
+						continue
+					}
+					seen[trimmed] = struct{}{}
+					tools = append(tools, map[string]any{
+						"id":              trimmed,
+						"label":           trimmed,
+						"description":     "Plugin tool",
+						"source":          "plugin",
+						"pluginId":        pluginID,
+						"defaultProfiles": []string{},
+					})
+				case map[string]any:
+					idRaw, ok := t["id"].(string)
+					if !ok {
+						continue
+					}
+					id := strings.TrimSpace(idRaw)
+					if id == "" {
+						continue
+					}
+					if _, exists := seen[id]; exists {
+						continue
+					}
+					seen[id] = struct{}{}
+					label, _ := t["label"].(string)
+					label = strings.TrimSpace(label)
+					if label == "" {
+						label = id
+					}
+					description, _ := t["description"].(string)
+					description = strings.TrimSpace(description)
+					if description == "" {
+						description = "Plugin tool"
+					}
+					optional := false
+					if v, ok := t["optional"].(bool); ok {
+						optional = v
+					}
+					profiles := getStringSlice(t, "default_profiles")
+					if len(profiles) == 0 {
+						profiles = getStringSlice(t, "defaultProfiles")
+					}
+					tools = append(tools, map[string]any{
+						"id":              id,
+						"label":           label,
+						"description":     description,
+						"source":          "plugin",
+						"pluginId":        pluginID,
+						"optional":        optional,
+						"defaultProfiles": profiles,
+					})
+				}
+			}
+		}
+		if len(tools) == 0 {
+			continue
+		}
+		sort.Slice(tools, func(i, j int) bool {
+			return fmt.Sprintf("%v", tools[i]["id"]) < fmt.Sprintf("%v", tools[j]["id"])
+		})
+		groups = append(groups, map[string]any{
+			"id":       "plugin:" + pluginID,
+			"label":    pluginID,
+			"source":   "plugin",
+			"pluginId": pluginID,
+			"tools":    tools,
+		})
 	}
 	return groups
 }
@@ -3117,7 +3409,7 @@ func currentSkillEntries(cfg state.ConfigDoc) []map[string]any {
 	sort.Strings(keys)
 	out := make([]map[string]any, 0, len(keys))
 	for _, key := range keys {
-		entry := map[string]any{"skill_key": key}
+		entry := map[string]any{"skillKey": key}
 		for ek, ev := range entries[key] {
 			entry[ek] = ev
 		}
@@ -3126,8 +3418,74 @@ func currentSkillEntries(cfg state.ConfigDoc) []map[string]any {
 	return out
 }
 
-func applySkillsBins(cfg state.ConfigDoc, req methods.SkillsBinsRequest) map[string]any {
-	_ = req
+func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any {
+	emptyRequirements := func() map[string]any {
+		return map[string]any{"bins": []string{}, "anyBins": []string{}, "env": []string{}, "config": []string{}, "os": []string{}}
+	}
+	skills := make([]map[string]any, 0)
+	for _, entry := range currentSkillEntries(cfg) {
+		skillKey := strings.TrimSpace(fmt.Sprintf("%v", entry["skillKey"]))
+		if skillKey == "" {
+			continue
+		}
+		name, _ := entry["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			name = skillKey
+		}
+		description, _ := entry["description"].(string)
+		description = strings.TrimSpace(description)
+		source, _ := entry["source"].(string)
+		source = strings.TrimSpace(source)
+		if source == "" {
+			source = "swarmstr-config"
+		}
+		enabled := true
+		if v, ok := entry["enabled"].(bool); ok {
+			enabled = v
+		}
+		requirements := emptyRequirements()
+		if reqMap, ok := entry["requirements"].(map[string]any); ok {
+			requirements = map[string]any{
+				"bins":    getStringSlice(reqMap, "bins"),
+				"anyBins": getStringSlice(reqMap, "anyBins"),
+				"env":     getStringSlice(reqMap, "env"),
+				"config":  getStringSlice(reqMap, "config"),
+				"os":      getStringSlice(reqMap, "os"),
+			}
+		}
+		filePath, _ := entry["filePath"].(string)
+		baseDir, _ := entry["baseDir"].(string)
+		skills = append(skills, map[string]any{
+			"name":              name,
+			"description":       description,
+			"source":            source,
+			"bundled":           false,
+			"filePath":          strings.TrimSpace(filePath),
+			"baseDir":           strings.TrimSpace(baseDir),
+			"skillKey":          skillKey,
+			"always":            false,
+			"disabled":          !enabled,
+			"blockedByAllowlist": false,
+			"eligible":          enabled,
+			"requirements":      requirements,
+			"missing":           emptyRequirements(),
+			"configChecks":      []map[string]any{},
+			"install":           []map[string]any{},
+		})
+	}
+	sort.Slice(skills, func(i, j int) bool {
+		return fmt.Sprintf("%v", skills[i]["skillKey"]) < fmt.Sprintf("%v", skills[j]["skillKey"])
+	})
+	workspaceDir := "/agents/" + defaultAgentID(agentID)
+	return map[string]any{
+		"workspaceDir":     workspaceDir,
+		"managedSkillsDir": "",
+		"skills":           skills,
+	}
+}
+
+func applySkillsBins(cfg state.ConfigDoc) map[string]any {
 	entries := currentSkillEntries(cfg)
 	seen := map[string]struct{}{}
 	bins := make([]string, 0, len(entries))
@@ -3145,7 +3503,7 @@ func applySkillsBins(cfg state.ConfigDoc, req methods.SkillsBinsRequest) map[str
 	for _, entry := range entries {
 		if binRaw, ok := entry["bin"].(string); ok {
 			push(binRaw)
-		} else if skillKey, ok := entry["skill_key"].(string); ok {
+		} else if skillKey, ok := entry["skillKey"].(string); ok {
 			push(skillKey)
 		}
 		switch rawBins := entry["bins"].(type) {
@@ -3190,7 +3548,23 @@ func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, conf
 func applySkillUpdate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.SkillsUpdateRequest) (state.ConfigDoc, map[string]any, error) {
 	cfg := configState.Get()
 	entries := extractSkillEntries(cfg)
-	entry, ok := entries[req.SkillKey]
+	rawSkillKey := strings.TrimSpace(req.SkillKey)
+	skillKey := strings.ToLower(rawSkillKey)
+	if skillKey == "" {
+		return state.ConfigDoc{}, nil, fmt.Errorf("skill key is required")
+	}
+	entry, ok := entries[skillKey]
+	if !ok {
+		for key, existing := range entries {
+			if strings.EqualFold(key, skillKey) {
+				if !ok {
+					entry = existing
+					ok = true
+				}
+				delete(entries, key)
+			}
+		}
+	}
 	if !ok {
 		entry = map[string]any{}
 	}
@@ -3214,7 +3588,7 @@ func applySkillUpdate(ctx context.Context, docsRepo *state.DocsRepository, confi
 		for key, value := range req.Env {
 			trimmedKey := strings.TrimSpace(key)
 			if trimmedKey == "" {
-				return state.ConfigDoc{}, nil, fmt.Errorf("env variable key cannot be blank")
+				continue
 			}
 			trimmedVal := strings.TrimSpace(value)
 			if trimmedVal == "" {
@@ -3230,7 +3604,7 @@ func applySkillUpdate(ctx context.Context, docsRepo *state.DocsRepository, confi
 		}
 	}
 	entry["updated_at"] = time.Now().Unix()
-	entries[req.SkillKey] = entry
+	entries[skillKey] = entry
 	next := configWithSkillEntries(cfg, entries)
 	if _, err := docsRepo.PutConfig(ctx, next); err != nil {
 		return state.ConfigDoc{}, nil, err

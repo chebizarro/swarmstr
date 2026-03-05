@@ -361,9 +361,7 @@ type SkillsStatusRequest struct {
 	AgentID string `json:"agent_id,omitempty"`
 }
 
-type SkillsBinsRequest struct {
-	AgentID string `json:"agent_id,omitempty"`
-}
+type SkillsBinsRequest struct{}
 
 type SkillsInstallRequest struct {
 	Name      string `json:"name"`
@@ -1043,7 +1041,6 @@ func (r SkillsStatusRequest) Normalize() (SkillsStatusRequest, error) {
 }
 
 func (r SkillsBinsRequest) Normalize() (SkillsBinsRequest, error) {
-	r.AgentID = normalizeAgentID(r.AgentID)
 	return r, nil
 }
 
@@ -1061,28 +1058,26 @@ func (r SkillsInstallRequest) Normalize() (SkillsInstallRequest, error) {
 }
 
 func (r SkillsUpdateRequest) Normalize() (SkillsUpdateRequest, error) {
-	r.SkillKey = strings.TrimSpace(r.SkillKey)
+	r.SkillKey = strings.ToLower(strings.TrimSpace(r.SkillKey))
 	if r.SkillKey == "" {
 		return r, fmt.Errorf("skill_key is required")
 	}
 	if r.Env == nil {
 		r.Env = map[string]string{}
-	}
-	for key, value := range r.Env {
-		trimmedKey := strings.TrimSpace(key)
-		if trimmedKey == "" {
-			delete(r.Env, key)
-			continue
+	} else {
+		cleaned := make(map[string]string, len(r.Env))
+		for key, value := range r.Env {
+			trimmedKey := strings.TrimSpace(key)
+			if trimmedKey == "" {
+				continue
+			}
+			trimmedValue := strings.TrimSpace(value)
+			if trimmedValue == "" {
+				continue
+			}
+			cleaned[trimmedKey] = trimmedValue
 		}
-		trimmedValue := strings.TrimSpace(value)
-		if trimmedValue == "" {
-			delete(r.Env, key)
-			continue
-		}
-		if trimmedKey != key {
-			delete(r.Env, key)
-		}
-		r.Env[trimmedKey] = trimmedValue
+		r.Env = cleaned
 	}
 	if r.APIKey != nil {
 		trimmed := strings.TrimSpace(*r.APIKey)
