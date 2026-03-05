@@ -535,7 +535,7 @@ func TestDecodeModelsToolsSkillsParams(t *testing.T) {
 }
 
 func TestSupportedMethodsIncludesModelsToolsSkillsMethods(t *testing.T) {
-	required := []string{MethodModelsList, MethodToolsCatalog, MethodSkillsStatus, MethodSkillsInstall, MethodSkillsUpdate}
+	required := []string{MethodModelsList, MethodToolsCatalog, MethodSkillsStatus, MethodSkillsBins, MethodSkillsInstall, MethodSkillsUpdate}
 	for _, want := range required {
 		found := false
 		for _, method := range SupportedMethods() {
@@ -701,6 +701,18 @@ func TestDecodeExecSecretsWizardTalkVoicewakeAndTTSParams(t *testing.T) {
 		t.Fatalf("unexpected exec approval request: %#v", execReq)
 	}
 
+	waitReq, err := DecodeExecApprovalWaitDecisionParams(json.RawMessage(`{"id":"approval-1","timeoutMs":1000}`))
+	if err != nil {
+		t.Fatalf("exec.approval.waitDecision decode error: %v", err)
+	}
+	waitReq, err = waitReq.Normalize()
+	if err != nil {
+		t.Fatalf("exec.approval.waitDecision normalize error: %v", err)
+	}
+	if waitReq.ID != "approval-1" || waitReq.TimeoutMS != 1000 {
+		t.Fatalf("unexpected exec approval wait request: %#v", waitReq)
+	}
+
 	secretsReq, err := DecodeSecretsResolveParams(json.RawMessage(`{"commandName":"memory status","targetIds":["talk.apiKey"]}`))
 	if err != nil {
 		t.Fatalf("secrets.resolve decode error: %v", err)
@@ -737,6 +749,30 @@ func TestDecodeExecSecretsWizardTalkVoicewakeAndTTSParams(t *testing.T) {
 		t.Fatalf("unexpected voicewake.set request: %#v", voicewakeReq)
 	}
 
+	ttsSetReq, err := DecodeTTSSetProviderParams(json.RawMessage(`["openai"]`))
+	if err != nil {
+		t.Fatalf("tts.setProvider decode error: %v", err)
+	}
+	ttsSetReq, err = ttsSetReq.Normalize()
+	if err != nil {
+		t.Fatalf("tts.setProvider normalize error: %v", err)
+	}
+	if ttsSetReq.Provider != "openai" {
+		t.Fatalf("unexpected tts.setProvider request: %#v", ttsSetReq)
+	}
+
+	skillsBinsReq, err := DecodeSkillsBinsParams(json.RawMessage(`{"agent_id":"main"}`))
+	if err != nil {
+		t.Fatalf("skills.bins decode error: %v", err)
+	}
+	skillsBinsReq, err = skillsBinsReq.Normalize()
+	if err != nil {
+		t.Fatalf("skills.bins normalize error: %v", err)
+	}
+	if skillsBinsReq.AgentID != "main" {
+		t.Fatalf("unexpected skills.bins request: %#v", skillsBinsReq)
+	}
+
 	ttsReq, err := DecodeTTSConvertParams(json.RawMessage(`{"text":"hello","provider":"openai"}`))
 	if err != nil {
 		t.Fatalf("tts.convert decode error: %v", err)
@@ -757,6 +793,7 @@ func TestSupportedMethodsIncludesOperationalBundles(t *testing.T) {
 		MethodExecApprovalsNodeGet,
 		MethodExecApprovalsNodeSet,
 		MethodExecApprovalRequest,
+		MethodExecApprovalWaitDecision,
 		MethodExecApprovalResolve,
 		MethodSecretsReload,
 		MethodSecretsResolve,
@@ -770,10 +807,69 @@ func TestSupportedMethodsIncludesOperationalBundles(t *testing.T) {
 		MethodVoicewakeSet,
 		MethodTTSStatus,
 		MethodTTSProviders,
+		MethodTTSSetProvider,
 		MethodTTSEnable,
 		MethodTTSDisable,
 		MethodTTSConvert,
 	}
+	for _, want := range required {
+		found := false
+		for _, method := range SupportedMethods() {
+			if method == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s not found in supported methods", want)
+		}
+	}
+}
+
+func TestNodeSurfaceDecodeAndNormalize(t *testing.T) {
+	listReq, err := DecodeNodeListParams(json.RawMessage(`[10]`))
+	if err != nil {
+		t.Fatalf("node.list decode error: %v", err)
+	}
+	listReq, err = listReq.Normalize()
+	if err != nil {
+		t.Fatalf("node.list normalize error: %v", err)
+	}
+	if listReq.Limit != 10 {
+		t.Fatalf("unexpected node.list request: %#v", listReq)
+	}
+
+	describeReq, err := DecodeNodeDescribeParams(json.RawMessage(`{"node_id":"n1"}`))
+	if err != nil {
+		t.Fatalf("node.describe decode error: %v", err)
+	}
+	if _, err := describeReq.Normalize(); err != nil {
+		t.Fatalf("node.describe normalize error: %v", err)
+	}
+
+	renameReq, err := DecodeNodeRenameParams(json.RawMessage(`["n1","Kitchen Mac"]`))
+	if err != nil {
+		t.Fatalf("node.rename decode error: %v", err)
+	}
+	renameReq, err = renameReq.Normalize()
+	if err != nil {
+		t.Fatalf("node.rename normalize error: %v", err)
+	}
+	if renameReq.Name != "Kitchen Mac" {
+		t.Fatalf("unexpected node.rename request: %#v", renameReq)
+	}
+
+	refreshReq, err := DecodeNodeCanvasCapabilityRefreshParams(json.RawMessage(`{"node_id":"n1"}`))
+	if err != nil {
+		t.Fatalf("node.canvas.capability.refresh decode error: %v", err)
+	}
+	if _, err := refreshReq.Normalize(); err != nil {
+		t.Fatalf("node.canvas.capability.refresh normalize error: %v", err)
+	}
+}
+
+func TestSupportedMethodsIncludesNodeSurfaceBundle(t *testing.T) {
+	required := []string{MethodNodeList, MethodNodeDescribe, MethodNodeRename, MethodNodeInvokeResult, MethodNodeCanvasCapabilityRefresh}
 	for _, want := range required {
 		found := false
 		for _, method := range SupportedMethods() {

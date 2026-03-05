@@ -677,6 +677,19 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		t.Fatalf("unexpected skills.status payload: %#v", res.Result)
 	}
 
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSkillsBins,
+		Params:     json.RawMessage(`{"agent_id":"main"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("skills.bins error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if _, ok := payload["bins"]; !ok {
+		t.Fatalf("unexpected skills.bins payload: %#v", res.Result)
+	}
+
 	enabled := true
 	apiKey := "token"
 	_, _, err = applySkillUpdate(context.Background(), docs, cfgState, methods.SkillsUpdateRequest{SkillKey: "nostr-core", Enabled: &enabled, APIKey: &apiKey, Env: map[string]string{"A": "B"}})
@@ -818,7 +831,11 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 }
 
 func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
-	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		Extra: map[string]any{"pairing": map[string]any{"node_paired": []any{map[string]any{"node_id": "n1", "display_name": "Node One", "caps": []any{"canvas"}, "approved_at_ms": int64(1)}}}},
+	})
 	prevNode := controlNodeInvocations
 	prevCron := controlCronJobs
 	controlNodeInvocations = newNodeInvocationRegistry()
@@ -830,13 +847,58 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 
 	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
+		Method:     methods.MethodNodeList,
+		Params:     json.RawMessage(`{"limit":10}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("node.list error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	nodes, _ := payload["nodes"].([]map[string]any)
+	if len(nodes) != 1 {
+		t.Fatalf("unexpected node.list payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodeDescribe,
+		Params:     json.RawMessage(`{"node_id":"n1"}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("node.describe error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["status"] != "paired" {
+		t.Fatalf("unexpected node.describe payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodeRename,
+		Params:     json.RawMessage(`{"node_id":"n1","name":"Kitchen"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("node.rename error: %v", err)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodeCanvasCapabilityRefresh,
+		Params:     json.RawMessage(`{"node_id":"n1"}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("node.canvas.capability.refresh error: %v", err)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
 		Method:     methods.MethodNodeInvoke,
 		Params:     json.RawMessage(`{"node_id":"n1","command":"ping"}`),
 	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.invoke error: %v", err)
 	}
-	payload, _ := res.Result.(map[string]any)
+	payload, _ = res.Result.(map[string]any)
 	runID, _ := payload["run_id"].(string)
 	if runID == "" {
 		t.Fatalf("expected run_id in node.invoke payload: %#v", res.Result)
@@ -849,6 +911,15 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.event error: %v", err)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodNodeInvokeResult,
+		Params:     json.RawMessage(fmt.Sprintf(`{"run_id":%q,"status":"ok","result":{"pong":true}}`, runID)),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("node.invoke.result error: %v", err)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -910,6 +981,76 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 	if payload["status"] != "accepted" {
 		t.Fatalf("unexpected exec.approval.request payload: %#v", res.Result)
 	}
+	approvalID, _ := payload["id"].(string)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	res, err = handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":100}`, approvalID))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("exec.approval.waitDecision error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["resolved"] != false {
+		t.Fatalf("unexpected exec.approval.waitDecision timeout payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalResolve, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"decision":"approve"}`, approvalID))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("exec.approval.resolve error: %v", err)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":5000}`, approvalID))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("exec.approval.waitDecision resolved error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["resolved"] != true {
+		t.Fatalf("unexpected resolved wait payload: %#v", res.Result)
+	}
+
+	ctxCancel, cancelFunc := context.WithCancel(context.Background())
+	done := make(chan bool)
+	go func() {
+		res2, _ := handleControlRPCRequest(ctxCancel, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"test-cancel"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+		payload2, _ := res2.Result.(map[string]any)
+		approvalID2, _ := payload2["id"].(string)
+		res3, _ := handleControlRPCRequest(ctxCancel, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":5000}`, approvalID2))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+		payload3, _ := res3.Result.(map[string]any)
+		if payload3["cancelled"] != true {
+			t.Errorf("expected cancelled=true, got: %#v", payload3)
+		}
+		done <- true
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancelFunc()
+	<-done
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"test-concurrent","timeout_ms":5000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("exec.approval.request concurrent error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	approvalID3, _ := payload["id"].(string)
+
+	done2 := make(chan map[string]any, 2)
+	go func() {
+		res4, _ := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":2000}`, approvalID3))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+		payload4, _ := res4.Result.(map[string]any)
+		done2 <- payload4
+	}()
+	go func() {
+		res5, _ := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":2000}`, approvalID3))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+		payload5, _ := res5.Result.(map[string]any)
+		done2 <- payload5
+	}()
+	time.Sleep(50 * time.Millisecond)
+	_, _ = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalResolve, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"decision":"approve"}`, approvalID3))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+
+	result1 := <-done2
+	result2 := <-done2
+	if result1["resolved"] != true || result2["resolved"] != true {
+		t.Fatalf("concurrent waiters should both receive resolution: r1=%#v r2=%#v", result1, result2)
+	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodWizardStart, Params: json.RawMessage(`{"mode":"local"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
 	if err != nil {
@@ -928,6 +1069,24 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 	payload, _ = res.Result.(map[string]any)
 	if _, ok := payload["triggers"]; !ok {
 		t.Fatalf("unexpected voicewake.set payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSSetProvider, Params: json.RawMessage(`{"provider":"edge"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("tts.setProvider error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["provider"] != "edge" {
+		t.Fatalf("expected provider=edge, got: %#v", payload)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSSetProvider, Params: json.RawMessage(`{"provider":"invalid-provider"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("tts.setProvider invalid error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["provider"] != "openai" {
+		t.Fatalf("expected invalid provider to default to openai, got: %#v", payload)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSConvert, Params: json.RawMessage(`{"text":"hello"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())

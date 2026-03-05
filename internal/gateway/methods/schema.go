@@ -56,6 +56,7 @@ const (
 	MethodModelsList         = "models.list"
 	MethodToolsCatalog       = "tools.catalog"
 	MethodSkillsStatus       = "skills.status"
+	MethodSkillsBins         = "skills.bins"
 	MethodSkillsInstall      = "skills.install"
 	MethodSkillsUpdate       = "skills.update"
 	MethodNodePairRequest    = "node.pair.request"
@@ -89,6 +90,7 @@ const (
 	MethodExecApprovalsNodeGet = "exec.approvals.node.get"
 	MethodExecApprovalsNodeSet = "exec.approvals.node.set"
 	MethodExecApprovalRequest  = "exec.approval.request"
+	MethodExecApprovalWaitDecision = "exec.approval.waitDecision"
 	MethodExecApprovalResolve  = "exec.approval.resolve"
 	MethodSecretsReload      = "secrets.reload"
 	MethodSecretsResolve     = "secrets.resolve"
@@ -102,6 +104,7 @@ const (
 	MethodVoicewakeSet       = "voicewake.set"
 	MethodTTSStatus          = "tts.status"
 	MethodTTSProviders       = "tts.providers"
+	MethodTTSSetProvider     = "tts.setProvider"
 	MethodTTSEnable          = "tts.enable"
 	MethodTTSDisable         = "tts.disable"
 	MethodTTSConvert         = "tts.convert"
@@ -349,6 +352,10 @@ type SkillsStatusRequest struct {
 	AgentID string `json:"agent_id,omitempty"`
 }
 
+type SkillsBinsRequest struct {
+	AgentID string `json:"agent_id,omitempty"`
+}
+
 type SkillsInstallRequest struct {
 	Name      string `json:"name"`
 	InstallID string `json:"install_id"`
@@ -519,6 +526,11 @@ type ExecApprovalRequestRequest struct {
 	TimeoutMS int            `json:"timeout_ms,omitempty"`
 }
 
+type ExecApprovalWaitDecisionRequest struct {
+	ID        string `json:"id"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"`
+}
+
 type ExecApprovalResolveRequest struct {
 	ID       string `json:"id"`
 	Decision string `json:"decision"`
@@ -566,6 +578,10 @@ type VoicewakeSetRequest struct {
 type TTSStatusRequest struct{}
 
 type TTSProvidersRequest struct{}
+
+type TTSSetProviderRequest struct {
+	Provider string `json:"provider"`
+}
 
 type TTSEnableRequest struct{}
 
@@ -962,6 +978,11 @@ func (r SkillsStatusRequest) Normalize() (SkillsStatusRequest, error) {
 	return r, nil
 }
 
+func (r SkillsBinsRequest) Normalize() (SkillsBinsRequest, error) {
+	r.AgentID = normalizeAgentID(r.AgentID)
+	return r, nil
+}
+
 func (r SkillsInstallRequest) Normalize() (SkillsInstallRequest, error) {
 	r.Name = strings.TrimSpace(r.Name)
 	r.InstallID = strings.TrimSpace(r.InstallID)
@@ -1261,10 +1282,19 @@ func (r ExecApprovalRequestRequest) Normalize() (ExecApprovalRequestRequest, err
 	if r.Command == "" {
 		return r, fmt.Errorf("command is required")
 	}
-	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 120_000, 600_000)
+	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 60_000, 600_000)
 	if r.Args == nil {
 		r.Args = map[string]any{}
 	}
+	return r, nil
+}
+
+func (r ExecApprovalWaitDecisionRequest) Normalize() (ExecApprovalWaitDecisionRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	if r.ID == "" {
+		return r, fmt.Errorf("id is required")
+	}
+	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 30_000, 600_000)
 	return r, nil
 }
 
@@ -1358,6 +1388,14 @@ func (r TTSStatusRequest) Normalize() (TTSStatusRequest, error) { return r, nil 
 
 func (r TTSProvidersRequest) Normalize() (TTSProvidersRequest, error) { return r, nil }
 
+func (r TTSSetProviderRequest) Normalize() (TTSSetProviderRequest, error) {
+	r.Provider = strings.TrimSpace(r.Provider)
+	if r.Provider == "" {
+		return r, fmt.Errorf("provider is required")
+	}
+	return r, nil
+}
+
 func (r TTSEnableRequest) Normalize() (TTSEnableRequest, error) { return r, nil }
 
 func (r TTSDisableRequest) Normalize() (TTSDisableRequest, error) { return r, nil }
@@ -1417,6 +1455,7 @@ func SupportedMethods() []string {
 		MethodModelsList,
 		MethodToolsCatalog,
 		MethodSkillsStatus,
+		MethodSkillsBins,
 		MethodSkillsInstall,
 		MethodSkillsUpdate,
 		MethodNodePairRequest,
@@ -1450,6 +1489,7 @@ func SupportedMethods() []string {
 		MethodExecApprovalsNodeGet,
 		MethodExecApprovalsNodeSet,
 		MethodExecApprovalRequest,
+		MethodExecApprovalWaitDecision,
 		MethodExecApprovalResolve,
 		MethodSecretsReload,
 		MethodSecretsResolve,
@@ -1463,6 +1503,7 @@ func SupportedMethods() []string {
 		MethodVoicewakeSet,
 		MethodTTSStatus,
 		MethodTTSProviders,
+		MethodTTSSetProvider,
 		MethodTTSEnable,
 		MethodTTSDisable,
 		MethodTTSConvert,
@@ -2566,6 +2607,13 @@ func DecodeSkillsStatusParams(params json.RawMessage) (SkillsStatusRequest, erro
 	return decodeMethodParams[SkillsStatusRequest](params)
 }
 
+func DecodeSkillsBinsParams(params json.RawMessage) (SkillsBinsRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return SkillsBinsRequest{}, nil
+	}
+	return decodeMethodParams[SkillsBinsRequest](params)
+}
+
 func DecodeSkillsInstallParams(params json.RawMessage) (SkillsInstallRequest, error) {
 	return decodeMethodParams[SkillsInstallRequest](params)
 }
@@ -2921,6 +2969,10 @@ func DecodeExecApprovalRequestParams(params json.RawMessage) (ExecApprovalReques
 	return decodeMethodParams[ExecApprovalRequestRequest](params)
 }
 
+func DecodeExecApprovalWaitDecisionParams(params json.RawMessage) (ExecApprovalWaitDecisionRequest, error) {
+	return decodeMethodParams[ExecApprovalWaitDecisionRequest](params)
+}
+
 func DecodeExecApprovalResolveParams(params json.RawMessage) (ExecApprovalResolveRequest, error) {
 	return decodeMethodParams[ExecApprovalResolveRequest](params)
 }
@@ -2992,6 +3044,24 @@ func DecodeTTSProvidersParams(params json.RawMessage) (TTSProvidersRequest, erro
 		return TTSProvidersRequest{}, nil
 	}
 	return decodeMethodParams[TTSProvidersRequest](params)
+}
+
+func DecodeTTSSetProviderParams(params json.RawMessage) (TTSSetProviderRequest, error) {
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return TTSSetProviderRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) != 1 {
+			return TTSSetProviderRequest{}, fmt.Errorf("invalid params")
+		}
+		provider, ok := arr[0].(string)
+		if !ok {
+			return TTSSetProviderRequest{}, fmt.Errorf("invalid params")
+		}
+		return TTSSetProviderRequest{Provider: provider}, nil
+	}
+	return decodeMethodParams[TTSSetProviderRequest](params)
 }
 
 func DecodeTTSEnableParams(params json.RawMessage) (TTSEnableRequest, error) {

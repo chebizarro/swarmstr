@@ -76,6 +76,7 @@ type ServerOptions struct {
 	ListModels           func(context.Context, methods.ModelsListRequest) (map[string]any, error)
 	ToolsCatalog         func(context.Context, methods.ToolsCatalogRequest) (map[string]any, error)
 	SkillsStatus         func(context.Context, methods.SkillsStatusRequest) (map[string]any, error)
+	SkillsBins           func(context.Context, methods.SkillsBinsRequest) (map[string]any, error)
 	SkillsInstall        func(context.Context, methods.SkillsInstallRequest) (map[string]any, error)
 	SkillsUpdate         func(context.Context, methods.SkillsUpdateRequest) (map[string]any, error)
 	NodePairRequest      func(context.Context, methods.NodePairRequest) (map[string]any, error)
@@ -108,6 +109,7 @@ type ServerOptions struct {
 	ExecApprovalsNodeGet func(context.Context, methods.ExecApprovalsNodeGetRequest) (map[string]any, error)
 	ExecApprovalsNodeSet func(context.Context, methods.ExecApprovalsNodeSetRequest) (map[string]any, error)
 	ExecApprovalRequest  func(context.Context, methods.ExecApprovalRequestRequest) (map[string]any, error)
+	ExecApprovalWaitDecision func(context.Context, methods.ExecApprovalWaitDecisionRequest) (map[string]any, error)
 	ExecApprovalResolve  func(context.Context, methods.ExecApprovalResolveRequest) (map[string]any, error)
 	SecretsReload        func(context.Context, methods.SecretsReloadRequest) (map[string]any, error)
 	SecretsResolve       func(context.Context, methods.SecretsResolveRequest) (map[string]any, error)
@@ -121,6 +123,7 @@ type ServerOptions struct {
 	VoicewakeSet         func(context.Context, methods.VoicewakeSetRequest) (map[string]any, error)
 	TTSStatus            func(context.Context, methods.TTSStatusRequest) (map[string]any, error)
 	TTSProviders         func(context.Context, methods.TTSProvidersRequest) (map[string]any, error)
+	TTSSetProvider       func(context.Context, methods.TTSSetProviderRequest) (map[string]any, error)
 	TTSEnable            func(context.Context, methods.TTSEnableRequest) (map[string]any, error)
 	TTSDisable           func(context.Context, methods.TTSDisableRequest) (map[string]any, error)
 	TTSConvert           func(context.Context, methods.TTSConvertRequest) (map[string]any, error)
@@ -1039,6 +1042,26 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil
+	case methods.MethodSkillsBins:
+		req, err := methods.DecodeSkillsBinsParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.SkillsBins == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("skills provider not configured")
+		}
+		out, err := opts.SkillsBins(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
 	case methods.MethodSkillsInstall:
 		req, err := methods.DecodeSkillsInstallParams(call.Params)
 		if err != nil {
@@ -1633,10 +1656,30 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusBadRequest, err
 		}
 		if opts.ExecApprovalRequest == nil {
-			return nil, http.StatusNotImplemented, fmt.Errorf("exec approvals provider not configured")
+			return nil, http.StatusNotImplemented, fmt.Errorf("exec approval provider not configured")
 		}
 		out, err := opts.ExecApprovalRequest(ctx, req)
 		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodExecApprovalWaitDecision:
+		req, err := methods.DecodeExecApprovalWaitDecisionParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.ExecApprovalWaitDecision == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("exec approval provider not configured")
+		}
+		out, err := opts.ExecApprovalWaitDecision(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil
@@ -1869,6 +1912,23 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusNotImplemented, fmt.Errorf("tts provider not configured")
 		}
 		out, err := opts.TTSProviders(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodTTSSetProvider:
+		req, err := methods.DecodeTTSSetProviderParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.TTSSetProvider == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("tts provider not configured")
+		}
+		out, err := opts.TTSSetProvider(ctx, req)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}

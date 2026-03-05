@@ -1027,6 +1027,9 @@ func TestDispatchMethodCallModelsToolsSkillsMethods(t *testing.T) {
 		SkillsStatus: func(_ context.Context, req methods.SkillsStatusRequest) (map[string]any, error) {
 			return map[string]any{"agent_id": req.AgentID, "skills": []map[string]any{}}, nil
 		},
+		SkillsBins: func(_ context.Context, req methods.SkillsBinsRequest) (map[string]any, error) {
+			return map[string]any{"agent_id": req.AgentID, "bins": []map[string]any{}}, nil
+		},
 		SkillsInstall: func(_ context.Context, req methods.SkillsInstallRequest) (map[string]any, error) {
 			return map[string]any{"ok": true, "name": req.Name, "install_id": req.InstallID}, nil
 		},
@@ -1054,6 +1057,13 @@ func TestDispatchMethodCallModelsToolsSkillsMethods(t *testing.T) {
 	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("skills.status failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodSkillsBins, map[string]any{"agent_id": "main"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("skills.bins failed status=%d err=%v", status, err)
 	}
 
 	rr = httptest.NewRecorder()
@@ -1121,6 +1131,18 @@ func TestDispatchMethodCallNodeDevicePairingMethods(t *testing.T) {
 
 func TestDispatchMethodCallNodeInvokeAndCronMethods(t *testing.T) {
 	opts := ServerOptions{
+		NodeList: func(_ context.Context, req methods.NodeListRequest) (map[string]any, error) {
+			return map[string]any{"nodes": []map[string]any{{"node_id": "node-a"}}, "count": 1, "limit": req.Limit}, nil
+		},
+		NodeDescribe: func(_ context.Context, req methods.NodeDescribeRequest) (map[string]any, error) {
+			return map[string]any{"node": map[string]any{"node_id": req.NodeID}, "status": "paired"}, nil
+		},
+		NodeRename: func(_ context.Context, req methods.NodeRenameRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "node_id": req.NodeID, "name": req.Name}, nil
+		},
+		NodeCanvasCapabilityRefresh: func(_ context.Context, req methods.NodeCanvasCapabilityRefreshRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "node_id": req.NodeID, "caps": []string{"canvas"}}, nil
+		},
 		NodeInvoke: func(_ context.Context, req methods.NodeInvokeRequest) (map[string]any, error) {
 			return map[string]any{"ok": true, "run_id": "node-run-1", "node_id": req.NodeID, "command": req.Command}, nil
 		},
@@ -1154,10 +1176,45 @@ func TestDispatchMethodCallNodeInvokeAndCronMethods(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := newMethodRequest(t, methods.MethodNodeInvoke, map[string]any{"node_id": "node-a", "command": "ping"})
+	req := newMethodRequest(t, methods.MethodNodeList, map[string]any{"limit": 10})
 	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
+		t.Fatalf("node.list failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodNodeDescribe, map[string]any{"node_id": "node-a"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("node.describe failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodNodeRename, map[string]any{"node_id": "node-a", "name": "Kitchen"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("node.rename failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodNodeCanvasCapabilityRefresh, map[string]any{"node_id": "node-a"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("node.canvas.capability.refresh failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodNodeInvoke, map[string]any{"node_id": "node-a", "command": "ping"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
 		t.Fatalf("node.invoke failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodNodeInvokeResult, map[string]any{"run_id": "node-run-1", "status": "ok"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("node.invoke.result failed status=%d err=%v", status, err)
 	}
 
 	rr = httptest.NewRecorder()
@@ -1183,6 +1240,9 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		ExecApprovalRequest: func(context.Context, methods.ExecApprovalRequestRequest) (map[string]any, error) {
 			return map[string]any{"id": "approval-1", "status": "accepted"}, nil
 		},
+		ExecApprovalWaitDecision: func(_ context.Context, req methods.ExecApprovalWaitDecisionRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "id": req.ID, "resolved": true, "decision": "approve"}, nil
+		},
 		SecretsResolve: func(context.Context, methods.SecretsResolveRequest) (map[string]any, error) {
 			return map[string]any{"ok": true, "assignments": []map[string]any{}}, nil
 		},
@@ -1195,6 +1255,9 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		VoicewakeGet: func(context.Context, methods.VoicewakeGetRequest) (map[string]any, error) {
 			return map[string]any{"triggers": []string{"openclaw"}}, nil
 		},
+		TTSSetProvider: func(_ context.Context, req methods.TTSSetProviderRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "provider": req.Provider}, nil
+		},
 		TTSConvert: func(context.Context, methods.TTSConvertRequest) (map[string]any, error) {
 			return map[string]any{"provider": "openai", "audioPath": ""}, nil
 		},
@@ -1206,10 +1269,12 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 	}{
 		{method: methods.MethodExecApprovalsGet, params: map[string]any{}},
 		{method: methods.MethodExecApprovalRequest, params: map[string]any{"command": "ls"}},
+		{method: methods.MethodExecApprovalWaitDecision, params: map[string]any{"id": "approval-1"}},
 		{method: methods.MethodSecretsResolve, params: map[string]any{"commandName": "memory status", "targetIds": []string{"talk.apiKey"}}},
 		{method: methods.MethodWizardStart, params: map[string]any{"mode": "local"}},
 		{method: methods.MethodTalkConfig, params: map[string]any{}},
 		{method: methods.MethodVoicewakeGet, params: map[string]any{}},
+		{method: methods.MethodTTSSetProvider, params: map[string]any{"provider": "openai"}},
 		{method: methods.MethodTTSConvert, params: map[string]any{"text": "hello"}},
 	}
 

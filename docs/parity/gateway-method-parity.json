@@ -3,9 +3,9 @@
   "captured_at": "2026-03-04",
   "summary": {
     "openclaw_method_count": 94,
-    "implemented": 82,
-    "partial": 1,
-    "missing": 11
+    "implemented": 86,
+    "partial": 0,
+    "missing": 8
   },
   "entries": [
     {
@@ -88,9 +88,9 @@
     },
     {
       "method": "tts.setProvider",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Provider-selection API not yet ported; current implementation supports status/providers/enable/disable/convert."
+      "status": "implemented",
+      "swarmstr_method": "tts.setProvider",
+      "notes": ""
     },
     {
       "method": "config.get",
@@ -154,9 +154,9 @@
     },
     {
       "method": "exec.approval.waitDecision",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Two-phase approval wait API not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "exec.approval.waitDecision",
+      "notes": ""
     },
     {
       "method": "exec.approval.resolve",
@@ -262,9 +262,9 @@
     },
     {
       "method": "skills.bins",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Skills binary inventory endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "skills.bins",
+      "notes": ""
     },
     {
       "method": "skills.install",
@@ -454,9 +454,9 @@
     },
     {
       "method": "node.invoke.result",
-      "status": "partial",
-      "swarmstr_method": "node.result",
-      "notes": "Swarmstr exposes equivalent behavior under a different method name."
+      "status": "implemented",
+      "swarmstr_method": "node.invoke.result",
+      "notes": ""
     },
     {
       "method": "node.event",

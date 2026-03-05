@@ -693,13 +693,15 @@ type execApprovalsRegistry struct {
 	perNode   map[string]map[string]any
 	pending   map[string]execApprovalPendingRecord
 	pendingID int64
+	watchers  map[string][]chan execApprovalPendingRecord
 }
 
 func newExecApprovalsRegistry() *execApprovalsRegistry {
 	return &execApprovalsRegistry{
-		global:  map[string]any{},
-		perNode: map[string]map[string]any{},
-		pending: map[string]execApprovalPendingRecord{},
+		global:   map[string]any{},
+		perNode:  map[string]map[string]any{},
+		pending:  map[string]execApprovalPendingRecord{},
+		watchers: map[string][]chan execApprovalPendingRecord{},
 	}
 }
 
@@ -786,7 +788,97 @@ func (r *execApprovalsRegistry) Resolve(req methods.ExecApprovalResolveRequest) 
 	rec.Status = "resolved"
 	rec.ResolvedAt = time.Now().UnixMilli()
 	r.pending[req.ID] = rec
+	r.notifyWatchers(req.ID, rec)
 	return rec, nil
+}
+
+func (r *execApprovalsRegistry) GetPending(id string) (execApprovalPendingRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.pending[id]
+	if !ok {
+		return execApprovalPendingRecord{}, state.ErrNotFound
+	}
+	return rec, nil
+}
+
+func (r *execApprovalsRegistry) WaitForDecision(ctx context.Context, id string, timeoutMS int) (execApprovalPendingRecord, bool, error) {
+	r.mu.Lock()
+	rec, ok := r.pending[id]
+	if !ok {
+		r.mu.Unlock()
+		return execApprovalPendingRecord{}, false, state.ErrNotFound
+	}
+	if rec.Status == "resolved" {
+		r.mu.Unlock()
+		return rec, true, nil
+	}
+	ch := make(chan execApprovalPendingRecord, 1)
+	r.watchers[id] = append(r.watchers[id], ch)
+	r.mu.Unlock()
+
+	defer func() {
+		r.mu.Lock()
+		r.removeWatcher(id, ch)
+		r.mu.Unlock()
+		close(ch)
+	}()
+
+	timeout := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
+	defer timeout.Stop()
+
+	expireTicker := time.NewTicker(1 * time.Second)
+	defer expireTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			r.mu.Lock()
+			rec, _ := r.pending[id]
+			r.mu.Unlock()
+			return rec, false, nil
+		case <-timeout.C:
+			r.mu.Lock()
+			rec, _ := r.pending[id]
+			r.mu.Unlock()
+			return rec, false, nil
+		case updated := <-ch:
+			if updated.Status == "resolved" {
+				return updated, true, nil
+			}
+		case <-expireTicker.C:
+			r.mu.Lock()
+			rec, ok := r.pending[id]
+			if ok && rec.ExpiresAt > 0 && time.Now().UnixMilli() > rec.ExpiresAt {
+				r.mu.Unlock()
+				return rec, false, nil
+			}
+			r.mu.Unlock()
+		}
+	}
+}
+
+func (r *execApprovalsRegistry) notifyWatchers(id string, rec execApprovalPendingRecord) {
+	for _, ch := range r.watchers[id] {
+		select {
+		case ch <- rec:
+		default:
+		}
+	}
+	delete(r.watchers, id)
+}
+
+func (r *execApprovalsRegistry) removeWatcher(id string, ch chan execApprovalPendingRecord) {
+	watchers := r.watchers[id]
+	for i, watcher := range watchers {
+		if watcher == ch {
+			r.watchers[id] = append(watchers[:i], watchers[i+1:]...)
+			if len(r.watchers[id]) == 0 {
+				delete(r.watchers, id)
+			}
+			break
+		}
+	}
 }
 
 type wizardSessionRecord struct {
@@ -944,6 +1036,20 @@ func (r *operationsRegistry) SetTTSEnabled(enabled bool) bool {
 	defer r.mu.Unlock()
 	r.ttsEnabled = enabled
 	return r.ttsEnabled
+}
+
+func (r *operationsRegistry) SetTTSProvider(provider string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ttsProvider = strings.TrimSpace(provider)
+	if r.ttsProvider == "" {
+		r.ttsProvider = "openai"
+	}
+	validProviders := map[string]bool{"openai": true, "elevenlabs": true, "edge": true}
+	if !validProviders[r.ttsProvider] {
+		r.ttsProvider = "openai"
+	}
+	return r.ttsProvider
 }
 
 func cloneMapAny(in map[string]any) map[string]any {

@@ -571,6 +571,9 @@ func main() {
 					entries := currentSkillEntries(configState.Get())
 					return map[string]any{"agent_id": defaultAgentID(req.AgentID), "skills": entries, "count": len(entries)}, nil
 				},
+				SkillsBins: func(_ context.Context, req methods.SkillsBinsRequest) (map[string]any, error) {
+					return applySkillsBins(configState.Get(), req), nil
+				},
 				SkillsInstall: func(ctx context.Context, req methods.SkillsInstallRequest) (map[string]any, error) {
 					updated, err := applySkillInstall(ctx, docsRepo, configState, req)
 					if err != nil {
@@ -675,6 +678,9 @@ func main() {
 				ExecApprovalRequest: func(_ context.Context, req methods.ExecApprovalRequestRequest) (map[string]any, error) {
 					return applyExecApprovalRequest(execApprovals, req)
 				},
+				ExecApprovalWaitDecision: func(ctx context.Context, req methods.ExecApprovalWaitDecisionRequest) (map[string]any, error) {
+					return applyExecApprovalWaitDecision(ctx, execApprovals, req)
+				},
 				ExecApprovalResolve: func(_ context.Context, req methods.ExecApprovalResolveRequest) (map[string]any, error) {
 					return applyExecApprovalResolve(execApprovals, req)
 				},
@@ -712,7 +718,10 @@ func main() {
 					return applyTTSStatus(ops, req)
 				},
 				TTSProviders: func(_ context.Context, req methods.TTSProvidersRequest) (map[string]any, error) {
-					return applyTTSProviders(req)
+					return applyTTSProviders(ops, req)
+				},
+				TTSSetProvider: func(_ context.Context, req methods.TTSSetProviderRequest) (map[string]any, error) {
+					return applyTTSSetProvider(ops, req)
 				},
 				TTSEnable: func(_ context.Context, req methods.TTSEnableRequest) (map[string]any, error) {
 					return applyTTSEnable(ops, req)
@@ -1706,6 +1715,16 @@ func handleControlRPCRequest(
 		}
 		entries := currentSkillEntries(cfg)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": defaultAgentID(req.AgentID), "skills": entries, "count": len(entries)}}, nil
+	case methods.MethodSkillsBins:
+		req, err := methods.DecodeSkillsBinsParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: applySkillsBins(cfg, req)}, nil
 	case methods.MethodSkillsInstall:
 		req, err := methods.DecodeSkillsInstallParams(in.Params)
 		if err != nil {
@@ -2154,6 +2173,20 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodExecApprovalWaitDecision:
+		req, err := methods.DecodeExecApprovalWaitDecisionParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyExecApprovalWaitDecision(ctx, controlExecApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodExecApprovalResolve:
 		req, err := methods.DecodeExecApprovalResolveParams(in.Params)
 		if err != nil {
@@ -2331,7 +2364,21 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		out, err := applyTTSProviders(req)
+		out, err := applyTTSProviders(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodTTSSetProvider:
+		req, err := methods.DecodeTTSSetProviderParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyTTSSetProvider(controlOps, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
@@ -2912,6 +2959,33 @@ func currentSkillEntries(cfg state.ConfigDoc) []map[string]any {
 		out = append(out, entry)
 	}
 	return out
+}
+
+func applySkillsBins(cfg state.ConfigDoc, req methods.SkillsBinsRequest) map[string]any {
+	entries := currentSkillEntries(cfg)
+	bins := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		skillKey := getString(entry, "skill_key")
+		if skillKey == "" {
+			continue
+		}
+		bin := getString(entry, "bin")
+		if bin == "" {
+			bin = skillKey
+		}
+		enabled := false
+		if val, ok := entry["enabled"].(bool); ok {
+			enabled = val
+		}
+		bins = append(bins, map[string]any{
+			"skill_key": skillKey,
+			"bin":       bin,
+			"name":      getString(entry, "name"),
+			"enabled":   enabled,
+			"status":    getString(entry, "status"),
+		})
+	}
+	return map[string]any{"agent_id": defaultAgentID(req.AgentID), "bins": bins, "count": len(bins)}
 }
 
 func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.SkillsInstallRequest) (state.ConfigDoc, error) {
@@ -3789,6 +3863,26 @@ func applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprov
 	return map[string]any{"id": rec.ID, "status": "accepted", "requested": rec}, nil
 }
 
+func applyExecApprovalWaitDecision(ctx context.Context, reg *execApprovalsRegistry, req methods.ExecApprovalWaitDecisionRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("exec approvals runtime not configured")
+	}
+	rec, resolved, err := reg.WaitForDecision(ctx, req.ID, req.TimeoutMS)
+	if err != nil {
+		return nil, err
+	}
+	if resolved {
+		return map[string]any{"ok": true, "id": rec.ID, "resolved": true, "decision": rec.Decision, "record": rec}, nil
+	}
+	if rec.ExpiresAt > 0 && time.Now().UnixMilli() > rec.ExpiresAt {
+		return map[string]any{"ok": false, "id": rec.ID, "resolved": false, "expired": true, "record": rec}, nil
+	}
+	if ctx.Err() != nil {
+		return map[string]any{"ok": false, "id": rec.ID, "resolved": false, "cancelled": true, "record": rec}, nil
+	}
+	return map[string]any{"ok": true, "id": rec.ID, "resolved": false, "timed_out": true, "record": rec}, nil
+}
+
 func applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprovalResolveRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("exec approvals runtime not configured")
@@ -3905,8 +3999,20 @@ func applyTTSStatus(reg *operationsRegistry, _ methods.TTSStatusRequest) (map[st
 	return map[string]any{"enabled": enabled, "provider": provider}, nil
 }
 
-func applyTTSProviders(_ methods.TTSProvidersRequest) (map[string]any, error) {
-	return map[string]any{"providers": []map[string]any{{"id": "openai", "name": "OpenAI", "configured": false}, {"id": "elevenlabs", "name": "ElevenLabs", "configured": false}, {"id": "edge", "name": "Edge TTS", "configured": true}}, "active": "openai"}, nil
+func applyTTSProviders(reg *operationsRegistry, _ methods.TTSProvidersRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("tts runtime not configured")
+	}
+	_, active := reg.TTSStatus()
+	return map[string]any{"providers": []map[string]any{{"id": "openai", "name": "OpenAI", "configured": false}, {"id": "elevenlabs", "name": "ElevenLabs", "configured": false}, {"id": "edge", "name": "Edge TTS", "configured": true}}, "active": active}, nil
+}
+
+func applyTTSSetProvider(reg *operationsRegistry, req methods.TTSSetProviderRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("tts runtime not configured")
+	}
+	provider := reg.SetTTSProvider(req.Provider)
+	return map[string]any{"ok": true, "provider": provider}, nil
 }
 
 func applyTTSEnable(reg *operationsRegistry, _ methods.TTSEnableRequest) (map[string]any, error) {
