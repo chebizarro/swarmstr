@@ -117,8 +117,16 @@ type ServerOptions struct {
 	WizardNext           func(context.Context, methods.WizardNextRequest) (map[string]any, error)
 	WizardCancel         func(context.Context, methods.WizardCancelRequest) (map[string]any, error)
 	WizardStatus         func(context.Context, methods.WizardStatusRequest) (map[string]any, error)
+	UpdateRun            func(context.Context, methods.UpdateRunRequest) (map[string]any, error)
 	TalkConfig           func(context.Context, methods.TalkConfigRequest) (map[string]any, error)
 	TalkMode             func(context.Context, methods.TalkModeRequest) (map[string]any, error)
+	LastHeartbeat        func(context.Context, methods.LastHeartbeatRequest) (map[string]any, error)
+	SetHeartbeats        func(context.Context, methods.SetHeartbeatsRequest) (map[string]any, error)
+	Wake                 func(context.Context, methods.WakeRequest) (map[string]any, error)
+	SystemPresence       func(context.Context, methods.SystemPresenceRequest) (map[string]any, error)
+	SystemEvent          func(context.Context, methods.SystemEventRequest) (map[string]any, error)
+	Send                 func(context.Context, methods.SendRequest) (map[string]any, error)
+	BrowserRequest       func(context.Context, methods.BrowserRequestRequest) (map[string]any, error)
 	VoicewakeGet         func(context.Context, methods.VoicewakeGetRequest) (map[string]any, error)
 	VoicewakeSet         func(context.Context, methods.VoicewakeSetRequest) (map[string]any, error)
 	TTSStatus            func(context.Context, methods.TTSStatusRequest) (map[string]any, error)
@@ -1814,6 +1822,23 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil
+	case methods.MethodUpdateRun:
+		req, err := methods.DecodeUpdateRunParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.UpdateRun == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("update provider not configured")
+		}
+		out, err := opts.UpdateRun(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
 	case methods.MethodTalkConfig:
 		req, err := methods.DecodeTalkConfigParams(call.Params)
 		if err != nil {
@@ -1844,6 +1869,125 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusNotImplemented, fmt.Errorf("talk provider not configured")
 		}
 		out, err := opts.TalkMode(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodLastHeartbeat:
+		req, err := methods.DecodeLastHeartbeatParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.LastHeartbeat == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("heartbeat provider not configured")
+		}
+		out, err := opts.LastHeartbeat(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodSetHeartbeats:
+		req, err := methods.DecodeSetHeartbeatsParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.SetHeartbeats == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("heartbeat provider not configured")
+		}
+		out, err := opts.SetHeartbeats(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodWake:
+		req, err := methods.DecodeWakeParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.Wake == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("wake provider not configured")
+		}
+		out, err := opts.Wake(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodSystemPresence:
+		req, err := methods.DecodeSystemPresenceParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.SystemPresence == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("system presence provider not configured")
+		}
+		out, err := opts.SystemPresence(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodSystemEvent:
+		req, err := methods.DecodeSystemEventParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.SystemEvent == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("system event provider not configured")
+		}
+		out, err := opts.SystemEvent(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodSend:
+		req, err := methods.DecodeSendParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.Send == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("send provider not configured")
+		}
+		out, err := opts.Send(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodBrowserRequest:
+		req, err := methods.DecodeBrowserRequestParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.BrowserRequest == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("browser provider not configured")
+		}
+		out, err := opts.BrowserRequest(ctx, req)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}

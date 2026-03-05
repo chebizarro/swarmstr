@@ -737,6 +737,71 @@ func TestDecodeExecSecretsWizardTalkVoicewakeAndTTSParams(t *testing.T) {
 		t.Fatalf("unexpected wizard.start request: %#v", wizardReq)
 	}
 
+	updateReq, err := DecodeUpdateRunParams(json.RawMessage(`{"force":true}`))
+	if err != nil {
+		t.Fatalf("update.run decode error: %v", err)
+	}
+	if _, err := updateReq.Normalize(); err != nil {
+		t.Fatalf("update.run normalize error: %v", err)
+	}
+
+	hbReq, err := DecodeSetHeartbeatsParams(json.RawMessage(`{"enabled":true,"interval_ms":30000}`))
+	if err != nil {
+		t.Fatalf("set-heartbeats decode error: %v", err)
+	}
+	hbReq, err = hbReq.Normalize()
+	if err != nil {
+		t.Fatalf("set-heartbeats normalize error: %v", err)
+	}
+	if hbReq.IntervalMS != 30000 {
+		t.Fatalf("unexpected set-heartbeats request: %#v", hbReq)
+	}
+
+	systemEventReq, err := DecodeSystemEventParams(json.RawMessage(`{"text":"Node: up","deviceId":"mac-1","roles":["control"]}`))
+	if err != nil {
+		t.Fatalf("system-event decode error: %v", err)
+	}
+	systemEventReq, err = systemEventReq.Normalize()
+	if err != nil {
+		t.Fatalf("system-event normalize error: %v", err)
+	}
+	if systemEventReq.Text != "Node: up" || systemEventReq.DeviceID != "mac-1" || len(systemEventReq.Roles) != 1 {
+		t.Fatalf("unexpected system-event request: %#v", systemEventReq)
+	}
+
+	sendReq, err := DecodeSendParams(json.RawMessage(`{"to":"0000000000000000000000000000000000000000000000000000000000000001","message":"hello","idempotencyKey":"idem-1"}`))
+	if err != nil {
+		t.Fatalf("send decode error: %v", err)
+	}
+	sendReq, err = sendReq.Normalize()
+	if err != nil {
+		t.Fatalf("send normalize error: %v", err)
+	}
+	if sendReq.To != "0000000000000000000000000000000000000000000000000000000000000001" || sendReq.Message != "hello" || sendReq.IdempotencyKey != "idem-1" {
+		t.Fatalf("unexpected send request: %#v", sendReq)
+	}
+
+	invalidSendReq, err := DecodeSendParams(json.RawMessage(`{"to":"invalid","message":"hello"}`))
+	if err != nil {
+		t.Fatalf("send decode error: %v", err)
+	}
+	_, err = invalidSendReq.Normalize()
+	if err == nil {
+		t.Fatalf("expected send normalize to fail with invalid npub")
+	}
+
+	browserReq, err := DecodeBrowserRequestParams(json.RawMessage(`{"method":"get","path":"/status"}`))
+	if err != nil {
+		t.Fatalf("browser.request decode error: %v", err)
+	}
+	browserReq, err = browserReq.Normalize()
+	if err != nil {
+		t.Fatalf("browser.request normalize error: %v", err)
+	}
+	if browserReq.Method != "GET" || browserReq.Path != "/status" {
+		t.Fatalf("unexpected browser.request request: %#v", browserReq)
+	}
+
 	voicewakeReq, err := DecodeVoicewakeSetParams(json.RawMessage(`{"triggers":[" openclaw ","swarmstr"]}`))
 	if err != nil {
 		t.Fatalf("voicewake.set decode error: %v", err)
@@ -801,8 +866,16 @@ func TestSupportedMethodsIncludesOperationalBundles(t *testing.T) {
 		MethodWizardNext,
 		MethodWizardCancel,
 		MethodWizardStatus,
+		MethodUpdateRun,
 		MethodTalkConfig,
 		MethodTalkMode,
+		MethodLastHeartbeat,
+		MethodSetHeartbeats,
+		MethodWake,
+		MethodSystemPresence,
+		MethodSystemEvent,
+		MethodSend,
+		MethodBrowserRequest,
 		MethodVoicewakeGet,
 		MethodVoicewakeSet,
 		MethodTTSStatus,

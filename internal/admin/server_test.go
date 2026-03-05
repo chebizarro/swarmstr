@@ -1252,6 +1252,18 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		TalkConfig: func(context.Context, methods.TalkConfigRequest) (map[string]any, error) {
 			return map[string]any{"config": map[string]any{}}, nil
 		},
+		SystemPresence: func(context.Context, methods.SystemPresenceRequest) (map[string]any, error) {
+			return map[string]any{"presence": []map[string]any{{"key": "default"}}}, nil
+		},
+		SystemEvent: func(_ context.Context, req methods.SystemEventRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "text": req.Text}, nil
+		},
+		Send: func(_ context.Context, req methods.SendRequest) (map[string]any, error) {
+			return map[string]any{"runId": req.IdempotencyKey, "channel": "nostr"}, nil
+		},
+		BrowserRequest: func(_ context.Context, req methods.BrowserRequestRequest) (map[string]any, error) {
+			return map[string]any{"ok": false, "method": req.Method, "path": req.Path}, nil
+		},
 		VoicewakeGet: func(context.Context, methods.VoicewakeGetRequest) (map[string]any, error) {
 			return map[string]any{"triggers": []string{"openclaw"}}, nil
 		},
@@ -1273,6 +1285,10 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		{method: methods.MethodSecretsResolve, params: map[string]any{"commandName": "memory status", "targetIds": []string{"talk.apiKey"}}},
 		{method: methods.MethodWizardStart, params: map[string]any{"mode": "local"}},
 		{method: methods.MethodTalkConfig, params: map[string]any{}},
+		{method: methods.MethodSystemPresence, params: map[string]any{}},
+		{method: methods.MethodSystemEvent, params: map[string]any{"text": "Node: up"}},
+		{method: methods.MethodSend, params: map[string]any{"to": "0000000000000000000000000000000000000000000000000000000000000001", "message": "hello", "idempotencyKey": "idem-1"}},
+		{method: methods.MethodBrowserRequest, params: map[string]any{"method": "GET", "path": "/status"}},
 		{method: methods.MethodVoicewakeGet, params: map[string]any{}},
 		{method: methods.MethodTTSSetProvider, params: map[string]any{"provider": "openai"}},
 		{method: methods.MethodTTSConvert, params: map[string]any{"text": "hello"}},

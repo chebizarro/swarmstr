@@ -988,15 +988,33 @@ func (r *wizardRegistry) Status(req methods.WizardStatusRequest) (wizardSessionR
 }
 
 type operationsRegistry struct {
-	mu          sync.Mutex
-	talkMode    string
-	voicewake   []string
-	ttsEnabled  bool
-	ttsProvider string
+	mu                  sync.Mutex
+	talkMode            string
+	voicewake           []string
+	ttsEnabled          bool
+	ttsProvider         string
+	heartbeatsEnabled   bool
+	heartbeatIntervalMS int
+	lastHeartbeatMS     int64
+	lastUpdateCheckMS   int64
+	systemPresence      map[string]map[string]any
+	systemEvents        []map[string]any
 }
 
 func newOperationsRegistry() *operationsRegistry {
-	return &operationsRegistry{talkMode: "disabled", voicewake: []string{"openclaw", "swarmstr"}, ttsEnabled: false, ttsProvider: "openai"}
+	now := time.Now().UnixMilli()
+	return &operationsRegistry{
+		talkMode:            "disabled",
+		voicewake:           []string{"openclaw", "swarmstr"},
+		ttsEnabled:          false,
+		ttsProvider:         "openai",
+		heartbeatsEnabled:   true,
+		heartbeatIntervalMS: 60_000,
+		lastHeartbeatMS:     now,
+		lastUpdateCheckMS:   now,
+		systemPresence:      map[string]map[string]any{},
+		systemEvents:        []map[string]any{},
+	}
 }
 
 func (r *operationsRegistry) SetTalkMode(mode string) string {
@@ -1050,6 +1068,100 @@ func (r *operationsRegistry) SetTTSProvider(provider string) string {
 		r.ttsProvider = "openai"
 	}
 	return r.ttsProvider
+}
+
+func (r *operationsRegistry) LastHeartbeat() (int64, bool, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastHeartbeatMS, r.heartbeatsEnabled, r.heartbeatIntervalMS
+}
+
+func (r *operationsRegistry) SetHeartbeats(enabled *bool, intervalMS int) (bool, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if enabled != nil {
+		r.heartbeatsEnabled = *enabled
+	}
+	if intervalMS > 0 {
+		r.heartbeatIntervalMS = intervalMS
+	}
+	return r.heartbeatsEnabled, r.heartbeatIntervalMS
+}
+
+func (r *operationsRegistry) Wake(source string) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lastHeartbeatMS = time.Now().UnixMilli()
+	return r.lastHeartbeatMS
+}
+
+func (r *operationsRegistry) RecordUpdateCheck() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lastUpdateCheckMS = time.Now().UnixMilli()
+	return r.lastUpdateCheckMS
+}
+
+func (r *operationsRegistry) LastUpdateCheck() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastUpdateCheckMS
+}
+
+func (r *operationsRegistry) ListSystemPresence() []map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]map[string]any, 0, len(r.systemPresence))
+	for _, rec := range r.systemPresence {
+		out = append(out, cloneMapAny(rec))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, _ := out[i]["updated_at_ms"].(int64)
+		b, _ := out[j]["updated_at_ms"].(int64)
+		return a > b
+	})
+	return out
+}
+
+func (r *operationsRegistry) RecordSystemEvent(req methods.SystemEventRequest) map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UnixMilli()
+	key := strings.TrimSpace(req.DeviceID)
+	if key == "" {
+		key = strings.TrimSpace(req.InstanceID)
+	}
+	if key == "" {
+		key = "default"
+	}
+	rec, ok := r.systemPresence[key]
+	if !ok {
+		rec = map[string]any{}
+	}
+	rec["key"] = key
+	rec["text"] = req.Text
+	rec["deviceId"] = req.DeviceID
+	rec["instanceId"] = req.InstanceID
+	rec["host"] = req.Host
+	rec["ip"] = req.IP
+	rec["mode"] = req.Mode
+	rec["version"] = req.Version
+	rec["platform"] = req.Platform
+	rec["deviceFamily"] = req.DeviceFamily
+	rec["modelIdentifier"] = req.ModelIdentifier
+	rec["lastInputSeconds"] = req.LastInputSeconds
+	rec["reason"] = req.Reason
+	rec["roles"] = append([]string{}, req.Roles...)
+	rec["scopes"] = append([]string{}, req.Scopes...)
+	rec["tags"] = append([]string{}, req.Tags...)
+	rec["updated_at_ms"] = now
+	r.systemPresence[key] = rec
+	event := map[string]any{"text": req.Text, "key": key, "ts": now}
+	r.systemEvents = append(r.systemEvents, event)
+	if len(r.systemEvents) > 200 {
+		r.systemEvents = r.systemEvents[len(r.systemEvents)-200:]
+	}
+	return cloneMapAny(rec)
 }
 
 func cloneMapAny(in map[string]any) map[string]any {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"swarmstr/internal/memory"
@@ -98,8 +99,16 @@ const (
 	MethodWizardNext         = "wizard.next"
 	MethodWizardCancel       = "wizard.cancel"
 	MethodWizardStatus       = "wizard.status"
+	MethodUpdateRun          = "update.run"
 	MethodTalkConfig         = "talk.config"
 	MethodTalkMode           = "talk.mode"
+	MethodLastHeartbeat      = "last-heartbeat"
+	MethodSetHeartbeats      = "set-heartbeats"
+	MethodWake               = "wake"
+	MethodSystemPresence     = "system-presence"
+	MethodSystemEvent        = "system-event"
+	MethodSend               = "send"
+	MethodBrowserRequest     = "browser.request"
 	MethodVoicewakeGet       = "voicewake.get"
 	MethodVoicewakeSet       = "voicewake.set"
 	MethodTTSStatus          = "tts.status"
@@ -567,6 +576,61 @@ type TalkConfigRequest struct {
 
 type TalkModeRequest struct {
 	Mode string `json:"mode"`
+}
+
+type UpdateRunRequest struct {
+	Force bool `json:"force,omitempty"`
+}
+
+type LastHeartbeatRequest struct{}
+
+type SetHeartbeatsRequest struct {
+	Enabled    *bool `json:"enabled,omitempty"`
+	IntervalMS int   `json:"interval_ms,omitempty"`
+}
+
+type WakeRequest struct {
+	Source string `json:"source,omitempty"`
+	Text   string `json:"text,omitempty"`
+	Mode   string `json:"mode,omitempty"`
+}
+
+type SystemPresenceRequest struct{}
+
+type SystemEventRequest struct {
+	Text             string   `json:"text"`
+	DeviceID         string   `json:"device_id,omitempty"`
+	InstanceID       string   `json:"instance_id,omitempty"`
+	Host             string   `json:"host,omitempty"`
+	IP               string   `json:"ip,omitempty"`
+	Mode             string   `json:"mode,omitempty"`
+	Version          string   `json:"version,omitempty"`
+	Platform         string   `json:"platform,omitempty"`
+	DeviceFamily     string   `json:"device_family,omitempty"`
+	ModelIdentifier  string   `json:"model_identifier,omitempty"`
+	LastInputSeconds float64  `json:"last_input_seconds,omitempty"`
+	Reason           string   `json:"reason,omitempty"`
+	Roles            []string `json:"roles,omitempty"`
+	Scopes           []string `json:"scopes,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+}
+
+type SendRequest struct {
+	To             string   `json:"to"`
+	Message        string   `json:"message,omitempty"`
+	Text           string   `json:"text,omitempty"`
+	MediaURL       string   `json:"mediaUrl,omitempty"`
+	MediaURLs      []string `json:"mediaUrls,omitempty"`
+	Channel        string   `json:"channel,omitempty"`
+	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
+}
+
+type BrowserRequestRequest struct {
+	Method    string         `json:"method"`
+	Path      string         `json:"path"`
+	Query     map[string]any `json:"query,omitempty"`
+	Body      any            `json:"body,omitempty"`
+	TimeoutMS int            `json:"timeout_ms,omitempty"`
 }
 
 type VoicewakeGetRequest struct{}
@@ -1369,6 +1433,105 @@ func (r TalkModeRequest) Normalize() (TalkModeRequest, error) {
 	return r, nil
 }
 
+func (r UpdateRunRequest) Normalize() (UpdateRunRequest, error) { return r, nil }
+
+func (r LastHeartbeatRequest) Normalize() (LastHeartbeatRequest, error) { return r, nil }
+
+func (r SetHeartbeatsRequest) Normalize() (SetHeartbeatsRequest, error) {
+	if r.Enabled == nil && r.IntervalMS <= 0 {
+		return r, fmt.Errorf("enabled or interval_ms is required")
+	}
+	if r.IntervalMS < 0 {
+		return r, fmt.Errorf("interval_ms cannot be negative")
+	}
+	if r.IntervalMS > 0 {
+		r.IntervalMS = normalizeLimit(r.IntervalMS, 60_000, 3_600_000)
+	}
+	return r, nil
+}
+
+func (r WakeRequest) Normalize() (WakeRequest, error) {
+	r.Source = strings.TrimSpace(r.Source)
+	r.Text = strings.TrimSpace(r.Text)
+	r.Mode = strings.TrimSpace(r.Mode)
+	return r, nil
+}
+
+func (r SystemPresenceRequest) Normalize() (SystemPresenceRequest, error) { return r, nil }
+
+func (r SystemEventRequest) Normalize() (SystemEventRequest, error) {
+	r.Text = strings.TrimSpace(r.Text)
+	r.DeviceID = strings.TrimSpace(r.DeviceID)
+	r.InstanceID = strings.TrimSpace(r.InstanceID)
+	r.Host = strings.TrimSpace(r.Host)
+	r.IP = strings.TrimSpace(r.IP)
+	r.Mode = strings.TrimSpace(r.Mode)
+	r.Version = strings.TrimSpace(r.Version)
+	r.Platform = strings.TrimSpace(r.Platform)
+	r.DeviceFamily = strings.TrimSpace(r.DeviceFamily)
+	r.ModelIdentifier = strings.TrimSpace(r.ModelIdentifier)
+	r.Reason = strings.TrimSpace(r.Reason)
+	if r.Text == "" {
+		return r, fmt.Errorf("text is required")
+	}
+	r.Roles = compactStringSlice(r.Roles)
+	r.Scopes = compactStringSlice(r.Scopes)
+	r.Tags = compactStringSlice(r.Tags)
+	if r.LastInputSeconds < 0 {
+		r.LastInputSeconds = 0
+	}
+	return r, nil
+}
+
+func (r SendRequest) Normalize() (SendRequest, error) {
+	r.To = strings.TrimSpace(r.To)
+	r.Message = strings.TrimSpace(r.Message)
+	r.Text = strings.TrimSpace(r.Text)
+	r.MediaURL = strings.TrimSpace(r.MediaURL)
+	r.Channel = strings.ToLower(strings.TrimSpace(r.Channel))
+	r.IdempotencyKey = strings.TrimSpace(r.IdempotencyKey)
+	if r.Message == "" && r.Text != "" {
+		r.Message = r.Text
+	}
+	if r.To == "" {
+		return r, fmt.Errorf("to is required")
+	}
+	if !isValidNostrIdentifier(r.To) {
+		return r, fmt.Errorf("to must be a valid npub or hex pubkey")
+	}
+	if r.Channel != "" && r.Channel != "nostr" {
+		return r, fmt.Errorf("unsupported channel: %s", r.Channel)
+	}
+	r.MediaURLs = compactStringSlice(r.MediaURLs)
+	if r.Message == "" && r.MediaURL == "" && len(r.MediaURLs) == 0 {
+		return r, fmt.Errorf("text or media is required")
+	}
+	if r.IdempotencyKey == "" {
+		r.IdempotencyKey = fmt.Sprintf("send-%d", time.Now().UnixNano())
+	}
+	return r, nil
+}
+
+func (r BrowserRequestRequest) Normalize() (BrowserRequestRequest, error) {
+	r.Method = strings.ToUpper(strings.TrimSpace(r.Method))
+	r.Path = strings.TrimSpace(r.Path)
+	if r.Method == "" || r.Path == "" {
+		return r, fmt.Errorf("method and path are required")
+	}
+	switch r.Method {
+	case "GET", "POST", "DELETE":
+	default:
+		return r, fmt.Errorf("method must be GET, POST, or DELETE")
+	}
+	if r.TimeoutMS < 0 {
+		return r, fmt.Errorf("timeoutMs cannot be negative")
+	}
+	if r.TimeoutMS > 0 {
+		r.TimeoutMS = normalizeLimit(r.TimeoutMS, 5_000, 120_000)
+	}
+	return r, nil
+}
+
 func (r VoicewakeGetRequest) Normalize() (VoicewakeGetRequest, error) { return r, nil }
 
 func (r VoicewakeSetRequest) Normalize() (VoicewakeSetRequest, error) {
@@ -1497,8 +1660,16 @@ func SupportedMethods() []string {
 		MethodWizardNext,
 		MethodWizardCancel,
 		MethodWizardStatus,
+		MethodUpdateRun,
 		MethodTalkConfig,
 		MethodTalkMode,
+		MethodLastHeartbeat,
+		MethodSetHeartbeats,
+		MethodWake,
+		MethodSystemPresence,
+		MethodSystemEvent,
+		MethodSend,
+		MethodBrowserRequest,
 		MethodVoicewakeGet,
 		MethodVoicewakeSet,
 		MethodTTSStatus,
@@ -3010,6 +3181,13 @@ func DecodeWizardStatusParams(params json.RawMessage) (WizardStatusRequest, erro
 	return decodeMethodParams[WizardStatusRequest](params)
 }
 
+func DecodeUpdateRunParams(params json.RawMessage) (UpdateRunRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return UpdateRunRequest{}, nil
+	}
+	return decodeMethodParams[UpdateRunRequest](params)
+}
+
 func DecodeTalkConfigParams(params json.RawMessage) (TalkConfigRequest, error) {
 	if len(bytes.TrimSpace(params)) == 0 {
 		return TalkConfigRequest{}, nil
@@ -3019,6 +3197,43 @@ func DecodeTalkConfigParams(params json.RawMessage) (TalkConfigRequest, error) {
 
 func DecodeTalkModeParams(params json.RawMessage) (TalkModeRequest, error) {
 	return decodeMethodParams[TalkModeRequest](params)
+}
+
+func DecodeLastHeartbeatParams(params json.RawMessage) (LastHeartbeatRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return LastHeartbeatRequest{}, nil
+	}
+	return decodeMethodParams[LastHeartbeatRequest](params)
+}
+
+func DecodeSetHeartbeatsParams(params json.RawMessage) (SetHeartbeatsRequest, error) {
+	return decodeMethodParams[SetHeartbeatsRequest](params)
+}
+
+func DecodeWakeParams(params json.RawMessage) (WakeRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return WakeRequest{}, nil
+	}
+	return decodeMethodParams[WakeRequest](params)
+}
+
+func DecodeSystemPresenceParams(params json.RawMessage) (SystemPresenceRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return SystemPresenceRequest{}, nil
+	}
+	return decodeMethodParams[SystemPresenceRequest](params)
+}
+
+func DecodeSystemEventParams(params json.RawMessage) (SystemEventRequest, error) {
+	return decodeMethodParams[SystemEventRequest](params)
+}
+
+func DecodeSendParams(params json.RawMessage) (SendRequest, error) {
+	return decodeMethodParams[SendRequest](params)
+}
+
+func DecodeBrowserRequestParams(params json.RawMessage) (BrowserRequestRequest, error) {
+	return decodeMethodParams[BrowserRequestRequest](params)
 }
 
 func DecodeVoicewakeGetParams(params json.RawMessage) (VoicewakeGetRequest, error) {
@@ -3138,6 +3353,8 @@ var objectParamAliases = map[string]string{
 	"includePlugins":   "include_plugins",
 	"nodeId":           "node_id",
 	"deviceId":         "device_id",
+	"instanceId":       "instance_id",
+	"lastInputSeconds": "last_input_seconds",
 	"displayName":      "display_name",
 	"coreVersion":      "core_version",
 	"uiVersion":        "ui_version",
@@ -3236,6 +3453,39 @@ func truncateRunes(s string, maxRunes int) string {
 		return s
 	}
 	return string(r[:maxRunes])
+}
+
+func compactStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func isValidNostrIdentifier(id string) bool {
+	if strings.HasPrefix(id, "npub1") && len(id) == 63 {
+		return true
+	}
+	if len(id) == 64 {
+		for _, c := range id {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func decodeWritePrecondition(raw json.RawMessage, expectedVersion *int, expectedEvent *string) (bool, error) {

@@ -1062,6 +1062,38 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("unexpected wizard.start payload: %#v", res.Result)
 	}
 
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSystemEvent, Params: json.RawMessage(`{"text":"Node: online","deviceId":"mac-1"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("system-event error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["ok"] != true {
+		t.Fatalf("unexpected system-event payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSystemPresence, Params: json.RawMessage(`{}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("system-presence error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if _, ok := payload["presence"]; !ok {
+		t.Fatalf("unexpected system-presence payload: %#v", res.Result)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSend, Params: json.RawMessage(`{"to":"0000000000000000000000000000000000000000000000000000000000000001","message":"hello","idempotencyKey":"idem-1"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err == nil {
+		t.Fatalf("expected send to fail when dm runtime is unavailable")
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodBrowserRequest, Params: json.RawMessage(`{"method":"GET","path":"/status"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("browser.request error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["ok"] != false {
+		t.Fatalf("unexpected browser.request payload: %#v", res.Result)
+	}
+
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodVoicewakeSet, Params: json.RawMessage(`{"triggers":["openclaw","swarmstr"]}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
 	if err != nil {
 		t.Fatalf("voicewake.set error: %v", err)

@@ -702,11 +702,35 @@ func main() {
 				WizardStatus: func(_ context.Context, req methods.WizardStatusRequest) (map[string]any, error) {
 					return applyWizardStatus(wizards, req)
 				},
+				UpdateRun: func(_ context.Context, req methods.UpdateRunRequest) (map[string]any, error) {
+					return applyUpdateRun(ops, req)
+				},
 				TalkConfig: func(_ context.Context, req methods.TalkConfigRequest) (map[string]any, error) {
 					return applyTalkConfig(configState.Get(), req)
 				},
 				TalkMode: func(_ context.Context, req methods.TalkModeRequest) (map[string]any, error) {
 					return applyTalkMode(ops, req)
+				},
+				LastHeartbeat: func(_ context.Context, req methods.LastHeartbeatRequest) (map[string]any, error) {
+					return applyLastHeartbeat(ops, req)
+				},
+				SetHeartbeats: func(_ context.Context, req methods.SetHeartbeatsRequest) (map[string]any, error) {
+					return applySetHeartbeats(ops, req)
+				},
+				Wake: func(_ context.Context, req methods.WakeRequest) (map[string]any, error) {
+					return applyWake(ops, req)
+				},
+				SystemPresence: func(_ context.Context, req methods.SystemPresenceRequest) (map[string]any, error) {
+					return applySystemPresence(ops, req)
+				},
+				SystemEvent: func(_ context.Context, req methods.SystemEventRequest) (map[string]any, error) {
+					return applySystemEvent(ops, req)
+				},
+				Send: func(ctx context.Context, req methods.SendRequest) (map[string]any, error) {
+					return applySend(ctx, bus, req)
+				},
+				BrowserRequest: func(_ context.Context, req methods.BrowserRequestRequest) (map[string]any, error) {
+					return applyBrowserRequest(req)
 				},
 				VoicewakeGet: func(_ context.Context, req methods.VoicewakeGetRequest) (map[string]any, error) {
 					return applyVoicewakeGet(ops, req)
@@ -2285,6 +2309,20 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodUpdateRun:
+		req, err := methods.DecodeUpdateRunParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyUpdateRun(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodTalkConfig:
 		req, err := methods.DecodeTalkConfigParams(in.Params)
 		if err != nil {
@@ -2309,6 +2347,104 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		out, err := applyTalkMode(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodLastHeartbeat:
+		req, err := methods.DecodeLastHeartbeatParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyLastHeartbeat(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodSetHeartbeats:
+		req, err := methods.DecodeSetHeartbeatsParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applySetHeartbeats(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodWake:
+		req, err := methods.DecodeWakeParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyWake(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodSystemPresence:
+		req, err := methods.DecodeSystemPresenceParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applySystemPresence(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodSystemEvent:
+		req, err := methods.DecodeSystemEventParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applySystemEvent(controlOps, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodSend:
+		req, err := methods.DecodeSendParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applySend(ctx, dmBus, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodBrowserRequest:
+		req, err := methods.DecodeBrowserRequestParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applyBrowserRequest(req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
@@ -3969,12 +4105,85 @@ func applyTalkConfig(cfg state.ConfigDoc, req methods.TalkConfigRequest) (map[st
 	return map[string]any{"config": configPayload}, nil
 }
 
+func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("update runtime not configured")
+	}
+	checkedAt := reg.RecordUpdateCheck()
+	return map[string]any{"ok": true, "status": "checked", "force": req.Force, "checked_at_ms": checkedAt}, nil
+}
+
 func applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("talk runtime not configured")
 	}
 	mode := reg.SetTalkMode(req.Mode)
 	return map[string]any{"mode": mode, "ts": time.Now().UnixMilli()}, nil
+}
+
+func applyLastHeartbeat(reg *operationsRegistry, _ methods.LastHeartbeatRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("heartbeat runtime not configured")
+	}
+	lastAt, enabled, interval := reg.LastHeartbeat()
+	return map[string]any{"last_heartbeat_ms": lastAt, "enabled": enabled, "interval_ms": interval}, nil
+}
+
+func applySetHeartbeats(reg *operationsRegistry, req methods.SetHeartbeatsRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("heartbeat runtime not configured")
+	}
+	enabled, interval := reg.SetHeartbeats(req.Enabled, req.IntervalMS)
+	return map[string]any{"ok": true, "enabled": enabled, "interval_ms": interval}, nil
+}
+
+func applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("wake runtime not configured")
+	}
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "control"
+	}
+	at := reg.Wake(source)
+	return map[string]any{"ok": true, "woken": true, "source": source, "mode": req.Mode, "text": req.Text, "wake_at_ms": at}, nil
+}
+
+func applySystemPresence(reg *operationsRegistry, _ methods.SystemPresenceRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("system runtime not configured")
+	}
+	return map[string]any{"presence": reg.ListSystemPresence()}, nil
+}
+
+func applySystemEvent(reg *operationsRegistry, req methods.SystemEventRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("system runtime not configured")
+	}
+	_ = reg.RecordSystemEvent(req)
+	return map[string]any{"ok": true}, nil
+}
+
+func applySend(ctx context.Context, dmBus *nostruntime.DMBus, req methods.SendRequest) (map[string]any, error) {
+	if dmBus == nil {
+		return nil, fmt.Errorf("send runtime not configured")
+	}
+	if err := dmBus.SendDM(ctx, req.To, req.Message); err != nil {
+		return nil, err
+	}
+	messageID := fmt.Sprintf("msg-%d", time.Now().UnixNano())
+	return map[string]any{"runId": req.IdempotencyKey, "messageId": messageID, "channel": "nostr"}, nil
+}
+
+func applyBrowserRequest(req methods.BrowserRequestRequest) (map[string]any, error) {
+	return map[string]any{
+		"ok":      false,
+		"error":   "browser control is disabled",
+		"method":  req.Method,
+		"path":    req.Path,
+		"query":   req.Query,
+		"timeout": req.TimeoutMS,
+	}, nil
 }
 
 func applyVoicewakeGet(reg *operationsRegistry, _ methods.VoicewakeGetRequest) (map[string]any, error) {

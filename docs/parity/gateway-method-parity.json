@@ -3,9 +3,9 @@
   "captured_at": "2026-03-04",
   "summary": {
     "openclaw_method_count": 94,
-    "implemented": 86,
+    "implemented": 94,
     "partial": 0,
-    "missing": 8
+    "missing": 0
   },
   "entries": [
     {
@@ -280,9 +280,9 @@
     },
     {
       "method": "update.run",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Update orchestration endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "update.run",
+      "notes": ""
     },
     {
       "method": "voicewake.get",
@@ -346,21 +346,21 @@
     },
     {
       "method": "last-heartbeat",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Heartbeat diagnostics method not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "last-heartbeat",
+      "notes": ""
     },
     {
       "method": "set-heartbeats",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Heartbeat control method not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "set-heartbeats",
+      "notes": ""
     },
     {
       "method": "wake",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Wake endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "wake",
+      "notes": ""
     },
     {
       "method": "node.pair.request",
@@ -514,21 +514,21 @@
     },
     {
       "method": "system-presence",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "System presence event endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "system-presence",
+      "notes": ""
     },
     {
       "method": "system-event",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "System event endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "system-event",
+      "notes": ""
     },
     {
       "method": "send",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Generic send endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "send",
+      "notes": ""
     },
     {
       "method": "agent",
@@ -550,9 +550,9 @@
     },
     {
       "method": "browser.request",
-      "status": "missing",
-      "swarmstr_method": "",
-      "notes": "Browser request endpoint not yet implemented."
+      "status": "implemented",
+      "swarmstr_method": "browser.request",
+      "notes": ""
     },
     {
       "method": "chat.history",
