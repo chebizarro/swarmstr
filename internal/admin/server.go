@@ -123,7 +123,7 @@ type ServerOptions struct {
 	LastHeartbeat        func(context.Context, methods.LastHeartbeatRequest) (map[string]any, error)
 	SetHeartbeats        func(context.Context, methods.SetHeartbeatsRequest) (map[string]any, error)
 	Wake                 func(context.Context, methods.WakeRequest) (map[string]any, error)
-	SystemPresence       func(context.Context, methods.SystemPresenceRequest) (map[string]any, error)
+	SystemPresence       func(context.Context, methods.SystemPresenceRequest) ([]map[string]any, error)
 	SystemEvent          func(context.Context, methods.SystemEventRequest) (map[string]any, error)
 	Send                 func(context.Context, methods.SendRequest) (map[string]any, error)
 	BrowserRequest       func(context.Context, methods.BrowserRequestRequest) (map[string]any, error)

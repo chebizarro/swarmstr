@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {
+      "name": "set-heartbeats requires enabled",
+      "method": "set-heartbeats",
+      "params": {"interval_ms": 30000},
+      "expect_error_contains": "enabled is required"
+    },
+    {
+      "name": "system-presence returns list",
+      "method": "system-presence",
+      "params": {},
+      "result_kind": "array"
+    },
+    {
+      "name": "system-event requires text",
+      "method": "system-event",
+      "params": {"deviceId": "mac-1"},
+      "expect_error_contains": "text is required"
+    },
+    {
+      "name": "browser-request disabled returns error",
+      "method": "browser.request",
+      "params": {"method": "GET", "path": "/status"},
+      "expect_error_contains": "browser control is disabled"
+    }
+  ]
+}

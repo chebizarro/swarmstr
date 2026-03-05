@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -950,6 +952,60 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	}
 }
 
+func TestHandleControlRPCRequest_OpenClawHighRiskParityFixtures(t *testing.T) {
+	type fixtureCase struct {
+		Name               string         `json:"name"`
+		Method             string         `json:"method"`
+		Params             map[string]any `json:"params"`
+		ExpectErrorContains string        `json:"expect_error_contains"`
+		ResultKind         string         `json:"result_kind"`
+	}
+	type fixtureFile struct {
+		Cases []fixtureCase `json:"cases"`
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "parity", "high_risk_methods.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fx fixtureFile
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	prevOps := controlOps
+	controlOps = newOperationsRegistry()
+	defer func() { controlOps = prevOps }()
+
+	for _, tc := range fx.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			paramsRaw, err := json.Marshal(tc.Params)
+			if err != nil {
+				t.Fatalf("marshal params: %v", err)
+			}
+			res, callErr := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+				FromPubKey: "caller",
+				Method:     tc.Method,
+				Params:     paramsRaw,
+			}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+			if tc.ExpectErrorContains != "" {
+				if callErr == nil || !strings.Contains(callErr.Error(), tc.ExpectErrorContains) {
+					t.Fatalf("err=%v, want contains %q", callErr, tc.ExpectErrorContains)
+				}
+				return
+			}
+			if callErr != nil {
+				t.Fatalf("unexpected error: %v", callErr)
+			}
+			switch tc.ResultKind {
+			case "array":
+				if _, ok := res.Result.([]map[string]any); !ok {
+					t.Fatalf("result kind mismatch: %#v", res.Result)
+				}
+			}
+		})
+	}
+}
+
 func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
 	prevExec := controlExecApprovals
@@ -1075,23 +1131,32 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("system-presence error: %v", err)
 	}
-	payload, _ = res.Result.(map[string]any)
-	if _, ok := payload["presence"]; !ok {
+	if _, ok := res.Result.([]map[string]any); !ok {
 		t.Fatalf("unexpected system-presence payload: %#v", res.Result)
 	}
 
-	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSend, Params: json.RawMessage(`{"to":"0000000000000000000000000000000000000000000000000000000000000001","message":"hello","idempotencyKey":"idem-1"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSetHeartbeats, Params: json.RawMessage(`{"interval_ms":30000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err == nil {
+		t.Fatalf("expected set-heartbeats to require enabled")
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSetHeartbeats, Params: json.RawMessage(`{"enabled":true,"interval_ms":30000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("set-heartbeats error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["enabled"] != true {
+		t.Fatalf("unexpected set-heartbeats payload: %#v", res.Result)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSend, Params: json.RawMessage(`{"to":"npub1abc","message":"hello","idempotencyKey":"idem-1"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
 	if err == nil {
 		t.Fatalf("expected send to fail when dm runtime is unavailable")
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodBrowserRequest, Params: json.RawMessage(`{"method":"GET","path":"/status"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
-	if err != nil {
-		t.Fatalf("browser.request error: %v", err)
-	}
-	payload, _ = res.Result.(map[string]any)
-	if payload["ok"] != false {
-		t.Fatalf("unexpected browser.request payload: %#v", res.Result)
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodBrowserRequest, Params: json.RawMessage(`{"method":"GET","path":"/status"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	if err == nil {
+		t.Fatalf("expected browser.request to fail when browser control is disabled")
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodVoicewakeSet, Params: json.RawMessage(`{"triggers":["openclaw","swarmstr"]}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())

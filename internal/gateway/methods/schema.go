@@ -1438,11 +1438,14 @@ func (r UpdateRunRequest) Normalize() (UpdateRunRequest, error) { return r, nil 
 func (r LastHeartbeatRequest) Normalize() (LastHeartbeatRequest, error) { return r, nil }
 
 func (r SetHeartbeatsRequest) Normalize() (SetHeartbeatsRequest, error) {
-	if r.Enabled == nil && r.IntervalMS <= 0 {
-		return r, fmt.Errorf("enabled or interval_ms is required")
+	if r.Enabled == nil {
+		return r, fmt.Errorf("enabled is required")
 	}
 	if r.IntervalMS < 0 {
 		return r, fmt.Errorf("interval_ms cannot be negative")
+	}
+	if r.Enabled != nil && *r.Enabled && r.IntervalMS == 0 {
+		return r, fmt.Errorf("interval_ms is required when enabled is true")
 	}
 	if r.IntervalMS > 0 {
 		r.IntervalMS = normalizeLimit(r.IntervalMS, 60_000, 3_600_000)

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1252,8 +1255,8 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		TalkConfig: func(context.Context, methods.TalkConfigRequest) (map[string]any, error) {
 			return map[string]any{"config": map[string]any{}}, nil
 		},
-		SystemPresence: func(context.Context, methods.SystemPresenceRequest) (map[string]any, error) {
-			return map[string]any{"presence": []map[string]any{{"key": "default"}}}, nil
+		SystemPresence: func(context.Context, methods.SystemPresenceRequest) ([]map[string]any, error) {
+			return []map[string]any{{"key": "default"}}, nil
 		},
 		SystemEvent: func(_ context.Context, req methods.SystemEventRequest) (map[string]any, error) {
 			return map[string]any{"ok": true, "text": req.Text}, nil
@@ -1301,6 +1304,84 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		if err != nil || status != http.StatusOK {
 			t.Fatalf("%s failed status=%d err=%v", tc.method, status, err)
 		}
+	}
+}
+
+func TestDispatchMethodCallSetHeartbeatsRequiresEnabled(t *testing.T) {
+	opts := ServerOptions{
+		SetHeartbeats: func(context.Context, methods.SetHeartbeatsRequest) (map[string]any, error) {
+			return map[string]any{"ok": true}, nil
+		},
+	}
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodSetHeartbeats, map[string]any{"interval_ms": 30000})
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("status=%d want=%d", status, http.StatusBadRequest)
+	}
+}
+
+func TestDispatchMethodCall_OpenClawHighRiskParityFixtures(t *testing.T) {
+	type fixtureCase struct {
+		Name               string         `json:"name"`
+		Method             string         `json:"method"`
+		Params             map[string]any `json:"params"`
+		ExpectedStatus     int            `json:"expected_status"`
+		ExpectErrorContains string        `json:"expect_error_contains"`
+		ResultKind         string         `json:"result_kind"`
+	}
+	type fixtureFile struct {
+		Cases []fixtureCase `json:"cases"`
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "parity", "high_risk_methods.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fx fixtureFile
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	opts := ServerOptions{
+		SetHeartbeats: func(_ context.Context, req methods.SetHeartbeatsRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "enabled": req.Enabled != nil && *req.Enabled}, nil
+		},
+		SystemPresence: func(context.Context, methods.SystemPresenceRequest) ([]map[string]any, error) {
+			return []map[string]any{{"key": "default"}}, nil
+		},
+		SystemEvent: func(_ context.Context, req methods.SystemEventRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "text": req.Text}, nil
+		},
+		BrowserRequest: func(context.Context, methods.BrowserRequestRequest) (map[string]any, error) {
+			return nil, fmt.Errorf("browser control is disabled")
+		},
+	}
+	for _, tc := range fx.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := newMethodRequest(t, tc.Method, tc.Params)
+			result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+			if status != tc.ExpectedStatus {
+				t.Fatalf("status=%d want=%d err=%v", status, tc.ExpectedStatus, err)
+			}
+			if tc.ExpectErrorContains != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.ExpectErrorContains) {
+					t.Fatalf("error=%v, want contains %q", err, tc.ExpectErrorContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			switch tc.ResultKind {
+			case "array":
+				if _, ok := result.([]map[string]any); !ok {
+					t.Fatalf("result kind mismatch: %#v", result)
+				}
+			}
+		})
 	}
 }
 

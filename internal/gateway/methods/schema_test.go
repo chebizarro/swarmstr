@@ -756,6 +756,13 @@ func TestDecodeExecSecretsWizardTalkVoicewakeAndTTSParams(t *testing.T) {
 	if hbReq.IntervalMS != 30000 {
 		t.Fatalf("unexpected set-heartbeats request: %#v", hbReq)
 	}
+	missingEnabledReq, err := DecodeSetHeartbeatsParams(json.RawMessage(`{"interval_ms":30000}`))
+	if err != nil {
+		t.Fatalf("set-heartbeats decode missing-enabled error: %v", err)
+	}
+	if _, err := missingEnabledReq.Normalize(); err == nil {
+		t.Fatalf("expected set-heartbeats normalize to require enabled")
+	}
 
 	systemEventReq, err := DecodeSystemEventParams(json.RawMessage(`{"text":"Node: up","deviceId":"mac-1","roles":["control"]}`))
 	if err != nil {

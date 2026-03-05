@@ -720,7 +720,7 @@ func main() {
 				Wake: func(_ context.Context, req methods.WakeRequest) (map[string]any, error) {
 					return applyWake(ops, req)
 				},
-				SystemPresence: func(_ context.Context, req methods.SystemPresenceRequest) (map[string]any, error) {
+				SystemPresence: func(_ context.Context, req methods.SystemPresenceRequest) ([]map[string]any, error) {
 					return applySystemPresence(ops, req)
 				},
 				SystemEvent: func(_ context.Context, req methods.SystemEventRequest) (map[string]any, error) {
@@ -4149,11 +4149,11 @@ func applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any
 	return map[string]any{"ok": true, "woken": true, "source": source, "mode": req.Mode, "text": req.Text, "wake_at_ms": at}, nil
 }
 
-func applySystemPresence(reg *operationsRegistry, _ methods.SystemPresenceRequest) (map[string]any, error) {
+func applySystemPresence(reg *operationsRegistry, _ methods.SystemPresenceRequest) ([]map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("system runtime not configured")
 	}
-	return map[string]any{"presence": reg.ListSystemPresence()}, nil
+	return reg.ListSystemPresence(), nil
 }
 
 func applySystemEvent(reg *operationsRegistry, req methods.SystemEventRequest) (map[string]any, error) {
@@ -4175,15 +4175,8 @@ func applySend(ctx context.Context, dmBus *nostruntime.DMBus, req methods.SendRe
 	return map[string]any{"runId": req.IdempotencyKey, "messageId": messageID, "channel": "nostr"}, nil
 }
 
-func applyBrowserRequest(req methods.BrowserRequestRequest) (map[string]any, error) {
-	return map[string]any{
-		"ok":      false,
-		"error":   "browser control is disabled",
-		"method":  req.Method,
-		"path":    req.Path,
-		"query":   req.Query,
-		"timeout": req.TimeoutMS,
-	}, nil
+func applyBrowserRequest(_ methods.BrowserRequestRequest) (map[string]any, error) {
+	return map[string]any{}, fmt.Errorf("browser control is disabled")
 }
 
 func applyVoicewakeGet(reg *operationsRegistry, _ methods.VoicewakeGetRequest) (map[string]any, error) {
