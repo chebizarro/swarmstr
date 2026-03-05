@@ -71,7 +71,47 @@ func extensionSchemaEntries(cfg state.ConfigDoc) map[string]any {
 			"gatewayMethods": extensionEntryGatewayMethods(entry),
 		})
 	}
-	return map[string]any{"entries": out}
+	rawExt := map[string]any{}
+	if cfg.Extra != nil {
+		if ext, ok := cfg.Extra["extensions"].(map[string]any); ok {
+			rawExt = ext
+		}
+	}
+	enabled := true
+	if v, ok := rawExt["enabled"].(bool); ok {
+		enabled = v
+	}
+	load := true
+	if v, ok := rawExt["load"].(bool); ok {
+		load = v
+	}
+	loadPaths := getStringSlice(rawExt, "load_paths")
+	if len(loadPaths) == 0 {
+		loadPaths = getStringSlice(rawExt, "loadPaths")
+	}
+	installIDs := []string{}
+	if rawInstalls, ok := rawExt["installs"].(map[string]any); ok {
+		for installID, installData := range rawInstalls {
+			installID = strings.TrimSpace(installID)
+			if installID == "" {
+				continue
+			}
+			if _, isMap := installData.(map[string]any); !isMap {
+				continue
+			}
+			installIDs = append(installIDs, installID)
+		}
+		sort.Strings(installIDs)
+	}
+	return map[string]any{
+		"enabled":   enabled,
+		"load":      load,
+		"allow":     getStringSlice(rawExt, "allow"),
+		"deny":      getStringSlice(rawExt, "deny"),
+		"loadPaths": loadPaths,
+		"installs":  installIDs,
+		"entries":   out,
+	}
 }
 
 func extensionEntries(cfg state.ConfigDoc) map[string]map[string]any {
@@ -268,47 +308,47 @@ func applyPluginEnvPatch(cfg state.ConfigDoc, key string, patch map[string]any) 
 				if entry, ok := rawEntries[entryID].(map[string]any); ok {
 					switch existing := entry["env"].(type) {
 					case map[string]string:
-						for k, v := range existing {
-							k = strings.TrimSpace(k)
-							v = strings.TrimSpace(v)
-							if k == "" || v == "" {
+						for existingKey, existingVal := range existing {
+							existingKey = strings.TrimSpace(existingKey)
+							existingVal = strings.TrimSpace(existingVal)
+							if existingKey == "" || existingVal == "" {
 								continue
 							}
-							merged[k] = v
+							merged[existingKey] = existingVal
 						}
 					case map[string]any:
-						for k, raw := range existing {
-							s, ok := raw.(string)
+						for existingKey, raw := range existing {
+							existingVal, ok := raw.(string)
 							if !ok {
 								continue
 							}
-							k = strings.TrimSpace(k)
-							s = strings.TrimSpace(s)
-							if k == "" || s == "" {
+							existingKey = strings.TrimSpace(existingKey)
+							existingVal = strings.TrimSpace(existingVal)
+							if existingKey == "" || existingVal == "" {
 								continue
 							}
-							merged[k] = s
+							merged[existingKey] = existingVal
 						}
 					}
 				}
 			}
 		}
 	}
-	for key, raw := range patch {
-		value, ok := raw.(string)
+	for patchKey, raw := range patch {
+		patchVal, ok := raw.(string)
 		if !ok {
 			return cfg, fmt.Errorf("plugins.entries.%s.env must be object<string,string>", entryID)
 		}
-		k := strings.TrimSpace(key)
-		if k == "" {
+		patchKey = strings.TrimSpace(patchKey)
+		if patchKey == "" {
 			continue
 		}
-		v := strings.TrimSpace(value)
-		if v == "" {
-			delete(merged, k)
+		patchVal = strings.TrimSpace(patchVal)
+		if patchVal == "" {
+			delete(merged, patchKey)
 			continue
 		}
-		merged[k] = v
+		merged[patchKey] = patchVal
 	}
 	return ApplyConfigSet(cfg, key, merged)
 }

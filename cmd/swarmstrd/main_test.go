@@ -20,10 +20,18 @@ import (
 
 func TestHandleControlRPCRequest_SupportedMethods(t *testing.T) {
 	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Extra: map[string]any{
-		"extensions": map[string]any{"entries": map[string]any{
-			"codegen": map[string]any{"enabled": true, "gateway_methods": []any{"ext.codegen.run", "ext.codegen.status"}},
-			"disabled": map[string]any{"enabled": false, "gateway_methods": []any{"ext.disabled"}},
-		}},
+		"extensions": map[string]any{
+			"enabled": true,
+			"load":    true,
+			"allow":   []string{"codegen"},
+			"deny":    []string{"blocked"},
+			"entries": map[string]any{
+				"codegen": map[string]any{"enabled": true, "gateway_methods": []any{"ext.codegen.run", "ext.codegen.status"}},
+				"blocked": map[string]any{"enabled": true, "gateway_methods": []any{"ext.blocked"}},
+				"extra":   map[string]any{"enabled": true, "gateway_methods": []any{"ext.extra"}},
+				"disabled": map[string]any{"enabled": false, "gateway_methods": []any{"ext.disabled"}},
+			},
+		},
 	}})
 	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
@@ -45,8 +53,50 @@ func TestHandleControlRPCRequest_SupportedMethods(t *testing.T) {
 		}
 		return false
 	}
-	if !contains("ext.codegen.run") || !contains("ext.codegen.status") || contains("ext.disabled") {
-		t.Fatalf("unexpected extension method projection in supported methods: %#v", list)
+	if !contains("ext.codegen.run") || !contains("ext.codegen.status") {
+		t.Fatalf("expected allowed extension methods in projection: %#v", list)
+	}
+	if contains("ext.disabled") || contains("ext.blocked") || contains("ext.extra") {
+		t.Fatalf("unexpected filtered extension methods present in projection: %#v", list)
+	}
+
+	cfgState.Set(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Extra: map[string]any{
+		"extensions": map[string]any{
+			"enabled": false,
+			"entries": map[string]any{"codegen": map[string]any{"enabled": true, "gateway_methods": []any{"ext.codegen.run"}}},
+		},
+	}})
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSupportedMethods,
+		Params:     json.RawMessage(`[]`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("handleControlRPCRequest disabled-extensions error: %v", err)
+	}
+	list, _ = res.Result.([]string)
+	if contains := func(target string) bool { for _, method := range list { if method == target { return true } }; return false }("ext.codegen.run"); contains {
+		t.Fatalf("expected no extension methods when plugins.enabled=false: %#v", list)
+	}
+
+	cfgState.Set(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Extra: map[string]any{
+		"extensions": map[string]any{
+			"enabled": true,
+			"allow":   "invalid-type",
+			"entries": map[string]any{"codegen": map[string]any{"enabled": true, "gateway_methods": []any{"ext.codegen.run"}}},
+		},
+	}})
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSupportedMethods,
+		Params:     json.RawMessage(`[]`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("handleControlRPCRequest invalid-allowlist error: %v", err)
+	}
+	list, _ = res.Result.([]string)
+	if contains := func(target string) bool { for _, method := range list { if method == target { return true } }; return false }("ext.codegen.run"); contains {
+		t.Fatalf("expected invalid allowlist type to fail-closed extension projection: %#v", list)
 	}
 }
 
@@ -1030,6 +1080,80 @@ func TestHandleControlRPCRequest_ToolsCatalogUnknownAgent(t *testing.T) {
 	}
 	if payload["agentId"] != "main" {
 		t.Fatalf("expected canonical main agent id in response, got: %#v", payload)
+	}
+}
+
+func TestHandleControlRPCRequest_ToolsCatalogRespectsPluginPolicy(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Extra: map[string]any{
+		"extensions": map[string]any{
+			"enabled": true,
+			"load":    true,
+			"allow":   []string{"codegen"},
+			"deny":    []string{"blocked"},
+			"entries": map[string]any{
+				"codegen": map[string]any{"enabled": true, "tools": []string{"codegen.apply"}},
+				"blocked": map[string]any{"enabled": true, "tools": []string{"blocked.tool"}},
+				"extra":   map[string]any{"enabled": true, "tools": []string{"extra.tool"}},
+			},
+		},
+	}})
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodToolsCatalog,
+		Params:     json.RawMessage(`{"agent_id":"main"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("tools.catalog policy error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	groups, _ := payload["groups"].([]map[string]any)
+	hasCodegen := false
+	hasBlocked := false
+	hasExtra := false
+	for _, group := range groups {
+		if group["source"] != "plugin" {
+			continue
+		}
+		if toolsList, ok := group["tools"].([]map[string]any); ok {
+			for _, toolEntry := range toolsList {
+				switch toolEntry["id"] {
+				case "codegen.apply":
+					hasCodegen = true
+				case "blocked.tool":
+					hasBlocked = true
+				case "extra.tool":
+					hasExtra = true
+				}
+			}
+		}
+	}
+	if !hasCodegen || hasBlocked || hasExtra {
+		t.Fatalf("unexpected plugin policy filtering in tools.catalog: %#v", payload)
+	}
+
+	cfgState.Set(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Extra: map[string]any{
+		"extensions": map[string]any{
+			"enabled": true,
+			"load":    false,
+			"entries": map[string]any{"codegen": map[string]any{"enabled": true, "tools": []string{"codegen.apply"}}},
+		},
+	}})
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodToolsCatalog,
+		Params:     json.RawMessage(`{"agent_id":"main"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	if err != nil {
+		t.Fatalf("tools.catalog load=false error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	groups, _ = payload["groups"].([]map[string]any)
+	for _, group := range groups {
+		if group["source"] == "plugin" {
+			t.Fatalf("expected no plugin groups when plugins.load=false: %#v", payload)
+		}
 	}
 }
 

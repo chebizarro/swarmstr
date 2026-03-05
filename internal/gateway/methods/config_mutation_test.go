@@ -136,9 +136,17 @@ func TestApplyConfigSetAndPatch(t *testing.T) {
 
 func TestConfigSchemaContainsCoreFields(t *testing.T) {
 	cfg := state.ConfigDoc{Extra: map[string]any{
-		"extensions": map[string]any{"entries": map[string]any{
-			"codegen": map[string]any{"enabled": true, "tools": []string{"codegen.apply"}, "gateway_methods": []string{"ext.codegen.run"}},
-		}},
+		"extensions": map[string]any{
+			"enabled":    true,
+			"load":       true,
+			"allow":      []string{"codegen"},
+			"deny":       []string{"blocked"},
+			"load_paths": []string{"./extensions"},
+			"installs":   map[string]any{"codegen": map[string]any{"source": "npm"}},
+			"entries": map[string]any{
+				"codegen": map[string]any{"enabled": true, "tools": []string{"codegen.apply"}, "gateway_methods": []string{"ext.codegen.run"}},
+			},
+		},
 	}}
 	s := ConfigSchema(cfg)
 	fields, ok := s["fields"].([]string)
@@ -170,6 +178,25 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 		t.Fatalf("missing schema fields: %+v", mustHave)
 	}
 	plugins, _ := s["plugins"].(map[string]any)
+	if plugins["enabled"] != true || plugins["load"] != true {
+		t.Fatalf("unexpected plugin schema enabled/load summary: %#v", plugins)
+	}
+	allow, _ := plugins["allow"].([]string)
+	if len(allow) != 1 || allow[0] != "codegen" {
+		t.Fatalf("unexpected plugin schema allow summary: %#v", plugins)
+	}
+	deny, _ := plugins["deny"].([]string)
+	if len(deny) != 1 || deny[0] != "blocked" {
+		t.Fatalf("unexpected plugin schema deny summary: %#v", plugins)
+	}
+	loadPaths, _ := plugins["loadPaths"].([]string)
+	if len(loadPaths) != 1 || loadPaths[0] != "./extensions" {
+		t.Fatalf("unexpected plugin schema loadPaths summary: %#v", plugins)
+	}
+	installs, _ := plugins["installs"].([]string)
+	if len(installs) != 1 || installs[0] != "codegen" {
+		t.Fatalf("unexpected plugin schema installs summary: %#v", plugins)
+	}
 	entries, _ := plugins["entries"].([]map[string]any)
 	if len(entries) != 1 || entries[0]["id"] != "codegen" {
 		t.Fatalf("unexpected plugin schema entries: %#v", s["plugins"])

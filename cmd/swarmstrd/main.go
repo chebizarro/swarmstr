@@ -3097,12 +3097,12 @@ func extensionGatewayMethods(cfg state.ConfigDoc) []string {
 		seen[v] = struct{}{}
 		methodsOut = append(methodsOut, v)
 	}
-	for _, rawEntry := range rawEntries {
+	for pluginID, rawEntry := range rawEntries {
 		entry, ok := rawEntry.(map[string]any)
 		if !ok {
 			continue
 		}
-		if enabled, ok := entry["enabled"].(bool); ok && !enabled {
+		if !extensionEntryAllowed(rawExt, pluginID, entry) {
 			continue
 		}
 		for _, key := range []string{"gateway_methods", "gatewayMethods"} {
@@ -3122,6 +3122,92 @@ func extensionGatewayMethods(cfg state.ConfigDoc) []string {
 	}
 	sort.Strings(methodsOut)
 	return methodsOut
+}
+
+func extensionEntryAllowed(rawExt map[string]any, pluginID string, entry map[string]any) bool {
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return false
+	}
+	if enabled, ok := rawExt["enabled"].(bool); ok && !enabled {
+		return false
+	}
+	if load, ok := rawExt["load"].(bool); ok && !load {
+		return false
+	}
+	denyList, denyValid := extensionPolicyList(rawExt, "deny")
+	if !denyValid {
+		log.Printf("WARNING: invalid plugins.deny list type, blocking all plugins (fail-closed)")
+		return false
+	}
+	deny := map[string]struct{}{}
+	for _, item := range denyList {
+		deny[item] = struct{}{}
+	}
+	if _, blocked := deny[pluginID]; blocked {
+		return false
+	}
+	allow, allowValid := extensionPolicyList(rawExt, "allow")
+	if !allowValid {
+		log.Printf("WARNING: invalid plugins.allow list type, blocking all plugins (fail-closed)")
+		return false
+	}
+	if len(allow) > 0 {
+		allowed := false
+		for _, candidate := range allow {
+			if candidate == pluginID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+	if enabled, ok := entry["enabled"].(bool); ok && !enabled {
+		return false
+	}
+	return true
+}
+
+func extensionPolicyList(rawExt map[string]any, key string) ([]string, bool) {
+	raw, exists := rawExt[key]
+	if !exists {
+		return nil, true
+	}
+	switch values := raw.(type) {
+	case []string:
+		return sanitizeStrings(values), true
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, item := range values {
+			s, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return sanitizeStrings(out), true
+	default:
+		return nil, false
+	}
+}
+
+func sanitizeStrings(in []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 type coreToolSection struct {
@@ -3252,7 +3338,7 @@ func buildPluginToolGroups(cfg state.ConfigDoc, seen map[string]struct{}) []map[
 		if !ok {
 			continue
 		}
-		if enabled, ok := rawEntry["enabled"].(bool); ok && !enabled {
+		if !extensionEntryAllowed(rawExt, pluginID, rawEntry) {
 			continue
 		}
 		tools := make([]map[string]any, 0)
@@ -3319,23 +3405,25 @@ func buildPluginToolGroups(cfg state.ConfigDoc, seen map[string]struct{}) []map[
 					if description == "" {
 						description = "Plugin tool"
 					}
-					optional := false
-					if v, ok := t["optional"].(bool); ok {
-						optional = v
-					}
+					optional, hasOptional := t["optional"].(bool)
 					profiles := getStringSlice(t, "default_profiles")
 					if len(profiles) == 0 {
 						profiles = getStringSlice(t, "defaultProfiles")
 					}
-					tools = append(tools, map[string]any{
+					toolEntry := map[string]any{
 						"id":              id,
 						"label":           label,
 						"description":     description,
 						"source":          "plugin",
 						"pluginId":        pluginID,
-						"optional":        optional,
 						"defaultProfiles": profiles,
-					})
+					}
+					// Only include optional field when explicitly true to reduce payload size.
+					// Omitting the field is semantically equivalent to optional=false.
+					if hasOptional && optional {
+						toolEntry["optional"] = true
+					}
+					tools = append(tools, toolEntry)
 				}
 			}
 		}
