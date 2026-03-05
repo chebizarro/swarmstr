@@ -1,0 +1,576 @@
+{
+  "source": "openclaw/src/gateway/server-methods-list.ts",
+  "captured_at": "2026-03-04",
+  "summary": {
+    "openclaw_method_count": 94,
+    "implemented": 78,
+    "partial": 1,
+    "missing": 15
+  },
+  "entries": [
+    {
+      "method": "health",
+      "status": "implemented",
+      "swarmstr_method": "health",
+      "notes": ""
+    },
+    {
+      "method": "doctor.memory.status",
+      "status": "implemented",
+      "swarmstr_method": "doctor.memory.status",
+      "notes": ""
+    },
+    {
+      "method": "logs.tail",
+      "status": "implemented",
+      "swarmstr_method": "logs.tail",
+      "notes": ""
+    },
+    {
+      "method": "channels.status",
+      "status": "implemented",
+      "swarmstr_method": "channels.status",
+      "notes": ""
+    },
+    {
+      "method": "channels.logout",
+      "status": "implemented",
+      "swarmstr_method": "channels.logout",
+      "notes": ""
+    },
+    {
+      "method": "status",
+      "status": "implemented",
+      "swarmstr_method": "status",
+      "notes": ""
+    },
+    {
+      "method": "usage.status",
+      "status": "implemented",
+      "swarmstr_method": "usage.status",
+      "notes": ""
+    },
+    {
+      "method": "usage.cost",
+      "status": "implemented",
+      "swarmstr_method": "usage.cost",
+      "notes": ""
+    },
+    {
+      "method": "tts.status",
+      "status": "implemented",
+      "swarmstr_method": "tts.status",
+      "notes": ""
+    },
+    {
+      "method": "tts.providers",
+      "status": "implemented",
+      "swarmstr_method": "tts.providers",
+      "notes": ""
+    },
+    {
+      "method": "tts.enable",
+      "status": "implemented",
+      "swarmstr_method": "tts.enable",
+      "notes": ""
+    },
+    {
+      "method": "tts.disable",
+      "status": "implemented",
+      "swarmstr_method": "tts.disable",
+      "notes": ""
+    },
+    {
+      "method": "tts.convert",
+      "status": "implemented",
+      "swarmstr_method": "tts.convert",
+      "notes": ""
+    },
+    {
+      "method": "tts.setProvider",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Provider-selection API not yet ported; current implementation supports status/providers/enable/disable/convert."
+    },
+    {
+      "method": "config.get",
+      "status": "implemented",
+      "swarmstr_method": "config.get",
+      "notes": ""
+    },
+    {
+      "method": "config.set",
+      "status": "implemented",
+      "swarmstr_method": "config.set",
+      "notes": ""
+    },
+    {
+      "method": "config.apply",
+      "status": "implemented",
+      "swarmstr_method": "config.apply",
+      "notes": ""
+    },
+    {
+      "method": "config.patch",
+      "status": "implemented",
+      "swarmstr_method": "config.patch",
+      "notes": ""
+    },
+    {
+      "method": "config.schema",
+      "status": "implemented",
+      "swarmstr_method": "config.schema",
+      "notes": ""
+    },
+    {
+      "method": "exec.approvals.get",
+      "status": "implemented",
+      "swarmstr_method": "exec.approvals.get",
+      "notes": ""
+    },
+    {
+      "method": "exec.approvals.set",
+      "status": "implemented",
+      "swarmstr_method": "exec.approvals.set",
+      "notes": ""
+    },
+    {
+      "method": "exec.approvals.node.get",
+      "status": "implemented",
+      "swarmstr_method": "exec.approvals.node.get",
+      "notes": ""
+    },
+    {
+      "method": "exec.approvals.node.set",
+      "status": "implemented",
+      "swarmstr_method": "exec.approvals.node.set",
+      "notes": ""
+    },
+    {
+      "method": "exec.approval.request",
+      "status": "implemented",
+      "swarmstr_method": "exec.approval.request",
+      "notes": ""
+    },
+    {
+      "method": "exec.approval.waitDecision",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Two-phase approval wait API not yet implemented."
+    },
+    {
+      "method": "exec.approval.resolve",
+      "status": "implemented",
+      "swarmstr_method": "exec.approval.resolve",
+      "notes": ""
+    },
+    {
+      "method": "wizard.start",
+      "status": "implemented",
+      "swarmstr_method": "wizard.start",
+      "notes": ""
+    },
+    {
+      "method": "wizard.next",
+      "status": "implemented",
+      "swarmstr_method": "wizard.next",
+      "notes": ""
+    },
+    {
+      "method": "wizard.cancel",
+      "status": "implemented",
+      "swarmstr_method": "wizard.cancel",
+      "notes": ""
+    },
+    {
+      "method": "wizard.status",
+      "status": "implemented",
+      "swarmstr_method": "wizard.status",
+      "notes": ""
+    },
+    {
+      "method": "talk.config",
+      "status": "implemented",
+      "swarmstr_method": "talk.config",
+      "notes": ""
+    },
+    {
+      "method": "talk.mode",
+      "status": "implemented",
+      "swarmstr_method": "talk.mode",
+      "notes": ""
+    },
+    {
+      "method": "models.list",
+      "status": "implemented",
+      "swarmstr_method": "models.list",
+      "notes": ""
+    },
+    {
+      "method": "tools.catalog",
+      "status": "implemented",
+      "swarmstr_method": "tools.catalog",
+      "notes": ""
+    },
+    {
+      "method": "agents.list",
+      "status": "implemented",
+      "swarmstr_method": "agents.list",
+      "notes": ""
+    },
+    {
+      "method": "agents.create",
+      "status": "implemented",
+      "swarmstr_method": "agents.create",
+      "notes": ""
+    },
+    {
+      "method": "agents.update",
+      "status": "implemented",
+      "swarmstr_method": "agents.update",
+      "notes": ""
+    },
+    {
+      "method": "agents.delete",
+      "status": "implemented",
+      "swarmstr_method": "agents.delete",
+      "notes": ""
+    },
+    {
+      "method": "agents.files.list",
+      "status": "implemented",
+      "swarmstr_method": "agents.files.list",
+      "notes": ""
+    },
+    {
+      "method": "agents.files.get",
+      "status": "implemented",
+      "swarmstr_method": "agents.files.get",
+      "notes": ""
+    },
+    {
+      "method": "agents.files.set",
+      "status": "implemented",
+      "swarmstr_method": "agents.files.set",
+      "notes": ""
+    },
+    {
+      "method": "skills.status",
+      "status": "implemented",
+      "swarmstr_method": "skills.status",
+      "notes": ""
+    },
+    {
+      "method": "skills.bins",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Skills binary inventory endpoint not yet implemented."
+    },
+    {
+      "method": "skills.install",
+      "status": "implemented",
+      "swarmstr_method": "skills.install",
+      "notes": ""
+    },
+    {
+      "method": "skills.update",
+      "status": "implemented",
+      "swarmstr_method": "skills.update",
+      "notes": ""
+    },
+    {
+      "method": "update.run",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Update orchestration endpoint not yet implemented."
+    },
+    {
+      "method": "voicewake.get",
+      "status": "implemented",
+      "swarmstr_method": "voicewake.get",
+      "notes": ""
+    },
+    {
+      "method": "voicewake.set",
+      "status": "implemented",
+      "swarmstr_method": "voicewake.set",
+      "notes": ""
+    },
+    {
+      "method": "secrets.reload",
+      "status": "implemented",
+      "swarmstr_method": "secrets.reload",
+      "notes": ""
+    },
+    {
+      "method": "secrets.resolve",
+      "status": "implemented",
+      "swarmstr_method": "secrets.resolve",
+      "notes": ""
+    },
+    {
+      "method": "sessions.list",
+      "status": "implemented",
+      "swarmstr_method": "sessions.list",
+      "notes": ""
+    },
+    {
+      "method": "sessions.preview",
+      "status": "implemented",
+      "swarmstr_method": "sessions.preview",
+      "notes": ""
+    },
+    {
+      "method": "sessions.patch",
+      "status": "implemented",
+      "swarmstr_method": "sessions.patch",
+      "notes": ""
+    },
+    {
+      "method": "sessions.reset",
+      "status": "implemented",
+      "swarmstr_method": "sessions.reset",
+      "notes": ""
+    },
+    {
+      "method": "sessions.delete",
+      "status": "implemented",
+      "swarmstr_method": "sessions.delete",
+      "notes": ""
+    },
+    {
+      "method": "sessions.compact",
+      "status": "implemented",
+      "swarmstr_method": "sessions.compact",
+      "notes": ""
+    },
+    {
+      "method": "last-heartbeat",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Heartbeat diagnostics method not yet implemented."
+    },
+    {
+      "method": "set-heartbeats",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Heartbeat control method not yet implemented."
+    },
+    {
+      "method": "wake",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Wake endpoint not yet implemented."
+    },
+    {
+      "method": "node.pair.request",
+      "status": "implemented",
+      "swarmstr_method": "node.pair.request",
+      "notes": ""
+    },
+    {
+      "method": "node.pair.list",
+      "status": "implemented",
+      "swarmstr_method": "node.pair.list",
+      "notes": ""
+    },
+    {
+      "method": "node.pair.approve",
+      "status": "implemented",
+      "swarmstr_method": "node.pair.approve",
+      "notes": ""
+    },
+    {
+      "method": "node.pair.reject",
+      "status": "implemented",
+      "swarmstr_method": "node.pair.reject",
+      "notes": ""
+    },
+    {
+      "method": "node.pair.verify",
+      "status": "implemented",
+      "swarmstr_method": "node.pair.verify",
+      "notes": ""
+    },
+    {
+      "method": "device.pair.list",
+      "status": "implemented",
+      "swarmstr_method": "device.pair.list",
+      "notes": ""
+    },
+    {
+      "method": "device.pair.approve",
+      "status": "implemented",
+      "swarmstr_method": "device.pair.approve",
+      "notes": ""
+    },
+    {
+      "method": "device.pair.reject",
+      "status": "implemented",
+      "swarmstr_method": "device.pair.reject",
+      "notes": ""
+    },
+    {
+      "method": "device.pair.remove",
+      "status": "implemented",
+      "swarmstr_method": "device.pair.remove",
+      "notes": ""
+    },
+    {
+      "method": "device.token.rotate",
+      "status": "implemented",
+      "swarmstr_method": "device.token.rotate",
+      "notes": ""
+    },
+    {
+      "method": "device.token.revoke",
+      "status": "implemented",
+      "swarmstr_method": "device.token.revoke",
+      "notes": ""
+    },
+    {
+      "method": "node.rename",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Node rename endpoint not yet implemented."
+    },
+    {
+      "method": "node.list",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Node listing endpoint not yet implemented."
+    },
+    {
+      "method": "node.describe",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Node describe endpoint not yet implemented."
+    },
+    {
+      "method": "node.invoke",
+      "status": "implemented",
+      "swarmstr_method": "node.invoke",
+      "notes": ""
+    },
+    {
+      "method": "node.invoke.result",
+      "status": "partial",
+      "swarmstr_method": "node.result",
+      "notes": "Swarmstr exposes equivalent behavior under a different method name."
+    },
+    {
+      "method": "node.event",
+      "status": "implemented",
+      "swarmstr_method": "node.event",
+      "notes": ""
+    },
+    {
+      "method": "node.canvas.capability.refresh",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Node canvas capability refresh endpoint not yet implemented."
+    },
+    {
+      "method": "cron.list",
+      "status": "implemented",
+      "swarmstr_method": "cron.list",
+      "notes": ""
+    },
+    {
+      "method": "cron.status",
+      "status": "implemented",
+      "swarmstr_method": "cron.status",
+      "notes": ""
+    },
+    {
+      "method": "cron.add",
+      "status": "implemented",
+      "swarmstr_method": "cron.add",
+      "notes": ""
+    },
+    {
+      "method": "cron.update",
+      "status": "implemented",
+      "swarmstr_method": "cron.update",
+      "notes": ""
+    },
+    {
+      "method": "cron.remove",
+      "status": "implemented",
+      "swarmstr_method": "cron.remove",
+      "notes": ""
+    },
+    {
+      "method": "cron.run",
+      "status": "implemented",
+      "swarmstr_method": "cron.run",
+      "notes": ""
+    },
+    {
+      "method": "cron.runs",
+      "status": "implemented",
+      "swarmstr_method": "cron.runs",
+      "notes": ""
+    },
+    {
+      "method": "system-presence",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "System presence event endpoint not yet implemented."
+    },
+    {
+      "method": "system-event",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "System event endpoint not yet implemented."
+    },
+    {
+      "method": "send",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Generic send endpoint not yet implemented."
+    },
+    {
+      "method": "agent",
+      "status": "implemented",
+      "swarmstr_method": "agent",
+      "notes": ""
+    },
+    {
+      "method": "agent.identity.get",
+      "status": "implemented",
+      "swarmstr_method": "agent.identity.get",
+      "notes": ""
+    },
+    {
+      "method": "agent.wait",
+      "status": "implemented",
+      "swarmstr_method": "agent.wait",
+      "notes": ""
+    },
+    {
+      "method": "browser.request",
+      "status": "missing",
+      "swarmstr_method": "",
+      "notes": "Browser request endpoint not yet implemented."
+    },
+    {
+      "method": "chat.history",
+      "status": "implemented",
+      "swarmstr_method": "chat.history",
+      "notes": ""
+    },
+    {
+      "method": "chat.abort",
+      "status": "implemented",
+      "swarmstr_method": "chat.abort",
+      "notes": ""
+    },
+    {
+      "method": "chat.send",
+      "status": "implemented",
+      "swarmstr_method": "chat.send",
+      "notes": ""
+    }
+  ]
+}
