@@ -20,6 +20,7 @@ const (
 	MethodChannelsStatus     = "channels.status"
 	MethodChannelsLogout     = "channels.logout"
 	MethodStatus             = "status.get"
+	MethodStatusAlias        = "status"
 	MethodUsageStatus        = "usage.status"
 	MethodUsageCost          = "usage.cost"
 	MethodMemorySearch       = "memory.search"
@@ -115,8 +116,10 @@ type AgentIdentityRequest struct {
 }
 
 type ChatSendRequest struct {
-	To   string `json:"to"`
-	Text string `json:"text"`
+	To             string `json:"to"`
+	Text           string `json:"text"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	RunID          string `json:"run_id,omitempty"`
 }
 
 type ChatHistoryRequest struct {
@@ -126,37 +129,56 @@ type ChatHistoryRequest struct {
 
 type ChatAbortRequest struct {
 	SessionID string `json:"session_id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
 }
 
 type SessionGetRequest struct {
 	SessionID string `json:"session_id"`
+	Key       string `json:"key,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
 }
 
 type SessionsListRequest struct {
-	Limit int `json:"limit,omitempty"`
+	Limit                int    `json:"limit,omitempty"`
+	ActiveMinutes        int    `json:"activeMinutes,omitempty"`
+	IncludeGlobal        bool   `json:"includeGlobal,omitempty"`
+	IncludeUnknown       bool   `json:"includeUnknown,omitempty"`
+	IncludeDerivedTitles bool   `json:"includeDerivedTitles,omitempty"`
+	IncludeLastMessage   bool   `json:"includeLastMessage,omitempty"`
+	Label                string `json:"label,omitempty"`
+	SpawnedBy            string `json:"spawnedBy,omitempty"`
+	AgentID              string `json:"agentId,omitempty"`
+	AgentIDSnake         string `json:"agent_id,omitempty"`
+	Search               string `json:"search,omitempty"`
 }
 
 type SessionsPreviewRequest struct {
-	SessionID string `json:"session_id"`
-	Limit     int    `json:"limit,omitempty"`
+	SessionID string   `json:"session_id"`
+	Key       string   `json:"key,omitempty"`
+	Keys      []string `json:"keys,omitempty"`
+	MaxChars  int      `json:"maxChars,omitempty"`
+	Limit     int      `json:"limit,omitempty"`
 }
 
 type SessionsPatchRequest struct {
 	SessionID string         `json:"session_id"`
+	Key       string         `json:"key,omitempty"`
 	Meta      map[string]any `json:"meta,omitempty"`
 }
 
 type SessionsResetRequest struct {
 	SessionID string `json:"session_id"`
+	Key       string `json:"key,omitempty"`
 }
 
 type SessionsDeleteRequest struct {
 	SessionID string `json:"session_id"`
+	Key       string `json:"key,omitempty"`
 }
 
 type SessionsCompactRequest struct {
 	SessionID string `json:"session_id"`
+	Key       string `json:"key,omitempty"`
 	Keep      int    `json:"keep,omitempty"`
 }
 
@@ -170,29 +192,43 @@ type ListGetRequest struct {
 }
 
 type ListPutRequest struct {
-	Name            string   `json:"name"`
-	Items           []string `json:"items"`
-	ExpectedVersion int      `json:"expected_version,omitempty"`
-	ExpectedEvent   string   `json:"expected_event,omitempty"`
+	Name               string   `json:"name"`
+	Items              []string `json:"items"`
+	ExpectedVersion    int      `json:"expected_version,omitempty"`
+	ExpectedVersionSet bool     `json:"-"`
+	ExpectedEvent      string   `json:"expected_event,omitempty"`
 }
 
 type ConfigPutRequest struct {
-	Config          state.ConfigDoc `json:"config"`
-	ExpectedVersion int             `json:"expected_version,omitempty"`
-	ExpectedEvent   string          `json:"expected_event,omitempty"`
+	Config             state.ConfigDoc `json:"config"`
+	ExpectedVersion    int             `json:"expected_version,omitempty"`
+	ExpectedVersionSet bool            `json:"-"`
+	ExpectedEvent      string          `json:"expected_event,omitempty"`
 }
 
 type ConfigSetRequest struct {
-	Key   string `json:"key"`
-	Value any    `json:"value"`
+	Key      string `json:"key"`
+	Value    any    `json:"value"`
+	Raw      string `json:"raw,omitempty"`
+	BaseHash string `json:"baseHash,omitempty"`
 }
 
 type ConfigApplyRequest struct {
-	Config state.ConfigDoc `json:"config"`
+	Config         state.ConfigDoc `json:"config"`
+	Raw            string          `json:"raw,omitempty"`
+	BaseHash       string          `json:"baseHash,omitempty"`
+	SessionKey     string          `json:"sessionKey,omitempty"`
+	Note           string          `json:"note,omitempty"`
+	RestartDelayMS int             `json:"restartDelayMs,omitempty"`
 }
 
 type ConfigPatchRequest struct {
-	Patch map[string]any `json:"patch"`
+	Patch          map[string]any `json:"patch"`
+	Raw            string         `json:"raw,omitempty"`
+	BaseHash       string         `json:"baseHash,omitempty"`
+	SessionKey     string         `json:"sessionKey,omitempty"`
+	Note           string         `json:"note,omitempty"`
+	RestartDelayMS int            `json:"restartDelayMs,omitempty"`
 }
 
 type LogsTailRequest struct {
@@ -387,6 +423,11 @@ func (r AgentIdentityRequest) Normalize() (AgentIdentityRequest, error) {
 func (r ChatSendRequest) Normalize() (ChatSendRequest, error) {
 	r.To = strings.TrimSpace(r.To)
 	r.Text = strings.TrimSpace(r.Text)
+	r.IdempotencyKey = strings.TrimSpace(r.IdempotencyKey)
+	r.RunID = strings.TrimSpace(r.RunID)
+	if r.RunID == "" {
+		r.RunID = r.IdempotencyKey
+	}
 	if r.To == "" || r.Text == "" {
 		return r, fmt.Errorf("to and text are required")
 	}
@@ -408,11 +449,16 @@ func (r ChatHistoryRequest) Normalize() (ChatHistoryRequest, error) {
 
 func (r ChatAbortRequest) Normalize() (ChatAbortRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.RunID = strings.TrimSpace(r.RunID)
 	return r, nil
 }
 
 func (r SessionGetRequest) Normalize() (SessionGetRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.Key = strings.TrimSpace(r.Key)
+	if r.SessionID == "" {
+		r.SessionID = r.Key
+	}
 	if r.SessionID == "" {
 		return r, fmt.Errorf("session_id is required")
 	}
@@ -421,14 +467,33 @@ func (r SessionGetRequest) Normalize() (SessionGetRequest, error) {
 }
 
 func (r SessionsListRequest) Normalize() (SessionsListRequest, error) {
+	if strings.TrimSpace(r.AgentID) == "" {
+		r.AgentID = strings.TrimSpace(r.AgentIDSnake)
+	}
 	r.Limit = normalizeLimit(r.Limit, 100, 500)
 	return r, nil
 }
 
 func (r SessionsPreviewRequest) Normalize() (SessionsPreviewRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.Key = strings.TrimSpace(r.Key)
+	cleaned := make([]string, 0, len(r.Keys))
+	for _, key := range r.Keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		cleaned = append(cleaned, key)
+	}
+	r.Keys = cleaned
 	if r.SessionID == "" {
-		return r, fmt.Errorf("session_id is required")
+		r.SessionID = r.Key
+	}
+	if r.SessionID == "" && len(r.Keys) > 0 {
+		r.SessionID = r.Keys[0]
+	}
+	if r.SessionID == "" && len(r.Keys) == 0 {
+		return r, fmt.Errorf("session_id or keys is required")
 	}
 	r.Limit = normalizeLimit(r.Limit, 25, 200)
 	return r, nil
@@ -436,6 +501,10 @@ func (r SessionsPreviewRequest) Normalize() (SessionsPreviewRequest, error) {
 
 func (r SessionsPatchRequest) Normalize() (SessionsPatchRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.Key = strings.TrimSpace(r.Key)
+	if r.SessionID == "" {
+		r.SessionID = r.Key
+	}
 	if r.SessionID == "" {
 		return r, fmt.Errorf("session_id is required")
 	}
@@ -447,6 +516,10 @@ func (r SessionsPatchRequest) Normalize() (SessionsPatchRequest, error) {
 
 func (r SessionsResetRequest) Normalize() (SessionsResetRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.Key = strings.TrimSpace(r.Key)
+	if r.SessionID == "" {
+		r.SessionID = r.Key
+	}
 	if r.SessionID == "" {
 		return r, fmt.Errorf("session_id is required")
 	}
@@ -455,6 +528,10 @@ func (r SessionsResetRequest) Normalize() (SessionsResetRequest, error) {
 
 func (r SessionsDeleteRequest) Normalize() (SessionsDeleteRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.Key = strings.TrimSpace(r.Key)
+	if r.SessionID == "" {
+		r.SessionID = r.Key
+	}
 	if r.SessionID == "" {
 		return r, fmt.Errorf("session_id is required")
 	}
@@ -463,6 +540,10 @@ func (r SessionsDeleteRequest) Normalize() (SessionsDeleteRequest, error) {
 
 func (r SessionsCompactRequest) Normalize() (SessionsCompactRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.Key = strings.TrimSpace(r.Key)
+	if r.SessionID == "" {
+		r.SessionID = r.Key
+	}
 	if r.SessionID == "" {
 		return r, fmt.Errorf("session_id is required")
 	}
@@ -497,7 +578,7 @@ func (r ListPutRequest) Normalize() (ListPutRequest, error) {
 		out = append(out, item)
 	}
 	r.Items = out
-	if r.ExpectedVersion < 0 {
+	if r.ExpectedVersionSet && r.ExpectedVersion < 0 {
 		return r, fmt.Errorf("expected_version must be >= 0")
 	}
 	r.ExpectedEvent = strings.TrimSpace(r.ExpectedEvent)
@@ -511,7 +592,7 @@ func (r ConfigPutRequest) Normalize() (ConfigPutRequest, error) {
 	if r.Config.Version == 0 {
 		r.Config.Version = 1
 	}
-	if r.ExpectedVersion < 0 {
+	if r.ExpectedVersionSet && r.ExpectedVersion < 0 {
 		return r, fmt.Errorf("expected_version must be >= 0")
 	}
 	r.ExpectedEvent = strings.TrimSpace(r.ExpectedEvent)
@@ -520,13 +601,25 @@ func (r ConfigPutRequest) Normalize() (ConfigPutRequest, error) {
 
 func (r ConfigSetRequest) Normalize() (ConfigSetRequest, error) {
 	r.Key = strings.TrimSpace(r.Key)
-	if r.Key == "" {
+	r.Raw = strings.TrimSpace(r.Raw)
+	r.BaseHash = strings.TrimSpace(r.BaseHash)
+	if r.Key == "" && r.Raw == "" {
 		return r, fmt.Errorf("key is required")
 	}
 	return r, nil
 }
 
 func (r ConfigApplyRequest) Normalize() (ConfigApplyRequest, error) {
+	r.Raw = strings.TrimSpace(r.Raw)
+	r.BaseHash = strings.TrimSpace(r.BaseHash)
+	r.SessionKey = strings.TrimSpace(r.SessionKey)
+	r.Note = strings.TrimSpace(r.Note)
+	if r.RestartDelayMS < 0 {
+		r.RestartDelayMS = 0
+	}
+	if r.Raw != "" {
+		return r, nil
+	}
 	if strings.TrimSpace(r.Config.DM.Policy) == "" {
 		return r, fmt.Errorf("config.dm.policy is required")
 	}
@@ -537,7 +630,14 @@ func (r ConfigApplyRequest) Normalize() (ConfigApplyRequest, error) {
 }
 
 func (r ConfigPatchRequest) Normalize() (ConfigPatchRequest, error) {
-	if len(r.Patch) == 0 {
+	r.Raw = strings.TrimSpace(r.Raw)
+	r.BaseHash = strings.TrimSpace(r.BaseHash)
+	r.SessionKey = strings.TrimSpace(r.SessionKey)
+	r.Note = strings.TrimSpace(r.Note)
+	if r.RestartDelayMS < 0 {
+		r.RestartDelayMS = 0
+	}
+	if r.Raw == "" && len(r.Patch) == 0 {
 		return r, fmt.Errorf("patch is required")
 	}
 	return r, nil
@@ -810,6 +910,7 @@ func SupportedMethods() []string {
 		MethodChannelsStatus,
 		MethodChannelsLogout,
 		MethodStatus,
+		MethodStatusAlias,
 		MethodUsageStatus,
 		MethodUsageCost,
 		MethodMemorySearch,
@@ -1020,7 +1121,50 @@ func DecodeChatSendParams(params json.RawMessage) (ChatSendRequest, error) {
 		}
 		return ChatSendRequest{To: to, Text: text}, nil
 	}
-	return decodeMethodParams[ChatSendRequest](params)
+	type chatSendCompatRequest struct {
+		To             string `json:"to,omitempty"`
+		Text           string `json:"text,omitempty"`
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		SessionKey     string `json:"sessionKey,omitempty"`
+		Message        string `json:"message,omitempty"`
+		Thinking       string `json:"thinking,omitempty"`
+		Deliver        *bool  `json:"deliver,omitempty"`
+		TimeoutMS      int    `json:"timeoutMs,omitempty"`
+		IdempotencyKey string `json:"idempotencyKey,omitempty"`
+		IdempotencyAlt string `json:"idempotency_key,omitempty"`
+		RunID          string `json:"runId,omitempty"`
+		RunIDAlt       string `json:"run_id,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat chatSendCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return ChatSendRequest{}, fmt.Errorf("invalid params")
+	}
+	to := strings.TrimSpace(compat.To)
+	if to == "" {
+		to = strings.TrimSpace(compat.SessionID)
+	}
+	if to == "" {
+		to = strings.TrimSpace(compat.SessionIDCamel)
+	}
+	if to == "" {
+		to = strings.TrimSpace(compat.SessionKey)
+	}
+	text := strings.TrimSpace(compat.Text)
+	if text == "" {
+		text = strings.TrimSpace(compat.Message)
+	}
+	idempotency := strings.TrimSpace(compat.IdempotencyKey)
+	if idempotency == "" {
+		idempotency = strings.TrimSpace(compat.IdempotencyAlt)
+	}
+	runID := strings.TrimSpace(compat.RunID)
+	if runID == "" {
+		runID = strings.TrimSpace(compat.RunIDAlt)
+	}
+	return ChatSendRequest{To: to, Text: text, IdempotencyKey: idempotency, RunID: runID}, nil
 }
 
 func DecodeSessionGetParams(params json.RawMessage) (SessionGetRequest, error) {
@@ -1050,7 +1194,30 @@ func DecodeSessionGetParams(params json.RawMessage) (SessionGetRequest, error) {
 		}
 		return req, nil
 	}
-	return decodeMethodParams[SessionGetRequest](params)
+	type sessionGetCompatRequest struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		SessionKey     string `json:"sessionKey,omitempty"`
+		Key            string `json:"key,omitempty"`
+		Limit          int    `json:"limit,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat sessionGetCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return SessionGetRequest{}, fmt.Errorf("invalid params")
+	}
+	sessionID := strings.TrimSpace(compat.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionIDCamel)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.Key)
+	}
+	return SessionGetRequest{SessionID: sessionID, Key: strings.TrimSpace(compat.Key), Limit: compat.Limit}, nil
 }
 
 func DecodeChatHistoryParams(params json.RawMessage) (ChatHistoryRequest, error) {
@@ -1080,7 +1247,26 @@ func DecodeChatHistoryParams(params json.RawMessage) (ChatHistoryRequest, error)
 		}
 		return req, nil
 	}
-	return decodeMethodParams[ChatHistoryRequest](params)
+	type chatHistoryCompatRequest struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		SessionKey     string `json:"sessionKey,omitempty"`
+		Limit          int    `json:"limit,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat chatHistoryCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return ChatHistoryRequest{}, fmt.Errorf("invalid params")
+	}
+	sessionID := strings.TrimSpace(compat.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionIDCamel)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	return ChatHistoryRequest{SessionID: sessionID, Limit: compat.Limit}, nil
 }
 
 func DecodeChatAbortParams(params json.RawMessage) (ChatAbortRequest, error) {
@@ -1101,7 +1287,31 @@ func DecodeChatAbortParams(params json.RawMessage) (ChatAbortRequest, error) {
 		}
 		return ChatAbortRequest{SessionID: sessionID}, nil
 	}
-	return decodeMethodParams[ChatAbortRequest](params)
+	type chatAbortCompatRequest struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		SessionKey     string `json:"sessionKey,omitempty"`
+		RunID          string `json:"run_id,omitempty"`
+		RunIDCamel     string `json:"runId,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat chatAbortCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return ChatAbortRequest{}, fmt.Errorf("invalid params")
+	}
+	sessionID := strings.TrimSpace(compat.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionIDCamel)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	runID := strings.TrimSpace(compat.RunID)
+	if runID == "" {
+		runID = strings.TrimSpace(compat.RunIDCamel)
+	}
+	return ChatAbortRequest{SessionID: sessionID, RunID: runID}, nil
 }
 
 func DecodeSessionsListParams(params json.RawMessage) (SessionsListRequest, error) {
@@ -1161,7 +1371,38 @@ func DecodeSessionsPreviewParams(params json.RawMessage) (SessionsPreviewRequest
 		}
 		return req, nil
 	}
-	return decodeMethodParams[SessionsPreviewRequest](params)
+	type sessionsPreviewCompatRequest struct {
+		SessionID      string   `json:"session_id,omitempty"`
+		SessionIDCamel string   `json:"sessionId,omitempty"`
+		SessionKey     string   `json:"sessionKey,omitempty"`
+		Key            string   `json:"key,omitempty"`
+		Keys           []string `json:"keys,omitempty"`
+		Limit          int      `json:"limit,omitempty"`
+		MaxChars       int      `json:"maxChars,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat sessionsPreviewCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return SessionsPreviewRequest{}, fmt.Errorf("invalid params")
+	}
+	sessionID := strings.TrimSpace(compat.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionIDCamel)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.Key)
+	}
+	return SessionsPreviewRequest{
+		SessionID: sessionID,
+		Key:       strings.TrimSpace(compat.Key),
+		Keys:      compat.Keys,
+		Limit:     compat.Limit,
+		MaxChars:  compat.MaxChars,
+	}, nil
 }
 
 func DecodeSessionsPatchParams(params json.RawMessage) (SessionsPatchRequest, error) {
@@ -1184,7 +1425,30 @@ func DecodeSessionsPatchParams(params json.RawMessage) (SessionsPatchRequest, er
 		}
 		return req, nil
 	}
-	return decodeMethodParams[SessionsPatchRequest](params)
+	type sessionsPatchCompatRequest struct {
+		SessionID      string         `json:"session_id,omitempty"`
+		SessionIDCamel string         `json:"sessionId,omitempty"`
+		SessionKey     string         `json:"sessionKey,omitempty"`
+		Key            string         `json:"key,omitempty"`
+		Meta           map[string]any `json:"meta,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat sessionsPatchCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return SessionsPatchRequest{}, fmt.Errorf("invalid params")
+	}
+	sessionID := strings.TrimSpace(compat.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionIDCamel)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.Key)
+	}
+	return SessionsPatchRequest{SessionID: sessionID, Key: strings.TrimSpace(compat.Key), Meta: compat.Meta}, nil
 }
 
 func DecodeSessionsResetParams(params json.RawMessage) (SessionsResetRequest, error) {
@@ -1202,7 +1466,29 @@ func DecodeSessionsResetParams(params json.RawMessage) (SessionsResetRequest, er
 		}
 		return SessionsResetRequest{SessionID: sessionID}, nil
 	}
-	return decodeMethodParams[SessionsResetRequest](params)
+	type sessionsResetCompatRequest struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		SessionKey     string `json:"sessionKey,omitempty"`
+		Key            string `json:"key,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat sessionsResetCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return SessionsResetRequest{}, fmt.Errorf("invalid params")
+	}
+	sessionID := strings.TrimSpace(compat.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionIDCamel)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.Key)
+	}
+	return SessionsResetRequest{SessionID: sessionID, Key: strings.TrimSpace(compat.Key)}, nil
 }
 
 func DecodeSessionsDeleteParams(params json.RawMessage) (SessionsDeleteRequest, error) {
@@ -1220,7 +1506,29 @@ func DecodeSessionsDeleteParams(params json.RawMessage) (SessionsDeleteRequest, 
 		}
 		return SessionsDeleteRequest{SessionID: sessionID}, nil
 	}
-	return decodeMethodParams[SessionsDeleteRequest](params)
+	type sessionsDeleteCompatRequest struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		SessionKey     string `json:"sessionKey,omitempty"`
+		Key            string `json:"key,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat sessionsDeleteCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return SessionsDeleteRequest{}, fmt.Errorf("invalid params")
+	}
+	sessionID := strings.TrimSpace(compat.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionIDCamel)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.Key)
+	}
+	return SessionsDeleteRequest{SessionID: sessionID, Key: strings.TrimSpace(compat.Key)}, nil
 }
 
 func DecodeSessionsCompactParams(params json.RawMessage) (SessionsCompactRequest, error) {
@@ -1252,7 +1560,35 @@ func DecodeSessionsCompactParams(params json.RawMessage) (SessionsCompactRequest
 		}
 		return req, nil
 	}
-	return decodeMethodParams[SessionsCompactRequest](params)
+	type sessionsCompactCompatRequest struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		SessionKey     string `json:"sessionKey,omitempty"`
+		Key            string `json:"key,omitempty"`
+		Keep           int    `json:"keep,omitempty"`
+		MaxLines       int    `json:"maxLines,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat sessionsCompactCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return SessionsCompactRequest{}, fmt.Errorf("invalid params")
+	}
+	sessionID := strings.TrimSpace(compat.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionIDCamel)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.Key)
+	}
+	keep := compat.Keep
+	if keep <= 0 {
+		keep = compat.MaxLines
+	}
+	return SessionsCompactRequest{SessionID: sessionID, Key: strings.TrimSpace(compat.Key), Keep: keep}, nil
 }
 
 func DecodeConfigPutParams(params json.RawMessage) (ConfigPutRequest, error) {
@@ -1270,13 +1606,32 @@ func DecodeConfigPutParams(params json.RawMessage) (ConfigPutRequest, error) {
 		}
 		req := ConfigPutRequest{Config: cfg}
 		if len(arr) == 2 {
-			if err := decodeWritePrecondition(arr[1], &req.ExpectedVersion, &req.ExpectedEvent); err != nil {
+			expectedVersionSet, err := decodeWritePrecondition(arr[1], &req.ExpectedVersion, &req.ExpectedEvent)
+			if err != nil {
 				return ConfigPutRequest{}, fmt.Errorf("invalid params")
 			}
+			req.ExpectedVersionSet = expectedVersionSet
 		}
 		return req, nil
 	}
-	return decodeMethodParams[ConfigPutRequest](params)
+	params = normalizeObjectParamAliases(params)
+	type configPutCompatRequest struct {
+		Config          state.ConfigDoc `json:"config"`
+		ExpectedVersion *int            `json:"expected_version,omitempty"`
+		ExpectedEvent   string          `json:"expected_event,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat configPutCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return ConfigPutRequest{}, fmt.Errorf("invalid params")
+	}
+	req := ConfigPutRequest{Config: compat.Config, ExpectedEvent: compat.ExpectedEvent}
+	if compat.ExpectedVersion != nil {
+		req.ExpectedVersionSet = true
+		req.ExpectedVersion = *compat.ExpectedVersion
+	}
+	return req, nil
 }
 
 func DecodeConfigSetParams(params json.RawMessage) (ConfigSetRequest, error) {
@@ -1309,6 +1664,10 @@ func DecodeConfigApplyParams(params json.RawMessage) (ConfigApplyRequest, error)
 		if len(arr) != 1 {
 			return ConfigApplyRequest{}, fmt.Errorf("invalid params")
 		}
+		var rawString string
+		if err := json.Unmarshal(arr[0], &rawString); err == nil {
+			return ConfigApplyRequest{Raw: rawString}, nil
+		}
 		var cfg state.ConfigDoc
 		if err := json.Unmarshal(arr[0], &cfg); err != nil {
 			return ConfigApplyRequest{}, fmt.Errorf("invalid params")
@@ -1320,20 +1679,28 @@ func DecodeConfigApplyParams(params json.RawMessage) (ConfigApplyRequest, error)
 
 func DecodeConfigPatchParams(params json.RawMessage) (ConfigPatchRequest, error) {
 	if isJSONArray(params) {
-		var arr []map[string]any
+		var arr []json.RawMessage
 		if err := json.Unmarshal(params, &arr); err != nil {
 			return ConfigPatchRequest{}, fmt.Errorf("invalid params")
 		}
 		if len(arr) != 1 {
 			return ConfigPatchRequest{}, fmt.Errorf("invalid params")
 		}
-		return ConfigPatchRequest{Patch: arr[0]}, nil
+		var rawString string
+		if err := json.Unmarshal(arr[0], &rawString); err == nil {
+			return ConfigPatchRequest{Raw: rawString}, nil
+		}
+		var patch map[string]any
+		if err := json.Unmarshal(arr[0], &patch); err != nil {
+			return ConfigPatchRequest{}, fmt.Errorf("invalid params")
+		}
+		return ConfigPatchRequest{Patch: patch}, nil
 	}
 	req, err := decodeMethodParams[ConfigPatchRequest](params)
 	if err != nil {
 		return ConfigPatchRequest{}, err
 	}
-	if len(req.Patch) > 0 {
+	if req.Raw != "" || len(req.Patch) > 0 {
 		return req, nil
 	}
 	patch, err := decodeMethodParams[map[string]any](params)
@@ -1509,13 +1876,33 @@ func DecodeListPutParams(params json.RawMessage) (ListPutRequest, error) {
 		}
 		req := ListPutRequest{Name: name, Items: items}
 		if len(arr) == 3 {
-			if err := decodeWritePrecondition(arr[2], &req.ExpectedVersion, &req.ExpectedEvent); err != nil {
+			expectedVersionSet, err := decodeWritePrecondition(arr[2], &req.ExpectedVersion, &req.ExpectedEvent)
+			if err != nil {
 				return ListPutRequest{}, fmt.Errorf("invalid params")
 			}
+			req.ExpectedVersionSet = expectedVersionSet
 		}
 		return req, nil
 	}
-	return decodeMethodParams[ListPutRequest](params)
+	params = normalizeObjectParamAliases(params)
+	type listPutCompatRequest struct {
+		Name            string   `json:"name"`
+		Items           []string `json:"items"`
+		ExpectedVersion *int     `json:"expected_version,omitempty"`
+		ExpectedEvent   string   `json:"expected_event,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat listPutCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return ListPutRequest{}, fmt.Errorf("invalid params")
+	}
+	req := ListPutRequest{Name: compat.Name, Items: compat.Items, ExpectedEvent: compat.ExpectedEvent}
+	if compat.ExpectedVersion != nil {
+		req.ExpectedVersionSet = true
+		req.ExpectedVersion = *compat.ExpectedVersion
+	}
+	return req, nil
 }
 
 func DecodeAgentsListParams(params json.RawMessage) (AgentsListRequest, error) {
@@ -1730,17 +2117,104 @@ func DecodeDeviceTokenRevokeParams(params json.RawMessage) (DeviceTokenRevokeReq
 	return decodeMethodParams[DeviceTokenRevokeRequest](params)
 }
 
+func DecodeConfigDocFromRaw(raw string) (state.ConfigDoc, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return state.ConfigDoc{}, fmt.Errorf("raw is required")
+	}
+	var cfg state.ConfigDoc
+	if err := json.Unmarshal([]byte(trimmed), &cfg); err != nil {
+		return state.ConfigDoc{}, fmt.Errorf("invalid raw config")
+	}
+	return cfg, nil
+}
+
+func DecodeConfigPatchFromRaw(raw string) (map[string]any, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("raw is required")
+	}
+	var patch map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &patch); err != nil {
+		return nil, fmt.Errorf("invalid raw patch")
+	}
+	if len(patch) == 0 {
+		return nil, fmt.Errorf("patch is required")
+	}
+	return patch, nil
+}
+
 func decodeMethodParams[T any](params json.RawMessage) (T, error) {
 	var out T
 	if len(bytes.TrimSpace(params)) == 0 {
 		return out, nil
 	}
+	params = normalizeObjectParamAliases(params)
 	dec := json.NewDecoder(bytes.NewReader(params))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&out); err != nil {
 		return out, fmt.Errorf("invalid params")
 	}
 	return out, nil
+}
+
+var objectParamAliases = map[string]string{
+	"sessionId":        "session_id",
+	"session_key":      "sessionKey",
+	"runId":            "run_id",
+	"timeoutMs":        "timeout_ms",
+	"requestId":        "request_id",
+	"expectedVersion":  "expected_version",
+	"expectedEvent":    "expected_event",
+	"agentId":          "agent_id",
+	"installId":        "install_id",
+	"skillKey":         "skill_key",
+	"apiKey":           "api_key",
+	"includePlugins":   "include_plugins",
+	"nodeId":           "node_id",
+	"deviceId":         "device_id",
+	"displayName":      "display_name",
+	"coreVersion":      "core_version",
+	"uiVersion":        "ui_version",
+	"deviceFamily":     "device_family",
+	"modelIdentifier":  "model_identifier",
+	"remoteIp":         "remote_ip",
+	"start_date":       "startDate",
+	"end_date":         "endDate",
+	"utc_offset":       "utcOffset",
+	"base_hash":        "baseHash",
+	"restart_delay_ms": "restartDelayMs",
+}
+
+func normalizeObjectParamAliases(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return raw
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &payload); err != nil {
+		return raw
+	}
+	changed := false
+	for alias, canonical := range objectParamAliases {
+		value, ok := payload[alias]
+		if !ok {
+			continue
+		}
+		if _, exists := payload[canonical]; !exists {
+			payload[canonical] = value
+		}
+		delete(payload, alias)
+		changed = true
+	}
+	if !changed {
+		return raw
+	}
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return raw
+	}
+	return normalized
 }
 
 func isJSONArray(raw json.RawMessage) bool {
@@ -1799,7 +2273,8 @@ func truncateRunes(s string, maxRunes int) string {
 	return string(r[:maxRunes])
 }
 
-func decodeWritePrecondition(raw json.RawMessage, expectedVersion *int, expectedEvent *string) error {
+func decodeWritePrecondition(raw json.RawMessage, expectedVersion *int, expectedEvent *string) (bool, error) {
+	raw = normalizeObjectParamAliases(raw)
 	var pre struct {
 		ExpectedVersion *int   `json:"expected_version"`
 		ExpectedEvent   string `json:"expected_event"`
@@ -1807,11 +2282,13 @@ func decodeWritePrecondition(raw json.RawMessage, expectedVersion *int, expected
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&pre); err != nil {
-		return err
+		return false, err
 	}
+	expectedVersionSet := false
 	if pre.ExpectedVersion != nil {
+		expectedVersionSet = true
 		*expectedVersion = *pre.ExpectedVersion
 	}
 	*expectedEvent = pre.ExpectedEvent
-	return nil
+	return expectedVersionSet, nil
 }

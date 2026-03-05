@@ -313,6 +313,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	if method == "" {
 		return nil, http.StatusBadRequest, fmt.Errorf("method is required")
 	}
+	method = canonicalMethodName(method)
 
 	cfg := state.ConfigDoc{}
 	if opts.GetConfig != nil {
@@ -408,7 +409,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil
-	case methods.MethodStatus:
+	case methods.MethodStatus, methods.MethodStatusAlias:
 		dmPolicy := opts.Status.DMPolicy
 		if opts.StatusDMPolicy != nil {
 			dmPolicy = opts.StatusDMPolicy()
@@ -529,7 +530,11 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			log.Printf("admin method chat.send failed: %v", err)
 			return nil, http.StatusBadGateway, fmt.Errorf("send failed")
 		}
-		return map[string]any{"ok": true}, http.StatusOK, nil
+		result := map[string]any{"ok": true, "status": "sent"}
+		if req.RunID != "" {
+			result["run_id"] = req.RunID
+		}
+		return result, http.StatusOK, nil
 	case methods.MethodChatHistory:
 		if opts.GetSession == nil || opts.ListTranscript == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -552,7 +557,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"session_id": req.SessionID, "entries": transcript}, http.StatusOK, nil
+		return map[string]any{"session_id": req.SessionID, "key": req.SessionID, "entries": transcript}, http.StatusOK, nil
 	case methods.MethodChatAbort:
 		req, err := methods.DecodeChatAbortParams(call.Params)
 		if err != nil {
@@ -563,13 +568,20 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusBadRequest, err
 		}
 		aborted := 0
+		if req.RunID != "" && strings.TrimSpace(req.SessionID) == "" {
+			return map[string]any{"ok": true, "run_id": req.RunID, "aborted": false, "aborted_count": 0}, http.StatusOK, nil
+		}
 		if opts.AbortChat != nil {
 			aborted, err = opts.AbortChat(ctx, req.SessionID)
 			if err != nil {
 				return nil, http.StatusInternalServerError, err
 			}
 		}
-		return map[string]any{"ok": true, "session_id": req.SessionID, "aborted": aborted > 0, "aborted_count": aborted}, http.StatusOK, nil
+		result := map[string]any{"ok": true, "session_id": req.SessionID, "key": req.SessionID, "aborted": aborted > 0, "aborted_count": aborted}
+		if req.RunID != "" {
+			result["run_id"] = req.RunID
+		}
+		return result, http.StatusOK, nil
 	case methods.MethodSessionGet:
 		if opts.GetSession == nil || opts.ListTranscript == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -610,7 +622,13 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"sessions": sessions}, http.StatusOK, nil
+		return map[string]any{
+			"ts":       time.Now().UnixMilli(),
+			"path":     "nostr://state/sessions",
+			"count":    len(sessions),
+			"defaults": map[string]any{"modelProvider": nil, "model": nil, "contextTokens": nil},
+			"sessions": sessions,
+		}, http.StatusOK, nil
 	case methods.MethodSessionsPreview:
 		if opts.GetSession == nil || opts.ListTranscript == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -623,6 +641,38 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+		if len(req.Keys) > 0 {
+			previews := make([]map[string]any, 0, len(req.Keys))
+			for _, key := range req.Keys {
+				session, err := opts.GetSession(ctx, key)
+				if err != nil {
+					if errors.Is(err, state.ErrNotFound) {
+						previews = append(previews, map[string]any{"key": key, "status": "missing", "items": []map[string]any{}})
+						continue
+					}
+					log.Printf("sessions.preview: failed to get session %q: %v", key, err)
+					previews = append(previews, map[string]any{"key": key, "status": "error", "items": []map[string]any{}})
+					continue
+				}
+				transcript, err := opts.ListTranscript(ctx, session.SessionID, req.Limit)
+				if err != nil {
+					log.Printf("sessions.preview: failed to list transcript for session %q: %v", key, err)
+					previews = append(previews, map[string]any{"key": key, "status": "error", "items": []map[string]any{}})
+					continue
+				}
+				items := make([]map[string]any, 0, len(transcript))
+				for _, entry := range transcript {
+					items = append(items, map[string]any{"role": entry.Role, "text": entry.Text})
+				}
+				statusValue := "ok"
+				if len(items) == 0 {
+					statusValue = "empty"
+				}
+				previews = append(previews, map[string]any{"key": key, "status": statusValue, "items": items})
+			}
+			return map[string]any{"ts": time.Now().UnixMilli(), "previews": previews}, http.StatusOK, nil
+		}
+
 		session, err := opts.GetSession(ctx, req.SessionID)
 		if err != nil {
 			if errors.Is(err, state.ErrNotFound) {
@@ -634,7 +684,24 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"session": session, "preview": transcript}, http.StatusOK, nil
+		items := make([]map[string]any, 0, len(transcript))
+		for _, entry := range transcript {
+			items = append(items, map[string]any{"role": entry.Role, "text": entry.Text})
+		}
+		statusValue := "ok"
+		if len(items) == 0 {
+			statusValue = "empty"
+		}
+		return map[string]any{
+			"session": session,
+			"preview": transcript,
+			"ts":      time.Now().UnixMilli(),
+			"previews": []map[string]any{{
+				"key":    req.SessionID,
+				"status": statusValue,
+				"items":  items,
+			}},
+		}, http.StatusOK, nil
 	case methods.MethodSessionsPatch:
 		if opts.GetSession == nil || opts.PutSession == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -658,7 +725,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err := opts.PutSession(ctx, req.SessionID, session); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true, "session": session}, http.StatusOK, nil
+		return map[string]any{"ok": true, "key": req.SessionID, "session": session}, http.StatusOK, nil
 	case methods.MethodSessionsReset:
 		if opts.GetSession == nil || opts.PutSession == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -684,7 +751,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err := opts.PutSession(ctx, req.SessionID, session); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true, "session": session}, http.StatusOK, nil
+		return map[string]any{"ok": true, "key": req.SessionID, "session": session}, http.StatusOK, nil
 	case methods.MethodSessionsDelete:
 		if opts.GetSession == nil || opts.PutSession == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -708,7 +775,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err := opts.PutSession(ctx, req.SessionID, session); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true, "session_id": req.SessionID, "deleted": true}, http.StatusOK, nil
+		return map[string]any{"ok": true, "session_id": req.SessionID, "key": req.SessionID, "deleted": true}, http.StatusOK, nil
 	case methods.MethodSessionsCompact:
 		if opts.GetSession == nil || opts.PutSession == nil || opts.ListTranscript == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -745,7 +812,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err := opts.PutSession(ctx, req.SessionID, session); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped}, http.StatusOK, nil
+		return map[string]any{"ok": true, "session_id": req.SessionID, "key": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped}, http.StatusOK, nil
 	case methods.MethodAgentsList:
 		req, err := methods.DecodeAgentsListParams(call.Params)
 		if err != nil {
@@ -1238,13 +1305,16 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
-		if req.ExpectedVersion > 0 || req.ExpectedEvent != "" {
+		if req.ExpectedVersionSet || req.ExpectedEvent != "" {
 			if opts.GetListWithEvent == nil {
 				return nil, http.StatusNotImplemented, fmt.Errorf("list preconditions not supported")
 			}
 			current, evt, err := opts.GetListWithEvent(ctx, req.Name)
 			if err != nil {
 				if errors.Is(err, state.ErrNotFound) {
+					if req.ExpectedVersionSet && req.ExpectedVersion == 0 && req.ExpectedEvent == "" {
+						goto listPreconditionsSatisfied
+					}
 					return nil, http.StatusConflict, &methods.PreconditionConflictError{
 						Resource:        "list:" + req.Name,
 						ExpectedVersion: req.ExpectedVersion,
@@ -1254,13 +1324,23 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				}
 				return nil, http.StatusInternalServerError, err
 			}
-			if req.ExpectedVersion > 0 && current.Version != req.ExpectedVersion {
-				return nil, http.StatusConflict, &methods.PreconditionConflictError{
-					Resource:        "list:" + req.Name,
-					ExpectedVersion: req.ExpectedVersion,
-					CurrentVersion:  current.Version,
-					ExpectedEvent:   req.ExpectedEvent,
-					CurrentEvent:    evt.ID,
+			if req.ExpectedVersionSet {
+				if req.ExpectedVersion == 0 {
+					return nil, http.StatusConflict, &methods.PreconditionConflictError{
+						Resource:        "list:" + req.Name,
+						ExpectedVersion: req.ExpectedVersion,
+						CurrentVersion:  current.Version,
+						ExpectedEvent:   req.ExpectedEvent,
+						CurrentEvent:    evt.ID,
+					}
+				} else if current.Version != req.ExpectedVersion {
+					return nil, http.StatusConflict, &methods.PreconditionConflictError{
+						Resource:        "list:" + req.Name,
+						ExpectedVersion: req.ExpectedVersion,
+						CurrentVersion:  current.Version,
+						ExpectedEvent:   req.ExpectedEvent,
+						CurrentEvent:    evt.ID,
+					}
 				}
 			}
 			if req.ExpectedEvent != "" && evt.ID != req.ExpectedEvent {
@@ -1273,6 +1353,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				}
 			}
 		}
+	listPreconditionsSatisfied:
 		if err := opts.PutList(ctx, req.Name, state.ListDoc{
 			Version: 1,
 			Name:    req.Name,
@@ -1293,13 +1374,16 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
-		if req.ExpectedVersion > 0 || req.ExpectedEvent != "" {
+		if req.ExpectedVersionSet || req.ExpectedEvent != "" {
 			if opts.GetConfigWithEvent == nil {
 				return nil, http.StatusNotImplemented, fmt.Errorf("config preconditions not supported")
 			}
 			current, evt, err := opts.GetConfigWithEvent(ctx)
 			if err != nil {
 				if errors.Is(err, state.ErrNotFound) {
+					if req.ExpectedVersionSet && req.ExpectedVersion == 0 && req.ExpectedEvent == "" {
+						goto configPreconditionsSatisfied
+					}
 					return nil, http.StatusConflict, &methods.PreconditionConflictError{
 						Resource:        "config",
 						ExpectedVersion: req.ExpectedVersion,
@@ -1309,13 +1393,23 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				}
 				return nil, http.StatusInternalServerError, err
 			}
-			if req.ExpectedVersion > 0 && current.Version != req.ExpectedVersion {
-				return nil, http.StatusConflict, &methods.PreconditionConflictError{
-					Resource:        "config",
-					ExpectedVersion: req.ExpectedVersion,
-					CurrentVersion:  current.Version,
-					ExpectedEvent:   req.ExpectedEvent,
-					CurrentEvent:    evt.ID,
+			if req.ExpectedVersionSet {
+				if req.ExpectedVersion == 0 {
+					return nil, http.StatusConflict, &methods.PreconditionConflictError{
+						Resource:        "config",
+						ExpectedVersion: req.ExpectedVersion,
+						CurrentVersion:  current.Version,
+						ExpectedEvent:   req.ExpectedEvent,
+						CurrentEvent:    evt.ID,
+					}
+				} else if current.Version != req.ExpectedVersion {
+					return nil, http.StatusConflict, &methods.PreconditionConflictError{
+						Resource:        "config",
+						ExpectedVersion: req.ExpectedVersion,
+						CurrentVersion:  current.Version,
+						ExpectedEvent:   req.ExpectedEvent,
+						CurrentEvent:    evt.ID,
+					}
 				}
 			}
 			if req.ExpectedEvent != "" && evt.ID != req.ExpectedEvent {
@@ -1328,6 +1422,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				}
 			}
 		}
+	configPreconditionsSatisfied:
 		if err := opts.PutConfig(ctx, req.Config); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
@@ -1344,6 +1439,16 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+		if req.Raw != "" {
+			next, err := methods.DecodeConfigDocFromRaw(req.Raw)
+			if err != nil {
+				return nil, http.StatusBadRequest, err
+			}
+			if err := opts.PutConfig(ctx, next); err != nil {
+				return nil, http.StatusInternalServerError, err
+			}
+			return map[string]any{"ok": true, "path": "raw", "config": next}, http.StatusOK, nil
+		}
 		current, err := opts.GetConfig(ctx)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
@@ -1355,7 +1460,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err := opts.PutConfig(ctx, next); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true}, http.StatusOK, nil
+		return map[string]any{"ok": true, "path": req.Key, "config": next}, http.StatusOK, nil
 	case methods.MethodConfigApply:
 		if opts.PutConfig == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("config provider not configured")
@@ -1368,10 +1473,17 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
-		if err := opts.PutConfig(ctx, req.Config); err != nil {
+		next := req.Config
+		if req.Raw != "" {
+			next, err = methods.DecodeConfigDocFromRaw(req.Raw)
+			if err != nil {
+				return nil, http.StatusBadRequest, err
+			}
+		}
+		if err := opts.PutConfig(ctx, next); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true}, http.StatusOK, nil
+		return map[string]any{"ok": true, "config": next}, http.StatusOK, nil
 	case methods.MethodConfigPatch:
 		if opts.GetConfig == nil || opts.PutConfig == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("config providers not configured")
@@ -1388,18 +1500,34 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		next, err := methods.ApplyConfigPatch(current, req.Patch)
+		patch := req.Patch
+		if req.Raw != "" {
+			patch, err = methods.DecodeConfigPatchFromRaw(req.Raw)
+			if err != nil {
+				return nil, http.StatusBadRequest, err
+			}
+		}
+		next, err := methods.ApplyConfigPatch(current, patch)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
 		if err := opts.PutConfig(ctx, next); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true}, http.StatusOK, nil
+		return map[string]any{"ok": true, "config": next}, http.StatusOK, nil
 	case methods.MethodConfigSchema:
 		return methods.ConfigSchema(), http.StatusOK, nil
 	default:
 		return nil, http.StatusNotFound, fmt.Errorf("unknown method %q", method)
+	}
+}
+
+func canonicalMethodName(method string) string {
+	switch strings.TrimSpace(method) {
+	case methods.MethodStatusAlias:
+		return methods.MethodStatus
+	default:
+		return method
 	}
 }
 

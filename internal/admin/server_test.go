@@ -53,6 +53,27 @@ func TestDispatchMethodCallStatusGet(t *testing.T) {
 	}
 }
 
+func TestDispatchMethodCallStatusAlias(t *testing.T) {
+	opts := ServerOptions{Status: StatusProvider{PubKey: "pub", Relays: []string{"wss://r"}, DMPolicy: "open", Started: time.Now().Add(-5 * time.Second)}}
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodStatusAlias, nil)
+
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil {
+		t.Fatalf("dispatchMethodCall error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	res, ok := result.(methods.StatusResponse)
+	if !ok {
+		t.Fatalf("result type = %T", result)
+	}
+	if res.PubKey != "pub" || res.DMPolicy != "open" {
+		t.Fatalf("unexpected status response: %+v", res)
+	}
+}
+
 func TestDispatchMethodCallStatusGetUsesLiveRelaysProvider(t *testing.T) {
 	opts := ServerOptions{
 		Status: StatusProvider{PubKey: "pub", Relays: []string{"wss://stale"}, DMPolicy: "open", Started: time.Now().Add(-5 * time.Second)},
@@ -314,6 +335,46 @@ func TestDispatchMethodCallListPutPreconditionConflict(t *testing.T) {
 	}
 }
 
+func TestDispatchMethodCallListPutExpectedVersionZeroSemantics(t *testing.T) {
+	putCalled := false
+	opts := ServerOptions{
+		GetListWithEvent: func(_ context.Context, name string) (state.ListDoc, state.Event, error) {
+			if name == "missing" {
+				return state.ListDoc{}, state.Event{}, state.ErrNotFound
+			}
+			return state.ListDoc{Version: 2, Name: name}, state.Event{ID: "evt-2"}, nil
+		},
+		PutList: func(_ context.Context, _ string, _ state.ListDoc) error {
+			putCalled = true
+			return nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newRawMethodRequest(t, `{"method":"list.put","params":{"name":"missing","items":["a"],"expected_version":0}}`)
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("expected create-if-missing success status=%d err=%v", status, err)
+	}
+	if !putCalled {
+		t.Fatal("expected put list callback for expected_version=0 on missing list")
+	}
+
+	putCalled = false
+	rr = httptest.NewRecorder()
+	req = newRawMethodRequest(t, `{"method":"list.put","params":{"name":"allowlist","items":["a"],"expected_version":0}}`)
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err == nil {
+		t.Fatal("expected conflict when expected_version=0 and list exists")
+	}
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", status, http.StatusConflict)
+	}
+	if putCalled {
+		t.Fatal("put list must not be called on expected_version=0 conflict")
+	}
+}
+
 func TestDispatchMethodCallConfigPutPreconditionConflict(t *testing.T) {
 	opts := ServerOptions{
 		GetConfigWithEvent: func(_ context.Context) (state.ConfigDoc, state.Event, error) {
@@ -335,6 +396,42 @@ func TestDispatchMethodCallConfigPutPreconditionConflict(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "current_event=evt-current") {
 		t.Fatalf("expected conflict metadata, got: %v", err)
+	}
+}
+
+func TestDispatchMethodCallConfigPutExpectedVersionZeroSemantics(t *testing.T) {
+	putCalled := false
+	opts := ServerOptions{
+		GetConfigWithEvent: func(_ context.Context) (state.ConfigDoc, state.Event, error) {
+			if !putCalled {
+				return state.ConfigDoc{}, state.Event{}, state.ErrNotFound
+			}
+			return state.ConfigDoc{Version: 2, DM: state.DMPolicy{Policy: "open"}}, state.Event{ID: "evt-2"}, nil
+		},
+		PutConfig: func(_ context.Context, _ state.ConfigDoc) error {
+			putCalled = true
+			return nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newRawMethodRequest(t, `{"method":"config.put","params":{"config":{"dm":{"policy":"open"}},"expected_version":0}}`)
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("expected create-if-missing success status=%d err=%v", status, err)
+	}
+	if !putCalled {
+		t.Fatal("expected put config callback for expected_version=0 on missing config")
+	}
+
+	rr = httptest.NewRecorder()
+	req = newRawMethodRequest(t, `{"method":"config.put","params":{"config":{"dm":{"policy":"open"}},"expected_version":0}}`)
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err == nil {
+		t.Fatal("expected conflict when expected_version=0 and config exists")
+	}
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", status, http.StatusConflict)
 	}
 }
 
@@ -376,9 +473,13 @@ func TestDispatchMethodCallConfigSetApplyPatchSchema(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := newMethodRequest(t, methods.MethodConfigSet, map[string]any{"key": "dm.policy", "value": "open"})
-	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("config.set failed status=%d err=%v", status, err)
+	}
+	setOut, _ := result.(map[string]any)
+	if setOut["ok"] != true || setOut["path"] != "dm.policy" || setOut["config"] == nil {
+		t.Fatalf("unexpected config.set response: %#v", result)
 	}
 	if cfg.DM.Policy != "open" {
 		t.Fatalf("expected dm.policy open, got %q", cfg.DM.Policy)
@@ -386,9 +487,13 @@ func TestDispatchMethodCallConfigSetApplyPatchSchema(t *testing.T) {
 
 	rr = httptest.NewRecorder()
 	req = newMethodRequest(t, methods.MethodConfigApply, map[string]any{"config": map[string]any{"version": 2, "dm": map[string]any{"policy": "pairing"}, "relays": map[string]any{"read": []string{"wss://r2"}, "write": []string{"wss://r2"}}}})
-	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("config.apply failed status=%d err=%v", status, err)
+	}
+	applyOut, _ := result.(map[string]any)
+	if applyOut["ok"] != true || applyOut["config"] == nil {
+		t.Fatalf("unexpected config.apply response: %#v", result)
 	}
 	if cfg.DM.Policy != "pairing" {
 		t.Fatalf("expected dm.policy pairing, got %q", cfg.DM.Policy)
@@ -396,9 +501,13 @@ func TestDispatchMethodCallConfigSetApplyPatchSchema(t *testing.T) {
 
 	rr = httptest.NewRecorder()
 	req = newMethodRequest(t, methods.MethodConfigPatch, map[string]any{"patch": map[string]any{"dm": map[string]any{"policy": "open"}}})
-	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("config.patch failed status=%d err=%v", status, err)
+	}
+	patchOut, _ := result.(map[string]any)
+	if patchOut["ok"] != true || patchOut["config"] == nil {
+		t.Fatalf("unexpected config.patch response: %#v", result)
 	}
 	if cfg.DM.Policy != "open" {
 		t.Fatalf("expected dm.policy open after patch, got %q", cfg.DM.Policy)
@@ -406,13 +515,58 @@ func TestDispatchMethodCallConfigSetApplyPatchSchema(t *testing.T) {
 
 	rr = httptest.NewRecorder()
 	req = newMethodRequest(t, methods.MethodConfigSchema, nil)
-	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("config.schema failed status=%d err=%v", status, err)
 	}
 	out, _ := result.(map[string]any)
 	if out["fields"] == nil {
 		t.Fatalf("unexpected config.schema result: %#v", result)
+	}
+}
+
+func TestDispatchMethodCallConfigRawMutations(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1, DM: state.DMPolicy{Policy: "pairing"}, Relays: state.RelayPolicy{Read: []string{"wss://r"}, Write: []string{"wss://r"}}}
+	opts := ServerOptions{
+		GetConfig: func(context.Context) (state.ConfigDoc, error) { return cfg, nil },
+		PutConfig: func(_ context.Context, next state.ConfigDoc) error {
+			cfg = next
+			return nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodConfigApply, map[string]any{"raw": `{"version":4,"dm":{"policy":"open"},"relays":{"read":["wss://a"],"write":["wss://a"]}}`})
+	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("config.apply raw failed status=%d err=%v", status, err)
+	}
+	if cfg.Version != 4 || cfg.DM.Policy != "open" {
+		t.Fatalf("unexpected config after apply raw: %#v", cfg)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodConfigPatch, map[string]any{"raw": `{"dm":{"policy":"pairing"}}`})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("config.patch raw failed status=%d err=%v", status, err)
+	}
+	if cfg.DM.Policy != "pairing" {
+		t.Fatalf("unexpected config after patch raw: %#v", cfg)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodConfigSet, map[string]any{"raw": `{"version":5,"dm":{"policy":"open"},"relays":{"read":["wss://b"],"write":["wss://b"]}}`})
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("config.set raw failed status=%d err=%v", status, err)
+	}
+	if cfg.Version != 5 || cfg.DM.Policy != "open" {
+		t.Fatalf("unexpected config after set raw: %#v", cfg)
+	}
+	out, _ := result.(map[string]any)
+	if out["path"] != "raw" {
+		t.Fatalf("expected raw path response, got: %#v", out)
 	}
 }
 
@@ -534,7 +688,12 @@ func TestDispatchMethodCallChatHistoryAndSessionViews(t *testing.T) {
 	session := state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer"}
 	entries := []state.TranscriptEntryDoc{{EntryID: "1", SessionID: "s1"}, {EntryID: "2", SessionID: "s1"}}
 	opts := ServerOptions{
-		GetSession: func(context.Context, string) (state.SessionDoc, error) { return session, nil },
+		GetSession: func(_ context.Context, id string) (state.SessionDoc, error) {
+			if id == "missing" {
+				return state.SessionDoc{}, state.ErrNotFound
+			}
+			return session, nil
+		},
 		ListSessions: func(context.Context, int) ([]state.SessionDoc, error) {
 			return []state.SessionDoc{session}, nil
 		},
@@ -553,6 +712,9 @@ func TestDispatchMethodCallChatHistoryAndSessionViews(t *testing.T) {
 	if len(out["sessions"].([]state.SessionDoc)) != 1 {
 		t.Fatalf("unexpected sessions.list result: %#v", result)
 	}
+	if out["count"].(int) != 1 || out["defaults"] == nil {
+		t.Fatalf("unexpected sessions.list compatibility fields: %#v", result)
+	}
 
 	rr = httptest.NewRecorder()
 	req = newMethodRequest(t, methods.MethodSessionsPreview, map[string]any{"session_id": "s1", "limit": 5})
@@ -563,6 +725,24 @@ func TestDispatchMethodCallChatHistoryAndSessionViews(t *testing.T) {
 	out, _ = result.(map[string]any)
 	if len(out["preview"].([]state.TranscriptEntryDoc)) != 2 {
 		t.Fatalf("unexpected sessions.preview result: %#v", result)
+	}
+	if previews, ok := out["previews"].([]map[string]any); !ok || len(previews) != 1 {
+		t.Fatalf("unexpected sessions.preview compatibility result: %#v", result)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodSessionsPreview, map[string]any{"keys": []string{"s1", "missing"}, "limit": 5})
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("sessions.preview(keys) failed status=%d err=%v", status, err)
+	}
+	out, _ = result.(map[string]any)
+	previews, ok := out["previews"].([]map[string]any)
+	if !ok || len(previews) != 2 {
+		t.Fatalf("unexpected sessions.preview(keys) result: %#v", result)
+	}
+	if previews[0]["status"] != "ok" || previews[1]["status"] != "missing" {
+		t.Fatalf("unexpected preview statuses: %#v", previews)
 	}
 
 	rr = httptest.NewRecorder()
@@ -733,59 +913,106 @@ func TestDispatchMethodCallAgentsMethods(t *testing.T) {
 
 func TestDispatchMethodCallSessionMutations(t *testing.T) {
 	session := state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer", LastInboundAt: 10, LastReplyAt: 11, Meta: map[string]any{"a": "b"}}
+	abortCalls := 0
 	opts := ServerOptions{
 		GetSession: func(context.Context, string) (state.SessionDoc, error) { return session, nil },
 		PutSession: func(_ context.Context, _ string, next state.SessionDoc) error {
 			session = next
 			return nil
 		},
-		AbortChat: func(context.Context, string) (int, error) { return 1, nil },
+		AbortChat: func(context.Context, string) (int, error) {
+			abortCalls++
+			return 1, nil
+		},
 		ListTranscript: func(context.Context, string, int) ([]state.TranscriptEntryDoc, error) {
 			return []state.TranscriptEntryDoc{{EntryID: "1"}, {EntryID: "2"}, {EntryID: "3"}}, nil
 		},
 	}
 
 	rr := httptest.NewRecorder()
-	req := newMethodRequest(t, methods.MethodSessionsPatch, map[string]any{"session_id": "s1", "meta": map[string]any{"x": "y"}})
+	req := newMethodRequest(t, methods.MethodSessionsPatch, map[string]any{"key": "s1", "meta": map[string]any{"x": "y"}})
 	_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK || session.Meta["x"] != "y" {
 		t.Fatalf("sessions.patch failed status=%d err=%v session=%+v", status, err, session)
 	}
 
 	rr = httptest.NewRecorder()
-	req = newMethodRequest(t, methods.MethodSessionsReset, map[string]any{"session_id": "s1"})
+	req = newMethodRequest(t, methods.MethodSessionsReset, map[string]any{"sessionKey": "s1"})
 	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK || session.LastInboundAt != 0 || len(session.Meta) != 0 {
 		t.Fatalf("sessions.reset failed status=%d err=%v session=%+v", status, err, session)
 	}
 
 	rr = httptest.NewRecorder()
-	req = newMethodRequest(t, methods.MethodSessionsDelete, map[string]any{"session_id": "s1"})
+	req = newMethodRequest(t, methods.MethodSessionsDelete, map[string]any{"key": "s1"})
 	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK || session.Meta["deleted"] != true {
 		t.Fatalf("sessions.delete failed status=%d err=%v session=%+v", status, err, session)
 	}
 
 	rr = httptest.NewRecorder()
-	req = newMethodRequest(t, methods.MethodSessionsCompact, map[string]any{"session_id": "s1", "keep": 1})
+	req = newMethodRequest(t, methods.MethodSessionsCompact, map[string]any{"key": "s1", "maxLines": 1})
 	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("sessions.compact failed status=%d err=%v", status, err)
 	}
 	out, _ := result.(map[string]any)
-	if out["dropped"].(int) != 2 {
+	if out["dropped"].(int) != 2 || out["key"] != "s1" {
 		t.Fatalf("unexpected compact result: %#v", out)
 	}
 
 	rr = httptest.NewRecorder()
-	req = newMethodRequest(t, methods.MethodChatAbort, map[string]any{"session_id": "s1"})
+	req = newMethodRequest(t, methods.MethodChatAbort, map[string]any{"sessionKey": "s1"})
 	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("chat.abort failed status=%d err=%v", status, err)
 	}
 	out, _ = result.(map[string]any)
-	if out["aborted"] != true || out["aborted_count"].(int) != 1 {
+	if out["aborted"] != true || out["aborted_count"].(int) != 1 || out["key"] != "s1" {
 		t.Fatalf("unexpected chat.abort result: %#v", out)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodChatAbort, map[string]any{"runId": "run-1"})
+	result, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("chat.abort (runId only) failed status=%d err=%v", status, err)
+	}
+	out, _ = result.(map[string]any)
+	if out["aborted"] != false || out["run_id"] != "run-1" {
+		t.Fatalf("unexpected run-only chat.abort result: %#v", out)
+	}
+	if abortCalls != 1 {
+		t.Fatalf("abort callback should not be called for runId-only request, got=%d", abortCalls)
+	}
+}
+
+func TestDispatchMethodCallChatSendOpenClawShape(t *testing.T) {
+	var gotTo string
+	var gotText string
+	opts := ServerOptions{
+		SendDM: func(_ context.Context, to string, text string) error {
+			gotTo = to
+			gotText = text
+			return nil
+		},
+	}
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodChatSend, map[string]any{
+		"sessionKey":     "npub1alice",
+		"message":        "hello",
+		"idempotencyKey": "run-1",
+	})
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("chat.send failed status=%d err=%v", status, err)
+	}
+	if gotTo != "npub1alice" || gotText != "hello" {
+		t.Fatalf("unexpected send args to=%q text=%q", gotTo, gotText)
+	}
+	out, _ := result.(map[string]any)
+	if out["status"] != "sent" || out["run_id"] != "run-1" {
+		t.Fatalf("unexpected chat.send result: %#v", out)
 	}
 }
 
