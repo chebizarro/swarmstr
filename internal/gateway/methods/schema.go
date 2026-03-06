@@ -56,6 +56,8 @@ const (
 	MethodAgentsFilesSet     = "agents.files.set"
 	MethodModelsList         = "models.list"
 	MethodToolsCatalog       = "tools.catalog"
+	MethodToolsProfileGet    = "tools.profile.get"
+	MethodToolsProfileSet    = "tools.profile.set"
 	MethodSkillsStatus       = "skills.status"
 	MethodSkillsBins         = "skills.bins"
 	MethodSkillsInstall      = "skills.install"
@@ -356,8 +358,18 @@ type AgentsFilesSetRequest struct {
 type ModelsListRequest struct{}
 
 type ToolsCatalogRequest struct {
-	AgentID        string `json:"agent_id,omitempty"`
-	IncludePlugins *bool  `json:"include_plugins,omitempty"`
+	AgentID        string  `json:"agent_id,omitempty"`
+	IncludePlugins *bool   `json:"include_plugins,omitempty"`
+	Profile        *string `json:"profile,omitempty"`
+}
+
+type ToolsProfileGetRequest struct {
+	AgentID string `json:"agent_id,omitempty"`
+}
+
+type ToolsProfileSetRequest struct {
+	AgentID string `json:"agent_id,omitempty"`
+	Profile string `json:"profile"`
 }
 
 type SkillsStatusRequest struct {
@@ -1054,6 +1066,20 @@ func (r ToolsCatalogRequest) Normalize() (ToolsCatalogRequest, error) {
 	return r, nil
 }
 
+func (r ToolsProfileGetRequest) Normalize() (ToolsProfileGetRequest, error) {
+	r.AgentID = normalizeAgentID(r.AgentID)
+	return r, nil
+}
+
+func (r ToolsProfileSetRequest) Normalize() (ToolsProfileSetRequest, error) {
+	r.AgentID = normalizeAgentID(r.AgentID)
+	r.Profile = strings.TrimSpace(strings.ToLower(r.Profile))
+	if r.Profile == "" {
+		return r, fmt.Errorf("profile is required")
+	}
+	return r, nil
+}
+
 func (r SkillsStatusRequest) Normalize() (SkillsStatusRequest, error) {
 	r.AgentID = normalizeAgentID(r.AgentID)
 	return r, nil
@@ -1672,6 +1698,8 @@ func SupportedMethods() []string {
 		MethodAgentsFilesSet,
 		MethodModelsList,
 		MethodToolsCatalog,
+		MethodToolsProfileGet,
+		MethodToolsProfileSet,
 		MethodSkillsStatus,
 		MethodSkillsBins,
 		MethodSkillsInstall,
@@ -2827,6 +2855,20 @@ func DecodeToolsCatalogParams(params json.RawMessage) (ToolsCatalogRequest, erro
 		return ToolsCatalogRequest{}, nil
 	}
 	return decodeMethodParams[ToolsCatalogRequest](params)
+}
+
+func DecodeToolsProfileGetParams(params json.RawMessage) (ToolsProfileGetRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return ToolsProfileGetRequest{}, nil
+	}
+	return decodeMethodParams[ToolsProfileGetRequest](params)
+}
+
+func DecodeToolsProfileSetParams(params json.RawMessage) (ToolsProfileSetRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return ToolsProfileSetRequest{}, fmt.Errorf("profile is required")
+	}
+	return decodeMethodParams[ToolsProfileSetRequest](params)
 }
 
 func DecodeSkillsStatusParams(params json.RawMessage) (SkillsStatusRequest, error) {

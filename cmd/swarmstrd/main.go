@@ -222,6 +222,11 @@ func main() {
 		}
 	}()
 
+	// wsEmitter pushes typed events to connected WebSocket clients.
+	// It starts as a no-op and is upgraded to the real runtime emitter once the
+	// WS gateway starts.  The dmOnMessage closure captures this variable.
+	var wsEmitter gatewayws.EventEmitter = gatewayws.NoopEmitter{}
+
 	// Shared inbound DM handler used by both NIP-04 and NIP-17 buses.
 	dmOnMessage := func(ctx context.Context, msg nostruntime.InboundDM) error {
 			if tracker.AlreadyProcessed(msg.EventID, msg.CreatedAt) {
@@ -229,6 +234,14 @@ func main() {
 			}
 			usageState.RecordInbound(msg.Text)
 			logBuffer.Append("info", fmt.Sprintf("dm inbound from=%s event=%s", msg.FromPubKey, msg.EventID))
+
+			// Emit inbound chat event.
+			wsEmitter.Emit(gatewayws.EventChatMessage, gatewayws.ChatMessagePayload{
+				TS:        time.Now().UnixMilli(),
+				SessionID: msg.FromPubKey,
+				Direction: "inbound",
+				EventID:   msg.EventID,
+			})
 
 			decision := policy.EvaluateIncomingDM(msg.FromPubKey, configState.Get())
 			if !decision.Allowed {
@@ -254,6 +267,12 @@ func main() {
 				releaseTurn()
 			}()
 			turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, msg.Text, 6)
+			wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+				TS:      time.Now().UnixMilli(),
+				AgentID: defaultAgentID(""),
+				Status:  "thinking",
+				Session: sessionID,
+			})
 			turnResult, err := agentRuntime.ProcessTurn(turnCtx, agent.Turn{SessionID: sessionID, UserText: msg.Text, Context: turnContext})
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
@@ -266,11 +285,25 @@ func main() {
 			if err := persistToolTraces(ctx, transcriptRepo, sessionID, msg.EventID, turnResult.ToolTraces); err != nil {
 				log.Printf("persist tool traces failed session=%s err=%v", sessionID, err)
 			}
+			wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+				TS:      time.Now().UnixMilli(),
+				AgentID: defaultAgentID(""),
+				Status:  "idle",
+				Session: sessionID,
+			})
 			if err := msg.Reply(ctx, turnResult.Text); err != nil {
 				log.Printf("reply failed event=%s err=%v", msg.EventID, err)
 				logBuffer.Append("error", fmt.Sprintf("dm reply failed event=%s err=%v", msg.EventID, err))
 				return nil
 			}
+			// Emit outbound chat event.
+			wsEmitter.Emit(gatewayws.EventChatMessage, gatewayws.ChatMessagePayload{
+				TS:        time.Now().UnixMilli(),
+				AgentID:   defaultAgentID(""),
+				SessionID: sessionID,
+				Direction: "outbound",
+				EventID:   msg.EventID,
+			})
 			usageState.RecordOutbound(turnResult.Text)
 			logBuffer.Append("info", fmt.Sprintf("dm reply sent to=%s event=%s", msg.FromPubKey, msg.EventID))
 			if err := persistAssistant(ctx, docsRepo, transcriptRepo, sessionID, turnResult.Text, msg.EventID); err != nil {
@@ -346,12 +379,12 @@ func main() {
 	if gatewayWSAddr != "" {
 		wsMethods := append([]string{}, supportedMethods(configState.Get())...)
 		wsMethods = append(wsMethods, gatewayws.MethodEventsList, gatewayws.MethodEventsSubscribe, gatewayws.MethodEventsUnsubscribe)
-		if _, err := gatewayws.Start(ctx, gatewayws.RuntimeOptions{
+		wsRuntime, err := gatewayws.Start(ctx, gatewayws.RuntimeOptions{
 			Addr:                   gatewayWSAddr,
 			Path:                   gatewayWSPath,
 			Token:                  gatewayWSToken,
 			Methods:                wsMethods,
-			Events:                 []string{"connect.challenge", "presence.updated"},
+			Events:                 gatewayws.AllPushEvents,
 			Version:                "swarmstrd",
 			HandshakeTTL:           10 * time.Second,
 			AuthRateLimitPerMin:    120,
@@ -373,9 +406,34 @@ func main() {
 				}
 				return res.Result, nil
 			},
-		}); err != nil {
+		})
+		if err != nil {
 			log.Fatalf("start gateway ws runtime: %v", err)
 		}
+		wsEmitter = gatewayws.NewRuntimeEmitter(wsRuntime)
+
+		// Periodic tick event and startup health pulse.
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			// Emit initial health on connect.
+			wsEmitter.Emit(gatewayws.EventHealth, gatewayws.HealthPayload{
+				TS: time.Now().UnixMilli(),
+				OK: true,
+			})
+			for {
+				select {
+				case <-ctx.Done():
+					wsEmitter.Emit(gatewayws.EventShutdown, gatewayws.ShutdownPayload{
+						TS:     time.Now().UnixMilli(),
+						Reason: "daemon stopping",
+					})
+					return
+				case <-ticker.C:
+					gatewayws.EmitTick(wsEmitter, startedAt, "swarmstrd")
+				}
+			}
+		}()
 	}
 
 	if adminAddr != "" {
@@ -605,7 +663,48 @@ func main() {
 					}
 					cfg := configState.Get()
 					agentID := defaultAgentID(req.AgentID)
-					return map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(cfg, tools, req.IncludePlugins, pluginMgr)}, nil
+					groups := buildToolCatalogGroups(cfg, tools, req.IncludePlugins, pluginMgr)
+					if req.Profile != nil && *req.Profile != "" {
+						profileID := strings.TrimSpace(strings.ToLower(*req.Profile))
+						if agent.LookupProfile(profileID) == nil {
+							return nil, fmt.Errorf("unknown profile %q; valid: %s", profileID, strings.Join(agent.ProfileListSorted(), ", "))
+						}
+						groups = agent.FilterCatalogByProfile(groups, profileID)
+					}
+					return map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": groups}, nil
+				},
+				ToolsProfileGet: func(ctx context.Context, req methods.ToolsProfileGetRequest) (map[string]any, error) {
+					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+						return nil, err
+					}
+					agentID := defaultAgentID(req.AgentID)
+					doc, _ := docsRepo.GetAgent(ctx, agentID)
+					profileID := agent.DefaultProfile
+					if p, ok := doc.Meta[agent.AgentProfileKey].(string); ok && p != "" {
+						profileID = p
+					}
+					return map[string]any{"agentId": agentID, "profile": profileID}, nil
+				},
+				ToolsProfileSet: func(ctx context.Context, req methods.ToolsProfileSetRequest) (map[string]any, error) {
+					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+						return nil, err
+					}
+					if agent.LookupProfile(req.Profile) == nil {
+						return nil, fmt.Errorf("unknown profile %q; valid: %s", req.Profile, strings.Join(agent.ProfileListSorted(), ", "))
+					}
+					agentID := defaultAgentID(req.AgentID)
+					doc, _ := docsRepo.GetAgent(ctx, agentID)
+					if doc.Meta == nil {
+						doc.Meta = map[string]any{}
+					}
+					if doc.AgentID == "" {
+						doc = state.AgentDoc{Version: 1, AgentID: agentID, Meta: map[string]any{}}
+					}
+					doc.Meta[agent.AgentProfileKey] = req.Profile
+					if _, err := docsRepo.PutAgent(ctx, agentID, doc); err != nil {
+						return nil, err
+					}
+					return map[string]any{"agentId": agentID, "profile": req.Profile}, nil
 				},
 				SkillsStatus: func(ctx context.Context, req methods.SkillsStatusRequest) (map[string]any, error) {
 					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
@@ -1790,7 +1889,62 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		agentID := defaultAgentID(req.AgentID)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(cfg, tools, req.IncludePlugins, pluginMgr)}}, nil
+		groups := buildToolCatalogGroups(cfg, tools, req.IncludePlugins, pluginMgr)
+		if req.Profile != nil && *req.Profile != "" {
+			profileID := strings.TrimSpace(strings.ToLower(*req.Profile))
+			if agent.LookupProfile(profileID) == nil {
+				return nostruntime.ControlRPCResult{}, fmt.Errorf("unknown profile %q; valid: %s", profileID, strings.Join(agent.ProfileListSorted(), ", "))
+			}
+			groups = agent.FilterCatalogByProfile(groups, profileID)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": groups}}, nil
+	case methods.MethodToolsProfileGet:
+		req, err := methods.DecodeToolsProfileGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		agentID := defaultAgentID(req.AgentID)
+		doc, _ := docsRepo.GetAgent(ctx, agentID)
+		profileID := agent.DefaultProfile
+		if p, ok := doc.Meta[agent.AgentProfileKey].(string); ok && p != "" {
+			profileID = p
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agentId": agentID, "profile": profileID}}, nil
+	case methods.MethodToolsProfileSet:
+		req, err := methods.DecodeToolsProfileSetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if agent.LookupProfile(req.Profile) == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("unknown profile %q; valid: %s", req.Profile, strings.Join(agent.ProfileListSorted(), ", "))
+		}
+		agentID := defaultAgentID(req.AgentID)
+		doc, _ := docsRepo.GetAgent(ctx, agentID)
+		if doc.AgentID == "" {
+			doc = state.AgentDoc{Version: 1, AgentID: agentID}
+		}
+		if doc.Meta == nil {
+			doc.Meta = map[string]any{}
+		}
+		doc.Meta[agent.AgentProfileKey] = req.Profile
+		if _, err := docsRepo.PutAgent(ctx, agentID, doc); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agentId": agentID, "profile": req.Profile}}, nil
 	case methods.MethodSkillsStatus:
 		req, err := methods.DecodeSkillsStatusParams(in.Params)
 		if err != nil {
@@ -3134,12 +3288,7 @@ func defaultModelsCatalog() []map[string]any {
 }
 
 func defaultToolProfiles() []map[string]any {
-	return []map[string]any{
-		{"id": "minimal", "label": "Minimal"},
-		{"id": "coding", "label": "Coding"},
-		{"id": "messaging", "label": "Messaging"},
-		{"id": "full", "label": "Full"},
-	}
+	return agent.ProfilesAsResponse()
 }
 
 func supportedMethods(cfg state.ConfigDoc) []string {

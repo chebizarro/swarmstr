@@ -76,6 +76,8 @@ type ServerOptions struct {
 	SetAgentFile         func(context.Context, methods.AgentsFilesSetRequest) (map[string]any, error)
 	ListModels           func(context.Context, methods.ModelsListRequest) (map[string]any, error)
 	ToolsCatalog         func(context.Context, methods.ToolsCatalogRequest) (map[string]any, error)
+	ToolsProfileGet      func(context.Context, methods.ToolsProfileGetRequest) (map[string]any, error)
+	ToolsProfileSet      func(context.Context, methods.ToolsProfileSetRequest) (map[string]any, error)
 	SkillsStatus         func(context.Context, methods.SkillsStatusRequest) (map[string]any, error)
 	SkillsBins           func(context.Context, methods.SkillsBinsRequest) (map[string]any, error)
 	SkillsInstall        func(context.Context, methods.SkillsInstallRequest) (map[string]any, error)
@@ -1035,6 +1037,46 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusNotImplemented, fmt.Errorf("tools catalog provider not configured")
 		}
 		out, err := opts.ToolsCatalog(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodToolsProfileGet:
+		req, err := methods.DecodeToolsProfileGetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.ToolsProfileGet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("tools profile not configured")
+		}
+		out, err := opts.ToolsProfileGet(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodToolsProfileSet:
+		req, err := methods.DecodeToolsProfileSetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.ToolsProfileSet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("tools profile not configured")
+		}
+		out, err := opts.ToolsProfileSet(ctx, req)
 		if err != nil {
 			if errors.Is(err, state.ErrNotFound) {
 				return nil, http.StatusNotFound, fmt.Errorf("not found")
