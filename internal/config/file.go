@@ -1,0 +1,189 @@
+// Package config provides config file I/O for Swarmstr.
+// It supports reading OpenClaw-compatible JSON5/YAML config files
+// and mapping them to the Swarmstr ConfigDoc format.
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/tailscale/hujson"
+	"gopkg.in/yaml.v3"
+	"swarmstr/internal/store/state"
+)
+
+// LoadConfigFile reads a JSON5 (or plain JSON) or YAML config file
+// and returns a ConfigDoc. OpenClaw config fields are mapped automatically.
+func LoadConfigFile(path string) (state.ConfigDoc, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return state.ConfigDoc{}, fmt.Errorf("config file path is required")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return state.ConfigDoc{}, fmt.Errorf("read config file: %w", err)
+	}
+	var obj map[string]any
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".yaml", ".yml":
+		if err := yaml.Unmarshal(raw, &obj); err != nil {
+			return state.ConfigDoc{}, fmt.Errorf("parse YAML config: %w", err)
+		}
+	default:
+		// JSON5 / HuJSON: standardise to plain JSON first.
+		standardised, err := hujson.Standardize(raw)
+		if err != nil {
+			return state.ConfigDoc{}, fmt.Errorf("parse JSON5 config: %w", err)
+		}
+		if err := json.Unmarshal(standardised, &obj); err != nil {
+			return state.ConfigDoc{}, fmt.Errorf("parse JSON config: %w", err)
+		}
+	}
+	if obj == nil {
+		return state.ConfigDoc{}, fmt.Errorf("config file is empty or null")
+	}
+	return mapRawToConfigDoc(obj), nil
+}
+
+// WriteConfigFile serialises a ConfigDoc to a JSON file at path.
+// Parent directories are created as needed.
+func WriteConfigFile(path string, doc state.ConfigDoc) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("config file path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir for config file: %w", err)
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write config temp file: %w", err)
+	}
+	return os.Rename(tmp, path)
+}
+
+// DefaultConfigPath returns ~/.swarmstr/config.json.
+func DefaultConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".swarmstr", "config.json"), nil
+}
+
+// ConfigFileExists returns true when a readable config file exists at path.
+func ConfigFileExists(path string) bool {
+	info, err := os.Stat(strings.TrimSpace(path))
+	return err == nil && !info.IsDir()
+}
+
+// ConfigFileModTime returns the modification time of path, or zero on error.
+func ConfigFileModTime(path string) time.Time {
+	info, err := os.Stat(strings.TrimSpace(path))
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// OpenClaw → ConfigDoc field mapping
+// ──────────────────────────────────────────────────────────────────────────────
+
+// mapRawToConfigDoc converts a raw parsed map (from JSON5 or YAML) to a
+// ConfigDoc, mapping known OpenClaw config fields to their Swarmstr equivalents.
+// Unknown top-level sections are preserved in ConfigDoc.Extra.
+func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
+	doc := state.ConfigDoc{Version: 1}
+	if doc.Extra == nil {
+		doc.Extra = map[string]any{}
+	}
+
+	// ── relays ────────────────────────────────────────────────────────────────
+	if relaysRaw, ok := raw["relays"]; ok {
+		if rm, ok := relaysRaw.(map[string]any); ok {
+			doc.Relays.Read = toStringSlice(rm["read"])
+			doc.Relays.Write = toStringSlice(rm["write"])
+		}
+	}
+
+	// ── DM policy (OpenClaw: channels.web.dm) ────────────────────────────────
+	if channelsRaw, ok := raw["channels"].(map[string]any); ok {
+		if webRaw, ok := channelsRaw["web"].(map[string]any); ok {
+			if dmRaw, ok := webRaw["dm"].(map[string]any); ok {
+				if policy, ok := dmRaw["policy"].(string); ok {
+					doc.DM.Policy = strings.TrimSpace(policy)
+				}
+				doc.DM.AllowFrom = toStringSlice(dmRaw["allow_from"])
+				if doc.DM.AllowFrom == nil {
+					doc.DM.AllowFrom = toStringSlice(dmRaw["allowFrom"])
+				}
+			}
+		}
+		// Preserve full channels map for Nostr channel configs (NIP-17/NIP-29 etc).
+		doc.Extra["channels"] = channelsRaw
+	}
+
+	// ── agent / provider defaults ─────────────────────────────────────────────
+	if agentsRaw, ok := raw["agents"].(map[string]any); ok {
+		if defaults, ok := agentsRaw["defaults"].(map[string]any); ok {
+			if model, ok := defaults["model"].(string); ok {
+				doc.Agent.DefaultModel = strings.TrimSpace(model)
+			}
+		}
+		doc.Extra["agents"] = agentsRaw
+	}
+
+	// ── plugins (map to extensions in extra, matching existing Swarmstr key) ──
+	if pluginsRaw, ok := raw["plugins"]; ok {
+		doc.Extra["extensions"] = pluginsRaw
+	}
+
+	// ── pass-through sections ─────────────────────────────────────────────────
+	passThrough := []string{
+		"providers", "skills", "memory", "session", "heartbeat",
+		"cron", "secrets", "update", "tts", "wizard", "pairing",
+	}
+	for _, key := range passThrough {
+		if v, ok := raw[key]; ok {
+			doc.Extra[key] = v
+		}
+	}
+
+	// Clean up empty extras.
+	if len(doc.Extra) == 0 {
+		doc.Extra = nil
+	}
+	return doc
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+func toStringSlice(v any) []string {
+	switch typed := v.(type) {
+	case []string:
+		return typed
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if s, ok := item.(string); ok {
+				if t := strings.TrimSpace(s); t != "" {
+					out = append(out, t)
+				}
+			}
+		}
+		return out
+	}
+	return nil
+}

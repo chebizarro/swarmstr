@@ -201,7 +201,7 @@ func newChannelRuntimeState() *channelRuntimeState {
 	return &channelRuntimeState{}
 }
 
-func (c *channelRuntimeState) Status(dmBus *nostruntime.DMBus, controlBus *nostruntime.ControlRPCBus, cfg state.ConfigDoc) map[string]any {
+func (c *channelRuntimeState) Status(dmBus nostruntime.DMTransport, controlBus *nostruntime.ControlRPCBus, cfg state.ConfigDoc) map[string]any {
 	c.mu.Lock()
 	loggedOut := c.loggedOut
 	c.mu.Unlock()
