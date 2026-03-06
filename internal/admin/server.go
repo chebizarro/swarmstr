@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"swarmstr/internal/config"
 	"swarmstr/internal/gateway/methods"
 	"swarmstr/internal/memory"
 	"swarmstr/internal/policy"
@@ -300,7 +301,7 @@ func Start(ctx context.Context, opts ServerOptions) error {
 				handleStateError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, cfg)
+			writeJSON(w, http.StatusOK, config.Redact(cfg))
 		case http.MethodPut:
 			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 			dec := json.NewDecoder(r.Body)
@@ -2210,7 +2211,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return cfg, http.StatusOK, nil
+		return config.Redact(cfg), http.StatusOK, nil
 	case methods.MethodRelayPolicyGet:
 		if opts.GetRelayPolicy == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("relay policy provider not configured")
@@ -2407,7 +2408,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err := opts.PutConfig(ctx, next); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true, "path": req.Key, "config": next}, http.StatusOK, nil
+		return map[string]any{"ok": true, "path": req.Key, "config": config.Redact(next)}, http.StatusOK, nil
 	case methods.MethodConfigApply:
 		if opts.PutConfig == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("config provider not configured")
@@ -2430,7 +2431,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err := opts.PutConfig(ctx, next); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true, "config": next}, http.StatusOK, nil
+		return map[string]any{"ok": true, "config": config.Redact(next)}, http.StatusOK, nil
 	case methods.MethodConfigPatch:
 		if opts.GetConfig == nil || opts.PutConfig == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("config providers not configured")
@@ -2461,7 +2462,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err := opts.PutConfig(ctx, next); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true, "config": next}, http.StatusOK, nil
+		return map[string]any{"ok": true, "config": config.Redact(next)}, http.StatusOK, nil
 	case methods.MethodConfigSchema:
 		if opts.GetConfig == nil {
 			return methods.ConfigSchema(), http.StatusOK, nil

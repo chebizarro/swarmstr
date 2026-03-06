@@ -211,11 +211,8 @@ func main() {
 		}
 	}()
 
-	bus, err := nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
-		PrivateKey: privateKey,
-		Relays:     cfg.Relays,
-		SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
-		OnMessage: func(ctx context.Context, msg nostruntime.InboundDM) error {
+	// Shared inbound DM handler used by both NIP-04 and NIP-17 buses.
+	dmOnMessage := func(ctx context.Context, msg nostruntime.InboundDM) error {
 			if tracker.AlreadyProcessed(msg.EventID, msg.CreatedAt) {
 				return nil
 			}
@@ -273,13 +270,38 @@ func main() {
 			}
 			log.Printf("dm accepted from=%s relay=%s event=%s text=%q", msg.FromPubKey, msg.RelayURL, msg.EventID, msg.Text)
 			return nil
-		},
-		OnError: func(err error) {
-			log.Printf("nostr runtime error: %v", err)
-		},
-	})
-	if err != nil {
-		log.Fatalf("start dm bus: %v", err)
+	}
+	dmOnError := func(err error) {
+		log.Printf("nostr runtime error: %v", err)
+	}
+
+	// Start the DM transport: NIP-17 (gift-wrapped, metadata-private) when
+	// enabled; otherwise fall back to NIP-04 for OpenClaw compatibility.
+	var bus nostruntime.DMTransport
+	if cfg.EnableNIP17 {
+		bus, err = nostruntime.StartNIP17Bus(ctx, nostruntime.NIP17BusOptions{
+			PrivateKey: privateKey,
+			Relays:     cfg.Relays,
+			SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
+			OnMessage:  dmOnMessage,
+			OnError:    dmOnError,
+		})
+		if err != nil {
+			log.Fatalf("start nip17 bus: %v", err)
+		}
+		log.Printf("dm transport: NIP-17 (gift-wrapped)")
+	} else {
+		bus, err = nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
+			PrivateKey: privateKey,
+			Relays:     cfg.Relays,
+			SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
+			OnMessage:  dmOnMessage,
+			OnError:    dmOnError,
+		})
+		if err != nil {
+			log.Fatalf("start dm bus: %v", err)
+		}
+		log.Printf("dm transport: NIP-04 (legacy encrypted DM)")
 	}
 	defer bus.Close()
 
@@ -1214,7 +1236,7 @@ func persistAssistant(
 func handleControlRPCRequest(
 	ctx context.Context,
 	in nostruntime.ControlRPCInbound,
-	dmBus *nostruntime.DMBus,
+	dmBus nostruntime.DMTransport,
 	controlBus *nostruntime.ControlRPCBus,
 	chatCancels *chatAbortRegistry,
 	usageState *usageTracker,
@@ -2636,7 +2658,7 @@ func handleControlRPCRequest(
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodConfigGet:
-		return nostruntime.ControlRPCResult{Result: cfg}, nil
+		return nostruntime.ControlRPCResult{Result: config.Redact(cfg)}, nil
 	case methods.MethodRelayPolicyGet:
 		dmRelays := []string{}
 		controlRelays := []string{}
@@ -3053,7 +3075,7 @@ func mergeSessionMeta(base map[string]any, patch map[string]any) map[string]any 
 	return out
 }
 
-func applyRuntimeRelayPolicy(dmBus *nostruntime.DMBus, controlBus *nostruntime.ControlRPCBus, cfg state.ConfigDoc) {
+func applyRuntimeRelayPolicy(dmBus nostruntime.DMTransport, controlBus *nostruntime.ControlRPCBus, cfg state.ConfigDoc) {
 	if dmBus != nil && len(cfg.Relays.Write) > 0 {
 		if err := dmBus.SetRelays(cfg.Relays.Write); err != nil {
 			log.Printf("dm relay policy update failed: %v", err)
@@ -5030,7 +5052,7 @@ func applySystemEvent(reg *operationsRegistry, req methods.SystemEventRequest) (
 	return map[string]any{"ok": true}, nil
 }
 
-func applySend(ctx context.Context, dmBus *nostruntime.DMBus, req methods.SendRequest) (map[string]any, error) {
+func applySend(ctx context.Context, dmBus nostruntime.DMTransport, req methods.SendRequest) (map[string]any, error) {
 	if dmBus == nil {
 		return nil, fmt.Errorf("send runtime not configured")
 	}
