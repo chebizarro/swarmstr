@@ -71,6 +71,33 @@ func WriteConfigFile(path string, doc state.ConfigDoc) error {
 	return os.Rename(tmp, path)
 }
 
+// ParseConfigBytes parses raw bytes (JSON5, plain JSON, or YAML if ext hint
+// contains ".yaml"/".yml") and returns a ConfigDoc.  ext is optional; an
+// empty string defaults to JSON5 parsing.
+func ParseConfigBytes(raw []byte, extHint string) (state.ConfigDoc, error) {
+	extHint = strings.ToLower(strings.TrimSpace(extHint))
+	ext := filepath.Ext(extHint)
+	var obj map[string]any
+	switch ext {
+	case ".yaml", ".yml":
+		if err := yaml.Unmarshal(raw, &obj); err != nil {
+			return state.ConfigDoc{}, fmt.Errorf("parse YAML config: %w", err)
+		}
+	default:
+		standardised, err := hujson.Standardize(raw)
+		if err != nil {
+			return state.ConfigDoc{}, fmt.Errorf("parse JSON5 config: %w", err)
+		}
+		if err := json.Unmarshal(standardised, &obj); err != nil {
+			return state.ConfigDoc{}, fmt.Errorf("parse JSON config: %w", err)
+		}
+	}
+	if obj == nil {
+		return state.ConfigDoc{}, fmt.Errorf("config is empty or null")
+	}
+	return mapRawToConfigDoc(obj), nil
+}
+
 // DefaultConfigPath returns ~/.swarmstr/config.json.
 func DefaultConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
