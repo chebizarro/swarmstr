@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1006,6 +1007,123 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		if _, exists := envMap[" "]; exists {
 			t.Fatalf("expected blank env key to be dropped, got: %#v", envMap)
 		}
+	}
+
+	tmpExtDir := t.TempDir()
+	sourceDir := filepath.Join(tmpExtDir, "source-codegen")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodPluginsInstall,
+		Params:     json.RawMessage(fmt.Sprintf(`{"plugin_id":"codegen","install":{"source":"path","sourcePath":%q,"installPath":"./extensions/codegen"}}`, sourceDir)),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("plugins.install error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["pluginId"] != "codegen" {
+		t.Fatalf("unexpected plugins.install payload: %#v", payload)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodPluginsUpdate,
+		Params:     json.RawMessage(`{"plugin_ids":["codegen"],"dry_run":true}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("plugins.update dry-run error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["changed"] != false {
+		t.Fatalf("expected plugins.update dry-run changed=false, got: %#v", payload)
+	}
+
+	cfgInstall := cfgState.Get()
+	rawExtInstall, _ := cfgInstall.Extra["extensions"].(map[string]any)
+	rawInstallsInstall, _ := rawExtInstall["installs"].(map[string]any)
+	installCodegen, _ := rawInstallsInstall["codegen"].(map[string]any)
+	installCodegen["source"] = "npm"
+	installCodegen["spec"] = "@acme/codegen@1.0.0"
+	installCodegen["version"] = "1.0.0"
+	rawInstallsInstall["codegen"] = installCodegen
+	rawExtInstall["installs"] = rawInstallsInstall
+	cfgInstall.Extra["extensions"] = rawExtInstall
+	if _, err := docs.PutConfig(context.Background(), cfgInstall); err != nil {
+		t.Fatalf("persist npm install record for update test: %v", err)
+	}
+	cfgState.Set(cfgInstall)
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodPluginsUpdate,
+		Params:     json.RawMessage(`{"plugin_ids":["codegen"],"dry_run":false}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("plugins.update execute error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["changed"] != false {
+		t.Fatalf("expected pinned npm plugins.update to be unchanged, got: %#v", payload)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodPluginsUninstall,
+		Params:     json.RawMessage(`{"plugin_id":"codegen"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err != nil {
+		t.Fatalf("plugins.uninstall error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["ok"] != true {
+		t.Fatalf("unexpected plugins.uninstall payload: %#v", payload)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodPluginsInstall,
+		Params:     json.RawMessage(`{"plugin_id":"bad","install":{"source":"path","sourcePath":"/definitely/missing/path"}}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err == nil {
+		t.Fatalf("expected plugins.install validation error for missing sourcePath")
+	}
+
+	archivePath := filepath.Join(tmpExtDir, "plugin.zip")
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatalf("create archive fixture: %v", err)
+	}
+	zw := zip.NewWriter(f)
+	w, err := zw.Create("package/index.js")
+	if err != nil {
+		t.Fatalf("create archive entry: %v", err)
+	}
+	if _, err := w.Write([]byte("module.exports={}")); err != nil {
+		t.Fatalf("write archive entry: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close archive writer: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close archive file: %v", err)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodPluginsInstall,
+		Params:     json.RawMessage(fmt.Sprintf(`{"plugin_id":"archivebad","install":{"source":"archive","sourcePath":%q,"installPath":%q}}`, archivePath, tmpExtDir)),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	if err == nil {
+		t.Fatalf("expected plugins.install validation error for unmanaged archive installPath")
+	}
+	cfgAfterArchiveFail := cfgState.Get()
+	rawExtAfterArchiveFail, _ := cfgAfterArchiveFail.Extra["extensions"].(map[string]any)
+	rawInstallsAfterArchiveFail, _ := rawExtAfterArchiveFail["installs"].(map[string]any)
+	if _, exists := rawInstallsAfterArchiveFail["archivebad"]; exists {
+		t.Fatalf("expected transactional install semantics to avoid persisted record on backend validation failure")
 	}
 
 	cfgWithLegacyCase := cfgState.Get()

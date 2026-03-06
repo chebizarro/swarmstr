@@ -79,6 +79,9 @@ type ServerOptions struct {
 	SkillsBins           func(context.Context, methods.SkillsBinsRequest) (map[string]any, error)
 	SkillsInstall        func(context.Context, methods.SkillsInstallRequest) (map[string]any, error)
 	SkillsUpdate         func(context.Context, methods.SkillsUpdateRequest) (map[string]any, error)
+	PluginsInstall       func(context.Context, methods.PluginsInstallRequest) (map[string]any, error)
+	PluginsUninstall     func(context.Context, methods.PluginsUninstallRequest) (map[string]any, error)
+	PluginsUpdate        func(context.Context, methods.PluginsUpdateRequest) (map[string]any, error)
 	NodePairRequest      func(context.Context, methods.NodePairRequest) (map[string]any, error)
 	NodePairList         func(context.Context, methods.NodePairListRequest) (map[string]any, error)
 	NodePairApprove      func(context.Context, methods.NodePairApproveRequest) (map[string]any, error)
@@ -1108,6 +1111,66 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusNotImplemented, fmt.Errorf("skills provider not configured")
 		}
 		out, err := opts.SkillsUpdate(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodPluginsInstall:
+		req, err := methods.DecodePluginsInstallParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.PluginsInstall == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("plugins provider not configured")
+		}
+		out, err := opts.PluginsInstall(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodPluginsUninstall:
+		req, err := methods.DecodePluginsUninstallParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.PluginsUninstall == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("plugins provider not configured")
+		}
+		out, err := opts.PluginsUninstall(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodPluginsUpdate:
+		req, err := methods.DecodePluginsUpdateParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.PluginsUpdate == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("plugins provider not configured")
+		}
+		out, err := opts.PluginsUpdate(ctx, req)
 		if err != nil {
 			if errors.Is(err, state.ErrNotFound) {
 				return nil, http.StatusNotFound, fmt.Errorf("not found")

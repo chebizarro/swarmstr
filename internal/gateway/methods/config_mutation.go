@@ -1,6 +1,7 @@
 package methods
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -8,6 +9,8 @@ import (
 
 	"swarmstr/internal/store/state"
 )
+
+var ErrPluginNotFound = errors.New("plugin not found")
 
 func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 	schema := map[string]any{
@@ -863,6 +866,7 @@ func ApplyPluginUpdateOperation(cfg state.ConfigDoc, pluginIDs []string, dryRun 
 			for key, value := range record {
 				nextRecord[key] = value
 			}
+			nextRecord["installedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
 			if strings.TrimSpace(res.NextVersion) != "" {
 				nextRecord["version"] = strings.TrimSpace(res.NextVersion)
 			}
@@ -930,11 +934,11 @@ func ApplyPluginUninstallOperation(cfg state.ConfigDoc, pluginID string) (state.
 		return cfg, PluginUninstallActions{}, fmt.Errorf("plugin id is required")
 	}
 	if cfg.Extra == nil {
-		return cfg, PluginUninstallActions{}, fmt.Errorf("plugin not found: %s", pluginID)
+		return cfg, PluginUninstallActions{}, fmt.Errorf("%w: %s", ErrPluginNotFound, pluginID)
 	}
 	rawExt, ok := cfg.Extra["extensions"].(map[string]any)
 	if !ok || rawExt == nil {
-		return cfg, PluginUninstallActions{}, fmt.Errorf("plugin not found: %s", pluginID)
+		return cfg, PluginUninstallActions{}, fmt.Errorf("%w: %s", ErrPluginNotFound, pluginID)
 	}
 	actions := PluginUninstallActions{}
 
@@ -959,7 +963,7 @@ func ApplyPluginUninstallOperation(cfg state.ConfigDoc, pluginID string) (state.
 		}
 	}
 	if !hasEntry && !hasInstall {
-		return cfg, PluginUninstallActions{}, fmt.Errorf("plugin not found: %s", pluginID)
+		return cfg, PluginUninstallActions{}, fmt.Errorf("%w: %s", ErrPluginNotFound, pluginID)
 	}
 
 	allow := getStringSlice(rawExt, "allow")

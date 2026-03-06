@@ -60,6 +60,9 @@ const (
 	MethodSkillsBins         = "skills.bins"
 	MethodSkillsInstall      = "skills.install"
 	MethodSkillsUpdate       = "skills.update"
+	MethodPluginsInstall     = "plugins.install"
+	MethodPluginsUninstall   = "plugins.uninstall"
+	MethodPluginsUpdate      = "plugins.update"
 	MethodNodePairRequest    = "node.pair.request"
 	MethodNodePairList       = "node.pair.list"
 	MethodNodePairApprove    = "node.pair.approve"
@@ -374,6 +377,22 @@ type SkillsUpdateRequest struct {
 	Enabled  *bool             `json:"enabled,omitempty"`
 	APIKey   *string           `json:"api_key,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
+}
+
+type PluginsInstallRequest struct {
+	PluginID        string         `json:"plugin_id"`
+	Install         map[string]any `json:"install"`
+	EnableEntry     *bool          `json:"enable_entry,omitempty"`
+	IncludeLoadPath *bool          `json:"include_load_path,omitempty"`
+}
+
+type PluginsUninstallRequest struct {
+	PluginID string `json:"plugin_id"`
+}
+
+type PluginsUpdateRequest struct {
+	PluginIDs []string `json:"plugin_ids,omitempty"`
+	DryRun    bool     `json:"dry_run,omitempty"`
 }
 
 type NodePairRequest struct {
@@ -1086,6 +1105,44 @@ func (r SkillsUpdateRequest) Normalize() (SkillsUpdateRequest, error) {
 	return r, nil
 }
 
+func (r PluginsInstallRequest) Normalize() (PluginsInstallRequest, error) {
+	r.PluginID = strings.ToLower(strings.TrimSpace(r.PluginID))
+	if r.PluginID == "" {
+		return r, fmt.Errorf("plugin_id is required")
+	}
+	if !isSafePluginID(r.PluginID) {
+		return r, fmt.Errorf("invalid plugin_id")
+	}
+	if r.Install == nil || len(r.Install) == 0 {
+		return r, fmt.Errorf("install is required")
+	}
+	if r.EnableEntry == nil {
+		v := true
+		r.EnableEntry = &v
+	}
+	if r.IncludeLoadPath == nil {
+		v := true
+		r.IncludeLoadPath = &v
+	}
+	return r, nil
+}
+
+func (r PluginsUninstallRequest) Normalize() (PluginsUninstallRequest, error) {
+	r.PluginID = strings.ToLower(strings.TrimSpace(r.PluginID))
+	if r.PluginID == "" {
+		return r, fmt.Errorf("plugin_id is required")
+	}
+	if !isSafePluginID(r.PluginID) {
+		return r, fmt.Errorf("invalid plugin_id")
+	}
+	return r, nil
+}
+
+func (r PluginsUpdateRequest) Normalize() (PluginsUpdateRequest, error) {
+	r.PluginIDs = compactStringSlice(r.PluginIDs)
+	return r, nil
+}
+
 func (r NodePairRequest) Normalize() (NodePairRequest, error) {
 	r.NodeID = strings.TrimSpace(r.NodeID)
 	r.DisplayName = strings.TrimSpace(r.DisplayName)
@@ -1619,6 +1676,9 @@ func SupportedMethods() []string {
 		MethodSkillsBins,
 		MethodSkillsInstall,
 		MethodSkillsUpdate,
+		MethodPluginsInstall,
+		MethodPluginsUninstall,
+		MethodPluginsUpdate,
 		MethodNodePairRequest,
 		MethodNodePairList,
 		MethodNodePairApprove,
@@ -2791,6 +2851,21 @@ func DecodeSkillsUpdateParams(params json.RawMessage) (SkillsUpdateRequest, erro
 	return decodeMethodParams[SkillsUpdateRequest](params)
 }
 
+func DecodePluginsInstallParams(params json.RawMessage) (PluginsInstallRequest, error) {
+	return decodeMethodParams[PluginsInstallRequest](params)
+}
+
+func DecodePluginsUninstallParams(params json.RawMessage) (PluginsUninstallRequest, error) {
+	return decodeMethodParams[PluginsUninstallRequest](params)
+}
+
+func DecodePluginsUpdateParams(params json.RawMessage) (PluginsUpdateRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return PluginsUpdateRequest{}, nil
+	}
+	return decodeMethodParams[PluginsUpdateRequest](params)
+}
+
 func DecodeNodePairRequestParams(params json.RawMessage) (NodePairRequest, error) {
 	return decodeMethodParams[NodePairRequest](params)
 }
@@ -3437,6 +3512,28 @@ func isSafeAgentFileName(name string) bool {
 		return false
 	}
 	if strings.ContainsAny(name, "\\/") {
+		return false
+	}
+	return true
+}
+
+func isSafePluginID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	if len(id) > 100 {
+		return false
+	}
+	for _, r := range id {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '@' || r == '.') {
+			return false
+		}
+	}
+	if strings.Contains(id, "..") {
+		return false
+	}
+	if strings.HasPrefix(id, ".") || strings.HasPrefix(id, "-") {
 		return false
 	}
 	return true

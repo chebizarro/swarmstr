@@ -1144,6 +1144,18 @@ func TestDispatchMethodCallModelsToolsSkillsMethods(t *testing.T) {
 		SkillsUpdate: func(_ context.Context, req methods.SkillsUpdateRequest) (map[string]any, error) {
 			return map[string]any{"ok": true, "skill_key": req.SkillKey}, nil
 		},
+		PluginsInstall: func(_ context.Context, req methods.PluginsInstallRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "pluginId": req.PluginID}, nil
+		},
+		PluginsUninstall: func(_ context.Context, req methods.PluginsUninstallRequest) (map[string]any, error) {
+			if req.PluginID == "missing" {
+				return nil, state.ErrNotFound
+			}
+			return map[string]any{"ok": true, "pluginId": req.PluginID}, nil
+		},
+		PluginsUpdate: func(_ context.Context, req methods.PluginsUpdateRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "dryRun": req.DryRun}, nil
+		},
 	}
 
 	rr := httptest.NewRecorder()
@@ -1186,6 +1198,27 @@ func TestDispatchMethodCallModelsToolsSkillsMethods(t *testing.T) {
 	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("skills.update failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodPluginsInstall, map[string]any{"plugin_id": "codegen", "install": map[string]any{"source": "path", "sourcePath": "./ext/codegen"}})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("plugins.install failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodPluginsUninstall, map[string]any{"plugin_id": "missing"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err == nil || status != http.StatusNotFound {
+		t.Fatalf("plugins.uninstall missing expected status=404 got status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodPluginsUpdate, map[string]any{"plugin_ids": []string{"codegen"}, "dry_run": true})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("plugins.update failed status=%d err=%v", status, err)
 	}
 }
 

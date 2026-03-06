@@ -535,10 +535,54 @@ func TestDecodeModelsToolsSkillsParams(t *testing.T) {
 	if updateReq.Env["K"] != "V" {
 		t.Fatalf("unexpected env normalization: %#v", updateReq.Env)
 	}
+
+	pluginInstallReq, err := DecodePluginsInstallParams(json.RawMessage(`{"plugin_id":"codegen","install":{"source":"path","sourcePath":"./ext/codegen"}}`))
+	if err != nil {
+		t.Fatalf("plugins.install decode error: %v", err)
+	}
+	pluginInstallReq, err = pluginInstallReq.Normalize()
+	if err != nil {
+		t.Fatalf("plugins.install normalize error: %v", err)
+	}
+	if pluginInstallReq.PluginID != "codegen" || pluginInstallReq.EnableEntry == nil || !*pluginInstallReq.EnableEntry {
+		t.Fatalf("unexpected plugins.install normalization: %#v", pluginInstallReq)
+	}
+
+	pluginUninstallReq, err := DecodePluginsUninstallParams(json.RawMessage(`{"plugin_id":"codegen"}`))
+	if err != nil {
+		t.Fatalf("plugins.uninstall decode error: %v", err)
+	}
+	pluginUninstallReq, err = pluginUninstallReq.Normalize()
+	if err != nil {
+		t.Fatalf("plugins.uninstall normalize error: %v", err)
+	}
+	if pluginUninstallReq.PluginID != "codegen" {
+		t.Fatalf("unexpected plugins.uninstall normalization: %#v", pluginUninstallReq)
+	}
+
+	invalidInstallReq, err := DecodePluginsInstallParams(json.RawMessage(`{"plugin_id":"../evil","install":{"source":"path","sourcePath":"./x"}}`))
+	if err != nil {
+		t.Fatalf("plugins.install invalid-id decode error: %v", err)
+	}
+	if _, err := invalidInstallReq.Normalize(); err == nil {
+		t.Fatalf("expected invalid plugin_id normalization error")
+	}
+
+	pluginUpdateReq, err := DecodePluginsUpdateParams(json.RawMessage(`{"plugin_ids":[" codegen ","", "other"],"dry_run":true}`))
+	if err != nil {
+		t.Fatalf("plugins.update decode error: %v", err)
+	}
+	pluginUpdateReq, err = pluginUpdateReq.Normalize()
+	if err != nil {
+		t.Fatalf("plugins.update normalize error: %v", err)
+	}
+	if len(pluginUpdateReq.PluginIDs) != 2 || pluginUpdateReq.PluginIDs[0] != "codegen" || pluginUpdateReq.PluginIDs[1] != "other" || !pluginUpdateReq.DryRun {
+		t.Fatalf("unexpected plugins.update normalization: %#v", pluginUpdateReq)
+	}
 }
 
 func TestSupportedMethodsIncludesModelsToolsSkillsMethods(t *testing.T) {
-	required := []string{MethodModelsList, MethodToolsCatalog, MethodSkillsStatus, MethodSkillsBins, MethodSkillsInstall, MethodSkillsUpdate}
+	required := []string{MethodModelsList, MethodToolsCatalog, MethodSkillsStatus, MethodSkillsBins, MethodSkillsInstall, MethodSkillsUpdate, MethodPluginsInstall, MethodPluginsUninstall, MethodPluginsUpdate}
 	for _, want := range required {
 		found := false
 		for _, method := range SupportedMethods() {

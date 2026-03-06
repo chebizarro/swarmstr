@@ -431,7 +431,7 @@ func TestApplyPluginUninstallOperationMissingPlugin(t *testing.T) {
 func TestApplyPluginUpdateOperation(t *testing.T) {
 	cfg := state.ConfigDoc{Version: 1, Extra: map[string]any{"extensions": map[string]any{
 		"installs": map[string]any{
-			"codegen": map[string]any{"source": "npm", "spec": "@acme/codegen@latest", "version": "1.0.0", "installPath": "./extensions/codegen"},
+			"codegen": map[string]any{"source": "npm", "spec": "@acme/codegen@latest", "version": "1.0.0", "installPath": "./extensions/codegen", "installedAt": "2026-03-01T00:00:00Z"},
 			"local":   map[string]any{"source": "path", "sourcePath": "./extensions/local", "installPath": "./extensions/local"},
 			"bad":     map[string]any{"source": "npm", "version": "0.0.1"},
 		},
@@ -482,8 +482,12 @@ func TestApplyPluginUpdateOperation(t *testing.T) {
 	if codegen["version"] != "1.1.0" {
 		t.Fatalf("expected updated install record version: %#v", codegen)
 	}
-	if installedAt, _ := codegen["installedAt"].(string); strings.TrimSpace(installedAt) == "" {
+	installedAt, _ := codegen["installedAt"].(string)
+	if strings.TrimSpace(installedAt) == "" {
 		t.Fatalf("expected installedAt refresh after update persistence: %#v", codegen)
+	}
+	if installedAt == "2026-03-01T00:00:00Z" {
+		t.Fatalf("expected installedAt to change on update persistence: %#v", codegen)
 	}
 }
 
