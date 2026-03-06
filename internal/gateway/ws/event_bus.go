@@ -36,6 +36,21 @@ const (
 
 	// EventPluginLoaded is emitted when a Goja plugin is loaded or reloaded.
 	EventPluginLoaded = "plugin.loaded"
+
+	// EventExecApprovalRequested is emitted when a node requests exec approval.
+	EventExecApprovalRequested = "exec.approval.requested"
+	// EventExecApprovalResolved is emitted when an exec approval is approved or denied.
+	EventExecApprovalResolved = "exec.approval.resolved"
+
+	// EventVoicewake is emitted when the daemon is woken via a voice trigger.
+	EventVoicewake = "voice.wake"
+
+	// EventUpdateAvailable is emitted when an OTA update check is triggered.
+	EventUpdateAvailable = "update.available"
+
+	// EventChannelMessage is emitted when a message arrives on or is sent to
+	// a channel (NIP-29 group or other).
+	EventChannelMessage = "channel.message"
 )
 
 // AllPushEvents is the canonical ordered list of events the server may push.
@@ -51,6 +66,11 @@ var AllPushEvents = []string{
 	EventCronResult,
 	EventConfigUpdated,
 	EventPluginLoaded,
+	EventExecApprovalRequested,
+	EventExecApprovalResolved,
+	EventVoicewake,
+	EventUpdateAvailable,
+	EventChannelMessage,
 	// Presence events are also emitted by the ws runtime itself.
 	"presence.updated",
 	"connect.challenge",
@@ -150,6 +170,49 @@ type CronResultPayload struct {
 // ConfigUpdatedPayload is the payload for EventConfigUpdated events.
 type ConfigUpdatedPayload struct {
 	TS int64 `json:"ts_ms"`
+}
+
+// ExecApprovalRequestedPayload is the payload for EventExecApprovalRequested.
+type ExecApprovalRequestedPayload struct {
+	TS        int64  `json:"ts_ms"`
+	ID        string `json:"id"`
+	NodeID    string `json:"node_id,omitempty"`
+	Command   string `json:"command,omitempty"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
+}
+
+// ExecApprovalResolvedPayload is the payload for EventExecApprovalResolved.
+type ExecApprovalResolvedPayload struct {
+	TS       int64  `json:"ts_ms"`
+	ID       string `json:"id"`
+	Decision string `json:"decision"` // "approved" | "denied"
+	NodeID   string `json:"node_id,omitempty"`
+}
+
+// VoicewakePayload is the payload for EventVoicewake.
+type VoicewakePayload struct {
+	TS      int64  `json:"ts_ms"`
+	Trigger string `json:"trigger,omitempty"`
+	Source  string `json:"source,omitempty"`
+}
+
+// UpdateAvailablePayload is the payload for EventUpdateAvailable.
+type UpdateAvailablePayload struct {
+	TS      int64  `json:"ts_ms"`
+	Version string `json:"version,omitempty"`
+	Source  string `json:"source,omitempty"`
+}
+
+// ChannelMessagePayload is the payload for EventChannelMessage.
+type ChannelMessagePayload struct {
+	TS        int64  `json:"ts_ms"`
+	ChannelID string `json:"channel_id"`
+	GroupID   string `json:"group_id,omitempty"`
+	Relay     string `json:"relay,omitempty"`
+	Direction string `json:"direction"` // "inbound" | "outbound"
+	From      string `json:"from,omitempty"`
+	Text      string `json:"text,omitempty"`
+	EventID   string `json:"event_id,omitempty"`
 }
 
 // ─── TickEmitter helper ───────────────────────────────────────────────────────

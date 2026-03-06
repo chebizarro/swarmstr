@@ -826,6 +826,142 @@ func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
 	}
 }
 
+func TestHandleControlRPCRequest_AgentRoutingLifecycle(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+
+	prevRegistry := controlAgentRegistry
+	prevRouter := controlSessionRouter
+	controlAgentRegistry = agent.NewAgentRuntimeRegistry(stubAgentRuntime{})
+	controlSessionRouter = agent.NewAgentSessionRouter()
+	defer func() {
+		controlAgentRegistry = prevRegistry
+		controlSessionRouter = prevRouter
+	}()
+
+	// Seed a legacy-shaped session where SessionID != PeerPubKey.
+	_, err := docs.PutSession(context.Background(), "ws-legacy-1", state.SessionDoc{
+		Version:    1,
+		SessionID:  "ws-legacy-1",
+		PeerPubKey: "npub-legacy-peer",
+		Meta:       map[string]any{"agent_id": "alpha"},
+	})
+	if err != nil {
+		t.Fatalf("seed legacy session: %v", err)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsCreate,
+		Params:     json.RawMessage(`{"agent_id":"alpha","name":"Alpha","model":"echo"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.create alpha error: %v", err)
+	}
+
+	assignRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsAssign,
+		Params:     json.RawMessage(`{"agent_id":"alpha","session_id":"ws-1"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.assign ws-1 error: %v", err)
+	}
+	assignPayload, _ := assignRes.Result.(map[string]any)
+	if assignPayload["durability"] != "best_effort" {
+		t.Fatalf("expected best_effort durability on assign, got: %#v", assignPayload)
+	}
+	if persisted, _ := assignPayload["persisted"].(bool); !persisted {
+		t.Fatalf("expected persisted=true on assign in test store, got: %#v", assignPayload)
+	}
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsAssign,
+		Params:     json.RawMessage(`{"agent_id":"alpha","session_id":"ws-2"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.assign ws-2 error: %v", err)
+	}
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsActive,
+		Params:     json.RawMessage(`{"limit":1}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.active error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	assignmentCount := 0
+	switch items := payload["assignments"].(type) {
+	case []map[string]any:
+		assignmentCount = len(items)
+	case []any:
+		assignmentCount = len(items)
+	}
+	if assignmentCount != 1 {
+		t.Fatalf("expected agents.active to honor limit=1, got: %#v", payload)
+	}
+
+	unassignRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsUnassign,
+		Params:     json.RawMessage(`{"session_id":"ws-1"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.unassign ws-1 error: %v", err)
+	}
+	unassignPayload, _ := unassignRes.Result.(map[string]any)
+	if unassignPayload["durability"] != "best_effort" {
+		t.Fatalf("expected best_effort durability on unassign, got: %#v", unassignPayload)
+	}
+	if persisted, _ := unassignPayload["persisted"].(bool); !persisted {
+		t.Fatalf("expected persisted=true on unassign in test store, got: %#v", unassignPayload)
+	}
+	s1, err := docs.GetSession(context.Background(), "ws-1")
+	if err != nil {
+		t.Fatalf("load ws-1 after unassign: %v", err)
+	}
+	if _, exists := s1.Meta["agent_id"]; exists {
+		t.Fatalf("expected ws-1 agent_id removed on unassign, got: %+v", s1.Meta)
+	}
+
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodAgentsDelete,
+		Params:     json.RawMessage(`{"agent_id":"alpha"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("agents.delete alpha error: %v", err)
+	}
+
+	for _, sessionID := range []string{"ws-2", "ws-legacy-1"} {
+		sess, sessErr := docs.GetSession(context.Background(), sessionID)
+		if sessErr != nil {
+			t.Fatalf("load %s after delete: %v", sessionID, sessErr)
+		}
+		if _, exists := sess.Meta["agent_id"]; exists {
+			t.Fatalf("expected session %s agent_id removed on delete cleanup, got: %+v", sessionID, sess.Meta)
+		}
+	}
+}
+
+func TestHandleControlRPCRequest_ChannelsJoinRejectsUnsupportedType(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	_, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodChannelsJoin,
+		Params:     json.RawMessage(`{"type":"slack","group_address":"relay.example.com'group-1"}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	if err == nil {
+		t.Fatalf("expected channels.join to reject unsupported type")
+	}
+	if !strings.Contains(err.Error(), "unsupported channel type") {
+		t.Fatalf("expected unsupported channel type error, got: %v", err)
+	}
+}
+
 func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 	store := newTestStore()
 	docs := state.NewDocsRepository(store, "author")
