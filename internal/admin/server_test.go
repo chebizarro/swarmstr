@@ -677,6 +677,122 @@ func TestDispatchMethodCallConfigRawMutations(t *testing.T) {
 	}
 }
 
+func TestDispatchMethodCallConfigGetResponseShape(t *testing.T) {
+	opts := ServerOptions{
+		GetConfig: func(context.Context) (state.ConfigDoc, error) {
+			return state.ConfigDoc{Version: 1, DM: state.DMPolicy{Policy: "open"}}, nil
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodConfigGet, nil)
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("config.get failed status=%d err=%v", status, err)
+	}
+	if _, ok := result.(state.ConfigDoc); !ok {
+		t.Fatalf("config.get result should be ConfigDoc, got %T (%#v)", result, result)
+	}
+}
+
+func TestDispatchMethodCallConfigRawMutationsRequireMatchingBaseHash(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1, DM: state.DMPolicy{Policy: "open"}, Relays: state.RelayPolicy{Read: []string{"wss://r"}, Write: []string{"wss://r"}}}
+	putCalled := false
+	opts := ServerOptions{
+		GetConfig: func(context.Context) (state.ConfigDoc, error) { return cfg, nil },
+		PutConfig: func(_ context.Context, next state.ConfigDoc) error {
+			putCalled = true
+			cfg = next
+			return nil
+		},
+	}
+
+	cases := []struct {
+		name   string
+		method string
+		params map[string]any
+	}{
+		{
+			name:   "config.put",
+			method: methods.MethodConfigPut,
+			params: map[string]any{"config": map[string]any{"dm": map[string]any{"policy": "pairing"}}, "base_hash": "deadbeef"},
+		},
+		{
+			name:   "config.set raw",
+			method: methods.MethodConfigSet,
+			params: map[string]any{"raw": `{"version":2,"dm":{"policy":"pairing"},"relays":{"read":["wss://r"],"write":["wss://r"]}}`, "base_hash": "deadbeef"},
+		},
+		{
+			name:   "config.apply raw",
+			method: methods.MethodConfigApply,
+			params: map[string]any{"raw": `{"version":3,"dm":{"policy":"pairing"},"relays":{"read":["wss://r"],"write":["wss://r"]}}`, "base_hash": "deadbeef"},
+		},
+		{
+			name:   "config.patch raw",
+			method: methods.MethodConfigPatch,
+			params: map[string]any{"raw": `{"dm":{"policy":"pairing"}}`, "base_hash": "deadbeef"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			putCalled = false
+			rr := httptest.NewRecorder()
+			req := newMethodRequest(t, tc.method, tc.params)
+			_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+			if err == nil {
+				t.Fatal("expected conflict error")
+			}
+			if status != http.StatusConflict {
+				t.Fatalf("status=%d want=%d err=%v", status, http.StatusConflict, err)
+			}
+			if !errors.Is(err, methods.ErrConfigConflict) {
+				t.Fatalf("expected ErrConfigConflict, got: %v", err)
+			}
+			if putCalled {
+				t.Fatal("PutConfig must not be called on base_hash conflict")
+			}
+		})
+	}
+}
+
+func TestDispatchMethodCallConfigBaseHashRequiresGetConfigProvider(t *testing.T) {
+	opts := ServerOptions{
+		PutConfig: func(context.Context, state.ConfigDoc) error { return nil },
+	}
+
+	cases := []struct {
+		name   string
+		method string
+		params map[string]any
+	}{
+		{
+			name:   "config.put",
+			method: methods.MethodConfigPut,
+			params: map[string]any{"config": map[string]any{"dm": map[string]any{"policy": "open"}}, "base_hash": "abc"},
+		},
+		{
+			name:   "config.apply",
+			method: methods.MethodConfigApply,
+			params: map[string]any{"config": map[string]any{"dm": map[string]any{"policy": "open"}}, "base_hash": "abc"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := newMethodRequest(t, tc.method, tc.params)
+			_, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if status != http.StatusNotImplemented {
+				t.Fatalf("status=%d want=%d err=%v", status, http.StatusNotImplemented, err)
+			}
+		})
+	}
+}
+
 func TestDispatchMethodCallHealthAndSessionsListAndConfigSet(t *testing.T) {
 	opts := ServerOptions{
 		GetConfig: func(context.Context) (state.ConfigDoc, error) {

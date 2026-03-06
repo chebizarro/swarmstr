@@ -921,6 +921,7 @@ func (r ConfigPutRequest) Normalize() (ConfigPutRequest, error) {
 	if r.ExpectedVersionSet && r.ExpectedVersion < 0 {
 		return r, fmt.Errorf("expected_version must be >= 0")
 	}
+	r.BaseHash = strings.TrimSpace(r.BaseHash)
 	r.ExpectedEvent = strings.TrimSpace(r.ExpectedEvent)
 	return r, nil
 }
@@ -2433,7 +2434,7 @@ func DecodeConfigPutParams(params json.RawMessage) (ConfigPutRequest, error) {
 		}
 		req := ConfigPutRequest{Config: cfg}
 		if len(arr) == 2 {
-			expectedVersionSet, err := decodeWritePrecondition(arr[1], &req.ExpectedVersion, &req.ExpectedEvent)
+			expectedVersionSet, err := decodeWritePrecondition(arr[1], &req.ExpectedVersion, &req.ExpectedEvent, &req.BaseHash)
 			if err != nil {
 				return ConfigPutRequest{}, fmt.Errorf("invalid params")
 			}
@@ -2446,6 +2447,7 @@ func DecodeConfigPutParams(params json.RawMessage) (ConfigPutRequest, error) {
 		Config          state.ConfigDoc `json:"config"`
 		ExpectedVersion *int            `json:"expected_version,omitempty"`
 		ExpectedEvent   string          `json:"expected_event,omitempty"`
+		BaseHash        string          `json:"baseHash,omitempty"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(params))
 	dec.DisallowUnknownFields()
@@ -2453,7 +2455,7 @@ func DecodeConfigPutParams(params json.RawMessage) (ConfigPutRequest, error) {
 	if err := dec.Decode(&compat); err != nil {
 		return ConfigPutRequest{}, fmt.Errorf("invalid params")
 	}
-	req := ConfigPutRequest{Config: compat.Config, ExpectedEvent: compat.ExpectedEvent}
+	req := ConfigPutRequest{Config: compat.Config, ExpectedEvent: compat.ExpectedEvent, BaseHash: compat.BaseHash}
 	if compat.ExpectedVersion != nil {
 		req.ExpectedVersionSet = true
 		req.ExpectedVersion = *compat.ExpectedVersion
@@ -2703,7 +2705,7 @@ func DecodeListPutParams(params json.RawMessage) (ListPutRequest, error) {
 		}
 		req := ListPutRequest{Name: name, Items: items}
 		if len(arr) == 3 {
-			expectedVersionSet, err := decodeWritePrecondition(arr[2], &req.ExpectedVersion, &req.ExpectedEvent)
+			expectedVersionSet, err := decodeWritePrecondition(arr[2], &req.ExpectedVersion, &req.ExpectedEvent, nil)
 			if err != nil {
 				return ListPutRequest{}, fmt.Errorf("invalid params")
 			}
@@ -3647,11 +3649,12 @@ func isValidNostrIdentifier(id string) bool {
 	return false
 }
 
-func decodeWritePrecondition(raw json.RawMessage, expectedVersion *int, expectedEvent *string) (bool, error) {
+func decodeWritePrecondition(raw json.RawMessage, expectedVersion *int, expectedEvent *string, baseHash *string) (bool, error) {
 	raw = normalizeObjectParamAliases(raw)
 	var pre struct {
 		ExpectedVersion *int   `json:"expected_version"`
 		ExpectedEvent   string `json:"expected_event"`
+		BaseHash        string `json:"baseHash"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -3664,5 +3667,8 @@ func decodeWritePrecondition(raw json.RawMessage, expectedVersion *int, expected
 		*expectedVersion = *pre.ExpectedVersion
 	}
 	*expectedEvent = pre.ExpectedEvent
+	if baseHash != nil {
+		*baseHash = pre.BaseHash
+	}
 	return expectedVersionSet, nil
 }

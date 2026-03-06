@@ -320,6 +320,30 @@ func TestDecodeConfigSetParams_ArrayMode(t *testing.T) {
 }
 
 func TestDecodeConfigParams_RawCompatibility(t *testing.T) {
+	putReq, err := DecodeConfigPutParams(json.RawMessage(`{"config":{"dm":{"policy":"open"}},"base_hash":"abc"}`))
+	if err != nil {
+		t.Fatalf("config.put decode error: %v", err)
+	}
+	putReq, err = putReq.Normalize()
+	if err != nil {
+		t.Fatalf("config.put normalize error: %v", err)
+	}
+	if putReq.BaseHash != "abc" {
+		t.Fatalf("unexpected config.put base hash: %#v", putReq)
+	}
+
+	putReq, err = DecodeConfigPutParams(json.RawMessage(`[{"dm":{"policy":"open"}},{"base_hash":"def"}]`))
+	if err != nil {
+		t.Fatalf("config.put array decode error: %v", err)
+	}
+	putReq, err = putReq.Normalize()
+	if err != nil {
+		t.Fatalf("config.put array normalize error: %v", err)
+	}
+	if putReq.BaseHash != "def" {
+		t.Fatalf("unexpected config.put array base hash: %#v", putReq)
+	}
+
 	setReq, err := DecodeConfigSetParams(json.RawMessage(`{"raw":"{\"version\":1,\"dm\":{\"policy\":\"open\"}}","base_hash":"abc"}`))
 	if err != nil {
 		t.Fatalf("config.set decode error: %v", err)

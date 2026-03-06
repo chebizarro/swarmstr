@@ -573,6 +573,47 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 	}
 }
 
+func TestHandleControlRPCRequest_ConfigGetResponseShape(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		DM:      state.DMPolicy{Policy: "open"},
+	})
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigGet,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.get error: %v", err)
+	}
+	if _, ok := res.Result.(state.ConfigDoc); !ok {
+		t.Fatalf("config.get result should be ConfigDoc, got %T (%#v)", res.Result, res.Result)
+	}
+}
+
+func TestHandleControlRPCRequest_ConfigPutBaseHashConflict(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		DM:      state.DMPolicy{Policy: "open"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay"}, Write: []string{"wss://relay"}},
+	})
+
+	_, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigPut,
+		Params:     json.RawMessage(`{"config":{"dm":{"policy":"pairing"}},"base_hash":"deadbeef"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
+	if err == nil {
+		t.Fatal("expected conflict error")
+	}
+	if !errors.Is(err, methods.ErrConfigConflict) {
+		t.Fatalf("expected ErrConfigConflict, got: %v", err)
+	}
+}
+
 func TestHandleControlRPCRequest_ChatHistoryAndSessionViews(t *testing.T) {
 	store := newTestStore()
 	docs := state.NewDocsRepository(store, "author")

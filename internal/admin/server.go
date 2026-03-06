@@ -2253,7 +2253,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"config": config.Redact(cfg), "hash": cfg.Hash()}, http.StatusOK, nil
+		return config.Redact(cfg), http.StatusOK, nil
 	case methods.MethodRelayPolicyGet:
 		if opts.GetRelayPolicy == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("relay policy provider not configured")
@@ -2414,7 +2414,13 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		}
 	configPreconditionsSatisfied:
 		if req.BaseHash != "" {
-			current, _ := opts.GetConfig(ctx)
+			if opts.GetConfig == nil {
+				return nil, http.StatusNotImplemented, fmt.Errorf("config base_hash precondition requires get config provider")
+			}
+			current, err := opts.GetConfig(ctx)
+			if err != nil {
+				return nil, http.StatusInternalServerError, err
+			}
 			if err := methods.CheckBaseHash(current, req.BaseHash); err != nil {
 				return nil, http.StatusConflict, err
 			}
@@ -2435,6 +2441,13 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+		current, err := opts.GetConfig(ctx)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		if err := methods.CheckBaseHash(current, req.BaseHash); err != nil {
+			return nil, http.StatusConflict, err
+		}
 		if req.Raw != "" {
 			next, err := methods.DecodeConfigDocFromRaw(req.Raw)
 			if err != nil {
@@ -2443,14 +2456,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			if err := opts.PutConfig(ctx, next); err != nil {
 				return nil, http.StatusInternalServerError, err
 			}
-			return map[string]any{"ok": true, "path": "raw", "config": next}, http.StatusOK, nil
-		}
-		current, err := opts.GetConfig(ctx)
-		if err != nil {
-			return nil, http.StatusInternalServerError, err
-		}
-		if err := methods.CheckBaseHash(current, req.BaseHash); err != nil {
-			return nil, http.StatusConflict, err
+			return map[string]any{"ok": true, "path": "raw", "config": next, "hash": next.Hash()}, http.StatusOK, nil
 		}
 		next, err := methods.ApplyConfigSet(current, req.Key, req.Value)
 		if err != nil {
@@ -2480,7 +2486,13 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 		}
 		if req.BaseHash != "" {
-			current, _ := opts.GetConfig(ctx)
+			if opts.GetConfig == nil {
+				return nil, http.StatusNotImplemented, fmt.Errorf("config base_hash precondition requires get config provider")
+			}
+			current, err := opts.GetConfig(ctx)
+			if err != nil {
+				return nil, http.StatusInternalServerError, err
+			}
 			if err := methods.CheckBaseHash(current, req.BaseHash); err != nil {
 				return nil, http.StatusConflict, err
 			}

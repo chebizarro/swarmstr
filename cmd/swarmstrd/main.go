@@ -1201,7 +1201,7 @@ func (s *runtimeConfigStore) Set(cfg state.ConfigDoc) {
 	onChange := s.onChange
 	s.mu.Unlock()
 	if onChange != nil {
-		go onChange(cfg) // run in goroutine to avoid deadlock if caller holds a lock
+		onChange(cfg)
 	}
 }
 
@@ -2889,11 +2889,7 @@ func handleControlRPCRequest(
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodConfigGet:
-		redacted := config.Redact(cfg)
-		return nostruntime.ControlRPCResult{Result: map[string]any{
-			"config": redacted,
-			"hash":   cfg.Hash(),
-		}}, nil
+		return nostruntime.ControlRPCResult{Result: config.Redact(cfg)}, nil
 	case methods.MethodRelayPolicyGet:
 		dmRelays := []string{}
 		controlRelays := []string{}
