@@ -56,6 +56,55 @@ func ValidateConfig(cfg state.ConfigDoc) error {
 			return fmt.Errorf("relays.write[%d] invalid: %w", i, err)
 		}
 	}
+	// Validate typed config sections (providers, session, heartbeat).
+	if err := validateProviders(cfg.Providers); err != nil {
+		return err
+	}
+	if err := validateSession(cfg.Session); err != nil {
+		return err
+	}
+	if err := validateHeartbeat(cfg.Heartbeat); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateProviders(p state.ProvidersConfig) error {
+	for name, entry := range p {
+		if entry.BaseURL == "" {
+			continue
+		}
+		u, err := url.Parse(strings.TrimSpace(entry.BaseURL))
+		if err != nil {
+			return fmt.Errorf("providers.%s.base_url: malformed URL: %w", name, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("providers.%s.base_url: scheme must be http or https (got %q)", name, u.Scheme)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("providers.%s.base_url: missing host", name)
+		}
+	}
+	return nil
+}
+
+func validateSession(s state.SessionConfig) error {
+	if s.TTLSeconds < 0 {
+		return fmt.Errorf("session.ttl_seconds must be >= 0 (got %d)", s.TTLSeconds)
+	}
+	if s.MaxSessions < 0 {
+		return fmt.Errorf("session.max_sessions must be >= 0 (got %d)", s.MaxSessions)
+	}
+	if s.HistoryLimit < 0 {
+		return fmt.Errorf("session.history_limit must be >= 0 (got %d)", s.HistoryLimit)
+	}
+	return nil
+}
+
+func validateHeartbeat(h state.HeartbeatConfig) error {
+	if h.Enabled && h.IntervalMS < 0 {
+		return fmt.Errorf("heartbeat.interval_ms must be >= 0 (got %d)", h.IntervalMS)
+	}
 	return nil
 }
 

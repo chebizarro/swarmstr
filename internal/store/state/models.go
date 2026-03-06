@@ -8,12 +8,18 @@ import (
 
 // ConfigDoc is the canonical runtime configuration persisted to Nostr.
 type ConfigDoc struct {
-	Version  int            `json:"version"`
-	DM       DMPolicy       `json:"dm"`
-	Relays   RelayPolicy    `json:"relays"`
-	Agent    AgentPolicy    `json:"agent"`
-	Control  ControlPolicy  `json:"control,omitempty"`
-	Extra    map[string]any `json:"extra,omitempty"`
+	Version   int             `json:"version"`
+	DM        DMPolicy        `json:"dm"`
+	Relays    RelayPolicy     `json:"relays"`
+	Agent     AgentPolicy     `json:"agent"`
+	Control   ControlPolicy   `json:"control,omitempty"`
+	Providers ProvidersConfig `json:"providers,omitempty"`
+	Session   SessionConfig   `json:"session,omitempty"`
+	Heartbeat HeartbeatConfig `json:"heartbeat,omitempty"`
+	TTS       TTSConfig       `json:"tts,omitempty"`
+	Secrets   SecretsConfig   `json:"secrets,omitempty"`
+	CronCfg   CronConfig      `json:"cron,omitempty"`
+	Extra     map[string]any  `json:"extra,omitempty"`
 }
 
 // Hash returns a stable SHA-256 hex digest of the ConfigDoc's JSON serialization.
@@ -55,6 +61,51 @@ type ControlPolicy struct {
 type ControlAdmin struct {
 	PubKey  string   `json:"pubkey"`
 	Methods []string `json:"methods,omitempty"`
+}
+
+// ── Typed config sections ──────────────────────────────────────────────────────
+
+// ProviderEntry holds per-provider settings (API key, base URL, default model…).
+// Unknown fields are preserved in Extra so new OpenClaw provider keys survive round-trips.
+type ProviderEntry struct {
+	Enabled bool           `json:"enabled,omitempty"`
+	APIKey  string         `json:"api_key,omitempty"`  // redacted on read
+	BaseURL string         `json:"base_url,omitempty"`
+	Model   string         `json:"model,omitempty"`
+	Extra   map[string]any `json:"extra,omitempty"`
+}
+
+// ProvidersConfig is a map of named provider configurations.
+// Keys are provider identifiers such as "openai", "anthropic", "ollama".
+type ProvidersConfig map[string]ProviderEntry
+
+// SessionConfig controls per-session behaviour.
+type SessionConfig struct {
+	TTLSeconds   int `json:"ttl_seconds,omitempty"`
+	MaxSessions  int `json:"max_sessions,omitempty"`
+	HistoryLimit int `json:"history_limit,omitempty"`
+}
+
+// HeartbeatConfig controls the periodic heartbeat pulse.
+type HeartbeatConfig struct {
+	Enabled    bool `json:"enabled,omitempty"`
+	IntervalMS int  `json:"interval_ms,omitempty"`
+}
+
+// TTSConfig controls text-to-speech.
+type TTSConfig struct {
+	Enabled  bool   `json:"enabled,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Voice    string `json:"voice,omitempty"`
+}
+
+// SecretsConfig holds named secret references (values are intentionally opaque).
+// The map key is a secret name; the value is a reference path (e.g. env var name).
+type SecretsConfig map[string]string
+
+// CronConfig holds top-level cron scheduler settings.
+type CronConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 type SessionDoc struct {

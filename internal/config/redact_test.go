@@ -150,3 +150,52 @@ func TestRedact_doesNotMutateOriginal(t *testing.T) {
 		t.Error("Redact mutated the original doc's api_key")
 	}
 }
+
+func TestRedact_typedSections(t *testing.T) {
+	doc := state.ConfigDoc{
+		Version: 1,
+		Providers: state.ProvidersConfig{
+			"openai": {
+				Enabled: true,
+				APIKey:  "sk-real",
+				BaseURL: "https://api.openai.com/v1",
+				Model:   "gpt-4o-mini",
+				Extra:   map[string]any{"temperature": 0.1},
+			},
+		},
+		Session:   state.SessionConfig{TTLSeconds: 60, MaxSessions: 3, HistoryLimit: 10},
+		Heartbeat: state.HeartbeatConfig{Enabled: true, IntervalMS: 15000},
+		TTS:       state.TTSConfig{Enabled: true, Provider: "elevenlabs", Voice: "alloy"},
+		Secrets:   state.SecretsConfig{"openai_api_key": "env:OPENAI_API_KEY"},
+		CronCfg:   state.CronConfig{Enabled: true},
+	}
+
+	out := Redact(doc)
+
+	if out.Providers["openai"].APIKey != RedactedValue {
+		t.Fatalf("typed provider api_key not redacted: %#v", out.Providers["openai"].APIKey)
+	}
+	if out.Providers["openai"].BaseURL != "https://api.openai.com/v1" {
+		t.Fatalf("typed provider base_url should be preserved: %#v", out.Providers["openai"].BaseURL)
+	}
+	if v, ok := out.Providers["openai"].Extra["temperature"].(float64); !ok || v != 0.1 {
+		t.Fatalf("typed provider extra should be preserved: %#v", out.Providers["openai"].Extra)
+	}
+
+	if out.Secrets["openai_api_key"] != RedactedValue {
+		t.Fatalf("typed secrets value not redacted: %#v", out.Secrets)
+	}
+
+	if out.Session != doc.Session {
+		t.Fatalf("session should be preserved: got %#v want %#v", out.Session, doc.Session)
+	}
+	if out.Heartbeat != doc.Heartbeat {
+		t.Fatalf("heartbeat should be preserved: got %#v want %#v", out.Heartbeat, doc.Heartbeat)
+	}
+	if out.TTS != doc.TTS {
+		t.Fatalf("tts should be preserved: got %#v want %#v", out.TTS, doc.TTS)
+	}
+	if out.CronCfg != doc.CronCfg {
+		t.Fatalf("cron should be preserved: got %#v want %#v", out.CronCfg, doc.CronCfg)
+	}
+}

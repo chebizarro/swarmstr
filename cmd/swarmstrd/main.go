@@ -1733,12 +1733,24 @@ func handleControlRPCRequest(
 		if req.SessionID == "" {
 			req.SessionID = in.FromPubKey
 		}
-		if controlAgentRuntime == nil || controlAgentJobs == nil {
+		if controlAgentJobs == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("agent runtime not configured")
+		}
+		// Route to the agent assigned to this session, falling back to the default runtime.
+		var rt agent.Runtime
+		if controlSessionRouter != nil && controlAgentRegistry != nil {
+			activeAgentID := controlSessionRouter.Get(req.SessionID)
+			rt = controlAgentRegistry.Get(activeAgentID)
+		}
+		if rt == nil {
+			rt = controlAgentRuntime
+		}
+		if rt == nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("agent runtime not configured")
 		}
 		runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 		snapshot := controlAgentJobs.Begin(runID, req.SessionID)
-		go executeAgentRun(runID, req, controlAgentRuntime, controlAgentJobs)
+		go executeAgentRun(runID, req, rt, controlAgentJobs)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"run_id": runID, "status": "accepted", "accepted_at": snapshot.StartedAt}}, nil
 	case methods.MethodAgentWait:
 		req, err := methods.DecodeAgentWaitParams(in.Params)
@@ -1777,14 +1789,27 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		agentID := strings.TrimSpace(req.AgentID)
+		sessionID := strings.TrimSpace(req.SessionID)
+		if sessionID == "" {
+			sessionID = in.FromPubKey
+		}
+		if agentID == "" && controlSessionRouter != nil {
+			agentID = controlSessionRouter.Get(sessionID)
+		}
 		if agentID == "" {
 			agentID = "main"
+		}
+		displayName := "Swarmstr Agent"
+		if docsRepo != nil {
+			if ag, err2 := docsRepo.GetAgent(ctx, agentID); err2 == nil && ag.Name != "" {
+				displayName = ag.Name
+			}
 		}
 		pubkey := strings.TrimSpace(in.FromPubKey)
 		if dmBus != nil {
 			pubkey = dmBus.PublicKey()
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": agentID, "display_name": "Swarmstr Agent", "session_id": req.SessionID, "pubkey": pubkey}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": agentID, "display_name": displayName, "session_id": sessionID, "pubkey": pubkey}}, nil
 	case methods.MethodChatSend:
 		req, err := methods.DecodeChatSendParams(in.Params)
 		if err != nil {
