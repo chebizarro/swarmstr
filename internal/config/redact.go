@@ -49,6 +49,27 @@ func Redact(doc state.ConfigDoc) state.ConfigDoc {
 		return state.ConfigDoc{Version: doc.Version}
 	}
 
+	// Redact provider API keys in the typed Providers section.
+	if out.Providers != nil {
+		redacted := make(state.ProvidersConfig, len(out.Providers))
+		for name, entry := range out.Providers {
+			if entry.APIKey != "" {
+				entry.APIKey = RedactedValue
+			}
+			redacted[name] = entry
+		}
+		out.Providers = redacted
+	}
+
+	// Redact the entire Secrets section (values are opaque references).
+	if len(out.Secrets) > 0 {
+		redactedSecrets := make(state.SecretsConfig, len(out.Secrets))
+		for k := range out.Secrets {
+			redactedSecrets[k] = RedactedValue
+		}
+		out.Secrets = redactedSecrets
+	}
+
 	if out.Extra == nil {
 		return out
 	}

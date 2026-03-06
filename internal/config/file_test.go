@@ -134,6 +134,100 @@ func TestLoadConfigFile_YML_extension(t *testing.T) {
 	}
 }
 
+func TestParseConfigBytes_TypedSectionsMapping(t *testing.T) {
+	raw := []byte(`{
+		"providers": {
+			"openai": {
+				"enabled": true,
+				"api_key": "sk-live",
+				"base_url": "https://api.openai.com/v1",
+				"model": "gpt-4o-mini",
+				"temperature": 0.2,
+				"stream": true
+			}
+		},
+		"session": {
+			"ttl_seconds": 3600,
+			"max_sessions": 12,
+			"history_limit": 80
+		},
+		"heartbeat": {
+			"enabled": true,
+			"interval_ms": 15000
+		},
+		"tts": {
+			"enabled": true,
+			"provider": "elevenlabs",
+			"voice": "alloy"
+		},
+		"secrets": {
+			"openai_api_key": "env:OPENAI_API_KEY"
+		},
+		"cron": {
+			"enabled": true
+		},
+		"memory": {
+			"backend": "sqlite"
+		}
+	}`)
+
+	doc, err := ParseConfigBytes(raw, ".json")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	provider, ok := doc.Providers["openai"]
+	if !ok {
+		t.Fatalf("expected typed provider entry for openai, got: %#v", doc.Providers)
+	}
+	if provider.APIKey != "sk-live" {
+		t.Fatalf("provider api_key mismatch: %q", provider.APIKey)
+	}
+	if provider.BaseURL != "https://api.openai.com/v1" {
+		t.Fatalf("provider base_url mismatch: %q", provider.BaseURL)
+	}
+	if provider.Model != "gpt-4o-mini" {
+		t.Fatalf("provider model mismatch: %q", provider.Model)
+	}
+	if provider.Extra == nil {
+		t.Fatalf("expected provider extra fields to be preserved")
+	}
+	if v, ok := provider.Extra["temperature"].(float64); !ok || v != 0.2 {
+		t.Fatalf("provider extra temperature missing/mismatched: %#v", provider.Extra["temperature"])
+	}
+	if v, ok := provider.Extra["stream"].(bool); !ok || !v {
+		t.Fatalf("provider extra stream missing/mismatched: %#v", provider.Extra["stream"])
+	}
+
+	if doc.Session.TTLSeconds != 3600 || doc.Session.MaxSessions != 12 || doc.Session.HistoryLimit != 80 {
+		t.Fatalf("session mapping mismatch: %#v", doc.Session)
+	}
+	if !doc.Heartbeat.Enabled || doc.Heartbeat.IntervalMS != 15000 {
+		t.Fatalf("heartbeat mapping mismatch: %#v", doc.Heartbeat)
+	}
+	if !doc.TTS.Enabled || doc.TTS.Provider != "elevenlabs" || doc.TTS.Voice != "alloy" {
+		t.Fatalf("tts mapping mismatch: %#v", doc.TTS)
+	}
+	if doc.Secrets["openai_api_key"] != "env:OPENAI_API_KEY" {
+		t.Fatalf("secrets mapping mismatch: %#v", doc.Secrets)
+	}
+	if !doc.CronCfg.Enabled {
+		t.Fatalf("cron mapping mismatch: %#v", doc.CronCfg)
+	}
+
+	if doc.Extra == nil {
+		t.Fatalf("expected extra map to keep passthrough sections")
+	}
+	if _, ok := doc.Extra["memory"]; !ok {
+		t.Fatalf("expected memory passthrough in extra")
+	}
+	for _, typedKey := range []string{"providers", "session", "heartbeat", "tts", "secrets", "cron"} {
+		if _, ok := doc.Extra[typedKey]; ok {
+			t.Fatalf("typed key %q should not be duplicated in extra", typedKey)
+		}
+	}
+}
+
 // ─── Write / round-trip ──────────────────────────────────────────────────────
 
 func TestWriteConfigFile_roundtrip(t *testing.T) {
@@ -163,6 +257,54 @@ func TestWriteConfigFile_roundtrip(t *testing.T) {
 	}
 	if back.Agent.DefaultModel != "claude-opus-4" {
 		t.Errorf("model after round-trip: %q", back.Agent.DefaultModel)
+	}
+}
+
+func TestWriteLoadConfigFile_roundtripProviderExtra(t *testing.T) {
+	doc := state.ConfigDoc{
+		Version: 1,
+		DM:      state.DMPolicy{Policy: "pairing"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://a.example"}, Write: []string{"wss://b.example"}},
+		Providers: state.ProvidersConfig{
+			"openai": {
+				Enabled: true,
+				APIKey:  "sk-live",
+				BaseURL: "https://api.openai.com/v1",
+				Model:   "gpt-4o-mini",
+				Extra: map[string]any{
+					"temperature": 0.3,
+					"stream":      true,
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "roundtrip.json")
+	if err := WriteConfigFile(path, doc); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	loaded, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+
+	provider, ok := loaded.Providers["openai"]
+	if !ok {
+		t.Fatalf("provider missing after round-trip: %#v", loaded.Providers)
+	}
+	if provider.APIKey != "sk-live" {
+		t.Fatalf("api_key mismatch after round-trip: %q", provider.APIKey)
+	}
+	if provider.Extra == nil {
+		t.Fatalf("provider extra missing after round-trip")
+	}
+	if v, ok := provider.Extra["temperature"].(float64); !ok || v != 0.3 {
+		t.Fatalf("temperature extra mismatch after round-trip: %#v", provider.Extra["temperature"])
+	}
+	if v, ok := provider.Extra["stream"].(bool); !ok || !v {
+		t.Fatalf("stream extra mismatch after round-trip: %#v", provider.Extra["stream"])
 	}
 }
 

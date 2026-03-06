@@ -205,10 +205,113 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		doc.Extra["extensions"] = pluginsRaw
 	}
 
-	// ── pass-through sections ─────────────────────────────────────────────────
+	// ── providers (typed) ────────────────────────────────────────────────────
+	if providersRaw, ok := raw["providers"].(map[string]any); ok {
+		doc.Providers = make(state.ProvidersConfig, len(providersRaw))
+		for name, val := range providersRaw {
+			if pm, ok := val.(map[string]any); ok {
+				entry := state.ProviderEntry{}
+				if v, ok := pm["enabled"].(bool); ok {
+					entry.Enabled = v
+				}
+				if v, ok := pm["api_key"].(string); ok {
+					entry.APIKey = strings.TrimSpace(v)
+				} else if v, ok := pm["apiKey"].(string); ok {
+					entry.APIKey = strings.TrimSpace(v)
+				}
+				if v, ok := pm["base_url"].(string); ok {
+					entry.BaseURL = strings.TrimSpace(v)
+				} else if v, ok := pm["baseUrl"].(string); ok {
+					entry.BaseURL = strings.TrimSpace(v)
+				}
+				if v, ok := pm["model"].(string); ok {
+					entry.Model = strings.TrimSpace(v)
+				}
+				if extraRaw, ok := pm["extra"].(map[string]any); ok {
+					entry.Extra = make(map[string]any, len(extraRaw))
+					for key, value := range extraRaw {
+						entry.Extra[key] = value
+					}
+				}
+				for key, value := range pm {
+					switch key {
+					case "enabled", "api_key", "apiKey", "base_url", "baseUrl", "model", "extra":
+						continue
+					}
+					if entry.Extra == nil {
+						entry.Extra = map[string]any{}
+					}
+					entry.Extra[key] = value
+				}
+				doc.Providers[name] = entry
+			}
+		}
+	}
+
+	// ── session (typed) ───────────────────────────────────────────────────────
+	if sessionRaw, ok := raw["session"].(map[string]any); ok {
+		sess := state.SessionConfig{}
+		if v, ok := sessionRaw["ttl_seconds"].(float64); ok {
+			sess.TTLSeconds = int(v)
+		}
+		if v, ok := sessionRaw["max_sessions"].(float64); ok {
+			sess.MaxSessions = int(v)
+		}
+		if v, ok := sessionRaw["history_limit"].(float64); ok {
+			sess.HistoryLimit = int(v)
+		}
+		doc.Session = sess
+	}
+
+	// ── heartbeat (typed) ─────────────────────────────────────────────────────
+	if hbRaw, ok := raw["heartbeat"].(map[string]any); ok {
+		hb := state.HeartbeatConfig{}
+		if v, ok := hbRaw["enabled"].(bool); ok {
+			hb.Enabled = v
+		}
+		if v, ok := hbRaw["interval_ms"].(float64); ok {
+			hb.IntervalMS = int(v)
+		}
+		doc.Heartbeat = hb
+	}
+
+	// ── tts (typed) ───────────────────────────────────────────────────────────
+	if ttsRaw, ok := raw["tts"].(map[string]any); ok {
+		tts := state.TTSConfig{}
+		if v, ok := ttsRaw["enabled"].(bool); ok {
+			tts.Enabled = v
+		}
+		if v, ok := ttsRaw["provider"].(string); ok {
+			tts.Provider = strings.TrimSpace(v)
+		}
+		if v, ok := ttsRaw["voice"].(string); ok {
+			tts.Voice = strings.TrimSpace(v)
+		}
+		doc.TTS = tts
+	}
+
+	// ── secrets (typed) ───────────────────────────────────────────────────────
+	if secretsRaw, ok := raw["secrets"].(map[string]any); ok {
+		doc.Secrets = make(state.SecretsConfig, len(secretsRaw))
+		for k, v := range secretsRaw {
+			if s, ok := v.(string); ok {
+				doc.Secrets[k] = s
+			}
+		}
+	}
+
+	// ── cron (typed) ──────────────────────────────────────────────────────────
+	if cronRaw, ok := raw["cron"].(map[string]any); ok {
+		cron := state.CronConfig{}
+		if v, ok := cronRaw["enabled"].(bool); ok {
+			cron.Enabled = v
+		}
+		doc.CronCfg = cron
+	}
+
+	// ── pass-through sections (unknown / rarely accessed as typed) ────────────
 	passThrough := []string{
-		"providers", "skills", "memory", "session", "heartbeat",
-		"cron", "secrets", "update", "tts", "wizard", "pairing",
+		"skills", "memory", "update", "wizard", "pairing",
 	}
 	for _, key := range passThrough {
 		if v, ok := raw[key]; ok {
