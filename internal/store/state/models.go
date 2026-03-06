@@ -1,13 +1,32 @@
 package state
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+)
+
 // ConfigDoc is the canonical runtime configuration persisted to Nostr.
 type ConfigDoc struct {
-	Version int            `json:"version"`
-	DM      DMPolicy       `json:"dm"`
-	Relays  RelayPolicy    `json:"relays"`
-	Agent   AgentPolicy    `json:"agent"`
-	Control ControlPolicy  `json:"control,omitempty"`
-	Extra   map[string]any `json:"extra,omitempty"`
+	Version  int            `json:"version"`
+	DM       DMPolicy       `json:"dm"`
+	Relays   RelayPolicy    `json:"relays"`
+	Agent    AgentPolicy    `json:"agent"`
+	Control  ControlPolicy  `json:"control,omitempty"`
+	Extra    map[string]any `json:"extra,omitempty"`
+}
+
+// Hash returns a stable SHA-256 hex digest of the ConfigDoc's JSON serialization.
+// This is used for optimistic concurrency control (base_hash) in config.put/set.
+// Fields not serialised to JSON (unexported) are excluded.
+func (c ConfigDoc) Hash() string {
+	// Use a temp struct without the hash field to avoid recursive hashing.
+	data, err := json.Marshal(c)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 type DMPolicy struct {

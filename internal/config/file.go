@@ -143,6 +143,36 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		}
 	}
 
+	// ── native Swarmstr DM policy (written by WriteConfigFile) ───────────────
+	// When the file was produced by WriteConfigFile it has a top-level "dm"
+	// key that maps directly onto DMPolicy's JSON fields.
+	if dmRaw, ok := raw["dm"].(map[string]any); ok {
+		if policy, ok := dmRaw["policy"].(string); ok && strings.TrimSpace(policy) != "" {
+			doc.DM.Policy = strings.TrimSpace(policy)
+		}
+		if doc.DM.AllowFrom == nil {
+			doc.DM.AllowFrom = toStringSlice(dmRaw["allow_from"])
+		}
+	}
+
+	// ── native Swarmstr agent policy ──────────────────────────────────────────
+	if agentRaw, ok := raw["agent"].(map[string]any); ok {
+		if model, ok := agentRaw["default_model"].(string); ok && model != "" {
+			if doc.Agent.DefaultModel == "" {
+				doc.Agent.DefaultModel = strings.TrimSpace(model)
+			}
+		}
+	}
+
+	// ── native extra pass-through ─────────────────────────────────────────────
+	if extraRaw, ok := raw["extra"].(map[string]any); ok {
+		for k, v := range extraRaw {
+			if _, exists := doc.Extra[k]; !exists {
+				doc.Extra[k] = v
+			}
+		}
+	}
+
 	// ── DM policy (OpenClaw: channels.web.dm) ────────────────────────────────
 	if channelsRaw, ok := raw["channels"].(map[string]any); ok {
 		if webRaw, ok := channelsRaw["web"].(map[string]any); ok {

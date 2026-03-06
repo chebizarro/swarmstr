@@ -48,6 +48,7 @@ type SyncEngine struct {
 	debounce time.Duration
 	log      *slog.Logger
 	cancel   context.CancelFunc
+	onChange func(state.ConfigDoc) // called after each successful reload from disk
 }
 
 // NewSyncEngine creates a SyncEngine. Call Start to activate file watching.
@@ -81,6 +82,13 @@ func WithDebounce(d time.Duration) SyncOption {
 // WithLogger sets a custom slog.Logger.
 func WithLogger(l *slog.Logger) SyncOption {
 	return func(se *SyncEngine) { se.log = l }
+}
+
+// WithOnChange registers a callback that is invoked with the freshly loaded
+// ConfigDoc each time the config file changes on disk and is successfully
+// read.  This allows the runtime to apply changes without a daemon restart.
+func WithOnChange(fn func(state.ConfigDoc)) SyncOption {
+	return func(se *SyncEngine) { se.onChange = fn }
 }
 
 // BootstrapFromRelay pulls the config from the relay and writes it to disk.
@@ -187,9 +195,22 @@ func (se *SyncEngine) loop(ctx context.Context) {
 			se.mu.Unlock()
 			pushCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			if err := se.PushToRelay(pushCtx); err != nil {
-				if !errors.Is(err, context.Canceled) {
-					se.log.Error("auto push to relay failed", "err", err)
+			doc, readErr := se.readFileLocked()
+			if readErr != nil {
+				se.log.Error("reload config from disk failed", "err", readErr)
+			} else {
+				// Notify the runtime about the config change first.
+				se.mu.Lock()
+				onChange := se.onChange
+				se.mu.Unlock()
+				if onChange != nil {
+					onChange(doc)
+				}
+				// Then push to relay.
+				if _, err := se.relay.PutConfig(pushCtx, doc); err != nil {
+					if !errors.Is(err, context.Canceled) {
+						se.log.Error("auto push to relay failed", "err", err)
+					}
 				}
 			}
 		})
