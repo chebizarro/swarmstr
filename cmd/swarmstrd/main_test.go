@@ -38,7 +38,7 @@ func TestHandleControlRPCRequest_SupportedMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSupportedMethods,
 		Params:     json.RawMessage(`[]`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("handleControlRPCRequest error: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestHandleControlRPCRequest_SupportedMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSupportedMethods,
 		Params:     json.RawMessage(`[]`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("handleControlRPCRequest disabled-extensions error: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestHandleControlRPCRequest_SupportedMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSupportedMethods,
 		Params:     json.RawMessage(`[]`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("handleControlRPCRequest invalid-allowlist error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestHandleControlRPCRequest_AuthzDenied(t *testing.T) {
 		FromPubKey: "caller-b",
 		Method:     methods.MethodConfigPut,
 		Params:     json.RawMessage(`[{"dm":{"policy":"open"}}]`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err == nil {
 		t.Fatal("expected authorization error")
 	}
@@ -126,7 +126,7 @@ func TestHandleControlRPCRequest_ListGetAndPut(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodListPut,
 		Params:     putRaw,
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("list.put error: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestHandleControlRPCRequest_ListGetAndPut(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodListGet,
 		Params:     getRaw,
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("list.get error: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestHandleControlRPCRequest_ListPutPreconditionConflict(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodListPut,
 		Params:     json.RawMessage(`{"name":"allowlist","items":["b"],"expected_version":1}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
 	if err == nil {
 		t.Fatal("expected precondition conflict")
 	}
@@ -181,7 +181,7 @@ func TestHandleControlRPCRequest_ListPutExpectedVersionZeroSemantics(t *testing.
 		FromPubKey: "caller",
 		Method:     methods.MethodListPut,
 		Params:     json.RawMessage(`{"name":"allowlist","items":["a"],"expected_version":0}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute)); err != nil {
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatalf("expected create-if-missing for expected_version=0, got err=%v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestHandleControlRPCRequest_ListPutExpectedVersionZeroSemantics(t *testing.
 		FromPubKey: "caller",
 		Method:     methods.MethodListPut,
 		Params:     json.RawMessage(`{"name":"allowlist","items":["b"],"expected_version":0}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute)); err == nil {
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute)); err == nil {
 		t.Fatal("expected conflict when expected_version=0 and list exists")
 	} else {
 		var conflict *methods.PreconditionConflictError
@@ -213,7 +213,7 @@ func TestHandleControlRPCRequest_ListPutExpectedVersionZeroSemantics(t *testing.
 		FromPubKey: "caller",
 		Method:     methods.MethodListPut,
 		Params:     json.RawMessage(`{"name":"allowlist","items":["c","d"],"expected_version":1}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now().Add(-time.Minute)); err != nil {
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatalf("expected successful update with expected_version=1, got err=%v", err)
 	}
 
@@ -285,7 +285,7 @@ func TestHandleControlRPCRequest_ChatAbortUsesRegistry(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodChatAbort,
 		Params:     json.RawMessage(`{"session_id":"s1"}`),
-	}, nil, nil, registry, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, registry, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("chat.abort error: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestHandleControlRPCRequest_OperationalSemantics(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodLogsTail,
 		Params:     json.RawMessage(`{"limit":10}`),
-	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("logs.tail error: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestHandleControlRPCRequest_OperationalSemantics(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodChannelsLogout,
 		Params:     json.RawMessage(`{"channel":"nostr"}`),
-	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("channels.logout error: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestHandleControlRPCRequest_OperationalSemantics(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodUsageStatus,
 		Params:     json.RawMessage(`{}`),
-	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("usage.status error: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestHandleControlRPCRequest_OperationalSemantics(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodUsageCost,
 		Params:     json.RawMessage(`{}`),
-	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("usage.cost error: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestHandleControlRPCRequest_AgentMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodAgent,
 		Params:     json.RawMessage(`{"message":"hello","session_id":"s1"}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("agent error: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestHandleControlRPCRequest_AgentMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodAgentWait,
 		Params:     json.RawMessage(fmt.Sprintf(`{"run_id":%q,"timeout_ms":1000}`, runID)),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("agent.wait error: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestHandleControlRPCRequest_AgentMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodAgentIdentityGet,
 		Params:     json.RawMessage(`{"session_id":"s1"}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("agent.identity.get error: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestHandleControlRPCRequest_RelayPolicyGet(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodRelayPolicyGet,
 		Params:     json.RawMessage(`[]`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now().Add(-time.Minute))
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("relay.policy.get error: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigSet,
 		Params:     json.RawMessage(`{"key":"dm.policy","value":"open"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("config.set error: %v", err)
 	}
@@ -456,7 +456,7 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigApply,
 		Params:     json.RawMessage(`{"config":{"version":2,"dm":{"policy":"pairing"},"relays":{"read":["wss://r1"],"write":["wss://r1"]}}}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("config.apply error: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigPatch,
 		Params:     json.RawMessage(`{"patch":{"dm":{"policy":"open"}}}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("config.patch error: %v", err)
 	}
@@ -480,7 +480,7 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigPatch,
 		Params:     json.RawMessage(`{"patch":{"plugins":{"entries":{"codegen":{"enabled":true,"gatewayMethods":["ext.codegen.run"],"env":{"OPENAI_API_KEY":"sk-1","KEEP":"y"}}}}}}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("config.patch plugins error: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigSet,
 		Params:     json.RawMessage(`{"key":"plugins.deny","value":["rogue-plugin"]}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("config.set plugins.deny error: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigSet,
 		Params:     json.RawMessage(`{"key":"plugins.load.paths","value":["./extensions"]}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("config.set plugins.load.paths error: %v", err)
 	}
@@ -504,7 +504,7 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigPatch,
 		Params:     json.RawMessage(`{"patch":{"plugins":{"entries":{"codegen":{"env":{"OPENAI_API_KEY":""}}}}}}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("config.patch plugins env merge error: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigSchema,
 		Params:     json.RawMessage(`{}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("config.schema error: %v", err)
 	}
@@ -556,7 +556,7 @@ func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSupportedMethods,
 		Params:     json.RawMessage(`[]`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("supported.methods error: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestHandleControlRPCRequest_ChatHistoryAndSessionViews(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSessionsList,
 		Params:     json.RawMessage(`{"limit":10}`),
-	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("sessions.list error: %v", err)
 	}
@@ -603,7 +603,7 @@ func TestHandleControlRPCRequest_ChatHistoryAndSessionViews(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSessionsPreview,
 		Params:     json.RawMessage(`{"session_id":"s1","limit":5}`),
-	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("sessions.preview error: %v", err)
 	}
@@ -616,7 +616,7 @@ func TestHandleControlRPCRequest_ChatHistoryAndSessionViews(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodChatHistory,
 		Params:     json.RawMessage(`{"session_id":"s1","limit":5}`),
-	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("chat.history error: %v", err)
 	}
@@ -646,7 +646,7 @@ func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodConfigSet,
 		Params:     json.RawMessage(`{"key":"dm.policy","value":"open"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("config.set error: %v", err)
 	}
@@ -658,7 +658,7 @@ func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSessionsPatch,
 		Params:     json.RawMessage(`{"session_id":"s1","meta":{"k":"v"}}`),
-	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("sessions.patch error: %v", err)
 	}
@@ -671,7 +671,7 @@ func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSessionsCompact,
 		Params:     json.RawMessage(`{"session_id":"s1","keep":1}`),
-	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("sessions.compact error: %v", err)
 	}
@@ -684,7 +684,7 @@ func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSessionsDelete,
 		Params:     json.RawMessage(`{"session_id":"s1"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("sessions.delete error: %v", err)
 	}
@@ -703,7 +703,7 @@ func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodAgentsCreate,
 		Params:     json.RawMessage(`{"agent_id":"main","name":"Main Agent","workspace":"/tmp/main","model":"gpt-5"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("agents.create error: %v", err)
 	}
@@ -712,7 +712,7 @@ func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodAgentsList,
 		Params:     json.RawMessage(`{"limit":10}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("agents.list error: %v", err)
 	}
@@ -726,7 +726,7 @@ func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodAgentsUpdate,
 		Params:     json.RawMessage(`{"agent_id":"main","name":"Updated Agent"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("agents.update error: %v", err)
 	}
@@ -735,7 +735,7 @@ func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodAgentsFilesSet,
 		Params:     json.RawMessage(`{"agent_id":"main","name":"instructions.md","content":"hello"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("agents.files.set error: %v", err)
 	}
@@ -744,7 +744,7 @@ func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodAgentsFilesGet,
 		Params:     json.RawMessage(`{"agent_id":"main","name":"instructions.md"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("agents.files.get error: %v", err)
 	}
@@ -758,7 +758,7 @@ func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodAgentsFilesList,
 		Params:     json.RawMessage(`{"agent_id":"main"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("agents.files.list error: %v", err)
 	}
@@ -772,7 +772,7 @@ func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodAgentsDelete,
 		Params:     json.RawMessage(`{"agent_id":"main"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("agents.delete error: %v", err)
 	}
@@ -803,7 +803,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodModelsList,
 		Params:     json.RawMessage(`{}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("models.list error: %v", err)
 	}
@@ -816,7 +816,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodToolsCatalog,
 		Params:     json.RawMessage(`{"agent_id":"main"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("tools.catalog error: %v", err)
 	}
@@ -873,7 +873,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodToolsCatalog,
 		Params:     json.RawMessage(`{"agent_id":"main","include_plugins":false}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("tools.catalog include_plugins=false error: %v", err)
 	}
@@ -912,7 +912,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSkillsInstall,
 		Params:     json.RawMessage(`{"name":"nostr-core","install_id":"builtin"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("skills.install error: %v", err)
 	}
@@ -928,7 +928,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSkillsStatus,
 		Params:     json.RawMessage(`{"agent_id":"main"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("skills.status error: %v", err)
 	}
@@ -948,7 +948,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSkillsBins,
 		Params:     json.RawMessage(`{}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("skills.bins error: %v", err)
 	}
@@ -965,7 +965,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSkillsUpdate,
 		Params:     json.RawMessage(`{"skill_key":"nostr-core","enabled":true}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("skills.update rpc error: %v", err)
 	}
@@ -1019,7 +1019,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodPluginsInstall,
 		Params:     json.RawMessage(fmt.Sprintf(`{"plugin_id":"codegen","install":{"source":"path","sourcePath":%q,"installPath":"./extensions/codegen"}}`, sourceDir)),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("plugins.install error: %v", err)
 	}
@@ -1032,7 +1032,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodPluginsUpdate,
 		Params:     json.RawMessage(`{"plugin_ids":["codegen"],"dry_run":true}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("plugins.update dry-run error: %v", err)
 	}
@@ -1060,7 +1060,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodPluginsUpdate,
 		Params:     json.RawMessage(`{"plugin_ids":["codegen"],"dry_run":false}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("plugins.update execute error: %v", err)
 	}
@@ -1073,7 +1073,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodPluginsUninstall,
 		Params:     json.RawMessage(`{"plugin_id":"codegen"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("plugins.uninstall error: %v", err)
 	}
@@ -1086,7 +1086,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodPluginsInstall,
 		Params:     json.RawMessage(`{"plugin_id":"bad","install":{"source":"path","sourcePath":"/definitely/missing/path"}}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err == nil {
 		t.Fatalf("expected plugins.install validation error for missing sourcePath")
 	}
@@ -1115,7 +1115,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodPluginsInstall,
 		Params:     json.RawMessage(fmt.Sprintf(`{"plugin_id":"archivebad","install":{"source":"archive","sourcePath":%q,"installPath":%q}}`, archivePath, tmpExtDir)),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err == nil {
 		t.Fatalf("expected plugins.install validation error for unmanaged archive installPath")
 	}
@@ -1156,7 +1156,7 @@ func TestHandleControlRPCRequest_SkillsStatusUnknownAgent(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSkillsStatus,
 		Params:     json.RawMessage(`{"agent_id":"ghost"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err == nil || !strings.Contains(err.Error(), "unknown agent id") {
 		t.Fatalf("expected unknown agent id error, got: %v", err)
 	}
@@ -1165,7 +1165,7 @@ func TestHandleControlRPCRequest_SkillsStatusUnknownAgent(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodSkillsBins,
 		Params:     json.RawMessage(`{}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("expected skills.bins to ignore agent scope and succeed, got: %v", err)
 	}
@@ -1179,7 +1179,7 @@ func TestHandleControlRPCRequest_ToolsCatalogUnknownAgent(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodToolsCatalog,
 		Params:     json.RawMessage(`{"agent_id":"ghost"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err == nil || !strings.Contains(err.Error(), "unknown agent id") {
 		t.Fatalf("expected unknown agent id error for tools.catalog, got: %v", err)
 	}
@@ -1188,7 +1188,7 @@ func TestHandleControlRPCRequest_ToolsCatalogUnknownAgent(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodToolsCatalog,
 		Params:     json.RawMessage(`{"agent_id":"MAIN"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("expected case-insensitive main agent id to be accepted, got: %v", err)
 	}
@@ -1221,7 +1221,7 @@ func TestHandleControlRPCRequest_ToolsCatalogRespectsPluginPolicy(t *testing.T) 
 		FromPubKey: "caller",
 		Method:     methods.MethodToolsCatalog,
 		Params:     json.RawMessage(`{"agent_id":"main"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("tools.catalog policy error: %v", err)
 	}
@@ -1262,7 +1262,7 @@ func TestHandleControlRPCRequest_ToolsCatalogRespectsPluginPolicy(t *testing.T) 
 		FromPubKey: "caller",
 		Method:     methods.MethodToolsCatalog,
 		Params:     json.RawMessage(`{"agent_id":"main"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("tools.catalog load=false error: %v", err)
 	}
@@ -1285,7 +1285,7 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodePairRequest,
 		Params:     json.RawMessage(`{"node_id":"n1","display_name":"Node One"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.pair.request error: %v", err)
 	}
@@ -1298,7 +1298,7 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodePairRequest,
 		Params:     json.RawMessage(`{"node_id":"n1","display_name":"Node One v2"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.pair.request update error: %v", err)
 	}
@@ -1311,7 +1311,7 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodePairList,
 		Params:     json.RawMessage(`{}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.pair.list error: %v", err)
 	}
@@ -1326,7 +1326,7 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodePairApprove,
 		Params:     json.RawMessage(fmt.Sprintf(`{"request_id":%q}`, requestID)),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.pair.approve error: %v", err)
 	}
@@ -1340,7 +1340,7 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodePairVerify,
 		Params:     json.RawMessage(`{"node_id":"n1","token":"wrong"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.pair.verify error: %v", err)
 	}
@@ -1361,7 +1361,7 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodDevicePairApprove,
 		Params:     json.RawMessage(`{"request_id":"dreq-1"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("device.pair.approve error: %v", err)
 	}
@@ -1370,7 +1370,7 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodDeviceTokenRotate,
 		Params:     json.RawMessage(`{"device_id":"d1","role":"node","scopes":["operator.read"]}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("device.token.rotate error: %v", err)
 	}
@@ -1383,7 +1383,7 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodDevicePairList,
 		Params:     json.RawMessage(`{}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("device.pair.list error: %v", err)
 	}
@@ -1401,7 +1401,7 @@ func TestHandleControlRPCRequest_NodeDevicePairingMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodDeviceTokenRevoke,
 		Params:     json.RawMessage(`{"device_id":"d1","role":"node"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, tools, nil, time.Now())
 	if err != nil {
 		t.Fatalf("device.token.revoke error: %v", err)
 	}
@@ -1426,7 +1426,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodeList,
 		Params:     json.RawMessage(`{"limit":10}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.list error: %v", err)
 	}
@@ -1440,7 +1440,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodeDescribe,
 		Params:     json.RawMessage(`{"node_id":"n1"}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.describe error: %v", err)
 	}
@@ -1453,7 +1453,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodeRename,
 		Params:     json.RawMessage(`{"node_id":"n1","name":"Kitchen"}`),
-	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.rename error: %v", err)
 	}
@@ -1462,7 +1462,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodeCanvasCapabilityRefresh,
 		Params:     json.RawMessage(`{"node_id":"n1"}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.canvas.capability.refresh error: %v", err)
 	}
@@ -1471,7 +1471,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodeInvoke,
 		Params:     json.RawMessage(`{"node_id":"n1","command":"ping"}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.invoke error: %v", err)
 	}
@@ -1485,7 +1485,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodeEvent,
 		Params:     json.RawMessage(fmt.Sprintf(`{"run_id":%q,"type":"progress","status":"running"}`, runID)),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.event error: %v", err)
 	}
@@ -1494,7 +1494,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodNodeInvokeResult,
 		Params:     json.RawMessage(fmt.Sprintf(`{"run_id":%q,"status":"ok","result":{"pong":true}}`, runID)),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("node.invoke.result error: %v", err)
 	}
@@ -1503,7 +1503,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodCronAdd,
 		Params:     json.RawMessage(`{"id":"c1","schedule":"* * * * *","method":"status.get"}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("cron.add error: %v", err)
 	}
@@ -1517,7 +1517,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodCronRun,
 		Params:     json.RawMessage(`{"id":"c1"}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("cron.run error: %v", err)
 	}
@@ -1561,7 +1561,7 @@ func TestHandleControlRPCRequest_OpenClawHighRiskParityFixtures(t *testing.T) {
 				FromPubKey: "caller",
 				Method:     tc.Method,
 				Params:     paramsRaw,
-			}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+			}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 			if tc.ExpectErrorContains != "" {
 				if callErr == nil || !strings.Contains(callErr.Error(), tc.ExpectErrorContains) {
 					t.Fatalf("err=%v, want contains %q", callErr, tc.ExpectErrorContains)
@@ -1614,7 +1614,7 @@ func TestHandleControlRPCRequest_RuntimeUnavailableParityFixtures(t *testing.T) 
 				FromPubKey: "caller",
 				Method:     tc.Method,
 				Params:     paramsRaw,
-			}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+			}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 			if callErr == nil {
 				t.Fatalf("expected runtime-unavailable error")
 			}
@@ -1639,7 +1639,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		controlOps = prevOps
 	}()
 
-	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalsSet, Params: json.RawMessage(`{"approvals":{"allow":true}}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalsSet, Params: json.RawMessage(`{"approvals":{"allow":true}}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("exec.approvals.set error: %v", err)
 	}
@@ -1648,7 +1648,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("unexpected exec.approvals.set payload: %#v", res.Result)
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"ls"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"ls"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("exec.approval.request error: %v", err)
 	}
@@ -1660,7 +1660,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	res, err = handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":100}`, approvalID))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":100}`, approvalID))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("exec.approval.waitDecision error: %v", err)
 	}
@@ -1669,12 +1669,12 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("unexpected exec.approval.waitDecision timeout payload: %#v", res.Result)
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalResolve, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"decision":"approve"}`, approvalID))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalResolve, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"decision":"approve"}`, approvalID))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("exec.approval.resolve error: %v", err)
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":5000}`, approvalID))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":5000}`, approvalID))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("exec.approval.waitDecision resolved error: %v", err)
 	}
@@ -1686,10 +1686,10 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 	ctxCancel, cancelFunc := context.WithCancel(context.Background())
 	done := make(chan bool)
 	go func() {
-		res2, _ := handleControlRPCRequest(ctxCancel, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"test-cancel"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+		res2, _ := handleControlRPCRequest(ctxCancel, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"test-cancel"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 		payload2, _ := res2.Result.(map[string]any)
 		approvalID2, _ := payload2["id"].(string)
-		res3, _ := handleControlRPCRequest(ctxCancel, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":5000}`, approvalID2))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+		res3, _ := handleControlRPCRequest(ctxCancel, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":5000}`, approvalID2))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 		payload3, _ := res3.Result.(map[string]any)
 		if payload3["cancelled"] != true {
 			t.Errorf("expected cancelled=true, got: %#v", payload3)
@@ -1700,7 +1700,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 	cancelFunc()
 	<-done
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"test-concurrent","timeout_ms":5000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"test-concurrent","timeout_ms":5000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("exec.approval.request concurrent error: %v", err)
 	}
@@ -1709,17 +1709,17 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 
 	done2 := make(chan map[string]any, 2)
 	go func() {
-		res4, _ := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":2000}`, approvalID3))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+		res4, _ := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":2000}`, approvalID3))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 		payload4, _ := res4.Result.(map[string]any)
 		done2 <- payload4
 	}()
 	go func() {
-		res5, _ := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":2000}`, approvalID3))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+		res5, _ := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":2000}`, approvalID3))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 		payload5, _ := res5.Result.(map[string]any)
 		done2 <- payload5
 	}()
 	time.Sleep(50 * time.Millisecond)
-	_, _ = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalResolve, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"decision":"approve"}`, approvalID3))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	_, _ = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalResolve, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"decision":"approve"}`, approvalID3))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 
 	result1 := <-done2
 	result2 := <-done2
@@ -1727,7 +1727,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("concurrent waiters should both receive resolution: r1=%#v r2=%#v", result1, result2)
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodWizardStart, Params: json.RawMessage(`{"mode":"local"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodWizardStart, Params: json.RawMessage(`{"mode":"local"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("wizard.start error: %v", err)
 	}
@@ -1737,7 +1737,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("unexpected wizard.start payload: %#v", res.Result)
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSystemEvent, Params: json.RawMessage(`{"text":"Node: online","deviceId":"mac-1"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSystemEvent, Params: json.RawMessage(`{"text":"Node: online","deviceId":"mac-1"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("system-event error: %v", err)
 	}
@@ -1746,7 +1746,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("unexpected system-event payload: %#v", res.Result)
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSystemPresence, Params: json.RawMessage(`{}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSystemPresence, Params: json.RawMessage(`{}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("system-presence error: %v", err)
 	}
@@ -1754,12 +1754,12 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("unexpected system-presence payload: %#v", res.Result)
 	}
 
-	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSetHeartbeats, Params: json.RawMessage(`{"interval_ms":30000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSetHeartbeats, Params: json.RawMessage(`{"interval_ms":30000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err == nil {
 		t.Fatalf("expected set-heartbeats to require enabled")
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSetHeartbeats, Params: json.RawMessage(`{"enabled":true,"interval_ms":30000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSetHeartbeats, Params: json.RawMessage(`{"enabled":true,"interval_ms":30000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("set-heartbeats error: %v", err)
 	}
@@ -1768,17 +1768,17 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("unexpected set-heartbeats payload: %#v", res.Result)
 	}
 
-	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSend, Params: json.RawMessage(`{"to":"npub1abc","message":"hello","idempotencyKey":"idem-1"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodSend, Params: json.RawMessage(`{"to":"npub1abc","message":"hello","idempotencyKey":"idem-1"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err == nil {
 		t.Fatalf("expected send to fail when dm runtime is unavailable")
 	}
 
-	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodBrowserRequest, Params: json.RawMessage(`{"method":"GET","path":"/status"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodBrowserRequest, Params: json.RawMessage(`{"method":"GET","path":"/status"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err == nil {
 		t.Fatalf("expected browser.request to fail when browser control is disabled")
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodVoicewakeSet, Params: json.RawMessage(`{"triggers":["openclaw","swarmstr"]}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodVoicewakeSet, Params: json.RawMessage(`{"triggers":["openclaw","swarmstr"]}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("voicewake.set error: %v", err)
 	}
@@ -1787,7 +1787,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("unexpected voicewake.set payload: %#v", res.Result)
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSSetProvider, Params: json.RawMessage(`{"provider":"edge"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSSetProvider, Params: json.RawMessage(`{"provider":"edge"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("tts.setProvider error: %v", err)
 	}
@@ -1796,7 +1796,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("expected provider=edge, got: %#v", payload)
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSSetProvider, Params: json.RawMessage(`{"provider":"invalid-provider"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSSetProvider, Params: json.RawMessage(`{"provider":"invalid-provider"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("tts.setProvider invalid error: %v", err)
 	}
@@ -1805,7 +1805,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("expected invalid provider to default to openai, got: %#v", payload)
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSConvert, Params: json.RawMessage(`{"text":"hello"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSConvert, Params: json.RawMessage(`{"text":"hello"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("tts.convert error: %v", err)
 	}
