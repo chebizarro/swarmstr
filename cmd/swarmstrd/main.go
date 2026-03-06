@@ -28,7 +28,9 @@ import (
 	"swarmstr/internal/memory"
 	nostruntime "swarmstr/internal/nostr/runtime"
 	"swarmstr/internal/nostr/secure"
+	pluginmanager "swarmstr/internal/plugins/manager"
 	"swarmstr/internal/plugins/installer"
+	skillspkg "swarmstr/internal/skills"
 	"swarmstr/internal/policy"
 	"swarmstr/internal/store/state"
 )
@@ -161,6 +163,15 @@ func main() {
 		log.Fatalf("load runtime config: %v", err)
 	}
 	configState := newRuntimeConfigStore(runtimeCfg)
+
+	// Load Goja (JS) plugins from config and register their tools.
+	pluginHost := pluginmanager.BuildHost(configState, agentRuntime)
+	pluginMgr := pluginmanager.New(pluginHost)
+	if loadErr := pluginMgr.Load(ctx, configState.Get()); loadErr != nil {
+		log.Printf("plugin manager load warning: %v", loadErr)
+	}
+	pluginMgr.RegisterTools(tools)
+
 	checkpoint, err := ensureIngestCheckpoint(ctx, docsRepo)
 	if err != nil {
 		log.Fatalf("load ingest checkpoint: %v", err)
@@ -316,7 +327,7 @@ func main() {
 			if controlTracker.AlreadyProcessed(in.EventID, in.CreatedAt) {
 				return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "duplicate": true}}, nil
 			}
-			return handleControlRPCRequest(ctx, in, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, startedAt)
+			return handleControlRPCRequest(ctx, in, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
 		},
 		OnHandled: func(ctx context.Context, eventID string, eventUnix int64) {
 			if err := controlTracker.MarkProcessed(ctx, docsRepo, eventID, eventUnix); err != nil {
@@ -353,7 +364,7 @@ func main() {
 					FromPubKey: bus.PublicKey(),
 					Method:     strings.TrimSpace(req.Method),
 					Params:     req.Params,
-				}, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, startedAt)
+				}, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
 				if err != nil {
 					return nil, mapGatewayWSError(err)
 				}
@@ -594,7 +605,7 @@ func main() {
 					}
 					cfg := configState.Get()
 					agentID := defaultAgentID(req.AgentID)
-					return map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(cfg, tools, req.IncludePlugins)}, nil
+					return map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(cfg, tools, req.IncludePlugins, pluginMgr)}, nil
 				},
 				SkillsStatus: func(ctx context.Context, req methods.SkillsStatusRequest) (map[string]any, error) {
 					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
@@ -1247,6 +1258,7 @@ func handleControlRPCRequest(
 	memoryIndex *memory.Index,
 	configState *runtimeConfigStore,
 	tools *agent.ToolRegistry,
+	pluginMgr *pluginmanager.GojaPluginManager,
 	startedAt time.Time,
 ) (nostruntime.ControlRPCResult, error) {
 	method := strings.TrimSpace(in.Method)
@@ -1778,7 +1790,7 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		agentID := defaultAgentID(req.AgentID)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(cfg, tools, req.IncludePlugins)}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": buildToolCatalogGroups(cfg, tools, req.IncludePlugins, pluginMgr)}}, nil
 	case methods.MethodSkillsStatus:
 		req, err := methods.DecodeSkillsStatusParams(in.Params)
 		if err != nil {
@@ -3340,7 +3352,7 @@ var coreToolCatalog = []coreToolDef{
 	{ID: "tts", Label: "tts", Description: "Text-to-speech conversion", SectionID: "media", Profiles: []string{}},
 }
 
-func buildToolCatalogGroups(cfg state.ConfigDoc, registry *agent.ToolRegistry, includePlugins *bool) []map[string]any {
+func buildToolCatalogGroups(cfg state.ConfigDoc, registry *agent.ToolRegistry, includePlugins *bool, pm *pluginmanager.GojaPluginManager) []map[string]any {
 	sectionTools := map[string][]map[string]any{}
 	seen := map[string]struct{}{}
 	addCore := func(sectionID, id, label, description string, profiles []string) {
@@ -3386,6 +3398,12 @@ func buildToolCatalogGroups(cfg state.ConfigDoc, registry *agent.ToolRegistry, i
 	}
 	for _, group := range buildPluginToolGroups(cfg, seen) {
 		groups = append(groups, group)
+	}
+	// Append live Goja plugin tools (real manifests from loaded VMs).
+	if pm != nil {
+		for _, group := range pm.CatalogGroups(seen) {
+			groups = append(groups, group)
+		}
 	}
 	return groups
 }
@@ -3585,7 +3603,64 @@ func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any
 	emptyRequirements := func() map[string]any {
 		return map[string]any{"bins": []string{}, "anyBins": []string{}, "env": []string{}, "config": []string{}, "os": []string{}}
 	}
-	skills := make([]map[string]any, 0)
+	requirementsToMap := func(r skillspkg.Requirements) map[string]any {
+		bins := r.Bins
+		if bins == nil {
+			bins = []string{}
+		}
+		anyBins := r.AnyBins
+		if anyBins == nil {
+			anyBins = []string{}
+		}
+		env := r.Env
+		if env == nil {
+			env = []string{}
+		}
+		osReq := r.OS
+		if osReq == nil {
+			osReq = []string{}
+		}
+		config := r.Config
+		if config == nil {
+			config = []string{}
+		}
+		return map[string]any{"bins": bins, "anyBins": anyBins, "env": env, "os": osReq, "config": config}
+	}
+
+	agentIDNorm := defaultAgentID(agentID)
+	workspaceDir := skillspkg.WorkspaceDir(cfg.Extra, agentIDNorm)
+	managedSkillsDir := ""
+
+	skillsList := make([]map[string]any, 0)
+
+	// ── Workspace-scanned YAML skills (real, file-based) ──────────────────────
+	if scanned, err := skillspkg.ScanWorkspace(workspaceDir); err == nil {
+		for _, s := range scanned {
+			installSteps := make([]map[string]any, 0, len(s.Manifest.Install))
+			for _, step := range s.Manifest.Install {
+				installSteps = append(installSteps, map[string]any{"cmd": step.Cmd, "cwd": step.Cwd})
+			}
+			skillsList = append(skillsList, map[string]any{
+				"name":               s.Manifest.Name,
+				"description":        s.Manifest.Description,
+				"source":             coalesceString(s.Manifest.Source, "workspace"),
+				"bundled":            false,
+				"filePath":           s.FilePath,
+				"baseDir":            s.BaseDir,
+				"skillKey":           s.SkillKey,
+				"always":             false,
+				"disabled":           !s.IsEnabled(),
+				"blockedByAllowlist": false,
+				"eligible":           s.Eligible && s.IsEnabled(),
+				"requirements":       requirementsToMap(s.Manifest.Requirements),
+				"missing":            requirementsToMap(s.Missing),
+				"configChecks":       []map[string]any{},
+				"install":            installSteps,
+			})
+		}
+	}
+
+	// ── Config-persisted skill entries (legacy / manually added) ─────────────
 	for _, entry := range currentSkillEntries(cfg) {
 		skillKey := strings.TrimSpace(fmt.Sprintf("%v", entry["skillKey"]))
 		if skillKey == "" {
@@ -3597,10 +3672,8 @@ func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any
 			name = skillKey
 		}
 		description, _ := entry["description"].(string)
-		description = strings.TrimSpace(description)
 		source, _ := entry["source"].(string)
-		source = strings.TrimSpace(source)
-		if source == "" {
+		if strings.TrimSpace(source) == "" {
 			source = "swarmstr-config"
 		}
 		enabled := true
@@ -3619,39 +3692,40 @@ func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any
 		}
 		filePath, _ := entry["filePath"].(string)
 		baseDir, _ := entry["baseDir"].(string)
-		skills = append(skills, map[string]any{
-			"name":              name,
-			"description":       description,
-			"source":            source,
-			"bundled":           false,
-			"filePath":          strings.TrimSpace(filePath),
-			"baseDir":           strings.TrimSpace(baseDir),
-			"skillKey":          skillKey,
-			"always":            false,
-			"disabled":          !enabled,
+		skillsList = append(skillsList, map[string]any{
+			"name":               strings.TrimSpace(name),
+			"description":        strings.TrimSpace(description),
+			"source":             strings.TrimSpace(source),
+			"bundled":            false,
+			"filePath":           strings.TrimSpace(filePath),
+			"baseDir":            strings.TrimSpace(baseDir),
+			"skillKey":           skillKey,
+			"always":             false,
+			"disabled":           !enabled,
 			"blockedByAllowlist": false,
-			"eligible":          enabled,
-			"requirements":      requirements,
-			"missing":           emptyRequirements(),
-			"configChecks":      []map[string]any{},
-			"install":           []map[string]any{},
+			"eligible":           enabled,
+			"requirements":       requirements,
+			"missing":            emptyRequirements(),
+			"configChecks":       []map[string]any{},
+			"install":            []map[string]any{},
 		})
 	}
-	sort.Slice(skills, func(i, j int) bool {
-		return fmt.Sprintf("%v", skills[i]["skillKey"]) < fmt.Sprintf("%v", skills[j]["skillKey"])
+
+	sort.Slice(skillsList, func(i, j int) bool {
+		ki := fmt.Sprintf("%v", skillsList[i]["skillKey"])
+		kj := fmt.Sprintf("%v", skillsList[j]["skillKey"])
+		return ki < kj
 	})
-	workspaceDir := "/agents/" + defaultAgentID(agentID)
 	return map[string]any{
 		"workspaceDir":     workspaceDir,
-		"managedSkillsDir": "",
-		"skills":           skills,
+		"managedSkillsDir": managedSkillsDir,
+		"skills":           skillsList,
 	}
 }
 
 func applySkillsBins(cfg state.ConfigDoc) map[string]any {
-	entries := currentSkillEntries(cfg)
 	seen := map[string]struct{}{}
-	bins := make([]string, 0, len(entries))
+	bins := make([]string, 0)
 	push := func(v string) {
 		v = strings.TrimSpace(v)
 		if v == "" {
@@ -3663,7 +3737,17 @@ func applySkillsBins(cfg state.ConfigDoc) map[string]any {
 		seen[v] = struct{}{}
 		bins = append(bins, v)
 	}
-	for _, entry := range entries {
+
+	// Workspace-scanned YAML skills contribute their declared bins.
+	wsDir := skillspkg.WorkspaceDir(cfg.Extra, "main")
+	if scanned, err := skillspkg.ScanWorkspace(wsDir); err == nil {
+		for _, b := range skillspkg.AggregateBins(scanned) {
+			push(b)
+		}
+	}
+
+	// Config-persisted entries.
+	for _, entry := range currentSkillEntries(cfg) {
 		if binRaw, ok := entry["bin"].(string); ok {
 			push(binRaw)
 		} else if skillKey, ok := entry["skillKey"].(string); ok {
@@ -3684,6 +3768,13 @@ func applySkillsBins(cfg state.ConfigDoc) map[string]any {
 	}
 	sort.Strings(bins)
 	return map[string]any{"bins": bins}
+}
+
+func coalesceString(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }
 
 func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.SkillsInstallRequest) (state.ConfigDoc, error) {
