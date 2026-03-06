@@ -47,6 +47,7 @@ var (
 
 func main() {
 	var bootstrapPath string
+	var configFilePath string
 	var adminAddr string
 	var adminToken string
 	var gatewayWSAddr string
@@ -56,6 +57,7 @@ func main() {
 	var gatewayWSTrustedProxies string
 	var gatewayWSAllowInsecureControlUI bool
 	flag.StringVar(&bootstrapPath, "bootstrap", "", "path to bootstrap config JSON")
+	flag.StringVar(&configFilePath, "config", "", "path to live config JSON/JSON5/YAML file; watched for changes (default: ~/.swarmstr/config.json)")
 	flag.StringVar(&adminAddr, "admin-addr", "", "optional admin API listen address, e.g. 127.0.0.1:8787")
 	flag.StringVar(&adminToken, "admin-token", "", "optional bearer token for admin API")
 	flag.StringVar(&gatewayWSAddr, "gateway-ws-addr", "", "optional gateway websocket listen address, e.g. 127.0.0.1:8788")
@@ -163,6 +165,13 @@ func main() {
 		log.Fatalf("load runtime config: %v", err)
 	}
 	configState := newRuntimeConfigStore(runtimeCfg)
+
+	// Resolve live config file path (for disk↔Nostr sync and hot-reload).
+	if configFilePath == "" {
+		if def, err2 := config.DefaultConfigPath(); err2 == nil {
+			configFilePath = def
+		}
+	}
 
 	// Load Goja (JS) plugins from config and register their tools.
 	pluginHost := pluginmanager.BuildHost(configState, agentRuntime)
@@ -434,6 +443,50 @@ func main() {
 				}
 			}
 		}()
+	}
+
+	// configState.Set hook: write-back to disk + WS event on every config mutation
+	// (API-triggered or relay-pulled).  The atomic rename of WriteConfigFile means
+	// the SyncEngine's fsnotify will fire once, but the re-read will produce the
+	// same content, so the secondary relay push is idempotent.
+	configState.SetOnChange(func(doc state.ConfigDoc) {
+		if configFilePath != "" {
+			if err := config.WriteConfigFile(configFilePath, doc); err != nil {
+				log.Printf("config write-back to disk failed path=%s err=%v", configFilePath, err)
+			}
+		}
+		wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
+			TS: time.Now().UnixMilli(),
+		})
+	})
+
+	// Start config file watcher for hot-reload (disk → runtimeConfigStore → relay).
+	// The SyncEngine debounces rapid edits and calls our onChange callback on
+	// each successful read, allowing the runtime to apply changes live.
+	if configFilePath != "" && config.ConfigFileExists(configFilePath) {
+		syncEngine, syncErr := config.NewSyncEngine(configFilePath, docsRepo,
+			config.WithOnChange(func(doc state.ConfigDoc) {
+				log.Printf("config file changed: applying live reload path=%s", configFilePath)
+				// Use the internal field directly to avoid triggering disk write-back
+				// (the file already has the new content).
+				configState.mu.Lock()
+				configState.cfg = doc
+				configState.mu.Unlock()
+				wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
+					TS: time.Now().UnixMilli(),
+				})
+			}),
+		)
+		if syncErr != nil {
+			log.Printf("config sync engine init warning: %v", syncErr)
+		} else {
+			if err := syncEngine.Start(ctx); err != nil {
+				log.Printf("config sync engine start warning: %v", err)
+			} else {
+				defer syncEngine.Stop()
+				log.Printf("config file hot-reload active path=%s", configFilePath)
+			}
+		}
 	}
 
 	if adminAddr != "" {
@@ -1035,8 +1088,9 @@ func ensureMemoryIndexCheckpoint(ctx context.Context, repo *state.DocsRepository
 }
 
 type runtimeConfigStore struct {
-	mu  sync.RWMutex
-	cfg state.ConfigDoc
+	mu       sync.RWMutex
+	cfg      state.ConfigDoc
+	onChange func(state.ConfigDoc) // optional: called after each Set
 }
 
 type ingestTracker struct {
@@ -1144,6 +1198,17 @@ func (s *runtimeConfigStore) Get() state.ConfigDoc {
 func (s *runtimeConfigStore) Set(cfg state.ConfigDoc) {
 	s.mu.Lock()
 	s.cfg = cfg
+	onChange := s.onChange
+	s.mu.Unlock()
+	if onChange != nil {
+		go onChange(cfg) // run in goroutine to avoid deadlock if caller holds a lock
+	}
+}
+
+// SetOnChange registers a callback invoked after every Set.
+func (s *runtimeConfigStore) SetOnChange(fn func(state.ConfigDoc)) {
+	s.mu.Lock()
+	s.onChange = fn
 	s.mu.Unlock()
 }
 
@@ -2824,7 +2889,11 @@ func handleControlRPCRequest(
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodConfigGet:
-		return nostruntime.ControlRPCResult{Result: config.Redact(cfg)}, nil
+		redacted := config.Redact(cfg)
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"config": redacted,
+			"hash":   cfg.Hash(),
+		}}, nil
 	case methods.MethodRelayPolicyGet:
 		dmRelays := []string{}
 		controlRelays := []string{}
@@ -2973,6 +3042,9 @@ controlListPreconditionsSatisfied:
 		}
 	controlConfigPreconditionsSatisfied:
 		req.Config = policy.NormalizeConfig(req.Config)
+		if err := methods.CheckBaseHash(cfg, req.BaseHash); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
 		if err := policy.ValidateConfig(req.Config); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
@@ -2986,7 +3058,7 @@ controlListPreconditionsSatisfied:
 		}
 		configState.Set(req.Config)
 		applyRuntimeRelayPolicy(dmBus, controlBus, req.Config)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": req.Config.Hash()}}, nil
 	case methods.MethodConfigSet:
 		req, err := methods.DecodeConfigSetParams(in.Params)
 		if err != nil {
@@ -3000,6 +3072,9 @@ controlListPreconditionsSatisfied:
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		if err := methods.CheckBaseHash(cfg, req.BaseHash); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
 		next = policy.NormalizeConfig(next)
 		if err := policy.ValidateConfig(next); err != nil {
 			return nostruntime.ControlRPCResult{}, err
@@ -3009,7 +3084,7 @@ controlListPreconditionsSatisfied:
 		}
 		configState.Set(next)
 		applyRuntimeRelayPolicy(dmBus, controlBus, next)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash()}}, nil
 	case methods.MethodConfigApply:
 		req, err := methods.DecodeConfigApplyParams(in.Params)
 		if err != nil {
@@ -3017,6 +3092,9 @@ controlListPreconditionsSatisfied:
 		}
 		req, err = req.Normalize()
 		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if err := methods.CheckBaseHash(cfg, req.BaseHash); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		next := policy.NormalizeConfig(req.Config)
@@ -3028,7 +3106,7 @@ controlListPreconditionsSatisfied:
 		}
 		configState.Set(next)
 		applyRuntimeRelayPolicy(dmBus, controlBus, next)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash()}}, nil
 	case methods.MethodConfigPatch:
 		req, err := methods.DecodeConfigPatchParams(in.Params)
 		if err != nil {
@@ -3042,6 +3120,9 @@ controlListPreconditionsSatisfied:
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		if err := methods.CheckBaseHash(cfg, req.BaseHash); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
 		next = policy.NormalizeConfig(next)
 		if err := policy.ValidateConfig(next); err != nil {
 			return nostruntime.ControlRPCResult{}, err
@@ -3051,7 +3132,7 @@ controlListPreconditionsSatisfied:
 		}
 		configState.Set(next)
 		applyRuntimeRelayPolicy(dmBus, controlBus, next)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash()}}, nil
 	case methods.MethodConfigSchema:
 		return nostruntime.ControlRPCResult{Result: methods.ConfigSchema(cfg)}, nil
 	default:

@@ -3,6 +3,7 @@ package methods
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -12,6 +13,26 @@ import (
 	"swarmstr/internal/memory"
 	"swarmstr/internal/store/state"
 )
+
+// ErrConfigConflict is returned when a config mutation is rejected because
+// the caller's base_hash does not match the server's current config hash.
+// This implements optimistic concurrency control for config updates.
+var ErrConfigConflict = errors.New("config conflict: base_hash mismatch")
+
+// CheckBaseHash validates that baseHash (from the request) matches the hash
+// of current.  If baseHash is empty, the check is skipped.  Returns
+// ErrConfigConflict if the hashes differ.
+func CheckBaseHash(current state.ConfigDoc, baseHash string) error {
+	baseHash = strings.TrimSpace(baseHash)
+	if baseHash == "" {
+		return nil
+	}
+	got := current.Hash()
+	if got != baseHash {
+		return fmt.Errorf("%w: have %s, client sent %s", ErrConfigConflict, got, baseHash)
+	}
+	return nil
+}
 
 const (
 	MethodSupportedMethods   = "supportedmethods"
@@ -257,6 +278,7 @@ type ConfigPutRequest struct {
 	ExpectedVersion    int             `json:"expected_version,omitempty"`
 	ExpectedVersionSet bool            `json:"-"`
 	ExpectedEvent      string          `json:"expected_event,omitempty"`
+	BaseHash           string          `json:"baseHash,omitempty"`
 }
 
 type ConfigSetRequest struct {
