@@ -116,3 +116,34 @@ func NewProviderFromEnv() (Provider, error) {
 		return nil, fmt.Errorf("unknown SWARMSTR_AGENT_PROVIDER %q", mode)
 	}
 }
+
+// NewProviderForModel constructs a Provider for the given model identifier.
+//   - "" / "echo"                → EchoProvider (no external dependency)
+//   - "http" / "http-default"    → HTTPProvider configured from env vars
+//
+// This is used by BuildRuntimeForModel and the agents.create RPC to spin up
+// per-agent runtimes with model-specific providers.
+func NewProviderForModel(model string) (Provider, error) {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "", "echo":
+		return EchoProvider{}, nil
+	case "http", "http-default":
+		url := strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_URL"))
+		if url == "" {
+			return nil, fmt.Errorf("SWARMSTR_AGENT_HTTP_URL is required for http model")
+		}
+		return &HTTPProvider{URL: url, APIKey: strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_API_KEY"))}, nil
+	default:
+		return nil, fmt.Errorf("unsupported model %q: known models are \"echo\", \"http\"", model)
+	}
+}
+
+// BuildRuntimeForModel constructs a Runtime for the given model identifier.
+// tools may be nil (tool calls will error gracefully).
+func BuildRuntimeForModel(model string, tools ToolExecutor) (Runtime, error) {
+	p, err := NewProviderForModel(model)
+	if err != nil {
+		return nil, err
+	}
+	return NewProviderRuntime(p, tools)
+}

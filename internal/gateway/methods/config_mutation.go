@@ -526,7 +526,16 @@ func updateInstallRecordField(entry map[string]any, field string, value any) err
 	if known && canonical == "installedAt" {
 		return nil
 	}
-	entry["installedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
+	// Guarantee the timestamp strictly advances even on sub-microsecond fast machines
+	// (two consecutive time.Now() calls can return the same nanosecond value).
+	prev, _ := entry["installedAt"].(string)
+	next := time.Now().UTC().Format(time.RFC3339Nano)
+	if next == prev {
+		if t, err := time.Parse(time.RFC3339Nano, prev); err == nil {
+			next = t.Add(time.Microsecond).UTC().Format(time.RFC3339Nano)
+		}
+	}
+	entry["installedAt"] = next
 	return nil
 }
 

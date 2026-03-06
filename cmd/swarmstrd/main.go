@@ -22,6 +22,7 @@ import (
 	"swarmstr/internal/admin"
 	"swarmstr/internal/agent"
 	"swarmstr/internal/config"
+	"swarmstr/internal/gateway/channels"
 	"swarmstr/internal/gateway/methods"
 	gatewayprotocol "swarmstr/internal/gateway/protocol"
 	gatewayws "swarmstr/internal/gateway/ws"
@@ -43,6 +44,13 @@ var (
 	controlExecApprovals   *execApprovalsRegistry
 	controlWizards         *wizardRegistry
 	controlOps             *operationsRegistry
+	controlAgentRegistry   *agent.AgentRuntimeRegistry
+	controlSessionRouter   *agent.AgentSessionRouter
+	controlChannels        *channels.Registry
+	controlPrivateKey      string
+	// controlWsEmitter forwards typed events to connected WS clients.
+	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
+	controlWsEmitter gatewayws.EventEmitter = gatewayws.NoopEmitter{}
 )
 
 func main() {
@@ -76,6 +84,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("resolve signer/private key: %v", err)
 	}
+	controlPrivateKey = privateKey
 	if adminAddr == "" {
 		adminAddr = cfg.AdminListenAddr
 	}
@@ -210,6 +219,55 @@ func main() {
 	controlExecApprovals = execApprovals
 	controlWizards = wizards
 	controlOps = ops
+
+	// Multi-agent runtime registry: maps agent IDs to their Runtime instances.
+	// "main" / "" always resolves to agentRuntime (the default).
+	agentRegistry := agent.NewAgentRuntimeRegistry(agentRuntime)
+	sessionRouter := agent.NewAgentSessionRouter()
+	controlAgentRegistry = agentRegistry
+	controlSessionRouter = sessionRouter
+
+	// Channel registry for NIP-29 group chat and future channel types.
+	channelReg := channels.NewRegistry()
+	controlChannels = channelReg
+	defer channelReg.CloseAll()
+
+	// Pre-load runtimes for any agents persisted from a previous run.
+	// This is best-effort: failures are logged but don't block startup.
+	if existingAgents, listErr := docsRepo.ListAgents(ctx, 200); listErr == nil {
+		for _, agDoc := range existingAgents {
+			if agDoc.Deleted || agDoc.AgentID == "" || agDoc.AgentID == "main" {
+				continue
+			}
+			if rt, rtErr := agent.BuildRuntimeForModel(agDoc.Model, tools); rtErr == nil {
+				agentRegistry.Set(agDoc.AgentID, rt)
+				log.Printf("agent runtime loaded id=%s model=%q", agDoc.AgentID, agDoc.Model)
+			} else {
+				log.Printf("agent runtime build warning id=%s model=%q err=%v", agDoc.AgentID, agDoc.Model, rtErr)
+			}
+		}
+	} else {
+		log.Printf("pre-load agents warning: %v", listErr)
+	}
+
+	// Pre-seed session→agent assignments from persisted session meta.
+	// Any session with meta["agent_id"] set is re-routed to that agent.
+	if existingSessions, sessErr := docsRepo.ListSessions(ctx, 5000); sessErr == nil {
+		for _, sess := range existingSessions {
+			if sess.Meta == nil {
+				continue
+			}
+			if aid, ok := sess.Meta["agent_id"].(string); ok && aid != "" && aid != "main" {
+				sessionID := strings.TrimSpace(sess.SessionID)
+				if sessionID == "" {
+					continue
+				}
+				sessionRouter.Assign(sessionID, aid)
+			}
+		}
+	} else {
+		log.Printf("pre-seed session routes warning: %v", sessErr)
+	}
 	usageState := newUsageTracker(startedAt)
 	logBuffer := newRuntimeLogBuffer(2000)
 	channelState := newChannelRuntimeState()
@@ -276,13 +334,19 @@ func main() {
 				releaseTurn()
 			}()
 			turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, msg.Text, 6)
+			// Route the session to the assigned agent (falls back to "main").
+			activeAgentID := sessionRouter.Get(sessionID)
+			if activeAgentID == "" {
+				activeAgentID = "main"
+			}
+			activeRuntime := agentRegistry.Get(activeAgentID)
 			wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 				TS:      time.Now().UnixMilli(),
-				AgentID: defaultAgentID(""),
+				AgentID: activeAgentID,
 				Status:  "thinking",
 				Session: sessionID,
 			})
-			turnResult, err := agentRuntime.ProcessTurn(turnCtx, agent.Turn{SessionID: sessionID, UserText: msg.Text, Context: turnContext})
+			turnResult, err := activeRuntime.ProcessTurn(turnCtx, agent.Turn{SessionID: sessionID, UserText: msg.Text, Context: turnContext})
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					log.Printf("agent process aborted session=%s", sessionID)
@@ -296,7 +360,7 @@ func main() {
 			}
 			wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 				TS:      time.Now().UnixMilli(),
-				AgentID: defaultAgentID(""),
+				AgentID: activeAgentID,
 				Status:  "idle",
 				Session: sessionID,
 			})
@@ -308,7 +372,7 @@ func main() {
 			// Emit outbound chat event.
 			wsEmitter.Emit(gatewayws.EventChatMessage, gatewayws.ChatMessagePayload{
 				TS:        time.Now().UnixMilli(),
-				AgentID:   defaultAgentID(""),
+				AgentID:   activeAgentID,
 				SessionID: sessionID,
 				Direction: "outbound",
 				EventID:   msg.EventID,
@@ -420,6 +484,7 @@ func main() {
 			log.Fatalf("start gateway ws runtime: %v", err)
 		}
 		wsEmitter = gatewayws.NewRuntimeEmitter(wsRuntime)
+		controlWsEmitter = wsEmitter
 
 		// Periodic tick event and startup health pulse.
 		go func() {
@@ -1502,6 +1567,123 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: res}, nil
+	case methods.MethodChannelsJoin:
+		req, err := methods.DecodeChannelsJoinParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlChannels == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("channel runtime not configured")
+		}
+		ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
+			GroupAddress: req.GroupAddress,
+			PrivateKey:   controlPrivateKey,
+			OnMessage: func(msg channels.InboundMessage) {
+				controlWsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+					TS:        time.Now().UnixMilli(),
+					ChannelID: msg.ChannelID,
+					GroupID:   msg.GroupID,
+					Relay:     msg.Relay,
+					Direction: "inbound",
+					From:      msg.FromPubKey,
+					Text:      msg.Text,
+					EventID:   msg.EventID,
+				})
+				// Route inbound group messages through the default agent runtime.
+				rt := controlAgentRuntime
+				turnCtx, release := chatCancels.Begin(msg.ChannelID, ctx)
+				go func() {
+					defer release()
+					result, turnErr := rt.ProcessTurn(turnCtx, agent.Turn{
+						SessionID: msg.ChannelID,
+						UserText:  msg.Text,
+					})
+					if turnErr != nil {
+						log.Printf("channel agent turn error channel=%s err=%v", msg.ChannelID, turnErr)
+						return
+					}
+					if err := msg.Reply(turnCtx, result.Text); err != nil {
+						log.Printf("channel reply error channel=%s err=%v", msg.ChannelID, err)
+						return
+					}
+					controlWsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+						TS:        time.Now().UnixMilli(),
+						ChannelID: msg.ChannelID,
+						GroupID:   msg.GroupID,
+						Relay:     msg.Relay,
+						Direction: "outbound",
+						Text:      result.Text,
+					})
+				}()
+			},
+			OnError: func(err error) {
+				log.Printf("nip29 channel error channel=%s err=%v", req.GroupAddress, err)
+			},
+		})
+		if chErr != nil {
+			return nostruntime.ControlRPCResult{}, chErr
+		}
+		if err := controlChannels.Add(ch); err != nil {
+			ch.Close()
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"ok":         true,
+			"channel_id": ch.ID(),
+			"type":       ch.Type(),
+		}}, nil
+	case methods.MethodChannelsLeave:
+		req, err := methods.DecodeChannelsLeaveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlChannels == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("channel runtime not configured")
+		}
+		if err := controlChannels.Remove(req.ChannelID); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "channel_id": req.ChannelID}}, nil
+	case methods.MethodChannelsList:
+		if controlChannels == nil {
+			return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []any{}}}, nil
+		}
+		list := controlChannels.List()
+		return nostruntime.ControlRPCResult{Result: map[string]any{"channels": list, "count": len(list)}}, nil
+	case methods.MethodChannelsSend:
+		req, err := methods.DecodeChannelsSendParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlChannels == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("channel runtime not configured")
+		}
+		ch, ok := controlChannels.Get(req.ChannelID)
+		if !ok {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("channel %q not found; join it first with channels.join", req.ChannelID)
+		}
+		if err := ch.Send(ctx, req.Text); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		controlWsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+			TS:        time.Now().UnixMilli(),
+			ChannelID: req.ChannelID,
+			Direction: "outbound",
+			Text:      req.Text,
+		})
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "channel_id": req.ChannelID}}, nil
 	case methods.MethodStatus:
 		return nostruntime.ControlRPCResult{Result: methods.StatusResponse{
 			PubKey:        dmBus.PublicKey(),
@@ -1832,6 +2014,14 @@ func handleControlRPCRequest(
 		if _, err := docsRepo.PutAgent(ctx, req.AgentID, doc); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		// Register a runtime for the new agent (best-effort; falls back to default on failure).
+		if controlAgentRegistry != nil {
+			if rt, rtErr := agent.BuildRuntimeForModel(req.Model, tools); rtErr == nil {
+				controlAgentRegistry.Set(req.AgentID, rt)
+			} else {
+				log.Printf("agents.create: runtime build warning id=%s model=%q err=%v", req.AgentID, req.Model, rtErr)
+			}
+		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "agent": doc}}, nil
 	case methods.MethodAgentsUpdate:
 		req, err := methods.DecodeAgentsUpdateParams(in.Params)
@@ -1862,6 +2052,14 @@ func handleControlRPCRequest(
 		if _, err := docsRepo.PutAgent(ctx, req.AgentID, doc); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		// Rebuild the runtime if the model changed.
+		if controlAgentRegistry != nil && req.Model != "" {
+			if rt, rtErr := agent.BuildRuntimeForModel(doc.Model, tools); rtErr == nil {
+				controlAgentRegistry.Set(req.AgentID, rt)
+			} else {
+				log.Printf("agents.update: runtime rebuild warning id=%s model=%q err=%v", req.AgentID, doc.Model, rtErr)
+			}
+		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "agent": doc}}, nil
 	case methods.MethodAgentsDelete:
 		req, err := methods.DecodeAgentsDeleteParams(in.Params)
@@ -1881,7 +2079,147 @@ func handleControlRPCRequest(
 		if _, err := docsRepo.PutAgent(ctx, req.AgentID, doc); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		// Remove the runtime and any session assignments for the deleted agent.
+		if controlAgentRegistry != nil {
+			controlAgentRegistry.Remove(req.AgentID)
+		}
+		if controlSessionRouter != nil {
+			// Un-assign all sessions that were using this agent.
+			for sessionID, aid := range controlSessionRouter.List() {
+				if aid == req.AgentID {
+					controlSessionRouter.Unassign(sessionID)
+				}
+			}
+		}
+		// Hard cleanup: remove persisted session.meta["agent_id"] references to
+		// this agent so routes do not reappear after restarts.
+		sessions, sessErr := docsRepo.ListSessions(ctx, 5000)
+		if sessErr != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("agents.delete: list sessions for cleanup: %w", sessErr)
+		}
+		for _, sess := range sessions {
+			if sess.Meta == nil {
+				continue
+			}
+			aid, _ := sess.Meta["agent_id"].(string)
+			if aid != req.AgentID {
+				continue
+			}
+			delete(sess.Meta, "agent_id")
+			sessionID := strings.TrimSpace(sess.SessionID)
+			if sessionID == "" {
+				continue
+			}
+			if _, err := docsRepo.PutSession(ctx, sessionID, sess); err != nil {
+				return nostruntime.ControlRPCResult{}, fmt.Errorf("agents.delete: cleanup session %q: %w", sessionID, err)
+			}
+			if controlSessionRouter != nil {
+				controlSessionRouter.Unassign(sessionID)
+			}
+		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "agent_id": req.AgentID, "deleted": true}}, nil
+	case methods.MethodAgentsAssign:
+		req, err := methods.DecodeAgentsAssignParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		// Validate that the target agent exists and is not deleted.
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlSessionRouter != nil {
+			controlSessionRouter.Assign(req.SessionID, req.AgentID)
+		}
+		// Persist assignment in session meta so it survives restarts.
+		persisted := true
+		sess, sessErr := docsRepo.GetSession(ctx, req.SessionID)
+		if sessErr != nil && !errors.Is(sessErr, state.ErrNotFound) {
+			return nostruntime.ControlRPCResult{}, sessErr
+		}
+		if sess.SessionID == "" {
+			sess = state.SessionDoc{Version: 1, SessionID: req.SessionID, PeerPubKey: req.SessionID}
+		}
+		if sess.Meta == nil {
+			sess.Meta = map[string]any{}
+		}
+		sess.Meta["agent_id"] = req.AgentID
+		if _, err := docsRepo.PutSession(ctx, req.SessionID, sess); err != nil {
+			persisted = false
+			log.Printf("agents.assign: persist session meta warning session=%s err=%v", req.SessionID, err)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"ok":         true,
+			"session_id": req.SessionID,
+			"agent_id":   req.AgentID,
+			"persisted":  persisted,
+			"durability": "best_effort",
+		}}, nil
+	case methods.MethodAgentsUnassign:
+		req, err := methods.DecodeAgentsUnassignParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlSessionRouter != nil {
+			controlSessionRouter.Unassign(req.SessionID)
+		}
+		// Remove the persisted agent_id from session meta.
+		persisted := true
+		sess, sessErr := docsRepo.GetSession(ctx, req.SessionID)
+		if sessErr == nil && sess.Meta != nil {
+			delete(sess.Meta, "agent_id")
+			if _, err := docsRepo.PutSession(ctx, req.SessionID, sess); err != nil {
+				persisted = false
+				log.Printf("agents.unassign: persist session meta warning session=%s err=%v", req.SessionID, err)
+			}
+		} else if sessErr != nil && !errors.Is(sessErr, state.ErrNotFound) {
+			persisted = false
+			log.Printf("agents.unassign: load session warning session=%s err=%v", req.SessionID, sessErr)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"ok":         true,
+			"session_id": req.SessionID,
+			"persisted":  persisted,
+			"durability": "best_effort",
+		}}, nil
+	case methods.MethodAgentsActive:
+		req, err := methods.DecodeAgentsActiveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		var registered []string
+		if controlAgentRegistry != nil {
+			registered = controlAgentRegistry.Registered()
+			sort.Strings(registered)
+		}
+		var assignments []map[string]any
+		if controlSessionRouter != nil {
+			for sessionID, agentID := range controlSessionRouter.List() {
+				assignments = append(assignments, map[string]any{
+					"session_id": sessionID,
+					"agent_id":   agentID,
+				})
+			}
+			sortRecordsByKeyDesc(assignments, "session_id")
+		}
+		if req.Limit > 0 && len(assignments) > req.Limit {
+			assignments = assignments[:req.Limit]
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"registered":  registered,
+			"assignments": assignments,
+		}}, nil
 	case methods.MethodAgentsFilesList:
 		req, err := methods.DecodeAgentsFilesListParams(in.Params)
 		if err != nil {
@@ -5149,10 +5487,21 @@ func applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any
 	if reg == nil {
 		return nil, fmt.Errorf("cron runtime not configured")
 	}
+	controlWsEmitter.Emit(gatewayws.EventCronTick, gatewayws.CronTickPayload{
+		TS:    time.Now().UnixMilli(),
+		JobID: req.ID,
+	})
+	started := time.Now()
 	run, err := reg.Run(req.ID)
 	if err != nil {
 		return nil, err
 	}
+	controlWsEmitter.Emit(gatewayws.EventCronResult, gatewayws.CronResultPayload{
+		TS:         time.Now().UnixMilli(),
+		JobID:      req.ID,
+		Succeeded:  run.Status == "done",
+		DurationMS: time.Since(started).Milliseconds(),
+	})
 	return map[string]any{"ok": true, "run": run}, nil
 }
 
@@ -5201,6 +5550,13 @@ func applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprov
 		return nil, fmt.Errorf("exec approvals runtime not configured")
 	}
 	rec := reg.Request(req)
+	controlWsEmitter.Emit(gatewayws.EventExecApprovalRequested, gatewayws.ExecApprovalRequestedPayload{
+		TS:        time.Now().UnixMilli(),
+		ID:        rec.ID,
+		NodeID:    rec.NodeID,
+		Command:   rec.Command,
+		ExpiresAt: rec.ExpiresAt,
+	})
 	return map[string]any{"id": rec.ID, "status": "accepted", "requested": rec}, nil
 }
 
@@ -5232,6 +5588,12 @@ func applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprov
 	if err != nil {
 		return nil, err
 	}
+	controlWsEmitter.Emit(gatewayws.EventExecApprovalResolved, gatewayws.ExecApprovalResolvedPayload{
+		TS:       time.Now().UnixMilli(),
+		ID:       rec.ID,
+		Decision: rec.Decision,
+		NodeID:   rec.NodeID,
+	})
 	return map[string]any{"ok": true, "id": rec.ID, "decision": rec.Decision, "resolved": rec}, nil
 }
 
@@ -5314,6 +5676,10 @@ func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[
 	if reg == nil {
 		return nil, fmt.Errorf("update runtime not configured")
 	}
+	controlWsEmitter.Emit(gatewayws.EventUpdateAvailable, gatewayws.UpdateAvailablePayload{
+		TS:     time.Now().UnixMilli(),
+		Source: "update.run",
+	})
 	checkedAt := reg.RecordUpdateCheck()
 	return map[string]any{"ok": true, "status": "checked", "force": req.Force, "checked_at_ms": checkedAt}, nil
 }
@@ -5351,6 +5717,13 @@ func applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any
 		source = "control"
 	}
 	at := reg.Wake(source)
+	// Emit voice.wake when the source is voice-related.
+	if source == "voice" || source == "voicewake" || source == "hotword" {
+		controlWsEmitter.Emit(gatewayws.EventVoicewake, gatewayws.VoicewakePayload{
+			TS:     at,
+			Source: source,
+		})
+	}
 	return map[string]any{"ok": true, "woken": true, "source": source, "mode": req.Mode, "text": req.Text, "wake_at_ms": at}, nil
 }
 

@@ -41,6 +41,10 @@ const (
 	MethodLogsTail           = "logs.tail"
 	MethodChannelsStatus     = "channels.status"
 	MethodChannelsLogout     = "channels.logout"
+	MethodChannelsJoin       = "channels.join"
+	MethodChannelsLeave      = "channels.leave"
+	MethodChannelsList       = "channels.list"
+	MethodChannelsSend       = "channels.send"
 	MethodStatus             = "status.get"
 	MethodStatusAlias        = "status"
 	MethodUsageStatus        = "usage.status"
@@ -72,6 +76,9 @@ const (
 	MethodAgentsCreate       = "agents.create"
 	MethodAgentsUpdate       = "agents.update"
 	MethodAgentsDelete       = "agents.delete"
+	MethodAgentsAssign       = "agents.assign"
+	MethodAgentsUnassign     = "agents.unassign"
+	MethodAgentsActive       = "agents.active"
 	MethodAgentsFilesList    = "agents.files.list"
 	MethodAgentsFilesGet     = "agents.files.get"
 	MethodAgentsFilesSet     = "agents.files.set"
@@ -322,6 +329,27 @@ type ChannelsLogoutRequest struct {
 	Channel string `json:"channel"`
 }
 
+// ChannelsJoinRequest joins a NIP-29 relay group or other channel.
+// For NIP-29, GroupAddress has the form "<relayHost>'<groupID>".
+type ChannelsJoinRequest struct {
+	Type         string `json:"type"`          // "nip29-group"
+	GroupAddress string `json:"group_address"` // relay'groupID
+}
+
+// ChannelsLeaveRequest leaves a previously joined channel.
+type ChannelsLeaveRequest struct {
+	ChannelID string `json:"channel_id"`
+}
+
+// ChannelsListRequest requests the list of joined channels.
+type ChannelsListRequest struct{}
+
+// ChannelsSendRequest sends a message to a joined channel.
+type ChannelsSendRequest struct {
+	ChannelID string `json:"channel_id"`
+	Text      string `json:"text"`
+}
+
 type UsageCostRequest struct {
 	StartDate string `json:"startDate,omitempty"`
 	EndDate   string `json:"endDate,omitempty"`
@@ -375,6 +403,26 @@ type AgentsFilesSetRequest struct {
 	AgentID string `json:"agent_id"`
 	Name    string `json:"name"`
 	Content string `json:"content"`
+}
+
+// AgentsAssignRequest routes a session (peer pubkey or WS client ID) to a
+// specific agent.  Subsequent DM/WS messages from that session are handled by
+// the named agent's runtime.
+type AgentsAssignRequest struct {
+	AgentID   string `json:"agent_id"`
+	SessionID string `json:"session_id"`
+}
+
+// AgentsUnassignRequest removes a session→agent assignment; the session falls
+// back to the default "main" agent.
+type AgentsUnassignRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+// AgentsActiveRequest requests the list of active agent runtimes and their
+// session assignments.
+type AgentsActiveRequest struct {
+	Limit int `json:"limit,omitempty"`
 }
 
 type ModelsListRequest struct{}
@@ -995,6 +1043,43 @@ func (r ChannelsLogoutRequest) Normalize() (ChannelsLogoutRequest, error) {
 	return r, nil
 }
 
+func (r ChannelsJoinRequest) Normalize() (ChannelsJoinRequest, error) {
+	r.Type = strings.ToLower(strings.TrimSpace(r.Type))
+	r.GroupAddress = strings.TrimSpace(r.GroupAddress)
+	if r.Type == "" {
+		r.Type = "nip29-group"
+	}
+	if r.Type != "nip29-group" {
+		return r, fmt.Errorf("unsupported channel type %q", r.Type)
+	}
+	if r.GroupAddress == "" {
+		return r, fmt.Errorf("group_address is required")
+	}
+	return r, nil
+}
+
+func (r ChannelsLeaveRequest) Normalize() (ChannelsLeaveRequest, error) {
+	r.ChannelID = strings.TrimSpace(r.ChannelID)
+	if r.ChannelID == "" {
+		return r, fmt.Errorf("channel_id is required")
+	}
+	return r, nil
+}
+
+func (r ChannelsListRequest) Normalize() (ChannelsListRequest, error) { return r, nil }
+
+func (r ChannelsSendRequest) Normalize() (ChannelsSendRequest, error) {
+	r.ChannelID = strings.TrimSpace(r.ChannelID)
+	r.Text = strings.TrimSpace(r.Text)
+	if r.ChannelID == "" {
+		return r, fmt.Errorf("channel_id is required")
+	}
+	if r.Text == "" {
+		return r, fmt.Errorf("text is required")
+	}
+	return r, nil
+}
+
 func (r UsageCostRequest) Normalize() (UsageCostRequest, error) {
 	r.StartDate = strings.TrimSpace(r.StartDate)
 	r.EndDate = strings.TrimSpace(r.EndDate)
@@ -1077,6 +1162,31 @@ func (r AgentsFilesSetRequest) Normalize() (AgentsFilesSetRequest, error) {
 	if !isSafeAgentFileName(r.Name) {
 		return r, fmt.Errorf("invalid file name")
 	}
+	return r, nil
+}
+
+func (r AgentsAssignRequest) Normalize() (AgentsAssignRequest, error) {
+	r.AgentID = normalizeAgentID(r.AgentID)
+	r.SessionID = strings.TrimSpace(r.SessionID)
+	if r.AgentID == "" {
+		return r, fmt.Errorf("agent_id is required")
+	}
+	if r.SessionID == "" {
+		return r, fmt.Errorf("session_id is required")
+	}
+	return r, nil
+}
+
+func (r AgentsUnassignRequest) Normalize() (AgentsUnassignRequest, error) {
+	r.SessionID = strings.TrimSpace(r.SessionID)
+	if r.SessionID == "" {
+		return r, fmt.Errorf("session_id is required")
+	}
+	return r, nil
+}
+
+func (r AgentsActiveRequest) Normalize() (AgentsActiveRequest, error) {
+	r.Limit = normalizeLimit(r.Limit, 100, 500)
 	return r, nil
 }
 
@@ -1685,6 +1795,10 @@ func SupportedMethods() []string {
 		MethodLogsTail,
 		MethodChannelsStatus,
 		MethodChannelsLogout,
+		MethodChannelsJoin,
+		MethodChannelsLeave,
+		MethodChannelsList,
+		MethodChannelsSend,
 		MethodStatus,
 		MethodStatusAlias,
 		MethodUsageStatus,
@@ -1716,6 +1830,9 @@ func SupportedMethods() []string {
 		MethodAgentsCreate,
 		MethodAgentsUpdate,
 		MethodAgentsDelete,
+		MethodAgentsAssign,
+		MethodAgentsUnassign,
+		MethodAgentsActive,
 		MethodAgentsFilesList,
 		MethodAgentsFilesGet,
 		MethodAgentsFilesSet,
@@ -2644,6 +2761,22 @@ func DecodeChannelsLogoutParams(params json.RawMessage) (ChannelsLogoutRequest, 
 	return decodeMethodParams[ChannelsLogoutRequest](params)
 }
 
+func DecodeChannelsJoinParams(params json.RawMessage) (ChannelsJoinRequest, error) {
+	return decodeMethodParams[ChannelsJoinRequest](params)
+}
+
+func DecodeChannelsLeaveParams(params json.RawMessage) (ChannelsLeaveRequest, error) {
+	return decodeMethodParams[ChannelsLeaveRequest](params)
+}
+
+func DecodeChannelsListParams(params json.RawMessage) (ChannelsListRequest, error) {
+	return ChannelsListRequest{}, nil
+}
+
+func DecodeChannelsSendParams(params json.RawMessage) (ChannelsSendRequest, error) {
+	return decodeMethodParams[ChannelsSendRequest](params)
+}
+
 func DecodeUsageCostParams(params json.RawMessage) (UsageCostRequest, error) {
 	if isJSONArray(params) {
 		var arr []json.RawMessage
@@ -2775,6 +2908,21 @@ func DecodeAgentsUpdateParams(params json.RawMessage) (AgentsUpdateRequest, erro
 
 func DecodeAgentsDeleteParams(params json.RawMessage) (AgentsDeleteRequest, error) {
 	return decodeMethodParams[AgentsDeleteRequest](params)
+}
+
+func DecodeAgentsAssignParams(params json.RawMessage) (AgentsAssignRequest, error) {
+	return decodeMethodParams[AgentsAssignRequest](params)
+}
+
+func DecodeAgentsUnassignParams(params json.RawMessage) (AgentsUnassignRequest, error) {
+	return decodeMethodParams[AgentsUnassignRequest](params)
+}
+
+func DecodeAgentsActiveParams(params json.RawMessage) (AgentsActiveRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return AgentsActiveRequest{}, nil
+	}
+	return decodeMethodParams[AgentsActiveRequest](params)
 }
 
 func DecodeAgentsFilesListParams(params json.RawMessage) (AgentsFilesListRequest, error) {

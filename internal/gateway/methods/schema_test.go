@@ -493,8 +493,91 @@ func TestDecodeAgentsFilesParams_ArrayMode(t *testing.T) {
 	}
 }
 
+func TestDecodeAgentsRoutingParams(t *testing.T) {
+	assignReq, err := DecodeAgentsAssignParams(json.RawMessage(`{"agent_id":"Main","session_id":" s-1 "}`))
+	if err != nil {
+		t.Fatalf("agents.assign decode error: %v", err)
+	}
+	assignReq, err = assignReq.Normalize()
+	if err != nil {
+		t.Fatalf("agents.assign normalize error: %v", err)
+	}
+	if assignReq.AgentID != "main" || assignReq.SessionID != "s-1" {
+		t.Fatalf("unexpected agents.assign request: %#v", assignReq)
+	}
+
+	unassignReq, err := DecodeAgentsUnassignParams(json.RawMessage(`{"session_id":" s-1 "}`))
+	if err != nil {
+		t.Fatalf("agents.unassign decode error: %v", err)
+	}
+	unassignReq, err = unassignReq.Normalize()
+	if err != nil {
+		t.Fatalf("agents.unassign normalize error: %v", err)
+	}
+	if unassignReq.SessionID != "s-1" {
+		t.Fatalf("unexpected agents.unassign request: %#v", unassignReq)
+	}
+
+	activeReq, err := DecodeAgentsActiveParams(json.RawMessage(`{"limit":999}`))
+	if err != nil {
+		t.Fatalf("agents.active decode error: %v", err)
+	}
+	activeReq, err = activeReq.Normalize()
+	if err != nil {
+		t.Fatalf("agents.active normalize error: %v", err)
+	}
+	if activeReq.Limit != 500 {
+		t.Fatalf("unexpected agents.active normalized limit: %d", activeReq.Limit)
+	}
+
+	activeDefaultReq, err := DecodeAgentsActiveParams(json.RawMessage(``))
+	if err != nil {
+		t.Fatalf("agents.active empty decode error: %v", err)
+	}
+	activeDefaultReq, err = activeDefaultReq.Normalize()
+	if err != nil {
+		t.Fatalf("agents.active default normalize error: %v", err)
+	}
+	if activeDefaultReq.Limit != 100 {
+		t.Fatalf("unexpected agents.active default limit: %d", activeDefaultReq.Limit)
+	}
+}
+
+func TestDecodeChannelsJoinParams_TypeValidation(t *testing.T) {
+	joinReq, err := DecodeChannelsJoinParams(json.RawMessage(`{"group_address":"relay.example.com'group-1"}`))
+	if err != nil {
+		t.Fatalf("channels.join decode error: %v", err)
+	}
+	joinReq, err = joinReq.Normalize()
+	if err != nil {
+		t.Fatalf("channels.join normalize error: %v", err)
+	}
+	if joinReq.Type != "nip29-group" {
+		t.Fatalf("expected default type nip29-group, got: %#v", joinReq)
+	}
+
+	badReq, err := DecodeChannelsJoinParams(json.RawMessage(`{"type":"slack","group_address":"relay.example.com'group-1"}`))
+	if err != nil {
+		t.Fatalf("channels.join bad type decode error: %v", err)
+	}
+	if _, err := badReq.Normalize(); err == nil {
+		t.Fatalf("expected unsupported channel type error")
+	}
+}
+
 func TestSupportedMethodsIncludesAgentsMethods(t *testing.T) {
-	required := []string{MethodAgentsList, MethodAgentsCreate, MethodAgentsUpdate, MethodAgentsDelete, MethodAgentsFilesList, MethodAgentsFilesGet, MethodAgentsFilesSet}
+	required := []string{
+		MethodAgentsList,
+		MethodAgentsCreate,
+		MethodAgentsUpdate,
+		MethodAgentsDelete,
+		MethodAgentsAssign,
+		MethodAgentsUnassign,
+		MethodAgentsActive,
+		MethodAgentsFilesList,
+		MethodAgentsFilesGet,
+		MethodAgentsFilesSet,
+	}
 	for _, want := range required {
 		found := false
 		for _, method := range SupportedMethods() {

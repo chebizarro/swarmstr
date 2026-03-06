@@ -1,108 +1,126 @@
 package ws
 
 import (
-	"sync"
 	"testing"
 	"time"
 )
 
-// captureEmitter records all emitted events for test assertions.
-type captureEmitter struct {
-	mu     sync.Mutex
-	events []emittedEvent
-}
+// ─── captureEmitter ────────────────────────────────────────────────────────────
 
-type emittedEvent struct {
-	Event   string
-	Payload any
+type captureEmitter struct {
+	events []string
+	payloads []any
 }
 
 func (c *captureEmitter) Emit(event string, payload any) {
-	c.mu.Lock()
-	c.events = append(c.events, emittedEvent{Event: event, Payload: payload})
-	c.mu.Unlock()
+	c.events = append(c.events, event)
+	c.payloads = append(c.payloads, payload)
 }
 
-func (c *captureEmitter) Last() *emittedEvent {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *captureEmitter) Last() (string, any) {
 	if len(c.events) == 0 {
-		return nil
+		return "", nil
 	}
-	e := c.events[len(c.events)-1]
-	return &e
+	i := len(c.events) - 1
+	return c.events[i], c.payloads[i]
 }
 
-func (c *captureEmitter) Count() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.events)
-}
+func (c *captureEmitter) Count() int { return len(c.events) }
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 func TestNoopEmitter(t *testing.T) {
-	var e NoopEmitter
-	// Should not panic.
+	e := NoopEmitter{}
+	// Must not panic.
 	e.Emit(EventTick, TickPayload{TS: 1})
-	e.Emit(EventShutdown, nil)
+	e.Emit(EventHealth, nil)
 }
 
 func TestRuntimeEmitter_nilRuntime(t *testing.T) {
-	e := &RuntimeEmitter{rt: nil}
-	// Should not panic with nil runtime.
-	e.Emit(EventTick, nil)
+	e := NewRuntimeEmitter(nil)
+	// Must not panic with nil runtime.
+	e.Emit(EventTick, TickPayload{TS: 1})
 }
 
 func TestAllPushEvents_containsCore(t *testing.T) {
 	required := []string{
 		EventTick, EventHealth, EventShutdown,
 		EventAgentStatus, EventChatMessage,
-		EventCronTick, EventConfigUpdated,
-		"presence.updated",
+		EventCronTick, EventCronResult,
+		EventConfigUpdated,
+		EventExecApprovalRequested, EventExecApprovalResolved,
+		EventVoicewake, EventUpdateAvailable,
+		EventChannelMessage,
 	}
-	lookup := make(map[string]bool, len(AllPushEvents))
+	set := make(map[string]struct{}, len(AllPushEvents))
 	for _, e := range AllPushEvents {
-		lookup[e] = true
+		set[e] = struct{}{}
 	}
-	for _, req := range required {
-		if !lookup[req] {
-			t.Errorf("AllPushEvents missing %q", req)
+	for _, name := range required {
+		if _, ok := set[name]; !ok {
+			t.Errorf("AllPushEvents missing %q", name)
 		}
 	}
 }
 
 func TestEmitTick(t *testing.T) {
-	cap := &captureEmitter{}
-	startedAt := time.Now().Add(-5 * time.Second)
-	EmitTick(cap, startedAt, "test-v1")
-	if cap.Count() != 1 {
-		t.Fatalf("expected 1 emitted event, got %d", cap.Count())
+	e := &captureEmitter{}
+	start := time.Now().Add(-5 * time.Second)
+	EmitTick(e, start, "v1")
+	if e.Count() != 1 {
+		t.Fatalf("expected 1 event, got %d", e.Count())
 	}
-	last := cap.Last()
-	if last.Event != EventTick {
-		t.Errorf("event = %q, want %q", last.Event, EventTick)
+	name, payload := e.Last()
+	if name != EventTick {
+		t.Errorf("expected %q, got %q", EventTick, name)
 	}
-	p, ok := last.Payload.(TickPayload)
+	tp, ok := payload.(TickPayload)
 	if !ok {
-		t.Fatalf("payload type = %T, want TickPayload", last.Payload)
+		t.Fatalf("expected TickPayload, got %T", payload)
 	}
-	if p.Version != "test-v1" {
-		t.Errorf("version = %q, want \"test-v1\"", p.Version)
+	if tp.UptimeMS < 5000 {
+		t.Errorf("uptime_ms should be >= 5000, got %d", tp.UptimeMS)
 	}
-	if p.UptimeMS < 5000 {
-		t.Errorf("uptime_ms = %d, expected >= 5000", p.UptimeMS)
+	if tp.Version != "v1" {
+		t.Errorf("expected version v1, got %q", tp.Version)
 	}
 }
 
 func TestCaptureEmitter_multiple(t *testing.T) {
-	cap := &captureEmitter{}
-	cap.Emit(EventAgentStatus, AgentStatusPayload{AgentID: "a1", Status: "thinking"})
-	cap.Emit(EventChatMessage, ChatMessagePayload{SessionID: "s1", Direction: "inbound"})
-	cap.Emit(EventCronTick, CronTickPayload{JobID: "j1"})
-	if cap.Count() != 3 {
-		t.Errorf("expected 3 events, got %d", cap.Count())
+	e := &captureEmitter{}
+	e.Emit(EventHealth, HealthPayload{OK: true})
+	e.Emit(EventShutdown, ShutdownPayload{Reason: "test"})
+	if e.Count() != 2 {
+		t.Fatalf("expected 2, got %d", e.Count())
 	}
-	last := cap.Last()
-	if last.Event != EventCronTick {
-		t.Errorf("last event = %q, want %q", last.Event, EventCronTick)
+	name, _ := e.Last()
+	if name != EventShutdown {
+		t.Errorf("expected shutdown, got %q", name)
+	}
+}
+
+func TestNewPayloadTypes(t *testing.T) {
+	e := &captureEmitter{}
+
+	e.Emit(EventExecApprovalRequested, ExecApprovalRequestedPayload{ID: "req-1", NodeID: "n1"})
+	e.Emit(EventExecApprovalResolved, ExecApprovalResolvedPayload{ID: "req-1", Decision: "approved"})
+	e.Emit(EventVoicewake, VoicewakePayload{Trigger: "hey swarmstr"})
+	e.Emit(EventUpdateAvailable, UpdateAvailablePayload{Version: "2.0"})
+	e.Emit(EventChannelMessage, ChannelMessagePayload{ChannelID: "ch1", Direction: "inbound"})
+
+	if e.Count() != 5 {
+		t.Fatalf("expected 5 events, got %d", e.Count())
+	}
+	// Spot-check last payload
+	name, payload := e.Last()
+	if name != EventChannelMessage {
+		t.Errorf("expected channel.message, got %q", name)
+	}
+	cp, ok := payload.(ChannelMessagePayload)
+	if !ok {
+		t.Fatalf("expected ChannelMessagePayload, got %T", payload)
+	}
+	if cp.ChannelID != "ch1" {
+		t.Errorf("expected ch1, got %q", cp.ChannelID)
 	}
 }
