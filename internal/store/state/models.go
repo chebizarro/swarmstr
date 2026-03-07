@@ -159,9 +159,15 @@ type AgentConfig struct {
 	Name         string `json:"name,omitempty"`
 	Model        string `json:"model,omitempty"`
 	WorkspaceDir string `json:"workspace_dir,omitempty"`
-	ToolProfile  string `json:"tool_profile,omitempty"` // minimal|coding|messaging|full
-	HeartbeatMS  int    `json:"heartbeat_ms,omitempty"`
-	HistoryLimit int    `json:"history_limit,omitempty"`
+	ToolProfile  string   `json:"tool_profile,omitempty"` // minimal|coding|messaging|full
+	HeartbeatMS  int      `json:"heartbeat_ms,omitempty"`
+	HistoryLimit int      `json:"history_limit,omitempty"`
+	// Provider names the providers[] entry to use for this agent (e.g. "anthropic", "ollama").
+	// When set, credentials from ProvidersConfig[Provider] override the default env-based provider.
+	Provider string `json:"provider,omitempty"`
+	// DmPeers is a list of Nostr pubkeys (hex) whose DMs are routed to this agent.
+	// At startup, each pubkey is pre-seeded into the session router with this agent's ID.
+	DmPeers []string `json:"dm_peers,omitempty"`
 }
 
 // AgentsConfig is an ordered list of per-agent configurations.
@@ -195,10 +201,13 @@ type TranscriptEntryDoc struct {
 	Version   int            `json:"version"`
 	SessionID string         `json:"session_id"`
 	EntryID   string         `json:"entry_id"`
-	Role      string         `json:"role"` // user|assistant|system
+	Role      string         `json:"role"` // user|assistant|system|deleted
 	Text      string         `json:"text"`
 	Unix      int64          `json:"unix"`
 	Meta      map[string]any `json:"meta,omitempty"`
+	// Deleted is true for tombstoned entries that have been compacted away.
+	// ListSession filters these out automatically.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 type MemoryDoc struct {

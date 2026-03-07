@@ -644,6 +644,22 @@ func (r *cronRegistry) Run(id string) (cronRunRecord, error) {
 	return run, nil
 }
 
+// RecordRun appends a run result for the given job ID.
+// Used by the cron scheduler to record actual execution outcomes.
+func (r *cronRegistry) RecordRun(id, status string, durationMS int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UnixMilli()
+	run := cronRunRecord{
+		RunID:    fmt.Sprintf("cron-run-%d", time.Now().UnixNano()),
+		JobID:    id,
+		Status:   status,
+		Started:  now - durationMS,
+		Finished: now,
+	}
+	r.runsByID[id] = append(r.runsByID[id], run)
+}
+
 func (r *cronRegistry) Runs(id string, limit int) []cronRunRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()

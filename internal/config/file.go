@@ -409,6 +409,23 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 		if v, ok := toInt(m["history_limit"]); ok {
 			ac.HistoryLimit = v
 		}
+		if v, ok := m["provider"].(string); ok {
+			ac.Provider = strings.TrimSpace(v)
+		}
+		// dm_peers: list of Nostr pubkeys routed to this agent for DMs.
+		if v, ok := m["dm_peers"].([]any); ok {
+			for _, peer := range v {
+				if s, ok := peer.(string); ok && strings.TrimSpace(s) != "" {
+					ac.DmPeers = append(ac.DmPeers, strings.TrimSpace(s))
+				}
+			}
+		} else if v, ok := m["dmPeers"].([]any); ok {
+			for _, peer := range v {
+				if s, ok := peer.(string); ok && strings.TrimSpace(s) != "" {
+					ac.DmPeers = append(ac.DmPeers, strings.TrimSpace(s))
+				}
+			}
+		}
 		out = append(out, ac)
 	}
 	return out

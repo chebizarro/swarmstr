@@ -26,11 +26,21 @@ import (
 	"swarmstr/internal/store/state"
 )
 
-// GojaPluginManager loads and manages Goja JS plugins.
+// pluginInstance is the common interface for Goja and Node.js plugin types.
+type pluginInstance interface {
+	Manifest() sdk.Manifest
+	Invoke(ctx context.Context, req sdk.InvokeRequest) (sdk.InvokeResult, error)
+}
+
+// compile-time checks
+var _ pluginInstance = (*runtime.GojaPlugin)(nil)
+var _ pluginInstance = (*runtime.NodePlugin)(nil)
+
+// GojaPluginManager loads and manages Goja JS (and Node.js compat) plugins.
 type GojaPluginManager struct {
 	mu      sync.RWMutex
 	host    *sdk.Host
-	plugins map[string]*runtime.GojaPlugin // pluginID → plugin
+	plugins map[string]pluginInstance // pluginID → plugin
 	log     *slog.Logger
 }
 
@@ -42,7 +52,7 @@ func New(host *sdk.Host) *GojaPluginManager {
 	}
 	return &GojaPluginManager{
 		host:    host,
-		plugins: map[string]*runtime.GojaPlugin{},
+		plugins: map[string]pluginInstance{},
 		log:     slog.Default().With("component", "plugin-manager"),
 	}
 }
@@ -55,18 +65,33 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 		return nil
 	}
 
-	next := map[string]*runtime.GojaPlugin{}
+	next := map[string]pluginInstance{}
 	for pluginID, entry := range entries {
 		if !entryEnabled(entry) {
 			continue
 		}
-		if !isGojaPlugin(entry) {
-			// Native npm or other; skip — not a Goja plugin.
-			continue
-		}
 		installPath, _ := entry["install_path"].(string)
 		if installPath == "" {
-			m.log.Warn("goja plugin has no install_path, skipping", "plugin", pluginID)
+			m.log.Warn("plugin has no install_path, skipping", "plugin", pluginID)
+			continue
+		}
+
+		// Node.js compat bridge: activated when plugin_type is "node"/"nodejs"
+		// OR when the install path contains a node_modules directory.
+		if isNodePlugin(entry) || runtime.IsNodePlugin(installPath) {
+			np, err := runtime.LoadNodePlugin(ctx, installPath)
+			if err != nil {
+				m.log.Warn("node plugin load failed (node.js may not be installed)", "plugin", pluginID, "err", err)
+				// Don't treat missing Node.js as a fatal error — fall through.
+			} else {
+				next[pluginID] = np
+				m.log.Info("loaded node.js plugin", "plugin", pluginID, "tools", len(np.Manifest().Tools))
+				continue
+			}
+		}
+
+		if !isGojaPlugin(entry) {
+			m.log.Debug("plugin type not supported, skipping", "plugin", pluginID)
 			continue
 		}
 		src, err := readPluginScript(installPath)
@@ -121,9 +146,9 @@ func (m *GojaPluginManager) CatalogGroups(seen map[string]struct{}) []map[string
 	groups := make([]map[string]any, 0, len(ids))
 	for _, pluginID := range ids {
 		p := m.plugins[pluginID]
-		m := p.Manifest()
-		tools := make([]map[string]any, 0, len(m.Tools))
-		for _, t := range m.Tools {
+		mf := p.Manifest()
+		tools := make([]map[string]any, 0, len(mf.Tools))
+		for _, t := range mf.Tools {
 			fullName := pluginToolName(pluginID, t.Name)
 			if _, exists := seen[fullName]; exists {
 				continue
@@ -133,7 +158,7 @@ func (m *GojaPluginManager) CatalogGroups(seen map[string]struct{}) []map[string
 				"id":              fullName,
 				"label":           t.Name,
 				"description":     t.Description,
-				"source":          "goja-plugin",
+				"source":          "plugin",
 				"pluginId":        pluginID,
 				"parameters":      t.Parameters,
 				"defaultProfiles": []string{},
@@ -144,9 +169,9 @@ func (m *GojaPluginManager) CatalogGroups(seen map[string]struct{}) []map[string
 		}
 		groups = append(groups, map[string]any{
 			"id":          pluginID,
-			"label":       m.ID,
-			"description": m.Description,
-			"source":      "goja-plugin",
+			"label":       mf.ID,
+			"description": mf.Description,
+			"source":      "plugin",
 			"tools":       tools,
 		})
 	}
@@ -215,6 +240,12 @@ func isGojaPlugin(entry map[string]any) bool {
 	return t == "" || strings.EqualFold(t, "goja") || strings.EqualFold(t, "js")
 }
 
+// isNodePlugin returns true when the entry explicitly requests the Node.js compat bridge.
+func isNodePlugin(entry map[string]any) bool {
+	t, _ := entry["plugin_type"].(string)
+	return strings.EqualFold(t, "node") || strings.EqualFold(t, "nodejs")
+}
+
 // readPluginScript resolves the main script from an install path.
 // It looks for (in order): index.js, plugin.js, main.js, or any *.js in root.
 func readPluginScript(installPath string) ([]byte, error) {
@@ -255,7 +286,7 @@ func pluginToolName(pluginID, toolName string) string {
 }
 
 // makeToolFunc creates a ToolFunc that calls plugin.Invoke for the given tool.
-func makeToolFunc(p *runtime.GojaPlugin, pluginID, toolName string) agent.ToolFunc {
+func makeToolFunc(p pluginInstance, pluginID, toolName string) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		res, err := p.Invoke(ctx, sdk.InvokeRequest{
 			Tool: toolName,
