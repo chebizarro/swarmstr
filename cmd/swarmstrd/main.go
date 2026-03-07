@@ -50,7 +50,13 @@ var (
 	controlPrivateKey      string
 	// controlWsEmitter forwards typed events to connected WS clients.
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
-	controlWsEmitter gatewayws.EventEmitter = gatewayws.NoopEmitter{}
+	controlWsEmitter   gatewayws.EventEmitter = gatewayws.NoopEmitter{}
+	controlWsEmitterMu sync.RWMutex
+
+	// controlRestartCh receives a restart-delay-ms value when a config mutation
+	// requires a daemon restart.  The restart goroutine drains this channel,
+	// emits EventShutdown, waits for the specified delay, then cancels the main context.
+	controlRestartCh = make(chan int, 4)
 )
 
 func main() {
@@ -115,6 +121,30 @@ func main() {
 	startedAt := time.Now()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Restart scheduler: drains controlRestartCh, emits EventShutdown, then stops the daemon.
+	// The supervisor (systemd / launchd / Docker restart policy) is expected to re-launch it.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case delayMS := <-controlRestartCh:
+				if delayMS < 0 {
+					delayMS = 0
+				}
+				emitControlWSEvent(gatewayws.EventShutdown, gatewayws.ShutdownPayload{
+					TS:     time.Now().UnixMilli(),
+					Reason: "config change requires restart",
+				})
+				if delayMS > 0 {
+					time.Sleep(time.Duration(delayMS) * time.Millisecond)
+				}
+				log.Printf("scheduled restart executing (delay=%dms)", delayMS)
+				stop() // cancel context → graceful shutdown
+			}
+		}
+	}()
 
 	store, err := state.NewNostrStore(privateKey, cfg.Relays)
 	if err != nil {
@@ -484,7 +514,7 @@ func main() {
 			log.Fatalf("start gateway ws runtime: %v", err)
 		}
 		wsEmitter = gatewayws.NewRuntimeEmitter(wsRuntime)
-		controlWsEmitter = wsEmitter
+		setControlWSEmitter(wsEmitter)
 
 		// Periodic tick event and startup health pulse.
 		go func() {
@@ -1583,7 +1613,7 @@ func handleControlRPCRequest(
 			GroupAddress: req.GroupAddress,
 			PrivateKey:   controlPrivateKey,
 			OnMessage: func(msg channels.InboundMessage) {
-				controlWsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+				emitControlWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 					TS:        time.Now().UnixMilli(),
 					ChannelID: msg.ChannelID,
 					GroupID:   msg.GroupID,
@@ -1610,7 +1640,7 @@ func handleControlRPCRequest(
 						log.Printf("channel reply error channel=%s err=%v", msg.ChannelID, err)
 						return
 					}
-					controlWsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+					emitControlWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 						TS:        time.Now().UnixMilli(),
 						ChannelID: msg.ChannelID,
 						GroupID:   msg.GroupID,
@@ -1677,7 +1707,7 @@ func handleControlRPCRequest(
 		if err := ch.Send(ctx, req.Text); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		controlWsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+		emitControlWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 			TS:        time.Now().UnixMilli(),
 			ChannelID: req.ChannelID,
 			Direction: "outbound",
@@ -3252,7 +3282,12 @@ func handleControlRPCRequest(
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodConfigGet:
-		return nostruntime.ControlRPCResult{Result: config.Redact(cfg)}, nil
+		redacted := config.Redact(cfg)
+		// Include base_hash so OpenClaw clients can use optimistic-lock semantics on mutations.
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"config":    redacted,
+			"base_hash": cfg.Hash(),
+		}}, nil
 	case methods.MethodRelayPolicyGet:
 		dmRelays := []string{}
 		controlRelays := []string{}
@@ -3417,7 +3452,8 @@ controlListPreconditionsSatisfied:
 		}
 		configState.Set(req.Config)
 		applyRuntimeRelayPolicy(dmBus, controlBus, req.Config)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": req.Config.Hash()}}, nil
+		restartPending := scheduleRestartIfNeeded(cfg, req.Config, 0)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": req.Config.Hash(), "restart_pending": restartPending}}, nil
 	case methods.MethodConfigSet:
 		req, err := methods.DecodeConfigSetParams(in.Params)
 		if err != nil {
@@ -3443,7 +3479,8 @@ controlListPreconditionsSatisfied:
 		}
 		configState.Set(next)
 		applyRuntimeRelayPolicy(dmBus, controlBus, next)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash()}}, nil
+		restartPending := scheduleRestartIfNeeded(cfg, next, 0)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash(), "restart_pending": restartPending}}, nil
 	case methods.MethodConfigApply:
 		req, err := methods.DecodeConfigApplyParams(in.Params)
 		if err != nil {
@@ -3465,7 +3502,8 @@ controlListPreconditionsSatisfied:
 		}
 		configState.Set(next)
 		applyRuntimeRelayPolicy(dmBus, controlBus, next)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash()}}, nil
+		restartPending := scheduleRestartIfNeeded(cfg, next, req.RestartDelayMS)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash(), "restart_pending": restartPending}}, nil
 	case methods.MethodConfigPatch:
 		req, err := methods.DecodeConfigPatchParams(in.Params)
 		if err != nil {
@@ -3491,12 +3529,48 @@ controlListPreconditionsSatisfied:
 		}
 		configState.Set(next)
 		applyRuntimeRelayPolicy(dmBus, controlBus, next)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash()}}, nil
+		restartPending := scheduleRestartIfNeeded(cfg, next, req.RestartDelayMS)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash(), "restart_pending": restartPending}}, nil
 	case methods.MethodConfigSchema:
 		return nostruntime.ControlRPCResult{Result: methods.ConfigSchema(cfg)}, nil
 	default:
 		return nostruntime.ControlRPCResult{}, fmt.Errorf("unknown method %q", method)
 	}
+}
+
+// scheduleRestartIfNeeded compares old and next ConfigDoc.  If the change
+// requires a daemon restart (model, providers, plugins changed) it sends a
+// signal to the restart scheduler goroutine and returns true.
+// delayMS is the caller-requested delay before restart; defaults to 500ms if zero.
+func scheduleRestartIfNeeded(old, next state.ConfigDoc, delayMS int) (pending bool) {
+	if !policy.ConfigChangedNeedsRestart(old, next) {
+		return false
+	}
+	if delayMS <= 0 {
+		delayMS = 500 // default grace period
+	}
+	select {
+	case controlRestartCh <- delayMS:
+	default:
+		// already queued; ignore duplicate
+	}
+	return true
+}
+
+func setControlWSEmitter(emitter gatewayws.EventEmitter) {
+	if emitter == nil {
+		emitter = gatewayws.NoopEmitter{}
+	}
+	controlWsEmitterMu.Lock()
+	defer controlWsEmitterMu.Unlock()
+	controlWsEmitter = emitter
+}
+
+func emitControlWSEvent(event string, payload any) {
+	controlWsEmitterMu.RLock()
+	emitter := controlWsEmitter
+	controlWsEmitterMu.RUnlock()
+	emitter.Emit(event, payload)
 }
 
 func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runtime, jobs *agentJobRegistry) {
@@ -5512,7 +5586,7 @@ func applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any
 	if reg == nil {
 		return nil, fmt.Errorf("cron runtime not configured")
 	}
-	controlWsEmitter.Emit(gatewayws.EventCronTick, gatewayws.CronTickPayload{
+	emitControlWSEvent(gatewayws.EventCronTick, gatewayws.CronTickPayload{
 		TS:    time.Now().UnixMilli(),
 		JobID: req.ID,
 	})
@@ -5521,7 +5595,7 @@ func applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any
 	if err != nil {
 		return nil, err
 	}
-	controlWsEmitter.Emit(gatewayws.EventCronResult, gatewayws.CronResultPayload{
+	emitControlWSEvent(gatewayws.EventCronResult, gatewayws.CronResultPayload{
 		TS:         time.Now().UnixMilli(),
 		JobID:      req.ID,
 		Succeeded:  run.Status == "done",
@@ -5575,7 +5649,7 @@ func applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprov
 		return nil, fmt.Errorf("exec approvals runtime not configured")
 	}
 	rec := reg.Request(req)
-	controlWsEmitter.Emit(gatewayws.EventExecApprovalRequested, gatewayws.ExecApprovalRequestedPayload{
+	emitControlWSEvent(gatewayws.EventExecApprovalRequested, gatewayws.ExecApprovalRequestedPayload{
 		TS:        time.Now().UnixMilli(),
 		ID:        rec.ID,
 		NodeID:    rec.NodeID,
@@ -5613,7 +5687,7 @@ func applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprov
 	if err != nil {
 		return nil, err
 	}
-	controlWsEmitter.Emit(gatewayws.EventExecApprovalResolved, gatewayws.ExecApprovalResolvedPayload{
+	emitControlWSEvent(gatewayws.EventExecApprovalResolved, gatewayws.ExecApprovalResolvedPayload{
 		TS:       time.Now().UnixMilli(),
 		ID:       rec.ID,
 		Decision: rec.Decision,
@@ -5701,7 +5775,7 @@ func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[
 	if reg == nil {
 		return nil, fmt.Errorf("update runtime not configured")
 	}
-	controlWsEmitter.Emit(gatewayws.EventUpdateAvailable, gatewayws.UpdateAvailablePayload{
+	emitControlWSEvent(gatewayws.EventUpdateAvailable, gatewayws.UpdateAvailablePayload{
 		TS:     time.Now().UnixMilli(),
 		Source: "update.run",
 	})
@@ -5744,7 +5818,7 @@ func applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any
 	at := reg.Wake(source)
 	// Emit voice.wake when the source is voice-related.
 	if source == "voice" || source == "voicewake" || source == "hotword" {
-		controlWsEmitter.Emit(gatewayws.EventVoicewake, gatewayws.VoicewakePayload{
+		emitControlWSEvent(gatewayws.EventVoicewake, gatewayws.VoicewakePayload{
 			TS:     at,
 			Source: source,
 		})

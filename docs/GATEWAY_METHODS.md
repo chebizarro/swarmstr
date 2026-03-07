@@ -91,7 +91,7 @@ NIP-86 response profile (`Content-Type` or `Accept`: `application/nostr+json+rpc
 
 - `config.get`
   - params: none
-  - result: `ConfigDoc`
+  - result: `{ config: ConfigDoc, base_hash: string }`
 
 - `relay.policy.get`
   - params: none
@@ -99,7 +99,7 @@ NIP-86 response profile (`Content-Type` or `Accept`: `application/nostr+json+rpc
 
 - `config.put`
   - params: `{ config: ConfigDoc, expected_version?: number, expected_event?: string }`
-  - result: `{ ok: true }`
+  - result: `{ ok: true, hash: string, restart_pending: boolean }`
   - validation:
     - `config.relays.read` and `config.relays.write` must each contain at least one relay
     - relay URLs must use `ws://` or `wss://`

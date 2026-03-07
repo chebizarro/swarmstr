@@ -6,6 +6,122 @@ import (
 	"swarmstr/internal/store/state"
 )
 
+// ─── ConfigChangedNeedsRestart ────────────────────────────────────────────────
+
+func baseDoc() state.ConfigDoc {
+	return state.ConfigDoc{
+		DM:    state.DMPolicy{Policy: "open"},
+		Agent: state.AgentPolicy{DefaultModel: "echo"},
+		Relays: state.RelayPolicy{
+			Read:  []string{"wss://relay.example"},
+			Write: []string{"wss://relay.example"},
+		},
+	}
+}
+
+func TestConfigChangedNeedsRestart_noChange(t *testing.T) {
+	d := baseDoc()
+	if ConfigChangedNeedsRestart(d, d) {
+		t.Fatal("identical docs should not need restart")
+	}
+}
+
+func TestConfigChangedNeedsRestart_dmPolicyChange(t *testing.T) {
+	old := baseDoc()
+	next := baseDoc()
+	next.DM.Policy = "pairing"
+	if ConfigChangedNeedsRestart(old, next) {
+		t.Fatal("DM policy change should be hot-applied (no restart)")
+	}
+}
+
+func TestConfigChangedNeedsRestart_relayChange(t *testing.T) {
+	old := baseDoc()
+	next := baseDoc()
+	next.Relays.Read = []string{"wss://other.relay"}
+	if ConfigChangedNeedsRestart(old, next) {
+		t.Fatal("relay change should be hot-applied (no restart)")
+	}
+}
+
+func TestConfigChangedNeedsRestart_modelChange(t *testing.T) {
+	old := baseDoc()
+	next := baseDoc()
+	next.Agent.DefaultModel = "http"
+	if !ConfigChangedNeedsRestart(old, next) {
+		t.Fatal("model change should require restart")
+	}
+}
+
+func TestConfigChangedNeedsRestart_providerAPIKeyChange(t *testing.T) {
+	old := baseDoc()
+	old.Providers = state.ProvidersConfig{"openai": {APIKey: "old-key"}}
+	next := baseDoc()
+	next.Providers = state.ProvidersConfig{"openai": {APIKey: "new-key"}}
+	if !ConfigChangedNeedsRestart(old, next) {
+		t.Fatal("provider API key change should require restart")
+	}
+}
+
+func TestConfigChangedNeedsRestart_providerAdded(t *testing.T) {
+	old := baseDoc()
+	next := baseDoc()
+	next.Providers = state.ProvidersConfig{"anthropic": {Enabled: true}}
+	if !ConfigChangedNeedsRestart(old, next) {
+		t.Fatal("adding a new provider should require restart")
+	}
+}
+
+func TestConfigChangedNeedsRestart_extensionChanged(t *testing.T) {
+	old := baseDoc()
+	old.Extra = map[string]any{"extensions": []any{"plugin-a"}}
+	next := baseDoc()
+	next.Extra = map[string]any{"extensions": []any{"plugin-a", "plugin-b"}}
+	if !ConfigChangedNeedsRestart(old, next) {
+		t.Fatal("extension change should require restart")
+	}
+}
+
+// ─── Agents config validation ─────────────────────────────────────────────────
+
+func TestValidateAgents_valid(t *testing.T) {
+	d := baseDoc()
+	d.Agents = state.AgentsConfig{
+		{ID: "main", Name: "Main Agent", Model: "echo", ToolProfile: "coding"},
+		{ID: "secondary", ToolProfile: "minimal"},
+	}
+	if err := ValidateConfig(d); err != nil {
+		t.Fatalf("expected valid agents config, got: %v", err)
+	}
+}
+
+func TestValidateAgents_missingID(t *testing.T) {
+	d := baseDoc()
+	d.Agents = state.AgentsConfig{{Name: "No ID"}}
+	if err := ValidateConfig(d); err == nil {
+		t.Fatal("expected error for agent with missing id")
+	}
+}
+
+func TestValidateAgents_duplicateID(t *testing.T) {
+	d := baseDoc()
+	d.Agents = state.AgentsConfig{
+		{ID: "main"},
+		{ID: "main"},
+	}
+	if err := ValidateConfig(d); err == nil {
+		t.Fatal("expected error for duplicate agent id")
+	}
+}
+
+func TestValidateAgents_invalidToolProfile(t *testing.T) {
+	d := baseDoc()
+	d.Agents = state.AgentsConfig{{ID: "x", ToolProfile: "ultra"}}
+	if err := ValidateConfig(d); err == nil {
+		t.Fatal("expected error for unknown tool_profile")
+	}
+}
+
 func TestNormalizeConfigRelaySets(t *testing.T) {
 	cfg := NormalizeConfig(state.ConfigDoc{
 		DM: state.DMPolicy{Policy: ""},

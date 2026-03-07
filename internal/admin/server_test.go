@@ -690,8 +690,15 @@ func TestDispatchMethodCallConfigGetResponseShape(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("config.get failed status=%d err=%v", status, err)
 	}
-	if _, ok := result.(state.ConfigDoc); !ok {
-		t.Fatalf("config.get result should be ConfigDoc, got %T (%#v)", result, result)
+	out, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("config.get result should be map[string]any, got %T (%#v)", result, result)
+	}
+	if _, hasConfig := out["config"]; !hasConfig {
+		t.Fatalf("config.get result missing 'config' key: %#v", out)
+	}
+	if hash, _ := out["base_hash"].(string); hash == "" {
+		t.Fatalf("config.get result missing 'base_hash': %#v", out)
 	}
 }
 

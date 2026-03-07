@@ -228,6 +228,53 @@ func TestParseConfigBytes_TypedSectionsMapping(t *testing.T) {
 	}
 }
 
+func TestParseConfigBytes_AgentsListPreservesMissingIDForValidation(t *testing.T) {
+	raw := []byte(`{
+		"agents": [
+			{"name":"No ID","tool_profile":"coding"},
+			{"id":"main","model":"echo"}
+		]
+	}`)
+
+	doc, err := ParseConfigBytes(raw, ".json")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if len(doc.Agents) != 2 {
+		t.Fatalf("expected both agent entries preserved, got %#v", doc.Agents)
+	}
+	if doc.Agents[0].ID != "" {
+		t.Fatalf("expected first agent ID to remain empty for validator, got %#v", doc.Agents[0])
+	}
+}
+
+func TestLoadConfigFile_YAMLAgentsNumericFields(t *testing.T) {
+	content := `
+relays:
+  read:
+    - wss://relay.yaml.example
+  write:
+    - wss://relay.yaml.example
+dm:
+  policy: open
+agents:
+  - id: main
+    heartbeat_ms: 1500
+    history_limit: 25
+`
+	path := writeTmp(t, "agents.yaml", content)
+	doc, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatalf("unexpected YAML load error: %v", err)
+	}
+	if len(doc.Agents) != 1 {
+		t.Fatalf("expected one parsed agent, got %#v", doc.Agents)
+	}
+	if doc.Agents[0].HeartbeatMS != 1500 || doc.Agents[0].HistoryLimit != 25 {
+		t.Fatalf("unexpected YAML numeric mapping: %#v", doc.Agents[0])
+	}
+}
+
 // ─── Write / round-trip ──────────────────────────────────────────────────────
 
 func TestWriteConfigFile_roundtrip(t *testing.T) {

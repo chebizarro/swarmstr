@@ -191,13 +191,22 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 	}
 
 	// ── agent / provider defaults ─────────────────────────────────────────────
-	if agentsRaw, ok := raw["agents"].(map[string]any); ok {
+	switch agentsRaw := raw["agents"].(type) {
+	case map[string]any:
+		// OpenClaw schema: {"agents": {"defaults": {"model": "..."}, "list": [...]}}
 		if defaults, ok := agentsRaw["defaults"].(map[string]any); ok {
 			if model, ok := defaults["model"].(string); ok {
 				doc.Agent.DefaultModel = strings.TrimSpace(model)
 			}
 		}
+		// Parse typed agent list if present under "list" key.
+		if list, ok := agentsRaw["list"].([]any); ok {
+			doc.Agents = parseAgentConfigList(list)
+		}
 		doc.Extra["agents"] = agentsRaw
+	case []any:
+		// Swarmstr-native typed format: agents is directly an array.
+		doc.Agents = parseAgentConfigList(agentsRaw)
 	}
 
 	// ── plugins (map to extensions in extra, matching existing Swarmstr key) ──
@@ -329,6 +338,77 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 // ──────────────────────────────────────────────────────────────────────────────
 // helpers
 // ──────────────────────────────────────────────────────────────────────────────
+
+// parseAgentConfigList converts a []any (from JSON unmarshalling) into a typed
+// AgentsConfig slice.  Unknown fields are silently ignored to stay forward-compatible.
+func parseAgentConfigList(list []any) state.AgentsConfig {
+	out := make(state.AgentsConfig, 0, len(list))
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		ac := state.AgentConfig{}
+		if v, ok := m["id"].(string); ok {
+			ac.ID = strings.TrimSpace(v)
+		}
+		if v, ok := m["name"].(string); ok {
+			ac.Name = strings.TrimSpace(v)
+		}
+		if v, ok := m["model"].(string); ok {
+			ac.Model = strings.TrimSpace(v)
+		}
+		if v, ok := m["workspace_dir"].(string); ok {
+			ac.WorkspaceDir = strings.TrimSpace(v)
+		} else if v, ok := m["workspaceDir"].(string); ok {
+			ac.WorkspaceDir = strings.TrimSpace(v)
+		}
+		if v, ok := m["tool_profile"].(string); ok {
+			ac.ToolProfile = strings.TrimSpace(v)
+		} else if v, ok := m["toolProfile"].(string); ok {
+			ac.ToolProfile = strings.TrimSpace(v)
+		}
+		if v, ok := toInt(m["heartbeat_ms"]); ok {
+			ac.HeartbeatMS = v
+		}
+		if v, ok := toInt(m["history_limit"]); ok {
+			ac.HistoryLimit = v
+		}
+		out = append(out, ac)
+	}
+	return out
+}
+
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int8:
+		return int(n), true
+	case int16:
+		return int(n), true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case uint:
+		return int(n), true
+	case uint8:
+		return int(n), true
+	case uint16:
+		return int(n), true
+	case uint32:
+		return int(n), true
+	case uint64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	case float64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
 
 func toStringSlice(v any) []string {
 	switch typed := v.(type) {
