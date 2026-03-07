@@ -400,6 +400,53 @@ func TestLoadConfigFile_nullFile(t *testing.T) {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+func TestParseConfigBytes_AgentDmPeersAndProvider(t *testing.T) {
+	raw := []byte(`{
+		"agents": [
+			{
+				"id": "support-bot",
+				"model": "echo",
+				"provider": "anthropic",
+				"dm_peers": ["abc123def456", "deadbeef0011"]
+			}
+		]
+	}`)
+	doc, err := ParseConfigBytes(raw, ".json")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if len(doc.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(doc.Agents))
+	}
+	ag := doc.Agents[0]
+	if ag.ID != "support-bot" {
+		t.Errorf("id mismatch: %q", ag.ID)
+	}
+	if ag.Provider != "anthropic" {
+		t.Errorf("provider mismatch: %q", ag.Provider)
+	}
+	if len(ag.DmPeers) != 2 {
+		t.Fatalf("expected 2 dm_peers, got %d: %v", len(ag.DmPeers), ag.DmPeers)
+	}
+	if ag.DmPeers[0] != "abc123def456" || ag.DmPeers[1] != "deadbeef0011" {
+		t.Errorf("dm_peers mismatch: %v", ag.DmPeers)
+	}
+}
+
+func TestParseConfigBytes_AgentDmPeersCamelCase(t *testing.T) {
+	// Verify camelCase alias dmPeers also parses correctly.
+	raw := []byte(`{
+		"agents": [{"id": "bot", "model": "echo", "dmPeers": ["peer1abc"]}]
+	}`)
+	doc, err := ParseConfigBytes(raw, ".json")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if len(doc.Agents) != 1 || len(doc.Agents[0].DmPeers) != 1 || doc.Agents[0].DmPeers[0] != "peer1abc" {
+		t.Errorf("camelCase dmPeers parse failed: %#v", doc.Agents)
+	}
+}
+
 func writeTmp(t *testing.T, name, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)

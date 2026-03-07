@@ -278,6 +278,161 @@ func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
 	}
 }
 
+// ─── NIP-28 Public Channel ────────────────────────────────────────────────────
+
+// NIP28PublicChannelOptions configure a NIP-28 public channel subscription.
+type NIP28PublicChannelOptions struct {
+	// ChannelID is the event ID of the kind-40 channel-creation event.
+	ChannelID string
+	// PrivateKey is the agent's Nostr private key (hex).
+	PrivateKey string
+	// Relays is the list of relay URLs to connect to.
+	Relays []string
+	// OnMessage is called for every inbound kind-42 message.
+	OnMessage func(InboundMessage)
+	// OnError is called for subscription errors (optional).
+	OnError func(error)
+}
+
+// NIP28PublicChannel subscribes to a NIP-28 public channel (kind 42) and
+// allows the agent to post replies.
+type NIP28PublicChannel struct {
+	id        string
+	channelID string
+	pk        string
+	relays    []string
+	pool      *nostr.Pool
+	cancel    context.CancelFunc
+	onMsg     func(InboundMessage)
+	onErr     func(error)
+	pubkey    string
+}
+
+// NewNIP28PublicChannel creates and starts a NIP-28 public channel subscription.
+func NewNIP28PublicChannel(parent context.Context, opts NIP28PublicChannelOptions) (*NIP28PublicChannel, error) {
+	if opts.PrivateKey == "" {
+		return nil, fmt.Errorf("private key is required")
+	}
+	if opts.ChannelID == "" {
+		return nil, fmt.Errorf("channel_id is required")
+	}
+	if len(opts.Relays) == 0 {
+		return nil, fmt.Errorf("at least one relay is required for nip28 channel")
+	}
+
+	pubkey, err := derivePubKey(opts.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("derive pubkey: %w", err)
+	}
+
+	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	ctx, cancel := context.WithCancel(parent)
+
+	ch := &NIP28PublicChannel{
+		id:        opts.ChannelID,
+		channelID: opts.ChannelID,
+		pk:        opts.PrivateKey,
+		relays:    opts.Relays,
+		pool:      pool,
+		cancel:    cancel,
+		onMsg:     opts.OnMessage,
+		onErr:     opts.OnError,
+		pubkey:    pubkey,
+	}
+
+	go ch.subscribeLoop(ctx)
+	return ch, nil
+}
+
+// ID implements Channel.
+func (c *NIP28PublicChannel) ID() string { return "nip28:" + c.channelID }
+
+// Type implements Channel.
+func (c *NIP28PublicChannel) Type() string { return "nip28-public" }
+
+// Send posts a kind-42 message to the channel.
+func (c *NIP28PublicChannel) Send(ctx context.Context, text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("text must not be empty")
+	}
+
+	sk, err := parseHexSecretKey(c.pk)
+	if err != nil {
+		return fmt.Errorf("parse private key: %w", err)
+	}
+
+	evt := nostr.Event{
+		Kind:      nostr.KindChannelMessage,
+		Content:   text,
+		CreatedAt: nostr.Timestamp(time.Now().Unix()),
+		Tags: nostr.Tags{
+			{"e", c.channelID, "", "root"},
+		},
+	}
+	if err := evt.Sign(sk); err != nil {
+		return fmt.Errorf("sign channel message: %w", err)
+	}
+
+	var lastErr error
+	for _, relay := range c.relays {
+		r, connErr := c.pool.EnsureRelay(relay)
+		if connErr != nil {
+			lastErr = connErr
+			continue
+		}
+		if pubErr := r.Publish(ctx, evt); pubErr != nil {
+			lastErr = pubErr
+			continue
+		}
+		return nil // published to at least one relay
+	}
+	if lastErr != nil {
+		return fmt.Errorf("nip28 send failed on all relays: %w", lastErr)
+	}
+	return fmt.Errorf("no relays available")
+}
+
+// Close shuts down the subscription.
+func (c *NIP28PublicChannel) Close() {
+	c.cancel()
+	c.pool.Close("nip28 channel closed")
+}
+
+// subscribeLoop listens for kind-42 messages on the configured relays.
+func (c *NIP28PublicChannel) subscribeLoop(ctx context.Context) {
+	since := nostr.Timestamp(time.Now().Unix())
+	filter := nostr.Filter{
+		Kinds: []nostr.Kind{nostr.KindChannelMessage},
+		Tags:  nostr.TagMap{"e": []string{c.channelID}},
+		Since: since,
+	}
+
+	sub := c.pool.SubscribeMany(ctx, c.relays, filter, nostr.SubscriptionOptions{})
+	for ev := range sub {
+		if ev.PubKey.Hex() == c.pubkey {
+			continue // skip our own messages
+		}
+		if c.onMsg == nil {
+			continue
+		}
+		channelID := c.channelID
+		senderHex := ev.PubKey.Hex()
+		evIDHex := ev.ID.Hex()
+		c.onMsg(InboundMessage{
+			ChannelID:  c.ID(),
+			GroupID:    channelID,
+			FromPubKey: senderHex,
+			Text:       ev.Content,
+			EventID:    evIDHex,
+			CreatedAt:  int64(ev.CreatedAt),
+			Reply: func(replyCtx context.Context, text string) error {
+				return c.Send(replyCtx, text)
+			},
+		})
+	}
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 // derivePubKey derives the hex public key from a hex-encoded secret key.

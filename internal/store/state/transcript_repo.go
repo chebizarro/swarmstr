@@ -93,6 +93,9 @@ func (r *TranscriptRepository) ListSession(ctx context.Context, sessionID string
 
 	out := make([]TranscriptEntryDoc, 0, len(byEntryID))
 	for _, doc := range byEntryID {
+		if doc.Deleted {
+			continue // skip tombstoned entries
+		}
 		out = append(out, doc)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -105,6 +108,43 @@ func (r *TranscriptRepository) ListSession(ctx context.Context, sessionID string
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// DeleteEntry tombstones a transcript entry so it is excluded from future ListSession results.
+// The underlying Nostr event is overwritten (PutReplaceable) with a deleted=true marker.
+func (r *TranscriptRepository) DeleteEntry(ctx context.Context, sessionID, entryID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
+	if entryID == "" {
+		return fmt.Errorf("entry_id is required")
+	}
+	tombstone := TranscriptEntryDoc{
+		Version:   1,
+		SessionID: sessionID,
+		EntryID:   entryID,
+		Role:      "deleted",
+		Text:      "",
+		Unix:      time.Now().Unix(),
+		Deleted:   true,
+	}
+	raw, err := encodeEnvelopePayload("transcript_entry_doc", tombstone, r.codec)
+	if err != nil {
+		return err
+	}
+	dTag := fmt.Sprintf("swarmstr:tx:%s:%s", sessionID, entryID)
+	tags := [][]string{
+		{"session", protectedTagValue(sessionID)},
+		{"entry", entryID},
+		{"role", "deleted"},
+		{"t", "transcript"},
+	}
+	_, err = r.store.PutReplaceable(ctx, Address{
+		Kind:   events.KindTranscriptDoc,
+		PubKey: r.author,
+		DTag:   dTag,
+	}, raw, tags)
+	return err
 }
 
 func (r *TranscriptRepository) decodeTranscriptEvent(evt Event) (TranscriptEntryDoc, error) {

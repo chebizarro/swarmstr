@@ -51,6 +51,14 @@ const (
 	// EventChannelMessage is emitted when a message arrives on or is sent to
 	// a channel (NIP-29 group or other).
 	EventChannelMessage = "channel.message"
+
+	// EventNodePairRequested is emitted when a node pair request is received.
+	EventNodePairRequested = "node.pair.requested"
+	// EventNodePairResolved is emitted when a node pair request is approved or rejected.
+	EventNodePairResolved = "node.pair.resolved"
+
+	// EventDevicePairResolved is emitted when a device pair request is approved or rejected.
+	EventDevicePairResolved = "device.pair.resolved"
 )
 
 // AllPushEvents is the canonical ordered list of events the server may push.
@@ -71,6 +79,9 @@ var AllPushEvents = []string{
 	EventVoicewake,
 	EventUpdateAvailable,
 	EventChannelMessage,
+	EventNodePairRequested,
+	EventNodePairResolved,
+	EventDevicePairResolved,
 	// Presence events are also emitted by the ws runtime itself.
 	"presence.updated",
 	"connect.challenge",
@@ -213,6 +224,38 @@ type ChannelMessagePayload struct {
 	From      string `json:"from,omitempty"`
 	Text      string `json:"text,omitempty"`
 	EventID   string `json:"event_id,omitempty"`
+}
+
+// PluginLoadedPayload is the payload for EventPluginLoaded.
+type PluginLoadedPayload struct {
+	TS       int64  `json:"ts_ms"`
+	PluginID string `json:"plugin_id"`
+	Version  string `json:"version,omitempty"`
+	Action   string `json:"action"` // "loaded" | "reloaded" | "installed"
+}
+
+// NodePairRequestedPayload is the payload for EventNodePairRequested.
+type NodePairRequestedPayload struct {
+	TS        int64  `json:"ts_ms"`
+	RequestID string `json:"request_id"`
+	NodeID    string `json:"node_id,omitempty"`
+	Label     string `json:"label,omitempty"`
+}
+
+// NodePairResolvedPayload is the payload for EventNodePairResolved.
+type NodePairResolvedPayload struct {
+	TS        int64  `json:"ts_ms"`
+	RequestID string `json:"request_id"`
+	NodeID    string `json:"node_id,omitempty"`
+	Decision  string `json:"decision"` // "approved" | "rejected"
+}
+
+// DevicePairResolvedPayload is the payload for EventDevicePairResolved.
+type DevicePairResolvedPayload struct {
+	TS       int64  `json:"ts_ms"`
+	DeviceID string `json:"device_id,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Decision string `json:"decision"` // "approved" | "rejected"
 }
 
 // ─── TickEmitter helper ───────────────────────────────────────────────────────

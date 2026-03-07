@@ -51,6 +51,8 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 		EventExecApprovalRequested, EventExecApprovalResolved,
 		EventVoicewake, EventUpdateAvailable,
 		EventChannelMessage,
+		EventNodePairRequested, EventNodePairResolved,
+		EventDevicePairResolved, EventPluginLoaded,
 	}
 	set := make(map[string]struct{}, len(AllPushEvents))
 	for _, e := range AllPushEvents {
@@ -122,5 +124,29 @@ func TestNewPayloadTypes(t *testing.T) {
 	}
 	if cp.ChannelID != "ch1" {
 		t.Errorf("expected ch1, got %q", cp.ChannelID)
+	}
+}
+
+func TestPairingAndPluginPayloads(t *testing.T) {
+	e := &captureEmitter{}
+
+	e.Emit(EventNodePairRequested, NodePairRequestedPayload{RequestID: "req-1", Label: "My Node"})
+	e.Emit(EventNodePairResolved, NodePairResolvedPayload{RequestID: "req-1", Decision: "approved"})
+	e.Emit(EventDevicePairResolved, DevicePairResolvedPayload{DeviceID: "dev-1", Decision: "rejected"})
+	e.Emit(EventPluginLoaded, PluginLoadedPayload{PluginID: "my-plugin", Action: "installed"})
+
+	if e.Count() != 4 {
+		t.Fatalf("expected 4 events, got %d", e.Count())
+	}
+	name, payload := e.Last()
+	if name != EventPluginLoaded {
+		t.Errorf("expected plugin.loaded, got %q", name)
+	}
+	pp, ok := payload.(PluginLoadedPayload)
+	if !ok {
+		t.Fatalf("expected PluginLoadedPayload, got %T", payload)
+	}
+	if pp.Action != "installed" {
+		t.Errorf("expected action=installed, got %q", pp.Action)
 	}
 }

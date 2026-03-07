@@ -116,6 +116,26 @@ func (i *Index) Search(query string, limit int) []IndexedMemory {
 	return results
 }
 
+// Count returns the total number of indexed memory entries.
+func (i *Index) Count() int {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return len(i.docs)
+}
+
+// SessionCount returns the number of distinct session IDs in the index.
+func (i *Index) SessionCount() int {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	sessions := map[string]struct{}{}
+	for _, doc := range i.docs {
+		if doc.SessionID != "" {
+			sessions[doc.SessionID] = struct{}{}
+		}
+	}
+	return len(sessions)
+}
+
 func (i *Index) ListSession(sessionID string, limit int) []IndexedMemory {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil

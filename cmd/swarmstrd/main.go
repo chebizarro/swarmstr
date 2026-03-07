@@ -21,7 +21,10 @@ import (
 
 	"swarmstr/internal/admin"
 	"swarmstr/internal/agent"
+	browserpkg "swarmstr/internal/browser"
 	"swarmstr/internal/config"
+	"swarmstr/internal/cron"
+	"swarmstr/internal/update"
 	"swarmstr/internal/gateway/channels"
 	"swarmstr/internal/gateway/methods"
 	gatewayprotocol "swarmstr/internal/gateway/protocol"
@@ -35,6 +38,13 @@ import (
 	"swarmstr/internal/policy"
 	"swarmstr/internal/store/state"
 )
+
+// version is set at build time via -ldflags "-X main.version=<tag>".
+// It defaults to "0.0.0-dev" for local builds.
+var version = "0.0.0-dev"
+
+// controlUpdateChecker is the shared version checker; initialised in main().
+var controlUpdateChecker *update.Checker
 
 var (
 	controlAgentRuntime    agent.Runtime
@@ -64,6 +74,11 @@ var (
 
 	// controlPluginMgr is the live Goja plugin manager; nil if no plugins are loaded.
 	controlPluginMgr *pluginmanager.GojaPluginManager
+
+	// controlCronExecutor dispatches a gateway method from the cron scheduler.
+	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
+	controlCronExecutorMu sync.RWMutex
+	controlCronExecutor   func(ctx context.Context, method string, params json.RawMessage) (any, error)
 )
 
 func main() {
@@ -259,6 +274,13 @@ func main() {
 	controlWizards = wizards
 	controlOps = ops
 
+	// Initialise the version checker. update_check_url from config extra overrides the default.
+	updateCheckURL := ""
+	if u, ok := configState.Get().Extra["update_check_url"].(string); ok {
+		updateCheckURL = strings.TrimSpace(u)
+	}
+	controlUpdateChecker = update.NewChecker(version, updateCheckURL)
+
 	// Multi-agent runtime registry: maps agent IDs to their Runtime instances.
 	// "main" / "" always resolves to agentRuntime (the default).
 	agentRegistry := agent.NewAgentRuntimeRegistry(agentRuntime)
@@ -321,6 +343,57 @@ func main() {
 				continue
 			}
 			log.Printf("auto-join nip29 channel joined name=%s group=%s id=%s", localChanName, localChanCfg.GroupAddress, ch.ID())
+		case state.NostrChannelKindNIP28:
+			if chanCfg.ChannelID == "" {
+				log.Printf("auto-join skip: nostr_channels.%s has no channel_id", chanName)
+				continue
+			}
+			relays := chanCfg.Relays
+			if len(relays) == 0 {
+				relays = configState.Get().Relays.Read
+			}
+			if len(relays) == 0 {
+				log.Printf("auto-join skip: nostr_channels.%s (nip28) has no relays configured", chanName)
+				continue
+			}
+			localChanCfg := chanCfg
+			localChanName := chanName
+			ch28, chErr := channels.NewNIP28PublicChannel(ctx, channels.NIP28PublicChannelOptions{
+				ChannelID:  localChanCfg.ChannelID,
+				PrivateKey: controlPrivateKey,
+				Relays:     relays,
+				OnMessage: func(msg channels.InboundMessage) {
+					activeAgentID, rt := resolveInboundChannelRuntime(localChanCfg.AgentID, msg.ChannelID)
+					turnCtx, release := chatCancels.Begin(msg.ChannelID, ctx)
+					go func() {
+						defer release()
+						result, turnErr := rt.ProcessTurn(turnCtx, agent.Turn{
+							SessionID: msg.ChannelID,
+							UserText:  msg.Text,
+						})
+						if turnErr != nil {
+							log.Printf("auto-join nip28 agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
+							return
+						}
+						if err := msg.Reply(turnCtx, result.Text); err != nil {
+							log.Printf("auto-join nip28 reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
+						}
+					}()
+				},
+				OnError: func(err error) {
+					log.Printf("auto-join nip28 error name=%s channel=%s err=%v", localChanName, localChanCfg.ChannelID, err)
+				},
+			})
+			if chErr != nil {
+				log.Printf("auto-join nip28 failed name=%s channel=%s err=%v", localChanName, localChanCfg.ChannelID, chErr)
+				continue
+			}
+			if addErr := channelReg.Add(ch28); addErr != nil {
+				ch28.Close()
+				log.Printf("auto-join nip28 channel add failed name=%s err=%v", localChanName, addErr)
+				continue
+			}
+			log.Printf("auto-join nip28 channel joined name=%s channel_id=%s id=%s", localChanName, localChanCfg.ChannelID, ch28.ID())
 		default:
 			log.Printf("auto-join skip: nostr_channels.%s kind=%q not yet supported for auto-join", chanName, chanCfg.Kind)
 		}
@@ -342,6 +415,68 @@ func main() {
 		}
 	} else {
 		log.Printf("pre-load agents warning: %v", listErr)
+	}
+
+	// Auto-provision agents declared in the typed Agents config section.
+	// These complement persisted agents (loaded above from Nostr docs).
+	// Config-declared agents take lower precedence: if an agent ID is already
+	// in the registry from a Nostr doc, its runtime is preserved.
+	// Provider overrides from cfg.Providers are applied when the agent names a provider.
+	if configAgents := configState.Get().Agents; len(configAgents) > 0 {
+		registeredIDs := make(map[string]bool)
+		for _, id := range agentRegistry.Registered() {
+			registeredIDs[id] = true
+		}
+		providers := configState.Get().Providers
+		for _, agCfg := range configAgents {
+			agentID := strings.TrimSpace(agCfg.ID)
+			if agentID == "" || agentID == "main" {
+				continue
+			}
+			model := strings.TrimSpace(agCfg.Model)
+			if model == "" {
+				continue
+			}
+			if registeredIDs[agentID] {
+				log.Printf("agent config: id=%s already loaded from Nostr docs, skipping auto-provision", agentID)
+				continue
+			}
+			// Resolve provider override: explicit provider name wins; if none is
+			// specified, auto-resolve from model name (e.g. "claude-*" → "anthropic"
+			// providers entry, "gpt-*" → "openai" providers entry).
+			var override agent.ProviderOverride
+			if provName := strings.TrimSpace(agCfg.Provider); provName != "" {
+				if pe, ok := providers[provName]; ok {
+					override = agent.ProviderOverride{
+						BaseURL: pe.BaseURL,
+						APIKey:  pe.APIKey,
+						Model:   pe.Model,
+					}
+				}
+			} else {
+				override = autoResolveProviderOverride(model, providers)
+			}
+			rt, rtErr := agent.BuildRuntimeWithOverride(model, override, tools)
+			if rtErr != nil {
+				log.Printf("agent config auto-provision warning id=%s model=%q provider=%q err=%v", agentID, model, agCfg.Provider, rtErr)
+				continue
+			}
+			agentRegistry.Set(agentID, rt)
+			log.Printf("agent config auto-provisioned id=%s model=%q provider=%q", agentID, model, agCfg.Provider)
+			// Pre-seed DM peer routing: each dm_peers pubkey is routed to this agent.
+			for _, peerPubkey := range agCfg.DmPeers {
+				peerPubkey = strings.TrimSpace(peerPubkey)
+				if peerPubkey == "" {
+					continue
+				}
+				sessionRouter.Assign(peerPubkey, agentID)
+				preview := peerPubkey
+				if len(preview) > 12 {
+					preview = preview[:12] + "..."
+				}
+				log.Printf("agent config dm-peer routed peer=%s → agent=%s", preview, agentID)
+			}
+		}
 	}
 
 	// Pre-seed session→agent assignments from persisted session meta.
@@ -1155,6 +1290,86 @@ func main() {
 		}()
 	}
 
+	// ── Cron auto-scheduler ─────────────────────────────────────────────────────
+	// Register the daemon-internal RPC executor so the scheduler can fire jobs.
+	daemonPubKey := bus.PublicKey()
+	controlCronExecutorMu.Lock()
+	controlCronExecutor = func(execCtx context.Context, method string, params json.RawMessage) (any, error) {
+		res, err := handleControlRPCRequest(execCtx,
+			nostruntime.ControlRPCInbound{
+				FromPubKey: daemonPubKey,
+				Method:     method,
+				Params:     params,
+			},
+			bus, controlBus, chatCancels, usageState, logBuffer, channelState,
+			docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return res.Result, nil
+	}
+	controlCronExecutorMu.Unlock()
+
+	// Scheduler goroutine: ticks every minute and fires enabled cron jobs.
+	go func() {
+		for {
+			now := time.Now()
+			next := now.Truncate(time.Minute).Add(time.Minute)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Until(next)):
+			}
+			tickTime := time.Now().Truncate(time.Minute)
+			jobs := controlCronJobs.List(1000)
+			for _, job := range jobs {
+				if !job.Enabled {
+					continue
+				}
+				sched, parseErr := cron.Parse(job.Schedule)
+				if parseErr != nil {
+					log.Printf("cron scheduler: job %s has invalid schedule %q: %v", job.ID, job.Schedule, parseErr)
+					continue
+				}
+				if !sched.Matches(tickTime) {
+					continue
+				}
+				jobCopy := job
+				go func() {
+					emitControlWSEvent(gatewayws.EventCronTick, gatewayws.CronTickPayload{
+						TS:    tickTime.UnixMilli(),
+						JobID: jobCopy.ID,
+					})
+					started := time.Now()
+					jobCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+					defer cancel()
+					_, execErr := func() (any, error) {
+						controlCronExecutorMu.RLock()
+						exec := controlCronExecutor
+						controlCronExecutorMu.RUnlock()
+						if exec == nil {
+							return nil, fmt.Errorf("cron executor not ready")
+						}
+						return exec(jobCtx, jobCopy.Method, jobCopy.Params)
+					}()
+					status := "ok"
+					if execErr != nil {
+						status = "error"
+						log.Printf("cron job %s (%s) failed: %v", jobCopy.ID, jobCopy.Method, execErr)
+					}
+					controlCronJobs.RecordRun(jobCopy.ID, status, time.Since(started).Milliseconds())
+					emitControlWSEvent(gatewayws.EventCronResult, gatewayws.CronResultPayload{
+						TS:         time.Now().UnixMilli(),
+						JobID:      jobCopy.ID,
+						Succeeded:  status == "ok",
+						DurationMS: time.Since(started).Milliseconds(),
+					})
+				}()
+			}
+		}
+	}()
+
 	fmt.Printf("swarmstrd running pubkey=%s relays=%d state_store=nostr dm_policy=%s admin=%s\n",
 		bus.PublicKey(), len(cfg.Relays), configState.Get().DM.Policy, adminAddr)
 	<-ctx.Done()
@@ -1607,7 +1822,21 @@ func handleControlRPCRequest(
 	case methods.MethodHealth:
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
 	case methods.MethodDoctorMemoryStatus:
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "index": map[string]any{"available": memoryIndex != nil}}}, nil
+		indexAvailable := memoryIndex != nil
+		entryCount := 0
+		sessionCount := 0
+		if memoryIndex != nil {
+			entryCount = memoryIndex.Count()
+			sessionCount = memoryIndex.SessionCount()
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"ok": true,
+			"index": map[string]any{
+				"available":     indexAvailable,
+				"entry_count":   entryCount,
+				"session_count": sessionCount,
+			},
+		}}, nil
 	case methods.MethodLogsTail:
 		req, err := methods.DecodeLogsTailParams(in.Params)
 		if err != nil {
@@ -2099,16 +2328,25 @@ func handleControlRPCRequest(
 		if dropped < 0 {
 			dropped = 0
 		}
+		// Tombstone entries that are older than the keep window.
+		// entries is sorted oldest-first; drop the first `dropped` entries.
+		deleteErrors := 0
+		for i := 0; i < dropped; i++ {
+			if delErr := transcriptRepo.DeleteEntry(ctx, req.SessionID, entries[i].EntryID); delErr != nil {
+				log.Printf("sessions.compact: delete entry %s: %v", entries[i].EntryID, delErr)
+				deleteErrors++
+			}
+		}
 		session.Meta = mergeSessionMeta(session.Meta, map[string]any{
 			"compacted_at":              time.Now().Unix(),
 			"compacted_keep":            req.Keep,
 			"compacted_from_entries":    len(entries),
-			"compacted_dropped_entries": dropped,
+			"compacted_dropped_entries": dropped - deleteErrors,
 		})
 		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped - deleteErrors}}, nil
 	case methods.MethodAgentsList:
 		req, err := methods.DecodeAgentsListParams(in.Params)
 		if err != nil {
@@ -2582,6 +2820,15 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		requestID := ""
+		if id, ok := out["request_id"].(string); ok {
+			requestID = id
+		}
+		emitControlWSEvent(gatewayws.EventNodePairRequested, gatewayws.NodePairRequestedPayload{
+			TS:        time.Now().UnixMilli(),
+			RequestID: requestID,
+			Label:     req.DisplayName,
+		})
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodNodePairList:
 		req, err := methods.DecodeNodePairListParams(in.Params)
@@ -2610,6 +2857,18 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		nodeID := ""
+		if node, ok := out["node"].(map[string]any); ok {
+			if id, ok := node["id"].(string); ok {
+				nodeID = id
+			}
+		}
+		emitControlWSEvent(gatewayws.EventNodePairResolved, gatewayws.NodePairResolvedPayload{
+			TS:        time.Now().UnixMilli(),
+			RequestID: req.RequestID,
+			NodeID:    nodeID,
+			Decision:  "approved",
+		})
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodNodePairReject:
 		req, err := methods.DecodeNodePairRejectParams(in.Params)
@@ -2624,6 +2883,18 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		nodeID := ""
+		if node, ok := out["node"].(map[string]any); ok {
+			if id, ok := node["id"].(string); ok {
+				nodeID = id
+			}
+		}
+		emitControlWSEvent(gatewayws.EventNodePairResolved, gatewayws.NodePairResolvedPayload{
+			TS:        time.Now().UnixMilli(),
+			RequestID: req.RequestID,
+			NodeID:    nodeID,
+			Decision:  "rejected",
+		})
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodNodePairVerify:
 		req, err := methods.DecodeNodePairVerifyParams(in.Params)
@@ -2666,6 +2937,22 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		deviceID := ""
+		label := ""
+		if device, ok := out["device"].(map[string]any); ok {
+			if id, ok := device["id"].(string); ok {
+				deviceID = id
+			}
+			if l, ok := device["label"].(string); ok {
+				label = l
+			}
+		}
+		emitControlWSEvent(gatewayws.EventDevicePairResolved, gatewayws.DevicePairResolvedPayload{
+			TS:       time.Now().UnixMilli(),
+			DeviceID: deviceID,
+			Label:    label,
+			Decision: "approved",
+		})
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodDevicePairReject:
 		req, err := methods.DecodeDevicePairRejectParams(in.Params)
@@ -2680,6 +2967,17 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		deviceID := ""
+		if device, ok := out["device"].(map[string]any); ok {
+			if id, ok := device["id"].(string); ok {
+				deviceID = id
+			}
+		}
+		emitControlWSEvent(gatewayws.EventDevicePairResolved, gatewayws.DevicePairResolvedPayload{
+			TS:       time.Now().UnixMilli(),
+			DeviceID: deviceID,
+			Decision: "rejected",
+		})
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodDevicePairRemove:
 		req, err := methods.DecodeDevicePairRemoveParams(in.Params)
@@ -3694,6 +3992,40 @@ func setControlWSEmitter(emitter gatewayws.EventEmitter) {
 	controlWsEmitter = emitter
 }
 
+// autoResolveProviderOverride infers a ProviderOverride from the model name and
+// the configured providers map.  It enables zero-config usage: a model named
+// "claude-3-5-sonnet-20241022" will automatically pick up an "anthropic" entry
+// from providers[], or fall back to env vars (handled by BuildRuntimeForModel).
+func autoResolveProviderOverride(model string, providers map[string]state.ProviderEntry) agent.ProviderOverride {
+	if providers == nil {
+		return agent.ProviderOverride{}
+	}
+	norm := strings.ToLower(strings.TrimSpace(model))
+
+	// Determine which provider family the model belongs to.
+	var family string
+	switch {
+	case norm == "anthropic" || strings.HasPrefix(norm, "claude-"):
+		family = "anthropic"
+	case norm == "openai" || strings.HasPrefix(norm, "gpt-") || strings.HasPrefix(norm, "o1-") || strings.HasPrefix(norm, "o3-") || strings.HasPrefix(norm, "o4-"):
+		family = "openai"
+	default:
+		return agent.ProviderOverride{}
+	}
+
+	// Look for an exact match first (e.g. providers["anthropic"]).
+	if pe, ok := providers[family]; ok {
+		return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: pe.APIKey, Model: pe.Model}
+	}
+	// Also scan for any entry with a matching family prefix in its key.
+	for key, pe := range providers {
+		if strings.HasPrefix(strings.ToLower(key), family) {
+			return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: pe.APIKey, Model: pe.Model}
+		}
+	}
+	return agent.ProviderOverride{}
+}
+
 func emitControlWSEvent(event string, payload any) {
 	controlWsEmitterMu.RLock()
 	emitter := controlWsEmitter
@@ -4459,7 +4791,17 @@ func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any
 	}
 
 	agentIDNorm := defaultAgentID(agentID)
-	workspaceDir := skillspkg.WorkspaceDir(cfg.Extra, agentIDNorm)
+	// Prefer workspace_dir from the typed Agents config for this agent.
+	workspaceDir := ""
+	for _, agCfg := range cfg.Agents {
+		if strings.TrimSpace(agCfg.ID) == agentIDNorm && strings.TrimSpace(agCfg.WorkspaceDir) != "" {
+			workspaceDir = strings.TrimSpace(agCfg.WorkspaceDir)
+			break
+		}
+	}
+	if workspaceDir == "" {
+		workspaceDir = skillspkg.WorkspaceDir(cfg.Extra, agentIDNorm)
+	}
 	managedSkillsDir := ""
 
 	skillsList := make([]map[string]any, 0)
@@ -4815,6 +5157,17 @@ func applyPluginInstallRuntime(ctx context.Context, docsRepo *state.DocsReposito
 	if installResult.Stderr != "" {
 		result["stderr"] = installResult.Stderr
 	}
+	// Notify WS clients that a plugin was installed.
+	version := ""
+	if v, ok := record["version"].(string); ok {
+		version = v
+	}
+	emitControlWSEvent(gatewayws.EventPluginLoaded, gatewayws.PluginLoadedPayload{
+		TS:       time.Now().UnixMilli(),
+		PluginID: req.PluginID,
+		Version:  version,
+		Action:   "installed",
+	})
 	return result, nil
 }
 
@@ -5725,6 +6078,9 @@ func applyCronAdd(reg *cronRegistry, req methods.CronAddRequest) (map[string]any
 	if reg == nil {
 		return nil, fmt.Errorf("cron runtime not configured")
 	}
+	if _, err := cron.Parse(req.Schedule); err != nil {
+		return nil, fmt.Errorf("invalid cron schedule %q: %w", req.Schedule, err)
+	}
 	job := reg.Add(req)
 	return map[string]any{"ok": true, "job": job}, nil
 }
@@ -5732,6 +6088,11 @@ func applyCronAdd(reg *cronRegistry, req methods.CronAddRequest) (map[string]any
 func applyCronUpdate(reg *cronRegistry, req methods.CronUpdateRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	if req.Schedule != "" {
+		if _, err := cron.Parse(req.Schedule); err != nil {
+			return nil, fmt.Errorf("invalid cron schedule %q: %w", req.Schedule, err)
+		}
 	}
 	job, err := reg.Update(req)
 	if err != nil {
@@ -5943,12 +6304,37 @@ func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[
 	if reg == nil {
 		return nil, fmt.Errorf("update runtime not configured")
 	}
-	emitControlWSEvent(gatewayws.EventUpdateAvailable, gatewayws.UpdateAvailablePayload{
-		TS:     time.Now().UnixMilli(),
-		Source: "update.run",
-	})
 	checkedAt := reg.RecordUpdateCheck()
-	return map[string]any{"ok": true, "status": "checked", "force": req.Force, "checked_at_ms": checkedAt}, nil
+
+	// Use the shared version checker (initialised in main).
+	// Fall back gracefully if it hasn't been set up yet (test environments).
+	if controlUpdateChecker == nil {
+		return map[string]any{"ok": true, "status": "checker_unavailable", "checked_at_ms": checkedAt}, nil
+	}
+
+	result := controlUpdateChecker.Check(context.Background(), req.Force)
+
+	out := map[string]any{
+		"ok":              true,
+		"current_version": result.Current,
+		"latest_version":  result.Latest,
+		"update_available": result.Available,
+		"checked_at_ms":   result.CheckedAt,
+	}
+	if result.Error != "" {
+		out["error"] = result.Error
+		out["status"] = "error"
+	} else if result.Available {
+		out["status"] = "update_available"
+		emitControlWSEvent(gatewayws.EventUpdateAvailable, gatewayws.UpdateAvailablePayload{
+			TS:      result.CheckedAt,
+			Version: result.Latest,
+			Source:  "update.run",
+		})
+	} else {
+		out["status"] = "up_to_date"
+	}
+	return out, nil
 }
 
 func applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[string]any, error) {
@@ -6020,8 +6406,55 @@ func applySend(ctx context.Context, dmBus nostruntime.DMTransport, req methods.S
 	return map[string]any{"runId": req.IdempotencyKey, "messageId": messageID, "channel": "nostr"}, nil
 }
 
-func applyBrowserRequest(_ methods.BrowserRequestRequest) (map[string]any, error) {
-	return map[string]any{}, fmt.Errorf("browser control is disabled")
+func applyBrowserRequest(req methods.BrowserRequestRequest) (map[string]any, error) {
+	// browser.request routes through a local browser proxy (e.g. a Playwright/CDP
+	// HTTP proxy).  The proxy base URL is configured via SWARMSTR_BROWSER_URL.
+	// When the env var is absent, the browser control is considered disabled.
+	proxyBase := strings.TrimRight(os.Getenv("SWARMSTR_BROWSER_URL"), "/")
+	if proxyBase == "" {
+		return nil, fmt.Errorf("browser control is disabled")
+	}
+
+	// Build the full URL: proxy base + the relative path from the request.
+	fullURL := proxyBase + req.Path
+
+	// Build header map from the request (currently schema doesn't expose headers
+	// but we forward Accept if the caller set it via body workaround).
+	headers := map[string]string{
+		"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+	}
+
+	// Convert body from interface{} to something Fetch can handle.
+	var bodyVal any
+	if req.Body != nil {
+		bodyVal = req.Body
+	}
+
+	fetchResp, err := browserpkg.Fetch(context.Background(), browserpkg.Request{
+		Method:    req.Method,
+		URL:       fullURL,
+		Query:     req.Query,
+		Headers:   headers,
+		Body:      bodyVal,
+		TimeoutMS: req.TimeoutMS,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("browser.request: %w", err)
+	}
+
+	out := map[string]any{
+		"ok":           true,
+		"status_code":  fetchResp.StatusCode,
+		"content_type": fetchResp.ContentType,
+		"url":          fetchResp.URL,
+	}
+	if fetchResp.Text != "" {
+		out["text"] = fetchResp.Text
+	}
+	if fetchResp.Body != "" {
+		out["body"] = fetchResp.Body
+	}
+	return out, nil
 }
 
 func applyVoicewakeGet(reg *operationsRegistry, _ methods.VoicewakeGetRequest) (map[string]any, error) {
