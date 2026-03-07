@@ -170,11 +170,13 @@ func Start(ctx context.Context, opts ServerOptions) error {
 		if opts.StatusRelays != nil {
 			relays = opts.StatusRelays()
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"pubkey":         opts.Status.PubKey,
-			"relays":         relays,
-			"dm_policy":      dmPolicy,
-			"uptime_seconds": int(time.Since(opts.Status.Started).Seconds()),
+		writeJSON(w, http.StatusOK, methods.StatusResponse{
+			PubKey:        opts.Status.PubKey,
+			Relays:        relays,
+			DMPolicy:      dmPolicy,
+			UptimeSeconds: int(time.Since(opts.Status.Started).Seconds()),
+			UptimeMS:      time.Since(opts.Status.Started).Milliseconds(),
+			Version:       "swarmstrd",
 		})
 	}))
 	mux.HandleFunc("/memory/search", withAuth(opts.Token, func(w http.ResponseWriter, r *http.Request) {
@@ -483,6 +485,8 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			Relays:        relays,
 			DMPolicy:      dmPolicy,
 			UptimeSeconds: int(time.Since(opts.Status.Started).Seconds()),
+			UptimeMS:      time.Since(opts.Status.Started).Milliseconds(),
+			Version:       "swarmstrd",
 		}, http.StatusOK, nil
 	case methods.MethodUsageStatus:
 		if opts.UsageStatus == nil {

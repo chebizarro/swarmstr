@@ -57,6 +57,13 @@ var (
 	// requires a daemon restart.  The restart goroutine drains this channel,
 	// emits EventShutdown, waits for the specified delay, then cancels the main context.
 	controlRestartCh = make(chan int, 4)
+
+	// controlToolRegistry is the base tool registry used by agent runtimes.
+	// Stored globally so the MethodAgent handler can build profile-filtered runtimes.
+	controlToolRegistry *agent.ToolRegistry
+
+	// controlPluginMgr is the live Goja plugin manager; nil if no plugins are loaded.
+	controlPluginMgr *pluginmanager.GojaPluginManager
 )
 
 func main() {
@@ -175,6 +182,7 @@ func main() {
 		}
 	}()
 	tools := agent.NewToolRegistry()
+	controlToolRegistry = tools
 	tools.Register("memory.search", func(_ context.Context, args map[string]any) (string, error) {
 		query := agent.ArgString(args, "query")
 		if query == "" {
@@ -215,6 +223,7 @@ func main() {
 	// Load Goja (JS) plugins from config and register their tools.
 	pluginHost := pluginmanager.BuildHost(configState, agentRuntime)
 	pluginMgr := pluginmanager.New(pluginHost)
+	controlPluginMgr = pluginMgr
 	if loadErr := pluginMgr.Load(ctx, configState.Get()); loadErr != nil {
 		log.Printf("plugin manager load warning: %v", loadErr)
 	}
@@ -1715,11 +1724,17 @@ func handleControlRPCRequest(
 		})
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "channel_id": req.ChannelID}}, nil
 	case methods.MethodStatus:
+		pubkey := ""
+		if dmBus != nil {
+			pubkey = dmBus.PublicKey()
+		}
 		return nostruntime.ControlRPCResult{Result: methods.StatusResponse{
-			PubKey:        dmBus.PublicKey(),
+			PubKey:        pubkey,
 			Relays:        cfg.Relays.Read,
 			DMPolicy:      cfg.DM.Policy,
 			UptimeSeconds: int(time.Since(startedAt).Seconds()),
+			UptimeMS:      time.Since(startedAt).Milliseconds(),
+			Version:       "swarmstrd",
 		}}, nil
 	case methods.MethodUsageStatus:
 		if usageState == nil {
@@ -1778,6 +1793,8 @@ func handleControlRPCRequest(
 		if rt == nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("agent runtime not configured")
 		}
+		// Apply profile-based tool filtering when the agent has a non-full profile.
+		rt = applyAgentProfileFilter(ctx, rt, req.SessionID, cfg, docsRepo)
 		runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 		snapshot := controlAgentJobs.Begin(runID, req.SessionID)
 		go executeAgentRun(runID, req, rt, controlAgentJobs)
@@ -3536,6 +3553,62 @@ controlListPreconditionsSatisfied:
 	default:
 		return nostruntime.ControlRPCResult{}, fmt.Errorf("unknown method %q", method)
 	}
+}
+
+// applyAgentProfileFilter resolves the tool profile for an agent/session and
+// returns a profile-filtered Runtime.  If no profile is set, or the profile is
+// "full", the original runtime is returned unchanged.
+func applyAgentProfileFilter(ctx context.Context, rt agent.Runtime, sessionID string, cfg state.ConfigDoc, docsRepo *state.DocsRepository) agent.Runtime {
+	pr, ok := rt.(*agent.ProviderRuntime)
+	if !ok || pr == nil {
+		return rt // can't filter non-ProviderRuntime implementations
+	}
+
+	// Resolve agent ID for this session.
+	agentID := ""
+	if controlSessionRouter != nil {
+		agentID = controlSessionRouter.Get(sessionID)
+	}
+	if agentID == "" {
+		agentID = "main"
+	}
+
+	// 1. Check typed AgentsConfig in ConfigDoc for an explicit tool_profile.
+	profileID := ""
+	for _, ac := range cfg.Agents {
+		if ac.ID == agentID && ac.ToolProfile != "" {
+			profileID = ac.ToolProfile
+			break
+		}
+	}
+
+	// 2. Fall back to the agent's runtime Meta (set via tools.profile.set).
+	if profileID == "" && docsRepo != nil {
+		if agentDoc, err := docsRepo.GetAgent(ctx, agentID); err == nil {
+			if p, ok := agentDoc.Meta[agent.AgentProfileKey].(string); ok {
+				profileID = strings.TrimSpace(p)
+			}
+		}
+	}
+
+	// No profile or full profile = no filtering.
+	if profileID == "" || profileID == agent.DefaultProfile {
+		return rt
+	}
+	if agent.LookupProfile(profileID) == nil {
+		return pr.Filtered(map[string]bool{})
+	}
+	if controlToolRegistry == nil {
+		return pr.Filtered(map[string]bool{})
+	}
+
+	// Build the allowed tool ID set from the catalog.
+	groups := buildToolCatalogGroups(cfg, controlToolRegistry, nil, controlPluginMgr)
+	if len(groups) == 0 {
+		return pr.Filtered(map[string]bool{})
+	}
+	allowed := agent.AllowedToolIDs(groups, profileID)
+	return pr.Filtered(allowed)
 }
 
 // scheduleRestartIfNeeded compares old and next ConfigDoc.  If the change

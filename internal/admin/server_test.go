@@ -75,6 +75,12 @@ func TestDispatchMethodCallStatusGet(t *testing.T) {
 	if res.PubKey != "pub" || res.DMPolicy != "open" {
 		t.Fatalf("unexpected status response: %+v", res)
 	}
+	if res.Version != "swarmstrd" {
+		t.Fatalf("unexpected status version: %q", res.Version)
+	}
+	if res.UptimeMS <= 0 {
+		t.Fatalf("expected uptime_ms > 0, got %d", res.UptimeMS)
+	}
 }
 
 func TestDispatchMethodCallStatusAlias(t *testing.T) {
@@ -95,6 +101,12 @@ func TestDispatchMethodCallStatusAlias(t *testing.T) {
 	}
 	if res.PubKey != "pub" || res.DMPolicy != "open" {
 		t.Fatalf("unexpected status response: %+v", res)
+	}
+	if res.Version != "swarmstrd" {
+		t.Fatalf("unexpected status version: %q", res.Version)
+	}
+	if res.UptimeMS <= 0 {
+		t.Fatalf("expected uptime_ms > 0, got %d", res.UptimeMS)
 	}
 }
 
@@ -121,6 +133,12 @@ func TestDispatchMethodCallStatusGetUsesLiveRelaysProvider(t *testing.T) {
 	}
 	if len(res.Relays) != 2 || res.Relays[0] != "wss://live-a" || res.Relays[1] != "wss://live-b" {
 		t.Fatalf("unexpected relays from live provider: %+v", res.Relays)
+	}
+	if res.Version != "swarmstrd" {
+		t.Fatalf("unexpected status version: %q", res.Version)
+	}
+	if res.UptimeMS <= 0 {
+		t.Fatalf("expected uptime_ms > 0, got %d", res.UptimeMS)
 	}
 }
 

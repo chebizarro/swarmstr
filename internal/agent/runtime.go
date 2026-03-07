@@ -41,6 +41,21 @@ func NewRuntimeFromEnv(tools ToolExecutor) (Runtime, error) {
 	return NewProviderRuntime(provider, tools)
 }
 
+// Filtered returns a Runtime that only permits tool calls in the allowed set.
+// If allowed is nil, all tools are permitted (equivalent to the original runtime).
+// A non-nil empty map means deny-all (strict fail-closed).
+// Only ProviderRuntime instances are filtered; other Runtime implementations are
+// returned unchanged.
+func (r *ProviderRuntime) Filtered(allowed map[string]bool) Runtime {
+	if allowed == nil {
+		return r
+	}
+	return &ProviderRuntime{
+		provider: r.provider,
+		tools:    &ProfileFilteredExecutor{Base: r.tools, Allowed: allowed},
+	}
+}
+
 func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResult, error) {
 	turn.UserText = strings.TrimSpace(turn.UserText)
 	if turn.UserText == "" {

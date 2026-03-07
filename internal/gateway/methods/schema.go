@@ -168,6 +168,8 @@ type StatusResponse struct {
 	Relays        []string `json:"relays"`
 	DMPolicy      string   `json:"dm_policy"`
 	UptimeSeconds int      `json:"uptime_seconds"`
+	UptimeMS      int64    `json:"uptime_ms"`
+	Version       string   `json:"version"`
 }
 
 type MemorySearchRequest struct {
