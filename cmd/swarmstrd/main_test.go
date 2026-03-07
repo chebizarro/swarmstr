@@ -587,8 +587,15 @@ func TestHandleControlRPCRequest_ConfigGetResponseShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.get error: %v", err)
 	}
-	if _, ok := res.Result.(state.ConfigDoc); !ok {
-		t.Fatalf("config.get result should be ConfigDoc, got %T (%#v)", res.Result, res.Result)
+	out, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("config.get result should be map[string]any, got %T (%#v)", res.Result, res.Result)
+	}
+	if _, hasConfig := out["config"]; !hasConfig {
+		t.Fatalf("config.get result missing 'config' key: %#v", out)
+	}
+	if hash, _ := out["base_hash"].(string); hash == "" {
+		t.Fatalf("config.get result missing 'base_hash': %#v", out)
 	}
 }
 
@@ -611,6 +618,32 @@ func TestHandleControlRPCRequest_ConfigPutBaseHashConflict(t *testing.T) {
 	}
 	if !errors.Is(err, methods.ErrConfigConflict) {
 		t.Fatalf("expected ErrConfigConflict, got: %v", err)
+	}
+}
+
+func TestHandleControlRPCRequest_ConfigPutIncludesRestartPending(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		DM:      state.DMPolicy{Policy: "open"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay"}, Write: []string{"wss://relay"}},
+	})
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodConfigPut,
+		Params:     json.RawMessage(`{"config":{"dm":{"policy":"pairing"},"relays":{"read":["wss://relay"],"write":["wss://relay"]}}}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("config.put error: %v", err)
+	}
+	out, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("config.put result should be map[string]any, got %T (%#v)", res.Result, res.Result)
+	}
+	if pending, ok := out["restart_pending"].(bool); !ok || pending {
+		t.Fatalf("expected restart_pending=false for dm policy change, got %#v", out)
 	}
 }
 

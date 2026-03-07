@@ -2253,7 +2253,11 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return config.Redact(cfg), http.StatusOK, nil
+		redacted := config.Redact(cfg)
+		return map[string]any{
+			"config":    redacted,
+			"base_hash": cfg.Hash(),
+		}, http.StatusOK, nil
 	case methods.MethodRelayPolicyGet:
 		if opts.GetRelayPolicy == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("relay policy provider not configured")

@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"net/url"
+	"reflect"
 	"strings"
 
 	nostruntime "swarmstr/internal/nostr/runtime"
@@ -56,7 +57,10 @@ func ValidateConfig(cfg state.ConfigDoc) error {
 			return fmt.Errorf("relays.write[%d] invalid: %w", i, err)
 		}
 	}
-	// Validate typed config sections (providers, session, heartbeat).
+	// Validate typed config sections (agents, providers, session, heartbeat).
+	if err := validateAgents(cfg.Agents); err != nil {
+		return err
+	}
 	if err := validateProviders(cfg.Providers); err != nil {
 		return err
 	}
@@ -65,6 +69,84 @@ func ValidateConfig(cfg state.ConfigDoc) error {
 	}
 	if err := validateHeartbeat(cfg.Heartbeat); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ─── Restart detection ────────────────────────────────────────────────────────
+
+// ConfigChangedNeedsRestart reports whether the change from old to next requires
+// a daemon restart to take effect.
+//
+// Changes that are hot-applied (no restart needed):
+//   - DM policy
+//   - Read/write relay lists (applied via applyRuntimeRelayPolicy)
+//   - Session / heartbeat / TTS / secrets tunables
+//
+// Changes that require restart:
+//   - Agent default model (must rebuild the live agent runtime)
+//   - Providers map (API key / base URL changes affect the HTTP provider)
+//   - Extensions / plugins (require Go runtime reload)
+func ConfigChangedNeedsRestart(old, next state.ConfigDoc) bool {
+	if old.Agent.DefaultModel != next.Agent.DefaultModel {
+		return true
+	}
+	if !providersEqual(old.Providers, next.Providers) {
+		return true
+	}
+	// extensions live in doc.Extra["extensions"]
+	oldExt, _ := old.Extra["extensions"]
+	newExt, _ := next.Extra["extensions"]
+	if !reflect.DeepEqual(oldExt, newExt) {
+		return true
+	}
+	return false
+}
+
+func providersEqual(a, b state.ProvidersConfig) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok {
+			return false
+		}
+		if av.Enabled != bv.Enabled || av.APIKey != bv.APIKey || av.BaseURL != bv.BaseURL || av.Model != bv.Model {
+			return false
+		}
+	}
+	return true
+}
+
+var validToolProfiles = map[string]bool{
+	"":          true, // unset = use default
+	"minimal":   true,
+	"coding":    true,
+	"messaging": true,
+	"full":      true,
+}
+
+func validateAgents(agents state.AgentsConfig) error {
+	seen := map[string]bool{}
+	for i, a := range agents {
+		id := strings.TrimSpace(a.ID)
+		if id == "" {
+			return fmt.Errorf("agents[%d]: id is required", i)
+		}
+		if seen[id] {
+			return fmt.Errorf("agents[%d]: duplicate id %q", i, id)
+		}
+		seen[id] = true
+		if !validToolProfiles[a.ToolProfile] {
+			return fmt.Errorf("agents[%d] (%s): tool_profile %q is not valid (valid: minimal, coding, messaging, full)", i, id, a.ToolProfile)
+		}
+		if a.HeartbeatMS < 0 {
+			return fmt.Errorf("agents[%d] (%s): heartbeat_ms must be >= 0", i, id)
+		}
+		if a.HistoryLimit < 0 {
+			return fmt.Errorf("agents[%d] (%s): history_limit must be >= 0", i, id)
+		}
 	}
 	return nil
 }

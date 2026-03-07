@@ -13,6 +13,7 @@ type ConfigDoc struct {
 	Relays    RelayPolicy     `json:"relays"`
 	Agent     AgentPolicy     `json:"agent"`
 	Control   ControlPolicy   `json:"control,omitempty"`
+	Agents    AgentsConfig    `json:"agents,omitempty"`
 	Providers ProvidersConfig `json:"providers,omitempty"`
 	Session   SessionConfig   `json:"session,omitempty"`
 	Heartbeat HeartbeatConfig `json:"heartbeat,omitempty"`
@@ -107,6 +108,23 @@ type SecretsConfig map[string]string
 type CronConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 }
+
+// AgentConfig holds per-agent configuration stored in the ConfigDoc.
+// This is distinct from AgentDoc (runtime state); AgentConfig is config-plane only.
+type AgentConfig struct {
+	ID           string `json:"id"`
+	Name         string `json:"name,omitempty"`
+	Model        string `json:"model,omitempty"`
+	WorkspaceDir string `json:"workspace_dir,omitempty"`
+	ToolProfile  string `json:"tool_profile,omitempty"` // minimal|coding|messaging|full
+	HeartbeatMS  int    `json:"heartbeat_ms,omitempty"`
+	HistoryLimit int    `json:"history_limit,omitempty"`
+}
+
+// AgentsConfig is an ordered list of per-agent configurations.
+// The first entry whose ID matches is used; unmatched agents fall back to
+// the top-level AgentPolicy defaults.
+type AgentsConfig []AgentConfig
 
 type SessionDoc struct {
 	Version       int            `json:"version"`
