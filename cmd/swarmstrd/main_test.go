@@ -9,17 +9,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"swarmstr/internal/agent"
+	gatewayws "swarmstr/internal/gateway/ws"
 	"swarmstr/internal/gateway/methods"
 	"swarmstr/internal/nostr/events"
 	nostruntime "swarmstr/internal/nostr/runtime"
 	"swarmstr/internal/store/state"
 )
 
-func TestHandleControlRPCRequest_SupportedMethods(t *testing.T) {
+func TestHandleControlRPCRequest_SystemAndVoiceMethods(t *testing.T) {
 	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Extra: map[string]any{
 		"extensions": map[string]any{
 			"enabled": true,
@@ -2025,10 +2027,136 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 	}
 }
 
+func TestResolveInboundChannelRuntime_PrefersConfiguredAgentThenSessionThenMain(t *testing.T) {
+	prevRegistry := controlAgentRegistry
+	prevRouter := controlSessionRouter
+	prevRuntime := controlAgentRuntime
+	defer func() {
+		controlAgentRegistry = prevRegistry
+		controlSessionRouter = prevRouter
+		controlAgentRuntime = prevRuntime
+	}()
+
+	mainRT := namedStubRuntime{name: "main"}
+	alphaRT := namedStubRuntime{name: "alpha"}
+	betaRT := namedStubRuntime{name: "beta"}
+
+	controlAgentRuntime = mainRT
+	controlAgentRegistry = agent.NewAgentRuntimeRegistry(mainRT)
+	controlAgentRegistry.Set("alpha", alphaRT)
+	controlAgentRegistry.Set("beta", betaRT)
+	controlSessionRouter = agent.NewAgentSessionRouter()
+	controlSessionRouter.Assign("session-1", "beta")
+
+	resolvedID, rt := resolveInboundChannelRuntime("alpha", "session-1")
+	if resolvedID != "alpha" {
+		t.Fatalf("expected configured agent to win, got id=%q", resolvedID)
+	}
+	if result, err := rt.ProcessTurn(context.Background(), agent.Turn{UserText: "hello"}); err != nil || !strings.HasPrefix(result.Text, "alpha:") {
+		t.Fatalf("expected alpha runtime, got result=%q err=%v", result.Text, err)
+	}
+
+	resolvedID, rt = resolveInboundChannelRuntime("", "session-1")
+	if resolvedID != "beta" {
+		t.Fatalf("expected session-assigned agent, got id=%q", resolvedID)
+	}
+	if result, err := rt.ProcessTurn(context.Background(), agent.Turn{UserText: "hello"}); err != nil || !strings.HasPrefix(result.Text, "beta:") {
+		t.Fatalf("expected beta runtime, got result=%q err=%v", result.Text, err)
+	}
+
+	resolvedID, rt = resolveInboundChannelRuntime("", "session-unknown")
+	if resolvedID != "main" {
+		t.Fatalf("expected main fallback, got id=%q", resolvedID)
+	}
+	if result, err := rt.ProcessTurn(context.Background(), agent.Turn{UserText: "hello"}); err != nil || !strings.HasPrefix(result.Text, "main:") {
+		t.Fatalf("expected main runtime fallback, got result=%q err=%v", result.Text, err)
+	}
+}
+
+func TestExecuteAgentRun_EmitsAgentStatusWithSession(t *testing.T) {
+	prevRouter := controlSessionRouter
+	prevEmitter := controlWsEmitter
+	defer func() {
+		controlSessionRouter = prevRouter
+		setControlWSEmitter(prevEmitter)
+	}()
+
+	controlSessionRouter = agent.NewAgentSessionRouter()
+	controlSessionRouter.Assign("session-42", "alpha")
+
+	capture := &capturingEmitter{}
+	setControlWSEmitter(capture)
+
+	jobs := newAgentJobRegistry()
+	runID := "run-session-event"
+	jobs.Begin(runID, "session-42")
+	executeAgentRun(runID, methods.AgentRequest{SessionID: "session-42", Message: "hello", TimeoutMS: 500}, stubAgentRuntime{}, jobs)
+
+	events := capture.eventsByName(gatewayws.EventAgentStatus)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 agent.status events, got %d", len(events))
+	}
+
+	thinking, ok := events[0].(gatewayws.AgentStatusPayload)
+	if !ok {
+		t.Fatalf("unexpected first agent.status payload type: %T", events[0])
+	}
+	idle, ok := events[1].(gatewayws.AgentStatusPayload)
+	if !ok {
+		t.Fatalf("unexpected second agent.status payload type: %T", events[1])
+	}
+
+	if thinking.Status != "thinking" || idle.Status != "idle" {
+		t.Fatalf("unexpected status transitions: thinking=%q idle=%q", thinking.Status, idle.Status)
+	}
+	if thinking.Session != "session-42" || idle.Session != "session-42" {
+		t.Fatalf("expected session in both status events, got thinking=%q idle=%q", thinking.Session, idle.Session)
+	}
+	if thinking.AgentID != "alpha" || idle.AgentID != "alpha" {
+		t.Fatalf("expected routed agent id alpha in status events, got thinking=%q idle=%q", thinking.AgentID, idle.AgentID)
+	}
+}
+
 type stubAgentRuntime struct{}
 
 func (stubAgentRuntime) ProcessTurn(_ context.Context, turn agent.Turn) (agent.TurnResult, error) {
 	return agent.TurnResult{Text: "ack: " + strings.TrimSpace(turn.UserText)}, nil
+}
+
+type namedStubRuntime struct {
+	name string
+}
+
+func (r namedStubRuntime) ProcessTurn(_ context.Context, turn agent.Turn) (agent.TurnResult, error) {
+	return agent.TurnResult{Text: strings.TrimSpace(r.name) + ": " + strings.TrimSpace(turn.UserText)}, nil
+}
+
+type capturedEvent struct {
+	name    string
+	payload any
+}
+
+type capturingEmitter struct {
+	mu     sync.Mutex
+	events []capturedEvent
+}
+
+func (e *capturingEmitter) Emit(event string, payload any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.events = append(e.events, capturedEvent{name: event, payload: payload})
+}
+
+func (e *capturingEmitter) eventsByName(name string) []any {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]any, 0, len(e.events))
+	for _, evt := range e.events {
+		if evt.name == name {
+			out = append(out, evt.payload)
+		}
+	}
+	return out
 }
 
 type testStore struct {
