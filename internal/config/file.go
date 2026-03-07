@@ -257,6 +257,41 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		}
 	}
 
+	// ── nostr_channels (typed) ───────────────────────────────────────────────
+	if ncRaw, ok := raw["nostr_channels"].(map[string]any); ok {
+		doc.NostrChannels = make(state.NostrChannelsConfig, len(ncRaw))
+		for name, val := range ncRaw {
+			if cm, ok := val.(map[string]any); ok {
+				ch := state.NostrChannelConfig{}
+				if v, ok := cm["kind"].(string); ok {
+					ch.Kind = strings.TrimSpace(v)
+				}
+				if v, ok := cm["enabled"].(bool); ok {
+					ch.Enabled = v
+				}
+				if v, ok := cm["group_address"].(string); ok {
+					ch.GroupAddress = strings.TrimSpace(v)
+				}
+				if v, ok := cm["channel_id"].(string); ok {
+					ch.ChannelID = strings.TrimSpace(v)
+				}
+				if v, ok := cm["relays"]; ok {
+					ch.Relays = toStringSlice(v)
+				}
+				if v, ok := cm["agent_id"].(string); ok {
+					ch.AgentID = strings.TrimSpace(v)
+				}
+				if tags, ok := cm["tags"].(map[string]any); ok {
+					ch.Tags = make(map[string][]string, len(tags))
+					for k, tv := range tags {
+						ch.Tags[k] = toStringSlice(tv)
+					}
+				}
+				doc.NostrChannels[name] = ch
+			}
+		}
+	}
+
 	// ── session (typed) ───────────────────────────────────────────────────────
 	if sessionRaw, ok := raw["session"].(map[string]any); ok {
 		sess := state.SessionConfig{}

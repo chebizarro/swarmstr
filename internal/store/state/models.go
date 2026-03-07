@@ -13,8 +13,9 @@ type ConfigDoc struct {
 	Relays    RelayPolicy     `json:"relays"`
 	Agent     AgentPolicy     `json:"agent"`
 	Control   ControlPolicy   `json:"control,omitempty"`
-	Agents    AgentsConfig    `json:"agents,omitempty"`
-	Providers ProvidersConfig `json:"providers,omitempty"`
+	Agents         AgentsConfig         `json:"agents,omitempty"`
+	NostrChannels  NostrChannelsConfig  `json:"nostr_channels,omitempty"`
+	Providers      ProvidersConfig      `json:"providers,omitempty"`
 	Session   SessionConfig   `json:"session,omitempty"`
 	Heartbeat HeartbeatConfig `json:"heartbeat,omitempty"`
 	TTS       TTSConfig       `json:"tts,omitempty"`
@@ -108,6 +109,48 @@ type SecretsConfig map[string]string
 type CronConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 }
+
+// ── Nostr channel config ──────────────────────────────────────────────────────
+
+// NostrChannelKind enumerates the supported Nostr transport types.
+// "dm" uses NIP-04/NIP-17 direct messages.
+// "nip28" uses NIP-28 public channel events (kind 40/42).
+// "nip29" uses NIP-29 relay-managed groups.
+// "relay-filter" subscribes to arbitrary relay filters and routes to an agent.
+type NostrChannelKind = string
+
+const (
+	NostrChannelKindDM          NostrChannelKind = "dm"
+	NostrChannelKindNIP28       NostrChannelKind = "nip28"
+	NostrChannelKindNIP29       NostrChannelKind = "nip29"
+	NostrChannelKindRelayFilter NostrChannelKind = "relay-filter"
+)
+
+// NostrChannelConfig describes a single Nostr transport subscription.
+type NostrChannelConfig struct {
+	// Kind identifies the transport type (dm, nip28, nip29, relay-filter).
+	Kind string `json:"kind"`
+	// Enabled controls whether this channel is active at startup.
+	Enabled bool `json:"enabled,omitempty"`
+	// GroupAddress is the NIP-29 group address ("relay'groupID").
+	// Used when Kind is "nip29".
+	GroupAddress string `json:"group_address,omitempty"`
+	// ChannelID is the NIP-28 channel event ID.
+	// Used when Kind is "nip28".
+	ChannelID string `json:"channel_id,omitempty"`
+	// Relays is the list of relays to subscribe on for this channel.
+	// Defaults to the global relay config when empty.
+	Relays []string `json:"relays,omitempty"`
+	// AgentID routes inbound messages to a specific agent.
+	// Empty string means the default/session-assigned agent.
+	AgentID string `json:"agent_id,omitempty"`
+	// Tags is an optional set of Nostr filter tags for relay-filter channels.
+	Tags map[string][]string `json:"tags,omitempty"`
+}
+
+// NostrChannelsConfig is a named map of Nostr channel configurations.
+// Keys are human-readable channel names (e.g. "main-group", "public-chat").
+type NostrChannelsConfig map[string]NostrChannelConfig
 
 // AgentConfig holds per-agent configuration stored in the ConfigDoc.
 // This is distinct from AgentDoc (runtime state); AgentConfig is config-plane only.
