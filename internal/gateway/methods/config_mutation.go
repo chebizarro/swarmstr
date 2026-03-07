@@ -53,12 +53,81 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"plugins.installs.<id>.resolvedAt",
 			"plugins.installs.<id>.installedAt",
 			"plugins.installs.<id>.<field>",
-		},
+		// Typed agent section (multi-agent support)
+		"agents[].id",
+		"agents[].name",
+		"agents[].model",
+		"agents[].workspace_dir",
+		"agents[].tool_profile",
+		"agents[].heartbeat_ms",
+		"agents[].history_limit",
+		// Nostr channel configuration
+		"nostr_channels.<name>.kind",
+		"nostr_channels.<name>.enabled",
+		"nostr_channels.<name>.group_address",
+		"nostr_channels.<name>.channel_id",
+		"nostr_channels.<name>.relays",
+		"nostr_channels.<name>.agent_id",
+		"nostr_channels.<name>.tags",
+		// Provider overrides
+		"providers.<name>.api_key",
+		"providers.<name>.base_url",
+		"providers.<name>.model",
+		// Session tunables
+		"session.ttl_seconds",
+		"session.history_limit",
+		"session.max_tokens",
+		"session.temperature",
+		// Heartbeat
+		"heartbeat.interval_ms",
+		"heartbeat.enabled",
+		// TTS
+		"tts.provider",
+		"tts.voice",
+		"tts.enabled",
+		// Secrets
+		"secrets.<name>",
+		// Cron
+		"cron.enabled",
+		"cron.jobs.<id>",
+		"cron.jobs.<id>.schedule",
+		"cron.jobs.<id>.command",
+		"cron.jobs.<id>.enabled",
+	},
 	}
 	if len(cfg) > 0 {
 		schema["plugins"] = extensionSchemaEntries(cfg[0])
+		schema["agents"] = agentSchemaEntries(cfg[0])
+		schema["nostr_channels"] = nostrChannelSchemaEntries(cfg[0])
 	}
 	return schema
+}
+
+// agentSchemaEntries returns a live summary of configured agents for the schema response.
+func agentSchemaEntries(cfg state.ConfigDoc) []map[string]any {
+	out := make([]map[string]any, 0, len(cfg.Agents))
+	for _, ag := range cfg.Agents {
+		out = append(out, map[string]any{
+			"id":           ag.ID,
+			"name":         ag.Name,
+			"model":        ag.Model,
+			"tool_profile": ag.ToolProfile,
+		})
+	}
+	return out
+}
+
+// nostrChannelSchemaEntries returns a live summary of configured Nostr channels for the schema response.
+func nostrChannelSchemaEntries(cfg state.ConfigDoc) []map[string]any {
+	out := make([]map[string]any, 0, len(cfg.NostrChannels))
+	for name, ch := range cfg.NostrChannels {
+		out = append(out, map[string]any{
+			"name":    name,
+			"kind":    ch.Kind,
+			"enabled": ch.Enabled,
+		})
+	}
+	return out
 }
 
 func extensionSchemaEntries(cfg state.ConfigDoc) map[string]any {

@@ -271,6 +271,61 @@ func main() {
 	controlChannels = channelReg
 	defer channelReg.CloseAll()
 
+	// Auto-join any NostrChannels declared in the config with enabled: true.
+	// This provides OpenClaw parity: channels configured in the config file are
+	// active immediately at startup without a manual channels.join RPC call.
+	for chanName, chanCfg := range configState.Get().NostrChannels {
+		if !chanCfg.Enabled {
+			continue
+		}
+		switch chanCfg.Kind {
+		case state.NostrChannelKindNIP29:
+			if chanCfg.GroupAddress == "" {
+				log.Printf("auto-join skip: nostr_channels.%s has no group_address", chanName)
+				continue
+			}
+			localChanCfg := chanCfg // capture loop var
+			localChanName := chanName
+			ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
+				GroupAddress: localChanCfg.GroupAddress,
+				PrivateKey:   controlPrivateKey,
+				OnMessage: func(msg channels.InboundMessage) {
+					activeAgentID, rt := resolveInboundChannelRuntime(localChanCfg.AgentID, msg.ChannelID)
+					turnCtx, release := chatCancels.Begin(msg.ChannelID, ctx)
+					go func() {
+						defer release()
+						result, turnErr := rt.ProcessTurn(turnCtx, agent.Turn{
+							SessionID: msg.ChannelID,
+							UserText:  msg.Text,
+						})
+						if turnErr != nil {
+							log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
+							return
+						}
+						if err := msg.Reply(turnCtx, result.Text); err != nil {
+							log.Printf("auto-join channel reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
+						}
+					}()
+				},
+				OnError: func(err error) {
+					log.Printf("auto-join nip29 error name=%s group=%s err=%v", localChanName, localChanCfg.GroupAddress, err)
+				},
+			})
+			if chErr != nil {
+				log.Printf("auto-join nip29 failed name=%s group=%s err=%v", localChanName, localChanCfg.GroupAddress, chErr)
+				continue
+			}
+			if addErr := channelReg.Add(ch); addErr != nil {
+				ch.Close()
+				log.Printf("auto-join channel add failed name=%s err=%v", localChanName, addErr)
+				continue
+			}
+			log.Printf("auto-join nip29 channel joined name=%s group=%s id=%s", localChanName, localChanCfg.GroupAddress, ch.ID())
+		default:
+			log.Printf("auto-join skip: nostr_channels.%s kind=%q not yet supported for auto-join", chanName, chanCfg.Kind)
+		}
+	}
+
 	// Pre-load runtimes for any agents persisted from a previous run.
 	// This is best-effort: failures are logged but don't block startup.
 	if existingAgents, listErr := docsRepo.ListAgents(ctx, 200); listErr == nil {
@@ -3646,6 +3701,22 @@ func emitControlWSEvent(event string, payload any) {
 	emitter.Emit(event, payload)
 }
 
+func resolveInboundChannelRuntime(configuredAgentID, sessionID string) (string, agent.Runtime) {
+	agentID := strings.TrimSpace(configuredAgentID)
+	if agentID == "" && controlSessionRouter != nil {
+		agentID = strings.TrimSpace(controlSessionRouter.Get(sessionID))
+	}
+	if agentID == "" {
+		agentID = "main"
+	}
+	if controlAgentRegistry != nil {
+		if rt := controlAgentRegistry.Get(agentID); rt != nil {
+			return agentID, rt
+		}
+	}
+	return agentID, controlAgentRuntime
+}
+
 func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runtime, jobs *agentJobRegistry) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -3665,7 +3736,31 @@ func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runti
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	// Resolve the active agent ID so WS clients see per-agent status events.
+	agentID := ""
+	if controlSessionRouter != nil {
+		agentID = controlSessionRouter.Get(req.SessionID)
+	}
+	if agentID == "" {
+		agentID = "main"
+	}
+
+	emitControlWSEvent(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+		TS:      time.Now().UnixMilli(),
+		AgentID: agentID,
+		Status:  "thinking",
+		Session: req.SessionID,
+	})
+
 	result, err := runtime.ProcessTurn(ctx, agent.Turn{SessionID: req.SessionID, UserText: req.Message, Context: req.Context})
+
+	emitControlWSEvent(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+		TS:      time.Now().UnixMilli(),
+		AgentID: agentID,
+		Status:  "idle",
+		Session: req.SessionID,
+	})
+
 	if err != nil {
 		jobs.Finish(runID, "", err)
 		return
