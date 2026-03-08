@@ -2,6 +2,8 @@ package state
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -242,6 +244,31 @@ func (r *DocsRepository) ListAgentFiles(ctx context.Context, agentID string, lim
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// PutCronJobs persists an arbitrary cron jobs payload (caller-serialised JSON)
+// as a replaceable state doc.  The caller is responsible for marshalling.
+func (r *DocsRepository) PutCronJobs(ctx context.Context, raw json.RawMessage) (Event, error) {
+	type cronJobsEnvelope struct {
+		Jobs json.RawMessage `json:"jobs"`
+	}
+	return r.putStateDoc(ctx, "swarmstr:cron_jobs", "cron_jobs", cronJobsEnvelope{Jobs: raw})
+}
+
+// GetCronJobs retrieves the persisted cron jobs payload.  Returns an empty
+// RawMessage (nil) and no error if not found.
+func (r *DocsRepository) GetCronJobs(ctx context.Context) (json.RawMessage, error) {
+	type cronJobsEnvelope struct {
+		Jobs json.RawMessage `json:"jobs"`
+	}
+	var env cronJobsEnvelope
+	if err := r.getStateDoc(ctx, "swarmstr:cron_jobs", &env); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return env.Jobs, nil
 }
 
 func (r *DocsRepository) putStateDoc(ctx context.Context, dTag string, typ string, value any) (Event, error) {

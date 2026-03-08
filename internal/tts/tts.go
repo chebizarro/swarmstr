@@ -41,6 +41,8 @@ func NewManager() *Manager {
 	}
 	m.Register(&OpenAIProvider{})
 	m.Register(&KokoroProvider{})
+	m.Register(&GoogleTTSProvider{})
+	m.Register(&ElevenLabsProvider{})
 	return m
 }
 

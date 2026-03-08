@@ -62,6 +62,10 @@ const (
 
 	// EventTalkMode is emitted when the voice/talk mode changes.
 	EventTalkMode = "talk.mode"
+
+	// EventChatChunk is emitted during streaming generation, delivering a single
+	// text token or token group as it arrives from the provider.
+	EventChatChunk = "chat.chunk"
 )
 
 // AllPushEvents is the canonical ordered list of events the server may push.
@@ -89,6 +93,7 @@ var AllPushEvents = []string{
 	// Presence events are also emitted by the ws runtime itself.
 	"presence.updated",
 	"connect.challenge",
+	EventChatChunk,
 }
 
 // ─── EventEmitter interface ───────────────────────────────────────────────────
@@ -260,6 +265,16 @@ type DevicePairResolvedPayload struct {
 	DeviceID string `json:"device_id,omitempty"`
 	Label    string `json:"label,omitempty"`
 	Decision string `json:"decision"` // "approved" | "rejected"
+}
+
+// ChatChunkPayload is the payload for EventChatChunk events.
+// It delivers a single streaming text chunk as it arrives from the LLM.
+type ChatChunkPayload struct {
+	TS        int64  `json:"ts_ms"`
+	AgentID   string `json:"agent_id,omitempty"`
+	SessionID string `json:"session_id"`
+	Text      string `json:"text"`
+	Done      bool   `json:"done,omitempty"` // true on the final chunk
 }
 
 // TalkModePayload is the payload for EventTalkMode events.

@@ -36,6 +36,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,6 +73,18 @@ func (d *DiscordPlugin) ConfigSchema() map[string]any {
 			},
 		},
 		"required": []string{"bot_token", "channel_id"},
+	}
+}
+
+// Capabilities declares the features supported by the Discord Bot channel.
+func (d *DiscordPlugin) Capabilities() sdk.ChannelCapabilities {
+	return sdk.ChannelCapabilities{
+		Typing:       true,
+		Reactions:    true,
+		Threads:      true,
+		Audio:        false,
+		Edit:         true,
+		MultiAccount: true,
 	}
 }
 
@@ -146,6 +160,109 @@ func (b *discordBot) Send(ctx context.Context, text string) error {
 
 func (b *discordBot) Close() {
 	close(b.done)
+}
+
+// ─── TypingHandle ─────────────────────────────────────────────────────────────
+
+// SendTyping triggers the typing indicator in the configured Discord channel.
+func (b *discordBot) SendTyping(ctx context.Context, _ int) error {
+	apiURL := fmt.Sprintf("%s/channels/%s/typing", discordAPIBase, b.discordChannelID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", b.token)
+	cl := &http.Client{Timeout: 10 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return fmt.Errorf("discord sendTyping: %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// ─── ReactionHandle ──────────────────────────────────────────────────────────
+
+// AddReaction adds an emoji reaction to a message.
+// eventID must be of the form "discord-{message_id}".
+func (b *discordBot) AddReaction(ctx context.Context, eventID, emoji string) error {
+	msgID := strings.TrimPrefix(eventID, "discord-")
+	apiURL := fmt.Sprintf("%s/channels/%s/messages/%s/reactions/%s/@me",
+		discordAPIBase, b.discordChannelID, msgID, url.PathEscape(emoji))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", b.token)
+	cl := &http.Client{Timeout: 10 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return fmt.Errorf("discord addReaction: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("discord addReaction: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	return nil
+}
+
+// RemoveReaction removes the bot's emoji reaction from a message.
+func (b *discordBot) RemoveReaction(ctx context.Context, eventID, emoji string) error {
+	msgID := strings.TrimPrefix(eventID, "discord-")
+	apiURL := fmt.Sprintf("%s/channels/%s/messages/%s/reactions/%s/@me",
+		discordAPIBase, b.discordChannelID, msgID, url.PathEscape(emoji))
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", b.token)
+	cl := &http.Client{Timeout: 10 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return fmt.Errorf("discord removeReaction: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("discord removeReaction: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	return nil
+}
+
+// ─── EditHandle ──────────────────────────────────────────────────────────────
+
+// EditMessage replaces the content of a previously sent Discord message.
+// eventID must be of the form "discord-{message_id}".
+func (b *discordBot) EditMessage(ctx context.Context, eventID, newText string) error {
+	msgID := strings.TrimPrefix(eventID, "discord-")
+	apiURL := fmt.Sprintf("%s/channels/%s/messages/%s", discordAPIBase, b.discordChannelID, msgID)
+	body, _ := json.Marshal(map[string]any{"content": newText})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, apiURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", b.token)
+	req.Header.Set("Content-Type", "application/json")
+	cl := &http.Client{Timeout: 15 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return fmt.Errorf("discord editMessage: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("discord editMessage: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	return nil
+}
+
+// ─── ThreadHandle ────────────────────────────────────────────────────────────
+
+// SendInThread posts a message to a Discord thread channel.
+// threadID is the Discord channel ID of the thread (threads are channels in Discord).
+func (b *discordBot) SendInThread(ctx context.Context, threadID, text string) error {
+	return sendDiscordMessage(ctx, b.token, threadID, text)
 }
 
 func (b *discordBot) poll(ctx context.Context) {

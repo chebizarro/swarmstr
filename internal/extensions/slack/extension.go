@@ -37,6 +37,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,6 +73,18 @@ func (s *SlackPlugin) ConfigSchema() map[string]any {
 			},
 		},
 		"required": []string{"bot_token", "channel_id"},
+	}
+}
+
+// Capabilities declares the features supported by the Slack Bot channel.
+func (s *SlackPlugin) Capabilities() sdk.ChannelCapabilities {
+	return sdk.ChannelCapabilities{
+		Typing:       false, // Slack removed bot typing API in 2021
+		Reactions:    true,
+		Threads:      true,
+		Audio:        false,
+		Edit:         true,
+		MultiAccount: true,
 	}
 }
 
@@ -153,6 +166,86 @@ func (b *slackBot) Send(ctx context.Context, text string) error {
 
 func (b *slackBot) Close() {
 	close(b.done)
+}
+
+// ─── ReactionHandle ──────────────────────────────────────────────────────────
+
+// AddReaction adds an emoji reaction to a message.
+// eventID must be of the form "slack-{ts}".
+func (b *slackBot) AddReaction(ctx context.Context, eventID, emoji string) error {
+	ts := strings.TrimPrefix(eventID, "slack-")
+	body, _ := json.Marshal(map[string]any{
+		"channel":   b.slackChannelID,
+		"timestamp": ts,
+		"name":      emoji,
+	})
+	return b.slackPost(ctx, slackAPIBase+"/reactions.add", body)
+}
+
+// RemoveReaction removes a previously added emoji reaction from a message.
+func (b *slackBot) RemoveReaction(ctx context.Context, eventID, emoji string) error {
+	ts := strings.TrimPrefix(eventID, "slack-")
+	body, _ := json.Marshal(map[string]any{
+		"channel":   b.slackChannelID,
+		"timestamp": ts,
+		"name":      emoji,
+	})
+	return b.slackPost(ctx, slackAPIBase+"/reactions.remove", body)
+}
+
+// ─── EditHandle ──────────────────────────────────────────────────────────────
+
+// EditMessage updates the text of a previously sent Slack message.
+// eventID must be of the form "slack-{ts}".
+func (b *slackBot) EditMessage(ctx context.Context, eventID, newText string) error {
+	ts := strings.TrimPrefix(eventID, "slack-")
+	body, _ := json.Marshal(map[string]any{
+		"channel": b.slackChannelID,
+		"ts":      ts,
+		"text":    newText,
+	})
+	return b.slackPost(ctx, slackAPIBase+"/chat.update", body)
+}
+
+// ─── ThreadHandle ────────────────────────────────────────────────────────────
+
+// SendInThread posts a reply in a Slack thread.
+// threadID is the Slack message timestamp of the parent message (the thread root).
+func (b *slackBot) SendInThread(ctx context.Context, threadID, text string) error {
+	body, _ := json.Marshal(map[string]any{
+		"channel":   b.slackChannelID,
+		"text":      text,
+		"thread_ts": threadID,
+	})
+	return b.slackPost(ctx, slackAPIBase+"/chat.postMessage", body)
+}
+
+// slackPost is a convenience helper for authenticated Slack API POSTs.
+func (b *slackBot) slackPost(ctx context.Context, apiURL string, body []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+b.token)
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	cl := &http.Client{Timeout: 15 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var result struct {
+		OK  bool   `json:"ok"`
+		Err string `json:"error,omitempty"`
+	}
+	if jsonErr := json.Unmarshal(raw, &result); jsonErr != nil {
+		return fmt.Errorf("slack API: decode response: %w", jsonErr)
+	}
+	if !result.OK {
+		return fmt.Errorf("slack API: %s", result.Err)
+	}
+	return nil
 }
 
 func (b *slackBot) poll(ctx context.Context) {

@@ -18,69 +18,99 @@
   --agent-bubble: #1e2130;
   --error: #f87171;
   --success: #34d399;
+  --warn: #fbbf24;
   --font: ui-sans-serif, system-ui, -apple-system, sans-serif;
   --mono: ui-monospace, SFMono-Regular, monospace;
 }
-body { background: var(--bg); color: var(--text); font-family: var(--font); height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+body {
+  background: var(--bg); color: var(--text); font-family: var(--font);
+  height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
+}
 
 /* ── Header ── */
 header {
-  padding: 0.75rem 1.25rem;
+  padding: 0.6rem 1rem;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-shrink: 0;
+  display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0;
 }
-header h1 { font-size: 1rem; font-weight: 600; letter-spacing: 0.04em; }
+header h1 { font-size: 0.95rem; font-weight: 700; letter-spacing: 0.05em; }
 .status-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  flex-shrink: 0;
-  transition: background 0.3s;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-muted); flex-shrink: 0; transition: background 0.3s;
 }
 .status-dot.connected { background: var(--success); }
 .status-dot.error     { background: var(--error); }
-.header-info { color: var(--text-muted); font-size: 0.75rem; margin-left: auto; display: flex; gap: 0.75rem; align-items: center; }
-.agent-badge {
-  background: var(--user-bubble);
-  border: 1px solid var(--border);
-  border-radius: 9999px;
-  padding: 0.1rem 0.6rem;
-  font-size: 0.7rem;
-  font-family: var(--mono);
+.header-info { color: var(--text-muted); font-size: 0.72rem; margin-left: auto; display: flex; gap: 0.75rem; align-items: center; }
+.badge {
+  background: var(--user-bubble); border: 1px solid var(--border);
+  border-radius: 9999px; padding: 0.1rem 0.55rem; font-size: 0.68rem; font-family: var(--mono);
 }
+.badge.warn { color: var(--warn); border-color: var(--warn); }
 
-/* ── Messages ── */
+/* ── Layout ── */
+.layout { flex: 1; display: flex; overflow: hidden; }
+
+/* ── Sidebar ── */
+.sidebar {
+  width: 220px; flex-shrink: 0;
+  background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.sidebar-tabs {
+  display: flex; border-bottom: 1px solid var(--border);
+}
+.tab-btn {
+  flex: 1; padding: 0.55rem 0.4rem; font-size: 0.7rem; font-weight: 600;
+  color: var(--text-muted); background: none; border: none; cursor: pointer;
+  letter-spacing: 0.04em; transition: color 0.15s, border-bottom 0.15s;
+  border-bottom: 2px solid transparent;
+}
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-panel { display: none; flex: 1; overflow-y: auto; padding: 0.5rem 0; }
+.tab-panel.active { display: block; }
+.sidebar-item {
+  padding: 0.45rem 0.85rem; font-size: 0.75rem; cursor: pointer;
+  border-left: 2px solid transparent; color: var(--text-muted);
+  transition: background 0.1s, color 0.1s;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sidebar-item:hover { background: rgba(108,99,255,.08); color: var(--text); }
+.sidebar-item.active { color: var(--accent); border-left-color: var(--accent); background: rgba(108,99,255,.08); }
+.sidebar-item .sub { font-size: 0.65rem; color: var(--text-muted); margin-top: 0.15rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-section { padding: 0.65rem 0.85rem 0.25rem; font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.sidebar-empty { padding: 0.75rem 0.85rem; font-size: 0.72rem; color: var(--text-muted); font-style: italic; }
+.new-session-btn {
+  margin: 0.5rem 0.75rem; padding: 0.4rem 0.75rem; background: none;
+  border: 1px solid var(--border); border-radius: 0.4rem; color: var(--text-muted);
+  font-size: 0.72rem; cursor: pointer; width: calc(100% - 1.5rem); text-align: left;
+  transition: border-color 0.15s, color 0.15s;
+}
+.new-session-btn:hover { border-color: var(--accent); color: var(--accent); }
+.channel-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: inline-block; margin-right: 0.4rem; flex-shrink: 0; }
+
+/* ── Main conversation ── */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 #messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 1rem 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  scroll-behavior: smooth;
+  flex: 1; overflow-y: auto; padding: 1rem 0;
+  display: flex; flex-direction: column; gap: 0.5rem; scroll-behavior: smooth;
 }
 #messages::-webkit-scrollbar { width: 5px; }
 #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 9999px; }
-
 .msg {
-  max-width: min(70ch, 90%);
-  padding: 0.65rem 0.9rem;
-  border-radius: 0.75rem;
-  line-height: 1.55;
-  font-size: 0.875rem;
-  white-space: pre-wrap;
-  word-break: break-word;
+  max-width: min(72ch, 90%); padding: 0.65rem 0.9rem;
+  border-radius: 0.75rem; line-height: 1.55; font-size: 0.875rem;
+  white-space: pre-wrap; word-break: break-word;
 }
-.msg.user { align-self: flex-end; background: var(--user-bubble); border: 1px solid var(--border); margin-right: 1.25rem; }
+.msg.user  { align-self: flex-end;  background: var(--user-bubble);  border: 1px solid var(--border); margin-right: 1.25rem; }
 .msg.agent { align-self: flex-start; background: var(--agent-bubble); border: 1px solid var(--border); margin-left: 1.25rem; }
-.msg.system { align-self: center; color: var(--text-muted); font-size: 0.75rem; background: none; border: none; max-width: 100%; }
-.msg.error-msg { align-self: center; color: var(--error); font-size: 0.8rem; background: none; border: none; }
+.msg.system    { align-self: center; color: var(--text-muted); font-size: 0.72rem; background: none; border: none; max-width: 100%; }
+.msg.error-msg { align-self: center; color: var(--error);      font-size: 0.8rem;  background: none; border: none; }
+.msg.streaming { opacity: 0.9; }
+.msg.streaming::after { content: '▌'; opacity: 0.7; animation: blink 0.8s step-end infinite; }
+@keyframes blink { 0%,100%{opacity:0.7} 50%{opacity:0} }
 
-.thinking { display: flex; gap: 4px; align-items: center; padding: 0.65rem 0.9rem; }
+.thinking { display: flex; gap: 4px; align-items: center; padding: 0.65rem 0.9rem; margin-left: 1.25rem; }
 .thinking span { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; animation: bounce 1.2s infinite ease-in-out; }
 .thinking span:nth-child(2) { animation-delay: 0.15s; }
 .thinking span:nth-child(3) { animation-delay: 0.3s; }
@@ -89,45 +119,51 @@ header h1 { font-size: 1rem; font-weight: 600; letter-spacing: 0.04em; }
 /* ── Input area ── */
 footer {
   padding: 0.75rem 1.25rem;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
+  background: var(--surface); border-top: 1px solid var(--border); flex-shrink: 0;
 }
 .input-row { display: flex; gap: 0.5rem; }
 #input {
-  flex: 1;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  padding: 0.6rem 0.85rem;
-  color: var(--text);
-  font-family: var(--font);
-  font-size: 0.875rem;
-  outline: none;
-  resize: none;
-  min-height: 2.5rem;
-  max-height: 8rem;
-  overflow-y: auto;
-  field-sizing: content;
-  transition: border-color 0.2s;
+  flex: 1; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 0.5rem; padding: 0.6rem 0.85rem; color: var(--text);
+  font-family: var(--font); font-size: 0.875rem; outline: none;
+  resize: none; min-height: 2.5rem; max-height: 8rem; overflow-y: auto;
+  field-sizing: content; transition: border-color 0.2s;
 }
 #input:focus { border-color: var(--accent); }
 #input::placeholder { color: var(--text-muted); }
 #send {
-  background: var(--accent);
-  border: none;
-  border-radius: 0.5rem;
-  padding: 0.6rem 1rem;
-  color: #fff;
-  font-size: 0.875rem;
-  font-weight: 600;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.2s;
+  background: var(--accent); border: none; border-radius: 0.5rem;
+  padding: 0.6rem 1rem; color: #fff; font-size: 0.875rem; font-weight: 600;
+  cursor: pointer; flex-shrink: 0; transition: background 0.2s;
 }
 #send:hover:not(:disabled) { background: var(--accent-hover); }
 #send:disabled { opacity: 0.4; cursor: not-allowed; }
-.hint { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.35rem; }
+.hint { font-size: 0.68rem; color: var(--text-muted); margin-top: 0.35rem; }
+
+/* ── Approval modal ── */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.65); backdrop-filter: blur(2px);
+  z-index: 100; align-items: center; justify-content: center;
+}
+.modal-overlay.visible { display: flex; }
+.modal {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 0.85rem; padding: 1.5rem; max-width: 480px; width: 90%;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.modal h2 { font-size: 1rem; margin-bottom: 0.5rem; color: var(--warn); }
+.modal .cmd-box {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 0.5rem;
+  padding: 0.6rem 0.85rem; font-family: var(--mono); font-size: 0.8rem;
+  white-space: pre-wrap; word-break: break-all; margin: 0.75rem 0 1rem;
+  max-height: 160px; overflow-y: auto; color: var(--warn);
+}
+.modal-actions { display: flex; gap: 0.75rem; justify-content: flex-end; }
+.btn { padding: 0.5rem 1.2rem; border-radius: 0.4rem; font-size: 0.85rem; font-weight: 600; cursor: pointer; border: none; }
+.btn-deny  { background: #3f1a1a; color: var(--error); border: 1px solid var(--error); }
+.btn-approve { background: #163025; color: var(--success); border: 1px solid var(--success); }
+.btn:hover { filter: brightness(1.1); }
 </style>
 </head>
 <body>
@@ -135,39 +171,94 @@ footer {
   <div class="status-dot" id="dot"></div>
   <h1>Swarmstr</h1>
   <div class="header-info">
-    <span class="agent-badge" id="agent-label">agent: main</span>
+    <span class="badge" id="agent-badge">agent: main</span>
+    <span class="badge warn" id="approvals-badge" style="display:none">⚠ approval pending</span>
     <span id="conn-label">connecting…</span>
   </div>
 </header>
 
-<div id="messages"></div>
+<div class="layout">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-tabs">
+      <button class="tab-btn active" data-tab="sessions">Sessions</button>
+      <button class="tab-btn" data-tab="channels">Channels</button>
+      <button class="tab-btn" data-tab="agents">Agents</button>
+    </div>
+    <div class="tab-panel active" id="tab-sessions">
+      <button class="new-session-btn" id="new-session-btn">+ New session</button>
+      <div id="sessions-list"><div class="sidebar-empty">Loading…</div></div>
+    </div>
+    <div class="tab-panel" id="tab-channels">
+      <div id="channels-list"><div class="sidebar-empty">Loading…</div></div>
+    </div>
+    <div class="tab-panel" id="tab-agents">
+      <div id="agents-list"><div class="sidebar-empty">Loading…</div></div>
+    </div>
+  </aside>
 
-<footer>
-  <div class="input-row">
-    <textarea id="input" rows="1" placeholder="Send a message… (Shift+Enter for newline)" disabled></textarea>
-    <button id="send" disabled>Send</button>
+  <!-- Main conversation -->
+  <div class="main">
+    <div id="messages"></div>
+    <footer>
+      <div class="input-row">
+        <textarea id="input" rows="1" placeholder="Send a message… (Shift+Enter for newline)" disabled></textarea>
+        <button id="send" disabled>Send</button>
+      </div>
+      <p class="hint">Tip: /help for slash commands</p>
+    </footer>
   </div>
-  <p class="hint">Tip: /help for slash commands</p>
-</footer>
+</div>
+
+<!-- Exec approval modal -->
+<div class="modal-overlay" id="approval-modal">
+  <div class="modal">
+    <h2>⚠ Exec Approval Required</h2>
+    <p style="font-size:0.82rem;color:var(--text-muted)">The agent wants to run the following command. Approve or deny:</p>
+    <div class="cmd-box" id="approval-cmd"></div>
+    <div class="modal-actions">
+      <button class="btn btn-deny"    id="approval-deny">Deny</button>
+      <button class="btn btn-approve" id="approval-approve">Approve</button>
+    </div>
+  </div>
+</div>
 
 <script>
-// Injected by the Go server at render time.
 const WS_PATH = '{{.WSPath}}';
 const TOKEN   = '{{.Token}}';
 (function () {
   const $ = id => document.getElementById(id);
-  const msgs = $('messages');
-  const input = $('input');
-  const sendBtn = $('send');
-  const dot = $('dot');
+
+  const msgs      = $('messages');
+  const input     = $('input');
+  const sendBtn   = $('send');
+  const dot       = $('dot');
   const connLabel = $('conn-label');
-  const agentLabel = $('agent-label');
+  const agentBadge      = $('agent-badge');
+  const approvalsBadge  = $('approvals-badge');
+  const approvalModal   = $('approval-modal');
+  const approvalCmd     = $('approval-cmd');
+  const sessionsList    = $('sessions-list');
+  const channelsList    = $('channels-list');
+  const agentsList      = $('agents-list');
 
-  let ws, thinkingEl, reconnectDelay = 1500, sessionID = null;
-  // Try to restore a session identifier from localStorage.
-  sessionID = localStorage.getItem('swarmstr_session') || null;
+  // ── State ─────────────────────────────────────────────────────────────────
+  let ws, reconnectDelay = 1500;
+  let connected = false;
+  let pendingResolvers = {};
+  let seq = 0;
+  let sessionID = localStorage.getItem('swarmstr_session') || null;
+  let activeAgentID = 'main';
+  // Streaming: the current agent bubble being written to (or null).
+  let streamingBubble = null;
+  let thinkingEl = null;
+  // Approval queue: id → {id, command, resolve}
+  let approvalQueue = [];
+  let currentApprovalID = null;
 
-  // ── Helpers ─────────────────────────────────────────────────────────────
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function nextID() { return 'ui-' + (++seq); }
+
   function addMsg(text, role) {
     const el = document.createElement('div');
     el.className = 'msg ' + role;
@@ -198,19 +289,37 @@ const TOKEN   = '{{.Token}}';
     if (ok) input.focus();
   }
 
-  // ── Gateway WS protocol ──────────────────────────────────────────────────
-  // Swarmstr uses a lightweight "connect" handshake before any requests.
-  let pendingResolvers = {};
-  let seq = 0;
-  let connNonce = null;
-  let connected = false;
+  // ── Streaming bubble management ───────────────────────────────────────────
+  function startStreaming() {
+    hideThinking();
+    streamingBubble = document.createElement('div');
+    streamingBubble.className = 'msg agent streaming';
+    streamingBubble.textContent = '';
+    msgs.appendChild(streamingBubble);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
 
-  function nextID() { return 'ui-' + (++seq); }
+  function appendChunk(text) {
+    if (!streamingBubble) startStreaming();
+    streamingBubble.textContent += text;
+    msgs.scrollTop = msgs.scrollHeight;
+  }
 
-  function sendFrame(frame) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(frame));
+  function finalizeStreaming() {
+    if (streamingBubble) {
+      streamingBubble.classList.remove('streaming');
+      // Keep bubble as a normal agent message.
+      if (!streamingBubble.textContent.trim()) {
+        streamingBubble.remove();
+      }
+      streamingBubble = null;
     }
+    hideThinking();
+  }
+
+  // ── Gateway WS protocol ───────────────────────────────────────────────────
+  function sendFrame(frame) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
   }
 
   function callMethod(method, params) {
@@ -221,36 +330,209 @@ const TOKEN   = '{{.Token}}';
     });
   }
 
+  async function loadSidebar() {
+    // Load sessions, channels, agents in parallel.
+    await Promise.all([loadSessions(), loadChannels(), loadAgents()]);
+  }
+
+  async function loadSessions() {
+    try {
+      const res = await callMethod('sessions.list', { limit: 40 });
+      const sessions = res && (res.sessions || res.items || []);
+      if (!sessions || !sessions.length) {
+        sessionsList.innerHTML = '<div class="sidebar-empty">No sessions yet</div>';
+        return;
+      }
+      sessionsList.innerHTML = '';
+      sessions.forEach(s => {
+        const el = document.createElement('div');
+        el.className = 'sidebar-item' + (s.session_id === sessionID ? ' active' : '');
+        el.dataset.sid = s.session_id;
+        el.innerHTML = `<div>${truncate(s.session_id, 22)}</div><div class="sub">${s.preview || ''}</div>`;
+        el.addEventListener('click', () => switchSession(s.session_id));
+        sessionsList.appendChild(el);
+      });
+    } catch { sessionsList.innerHTML = '<div class="sidebar-empty">—</div>'; }
+  }
+
+  async function loadChannels() {
+    try {
+      const res = await callMethod('channels.list', {});
+      const chans = res && (res.channels || res.items || []);
+      if (!chans || !chans.length) {
+        channelsList.innerHTML = '<div class="sidebar-empty">No channels connected</div>';
+        return;
+      }
+      channelsList.innerHTML = '';
+      chans.forEach(c => {
+        const el = document.createElement('div');
+        el.className = 'sidebar-item';
+        el.innerHTML = `<span class="channel-dot"></span>${c.id || '—'}<div class="sub">${c.type || ''}</div>`;
+        channelsList.appendChild(el);
+      });
+    } catch { channelsList.innerHTML = '<div class="sidebar-empty">—</div>'; }
+  }
+
+  async function loadAgents() {
+    try {
+      const res = await callMethod('agents.list', {});
+      const ags = res && (res.agents || res.items || []);
+      if (!ags || !ags.length) {
+        agentsList.innerHTML = '<div class="sidebar-empty">No agents configured</div>';
+        return;
+      }
+      agentsList.innerHTML = '';
+      ags.forEach(a => {
+        const el = document.createElement('div');
+        el.className = 'sidebar-item' + (a.id === activeAgentID ? ' active' : '');
+        el.innerHTML = `<div>${a.id || a.agent_id}</div><div class="sub">${a.model || ''}</div>`;
+        agentsList.appendChild(el);
+      });
+    } catch { agentsList.innerHTML = '<div class="sidebar-empty">—</div>'; }
+  }
+
+  function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : (s || ''); }
+
+  function switchSession(sid) {
+    sessionID = sid;
+    localStorage.setItem('swarmstr_session', sid);
+    msgs.innerHTML = '';
+    addMsg('Switched to session: ' + sid, 'system');
+    // Update active state in sidebar.
+    document.querySelectorAll('#sessions-list .sidebar-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.sid === sid);
+    });
+  }
+
+  // ── Approval queue management ─────────────────────────────────────────────
+  function enqueueApproval(id, command) {
+    approvalQueue.push({ id, command });
+    approvalsBadge.style.display = '';
+    if (!currentApprovalID) showNextApproval();
+  }
+
+  function showNextApproval() {
+    if (!approvalQueue.length) {
+      currentApprovalID = null;
+      approvalModal.classList.remove('visible');
+      approvalsBadge.style.display = 'none';
+      return;
+    }
+    const a = approvalQueue[0];
+    currentApprovalID = a.id;
+    approvalCmd.textContent = a.command || a.id;
+    approvalModal.classList.add('visible');
+  }
+
+  async function resolveApproval(decision) {
+    if (!currentApprovalID) return;
+    const id = currentApprovalID;
+    approvalQueue = approvalQueue.filter(a => a.id !== id);
+    currentApprovalID = null;
+    approvalModal.classList.remove('visible');
+    try {
+      await callMethod('exec.approval.resolve', { id, decision });
+    } catch (e) {
+      addMsg('⚠️ Could not resolve approval: ' + (e && e.message), 'error-msg');
+    }
+    showNextApproval();
+  }
+
+  $('approval-approve').addEventListener('click', () => resolveApproval('approve'));
+  $('approval-deny').addEventListener('click',    () => resolveApproval('deny'));
+
+  // ── Tab switching ─────────────────────────────────────────────────────────
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      $('tab-' + btn.dataset.tab).classList.add('active');
+    });
+  });
+
+  $('new-session-btn').addEventListener('click', () => {
+    sessionID = null;
+    localStorage.removeItem('swarmstr_session');
+    msgs.innerHTML = '';
+    addMsg('New conversation started.', 'system');
+    document.querySelectorAll('#sessions-list .sidebar-item').forEach(el => el.classList.remove('active'));
+    input.focus();
+  });
+
+  // ── WS event dispatcher ───────────────────────────────────────────────────
+  function onEvent(event, payload) {
+    switch (event) {
+      case 'agent.status':
+        if (payload) {
+          activeAgentID = payload.agent_id || activeAgentID;
+          agentBadge.textContent = 'agent: ' + activeAgentID;
+          if (payload.status === 'thinking' && payload.session_id === sessionID) {
+            if (!streamingBubble) showThinking();
+          }
+          if (payload.status === 'idle') {
+            if (!streamingBubble) hideThinking();
+          }
+        }
+        break;
+      case 'chat.chunk':
+        if (payload && payload.session_id === sessionID) {
+          if (payload.done) {
+            finalizeStreaming();
+            loadSessions(); // Refresh session list after reply.
+          } else if (payload.text) {
+            appendChunk(payload.text);
+          }
+        }
+        break;
+      case 'chat.message':
+        if (payload && payload.direction === 'outbound' && !streamingBubble) {
+          hideThinking();
+          if (payload.text) addMsg(payload.text, 'agent');
+        }
+        break;
+      case 'exec.approval.requested':
+        if (payload) enqueueApproval(payload.id, payload.command);
+        break;
+      case 'config.updated':
+        addMsg('Config reloaded.', 'system');
+        loadAgents();
+        break;
+      case 'channel.message':
+        // Optionally surface channel messages in a notification.
+        break;
+    }
+  }
+
+  // ── WebSocket connect ─────────────────────────────────────────────────────
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsURL = proto + '//' + location.host + WS_PATH;
-    ws = new WebSocket(wsURL);
+    ws = new WebSocket(proto + '//' + location.host + WS_PATH);
     ws.binaryType = 'arraybuffer';
-
-    ws.onopen = () => { connected = false; /* wait for challenge */ };
-
+    ws.onopen = () => {};
     ws.onmessage = async (ev) => {
       let frame;
       try { frame = JSON.parse(ev.data); } catch { return; }
 
       if (frame.type === 'event') {
         if (frame.event === 'connect.challenge') {
-          connNonce = frame.payload && frame.payload.nonce;
-          // Perform connect handshake.
+          const nonce = frame.payload && frame.payload.nonce;
           const id = nextID();
           sendFrame({
             type: 'request', id, method: 'connect',
             params: {
               client: { id: 'swarmstr-webui', mode: 'local', platform: navigator.platform || 'browser', version: '0.0.0', instanceId: 'webui-' + Math.random().toString(36).slice(2) },
               min_protocol: 1, max_protocol: 10,
-              auth: { token: TOKEN, nonce: connNonce }
+              auth: { token: TOKEN, nonce }
             }
           });
           pendingResolvers[id] = {
-            resolve: (payload) => {
+            resolve: () => {
               connected = true;
+              reconnectDelay = 1500;
               setConnected(true, 'connected');
-              addMsg('Connected to Swarmstr gateway. Type /help for slash commands.', 'system');
+              addMsg('Connected. Type /help for commands.', 'system');
+              loadSidebar();
             },
             reject: (err) => {
               setConnected(false, 'auth failed');
@@ -259,18 +541,7 @@ const TOKEN   = '{{.Token}}';
           };
           return;
         }
-        if (frame.event === 'agent.status') {
-          const p = frame.payload || {};
-          agentLabel.textContent = 'agent: ' + (p.agent_id || 'main');
-          if (p.status === 'thinking') showThinking();
-          if (p.status === 'idle') hideThinking();
-        }
-        if (frame.event === 'chat.message' && frame.payload) {
-          const p = frame.payload;
-          if (p.direction === 'outbound') {
-            hideThinking();
-          }
-        }
+        onEvent(frame.event, frame.payload);
         return;
       }
 
@@ -284,9 +555,10 @@ const TOKEN   = '{{.Token}}';
       }
     };
 
-    ws.onerror = () => { setConnected(null, 'connection error'); };
+    ws.onerror = () => setConnected(null, 'connection error');
     ws.onclose = () => {
       connected = false;
+      finalizeStreaming();
       setConnected(null, 'reconnecting in ' + (reconnectDelay / 1000).toFixed(1) + 's…');
       pendingResolvers = {};
       hideThinking();
@@ -297,32 +569,37 @@ const TOKEN   = '{{.Token}}';
     };
   }
 
-  // ── Sending messages via chat.send ────────────────────────────────────────
+  // ── Sending messages ──────────────────────────────────────────────────────
   async function sendMessage() {
     const text = input.value.trim();
     if (!text || !connected) return;
     input.value = '';
     input.style.height = '';
     addMsg(text, 'user');
-    showThinking();
     sendBtn.disabled = true;
+
+    // Show thinking indicator; streaming chunks will replace it.
+    showThinking();
 
     try {
       const result = await callMethod('chat.send', { message: text, session_id: sessionID || undefined });
-      hideThinking();
-      if (result && result.text) {
+      if (result && result.session_id && result.session_id !== sessionID) {
+        sessionID = result.session_id;
+        localStorage.setItem('swarmstr_session', sessionID);
+      }
+      // If no streaming chunks arrived, render the final response from result.text.
+      if (!streamingBubble && result && result.text) {
+        hideThinking();
         addMsg(result.text, 'agent');
-        if (result.session_id && result.session_id !== sessionID) {
-          sessionID = result.session_id;
-          localStorage.setItem('swarmstr_session', sessionID);
-        }
+        loadSessions();
       }
     } catch (err) {
+      finalizeStreaming();
       hideThinking();
-      const msg = err && err.message ? err.message : 'Request failed';
-      addMsg('⚠️ ' + msg, 'error-msg');
+      addMsg('⚠️ ' + (err && err.message ? err.message : 'Request failed'), 'error-msg');
     } finally {
       sendBtn.disabled = !connected;
+      input.focus();
     }
   }
 
@@ -332,7 +609,6 @@ const TOKEN   = '{{.Token}}';
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
   input.addEventListener('input', () => {
-    // Auto-resize textarea.
     input.style.height = 'auto';
     input.style.height = input.scrollHeight + 'px';
   });
@@ -341,7 +617,6 @@ const TOKEN   = '{{.Token}}';
   setConnected(null, 'connecting…');
   connect();
 })();
-
 </script>
 </body>
 </html>

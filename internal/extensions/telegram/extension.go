@@ -29,6 +29,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,6 +67,18 @@ func (t *TelegramPlugin) ConfigSchema() map[string]any {
 			},
 		},
 		"required": []string{"token"},
+	}
+}
+
+// Capabilities declares the features supported by the Telegram Bot channel.
+func (t *TelegramPlugin) Capabilities() sdk.ChannelCapabilities {
+	return sdk.ChannelCapabilities{
+		Typing:       true,
+		Reactions:    false,
+		Threads:      true,
+		Audio:        false,
+		Edit:         true,
+		MultiAccount: true,
 	}
 }
 
@@ -151,6 +165,111 @@ func (b *telegramBot) Send(ctx context.Context, text string) error {
 
 func (b *telegramBot) Close() {
 	close(b.done)
+}
+
+// ─── TypingHandle ─────────────────────────────────────────────────────────────
+
+// SendTyping sends a "typing" chat action to the current chat.
+func (b *telegramBot) SendTyping(ctx context.Context, _ int) error {
+	b.mu.Lock()
+	chatID := b.lastChatID
+	b.mu.Unlock()
+	if chatID == "" {
+		return nil // no chat known yet
+	}
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendChatAction", b.token)
+	body, _ := json.Marshal(map[string]any{"chat_id": chatID, "action": "typing"})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	cl := &http.Client{Timeout: 10 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return fmt.Errorf("telegram sendChatAction: %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// ─── EditHandle ──────────────────────────────────────────────────────────────
+
+// EditMessage replaces the text of a previously sent message.
+// eventID must be of the form "tg-{message_id}".
+func (b *telegramBot) EditMessage(ctx context.Context, eventID, newText string) error {
+	b.mu.Lock()
+	chatID := b.lastChatID
+	b.mu.Unlock()
+	if chatID == "" {
+		return fmt.Errorf("telegram %s: no chat ID known", b.channelID)
+	}
+	msgIDStr := strings.TrimPrefix(eventID, "tg-")
+	msgID, err := strconv.ParseInt(msgIDStr, 10, 64)
+	if err != nil || msgID == 0 {
+		return fmt.Errorf("telegram EditMessage: invalid eventID %q", eventID)
+	}
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/editMessageText", b.token)
+	body, _ := json.Marshal(map[string]any{
+		"chat_id":    chatID,
+		"message_id": msgID,
+		"text":       newText,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	cl := &http.Client{Timeout: 15 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return fmt.Errorf("telegram editMessageText: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram editMessageText: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	return nil
+}
+
+// ─── ThreadHandle ────────────────────────────────────────────────────────────
+
+// SendInThread sends a reply to a specific message using reply_to_message_id.
+// threadID should be the numeric Telegram message ID (string form) to reply to.
+func (b *telegramBot) SendInThread(ctx context.Context, threadID, text string) error {
+	b.mu.Lock()
+	chatID := b.lastChatID
+	b.mu.Unlock()
+	if chatID == "" {
+		return fmt.Errorf("telegram %s: no chat ID known", b.channelID)
+	}
+	replyTo, _ := strconv.ParseInt(threadID, 10, 64)
+	payload := map[string]any{
+		"chat_id": chatID,
+		"text":    text,
+	}
+	if replyTo > 0 {
+		payload["reply_to_message_id"] = replyTo
+	}
+	body, _ := json.Marshal(payload)
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	cl := &http.Client{Timeout: 15 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return fmt.Errorf("telegram sendInThread: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram sendInThread: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	return nil
 }
 
 func (b *telegramBot) poll(ctx context.Context) {

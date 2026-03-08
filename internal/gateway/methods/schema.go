@@ -81,6 +81,7 @@ const (
 	MethodACPUnregister      = "acp.unregister"
 	MethodACPPeers           = "acp.peers"
 	MethodACPDispatch        = "acp.dispatch"
+	MethodACPPipeline        = "acp.pipeline"
 	MethodAgentsList         = "agents.list"
 	MethodAgentsCreate       = "agents.create"
 	MethodAgentsUpdate       = "agents.update"
@@ -99,9 +100,12 @@ const (
 	MethodSkillsBins         = "skills.bins"
 	MethodSkillsInstall      = "skills.install"
 	MethodSkillsUpdate       = "skills.update"
-	MethodPluginsInstall     = "plugins.install"
-	MethodPluginsUninstall   = "plugins.uninstall"
-	MethodPluginsUpdate      = "plugins.update"
+	MethodPluginsInstall        = "plugins.install"
+	MethodPluginsUninstall      = "plugins.uninstall"
+	MethodPluginsUpdate         = "plugins.update"
+	MethodPluginsRegistryList   = "plugins.registry.list"
+	MethodPluginsRegistryGet    = "plugins.registry.get"
+	MethodPluginsRegistrySearch = "plugins.registry.search"
 	MethodNodePairRequest    = "node.pair.request"
 	MethodNodePairList       = "node.pair.list"
 	MethodNodePairApprove    = "node.pair.approve"
@@ -136,6 +140,7 @@ const (
 	MethodExecApprovalWaitDecision = "exec.approval.waitDecision"
 	MethodExecApprovalResolve  = "exec.approval.resolve"
 	MethodSecretsReload      = "secrets.reload"
+	MethodSandboxRun         = "sandbox.run"
 	MethodSecretsResolve     = "secrets.resolve"
 	MethodWizardStart        = "wizard.start"
 	MethodWizardNext         = "wizard.next"
@@ -242,6 +247,29 @@ type ACPDispatchRequest struct {
 	Instructions string `json:"instructions"`
 	// TimeoutMS, when > 0, limits the round-trip wait in milliseconds.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
+	// Wait, when true, blocks until the worker sends a result DM and returns
+	// the result text.  When false (default), returns immediately with the task_id.
+	Wait bool `json:"wait,omitempty"`
+}
+
+// ACPPipelineStepRequest is a single step in an ACP pipeline.
+type ACPPipelineStepRequest struct {
+	// PeerPubKey is the Nostr pubkey of the target worker agent.
+	PeerPubKey string `json:"peer_pubkey"`
+	// Instructions is the task text for this step.
+	Instructions string `json:"instructions"`
+	// TimeoutMS is the per-step timeout.  0 = 60 s default.
+	TimeoutMS int64 `json:"timeout_ms,omitempty"`
+}
+
+// ACPPipelineRequest orchestrates a multi-step ACP workflow.
+type ACPPipelineRequest struct {
+	// Steps are the pipeline stages in execution order.
+	Steps []ACPPipelineStepRequest `json:"steps"`
+	// Parallel, when true, dispatches all steps concurrently.
+	// When false (default), steps run sequentially and each step receives
+	// the previous step's result as context.
+	Parallel bool `json:"parallel,omitempty"`
 }
 
 type AgentWaitRequest struct {
@@ -590,6 +618,31 @@ type PluginsUpdateRequest struct {
 	DryRun    bool     `json:"dry_run,omitempty"`
 }
 
+// PluginsRegistryListRequest fetches the full plugin index from a remote registry.
+type PluginsRegistryListRequest struct {
+	// RegistryURL overrides the registry URL configured in the daemon config.
+	// If empty, the daemon's configured registry URL is used.
+	RegistryURL string `json:"registry_url,omitempty"`
+}
+
+// PluginsRegistryGetRequest fetches details for a single plugin from the registry.
+type PluginsRegistryGetRequest struct {
+	// PluginID is the plugin identifier to look up.
+	PluginID string `json:"plugin_id"`
+	// RegistryURL overrides the configured registry URL.
+	RegistryURL string `json:"registry_url,omitempty"`
+}
+
+// PluginsRegistrySearchRequest searches the remote registry by keyword or tag.
+type PluginsRegistrySearchRequest struct {
+	// Query is a keyword to match against plugin name, description, and tags.
+	Query string `json:"query,omitempty"`
+	// Tag filters results by a specific tag.
+	Tag string `json:"tag,omitempty"`
+	// RegistryURL overrides the configured registry URL.
+	RegistryURL string `json:"registry_url,omitempty"`
+}
+
 type NodePairRequest struct {
 	NodeID          string         `json:"node_id"`
 	DisplayName     string         `json:"display_name,omitempty"`
@@ -756,6 +809,20 @@ type ExecApprovalResolveRequest struct {
 	ID       string `json:"id"`
 	Decision string `json:"decision"`
 	Reason   string `json:"reason,omitempty"`
+}
+
+// SandboxRunRequest is the request payload for sandbox.run.
+type SandboxRunRequest struct {
+	// Cmd is the command and arguments to execute.
+	Cmd []string `json:"cmd"`
+	// Env is a list of "KEY=VALUE" environment overrides.
+	Env []string `json:"env,omitempty"`
+	// Workdir is the working directory for the command.
+	Workdir string `json:"workdir,omitempty"`
+	// TimeoutSeconds overrides the daemon's configured sandbox timeout.
+	TimeoutSeconds int `json:"timeout_s,omitempty"`
+	// Driver overrides the daemon's configured sandbox driver.
+	Driver string `json:"driver,omitempty"`
 }
 
 type SecretsReloadRequest struct{}
@@ -1952,6 +2019,7 @@ func SupportedMethods() []string {
 		MethodACPUnregister,
 		MethodACPPeers,
 		MethodACPDispatch,
+		MethodACPPipeline,
 		MethodAgentsList,
 		MethodAgentsCreate,
 		MethodAgentsUpdate,
@@ -1973,6 +2041,9 @@ func SupportedMethods() []string {
 		MethodPluginsInstall,
 		MethodPluginsUninstall,
 		MethodPluginsUpdate,
+		MethodPluginsRegistryList,
+		MethodPluginsRegistryGet,
+		MethodPluginsRegistrySearch,
 		MethodNodePairRequest,
 		MethodNodePairList,
 		MethodNodePairApprove,
@@ -2007,6 +2078,7 @@ func SupportedMethods() []string {
 		MethodExecApprovalWaitDecision,
 		MethodExecApprovalResolve,
 		MethodSecretsReload,
+		MethodSandboxRun,
 		MethodSecretsResolve,
 		MethodWizardStart,
 		MethodWizardNext,
@@ -3212,6 +3284,24 @@ func DecodePluginsUpdateParams(params json.RawMessage) (PluginsUpdateRequest, er
 	return decodeMethodParams[PluginsUpdateRequest](params)
 }
 
+func DecodePluginsRegistryListParams(params json.RawMessage) (PluginsRegistryListRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return PluginsRegistryListRequest{}, nil
+	}
+	return decodeMethodParams[PluginsRegistryListRequest](params)
+}
+
+func DecodePluginsRegistryGetParams(params json.RawMessage) (PluginsRegistryGetRequest, error) {
+	return decodeMethodParams[PluginsRegistryGetRequest](params)
+}
+
+func DecodePluginsRegistrySearchParams(params json.RawMessage) (PluginsRegistrySearchRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return PluginsRegistrySearchRequest{}, nil
+	}
+	return decodeMethodParams[PluginsRegistrySearchRequest](params)
+}
+
 func DecodeNodePairRequestParams(params json.RawMessage) (NodePairRequest, error) {
 	return decodeMethodParams[NodePairRequest](params)
 }
@@ -3565,6 +3655,10 @@ func DecodeExecApprovalWaitDecisionParams(params json.RawMessage) (ExecApprovalW
 
 func DecodeExecApprovalResolveParams(params json.RawMessage) (ExecApprovalResolveRequest, error) {
 	return decodeMethodParams[ExecApprovalResolveRequest](params)
+}
+
+func DecodeSandboxRunParams(params json.RawMessage) (SandboxRunRequest, error) {
+	return decodeMethodParams[SandboxRunRequest](params)
 }
 
 func DecodeSecretsReloadParams(params json.RawMessage) (SecretsReloadRequest, error) {

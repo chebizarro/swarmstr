@@ -793,6 +793,51 @@ func (r *cronRegistry) Runs(id string, limit int) []cronRunRecord {
 	return all
 }
 
+// Save persists the current cron jobs to the DocsRepository so they survive
+// daemon restarts.  Runs are intentionally not persisted (they are ephemeral).
+func (r *cronRegistry) Save(ctx context.Context, repo *state.DocsRepository) error {
+	r.mu.Lock()
+	jobs := make([]cronJobRecord, 0, len(r.jobs))
+	for _, j := range r.jobs {
+		jobs = append(jobs, j)
+	}
+	r.mu.Unlock()
+
+	raw, err := json.Marshal(jobs)
+	if err != nil {
+		return fmt.Errorf("marshal cron jobs: %w", err)
+	}
+	_, err = repo.PutCronJobs(ctx, raw)
+	return err
+}
+
+// Load restores cron jobs from the DocsRepository.
+// Must be called before the scheduler starts.  Non-fatal: if no jobs are stored
+// it returns nil.
+func (r *cronRegistry) Load(ctx context.Context, repo *state.DocsRepository) error {
+	raw, err := repo.GetCronJobs(ctx)
+	if err != nil {
+		return fmt.Errorf("get cron jobs: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil // nothing persisted yet
+	}
+	var jobs []cronJobRecord
+	if err := json.Unmarshal(raw, &jobs); err != nil {
+		return fmt.Errorf("unmarshal cron jobs: %w", err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, j := range jobs {
+		if _, exists := r.jobs[j.ID]; !exists {
+			r.order = append(r.order, j.ID)
+		}
+		r.jobs[j.ID] = j
+	}
+	return nil
+}
+
 type execApprovalPendingRecord struct {
 	ID         string         `json:"id"`
 	NodeID     string         `json:"node_id,omitempty"`

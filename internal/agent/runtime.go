@@ -33,6 +33,17 @@ type Runtime interface {
 	ProcessTurn(context.Context, Turn) (TurnResult, error)
 }
 
+// StreamingRuntime extends Runtime with incremental text delivery.
+// Implementations call onChunk for each text token (or small group) as it
+// arrives from the provider, enabling real-time display of partial responses.
+type StreamingRuntime interface {
+	Runtime
+	// ProcessTurnStreaming processes a turn and delivers text chunks via onChunk
+	// as they arrive.  The returned TurnResult is the complete response including
+	// ToolTraces.  onChunk may be nil (degrades to buffered delivery).
+	ProcessTurnStreaming(ctx context.Context, turn Turn, onChunk func(text string)) (TurnResult, error)
+}
+
 type ProviderRuntime struct {
 	provider Provider
 	tools    ToolExecutor
@@ -77,7 +88,40 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 	if err != nil {
 		return TurnResult{}, err
 	}
+	return r.buildResult(ctx, gen)
+}
 
+// ProcessTurnStreaming processes a turn with incremental text delivery.
+// If the underlying provider implements StreamingProvider, text tokens are
+// delivered via onChunk as they arrive; otherwise Generate() is called and
+// the full text is delivered in one onChunk call.  Tool calls are executed
+// after streaming completes using the configured ToolExecutor.
+func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, onChunk func(text string)) (TurnResult, error) {
+	turn.UserText = strings.TrimSpace(turn.UserText)
+	if turn.UserText == "" {
+		return TurnResult{}, fmt.Errorf("empty user turn")
+	}
+
+	var gen ProviderResult
+	var err error
+
+	if sp, ok := r.provider.(StreamingProvider); ok {
+		gen, err = sp.Stream(ctx, turn, onChunk)
+	} else {
+		gen, err = r.provider.Generate(ctx, turn)
+		if err == nil && onChunk != nil {
+			onChunk(gen.Text)
+		}
+	}
+	if err != nil {
+		return TurnResult{}, err
+	}
+
+	return r.buildResult(ctx, gen)
+}
+
+// buildResult executes any tool calls from gen and assembles the TurnResult.
+func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult) (TurnResult, error) {
 	result := TurnResult{Text: strings.TrimSpace(gen.Text)}
 	for _, call := range gen.ToolCalls {
 		trace := ToolTrace{Call: call}

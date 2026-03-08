@@ -85,9 +85,16 @@ func (e *ExtensionHandle) Close() { e.handle.Close() }
 
 // ExtensionConnectResult holds a connected extension channel.
 type ExtensionConnectResult struct {
-	PluginID  string
-	ChannelID string
-	Handle    Channel
+	PluginID     string
+	ChannelID    string
+	Handle       Channel
+	// RawHandle is the underlying sdk.ChannelHandle returned by the plugin.
+	// Callers can perform interface assertions (e.g. sdk.TypingHandle) on it
+	// to access optional channel features.
+	RawHandle    sdk.ChannelHandle
+	// Capabilities is the declared feature set for this channel instance.
+	// It is populated when the plugin implements sdk.ChannelPluginWithCapabilities.
+	Capabilities sdk.ChannelCapabilities
 }
 
 // ConnectExtensions reads the live config, finds nostr_channels entries whose
@@ -124,10 +131,16 @@ func ConnectExtensions(
 			continue
 		}
 
+		var caps sdk.ChannelCapabilities
+		if cp, ok := plugin.(sdk.ChannelPluginWithCapabilities); ok {
+			caps = cp.Capabilities()
+		}
 		results = append(results, ExtensionConnectResult{
-			PluginID:  chanCfg.Kind,
-			ChannelID: channelID,
-			Handle:    &ExtensionHandle{handle: handle},
+			PluginID:     chanCfg.Kind,
+			ChannelID:    channelID,
+			Handle:       &ExtensionHandle{handle: handle},
+			RawHandle:    handle,
+			Capabilities: caps,
 		})
 	}
 
