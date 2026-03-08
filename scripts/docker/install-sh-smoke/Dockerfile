@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim@sha256:3cfe526ec8dd62013b8843e8e5d4877e297b886e5aace4a59fec25dc20736e45
+FROM debian:bookworm-slim
 
 RUN set -eux; \
   for attempt in 1 2 3; do \
@@ -11,15 +11,11 @@ RUN set -eux; \
     bash \
     ca-certificates \
     curl \
-    git \
-    g++ \
-    make \
-    python3 \
-    sudo \
+    shellcheck \
   && rm -rf /var/lib/apt/lists/*
 
-COPY install-sh-common/cli-verify.sh /usr/local/install-sh-common/cli-verify.sh
-COPY install-sh-smoke/run.sh /usr/local/bin/openclaw-install-smoke
-RUN chmod +x /usr/local/bin/openclaw-install-smoke
+COPY install-sh-common/verify.sh /usr/local/install-sh-common/verify.sh
+COPY install-sh-smoke/run.sh     /usr/local/bin/swarmstr-install-smoke
+RUN chmod +x /usr/local/bin/swarmstr-install-smoke
 
-ENTRYPOINT ["/usr/local/bin/openclaw-install-smoke"]
+ENTRYPOINT ["/usr/local/bin/swarmstr-install-smoke"]

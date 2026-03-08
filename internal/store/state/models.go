@@ -71,7 +71,8 @@ type ControlAdmin struct {
 // Unknown fields are preserved in Extra so new OpenClaw provider keys survive round-trips.
 type ProviderEntry struct {
 	Enabled bool           `json:"enabled,omitempty"`
-	APIKey  string         `json:"api_key,omitempty"`  // redacted on read
+	APIKey  string         `json:"api_key,omitempty"`  // redacted on read; first key used by default
+	APIKeys []string       `json:"api_keys,omitempty"` // multi-key pool for round-robin rotation
 	BaseURL string         `json:"base_url,omitempty"`
 	Model   string         `json:"model,omitempty"`
 	Extra   map[string]any `json:"extra,omitempty"`
@@ -146,6 +147,9 @@ type NostrChannelConfig struct {
 	AgentID string `json:"agent_id,omitempty"`
 	// Tags is an optional set of Nostr filter tags for relay-filter channels.
 	Tags map[string][]string `json:"tags,omitempty"`
+	// Config holds channel-plugin-specific configuration (arbitrary key/value pairs).
+	// Used by extension channel plugins (telegram, discord, etc.) for their settings.
+	Config map[string]any `json:"config,omitempty"`
 }
 
 // NostrChannelsConfig is a named map of Nostr channel configurations.
@@ -168,6 +172,15 @@ type AgentConfig struct {
 	// DmPeers is a list of Nostr pubkeys (hex) whose DMs are routed to this agent.
 	// At startup, each pubkey is pre-seeded into the session router with this agent's ID.
 	DmPeers []string `json:"dm_peers,omitempty"`
+	// FallbackModels is an ordered list of model identifiers to try when the
+	// primary Model request fails (e.g. 429 rate limit or context-too-long).
+	// Each entry can be a plain model name or "provider/model" to also switch provider.
+	FallbackModels []string `json:"fallback_models,omitempty"`
+	// MaxContextTokens is the approximate token budget for assembled context.
+	// When the context engine estimates the assembled messages exceed 80% of this
+	// value, auto-compaction is triggered before the model call.
+	// Defaults to 100,000 when 0.
+	MaxContextTokens int `json:"max_context_tokens,omitempty"`
 }
 
 // AgentsConfig is an ordered list of per-agent configurations.

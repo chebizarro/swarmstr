@@ -50,6 +50,7 @@ const (
 	MethodUsageStatus        = "usage.status"
 	MethodUsageCost          = "usage.cost"
 	MethodMemorySearch       = "memory.search"
+	MethodMemoryCompact      = "memory.compact"
 	MethodAgent              = "agent"
 	MethodAgentWait          = "agent.wait"
 	MethodAgentIdentityGet   = "agent.identity.get"
@@ -63,6 +64,8 @@ const (
 	MethodSessionsReset      = "sessions.reset"
 	MethodSessionsDelete     = "sessions.delete"
 	MethodSessionsCompact    = "sessions.compact"
+	MethodSessionsSpawn      = "sessions.spawn"
+	MethodSessionsExport     = "sessions.export"
 	MethodListGet            = "list.get"
 	MethodListPut            = "list.put"
 	MethodRelayPolicyGet     = "relay.policy.get"
@@ -72,6 +75,12 @@ const (
 	MethodConfigApply        = "config.apply"
 	MethodConfigPatch        = "config.patch"
 	MethodConfigSchema       = "config.schema"
+	MethodConfigSchemaLookup = "config.schema.lookup"
+	MethodSecurityAudit      = "security.audit"
+	MethodACPRegister        = "acp.register"
+	MethodACPUnregister      = "acp.unregister"
+	MethodACPPeers           = "acp.peers"
+	MethodACPDispatch        = "acp.dispatch"
 	MethodAgentsList         = "agents.list"
 	MethodAgentsCreate       = "agents.create"
 	MethodAgentsUpdate       = "agents.update"
@@ -150,6 +159,11 @@ const (
 	MethodTTSEnable          = "tts.enable"
 	MethodTTSDisable         = "tts.disable"
 	MethodTTSConvert         = "tts.convert"
+	MethodHooksList          = "hooks.list"
+	MethodHooksEnable        = "hooks.enable"
+	MethodHooksDisable       = "hooks.disable"
+	MethodHooksInfo          = "hooks.info"
+	MethodHooksCheck         = "hooks.check"
 )
 
 type CallRequest struct {
@@ -181,11 +195,53 @@ type MemorySearchResponse struct {
 	Results []memory.IndexedMemory `json:"results"`
 }
 
+// MemoryCompactRequest asks the context engine to compact the given session.
+// If SessionID is empty, all sessions are compacted.
+type MemoryCompactRequest struct {
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// MemoryCompactResponse reports the result of a compaction operation.
+type MemoryCompactResponse struct {
+	OK           bool   `json:"ok"`
+	SessionsRun  int    `json:"sessions_run"`
+	TokensBefore int    `json:"tokens_before,omitempty"`
+	TokensAfter  int    `json:"tokens_after,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+}
+
 type AgentRequest struct {
 	SessionID string `json:"session_id,omitempty"`
 	Message   string `json:"message"`
 	Context   string `json:"context,omitempty"`
 	TimeoutMS int    `json:"timeout_ms,omitempty"`
+}
+
+// ── ACP (Agent Control Protocol) request/response types ─────────────────────
+
+// ACPRegisterRequest registers a remote agent peer by Nostr pubkey.
+type ACPRegisterRequest struct {
+	// PubKey is the Nostr pubkey (hex) of the remote agent.
+	PubKey string `json:"pubkey"`
+	// Alias is a human-friendly label for the peer.
+	Alias string `json:"alias,omitempty"`
+	// Tags holds arbitrary key-value metadata for this peer.
+	Tags map[string]string `json:"tags,omitempty"`
+}
+
+// ACPUnregisterRequest removes a remote agent peer.
+type ACPUnregisterRequest struct {
+	PubKey string `json:"pubkey"`
+}
+
+// ACPDispatchRequest sends an ACP task to a registered peer.
+type ACPDispatchRequest struct {
+	// TargetPubKey is the Nostr pubkey of the destination agent.
+	TargetPubKey string `json:"target_pubkey"`
+	// Instructions is the task description.
+	Instructions string `json:"instructions"`
+	// TimeoutMS, when > 0, limits the round-trip wait in milliseconds.
+	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 }
 
 type AgentWaitRequest struct {
@@ -198,11 +254,23 @@ type AgentIdentityRequest struct {
 	AgentID   string `json:"agent_id,omitempty"`
 }
 
+// AttachmentInput represents a media file attached to a chat.send or agent.run request.
+// The handler pre-processes attachments before forwarding: audio is transcribed,
+// PDFs are text-extracted, and images are resolved to ImageRef for vision providers.
+type AttachmentInput struct {
+	Type     string `json:"type"`             // "image", "audio", "pdf"
+	URL      string `json:"url,omitempty"`    // remote URL (optional)
+	Base64   string `json:"base64,omitempty"` // base64-encoded content (optional)
+	MimeType string `json:"mime_type,omitempty"`
+	Filename string `json:"filename,omitempty"`
+}
+
 type ChatSendRequest struct {
-	To             string `json:"to"`
-	Text           string `json:"text"`
-	IdempotencyKey string `json:"idempotency_key,omitempty"`
-	RunID          string `json:"run_id,omitempty"`
+	To             string            `json:"to"`
+	Text           string            `json:"text"`
+	IdempotencyKey string            `json:"idempotency_key,omitempty"`
+	RunID          string            `json:"run_id,omitempty"`
+	Attachments    []AttachmentInput `json:"attachments,omitempty"`
 }
 
 type ChatHistoryRequest struct {
@@ -259,10 +327,53 @@ type SessionsDeleteRequest struct {
 	Key       string `json:"key,omitempty"`
 }
 
+// SessionsExportRequest requests exporting a session transcript.
+type SessionsExportRequest struct {
+	// SessionID is the session to export.
+	SessionID string `json:"session_id"`
+	// Format is the export format. Currently only "html" is supported.
+	Format string `json:"format,omitempty"`
+}
+
+// SessionsExportResponse holds the exported content.
+type SessionsExportResponse struct {
+	// HTML is set when Format == "html".
+	HTML   string `json:"html,omitempty"`
+	Format string `json:"format"`
+}
+
 type SessionsCompactRequest struct {
 	SessionID string `json:"session_id"`
 	Key       string `json:"key,omitempty"`
 	Keep      int    `json:"keep,omitempty"`
+}
+
+type SessionsSpawnRequest struct {
+	// Message is the initial prompt for the spawned subagent.
+	Message string `json:"message"`
+	// ParentSessionID is the caller's session ID for depth/ancestry tracking.
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	// AgentID selects which configured agent handles the sub-session.
+	AgentID string `json:"agent_id,omitempty"`
+	// Context is extra system context to inject into the child session.
+	Context string `json:"context,omitempty"`
+	// TimeoutMS limits how long the caller will wait via agent.wait.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
+}
+
+func (r SessionsSpawnRequest) Normalize() (SessionsSpawnRequest, error) {
+	r.Message = strings.TrimSpace(r.Message)
+	if r.Message == "" {
+		return r, fmt.Errorf("message is required")
+	}
+	r.ParentSessionID = strings.TrimSpace(r.ParentSessionID)
+	r.AgentID = normalizeAgentID(r.AgentID)
+	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 60_000, 300_000)
+	return r, nil
+}
+
+func DecodeSessionsSpawnParams(params json.RawMessage) (SessionsSpawnRequest, error) {
+	return decodeMethodParams[SessionsSpawnRequest](params)
 }
 
 type SessionGetResponse struct {
@@ -804,8 +915,12 @@ func (r ChatSendRequest) Normalize() (ChatSendRequest, error) {
 	if r.RunID == "" {
 		r.RunID = r.IdempotencyKey
 	}
-	if r.To == "" || r.Text == "" {
-		return r, fmt.Errorf("to and text are required")
+	if r.To == "" {
+		return r, fmt.Errorf("to is required")
+	}
+	// text is optional when attachments are present (e.g. image-only messages).
+	if r.Text == "" && len(r.Attachments) == 0 {
+		return r, fmt.Errorf("text or attachments are required")
 	}
 	const maxTextRunes = 4096
 	if utf8.RuneCountInString(r.Text) > maxTextRunes {
@@ -1806,6 +1921,7 @@ func SupportedMethods() []string {
 		MethodUsageStatus,
 		MethodUsageCost,
 		MethodMemorySearch,
+		MethodMemoryCompact,
 		MethodAgent,
 		MethodAgentWait,
 		MethodAgentIdentityGet,
@@ -1819,6 +1935,8 @@ func SupportedMethods() []string {
 		MethodSessionsReset,
 		MethodSessionsDelete,
 		MethodSessionsCompact,
+		MethodSessionsSpawn,
+		MethodSessionsExport,
 		MethodListGet,
 		MethodListPut,
 		MethodRelayPolicyGet,
@@ -1828,6 +1946,12 @@ func SupportedMethods() []string {
 		MethodConfigApply,
 		MethodConfigPatch,
 		MethodConfigSchema,
+		MethodConfigSchemaLookup,
+		MethodSecurityAudit,
+		MethodACPRegister,
+		MethodACPUnregister,
+		MethodACPPeers,
+		MethodACPDispatch,
 		MethodAgentsList,
 		MethodAgentsCreate,
 		MethodAgentsUpdate,
@@ -1906,6 +2030,11 @@ func SupportedMethods() []string {
 		MethodTTSEnable,
 		MethodTTSDisable,
 		MethodTTSConvert,
+		MethodHooksList,
+		MethodHooksEnable,
+		MethodHooksDisable,
+		MethodHooksInfo,
+		MethodHooksCheck,
 	}
 }
 
@@ -2069,19 +2198,20 @@ func DecodeChatSendParams(params json.RawMessage) (ChatSendRequest, error) {
 		return ChatSendRequest{To: to, Text: text}, nil
 	}
 	type chatSendCompatRequest struct {
-		To             string `json:"to,omitempty"`
-		Text           string `json:"text,omitempty"`
-		SessionID      string `json:"session_id,omitempty"`
-		SessionIDCamel string `json:"sessionId,omitempty"`
-		SessionKey     string `json:"sessionKey,omitempty"`
-		Message        string `json:"message,omitempty"`
-		Thinking       string `json:"thinking,omitempty"`
-		Deliver        *bool  `json:"deliver,omitempty"`
-		TimeoutMS      int    `json:"timeoutMs,omitempty"`
-		IdempotencyKey string `json:"idempotencyKey,omitempty"`
-		IdempotencyAlt string `json:"idempotency_key,omitempty"`
-		RunID          string `json:"runId,omitempty"`
-		RunIDAlt       string `json:"run_id,omitempty"`
+		To             string            `json:"to,omitempty"`
+		Text           string            `json:"text,omitempty"`
+		SessionID      string            `json:"session_id,omitempty"`
+		SessionIDCamel string            `json:"sessionId,omitempty"`
+		SessionKey     string            `json:"sessionKey,omitempty"`
+		Message        string            `json:"message,omitempty"`
+		Thinking       string            `json:"thinking,omitempty"`
+		Deliver        *bool             `json:"deliver,omitempty"`
+		TimeoutMS      int               `json:"timeoutMs,omitempty"`
+		IdempotencyKey string            `json:"idempotencyKey,omitempty"`
+		IdempotencyAlt string            `json:"idempotency_key,omitempty"`
+		RunID          string            `json:"runId,omitempty"`
+		RunIDAlt       string            `json:"run_id,omitempty"`
+		Attachments    []AttachmentInput `json:"attachments,omitempty"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(params))
 	dec.DisallowUnknownFields()
@@ -2111,7 +2241,7 @@ func DecodeChatSendParams(params json.RawMessage) (ChatSendRequest, error) {
 	if runID == "" {
 		runID = strings.TrimSpace(compat.RunIDAlt)
 	}
-	return ChatSendRequest{To: to, Text: text, IdempotencyKey: idempotency, RunID: runID}, nil
+	return ChatSendRequest{To: to, Text: text, IdempotencyKey: idempotency, RunID: runID, Attachments: compat.Attachments}, nil
 }
 
 func DecodeSessionGetParams(params json.RawMessage) (SessionGetRequest, error) {

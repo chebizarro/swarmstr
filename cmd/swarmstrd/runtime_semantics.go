@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -244,6 +246,94 @@ func (c *channelRuntimeState) IsLoggedOut() bool {
 	return c.loggedOut
 }
 
+// ── SubagentRegistry ─────────────────────────────────────────────────────────
+
+const maxSubagentDepth = 5
+
+// SubagentRecord tracks a spawned sub-session.
+type SubagentRecord struct {
+	RunID           string `json:"run_id"`
+	SessionID       string `json:"session_id"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	Depth           int    `json:"depth"`
+	Status          string `json:"status"` // "running" | "done" | "error"
+	Message         string `json:"message"`
+	Result          string `json:"result,omitempty"`
+	Error           string `json:"error,omitempty"`
+	StartedAt       int64  `json:"started_at"`
+	UpdatedAt       int64  `json:"updated_at"`
+}
+
+// SubagentRegistry tracks spawned child sessions and their ancestry/depth.
+type SubagentRegistry struct {
+	mu      sync.Mutex
+	records map[string]*SubagentRecord // key: RunID
+}
+
+func newSubagentRegistry() *SubagentRegistry {
+	return &SubagentRegistry{records: map[string]*SubagentRecord{}}
+}
+
+// Spawn creates a new SubagentRecord if depth limits allow.
+// Returns the record and whether the spawn was permitted.
+func (r *SubagentRegistry) Spawn(runID, sessionID, parentSessionID string, depth int, message string) (*SubagentRecord, bool) {
+	if depth > maxSubagentDepth {
+		return nil, false
+	}
+	now := time.Now().UnixMilli()
+	rec := &SubagentRecord{
+		RunID:           runID,
+		SessionID:       sessionID,
+		ParentSessionID: parentSessionID,
+		Depth:           depth,
+		Status:          "running",
+		Message:         message,
+		StartedAt:       now,
+		UpdatedAt:       now,
+	}
+	r.mu.Lock()
+	r.records[runID] = rec
+	r.mu.Unlock()
+	return rec, true
+}
+
+// Finish marks a sub-session as done or errored.
+func (r *SubagentRegistry) Finish(runID, result, errStr string) {
+	r.mu.Lock()
+	rec := r.records[runID]
+	if rec != nil {
+		if errStr != "" {
+			rec.Status = "error"
+			rec.Error = errStr
+		} else {
+			rec.Status = "done"
+			rec.Result = result
+		}
+		rec.UpdatedAt = time.Now().UnixMilli()
+	}
+	r.mu.Unlock()
+}
+
+// Get returns the record for the given run_id, or nil.
+func (r *SubagentRegistry) Get(runID string) *SubagentRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.records[runID]
+}
+
+// DepthOf returns the depth of the session identified by parentSessionID,
+// searching by sessionID field in records (for recursive depth calculation).
+func (r *SubagentRegistry) DepthOf(parentSessionID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rec := range r.records {
+		if rec.SessionID == parentSessionID {
+			return rec.Depth
+		}
+	}
+	return 0
+}
+
 type agentJobSnapshot struct {
 	RunID     string
 	SessionID string
@@ -309,6 +399,20 @@ func (r *agentJobRegistry) Finish(runID string, result string, err error) {
 		delete(r.jobs, runID)
 		r.mu.Unlock()
 	}()
+}
+
+// Get returns a snapshot of the job for runID, or (zero, false) if not found.
+func (r *agentJobRegistry) Get(runID string) (agentJobSnapshot, bool) {
+	r.mu.Lock()
+	h := r.jobs[runID]
+	r.mu.Unlock()
+	if h == nil {
+		return agentJobSnapshot{}, false
+	}
+	h.mu.Lock()
+	snap := h.snapshot
+	h.mu.Unlock()
+	return snap, true
 }
 
 func (r *agentJobRegistry) Wait(ctx context.Context, runID string, timeout time.Duration) (agentJobSnapshot, bool) {
@@ -897,6 +1001,24 @@ func (r *execApprovalsRegistry) removeWatcher(id string, ch chan execApprovalPen
 	}
 }
 
+// wizardStep describes a single UI step in the onboarding wizard.
+type wizardStep struct {
+	// ID is the machine-readable key this step collects (also used as Input map key).
+	ID string `json:"id"`
+	// Type is "text", "choice", "confirm", or "info".
+	Type string `json:"type"`
+	// Prompt is the human-readable question/instruction.
+	Prompt string `json:"prompt"`
+	// Options lists selectable values for "choice" steps.
+	Options []string `json:"options,omitempty"`
+	// Default is the pre-filled default value.
+	Default string `json:"default,omitempty"`
+	// Required marks steps whose input must be non-empty before advancing.
+	Required bool `json:"required,omitempty"`
+	// Secret masks the input display (e.g. for API keys / nsec).
+	Secret bool `json:"secret,omitempty"`
+}
+
 type wizardSessionRecord struct {
 	SessionID string         `json:"session_id"`
 	Mode      string         `json:"mode"`
@@ -909,12 +1031,77 @@ type wizardSessionRecord struct {
 }
 
 type wizardRegistry struct {
-	mu       sync.Mutex
-	sessions map[string]wizardSessionRecord
+	mu               sync.Mutex
+	sessions         map[string]wizardSessionRecord
+	// onComplete is called after the wizard reaches the final step.
+	// The caller may use it to persist wizard results to config.
+	onComplete func(rec wizardSessionRecord)
 }
 
 func newWizardRegistry() *wizardRegistry {
 	return &wizardRegistry{sessions: map[string]wizardSessionRecord{}}
+}
+
+// computeSteps returns the ordered step list for the given wizard mode and
+// already-collected input (so conditional steps can be included/excluded).
+func computeWizardSteps(mode string, input map[string]any) []wizardStep {
+	switch mode {
+	case "quick":
+		// Minimal setup: choose provider + API key.
+		steps := []wizardStep{
+			{ID: "provider", Type: "choice", Prompt: "Select your AI provider", Options: []string{"anthropic", "openai", "ollama", "google"}, Default: "anthropic"},
+		}
+		provider, _ := input["provider"].(string)
+		if provider != "ollama" {
+			steps = append(steps, wizardStep{ID: "api_key", Type: "text", Prompt: "Enter your API key", Required: true, Secret: true})
+		}
+		steps = append(steps, wizardStep{ID: "confirm", Type: "confirm", Prompt: "Apply these settings?"})
+		return steps
+
+	default: // "onboarding" or any unknown mode → full setup
+		// Step 0: Nostr key choice.
+		steps := []wizardStep{
+			{ID: "nostr_key_action", Type: "choice", Prompt: "How do you want to set up your Nostr identity?", Options: []string{"generate", "import"}, Default: "generate"},
+		}
+		// Step 1: nsec entry only if importing.
+		keyAction, _ := input["nostr_key_action"].(string)
+		if keyAction == "import" {
+			steps = append(steps, wizardStep{ID: "nsec", Type: "text", Prompt: "Enter your nsec (private key, starts with nsec1…)", Required: true, Secret: true})
+		}
+		// Step 2: Relay URLs.
+		steps = append(steps, wizardStep{
+			ID: "relays", Type: "text",
+			Prompt:  "Enter relay URLs (comma-separated)",
+			Default: "wss://relay.damus.io,wss://relay.nostr.band",
+		})
+		// Step 3: Agent display name.
+		steps = append(steps, wizardStep{ID: "agent_name", Type: "text", Prompt: "Agent display name", Default: "swarmstr"})
+		// Step 4: AI provider.
+		steps = append(steps, wizardStep{ID: "provider", Type: "choice", Prompt: "Select your AI provider", Options: []string{"anthropic", "openai", "ollama", "google"}, Default: "anthropic"})
+		// Step 5: API key (skip for ollama).
+		provider, _ := input["provider"].(string)
+		if provider != "ollama" {
+			steps = append(steps, wizardStep{ID: "api_key", Type: "text", Prompt: "Enter your API key", Required: true, Secret: true})
+		}
+		// Step 6: Workspace directory.
+		homeDir, _ := os.UserHomeDir()
+		defaultWorkspace := filepath.Join(homeDir, ".swarmstr", "workspace")
+		steps = append(steps, wizardStep{ID: "workspace_dir", Type: "text", Prompt: "Workspace directory", Default: defaultWorkspace})
+		// Final: confirm.
+		steps = append(steps, wizardStep{ID: "confirm", Type: "confirm", Prompt: "Apply these settings and start swarmstr?"})
+		return steps
+	}
+}
+
+// currentWizardStep returns the step definition for the given step index,
+// or nil if the wizard is complete.
+func currentWizardStep(rec wizardSessionRecord) *wizardStep {
+	steps := computeWizardSteps(rec.Mode, rec.Input)
+	if rec.Step >= len(steps) {
+		return nil
+	}
+	s := steps[rec.Step]
+	return &s
 }
 
 func (r *wizardRegistry) cleanup() {
@@ -942,17 +1129,33 @@ func (r *wizardRegistry) cleanup() {
 	}
 }
 
-func (r *wizardRegistry) Start(req methods.WizardStartRequest) wizardSessionRecord {
+// Start creates a new wizard session and returns the first step.
+func (r *wizardRegistry) Start(req methods.WizardStartRequest) (wizardSessionRecord, *wizardStep) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now().UnixMilli()
 	sessionID := fmt.Sprintf("wizard-%d", time.Now().UnixNano())
-	rec := wizardSessionRecord{SessionID: sessionID, Mode: req.Mode, Status: "running", Step: 0, Input: map[string]any{}, CreatedAt: now, UpdatedAt: now}
+	mode := strings.TrimSpace(req.Mode)
+	if mode == "" {
+		mode = "onboarding"
+	}
+	rec := wizardSessionRecord{
+		SessionID: sessionID,
+		Mode:      mode,
+		Status:    "running",
+		Step:      0,
+		Input:     map[string]any{},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
 	r.sessions[sessionID] = rec
-	return rec
+	step := currentWizardStep(rec)
+	return rec, step
 }
 
-func (r *wizardRegistry) Next(req methods.WizardNextRequest) (wizardSessionRecord, map[string]any, bool, error) {
+// Next advances the wizard session by one step, validates input, and returns
+// the next step definition (or nil if the wizard is complete).
+func (r *wizardRegistry) Next(req methods.WizardNextRequest) (wizardSessionRecord, *wizardStep, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec, ok := r.sessions[req.ID]
@@ -960,24 +1163,59 @@ func (r *wizardRegistry) Next(req methods.WizardNextRequest) (wizardSessionRecor
 		return wizardSessionRecord{}, nil, false, state.ErrNotFound
 	}
 	if rec.Status != "running" {
+		// Already done or cancelled — return the final state.
+		return rec, nil, rec.Status == "done", nil
+	}
+
+	// Get the current step definition before advancing.
+	steps := computeWizardSteps(rec.Mode, rec.Input)
+	if rec.Step >= len(steps) {
+		// Shouldn't happen; treat as done.
+		rec.Status = "done"
+		rec.UpdatedAt = time.Now().UnixMilli()
+		r.sessions[req.ID] = rec
 		return rec, nil, true, nil
 	}
+	curStep := steps[rec.Step]
+
+	// Merge supplied input into session input.
 	if len(req.Input) > 0 {
 		for k, v := range req.Input {
 			rec.Input[k] = v
 		}
 	}
+
+	// Validate required fields.
+	if curStep.Required {
+		val, _ := rec.Input[curStep.ID].(string)
+		if strings.TrimSpace(val) == "" {
+			// Return the same step with an error message.
+			return rec, &curStep, false, fmt.Errorf("%s is required", curStep.Prompt)
+		}
+	}
+
 	rec.Step++
 	rec.UpdatedAt = time.Now().UnixMilli()
-	done := rec.Step >= 1
+
+	// Re-compute steps with updated input (handles conditional steps).
+	steps = computeWizardSteps(rec.Mode, rec.Input)
+	done := rec.Step >= len(steps)
 	if done {
 		rec.Status = "done"
-		r.sessions[req.ID] = rec
-		return rec, nil, true, nil
 	}
-	step := map[string]any{"id": "mode", "type": "choice", "prompt": "Select mode", "options": []string{"local", "remote"}}
 	r.sessions[req.ID] = rec
-	return rec, step, false, nil
+
+	var nextStep *wizardStep
+	if !done {
+		s := steps[rec.Step]
+		nextStep = &s
+	}
+
+	if done && r.onComplete != nil {
+		go r.onComplete(rec)
+	}
+
+	return rec, nextStep, done, nil
 }
 
 func (r *wizardRegistry) Cancel(req methods.WizardCancelRequest) (wizardSessionRecord, error) {
@@ -996,6 +1234,22 @@ func (r *wizardRegistry) Cancel(req methods.WizardCancelRequest) (wizardSessionR
 func (r *wizardRegistry) Status(req methods.WizardStatusRequest) (wizardSessionRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if req.ID == "" {
+		// Return the most-recently-updated active session, if any.
+		var latest *wizardSessionRecord
+		for _, rec := range r.sessions {
+			rec := rec
+			if rec.Status == "running" {
+				if latest == nil || rec.UpdatedAt > latest.UpdatedAt {
+					latest = &rec
+				}
+			}
+		}
+		if latest == nil {
+			return wizardSessionRecord{}, state.ErrNotFound
+		}
+		return *latest, nil
+	}
 	rec, ok := r.sessions[req.ID]
 	if !ok {
 		return wizardSessionRecord{}, state.ErrNotFound
@@ -1079,7 +1333,7 @@ func (r *operationsRegistry) SetTTSProvider(provider string) string {
 	if r.ttsProvider == "" {
 		r.ttsProvider = "openai"
 	}
-	validProviders := map[string]bool{"openai": true, "elevenlabs": true, "edge": true}
+	validProviders := map[string]bool{"openai": true, "kokoro": true, "elevenlabs": true, "edge": true}
 	if !validProviders[r.ttsProvider] {
 		r.ttsProvider = "openai"
 	}

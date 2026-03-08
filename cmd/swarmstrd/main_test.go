@@ -1129,7 +1129,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		t.Fatalf("skills.install error: %v", err)
 	}
 	payload, _ = res.Result.(map[string]any)
-	if payload["message"] != "Installed" || payload["code"] != 0 {
+	if payload["ok"] != true || payload["code"] != 0 {
 		t.Fatalf("unexpected skills.install payload: %#v", payload)
 	}
 	if _, ok := payload["installId"]; ok {
@@ -1169,8 +1169,16 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected skills.bins payload shape: %#v", res.Result)
 	}
-	if len(bins) == 0 || bins[0] != "nostr-core" {
-		t.Fatalf("unexpected skills.bins payload values: %#v", res.Result)
+	// "nostr-core" must appear somewhere in the bins list (bundled skills may also be present).
+	foundNostrCore := false
+	for _, b := range bins {
+		if b == "nostr-core" {
+			foundNostrCore = true
+			break
+		}
+	}
+	if !foundNostrCore {
+		t.Fatalf("expected 'nostr-core' in skills.bins, got: %#v", res.Result)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{

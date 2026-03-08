@@ -1,329 +1,169 @@
-# OpenClaw Installer for Windows (PowerShell)
-# Usage: iwr -useb https://openclaw.ai/install.ps1 | iex
-# Or: & ([scriptblock]::Create((iwr -useb https://openclaw.ai/install.ps1))) -NoOnboard
+# swarmstr installer for Windows (PowerShell)
+# Usage: iwr -useb https://swarmstr.com/install.ps1 | iex
+# Or:    & ([scriptblock]::Create((iwr -useb https://swarmstr.com/install.ps1))) -Tag v1.0.0
 
 param(
-    [string]$InstallMethod = "npm",
-    [string]$Tag = "latest",
-    [string]$GitDir = "$env:USERPROFILE\openclaw",
+    [string]$Tag       = "latest",
+    [string]$Prefix    = "",
     [switch]$NoOnboard,
-    [switch]$NoGitUpdate,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
 
-# Colors
-$ACCENT = "`e[38;2;255;77;77m"    # coral-bright
-$SUCCESS = "`e[38;2;0;229;204m"    # cyan-bright
-$WARN = "`e[38;2;255;176;32m"     # amber
-$ERROR = "`e[38;2;230;57;70m"     # coral-mid
-$MUTED = "`e[38;2;90;100;128m"    # text-muted
-$NC = "`e[0m"                     # No Color
+# ── Colours ───────────────────────────────────────────────────────────────────
+$ACCENT  = "`e[38;2;100;180;255m"   # nostr-blue
+$SUCCESS = "`e[38;2;0;229;180m"     # teal
+$WARN    = "`e[38;2;255;176;32m"    # amber
+$ERR     = "`e[38;2;230;57;70m"     # red
+$MUTED   = "`e[38;2;90;100;128m"    # dim
+$NC      = "`e[0m"
 
-function Write-Host {
-    param([string]$Message, [string]$Level = "info")
-    $msg = switch ($Level) {
-        "success" { "$SUCCESS✓$NC $Message" }
-        "warn" { "$WARN!$NC $Message" }
-        "error" { "$ERROR✗$NC $Message" }
-        default { "$MUTED·$NC $Message" }
-    }
-    Microsoft.PowerShell.Host\Write-Host $msg
-}
+function Write-Info    { param([string]$m) Microsoft.PowerShell.Utility\Write-Host "${MUTED}·${NC} $m" }
+function Write-Success { param([string]$m) Microsoft.PowerShell.Utility\Write-Host "${SUCCESS}✓${NC} $m" }
+function Write-Warn    { param([string]$m) Microsoft.PowerShell.Utility\Write-Host "${WARN}!${NC} $m" }
+function Write-Err     { param([string]$m) Microsoft.PowerShell.Utility\Write-Host "${ERR}✗${NC} $m" }
 
 function Write-Banner {
-    Write-Host ""
-    Write-Host "${ACCENT}  🦞 OpenClaw Installer$NC" -Level info
-    Write-Host "${MUTED}  All your chats, one OpenClaw.$NC" -Level info
-    Write-Host ""
+    Microsoft.PowerShell.Utility\Write-Host ""
+    Microsoft.PowerShell.Utility\Write-Host "${ACCENT}  ⚡ swarmstr installer${NC}"
+    Microsoft.PowerShell.Utility\Write-Host "${MUTED}  Nostr-native AI agent daemon.${NC}"
+    Microsoft.PowerShell.Utility\Write-Host ""
 }
 
-function Get-ExecutionPolicyStatus {
-    $policy = Get-ExecutionPolicy
-    if ($policy -eq "Restricted" -or $policy -eq "AllSigned") {
-        return @{ Blocked = $true; Policy = $policy }
-    }
-    return @{ Blocked = $false; Policy = $policy }
-}
+# ── Constants ─────────────────────────────────────────────────────────────────
+$GitHubRepo = "swarmstr/swarmstr"
+$ConfigDir  = Join-Path $env:USERPROFILE ".swarmstr"
+$EnvFile    = Join-Path $ConfigDir ".env"
 
-function Test-Admin {
-    $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
+Write-Banner
 
-function Ensure-ExecutionPolicy {
-    $status = Get-ExecutionPolicyStatus
-    if ($status.Blocked) {
-        Write-Host "PowerShell execution policy is set to: $($status.Policy)" -Level warn
-        Write-Host "This prevents scripts like npm.ps1 from running." -Level warn
-        Write-Host ""
-        
-        # Try to set execution policy for current process
+# ── Platform detection ────────────────────────────────────────────────────────
+$Arch = $env:PROCESSOR_ARCHITECTURE
+$GoArch = switch ($Arch) {
+    "AMD64"   { "amd64" }
+    "ARM64"   { "arm64" }
+    default   { Write-Err "Unsupported architecture: $Arch"; exit 1 }
+}
+Write-Success "Detected: windows/$GoArch"
+
+# ── Resolve install location ──────────────────────────────────────────────────
+if ([string]::IsNullOrEmpty($Prefix)) {
+    $Prefix = Join-Path $env:USERPROFILE ".local"
+}
+$BinDir = Join-Path $Prefix "bin"
+
+# ── Resolve download URL ──────────────────────────────────────────────────────
+function Get-DownloadUrl {
+    param([string]$tag)
+    if ($tag -eq "latest") {
+        $apiUrl  = "https://api.github.com/repos/$GitHubRepo/releases/latest"
+        $headers = @{ "User-Agent" = "swarmstr-installer" }
         try {
-            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -ErrorAction Stop
-            Write-Host "Set execution policy to RemoteSigned for current process" -Level success
-            return $true
+            $resp = Invoke-RestMethod -Uri $apiUrl -Headers $headers
+            $tag  = $resp.tag_name
         } catch {
-            Write-Host "Could not automatically set execution policy" -Level error
-            Write-Host ""
-            Write-Host "To fix this, run:" -Level info
-            Write-Host "  Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process" -Level info
-            Write-Host ""
-            Write-Host "Or run PowerShell as Administrator and execute:" -Level info
-            Write-Host "  Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine" -Level info
-            return $false
-        }
-    }
-    return $true
-}
-
-function Get-NodeVersion {
-    try {
-        $version = node --version 2>$null
-        if ($version) {
-            return $version -replace '^v', ''
-        }
-    } catch { }
-    return $null
-}
-
-function Get-NpmVersion {
-    try {
-        $version = npm --version 2>$null
-        if ($version) {
-            return $version
-        }
-    } catch { }
-    return $null
-}
-
-function Install-Node {
-    Write-Host "Node.js not found" -Level info
-    Write-Host "Installing Node.js..." -Level info
-    
-    # Try winget first
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Host "  Using winget..." -Level info
-        try {
-            winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            # Refresh PATH
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-            Write-Host "  Node.js installed via winget" -Level success
-            return $true
-        } catch {
-            Write-Host "  Winget install failed: $_" -Level warn
-        }
-    }
-    
-    # Try chocolatey
-    if (Get-Command choco -ErrorAction SilentlyContinue) {
-        Write-Host "  Using chocolatey..." -Level info
-        try {
-            choco install nodejs-lts -y 2>&1 | Out-Null
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-            Write-Host "  Node.js installed via chocolatey" -Level success
-            return $true
-        } catch {
-            Write-Host "  Chocolatey install failed: $_" -Level warn
-        }
-    }
-    
-    # Try scoop
-    if (Get-Command scoop -ErrorAction SilentlyContinue) {
-        Write-Host "  Using scoop..." -Level info
-        try {
-            scoop install nodejs-lts 2>&1 | Out-Null
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-            Write-Host "  Node.js installed via scoop" -Level success
-            return $true
-        } catch {
-            Write-Host "  Scoop install failed: $_" -Level warn
-        }
-    }
-    
-    Write-Host "Could not install Node.js automatically" -Level error
-    Write-Host "Please install Node.js 22+ manually from: https://nodejs.org" -Level info
-    return $false
-}
-
-function Ensure-Node {
-    $nodeVersion = Get-NodeVersion
-    if ($nodeVersion) {
-        $major = [int]($nodeVersion -split '\.')[0]
-        if ($major -ge 22) {
-            Write-Host "Node.js v$nodeVersion found" -Level success
-            return $true
-        }
-        Write-Host "Node.js v$nodeVersion found, but need v22+" -Level warn
-    }
-    return Install-Node
-}
-
-function Get-GitVersion {
-    try {
-        $version = git --version 2>$null
-        if ($version) {
-            return $version
-        }
-    } catch { }
-    return $null
-}
-
-function Install-Git {
-    Write-Host "Git not found" -Level info
-    
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Host "  Installing Git via winget..." -Level info
-        try {
-            winget install Git.Git --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-            Write-Host "  Git installed" -Level success
-            return $true
-        } catch {
-            Write-Host "  Winget install failed" -Level warn
-        }
-    }
-    
-    Write-Host "Please install Git for Windows from: https://git-scm.com" -Level error
-    return $false
-}
-
-function Ensure-Git {
-    $gitVersion = Get-GitVersion
-    if ($gitVersion) {
-        Write-Host "$gitVersion found" -Level success
-        return $true
-    }
-    return Install-Git
-}
-
-function Install-OpenClawNpm {
-    param([string]$Version = "latest")
-    
-    Write-Host "Installing OpenClaw (openclaw@$Version)..." -Level info
-    
-    try {
-        # Use -ExecutionPolicy Bypass to handle restricted execution policy
-        npm install -g openclaw@$Version --no-fund --no-audit 2>&1
-        Write-Host "OpenClaw installed" -Level success
-        return $true
-    } catch {
-        Write-Host "npm install failed: $_" -Level error
-        return $false
-    }
-}
-
-function Install-OpenClawGit {
-    param([string]$RepoDir, [switch]$Update)
-    
-    Write-Host "Installing OpenClaw from git..." -Level info
-    
-    if (!(Test-Path $RepoDir)) {
-        Write-Host "  Cloning repository..." -Level info
-        git clone https://github.com/openclaw/openclaw.git $RepoDir 2>&1
-    } elseif ($Update) {
-        Write-Host "  Updating repository..." -Level info
-        git -C $RepoDir pull --rebase 2>&1
-    }
-    
-    # Install pnpm if not present
-    if (!(Get-Command pnpm -ErrorAction SilentlyContinue)) {
-        Write-Host "  Installing pnpm..." -Level info
-        npm install -g pnpm 2>&1
-    }
-    
-    # Install dependencies
-    Write-Host "  Installing dependencies..." -Level info
-    pnpm install --dir $RepoDir 2>&1
-    
-    # Build
-    Write-Host "  Building..." -Level info
-    pnpm --dir $RepoDir build 2>&1
-    
-    # Create wrapper
-    $wrapperDir = "$env:USERPROFILE\.local\bin"
-    if (!(Test-Path $wrapperDir)) {
-        New-Item -ItemType Directory -Path $wrapperDir -Force | Out-Null
-    }
-    
-    @"
-@echo off
-node "%~dp0..\openclaw\dist\entry.js" %*
-"@ | Out-File -FilePath "$wrapperDir\openclaw.cmd" -Encoding ASCII -Force
-    
-    Write-Host "OpenClaw installed" -Level success
-    return $true
-}
-
-function Add-ToPath {
-    param([string]$Path)
-    
-    $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($currentPath -notlike "*$Path*") {
-        [Environment]::SetEnvironmentVariable("Path", "$currentPath;$Path", "User")
-        Write-Host "Added $Path to user PATH" -Level info
-    }
-}
-
-# Main
-function Main {
-    Write-Banner
-    
-    Write-Host "Windows detected" -Level success
-    
-    # Check and handle execution policy FIRST, before any npm calls
-    if (!(Ensure-ExecutionPolicy)) {
-        Write-Host ""
-        Write-Host "Installation cannot continue due to execution policy restrictions" -Level error
-        exit 1
-    }
-    
-    if (!(Ensure-Node)) {
-        exit 1
-    }
-    
-    if ($InstallMethod -eq "git") {
-        if (!(Ensure-Git)) {
+            Write-Err "Could not determine latest release: $_"
             exit 1
         }
-        
-        if ($DryRun) {
-            Write-Host "[DRY RUN] Would install OpenClaw from git to $GitDir" -Level info
-        } else {
-            Install-OpenClawGit -RepoDir $GitDir -Update:(-not $NoGitUpdate)
-        }
-    } else {
-        # npm method
-        if (!(Ensure-Git)) {
-            Write-Host "Git is required for npm installs. Please install Git and try again." -Level warn
-        }
-        
-        if ($DryRun) {
-            Write-Host "[DRY RUN] Would install OpenClaw via npm (tag: $Tag)" -Level info
-        } else {
-            if (!(Install-OpenClawNpm -Version $Tag)) {
-                exit 1
-            }
-        }
+        Write-Info "Resolved latest tag: $tag"
     }
-    
-    # Try to add npm global bin to PATH
-    try {
-        $npmPrefix = npm config get prefix 2>$null
-        if ($npmPrefix) {
-            Add-ToPath -Path "$npmPrefix"
-        }
-    } catch { }
-    
-    if (!$NoOnboard -and !$DryRun) {
-        Write-Host ""
-        Write-Host "Run 'openclaw onboard' to complete setup" -Level info
-    }
-    
-    Write-Host ""
-    Write-Host "🦞 OpenClaw installed successfully!" -Level success
+    return "https://github.com/$GitHubRepo/releases/download/$tag/swarmstrd-windows-$GoArch.exe"
 }
 
-Main
+$DownloadUrl = Get-DownloadUrl -tag $Tag
+Write-Info "Download URL: $DownloadUrl"
+
+# ── Download binary ───────────────────────────────────────────────────────────
+$TmpBin = Join-Path $env:TEMP "swarmstrd-install.exe"
+
+if ($DryRun) {
+    Write-Info "[DRY RUN] Would download: $DownloadUrl -> $BinDir\swarmstrd.exe"
+} else {
+    Write-Info "Downloading swarmstrd ..."
+    try {
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpBin -UseBasicParsing
+        Write-Success "Downloaded"
+    } catch {
+        Write-Err "Download failed: $_"
+        exit 1
+    }
+}
+
+# ── Install binary ────────────────────────────────────────────────────────────
+$Dest = Join-Path $BinDir "swarmstrd.exe"
+if ($DryRun) {
+    Write-Info "[DRY RUN] Would install to: $Dest"
+} else {
+    if (!(Test-Path $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
+    Move-Item -Force $TmpBin $Dest
+    Write-Success "Installed to $Dest"
+}
+
+# ── Create config dir and .env ────────────────────────────────────────────────
+if (!$DryRun) {
+    if (!(Test-Path $ConfigDir)) {
+        New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
+        Write-Success "Created config dir: $ConfigDir"
+    }
+    if (!(Test-Path $EnvFile)) {
+        @"
+# swarmstr environment configuration
+# Edit this file and fill in the values you need.
+
+# ── Nostr ─────────────────────────────────────────────────────────────────────
+# Your agent's Nostr private key (hex or nsec bech32)
+#SWARMSTR_NOSTR_KEY=
+
+# Optional: comma-separated relay URLs
+#SWARMSTR_NOSTR_RELAYS=wss://relay.damus.io,wss://relay.nostr.band
+
+# ── LLM providers ─────────────────────────────────────────────────────────────
+#ANTHROPIC_API_KEY=
+#OPENAI_API_KEY=
+#GEMINI_API_KEY=
+#XAI_API_KEY=
+#GROQ_API_KEY=
+#MISTRAL_API_KEY=
+#OPENROUTER_API_KEY=
+#TOGETHER_API_KEY=
+
+# Default model (e.g. claude-sonnet-4-5, gpt-4o, gemini-2.0-flash, grok-3)
+#SWARMSTR_DEFAULT_MODEL=claude-sonnet-4-5
+
+# ── Browser sandbox (optional) ────────────────────────────────────────────────
+#SWARMSTR_BROWSER_URL=http://localhost:3500
+
+# ── Skills ───────────────────────────────────────────────────────────────────
+#SWARMSTR_MANAGED_SKILLS_DIR=%USERPROFILE%\.swarmstr\skills
+"@ | Set-Content -Path $EnvFile -Encoding UTF8
+        Write-Success "Created $EnvFile"
+    }
+}
+
+# ── Add BinDir to user PATH ───────────────────────────────────────────────────
+function Add-ToUserPath {
+    param([string]$Dir)
+    $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($currentPath -notlike "*$Dir*") {
+        [Environment]::SetEnvironmentVariable("Path", "$currentPath;$Dir", "User")
+        Write-Info "Added $Dir to user PATH (restart shell to take effect)"
+    }
+}
+
+if (!$DryRun) {
+    Add-ToUserPath -Dir $BinDir
+}
+
+# ── Done ──────────────────────────────────────────────────────────────────────
+Microsoft.PowerShell.Utility\Write-Host ""
+Microsoft.PowerShell.Utility\Write-Host "${ACCENT}⚡ swarmstr installed!${NC}"
+Microsoft.PowerShell.Utility\Write-Host ""
+Write-Info "Config:  $EnvFile"
+Write-Info "Binary:  $Dest"
+Microsoft.PowerShell.Utility\Write-Host ""
+Write-Info "Next steps:"
+Write-Info "  1. Edit $EnvFile with your Nostr key + API keys"
+Write-Info "  2. Run:  swarmstrd"
+Write-Info "  3. Send a DM on Nostr to your agent's pubkey"
+Microsoft.PowerShell.Utility\Write-Host ""

@@ -382,6 +382,162 @@ func TestNewProviderForModel_openaiAlias(t *testing.T) {
 	}
 }
 
+// ─── GoogleGeminiProvider tests ───────────────────────────────────────────────
+
+func TestGoogleGeminiProvider_generate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"Paris"}]}}]}`))
+	}))
+	defer srv.Close()
+
+	p := &GoogleGeminiProvider{
+		Model:  "gemini-2.0-flash",
+		APIKey: "test-key",
+		Client: newRewriteClient(&http.Client{}, "https://generativelanguage.googleapis.com", srv.URL),
+	}
+	res, err := p.Generate(context.Background(), Turn{UserText: "Capital of France?"})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if res.Text != "Paris" {
+		t.Errorf("text: %q", res.Text)
+	}
+}
+
+func TestGoogleGeminiProvider_missingAPIKey(t *testing.T) {
+	p := &GoogleGeminiProvider{Model: "gemini-2.0-flash"}
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GOOGLE_API_KEY", "")
+	t.Setenv("GOOGLE_GENERATIVE_AI_API_KEY", "")
+	_, err := p.Generate(context.Background(), Turn{UserText: "hi"})
+	if err == nil || !containsStr(err.Error(), "API key not configured") {
+		t.Errorf("expected API key error, got: %v", err)
+	}
+}
+
+func TestGoogleGeminiProvider_serverError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":{"code":400,"message":"bad request"}}`))
+	}))
+	defer srv.Close()
+
+	p := &GoogleGeminiProvider{
+		Model:  "gemini-2.0-flash",
+		APIKey: "test-key",
+		Client: newRewriteClient(&http.Client{}, "https://generativelanguage.googleapis.com", srv.URL),
+	}
+	_, err := p.Generate(context.Background(), Turn{UserText: "hi"})
+	if err == nil || !containsStr(err.Error(), "bad request") {
+		t.Errorf("expected server error, got: %v", err)
+	}
+}
+
+// ─── NewProviderForModel: new provider prefixes ───────────────────────────────
+
+func TestNewProviderForModel_geminiPrefix(t *testing.T) {
+	p, err := NewProviderForModel("gemini-2.0-flash")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := p.(*GoogleGeminiProvider); !ok {
+		t.Errorf("expected GoogleGeminiProvider, got %T", p)
+	}
+}
+
+func TestNewProviderForModel_geminiAlias(t *testing.T) {
+	p, err := NewProviderForModel("gemini")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := p.(*GoogleGeminiProvider); !ok {
+		t.Errorf("expected GoogleGeminiProvider, got %T", p)
+	}
+}
+
+func TestNewProviderForModel_grokPrefix(t *testing.T) {
+	p, err := NewProviderForModel("grok-3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	oai, ok := p.(*OpenAIChatProvider)
+	if !ok {
+		t.Fatalf("expected OpenAIChatProvider, got %T", p)
+	}
+	if !containsStr(oai.BaseURL, "x.ai") {
+		t.Errorf("expected x.ai base URL, got %q", oai.BaseURL)
+	}
+}
+
+func TestNewProviderForModel_groqAlias(t *testing.T) {
+	p, err := NewProviderForModel("groq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	oai, ok := p.(*OpenAIChatProvider)
+	if !ok {
+		t.Fatalf("expected OpenAIChatProvider, got %T", p)
+	}
+	if !containsStr(oai.BaseURL, "groq.com") {
+		t.Errorf("expected groq.com base URL, got %q", oai.BaseURL)
+	}
+}
+
+func TestNewProviderForModel_mistralPrefix(t *testing.T) {
+	p, err := NewProviderForModel("mistral-large-latest")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	oai, ok := p.(*OpenAIChatProvider)
+	if !ok {
+		t.Fatalf("expected OpenAIChatProvider, got %T", p)
+	}
+	if !containsStr(oai.BaseURL, "mistral.ai") {
+		t.Errorf("expected mistral.ai base URL, got %q", oai.BaseURL)
+	}
+}
+
+func TestNewProviderForModel_openrouterPath(t *testing.T) {
+	p, err := NewProviderForModel("openrouter/meta-llama/llama-3.1-8b-instruct")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	oai, ok := p.(*OpenAIChatProvider)
+	if !ok {
+		t.Fatalf("expected OpenAIChatProvider, got %T", p)
+	}
+	if !containsStr(oai.BaseURL, "openrouter.ai") {
+		t.Errorf("expected openrouter.ai base URL, got %q", oai.BaseURL)
+	}
+}
+
+func TestNewProviderForModel_togetherPath(t *testing.T) {
+	p, err := NewProviderForModel("together/Qwen/Qwen3-235B-A22B")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	oai, ok := p.(*OpenAIChatProvider)
+	if !ok {
+		t.Fatalf("expected OpenAIChatProvider, got %T", p)
+	}
+	if !containsStr(oai.BaseURL, "together.xyz") {
+		t.Errorf("expected together.xyz base URL, got %q", oai.BaseURL)
+	}
+}
+
+func containsStr(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+			return false
+		}())
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 // newRewriteClient returns an *http.Client that replaces oldBase with newBase in request URLs.
@@ -414,4 +570,140 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	cloned.URL = parsed
 	cloned.Host = parsed.Host
 	return t.base.RoundTrip(cloned)
+}
+
+// ─── Vision multi-modal tests ─────────────────────────────────────────────────
+
+func TestAnthropicProvider_Vision_MultiModal(t *testing.T) {
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "I see an image"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	p := &AnthropicProvider{
+		APIKey: "test-key",
+		Model:  "claude-3-5-sonnet-20241022",
+		Client: newRewriteClient(srv.Client(), "https://api.anthropic.com", srv.URL),
+	}
+	turn := Turn{
+		UserText: "What is in this image?",
+		Images: []ImageRef{
+			{Base64: "aGVsbG8=", MimeType: "image/png"},
+		},
+	}
+	result, err := p.Generate(context.Background(), turn)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if result.Text == "" {
+		t.Error("expected non-empty response")
+	}
+	// Verify the request body contains a content array (multi-modal format).
+	msgs, ok := capturedBody["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		t.Fatal("expected messages in request body")
+	}
+	userMsg, ok := msgs[0].(map[string]any)
+	if !ok {
+		t.Fatal("expected first message to be a map")
+	}
+	// Content should be a []any (multi-modal blocks), not a plain string.
+	if _, isSlice := userMsg["content"].([]any); !isSlice {
+		t.Errorf("expected content to be array for multi-modal, got %T", userMsg["content"])
+	}
+}
+
+func TestOpenAIChatProvider_Vision_MultiModal(t *testing.T) {
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "I see a PNG image"}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	p := &OpenAIChatProvider{
+		BaseURL: srv.URL,
+		APIKey:  "test-key",
+		Model:   "gpt-4o",
+		Client:  srv.Client(),
+	}
+	turn := Turn{
+		UserText: "Describe this image.",
+		Images: []ImageRef{
+			{URL: "https://example.com/photo.jpg"},
+		},
+	}
+	result, err := p.Generate(context.Background(), turn)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if result.Text == "" {
+		t.Error("expected non-empty response")
+	}
+	// Verify multi-modal content array in the request.
+	msgs, ok := capturedBody["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		t.Fatal("expected messages in request body")
+	}
+	// Find the user message (last message).
+	userMsg, ok := msgs[len(msgs)-1].(map[string]any)
+	if !ok {
+		t.Fatal("expected user message to be a map")
+	}
+	if _, isSlice := userMsg["content"].([]any); !isSlice {
+		t.Errorf("expected content to be array for multi-modal, got %T", userMsg["content"])
+	}
+}
+
+func TestBuildAnthropicContent_TextOnly(t *testing.T) {
+	content := buildAnthropicContent("hello", nil)
+	if s, ok := content.(string); !ok || s != "hello" {
+		t.Errorf("expected plain string content, got %T: %v", content, content)
+	}
+}
+
+func TestBuildOpenAIContent_TextOnly(t *testing.T) {
+	content := buildOpenAIContent("hello", nil)
+	if s, ok := content.(string); !ok || s != "hello" {
+		t.Errorf("expected plain string content, got %T: %v", content, content)
+	}
+}
+
+func TestBuildGeminiParts_TextOnly(t *testing.T) {
+	parts := buildGeminiParts("hello", nil)
+	if len(parts) != 1 || parts[0].Text != "hello" {
+		t.Errorf("expected single text part, got %v", parts)
+	}
+}
+
+func TestBuildGeminiParts_WithImages(t *testing.T) {
+	parts := buildGeminiParts("describe", []ImageRef{
+		{Base64: "aGVsbG8=", MimeType: "image/jpeg"},
+		{URL: "https://example.com/img.png"},
+	})
+	// Should have 2 image parts + 1 text part = 3 total.
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts, got %d", len(parts))
+	}
+	if parts[0].InlineData == nil {
+		t.Error("expected first part to be inline_data")
+	}
+	if parts[1].FileData == nil {
+		t.Error("expected second part to be file_data")
+	}
+	if parts[2].Text != "describe" {
+		t.Errorf("expected last part to be text, got %v", parts[2])
+	}
 }

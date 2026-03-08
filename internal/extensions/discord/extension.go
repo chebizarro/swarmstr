@@ -1,0 +1,271 @@
+// Package discord implements a Discord Bot channel extension for swarmstr.
+//
+// Registration: import _ "swarmstr/internal/extensions/discord" in the daemon
+// main.go to register this plugin at startup.
+//
+// Config schema (under nostr_channels.<name>.config):
+//
+//	{
+//	  "bot_token":  "Bot <token>",      // required: Discord bot token (include "Bot " prefix)
+//	  "channel_id": "1234567890",       // required: Discord channel ID to listen/send on
+//	  "guild_id":   "0987654321"        // optional: guild ID for filtering
+//	}
+//
+// To add a Discord channel to your swarmstr config:
+//
+//	"nostr_channels": {
+//	  "discord-main": {
+//	    "kind": "discord",
+//	    "config": {
+//	      "bot_token":  "Bot YOUR_TOKEN",
+//	      "channel_id": "YOUR_CHANNEL_ID"
+//	    }
+//	  }
+//	}
+//
+// The extension uses Discord's REST API for outbound messages and polls the
+// /messages endpoint for inbound. For production use, switch to the Discord
+// Gateway WebSocket (wss://gateway.discord.gg) for real-time event delivery.
+package discord
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+
+	"swarmstr/internal/gateway/channels"
+	"swarmstr/internal/plugins/sdk"
+)
+
+func init() {
+	channels.RegisterChannelPlugin(&DiscordPlugin{})
+}
+
+// DiscordPlugin is the factory for Discord Bot channel instances.
+type DiscordPlugin struct{}
+
+func (d *DiscordPlugin) ID() string   { return "discord" }
+func (d *DiscordPlugin) Type() string { return "Discord Bot" }
+
+func (d *DiscordPlugin) ConfigSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"bot_token": map[string]any{
+				"type":        "string",
+				"description": "Discord bot token. Include the 'Bot ' prefix: 'Bot ABC...'",
+			},
+			"channel_id": map[string]any{
+				"type":        "string",
+				"description": "Discord channel ID to listen on and send messages to.",
+			},
+			"guild_id": map[string]any{
+				"type":        "string",
+				"description": "Optional: Discord guild (server) ID for context.",
+			},
+		},
+		"required": []string{"bot_token", "channel_id"},
+	}
+}
+
+func (d *DiscordPlugin) GatewayMethods() []sdk.GatewayMethod {
+	return []sdk.GatewayMethod{
+		{
+			Method:      "discord.send",
+			Description: "Send a message to a Discord channel",
+			Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+				token, _ := params["bot_token"].(string)
+				channelID, _ := params["channel_id"].(string)
+				text, _ := params["text"].(string)
+				if token == "" || channelID == "" || text == "" {
+					return nil, fmt.Errorf("discord.send: bot_token, channel_id, and text are required")
+				}
+				if err := sendDiscordMessage(ctx, token, channelID, text); err != nil {
+					return nil, err
+				}
+				return map[string]any{"ok": true}, nil
+			},
+		},
+	}
+}
+
+func (d *DiscordPlugin) Connect(
+	ctx context.Context,
+	channelID string,
+	cfg map[string]any,
+	onMessage func(sdk.InboundChannelMessage),
+) (sdk.ChannelHandle, error) {
+	token, _ := cfg["bot_token"].(string)
+	discordChannelID, _ := cfg["channel_id"].(string)
+
+	if token == "" {
+		return nil, fmt.Errorf("discord channel %q: config.bot_token is required", channelID)
+	}
+	if discordChannelID == "" {
+		return nil, fmt.Errorf("discord channel %q: config.channel_id is required", channelID)
+	}
+
+	bot := &discordBot{
+		channelID:        channelID,
+		token:            token,
+		discordChannelID: discordChannelID,
+		onMessage:        onMessage,
+		done:             make(chan struct{}),
+	}
+
+	go bot.poll(ctx)
+	log.Printf("discord: polling started for channel %s (discord_channel=%s)", channelID, discordChannelID)
+	return bot, nil
+}
+
+// ─── Bot implementation ───────────────────────────────────────────────────────
+
+const discordAPIBase = "https://discord.com/api/v10"
+
+type discordBot struct {
+	mu               sync.Mutex
+	channelID        string
+	token            string
+	discordChannelID string
+	onMessage        func(sdk.InboundChannelMessage)
+	lastMessageID    string
+	done             chan struct{}
+}
+
+func (b *discordBot) ID() string { return b.channelID }
+
+func (b *discordBot) Send(ctx context.Context, text string) error {
+	return sendDiscordMessage(ctx, b.token, b.discordChannelID, text)
+}
+
+func (b *discordBot) Close() {
+	close(b.done)
+}
+
+func (b *discordBot) poll(ctx context.Context) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-b.done:
+			return
+		case <-ticker.C:
+			b.fetchMessages(ctx)
+		}
+	}
+}
+
+func (b *discordBot) fetchMessages(ctx context.Context) {
+	b.mu.Lock()
+	afterID := b.lastMessageID
+	b.mu.Unlock()
+
+	url := fmt.Sprintf("%s/channels/%s/messages?limit=10", discordAPIBase, b.discordChannelID)
+	if afterID != "" {
+		url += "&after=" + afterID
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", b.token)
+
+	cl := &http.Client{Timeout: 10 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+
+	var messages []struct {
+		ID        string `json:"id"`
+		Content   string `json:"content"`
+		Timestamp string `json:"timestamp"`
+		Author    *struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+			Bot      bool   `json:"bot"`
+		} `json:"author"`
+	}
+
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		return
+	}
+
+	// Messages come newest-first; reverse to process in order.
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
+	for _, msg := range messages {
+		// Skip bot messages to avoid reply loops.
+		if msg.Author != nil && msg.Author.Bot {
+			b.mu.Lock()
+			if msg.ID > b.lastMessageID {
+				b.lastMessageID = msg.ID
+			}
+			b.mu.Unlock()
+			continue
+		}
+
+		if msg.Content == "" {
+			continue
+		}
+
+		b.mu.Lock()
+		if msg.ID > b.lastMessageID {
+			b.lastMessageID = msg.ID
+		}
+		b.mu.Unlock()
+
+		senderID := ""
+		if msg.Author != nil {
+			senderID = msg.Author.Username + "#" + msg.Author.ID
+		}
+
+		b.onMessage(sdk.InboundChannelMessage{
+			ChannelID: b.channelID,
+			SenderID:  senderID,
+			Text:      msg.Content,
+			EventID:   "discord-" + msg.ID,
+		})
+	}
+}
+
+// sendDiscordMessage posts a message to a Discord channel via REST API.
+func sendDiscordMessage(ctx context.Context, token, channelID, text string) error {
+	url := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, channelID)
+	body, _ := json.Marshal(map[string]any{"content": text})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", token)
+	req.Header.Set("Content-Type", "application/json")
+
+	cl := &http.Client{Timeout: 15 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return fmt.Errorf("discord sendMessage: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("discord sendMessage: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	return nil
+}

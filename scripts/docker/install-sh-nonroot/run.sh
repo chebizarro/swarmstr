@@ -1,36 +1,36 @@
 #!/usr/bin/env bash
+# Non-root install smoke test for swarmstr.
+# Runs as an unprivileged user; the binary should land in $HOME/.local/bin.
 set -euo pipefail
 
-INSTALL_URL="${OPENCLAW_INSTALL_URL:-https://openclaw.bot/install.sh}"
-DEFAULT_PACKAGE="openclaw"
-PACKAGE_NAME="${OPENCLAW_INSTALL_PACKAGE:-$DEFAULT_PACKAGE}"
+INSTALL_URL="${SWARMSTR_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
+SKIP_DOWNLOAD="${SWARMSTR_INSTALL_SKIP_DOWNLOAD:-0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# shellcheck source=../install-sh-common/cli-verify.sh
-source "$SCRIPT_DIR/../install-sh-common/cli-verify.sh"
+# shellcheck source=../install-sh-common/verify.sh
+source "$SCRIPT_DIR/../install-sh-common/verify.sh"
 
-echo "==> Pre-flight: ensure git absent"
-if command -v git >/dev/null; then
-  echo "git is present unexpectedly" >&2
+echo "==> Confirm running as non-root"
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "ERROR: this test must run as a non-root user" >&2
   exit 1
 fi
+echo "Running as: $(id)"
 
-echo "==> Run installer (non-root user)"
-curl -fsSL "$INSTALL_URL" | bash
-
-# Ensure PATH picks up user npm prefix
-export PATH="$HOME/.npm-global/bin:$PATH"
-
-echo "==> Verify git installed"
-command -v git >/dev/null
-
-EXPECTED_VERSION="${OPENCLAW_INSTALL_EXPECT_VERSION:-}"
-if [[ -n "$EXPECTED_VERSION" ]]; then
-  LATEST_VERSION="$EXPECTED_VERSION"
+if [[ "$SKIP_DOWNLOAD" == "1" ]]; then
+  echo "==> Skip download (SWARMSTR_INSTALL_SKIP_DOWNLOAD=1)"
+  # Binary injected via mount at /tmp/swarmstrd-linux-amd64 — install manually.
+  mkdir -p "$HOME/.local/bin"
+  cp /tmp/swarmstrd-linux-amd64 "$HOME/.local/bin/swarmstrd"
+  chmod +x "$HOME/.local/bin/swarmstrd"
+  export PATH="$HOME/.local/bin:$PATH"
 else
-  LATEST_VERSION="$(npm view "$PACKAGE_NAME" version)"
+  echo "==> Run install script (non-root)"
+  PREFIX="$HOME/.local" curl -fsSL "$INSTALL_URL" | bash
+  export PATH="$HOME/.local/bin:$PATH"
 fi
-echo "==> Verify CLI installed"
-verify_installed_cli "$PACKAGE_NAME" "$LATEST_VERSION"
+
+echo "==> Verify binary"
+verify_binary swarmstrd
 
 echo "OK"
