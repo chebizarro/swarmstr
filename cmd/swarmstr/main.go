@@ -126,6 +126,10 @@ func main() {
 		run("qr", runQR, args[1:])
 	case "completion":
 		run("completion", runCompletion, args[1:])
+	case "daemon":
+		run("daemon", runDaemon, args[1:])
+	case "gw":
+		run("gw", runGW, args[1:])
 
 	// ── legacy flat commands (kept for backward compat) ───────────────────────
 	case "plan":
@@ -509,6 +513,16 @@ func usage() {
 	fmt.Println("  plugins install    install plugin from Nostr (--pubkey --id)")
 	fmt.Println("  plugins search     search Nostr plugin registry (--q)")
 	fmt.Println("  plugins publish    publish plugin manifest (--manifest)")
+	fmt.Println()
+	fmt.Println("Daemon lifecycle:")
+	fmt.Println("  daemon start       start swarmstrd in background (--bin --bootstrap)")
+	fmt.Println("  daemon stop        send SIGTERM to running daemon")
+	fmt.Println("  daemon restart     stop then start daemon")
+	fmt.Println("  daemon status      show daemon liveness and uptime")
+	fmt.Println()
+	fmt.Println("Gateway passthrough:")
+	fmt.Println("  gw <method> [params]  call any gateway method and print JSON result")
+	fmt.Println("                        params: JSON object or key=value pairs")
 	fmt.Println()
 	fmt.Println("Other:")
 	fmt.Println("  security audit     run local security posture checks")

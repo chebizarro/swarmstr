@@ -339,14 +339,36 @@ All swarmstr-22.x beads are **closed**. Swarmstr has reached full OpenClaw gatew
 | Shell completion (bash/zsh/fish) | swarmstr-23.5 | ✅ Done |
 | CLI: sessions, cron, approvals, doctor, qr | swarmstr-23.6 | ✅ Done |
 
-### Remaining roadmap (23.x series)
+### Completed features (23.x/24.x series)
 
-| Feature | Bead | Priority |
-|---------|------|----------|
-| Sandbox execution environment (Docker isolation) | swarmstr-23.9 | low |
-| Documentation updates | swarmstr-23.10 | low |
+| Feature | Bead | Status |
+|---------|------|--------|
+| Sandbox execution environment (NopSandbox + DockerSandbox, `sandbox.run` gateway method) | swarmstr-23.9 | ✅ Done |
+| Channel plugin interface richness (TypingHandle, ReactionHandle, ThreadHandle, EditHandle, AudioHandle) | swarmstr-24.1 | ✅ Done |
+| Exec approval wired to tool execution | swarmstr-24.2 | ✅ Done |
+| Block streaming — incremental response delivery (`chat.chunk` WS events, SSE provider) | swarmstr-24.3 | ✅ Done |
+| Daemon lifecycle CLI (start/stop/restart/status) | swarmstr-24.4 | ✅ Done |
+| Additional channel plugins (Telegram, Discord, Email) | swarmstr-24.6 | ✅ Done |
+| Multi-agent orchestration (ACP dispatcher, pipeline sequential/parallel) | swarmstr-24.14 | ✅ Done |
+| Plugin/skill marketplace and remote loading (`plugins.registry.*`, `source=url`) | swarmstr-24.13 | ✅ Done |
+| End-to-end encryption for channel messages (NIP-44 EncryptedHandle) | swarmstr-24.18 | ✅ Done |
+| Web UI (sessions sidebar, streaming display, approval modal) | swarmstr-24.12 | ✅ Done |
 
 Note: Mobile apps (iOS, Android, macOS) and Swabble (Swift voice app) are out of scope — these are platform-specific applications with no Go equivalent in Swarmstr.
+
+---
+
+## Nostr-native remote node addressing
+
+Unlike OpenClaw which requires explicit device pairing protocols, Swarmstr agents are inherently addressable over Nostr:
+
+- Every `swarmstrd` instance has a Nostr keypair.  Any device running `swarmstrd` is reachable via NIP-17 DMs routed through the Nostr relay network.
+- Use `swarmstr nodes list` to see registered remote nodes.
+- Use `swarmstr nodes send <npub> <message>` to send a task to a remote agent via DM.
+- Use `swarmstr nodes status <npub>` to check a remote node's health.
+- The ACP (Agent Control Protocol) layer handles multi-agent orchestration natively over Nostr DMs, with `acp.dispatch` and `acp.pipeline` for sequential/parallel multi-step workflows.
+
+This means Raspberry Pi embedded runners, cloud VMs, and mobile devices can all participate in the same agent mesh without a separate pairing infrastructure — just share their Nostr pubkey.
 
 ---
 

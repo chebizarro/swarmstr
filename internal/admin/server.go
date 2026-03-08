@@ -82,10 +82,13 @@ type ServerOptions struct {
 	SkillsBins           func(context.Context, methods.SkillsBinsRequest) (map[string]any, error)
 	SkillsInstall        func(context.Context, methods.SkillsInstallRequest) (map[string]any, error)
 	SkillsUpdate         func(context.Context, methods.SkillsUpdateRequest) (map[string]any, error)
-	PluginsInstall       func(context.Context, methods.PluginsInstallRequest) (map[string]any, error)
-	PluginsUninstall     func(context.Context, methods.PluginsUninstallRequest) (map[string]any, error)
-	PluginsUpdate        func(context.Context, methods.PluginsUpdateRequest) (map[string]any, error)
-	NodePairRequest      func(context.Context, methods.NodePairRequest) (map[string]any, error)
+	PluginsInstall          func(context.Context, methods.PluginsInstallRequest) (map[string]any, error)
+	PluginsUninstall        func(context.Context, methods.PluginsUninstallRequest) (map[string]any, error)
+	PluginsUpdate           func(context.Context, methods.PluginsUpdateRequest) (map[string]any, error)
+	PluginsRegistryList     func(context.Context, methods.PluginsRegistryListRequest) (map[string]any, error)
+	PluginsRegistryGet      func(context.Context, methods.PluginsRegistryGetRequest) (map[string]any, error)
+	PluginsRegistrySearch   func(context.Context, methods.PluginsRegistrySearchRequest) (map[string]any, error)
+	NodePairRequest         func(context.Context, methods.NodePairRequest) (map[string]any, error)
 	NodePairList         func(context.Context, methods.NodePairListRequest) (map[string]any, error)
 	NodePairApprove      func(context.Context, methods.NodePairApproveRequest) (map[string]any, error)
 	NodePairReject       func(context.Context, methods.NodePairRejectRequest) (map[string]any, error)
@@ -117,6 +120,7 @@ type ServerOptions struct {
 	ExecApprovalRequest  func(context.Context, methods.ExecApprovalRequestRequest) (map[string]any, error)
 	ExecApprovalWaitDecision func(context.Context, methods.ExecApprovalWaitDecisionRequest) (map[string]any, error)
 	ExecApprovalResolve  func(context.Context, methods.ExecApprovalResolveRequest) (map[string]any, error)
+	SandboxRun           func(context.Context, methods.SandboxRunRequest) (map[string]any, error)
 	SecretsReload        func(context.Context, methods.SecretsReloadRequest) (map[string]any, error)
 	SecretsResolve       func(context.Context, methods.SecretsResolveRequest) (map[string]any, error)
 	WizardStart          func(context.Context, methods.WizardStartRequest) (map[string]any, error)
@@ -147,6 +151,12 @@ type ServerOptions struct {
 	GetConfigWithEvent   func(context.Context) (state.ConfigDoc, state.Event, error)
 	GetRelayPolicy       func(context.Context) (methods.RelayPolicyResponse, error)
 	SupportedMethods     func(context.Context) ([]string, error)
+
+	// Metrics is an optional callback that returns the Prometheus text
+	// exposition for /metrics.  If nil the endpoint returns a minimal stub.
+	Metrics func(context.Context) string
+	// HealthExtra is an optional callback that adds extra fields to /healthz.
+	HealthExtra func(context.Context) map[string]any
 }
 
 func Start(ctx context.Context, opts ServerOptions) error {
@@ -160,6 +170,29 @@ func Start(ctx context.Context, opts ServerOptions) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", withAuth(opts.Token, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}))
+	// /healthz — Kubernetes-style liveness probe (no auth required for ease of use
+	// by orchestration systems).
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		body := map[string]any{"status": "ok"}
+		if opts.HealthExtra != nil {
+			for k, v := range opts.HealthExtra(r.Context()) {
+				body[k] = v
+			}
+		}
+		writeJSON(w, http.StatusOK, body)
+	})
+	// /metrics — Prometheus text exposition format.  Requires auth if token is set.
+	mux.HandleFunc("/metrics", withAuth(opts.Token, func(w http.ResponseWriter, r *http.Request) {
+		var exposition string
+		if opts.Metrics != nil {
+			exposition = opts.Metrics(r.Context())
+		} else {
+			exposition = "# swarmstrd metrics not configured\n"
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(exposition))
 	}))
 	mux.HandleFunc("/status", withAuth(opts.Token, func(w http.ResponseWriter, _ *http.Request) {
 		dmPolicy := opts.Status.DMPolicy
@@ -1225,6 +1258,48 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil
+	case methods.MethodPluginsRegistryList:
+		req, err := methods.DecodePluginsRegistryListParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.PluginsRegistryList == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("plugins registry not configured")
+		}
+		out, err := opts.PluginsRegistryList(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodPluginsRegistryGet:
+		req, err := methods.DecodePluginsRegistryGetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.PluginsRegistryGet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("plugins registry not configured")
+		}
+		out, err := opts.PluginsRegistryGet(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("plugin not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodPluginsRegistrySearch:
+		req, err := methods.DecodePluginsRegistrySearchParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.PluginsRegistrySearch == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("plugins registry not configured")
+		}
+		out, err := opts.PluginsRegistrySearch(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
 	case methods.MethodNodePairRequest:
 		req, err := methods.DecodeNodePairRequestParams(call.Params)
 		if err != nil {
@@ -1826,6 +1901,19 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			if errors.Is(err, state.ErrNotFound) {
 				return nil, http.StatusNotFound, fmt.Errorf("not found")
 			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodSandboxRun:
+		req, err := methods.DecodeSandboxRunParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.SandboxRun == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("sandbox not configured")
+		}
+		out, err := opts.SandboxRun(ctx, req)
+		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil

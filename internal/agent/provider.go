@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -18,6 +20,18 @@ type Provider interface {
 type ProviderResult struct {
 	Text      string     `json:"text"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
+// StreamingProvider extends Provider with incremental text delivery.
+//
+// Stream generates a response for turn, calling onChunk for each text token (or
+// small token group) as it arrives from the LLM.  When generation completes the
+// returned ProviderResult holds the full accumulated Text and any ToolCalls that
+// were requested by the model.  Callers should not rely on Text in ProviderResult
+// from onChunk — use only onChunk for incremental delivery.
+type StreamingProvider interface {
+	Provider
+	Stream(ctx context.Context, turn Turn, onChunk func(text string)) (ProviderResult, error)
 }
 
 type EchoProvider struct{}
@@ -384,6 +398,160 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 	return ProviderResult{Text: out.Choices[0].Message.Content}, nil
 }
 
+// Stream implements StreamingProvider for OpenAIChatProvider.
+// It uses Server-Sent Events (SSE) to deliver text tokens incrementally via
+// onChunk and accumulates any tool_call deltas for return in ProviderResult.
+func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func(text string)) (ProviderResult, error) {
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		model = "gpt-4o"
+	}
+	apiKey := strings.TrimSpace(p.APIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = "https://api.openai.com"
+	}
+
+	messages := make([]openAIMessage, 0, 2)
+	if ctxText := strings.TrimSpace(turn.Context); ctxText != "" {
+		messages = append(messages, openAIMessage{Role: "system", Content: ctxText})
+	}
+	messages = append(messages, openAIMessage{Role: "user", Content: buildOpenAIContent(strings.TrimSpace(turn.UserText), turn.Images)})
+
+	// stream:true makes the API emit SSE data lines.
+	reqBody := map[string]any{
+		"model":    model,
+		"messages": messages,
+		"stream":   true,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := p.Client
+	if client == nil {
+		// No overall timeout on the client; rely on ctx cancellation.
+		client = &http.Client{}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return ProviderResult{}, fmt.Errorf("openai stream: HTTP %d: %s", resp.StatusCode, raw)
+	}
+
+	// toolCallAccumulators accumulates tool_call deltas by index.
+	type toolCallAcc struct {
+		ID        string
+		Name      string
+		Arguments strings.Builder
+	}
+	toolAcc := map[int]*toolCallAcc{}
+
+	var textBuf strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	// Streaming chunks (especially tool_call argument deltas) can exceed the
+	// scanner's default token size (~64 KiB).
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id,omitempty"`
+						Function struct {
+							Name      string `json:"name,omitempty"`
+							Arguments string `json:"arguments,omitempty"`
+						} `json:"function"`
+					} `json:"tool_calls,omitempty"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta
+		if delta.Content != "" {
+			textBuf.WriteString(delta.Content)
+			if onChunk != nil {
+				onChunk(delta.Content)
+			}
+		}
+		for _, tc := range delta.ToolCalls {
+			acc, ok := toolAcc[tc.Index]
+			if !ok {
+				acc = &toolCallAcc{}
+				toolAcc[tc.Index] = acc
+			}
+			if tc.ID != "" {
+				acc.ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				acc.Name = tc.Function.Name
+			}
+			if tc.Function.Arguments != "" {
+				acc.Arguments.WriteString(tc.Function.Arguments)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return ProviderResult{}, fmt.Errorf("openai stream scanner: %w", err)
+	}
+
+	// Assemble tool calls from accumulators.
+	var toolCalls []ToolCall
+	for idx := 0; idx < len(toolAcc); idx++ {
+		acc, ok := toolAcc[idx]
+		if !ok {
+			continue
+		}
+		var args map[string]any
+		if argStr := acc.Arguments.String(); argStr != "" {
+			_ = json.Unmarshal([]byte(argStr), &args)
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			Name: acc.Name,
+			Args: args,
+		})
+	}
+
+	return ProviderResult{
+		Text:      textBuf.String(),
+		ToolCalls: toolCalls,
+	}, nil
+}
+
 // ─── Google Gemini provider ───────────────────────────────────────────────────
 
 // GoogleGeminiProvider calls the Google AI Gemini API.
@@ -527,10 +695,11 @@ func (p *GoogleGeminiProvider) Generate(ctx context.Context, turn Turn) (Provide
 // openAICompatProviders maps model prefixes / aliases to their base URL and env key name.
 // All of these use the OpenAI Chat Completions API format.
 var openAICompatProviders = []struct {
-	prefix string // lowercase prefix (or exact alias) to match
-	alias  string // exact alias (e.g. "groq", "mistral")
-	base   string // default base URL
-	envKey string // primary env var name for the API key
+	prefix   string // lowercase prefix (or exact alias) to match
+	alias    string // exact alias (e.g. "groq", "mistral")
+	base     string // default base URL
+	envKey   string // primary env var name for the API key
+	baseEnv  string // optional env var that overrides base URL (for local servers)
 }{
 	{prefix: "grok-", alias: "xai", base: "https://api.x.ai/v1", envKey: "XAI_API_KEY"},
 	{prefix: "", alias: "groq", base: "https://api.groq.com/openai/v1", envKey: "GROQ_API_KEY"},
@@ -540,6 +709,18 @@ var openAICompatProviders = []struct {
 	{prefix: "together/", alias: "", base: "https://api.together.xyz/v1", envKey: "TOGETHER_API_KEY"},
 	{prefix: "", alias: "openrouter", base: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY"},
 	{prefix: "openrouter/", alias: "", base: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY"},
+	// Ollama: local inference server with OpenAI-compatible API.
+	// Base URL defaults to http://localhost:11434/v1; override with OLLAMA_BASE_URL.
+	// No API key required for local Ollama (OLLAMA_API_KEY optional for remote).
+	{prefix: "ollama/", alias: "ollama", base: "http://localhost:11434/v1", envKey: "OLLAMA_API_KEY", baseEnv: "OLLAMA_BASE_URL"},
+	// LM Studio: OpenAI-compatible local server, typically on :1234.
+	{prefix: "lmstudio/", alias: "lmstudio", base: "http://localhost:1234/v1", envKey: "", baseEnv: "LMSTUDIO_BASE_URL"},
+	// Fireworks AI: fast inference for open-source models.
+	{prefix: "fireworks/", alias: "fireworks", base: "https://api.fireworks.ai/inference/v1", envKey: "FIREWORKS_API_KEY"},
+	// DeepInfra: affordable hosted inference.
+	{prefix: "deepinfra/", alias: "deepinfra", base: "https://api.deepinfra.com/v1/openai", envKey: "DEEPINFRA_API_KEY"},
+	// Perplexity: search-augmented chat.
+	{prefix: "pplx-", alias: "perplexity", base: "https://api.perplexity.ai", envKey: "PERPLEXITY_API_KEY"},
 }
 
 // resolveOpenAICompat checks whether a model string matches one of the known
@@ -547,12 +728,19 @@ var openAICompatProviders = []struct {
 // and env key name; otherwise returns empty strings.
 func resolveOpenAICompat(norm string) (baseURL, envKey string) {
 	for _, p := range openAICompatProviders {
-		if p.alias != "" && norm == p.alias {
-			return p.base, p.envKey
+		matched := (p.alias != "" && norm == p.alias) ||
+			(p.prefix != "" && strings.HasPrefix(norm, p.prefix))
+		if !matched {
+			continue
 		}
-		if p.prefix != "" && strings.HasPrefix(norm, p.prefix) {
-			return p.base, p.envKey
+		base := p.base
+		// Allow base URL override via environment variable (e.g. OLLAMA_BASE_URL).
+		if p.baseEnv != "" {
+			if override := strings.TrimRight(strings.TrimSpace(os.Getenv(p.baseEnv)), "/"); override != "" {
+				base = override
+			}
 		}
+		return base, p.envKey
 	}
 	return "", ""
 }
@@ -594,17 +782,125 @@ func NewProviderForModel(model string) (Provider, error) {
 		return &OpenAIChatProvider{Model: strings.TrimSpace(model)}, nil
 	case norm == "gemini" || strings.HasPrefix(norm, "gemini-"):
 		return &GoogleGeminiProvider{Model: strings.TrimSpace(model)}, nil
+	case norm == "cohere" || strings.HasPrefix(norm, "command-"):
+		return &CohereProvider{Model: strings.TrimSpace(model)}, nil
 	}
 	// OpenAI-compatible providers by prefix/alias.
 	if baseURL, envKey := resolveOpenAICompat(norm); baseURL != "" {
-		apiKey := strings.TrimSpace(os.Getenv(envKey))
+		apiKey := ""
+		if envKey != "" {
+			apiKey = strings.TrimSpace(os.Getenv(envKey))
+		}
 		return &OpenAIChatProvider{
 			BaseURL: baseURL,
 			APIKey:  apiKey,
 			Model:   strings.TrimSpace(model),
 		}, nil
 	}
-	return nil, fmt.Errorf("unsupported model %q — try: echo, claude-*, gpt-*, gemini-*, grok-*, groq/*, mistral-*, together/*, openrouter/*, or http", model)
+	return nil, fmt.Errorf("unsupported model %q — try: echo, claude-*, gpt-*, gemini-*, grok-*, groq/*, mistral-*, together/*, openrouter/*, cohere/command-*, ollama/*, or http", model)
+}
+
+// ─── Cohere provider ──────────────────────────────────────────────────────────
+
+// CohereProvider implements Provider using the Cohere Chat API v2.
+// Docs: https://docs.cohere.com/reference/chat
+// Reads COHERE_API_KEY from the environment at call time.
+type CohereProvider struct {
+	Model  string
+	APIKey string
+}
+
+type cohereMessage struct {
+	Role    string `json:"role"`    // "user" | "assistant"
+	Content string `json:"content"` // plain text
+}
+
+type cohereRequest struct {
+	Model    string          `json:"model"`
+	Messages []cohereMessage `json:"messages"`
+	Preamble string          `json:"preamble,omitempty"` // system prompt equivalent
+	Stream   bool            `json:"stream"`
+}
+
+type cohereResponse struct {
+	Message struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"message"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+func (p *CohereProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
+	apiKey := strings.TrimSpace(p.APIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("COHERE_API_KEY"))
+	}
+	if apiKey == "" {
+		return ProviderResult{}, fmt.Errorf("COHERE_API_KEY is not set")
+	}
+	model := strings.TrimSpace(p.Model)
+	if model == "" || model == "cohere" {
+		model = "command-r-plus"
+	}
+
+	req := cohereRequest{
+		Model:  model,
+		Stream: false,
+		Messages: []cohereMessage{
+			{Role: "user", Content: strings.TrimSpace(turn.UserText)},
+		},
+	}
+	if turn.Context != "" {
+		req.Preamble = turn.Context
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://api.cohere.com/v2/chat", bytes.NewReader(body))
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return ProviderResult{}, fmt.Errorf("call Cohere API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var cohereResp cohereResponse
+	if err := json.NewDecoder(resp.Body).Decode(&cohereResp); err != nil {
+		return ProviderResult{}, fmt.Errorf("decode Cohere response: %w", err)
+	}
+	if cohereResp.Error != nil {
+		return ProviderResult{}, fmt.Errorf("Cohere API error: %s", cohereResp.Error.Message)
+	}
+	if resp.StatusCode >= 300 {
+		return ProviderResult{}, fmt.Errorf("Cohere API HTTP %d", resp.StatusCode)
+	}
+
+	var sb strings.Builder
+	for _, block := range cohereResp.Message.Content {
+		if block.Type == "text" {
+			sb.WriteString(block.Text)
+		}
+	}
+	text := strings.TrimSpace(sb.String())
+	if text == "" {
+		return ProviderResult{}, fmt.Errorf("Cohere API returned empty response")
+	}
+	return ProviderResult{Text: text}, nil
 }
 
 // BuildRuntimeForModel constructs a Runtime for the given model identifier.

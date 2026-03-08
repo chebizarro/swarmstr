@@ -87,6 +87,18 @@ func (w *WhatsAppPlugin) ConfigSchema() map[string]any {
 	}
 }
 
+// Capabilities declares the features supported by the WhatsApp Business channel.
+func (w *WhatsAppPlugin) Capabilities() sdk.ChannelCapabilities {
+	return sdk.ChannelCapabilities{
+		Typing:       false,
+		Reactions:    false,
+		Threads:      false,
+		Audio:        false,
+		Edit:         false,
+		MultiAccount: false,
+	}
+}
+
 func (w *WhatsAppPlugin) GatewayMethods() []sdk.GatewayMethod {
 	return []sdk.GatewayMethod{
 		{

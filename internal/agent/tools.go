@@ -25,12 +25,26 @@ type ToolExecutor interface {
 
 type ToolFunc func(context.Context, map[string]any) (string, error)
 
+// ToolMiddleware is a function that wraps a tool execution.  It receives the
+// tool call and a next function that performs the actual execution.  The
+// middleware can inspect or modify the call, block execution (by returning an
+// error without calling next), or post-process the result.
+type ToolMiddleware func(ctx context.Context, call ToolCall, next func(context.Context, ToolCall) (string, error)) (string, error)
+
 type ToolRegistry struct {
-	tools map[string]ToolFunc
+	tools      map[string]ToolFunc
+	middleware ToolMiddleware
 }
 
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{tools: map[string]ToolFunc{}}
+}
+
+// SetMiddleware installs a middleware that wraps every Execute call.  Only one
+// middleware is supported; calling SetMiddleware again replaces the previous
+// one.  Pass nil to remove the middleware.
+func (r *ToolRegistry) SetMiddleware(mw ToolMiddleware) {
+	r.middleware = mw
 }
 
 func (r *ToolRegistry) Register(name string, fn ToolFunc) {
@@ -44,6 +58,16 @@ func (r *ToolRegistry) Execute(ctx context.Context, call ToolCall) (string, erro
 	fn, ok := r.tools[call.Name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool %q", call.Name)
+	}
+	rawExec := func(ctx context.Context, c ToolCall) (string, error) {
+		f, ok := r.tools[c.Name]
+		if !ok {
+			return "", fmt.Errorf("unknown tool %q", c.Name)
+		}
+		return f(ctx, c.Args)
+	}
+	if r.middleware != nil {
+		return r.middleware(ctx, call, rawExec)
 	}
 	return fn(ctx, call.Args)
 }

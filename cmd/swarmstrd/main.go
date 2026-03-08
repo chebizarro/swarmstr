@@ -49,7 +49,10 @@ import (
 
 	acppkg "swarmstr/internal/acp"
 	ctxengine "swarmstr/internal/context"
+	"swarmstr/internal/sandbox"
 	exportpkg "swarmstr/internal/export"
+	metricspkg "swarmstr/internal/metrics"
+	ratelimitpkg "swarmstr/internal/ratelimit"
 	"swarmstr/internal/plugins/sdk"
 	securitypkg "swarmstr/internal/security"
 	"swarmstr/internal/webui"
@@ -57,6 +60,7 @@ import (
 	// Built-in channel extensions. Importing these packages registers their
 	// ChannelPlugin implementations with the global channel plugin registry.
 	_ "swarmstr/internal/extensions/discord"
+	_ "swarmstr/internal/extensions/email"
 	_ "swarmstr/internal/extensions/slack"
 	_ "swarmstr/internal/extensions/telegram"
 	_ "swarmstr/internal/extensions/whatsapp"
@@ -115,6 +119,8 @@ var (
 
 	// controlACPPeers is the ACP peer registry tracking known remote agent pubkeys.
 	controlACPPeers *acppkg.PeerRegistry
+	// controlACPDispatcher routes incoming ACP result DMs to waiting Dispatch() callers.
+	controlACPDispatcher *acppkg.Dispatcher
 
 	// controlContextEngine is the shared pluggable context engine used to ingest
 	// and assemble conversation history for every agent session.
@@ -150,6 +156,7 @@ func main() {
 	var gatewayWSAllowedOrigins string
 	var gatewayWSTrustedProxies string
 	var gatewayWSAllowInsecureControlUI bool
+	var pidFile string
 	flag.StringVar(&bootstrapPath, "bootstrap", "", "path to bootstrap config JSON")
 	flag.StringVar(&configFilePath, "config", "", "path to live config JSON/JSON5/YAML file; watched for changes (default: ~/.swarmstr/config.json)")
 	flag.StringVar(&adminAddr, "admin-addr", "", "optional admin API listen address, e.g. 127.0.0.1:8787")
@@ -160,6 +167,7 @@ func main() {
 	flag.StringVar(&gatewayWSAllowedOrigins, "gateway-ws-allowed-origins", "", "optional comma-separated websocket Origin allowlist")
 	flag.StringVar(&gatewayWSTrustedProxies, "gateway-ws-trusted-proxies", "", "optional comma-separated trusted proxy CIDRs/IPs for proxy-auth mode")
 	flag.BoolVar(&gatewayWSAllowInsecureControlUI, "gateway-ws-allow-insecure-control-ui", false, "allow control-ui without device identity outside localhost")
+	flag.StringVar(&pidFile, "pid-file", "", "write PID to this file on startup; removed on clean shutdown")
 	flag.Parse()
 
 	cfg, err := config.LoadBootstrap(bootstrapPath)
@@ -196,6 +204,22 @@ func main() {
 	}
 	if !gatewayWSAllowInsecureControlUI {
 		gatewayWSAllowInsecureControlUI = cfg.GatewayWSAllowInsecureControlUI
+	}
+
+	// Write PID file if requested; remove on clean shutdown.
+	if pidFile != "" {
+		if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
+			log.Fatalf("create pid file directory %s: %v", filepath.Dir(pidFile), err)
+		}
+		if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
+			log.Fatalf("write pid file %s: %v", pidFile, err)
+		}
+		defer func() {
+			if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
+				log.Printf("remove pid file %s: %v", pidFile, err)
+			}
+		}()
+		log.Printf("pid file written: %s (pid=%d)", pidFile, os.Getpid())
 	}
 
 	startedAt := time.Now()
@@ -274,6 +298,46 @@ func main() {
 			return "", err
 		}
 		return string(b), nil
+	})
+
+	// acp.delegate — allows the agent to dispatch a sub-task to a peer agent
+	// and wait for the result.  Uses the global DM transport + dispatcher.
+	tools.Register("acp.delegate", func(ctx context.Context, args map[string]any) (string, error) {
+		peerPubKey := agent.ArgString(args, "peer_pubkey")
+		instructions := agent.ArgString(args, "instructions")
+		timeoutMS := int64(agent.ArgInt(args, "timeout_ms", 60000))
+		if peerPubKey == "" || instructions == "" {
+			return "", fmt.Errorf("acp.delegate: peer_pubkey and instructions are required")
+		}
+		if controlACPPeers == nil || !controlACPPeers.IsPeer(peerPubKey) {
+			return "", fmt.Errorf("acp.delegate: unknown peer %q (register via acp.register first)", peerPubKey)
+		}
+		controlDMBusMu.RLock()
+		dmBus := controlDMBus
+		controlDMBusMu.RUnlock()
+		if dmBus == nil {
+			return "", fmt.Errorf("acp.delegate: DM transport not available")
+		}
+		taskID := acppkg.GenerateTaskID()
+		senderPubKey := dmBus.PublicKey()
+		acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
+			Instructions: instructions,
+			TimeoutMS:    timeoutMS,
+			ReplyTo:      senderPubKey,
+		})
+		payload, _ := json.Marshal(acpMsg)
+		if err := dmBus.SendDM(ctx, peerPubKey, string(payload)); err != nil {
+			return "", fmt.Errorf("acp.delegate: send: %w", err)
+		}
+		controlACPDispatcher.Register(taskID)
+		result, err := controlACPDispatcher.Wait(ctx, taskID, time.Duration(timeoutMS)*time.Millisecond)
+		if err != nil {
+			return "", fmt.Errorf("acp.delegate: %w", err)
+		}
+		if result.Error != "" {
+			return "", fmt.Errorf("acp.delegate: peer error: %s", result.Error)
+		}
+		return result.Text, nil
 	})
 
 	agentRuntime, err := agent.NewRuntimeFromEnv(tools)
@@ -430,16 +494,110 @@ func main() {
 	subagents := newSubagentRegistry()
 	keyRings := agent.NewProviderKeyRingRegistry()
 	acpPeers := acppkg.NewPeerRegistry()
+	acpDispatcher := acppkg.NewDispatcher()
 	controlACPPeers = acpPeers
+	controlACPDispatcher = acpDispatcher
 	controlAgentRuntime = agentRuntime
 	controlAgentJobs = agentJobs
 	controlNodeInvocations = nodeInvocations
 	controlCronJobs = cronJobs
+	// Load persisted cron jobs from the state store so they survive restarts.
+	if loadErr := cronJobs.Load(ctx, docsRepo); loadErr != nil {
+		log.Printf("cron jobs load warning: %v", loadErr)
+	} else {
+		loaded := cronJobs.List(0)
+		if len(loaded) > 0 {
+			log.Printf("cron jobs restored from state store: %d jobs", len(loaded))
+		}
+	}
 	controlExecApprovals = execApprovals
 	controlWizards = wizards
 	controlSubagents = subagents
 	controlKeyRings = keyRings
 	controlOps = ops
+
+	// ── Exec approval middleware ──────────────────────────────────────────────
+	// Hook the tool registry so that tools matching the configured approval list
+	// pause execution, create an approval request, and wait for a human decision
+	// before proceeding.  This implements OpenClaw parity for exec approval gating.
+	{
+		// Default tool names that require approval. Overridable via
+		// Extra["approvals"]["tools"] (comma-separated or []string).
+		defaultApprovalTools := []string{"bash", "shell", "exec", "run_command", "terminal", "sh"}
+		approvalTools := make(map[string]bool)
+		for _, t := range defaultApprovalTools {
+			approvalTools[t] = true
+		}
+		if aExtra, ok := configState.Get().Extra["approvals"].(map[string]any); ok {
+			switch v := aExtra["tools"].(type) {
+			case string:
+				for _, t := range strings.Split(v, ",") {
+					if s := strings.TrimSpace(t); s != "" {
+						approvalTools[s] = true
+					}
+				}
+			case []any:
+				for _, item := range v {
+					if s, ok := item.(string); ok && s != "" {
+						approvalTools[s] = true
+					}
+				}
+			}
+		}
+
+		// Approval timeout defaults to 5 minutes; configurable via
+		// Extra["approvals"]["timeout_ms"].
+		approvalTimeoutMS := 5 * 60 * 1000 // 5 min in ms
+		if aExtra, ok := configState.Get().Extra["approvals"].(map[string]any); ok {
+			if ms, ok := aExtra["timeout_ms"].(float64); ok && ms > 0 {
+				approvalTimeoutMS = int(ms)
+			}
+		}
+
+		tools.SetMiddleware(func(ctx context.Context, call agent.ToolCall, next func(context.Context, agent.ToolCall) (string, error)) (string, error) {
+			if !approvalTools[call.Name] {
+				metricspkg.ToolCalls.Inc()
+				return next(ctx, call)
+			}
+
+			// Build an approval request.
+			rec := execApprovals.Request(methods.ExecApprovalRequestRequest{
+				Command:   call.Name,
+				Args:      call.Args,
+				TimeoutMS: approvalTimeoutMS,
+			})
+
+			// Emit a WS event so the UI / operator can see the pending request.
+			emitControlWSEvent(gatewayws.EventExecApprovalRequested, gatewayws.ExecApprovalRequestedPayload{
+				ID:     rec.ID,
+				NodeID: rec.NodeID,
+			})
+			log.Printf("exec approval requested id=%s tool=%s", rec.ID, call.Name)
+
+			// Block until decided, timed out, or context cancelled.
+			decided, resolved, waitErr := execApprovals.WaitForDecision(ctx, rec.ID, approvalTimeoutMS)
+			if waitErr != nil {
+				return "", fmt.Errorf("exec approval wait error tool=%s: %w", call.Name, waitErr)
+			}
+			if !resolved || decided.Decision != "approve" {
+				reason := decided.Reason
+				if reason == "" {
+					if !resolved {
+						reason = "timed out waiting for approval"
+					} else {
+						reason = "denied"
+					}
+				}
+				metricspkg.ToolDenied.Inc()
+				log.Printf("exec approval denied id=%s tool=%s reason=%s", rec.ID, call.Name, reason)
+				return "", fmt.Errorf("tool %q execution denied by approval gate: %s", call.Name, reason)
+			}
+
+			log.Printf("exec approval granted id=%s tool=%s", rec.ID, call.Name)
+			metricspkg.ToolCalls.Inc()
+			return next(ctx, call)
+		})
+	}
 
 	// Initialise the version checker. update_check_url from config extra overrides the default.
 	updateCheckURL := ""
@@ -668,6 +826,44 @@ func main() {
 	}
 	usageState := newUsageTracker(startedAt)
 	logBuffer := newRuntimeLogBuffer(2000)
+
+	// ── Rate limiter ──────────────────────────────────────────────────────────
+	// Per-user and per-channel rate limits. Configurable via Extra["rate_limit"].
+	// Defaults: user burst=10, rate=2/s; channel burst=20, rate=5/s.
+	buildRateLimitCfg := func(key string, defBurst, defRate float64) ratelimitpkg.Config {
+		cfg := ratelimitpkg.Config{Burst: defBurst, Rate: defRate, Enabled: true}
+		if rlExtra, ok := configState.Get().Extra["rate_limit"].(map[string]any); ok {
+			if section, ok := rlExtra[key].(map[string]any); ok {
+				if v, ok := section["burst"].(float64); ok && v > 0 {
+					cfg.Burst = v
+				}
+				if v, ok := section["rate"].(float64); ok && v > 0 {
+					cfg.Rate = v
+				}
+				if v, ok := section["enabled"].(bool); ok {
+					cfg.Enabled = v
+				}
+			}
+		}
+		return cfg
+	}
+	dmRateLimiter := ratelimitpkg.NewMultiLimiter(
+		buildRateLimitCfg("user", 10, 2),
+		buildRateLimitCfg("channel", 20, 5),
+	)
+	// Prune idle rate-limit buckets every 10 minutes.
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				dmRateLimiter.Prune()
+			}
+		}
+	}()
 	channelState := newChannelRuntimeState()
 
 	// Start background cleanup goroutines to prevent memory leaks
@@ -803,6 +999,7 @@ func main() {
 				return nil
 			}
 			usageState.RecordInbound(msg.Text)
+			metricspkg.MessagesInbound.Inc()
 			logBuffer.Append("info", fmt.Sprintf("dm inbound from=%s event=%s", msg.FromPubKey, msg.EventID))
 
 			// Emit inbound chat event.
@@ -820,6 +1017,12 @@ func main() {
 					_ = msg.Reply(ctx, "Your message was received, but this node requires pairing approval before processing DMs.")
 				}
 				return nil
+			}
+
+			// Rate limit check: per-user and per-channel (using pubkey as channel for DMs).
+			if !dmRateLimiter.Allow(msg.FromPubKey, "dm:"+msg.FromPubKey) {
+				log.Printf("dm rate-limited from=%s", msg.FromPubKey)
+				return nil // silently drop rate-limited messages
 			}
 
 			// Session ID for DM conversations is the sender's pubkey (peer-to-peer session).
@@ -951,7 +1154,21 @@ func main() {
 				Status:  "thinking",
 				Session: sessionID,
 			})
-			turnResult, err := activeRuntime.ProcessTurn(turnCtx, agent.Turn{SessionID: sessionID, UserText: msg.Text, Context: turnContext})
+			// Use streaming if the runtime supports it, delivering chunks to WS
+			// clients via EventChatChunk while the full reply is assembled.
+			var turnResult agent.TurnResult
+			if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
+				turnResult, err = sr.ProcessTurnStreaming(turnCtx, agent.Turn{SessionID: sessionID, UserText: msg.Text, Context: turnContext}, func(chunk string) {
+					wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
+						TS:        time.Now().UnixMilli(),
+						AgentID:   activeAgentID,
+						SessionID: sessionID,
+						Text:      chunk,
+					})
+				})
+			} else {
+				turnResult, err = activeRuntime.ProcessTurn(turnCtx, agent.Turn{SessionID: sessionID, UserText: msg.Text, Context: turnContext})
+			}
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					log.Printf("agent process aborted session=%s", sessionID)
@@ -969,6 +1186,13 @@ func main() {
 				Status:  "idle",
 				Session: sessionID,
 			})
+			// Signal streaming done to WS clients.
+			wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
+				TS:        time.Now().UnixMilli(),
+				AgentID:   activeAgentID,
+				SessionID: sessionID,
+				Done:      true,
+			})
 			if err := msg.Reply(ctx, turnResult.Text); err != nil {
 				log.Printf("reply failed event=%s err=%v", msg.EventID, err)
 				logBuffer.Append("error", fmt.Sprintf("dm reply failed event=%s err=%v", msg.EventID, err))
@@ -983,6 +1207,7 @@ func main() {
 				EventID:   msg.EventID,
 			})
 			usageState.RecordOutbound(turnResult.Text)
+			metricspkg.MessagesOutbound.Inc()
 			logBuffer.Append("info", fmt.Sprintf("dm reply sent to=%s event=%s", msg.FromPubKey, msg.EventID))
 			if err := persistAssistant(ctx, docsRepo, transcriptRepo, sessionID, turnResult.Text, msg.EventID); err != nil {
 				log.Printf("persist assistant failed session=%s err=%v", sessionID, err)
@@ -1046,30 +1271,219 @@ func main() {
 	// ── Start built-in channel extensions ──────────────────────────────────────
 	// ConnectExtensions scans nostr_channels for entries whose "kind" matches
 	// a registered ChannelPlugin (telegram, discord, etc.).
-	extensionResults, err := channels.ConnectExtensions(ctx, configState.Get(), func(msg sdk.InboundChannelMessage) {
-		// Forward extension messages into the same DM dispatch pipeline.
-		controlDMBusMu.RLock()
-		activeBus := controlDMBus
-		controlDMBusMu.RUnlock()
-		if activeBus == nil {
+	//
+	// All inbound channel messages are run through a per-(channel,sender)
+	// debouncer (500 ms window) before reaching the agent pipeline.  This
+	// prevents duplicate or fragmented agent responses when a user types
+	// several messages in quick succession (matching OpenClaw behaviour).
+
+	// channelDebounceWindow is read from Extra["channels"]["debounce_ms"] if set.
+	channelDebounceWindow := 500 * time.Millisecond
+	if cExtra, ok := configState.Get().Extra["channels"].(map[string]any); ok {
+		if ms, ok := cExtra["debounce_ms"].(float64); ok && ms > 0 {
+			channelDebounceWindow = time.Duration(ms) * time.Millisecond
+		}
+	}
+
+	// channelHandles maps channelID → Channel handle, populated after
+	// ConnectExtensions returns.  The debounce callback (which fires ≥500ms later)
+	// can safely read from it by then.
+	var channelHandlesMu sync.RWMutex
+	channelHandles := map[string]channels.Channel{}
+	// channelRawHandles maps channelID → raw sdk.ChannelHandle so the debounce
+	// flush can do interface assertions for optional features (e.g. TypingHandle).
+	channelRawHandles := map[string]sdk.ChannelHandle{}
+
+	channelDebouncer := channels.NewDebouncer(channelDebounceWindow, func(key string, msgs []string) {
+		// key == "channelID:senderID"
+		parts := strings.SplitN(key, ":", 2)
+		chID, senderID := "", ""
+		if len(parts) == 2 {
+			chID, senderID = parts[0], parts[1]
+		}
+		combined := channels.JoinMessages(msgs)
+		preview := combined
+		if len(preview) > 120 {
+			preview = preview[:117] + "..."
+		}
+		log.Printf("channel dispatch channel=%s sender=%s msgs=%d text=%q",
+			chID, senderID, len(msgs), preview)
+
+		channelHandlesMu.RLock()
+		handle := channelHandles[chID]
+		rawHandle := channelRawHandles[chID]
+		channelHandlesMu.RUnlock()
+
+		// Send a typing indicator if the channel supports it, before handing off
+		// to the agent pipeline.  Errors are non-fatal.
+		if typingH, ok := rawHandle.(sdk.TypingHandle); ok {
+			if typErr := typingH.SendTyping(ctx, 0); typErr != nil {
+				log.Printf("channel typing indicator error channel=%s err=%v", chID, typErr)
+			}
+		}
+
+		// Slash command fast-path: route /commands before hitting the agent.
+		if slashCmd := autoreply.Parse(combined); slashCmd != nil {
+			slashCmd.SessionID = chID
+			slashCmd.FromPubKey = senderID
+			reply, handled, slashErr := slashRouter.Dispatch(ctx, slashCmd)
+			if slashErr != nil {
+				reply = fmt.Sprintf("error: %v", slashErr)
+				handled = true
+			}
+			if handled && reply != "" && handle != nil {
+				replyCtx := sdk.WithChannelReplyTarget(ctx, senderID)
+				if sendErr := handle.Send(replyCtx, reply); sendErr != nil {
+					log.Printf("channel slash reply error channel=%s err=%v", chID, sendErr)
+				}
+			}
+			metricspkg.MessagesInbound.Inc()
+			if handled {
+				metricspkg.MessagesOutbound.Inc()
+				return
+			}
+		}
+
+		// ── Channel agent pipeline ────────────────────────────────────────────
+		// sessionID is per-(channel, sender) so each user gets their own
+		// conversation context.
+		metricspkg.MessagesInbound.Inc()
+		sessionID := "ch:" + chID + ":" + senderID
+
+		// Per-session turn serialisation: prevent concurrent agent calls for
+		// the same channel session (same as DM pipeline).
+		releaseTurnSlot, acquired := sessionTurns.TryAcquire(sessionID)
+		if !acquired {
+			if handle != nil {
+				replyCtx := sdk.WithChannelReplyTarget(ctx, senderID)
+				_ = handle.Send(replyCtx, "⏳ Still processing your previous message.")
+			}
 			return
 		}
-		// Convert InboundChannelMessage to a DM-like event for the agent pipeline.
-		// The SenderID is used as the "from" pubkey (it's a platform ID, not a Nostr key).
-		// Agents should respond via the channel handle's Send() method, not Nostr DM.
-		text := msg.Text
-		if len(text) > 100 {
-			text = text[:97] + "..."
+		defer releaseTurnSlot()
+
+		// Assemble turn context from memory index.
+		turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, combined, 6)
+
+		// Route to the session's assigned agent (defaults to "main").
+		activeAgentID := sessionRouter.Get(sessionID)
+		if activeAgentID == "" {
+			activeAgentID = "main"
 		}
-		log.Printf("extension channel %s: message from %s: %q", msg.ChannelID, msg.SenderID, text)
+		activeRuntime := agentRegistry.Get(activeAgentID)
+		if activeRuntime == nil {
+			log.Printf("channel dispatch: no runtime for agent=%s session=%s", activeAgentID, sessionID)
+			return
+		}
+
+		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+			TS:      time.Now().UnixMilli(),
+			AgentID: activeAgentID,
+			Status:  "thinking",
+			Session: sessionID,
+		})
+
+		turnCtx, releaseTurn := chatCancels.Begin(sessionID, ctx)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("panic in channel agent session=%s panic=%v", sessionID, r)
+			}
+			releaseTurn()
+		}()
+
+		// Use streaming if available; emit EventChatChunk for WS clients.
+		var turnResult agent.TurnResult
+		var turnErr error
+		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
+			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, agent.Turn{
+				SessionID: sessionID,
+				UserText:  combined,
+				Context:   turnContext,
+			}, func(chunk string) {
+				wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
+					TS:        time.Now().UnixMilli(),
+					AgentID:   activeAgentID,
+					SessionID: sessionID,
+					Text:      chunk,
+				})
+			})
+		} else {
+			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, agent.Turn{
+				SessionID: sessionID,
+				UserText:  combined,
+				Context:   turnContext,
+			})
+		}
+
+		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+			TS:      time.Now().UnixMilli(),
+			AgentID: activeAgentID,
+			Status:  "idle",
+			Session: sessionID,
+		})
+
+		if turnErr != nil {
+			if errors.Is(turnErr, context.Canceled) {
+				log.Printf("channel agent aborted session=%s", sessionID)
+			} else {
+				log.Printf("channel agent error session=%s err=%v", sessionID, turnErr)
+			}
+			return
+		}
+
+		// Emit final streaming-done marker for WS clients.
+		wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
+			TS:        time.Now().UnixMilli(),
+			AgentID:   activeAgentID,
+			SessionID: sessionID,
+			Done:      true,
+		})
+
+		// Deliver the reply via the channel handle.
+		if handle != nil && turnResult.Text != "" {
+			replyCtx := sdk.WithChannelReplyTarget(ctx, senderID)
+			if sendErr := handle.Send(replyCtx, turnResult.Text); sendErr != nil {
+				log.Printf("channel reply error channel=%s session=%s err=%v", chID, sessionID, sendErr)
+			} else {
+				metricspkg.MessagesOutbound.Inc()
+				wsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+					TS:        time.Now().UnixMilli(),
+					ChannelID: chID,
+					Direction: "outbound",
+					From:      activeAgentID,
+					Text:      turnResult.Text,
+				})
+				logBuffer.Append("info", fmt.Sprintf("channel reply sent channel=%s session=%s", chID, sessionID))
+			}
+		}
+
+		if err := persistToolTraces(ctx, transcriptRepo, sessionID, "", turnResult.ToolTraces); err != nil {
+			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
+		}
+	})
+
+	extensionResults, err := channels.ConnectExtensions(ctx, configState.Get(), func(msg sdk.InboundChannelMessage) {
+		// Submit to the debouncer; it will coalesce rapid messages from the same
+		// sender and fire after channelDebounceWindow of silence.
+		channelDebouncer.Submit(channels.DebounceKey(msg.ChannelID, msg.SenderID), msg.Text)
 	})
 	if err != nil {
 		log.Printf("extension channel startup error: %v", err)
 	}
 	for _, r := range extensionResults {
-		log.Printf("extension channel connected: %s (plugin=%s)", r.ChannelID, r.PluginID)
+		log.Printf("extension channel connected: %s (plugin=%s caps=%+v)", r.ChannelID, r.PluginID, r.Capabilities)
 		defer r.Handle.Close()
+		// Register handles so the debounce flush callback can send replies and
+		// use optional channel features via interface assertions.
+		channelHandlesMu.Lock()
+		channelHandles[r.ChannelID] = r.Handle
+		if r.RawHandle != nil {
+			channelRawHandles[r.ChannelID] = r.RawHandle
+		}
+		channelHandlesMu.Unlock()
 	}
+	// Flush any in-flight debounced messages on shutdown.
+	defer channelDebouncer.FlushAll()
 
 	var controlBus *nostruntime.ControlRPCBus
 	controlBus, err = nostruntime.StartControlRPCBus(ctx, nostruntime.ControlRPCBusOptions{
@@ -1208,6 +1622,42 @@ func main() {
 		}
 	}
 
+	// ── SIGHUP config hot-reload ─────────────────────────────────────────────
+	// Receiving SIGHUP triggers an immediate re-read of configFilePath and
+	// applies the new config to the running daemon — same as OpenClaw's
+	// SIGHUP handler.  The fsnotify SyncEngine watches for file changes
+	// automatically; SIGHUP is a manual override (useful for scripts and
+	// systemd/launchd ExecReload= directives).
+	if configFilePath != "" {
+		sighupCh := make(chan os.Signal, 1)
+		signal.Notify(sighupCh, syscall.SIGHUP)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					signal.Stop(sighupCh)
+					return
+				case <-sighupCh:
+					log.Printf("SIGHUP received: reloading config from %s", configFilePath)
+					raw, readErr := os.ReadFile(configFilePath)
+					if readErr != nil {
+						log.Printf("SIGHUP reload: read config failed path=%s err=%v", configFilePath, readErr)
+						continue
+					}
+					newDoc, parseErr := config.ParseConfigBytes(raw, configFilePath)
+					if parseErr != nil {
+						log.Printf("SIGHUP reload: parse config failed err=%v", parseErr)
+						continue
+					}
+					configState.Set(newDoc)
+					log.Printf("SIGHUP reload: config applied successfully agents=%d relays=%d",
+						len(newDoc.Agents), len(newDoc.Relays.Read))
+				}
+			}
+		}()
+		log.Printf("SIGHUP handler registered (config reload on SIGHUP)")
+	}
+
 	if adminAddr != "" {
 		go func() {
 			err := admin.Start(ctx, admin.ServerOptions{
@@ -1225,6 +1675,22 @@ func main() {
 				StatusRelays: func() []string {
 					current := configState.Get()
 					return append([]string{}, current.Relays.Read...)
+				},
+				Metrics: func(_ context.Context) string {
+					// Update live gauges before rendering.
+					metricspkg.UptimeSeconds.Set(time.Since(startedAt).Seconds())
+					metricspkg.RelayConnected.Set(float64(len(cfg.Relays)))
+					if controlExecApprovals != nil {
+						pending := controlExecApprovals.GetGlobal()
+						metricspkg.ApprovalQueueSize.Set(float64(len(pending)))
+					}
+					return metricspkg.Default.Exposition()
+				},
+				HealthExtra: func(_ context.Context) map[string]any {
+					return map[string]any{
+						"uptime_seconds": int(time.Since(startedAt).Seconds()),
+						"version":        version,
+					}
 				},
 				SearchMemory: func(query string, limit int) []memory.IndexedMemory {
 					return memoryIndex.Search(query, limit)
@@ -1511,6 +1977,15 @@ func main() {
 				PluginsUpdate: func(ctx context.Context, req methods.PluginsUpdateRequest) (map[string]any, error) {
 					return applyPluginUpdateRuntime(ctx, docsRepo, configState, req)
 				},
+				PluginsRegistryList: func(ctx context.Context, req methods.PluginsRegistryListRequest) (map[string]any, error) {
+					return handlePluginsRegistryList(ctx, configState, req)
+				},
+				PluginsRegistryGet: func(ctx context.Context, req methods.PluginsRegistryGetRequest) (map[string]any, error) {
+					return handlePluginsRegistryGet(ctx, configState, req)
+				},
+				PluginsRegistrySearch: func(ctx context.Context, req methods.PluginsRegistrySearchRequest) (map[string]any, error) {
+					return handlePluginsRegistrySearch(ctx, configState, req)
+				},
 				NodePairRequest: func(ctx context.Context, req methods.NodePairRequest) (map[string]any, error) {
 					return applyNodePairRequest(ctx, docsRepo, configState, req)
 				},
@@ -1606,6 +2081,9 @@ func main() {
 				},
 				ExecApprovalResolve: func(_ context.Context, req methods.ExecApprovalResolveRequest) (map[string]any, error) {
 					return applyExecApprovalResolve(execApprovals, req)
+				},
+				SandboxRun: func(ctx context.Context, req methods.SandboxRunRequest) (map[string]any, error) {
+					return applySandboxRun(ctx, configState, req)
 				},
 				SecretsReload: func(_ context.Context, req methods.SecretsReloadRequest) (map[string]any, error) {
 					return applySecretsReload(req)
@@ -3425,6 +3903,36 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodPluginsRegistryList:
+		req, err := methods.DecodePluginsRegistryListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := handlePluginsRegistryList(ctx, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodPluginsRegistryGet:
+		req, err := methods.DecodePluginsRegistryGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := handlePluginsRegistryGet(ctx, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodPluginsRegistrySearch:
+		req, err := methods.DecodePluginsRegistrySearchParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := handlePluginsRegistrySearch(ctx, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodNodePairRequest:
 		req, err := methods.DecodeNodePairRequestParams(in.Params)
 		if err != nil {
@@ -3800,6 +4308,9 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
+			log.Printf("cron jobs save warning (add): %v", saveErr)
+		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodCronUpdate:
 		req, err := methods.DecodeCronUpdateParams(in.Params)
@@ -3814,6 +4325,9 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
+			log.Printf("cron jobs save warning (update): %v", saveErr)
+		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodCronRemove:
 		req, err := methods.DecodeCronRemoveParams(in.Params)
@@ -3827,6 +4341,9 @@ func handleControlRPCRequest(
 		out, err := applyCronRemove(controlCronJobs, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
+		}
+		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
+			log.Printf("cron jobs save warning (remove): %v", saveErr)
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodCronRun:
@@ -3951,6 +4468,16 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		out, err := applyExecApprovalResolve(controlExecApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodSandboxRun:
+		req, err := methods.DecodeSandboxRunParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applySandboxRun(ctx, configState, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
@@ -4768,7 +5295,89 @@ controlListPreconditionsSatisfied:
 		if err := dmBus.SendDM(ctx, target, string(payload)); err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: send DM: %w", err)
 		}
+
+		// If wait==true, register in dispatcher and block until result arrives.
+		if req.Wait {
+			ch := controlACPDispatcher.Register(taskID)
+			_ = ch // Wait() handles the channel internally
+			timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+			if timeout == 0 {
+				timeout = 60 * time.Second
+			}
+			result, waitErr := controlACPDispatcher.Wait(ctx, taskID, timeout)
+			if waitErr != nil {
+				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: wait: %w", waitErr)
+			}
+			if result.Error != "" {
+				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: worker error: %s", result.Error)
+			}
+			return nostruntime.ControlRPCResult{Result: map[string]any{
+				"ok": true, "task_id": taskID, "target": target,
+				"text": result.Text,
+			}}, nil
+		}
+
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "task_id": taskID, "target": target}}, nil
+
+	case methods.MethodACPPipeline:
+		var req methods.ACPPipelineRequest
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: invalid params: %w", err)
+		}
+		if len(req.Steps) == 0 {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: steps required")
+		}
+		if dmBus == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: DM transport not available")
+		}
+
+		senderPubKey := dmBus.PublicKey()
+		sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string) error {
+			acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
+				Instructions: instructions,
+				ReplyTo:      senderPubKey,
+			})
+			payload, _ := json.Marshal(acpMsg)
+			return dmBus.SendDM(ctx, peerPubKey, string(payload))
+		}
+
+		steps := make([]acppkg.Step, 0, len(req.Steps))
+		for _, s := range req.Steps {
+			steps = append(steps, acppkg.Step{
+				PeerPubKey:   s.PeerPubKey,
+				Instructions: s.Instructions,
+				TimeoutMS:    s.TimeoutMS,
+			})
+		}
+		pipeline := &acppkg.Pipeline{Steps: steps}
+
+		var pipelineResults []acppkg.PipelineResult
+		var pipelineErr error
+		if req.Parallel {
+			pipelineResults, pipelineErr = pipeline.RunParallel(ctx, controlACPDispatcher, sendFn)
+		} else {
+			pipelineResults, pipelineErr = pipeline.RunSequential(ctx, controlACPDispatcher, sendFn)
+		}
+
+		out := make([]map[string]any, 0, len(pipelineResults))
+		for _, r := range pipelineResults {
+			out = append(out, map[string]any{
+				"step_index": r.StepIndex,
+				"task_id":    r.TaskID,
+				"text":       r.Text,
+				"error":      r.Error,
+			})
+		}
+		aggregate := acppkg.AggregateResults(pipelineResults)
+
+		if pipelineErr != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: %w", pipelineErr)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"ok":      true,
+			"results": out,
+			"text":    aggregate,
+		}}, nil
 
 	default:
 		return nostruntime.ControlRPCResult{}, fmt.Errorf("unknown method %q", method)
@@ -4855,6 +5464,10 @@ func handleACPMessage(
 			}
 		}
 		log.Printf("acp result from=%s task_id=%s ok=%v text=%q err=%q", fromPubKey, taskID, errStr == "", text, errStr)
+		// Deliver to any waiting Dispatch() caller.
+		if controlACPDispatcher != nil {
+			controlACPDispatcher.Deliver(acppkg.TaskResult{TaskID: taskID, Text: text, Error: errStr})
+		}
 		return nil
 
 	case "ping":
@@ -6626,6 +7239,64 @@ func applyPluginInstallRuntime(ctx context.Context, docsRepo *state.DocsReposito
 			install["integrity"] = installResult.Integrity
 		}
 		install["installPath"] = installPath
+	case "url":
+		// Download a plugin from a URL (single .js file or archive).
+		srcURL := strings.TrimSpace(getString(install, "url"))
+		if srcURL == "" {
+			srcURL = sourcePath
+		}
+		if srcURL == "" {
+			return nil, fmt.Errorf("install.url is required for source=url")
+		}
+		tmpFile, err := installer.DownloadURL(ctx, srcURL)
+		if err != nil {
+			log.Printf("plugins.install url download error for %s: %v", req.PluginID, err)
+			return nil, fmt.Errorf("URL download failed: %w", err)
+		}
+		defer os.Remove(tmpFile)
+
+		// Determine whether the download is an archive or a JS file.
+		lower := strings.ToLower(tmpFile)
+		if strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") || strings.HasSuffix(lower, ".zip") {
+			// Archive: extract to managed path.
+			if installPath == "" {
+				installPath = "./extensions/" + req.PluginID
+			}
+			managedPath, ok := resolveManagedInstallPath(installPath)
+			if !ok {
+				return nil, fmt.Errorf("install.installPath for source=url archive must be within managed extensions directory")
+			}
+			installPath = managedPath
+			res, err := inst.ExtractArchive(ctx, tmpFile, installPath)
+			if err != nil {
+				log.Printf("plugins.install url archive error for %s: %v", req.PluginID, err)
+				return nil, fmt.Errorf("archive extraction failed: %w", err)
+			}
+			installResult = res
+		} else {
+			// Single JS file: copy to managed directory.
+			if installPath == "" {
+				installPath = "./extensions/" + req.PluginID
+			}
+			managedPath, ok := resolveManagedInstallPath(installPath)
+			if !ok {
+				return nil, fmt.Errorf("install.installPath for source=url must be within managed extensions directory")
+			}
+			if err := os.MkdirAll(managedPath, 0o755); err != nil {
+				return nil, fmt.Errorf("create install directory: %w", err)
+			}
+			destFile := filepath.Join(managedPath, "index.js")
+			data, err := os.ReadFile(tmpFile)
+			if err != nil {
+				return nil, fmt.Errorf("read downloaded file: %w", err)
+			}
+			if err := os.WriteFile(destFile, data, 0o644); err != nil {
+				return nil, fmt.Errorf("write plugin file: %w", err)
+			}
+			installPath = managedPath
+		}
+		install["url"] = srcURL
+		install["installPath"] = installPath
 	default:
 		return nil, fmt.Errorf("unsupported install.source %q", source)
 	}
@@ -6779,6 +7450,141 @@ func applyPluginUpdateRuntime(ctx context.Context, docsRepo *state.DocsRepositor
 		configState.Set(next)
 	}
 	return map[string]any{"ok": true, "changed": changed, "outcomes": outcomes}, nil
+}
+
+// ─── Plugin registry handlers ──────────────────────────────────────────────────
+
+// resolveRegistryURL returns the registry URL to use for a request:
+// the request's RegistryURL (if set) or the daemon's configured registry URL.
+func resolveRegistryURL(configState *runtimeConfigStore, requestURL string) (string, error) {
+	u := strings.TrimSpace(requestURL)
+	if u != "" {
+		return u, nil
+	}
+	cfg := configState.Get()
+	if cfg.Extra != nil {
+		if rawExt, ok := cfg.Extra["extensions"].(map[string]any); ok {
+			if regURL, ok := rawExt["registry_url"].(string); ok && strings.TrimSpace(regURL) != "" {
+				return strings.TrimSpace(regURL), nil
+			}
+		}
+	}
+	// Fall back to the default public registry.
+	return "https://registry.swarmstr.com/plugins/index.json", nil
+}
+
+func handlePluginsRegistryList(ctx context.Context, configState *runtimeConfigStore, req methods.PluginsRegistryListRequest) (map[string]any, error) {
+	regURL, err := resolveRegistryURL(configState, req.RegistryURL)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := installer.FetchRegistry(ctx, regURL)
+	if err != nil {
+		return nil, fmt.Errorf("registry fetch failed: %w", err)
+	}
+	plugins := make([]map[string]any, 0, len(idx.Plugins))
+	for _, p := range idx.Plugins {
+		plugins = append(plugins, pluginEntryToMap(p))
+	}
+	return map[string]any{
+		"ok":          true,
+		"registryURL": regURL,
+		"version":     idx.Version,
+		"plugins":     plugins,
+		"count":       len(plugins),
+	}, nil
+}
+
+func handlePluginsRegistryGet(ctx context.Context, configState *runtimeConfigStore, req methods.PluginsRegistryGetRequest) (map[string]any, error) {
+	if strings.TrimSpace(req.PluginID) == "" {
+		return nil, fmt.Errorf("plugin_id is required")
+	}
+	regURL, err := resolveRegistryURL(configState, req.RegistryURL)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := installer.FetchRegistry(ctx, regURL)
+	if err != nil {
+		return nil, fmt.Errorf("registry fetch failed: %w", err)
+	}
+	for _, p := range idx.Plugins {
+		if strings.EqualFold(p.ID, req.PluginID) {
+			return map[string]any{
+				"ok":          true,
+				"registryURL": regURL,
+				"plugin":      pluginEntryToMap(p),
+			}, nil
+		}
+	}
+	return nil, state.ErrNotFound
+}
+
+func handlePluginsRegistrySearch(ctx context.Context, configState *runtimeConfigStore, req methods.PluginsRegistrySearchRequest) (map[string]any, error) {
+	regURL, err := resolveRegistryURL(configState, req.RegistryURL)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := installer.FetchRegistry(ctx, regURL)
+	if err != nil {
+		return nil, fmt.Errorf("registry fetch failed: %w", err)
+	}
+	query := strings.ToLower(strings.TrimSpace(req.Query))
+	tag := strings.ToLower(strings.TrimSpace(req.Tag))
+	results := make([]map[string]any, 0)
+	for _, p := range idx.Plugins {
+		if tag != "" {
+			matched := false
+			for _, t := range p.Tags {
+				if strings.EqualFold(t, tag) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		if query != "" {
+			haystack := strings.ToLower(p.ID + " " + p.Name + " " + p.Description + " " + strings.Join(p.Tags, " "))
+			if !strings.Contains(haystack, query) {
+				continue
+			}
+		}
+		results = append(results, pluginEntryToMap(p))
+	}
+	return map[string]any{
+		"ok":          true,
+		"registryURL": regURL,
+		"query":       req.Query,
+		"tag":         req.Tag,
+		"plugins":     results,
+		"count":       len(results),
+	}, nil
+}
+
+func pluginEntryToMap(p installer.RegistryPlugin) map[string]any {
+	m := map[string]any{
+		"id":          p.ID,
+		"name":        p.Name,
+		"description": p.Description,
+		"url":         p.URL,
+	}
+	if p.Version != "" {
+		m["version"] = p.Version
+	}
+	if p.Type != "" {
+		m["type"] = p.Type
+	}
+	if p.Author != "" {
+		m["author"] = p.Author
+	}
+	if p.License != "" {
+		m["license"] = p.License
+	}
+	if len(p.Tags) > 0 {
+		m["tags"] = p.Tags
+	}
+	return m
 }
 
 func isValidNPMSpec(spec string) bool {
@@ -7722,6 +8528,55 @@ func applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprov
 		NodeID:   rec.NodeID,
 	})
 	return map[string]any{"ok": true, "id": rec.ID, "decision": rec.Decision, "resolved": rec}, nil
+}
+
+func applySandboxRun(ctx context.Context, configState *runtimeConfigStore, req methods.SandboxRunRequest) (map[string]any, error) {
+	if len(req.Cmd) == 0 {
+		return nil, fmt.Errorf("sandbox.run: cmd is required")
+	}
+
+	// Build sandbox config from daemon config + request overrides.
+	cfg := sandbox.Config{}
+	daemonCfg := configState.Get()
+	if daemonCfg.Extra != nil {
+		if rawSandbox, ok := daemonCfg.Extra["sandbox"].(map[string]any); ok {
+			cfg.Driver = getString(rawSandbox, "driver")
+			cfg.MemoryLimit = getString(rawSandbox, "memory_limit")
+			cfg.CPULimit = getString(rawSandbox, "cpu_limit")
+			cfg.DockerImage = getString(rawSandbox, "docker_image")
+			if v, ok := rawSandbox["timeout_s"].(float64); ok {
+				cfg.TimeoutSeconds = int(v)
+			}
+			if v, ok := rawSandbox["network_disabled"].(bool); ok {
+				cfg.NetworkDisabled = v
+			}
+		}
+	}
+	// Request overrides.
+	if req.Driver != "" {
+		cfg.Driver = req.Driver
+	}
+	if req.TimeoutSeconds > 0 {
+		cfg.TimeoutSeconds = req.TimeoutSeconds
+	}
+
+	runner, err := sandbox.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox.run: %w", err)
+	}
+
+	result, err := runner.Run(ctx, req.Cmd, req.Env, req.Workdir)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox.run: %w", err)
+	}
+	return map[string]any{
+		"ok":        true,
+		"stdout":    result.Stdout,
+		"stderr":    result.Stderr,
+		"exit_code": result.ExitCode,
+		"timed_out": result.TimedOut,
+		"driver":    result.Driver,
+	}, nil
 }
 
 func applySecretsReload(_ methods.SecretsReloadRequest) (map[string]any, error) {

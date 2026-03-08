@@ -20,6 +20,30 @@ package sdk
 
 import "context"
 
+type contextKey string
+
+const channelReplyTargetContextKey contextKey = "channel-reply-target"
+
+// WithChannelReplyTarget stores a channel-specific recipient/session hint in ctx.
+// ChannelHandle implementations that need explicit recipient routing (for
+// example email) can read this value in Send() to avoid cross-session races.
+func WithChannelReplyTarget(ctx context.Context, target string) context.Context {
+	if ctx == nil || target == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, channelReplyTargetContextKey, target)
+}
+
+// ChannelReplyTarget returns the recipient/session hint previously set by
+// WithChannelReplyTarget.
+func ChannelReplyTarget(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(channelReplyTargetContextKey).(string)
+	return v
+}
+
 // ─── Host API namespaces ──────────────────────────────────────────────────────
 
 // NostrHost provides Nostr I/O to a plugin.
@@ -165,6 +189,92 @@ type InboundChannelMessage struct {
 	EventID string
 	// CreatedAt is the UNIX timestamp of the message.
 	CreatedAt int64
+	// ThreadID is an optional thread or conversation ID (platform-specific).
+	ThreadID string
+	// ReplyToEventID is the EventID of the message being replied to, if any.
+	ReplyToEventID string
+	// MediaURL is an optional URL of an attached media file (image, audio, etc.).
+	MediaURL string
+	// MediaMIME is the MIME type of the attached media, if present.
+	MediaMIME string
+}
+
+// ─── Channel capabilities ─────────────────────────────────────────────────────
+
+// ChannelCapabilities declares which optional features a channel plugin supports.
+// Callers check capabilities before invoking optional ChannelHandle methods.
+type ChannelCapabilities struct {
+	// Typing indicates the channel supports sending typing indicators.
+	Typing bool
+	// Reactions indicates the channel supports adding emoji reactions to messages.
+	Reactions bool
+	// Threads indicates the channel supports threaded replies.
+	Threads bool
+	// Audio indicates the channel can deliver voice/audio messages.
+	Audio bool
+	// Edit indicates the channel supports editing previously sent messages.
+	Edit bool
+	// MultiAccount indicates the plugin supports multiple account instances.
+	MultiAccount bool
+	// E2EEncryption indicates the channel supports end-to-end encrypted messages
+	// via NIP-44. When true the runtime will wrap the handle with EncryptedHandle.
+	E2EEncryption bool
+}
+
+// ChannelPluginWithCapabilities is an optional extension of ChannelPlugin.
+// Plugins that implement this interface advertise their capabilities so the
+// dispatcher can gate optional features without runtime errors.
+type ChannelPluginWithCapabilities interface {
+	ChannelPlugin
+	// Capabilities returns the feature set supported by this plugin.
+	Capabilities() ChannelCapabilities
+}
+
+// ─── Optional ChannelHandle extensions ───────────────────────────────────────
+//
+// These interfaces are optional extensions for ChannelHandle.  The dispatcher
+// uses interface assertions to check for support before calling them.  Existing
+// plugins that only implement ChannelHandle (Send + Close) continue to work.
+
+// TypingHandle is implemented by channels that support typing indicators.
+type TypingHandle interface {
+	ChannelHandle
+	// SendTyping sends a typing indicator to the channel.  Duration hints how
+	// long the indicator should be displayed; 0 means "brief".
+	SendTyping(ctx context.Context, durationMS int) error
+}
+
+// ReactionHandle is implemented by channels that support emoji reactions.
+type ReactionHandle interface {
+	ChannelHandle
+	// AddReaction attaches an emoji reaction to a message.
+	// eventID is the platform-native ID of the target message.
+	AddReaction(ctx context.Context, eventID, emoji string) error
+	// RemoveReaction removes a previously added reaction.
+	RemoveReaction(ctx context.Context, eventID, emoji string) error
+}
+
+// AudioHandle is implemented by channels that can deliver audio messages.
+type AudioHandle interface {
+	ChannelHandle
+	// SendAudio delivers raw audio bytes to the channel.
+	// format is the audio format (e.g. "mp3", "ogg", "wav").
+	SendAudio(ctx context.Context, audio []byte, format string) error
+}
+
+// EditHandle is implemented by channels that support message editing.
+type EditHandle interface {
+	ChannelHandle
+	// EditMessage replaces the content of a previously sent message.
+	EditMessage(ctx context.Context, eventID, newText string) error
+}
+
+// ThreadHandle is implemented by channels that support threaded replies.
+type ThreadHandle interface {
+	ChannelHandle
+	// SendInThread sends a reply within an existing thread.
+	// threadID is the platform-native thread or conversation ID.
+	SendInThread(ctx context.Context, threadID, text string) error
 }
 
 // ChannelPlugin is the factory interface for an external channel integration.
