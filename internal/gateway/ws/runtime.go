@@ -47,6 +47,10 @@ type RuntimeOptions struct {
 	AllowInsecureControlUI  bool
 	DeviceAuthSignatureSkew time.Duration
 	HandleRequest           RequestHandler
+	// StaticHandler, when non-nil, is mounted at "/" in the same HTTP server
+	// as the WebSocket endpoint.  It is called only when the request path
+	// does not match Path (the WS path).
+	StaticHandler http.Handler
 }
 
 type Runtime struct {
@@ -121,6 +125,9 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(opts.Path, r.handleWS)
+	if opts.StaticHandler != nil {
+		mux.Handle("/", opts.StaticHandler)
+	}
 
 	r.srv = &http.Server{
 		Addr:              opts.Addr,

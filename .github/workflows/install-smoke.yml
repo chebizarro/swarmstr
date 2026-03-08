@@ -1,0 +1,107 @@
+name: Install Smoke
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/install.sh"
+      - "scripts/docker/install-sh-smoke/**"
+      - "scripts/docker/install-sh-common/**"
+      - ".github/workflows/install-smoke.yml"
+  workflow_dispatch:
+    inputs:
+      skip_binary_build:
+        description: "Skip building binary (use latest release)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: install-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install-smoke:
+    name: Install script smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build swarmstrd (linux/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=smoke-test" \
+            -o /tmp/swarmstrd-linux-amd64 \
+            ./cmd/swarmstrd
+
+      - name: Smoke-test install.sh (dry-run mode)
+        run: |
+          DRY_RUN=1 bash scripts/install.sh
+          echo "install.sh dry-run passed"
+
+      - name: Validate install.sh syntax (shellcheck)
+        run: |
+          if command -v shellcheck &>/dev/null; then
+            shellcheck -S warning scripts/install.sh
+          else
+            bash -n scripts/install.sh
+            echo "shellcheck not available; used bash -n for syntax check"
+          fi
+
+      - name: Build smoke Docker image
+        run: |
+          docker build \
+            -f scripts/docker/install-sh-smoke/Dockerfile \
+            -t swarmstr-install-smoke \
+            scripts/docker/
+
+      - name: Run smoke test container
+        run: |
+          docker run --rm \
+            -v /tmp/swarmstrd-linux-amd64:/usr/local/bin/swarmstrd:ro \
+            -e SWARMSTR_INSTALL_SKIP_DOWNLOAD=1 \
+            swarmstr-install-smoke
+
+  install-smoke-nonroot:
+    name: Install script (non-root) smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build swarmstrd (linux/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=smoke-test" \
+            -o /tmp/swarmstrd-linux-amd64 \
+            ./cmd/swarmstrd
+
+      - name: Build nonroot smoke Docker image
+        run: |
+          docker build \
+            -f scripts/docker/install-sh-nonroot/Dockerfile \
+            -t swarmstr-install-smoke-nonroot \
+            scripts/docker/
+
+      - name: Run nonroot smoke test container
+        run: |
+          docker run --rm \
+            -v /tmp/swarmstrd-linux-amd64:/tmp/swarmstrd-linux-amd64:ro \
+            swarmstr-install-smoke-nonroot

@@ -132,15 +132,18 @@ type AnthropicProvider struct {
 }
 
 type anthropicRequest struct {
-	Model     string              `json:"model"`
-	MaxTokens int                 `json:"max_tokens"`
-	System    string              `json:"system,omitempty"`
-	Messages  []anthropicMessage  `json:"messages"`
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    string             `json:"system,omitempty"`
+	Messages  []anthropicMessage `json:"messages"`
 }
 
+// anthropicMessage supports both plain-text content (string) and multi-modal
+// content ([]any with image + text blocks). Content is typed as any so that
+// json.Marshal produces the correct shape for each case.
 type anthropicMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"` // string or []map[string]any for multi-modal
 }
 
 type anthropicResponse struct {
@@ -152,6 +155,42 @@ type anthropicResponse struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+// buildAnthropicContent constructs the message content block for a user turn.
+// When images are present the content is a []map[string]any with image blocks
+// followed by the text block (Anthropic multi-modal format).
+func buildAnthropicContent(text string, images []ImageRef) any {
+	if len(images) == 0 {
+		return text
+	}
+	blocks := make([]map[string]any, 0, len(images)+1)
+	for _, img := range images {
+		if img.Base64 != "" {
+			mt := img.MimeType
+			if mt == "" {
+				mt = "image/jpeg"
+			}
+			blocks = append(blocks, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": mt,
+					"data":       img.Base64,
+				},
+			})
+		} else if img.URL != "" {
+			blocks = append(blocks, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type": "url",
+					"url":  img.URL,
+				},
+			})
+		}
+	}
+	blocks = append(blocks, map[string]any{"type": "text", "text": text})
+	return blocks
 }
 
 func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
@@ -167,10 +206,11 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		return ProviderResult{}, fmt.Errorf("ANTHROPIC_API_KEY is not set")
 	}
 
+	userText := strings.TrimSpace(turn.UserText)
 	reqBody := anthropicRequest{
 		Model:     model,
 		MaxTokens: 4096,
-		Messages:  []anthropicMessage{{Role: "user", Content: strings.TrimSpace(turn.UserText)}},
+		Messages:  []anthropicMessage{{Role: "user", Content: buildAnthropicContent(userText, turn.Images)}},
 	}
 	if context := strings.TrimSpace(turn.Context); context != "" {
 		reqBody.System = context
@@ -231,9 +271,43 @@ type openAIRequest struct {
 	Messages []openAIMessage `json:"messages"`
 }
 
+// openAIMessage supports both plain-text content (string) and multi-modal
+// content ([]map[string]any). Content is typed as any so json.Marshal produces
+// the correct wire format for each case.
 type openAIMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"` // string or []map[string]any for vision
+}
+
+// buildOpenAIContent constructs the message content for a user turn.
+// When images are present the content is a []map[string]any with image_url blocks
+// followed by the text block (OpenAI multi-modal format).
+func buildOpenAIContent(text string, images []ImageRef) any {
+	if len(images) == 0 {
+		return text
+	}
+	blocks := make([]map[string]any, 0, len(images)+1)
+	for _, img := range images {
+		if img.Base64 != "" {
+			mt := img.MimeType
+			if mt == "" {
+				mt = "image/jpeg"
+			}
+			// OpenAI requires data URI format: data:<mime>;base64,<data>
+			dataURI := "data:" + mt + ";base64," + img.Base64
+			blocks = append(blocks, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": dataURI},
+			})
+		} else if img.URL != "" {
+			blocks = append(blocks, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": img.URL},
+			})
+		}
+	}
+	blocks = append(blocks, map[string]any{"type": "text", "text": text})
+	return blocks
 }
 
 type openAIResponse struct {
@@ -268,7 +342,7 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 	if context := strings.TrimSpace(turn.Context); context != "" {
 		messages = append(messages, openAIMessage{Role: "system", Content: context})
 	}
-	messages = append(messages, openAIMessage{Role: "user", Content: strings.TrimSpace(turn.UserText)})
+	messages = append(messages, openAIMessage{Role: "user", Content: buildOpenAIContent(strings.TrimSpace(turn.UserText), turn.Images)})
 
 	reqBody := openAIRequest{Model: model, Messages: messages}
 	body, err := json.Marshal(reqBody)
@@ -310,11 +384,191 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 	return ProviderResult{Text: out.Choices[0].Message.Content}, nil
 }
 
+// ─── Google Gemini provider ───────────────────────────────────────────────────
+
+// GoogleGeminiProvider calls the Google AI Gemini API.
+// API key is read from GEMINI_API_KEY (or GOOGLE_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY).
+// Default model: "gemini-2.0-flash".
+type GoogleGeminiProvider struct {
+	Model  string
+	APIKey string
+	Client *http.Client
+}
+
+type geminiContent struct {
+	Role  string      `json:"role"`
+	Parts []geminiPart `json:"parts"`
+}
+
+// geminiPart supports text, inline_data (base64 image), and file_data (URL image).
+// Fields are omitempty so the JSON output only includes the relevant shape.
+type geminiPart struct {
+	Text       string              `json:"text,omitempty"`
+	InlineData *geminiInlineData   `json:"inline_data,omitempty"`
+	FileData   *geminiFileData     `json:"file_data,omitempty"`
+}
+
+type geminiInlineData struct {
+	MimeType string `json:"mime_type"`
+	Data     string `json:"data"` // base64
+}
+
+type geminiFileData struct {
+	MimeType string `json:"mime_type,omitempty"`
+	FileURI  string `json:"file_uri"`
+}
+
+type geminiRequest struct {
+	SystemInstruction *geminiContent `json:"systemInstruction,omitempty"`
+	Contents          []geminiContent `json:"contents"`
+	GenerationConfig  map[string]any  `json:"generationConfig,omitempty"`
+}
+
+type geminiResponse struct {
+	Candidates []struct {
+		Content struct {
+			Parts []geminiPart `json:"parts"`
+		} `json:"content"`
+	} `json:"candidates"`
+	Error *struct {
+		Message string `json:"message"`
+		Code    int    `json:"code"`
+	} `json:"error"`
+}
+
+// buildGeminiParts constructs the parts slice for a user turn.
+// When images are present they appear before the text part (Gemini multi-modal format).
+func buildGeminiParts(text string, images []ImageRef) []geminiPart {
+	if len(images) == 0 {
+		return []geminiPart{{Text: text}}
+	}
+	parts := make([]geminiPart, 0, len(images)+1)
+	for _, img := range images {
+		if img.Base64 != "" {
+			mt := img.MimeType
+			if mt == "" {
+				mt = "image/jpeg"
+			}
+			parts = append(parts, geminiPart{InlineData: &geminiInlineData{MimeType: mt, Data: img.Base64}})
+		} else if img.URL != "" {
+			parts = append(parts, geminiPart{FileData: &geminiFileData{MimeType: img.MimeType, FileURI: img.URL}})
+		}
+	}
+	parts = append(parts, geminiPart{Text: text})
+	return parts
+}
+
+func (p *GoogleGeminiProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
+	apiKey := strings.TrimSpace(p.APIKey)
+	if apiKey == "" {
+		for _, envKey := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"} {
+			if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
+				apiKey = v
+				break
+			}
+		}
+	}
+	if apiKey == "" {
+		return ProviderResult{}, fmt.Errorf("Gemini API key not configured (set GEMINI_API_KEY)")
+	}
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		model = "gemini-2.0-flash"
+	}
+
+	req := geminiRequest{
+		Contents: []geminiContent{
+			{Role: "user", Parts: buildGeminiParts(strings.TrimSpace(turn.UserText), turn.Images)},
+		},
+	}
+	if turn.Context != "" {
+		req.SystemInstruction = &geminiContent{
+			Parts: []geminiPart{{Text: turn.Context}},
+		}
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+
+	apiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, apiKey)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 120 * time.Second}
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return ProviderResult{}, fmt.Errorf("gemini request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var out geminiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return ProviderResult{}, fmt.Errorf("gemini decode: %w", err)
+	}
+	if out.Error != nil {
+		return ProviderResult{}, fmt.Errorf("gemini API error %d: %s", out.Error.Code, out.Error.Message)
+	}
+	if len(out.Candidates) == 0 || len(out.Candidates[0].Content.Parts) == 0 {
+		return ProviderResult{}, fmt.Errorf("gemini: empty response")
+	}
+	return ProviderResult{Text: out.Candidates[0].Content.Parts[0].Text}, nil
+}
+
+// ─── Provider table for OpenAI-compatible endpoints ───────────────────────────
+
+// openAICompatProviders maps model prefixes / aliases to their base URL and env key name.
+// All of these use the OpenAI Chat Completions API format.
+var openAICompatProviders = []struct {
+	prefix string // lowercase prefix (or exact alias) to match
+	alias  string // exact alias (e.g. "groq", "mistral")
+	base   string // default base URL
+	envKey string // primary env var name for the API key
+}{
+	{prefix: "grok-", alias: "xai", base: "https://api.x.ai/v1", envKey: "XAI_API_KEY"},
+	{prefix: "", alias: "groq", base: "https://api.groq.com/openai/v1", envKey: "GROQ_API_KEY"},
+	{prefix: "groq/", alias: "", base: "https://api.groq.com/openai/v1", envKey: "GROQ_API_KEY"},
+	{prefix: "mistral-", alias: "mistral", base: "https://api.mistral.ai/v1", envKey: "MISTRAL_API_KEY"},
+	{prefix: "", alias: "together", base: "https://api.together.xyz/v1", envKey: "TOGETHER_API_KEY"},
+	{prefix: "together/", alias: "", base: "https://api.together.xyz/v1", envKey: "TOGETHER_API_KEY"},
+	{prefix: "", alias: "openrouter", base: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY"},
+	{prefix: "openrouter/", alias: "", base: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY"},
+}
+
+// resolveOpenAICompat checks whether a model string matches one of the known
+// OpenAI-compatible provider aliases/prefixes.  On match it returns the base URL
+// and env key name; otherwise returns empty strings.
+func resolveOpenAICompat(norm string) (baseURL, envKey string) {
+	for _, p := range openAICompatProviders {
+		if p.alias != "" && norm == p.alias {
+			return p.base, p.envKey
+		}
+		if p.prefix != "" && strings.HasPrefix(norm, p.prefix) {
+			return p.base, p.envKey
+		}
+	}
+	return "", ""
+}
+
 // NewProviderForModel constructs a Provider for the given model identifier.
-//   - "" / "echo"                      → EchoProvider
-//   - "http" / "http-default"          → HTTPProvider from env vars
-//   - "anthropic" / "claude-*"         → AnthropicProvider (requires ANTHROPIC_API_KEY)
-//   - "openai" / "gpt-*" / "o1-*" / "o3-*" → OpenAIChatProvider (requires OPENAI_API_KEY)
+//
+//   - "" / "echo"                         → EchoProvider
+//   - "http" / "http-default"             → HTTPProvider (SWARMSTR_AGENT_HTTP_URL)
+//   - "anthropic" / "claude-*"            → AnthropicProvider (ANTHROPIC_API_KEY)
+//   - "openai" / "gpt-*" / "o1-*" …      → OpenAIChatProvider (OPENAI_API_KEY)
+//   - "gemini" / "gemini-*"              → GoogleGeminiProvider (GEMINI_API_KEY)
+//   - "grok-*" / "xai"                   → OpenAIChatProvider → api.x.ai (XAI_API_KEY)
+//   - "groq" / "groq/*"                  → OpenAIChatProvider → api.groq.com (GROQ_API_KEY)
+//   - "mistral" / "mistral-*"            → OpenAIChatProvider → api.mistral.ai (MISTRAL_API_KEY)
+//   - "together" / "together/*"          → OpenAIChatProvider → api.together.xyz (TOGETHER_API_KEY)
+//   - "openrouter" / "openrouter/*"      → OpenAIChatProvider → openrouter.ai (OPENROUTER_API_KEY)
 func NewProviderForModel(model string) (Provider, error) {
 	norm := strings.ToLower(strings.TrimSpace(model))
 	switch {
@@ -326,13 +580,31 @@ func NewProviderForModel(model string) (Provider, error) {
 			return nil, fmt.Errorf("SWARMSTR_AGENT_HTTP_URL is required for http model")
 		}
 		return &HTTPProvider{URL: url, APIKey: strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_API_KEY"))}, nil
+	case norm == "github-copilot":
+		// GitHub Copilot: OpenAI-compatible API with OAuth device-flow auth.
+		tok, _, _ := FetchOAuthToken(context.Background(), "github-copilot")
+		return &OpenAIChatProvider{
+			BaseURL: "https://api.githubcopilot.com",
+			APIKey:  tok,
+			Model:   "gpt-4o", // default Copilot model; override via ProviderOverride.Model
+		}, nil
 	case norm == "anthropic" || strings.HasPrefix(norm, "claude-"):
 		return &AnthropicProvider{Model: strings.TrimSpace(model)}, nil
 	case norm == "openai" || strings.HasPrefix(norm, "gpt-") || strings.HasPrefix(norm, "o1-") || strings.HasPrefix(norm, "o3-") || strings.HasPrefix(norm, "o4-"):
 		return &OpenAIChatProvider{Model: strings.TrimSpace(model)}, nil
-	default:
-		return nil, fmt.Errorf("unsupported model %q: use \"echo\", \"http\", \"anthropic\", \"openai\", or a named model like \"claude-3-5-sonnet-20241022\" or \"gpt-4o\"", model)
+	case norm == "gemini" || strings.HasPrefix(norm, "gemini-"):
+		return &GoogleGeminiProvider{Model: strings.TrimSpace(model)}, nil
 	}
+	// OpenAI-compatible providers by prefix/alias.
+	if baseURL, envKey := resolveOpenAICompat(norm); baseURL != "" {
+		apiKey := strings.TrimSpace(os.Getenv(envKey))
+		return &OpenAIChatProvider{
+			BaseURL: baseURL,
+			APIKey:  apiKey,
+			Model:   strings.TrimSpace(model),
+		}, nil
+	}
+	return nil, fmt.Errorf("unsupported model %q — try: echo, claude-*, gpt-*, gemini-*, grok-*, groq/*, mistral-*, together/*, openrouter/*, or http", model)
 }
 
 // BuildRuntimeForModel constructs a Runtime for the given model identifier.
@@ -361,6 +633,21 @@ func BuildRuntimeWithOverride(model string, override ProviderOverride, tools Too
 	if override.BaseURL == "" && override.APIKey == "" {
 		return BuildRuntimeForModel(model, tools)
 	}
+	// GitHub Copilot OAuth: detect via base URL or model prefix.
+	normModel := strings.ToLower(strings.TrimSpace(override.Model))
+	if normModel == "" {
+		normModel = strings.ToLower(strings.TrimSpace(model))
+	}
+	isGHCopilot := strings.Contains(strings.ToLower(override.BaseURL), "githubcopilot.com") ||
+		normModel == "github-copilot"
+	if isGHCopilot && strings.TrimSpace(override.APIKey) == "" {
+		if tok, found, tokErr := FetchOAuthToken(context.Background(), "github-copilot"); found && tokErr == nil {
+			override.APIKey = tok
+		}
+		if override.BaseURL == "" {
+			override.BaseURL = "https://api.githubcopilot.com"
+		}
+	}
 	// Resolve effective model: prefer override.Model, then the passed model arg.
 	effectiveModel := strings.TrimSpace(override.Model)
 	if effectiveModel == "" {
@@ -368,8 +655,7 @@ func BuildRuntimeWithOverride(model string, override ProviderOverride, tools Too
 	}
 	norm := strings.ToLower(effectiveModel)
 
-	// When the model is Anthropic-class and an API key override is provided,
-	// use AnthropicProvider with the overridden key.
+	// Anthropic (claude-* models).
 	if norm == "anthropic" || strings.HasPrefix(norm, "claude-") {
 		apiKey := strings.TrimSpace(override.APIKey)
 		if apiKey == "" {
@@ -378,29 +664,59 @@ func BuildRuntimeWithOverride(model string, override ProviderOverride, tools Too
 		return NewProviderRuntime(&AnthropicProvider{Model: effectiveModel, APIKey: apiKey}, tools)
 	}
 
-	// When the model is OpenAI-class and a base URL / API key override is provided,
-	// use OpenAIChatProvider.
-	if norm == "openai" || strings.HasPrefix(norm, "gpt-") || strings.HasPrefix(norm, "o1-") || strings.HasPrefix(norm, "o3-") || strings.HasPrefix(norm, "o4-") {
+	// Google Gemini.
+	if norm == "gemini" || strings.HasPrefix(norm, "gemini-") {
 		apiKey := strings.TrimSpace(override.APIKey)
 		if apiKey == "" {
-			apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+			for _, k := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"} {
+				if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+					apiKey = v
+					break
+				}
+			}
+		}
+		return NewProviderRuntime(&GoogleGeminiProvider{Model: effectiveModel, APIKey: apiKey}, tools)
+	}
+
+	// OpenAI and OpenAI-compatible providers.
+	// If an explicit base URL is provided in the override, use it; otherwise
+	// look up the default base URL from the model prefix table.
+	overrideBaseURL := strings.TrimSpace(override.BaseURL)
+	overrideAPIKey := strings.TrimSpace(override.APIKey)
+
+	isOpenAIClass := norm == "openai" || strings.HasPrefix(norm, "gpt-") ||
+		strings.HasPrefix(norm, "o1-") || strings.HasPrefix(norm, "o3-") || strings.HasPrefix(norm, "o4-")
+
+	compatBase, compatEnvKey := resolveOpenAICompat(norm)
+	if isOpenAIClass || overrideBaseURL != "" || compatBase != "" {
+		baseURL := overrideBaseURL
+		apiKey := overrideAPIKey
+		if baseURL == "" {
+			baseURL = compatBase
+		}
+		if apiKey == "" {
+			envKey := "OPENAI_API_KEY"
+			if compatEnvKey != "" {
+				envKey = compatEnvKey
+			}
+			apiKey = strings.TrimSpace(os.Getenv(envKey))
 		}
 		return NewProviderRuntime(&OpenAIChatProvider{
-			BaseURL: strings.TrimSpace(override.BaseURL),
+			BaseURL: baseURL,
 			APIKey:  apiKey,
 			Model:   effectiveModel,
 		}, tools)
 	}
 
 	// Generic HTTP-compatible endpoint (Ollama, custom servers, etc.)
-	baseURL := strings.TrimSpace(override.BaseURL)
+	baseURL := overrideBaseURL
 	if baseURL == "" {
 		baseURL = strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_URL"))
 	}
 	if baseURL == "" {
 		return nil, fmt.Errorf("provider base_url is required (set in providers config or SWARMSTR_AGENT_HTTP_URL)")
 	}
-	apiKey := strings.TrimSpace(override.APIKey)
+	apiKey := overrideAPIKey
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_API_KEY"))
 	}

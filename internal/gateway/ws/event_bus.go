@@ -59,6 +59,9 @@ const (
 
 	// EventDevicePairResolved is emitted when a device pair request is approved or rejected.
 	EventDevicePairResolved = "device.pair.resolved"
+
+	// EventTalkMode is emitted when the voice/talk mode changes.
+	EventTalkMode = "talk.mode"
 )
 
 // AllPushEvents is the canonical ordered list of events the server may push.
@@ -82,6 +85,7 @@ var AllPushEvents = []string{
 	EventNodePairRequested,
 	EventNodePairResolved,
 	EventDevicePairResolved,
+	EventTalkMode,
 	// Presence events are also emitted by the ws runtime itself.
 	"presence.updated",
 	"connect.challenge",
@@ -256,6 +260,12 @@ type DevicePairResolvedPayload struct {
 	DeviceID string `json:"device_id,omitempty"`
 	Label    string `json:"label,omitempty"`
 	Decision string `json:"decision"` // "approved" | "rejected"
+}
+
+// TalkModePayload is the payload for EventTalkMode events.
+type TalkModePayload struct {
+	TS   int64  `json:"ts_ms"`
+	Mode string `json:"mode"` // "disabled" | "off" | "push-to-talk" | "always-on" | "hotword"
 }
 
 // ─── TickEmitter helper ───────────────────────────────────────────────────────

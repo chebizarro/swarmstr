@@ -1,4 +1,4 @@
-FROM ubuntu:24.04@sha256:cd1dba651b3080c3686ecf4e3c4220f026b521fb76978881737d24f200828b2b
+FROM ubuntu:24.04
 
 RUN set -eux; \
   for attempt in 1 2 3; do \
@@ -11,23 +11,18 @@ RUN set -eux; \
     bash \
     ca-certificates \
     curl \
-    g++ \
-    make \
-    python3 \
     sudo \
   && rm -rf /var/lib/apt/lists/*
 
+# Create an unprivileged user to test non-root install.
 RUN useradd -m -s /bin/bash app \
   && echo "app ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/app
 
 USER app
 WORKDIR /home/app
 
-ENV NPM_CONFIG_FUND=false
-ENV NPM_CONFIG_AUDIT=false
+COPY install-sh-common/verify.sh /usr/local/install-sh-common/verify.sh
+COPY install-sh-nonroot/run.sh   /usr/local/bin/swarmstr-install-nonroot
+RUN sudo chmod +x /usr/local/bin/swarmstr-install-nonroot
 
-COPY install-sh-common/cli-verify.sh /usr/local/install-sh-common/cli-verify.sh
-COPY install-sh-nonroot/run.sh /usr/local/bin/openclaw-install-nonroot
-RUN sudo chmod +x /usr/local/bin/openclaw-install-nonroot
-
-ENTRYPOINT ["/usr/local/bin/openclaw-install-nonroot"]
+ENTRYPOINT ["/usr/local/bin/swarmstr-install-nonroot"]

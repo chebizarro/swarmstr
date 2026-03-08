@@ -1,0 +1,62 @@
+version: "3.9"
+
+# swarmstr daemon + optional Playwright browser sandbox
+#
+# Quick start:
+#   cp .env.example .env   # fill in SWARMSTR_NOSTR_KEY + API keys
+#   docker compose up -d
+#
+# To enable browser control, uncomment the `playwright` service and
+# set SWARMSTR_BROWSER_URL=http://playwright:3500 in .env.
+
+services:
+
+  # ── swarmstr daemon ──────────────────────────────────────────────────────────
+  swarmstrd:
+    build:
+      context: ../..          # repo root
+      dockerfile: scripts/docker/Dockerfile
+    image: swarmstr/swarmstrd:latest
+    restart: unless-stopped
+    env_file:
+      - .env                  # create from .env.example
+    volumes:
+      - swarmstr-data:/data   # persistent config + session storage
+    depends_on:
+      playwright:
+        condition: service_healthy
+        required: false       # still starts if playwright is disabled
+    networks:
+      - swarmstr
+
+  # ── Playwright browser sandbox (optional, high-value) ────────────────────────
+  # Set SWARMSTR_BROWSER_URL=http://playwright:3500 in .env to enable.
+  playwright:
+    image: swarmstr/playwright-sandbox:latest
+    build:
+      context: ../..
+      dockerfile: scripts/docker/Dockerfile.playwright
+    restart: unless-stopped
+    environment:
+      - SANDBOX_LISTEN=0.0.0.0:3500
+      - SANDBOX_AUTH_TOKEN=${SWARMSTR_BROWSER_TOKEN:-}
+      - EVALUATE_ENABLED=1
+      - NOVNC_ENABLED=0
+    ports:
+      - "127.0.0.1:3500:3500"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3500/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - swarmstr
+    profiles:
+      - browser  # opt-in: docker compose --profile browser up
+
+volumes:
+  swarmstr-data:
+
+networks:
+  swarmstr:
+    driver: bridge

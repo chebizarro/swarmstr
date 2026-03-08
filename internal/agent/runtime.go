@@ -10,6 +10,18 @@ type Turn struct {
 	SessionID string
 	UserText  string
 	Context   string
+	// Images carries vision content for multi-modal providers.
+	// Each element is either a URL reference or inline base64 data.
+	// Text-only providers (echo, http, ollama) ignore this field.
+	Images []ImageRef
+}
+
+// ImageRef is a resolved image reference for passing to vision providers.
+// Exactly one of URL or Base64 is set.
+type ImageRef struct {
+	URL      string // remote URL; provider may pass as image_url reference
+	Base64   string // base64-encoded binary (no data URI prefix)
+	MimeType string // e.g. "image/jpeg", "image/png", "image/webp"
 }
 
 type TurnResult struct {

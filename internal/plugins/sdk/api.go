@@ -149,3 +149,80 @@ type InvokeResult struct {
 	// Error is set when the JS function threw or returned an Error object.
 	Error string `json:"error,omitempty"`
 }
+
+// ─── Channel plugin interface ─────────────────────────────────────────────────
+
+// InboundChannelMessage is a normalised inbound message delivered by a channel plugin.
+// It mirrors channels.InboundMessage but is defined here to avoid import cycles.
+type InboundChannelMessage struct {
+	// ChannelID is the registry key for the channel instance.
+	ChannelID string
+	// SenderID is a string identifier for the sender (platform-specific).
+	SenderID string
+	// Text is the plain-text content of the message.
+	Text string
+	// EventID is an optional platform-native message ID.
+	EventID string
+	// CreatedAt is the UNIX timestamp of the message.
+	CreatedAt int64
+}
+
+// ChannelPlugin is the factory interface for an external channel integration.
+//
+// Built-in implementations (e.g. telegram, discord) call RegisterChannelPlugin
+// in their package init() functions.  User-installed JS plugins can also declare
+// a channel plugin by exporting a channelPlugin object in their manifest.
+//
+// Lifecycle for each configured channel instance:
+//
+//	plugin.Connect(ctx, channelID, cfg, onMessage) → Channel
+//	channel.Send(ctx, text) for outbound
+//	channel.Close() on shutdown
+type ChannelPlugin interface {
+	// ID returns the unique plugin identifier, e.g. "telegram" or "discord".
+	ID() string
+
+	// Type returns a human-readable name, e.g. "Telegram Bot".
+	Type() string
+
+	// ConfigSchema returns a JSON Schema object describing the configuration
+	// fields required to set up a channel instance of this type.  This is
+	// surfaced via config.schema.lookup and used by the setup wizard.
+	ConfigSchema() map[string]any
+
+	// Connect creates and starts a channel instance.  cfg is the per-channel
+	// configuration map (token, webhook_url, etc.).  onMessage is called for
+	// each inbound message.  The returned ChannelHandle must be closed on
+	// daemon shutdown.
+	Connect(ctx context.Context, channelID string, cfg map[string]any, onMessage func(InboundChannelMessage)) (ChannelHandle, error)
+}
+
+// ChannelHandle represents a running channel instance.
+type ChannelHandle interface {
+	// ID returns the channel instance identifier.
+	ID() string
+
+	// Send posts a text message from the agent to the channel.
+	Send(ctx context.Context, text string) error
+
+	// Close terminates the channel subscription and frees resources.
+	Close()
+}
+
+// GatewayMethod is an additional gateway RPC method contributed by a channel plugin.
+type GatewayMethod struct {
+	// Method is the full method name, e.g. "telegram.send".
+	Method string
+	// Description is a human-readable description for documentation.
+	Description string
+	// Handle is called when the method is invoked.
+	Handle func(ctx context.Context, params map[string]any) (map[string]any, error)
+}
+
+// ChannelPluginWithMethods is an optional extension of ChannelPlugin that allows
+// a channel plugin to register additional gateway methods.
+type ChannelPluginWithMethods interface {
+	ChannelPlugin
+	// GatewayMethods returns extra methods to register on the gateway.
+	GatewayMethods() []GatewayMethod
+}

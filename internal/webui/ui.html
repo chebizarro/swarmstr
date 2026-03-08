@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swarmstr</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --border: #2d3048;
+  --accent: #6c63ff;
+  --accent-hover: #7e76ff;
+  --text: #e2e4f0;
+  --text-muted: #6b7280;
+  --user-bubble: #25284a;
+  --agent-bubble: #1e2130;
+  --error: #f87171;
+  --success: #34d399;
+  --font: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, monospace;
+}
+body { background: var(--bg); color: var(--text); font-family: var(--font); height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── Header ── */
+header {
+  padding: 0.75rem 1.25rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+header h1 { font-size: 1rem; font-weight: 600; letter-spacing: 0.04em; }
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+.status-dot.connected { background: var(--success); }
+.status-dot.error     { background: var(--error); }
+.header-info { color: var(--text-muted); font-size: 0.75rem; margin-left: auto; display: flex; gap: 0.75rem; align-items: center; }
+.agent-badge {
+  background: var(--user-bubble);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.7rem;
+  font-family: var(--mono);
+}
+
+/* ── Messages ── */
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  scroll-behavior: smooth;
+}
+#messages::-webkit-scrollbar { width: 5px; }
+#messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 9999px; }
+
+.msg {
+  max-width: min(70ch, 90%);
+  padding: 0.65rem 0.9rem;
+  border-radius: 0.75rem;
+  line-height: 1.55;
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg.user { align-self: flex-end; background: var(--user-bubble); border: 1px solid var(--border); margin-right: 1.25rem; }
+.msg.agent { align-self: flex-start; background: var(--agent-bubble); border: 1px solid var(--border); margin-left: 1.25rem; }
+.msg.system { align-self: center; color: var(--text-muted); font-size: 0.75rem; background: none; border: none; max-width: 100%; }
+.msg.error-msg { align-self: center; color: var(--error); font-size: 0.8rem; background: none; border: none; }
+
+.thinking { display: flex; gap: 4px; align-items: center; padding: 0.65rem 0.9rem; }
+.thinking span { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; animation: bounce 1.2s infinite ease-in-out; }
+.thinking span:nth-child(2) { animation-delay: 0.15s; }
+.thinking span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
+
+/* ── Input area ── */
+footer {
+  padding: 0.75rem 1.25rem;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.input-row { display: flex; gap: 0.5rem; }
+#input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 0.875rem;
+  outline: none;
+  resize: none;
+  min-height: 2.5rem;
+  max-height: 8rem;
+  overflow-y: auto;
+  field-sizing: content;
+  transition: border-color 0.2s;
+}
+#input:focus { border-color: var(--accent); }
+#input::placeholder { color: var(--text-muted); }
+#send {
+  background: var(--accent);
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.6rem 1rem;
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+#send:hover:not(:disabled) { background: var(--accent-hover); }
+#send:disabled { opacity: 0.4; cursor: not-allowed; }
+.hint { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.35rem; }
+</style>
+</head>
+<body>
+<header>
+  <div class="status-dot" id="dot"></div>
+  <h1>Swarmstr</h1>
+  <div class="header-info">
+    <span class="agent-badge" id="agent-label">agent: main</span>
+    <span id="conn-label">connecting…</span>
+  </div>
+</header>
+
+<div id="messages"></div>
+
+<footer>
+  <div class="input-row">
+    <textarea id="input" rows="1" placeholder="Send a message… (Shift+Enter for newline)" disabled></textarea>
+    <button id="send" disabled>Send</button>
+  </div>
+  <p class="hint">Tip: /help for slash commands</p>
+</footer>
+
+<script>
+// Injected by the Go server at render time.
+const WS_PATH = '{{.WSPath}}';
+const TOKEN   = '{{.Token}}';
+(function () {
+  const $ = id => document.getElementById(id);
+  const msgs = $('messages');
+  const input = $('input');
+  const sendBtn = $('send');
+  const dot = $('dot');
+  const connLabel = $('conn-label');
+  const agentLabel = $('agent-label');
+
+  let ws, thinkingEl, reconnectDelay = 1500, sessionID = null;
+  // Try to restore a session identifier from localStorage.
+  sessionID = localStorage.getItem('swarmstr_session') || null;
+
+  // ── Helpers ─────────────────────────────────────────────────────────────
+  function addMsg(text, role) {
+    const el = document.createElement('div');
+    el.className = 'msg ' + role;
+    el.textContent = text;
+    msgs.appendChild(el);
+    msgs.scrollTop = msgs.scrollHeight;
+    return el;
+  }
+
+  function showThinking() {
+    hideThinking();
+    thinkingEl = document.createElement('div');
+    thinkingEl.className = 'msg agent thinking';
+    thinkingEl.innerHTML = '<span></span><span></span><span></span>';
+    msgs.appendChild(thinkingEl);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function hideThinking() {
+    if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+  }
+
+  function setConnected(ok, label) {
+    dot.className = 'status-dot' + (ok ? ' connected' : ok === false ? ' error' : '');
+    connLabel.textContent = label;
+    input.disabled = !ok;
+    sendBtn.disabled = !ok;
+    if (ok) input.focus();
+  }
+
+  // ── Gateway WS protocol ──────────────────────────────────────────────────
+  // Swarmstr uses a lightweight "connect" handshake before any requests.
+  let pendingResolvers = {};
+  let seq = 0;
+  let connNonce = null;
+  let connected = false;
+
+  function nextID() { return 'ui-' + (++seq); }
+
+  function sendFrame(frame) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(frame));
+    }
+  }
+
+  function callMethod(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = nextID();
+      pendingResolvers[id] = { resolve, reject };
+      sendFrame({ type: 'request', id, method, params: params || {} });
+    });
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsURL = proto + '//' + location.host + WS_PATH;
+    ws = new WebSocket(wsURL);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => { connected = false; /* wait for challenge */ };
+
+    ws.onmessage = async (ev) => {
+      let frame;
+      try { frame = JSON.parse(ev.data); } catch { return; }
+
+      if (frame.type === 'event') {
+        if (frame.event === 'connect.challenge') {
+          connNonce = frame.payload && frame.payload.nonce;
+          // Perform connect handshake.
+          const id = nextID();
+          sendFrame({
+            type: 'request', id, method: 'connect',
+            params: {
+              client: { id: 'swarmstr-webui', mode: 'local', platform: navigator.platform || 'browser', version: '0.0.0', instanceId: 'webui-' + Math.random().toString(36).slice(2) },
+              min_protocol: 1, max_protocol: 10,
+              auth: { token: TOKEN, nonce: connNonce }
+            }
+          });
+          pendingResolvers[id] = {
+            resolve: (payload) => {
+              connected = true;
+              setConnected(true, 'connected');
+              addMsg('Connected to Swarmstr gateway. Type /help for slash commands.', 'system');
+            },
+            reject: (err) => {
+              setConnected(false, 'auth failed');
+              addMsg('Connection refused: ' + (err && err.message || 'authentication required'), 'error-msg');
+            }
+          };
+          return;
+        }
+        if (frame.event === 'agent.status') {
+          const p = frame.payload || {};
+          agentLabel.textContent = 'agent: ' + (p.agent_id || 'main');
+          if (p.status === 'thinking') showThinking();
+          if (p.status === 'idle') hideThinking();
+        }
+        if (frame.event === 'chat.message' && frame.payload) {
+          const p = frame.payload;
+          if (p.direction === 'outbound') {
+            hideThinking();
+          }
+        }
+        return;
+      }
+
+      if (frame.type === 'response' && frame.id) {
+        const resolver = pendingResolvers[frame.id];
+        delete pendingResolvers[frame.id];
+        if (resolver) {
+          if (frame.ok) resolver.resolve(frame.payload);
+          else resolver.reject(frame.error || { message: 'request failed' });
+        }
+      }
+    };
+
+    ws.onerror = () => { setConnected(null, 'connection error'); };
+    ws.onclose = () => {
+      connected = false;
+      setConnected(null, 'reconnecting in ' + (reconnectDelay / 1000).toFixed(1) + 's…');
+      pendingResolvers = {};
+      hideThinking();
+      setTimeout(() => {
+        reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
+        connect();
+      }, reconnectDelay);
+    };
+  }
+
+  // ── Sending messages via chat.send ────────────────────────────────────────
+  async function sendMessage() {
+    const text = input.value.trim();
+    if (!text || !connected) return;
+    input.value = '';
+    input.style.height = '';
+    addMsg(text, 'user');
+    showThinking();
+    sendBtn.disabled = true;
+
+    try {
+      const result = await callMethod('chat.send', { message: text, session_id: sessionID || undefined });
+      hideThinking();
+      if (result && result.text) {
+        addMsg(result.text, 'agent');
+        if (result.session_id && result.session_id !== sessionID) {
+          sessionID = result.session_id;
+          localStorage.setItem('swarmstr_session', sessionID);
+        }
+      }
+    } catch (err) {
+      hideThinking();
+      const msg = err && err.message ? err.message : 'Request failed';
+      addMsg('⚠️ ' + msg, 'error-msg');
+    } finally {
+      sendBtn.disabled = !connected;
+    }
+  }
+
+  // ── Event listeners ───────────────────────────────────────────────────────
+  sendBtn.addEventListener('click', sendMessage);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+  input.addEventListener('input', () => {
+    // Auto-resize textarea.
+    input.style.height = 'auto';
+    input.style.height = input.scrollHeight + 'px';
+  });
+
+  // ── Boot ──────────────────────────────────────────────────────────────────
+  setConnected(null, 'connecting…');
+  connect();
+})();
+
+</script>
+</body>
+</html>

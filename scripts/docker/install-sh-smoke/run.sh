@@ -1,63 +1,37 @@
 #!/usr/bin/env bash
+# Smoke test for swarmstr install.sh.
+#
+# When SWARMSTR_INSTALL_SKIP_DOWNLOAD=1 the binary is expected to already be
+# present at /usr/local/bin/swarmstrd (mounted by the CI job).
 set -euo pipefail
 
-INSTALL_URL="${OPENCLAW_INSTALL_URL:-https://openclaw.bot/install.sh}"
-SMOKE_PREVIOUS_VERSION="${OPENCLAW_INSTALL_SMOKE_PREVIOUS:-}"
-SKIP_PREVIOUS="${OPENCLAW_INSTALL_SMOKE_SKIP_PREVIOUS:-0}"
-DEFAULT_PACKAGE="openclaw"
-PACKAGE_NAME="${OPENCLAW_INSTALL_PACKAGE:-$DEFAULT_PACKAGE}"
+INSTALL_URL="${SWARMSTR_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
+SKIP_DOWNLOAD="${SWARMSTR_INSTALL_SKIP_DOWNLOAD:-0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# shellcheck source=../install-sh-common/cli-verify.sh
-source "$SCRIPT_DIR/../install-sh-common/cli-verify.sh"
+# shellcheck source=../install-sh-common/verify.sh
+source "$SCRIPT_DIR/../install-sh-common/verify.sh"
 
-echo "==> Resolve npm versions"
-LATEST_VERSION="$(npm view "$PACKAGE_NAME" version)"
-if [[ -n "$SMOKE_PREVIOUS_VERSION" ]]; then
-  PREVIOUS_VERSION="$SMOKE_PREVIOUS_VERSION"
+echo "==> Validate install.sh syntax"
+if command -v shellcheck &>/dev/null; then
+  curl -fsSL "$INSTALL_URL" -o /tmp/install.sh
+  shellcheck -S warning /tmp/install.sh
+  echo "shellcheck passed"
 else
-  VERSIONS_JSON="$(npm view "$PACKAGE_NAME" versions --json)"
-  PREVIOUS_VERSION="$(VERSIONS_JSON="$VERSIONS_JSON" LATEST_VERSION="$LATEST_VERSION" node - <<'NODE'
-const raw = process.env.VERSIONS_JSON || "[]";
-const latest = process.env.LATEST_VERSION || "";
-let versions;
-try {
-  versions = JSON.parse(raw);
-} catch {
-  versions = raw ? [raw] : [];
-}
-if (!Array.isArray(versions)) {
-  versions = [versions];
-}
-if (versions.length === 0) {
-  process.exit(1);
-}
-const latestIndex = latest ? versions.lastIndexOf(latest) : -1;
-if (latestIndex > 0) {
-  process.stdout.write(String(versions[latestIndex - 1]));
-  process.exit(0);
-}
-process.stdout.write(String(latest || versions[versions.length - 1]));
-NODE
-)"
+  curl -fsSL "$INSTALL_URL" | bash -n
+  echo "bash -n syntax check passed"
 fi
 
-echo "package=$PACKAGE_NAME latest=$LATEST_VERSION previous=$PREVIOUS_VERSION"
-
-if [[ "$SKIP_PREVIOUS" == "1" ]]; then
-  echo "==> Skip preinstall previous (OPENCLAW_INSTALL_SMOKE_SKIP_PREVIOUS=1)"
+if [[ "$SKIP_DOWNLOAD" == "1" ]]; then
+  echo "==> Skip download (SWARMSTR_INSTALL_SKIP_DOWNLOAD=1)"
+  echo "==> Verify pre-installed binary"
+  verify_binary swarmstrd
 else
-  echo "==> Preinstall previous (forces installer upgrade path)"
-  npm install -g "${PACKAGE_NAME}@${PREVIOUS_VERSION}"
-fi
+  echo "==> Run install script"
+  curl -fsSL "$INSTALL_URL" | bash
 
-echo "==> Run official installer one-liner"
-curl -fsSL "$INSTALL_URL" | bash
-
-echo "==> Verify installed version"
-if [[ -n "${OPENCLAW_INSTALL_LATEST_OUT:-}" ]]; then
-  printf "%s" "$LATEST_VERSION" > "${OPENCLAW_INSTALL_LATEST_OUT:-}"
+  echo "==> Verify installed binary"
+  verify_binary swarmstrd
 fi
-verify_installed_cli "$PACKAGE_NAME" "$LATEST_VERSION"
 
 echo "OK"

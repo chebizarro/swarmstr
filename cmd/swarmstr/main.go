@@ -16,6 +16,9 @@ import (
 	"swarmstr/internal/plugins/registry"
 )
 
+// version is set at build time via -ldflags "-X main.version=<tag>".
+var version = "0.0.0-dev"
+
 func main() {
 	var bootstrapPath string
 	flag.StringVar(&bootstrapPath, "bootstrap", "", "path to bootstrap config JSON")
@@ -27,7 +30,104 @@ func main() {
 		return
 	}
 
+	// run dispatches to a named handler; exits with code 1 on error, 2 on unknown.
+	run := func(name string, fn func([]string) error, fnArgs []string) {
+		if err := fn(fnArgs); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+			os.Exit(1)
+		}
+	}
+
 	switch args[0] {
+	// ── version ──────────────────────────────────────────────────────────────
+	case "version", "--version", "-version":
+		run("version", runVersion, args[1:])
+
+	// ── status / health ───────────────────────────────────────────────────────
+	case "status":
+		run("status", runStatus, args[1:])
+	case "health":
+		run("health", runHealth, args[1:])
+
+	// ── logs ─────────────────────────────────────────────────────────────────
+	case "logs":
+		run("logs", runLogs, args[1:])
+
+	// ── models ───────────────────────────────────────────────────────────────
+	case "models":
+		run("models", runModels, args[1:])
+
+	// ── channels ─────────────────────────────────────────────────────────────
+	case "channels":
+		run("channels", runChannels, args[1:])
+
+	// ── agents ───────────────────────────────────────────────────────────────
+	case "agents":
+		run("agents", runAgents, args[1:])
+
+	// ── skills ───────────────────────────────────────────────────────────────
+	case "skills":
+		run("skills", runSkills, args[1:])
+
+	// ── hooks ────────────────────────────────────────────────────────────────
+	case "hooks":
+		run("hooks", runHooks, args[1:])
+
+	// ── secrets ──────────────────────────────────────────────────────────────
+	case "secrets":
+		run("secrets", runSecrets, args[1:])
+
+	// ── update ───────────────────────────────────────────────────────────────
+	case "update":
+		run("update", runUpdate, args[1:])
+
+	// ── security ─────────────────────────────────────────────────────────────
+	case "security":
+		run("security", runSecurity, args[1:])
+
+	// ── plugins (rich sub-CLI) ────────────────────────────────────────────────
+	case "plugins":
+		run("plugins", runPlugins, args[1:])
+
+	// ── config sub-CLI ────────────────────────────────────────────────────────
+	case "config":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "config subcommands: get, validate, path, import, export\n")
+			os.Exit(2)
+		}
+		switch args[1] {
+		case "get":
+			run("config get", runConfigGet, args[2:])
+		case "validate":
+			run("config validate", runConfigValidate, args[2:])
+		case "path":
+			run("config path", runConfigPath, args[2:])
+		case "import":
+			run("config import", runConfigImport, args[2:])
+		case "export":
+			run("config export", runConfigExport, args[2:])
+		default:
+			fmt.Fprintf(os.Stderr, "config subcommands: get, validate, path, import, export\n")
+			os.Exit(2)
+		}
+
+	// ── nodes ────────────────────────────────────────────────────────────────
+	case "nodes", "node":
+		run("nodes", runNodes, args[1:])
+	case "sessions", "session":
+		run("sessions", runSessions, args[1:])
+	case "cron":
+		run("cron", runCron, args[1:])
+	case "approvals", "approval":
+		run("approvals", runApprovals, args[1:])
+	case "doctor":
+		run("doctor", runDoctor, args[1:])
+	case "qr":
+		run("qr", runQR, args[1:])
+	case "completion":
+		run("completion", runCompletion, args[1:])
+
+	// ── legacy flat commands (kept for backward compat) ───────────────────────
 	case "plan":
 		fmt.Println("docs/PORT_PLAN.md")
 	case "bootstrap-check":
@@ -373,15 +473,53 @@ func runPluginInstall(bootstrapPath string, args []string) error {
 }
 
 func usage() {
-	fmt.Println("swarmstr <command>")
-	fmt.Println("commands:")
-	fmt.Println("  plan               print implementation plan path")
-	fmt.Println("  bootstrap-check    validate local bootstrap config")
-	fmt.Println("  dm-send            send one NIP-04 DM (--to --text)")
+	fmt.Printf("swarmstr %s\n\n", version)
+	fmt.Println("Usage: swarmstr <command> [flags]")
+	fmt.Println()
+	fmt.Println("Daemon status (requires running swarmstrd with --admin-addr):")
+	fmt.Println("  status             show daemon status (pubkey, uptime, relays)")
+	fmt.Println("  health             ping daemon health endpoint")
+	fmt.Println("  logs               tail recent daemon log lines (--lines N)")
+	fmt.Println()
+	fmt.Println("Agent management:")
+	fmt.Println("  agents list        list configured agents")
+	fmt.Println("  models list        list available models (--agent)")
+	fmt.Println("  models set <id>    set default model for an agent")
+	fmt.Println()
+	fmt.Println("Channels & skills:")
+	fmt.Println("  channels list      list configured channels and their status")
+	fmt.Println("  skills list        list installed skills")
+	fmt.Println("  skills status      detailed skills status")
+	fmt.Println("  hooks list         list installed hooks")
+	fmt.Println()
+	fmt.Println("Config:")
+	fmt.Println("  config get [key]   get config value (dot-notation key optional)")
+	fmt.Println("  config validate    validate live config file")
+	fmt.Println("  config path        print config file path")
+	fmt.Println("  config import      import config from file (--file --path --dry-run)")
+	fmt.Println("  config export      export config (--path --out --redact)")
+	fmt.Println()
+	fmt.Println("Secrets:")
+	fmt.Println("  secrets list       list secret keys")
+	fmt.Println("  secrets get <key>  get a secret value")
+	fmt.Println("  secrets set <k> <v> set a secret value")
+	fmt.Println()
+	fmt.Println("Plugins:")
+	fmt.Println("  plugins list       list installed plugins")
+	fmt.Println("  plugins install    install plugin from Nostr (--pubkey --id)")
+	fmt.Println("  plugins search     search Nostr plugin registry (--q)")
+	fmt.Println("  plugins publish    publish plugin manifest (--manifest)")
+	fmt.Println()
+	fmt.Println("Other:")
+	fmt.Println("  security audit     run local security posture checks")
+	fmt.Println("  update             check for daemon updates")
+	fmt.Println("  version            print version")
+	fmt.Println("  dm-send            send a NIP-17 DM (--to --text)")
 	fmt.Println("  memory-search      search local memory index (--q [--limit])")
-	fmt.Println("  config-export      export config to stdout or file (--path --out --redact)")
-	fmt.Println("  config-import      import config from stdin or file (--path --file --dry-run)")
-	fmt.Println("  plugin-publish     publish plugin manifest to Nostr (--manifest --timeout)")
-	fmt.Println("  plugin-search      search Nostr for plugins (--q --limit --timeout)")
-	fmt.Println("  plugin-install     install plugin from Nostr (--pubkey --id --dir --timeout)")
+	fmt.Println("  bootstrap-check    validate bootstrap config")
+	fmt.Println()
+	fmt.Println("Global flags (for daemon commands):")
+	fmt.Println("  --admin-addr <host:port>  admin API address")
+	fmt.Println("  --admin-token <token>     admin API bearer token")
+	fmt.Println("  --bootstrap <path>        bootstrap config path")
 }

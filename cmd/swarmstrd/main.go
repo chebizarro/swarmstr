@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -8,8 +9,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -21,6 +25,7 @@ import (
 
 	"swarmstr/internal/admin"
 	"swarmstr/internal/agent"
+	"swarmstr/internal/autoreply"
 	browserpkg "swarmstr/internal/browser"
 	"swarmstr/internal/config"
 	"swarmstr/internal/cron"
@@ -35,8 +40,26 @@ import (
 	pluginmanager "swarmstr/internal/plugins/manager"
 	"swarmstr/internal/plugins/installer"
 	skillspkg "swarmstr/internal/skills"
+	hookspkg "swarmstr/internal/hooks"
 	"swarmstr/internal/policy"
+	secretspkg "swarmstr/internal/secrets"
 	"swarmstr/internal/store/state"
+	ttspkg "swarmstr/internal/tts"
+	mediapkg "swarmstr/internal/media"
+
+	acppkg "swarmstr/internal/acp"
+	ctxengine "swarmstr/internal/context"
+	exportpkg "swarmstr/internal/export"
+	"swarmstr/internal/plugins/sdk"
+	securitypkg "swarmstr/internal/security"
+	"swarmstr/internal/webui"
+
+	// Built-in channel extensions. Importing these packages registers their
+	// ChannelPlugin implementations with the global channel plugin registry.
+	_ "swarmstr/internal/extensions/discord"
+	_ "swarmstr/internal/extensions/slack"
+	_ "swarmstr/internal/extensions/telegram"
+	_ "swarmstr/internal/extensions/whatsapp"
 )
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
@@ -74,6 +97,41 @@ var (
 
 	// controlPluginMgr is the live Goja plugin manager; nil if no plugins are loaded.
 	controlPluginMgr *pluginmanager.GojaPluginManager
+
+	// controlHooksMgr manages bundled and managed hook event handlers.
+	controlHooksMgr *hookspkg.Manager
+
+	// controlSecrets is the runtime secrets store (dotenv + env passthrough).
+	controlSecrets *secretspkg.Store
+
+	// controlTTSMgr is the TTS provider manager (OpenAI, Kokoro, …).
+	controlTTSMgr *ttspkg.Manager
+
+	// controlMediaTranscriber is the audio transcription provider (Whisper by default).
+	controlMediaTranscriber mediapkg.Transcriber
+
+	// controlSubagents tracks spawned child agent sessions and their ancestry.
+	controlSubagents *SubagentRegistry
+
+	// controlACPPeers is the ACP peer registry tracking known remote agent pubkeys.
+	controlACPPeers *acppkg.PeerRegistry
+
+	// controlContextEngine is the shared pluggable context engine used to ingest
+	// and assemble conversation history for every agent session.
+	controlContextEngine ctxengine.Engine
+
+	// controlContextEngineName tracks which engine is active (for gateway method responses).
+	controlContextEngineName string
+
+	// controlKeyRings manages multi-key rotation pools for each provider.
+	controlKeyRings *agent.ProviderKeyRingRegistry
+
+	// controlDMBus is the active DM transport (NIP-17 or NIP-04).
+	// Set after the bus is initialised in main() so node-pairing and
+	// node.invoke handlers can send DMs without threading the bus through
+	// every function signature.
+	controlDMBusMu sync.RWMutex
+	controlDMBus   nostruntime.DMTransport
 
 	// controlCronExecutor dispatches a gateway method from the cron scheduler.
 	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
@@ -228,6 +286,45 @@ func main() {
 	}
 	configState := newRuntimeConfigStore(runtimeCfg)
 
+	// Resolve memory backend from live config (Extra["memory"]["backend"]).
+	// The backend abstraction is used to future-proof swappable storage; the
+	// default "memory" backend wraps the in-process JSON inverted index.
+	{
+		memoryBackendName := "memory"
+		if mExtra, ok := configState.Get().Extra["memory"].(map[string]any); ok {
+			if beName, ok2 := mExtra["backend"].(string); ok2 && strings.TrimSpace(beName) != "" {
+				memoryBackendName = strings.TrimSpace(beName)
+			}
+		}
+		if _, beErr := memory.OpenBackend(memoryBackendName, ""); beErr != nil {
+			log.Printf("memory backend %q not available (%v); using 'memory'", memoryBackendName, beErr)
+		} else {
+			log.Printf("memory backend: %s", memoryBackendName)
+		}
+	}
+
+	// Initialise pluggable context engine from config (Extra["context_engine"]).
+	// The engine ingests and assembles conversation history for every agent session.
+	{
+		engineName := "windowed"
+		if ceVal, ok := configState.Get().Extra["context_engine"].(string); ok && strings.TrimSpace(ceVal) != "" {
+			engineName = strings.TrimSpace(ceVal)
+		}
+		engineOpts := map[string]any{}
+		if ceExtra, ok := configState.Get().Extra["context_engine_opts"].(map[string]any); ok {
+			engineOpts = ceExtra
+		}
+		eng, engErr := ctxengine.NewEngine(engineName, "global", engineOpts)
+		if engErr != nil {
+			log.Printf("context engine %q unavailable (%v); falling back to 'windowed'", engineName, engErr)
+			eng, _ = ctxengine.NewEngine("windowed", "global", engineOpts)
+			engineName = "windowed"
+		}
+		controlContextEngine = eng
+		controlContextEngineName = engineName
+		log.Printf("context engine: %s", engineName)
+	}
+
 	// Resolve live config file path (for disk↔Nostr sync and hot-reload).
 	if configFilePath == "" {
 		if def, err2 := config.DefaultConfigPath(); err2 == nil {
@@ -243,6 +340,70 @@ func main() {
 		log.Printf("plugin manager load warning: %v", loadErr)
 	}
 	pluginMgr.RegisterTools(tools)
+
+	// ── Hooks system ─────────────────────────────────────────────────────────
+	hooksMgr := hookspkg.NewManager()
+	// Load bundled hooks from the bundled hooks directory.
+	if bundledHooksDir := hookspkg.BundledHooksDir(); bundledHooksDir != "" {
+		if bundledHooks, err := hookspkg.ScanDir(bundledHooksDir, hookspkg.SourceBundled); err == nil {
+			for _, h := range bundledHooks {
+				hooksMgr.Register(h)
+			}
+		}
+	}
+	// Load managed hooks from ~/.swarmstr/hooks/.
+	if managedHooksDir := hookspkg.ManagedHooksDir(); managedHooksDir != "" {
+		if managedHooks, err := hookspkg.ScanDir(managedHooksDir, hookspkg.SourceManaged); err == nil {
+			for _, h := range managedHooks {
+				hooksMgr.Register(h)
+			}
+		}
+	}
+	// Wire bundled Go handlers.
+	hookspkg.RegisterBundledHandlers(hooksMgr, hookspkg.BundledHandlerOpts{
+		WorkspaceDir: func() string {
+			cfg := configState.Get()
+			if cfg.Extra != nil {
+				if ws, ok := cfg.Extra["workspace"].(map[string]any); ok {
+					if d, ok := ws["dir"].(string); ok && d != "" {
+						return d
+					}
+				}
+			}
+			if d := os.Getenv("SWARMSTR_WORKSPACE"); d != "" {
+				return d
+			}
+			home, _ := os.UserHomeDir()
+			return filepath.Join(home, ".swarmstr", "workspace")
+		},
+	})
+	controlHooksMgr = hooksMgr
+
+	// ── Secrets store ─────────────────────────────────────────────────────────
+	secretsStore := secretspkg.NewStore(nil) // uses ~/.swarmstr/.env by default
+	if _, warns := secretsStore.Reload(); len(warns) > 0 {
+		for _, w := range warns {
+			log.Printf("secrets: %s", w)
+		}
+	}
+	controlSecrets = secretsStore
+
+	// TTS manager — initialise before the server starts so method handlers have it.
+	controlTTSMgr = ttspkg.NewManager()
+
+	// Media transcriber — auto-selected from configured API keys, or a specific
+	// backend from the config's media_understanding.transcriber field.
+	// Priority: config override → OPENAI_API_KEY → GROQ_API_KEY → DEEPGRAM_API_KEY.
+	if t := configuredTranscriber(configState.Get()); t != nil {
+		controlMediaTranscriber = t
+	} else {
+		controlMediaTranscriber = mediapkg.DefaultTranscriber()
+	}
+	if controlMediaTranscriber != nil {
+		log.Printf("media transcriber: configured (type=%T)", controlMediaTranscriber)
+	} else {
+		log.Printf("media transcriber: none configured (audio attachments will not be transcribed)")
+	}
 
 	checkpoint, err := ensureIngestCheckpoint(ctx, docsRepo)
 	if err != nil {
@@ -266,12 +427,18 @@ func main() {
 	execApprovals := newExecApprovalsRegistry()
 	wizards := newWizardRegistry()
 	ops := newOperationsRegistry()
+	subagents := newSubagentRegistry()
+	keyRings := agent.NewProviderKeyRingRegistry()
+	acpPeers := acppkg.NewPeerRegistry()
+	controlACPPeers = acpPeers
 	controlAgentRuntime = agentRuntime
 	controlAgentJobs = agentJobs
 	controlNodeInvocations = nodeInvocations
 	controlCronJobs = cronJobs
 	controlExecApprovals = execApprovals
 	controlWizards = wizards
+	controlSubagents = subagents
+	controlKeyRings = keyRings
 	controlOps = ops
 
 	// Initialise the version checker. update_check_url from config extra overrides the default.
@@ -428,6 +595,8 @@ func main() {
 			registeredIDs[id] = true
 		}
 		providers := configState.Get().Providers
+		// Refresh multi-key rotation rings from provider config.
+		refreshKeyRings(providers)
 		for _, agCfg := range configAgents {
 			agentID := strings.TrimSpace(agCfg.ID)
 			if agentID == "" || agentID == "main" {
@@ -518,10 +687,115 @@ func main() {
 		}
 	}()
 
+	// Background context engine compaction: every 30 minutes, compact the
+	// shared engine (which handles all sessions internally).
+	go func() {
+		compactInterval := 30 * time.Minute
+		if v, ok := configState.Get().Extra["context_compact_interval_minutes"].(float64); ok && v > 0 {
+			compactInterval = time.Duration(v) * time.Minute
+		}
+		ticker := time.NewTicker(compactInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if controlContextEngine == nil {
+					continue
+				}
+				if cr, cErr := controlContextEngine.Compact(ctx, ""); cErr == nil && cr.Compacted {
+					log.Printf("context engine background compact: %s", cr.Summary)
+				}
+			}
+		}
+	}()
+
 	// wsEmitter pushes typed events to connected WebSocket clients.
 	// It starts as a no-op and is upgraded to the real runtime emitter once the
 	// WS gateway starts.  The dmOnMessage closure captures this variable.
 	var wsEmitter gatewayws.EventEmitter = gatewayws.NoopEmitter{}
+
+	// ── Slash command router ──────────────────────────────────────────────────
+	// Registers built-in /commands that are intercepted before the message
+	// reaches the agent runtime.
+	slashRouter := autoreply.NewRouter()
+	sessionTurns := autoreply.NewSessionTurns()
+
+	slashRouter.Register("help", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		cmds := slashRouter.Registered()
+		lines := make([]string, 0, len(cmds)+1)
+		lines = append(lines, "Available slash commands:")
+		for _, c := range cmds {
+			lines = append(lines, "  /"+c)
+		}
+		return strings.Join(lines, "\n"), nil
+	})
+
+	slashRouter.Register("status", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		agentID := sessionRouter.Get(cmd.SessionID)
+		if agentID == "" {
+			agentID = "main"
+		}
+		preview := cmd.SessionID
+		if len(preview) > 16 {
+			preview = preview[:16] + "…"
+		}
+		return fmt.Sprintf("Session: %s\nAgent:   %s", preview, agentID), nil
+	})
+
+	slashRouter.Register("model", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		if len(cmd.Args) == 0 {
+			agentID := sessionRouter.Get(cmd.SessionID)
+			if agentID == "" {
+				agentID = "main"
+			}
+			return fmt.Sprintf("Current agent: %s\nUsage: /model <model-name>", agentID), nil
+		}
+		modelName := cmd.Args[0]
+		rt, rtErr := agent.BuildRuntimeForModel(modelName, tools)
+		if rtErr != nil {
+			return fmt.Sprintf("⚠️  Unknown or unconfigured model %q: %v", modelName, rtErr), nil
+		}
+		// Register an ephemeral per-session agent so other sessions are unaffected.
+		ephemeralID := "session-model:" + cmd.SessionID
+		if len(ephemeralID) > 48 {
+			ephemeralID = ephemeralID[:48]
+		}
+		agentRegistry.Set(ephemeralID, rt)
+		sessionRouter.Assign(cmd.SessionID, ephemeralID)
+		return fmt.Sprintf("✓ Switched to model %q for this session.", modelName), nil
+	})
+
+	slashRouter.Register("reset", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
+		// Cancel any in-flight turn for this session.
+		chatCancels.Abort(cmd.SessionID)
+		// Reset the agent assignment back to the default.
+		sessionRouter.Assign(cmd.SessionID, "")
+		// Delete stored transcript entries (best-effort).
+		if entries, lErr := transcriptRepo.ListSession(cmdCtx, cmd.SessionID, 1000); lErr == nil {
+			for _, e := range entries {
+				if dErr := transcriptRepo.DeleteEntry(cmdCtx, cmd.SessionID, e.EntryID); dErr != nil {
+					log.Printf("reset: delete transcript entry session=%s id=%s err=%v", cmd.SessionID, e.EntryID, dErr)
+				}
+			}
+		}
+		return "🔄 Session reset. Conversation history cleared — starting fresh.", nil
+	})
+
+	slashRouter.Register("agents", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		ids := agentRegistry.Registered()
+		if len(ids) == 0 {
+			return "No agents registered.", nil
+		}
+		lines := make([]string, 0, len(ids)+1)
+		lines = append(lines, "Registered agents:")
+		for _, id := range ids {
+			lines = append(lines, "  "+id)
+		}
+		return strings.Join(lines, "\n"), nil
+	})
+	// ─────────────────────────────────────────────────────────────────────────
 
 	// Shared inbound DM handler used by both NIP-04 and NIP-17 buses.
 	dmOnMessage := func(ctx context.Context, msg nostruntime.InboundDM) error {
@@ -548,12 +822,82 @@ func main() {
 				return nil
 			}
 
-			// Session ID for DM conversations is the sender's pubkey (peer-to-peer session)
+			// Session ID for DM conversations is the sender's pubkey (peer-to-peer session).
 			sessionID := msg.FromPubKey
+
+			// ── ACP fast-path ────────────────────────────────────────────────
+			// If the sender is a registered ACP peer and the message is a
+			// valid ACP JSON payload, dispatch through the ACP handler instead
+			// of the user-facing agent pipeline.
+			if controlACPPeers != nil && controlACPPeers.IsPeer(msg.FromPubKey) && acppkg.IsACPMessage([]byte(msg.Text)) {
+				if acpMsg, acpErr := acppkg.Parse([]byte(msg.Text)); acpErr == nil {
+					if err := handleACPMessage(ctx, acpMsg, msg.FromPubKey, msg, agentRegistry, sessionRouter, tools); err != nil {
+						log.Printf("acp message handler error from=%s task_id=%s err=%v", msg.FromPubKey, acpMsg.TaskID, err)
+					}
+					if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
+						log.Printf("checkpoint update (acp) failed event=%s err=%v", msg.EventID, err)
+					}
+					return nil
+				}
+			}
+			// ─────────────────────────────────────────────────────────────────
+
+			// ── Slash command fast-path ───────────────────────────────────────
+			// Slash commands are handled before agent processing and do NOT
+			// consume a turn slot (they return synchronously).
+			if slashCmd := autoreply.Parse(msg.Text); slashCmd != nil {
+				slashCmd.SessionID = sessionID
+				slashCmd.FromPubKey = msg.FromPubKey
+				reply, handled, slashErr := slashRouter.Dispatch(ctx, slashCmd)
+				if handled {
+					if slashErr != nil {
+						log.Printf("slash command error cmd=%s session=%s err=%v", slashCmd.Name, sessionID, slashErr)
+						reply = fmt.Sprintf("⚠️  Error running /%s: %v", slashCmd.Name, slashErr)
+					}
+					if reply != "" {
+						if replyErr := msg.Reply(ctx, reply); replyErr != nil {
+							log.Printf("slash reply failed event=%s err=%v", msg.EventID, replyErr)
+						}
+					}
+					if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
+						log.Printf("checkpoint update (slash) failed event=%s err=%v", msg.EventID, err)
+					}
+					return nil
+				}
+				// Unknown slash command — fall through to agent so it can answer.
+			}
+			// ─────────────────────────────────────────────────────────────────
+
+			// ── Per-session turn serialisation ────────────────────────────────
+			// Prevent two agent invocations from running concurrently for the
+			// same session (race on context memory / transcript state).
+			releaseTurnSlot, acquired := sessionTurns.TryAcquire(sessionID)
+			if !acquired {
+				busyMsg := "⏳ Still processing your previous message. Please wait a moment."
+				if replyErr := msg.Reply(ctx, busyMsg); replyErr != nil {
+					log.Printf("busy reply failed event=%s err=%v", msg.EventID, replyErr)
+				}
+				return nil
+			}
+			defer releaseTurnSlot()
+			// ─────────────────────────────────────────────────────────────────
+
 			if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, msg); err != nil {
 				log.Printf("persist inbound failed event=%s err=%v", msg.EventID, err)
 			}
 			persistMemories(ctx, docsRepo, memoryRepo, memoryIndex, memoryTracker, memory.ExtractFromTurn(sessionID, "user", msg.EventID, msg.Text, msg.CreatedAt))
+
+			// Ingest user message into the context engine.
+			if controlContextEngine != nil {
+				if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
+					Role:    "user",
+					Content: msg.Text,
+					ID:      msg.EventID,
+					Unix:    msg.CreatedAt,
+				}); ingErr != nil {
+					log.Printf("context engine ingest user session=%s err=%v", sessionID, ingErr)
+				}
+			}
 
 			turnCtx, releaseTurn := chatCancels.Begin(sessionID, ctx)
 			defer func() {
@@ -562,7 +906,39 @@ func main() {
 				}
 				releaseTurn()
 			}()
+
+			// Assemble context from the engine (replaces assembleSessionMemoryContext).
 			turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, msg.Text, 6)
+			if controlContextEngine != nil {
+				// Resolve active agent's token budget (default 100,000).
+				maxCtxTokens := 100_000
+				if agID := sessionRouter.Get(sessionID); agID != "" {
+					for _, ac := range configState.Get().Agents {
+						if ac.ID == agID && ac.MaxContextTokens > 0 {
+							maxCtxTokens = ac.MaxContextTokens
+							break
+						}
+					}
+				}
+				assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
+				if asmErr == nil {
+					// Per-turn auto-compaction: if >80% of budget, compact and re-assemble.
+					threshold := int(float64(maxCtxTokens) * 0.80)
+					if assembled.EstimatedTokens > 0 && threshold > 0 && assembled.EstimatedTokens > threshold {
+						if cr, cErr := controlContextEngine.Compact(turnCtx, sessionID); cErr == nil && cr.Compacted {
+							log.Printf("context engine auto-compact session=%s tokens_before=%d tokens_after=%d", sessionID, cr.TokensBefore, cr.TokensAfter)
+							assembled, _ = controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
+						}
+					}
+					// Use the engine's system prompt addition as memory context.
+					if assembled.SystemPromptAddition != "" {
+						turnContext = assembled.SystemPromptAddition
+					}
+				} else {
+					log.Printf("context engine assemble session=%s err=%v", sessionID, asmErr)
+				}
+			}
+
 			// Route the session to the assigned agent (falls back to "main").
 			activeAgentID := sessionRouter.Get(sessionID)
 			if activeAgentID == "" {
@@ -611,6 +987,16 @@ func main() {
 			if err := persistAssistant(ctx, docsRepo, transcriptRepo, sessionID, turnResult.Text, msg.EventID); err != nil {
 				log.Printf("persist assistant failed session=%s err=%v", sessionID, err)
 			}
+			// Ingest assistant reply into the context engine.
+			if controlContextEngine != nil && turnResult.Text != "" {
+				if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
+					Role:    "assistant",
+					Content: turnResult.Text,
+					Unix:    time.Now().Unix(),
+				}); ingErr != nil {
+					log.Printf("context engine ingest assistant session=%s err=%v", sessionID, ingErr)
+				}
+			}
 			if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
 				log.Printf("checkpoint update failed event=%s err=%v", msg.EventID, err)
 			}
@@ -651,6 +1037,40 @@ func main() {
 	}
 	defer bus.Close()
 
+	// Expose the DM bus globally so node-pairing and node.invoke handlers
+	// can send NIP-17/NIP-04 DMs without the bus being threaded into every function.
+	controlDMBusMu.Lock()
+	controlDMBus = bus
+	controlDMBusMu.Unlock()
+
+	// ── Start built-in channel extensions ──────────────────────────────────────
+	// ConnectExtensions scans nostr_channels for entries whose "kind" matches
+	// a registered ChannelPlugin (telegram, discord, etc.).
+	extensionResults, err := channels.ConnectExtensions(ctx, configState.Get(), func(msg sdk.InboundChannelMessage) {
+		// Forward extension messages into the same DM dispatch pipeline.
+		controlDMBusMu.RLock()
+		activeBus := controlDMBus
+		controlDMBusMu.RUnlock()
+		if activeBus == nil {
+			return
+		}
+		// Convert InboundChannelMessage to a DM-like event for the agent pipeline.
+		// The SenderID is used as the "from" pubkey (it's a platform ID, not a Nostr key).
+		// Agents should respond via the channel handle's Send() method, not Nostr DM.
+		text := msg.Text
+		if len(text) > 100 {
+			text = text[:97] + "..."
+		}
+		log.Printf("extension channel %s: message from %s: %q", msg.ChannelID, msg.SenderID, text)
+	})
+	if err != nil {
+		log.Printf("extension channel startup error: %v", err)
+	}
+	for _, r := range extensionResults {
+		log.Printf("extension channel connected: %s (plugin=%s)", r.ChannelID, r.PluginID)
+		defer r.Handle.Close()
+	}
+
 	var controlBus *nostruntime.ControlRPCBus
 	controlBus, err = nostruntime.StartControlRPCBus(ctx, nostruntime.ControlRPCBusOptions{
 		PrivateKey:        privateKey,
@@ -681,9 +1101,13 @@ func main() {
 	if gatewayWSAddr != "" {
 		wsMethods := append([]string{}, supportedMethods(configState.Get())...)
 		wsMethods = append(wsMethods, gatewayws.MethodEventsList, gatewayws.MethodEventsSubscribe, gatewayws.MethodEventsUnsubscribe)
+		wsPath := strings.TrimSpace(gatewayWSPath)
+		if wsPath == "" {
+			wsPath = "/ws"
+		}
 		wsRuntime, err := gatewayws.Start(ctx, gatewayws.RuntimeOptions{
 			Addr:                   gatewayWSAddr,
-			Path:                   gatewayWSPath,
+			Path:                   wsPath,
 			Token:                  gatewayWSToken,
 			Methods:                wsMethods,
 			Events:                 gatewayws.AllPushEvents,
@@ -694,6 +1118,7 @@ func main() {
 			AllowedOrigins:         allowedOrigins,
 			TrustedProxies:         trustedProxies,
 			AllowInsecureControlUI: gatewayWSAllowInsecureControlUI,
+			StaticHandler:          webui.Handler(wsPath, gatewayWSToken),
 			HandleRequest: func(ctx context.Context, req gatewayprotocol.RequestFrame) (any, *gatewayprotocol.ErrorShape) {
 				res, err := handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{
 					FromPubKey: bus.PublicKey(),
@@ -1064,10 +1489,11 @@ func main() {
 					return applySkillsBins(configState.Get()), nil
 				},
 				SkillsInstall: func(ctx context.Context, req methods.SkillsInstallRequest) (map[string]any, error) {
-					if _, err := applySkillInstall(ctx, docsRepo, configState, req); err != nil {
+					_, result, err := applySkillInstall(ctx, docsRepo, configState, req)
+					if err != nil {
 						return nil, err
 					}
-					return map[string]any{"ok": true, "message": "Installed", "stdout": "", "stderr": "", "code": 0}, nil
+					return result, nil
 				},
 				SkillsUpdate: func(ctx context.Context, req methods.SkillsUpdateRequest) (map[string]any, error) {
 					_, entry, err := applySkillUpdate(ctx, docsRepo, configState, req)
@@ -1203,7 +1629,7 @@ func main() {
 					return applyUpdateRun(ops, req)
 				},
 				TalkConfig: func(_ context.Context, req methods.TalkConfigRequest) (map[string]any, error) {
-					return applyTalkConfig(configState.Get(), req)
+					return applyTalkConfig(configState.Get(), ops, req)
 				},
 				TalkMode: func(_ context.Context, req methods.TalkModeRequest) (map[string]any, error) {
 					return applyTalkMode(ops, req)
@@ -1250,8 +1676,8 @@ func main() {
 				TTSDisable: func(_ context.Context, req methods.TTSDisableRequest) (map[string]any, error) {
 					return applyTTSDisable(ops, req)
 				},
-				TTSConvert: func(_ context.Context, req methods.TTSConvertRequest) (map[string]any, error) {
-					return applyTTSConvert(ops, req)
+				TTSConvert: func(ctx context.Context, req methods.TTSConvertRequest) (map[string]any, error) {
+					return applyTTSConvert(ctx, ops, req)
 				},
 				GetConfig: func(ctx context.Context) (state.ConfigDoc, error) {
 					return docsRepo.GetConfig(ctx)
@@ -1372,6 +1798,12 @@ func main() {
 
 	fmt.Printf("swarmstrd running pubkey=%s relays=%d state_store=nostr dm_policy=%s admin=%s\n",
 		bus.PublicKey(), len(cfg.Relays), configState.Get().DM.Policy, adminAddr)
+
+	// Fire gateway:startup hook now that all channels and goroutines are ready.
+	if controlHooksMgr != nil {
+		go controlHooksMgr.Fire("gateway:startup", "", map[string]any{})
+	}
+
 	<-ctx.Done()
 	log.Println("swarmstrd shutting down")
 }
@@ -2050,6 +2482,27 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.MemorySearchResponse{Results: memoryIndex.Search(req.Query, req.Limit)}}, nil
+
+	case methods.MethodMemoryCompact:
+		var compactReq methods.MemoryCompactRequest
+		if len(in.Params) > 0 {
+			_ = json.Unmarshal(in.Params, &compactReq)
+		}
+		if controlContextEngine == nil {
+			return nostruntime.ControlRPCResult{Result: methods.MemoryCompactResponse{OK: false, Summary: "no context engine active"}}, nil
+		}
+		sessionToCompact := compactReq.SessionID
+		cr, cErr := controlContextEngine.Compact(ctx, sessionToCompact)
+		if cErr != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("memory.compact: %w", cErr)
+		}
+		return nostruntime.ControlRPCResult{Result: methods.MemoryCompactResponse{
+			OK:           cr.OK,
+			SessionsRun:  1,
+			TokensBefore: cr.TokensBefore,
+			TokensAfter:  cr.TokensAfter,
+			Summary:      cr.Summary,
+		}}, nil
 	case methods.MethodAgent:
 		req, err := methods.DecodeAgentParams(in.Params)
 		if err != nil {
@@ -2079,9 +2532,32 @@ func handleControlRPCRequest(
 		}
 		// Apply profile-based tool filtering when the agent has a non-full profile.
 		rt = applyAgentProfileFilter(ctx, rt, req.SessionID, cfg, docsRepo)
+		// Build fallback runtimes from the active agent's FallbackModels list.
+		var fallbackRuntimes []agent.Runtime
+		if controlSessionRouter != nil {
+			activeAgentID := controlSessionRouter.Get(req.SessionID)
+			for _, agCfg := range cfg.Agents {
+				if strings.TrimSpace(agCfg.ID) != strings.TrimSpace(activeAgentID) {
+					continue
+				}
+				providers := cfg.Providers
+				for _, fbModel := range agCfg.FallbackModels {
+					fbModel = strings.TrimSpace(fbModel)
+					if fbModel == "" {
+						continue
+					}
+					override := autoResolveProviderOverride(fbModel, providers)
+					fbRt, fbErr := agent.BuildRuntimeWithOverride(fbModel, override, controlToolRegistry)
+					if fbErr == nil && fbRt != nil {
+						fallbackRuntimes = append(fallbackRuntimes, fbRt)
+					}
+				}
+				break
+			}
+		}
 		runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 		snapshot := controlAgentJobs.Begin(runID, req.SessionID)
-		go executeAgentRun(runID, req, rt, controlAgentJobs)
+		go executeAgentRunWithFallbacks(runID, req, rt, fallbackRuntimes, controlAgentJobs)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"run_id": runID, "status": "accepted", "accepted_at": snapshot.StartedAt}}, nil
 	case methods.MethodAgentWait:
 		req, err := methods.DecodeAgentWaitParams(in.Params)
@@ -2150,13 +2626,28 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		// Preprocess any media attachments: transcribe audio, extract PDF text,
+		// resolve image references. The augmented text is sent via DM; image
+		// refs are currently logged (vision would require direct ProcessTurn access
+		// which the RPC handler does not have without threading the runtime through).
+		msgText := req.Text
+		if len(req.Attachments) > 0 {
+			var preprocessErr error
+			msgText, _, preprocessErr = preprocessAttachments(ctx, req.Text, req.Attachments, controlMediaTranscriber)
+			if preprocessErr != nil {
+				log.Printf("chat.send: attachment preprocess error: %v", preprocessErr)
+			}
+		}
+		if msgText == "" {
+			msgText = req.Text
+		}
 		sendCtx := ctx
 		release := func() {}
 		if chatCancels != nil {
 			sendCtx, release = chatCancels.Begin(req.To, ctx)
 			defer release()
 		}
-		if err := dmBus.SendDM(sendCtx, req.To, req.Text); err != nil {
+		if err := dmBus.SendDM(sendCtx, req.To, msgText); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nostruntime.ControlRPCResult{}, fmt.Errorf("chat aborted")
 			}
@@ -2288,6 +2779,10 @@ func handleControlRPCRequest(
 		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		// Fire hook event.
+		if controlHooksMgr != nil {
+			go controlHooksMgr.Fire("command:reset", req.SessionID, map[string]any{})
+		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session": session}}, nil
 	case methods.MethodSessionsDelete:
 		req, err := methods.DecodeSessionsDeleteParams(in.Params)
@@ -2328,6 +2823,62 @@ func handleControlRPCRequest(
 		if dropped < 0 {
 			dropped = 0
 		}
+
+		// ── LLM summary generation ─────────────────────────────────────────
+		// Before tombstoning, generate a compact summary of the entries that
+		// are about to be removed and inject it as a system-role entry.
+		summaryGenerated := false
+		if dropped > 0 && controlAgentRuntime != nil {
+			compactedEntries := entries[:dropped]
+			// Build a compact transcript snippet for the prompt.
+			var sb strings.Builder
+			for _, e := range compactedEntries {
+				if e.Role == "deleted" {
+					continue
+				}
+				sb.WriteString(e.Role)
+				sb.WriteString(": ")
+				text := e.Text
+				if len(text) > 400 {
+					text = text[:400] + "…"
+				}
+				sb.WriteString(text)
+				sb.WriteString("\n")
+			}
+			snippet := sb.String()
+			if len(snippet) > 6000 {
+				snippet = snippet[:6000] + "…"
+			}
+			if snippet != "" {
+				summaryPrompt := "You are a session-memory assistant. Summarize the following conversation history concisely in 2-4 sentences, capturing the key topics, decisions, and context needed to continue the conversation later. Do NOT include greetings or meta-commentary; only output the summary.\n\n" + snippet
+				summaryCtx, summaryCancel := context.WithTimeout(ctx, 30*time.Second)
+				result, summaryErr := controlAgentRuntime.ProcessTurn(summaryCtx, agent.Turn{
+					SessionID: req.SessionID + ":compact",
+					UserText:  summaryPrompt,
+				})
+				summaryCancel()
+				if summaryErr == nil && strings.TrimSpace(result.Text) != "" {
+					summaryEntryID := fmt.Sprintf("compact-summary-%d", time.Now().UnixMilli())
+					summaryEntry := state.TranscriptEntryDoc{
+						Version:   1,
+						SessionID: req.SessionID,
+						EntryID:   summaryEntryID,
+						Role:      "system",
+						Text:      "[Compact summary of " + strconv.Itoa(dropped) + " earlier messages]\n\n" + strings.TrimSpace(result.Text),
+						Unix:      time.Now().Unix(),
+						Meta:      map[string]any{"compact": true, "compact_from": dropped},
+					}
+					if _, putErr := transcriptRepo.PutEntry(ctx, summaryEntry); putErr != nil {
+						log.Printf("sessions.compact: insert summary entry: %v", putErr)
+					} else {
+						summaryGenerated = true
+					}
+				} else if summaryErr != nil {
+					log.Printf("sessions.compact: LLM summary skipped: %v", summaryErr)
+				}
+			}
+		}
+
 		// Tombstone entries that are older than the keep window.
 		// entries is sorted oldest-first; drop the first `dropped` entries.
 		deleteErrors := 0
@@ -2342,11 +2893,77 @@ func handleControlRPCRequest(
 			"compacted_keep":            req.Keep,
 			"compacted_from_entries":    len(entries),
 			"compacted_dropped_entries": dropped - deleteErrors,
+			"compacted_summary":         summaryGenerated,
 		})
 		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped - deleteErrors}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped - deleteErrors, "summary_generated": summaryGenerated}}, nil
+	case methods.MethodSessionsExport:
+		var exportReq methods.SessionsExportRequest
+		if len(in.Params) > 0 {
+			_ = json.Unmarshal(in.Params, &exportReq)
+		}
+		if exportReq.SessionID == "" {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("sessions.export: session_id is required")
+		}
+		exportFormat := strings.ToLower(strings.TrimSpace(exportReq.Format))
+		if exportFormat == "" {
+			exportFormat = "html"
+		}
+		if exportFormat != "html" {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("sessions.export: unsupported format %q (only 'html' is supported)", exportFormat)
+		}
+		// Load transcript entries for the session.
+		entries, err := transcriptRepo.ListSession(ctx, exportReq.SessionID, 5000)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("sessions.export: load transcript: %w", err)
+		}
+		msgs := make([]exportpkg.Message, 0, len(entries))
+		for _, e := range entries {
+			if e.Role == "deleted" || e.Role == "" {
+				continue
+			}
+			msgs = append(msgs, exportpkg.Message{
+				Role:      e.Role,
+				Content:   e.Text,
+				Timestamp: e.Unix,
+				ID:        e.EntryID,
+			})
+		}
+		// Resolve agent name from registry.
+		agentName := ""
+		if agDoc, err2 := docsRepo.GetAgent(ctx, "main"); err2 == nil {
+			agentName = agDoc.Name
+		}
+		htmlOut, err := exportpkg.SessionToHTML(exportpkg.SessionHTMLOptions{
+			SessionID:  exportReq.SessionID,
+			AgentID:    "main",
+			AgentName:  agentName,
+			PubKey:     in.FromPubKey,
+			Messages:   msgs,
+			ExportedAt: time.Now(),
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("sessions.export: render: %w", err)
+		}
+		return nostruntime.ControlRPCResult{Result: methods.SessionsExportResponse{HTML: htmlOut, Format: "html"}}, nil
+
+	case methods.MethodSessionsSpawn:
+		req, err := methods.DecodeSessionsSpawnParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := applySessionsSpawn(ctx, req, cfg, docsRepo)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+
 	case methods.MethodAgentsList:
 		req, err := methods.DecodeAgentsListParams(in.Params)
 		if err != nil {
@@ -2747,10 +3364,11 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		if _, err := applySkillInstall(ctx, docsRepo, configState, req); err != nil {
+		_, installResult, err := applySkillInstall(ctx, docsRepo, configState, req)
+		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "message": "Installed", "stdout": "", "stderr": "", "code": 0}}, nil
+		return nostruntime.ControlRPCResult{Result: installResult}, nil
 	case methods.MethodSkillsUpdate:
 		req, err := methods.DecodeSkillsUpdateParams(in.Params)
 		if err != nil {
@@ -2858,9 +3476,13 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		nodeID := ""
+		approvalToken := ""
 		if node, ok := out["node"].(map[string]any); ok {
-			if id, ok := node["id"].(string); ok {
+			if id, ok := node["node_id"].(string); ok {
 				nodeID = id
+			}
+			if tok, ok := node["token"].(string); ok {
+				approvalToken = tok
 			}
 		}
 		emitControlWSEvent(gatewayws.EventNodePairResolved, gatewayws.NodePairResolvedPayload{
@@ -2869,6 +3491,10 @@ func handleControlRPCRequest(
 			NodeID:    nodeID,
 			Decision:  "approved",
 		})
+		// Notify the node via NIP-17 DM if node_id looks like a Nostr pubkey.
+		if nodeID != "" && approvalToken != "" {
+			go sendControlDM(ctx, nodeID, fmt.Sprintf(`{"type":"pair.approved","request_id":%q,"token":%q}`, req.RequestID, approvalToken))
+		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodNodePairReject:
 		req, err := methods.DecodeNodePairRejectParams(in.Params)
@@ -2884,10 +3510,8 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		nodeID := ""
-		if node, ok := out["node"].(map[string]any); ok {
-			if id, ok := node["id"].(string); ok {
-				nodeID = id
-			}
+		if id, ok := out["node_id"].(string); ok {
+			nodeID = id
 		}
 		emitControlWSEvent(gatewayws.EventNodePairResolved, gatewayws.NodePairResolvedPayload{
 			TS:        time.Now().UnixMilli(),
@@ -2895,6 +3519,10 @@ func handleControlRPCRequest(
 			NodeID:    nodeID,
 			Decision:  "rejected",
 		})
+		// Notify the node via NIP-17 DM if node_id looks like a Nostr pubkey.
+		if nodeID != "" {
+			go sendControlDM(ctx, nodeID, fmt.Sprintf(`{"type":"pair.rejected","request_id":%q}`, req.RequestID))
+		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodNodePairVerify:
 		req, err := methods.DecodeNodePairVerifyParams(in.Params)
@@ -3089,6 +3717,18 @@ func handleControlRPCRequest(
 		out, err := applyNodeInvoke(controlNodeInvocations, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
+		}
+		// Dispatch the invocation to the target node via NIP-17 DM if its
+		// node_id looks like a Nostr pubkey (hex or npub).
+		if req.NodeID != "" {
+			runID, _ := out["run_id"].(string)
+			payload, _ := json.Marshal(map[string]any{
+				"type":    "node.invoke",
+				"run_id":  runID,
+				"command": req.Command,
+				"args":    req.Args,
+			})
+			go sendControlDM(ctx, req.NodeID, string(payload))
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodNodeEvent:
@@ -3422,7 +4062,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		out, err := applyTalkConfig(cfg, req)
+		out, err := applyTalkConfig(cfg, controlOps, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
@@ -3646,11 +4286,105 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		out, err := applyTTSConvert(controlOps, req)
+		out, err := applyTTSConvert(ctx, controlOps, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
+
+	// ── Hooks ────────────────────────────────────────────────────────────────
+	case methods.MethodHooksList:
+		var statuses []map[string]any
+		if controlHooksMgr != nil {
+			for _, s := range controlHooksMgr.List() {
+				statuses = append(statuses, hookspkg.StatusToMap(s))
+			}
+		}
+		if statuses == nil {
+			statuses = []map[string]any{}
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"hooks": statuses}}, nil
+
+	case methods.MethodHooksEnable:
+		var req struct {
+			HookKey string `json:"hookKey"`
+			Key     string `json:"key"`
+		}
+		if len(in.Params) > 0 {
+			_ = json.Unmarshal(in.Params, &req)
+		}
+		key := req.HookKey
+		if key == "" {
+			key = req.Key
+		}
+		if key == "" {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("hookKey is required")
+		}
+		if controlHooksMgr != nil {
+			controlHooksMgr.SetEnabled(key, true)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hookKey": key, "enabled": true}}, nil
+
+	case methods.MethodHooksDisable:
+		var req struct {
+			HookKey string `json:"hookKey"`
+			Key     string `json:"key"`
+		}
+		if len(in.Params) > 0 {
+			_ = json.Unmarshal(in.Params, &req)
+		}
+		key := req.HookKey
+		if key == "" {
+			key = req.Key
+		}
+		if key == "" {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("hookKey is required")
+		}
+		if controlHooksMgr != nil {
+			controlHooksMgr.SetEnabled(key, false)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hookKey": key, "enabled": false}}, nil
+
+	case methods.MethodHooksInfo:
+		var req struct {
+			HookKey string `json:"hookKey"`
+			Key     string `json:"key"`
+		}
+		if len(in.Params) > 0 {
+			_ = json.Unmarshal(in.Params, &req)
+		}
+		key := req.HookKey
+		if key == "" {
+			key = req.Key
+		}
+		if key == "" {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("hookKey is required")
+		}
+		if controlHooksMgr == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("hook %q not found", key)
+		}
+		info := controlHooksMgr.Info(key)
+		if info == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("hook %q not found", key)
+		}
+		return nostruntime.ControlRPCResult{Result: hookspkg.StatusToMap(*info)}, nil
+
+	case methods.MethodHooksCheck:
+		var statuses []map[string]any
+		if controlHooksMgr != nil {
+			for _, s := range controlHooksMgr.List() {
+				statuses = append(statuses, hookspkg.StatusToMap(s))
+			}
+		}
+		if statuses == nil {
+			statuses = []map[string]any{}
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"hooks":       statuses,
+			"totalHooks":  len(statuses),
+			"eligible":    countEligible(statuses),
+		}}, nil
+
 	case methods.MethodConfigGet:
 		redacted := config.Redact(cfg)
 		// Include base_hash so OpenClaw clients can use optimistic-lock semantics on mutations.
@@ -3903,8 +4637,238 @@ controlListPreconditionsSatisfied:
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash(), "restart_pending": restartPending}}, nil
 	case methods.MethodConfigSchema:
 		return nostruntime.ControlRPCResult{Result: methods.ConfigSchema(cfg)}, nil
+	case methods.MethodConfigSchemaLookup:
+		// Look up a schema property by dot-notation path (e.g. "agents.model").
+		// Returns the full schema when path is empty.
+		path := ""
+		if in.Params != nil {
+			var p struct {
+				Path  string `json:"path"`
+				Field string `json:"field"`
+			}
+			if err := json.Unmarshal(in.Params, &p); err == nil {
+				path = strings.TrimSpace(p.Path)
+				if path == "" {
+					path = strings.TrimSpace(p.Field)
+				}
+			}
+		}
+		full := methods.ConfigSchema(cfg)
+		if path == "" {
+			return nostruntime.ControlRPCResult{Result: full}, nil
+		}
+		// Walk the schema map by dot-separated segments.
+		var cur any = full
+		for _, seg := range strings.Split(path, ".") {
+			m, ok := cur.(map[string]any)
+			if !ok {
+				cur = nil
+				break
+			}
+			if v, found := m[seg]; found {
+				cur = v
+			} else if props, hasProps := m["properties"].(map[string]any); hasProps {
+				cur = props[seg]
+			} else {
+				cur = nil
+				break
+			}
+		}
+		if cur == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("schema path %q not found", path)
+		}
+		return nostruntime.ControlRPCResult{Result: cur}, nil
+	case methods.MethodSecurityAudit:
+		// Run security posture checks and return findings.
+		report := securitypkg.Audit(securitypkg.AuditOptions{
+			ConfigDoc: &cfg,
+		})
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"findings": report.Findings,
+			"critical": report.Critical,
+			"warn":     report.Warn,
+			"info":     report.Info,
+		}}, nil
+
+	// ── ACP (Agent Control Protocol) ────────────────────────────────────────
+	case methods.MethodACPRegister:
+		var req methods.ACPRegisterRequest
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.register: invalid params: %w", err)
+		}
+		pk := strings.TrimSpace(req.PubKey)
+		if pk == "" {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.register: pubkey required")
+		}
+		if err := controlACPPeers.Register(acppkg.PeerEntry{
+			PubKey: pk,
+			Alias:  req.Alias,
+			Tags:   req.Tags,
+		}); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "pubkey": pk}}, nil
+
+	case methods.MethodACPUnregister:
+		var req methods.ACPUnregisterRequest
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.unregister: invalid params: %w", err)
+		}
+		controlACPPeers.Remove(req.PubKey)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+
+	case methods.MethodACPPeers:
+		peers := controlACPPeers.List()
+		out := make([]map[string]any, 0, len(peers))
+		for _, p := range peers {
+			out = append(out, map[string]any{
+				"pubkey": p.PubKey,
+				"alias":  p.Alias,
+				"tags":   p.Tags,
+			})
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"peers": out}}, nil
+
+	case methods.MethodACPDispatch:
+		var req methods.ACPDispatchRequest
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: invalid params: %w", err)
+		}
+		target := strings.TrimSpace(req.TargetPubKey)
+		if target == "" {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: target_pubkey required")
+		}
+		if !controlACPPeers.IsPeer(target) {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: unknown peer %q — register via acp.register first", target)
+		}
+		if strings.TrimSpace(req.Instructions) == "" {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: instructions required")
+		}
+		taskID := fmt.Sprintf("acp-%d-%x", time.Now().UnixNano(), func() []byte {
+			b := make([]byte, 4)
+			_, _ = rand.Read(b)
+			return b
+		}())
+		senderPubKey := ""
+		if dmBus != nil {
+			senderPubKey = dmBus.PublicKey()
+		}
+		acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
+			Instructions: req.Instructions,
+			TimeoutMS:    req.TimeoutMS,
+			ReplyTo:      senderPubKey,
+		})
+		payload, err := json.Marshal(acpMsg)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: marshal: %w", err)
+		}
+		if dmBus == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: DM transport not available")
+		}
+		if err := dmBus.SendDM(ctx, target, string(payload)); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: send DM: %w", err)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "task_id": taskID, "target": target}}, nil
+
 	default:
 		return nostruntime.ControlRPCResult{}, fmt.Errorf("unknown method %q", method)
+	}
+}
+
+// handleACPMessage processes an incoming ACP control message from a registered peer.
+// For task messages, it runs the agent and sends a result DM back to the sender.
+func handleACPMessage(
+	ctx context.Context,
+	msg acppkg.Message,
+	fromPubKey string,
+	dm nostruntime.InboundDM,
+	agentReg *agent.AgentRuntimeRegistry,
+	sessRouter *agent.AgentSessionRouter,
+	tools *agent.ToolRegistry,
+) error {
+	switch msg.ACPType {
+	case "task":
+		instructions := ""
+		if msg.Payload != nil {
+			if v, ok := msg.Payload["instructions"].(string); ok {
+				instructions = v
+			}
+		}
+		if strings.TrimSpace(instructions) == "" {
+			log.Printf("acp task from=%s task_id=%s: missing instructions", fromPubKey, msg.TaskID)
+			return nil
+		}
+		log.Printf("acp task from=%s task_id=%s instructions=%q", fromPubKey, msg.TaskID, instructions)
+
+		// Route to the assigned agent for this peer, falling back to "main".
+		agentID := ""
+		if sessRouter != nil {
+			agentID = sessRouter.Get(fromPubKey)
+		}
+		rt := agentReg.Get(agentID) // returns default if agentID == ""
+
+		result, err := rt.ProcessTurn(ctx, agent.Turn{
+			SessionID: "acp:" + fromPubKey,
+			UserText:  instructions,
+		})
+
+		// Build and send result DM back to the sender.
+		var resultMsg acppkg.Message
+		if err != nil {
+			resultMsg = acppkg.NewResult(msg.TaskID, "", acppkg.ResultPayload{
+				Error: err.Error(),
+			})
+		} else {
+			resultMsg = acppkg.NewResult(msg.TaskID, "", acppkg.ResultPayload{
+				Text: result.Text,
+			})
+		}
+
+		payload, marshalErr := json.Marshal(resultMsg)
+		if marshalErr != nil {
+			return fmt.Errorf("acp result marshal: %w", marshalErr)
+		}
+		// Determine reply-to pubkey: prefer explicit reply_to from payload, else sender.
+		replyTo := fromPubKey
+		if msg.Payload != nil {
+			if v, ok := msg.Payload["reply_to"].(string); ok && strings.TrimSpace(v) != "" {
+				replyTo = strings.TrimSpace(v)
+			}
+		}
+		if sendErr := dm.Reply(ctx, string(payload)); sendErr != nil {
+			// dm.Reply goes to the DM sender; if replyTo differs we log but continue.
+			log.Printf("acp result send failed to=%s task_id=%s err=%v", replyTo, msg.TaskID, sendErr)
+		}
+		return nil
+
+	case "result":
+		// Incoming result from a peer for a previously dispatched task.
+		taskID := msg.TaskID
+		text := ""
+		errStr := ""
+		if msg.Payload != nil {
+			if v, ok := msg.Payload["text"].(string); ok {
+				text = v
+			}
+			if v, ok := msg.Payload["error"].(string); ok {
+				errStr = v
+			}
+		}
+		log.Printf("acp result from=%s task_id=%s ok=%v text=%q err=%q", fromPubKey, taskID, errStr == "", text, errStr)
+		return nil
+
+	case "ping":
+		// Liveness probe: respond with a pong.
+		pong := acppkg.Message{ACPType: "pong", Version: acppkg.Version, TaskID: msg.TaskID}
+		payload, _ := json.Marshal(pong)
+		if sendErr := dm.Reply(ctx, string(payload)); sendErr != nil {
+			log.Printf("acp pong send failed to=%s err=%v", fromPubKey, sendErr)
+		}
+		return nil
+
+	default:
+		log.Printf("acp unknown message type=%q from=%s", msg.ACPType, fromPubKey)
+		return nil
 	}
 }
 
@@ -3996,6 +4960,25 @@ func setControlWSEmitter(emitter gatewayws.EventEmitter) {
 // the configured providers map.  It enables zero-config usage: a model named
 // "claude-3-5-sonnet-20241022" will automatically pick up an "anthropic" entry
 // from providers[], or fall back to env vars (handled by BuildRuntimeForModel).
+// refreshKeyRings rebuilds the ProviderKeyRingRegistry from the current
+// provider config.  It should be called whenever the config changes.
+func refreshKeyRings(providers map[string]state.ProviderEntry) {
+	if controlKeyRings == nil {
+		return
+	}
+	for providerID, pe := range providers {
+		// Build the full key pool: APIKeys list + single APIKey if non-empty.
+		keys := make([]string, 0, len(pe.APIKeys)+1)
+		keys = append(keys, pe.APIKeys...)
+		if pe.APIKey != "" {
+			keys = append(keys, pe.APIKey)
+		}
+		if len(keys) > 0 {
+			controlKeyRings.Set(providerID, agent.NewKeyRing(keys))
+		}
+	}
+}
+
 func autoResolveProviderOverride(model string, providers map[string]state.ProviderEntry) agent.ProviderOverride {
 	if providers == nil {
 		return agent.ProviderOverride{}
@@ -4009,18 +4992,45 @@ func autoResolveProviderOverride(model string, providers map[string]state.Provid
 		family = "anthropic"
 	case norm == "openai" || strings.HasPrefix(norm, "gpt-") || strings.HasPrefix(norm, "o1-") || strings.HasPrefix(norm, "o3-") || strings.HasPrefix(norm, "o4-"):
 		family = "openai"
+	case norm == "gemini" || strings.HasPrefix(norm, "gemini-"):
+		family = "google"
+	case norm == "xai" || strings.HasPrefix(norm, "grok-"):
+		family = "xai"
+	case norm == "groq" || strings.HasPrefix(norm, "groq/"):
+		family = "groq"
+	case norm == "mistral" || strings.HasPrefix(norm, "mistral-"):
+		family = "mistral"
+	case norm == "together" || strings.HasPrefix(norm, "together/"):
+		family = "together"
+	case norm == "openrouter" || strings.HasPrefix(norm, "openrouter/"):
+		family = "openrouter"
 	default:
 		return agent.ProviderOverride{}
 	}
 
+	// resolveKeyForEntry picks the best API key from the entry, consulting the
+	// KeyRing for rotation if multiple keys are configured.
+	resolveKeyForEntry := func(family string, pe state.ProviderEntry) string {
+		if controlKeyRings != nil {
+			if ring := controlKeyRings.Get(family); ring != nil && ring.Len() > 0 {
+				if k, ok := ring.Pick(); ok && k != "" {
+					return k
+				}
+			}
+		}
+		return pe.APIKey
+	}
+
 	// Look for an exact match first (e.g. providers["anthropic"]).
 	if pe, ok := providers[family]; ok {
-		return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: pe.APIKey, Model: pe.Model}
+		apiKey := resolveKeyForEntry(family, pe)
+		return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: apiKey, Model: pe.Model}
 	}
 	// Also scan for any entry with a matching family prefix in its key.
 	for key, pe := range providers {
 		if strings.HasPrefix(strings.ToLower(key), family) {
-			return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: pe.APIKey, Model: pe.Model}
+			apiKey := resolveKeyForEntry(key, pe)
+			return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: apiKey, Model: pe.Model}
 		}
 	}
 	return agent.ProviderOverride{}
@@ -4031,6 +5041,99 @@ func emitControlWSEvent(event string, payload any) {
 	emitter := controlWsEmitter
 	controlWsEmitterMu.RUnlock()
 	emitter.Emit(event, payload)
+}
+
+// preprocessAttachments processes media attachments from a chat.send request.
+// - Audio attachments are transcribed via Whisper and their transcripts are
+//   appended to text as "[Transcription]: ...".
+// - PDF attachments are text-extracted via pdftotext and appended similarly.
+// - Image attachments are resolved to agent.ImageRef for multi-modal providers;
+//   when a DM must be used (text-only channel), a URL reference or filename hint
+//   is appended to text instead.
+// Returns the augmented text and image refs (may be empty if no images).
+func preprocessAttachments(ctx context.Context, text string, atts []methods.AttachmentInput, transcriber mediapkg.Transcriber) (string, []agent.ImageRef, error) {
+	var images []agent.ImageRef
+	for _, att := range atts {
+		ma := mediapkg.MediaAttachment{
+			Type:     att.Type,
+			URL:      att.URL,
+			Base64:   att.Base64,
+			MimeType: att.MimeType,
+			Filename: att.Filename,
+		}
+		switch {
+		case ma.IsAudio():
+			audioBytes, mimeType, err := mediapkg.FetchAudioBytes(ctx, ma)
+			if err != nil {
+				log.Printf("chat.send: audio fetch error: %v", err)
+				text += "\n[Audio attachment: could not fetch]"
+				continue
+			}
+			if transcriber == nil || !transcriber.Configured() {
+				text += "\n[Audio attachment: transcription not configured]"
+				continue
+			}
+			transcript, err := transcriber.Transcribe(ctx, audioBytes, mimeType)
+			if err != nil {
+				log.Printf("chat.send: audio transcription error: %v", err)
+				text += "\n[Audio attachment: transcription failed]"
+				continue
+			}
+			if transcript != "" {
+				text += "\n[Transcription]: " + transcript
+			}
+
+		case ma.IsPDF():
+			pdfBytes, err := mediapkg.FetchPDFBytes(ctx, ma)
+			if err != nil {
+				log.Printf("chat.send: pdf fetch error: %v", err)
+				text += "\n[PDF attachment: could not fetch]"
+				continue
+			}
+			extracted, err := mediapkg.ExtractPDFText(ctx, pdfBytes)
+			if err != nil {
+				// pdftotext may not be installed; fall back to a note.
+				log.Printf("chat.send: pdf extract error: %v", err)
+				text += "\n[PDF attachment: text extraction failed]"
+				continue
+			}
+			if extracted != "" {
+				text += "\n[PDF content]:\n" + extracted
+			}
+
+		case ma.IsImage():
+			ref, err := mediapkg.ResolveImage(ma)
+			if err != nil {
+				log.Printf("chat.send: image resolve error: %v", err)
+				text += "\n" + mediapkg.InlineImageText(ma)
+				continue
+			}
+			images = append(images, agent.ImageRef{
+				URL:      ref.URL,
+				Base64:   ref.Base64,
+				MimeType: ref.MimeType,
+			})
+			// Also inline a text hint so text-only DM recipients get context.
+			text += "\n" + mediapkg.InlineImageText(ma)
+		}
+	}
+	return strings.TrimSpace(text), images, nil
+}
+
+// sendControlDM sends a DM via the active DM transport (NIP-17 or NIP-04).
+// It is best-effort: errors are logged, not returned.
+func sendControlDM(ctx context.Context, toPubKey, text string) {
+	controlDMBusMu.RLock()
+	bus := controlDMBus
+	controlDMBusMu.RUnlock()
+	if bus == nil {
+		return
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := bus.SendDM(sendCtx, toPubKey, text); err != nil {
+		log.Printf("sendControlDM to=%s err=%v", toPubKey, err)
+	}
 }
 
 func resolveInboundChannelRuntime(configuredAgentID, sessionID string) (string, agent.Runtime) {
@@ -4049,7 +5152,102 @@ func resolveInboundChannelRuntime(configuredAgentID, sessionID string) (string, 
 	return agentID, controlAgentRuntime
 }
 
+// applySessionsSpawn creates a child agent session bounded by the depth limit.
+// It dispatches an agent job and returns immediately; the caller can use agent.wait
+// with the returned run_id to block until the sub-session completes.
+func applySessionsSpawn(ctx context.Context, req methods.SessionsSpawnRequest, cfg state.ConfigDoc, docsRepo *state.DocsRepository) (map[string]any, error) {
+	if controlAgentRuntime == nil || controlAgentJobs == nil {
+		return nil, fmt.Errorf("agent runtime not configured")
+	}
+	if controlSubagents == nil {
+		return nil, fmt.Errorf("subagent registry not initialised")
+	}
+
+	// Determine the depth of the new child session.
+	parentDepth := 0
+	if req.ParentSessionID != "" {
+		parentDepth = controlSubagents.DepthOf(req.ParentSessionID)
+	}
+	childDepth := parentDepth + 1
+
+	// Check depth limit.
+	if childDepth > maxSubagentDepth {
+		return nil, fmt.Errorf("subagent depth limit %d exceeded", maxSubagentDepth)
+	}
+
+	// Build IDs.
+	runID := fmt.Sprintf("spawn-%d", time.Now().UnixNano())
+	sessionID := fmt.Sprintf("spawn-sess-%d", time.Now().UnixNano())
+
+	// Register in SubagentRegistry.
+	rec, ok := controlSubagents.Spawn(runID, sessionID, req.ParentSessionID, childDepth, req.Message)
+	if !ok {
+		return nil, fmt.Errorf("subagent depth limit %d exceeded", maxSubagentDepth)
+	}
+
+	// Select the agent runtime for this sub-session.
+	var rt agent.Runtime
+	if controlAgentRegistry != nil && req.AgentID != "" {
+		rt = controlAgentRegistry.Get(req.AgentID)
+	}
+	if rt == nil {
+		rt = controlAgentRuntime
+	}
+
+	// Apply profile-based tool filtering.
+	rt = applyAgentProfileFilter(ctx, rt, sessionID, cfg, docsRepo)
+
+	// Build the agent request for the child session.
+	agentReq := methods.AgentRequest{
+		SessionID: sessionID,
+		Message:   req.Message,
+		Context:   req.Context,
+		TimeoutMS: req.TimeoutMS,
+	}
+
+	// Start the agent job and track in SubagentRegistry.
+	snapshot := controlAgentJobs.Begin(runID, sessionID)
+	go func() {
+		executeAgentRun(runID, agentReq, rt, controlAgentJobs)
+		// Mirror final status into SubagentRegistry.
+		if final, found := controlAgentJobs.Get(runID); found {
+			controlSubagents.Finish(runID, final.Result, final.Err)
+		}
+	}()
+
+	return map[string]any{
+		"run_id":            runID,
+		"session_id":        sessionID,
+		"parent_session_id": rec.ParentSessionID,
+		"depth":             rec.Depth,
+		"status":            "accepted",
+		"accepted_at":       snapshot.StartedAt,
+	}, nil
+}
+
+// isRetryableAgentError returns true if the error indicates a rate-limit or
+// temporary unavailability that warrants trying a fallback model/key.
+func isRetryableAgentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "429") ||
+		strings.Contains(msg, "rate_limit") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "context_length_exceeded") ||
+		strings.Contains(msg, "context length") ||
+		strings.Contains(msg, "too many tokens") ||
+		strings.Contains(msg, "model_not_found")
+}
+
 func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runtime, jobs *agentJobRegistry) {
+	executeAgentRunWithFallbacks(runID, req, runtime, nil, jobs)
+}
+
+// executeAgentRunWithFallbacks tries the primary runtime; on retryable errors,
+// it tries each fallback runtime in order before giving up.
+func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, jobs *agentJobRegistry) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("panic in executeAgentRun runID=%s panic=%v", runID, r)
@@ -4059,7 +5257,7 @@ func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runti
 		}
 	}()
 
-	if runtime == nil || jobs == nil {
+	if primary == nil || jobs == nil {
 		return
 	}
 	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
@@ -4084,7 +5282,25 @@ func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runti
 		Session: req.SessionID,
 	})
 
-	result, err := runtime.ProcessTurn(ctx, agent.Turn{SessionID: req.SessionID, UserText: req.Message, Context: req.Context})
+	runtimesToTry := append([]agent.Runtime{primary}, fallbacks...)
+	var result *agent.TurnResult
+	var lastErr error
+	for i, rt := range runtimesToTry {
+		if rt == nil {
+			continue
+		}
+		var r agent.TurnResult
+		r, lastErr = rt.ProcessTurn(ctx, agent.Turn{SessionID: req.SessionID, UserText: req.Message, Context: req.Context})
+		if lastErr == nil {
+			result = &r
+			break
+		}
+		if i < len(runtimesToTry)-1 && isRetryableAgentError(lastErr) {
+			log.Printf("executeAgentRun runID=%s fallback attempt %d/%d err=%v", runID, i+1, len(runtimesToTry)-1, lastErr)
+			continue
+		}
+		break
+	}
 
 	emitControlWSEvent(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 		TS:      time.Now().UnixMilli(),
@@ -4093,8 +5309,12 @@ func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runti
 		Session: req.SessionID,
 	})
 
-	if err != nil {
-		jobs.Finish(runID, "", err)
+	if lastErr != nil {
+		jobs.Finish(runID, "", lastErr)
+		return
+	}
+	if result == nil {
+		jobs.Finish(runID, "", fmt.Errorf("all runtimes returned nil result"))
 		return
 	}
 	jobs.Finish(runID, result.Text, nil)
@@ -4303,6 +5523,25 @@ func defaultModelsCatalog() []map[string]any {
 
 func defaultToolProfiles() []map[string]any {
 	return agent.ProfilesAsResponse()
+}
+
+// configuredTranscriber returns a Transcriber based on the live config's
+// extra.media_understanding.transcriber field, or nil if not specified there.
+func configuredTranscriber(cfg state.ConfigDoc) mediapkg.Transcriber {
+	mu, ok := cfg.Extra["media_understanding"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	name, _ := mu["transcriber"].(string)
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	t, err := mediapkg.ResolveTranscriber(name)
+	if err != nil {
+		log.Printf("media transcriber config: %v", err)
+		return nil
+	}
+	return t
 }
 
 func supportedMethods(cfg state.ConfigDoc) []string {
@@ -4802,34 +6041,99 @@ func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any
 	if workspaceDir == "" {
 		workspaceDir = skillspkg.WorkspaceDir(cfg.Extra, agentIDNorm)
 	}
-	managedSkillsDir := ""
+	managedSkillsDir := skillspkg.ManagedSkillsDir()
 
 	skillsList := make([]map[string]any, 0)
 
-	// ── Workspace-scanned YAML skills (real, file-based) ──────────────────────
+	// skillToMap converts a loaded Skill to the wire format expected by clients.
+	skillToMap := func(s *skillspkg.Skill, source string, bundled bool) map[string]any {
+		req := s.EffectiveRequirements()
+		// Build structured install specs from OpenClaw metadata.
+		installSpecs := make([]map[string]any, 0)
+		for _, spec := range s.InstallSpecs() {
+			m := map[string]any{
+				"id":    spec.ID,
+				"kind":  spec.Kind,
+				"label": spec.Label,
+				"bins":  spec.Bins,
+			}
+			if spec.Formula != "" {
+				m["formula"] = spec.Formula
+			}
+			if spec.Package != "" {
+				m["package"] = spec.Package
+			}
+			if spec.Module != "" {
+				m["module"] = spec.Module
+			}
+			if spec.URL != "" {
+				m["url"] = spec.URL
+			}
+			installSpecs = append(installSpecs, m)
+		}
+		// Fall back to legacy install steps if no structured specs.
+		if len(installSpecs) == 0 {
+			for _, step := range s.Manifest.Install {
+				installSpecs = append(installSpecs, map[string]any{"cmd": step.Cmd, "cwd": step.Cwd})
+			}
+		}
+		always := false
+		if oc := s.Manifest.Metadata; oc != nil && oc.OpenClaw != nil {
+			always = oc.OpenClaw.Always
+		}
+		return map[string]any{
+			"name":               s.Manifest.Name,
+			"description":        s.Manifest.Description,
+			"source":             coalesceString(s.Manifest.Source, source),
+			"bundled":            bundled,
+			"filePath":           s.FilePath,
+			"baseDir":            s.BaseDir,
+			"skillKey":           s.SkillKey,
+			"emoji":              s.Emoji(),
+			"homepage":           s.Manifest.Homepage,
+			"always":             always,
+			"disabled":           !s.IsEnabled(),
+			"blockedByAllowlist": false,
+			"eligible":           s.Eligible && s.IsEnabled(),
+			"requirements":       requirementsToMap(req),
+			"missing":            requirementsToMap(s.Missing),
+			"configChecks":       []map[string]any{},
+			"install":            installSpecs,
+		}
+	}
+
+	// ── Bundled skills (SKILL.md files shipped with the binary) ───────────────
+	bundledDir := skillspkg.BundledSkillsDir()
+	bundledKeys := map[string]struct{}{}
+	if bundledDir != "" {
+		if bundled, err := skillspkg.ScanBundledDir(bundledDir); err == nil {
+			for _, s := range bundled {
+				bundledKeys[s.SkillKey] = struct{}{}
+				skillsList = append(skillsList, skillToMap(s, "swarmstr-bundled", true))
+			}
+		}
+	}
+
+	// ── Workspace-scanned skills (SKILL.md + legacy .yaml, user-authored) ─────
 	if scanned, err := skillspkg.ScanWorkspace(workspaceDir); err == nil {
 		for _, s := range scanned {
-			installSteps := make([]map[string]any, 0, len(s.Manifest.Install))
-			for _, step := range s.Manifest.Install {
-				installSteps = append(installSteps, map[string]any{"cmd": step.Cmd, "cwd": step.Cwd})
+			if _, alreadyBundled := bundledKeys[s.SkillKey]; alreadyBundled {
+				continue // workspace overrides bundled? no — bundled takes precedence unless
+				// user wants to override; for now skip duplicates (bundled wins).
 			}
-			skillsList = append(skillsList, map[string]any{
-				"name":               s.Manifest.Name,
-				"description":        s.Manifest.Description,
-				"source":             coalesceString(s.Manifest.Source, "workspace"),
-				"bundled":            false,
-				"filePath":           s.FilePath,
-				"baseDir":            s.BaseDir,
-				"skillKey":           s.SkillKey,
-				"always":             false,
-				"disabled":           !s.IsEnabled(),
-				"blockedByAllowlist": false,
-				"eligible":           s.Eligible && s.IsEnabled(),
-				"requirements":       requirementsToMap(s.Manifest.Requirements),
-				"missing":            requirementsToMap(s.Missing),
-				"configChecks":       []map[string]any{},
-				"install":            installSteps,
-			})
+			skillsList = append(skillsList, skillToMap(s, "workspace", false))
+		}
+	}
+
+	// ── Managed skills (~/.swarmstr/skills/) ──────────────────────────────────
+	if managedSkillsDir != "" {
+		if managed, err := skillspkg.ScanBundledDir(managedSkillsDir); err == nil {
+			for _, s := range managed {
+				if _, alreadyBundled := bundledKeys[s.SkillKey]; alreadyBundled {
+					continue
+				}
+				skillsList = append(skillsList, skillToMap(s, "managed", false))
+			}
 		}
 	}
 
@@ -4911,11 +6215,29 @@ func applySkillsBins(cfg state.ConfigDoc) map[string]any {
 		bins = append(bins, v)
 	}
 
-	// Workspace-scanned YAML skills contribute their declared bins.
+	// Bundled skills.
+	if bundledDir := skillspkg.BundledSkillsDir(); bundledDir != "" {
+		if bundled, err := skillspkg.ScanBundledDir(bundledDir); err == nil {
+			for _, b := range skillspkg.AggregateBins(bundled) {
+				push(b)
+			}
+		}
+	}
+
+	// Workspace-scanned skills (SKILL.md + legacy YAML).
 	wsDir := skillspkg.WorkspaceDir(cfg.Extra, "main")
 	if scanned, err := skillspkg.ScanWorkspace(wsDir); err == nil {
 		for _, b := range skillspkg.AggregateBins(scanned) {
 			push(b)
+		}
+	}
+
+	// Managed skills (~/.swarmstr/skills/).
+	if managedDir := skillspkg.ManagedSkillsDir(); managedDir != "" {
+		if managed, err := skillspkg.ScanBundledDir(managedDir); err == nil {
+			for _, b := range skillspkg.AggregateBins(managed) {
+				push(b)
+			}
 		}
 	}
 
@@ -4950,8 +6272,185 @@ func coalesceString(a, b string) string {
 	return b
 }
 
-func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.SkillsInstallRequest) (state.ConfigDoc, error) {
+// findInstallSpec searches bundled, workspace and managed skill directories for the
+// install spec with the given ID on the named skill.
+func findInstallSpec(cfg state.ConfigDoc, name, installID string) (*skillspkg.InstallSpec, bool) {
+	nameNorm := strings.ToLower(strings.TrimSpace(name))
+	idNorm := strings.ToLower(strings.TrimSpace(installID))
+
+	var allSkills []*skillspkg.Skill
+	if dir := skillspkg.BundledSkillsDir(); dir != "" {
+		if skills, err := skillspkg.ScanBundledDir(dir); err == nil {
+			allSkills = append(allSkills, skills...)
+		}
+	}
+	if workspaceDir := skillspkg.WorkspaceDir(cfg.Extra, "default"); workspaceDir != "" {
+		if skills, err := skillspkg.ScanWorkspace(workspaceDir); err == nil {
+			allSkills = append(allSkills, skills...)
+		}
+	}
+	if dir := skillspkg.ManagedSkillsDir(); dir != "" {
+		if skills, err := skillspkg.ScanBundledDir(dir); err == nil {
+			allSkills = append(allSkills, skills...)
+		}
+	}
+
+	for _, s := range allSkills {
+		skillName := strings.ToLower(strings.TrimSpace(s.Manifest.Name))
+		if skillName != nameNorm && strings.ToLower(s.SkillKey) != nameNorm {
+			continue
+		}
+		for _, spec := range s.InstallSpecs() {
+			if strings.ToLower(spec.ID) == idNorm {
+				cp := spec
+				return &cp, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// runDownloadInstall downloads a binary from spec.URL into ~/.swarmstr/bin/.
+func runDownloadInstall(ctx context.Context, spec skillspkg.InstallSpec) (stdout, stderr string, code int, err error) {
+	if spec.URL == "" {
+		return "", "download spec missing url", 1, fmt.Errorf("download spec missing url")
+	}
+	req, herr := http.NewRequestWithContext(ctx, http.MethodGet, spec.URL, nil)
+	if herr != nil {
+		return "", herr.Error(), 1, herr
+	}
+	resp, herr := http.DefaultClient.Do(req)
+	if herr != nil {
+		return "", herr.Error(), 1, herr
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg := fmt.Sprintf("download failed: HTTP %d", resp.StatusCode)
+		return "", msg, 1, fmt.Errorf("%s", msg)
+	}
+	filename := filepath.Base(resp.Request.URL.Path)
+	if filename == "" || filename == "." || filename == "/" {
+		filename = "download"
+	}
+	homeDir, _ := os.UserHomeDir()
+	binDir := filepath.Join(homeDir, ".swarmstr", "bin")
+	if merr := os.MkdirAll(binDir, 0o755); merr != nil {
+		return "", merr.Error(), 1, merr
+	}
+	destPath := filepath.Join(binDir, filename)
+	f, ferr := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if ferr != nil {
+		return "", ferr.Error(), 1, ferr
+	}
+	defer f.Close()
+	if _, copyErr := io.Copy(f, resp.Body); copyErr != nil {
+		return "", copyErr.Error(), 1, copyErr
+	}
+	return fmt.Sprintf("Downloaded to %s", destPath), "", 0, nil
+}
+
+// runInstallSpec executes the installation command described by spec, using ctx
+// (which should already have a deadline set from req.TimeoutMS).
+func runInstallSpec(ctx context.Context, spec skillspkg.InstallSpec) (stdout, stderr string, code int, err error) {
+	var cmd *exec.Cmd
+	switch strings.ToLower(spec.Kind) {
+	case "brew":
+		formula := spec.Formula
+		if formula == "" {
+			formula = spec.Package
+		}
+		if formula == "" {
+			return "", "brew spec missing formula/package", 1, fmt.Errorf("brew spec missing formula/package")
+		}
+		cmd = exec.CommandContext(ctx, "brew", "install", formula)
+	case "npm":
+		if spec.Package == "" {
+			return "", "npm spec missing package", 1, fmt.Errorf("npm spec missing package")
+		}
+		cmd = exec.CommandContext(ctx, "npm", "install", "-g", spec.Package)
+	case "go":
+		if spec.Module == "" {
+			return "", "go spec missing module", 1, fmt.Errorf("go spec missing module")
+		}
+		cmd = exec.CommandContext(ctx, "go", "install", spec.Module+"@latest")
+	case "uv":
+		if spec.Package == "" {
+			return "", "uv spec missing package", 1, fmt.Errorf("uv spec missing package")
+		}
+		cmd = exec.CommandContext(ctx, "uv", "tool", "install", spec.Package)
+	case "apt":
+		if spec.Package == "" {
+			return "", "apt spec missing package", 1, fmt.Errorf("apt spec missing package")
+		}
+		cmd = exec.CommandContext(ctx, "apt-get", "install", "-y", spec.Package)
+	case "download":
+		return runDownloadInstall(ctx, spec)
+	default:
+		return "", fmt.Sprintf("unsupported install kind %q", spec.Kind), 1, fmt.Errorf("unsupported install kind %q", spec.Kind)
+	}
+
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	runErr := cmd.Run()
+	stdout = outBuf.String()
+	stderr = errBuf.String()
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			code = exitErr.ExitCode()
+		} else {
+			code = 1
+		}
+		err = runErr
+	}
+	return
+}
+
+func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.SkillsInstallRequest) (state.ConfigDoc, map[string]any, error) {
 	cfg := configState.Get()
+
+	// Find the install spec in bundled/workspace/managed skills.
+	spec, found := findInstallSpec(cfg, req.Name, req.InstallID)
+
+	var installResult map[string]any
+	if !found {
+		// Spec not found — still mark as installed (legacy / config-only behaviour).
+		installResult = map[string]any{
+			"ok":      true,
+			"message": "Installed (spec not found — marked in config only)",
+			"stdout":  "",
+			"stderr":  "",
+			"code":    0,
+		}
+	} else {
+		// Apply timeout from the request.
+		timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+		installCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		outStr, errStr, exitCode, runErr := runInstallSpec(installCtx, *spec)
+		if runErr != nil {
+			installResult = map[string]any{
+				"ok":      false,
+				"message": fmt.Sprintf("install failed (exit %d)", exitCode),
+				"stdout":  outStr,
+				"stderr":  errStr,
+				"code":    exitCode,
+			}
+			// Do not update config on failure.
+			return state.ConfigDoc{}, installResult, nil
+		}
+		installResult = map[string]any{
+			"ok":      true,
+			"message": "Installed",
+			"stdout":  outStr,
+			"stderr":  errStr,
+			"code":    exitCode,
+		}
+	}
+
+	// Persist the install record in config.
 	entries := extractSkillEntries(cfg)
 	key := strings.ToLower(strings.TrimSpace(req.Name))
 	entry, ok := entries[key]
@@ -4966,10 +6465,10 @@ func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, conf
 	entries[key] = entry
 	next := configWithSkillEntries(cfg, entries)
 	if _, err := docsRepo.PutConfig(ctx, next); err != nil {
-		return state.ConfigDoc{}, err
+		return state.ConfigDoc{}, installResult, err
 	}
 	configState.Set(next)
-	return next, nil
+	return next, installResult, nil
 }
 
 func applySkillUpdate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.SkillsUpdateRequest) (state.ConfigDoc, map[string]any, error) {
@@ -6226,24 +7725,92 @@ func applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprov
 }
 
 func applySecretsReload(_ methods.SecretsReloadRequest) (map[string]any, error) {
-	return map[string]any{"ok": true, "warningCount": 0}, nil
+	if controlSecrets == nil {
+		return map[string]any{"ok": true, "count": 0, "warningCount": 0, "warnings": []string{}}, nil
+	}
+	count, warnings := controlSecrets.Reload()
+	return map[string]any{
+		"ok":           true,
+		"count":        count,
+		"warningCount": len(warnings),
+		"warnings":     warnings,
+	}, nil
 }
 
 func applySecretsResolve(req methods.SecretsResolveRequest) (map[string]any, error) {
 	assignments := make([]map[string]any, 0, len(req.TargetIDs))
+	var diagnostics []string
+	var inactive []string
+
 	for _, id := range req.TargetIDs {
-		segments := strings.Split(id, ".")
-		assignments = append(assignments, map[string]any{"path": id, "pathSegments": segments, "value": nil})
+		entry := map[string]any{
+			"path":         id,
+			"pathSegments": strings.Split(id, "."),
+		}
+		if controlSecrets == nil {
+			entry["value"] = nil
+			entry["found"] = false
+			inactive = append(inactive, id)
+		} else {
+			v, found := controlSecrets.Resolve(id)
+			if found {
+				// Never log the actual secret value — only indicate presence.
+				entry["found"] = true
+				entry["value"] = v // caller sees value; we redact in logs
+			} else {
+				entry["found"] = false
+				entry["value"] = nil
+				diagnostics = append(diagnostics, "unresolved ref: "+id)
+				inactive = append(inactive, id)
+			}
+		}
+		assignments = append(assignments, entry)
 	}
-	return map[string]any{"ok": true, "assignments": assignments, "diagnostics": []string{}, "inactiveRefPaths": []string{}}, nil
+
+	return map[string]any{
+		"ok":               true,
+		"assignments":      assignments,
+		"diagnostics":      diagnostics,
+		"inactiveRefPaths": inactive,
+	}, nil
+}
+
+func wizardStepToMap(s *wizardStep) map[string]any {
+	if s == nil {
+		return nil
+	}
+	m := map[string]any{
+		"id":       s.ID,
+		"type":     s.Type,
+		"prompt":   s.Prompt,
+		"required": s.Required,
+		"secret":   s.Secret,
+	}
+	if len(s.Options) > 0 {
+		m["options"] = s.Options
+	}
+	if s.Default != "" {
+		m["default"] = s.Default
+	}
+	return m
 }
 
 func applyWizardStart(reg *wizardRegistry, req methods.WizardStartRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("wizard runtime not configured")
 	}
-	rec := reg.Start(req)
-	return map[string]any{"session_id": rec.SessionID, "sessionId": rec.SessionID, "status": rec.Status, "done": false, "step": map[string]any{"id": "mode", "type": "choice", "prompt": "Select mode", "options": []string{"local", "remote"}}}, nil
+	rec, step := reg.Start(req)
+	out := map[string]any{
+		"session_id": rec.SessionID,
+		"sessionId":  rec.SessionID,
+		"status":     rec.Status,
+		"mode":       rec.Mode,
+		"done":       false,
+	}
+	if step != nil {
+		out["step"] = wizardStepToMap(step)
+	}
+	return out, nil
 }
 
 func applyWizardNext(reg *wizardRegistry, req methods.WizardNextRequest) (map[string]any, error) {
@@ -6254,9 +7821,17 @@ func applyWizardNext(reg *wizardRegistry, req methods.WizardNextRequest) (map[st
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"session_id": rec.SessionID, "sessionId": rec.SessionID, "status": rec.Status, "done": done}
+	out := map[string]any{
+		"session_id": rec.SessionID,
+		"sessionId":  rec.SessionID,
+		"status":     rec.Status,
+		"done":       done,
+	}
 	if step != nil {
-		out["step"] = step
+		out["step"] = wizardStepToMap(step)
+	}
+	if done && len(rec.Input) > 0 {
+		out["result"] = rec.Input
 	}
 	return out, nil
 }
@@ -6280,16 +7855,67 @@ func applyWizardStatus(reg *wizardRegistry, req methods.WizardStatusRequest) (ma
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"status": rec.Status, "error": rec.Error}, nil
+	out := map[string]any{
+		"session_id": rec.SessionID,
+		"sessionId":  rec.SessionID,
+		"status":     rec.Status,
+		"mode":       rec.Mode,
+		"step":       rec.Step,
+		"error":      rec.Error,
+	}
+	step := currentWizardStep(rec)
+	if step != nil {
+		out["currentStep"] = wizardStepToMap(step)
+	}
+	return out, nil
 }
 
-func applyTalkConfig(cfg state.ConfigDoc, req methods.TalkConfigRequest) (map[string]any, error) {
-	_ = req
-	configPayload := map[string]any{}
+func applyTalkConfig(cfg state.ConfigDoc, reg *operationsRegistry, req methods.TalkConfigRequest) (map[string]any, error) {
+	// Build the talk section by merging persisted config with live registry state.
+	talk := map[string]any{
+		"enabled":      false,
+		"mode":         "disabled",
+		"hotword":      []string{"openclaw", "swarmstr"},
+		"sensitivity":  0.5,
+		"tts_provider": "openai",
+		"stt_provider": "openai-whisper",
+		"voice_model":  "alloy",
+	}
+
+	// Overlay persisted talk config from cfg.Extra["talk"].
 	if cfg.Extra != nil {
-		if talk, ok := cfg.Extra["talk"]; ok {
-			configPayload["talk"] = talk
+		if raw, ok := cfg.Extra["talk"].(map[string]any); ok {
+			for k, v := range raw {
+				talk[k] = v
+			}
 		}
+	}
+
+	// Overlay live state from ops registry.
+	if reg != nil {
+		ttsEnabled, ttsProvider := reg.TTSStatus()
+		talkMode := reg.TalkMode()
+		voicewake := reg.Voicewake()
+		talk["enabled"] = ttsEnabled
+		talk["mode"] = talkMode
+		if ttsProvider != "" {
+			talk["tts_provider"] = ttsProvider
+		}
+		if len(voicewake) > 0 {
+			talk["hotword"] = voicewake
+		}
+	}
+
+	// Optionally redact API keys unless includeSecrets is set.
+	if !req.IncludeSecrets {
+		delete(talk, "api_key")
+		delete(talk, "apiKey")
+	}
+
+	configPayload := map[string]any{"talk": talk}
+
+	// Include additional config sections.
+	if cfg.Extra != nil {
 		if session, ok := cfg.Extra["session"]; ok {
 			configPayload["session"] = session
 		}
@@ -6337,12 +7963,27 @@ func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[
 	return out, nil
 }
 
+// validTalkModes lists the modes accepted by talk.mode.
+var validTalkModes = map[string]bool{
+	"disabled":      true,
+	"off":           true,
+	"push-to-talk":  true,
+	"always-on":     true,
+	"hotword":       true,
+}
+
 func applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("talk runtime not configured")
 	}
-	mode := reg.SetTalkMode(req.Mode)
-	return map[string]any{"mode": mode, "ts": time.Now().UnixMilli()}, nil
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if !validTalkModes[mode] {
+		return nil, fmt.Errorf("invalid talk mode %q; valid modes: disabled, off, push-to-talk, always-on, hotword", req.Mode)
+	}
+	mode = reg.SetTalkMode(mode)
+	ts := time.Now().UnixMilli()
+	emitControlWSEvent(gatewayws.EventTalkMode, gatewayws.TalkModePayload{TS: ts, Mode: mode})
+	return map[string]any{"mode": mode, "ts": ts}, nil
 }
 
 func applyLastHeartbeat(reg *operationsRegistry, _ methods.LastHeartbeatRequest) (map[string]any, error) {
@@ -6406,25 +8047,64 @@ func applySend(ctx context.Context, dmBus nostruntime.DMTransport, req methods.S
 	return map[string]any{"runId": req.IdempotencyKey, "messageId": messageID, "channel": "nostr"}, nil
 }
 
+// browserBridgePaths are path prefixes that must go through the browser
+// bridge proxy (Playwright sandbox).  All other paths are treated as direct
+// HTTP fetch targets.
+var browserBridgePaths = []string{
+	"/act", "/snapshot", "/screenshot", "/evaluate",
+	"/tabs", "/storage", "/fetch",
+}
+
 func applyBrowserRequest(req methods.BrowserRequestRequest) (map[string]any, error) {
-	// browser.request routes through a local browser proxy (e.g. a Playwright/CDP
-	// HTTP proxy).  The proxy base URL is configured via SWARMSTR_BROWSER_URL.
-	// When the env var is absent, the browser control is considered disabled.
+	// browser.request routes through a local browser proxy (e.g. a Playwright
+	// bridge server).  The proxy base URL is configured via SWARMSTR_BROWSER_URL.
+	// When the env var is absent, browser control is disabled.
 	proxyBase := strings.TrimRight(os.Getenv("SWARMSTR_BROWSER_URL"), "/")
 	if proxyBase == "" {
 		return nil, fmt.Errorf("browser control is disabled")
 	}
 
-	// Build the full URL: proxy base + the relative path from the request.
-	fullURL := proxyBase + req.Path
+	path := req.Path
+	if path == "" {
+		path = "/"
+	}
 
-	// Build header map from the request (currently schema doesn't expose headers
-	// but we forward Accept if the caller set it via body workaround).
+	// Route browser automation paths to the bridge proxy.
+	isBridgePath := false
+	for _, prefix := range browserBridgePaths {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") || strings.HasPrefix(path, prefix+"?") {
+			isBridgePath = true
+			break
+		}
+	}
+
+	// Check if path looks like an absolute URL (direct fetch).
+	isAbsoluteURL := strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://")
+
+	// Build the full URL.
+	var fullURL string
+	if isAbsoluteURL {
+		// Direct HTTP fetch — do not proxy through bridge.
+		fullURL = path
+	} else {
+		fullURL = proxyBase + path
+	}
+
+	_ = isBridgePath // available for future routing decisions
+
 	headers := map[string]string{
 		"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 	}
+	if isBridgePath {
+		headers["Accept"] = "application/json"
+		headers["Content-Type"] = "application/json"
+	}
 
-	// Convert body from interface{} to something Fetch can handle.
+	// Pass auth token if configured.
+	if token := os.Getenv("SWARMSTR_BROWSER_TOKEN"); token != "" {
+		headers["Authorization"] = "Bearer " + token
+	}
+
 	var bodyVal any
 	if req.Body != nil {
 		bodyVal = req.Body
@@ -6484,7 +8164,16 @@ func applyTTSProviders(reg *operationsRegistry, _ methods.TTSProvidersRequest) (
 		return nil, fmt.Errorf("tts runtime not configured")
 	}
 	_, active := reg.TTSStatus()
-	return map[string]any{"providers": []map[string]any{{"id": "openai", "name": "OpenAI", "configured": false}, {"id": "elevenlabs", "name": "ElevenLabs", "configured": false}, {"id": "edge", "name": "Edge TTS", "configured": true}}, "active": active}, nil
+	var providers []map[string]any
+	if controlTTSMgr != nil {
+		providers = controlTTSMgr.Providers()
+	} else {
+		providers = []map[string]any{
+			{"id": "openai", "name": "OpenAI TTS", "configured": false, "voices": []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"}},
+			{"id": "kokoro", "name": "Kokoro TTS (local)", "configured": false, "voices": []string{}},
+		}
+	}
+	return map[string]any{"providers": providers, "active": active}, nil
 }
 
 func applyTTSSetProvider(reg *operationsRegistry, req methods.TTSSetProviderRequest) (map[string]any, error) {
@@ -6509,15 +8198,71 @@ func applyTTSDisable(reg *operationsRegistry, _ methods.TTSDisableRequest) (map[
 	return map[string]any{"enabled": reg.SetTTSEnabled(false)}, nil
 }
 
-func applyTTSConvert(reg *operationsRegistry, req methods.TTSConvertRequest) (map[string]any, error) {
+// countEligible counts how many hook status maps have eligible=true.
+func countEligible(statuses []map[string]any) int {
+	n := 0
+	for _, s := range statuses {
+		if v, ok := s["eligible"]; ok {
+			if b, ok := v.(bool); ok && b {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func applyTTSConvert(ctx context.Context, reg *operationsRegistry, req methods.TTSConvertRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("tts runtime not configured")
 	}
-	_, provider := reg.TTSStatus()
+	enabled, activeProvider := reg.TTSStatus()
+	providerID := activeProvider
 	if req.Provider != "" {
-		provider = req.Provider
+		providerID = req.Provider
 	}
-	return map[string]any{"audioPath": "", "provider": provider, "outputFormat": "mp3", "voiceCompatible": true, "text": req.Text}, nil
+
+	// If TTS is disabled, the manager is unavailable, or the provider is not
+	// configured, return a metadata-only response (no audio) so callers can
+	// always query the method without an error.
+	doConvert := enabled && controlTTSMgr != nil
+	if doConvert {
+		if p := controlTTSMgr.Get(providerID); p == nil || !p.Configured() {
+			doConvert = false
+		}
+	}
+
+	if doConvert {
+		result, err := controlTTSMgr.Convert(ctx, providerID, req.Text, req.Voice)
+		if err != nil {
+			return nil, fmt.Errorf("tts.convert: %w", err)
+		}
+		return map[string]any{
+			"ok":           true,
+			"audioPath":    result.AudioPath,
+			"audioBase64":  result.AudioBase64,
+			"provider":     result.Provider,
+			"voice":        result.Voice,
+			"outputFormat": result.Format,
+			"text":         req.Text,
+		}, nil
+	}
+
+	// Stub / metadata-only response when synthesis is not available.
+	voice := req.Voice
+	if voice == "" && controlTTSMgr != nil {
+		if p := controlTTSMgr.Get(providerID); p != nil && len(p.Voices()) > 0 {
+			voice = p.Voices()[0]
+		}
+	}
+	return map[string]any{
+		"ok":           false,
+		"audioPath":    "",
+		"audioBase64":  "",
+		"provider":     providerID,
+		"voice":        voice,
+		"outputFormat": "mp3",
+		"text":         req.Text,
+	}, nil
 }
 
 func persistMemories(

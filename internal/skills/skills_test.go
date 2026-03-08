@@ -3,8 +3,16 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -12,6 +20,257 @@ func writeYAML(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func writeSkillMD(t *testing.T, dir, skillName, content string) string {
+	t.Helper()
+	skillDir := filepath.Join(dir, skillName)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// ─── LoadSkillMD ─────────────────────────────────────────────────────────────
+
+func TestLoadSkillMD_basic(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillMD(t, dir, "weather", `---
+name: weather
+description: "Get current weather via wttr.in. No API key needed."
+homepage: https://wttr.in/:help
+metadata: { "openclaw": { "emoji": "🌤️", "requires": { "bins": ["curl"] } } }
+---
+
+# Weather Skill
+
+Get weather for any location.
+`)
+	p := filepath.Join(dir, "weather", "SKILL.md")
+	s, err := LoadSkillMD(p)
+	if err != nil {
+		t.Fatalf("LoadSkillMD: %v", err)
+	}
+	if s.SkillKey != "weather" {
+		t.Errorf("skillKey: got %q want %q", s.SkillKey, "weather")
+	}
+	if s.Manifest.Name != "weather" {
+		t.Errorf("name: %q", s.Manifest.Name)
+	}
+	if s.Manifest.Homepage != "https://wttr.in/:help" {
+		t.Errorf("homepage: %q", s.Manifest.Homepage)
+	}
+	if s.Emoji() != "🌤️" {
+		t.Errorf("emoji: %q", s.Emoji())
+	}
+	req := s.EffectiveRequirements()
+	if len(req.Bins) != 1 || req.Bins[0] != "curl" {
+		t.Errorf("requires.bins: %v", req.Bins)
+	}
+	if !strings.Contains(s.Manifest.Body, "Weather Skill") {
+		t.Errorf("body missing heading: %q", s.Manifest.Body[:min(50, len(s.Manifest.Body))])
+	}
+}
+
+func TestLoadSkillMD_withInstallSpecs(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillMD(t, dir, "github", `---
+name: github
+description: "GitHub CLI operations."
+metadata:
+	{
+	"openclaw":
+		{
+		"emoji": "🐙",
+		"requires": { "bins": ["gh"] },
+		"install":
+			[
+			{
+				"id": "brew",
+				"kind": "brew",
+				"formula": "gh",
+				"bins": ["gh"],
+				"label": "Install GitHub CLI (brew)",
+			},
+			],
+		},
+	}
+---
+
+# GitHub
+`)
+	p := filepath.Join(dir, "github", "SKILL.md")
+	s, err := LoadSkillMD(p)
+	if err != nil {
+		t.Fatalf("LoadSkillMD: %v", err)
+	}
+	specs := s.InstallSpecs()
+	if len(specs) != 1 {
+		t.Fatalf("install specs: got %d want 1", len(specs))
+	}
+	if specs[0].Kind != "brew" {
+		t.Errorf("spec.kind: %q", specs[0].Kind)
+	}
+	if specs[0].Formula != "gh" {
+		t.Errorf("spec.formula: %q", specs[0].Formula)
+	}
+}
+
+func TestLoadSkillMD_osFilter(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillMD(t, dir, "imsg", `---
+name: imsg
+description: "iMessage."
+metadata: { "openclaw": { "emoji": "💬", "os": ["darwin"], "requires": { "bins": ["osascript"] } } }
+---
+# iMessage
+`)
+	s, err := LoadSkillMD(filepath.Join(dir, "imsg", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("LoadSkillMD: %v", err)
+	}
+	req := s.EffectiveRequirements()
+	found := false
+	for _, os := range req.OS {
+		if os == "darwin" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("OS constraint 'darwin' not in effective requirements: %v", req.OS)
+	}
+}
+
+func TestLoadSkillMD_noFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillMD(t, dir, "bare", "# Bare Skill\nNo frontmatter here.\n")
+	s, err := LoadSkillMD(filepath.Join(dir, "bare", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("LoadSkillMD: %v", err)
+	}
+	if s.SkillKey != "bare" {
+		t.Errorf("skillKey: %q", s.SkillKey)
+	}
+	if s.Manifest.Name != "bare" {
+		t.Errorf("name default: %q", s.Manifest.Name)
+	}
+}
+
+// ─── ScanBundledDir ───────────────────────────────────────────────────────────
+
+func TestScanBundledDir_findsSkillMDs(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillMD(t, dir, "weather", "---\nname: weather\ndescription: weather\n---\n# Weather\n")
+	writeSkillMD(t, dir, "github", "---\nname: github\ndescription: github\n---\n# GitHub\n")
+	// A stray file should be ignored.
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte("readme"), 0o644)
+
+	skills, err := ScanBundledDir(dir)
+	if err != nil {
+		t.Fatalf("ScanBundledDir: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("got %d skills want 2", len(skills))
+	}
+	// Should be sorted by skillKey.
+	if skills[0].SkillKey != "github" || skills[1].SkillKey != "weather" {
+		t.Errorf("order: %v %v", skills[0].SkillKey, skills[1].SkillKey)
+	}
+	// Both should be marked bundled.
+	for _, s := range skills {
+		if !s.Bundled {
+			t.Errorf("skill %q not marked Bundled", s.SkillKey)
+		}
+	}
+}
+
+func TestScanBundledDir_emptyDir(t *testing.T) {
+	dir := t.TempDir()
+	skills, err := ScanBundledDir(dir)
+	if err != nil {
+		t.Fatalf("ScanBundledDir empty: %v", err)
+	}
+	if len(skills) != 0 {
+		t.Errorf("want 0 skills, got %d", len(skills))
+	}
+}
+
+func TestScanBundledDir_missingDir(t *testing.T) {
+	skills, err := ScanBundledDir("/nonexistent/path/skills")
+	if err != nil {
+		t.Fatalf("ScanBundledDir missing: %v", err)
+	}
+	if skills != nil {
+		t.Errorf("want nil, got %v", skills)
+	}
+}
+
+// ─── looksLikeBundledSkillsDir ────────────────────────────────────────────────
+
+func TestLooksLikeBundledSkillsDir(t *testing.T) {
+	dir := t.TempDir()
+	// Empty dir.
+	if looksLikeBundledSkillsDir(dir) {
+		t.Error("empty dir should not look like bundled dir")
+	}
+	// Dir with SKILL.md subdir.
+	writeSkillMD(t, dir, "weather", "# Weather\n")
+	if !looksLikeBundledSkillsDir(dir) {
+		t.Error("dir with SKILL.md subdir should look like bundled dir")
+	}
+}
+
+// ─── ScanWorkspace with SKILL.md ─────────────────────────────────────────────
+
+func TestScanWorkspace_findsSkillMDandYAML(t *testing.T) {
+	dir := t.TempDir()
+	// SKILL.md skill.
+	writeSkillMD(t, dir, "tmux", "---\nname: tmux\ndescription: tmux skill\n---\n# Tmux\n")
+	// Legacy YAML skill.
+	writeYAML(t, dir, "python.yaml", "name: Python\ndescription: Python\n")
+
+	skills, err := ScanWorkspace(dir)
+	if err != nil {
+		t.Fatalf("ScanWorkspace: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("got %d skills want 2", len(skills))
+	}
+	keys := map[string]bool{}
+	for _, s := range skills {
+		keys[s.SkillKey] = true
+	}
+	if !keys["tmux"] || !keys["python"] {
+		t.Errorf("unexpected skill keys: %v", keys)
+	}
+}
+
+// ─── AggregateBins with SKILL.md ─────────────────────────────────────────────
+
+func TestAggregateBins_includersSkillMDBins(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillMD(t, dir, "github", `---
+name: github
+description: github
+metadata: { "openclaw": { "emoji": "🐙", "requires": { "bins": ["gh"] }, "install": [{"id":"brew","kind":"brew","formula":"gh","bins":["gh"],"label":"brew"}] } }
+---
+# GitHub
+`)
+	skills, _ := ScanBundledDir(dir)
+	bins := AggregateBins(skills)
+	found := false
+	for _, b := range bins {
+		if b == "gh" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("'gh' not in aggregated bins: %v", bins)
 	}
 }
 

@@ -1,0 +1,27 @@
+[Unit]
+Description=swarmstr daemon — Nostr-native AI agent
+Documentation=https://github.com/swarmstr/swarmstr
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Load configuration from ~/.swarmstr/.env
+EnvironmentFile=-%h/.swarmstr/.env
+
+# The binary is expected to be on PATH or at ~/.local/bin/swarmstrd
+ExecStart=%h/.local/bin/swarmstrd
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Hardening (user service — no root needed)
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.swarmstr %h/.local/share/swarmstr /tmp
+
+[Install]
+WantedBy=default.target
