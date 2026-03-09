@@ -412,6 +412,11 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 		if v, ok := m["provider"].(string); ok {
 			ac.Provider = strings.TrimSpace(v)
 		}
+		if v, ok := m["system_prompt"].(string); ok {
+			ac.SystemPrompt = strings.TrimSpace(v)
+		} else if v, ok := m["systemPrompt"].(string); ok {
+			ac.SystemPrompt = strings.TrimSpace(v)
+		}
 		// dm_peers: list of Nostr pubkeys routed to this agent for DMs.
 		if v, ok := m["dm_peers"].([]any); ok {
 			for _, peer := range v {
