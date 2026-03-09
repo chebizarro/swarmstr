@@ -140,9 +140,10 @@ func NewProviderFromEnv() (Provider, error) {
 // AnthropicProvider calls the Anthropic Messages API (POST /v1/messages).
 // Set ANTHROPIC_API_KEY in the environment or use ProviderOverride.APIKey.
 type AnthropicProvider struct {
-	APIKey string
-	Model  string
-	Client *http.Client
+	APIKey       string
+	Model        string
+	SystemPrompt string
+	Client       *http.Client
 }
 
 type anthropicRequest struct {
@@ -235,8 +236,14 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		MaxTokens: 4096,
 		Messages:  []anthropicMessage{{Role: "user", Content: buildAnthropicContent(userText, turn.Images)}},
 	}
-	if context := strings.TrimSpace(turn.Context); context != "" {
-		reqBody.System = context
+	sys := strings.TrimSpace(turn.Context)
+	if sys == "" {
+		sys = strings.TrimSpace(p.SystemPrompt)
+	} else if p.SystemPrompt != "" {
+		sys = strings.TrimSpace(p.SystemPrompt) + "\n\n" + sys
+	}
+	if sys != "" {
+		reqBody.System = sys
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -321,7 +328,13 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 		MaxTokens: 4096,
 		Messages:  []anthropicMessage{{Role: "user", Content: buildAnthropicContent(userText, turn.Images)}},
 	}
-	if sys := strings.TrimSpace(turn.Context); sys != "" {
+	sys := strings.TrimSpace(turn.Context)
+	if sys == "" {
+		sys = strings.TrimSpace(p.SystemPrompt)
+	} else if p.SystemPrompt != "" {
+		sys = strings.TrimSpace(p.SystemPrompt) + "\n\n" + sys
+	}
+	if sys != "" {
 		reqBody.System = sys
 	}
 
@@ -1011,9 +1024,10 @@ func BuildRuntimeForModel(model string, tools ToolExecutor) (Runtime, error) {
 // ProviderOverride carries explicit credentials from the providers config section.
 // Either BaseURL or APIKey (or both) can override the env-based defaults.
 type ProviderOverride struct {
-	BaseURL string
-	APIKey  string
-	Model   string
+	BaseURL      string
+	APIKey       string
+	Model        string
+	SystemPrompt string // injected as system context for every turn
 }
 
 // BuildRuntimeWithOverride constructs a Runtime using explicit provider credentials
@@ -1052,7 +1066,7 @@ func BuildRuntimeWithOverride(model string, override ProviderOverride, tools Too
 		if apiKey == "" {
 			apiKey = strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
 		}
-		return NewProviderRuntime(&AnthropicProvider{Model: effectiveModel, APIKey: apiKey}, tools)
+		return NewProviderRuntime(&AnthropicProvider{Model: effectiveModel, APIKey: apiKey, SystemPrompt: override.SystemPrompt}, tools)
 	}
 
 	// Google Gemini.

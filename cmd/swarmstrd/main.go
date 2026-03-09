@@ -845,13 +845,15 @@ func main() {
 			if provName := strings.TrimSpace(agCfg.Provider); provName != "" {
 				if pe, ok := providers[provName]; ok {
 					override = agent.ProviderOverride{
-						BaseURL: pe.BaseURL,
-						APIKey:  pe.APIKey,
-						Model:   pe.Model,
+						BaseURL:      pe.BaseURL,
+						APIKey:       pe.APIKey,
+						Model:        pe.Model,
+						SystemPrompt: strings.TrimSpace(agCfg.SystemPrompt),
 					}
 				}
 			} else {
 				override = autoResolveProviderOverride(model, providers)
+				override.SystemPrompt = strings.TrimSpace(agCfg.SystemPrompt)
 			}
 			rt, rtErr := agent.BuildRuntimeWithOverride(model, override, tools)
 			if rtErr != nil {
