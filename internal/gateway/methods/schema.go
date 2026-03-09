@@ -125,6 +125,12 @@ const (
 	MethodNodeEvent          = "node.event"
 	MethodNodeResult         = "node.result"
 	MethodNodeCanvasCapabilityRefresh = "node.canvas.capability.refresh"
+
+	MethodCanvasGet    = "canvas.get"
+	MethodCanvasList   = "canvas.list"
+	MethodCanvasUpdate = "canvas.update"
+	MethodCanvasDelete = "canvas.delete"
+
 	MethodCronList           = "cron.list"
 	MethodCronStatus         = "cron.status"
 	MethodCronAdd            = "cron.add"
@@ -776,6 +782,22 @@ type CronRunRequest struct {
 type CronRunsRequest struct {
 	ID    string `json:"id,omitempty"`
 	Limit int    `json:"limit,omitempty"`
+}
+
+type CanvasGetRequest struct {
+	ID string `json:"id"`
+}
+
+type CanvasListRequest struct{}
+
+type CanvasUpdateRequest struct {
+	ID          string `json:"id"`
+	ContentType string `json:"content_type"`
+	Data        string `json:"data"`
+}
+
+type CanvasDeleteRequest struct {
+	ID string `json:"id"`
 }
 
 type ExecApprovalsGetRequest struct{}
@@ -2063,6 +2085,10 @@ func SupportedMethods() []string {
 		MethodNodeEvent,
 		MethodNodeResult,
 		MethodNodeCanvasCapabilityRefresh,
+		MethodCanvasGet,
+		MethodCanvasList,
+		MethodCanvasUpdate,
+		MethodCanvasDelete,
 		MethodCronList,
 		MethodCronStatus,
 		MethodCronAdd,

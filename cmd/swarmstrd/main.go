@@ -28,6 +28,7 @@ import (
 	"swarmstr/internal/autoreply"
 	browserpkg "swarmstr/internal/browser"
 	"swarmstr/internal/config"
+	"swarmstr/internal/canvas"
 	"swarmstr/internal/cron"
 	"swarmstr/internal/update"
 	"swarmstr/internal/gateway/channels"
@@ -53,6 +54,7 @@ import (
 	exportpkg "swarmstr/internal/export"
 	metricspkg "swarmstr/internal/metrics"
 	ratelimitpkg "swarmstr/internal/ratelimit"
+	"swarmstr/internal/agent/toolbuiltin"
 	"swarmstr/internal/plugins/sdk"
 	securitypkg "swarmstr/internal/security"
 	"swarmstr/internal/webui"
@@ -60,6 +62,7 @@ import (
 	// Built-in channel extensions. Importing these packages registers their
 	// ChannelPlugin implementations with the global channel plugin registry.
 	_ "swarmstr/internal/extensions/discord"
+	_ "swarmstr/internal/extensions/irc"
 	_ "swarmstr/internal/extensions/email"
 	_ "swarmstr/internal/extensions/slack"
 	_ "swarmstr/internal/extensions/telegram"
@@ -110,6 +113,9 @@ var (
 
 	// controlTTSMgr is the TTS provider manager (OpenAI, Kokoro, …).
 	controlTTSMgr *ttspkg.Manager
+
+	// controlCanvas is the canvas host that stores agent-rendered UI content.
+	controlCanvas *canvas.Host
 
 	// controlMediaTranscriber is the audio transcription provider (Whisper by default).
 	controlMediaTranscriber mediapkg.Transcriber
@@ -280,6 +286,7 @@ func main() {
 	}()
 	tools := agent.NewToolRegistry()
 	controlToolRegistry = tools
+	var configState *runtimeConfigStore
 	tools.Register("memory.search", func(_ context.Context, args map[string]any) (string, error) {
 		query := agent.ArgString(args, "query")
 		if query == "" {
@@ -325,11 +332,11 @@ func main() {
 			TimeoutMS:    timeoutMS,
 			ReplyTo:      senderPubKey,
 		})
+		controlACPDispatcher.Register(taskID)
 		payload, _ := json.Marshal(acpMsg)
 		if err := dmBus.SendDM(ctx, peerPubKey, string(payload)); err != nil {
 			return "", fmt.Errorf("acp.delegate: send: %w", err)
 		}
-		controlACPDispatcher.Register(taskID)
 		result, err := controlACPDispatcher.Wait(ctx, taskID, time.Duration(timeoutMS)*time.Millisecond)
 		if err != nil {
 			return "", fmt.Errorf("acp.delegate: %w", err)
@@ -340,15 +347,49 @@ func main() {
 		return result.Text, nil
 	})
 
+	// ── Built-in toolbuiltin tools ─────────────────────────────────────────
+	// web_fetch: fetch and extract text from a URL (SSRF-guarded).
+	tools.Register("web_fetch", toolbuiltin.WebFetchTool(toolbuiltin.WebFetchOpts{}))
+
+	// web_search: search the web via Brave (BRAVE_SEARCH_API_KEY) or
+	// Serper (SERPER_API_KEY).  Provider is auto-detected from env vars.
+	tools.Register("web_search", toolbuiltin.WebSearchTool(toolbuiltin.WebSearchConfig{}))
+
+	// memory_store / memory_delete: write and remove memory entries.
+	tools.Register("memory_store", toolbuiltin.MemoryStoreTool(memoryIndex))
+	tools.Register("memory_delete", toolbuiltin.MemoryDeleteTool(memoryIndex))
+
+	// read_pdf: extract text from a local PDF file via pdftotext.
+	// Allowed roots come from extra.tools.pdf.allowed_roots and default to
+	// workspace-scoped directories when not configured.
+	tools.Register("read_pdf", func(ctx context.Context, args map[string]any) (string, error) {
+		if configState == nil {
+			return "", fmt.Errorf("read_pdf: runtime config unavailable")
+		}
+		allowedRoots := configuredPDFAllowedRoots(configState.Get())
+		return toolbuiltin.PDFTool(allowedRoots)(ctx, args)
+	})
+	tools.Register("add_reaction", toolbuiltin.AddReactionTool())
+	tools.Register("remove_reaction", toolbuiltin.RemoveReactionTool())
+	tools.Register("send_typing", toolbuiltin.SendTypingTool())
+	tools.Register("send_in_thread", toolbuiltin.SendInThreadTool())
+	tools.Register("edit_message", toolbuiltin.EditMessageTool())
+
 	agentRuntime, err := agent.NewRuntimeFromEnv(tools)
 	if err != nil {
 		log.Fatalf("init agent runtime: %v", err)
 	}
+
+	// image: analyse an image via the configured vision-capable model.
+	tools.Register("image", toolbuiltin.ImageTool(agentRuntime, toolbuiltin.ImageOpts{}))
+
+	// tts: convert text to speech — registered after controlTTSMgr is set up.
+	// See the deferred registration below (after controlTTSMgr = ttspkg.NewManager()).
 	runtimeCfg, err := ensureRuntimeConfig(ctx, docsRepo, cfg.Relays, pubkey)
 	if err != nil {
 		log.Fatalf("load runtime config: %v", err)
 	}
-	configState := newRuntimeConfigStore(runtimeCfg)
+	configState = newRuntimeConfigStore(runtimeCfg)
 
 	// Resolve memory backend from live config (Extra["memory"]["backend"]).
 	// The backend abstraction is used to future-proof swappable storage; the
@@ -454,6 +495,32 @@ func main() {
 
 	// TTS manager — initialise before the server starts so method handlers have it.
 	controlTTSMgr = ttspkg.NewManager()
+	// Register the tts agent tool now that the manager is initialised.
+	tools.Register("tts", toolbuiltin.TTSTool(controlTTSMgr))
+
+	// Canvas host — shared store for agent-rendered UI content.
+	controlCanvas = canvas.NewHost()
+	controlCanvas.Subscribe(func(ev canvas.UpdateEvent) {
+		emitControlWSEvent(gatewayws.EventCanvasUpdate, gatewayws.CanvasUpdatePayload{
+			TS:          time.Now().UnixMilli(),
+			CanvasID:    ev.CanvasID,
+			ContentType: ev.ContentType,
+			Data:        ev.Data,
+		})
+	})
+	tools.Register("canvas_update", func(_ context.Context, args map[string]any) (string, error) {
+		id := agent.ArgString(args, "canvas_id")
+		contentType := agent.ArgString(args, "content_type")
+		data := agent.ArgString(args, "data")
+		if id == "" || contentType == "" {
+			return "", fmt.Errorf("canvas_update: canvas_id and content_type are required")
+		}
+		if err := controlCanvas.UpdateCanvas(id, contentType, data); err != nil {
+			return "", fmt.Errorf("canvas_update: %w", err)
+		}
+		b, _ := json.Marshal(map[string]any{"ok": true, "canvas_id": id, "content_type": contentType})
+		return string(b), nil
+	})
 
 	// Media transcriber — auto-selected from configured API keys, or a specific
 	// backend from the config's media_understanding.transcriber field.
@@ -917,6 +984,199 @@ func main() {
 	// reaches the agent runtime.
 	slashRouter := autoreply.NewRouter()
 	sessionTurns := autoreply.NewSessionTurns()
+
+	// ── Session and node agent tools ─────────────────────────────────────────
+	// Registered here so they can close over sessionTurns and configState.
+
+	// sessions_list: return all tracked session IDs.
+	tools.Register("sessions_list", func(_ context.Context, _ map[string]any) (string, error) {
+		sessions := sessionTurns.KnownSessions()
+		b, _ := json.Marshal(map[string]any{"sessions": sessions, "count": len(sessions)})
+		return string(b), nil
+	})
+
+	// session_spawn: run a fresh agent session and optionally wait for result.
+	tools.Register("session_spawn", func(ctx context.Context, args map[string]any) (string, error) {
+		instructions := agent.ArgString(args, "instructions")
+		if instructions == "" {
+			return "", fmt.Errorf("session_spawn: instructions is required")
+		}
+		waitFor := args["wait"] == true
+		timeoutSec := agent.ArgInt(args, "timeout_seconds", 60)
+
+		sessionID := generateSessionID()
+		sessionTurns.Track(sessionID, agent.ArgString(args, "agent_id"))
+
+		runTurn := func(ctx context.Context) (string, error) {
+			releaseTurn, acquired := sessionTurns.TryAcquire(sessionID)
+			if !acquired {
+				return "", fmt.Errorf("session_spawn: session %q is busy", sessionID)
+			}
+			defer releaseTurn()
+			turnCtx := assembleSessionMemoryContext(memoryIndex, sessionID, instructions, 6)
+			result, err := agentRuntime.ProcessTurn(ctx, agent.Turn{
+				SessionID: sessionID,
+				UserText:  instructions,
+				Context:   turnCtx,
+			})
+			if err != nil {
+				return "", err
+			}
+			return result.Text, nil
+		}
+
+		if !waitFor {
+			go func() {
+				tctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+				defer cancel()
+				//nolint:errcheck
+				runTurn(tctx)
+			}()
+			b, _ := json.Marshal(map[string]any{"session_id": sessionID, "running": true})
+			return string(b), nil
+		}
+
+		tctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+		defer cancel()
+		text, err := runTurn(tctx)
+		if err != nil {
+			return "", fmt.Errorf("session_spawn: %w", err)
+		}
+		b, _ := json.Marshal(map[string]any{"session_id": sessionID, "result": text})
+		return string(b), nil
+	})
+
+	// session_send: run a turn in an existing named session.
+	tools.Register("session_send", func(ctx context.Context, args map[string]any) (string, error) {
+		sessionID := agent.ArgString(args, "session_id")
+		text := agent.ArgString(args, "text")
+		if sessionID == "" || text == "" {
+			return "", fmt.Errorf("session_send: session_id and text are required")
+		}
+		if !sessionTurns.IsKnown(sessionID) {
+			return "", fmt.Errorf("session_send: unknown session %q", sessionID)
+		}
+		releaseTurn, acquired := sessionTurns.TryAcquire(sessionID)
+		if !acquired {
+			return "", fmt.Errorf("session_send: session %q is busy", sessionID)
+		}
+		defer releaseTurn()
+		turnCtx := assembleSessionMemoryContext(memoryIndex, sessionID, text, 6)
+		result, err := agentRuntime.ProcessTurn(ctx, agent.Turn{
+			SessionID: sessionID,
+			UserText:  text,
+			Context:   turnCtx,
+		})
+		if err != nil {
+			return "", fmt.Errorf("session_send: %w", err)
+		}
+		b, _ := json.Marshal(map[string]any{"session_id": sessionID, "result": result.Text})
+		return string(b), nil
+	})
+
+	// node_invoke: send an ACP task DM to any swarmstr node pubkey and wait.
+	tools.Register("node_invoke", func(ctx context.Context, args map[string]any) (string, error) {
+		targetPubKey := agent.ArgString(args, "node_pubkey")
+		instructions := agent.ArgString(args, "instructions")
+		timeoutMS := int64(agent.ArgInt(args, "timeout_seconds", 30)) * 1000
+		if targetPubKey == "" || instructions == "" {
+			return "", fmt.Errorf("node_invoke: node_pubkey and instructions are required")
+		}
+		controlDMBusMu.RLock()
+		dmBus := controlDMBus
+		controlDMBusMu.RUnlock()
+		if dmBus == nil {
+			return "", fmt.Errorf("node_invoke: DM transport not available")
+		}
+		taskID := acppkg.GenerateTaskID()
+		acpMsg := acppkg.NewTask(taskID, dmBus.PublicKey(), acppkg.TaskPayload{
+			Instructions: instructions,
+			TimeoutMS:    timeoutMS,
+			ReplyTo:      dmBus.PublicKey(),
+		})
+		controlACPDispatcher.Register(taskID)
+		payload, _ := json.Marshal(acpMsg)
+		if err := dmBus.SendDM(ctx, targetPubKey, string(payload)); err != nil {
+			return "", fmt.Errorf("node_invoke: send: %w", err)
+		}
+		result, err := controlACPDispatcher.Wait(ctx, taskID, time.Duration(timeoutMS)*time.Millisecond)
+		if err != nil {
+			return "", fmt.Errorf("node_invoke: %w", err)
+		}
+		if result.Error != "" {
+			return "", fmt.Errorf("node_invoke: remote error: %s", result.Error)
+		}
+		return result.Text, nil
+	})
+
+	// node_list: return paired/known swarmstr nodes.
+	tools.Register("node_list", func(_ context.Context, _ map[string]any) (string, error) {
+		out, err := applyNodeList(configState, methods.NodeListRequest{Limit: 100})
+		if err != nil {
+			return "", fmt.Errorf("node_list: %w", err)
+		}
+		b, _ := json.Marshal(out)
+		return string(b), nil
+	})
+
+	// cron_add: schedule a recurring agent task.
+	tools.Register("cron_add", func(ctx context.Context, args map[string]any) (string, error) {
+		schedule := agent.ArgString(args, "schedule")
+		instructions := agent.ArgString(args, "instructions")
+		if schedule == "" || instructions == "" {
+			return "", fmt.Errorf("cron_add: schedule and instructions are required")
+		}
+		if _, parseErr := cron.Parse(schedule); parseErr != nil {
+			return "", fmt.Errorf("cron_add: invalid schedule %q: %w", schedule, parseErr)
+		}
+		// Guard: cap agent-created cron jobs.
+		const maxAgentCronJobs = 20
+		existing := controlCronJobs.List(0)
+		if len(existing) >= maxAgentCronJobs {
+			return "", fmt.Errorf("cron_add: limit of %d cron jobs reached", maxAgentCronJobs)
+		}
+		agentID := agent.ArgString(args, "agent_id")
+		label := agent.ArgString(args, "label")
+		params, _ := json.Marshal(methods.ChatSendRequest{To: agentID, Text: instructions})
+		req := methods.CronAddRequest{
+			Schedule: schedule,
+			Method:   methods.MethodChatSend,
+			Params:   params,
+		}
+		if label != "" {
+			// CronAddRequest has no label field; embed in ID prefix so it shows in list.
+			req.ID = label
+		}
+		job := controlCronJobs.Add(req)
+		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
+			log.Printf("cron_add: save: %v", saveErr)
+		}
+		b, _ := json.Marshal(map[string]any{"ok": true, "job_id": job.ID, "schedule": job.Schedule})
+		return string(b), nil
+	})
+
+	// cron_list: return scheduled cron jobs as JSON.
+	tools.Register("cron_list", func(_ context.Context, _ map[string]any) (string, error) {
+		jobs := controlCronJobs.List(100)
+		b, _ := json.Marshal(map[string]any{"jobs": jobs, "count": len(jobs)})
+		return string(b), nil
+	})
+
+	// cron_remove: remove a cron job by ID.
+	tools.Register("cron_remove", func(ctx context.Context, args map[string]any) (string, error) {
+		jobID := agent.ArgString(args, "job_id")
+		if jobID == "" {
+			return "", fmt.Errorf("cron_remove: job_id is required")
+		}
+		if err := controlCronJobs.Remove(jobID); err != nil {
+			return "", fmt.Errorf("cron_remove: %w", err)
+		}
+		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
+			log.Printf("cron_remove: save: %v", saveErr)
+		}
+		b, _ := json.Marshal(map[string]any{"ok": true, "job_id": jobID, "removed": true})
+		return string(b), nil
+	})
 
 	slashRouter.Register("help", func(_ context.Context, cmd autoreply.Command) (string, error) {
 		cmds := slashRouter.Registered()
@@ -1391,6 +1651,12 @@ func main() {
 			releaseTurn()
 		}()
 
+		// Inject the channel handle into the context so channel-action tools
+		// (add_reaction, send_typing, etc.) can access it during tool execution.
+		if rawHandle != nil {
+			turnCtx = toolbuiltin.WithChannelHandle(turnCtx, rawHandle)
+		}
+
 		// Use streaming if available; emit EventChatChunk for WS clients.
 		var turnResult agent.TurnResult
 		var turnErr error
@@ -1440,9 +1706,44 @@ func main() {
 		})
 
 		// Deliver the reply via the channel handle.
-		if handle != nil && turnResult.Text != "" {
+		outboundText := turnResult.Text
+		audioSent := false
+		audioPath, isMedia := extractMediaOutputPath(turnResult.Text)
+		if isMedia {
+			if ah, ok := rawHandle.(sdk.AudioHandle); ok {
+				audioData, readErr := os.ReadFile(filepath.FromSlash(audioPath))
+				if readErr != nil {
+					log.Printf("channel audio read error channel=%s path=%s err=%v", chID, audioPath, readErr)
+				} else {
+					format := strings.TrimPrefix(strings.ToLower(filepath.Ext(audioPath)), ".")
+					if format == "" {
+						format = "mp3"
+					}
+					replyCtx := sdk.WithChannelReplyTarget(ctx, senderID)
+					if sendErr := ah.SendAudio(replyCtx, audioData, format); sendErr != nil {
+						log.Printf("channel audio send error channel=%s session=%s err=%v", chID, sessionID, sendErr)
+					} else {
+						audioSent = true
+						metricspkg.MessagesOutbound.Inc()
+						wsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+							TS:        time.Now().UnixMilli(),
+							ChannelID: chID,
+							Direction: "outbound",
+							From:      activeAgentID,
+							Text:      "[audio]",
+						})
+						logBuffer.Append("info", fmt.Sprintf("channel audio reply sent channel=%s session=%s", chID, sessionID))
+					}
+				}
+			}
+			if !audioSent {
+				outboundText = fmt.Sprintf("[audio generated] %s", audioPath)
+			}
+		}
+
+		if !audioSent && handle != nil && outboundText != "" {
 			replyCtx := sdk.WithChannelReplyTarget(ctx, senderID)
-			if sendErr := handle.Send(replyCtx, turnResult.Text); sendErr != nil {
+			if sendErr := handle.Send(replyCtx, outboundText); sendErr != nil {
 				log.Printf("channel reply error channel=%s session=%s err=%v", chID, sessionID, sendErr)
 			} else {
 				metricspkg.MessagesOutbound.Inc()
@@ -1451,7 +1752,7 @@ func main() {
 					ChannelID: chID,
 					Direction: "outbound",
 					From:      activeAgentID,
-					Text:      turnResult.Text,
+					Text:      outboundText,
 				})
 				logBuffer.Append("info", fmt.Sprintf("channel reply sent channel=%s session=%s", chID, sessionID))
 			}
@@ -4267,6 +4568,35 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodCanvasGet:
+		var req methods.CanvasGetRequest
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("invalid params: %w", err)
+		}
+		c := controlCanvas.GetCanvas(req.ID)
+		if c == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("canvas %q not found", req.ID)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"canvas": c}}, nil
+	case methods.MethodCanvasList:
+		canvases := controlCanvas.ListCanvases()
+		return nostruntime.ControlRPCResult{Result: map[string]any{"canvases": canvases, "count": len(canvases)}}, nil
+	case methods.MethodCanvasUpdate:
+		var req methods.CanvasUpdateRequest
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("invalid params: %w", err)
+		}
+		if err := controlCanvas.UpdateCanvas(req.ID, req.ContentType, req.Data); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "canvas_id": req.ID}}, nil
+	case methods.MethodCanvasDelete:
+		var req methods.CanvasDeleteRequest
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("invalid params: %w", err)
+		}
+		removed := controlCanvas.DeleteCanvas(req.ID)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "removed": removed, "canvas_id": req.ID}}, nil
 	case methods.MethodCronList:
 		req, err := methods.DecodeCronListParams(in.Params)
 		if err != nil {
@@ -6157,6 +6487,31 @@ func configuredTranscriber(cfg state.ConfigDoc) mediapkg.Transcriber {
 	return t
 }
 
+func configuredPDFAllowedRoots(cfg state.ConfigDoc) []string {
+	if toolsExtra, ok := cfg.Extra["tools"].(map[string]any); ok {
+		if pdfExtra, ok := toolsExtra["pdf"].(map[string]any); ok {
+			if roots, ok := extensionPolicyList(pdfExtra, "allowed_roots"); ok && len(roots) > 0 {
+				return roots
+			}
+		}
+	}
+	if cfg.Extra != nil {
+		if ws, ok := cfg.Extra["workspace"].(map[string]any); ok {
+			if d, ok := ws["dir"].(string); ok && strings.TrimSpace(d) != "" {
+				return []string{strings.TrimSpace(d)}
+			}
+		}
+	}
+	if d := strings.TrimSpace(os.Getenv("SWARMSTR_WORKSPACE")); d != "" {
+		return []string{d}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return []string{"."}
+	}
+	return []string{filepath.Join(home, ".swarmstr", "workspace")}
+}
+
 func supportedMethods(cfg state.ConfigDoc) []string {
 	base := append([]string{}, methods.SupportedMethods()...)
 	seen := map[string]struct{}{}
@@ -6340,29 +6695,28 @@ var coreToolSections = []coreToolSection{
 }
 
 var coreToolCatalog = []coreToolDef{
-	{ID: "read", Label: "read", Description: "Read file contents", SectionID: "fs", Profiles: []string{"coding"}},
-	{ID: "write", Label: "write", Description: "Create or overwrite files", SectionID: "fs", Profiles: []string{"coding"}},
-	{ID: "edit", Label: "edit", Description: "Make precise edits", SectionID: "fs", Profiles: []string{"coding"}},
 	{ID: "apply_patch", Label: "apply_patch", Description: "Patch files", SectionID: "fs", Profiles: []string{"coding"}},
-	{ID: "exec", Label: "exec", Description: "Run shell commands", SectionID: "runtime", Profiles: []string{"coding"}},
-	{ID: "process", Label: "process", Description: "Manage background processes", SectionID: "runtime", Profiles: []string{"coding"}},
+	{ID: "read_pdf", Label: "read_pdf", Description: "Read local PDF files", SectionID: "fs", Profiles: []string{"coding"}},
+	{ID: "memory.search", Label: "memory.search", Description: "Search memory index", SectionID: "memory", Profiles: []string{"coding"}},
+	{ID: "memory_store", Label: "memory_store", Description: "Store memory entries", SectionID: "memory", Profiles: []string{"coding"}},
+	{ID: "memory_delete", Label: "memory_delete", Description: "Delete memory entries", SectionID: "memory", Profiles: []string{"coding"}},
+	{ID: "sessions_list", Label: "sessions_list", Description: "List sessions", SectionID: "sessions", Profiles: []string{"coding", "messaging"}},
+	{ID: "session_spawn", Label: "session_spawn", Description: "Spawn sub-agent session", SectionID: "sessions", Profiles: []string{"coding"}},
+	{ID: "session_send", Label: "session_send", Description: "Send to session", SectionID: "sessions", Profiles: []string{"coding", "messaging"}},
+	{ID: "canvas_update", Label: "canvas_update", Description: "Update shared canvas", SectionID: "ui", Profiles: []string{}},
+	{ID: "add_reaction", Label: "add_reaction", Description: "Add emoji reaction", SectionID: "messaging", Profiles: []string{"messaging"}},
+	{ID: "remove_reaction", Label: "remove_reaction", Description: "Remove emoji reaction", SectionID: "messaging", Profiles: []string{"messaging"}},
+	{ID: "send_typing", Label: "send_typing", Description: "Send typing indicator", SectionID: "messaging", Profiles: []string{"messaging"}},
+	{ID: "send_in_thread", Label: "send_in_thread", Description: "Send message in thread", SectionID: "messaging", Profiles: []string{"messaging"}},
+	{ID: "edit_message", Label: "edit_message", Description: "Edit channel message", SectionID: "messaging", Profiles: []string{"messaging"}},
+	{ID: "cron_add", Label: "cron_add", Description: "Schedule recurring task", SectionID: "automation", Profiles: []string{"coding"}},
+	{ID: "cron_list", Label: "cron_list", Description: "List scheduled tasks", SectionID: "automation", Profiles: []string{"coding"}},
+	{ID: "cron_remove", Label: "cron_remove", Description: "Remove scheduled task", SectionID: "automation", Profiles: []string{"coding"}},
+	{ID: "node_invoke", Label: "node_invoke", Description: "Invoke a remote node", SectionID: "nodes", Profiles: []string{}},
+	{ID: "node_list", Label: "node_list", Description: "List known nodes", SectionID: "nodes", Profiles: []string{}},
+	{ID: "acp.delegate", Label: "acp.delegate", Description: "Delegate ACP task to peer", SectionID: "nodes", Profiles: []string{}},
 	{ID: "web_search", Label: "web_search", Description: "Search the web", SectionID: "web", Profiles: []string{}},
 	{ID: "web_fetch", Label: "web_fetch", Description: "Fetch web content", SectionID: "web", Profiles: []string{}},
-	{ID: "memory_search", Label: "memory_search", Description: "Semantic search", SectionID: "memory", Profiles: []string{"coding"}},
-	{ID: "memory_get", Label: "memory_get", Description: "Read memory files", SectionID: "memory", Profiles: []string{"coding"}},
-	{ID: "sessions_list", Label: "sessions_list", Description: "List sessions", SectionID: "sessions", Profiles: []string{"coding", "messaging"}},
-	{ID: "sessions_history", Label: "sessions_history", Description: "Session history", SectionID: "sessions", Profiles: []string{"coding", "messaging"}},
-	{ID: "sessions_send", Label: "sessions_send", Description: "Send to session", SectionID: "sessions", Profiles: []string{"coding", "messaging"}},
-	{ID: "sessions_spawn", Label: "sessions_spawn", Description: "Spawn sub-agent", SectionID: "sessions", Profiles: []string{"coding"}},
-	{ID: "subagents", Label: "subagents", Description: "Manage sub-agents", SectionID: "sessions", Profiles: []string{"coding"}},
-	{ID: "session_status", Label: "session_status", Description: "Session status", SectionID: "sessions", Profiles: []string{"minimal", "coding", "messaging"}},
-	{ID: "browser", Label: "browser", Description: "Control web browser", SectionID: "ui", Profiles: []string{}},
-	{ID: "canvas", Label: "canvas", Description: "Control canvases", SectionID: "ui", Profiles: []string{}},
-	{ID: "message", Label: "message", Description: "Send messages", SectionID: "messaging", Profiles: []string{"messaging"}},
-	{ID: "cron", Label: "cron", Description: "Schedule tasks", SectionID: "automation", Profiles: []string{"coding"}},
-	{ID: "gateway", Label: "gateway", Description: "Gateway control", SectionID: "automation", Profiles: []string{}},
-	{ID: "nodes", Label: "nodes", Description: "Nodes + devices", SectionID: "nodes", Profiles: []string{}},
-	{ID: "agents_list", Label: "agents_list", Description: "List agents", SectionID: "agents", Profiles: []string{}},
 	{ID: "image", Label: "image", Description: "Image understanding", SectionID: "media", Profiles: []string{"coding"}},
 	{ID: "tts", Label: "tts", Description: "Text-to-speech conversion", SectionID: "media", Profiles: []string{}},
 }
@@ -9162,4 +9516,28 @@ func (t *memoryIndexTracker) MarkIndexed(ctx context.Context, repo *state.DocsRe
 
 	_, err := repo.PutCheckpoint(ctx, "memory_index", checkpoint)
 	return err
+}
+
+func generateSessionID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("sess-%d", time.Now().UnixNano())
+	}
+	return "sess-" + hex.EncodeToString(b)
+}
+
+func extractMediaOutputPath(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, toolbuiltin.MediaPrefix) {
+		return "", false
+	}
+	payload := strings.TrimPrefix(trimmed, toolbuiltin.MediaPrefix)
+	if i := strings.IndexByte(payload, '\n'); i >= 0 {
+		payload = payload[:i]
+	}
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return "", false
+	}
+	return payload, true
 }

@@ -66,6 +66,9 @@ const (
 	// EventChatChunk is emitted during streaming generation, delivering a single
 	// text token or token group as it arrives from the provider.
 	EventChatChunk = "chat.chunk"
+
+	// EventCanvasUpdate is emitted when an agent writes to a named canvas.
+	EventCanvasUpdate = "canvas.update"
 )
 
 // AllPushEvents is the canonical ordered list of events the server may push.
@@ -94,6 +97,7 @@ var AllPushEvents = []string{
 	"presence.updated",
 	"connect.challenge",
 	EventChatChunk,
+	EventCanvasUpdate,
 }
 
 // ─── EventEmitter interface ───────────────────────────────────────────────────
@@ -275,6 +279,14 @@ type ChatChunkPayload struct {
 	SessionID string `json:"session_id"`
 	Text      string `json:"text"`
 	Done      bool   `json:"done,omitempty"` // true on the final chunk
+}
+
+// CanvasUpdatePayload is the payload for EventCanvasUpdate events.
+type CanvasUpdatePayload struct {
+	TS          int64  `json:"ts_ms"`
+	CanvasID    string `json:"canvas_id"`
+	ContentType string `json:"content_type"`
+	Data        string `json:"data"`
 }
 
 // TalkModePayload is the payload for EventTalkMode events.
