@@ -1556,6 +1556,9 @@ func main() {
 			if err := persistAssistant(ctx, docsRepo, transcriptRepo, sessionID, turnResult.Text, msg.EventID); err != nil {
 				log.Printf("persist assistant failed session=%s err=%v", sessionID, err)
 			}
+			// Also persist assistant reply into the memory index (Qdrant/FTS).
+			persistMemories(ctx, docsRepo, memoryRepo, memoryIndex, memoryTracker,
+				memory.ExtractFromTurn(sessionID, "assistant", msg.EventID, turnResult.Text, time.Now().Unix()))
 			// Ingest assistant reply into the context engine.
 			if controlContextEngine != nil && turnResult.Text != "" {
 				if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{

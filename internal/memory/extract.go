@@ -16,6 +16,10 @@ var stopwords = map[string]struct{}{
 	"for": {}, "with": {}, "is": {}, "are": {}, "be": {}, "i": {}, "you": {}, "me": {}, "my": {},
 }
 
+// minTurnLen is the minimum character length for a turn to be stored in memory.
+// Short acks ("ok", "yes", "thanks") don't carry useful information.
+const minTurnLen = 20
+
 func ExtractFromTurn(sessionID, role, sourceRef, text string, unix int64) []state.MemoryDoc {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -25,11 +29,13 @@ func ExtractFromTurn(sessionID, role, sourceRef, text string, unix int64) []stat
 		unix = time.Now().Unix()
 	}
 
-	candidate := explicitMemoryPayload(trimmed)
-	if candidate == "" {
+	// Always store turns that are substantive enough — the retrieval layer
+	// handles relevance. Short acks and noise are filtered by minTurnLen.
+	const maxMemoryLen = 1024
+	candidate := trimmed
+	if len(candidate) < minTurnLen {
 		return nil
 	}
-	const maxMemoryLen = 1024
 	if len(candidate) > maxMemoryLen {
 		candidate = candidate[:maxMemoryLen]
 	}
