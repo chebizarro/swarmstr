@@ -395,7 +395,23 @@ func main() {
 	}
 	configState = newRuntimeConfigStore(runtimeCfg)
 
-	// Resolve memory backend from live config (Extra["memory"]["backend"]).
+
+	// ── Early config file sync ──────────────────────────────────────────────
+	// Load config.json synchronously at startup so that configState reflects
+	// file-based settings (e.g. memory.backend) before the backend is initialized.
+	// The file watcher is started later and handles subsequent hot-reloads.
+	if cfgPath, cfgErr := config.DefaultConfigPath(); cfgErr == nil {
+		if config.ConfigFileExists(cfgPath) {
+			if earlyDoc, earlyErr := config.LoadConfigFile(cfgPath); earlyErr == nil {
+				configState.Set(earlyDoc)
+				log.Printf("config: early sync from %s", cfgPath)
+			} else {
+				log.Printf("config: early sync failed (%v); using Nostr state", earlyErr)
+			}
+		}
+	}
+
+		// Resolve memory backend from live config (Extra["memory"]["backend"]).
 	// The backend abstraction is used to future-proof swappable storage; the
 	// default "memory" backend wraps the in-process JSON inverted index.
 	{
