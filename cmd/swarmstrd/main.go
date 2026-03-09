@@ -423,11 +423,12 @@ func main() {
 		}
 				memoryBackendPath := ""
 		if mExtra2, ok2 := configState.Get().Extra["memory"].(map[string]any); ok2 {
-			if u, ok3 := mExtra2["url"].(string); ok3 {
-				memoryBackendPath = u
-			}
-			if c, ok3 := mExtra2["collection"].(string); ok3 {
-				memoryBackendPath += "|" + c
+			qdrantURL, _ := mExtra2["url"].(string)
+			ollamaURL, _ := mExtra2["ollama_url"].(string)
+			collection, _ := mExtra2["collection"].(string)
+			// path format: "qdrantURL|ollamaURL|collection"
+			if qdrantURL != "" {
+				memoryBackendPath = qdrantURL + "|" + ollamaURL + "|" + collection
 			}
 		}
 		if be, beErr := memory.OpenBackend(memoryBackendName, memoryBackendPath); beErr != nil {

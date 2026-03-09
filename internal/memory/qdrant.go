@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -128,9 +128,11 @@ func (b *QdrantBackend) ensureCollection() error {
 }
 
 func (b *QdrantBackend) upsert(id string, vec []float32, payload map[string]any) error {
+	// Qdrant requires UUID or unsigned int point IDs.
+	qdrantID := stringToUUID(id)
 	body, _ := json.Marshal(map[string]any{
 		"points": []map[string]any{
-			{"id": id, "vector": vec, "payload": payload},
+			{"id": qdrantID, "vector": vec, "payload": payload},
 		},
 	})
 	req, _ := http.NewRequest(http.MethodPut,
@@ -373,7 +375,25 @@ func (b *QdrantBackend) Close() error { return nil }
 func randomID() string {
 	buf := make([]byte, 16)
 	rand.Read(buf)
-	return hex.EncodeToString(buf)
+	return toUUID(buf)
+}
+
+// toUUID formats 16 bytes as a RFC-4122 UUID string.
+func toUUID(b []byte) string {
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// stringToUUID converts any string to a deterministic UUID v5-like identifier.
+func stringToUUID(s string) string {
+	h := sha256.Sum256([]byte(s))
+	b := h[:16]
+	b[6] = (b[6] & 0x0f) | 0x50 // version 5
+	b[8] = (b[8] & 0x3f) | 0x80 // variant
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // HybridIndex wraps the existing JSON-FTS Index and mirrors writes to a Backend.
