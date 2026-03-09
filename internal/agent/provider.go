@@ -217,7 +217,16 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		apiKey = strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
 	}
 	if apiKey == "" {
+		// Also check the OAuth token env var (OpenClaw compat).
+		apiKey = strings.TrimSpace(os.Getenv("ANTHROPIC_OAUTH_TOKEN"))
+	}
+	if apiKey == "" {
 		return ProviderResult{}, fmt.Errorf("ANTHROPIC_API_KEY is not set")
+	}
+
+	// Detect OAuth credentials (OpenClaw format or sk-ant-oat prefix).
+	if access, refresh, isOAuth := ParseAnthropicOAuthCredential(apiKey); isOAuth {
+		return p.generateWithOAuth(ctx, turn, model, access, refresh)
 	}
 
 	userText := strings.TrimSpace(turn.UserText)
@@ -268,6 +277,92 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		}
 	}
 	return ProviderResult{}, fmt.Errorf("anthropic returned no text content")
+}
+
+// generateWithOAuth performs an Anthropic API call using OAuth Bearer token auth.
+// On 401, it attempts to refresh the token once and retries.
+func (p *AnthropicProvider) generateWithOAuth(ctx context.Context, turn Turn, model, access, refresh string) (ProviderResult, error) {
+	result, err := p.doAnthropicOAuthRequest(ctx, turn, model, access)
+	if err == nil {
+		return result, nil
+	}
+	// On auth failure, try refreshing if we have a refresh token.
+	if refresh == "" || !isAnthropicAuthError(err) {
+		return ProviderResult{}, fmt.Errorf("anthropic oauth: %w", err)
+	}
+	newAccess, newRefresh, refreshErr := AnthropicOAuthRefresh(ctx, refresh)
+	if refreshErr != nil {
+		return ProviderResult{}, fmt.Errorf("anthropic oauth: request failed (%v); token refresh also failed: %w", err, refreshErr)
+	}
+	// Update in-process cache with new tokens.
+	oauthTokenCache.mu.Lock()
+	oauthTokenCache.access = newAccess
+	oauthTokenCache.refresh = newRefresh
+	oauthTokenCache.expiry = time.Now().Add(55 * time.Minute)
+	oauthTokenCache.mu.Unlock()
+
+	return p.doAnthropicOAuthRequest(ctx, turn, model, newAccess)
+}
+
+// isAnthropicAuthError reports whether err indicates an authentication failure.
+func isAnthropicAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "401") || strings.Contains(s, "authentication_error") || strings.Contains(s, "permission_error")
+}
+
+// doAnthropicOAuthRequest performs a single Anthropic API call with Bearer auth.
+func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Turn, model, accessToken string) (ProviderResult, error) {
+	userText := strings.TrimSpace(turn.UserText)
+	reqBody := anthropicRequest{
+		Model:     model,
+		MaxTokens: 4096,
+		Messages:  []anthropicMessage{{Role: "user", Content: buildAnthropicContent(userText, turn.Images)}},
+	}
+	if sys := strings.TrimSpace(turn.Context); sys != "" {
+		reqBody.System = sys
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	applyAnthropicOAuthHeaders(req, accessToken)
+
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 120 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	defer resp.Body.Close()
+
+	var out anthropicResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return ProviderResult{}, fmt.Errorf("anthropic oauth decode: %w", err)
+	}
+	if out.Error != nil {
+		return ProviderResult{}, fmt.Errorf("anthropic oauth error %s: %s", out.Error.Type, out.Error.Message)
+	}
+	if resp.StatusCode >= 300 {
+		return ProviderResult{}, fmt.Errorf("anthropic oauth returned %s", resp.Status)
+	}
+	for _, c := range out.Content {
+		if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
+			return ProviderResult{Text: c.Text}, nil
+		}
+	}
+	return ProviderResult{}, fmt.Errorf("anthropic oauth returned no text content")
 }
 
 // OpenAIChatProvider calls the OpenAI Chat Completions API (POST /v1/chat/completions).
