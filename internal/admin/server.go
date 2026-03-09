@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"swarmstr/internal/extensions/msteams"
 	"swarmstr/internal/config"
 	"swarmstr/internal/gateway/methods"
 	"swarmstr/internal/memory"
@@ -168,6 +169,14 @@ func Start(ctx context.Context, opts ServerOptions) error {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/webhooks/msteams/", func(w http.ResponseWriter, r *http.Request) {
+		channelID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webhooks/msteams/"))
+		if channelID == "" {
+			http.Error(w, "missing channel id", http.StatusBadRequest)
+			return
+		}
+		msteams.HandleWebhook(channelID, w, r)
+	})
 	mux.HandleFunc("/health", withAuth(opts.Token, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}))

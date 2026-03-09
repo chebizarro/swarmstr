@@ -63,6 +63,9 @@ import (
 	// ChannelPlugin implementations with the global channel plugin registry.
 	_ "swarmstr/internal/extensions/discord"
 	_ "swarmstr/internal/extensions/irc"
+	_ "swarmstr/internal/extensions/matrix"
+	_ "swarmstr/internal/extensions/msteams"
+	_ "swarmstr/internal/extensions/mattermost"
 	_ "swarmstr/internal/extensions/email"
 	_ "swarmstr/internal/extensions/slack"
 	_ "swarmstr/internal/extensions/telegram"

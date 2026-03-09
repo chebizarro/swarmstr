@@ -153,6 +153,7 @@ func (p *MattermostPlugin) Connect(
 		onMessage:      onMessage,
 		done:           make(chan struct{}),
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
+		userNameByID:   map[string]string{},
 	}
 
 	// Resolve team and channel IDs from slugs.
@@ -182,9 +183,11 @@ type mmBot struct {
 	teamID         string
 	mmChannelID    string // resolved Mattermost channel ID
 	selfUserID     string
+	selfUsername   string
 	allowedSenders map[string]bool
 	requireMention bool
 	onMessage      func(sdk.InboundChannelMessage)
+	userNameByID   map[string]string
 	// lastSince is the cursor for polling (Unix ms).
 	lastSince      int64
 	done           chan struct{}
@@ -296,7 +299,73 @@ func (b *mmBot) fetchSelfID(ctx context.Context) error {
 		return err
 	}
 	b.selfUserID = me.ID
+	b.selfUsername = me.Username
+	if b.selfUserID != "" && b.selfUsername != "" {
+		b.mu.Lock()
+		if b.userNameByID == nil {
+			b.userNameByID = map[string]string{}
+		}
+		b.userNameByID[b.selfUserID] = b.selfUsername
+		b.mu.Unlock()
+	}
 	return nil
+}
+
+func (b *mmBot) resolveUsernames(ctx context.Context, userIDs []string) map[string]string {
+	out := make(map[string]string, len(userIDs))
+	if len(userIDs) == 0 {
+		return out
+	}
+
+	missing := make([]string, 0, len(userIDs))
+	b.mu.Lock()
+	if b.userNameByID == nil {
+		b.userNameByID = map[string]string{}
+	}
+	for _, id := range userIDs {
+		if id == "" {
+			continue
+		}
+		if username, ok := b.userNameByID[id]; ok {
+			out[id] = username
+			continue
+		}
+		missing = append(missing, id)
+	}
+	b.mu.Unlock()
+
+	if len(missing) == 0 {
+		return out
+	}
+
+	var users []struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+	}
+	if err := b.doJSON(ctx, http.MethodPost, "/users/ids", missing, &users); err != nil {
+		return out
+	}
+	b.mu.Lock()
+	for _, u := range users {
+		if u.ID == "" || u.Username == "" {
+			continue
+		}
+		b.userNameByID[u.ID] = u.Username
+		out[u.ID] = u.Username
+	}
+	b.mu.Unlock()
+	return out
+}
+
+func messageMentions(message, username string) bool {
+	if username == "" {
+		return false
+	}
+	needle := "@" + strings.ToLower(strings.TrimSpace(username))
+	if needle == "@" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(message), needle)
 }
 
 // ─── Polling ──────────────────────────────────────────────────────────────────
@@ -351,9 +420,25 @@ func (b *mmBot) fetchPosts(ctx context.Context) {
 		result.Order[i], result.Order[j] = result.Order[j], result.Order[i]
 	}
 
+	userIDSet := map[string]struct{}{}
+	userIDs := make([]string, 0, len(result.Order))
+	for _, postID := range result.Order {
+		post := result.Posts[postID]
+		if post.UserID == "" {
+			continue
+		}
+		if _, seen := userIDSet[post.UserID]; seen {
+			continue
+		}
+		userIDSet[post.UserID] = struct{}{}
+		userIDs = append(userIDs, post.UserID)
+	}
+	usernameByID := b.resolveUsernames(ctx, userIDs)
+
 	var newSince int64
 	for _, postID := range result.Order {
 		post := result.Posts[postID]
+		senderUsername := usernameByID[post.UserID]
 		if post.DeleteAt > 0 {
 			continue
 		}
@@ -366,7 +451,12 @@ func (b *mmBot) fetchPosts(ctx context.Context) {
 		if post.Message == "" {
 			continue
 		}
-		if len(b.allowedSenders) > 0 && !b.allowedSenders[post.UserID] {
+		if len(b.allowedSenders) > 0 {
+			if senderUsername == "" || !b.allowedSenders[senderUsername] {
+				continue
+			}
+		}
+		if b.requireMention && b.selfUsername != "" && !messageMentions(post.Message, b.selfUsername) {
 			continue
 		}
 
