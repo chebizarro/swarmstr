@@ -1413,6 +1413,23 @@ func main() {
 				activeAgentID = "main"
 			}
 			activeRuntime := agentRegistry.Get(activeAgentID)
+
+			// Inject system_prompt from live config into turnContext.
+			// This runs at turn time so hot-reloaded config is always used.
+			liveAgents := configState.Get().Agents
+			log.Printf("DEBUG turn agent=%s live_agents=%d context_before=%d", activeAgentID, len(liveAgents), len(turnContext))
+			for _, ac := range liveAgents {
+				if ac.ID == activeAgentID && strings.TrimSpace(ac.SystemPrompt) != "" {
+					sp := strings.TrimSpace(ac.SystemPrompt)
+					if turnContext == "" {
+						turnContext = sp
+					} else {
+						turnContext = sp + "\n\n" + turnContext
+					}
+					log.Printf("DEBUG system_prompt injected agent=%s len=%d", activeAgentID, len(sp))
+					break
+				}
+			}
 			wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 				TS:      time.Now().UnixMilli(),
 				AgentID: activeAgentID,
