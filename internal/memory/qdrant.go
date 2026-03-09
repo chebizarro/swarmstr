@@ -1,0 +1,435 @@
+// Package memory - Qdrant backend for semantic memory search.
+// Uses Ollama (nomic-embed-text) for embeddings + Qdrant for vector storage.
+package memory
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"swarmstr/internal/store/state"
+)
+
+const (
+	qdrantDefaultURL  = "http://localhost:6333"
+	ollamaDefaultURL  = "http://localhost:11434"
+	defaultCollection = "swarmstr"
+	embedModel        = "nomic-embed-text"
+	vectorDim         = 768
+)
+
+func init() {
+	RegisterBackend("qdrant", func(path string) (Backend, error) {
+		// path encodes "qdrant_url|ollama_url|collection" or just qdrant_url
+		qdrantURL := qdrantDefaultURL
+		ollamaURL := ollamaDefaultURL
+		collection := defaultCollection
+		if path != "" {
+			parts := strings.SplitN(path, "|", 3)
+			if len(parts) >= 1 && parts[0] != "" {
+				qdrantURL = parts[0]
+			}
+			if len(parts) >= 2 && parts[1] != "" {
+				ollamaURL = parts[1]
+			}
+			if len(parts) >= 3 && parts[2] != "" {
+				collection = parts[2]
+			}
+		}
+		b := &QdrantBackend{
+			qdrantURL:  strings.TrimRight(qdrantURL, "/"),
+			ollamaURL:  strings.TrimRight(ollamaURL, "/"),
+			collection: collection,
+			client:     &http.Client{Timeout: 30 * time.Second},
+		}
+		if err := b.ensureCollection(); err != nil {
+			return nil, fmt.Errorf("qdrant: ensure collection %q: %w", collection, err)
+		}
+		return b, nil
+	})
+}
+
+// QdrantBackend implements memory.Backend using Qdrant + Ollama embeddings.
+type QdrantBackend struct {
+	mu         sync.Mutex
+	qdrantURL  string
+	ollamaURL  string
+	collection string
+	client     *http.Client
+}
+
+// -- embedding --
+
+func (b *QdrantBackend) embed(text string) ([]float32, error) {
+	body, _ := json.Marshal(map[string]any{
+		"model":  embedModel,
+		"prompt": text,
+	})
+	resp, err := b.client.Post(b.ollamaURL+"/api/embeddings", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("ollama embed: %w", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Embedding []float32 `json:"embedding"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("ollama embed decode: %w", err)
+	}
+	if len(out.Embedding) == 0 {
+		return nil, fmt.Errorf("ollama embed returned empty vector")
+	}
+	return out.Embedding, nil
+}
+
+// -- Qdrant helpers --
+
+func (b *QdrantBackend) ensureCollection() error {
+	// Check if collection exists
+	resp, err := b.client.Get(fmt.Sprintf("%s/collections/%s", b.qdrantURL, b.collection))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 200 {
+		return nil // exists
+	}
+	// Create it
+	body, _ := json.Marshal(map[string]any{
+		"vectors": map[string]any{
+			"size":     vectorDim,
+			"distance": "Cosine",
+		},
+		"on_disk_payload": true,
+	})
+	req, _ := http.NewRequest(http.MethodPut,
+		fmt.Sprintf("%s/collections/%s", b.qdrantURL, b.collection),
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	cr, err := b.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer cr.Body.Close()
+	if cr.StatusCode >= 300 {
+		raw, _ := io.ReadAll(cr.Body)
+		return fmt.Errorf("create collection status %d: %s", cr.StatusCode, raw)
+	}
+	return nil
+}
+
+func (b *QdrantBackend) upsert(id string, vec []float32, payload map[string]any) error {
+	body, _ := json.Marshal(map[string]any{
+		"points": []map[string]any{
+			{"id": id, "vector": vec, "payload": payload},
+		},
+	})
+	req, _ := http.NewRequest(http.MethodPut,
+		fmt.Sprintf("%s/collections/%s/points", b.qdrantURL, b.collection),
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upsert status %d: %s", resp.StatusCode, raw)
+	}
+	return nil
+}
+
+type qdrantSearchResult struct {
+	Result []struct {
+		ID      string         `json:"id"`
+		Score   float64        `json:"score"`
+		Payload map[string]any `json:"payload"`
+	} `json:"result"`
+}
+
+func (b *QdrantBackend) vectorSearch(vec []float32, limit int, filter map[string]any) ([]IndexedMemory, error) {
+	req := map[string]any{
+		"vector":      vec,
+		"limit":       limit,
+		"with_payload": true,
+	}
+	if filter != nil {
+		req["filter"] = filter
+	}
+	body, _ := json.Marshal(req)
+	resp, err := b.client.Post(
+		fmt.Sprintf("%s/collections/%s/points/search", b.qdrantURL, b.collection),
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var sr qdrantSearchResult
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		return nil, err
+	}
+	out := make([]IndexedMemory, 0, len(sr.Result))
+	for _, r := range sr.Result {
+		m := payloadToIndexedMemory(r.ID, r.Payload)
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+func payloadToIndexedMemory(id string, p map[string]any) IndexedMemory {
+	m := IndexedMemory{MemoryID: id}
+	if v, ok := p["text"].(string); ok {
+		m.Text = v
+	}
+	if v, ok := p["session_id"].(string); ok {
+		m.SessionID = v
+	}
+	if v, ok := p["role"].(string); ok {
+		m.Role = v
+	}
+	if v, ok := p["topic"].(string); ok {
+		m.Topic = v
+	}
+	if v, ok := p["unix"].(float64); ok {
+		m.Unix = int64(v)
+	}
+	if v, ok := p["keywords"].([]any); ok {
+		for _, kw := range v {
+			if s, ok := kw.(string); ok {
+				m.Keywords = append(m.Keywords, s)
+			}
+		}
+	}
+	return m
+}
+
+// -- Backend interface --
+
+func (b *QdrantBackend) Add(doc state.MemoryDoc) {
+	text := strings.TrimSpace(doc.Text)
+	if text == "" {
+		return
+	}
+	vec, err := b.embed(text)
+	if err != nil {
+		log.Printf("qdrant: embed failed: %v", err)
+		return
+	}
+	id := doc.MemoryID
+	if id == "" {
+		id = randomID()
+	}
+	payload := map[string]any{
+		"text":       text,
+		"session_id": doc.SessionID,
+		"role":       doc.Role,
+		"unix":       time.Now().Unix(),
+	}
+	if err := b.upsert(id, vec, payload); err != nil {
+		log.Printf("qdrant: upsert failed: %v", err)
+	}
+}
+
+func (b *QdrantBackend) Store(sessionID, text string, tags []string) string {
+	id := randomID()
+	vec, err := b.embed(text)
+	if err != nil {
+		log.Printf("qdrant: embed failed: %v", err)
+		return id
+	}
+	payload := map[string]any{
+		"text":       text,
+		"session_id": sessionID,
+		"keywords":   tags,
+		"unix":       time.Now().Unix(),
+	}
+	if err := b.upsert(id, vec, payload); err != nil {
+		log.Printf("qdrant: upsert failed: %v", err)
+	}
+	return id
+}
+
+func (b *QdrantBackend) Search(query string, limit int) []IndexedMemory {
+	vec, err := b.embed(query)
+	if err != nil {
+		log.Printf("qdrant: embed for search failed: %v", err)
+		return nil
+	}
+	results, err := b.vectorSearch(vec, limit, nil)
+	if err != nil {
+		log.Printf("qdrant: search failed: %v", err)
+		return nil
+	}
+	return results
+}
+
+func (b *QdrantBackend) SearchSession(sessionID, query string, limit int) []IndexedMemory {
+	vec, err := b.embed(query)
+	if err != nil {
+		return nil
+	}
+	filter := map[string]any{
+		"must": []map[string]any{
+			{"key": "session_id", "match": map[string]any{"value": sessionID}},
+		},
+	}
+	results, err := b.vectorSearch(vec, limit, filter)
+	if err != nil {
+		log.Printf("qdrant: session search failed: %v", err)
+		return nil
+	}
+	return results
+}
+
+func (b *QdrantBackend) ListSession(sessionID string, limit int) []IndexedMemory {
+	// Use a neutral embedding to get recent entries, filtered by session
+	// Fallback: scroll API
+	body, _ := json.Marshal(map[string]any{
+		"filter": map[string]any{
+			"must": []map[string]any{
+				{"key": "session_id", "match": map[string]any{"value": sessionID}},
+			},
+		},
+		"limit":        limit,
+		"with_payload": true,
+		"order_by":     map[string]any{"key": "unix", "direction": "desc"},
+	})
+	resp, err := b.client.Post(
+		fmt.Sprintf("%s/collections/%s/points/scroll", b.qdrantURL, b.collection),
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var sr struct {
+		Result struct {
+			Points []struct {
+				ID      string         `json:"id"`
+				Payload map[string]any `json:"payload"`
+			} `json:"points"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		return nil
+	}
+	out := make([]IndexedMemory, 0)
+	for _, p := range sr.Result.Points {
+		out = append(out, payloadToIndexedMemory(p.ID, p.Payload))
+	}
+	return out
+}
+
+func (b *QdrantBackend) Count() int {
+	resp, err := b.client.Get(fmt.Sprintf("%s/collections/%s", b.qdrantURL, b.collection))
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	var info struct {
+		Result struct {
+			PointsCount int `json:"points_count"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return 0
+	}
+	return info.Result.PointsCount
+}
+
+func (b *QdrantBackend) SessionCount() int { return 0 } // not efficient in Qdrant without aggregation
+
+func (b *QdrantBackend) Compact(maxEntries int) int { return 0 } // Qdrant manages its own storage
+
+func (b *QdrantBackend) Save() error { return nil } // Qdrant persists automatically
+
+func (b *QdrantBackend) Delete(id string) bool {
+	body, _ := json.Marshal(map[string]any{
+		"points": []string{id},
+	})
+	req, _ := http.NewRequest(http.MethodPost,
+		fmt.Sprintf("%s/collections/%s/points/delete", b.qdrantURL, b.collection),
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode < 300
+}
+
+func (b *QdrantBackend) Close() error { return nil }
+
+func randomID() string {
+	buf := make([]byte, 16)
+	rand.Read(buf)
+	return hex.EncodeToString(buf)
+}
+
+// HybridIndex wraps the existing JSON-FTS Index and mirrors writes to a Backend.
+// Reads prefer the Backend (semantic), falling back to the JSON index.
+type HybridIndex struct {
+	*Index
+	backend Backend
+}
+
+// NewHybridIndex creates a HybridIndex that writes to both stores.
+func NewHybridIndex(idx *Index, backend Backend) *HybridIndex {
+	return &HybridIndex{Index: idx, backend: backend}
+}
+
+func (h *HybridIndex) Search(query string, limit int) []IndexedMemory {
+	// Prefer semantic search from backend
+	results := h.backend.Search(query, limit)
+	if len(results) > 0 {
+		return results
+	}
+	// Fallback to FTS
+	return h.Index.Search(query, limit)
+}
+
+func (h *HybridIndex) SearchSession(sessionID, query string, limit int) []IndexedMemory {
+	results := h.backend.SearchSession(sessionID, query, limit)
+	if len(results) > 0 {
+		return results
+	}
+	return h.Index.SearchSession(sessionID, query, limit)
+}
+
+// persistToBackend asynchronously mirrors an Add to the vector backend.
+func (h *HybridIndex) persistToBackend(doc state.MemoryDoc) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = ctx
+		h.backend.Add(doc)
+	}()
+}
+func (h *HybridIndex) Add(doc state.MemoryDoc) {
+	h.Index.Add(doc)
+	h.persistToBackend(doc)
+}
+
+
+// Store is the interface satisfied by both *Index and *HybridIndex.
+type Store interface {
+	Add(doc state.MemoryDoc)
+	Search(query string, limit int) []IndexedMemory
+	SearchSession(sessionID, query string, limit int) []IndexedMemory
+	ListSession(sessionID string, limit int) []IndexedMemory
+	Count() int
+	SessionCount() int
+	Save() error
+	Store(sessionID, text string, tags []string) string
+	Delete(id string) bool
+}
