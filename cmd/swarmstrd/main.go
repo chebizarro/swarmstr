@@ -1441,20 +1441,54 @@ func main() {
 			}
 			activeRuntime := agentRegistry.Get(activeAgentID)
 
-			// Inject system_prompt from live config into turnContext.
-			// This runs at turn time so hot-reloaded config is always used.
-			liveAgents := configState.Get().Agents
-			log.Printf("DEBUG turn agent=%s live_agents=%d context_before=%d", activeAgentID, len(liveAgents), len(turnContext))
-			for _, ac := range liveAgents {
-				if ac.ID == activeAgentID && strings.TrimSpace(ac.SystemPrompt) != "" {
-					sp := strings.TrimSpace(ac.SystemPrompt)
-					if turnContext == "" {
-						turnContext = sp
-					} else {
-						turnContext = sp + "\n\n" + turnContext
+			// Inject workspace identity files + system_prompt into turnContext.
+			// Loads SOUL.md, IDENTITY.md, USER.md from the agent workspace dir,
+			// then prepends the config system_prompt. Runs at turn time so
+			// hot-reloaded config and edited files are always reflected.
+			{
+				liveAgents := configState.Get().Agents
+				log.Printf("DEBUG turn agent=%s live_agents=%d context_before=%d", activeAgentID, len(liveAgents), len(turnContext))
+
+				// Build workspace identity prefix from files.
+				wsDir := ""
+				var agentSystemPrompt string
+				for _, ac := range liveAgents {
+					if ac.ID == activeAgentID {
+						agentSystemPrompt = strings.TrimSpace(ac.SystemPrompt)
+						wsDir = strings.TrimSpace(ac.WorkspaceDir)
+						break
 					}
-					log.Printf("DEBUG system_prompt injected agent=%s len=%d", activeAgentID, len(sp))
-					break
+				}
+				if wsDir == "" {
+					if home, herr := os.UserHomeDir(); herr == nil {
+						wsDir = filepath.Join(home, ".swarmstr", "workspace")
+					}
+				}
+
+				var identityParts []string
+				for _, fname := range []string{"SOUL.md", "IDENTITY.md", "USER.md"} {
+					fpath := filepath.Join(wsDir, fname)
+					if raw, ferr := os.ReadFile(fpath); ferr == nil && len(raw) > 0 {
+						identityParts = append(identityParts, strings.TrimSpace(string(raw)))
+					}
+				}
+
+				var contextParts []string
+				if len(identityParts) > 0 {
+					contextParts = append(contextParts, strings.Join(identityParts, "\n\n---\n\n"))
+				}
+				if agentSystemPrompt != "" {
+					contextParts = append(contextParts, agentSystemPrompt)
+					log.Printf("DEBUG system_prompt injected agent=%s len=%d", activeAgentID, len(agentSystemPrompt))
+				}
+				if len(contextParts) > 0 {
+					prefix := strings.Join(contextParts, "\n\n")
+					if turnContext == "" {
+						turnContext = prefix
+					} else {
+						turnContext = prefix + "\n\n" + turnContext
+					}
+					log.Printf("DEBUG workspace_context agent=%s identity_files=%d total_len=%d", activeAgentID, len(identityParts), len(turnContext))
 				}
 			}
 			wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
