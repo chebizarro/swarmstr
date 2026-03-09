@@ -294,6 +294,9 @@ func (b *signalBot) Send(ctx context.Context, text string) error {
 // eventID must be of the form "signal-{sender}-{timestamp}".
 func (b *signalBot) AddReaction(ctx context.Context, eventID, emoji string) error {
 	// Parse sender and timestamp from eventID.
+	if !strings.HasPrefix(eventID, "signal-") {
+		return fmt.Errorf("signal: invalid eventID format %q", eventID)
+	}
 	parts := strings.SplitN(strings.TrimPrefix(eventID, "signal-"), "-", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("signal: invalid eventID format %q", eventID)
@@ -326,6 +329,9 @@ func (b *signalBot) AddReaction(ctx context.Context, eventID, emoji string) erro
 
 // RemoveReaction removes an emoji reaction by sending a remove flag.
 func (b *signalBot) RemoveReaction(ctx context.Context, eventID, emoji string) error {
+	if !strings.HasPrefix(eventID, "signal-") {
+		return fmt.Errorf("signal: invalid eventID format %q", eventID)
+	}
 	parts := strings.SplitN(strings.TrimPrefix(eventID, "signal-"), "-", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("signal: invalid eventID format %q", eventID)
