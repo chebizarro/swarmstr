@@ -134,6 +134,9 @@ func main() {
 	// ── legacy flat commands (kept for backward compat) ───────────────────────
 	case "plan":
 		fmt.Println("docs/PORT_PLAN.md")
+	case "init":
+		run("init", runInit, args[1:])
+
 	case "bootstrap-check":
 		cfg, err := config.LoadBootstrap(bootstrapPath)
 		if err != nil {
