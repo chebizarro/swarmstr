@@ -181,6 +181,9 @@ type AgentConfig struct {
 	// value, auto-compaction is triggered before the model call.
 	// Defaults to 100,000 when 0.
 	MaxContextTokens int `json:"max_context_tokens,omitempty"`
+	// SystemPrompt is injected as the system/context for every turn processed
+	// by this agent. It is prepended before any memory or context-engine additions.
+	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 
 // AgentsConfig is an ordered list of per-agent configurations.
