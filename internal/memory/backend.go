@@ -40,6 +40,12 @@ type Backend interface {
 	// Save persists the backend's state to disk (if applicable).
 	// Implementations that are purely in-memory may return nil.
 	Save() error
+	// Store adds a new memory entry with the given text and optional tags,
+	// returning the generated MemoryID.
+	Store(sessionID, text string, tags []string) string
+	// Delete removes the memory entry with the given ID.
+	// Returns true if it existed, false if not found.
+	Delete(id string) bool
 	// Close releases any resources held by the backend.
 	Close() error
 }
@@ -119,6 +125,8 @@ func (b *IndexBackend) SearchSession(sid, q string, limit int) []IndexedMemory  
 func (b *IndexBackend) ListSession(sid string, limit int) []IndexedMemory        { return b.idx.ListSession(sid, limit) }
 func (b *IndexBackend) Count() int                                               { return b.idx.Count() }
 func (b *IndexBackend) SessionCount() int                                        { return b.idx.SessionCount() }
+func (b *IndexBackend) Store(sid, text string, tags []string) string             { return b.idx.Store(sid, text, tags) }
+func (b *IndexBackend) Delete(id string) bool                                    { return b.idx.Delete(id) }
 func (b *IndexBackend) Save() error                                              { return b.idx.Save() }
 func (b *IndexBackend) Close() error                                             { return b.idx.Save() }
 

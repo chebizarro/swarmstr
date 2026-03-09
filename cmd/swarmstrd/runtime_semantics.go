@@ -796,6 +796,9 @@ func (r *cronRegistry) Runs(id string, limit int) []cronRunRecord {
 // Save persists the current cron jobs to the DocsRepository so they survive
 // daemon restarts.  Runs are intentionally not persisted (they are ephemeral).
 func (r *cronRegistry) Save(ctx context.Context, repo *state.DocsRepository) error {
+	if repo == nil {
+		return nil // no-op when store is unavailable (e.g. tests)
+	}
 	r.mu.Lock()
 	jobs := make([]cronJobRecord, 0, len(r.jobs))
 	for _, j := range r.jobs {

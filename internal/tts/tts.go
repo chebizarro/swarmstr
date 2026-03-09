@@ -77,6 +77,23 @@ func (m *Manager) Providers() []map[string]any {
 	return result
 }
 
+// DefaultConfiguredProvider returns the ID of the first alphabetically-sorted
+// provider that is currently configured (has API key / binary present).
+// Returns "" if no provider is ready.
+func (m *Manager) DefaultConfiguredProvider() string {
+	ids := make([]string, 0, len(m.providers))
+	for id := range m.providers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if m.providers[id].Configured() {
+			return id
+		}
+	}
+	return ""
+}
+
 // ConvertResult holds the output of a Convert call.
 type ConvertResult struct {
 	// AudioPath is the path to the temporary audio file (caller should clean up if desired).

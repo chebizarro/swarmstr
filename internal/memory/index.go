@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"swarmstr/internal/store/state"
 )
@@ -54,6 +57,43 @@ func OpenIndex(path string) (*Index, error) {
 		return nil, err
 	}
 	return idx, nil
+}
+
+// generateMemoryID generates a random 8-byte hex string for use as a MemoryID.
+func generateMemoryID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("mem-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// Store indexes the given text as a new memory entry and returns the
+// generated MemoryID.  It is a convenience wrapper around Add that generates
+// a unique ID and sets the current Unix timestamp.
+func (i *Index) Store(sessionID, text string, tags []string) string {
+	id := generateMemoryID()
+	i.Add(state.MemoryDoc{
+		MemoryID:  id,
+		SessionID: sessionID,
+		Text:      text,
+		Keywords:  append([]string(nil), tags...),
+		Unix:      time.Now().Unix(),
+	})
+	return id
+}
+
+// Delete removes the memory entry with the given ID.
+// Returns true if the entry existed, false if it was not found.
+func (i *Index) Delete(id string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if _, ok := i.docs[id]; !ok {
+		return false
+	}
+	delete(i.docs, id)
+	i.rebuildTokenMapLocked()
+	return true
 }
 
 func (i *Index) Add(doc state.MemoryDoc) {
