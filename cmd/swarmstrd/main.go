@@ -278,15 +278,16 @@ func main() {
 	docsRepo := state.NewDocsRepositoryWithCodec(store, pubkey, codec)
 	transcriptRepo := state.NewTranscriptRepositoryWithCodec(store, pubkey, codec)
 	memoryRepo := state.NewMemoryRepositoryWithCodec(store, pubkey, codec)
-	memoryIndex, err := memory.OpenIndex("")
+	baseMemoryIndex, err := memory.OpenIndex("")
 	if err != nil {
 		log.Fatalf("open memory index: %v", err)
 	}
 	defer func() {
-		if err := memoryIndex.Save(); err != nil {
+		if err := baseMemoryIndex.Save(); err != nil {
 			log.Printf("memory index save on shutdown failed: %v", err)
 		}
 	}()
+	var memoryIndex memory.Store = baseMemoryIndex
 	tools := agent.NewToolRegistry()
 	controlToolRegistry = tools
 	var configState *runtimeConfigStore
@@ -404,10 +405,20 @@ func main() {
 				memoryBackendName = strings.TrimSpace(beName)
 			}
 		}
-		if _, beErr := memory.OpenBackend(memoryBackendName, ""); beErr != nil {
-			log.Printf("memory backend %q not available (%v); using 'memory'", memoryBackendName, beErr)
+				memoryBackendPath := ""
+		if mExtra2, ok2 := configState.Get().Extra["memory"].(map[string]any); ok2 {
+			if u, ok3 := mExtra2["url"].(string); ok3 {
+				memoryBackendPath = u
+			}
+			if c, ok3 := mExtra2["collection"].(string); ok3 {
+				memoryBackendPath += "|" + c
+			}
+		}
+		if be, beErr := memory.OpenBackend(memoryBackendName, memoryBackendPath); beErr != nil {
+			log.Printf("memory backend %q not available (%v); using json-fts", memoryBackendName, beErr)
 		} else {
-			log.Printf("memory backend: %s", memoryBackendName)
+			log.Printf("memory backend: %s path=%q", memoryBackendName, memoryBackendPath)
+			memoryIndex = memory.NewHybridIndex(baseMemoryIndex, be)
 		}
 	}
 
@@ -1475,6 +1486,7 @@ func main() {
 				SessionID: sessionID,
 				Done:      true,
 			})
+			log.Printf("DEBUG reply text_len=%d text_preview=%q", len(turnResult.Text), func() string { s := turnResult.Text; if len(s) > 80 { return s[:80] }; return s }())
 			if err := msg.Reply(ctx, turnResult.Text); err != nil {
 				log.Printf("reply failed event=%s err=%v", msg.EventID, err)
 				logBuffer.Append("error", fmt.Sprintf("dm reply failed event=%s err=%v", msg.EventID, err))
@@ -3026,7 +3038,7 @@ func handleControlRPCRequest(
 	channelState *channelRuntimeState,
 	docsRepo *state.DocsRepository,
 	transcriptRepo *state.TranscriptRepository,
-	memoryIndex *memory.Index,
+	memoryIndex memory.Store,
 	configState *runtimeConfigStore,
 	tools *agent.ToolRegistry,
 	pluginMgr *pluginmanager.GojaPluginManager,
@@ -6313,7 +6325,7 @@ func mapGatewayWSError(err error) *gatewayprotocol.ErrorShape {
 	return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeUnavailable, msg, nil)
 }
 
-func assembleSessionMemoryContext(index *memory.Index, sessionID string, userText string, limit int) string {
+func assembleSessionMemoryContext(index memory.Store, sessionID string, userText string, limit int) string {
 	if index == nil || strings.TrimSpace(sessionID) == "" {
 		return ""
 	}
@@ -9500,7 +9512,7 @@ func persistMemories(
 	ctx context.Context,
 	docsRepo *state.DocsRepository,
 	repo *state.MemoryRepository,
-	index *memory.Index,
+	index memory.Store,
 	tracker *memoryIndexTracker,
 	docs []state.MemoryDoc,
 ) {

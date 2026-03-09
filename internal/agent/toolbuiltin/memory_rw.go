@@ -15,7 +15,7 @@ import (
 //   - text (string, required) – content to store
 //   - tags ([]string or comma-delimited string, optional) – keywords for retrieval
 //   - session_id (string, optional) – scope the entry to a session
-func MemoryStoreTool(idx *memory.Index) agent.ToolFunc {
+func MemoryStoreTool(idx memory.Store) agent.ToolFunc {
 	return func(_ context.Context, args map[string]any) (string, error) {
 		text := agent.ArgString(args, "text")
 		if text == "" {
@@ -53,7 +53,7 @@ func MemoryStoreTool(idx *memory.Index) agent.ToolFunc {
 //
 // Tool parameters:
 //   - id (string, required) – MemoryID returned by memory_store
-func MemoryDeleteTool(idx *memory.Index) agent.ToolFunc {
+func MemoryDeleteTool(idx memory.Store) agent.ToolFunc {
 	return func(_ context.Context, args map[string]any) (string, error) {
 		id := agent.ArgString(args, "id")
 		if id == "" {
