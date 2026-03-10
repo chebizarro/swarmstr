@@ -22,6 +22,15 @@ type InboundDM struct {
 	Reply      func(ctx context.Context, text string) error
 }
 
+// NIP04Decrypter is an optional extension of nostr.Keyer for signers that
+// support NIP-04 (kind:4) AES-CBC decryption in addition to NIP-44.
+// DMBus checks for this interface at runtime and uses it when available;
+// without it the bus can subscribe and sign AUTH but cannot decrypt kind:4 DMs.
+type NIP04Decrypter interface {
+	nostr.Keyer
+	DecryptNIP04(ctx context.Context, ciphertext string, sender nostr.PubKey) (string, error)
+}
+
 type DMBusOptions struct {
 	PrivateKey  string
 	// Keyer is an optional pre-built nostr.Keyer (e.g. a NIP-46 BunkerSigner).
@@ -39,9 +48,9 @@ type DMBusOptions struct {
 
 type DMBus struct {
 	pool      *nostr.Pool
+	ks        nostr.Keyer
 	relays    []string
 	relaysMu  sync.RWMutex
-	secret    nostr.SecretKey
 	public    nostr.PubKey
 	onMessage func(context.Context, InboundDM) error
 	onError   func(error)
@@ -81,14 +90,16 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 			return nil, err
 		}
 		public = sk.Public()
-		// Build a plain keyer for NIP-42 AUTH if no external Keyer provided.
+		// Wrap the raw key in a NIP-04-capable adapter.  If the caller also
+		// provided a Keyer (e.g. for bunker AUTH), prefer it for signing but
+		// still use the adapter for NIP-04 encrypt/decrypt via the stored sk.
 		if opts.Keyer == nil {
-			ks = keyer.NewPlainKeySigner([32]byte(sk))
+			ks = newNIP04KeyerAdapter(sk)
 		} else {
 			ks = opts.Keyer
 		}
 	} else {
-		// Keyer-only mode: can do NIP-42 AUTH but not NIP-04 encryption.
+		// Keyer-only mode: NIP-04 works if the Keyer implements NIP04Decrypter.
 		ks = opts.Keyer
 		pk, err := ks.GetPublicKey(parent)
 		if err != nil {
@@ -106,6 +117,7 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 
 	ctx, cancel := context.WithCancel(parent)
 	bus := &DMBus{
+		ks:   ks,
 		pool: nostr.NewPool(nostr.PoolOptions{
 			PenaltyBox: true,
 			RelayOptions: nostr.RelayOptions{
@@ -116,8 +128,7 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 			},
 		}),
 		relays:       initialRelays,
-		secret:       sk,
-		public:       public,
+			public:       public,
 		onMessage:    opts.OnMessage,
 		onError:      opts.OnError,
 		seenSet:      make(map[string]struct{}),
@@ -179,7 +190,7 @@ func (b *DMBus) SendDM(ctx context.Context, toPubKey string, text string) error 
 	if err != nil {
 		return err
 	}
-	_, err = publishEncryptedDM(ctx, b.pool, b.secret, b.currentRelays(), pk, text)
+	_, err = publishEncryptedDM(ctx, b.pool, b.ks, b.currentRelays(), pk, text)
 	return err
 }
 
@@ -212,16 +223,40 @@ func SendDMOnce(ctx context.Context, privateKey string, relays []string, toPubKe
 		return "", err
 	}
 
+	// Build a NIP-04-capable keyer from the raw secret key so that
+	// publishEncryptedDM can use the unified keyer interface.
+	onceKS := newNIP04KeyerAdapter(sk)
 	pool := nostr.NewPool(nostr.PoolOptions{
 		PenaltyBox: true,
 		RelayOptions: nostr.RelayOptions{
 			AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-				return evt.Sign([32]byte(sk))
+				return onceKS.SignEvent(ctx, evt)
 			},
 		},
 	})
 	defer pool.Close("send once finished")
-	return publishEncryptedDM(ctx, pool, sk, relays, pk, text)
+	return publishEncryptedDM(ctx, pool, onceKS, relays, pk, text)
+}
+
+// nip04KeyerAdapter wraps a raw secret key as a nostr.Keyer that also
+// implements NIP04Decrypter and NIP04Encrypter.  Used internally when a
+// raw private key (e.g. from SendDMOnce or legacy DMBusOptions.PrivateKey)
+// must satisfy the unified keyer interface without importing the config package.
+type nip04KeyerAdapter struct {
+	keyer.KeySigner
+	sk nostr.SecretKey
+}
+
+func newNIP04KeyerAdapter(sk nostr.SecretKey) nip04KeyerAdapter {
+	return nip04KeyerAdapter{KeySigner: keyer.NewPlainKeySigner([32]byte(sk)), sk: sk}
+}
+
+func (a nip04KeyerAdapter) DecryptNIP04(ctx context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	return decryptNIP04(a.sk, sender, ciphertext)
+}
+
+func (a nip04KeyerAdapter) EncryptNIP04(ctx context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
+	return encryptNIP04(a.sk, recipient, plaintext)
 }
 
 func (b *DMBus) handleInbound(re nostr.RelayEvent) {
@@ -248,7 +283,12 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		return
 	}
 
-	plaintext, err := decryptNIP04(b.secret, re.Event.PubKey, re.Event.Content)
+	dec, ok := b.ks.(NIP04Decrypter)
+	if !ok {
+		b.emitErr(fmt.Errorf("decrypt dm %s: keyer does not support NIP-04; use a local key signer", eventID))
+		return
+	}
+	plaintext, err := dec.DecryptNIP04(context.Background(), re.Event.Content, re.Event.PubKey)
 	if err != nil {
 		b.emitErr(fmt.Errorf("decrypt dm %s: %w", eventID, err))
 		return
@@ -273,7 +313,7 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 			if err != nil {
 				return err
 			}
-			_, err := publishEncryptedDM(ctx, b.pool, b.secret, b.currentRelays(), re.Event.PubKey, text)
+			_, err := publishEncryptedDM(ctx, b.pool, b.ks, b.currentRelays(), re.Event.PubKey, text)
 			return err
 		},
 	}
@@ -310,13 +350,23 @@ func (b *DMBus) markSeen(id string) bool {
 	return false
 }
 
-func publishEncryptedDM(ctx context.Context, pool *nostr.Pool, sk nostr.SecretKey, relays []string, to nostr.PubKey, text string) (string, error) {
+// NIP04Encrypter is an optional interface for signers that support NIP-04
+// AES-CBC encryption (distinct from the NIP-44 Cipher interface on nostr.Keyer).
+type NIP04Encrypter interface {
+	EncryptNIP04(ctx context.Context, plaintext string, recipient nostr.PubKey) (string, error)
+}
+
+func publishEncryptedDM(ctx context.Context, pool *nostr.Pool, ks nostr.Keyer, relays []string, to nostr.PubKey, text string) (string, error) {
 	var err error
 	text, err = sanitizeDMText(text)
 	if err != nil {
 		return "", err
 	}
-	ciphertext, err := encryptNIP04(sk, to, text)
+	enc, ok := ks.(NIP04Encrypter)
+	if !ok {
+		return "", fmt.Errorf("keyer does not support NIP-04 encryption; use a local key signer")
+	}
+	ciphertext, err := enc.EncryptNIP04(ctx, text, to)
 	if err != nil {
 		return "", err
 	}
@@ -327,7 +377,7 @@ func publishEncryptedDM(ctx context.Context, pool *nostr.Pool, sk nostr.SecretKe
 		Tags:      nostr.Tags{{"p", to.Hex()}},
 		Content:   ciphertext,
 	}
-	if err := evt.Sign([32]byte(sk)); err != nil {
+	if err := ks.SignEvent(ctx, &evt); err != nil {
 		return "", fmt.Errorf("sign dm event: %w", err)
 	}
 
