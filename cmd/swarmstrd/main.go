@@ -2306,6 +2306,7 @@ func main() {
 			Context:        turnContext,
 			History:        turnHistory,
 			Tools:          baseTurnTools,
+			Executor:       tools, // wire executor so agentic tool loop continues past first call
 			ThinkingBudget: thinkingBudget,
 		}
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
@@ -2724,6 +2725,7 @@ func main() {
 					result, err := agentRuntime.ProcessTurn(jobCtx, agent.Turn{
 						SessionID: "dvm:" + jobID,
 						UserText:  input,
+						Executor:  tools,
 					})
 					if err != nil {
 						return "", err
@@ -2897,6 +2899,7 @@ func main() {
 			UserText:  text,
 			Context:   turnContext,
 			History:   chTurnHistory,
+			Executor:  tools,
 		}
 		var turnResult agent.TurnResult
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
