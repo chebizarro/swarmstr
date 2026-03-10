@@ -17,6 +17,15 @@ const (
 	KindLifecycle  Kind = 30316
 	KindCapability Kind = 30317
 
+	// NIP-60 Cashu wallet event kinds.
+	KindNIP60UnspentToken  Kind = 7375  // encrypted unspent token bundle
+	KindNIP60TokenHistory  Kind = 7376  // encrypted token history entry
+	KindNIP60Wallet        Kind = 37375 // encrypted wallet metadata (parameterized-replaceable)
+
+	// NIP-61 Nutzap event kinds.
+	KindNIP61NutzapInfo Kind = 10019 // replaceable: advertise supported mints + P2PK pubkey
+	KindNIP61Nutzap     Kind = 9321  // nutzap: send Cashu proofs to a recipient
+
 	// Swarmstr application state kinds.
 	// We use parameterized-replaceable addressing via `d` tag.
 	KindStateDoc      Kind = 30078
