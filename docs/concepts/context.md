@@ -1,0 +1,114 @@
+# Context
+
+**Context** is the information the agent has available when generating a response. In swarmstr, context is assembled from multiple sources and cached aggressively to reduce API costs.
+
+## Context Sources
+
+On every turn, `dmRunAgentTurn` assembles the full context in this order:
+
+| Priority | Source | Where |
+|----------|--------|--------|
+| 1 | `SOUL.md` | Permanent personality |
+| 2 | `IDENTITY.md` | Nostr identity (npub, name, NIP-05) |
+| 3 | `AGENTS.md` | Operating rules, tool policy |
+| 4 | `BOOTSTRAP.md` | Extra static context |
+| 5 | `BOOT.md` | Boot message (first turn only) |
+| 6 | `memory/*.md` | Long-term memory files |
+| 7 | `USER.md` | Per-user context |
+| 8 | `TOOLS.md` | Tool usage guidance |
+| 9 | Skill SOUL.md | Loaded skills' personality fragments |
+| 10 | Session history | JSONL transcript (prior turns) |
+| 11 | Current message | The inbound Nostr DM text |
+
+Sources 1–8 are **static** for the duration of a session (cached via Anthropic prompt caching). Source 9–11 are dynamic.
+
+## Prompt Caching
+
+Static content (sources 1–8) is marked with Anthropic cache breakpoints. On the first turn, Claude caches these tokens. Subsequent turns hit the cache, paying only the cache-read rate (~10% of input cost).
+
+Cache hits are reported in token tracking:
+
+```json
+{
+  "cacheRead": 12400,
+  "cacheWrite": 0,
+  "inputTokens": 320,
+  "outputTokens": 891
+}
+```
+
+See [Token Use](../reference/token-use.md) for cost details.
+
+## Session History
+
+Each conversation is stored as a JSONL transcript in:
+
+```
+~/.swarmstr/sessions/<scope>.jsonl
+```
+
+The full transcript is appended to the context on each turn (up to the configured window). When the session grows too large, **compaction** summarizes older turns into a condensed block, keeping the context window manageable.
+
+See [Session Management](../reference/session-management-compaction.md).
+
+## Memory
+
+The `memory/` directory in the workspace holds persistent files that survive across sessions:
+
+```
+~/.swarmstr/workspace/memory/
+├── USER.md           # Facts about the user (auto-updated)
+├── projects.md       # Ongoing projects
+└── preferences.md    # User preferences
+```
+
+The built-in `session-memory` hook reads/writes `USER.md` after each turn, extracting facts about the user and storing them for future turns.
+
+## Dynamic Context Injection
+
+Hooks can inject additional context on specific events. For example, the `bootstrap-extra-files` hook can prepend extra `.md` files based on environment or time of day.
+
+Custom context injection pattern:
+
+```bash
+# In a hook handler (pre-turn)
+echo "## Current Time\nIt is $(date -u '+%Y-%m-%d %H:%M UTC')." >> /tmp/context-inject.md
+```
+
+## Context Limits
+
+| Limit | Value | Notes |
+|-------|-------|-------|
+| Max session history | Configurable | Default: full transcript until compaction threshold |
+| Compaction threshold | ~80% of model context window | Triggers auto-compaction |
+| Max output tokens | 16,000 | Configurable via `maxTokens` |
+| Workspace file size | Practical limit ~100KB | Larger files slow cache invalidation |
+
+## skipBootstrap
+
+To disable loading workspace `.md` files into the system prompt (useful for DVM jobs or lightweight sessions):
+
+```json
+{
+  "skipBootstrap": true
+}
+```
+
+When `skipBootstrap: true`, only the raw session history and current message are sent. Useful for high-volume automation where personality context is not needed.
+
+## Context for Sub-agents
+
+Sub-agents spawned via `/spawn` receive their own fresh context. They do **not** inherit the parent session history. However, they share the same workspace files (SOUL.md, AGENTS.md, etc.), so personality and operating rules are consistent.
+
+The parent can explicitly pass context to a sub-agent by including it in the spawn message:
+
+```
+/spawn research "Research the Nostr NIP-44 encryption spec and summarize findings"
+```
+
+## See Also
+
+- [System Prompt](system-prompt.md) — full assembly order with cache breakpoints
+- [Session Management](../reference/session-management-compaction.md) — compaction and pruning
+- [Token Use](../reference/token-use.md) — caching cost breakdown
+- [Agent](agent.md) — agent runtime overview

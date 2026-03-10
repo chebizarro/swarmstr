@@ -1,0 +1,106 @@
+---
+summary: "Full capabilities list for swarmstr"
+read_when:
+  - Getting an overview of swarmstr's capabilities
+  - Evaluating swarmstr for a use case
+title: "Features"
+---
+
+# swarmstr Features
+
+## Core Capabilities
+
+### Nostr-First Architecture
+- End-to-end encrypted DMs via NIP-04/NIP-44
+- Multiple relay support with automatic reconnection
+- NIP-05 human-readable identity
+- NIP-65 outbox model support
+- NIP-57 zaps (send and receive)
+- NIP-90 Data Vending Machine (DVM) mode
+- Cryptographic identity — nsec/npub keypair
+
+### AI Agent Runtime
+- Claude (Anthropic), GPT (OpenAI), Ollama (local), and 50+ providers
+- Tool execution: exec, web fetch, web search, file I/O
+- Extended thinking mode (Claude 3.7+)
+- Automatic session compaction
+- Per-session memory with workspace files
+- Bootstrap files: AGENTS.md, SOUL.md, USER.md, IDENTITY.md, TOOLS.md
+
+### Nostr-Specific Agent Tools
+- `nostr_fetch` — query Nostr events by filter
+- `nostr_publish` — publish Nostr events
+- `nostr_send_dm` — send encrypted DMs to any npub
+- `nostr_watch` / `nostr_unwatch` / `nostr_watch_list` — subscribe to live events
+- `nostr_profile` — fetch Nostr profiles
+- `nostr_resolve_nip05` — resolve NIP-05 identifiers
+- `relay_list` / `relay_ping` / `relay_info` — relay management tools
+- `nostr_follows` / `nostr_followers` / `nostr_wot_distance` — social graph tools
+- `nostr_zap_send` / `nostr_zap_list` — Lightning zap tools
+- `nostr_relay_hints` — NIP-65 outbox relay hints
+
+### Multi-Channel Support
+- Primary: Nostr DMs (NIP-04 encrypted)
+- Optional plugins: Discord, Telegram, Signal, Matrix, and more
+- Multi-agent routing: multiple Nostr keys with isolated workspaces
+- Session routing by pubkey, channel, or topic
+
+### Automation & Scheduling
+- Built-in cron scheduler (persistent, systemd-compatible)
+- Heartbeat system for periodic agent turns
+- Event hooks for /new, /reset, lifecycle events
+- Webhook endpoints (`/hooks/wake`, `/hooks/agent`)
+- Gmail Pub/Sub bridge
+
+### Memory & Context
+- Workspace Markdown files (persistent across sessions)
+- Per-session JSONL transcripts
+- Auto-compaction with LLM-generated summaries
+- `/compact` manual compaction
+- Vector memory search (configurable)
+- Auto memory flush before compaction
+
+### Web & Dashboard
+- Canvas tool for HTML/JSON/Markdown rendering
+- WebSocket dashboard at `localhost:18789`
+- Browser-based webchat UI
+- Terminal UI (TUI)
+- OpenAI-compatible `/v1/chat/completions` endpoint
+
+### Operations
+- Single Go binary — no runtime dependencies
+- systemd/launchd service integration
+- Docker support
+- `~/.swarmstr/config.json` with `${ENV_VAR}` interpolation
+- Multiple profiles (`--profile work`) for isolation
+- Full CLI management (`swarmstr` command)
+
+### Security
+- nsec stored separately from config (env var / .env file)
+- DM access control: allowlist, pairing code, or open
+- Gateway token authentication for HTTP API
+- Docker sandbox for agent tool execution (optional)
+- Tool approval gates for exec/elevated operations
+
+### Slash Commands
+`/new` `/kill` `/reset` `/compact` `/set` `/unset` `/info` `/status` `/context` `/export` `/focus` `/unfocus` `/spawn` `/stop` `/reasoning` `/send`
+
+### Node Device Support
+- Headless node host for remote exec
+- Camera snap and video clip
+- Audio in/out with sherpa-onnx TTS
+- GPS location
+- VoiceWake word detection
+
+## What swarmstr is NOT
+
+- Not a hosted service — you run your own binary
+- Not a mobile app — it's a Go daemon
+- Not a Nostr relay — it's a Nostr *client* that acts as an AI agent
+- Not WhatsApp/Telegram-primary — those are secondary plugins
+
+## See Also
+
+- [Getting Started](/start/getting-started)
+- [Architecture](/concepts/architecture)
+- [Nostr Tools](/tools/nostr-tools)
