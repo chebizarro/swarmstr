@@ -280,6 +280,12 @@ func main() {
 	docsRepo := state.NewDocsRepositoryWithCodec(store, pubkey, codec)
 	transcriptRepo := state.NewTranscriptRepositoryWithCodec(store, pubkey, codec)
 	memoryRepo := state.NewMemoryRepositoryWithCodec(store, pubkey, codec)
+
+	sessionStore, ssErr := state.NewSessionStore(state.DefaultSessionStorePath())
+	if ssErr != nil {
+		log.Printf("session store init failed (non-fatal): %v", ssErr)
+		sessionStore = nil
+	}
 	baseMemoryIndex, err := memory.OpenIndex("")
 	if err != nil {
 		log.Fatalf("open memory index: %v", err)
@@ -737,12 +743,19 @@ func main() {
 				GroupAddress: localChanCfg.GroupAddress,
 				PrivateKey:   controlPrivateKey,
 				OnMessage: func(msg channels.InboundMessage) {
+					// Per-channel allow-from check.
+					if dec := policy.EvaluateGroupMessage(msg.FromPubKey, localChanCfg.AllowFrom, configState.Get()); !dec.Allowed {
+						log.Printf("nip29 group message rejected from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, dec.Reason)
+						return
+					}
+					// Per-sender session: each group member gets their own conversation.
+					sessionID := "ch:" + msg.ChannelID + ":" + msg.FromPubKey
 					activeAgentID, rt := resolveInboundChannelRuntime(localChanCfg.AgentID, msg.ChannelID)
-					turnCtx, release := chatCancels.Begin(msg.ChannelID, ctx)
+					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
 						result, turnErr := rt.ProcessTurn(turnCtx, agent.Turn{
-							SessionID: msg.ChannelID,
+							SessionID: sessionID,
 							UserText:  msg.Text,
 						})
 						if turnErr != nil {
@@ -788,12 +801,19 @@ func main() {
 				PrivateKey: controlPrivateKey,
 				Relays:     relays,
 				OnMessage: func(msg channels.InboundMessage) {
+					// Per-channel allow-from check.
+					if dec := policy.EvaluateGroupMessage(msg.FromPubKey, localChanCfg.AllowFrom, configState.Get()); !dec.Allowed {
+						log.Printf("nip28 channel message rejected from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, dec.Reason)
+						return
+					}
+					// Per-sender session: each channel member gets their own conversation.
+					sessionID := "ch:" + msg.ChannelID + ":" + msg.FromPubKey
 					activeAgentID, rt := resolveInboundChannelRuntime(localChanCfg.AgentID, msg.ChannelID)
-					turnCtx, release := chatCancels.Begin(msg.ChannelID, ctx)
+					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
 						result, turnErr := rt.ProcessTurn(turnCtx, agent.Turn{
-							SessionID: msg.ChannelID,
+							SessionID: sessionID,
 							UserText:  msg.Text,
 						})
 						if turnErr != nil {
@@ -1018,6 +1038,30 @@ func main() {
 	// Registers built-in /commands that are intercepted before the message
 	// reaches the agent runtime.
 	slashRouter := autoreply.NewRouter()
+
+	// slashAuthLevels defines the minimum AuthLevel required for each slash command.
+	// Commands not listed default to AuthPublic (any allowed sender may run them).
+	slashAuthLevels := map[string]policy.AuthLevel{
+		// Owner-only: configuration and export.
+		"set":    policy.AuthOwner,
+		"unset":  policy.AuthOwner,
+		"export": policy.AuthOwner,
+		// Trusted+: session management and compaction.
+		"compact": policy.AuthTrusted,
+		"kill":    policy.AuthTrusted,
+		"new":     policy.AuthTrusted,
+		"reset":   policy.AuthTrusted,
+		// Trusted+: agent routing commands.
+		"focus":   policy.AuthTrusted,
+		"unfocus": policy.AuthTrusted,
+		"spawn":   policy.AuthTrusted,
+		// Public: informational commands (default — listed for documentation).
+		"help":    policy.AuthPublic,
+		"status":  policy.AuthPublic,
+		"info":    policy.AuthPublic,
+		"agents":  policy.AuthPublic,
+		"model":   policy.AuthPublic,
+	}
 	sessionTurns := autoreply.NewSessionTurns()
 
 	// ── Session and node agent tools ─────────────────────────────────────────
@@ -1232,7 +1276,35 @@ func main() {
 		if len(preview) > 16 {
 			preview = preview[:16] + "…"
 		}
-		return fmt.Sprintf("Session: %s\nAgent:   %s", preview, agentID), nil
+		lines := []string{
+			fmt.Sprintf("Session: %s", preview),
+			fmt.Sprintf("Agent:   %s", agentID),
+		}
+		if sessionStore != nil {
+			if se, ok := sessionStore.Get(cmd.SessionID); ok {
+				if se.ModelOverride != "" {
+					lines = append(lines, fmt.Sprintf("Model:   %s", se.ModelOverride))
+				}
+				if se.TotalTokens > 0 {
+					lines = append(lines, fmt.Sprintf("Tokens:  %d in / %d out / %d total",
+						se.InputTokens, se.OutputTokens, se.TotalTokens))
+				}
+				var flags []string
+				if se.Verbose {
+					flags = append(flags, "verbose")
+				}
+				if se.Thinking {
+					flags = append(flags, "thinking")
+				}
+				if se.TTSAuto {
+					flags = append(flags, "tts-auto")
+				}
+				if len(flags) > 0 {
+					lines = append(lines, "Flags:   "+strings.Join(flags, ", "))
+				}
+			}
+		}
+		return strings.Join(lines, "\n"), nil
 	})
 
 	slashRouter.Register("model", func(_ context.Context, cmd autoreply.Command) (string, error) {
@@ -1255,23 +1327,220 @@ func main() {
 		}
 		agentRegistry.Set(ephemeralID, rt)
 		sessionRouter.Assign(cmd.SessionID, ephemeralID)
+		// Persist model override in session store.
+		if sessionStore != nil {
+			se := sessionStore.GetOrNew(cmd.SessionID)
+			se.ModelOverride = modelName
+			_ = sessionStore.Put(cmd.SessionID, se)
+		}
 		return fmt.Sprintf("✓ Switched to model %q for this session.", modelName), nil
 	})
 
-	slashRouter.Register("reset", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
-		// Cancel any in-flight turn for this session.
-		chatCancels.Abort(cmd.SessionID)
-		// Reset the agent assignment back to the default.
-		sessionRouter.Assign(cmd.SessionID, "")
-		// Delete stored transcript entries (best-effort).
-		if entries, lErr := transcriptRepo.ListSession(cmdCtx, cmd.SessionID, 1000); lErr == nil {
+	// seenChannelSessions tracks which channel sessionIDs have had session_start
+	// fired; must be declared here so rotateSession can clear it on reset.
+	var seenChannelSessions sync.Map // key: sessionID string → struct{}
+
+	// rotateSession clears transcript and session state, carrying over flags.
+	// For ACP-bound sessions ("acp:*"), the sessionID is preserved (in-place reset).
+	// It returns the response string for the command.
+	rotateSession := func(cmdCtx context.Context, sessionID string) string {
+		isACP := strings.HasPrefix(sessionID, "acp:")
+
+		// Fire session_end hook before clearing state.
+		go controlHooksMgr.Fire("session:end", sessionID, map[string]any{"reason": "reset", "acp": isACP})
+		// Clear first-seen marker so session_start fires again after rotation.
+		seenChannelSessions.Delete(sessionID)
+
+		// Abort any in-flight turn for this session.
+		chatCancels.Abort(sessionID)
+
+		// For non-ACP sessions, also reset the agent router assignment.
+		if !isACP {
+			sessionRouter.Assign(sessionID, "")
+		}
+
+		// Clear transcript entries (applies to all session types).
+		if entries, lErr := transcriptRepo.ListSession(cmdCtx, sessionID, 1000); lErr == nil {
 			for _, e := range entries {
-				if dErr := transcriptRepo.DeleteEntry(cmdCtx, cmd.SessionID, e.EntryID); dErr != nil {
-					log.Printf("reset: delete transcript entry session=%s id=%s err=%v", cmd.SessionID, e.EntryID, dErr)
-				}
+				_ = transcriptRepo.DeleteEntry(cmdCtx, sessionID, e.EntryID)
 			}
 		}
-		return "🔄 Session reset. Conversation history cleared — starting fresh.", nil
+
+		// Carry over flags in session store (session ID unchanged — in-place reset).
+		if sessionStore != nil {
+			if old, ok := sessionStore.Get(sessionID); ok {
+				newEntry := old.CarryOverFlags(sessionID)
+				_ = sessionStore.Put(sessionID, newEntry)
+			}
+		}
+
+		if isACP {
+			return "🔄 ACP session reset in-place. Conversation history cleared."
+		}
+		return "🔄 Session reset. Conversation history cleared — starting fresh."
+	}
+
+	slashRouter.Register("reset", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
+		return rotateSession(cmdCtx, cmd.SessionID), nil
+	})
+
+	slashRouter.Register("new", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
+		return rotateSession(cmdCtx, cmd.SessionID), nil
+	})
+
+	slashRouter.Register("kill", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		chatCancels.Abort(cmd.SessionID)
+		return "🛑 Aborted in-flight turn.", nil
+	})
+
+	// /set <flag> [value] — persist a per-session flag.
+	// flags: verbose on/off, thinking on/off, tts on/off, model <name>, label <text>
+	slashRouter.Register("set", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		if len(cmd.Args) == 0 {
+			return "Usage: /set <flag> [value]\nFlags: verbose, thinking, tts, model <name>, label <text>", nil
+		}
+		flag := strings.ToLower(cmd.Args[0])
+		value := ""
+		if len(cmd.Args) > 1 {
+			value = strings.Join(cmd.Args[1:], " ")
+		}
+		boolVal := value == "" || value == "on" || value == "true" || value == "1"
+		if sessionStore == nil {
+			return "⚠️  Session store unavailable.", nil
+		}
+		se := sessionStore.GetOrNew(cmd.SessionID)
+		switch flag {
+		case "verbose":
+			se.Verbose = boolVal
+		case "thinking":
+			se.Thinking = boolVal
+		case "tts", "tts-auto":
+			se.TTSAuto = boolVal
+		case "model":
+			if value == "" {
+				return "Usage: /set model <model-name>", nil
+			}
+			se.ModelOverride = value
+			rt, rtErr := agent.BuildRuntimeForModel(value, tools)
+			if rtErr != nil {
+				return fmt.Sprintf("⚠️  Unknown or unconfigured model %q: %v", value, rtErr), nil
+			}
+			ephemeralID := "session-model:" + cmd.SessionID
+			if len(ephemeralID) > 48 {
+				ephemeralID = ephemeralID[:48]
+			}
+			agentRegistry.Set(ephemeralID, rt)
+			sessionRouter.Assign(cmd.SessionID, ephemeralID)
+		case "label":
+			if value == "" {
+				return "Usage: /set label <text>", nil
+			}
+			se.Label = value
+		default:
+			return fmt.Sprintf("⚠️  Unknown flag %q. Options: verbose, thinking, tts, model, label", flag), nil
+		}
+		if err := sessionStore.Put(cmd.SessionID, se); err != nil {
+			return fmt.Sprintf("⚠️  Failed to persist: %v", err), nil
+		}
+		return fmt.Sprintf("✓ Set %s.", flag), nil
+	})
+
+	// /unset <flag> — clear a per-session flag.
+	slashRouter.Register("unset", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		if len(cmd.Args) == 0 {
+			return "Usage: /unset <flag>\nFlags: verbose, thinking, tts, model, label", nil
+		}
+		flag := strings.ToLower(cmd.Args[0])
+		if sessionStore == nil {
+			return "⚠️  Session store unavailable.", nil
+		}
+		se := sessionStore.GetOrNew(cmd.SessionID)
+		switch flag {
+		case "verbose":
+			se.Verbose = false
+		case "thinking":
+			se.Thinking = false
+		case "tts", "tts-auto":
+			se.TTSAuto = false
+		case "model":
+			se.ModelOverride = ""
+			sessionRouter.Assign(cmd.SessionID, "")
+		case "label":
+			se.Label = ""
+		default:
+			return fmt.Sprintf("⚠️  Unknown flag %q.", flag), nil
+		}
+		if err := sessionStore.Put(cmd.SessionID, se); err != nil {
+			return fmt.Sprintf("⚠️  Failed to persist: %v", err), nil
+		}
+		return fmt.Sprintf("✓ Unset %s.", flag), nil
+	})
+
+	// /info — agent / node info.
+	slashRouter.Register("info", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		agentID := sessionRouter.Get(cmd.SessionID)
+		if agentID == "" {
+			agentID = "main"
+		}
+		return fmt.Sprintf("Swarmstr v%s\nPubkey: %s\nAgent:  %s", version, pubkey, agentID), nil
+	})
+
+	// /compact — compact conversation history via the context engine.
+	slashRouter.Register("compact", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
+		if controlContextEngine == nil {
+			return "⚠️  No context engine active.", nil
+		}
+		cr, cErr := controlContextEngine.Compact(cmdCtx, cmd.SessionID)
+		if cErr != nil {
+			return fmt.Sprintf("⚠️  Compact failed: %v", cErr), nil
+		}
+		if !cr.Compacted {
+			return "Nothing to compact yet.", nil
+		}
+		saved := cr.TokensBefore - cr.TokensAfter
+		if saved > 0 {
+			return fmt.Sprintf("✓ Compacted. %d tokens freed.", saved), nil
+		}
+		return "✓ Compacted.", nil
+	})
+
+	// /export — export session transcript as HTML and return a summary.
+	slashRouter.Register("export", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
+		entries, lErr := transcriptRepo.ListSession(cmdCtx, cmd.SessionID, 5000)
+		if lErr != nil {
+			return fmt.Sprintf("⚠️  Export failed: %v", lErr), nil
+		}
+		msgs := make([]exportpkg.Message, 0, len(entries))
+		for _, e := range entries {
+			if e.Role == "deleted" || e.Role == "" {
+				continue
+			}
+			msgs = append(msgs, exportpkg.Message{
+				Role:      e.Role,
+				Content:   e.Text,
+				Timestamp: e.Unix,
+				ID:        e.EntryID,
+			})
+		}
+		if len(msgs) == 0 {
+			return "Nothing to export yet.", nil
+		}
+		agentName := ""
+		if agDoc, err2 := docsRepo.GetAgent(cmdCtx, "main"); err2 == nil {
+			agentName = agDoc.Name
+		}
+		_, exportErr := exportpkg.SessionToHTML(exportpkg.SessionHTMLOptions{
+			SessionID:  cmd.SessionID,
+			AgentID:    "main",
+			AgentName:  agentName,
+			PubKey:     cmd.FromPubKey,
+			Messages:   msgs,
+			ExportedAt: time.Now(),
+		})
+		if exportErr != nil {
+			return fmt.Sprintf("⚠️  Export render failed: %v", exportErr), nil
+		}
+		return fmt.Sprintf("✓ Exported %d messages. (Full HTML available via the gateway sessions.export method.)", len(msgs)), nil
 	})
 
 	slashRouter.Register("agents", func(_ context.Context, cmd autoreply.Command) (string, error) {
@@ -1286,298 +1555,489 @@ func main() {
 		}
 		return strings.Join(lines, "\n"), nil
 	})
+
+	// /focus <agent-name> — route this session to a named agent.
+	slashRouter.Register("focus", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		if len(cmd.Args) == 0 {
+			current := sessionRouter.Get(cmd.SessionID)
+			if current == "" {
+				current = "main"
+			}
+			return fmt.Sprintf("Currently focused on: %s\nUsage: /focus <agent-name>", current), nil
+		}
+		agentName := cmd.Args[0]
+		if agentRegistry.Get(agentName) == nil {
+			return fmt.Sprintf("⚠️  Agent %q not found. Use /agents to list available agents.", agentName), nil
+		}
+		sessionRouter.Assign(cmd.SessionID, agentName)
+		return fmt.Sprintf("✓ Session now focused on agent: %s", agentName), nil
+	})
+
+	// /unfocus — reset session routing to the default agent.
+	slashRouter.Register("unfocus", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		sessionRouter.Assign(cmd.SessionID, "")
+		return "✓ Unfocused — session reset to default agent.", nil
+	})
+
+	// /spawn <agent-name> [instructions...] — spawn and focus a subagent session.
+	slashRouter.Register("spawn", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
+		if len(cmd.Args) == 0 {
+			return "Usage: /spawn <agent-name> [initial instructions]", nil
+		}
+		agentName := cmd.Args[0]
+		if agentRegistry.Get(agentName) == nil {
+			return fmt.Sprintf("⚠️  Agent %q not found. Use /agents to list available agents.", agentName), nil
+		}
+		// Route session to the named agent.
+		sessionRouter.Assign(cmd.SessionID, agentName)
+		instructions := ""
+		if len(cmd.Args) > 1 {
+			instructions = strings.Join(cmd.Args[1:], " ")
+		}
+		if instructions != "" {
+			return fmt.Sprintf("✓ Spawned and focused on agent: %s\nFirst message: %q", agentName, instructions), nil
+		}
+		return fmt.Sprintf("✓ Spawned and focused on agent: %s", agentName), nil
+	})
 	// ─────────────────────────────────────────────────────────────────────────
 
-	// Shared inbound DM handler used by both NIP-04 and NIP-17 buses.
-	dmOnMessage := func(ctx context.Context, msg nostruntime.InboundDM) error {
-			if tracker.AlreadyProcessed(msg.EventID, msg.CreatedAt) {
-				return nil
+	// dmDebounceWindow is read from Extra["messages"]["inbound"]["debounce_ms"].
+	// 0ms (default) = no debounce; each DM is processed immediately.
+	dmDebounceWindow := time.Duration(0)
+	if mExtra, ok := configState.Get().Extra["messages"].(map[string]any); ok {
+		if inExtra, ok := mExtra["inbound"].(map[string]any); ok {
+			if ms, ok := inExtra["debounce_ms"].(float64); ok && ms > 0 {
+				dmDebounceWindow = time.Duration(ms) * time.Millisecond
 			}
-			usageState.RecordInbound(msg.Text)
-			metricspkg.MessagesInbound.Inc()
-			logBuffer.Append("info", fmt.Sprintf("dm inbound from=%s event=%s", msg.FromPubKey, msg.EventID))
+		}
+	}
 
-			// Emit inbound chat event.
-			wsEmitter.Emit(gatewayws.EventChatMessage, gatewayws.ChatMessagePayload{
-				TS:        time.Now().UnixMilli(),
-				SessionID: msg.FromPubKey,
-				Direction: "inbound",
-				EventID:   msg.EventID,
-			})
+	// dmReplyFns stores the most recent reply function per fromPubKey so the
+	// DM debouncer can reply with the combined message via the correct channel.
+	var dmReplyFnsMu sync.Mutex
+	dmReplyFns := make(map[string]func(context.Context, string) error)
 
-			decision := policy.EvaluateIncomingDM(msg.FromPubKey, configState.Get())
-			if !decision.Allowed {
-				log.Printf("dm rejected from=%s reason=%s", msg.FromPubKey, decision.Reason)
-				if decision.RequiresPairing {
-					_ = msg.Reply(ctx, "Your message was received, but this node requires pairing approval before processing DMs.")
-				}
-				return nil
+	// dmRunAgentTurn is the core DM agent-dispatch logic, called either directly
+	// from dmOnMessage (no debounce) or from the dmDebouncer flush.
+	dmRunAgentTurn := func(
+		ctx context.Context,
+		fromPubKey, combinedText, eventID string,
+		createdAt int64,
+		replyFn func(context.Context, string) error,
+	) {
+		sessionID := fromPubKey
+
+		// Per-session turn serialisation.
+		releaseTurnSlot, acquired := sessionTurns.TryAcquire(sessionID)
+		if !acquired {
+			if replyFn != nil {
+				_ = replyFn(ctx, "⏳ Still processing your previous message. Please wait a moment.")
 			}
+			return
+		}
+		defer releaseTurnSlot()
 
-			// Rate limit check: per-user and per-channel (using pubkey as channel for DMs).
-			if !dmRateLimiter.Allow(msg.FromPubKey, "dm:"+msg.FromPubKey) {
-				log.Printf("dm rate-limited from=%s", msg.FromPubKey)
-				return nil // silently drop rate-limited messages
+		if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, nostruntime.InboundDM{
+			EventID:    eventID,
+			FromPubKey: fromPubKey,
+			Text:       combinedText,
+			CreatedAt:  createdAt,
+		}); err != nil {
+			log.Printf("persist inbound text failed event=%s err=%v", eventID, err)
+		}
+		persistMemories(ctx, docsRepo, memoryRepo, memoryIndex, memoryTracker, memory.ExtractFromTurn(sessionID, "user", eventID, combinedText, createdAt))
+
+		if controlContextEngine != nil {
+			if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
+				Role:    "user",
+				Content: combinedText,
+				ID:      eventID,
+				Unix:    createdAt,
+			}); ingErr != nil {
+				log.Printf("context engine ingest user session=%s err=%v", sessionID, ingErr)
 			}
+		}
 
-			// Session ID for DM conversations is the sender's pubkey (peer-to-peer session).
-			sessionID := msg.FromPubKey
-
-			// ── ACP fast-path ────────────────────────────────────────────────
-			// If the sender is a registered ACP peer and the message is a
-			// valid ACP JSON payload, dispatch through the ACP handler instead
-			// of the user-facing agent pipeline.
-			if controlACPPeers != nil && controlACPPeers.IsPeer(msg.FromPubKey) && acppkg.IsACPMessage([]byte(msg.Text)) {
-				if acpMsg, acpErr := acppkg.Parse([]byte(msg.Text)); acpErr == nil {
-					if err := handleACPMessage(ctx, acpMsg, msg.FromPubKey, msg, agentRegistry, sessionRouter, tools); err != nil {
-						log.Printf("acp message handler error from=%s task_id=%s err=%v", msg.FromPubKey, acpMsg.TaskID, err)
-					}
-					if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
-						log.Printf("checkpoint update (acp) failed event=%s err=%v", msg.EventID, err)
-					}
-					return nil
-				}
+		turnCtx, releaseTurn := chatCancels.Begin(sessionID, ctx)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("panic in agent process session=%s panic=%v", sessionID, r)
 			}
-			// ─────────────────────────────────────────────────────────────────
+			releaseTurn()
+		}()
 
-			// ── Slash command fast-path ───────────────────────────────────────
-			// Slash commands are handled before agent processing and do NOT
-			// consume a turn slot (they return synchronously).
-			if slashCmd := autoreply.Parse(msg.Text); slashCmd != nil {
-				slashCmd.SessionID = sessionID
-				slashCmd.FromPubKey = msg.FromPubKey
-				reply, handled, slashErr := slashRouter.Dispatch(ctx, slashCmd)
-				if handled {
-					if slashErr != nil {
-						log.Printf("slash command error cmd=%s session=%s err=%v", slashCmd.Name, sessionID, slashErr)
-						reply = fmt.Sprintf("⚠️  Error running /%s: %v", slashCmd.Name, slashErr)
-					}
-					if reply != "" {
-						if replyErr := msg.Reply(ctx, reply); replyErr != nil {
-							log.Printf("slash reply failed event=%s err=%v", msg.EventID, replyErr)
-						}
-					}
-					if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
-						log.Printf("checkpoint update (slash) failed event=%s err=%v", msg.EventID, err)
-					}
-					return nil
-				}
-				// Unknown slash command — fall through to agent so it can answer.
-			}
-			// ─────────────────────────────────────────────────────────────────
-
-			// ── Per-session turn serialisation ────────────────────────────────
-			// Prevent two agent invocations from running concurrently for the
-			// same session (race on context memory / transcript state).
-			releaseTurnSlot, acquired := sessionTurns.TryAcquire(sessionID)
-			if !acquired {
-				busyMsg := "⏳ Still processing your previous message. Please wait a moment."
-				if replyErr := msg.Reply(ctx, busyMsg); replyErr != nil {
-					log.Printf("busy reply failed event=%s err=%v", msg.EventID, replyErr)
-				}
-				return nil
-			}
-			defer releaseTurnSlot()
-			// ─────────────────────────────────────────────────────────────────
-
-			if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, msg); err != nil {
-				log.Printf("persist inbound failed event=%s err=%v", msg.EventID, err)
-			}
-			persistMemories(ctx, docsRepo, memoryRepo, memoryIndex, memoryTracker, memory.ExtractFromTurn(sessionID, "user", msg.EventID, msg.Text, msg.CreatedAt))
-
-			// Ingest user message into the context engine.
-			if controlContextEngine != nil {
-				if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
-					Role:    "user",
-					Content: msg.Text,
-					ID:      msg.EventID,
-					Unix:    msg.CreatedAt,
-				}); ingErr != nil {
-					log.Printf("context engine ingest user session=%s err=%v", sessionID, ingErr)
-				}
-			}
-
-			turnCtx, releaseTurn := chatCancels.Begin(sessionID, ctx)
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("panic in agent process session=%s panic=%v", sessionID, r)
-				}
-				releaseTurn()
-			}()
-
-			// Assemble context from the engine (replaces assembleSessionMemoryContext).
-			turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, msg.Text, 6)
-			if controlContextEngine != nil {
-				// Resolve active agent's token budget (default 100,000).
-				maxCtxTokens := 100_000
-				if agID := sessionRouter.Get(sessionID); agID != "" {
-					for _, ac := range configState.Get().Agents {
-						if ac.ID == agID && ac.MaxContextTokens > 0 {
-							maxCtxTokens = ac.MaxContextTokens
-							break
-						}
-					}
-				}
-				assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
-				if asmErr == nil {
-					// Per-turn auto-compaction: if >80% of budget, compact and re-assemble.
-					threshold := int(float64(maxCtxTokens) * 0.80)
-					if assembled.EstimatedTokens > 0 && threshold > 0 && assembled.EstimatedTokens > threshold {
-						if cr, cErr := controlContextEngine.Compact(turnCtx, sessionID); cErr == nil && cr.Compacted {
-							log.Printf("context engine auto-compact session=%s tokens_before=%d tokens_after=%d", sessionID, cr.TokensBefore, cr.TokensAfter)
-							assembled, _ = controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
-						}
-					}
-					// Use the engine's system prompt addition as memory context.
-					if assembled.SystemPromptAddition != "" {
-						turnContext = assembled.SystemPromptAddition
-					}
-				} else {
-					log.Printf("context engine assemble session=%s err=%v", sessionID, asmErr)
-				}
-			}
-
-			// Route the session to the assigned agent (falls back to "main").
-			activeAgentID := sessionRouter.Get(sessionID)
-			if activeAgentID == "" {
-				activeAgentID = "main"
-			}
-			activeRuntime := agentRegistry.Get(activeAgentID)
-
-			// Inject workspace identity files + system_prompt into turnContext.
-			// Loads SOUL.md, IDENTITY.md, USER.md from the agent workspace dir,
-			// then prepends the config system_prompt. Runs at turn time so
-			// hot-reloaded config and edited files are always reflected.
-			{
-				liveAgents := configState.Get().Agents
-				log.Printf("DEBUG turn agent=%s live_agents=%d context_before=%d", activeAgentID, len(liveAgents), len(turnContext))
-
-				// Build workspace identity prefix from files.
-				wsDir := ""
-				var agentSystemPrompt string
-				for _, ac := range liveAgents {
-					if ac.ID == activeAgentID {
-						agentSystemPrompt = strings.TrimSpace(ac.SystemPrompt)
-						wsDir = strings.TrimSpace(ac.WorkspaceDir)
+		turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, combinedText, 6)
+		if controlContextEngine != nil {
+			maxCtxTokens := 100_000
+			if agID := sessionRouter.Get(sessionID); agID != "" {
+				for _, ac := range configState.Get().Agents {
+					if ac.ID == agID && ac.MaxContextTokens > 0 {
+						maxCtxTokens = ac.MaxContextTokens
 						break
 					}
 				}
-				if wsDir == "" {
-					if home, herr := os.UserHomeDir(); herr == nil {
-						wsDir = filepath.Join(home, ".swarmstr", "workspace")
-					}
-				}
-
-				var identityParts []string
-				for _, fname := range []string{"SOUL.md", "IDENTITY.md", "USER.md"} {
-					fpath := filepath.Join(wsDir, fname)
-					if raw, ferr := os.ReadFile(fpath); ferr == nil && len(raw) > 0 {
-						identityParts = append(identityParts, strings.TrimSpace(string(raw)))
-					}
-				}
-
-				var contextParts []string
-				if len(identityParts) > 0 {
-					contextParts = append(contextParts, strings.Join(identityParts, "\n\n---\n\n"))
-				}
-				if agentSystemPrompt != "" {
-					contextParts = append(contextParts, agentSystemPrompt)
-					log.Printf("DEBUG system_prompt injected agent=%s len=%d", activeAgentID, len(agentSystemPrompt))
-				}
-				if len(contextParts) > 0 {
-					prefix := strings.Join(contextParts, "\n\n")
-					if turnContext == "" {
-						turnContext = prefix
-					} else {
-						turnContext = prefix + "\n\n" + turnContext
-					}
-					log.Printf("DEBUG workspace_context agent=%s identity_files=%d total_len=%d", activeAgentID, len(identityParts), len(turnContext))
-				}
 			}
-			wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
-				TS:      time.Now().UnixMilli(),
-				AgentID: activeAgentID,
-				Status:  "thinking",
-				Session: sessionID,
-			})
-			// Use streaming if the runtime supports it, delivering chunks to WS
-			// clients via EventChatChunk while the full reply is assembled.
-			var turnResult agent.TurnResult
-			if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
-				turnResult, err = sr.ProcessTurnStreaming(turnCtx, agent.Turn{SessionID: sessionID, UserText: msg.Text, Context: turnContext}, func(chunk string) {
-					wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
-						TS:        time.Now().UnixMilli(),
-						AgentID:   activeAgentID,
-						SessionID: sessionID,
-						Text:      chunk,
-					})
-				})
+			assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
+			if asmErr == nil {
+				threshold := int(float64(maxCtxTokens) * 0.80)
+				if assembled.EstimatedTokens > 0 && threshold > 0 && assembled.EstimatedTokens > threshold {
+					if cr, cErr := controlContextEngine.Compact(turnCtx, sessionID); cErr == nil && cr.Compacted {
+						log.Printf("context engine auto-compact session=%s tokens_before=%d tokens_after=%d", sessionID, cr.TokensBefore, cr.TokensAfter)
+						assembled, _ = controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
+					}
+				}
+				if assembled.SystemPromptAddition != "" {
+					turnContext = assembled.SystemPromptAddition
+				}
 			} else {
-				turnResult, err = activeRuntime.ProcessTurn(turnCtx, agent.Turn{SessionID: sessionID, UserText: msg.Text, Context: turnContext})
+				log.Printf("context engine assemble session=%s err=%v", sessionID, asmErr)
 			}
-			if err != nil {
-				if errors.Is(err, context.Canceled) {
-					log.Printf("agent process aborted session=%s", sessionID)
-					return nil
+		}
+
+		activeAgentID := sessionRouter.Get(sessionID)
+		if activeAgentID == "" {
+			activeAgentID = "main"
+		}
+		activeRuntime := agentRegistry.Get(activeAgentID)
+
+		// Inject workspace identity files + system_prompt into turnContext.
+		// Loads SOUL.md, IDENTITY.md, USER.md from the agent workspace dir,
+		// then prepends the config system_prompt. Runs at turn time so
+		// hot-reloaded config and edited files are always reflected.
+		{
+			liveAgents := configState.Get().Agents
+			log.Printf("DEBUG turn agent=%s live_agents=%d context_before=%d", activeAgentID, len(liveAgents), len(turnContext))
+
+			wsDir := ""
+			var agentSystemPrompt string
+			for _, ac := range liveAgents {
+				if ac.ID == activeAgentID {
+					agentSystemPrompt = strings.TrimSpace(ac.SystemPrompt)
+					wsDir = strings.TrimSpace(ac.WorkspaceDir)
+					break
 				}
-				log.Printf("agent process failed session=%s err=%v", sessionID, err)
+			}
+			if wsDir == "" {
+				if home, herr := os.UserHomeDir(); herr == nil {
+					wsDir = filepath.Join(home, ".swarmstr", "workspace")
+				}
+			}
+
+			var identityParts []string
+			for _, fname := range []string{"SOUL.md", "IDENTITY.md", "USER.md"} {
+				fpath := filepath.Join(wsDir, fname)
+				if raw, ferr := os.ReadFile(fpath); ferr == nil && len(raw) > 0 {
+					identityParts = append(identityParts, strings.TrimSpace(string(raw)))
+				}
+			}
+
+			var contextParts []string
+			if len(identityParts) > 0 {
+				contextParts = append(contextParts, strings.Join(identityParts, "\n\n---\n\n"))
+			}
+			if agentSystemPrompt != "" {
+				contextParts = append(contextParts, agentSystemPrompt)
+				log.Printf("DEBUG system_prompt injected agent=%s len=%d", activeAgentID, len(agentSystemPrompt))
+			}
+			if len(contextParts) > 0 {
+				prefix := strings.Join(contextParts, "\n\n")
+				if turnContext == "" {
+					turnContext = prefix
+				} else {
+					turnContext = prefix + "\n\n" + turnContext
+				}
+				log.Printf("DEBUG workspace_context agent=%s identity_files=%d total_len=%d", activeAgentID, len(identityParts), len(turnContext))
+			}
+		}
+
+		lastActivityAt := time.Now().UnixMilli()
+		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+			TS:             lastActivityAt,
+			AgentID:        activeAgentID,
+			Status:         "thinking",
+			Session:        sessionID,
+			LastActivityAt: lastActivityAt,
+		})
+
+		heartbeatDone := make(chan struct{})
+		var heartbeatOnce sync.Once
+		stopHeartbeat := func() { heartbeatOnce.Do(func() { close(heartbeatDone) }) }
+		go func() {
+			ticker := time.NewTicker(60 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-heartbeatDone:
+					return
+				case <-turnCtx.Done():
+					return
+				case t := <-ticker.C:
+					wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+						TS:             t.UnixMilli(),
+						AgentID:        activeAgentID,
+						Status:         "busy",
+						Session:        sessionID,
+						LastActivityAt: lastActivityAt,
+					})
+				}
+			}
+		}()
+
+		var turnResult agent.TurnResult
+		var turnErr error
+		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
+			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, agent.Turn{SessionID: sessionID, UserText: combinedText, Context: turnContext}, func(chunk string) {
+				wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
+					TS:        time.Now().UnixMilli(),
+					AgentID:   activeAgentID,
+					SessionID: sessionID,
+					Text:      chunk,
+				})
+			})
+		} else {
+			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, agent.Turn{SessionID: sessionID, UserText: combinedText, Context: turnContext})
+		}
+		if turnErr != nil {
+			stopHeartbeat()
+			if errors.Is(turnErr, context.Canceled) {
+				log.Printf("agent process aborted session=%s", sessionID)
+			} else {
+				log.Printf("agent process failed session=%s err=%v", sessionID, turnErr)
+			}
+			return
+		}
+		stopHeartbeat()
+
+		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
+			log.Printf("persist tool traces failed session=%s err=%v", sessionID, err)
+		}
+		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+			TS:      time.Now().UnixMilli(),
+			AgentID: activeAgentID,
+			Status:  "idle",
+			Session: sessionID,
+		})
+		wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
+			TS:        time.Now().UnixMilli(),
+			AgentID:   activeAgentID,
+			SessionID: sessionID,
+			Done:      true,
+		})
+
+		if replyFn != nil {
+			if err := replyFn(ctx, turnResult.Text); err != nil {
+				log.Printf("reply failed event=%s err=%v", eventID, err)
+				logBuffer.Append("error", fmt.Sprintf("dm reply failed event=%s err=%v", eventID, err))
+				return
+			}
+		}
+
+		wsEmitter.Emit(gatewayws.EventChatMessage, gatewayws.ChatMessagePayload{
+			TS:        time.Now().UnixMilli(),
+			AgentID:   activeAgentID,
+			SessionID: sessionID,
+			Direction: "outbound",
+			EventID:   eventID,
+		})
+		usageState.RecordOutbound(turnResult.Text)
+		metricspkg.MessagesOutbound.Inc()
+		logBuffer.Append("info", fmt.Sprintf("dm reply sent to=%s event=%s", fromPubKey, eventID))
+		if err := persistAssistant(ctx, docsRepo, transcriptRepo, sessionID, turnResult.Text, eventID); err != nil {
+			log.Printf("persist assistant failed session=%s err=%v", sessionID, err)
+		}
+		if sessionStore != nil && (turnResult.Usage.InputTokens > 0 || turnResult.Usage.OutputTokens > 0) {
+			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens)
+		}
+		if controlContextEngine != nil && turnResult.Text != "" {
+			if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
+				Role:    "assistant",
+				Content: turnResult.Text,
+				Unix:    time.Now().Unix(),
+			}); ingErr != nil {
+				log.Printf("context engine ingest assistant session=%s err=%v", sessionID, ingErr)
+			}
+		}
+		if eventID != "" && createdAt > 0 {
+			if err := tracker.MarkProcessed(ctx, docsRepo, eventID, createdAt); err != nil {
+				log.Printf("checkpoint update failed event=%s err=%v", eventID, err)
+			}
+		}
+	}
+
+	// dmDebouncer coalesces rapid DM messages per sender.
+	// Only created when dmDebounceWindow > 0.
+	var dmDebouncer *channels.Debouncer
+	type dmEventMeta struct {
+		ID        string
+		CreatedAt int64
+	}
+	var dmEventIDsMu sync.Mutex
+	dmEventIDs := make(map[string]dmEventMeta) // pubkey → latest event metadata
+
+	if dmDebounceWindow > 0 {
+		dmDebouncer = channels.NewDebouncer(dmDebounceWindow, func(pubkey string, msgs []string) {
+			combined := strings.Join(msgs, "\n")
+
+			dmEventIDsMu.Lock()
+			ev := dmEventIDs[pubkey]
+			delete(dmEventIDs, pubkey)
+			dmEventIDsMu.Unlock()
+
+			dmReplyFnsMu.Lock()
+			replyFn := dmReplyFns[pubkey]
+			dmReplyFnsMu.Unlock()
+
+			if replyFn == nil {
+				return
+			}
+			dmRunAgentTurn(ctx, pubkey, combined, ev.ID, ev.CreatedAt, replyFn)
+		})
+		defer dmDebouncer.FlushAll()
+	}
+
+	// Shared inbound DM handler used by both NIP-04 and NIP-17 buses.
+	dmOnMessage := func(ctx context.Context, msg nostruntime.InboundDM) error {
+		if tracker.AlreadyProcessed(msg.EventID, msg.CreatedAt) {
+			return nil
+		}
+		usageState.RecordInbound(msg.Text)
+		metricspkg.MessagesInbound.Inc()
+		logBuffer.Append("info", fmt.Sprintf("dm inbound from=%s event=%s", msg.FromPubKey, msg.EventID))
+
+		// Emit inbound chat event.
+		wsEmitter.Emit(gatewayws.EventChatMessage, gatewayws.ChatMessagePayload{
+			TS:        time.Now().UnixMilli(),
+			SessionID: msg.FromPubKey,
+			Direction: "inbound",
+			EventID:   msg.EventID,
+		})
+
+		decision := policy.EvaluateIncomingDM(msg.FromPubKey, configState.Get())
+		if !decision.Allowed {
+			log.Printf("dm rejected from=%s reason=%s", msg.FromPubKey, decision.Reason)
+			if decision.RequiresPairing {
+				_ = msg.Reply(ctx, "Your message was received, but this node requires pairing approval before processing DMs.")
+			}
+			return nil
+		}
+
+		// Rate limit check: per-user and per-channel (using pubkey as channel for DMs).
+		if !dmRateLimiter.Allow(msg.FromPubKey, "dm:"+msg.FromPubKey) {
+			log.Printf("dm rate-limited from=%s", msg.FromPubKey)
+			return nil // silently drop rate-limited messages
+		}
+
+		// Session ID for DM conversations is the sender's pubkey (peer-to-peer session).
+		sessionID := msg.FromPubKey
+
+		// ── ACP fast-path ────────────────────────────────────────────────
+		// If the sender is a registered ACP peer and the message is a
+		// valid ACP JSON payload, dispatch through the ACP handler instead
+		// of the user-facing agent pipeline.
+		if controlACPPeers != nil && controlACPPeers.IsPeer(msg.FromPubKey) && acppkg.IsACPMessage([]byte(msg.Text)) {
+			if acpMsg, acpErr := acppkg.Parse([]byte(msg.Text)); acpErr == nil {
+				if err := handleACPMessage(ctx, acpMsg, msg.FromPubKey, msg, agentRegistry, sessionRouter, tools); err != nil {
+					log.Printf("acp message handler error from=%s task_id=%s err=%v", msg.FromPubKey, acpMsg.TaskID, err)
+				}
+				if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
+					log.Printf("checkpoint update (acp) failed event=%s err=%v", msg.EventID, err)
+				}
 				return nil
 			}
-			if err := persistToolTraces(ctx, transcriptRepo, sessionID, msg.EventID, turnResult.ToolTraces); err != nil {
-				log.Printf("persist tool traces failed session=%s err=%v", sessionID, err)
-			}
-			wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
-				TS:      time.Now().UnixMilli(),
-				AgentID: activeAgentID,
-				Status:  "idle",
-				Session: sessionID,
-			})
-			// Signal streaming done to WS clients.
-			wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
-				TS:        time.Now().UnixMilli(),
-				AgentID:   activeAgentID,
-				SessionID: sessionID,
-				Done:      true,
-			})
-			log.Printf("DEBUG reply text_len=%d text_preview=%q", len(turnResult.Text), func() string { s := turnResult.Text; if len(s) > 80 { return s[:80] }; return s }())
-			if err := msg.Reply(ctx, turnResult.Text); err != nil {
-				log.Printf("reply failed event=%s err=%v", msg.EventID, err)
-				logBuffer.Append("error", fmt.Sprintf("dm reply failed event=%s err=%v", msg.EventID, err))
-				return nil
-			}
-			// Emit outbound chat event.
-			wsEmitter.Emit(gatewayws.EventChatMessage, gatewayws.ChatMessagePayload{
-				TS:        time.Now().UnixMilli(),
-				AgentID:   activeAgentID,
-				SessionID: sessionID,
-				Direction: "outbound",
-				EventID:   msg.EventID,
-			})
-			usageState.RecordOutbound(turnResult.Text)
-			metricspkg.MessagesOutbound.Inc()
-			logBuffer.Append("info", fmt.Sprintf("dm reply sent to=%s event=%s", msg.FromPubKey, msg.EventID))
-			if err := persistAssistant(ctx, docsRepo, transcriptRepo, sessionID, turnResult.Text, msg.EventID); err != nil {
-				log.Printf("persist assistant failed session=%s err=%v", sessionID, err)
-			}
-			// Also persist assistant reply into the memory index (Qdrant/FTS).
-			persistMemories(ctx, docsRepo, memoryRepo, memoryIndex, memoryTracker,
-				memory.ExtractFromTurn(sessionID, "assistant", msg.EventID, turnResult.Text, time.Now().Unix()))
-			// Ingest assistant reply into the context engine.
-			if controlContextEngine != nil && turnResult.Text != "" {
-				if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
-					Role:    "assistant",
-					Content: turnResult.Text,
-					Unix:    time.Now().Unix(),
-				}); ingErr != nil {
-					log.Printf("context engine ingest assistant session=%s err=%v", sessionID, ingErr)
-				}
+		}
+		// ─────────────────────────────────────────────────────────────────
+
+		// ── Reset trigger detection ───────────────────────────────────────
+		// Detect /new or /reset at the start of the message body (before
+		// slash routing) so that "  /new hello" resets the session and
+		// then passes "hello" as the first message of the fresh session.
+		if trigger, remainder := parseResetTrigger(msg.Text); trigger != "" {
+			_ = rotateSession(ctx, sessionID)
+			reply := "🔄 Session reset. Starting fresh."
+			if replyErr := msg.Reply(ctx, reply); replyErr != nil {
+				log.Printf("reset trigger reply failed event=%s err=%v", msg.EventID, replyErr)
 			}
 			if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
-				log.Printf("checkpoint update failed event=%s err=%v", msg.EventID, err)
+				log.Printf("checkpoint update (reset-trigger) failed event=%s err=%v", msg.EventID, err)
 			}
-			log.Printf("dm accepted from=%s relay=%s event=%s text=%q", msg.FromPubKey, msg.RelayURL, msg.EventID, msg.Text)
+			if remainder == "" {
+				return nil
+			}
+			// Re-inject the remainder as a new virtual message.
+			msg.Text = remainder
+		}
+		// ─────────────────────────────────────────────────────────────────
+
+		// ── Slash command fast-path ───────────────────────────────────────
+		// Slash commands are handled before agent processing and do NOT
+		// consume a turn slot (they return synchronously).
+		if slashCmd := autoreply.Parse(msg.Text); slashCmd != nil {
+			slashCmd.SessionID = sessionID
+			slashCmd.FromPubKey = msg.FromPubKey
+
+			// Auth level check: compare sender's level against command requirement.
+			senderDecision := policy.EvaluateIncomingDM(msg.FromPubKey, configState.Get())
+			requiredLevel := slashAuthLevels[slashCmd.Name] // zero value = AuthDenied treated as AuthPublic
+			if requiredLevel == 0 {
+				requiredLevel = policy.AuthPublic
+			}
+			if senderDecision.Level < requiredLevel {
+				// Reply with permission denied, mark processed, and return.
+				denyMsg := fmt.Sprintf("⛔ /%s requires %s access (you have %s).", slashCmd.Name, requiredLevel, senderDecision.Level)
+				if replyErr := msg.Reply(ctx, denyMsg); replyErr != nil {
+					log.Printf("auth deny reply failed event=%s err=%v", msg.EventID, replyErr)
+				}
+				if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
+					log.Printf("checkpoint update (auth-deny) failed event=%s err=%v", msg.EventID, err)
+				}
+				return nil
+			}
+
+			reply, handled, slashErr := slashRouter.Dispatch(ctx, slashCmd)
+			if handled {
+				if slashErr != nil {
+					log.Printf("slash command error cmd=%s session=%s err=%v", slashCmd.Name, sessionID, slashErr)
+					reply = fmt.Sprintf("⚠️  Error running /%s: %v", slashCmd.Name, slashErr)
+				}
+				if reply != "" {
+					if replyErr := msg.Reply(ctx, reply); replyErr != nil {
+						log.Printf("slash reply failed event=%s err=%v", msg.EventID, replyErr)
+					}
+				}
+				if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
+					log.Printf("checkpoint update (slash) failed event=%s err=%v", msg.EventID, err)
+				}
+				return nil
+			}
+			// Unknown slash command — fall through to agent so it can answer.
+		}
+		// ─────────────────────────────────────────────────────────────────
+
+		// ── DM debounce ───────────────────────────────────────────────────
+		// If a debounce window is configured, coalesce rapid messages from
+		// the same sender and defer agent dispatch until silence.
+		if dmDebouncer != nil {
+			dmReplyFnsMu.Lock()
+			dmReplyFns[msg.FromPubKey] = msg.Reply
+			dmReplyFnsMu.Unlock()
+
+			dmEventIDsMu.Lock()
+			if msg.EventID != "" {
+				dmEventIDs[msg.FromPubKey] = dmEventMeta{ID: msg.EventID, CreatedAt: msg.CreatedAt}
+			}
+			dmEventIDsMu.Unlock()
+
+			dmDebouncer.Submit(msg.FromPubKey, msg.Text)
 			return nil
+		}
+		// ─────────────────────────────────────────────────────────────────
+
+		// Direct (non-debounced) DM turn execution via shared helper.
+		dmRunAgentTurn(ctx, msg.FromPubKey, msg.Text, msg.EventID, msg.CreatedAt, msg.Reply)
+		log.Printf("dm accepted from=%s relay=%s event=%s text=%q", msg.FromPubKey, msg.RelayURL, msg.EventID, msg.Text)
+		return nil
 	}
+
 	dmOnError := func(err error) {
 		log.Printf("nostr runtime error: %v", err)
 	}
@@ -1644,14 +2104,227 @@ func main() {
 	// flush can do interface assertions for optional features (e.g. TypingHandle).
 	channelRawHandles := map[string]sdk.ChannelHandle{}
 
+	// channelEventIDs tracks the most-recent inbound EventID per debounce key
+	// so ack reactions can target the right message after debouncing.
+	var channelEventIDsMu sync.Mutex
+	channelEventIDs := map[string]string{}
+
+	// channelQueues holds per-session pending-turn queues for when a session
+	// is busy. Items are drained immediately after each turn completes.
+	channelQueues := autoreply.NewSessionQueueRegistry(20, autoreply.QueueDropSummarize)
+
+	// doChannelTurn runs one agent turn for a channel session and delivers the
+	// reply. It is called both from the initial debounce flush and from the
+	// post-turn queue drain loop. turnCtx must already be set up by the caller.
+	doChannelTurn := func(
+		turnCtx context.Context,
+		chID, senderID, sessionID, text, eventID string,
+		handle channels.Channel,
+		rawHandle sdk.ChannelHandle,
+	) (turnErr error) {
+		// ── Session start hook (fires once per session) ───────────────────
+		if _, seen := seenChannelSessions.LoadOrStore(sessionID, struct{}{}); !seen {
+			go controlHooksMgr.Fire("session:start", sessionID, map[string]any{
+				"channel_id": chID,
+				"sender_id":  senderID,
+			})
+		}
+
+		// ── Status reaction controller ────────────────────────────────────
+		var statusCtrl *channels.StatusReactionController
+		if rh, ok := rawHandle.(sdk.ReactionHandle); ok && eventID != "" {
+			statusCtrl = channels.NewStatusReactionController(turnCtx, rh, eventID)
+			statusCtrl.SetQueued()
+		}
+		closeStatus := func(success bool) {
+			if statusCtrl == nil {
+				return
+			}
+			if success {
+				statusCtrl.SetDone()
+			} else {
+				statusCtrl.SetError()
+			}
+			statusCtrl.Close()
+		}
+
+		// ── Typing keepalive ──────────────────────────────────────────────
+		var typingKA *channels.TypingKeepalive
+		if typingH, ok := rawHandle.(sdk.TypingHandle); ok {
+			typingKA = channels.NewTypingKeepalive(typingH.SendTyping, 3*time.Second, 60*time.Second, 2)
+			typingKA.Start(turnCtx)
+		}
+		stopTyping := func() {
+			if typingKA != nil {
+				typingKA.Stop()
+			}
+		}
+
+		// ── Agent routing ─────────────────────────────────────────────────
+		activeAgentID := sessionRouter.Get(sessionID)
+		if activeAgentID == "" {
+			activeAgentID = "main"
+		}
+		activeRuntime := agentRegistry.Get(activeAgentID)
+		if activeRuntime == nil {
+			stopTyping()
+			log.Printf("channel dispatch: no runtime for agent=%s session=%s", activeAgentID, sessionID)
+			return fmt.Errorf("no runtime for agent %s", activeAgentID)
+		}
+
+		turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, text, 6)
+
+		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+			TS:      time.Now().UnixMilli(),
+			AgentID: activeAgentID,
+			Status:  "thinking",
+			Session: sessionID,
+		})
+		if statusCtrl != nil {
+			statusCtrl.SetThinking()
+		}
+
+		// Inject channel handle so channel-action tools work during execution.
+		if rawHandle != nil {
+			turnCtx = toolbuiltin.WithChannelHandle(turnCtx, rawHandle)
+		}
+
+		// ── Run agent turn ────────────────────────────────────────────────
+		var turnResult agent.TurnResult
+		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
+			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, agent.Turn{
+				SessionID: sessionID,
+				UserText:  text,
+				Context:   turnContext,
+			}, func(chunk string) {
+				wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
+					TS:        time.Now().UnixMilli(),
+					AgentID:   activeAgentID,
+					SessionID: sessionID,
+					Text:      chunk,
+				})
+			})
+		} else {
+			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, agent.Turn{
+				SessionID: sessionID,
+				UserText:  text,
+				Context:   turnContext,
+			})
+		}
+
+		stopTyping()
+
+		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+			TS:      time.Now().UnixMilli(),
+			AgentID: activeAgentID,
+			Status:  "idle",
+			Session: sessionID,
+		})
+
+		// ── Status reaction: done or error ───────────────────────────────
+		success := turnErr == nil || errors.Is(turnErr, context.Canceled)
+		closeStatus(success)
+
+		if turnErr != nil {
+			if errors.Is(turnErr, context.Canceled) {
+				log.Printf("channel agent aborted session=%s", sessionID)
+			} else {
+				log.Printf("channel agent error session=%s err=%v", sessionID, turnErr)
+			}
+			return turnErr
+		}
+
+		wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
+			TS:        time.Now().UnixMilli(),
+			AgentID:   activeAgentID,
+			SessionID: sessionID,
+			Done:      true,
+		})
+
+		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
+			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
+		}
+
+		// ── Deliver reply ─────────────────────────────────────────────────
+		outboundText := turnResult.Text
+		audioSent := false
+		audioPath, isMedia := extractMediaOutputPath(turnResult.Text)
+		if isMedia {
+			if ah, ok := rawHandle.(sdk.AudioHandle); ok {
+				audioData, readErr := os.ReadFile(filepath.FromSlash(audioPath))
+				if readErr != nil {
+					log.Printf("channel audio read error channel=%s path=%s err=%v", chID, audioPath, readErr)
+				} else {
+					format := strings.TrimPrefix(strings.ToLower(filepath.Ext(audioPath)), ".")
+					if format == "" {
+						format = "mp3"
+					}
+					if sendErr := ah.SendAudio(turnCtx, audioData, format); sendErr != nil {
+						log.Printf("channel audio send error channel=%s session=%s err=%v", chID, sessionID, sendErr)
+					} else {
+						audioSent = true
+						metricspkg.MessagesOutbound.Inc()
+						wsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+							TS:        time.Now().UnixMilli(),
+							ChannelID: chID,
+							Direction: "outbound",
+							From:      activeAgentID,
+							Text:      "[audio]",
+						})
+						logBuffer.Append("info", fmt.Sprintf("channel audio reply sent channel=%s session=%s", chID, sessionID))
+					}
+				}
+			}
+			if !audioSent {
+				outboundText = fmt.Sprintf("[audio generated] %s", audioPath)
+			}
+		}
+		if !audioSent && handle != nil && outboundText != "" {
+			if sendErr := handle.Send(turnCtx, outboundText); sendErr != nil {
+				log.Printf("channel reply error channel=%s session=%s err=%v", chID, sessionID, sendErr)
+			} else {
+				metricspkg.MessagesOutbound.Inc()
+				wsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+					TS:        time.Now().UnixMilli(),
+					ChannelID: chID,
+					Direction: "outbound",
+					From:      activeAgentID,
+					Text:      outboundText,
+				})
+				logBuffer.Append("info", fmt.Sprintf("channel reply sent channel=%s session=%s", chID, sessionID))
+			}
+		}
+		// Accumulate token usage into session state.
+		if sessionStore != nil && (turnResult.Usage.InputTokens > 0 || turnResult.Usage.OutputTokens > 0) {
+			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens)
+		}
+		return nil
+	}
+
 	channelDebouncer := channels.NewDebouncer(channelDebounceWindow, func(key string, msgs []string) {
-		// key == "channelID:senderID"
+		// key format: "channelID:senderID" or "channelID:senderID:thread:threadID"
+		// Parse out the three components.
 		parts := strings.SplitN(key, ":", 2)
-		chID, senderID := "", ""
+		chID, senderID, threadID := "", "", ""
 		if len(parts) == 2 {
-			chID, senderID = parts[0], parts[1]
+			chID = parts[0]
+			rest := parts[1]
+			// Check for thread suffix ":thread:<threadID>"
+			if idx := strings.Index(rest, ":thread:"); idx >= 0 {
+				senderID = rest[:idx]
+				threadID = rest[idx+len(":thread:"):]
+			} else {
+				senderID = rest
+			}
 		}
 		combined := channels.JoinMessages(msgs)
+
+		// Retrieve (and clear) the latest EventID tracked for this key.
+		channelEventIDsMu.Lock()
+		eventID := channelEventIDs[key]
+		delete(channelEventIDs, key)
+		channelEventIDsMu.Unlock()
+
 		preview := combined
 		if len(preview) > 120 {
 			preview = preview[:117] + "..."
@@ -1664,17 +2337,11 @@ func main() {
 		rawHandle := channelRawHandles[chID]
 		channelHandlesMu.RUnlock()
 
-		// Send a typing indicator if the channel supports it, before handing off
-		// to the agent pipeline.  Errors are non-fatal.
-		if typingH, ok := rawHandle.(sdk.TypingHandle); ok {
-			if typErr := typingH.SendTyping(ctx, 0); typErr != nil {
-				log.Printf("channel typing indicator error channel=%s err=%v", chID, typErr)
-			}
-		}
+		sessionID := channels.SessionIDForMessage(chID, senderID, threadID)
 
 		// Slash command fast-path: route /commands before hitting the agent.
 		if slashCmd := autoreply.Parse(combined); slashCmd != nil {
-			slashCmd.SessionID = chID
+			slashCmd.SessionID = sessionID
 			slashCmd.FromPubKey = senderID
 			reply, handled, slashErr := slashRouter.Dispatch(ctx, slashCmd)
 			if slashErr != nil {
@@ -1698,165 +2365,107 @@ func main() {
 		// sessionID is per-(channel, sender) so each user gets their own
 		// conversation context.
 		metricspkg.MessagesInbound.Inc()
-		sessionID := "ch:" + chID + ":" + senderID
+		sessionQ := channelQueues.Get(sessionID)
 
-		// Per-session turn serialisation: prevent concurrent agent calls for
-		// the same channel session (same as DM pipeline).
+		// Per-session turn serialisation. If busy, queue and return;
+		// the turn loop below drains the queue after each turn.
 		releaseTurnSlot, acquired := sessionTurns.TryAcquire(sessionID)
 		if !acquired {
-			if handle != nil {
-				replyCtx := sdk.WithChannelReplyTarget(ctx, senderID)
-				_ = handle.Send(replyCtx, "⏳ Still processing your previous message.")
+			// Enqueue for processing after the current turn finishes.
+			sessionQ.Enqueue(autoreply.PendingTurn{
+				Text:     combined,
+				EventID:  eventID,
+				SenderID: senderID,
+			})
+			// Ack with 👀 to confirm receipt while busy.
+			if rh, ok := rawHandle.(sdk.ReactionHandle); ok && eventID != "" {
+				if rErr := rh.AddReaction(ctx, eventID, "👀"); rErr != nil {
+					log.Printf("channel queue ack reaction error channel=%s err=%v", chID, rErr)
+				}
 			}
-			return
-		}
-		defer releaseTurnSlot()
-
-		// Assemble turn context from memory index.
-		turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, combined, 6)
-
-		// Route to the session's assigned agent (defaults to "main").
-		activeAgentID := sessionRouter.Get(sessionID)
-		if activeAgentID == "" {
-			activeAgentID = "main"
-		}
-		activeRuntime := agentRegistry.Get(activeAgentID)
-		if activeRuntime == nil {
-			log.Printf("channel dispatch: no runtime for agent=%s session=%s", activeAgentID, sessionID)
+			log.Printf("channel session busy, queued: session=%s queue_len=%d", sessionID, sessionQ.Len())
 			return
 		}
 
-		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
-			TS:      time.Now().UnixMilli(),
-			AgentID: activeAgentID,
-			Status:  "thinking",
-			Session: sessionID,
-		})
-
+		// We hold the turn slot. Run the current turn, then drain the queue.
 		turnCtx, releaseTurn := chatCancels.Begin(sessionID, ctx)
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("panic in channel agent session=%s panic=%v", sessionID, r)
 			}
 			releaseTurn()
+			releaseTurnSlot()
+			if sessionQ.Len() == 0 {
+				channelQueues.Delete(sessionID)
+			}
 		}()
 
-		// Inject the channel handle into the context so channel-action tools
-		// (add_reaction, send_typing, etc.) can access it during tool execution.
-		if rawHandle != nil {
-			turnCtx = toolbuiltin.WithChannelHandle(turnCtx, rawHandle)
-		}
+		replyCtx := sdk.WithChannelReplyTarget(turnCtx, senderID)
 
-		// Use streaming if available; emit EventChatChunk for WS clients.
-		var turnResult agent.TurnResult
-		var turnErr error
-		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
-			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, agent.Turn{
-				SessionID: sessionID,
-				UserText:  combined,
-				Context:   turnContext,
-			}, func(chunk string) {
-				wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
-					TS:        time.Now().UnixMilli(),
-					AgentID:   activeAgentID,
-					SessionID: sessionID,
-					Text:      chunk,
-				})
-			})
-		} else {
-			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, agent.Turn{
-				SessionID: sessionID,
-				UserText:  combined,
-				Context:   turnContext,
-			})
-		}
+		// Run the initial turn.
+		_ = doChannelTurn(replyCtx, chID, senderID, sessionID, combined, eventID, handle, rawHandle)
 
-		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
-			TS:      time.Now().UnixMilli(),
-			AgentID: activeAgentID,
-			Status:  "idle",
-			Session: sessionID,
-		})
-
-		if turnErr != nil {
-			if errors.Is(turnErr, context.Canceled) {
-				log.Printf("channel agent aborted session=%s", sessionID)
-			} else {
-				log.Printf("channel agent error session=%s err=%v", sessionID, turnErr)
+		// Drain any messages that arrived while we were running.
+		for {
+			pending := sessionQ.Dequeue()
+			if len(pending) == 0 {
+				break
 			}
-			return
-		}
-
-		// Emit final streaming-done marker for WS clients.
-		wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
-			TS:        time.Now().UnixMilli(),
-			AgentID:   activeAgentID,
-			SessionID: sessionID,
-			Done:      true,
-		})
-
-		// Deliver the reply via the channel handle.
-		outboundText := turnResult.Text
-		audioSent := false
-		audioPath, isMedia := extractMediaOutputPath(turnResult.Text)
-		if isMedia {
-			if ah, ok := rawHandle.(sdk.AudioHandle); ok {
-				audioData, readErr := os.ReadFile(filepath.FromSlash(audioPath))
-				if readErr != nil {
-					log.Printf("channel audio read error channel=%s path=%s err=%v", chID, audioPath, readErr)
-				} else {
-					format := strings.TrimPrefix(strings.ToLower(filepath.Ext(audioPath)), ".")
-					if format == "" {
-						format = "mp3"
-					}
-					replyCtx := sdk.WithChannelReplyTarget(ctx, senderID)
-					if sendErr := ah.SendAudio(replyCtx, audioData, format); sendErr != nil {
-						log.Printf("channel audio send error channel=%s session=%s err=%v", chID, sessionID, sendErr)
-					} else {
-						audioSent = true
-						metricspkg.MessagesOutbound.Inc()
-						wsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
-							TS:        time.Now().UnixMilli(),
-							ChannelID: chID,
-							Direction: "outbound",
-							From:      activeAgentID,
-							Text:      "[audio]",
-						})
-						logBuffer.Append("info", fmt.Sprintf("channel audio reply sent channel=%s session=%s", chID, sessionID))
-					}
+			// Collect all queued items into one combined prompt.
+			var texts []string
+			var latestEventID string
+			for _, pt := range pending {
+				texts = append(texts, pt.Text)
+				if pt.EventID != "" {
+					latestEventID = pt.EventID
 				}
 			}
-			if !audioSent {
-				outboundText = fmt.Sprintf("[audio generated] %s", audioPath)
+			queuedText := channels.JoinMessages(texts)
+			if len(pending) > 1 {
+				queuedText = fmt.Sprintf("[%d queued messages while agent was busy]\n\n%s", len(pending), queuedText)
 			}
+			queuedCtx := sdk.WithChannelReplyTarget(turnCtx, senderID)
+			_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, queuedText, latestEventID, handle, rawHandle)
 		}
 
-		if !audioSent && handle != nil && outboundText != "" {
-			replyCtx := sdk.WithChannelReplyTarget(ctx, senderID)
-			if sendErr := handle.Send(replyCtx, outboundText); sendErr != nil {
-				log.Printf("channel reply error channel=%s session=%s err=%v", chID, sessionID, sendErr)
-			} else {
-				metricspkg.MessagesOutbound.Inc()
-				wsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
-					TS:        time.Now().UnixMilli(),
-					ChannelID: chID,
-					Direction: "outbound",
-					From:      activeAgentID,
-					Text:      outboundText,
-				})
-				logBuffer.Append("info", fmt.Sprintf("channel reply sent channel=%s session=%s", chID, sessionID))
-			}
-		}
-
-		if err := persistToolTraces(ctx, transcriptRepo, sessionID, "", turnResult.ToolTraces); err != nil {
-			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
-		}
 	})
 
+	// channelPlatforms maps channelID → plugin kind (e.g. "slack", "telegram")
+	// for per-platform inbound text normalization.
+	channelPlatforms := make(map[string]string)
+	for chID, chanCfg := range configState.Get().NostrChannels {
+		if chanCfg.Kind != "" {
+			channelPlatforms[chID] = chanCfg.Kind
+		}
+	}
+
 	extensionResults, err := channels.ConnectExtensions(ctx, configState.Get(), func(msg sdk.InboundChannelMessage) {
+		// Per-channel allow-from check for extension channels.
+		if chanCfgExt, ok := configState.Get().NostrChannels[msg.ChannelID]; ok {
+			if dec := policy.EvaluateGroupMessage(msg.SenderID, chanCfgExt.AllowFrom, configState.Get()); !dec.Allowed {
+				log.Printf("extension channel message rejected from=%s channel=%s reason=%s", msg.SenderID, msg.ChannelID, dec.Reason)
+				return
+			}
+		}
+
+		// Normalize inbound text: strip platform-specific bot mention prefixes.
+		text := msg.Text
+		if platform, ok := channelPlatforms[msg.ChannelID]; ok {
+			text = channels.NormalizeInbound(platform, text, "")
+			msg.Text = text
+		}
+
+		// Compute debounce key (includes thread ID when present for separate
+		// thread-scoped queues).
+		key := channels.DebounceKeyWithThread(msg.ChannelID, msg.SenderID, msg.ThreadID)
+		if msg.EventID != "" {
+			channelEventIDsMu.Lock()
+			channelEventIDs[key] = msg.EventID
+			channelEventIDsMu.Unlock()
+		}
 		// Submit to the debouncer; it will coalesce rapid messages from the same
-		// sender and fire after channelDebounceWindow of silence.
-		channelDebouncer.Submit(channels.DebounceKey(msg.ChannelID, msg.SenderID), msg.Text)
+		// sender (and thread) and fire after channelDebounceWindow of silence.
+		channelDebouncer.Submit(key, msg.Text)
 	})
 	if err != nil {
 		log.Printf("extension channel startup error: %v", err)
@@ -9614,6 +10223,25 @@ func generateSessionID() string {
 		return fmt.Sprintf("sess-%d", time.Now().UnixNano())
 	}
 	return "sess-" + hex.EncodeToString(b)
+}
+
+// parseResetTrigger checks whether text starts with a session-reset trigger
+// (/new or /reset, case-insensitive, optional leading whitespace).
+// It returns the matched trigger word and any text that follows it.
+// Both return values are empty strings when no trigger is found.
+func parseResetTrigger(text string) (trigger, remainder string) {
+	trimmed := strings.TrimSpace(text)
+	lower := strings.ToLower(trimmed)
+	for _, kw := range []string{"/new", "/reset"} {
+		if lower == kw {
+			return kw, ""
+		}
+		if strings.HasPrefix(lower, kw+" ") || strings.HasPrefix(lower, kw+"\n") {
+			rest := strings.TrimSpace(trimmed[len(kw):])
+			return kw, rest
+		}
+	}
+	return "", ""
 }
 
 func extractMediaOutputPath(text string) (string, bool) {

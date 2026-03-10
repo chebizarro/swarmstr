@@ -158,10 +158,12 @@ type ShutdownPayload struct {
 
 // AgentStatusPayload is the payload for EventAgentStatus events.
 type AgentStatusPayload struct {
-	TS       int64  `json:"ts_ms"`
-	AgentID  string `json:"agent_id"`
-	Status   string `json:"status"` // "idle" | "thinking" | "error"
-	Session  string `json:"session,omitempty"`
+	TS             int64  `json:"ts_ms"`
+	AgentID        string `json:"agent_id"`
+	Status         string `json:"status"` // "idle" | "thinking" | "error" | "busy"
+	Session        string `json:"session,omitempty"`
+	ActiveRuns     int    `json:"active_runs,omitempty"`
+	LastActivityAt int64  `json:"last_activity_at_ms,omitempty"`
 }
 
 // ChatMessagePayload is the payload for EventChatMessage events.

@@ -20,6 +20,14 @@ type Provider interface {
 type ProviderResult struct {
 	Text      string     `json:"text"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// Usage reports token consumption, populated by providers that support it.
+	Usage ProviderUsage `json:"usage,omitempty"`
+}
+
+// ProviderUsage holds token counts from the provider API response.
+type ProviderUsage struct {
+	InputTokens  int64 `json:"input_tokens,omitempty"`
+	OutputTokens int64 `json:"output_tokens,omitempty"`
 }
 
 // StreamingProvider extends Provider with incremental text delivery.
@@ -170,6 +178,10 @@ type anthropicResponse struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+	Usage *struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage,omitempty"`
 }
 
 // buildAnthropicContent constructs the message content block for a user turn.
@@ -280,7 +292,14 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 	}
 	for _, c := range out.Content {
 		if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
-			return ProviderResult{Text: c.Text}, nil
+			res := ProviderResult{Text: c.Text}
+			if out.Usage != nil {
+				res.Usage = ProviderUsage{
+					InputTokens:  int64(out.Usage.InputTokens),
+					OutputTokens: int64(out.Usage.OutputTokens),
+				}
+			}
+			return res, nil
 		}
 	}
 	return ProviderResult{}, fmt.Errorf("anthropic returned no text content")

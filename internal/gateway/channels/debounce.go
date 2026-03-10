@@ -102,6 +102,25 @@ func DebounceKey(channelID, senderID string) string {
 	return channelID + ":" + senderID
 }
 
+// DebounceKeyWithThread returns a canonical debounce key that includes the
+// thread ID when non-empty, creating separate queues for each thread.
+func DebounceKeyWithThread(channelID, senderID, threadID string) string {
+	if threadID != "" {
+		return channelID + ":" + senderID + ":thread:" + threadID
+	}
+	return channelID + ":" + senderID
+}
+
+// SessionIDForMessage derives a session ID from channel, sender, and optional
+// thread context. When threadID is non-empty, a thread-scoped session is used.
+func SessionIDForMessage(channelID, senderID, threadID string) string {
+	key := "ch:" + channelID + ":" + senderID
+	if threadID != "" {
+		key += ":thread:" + threadID
+	}
+	return key
+}
+
 // JoinMessages joins multiple debounced messages with a newline separator,
 // treating them as a single user turn for the agent.
 func JoinMessages(msgs []string) string {
