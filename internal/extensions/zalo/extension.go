@@ -292,7 +292,11 @@ func (b *zaloBot) handleEvent(w http.ResponseWriter, r *http.Request) {
 	if mac == "" {
 		mac = r.Header.Get("X-Zalo-Mac")
 	}
-	if mac != "" && !b.verifySignature(body, mac) {
+	if mac == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if !b.verifySignature(body, mac) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}

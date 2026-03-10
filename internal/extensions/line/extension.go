@@ -280,17 +280,21 @@ func (b *lineBot) Send(ctx context.Context, text string) error {
 
 	// No target: best-effort reply using most-recently cached token.
 	b.replyTokensMu.Lock()
-	var lastUser, lastToken string
-	for u, t := range b.replyTokens {
-		lastUser, lastToken = u, t
+	if len(b.replyTokens) != 1 {
+		b.replyTokensMu.Unlock()
+		return fmt.Errorf("line: ambiguous reply target; set channel reply target explicitly")
 	}
-	if lastToken != "" {
-		delete(b.replyTokens, lastUser)
+	var onlyUser, onlyToken string
+	for u, t := range b.replyTokens {
+		onlyUser, onlyToken = u, t
+	}
+	if onlyToken != "" {
+		delete(b.replyTokens, onlyUser)
 	}
 	b.replyTokensMu.Unlock()
 
-	if lastToken != "" {
-		return b.sendReply(ctx, lastToken, text)
+	if onlyToken != "" {
+		return b.sendReply(ctx, onlyToken, text)
 	}
 	return fmt.Errorf("line: no reply token or push target available")
 }

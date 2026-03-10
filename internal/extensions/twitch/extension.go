@@ -212,7 +212,9 @@ func (b *twitchBot) connect() error {
 	b.mu.Lock()
 	b.conn = conn
 	b.mu.Unlock()
+	connDone := make(chan struct{})
 	defer func() {
+		close(connDone)
 		conn.Close()
 		b.mu.Lock()
 		b.conn = nil
@@ -240,13 +242,19 @@ func (b *twitchBot) connect() error {
 		defer pingTicker.Stop()
 		for {
 			select {
+			case <-connDone:
+				return
 			case <-b.ctx.Done():
 				conn.Close()
 				return
 			case <-pingTicker.C:
-				fmt.Fprintf(conn, "PING :tmi.twitch.tv\r\n")
+				if _, err := fmt.Fprintf(conn, "PING :tmi.twitch.tv\r\n"); err != nil {
+					return
+				}
 			case msg := <-b.sendCh:
-				fmt.Fprintf(conn, "%s\r\n", msg)
+				if _, err := fmt.Fprintf(conn, "%s\r\n", msg); err != nil {
+					return
+				}
 			}
 		}
 	}()
