@@ -376,6 +376,10 @@ func main() {
 	tools.RegisterWithDef("memory_store", toolbuiltin.MemoryStoreTool(memoryIndex), toolbuiltin.MemoryStoreDef)
 	tools.RegisterWithDef("memory_delete", toolbuiltin.MemoryDeleteTool(memoryIndex), toolbuiltin.MemoryDeleteDef)
 
+	// memory_pin / memory_pinned: long-term agent knowledge surfaced in every system prompt.
+	tools.RegisterWithDef("memory_pin", toolbuiltin.MemoryPinTool(memoryIndex), toolbuiltin.MemoryPinDef)
+	tools.RegisterWithDef("memory_pinned", toolbuiltin.MemoryPinnedTool(memoryIndex), toolbuiltin.MemoryPinnedDef)
+
 	// read_pdf: extract text from a local PDF file via pdftotext.
 	// Allowed roots come from extra.tools.pdf.allowed_roots and default to
 	// workspace-scoped directories when not configured.
@@ -1893,6 +1897,27 @@ func main() {
 			}
 		}
 
+		// Inject pinned agent knowledge (topic=agent_knowledge) into the system prompt.
+		// These entries are written by memory_pin and represent stable, always-needed facts.
+		if memoryIndex != nil {
+			pinned := memoryIndex.ListByTopic("agent_knowledge", 50)
+			if len(pinned) > 0 {
+				var sb strings.Builder
+				sb.WriteString("## Pinned Knowledge\n")
+				for _, p := range pinned {
+					sb.WriteString("- ")
+					sb.WriteString(p.Text)
+					sb.WriteString("\n")
+				}
+				pinnedBlock := strings.TrimRight(sb.String(), "\n")
+				if turnContext == "" {
+					turnContext = pinnedBlock
+				} else {
+					turnContext = pinnedBlock + "\n\n" + turnContext
+				}
+			}
+		}
+
 		lastActivityAt := time.Now().UnixMilli()
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 			TS:             lastActivityAt,
@@ -2382,6 +2407,25 @@ func main() {
 						Content:    m.Content,
 						ToolCallID: m.ToolCallID,
 					})
+				}
+			}
+		}
+
+		// Inject pinned agent knowledge into channel turn context.
+		if memoryIndex != nil {
+			if pinned := memoryIndex.ListByTopic("agent_knowledge", 50); len(pinned) > 0 {
+				var sb strings.Builder
+				sb.WriteString("## Pinned Knowledge\n")
+				for _, p := range pinned {
+					sb.WriteString("- ")
+					sb.WriteString(p.Text)
+					sb.WriteString("\n")
+				}
+				pinnedBlock := strings.TrimRight(sb.String(), "\n")
+				if turnContext == "" {
+					turnContext = pinnedBlock
+				} else {
+					turnContext = pinnedBlock + "\n\n" + turnContext
 				}
 			}
 		}

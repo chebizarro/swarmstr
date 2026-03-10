@@ -46,6 +46,9 @@ type Backend interface {
 	// Delete removes the memory entry with the given ID.
 	// Returns true if it existed, false if not found.
 	Delete(id string) bool
+	// ListByTopic returns entries whose Topic exactly matches the given topic,
+	// newest-first, up to limit results.  Used to surface pinned agent knowledge.
+	ListByTopic(topic string, limit int) []IndexedMemory
 	// Close releases any resources held by the backend.
 	Close() error
 }
@@ -119,16 +122,17 @@ type IndexBackend struct {
 	idx *Index
 }
 
-func (b *IndexBackend) Add(doc state.MemoryDoc)                                  { b.idx.Add(doc) }
-func (b *IndexBackend) Search(query string, limit int) []IndexedMemory           { return b.idx.Search(query, limit) }
-func (b *IndexBackend) SearchSession(sid, q string, limit int) []IndexedMemory   { return b.idx.SearchSession(sid, q, limit) }
-func (b *IndexBackend) ListSession(sid string, limit int) []IndexedMemory        { return b.idx.ListSession(sid, limit) }
-func (b *IndexBackend) Count() int                                               { return b.idx.Count() }
-func (b *IndexBackend) SessionCount() int                                        { return b.idx.SessionCount() }
-func (b *IndexBackend) Store(sid, text string, tags []string) string             { return b.idx.Store(sid, text, tags) }
-func (b *IndexBackend) Delete(id string) bool                                    { return b.idx.Delete(id) }
-func (b *IndexBackend) Save() error                                              { return b.idx.Save() }
-func (b *IndexBackend) Close() error                                             { return b.idx.Save() }
+func (b *IndexBackend) Add(doc state.MemoryDoc)                                        { b.idx.Add(doc) }
+func (b *IndexBackend) Search(query string, limit int) []IndexedMemory                 { return b.idx.Search(query, limit) }
+func (b *IndexBackend) SearchSession(sid, q string, limit int) []IndexedMemory         { return b.idx.SearchSession(sid, q, limit) }
+func (b *IndexBackend) ListSession(sid string, limit int) []IndexedMemory              { return b.idx.ListSession(sid, limit) }
+func (b *IndexBackend) Count() int                                                     { return b.idx.Count() }
+func (b *IndexBackend) SessionCount() int                                              { return b.idx.SessionCount() }
+func (b *IndexBackend) Store(sid, text string, tags []string) string                   { return b.idx.Store(sid, text, tags) }
+func (b *IndexBackend) Delete(id string) bool                                          { return b.idx.Delete(id) }
+func (b *IndexBackend) ListByTopic(topic string, limit int) []IndexedMemory            { return b.idx.ListByTopic(topic, limit) }
+func (b *IndexBackend) Save() error                                                    { return b.idx.Save() }
+func (b *IndexBackend) Close() error                                                   { return b.idx.Save() }
 
 // Compact removes the oldest (lowest-Unix) entries to reduce total count.
 func (b *IndexBackend) Compact(maxEntries int) int {

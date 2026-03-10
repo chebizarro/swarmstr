@@ -350,6 +350,45 @@ func (b *QdrantBackend) Count() int {
 
 func (b *QdrantBackend) SessionCount() int { return 0 } // not efficient in Qdrant without aggregation
 
+func (b *QdrantBackend) ListByTopic(topic string, limit int) []IndexedMemory {
+	if limit <= 0 {
+		limit = 100
+	}
+	body, _ := json.Marshal(map[string]any{
+		"filter": map[string]any{
+			"must": []map[string]any{
+				{"key": "topic", "match": map[string]any{"value": topic}},
+			},
+		},
+		"limit":        limit,
+		"with_payload": true,
+		"order_by":     map[string]any{"key": "unix", "direction": "desc"},
+	})
+	resp, err := b.client.Post(
+		fmt.Sprintf("%s/collections/%s/points/scroll", b.qdrantURL, b.collection),
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var sr struct {
+		Result struct {
+			Points []struct {
+				ID      string         `json:"id"`
+				Payload map[string]any `json:"payload"`
+			} `json:"points"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		return nil
+	}
+	out := make([]IndexedMemory, 0)
+	for _, p := range sr.Result.Points {
+		out = append(out, payloadToIndexedMemory(p.ID, p.Payload))
+	}
+	return out
+}
+
 func (b *QdrantBackend) Compact(maxEntries int) int { return 0 } // Qdrant manages its own storage
 
 func (b *QdrantBackend) Save() error { return nil } // Qdrant persists automatically
@@ -447,6 +486,9 @@ type Store interface {
 	Search(query string, limit int) []IndexedMemory
 	SearchSession(sessionID, query string, limit int) []IndexedMemory
 	ListSession(sessionID string, limit int) []IndexedMemory
+	// ListByTopic returns all entries with the given topic, newest-first.
+	// Used to surface pinned agent knowledge into the system prompt.
+	ListByTopic(topic string, limit int) []IndexedMemory
 	Count() int
 	SessionCount() int
 	Save() error

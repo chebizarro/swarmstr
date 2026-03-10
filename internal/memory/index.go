@@ -156,6 +156,27 @@ func (i *Index) Search(query string, limit int) []IndexedMemory {
 	return results
 }
 
+// ListByTopic returns all entries whose Topic exactly matches the given topic,
+// sorted newest-first, up to limit results.
+func (i *Index) ListByTopic(topic string, limit int) []IndexedMemory {
+	if limit <= 0 {
+		limit = 100
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	results := make([]IndexedMemory, 0, 8)
+	for _, doc := range i.docs {
+		if doc.Topic == topic {
+			results = append(results, doc)
+		}
+	}
+	sort.Slice(results, func(a, b int) bool { return results[a].Unix > results[b].Unix })
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results
+}
+
 // Count returns the total number of indexed memory entries.
 func (i *Index) Count() int {
 	i.mu.RLock()
