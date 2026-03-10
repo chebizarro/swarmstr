@@ -93,24 +93,24 @@ var NostrFetchDef = agent.ToolDefinition{
 				Type:        "integer",
 				Description: "Unix timestamp: only return events before this time.",
 			},
-			"#d": {
+			"tag_d": {
 				Type:        "array",
-				Description: "Filter by d-tag values. Used for parameterized replaceable events (e.g. kind:30000 lists). Example: ['cascadia-agents']",
+				Description: "Filter by d-tag values (NIP-01 #d filter). Used for parameterized replaceable events, e.g. kind:30000 lists. Example: [\"cascadia-agents\"]",
 				Items:       &agent.ToolParamProp{Type: "string"},
 			},
-			"#p": {
+			"tag_p": {
 				Type:        "array",
-				Description: "Filter by p-tag pubkeys (events tagged with specific pubkeys).",
+				Description: "Filter by p-tag pubkeys (NIP-01 #p filter). Events tagged with specific pubkeys.",
 				Items:       &agent.ToolParamProp{Type: "string"},
 			},
-			"#e": {
+			"tag_e": {
 				Type:        "array",
-				Description: "Filter by e-tag event IDs (events referencing specific events).",
+				Description: "Filter by e-tag event IDs (NIP-01 #e filter). Events referencing specific events.",
 				Items:       &agent.ToolParamProp{Type: "string"},
 			},
-			"#t": {
+			"tag_t": {
 				Type:        "array",
-				Description: "Filter by t-tag topic/hashtag values.",
+				Description: "Filter by t-tag topic/hashtag values (NIP-01 #t filter).",
 				Items:       &agent.ToolParamProp{Type: "string"},
 			},
 			"relays": {
@@ -395,14 +395,14 @@ func buildNostrFilter(m map[string]any, limit int) (nostr.Filter, error) {
 		ts := nostr.Timestamp(int64(v))
 		f.Until = ts
 	}
-	// tag filters (#e, #p, #t, etc.)
+	// tag filters: accept both "#d" style (relay-native) and "tag_d" style (schema-safe)
 	tagMap := nostr.TagMap{}
 	for k, v := range m {
-		if !strings.HasPrefix(k, "#") {
-			continue
+		if strings.HasPrefix(k, "#") {
+			tagMap[k[1:]] = toStringSlice(v)
+		} else if strings.HasPrefix(k, "tag_") && len(k) == 5 {
+			tagMap[k[4:]] = toStringSlice(v)
 		}
-		letter := k[1:]
-		tagMap[letter] = toStringSlice(v)
 	}
 	if len(tagMap) > 0 {
 		f.Tags = tagMap
