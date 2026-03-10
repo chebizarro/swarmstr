@@ -2366,23 +2366,43 @@ func main() {
 		log.Printf("nostr runtime error: %v", err)
 	}
 
-	// Start the DM transport: NIP-17 only.
-	var bus nostruntime.DMTransport
-	if !cfg.EnableNIP17 {
-		log.Printf("dm transport: forcing NIP-17 (legacy NIP-04 disabled)")
-	}
-	bus, err = nostruntime.StartNIP17Bus(ctx, nostruntime.NIP17BusOptions{
+	// Start DM transport: NIP-17 (gift-wrapped) + NIP-04 (legacy) in parallel.
+	// Both buses share the same dmOnMessage handler so any client protocol works.
+	nip17bus, nip17err := nostruntime.StartNIP17Bus(ctx, nostruntime.NIP17BusOptions{
 		Keyer:      controlKeyer,
 		Relays:     cfg.Relays,
 		SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
 		OnMessage:  dmOnMessage,
 		OnError:    dmOnError,
 	})
-	if err != nil {
-		log.Fatalf("start nip17 bus: %v", err)
+	if nip17err != nil {
+		log.Printf("dm transport: NIP-17 unavailable (%v); NIP-04 only", nip17err)
+	} else {
+		log.Printf("dm transport: NIP-17 (gift-wrapped) active")
+		defer nip17bus.Close()
 	}
-	log.Printf("dm transport: NIP-17 (gift-wrapped)")
-	defer bus.Close()
+	nip04bus, nip04err := nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
+		Keyer:      controlKeyer,
+		Relays:     cfg.Relays,
+		SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
+		OnMessage:  dmOnMessage,
+		OnError:    dmOnError,
+	})
+	if nip04err != nil {
+		log.Printf("dm transport: NIP-04 unavailable (%v)", nip04err)
+	} else {
+		log.Printf("dm transport: NIP-04 (legacy) active")
+		defer nip04bus.Close()
+	}
+	// Expose whichever bus is available for outbound sends (prefer NIP-17).
+	var bus nostruntime.DMTransport
+	if nip17err == nil {
+		bus = nip17bus
+	} else if nip04err == nil {
+		bus = nip04bus
+	} else {
+		log.Fatalf("dm transport: no transport available (NIP-17: %v, NIP-04: %v)", nip17err, nip04err)
+	}
 
 	// Expose the DM bus globally so node-pairing and node.invoke handlers
 	// can send NIP-17/NIP-04 DMs without the bus being threaded into every function.
