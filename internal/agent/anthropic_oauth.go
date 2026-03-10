@@ -29,7 +29,7 @@ import (
 
 const (
 	// anthropicOAuthBeta lists the beta features required for OAuth-authenticated requests.
-	anthropicOAuthBeta = "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14"
+	anthropicOAuthBeta = "claude-code-20250219,oauth-2025-04-20"
 
 	// anthropicOAuthUserAgent mimics the Claude CLI user-agent.
 	anthropicOAuthUserAgent = "claude-cli/2.1.62"
