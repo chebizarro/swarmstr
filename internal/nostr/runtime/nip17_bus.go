@@ -90,7 +90,15 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 
 	ctx, cancel := context.WithCancel(parent)
 	b := &NIP17Bus{
-		pool:         nostr.NewPool(nostr.PoolOptions{PenaltyBox: true}),
+		pool: nostr.NewPool(nostr.PoolOptions{
+			PenaltyBox: true,
+			RelayOptions: nostr.RelayOptions{
+				// NIP-42: automatically sign AUTH challenges with the agent's key.
+				AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
+					return evt.Sign([32]byte(sk))
+				},
+			},
+		}),
 		kr:           ks,
 		public:       pub,
 		relays:       initialRelays,

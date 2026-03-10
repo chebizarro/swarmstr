@@ -78,7 +78,15 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 
 	ctx, cancel := context.WithCancel(parent)
 	bus := &DMBus{
-		pool:         nostr.NewPool(nostr.PoolOptions{PenaltyBox: true}),
+		pool: nostr.NewPool(nostr.PoolOptions{
+			PenaltyBox: true,
+			RelayOptions: nostr.RelayOptions{
+				// NIP-42: automatically sign AUTH challenges with the agent's key.
+				AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
+					return evt.Sign([32]byte(sk))
+				},
+			},
+		}),
 		relays:       initialRelays,
 		secret:       sk,
 		public:       sk.Public(),
@@ -176,7 +184,14 @@ func SendDMOnce(ctx context.Context, privateKey string, relays []string, toPubKe
 		return "", err
 	}
 
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := nostr.NewPool(nostr.PoolOptions{
+		PenaltyBox: true,
+		RelayOptions: nostr.RelayOptions{
+			AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
+				return evt.Sign([32]byte(sk))
+			},
+		},
+	})
 	defer pool.Close("send once finished")
 	return publishEncryptedDM(ctx, pool, sk, relays, pk, text)
 }
