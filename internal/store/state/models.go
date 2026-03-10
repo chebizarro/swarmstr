@@ -187,6 +187,10 @@ type AgentConfig struct {
 	// SystemPrompt is injected as the system/context for every turn processed
 	// by this agent. It is prepended before any memory or context-engine additions.
 	SystemPrompt string `json:"system_prompt,omitempty"`
+	// EnabledTools is an explicit allowlist of tool names to expose to this agent.
+	// When non-empty, only listed tools are included in the model's tool schema.
+	// When empty, all registered tools are available (subject to ToolProfile).
+	EnabledTools []string `json:"enabled_tools,omitempty"`
 }
 
 // AgentsConfig is an ordered list of per-agent configurations.

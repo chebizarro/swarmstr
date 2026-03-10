@@ -1880,6 +1880,25 @@ func main() {
 
 	// dmRunAgentTurn is the core DM agent-dispatch logic, called either directly
 	// from dmOnMessage (no debounce) or from the dmDebouncer flush.
+	// filterEnabledTools returns only the tool definitions whose names appear in
+	// the allowlist.  If allowlist is empty every tool is returned unchanged.
+	filterEnabledTools := func(defs []agent.ToolDefinition, allowlist []string) []agent.ToolDefinition {
+		if len(allowlist) == 0 {
+			return defs
+		}
+		allow := make(map[string]struct{}, len(allowlist))
+		for _, n := range allowlist {
+			allow[n] = struct{}{}
+		}
+		out := make([]agent.ToolDefinition, 0, len(allowlist))
+		for _, d := range defs {
+			if _, ok := allow[d.Name]; ok {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+
 	dmRunAgentTurn := func(
 		ctx context.Context,
 		fromPubKey, combinedText, eventID string,
@@ -2093,11 +2112,27 @@ func main() {
 
 		var turnResult agent.TurnResult
 		var turnErr error
+		// Resolve enabled tools for this agent from config.
+		var baseTurnTools []agent.ToolDefinition
+		if controlToolRegistry != nil {
+			if dp, ok := interface{}(controlToolRegistry).(interface{ Definitions() []agent.ToolDefinition }); ok {
+				defs := dp.Definitions()
+				var agentEnabledTools []string
+				for _, ac := range configState.Get().Agents {
+					if ac.ID == activeAgentID {
+						agentEnabledTools = ac.EnabledTools
+						break
+					}
+				}
+				baseTurnTools = filterEnabledTools(defs, agentEnabledTools)
+			}
+		}
 		baseTurn := agent.Turn{
 			SessionID: sessionID,
 			UserText:  combinedText,
 			Context:   turnContext,
 			History:   turnHistory,
+			Tools:     baseTurnTools,
 		}
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, func(chunk string) {
@@ -2381,9 +2416,7 @@ func main() {
 		log.Printf("dm transport: NIP-17 (gift-wrapped) active")
 		defer nip17bus.Close()
 	}
-	nip04rawKey, _ := config.ResolvePrivateKey(cfg)
 	nip04bus, nip04err := nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
-		PrivateKey: nip04rawKey,
 		Keyer:      controlKeyer,
 		Relays:     cfg.Relays,
 		SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
