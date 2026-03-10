@@ -862,27 +862,34 @@ func main() {
 	// pause execution, create an approval request, and wait for a human decision
 	// before proceeding.  This implements OpenClaw parity for exec approval gating.
 	{
-		// Default tool names that require approval. Overridable via
-		// Extra["approvals"]["tools"] (comma-separated or []string).
+		// Default tool names that require approval.
+		// If Extra["approvals"]["tools"] is present (even empty), it REPLACES the defaults.
+		// Set to [] for fully autonomous operation; omit the key to use defaults.
 		defaultApprovalTools := []string{"bash", "shell", "exec", "run_command", "terminal", "sh", "bash_exec"}
 		approvalTools := make(map[string]bool)
-		for _, t := range defaultApprovalTools {
-			approvalTools[t] = true
-		}
+		configOverride := false
 		if aExtra, ok := configState.Get().Extra["approvals"].(map[string]any); ok {
-			switch v := aExtra["tools"].(type) {
-			case string:
-				for _, t := range strings.Split(v, ",") {
-					if s := strings.TrimSpace(t); s != "" {
-						approvalTools[s] = true
+			if _, hasKey := aExtra["tools"]; hasKey {
+				configOverride = true
+				switch v := aExtra["tools"].(type) {
+				case string:
+					for _, t := range strings.Split(v, ",") {
+						if s := strings.TrimSpace(t); s != "" {
+							approvalTools[s] = true
+						}
+					}
+				case []any:
+					for _, item := range v {
+						if s, ok := item.(string); ok && s != "" {
+							approvalTools[s] = true
+						}
 					}
 				}
-			case []any:
-				for _, item := range v {
-					if s, ok := item.(string); ok && s != "" {
-						approvalTools[s] = true
-					}
-				}
+			}
+		}
+		if !configOverride {
+			for _, t := range defaultApprovalTools {
+				approvalTools[t] = true
 			}
 		}
 
@@ -898,24 +905,27 @@ func main() {
 		tools.SetMiddleware(func(ctx context.Context, call agent.ToolCall, next func(context.Context, agent.ToolCall) (string, error)) (string, error) {
 			// Re-read approval tool list from live config on every call so that
 			// config hot-reload (SIGHUP or file change) takes effect immediately.
+			// If Extra["approvals"]["tools"] is present it REPLACES the startup defaults.
 			liveApprovalTools := approvalTools
 			if aExtra, ok := configState.Get().Extra["approvals"].(map[string]any); ok {
-				live := make(map[string]bool)
-				switch v := aExtra["tools"].(type) {
-				case string:
-					for _, t := range strings.Split(v, ",") {
-						if s := strings.TrimSpace(t); s != "" {
-							live[s] = true
+				if _, hasKey := aExtra["tools"]; hasKey {
+					live := make(map[string]bool)
+					switch v := aExtra["tools"].(type) {
+					case string:
+						for _, t := range strings.Split(v, ",") {
+							if s := strings.TrimSpace(t); s != "" {
+								live[s] = true
+							}
+						}
+					case []any:
+						for _, item := range v {
+							if s, ok := item.(string); ok && s != "" {
+								live[s] = true
+							}
 						}
 					}
-				case []any:
-					for _, item := range v {
-						if s, ok := item.(string); ok && s != "" {
-							live[s] = true
-						}
-					}
+					liveApprovalTools = live
 				}
-				liveApprovalTools = live
 			}
 			if !liveApprovalTools[call.Name] {
 				metricspkg.ToolCalls.Inc()
