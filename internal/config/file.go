@@ -417,6 +417,13 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 		} else if v, ok := m["systemPrompt"].(string); ok {
 			ac.SystemPrompt = strings.TrimSpace(v)
 		}
+		if v, ok := m["enabled_tools"].([]any); ok {
+			for _, t := range v {
+				if s, ok := t.(string); ok && strings.TrimSpace(s) != "" {
+					ac.EnabledTools = append(ac.EnabledTools, strings.TrimSpace(s))
+				}
+			}
+		}
 		// dm_peers: list of Nostr pubkeys routed to this agent for DMs.
 		if v, ok := m["dm_peers"].([]any); ok {
 			for _, peer := range v {
