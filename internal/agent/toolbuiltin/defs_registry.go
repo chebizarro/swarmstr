@@ -13,7 +13,7 @@ import "swarmstr/internal/agent"
 
 // MemorySearchDef is the ToolDefinition for memory.search (global search).
 var MemorySearchDef = agent.ToolDefinition{
-	Name:        "memory.search",
+	Name:        "memory_search",
 	Description: "Search the persistent memory store for records matching a query. Returns ranked results across all sessions. Use to recall stored facts, past decisions, user preferences, or any information you've previously saved.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
@@ -35,7 +35,7 @@ var MemorySearchDef = agent.ToolDefinition{
 
 // ACPDelegateDef is the ToolDefinition for acp.delegate.
 var ACPDelegateDef = agent.ToolDefinition{
-	Name:        "acp.delegate",
+	Name:        "acp_delegate",
 	Description: "Delegate a sub-task to a peer agent and wait for the result. The peer executes the instructions in their own session and returns a text response. Use for parallelising work or routing specialised tasks to domain-specific agents.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
