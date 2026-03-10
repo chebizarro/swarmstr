@@ -40,6 +40,7 @@ type ToolParamProp struct {
 }
 
 type ToolCall struct {
+	ID   string         `json:"id,omitempty"` // provider-assigned call ID for tool_result linking
 	Name string         `json:"name"`
 	Args map[string]any `json:"args,omitempty"`
 }

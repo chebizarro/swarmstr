@@ -30,6 +30,8 @@ type Turn struct {
 	// History is the prior conversation for multi-turn context.
 	// Messages are ordered oldest-first.
 	History []ConversationMessage
+	// Executor is the tool executor for agentic loops inside providers.
+	Executor ToolExecutor
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.
@@ -115,6 +117,10 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 			turn.Tools = dp.Definitions()
 		}
 	}
+	// Inject the executor so providers can run the agentic tool loop internally.
+	if turn.Executor == nil {
+		turn.Executor = r.tools
+	}
 	gen, err := r.provider.Generate(ctx, turn)
 	if err != nil {
 		return TurnResult{}, err
@@ -137,6 +143,9 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		if dp, ok := r.tools.(interface{ Definitions() []ToolDefinition }); ok {
 			turn.Tools = dp.Definitions()
 		}
+	}
+	if turn.Executor == nil {
+		turn.Executor = r.tools
 	}
 
 	var gen ProviderResult
