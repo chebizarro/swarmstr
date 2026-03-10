@@ -22,7 +22,15 @@ type ConfigDoc struct {
 	Secrets   SecretsConfig   `json:"secrets,omitempty"`
 	CronCfg   CronConfig      `json:"cron,omitempty"`
 	Hooks     HooksConfig     `json:"hooks,omitempty"`
+	AgentList *AgentListConfig `json:"agent_list,omitempty"`
 	Extra     map[string]any  `json:"extra,omitempty"`
+}
+
+// AgentListConfig controls Strand's own NIP-51 kind:30000 agent list publishing.
+type AgentListConfig struct {
+	DTag     string `json:"d"`               // d-tag identifier (e.g. "cascadia-agents")
+	Relay    string `json:"relay,omitempty"` // optional hint relay for publishing
+	AutoSync bool   `json:"auto_sync"`       // publish on startup + when peers change
 }
 
 // Hash returns a stable SHA-256 hex digest of the ConfigDoc's JSON serialization.
@@ -39,8 +47,17 @@ func (c ConfigDoc) Hash() string {
 }
 
 type DMPolicy struct {
-	Policy    string   `json:"policy"` // pairing|allowlist|open|disabled
-	AllowFrom []string `json:"allow_from,omitempty"`
+	Policy         string             `json:"policy"` // pairing|allowlist|open|disabled
+	AllowFrom      []string           `json:"allow_from,omitempty"`
+	AllowFromLists []AllowFromListRef `json:"allow_from_lists,omitempty"`
+}
+
+// AllowFromListRef references a NIP-51 kind:30000 list whose "p" tags are
+// merged into the DM allowlist at runtime.
+type AllowFromListRef struct {
+	Pubkey string `json:"pubkey"`          // hex or npub of the list owner
+	D      string `json:"d"`               // d-tag identifier (e.g. "cascadia-agents")
+	Relay  string `json:"relay,omitempty"` // optional hint relay
 }
 
 type RelayPolicy struct {
