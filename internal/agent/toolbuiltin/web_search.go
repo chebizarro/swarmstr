@@ -88,6 +88,26 @@ func (c WebSearchConfig) serperURL() string {
 //   - query (string, required) – search query
 //   - provider ("brave"|"serper", optional) – defaults to auto-detect
 //   - count (int, default 5, max 10) – number of results to return
+// WebSearchDef is the ToolDefinition for web_search (native function-calling schema).
+var WebSearchDef = agent.ToolDefinition{
+	Name:        "web_search",
+	Description: "Search the web using Brave Search or Serper. Returns a list of results with titles, URLs, and snippets. Use to find current information, recent events, or when you need to discover resources you don't have a URL for.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"query": {
+				Type:        "string",
+				Description: "The search query, e.g. \"Go 1.22 release notes\"",
+			},
+			"count": {
+				Type:        "integer",
+				Description: "Number of results to return (1–20, default 5)",
+			},
+		},
+		Required: []string{"query"},
+	},
+}
+
 func WebSearchTool(cfg WebSearchConfig) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		query := agent.ArgString(args, "query")

@@ -48,6 +48,89 @@ func (o NostrToolOpts) resolveRelays(override []string) []string {
 //   - relays     []string — relay URLs (optional, overrides configured relays)
 //   - limit      int     — max events to return (default 20, max 100)
 //   - timeout_seconds int (default 10)
+// NostrFetchDef is the ToolDefinition for nostr_fetch.
+var NostrFetchDef = agent.ToolDefinition{
+	Name:        "nostr_fetch",
+	Description: "Fetch Nostr events using a filter (kind, authors, ids, tags, time range, limit). Returns matching events as JSON. Use to read notes, profiles, DMs, and any other Nostr content.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"kinds": {
+				Type:        "array",
+				Description: "Event kind numbers, e.g. [1] for short notes, [0] for profiles, [4] for DMs.",
+				Items:       &agent.ToolParamProp{Type: "integer"},
+			},
+			"authors": {
+				Type:        "array",
+				Description: "Filter by author hex pubkeys.",
+				Items:       &agent.ToolParamProp{Type: "string"},
+			},
+			"ids": {
+				Type:        "array",
+				Description: "Filter by event IDs (hex).",
+				Items:       &agent.ToolParamProp{Type: "string"},
+			},
+			"limit": {
+				Type:        "integer",
+				Description: "Maximum number of events to return (default 10, max 100).",
+			},
+			"since": {
+				Type:        "integer",
+				Description: "Unix timestamp: only return events after this time.",
+			},
+			"until": {
+				Type:        "integer",
+				Description: "Unix timestamp: only return events before this time.",
+			},
+		},
+	},
+}
+
+// NostrPublishDef is the ToolDefinition for nostr_publish.
+var NostrPublishDef = agent.ToolDefinition{
+	Name:        "nostr_publish",
+	Description: "Publish a signed Nostr event to the configured relays. Use to post notes (kind 1), reactions, articles, or any other Nostr event kind.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"kind": {
+				Type:        "integer",
+				Description: "Nostr event kind number (e.g. 1 for short text note).",
+			},
+			"content": {
+				Type:        "string",
+				Description: "The event content (text, JSON, etc.).",
+			},
+			"tags": {
+				Type:        "array",
+				Description: "Optional NIP-01 tags as array-of-arrays, e.g. [[\"e\",\"<event-id>\"], [\"p\",\"<pubkey>\"]].",
+				Items:       &agent.ToolParamProp{Type: "array"},
+			},
+		},
+		Required: []string{"kind", "content"},
+	},
+}
+
+// NostrSendDMDef is the ToolDefinition for nostr_send_dm.
+var NostrSendDMDef = agent.ToolDefinition{
+	Name:        "nostr_send_dm",
+	Description: "Send an encrypted direct message to a Nostr user via NIP-17 (or NIP-04 fallback). Use for direct communication with known pubkeys.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"to": {
+				Type:        "string",
+				Description: "Recipient hex pubkey or npub.",
+			},
+			"message": {
+				Type:        "string",
+				Description: "The message text to send.",
+			},
+		},
+		Required: []string{"to", "message"},
+	},
+}
+
 func NostrFetchTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		timeoutSec := 10
@@ -76,9 +159,9 @@ func NostrFetchTool(opts NostrToolOpts) agent.ToolFunc {
 			return "", fmt.Errorf("nostr_fetch: no relays configured")
 		}
 
-		// Build NIP-01 filter from the "filter" arg.
-		filterArg, _ := args["filter"].(map[string]any)
-		f, err := buildNostrFilter(filterArg, limit)
+		// Build NIP-01 filter directly from top-level tool arguments to match
+		// NostrFetchDef (kinds/authors/ids/since/until/#tags).
+		f, err := buildNostrFilter(args, limit)
 		if err != nil {
 			return "", fmt.Errorf("nostr_fetch: invalid filter: %w", err)
 		}

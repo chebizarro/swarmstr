@@ -26,6 +26,22 @@ type WebFetchOpts struct {
 //   - max_chars (int, default 50000) – truncation limit in Unicode code points
 //   - timeout_seconds (int, default 30) – request timeout
 //   - allow_local (bool) – per-call override of the SSRF guard
+// WebFetchDef is the ToolDefinition for web_fetch (native function-calling schema).
+var WebFetchDef = agent.ToolDefinition{
+	Name:        "web_fetch",
+	Description: "Fetch the text content of a web page or URL. Returns the visible text (HTML stripped). Use for reading documentation, articles, GitHub READMEs, or any publicly accessible web content. Respects SSRF guards.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"url": {
+				Type:        "string",
+				Description: "The URL to fetch, e.g. \"https://example.com/page\"",
+			},
+		},
+		Required: []string{"url"},
+	},
+}
+
 func WebFetchTool(opts WebFetchOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		rawURL := agent.ArgString(args, "url")
