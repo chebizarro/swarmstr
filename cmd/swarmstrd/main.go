@@ -896,7 +896,28 @@ func main() {
 		}
 
 		tools.SetMiddleware(func(ctx context.Context, call agent.ToolCall, next func(context.Context, agent.ToolCall) (string, error)) (string, error) {
-			if !approvalTools[call.Name] {
+			// Re-read approval tool list from live config on every call so that
+			// config hot-reload (SIGHUP or file change) takes effect immediately.
+			liveApprovalTools := approvalTools
+			if aExtra, ok := configState.Get().Extra["approvals"].(map[string]any); ok {
+				live := make(map[string]bool)
+				switch v := aExtra["tools"].(type) {
+				case string:
+					for _, t := range strings.Split(v, ",") {
+						if s := strings.TrimSpace(t); s != "" {
+							live[s] = true
+						}
+					}
+				case []any:
+					for _, item := range v {
+						if s, ok := item.(string); ok && s != "" {
+							live[s] = true
+						}
+					}
+				}
+				liveApprovalTools = live
+			}
+			if !liveApprovalTools[call.Name] {
 				metricspkg.ToolCalls.Inc()
 				return next(ctx, call)
 			}
