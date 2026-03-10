@@ -251,7 +251,7 @@ func parseAnthropicToolCalls(content []struct {
 				if args == nil {
 					args = map[string]any{}
 				}
-				calls = append(calls, ToolCall{Name: c.Name, Args: args})
+				calls = append(calls, ToolCall{ID: c.ID, Name: c.Name, Args: args})
 			}
 		}
 	}
@@ -411,16 +411,77 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		return ProviderResult{}, fmt.Errorf("anthropic returned %s", resp.Status)
 	}
 	text, calls := parseAnthropicToolCalls(out.Content)
+	totalInput := int64(0)
+	totalOutput := int64(0)
+	if out.Usage != nil {
+		totalInput = int64(out.Usage.InputTokens)
+		totalOutput = int64(out.Usage.OutputTokens)
+	}
+
+	// Agentic tool loop: if the model returned tool calls and we have an executor,
+	// run tool→result→continue until the model produces a text response.
+	if out.StopReason == "tool_use" && len(calls) > 0 && turn.Executor != nil {
+		const maxIter = 10
+		for iter := 0; iter < maxIter && out.StopReason == "tool_use"; iter++ {
+			// Append the assistant's tool_use turn (preserve raw content blocks).
+			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
+
+			// Execute each tool and collect results.
+			toolResults := make([]map[string]any, 0, len(calls))
+			for _, call := range calls {
+				result, execErr := turn.Executor.Execute(ctx, call)
+				if execErr != nil {
+					result = "error: " + execErr.Error()
+				}
+				toolResults = append(toolResults, map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": call.ID,
+					"content":     result,
+				})
+			}
+			// Append the tool results as a user turn.
+			msgs = append(msgs, anthropicMessage{Role: "user", Content: toolResults})
+
+			// Call the API again with the updated message history.
+			reqBody.Messages = msgs
+			body2, err2 := json.Marshal(reqBody)
+			if err2 != nil {
+				break
+			}
+			req2, err2 := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
+			if err2 != nil {
+				break
+			}
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("x-api-key", apiKey)
+			req2.Header.Set("anthropic-version", "2023-06-01")
+			resp2, err2 := client.Do(req2)
+			if err2 != nil {
+				break
+			}
+			var out2 anthropicResponse
+			if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 != nil {
+				resp2.Body.Close()
+				break
+			}
+			resp2.Body.Close()
+			if out2.Error != nil {
+				break
+			}
+			if out2.Usage != nil {
+				totalInput += int64(out2.Usage.InputTokens)
+				totalOutput += int64(out2.Usage.OutputTokens)
+			}
+			out = out2
+			text, calls = parseAnthropicToolCalls(out.Content)
+		}
+	}
+
 	if text == "" && len(calls) == 0 {
 		return ProviderResult{}, fmt.Errorf("anthropic returned no content")
 	}
 	res := ProviderResult{Text: text, ToolCalls: calls}
-	if out.Usage != nil {
-		res.Usage = ProviderUsage{
-			InputTokens:  int64(out.Usage.InputTokens),
-			OutputTokens: int64(out.Usage.OutputTokens),
-		}
-	}
+	res.Usage = ProviderUsage{InputTokens: totalInput, OutputTokens: totalOutput}
 	return res, nil
 }
 
@@ -518,16 +579,70 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 		return ProviderResult{}, fmt.Errorf("anthropic oauth returned %s", resp.Status)
 	}
 	text, calls := parseAnthropicToolCalls(out.Content)
+	totalInput := int64(0)
+	totalOutput := int64(0)
+	if out.Usage != nil {
+		totalInput = int64(out.Usage.InputTokens)
+		totalOutput = int64(out.Usage.OutputTokens)
+	}
+
+	// Agentic tool loop — same as the API-key provider.
+	if out.StopReason == "tool_use" && len(calls) > 0 && turn.Executor != nil {
+		const maxIter = 10
+		for iter := 0; iter < maxIter && out.StopReason == "tool_use"; iter++ {
+			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
+			toolResults := make([]map[string]any, 0, len(calls))
+			for _, call := range calls {
+				result, execErr := turn.Executor.Execute(ctx, call)
+				if execErr != nil {
+					result = "error: " + execErr.Error()
+				}
+				toolResults = append(toolResults, map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": call.ID,
+					"content":     result,
+				})
+			}
+			msgs = append(msgs, anthropicMessage{Role: "user", Content: toolResults})
+			reqBody.Messages = msgs
+			body2, err2 := json.Marshal(reqBody)
+			if err2 != nil {
+				break
+			}
+			req2, err2 := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
+			if err2 != nil {
+				break
+			}
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("anthropic-version", "2023-06-01")
+			applyAnthropicOAuthHeaders(req2, accessToken)
+			resp2, err2 := client.Do(req2)
+			if err2 != nil {
+				break
+			}
+			var out2 anthropicResponse
+			if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 != nil {
+				resp2.Body.Close()
+				break
+			}
+			resp2.Body.Close()
+			if out2.Error != nil {
+				break
+			}
+			if out2.Usage != nil {
+				totalInput += int64(out2.Usage.InputTokens)
+				totalOutput += int64(out2.Usage.OutputTokens)
+			}
+			out = out2
+			text, calls = parseAnthropicToolCalls(out.Content)
+		}
+	}
+
 	if text == "" && len(calls) == 0 {
 		return ProviderResult{}, fmt.Errorf("anthropic oauth returned no content")
 	}
 	res := ProviderResult{Text: text, ToolCalls: calls}
-	if out.Usage != nil {
-		res.Usage = ProviderUsage{
-			InputTokens:  int64(out.Usage.InputTokens),
-			OutputTokens: int64(out.Usage.OutputTokens),
-		}
-	}
+	res.Usage = ProviderUsage{InputTokens: totalInput, OutputTokens: totalOutput}
 	return res, nil
 }
 
