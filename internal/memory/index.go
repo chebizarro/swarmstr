@@ -177,6 +177,28 @@ func (i *Index) ListByTopic(topic string, limit int) []IndexedMemory {
 	return results
 }
 
+// Compact removes the oldest entries (lowest Unix timestamp) to keep the total
+// count at or below maxEntries.  Returns the number of entries removed.
+func (i *Index) Compact(maxEntries int) int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if len(i.docs) <= maxEntries {
+		return 0
+	}
+	entries := make([]IndexedMemory, 0, len(i.docs))
+	for _, d := range i.docs {
+		entries = append(entries, d)
+	}
+	// Sort ascending by age (oldest first).
+	sort.Slice(entries, func(a, b int) bool { return entries[a].Unix < entries[b].Unix })
+	toRemove := len(entries) - maxEntries
+	for idx := 0; idx < toRemove; idx++ {
+		delete(i.docs, entries[idx].MemoryID)
+	}
+	i.rebuildTokenMapLocked()
+	return toRemove
+}
+
 // Count returns the total number of indexed memory entries.
 func (i *Index) Count() int {
 	i.mu.RLock()

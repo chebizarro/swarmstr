@@ -491,6 +491,9 @@ type Store interface {
 	ListByTopic(topic string, limit int) []IndexedMemory
 	Count() int
 	SessionCount() int
+	// Compact removes the oldest entries to keep total count below maxEntries.
+	// Returns the number of removed entries.
+	Compact(maxEntries int) int
 	Save() error
 	Store(sessionID, text string, tags []string) string
 	Delete(id string) bool
