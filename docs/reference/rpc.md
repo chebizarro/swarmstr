@@ -1,0 +1,220 @@
+---
+summary: "HTTP and WebSocket API reference for swarmstr's admin and control endpoints"
+read_when:
+  - Integrating with swarmstr programmatically
+  - Calling the admin API from scripts
+  - Understanding the WebSocket event stream
+title: "RPC / HTTP API Reference"
+---
+
+# RPC / HTTP API Reference
+
+swarmstr exposes an HTTP API and WebSocket event stream for programmatic integration. This powers the CLI, TUI, and web dashboard.
+
+## Base URL
+
+Default: `http://localhost:18789`
+
+All endpoints require authentication via the gateway token:
+```
+Authorization: Bearer <token>
+```
+
+Or via the `x-swarmstr-token` header:
+```
+x-swarmstr-token: <token>
+```
+
+## HTTP Endpoints
+
+### `GET /health`
+
+Returns daemon health status.
+
+```json
+{
+  "status": "ok",
+  "version": "0.1.0",
+  "uptime": 3600,
+  "relays": { "connected": 3, "total": 3 }
+}
+```
+
+### `POST /call`
+
+Generic RPC endpoint for method calls.
+
+```json
+// Request
+{
+  "method": "status.get",
+  "params": {}
+}
+
+// Response
+{
+  "result": { ... },
+  "error": null
+}
+```
+
+### `POST /hooks/wake`
+
+Wake the agent with a system event (webhook trigger).
+
+```json
+{
+  "text": "Check relay connectivity",
+  "mode": "now"
+}
+```
+
+### `POST /hooks/agent`
+
+Trigger an agent turn with a message (isolated session).
+
+```json
+{
+  "sessionKey": "hook:mywebhook:123",
+  "message": "Summarize the latest Nostr events",
+  "deliver": true
+}
+```
+
+### `POST /v1/chat/completions`
+
+OpenAI-compatible chat completions endpoint.
+
+```json
+{
+  "model": "swarmstr",
+  "messages": [{"role": "user", "content": "Hello!"}],
+  "stream": false
+}
+```
+
+## WebSocket Event Stream
+
+Connect to `ws://localhost:18789/ws` for real-time events.
+
+Authentication:
+```
+ws://localhost:18789/ws?token=<token>
+```
+
+### Event Types
+
+```typescript
+// Agent turn started
+{ "type": "agent", "action": "start", "sessionKey": "agent:main:main", "timestamp": "..." }
+
+// Agent turn complete
+{ "type": "agent", "action": "complete", "sessionKey": "agent:main:main", "content": "..." }
+
+// Chat message received
+{ "type": "chat", "action": "received", "from": "npub1abc...", "content": "...", "channel": "nostr" }
+
+// Chat message sent
+{ "type": "chat", "action": "sent", "to": "npub1abc...", "content": "...", "channel": "nostr" }
+
+// Heartbeat tick
+{ "type": "tick", "timestamp": "...", "interval": 1800 }
+
+// Health update
+{ "type": "health", "status": "ok", "relays": { "connected": 3, "total": 3 } }
+
+// Cron job run
+{ "type": "cron", "action": "run", "jobId": "job-abc", "name": "daily-check" }
+
+// Canvas update
+{ "type": "canvas", "contentType": "html", "content": "...", "title": "Status Board" }
+```
+
+## RPC Methods
+
+Called via `POST /call` with `{ "method": "...", "params": { ... } }`.
+
+### Status & Health
+
+| Method | Description |
+|--------|-------------|
+| `status.get` | Full status including relay health |
+| `health.get` | Daemon health check |
+| `config.get` | Get current config |
+| `config.patch` | Patch config (triggers restart) |
+
+### Sessions
+
+| Method | Description |
+|--------|-------------|
+| `sessions.list` | List all sessions |
+| `sessions.get` | Get session details by key |
+| `sessions.reset` | Reset a session (new session) |
+| `sessions.compact` | Compact a session |
+| `sessions.delete` | Delete a session |
+
+### Agent
+
+| Method | Description |
+|--------|-------------|
+| `agent.turn` | Trigger an agent turn |
+| `agent.abort` | Abort the current turn |
+
+### Cron
+
+| Method | Description |
+|--------|-------------|
+| `cron.list` | List cron jobs |
+| `cron.add` | Add a new cron job |
+| `cron.edit` | Edit a cron job |
+| `cron.remove` | Remove a cron job |
+| `cron.enable` | Enable a cron job |
+| `cron.disable` | Disable a cron job |
+| `cron.run` | Manually trigger a cron job |
+| `cron.status` | Cron scheduler status |
+
+### System
+
+| Method | Description |
+|--------|-------------|
+| `system.event` | Enqueue a system event |
+| `system.heartbeat.last` | Get last heartbeat time |
+| `system.heartbeat.enable` | Enable heartbeat |
+| `system.heartbeat.disable` | Disable heartbeat |
+
+### Models
+
+| Method | Description |
+|--------|-------------|
+| `models.list` | List available models |
+| `models.status` | Auth/quota status |
+
+### Logs
+
+| Method | Description |
+|--------|-------------|
+| `logs.tail` | Stream recent logs |
+
+## CLI RPC Calls
+
+The CLI wraps these RPC calls. For scripting, call directly:
+
+```bash
+# Using curl
+curl -s -X POST http://localhost:18789/call \
+  -H "Authorization: Bearer $SWARMSTR_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"method":"status.get","params":{}}' | jq .
+
+# Using the CLI gateway call command
+swarmstr gateway call status.get
+swarmstr gateway call cron.list
+swarmstr gateway call system.event --params '{"text":"test"}'
+```
+
+## See Also
+
+- [CLI Reference](/cli/)
+- [Webhooks](/automation/webhook)
+- [Configuration](/gateway/configuration)
+- [Multiple Gateways](/gateway/multiple-gateways)
