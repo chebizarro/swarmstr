@@ -153,6 +153,43 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		if doc.DM.AllowFrom == nil {
 			doc.DM.AllowFrom = toStringSlice(dmRaw["allow_from"])
 		}
+		// allow_from_lists: NIP-51 kind:30000 list references for dynamic allowlist.
+		if listsRaw, ok := dmRaw["allow_from_lists"].([]any); ok {
+			for _, item := range listsRaw {
+				if m, ok := item.(map[string]any); ok {
+					ref := state.AllowFromListRef{}
+					if v, ok := m["pubkey"].(string); ok {
+						ref.Pubkey = strings.TrimSpace(v)
+					}
+					if v, ok := m["d"].(string); ok {
+						ref.D = strings.TrimSpace(v)
+					}
+					if v, ok := m["relay"].(string); ok {
+						ref.Relay = strings.TrimSpace(v)
+					}
+					if ref.Pubkey != "" && ref.D != "" {
+						doc.DM.AllowFromLists = append(doc.DM.AllowFromLists, ref)
+					}
+				}
+			}
+		}
+	}
+
+	// ── agent_list (NIP-51 kind:30000 agent list sync) ────────────────────────
+	if alRaw, ok := raw["agent_list"].(map[string]any); ok {
+		al := &state.AgentListConfig{}
+		if v, ok := alRaw["d"].(string); ok {
+			al.DTag = strings.TrimSpace(v)
+		}
+		if v, ok := alRaw["relay"].(string); ok {
+			al.Relay = strings.TrimSpace(v)
+		}
+		if v, ok := alRaw["auto_sync"].(bool); ok {
+			al.AutoSync = v
+		}
+		if al.DTag != "" {
+			doc.AgentList = al
+		}
 	}
 
 	// ── native Swarmstr agent policy ──────────────────────────────────────────

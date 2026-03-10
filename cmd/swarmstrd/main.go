@@ -2457,11 +2457,17 @@ func main() {
 
 		decision := policy.EvaluateIncomingDM(msg.FromPubKey, configState.Get())
 		if !decision.Allowed {
-			log.Printf("dm rejected from=%s reason=%s", msg.FromPubKey, decision.Reason)
-			if decision.RequiresPairing {
-				_ = msg.Reply(ctx, "Your message was received, but this node requires pairing approval before processing DMs.")
+			// Check NIP-51 dynamic allowlist before rejecting.
+			if isInDynamicAllowlist(msg.FromPubKey) {
+				decision = policy.DMDecision{Allowed: true, Level: policy.AuthPublic}
+				log.Printf("dm allowed via nip51 list from=%s", msg.FromPubKey)
+			} else {
+				log.Printf("dm rejected from=%s reason=%s", msg.FromPubKey, decision.Reason)
+				if decision.RequiresPairing {
+					_ = msg.Reply(ctx, "Your message was received, but this node requires pairing approval before processing DMs.")
+				}
+				return nil
 			}
-			return nil
 		}
 
 		// Rate limit check: per-user and per-channel (using pubkey as channel for DMs).
@@ -2628,6 +2634,32 @@ func main() {
 	controlDMBusMu.Lock()
 	controlDMBus = bus
 	controlDMBusMu.Unlock()
+
+	// ── NIP-51 allowlist watcher + agent list sync ─────────────────────────────
+	// Create a dedicated pool for NIP-51 list fetch/subscribe operations so the
+	// DM buses are not disturbed.
+	{
+		nip51Pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+		liveCfg := configState.Get()
+
+		// When the runtime config has no explicit relays, fall back to bootstrap relays.
+		if len(liveCfg.Relays.Read) == 0 {
+			liveCfg.Relays.Read = cfg.Relays
+		}
+		if len(liveCfg.Relays.Write) == 0 {
+			liveCfg.Relays.Write = cfg.Relays
+		}
+
+		// Start watchers for each allow_from_lists entry.
+		log.Printf("nip51: starting watcher for %d allow_from_lists entries", len(liveCfg.DM.AllowFromLists))
+		startNIP51AllowlistWatcher(ctx, nip51Pool, liveCfg)
+
+		// Publish/update Strand's own kind:30000 agent list if auto_sync is enabled.
+		// Run in background so startup is not blocked on relay I/O.
+		if liveCfg.AgentList != nil && liveCfg.AgentList.AutoSync {
+			go syncAgentList(ctx, nip51Pool, liveCfg)
+		}
+	}
 
 	// ── NIP-38 Heartbeat ────────────────────────────────────────────────────────
 	// Publishes kind 30315 status events so other Nostr clients can see whether
