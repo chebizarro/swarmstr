@@ -70,8 +70,8 @@ func ResolveLNURL(ctx context.Context, lud16 string) (*lnurlPayMetadata, error) 
 
 // SendOpts configures a zap send operation.
 type SendOpts struct {
-	// PrivateKey is the sender's hex-encoded secret key.
-	PrivateKey string
+	// Keyer is the sender signing interface.
+	Keyer nostr.Keyer
 	// Relays is the relay list embedded in the zap request.
 	Relays []string
 }
@@ -90,12 +90,12 @@ type ZapResult struct {
 // recipientPubkey is the hex pubkey of the Nostr user being zapped.
 // noteID is the optional note being zapped (hex event ID).
 func Send(ctx context.Context, opts SendOpts, lud16, recipientPubkeyHex, noteID string, amountSats int64, comment string) (*ZapResult, error) {
-	if opts.PrivateKey == "" {
-		return nil, fmt.Errorf("zap: sender private key is required")
+	if opts.Keyer == nil {
+		return nil, fmt.Errorf("zap: sender keyer is required")
 	}
-	sk, err := nostr.SecretKeyFromHex(strings.TrimSpace(opts.PrivateKey))
+	pk, err := opts.Keyer.GetPublicKey(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("zap: parse private key: %w", err)
+		return nil, fmt.Errorf("zap: resolve sender pubkey: %w", err)
 	}
 
 	meta, err := ResolveLNURL(ctx, lud16)
@@ -135,8 +135,8 @@ func Send(ctx context.Context, opts SendOpts, lud16, recipientPubkeyHex, noteID 
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
 		Tags:      tags,
 	}
-	zapReq.PubKey = sk.Public()
-	if err := zapReq.Sign(sk); err != nil {
+	zapReq.PubKey = pk
+	if err := opts.Keyer.SignEvent(ctx, &zapReq); err != nil {
 		return nil, fmt.Errorf("zap: sign zap request: %w", err)
 	}
 

@@ -1,12 +1,12 @@
 package secure
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip44"
-
 	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
@@ -38,27 +38,26 @@ func (PlaintextCodec) Decrypt(ciphertext string, enc string) (string, error) {
 }
 
 type NIP44SelfCodec struct {
-	secret nostr.SecretKey
-	pub    nostr.PubKey
+	keyer nostr.Keyer
+	pub   nostr.PubKey
 }
 
-func NewNIP44SelfCodec(privateKey string) (*NIP44SelfCodec, error) {
-	sk, err := nostruntime.ParseSecretKey(privateKey)
-	if err != nil {
-		return nil, err
+func NewNIP44SelfCodec(keyer nostr.Keyer) (*NIP44SelfCodec, error) {
+	if keyer == nil {
+		return nil, fmt.Errorf("nip44 self codec: signing keyer is required")
 	}
-	return &NIP44SelfCodec{secret: sk, pub: sk.Public()}, nil
+	pk, err := keyer.GetPublicKey(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("nip44 self codec: get public key: %w", err)
+	}
+	return &NIP44SelfCodec{keyer: keyer, pub: pk}, nil
 }
 
 func (c *NIP44SelfCodec) Encrypt(plaintext string) (string, string, error) {
 	if strings.TrimSpace(plaintext) == "" {
 		return "", EncNIP44, fmt.Errorf("cannot encrypt empty plaintext")
 	}
-	ck, err := nip44.GenerateConversationKey(c.pub, c.secret)
-	if err != nil {
-		return "", EncNIP44, fmt.Errorf("derive nip44 key: %w", err)
-	}
-	ciphertext, err := nip44.Encrypt(plaintext, ck)
+	ciphertext, err := c.keyer.Encrypt(context.Background(), plaintext, c.pub)
 	if err != nil {
 		return "", EncNIP44, fmt.Errorf("nip44 encrypt: %w", err)
 	}
@@ -70,11 +69,7 @@ func (c *NIP44SelfCodec) Decrypt(ciphertext string, enc string) (string, error) 
 	case EncNone:
 		return ciphertext, nil
 	case EncNIP44:
-		ck, err := nip44.GenerateConversationKey(c.pub, c.secret)
-		if err != nil {
-			return "", fmt.Errorf("derive nip44 key: %w", err)
-		}
-		plaintext, err := nip44.Decrypt(ciphertext, ck)
+		plaintext, err := c.keyer.Decrypt(context.Background(), ciphertext, c.pub)
 		if err != nil {
 			return "", fmt.Errorf("nip44 decrypt: %w", err)
 		}

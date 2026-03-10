@@ -35,7 +35,7 @@ type controlCallRequest struct {
 }
 
 type ControlRPCBusOptions struct {
-	PrivateKey        string
+	Keyer             nostr.Keyer // required signing interface
 	Relays            []string
 	SinceUnix         int64
 	MaxRequestAge     time.Duration
@@ -67,7 +67,7 @@ type ControlRPCBus struct {
 	pool        *nostr.Pool
 	relays      []string
 	relaysMu    sync.RWMutex
-	secret      nostr.SecretKey
+	keyer       nostr.Keyer
 	public      nostr.PubKey
 	onReq       func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
 	onHandled   func(context.Context, string, int64)
@@ -99,32 +99,40 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 	if len(initialRelays) == 0 {
 		return nil, fmt.Errorf("at least one relay is required")
 	}
-	if opts.PrivateKey == "" {
-		return nil, fmt.Errorf("private key is required")
+	if opts.Keyer == nil {
+		return nil, fmt.Errorf("keyer is required")
 	}
-	sk, err := ParseSecretKey(opts.PrivateKey)
+
+	ks := opts.Keyer
+	var public nostr.PubKey
+	pk, err := ks.GetPublicKey(parent)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("control bus: get public key from keyer: %w", err)
 	}
+	public = pk
 
 	since := opts.SinceUnix
 	if since <= 0 {
 		since = time.Now().Add(-10 * time.Minute).Unix()
 	}
 	ctx, cancel := context.WithCancel(parent)
+
+	// Build NIP-42 auth handler.
+	authHandler := func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
+		return ks.SignEvent(ctx, evt)
+	}
+
 	bus := &ControlRPCBus{
 		pool: nostr.NewPool(nostr.PoolOptions{
 			PenaltyBox: true,
 			RelayOptions: nostr.RelayOptions{
 				// NIP-42: automatically sign AUTH challenges with the agent's key.
-				AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-					return evt.Sign([32]byte(sk))
-				},
+				AuthHandler: authHandler,
 			},
 		}),
 		relays:            initialRelays,
-		secret:            sk,
-		public:            sk.Public(),
+		keyer:             ks,
+		public:            public,
 		onReq:             opts.OnRequest,
 		onHandled:         opts.OnHandled,
 		onError:           opts.OnError,
@@ -303,7 +311,7 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 
 func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requestID string, payload string, tags nostr.Tags) {
 	evt := nostr.Event{Kind: nostr.Kind(events.KindMCPResult), CreatedAt: nostr.Now(), Tags: tags, Content: payload}
-	if err := evt.Sign([32]byte(b.secret)); err != nil {
+	if err := b.keyer.SignEvent(b.ctx, &evt); err != nil {
 		b.emitErr(fmt.Errorf("sign control response req=%s: %w", requestID, err))
 		return
 	}

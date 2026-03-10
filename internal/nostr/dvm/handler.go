@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -23,8 +22,8 @@ type JobHandler func(ctx context.Context, jobID string, kind int, input string) 
 
 // HandlerOpts configures the DVM handler.
 type HandlerOpts struct {
-	// PrivateKey is the agent's hex-encoded secret key.
-	PrivateKey string
+	// Keyer is the signing interface used to publish statuses and results.
+	Keyer nostr.Keyer
 	// Relays is the list of relays to subscribe to and publish on.
 	Relays []string
 	// AcceptedKinds is the set of request kinds to handle (5000-5999).
@@ -39,9 +38,10 @@ type HandlerOpts struct {
 // Handler manages NIP-90 DVM subscriptions and result publishing.
 type Handler struct {
 	opts   HandlerOpts
-	sk     nostr.SecretKey
+	keyer  nostr.Keyer
 	pubkey nostr.PubKey
 	pool   *nostr.Pool
+	ctx    context.Context // saved for keyer.SignEvent calls
 	jobSem chan struct{}
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -52,18 +52,19 @@ func Start(ctx context.Context, opts HandlerOpts) (*Handler, error) {
 	if opts.OnJob == nil {
 		return nil, fmt.Errorf("dvm: OnJob handler is required")
 	}
-	if opts.PrivateKey == "" {
-		return nil, fmt.Errorf("dvm: PrivateKey is required")
+	if opts.Keyer == nil {
+		return nil, fmt.Errorf("dvm: keyer is required")
 	}
 	if len(opts.Relays) == 0 {
 		return nil, fmt.Errorf("dvm: Relays must be non-empty")
 	}
 
-	sk, err := nostr.SecretKeyFromHex(strings.TrimSpace(opts.PrivateKey))
+	ks := opts.Keyer
+	pk, err := ks.GetPublicKey(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("dvm: parse private key: %w", err)
+		return nil, fmt.Errorf("dvm: get public key from keyer: %w", err)
 	}
-	pubkey := sk.Public()
+	pubkey := pk
 
 	if len(opts.AcceptedKinds) == 0 {
 		opts.AcceptedKinds = []int{5000}
@@ -75,9 +76,10 @@ func Start(ctx context.Context, opts HandlerOpts) (*Handler, error) {
 	ctx2, cancel := context.WithCancel(ctx)
 	h := &Handler{
 		opts:   opts,
-		sk:     sk,
+		keyer:  ks,
 		pubkey: pubkey,
 		pool:   nostr.NewPool(nostr.PoolOptions{}),
+		ctx:    ctx2,
 		jobSem: make(chan struct{}, opts.MaxConcurrentJobs),
 		cancel: cancel,
 	}
@@ -160,6 +162,10 @@ func (h *Handler) handleJob(ctx context.Context, ev nostr.Event) {
 	h.publishStatus(ctx, jobID, ev.PubKey.Hex(), "success", "")
 }
 
+func (h *Handler) signEvent(ctx context.Context, evt *nostr.Event) error {
+	return h.keyer.SignEvent(ctx, evt)
+}
+
 func (h *Handler) publishResult(ctx context.Context, jobID, requesterPubkey string, kind int, content string) {
 	evt := nostr.Event{
 		Kind:      nostr.Kind(kind),
@@ -172,7 +178,7 @@ func (h *Handler) publishResult(ctx context.Context, jobID, requesterPubkey stri
 		},
 	}
 	evt.PubKey = h.pubkey
-	if err := evt.Sign(h.sk); err != nil {
+	if err := h.signEvent(ctx, &evt); err != nil {
 		log.Printf("dvm: sign result: %v", err)
 		return
 	}
@@ -195,7 +201,7 @@ func (h *Handler) publishStatus(ctx context.Context, jobID, requesterPubkey, sta
 		},
 	}
 	evt.PubKey = h.pubkey
-	if err := evt.Sign(h.sk); err != nil {
+	if err := h.signEvent(ctx, &evt); err != nil {
 		log.Printf("dvm: sign status: %v", err)
 		return
 	}

@@ -133,8 +133,8 @@ type ChannelInfo struct {
 type NIP29GroupChannelOptions struct {
 	// GroupAddress is the NIP-29 group address: "<relayHost>'<groupID>".
 	GroupAddress string
-	// PrivateKey is the agent's Nostr private key (hex).
-	PrivateKey string
+	// Keyer is the signing interface used for group sends and identity resolution.
+	Keyer nostr.Keyer
 	// OnMessage is called for every inbound group message.
 	OnMessage func(InboundMessage)
 	// OnError is called for subscription errors.
@@ -146,8 +146,9 @@ type NIP29GroupChannelOptions struct {
 type NIP29GroupChannel struct {
 	id      string
 	gad     nip29.GroupAddress
-	pk      string // private key hex
+	keyer   nostr.Keyer
 	pool    *nostr.Pool
+	ctx     context.Context // saved for keyer.SignEvent calls
 	cancel  context.CancelFunc
 	onMsg   func(InboundMessage)
 	onErr   func(error)
@@ -156,8 +157,8 @@ type NIP29GroupChannel struct {
 
 // NewNIP29GroupChannel creates and starts a NIP-29 group subscription.
 func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions) (*NIP29GroupChannel, error) {
-	if opts.PrivateKey == "" {
-		return nil, fmt.Errorf("private key is required")
+	if opts.Keyer == nil {
+		return nil, fmt.Errorf("keyer is required")
 	}
 	if opts.GroupAddress == "" {
 		return nil, fmt.Errorf("group_address is required (format: relay'groupID)")
@@ -171,10 +172,11 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 		return nil, fmt.Errorf("invalid group_address %q: relay and group ID are required", opts.GroupAddress)
 	}
 
-	pubkey, err := derivePubKey(opts.PrivateKey)
+	pk, err := opts.Keyer.GetPublicKey(parent)
 	if err != nil {
-		return nil, fmt.Errorf("derive pubkey: %w", err)
+		return nil, fmt.Errorf("nip29: get public key from keyer: %w", err)
 	}
+	pubkey := pk.Hex()
 
 	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
 	ctx, cancel := context.WithCancel(parent)
@@ -182,8 +184,9 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 	ch := &NIP29GroupChannel{
 		id:     opts.GroupAddress,
 		gad:    gad,
-		pk:     opts.PrivateKey,
+		keyer:  opts.Keyer,
 		pool:   pool,
+		ctx:    ctx,
 		cancel: cancel,
 		onMsg:  opts.OnMessage,
 		onErr:  opts.OnError,
@@ -207,11 +210,6 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 		return fmt.Errorf("text must not be empty")
 	}
 
-	sk, err := parseHexSecretKey(c.pk)
-	if err != nil {
-		return fmt.Errorf("parse private key: %w", err)
-	}
-
 	evt := nostr.Event{
 		Kind:      nostr.KindSimpleGroupChatMessage,
 		Content:   text,
@@ -220,7 +218,7 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 			{"h", c.gad.ID},
 		},
 	}
-	if err := evt.Sign(sk); err != nil {
+	if err := c.keyer.SignEvent(ctx, &evt); err != nil {
 		return fmt.Errorf("sign group message: %w", err)
 	}
 
@@ -284,8 +282,8 @@ func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
 type NIP28PublicChannelOptions struct {
 	// ChannelID is the event ID of the kind-40 channel-creation event.
 	ChannelID string
-	// PrivateKey is the agent's Nostr private key (hex).
-	PrivateKey string
+	// Keyer is the signing interface used for channel sends and identity resolution.
+	Keyer nostr.Keyer
 	// Relays is the list of relay URLs to connect to.
 	Relays []string
 	// OnMessage is called for every inbound kind-42 message.
@@ -299,7 +297,7 @@ type NIP28PublicChannelOptions struct {
 type NIP28PublicChannel struct {
 	id        string
 	channelID string
-	pk        string
+	keyer     nostr.Keyer
 	relays    []string
 	pool      *nostr.Pool
 	cancel    context.CancelFunc
@@ -310,8 +308,8 @@ type NIP28PublicChannel struct {
 
 // NewNIP28PublicChannel creates and starts a NIP-28 public channel subscription.
 func NewNIP28PublicChannel(parent context.Context, opts NIP28PublicChannelOptions) (*NIP28PublicChannel, error) {
-	if opts.PrivateKey == "" {
-		return nil, fmt.Errorf("private key is required")
+	if opts.Keyer == nil {
+		return nil, fmt.Errorf("keyer is required")
 	}
 	if opts.ChannelID == "" {
 		return nil, fmt.Errorf("channel_id is required")
@@ -320,10 +318,11 @@ func NewNIP28PublicChannel(parent context.Context, opts NIP28PublicChannelOption
 		return nil, fmt.Errorf("at least one relay is required for nip28 channel")
 	}
 
-	pubkey, err := derivePubKey(opts.PrivateKey)
+	pk, err := opts.Keyer.GetPublicKey(parent)
 	if err != nil {
-		return nil, fmt.Errorf("derive pubkey: %w", err)
+		return nil, fmt.Errorf("nip28: get public key from keyer: %w", err)
 	}
+	pubkey := pk.Hex()
 
 	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
 	ctx, cancel := context.WithCancel(parent)
@@ -331,7 +330,7 @@ func NewNIP28PublicChannel(parent context.Context, opts NIP28PublicChannelOption
 	ch := &NIP28PublicChannel{
 		id:        opts.ChannelID,
 		channelID: opts.ChannelID,
-		pk:        opts.PrivateKey,
+		keyer:     opts.Keyer,
 		relays:    opts.Relays,
 		pool:      pool,
 		cancel:    cancel,
@@ -357,11 +356,6 @@ func (c *NIP28PublicChannel) Send(ctx context.Context, text string) error {
 		return fmt.Errorf("text must not be empty")
 	}
 
-	sk, err := parseHexSecretKey(c.pk)
-	if err != nil {
-		return fmt.Errorf("parse private key: %w", err)
-	}
-
 	evt := nostr.Event{
 		Kind:      nostr.KindChannelMessage,
 		Content:   text,
@@ -370,7 +364,7 @@ func (c *NIP28PublicChannel) Send(ctx context.Context, text string) error {
 			{"e", c.channelID, "", "root"},
 		},
 	}
-	if err := evt.Sign(sk); err != nil {
+	if err := c.keyer.SignEvent(ctx, &evt); err != nil {
 		return fmt.Errorf("sign channel message: %w", err)
 	}
 
@@ -435,17 +429,3 @@ func (c *NIP28PublicChannel) subscribeLoop(ctx context.Context) {
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-// derivePubKey derives the hex public key from a hex-encoded secret key.
-// It reuses the key parsing logic from the nostr runtime package; the import
-// is intentionally kept local to avoid a circular dependency.
-func derivePubKey(hexSK string) (string, error) {
-	sk, err := nostr.SecretKeyFromHex(strings.TrimSpace(hexSK))
-	if err != nil {
-		return "", err
-	}
-	return sk.Public().Hex(), nil
-}
-
-func parseHexSecretKey(hexSK string) (nostr.SecretKey, error) {
-	return nostr.SecretKeyFromHex(strings.TrimSpace(hexSK))
-}

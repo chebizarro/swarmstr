@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# VibeTunnel Logging Utility
-# Simplifies access to VibeTunnel logs using macOS unified logging system
+# swarmstr Logging Utility
+# Simplifies access to swarmstr logs using macOS unified logging system
 
 set -euo pipefail
 
 # Configuration
-SUBSYSTEM="ai.openclaw"
+SUBSYSTEM="io.swarmstr"
 DEFAULT_LEVEL="info"
 
 # Colors for output
@@ -49,17 +49,17 @@ STYLE_JSON=false
 # Function to show usage
 show_usage() {
     cat << EOF
-clawlog - OpenClaw Logging Utility
+clawlog - swarmstr Logging Utility
 
 USAGE:
     clawlog [OPTIONS]
 
 DESCRIPTION:
-    View OpenClaw logs with full details (bypasses Apple's privacy redaction).
+    View swarmstr logs with full details (bypasses Apple's privacy redaction).
     Requires sudo access configured for /usr/bin/log command.
 
 LOG FLOW ARCHITECTURE:
-    OpenClaw logs flow through the macOS unified log (subsystem: ai.openclaw).
+    swarmstr logs flow through the macOS unified log (subsystem: io.swarmstr).
 
 LOG CATEGORIES (examples):
     • voicewake           - Voice wake detection/test harness
@@ -124,7 +124,7 @@ EOF
 
 # Function to list categories
 list_categories() {
-    echo -e "${BLUE}Fetching VibeTunnel log categories from the last hour...${NC}\n"
+    echo -e "Fetching swarmstr log categories from the last hour...${NC}\n"
 
     # Get unique categories from recent logs
     log show --predicate "subsystem == \"$SUBSYSTEM\"" --last 1h 2>/dev/null | \
@@ -243,7 +243,7 @@ if [[ "$STREAM_MODE" == true ]]; then
     # Streaming mode
     LOG_CMD+=(stream --predicate "$PREDICATE" --level "$LOG_LEVEL" --info)
 
-    echo -e "${GREEN}Streaming VibeTunnel logs continuously...${NC}"
+    echo -e "${GREEN}Streaming swarmstr logs continuously...${NC}"
     echo -e "${YELLOW}Press Ctrl+C to stop${NC}\n"
 else
     # Show mode

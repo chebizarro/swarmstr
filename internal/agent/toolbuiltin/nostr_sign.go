@@ -45,35 +45,16 @@ var NostrSignDef = agent.ToolDefinition{
 }
 
 // NostrSignOpts carries the signing credentials for the nostr_sign tool.
-// Either Keyer or PrivateKey must be set.  Keyer takes priority (supports
-// NIP-46 bunker remote signing).
 type NostrSignOpts struct {
-	// PrivateKey is the hex-encoded 32-byte secret key.  Used when Keyer is nil.
-	PrivateKey string
-	// Keyer is an optional nostr.Keyer (e.g. keyer.BunkerSigner for NIP-46).
+	// Keyer is the required signing interface (supports plain and bunker signers).
 	Keyer nostr.Keyer
 }
 
 // NostrSignTool returns a ToolFunc that signs a Nostr event without publishing.
 func NostrSignTool(opts NostrSignOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
-		// Build a signing function that works for both plain keys and bunker signers.
-		var signFn func(context.Context, *nostr.Event) error
-		if opts.Keyer != nil {
-			signFn = func(ctx context.Context, ev *nostr.Event) error {
-				return opts.Keyer.SignEvent(ctx, ev)
-			}
-		} else {
-			if opts.PrivateKey == "" {
-				return "", fmt.Errorf("nostr_sign: private key not configured")
-			}
-			sk, err := nostr.SecretKeyFromHex(strings.TrimSpace(opts.PrivateKey))
-			if err != nil {
-				return "", fmt.Errorf("nostr_sign: invalid private key: %w", err)
-			}
-			signFn = func(_ context.Context, ev *nostr.Event) error {
-				return ev.Sign(sk)
-			}
+		if opts.Keyer == nil {
+			return "", fmt.Errorf("nostr_sign: signing keyer not configured")
 		}
 
 		kind := agent.ArgInt(args, "kind", 1)
@@ -103,7 +84,7 @@ func NostrSignTool(opts NostrSignOpts) agent.ToolFunc {
 			ev.Tags = tags
 		}
 
-		if err := signFn(ctx, &ev); err != nil {
+		if err := opts.Keyer.SignEvent(ctx, &ev); err != nil {
 			return "", fmt.Errorf("nostr_sign: sign: %w", err)
 		}
 

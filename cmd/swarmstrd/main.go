@@ -39,6 +39,8 @@ import (
 	gatewayws "swarmstr/internal/gateway/ws"
 	"swarmstr/internal/memory"
 	"swarmstr/internal/nostr/dvm"
+	"swarmstr/internal/nostr/nip38"
+	"swarmstr/internal/nostr/nip51"
 	nostruntime "swarmstr/internal/nostr/runtime"
 	"swarmstr/internal/nostr/secure"
 	pluginmanager "swarmstr/internal/plugins/manager"
@@ -103,7 +105,8 @@ var (
 	controlSessionRouter   *agent.AgentSessionRouter
 	controlChannels        *channels.Registry
 	controlPrivateKey      string
-	controlKeyer           nostr.Keyer // nil when using plain key; set for NIP-46 bunker signers
+	controlKeyer           nostr.Keyer    // always set at startup; plain mode wraps key in a keyer
+	controlHeartbeat38     *nip38.Heartbeat // NIP-38 status heartbeat; nil when disabled
 	// controlWsEmitter forwards typed events to connected WS clients.
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
 	controlWsEmitter   gatewayws.EventEmitter = gatewayws.NoopEmitter{}
@@ -196,36 +199,25 @@ func main() {
 	if err != nil {
 		log.Fatalf("load bootstrap config: %v", err)
 	}
-	var privateKey string
 	if config.IsBunkerURL(cfg) {
-		// NIP-46 remote signer: connect to bunker asynchronously.
-		// We get the pubkey from the bunker; the raw private key stays remote.
 		log.Printf("signer: NIP-46 bunker detected, connecting…")
-		signerCtx, signerCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		kr, kErr := config.ResolveSigner(signerCtx, cfg, nil)
-		signerCancel()
-		if kErr != nil {
-			log.Fatalf("connect NIP-46 bunker: %v", kErr)
-		}
-		controlKeyer = kr
-		// Derive pubkey from the bunker for identity tools.
-		pkCtx, pkCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		pk, pkErr := kr.GetPublicKey(pkCtx)
-		pkCancel()
-		if pkErr != nil {
-			log.Fatalf("NIP-46: get public key: %v", pkErr)
-		}
-		privateKey = "" // no raw key; signing is done via controlKeyer
-		controlPrivateKey = pk.Hex() // store pubkey so identity tools work
-		log.Printf("signer: NIP-46 bunker connected pubkey=%s", pk.Hex())
-	} else {
-		var resolveErr error
-		privateKey, resolveErr = config.ResolvePrivateKey(cfg)
-		if resolveErr != nil {
-			log.Fatalf("resolve signer/private key: %v", resolveErr)
-		}
-		controlPrivateKey = privateKey
 	}
+	signerCtx, signerCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	kr, kErr := config.ResolveSigner(signerCtx, cfg, nil)
+	signerCancel()
+	if kErr != nil {
+		log.Fatalf("resolve signer: %v", kErr)
+	}
+	controlKeyer = kr
+	// Derive pubkey from the signer for identity tools and runtime wiring.
+	pkCtx, pkCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	pk, pkErr := kr.GetPublicKey(pkCtx)
+	pkCancel()
+	if pkErr != nil {
+		log.Fatalf("signer: get public key: %v", pkErr)
+	}
+	controlPrivateKey = pk.Hex() // always store pubkey only
+	log.Printf("signer ready pubkey=%s", pk.Hex())
 	if adminAddr == "" {
 		adminAddr = cfg.AdminListenAddr
 	}
@@ -297,18 +289,15 @@ func main() {
 		}
 	}()
 
-	store, err := state.NewNostrStore(privateKey, cfg.Relays)
+	store, err := state.NewNostrStore(controlKeyer, cfg.Relays)
 	if err != nil {
 		log.Fatalf("init state store: %v", err)
 	}
 	defer store.Close()
 
-	pubkey, err := nostruntime.PublicKeyHex(privateKey)
-	if err != nil {
-		log.Fatalf("derive public key: %v", err)
-	}
+	pubkey := controlPrivateKey
 
-	codec, err := initEnvelopeCodec(cfg, privateKey)
+	codec, err := initEnvelopeCodec(cfg, controlKeyer)
 	if err != nil {
 		log.Fatalf("init envelope codec: %v", err)
 	}
@@ -434,14 +423,12 @@ func main() {
 	// ── Nostr network tools ─────────────────────────────────────────────────
 	// These give the agent first-class read/write/DM access to the Nostr network.
 	nostrToolOpts := toolbuiltin.NostrToolOpts{
-		PrivateKey: controlPrivateKey,
-		Keyer:      controlKeyer, // nil for plain key setups; set for NIP-46 bunkers
+		Keyer:  controlKeyer,
 		Relays:     cfg.Relays,
 	}
 	tools.RegisterWithDef("nostr_fetch", toolbuiltin.NostrFetchTool(nostrToolOpts), toolbuiltin.NostrFetchDef)
 	tools.RegisterWithDef("nostr_publish", toolbuiltin.NostrPublishTool(toolbuiltin.NostrToolOpts{
-		PrivateKey: controlPrivateKey,
-		Keyer:      controlKeyer,
+		Keyer:  controlKeyer,
 		Relays:     cfg.Relays,
 	}), toolbuiltin.NostrPublishDef)
 	// nostr_send_dm uses controlDMBus which is assigned later; capture by reference via closure.
@@ -467,6 +454,81 @@ func main() {
 	tools.RegisterWithDef("nostr_zap_send", toolbuiltin.NostrZapSendTool(nostrToolOpts), toolbuiltin.NostrZapSendDef)
 	tools.RegisterWithDef("nostr_zap_list", toolbuiltin.NostrZapListTool(nostrToolOpts), toolbuiltin.NostrZapListDef)
 
+	// NIP-51 list management tools (allowlists, blocklists, mute lists, etc.)
+	listStore := nip51.NewListStore()
+	toolbuiltin.RegisterListTools(tools, toolbuiltin.NostrListToolOpts{
+		Keyer:  controlKeyer,
+		Relays:     cfg.Relays,
+		Store:      listStore,
+	})
+
+	// NIP-38 status tool — uses controlHeartbeat38 which is set after DM bus starts.
+	// Wire via closure so it picks up the global after initialization.
+	tools.RegisterWithDef("nostr_status_set", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.NostrStatusTool(toolbuiltin.NostrStatusToolOpts{
+			Heartbeat: controlHeartbeat38,
+		})(ctx, args)
+	}, toolbuiltin.NostrStatusSetDef)
+
+	// ── Additional NIP tools (NIP-09/22/23/25/50/78/94) ────────────────────
+	toolbuiltin.RegisterNIPTools(tools, nostrToolOpts)
+
+	// ── Relay-as-memory tools ───────────────────────────────────────────────
+	toolbuiltin.RegisterRelayMemoryTools(tools, toolbuiltin.RelayMemoryToolOpts{
+		Keyer:  controlKeyer,
+		Relays:     cfg.Relays,
+	})
+
+	// ── ContextVM tools ─────────────────────────────────────────────────────
+	toolbuiltin.RegisterContextVMTools(tools, toolbuiltin.ContextVMToolOpts{
+		Keyer:  controlKeyer,
+		Relays:     cfg.Relays,
+	})
+
+	// ── GRASP NIP-34 git repository tools ───────────────────────────────────
+	toolbuiltin.RegisterGRASPTools(tools, toolbuiltin.GRASPToolOpts{
+		Keyer:  controlKeyer,
+		Relays:     cfg.Relays,
+	})
+
+	// ── Loom compute marketplace tools ──────────────────────────────────────
+	toolbuiltin.RegisterLoomTools(tools, toolbuiltin.LoomToolOpts{
+		Keyer:  controlKeyer,
+		Relays:     cfg.Relays,
+	})
+
+	// ── Cashu NUT ecash tools ───────────────────────────────────────────────
+	{
+		var nutsDefaultMint string
+		if nutsExtra, ok := configState.Get().Extra["nuts"].(map[string]any); ok {
+			nutsDefaultMint, _ = nutsExtra["mint_url"].(string)
+		}
+		if nutsDefaultMint == "" {
+			nutsDefaultMint = "https://legend.lnbits.com/cashu/api/v1/Ah9J3tb5bI0ZLI-e0iSZ0g" // well-known public mint
+		}
+		toolbuiltin.RegisterNutsTools(tools, toolbuiltin.NutsToolOpts{
+			DefaultMintURL: nutsDefaultMint,
+		})
+		log.Printf("Cashu NUT tools active (default mint: %s)", nutsDefaultMint)
+	}
+
+	// ── Blossom blob storage tools (BUD-01 through BUD-05) ──────────────────
+	// Enabled by default; default server can be configured via extra.blossom.server.
+	{
+		var blossomServer string
+		if blossomExtra, ok := configState.Get().Extra["blossom"].(map[string]any); ok {
+			blossomServer, _ = blossomExtra["server"].(string)
+		}
+		if blossomServer == "" {
+			blossomServer = "https://blossom.band" // community default
+		}
+		toolbuiltin.RegisterBlossomTools(tools, toolbuiltin.BlossomToolOpts{
+			Keyer:         controlKeyer,
+			DefaultServer: blossomServer,
+		})
+		log.Printf("Blossom tools active (default server: %s)", blossomServer)
+	}
+
 	// nostr_watch / nostr_unwatch / nostr_watch_list — persistent subscriptions.
 	// Delivery fires back into the DM pipeline via dmRunAgentTurnRef which is
 	// populated once dmRunAgentTurn is defined below.
@@ -491,8 +553,7 @@ func main() {
 	tools.RegisterWithDef("current_time", toolbuiltin.CurrentTimeTool, toolbuiltin.CurrentTimeDef)
 	// nostr_sign: sign an event without publishing (returns signed JSON).
 	tools.RegisterWithDef("nostr_sign", toolbuiltin.NostrSignTool(toolbuiltin.NostrSignOpts{
-		PrivateKey: cfg.PrivateKey,
-		Keyer:      controlKeyer,
+		Keyer: controlKeyer,
 	}), toolbuiltin.NostrSignDef)
 	// my_identity: agent self-awareness — name, nostr pubkey, model.
 	toolbuiltin.SetIdentityInfo(toolbuiltin.IdentityInfo{
@@ -897,7 +958,7 @@ func main() {
 			localChanName := chanName
 			ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
 				GroupAddress: localChanCfg.GroupAddress,
-				PrivateKey:   controlPrivateKey,
+				Keyer:        controlKeyer,
 				OnMessage: func(msg channels.InboundMessage) {
 					// Per-channel allow-from check.
 					if dec := policy.EvaluateGroupMessage(msg.FromPubKey, localChanCfg.AllowFrom, configState.Get()); !dec.Allowed {
@@ -954,7 +1015,7 @@ func main() {
 			localChanName := chanName
 			ch28, chErr := channels.NewNIP28PublicChannel(ctx, channels.NIP28PublicChannelOptions{
 				ChannelID:  localChanCfg.ChannelID,
-				PrivateKey: controlPrivateKey,
+				Keyer:      controlKeyer,
 				Relays:     relays,
 				OnMessage: func(msg channels.InboundMessage) {
 					// Per-channel allow-from check.
@@ -1997,6 +2058,10 @@ func main() {
 			Session:        sessionID,
 			LastActivityAt: lastActivityAt,
 		})
+		// NIP-38: signal to Nostr network that the agent is composing a response.
+		if controlHeartbeat38 != nil {
+			controlHeartbeat38.SetTyping(turnCtx, "processing request…")
+		}
 
 		heartbeatDone := make(chan struct{})
 		var heartbeatOnce sync.Once
@@ -2044,6 +2109,9 @@ func main() {
 		}
 		if turnErr != nil {
 			stopHeartbeat()
+			if controlHeartbeat38 != nil {
+				controlHeartbeat38.SetIdle(ctx)
+			}
 			if errors.Is(turnErr, context.Canceled) {
 				log.Printf("agent process aborted session=%s", sessionID)
 			} else {
@@ -2052,6 +2120,10 @@ func main() {
 			return
 		}
 		stopHeartbeat()
+		// NIP-38: return to idle once the agent turn is complete.
+		if controlHeartbeat38 != nil {
+			controlHeartbeat38.SetIdle(ctx)
+		}
 
 		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
 			log.Printf("persist tool traces failed session=%s err=%v", sessionID, err)
@@ -2290,42 +2362,22 @@ func main() {
 		log.Printf("nostr runtime error: %v", err)
 	}
 
-	// Start the DM transport: NIP-17 (gift-wrapped, metadata-private) when
-	// enabled; otherwise fall back to NIP-04 for OpenClaw compatibility.
+	// Start the DM transport: NIP-17 only.
 	var bus nostruntime.DMTransport
-	if cfg.EnableNIP17 || controlKeyer != nil {
-		// Force NIP-17 when using a bunker signer (NIP-04 requires the raw key
-		// for encryption/decryption which is not available with remote signing).
-		if controlKeyer != nil && !cfg.EnableNIP17 {
-			log.Printf("dm transport: forcing NIP-17 — NIP-04 requires raw key unavailable with NIP-46 bunker")
-		}
-		bus, err = nostruntime.StartNIP17Bus(ctx, nostruntime.NIP17BusOptions{
-			PrivateKey: privateKey,
-			Keyer:      controlKeyer,
-			Relays:     cfg.Relays,
-			SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
-			OnMessage:  dmOnMessage,
-			OnError:    dmOnError,
-		})
-		if err != nil {
-			log.Fatalf("start nip17 bus: %v", err)
-		}
-		log.Printf("dm transport: NIP-17 (gift-wrapped)")
-	} else {
-		bus, err = nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
-			PrivateKey: privateKey,
-			Relays:     cfg.Relays,
-			SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
-			OnMessage:  dmOnMessage,
-			OnError:    dmOnError,
-		})
-		if err != nil {
-			log.Fatalf("start dm bus: %v", err)
-		}
-		log.Printf("dm transport: NIP-04 (legacy encrypted DM)")
-		log.Printf("⚠️  SECURITY WARNING: NIP-04 leaks message metadata (sender/receiver visible to relays).")
-		log.Printf("   Set \"enable_nip17\": true in bootstrap.json to upgrade to NIP-17 gift-wrapped DMs.")
+	if !cfg.EnableNIP17 {
+		log.Printf("dm transport: forcing NIP-17 (legacy NIP-04 disabled)")
 	}
+	bus, err = nostruntime.StartNIP17Bus(ctx, nostruntime.NIP17BusOptions{
+		Keyer:      controlKeyer,
+		Relays:     cfg.Relays,
+		SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
+		OnMessage:  dmOnMessage,
+		OnError:    dmOnError,
+	})
+	if err != nil {
+		log.Fatalf("start nip17 bus: %v", err)
+	}
+	log.Printf("dm transport: NIP-17 (gift-wrapped)")
 	defer bus.Close()
 
 	// Expose the DM bus globally so node-pairing and node.invoke handlers
@@ -2333,6 +2385,48 @@ func main() {
 	controlDMBusMu.Lock()
 	controlDMBus = bus
 	controlDMBusMu.Unlock()
+
+	// ── NIP-38 Heartbeat ────────────────────────────────────────────────────────
+	// Publishes kind 30315 status events so other Nostr clients can see whether
+	// the agent is idle, typing, or running tools.
+	{
+		hbEnabled := true // default on
+		hbInterval := 5 * time.Minute
+		var hbDefaultContent string
+		if hbExtra, ok := configState.Get().Extra["heartbeat"].(map[string]any); ok {
+			if v, ok := hbExtra["enabled"].(bool); ok {
+				hbEnabled = v
+			}
+			if v, ok := hbExtra["interval_seconds"].(float64); ok && v > 0 {
+				hbInterval = time.Duration(v) * time.Second
+			}
+			if v, ok := hbExtra["content"].(string); ok {
+				hbDefaultContent = v
+			}
+		}
+		hbKeyer := controlKeyer
+		if hbKeyer != nil && hbEnabled {
+			hb, hbErr := nip38.NewHeartbeat(ctx, nip38.HeartbeatOptions{
+				Keyer:          hbKeyer,
+				Relays:         cfg.Relays,
+				IdleInterval:   hbInterval,
+				DefaultContent: hbDefaultContent,
+				Enabled:        true,
+			})
+			if hbErr != nil {
+				log.Printf("warn: NIP-38 heartbeat init failed: %v", hbErr)
+			} else {
+				controlHeartbeat38 = hb
+				defer controlHeartbeat38.Stop()
+				log.Printf("NIP-38 heartbeat active (interval=%s)", hbInterval)
+			}
+		} else if !hbEnabled {
+			log.Printf("NIP-38 heartbeat disabled by config")
+		} else {
+			log.Printf("NIP-38 heartbeat skipped: no signing key available")
+		}
+		_ = controlHeartbeat38 // referenced in dmRunAgentTurn closure
+	}
 
 	// ── NIP-90 DVM handler ─────────────────────────────────────────────────────
 	// Enabled when extra.dvm.enabled = true in config.
@@ -2348,7 +2442,7 @@ func main() {
 				}
 			}
 			dvmHandler, dvmErr := dvm.Start(ctx, dvm.HandlerOpts{
-				PrivateKey:    privateKey,
+				Keyer:         controlKeyer,
 				Relays:        cfg.Relays,
 				AcceptedKinds: acceptedKinds,
 				OnJob: func(jobCtx context.Context, jobID string, kind int, input string) (string, error) {
@@ -2818,7 +2912,7 @@ func main() {
 
 	var controlBus *nostruntime.ControlRPCBus
 	controlBus, err = nostruntime.StartControlRPCBus(ctx, nostruntime.ControlRPCBusOptions{
-		PrivateKey:        privateKey,
+		Keyer:             controlKeyer,
 		Relays:            cfg.Relays,
 		SinceUnix:         checkpointSinceUnix(controlCheckpoint.LastUnix),
 		MaxRequestAge:     2 * time.Minute,
@@ -3617,12 +3711,12 @@ func main() {
 	log.Println("swarmstrd shutting down")
 }
 
-func initEnvelopeCodec(cfg config.BootstrapConfig, privateKey string) (secure.EnvelopeCodec, error) {
+func initEnvelopeCodec(cfg config.BootstrapConfig, signer nostr.Keyer) (secure.EnvelopeCodec, error) {
 	if !cfg.EnableNIP44 {
 		codec := secure.NewPlaintextCodec()
 		return codec, nil
 	}
-	return secure.NewNIP44SelfCodec(privateKey)
+	return secure.NewNIP44SelfCodec(signer)
 }
 
 func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays []string, adminPubKey string) (state.ConfigDoc, error) {
@@ -4145,7 +4239,7 @@ func handleControlRPCRequest(
 		}
 		ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
 			GroupAddress: req.GroupAddress,
-			PrivateKey:   controlPrivateKey,
+			Keyer:        controlKeyer,
 			OnMessage: func(msg channels.InboundMessage) {
 				emitControlWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 					TS:        time.Now().UnixMilli(),

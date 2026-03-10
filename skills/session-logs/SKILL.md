@@ -1,115 +1,85 @@
 ---
 name: session-logs
-description: Search and analyze your own session logs (older/parent conversations) using jq.
-metadata: { "openclaw": { "emoji": "📜", "requires": { "bins": ["jq", "rg"] } } }
+description: Search and analyze your session index to look up past sessions by date, channel, or user.
+metadata: { "openclaw": { "emoji": "📜", "requires": { "bins": ["jq"] } } }
 ---
 
 # session-logs
 
-Search your complete conversation history stored in session JSONL files. Use this when a user references older/parent conversations or asks what was said before.
+Browse your session history stored in the swarmstr sessions index. Use this when a user references older conversations or asks what was discussed before.
 
 ## Trigger
 
-Use this skill when the user asks about prior chats, parent conversations, or historical context that isn't in memory files.
+Use this skill when the user asks about prior sessions, parent conversations, or historical context that isn't in memory files.
 
 ## Location
 
-Session logs live at: `~/.openclaw/agents/<agentId>/sessions/` (use the `agent=<id>` value from the system prompt Runtime line).
+Session data lives at: `~/.swarmstr/sessions.json` — a JSON index of all sessions.
 
-- **`sessions.json`** - Index mapping session keys to session IDs
-- **`<session-id>.jsonl`** - Full conversation transcript per session
+- **`sessions.json`** - Index of sessions with metadata (session key, start time, channel, user, topic)
+
+> **Note:** swarmstr stores session metadata in the index but does not persist full conversation transcripts to disk. Use memory files (`~/.swarmstr/memory/`) for information you want to recall across sessions.
 
 ## Structure
 
-Each `.jsonl` file contains messages with:
+`sessions.json` is a JSON object mapping session keys to session metadata:
 
-- `type`: "session" (metadata) or "message"
-- `timestamp`: ISO timestamp
-- `message.role`: "user", "assistant", or "toolResult"
-- `message.content[]`: Text, thinking, or tool calls (filter `type=="text"` for human-readable content)
-- `message.usage.cost.total`: Cost per response
+```json
+{
+  "discord:12345:67890": {
+    "sessionKey": "discord:12345:67890",
+    "startedAt": "2026-03-01T10:00:00Z",
+    "lastActiveAt": "2026-03-01T10:45:00Z",
+    "channel": "discord",
+    "userID": "12345",
+    "topic": "Discussing Nostr relays"
+  }
+}
+```
 
 ## Common Queries
 
-### List all sessions by date and size
+### List all sessions sorted by date
 
 ```bash
-for f in ~/.openclaw/agents/<agentId>/sessions/*.jsonl; do
-  date=$(head -1 "$f" | jq -r '.timestamp' | cut -dT -f1)
-  size=$(ls -lh "$f" | awk '{print $5}')
-  echo "$date $size $(basename $f)"
-done | sort -r
+jq -r 'to_entries | sort_by(.value.startedAt) | reverse | .[] | "\(.value.startedAt[:10]) \(.value.channel) \(.key)"' ~/.swarmstr/sessions.json
 ```
 
 ### Find sessions from a specific day
 
 ```bash
-for f in ~/.openclaw/agents/<agentId>/sessions/*.jsonl; do
-  head -1 "$f" | jq -r '.timestamp' | grep -q "2026-01-06" && echo "$f"
-done
+jq -r 'to_entries | .[] | select(.value.startedAt | startswith("2026-03-01")) | .key' ~/.swarmstr/sessions.json
 ```
 
-### Extract user messages from a session
+### Find sessions by channel
 
 ```bash
-jq -r 'select(.message.role == "user") | .message.content[]? | select(.type == "text") | .text' <session>.jsonl
+jq -r 'to_entries | .[] | select(.value.channel == "discord") | "\(.value.startedAt[:10]) \(.key)"' ~/.swarmstr/sessions.json
 ```
 
-### Search for keyword in assistant responses
+### Find sessions by user
 
 ```bash
-jq -r 'select(.message.role == "assistant") | .message.content[]? | select(.type == "text") | .text' <session>.jsonl | rg -i "keyword"
+jq -r 'to_entries | .[] | select(.value.userID == "12345") | "\(.value.startedAt[:10]) \(.key)"' ~/.swarmstr/sessions.json
 ```
 
-### Get total cost for a session
+### Count sessions per channel
 
 ```bash
-jq -s '[.[] | .message.usage.cost.total // 0] | add' <session>.jsonl
+jq -r '[to_entries[] | .value.channel] | group_by(.) | map({channel: .[0], count: length}) | sort_by(.count) | reverse[]' ~/.swarmstr/sessions.json
 ```
 
-### Daily cost summary
+### Show sessions active today
 
 ```bash
-for f in ~/.openclaw/agents/<agentId>/sessions/*.jsonl; do
-  date=$(head -1 "$f" | jq -r '.timestamp' | cut -dT -f1)
-  cost=$(jq -s '[.[] | .message.usage.cost.total // 0] | add' "$f")
-  echo "$date $cost"
-done | awk '{a[$1]+=$2} END {for(d in a) print d, "$"a[d]}' | sort -r
-```
-
-### Count messages and tokens in a session
-
-```bash
-jq -s '{
-  messages: length,
-  user: [.[] | select(.message.role == "user")] | length,
-  assistant: [.[] | select(.message.role == "assistant")] | length,
-  first: .[0].timestamp,
-  last: .[-1].timestamp
-}' <session>.jsonl
-```
-
-### Tool usage breakdown
-
-```bash
-jq -r '.message.content[]? | select(.type == "toolCall") | .name' <session>.jsonl | sort | uniq -c | sort -rn
-```
-
-### Search across ALL sessions for a phrase
-
-```bash
-rg -l "phrase" ~/.openclaw/agents/<agentId>/sessions/*.jsonl
+TODAY=$(date -u +%Y-%m-%d)
+jq -r --arg today "$TODAY" 'to_entries | .[] | select(.value.lastActiveAt | startswith($today)) | "\(.value.channel) \(.key)"' ~/.swarmstr/sessions.json
 ```
 
 ## Tips
 
-- Sessions are append-only JSONL (one JSON object per line)
-- Large sessions can be several MB - use `head`/`tail` for sampling
-- The `sessions.json` index maps chat providers (discord, whatsapp, etc.) to session IDs
-- Deleted sessions have `.deleted.<timestamp>` suffix
+- Sessions are indexed by their session key (format: `channel:userID:threadID`)
+- For persistent memory across sessions, write to memory files: `~/.swarmstr/memory/`
+- The sessions index is updated by swarmstrd as sessions are created and used
+- For conversation context that must survive across sessions, ask the user to use `/compact` or `/export` before ending a session
 
-## Fast text-only hint (low noise)
-
-```bash
-jq -r 'select(.type=="message") | .message.content[]? | select(.type=="text") | .text' ~/.openclaw/agents/<agentId>/sessions/<id>.jsonl | rg 'keyword'
-```

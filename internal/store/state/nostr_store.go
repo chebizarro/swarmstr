@@ -15,25 +15,28 @@ import (
 type NostrStore struct {
 	pool   *nostr.Pool
 	relays []string
-	secret nostr.SecretKey
+	keyer  nostr.Keyer
 	pub    nostr.PubKey
 }
 
 var _ NostrStateStore = (*NostrStore)(nil)
 
-func NewNostrStore(privateKey string, relays []string) (*NostrStore, error) {
+func NewNostrStore(keyer nostr.Keyer, relays []string) (*NostrStore, error) {
 	if len(relays) == 0 {
 		return nil, fmt.Errorf("at least one relay is required")
 	}
-	sk, err := nostruntime.ParseSecretKey(privateKey)
+	if keyer == nil {
+		return nil, fmt.Errorf("signing keyer is required")
+	}
+	pk, err := keyer.GetPublicKey(context.Background())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve signer pubkey: %w", err)
 	}
 	return &NostrStore{
 		pool:   nostr.NewPool(nostr.PoolOptions{PenaltyBox: true}),
 		relays: relays,
-		secret: sk,
-		pub:    sk.Public(),
+		keyer:  keyer,
+		pub:    pk,
 	}, nil
 }
 
@@ -103,7 +106,7 @@ func (s *NostrStore) PutReplaceable(ctx context.Context, addr Address, content s
 		Tags:      toNostrTags(tags),
 		Content:   content,
 	}
-	if err := evt.Sign([32]byte(s.secret)); err != nil {
+	if err := s.keyer.SignEvent(ctx, &evt); err != nil {
 		return Event{}, fmt.Errorf("sign replaceable event: %w", err)
 	}
 	if err := publishAtLeastOnce(ctx, s.pool, s.relays, evt); err != nil {
@@ -133,7 +136,7 @@ func (s *NostrStore) PutAppend(ctx context.Context, addr Address, content string
 		Tags:      toNostrTags(tags),
 		Content:   content,
 	}
-	if err := evt.Sign([32]byte(s.secret)); err != nil {
+	if err := s.keyer.SignEvent(ctx, &evt); err != nil {
 		return Event{}, fmt.Errorf("sign append event: %w", err)
 	}
 	if err := publishAtLeastOnce(ctx, s.pool, s.relays, evt); err != nil {
