@@ -155,10 +155,18 @@ type AnthropicProvider struct {
 }
 
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system,omitempty"`
-	Messages  []anthropicMessage `json:"messages"`
+	Model     string              `json:"model"`
+	MaxTokens int                 `json:"max_tokens"`
+	System    string              `json:"system,omitempty"`
+	Messages  []anthropicMessage  `json:"messages"`
+	Tools     []anthropicToolDef  `json:"tools,omitempty"`
+}
+
+// anthropicToolDef is the Anthropic API representation of a tool definition.
+type anthropicToolDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"input_schema"`
 }
 
 // anthropicMessage supports both plain-text content (string) and multi-modal
@@ -171,9 +179,14 @@ type anthropicMessage struct {
 
 type anthropicResponse struct {
 	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type  string         `json:"type"`
+		Text  string         `json:"text,omitempty"`
+		// tool_use fields
+		ID    string         `json:"id,omitempty"`
+		Name  string         `json:"name,omitempty"`
+		Input map[string]any `json:"input,omitempty"`
 	} `json:"content"`
+	StopReason string `json:"stop_reason,omitempty"`
 	Error *struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
@@ -182,6 +195,104 @@ type anthropicResponse struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage,omitempty"`
+}
+
+// toolDefsToAnthropic converts ToolDefinition slice to Anthropic API format.
+func toolDefsToAnthropic(defs []ToolDefinition) []anthropicToolDef {
+	out := make([]anthropicToolDef, 0, len(defs))
+	for _, d := range defs {
+		schema := map[string]any{"type": "object"}
+		if len(d.Parameters.Properties) > 0 {
+			props := map[string]any{}
+			for k, v := range d.Parameters.Properties {
+				prop := map[string]any{"type": v.Type}
+				if v.Description != "" {
+					prop["description"] = v.Description
+				}
+				if len(v.Enum) > 0 {
+					prop["enum"] = v.Enum
+				}
+				if v.Items != nil {
+					prop["items"] = map[string]any{"type": v.Items.Type}
+				}
+				props[k] = prop
+			}
+			schema["properties"] = props
+		}
+		if len(d.Parameters.Required) > 0 {
+			schema["required"] = d.Parameters.Required
+		}
+		out = append(out, anthropicToolDef{
+			Name:        d.Name,
+			Description: d.Description,
+			InputSchema: schema,
+		})
+	}
+	return out
+}
+
+// parseAnthropicToolCalls extracts ToolCall entries from an Anthropic response.
+func parseAnthropicToolCalls(content []struct {
+	Type  string         `json:"type"`
+	Text  string         `json:"text,omitempty"`
+	ID    string         `json:"id,omitempty"`
+	Name  string         `json:"name,omitempty"`
+	Input map[string]any `json:"input,omitempty"`
+}) (text string, calls []ToolCall) {
+	for _, c := range content {
+		switch c.Type {
+		case "text":
+			if strings.TrimSpace(c.Text) != "" {
+				text = c.Text
+			}
+		case "tool_use":
+			if c.Name != "" {
+				args := c.Input
+				if args == nil {
+					args = map[string]any{}
+				}
+				calls = append(calls, ToolCall{Name: c.Name, Args: args})
+			}
+		}
+	}
+	return text, calls
+}
+
+// toolDefsToOpenAI converts ToolDefinition slice to the OpenAI tools API format.
+func toolDefsToOpenAI(defs []ToolDefinition) []openAIToolDef {
+	out := make([]openAIToolDef, 0, len(defs))
+	for _, d := range defs {
+		params := map[string]any{"type": "object"}
+		if len(d.Parameters.Properties) > 0 {
+			props := map[string]any{}
+			for k, v := range d.Parameters.Properties {
+				prop := map[string]any{"type": v.Type}
+				if v.Description != "" {
+					prop["description"] = v.Description
+				}
+				if len(v.Enum) > 0 {
+					prop["enum"] = v.Enum
+				}
+				if v.Items != nil {
+					prop["items"] = map[string]any{"type": v.Items.Type}
+				}
+				props[k] = prop
+			}
+			params["properties"] = props
+		}
+		if len(d.Parameters.Required) > 0 {
+			params["required"] = d.Parameters.Required
+		}
+		out = append(out, openAIToolDef{
+			Type: "function",
+			Function: openAIFunctionDef{
+				Name:        d.Name,
+				Description: d.Description,
+				Parameters:  params,
+			},
+		})
+	}
+	return out
 }
 
 // buildAnthropicContent constructs the message content block for a user turn.
@@ -243,10 +354,16 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 	}
 
 	userText := strings.TrimSpace(turn.UserText)
+	// Build messages: prior history + current user turn.
+	msgs := make([]anthropicMessage, 0, len(turn.History)+1)
+	for _, h := range turn.History {
+		msgs = append(msgs, anthropicMessage{Role: h.Role, Content: h.Content})
+	}
+	msgs = append(msgs, anthropicMessage{Role: "user", Content: buildAnthropicContent(userText, turn.Images)})
 	reqBody := anthropicRequest{
 		Model:     model,
 		MaxTokens: 4096,
-		Messages:  []anthropicMessage{{Role: "user", Content: buildAnthropicContent(userText, turn.Images)}},
+		Messages:  msgs,
 	}
 	sys := strings.TrimSpace(turn.Context)
 	if sys == "" {
@@ -256,6 +373,9 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 	}
 	if sys != "" {
 		reqBody.System = sys
+	}
+	if len(turn.Tools) > 0 {
+		reqBody.Tools = toolDefsToAnthropic(turn.Tools)
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -290,19 +410,18 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 	if resp.StatusCode >= 300 {
 		return ProviderResult{}, fmt.Errorf("anthropic returned %s", resp.Status)
 	}
-	for _, c := range out.Content {
-		if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
-			res := ProviderResult{Text: c.Text}
-			if out.Usage != nil {
-				res.Usage = ProviderUsage{
-					InputTokens:  int64(out.Usage.InputTokens),
-					OutputTokens: int64(out.Usage.OutputTokens),
-				}
-			}
-			return res, nil
+	text, calls := parseAnthropicToolCalls(out.Content)
+	if text == "" && len(calls) == 0 {
+		return ProviderResult{}, fmt.Errorf("anthropic returned no content")
+	}
+	res := ProviderResult{Text: text, ToolCalls: calls}
+	if out.Usage != nil {
+		res.Usage = ProviderUsage{
+			InputTokens:  int64(out.Usage.InputTokens),
+			OutputTokens: int64(out.Usage.OutputTokens),
 		}
 	}
-	return ProviderResult{}, fmt.Errorf("anthropic returned no text content")
+	return res, nil
 }
 
 // generateWithOAuth performs an Anthropic API call using OAuth Bearer token auth.
@@ -342,10 +461,16 @@ func isAnthropicAuthError(err error) bool {
 // doAnthropicOAuthRequest performs a single Anthropic API call with Bearer auth.
 func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Turn, model, accessToken string) (ProviderResult, error) {
 	userText := strings.TrimSpace(turn.UserText)
+	// Build messages: prior history + current user turn.
+	msgs := make([]anthropicMessage, 0, len(turn.History)+1)
+	for _, h := range turn.History {
+		msgs = append(msgs, anthropicMessage{Role: h.Role, Content: h.Content})
+	}
+	msgs = append(msgs, anthropicMessage{Role: "user", Content: buildAnthropicContent(userText, turn.Images)})
 	reqBody := anthropicRequest{
 		Model:     model,
 		MaxTokens: 4096,
-		Messages:  []anthropicMessage{{Role: "user", Content: buildAnthropicContent(userText, turn.Images)}},
+		Messages:  msgs,
 	}
 	sys := strings.TrimSpace(turn.Context)
 	if sys == "" {
@@ -355,6 +480,9 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 	}
 	if sys != "" {
 		reqBody.System = sys
+	}
+	if len(turn.Tools) > 0 {
+		reqBody.Tools = toolDefsToAnthropic(turn.Tools)
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -389,12 +517,18 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 	if resp.StatusCode >= 300 {
 		return ProviderResult{}, fmt.Errorf("anthropic oauth returned %s", resp.Status)
 	}
-	for _, c := range out.Content {
-		if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
-			return ProviderResult{Text: c.Text}, nil
+	text, calls := parseAnthropicToolCalls(out.Content)
+	if text == "" && len(calls) == 0 {
+		return ProviderResult{}, fmt.Errorf("anthropic oauth returned no content")
+	}
+	res := ProviderResult{Text: text, ToolCalls: calls}
+	if out.Usage != nil {
+		res.Usage = ProviderUsage{
+			InputTokens:  int64(out.Usage.InputTokens),
+			OutputTokens: int64(out.Usage.OutputTokens),
 		}
 	}
-	return ProviderResult{}, fmt.Errorf("anthropic oauth returned no text content")
+	return res, nil
 }
 
 // OpenAIChatProvider calls the OpenAI Chat Completions API (POST /v1/chat/completions).
@@ -410,6 +544,19 @@ type OpenAIChatProvider struct {
 type openAIRequest struct {
 	Model    string          `json:"model"`
 	Messages []openAIMessage `json:"messages"`
+	Tools    []openAIToolDef `json:"tools,omitempty"`
+}
+
+// openAIToolDef is the OpenAI API representation of a tool.
+type openAIToolDef struct {
+	Type     string              `json:"type"`     // always "function"
+	Function openAIFunctionDef   `json:"function"`
+}
+
+type openAIFunctionDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
 // openAIMessage supports both plain-text content (string) and multi-modal
@@ -454,7 +601,15 @@ func buildOpenAIContent(text string, images []ImageRef) any {
 type openAIResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls,omitempty"`
 		} `json:"message"`
 	} `json:"choices"`
 	Error *struct {
@@ -479,13 +634,20 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 
-	messages := make([]openAIMessage, 0, 2)
-	if context := strings.TrimSpace(turn.Context); context != "" {
-		messages = append(messages, openAIMessage{Role: "system", Content: context})
+	// Build messages: system context + prior history + current user turn.
+	msgs := make([]openAIMessage, 0, len(turn.History)+2)
+	if ctxText := strings.TrimSpace(turn.Context); ctxText != "" {
+		msgs = append(msgs, openAIMessage{Role: "system", Content: ctxText})
 	}
-	messages = append(messages, openAIMessage{Role: "user", Content: buildOpenAIContent(strings.TrimSpace(turn.UserText), turn.Images)})
+	for _, h := range turn.History {
+		msgs = append(msgs, openAIMessage{Role: h.Role, Content: h.Content})
+	}
+	msgs = append(msgs, openAIMessage{Role: "user", Content: buildOpenAIContent(strings.TrimSpace(turn.UserText), turn.Images)})
 
-	reqBody := openAIRequest{Model: model, Messages: messages}
+	reqBody := openAIRequest{Model: model, Messages: msgs}
+	if len(turn.Tools) > 0 {
+		reqBody.Tools = toolDefsToOpenAI(turn.Tools)
+	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return ProviderResult{}, err
@@ -519,10 +681,24 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 	if resp.StatusCode >= 300 {
 		return ProviderResult{}, fmt.Errorf("openai returned %s", resp.Status)
 	}
-	if len(out.Choices) == 0 || strings.TrimSpace(out.Choices[0].Message.Content) == "" {
+	if len(out.Choices) == 0 {
+		return ProviderResult{}, fmt.Errorf("openai returned no choices")
+	}
+	choice := out.Choices[0].Message
+	// Parse tool calls if present.
+	var toolCalls []ToolCall
+	for _, tc := range choice.ToolCalls {
+		var args map[string]any
+		if tc.Function.Arguments != "" {
+			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		}
+		toolCalls = append(toolCalls, ToolCall{Name: tc.Function.Name, Args: args})
+	}
+	text := strings.TrimSpace(choice.Content)
+	if text == "" && len(toolCalls) == 0 {
 		return ProviderResult{}, fmt.Errorf("openai returned no content")
 	}
-	return ProviderResult{Text: out.Choices[0].Message.Content}, nil
+	return ProviderResult{Text: text, ToolCalls: toolCalls}, nil
 }
 
 // Stream implements StreamingProvider for OpenAIChatProvider.
@@ -542,17 +718,24 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 		baseURL = "https://api.openai.com"
 	}
 
-	messages := make([]openAIMessage, 0, 2)
+	// Build messages: system context + prior history + current user turn.
+	msgs := make([]openAIMessage, 0, len(turn.History)+2)
 	if ctxText := strings.TrimSpace(turn.Context); ctxText != "" {
-		messages = append(messages, openAIMessage{Role: "system", Content: ctxText})
+		msgs = append(msgs, openAIMessage{Role: "system", Content: ctxText})
 	}
-	messages = append(messages, openAIMessage{Role: "user", Content: buildOpenAIContent(strings.TrimSpace(turn.UserText), turn.Images)})
+	for _, h := range turn.History {
+		msgs = append(msgs, openAIMessage{Role: h.Role, Content: h.Content})
+	}
+	msgs = append(msgs, openAIMessage{Role: "user", Content: buildOpenAIContent(strings.TrimSpace(turn.UserText), turn.Images)})
 
 	// stream:true makes the API emit SSE data lines.
 	reqBody := map[string]any{
 		"model":    model,
-		"messages": messages,
+		"messages": msgs,
 		"stream":   true,
+	}
+	if len(turn.Tools) > 0 {
+		reqBody["tools"] = toolDefsToOpenAI(turn.Tools)
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -714,21 +897,74 @@ type geminiFileData struct {
 }
 
 type geminiRequest struct {
-	SystemInstruction *geminiContent `json:"systemInstruction,omitempty"`
-	Contents          []geminiContent `json:"contents"`
-	GenerationConfig  map[string]any  `json:"generationConfig,omitempty"`
+	SystemInstruction *geminiContent     `json:"systemInstruction,omitempty"`
+	Contents          []geminiContent    `json:"contents"`
+	GenerationConfig  map[string]any     `json:"generationConfig,omitempty"`
+	Tools             []geminiToolBundle `json:"tools,omitempty"`
+}
+
+// geminiToolBundle wraps a list of function declarations for the Gemini tools field.
+type geminiToolBundle struct {
+	FunctionDeclarations []geminiFuncDecl `json:"functionDeclarations"`
+}
+
+type geminiFuncDecl struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
 type geminiResponse struct {
 	Candidates []struct {
 		Content struct {
-			Parts []geminiPart `json:"parts"`
+			Parts []struct {
+				Text         string         `json:"text,omitempty"`
+				FunctionCall *struct {
+					Name string         `json:"name"`
+					Args map[string]any `json:"args"`
+				} `json:"functionCall,omitempty"`
+			} `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
 	Error *struct {
 		Message string `json:"message"`
 		Code    int    `json:"code"`
 	} `json:"error"`
+}
+
+// toolDefsToGemini converts ToolDefinition slice to the Gemini functionDeclarations format.
+func toolDefsToGemini(defs []ToolDefinition) []geminiToolBundle {
+	decls := make([]geminiFuncDecl, 0, len(defs))
+	for _, d := range defs {
+		params := map[string]any{"type": "OBJECT"}
+		if len(d.Parameters.Properties) > 0 {
+			props := map[string]any{}
+			for k, v := range d.Parameters.Properties {
+				// Gemini uses uppercase type names.
+				prop := map[string]any{"type": strings.ToUpper(v.Type)}
+				if v.Description != "" {
+					prop["description"] = v.Description
+				}
+				if len(v.Enum) > 0 {
+					prop["enum"] = v.Enum
+				}
+				props[k] = prop
+			}
+			params["properties"] = props
+		}
+		if len(d.Parameters.Required) > 0 {
+			params["required"] = d.Parameters.Required
+		}
+		decls = append(decls, geminiFuncDecl{
+			Name:        d.Name,
+			Description: d.Description,
+			Parameters:  params,
+		})
+	}
+	if len(decls) == 0 {
+		return nil
+	}
+	return []geminiToolBundle{{FunctionDeclarations: decls}}
 }
 
 // buildGeminiParts constructs the parts slice for a user turn.
@@ -771,15 +1007,30 @@ func (p *GoogleGeminiProvider) Generate(ctx context.Context, turn Turn) (Provide
 		model = "gemini-2.0-flash"
 	}
 
-	req := geminiRequest{
-		Contents: []geminiContent{
-			{Role: "user", Parts: buildGeminiParts(strings.TrimSpace(turn.UserText), turn.Images)},
-		},
+	// Build contents: prior history + current user turn.
+	contents := make([]geminiContent, 0, len(turn.History)+1)
+	for _, h := range turn.History {
+		role := h.Role
+		if role == "assistant" {
+			role = "model" // Gemini uses "model" for assistant
+		}
+		contents = append(contents, geminiContent{
+			Role:  role,
+			Parts: []geminiPart{{Text: h.Content}},
+		})
 	}
+	contents = append(contents, geminiContent{
+		Role:  "user",
+		Parts: buildGeminiParts(strings.TrimSpace(turn.UserText), turn.Images),
+	})
+	req := geminiRequest{Contents: contents}
 	if turn.Context != "" {
 		req.SystemInstruction = &geminiContent{
 			Parts: []geminiPart{{Text: turn.Context}},
 		}
+	}
+	if len(turn.Tools) > 0 {
+		req.Tools = toolDefsToGemini(turn.Tools)
 	}
 
 	body, err := json.Marshal(req)
@@ -814,7 +1065,26 @@ func (p *GoogleGeminiProvider) Generate(ctx context.Context, turn Turn) (Provide
 	if len(out.Candidates) == 0 || len(out.Candidates[0].Content.Parts) == 0 {
 		return ProviderResult{}, fmt.Errorf("gemini: empty response")
 	}
-	return ProviderResult{Text: out.Candidates[0].Content.Parts[0].Text}, nil
+	// Collect text and any function calls from response parts.
+	var textBuf strings.Builder
+	var toolCalls []ToolCall
+	for _, part := range out.Candidates[0].Content.Parts {
+		if part.Text != "" {
+			textBuf.WriteString(part.Text)
+		}
+		if part.FunctionCall != nil && part.FunctionCall.Name != "" {
+			args := part.FunctionCall.Args
+			if args == nil {
+				args = map[string]any{}
+			}
+			toolCalls = append(toolCalls, ToolCall{Name: part.FunctionCall.Name, Args: args})
+		}
+	}
+	text := strings.TrimSpace(textBuf.String())
+	if text == "" && len(toolCalls) == 0 {
+		return ProviderResult{}, fmt.Errorf("gemini: empty response")
+	}
+	return ProviderResult{Text: text, ToolCalls: toolCalls}, nil
 }
 
 // ─── Provider table for OpenAI-compatible endpoints ───────────────────────────

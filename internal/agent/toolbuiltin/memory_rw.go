@@ -15,6 +15,42 @@ import (
 //   - text (string, required) – content to store
 //   - tags ([]string or comma-delimited string, optional) – keywords for retrieval
 //   - session_id (string, optional) – scope the entry to a session
+// MemoryStoreDef is the ToolDefinition for memory_store.
+var MemoryStoreDef = agent.ToolDefinition{
+	Name:        "memory_store",
+	Description: "Persist a piece of information to memory so it can be retrieved in future sessions. Use to remember facts, preferences, decisions, or anything worth retaining across conversations.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"text": {
+				Type:        "string",
+				Description: "The information to store (plain text).",
+			},
+			"topic": {
+				Type:        "string",
+				Description: "Short topic label to categorise this memory (e.g. \"preferences\", \"project:swarmstr\").",
+			},
+		},
+		Required: []string{"text"},
+	},
+}
+
+// MemoryDeleteDef is the ToolDefinition for memory_delete.
+var MemoryDeleteDef = agent.ToolDefinition{
+	Name:        "memory_delete",
+	Description: "Delete a previously stored memory entry by its ID. Use when stored information is outdated, incorrect, or no longer relevant.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"id": {
+				Type:        "string",
+				Description: "The ID of the memory record to delete (returned by memory_store or memory.search).",
+			},
+		},
+		Required: []string{"id"},
+	},
+}
+
 func MemoryStoreTool(idx memory.Store) agent.ToolFunc {
 	return func(_ context.Context, args map[string]any) (string, error) {
 		text := agent.ArgString(args, "text")

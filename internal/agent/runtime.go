@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// ConversationMessage is one message in the prior conversation history passed
+// to the provider.  Role is "user", "assistant", "system", or "tool".
+type ConversationMessage struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	// ToolCallID is set for role="tool" messages linking results to calls.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
 type Turn struct {
 	SessionID string
 	UserText  string
@@ -14,6 +23,13 @@ type Turn struct {
 	// Each element is either a URL reference or inline base64 data.
 	// Text-only providers (echo, http, ollama) ignore this field.
 	Images []ImageRef
+	// Tools lists available tool definitions for native function-calling.
+	// When non-empty, providers that support it (Anthropic, OpenAI, Gemini)
+	// include these in the API request so the model can invoke them.
+	Tools []ToolDefinition
+	// History is the prior conversation for multi-turn context.
+	// Messages are ordered oldest-first.
+	History []ConversationMessage
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.
@@ -92,6 +108,13 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 	if turn.UserText == "" {
 		return TurnResult{}, fmt.Errorf("empty user turn")
 	}
+	// Auto-inject tool definitions when the executor provides them and the
+	// caller hasn't already populated turn.Tools.
+	if len(turn.Tools) == 0 && r.tools != nil {
+		if dp, ok := r.tools.(interface{ Definitions() []ToolDefinition }); ok {
+			turn.Tools = dp.Definitions()
+		}
+	}
 	gen, err := r.provider.Generate(ctx, turn)
 	if err != nil {
 		return TurnResult{}, err
@@ -108,6 +131,12 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	turn.UserText = strings.TrimSpace(turn.UserText)
 	if turn.UserText == "" {
 		return TurnResult{}, fmt.Errorf("empty user turn")
+	}
+	// Auto-inject tool definitions (same as ProcessTurn).
+	if len(turn.Tools) == 0 && r.tools != nil {
+		if dp, ok := r.tools.(interface{ Definitions() []ToolDefinition }); ok {
+			turn.Tools = dp.Definitions()
+		}
 	}
 
 	var gen ProviderResult

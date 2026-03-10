@@ -359,18 +359,22 @@ func main() {
 		}
 		return result.Text, nil
 	})
+	tools.SetDefinition("acp.delegate", toolbuiltin.ACPDelegateDef)
+
+	// Attach definition for inline memory.search (global cross-session search).
+	tools.SetDefinition("memory.search", toolbuiltin.MemorySearchDef)
 
 	// ── Built-in toolbuiltin tools ─────────────────────────────────────────
 	// web_fetch: fetch and extract text from a URL (SSRF-guarded).
-	tools.Register("web_fetch", toolbuiltin.WebFetchTool(toolbuiltin.WebFetchOpts{}))
+	tools.RegisterWithDef("web_fetch", toolbuiltin.WebFetchTool(toolbuiltin.WebFetchOpts{}), toolbuiltin.WebFetchDef)
 
 	// web_search: search the web via Brave (BRAVE_SEARCH_API_KEY) or
 	// Serper (SERPER_API_KEY).  Provider is auto-detected from env vars.
-	tools.Register("web_search", toolbuiltin.WebSearchTool(toolbuiltin.WebSearchConfig{}))
+	tools.RegisterWithDef("web_search", toolbuiltin.WebSearchTool(toolbuiltin.WebSearchConfig{}), toolbuiltin.WebSearchDef)
 
 	// memory_store / memory_delete: write and remove memory entries.
-	tools.Register("memory_store", toolbuiltin.MemoryStoreTool(memoryIndex))
-	tools.Register("memory_delete", toolbuiltin.MemoryDeleteTool(memoryIndex))
+	tools.RegisterWithDef("memory_store", toolbuiltin.MemoryStoreTool(memoryIndex), toolbuiltin.MemoryStoreDef)
+	tools.RegisterWithDef("memory_delete", toolbuiltin.MemoryDeleteTool(memoryIndex), toolbuiltin.MemoryDeleteDef)
 
 	// read_pdf: extract text from a local PDF file via pdftotext.
 	// Allowed roots come from extra.tools.pdf.allowed_roots and default to
@@ -394,11 +398,11 @@ func main() {
 		PrivateKey: controlPrivateKey,
 		Relays:     cfg.Relays,
 	}
-	tools.Register("nostr_fetch", toolbuiltin.NostrFetchTool(nostrToolOpts))
-	tools.Register("nostr_publish", toolbuiltin.NostrPublishTool(toolbuiltin.NostrToolOpts{
+	tools.RegisterWithDef("nostr_fetch", toolbuiltin.NostrFetchTool(nostrToolOpts), toolbuiltin.NostrFetchDef)
+	tools.RegisterWithDef("nostr_publish", toolbuiltin.NostrPublishTool(toolbuiltin.NostrToolOpts{
 		PrivateKey: controlPrivateKey,
 		Relays:     cfg.Relays,
-	}))
+	}), toolbuiltin.NostrPublishDef)
 	// nostr_send_dm uses controlDMBus which is assigned later; capture by reference via closure.
 	tools.Register("nostr_send_dm", func(ctx context.Context, args map[string]any) (string, error) {
 		controlDMBusMu.RLock()
@@ -406,20 +410,21 @@ func main() {
 		controlDMBusMu.RUnlock()
 		return toolbuiltin.NostrSendDMTool(toolbuiltin.NostrToolOpts{DMTransport: bus})(ctx, args)
 	})
-	tools.Register("nostr_profile", toolbuiltin.NostrProfileTool(nostrToolOpts))
-	tools.Register("nostr_resolve_nip05", toolbuiltin.NostrResolveNIP05Tool())
-	tools.Register("relay_list", toolbuiltin.NostrRelayListTool(toolbuiltin.NostrRelayToolOpts{
+	tools.SetDefinition("nostr_send_dm", toolbuiltin.NostrSendDMDef)
+	tools.RegisterWithDef("nostr_profile", toolbuiltin.NostrProfileTool(nostrToolOpts), toolbuiltin.NostrProfileDef)
+	tools.RegisterWithDef("nostr_resolve_nip05", toolbuiltin.NostrResolveNIP05Tool(), toolbuiltin.NostrResolveNIP05Def)
+	tools.RegisterWithDef("relay_list", toolbuiltin.NostrRelayListTool(toolbuiltin.NostrRelayToolOpts{
 		ReadRelays:  cfg.Relays,
 		WriteRelays: cfg.Relays,
-	}))
-	tools.Register("relay_ping", toolbuiltin.NostrRelayPingTool())
-	tools.Register("relay_info", toolbuiltin.NostrRelayInfoTool())
-	tools.Register("nostr_follows", toolbuiltin.NostrFollowsTool(nostrToolOpts))
-	tools.Register("nostr_followers", toolbuiltin.NostrFollowersTool(nostrToolOpts))
-	tools.Register("nostr_wot_distance", toolbuiltin.NostrWotDistanceTool(nostrToolOpts))
-	tools.Register("nostr_relay_hints", toolbuiltin.NostrRelayHintsTool(nostrToolOpts))
-	tools.Register("nostr_zap_send", toolbuiltin.NostrZapSendTool(nostrToolOpts))
-	tools.Register("nostr_zap_list", toolbuiltin.NostrZapListTool(nostrToolOpts))
+	}), toolbuiltin.NostrRelayListDef)
+	tools.RegisterWithDef("relay_ping", toolbuiltin.NostrRelayPingTool(), toolbuiltin.NostrRelayPingDef)
+	tools.RegisterWithDef("relay_info", toolbuiltin.NostrRelayInfoTool(), toolbuiltin.NostrRelayInfoDef)
+	tools.RegisterWithDef("nostr_follows", toolbuiltin.NostrFollowsTool(nostrToolOpts), toolbuiltin.NostrFollowsDef)
+	tools.RegisterWithDef("nostr_followers", toolbuiltin.NostrFollowersTool(nostrToolOpts), toolbuiltin.NostrFollowersDef)
+	tools.RegisterWithDef("nostr_wot_distance", toolbuiltin.NostrWotDistanceTool(nostrToolOpts), toolbuiltin.NostrWotDistanceDef)
+	tools.RegisterWithDef("nostr_relay_hints", toolbuiltin.NostrRelayHintsTool(nostrToolOpts), toolbuiltin.NostrRelayHintsDef)
+	tools.RegisterWithDef("nostr_zap_send", toolbuiltin.NostrZapSendTool(nostrToolOpts), toolbuiltin.NostrZapSendDef)
+	tools.RegisterWithDef("nostr_zap_list", toolbuiltin.NostrZapListTool(nostrToolOpts), toolbuiltin.NostrZapListDef)
 
 	// nostr_watch / nostr_unwatch / nostr_watch_list — persistent subscriptions.
 	// Delivery fires back into the DM pipeline via dmRunAgentTurnRef which is
@@ -436,9 +441,41 @@ func main() {
 		text := fmt.Sprintf("[watch:%s] %s", name, string(b))
 		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, "", time.Now().Unix(), nil)
 	}
-	tools.Register("nostr_watch", toolbuiltin.NostrWatchTool(nostrToolOpts, watchRegistry, watchDeliver))
-	tools.Register("nostr_unwatch", toolbuiltin.NostrUnwatchTool(watchRegistry))
-	tools.Register("nostr_watch_list", toolbuiltin.NostrWatchListTool(watchRegistry))
+	tools.RegisterWithDef("nostr_watch", toolbuiltin.NostrWatchTool(nostrToolOpts, watchRegistry, watchDeliver), toolbuiltin.NostrWatchDef)
+	tools.RegisterWithDef("nostr_unwatch", toolbuiltin.NostrUnwatchTool(watchRegistry), toolbuiltin.NostrUnwatchDef)
+	tools.RegisterWithDef("nostr_watch_list", toolbuiltin.NostrWatchListTool(watchRegistry), toolbuiltin.NostrWatchListDef)
+
+	// ── System / capability tools ───────────────────────────────────────────
+	// current_time: returns UTC timestamp so the agent always knows "now".
+	tools.RegisterWithDef("current_time", toolbuiltin.CurrentTimeTool, toolbuiltin.CurrentTimeDef)
+	// nostr_sign: sign an event without publishing (returns signed JSON).
+	tools.RegisterWithDef("nostr_sign", toolbuiltin.NostrSignTool(toolbuiltin.NostrSignOpts{PrivateKey: cfg.PrivateKey}), toolbuiltin.NostrSignDef)
+	// my_identity: agent self-awareness — name, nostr pubkey, model.
+	toolbuiltin.SetIdentityInfo(toolbuiltin.IdentityInfo{
+		Name:   "main",
+		Pubkey: pubkey,
+		Model:  strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_PROVIDER")),
+	})
+	tools.RegisterWithDef("my_identity", toolbuiltin.MyIdentityTool, toolbuiltin.MyIdentityDef)
+	// bash_exec: shell command execution (gated by exec approval policy middleware).
+	tools.RegisterWithDef("bash_exec", toolbuiltin.BashExecTool, toolbuiltin.BashExecDef)
+	// Filesystem tools: read/write files, list and create directories.
+	tools.RegisterWithDef("read_file", toolbuiltin.ReadFileTool, toolbuiltin.ReadFileDef)
+	tools.RegisterWithDef("write_file", toolbuiltin.WriteFileTool, toolbuiltin.WriteFileDef)
+	tools.RegisterWithDef("list_dir", toolbuiltin.ListDirTool, toolbuiltin.ListDirDef)
+	tools.RegisterWithDef("make_dir", toolbuiltin.MakeDirTool, toolbuiltin.MakeDirDef)
+	// task queue: persistent structured work-item management.
+	{
+		home, _ := os.UserHomeDir()
+		taskPath := filepath.Join(home, ".swarmstr", "tasks.json")
+		if err := toolbuiltin.InitTaskStore(taskPath); err != nil {
+			log.Printf("task store init (non-fatal): %v", err)
+		}
+	}
+	tools.RegisterWithDef("task_add", toolbuiltin.TaskAddTool, toolbuiltin.TaskAddDef)
+	tools.RegisterWithDef("task_list", toolbuiltin.TaskListTool, toolbuiltin.TaskListDef)
+	tools.RegisterWithDef("task_update", toolbuiltin.TaskUpdateTool, toolbuiltin.TaskUpdateDef)
+	tools.RegisterWithDef("task_remove", toolbuiltin.TaskRemoveTool, toolbuiltin.TaskRemoveDef)
 
 	agentRuntime, err := agent.NewRuntimeFromEnv(tools)
 	if err != nil {
@@ -455,6 +492,28 @@ func main() {
 		log.Fatalf("load runtime config: %v", err)
 	}
 	configState = newRuntimeConfigStore(runtimeCfg)
+	{
+		identityName := "main"
+		identityModel := strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_PROVIDER"))
+		for _, ag := range runtimeCfg.Agents {
+			id := strings.TrimSpace(ag.ID)
+			if id != "" && id != "main" {
+				continue
+			}
+			if name := strings.TrimSpace(ag.Name); name != "" {
+				identityName = name
+			}
+			if model := strings.TrimSpace(ag.Model); model != "" {
+				identityModel = model
+			}
+			break
+		}
+		toolbuiltin.SetIdentityInfo(toolbuiltin.IdentityInfo{
+			Name:   identityName,
+			Pubkey: pubkey,
+			Model:  identityModel,
+		})
+	}
 
 
 	// ── Early config file sync ──────────────────────────────────────────────
@@ -682,7 +741,7 @@ func main() {
 	{
 		// Default tool names that require approval. Overridable via
 		// Extra["approvals"]["tools"] (comma-separated or []string).
-		defaultApprovalTools := []string{"bash", "shell", "exec", "run_command", "terminal", "sh"}
+		defaultApprovalTools := []string{"bash", "shell", "exec", "run_command", "terminal", "sh", "bash_exec"}
 		approvalTools := make(map[string]bool)
 		for _, t := range defaultApprovalTools {
 			approvalTools[t] = true
@@ -1117,8 +1176,12 @@ func main() {
 	}
 	sessionTurns := autoreply.NewSessionTurns()
 
-	// ── Session and node agent tools ─────────────────────────────────────────
+	// ── Session and node agent tools ─────────────────────────────────
 	// Registered here so they can close over sessionTurns and configState.
+	// Attach native function-calling definitions for session tools.
+	tools.SetDefinition("sessions_list", toolbuiltin.SessionsListDef)
+	tools.SetDefinition("session_spawn", toolbuiltin.SessionSpawnDef)
+	tools.SetDefinition("session_send", toolbuiltin.SessionSendDef)
 
 	// sessions_list: return all tracked session IDs.
 	tools.Register("sessions_list", func(_ context.Context, _ map[string]any) (string, error) {
@@ -1250,6 +1313,11 @@ func main() {
 		b, _ := json.Marshal(out)
 		return string(b), nil
 	})
+
+	// Attach native function-calling definitions for cron tools.
+	tools.SetDefinition("cron_add", toolbuiltin.CronAddDef)
+	tools.SetDefinition("cron_list", toolbuiltin.CronListDef)
+	tools.SetDefinition("cron_remove", toolbuiltin.CronRemoveDef)
 
 	// cron_add: schedule a recurring agent task.
 	tools.Register("cron_add", func(ctx context.Context, args map[string]any) (string, error) {
@@ -1720,6 +1788,8 @@ func main() {
 		}()
 
 		turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, combinedText, 6)
+		// turnHistory carries prior conversation turns for multi-turn LLM context.
+		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
 			maxCtxTokens := 100_000
 			if agID := sessionRouter.Get(sessionID); agID != "" {
@@ -1741,6 +1811,26 @@ func main() {
 				}
 				if assembled.SystemPromptAddition != "" {
 					turnContext = assembled.SystemPromptAddition
+				}
+				// Convert assembled.Messages → turn.History.
+				// Exclude the last message if it is the current user turn (just ingested)
+				// to avoid duplication with turn.UserText.
+				msgs := assembled.Messages
+				if n := len(msgs); n > 0 {
+					last := msgs[n-1]
+					if last.Role == "user" && strings.TrimSpace(last.Content) == strings.TrimSpace(combinedText) {
+						msgs = msgs[:n-1]
+					}
+				}
+				for _, m := range msgs {
+					turnHistory = append(turnHistory, agent.ConversationMessage{
+						Role:       m.Role,
+						Content:    m.Content,
+						ToolCallID: m.ToolCallID,
+					})
+				}
+				if len(turnHistory) > 0 {
+					log.Printf("context engine history session=%s messages=%d", sessionID, len(turnHistory))
 				}
 			} else {
 				log.Printf("context engine assemble session=%s err=%v", sessionID, asmErr)
@@ -1838,8 +1928,14 @@ func main() {
 
 		var turnResult agent.TurnResult
 		var turnErr error
+		baseTurn := agent.Turn{
+			SessionID: sessionID,
+			UserText:  combinedText,
+			Context:   turnContext,
+			History:   turnHistory,
+		}
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
-			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, agent.Turn{SessionID: sessionID, UserText: combinedText, Context: turnContext}, func(chunk string) {
+			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, func(chunk string) {
 				wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
 					TS:        time.Now().UnixMilli(),
 					AgentID:   activeAgentID,
@@ -1848,7 +1944,7 @@ func main() {
 				})
 			})
 		} else {
-			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, agent.Turn{SessionID: sessionID, UserText: combinedText, Context: turnContext})
+			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, baseTurn)
 		}
 		if turnErr != nil {
 			stopHeartbeat()
@@ -2125,6 +2221,8 @@ func main() {
 			log.Fatalf("start dm bus: %v", err)
 		}
 		log.Printf("dm transport: NIP-04 (legacy encrypted DM)")
+		log.Printf("⚠️  SECURITY WARNING: NIP-04 leaks message metadata (sender/receiver visible to relays).")
+		log.Printf("   Set \"enable_nip17\": true in bootstrap.json to upgrade to NIP-17 gift-wrapped DMs.")
 	}
 	defer bus.Close()
 
@@ -2266,6 +2364,27 @@ func main() {
 		}
 
 		turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, text, 6)
+		var chTurnHistory []agent.ConversationMessage
+		if controlContextEngine != nil {
+			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
+				if assembled.SystemPromptAddition != "" {
+					turnContext = assembled.SystemPromptAddition
+				}
+				msgs := assembled.Messages
+				if n := len(msgs); n > 0 {
+					if last := msgs[n-1]; last.Role == "user" && strings.TrimSpace(last.Content) == strings.TrimSpace(text) {
+						msgs = msgs[:n-1]
+					}
+				}
+				for _, m := range msgs {
+					chTurnHistory = append(chTurnHistory, agent.ConversationMessage{
+						Role:       m.Role,
+						Content:    m.Content,
+						ToolCallID: m.ToolCallID,
+					})
+				}
+			}
+		}
 
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 			TS:      time.Now().UnixMilli(),
@@ -2282,14 +2401,16 @@ func main() {
 			turnCtx = toolbuiltin.WithChannelHandle(turnCtx, rawHandle)
 		}
 
-		// ── Run agent turn ────────────────────────────────────────────────
+		// ── Run agent turn ──────────────────────────────────────────
+		chBaseTurn := agent.Turn{
+			SessionID: sessionID,
+			UserText:  text,
+			Context:   turnContext,
+			History:   chTurnHistory,
+		}
 		var turnResult agent.TurnResult
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
-			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, agent.Turn{
-				SessionID: sessionID,
-				UserText:  text,
-				Context:   turnContext,
-			}, func(chunk string) {
+			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, chBaseTurn, func(chunk string) {
 				wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
 					TS:        time.Now().UnixMilli(),
 					AgentID:   activeAgentID,
@@ -2298,11 +2419,7 @@ func main() {
 				})
 			})
 		} else {
-			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, agent.Turn{
-				SessionID: sessionID,
-				UserText:  text,
-				Context:   turnContext,
-			})
+			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, chBaseTurn)
 		}
 
 		stopTyping()
