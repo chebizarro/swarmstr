@@ -1,0 +1,100 @@
+package toolbuiltin
+
+import (
+	"context"
+	"testing"
+
+	nostr "fiatjaf.com/nostr"
+)
+
+func TestNostrWatchTool_MissingName(t *testing.T) {
+	reg := NewWatchRegistry()
+	tool := NostrWatchTool(NostrToolOpts{Relays: []string{"wss://example.com"}}, reg, nil)
+	_, err := tool(context.Background(), map[string]any{"session_id": "s1"})
+	if err == nil {
+		t.Fatal("expected error with missing name")
+	}
+}
+
+func TestNostrWatchTool_MissingSessionID(t *testing.T) {
+	reg := NewWatchRegistry()
+	tool := NostrWatchTool(NostrToolOpts{Relays: []string{"wss://example.com"}}, reg, nil)
+	_, err := tool(context.Background(), map[string]any{"name": "test"})
+	if err == nil {
+		t.Fatal("expected error with missing session_id")
+	}
+}
+
+func TestNostrWatchTool_NoRelays(t *testing.T) {
+	reg := NewWatchRegistry()
+	tool := NostrWatchTool(NostrToolOpts{}, reg, nil)
+	_, err := tool(context.Background(), map[string]any{
+		"name":       "test",
+		"session_id": "s1",
+	})
+	if err == nil {
+		t.Fatal("expected error with no relays")
+	}
+}
+
+func TestNostrUnwatchTool_MissingName(t *testing.T) {
+	reg := NewWatchRegistry()
+	tool := NostrUnwatchTool(reg)
+	_, err := tool(context.Background(), map[string]any{})
+	if err == nil {
+		t.Fatal("expected error with missing name")
+	}
+}
+
+func TestNostrUnwatchTool_NotFound(t *testing.T) {
+	reg := NewWatchRegistry()
+	tool := NostrUnwatchTool(reg)
+	_, err := tool(context.Background(), map[string]any{"name": "nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown watch name")
+	}
+}
+
+func TestNostrWatchListTool_Empty(t *testing.T) {
+	reg := NewWatchRegistry()
+	tool := NostrWatchListTool(reg)
+	out, err := tool(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != "[]" {
+		t.Fatalf("expected empty array, got %q", out)
+	}
+}
+
+func TestWatchRegistry_MaxWatches(t *testing.T) {
+	reg := NewWatchRegistry()
+	// Fill up to the max.
+	for i := 0; i < maxActiveWatches; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		err := reg.start(ctx, NostrToolOpts{}, func() string {
+			return "watch" + string(rune('0'+i))
+		}(), "s1",
+			nostrFilterEmpty(), []string{"wss://unreachable.example.com"},
+			1, 0, func(_, _ string, _ map[string]any) {})
+		if err != nil {
+			t.Fatalf("entry %d: unexpected error: %v", i, err)
+		}
+	}
+	// One more should fail.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := reg.start(ctx, NostrToolOpts{}, "overflow", "s1",
+		nostrFilterEmpty(), []string{"wss://unreachable.example.com"},
+		1, 0, func(_, _ string, _ map[string]any) {})
+	if err == nil {
+		t.Fatal("expected error when max watches exceeded")
+	}
+}
+
+// nostrFilterEmpty returns an empty nostr.Filter for testing.
+func nostrFilterEmpty() nostr.Filter {
+	f, _ := buildNostrFilter(nil, 10)
+	return f
+}

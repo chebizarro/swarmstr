@@ -36,6 +36,7 @@ import (
 	gatewayprotocol "swarmstr/internal/gateway/protocol"
 	gatewayws "swarmstr/internal/gateway/ws"
 	"swarmstr/internal/memory"
+	"swarmstr/internal/nostr/dvm"
 	nostruntime "swarmstr/internal/nostr/runtime"
 	"swarmstr/internal/nostr/secure"
 	pluginmanager "swarmstr/internal/plugins/manager"
@@ -386,6 +387,58 @@ func main() {
 	tools.Register("send_typing", toolbuiltin.SendTypingTool())
 	tools.Register("send_in_thread", toolbuiltin.SendInThreadTool())
 	tools.Register("edit_message", toolbuiltin.EditMessageTool())
+
+	// ── Nostr network tools ─────────────────────────────────────────────────
+	// These give the agent first-class read/write/DM access to the Nostr network.
+	nostrToolOpts := toolbuiltin.NostrToolOpts{
+		PrivateKey: controlPrivateKey,
+		Relays:     cfg.Relays,
+	}
+	tools.Register("nostr_fetch", toolbuiltin.NostrFetchTool(nostrToolOpts))
+	tools.Register("nostr_publish", toolbuiltin.NostrPublishTool(toolbuiltin.NostrToolOpts{
+		PrivateKey: controlPrivateKey,
+		Relays:     cfg.Relays,
+	}))
+	// nostr_send_dm uses controlDMBus which is assigned later; capture by reference via closure.
+	tools.Register("nostr_send_dm", func(ctx context.Context, args map[string]any) (string, error) {
+		controlDMBusMu.RLock()
+		bus := controlDMBus
+		controlDMBusMu.RUnlock()
+		return toolbuiltin.NostrSendDMTool(toolbuiltin.NostrToolOpts{DMTransport: bus})(ctx, args)
+	})
+	tools.Register("nostr_profile", toolbuiltin.NostrProfileTool(nostrToolOpts))
+	tools.Register("nostr_resolve_nip05", toolbuiltin.NostrResolveNIP05Tool())
+	tools.Register("relay_list", toolbuiltin.NostrRelayListTool(toolbuiltin.NostrRelayToolOpts{
+		ReadRelays:  cfg.Relays,
+		WriteRelays: cfg.Relays,
+	}))
+	tools.Register("relay_ping", toolbuiltin.NostrRelayPingTool())
+	tools.Register("relay_info", toolbuiltin.NostrRelayInfoTool())
+	tools.Register("nostr_follows", toolbuiltin.NostrFollowsTool(nostrToolOpts))
+	tools.Register("nostr_followers", toolbuiltin.NostrFollowersTool(nostrToolOpts))
+	tools.Register("nostr_wot_distance", toolbuiltin.NostrWotDistanceTool(nostrToolOpts))
+	tools.Register("nostr_relay_hints", toolbuiltin.NostrRelayHintsTool(nostrToolOpts))
+	tools.Register("nostr_zap_send", toolbuiltin.NostrZapSendTool(nostrToolOpts))
+	tools.Register("nostr_zap_list", toolbuiltin.NostrZapListTool(nostrToolOpts))
+
+	// nostr_watch / nostr_unwatch / nostr_watch_list — persistent subscriptions.
+	// Delivery fires back into the DM pipeline via dmRunAgentTurnRef which is
+	// populated once dmRunAgentTurn is defined below.
+	watchRegistry := toolbuiltin.NewWatchRegistry()
+	watchDeliveryCtx, watchDeliveryCancel := context.WithCancel(ctx)
+	defer watchDeliveryCancel()
+	var dmRunAgentTurnRef func(ctx context.Context, fromPubKey, text, eventID string, createdAt int64, replyFn func(context.Context, string) error)
+	watchDeliver := func(sessionID, name string, event map[string]any) {
+		if dmRunAgentTurnRef == nil {
+			return
+		}
+		b, _ := json.Marshal(event)
+		text := fmt.Sprintf("[watch:%s] %s", name, string(b))
+		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, "", time.Now().Unix(), nil)
+	}
+	tools.Register("nostr_watch", toolbuiltin.NostrWatchTool(nostrToolOpts, watchRegistry, watchDeliver))
+	tools.Register("nostr_unwatch", toolbuiltin.NostrUnwatchTool(watchRegistry))
+	tools.Register("nostr_watch_list", toolbuiltin.NostrWatchListTool(watchRegistry))
 
 	agentRuntime, err := agent.NewRuntimeFromEnv(tools)
 	if err != nil {
@@ -1864,6 +1917,9 @@ func main() {
 		}
 	}
 
+	// Wire dmRunAgentTurn into the watch delivery closure.
+	dmRunAgentTurnRef = dmRunAgentTurn
+
 	// dmDebouncer coalesces rapid DM messages per sender.
 	// Only created when dmDebounceWindow > 0.
 	var dmDebouncer *channels.Debouncer
@@ -2077,6 +2133,43 @@ func main() {
 	controlDMBusMu.Lock()
 	controlDMBus = bus
 	controlDMBusMu.Unlock()
+
+	// ── NIP-90 DVM handler ─────────────────────────────────────────────────────
+	// Enabled when extra.dvm.enabled = true in config.
+	if dvmExtra, ok := configState.Get().Extra["dvm"].(map[string]any); ok {
+		if enabled, _ := dvmExtra["enabled"].(bool); enabled {
+			// Collect accepted kinds from extra.dvm.kinds (e.g. [5000, 5001]).
+			var acceptedKinds []int
+			if rawKinds, ok := dvmExtra["kinds"].([]any); ok {
+				for _, k := range rawKinds {
+					if f, ok := k.(float64); ok {
+						acceptedKinds = append(acceptedKinds, int(f))
+					}
+				}
+			}
+			dvmHandler, dvmErr := dvm.Start(ctx, dvm.HandlerOpts{
+				PrivateKey:    privateKey,
+				Relays:        cfg.Relays,
+				AcceptedKinds: acceptedKinds,
+				OnJob: func(jobCtx context.Context, jobID string, kind int, input string) (string, error) {
+					result, err := agentRuntime.ProcessTurn(jobCtx, agent.Turn{
+						SessionID: "dvm:" + jobID,
+						UserText:  input,
+					})
+					if err != nil {
+						return "", err
+					}
+					return result.Text, nil
+				},
+			})
+			if dvmErr != nil {
+				log.Printf("warn: DVM handler start failed: %v", dvmErr)
+			} else {
+				defer dvmHandler.Stop()
+				log.Printf("NIP-90 DVM handler active (kinds=%v)", acceptedKinds)
+			}
+		}
+	}
 
 	// ── Start built-in channel extensions ──────────────────────────────────────
 	// ConnectExtensions scans nostr_channels for entries whose "kind" matches
