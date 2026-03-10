@@ -150,6 +150,9 @@ type NostrChannelConfig struct {
 	// Config holds channel-plugin-specific configuration (arbitrary key/value pairs).
 	// Used by extension channel plugins (telegram, discord, etc.) for their settings.
 	Config map[string]any `json:"config,omitempty"`
+	// AllowFrom restricts which senders can interact via this channel.
+	// Use "*" for wildcard (allow all). Empty = inherit DM policy allowlist.
+	AllowFrom []string `json:"allow_from,omitempty"`
 }
 
 // NostrChannelsConfig is a named map of Nostr channel configurations.

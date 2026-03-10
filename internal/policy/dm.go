@@ -17,10 +17,40 @@ const (
 	DMPolicyDisabled  = "disabled"
 )
 
+// AuthLevel defines the permission tier of an inbound message sender.
+type AuthLevel int
+
+const (
+	// AuthDenied — sender is not allowed.
+	AuthDenied AuthLevel = iota
+	// AuthPublic — sender is on the allowlist (general access).
+	AuthPublic
+	// AuthTrusted — sender is tagged with the "trusted:" prefix in AllowFrom.
+	AuthTrusted
+	// AuthOwner — sender is the first entry in AllowFrom (highest privilege).
+	AuthOwner
+)
+
+// String returns a human-readable description of the auth level.
+func (a AuthLevel) String() string {
+	switch a {
+	case AuthOwner:
+		return "owner"
+	case AuthTrusted:
+		return "trusted"
+	case AuthPublic:
+		return "public"
+	default:
+		return "denied"
+	}
+}
+
 type DMDecision struct {
 	Allowed         bool
 	RequiresPairing bool
 	Reason          string
+	// Level is the permission tier of the sender. AuthDenied when !Allowed.
+	Level AuthLevel
 }
 
 func NormalizeDMPolicy(policy string) string {
@@ -248,28 +278,100 @@ func validateControlPolicy(control state.ControlPolicy) error {
 	return nil
 }
 
+// EvaluateGroupMessage evaluates whether a sender is allowed in a group/channel
+// context.  channelAllowFrom is the per-channel allow list (from
+// NostrChannelConfig.AllowFrom).  When channelAllowFrom is empty, it falls back
+// to the global DM allowlist.  A "*" wildcard in either list allows all senders.
+func EvaluateGroupMessage(sender string, channelAllowFrom []string, cfg state.ConfigDoc) DMDecision {
+	normalizedSender := normalizePubKey(sender)
+
+	// If the channel has its own allowlist, use it exclusively.
+	if len(channelAllowFrom) > 0 {
+		if isAllowedSender(normalizedSender, channelAllowFrom) {
+			return DMDecision{Allowed: true}
+		}
+		return DMDecision{Allowed: false, Reason: "sender not in channel allowlist"}
+	}
+
+	// Fall back to the global DM allowlist (policy-aware).
+	dmPolicy := NormalizeDMPolicy(cfg.DM.Policy)
+	switch dmPolicy {
+	case DMPolicyDisabled:
+		return DMDecision{Allowed: false, Reason: "channel messages disabled (dm policy is disabled)"}
+	case DMPolicyOpen:
+		return DMDecision{Allowed: true}
+	default: // allowlist + pairing
+		if isAllowedSender(normalizedSender, cfg.DM.AllowFrom) {
+			return DMDecision{Allowed: true}
+		}
+		return DMDecision{Allowed: false, Reason: "sender not in allowlist"}
+	}
+}
+
 func EvaluateIncomingDM(sender string, cfg state.ConfigDoc) DMDecision {
 	normalizedSender := normalizePubKey(sender)
 	policy := NormalizeDMPolicy(cfg.DM.Policy)
 
 	switch policy {
 	case DMPolicyDisabled:
-		return DMDecision{Allowed: false, Reason: "dm policy is disabled"}
+		return DMDecision{Allowed: false, Reason: "dm policy is disabled", Level: AuthDenied}
 	case DMPolicyOpen:
-		return DMDecision{Allowed: true}
+		level := authLevelOf(normalizedSender, cfg.DM.AllowFrom)
+		if level == AuthDenied {
+			level = AuthPublic // open policy allows all at public level
+		}
+		return DMDecision{Allowed: true, Level: level}
 	case DMPolicyAllowlist:
-		if isAllowedSender(normalizedSender, cfg.DM.AllowFrom) {
-			return DMDecision{Allowed: true}
+		level := authLevelOf(normalizedSender, cfg.DM.AllowFrom)
+		if level == AuthDenied {
+			return DMDecision{Allowed: false, Reason: "sender not in allowlist", Level: AuthDenied}
 		}
-		return DMDecision{Allowed: false, Reason: "sender not in allowlist"}
+		return DMDecision{Allowed: true, Level: level}
 	case DMPolicyPairing:
-		if isAllowedSender(normalizedSender, cfg.DM.AllowFrom) {
-			return DMDecision{Allowed: true}
+		level := authLevelOf(normalizedSender, cfg.DM.AllowFrom)
+		if level == AuthDenied {
+			return DMDecision{Allowed: false, RequiresPairing: true, Reason: "sender requires pairing approval", Level: AuthDenied}
 		}
-		return DMDecision{Allowed: false, RequiresPairing: true, Reason: "sender requires pairing approval"}
+		return DMDecision{Allowed: true, Level: level}
 	default:
-		return DMDecision{Allowed: false, Reason: "unknown dm policy"}
+		return DMDecision{Allowed: false, Reason: "unknown dm policy", Level: AuthDenied}
 	}
+}
+
+// authLevelOf returns the AuthLevel of sender within the allowFrom list.
+// The first entry is the owner; entries prefixed with "trusted:" are trusted;
+// other explicit allowlist entries are treated as trusted for backward
+// compatibility (so existing allowlists keep command access).  AuthDenied is
+// returned if not found (unless wildcard *).
+func authLevelOf(normalizedSender string, allowFrom []string) AuthLevel {
+	if normalizedSender == "" {
+		return AuthDenied
+	}
+	for i, entry := range allowFrom {
+		raw := strings.TrimSpace(entry)
+		// Strip trusted: prefix for comparison.
+		trusted := false
+		if strings.HasPrefix(strings.ToLower(raw), "trusted:") {
+			raw = strings.TrimSpace(raw[len("trusted:"):])
+			trusted = true
+		}
+		if raw == "*" {
+			if i == 0 {
+				return AuthOwner
+			}
+			if trusted {
+				return AuthTrusted
+			}
+			return AuthPublic
+		}
+		if normalizePubKey(raw) == normalizedSender {
+			if i == 0 && !trusted {
+				return AuthOwner
+			}
+			return AuthTrusted
+		}
+	}
+	return AuthDenied
 }
 
 func isAllowedSender(sender string, allow []string) bool {

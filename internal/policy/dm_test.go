@@ -141,6 +141,93 @@ func TestNormalizeConfigRelaySets(t *testing.T) {
 	}
 }
 
+func TestAuthLevelOf(t *testing.T) {
+	allow := []string{"owner-key", "trusted:trusted-key", "public-key"}
+
+	if got := authLevelOf("owner-key", allow); got != AuthOwner {
+		t.Fatalf("got %v want AuthOwner", got)
+	}
+	if got := authLevelOf("trusted-key", allow); got != AuthTrusted {
+		t.Fatalf("got %v want AuthTrusted", got)
+	}
+	if got := authLevelOf("public-key", allow); got != AuthTrusted {
+		t.Fatalf("got %v want AuthTrusted", got)
+	}
+	if got := authLevelOf("unknown", allow); got != AuthDenied {
+		t.Fatalf("got %v want AuthDenied", got)
+	}
+	if got := authLevelOf("", allow); got != AuthDenied {
+		t.Fatalf("got %v want AuthDenied for empty sender", got)
+	}
+}
+
+func TestEvaluateIncomingDM_AuthLevel(t *testing.T) {
+	cfg := baseDoc()
+	cfg.DM.Policy = DMPolicyAllowlist
+	cfg.DM.AllowFrom = []string{"ownerkey", "trusted:trustedkey"}
+
+	dec := EvaluateIncomingDM("ownerkey", cfg)
+	if !dec.Allowed || dec.Level != AuthOwner {
+		t.Fatalf("expected owner allowed: %+v", dec)
+	}
+	dec = EvaluateIncomingDM("trustedkey", cfg)
+	if !dec.Allowed || dec.Level != AuthTrusted {
+		t.Fatalf("expected trusted allowed: %+v", dec)
+	}
+	dec = EvaluateIncomingDM("unknown", cfg)
+	if dec.Allowed || dec.Level != AuthDenied {
+		t.Fatalf("expected denied: %+v", dec)
+	}
+
+	// Open policy gives at least AuthPublic to all.
+	openCfg := baseDoc()
+	openCfg.DM.Policy = DMPolicyOpen
+	dec = EvaluateIncomingDM("anykey", openCfg)
+	if !dec.Allowed || dec.Level < AuthPublic {
+		t.Fatalf("expected public+ on open policy: %+v", dec)
+	}
+}
+
+func TestEvaluateGroupMessage(t *testing.T) {
+	cfg := baseDoc()
+	cfg.DM.Policy = DMPolicyAllowlist
+	cfg.DM.AllowFrom = []string{"aabbcc"}
+
+	// Channel-specific allowlist takes precedence.
+	dec := EvaluateGroupMessage("aabbcc", []string{"aabbcc"}, cfg)
+	if !dec.Allowed {
+		t.Fatalf("expected allowed with channel allowlist: %s", dec.Reason)
+	}
+	dec = EvaluateGroupMessage("unknown", []string{"aabbcc"}, cfg)
+	if dec.Allowed {
+		t.Fatal("expected rejected: not in channel allowlist")
+	}
+
+	// Wildcard allows all.
+	dec = EvaluateGroupMessage("anyone", []string{"*"}, cfg)
+	if !dec.Allowed {
+		t.Fatal("expected allowed: wildcard")
+	}
+
+	// Empty channel allowlist falls back to DM policy.
+	dec = EvaluateGroupMessage("aabbcc", nil, cfg)
+	if !dec.Allowed {
+		t.Fatalf("expected allowed via DM allowlist fallback: %s", dec.Reason)
+	}
+	dec = EvaluateGroupMessage("unknown", nil, cfg)
+	if dec.Allowed {
+		t.Fatal("expected rejected via DM allowlist fallback")
+	}
+
+	// Open DM policy allows all.
+	openCfg := baseDoc()
+	openCfg.DM.Policy = DMPolicyOpen
+	dec = EvaluateGroupMessage("anyone", nil, openCfg)
+	if !dec.Allowed {
+		t.Fatal("expected allowed: open policy")
+	}
+}
+
 func TestValidateConfigRejectsInvalidRelayPolicy(t *testing.T) {
 	cfg := state.ConfigDoc{
 		DM:     state.DMPolicy{Policy: DMPolicyOpen},

@@ -27,6 +27,14 @@ type ImageRef struct {
 type TurnResult struct {
 	Text       string
 	ToolTraces []ToolTrace
+	// Usage reports token consumption for the turn (if the provider supports it).
+	Usage TurnUsage
+}
+
+// TurnUsage holds provider-reported token counts for a single turn.
+type TurnUsage struct {
+	InputTokens  int64
+	OutputTokens int64
 }
 
 type Runtime interface {
@@ -122,7 +130,10 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 
 // buildResult executes any tool calls from gen and assembles the TurnResult.
 func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult) (TurnResult, error) {
-	result := TurnResult{Text: strings.TrimSpace(gen.Text)}
+	result := TurnResult{
+		Text:  strings.TrimSpace(gen.Text),
+		Usage: TurnUsage{InputTokens: gen.Usage.InputTokens, OutputTokens: gen.Usage.OutputTokens},
+	}
 	for _, call := range gen.ToolCalls {
 		trace := ToolTrace{Call: call}
 		if r.tools == nil {
