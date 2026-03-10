@@ -1,24 +1,22 @@
-# OpenClaw gateway — Podman Quadlet (rootless)
-# Installed by setup-podman.sh into openclaw's ~/.config/containers/systemd/
-# {{OPENCLAW_HOME}} is replaced at install time.
+# swarmstrd — Podman Quadlet (rootless)
+# Installed by setup-podman.sh into ~/.config/containers/systemd/
+# {{SWARMSTR_HOME}} is replaced at install time.
 
 [Unit]
-Description=OpenClaw gateway (rootless Podman)
+Description=swarmstrd (rootless Podman)
 
 [Container]
-Image=openclaw:local
-ContainerName=openclaw
+Image=swarmstrd:local
+ContainerName=swarmstrd
 UserNS=keep-id
 # Keep container UID/GID aligned with the invoking user so mounted config is readable.
 User=%U:%G
-Volume={{OPENCLAW_HOME}}/.openclaw:/home/node/.openclaw
-EnvironmentFile={{OPENCLAW_HOME}}/.openclaw/.env
-Environment=HOME=/home/node
+Volume={{SWARMSTR_HOME}}/.swarmstr:/home/swarmstr/.swarmstr
+EnvironmentFile={{SWARMSTR_HOME}}/.swarmstr/.env
+Environment=HOME=/home/swarmstr
 Environment=TERM=xterm-256color
-PublishPort=18789:18789
-PublishPort=18790:18790
 Pull=never
-Exec=node dist/index.js gateway --bind lan --port 18789
+Exec=/usr/local/bin/swarmstrd
 
 [Service]
 TimeoutStartSec=300

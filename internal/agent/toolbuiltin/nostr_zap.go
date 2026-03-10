@@ -25,8 +25,8 @@ import (
 //   - note_id     string — optional hex event ID of the note being zapped
 func NostrZapSendTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
-		if opts.PrivateKey == "" {
-			return "", fmt.Errorf("nostr_zap_send: private key not configured")
+		if opts.Keyer == nil {
+			return "", fmt.Errorf("nostr_zap_send: signing keyer not configured")
 		}
 
 		toPubkeyRaw, _ := args["to_pubkey"].(string)
@@ -52,8 +52,8 @@ func NostrZapSendTool(opts NostrToolOpts) agent.ToolFunc {
 		noteID, _ := args["note_id"].(string)
 
 		result, err := zap.Send(ctx, zap.SendOpts{
-			PrivateKey: opts.PrivateKey,
-			Relays:     opts.Relays,
+			Keyer:  opts.Keyer,
+			Relays: opts.Relays,
 		}, lud16, toPubkey, noteID, int64(amountSats), comment)
 		if err != nil {
 			return "", fmt.Errorf("nostr_zap_send: %w", err)

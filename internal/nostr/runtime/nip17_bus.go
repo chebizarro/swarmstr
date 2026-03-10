@@ -18,13 +18,11 @@ import (
 	"unicode/utf8"
 
 	nostr "fiatjaf.com/nostr"
-	"fiatjaf.com/nostr/keyer"
 	"fiatjaf.com/nostr/nip17"
 )
 
 // NIP17BusOptions mirrors DMBusOptions so the two buses are interchangeable.
 type NIP17BusOptions struct {
-	PrivateKey  string
 	Relays      []string
 	SinceUnix   int64
 	OnMessage   func(context.Context, InboundDM) error
@@ -32,9 +30,7 @@ type NIP17BusOptions struct {
 	SeenCap     int
 	WorkerCount int
 	QueueSize   int
-	// Keyer is an optional pre-built nostr.Keyer (e.g. a NIP-46 BunkerSigner).
-	// When set, PrivateKey is ignored for signing; only the pubkey is derived
-	// from the Keyer.  PrivateKey is still accepted as a fallback when Keyer is nil.
+	// Keyer is the required signing/decryption interface.
 	Keyer nostr.Keyer
 }
 
@@ -68,22 +64,9 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 		return nil, fmt.Errorf("at least one relay is required")
 	}
 
-	// Build the keyer: prefer the pre-built Keyer option (e.g. NIP-46 bunker),
-	// fall back to deriving a plain key signer from PrivateKey.
-	var ks nostr.Keyer
-	var authSK nostr.SecretKey // used only for NIP-42 AUTH handler when we have a raw key
-	if opts.Keyer != nil {
-		ks = opts.Keyer
-	} else {
-		if opts.PrivateKey == "" {
-			return nil, fmt.Errorf("private key is required (or provide a Keyer)")
-		}
-		sk, err := ParseSecretKey(opts.PrivateKey)
-		if err != nil {
-			return nil, err
-		}
-		authSK = sk
-		ks = keyer.NewPlainKeySigner([32]byte(sk))
+	ks := opts.Keyer
+	if ks == nil {
+		return nil, fmt.Errorf("keyer is required")
 	}
 
 	since := opts.SinceUnix
@@ -101,12 +84,8 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 		return nil, fmt.Errorf("resolve public key: %w", err)
 	}
 
-	// Build the NIP-42 AUTH handler.  For plain key signers we sign inline;
-	// for bunker signers we route through the keyer's SignEvent.
+	// Build the NIP-42 AUTH handler via keyer-only signing.
 	authHandler := func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-		if authSK != [32]byte{} {
-			return evt.Sign([32]byte(authSK))
-		}
 		return ks.SignEvent(ctx, evt)
 	}
 

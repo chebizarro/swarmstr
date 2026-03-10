@@ -63,10 +63,10 @@ Local TTS using the sherpa-onnx offline CLI.
 
 ## Install
 
-1. Download the runtime for your OS (extracts into `~/.openclaw/tools/sherpa-onnx-tts/runtime`)
-2. Download a voice model (extracts into `~/.openclaw/tools/sherpa-onnx-tts/models`)
+1. Download the runtime for your OS (extracts into `~/.swarmstr/tools/sherpa-onnx-tts/runtime`)
+2. Download a voice model (extracts into `~/.swarmstr/tools/sherpa-onnx-tts/models`)
 
-Update `~/.openclaw/openclaw.json`:
+Update `~/.swarmstr/config.json`:
 
 ```json5
 {
@@ -74,8 +74,8 @@ Update `~/.openclaw/openclaw.json`:
     entries: {
       "sherpa-onnx-tts": {
         env: {
-          SHERPA_ONNX_RUNTIME_DIR: "~/.openclaw/tools/sherpa-onnx-tts/runtime",
-          SHERPA_ONNX_MODEL_DIR: "~/.openclaw/tools/sherpa-onnx-tts/models/vits-piper-en_US-lessac-high",
+          SHERPA_ONNX_RUNTIME_DIR: "~/.swarmstr/tools/sherpa-onnx-tts/runtime",
+          SHERPA_ONNX_MODEL_DIR: "~/.swarmstr/tools/sherpa-onnx-tts/models/vits-piper-en_US-lessac-high",
         },
       },
     },

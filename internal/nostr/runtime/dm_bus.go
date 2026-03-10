@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	nostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/keyer"
 	"fiatjaf.com/nostr/nip04"
 )
 
@@ -23,6 +24,10 @@ type InboundDM struct {
 
 type DMBusOptions struct {
 	PrivateKey  string
+	// Keyer is an optional pre-built nostr.Keyer (e.g. a NIP-46 BunkerSigner).
+	// When set, it is used for NIP-42 AUTH signing. PrivateKey is still needed
+	// for NIP-04 encryption/decryption (which requires a raw secret key).
+	Keyer       nostr.Keyer
 	Relays      []string
 	SinceUnix   int64
 	OnMessage   func(context.Context, InboundDM) error
@@ -60,13 +65,36 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 	if len(initialRelays) == 0 {
 		return nil, fmt.Errorf("at least one relay is required")
 	}
-	if opts.PrivateKey == "" {
-		return nil, fmt.Errorf("private key is required")
+	if opts.PrivateKey == "" && opts.Keyer == nil {
+		return nil, fmt.Errorf("private key is required (NIP-04 requires raw secret key)")
 	}
 
-	sk, err := ParseSecretKey(opts.PrivateKey)
-	if err != nil {
-		return nil, err
+	// NIP-04 always requires a raw secret key for shared-secret computation.
+	// If only a Keyer is provided (e.g. bunker mode), callers should use NIP17Bus instead.
+	var sk nostr.SecretKey
+	var ks nostr.Keyer
+	var public nostr.PubKey
+	if opts.PrivateKey != "" {
+		var err error
+		sk, err = ParseSecretKey(opts.PrivateKey)
+		if err != nil {
+			return nil, err
+		}
+		public = sk.Public()
+		// Build a plain keyer for NIP-42 AUTH if no external Keyer provided.
+		if opts.Keyer == nil {
+			ks = keyer.NewPlainKeySigner([32]byte(sk))
+		} else {
+			ks = opts.Keyer
+		}
+	} else {
+		// Keyer-only mode: can do NIP-42 AUTH but not NIP-04 encryption.
+		ks = opts.Keyer
+		pk, err := ks.GetPublicKey(parent)
+		if err != nil {
+			return nil, fmt.Errorf("dm bus: get public key from keyer: %w", err)
+		}
+		public = pk
 	}
 
 	since := opts.SinceUnix
@@ -81,15 +109,15 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 		pool: nostr.NewPool(nostr.PoolOptions{
 			PenaltyBox: true,
 			RelayOptions: nostr.RelayOptions{
-				// NIP-42: automatically sign AUTH challenges with the agent's key.
+				// NIP-42: sign AUTH challenges via Keyer (supports both raw keys and bunker).
 				AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-					return evt.Sign([32]byte(sk))
+					return ks.SignEvent(ctx, evt)
 				},
 			},
 		}),
 		relays:       initialRelays,
 		secret:       sk,
-		public:       sk.Public(),
+		public:       public,
 		onMessage:    opts.OnMessage,
 		onError:      opts.OnError,
 		seenSet:      make(map[string]struct{}),

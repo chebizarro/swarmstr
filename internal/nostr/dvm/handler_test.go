@@ -5,50 +5,45 @@ import (
 	"testing"
 
 	nostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/keyer"
 )
+
+func testSigner(t *testing.T) nostr.Keyer {
+	t.Helper()
+	sk := nostr.Generate()
+	return keyer.NewPlainKeySigner([32]byte(sk))
+}
 
 // TestStart_MissingOnJob returns error when OnJob is nil.
 func TestStart_MissingOnJob(t *testing.T) {
 	_, err := Start(context.Background(), HandlerOpts{
-		PrivateKey: nostr.Generate().Hex(),
-		Relays:     []string{"wss://example.com"},
+		Keyer:  testSigner(t),
+		Relays: []string{"wss://example.com"},
 	})
 	if err == nil {
 		t.Fatal("expected error when OnJob is nil")
 	}
 }
 
-// TestStart_MissingPrivateKey returns error when PrivateKey is empty.
-func TestStart_MissingPrivateKey(t *testing.T) {
+// TestStart_MissingKeyer returns error when Keyer is nil.
+func TestStart_MissingKeyer(t *testing.T) {
 	_, err := Start(context.Background(), HandlerOpts{
 		Relays: []string{"wss://example.com"},
 		OnJob:  func(_ context.Context, _ string, _ int, _ string) (string, error) { return "", nil },
 	})
 	if err == nil {
-		t.Fatal("expected error when PrivateKey is empty")
+		t.Fatal("expected error when Keyer is nil")
 	}
 }
 
 // TestStart_MissingRelays returns error when Relays is empty.
 func TestStart_MissingRelays(t *testing.T) {
 	_, err := Start(context.Background(), HandlerOpts{
-		PrivateKey: nostr.Generate().Hex(),
-		OnJob:      func(_ context.Context, _ string, _ int, _ string) (string, error) { return "", nil },
+		Keyer: testSigner(t),
+		OnJob: func(_ context.Context, _ string, _ int, _ string) (string, error) { return "", nil },
 	})
 	if err == nil {
 		t.Fatal("expected error when Relays is empty")
-	}
-}
-
-// TestStart_BadPrivateKey returns error for an invalid private key.
-func TestStart_BadPrivateKey(t *testing.T) {
-	_, err := Start(context.Background(), HandlerOpts{
-		PrivateKey: "not-a-valid-hex-key",
-		Relays:     []string{"wss://example.com"},
-		OnJob:      func(_ context.Context, _ string, _ int, _ string) (string, error) { return "", nil },
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid private key")
 	}
 }
 
@@ -95,9 +90,9 @@ func TestDefaultAcceptedKinds(t *testing.T) {
 	cancel() // cancel immediately so the goroutine exits without dialing
 
 	h, err := Start(ctx, HandlerOpts{
-		PrivateKey: nostr.Generate().Hex(),
-		Relays:     []string{"wss://unreachable.example.com"},
-		OnJob:      func(_ context.Context, _ string, _ int, _ string) (string, error) { return "", nil },
+		Keyer:  testSigner(t),
+		Relays: []string{"wss://unreachable.example.com"},
+		OnJob:  func(_ context.Context, _ string, _ int, _ string) (string, error) { return "", nil },
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

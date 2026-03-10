@@ -21,11 +21,8 @@ import (
 // NostrToolOpts holds the shared credentials and default relay list for all
 // Nostr agent tools.
 type NostrToolOpts struct {
-	// PrivateKey is the agent's hex-encoded Nostr secret key used for signing.
-	PrivateKey string
-	// Keyer is an optional pre-built nostr.Keyer (e.g. a NIP-46 BunkerSigner).
-	// When set, PrivateKey is not used for signing; all event signing is
-	// delegated to the Keyer.  Either PrivateKey or Keyer must be set.
+	// Keyer is the signing interface used for all event signing.
+	// This is required in all modes (plain-key and bunker).
 	Keyer nostr.Keyer
 	// Relays is the default relay list used when the tool caller doesn't specify.
 	Relays []string
@@ -42,23 +39,13 @@ func (o NostrToolOpts) resolveRelays(override []string) []string {
 	return o.Relays
 }
 
-// signerFunc returns a function that signs a nostr event using either the
-// Keyer (for NIP-46 bunker signing) or the raw PrivateKey.
+// signerFunc returns a function that signs a nostr event using the configured Keyer.
 func (o NostrToolOpts) signerFunc() (func(ctx context.Context, evt *nostr.Event) error, error) {
-	if o.Keyer != nil {
-		return func(ctx context.Context, evt *nostr.Event) error {
-			return o.Keyer.SignEvent(ctx, evt)
-		}, nil
+	if o.Keyer == nil {
+		return nil, fmt.Errorf("signing keyer not configured")
 	}
-	if o.PrivateKey == "" {
-		return nil, fmt.Errorf("private key not configured")
-	}
-	sk, err := nostr.SecretKeyFromHex(strings.TrimSpace(o.PrivateKey))
-	if err != nil {
-		return nil, fmt.Errorf("parse private key: %w", err)
-	}
-	return func(_ context.Context, evt *nostr.Event) error {
-		return evt.Sign(sk)
+	return func(ctx context.Context, evt *nostr.Event) error {
+		return o.Keyer.SignEvent(ctx, evt)
 	}, nil
 }
 

@@ -3,6 +3,9 @@ package channels
 import (
 	"context"
 	"testing"
+
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/keyer"
 )
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
@@ -96,23 +99,18 @@ func TestRegistry_closeAll(t *testing.T) {
 	}
 }
 
-// ─── parseHexSecretKey ────────────────────────────────────────────────────────
-
-func TestParseHexSecretKey_invalid(t *testing.T) {
-	_, err := parseHexSecretKey("tooshort")
-	if err == nil {
-		t.Error("expected error for short key")
-	}
-}
-
-func TestParseHexSecretKey_valid(t *testing.T) {
-	// 64 hex chars (32 bytes of zeros)
-	sk, err := parseHexSecretKey("0000000000000000000000000000000000000000000000000000000000000001")
+func testKeyer(t *testing.T) nostr.Keyer {
+	t.Helper()
+	sk, err := nostr.SecretKeyFromHex("0000000000000000000000000000000000000000000000000000000000000001")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("parse test key: %v", err)
 	}
-	_ = sk // just check it doesn't error
+	return keyer.NewPlainKeySigner([32]byte(sk))
 }
+
+// ─── signer validation ────────────────────────────────────────────────────────
+
+func TestTestKeyer_valid(t *testing.T) { _ = testKeyer(t) }
 
 // ─── NIP29GroupChannelOptions validation ─────────────────────────────────────
 
@@ -121,13 +119,13 @@ func TestNewNIP29GroupChannel_missingKey(t *testing.T) {
 		GroupAddress: "relay.example.com'testgroup",
 	})
 	if err == nil {
-		t.Error("expected error for missing private key")
+		t.Error("expected error for missing keyer")
 	}
 }
 
 func TestNewNIP29GroupChannel_missingAddress(t *testing.T) {
 	_, err := NewNIP29GroupChannel(context.Background(), NIP29GroupChannelOptions{
-		PrivateKey: "0000000000000000000000000000000000000000000000000000000000000001",
+		Keyer: testKeyer(t),
 	})
 	if err == nil {
 		t.Error("expected error for missing group_address")
@@ -136,7 +134,7 @@ func TestNewNIP29GroupChannel_missingAddress(t *testing.T) {
 
 func TestNewNIP29GroupChannel_badAddress(t *testing.T) {
 	_, err := NewNIP29GroupChannel(context.Background(), NIP29GroupChannelOptions{
-		PrivateKey:   "0000000000000000000000000000000000000000000000000000000000000001",
+		Keyer:        testKeyer(t),
 		GroupAddress: "noSlashInAddress",
 	})
 	if err == nil {
