@@ -23,6 +23,10 @@ import (
 type NostrToolOpts struct {
 	// PrivateKey is the agent's hex-encoded Nostr secret key used for signing.
 	PrivateKey string
+	// Keyer is an optional pre-built nostr.Keyer (e.g. a NIP-46 BunkerSigner).
+	// When set, PrivateKey is not used for signing; all event signing is
+	// delegated to the Keyer.  Either PrivateKey or Keyer must be set.
+	Keyer nostr.Keyer
 	// Relays is the default relay list used when the tool caller doesn't specify.
 	Relays []string
 	// DMTransport is used by NostrSendDMTool to deliver DMs. May be nil
@@ -36,6 +40,26 @@ func (o NostrToolOpts) resolveRelays(override []string) []string {
 		return override
 	}
 	return o.Relays
+}
+
+// signerFunc returns a function that signs a nostr event using either the
+// Keyer (for NIP-46 bunker signing) or the raw PrivateKey.
+func (o NostrToolOpts) signerFunc() (func(ctx context.Context, evt *nostr.Event) error, error) {
+	if o.Keyer != nil {
+		return func(ctx context.Context, evt *nostr.Event) error {
+			return o.Keyer.SignEvent(ctx, evt)
+		}, nil
+	}
+	if o.PrivateKey == "" {
+		return nil, fmt.Errorf("private key not configured")
+	}
+	sk, err := nostr.SecretKeyFromHex(strings.TrimSpace(o.PrivateKey))
+	if err != nil {
+		return nil, fmt.Errorf("parse private key: %w", err)
+	}
+	return func(_ context.Context, evt *nostr.Event) error {
+		return evt.Sign(sk)
+	}, nil
 }
 
 // ─── nostr_fetch ──────────────────────────────────────────────────────────────
@@ -194,12 +218,10 @@ func NostrFetchTool(opts NostrToolOpts) agent.ToolFunc {
 //   - relays  []string  — optional relay override
 func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
-		if opts.PrivateKey == "" {
-			return "", fmt.Errorf("nostr_publish: private key not configured")
-		}
-		sk, err := nostr.SecretKeyFromHex(strings.TrimSpace(opts.PrivateKey))
+		// Build signer: prefer Keyer (supports NIP-46), fall back to raw private key.
+		signFn, err := opts.signerFunc()
 		if err != nil {
-			return "", fmt.Errorf("nostr_publish: parse key: %w", err)
+			return "", fmt.Errorf("nostr_publish: %w", err)
 		}
 
 		kindVal, ok := args["kind"].(float64)
@@ -212,9 +234,10 @@ func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 		// Parse tags: accept [][]string or [][]interface{}.
 		var tags nostr.Tags
 		if tagsRaw, ok := args["tags"]; ok {
-			tags, err = parseTagsArg(tagsRaw)
-			if err != nil {
-				return "", fmt.Errorf("nostr_publish: invalid tags: %w", err)
+			var parseErr error
+			tags, parseErr = parseTagsArg(tagsRaw)
+			if parseErr != nil {
+				return "", fmt.Errorf("nostr_publish: invalid tags: %w", parseErr)
 			}
 		}
 
@@ -233,7 +256,7 @@ func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 			Tags:      tags,
 			CreatedAt: nostr.Timestamp(time.Now().Unix()),
 		}
-		if err := evt.Sign(sk); err != nil {
+		if err := signFn(ctx, &evt); err != nil {
 			return "", fmt.Errorf("nostr_publish: sign: %w", err)
 		}
 

@@ -23,6 +23,8 @@ import (
 	"syscall"
 	"time"
 
+	nostr "fiatjaf.com/nostr"
+
 	"swarmstr/internal/admin"
 	"swarmstr/internal/agent"
 	"swarmstr/internal/autoreply"
@@ -94,6 +96,7 @@ var (
 	controlSessionRouter   *agent.AgentSessionRouter
 	controlChannels        *channels.Registry
 	controlPrivateKey      string
+	controlKeyer           nostr.Keyer // nil when using plain key; set for NIP-46 bunker signers
 	// controlWsEmitter forwards typed events to connected WS clients.
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
 	controlWsEmitter   gatewayws.EventEmitter = gatewayws.NoopEmitter{}
@@ -186,11 +189,36 @@ func main() {
 	if err != nil {
 		log.Fatalf("load bootstrap config: %v", err)
 	}
-	privateKey, err := config.ResolvePrivateKey(cfg)
-	if err != nil {
-		log.Fatalf("resolve signer/private key: %v", err)
+	var privateKey string
+	if config.IsBunkerURL(cfg) {
+		// NIP-46 remote signer: connect to bunker asynchronously.
+		// We get the pubkey from the bunker; the raw private key stays remote.
+		log.Printf("signer: NIP-46 bunker detected, connecting…")
+		signerCtx, signerCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		kr, kErr := config.ResolveSigner(signerCtx, cfg, nil)
+		signerCancel()
+		if kErr != nil {
+			log.Fatalf("connect NIP-46 bunker: %v", kErr)
+		}
+		controlKeyer = kr
+		// Derive pubkey from the bunker for identity tools.
+		pkCtx, pkCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		pk, pkErr := kr.GetPublicKey(pkCtx)
+		pkCancel()
+		if pkErr != nil {
+			log.Fatalf("NIP-46: get public key: %v", pkErr)
+		}
+		privateKey = "" // no raw key; signing is done via controlKeyer
+		controlPrivateKey = pk.Hex() // store pubkey so identity tools work
+		log.Printf("signer: NIP-46 bunker connected pubkey=%s", pk.Hex())
+	} else {
+		var resolveErr error
+		privateKey, resolveErr = config.ResolvePrivateKey(cfg)
+		if resolveErr != nil {
+			log.Fatalf("resolve signer/private key: %v", resolveErr)
+		}
+		controlPrivateKey = privateKey
 	}
-	controlPrivateKey = privateKey
 	if adminAddr == "" {
 		adminAddr = cfg.AdminListenAddr
 	}
@@ -400,11 +428,13 @@ func main() {
 	// These give the agent first-class read/write/DM access to the Nostr network.
 	nostrToolOpts := toolbuiltin.NostrToolOpts{
 		PrivateKey: controlPrivateKey,
+		Keyer:      controlKeyer, // nil for plain key setups; set for NIP-46 bunkers
 		Relays:     cfg.Relays,
 	}
 	tools.RegisterWithDef("nostr_fetch", toolbuiltin.NostrFetchTool(nostrToolOpts), toolbuiltin.NostrFetchDef)
 	tools.RegisterWithDef("nostr_publish", toolbuiltin.NostrPublishTool(toolbuiltin.NostrToolOpts{
 		PrivateKey: controlPrivateKey,
+		Keyer:      controlKeyer,
 		Relays:     cfg.Relays,
 	}), toolbuiltin.NostrPublishDef)
 	// nostr_send_dm uses controlDMBus which is assigned later; capture by reference via closure.
@@ -453,7 +483,10 @@ func main() {
 	// current_time: returns UTC timestamp so the agent always knows "now".
 	tools.RegisterWithDef("current_time", toolbuiltin.CurrentTimeTool, toolbuiltin.CurrentTimeDef)
 	// nostr_sign: sign an event without publishing (returns signed JSON).
-	tools.RegisterWithDef("nostr_sign", toolbuiltin.NostrSignTool(toolbuiltin.NostrSignOpts{PrivateKey: cfg.PrivateKey}), toolbuiltin.NostrSignDef)
+	tools.RegisterWithDef("nostr_sign", toolbuiltin.NostrSignTool(toolbuiltin.NostrSignOpts{
+		PrivateKey: cfg.PrivateKey,
+		Keyer:      controlKeyer,
+	}), toolbuiltin.NostrSignDef)
 	// my_identity: agent self-awareness — name, nostr pubkey, model.
 	toolbuiltin.SetIdentityInfo(toolbuiltin.IdentityInfo{
 		Name:   "main",
@@ -1140,6 +1173,37 @@ func main() {
 				}
 				if cr, cErr := controlContextEngine.Compact(ctx, ""); cErr == nil && cr.Compacted {
 					log.Printf("context engine background compact: %s", cr.Summary)
+				}
+			}
+		}
+	}()
+
+	// Background memory index compaction: every 6 hours, trim the raw JSON-FTS
+	// memory index to prevent unbounded disk/memory growth.
+	// Default max is 50 000 entries; configurable via extra.memory.max_entries.
+	go func() {
+		const defaultMaxMemoryEntries = 50_000
+		const compactCycle = 6 * time.Hour
+		ticker := time.NewTicker(compactCycle)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if memoryIndex == nil {
+					continue
+				}
+				maxEntries := defaultMaxMemoryEntries
+				if extra, ok := configState.Get().Extra["memory"].(map[string]any); ok {
+					if mv, ok := extra["max_entries"].(float64); ok && mv > 0 {
+						maxEntries = int(mv)
+					}
+				}
+				removed := memoryIndex.Compact(maxEntries)
+				if removed > 0 {
+					log.Printf("memory index compaction: removed %d oldest entries (max=%d)", removed, maxEntries)
+					_ = memoryIndex.Save()
 				}
 			}
 		}
@@ -2222,9 +2286,15 @@ func main() {
 	// Start the DM transport: NIP-17 (gift-wrapped, metadata-private) when
 	// enabled; otherwise fall back to NIP-04 for OpenClaw compatibility.
 	var bus nostruntime.DMTransport
-	if cfg.EnableNIP17 {
+	if cfg.EnableNIP17 || controlKeyer != nil {
+		// Force NIP-17 when using a bunker signer (NIP-04 requires the raw key
+		// for encryption/decryption which is not available with remote signing).
+		if controlKeyer != nil && !cfg.EnableNIP17 {
+			log.Printf("dm transport: forcing NIP-17 — NIP-04 requires raw key unavailable with NIP-46 bunker")
+		}
 		bus, err = nostruntime.StartNIP17Bus(ctx, nostruntime.NIP17BusOptions{
 			PrivateKey: privateKey,
+			Keyer:      controlKeyer,
 			Relays:     cfg.Relays,
 			SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
 			OnMessage:  dmOnMessage,

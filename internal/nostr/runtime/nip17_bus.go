@@ -32,12 +32,16 @@ type NIP17BusOptions struct {
 	SeenCap     int
 	WorkerCount int
 	QueueSize   int
+	// Keyer is an optional pre-built nostr.Keyer (e.g. a NIP-46 BunkerSigner).
+	// When set, PrivateKey is ignored for signing; only the pubkey is derived
+	// from the Keyer.  PrivateKey is still accepted as a fallback when Keyer is nil.
+	Keyer nostr.Keyer
 }
 
 // NIP17Bus is the NIP-17 equivalent of DMBus.
 type NIP17Bus struct {
 	pool     *nostr.Pool
-	kr       keyer.KeySigner
+	kr       nostr.Keyer
 	public   nostr.PubKey
 	relaysMu sync.RWMutex
 	relays   []string
@@ -63,15 +67,24 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 	if len(initialRelays) == 0 {
 		return nil, fmt.Errorf("at least one relay is required")
 	}
-	if opts.PrivateKey == "" {
-		return nil, fmt.Errorf("private key is required")
-	}
 
-	sk, err := ParseSecretKey(opts.PrivateKey)
-	if err != nil {
-		return nil, err
+	// Build the keyer: prefer the pre-built Keyer option (e.g. NIP-46 bunker),
+	// fall back to deriving a plain key signer from PrivateKey.
+	var ks nostr.Keyer
+	var authSK nostr.SecretKey // used only for NIP-42 AUTH handler when we have a raw key
+	if opts.Keyer != nil {
+		ks = opts.Keyer
+	} else {
+		if opts.PrivateKey == "" {
+			return nil, fmt.Errorf("private key is required (or provide a Keyer)")
+		}
+		sk, err := ParseSecretKey(opts.PrivateKey)
+		if err != nil {
+			return nil, err
+		}
+		authSK = sk
+		ks = keyer.NewPlainKeySigner([32]byte(sk))
 	}
-	ks := keyer.NewPlainKeySigner([32]byte(sk))
 
 	since := opts.SinceUnix
 	if since <= 0 {
@@ -81,11 +94,20 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 	queueSize := max(opts.QueueSize, 256)
 
 	// Resolve pubkey from the keyer before starting goroutines.
-	pkCtx, pkCancel := context.WithTimeout(parent, 5*time.Second)
+	pkCtx, pkCancel := context.WithTimeout(parent, 10*time.Second)
 	pub, err := ks.GetPublicKey(pkCtx)
 	pkCancel()
 	if err != nil {
 		return nil, fmt.Errorf("resolve public key: %w", err)
+	}
+
+	// Build the NIP-42 AUTH handler.  For plain key signers we sign inline;
+	// for bunker signers we route through the keyer's SignEvent.
+	authHandler := func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
+		if authSK != [32]byte{} {
+			return evt.Sign([32]byte(authSK))
+		}
+		return ks.SignEvent(ctx, evt)
 	}
 
 	ctx, cancel := context.WithCancel(parent)
@@ -94,9 +116,7 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 			PenaltyBox: true,
 			RelayOptions: nostr.RelayOptions{
 				// NIP-42: automatically sign AUTH challenges with the agent's key.
-				AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-					return evt.Sign([32]byte(sk))
-				},
+				AuthHandler: authHandler,
 			},
 		}),
 		kr:           ks,
