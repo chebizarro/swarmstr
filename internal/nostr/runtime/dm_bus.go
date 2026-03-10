@@ -110,7 +110,7 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 
 	since := opts.SinceUnix
 	if since <= 0 {
-		since = time.Now().Add(-10 * time.Minute).Unix()
+		since = time.Now().Add(-30 * time.Minute).Unix()
 	}
 	workerCount := max(opts.WorkerCount, 4)
 	queueSize := max(opts.QueueSize, 256)

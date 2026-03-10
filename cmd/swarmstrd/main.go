@@ -4105,10 +4105,18 @@ func ensureIngestCheckpoint(ctx context.Context, repo *state.DocsRepository) (st
 }
 
 func checkpointSinceUnix(lastUnix int64) int64 {
+	// Always look back at least 30 minutes so that agents reconstruct
+	// recent conversation context after a restart, even if the checkpoint
+	// is current.  The AlreadyProcessed gate prevents re-replies to
+	// messages that were handled before the restart.
+	floor := time.Now().Add(-30 * time.Minute).Unix()
 	if lastUnix <= 0 {
-		return 0
+		return floor
 	}
 	since := lastUnix - 120
+	if since > floor {
+		since = floor
+	}
 	if since < 0 {
 		return 0
 	}
