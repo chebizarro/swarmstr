@@ -500,8 +500,10 @@ func main() {
 	// ── Cashu NUT ecash tools ───────────────────────────────────────────────
 	{
 		var nutsDefaultMint string
-		if nutsExtra, ok := configState.Get().Extra["nuts"].(map[string]any); ok {
-			nutsDefaultMint, _ = nutsExtra["mint_url"].(string)
+		if configState != nil {
+			if nutsExtra, ok := configState.Get().Extra["nuts"].(map[string]any); ok {
+				nutsDefaultMint, _ = nutsExtra["mint_url"].(string)
+			}
 		}
 		if nutsDefaultMint == "" {
 			nutsDefaultMint = "https://legend.lnbits.com/cashu/api/v1/Ah9J3tb5bI0ZLI-e0iSZ0g" // well-known public mint
@@ -516,8 +518,10 @@ func main() {
 	// Enabled by default; default server can be configured via extra.blossom.server.
 	{
 		var blossomServer string
-		if blossomExtra, ok := configState.Get().Extra["blossom"].(map[string]any); ok {
-			blossomServer, _ = blossomExtra["server"].(string)
+		if configState != nil {
+			if blossomExtra, ok := configState.Get().Extra["blossom"].(map[string]any); ok {
+				blossomServer, _ = blossomExtra["server"].(string)
+			}
 		}
 		if blossomServer == "" {
 			blossomServer = "https://blossom.band" // community default
