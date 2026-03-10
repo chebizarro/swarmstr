@@ -9,24 +9,21 @@ title: "Additional Providers"
 
 swarmstr supports all OpenAI-compatible API providers. Below is a quick reference for common ones.
 
+All provider entries go under `providers.<name>` in `~/.swarmstr/config.json`.
+Set `agent.default_model` to the desired model string.
+
 ## Mistral AI
 
 ```
 MISTRAL_API_KEY=your-key
 ```
 
-```json5
+```json
 {
   "providers": {
-    "mistral": {
-      "apiKey": "${MISTRAL_API_KEY}"
-    }
+    "mistral": { "api_key": "${MISTRAL_API_KEY}" }
   },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "mistral/mistral-large-latest" }
-    }
-  }
+  "agent": { "default_model": "mistral/mistral-large-latest" }
 }
 ```
 
@@ -38,18 +35,12 @@ Models: `mistral-large-latest`, `mistral-medium-latest`, `mistral-small-latest`,
 GEMINI_API_KEY=AI...
 ```
 
-```json5
+```json
 {
   "providers": {
-    "gemini": {
-      "apiKey": "${GEMINI_API_KEY}"
-    }
+    "gemini": { "api_key": "${GEMINI_API_KEY}" }
   },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "gemini/gemini-2.0-flash" }
-    }
-  }
+  "agent": { "default_model": "gemini/gemini-2.0-flash" }
 }
 ```
 
@@ -63,20 +54,18 @@ AWS_SECRET_ACCESS_KEY=your-secret
 AWS_REGION=us-east-1
 ```
 
-```json5
+```json
 {
   "providers": {
     "bedrock": {
-      "region": "${AWS_REGION}",
-      "accessKeyId": "${AWS_ACCESS_KEY_ID}",
-      "secretAccessKey": "${AWS_SECRET_ACCESS_KEY}"
+      "extra": {
+        "region": "${AWS_REGION}",
+        "access_key_id": "${AWS_ACCESS_KEY_ID}",
+        "secret_access_key": "${AWS_SECRET_ACCESS_KEY}"
+      }
     }
   },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0" }
-    }
-  }
+  "agent": { "default_model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0" }
 }
 ```
 
@@ -84,19 +73,15 @@ AWS_REGION=us-east-1
 
 [LiteLLM](https://litellm.ai) proxies multiple providers with one unified API.
 
-```json5
+```json
 {
   "providers": {
     "litellm": {
-      "baseUrl": "http://localhost:4000",
-      "apiKey": "${LITELLM_API_KEY}"
+      "base_url": "http://localhost:4000",
+      "api_key": "${LITELLM_API_KEY}"
     }
   },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "litellm/claude-3-5-sonnet" }
-    }
-  }
+  "agent": { "default_model": "litellm/claude-3-5-sonnet" }
 }
 ```
 
@@ -104,19 +89,15 @@ AWS_REGION=us-east-1
 
 Run inference on your own GPU cluster:
 
-```json5
+```json
 {
   "providers": {
     "vllm": {
-      "baseUrl": "http://your-vllm-server:8000",
-      "apiKey": "not-needed"
+      "base_url": "http://your-vllm-server:8000",
+      "api_key": "none"
     }
   },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "vllm/meta-llama/Llama-3.3-70B-Instruct" }
-    }
-  }
+  "agent": { "default_model": "vllm/meta-llama/Llama-3.3-70B-Instruct" }
 }
 ```
 
@@ -126,18 +107,12 @@ Run inference on your own GPU cluster:
 TOGETHER_API_KEY=your-key
 ```
 
-```json5
+```json
 {
   "providers": {
-    "together": {
-      "apiKey": "${TOGETHER_API_KEY}"
-    }
+    "together": { "api_key": "${TOGETHER_API_KEY}" }
   },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "together/meta-llama/Llama-3.3-70B-Instruct-Turbo" }
-    }
-  }
+  "agent": { "default_model": "together/meta-llama/Llama-3.3-70B-Instruct-Turbo" }
 }
 ```
 
@@ -149,18 +124,12 @@ Venice.ai provides private AI inference with no data retention:
 VENICE_API_KEY=your-key
 ```
 
-```json5
+```json
 {
   "providers": {
-    "venice": {
-      "apiKey": "${VENICE_API_KEY}"
-    }
+    "venice": { "api_key": "${VENICE_API_KEY}" }
   },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "venice/llama-3.3-70b" }
-    }
-  }
+  "agent": { "default_model": "venice/llama-3.3-70b" }
 }
 ```
 
@@ -168,12 +137,12 @@ VENICE_API_KEY=your-key
 
 Route requests through Cloudflare's AI Gateway for observability:
 
-```json5
+```json
 {
   "providers": {
     "anthropic": {
-      "apiKey": "${ANTHROPIC_API_KEY}",
-      "baseUrl": "https://gateway.ai.cloudflare.com/v1/<account-id>/<gateway-name>/anthropic"
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "base_url": "https://gateway.ai.cloudflare.com/v1/<account-id>/<gateway-name>/anthropic"
     }
   }
 }
@@ -182,21 +151,15 @@ Route requests through Cloudflare's AI Gateway for observability:
 ## HuggingFace Inference
 
 ```
-HUGGINGFACE_API_KEY=hf_...
+HUGGINGFACE_HUB_TOKEN=hf_...
 ```
 
-```json5
+```json
 {
   "providers": {
-    "huggingface": {
-      "apiKey": "${HUGGINGFACE_API_KEY}"
-    }
+    "huggingface": { "api_key": "${HUGGINGFACE_HUB_TOKEN}" }
   },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "huggingface/meta-llama/Llama-3.1-8B-Instruct" }
-    }
-  }
+  "agent": { "default_model": "huggingface/meta-llama/Llama-3.1-8B-Instruct" }
 }
 ```
 
@@ -204,20 +167,15 @@ HUGGINGFACE_API_KEY=hf_...
 
 For any OpenAI-compatible API:
 
-```json5
+```json
 {
   "providers": {
     "custom": {
-      "baseUrl": "https://api.your-provider.com/v1",
-      "apiKey": "${YOUR_PROVIDER_API_KEY}",
-      "compatibility": "openai"
+      "base_url": "https://api.your-provider.com/v1",
+      "api_key": "${YOUR_PROVIDER_API_KEY}"
     }
   },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "custom/your-model-id" }
-    }
-  }
+  "agent": { "default_model": "custom/your-model-id" }
 }
 ```
 

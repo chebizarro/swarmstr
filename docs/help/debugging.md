@@ -16,7 +16,7 @@ Start here when something isn't working:
 ```bash
 swarmstr status          # Daemon health + relay connection status
 swarmstr health          # Quick health check (returns 0 if healthy)
-swarmstr logs --follow   # Real-time log stream
+swarmstr logs --lines 100  # Recent log lines
 swarmstr doctor          # Diagnostic check: config, keys, relay connectivity
 ```
 
@@ -25,9 +25,8 @@ swarmstr doctor          # Diagnostic check: config, keys, relay connectivity
 ### Agent not receiving DMs
 
 ```bash
-swarmstr relay list      # Show configured relays and connection state
-swarmstr relay ping wss://relay.damus.io  # Ping a specific relay
-swarmstr logs --follow   # Watch for relay connection errors
+swarmstr channels status   # Show configured channels and connection state
+swarmstr logs --lines 100  # Watch for relay connection errors
 ```
 
 Check:
@@ -47,20 +46,20 @@ Check:
 ### No response to DM
 
 ```bash
-swarmstr logs --follow   # Look for "Processing DM from..." or error lines
-swarmstr sessions --json | jq '.'  # Check session state
+swarmstr logs --lines 100          # Look for "Processing DM from..." or error lines
+swarmstr sessions list --json      # Check session state
 ```
 
 Common causes:
-- DM from unapproved sender (pairing mode: check for pairing challenge DM).
-- API key invalid or exhausted: check model provider status.
-- Agent timeout (default 600s): increase `agents.defaults.timeoutSeconds`.
+- DM from unapproved sender (pairing mode): sender gets a notice; add them to `dm.allow_from`.
+- API key invalid or exhausted: check model provider.
+- Agent timeout: the turn timed out; check logs for details.
 
 ### API errors
 
 ```bash
-swarmstr logs --follow  # Look for model provider errors
-swarmstr models status  # Check API key status
+swarmstr logs --lines 100  # Look for model provider errors
+swarmstr models list       # Check configured models
 ```
 
 Common errors:
@@ -76,27 +75,25 @@ See [Automation Troubleshooting](/automation/troubleshooting).
 
 | Method | Command/Path |
 | ------ | ------------ |
-| CLI | `swarmstr logs --follow` |
+| CLI | `swarmstr logs --lines 100` |
 | systemd | `journalctl -u swarmstrd -f` |
 | File | `~/.swarmstr/logs/swarmstrd.log` |
 
 ## Debug mode
 
-Enable verbose logging:
+Enable verbose logging for a specific session:
+
+```
+/set verbose on
+```
+
+For daemon-level verbosity, run swarmstrd in a terminal and watch stderr. To capture:
 
 ```bash
-SWARMSTR_LOG_LEVEL=debug swarmstrd
+swarmstrd 2>&1 | tee /tmp/swarmstrd-debug.log
 ```
 
-Or set in config:
 
-```json
-{
-  "log": {
-    "level": "debug"
-  }
-}
-```
 
 ## Common issues
 

@@ -145,6 +145,7 @@ fi
 echo "[my-hook] New command triggered"
 echo "  Session: $HOOK_SESSION_KEY"
 echo "  Timestamp: $HOOK_TIMESTAMP"
+echo "  Context: $HOOK_CONTEXT"
 ```
 
 #### Event Environment Variables
@@ -152,13 +153,23 @@ echo "  Timestamp: $HOOK_TIMESTAMP"
 For shell hooks, the event is delivered via env vars:
 
 ```
-HOOK_TYPE          # "command" | "session" | "agent" | "gateway" | "message"
-HOOK_ACTION        # e.g., "new", "reset", "stop", "received", "sent"
+HOOK_NAME          # Full event name (e.g., "command:new")
+HOOK_TYPE          # Event type (e.g., "command" | "session" | "agent" | "gateway" | "message")
+HOOK_ACTION        # Sub-action (e.g., "new", "reset", "stop", "received", "sent")
 HOOK_SESSION_KEY   # Session identifier (e.g., "agent:main:main")
-HOOK_TIMESTAMP     # RFC3339 timestamp
-HOOK_FROM_PUBKEY   # For Nostr events: sender npub/hex pubkey
+HOOK_TIMESTAMP     # RFC3339 timestamp (UTC)
+HOOK_CONTEXT       # JSON-encoded event context map (all event fields)
+```
+
+For Nostr message events, additional convenience variables are exported from the context map:
+
+```
+HOOK_FROM_PUBKEY   # Sender's Nostr pubkey (hex)
+HOOK_TO_PUBKEY     # Recipient's Nostr pubkey (hex)
+HOOK_EVENT_ID      # Nostr event ID (hex)
+HOOK_RELAY         # Relay URL the event arrived from
 HOOK_CHANNEL_ID    # Channel identifier (e.g., "nostr")
-HOOK_CONTENT       # Message content (for message events)
+HOOK_CONTENT       # Message content
 ```
 
 ## Event Types
@@ -267,7 +278,7 @@ swarmstr hooks list
 swarmstr hooks enable my-hook
 
 # Restart swarmstrd so hooks reload
-swarmstr gateway restart
+swarmstr daemon restart
 
 # Trigger the event — send /new via Nostr DM
 ```
@@ -605,7 +616,7 @@ journalctl -u swarmstrd -f
 2. Restart the daemon so hooks reload:
 
    ```bash
-   swarmstr gateway restart
+   swarmstr daemon restart
    ```
 
 3. Check daemon logs for errors:

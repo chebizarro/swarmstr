@@ -74,12 +74,12 @@ Or include it in a bootstrap config file (`~/.swarmstr/bootstrap.json`):
 swarmstrd
 ```
 
-The daemon binds an HTTP admin server (default `localhost:7423`) and a WebSocket gateway. These are drop-in replacements for the OpenClaw HTTP/WS surfaces.
+The daemon binds an HTTP admin server at the address set in `admin_listen_addr` in `bootstrap.json`.
 
-Check the daemon is up:
+Check the daemon is up (replace port with your `admin_listen_addr` port):
 
 ```sh
-curl -s http://localhost:7423/health | jq .
+curl -s http://127.0.0.1:7423/health | jq .
 ```
 
 ---
@@ -104,7 +104,7 @@ Swarmstr supports all top-level OpenClaw config sections. The mapping:
 | N/A | `agents[].fallback_models` | Ordered model fallback chain on error |
 | `plugins.*` | `plugins.*` (→ `extensions.*` internally) | mapped |
 | `session.*` | `session.*` | identical |
-| `heartbeat.*` | `heartbeat.*` | identical |
+| `heartbeat.*` | `extra.heartbeat.*` | moved under `extra` in Swarmstr |
 | `tts.*` | `tts.*` | identical |
 | `secrets.*` | `secrets.*` | identical |
 | `cron.*` | `cron.*` | identical |

@@ -26,12 +26,9 @@ web_search(query="latest Nostr NIP proposals")
 
 **Parameters:**
 - `query` (required): search query
-- `provider`: override the configured provider
-- `limit`: max results (default varies by provider)
-- `freshness`: filter by recency (`day`, `week`, `month`)
-- `language`: result language code
+- `count`: max results (default 10)
 
-Results are cached for 15 minutes by default.
+Provider is auto-detected from available API keys.
 
 ## `web_fetch`
 
@@ -43,10 +40,11 @@ web_fetch(url="https://github.com/nostr-protocol/nostr")
 
 **Parameters:**
 - `url` (required): URL to fetch
-- `format`: `"markdown"` (default) or `"text"`
-- `maxBytes`: limit response size
+- `max_chars` (optional, default 50000): truncation limit in characters
+- `timeout_seconds` (optional, default 30): request timeout
+- `allow_local` (optional, default false): allow loopback/private addresses
 
-`web_fetch` does a plain HTTP GET and extracts readable content. It does **not** execute JavaScript. Use the [Browser tool](/tools/browser) for JavaScript-heavy sites.
+`web_fetch` does a plain HTTP GET and extracts readable content (HTML tags stripped). It does **not** execute JavaScript.
 
 ## Search Provider Setup
 
@@ -54,100 +52,48 @@ web_fetch(url="https://github.com/nostr-protocol/nostr")
 
 swarmstr checks for API keys in this order:
 
-1. `BRAVE_API_KEY` → Brave Search
-2. `GEMINI_API_KEY` → Gemini with Google Search grounding
-3. `PERPLEXITY_API_KEY` → Perplexity Search
-4. `XAI_API_KEY` → Grok
+1. `BRAVE_SEARCH_API_KEY` → Brave Search
+2. `SERPER_API_KEY` → Serper (Google via Serper.dev)
 
-Configure explicitly:
-
-```json5
-{
-  "tools": {
-    "web": {
-      "search": {
-        "provider": "perplexity",
-        "apiKey": "${PERPLEXITY_API_KEY}"
-      }
-    }
-  }
-}
-```
-
-### Perplexity Search
-
-1. Create an account at [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api)
-2. Generate an API key
-3. Add to `~/.swarmstr/.env`:
-   ```
-   PERPLEXITY_API_KEY=pplx-...
-   ```
-
-See [Perplexity setup](/perplexity) for detailed config.
+Set the appropriate environment variable to enable the tool.
 
 ### Brave Search
 
 1. Sign up at [api.search.brave.com](https://api.search.brave.com)
 2. Generate an API key
-3. Add to `~/.swarmstr/.env`:
+3. Set in your environment:
    ```
-   BRAVE_API_KEY=BSA...
+   BRAVE_SEARCH_API_KEY=BSA...
    ```
 
 See [Brave Search setup](/brave-search) for detailed config.
 
-### Gemini (Google Search Grounding)
+### Serper (Google Search)
 
-```bash
-GEMINI_API_KEY=AI...
-```
-
-```json5
-{
-  "tools": {
-    "web": {
-      "search": {
-        "provider": "gemini"
-      }
-    }
-  }
-}
-```
+1. Sign up at [serper.dev](https://serper.dev)
+2. Generate an API key
+3. Set in your environment:
+   ```
+   SERPER_API_KEY=...
+   ```
 
 ## Configuration Reference
 
-```json5
-{
-  "tools": {
-    "web": {
-      "search": {
-        "enabled": true,
-        "provider": "perplexity",    // auto-detected if not set
-        "apiKey": "${PERPLEXITY_API_KEY}",
-        "cacheMinutes": 15,
-        "maxResults": 10,
-        "perplexity": {
-          "model": "sonar"
-        }
-      },
-      "fetch": {
-        "enabled": true,
-        "maxBytes": 500000,
-        "timeoutMs": 10000
-      }
-    }
-  }
-}
-```
+Web tools are configured via environment variables:
+
+| Variable | Provider | Notes |
+|----------|----------|---------|
+| `BRAVE_SEARCH_API_KEY` | Brave Search | First-choice if set |
+| `SERPER_API_KEY` | Serper (Google) | Fallback |
+
+There is no config-file section for web tools — just set the env var for the provider you want to use.
 
 ## Provider Comparison
 
 | Provider | Pros | API Key Env |
 |----------|------|-------------|
-| **Perplexity** | Structured results, freshness filters, domain filtering | `PERPLEXITY_API_KEY` |
-| **Brave** | Fast, privacy-focused | `BRAVE_API_KEY` |
-| **Gemini** | Google Search grounding, AI-synthesized | `GEMINI_API_KEY` |
-| **Grok** | xAI web-grounded responses | `XAI_API_KEY` |
+| **Brave** | Fast, privacy-focused, structured results | `BRAVE_SEARCH_API_KEY` |
+| **Serper** | Google Search results via Serper.dev | `SERPER_API_KEY` |
 
 ## Examples
 

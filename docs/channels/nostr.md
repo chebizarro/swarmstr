@@ -18,71 +18,77 @@ interoperability with the entire Nostr ecosystem.
 
 ## Quick setup
 
-1. Generate a Nostr keypair (if needed):
+1. Generate a Nostr keypair:
 
 ```bash
-# Using nak (recommended)
-nak key generate
-
-# Or generate in swarmstr
-swarmstr nostr key generate
+swarmstr keygen
+# nsec: nsec1...   (private key — keep secret)
+# npub: npub1...   (your agent's public identity)
 ```
 
-2. Add to config (`~/.swarmstr/config.json`):
+2. Create `~/.swarmstr/bootstrap.json`:
 
 ```json
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}"
-    }
-  }
+  "private_key": "${NOSTR_NSEC}",
+  "relays": [
+    "wss://relay.damus.io",
+    "wss://nos.lol"
+  ]
 }
 ```
 
 3. Export the key:
 
 ```bash
-export NOSTR_PRIVATE_KEY="nsec1..."
+export NOSTR_NSEC="nsec1..."
 ```
 
-4. Start or restart swarmstrd:
+4. Configure DM access control in the runtime config:
+
+```json
+{
+  "dm": {
+    "policy": "pairing"
+  }
+}
+```
+
+5. Start swarmstrd:
 
 ```bash
-systemctl restart swarmstrd
+swarmstrd
+# or: systemctl start swarmstrd
 ```
 
 ## Configuration reference
 
-| Key          | Type     | Default                                        | Description                         |
-| ------------ | -------- | ---------------------------------------------- | ----------------------------------- |
-| `privateKey` | string   | required                                       | Private key in `nsec` or hex format |
-| `relays`     | string[] | `['wss://relay.damus.io', 'wss://nos.lol']`   | Relay URLs (WebSocket)              |
-| `dmPolicy`   | string   | `pairing`                                      | DM access policy                    |
-| `allowFrom`  | string[] | `[]`                                           | Allowed sender pubkeys (npub/hex)   |
-| `enabled`    | boolean  | `true`                                         | Enable/disable channel              |
+Nostr configuration is split between the **bootstrap config** (local file, startup-only) and the **runtime config** (stored on Nostr, hot-reloadable).
+
+### Bootstrap config (`bootstrap.json`)
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `private_key` | string | nsec or hex private key |
+| `relays` | string[] | Nostr relay WebSocket URLs |
+| `signer_url` | string | Alternative: bunker URL or env:// reference |
+| `enable_nip44` | bool | Enable NIP-44 encryption (recommended) |
+| `enable_nip17` | bool | Enable NIP-17 gift-wrapped DMs |
+
+### Runtime config (ConfigDoc)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dm.policy` | string | `pairing` | DM access policy |
+| `dm.allow_from` | string[] | `[]` | Allowed sender pubkeys (npub/hex) |
+| `relays.read` | string[] | from bootstrap | Override read relays |
+| `relays.write` | string[] | from bootstrap | Override write relays |
 
 ## Profile metadata
 
-Profile data is published as a NIP-01 `kind:0` event when swarmstrd starts.
+Profile data (name, about, picture) is set in the agent's `IDENTITY.md` workspace file. The agent reads it at startup and can use the `nostr_profile` tool to update its kind:0 event on the network.
 
-```json
-{
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "profile": {
-        "name": "myagent",
-        "displayName": "My swarmstr Agent",
-        "about": "Personal AI assistant via Nostr DMs",
-        "picture": "https://example.com/avatar.png",
-        "nip05": "agent@example.com",
-        "lud16": "agent@example.com"
-      }
-    }
-  }
-}
-```
+See [Agent Workspace](/concepts/agent-workspace) for the IDENTITY.md format.
 
 ## Access control
 
@@ -90,19 +96,16 @@ Profile data is published as a NIP-01 `kind:0` event when swarmstrd starts.
 
 - **pairing** (default): unknown senders get a pairing code DM. They reply with the code to gain access.
 - **allowlist**: only npubs in `allowFrom` can DM the agent.
-- **open**: public inbound DMs (set `allowFrom: ["*"]`). Use with caution.
+- **open**: public inbound DMs (anyone can DM). Use with caution.
 - **disabled**: ignore all inbound DMs.
 
 ### Allowlist example
 
 ```json
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "dmPolicy": "allowlist",
-      "allowFrom": ["npub1abc...", "npub1xyz..."]
-    }
+  "dm": {
+    "policy": "allowlist",
+    "allow_from": ["npub1abc...", "npub1xyz..."]
   }
 }
 ```
@@ -110,10 +113,9 @@ Profile data is published as a NIP-01 `kind:0` event when swarmstrd starts.
 ### Pairing flow
 
 1. Unknown npub sends a DM to the agent.
-2. Agent replies with a 6-digit pairing code.
-3. User replies with the code.
-4. Agent approves and starts the conversation.
-5. Approval is persisted; subsequent DMs from that npub are allowed immediately.
+2. Agent sends them a notification: _"Your message was received, but this node requires pairing approval before processing DMs."_
+3. The agent operator adds their npub to `dm.allow_from` (via the CLI or a control DM from an admin key).
+4. The next message from that npub is processed normally.
 
 ## Key formats
 
@@ -124,21 +126,17 @@ Profile data is published as a NIP-01 `kind:0` event when swarmstrd starts.
 
 Defaults: `wss://relay.damus.io` and `wss://nos.lol`.
 
-Recommended configuration for reliability:
+Recommended configuration for reliability (in `bootstrap.json`):
 
 ```json
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "relays": [
-        "wss://relay.damus.io",
-        "wss://relay.primal.net",
-        "wss://nostr.wine",
-        "wss://nos.lol"
-      ]
-    }
-  }
+  "private_key": "${NOSTR_NSEC}",
+  "relays": [
+    "wss://relay.damus.io",
+    "wss://relay.primal.net",
+    "wss://nostr.wine",
+    "wss://nos.lol"
+  ]
 }
 ```
 
@@ -196,12 +194,8 @@ docker run -p 7777:7777 ghcr.io/hoytech/strfry
 
 ```json
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "relays": ["ws://localhost:7777"]
-    }
-  }
+  "private_key": "${NOSTR_NSEC}",
+  "relays": ["ws://localhost:7777"]
 }
 ```
 
@@ -225,12 +219,12 @@ swarmstr dm-send --to <agent-npub> --text "Hello!"
 - Verify the private key is valid (`nak key public <nsec>` should show the correct npub).
 - Ensure relay URLs are reachable (`swarmstr relay ping <url>`).
 - Check swarmstrd logs for relay connection errors.
-- Confirm `dmPolicy` is not `disabled`.
+- Confirm `dm.policy` is not `disabled`.
 
 ### Not sending responses
 
 - Verify the sending relay accepts writes (some relays are read-only).
-- Check `swarmstr logs --follow` for relay write errors.
+- Check `swarmstr logs --lines 100` for relay write errors.
 
 ### Duplicate responses
 
@@ -239,7 +233,7 @@ swarmstr dm-send --to <agent-npub> --text "Hello!"
 
 ## Security
 
-- **Never commit nsec keys.** Use environment variables or `${NOSTR_PRIVATE_KEY}`.
-- Use `dmPolicy: "allowlist"` for production bots.
+- **Never commit nsec keys.** Use environment variables or `${NOSTR_NSEC}` references in bootstrap config.
+- Use `dm.policy: "allowlist"` for production bots.
 - NIP-17 gift-wrap DMs provide better metadata privacy than NIP-04.
 - Consider using a dedicated keypair for the agent (separate from personal Nostr identity).

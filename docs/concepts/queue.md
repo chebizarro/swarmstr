@@ -30,8 +30,8 @@ This prevents context corruption from concurrent turns.
 Different sessions run concurrently:
 
 ```
-Session A (agent:main:main) → turn 1 running
-Session B (agent:main:npub1alice...) → turn 1 running (simultaneously)
+Session A (alice's pubkey hex) → turn 1 running
+Session B (bob's pubkey hex)   → turn 1 running (simultaneously)
 ```
 
 The `controlDMBus` routes messages to the correct session goroutine.
@@ -49,47 +49,29 @@ User sends 3 messages quickly:
 After 300ms → single turn with concatenated messages
 ```
 
-Configure:
+Configure via `extra.messages.inbound.debounce_ms`:
 
-```json5
+```json
 {
-  "agents": {
-    "defaults": {
-      "dmDebounceMs": 300
+  "extra": {
+    "messages": {
+      "inbound": {
+        "debounce_ms": 300
+      }
     }
   }
 }
 ```
+
+Default is 0 (no debounce — each DM is processed immediately).
 
 ## Queue Limits
 
-To prevent memory exhaustion from message floods:
-
-```json5
-{
-  "agents": {
-    "defaults": {
-      "queueMaxSize": 100     // max queued messages per session
-    }
-  }
-}
-```
-
-Messages exceeding the queue limit are dropped and logged.
+The in-memory queue per session is bounded to prevent memory exhaustion. Messages that arrive when the queue is full are dropped with a "still processing" reply to the user.
 
 ## Turn Timeout
 
-```json5
-{
-  "agents": {
-    "defaults": {
-      "timeoutSeconds": 300   // kill a turn that runs > 5 minutes
-    }
-  }
-}
-```
-
-Long-running turns (e.g., complex multi-step tool chains) may hit the timeout. Increase it for complex use cases.
+Turns time out after 120 seconds by default. Long tool chains respect individual tool timeouts (e.g. exec defaults to 30 seconds per command).
 
 ## Goroutine Architecture
 
@@ -115,7 +97,7 @@ Ongoing turns can be aborted:
 
 ```bash
 # Via CLI
-swarmstr gateway call agent.abort --params '{"sessionKey":"agent:main:main"}'
+swarmstr gw agent.abort --params '{"sessionKey":"agent:main:main"}'
 ```
 
 This sends a context cancellation to the running turn. The agent stops gracefully and acknowledges the abort.

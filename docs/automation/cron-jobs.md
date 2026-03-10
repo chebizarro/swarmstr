@@ -1,174 +1,161 @@
 ---
 summary: "Cron jobs for the swarmstr scheduler"
 read_when:
-  - Scheduling background jobs or wakeups
+  - Scheduling background jobs or recurring agent tasks
   - Deciding between heartbeat and cron for scheduled tasks
 title: "Cron Jobs"
 ---
 
-# Cron jobs (swarmstr scheduler)
+# Cron Jobs (swarmstr Scheduler)
 
 > **Cron vs Heartbeat?** See [Cron vs Heartbeat](/automation/cron-vs-heartbeat) first.
 
-Cron is swarmstr's built-in scheduler. It persists jobs, wakes the agent at the right time,
-and can deliver output to a Nostr DM or other channel.
+Cron is swarmstr's built-in scheduler. Jobs are persisted to Nostr (via the transcript repository), so they survive daemon restarts. When a job fires, it calls a specified gateway method with specified params.
 
-## TL;DR
+## Quick Start
 
-- Cron runs **inside swarmstrd** (not inside the model).
-- Jobs persist under `~/.swarmstr/cron/jobs.json`.
-- Two execution styles:
-  - **Main session**: enqueue a system event, run on the next heartbeat.
-  - **Isolated**: run a dedicated agent turn in `cron:<jobId>`.
-- Delivery: send a DM summary to a Nostr npub or other channel.
+Enable cron in the ConfigDoc:
 
-## Quick start
-
-One-shot reminder:
-
-```bash
-swarmstr cron add \
-  --name "Reminder" \
-  --at "2026-03-15T16:00:00Z" \
-  --session main \
-  --system-event "Reminder: check the deploy" \
-  --wake now \
-  --delete-after-run
+```json5
+{
+  "cron": {
+    "enabled": true
+  }
+}
 ```
 
-Recurring isolated job with Nostr delivery:
+Then add a job:
 
 ```bash
+# Daily morning message to the agent at 7am
 swarmstr cron add \
-  --name "Morning brief" \
-  --cron "0 7 * * *" \
-  --tz "America/New_York" \
-  --session isolated \
-  --message "Summarize overnight updates." \
-  --announce \
-  --channel nostr \
-  --to "npub1youknpub..."
+  --id morning-brief \
+  --schedule "0 7 * * *" \
+  --message "Generate today's briefing: what's on the calendar, any urgent messages?" \
+  --agent main
+
+# Every 4 hours
+swarmstr cron add \
+  --id health-check \
+  --schedule "@every 4h" \
+  --message "Run a quick health check on all systems."
 ```
 
-## Main vs isolated execution
-
-### Main session jobs (system events)
-
-Main jobs enqueue a system event and optionally wake the heartbeat runner.
-
-```bash
-swarmstr cron add \
-  --name "Check project" \
-  --every "4h" \
-  --session main \
-  --system-event "Time for a project health check" \
-  --wake now
-```
-
-### Isolated jobs (dedicated cron sessions)
-
-Isolated jobs run a dedicated agent turn in session `cron:<jobId>`.
-Each run starts fresh — no prior conversation carry-over.
-
-```bash
-swarmstr cron add \
-  --name "Deep analysis" \
-  --cron "0 6 * * 0" \
-  --tz "UTC" \
-  --session isolated \
-  --message "Weekly codebase analysis..." \
-  --model opus \
-  --thinking high \
-  --announce \
-  --channel nostr \
-  --to "npub1..."
-```
-
-## Schedules
-
-Three schedule kinds:
-
-- `--at "2026-03-15T16:00:00Z"` — one-shot timestamp (ISO 8601, UTC if no timezone).
-- `--every "4h"` — fixed interval (human duration string).
-- `--cron "0 7 * * *"` — 5-field cron expression with optional `--tz`.
-
-One-shot jobs auto-delete after success by default (`--delete-after-run` explicit, or `--keep` to preserve).
-
-## CLI reference
+## CLI Reference
 
 ```bash
 # List all cron jobs
 swarmstr cron list
 
-# Run a job immediately
-swarmstr cron run <jobId>
+# Add a job (see flags below)
+swarmstr cron add --id <id> --schedule <expr> --message <text> [--agent <id>]
 
-# Show run history
-swarmstr cron runs --id <jobId> --limit 20
+# Run a job immediately (ignores schedule)
+swarmstr cron run <job-id>
 
-# Edit a job
-swarmstr cron edit <jobId> --message "Updated prompt" --model "sonnet"
-
-# Delete a job
-swarmstr cron remove <jobId>
-
-# Immediate system event (no job)
-swarmstr system event --mode now --text "Next heartbeat: check battery."
+# Remove a job
+swarmstr cron remove <job-id>
 ```
 
-## Delivery options
+### swarmstr cron add Flags
 
-| Mode      | What happens                                              |
-| --------- | --------------------------------------------------------- |
-| `announce`| Send summary to configured channel/to target (default)   |
-| `webhook` | POST finished event JSON to a URL                        |
-| `none`    | Internal only — no external delivery                     |
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--schedule` | Yes | Cron schedule expression (see below) |
+| `--message` | Yes* | Message to send to the agent |
+| `--method` | Yes* | Gateway method to call instead of agent message |
+| `--id` | No | Job ID (auto-generated if omitted) |
+| `--agent` | No | Agent ID to target (default: `main`) |
+| `--params` | No | Raw JSON params for `--method` |
+| `--enabled` | No | Enable immediately (default: `true`) |
 
-Delivery channels: `nostr` (primary), `discord`, `telegram`, `slack`, or `last`.
+*Either `--message` or `--method` is required.
 
-## Agent selection (multi-agent)
+### Advanced: Direct Method Call
+
+For full control, use `--method` and `--params` directly to call any gateway method on schedule:
 
 ```bash
-# Pin a job to a specific agent
-swarmstr cron add --name "Ops sweep" --cron "0 6 * * *" --session isolated \
-  --message "Check ops queue" --agent ops
-
-# Change agent on existing job
-swarmstr cron edit <jobId> --agent ops
-swarmstr cron edit <jobId> --clear-agent
+# Call any gateway method
+swarmstr cron add \
+  --id weekly-review \
+  --schedule "0 9 * * 1" \
+  --method agent \
+  --params '{"text": "Weekly project review: summarize progress and blockers."}'
 ```
 
-## Storage and retention
+## Schedule Expressions
 
-- Job store: `~/.swarmstr/cron/jobs.json`
-- Run history: `~/.swarmstr/cron/runs/<jobId>.jsonl`
-- Isolated run sessions pruned by `cron.sessionRetention` (default `24h`).
+Three formats are supported:
+
+### 5-Field Cron Expression
+
+```
+┌─ minute (0-59)
+│ ┌─ hour (0-23)
+│ │ ┌─ day of month (1-31)
+│ │ │ ┌─ month (1-12)
+│ │ │ │ ┌─ day of week (0-6, Sunday=0)
+* * * * *
+```
+
+Examples:
+- `0 7 * * *` — daily at 7am
+- `0 7 * * 1` — Mondays at 7am
+- `*/15 * * * *` — every 15 minutes
+
+### Shorthands
+
+| Shorthand | Equivalent |
+|-----------|-----------|
+| `@hourly` | `0 * * * *` |
+| `@daily` / `@midnight` | `0 0 * * *` |
+| `@weekly` | `0 0 * * 0` |
+| `@monthly` | `0 0 1 * *` |
+
+### @every Duration
+
+```bash
+@every 30m       # every 30 minutes
+@every 4h        # every 4 hours
+@every 1h30m     # every 90 minutes
+```
+
+## Job Persistence
+
+Cron jobs are persisted to Nostr via the transcript repository (not local files). Jobs survive daemon restarts and are loaded at startup from the agent's Nostr state.
 
 ## Configuration
 
-```json
+```json5
 {
   "cron": {
-    "enabled": true,
-    "store": "~/.swarmstr/cron/jobs.json",
-    "maxConcurrentRuns": 1,
-    "sessionRetention": "24h",
-    "runLog": {
-      "maxBytes": "2mb",
-      "keepLines": 2000
-    }
+    "enabled": true   // false to disable all cron jobs
   }
 }
 ```
 
-Disable cron: `SWARMSTR_SKIP_CRON=1` or `cron.enabled: false`.
+Disable cron by setting `enabled: false` (or removing `cron.enabled`).
 
-## Retry policy
+## Cron and Agents
 
-- **Transient errors** (rate limit, network, 5xx): exponential backoff up to 3 attempts.
-- **Permanent errors** (invalid API key, config): disable job immediately.
-- **Recurring jobs**: backoff applied; resets on next successful run.
+The `--agent` flag (or `session_id` in params) specifies which agent processes the triggered message. Leave it as `main` for single-agent setups, or set to a specific agent ID from `agents[]` in multi-agent setups.
 
 ## Troubleshooting
 
-See [Automation Troubleshooting](/automation/troubleshooting).
+```bash
+# Check job list
+swarmstr cron list
+
+# Trigger a job manually to test
+swarmstr cron run <job-id>
+
+# Check daemon logs for cron activity
+swarmstr logs --lines 100 --level info
+```
+
+## See Also
+
+- [Cron vs Heartbeat](/automation/cron-vs-heartbeat)
+- [Heartbeat](/gateway/heartbeat)
+- [Configuration](/gateway/configuration)

@@ -32,19 +32,15 @@ ollama pull mistral-nemo
 
 ## Configure swarmstr
 
-```json5
+```json
 {
   "providers": {
     "ollama": {
-      "baseUrl": "http://localhost:11434"
+      "base_url": "http://localhost:11434"
     }
   },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "ollama/llama3.3"
-      }
-    }
+  "agent": {
+    "default_model": "ollama/llama3.3"
   }
 }
 ```
@@ -55,11 +51,11 @@ No API key needed.
 
 If Ollama runs on another machine (e.g., a beefy desktop):
 
-```json5
+```json
 {
   "providers": {
     "ollama": {
-      "baseUrl": "http://192.168.1.100:11434"
+      "base_url": "http://192.168.1.100:11434"
     }
   }
 }
@@ -67,11 +63,11 @@ If Ollama runs on another machine (e.g., a beefy desktop):
 
 Or via Tailscale:
 
-```json5
+```json
 {
   "providers": {
     "ollama": {
-      "baseUrl": "http://mymachine.tail1234.ts.net:11434"
+      "base_url": "http://mymachine.tail1234.ts.net:11434"
     }
   }
 }

@@ -29,24 +29,35 @@ The delay is jittered ±25% to prevent thundering herd when multiple sessions hi
 
 ### API Key Rotation on Error
 
-If multiple Anthropic API keys are configured:
+If multiple Anthropic API keys are configured via `providers.anthropic.api_keys`:
 
-```bash
-ANTHROPIC_API_KEYS=sk-ant-key1,sk-ant-key2,sk-ant-key3
+```json
+{
+  "providers": {
+    "anthropic": {
+      "api_keys": ["${ANTHROPIC_KEY_1}", "${ANTHROPIC_KEY_2}", "${ANTHROPIC_KEY_3}"]
+    }
+  }
+}
 ```
 
 A failed key is moved to the back of the rotation. The next available key is tried immediately (no delay). See [Models](models.md#api-key-rotation).
 
 ### Model Fallback
 
-After exhausting retries on the primary model, the agent tries each model in `modelFallbacks`:
+After exhausting retries on the primary model, the agent tries each model in `fallback_models`:
 
 ```json
 {
-  "model": "claude-opus-4-5",
-  "modelFallbacks": [
-    "claude-sonnet-4-5",
-    "openrouter/anthropic/claude-opus-4-5"
+  "agents": [
+    {
+      "id": "main",
+      "model": "claude-opus-4-5",
+      "fallback_models": [
+        "claude-sonnet-4-5",
+        "openrouter/anthropic/claude-opus-4-5"
+      ]
+    }
   ]
 }
 ```
@@ -92,17 +103,7 @@ Certain tools have their own retry logic:
 
 Each agent turn has a maximum wall-clock duration. If a turn exceeds this limit (e.g., a tool hangs), the turn is aborted and a timeout message is sent to the user.
 
-```json
-{
-  "extra": {
-    "agent": {
-      "turnTimeoutSeconds": 120
-    }
-  }
-}
-```
-
-Default: 120 seconds. Increase for long-running research tasks, but be aware this blocks the session queue.
+The turn timeout is hardcoded at 120 seconds. Long-running tool operations respect individual tool timeouts (e.g. shell exec defaults to 30 seconds).
 
 ## Error Messages to Users
 
@@ -121,15 +122,13 @@ If a relay consistently fails, it is placed in a temporary "circuit open" state 
 
 ## Debugging Retries
 
-Enable verbose logging to see retry attempts:
+Enable verbose per-session logging by setting the session verbose flag:
 
-```json
-{
-  "logLevel": "debug"
-}
+```
+/set verbose on
 ```
 
-Log output for a retry:
+Or check daemon stdout/stderr for retry log lines:
 
 ```
 [WARN] LLM call failed (attempt 1/3): 529 overloaded, retrying in 1.2s

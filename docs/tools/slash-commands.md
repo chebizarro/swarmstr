@@ -55,11 +55,10 @@ Show agent status: session info, context size, Nostr relay connections, heartbea
 ```
 
 ### `/context list`
-List all bootstrap files currently injected into the session (AGENTS.md, SOUL.md, etc.).
+List workspace bootstrap files and whether they exist on disk (AGENTS.md, SOUL.md, etc.).
 
 ```
 /context list
-/context detail
 ```
 
 ## Configuration commands
@@ -68,8 +67,10 @@ List all bootstrap files currently injected into the session (AGENTS.md, SOUL.md
 Set a session-scoped configuration value.
 
 ```
-/set model anthropic/claude-opus-4-6
-/set thinking high
+/set model anthropic/claude-opus-4-5
+/set thinking on
+/set verbose on
+/set label My research session
 ```
 
 ### `/unset`
@@ -93,14 +94,16 @@ Export the current session transcript to a file in the workspace.
 ## Focus commands
 
 ### `/focus`
-Focus the agent's attention on a specific topic or context. Injects the focus text as a persistent system note.
+Route the current session to a named registered agent. Use with no argument to see which agent is currently focused.
 
 ```
-/focus The current task is migrating the database schema
+/focus research
+/focus coding
+/focus          # show current focus
 ```
 
 ### `/unfocus`
-Clear the current focus.
+Reset session routing back to the default agent.
 
 ```
 /unfocus
@@ -109,38 +112,65 @@ Clear the current focus.
 ## Agent management
 
 ### `/spawn`
-Spawn a subagent for a specific task. The subagent runs in an isolated session.
+Route the current session to a named registered agent (same as `/focus`). Optionally include initial instructions that are shown in the confirmation.
 
 ```
-/spawn Run the test suite and report failures
-/spawn --agent coding Run the coding review
+/spawn coding
+/spawn research Review the latest Nostr NIP proposals
+```
+
+### `/agents`
+List all registered agent IDs.
+
+```
+/agents
 ```
 
 ### `/stop`
-Abort the current running agent turn and clear the queue.
+Abort the current running agent turn. Alias for `/kill`.
 
 ```
 /stop
+/kill
 ```
 
-## Reasoning
+## Thinking
 
-### `/reasoning on` / `/reasoning off`
-Toggle inclusion of model reasoning/thinking in replies (for models that support extended thinking).
+### `/set thinking on` / `/set thinking off`
+Enable or disable extended thinking mode for Anthropic Claude models. Thinking gives the model additional token budget to reason through complex problems before responding.
 
 ```
-/reasoning on
-/reasoning off
+/set thinking on
+/set thinking off
 ```
+
+To disable:
+
+```
+/unset thinking
+```
+
+See [Thinking Mode](/tools/thinking) for thinking levels and per-agent configuration.
 
 ## Sending
 
 ### `/send on` / `/send off`
-Control whether replies are delivered for this session.
+Control whether replies are delivered for this session. Useful for background work where you don't want notifications.
 
 ```
-/send off   # suppress all replies (useful for quiet background work)
+/send off   # suppress all reply delivery
 /send on    # re-enable delivery
+```
+
+Note: `/send` state is not carried over when you start a new session with `/new`.
+
+## Help
+
+### `/help`
+List all registered slash commands.
+
+```
+/help
 ```
 
 ## Tips
@@ -149,3 +179,4 @@ Control whether replies are delivered for this session.
 - Unknown slash commands are passed through to the agent as regular text.
 - `/new <model>` accepts model aliases (e.g. `opus`, `sonnet`) or full provider/model strings.
 - `/compact` is especially useful after long coding sessions or research threads.
+- `/stop` and `/kill` are equivalent — both abort the in-flight turn.

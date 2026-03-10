@@ -54,22 +54,40 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
         state: directory
         mode: '0700'
 
+    - name: Deploy bootstrap.json
+      template:
+        src: templates/bootstrap.json.j2
+        dest: "{{ swarmstr_home }}/bootstrap.json"
+        mode: '0600'
+
     - name: Deploy config.json
       template:
         src: templates/config.json.j2
         dest: "{{ swarmstr_home }}/config.json"
         mode: '0600'
 
-    - name: Deploy .env file
+    - name: Deploy env file
       template:
         src: templates/env.j2
-        dest: "{{ swarmstr_home }}/.env"
+        dest: "{{ swarmstr_home }}/env"
         mode: '0600'
 
+    - name: Create systemd user directory
+      file:
+        path: "{{ ansible_env.HOME }}/.config/systemd/user"
+        state: directory
+        mode: '0755'
+
     - name: Install systemd service
-      command: "{{ ansible_env.HOME }}/.local/bin/swarmstrd gateway install"
-      args:
-        creates: "{{ ansible_env.HOME }}/.config/systemd/user/swarmstrd.service"
+      template:
+        src: templates/swarmstrd.service.j2
+        dest: "{{ ansible_env.HOME }}/.config/systemd/user/swarmstrd.service"
+        mode: '0644'
+
+    - name: Reload systemd user daemon
+      systemd:
+        daemon_reload: yes
+        scope: user
 
     - name: Start swarmstrd service
       systemd:
@@ -79,25 +97,44 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
         scope: user
 ```
 
-### Config Template
+### Config Templates
 
-```json5
+```json
+// templates/bootstrap.json.j2
+{
+  "private_key": "${NOSTR_PRIVATE_KEY}",
+  "relays": {{ swarmstr_relays | to_json }},
+  "admin_listen_addr": "127.0.0.1:7423",
+  "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
+}
+```
+
+```json
 // templates/config.json.j2
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "relays": {{ swarmstr_relays | to_json }},
-      "dmPolicy": "allowlist",
-      "allowFrom": {{ swarmstr_allowlist | to_json }}
-    }
-  },
+  "agent": { "default_model": "anthropic/claude-opus-4-6" },
   "providers": {
-    "anthropic": {
-      "apiKey": "${ANTHROPIC_API_KEY}"
-    }
-  }
+    "anthropic": { "api_key": "${ANTHROPIC_API_KEY}" }
+  },
+  "dm": { "policy": "allowlist", "allow_from": {{ swarmstr_allowlist | to_json }} }
 }
+```
+
+```ini
+# templates/swarmstrd.service.j2
+[Unit]
+Description=swarmstr AI agent daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={{ ansible_env.HOME }}/.local/bin/swarmstrd
+Restart=on-failure
+RestartSec=5
+EnvironmentFile={{ ansible_env.HOME }}/.swarmstr/env
+
+[Install]
+WantedBy=default.target
 ```
 
 ### Secrets with Ansible Vault
@@ -160,9 +197,7 @@ in
         RestartSec = "10s";
       };
 
-      environment = {
-        SWARMSTR_CONFIG = cfg.configFile;
-      };
+      environment = {};
     };
   };
 }
@@ -178,7 +213,7 @@ in
   services.swarmstr = {
     enable = true;
     configFile = /etc/swarmstr/config.json;
-    envFile = /etc/swarmstr/.env;
+    envFile = /etc/swarmstr/env;
   };
 }
 ```

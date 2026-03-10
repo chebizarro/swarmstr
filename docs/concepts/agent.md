@@ -7,26 +7,26 @@ The swarmstr **agent** is the core runtime that receives messages, manages conte
 In swarmstr, "the agent" refers to the running instance of the AI assistant. It:
 
 - Listens for inbound Nostr DMs (and DVM jobs)
-- Maintains per-session conversation history
+- Maintains per-session conversation history (stored as encrypted Nostr events)
 - Assembles a system prompt from workspace files
 - Calls an LLM (Anthropic Claude by default) with tool use
 - Executes tools (shell, browser, nostr, canvas, …)
-- Sends replies back via Nostr
+- Sends replies back via Nostr DM
 
-A single `swarmstrd` process runs one agent, identified by its Nostr public key (`npub`). Multiple agents can run on the same machine using `--profile` to isolate their configurations.
+A single `swarmstrd` process runs one agent, identified by its Nostr public key (`npub`). Multiple agents can run on the same machine using separate config files (via `--bootstrap` flag) to isolate their configurations.
 
 ## Agent Identity
 
-The agent has two key files in `~/.swarmstr/workspace/`:
+The agent has key files in `~/.swarmstr/workspace/`:
 
 | File | Purpose |
 |------|---------|
 | `SOUL.md` | Permanent personality and values |
 | `IDENTITY.md` | Nostr identity — npub, name, NIP-05 handle |
 | `AGENTS.md` | Operating instructions, tool policies, memory rules |
-| `USER.md` | Per-user context (auto-updated by memory hooks) |
+| `USER.md` | Per-user context (updated by memory hooks) |
 
-These files are loaded into the system prompt on every turn. The agent's Nostr private key (`nsec`) lives in `config.json` or is referenced via `${SWARMSTR_NSEC}`.
+These files are loaded into the system prompt on every turn. The agent's Nostr private key lives in the bootstrap config (`~/.swarmstr/bootstrap.json`), or is referenced via a `signer_url` (e.g. `env://NOSTR_PRIVATE_KEY`).
 
 ## Turn Lifecycle
 
@@ -41,14 +41,15 @@ controlDMBus.Dispatch(fromPubKey, text, eventID, createdAt)
        ▼
 dmRunAgentTurn(ctx, fromPubKey, text, eventID, createdAt, replyFn)
        │
-       ├─ Load session history (SessionStore)
-       ├─ Assemble system prompt (bootstrap files)
-       ├─ Call LLM with tool definitions
+       ├─ Slash command? → handle directly, skip LLM
+       ├─ Load session history (TranscriptRepository → Nostr)
+       ├─ Assemble system prompt (workspace .md files)
+       ├─ Build Turn{UserText, Context, History, Tools, ThinkingBudget}
        │       │
        │       ├─ LLM returns text → replyFn (Nostr DM back)
        │       └─ LLM returns tool_use → execute tool → loop
        │
-       └─ Persist updated session (JSONL transcript)
+       └─ Persist new entries to TranscriptRepository
 ```
 
 The agent loops until the LLM produces a final text response (no more tool calls).
@@ -62,67 +63,93 @@ The agent workspace at `~/.swarmstr/workspace/` is the agent's "home":
 ├── AGENTS.md          # Operating rules (loaded every turn)
 ├── SOUL.md            # Personality
 ├── IDENTITY.md        # Nostr identity
-├── BOOT.md            # Boot message (shown once on start)
+├── BOOT.md            # Boot message (shown on first turn)
 ├── BOOTSTRAP.md       # Extra context injected into every prompt
 ├── HEARTBEAT.md       # Periodic self-check script
 ├── TOOLS.md           # Tool usage guidance
 ├── memory/            # Persistent memory files (USER.md, etc.)
-└── skills/            # Skill definitions (SKILL.md + handlers)
+├── skills/            # Skill definitions (SKILL.md + handlers)
+└── hooks/             # Workspace-local hooks (HOOK.md + handler.sh)
 ```
 
-Any `.md` file placed in the workspace root (or `memory/`) can be referenced by hooks to inject context dynamically.
+Any `.md` file placed in the workspace root or `memory/` is loaded as context.
 
 ## Session Isolation
 
-Each conversation partner gets their own **session** keyed by scope:
+Each conversation partner gets their own **session** keyed by their Nostr public key. Sessions are stored as encrypted Nostr events in the transcript repository. A local `~/.swarmstr/sessions.json` tracks per-session flags and token counts.
 
 ```
-agent:<agentId>:<dmScope>
+agent:<agentId>:<senderPubKey>
 ```
 
-Where `dmScope` defaults to the sender's public key. Sessions are stored as JSONL transcripts and loaded into context on each turn. Sessions from different senders never mix.
+Sessions from different senders never mix.
 
 ## Sub-agents
 
-An agent can spawn sub-agents via `/spawn <name>` (ACP — Agent Control Protocol). The sub-agent runs as a separate session with its own context:
-
-```
-agent:<agentId>:<parentScope>:<subagentName>
-```
-
-Sub-agents communicate back to the parent via the same Nostr DM channel. See [Sub-agents](../tools/subagents.md).
+An agent can route sessions to different registered agents via the `/focus` and `/spawn` slash commands, or delegate tasks to peer agents via the `acp_delegate` tool. See [Sub-agents](../tools/subagents.md).
 
 ## Configuration
 
-Key agent settings in `config.json`:
+Key agent settings in the bootstrap config (`~/.swarmstr/bootstrap.json`):
 
 ```json
 {
-  "model": "claude-opus-4-5",
-  "thinkingLevel": "medium",
-  "maxTokens": 16000,
-  "dmScope": "pubkey",
-  "skipBootstrap": false,
+  "private_key": "${NOSTR_PRIVATE_KEY}",
+  "relays": ["wss://relay.damus.io", "wss://nos.lol"],
+  "admin_listen_addr": "127.0.0.1:8787",
+  "admin_token": "${ADMIN_TOKEN}"
+}
+```
+
+Per-agent model and behaviour settings live in the **runtime config** (`~/.swarmstr/config.json`, loaded via `swarmstr config import --file config.json`):
+
+```json
+{
+  "agent": {
+    "default_model": "claude-opus-4-5",
+    "thinking": "medium"
+  },
+  "session": {
+    "history_limit": 100,
+    "prune_after_days": 30,
+    "prune_on_boot": true
+  },
   "extra": {
-    "agent": {
-      "heartbeatInterval": "1h",
-      "memoryHook": true
-    }
+    "heartbeat": { "enabled": true, "interval_seconds": 3600 }
   }
 }
 ```
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `model` | `claude-opus-4-5` | LLM model to use |
-| `thinkingLevel` | `"medium"` | Extended thinking budget |
-| `maxTokens` | 16000 | Max output tokens per turn |
-| `dmScope` | `"pubkey"` | Session isolation key strategy |
-| `skipBootstrap` | `false` | Skip loading workspace `.md` files |
+Per-agent configuration (for multi-agent setups) lives in the `agents[]` array:
+
+```json
+{
+  "agents": [
+    {
+      "id": "researcher",
+      "model": "claude-opus-4-5",
+      "thinking_level": "high",
+      "tool_profile": "minimal",
+      "fallback_models": ["claude-sonnet-4-5"]
+    }
+  ]
+}
+```
+
+| AgentConfig Field | Type | Description |
+|---|---|---|
+| `id` | string | Unique agent identifier |
+| `model` | string | Model to use (e.g. `claude-opus-4-5`) |
+| `thinking_level` | string | `off`/`minimal`/`low`/`medium`/`high`/`xhigh` |
+| `tool_profile` | string | `minimal`/`coding`/`messaging`/`full` |
+| `fallback_models` | []string | Ordered list of fallback models |
+| `max_context_tokens` | int | Approximate context token budget (default: 100 000) |
+| `enabled_tools` | []string | Allowlist of tool names (empty = all tools) |
 
 ## See Also
 
 - [System Prompt](system-prompt.md) — how context is assembled
-- [Session Management](../reference/session-management-compaction.md) — JSONL transcripts, compaction
+- [Session Management](../reference/session-management-compaction.md) — transcript storage, compaction
 - [Models](models.md) — model selection and failover
 - [Hooks](../automation/hooks.md) — event-driven extensions
+- [Thinking](../tools/thinking.md) — extended thinking configuration

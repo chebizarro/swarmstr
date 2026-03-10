@@ -49,11 +49,10 @@ Some context is injected fresh each turn:
 
 ## System Prompt Size
 
-Monitor system prompt size to avoid context limit issues:
+Monitor system prompt size to avoid context limit issues. Enable verbose mode in the DM session to get token counts:
 
-```bash
-# The agent reports system prompt token count in verbose mode
-swarmstr agent --message "ping" --verbose --deliver
+```
+/set verbose on
 ```
 
 If your workspace files are very large, consider:
@@ -78,15 +77,16 @@ nano ~/.swarmstr/workspace/USER.md
 
 Changes take effect on the next agent turn (no restart needed).
 
-## skipBootstrap
+## DVM Mode
 
-For DVM mode or isolated turns, bootstrap can be skipped:
+DVM (Data Vending Machine) jobs use a reduced context — only the job content is sent, without full workspace bootstrap files. This is controlled by enabling DVM mode in config:
 
-```json5
+```json
 {
-  "agents": {
+  "extra": {
     "dvm": {
-      "skipBootstrap": true   // don't inject workspace files for DVM jobs
+      "enabled": true,
+      "kinds": [5000, 5001]
     }
   }
 }

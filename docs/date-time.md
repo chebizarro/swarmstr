@@ -11,22 +11,16 @@ title: "Date & Time"
 
 ## Timezone Configuration
 
-Set the agent's timezone in config:
-
-```json5
-{
-  "agents": {
-    "defaults": {
-      "timezone": "Europe/Berlin"   // IANA timezone name
-    }
-  }
-}
-```
-
-Or via environment variable:
+Set the process timezone via the `TZ` environment variable (IANA name):
 
 ```bash
 TZ=Europe/Berlin swarmstrd
+```
+
+Or in the systemd service `EnvironmentFile` (`~/.swarmstr/.env`):
+
+```bash
+TZ=Europe/Berlin
 ```
 
 The timezone affects:
@@ -49,8 +43,7 @@ Cron expressions are evaluated in the configured timezone:
 
 ```bash
 # Runs at 8:00 AM in your configured timezone
-swarmstr cron add --name morning --cron "0 8 * * *" \
-  --system-event "Good morning check"
+swarmstr cron add --schedule "0 8 * * *" --message "Good morning check"
 ```
 
 If no timezone is configured, UTC is used. This matters especially for cron jobs — always configure your timezone.

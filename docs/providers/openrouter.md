@@ -21,21 +21,17 @@ title: "OpenRouter"
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-4. Configure:
+4. Configure in `config.json`:
 
-```json5
+```json
 {
   "providers": {
     "openrouter": {
-      "apiKey": "${OPENROUTER_API_KEY}"
+      "api_key": "${OPENROUTER_API_KEY}"
     }
   },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "openrouter/anthropic/claude-opus-4-5"
-      }
-    }
+  "agent": {
+    "default_model": "openrouter/anthropic/claude-opus-4-5"
   }
 }
 ```
@@ -61,55 +57,46 @@ openrouter/meta-llama/llama-3.3-70b-instruct:free
 openrouter/google/gemini-2.0-flash:free
 ```
 
-Good for cron jobs and heartbeat checks where cost matters:
-
-```json5
-{
-  "webhooks": {
-    "gmail": {
-      "model": "openrouter/meta-llama/llama-3.3-70b-instruct:free"
-    }
-  }
-}
-```
+Good for cron jobs where cost matters — set per-agent model in `agents[].model`.
 
 ## Model Fallbacks
 
-OpenRouter supports automatic model fallbacks when a model is unavailable:
+Configure fallback models per agent:
 
-```json5
+```json
 {
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "openrouter/anthropic/claude-opus-4-5",
-        "fallbacks": [
-          "openrouter/openai/gpt-4o",
-          "openrouter/meta-llama/llama-3.3-70b-instruct"
-        ]
-      }
+  "agents": [
+    {
+      "id": "main",
+      "model": "openrouter/anthropic/claude-opus-4-5",
+      "fallback_models": [
+        "openrouter/openai/gpt-4o",
+        "openrouter/meta-llama/llama-3.3-70b-instruct"
+      ]
     }
-  }
+  ]
 }
 ```
 
 ## Site Attribution
 
-Set your site name for OpenRouter analytics:
+OpenRouter analytics headers can be set via the `extra` field on the provider entry:
 
-```json5
+```json
 {
   "providers": {
     "openrouter": {
-      "apiKey": "${OPENROUTER_API_KEY}",
-      "headers": {
-        "HTTP-Referer": "https://yoursite.com",
-        "X-Title": "My swarmstr Agent"
+      "api_key": "${OPENROUTER_API_KEY}",
+      "extra": {
+        "http_referer": "https://yoursite.com",
+        "x_title": "My swarmstr Agent"
       }
     }
   }
 }
 ```
+
+Note: custom OpenRouter headers require provider-level support in the adapter.
 
 ## See Also
 

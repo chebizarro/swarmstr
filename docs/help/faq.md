@@ -50,29 +50,36 @@ Or use any Nostr key manager (Alby, nos2x, etc.).
 
 ### Where does swarmstr store its config?
 
-`~/.swarmstr/config.json` by default. Override with `SWARMSTR_CONFIG_PATH`.
+`~/.swarmstr/config.json` (runtime config) and `~/.swarmstr/bootstrap.json` (keys and network). Use `--config` and `--bootstrap` CLI flags to override paths.
 
 ### How do I connect my agent to relays?
 
-Add relays to `channels.nostr.relays` in your config:
+Relays are set in `bootstrap.json` under `relays`:
 
 ```json
 {
-  "channels": {
-    "nostr": {
-      "relays": ["wss://relay.damus.io", "wss://nos.lol", "wss://nostr.wine"]
-    }
-  }
+  "relays": ["wss://relay.damus.io", "wss://nos.lol", "wss://nostr.wine"]
 }
 ```
 
+For read/write relay separation, use `relays.read` and `relays.write` in `config.json`.
+
 ### How do I control who can DM my agent?
 
-Set `dmPolicy` in the nostr channel config:
+Set `dm.policy` in `config.json`:
 
-- `pairing` (default): new contacts get a pairing code challenge.
-- `allowlist`: only listed npubs can DM.
+- `allowlist` (recommended): only npubs in `dm.allow_from` can DM.
+- `pairing`: unknown senders get a notice that approval is needed; admin adds them to `allow_from` manually.
 - `open`: anyone can DM.
+- `disabled`: DMs are not processed.
+
+```json
+{
+  "dm": {
+    "policy": "allowlist",
+    "allow_from": ["npub1yourpubkey..."]
+  }
+}
 
 ## Operations
 
@@ -94,14 +101,14 @@ swarmstr status
 ### How do I view logs?
 
 ```bash
-swarmstr logs --follow
+swarmstr logs --lines 100
 # or
 journalctl -u swarmstrd -f
 ```
 
 ### How do I reset a conversation session?
 
-Send `/new` or `/reset` in the DM chat to start a fresh session.
+Send `/new` in the DM chat to start a fresh session.
 
 ## Nostr-specific
 

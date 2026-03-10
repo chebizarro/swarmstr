@@ -18,23 +18,9 @@ swarmstr streams responses from the model API but delivers to Nostr as complete 
 
 ## Response Chunking
 
-For very long responses, swarmstr splits the reply into multiple DMs:
+For very long responses, swarmstr splits the reply into multiple Nostr DMs automatically. Chunks are numbered: `[1/3] First chunk...`, `[2/3] Second chunk...`, `[3/3] Final chunk.`
 
-```json5
-{
-  "agents": {
-    "defaults": {
-      "responseChunking": {
-        "enabled": true,
-        "maxChunkBytes": 4096,    // max size per Nostr DM
-        "chunkDelayMs": 500       // delay between chunks to avoid relay spam
-      }
-    }
-  }
-}
-```
-
-Chunks are numbered: `[1/3] First chunk...`, `[2/3] Second chunk...`, `[3/3] Final chunk.`
+The chunk size is governed by Nostr event size limits — responses that would produce events over ~64KB are split.
 
 ## Internal Streaming
 
@@ -62,19 +48,7 @@ swarmstr monitors for infinite tool-use loops. If the agent calls the same tool 
 2. The agent is told it appears to be looping
 3. The current turn is completed without further tool calls
 
-```json5
-{
-  "agents": {
-    "defaults": {
-      "loopDetection": {
-        "enabled": true,
-        "maxRepetitions": 3,
-        "windowSize": 10    // check last 10 tool calls
-      }
-    }
-  }
-}
-```
+Loop detection is always active and requires no configuration.
 
 ## Retry Policy
 

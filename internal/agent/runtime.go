@@ -32,6 +32,12 @@ type Turn struct {
 	History []ConversationMessage
 	// Executor is the tool executor for agentic loops inside providers.
 	Executor ToolExecutor
+	// ThinkingBudget enables extended thinking for providers that support it.
+	// 0 means disabled; a positive value specifies the token budget for the
+	// model's internal reasoning phase (Anthropic: budget_tokens in the
+	// thinking config block).  The caller should ensure MaxTokens (if set) is
+	// strictly greater than ThinkingBudget.
+	ThinkingBudget int
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.

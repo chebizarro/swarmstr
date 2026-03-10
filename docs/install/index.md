@@ -70,10 +70,10 @@ See [Docker](/install/docker) for full setup.
 
 ## After installing
 
-1. Create `~/.swarmstr/config.json` — see [Configuration](/gateway/configuration).
-2. Initialize the workspace: `swarmstr setup`.
+1. Create `~/.swarmstr/bootstrap.json` with your private key and relays — see [Setup](/start/setup).
+2. Create `~/.swarmstr/config.json` — see [Configuration](/gateway/configuration).
 3. Start the daemon: `swarmstrd` or `systemctl start swarmstrd`.
-4. Verify: `swarmstr health`.
+4. Verify: `swarmstr status`.
 
 ## Verify installation
 

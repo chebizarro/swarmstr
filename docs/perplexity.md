@@ -1,76 +1,26 @@
 ---
-summary: "Perplexity Search API setup for swarmstr's web_search tool"
+summary: "Perplexity Search is not currently a supported provider for swarmstr's web_search tool"
 read_when:
-  - Setting up Perplexity for the agent's web search
-  - Configuring the PERPLEXITY_API_KEY
+  - Wondering whether Perplexity can be used for agent web search
 title: "Perplexity Search"
 ---
 
 # Perplexity Search
 
-[Perplexity](https://perplexity.ai) provides AI-powered web search with structured results, domain filtering, and freshness controls.
+> **Not currently supported**: The `web_search` tool supports [Brave Search](/brave-search) (`BRAVE_SEARCH_API_KEY`) and [Serper](/tools/web) (`SERPER_API_KEY`). Perplexity is not a supported provider at this time.
 
-## Setup
+## Workaround
 
-1. Create an account at [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api)
-2. Generate an API key
-3. Note your usage tier
-
-Add to `~/.swarmstr/.env`:
+You can use Perplexity's API indirectly via the `browser.request` gateway method or the `web_fetch` agent tool to call the Perplexity API endpoint directly:
 
 ```
-PERPLEXITY_API_KEY=pplx-...
+web_fetch(url="https://api.perplexity.ai/chat/completions", ...)
 ```
 
-Config:
-
-```json5
-{
-  "tools": {
-    "web": {
-      "search": {
-        "provider": "perplexity",
-        "apiKey": "${PERPLEXITY_API_KEY}",
-        "perplexity": {
-          "model": "sonar"   // "sonar" | "sonar-pro"
-        }
-      }
-    }
-  }
-}
-```
-
-## Models
-
-| Model | Notes |
-|-------|-------|
-| `sonar` | Standard, fast, good for most queries |
-| `sonar-pro` | Higher quality, more expensive |
-
-## Advanced Options
-
-```json5
-{
-  "tools": {
-    "web": {
-      "search": {
-        "provider": "perplexity",
-        "apiKey": "${PERPLEXITY_API_KEY}",
-        "perplexity": {
-          "model": "sonar",
-          "searchDomainFilter": ["github.com", "nostr.com"],  // optional domain allowlist
-          "returnImages": false,
-          "returnRelatedQuestions": false,
-          "searchRecencyFilter": "week"  // "day" | "week" | "month" | "year"
-        }
-      }
-    }
-  }
-}
-```
+However, this is not integrated into `web_search`'s provider system.
 
 ## See Also
 
-- [Web Tools](/tools/web)
-- [Brave Search](/brave-search)
-- [Provider Overview](/providers/)
+- [Web Tools](/tools/web) — supported search providers (`brave`, `serper`)
+- [Brave Search](/brave-search) — setup guide for Brave Search API
+- [Browser Tool](/tools/browser) — HTTP fetch for arbitrary URLs

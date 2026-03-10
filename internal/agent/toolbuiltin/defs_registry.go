@@ -57,6 +57,35 @@ var ACPDelegateDef = agent.ToolDefinition{
 	},
 }
 
+// ─── Canvas ──────────────────────────────────────────────────────────────────
+
+// CanvasUpdateDef is the ToolDefinition for canvas_update.
+// The tool is registered inline in main.go; this definition is set via
+// tools.SetDefinition so the model sees the correct schema.
+var CanvasUpdateDef = agent.ToolDefinition{
+	Name:        "canvas_update",
+	Description: "Update a named canvas surface with HTML, Markdown, or JSON content. The canvas is broadcast over WebSocket to any connected browser clients (e.g. the webchat UI). Use this to render rich output such as tables, dashboards, or formatted reports that would be unwieldy as plain DM text.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"canvas_id": {
+				Type:        "string",
+				Description: "Identifier for this canvas surface (e.g. \"main\", \"report\", \"game\"). Multiple canvases can coexist.",
+			},
+			"content_type": {
+				Type:        "string",
+				Description: "One of: \"html\" (full HTML page), \"markdown\" (GitHub-flavoured), \"json\" (pretty-printed data).",
+				Enum:        []string{"html", "markdown", "json"},
+			},
+			"data": {
+				Type:        "string",
+				Description: "The content string — full HTML, Markdown text, or JSON string depending on content_type.",
+			},
+		},
+		Required: []string{"canvas_id", "content_type", "data"},
+	},
+}
+
 // ─── Sessions ────────────────────────────────────────────────────────────────
 
 // SessionsListDef is the ToolDefinition for sessions_list.

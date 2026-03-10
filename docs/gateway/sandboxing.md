@@ -1,181 +1,145 @@
 ---
-summary: "How swarmstr sandboxing works: Docker isolation for agent tool execution"
+summary: "Sandbox execution environment for swarmstr: isolated command execution with resource limits"
 title: "Sandboxing"
 read_when:
-  - You want to sandbox agent tool execution in Docker
-  - Tuning agents.defaults.sandbox in config
-  - Understanding what is and isn't sandboxed
+  - Running agent commands in a sandboxed environment
+  - Configuring Docker isolation for exec tool calls
+  - Understanding the sandbox.run gateway method
 ---
 
 # Sandboxing
 
-swarmstr can run **agent tools inside Docker containers** to reduce blast radius when the agent executes shell commands, reads/writes files, or runs scripts.
+swarmstr supports running commands in an isolated execution environment via the `sandbox.run` gateway method and the `exec` agent tool. Two backends are available:
 
-This is **optional** — controlled by `agents.defaults.sandbox` in config. If sandboxing is off, tools run directly on the host. The daemon itself always runs on the host; only tool execution is sandboxed.
+- **`nop`** (default) — plain `os/exec` with optional timeout; no isolation.
+- **`docker`** — ephemeral Docker container with CPU/memory caps and optional network isolation.
 
-This is not a perfect security boundary, but it materially limits filesystem and process access for risky tool invocations.
-
-## What Gets Sandboxed
-
-When enabled, the following tools run inside the container:
-
-- `exec` — shell command execution
-- `read`, `write`, `edit` — file I/O
-- `apply_patch` — patch application
-- `process` — process management
-
-**Not sandboxed:**
-
-- The swarmstrd daemon process itself.
-- Tools explicitly in `tools.elevated` (these run on the host by design).
-- Nostr protocol operations (signing, relay connections).
-
-## Modes
-
-`agents.defaults.sandbox.mode` controls **when** sandboxing applies:
-
-- `"off"` (default): no sandboxing.
-- `"non-main"`: sandbox only non-main sessions (group/channel/subagent sessions).
-- `"all"`: every session runs in a sandbox container.
-
-## Scope
-
-`agents.defaults.sandbox.scope` controls **how many containers** are created:
-
-- `"session"` (default): one container per session.
-- `"agent"`: one container shared across all sessions for an agent.
-- `"shared"`: one container shared across all sandboxed sessions globally.
-
-## Workspace Access
-
-`agents.defaults.sandbox.workspaceAccess` controls what the sandbox can see of the agent workspace:
-
-- `"none"` (default): sandbox has its own isolated workspace under `~/.swarmstr/sandboxes/`.
-- `"ro"`: mounts the agent workspace read-only at `/agent`.
-- `"rw"`: mounts the agent workspace read/write at `/workspace`.
+The sandbox is invoked for `exec` tool calls and directly via the `sandbox.run` gateway method.
 
 ## Configuration
 
-Minimal sandbox config in `~/.swarmstr/config.json`:
+Configure the sandbox backend via `extra.sandbox` in the runtime ConfigDoc:
 
 ```json5
 {
-  "agents": {
-    "defaults": {
-      "sandbox": {
-        "mode": "non-main",
-        "scope": "session",
-        "workspaceAccess": "none"
-      }
+  "extra": {
+    "sandbox": {
+      "driver": "docker",          // "nop" (default) or "docker"
+      "docker_image": "alpine:3",  // Docker image (docker backend only)
+      "memory_limit": "256m",      // Memory cap (docker backend only)
+      "cpu_limit": "0.5",          // CPU limit in cores (docker backend only)
+      "timeout_s": 30,             // Execution timeout in seconds
+      "network_disabled": false    // Disable network in container (docker backend only)
     }
   }
 }
 ```
 
-Full sandbox config reference:
+### Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `driver` | string | `"nop"` | Execution backend: `nop` or `docker` |
+| `docker_image` | string | `"alpine:3"` | Docker image for the `docker` backend |
+| `memory_limit` | string | `""` | Container memory limit (e.g. `"256m"`, `"1g"`) |
+| `cpu_limit` | string | `""` | CPU limit (e.g. `"0.5"` = half a core) |
+| `timeout_s` | number | `0` | Max execution time in seconds; `0` = no limit |
+| `network_disabled` | bool | `false` | Block network inside the container |
+| `max_output_bytes` | number | `1048576` | Max stdout+stderr bytes (default: 1 MiB) |
+
+## NopSandbox (Default)
+
+The `nop` backend runs commands directly via `os/exec` on the host. This provides no isolation but supports an optional timeout:
 
 ```json5
 {
-  "agents": {
-    "defaults": {
-      "sandbox": {
-        "mode": "non-main",     // "off" | "non-main" | "all"
-        "scope": "session",     // "session" | "agent" | "shared"
-        "workspaceAccess": "none", // "none" | "ro" | "rw"
-        "docker": {
-          "image": "swarmstr/sandbox:latest",
-          "binds": [
-            "/home/user/source:/source:rw"
-          ],
-          "memory": "512m",
-          "cpus": "1.0"
-        }
-      }
+  "extra": {
+    "sandbox": {
+      "driver": "nop",
+      "timeout_s": 60
     }
   }
 }
 ```
 
-## Per-Agent Sandbox Config
+## Docker Sandbox
 
-Override sandbox settings for a specific agent:
+The `docker` backend runs each command in an ephemeral container that is automatically removed after execution (`docker run --rm`):
 
 ```json5
 {
-  "agents": {
-    "list": [
-      {
-        "id": "mybot",
-        "sandbox": {
-          "mode": "all",
-          "scope": "agent",
-          "workspaceAccess": "rw"
-        }
-      }
-    ]
+  "extra": {
+    "sandbox": {
+      "driver": "docker",
+      "docker_image": "ubuntu:22.04",
+      "memory_limit": "512m",
+      "cpu_limit": "1.0",
+      "timeout_s": 120,
+      "network_disabled": true
+    }
   }
 }
 ```
 
-## Docker Requirement
-
-Sandboxing requires Docker to be installed and the daemon user to have access to the Docker socket.
+**Prerequisites:** Docker must be installed and accessible to the daemon user:
 
 ```bash
-# Verify Docker is accessible
+# Verify Docker access
 docker ps
 
-# If using rootless Docker
+# For rootless Docker
 export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock
 ```
 
-## Sandbox State
+## Using sandbox.run Gateway Method
 
-Sandbox containers are tracked at `~/.swarmstr/sandboxes/`. Each session gets a named container:
-
-```
-~/.swarmstr/sandboxes/
-└── session-<sessionId>/
-    ├── workspace/      # Isolated workspace for this session
-    └── media/inbound/  # Inbound media files copied in
-```
-
-## Checking Sandbox Status
+The sandbox is directly accessible via the `sandbox.run` gateway method. This is used by the `exec` tool and can also be called directly:
 
 ```bash
-swarmstr approvals get exec   # Check exec approval mode
-docker ps | grep swarmstr     # List running sandbox containers
+swarmstr gw sandbox.run '{"cmd": ["echo", "hello"]}'
+swarmstr gw sandbox.run '{"cmd": ["bash", "-c", "echo $HOME"], "driver": "docker", "timeout_seconds": 30}'
 ```
 
-## CLI Commands
+Request fields:
+- `cmd` — command array (required)
+- `env` — extra environment variables as `KEY=VALUE` strings
+- `workdir` — working directory inside the sandbox
+- `driver` — override the config driver for this single call
+- `timeout_seconds` — override the config timeout for this call
 
-```bash
-# List sandbox containers
-swarmstr sandbox list
-
-# Force-recreate a sandbox
-swarmstr sandbox recreate <sessionId>
-
-# Explain sandbox config
-swarmstr sandbox explain
-```
-
-## Elevated Tools
-
-`tools.elevated` specifies tools that always run on the **host**, bypassing sandboxing:
-
-```json5
+Response:
+```json
 {
-  "tools": {
-    "elevated": ["exec"]   // exec always runs on host, even in sandbox mode
-  }
+  "ok": true,
+  "stdout": "hello\n",
+  "stderr": "",
+  "exit_code": 0,
+  "timed_out": false,
+  "driver": "nop"
 }
 ```
 
-> **Security note**: Elevated tools run with the daemon's full host permissions. Use sparingly.
+## Security Notes
+
+- The `docker` backend provides resource isolation (CPU, memory, network) but is not a perfect security boundary.
+- The `nop` backend runs with the daemon's full host permissions — use it only for trusted workloads.
+- Network is enabled by default in Docker containers; set `network_disabled: true` for air-gapped execution.
+- The daemon itself always runs on the host; sandboxing applies only to executed commands.
+
+## Exec Tool Approvals
+
+The `exec` agent tool has its own approval system (independent of the sandbox backend). By default, exec commands require approval before running. Configure approval mode via:
+
+```bash
+swarmstr approvals list
+swarmstr approvals approve <id>
+swarmstr approvals deny <id>
+```
+
+See [Exec Tool](/tools/exec) for approval configuration.
 
 ## See Also
 
+- [Exec Tool](/tools/exec)
 - [Security](/security/)
-- [Tool Approvals](/tools/exec)
 - [Configuration](/gateway/configuration)

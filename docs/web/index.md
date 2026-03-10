@@ -8,18 +8,24 @@ title: "Web UI"
 
 # Web UI
 
-swarmstr serves a web interface on the same port as the HTTP/WS API (default: `http://127.0.0.1:18789`).
+swarmstr serves a web interface on the same address as the gateway WebSocket (`gateway_ws_listen_addr` in `bootstrap.json`). There is no hardcoded default — you must configure the address to enable the web UI.
+
+## Enabling the Web UI
+
+In `bootstrap.json`:
+
+```json
+{
+  "gateway_ws_listen_addr": "127.0.0.1:18789",
+  "gateway_ws_token": "your-secret-token"
+}
+```
+
+Then open `http://127.0.0.1:18789/` in your browser.
 
 ## Dashboard
 
-Access the control dashboard:
-
-```bash
-swarmstr dashboard
-# Opens http://127.0.0.1:18789/ in your browser
-```
-
-The dashboard provides:
+The dashboard at `http://<gateway_ws_listen_addr>/` provides:
 
 - **Agent chat** — web-based chat with your agent (no Nostr client needed).
 - **Session history** — list of active sessions and recent conversations.
@@ -49,7 +55,7 @@ Supported content types:
 
 ## Webchat
 
-The web chat interface at `http://127.0.0.1:18789/chat` allows direct browser-based
+The web chat interface at `http://<gateway_ws_listen_addr>/chat` allows direct browser-based
 conversations with the agent — no Nostr client needed.
 
 Useful for:
@@ -57,34 +63,23 @@ Useful for:
 - Users without a Nostr client
 - Local-only deployments where Nostr is not the primary interface
 
-## Remote access
+## Remote Access
 
-For remote access to the web UI:
+For remote access to the web UI, use an SSH tunnel or Tailscale:
 
 ```bash
-# SSH tunnel
+# SSH tunnel (assuming gateway_ws_listen_addr is 127.0.0.1:18789)
 ssh -N -L 18789:127.0.0.1:18789 user@your-server
 
 # Tailscale (recommended for persistent remote access)
+# After binding to 0.0.0.0:18789 in bootstrap.json:
 tailscale funnel 18789
 ```
 
-Set a token to protect the web UI:
+Always set `gateway_ws_token` when exposing the web UI beyond localhost.
 
-```json
-{
-  "server": {
-    "token": "${SWARMSTR_GATEWAY_TOKEN}"
-  }
-}
-```
+## See Also
 
-## TUI (Terminal UI)
-
-A terminal-based UI is available for those who prefer the command line:
-
-```bash
-swarmstr tui
-```
-
-The TUI shows the same information as the dashboard but in a terminal interface.
+- [Remote Access](/gateway/remote)
+- [Configuration](/gateway/configuration)
+- [Canvas Tool](/tools/canvas)

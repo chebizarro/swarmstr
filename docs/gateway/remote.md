@@ -1,7 +1,7 @@
 ---
 summary: "Remote access to swarmstr: Tailscale, SSH tunnels, and the Nostr advantage"
 read_when:
-  - Accessing the swarmstr dashboard remotely
+  - Accessing the swarmstr web UI or admin API remotely
   - Setting up Tailscale or SSH tunnel for remote admin
   - Understanding why Nostr gives you remote access for free
 title: "Remote Access"
@@ -21,45 +21,61 @@ swarmstr:
   You → Nostr relay network → Agent
 ```
 
-You can send commands to your agent from your phone using a Nostr client like Damus or Amethyst. No SSH, no tunnels, no dynamic DNS. The agent replies back via encrypted Nostr DM.
+You can send commands to your agent from your phone using a Nostr client like Damus or Amethyst. No SSH, no tunnels, no dynamic DNS. The agent replies back via encrypted Nostr DM (NIP-04/44). This covers the most common "remote" use case.
 
-This covers the most common "remote" use case: controlling and chatting with your agent.
+## Local HTTP Servers
 
-## Remote Admin Dashboard
+swarmstr exposes two optional local HTTP servers, both configured in `bootstrap.json`:
 
-For the web dashboard and canvas UI (which aren't Nostr-based), you need a way to expose the local HTTP server.
+| Server | Config key | Default | Purpose |
+|--------|------------|---------|---------|
+| Admin API | `admin_listen_addr` | off | CLI status, logs, config commands |
+| Gateway WebSocket | `gateway_ws_listen_addr` | off | Web UI, OpenClaw-compatible clients |
 
-Default port: `18789`
+```json
+{
+  "private_key": "...",
+  "relays": ["wss://relay.damus.io"],
+  "admin_listen_addr": "127.0.0.1:18788",
+  "admin_token": "your-secret-token",
+  "gateway_ws_listen_addr": "127.0.0.1:18789",
+  "gateway_ws_token": "your-ws-token"
+}
+```
+
+Both servers bind to `127.0.0.1` by default and are only reachable locally. To allow remote access, use one of the approaches below.
+
+## Remote Access Options
 
 ### Tailscale (Recommended)
 
-Tailscale creates a private network between your devices. Your swarmstr dashboard is accessible from any device on your Tailscale network.
+Tailscale creates a private network between your devices. Your swarmstr admin API and web UI are accessible from any device on your Tailscale network.
 
 ```bash
 # Install Tailscale
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
-
-# Access dashboard from another device at:
-# http://<hostname>.tail1234.ts.net:18789
 ```
 
-For a public URL (Tailscale Funnel):
+Change the bind address in `bootstrap.json` to listen on the Tailscale interface:
+
+```json
+{
+  "admin_listen_addr": "0.0.0.0:18788",
+  "admin_token": "your-secret-token"
+}
+```
+
+Then access from another Tailscale device:
+```
+http://<hostname>.tail1234.ts.net:18788/status
+```
+
+For a public HTTPS URL (Tailscale Funnel):
 
 ```bash
-tailscale funnel 18789
+tailscale funnel 18788
 # Exposes https://<hostname>.tail1234.ts.net
-```
-
-Configure in swarmstr:
-
-```json5
-{
-  "http": {
-    "port": 18789,
-    "bind": "tailnet"   // bind to Tailscale interface only
-  }
-}
 ```
 
 ### SSH Tunnel
@@ -67,40 +83,38 @@ Configure in swarmstr:
 Access from a remote machine via SSH port forwarding:
 
 ```bash
-# On your local machine, tunnel the remote swarmstr port to localhost:8080
-ssh -L 8080:localhost:18789 user@yourserver.example.com
+# Forward remote admin port 18788 to local port 8788
+ssh -L 8788:localhost:18788 user@yourserver.example.com
 
-# Then open http://localhost:8080 in your browser
+# Then use the CLI targeting your local tunnel
+SWARMSTR_ADMIN_ADDR=localhost:8788 swarmstr status
 ```
 
 For a persistent tunnel (with autossh):
 
 ```bash
-autossh -M 20000 -f -N -L 8080:localhost:18789 user@yourserver.example.com
+autossh -M 20000 -f -N -L 8788:localhost:18788 user@yourserver.example.com
 ```
 
-### Expose with a Reverse Proxy
+### Reverse Proxy (nginx / Caddy)
 
-For production deployments, put nginx or Caddy in front:
+For production deployments, put nginx or Caddy in front with TLS:
 
-**Caddy**:
+**Caddy:**
 ```
-swarmstr.example.com {
-    reverse_proxy localhost:18789
-    basicauth {
-        admin $2a$14$...
-    }
+admin.swarmstr.example.com {
+    reverse_proxy localhost:18788
 }
 ```
 
-**nginx**:
+**nginx:**
 ```nginx
 server {
     listen 443 ssl;
-    server_name swarmstr.example.com;
+    server_name admin.swarmstr.example.com;
 
     location / {
-        proxy_pass http://localhost:18789;
+        proxy_pass http://localhost:18788;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -111,37 +125,34 @@ server {
 
 ## Security for Remote Access
 
-When exposing the HTTP server publicly:
+When exposing the HTTP servers beyond localhost:
 
-1. **Always set a gateway token** in config:
-   ```json5
-   { "http": { "token": "${SWARMSTR_GATEWAY_TOKEN}" } }
-   ```
+1. **Always set tokens** — both `admin_token` and `gateway_ws_token` in `bootstrap.json`.
 
-2. **Use HTTPS** — either via Tailscale, Caddy (auto-TLS), or nginx + Let's Encrypt.
+2. **Use HTTPS** — via Tailscale, Caddy (auto-TLS), or nginx + Let's Encrypt.
 
 3. **Prefer Tailscale** — the private network model is safer than public exposure.
 
-4. **The agent itself** (Nostr DM channel) is always end-to-end encrypted via NIP-04/NIP-44 — no additional setup needed.
+4. **The Nostr DM channel** (agent chat) is always end-to-end encrypted via NIP-04/44 — no additional setup needed for that.
 
-## Bind Configuration
+## CLI Remote Access
 
-```json5
-{
-  "http": {
-    "port": 18789,
-    "bind": "loopback"   // "loopback" | "tailnet" | "lan" | "auto" | "custom"
-  }
-}
+Set environment variables to point CLI commands at a remote admin API:
+
+```bash
+export SWARMSTR_ADMIN_ADDR=admin.swarmstr.example.com:18788
+export SWARMSTR_ADMIN_TOKEN=your-secret-token
+
+swarmstr status
+swarmstr logs --lines 50
+swarmstr config get
 ```
 
-| Bind mode | Description |
-|-----------|-------------|
-| `loopback` | Only local machine can access (127.0.0.1) |
-| `tailnet` | Only Tailscale network can access |
-| `lan` | Local network (192.168.x.x) |
-| `auto` | Tailscale if available, else loopback |
-| `custom` | Specify a custom bind address |
+Or pass flags explicitly:
+
+```bash
+swarmstr status --admin-addr admin.swarmstr.example.com:18788 --admin-token your-token
+```
 
 ## Network Architecture
 
@@ -150,18 +161,16 @@ Internet
     │
     └── Nostr Relay Network ──── swarmstrd ──── Claude API
                                      │
-                              Local HTTP :18789
-                                     │
-                         ┌───────────┴───────────┐
-                      Dashboard              WebSocket/TUI
-                    (canvas/admin)          (chat interface)
+                          ┌──────────┴──────────────┐
+                    Admin API :18788          Gateway WS :18789
+                   (CLI status/logs)         (Web UI / clients)
 ```
 
-The agent itself is always reachable via Nostr — only the admin UI needs tunneling.
+The agent is always reachable via Nostr — only the admin API and web UI need tunneling.
 
 ## See Also
 
 - [Configuration](/gateway/configuration)
 - [Security](/security/)
-- [Tailscale on Raspberry Pi](/platforms/raspberry-pi#tailscale)
+- [Health, Logging & Process](/gateway/health)
 - [Nostr Channel](/channels/nostr)

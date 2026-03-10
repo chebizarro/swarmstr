@@ -132,30 +132,23 @@ jobs:
 ### Send a DM via CLI
 
 ```bash
-# Trigger an agent turn with a test message
-swarmstr agent --message "ping" --deliver --timeout 30
+# Send a test DM to the agent
+swarmstr dm-send --to <agent-npub> --text "ping"
 ```
 
 ### Test Cron Jobs
 
 ```bash
 # Trigger a cron job immediately (bypasses schedule)
-swarmstr cron run <jobId> --force
-```
-
-### Test Heartbeat
-
-```bash
-# Trigger a manual heartbeat
-swarmstr system event --text "manual heartbeat test" --mode now
+swarmstr cron run <jobId>
 ```
 
 ### Test Webhooks
 
 ```bash
-# Send a test webhook
-curl -X POST http://localhost:18789/hooks/wake \
-  -H "x-swarmstr-token: $SWARMSTR_GATEWAY_TOKEN" \
+# Send a test webhook (port matches admin_listen_addr in bootstrap.json)
+curl -X POST http://localhost:7423/hooks/wake \
+  -H "Authorization: Bearer $SWARMSTR_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"text": "test webhook"}'
 ```
@@ -166,9 +159,11 @@ For stress-testing relay connections:
 
 ```bash
 # Concurrent DM test (10 concurrent senders)
+# Get agent pubkey first
+AGENT_PUBKEY=$(swarmstr status --json | jq -r '.pubkey')
 for i in $(seq 1 10); do
   nak event --sec $NSEC -k 4 -c "test message $i" \
-    --tag p=$(swarmstr config get channels.nostr.publicKey) \
+    --tag p=$AGENT_PUBKEY \
     wss://relay.damus.io &
 done
 wait

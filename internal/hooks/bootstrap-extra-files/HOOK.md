@@ -26,17 +26,13 @@ workspace root.
 
 ## Configuration
 
+Set glob patterns in `extra.bootstrap_extra_files.paths` in your ConfigDoc:
+
 ```json
 {
-  "hooks": {
-    "internal": {
-      "enabled": true,
-      "entries": {
-        "bootstrap-extra-files": {
-          "enabled": true,
-          "paths": ["packages/*/AGENTS.md", "packages/*/TOOLS.md"]
-        }
-      }
+  "extra": {
+    "bootstrap_extra_files": {
+      "paths": ["packages/*/AGENTS.md", "packages/*/TOOLS.md"]
     }
   }
 }

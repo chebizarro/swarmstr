@@ -1,166 +1,135 @@
 ---
-summary: "Health checks, logging, and background process management for swarmstr"
+summary: "Health checks, logging, and process management for swarmstr"
 read_when:
   - Checking daemon health
-  - Configuring log output and log levels
+  - Tailing daemon logs
   - Managing swarmstrd as a background service
-title: "Health, Logging & Background Process"
+title: "Health, Logging & Process Management"
 ---
 
-# Health, Logging & Background Process
+# Health, Logging & Process Management
+
+## Prerequisites: Admin API
+
+Most `swarmstr` CLI commands communicate with the running `swarmstrd` daemon via its HTTP admin API. Configure the admin listen address in `bootstrap.json`:
+
+```json
+{
+  "admin_listen_addr": "127.0.0.1:18788",
+  "admin_token": "your-secret-token"
+}
+```
+
+Then use:
+
+```bash
+export SWARMSTR_ADMIN_ADDR=127.0.0.1:18788
+export SWARMSTR_ADMIN_TOKEN=your-secret-token
+```
+
+Or pass `--admin-addr` and `--admin-token` to each command.
 
 ## Health Checks
 
 ### Quick Status
 
 ```bash
-swarmstr health
+# Show daemon pubkey, version, uptime, relays, dm_policy
 swarmstr status
+
+# Output as JSON
+swarmstr status --json
+
+# Ping the /health endpoint (exits 0 if healthy)
+swarmstr health
+
+# Run diagnostic checks (admin reachable, bootstrap file, relay config)
 swarmstr doctor
 ```
 
-`swarmstr health` returns the daemon's current health state. It exits `0` if healthy, non-zero otherwise.
+### HTTP Health Endpoints
 
-### Deep Health Check
-
-```bash
-swarmstr status --deep
-```
-
-Deep check probes:
-- Relay connections (each configured relay's connectivity)
-- Model provider authentication
-- Session store integrity
-- Workspace accessibility
-
-### HTTP Health Endpoint
-
-When the daemon's HTTP server is enabled, a health endpoint is available:
+When `admin_listen_addr` is configured, the daemon exposes:
 
 ```
-GET http://localhost:18789/health
+GET http://<admin-addr>/health     → {"ok": true}           (requires auth)
+GET http://<admin-addr>/healthz    → {"status": "ok", ...}  (no auth, k8s liveness probe)
+GET http://<admin-addr>/status     → {"pubkey":"...","relays":[...],"dm_policy":"...","uptime_seconds":N,...}
 ```
 
-Response:
-```json
-{
-  "status": "ok",
-  "version": "0.1.0",
-  "uptime": 3600,
-  "relays": {
-    "connected": 3,
-    "total": 3
-  },
-  "agents": {
-    "active": 1
-  }
-}
+`/healthz` is the Kubernetes-style liveness probe endpoint and requires no authentication. Use it for orchestration health checks.
+
+### Prometheus Metrics
+
+```
+GET http://<admin-addr>/metrics    → Prometheus text format (requires auth if token set)
 ```
 
 ## Logging
 
-### Log Locations
-
-| Log | Location |
-|-----|----------|
-| Daemon main log | `~/.swarmstr/logs/swarmstrd.log` |
-| Command audit log | `~/.swarmstr/logs/commands.log` (if command-logger hook enabled) |
-| Session transcripts | `~/.swarmstr/agents/<id>/sessions/<sessionId>.jsonl` |
-| Relay connection log | `~/.swarmstr/logs/relay.log` |
-
-### Tailing Logs
+### Tail Daemon Logs
 
 ```bash
-# Via CLI (formatted)
-swarmstr logs --follow
-swarmstr logs --limit 200
+# Tail recent log lines via admin API
+swarmstr logs --lines 100
 
-# Via journalctl (systemd)
+# Filter by level
+swarmstr logs --lines 200 --level error
+```
+
+### Via journalctl (systemd)
+
+```bash
+# Follow logs in real time
 journalctl -u swarmstrd -f
 
-# Raw log file
-tail -f ~/.swarmstr/logs/swarmstrd.log
+# Show last 200 lines
+journalctl -u swarmstrd -n 200
 ```
 
-### Log Levels
+### Log Format
 
-Set log level in config:
+swarmstrd logs are structured (Go `log/slog` default):
 
-```json5
-{
-  "log": {
-    "level": "info"   // "debug" | "info" | "warn" | "error"
-  }
-}
+```
+2026-01-16T14:30:00Z INFO relay connected relay=wss://relay.damus.io
+2026-01-16T14:30:01Z INFO DM received from=npub1abc...
+2026-01-16T14:30:02Z INFO agent turn started session=abc123
 ```
 
-Or via environment variable:
+### Log Level
+
+Log verbosity is set via Go's standard `log` package. For verbose debug output, configure it in the environment or use the `/set verbose on` per-session flag.
+
+## Background Process
+
+### Run in Foreground
 
 ```bash
-SWARMSTR_LOG_LEVEL=debug swarmstrd
-```
-
-Debug logging includes:
-- Full Nostr event payloads (encrypted content not shown)
-- Relay subscription and filter details
-- Tool execution traces
-- Session state transitions
-
-### Structured Logging
-
-Logs are emitted as structured JSON lines (JSONL):
-
-```jsonl
-{"time":"2026-01-16T14:30:00Z","level":"INFO","msg":"relay connected","relay":"wss://relay.damus.io"}
-{"time":"2026-01-16T14:30:01Z","level":"INFO","msg":"DM received","from":"npub1abc...","eventId":"abc123"}
-{"time":"2026-01-16T14:30:02Z","level":"INFO","msg":"agent turn started","session":"agent:main:main"}
-```
-
-Parse with jq:
-
-```bash
-swarmstr logs --json | jq 'select(.level == "ERROR")'
-cat ~/.swarmstr/logs/swarmstrd.log | jq 'select(.msg | contains("relay"))'
-```
-
-## Background Process (systemd)
-
-### Install as systemd Service
-
-```bash
-swarmstr gateway install
-```
-
-This creates `/etc/systemd/system/swarmstrd.service` (or `~/.config/systemd/user/swarmstrd.service` for user-level).
-
-### Manage the Service
-
-```bash
-swarmstr gateway status
-swarmstr gateway start
-swarmstr gateway stop
-swarmstr gateway restart
-```
-
-Or directly with systemctl:
-
-```bash
-systemctl --user status swarmstrd
-systemctl --user restart swarmstrd
-journalctl --user -u swarmstrd -f
-```
-
-### Manual Run (Foreground)
-
-```bash
-swarmstr gateway run
-# or
 swarmstrd
+# or with explicit bootstrap path:
+swarmstrd --bootstrap ~/.swarmstr/bootstrap.json
 ```
 
-### Service Unit Template
+### Daemon Management (swarmstr daemon)
 
-For a production systemd unit:
+```bash
+# Start swarmstrd in background
+swarmstr daemon start
+
+# Stop running daemon
+swarmstr daemon stop
+
+# Restart daemon
+swarmstr daemon restart
+
+# Show daemon liveness and uptime
+swarmstr daemon status
+```
+
+### systemd Service (Linux)
+
+For production use, run swarmstrd as a systemd service:
 
 ```ini
 [Unit]
@@ -183,9 +152,26 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
+Install and enable:
+
+```bash
+sudo cp swarmstrd.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now swarmstrd
+sudo systemctl status swarmstrd
+```
+
+Or as a user service:
+
+```bash
+cp swarmstrd.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now swarmstrd
+```
+
 ### Watchdog / Auto-Restart
 
-The systemd unit uses `Restart=always` with `RestartSec=10`. For additional reliability on Raspberry Pi or low-memory devices, add:
+The systemd unit uses `Restart=always` with `RestartSec=10`. For low-memory devices, add:
 
 ```ini
 [Service]
@@ -193,32 +179,14 @@ MemoryMax=512M
 OOMScoreAdjust=100
 ```
 
-## Log Rotation
-
-Configure logrotate for the swarmstr log files:
-
-```
-/home/youruser/.swarmstr/logs/*.log {
-    daily
-    rotate 7
-    compress
-    missingok
-    notifempty
-    postrotate
-        systemctl --user kill -s HUP swarmstrd 2>/dev/null || true
-    endscript
-}
-```
-
 ## Monitoring
 
-For production deployments, consider:
+For production deployments:
 
-- **Uptime**: `systemctl --user is-active swarmstrd`
-- **Model auth expiry**: `swarmstr models status --check` (exits 1 if expired)
-- **Relay health**: `swarmstr status --deep --json | jq .relays`
-
-See [Auth Monitoring](/automation/auth-monitoring) for scripted auth expiry alerting.
+- **Liveness**: `curl http://<admin-addr>/healthz` (no auth required)
+- **Process**: `systemctl --user is-active swarmstrd`
+- **Relay health**: `swarmstr status --json | jq .relays`
+- **Doctor checks**: `swarmstr doctor`
 
 ## See Also
 

@@ -56,13 +56,12 @@ Each message turn includes:
 
 ## Session Routing
 
-The message is routed to a session based on `dmScope`:
+DM sessions are always per-peer. The session key is the sender's hex pubkey:
 
-| `dmScope` | Session key |
-|-----------|-------------|
-| `main` | `agent:<agentId>:main` |
-| `per-peer` | `agent:<agentId>:<fromPubKey>` |
-| `per-channel-peer` | `agent:<agentId>:nostr:<fromPubKey>` |
+| Channel | Session key |
+|---------|-------------|
+| Nostr DM | Sender's hex pubkey |
+| Group/channel message | `ch:<channelID>:<senderPubKey>` |
 
 ## Deduplication
 

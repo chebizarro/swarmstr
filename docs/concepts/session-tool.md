@@ -1,155 +1,185 @@
 # Session Tool (Slash Commands)
 
-Users manage their sessions through **slash commands** — a lightweight command interface delivered as regular Nostr DMs. Slash commands are intercepted before the LLM sees the message, parsed by the agent runtime, and executed directly.
+Users manage their sessions through **slash commands** — messages starting with `/` that are intercepted before reaching the LLM. The agent router parses and dispatches them directly, so they never consume model tokens (except `/spawn` which invokes a full turn).
 
 ## Available Slash Commands
 
 | Command | Description |
 |---------|-------------|
-| `/new` | Clear current session, start fresh |
-| `/kill` | Abort the running turn immediately |
+| `/help` | List all available slash commands |
+| `/status` | Show session status (agent, model, token counts, flags) |
+| `/new` | Clear current session transcript, start fresh |
+| `/reset` | Alias for `/new` |
+| `/kill` | Abort the currently running turn immediately |
 | `/compact` | Force compaction of the current session |
-| `/export` | Export session transcript |
-| `/info` | Show session metadata (token count, model, etc.) |
-| `/set <key> <value>` | Set a session variable |
-| `/unset <key>` | Remove a session variable |
-| `/focus <topic>` | Add a focus constraint to the current session |
-| `/unfocus` | Remove focus constraint |
-| `/spawn <name> <task>` | Spawn a named sub-agent |
+| `/export` | Export session transcript as HTML |
+| `/info` | Show agent identity (version, pubkey, agent ID) |
+| `/model <name>` | Switch model for this session only |
+| `/set <flag> [value]` | Set a per-session flag |
+| `/unset <flag>` | Remove a per-session flag |
+| `/agents` | List registered agents |
+| `/focus <agent-name>` | Route this session to a specific registered agent |
+| `/unfocus` | Reset session routing to the default agent |
+| `/spawn <agent-name> [task]` | Route session to a named agent and optionally send first message |
 
-## `/new` — Reset Session
+## `/new` / `/reset` — Clear Session
 
-Clears the session transcript. The agent starts with no memory of prior conversation.
+Clears the session transcript. Any in-flight turn is aborted.
 
 ```
 You: /new
-Agent: 🆕 Session cleared. What can I help you with?
+Agent: 🔄 Session reset. Conversation history cleared — starting fresh.
 ```
 
-The old session JSONL is deleted. If you need the history, `/export` first.
+Per-session flags (model override, verbose, thinking, TTS) are preserved across `/new`.
 
 ## `/kill` — Abort Turn
 
-Sends an abort signal to the currently running turn. Useful when a tool call is taking too long or went in the wrong direction.
+Aborts the currently running agent turn:
 
 ```
 You: /kill
-Agent: ✋ Stopped.
+Agent: 🛑 Aborted in-flight turn.
 ```
 
-The turn context is discarded. The session history up to the last completed turn is preserved.
+The session history up to the last completed turn is preserved.
 
 ## `/compact` — Force Compaction
 
-Triggers immediate session compaction — summarizes older turns into a condensed block to reduce context size.
+Triggers immediate LLM-based summarisation of older turns:
 
 ```
 You: /compact
-Agent: ✅ Session compacted. (was 42,000 tokens → now 3,200 tokens)
+Agent: ✓ Compacted. 8400 tokens freed.
 ```
-
-Useful before a long complex task to free up context window space.
 
 ## `/export` — Export Transcript
 
-Exports the session transcript as a formatted text file.
+Exports the session transcript as HTML (retrievable via the gateway API):
 
 ```
 You: /export
-Agent: 📄 Session exported to ~/.swarmstr/exports/session-20260309-143022.md
+Agent: ✓ Exported 23 messages. (Full HTML available via the gateway sessions.export method.)
 ```
 
-The exported file is also available via the configured workspace HTTP server (if enabled).
+## `/status` — Session Info
 
-## `/info` — Session Info
+Shows detailed session state:
 
-Shows current session metadata:
+```
+You: /status
+Agent:
+Session: npub1abc123…
+Agent:   main
+Model:   claude-opus-4-5
+Tokens:  18400 in / 2300 out / 20700 total
+Flags:   verbose, thinking
+```
+
+## `/info` — Agent Identity
+
+Shows the daemon version and pubkey:
 
 ```
 You: /info
 Agent:
-📊 Session Info
-  Model: claude-opus-4-5
-  Thinking: medium (10,000 tokens)
-  Turns: 17
-  Tokens: ~28,400 (input: 24,100 | output: 4,300)
-  Session key: agent:abc123:npub1xyz
-  Started: 2026-03-09 12:04 UTC
+Swarmstr v1.2.3
+Pubkey: a1b2c3d4…
+Agent:  main
 ```
 
-## `/set` and `/unset` — Session Variables
+## `/set` — Per-session Flags
 
-Set per-session variables that persist for the duration of the session:
+Set persistent per-session flags:
 
-```
-You: /set language Spanish
-Agent: ✅ Set language = Spanish
-
-You: /set verbosity brief
-Agent: ✅ Set verbosity = brief
-```
-
-Variables are injected into the system prompt context. The agent respects them as soft instructions.
+| Flag | Values | Description |
+|------|--------|-------------|
+| `verbose` | `on`/`off` | Enable verbose turn output |
+| `thinking` | `on`/`off` | Enable extended thinking (Anthropic; budget: 10 000 tokens) |
+| `tts` | `on`/`off` | Enable TTS auto-playback for replies |
+| `model <name>` | model string | Override model for this session |
+| `label <text>` | any text | Human-readable session label |
 
 ```
-You: /unset verbosity
-Agent: ✅ Unset verbosity
+You: /set thinking on
+Agent: ✓ Set thinking.
+
+You: /set model claude-haiku-4-5
+Agent: ✓ Switched to model "claude-haiku-4-5" for this session.
+
+You: /set verbose on
+Agent: ✓ Set verbose.
+
+You: /set label research session
+Agent: ✓ Set label.
 ```
 
-## `/focus` and `/unfocus` — Scope Narrowing
+Flags persist in `~/.swarmstr/sessions.json` and survive `/new` (transcript is cleared but flags carry over).
 
-Focus constrains the agent to a specific topic for the session:
+## `/unset` — Remove Flag
 
 ```
-You: /focus Nostr protocol development
-Agent: 🎯 Focused on: Nostr protocol development. I'll stay on-topic.
+You: /unset thinking
+Agent: ✓ Unset thinking.
 ```
 
-The focus string is injected as a strong constraint into the system prompt. The agent declines off-topic requests with a redirect.
+## `/focus` — Route to Agent
+
+Routes all subsequent messages in this session to a specific registered agent:
+
+```
+You: /agents
+Agent: Registered agents:
+  main
+  researcher
+  coder
+
+You: /focus researcher
+Agent: ✓ Session now focused on agent: researcher
+```
+
+The agent must be registered (`agents` config list). `/focus` routes to an agent by name — it does not add a topic constraint.
+
+## `/unfocus` — Default Agent
+
+Resets routing back to the default agent:
 
 ```
 You: /unfocus
-Agent: 🔓 Focus removed.
+Agent: ✓ Unfocused — session reset to default agent.
 ```
 
-## `/spawn` — Sub-agent
+## `/spawn` — Route to Named Agent
 
-Spawns a named sub-agent for a parallel task:
+Routes the session to a named agent and optionally sends an initial message:
 
 ```
-You: /spawn researcher "Find all NIP proposals related to encrypted group chat"
-Agent: 🤖 Spawning researcher... (reply will arrive separately)
+You: /spawn researcher "Find all NIP proposals related to groups"
+Agent: ✓ Spawned and focused on agent: researcher
+       First message: "Find all NIP proposals related to groups"
 ```
 
-See [Sub-agents](../tools/subagents.md) for full details on sub-agent lifecycle.
+`/spawn` is syntactic sugar for `/focus <agent-name>` + sending the first message. For true parallel sub-agent execution with result aggregation, use the `acp_delegate` tool.
 
 ## Command Detection
 
-Slash commands are detected by the message prefix `/` at the very beginning of the DM text. They are case-insensitive.
+Slash commands are detected by a `/` prefix at the start of the message (after whitespace trimming). Commands are case-insensitive. Detection happens in `dmRunAgentTurn` before the message reaches the LLM.
 
-The detection happens in `dmRunAgentTurn` before the message reaches the LLM, so slash commands never consume model tokens (except `/spawn` which invokes a full turn).
+## Configuring Available Commands
 
-## Configuring Slash Commands
+To restrict available commands for a public-facing agent, configure in `AGENTS.md`:
 
-Commands can be disabled per-agent:
-
-```json
-{
-  "extra": {
-    "slashCommands": {
-      "enabled": true,
-      "allowed": ["/new", "/info", "/kill"],
-      "disabled": ["/spawn"]
-    }
-  }
-}
+```markdown
+## Slash Commands
+Only respond to: /new, /status, /info, /kill
+Ignore all other slash commands.
 ```
 
-Restrict to a subset of commands for public-facing agents where you don't want users spawning sub-agents or exporting transcripts.
+Full programmatic restriction isn't exposed via config yet — use AGENTS.md instructions as a soft constraint.
 
 ## See Also
 
-- [Session Management](../reference/session-management-compaction.md) — JSONL transcripts, compaction details
-- [Session Pruning](session-pruning.md) — auto-pruning configuration
-- [Sub-agents](../tools/subagents.md) — `/spawn` details
-- [Queue](queue.md) — turn queuing and abort
+- [Session Pruning](session-pruning.md) — auto-pruning, session lifecycle
+- [Session Management](../reference/session-management-compaction.md) — compaction details
+- [Sub-agents](../tools/subagents.md) — `acp_delegate` for parallel work
+- [Thinking](../tools/thinking.md) — extended thinking configuration

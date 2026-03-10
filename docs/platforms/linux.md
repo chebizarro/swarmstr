@@ -47,19 +47,22 @@ Create config directory and config file:
 
 ```bash
 mkdir -p ~/.swarmstr
+
+# bootstrap.json — process-level config (key, relays, API addresses)
+cat > ~/.swarmstr/bootstrap.json << 'EOF'
+{
+  "private_key": "${NOSTR_PRIVATE_KEY}",
+  "relays": ["wss://relay.damus.io", "wss://nos.lol"],
+  "admin_listen_addr": "127.0.0.1:7423",
+  "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
+}
+EOF
+
+# config.json — runtime agent config
 cat > ~/.swarmstr/config.json << 'EOF'
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "relays": ["wss://relay.damus.io", "wss://nos.lol"]
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "anthropic/claude-opus-4-6" }
-    }
-  }
+  "agent": { "default_model": "anthropic/claude-opus-4-6" },
+  "providers": { "anthropic": { "api_key": "${ANTHROPIC_API_KEY}" } }
 }
 EOF
 ```
@@ -88,8 +91,7 @@ Restart=on-failure
 RestartSec=5
 
 # Environment
-Environment=SWARMSTR_CONFIG_PATH=/home/YOUR_USER/.swarmstr/config.json
-EnvironmentFile=-/home/YOUR_USER/.swarmstr/env
+EnvironmentFile=-/home/YOUR_USER/.swarmstr/.env
 
 [Install]
 WantedBy=multi-user.target
@@ -123,7 +125,7 @@ journalctl -u swarmstrd -f
 journalctl -u swarmstrd -n 100
 
 # Or via swarmstr CLI
-swarmstr logs --follow
+swarmstr logs --lines 100
 ```
 
 ## Updates
@@ -157,8 +159,8 @@ for core functionality.
 If you expose the control API remotely:
 
 ```bash
-# Allow HTTP/WS port (default 18789)
-ufw allow 18789/tcp
+# Allow the admin port configured in bootstrap.json (e.g. 7423)
+ufw allow 7423/tcp
 ```
 
 For remote access, prefer Tailscale over opening ports to the public internet.

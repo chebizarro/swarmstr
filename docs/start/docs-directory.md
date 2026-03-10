@@ -152,16 +152,15 @@ A map of all swarmstr documentation.
 
 | Page | What it covers |
 |------|---------------|
-| [Web Overview](/web/) | Dashboard, canvas, webchat, TUI |
+| [Web Overview](/web/) | Web dashboard, canvas, webchat |
 | [Webchat](/web/webchat) | Browser-based chat UI |
-| [TUI](/web/tui) | Terminal UI |
 
 ## Nodes
 
 | Page | What it covers |
 |------|---------------|
 | [Nodes Overview](/nodes/) | Audio, camera, location nodes |
-| [Audio & TTS](/nodes/audio) | Voice input/output via sherpa-onnx |
+| [Audio & TTS](/nodes/audio) | Voice input/output, TTS providers, STT via Whisper |
 | [Camera](/nodes/camera) | Camera node, image understanding |
 | [Location](/nodes/location) | GPS location, location commands |
 

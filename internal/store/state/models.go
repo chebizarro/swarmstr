@@ -21,6 +21,7 @@ type ConfigDoc struct {
 	TTS       TTSConfig       `json:"tts,omitempty"`
 	Secrets   SecretsConfig   `json:"secrets,omitempty"`
 	CronCfg   CronConfig      `json:"cron,omitempty"`
+	Hooks     HooksConfig     `json:"hooks,omitempty"`
 	Extra     map[string]any  `json:"extra,omitempty"`
 }
 
@@ -84,9 +85,17 @@ type ProvidersConfig map[string]ProviderEntry
 
 // SessionConfig controls per-session behaviour.
 type SessionConfig struct {
-	TTLSeconds   int `json:"ttl_seconds,omitempty"`
-	MaxSessions  int `json:"max_sessions,omitempty"`
-	HistoryLimit int `json:"history_limit,omitempty"`
+	TTLSeconds         int  `json:"ttl_seconds,omitempty"`
+	MaxSessions        int  `json:"max_sessions,omitempty"`
+	HistoryLimit       int  `json:"history_limit,omitempty"`
+	// PruneAfterDays deletes transcript entries for sessions whose last
+	// activity is older than this many days.  0 = disabled.
+	PruneAfterDays     int  `json:"prune_after_days,omitempty"`
+	// PruneIdleAfterDays deletes sessions that have received no inbound message
+	// for this many days (more aggressive than PruneAfterDays).  0 = disabled.
+	PruneIdleAfterDays int  `json:"prune_idle_after_days,omitempty"`
+	// PruneOnBoot runs a pruning pass at daemon startup.
+	PruneOnBoot        bool `json:"prune_on_boot,omitempty"`
 }
 
 // HeartbeatConfig controls the periodic heartbeat pulse.
@@ -109,6 +118,57 @@ type SecretsConfig map[string]string
 // CronConfig holds top-level cron scheduler settings.
 type CronConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
+}
+
+// HooksConfig configures the HTTP webhook ingress on the admin server.
+// When enabled, the admin server exposes POST /hooks/wake and POST /hooks/agent
+// endpoints authenticated by Token.  Custom path mappings route arbitrary
+// POST /hooks/<name> requests to wake or agent actions.
+type HooksConfig struct {
+	// Enabled activates the webhook ingress.  Token is required when true.
+	Enabled bool `json:"enabled,omitempty"`
+	// Token is the shared secret used to authenticate inbound requests.
+	// Send via "Authorization: Bearer <token>" or "X-Swarmstr-Token: <token>".
+	Token string `json:"token,omitempty"`
+	// AllowedAgentIDs restricts which agent IDs callers may target via
+	// /hooks/agent.  Empty slice = no restriction.  Use "*" for wildcard.
+	AllowedAgentIDs []string `json:"allowed_agent_ids,omitempty"`
+	// DefaultSessionKey overrides the default session key for /hooks/agent
+	// requests that do not specify an agent_id.  Defaults to "hook:ingress".
+	DefaultSessionKey string `json:"default_session_key,omitempty"`
+	// AllowRequestSessionKey permits callers to supply a custom session_key in
+	// the /hooks/agent payload.  Disabled by default for security.
+	AllowRequestSessionKey bool `json:"allow_request_session_key,omitempty"`
+	// Mappings maps arbitrary POST /hooks/<name> paths to wake or agent actions.
+	Mappings []HookMapping `json:"mappings,omitempty"`
+}
+
+// HookMappingMatch defines which path segment triggers a mapping.
+type HookMappingMatch struct {
+	// Path is the segment after /hooks/ (e.g. "github" → POST /hooks/github).
+	Path string `json:"path"`
+}
+
+// HookMapping routes an inbound webhook request to a wake or agent action.
+type HookMapping struct {
+	// Match identifies the URL path segment to match.
+	Match HookMappingMatch `json:"match"`
+	// Action is "wake" (system event) or "agent" (isolated agent turn).
+	Action string `json:"action"`
+	// Name is an optional human-readable label for this mapping.
+	Name string `json:"name,omitempty"`
+	// MessageTemplate is the prompt or event text.
+	// Use {{field.path}} tokens to interpolate JSON body values.
+	// Example: "New event: {{action}} on {{repository.full_name}}"
+	MessageTemplate string `json:"message_template,omitempty"`
+	// Deliver, when true for action="agent", sends the reply via SendDM.
+	Deliver bool `json:"deliver,omitempty"`
+	// Channel selects the delivery channel ("nostr" is currently supported).
+	Channel string `json:"channel,omitempty"`
+	// To is the delivery recipient (Nostr npub for channel="nostr").
+	To string `json:"to,omitempty"`
+	// SessionKey overrides the session key for this mapping's agent turns.
+	SessionKey string `json:"session_key,omitempty"`
 }
 
 // ── Nostr channel config ──────────────────────────────────────────────────────
@@ -191,6 +251,11 @@ type AgentConfig struct {
 	// When non-empty, only listed tools are included in the model's tool schema.
 	// When empty, all registered tools are available (subject to ToolProfile).
 	EnabledTools []string `json:"enabled_tools,omitempty"`
+	// ThinkingLevel sets the extended-thinking budget for Anthropic models.
+	// Values: "off", "minimal" (1 024), "low" (5 000), "medium" (10 000),
+	// "high" (20 000), "xhigh" (40 000).  Empty string inherits the default
+	// ("medium" when the session's Thinking flag is set).
+	ThinkingLevel string `json:"thinking_level,omitempty"`
 }
 
 // AgentsConfig is an ordered list of per-agent configurations.

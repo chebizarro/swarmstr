@@ -21,17 +21,20 @@ elsewhere on the host unless sandboxing is enabled.
 ## Default location
 
 - Default: `~/.swarmstr/workspace`
-- Override in `~/.swarmstr/config.json`:
+- Override via environment variable: `SWARMSTR_WORKSPACE=/path/to/workspace`
+- Or in the runtime config:
 
 ```json
 {
-  "agent": {
-    "workspace": "~/.swarmstr/workspace"
+  "extra": {
+    "workspace": {
+      "dir": "~/.swarmstr/workspace"
+    }
   }
 }
 ```
 
-`swarmstr setup` will create the workspace and seed bootstrap files if they are missing.
+- Per-agent: set `workspace_dir` in the agent's `agents[]` config entry.
 
 ## Workspace file map (what each file means)
 
@@ -91,7 +94,7 @@ These live under `~/.swarmstr/` and should NOT be committed to the workspace rep
 
 - `~/.swarmstr/config.json` (config)
 - `~/.swarmstr/credentials/` (API keys, Nostr keys)
-- `~/.swarmstr/agents/<agentId>/sessions/` (session transcripts + metadata)
+- Session transcripts (stored on Nostr, not local files)
 - `~/.swarmstr/skills/` (managed skills)
 
 ## Git backup (recommended, private)
@@ -142,6 +145,5 @@ Suggested `.gitignore`:
 
 1. Clone the repo to the desired path (default `~/.swarmstr/workspace`).
 2. Set `agent.workspace` to that path in `~/.swarmstr/config.json`.
-3. Run `swarmstr setup --workspace <path>` to seed any missing files.
-4. If you need sessions, copy `~/.swarmstr/agents/<agentId>/sessions/` from the
-   old machine separately.
+3. Seed any missing files by starting swarmstrd — it creates default workspace files on first run.
+4. Sessions are stored on Nostr relays and will be accessible from the new machine automatically.

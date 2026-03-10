@@ -56,37 +56,28 @@ sudo dphys-swapfile swapon
 
 ## Performance tuning
 
-For Pi 3B+ / Pi 4 with 2GB RAM, reduce resource usage:
+For Pi 3B+ / Pi 4 with 2GB RAM, reduce resource usage in `~/.swarmstr/config.json`:
 
 ```json
 {
-  "agents": {
-    "defaults": {
-      "heartbeat": {
-        "every": "60m",
-        "lightContext": true
-      },
-      "compaction": {
-        "reserveTokensFloor": 15000
-      }
+  "extra": {
+    "heartbeat": {
+      "enabled": true,
+      "interval_seconds": 3600
     }
   },
-  "cron": {
-    "maxConcurrentRuns": 1
+  "session": {
+    "history_limit": 50
   }
 }
 ```
 
-Use a smaller/cheaper model for heartbeats to reduce API costs:
+Use a smaller/cheaper model to reduce API costs:
 
 ```json
 {
-  "agents": {
-    "defaults": {
-      "heartbeat": {
-        "model": "anthropic/claude-haiku-4"
-      }
-    }
+  "agent": {
+    "default_model": "anthropic/claude-haiku-4"
   }
 }
 ```
@@ -110,8 +101,8 @@ sudo tailscale up
 free -h
 # Check CPU
 htop
-# Check swarmstr
-swarmstr health
+# Check swarmstr daemon
+swarmstr status
 journalctl -u swarmstrd --since "1 hour ago"
 ```
 

@@ -22,8 +22,8 @@ See [Nostr Channel](/channels/nostr) for configuration.
 
 ## Secondary channels (optional)
 
-Additional channels can be configured as plugins. These are secondary to Nostr
-but useful for reaching users who prefer specific platforms:
+Additional channels are delivered via **channel plugins** — loadable extensions that bridge
+external platforms into the `nostr_channels` pipeline. All channels share the same agent runtime.
 
 | Channel    | Status    | Notes                                      |
 | ---------- | --------- | ------------------------------------------ |
@@ -32,65 +32,77 @@ but useful for reaching users who prefer specific platforms:
 | Signal     | Plugin    | Signal-cli required                        |
 | Matrix     | Plugin    | homeserver + access token                  |
 | Slack      | Plugin    | App token; team-based                      |
-| iRC        | Plugin    | Server + credentials                       |
-| WhatsApp   | Plugin    | Baileys-based; unofficial                  |
+| IRC        | Plugin    | Server + credentials                       |
+| WhatsApp   | Plugin    | Unofficial; Baileys-based                  |
 | MS Teams   | Plugin    | App registration required                  |
 | MatterMost | Plugin    | Server URL + bot token                     |
 
 ## Routing
 
-Messages from all channels are routed to the agent runtime via the same DM bus.
+Messages from all channels are routed to the agent runtime via the same internal bus.
 The agent replies through the same channel that sent the message.
 
-For multi-agent setups, use `bindings` to route different channels or senders to
-different agent identities:
+For multi-agent setups, route different senders to different agents via `agents[].dm_peers`
+or `nostr_channels[].agent_id`:
 
-```json
+```json5
 {
-  "bindings": [
+  "nostr_channels": {
+    "work-group": {
+      "kind": "nip29",
+      "group_address": "groups.example.com'work",
+      "agent_id": "work-agent"   // routes this channel to a specific agent
+    }
+  },
+  "agents": [
     {
-      "agentId": "work",
-      "match": { "channel": "discord", "accountId": "work-bot" }
-    },
-    {
-      "agentId": "main",
-      "match": { "channel": "nostr" }
+      "id": "work-agent",
+      "dm_peers": ["npub1colleague..."]   // routes DMs from this peer to work-agent
     }
   ]
 }
 ```
 
-## Pairing
+## Access Control
 
-New contacts from any channel must pair before interacting with the agent (default policy).
-The pairing flow differs per channel:
+Access control is configured via `dm.policy` and `dm.allow_from`:
 
-- **Nostr**: Agent sends a DM with a 6-digit code; user replies with the code.
-- **Telegram**: Agent sends a challenge message; user replies.
-- **Discord**: Similar challenge flow.
+```json5
+{
+  "dm": {
+    "policy": "allowlist",   // pairing | allowlist | open | disabled
+    "allow_from": [
+      "npub1yourpubkey...",
+      "npub1friendspubkey..."
+    ]
+  }
+}
+```
 
-Configure `dmPolicy: "allowlist"` to skip pairing and only allow pre-approved senders.
+Per-channel access is configured via `nostr_channels[].allow_from`.
 
-See [Pairing](/channels/pairing) for details.
+See [Access Control & Pairing](/channels/pairing) for details.
 
 ## Group chats
 
-Agents can participate in group chats on channels that support them.
+Agents can participate in NIP-29 and NIP-28 group channels via `nostr_channels`.
+Each group sender gets their own session (key: `ch:<channelID>:<senderPubKey>`).
 
-By default, agents in groups only respond to direct mentions (configurable via `mentionPatterns`).
-See [Group Messages](/channels/group-messages).
+See [Group Chats](/channels/groups) for configuration.
 
-## Configuration pattern
+## Plugin channel configuration
 
-All channels follow the same config structure:
+All channel plugins use the same `nostr_channels` config structure:
 
-```json
+```json5
 {
-  "channels": {
-    "<channelName>": {
+  "nostr_channels": {
+    "<channel-name>": {
+      "kind": "<plugin-kind>",    // e.g. telegram, discord, nip29, nip28
       "enabled": true,
-      "dmPolicy": "pairing",
-      "allowFrom": []
+      "allow_from": ["*"],
+      "agent_id": "",             // optional: route to specific agent
+      "config": {}                // plugin-specific settings
     }
   }
 }

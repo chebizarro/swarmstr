@@ -1,220 +1,157 @@
 ---
-summary: "Running multiple swarmstrd instances and OpenAI-compatible HTTP API"
+summary: "Running multiple swarmstrd instances on the same machine"
 read_when:
-  - Running multiple swarmstrd daemons on different Nostr keys
-  - Exposing swarmstr via the OpenAI-compatible HTTP API
+  - Running multiple swarmstrd daemons with different Nostr identities
   - Multi-instance orchestration
-title: "Multiple Gateways & OpenAI API"
+title: "Multiple Instances"
 ---
 
-# Multiple Gateways & OpenAI-Compatible API
+# Multiple Instances
 
-## Multiple swarmstrd Instances
+You can run multiple `swarmstrd` instances on the same machine, each with a different Nostr identity (private key) and configuration. Each instance gets its own bootstrap config pointing to different credentials and listen ports.
 
-You can run multiple `swarmstrd` instances on the same machine, each with a different Nostr identity and configuration.
+## How It Works
 
-### Profile-Based Isolation
-
-Use `--profile` to isolate state:
+Each `swarmstrd` instance is configured by a separate bootstrap file. Use `--bootstrap` to specify the path:
 
 ```bash
-# Default instance
-swarmstrd
+# First instance (personal agent)
+swarmstrd --bootstrap ~/.swarmstr/personal/bootstrap.json
 
-# Named profile (state at ~/.swarmstr-work/)
-swarmstrd --profile work
-
-# Second named profile
-swarmstrd --profile personal
+# Second instance (work agent)
+swarmstrd --bootstrap ~/.swarmstr/work/bootstrap.json
 ```
 
-Each profile has isolated:
-- Config: `~/.swarmstr-<profile>/config.json`
-- Workspace: `~/.swarmstr-<profile>/workspace/`
-- Sessions: `~/.swarmstr-<profile>/agents/`
-- Logs: `~/.swarmstr-<profile>/logs/`
+Each bootstrap file should specify different ports to avoid conflicts:
 
-### Port Assignment
-
-Each instance needs its own HTTP port:
-
-```json5
-// ~/.swarmstr-work/config.json
+**~/.swarmstr/personal/bootstrap.json:**
+```json
 {
-  "http": { "port": 18790 }
-}
-
-// ~/.swarmstr-personal/config.json
-{
-  "http": { "port": 18791 }
+  "private_key": "${PERSONAL_NSEC}",
+  "relays": ["wss://relay.damus.io"],
+  "admin_listen_addr": "127.0.0.1:18789"
 }
 ```
 
-### systemd Multi-Instance
-
-Create separate service files:
-
-```ini
-# /etc/systemd/system/swarmstrd-work.service
-[Service]
-ExecStart=/usr/local/bin/swarmstrd --profile work
-EnvironmentFile=/home/user/.swarmstr-work/.env
-
-# /etc/systemd/system/swarmstrd-personal.service
-[Service]
-ExecStart=/usr/local/bin/swarmstrd --profile personal
-EnvironmentFile=/home/user/.swarmstr-personal/.env
+**~/.swarmstr/work/bootstrap.json:**
+```json
+{
+  "private_key": "${WORK_NSEC}",
+  "relays": ["wss://relay.damus.io"],
+  "admin_listen_addr": "127.0.0.1:18790"
+}
 ```
 
-### CLI Targeting
+Each instance loads its own ConfigDoc from Nostr (identified by the instance's private key), so config is fully isolated.
 
-Use `--profile` with CLI commands to target a specific instance:
+## CLI Targeting
+
+Point CLI commands at a specific instance using `--admin-addr` or `SWARMSTR_ADMIN_ADDR`:
 
 ```bash
-swarmstr --profile work status
-swarmstr --profile work gateway restart
-swarmstr --profile personal logs --follow
+# Target personal agent
+swarmstr status --admin-addr 127.0.0.1:18789
+
+# Target work agent
+swarmstr status --admin-addr 127.0.0.1:18790
+
+# Or via environment variable
+SWARMSTR_ADMIN_ADDR=127.0.0.1:18790 swarmstr status
 ```
 
 ## Multi-Agent Within One Instance
 
-Alternatively, use the built-in agents system to run multiple Nostr identities within one daemon:
+For most multi-agent scenarios, a **single daemon** with multiple agents is simpler and more efficient. Use `agents[]` to define per-agent configs with `dm_peers` to route different senders to different agents:
 
 ```json5
 {
-  "agents": {
-    "list": [
-      {
-        "id": "agent-alpha",
-        "workspace": "~/.swarmstr/workspace-alpha",
-        "channels": {
-          "nostr": {
-            "privateKey": "${AGENT_ALPHA_NSEC}"
-          }
-        }
-      },
-      {
-        "id": "agent-beta",
-        "workspace": "~/.swarmstr/workspace-beta",
-        "channels": {
-          "nostr": {
-            "privateKey": "${AGENT_BETA_NSEC}"
-          }
-        }
-      }
-    ]
-  }
-}
-```
-
-This is the recommended approach for most multi-agent scenarios — one daemon, multiple Nostr identities.
-
-## OpenAI-Compatible HTTP API
-
-swarmstr exposes an OpenAI-compatible chat completions endpoint. This allows any OpenAI-compatible client or tool to use swarmstr as a backend.
-
-### Endpoint
-
-```
-POST http://localhost:18789/v1/chat/completions
-Authorization: Bearer <gateway-token>
-Content-Type: application/json
-```
-
-### Request Format
-
-```json
-{
-  "model": "swarmstr",
-  "messages": [
-    {"role": "user", "content": "What's the current time?"}
-  ],
-  "stream": false
-}
-```
-
-### Response Format
-
-```json
-{
-  "id": "chatcmpl-abc123",
-  "object": "chat.completion",
-  "model": "swarmstr",
-  "choices": [
+  "agents": [
     {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "The current time is 14:32 UTC."
-      },
-      "finish_reason": "stop"
+      "id": "coding-agent",
+      "model": "anthropic/claude-opus-4-6",
+      "dm_peers": ["npub1dev..."],
+      "tool_profile": "coding"
+    },
+    {
+      "id": "research-agent",
+      "model": "anthropic/claude-sonnet-4-5",
+      "dm_peers": ["npub1researcher..."],
+      "tool_profile": "full"
     }
   ]
 }
 ```
 
-### Streaming
+See [Multi-Agent Concepts](/concepts/multi-agent) for more on this approach.
+
+## systemd Multi-Instance
+
+Create separate service units for each bootstrap config:
+
+```ini
+# /etc/systemd/system/swarmstrd-personal.service
+[Unit]
+Description=swarmstr personal agent
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/swarmstrd --bootstrap /home/user/.swarmstr/personal/bootstrap.json
+Restart=always
+User=user
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/swarmstrd-work.service
+[Unit]
+Description=swarmstr work agent
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/swarmstrd --bootstrap /home/user/.swarmstr/work/bootstrap.json
+Restart=always
+User=user
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now swarmstrd-personal swarmstrd-work
+```
+
+## Gateway WebSocket (Multiple Instances)
+
+Each instance can also expose its own Gateway WebSocket on a different port:
 
 ```json
-{ "stream": true }
-```
-
-Responses are streamed as server-sent events (SSE) in the standard OpenAI streaming format.
-
-### Using with OpenAI-Compatible Clients
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:18789/v1",
-    api_key="your-gateway-token"
-)
-
-response = client.chat.completions.create(
-    model="swarmstr",
-    messages=[{"role": "user", "content": "Hello!"}]
-)
-print(response.choices[0].message.content)
-```
-
-### Targeting a Specific Agent
-
-Include the agent ID in the model name:
-
-```json
-{ "model": "swarmstr/agent-alpha" }
-```
-
-### Configure API
-
-```json5
 {
-  "http": {
-    "port": 18789,
-    "openaiApi": {
-      "enabled": true
-    },
-    "token": "${SWARMSTR_GATEWAY_TOKEN}"
-  }
+  "admin_listen_addr": "127.0.0.1:18789",
+  "gateway_ws_listen_addr": "127.0.0.1:18788"
 }
 ```
 
-## Load Balancing Multiple Instances
+## Kubernetes / Docker
 
-Use nginx upstream for load balancing:
+For containerized deployments, run each instance in its own container with its own environment variables for the private key and relay config:
 
-```nginx
-upstream swarmstr {
-    server localhost:18789;
-    server localhost:18790;
-}
+```yaml
+services:
+  swarmstrd-personal:
+    image: swarmstr/swarmstrd:latest
+    environment:
+      - NOSTR_NSEC=${PERSONAL_NSEC}
+    ports:
+      - "18789:18789"
 
-server {
-    location /v1/ {
-        proxy_pass http://swarmstr;
-    }
-}
+  swarmstrd-work:
+    image: swarmstr/swarmstrd:latest
+    environment:
+      - NOSTR_NSEC=${WORK_NSEC}
+    ports:
+      - "18790:18789"
 ```
 
 ## See Also
@@ -222,4 +159,3 @@ server {
 - [Multi-Agent Concepts](/concepts/multi-agent)
 - [Configuration](/gateway/configuration)
 - [Authentication](/gateway/authentication)
-- [Remote Access](/gateway/remote)

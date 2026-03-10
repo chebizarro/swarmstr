@@ -21,19 +21,15 @@ OPENAI_API_KEY=sk-...
 
 3. Configure:
 
-```json5
+```json
 {
   "providers": {
     "openai": {
-      "apiKey": "${OPENAI_API_KEY}"
+      "api_key": "${OPENAI_API_KEY}"
     }
   },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "openai/gpt-4o"
-      }
-    }
+  "agent": {
+    "default_model": "openai/gpt-4o"
   }
 }
 ```
@@ -56,13 +52,12 @@ swarmstr models list --provider openai
 
 For Azure-hosted OpenAI:
 
-```json5
+```json
 {
   "providers": {
     "openai": {
-      "apiKey": "${AZURE_OPENAI_API_KEY}",
-      "baseUrl": "https://<resource>.openai.azure.com/openai/deployments/<deployment>",
-      "apiVersion": "2024-02-15-preview"
+      "api_key": "${AZURE_OPENAI_API_KEY}",
+      "base_url": "https://<resource>.openai.azure.com/openai/deployments/<deployment>"
     }
   }
 }

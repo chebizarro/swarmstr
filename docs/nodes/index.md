@@ -32,12 +32,14 @@ Node Device ──WebSocket──► swarmstrd
 ## Pairing Nodes
 
 ```bash
-# On the node device, start the node host
-swarmstr node run --host <gateway-host> --port 18789
-
-# On the gateway, approve the pairing request
+# View pending pairing requests
 swarmstr nodes pending
+
+# Approve a pairing request
 swarmstr nodes approve <requestId>
+
+# Reject a pairing request
+swarmstr nodes reject <requestId>
 
 # Verify
 swarmstr nodes status
@@ -45,40 +47,25 @@ swarmstr nodes status
 
 ## Available Node Commands
 
-Once paired, the agent can invoke node commands:
+Once paired, the agent can invoke node commands via `swarmstr nodes invoke`.
+The available commands depend on what capabilities the node host exposes.
 
 ### Audio / TTS
-
-```bash
-# The agent uses the sherpa-onnx-tts skill to generate audio
-# and delivers it via the node's audio output
-```
 
 See [Audio & TTS](/nodes/audio).
 
 ### Camera
 
 ```bash
-# Capture a photo from the node's camera
-swarmstr nodes camera snap --node <name>
+swarmstr nodes invoke --node <node-id> --command camera.snap
 ```
 
-The agent can request a camera snapshot for visual context. See [Camera](/nodes/camera).
-
-### System Commands
-
-```bash
-# Run a command on the node
-swarmstr nodes run --node <name> ls -la /home
-```
-
-This is useful when the gateway runs on a different machine from the target system.
+See [Camera](/nodes/camera).
 
 ### Location
 
 ```bash
-# Get GPS location from the node
-swarmstr nodes location get --node <name>
+swarmstr nodes invoke --node <node-id> --command location.get
 ```
 
 See [Location](/nodes/location).
@@ -86,49 +73,36 @@ See [Location](/nodes/location).
 ## Node CLI
 
 ```bash
-# List connected nodes
-swarmstr nodes status
+# List registered nodes
 swarmstr nodes list
+swarmstr nodes status
 
 # Describe a specific node
-swarmstr nodes describe --node <id|name>
+swarmstr nodes describe <node-id>
 
-# Run a command on a node
-swarmstr nodes run --node <name> <command>
+# Rename a node
+swarmstr nodes rename <node-id> <new-name>
 
-# Camera
-swarmstr nodes camera list --node <name>
-swarmstr nodes camera snap --node <name>
+# Send a message to a node
+swarmstr nodes send <node-id> <message>
 
-# Location
-swarmstr nodes location get --node <name>
-```
+# Invoke a command on a node
+swarmstr nodes invoke --node <node-id> --command <cmd> [--args '{...}']
 
-## Node Service Management
-
-```bash
-# Install node service on a device
-swarmstr node install --host <gateway-host>
-
-# Start/stop/restart
-swarmstr node start
-swarmstr node stop
-swarmstr node restart
-swarmstr node status
+# Pairing management
+swarmstr nodes pending
+swarmstr nodes approve <request-id>
+swarmstr nodes reject <request-id>
 ```
 
 ## Headless Node Host
 
-Run a headless node host that exposes the current machine's capabilities to the gateway:
+A node host runs on a remote device and connects to the swarmstr gateway over WebSocket.
+The node host registers capabilities (audio, camera, location, exec) and makes them
+accessible via `swarmstr nodes invoke`.
 
-```bash
-swarmstr node run --host <gateway-ip-or-hostname> --port 18789
-```
-
-This is useful for:
-- Routing `exec` calls to a specific machine
-- Providing audio/camera from a remote device
-- Separating the gateway from compute nodes
+The node host can be run via the `swarmstrd` binary on the remote device, or any
+WebSocket client that speaks the node protocol.
 
 ## Security
 
@@ -142,5 +116,5 @@ This is useful for:
 - [Audio & TTS](/nodes/audio)
 - [Camera & Images](/nodes/camera)
 - [Location](/nodes/location)
-- [Skills: sherpa-onnx-tts](/tools/skills)
+- [Audio & TTS Providers](/nodes/audio)
 - [Exec Tool](/tools/exec)

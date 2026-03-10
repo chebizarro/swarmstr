@@ -9,319 +9,108 @@ title: "CLI Reference"
 
 # CLI Reference
 
-This page describes the current swarmstr CLI behavior. If commands change, update this doc.
+The `swarmstr` binary is the control-plane client for the swarmstrd daemon. It communicates over the admin HTTP API (address configured via `admin_listen_addr` in `bootstrap.json`).
 
-## Command Pages
-
-- [`setup`](/cli/setup)
-- [`config`](/cli/config)
-- [`doctor`](/cli/doctor)
-- [`dm-send`](/cli/dm-send)
-- [`agent`](/cli/agent)
-- [`agents`](/cli/agents)
-- [`status`](/cli/status)
-- [`health`](/cli/health)
-- [`sessions`](/cli/sessions)
-- [`gateway`](/cli/gateway)
-- [`logs`](/cli/logs)
-- [`system`](/cli/system)
-- [`models`](/cli/models)
-- [`memory`](/cli/memory)
-- [`approvals`](/cli/approvals)
-- [`cron`](/cli/cron)
-- [`hooks`](/cli/hooks)
-- [`skills`](/cli/skills)
-- [`nostr`](/cli/nostr)
-- [`tui`](/cli/tui)
-
-## Global Flags
-
-- `--dev`: isolate state under `~/.swarmstr-dev` and shift default ports.
-- `--profile <name>`: isolate state under `~/.swarmstr-<name>`.
-- `--no-color`: disable ANSI colors.
-- `-V`, `--version`, `-v`: print version and exit.
-
-## Output Styling
-
-- ANSI colors and progress indicators only render in TTY sessions.
-- `--json` (and `--plain` where supported) disables styling for clean output.
-- `--no-color` disables ANSI styling; `NO_COLOR=1` is also respected.
+**Global flag**: `--bootstrap <path>` — path to bootstrap config JSON (auto-detected by default).
 
 ## Command Tree
 
 ```
-swarmstr [--dev] [--profile <name>] <command>
-  setup
-  config
-    get
-    set
-    unset
-    file
-    validate
-  doctor
-  dm-send
-  agent
-  agents
-    list
-    add
-    delete
-    bind
-    unbind
+swarmstr <command> [subcommand] [flags]
+  version
   status
   health
-  sessions
-  gateway
-    status
-    install
-    uninstall
-    start
-    stop
-    restart
-    run
   logs
-  system
-    event
-    heartbeat last|enable|disable
+  doctor
+  keygen
+  dm-send
+  memory-search
+  agents
+    list
   models
     list
-    status
     set
-    fallbacks list|add|remove|clear
-    auth add|setup-token
-  memory
+  channels
+    list
     status
-    index
-    search
-  approvals
+  config
     get
-    set
-    allowlist add|remove
-  cron
-    status
+    validate
+    path
+    import
+    export
+  sessions
+    list
+    get
+    export
+    delete
+    reset
+    prune
+  nodes
     list
     add
-    edit
-    rm
-    enable
-    disable
-    runs
+    status
+    send
+    pending
+    approve
+    reject
+    describe
+    invoke
+    rename
+  cron
+    list
+    add
+    remove (rm)
     run
   hooks
     list
-    info
-    check
-    enable
-    disable
   skills
     list
-    info
-    check
-  nostr
-    profile
-    relay-info
-    fetch
+    status
+  secrets
+    list
+    get
+    set
+  approvals
+    list
+    approve
+    deny
+  plugins
+    list
     publish
-  tui
+    search
+    install
+  completion
+  daemon
+  gw
 ```
 
-## Setup + Configuration
+## Core Commands
 
-### `setup`
+### `version`
 
-Initialize config and workspace for swarmstr.
+Print swarmstr version.
 
 ```bash
-swarmstr setup
-swarmstr setup --workspace ~/.swarmstr/workspace
+swarmstr version
 ```
-
-Options:
-
-- `--workspace <dir>`: agent workspace path (default `~/.swarmstr/workspace`).
-- `--non-interactive`: run without prompts.
-
-### `config`
-
-Non-interactive config helpers.
-
-Subcommands:
-
-- `config get <path>`: print a config value (dot/bracket path).
-- `config set <path> <value>`: set a value (JSON5 or raw string).
-- `config unset <path>`: remove a value.
-- `config file`: print the active config file path.
-- `config validate`: validate the current config against the schema.
-
-```bash
-swarmstr config get channels.nostr.privateKey
-swarmstr config set agents.defaults.model.primary anthropic/claude-opus-4-5
-swarmstr config file
-```
-
-### `doctor`
-
-Health checks and quick fixes (config + daemon + relay connections).
-
-```bash
-swarmstr doctor
-swarmstr doctor --yes
-```
-
-Options:
-
-- `--yes`: accept defaults without prompting.
-- `--non-interactive`: skip prompts; apply safe migrations only.
-
-## Messaging + Agent
-
-### `dm-send`
-
-Send a Nostr DM to a pubkey via the configured relays.
-
-```bash
-swarmstr dm-send --to npub1abc... --message "Hello from swarmstr"
-swarmstr dm-send --to npub1abc... --message "status update" --deliver
-```
-
-Options:
-
-- `--to <npub|hex>`: recipient Nostr pubkey (required).
-- `--message <text>`: message content (required).
-- `--deliver`: wait for agent reply and return it.
-
-### `agent`
-
-Run one agent turn via the running daemon.
-
-```bash
-swarmstr agent --message "Summarize recent events"
-swarmstr agent --to npub1abc... --message "Check relay status" --deliver
-swarmstr agent --agent ops --message "Generate report"
-```
-
-Options:
-
-- `--message <text>`: message to send (required).
-- `--to <npub|hex>`: target pubkey (for session routing).
-- `--agent <id>`: target a configured agent by name.
-- `--session-id <id>`: specific session ID.
-- `--deliver`: wait for reply and print it.
-- `--json`: JSON output.
-- `--timeout <seconds>`: turn timeout.
-
-### `agents`
-
-Manage isolated agents (workspaces + Nostr keys + routing).
-
-#### `agents list`
-
-```bash
-swarmstr agents list
-swarmstr agents list --json
-```
-
-#### `agents add [name]`
-
-Add a new isolated agent with its own Nostr key and workspace.
-
-```bash
-swarmstr agents add mybot
-swarmstr agents add mybot --workspace /custom/path --non-interactive
-```
-
-Options:
-
-- `--workspace <dir>`: workspace directory.
-- `--private-key <nsec|hex>`: Nostr private key for this agent.
-- `--non-interactive`: skip prompts.
-
-#### `agents bind`
-
-Add Nostr pubkey routing bindings for an agent.
-
-```bash
-swarmstr agents bind --agent mybot --npub npub1abc...
-```
-
-#### `agents unbind`
-
-Remove routing bindings.
-
-```bash
-swarmstr agents unbind --agent mybot --npub npub1abc...
-```
-
-#### `agents delete <id>`
-
-Delete an agent and prune its workspace and state.
-
-```bash
-swarmstr agents delete mybot --force
-```
-
-## Status + Health
 
 ### `status`
 
-Show daemon health and recent Nostr DM recipients.
+Show daemon health and relay connection status.
 
 ```bash
 swarmstr status
 swarmstr status --json
-swarmstr status --deep
 ```
-
-Options:
-
-- `--json`: JSON output.
-- `--deep`: probe relay connections.
-- `--verbose`: extended output.
 
 ### `health`
 
-Fetch health from the running daemon.
+Lightweight health check (exits 0 if healthy).
 
 ```bash
 swarmstr health
 swarmstr health --json
-```
-
-### `sessions`
-
-List stored conversation sessions.
-
-```bash
-swarmstr sessions
-swarmstr sessions --json
-swarmstr sessions --active 60
-```
-
-Options:
-
-- `--json`: JSON output.
-- `--active <minutes>`: filter to sessions active within N minutes.
-- `--store <path>`: custom sessions file path.
-
-## Gateway / Daemon
-
-### `gateway`
-
-Manage the swarmstrd background daemon.
-
-Subcommands:
-
-- `gateway status`: show daemon status (relays connected, agents running).
-- `gateway install`: install as systemd/launchd service.
-- `gateway uninstall`: remove the service.
-- `gateway start`: start the daemon.
-- `gateway stop`: stop the daemon.
-- `gateway restart`: restart the daemon.
-- `gateway run`: run the daemon in the foreground.
-
-```bash
-swarmstr gateway status
-swarmstr gateway restart
-swarmstr gateway install --port 18789
 ```
 
 ### `logs`
@@ -329,89 +118,192 @@ swarmstr gateway install --port 18789
 Tail daemon logs.
 
 ```bash
-swarmstr logs --follow
-swarmstr logs --limit 200
-swarmstr logs --json
+swarmstr logs
+swarmstr logs --lines 100
+swarmstr logs --lines 50 --level error
 ```
 
-## System
+### `doctor`
 
-### `system event`
-
-Enqueue a system event to trigger an agent turn.
+Diagnostics: checks config, relay connections, credentials.
 
 ```bash
-swarmstr system event --text "Check relay connectivity"
-swarmstr system event --text "Daily report" --mode now
+swarmstr doctor
+```
+
+### `keygen`
+
+Generate a fresh Nostr keypair (nsec + npub).
+
+```bash
+swarmstr keygen
+swarmstr keygen --json
+```
+
+Output includes the generated nsec/npub and instructions for adding to your bootstrap config.
+
+## Messaging
+
+### `dm-send`
+
+Send a Nostr DM to a pubkey directly (bypasses the daemon).
+
+```bash
+swarmstr dm-send --to npub1abc... --text "Hello"
+swarmstr dm-send --to npub1abc... --text "Hello" --timeout 30
 ```
 
 Options:
+- `--to <npub|hex>` — recipient pubkey (required)
+- `--text <message>` — message text (required)
+- `--timeout <seconds>` — publish timeout (default: 15)
 
-- `--text <text>`: event text (required).
-- `--mode <now|next-heartbeat>`: delivery mode.
+### `memory-search`
 
-### `system heartbeat last|enable|disable`
-
-Heartbeat controls.
+Search the in-process memory index (daemon must be running).
 
 ```bash
-swarmstr system heartbeat last
-swarmstr system heartbeat enable
-swarmstr system heartbeat disable
+swarmstr memory-search -q "relay configuration"
+swarmstr memory-search -q "deploy pipeline" --limit 20
+```
+
+Options:
+- `-q <query>` — search query (required)
+- `--limit <n>` — max results (default: 10)
+
+## Agents
+
+### `agents list`
+
+List all registered agents and their status.
+
+```bash
+swarmstr agents list
+swarmstr agents list --json
 ```
 
 ## Models
 
 ### `models list`
 
+List available models from the running daemon.
+
 ```bash
 swarmstr models list
-swarmstr models list --provider anthropic
+swarmstr models list --agent main
+swarmstr models list --json
 ```
 
-### `models status`
+### `models set <model-id>`
+
+Set the default model for an agent.
 
 ```bash
-swarmstr models status
-swarmstr models status --check    # exit 1 if expired/missing
+swarmstr models set claude-opus-4-5
+swarmstr models set openai/gpt-4o --agent fast-reply
 ```
 
-### `models set <model>`
+## Channels
 
-Set the default primary model.
+### `channels list`
+
+List configured Nostr channels.
 
 ```bash
-swarmstr models set anthropic/claude-opus-4-5
+swarmstr channels list
+swarmstr channels list --json
 ```
 
-### `models fallbacks`
+### `channels status`
 
-Manage fallback model list.
+Show connection status for all channels.
 
 ```bash
-swarmstr models fallbacks list
-swarmstr models fallbacks add anthropic/claude-haiku-4-5
-swarmstr models fallbacks remove anthropic/claude-haiku-4-5
-swarmstr models fallbacks clear
+swarmstr channels status
 ```
 
-### `models auth`
+## Config
 
-Manage model provider credentials.
+Manage the runtime ConfigDoc (stored on Nostr).
 
 ```bash
-swarmstr models auth add
-swarmstr models auth setup-token --provider anthropic
+swarmstr config get
+swarmstr config get agent.default_model
+swarmstr config validate
+swarmstr config path
+swarmstr config export > config.json
+swarmstr config import --file config.json
 ```
 
-## Memory
+## Sessions
 
-Vector search over `MEMORY.md` + `memory/*.md`:
+### `sessions list`
 
 ```bash
-swarmstr memory status
-swarmstr memory index
-swarmstr memory search "relay configuration"
+swarmstr sessions list
+swarmstr sessions list --json
+swarmstr sessions list --active 60
+```
+
+### `sessions get <session-id>`
+
+Show details for a specific session.
+
+```bash
+swarmstr sessions get abc123
+```
+
+### `sessions export <session-id>`
+
+Export transcript for a session.
+
+```bash
+swarmstr sessions export abc123
+```
+
+### `sessions delete <session-id>`
+
+Delete a session.
+
+```bash
+swarmstr sessions delete abc123
+```
+
+### `sessions reset <session-id>`
+
+Reset a session (clear history, keep settings).
+
+```bash
+swarmstr sessions reset abc123
+```
+
+### `sessions prune`
+
+Prune old sessions.
+
+```bash
+swarmstr sessions prune --older-than 30d --dry-run
+swarmstr sessions prune --older-than 30d
+swarmstr sessions prune --all --dry-run
+```
+
+Options:
+- `--older-than <Nd>` — prune sessions older than N days
+- `--all` — prune all sessions
+- `--dry-run` — preview without deleting
+
+## Nodes
+
+Manage remote hardware nodes (Raspberry Pi, etc.).
+
+```bash
+swarmstr nodes list
+swarmstr nodes add --name mypi --pubkey npub1...
+swarmstr nodes status mypi
+swarmstr nodes send --node mypi --command canvas.clear
+swarmstr nodes pending
+swarmstr nodes approve <request-id>
+swarmstr nodes invoke --node mypi --command agent --args '{"text":"ping"}'
 ```
 
 ## Cron
@@ -420,111 +312,96 @@ Manage scheduled jobs. See [Cron Jobs](/automation/cron-jobs).
 
 ```bash
 swarmstr cron list
-swarmstr cron add --name daily-check --every 24h --system-event "Daily health check"
-swarmstr cron add --name morning --at "08:00" --system-event "Good morning"
-swarmstr cron enable <id>
-swarmstr cron disable <id>
-swarmstr cron rm <id>
-swarmstr cron run <id> --force
+swarmstr cron add --name daily-check --every 24h
+swarmstr cron remove <id>
+swarmstr cron run <id>
 ```
 
 ## Hooks
 
-Manage event hooks. See [Hooks](/automation/hooks).
+See [Hooks](/automation/hooks).
 
 ```bash
 swarmstr hooks list
-swarmstr hooks enable session-memory
-swarmstr hooks disable command-logger
-swarmstr hooks info session-memory
-swarmstr hooks check
+swarmstr hooks list --json
 ```
 
 ## Skills
 
-List and inspect available agent skills.
-
 ```bash
 swarmstr skills list
-swarmstr skills info sherpa-onnx-tts
-swarmstr skills check
+swarmstr skills status
 ```
 
-Options:
+## Secrets
 
-- `--eligible`: show only ready skills.
-- `--json`: JSON output.
-- `--verbose`: include missing requirements detail.
+Manage named secrets in the runtime config.
+
+```bash
+swarmstr secrets list
+swarmstr secrets get ANTHROPIC_API_KEY
+swarmstr secrets set MY_TOKEN "value"
+```
 
 ## Approvals
 
-Manage tool approval requirements.
+Manage pending tool approval requests (for `exec` tool with approval mode).
 
 ```bash
-swarmstr approvals get exec
-swarmstr approvals set exec always
-swarmstr approvals allowlist add exec /bin/ls
+swarmstr approvals list
+swarmstr approvals approve <approval-id>
+swarmstr approvals deny <approval-id>
 ```
 
-## Nostr Utilities
+## Plugins
 
-### `nostr profile`
-
-Fetch a Nostr profile by npub.
+Manage plugins (skills written in JavaScript).
 
 ```bash
-swarmstr nostr profile npub1abc...
+swarmstr plugins list
+swarmstr plugins search "nostr"
+swarmstr plugins install my-plugin
+swarmstr plugins publish --path ./my-plugin
 ```
 
-### `nostr relay-info`
+## Daemon
 
-Fetch NIP-11 relay information.
+Manage the swarmstrd background process.
 
 ```bash
-swarmstr nostr relay-info wss://relay.damus.io
+swarmstr daemon start
+swarmstr daemon stop
+swarmstr daemon restart
+swarmstr daemon status
+swarmstr daemon start --bootstrap ~/.swarmstr/bootstrap.json
 ```
 
-### `nostr fetch`
+## GW (Raw RPC)
 
-Fetch Nostr events by filter.
+Send a raw JSON-RPC call to the gateway.
 
 ```bash
-swarmstr nostr fetch --kinds 1 --limit 10 --author npub1abc...
+swarmstr gw <method> [key=value ...]
+swarmstr gw --json status.get
+swarmstr gw config.get path=agent.default_model
 ```
 
-### `nostr publish`
+## Slash Commands (In-Chat)
 
-Publish a Nostr event.
+When messaging the agent via Nostr DM, use `/` commands:
 
-```bash
-swarmstr nostr publish --kind 1 --content "Hello Nostr"
+```
+/new [model]       — start fresh session
+/kill or /reset    — hard reset session
+/compact           — compact session history
+/set <key> <val>   — set session flag (model, thinking, verbose, tts, label)
+/unset <key>       — clear session flag
+/info              — show session info
+/status            — agent + relay status
+/focus <text>      — route to named agent
+/unfocus           — clear focus
+/spawn <msg>       — delegate to subagent
+/export            — export transcript
 ```
 
-## TUI
-
-Open the terminal UI connected to the daemon.
-
-```bash
-swarmstr tui
-swarmstr tui --session agent:main:main
-```
-
-Options:
-
-- `--session <key>`: connect to specific session.
-- `--deliver`: route turns back via Nostr DM.
-
-## Chat Slash Commands
-
-Nostr DM messages support `/...` commands. See [Slash Commands](/tools/slash-commands).
-
-Key commands:
-
-- `/new` — start a fresh session
-- `/kill` — end current session
-- `/compact` — compact session history
-- `/set key value` — set config value
-- `/info` — show session info
-- `/status` — quick diagnostics
-- `/focus <topic>` — set session focus
-- `/spawn <name>` — spawn subagent
+See [Slash Commands](/tools/slash-commands) for full reference.

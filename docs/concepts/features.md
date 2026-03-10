@@ -47,7 +47,7 @@ title: "Features"
 
 ### Automation & Scheduling
 - Built-in cron scheduler (persistent, systemd-compatible)
-- Heartbeat system for periodic agent turns
+- NIP-38 heartbeat for Nostr presence (kind:30315)
 - Event hooks for /new, /reset, lifecycle events
 - Webhook endpoints (`/hooks/wake`, `/hooks/agent`)
 - Gmail Pub/Sub bridge
@@ -62,33 +62,32 @@ title: "Features"
 
 ### Web & Dashboard
 - Canvas tool for HTML/JSON/Markdown rendering
-- WebSocket dashboard at `localhost:18789`
+- WebSocket dashboard at the configured `gateway_ws_listen_addr`
 - Browser-based webchat UI
 - Terminal UI (TUI)
-- OpenAI-compatible `/v1/chat/completions` endpoint
 
 ### Operations
 - Single Go binary — no runtime dependencies
 - systemd/launchd service integration
 - Docker support
 - `~/.swarmstr/config.json` with `${ENV_VAR}` interpolation
-- Multiple profiles (`--profile work`) for isolation
+- Multiple instances via separate bootstrap files
 - Full CLI management (`swarmstr` command)
 
 ### Security
 - nsec stored separately from config (env var / .env file)
-- DM access control: allowlist, pairing code, or open
+- DM access control: allowlist, pairing, open, or disabled
 - Gateway token authentication for HTTP API
 - Docker sandbox for agent tool execution (optional)
 - Tool approval gates for exec/elevated operations
 
 ### Slash Commands
-`/new` `/kill` `/reset` `/compact` `/set` `/unset` `/info` `/status` `/context` `/export` `/focus` `/unfocus` `/spawn` `/stop` `/reasoning` `/send`
+`/new` `/reset` `/kill` `/set` `/unset` `/info` `/status` `/model` `/compact` `/export` `/agents` `/focus` `/unfocus` `/spawn` `/help`
 
 ### Node Device Support
 - Headless node host for remote exec
 - Camera snap and video clip
-- Audio in/out with sherpa-onnx TTS
+- Audio in/out with TTS (openai, kokoro, google, elevenlabs)
 - GPS location
 - VoiceWake word detection
 

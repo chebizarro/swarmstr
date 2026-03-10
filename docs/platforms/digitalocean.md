@@ -61,40 +61,62 @@ source ~/.bashrc
 ```bash
 mkdir -p ~/.swarmstr
 
-# Create .env with your secrets
-cat > ~/.swarmstr/.env <<'EOF'
+# Create env file with your secrets (keep chmod 600)
+cat > ~/.swarmstr/env <<'EOF'
 NOSTR_PRIVATE_KEY=nsec1...
 ANTHROPIC_API_KEY=sk-ant-...
-SWARMSTR_GATEWAY_TOKEN=$(openssl rand -hex 32)
+SWARMSTR_ADMIN_TOKEN=change-me-use-openssl-rand-hex-32
 EOF
-chmod 600 ~/.swarmstr/.env
+chmod 600 ~/.swarmstr/env
 
-# Create minimal config
+# bootstrap.json — process-level config (key, relays, admin address)
+cat > ~/.swarmstr/bootstrap.json <<'EOF'
+{
+  "private_key": "${NOSTR_PRIVATE_KEY}",
+  "relays": ["wss://relay.damus.io", "wss://relay.nostr.band", "wss://nos.lol"],
+  "admin_listen_addr": "127.0.0.1:7423",
+  "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
+}
+EOF
+
+# config.json — runtime agent config
 cat > ~/.swarmstr/config.json <<'EOF'
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "relays": ["wss://relay.damus.io", "wss://relay.nostr.band", "wss://nos.lol"],
-      "dmPolicy": "allowlist",
-      "allowFrom": ["npub1your-pubkey..."]
-    }
-  },
-  "providers": {
-    "anthropic": { "apiKey": "${ANTHROPIC_API_KEY}" }
-  }
+  "agent": { "default_model": "anthropic/claude-opus-4-6" },
+  "providers": { "anthropic": { "api_key": "${ANTHROPIC_API_KEY}" } },
+  "dm": { "policy": "allowlist", "allow_from": ["npub1your-pubkey..."] }
 }
 EOF
 ```
 
 ### 5. Install as systemd Service
 
-```bash
-swarmstr gateway install
-systemctl --user start swarmstrd
-systemctl --user enable swarmstrd
+Create a user systemd unit:
 
-# Enable linger (persists across logout)
+```ini
+# ~/.config/systemd/user/swarmstrd.service
+[Unit]
+Description=swarmstr AI agent daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/swarmstrd
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=-%h/.swarmstr/env
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+mkdir -p ~/.config/systemd/user
+# (create the unit file above)
+systemctl --user daemon-reload
+systemctl --user enable --now swarmstrd
+
+# Enable linger (persists after logout)
 sudo loginctl enable-linger swarmstr
 ```
 
@@ -102,7 +124,7 @@ sudo loginctl enable-linger swarmstr
 
 ```bash
 swarmstr status
-journalctl --user -u swarmstrd -f
+journalctl --user -u swarmstrd -n 50
 ```
 
 ## Firewall Setup
@@ -114,15 +136,15 @@ If you want dashboard access:
 ```bash
 # UFW setup
 sudo ufw allow OpenSSH
-sudo ufw allow 18789/tcp   # only if you want dashboard externally
+# No inbound port needed for Nostr; admin API is on 127.0.0.1 only by default
 sudo ufw enable
 ```
 
-For dashboard access, prefer SSH tunneling:
+For admin API access from your laptop, use SSH tunneling (never expose the admin port publicly):
 ```bash
-# From your laptop
-ssh -L 8080:localhost:18789 swarmstr@<droplet-ip>
-# Then open http://localhost:8080
+# From your laptop (7423 = admin_listen_addr in bootstrap.json)
+ssh -L 7423:localhost:7423 swarmstr@<droplet-ip>
+# Then run: swarmstr --admin-addr localhost:7423 status
 ```
 
 ## DigitalOcean Managed Database (Optional)
