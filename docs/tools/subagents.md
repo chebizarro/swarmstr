@@ -1,7 +1,7 @@
 ---
-summary: "Subagents and ACP: spawning child agents and the Agent Control Protocol in swarmstr"
+summary: "Subagents and ACP: routing to named agents and the Agent Control Protocol in swarmstr"
 read_when:
-  - Using /spawn to create subagents
+  - Using /spawn to route to a named agent
   - Understanding ACP (Agent Control Protocol)
   - Building multi-agent workflows with swarmstr
 title: "Subagents & ACP"
@@ -9,30 +9,47 @@ title: "Subagents & ACP"
 
 # Subagents & ACP
 
-swarmstr supports spawning subagents from a parent agent turn, and uses the Agent Control Protocol (ACP) for agent-to-agent communication.
+swarmstr supports multi-agent workflows through two mechanisms:
+
+1. **Agent routing** — `/spawn` or `/focus` redirects the current session to a named agent configured in `agents[]`
+2. **ACP delegation** — the `acp_delegate` tool sends tasks to peer agents via Nostr DMs and awaits their response
 
 ## Slash Command: `/spawn`
 
-The easiest way to spawn a subagent is via the `/spawn` slash command in a Nostr DM:
+Routes the current session to a named registered agent. The session remains the same; all subsequent turns are processed by the named agent's runtime.
 
 ```
-/spawn <name>
+/spawn research
+/spawn coding
 ```
 
-This creates a new agent session scoped under the current session. The subagent:
-- Inherits the parent's workspace and bootstrap files
-- Gets its own session key: `agent:<agentId>:<parentKey>:<name>`
-- Can be addressed independently via DM routing
+To route back to the default agent use `/unfocus` or `/new`.
 
-## The `spawn_agent` Tool
+**The named agent must be configured in `agents[]` in the runtime config:**
 
-The agent can spawn subagents programmatically via the `spawn_agent` tool:
+```json
+{
+  "agents": [
+    { "id": "main" },
+    {
+      "id": "research",
+      "model": "claude-opus-4-5",
+      "thinking_level": "high",
+      "workspace_dir": "~/.swarmstr/workspace-research"
+    }
+  ]
+}
+```
+
+## The `acp_delegate` Tool
+
+The `acp_delegate` tool sends a task to a peer agent via Nostr DM and waits for the result. This is fully decentralized — the peer can run on a different machine.
 
 ```
-spawn_agent(
-  name="researcher",
-  task="Research the latest Nostr NIP proposals and summarize them",
-  workspace="~/.swarmstr/workspace-researcher"  // optional
+acp_delegate(
+  peer_pubkey="npub1abc...",
+  instructions="Research the latest Nostr NIP proposals and summarize them",
+  timeout_ms=60000
 )
 ```
 
@@ -40,51 +57,35 @@ spawn_agent(
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `name` | string | Subagent name (used in session key) |
-| `task` | string | Initial task/system prompt for the subagent |
-| `model` | string? | Model override for the subagent |
-| `workspace` | string? | Custom workspace path |
-| `timeout` | int? | Turn timeout in seconds |
+| `peer_pubkey` | string | Nostr npub or hex pubkey of the peer agent |
+| `instructions` | string | Task to delegate |
+| `timeout_ms` | int | Timeout in milliseconds (default: 60000) |
 
-**Returns:** Session key of the spawned subagent and its initial response.
+**Returns:** The peer agent's response text.
+
+**Note:** The peer must be registered as a known ACP peer before delegation. Peers are registered at startup via config or announced on the Nostr network.
 
 ## ACP (Agent Control Protocol)
 
-ACP is the protocol swarmstr uses for structured agent-to-agent communication. It enables:
+ACP is the protocol swarmstr uses for structured agent-to-agent communication over Nostr DMs. An ACP task is a JSON message sent via NIP-04/NIP-17 encrypted DM, containing:
 
-- **Parallel execution**: parent spawns multiple subagents running concurrently
-- **Result aggregation**: parent collects and synthesizes subagent outputs
-- **Specialization**: different subagents with different skills/prompts for different tasks
+- Task ID
+- Instructions
+- Sender pubkey (for reply routing)
+- Timeout
 
-### ACP Session Key Format
+When the receiving agent finishes the task, it sends an encrypted reply with the result. The delegating agent's `acp_delegate` call unblocks with the result.
 
-Subagent sessions use a hierarchical key format:
+## Agent-to-Agent via Nostr Tools
 
-```
-agent:<agentId>:<parentScope>:<subagentName>
-```
+Agents can also communicate via standard Nostr tools without ACP:
 
-Examples:
-```
-agent:main:main:researcher     # researcher subagent of main session
-agent:main:main:coder          # coder subagent of main session
-agent:ops:main:monitor         # monitor subagent of ops agent's main session
-```
+1. Parent agent knows peer's npub
+2. Parent calls `nostr_send_dm(pubkey, message)`
+3. Peer processes and replies
+4. Parent watches for reply via `nostr_watch`
 
-### ACP Reset
-
-The `/reset` slash command includes ACP cleanup — it terminates any active subagent sessions spawned from the current session.
-
-## Multi-Agent via Nostr DM Routing
-
-In swarmstr, agents can also communicate via Nostr DMs. If each subagent has its own Nostr key:
-
-1. Parent agent knows subagent's npub
-2. Parent sends a task via `nostr_send_dm` tool
-3. Subagent processes and replies
-4. Parent receives reply via `nostr_watch`
-
-This is the fully decentralized approach — subagents can run on different machines, even different continents.
+This is the fully decentralized approach — no in-process coordination needed.
 
 ## Example: Research + Synthesize Workflow
 
@@ -92,79 +93,37 @@ This is the fully decentralized approach — subagents can run on different mach
 User: "Research Nostr NIP-90 and write a blog post about it"
 
 Parent agent:
-1. spawn_agent("researcher", "Find all info about NIP-90: Data Vending Machines")
-2. spawn_agent("writer", "Write a blog post based on: {researcher_output}")
-3. Synthesize results and reply to user
+1. acp_delegate(peer_pubkey=research_agent, instructions="Find all info about NIP-90")
+2. Uses research result to write blog post
+3. Replies to user
 ```
 
-## Example: Parallel Relay Health Checks
+## Example: Routing to Specialised Agent
 
 ```
-Parent agent spawns one subagent per relay:
-- spawn_agent("check-damus", "Ping wss://relay.damus.io and report latency")
-- spawn_agent("check-nostr-band", "Ping wss://relay.nostr.band and report latency")
-- spawn_agent("check-primal", "Ping wss://relay.primal.net and report latency")
+User: "I need help with my Go code"
 
-Collects all results and presents a unified health report.
+Agent: "/spawn coding [to use coding agent]"
+
+All subsequent messages → coding agent runtime
 ```
 
-## Subagent Lifecycle
+## Lifecycle
 
+**`/spawn` routing:**
 ```
-/spawn researcher
-    ↓
-New session created: agent:main:main:researcher
-    ↓
-Bootstrap files injected (from parent workspace)
-    ↓
-Initial task sent as first turn
-    ↓
-Subagent processes and replies to parent
-    ↓
-Parent continues with subagent output
-    ↓
-/reset or session timeout → subagent cleaned up
+/spawn research
+  → sessionRouter.Assign(sessionID, "research")
+  → All turns processed by research agent
+  → /unfocus or /new → routes back to default
 ```
 
-## Session Management for Subagents
-
-Subagent sessions appear in the session list:
-
-```bash
-swarmstr sessions --json | jq '.[] | select(.key | contains("researcher"))'
+**`acp_delegate`:**
 ```
-
-Kill a specific subagent session:
-
-```bash
-# Via DM to the subagent's session (if it has its own Nostr key)
-# Or via the parent session /kill command
-```
-
-## ACP Bridge (IDE Integration)
-
-The ACP bridge connects IDEs to the daemon, enabling IDE tools to invoke agent turns:
-
-```bash
-swarmstr acp
-```
-
-This starts an ACP bridge that accepts connections from IDEs (e.g., Claude Desktop, OpenCode).
-
-## Configuration
-
-```json5
-{
-  "agents": {
-    "defaults": {
-      "acp": {
-        "enabled": true,
-        "maxSubagents": 5,    // max concurrent subagents per session
-        "timeout": 300        // subagent turn timeout (seconds)
-      }
-    }
-  }
-}
+acp_delegate(peer_pubkey, instructions)
+  → Send encrypted Nostr DM to peer
+  → Wait for encrypted reply (up to timeout_ms)
+  → Return result to calling agent
 ```
 
 ## See Also

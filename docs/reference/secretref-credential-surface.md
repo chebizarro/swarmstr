@@ -181,10 +181,8 @@ nak key generate
 # Update .env with new key
 nano ~/.swarmstr/.env
 
-# Reload without restart
-swarmstr gateway call config.patch --params '{"reload":"env"}'
-# or just restart
-swarmstr gateway restart
+# Restart daemon to pick up new env vars
+swarmstr daemon restart
 ```
 
 ### Rotate Gateway Token
@@ -192,7 +190,7 @@ swarmstr gateway restart
 ```bash
 NEW_TOKEN=$(openssl rand -hex 32)
 sed -i "s/SWARMSTR_GATEWAY_TOKEN=.*/SWARMSTR_GATEWAY_TOKEN=$NEW_TOKEN/" ~/.swarmstr/.env
-swarmstr gateway restart
+swarmstr daemon restart
 ```
 
 ## See Also

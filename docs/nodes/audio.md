@@ -2,157 +2,101 @@
 summary: "Audio input/output and TTS for swarmstr nodes"
 read_when:
   - Adding voice capabilities to swarmstr
-  - Configuring sherpa-onnx for TTS
-  - Setting up STT (speech-to-text) on a node device
+  - Configuring TTS or STT (speech-to-text)
+  - Setting up audio on a node device
 title: "Audio & TTS"
 ---
 
 # Audio & TTS
 
-swarmstr supports text-to-speech (TTS) and speech-to-text (STT) via node devices and skills.
+swarmstr supports text-to-speech (TTS) and speech-to-text (STT) via built-in providers
+and node device plugins.
 
 ## Text-to-Speech (TTS)
 
-### sherpa-onnx TTS Skill
+Configure TTS in `config.json` under the `tts` key:
 
-The primary TTS mechanism is the `sherpa-onnx-tts` skill, which uses on-device ONNX models for offline TTS.
-
-**Setup:**
-
-```bash
-# Install sherpa-onnx
-pip install sherpa-onnx
-
-# Download a TTS model (e.g., VITS)
-wget https://huggingface.co/csukuangfj/vits-piper-en_US-amy-low/...
-```
-
-Configure in the skill's `SKILL.md`:
-
-```yaml
-metadata:
-  openclaw:
-    name: sherpa-onnx-tts
-    description: "Offline TTS via sherpa-onnx"
-    requires:
-      bins: ["sherpa-onnx-tts"]
-```
-
-**Usage:**
-
-The agent calls the TTS skill to speak a message via the connected node's audio output.
-
-### Cloud TTS Providers
-
-For cloud-based TTS, configure OpenAI TTS or another provider:
-
-```json5
+```json
 {
-  "tools": {
-    "tts": {
-      "provider": "openai",
-      "voice": "nova",
-      "model": "tts-1"
-    }
+  "tts": {
+    "enabled": true,
+    "provider": "openai",
+    "voice": "nova"
   }
 }
 ```
+
+Supported providers: `openai`, `kokoro`, `google`, `elevenlabs`.
+
+See [TTS Configuration](/tts) for full details.
+
+### Per-Session TTS
+
+Enable TTS for a specific DM session:
+
+```
+/set tts on
+```
+
+The agent will speak its replies via the configured TTS provider.
 
 ## Speech-to-Text (STT)
 
-### Whisper STT
-
-The agent can transcribe audio from node devices using OpenAI Whisper:
-
-```json5
-{
-  "tools": {
-    "stt": {
-      "provider": "openai",
-      "model": "whisper-1"
-    }
-  }
-}
-```
-
-### Local Whisper (whisper.cpp)
-
-For offline STT:
+swarmstr automatically transcribes audio attachments sent via Nostr DM using **OpenAI Whisper** (`whisper-1` model). No configuration is required — it is enabled automatically when `OPENAI_API_KEY` is set.
 
 ```bash
-# Install whisper.cpp
-git clone https://github.com/ggerganov/whisper.cpp
-cd whisper.cpp
-make
-
-# Download model
-bash ./models/download-ggml-model.sh base.en
+# In ~/.swarmstr/.env
+OPENAI_API_KEY=sk-...
 ```
 
-Configure:
+When a user sends a voice message or audio file as a Nostr media attachment, swarmstr:
 
-```json5
-{
-  "tools": {
-    "stt": {
-      "provider": "whisper.cpp",
-      "binary": "~/.local/bin/whisper-cli",
-      "model": "~/.whisper/ggml-base.en.bin"
-    }
-  }
-}
-```
+1. Downloads the audio file
+2. Transcribes it via Whisper
+3. Passes the transcribed text to the agent as the user's message
 
 ## Node Audio Commands
 
-When a node with audio capabilities is paired:
+When a swarmstr node device (e.g., Raspberry Pi) has audio hardware and exposes audio commands via ACP, you can invoke them via the CLI or agent tools.
+
+### Via CLI
 
 ```bash
-# Play TTS on the node
-swarmstr nodes invoke --node mypi --command audio.tts \
-  --params '{"text": "Hello from swarmstr", "voice": "amy"}'
+# Invoke TTS on a paired node
+swarmstr nodes invoke --node <node-id> --command audio.tts \
+  --args '{"text": "Hello from swarmstr"}'
 
-# Record from node microphone
-swarmstr nodes invoke --node mypi --command audio.record \
-  --params '{"duration": 5000}'
+# Record from node microphone (duration in ms)
+swarmstr nodes invoke --node <node-id> --command audio.record \
+  --args '{"duration_ms": 5000}'
 ```
 
-## Voice Wake Word
+The `--node` flag takes the node ID as shown by `swarmstr nodes list`.
 
-For always-listening wake word detection (e.g., "Hey swarmstr"):
+### Via Agent Tool
 
-See [Location & VoiceWake](/nodes/location) for voicewake configuration.
+The `node_invoke` tool lets the agent send commands to nodes:
 
-## Audio in the Agent
-
-When audio input is received (from a user's voice message or node microphone):
-
-1. The audio file is received (Nostr media attachment or node audio stream)
-2. STT transcribes the audio to text
-3. The agent processes the transcribed text as a normal turn
-4. The agent can optionally respond with TTS audio
-
-## Configuration Reference
-
-```json5
-{
-  "nodes": {
-    "audio": {
-      "tts": {
-        "provider": "sherpa-onnx",   // "sherpa-onnx" | "openai" | "whisper.cpp"
-        "defaultVoice": "en_US-amy-low"
-      },
-      "stt": {
-        "provider": "whisper.cpp",
-        "model": "base.en"
-      }
-    }
-  }
-}
 ```
+node_invoke(
+  node_pubkey="<hex-pubkey-of-node>",
+  instructions="Play TTS: Hello from swarmstr",
+  timeout_seconds=10
+)
+```
+
+## Node Plugin: Audio Capabilities
+
+Audio commands (`audio.tts`, `audio.record`) are implemented by the node device itself.
+The node must:
+
+1. Be paired with the daemon (`swarmstr nodes pending` → `swarmstr nodes approve <id>`)
+2. Implement audio capabilities and expose them via ACP DM replies
+
+See the [Nodes Overview](/nodes/) for pairing setup.
 
 ## See Also
 
-- [Nodes Overview](/nodes/)
-- [Skills](/tools/skills)
-- [TTS](/tts)
+- [TTS Configuration](/tts) — provider setup and voices
+- [Nodes Overview](/nodes/) — pairing and node management
+- [Skills](/tools/skills) — custom skill-based audio tools

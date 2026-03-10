@@ -66,6 +66,7 @@ const (
 	MethodSessionsCompact    = "sessions.compact"
 	MethodSessionsSpawn      = "sessions.spawn"
 	MethodSessionsExport     = "sessions.export"
+	MethodSessionsPrune      = "sessions.prune"
 	MethodListGet            = "list.get"
 	MethodListPut            = "list.put"
 	MethodRelayPolicyGet     = "relay.policy.get"
@@ -380,6 +381,16 @@ type SessionsCompactRequest struct {
 	SessionID string `json:"session_id"`
 	Key       string `json:"key,omitempty"`
 	Keep      int    `json:"keep,omitempty"`
+}
+
+// SessionsPruneRequest deletes transcript entries for sessions that are older
+// than OlderThanDays days (measured by last_inbound_at).  When All is true
+// every session is deleted regardless of age.  DryRun reports what would be
+// deleted without actually removing anything.
+type SessionsPruneRequest struct {
+	OlderThanDays int  `json:"older_than_days,omitempty"`
+	DryRun        bool `json:"dry_run,omitempty"`
+	All           bool `json:"all,omitempty"`
 }
 
 type SessionsSpawnRequest struct {
@@ -2026,6 +2037,7 @@ func SupportedMethods() []string {
 		MethodSessionsCompact,
 		MethodSessionsSpawn,
 		MethodSessionsExport,
+		MethodSessionsPrune,
 		MethodListGet,
 		MethodListPut,
 		MethodRelayPolicyGet,

@@ -59,10 +59,9 @@ For systemd in WSL2 (Ubuntu 22.04+):
 echo '[boot]
 systemd=true' | sudo tee /etc/wsl.conf
 
-# Restart WSL2
-# Then use normal systemd commands
-swarmstr gateway install
-systemctl --user enable swarmstrd
+# Restart WSL2 (wsl --shutdown from PowerShell, then reopen)
+# Then follow the Linux systemd setup:
+systemctl --user enable --now swarmstrd
 ```
 
 ## Option B: Native Windows Binary
@@ -75,29 +74,33 @@ Download `swarmstrd-windows-amd64.exe` from the releases page and place it in a 
 
 ### Configure
 
-Create config at `%USERPROFILE%\.swarmstr\config.json`:
+Create `%USERPROFILE%\.swarmstr\bootstrap.json` (process-level config):
 
-```json5
+```json
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "relays": ["wss://relay.damus.io", "wss://relay.nostr.band"],
-      "dmPolicy": "allowlist",
-      "allowFrom": ["npub1your-pubkey..."]
-    }
-  },
-  "providers": {
-    "anthropic": { "apiKey": "${ANTHROPIC_API_KEY}" }
-  }
+  "private_key": "${NOSTR_PRIVATE_KEY}",
+  "relays": ["wss://relay.damus.io", "wss://relay.nostr.band"],
+  "admin_listen_addr": "127.0.0.1:7423",
+  "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
 }
 ```
 
-Create `%USERPROFILE%\.swarmstr\.env`:
+Create `%USERPROFILE%\.swarmstr\config.json` (runtime agent config):
+
+```json
+{
+  "agent": { "default_model": "anthropic/claude-opus-4-6" },
+  "providers": { "anthropic": { "api_key": "${ANTHROPIC_API_KEY}" } },
+  "dm": { "policy": "allowlist", "allow_from": ["npub1your-pubkey..."] }
+}
+```
+
+Create `%USERPROFILE%\.swarmstr\env`:
 
 ```
 NOSTR_PRIVATE_KEY=nsec1...
 ANTHROPIC_API_KEY=sk-ant-...
+SWARMSTR_ADMIN_TOKEN=change-me
 ```
 
 ### Run as Windows Service (Task Scheduler)
@@ -126,9 +129,16 @@ nssm start swarmstrd
 | Workspace | `%USERPROFILE%\.swarmstr\workspace\` |
 | Logs | `%USERPROFILE%\.swarmstr\logs\` |
 
-## Accessing Dashboard
+## Accessing the Admin API
 
-The dashboard is at `http://localhost:18789`. The same security recommendations apply — use a strong gateway token.
+The admin API listens on `admin_listen_addr` from `bootstrap.json` (default `127.0.0.1:7423`). Use the `swarmstr` CLI to communicate with it:
+
+```bash
+swarmstr status
+swarmstr logs --lines 50
+```
+
+Never expose the admin port on a public interface.
 
 ## WSL2 vs Native Performance
 

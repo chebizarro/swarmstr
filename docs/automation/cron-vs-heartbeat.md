@@ -3,173 +3,125 @@ summary: "Guidance for choosing between heartbeat and cron jobs for automation"
 read_when:
   - Deciding how to schedule recurring tasks
   - Setting up background monitoring or notifications
-  - Optimizing token usage for periodic checks
+  - Understanding the difference between NIP-38 heartbeat and cron
 title: "Cron vs Heartbeat"
 ---
 
 # Cron vs Heartbeat: When to Use Each
 
-Both heartbeats and cron jobs let you run tasks on a schedule. This guide helps you choose.
+swarmstr has two scheduled mechanisms with very different purposes.
+
+## The Key Difference
+
+| | Heartbeat | Cron |
+|--|-----------|------|
+| What it does | Publishes NIP-38 status events (kind:30315) | Calls a gateway method on schedule |
+| Purpose | Presence visibility (idle/typing/busy/offline) | Trigger periodic agent tasks |
+| Runs LLM? | No | Yes (via `agent` method) |
+| Config | `extra.heartbeat.*` | `cron.enabled: true` + CLI |
+
+**Heartbeat = "show I'm available"** — other Nostr clients see your status.
+**Cron = "do something on a schedule"** — runs agent turns, sends messages, etc.
 
 ## Quick Decision Guide
 
-| Use Case                             | Recommended         | Why                                      |
-| ------------------------------------ | ------------------- | ---------------------------------------- |
-| Check inbox every 30 min             | Heartbeat           | Batches with other checks, context-aware |
-| Send daily report at 9am sharp       | Cron (isolated)     | Exact timing needed                      |
-| Monitor calendar for upcoming events | Heartbeat           | Natural fit for periodic awareness       |
-| Run weekly deep analysis             | Cron (isolated)     | Standalone task, can use different model |
-| Remind me in 20 minutes              | Cron (main, `--at`) | One-shot with precise timing             |
-| Background project health check      | Heartbeat           | Piggybacks on existing cycle             |
+| Use Case | Use |
+|----------|-----|
+| Show "available" status on Nostr | Heartbeat |
+| Keep clients informed of agent state (typing, running tools) | Heartbeat (automatic) |
+| Check inbox every 30 minutes | Cron (`@every 30m`) |
+| Send daily report at 9am sharp | Cron (`0 9 * * *`) |
+| Run weekly deep analysis | Cron (`0 9 * * 1`) |
+| Periodic health checks | Cron |
 
-## Heartbeat: Periodic Awareness
+## Heartbeat: NIP-38 Presence Status
 
-Heartbeats run in the **main session** at a regular interval (default: 30 min). Designed for
-the agent to check on things and surface anything important.
+The heartbeat publishes **NIP-38 status events** (kind:30315) at a regular interval so other Nostr clients can see whether your agent is idle, busy, typing, or offline. It does **not** run agent turns or trigger model calls.
 
-### When to use heartbeat
+The agent automatically transitions through statuses during turns (typing → running tools → done). The heartbeat interval just controls how often the idle status is re-published.
 
-- **Multiple periodic checks**: Instead of 5 separate cron jobs, one heartbeat can check
-  inbox, calendar, pending tasks, and Nostr notifications together.
-- **Context-aware decisions**: The agent has full main-session context.
-- **Low-overhead monitoring**: One heartbeat replaces many small polling tasks.
-
-### Heartbeat example: HEARTBEAT.md checklist
-
-```md
-# Heartbeat checklist
-
-- Check email for urgent messages
-- Review calendar for events in next 2 hours
-- If a background task finished, summarize results
-- Check Nostr notifications for mentions
-- If idle for 8+ hours, send a brief check-in via Nostr DM
-```
-
-The agent reads this on each heartbeat and handles all items in one turn.
-
-### Configuring heartbeat
-
-```json
+```json5
 {
-  "agents": {
-    "defaults": {
-      "heartbeat": {
-        "every": "30m",
-        "target": "last",
-        "activeHours": { "start": "08:00", "end": "22:00" }
-      }
+  "extra": {
+    "heartbeat": {
+      "enabled": true,
+      "interval_seconds": 300,   // publish idle status every 5 minutes
+      "content": "Available 🟢"  // optional text for idle status
     }
   }
 }
 ```
 
-See [Heartbeat](/gateway/heartbeat) for full configuration.
+See [Heartbeat](/gateway/heartbeat) for full details.
 
-## Cron: Precise Scheduling
+## Cron: Scheduled Agent Tasks
 
-Cron jobs run at precise times and can run in isolated sessions.
-
-### When to use cron
-
-- **Exact timing required**: "Send this at 9:00 AM every Monday" (not "sometime around 9").
-- **Standalone tasks**: Tasks that don't need conversational context.
-- **Different model**: Heavy analysis that warrants a more powerful model.
-- **One-shot reminders**: "Remind me in 20 minutes" with `--at`.
-- **Noisy/frequent tasks**: Tasks that would clutter main session history.
-
-### Cron example: Daily morning briefing
+Cron jobs call a gateway method on a schedule. The most common use is triggering agent turns via the `agent` method.
 
 ```bash
+# Daily morning briefing at 7am
 swarmstr cron add \
-  --name "Morning briefing" \
-  --cron "0 7 * * *" \
-  --tz "America/New_York" \
-  --session isolated \
-  --message "Generate today's briefing: calendar, top emails, news summary." \
-  --model opus \
-  --announce \
-  --channel nostr \
-  --to "npub1youknpub..."
+  --id morning-brief \
+  --schedule "0 7 * * *" \
+  --message "Generate today's briefing: calendar, top messages, any urgent items."
+
+# Recurring check every 4 hours
+swarmstr cron add \
+  --id health-check \
+  --schedule "@every 4h" \
+  --message "Run a quick health check and report any issues."
+
+# Weekly review on Mondays at 9am
+swarmstr cron add \
+  --id weekly-review \
+  --schedule "0 9 * * 1" \
+  --message "Weekly project review: summarize progress and blockers."
 ```
 
-### Cron example: One-shot reminder
-
-```bash
-swarmstr cron add \
-  --name "Meeting reminder" \
-  --at "20m" \
-  --session main \
-  --system-event "Reminder: standup meeting starts in 10 minutes." \
-  --wake now \
-  --delete-after-run
-```
+See [Cron Jobs](/automation/cron-jobs) for the full CLI reference.
 
 ## Decision Flowchart
 
 ```
-Does the task need to run at an EXACT time?
-  YES → Use cron
+Is this about signaling availability to Nostr contacts?
+  YES → Heartbeat (already on by default)
   NO  → Continue...
 
-Does the task need isolation from main session?
-  YES → Use cron (isolated)
+Does the task need to run at a specific time?
+  YES → Cron
   NO  → Continue...
 
-Can this task be batched with other periodic checks?
-  YES → Use heartbeat (add to HEARTBEAT.md)
-  NO  → Use cron
-
-Is this a one-shot reminder?
-  YES → Use cron with --at
-  NO  → Use heartbeat
+Is it a recurring background task?
+  YES → Cron with @every or cron expression
+  NO  → Run it manually or from a DM command
 ```
 
 ## Combining Both
 
-The most efficient setup uses **both**:
+The most common production setup:
 
-1. **Heartbeat** handles routine monitoring in one batched turn every 30 minutes.
-2. **Cron** handles precise schedules and one-shot reminders.
-
-**HEARTBEAT.md** (checked every 30 min):
-
-```md
-# Heartbeat checklist
-
-- Scan inbox for urgent emails
-- Check calendar for events in next 2h
-- Review any Nostr DMs from allowed contacts
-- Light check-in if quiet for 8+ hours
-```
-
-**Cron jobs** (precise timing):
+- **Heartbeat** on (default) so contacts can see the agent is available
+- **Cron** for all scheduled agent work
 
 ```bash
-# Daily morning briefing at 7am
-swarmstr cron add --name "Morning brief" --cron "0 7 * * *" --session isolated --message "..."
-
-# Weekly project review on Mondays at 9am
-swarmstr cron add --name "Weekly review" --cron "0 9 * * 1" --session isolated --message "..." --model opus
-
-# One-shot reminder
-swarmstr cron add --name "Call back" --at "2h" --session main --system-event "Call back the client" --wake now
+# Example cron setup
+swarmstr cron add --id daily-brief --schedule "0 7 * * *" --message "Daily briefing..."
+swarmstr cron add --id weekly-review --schedule "0 9 * * 1" --message "Weekly review..."
+swarmstr cron add --id hourly-check --schedule "@every 1h" --message "Hourly check-in..."
 ```
 
 ## Cost Considerations
 
-| Mechanism       | Cost Profile                                            |
-| --------------- | ------------------------------------------------------- |
-| Heartbeat       | One turn every N minutes; scales with HEARTBEAT.md size |
-| Cron (main)     | Adds event to next heartbeat (no isolated turn)         |
-| Cron (isolated) | Full agent turn per job; can use cheaper model          |
+| Mechanism | LLM Cost |
+|-----------|----------|
+| Heartbeat | Zero (no LLM calls) |
+| Cron job | One agent turn per trigger (varies by model and context) |
 
-**Tips:**
-- Keep `HEARTBEAT.md` small to minimize token overhead.
-- Batch similar checks into heartbeat instead of multiple cron jobs.
-- Use `target: "none"` on heartbeat if you only want internal processing.
+Tips:
+- Keep cron messages concise to minimize token usage
+- Use a less powerful (cheaper) model for routine cron tasks via `agents[].model`
 
 ## Related
 
-- [Heartbeat](/gateway/heartbeat) — full heartbeat configuration
-- [Cron jobs](/automation/cron-jobs) — full cron CLI and API reference
+- [Heartbeat](/gateway/heartbeat) — NIP-38 status heartbeat configuration
+- [Cron Jobs](/automation/cron-jobs) — full cron CLI and API reference

@@ -2,7 +2,7 @@
 summary: "TTS (text-to-speech) configuration and providers for swarmstr"
 read_when:
   - Setting up TTS for swarmstr
-  - Configuring sherpa-onnx or cloud TTS
+  - Configuring cloud TTS for agent responses
   - Adding voice output to agent responses
 title: "Text-to-Speech (TTS)"
 ---
@@ -13,62 +13,71 @@ swarmstr supports multiple TTS providers for agent voice output.
 
 ## Providers
 
-### sherpa-onnx (Offline, Recommended)
+Built-in providers (selected based on available credentials):
 
-Run TTS fully offline with no API costs:
+| Provider | ID | Env var required |
+|----------|----|-----------------|
+| OpenAI TTS | `openai` | `OPENAI_API_KEY` |
+| Kokoro | `kokoro` | `KOKORO_API_KEY` (or local server URL) |
+| Google TTS | `google` | `GOOGLE_APPLICATION_CREDENTIALS` |
+| ElevenLabs | `elevenlabs` | `ELEVENLABS_API_KEY` |
 
-```bash
-# Install
-pip install sherpa-onnx
+## Configuration
 
-# Download VITS model
-wget https://huggingface.co/csukuangfj/vits-piper-en_US-amy-low/resolve/main/en_US-amy-low.onnx
+Enable TTS and set the default provider/voice in `config.json`:
 
-# Test
-sherpa-onnx-tts --model en_US-amy-low.onnx "Hello from swarmstr"
-```
-
-Configure:
-
-```json5
+```json
 {
-  "tools": {
-    "tts": {
-      "provider": "sherpa-onnx",
-      "modelPath": "~/.sherpa-onnx/en_US-amy-low.onnx",
-      "defaultVoice": "en_US-amy-low"
-    }
+  "tts": {
+    "enabled": true,
+    "provider": "openai",
+    "voice": "nova"
   }
 }
 ```
 
 ### OpenAI TTS
 
-```json5
+Set the `OPENAI_API_KEY` environment variable (or reference it in the secrets store).
+Available voices: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`.
+
+```json
 {
-  "tools": {
-    "tts": {
-      "provider": "openai",
-      "apiKey": "${OPENAI_API_KEY}",
-      "voice": "nova",    // "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer"
-      "model": "tts-1"   // "tts-1" | "tts-1-hd"
-    }
+  "tts": {
+    "enabled": true,
+    "provider": "openai",
+    "voice": "nova"
   }
 }
 ```
 
 ### ElevenLabs
 
-```json5
+Set `ELEVENLABS_API_KEY` and configure the voice ID:
+
+```json
 {
-  "tools": {
-    "tts": {
-      "provider": "elevenlabs",
-      "apiKey": "${ELEVENLABS_API_KEY}",
-      "voiceId": "pNInz6obpgDQGcFmaJgB"   // Adam voice
-    }
+  "tts": {
+    "enabled": true,
+    "provider": "elevenlabs",
+    "voice": "pNInz6obpgDQGcFmaJgB"
   }
 }
+```
+
+### Kokoro (Local)
+
+Kokoro is a local TTS server. Run it on your machine and point swarmstr at it via
+`KOKORO_BASE_URL` (or configure in provider settings).
+
+## Listing & Switching Providers
+
+```bash
+# List available TTS providers and their configured status
+swarmstr gw tts.providers
+
+# Switch active provider
+swarmstr gw tts.set_provider '{"provider": "elevenlabs", "voice": "pNInz6obpgDQGcFmaJgB"}'
 ```
 
 ## TTS with Node Devices
@@ -76,30 +85,24 @@ Configure:
 When a node device is paired with audio output:
 
 ```bash
-# Agent calls TTS, audio plays on node
+# Invoke TTS on a remote node
 swarmstr nodes invoke --node mypi --command audio.tts \
-  --params '{"text": "Hello", "provider": "sherpa-onnx"}'
+  --args '{"text": "Hello", "provider": "openai"}'
 ```
 
-## TTS Skill
+## TTS Tool
 
-The sherpa-onnx TTS skill enables the agent to generate audio in response to requests:
-
-```
-User: "Read me the daily summary"
-Agent: [calls TTS skill, audio plays on connected node or is sent as audio file via Nostr]
-```
+The agent can generate speech via the `tts` tool. When enabled and a TTS provider is configured, the agent calls this tool in response to voice requests.
 
 ## Voice Quality vs Cost
 
-| Provider | Quality | Cost | Offline |
-|----------|---------|------|---------|
-| sherpa-onnx | Good | Free | ✅ |
-| OpenAI TTS-1 | Great | $0.015/1K chars | ❌ |
-| OpenAI TTS-1-HD | Excellent | $0.030/1K chars | ❌ |
-| ElevenLabs | Excellent | Varies | ❌ |
-
-For always-on agents, sherpa-onnx is recommended to avoid API costs.
+| Provider | Quality | Cost | Notes |
+|----------|---------|------|-------|
+| OpenAI TTS-1 | Great | $0.015/1K chars | Cloud |
+| OpenAI TTS-1-HD | Excellent | $0.030/1K chars | Cloud |
+| ElevenLabs | Excellent | Varies | Cloud |
+| Kokoro | Good | Free | Local server |
+| Google TTS | Good | Varies | Cloud |
 
 ## See Also
 

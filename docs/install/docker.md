@@ -12,14 +12,24 @@ swarmstr can run in Docker as a stateless Go binary with mounted config and stat
 
 ## Quick start
 
+Mount your `~/.swarmstr` directory (which contains `bootstrap.json` and `config.json`):
+
 ```bash
 docker run -d \
   --name swarmstrd \
   --restart unless-stopped \
-  -e NOSTR_PRIVATE_KEY="nsec1..." \
-  -e ANTHROPIC_API_KEY="sk-ant-..." \
-  -v ~/.swarmstr:/data/.swarmstr \
-  -p 18789:18789 \
+  -v ~/.swarmstr:/root/.swarmstr \
+  ghcr.io/your-org/swarmstr:latest
+```
+
+If your `bootstrap.json` has `admin_listen_addr` set (e.g. `"127.0.0.1:7423"`), expose the port:
+
+```bash
+docker run -d \
+  --name swarmstrd \
+  --restart unless-stopped \
+  -v ~/.swarmstr:/root/.swarmstr \
+  -p 127.0.0.1:7423:7423 \
   ghcr.io/your-org/swarmstr:latest
 ```
 
@@ -33,44 +43,50 @@ services:
     image: ghcr.io/your-org/swarmstr:latest
     container_name: swarmstrd
     restart: unless-stopped
-    environment:
-      - NOSTR_PRIVATE_KEY=${NOSTR_PRIVATE_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - SWARMSTR_STATE_DIR=/data/.swarmstr
-      - SWARMSTR_CONFIG_PATH=/data/.swarmstr/config.json
     volumes:
-      - swarmstr-data:/data/.swarmstr
-    ports:
-      - "127.0.0.1:18789:18789"
+      - swarmstr-data:/root/.swarmstr
+    # Expose admin API port only if admin_listen_addr is set in bootstrap.json
+    # ports:
+    #   - "127.0.0.1:7423:7423"
 
 volumes:
   swarmstr-data:
 ```
 
-Use an `.env` file:
+Seed your config files into the volume before the first run:
 
 ```bash
-NOSTR_PRIVATE_KEY=nsec1...
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-```bash
+docker run --rm \
+  -v swarmstr-data:/root/.swarmstr \
+  -v ~/.swarmstr:/src:ro \
+  alpine sh -c "cp -r /src/. /root/.swarmstr/"
 docker compose up -d
 docker compose logs -f swarmstrd
 ```
 
 ## Config in the container
 
-Mount a config file:
+Mount individual config files read-only:
 
 ```bash
 docker run -d \
   --name swarmstrd \
-  -e NOSTR_PRIVATE_KEY="nsec1..." \
-  -e ANTHROPIC_API_KEY="sk-ant-..." \
-  -v /path/to/config.json:/data/.swarmstr/config.json:ro \
-  -v swarmstr-data:/data/.swarmstr \
+  -v /path/to/bootstrap.json:/root/.swarmstr/bootstrap.json:ro \
+  -v /path/to/config.json:/root/.swarmstr/config.json:ro \
+  -v swarmstr-workspace:/root/.swarmstr/workspace \
   ghcr.io/your-org/swarmstr:latest
+```
+
+The binary accepts `--bootstrap` and `--config` flags if you need non-default paths:
+
+```bash
+docker run -d \
+  --name swarmstrd \
+  -v /etc/swarmstr:/etc/swarmstr:ro \
+  -v swarmstr-data:/data \
+  ghcr.io/your-org/swarmstr:latest \
+  --bootstrap /etc/swarmstr/bootstrap.json \
+  --config /etc/swarmstr/config.json
 ```
 
 ## Building from source
@@ -94,19 +110,20 @@ docker build -t swarmstrd:local .
 ## Volumes and data
 
 swarmstr needs a persistent volume for:
-- `config.json` — daemon config
+- `bootstrap.json` — startup config (key, relays, admin addr)
+- `config.json` — runtime agent config
 - `workspace/` — agent workspace (AGENTS.md, SOUL.md, memory, etc.)
 - `agents/*/sessions/` — session transcripts
 - `cron/jobs.json` — cron job store
 - `skills/` — installed skills
 
-Mount everything under one volume at `SWARMSTR_STATE_DIR` (`/data/.swarmstr`).
+Mount everything under one volume at `/root/.swarmstr`.
 
 ## Health check
 
 ```bash
 docker exec swarmstrd swarmstr health
-docker logs swarmstrd --tail 50 -f
+docker logs swarmstrd --tail 50
 ```
 
 ## Updating

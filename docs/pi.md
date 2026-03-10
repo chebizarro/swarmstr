@@ -25,10 +25,11 @@ curl -L https://github.com/yourorg/swarmstr/releases/latest/download/swarmstrd-l
   -o /usr/local/bin/swarmstrd
 chmod +x /usr/local/bin/swarmstrd
 
-# Setup
-swarmstr setup
-swarmstr gateway install
-swarmstr gateway start
+# Configure
+mkdir -p ~/.swarmstr
+# Create ~/.swarmstr/bootstrap.json with your private_key and relays
+# Then enable as a service:
+systemctl --user enable --now swarmstrd
 ```
 
 ## Swap (Prevent OOM)
@@ -51,7 +52,7 @@ curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
 ```
 
-Access dashboard from your laptop: `http://<pi-hostname>.tail1234.ts.net:18789`
+Access dashboard from your laptop via the configured `gateway_ws_listen_addr` port over Tailscale.
 
 ## See Also
 

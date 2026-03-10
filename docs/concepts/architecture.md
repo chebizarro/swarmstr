@@ -20,7 +20,7 @@ communication channel.
 - A single long-lived **swarmstrd** process owns all Nostr subscriptions, the agent runtime,
   and optional secondary channels (Discord, Telegram via plugins).
 - Control-plane clients (CLI, web UI, automations) connect over **WebSocket** or **HTTP** on
-  the configured bind host (default `127.0.0.1:18789`).
+  the configured bind host (set via `admin_listen_addr` in `bootstrap.json`; off unless configured).
 - **Nodes** (headless, Raspberry Pi, remote) connect over WebSocket, declaring `role: node`
   with explicit capabilities.
 - One swarmstrd per host; it holds the Nostr private key and maintains relay connections.
@@ -91,10 +91,11 @@ nostr_send_dm (encrypted reply to sender's npub)
 
 ## Session keys
 
-- Direct Nostr DMs: `nostr:dm:<senderNpub>` (when `dmScope: "per-peer"`) or `main`
+- Direct Nostr DMs: sender's hex pubkey (always per-peer)
+- Group/channel messages: `ch:<channelID>:<senderPubKey>`
 - Cron jobs: `cron:<jobId>`
 - Webhooks: `hook:<uuid>`
-- Subagents: `agent:<agentId>:<sessionKey>`
+- DVM jobs: `dvm:<jobId>`
 
 ## Nostr advantage
 
@@ -111,7 +112,7 @@ Telegram Bot API), swarmstr agents have:
 
 - **Via Nostr**: inherent — any Nostr client on any device can reach the agent.
 - **Via Tailscale**: SSH tunnel or Tailscale Funnel for control API access.
-- **Via SSH**: `ssh -N -L 18789:127.0.0.1:18789 user@host`
+- **Via SSH**: `ssh -N -L 18788:127.0.0.1:18788 user@host` (adjust port to match your `admin_listen_addr`)
 
 ## Operations snapshot
 

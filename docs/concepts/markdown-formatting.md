@@ -82,7 +82,7 @@ Add to `AGENTS.md`:
 
 ## Webchat
 
-The webchat at `localhost:18789` renders full Markdown via a browser UI. When the agent detects the conversation is via webchat (based on session metadata), it can use richer formatting.
+The webchat is served by the gateway WebSocket server (configured via `gateway_ws_listen_addr` in `bootstrap.json`). It renders full Markdown via a browser UI. When the agent detects the conversation is via webchat (based on session metadata), it can use richer formatting.
 
 See [Webchat](../web/webchat.md).
 

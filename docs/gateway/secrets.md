@@ -15,18 +15,25 @@ swarmstr supports several patterns for keeping secrets out of your config file w
 
 Any string value in `~/.swarmstr/config.json` can reference an environment variable using `${VAR_NAME}` syntax:
 
-```json5
+```json
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}"
-    }
-  },
   "providers": {
     "anthropic": {
-      "apiKey": "${ANTHROPIC_API_KEY}"
+      "api_key": "${ANTHROPIC_API_KEY}"
     }
+  },
+  "agent": {
+    "default_model": "claude-opus-4-5"
   }
+}
+```
+
+For bootstrap config (private key and relays), use `${VAR}` references too:
+
+```json
+{
+  "private_key": "${NOSTR_NSEC}",
+  "relays": ["wss://relay.damus.io"]
 }
 ```
 
@@ -57,76 +64,54 @@ Configure systemd to load it:
 EnvironmentFile=/home/youruser/.swarmstr/.env
 ```
 
-Or add the env file path to config:
-
-```json5
-{
-  "envFile": "~/.swarmstr/.env"
-}
-```
+Alternatively, source `~/.swarmstr/.env` manually before starting swarmstrd, or use systemd's `EnvironmentFile`.
 
 ## Credential Storage Layout
 
 ```
 ~/.swarmstr/
 ├── .env                        # Env vars for daemon (chmod 600)
-├── config.json                 # Main config (uses ${VAR} refs)
-├── credentials/                # Provider auth profiles
-│   ├── auth-profiles.json      # OAuth tokens + API key profiles
-│   └── .gitignore              # Prevents accidental git commit
-└── agents/
-    └── <agentId>/
-        └── auth-profiles.json  # Per-agent auth overrides
+├── bootstrap.json              # Bootstrap config (private key, relays, ports)
+├── sessions.json               # Session settings (labels, overrides)
+├── workspace/                  # Agent workspace (SOUL.md, AGENTS.md, etc.)
+├── hooks/                      # User-managed hooks
+└── skills/                     # User-managed skills
 ```
+
+Runtime config (providers, model, session config) is stored as encrypted Nostr events — not in a local file.
 
 ## Nostr Private Key
 
 The Nostr private key (nsec) is the most sensitive secret. Best practices:
 
-1. **Never store in config.json directly** — use `${NOSTR_PRIVATE_KEY}`.
+1. **Never store in `bootstrap.json` directly** — use `${NOSTR_NSEC}`.
 2. **Keep in `~/.swarmstr/.env`** with `chmod 600`.
 3. **Backup securely** — loss of the nsec means losing the agent identity.
 4. **Don't share** — whoever has the nsec can impersonate the agent.
 
 ```bash
-# Generate a new keypair with nak
-nak key generate
-# Copy the nsec output to ~/.swarmstr/.env
+# Generate a new keypair
+swarmstr keygen
+# Copy the nsec output to ~/.swarmstr/.env as NOSTR_NSEC=nsec1...
 ```
 
-For multi-agent setups, each agent has its own nsec:
+All agents in a single swarmstrd share one Nostr identity. For separate npub identities, run separate swarmstrd instances with different bootstrap configs.
 
-```json5
+## API Key Rotation
+
+For provider API keys, configure a pool in the runtime config:
+
+```json
 {
-  "agents": {
-    "list": [
-      {
-        "id": "agent-alpha",
-        "channels": {
-          "nostr": {
-            "privateKey": "${AGENT_ALPHA_NSEC}"
-          }
-        }
-      }
-    ]
+  "providers": {
+    "anthropic": {
+      "api_keys": ["${ANTHROPIC_KEY_1}", "${ANTHROPIC_KEY_2}", "${ANTHROPIC_KEY_3}"]
+    }
   }
 }
 ```
 
-## API Key Rotation
-
-For provider API keys, swarmstr supports key lists for rotation:
-
-```bash
-# In ~/.swarmstr/.env
-ANTHROPIC_API_KEYS=sk-ant-key1,sk-ant-key2,sk-ant-key3
-```
-
-Priority order:
-1. `SWARMSTR_LIVE_ANTHROPIC_KEY` — runtime override
-2. `ANTHROPIC_API_KEYS` — comma-separated rotation list
-3. `ANTHROPIC_API_KEY` — single key
-4. `ANTHROPIC_API_KEY_1`, `ANTHROPIC_API_KEY_2`, ... — numbered alternates
+Each `${VAR}` reference is resolved from the environment. Keys are rotated round-robin on rate-limit errors.
 
 ## Secret Validation
 
@@ -134,8 +119,8 @@ Priority order:
 # Validate config (checks ${VAR} refs resolve)
 swarmstr config validate
 
-# Check model auth status
-swarmstr models status
+# List configured models
+swarmstr models list
 
 # Audit for common security issues
 swarmstr doctor
@@ -148,14 +133,14 @@ If you've previously stored secrets as plaintext in config.json:
 1. Move secrets to `~/.swarmstr/.env`
 2. Replace plaintext values with `${VAR_NAME}` references in config.json
 3. Restart the daemon
-4. Verify with `swarmstr models status`
+4. Verify with `swarmstr models list`
 
 ```bash
-# Before
-# "apiKey": "sk-ant-abc123"
+# Before (in providers config)
+# "api_key": "sk-ant-abc123"
 
 # After
-# "apiKey": "${ANTHROPIC_API_KEY}"
+# "api_key": "${ANTHROPIC_API_KEY}"
 # And in ~/.swarmstr/.env:
 # ANTHROPIC_API_KEY=sk-ant-abc123
 ```

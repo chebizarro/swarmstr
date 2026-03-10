@@ -26,45 +26,25 @@ Accumulated per session:
 ## Viewing Usage
 
 ```bash
-# Current status with usage
-swarmstr status --usage
+# Current status
+swarmstr status
+swarmstr status --json
 
-# Model auth and quota status
-swarmstr models status
+# List models (shows which are configured)
+swarmstr models list
 ```
 
 ## Usage in Transcripts
 
-Token counts are stored in session transcripts:
-
-```jsonl
-{"role":"assistant","content":"...","tokenCount":{"input":1500,"output":320,"cacheRead":800,"cacheWrite":0}}
-```
+Token counts are stored in session transcript events on Nostr. The `meta` field of each `TranscriptEntryDoc` carries token usage for that turn.
 
 ## Provider Usage APIs
 
-For providers that expose usage APIs (Anthropic, OpenAI, GitHub Copilot), swarmstr can surface quota information:
-
-```bash
-swarmstr models status --probe   # live probe of provider usage APIs
-```
+Token usage is tracked in session transcript metadata. Per-provider quota information is not currently surfaced via the CLI. Check your provider dashboard for quota and spend information.
 
 ## Usage Alerts
 
-Configure alerts when tokens or costs exceed thresholds:
-
-```json5
-{
-  "agents": {
-    "defaults": {
-      "usage": {
-        "alertOnDailyTokens": 1000000,    // alert if > 1M tokens/day
-        "alertOnDailyCost": 10.00          // alert if > $10/day
-      }
-    }
-  }
-}
-```
+Swarmstr does not currently have built-in token/cost alert thresholds. Monitor usage via `swarmstr status` or `swarmstr models list`, or build alerting around the webhook integration.
 
 ## See Also
 

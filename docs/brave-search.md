@@ -19,25 +19,10 @@ title: "Brave Search"
 Add to `~/.swarmstr/.env`:
 
 ```
-BRAVE_API_KEY=BSA...
+BRAVE_SEARCH_API_KEY=BSAxxxxxxxxxxxxxxxxxx
 ```
 
-Config:
-
-```json5
-{
-  "tools": {
-    "web": {
-      "search": {
-        "provider": "brave",
-        "apiKey": "${BRAVE_API_KEY}"
-      }
-    }
-  }
-}
-```
-
-Brave Search is **auto-detected** if `BRAVE_API_KEY` is set and no explicit provider is configured.
+The `web_search` tool auto-detects Brave when `BRAVE_SEARCH_API_KEY` is set — no additional config needed.
 
 ## API Tiers
 

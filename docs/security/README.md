@@ -24,12 +24,12 @@ Every swarmstr agent has a Nostr keypair (nsec/npub). The nsec is the agent's pr
 
 ### DM access control
 
-By default, swarmstr uses **pairing mode**: unknown senders must complete a challenge before
-they can interact with the agent. Configure appropriately for your threat model:
+Configure `dm.policy` in `config.json` based on your threat model:
 
-- `pairing` — unknown senders get a challenge code (default; recommended for personal use).
 - `allowlist` — only pre-approved npubs can interact (recommended for production bots).
+- `pairing` — unknown senders receive a notice; admin manually adds them to `dm.allow_from`.
 - `open` — anyone can DM the agent (high risk; only for public bots with no private data).
+- `disabled` — DM processing is turned off.
 
 ### API key protection
 
@@ -75,21 +75,20 @@ Nostr relays are **untrusted**:
 
 ## Sandboxing
 
-For public-facing agents or shared deployments, enable the agent sandbox:
+For public-facing agents or shared deployments, enable the Docker sandbox:
 
 ```json
 {
-  "agents": {
-    "defaults": {
-      "sandbox": {
-        "mode": "all"
-      }
+  "extra": {
+    "sandbox": {
+      "driver": "docker",
+      "network_disabled": true
     }
   }
 }
 ```
 
-This restricts the agent's file system access and exec capabilities.
+This runs agent exec calls inside an ephemeral Docker container. See [Sandboxing](/gateway/sandboxing).
 
 ## Webhook security
 
@@ -103,7 +102,7 @@ If using HTTP webhooks (`hooks.enabled: true`):
 
 - [ ] nsec stored in environment variable, not config file
 - [ ] `~/.swarmstr/` has restricted permissions (`chmod 700`)
-- [ ] `dmPolicy` set appropriately (`pairing` or `allowlist`)
+- [ ] `dm.policy` set appropriately (`pairing` or `allowlist`)
 - [ ] API keys stored as environment variables
 - [ ] Workspace git repo is private
 - [ ] No secrets in workspace Markdown files

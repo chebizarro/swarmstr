@@ -17,7 +17,7 @@ swarmstr tracks token usage per session and per agent turn. Token counts are sto
 
 ```bash
 swarmstr status --usage
-swarmstr models status
+swarmstr models list
 ```
 
 The status output includes:
@@ -97,7 +97,7 @@ For a typical agent session (100 turns, 2k tokens/turn avg):
 
 ```bash
 # Check provider quota status
-swarmstr models status --check
+swarmstr models list --check
 
 # Exits 0 if healthy, 1 if expired/missing, 2 if expiring soon
 ```

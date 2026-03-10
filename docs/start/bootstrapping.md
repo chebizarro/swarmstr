@@ -30,7 +30,7 @@ These files live in `~/.swarmstr/workspace/` and are loaded at session start:
 ## Blank and missing files
 
 - **Blank files**: skipped silently.
-- **Missing files**: a single "missing file" marker is injected. `swarmstr setup` recreates defaults.
+- **Missing files**: a single "missing file" marker is injected. `swarmstr init` recreates defaults.
 - **Large files**: truncated at `bootstrapMaxChars` (default: 20000 chars per file).
 
 ## The BOOTSTRAP.md ritual
@@ -49,46 +49,37 @@ After completing the ritual, the agent deletes `BOOTSTRAP.md` — it's a one-tim
 
 ```bash
 # Create workspace and seed default bootstrap files
-swarmstr setup
+swarmstr init
 
 # Or specify a custom workspace path
-swarmstr setup --workspace /path/to/my-workspace
+swarmstr init --workspace /path/to/my-workspace
+
+# Overwrite existing files
+swarmstr init --force
 ```
 
-This creates default AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, and HEARTBEAT.md
-if they don't exist. Existing files are never overwritten.
-
-## Skipping bootstrap (for pre-seeded workspaces)
-
-```json
-{
-  "agent": {
-    "skipBootstrap": true
-  }
-}
-```
+This creates AGENTS.md, SOUL.md, IDENTITY.md, USER.md, and BOOTSTRAP.md if they don't exist.
+Existing files are never overwritten unless `--force` is passed.
 
 ## Custom bootstrap files
 
-Add extra files to the bootstrap context via the `bootstrap-extra-files` hook:
+Add extra files to the bootstrap context via the `bootstrap-extra-files` hook.
+Configure the glob patterns in `extra.bootstrap_extra_files.paths`:
 
 ```json
 {
-  "hooks": {
-    "internal": {
-      "enabled": true,
-      "entries": {
-        "bootstrap-extra-files": {
-          "enabled": true,
-          "paths": ["packages/*/AGENTS.md"]
-        }
-      }
+  "extra": {
+    "bootstrap_extra_files": {
+      "paths": ["packages/*/AGENTS.md", "packages/*/TOOLS.md"]
     }
   }
 }
 ```
 
 This is useful for monorepos where each package has its own context.
+Only recognised bootstrap file names are injected (`AGENTS.md`, `SOUL.md`, `TOOLS.md`,
+`IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md`, `MEMORY.md`).
+All resolved paths must remain inside the workspace directory.
 
 ## Template files
 

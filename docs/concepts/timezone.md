@@ -13,19 +13,13 @@ By default, the agent uses UTC for all time references:
 
 ## Configuring Agent Timezone
 
-Set the agent's display timezone in `config.json`:
+swarmstr does not have a global timezone config field. The most reliable approach is to tell the agent its timezone in `AGENTS.md` or `USER.md` (see below). The `TZ` environment variable also affects Go's `time.Local` if you run the daemon with it set:
 
-```json
-{
-  "extra": {
-    "timezone": "America/New_York"
-  }
-}
+```bash
+TZ=America/New_York swarmstrd
 ```
 
-Valid values are IANA timezone names (e.g., `Europe/London`, `Asia/Tokyo`, `US/Pacific`).
-
-When configured, the agent formats times in the local zone and is aware of DST transitions.
+This affects log timestamps and time-related output from tools. Valid values are IANA timezone names (e.g., `Europe/London`, `Asia/Tokyo`, `US/Pacific`).
 
 ## Injecting Timezone via AGENTS.md
 
@@ -41,65 +35,48 @@ This is more flexible — you can update it without restarting the daemon.
 
 ## Current Time Awareness
 
-The agent knows the current time is injected dynamically on each turn (via a context hook):
+The agent can access the current time by calling the built-in `current_time` tool, which returns a UTC timestamp. To always know "now", instruct the agent in `AGENTS.md`:
 
 ```markdown
-Current time: 2026-03-09 14:32 UTC (Monday)
+## Time Awareness
+Always call the current_time tool at the start of any time-sensitive task
+to get the actual current UTC time. Present times in the user's local timezone.
 ```
-
-This prevents the agent from using stale time assumptions from its training data. The time is injected as part of the dynamic context layer before the session history.
-
-Configure the time injection format:
-
-```json
-{
-  "extra": {
-    "timezone": "Europe/Berlin",
-    "timeFormat": "2006-01-02 15:04 MST"
-  }
-}
-```
-
-The format follows Go's `time.Format` reference time (`2006-01-02 15:04:05 MST`).
 
 ## Cron Schedules
 
-Cron jobs respect the configured timezone:
+Cron jobs are created dynamically via the `cron_add` agent tool or the `cron.add` gateway method. Schedules use standard 5-field cron syntax (UTC by default):
 
-```json
-{
-  "cron": [
-    {
-      "schedule": "0 9 * * 1-5",
-      "task": "Daily standup reminder",
-      "timezone": "America/New_York"
-    }
-  ]
-}
+```
+cron_add(schedule="0 9 * * 1-5", instructions="Post daily standup reminder")
 ```
 
-The `timezone` field on individual cron entries overrides the global setting.
+Cron expressions are always interpreted as UTC. To account for local time, adjust the hour offset in the expression:
 
-**Default**: All cron schedules are UTC unless a timezone is specified.
+```
+# 9am US Eastern (UTC-5 in winter)
+cron_add(schedule="0 14 * * 1-5", instructions="Daily 9am ET standup")
+```
 
 ## Heartbeat Timezone
 
-The heartbeat interval (`heartbeatInterval`) is duration-based (not cron), so it's timezone-independent:
+The heartbeat interval is configured in milliseconds and is timezone-independent:
 
 ```json
 {
   "extra": {
-    "agent": {
-      "heartbeatInterval": "1h"
+    "heartbeat": {
+      "enabled": true,
+      "interval_seconds": 3600
     }
   }
 }
 ```
 
-But the heartbeat *script* can output local time:
+The heartbeat script (`HEARTBEAT.md`) can use local time for display:
 
 ```bash
-# HEARTBEAT.md
+# In HEARTBEAT.md
 echo "Heartbeat at $(TZ=America/Denver date '+%H:%M %Z')"
 ```
 

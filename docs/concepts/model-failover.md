@@ -16,49 +16,44 @@ swarmstr handles model provider failures in two stages:
 
 ## API Key Rotation
 
-When a request hits a rate limit (`429` / `rate_limit` / `quota`), swarmstr retries with the next available key:
+When a request hits a rate limit (`429` / `rate_limit` / `quota`), swarmstr retries with the next available key from the pool. Configure multiple keys in the runtime config:
 
-**Priority order:**
-1. `SWARMSTR_LIVE_<PROVIDER>_KEY` — single live override
-2. `<PROVIDER>_API_KEYS` — comma-separated rotation list
-3. `<PROVIDER>_API_KEY` — single key
-4. `<PROVIDER>_API_KEY_1`, `_2`, ... — numbered alternates
-
-```bash
-# Multiple keys for rotation in ~/.swarmstr/.env
-ANTHROPIC_API_KEYS=sk-ant-key1,sk-ant-key2,sk-ant-key3
-```
-
-Non-rate-limit errors are **not** retried with alternate keys.
-
-## Model Fallbacks
-
-When a model fails (provider down, model unavailable, quota exhausted after all keys are tried), swarmstr falls back to the next model in the fallback list:
-
-```json5
+```json
 {
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "anthropic/claude-opus-4-5",
-        "fallbacks": [
-          "anthropic/claude-sonnet-4-5",      // cheaper Claude first
-          "openai/gpt-4o",                     // OpenAI as backup
-          "openrouter/meta-llama/llama-3.3-70b-instruct"  // free fallback
-        ]
-      }
+  "providers": {
+    "anthropic": {
+      "api_keys": ["${ANTHROPIC_KEY_1}", "${ANTHROPIC_KEY_2}", "${ANTHROPIC_KEY_3}"]
     }
   }
 }
 ```
 
-### CLI Fallback Management
+Keys are used round-robin. A rate-limited key is temporarily moved to the back. Non-rate-limit errors are **not** retried with alternate keys.
+
+## Model Fallbacks
+
+When a model fails (provider down, model unavailable, quota exhausted after all keys are tried), swarmstr falls back to the next model in the `fallback_models` list:
+
+```json
+{
+  "agents": [
+    {
+      "id": "main",
+      "model": "claude-opus-4-5",
+      "fallback_models": [
+        "claude-sonnet-4-5",
+        "openai/gpt-4o",
+        "openrouter/meta-llama/llama-3.3-70b-instruct"
+      ]
+    }
+  ]
+}
+```
+
+Change the primary model at runtime:
 
 ```bash
-swarmstr models fallbacks list
-swarmstr models fallbacks add anthropic/claude-haiku-4-5
-swarmstr models fallbacks remove openai/gpt-4o
-swarmstr models fallbacks clear
+swarmstr models set claude-sonnet-4-5
 ```
 
 ## Failover Triggers
@@ -71,36 +66,24 @@ swarmstr models fallbacks clear
 | Network timeout | ❌ | ✅ after 3 retries |
 | Context too long | ❌ | ✅ to larger-context model |
 
-## Auth Profile Management
-
-For OAuth tokens (setup-token), swarmstr manages multiple auth profiles per provider:
-
-```
-~/.swarmstr/agents/<agentId>/auth-profiles.json
-```
-
-Profile IDs follow the pattern `<provider>:<email>` or `<provider>:default`.
+## Checking Credentials
 
 ```bash
-# View auth profile order
-swarmstr models auth order get --provider anthropic
+# List configured models and providers
+swarmstr models list
 
-# Set profile priority
-swarmstr models auth order set --provider anthropic anthropic:work anthropic:default
-
-# Check auth status
-swarmstr models status
+# Full diagnostics
+swarmstr doctor
 ```
 
 ## Monitoring Failover
 
 ```bash
-# Check for expired/expiring credentials
-swarmstr models status --check
-# Exit code: 0=ok, 1=expired/missing, 2=expiring soon
+# List models — shows active model per agent
+swarmstr models list
 
-# View model status with auth details
-swarmstr models status
+# Run full diagnostic checks
+swarmstr doctor
 ```
 
 ## See Also

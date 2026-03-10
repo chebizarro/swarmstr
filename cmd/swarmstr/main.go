@@ -131,6 +131,10 @@ func main() {
 	case "gw":
 		run("gw", runGW, args[1:])
 
+	// ── keygen ───────────────────────────────────────────────────────────────
+	case "keygen":
+		run("keygen", runKeygen, args[1:])
+
 	// ── legacy flat commands (kept for backward compat) ───────────────────────
 	case "plan":
 		fmt.Println("docs/PORT_PLAN.md")

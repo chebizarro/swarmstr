@@ -1,14 +1,16 @@
 ---
-summary: "Discord channel plugin for swarmstr (optional, community-contributed)"
+summary: "Discord channel plugin for swarmstr (optional extension, not built-in)"
 read_when:
   - Adding Discord as a secondary channel alongside Nostr
-  - Routing Discord messages to a swarmstr agent
+  - Routing Discord messages to a swarmstr agent via channel plugin
 title: "Discord Channel"
 ---
 
 # Discord Channel
 
-Discord is a **secondary channel** for swarmstr. Nostr DMs are the primary channel — Discord is an optional plugin for reaching users who prefer Discord.
+Discord is a **secondary channel** for swarmstr delivered via a **channel plugin** — a loadable extension that bridges Discord into the `nostr_channels` pipeline. Nostr DMs are the primary channel; Discord is an optional plugin for reaching users who prefer Discord.
+
+> **Plugin required**: The Discord channel plugin must be installed and loaded. It is not included in the standard swarmstr build. Check the plugin registry for the current Discord plugin package.
 
 > **Nostr-first reminder**: swarmstr is designed around Nostr. Discord support is a convenience bridge for users not on Nostr yet. Consider encouraging your users to use a Nostr client for the best experience.
 
@@ -19,7 +21,7 @@ When the Discord channel plugin is enabled, swarmstr:
 2. Routes messages from configured channels/DMs to the agent runtime
 3. Replies via Discord using the same bot
 
-The agent's responses are identical regardless of channel — the same Claude-powered reasoning with full tool access.
+The agent's responses are identical regardless of channel — the same reasoning with full tool access.
 
 ## Prerequisites
 
@@ -29,35 +31,32 @@ The agent's responses are identical regardless of channel — the same Claude-po
 
 ## Configuration
 
-```json5
-{
-  "channels": {
-    "discord": {
-      "enabled": true,
-      "token": "${DISCORD_BOT_TOKEN}",
-      "dmPolicy": "allowlist",         // "open" | "allowlist"
-      "allowFrom": ["user-id-1", "user-id-2"],
-      "guildId": "your-server-id",
-      "channels": ["allowed-channel-id"]  // optional channel allowlist
-    }
-  }
-}
-```
-
-Set the bot token in `~/.swarmstr/.env`:
+Set the bot token in your environment:
 
 ```
 DISCORD_BOT_TOKEN=your-bot-token-here
 ```
 
-## CLI Setup
+Configure in the runtime ConfigDoc:
 
-```bash
-# Add Discord channel
-swarmstr channels add --channel discord --token ${DISCORD_BOT_TOKEN} --name "My Discord Bot"
-
-# Check Discord status
-swarmstr channels status --channel discord
+```json5
+{
+  "nostr_channels": {
+    "discord-bot": {
+      "kind": "discord",
+      "enabled": true,
+      "allow_from": ["*"],             // or list specific Discord user IDs as strings
+      "config": {
+        "token": "${DISCORD_BOT_TOKEN}",
+        "guild_id": "your-server-id",  // optional: restrict to one server
+        "channels": [                  // optional: restrict to specific channel IDs
+          "allowed-channel-id-1",
+          "allowed-channel-id-2"
+        ]
+      }
+    }
+  }
+}
 ```
 
 ## Bot Permissions
@@ -71,39 +70,41 @@ The Discord bot needs the following permissions:
 Required gateway intents:
 - `GUILD_MESSAGES`
 - `DIRECT_MESSAGES`
-- `MESSAGE_CONTENT` (privileged)
+- `MESSAGE_CONTENT` (privileged — enable in Discord Developer Portal → Bot)
 
-## Session Routing
+## Session Keys
 
-Discord messages are routed to agent sessions with the key format:
-
-```
-agent:<agentId>:discord:<userId>
-```
-
-Or for guild channels:
+Discord messages route to agent sessions using the standard channel key format:
 
 ```
-agent:<agentId>:discord:<guildId>:<channelId>
+ch:<channelID>:<senderID>
 ```
 
-## Multi-Account
+Where `channelID` is the Discord channel or DM channel ID and `senderID` is the Discord user ID. Each user gets their own isolated session.
 
-Run multiple Discord bots (e.g., different bots for different servers):
+## Multiple Discord Bots
+
+Run multiple bots by adding additional entries to `nostr_channels`:
 
 ```json5
 {
-  "channels": {
-    "discord": {
-      "accounts": {
-        "server-alpha": {
-          "token": "${DISCORD_ALPHA_TOKEN}",
-          "guildId": "server-alpha-id"
-        },
-        "server-beta": {
-          "token": "${DISCORD_BETA_TOKEN}",
-          "guildId": "server-beta-id"
-        }
+  "nostr_channels": {
+    "discord-alpha": {
+      "kind": "discord",
+      "enabled": true,
+      "agent_id": "alpha-agent",
+      "config": {
+        "token": "${DISCORD_ALPHA_TOKEN}",
+        "guild_id": "server-alpha-id"
+      }
+    },
+    "discord-beta": {
+      "kind": "discord",
+      "enabled": true,
+      "agent_id": "beta-agent",
+      "config": {
+        "token": "${DISCORD_BETA_TOKEN}",
+        "guild_id": "server-beta-id"
       }
     }
   }
@@ -124,18 +125,13 @@ For sensitive conversations, Nostr DMs are strongly preferred.
 
 ## Troubleshooting
 
-```bash
-swarmstr channels logs --channel discord
-swarmstr channels status --channel discord
-```
-
 Common issues:
-- `DISCORD_BOT_TOKEN not set`: add to `~/.swarmstr/.env`
-- `Missing permissions`: re-invite bot with correct permission integer
+- `DISCORD_BOT_TOKEN not set`: add to your environment or bootstrap config
+- `Missing permissions`: re-invite the bot with the correct permission integer
 - `MESSAGE_CONTENT intent`: enable in Discord Developer Portal → Bot → Privileged Gateway Intents
 
 ## See Also
 
 - [Nostr Channel](/channels/nostr) — primary channel
+- [Group Chats](/channels/groups)
 - [Channel Index](/channels/)
-- [Configuration](/gateway/configuration)

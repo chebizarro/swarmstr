@@ -24,19 +24,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 3. Configure in `~/.swarmstr/config.json`:
 
-```json5
+```json
 {
   "providers": {
     "anthropic": {
-      "apiKey": "${ANTHROPIC_API_KEY}"
+      "api_key": "${ANTHROPIC_API_KEY}"
     }
   },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "anthropic/claude-opus-4-5"
-      }
-    }
+  "agent": {
+    "default_model": "claude-opus-4-5"
   }
 }
 ```
@@ -49,14 +45,11 @@ If you have a Claude subscription via Claude Code:
 # On your daemon host
 claude setup-token
 
-# Register with swarmstr
-swarmstr models auth setup-token --provider anthropic
-
-# Verify
-swarmstr models status
+# Register with swarmstr (not yet automated — add the token manually to config):
+swarmstr models list
 ```
 
-> **Warning**: Anthropic has blocked some subscription usage outside Claude Code in the past. API key auth is safer for production. Verify current Anthropic terms.
+Common issues:
 
 ## Available Models
 
@@ -73,51 +66,46 @@ swarmstr models list --provider anthropic
 
 ## Thinking Mode
 
-Claude supports extended thinking for deeper reasoning:
+Claude supports extended thinking for deeper reasoning. Set globally:
 
-```json5
+```json
 {
-  "agents": {
-    "defaults": {
-      "thinking": "medium"   // "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
-    }
+  "agent": {
+    "thinking": "medium"
   }
 }
 ```
 
-Or per-session via slash command: `/reasoning high`
+Or per-agent:
+
+```json
+{
+  "agents": [
+    { "id": "main", "thinking_level": "high" }
+  ]
+}
+```
+
+Or per-session via slash command: `/set thinking on`
 
 See [Thinking Mode](/tools/thinking) for details.
 
 ## Prompt Caching
 
-swarmstr supports Anthropic's prompt caching to reduce costs on repeated context:
-
-```json5
-{
-  "agents": {
-    "defaults": {
-      "models": {
-        "anthropic/claude-opus-4-5": {
-          "params": {
-            "cacheRetention": "short"   // "none" | "short" (5min) | "long" (1hr)
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-With an API key, `cacheRetention: "short"` is applied automatically. Prompt caching is not available with setup-token auth.
+swarmstr automatically applies Anthropic's prompt caching (cache breakpoints on static system context). Cache hits reduce cost to ~10% of the normal input token rate. This is always active when using an API key — no additional configuration needed.
 
 ## API Key Rotation
 
-Rotate keys automatically when one hits rate limits:
+Provide multiple keys for automatic round-robin rotation:
 
-```
-# ~/.swarmstr/.env
-ANTHROPIC_API_KEYS=sk-ant-key1,sk-ant-key2
+```json
+{
+  "providers": {
+    "anthropic": {
+      "api_keys": ["${ANTHROPIC_KEY_1}", "${ANTHROPIC_KEY_2}"]
+    }
+  }
+}
 ```
 
 swarmstr retries with the next key on `429` / rate limit errors.
@@ -125,7 +113,7 @@ swarmstr retries with the next key on `429` / rate limit errors.
 ## Troubleshooting
 
 ```bash
-swarmstr models status
+swarmstr models list
 swarmstr doctor
 ```
 
@@ -133,7 +121,7 @@ Common issues:
 
 - **`No credentials found`**: Check `ANTHROPIC_API_KEY` is set and `~/.swarmstr/.env` is loaded.
 - **`Unauthorized`**: API key may be invalid or revoked. Generate a new one.
-- **`Rate limited`**: Add more keys to `ANTHROPIC_API_KEYS` for rotation.
+- **`Rate limited`**: Add more keys to `providers.anthropic.api_keys` for rotation.
 - **`This credential is only authorized for Claude Code`**: Switch from setup-token to API key.
 
 ## See Also

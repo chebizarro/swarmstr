@@ -1,155 +1,154 @@
 ---
-summary: "Pairing flow for swarmstr: how new Nostr contacts get access to the agent"
+summary: "Access control for swarmstr: DM policy modes (pairing, allowlist, open, disabled)"
 read_when:
-  - Setting up pairing for your swarmstr agent
+  - Setting up access control for your swarmstr agent
   - Onboarding new users to your agent
-  - Configuring the pairing code and welcome message
-title: "Pairing"
+  - Configuring DM allow lists
+title: "Access Control & Pairing"
 ---
 
-# Pairing
+# Access Control & Pairing
 
-Pairing is swarmstr's access control mechanism for letting new contacts interact with the agent. Instead of manually editing an allowlist, users send a pairing code and get automatically approved.
+swarmstr controls who can interact with your agent via the `dm.policy` field in the runtime ConfigDoc. There are four policy modes.
 
-## How Pairing Works
+## DM Policy Modes
 
-1. You configure a pairing code in your swarmstr config
-2. You share your agent's npub and the pairing code with trusted contacts
-3. The contact sends the pairing code to your agent via Nostr DM (or any enabled channel)
-4. The agent validates the code, adds their pubkey to the approved list, and sends a welcome message
-5. Subsequent messages from that contact are processed normally
-
-## Configuration
+Configure in the `dm` section of your ConfigDoc:
 
 ```json5
 {
-  "channels": {
-    "nostr": {
-      "dmPolicy": "pairing",
-      "pairing": {
-        "code": "${PAIRING_CODE}",
-        "welcomeMessage": "Welcome! You've been paired with this agent. Send any message to get started.",
-        "maxPairings": 10    // optional: limit total approved contacts
-      }
-    }
+  "dm": {
+    "policy": "pairing",     // pairing | allowlist | open | disabled
+    "allow_from": []         // list of allowed npubs or hex pubkeys
   }
 }
 ```
 
-Set the pairing code in `~/.swarmstr/.env`:
+### `pairing` (Default)
 
-```
-PAIRING_CODE=your-secret-code-here
-```
+Unknown senders receive a notification that approval is required, rather than being silently ignored:
 
-> Choose a pairing code that's hard to guess — it's the gate to your agent. Rotate it after you've onboarded all expected users.
-
-## Sharing Your Agent
-
-Share both the agent's npub and the pairing code with contacts:
-
-```
-To connect with my agent:
-1. Open your Nostr client (Damus, Amethyst, Iris, etc.)
-2. Send a DM to: npub1abc...
-3. Message: join-abc123   ← (your pairing code)
+```json5
+{
+  "dm": {
+    "policy": "pairing",
+    "allow_from": [
+      "npub1yourpubkey...",
+      "npub1friendspubkey..."
+    ]
+  }
+}
 ```
 
-Or if you have NIP-05 configured:
+When an unknown sender DMs your agent, they receive: _"Your message was received, but this node requires pairing approval before processing DMs."_
 
-```
-To connect with my agent:
-1. Find "agent@yourdomain.com" in your Nostr client
-2. Send a DM with: join-abc123
+Once you add their npub to `allow_from` (by editing `config.json` and running `swarmstr config import --file config.json`), subsequent messages from them are processed normally.
+
+### `allowlist` (Recommended for Production)
+
+Only pubkeys explicitly listed in `allow_from` can interact. Unknown senders are silently dropped:
+
+```json5
+{
+  "dm": {
+    "policy": "allowlist",
+    "allow_from": [
+      "npub1alice...",
+      "npub1bob..."
+    ]
+  }
+}
 ```
 
-## Managing Approved Contacts
+### `open` (Testing Only)
+
+Any Nostr DM is processed — do not use on public relays in production:
+
+```json5
+{
+  "dm": {
+    "policy": "open"
+  }
+}
+```
+
+### `disabled`
+
+All inbound DMs are rejected. Useful when you want to pause the agent without stopping the daemon:
+
+```json5
+{
+  "dm": {
+    "policy": "disabled"
+  }
+}
+```
+
+## Adding Contacts
+
+To allow a new contact, add their npub or hex pubkey to `allow_from`. Export, edit, then reimport the config:
 
 ```bash
-# List pending pairing requests
-swarmstr pairing list
+# View current config
+swarmstr config get
 
-# Manually approve a request
-swarmstr pairing approve <code>
-
-# View current approved contacts
-swarmstr config get channels.nostr.allowFrom
+# Export, edit, reimport
+swarmstr config export > /tmp/cfg.json
+# (add npub to dm.allow_from in /tmp/cfg.json)
+swarmstr config import --file /tmp/cfg.json
 ```
 
-## From Pairing to Allowlist
+Or send a control DM from an admin/owner key with the `config.set` command.
 
-Once you've onboarded all expected users, switch to `allowlist` mode for tighter control:
+## Auth Levels
+
+The first entry in `allow_from` is the **owner** (highest privilege — can run admin commands). Subsequent entries marked `trusted:npub1...` have trusted access. Other entries are treated as public access:
 
 ```json5
 {
-  "channels": {
-    "nostr": {
-      "dmPolicy": "allowlist",
-      "allowFrom": [
-        "npub1alice...",
-        "npub1bob..."
-      ]
-    }
+  "dm": {
+    "policy": "allowlist",
+    "allow_from": [
+      "npub1owner...",           // owner — full admin access
+      "trusted:npub1admin...",   // trusted — elevated access
+      "npub1user..."             // public — standard access
+    ]
   }
 }
 ```
 
-You can see the list of approved pubkeys after users have paired, then hardcode them in the allowlist and disable pairing.
+## NIP-05 Discovery
 
-## Pairing Code Security
+Make your agent discoverable by human-readable name by setting up NIP-05 in your agent's `IDENTITY.md` file or profile config:
 
-- Store the code in env vars, not hardcoded in config
-- Use a strong random code (e.g., `openssl rand -hex 16`)
-- Rotate the code if you suspect it's been leaked
-- Set `maxPairings` to limit exposure if you only expect a specific number of users
+```
+Agent NIP-05: agent@yourdomain.com
+```
+
+Serve the NIP-05 JSON at `https://yourdomain.com/.well-known/nostr.json`:
+
+```json
+{
+  "names": {
+    "agent": "<agent-pubkey-hex>"
+  }
+}
+```
+
+With NIP-05, users can find your agent by name rather than memorizing a raw npub.
+
+## Get the Agent's npub
 
 ```bash
-# Generate a strong pairing code
-openssl rand -hex 16
+swarmstr status
+# Includes:
+#   pubkey: npub1abc...
 ```
 
-## Multi-Channel Pairing
-
-Pairing can be configured per-channel. Discord and Telegram have their own pairing flows:
-
-```json5
-{
-  "channels": {
-    "nostr": {
-      "dmPolicy": "pairing",
-      "pairing": { "code": "${NOSTR_PAIRING_CODE}" }
-    },
-    "telegram": {
-      "dmPolicy": "pairing",
-      "pairing": { "code": "${TELEGRAM_PAIRING_CODE}" }
-    }
-  }
-}
-```
-
-Use different codes per channel so you can revoke access independently.
-
-## Groups
-
-For Nostr group chats (NIP-29), pairing works at the group level rather than per-user:
-
-```json5
-{
-  "channels": {
-    "nostr": {
-      "groups": {
-        "enabled": true,
-        "allowFrom": ["<group-id-1>", "<group-id-2>"]
-      }
-    }
-  }
-}
-```
-
-Add the agent to the group and configure the group ID in the allowlist. The agent will respond to messages mentioning it in approved groups.
+Share this with contacts you want to allow. They open any Nostr client (Damus, Amethyst, Primal, Gossip, etc.) and send a DM to that npub.
 
 ## See Also
 
 - [Nostr Channel](/channels/nostr)
-- [Security](/security/)
 - [Gateway: Pairing](/gateway/pairing)
+- [Security](/security/)

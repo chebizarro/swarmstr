@@ -1,15 +1,27 @@
 ---
-summary: "Group chat support for swarmstr: Nostr groups (NIP-29) and other channel groups"
+summary: "Group chat support for swarmstr: Nostr groups (NIP-29, NIP-28) and relay-filter channels"
 read_when:
   - Setting up group chat for your swarmstr agent
   - Using NIP-29 relay-based groups with swarmstr
+  - Configuring NIP-28 public channels
   - Configuring group message handling
 title: "Group Chats"
 ---
 
 # Group Chats
 
-swarmstr supports group contexts where the agent participates alongside multiple users. The primary group mechanism is **NIP-29 relay-based groups** on Nostr.
+swarmstr supports group contexts where the agent participates alongside multiple users. The primary group mechanisms are **NIP-29 relay-based groups** and **NIP-28 public channels** on Nostr. Both are configured via the `nostr_channels` map in the runtime ConfigDoc.
+
+## nostr_channels Configuration
+
+All group channels are defined as named entries in `nostr_channels`. Each entry has a `kind` field that determines the channel type:
+
+| Kind | Description |
+|------|-------------|
+| `nip29` | Relay-managed group (NIP-29) |
+| `nip28` | Public channel (NIP-28) |
+| `relay-filter` | Arbitrary Nostr filter subscription |
+| `dm` | Direct message (default DM handling) |
 
 ## Nostr Groups (NIP-29)
 
@@ -18,102 +30,136 @@ NIP-29 defines relay-managed groups where the relay enforces membership and mess
 ### How It Works
 
 1. Create or join a NIP-29 group on a relay that supports it (e.g., groups.fiatjaf.com)
-2. Add the agent's npub as a member
-3. Configure swarmstr to listen for group messages
-4. The agent responds when mentioned by name or npub
+2. Add the agent's npub as a member of the group
+3. Configure swarmstr to subscribe to the group via `nostr_channels`
+4. The agent receives and responds to group messages
 
 ### Configuration
 
 ```json5
 {
-  "channels": {
-    "nostr": {
-      "groups": {
-        "enabled": true,
-        "allowFrom": [
-          "group-id-on-relay-1",
-          "group-id-on-relay-2"
-        ],
-        "mentionPattern": "@agent",   // how users summon the agent
-        "respondToAll": false         // if true, responds to all group messages
-      }
+  "nostr_channels": {
+    "my-group": {
+      "kind": "nip29",
+      "enabled": true,
+      "group_address": "groups.fiatjaf.com'my-group-id",  // relay'groupID
+      "relays": ["wss://groups.fiatjaf.com"],              // optional: defaults to global relays
+      "agent_id": "",                                       // optional: route to specific agent
+      "allow_from": ["*"]                                   // "*" = anyone in group; or list pubkeys
     }
   }
 }
 ```
+
+The `group_address` format is `relay'groupID` (relay URL, single quote, group identifier) as defined by NIP-29.
 
 ### Group Session Keys
 
-Group messages route to sessions with keys:
+Each sender in a group gets their own session:
 
 ```
-agent:<agentId>:nostr:group:<groupId>
+ch:<channelID>:<senderPubKey>
 ```
 
-Each group has its own session context, separate from DM sessions.
+Where `channelID` is derived from the group address. Each group participant has their own isolated session context with the agent.
 
-### Mention Patterns
+## Nostr Public Channels (NIP-28)
 
-By default, the agent only responds in groups when explicitly mentioned. Configure the mention pattern:
+NIP-28 defines open public channels anchored by a channel creation event on Nostr.
 
 ```json5
 {
-  "channels": {
-    "nostr": {
-      "groups": {
-        "mentionPattern": "npub1abc..."   // agent's own npub
-      }
+  "nostr_channels": {
+    "public-chat": {
+      "kind": "nip28",
+      "enabled": true,
+      "channel_id": "abc123def456...",  // NIP-28 channel event ID (hex)
+      "relays": ["wss://relay.nostr.com"],
+      "allow_from": ["*"]
     }
   }
 }
 ```
 
-Users mention the agent with `nostr:npub1abc...` or just the display name if the client resolves it.
+## Relay-Filter Channels
 
-## Telegram Groups
-
-For Telegram channel plugin users:
+For custom subscriptions beyond NIP-28/29, use `relay-filter`:
 
 ```json5
 {
-  "channels": {
-    "telegram": {
-      "groups": {
-        "enabled": true,
-        "allowFrom": [-1001234567890]   // Telegram group IDs
-      }
+  "nostr_channels": {
+    "mentions": {
+      "kind": "relay-filter",
+      "enabled": true,
+      "relays": ["wss://relay.nostr.com"],
+      "tags": {
+        "p": ["<agent-pubkey-hex>"]
+      },
+      "allow_from": ["*"]
     }
   }
 }
 ```
 
-The agent responds when mentioned as `@yourbotname`.
+The `tags` field maps Nostr tag names to lists of values, forming the subscription filter.
 
-## Discord Groups (Servers)
+## Multiple Channels
 
-For Discord channel plugin users:
+You can define multiple channels simultaneously:
 
 ```json5
 {
-  "channels": {
-    "discord": {
-      "guildId": "your-server-id",
-      "channels": ["allowed-channel-id-1", "allowed-channel-id-2"]
+  "nostr_channels": {
+    "team-group": {
+      "kind": "nip29",
+      "enabled": true,
+      "group_address": "groups.fiatjaf.com'team-abc",
+      "agent_id": "coding-agent",
+      "allow_from": ["*"]
+    },
+    "public-qa": {
+      "kind": "nip28",
+      "enabled": true,
+      "channel_id": "def789...",
+      "allow_from": ["*"]
     }
   }
 }
 ```
 
-The agent responds to messages in the specified channels.
+## Access Control
+
+`allow_from` controls who can interact via each channel:
+
+- `["*"]` — anyone (no restriction beyond group membership)
+- `["npub1alice...", "npub1bob..."]` — specific npubs only
+- `[]` (empty) — inherits the global `dm.allow_from` policy
+
+## Routing to Specific Agents
+
+Set `agent_id` to route a channel's messages to a named agent from `agents[]`:
+
+```json5
+{
+  "nostr_channels": {
+    "coding-group": {
+      "kind": "nip29",
+      "group_address": "groups.fiatjaf.com'code-review",
+      "agent_id": "coding-agent",
+      "enabled": true
+    }
+  }
+}
+```
 
 ## Group vs DM Sessions
 
 | | DM Session | Group Session |
 |--|-----------|---------------|
-| Session key | `agent:main:main:<userId>` | `agent:main:nostr:group:<groupId>` |
-| Context | Per-user | Shared across group |
-| Privacy | Private | Group members see agent replies |
-| Memory | Per-user workspace | Shared group context |
+| Session key | `<senderPubKey>` | `ch:<channelID>:<senderPubKey>` |
+| Context | Per-user | Per-user within channel |
+| Privacy | NIP-04/44 encrypted | Group relay sees content |
+| Config | `dm` section | `nostr_channels` map |
 
 ## Broadcast Groups
 
@@ -128,11 +174,31 @@ nostr_send_dm(to="npub1alice...", content="Report ready")
 nostr_send_dm(to="npub1bob...", content="Report ready")
 ```
 
+## Extension Channels (Telegram, Discord, etc.)
+
+Platforms like Telegram, Discord, Slack, and WhatsApp are supported via **channel plugins** — loadable extensions that bridge the external platform into the `nostr_channels` pipeline. Plugin-specific configuration goes in the `config` field of the channel entry:
+
+```json5
+{
+  "nostr_channels": {
+    "telegram-bot": {
+      "kind": "telegram",          // provided by the telegram plugin
+      "enabled": true,
+      "config": {
+        "bot_token": "1234567890:ABC..."
+      }
+    }
+  }
+}
+```
+
+See the plugin documentation for each platform's specific `config` fields.
+
 ## Group Privacy Considerations
 
 - NIP-29 groups: messages are visible to all group members and the relay operator
-- Telegram groups: Telegram servers have access to all messages
-- Discord channels: Discord has access to all messages
+- NIP-28 channels: messages are publicly readable on relays
+- Relay-filter: depends on the relay's access policy
 
 For sensitive agent interactions, DMs via Nostr (NIP-04/44 encrypted) are preferred over group channels.
 
@@ -140,4 +206,4 @@ For sensitive agent interactions, DMs via Nostr (NIP-04/44 encrypted) are prefer
 
 - [Nostr Channel](/channels/nostr)
 - [Pairing](/channels/pairing)
-- [Security](/security/)
+- [Architecture](/concepts/architecture)

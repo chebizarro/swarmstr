@@ -15,14 +15,15 @@ title: "Location, VoiceWake & Node Troubleshooting"
 
 When a node device has GPS or location capabilities, the agent can request the current location:
 
+Location commands are sent to nodes via `swarmstr nodes invoke`:
+
 ```bash
 # Get location from node
-swarmstr nodes location get --node mypi
+swarmstr nodes invoke --node <node-id> --command location.get
 
-# With accuracy preference
-swarmstr nodes location get --node mypi \
-  --accuracy precise \
-  --max-age 60000    # accept location up to 60 seconds old
+# With options
+swarmstr nodes invoke --node <node-id> --command location.get \
+  --args '{"max_age_ms": 60000}'
 ```
 
 ### Location in Agent Context
@@ -35,10 +36,10 @@ The agent can use location data for:
 ### Example: Location-Based Cron
 
 ```bash
-# Cron job that runs when device enters a specific area
+# Cron job that checks GPS location on schedule
 swarmstr cron add \
-  --name "arrive-home" \
-  --system-event "Check if I've arrived home based on GPS location"
+  --schedule "*/5 * * * *" \
+  --message "Check if I've arrived home based on GPS location"
 ```
 
 ## VoiceWake
@@ -108,11 +109,11 @@ swarmstr nodes list
 ### Node Disconnecting Frequently
 
 ```bash
-# Check node logs
-swarmstr node status
+# Check node status
+swarmstr nodes status --node <node-id>
 
 # On the node device
-journalctl -u swarmstr-node -f
+journalctl -u swarmstrd -f
 ```
 
 Common causes:
@@ -123,22 +124,17 @@ Common causes:
 ### Node Command Failures
 
 ```bash
-# Test a simple command
-swarmstr nodes run --node mypi echo "test"
-
-# Check exec approvals on node
-# SSH into the node and check:
-cat ~/.swarmstr/exec-approvals.json
+# Test a simple command via invoke
+swarmstr nodes invoke --node <node-id> --command echo --args '{"text": "test"}'
 ```
 
 ### Camera Not Working
 
 ```bash
-# List cameras on node
-swarmstr nodes camera list --node mypi
+# List cameras on node via invoke
+swarmstr nodes invoke --node <node-id> --command camera.list
 
-# Verify camera is accessible on the node itself
-# SSH into node and test:
+# Verify camera is accessible on the node itself (SSH into node and test):
 libcamera-still -o /tmp/test.jpg   # Raspberry Pi
 v4l2-ctl --list-devices             # USB camera
 ```
@@ -158,7 +154,7 @@ pactl list sinks   # PulseAudio sinks
 ```bash
 # Verify node can reach gateway
 ping <gateway-host>
-curl http://<gateway-host>:18789/health
+curl http://<gateway-host>:<admin_listen_addr>/health
 
 # For Tailscale setups
 tailscale status

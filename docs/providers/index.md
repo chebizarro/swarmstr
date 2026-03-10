@@ -45,19 +45,25 @@ swarmstr supports LLM providers via the pi-ai catalog and custom OpenAI-compatib
 
 ## Quick setup
 
+Set your API key as an environment variable (referenced in config with `${VAR}`):
+
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-Or in config:
+Or put it in `~/.swarmstr/.env`:
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Then in `~/.swarmstr/config.json`:
 
 ```json
 {
-  "models": {
-    "providers": {
-      "anthropic": {
-        "apiKey": "${ANTHROPIC_API_KEY}"
-      }
+  "agent": { "default_model": "anthropic/claude-opus-4-6" },
+  "providers": {
+    "anthropic": {
+      "api_key": "${ANTHROPIC_API_KEY}"
     }
   }
 }
@@ -65,28 +71,28 @@ Or in config:
 
 ## API key rotation
 
-```bash
-export ANTHROPIC_API_KEYS="sk-ant-1,sk-ant-2,sk-ant-3"
-```
+Supply multiple keys via `api_keys` array — swarmstr rotates on 429 (rate limit):
 
-swarmstr automatically rotates to the next key on 429 (rate limit) responses.
+```json
+{
+  "providers": {
+    "anthropic": {
+      "api_keys": ["${ANTHROPIC_API_KEY_1}", "${ANTHROPIC_API_KEY_2}"]
+    }
+  }
+}
+```
 
 ## Custom OpenAI-compatible provider
 
 ```json
 {
-  "models": {
-    "mode": "merge",
-    "providers": {
-      "my-provider": {
-        "baseUrl": "http://localhost:1234/v1",
-        "apiKey": "${MY_PROVIDER_KEY}",
-        "api": "openai-completions",
-        "models": [
-          { "id": "my-model", "name": "My Model", "contextWindow": 128000, "maxTokens": 8192 }
-        ]
-      }
+  "providers": {
+    "my-provider": {
+      "base_url": "http://localhost:1234/v1",
+      "api_key": "${MY_PROVIDER_KEY}"
     }
-  }
+  },
+  "agent": { "default_model": "my-provider/my-model-id" }
 }
 ```

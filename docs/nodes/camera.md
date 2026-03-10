@@ -17,31 +17,32 @@ When a node with camera capabilities is paired, the agent can request snapshots 
 
 ### Taking a Snapshot
 
+Camera commands are sent to nodes via `swarmstr nodes invoke`:
+
 ```bash
 # Capture a photo from a paired node
-swarmstr nodes camera snap --node mypi
+swarmstr nodes invoke --node <node-id> --command camera.snap
 
 # With options
-swarmstr nodes camera snap --node mypi \
-  --max-width 1280 \
-  --quality 0.8
+swarmstr nodes invoke --node <node-id> --command camera.snap \
+  --args '{"max_width": 1280, "quality": 0.8}'
 ```
 
 ### Camera List
 
 ```bash
 # List cameras available on a node
-swarmstr nodes camera list --node mypi
-# Output:
-# 0: Built-in Camera (front)
-# 1: USB Camera (back)
+swarmstr nodes invoke --node <node-id> --command camera.list
 ```
 
 ### Select Specific Camera
 
 ```bash
-swarmstr nodes camera snap --node mypi --device-id 1
+swarmstr nodes invoke --node <node-id> --command camera.snap \
+  --args '{"device_id": 1}'
 ```
+
+The `--node` flag takes the node ID from `swarmstr nodes list`.
 
 ## Image Understanding
 
@@ -62,14 +63,12 @@ The agent can understand images using vision-capable models (Claude, GPT-4V, Gem
 
 ### Vision Model Configuration
 
-```json5
+Vision is used automatically when the configured model supports it. Set the model in `config.json`:
+
+```json
 {
-  "agents": {
-    "defaults": {
-      "imageModel": {
-        "primary": "anthropic/claude-opus-4-5"   // model with vision support
-      }
-    }
+  "agent": {
+    "default_model": "anthropic/claude-opus-4-5"
   }
 }
 ```
@@ -96,12 +95,7 @@ sudo apt install libcamera-tools
 libcamera-still -o test.jpg
 ```
 
-Run the node host with camera support:
-
-```bash
-swarmstr node run --host <gateway-host>
-# The node host auto-detects camera capabilities
-```
+The node device runs its own swarmstrd instance configured to pair with your main daemon.
 
 ## USB Camera
 
@@ -120,12 +114,11 @@ The node host uses v4l2 for USB camera access on Linux.
 
 ```bash
 # Capture a short video clip
-swarmstr nodes camera clip --node mypi \
-  --duration 5000 \
-  --no-audio
+swarmstr nodes invoke --node <node-id> --command camera.clip \
+  --args '{"duration_ms": 5000}'
 ```
 
-Video clips are transcoded and passed to the vision model for analysis.
+Video clips are transcoded and passed to the vision model for analysis (provider must support video).
 
 ## Example: Security Camera Skill
 

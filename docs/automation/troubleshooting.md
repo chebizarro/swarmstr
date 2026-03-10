@@ -9,94 +9,86 @@ title: "Automation Troubleshooting"
 
 # Automation troubleshooting
 
-Use this page for scheduler and delivery issues (`cron` + `heartbeat`).
+Use this page for scheduler and delivery issues (`cron` + heartbeat).
 
 ## Command ladder
 
 ```bash
 swarmstr status
-swarmstr logs --follow
+swarmstr logs --lines 100
 swarmstr doctor
-swarmstr channels status --probe
+swarmstr channels status
 ```
 
 Then run automation checks:
 
 ```bash
-swarmstr cron status
 swarmstr cron list
-swarmstr system heartbeat last
 ```
 
 ## Cron not firing
 
 ```bash
-swarmstr cron status
 swarmstr cron list
-swarmstr cron runs --id <jobId> --limit 20
-swarmstr logs --follow
+swarmstr logs --lines 100
 ```
 
 Good output looks like:
 
-- `cron status` reports enabled and a future `nextWakeAtMs`.
-- Job is enabled and has a valid schedule/timezone.
-- `cron runs` shows `ok` or explicit skip reason.
+- `cron list` shows the job as enabled with a valid schedule.
+- `swarmstr logs` shows cron tick events and job execution.
 
 Common signatures:
 
-- `cron: scheduler disabled` → cron disabled in config or `SWARMSTR_SKIP_CRON=1`.
+- `cron: scheduler disabled` → set `cron.enabled=true` in config.
 - `cron: timer tick failed` → scheduler tick crashed; inspect surrounding log context.
-- `reason: not-due` in run output → manual run called without `--force`.
+- Job not listed → add with `swarmstr cron add`.
 
 ## Cron fired but no delivery
 
 ```bash
-swarmstr cron runs --id <jobId> --limit 20
 swarmstr cron list
-swarmstr channels status --probe
-swarmstr logs --follow
+swarmstr channels status
+swarmstr logs --lines 100
 ```
 
 Common signatures:
 
-- Run succeeded but delivery mode is `none` → no external message is expected.
-- Delivery target missing/invalid → run may succeed internally but skip outbound.
-- Relay write errors → check relay connectivity and write permissions.
+- Delivery target missing → check `to` field in the cron job's agent params.
+- Relay write errors → check relay connectivity with `swarmstr channels status`.
 
-## Heartbeat suppressed or skipped
+## Heartbeat silent
+
+The heartbeat (`extra.heartbeat.*`) publishes NIP-38 status events (kind:30315).
+It does **not** run agent turns. If you see no presence updates:
 
 ```bash
-swarmstr system heartbeat last
-swarmstr logs --follow
-swarmstr config get agents.defaults.heartbeat
+swarmstr config get extra.heartbeat
+swarmstr logs --lines 50
 ```
 
 Common signatures:
 
-- `heartbeat skipped` with `reason=quiet-hours` → outside `activeHours`.
-- `requests-in-flight` → main lane busy; heartbeat deferred.
-- `empty-heartbeat-file` → HEARTBEAT.md has no actionable content.
-- Nostr delivery target not configured → set `target: "last"` or explicit npub.
+- `heartbeat.enabled=false` → set `extra.heartbeat.enabled=true`.
+- No Nostr write → check relay config with `swarmstr channels status`.
 
-## Timezone and activeHours gotchas
+For periodic agent work, use Cron instead — see [Cron vs Heartbeat](/automation/cron-vs-heartbeat).
+
+## Timezone gotchas
 
 ```bash
-swarmstr config get agents.defaults.heartbeat.activeHours
 swarmstr cron list
-swarmstr logs --follow
+swarmstr logs --lines 50
 ```
 
 Quick rules:
 
-- Cron without `--tz` uses gateway host timezone.
-- Heartbeat `activeHours` uses configured timezone (or host tz if unset).
-- ISO timestamps without timezone are treated as UTC for cron `at` schedules.
+- Cron without explicit timezone uses the gateway host timezone.
+- ISO timestamps without timezone are treated as UTC for `@at` schedules.
 
 Common signatures:
 
 - Jobs run at the wrong wall-clock time after host timezone changes.
-- Heartbeat always skipped during your daytime because `activeHours.timezone` is wrong.
 
 ## Related
 

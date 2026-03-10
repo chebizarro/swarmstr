@@ -1,5 +1,5 @@
 ---
-summary: "swarmstr configuration reference: all config keys and examples"
+summary: "swarmstr configuration reference: bootstrap config and runtime config"
 read_when:
   - Setting up swarmstr for the first time
   - Looking for a specific config option
@@ -8,174 +8,260 @@ title: "Configuration"
 
 # Configuration
 
-swarmstr is configured via `~/.swarmstr/config.json` (JSON with comment support, JSON5-style).
-Override the path with `SWARMSTR_CONFIG_PATH`.
+swarmstr has two layers of configuration:
 
-## Minimal config
+1. **Bootstrap config** — a local JSON file the daemon reads at startup (contains private key, relays, network settings). Never stored on Nostr.
+2. **Runtime config** — stored as an encrypted Nostr event on your relays (`ConfigDoc`). Editable via `swarmstr config` CLI or the web UI while the daemon runs.
+
+## Bootstrap Config
+
+Default location: `~/.swarmstr/bootstrap.json` (override with the `--bootstrap` flag).
+
+### Minimal bootstrap
 
 ```json
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "anthropic/claude-opus-4-6"
-      }
-    }
+  "private_key": "${NOSTR_NSEC}",
+  "relays": [
+    "wss://relay.damus.io",
+    "wss://nos.lol"
+  ]
+}
+```
+
+### Full bootstrap options
+
+```json
+{
+  "private_key": "${NOSTR_NSEC}",
+  "relays": [
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://nostr.wine"
+  ],
+
+  "signer_url": "",               // Alternative: bunker://... or env://VAR or file:///path
+  "admin_listen_addr": "127.0.0.1:18788",
+  "admin_token": "${SWARMSTR_ADMIN_TOKEN}",
+  "gateway_ws_listen_addr": "127.0.0.1:18789",
+  "gateway_ws_token": "${SWARMSTR_GATEWAY_TOKEN}",
+  "enable_nip44": true,           // NIP-44 encrypted DMs (recommended)
+  "enable_nip17": true            // NIP-17 gift-wrapped DMs
+}
+```
+
+Use `${VAR_NAME}` for any value — resolved from the process environment at startup.
+
+## Runtime Config (`ConfigDoc`)
+
+The runtime config is read/written via RPC and stored as an encrypted Nostr event.
+
+### CLI commands
+
+```bash
+# Get a config value (or whole config)
+swarmstr config get
+swarmstr config get agent.default_model
+
+# Export full config
+swarmstr config export
+
+# Import from file (replaces config)
+swarmstr config import --file config.json
+
+# Validate config
+swarmstr config validate
+```
+
+### Top-level structure
+
+```json
+{
+  "version": 1,
+  "dm": { ... },
+  "relays": { ... },
+  "agent": { ... },
+  "agents": [ ... ],
+  "providers": { ... },
+  "session": { ... },
+  "nostr_channels": { ... },
+  "heartbeat": { ... },
+  "tts": { ... },
+  "cron": { ... },
+  "extra": { ... }
+}
+```
+
+### DM Policy (`dm`)
+
+```json
+{
+  "dm": {
+    "policy": "pairing",
+    "allow_from": []
   }
 }
 ```
 
-## Full example
+| `policy` | Behaviour |
+|----------|-----------|
+| `pairing` | Only paired npubs can DM (default) |
+| `allowlist` | Only npubs in `allow_from` |
+| `open` | Anyone can DM |
+| `disabled` | No inbound DMs |
 
-```json5
+### Relay Policy (`relays`)
+
+```json
 {
-  // Nostr channel (primary)
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "relays": [
-        "wss://relay.damus.io",
-        "wss://nos.lol",
-        "wss://nostr.wine"
-      ],
-      "dmPolicy": "pairing",           // pairing | allowlist | open | disabled
-      "allowFrom": [],                  // npubs for allowlist mode
-      "profile": {
-        "name": "myagent",
-        "displayName": "My Agent",
-        "about": "Personal AI assistant"
-      }
-    }
-  },
-
-  // Agent runtime
-  "agents": {
-    "defaults": {
-      "workspace": "~/.swarmstr/workspace",
-      "model": {
-        "primary": "anthropic/claude-opus-4-6",
-        "fallbacks": []
-      },
-      "timeoutSeconds": 600,
-      "heartbeat": {
-        "every": "30m",
-        "target": "last",
-        "activeHours": { "start": "08:00", "end": "22:00" }
-      },
-      "compaction": {
-        "mode": "auto",
-        "reserveTokensFloor": 20000,
-        "memoryFlush": { "enabled": true }
-      }
-    }
-  },
-
-  // Session management
-  "session": {
-    "dmScope": "per-peer",             // main | per-peer | per-channel-peer
-    "reset": {
-      "mode": "daily",
-      "atHour": 4
-    },
-    "maintenance": {
-      "mode": "enforce",
-      "pruneAfter": "30d",
-      "maxEntries": 500
-    }
-  },
-
-  // Cron scheduler
-  "cron": {
-    "enabled": true,
-    "store": "~/.swarmstr/cron/jobs.json",
-    "maxConcurrentRuns": 1
-  },
-
-  // Webhooks (optional)
-  "hooks": {
-    "enabled": false,
-    "token": "${SWARMSTR_HOOKS_TOKEN}",
-    "path": "/hooks"
-  },
-
-  // DVM mode (optional)
-  "extra": {
-    "dvm": {
-      "enabled": false,
-      "kinds": [5000, 5001]
-    }
-  },
-
-  // HTTP/WS server
-  "server": {
-    "host": "127.0.0.1",
-    "port": 18789,
-    "token": "${SWARMSTR_GATEWAY_TOKEN}"
+  "relays": {
+    "read": ["wss://relay.damus.io", "wss://nos.lol"],
+    "write": ["wss://relay.damus.io"]
   }
 }
 ```
 
-## Environment variable interpolation
+### Agent Policy (`agent`)
 
-Use `${VAR_NAME}` in any string config value:
+Global defaults for all agents:
 
 ```json
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}"
-    }
+  "agent": {
+    "default_model": "claude-opus-4-5",
+    "thinking": "off",
+    "verbose": "off"
   }
 }
 ```
 
-## Multi-agent config
+### Per-Agent Config (`agents`)
+
+Override settings for specific named agents:
 
 ```json
 {
-  "agents": {
-    "list": [
-      {
-        "id": "main",
-        "default": true,
-        "workspace": "~/.swarmstr/workspace"
-      },
-      {
-        "id": "work",
-        "workspace": "~/.swarmstr/workspace-work",
-        "nostr": { "privateKey": "${NOSTR_WORK_KEY}" }
-      }
-    ]
-  },
-  "bindings": [
+  "agents": [
     {
-      "agentId": "work",
-      "match": { "channel": "nostr", "peer": { "kind": "direct", "id": "npub1..." } }
+      "id": "main",
+      "name": "Main Assistant",
+      "model": "claude-opus-4-5",
+      "thinking_level": "medium",
+      "workspace_dir": "~/.swarmstr/workspace",
+      "tool_profile": "full",
+      "fallback_models": ["claude-sonnet-4-5"],
+      "max_context_tokens": 100000
     }
   ]
 }
 ```
 
-## Config paths
+### Provider Config (`providers`)
 
-| Path                                   | Purpose                            |
-| -------------------------------------- | ---------------------------------- |
-| `~/.swarmstr/config.json`              | Main config file                   |
-| `~/.swarmstr/workspace/`               | Default agent workspace            |
-| `~/.swarmstr/agents/<id>/sessions/`    | Session store + transcripts        |
-| `~/.swarmstr/cron/jobs.json`           | Cron job store                     |
-| `~/.swarmstr/skills/`                  | Managed skills                     |
-| `~/.swarmstr/credentials/`            | Credential files                   |
-
-## CLI config commands
-
-```bash
-swarmstr config get agents.defaults.heartbeat.every
-swarmstr config set agents.defaults.heartbeat.every 1h
-swarmstr config list
+```json
+{
+  "providers": {
+    "anthropic": {
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "api_keys": ["${ANTHROPIC_KEY_1}", "${ANTHROPIC_KEY_2}"]
+    },
+    "openai": {
+      "api_key": "${OPENAI_API_KEY}"
+    },
+    "ollama": {
+      "base_url": "http://localhost:11434"
+    }
+  }
+}
 ```
+
+### Session Config (`session`)
+
+```json
+{
+  "session": {
+    "ttl_seconds": 0,
+    "max_sessions": 0,
+    "history_limit": 0,
+    "prune_after_days": 30,
+    "prune_idle_after_days": 7,
+    "prune_on_boot": true
+  }
+}
+```
+
+### Heartbeat (NIP-38 status, `extra.heartbeat`)
+
+The NIP-38 status heartbeat is configured under `extra.heartbeat`:
+
+```json
+{
+  "extra": {
+    "heartbeat": {
+      "enabled": true,
+      "interval_seconds": 300,
+      "content": "Available 🟢"
+    }
+  }
+}
+```
+
+See [Heartbeat](/gateway/heartbeat) for full details.
+
+### TTS (`tts`)
+
+```json
+{
+  "tts": {
+    "enabled": false,
+    "provider": "openai",
+    "voice": "nova"
+  }
+}
+```
+
+### Cron (`cron`)
+
+```json
+{
+  "cron": {
+    "enabled": true
+  }
+}
+```
+
+### Extra (`extra`)
+
+Arbitrary key-value configuration for features that don't have top-level sections:
+
+```json
+{
+  "extra": {
+    "dvm": {
+      "enabled": false,
+      "kinds": [5000, 5001]
+    },
+    "memory": {
+      "backend": "qdrant",
+      "url": "http://localhost:6333"
+    },
+    "context_engine": "windowed"
+  }
+}
+```
+
+## Config Paths
+
+| Path | Purpose |
+|------|---------|
+| `~/.swarmstr/bootstrap.json` | Bootstrap config (private key, relays, ports) |
+| `~/.swarmstr/sessions.json` | Session settings (labels, overrides) |
+| `~/.swarmstr/workspace/` | Default agent workspace (SOUL.md, AGENTS.md, etc.) |
+| `~/.swarmstr/hooks/` | User-managed hooks |
+| `~/.swarmstr/skills/` | User-managed skills |
+
+## See Also
+
+- [Secrets](secrets.md) — environment variable interpolation
+- [Authentication](authentication.md) — API key and token setup
+- [Providers](../providers/) — per-provider setup

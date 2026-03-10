@@ -14,30 +14,44 @@ swarmstr supports extended thinking mode for Anthropic's Claude models (claude-3
 
 ### Per-Session (Slash Command)
 
+Toggle thinking on or off for the current session:
+
 ```
-/reasoning on
-/reasoning high
-/reasoning off
+/set thinking on
+/set thinking off
 ```
 
-Thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
+To clear the override and revert to the agent default:
 
-### Global Default (Config)
+```
+/unset thinking
+```
 
-```json5
+When enabled via `/set thinking on`, swarmstr uses the `medium` thinking level (10,000 budget tokens) by default.
+
+### Per-Agent Default (Config)
+
+Configure a default thinking level for a specific agent in `config.json`:
+
+```json
 {
-  "agents": {
-    "defaults": {
-      "thinking": "medium"
+  "agents": [
+    {
+      "id": "main",
+      "thinking_level": "high"
     }
-  }
+  ]
 }
 ```
 
-### Per-Turn (CLI)
+Global default for all agents (when no per-agent override):
 
-```bash
-swarmstr agent --message "Analyze this architecture" --thinking high
+```json
+{
+  "agent": {
+    "thinking": "medium"
+  }
+}
 ```
 
 ## Thinking Levels
@@ -45,11 +59,11 @@ swarmstr agent --message "Analyze this architecture" --thinking high
 | Level | Budget tokens | Use case |
 |-------|--------------|----------|
 | `off` | 0 | Standard responses |
-| `minimal` | 1,000 | Light reflection |
-| `low` | 4,000 | Simple reasoning |
-| `medium` | 10,000 | Complex tasks |
-| `high` | 32,000 | Deep analysis |
-| `xhigh` | 64,000 | Maximum reasoning |
+| `minimal` | 1,024 | Light reflection |
+| `low` | 5,000 | Simple reasoning |
+| `medium` | 10,000 | Complex tasks (default when thinking is on) |
+| `high` | 20,000 | Deep analysis |
+| `xhigh` | 40,000 | Maximum reasoning |
 
 > Thinking tokens count toward your API usage. High/xhigh thinking significantly increases costs.
 

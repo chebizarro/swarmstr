@@ -11,6 +11,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/keyer"
+	"fiatjaf.com/nostr/nip19"
 	"fiatjaf.com/nostr/nip46"
 )
 
@@ -173,4 +174,22 @@ func generateEphemeralKey() nostr.SecretKey {
 		panic("NIP-46: failed to generate ephemeral client key: " + err.Error())
 	}
 	return sk
+}
+
+// KeypairFromHex derives bech32-encoded nsec and npub strings from a hex
+// private key.  The hex string must be exactly 64 characters (32 bytes).
+// This is a convenience helper used by the keygen CLI command.
+func KeypairFromHex(hexKey string) (nsec, npub string, err error) {
+	b, err := hex.DecodeString(strings.TrimSpace(hexKey))
+	if err != nil {
+		return "", "", fmt.Errorf("decode hex key: %w", err)
+	}
+	if len(b) != 32 {
+		return "", "", fmt.Errorf("expected 32-byte key, got %d bytes", len(b))
+	}
+	var skArr [32]byte
+	copy(skArr[:], b)
+	sk := nostr.SecretKey(skArr)
+	pk := sk.Public()
+	return nip19.EncodeNsec(skArr), nip19.EncodeNpub(pk), nil
 }

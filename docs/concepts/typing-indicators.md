@@ -1,42 +1,68 @@
 # Typing Indicators
 
-swarmstr uses **status reactions** (NIP-25 kind:7 events) to signal processing state to users. These serve as the Nostr equivalent of typing indicators — they give users real-time feedback that their message was received and the agent is working.
+swarmstr uses **status reactions** on inbound Nostr events to signal processing state to users. These give users real-time feedback that their message was received and the agent is working — the Nostr equivalent of a typing indicator.
 
 ## How It Works
 
-Nostr does not have a native "typing" concept. swarmstr implements processing indicators via NIP-25 reactions published to the same relays as the conversation:
+Nostr has no native "typing" concept. swarmstr implements processing indicators via NIP-25 reactions published against the original inbound event:
 
 ```
 User sends DM → agent receives
                     │
                     ▼
-             👀 reaction published   ← "I see your message"
+             👀 queued reaction    ← "I see your message"
                     │
                     ▼
-             ⚙️ reaction published   ← "Processing / tools running"
+             🤔 thinking (700ms debounce)  ← "LLM working"
                     │
-                    ▼
-             ✅ reaction published   ← "Done, reply coming"
-                    │
-                    ▼
-             Reply DM sent
+          ┌─────────┴──────────┐
+          │                    │
+    🌐 web tool          💻 code tool     ← tool-specific emoji
+    🔥 other tool
+          │
+          ▼
+         👍 done              ← turn complete, reply coming
 ```
 
-Reactions are kind:7 events with the `e` tag pointing to the user's original event ID.
+Reactions are kind:7 events with the `e` tag pointing to the user's original event ID. They are published to the same relays as the conversation.
 
 ## Status Reaction Sequence
 
 | Emoji | Stage | Timing |
 |-------|-------|--------|
-| 👀 | Message received | Immediately on receipt |
-| ⚙️ | LLM / tools running | When turn processing begins |
-| ✅ | Turn complete | Just before sending reply |
+| 👀 | Message queued for agent | Immediately on receipt |
+| 🤔 | LLM thinking | 700 ms after turn starts (debounced) |
+| 🌐 | Web/search/fetch tool running | Immediately when tool starts |
+| 💻 | Code/exec/bash tool running | Immediately when tool starts |
+| 🔥 | Other tool running | Immediately when tool starts |
+| 👍 | Turn complete | Just before sending reply |
+| 😱 | Error | On unrecoverable turn failure |
+| 🥱 | Stall (soft) | After 10 s with no progress |
+| 😨 | Stall (hard) | After 30 s with no progress |
 
-The `StatusReactionController` in `cmd/swarmstrd/main.go` manages this sequence via the `controlDMBus`.
+The 🤔 thinking reaction has a 700 ms debounce — if the turn completes very quickly (cached response, simple question) the thinking indicator never appears, avoiding flicker.
+
+## StatusReactionController
+
+The `StatusReactionController` (in `internal/gateway/channels/status_reaction.go`) manages the full lifecycle:
+
+- Serialises all emoji swaps through an internal goroutine — no race conditions
+- Removes the previous emoji before setting the next (only one emoji active at a time)
+- Provides stall timers that escalate 🥱 → 😨 for hung turns
+- Cleans up on `Close()` regardless of how the turn ended
+
+```go
+ctrl := channels.NewStatusReactionController(ctx, reactionHandle, eventID)
+ctrl.SetQueued()         // 👀 immediately
+ctrl.SetThinking()       // 🤔 after 700ms debounce
+ctrl.SetTool("web_search") // 🌐 immediately
+ctrl.SetDone()           // 👍 immediately, stops stall timers
+ctrl.Close()             // always called — removes any active emoji
+```
 
 ## Client Support
 
-Status reactions are visible in Nostr clients that display kind:7 reactions on DMs. Currently:
+Status reactions are visible in Nostr clients that render kind:7 reactions on DM threads:
 
 | Client | Reaction Display |
 |--------|-----------------|
@@ -45,71 +71,31 @@ Status reactions are visible in Nostr clients that display kind:7 reactions on D
 | Snort | Shows on timeline |
 | Primal | Shows on note detail |
 
-Most clients will at minimum show the 👀/⚙️/✅ emoji visually attached to the original message. Users see feedback without any custom client code.
-
 ## Configuration
 
-Status reactions are enabled by default. Disable if relay volume is a concern:
+Status reactions are enabled automatically when the inbound message is a Nostr DM with a
+known event ID to react to. There is no config toggle — the `StatusReactionController` is
+always active for eligible DM sessions.
 
-```json
-{
-  "extra": {
-    "statusReactions": {
-      "enabled": true,
-      "seen": "👀",
-      "processing": "⚙️",
-      "done": "✅"
-    }
-  }
-}
-```
+The emoji values are defined as constants in `internal/gateway/channels/status_reaction.go`
+and are not configurable.
 
-Customize the emoji if desired. Set `enabled: false` to suppress all reactions (agent replies silently).
+## NIP-17 Compatibility
 
-## Reaction Relays
-
-Reactions are published to the same relay set as outbound DMs. The `nostrToolOpts` relay list applies. Publishing reactions does not require additional relay configuration.
-
-## Heartbeat Suppression
-
-The heartbeat timer resets on each turn. If the agent is mid-turn (processing a long tool chain), the heartbeat reaction is suppressed to avoid confusing interleaved signals.
-
-## Error Signaling
-
-On turn error (LLM failure, timeout), a different reaction signals the problem:
-
-```
-⚠️  (kind:7 with content "⚠️")
-```
-
-This tells the user the agent tried but encountered an error, before the error message DM arrives.
-
-This is distinct from the ✅ "done successfully" signal.
+When using NIP-17 gift-wrapped DMs, reaction events are published as plain kind:7. Wrapping reactions in NIP-17 for full privacy is planned.
 
 ## Comparison to Traditional Typing Indicators
 
 | | Traditional (WhatsApp, Signal) | Nostr / swarmstr |
 |---|---|---|
 | Protocol | Proprietary presence | Open NIP-25 kind:7 |
-| Visibility | Only to the recipient | Public on relay (but DM context) |
-| Persistence | Ephemeral | Events stored on relay |
-| Customizable | No | Yes (any emoji) |
-| Client requirement | Built-in | Requires NIP-25 support |
-
-The Nostr approach trades perfect ephemerality for openness — anyone with access to the relay can see the reaction events. For NIP-17 gift-wrapped DMs, reaction events should also be wrapped to preserve privacy.
-
-## NIP-17 Compatibility
-
-When using NIP-17 (sealed / gift-wrapped DMs), status reactions should ideally be sent as gift-wrapped kind:7 events. This is on the roadmap:
-
-```
-Currently: reactions published as plain kind:7
-Planned:   reactions wrapped in NIP-17 gift-wrap for privacy
-```
+| Ephemerality | Disappears instantly | Events stored on relay |
+| Customizable | No | Constants in code |
+| Client requirement | Built-in | Requires NIP-25 display |
+| Multi-tool info | None | Tool-specific emoji per call |
 
 ## See Also
 
 - [Reactions Tool](../tools/reactions.md) — `nostr_publish` for custom reactions
 - [Messages](messages.md) — full inbound/outbound message flow
-- [Presence](presence.md) — NIP-38 user status events (different from reactions)
-- [Network](../network.md) — relay configuration
+- [Presence](presence.md) — NIP-38 kind:30315 user status events (separate from reactions)

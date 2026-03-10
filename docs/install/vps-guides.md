@@ -73,31 +73,38 @@ swarmstrd --version
 ```bash
 mkdir -p ~/.swarmstr
 
+# Create secrets file
 cat > ~/.swarmstr/.env <<'EOF'
-NOSTR_PRIVATE_KEY=nsec1...
+NOSTR_NSEC=nsec1...
 ANTHROPIC_API_KEY=sk-ant-...
-SWARMSTR_GATEWAY_TOKEN=$(openssl rand -hex 32)
+SWARMSTR_ADMIN_TOKEN=$(openssl rand -hex 32)
 EOF
 chmod 600 ~/.swarmstr/.env
 
-# Create config
+# Bootstrap config (keys, relays, admin API)
+cat > ~/.swarmstr/bootstrap.json <<'EOF'
+{
+  "private_key": "${NOSTR_NSEC}",
+  "relays": [
+    "wss://relay.damus.io",
+    "wss://relay.nostr.band",
+    "wss://nos.lol"
+  ],
+  "admin_listen_addr": "127.0.0.1:18788",
+  "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
+}
+EOF
+
+# Runtime config (agent, model, DM policy)
 cat > ~/.swarmstr/config.json <<'EOF'
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "relays": [
-        "wss://relay.damus.io",
-        "wss://relay.nostr.band",
-        "wss://nos.lol"
-      ],
-      "dmPolicy": "allowlist",
-      "allowFrom": ["npub1your-pubkey..."]
-    }
+  "dm": {
+    "policy": "allowlist",
+    "allow_from": ["<your-npub-hex>"]
   },
   "providers": {
     "anthropic": {
-      "apiKey": "${ANTHROPIC_API_KEY}"
+      "api_key": "${ANTHROPIC_API_KEY}"
     }
   }
 }
@@ -107,8 +114,29 @@ EOF
 ### 5. Install as systemd Service
 
 ```bash
-swarmstr gateway install
-swarmstr gateway start
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/swarmstrd.service <<'EOF'
+[Unit]
+Description=swarmstr AI agent daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+EnvironmentFile=%h/.swarmstr/.env
+ExecStart=/usr/local/bin/swarmstrd
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now swarmstrd
 systemctl --user status swarmstrd
 ```
 
@@ -121,8 +149,11 @@ sudo loginctl enable-linger swarmstr
 ### 7. Verify
 
 ```bash
+export SWARMSTR_ADMIN_ADDR=127.0.0.1:18788
+export SWARMSTR_ADMIN_TOKEN=$(grep SWARMSTR_ADMIN_TOKEN ~/.swarmstr/.env | cut -d= -f2)
+
 swarmstr status
-swarmstr gateway status
+swarmstr daemon status
 
 # Test — send a DM from your Nostr client
 ```
@@ -140,13 +171,12 @@ Follow the same steps as Hetzner above (install binary, configure, systemd).
 ### Firewall Configuration
 
 ```bash
-# If you want to expose the dashboard:
-sudo ufw allow 18789/tcp   # Dashboard port
-
-# Recommended: only allow SSH and let Nostr handle remote access
+# Recommended: only allow SSH — Nostr doesn't need inbound ports!
 sudo ufw allow OpenSSH
 sudo ufw enable
 ```
+
+If you want to expose the web UI or admin API remotely, use an SSH tunnel or Tailscale (see [Remote Access](/gateway/remote)).
 
 ## Fly.io (Docker)
 

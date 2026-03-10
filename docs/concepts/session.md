@@ -8,102 +8,123 @@ title: "Session Management"
 
 # Session Management
 
-swarmstr maintains **one primary session per agent** for direct Nostr DMs, while
-group/channel chats get their own keys.
+swarmstr maintains one **session per sender pubkey** for Nostr DMs. Each unique Nostr identity that sends a DM gets its own isolated conversation context.
 
-Use `session.dmScope` to control how **direct messages** are grouped:
+## Session Scoping
 
-- `main` (default): all DMs share the main session for continuity.
-- `per-peer`: isolate by sender npub.
-- `per-channel-peer`: isolate by channel + sender (recommended for multi-user setups).
+| Channel | Session Key |
+|---------|-------------|
+| Nostr DM | Sender's hex pubkey |
+| NIP-28 / NIP-29 channel | `ch:<channelID>:<senderPubKey>` |
+| Cron job | `cron:<jobID>` |
+| Webhook | `hook:<uuid>` |
+| DVM job | `dvm:<jobID>` |
 
-## Secure DM mode (recommended for multi-user setups)
+DM sessions are always per-peer — there is no shared context between different senders.
 
-If your agent can receive DMs from multiple npubs, enable per-peer isolation:
+## Where State Lives
+
+- **Transcripts**: stored as encrypted Nostr events on your configured relays (`TranscriptRepository`). Each turn is a separate kind event, encrypted and signed with your nsec.
+- **Session settings**: persisted locally in `~/.swarmstr/sessions.json`. This includes labels, model overrides, flags (verbose, thinking, tts), and last-activity timestamps.
+
+No JSONL files are written to disk for session history — everything flows through Nostr.
+
+## Session Lifecycle
+
+Sessions are created automatically on the first inbound DM from a pubkey. They are reused across reconnects.
+
+Reset triggers:
+- `/new` — starts a fresh session, saving a memory snapshot of the old one
+- `/kill` or `/reset` — hard reset, no memory snapshot
+- Auto-prune (see below) — old sessions are cleaned up when configured
+
+## Session Configuration
 
 ```json
 {
   "session": {
-    "dmScope": "per-peer"
+    "ttl_seconds": 0,
+    "max_sessions": 0,
+    "history_limit": 0,
+    "prune_after_days": 30,
+    "prune_idle_after_days": 7,
+    "prune_on_boot": true
   }
 }
 ```
 
-Without isolation, all DMs share the same context — a second user could see context
-from the first user's conversation.
+| Field | Default | Description |
+|-------|---------|-------------|
+| `ttl_seconds` | 0 (disabled) | Auto-expire session after this many seconds since last activity |
+| `max_sessions` | 0 (unlimited) | Maximum number of concurrent sessions |
+| `history_limit` | 0 (unlimited) | Maximum transcript entries to load per session |
+| `prune_after_days` | 0 (disabled) | Delete sessions whose last activity exceeds N days |
+| `prune_idle_after_days` | 0 (disabled) | Delete sessions with no inbound messages for N days |
+| `prune_on_boot` | false | Run a prune pass at daemon startup |
 
-## Where state lives
+## Session Pruning
 
-- **Store**: `~/.swarmstr/agents/<agentId>/sessions/sessions.json` (per agent).
-- **Transcripts**: `~/.swarmstr/agents/<agentId>/sessions/<sessionId>.jsonl`.
-- The store is a map `sessionKey → { sessionId, updatedAt, ... }`. Deleting entries
-  is safe; they are recreated on demand.
+Old sessions can be pruned manually from the CLI:
 
-## Session keys
+```bash
+# Preview what would be deleted
+swarmstr sessions prune --older-than 30d --dry-run
 
-- Direct Nostr DMs (main): `agent:<agentId>:main`
-- Direct Nostr DMs (per-peer): `agent:<agentId>:nostr:dm:<senderNpub>`
-- Cron jobs: `cron:<jobId>`
-- Webhooks: `hook:<uuid>`
-- DVM jobs: `dvm:<jobId>`
+# Delete sessions older than 30 days
+swarmstr sessions prune --older-than 30d
 
-## Maintenance
+# Delete all sessions
+swarmstr sessions prune --all
+```
 
-swarmstr applies session-store maintenance to keep `sessions.json` and transcripts bounded.
+Or configure automatic pruning in the session config (runs at startup and on a schedule).
 
-Default config:
+See [Session Pruning](session-pruning.md) for full details.
+
+## Inspecting Sessions
+
+```bash
+# List all sessions
+swarmstr sessions list
+
+# Get details for a specific session
+swarmstr sessions get <session-id>
+
+# Export session transcript
+swarmstr sessions export <session-id>
+```
+
+In-chat commands:
+
+```
+/info       — show session ID, model, context size
+/status     — full status including relay connections
+/compact    — manually compact old context
+```
+
+## Multi-Agent Routing
+
+When `agents[]` is configured with multiple agent definitions, each agent can receive sessions based on:
+- `dm_peers` in `AgentConfig` — specific pubkeys always route to this agent
+- `/focus <agent-name>` slash command — the user routes themselves to a specific agent
 
 ```json
 {
-  "session": {
-    "maintenance": {
-      "mode": "warn",
-      "pruneAfter": "30d",
-      "maxEntries": 500
-    }
-  }
-}
-```
-
-Run manual cleanup:
-
-```bash
-swarmstr sessions cleanup --dry-run
-swarmstr sessions cleanup --enforce
-```
-
-## Session lifecycle
-
-- Reset policy: sessions are reused until they expire (daily reset at 4:00 AM local time by default).
-- Idle reset: optional `idleMinutes` adds a sliding window.
-- Reset triggers: `/new`, `/reset`, `/kill` start a fresh session.
-- Manual reset: delete specific keys from the store; next message recreates them.
-
-## Inspecting
-
-```bash
-swarmstr status           # shows store path and recent sessions
-swarmstr sessions --json  # dumps every entry
-```
-
-Send `/status` in chat to see session context usage, model, and relay connection state.
-Send `/compact` to manually compact older context.
-
-## Configuration example
-
-```json
-{
-  "session": {
-    "dmScope": "per-peer",
-    "reset": {
-      "mode": "daily",
-      "atHour": 4
+  "agents": [
+    {
+      "id": "research",
+      "dm_peers": ["npub1abc..."]
     },
-    "maintenance": {
-      "mode": "enforce",
-      "pruneAfter": "30d",
-      "maxEntries": 500
+    {
+      "id": "assistant"
     }
-  }
+  ]
 }
 ```
+
+## See Also
+
+- [Session Pruning](session-pruning.md) — pruning configuration and CLI
+- [Compaction](compaction.md) — context window management
+- [Slash Commands](../tools/slash-commands.md) — session control commands
+- [Context](context.md) — how context is assembled per turn

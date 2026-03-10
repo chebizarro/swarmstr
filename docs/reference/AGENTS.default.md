@@ -15,10 +15,10 @@ This is the default `AGENTS.md` content shipped with swarmstr. It's injected at 
 
 swarmstr uses a dedicated workspace directory. Default: `~/.swarmstr/workspace/`.
 
-1. Run setup to initialize workspace with defaults:
+1. Run init to initialize workspace with defaults:
 
 ```bash
-swarmstr setup
+swarmstr init
 ```
 
 Or manually:

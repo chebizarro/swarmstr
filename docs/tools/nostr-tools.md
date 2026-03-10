@@ -210,6 +210,28 @@ Where should I publish a DM to reach npub1bob... reliably?
 → nostr_relay_hints(pubkey="npub1bob...")
 ```
 
+## nostr_status_set
+
+Set the agent's NIP-38 user status (kind:30315) on Nostr. Broadcasts a replaceable event so other Nostr clients can see the agent's current activity.
+
+**Parameters:**
+- `status` (string, required) — status value: `idle`, `typing`, `updating`, `dnd`, or `offline`
+- `content` (string, optional) — free-form note shown alongside the status
+- `expiry_seconds` (int, optional) — seconds until the status expires; `0` = no expiry
+
+**Returns:** `{"ok": true, "status": "..."}` with optional `content` and `expires_at`.
+
+**Example:**
+```
+Signal to Nostr clients that you're busy with a long task
+→ nostr_status_set(status="dnd", content="Working on a long task...", expiry_seconds=3600)
+
+Signal idle after completing
+→ nostr_status_set(status="idle")
+```
+
+> **Requires NIP-38 heartbeat**: `extra.heartbeat.enabled` must be `true` (the default). See [Heartbeat](/gateway/heartbeat).
+
 ## Tips
 
 - Always use `limit` on `nostr_fetch` to avoid overwhelming the context window.

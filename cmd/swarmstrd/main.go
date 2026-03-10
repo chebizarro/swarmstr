@@ -724,6 +724,17 @@ func main() {
 			}
 		}
 	}
+	// Load workspace hooks from the agent's workspace hooks/ subdirectory.
+	if wkspHooksDir := func() string {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".swarmstr", "workspace", "hooks")
+	}(); wkspHooksDir != "" {
+		if wkspHooks, err := hookspkg.ScanDir(wkspHooksDir, hookspkg.SourceWorkspace); err == nil {
+			for _, h := range wkspHooks {
+				hooksMgr.Register(h)
+			}
+		}
+	}
 	// Wire bundled Go handlers.
 	hookspkg.RegisterBundledHandlers(hooksMgr, hookspkg.BundledHandlerOpts{
 		WorkspaceDir: func() string {
@@ -742,6 +753,9 @@ func main() {
 			return filepath.Join(home, ".swarmstr", "workspace")
 		},
 	})
+	// Attach shell handlers for any managed/workspace hooks that have handler.sh
+	// but no bundled Go implementation.
+	hookspkg.AttachShellHandlers(hooksMgr)
 	controlHooksMgr = hooksMgr
 
 	// ── Secrets store ─────────────────────────────────────────────────────────
@@ -768,7 +782,7 @@ func main() {
 			Data:        ev.Data,
 		})
 	})
-	tools.Register("canvas_update", func(_ context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("canvas_update", func(_ context.Context, args map[string]any) (string, error) {
 		id := agent.ArgString(args, "canvas_id")
 		contentType := agent.ArgString(args, "content_type")
 		data := agent.ArgString(args, "data")
@@ -780,7 +794,7 @@ func main() {
 		}
 		b, _ := json.Marshal(map[string]any{"ok": true, "canvas_id": id, "content_type": contentType})
 		return string(b), nil
-	})
+	}, toolbuiltin.CanvasUpdateDef)
 
 	// Media transcriber — auto-selected from configured API keys, or a specific
 	// backend from the config's media_understanding.transcriber field.
@@ -1654,6 +1668,12 @@ func main() {
 		return "🛑 Aborted in-flight turn.", nil
 	})
 
+	// /stop — alias for /kill.
+	slashRouter.Register("stop", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		chatCancels.Abort(cmd.SessionID)
+		return "🛑 Aborted in-flight turn.", nil
+	})
+
 	// /set <flag> [value] — persist a per-session flag.
 	// flags: verbose on/off, thinking on/off, tts on/off, model <name>, label <text>
 	slashRouter.Register("set", func(_ context.Context, cmd autoreply.Command) (string, error) {
@@ -1735,6 +1755,66 @@ func main() {
 			return fmt.Sprintf("⚠️  Failed to persist: %v", err), nil
 		}
 		return fmt.Sprintf("✓ Unset %s.", flag), nil
+	})
+
+	// /send on|off — enable or suppress reply delivery for this session.
+	slashRouter.Register("send", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		arg := ""
+		if len(cmd.Args) > 0 {
+			arg = strings.ToLower(cmd.Args[0])
+		}
+		if arg == "" {
+			return "Usage: /send on|off", nil
+		}
+		suppress := arg == "off" || arg == "false" || arg == "0"
+		if sessionStore == nil {
+			return "⚠️  Session store unavailable.", nil
+		}
+		se := sessionStore.GetOrNew(cmd.SessionID)
+		se.SendSuppressed = suppress
+		if err := sessionStore.Put(cmd.SessionID, se); err != nil {
+			return fmt.Sprintf("⚠️  Failed to persist: %v", err), nil
+		}
+		if suppress {
+			return "🔇 Reply delivery suppressed. Use /send on to re-enable.", nil
+		}
+		return "🔊 Reply delivery enabled.", nil
+	})
+
+	// /context list — list workspace bootstrap files present on disk.
+	slashRouter.Register("context", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		sub := ""
+		if len(cmd.Args) > 0 {
+			sub = strings.ToLower(cmd.Args[0])
+		}
+		if sub == "" || sub == "list" || sub == "detail" {
+			cfg := configState.Get()
+			activeAgentID := sessionRouter.Get(cmd.SessionID)
+			if activeAgentID == "" {
+				activeAgentID = "main"
+			}
+			wsDir := skillspkg.WorkspaceDir(cfg.Extra, activeAgentID)
+			if wsDir == "" {
+				home, _ := os.UserHomeDir()
+				wsDir = filepath.Join(home, ".swarmstr", "workspace")
+			}
+			candidates := []string{
+				"AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md",
+				"TOOLS.md", "HEARTBEAT.md", "BOOT.md", "BOOTSTRAP.md", "MEMORY.md",
+			}
+			lines := []string{fmt.Sprintf("Workspace: %s", wsDir)}
+			for _, f := range candidates {
+				fp := filepath.Join(wsDir, f)
+				info, err := os.Stat(fp)
+				if err == nil {
+					lines = append(lines, fmt.Sprintf("  ✓ %s (%d bytes)", f, info.Size()))
+				} else {
+					lines = append(lines, fmt.Sprintf("  · %s (missing)", f))
+				}
+			}
+			return strings.Join(lines, "\n"), nil
+		}
+		return fmt.Sprintf("Unknown subcommand %q. Usage: /context list", sub), nil
 	})
 
 	// /info — agent / node info.
@@ -2033,6 +2113,42 @@ func main() {
 				}
 			}
 
+			// Fire agent:bootstrap to allow extra file injection via the
+			// bootstrap-extra-files hook.  Extra file patterns are read from
+			// extra.bootstrap_extra_files.paths in the runtime config.
+			if controlHooksMgr != nil {
+				liveCfg := configState.Get()
+				var extraPaths []string
+				if befRaw, ok := liveCfg.Extra["bootstrap_extra_files"]; ok {
+					if befMap, ok := befRaw.(map[string]any); ok {
+						for _, key := range []string{"paths", "patterns", "files"} {
+							if v, ok2 := befMap[key]; ok2 {
+								switch tv := v.(type) {
+								case []any:
+									for _, p := range tv {
+										if s, ok3 := p.(string); ok3 {
+											extraPaths = append(extraPaths, s)
+										}
+									}
+								case []string:
+									extraPaths = append(extraPaths, tv...)
+								}
+							}
+						}
+					}
+				}
+				if len(extraPaths) > 0 {
+					evCtx := map[string]any{"paths": extraPaths}
+					errs := controlHooksMgr.Fire("agent:bootstrap", sessionID, evCtx)
+					for _, herr := range errs {
+						log.Printf("agent:bootstrap hook: %v", herr)
+					}
+					if injected, ok := evCtx["injectedFiles"].([]string); ok {
+						identityParts = append(identityParts, injected...)
+					}
+				}
+			}
+
 			var contextParts []string
 			if len(identityParts) > 0 {
 				contextParts = append(contextParts, strings.Join(identityParts, "\n\n---\n\n"))
@@ -2127,12 +2243,27 @@ func main() {
 				baseTurnTools = filterEnabledTools(defs, agentEnabledTools)
 			}
 		}
+		// Resolve thinking budget: per-agent ThinkingLevel takes precedence,
+		// then the session-level Thinking bool (defaults to medium: 10 000 tokens).
+		var thinkingBudget int
+		if sessionStore != nil {
+			if se, ok := sessionStore.Get(sessionID); ok && se.Thinking {
+				thinkingBudget = thinkingLevelToBudget("medium")
+			}
+		}
+		for _, ac := range configState.Get().Agents {
+			if ac.ID == activeAgentID && ac.ThinkingLevel != "" {
+				thinkingBudget = thinkingLevelToBudget(ac.ThinkingLevel)
+				break
+			}
+		}
 		baseTurn := agent.Turn{
-			SessionID: sessionID,
-			UserText:  combinedText,
-			Context:   turnContext,
-			History:   turnHistory,
-			Tools:     baseTurnTools,
+			SessionID:      sessionID,
+			UserText:       combinedText,
+			Context:        turnContext,
+			History:        turnHistory,
+			Tools:          baseTurnTools,
+			ThinkingBudget: thinkingBudget,
 		}
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, func(chunk string) {
@@ -2181,10 +2312,20 @@ func main() {
 		})
 
 		if replyFn != nil {
-			if err := replyFn(ctx, turnResult.Text); err != nil {
-				log.Printf("reply failed event=%s err=%v", eventID, err)
-				logBuffer.Append("error", fmt.Sprintf("dm reply failed event=%s err=%v", eventID, err))
-				return
+			sendSuppressed := false
+			if sessionStore != nil {
+				if se, ok := sessionStore.Get(sessionID); ok {
+					sendSuppressed = se.SendSuppressed
+				}
+			}
+			if !sendSuppressed {
+				if err := replyFn(ctx, turnResult.Text); err != nil {
+					log.Printf("reply failed event=%s err=%v", eventID, err)
+					logBuffer.Append("error", fmt.Sprintf("dm reply failed event=%s err=%v", eventID, err))
+					return
+				}
+			} else {
+				log.Printf("reply suppressed (send off) session=%s event=%s", sessionID, eventID)
 			}
 		}
 
@@ -3247,6 +3388,57 @@ func main() {
 				ListTranscript: func(ctx context.Context, sessionID string, limit int) ([]state.TranscriptEntryDoc, error) {
 					return transcriptRepo.ListSession(ctx, sessionID, limit)
 				},
+				SessionsPrune: func(ctx context.Context, req methods.SessionsPruneRequest) (map[string]any, error) {
+					if !req.All && req.OlderThanDays <= 0 {
+						return nil, fmt.Errorf("older_than_days must be > 0 unless all=true")
+					}
+					sessions, err := docsRepo.ListSessions(ctx, 10000)
+					if err != nil {
+						return nil, fmt.Errorf("sessions.prune: list: %w", err)
+					}
+					cutoff := time.Now()
+					var deletedIDs []string
+					var skippedIDs []string
+					for _, sess := range sessions {
+						eligible := req.All
+						if !eligible && req.OlderThanDays > 0 {
+							lastActivity := sess.LastInboundAt
+							if sess.LastReplyAt > lastActivity {
+								lastActivity = sess.LastReplyAt
+							}
+							if lastActivity == 0 {
+								eligible = true
+							} else {
+								age := cutoff.Sub(time.Unix(lastActivity, 0))
+								eligible = age >= time.Duration(req.OlderThanDays)*24*time.Hour
+							}
+						}
+						if !eligible {
+							skippedIDs = append(skippedIDs, sess.SessionID)
+							continue
+						}
+						if req.DryRun {
+							deletedIDs = append(deletedIDs, sess.SessionID)
+							continue
+						}
+						entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
+						for _, e := range entries {
+							_ = transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID)
+						}
+						sess.Meta = mergeSessionMeta(sess.Meta, map[string]any{
+							"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "manual",
+						})
+						_, _ = docsRepo.PutSession(ctx, sess.SessionID, sess)
+						deletedIDs = append(deletedIDs, sess.SessionID)
+					}
+					return map[string]any{
+						"ok":            true,
+						"dry_run":       req.DryRun,
+						"deleted_count": len(deletedIDs),
+						"deleted":       deletedIDs,
+						"skipped_count": len(skippedIDs),
+					}, nil
+				},
 				TailLogs: func(_ context.Context, cursor int64, limit int, maxBytes int) (map[string]any, error) {
 					return logBuffer.Tail(cursor, limit, maxBytes), nil
 				},
@@ -3764,6 +3956,17 @@ func main() {
 	// Fire gateway:startup hook now that all channels and goroutines are ready.
 	if controlHooksMgr != nil {
 		go controlHooksMgr.Fire("gateway:startup", "", map[string]any{})
+	}
+
+	// Boot-time session pruning: delete sessions older than PruneAfterDays if
+	// PruneOnBoot is set in the session config.
+	if configState != nil {
+		sessCfg := configState.Get().Session
+		if sessCfg.PruneOnBoot && sessCfg.PruneAfterDays > 0 {
+			go func() {
+				pruneSessions(ctx, docsRepo, transcriptRepo, sessCfg.PruneAfterDays)
+			}()
+		}
 	}
 
 	<-ctx.Done()
@@ -4910,6 +5113,61 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("sessions.export: render: %w", err)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.SessionsExportResponse{HTML: htmlOut, Format: "html"}}, nil
+
+	case methods.MethodSessionsPrune:
+		var pruneReq methods.SessionsPruneRequest
+		if len(in.Params) > 0 {
+			_ = json.Unmarshal(in.Params, &pruneReq)
+		}
+		sessions, listErr := docsRepo.ListSessions(ctx, 10000)
+		if listErr != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("sessions.prune: list: %w", listErr)
+		}
+		cutoff := time.Now()
+		var deletedIDs []string
+		var skippedIDs []string
+		for _, sess := range sessions {
+			eligible := pruneReq.All
+			if !eligible && pruneReq.OlderThanDays > 0 {
+				lastActivity := sess.LastInboundAt
+				if sess.LastReplyAt > lastActivity {
+					lastActivity = sess.LastReplyAt
+				}
+				if lastActivity == 0 {
+					eligible = true // never used — always prune
+				} else {
+					age := cutoff.Sub(time.Unix(lastActivity, 0))
+					eligible = age >= time.Duration(pruneReq.OlderThanDays)*24*time.Hour
+				}
+			}
+			if !eligible {
+				skippedIDs = append(skippedIDs, sess.SessionID)
+				continue
+			}
+			if pruneReq.DryRun {
+				deletedIDs = append(deletedIDs, sess.SessionID)
+				continue
+			}
+			// Delete session document and all transcript entries.
+			entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
+			for _, e := range entries {
+				_ = transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID)
+			}
+			// Mark session deleted in the store.
+			sess.Meta = mergeSessionMeta(sess.Meta, map[string]any{
+				"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "manual",
+			})
+			_, _ = docsRepo.PutSession(ctx, sess.SessionID, sess)
+			deletedIDs = append(deletedIDs, sess.SessionID)
+		}
+		result := map[string]any{
+			"ok":             true,
+			"dry_run":        pruneReq.DryRun,
+			"deleted_count":  len(deletedIDs),
+			"deleted":        deletedIDs,
+			"skipped_count":  len(skippedIDs),
+		}
+		return nostruntime.ControlRPCResult{Result: result}, nil
 
 	case methods.MethodSessionsSpawn:
 		req, err := methods.DecodeSessionsSpawnParams(in.Params)
@@ -7556,6 +7814,60 @@ func persistToolTraces(
 func normalizeCSVList(raw string) []string {
 	items := strings.Split(raw, ",")
 	return normalizeStringList(items)
+}
+
+// thinkingLevelToBudget converts a level string to an Anthropic thinking
+// budget in tokens.  Returns 0 (disabled) for "off" or unknown values.
+// pruneSessions deletes session transcript entries and marks session docs as
+// deleted when the session's last activity is older than olderThanDays days.
+func pruneSessions(ctx context.Context, docsRepo *state.DocsRepository, transcriptRepo *state.TranscriptRepository, olderThanDays int) {
+	sessions, err := docsRepo.ListSessions(ctx, 10000)
+	if err != nil {
+		log.Printf("session prune: list sessions: %v", err)
+		return
+	}
+	cutoff := time.Now().Add(-time.Duration(olderThanDays) * 24 * time.Hour)
+	pruned := 0
+	for _, sess := range sessions {
+		lastActivity := sess.LastInboundAt
+		if sess.LastReplyAt > lastActivity {
+			lastActivity = sess.LastReplyAt
+		}
+		if lastActivity > 0 && time.Unix(lastActivity, 0).After(cutoff) {
+			continue // recently active
+		}
+		entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
+		for _, e := range entries {
+			_ = transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID)
+		}
+		sess.Meta = mergeSessionMeta(sess.Meta, map[string]any{
+			"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "auto",
+		})
+		_, _ = docsRepo.PutSession(ctx, sess.SessionID, sess)
+		pruned++
+	}
+	if pruned > 0 {
+		log.Printf("session prune: deleted %d sessions older than %d days", pruned, olderThanDays)
+	}
+}
+
+func thinkingLevelToBudget(level string) int {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "off", "":
+		return 0
+	case "minimal":
+		return 1024
+	case "low":
+		return 5000
+	case "medium":
+		return 10000
+	case "high":
+		return 20000
+	case "xhigh":
+		return 40000
+	default:
+		return 10000
+	}
 }
 
 func normalizeStringList(items []string) []string {

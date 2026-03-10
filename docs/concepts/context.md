@@ -41,13 +41,9 @@ See [Token Use](../reference/token-use.md) for cost details.
 
 ## Session History
 
-Each conversation is stored as a JSONL transcript in:
+Conversation transcripts are stored as encrypted Nostr events on the configured relays (`TranscriptRepository`). Session metadata (labels, settings) is persisted locally in `~/.swarmstr/sessions.json`.
 
-```
-~/.swarmstr/sessions/<scope>.jsonl
-```
-
-The full transcript is appended to the context on each turn (up to the configured window). When the session grows too large, **compaction** summarizes older turns into a condensed block, keeping the context window manageable.
+The full transcript is assembled on each turn (up to the configured window). When the session grows too large, **compaction** summarises older turns into a condensed block, keeping the context window manageable.
 
 See [Session Management](../reference/session-management-compaction.md).
 
@@ -81,29 +77,36 @@ echo "## Current Time\nIt is $(date -u '+%Y-%m-%d %H:%M UTC')." >> /tmp/context-
 |-------|-------|-------|
 | Max session history | Configurable | Default: full transcript until compaction threshold |
 | Compaction threshold | ~80% of model context window | Triggers auto-compaction |
-| Max output tokens | 16,000 | Configurable via `maxTokens` |
+| Max context tokens | 100,000 (default) | Set via `agents[].max_context_tokens` |
 | Workspace file size | Practical limit ~100KB | Larger files slow cache invalidation |
 
-## skipBootstrap
+## Limiting Context Tokens Per Agent
 
-To disable loading workspace `.md` files into the system prompt (useful for DVM jobs or lightweight sessions):
+To control how much token budget is reserved for assembled context, set `max_context_tokens` on an agent config:
 
 ```json
 {
-  "skipBootstrap": true
+  "agents": [
+    {
+      "id": "main",
+      "max_context_tokens": 50000
+    }
+  ]
 }
 ```
 
-When `skipBootstrap: true`, only the raw session history and current message are sent. Useful for high-volume automation where personality context is not needed.
+When the assembled context approaches 80% of this value, auto-compaction triggers before the model call. Defaults to 100,000 when unset. Useful for high-volume automation agents where a smaller context budget reduces cost.
 
 ## Context for Sub-agents
 
-Sub-agents spawned via `/spawn` receive their own fresh context. They do **not** inherit the parent session history. However, they share the same workspace files (SOUL.md, AGENTS.md, etc.), so personality and operating rules are consistent.
+Agents routed via `/spawn` or `/focus` share the **same session ID and conversation history** — they continue the same context window. What changes is which agent runtime (and its workspace files) processes subsequent turns.
 
-The parent can explicitly pass context to a sub-agent by including it in the spawn message:
+If the target agent has a different `workspace_dir`, it loads different SOUL.md / AGENTS.md / etc. files, but sees the same transcript history assembled from the context engine.
+
+The parent can provide additional instructions in the spawn message:
 
 ```
-/spawn research "Research the Nostr NIP-44 encryption spec and summarize findings"
+/spawn research Review the Nostr NIP-44 encryption spec and summarize findings
 ```
 
 ## See Also

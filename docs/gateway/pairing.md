@@ -1,221 +1,173 @@
 ---
-summary: "Nostr-based pairing and discovery for swarmstr"
+summary: "DM access control and discovery for swarmstr"
 read_when:
-  - Setting up a new contact to talk to your agent
-  - Configuring DM access control and allowlists
+  - Setting up DM access control
+  - Configuring who can interact with your agent
   - Understanding how swarmstr handles unknown senders
-title: "Pairing & Discovery"
+title: "DM Access Control"
 ---
 
-# Pairing & Discovery
+# DM Access Control
 
-swarmstr uses Nostr DMs as its primary channel. Access control determines who can interact with your agent.
+swarmstr controls inbound DM access via the `dm` section of the runtime ConfigDoc. Configure `dm.policy` and `dm.allow_from` to control who can interact with your agent.
 
 ## The Nostr Advantage for Discovery
 
-Unlike traditional chatbots that need QR codes, invite links, or phone number registration, Nostr provides cryptographic identity built in. Your agent has a stable Nostr public key (npub) that serves as its permanent address.
-
-Anyone who knows your agent's npub can attempt to send it a DM. Access control determines whether those messages are processed.
+Unlike traditional chatbots that need QR codes or phone number registration, Nostr provides cryptographic identity built in. Your agent has a stable public key (npub) that serves as its permanent address. Anyone who knows the npub can send DMs — access policy determines whether those messages are processed.
 
 ## DM Policy Modes
 
-Configure in `channels.nostr.dmPolicy`:
+### `pairing` (Default)
 
-### `allowlist` (Recommended for Production)
-
-Only pubkeys on the allowlist can interact with the agent:
+In `pairing` mode, senders not listed in `allow_from` receive a notification rather than being silently dropped:
 
 ```json5
 {
-  "channels": {
-    "nostr": {
-      "dmPolicy": "allowlist",
-      "allowFrom": [
-        "npub1yourpubkey...",
-        "npub1friendspubkey..."
-      ]
-    }
-  }
-}
-```
-
-### `pairing` (Good for Onboarding)
-
-New contacts must send a pairing code before the agent responds:
-
-```json5
-{
-  "channels": {
-    "nostr": {
-      "dmPolicy": "pairing",
-      "pairing": {
-        "code": "${PAIRING_CODE}",
-        "welcomeMessage": "Welcome! You're now paired with this agent."
-      }
-    }
-  }
-}
-```
-
-Flow:
-1. User sends the pairing code to the agent's npub via DM
-2. Agent verifies the code and adds the user's pubkey to the approved list
-3. Subsequent messages are processed normally
-
-### `open` (Not Recommended)
-
-Any Nostr DM is processed — use only on private relays or for testing:
-
-```json5
-{
-  "channels": {
-    "nostr": {
-      "dmPolicy": "open"
-    }
-  }
-}
-```
-
-## Pairing Flow in Detail
-
-```
-1. Share your agent's npub with the person you want to add
-   (e.g., npub1abc... or its NIP-05: agent@yourdomain.com)
-
-2. They open their Nostr client (Damus, Amethyst, Iris, etc.)
-   and send a DM to your agent with the pairing code
-
-3. The agent receives the DM, validates the code,
-   and adds their pubkey to the approved list
-
-4. The agent replies with a welcome message
-
-5. All subsequent DMs from that pubkey are processed
-```
-
-## Managing Approved Contacts
-
-```bash
-# List pending pairing requests
-swarmstr pairing list
-
-# Approve a pairing request by code
-swarmstr pairing approve <code>
-
-# View current allowlist
-swarmstr config get channels.nostr.allowFrom
-```
-
-Via config (static allowlist):
-
-```json5
-{
-  "channels": {
-    "nostr": {
-      "allowFrom": [
-        "npub1alice...",
-        "npub1bob..."
-      ]
-    }
-  }
-}
-```
-
-## NIP-05 Discovery
-
-Enable NIP-05 to make your agent discoverable by human-readable name:
-
-```json5
-{
-  "channels": {
-    "nostr": {
-      "profile": {
-        "name": "My Agent",
-        "nip05": "agent@yourdomain.com"
-      }
-    }
-  }
-}
-```
-
-Serve the NIP-05 JSON at `https://yourdomain.com/.well-known/nostr.json`:
-
-```json
-{
-  "names": {
-    "agent": "<agent-pubkey-hex>"
-  }
-}
-```
-
-With NIP-05, users can find your agent via the human-readable identifier rather than having to remember the raw npub.
-
-## Multi-Agent Discovery
-
-In multi-agent setups, each agent has its own Nostr key and is independently discoverable:
-
-```json5
-{
-  "agents": {
-    "list": [
-      {
-        "id": "agent-alpha",
-        "channels": {
-          "nostr": {
-            "privateKey": "${AGENT_ALPHA_NSEC}",
-            "profile": {
-              "nip05": "alpha@yourdomain.com"
-            }
-          }
-        }
-      },
-      {
-        "id": "agent-beta",
-        "channels": {
-          "nostr": {
-            "privateKey": "${AGENT_BETA_NSEC}",
-            "profile": {
-              "nip05": "beta@yourdomain.com"
-            }
-          }
-        }
-      }
+  "dm": {
+    "policy": "pairing",
+    "allow_from": [
+      "npub1yourpubkey...",
+      "npub1friendspubkey..."
     ]
   }
 }
 ```
 
-## Share Your Agent's Contact
+Unknown senders receive: _"Your message was received, but this node requires pairing approval before processing DMs."_
 
-Once running, get your agent's npub:
+You then add their pubkey to `allow_from` to grant access.
 
-```bash
-swarmstr status
-# Output includes:
-# Agent npub: npub1abc...
-# NIP-05: agent@yourdomain.com (if configured)
-```
+### `allowlist` (Recommended for Production)
 
-Share the npub or NIP-05 identifier. Users can add it to their Nostr client's contacts and send DMs directly.
-
-## Local Network Discovery (mDNS)
-
-For local network admin access to the dashboard, swarmstr optionally announces itself via mDNS:
+Only pubkeys in `allow_from` can interact. Unknown senders are silently dropped:
 
 ```json5
 {
-  "http": {
-    "mdns": true,
-    "mdnsName": "swarmstr"
+  "dm": {
+    "policy": "allowlist",
+    "allow_from": [
+      "npub1yourpubkey...",
+      "npub1friendspubkey..."
+    ]
   }
 }
 ```
 
-This allows `http://swarmstr.local:18789` to resolve on the same LAN.
+### `open` (Testing Only)
+
+Any Nostr DM is processed — use only on private relays or for local testing:
+
+```json5
+{
+  "dm": {
+    "policy": "open"
+  }
+}
+```
+
+### `disabled`
+
+All inbound DMs are rejected — useful for pausing the agent without stopping the daemon.
+
+## Auth Levels
+
+Entries in `allow_from` carry privilege tiers:
+
+| Position / Prefix | Auth Level | Description |
+|-------------------|------------|-------------|
+| First entry (no prefix) | owner | Full admin access |
+| `trusted:npub1...` | trusted | Elevated access |
+| Other entries | public | Standard access |
+| `*` wildcard | varies | Depends on position |
+
+Example:
+
+```json5
+{
+  "dm": {
+    "policy": "allowlist",
+    "allow_from": [
+      "npub1owner...",         // owner
+      "trusted:npub1admin...", // trusted
+      "npub1user1...",         // public
+      "npub1user2..."          // public
+    ]
+  }
+}
+```
+
+## Adding Contacts
+
+Add a new contact's pubkey to `allow_from` by editing `~/.swarmstr/config.json` and restarting the daemon, or by sending a `config.set` RPC from an admin client:
+
+```bash
+# View current config
+swarmstr config get
+
+# Export, edit, and reimport
+swarmstr config export > /tmp/config.json
+# (edit /tmp/config.json: add npub to dm.allow_from)
+swarmstr config import --file /tmp/config.json
+```
+
+Or send a control DM from an owner-level key: `config.set dm.allow_from npub1owner...,npub1newuser...`
+
+## NIP-05 Discovery
+
+Make your agent discoverable by human-readable identifier:
+
+1. Set the NIP-05 in `IDENTITY.md` (in the agent's workspace):
+   ```
+   NIP-05: agent@yourdomain.com
+   ```
+
+2. Serve `https://yourdomain.com/.well-known/nostr.json`:
+   ```json
+   {
+     "names": {
+       "agent": "<agent-pubkey-hex>"
+     }
+   }
+   ```
+
+Users can then find your agent via `agent@yourdomain.com` in any Nostr client.
+
+## Multi-Agent Access
+
+Each agent in a multi-agent setup uses the same global `dm.allow_from` list, with per-agent routing handled via `agents[].dm_peers`:
+
+```json5
+{
+  "dm": {
+    "policy": "allowlist",
+    "allow_from": ["npub1owner...", "npub1userA...", "npub1userB..."]
+  },
+  "agents": [
+    {
+      "id": "coding-agent",
+      "dm_peers": ["npub1userA..."]   // routes userA to this agent
+    },
+    {
+      "id": "research-agent",
+      "dm_peers": ["npub1userB..."]   // routes userB to this agent
+    }
+  ]
+}
+```
+
+## Getting Your Agent's npub
+
+```bash
+swarmstr status
+# Includes:
+#   pubkey: npub1abc...
+```
+
+Share this with contacts you want to add. They open any Nostr client and DM your agent's npub.
 
 ## See Also
 
 - [Nostr Channel](/channels/nostr)
-- [Security](/security/)
+- [Access Control & Pairing](/channels/pairing)
 - [Configuration](/gateway/configuration)
 - [Multi-Agent](/concepts/multi-agent)

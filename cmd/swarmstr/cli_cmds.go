@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -1130,9 +1132,237 @@ func runNodes(args []string) error {
 		return runNodesStatus(args[1:])
 	case "send":
 		return runNodesSend(args[1:])
+	case "pending":
+		return runNodesPending(args[1:])
+	case "approve":
+		return runNodesApprove(args[1:])
+	case "reject":
+		return runNodesReject(args[1:])
+	case "describe":
+		return runNodesDescribe(args[1:])
+	case "invoke":
+		return runNodesInvoke(args[1:])
+	case "rename":
+		return runNodesRename(args[1:])
 	default:
-		return fmt.Errorf("unknown nodes sub-command %q (list|add|status|send)", args[0])
+		return fmt.Errorf("unknown nodes sub-command %q (list|add|status|send|pending|approve|reject|describe|invoke|rename)", args[0])
 	}
+}
+
+// runNodesPending lists pending node pairing requests.
+func runNodesPending(args []string) error {
+	fs := flag.NewFlagSet("nodes pending", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var jsonOut, includePaired bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&includePaired, "include-paired", false, "also print currently paired nodes")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("node.pair.list", map[string]any{})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	pending, _ := result["pending"].([]any)
+	paired, _ := result["paired"].([]any)
+	if len(pending) == 0 && (!includePaired || len(paired) == 0) {
+		fmt.Println("No pending node pairing requests.")
+		return nil
+	}
+	if len(pending) > 0 {
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "REQUEST ID\tNODE ID\tSTATUS")
+		for _, r := range pending {
+			req, ok := r.(map[string]any)
+			if !ok {
+				continue
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\n",
+				stringFieldAny(req, "request_id"),
+				stringFieldAny(req, "node_id"),
+				stringFieldAny(req, "status"),
+			)
+		}
+		if err := w.Flush(); err != nil {
+			return err
+		}
+	}
+	if includePaired {
+		if len(paired) > 0 {
+			if len(pending) > 0 {
+				fmt.Println()
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "PAIRED NODE ID\tDISPLAY NAME\tAPPROVED AT")
+			for _, r := range paired {
+				node, ok := r.(map[string]any)
+				if !ok {
+					continue
+				}
+				fmt.Fprintf(w, "%s\t%s\t%d\n",
+					stringFieldAny(node, "node_id"),
+					stringFieldAny(node, "display_name"),
+					int64(floatFieldAny(node, "approved_at_ms")),
+				)
+			}
+			if err := w.Flush(); err != nil {
+				return err
+			}
+		} else if len(pending) == 0 {
+			fmt.Println("No paired nodes.")
+		}
+	}
+	return nil
+}
+
+// runNodesApprove approves a pending node pairing request.
+func runNodesApprove(args []string) error {
+	fs := flag.NewFlagSet("nodes approve", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: swarmstr nodes approve <request-id>")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("node.pair.approve", map[string]any{"request_id": fs.Arg(0)})
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
+}
+
+// runNodesReject rejects a pending node pairing request.
+func runNodesReject(args []string) error {
+	fs := flag.NewFlagSet("nodes reject", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: swarmstr nodes reject <request-id>")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("node.pair.reject", map[string]any{"request_id": fs.Arg(0)})
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
+}
+
+// runNodesDescribe shows detailed info about a node.
+func runNodesDescribe(args []string) error {
+	fs := flag.NewFlagSet("nodes describe", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: swarmstr nodes describe <node-id>")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("node.describe", map[string]any{"node_id": fs.Arg(0)})
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
+}
+
+// runNodesInvoke invokes a command on a remote node.
+func runNodesInvoke(args []string) error {
+	fs := flag.NewFlagSet("nodes invoke", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath, nodeID, command, rawArgs string
+	var timeoutSeconds int
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&nodeID, "node", "", "node ID (required)")
+	fs.StringVar(&command, "command", "", "command to invoke (required)")
+	fs.StringVar(&rawArgs, "args", "", "JSON args to pass to the command")
+	fs.IntVar(&timeoutSeconds, "timeout", 30, "timeout in seconds")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if nodeID == "" || command == "" {
+		return fmt.Errorf("usage: swarmstr nodes invoke --node <id> --command <cmd> [--args '{...}']")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{
+		"node_id":    nodeID,
+		"command":    command,
+		"timeout_ms": timeoutSeconds * 1000,
+	}
+	if rawArgs != "" {
+		var argsMap map[string]any
+		if err := json.Unmarshal([]byte(rawArgs), &argsMap); err != nil {
+			return fmt.Errorf("invalid --args JSON: %w", err)
+		}
+		body["args"] = argsMap
+	}
+	result, err := cl.call("node.invoke", body)
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
+}
+
+// runNodesRename renames a remote node.
+func runNodesRename(args []string) error {
+	fs := flag.NewFlagSet("nodes rename", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() < 2 {
+		return fmt.Errorf("usage: swarmstr nodes rename <node-id> <new-name>")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("node.rename", map[string]any{
+		"node_id": fs.Arg(0),
+		"name":    fs.Arg(1),
+	})
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
 }
 
 // stringFieldAny is like stringField but operates on map[string]any.
@@ -1160,8 +1390,10 @@ func runSessions(args []string) error {
 		return runSessionsDelete(args[1:])
 	case "reset":
 		return runSessionsReset(args[1:])
+	case "prune":
+		return runSessionsPrune(args[1:])
 	default:
-		return fmt.Errorf("unknown sessions sub-command %q (list|get|export|delete|reset)", args[0])
+		return fmt.Errorf("unknown sessions sub-command %q (list|get|export|delete|reset|prune)", args[0])
 	}
 }
 
@@ -1338,6 +1570,62 @@ func runSessionsReset(args []string) error {
 	return printJSON(result)
 }
 
+func runSessionsPrune(args []string) error {
+	fs := flag.NewFlagSet("sessions prune", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var olderThanStr string
+	var dryRun, all bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
+	fs.StringVar(&olderThanStr, "older-than", "", "delete sessions older than this duration, e.g. 7d, 30d")
+	fs.BoolVar(&dryRun, "dry-run", false, "report what would be deleted without deleting")
+	fs.BoolVar(&all, "all", false, "delete all sessions regardless of age")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !all && olderThanStr == "" {
+		return fmt.Errorf("usage: swarmstr sessions prune --older-than <Nd> [--dry-run]\n  or:  swarmstr sessions prune --all [--dry-run]")
+	}
+
+	olderThanDays := 0
+	if olderThanStr != "" {
+		olderThanStr = strings.TrimSuffix(strings.TrimSpace(olderThanStr), "d")
+		n, err := strconv.Atoi(olderThanStr)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("--older-than must be a positive number of days, e.g. 7d (got %q)", olderThanStr)
+		}
+		olderThanDays = n
+	}
+
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	params := map[string]any{
+		"older_than_days": olderThanDays,
+		"dry_run":         dryRun,
+		"all":             all,
+	}
+	result, err := cl.call("sessions.prune", params)
+	if err != nil {
+		return fmt.Errorf("sessions.prune: %w", err)
+	}
+	deleted, _ := result["deleted_count"].(float64)
+	dryRunResult, _ := result["dry_run"].(bool)
+	if dryRunResult {
+		fmt.Printf("dry-run: would delete %d session(s)\n", int(deleted))
+		if ids, ok := result["deleted"].([]any); ok {
+			for _, id := range ids {
+				fmt.Printf("  %v\n", id)
+			}
+		}
+	} else {
+		fmt.Printf("deleted %d session(s)\n", int(deleted))
+	}
+	return nil
+}
+
 // ─── approvals ────────────────────────────────────────────────────────────────
 
 func runApprovals(args []string) error {
@@ -1494,35 +1782,51 @@ func runCronList(args []string) error {
 
 func runCronAdd(args []string) error {
 	fs := flag.NewFlagSet("cron add", flag.ContinueOnError)
-	var adminAddr, adminToken, bootstrapPath, id, schedule, message, agentID, description string
+	var adminAddr, adminToken, bootstrapPath, id, schedule, message, agentID, method, rawParams string
 	var enabled bool
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
-	fs.StringVar(&id, "id", "", "cron job ID (required)")
-	fs.StringVar(&schedule, "schedule", "", "cron schedule expression (required)")
-	fs.StringVar(&message, "message", "", "message to send on trigger (required)")
-	fs.StringVar(&agentID, "agent", "main", "agent ID to target")
-	fs.StringVar(&description, "description", "", "human-readable description")
+	fs.StringVar(&id, "id", "", "cron job ID (auto-generated if empty)")
+	fs.StringVar(&schedule, "schedule", "", "cron schedule expression (required); e.g. \"0 7 * * *\", \"@every 1h\", \"@daily\"")
+	fs.StringVar(&message, "message", "", "agent message to send on trigger (shorthand: sets method=agent and params.text=<message>)")
+	fs.StringVar(&agentID, "agent", "main", "agent ID to target (used with --message)")
+	fs.StringVar(&method, "method", "", "gateway method to call on trigger (e.g. \"agent\"); required if --message not set")
+	fs.StringVar(&rawParams, "params", "", "JSON params for the method (e.g. '{\"text\":\"hello\"}')")
 	fs.BoolVar(&enabled, "enabled", true, "enable job immediately")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if id == "" || schedule == "" || message == "" {
-		return fmt.Errorf("--id, --schedule, and --message are required")
+	if schedule == "" {
+		return fmt.Errorf("--schedule is required")
+	}
+	// --message is a convenience shorthand that maps to method=agent with text param.
+	if message != "" && method == "" {
+		method = "agent"
+		params := map[string]any{"text": message}
+		if agentID != "" && agentID != "main" {
+			params["session_id"] = agentID
+		}
+		b, _ := json.Marshal(params)
+		rawParams = string(b)
+	}
+	if method == "" {
+		return fmt.Errorf("--method or --message is required")
 	}
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
 	if err != nil {
 		return err
 	}
-	result, err := cl.call("cron.add", map[string]any{
-		"id":          id,
-		"schedule":    schedule,
-		"message":     message,
-		"agent_id":    agentID,
-		"description": description,
-		"enabled":     enabled,
-	})
+	body := map[string]any{
+		"id":       id,
+		"schedule": schedule,
+		"method":   method,
+		"enabled":  enabled,
+	}
+	if rawParams != "" {
+		body["params"] = json.RawMessage(rawParams)
+	}
+	result, err := cl.call("cron.add", body)
 	if err != nil {
 		return fmt.Errorf("cron.add: %w", err)
 	}
@@ -2157,5 +2461,53 @@ func runGW(args []string) error {
 		return printJSON(result)
 	}
 	fmt.Printf("%v\n", result)
+	return nil
+}
+
+// ─── keygen ───────────────────────────────────────────────────────────────────
+
+// runKeygen generates a fresh Nostr keypair (nsec + npub) and prints them.
+// It does not persist anything; the operator adds the nsec to their config or
+// environment and treats the npub as the public identity.
+func runKeygen(args []string) error {
+	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
+	var jsonOut bool
+	fs.BoolVar(&jsonOut, "json", false, "output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// Generate 32 random bytes for the secret key.
+	var skBytes [32]byte
+	if _, err := rand.Read(skBytes[:]); err != nil {
+		return fmt.Errorf("keygen: failed to generate random key: %w", err)
+	}
+
+	// Derive public key using secp256k1 scalar multiplication.
+	// We use the nostr library's hex encoding for nsec/npub bech32.
+	skHex := hex.EncodeToString(skBytes[:])
+
+	// Use swarmstr's config package to produce bech32 keys.
+	nsec, npub, err := config.KeypairFromHex(skHex)
+	if err != nil {
+		return fmt.Errorf("keygen: %w", err)
+	}
+
+	if jsonOut {
+		out, _ := json.MarshalIndent(map[string]string{
+			"nsec": nsec,
+			"npub": npub,
+			"hex":  skHex,
+		}, "", "  ")
+		fmt.Println(string(out))
+		return nil
+	}
+
+	fmt.Printf("nsec: %s\n", nsec)
+	fmt.Printf("npub: %s\n", npub)
+	fmt.Printf("\n")
+	fmt.Printf("Add to your environment or bootstrap config:\n")
+	fmt.Printf("  NOSTR_NSEC=%s\n", nsec)
+	fmt.Printf("\nKeep the nsec secret — it is your private signing key.\n")
 	return nil
 }

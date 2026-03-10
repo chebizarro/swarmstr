@@ -1,197 +1,94 @@
 ---
-summary: "Browser tool: agent-controlled Chromium automation in swarmstr"
+summary: "Browser fetch and optional browser proxy for swarmstr agents"
 read_when:
-  - Adding agent-controlled browser automation
-  - Debugging browser connectivity or CDP
-  - Configuring the browser tool for the agent
-title: "Browser Tool"
+  - Using web_fetch or browser.request gateway method
+  - Connecting swarmstr to a Playwright or CDP browser proxy
+title: "Browser"
 ---
 
-# Browser Tool
+# Browser
 
-swarmstr can control a **dedicated Chromium/Chrome/Brave/Edge profile** for agent-driven browser automation. The browser is isolated from your personal browser and managed through the daemon.
+swarmstr's browser package provides HTTP fetch with HTML-to-text extraction.
+It is the backing implementation for the `web_fetch` agent tool and the
+`browser.request` gateway method.
 
-## What You Get
+## `web_fetch` tool
 
-- A separate browser profile named **swarmstr** (isolated from your daily driver).
-- Deterministic tab control: list, open, focus, close tabs.
-- Agent actions: click, type, drag, select, screenshot, snapshot, PDF.
-- No interference with your personal browser profile.
+The agent's built-in web fetcher. See [Web Tools](/tools/web) for full details.
 
-## Quick Start
+```
+web_fetch(url="https://nostr.com/protocol")
+```
+
+- Plain HTTP GET; HTML tags stripped; result returned as readable text.
+- Does **not** execute JavaScript.
+
+## `browser.request` gateway method
+
+Low-level HTTP fetch callable from the gateway API:
+
+```json
+{
+  "method": "browser.request",
+  "params": {
+    "method": "GET",
+    "path": "https://relay.damus.io",
+    "timeout_ms": 10000
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "status_code": 200,
+  "content_type": "text/html; charset=utf-8",
+  "url": "https://relay.damus.io",
+  "text": "..."
+}
+```
+
+**Parameters:**
+
+- `method`: HTTP method (`GET`, `POST`, etc.)
+- `path`: absolute URL (e.g. `https://example.com/page`) or path relative to `SWARMSTR_BROWSER_URL`
+- `query`: optional query parameters map
+- `headers`: optional additional request headers map
+- `body`: optional request body (string, object, or array)
+- `timeout_ms`: request timeout in milliseconds
+
+## Optional browser proxy (`SWARMSTR_BROWSER_URL`)
+
+For JavaScript-heavy sites or browser automation, you can run a Playwright or CDP
+bridge server and configure swarmstr to route `browser.request` calls through it:
 
 ```bash
-# Check browser status
-swarmstr browser status
-
-# Start the managed browser
-swarmstr browser start
-
-# Open a URL
-swarmstr browser open https://relay.damus.io
-
-# Take a snapshot
-swarmstr browser snapshot
-
-# Screenshot
-swarmstr browser screenshot
+export SWARMSTR_BROWSER_URL=http://127.0.0.1:19222
+export SWARMSTR_BROWSER_TOKEN=your-bridge-token  # optional
 ```
 
-## Configuration
+When `SWARMSTR_BROWSER_URL` is set, `browser.request` calls with relative paths
+are proxied to the bridge server. Absolute URLs are fetched directly without proxying.
 
-```json5
-{
-  "browser": {
-    "enabled": true,
-    "defaultProfile": "swarmstr",
-    "headless": false,
-    "executablePath": "/usr/bin/chromium",   // or Brave, Chrome path
-    "profiles": {
-      "swarmstr": {
-        "cdpPort": 18800
-      }
-    }
-  }
-}
-```
+When `SWARMSTR_BROWSER_URL` is **not** set, `browser.request` with relative paths
+returns an error (`browser control is disabled`).
 
-## Agent Browser Tools
+## SSRF protection
 
-The following tools are available to the agent when the browser is configured:
+`web_fetch` enforces an SSRF guard by default — it rejects requests to private
+network addresses (`127.x.x.x`, `10.x.x.x`, `192.168.x.x`, etc.).
 
-### `browser_navigate`
+To allow local addresses (useful for intranet or testing):
 
 ```
-browser_navigate(url, targetId?)
+web_fetch(url="http://192.168.1.10/api", allow_local=true)
 ```
 
-Navigate to a URL in the browser.
-
-### `browser_snapshot`
-
-```
-browser_snapshot(format?, targetId?)
-```
-
-Capture the current page as an accessibility tree (AI-readable page structure).
-
-### `browser_screenshot`
-
-```
-browser_screenshot(fullPage?, targetId?)
-```
-
-Capture a PNG screenshot of the current page.
-
-### `browser_click`
-
-```
-browser_click(ref, button?, double?, targetId?)
-```
-
-Click on an element identified by `ref` (from a snapshot).
-
-### `browser_type`
-
-```
-browser_type(ref, text, submit?, targetId?)
-```
-
-Type text into a field.
-
-### `browser_navigate` + `browser_wait`
-
-Navigate then wait for content:
-
-```
-browser_navigate(url="https://example.com")
-browser_wait(text="Expected content")
-```
-
-### `browser_evaluate`
-
-```
-browser_evaluate(fn, ref?, targetId?)
-```
-
-Execute JavaScript in the page context.
-
-### `browser_pdf`
-
-```
-browser_pdf(targetId?)
-```
-
-Export the current page as PDF.
-
-## SSRF Policy
-
-The browser tool uses a SSRF (Server-Side Request Forgery) policy to prevent the agent from accessing internal network resources:
-
-```json5
-{
-  "browser": {
-    "ssrfPolicy": {
-      "dangerouslyAllowPrivateNetwork": false,   // default: false
-      "hostnameAllowlist": ["*.relay.nostr.com"]  // optional explicit allowlist
-    }
-  }
-}
-```
-
-By default, the browser cannot access private network addresses (192.168.x.x, 10.x.x.x, 127.x.x.x) to prevent the agent from probing your local network.
-
-## Multi-Profile Support
-
-Create separate browser profiles for different use cases:
-
-```json5
-{
-  "browser": {
-    "profiles": {
-      "swarmstr": { "cdpPort": 18800 },
-      "research": { "cdpPort": 18801 },
-      "remote": { "cdpUrl": "http://10.0.0.42:9222" }
-    }
-  }
-}
-```
-
-## CLI Reference
-
-```bash
-swarmstr browser status
-swarmstr browser start [--browser-profile swarmstr]
-swarmstr browser stop
-swarmstr browser reset-profile
-swarmstr browser tabs
-swarmstr browser open <url>
-swarmstr browser focus <targetId>
-swarmstr browser close [targetId]
-swarmstr browser screenshot [targetId] [--full-page]
-swarmstr browser snapshot [--format aria|ai]
-swarmstr browser navigate <url>
-swarmstr browser click <ref>
-swarmstr browser type <ref> <text>
-swarmstr browser press <key>
-swarmstr browser evaluate --fn <code>
-swarmstr browser pdf
-```
-
-## Browser vs Web Fetch
-
-| | Browser | Web Fetch |
-|--|---------|-----------|
-| JavaScript | ✅ Full JS execution | ❌ Static HTML only |
-| Login sessions | ✅ Persistent cookies | ❌ No session |
-| Screenshots | ✅ | ❌ |
-| Speed | Slower | Faster |
-| Use case | Dynamic sites, logins | Simple page reading |
-
-Use `web_fetch` for reading static content. Use the browser for JavaScript-heavy sites, requiring login, or when you need screenshots.
+Or configure the tool with `AllowLocal: true` at registration time.
 
 ## See Also
 
-- [Web Tools](/tools/web)
-- [CLI: browser](/cli/index#browser)
+- [Web Tools](/tools/web) — `web_search` and `web_fetch` tool reference
 - [Sandboxing](/gateway/sandboxing)

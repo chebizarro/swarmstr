@@ -1,8 +1,7 @@
 ---
-summary: "swarmstr setup wizard and manual configuration walkthrough"
+summary: "swarmstr init and manual configuration walkthrough"
 read_when:
   - Setting up swarmstr for the first time
-  - Running the setup wizard
   - Configuring your Nostr key and model provider
 title: "Setup & Onboarding"
 ---
@@ -11,22 +10,18 @@ title: "Setup & Onboarding"
 
 ## Quick Setup
 
-Run the interactive setup wizard:
+Create your config directory and initialize your workspace:
 
 ```bash
-swarmstr setup
+mkdir -p ~/.swarmstr
+
+# Seed default workspace files (AGENTS.md, SOUL.md, IDENTITY.md, USER.md, BOOTSTRAP.md)
+swarmstr init
 ```
 
-This guides you through:
-1. Nostr keypair setup
-2. Relay configuration
-3. Model provider API key
-4. Workspace initialization
-5. Service installation (optional)
+Then follow the [manual setup steps](#manual-setup) below to configure your key and provider.
 
 ## Manual Setup
-
-If you prefer to configure manually:
 
 ### 1. Generate a Nostr Keypair
 
@@ -49,52 +44,42 @@ Or use any Nostr key generation tool (Alby, nos2x, etc.).
 mkdir -p ~/.swarmstr
 ```
 
-### 3. Create `.env` File
+### 3. Create `bootstrap.json`
 
-```bash
-cat > ~/.swarmstr/.env <<'EOF'
-NOSTR_PRIVATE_KEY=nsec1...
-ANTHROPIC_API_KEY=sk-ant-...
-SWARMSTR_GATEWAY_TOKEN=$(openssl rand -hex 32)
-EOF
-chmod 600 ~/.swarmstr/.env
+`bootstrap.json` holds process-level config (network addresses, key material):
+
+```json
+{
+  "private_key": "nsec1...",
+  "relays": [
+    "wss://relay.damus.io",
+    "wss://relay.nostr.band",
+    "wss://nos.lol"
+  ],
+  "admin_listen_addr": "127.0.0.1:18080",
+  "admin_token": "your-admin-token-here"
+}
 ```
 
-### 4. Create Config File
+### 4. Create `config.json`
 
-```json5
-// ~/.swarmstr/config.json
+`config.json` holds runtime agent behaviour (stored to Nostr):
+
+```json
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "relays": [
-        "wss://relay.damus.io",
-        "wss://relay.nostr.band",
-        "wss://nos.lol"
-      ],
-      "dmPolicy": "allowlist",
-      "allowFrom": [
-        "npub1yourownpubkey..."
-      ]
-    }
+  "dm": {
+    "policy": "allowlist",
+    "allow_from": [
+      "npub1yourownpubkey..."
+    ]
   },
   "providers": {
     "anthropic": {
-      "apiKey": "${ANTHROPIC_API_KEY}"
+      "api_key": "sk-ant-..."
     }
   },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "anthropic/claude-sonnet-4-5"
-      },
-      "workspace": "~/.swarmstr/workspace"
-    }
-  },
-  "http": {
-    "port": 18789,
-    "token": "${SWARMSTR_GATEWAY_TOKEN}"
+  "agent": {
+    "default_model": "anthropic/claude-sonnet-4-5"
   }
 }
 ```
@@ -102,50 +87,52 @@ chmod 600 ~/.swarmstr/.env
 ### 5. Initialize Workspace
 
 ```bash
-swarmstr setup --non-interactive
+swarmstr init
 ```
 
-This creates the workspace directory and writes default bootstrap files (AGENTS.md, SOUL.md, etc.).
+This creates the workspace directory and writes default bootstrap files (AGENTS.md, SOUL.md,
+IDENTITY.md, USER.md, BOOTSTRAP.md). Existing files are never overwritten unless `--force` is
+passed.
 
-### 6. Verify Config
+To use a custom workspace location:
 
 ```bash
-swarmstr config validate
-swarmstr models status
+swarmstr init --workspace /path/to/my-workspace
+```
+
+### 6. Verify Config and Models
+
+```bash
+swarmstr models list
 ```
 
 ### 7. Start the Daemon
 
 ```bash
 # Run in foreground (for testing)
-swarmstr gateway run
+swarmstrd --bootstrap ~/.swarmstr/bootstrap.json
 
-# Or install as a service
-swarmstr gateway install
-swarmstr gateway start
+# Or manage via the daemon CLI
+swarmstr daemon start
+swarmstr daemon status
 ```
 
 ## First Conversation
 
-Find your agent's npub:
+Find your agent's npub in the daemon logs at startup, or from your `bootstrap.json` private key
+using `nak key public <nsec>`.
 
-```bash
-swarmstr status
-# Agent npub: npub1abc...
-```
+Open your Nostr client (Damus, Amethyst, Iris, etc.) and send a DM to your agent's npub.
 
-Open your Nostr client (Damus, Amethyst, Iris, etc.) and send a DM to `npub1abc...`. 
-
-The agent should respond within a few seconds.
+The agent should respond within a few seconds, beginning the BOOTSTRAP.md first-run ritual.
 
 ## Onboarding Checklist
 
-- [ ] Nostr private key generated and stored in `.env`
+- [ ] Nostr private key generated and stored in `bootstrap.json`
 - [ ] At least 3 relays configured (for redundancy)
-- [ ] Model provider API key set
-- [ ] `dmPolicy` set to `allowlist` with your own npub
-- [ ] `swarmstr config validate` passes
-- [ ] `swarmstr models status` shows model accessible
+- [ ] Model provider API key set in `config.json`
+- [ ] `dm.policy` set to `allowlist` with your own npub
+- [ ] `swarmstr models list` shows models accessible
 - [ ] First DM received and agent replied
 - [ ] (Optional) systemd service installed for always-on operation
 
@@ -159,31 +146,29 @@ After setup, your workspace contains:
 ├── SOUL.md         # Agent personality
 ├── USER.md         # User/owner profile
 ├── IDENTITY.md     # Agent identity
-├── TOOLS.md        # Available tools reference
-├── HEARTBEAT.md    # Heartbeat instructions
-├── BOOT.md         # Startup instructions
-├── BOOTSTRAP.md    # Bootstrap ritual
-└── memory/         # Persistent memory files
+└── BOOTSTRAP.md    # Bootstrap ritual (deleted after first run)
 ```
 
 Customize these files to shape your agent's behavior. See [Bootstrapping](/start/bootstrapping).
 
 ## Resetting / Reinstalling
 
-Reset to defaults:
+Reset workspace to defaults:
 
 ```bash
-swarmstr gateway stop
+swarmstr daemon stop
 rm -rf ~/.swarmstr/workspace
-swarmstr setup --non-interactive
+swarmstr init
 ```
 
 Full reset (removes all state):
 
 ```bash
-swarmstr gateway stop
+swarmstr daemon stop
 rm -rf ~/.swarmstr
-swarmstr setup
+mkdir -p ~/.swarmstr
+# Recreate bootstrap.json and config.json, then:
+swarmstr init
 ```
 
 ## Migrating from Another Installation
@@ -192,12 +177,12 @@ swarmstr setup
 # Copy workspace files
 cp -r /old/path/workspace ~/.swarmstr/workspace
 
-# Copy config (update paths)
+# Copy config files (update any hardcoded paths)
+cp /old/path/bootstrap.json ~/.swarmstr/bootstrap.json
 cp /old/path/config.json ~/.swarmstr/config.json
-# Edit config.json to update any hardcoded paths
 
 # Restart
-swarmstr gateway restart
+swarmstr daemon restart
 ```
 
 ## See Also

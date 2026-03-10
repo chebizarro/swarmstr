@@ -160,6 +160,13 @@ type anthropicRequest struct {
 	System    string              `json:"system,omitempty"`
 	Messages  []anthropicMessage  `json:"messages"`
 	Tools     []anthropicToolDef  `json:"tools,omitempty"`
+	Thinking  *anthropicThinking  `json:"thinking,omitempty"`
+}
+
+// anthropicThinking is the extended-thinking configuration block.
+type anthropicThinking struct {
+	Type         string `json:"type"`          // always "enabled"
+	BudgetTokens int    `json:"budget_tokens"` // must be < max_tokens
 }
 
 // anthropicToolDef is the Anthropic API representation of a tool definition.
@@ -245,6 +252,9 @@ func parseAnthropicToolCalls(content []struct {
 			if strings.TrimSpace(c.Text) != "" {
 				text = c.Text
 			}
+		case "thinking":
+			// Extended-thinking internal reasoning block — intentionally skipped.
+			// The model's visible answer is in the subsequent "text" block.
 		case "tool_use":
 			if c.Name != "" {
 				args := c.Input
@@ -360,10 +370,26 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		msgs = append(msgs, anthropicMessage{Role: h.Role, Content: h.Content})
 	}
 	msgs = append(msgs, anthropicMessage{Role: "user", Content: buildAnthropicContent(userText, turn.Images)})
+
+	// When extended thinking is requested the max_tokens budget must exceed the
+	// thinking budget.  Use 1.5× budget or 16 000, whichever is larger.
+	maxTokens := 4096
+	if turn.ThinkingBudget > 0 {
+		maxTokens = turn.ThinkingBudget + turn.ThinkingBudget/2
+		if maxTokens < 16000 {
+			maxTokens = 16000
+		}
+	}
 	reqBody := anthropicRequest{
 		Model:     model,
-		MaxTokens: 4096,
+		MaxTokens: maxTokens,
 		Messages:  msgs,
+	}
+	if turn.ThinkingBudget > 0 {
+		reqBody.Thinking = &anthropicThinking{
+			Type:         "enabled",
+			BudgetTokens: turn.ThinkingBudget,
+		}
 	}
 	sys := strings.TrimSpace(turn.Context)
 	if sys == "" {
@@ -389,6 +415,9 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	if turn.ThinkingBudget > 0 {
+		req.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+	}
 
 	client := p.Client
 	if client == nil {

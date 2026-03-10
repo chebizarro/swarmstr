@@ -43,48 +43,32 @@ instead of an error).
 
 ## Automatic memory flush (pre-compaction)
 
-When a session is close to auto-compaction, swarmstr triggers a **silent agentic turn**
-that reminds the model to write durable memory **before** the context is compacted.
+When a session nears the context window limit, swarmstr triggers auto-compaction. Before
+compaction, the agent's AGENTS.md or TOOLS.md prompt should instruct it to write durable
+notes to memory files. The agent then produces a compaction summary of the session.
 
-Config:
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "compaction": {
-        "reserveTokensFloor": 20000,
-        "memoryFlush": {
-          "enabled": true,
-          "softThresholdTokens": 4000,
-          "prompt": "Write any lasting notes to memory/YYYY-MM-DD.md; reply with NO_REPLY if nothing to store."
-        }
-      }
-    }
-  }
-}
-```
+Use `/compact` to manually trigger compaction. Use `/new` to start fresh, which saves a
+memory snapshot of the old session via the session-memory hook.
 
 ## Vector memory search
 
-swarmstr can build a vector index over `MEMORY.md` and `memory/*.md` for semantic queries.
-
-Config:
+swarmstr can use a vector backend (Qdrant + Ollama embeddings) for semantic memory queries.
+This is configured via `extra.memory` in `config.json`:
 
 ```json
 {
-  "agents": {
-    "defaults": {
-      "memorySearch": {
-        "provider": "openai",
-        "model": "text-embedding-3-small"
-      }
+  "extra": {
+    "memory": {
+      "backend": "qdrant",
+      "url": "http://localhost:6333",
+      "ollama_url": "http://localhost:11434",
+      "collection": "swarmstr_memory"
     }
   }
 }
 ```
 
-Auto-selects from: `local` (GGUF model) → `openai` → `gemini` → `voyage` → `mistral`.
+Without a vector backend, `memory_search` uses a built-in JSON full-text search index.
 
 ## How the memory tools work
 

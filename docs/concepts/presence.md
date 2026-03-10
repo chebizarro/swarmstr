@@ -18,16 +18,21 @@ On Nostr, presence can be signaled via NIP-38 user statuses (kind:30315) or cust
 - The daemon stops (agent goes offline)
 - The heartbeat fires (agent is alive)
 
-```json5
+The NIP-38 heartbeat is enabled by default and configured via `extra.heartbeat`:
+
+```json
 {
-  "presence": {
-    "enabled": true,
-    "onStartup": "online",         // publish "online" status on startup
-    "onShutdown": "offline",       // publish "offline" status on clean shutdown
-    "heartbeatStatus": true        // update status on each heartbeat
+  "extra": {
+    "heartbeat": {
+      "enabled": true,
+      "interval_seconds": 300,
+      "content": "online"
+    }
   }
 }
 ```
+
+To disable: set `extra.heartbeat.enabled` to `false`.
 
 ## Presence Status Events
 
@@ -46,17 +51,12 @@ swarmstr publishes kind:30315 NIP-38 user status events:
 
 The status expires automatically — if the daemon crashes, the status expires without needing a clean shutdown.
 
-## System Presence
+## Status Check
 
-The `system presence` command lists active presence entries:
+Check presence and relay connection state:
 
 ```bash
-swarmstr system presence
-```
-
-Output:
-```
-agent:main:main  →  active (last seen: 2 minutes ago)
+swarmstr status
 ```
 
 ## Presence in the Dashboard

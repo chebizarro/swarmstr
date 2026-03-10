@@ -9,13 +9,18 @@ title: "RPC / HTTP API Reference"
 
 # RPC / HTTP API Reference
 
-swarmstr exposes an HTTP API and WebSocket event stream for programmatic integration. This powers the CLI, TUI, and web dashboard.
+swarmstr exposes an HTTP API and WebSocket event stream for programmatic integration. This powers the CLI and web dashboard.
 
 ## Base URL
 
-Default: `http://localhost:18789`
+The base URL is your `admin_listen_addr` (from `bootstrap.json`). Set in the CLI via:
 
-All endpoints require authentication via the gateway token:
+```bash
+export SWARMSTR_ADMIN_ADDR=127.0.0.1:18788
+export SWARMSTR_ADMIN_TOKEN=your-token
+```
+
+All endpoints require authentication via the admin token:
 ```
 Authorization: Bearer <token>
 ```
@@ -200,16 +205,16 @@ Called via `POST /call` with `{ "method": "...", "params": { ... } }`.
 The CLI wraps these RPC calls. For scripting, call directly:
 
 ```bash
-# Using curl
-curl -s -X POST http://localhost:18789/call \
-  -H "Authorization: Bearer $SWARMSTR_GATEWAY_TOKEN" \
+# Using curl (admin API, port from admin_listen_addr)
+curl -s -X POST http://localhost:18788/call \
+  -H "Authorization: Bearer $SWARMSTR_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"method":"status.get","params":{}}' | jq .
 
-# Using the CLI gateway call command
-swarmstr gateway call status.get
-swarmstr gateway call cron.list
-swarmstr gateway call system.event --params '{"text":"test"}'
+# Using the CLI gw passthrough
+swarmstr gw status.get
+swarmstr gw cron.list
+swarmstr gw system.event '{"text":"test"}'
 ```
 
 ## See Also

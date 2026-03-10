@@ -27,8 +27,8 @@ swarmstr's network topology:
               ┌────────────────┼────────────────┐
               │                │                │
     ┌─────────┴──┐   ┌────────┴───┐   ┌────────┴───┐
-    │ Claude API  │   │ Local HTTP  │   │ Node WS    │
-    │ (HTTPS)    │   │ :18789      │   │ connections│
+    │ │ Local HTTP  │   │ Node WS    │
+    │ │ (optional)  │   │ connections│
     └────────────┘   └────────────┘   └────────────┘
 ```
 
@@ -41,26 +41,32 @@ No inbound ports are required for Nostr operation.
 
 ## Relay Configuration
 
-```json5
+Relays are configured in `bootstrap.json` (used for both read and write):
+
+```json
 {
-  "channels": {
-    "nostr": {
-      "relays": [
-        "wss://relay.damus.io",
-        "wss://relay.nostr.band",
-        "wss://nos.lol",
-        "wss://relay.snort.social"
-      ],
-      "relayPolicy": {
-        "minConnected": 2,         // alert if fewer than 2 relays connected
-        "reconnectDelay": "5s",    // wait 5s before reconnecting
-        "maxReconnectDelay": "5m", // back off to max 5 minutes
-        "pingInterval": "30s"      // keepalive ping
-      }
-    }
+  "private_key": "${NOSTR_NSEC}",
+  "relays": [
+    "wss://relay.damus.io",
+    "wss://relay.nostr.band",
+    "wss://nos.lol",
+    "wss://relay.snort.social"
+  ]
+}
+```
+
+For separate read/write relay sets, use `relays` in the runtime config (`config.json`):
+
+```json
+{
+  "relays": {
+    "read": ["wss://relay.damus.io", "wss://nos.lol"],
+    "write": ["wss://relay.damus.io", "wss://relay.nostr.band"]
   }
 }
 ```
+
+Relay reconnection uses exponential backoff automatically. Always configure at least 3 relays for redundancy.
 
 ## Relay Selection
 
@@ -77,48 +83,18 @@ Always configure at least 3 relays for redundancy. If one relay is down, the age
 
 ## Outbox Model (NIP-65)
 
-swarmstr supports the Nostr outbox model (NIP-65) for discovering the best relays to read from each pubkey:
-
-```json5
-{
-  "channels": {
-    "nostr": {
-      "outboxModel": {
-        "enabled": true,
-        "cacheMinutes": 30
-      }
-    }
-  }
-}
-```
-
-When publishing replies, swarmstr can look up the recipient's preferred relays and publish there too.
+swarmstr supports the Nostr outbox model (NIP-65) via the `nostr_relay_hints` agent tool. When publishing replies, the agent can look up the recipient's preferred relays and publish there too. This is automatic — no configuration required beyond having the `nostr_relay_hints` tool available.
 
 ## HTTP/SOCKS Proxy
 
-Route relay connections through a proxy:
-
-```json5
-{
-  "network": {
-    "proxy": "socks5://127.0.0.1:1080"
-    // or: "http://proxy.example.com:8080"
-    // or: "https://proxy.example.com:8080"
-  }
-}
-```
-
-Or via environment variable:
+Route relay connections through a proxy using the standard environment variable:
 
 ```bash
 HTTPS_PROXY=socks5://127.0.0.1:1080 swarmstrd
 ALL_PROXY=socks5://127.0.0.1:1080 swarmstrd
 ```
 
-Proxy applies to:
-- Relay WebSocket connections
-- Model provider HTTPS calls
-- Web fetch/search tool requests
+The Go HTTP client respects `HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY` automatically.
 
 ## Custom Relay for Private Agent
 

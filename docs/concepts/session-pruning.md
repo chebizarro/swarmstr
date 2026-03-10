@@ -1,61 +1,61 @@
 # Session Pruning
 
-**Pruning** permanently deletes old session data. It differs from [compaction](../reference/session-management-compaction.md#compaction-vs-pruning), which summarizes and retains a condensed history.
+**Pruning** permanently deletes old session data. It differs from [compaction](../reference/session-management-compaction.md#compaction-vs-pruning), which summarises and retains a condensed history.
 
 ## Pruning vs Compaction
 
 | | Pruning | Compaction |
 |---|---------|-----------|
-| **What it does** | Deletes session files | Summarizes old turns |
-| **History retained** | None (deleted) | Compact summary |
-| **Reversible** | No | No |
-| **Trigger** | Age / manual | Context window pressure |
-| **Use case** | Free disk space, privacy | Keep context manageable |
+| **What it does** | Deletes transcript entries + marks session deleted | Summarises old turns |
+| **History retained** | None | Compact summary |
+| **Reversible** | No (Nostr events are deleted) | No |
+| **Trigger** | Age-based / manual | Context window pressure |
+| **Use case** | Free relay storage, privacy | Keep context manageable |
 
-Use pruning when you want to wipe old conversations. Use compaction when you want to continue a long conversation without losing all context.
+## Session Storage
+
+Session transcripts are stored as Nostr events in the configured relay set (encrypted, via the `TranscriptRepository`). A lightweight settings file at `~/.swarmstr/sessions.json` tracks per-session flags (model override, verbose mode, token counts). Pruning removes the Nostr transcript entries and marks the session deleted in the state store.
 
 ## Auto-Pruning
 
-Configure automatic pruning of sessions older than a threshold:
+Configure automatic pruning of sessions older than a threshold in `config.json`:
 
 ```json
 {
-  "extra": {
-    "sessions": {
-      "pruneAfterDays": 30,
-      "pruneOnBoot": true
-    }
+  "session": {
+    "prune_after_days": 30,
+    "prune_on_boot": true,
+    "prune_idle_after_days": 7
   }
 }
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `pruneAfterDays` | 0 (disabled) | Delete sessions older than N days |
-| `pruneOnBoot` | `false` | Run pruning check at startup |
-| `pruneIdleAfterDays` | 0 (disabled) | Prune sessions with no activity for N days |
+| `prune_after_days` | 0 (disabled) | Delete sessions whose last activity is older than N days |
+| `prune_idle_after_days` | 0 (disabled) | Delete sessions with no inbound message for N days |
+| `prune_on_boot` | `false` | Run a pruning pass at daemon startup |
 
-When `pruneOnBoot: true`, swarmstr scans session files at startup and deletes those past the threshold.
+When `prune_on_boot: true`, swarmstrd runs the pruning check immediately after startup.
 
-## Manual Pruning
-
-Via the swarmstr CLI:
+## CLI Pruning
 
 ```bash
-# Delete all sessions older than 7 days
+# Delete sessions older than 7 days
 swarmstr sessions prune --older-than 7d
 
-# Delete a specific session
-swarmstr sessions delete agent:abc123:npub1xyz
+# Delete sessions older than 30 days (dry run first)
+swarmstr sessions prune --older-than 30d --dry-run
+swarmstr sessions prune --older-than 30d
 
-# Delete all sessions (wipe everything)
+# Delete ALL sessions
 swarmstr sessions prune --all
 
-# Dry run (list what would be deleted)
-swarmstr sessions prune --older-than 30d --dry-run
+# Delete a specific session
+swarmstr sessions delete <session-id>
 ```
 
-## Pruning a Single Session In-Conversation
+## In-Conversation Reset
 
 Users can reset their own session with the `/new` slash command:
 
@@ -63,59 +63,48 @@ Users can reset their own session with the `/new` slash command:
 /new
 ```
 
-This clears the current session transcript (effectively pruning it) and starts fresh. The agent acknowledges:
+This clears the current session transcript and starts fresh. The agent acknowledges:
 
 ```
-🆕 Session cleared. Starting fresh!
+🔄 Session reset. Conversation history cleared — starting fresh.
 ```
 
-The old session file is deleted, not archived. If you want to export first, use `/export` before `/new`.
+If you want to export the transcript first, use `/export` before `/new`.
 
-## Session File Locations
-
-```
-~/.swarmstr/sessions/
-├── agent:abc123:npub1user1.jsonl   # User 1's session
-├── agent:abc123:npub1user2.jsonl   # User 2's session
-└── ...
-```
-
-Sessions are named by scope key. The scope is typically the sender's public key (`npub`), so each user has a separate file.
-
-## Disk Usage
-
-Check session storage:
+## Listing Sessions
 
 ```bash
-# Total size
-du -sh ~/.swarmstr/sessions/
+# List active sessions
+swarmstr sessions list
 
-# Per-session sizes
-du -sh ~/.swarmstr/sessions/*.jsonl | sort -h
+# Show a specific session
+swarmstr sessions get <session-id>
+
+# Export a session transcript
+swarmstr sessions export <session-id> --output session.html
 ```
 
-For long-running agents with many users, sessions can accumulate significantly. Set `pruneAfterDays` to keep disk usage bounded.
+## Session Scope
+
+Sessions are keyed by the sender's Nostr public key (or the channel-specific scope). Each user gets their own isolated session. Session IDs are stored in the state relay and the local `sessions.json` file.
 
 ## Privacy Considerations
 
-Session JSONL files contain full conversation history in plaintext. If your agent handles sensitive topics:
+Session transcript entries are stored as encrypted Nostr events on the configured relay. The relay stores ciphertext; the agent decrypts on read using the agent's private key. If your agent handles sensitive topics:
 
-- Enable auto-pruning with a short `pruneAfterDays`
-- Consider encrypting the `~/.swarmstr/` directory at rest
-- Use `/new` to give users control over their own history
-- Remind users that conversations are stored on the server
-
-Session data never leaves the server — it is not published to Nostr relays. Nostr delivers the messages, but the agent stores the history locally.
+- Enable auto-pruning with a short `prune_after_days`
+- Note that `/new` also removes session transcript entries
+- Consider running a private relay (see [Network](../network.md))
 
 ## After Pruning
 
 After a session is pruned, the next message from that user starts a fresh session. The agent has no memory of prior conversations unless:
 
-- Memory was explicitly saved to `USER.md` by the memory hook
+- Facts were saved to the memory index via the `memory_store` tool
 - The user explicitly provides context in their new message
 
 ## See Also
 
-- [Session Management](../reference/session-management-compaction.md) — compaction, JSONL format
+- [Session Management](../reference/session-management-compaction.md) — compaction details
 - [Transcript Hygiene](../reference/transcript-hygiene.md) — privacy in session storage
-- [Slash Commands](../cli/index.md) — `/new`, `/export`, `/compact`
+- [Session Tool](session-tool.md) — `/new`, `/export`, `/compact` slash commands

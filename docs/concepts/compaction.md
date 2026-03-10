@@ -15,12 +15,12 @@ to stay within limits.
 ## What compaction is
 
 Compaction **summarizes older conversation** into a compact summary entry and keeps recent
-messages intact. The summary is stored in the session's JSONL history, so future requests use:
+messages intact. The summary is stored as a Nostr transcript event, so future requests use:
 
 - The compaction summary
 - Recent messages after the compaction point
 
-Compaction **persists** in the session's JSONL history.
+Compaction **persists** in the session's Nostr transcript.
 
 ## Auto-compaction (default on)
 
@@ -41,23 +41,23 @@ This is available as a slash command — send it in any DM to the agent.
 
 ## Configuration
 
+Auto-compaction triggers when assembled context approaches ~80% of the agent's `max_context_tokens` budget (default 100,000). Set a custom budget per agent:
+
 ```json
 {
-  "agents": {
-    "defaults": {
-      "compaction": {
-        "mode": "auto",
-        "reserveTokensFloor": 20000
-      }
+  "agents": [
+    {
+      "id": "main",
+      "max_context_tokens": 50000
     }
-  }
+  ]
 }
 ```
 
 ## Compaction vs pruning
 
-- **Compaction**: summarizes and **persists** in JSONL.
-- **Session pruning**: trims old **tool results** only, **in-memory**, per request.
+- **Compaction**: summarizes older history and **persists** as a Nostr transcript event.
+- **Session pruning**: deletes old sessions from the Nostr transcript repository entirely.
 
 See [Session pruning](/concepts/session-pruning) for pruning details.
 

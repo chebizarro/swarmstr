@@ -18,7 +18,7 @@ into actions and a final encrypted reply.
 - **Webhook**: `POST /hooks/agent` → isolated agent turn.
 - **Cron**: scheduled job triggers `dmRunAgentTurn` (isolated or main session).
 - **Heartbeat**: periodic tick → agent turn in main session.
-- **CLI**: `swarmstr agent` command.
+- **CLI**: Admin API call (e.g. via `swarmstr gw agent` or a webhook trigger).
 
 ## How it works (high-level)
 
@@ -26,7 +26,7 @@ into actions and a final encrypted reply.
 2. swarmstrd decrypts the DM using the agent's nsec key.
 3. `controlDMBus` routes the event to registered handlers.
 4. `dmRunAgentTurn(ctx, fromPubKey, text, eventID, createdAt, replyFn)` is called:
-   - Resolves session key from sender npub + dmScope config.
+   - Uses sender pubkey as the session ID (DM sessions are always per-peer).
    - Loads workspace bootstrap files (AGENTS.md, SOUL.md, USER.md, IDENTITY.md, TOOLS.md).
    - Calls `agentRuntime.ProcessTurn(ctx, sessionID, userMsg, replyFn)`.
 5. `ProcessTurn` runs the Claude API loop:
@@ -83,7 +83,8 @@ into actions and a final encrypted reply.
 
 ## Timeouts
 
-- Agent runtime default timeout: 600 seconds (configurable via `agents.defaults.timeoutSeconds`).
+- Agent runtime default timeout: 120 seconds per turn.
+- Shell exec tool timeout: 30 seconds per command.
 - Context cancellation propagates through the entire tool chain.
 
 ## Where things can end early

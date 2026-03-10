@@ -1,23 +1,51 @@
 ---
-summary: "swarmstr webchat: browser-based chat interface and TUI"
+summary: "swarmstr webchat: browser-based chat interface"
 read_when:
-  - Using the webchat UI or TUI to interact with the agent
+  - Using the webchat UI to interact with the agent
   - Setting up browser-based agent chat
-  - Configuring the terminal UI
-title: "Webchat & TUI"
+title: "Webchat"
 ---
 
-# Webchat & TUI
+# Webchat
 
-swarmstr includes two local chat interfaces that don't require Nostr: the webchat UI and the terminal UI (TUI).
+swarmstr includes a browser-based chat interface (webchat) that doesn't require a Nostr client.
 
-> **Note**: These interfaces are for local/admin use. For remote access, Nostr DMs are the primary channel and don't require any tunnel or port exposure.
+> **Note**: Webchat is for local/admin use. For remote access, Nostr DMs are the primary channel and don't require any tunnel or port exposure.
 
-## Webchat
+## Prerequisites
 
-The webchat is a browser-based chat interface available at `http://localhost:18789`.
+The webchat is served by the **gateway WebSocket server** (`gateway_ws_listen_addr` in `bootstrap.json`). You must configure this to enable the webchat.
 
-### Features
+```json
+{
+  "gateway_ws_listen_addr": "127.0.0.1:18789",
+  "gateway_ws_token": "your-secret-token"
+}
+```
+
+## Accessing Webchat
+
+```bash
+# Start daemon
+swarmstrd
+
+# Open in browser (use your configured port)
+open http://127.0.0.1:18789
+```
+
+The webchat is at `http://<gateway_ws_listen_addr>/`.
+
+### Authentication
+
+The webchat requires the gateway token:
+
+```
+http://127.0.0.1:18789?token=<your-gateway-token>
+```
+
+Or enter the token in the login prompt when first opening.
+
+## Features
 
 - Real-time streaming responses via WebSocket
 - Slash command support (`/new`, `/compact`, etc.)
@@ -25,39 +53,21 @@ The webchat is a browser-based chat interface available at `http://localhost:187
 - Session history viewer
 - Agent status indicator
 
-### Accessing Webchat
+## Remote Access
 
-```bash
-# Start daemon
-swarmstr gateway run
-
-# Open in browser
-open http://localhost:18789
-```
-
-For remote access:
+For remote access to the webchat:
 
 ```bash
 # SSH tunnel (most secure)
-ssh -L 8080:localhost:18789 user@yourserver
+ssh -L 8080:127.0.0.1:18789 user@yourserver
 open http://localhost:8080
 
-# Tailscale
+# Tailscale (after binding to 0.0.0.0:18789)
 tailscale funnel 18789
 # Access at https://<hostname>.tail1234.ts.net
 ```
 
-### Authentication
-
-The webchat requires the gateway token:
-
-```
-http://localhost:18789?token=<your-gateway-token>
-```
-
-Or enter the token in the login prompt when first opening.
-
-### Webchat vs Nostr DMs
+## Webchat vs Nostr DMs
 
 | | Webchat | Nostr DMs |
 |--|---------|-----------|
@@ -68,45 +78,6 @@ Or enter the token in the login prompt when first opening.
 | Slash commands | ✅ | ✅ |
 
 Use webchat for local admin/development. Use Nostr DMs for normal usage.
-
-## TUI (Terminal UI)
-
-The TUI is a terminal-based chat interface, great for SSH sessions.
-
-```bash
-swarmstr tui
-```
-
-### TUI Features
-
-- Chat interface in the terminal
-- Real-time streaming
-- Slash commands
-- Session selection
-- Log viewer (press Tab)
-
-### TUI Options
-
-```bash
-# Connect to specific session
-swarmstr tui --session agent:main:main
-
-# Connect to remote gateway
-swarmstr tui --url http://yourserver:18789 --token <token>
-
-# Send a one-shot message and exit
-swarmstr tui --message "status update" --timeout-ms 30000
-```
-
-### TUI Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Send message |
-| `Tab` | Toggle log view |
-| `Ctrl+C` | Exit |
-| `↑`/`↓` | Navigate history |
-| `Ctrl+L` | Clear screen |
 
 ## Canvas in Webchat
 
@@ -124,24 +95,8 @@ canvas_update(
 
 The canvas is persistent within a session — refreshing the browser re-loads the last canvas content.
 
-## Configuration
-
-```json5
-{
-  "http": {
-    "port": 18789,
-    "token": "${SWARMSTR_GATEWAY_TOKEN}",
-    "bind": "loopback",    // "loopback" | "tailnet" | "lan"
-    "cors": {
-      "origins": ["http://localhost:3000"]  // for dev setups
-    }
-  }
-}
-```
-
 ## See Also
 
 - [Web Overview](/web/)
 - [Canvas Tool](/tools/canvas)
 - [Remote Access](/gateway/remote)
-- [CLI: tui](/cli/#tui)

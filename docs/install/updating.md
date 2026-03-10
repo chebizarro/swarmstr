@@ -15,7 +15,7 @@ title: "Updating, Uninstalling & Migrating"
 
 ```bash
 # Stop the daemon
-swarmstr gateway stop
+swarmstr daemon stop
 
 # Download new binary (same method as initial install)
 VERSION=$(curl -s https://api.github.com/repos/yourorg/swarmstr/releases/latest | jq -r .tag_name)
@@ -25,7 +25,7 @@ curl -L "https://github.com/yourorg/swarmstr/releases/download/${VERSION}/swarms
 chmod +x /usr/local/bin/swarmstrd
 
 # Restart
-swarmstr gateway start
+swarmstr daemon start
 
 # Verify
 swarmstrd --version
@@ -38,7 +38,7 @@ swarmstr status
 cd ~/swarmstr-src
 git pull origin main
 go build -o /usr/local/bin/swarmstrd ./cmd/swarmstrd/
-swarmstr gateway restart
+swarmstr daemon restart
 ```
 
 ### Docker Update
@@ -72,11 +72,20 @@ swarmstr doctor
 
 ## Uninstalling swarmstr
 
-### Stop and Remove Service
+### Stop Service
 
 ```bash
-swarmstr gateway stop
-swarmstr gateway uninstall
+# If running via systemd
+sudo systemctl stop swarmstrd
+sudo systemctl disable swarmstrd
+sudo rm /etc/systemd/system/swarmstrd.service
+sudo systemctl daemon-reload
+
+# Or if running in user mode
+systemctl --user stop swarmstrd
+systemctl --user disable swarmstrd
+rm ~/.config/systemd/user/swarmstrd.service
+systemctl --user daemon-reload
 ```
 
 ### Remove Binary
@@ -120,17 +129,17 @@ tar czf swarmstr-backup.tar.gz \
 cd ~/
 tar xzf swarmstr-backup.tar.gz
 
-# Recreate .env with your secrets
-cat > ~/.swarmstr/.env <<'EOF'
+# Recreate env file with your secrets
+cat > ~/.swarmstr/env <<'EOF'
 NOSTR_PRIVATE_KEY=nsec1...
 ANTHROPIC_API_KEY=sk-ant-...
 EOF
-chmod 600 ~/.swarmstr/.env
+chmod 600 ~/.swarmstr/env
 
 # Verify
 swarmstr config validate
-swarmstr models status
-swarmstr gateway start
+swarmstr models list
+swarmstr daemon start
 ```
 
 > The agent identity (nsec) is in `.env`. The same nsec on the new machine means the same Nostr npub — your agent is immediately reachable at the same address.

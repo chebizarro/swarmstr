@@ -44,10 +44,15 @@ curl -L https://github.com/yourorg/swarmstr/releases/latest/download/swarmstrd-l
   -o ~/.local/bin/swarmstrd
 mkdir -p ~/.local/bin && chmod +x ~/.local/bin/swarmstrd
 
-# Setup
-swarmstr setup
-swarmstr gateway install
-swarmstr gateway start
+# Configure
+mkdir -p ~/.swarmstr
+# Create ~/.swarmstr/bootstrap.json with private_key, relays, admin_listen_addr
+# Create ~/.swarmstr/config.json with providers, agent config
+# Install as systemd service:
+mkdir -p ~/.config/systemd/user
+# (create swarmstrd.service unit — see VPS Deploy Guides for template)
+systemctl --user daemon-reload
+systemctl --user enable --now swarmstrd
 ```
 
 ## Firewall (UFW)

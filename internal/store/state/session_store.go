@@ -24,6 +24,10 @@ type SessionEntry struct {
 	Thinking bool `json:"thinking,omitempty"`
 	TTSAuto  bool `json:"tts_auto,omitempty"`
 
+	// SendSuppressed disables reply delivery for this session (/send off).
+	// Intentionally NOT carried over on rotation — fresh sessions always send.
+	SendSuppressed bool `json:"send_suppressed,omitempty"`
+
 	// Human label (e.g. set via /set label <name>).
 	Label string `json:"label,omitempty"`
 

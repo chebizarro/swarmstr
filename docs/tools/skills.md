@@ -1,45 +1,41 @@
 ---
-summary: "swarmstr skills: discovering, installing, and creating skills"
+summary: "swarmstr skills: Markdown-driven agent instructions and workflow guides"
 read_when:
   - Installing or managing skills
   - Creating a new skill for swarmstr
+  - Understanding how skills are discovered and loaded
 title: "Skills"
 ---
 
 # Skills
 
-Skills are Markdown-driven instructions that teach the agent how to use specific tools,
-workflows, or external services. They inject guidance into the system prompt.
+Skills are Markdown-driven instruction sets that teach the agent how to use specific tools, workflows, or external services. They inject guidance into the agent's system prompt at startup.
 
-## Discovery locations (precedence order)
+## Discovery Locations (precedence order)
 
 1. **Workspace skills**: `<workspace>/skills/` — per-agent, highest precedence.
-2. **Managed/local skills**: `~/.swarmstr/skills/` — shared across workspaces.
+2. **Managed/local skills**: `~/.swarmstr/skills/` — shared across all agents on this instance.
 3. **Bundled skills**: shipped with swarmstr installation.
 
 When a skill name appears in multiple locations, the highest-precedence location wins.
 
-## Skill structure
+## Skill Structure
 
 Each skill is a directory:
 
 ```
 my-skill/
-├── SKILL.md          # Skill instructions + metadata
+├── SKILL.md          # Skill instructions + metadata (required)
 └── scripts/          # Optional helper scripts
     └── helper.sh
 ```
 
-### SKILL.md format
+### SKILL.md Format
 
 ```yaml
 ---
 name: my-skill
 description: "What this skill teaches the agent"
-metadata:
-  openclaw:         # Kept for OpenClaw compatibility
-    emoji: "🔧"
-    tags: ["productivity"]
 ---
 
 # My Skill
@@ -47,39 +43,21 @@ metadata:
 Instructions for the agent about how to use this skill...
 ```
 
-## Installing skills
+The `name` field in the frontmatter is the skill identifier used for listing and management.
+
+## CLI Commands
 
 ```bash
-# Install from a directory
-swarmstr skills install /path/to/my-skill
-
-# Install from git
-swarmstr skills install https://github.com/example/my-skill
-
-# List installed skills
+# List installed skills with status
 swarmstr skills list
 
-# Enable/disable a skill
-swarmstr skills enable my-skill
-swarmstr skills disable my-skill
+# Detailed skills status (JSON)
+swarmstr skills status
 ```
 
-## Bundled skills
+There is no install/enable/disable CLI command — skills are loaded automatically based on discovery. To add a skill, place the directory in the appropriate location and restart swarmstrd (or send SIGHUP).
 
-swarmstr ships with these bundled skills:
-
-- **coding-agent** — Instructions for using the agent as a coding assistant
-- **canvas** — Using the `canvas_update` tool for HTML/JSON/Markdown UI updates
-- **session-logs** — Querying session history via `~/.swarmstr/sessions.json`
-- **sherpa-onnx-tts** — Text-to-speech using sherpa-onnx
-- **openai-whisper-api** — Speech-to-text using OpenAI Whisper API
-- **gh-issues** — GitHub Issues integration
-- **1password** — 1Password CLI integration
-- **tmux** — tmux session management
-
-See `skills/` in the swarmstr repository for the full list.
-
-## Creating a skill
+## Creating a Skill
 
 1. Create a directory in `~/.swarmstr/skills/` or your workspace `skills/`:
 
@@ -93,43 +71,61 @@ mkdir -p ~/.swarmstr/skills/my-tool
 ---
 name: my-tool
 description: "Teaches the agent to use MyTool API"
-metadata:
-  openclaw:
-    emoji: "🛠️"
 ---
 
 # MyTool
 
-Use the `my_tool_fetch` API call with these parameters:
-- ...
+Use the `my_tool_fetch` function with these parameters:
+- `query` (string, required): search query
+
+## Authentication
+
+MyTool requires `MY_TOOL_API_KEY` in your environment.
 
 ## Examples
 
-...
+Fetch top results for "nostr":
+→ Call my_tool_fetch with query="nostr"
 ```
 
-3. Install:
+3. Restart swarmstrd or send SIGHUP to reload skills.
 
-```bash
-swarmstr skills install ~/.swarmstr/skills/my-tool
-swarmstr skills enable my-tool
-```
-
-## Per-agent vs shared skills
+## Per-Agent vs Shared Skills
 
 - Skills in `~/.swarmstr/skills/` are **shared** across all agents on this swarmstrd instance.
 - Skills in `<workspace>/skills/` are **per-agent** (apply only to the agent using that workspace).
 - Per-agent skills take precedence over shared skills with the same name.
 
-## Skill config
+## Workspace Skills
 
-Control skill loading in `~/.swarmstr/config.json`:
+Set the workspace directory per-agent in `agents[]`:
 
-```json
+```json5
 {
-  "skills": {
-    "disabled": ["coding-agent"],
-    "path": "~/.swarmstr/skills"
+  "agents": [
+    {
+      "id": "coding-agent",
+      "workspace_dir": "/home/user/coding-workspace"
+      // Skills loaded from /home/user/coding-workspace/skills/
+    }
+  ]
+}
+```
+
+Or via `extra.workspace.dir` for the default agent:
+
+```json5
+{
+  "extra": {
+    "workspace": {
+      "dir": "/home/user/my-workspace"
+    }
   }
 }
 ```
+
+## See Also
+
+- [Agent Workspace](/concepts/agent-workspace)
+- [System Prompt](/concepts/system-prompt)
+- [Tool Profiles](/concepts/multi-agent)

@@ -1,156 +1,116 @@
----
-summary: "canvas_update tool: in-memory canvas for the agent to render HTML, JSON, and Markdown"
-read_when:
-  - Using the canvas_update tool in agent skills
-  - Understanding the WebSocket canvas broadcast
-  - Building dashboard or visualization skills
-title: "Canvas Tool"
----
+# Canvas
 
-# Canvas Tool
-
-swarmstr has a built-in canvas system that lets the agent render content in the web dashboard. The agent uses the `canvas_update` tool to push content to a live canvas displayed in connected browsers.
-
-Unlike openclaw's node-based canvas (which renders on a device screen), swarmstr's canvas is server-side and viewed via the web dashboard at `http://localhost:18789`.
+swarmstr has a built-in canvas system that lets the agent render rich content in the web dashboard. The agent uses the `canvas_update` tool to push content to a live in-memory canvas surface. Any browser client connected via WebSocket receives the update instantly.
 
 ## The `canvas_update` Tool
 
 ```
-canvas_update(content_type, content, title?)
+canvas_update(canvas_id, content_type, data)
 ```
 
-**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `canvas_id` | string | ✅ | Identifier for this canvas surface (e.g. `"main"`, `"report"`) |
+| `content_type` | enum | ✅ | `"html"`, `"markdown"`, or `"json"` |
+| `data` | string | ✅ | The full content string — HTML, Markdown, or JSON |
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `content_type` | string | `"html"`, `"json"`, or `"markdown"` |
-| `content` | string | The content to render |
-| `title` | string? | Optional canvas title |
-
-**Returns:** `{"ok": true}` on success.
+Multiple canvases can coexist simultaneously (different `canvas_id` values). Calling `canvas_update` again with the same `canvas_id` replaces the previous content.
 
 ## Content Types
 
-### HTML Canvas
+### HTML
 
-Render arbitrary HTML in the canvas panel:
-
-```
-canvas_update(
-  content_type="html",
-  title="System Status",
-  content="<h1>Status</h1><p>All relays connected. ✅</p><ul><li>wss://relay.damus.io: OK</li></ul>"
-)
-```
-
-HTML content is sandboxed in an iframe for security. Styles and scripts are allowed within the iframe context.
-
-### Markdown Canvas
-
-Render formatted Markdown:
+Full HTML page content. Rendered in an `<iframe>` in the webchat UI. Supports scripts, styles, and interactive elements.
 
 ```
 canvas_update(
-  content_type="markdown",
-  title="Daily Summary",
-  content="# Daily Summary\n\n- 5 messages processed\n- 2 cron jobs ran\n- All relays healthy"
+  canvas_id: "game"
+  content_type: "html"
+  data: "<!DOCTYPE html><html><body><h1>Snake</h1><!-- game code --></body></html>"
 )
 ```
 
-Markdown is rendered with standard formatting (headers, bold, lists, code blocks, tables).
+### Markdown
 
-### JSON Canvas
-
-Render structured JSON data:
+GitHub-flavoured Markdown. Rendered as formatted text with tables, code blocks, etc.
 
 ```
 canvas_update(
-  content_type="json",
-  title="Relay Status",
-  content='{"relays": [{"url": "wss://relay.damus.io", "connected": true, "latency_ms": 42}]}'
+  canvas_id: "report"
+  content_type: "markdown"
+  data: "# Report\n\n| Metric | Value |\n|---|---|\n| Events | 1 234 |"
 )
 ```
 
-JSON is displayed as a formatted, syntax-highlighted tree viewer.
+### JSON
 
-## WebSocket Broadcast
+Pretty-printed JSON data. Rendered as a scrollable formatted view.
+
+```
+canvas_update(
+  canvas_id: "metrics"
+  content_type: "json"
+  data: "{\"requests\": 1234, \"errors\": 2, \"latency_p99\": 142}"
+)
+```
+
+## Delivery Flow
 
 When the agent calls `canvas_update`, the content is:
 
-1. Stored in memory (replaced on each call — there's one canvas per agent)
-2. Broadcast via WebSocket to all connected dashboard clients
-3. Rendered live in connected browsers
+1. Validated (content_type must be one of the three supported types)
+2. Stored in the in-memory `canvas.Host` (keyed by `canvas_id`)
+3. Broadcast as a `canvas.update` WebSocket event to all connected clients
 
-Multiple browser windows all see the same canvas, updated in real time.
-
-## Accessing the Canvas
-
-Open the web dashboard at `http://localhost:18789` (or your configured port). The canvas panel is visible in the dashboard UI.
-
-For remote access, see [Remote Access](/gateway/remote).
-
-## Canvas in Skills
-
-Skills can use `canvas_update` to display rich output. Example skill that renders a Nostr relay status board:
-
-```markdown
-<!-- In your skill's SKILL.md or instructions -->
-When checking relay status, use canvas_update with content_type="html" to render
-a status table. Show each relay URL, connection status, and latency.
-
-Example:
-canvas_update(
-  content_type="html",
-  title="Relay Status Board",
-  content="<table>...</table>"
-)
 ```
+Agent → canvas_update tool → canvas.Host → WebSocket broadcast → Browser UI
+```
+
+The canvas is **not** persisted between daemon restarts. It is an in-memory live display.
 
 ## Canvas vs Nostr DM
 
 | | Canvas | Nostr DM |
-|--|--------|----------|
-| Visibility | Dashboard browser only | Any Nostr client |
-| Content types | HTML, JSON, Markdown | Text |
-| Persistence | In-memory (lost on restart) | On relays |
-| Remote access | Requires tunnel/Tailscale | Built-in via Nostr |
-| Rich formatting | Full HTML/CSS/JS | Text only |
+|---|---|---|
+| Format | HTML / Markdown / JSON | Plain text |
+| Persistence | In-memory (ephemeral) | Stored on relay |
+| Audience | Browser WebSocket clients | Any Nostr client |
+| Best for | Dashboards, tables, code | Conversation replies |
+| Max size | Practical: ~1 MB | Keep under 64 KB |
 
-Use canvas for rich visualizations for operators monitoring the dashboard. Use Nostr DM replies for communicating back to users.
+## Example: Relay Status Board
 
-## Example: Real-Time Dashboard Skill
+Use `canvas_update` when you want to show a rich dashboard rather than a wall of text in a DM:
 
-A skill that updates the canvas on every heartbeat with current system status:
-
-```markdown
-On each heartbeat (or when asked), update the canvas with:
-- Current time
-- Number of active sessions  
-- Relay connection status
-- Recent DM count
-
-Use canvas_update with content_type="html" for a nice status panel.
+```
+canvas_update(
+  canvas_id: "relay-status"
+  content_type: "html"
+  data: "<html><body>
+    <h2>Relay Status</h2>
+    <table>
+      <tr><th>Relay</th><th>Status</th><th>Latency</th></tr>
+      <tr><td>wss://relay.damus.io</td><td>✅</td><td>45ms</td></tr>
+      <tr><td>wss://nos.lol</td><td>✅</td><td>112ms</td></tr>
+    </table>
+  </body></html>"
+)
 ```
 
-## Configuration
+Then reply to the DM: "Relay status updated in canvas 📊"
 
-Canvas is enabled by default when the HTTP server is running. No additional config needed.
+## Skills Using Canvas
 
-To disable the canvas (reduce memory usage):
+Add a canvas section to your `SKILL.md`:
 
-```json5
-{
-  "http": {
-    "canvas": {
-      "enabled": false
-    }
-  }
-}
+```markdown
+## Canvas
+Use canvas_update with content_type="html" to render dashboards.
+Always use canvas_id="main" unless building multiple independent displays.
 ```
 
 ## See Also
 
-- [Web Dashboard](/web/)
-- [Remote Access](/gateway/remote)
-- [Nostr Tools](/tools/nostr-tools)
-- [Skills](/tools/skills)
+- [Webchat](../web/webchat.md) — the browser UI that displays canvases
+- [Web Index](../web/index.md) — canvas in the WebSocket event stream
+- [Markdown Formatting](../concepts/markdown-formatting.md) — when to use canvas vs DM text

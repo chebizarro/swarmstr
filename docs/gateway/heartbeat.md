@@ -1,112 +1,106 @@
 ---
-summary: "Heartbeat polling messages and notification rules"
+summary: "NIP-38 status heartbeat for swarmstr — publishes presence to Nostr"
 read_when:
-  - Adjusting heartbeat cadence or messaging
+  - Configuring presence/status visibility for your agent on Nostr
   - Deciding between heartbeat and cron for scheduled tasks
-title: "Heartbeat"
+  - Understanding NIP-38 user status events
+title: "Heartbeat (NIP-38 Status)"
 ---
 
-# Heartbeat (swarmstr)
+# Heartbeat (NIP-38 Status)
 
 > **Heartbeat vs Cron?** See [Cron vs Heartbeat](/automation/cron-vs-heartbeat) for guidance.
 
-Heartbeat runs **periodic agent turns** in the main session so the model can
-surface anything that needs attention without spamming you.
+The heartbeat publishes **NIP-38 kind 30315 user status events** so Nostr clients can see whether the agent is idle, typing, running tools, or offline. It does **not** trigger agent turns or send DMs — for periodic agent tasks, use [Cron](/automation/cron-jobs).
 
-## Quick start
+## What It Does
 
-1. Leave heartbeats enabled (default is `30m`) or set your own cadence.
-2. Create a tiny `HEARTBEAT.md` checklist in the agent workspace (optional but recommended).
-3. Decide where heartbeat messages should go (`target: "none"` is the default; set `target: "last"` to route to the last contact).
+Every few minutes (configurable), swarmstr publishes a NIP-38 status event showing the agent's current state:
 
-Example config:
+- `idle` — waiting for messages
+- `typing` — composing a reply
+- `dnd` — do not disturb
+- `offline` — shutting down
 
-```json
+These events are visible in Nostr clients that support NIP-38 (e.g., alongside the agent's npub in your contact list).
+
+## Configuration
+
+Configure via `extra.heartbeat` in the runtime ConfigDoc:
+
+```json5
 {
-  "agents": {
-    "defaults": {
-      "heartbeat": {
-        "every": "30m",
-        "target": "last",
-        "activeHours": { "start": "08:00", "end": "22:00" }
-      }
+  "extra": {
+    "heartbeat": {
+      "enabled": true,             // default: true
+      "interval_seconds": 300,     // default: 300 (5 minutes)
+      "content": "Available 🟢"   // optional: text for idle status events
     }
   }
 }
 ```
 
-## Defaults
+### Fields
 
-- Interval: `30m`. Set `agents.defaults.heartbeat.every`; use `0m` to disable.
-- Prompt body (configurable via `agents.defaults.heartbeat.prompt`):
-  `Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Enable/disable NIP-38 heartbeat |
+| `interval_seconds` | number | `300` | How often to publish an idle status event (seconds) |
+| `content` | string | `""` | Optional text content for idle status events |
 
-## Response contract
+## Disabling
 
-- If nothing needs attention, reply with **`HEARTBEAT_OK`**.
-- swarmstr treats `HEARTBEAT_OK` as a silent ack and suppresses delivery.
-- For alerts, **do not** include `HEARTBEAT_OK`; return only the alert text.
-
-## Config
-
-```json
+```json5
 {
-  "agents": {
-    "defaults": {
-      "heartbeat": {
-        "every": "30m",
-        "model": "anthropic/claude-opus-4-6",
-        "lightContext": false,
-        "target": "last",
-        "to": "npub1yournpub...",
-        "prompt": "Read HEARTBEAT.md if it exists. Follow it strictly. Reply HEARTBEAT_OK if nothing needs attention.",
-        "ackMaxChars": 300,
-        "activeHours": {
-          "start": "09:00",
-          "end": "22:00",
-          "timezone": "America/New_York"
-        }
-      }
+  "extra": {
+    "heartbeat": {
+      "enabled": false
     }
   }
 }
 ```
 
-### Field notes
+Or remove the `extra.heartbeat` block entirely to keep the default (enabled, 5-minute interval).
 
-- `every`: heartbeat interval (duration string; e.g., `30m`, `1h`). Default: `30m`.
-- `model`: optional model override for heartbeat runs.
-- `lightContext`: when `true`, only inject `HEARTBEAT.md` from workspace bootstrap files (cheaper).
-- `target`: `last` (last used channel), `nostr` (explicit), or `none` (default, no external delivery).
-- `to`: optional npub or channel-specific recipient override.
-- `prompt`: overrides the default prompt body (not merged).
-- `ackMaxChars`: max chars allowed after `HEARTBEAT_OK` before delivery.
-- `activeHours`: restricts heartbeat runs to a time window.
+## Status Values
 
-## HEARTBEAT.md (optional)
+The agent automatically transitions through statuses during its lifecycle:
 
-Keep it tiny — it's injected every heartbeat run.
+| Status | When |
+|--------|------|
+| `idle` | Waiting for messages (published on the heartbeat interval) |
+| `typing` | Composing a reply to a DM |
+| `dnd` | Running tools during an agent turn |
+| `offline` | Daemon shutting down |
 
-Example:
+Status updates are published to the configured write relays using the agent's signing key.
 
-```md
-# Heartbeat checklist
+## Manual Status (Tool)
 
-- Quick scan: anything urgent in inboxes or Nostr mentions?
-- If it's daytime, do a lightweight check-in if nothing else is pending.
-- If a task is blocked, write down what is missing and ask next time.
+Agents can publish a custom NIP-38 status via the `nostr_status` tool:
+
+```
+nostr_status(status="dnd", content="Working on a long task...")
+nostr_status(status="idle", content="Done!")
 ```
 
-If `HEARTBEAT.md` exists but is effectively empty (only blank lines and headers),
-swarmstr skips the heartbeat run to save API calls.
+## Scheduled Agent Tasks
 
-## Manual wake (on-demand)
+The heartbeat is for **presence visibility only**. To run periodic agent turns (e.g., checking feeds, summarizing events), use the Cron system:
 
-```bash
-swarmstr system event --text "Check for urgent follow-ups" --mode now
+```json5
+{
+  "cron": {
+    "enabled": true
+  }
+}
 ```
 
-## Cost awareness
+See [Cron Jobs](/automation/cron-jobs) for scheduling agent tasks.
 
-Heartbeats run full agent turns. Keep `HEARTBEAT.md` small and consider a cheaper
-`model` or `target: "none"` if you only want internal state updates.
+## See Also
+
+- [Presence](/concepts/presence)
+- [Cron Jobs](/automation/cron-jobs)
+- [Cron vs Heartbeat](/automation/cron-vs-heartbeat)
+- [Configuration](/gateway/configuration)

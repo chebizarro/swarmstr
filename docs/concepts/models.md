@@ -27,37 +27,46 @@ Anthropic models can be specified without prefix — the runtime detects `claude
 
 ## Setting the Model
 
-In `config.json`:
+Set the global default model in `config.json` under the `agent` section:
 
 ```json
 {
-  "model": "claude-opus-4-5"
+  "agent": {
+    "default_model": "claude-opus-4-5"
+  }
 }
 ```
 
-Or via environment variable:
+Or use the `SWARMSTR_AGENT_PROVIDER` env var to override the provider (not the model name) for the default agent:
 
 ```bash
-SWARMSTR_MODEL=claude-sonnet-4-5 swarmstrd
+SWARMSTR_AGENT_PROVIDER=openai swarmstrd
 ```
+
+To change the model dynamically (on a running daemon), edit `config.json` and reload, or use `/set model <name>` in a DM session.
 
 ## Thinking Mode
 
-Anthropic Claude models support extended thinking (internal reasoning before responding). Configure via `thinkingLevel`:
+Anthropic Claude models support extended thinking (internal reasoning before responding). Configure via `thinking_level` in the agent config:
 
 ```json
 {
-  "model": "claude-opus-4-5",
-  "thinkingLevel": "high"
+  "agents": [
+    {
+      "id": "main",
+      "model": "claude-opus-4-5",
+      "thinking_level": "high"
+    }
+  ]
 }
 ```
 
 | Level | Budget Tokens | Use Case |
 |-------|--------------|----------|
 | `off` | 0 | Fastest, cheapest |
-| `minimal` | 1,000 | Quick tasks |
+| `minimal` | 1,024 | Quick tasks |
 | `low` | 5,000 | Light reasoning |
-| `medium` | 10,000 | Default |
+| `medium` | 10,000 | Default when thinking is on |
 | `high` | 20,000 | Complex tasks |
 | `xhigh` | 40,000 | Research / deep analysis |
 
@@ -65,15 +74,20 @@ Thinking tokens appear in `thinkingTokens` in usage tracking but are not billed 
 
 ## Model Fallback
 
-Configure a fallback chain to survive API outages:
+Configure a fallback chain to survive API outages using `fallback_models` in an agent config:
 
 ```json
 {
-  "model": "claude-opus-4-5",
-  "modelFallbacks": [
-    "claude-sonnet-4-5",
-    "openrouter/anthropic/claude-opus-4-5",
-    "openai/gpt-4o"
+  "agents": [
+    {
+      "id": "main",
+      "model": "claude-opus-4-5",
+      "fallback_models": [
+        "claude-sonnet-4-5",
+        "openrouter/anthropic/claude-opus-4-5",
+        "openai/gpt-4o"
+      ]
+    }
   ]
 }
 ```
@@ -82,14 +96,19 @@ The agent tries each model in order when it receives a 5xx error, rate limit, or
 
 ## API Key Rotation
 
-For Anthropic, provide multiple keys to distribute load:
+For Anthropic, provide multiple keys to distribute load using `providers.anthropic.api_keys`:
 
-```bash
-# ~/.swarmstr/.env
-ANTHROPIC_API_KEYS=sk-ant-key1,sk-ant-key2,sk-ant-key3
+```json
+{
+  "providers": {
+    "anthropic": {
+      "api_keys": ["sk-ant-key1", "sk-ant-key2", "sk-ant-key3"]
+    }
+  }
+}
 ```
 
-Keys are tried round-robin, with a failed key moved to the back on error. See [Gateway Secrets](../gateway/secrets.md).
+Values can reference environment variables via the secrets system — see [Gateway Secrets](../gateway/secrets.md). Keys are tried round-robin, with a failed key deprioritised on error.
 
 ## Recommended Models by Use Case
 
@@ -97,21 +116,30 @@ Keys are tried round-robin, with a failed key moved to the back on error. See [G
 |---|---|
 | General assistant | `claude-opus-4-5` |
 | High-volume / cost-sensitive | `claude-sonnet-4-5` |
-| Code generation | `claude-opus-4-5` with `thinkingLevel: high` |
+| Code generation | `claude-opus-4-5` with `thinking_level: high` |
 | Local / private | `ollama/llama3.3` or `ollama/qwen2.5:72b` |
 | Multi-provider resilience | OpenRouter with fallbacks |
 | DVM jobs (high-volume) | `claude-haiku-4-5` or `openai/gpt-4o-mini` |
 
 ## Per-Agent Models
 
-When running multiple agents via `--profile`, each agent can use a different model:
+With the `agents[]` config array, each agent can use a different model in the same daemon:
 
-```bash
-# Agent 1: heavy reasoning
-swarmstrd --profile research  # config: claude-opus-4-5, thinking: xhigh
-
-# Agent 2: fast replies
-swarmstrd --profile assistant  # config: claude-haiku-4-5, thinking: off
+```json
+{
+  "agents": [
+    {
+      "id": "research",
+      "model": "claude-opus-4-5",
+      "thinking_level": "xhigh"
+    },
+    {
+      "id": "assistant",
+      "model": "claude-haiku-4-5",
+      "thinking_level": "off"
+    }
+  ]
+}
 ```
 
 ## Provider Configuration

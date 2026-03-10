@@ -40,43 +40,44 @@ go build -o dist/swarmstrd ./cmd/swarmstrd/
 ### Step 2: Generate a Nostr keypair
 
 ```bash
-# Using nak (nostr swiss army knife)
-nak key generate
+swarmstr keygen
 
-# Output: nsec1... (private key) → save this
-# Derive pubkey: nak key public nsec1...
+# Output:
+# nsec: nsec1...   (private key — keep secret)
+# npub: npub1...   (public identity — share freely)
 ```
+
+Save the nsec to your environment.
 
 ### Step 3: Configure swarmstr
 
-Create `~/.swarmstr/config.json`:
+Create `~/.swarmstr/bootstrap.json` (bootstrap config — needed at daemon startup):
 
 ```json
 {
-  "channels": {
-    "nostr": {
-      "privateKey": "${NOSTR_PRIVATE_KEY}",
-      "relays": [
-        "wss://relay.damus.io",
-        "wss://nos.lol"
-      ],
-      "dmPolicy": "pairing"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "anthropic/claude-opus-4-6"
-      }
-    }
+  "private_key": "${NOSTR_NSEC}",
+  "relays": [
+    "wss://relay.damus.io",
+    "wss://nos.lol"
+  ]
+}
+```
+
+Create `~/.swarmstr/config.json` for model settings:
+
+```json
+{
+  "agent": { "default_model": "anthropic/claude-opus-4-6" },
+  "providers": {
+    "anthropic": { "api_key": "${ANTHROPIC_API_KEY}" }
   }
 }
 ```
 
-Export your keys:
+Export your environment (referenced via `${VAR}` in config files):
 
 ```bash
-export NOSTR_PRIVATE_KEY="nsec1..."
+export NOSTR_NSEC="nsec1..."
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
@@ -114,10 +115,9 @@ sudo systemctl enable --now swarmstrd
 
 ## Useful environment variables
 
-- `SWARMSTR_HOME` — home directory for internal path resolution.
-- `SWARMSTR_STATE_DIR` — overrides the state directory (default: `~/.swarmstr/`).
-- `SWARMSTR_CONFIG_PATH` — overrides the config file path.
-- `SWARMSTR_GATEWAY_TOKEN` — HTTP API auth token.
+- `SWARMSTR_WORKSPACE` — overrides the workspace directory (default: `~/.swarmstr/workspace`).
+- `SWARMSTR_BROWSER_URL` — proxy URL for `browser.request` calls.
+- `SWARMSTR_BROWSER_TOKEN` — auth token for the browser proxy.
 
 See [Environment variables](/help/environment) for the full reference.
 

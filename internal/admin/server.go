@@ -66,6 +66,7 @@ type ServerOptions struct {
 	PutSession           func(context.Context, string, state.SessionDoc) error
 	ListSessions         func(context.Context, int) ([]state.SessionDoc, error)
 	ListTranscript       func(context.Context, string, int) ([]state.TranscriptEntryDoc, error)
+	SessionsPrune        func(context.Context, methods.SessionsPruneRequest) (map[string]any, error)
 	TailLogs             func(context.Context, int64, int, int) (map[string]any, error)
 	ChannelsStatus       func(context.Context, methods.ChannelsStatusRequest) (map[string]any, error)
 	ChannelsLogout       func(context.Context, string) (map[string]any, error)
@@ -222,6 +223,10 @@ func Start(ctx context.Context, opts ServerOptions) error {
 		}
 		zalo.HandleWebhook(channelID, w, r)
 	})
+	// HTTP webhook ingress — POST /hooks/{wake,agent,<mapped>}
+	// Active only when hooks.enabled=true in runtime ConfigDoc.
+	mountWebhookIngress(mux, opts)
+
 	mux.HandleFunc("/health", withAuth(opts.Token, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}))
@@ -964,6 +969,24 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusInternalServerError, err
 		}
 		return map[string]any{"ok": true, "session_id": req.SessionID, "key": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped}, http.StatusOK, nil
+	case methods.MethodSessionsPrune:
+		if opts.SessionsPrune == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("sessions prune provider not configured")
+		}
+		var req methods.SessionsPruneRequest
+		if len(call.Params) > 0 {
+			if err := json.Unmarshal(call.Params, &req); err != nil {
+				return nil, http.StatusBadRequest, err
+			}
+		}
+		if !req.All && req.OlderThanDays <= 0 {
+			return nil, http.StatusBadRequest, fmt.Errorf("older_than_days must be > 0 unless all=true")
+		}
+		out, err := opts.SessionsPrune(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
 	case methods.MethodAgentsList:
 		req, err := methods.DecodeAgentsListParams(call.Params)
 		if err != nil {
