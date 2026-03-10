@@ -1112,14 +1112,19 @@ func main() {
 		refreshKeyRings(providers)
 		for _, agCfg := range configAgents {
 			agentID := strings.TrimSpace(agCfg.ID)
-			if agentID == "" || agentID == "main" {
+			if agentID == "" {
 				continue
 			}
 			model := strings.TrimSpace(agCfg.Model)
 			if model == "" {
 				continue
 			}
-			if registeredIDs[agentID] {
+			// "main" is normally skipped because Get("main") returns the default
+			// runtime.  However, when config explicitly declares a "main" agent with
+			// a model/provider, we want that to become the new default.  We handle
+			// it separately below by updating the registry default.
+			isMain := agentID == "main"
+			if !isMain && registeredIDs[agentID] {
 				log.Printf("agent config: id=%s already loaded from Nostr docs, skipping auto-provision", agentID)
 				continue
 			}
@@ -1143,6 +1148,13 @@ func main() {
 			rt, rtErr := agent.BuildRuntimeWithOverride(model, override, tools)
 			if rtErr != nil {
 				log.Printf("agent config auto-provision warning id=%s model=%q provider=%q err=%v", agentID, model, agCfg.Provider, rtErr)
+				continue
+			}
+			if isMain {
+				// Update the registry default so all "main"/"" lookups use this runtime.
+				agentRegistry.SetDefault(rt)
+				controlAgentRuntime = rt
+				log.Printf("agent config: default runtime updated id=main model=%q provider=%q", model, agCfg.Provider)
 				continue
 			}
 			agentRegistry.Set(agentID, rt)
