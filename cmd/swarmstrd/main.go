@@ -324,7 +324,7 @@ func main() {
 	tools := agent.NewToolRegistry()
 	controlToolRegistry = tools
 	var configState *runtimeConfigStore
-	tools.Register("memory.search", func(_ context.Context, args map[string]any) (string, error) {
+	tools.Register("memory_search", func(_ context.Context, args map[string]any) (string, error) {
 		query := agent.ArgString(args, "query")
 		if query == "" {
 			return "", fmt.Errorf("memory.search requires query")
@@ -346,7 +346,7 @@ func main() {
 
 	// acp.delegate — allows the agent to dispatch a sub-task to a peer agent
 	// and wait for the result.  Uses the global DM transport + dispatcher.
-	tools.Register("acp.delegate", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.Register("acp_delegate", func(ctx context.Context, args map[string]any) (string, error) {
 		peerPubKey := agent.ArgString(args, "peer_pubkey")
 		instructions := agent.ArgString(args, "instructions")
 		timeoutMS := int64(agent.ArgInt(args, "timeout_ms", 60000))
@@ -383,10 +383,10 @@ func main() {
 		}
 		return result.Text, nil
 	})
-	tools.SetDefinition("acp.delegate", toolbuiltin.ACPDelegateDef)
+	tools.SetDefinition("acp_delegate", toolbuiltin.ACPDelegateDef)
 
 	// Attach definition for inline memory.search (global cross-session search).
-	tools.SetDefinition("memory.search", toolbuiltin.MemorySearchDef)
+	tools.SetDefinition("memory_search", toolbuiltin.MemorySearchDef)
 
 	// ── Built-in toolbuiltin tools ─────────────────────────────────────────
 	// web_fetch: fetch and extract text from a URL (SSRF-guarded).
@@ -2381,7 +2381,9 @@ func main() {
 		log.Printf("dm transport: NIP-17 (gift-wrapped) active")
 		defer nip17bus.Close()
 	}
+	nip04rawKey, _ := config.ResolvePrivateKey(cfg)
 	nip04bus, nip04err := nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
+		PrivateKey: nip04rawKey,
 		Keyer:      controlKeyer,
 		Relays:     cfg.Relays,
 		SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
@@ -7845,7 +7847,7 @@ var coreToolSections = []coreToolSection{
 var coreToolCatalog = []coreToolDef{
 	{ID: "apply_patch", Label: "apply_patch", Description: "Patch files", SectionID: "fs", Profiles: []string{"coding"}},
 	{ID: "read_pdf", Label: "read_pdf", Description: "Read local PDF files", SectionID: "fs", Profiles: []string{"coding"}},
-	{ID: "memory.search", Label: "memory.search", Description: "Search memory index", SectionID: "memory", Profiles: []string{"coding"}},
+	{ID: "memory_search", Label: "memory_search", Description: "Search memory index", SectionID: "memory", Profiles: []string{"coding"}},
 	{ID: "memory_store", Label: "memory_store", Description: "Store memory entries", SectionID: "memory", Profiles: []string{"coding"}},
 	{ID: "memory_delete", Label: "memory_delete", Description: "Delete memory entries", SectionID: "memory", Profiles: []string{"coding"}},
 	{ID: "sessions_list", Label: "sessions_list", Description: "List sessions", SectionID: "sessions", Profiles: []string{"coding", "messaging"}},
@@ -7862,7 +7864,7 @@ var coreToolCatalog = []coreToolDef{
 	{ID: "cron_remove", Label: "cron_remove", Description: "Remove scheduled task", SectionID: "automation", Profiles: []string{"coding"}},
 	{ID: "node_invoke", Label: "node_invoke", Description: "Invoke a remote node", SectionID: "nodes", Profiles: []string{}},
 	{ID: "node_list", Label: "node_list", Description: "List known nodes", SectionID: "nodes", Profiles: []string{}},
-	{ID: "acp.delegate", Label: "acp.delegate", Description: "Delegate ACP task to peer", SectionID: "nodes", Profiles: []string{}},
+	{ID: "acp_delegate", Label: "acp_delegate", Description: "Delegate ACP task to peer", SectionID: "nodes", Profiles: []string{}},
 	{ID: "web_search", Label: "web_search", Description: "Search the web", SectionID: "web", Profiles: []string{}},
 	{ID: "web_fetch", Label: "web_fetch", Description: "Fetch web content", SectionID: "web", Profiles: []string{}},
 	{ID: "image", Label: "image", Description: "Image understanding", SectionID: "media", Profiles: []string{"coding"}},
