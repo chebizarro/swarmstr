@@ -102,7 +102,8 @@ func (p *NextcloudPlugin) Connect(
 	cfg map[string]any,
 	onMessage func(sdk.InboundChannelMessage),
 ) (sdk.ChannelHandle, error) {
-	baseURL := strings.TrimRight(cfg["base_url"].(string), "/")
+	baseURL, _ := cfg["base_url"].(string)
+	baseURL = strings.TrimRight(baseURL, "/")
 	username, _ := cfg["username"].(string)
 	appPassword, _ := cfg["app_password"].(string)
 	roomToken, _ := cfg["room_token"].(string)

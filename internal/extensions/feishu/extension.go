@@ -91,7 +91,7 @@ func (p *FeishuPlugin) ConfigSchema() map[string]any {
 }
 
 func (p *FeishuPlugin) Capabilities() sdk.ChannelCapabilities {
-	return sdk.ChannelCapabilities{Typing: true, Reactions: true, Threads: true}
+	return sdk.ChannelCapabilities{Typing: true, Threads: true}
 }
 
 func (p *FeishuPlugin) GatewayMethods() []sdk.GatewayMethod { return nil }
@@ -191,6 +191,9 @@ func decryptEvent(encryptKey, ciphertext string) ([]byte, error) {
 	}
 	iv := ctBytes[:aes.BlockSize]
 	ct := ctBytes[aes.BlockSize:]
+	if len(ct) == 0 || len(ct)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("ciphertext is not a whole number of blocks")
+	}
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -204,8 +207,13 @@ func decryptEvent(encryptKey, ciphertext string) ([]byte, error) {
 		return nil, fmt.Errorf("empty plaintext after decrypt")
 	}
 	pad := int(ct[len(ct)-1])
-	if pad == 0 || pad > aes.BlockSize {
+	if pad == 0 || pad > aes.BlockSize || pad > len(ct) {
 		return nil, fmt.Errorf("invalid padding %d", pad)
+	}
+	for _, b := range ct[len(ct)-pad:] {
+		if int(b) != pad {
+			return nil, fmt.Errorf("invalid padding bytes")
+		}
 	}
 	return ct[:len(ct)-pad], nil
 }
