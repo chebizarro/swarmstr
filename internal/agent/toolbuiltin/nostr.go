@@ -62,18 +62,18 @@ func (o NostrToolOpts) signerFunc() (func(ctx context.Context, evt *nostr.Event)
 // NostrFetchDef is the ToolDefinition for nostr_fetch.
 var NostrFetchDef = agent.ToolDefinition{
 	Name:        "nostr_fetch",
-	Description: "Fetch Nostr events using a filter (kind, authors, ids, tags, time range, limit). Returns matching events as JSON. Use to read notes, profiles, DMs, and any other Nostr content.",
+	Description: "Fetch Nostr events using a NIP-01 filter. Returns matching events as JSON. Use to read notes, profiles, lists, DMs, and any other Nostr content. Tag filters use '#' prefix (e.g. '#d' for d-tag, '#p' for p-tag).",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
 			"kinds": {
 				Type:        "array",
-				Description: "Event kind numbers, e.g. [1] for short notes, [0] for profiles, [4] for DMs.",
+				Description: "Event kind numbers, e.g. [1] for short notes, [0] for profiles, [4] for DMs, [30000] for categorized people lists.",
 				Items:       &agent.ToolParamProp{Type: "integer"},
 			},
 			"authors": {
 				Type:        "array",
-				Description: "Filter by author hex pubkeys.",
+				Description: "Filter by author hex pubkeys or npubs.",
 				Items:       &agent.ToolParamProp{Type: "string"},
 			},
 			"ids": {
@@ -92,6 +92,31 @@ var NostrFetchDef = agent.ToolDefinition{
 			"until": {
 				Type:        "integer",
 				Description: "Unix timestamp: only return events before this time.",
+			},
+			"#d": {
+				Type:        "array",
+				Description: "Filter by d-tag values. Used for parameterized replaceable events (e.g. kind:30000 lists). Example: ['cascadia-agents']",
+				Items:       &agent.ToolParamProp{Type: "string"},
+			},
+			"#p": {
+				Type:        "array",
+				Description: "Filter by p-tag pubkeys (events tagged with specific pubkeys).",
+				Items:       &agent.ToolParamProp{Type: "string"},
+			},
+			"#e": {
+				Type:        "array",
+				Description: "Filter by e-tag event IDs (events referencing specific events).",
+				Items:       &agent.ToolParamProp{Type: "string"},
+			},
+			"#t": {
+				Type:        "array",
+				Description: "Filter by t-tag topic/hashtag values.",
+				Items:       &agent.ToolParamProp{Type: "string"},
+			},
+			"relays": {
+				Type:        "array",
+				Description: "Optional relay URLs to query (overrides defaults).",
+				Items:       &agent.ToolParamProp{Type: "string"},
 			},
 		},
 	},
@@ -295,13 +320,21 @@ func NostrSendDMTool(opts NostrToolOpts) agent.ToolFunc {
 		if opts.DMTransport == nil {
 			return "", fmt.Errorf("nostr_send_dm: DM transport not available")
 		}
-		toPubKey, _ := args["to_pubkey"].(string)
+		// Accept "to" (schema name) or "to_pubkey" (legacy) for the recipient.
+		toPubKey, _ := args["to"].(string)
 		if toPubKey == "" {
-			return "", fmt.Errorf("nostr_send_dm: to_pubkey is required")
+			toPubKey, _ = args["to_pubkey"].(string)
 		}
-		text, _ := args["text"].(string)
+		if toPubKey == "" {
+			return "", fmt.Errorf("nostr_send_dm: to (recipient pubkey or npub) is required")
+		}
+		// Accept "message" (schema name) or "text" (legacy) for the body.
+		text, _ := args["message"].(string)
+		if text == "" {
+			text, _ = args["text"].(string)
+		}
 		if strings.TrimSpace(text) == "" {
-			return "", fmt.Errorf("nostr_send_dm: text is required")
+			return "", fmt.Errorf("nostr_send_dm: message is required")
 		}
 
 		// Resolve npub → hex.
