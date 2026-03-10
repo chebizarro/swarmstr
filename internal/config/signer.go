@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -100,9 +101,18 @@ func IsBunkerURL(cfg BootstrapConfig) bool {
 func ResolveSigner(ctx context.Context, cfg BootstrapConfig, pool *nostr.Pool) (nostr.Keyer, error) {
 	raw := strings.TrimSpace(cfg.SignerURL)
 
-	// If a direct private_key is present, wrap it.
+	// If a direct private_key is present, wrap it in an ExtendedSigner so
+	// callers get both NIP-44 (keyer.Keyer) and NIP-04 decrypt support without
+	// needing to extract the raw key.
 	if key := strings.TrimSpace(cfg.PrivateKey); key != "" {
-		return keyer.New(ctx, pool, key, nil)
+		var skArr [32]byte
+		decoded, err := hex.DecodeString(key)
+		if err != nil || len(decoded) != 32 {
+			return nil, fmt.Errorf("private_key: expected 32-byte hex: %w", err)
+		}
+		copy(skArr[:], decoded)
+		sk := nostr.SecretKey(skArr)
+		return NewExtendedSigner(sk), nil
 	}
 
 	if raw == "" {
