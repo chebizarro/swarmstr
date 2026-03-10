@@ -18,7 +18,7 @@ FROM alpine:3.21 AS certs
 RUN apk add --no-cache ca-certificates tzdata
 
 # ── Stage: Build ───────────────────────────────────────────────────────────────
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 ARG VERSION=dev
 # TARGETOS / TARGETARCH are set automatically by buildx.
