@@ -42,6 +42,14 @@ func (r *AgentRuntimeRegistry) Get(agentID string) Runtime {
 	return r.def
 }
 
+// SetDefault replaces the fallback runtime returned for "main"/""  lookups.
+// This allows config-declared "main" agents to override the startup default.
+func (r *AgentRuntimeRegistry) SetDefault(rt Runtime) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.def = rt
+}
+
 // Set registers a Runtime for agentID.  Pass nil to remove the registration.
 func (r *AgentRuntimeRegistry) Set(agentID string, rt Runtime) {
 	r.mu.Lock()

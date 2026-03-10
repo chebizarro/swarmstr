@@ -127,7 +127,26 @@ func NewProviderFromEnv() (Provider, error) {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_PROVIDER")))
 	switch mode {
 	case "", "echo":
+		// Fall through to key-based auto-detect: if ANTHROPIC_API_KEY is set,
+		// use Anthropic as the default provider instead of the echo stub.
+		if apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); apiKey != "" {
+			model := strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_MODEL"))
+			if model == "" {
+				model = "claude-sonnet-4-5"
+			}
+			return &AnthropicProvider{Model: model, APIKey: apiKey}, nil
+		}
 		return EchoProvider{}, nil
+	case "anthropic":
+		apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+		if apiKey == "" {
+			return nil, fmt.Errorf("ANTHROPIC_API_KEY is required when SWARMSTR_AGENT_PROVIDER=anthropic")
+		}
+		model := strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_MODEL"))
+		if model == "" {
+			model = "claude-sonnet-4-5"
+		}
+		return &AnthropicProvider{Model: model, APIKey: apiKey}, nil
 	case "http":
 		url := strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_URL"))
 		if url == "" {
