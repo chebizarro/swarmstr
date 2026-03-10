@@ -153,10 +153,27 @@ func (b *QdrantBackend) upsert(id string, vec []float32, payload map[string]any)
 
 type qdrantSearchResult struct {
 	Result []struct {
-		ID      string         `json:"id"`
-		Score   float64        `json:"score"`
-		Payload map[string]any `json:"payload"`
+		ID      json.RawMessage `json:"id"` // may be string UUID or numeric integer
+		Score   float64         `json:"score"`
+		Payload map[string]any  `json:"payload"`
 	} `json:"result"`
+}
+
+// qdrantIDToString coerces a Qdrant point ID (which may be a JSON string or
+// a JSON number) to a plain Go string so callers don't need to branch.
+func qdrantIDToString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	// JSON string — strip quotes.
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return s
+		}
+	}
+	// JSON number — return the decimal representation as-is.
+	return string(raw)
 }
 
 func (b *QdrantBackend) vectorSearch(vec []float32, limit int, filter map[string]any) ([]IndexedMemory, error) {
@@ -182,7 +199,7 @@ func (b *QdrantBackend) vectorSearch(vec []float32, limit int, filter map[string
 	}
 	out := make([]IndexedMemory, 0, len(sr.Result))
 	for _, r := range sr.Result {
-		m := payloadToIndexedMemory(r.ID, r.Payload)
+		m := payloadToIndexedMemory(qdrantIDToString(r.ID), r.Payload)
 		out = append(out, m)
 	}
 	return out, nil
@@ -316,8 +333,8 @@ func (b *QdrantBackend) ListSession(sessionID string, limit int) []IndexedMemory
 	var sr struct {
 		Result struct {
 			Points []struct {
-				ID      string         `json:"id"`
-				Payload map[string]any `json:"payload"`
+				ID      json.RawMessage `json:"id"`
+				Payload map[string]any  `json:"payload"`
 			} `json:"points"`
 		} `json:"result"`
 	}
@@ -326,7 +343,7 @@ func (b *QdrantBackend) ListSession(sessionID string, limit int) []IndexedMemory
 	}
 	out := make([]IndexedMemory, 0)
 	for _, p := range sr.Result.Points {
-		out = append(out, payloadToIndexedMemory(p.ID, p.Payload))
+		out = append(out, payloadToIndexedMemory(qdrantIDToString(p.ID), p.Payload))
 	}
 	return out
 }
@@ -374,8 +391,8 @@ func (b *QdrantBackend) ListByTopic(topic string, limit int) []IndexedMemory {
 	var sr struct {
 		Result struct {
 			Points []struct {
-				ID      string         `json:"id"`
-				Payload map[string]any `json:"payload"`
+				ID      json.RawMessage `json:"id"`
+				Payload map[string]any  `json:"payload"`
 			} `json:"points"`
 		} `json:"result"`
 	}
@@ -384,7 +401,7 @@ func (b *QdrantBackend) ListByTopic(topic string, limit int) []IndexedMemory {
 	}
 	out := make([]IndexedMemory, 0)
 	for _, p := range sr.Result.Points {
-		out = append(out, payloadToIndexedMemory(p.ID, p.Payload))
+		out = append(out, payloadToIndexedMemory(qdrantIDToString(p.ID), p.Payload))
 	}
 	return out
 }
