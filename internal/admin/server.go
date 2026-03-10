@@ -15,7 +15,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"swarmstr/internal/extensions/feishu"
+	"swarmstr/internal/extensions/line"
 	"swarmstr/internal/extensions/msteams"
+	"swarmstr/internal/extensions/nextcloud"
+	"swarmstr/internal/extensions/synology"
+	"swarmstr/internal/extensions/zalo"
 	"swarmstr/internal/config"
 	"swarmstr/internal/gateway/methods"
 	"swarmstr/internal/memory"
@@ -176,6 +181,46 @@ func Start(ctx context.Context, opts ServerOptions) error {
 			return
 		}
 		msteams.HandleWebhook(channelID, w, r)
+	})
+	mux.HandleFunc("/webhooks/synology/", func(w http.ResponseWriter, r *http.Request) {
+		channelID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webhooks/synology/"))
+		if channelID == "" {
+			http.Error(w, "missing channel id", http.StatusBadRequest)
+			return
+		}
+		synology.HandleWebhook(channelID, w, r)
+	})
+	mux.HandleFunc("/webhooks/line/", func(w http.ResponseWriter, r *http.Request) {
+		channelID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webhooks/line/"))
+		if channelID == "" {
+			http.Error(w, "missing channel id", http.StatusBadRequest)
+			return
+		}
+		line.HandleWebhook(channelID, w, r)
+	})
+	mux.HandleFunc("/webhooks/nextcloud/", func(w http.ResponseWriter, r *http.Request) {
+		channelID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webhooks/nextcloud/"))
+		if channelID == "" {
+			http.Error(w, "missing channel id", http.StatusBadRequest)
+			return
+		}
+		nextcloud.HandleWebhook(channelID, w, r)
+	})
+	mux.HandleFunc("/webhooks/feishu/", func(w http.ResponseWriter, r *http.Request) {
+		channelID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webhooks/feishu/"))
+		if channelID == "" {
+			http.Error(w, "missing channel id", http.StatusBadRequest)
+			return
+		}
+		feishu.HandleWebhook(channelID, w, r)
+	})
+	mux.HandleFunc("/webhooks/zalo/", func(w http.ResponseWriter, r *http.Request) {
+		channelID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webhooks/zalo/"))
+		if channelID == "" {
+			http.Error(w, "missing channel id", http.StatusBadRequest)
+			return
+		}
+		zalo.HandleWebhook(channelID, w, r)
 	})
 	mux.HandleFunc("/health", withAuth(opts.Token, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
