@@ -523,6 +523,32 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 			out = out2
 			text, calls = parseAnthropicToolCalls(out.Content)
 		}
+
+		// If the loop exhausted maxIter with text still empty, force one final call
+		// asking the model to summarise its findings — prevents "tool execution complete".
+		if text == "" {
+			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
+			msgs = append(msgs, anthropicMessage{Role: "user", Content: []map[string]any{
+				{"type": "text", "text": "Please summarise your findings and give a final response."},
+			}})
+			reqBody.Messages = msgs
+			body2, _ := json.Marshal(reqBody)
+			req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("x-api-key", apiKey)
+			req2.Header.Set("anthropic-version", "2023-06-01")
+			if resp2, err2 := client.Do(req2); err2 == nil {
+				var out2 anthropicResponse
+				if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 == nil && out2.Error == nil {
+					text, calls = parseAnthropicToolCalls(out2.Content)
+					if out2.Usage != nil {
+						totalInput += int64(out2.Usage.InputTokens)
+						totalOutput += int64(out2.Usage.OutputTokens)
+					}
+				}
+				resp2.Body.Close()
+			}
+		}
 	}
 
 	if text == "" && len(calls) == 0 {
@@ -683,6 +709,31 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 			}
 			out = out2
 			text, calls = parseAnthropicToolCalls(out.Content)
+		}
+
+		// Force a final summary turn if maxIter was exhausted with no text.
+		if text == "" {
+			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
+			msgs = append(msgs, anthropicMessage{Role: "user", Content: []map[string]any{
+				{"type": "text", "text": "Please summarise your findings and give a final response."},
+			}})
+			reqBody.Messages = msgs
+			body2, _ := json.Marshal(reqBody)
+			req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("anthropic-version", "2023-06-01")
+			applyAnthropicOAuthHeaders(req2, accessToken)
+			if resp2, err2 := client.Do(req2); err2 == nil {
+				var out2 anthropicResponse
+				if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 == nil && out2.Error == nil {
+					text, calls = parseAnthropicToolCalls(out2.Content)
+					if out2.Usage != nil {
+						totalInput += int64(out2.Usage.InputTokens)
+						totalOutput += int64(out2.Usage.OutputTokens)
+					}
+				}
+				resp2.Body.Close()
+			}
 		}
 	}
 
