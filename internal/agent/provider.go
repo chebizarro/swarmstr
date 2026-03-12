@@ -174,12 +174,12 @@ type AnthropicProvider struct {
 }
 
 type anthropicRequest struct {
-	Model     string              `json:"model"`
-	MaxTokens int                 `json:"max_tokens"`
-	System    string              `json:"system,omitempty"`
-	Messages  []anthropicMessage  `json:"messages"`
-	Tools     []anthropicToolDef  `json:"tools,omitempty"`
-	Thinking  *anthropicThinking  `json:"thinking,omitempty"`
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    any                `json:"system,omitempty"` // string or []map[string]any (for cache_control)
+	Messages  []anthropicMessage `json:"messages"`
+	Tools     []anthropicToolDef `json:"tools,omitempty"`
+	Thinking  *anthropicThinking `json:"thinking,omitempty"`
 }
 
 // anthropicThinking is the extended-thinking configuration block.
@@ -190,9 +190,15 @@ type anthropicThinking struct {
 
 // anthropicToolDef is the Anthropic API representation of a tool definition.
 type anthropicToolDef struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name         string              `json:"name"`
+	Description  string              `json:"description"`
+	InputSchema  map[string]any      `json:"input_schema"`
+	CacheControl *anthropicCacheCtrl `json:"cache_control,omitempty"`
+}
+
+// anthropicCacheCtrl marks a content block for prompt caching.
+type anthropicCacheCtrl struct {
+	Type string `json:"type"` // always "ephemeral"
 }
 
 // anthropicMessage supports both plain-text content (string) and multi-modal
@@ -223,7 +229,24 @@ type anthropicResponse struct {
 	} `json:"usage,omitempty"`
 }
 
+// buildSystemWithCache wraps a system prompt string in a content block array
+// with cache_control set, so Anthropic will cache it across turns.
+// Returns nil if text is empty.
+func buildSystemWithCache(text string) any {
+	if text == "" {
+		return nil
+	}
+	return []map[string]any{
+		{
+			"type":          "text",
+			"text":          text,
+			"cache_control": map[string]any{"type": "ephemeral"},
+		},
+	}
+}
+
 // toolDefsToAnthropic converts ToolDefinition slice to Anthropic API format.
+// The last tool is marked with cache_control so the full tool list is cached.
 func toolDefsToAnthropic(defs []ToolDefinition) []anthropicToolDef {
 	out := make([]anthropicToolDef, 0, len(defs))
 	for _, d := range defs {
@@ -253,6 +276,11 @@ func toolDefsToAnthropic(defs []ToolDefinition) []anthropicToolDef {
 			Description: d.Description,
 			InputSchema: schema,
 		})
+	}
+	// Mark the last tool for caching — the whole tool list is re-sent every
+	// turn and is otherwise billed at full input-token rate each time.
+	if len(out) > 0 {
+		out[len(out)-1].CacheControl = &anthropicCacheCtrl{Type: "ephemeral"}
 	}
 	return out
 }
@@ -417,7 +445,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		sys = strings.TrimSpace(p.SystemPrompt) + "\n\n" + sys
 	}
 	if sys != "" {
-		reqBody.System = sys
+		reqBody.System = buildSystemWithCache(sys)
 	}
 	if len(turn.Tools) > 0 {
 		reqBody.Tools = toolDefsToAnthropic(turn.Tools)
@@ -434,9 +462,11 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	betaHeaders := []string{"prompt-caching-2024-07-31"}
 	if turn.ThinkingBudget > 0 {
-		req.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+		betaHeaders = append(betaHeaders, "interleaved-thinking-2025-05-14")
 	}
+	req.Header.Set("anthropic-beta", strings.Join(betaHeaders, ","))
 
 	client := p.Client
 	if client == nil {
@@ -614,7 +644,7 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 		sys = strings.TrimSpace(p.SystemPrompt) + "\n\n" + sys
 	}
 	if sys != "" {
-		reqBody.System = sys
+		reqBody.System = buildSystemWithCache(sys)
 	}
 	if len(turn.Tools) > 0 {
 		reqBody.Tools = toolDefsToAnthropic(turn.Tools)
@@ -631,6 +661,13 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
 	applyAnthropicOAuthHeaders(req, accessToken)
+	// Add prompt-caching beta alongside any headers already set by applyAnthropicOAuthHeaders.
+	existing := req.Header.Get("anthropic-beta")
+	if existing != "" {
+		req.Header.Set("anthropic-beta", existing+",prompt-caching-2024-07-31")
+	} else {
+		req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
+	}
 
 	client := p.Client
 	if client == nil {
