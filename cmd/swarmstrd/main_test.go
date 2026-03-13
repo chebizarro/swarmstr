@@ -1735,6 +1735,45 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
+		Method:     methods.MethodCronList,
+		Params:     json.RawMessage(`{"limit":10}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("cron.list error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if _, ok := payload["jobs"]; !ok {
+		t.Fatalf("unexpected cron.list payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodCronStatus,
+		Params:     json.RawMessage(`{"id":"c1"}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("cron.status error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if jobAny, ok := payload["job"]; !ok || jobAny == nil {
+		t.Fatalf("unexpected cron.status payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodCronUpdate,
+		Params:     json.RawMessage(`{"id":"c1","enabled":false}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("cron.update error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["ok"] != true {
+		t.Fatalf("unexpected cron.update payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
 		Method:     methods.MethodCronRun,
 		Params:     json.RawMessage(`{"id":"c1"}`),
 	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
@@ -1744,6 +1783,32 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	payload, _ = res.Result.(map[string]any)
 	if payload["ok"] != true {
 		t.Fatalf("unexpected cron.run payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodCronRuns,
+		Params:     json.RawMessage(`{"limit":10}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("cron.runs error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if _, ok := payload["runs"]; !ok {
+		t.Fatalf("unexpected cron.runs payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodCronRemove,
+		Params:     json.RawMessage(`{"id":"c1"}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("cron.remove error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	if payload["ok"] != true {
+		t.Fatalf("unexpected cron.remove payload: %#v", res.Result)
 	}
 }
 

@@ -173,17 +173,37 @@ func (r *Runtime) Broadcast(event string, payload any) {
 	}
 	r.mu.RUnlock()
 
-	for _, c := range clients {
-		if !c.isSubscribed(event) {
-			continue
+	emit := func(name string) {
+		for _, c := range clients {
+			if !c.isSubscribed(name) {
+				continue
+			}
+			seq := atomic.AddInt64(&r.seq, 1)
+			_ = writeFrame(context.Background(), c.conn, map[string]any{
+				"type":    protocol.FrameTypeEvent,
+				"event":   name,
+				"seq":     seq,
+				"payload": payload,
+			})
 		}
-		seq := atomic.AddInt64(&r.seq, 1)
-		_ = writeFrame(context.Background(), c.conn, map[string]any{
-			"type":    protocol.FrameTypeEvent,
-			"event":   event,
-			"seq":     seq,
-			"payload": payload,
-		})
+	}
+
+	emit(event)
+	for _, proj := range compatibilityEventProjections(event, payload) {
+		emitWithPayload := proj.Payload
+		emitEvent := proj.Event
+		for _, c := range clients {
+			if !c.isSubscribed(emitEvent) {
+				continue
+			}
+			seq := atomic.AddInt64(&r.seq, 1)
+			_ = writeFrame(context.Background(), c.conn, map[string]any{
+				"type":    protocol.FrameTypeEvent,
+				"event":   emitEvent,
+				"seq":     seq,
+				"payload": emitWithPayload,
+			})
+		}
 	}
 }
 

@@ -69,6 +69,14 @@ const (
 
 	// EventCanvasUpdate is emitted when an agent writes to a named canvas.
 	EventCanvasUpdate = "canvas.update"
+
+	// OpenClaw compatibility alias events.
+	EventCompatAgent          = "agent"
+	EventCompatChat           = "chat"
+	EventCompatCron           = "cron"
+	EventCompatPresence       = "presence"
+	EventCompatHeartbeat      = "heartbeat"
+	EventCompatVoicewakeChanged = "voicewake.changed"
 )
 
 // AllPushEvents is the canonical ordered list of events the server may push.
@@ -98,6 +106,13 @@ var AllPushEvents = []string{
 	"connect.challenge",
 	EventChatChunk,
 	EventCanvasUpdate,
+	// OpenClaw compatibility aliases.
+	EventCompatAgent,
+	EventCompatChat,
+	EventCompatCron,
+	EventCompatPresence,
+	EventCompatHeartbeat,
+	EventCompatVoicewakeChanged,
 }
 
 // ─── EventEmitter interface ───────────────────────────────────────────────────
@@ -125,6 +140,111 @@ func (e *RuntimeEmitter) Emit(event string, payload any) {
 		return
 	}
 	e.rt.Broadcast(event, payload)
+}
+
+func compatibilityEventAliases(event string) []string {
+	switch event {
+	case EventAgentStatus, EventAgentThinking:
+		return []string{EventCompatAgent}
+	case EventChatMessage, EventChatChunk:
+		return []string{EventCompatChat}
+	case EventCronTick, EventCronResult:
+		return []string{EventCompatCron}
+	case "presence.updated":
+		return []string{EventCompatPresence}
+	case EventTick:
+		return []string{EventCompatHeartbeat}
+	case EventVoicewake:
+		return []string{EventCompatVoicewakeChanged}
+	default:
+		return nil
+	}
+}
+
+type compatibilityProjection struct {
+	Event   string
+	Payload any
+}
+
+func compatibilityEventProjections(event string, payload any) []compatibilityProjection {
+	aliases := compatibilityEventAliases(event)
+	if len(aliases) == 0 {
+		return nil
+	}
+	out := make([]compatibilityProjection, 0, len(aliases))
+	for _, alias := range aliases {
+		projected := payload
+		switch event {
+		case EventAgentStatus:
+			if p, ok := payload.(AgentStatusPayload); ok {
+				runID := p.Session
+				if runID == "" {
+					runID = p.AgentID
+				}
+				projected = map[string]any{
+					"runId":      runID,
+					"sessionKey": p.Session,
+					"seq":        0,
+					"stream":     "lifecycle",
+					"ts":         p.TS,
+					"data": map[string]any{
+						"phase": p.Status,
+					},
+				}
+			}
+		case EventChatMessage:
+			if p, ok := payload.(ChatMessagePayload); ok {
+				projected = map[string]any{
+					"runId":      p.SessionID,
+					"sessionKey": p.SessionID,
+					"seq":        0,
+					"state":      "final",
+					"text":       p.Text,
+					"message": map[string]any{
+						"text":      p.Text,
+						"direction": p.Direction,
+					},
+				}
+			}
+		case EventChatChunk:
+			if p, ok := payload.(ChatChunkPayload); ok {
+				state := "streaming"
+				if p.Done {
+					state = "final"
+				}
+				projected = map[string]any{
+					"runId":      p.SessionID,
+					"sessionKey": p.SessionID,
+					"seq":        0,
+					"state":      state,
+					"chunk":      p.Text,
+					"text":       p.Text,
+				}
+			}
+		case EventCronTick:
+			if p, ok := payload.(CronTickPayload); ok {
+				projected = map[string]any{"action": "triggered", "jobId": p.JobID, "ts": p.TS}
+			}
+		case EventCronResult:
+			if p, ok := payload.(CronResultPayload); ok {
+				projected = map[string]any{"action": "finished", "jobId": p.JobID, "succeeded": p.Succeeded, "durationMs": p.DurationMS, "ts": p.TS}
+			}
+		case EventTick:
+			if p, ok := payload.(TickPayload); ok {
+				projected = map[string]any{"ts": p.TS, "uptimeMs": p.UptimeMS, "version": p.Version}
+			}
+		case EventVoicewake:
+			if p, ok := payload.(VoicewakePayload); ok {
+				triggers := []string{}
+				if p.Trigger != "" {
+					triggers = append(triggers, p.Trigger)
+				}
+				projected = map[string]any{"triggers": triggers, "source": p.Source, "ts": p.TS}
+			}
+		}
+		out = append(out, compatibilityProjection{Event: alias, Payload: projected})
+	}
+	return out
 }
 
 // ─── NoopEmitter ──────────────────────────────────────────────────────────────

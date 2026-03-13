@@ -1,0 +1,16 @@
+{
+  "source": "cmd/swarmstrd/testdata/parity/core_method_surface_deviations.json",
+  "notes": "Accepted core parity deviations for Swarmstr vs OpenClaw. Keep this aligned with the verifier fixtures.",
+  "accepted_deviations": [
+    {
+      "id": "nostr-first.session-scoping",
+      "scope": "session routing",
+      "reason": "Session IDs are scoped for Nostr-first behavior (not transport-specific thread IDs as primary identity)."
+    },
+    {
+      "id": "idiomatic-go.session-store-shape",
+      "scope": "session persistence",
+      "reason": "Session entry field names are idiomatic Go structs serialized with OpenClaw-compatible JSON keys."
+    }
+  ]
+}

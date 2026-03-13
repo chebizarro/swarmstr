@@ -111,6 +111,9 @@ func main() {
 			os.Exit(2)
 		}
 
+	case "lists", "list":
+		run("lists", runLists, args[1:])
+
 	// ── nodes ────────────────────────────────────────────────────────────────
 	case "nodes", "node":
 		run("nodes", runNodes, args[1:])
@@ -509,6 +512,8 @@ func usage() {
 	fmt.Println("  config path        print config file path")
 	fmt.Println("  config import      import config from file (--file --path --dry-run)")
 	fmt.Println("  config export      export config (--path --out --redact)")
+	fmt.Println("  lists get          read a runtime list doc from Nostr state (--name)")
+	fmt.Println("  lists put          write a runtime list doc (--name --item/--file)")
 	fmt.Println()
 	fmt.Println("Secrets:")
 	fmt.Println("  secrets list       list secret keys")

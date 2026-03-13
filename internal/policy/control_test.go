@@ -1,10 +1,60 @@
 package policy
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
+	nostr "fiatjaf.com/nostr"
 	"swarmstr/internal/store/state"
 )
+
+func TestAuthenticateControlCall_ValidNIP98Event(t *testing.T) {
+	payload := []byte(`{"method":"status.get"}`)
+	req, authHeader, caller := buildNIP98AuthHeader(t, http.MethodPost, "http://localhost:7423/call", payload, nil)
+	req.Header.Set("X-Nostr-Authorization", authHeader)
+
+	auth := AuthenticateControlCall(req, payload, 30*time.Second)
+	if !auth.Authenticated {
+		t.Fatalf("expected authenticated call, got reason=%q", auth.Reason)
+	}
+	if auth.CallerPubKey != caller {
+		t.Fatalf("caller pubkey mismatch got=%q want=%q", auth.CallerPubKey, caller)
+	}
+}
+
+func TestAuthenticateControlCall_RejectsMethodTagMismatch(t *testing.T) {
+	payload := []byte(`{"method":"status.get"}`)
+	req, authHeader, _ := buildNIP98AuthHeader(t, http.MethodPost, "http://localhost:7423/call", payload, map[string]string{"method": http.MethodGet})
+	req.Header.Set("X-Nostr-Authorization", authHeader)
+
+	auth := AuthenticateControlCall(req, payload, 30*time.Second)
+	if auth.Authenticated {
+		t.Fatal("expected method tag mismatch to be rejected")
+	}
+	if auth.Reason == "" {
+		t.Fatal("expected rejection reason")
+	}
+}
+
+func TestAuthenticateControlCall_RejectsPayloadMismatch(t *testing.T) {
+	payload := []byte(`{"method":"status.get"}`)
+	req, authHeader, _ := buildNIP98AuthHeader(t, http.MethodPost, "http://localhost:7423/call", payload, map[string]string{"payload": "deadbeef"})
+	req.Header.Set("X-Nostr-Authorization", authHeader)
+
+	auth := AuthenticateControlCall(req, payload, 30*time.Second)
+	if auth.Authenticated {
+		t.Fatal("expected payload hash mismatch to be rejected")
+	}
+	if auth.Reason == "" {
+		t.Fatal("expected rejection reason")
+	}
+}
 
 func TestEvaluateControlCallRequiresAuthentication(t *testing.T) {
 	cfg := state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: true}}
@@ -14,6 +64,17 @@ func TestEvaluateControlCallRequiresAuthentication(t *testing.T) {
 	}
 	if dec.Authenticated {
 		t.Fatal("expected decision to indicate unauthenticated")
+	}
+}
+
+func TestEvaluateControlCall_AllowUnauthMethodsBypassesAuth(t *testing.T) {
+	cfg := state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: true, AllowUnauthMethods: []string{"supportedmethods"}}}
+	dec := EvaluateControlCall("", "supportedmethods", false, cfg)
+	if !dec.Allowed {
+		t.Fatalf("expected allow_unauth_methods bypass, got: %+v", dec)
+	}
+	if dec.Authenticated {
+		t.Fatal("expected unauthenticated decision")
 	}
 }
 
@@ -42,4 +103,46 @@ func TestEvaluateControlCallAdminDeniedMethod(t *testing.T) {
 	if !dec.Authenticated {
 		t.Fatal("expected authenticated decision")
 	}
+}
+
+func buildNIP98AuthHeader(t *testing.T, method, url string, payload []byte, overrides map[string]string) (*http.Request, string, string) {
+	t.Helper()
+	req := httptest.NewRequest(method, url, bytes.NewReader(payload))
+	hash := sha256.Sum256(payload)
+	payloadHash := nostr.HexEncodeToString(hash[:])
+	if v, ok := overrides["payload"]; ok {
+		payloadHash = v
+	}
+	tagMethod := method
+	if v, ok := overrides["method"]; ok {
+		tagMethod = v
+	}
+	tagURL := url
+	if v, ok := overrides["u"]; ok {
+		tagURL = v
+	}
+	createdAt := nostr.Now()
+	if v, ok := overrides["created_at"]; ok && v == "old" {
+		createdAt = createdAt - nostr.Timestamp(90)
+	}
+
+	evt := nostr.Event{
+		Kind:      nostr.Kind(27235),
+		CreatedAt: createdAt,
+		Tags: nostr.Tags{
+			{"method", tagMethod},
+			{"u", tagURL},
+			{"payload", payloadHash},
+		},
+	}
+	sk := nostr.Generate()
+	if err := evt.Sign([32]byte(sk)); err != nil {
+		t.Fatalf("sign auth event: %v", err)
+	}
+	raw, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("marshal auth event: %v", err)
+	}
+	caller := evt.PubKey.Hex()
+	return req, "Nostr " + base64.StdEncoding.EncodeToString(raw), caller
 }

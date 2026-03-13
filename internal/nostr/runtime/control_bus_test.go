@@ -1,6 +1,9 @@
 package runtime
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -129,5 +132,74 @@ func TestAllowCallerDisabledWhenIntervalZero(t *testing.T) {
 	now := time.Unix(1000, 0)
 	if !b.allowCaller("caller-a", now) || !b.allowCaller("caller-a", now) {
 		t.Fatal("expected throttle disabled when interval is zero")
+	}
+}
+
+func TestControlRPCEnvelopeParityFixtures(t *testing.T) {
+	type fixtureCase struct {
+		Name                  string         `json:"name"`
+		Result                map[string]any `json:"result"`
+		Error                 string         `json:"error"`
+		ErrorCode             int            `json:"error_code"`
+		ErrorData             map[string]any `json:"error_data"`
+		ExpectedHasResult     bool           `json:"expected_has_result"`
+		ExpectedErrorCode     int            `json:"expected_error_code"`
+		ExpectedErrorContains string         `json:"expected_error_contains"`
+		ExpectedErrorDataKey  string         `json:"expected_error_data_key"`
+	}
+	type fixtureFile struct {
+		Cases []fixtureCase `json:"cases"`
+	}
+
+	raw, err := os.ReadFile(filepath.Join("testdata", "control_rpc_envelope_cases.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fx fixtureFile
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+
+	for _, tc := range fx.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			payloadMap := map[string]any{"result": tc.Result}
+			if tc.Error != "" {
+				payloadMap = map[string]any{"error": buildControlRPCError(tc.Error, tc.ErrorCode, tc.ErrorData)}
+			}
+			rawPayload, err := json.Marshal(payloadMap)
+			if err != nil {
+				t.Fatalf("marshal payload: %v", err)
+			}
+			decoded := map[string]any{}
+			if err := json.Unmarshal(rawPayload, &decoded); err != nil {
+				t.Fatalf("decode payload: %v", err)
+			}
+			if tc.ExpectedHasResult {
+				if _, ok := decoded["result"]; !ok {
+					t.Fatalf("expected result envelope: %#v", decoded)
+				}
+				if _, hasErr := decoded["error"]; hasErr {
+					t.Fatalf("result envelope must not contain error: %#v", decoded)
+				}
+				return
+			}
+			errObj, ok := decoded["error"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected error envelope: %#v", decoded)
+			}
+			if tc.ExpectedErrorCode != 0 && int(errObj["code"].(float64)) != tc.ExpectedErrorCode {
+				t.Fatalf("error.code=%v want=%d", errObj["code"], tc.ExpectedErrorCode)
+			}
+			msg, _ := errObj["message"].(string)
+			if tc.ExpectedErrorContains != "" && !strings.Contains(msg, tc.ExpectedErrorContains) {
+				t.Fatalf("error.message=%q want contains %q", msg, tc.ExpectedErrorContains)
+			}
+			if tc.ExpectedErrorDataKey != "" {
+				data, _ := errObj["data"].(map[string]any)
+				if _, ok := data[tc.ExpectedErrorDataKey]; !ok {
+					t.Fatalf("error.data missing key %q: %#v", tc.ExpectedErrorDataKey, data)
+				}
+			}
+		})
 	}
 }

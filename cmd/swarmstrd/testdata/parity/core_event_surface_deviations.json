@@ -1,0 +1,20 @@
+{
+  "accepted_missing_events": [
+    "device.pair.requested",
+    "node.invoke.request"
+  ],
+  "accepted_additional_events": [
+    "agent.status",
+    "agent.thinking",
+    "channel.message",
+    "chat.chunk",
+    "chat.message",
+    "config.updated",
+    "cron.result",
+    "cron.tick",
+    "plugin.loaded",
+    "presence.updated",
+    "voice.wake",
+    "canvas.update"
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "health": {
+    "required_keys": ["ts_ms", "ok"]
+  },
+  "talk.mode": {
+    "required_keys": ["ts_ms", "mode"]
+  },
+  "update.available": {
+    "required_keys": ["ts_ms", "version"]
+  },
+  "exec.approval.requested": {
+    "required_keys": ["ts_ms", "id", "command"]
+  },
+  "exec.approval.resolved": {
+    "required_keys": ["ts_ms", "id", "decision"]
+  },
+  "node.pair.requested": {
+    "required_keys": ["ts_ms", "request_id"]
+  },
+  "node.pair.resolved": {
+    "required_keys": ["ts_ms", "request_id", "decision"]
+  },
+  "device.pair.resolved": {
+    "required_keys": ["ts_ms", "decision"]
+  },
+  "presence.updated": {
+    "required_keys": ["presence"]
+  },
+  "channel.message": {
+    "required_keys": ["ts_ms", "channel_id", "direction"]
+  },
+  "config.updated": {
+    "required_keys": ["ts_ms"]
+  },
+  "plugin.loaded": {
+    "required_keys": ["ts_ms", "plugin_id", "action"]
+  },
+  "canvas.update": {
+    "required_keys": ["ts_ms", "canvas_id", "content_type", "data"]
+  }
+}

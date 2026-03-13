@@ -1,0 +1,73 @@
+{
+  "cases": [
+    {
+      "name": "default collect mode",
+      "default_cap": 20,
+      "expected": {
+        "mode": "collect",
+        "cap": 20,
+        "drop": "summarize",
+        "collect": true,
+        "sequential": false
+      }
+    },
+    {
+      "name": "config by_channel override",
+      "default_cap": 20,
+      "channel_id": "discord-main",
+      "config": {
+        "mode": "followup",
+        "cap": 12,
+        "drop": "oldest",
+        "by_channel": {
+          "discord-main": "steer-backlog"
+        }
+      },
+      "expected": {
+        "mode": "steer-backlog",
+        "cap": 12,
+        "drop": "oldest",
+        "collect": false,
+        "sequential": true
+      }
+    },
+    {
+      "name": "session override wins",
+      "default_cap": 20,
+      "channel_id": "discord-main",
+      "config": {
+        "mode": "collect",
+        "cap": 15,
+        "drop": "summarize"
+      },
+      "session": {
+        "queue_mode": "queue",
+        "queue_cap": 25,
+        "queue_drop": "newest"
+      },
+      "expected": {
+        "mode": "queue",
+        "cap": 25,
+        "drop": "newest",
+        "collect": false,
+        "sequential": true
+      }
+    },
+    {
+      "name": "invalid config values fail closed",
+      "default_cap": 10,
+      "config": {
+        "mode": "invalid-mode",
+        "cap": -4,
+        "drop": "invalid-drop"
+      },
+      "expected": {
+        "mode": "collect",
+        "cap": 10,
+        "drop": "summarize",
+        "collect": true,
+        "sequential": false
+      }
+    }
+  ]
+}

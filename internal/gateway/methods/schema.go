@@ -125,6 +125,10 @@ const (
 	MethodNodeInvokeResult   = "node.invoke.result"
 	MethodNodeEvent          = "node.event"
 	MethodNodeResult         = "node.result"
+	MethodNodePendingEnqueue = "node.pending.enqueue"
+	MethodNodePendingPull    = "node.pending.pull"
+	MethodNodePendingAck     = "node.pending.ack"
+	MethodNodePendingDrain   = "node.pending.drain"
 	MethodNodeCanvasCapabilityRefresh = "node.canvas.capability.refresh"
 
 	MethodCanvasGet    = "canvas.get"
@@ -156,6 +160,7 @@ const (
 	MethodUpdateRun          = "update.run"
 	MethodTalkConfig         = "talk.config"
 	MethodTalkMode           = "talk.mode"
+	MethodGatewayIdentityGet = "gateway.identity.get"
 	MethodLastHeartbeat      = "last-heartbeat"
 	MethodSetHeartbeats      = "set-heartbeats"
 	MethodWake               = "wake"
@@ -756,6 +761,28 @@ type NodeResultRequest struct {
 	Status string `json:"status,omitempty"`
 	Result any    `json:"result,omitempty"`
 	Error  string `json:"error,omitempty"`
+}
+
+type NodePendingEnqueueRequest struct {
+	NodeID         string         `json:"node_id"`
+	Command        string         `json:"command"`
+	Args           map[string]any `json:"args,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	TTLMS          int            `json:"ttl_ms,omitempty"`
+}
+
+type NodePendingPullRequest struct {
+	NodeID string `json:"node_id,omitempty"`
+}
+
+type NodePendingAckRequest struct {
+	NodeID string   `json:"node_id"`
+	IDs    []string `json:"ids,omitempty"`
+}
+
+type NodePendingDrainRequest struct {
+	NodeID   string `json:"node_id"`
+	MaxItems int    `json:"max_items,omitempty"`
 }
 
 type CronListRequest struct {
@@ -1682,6 +1709,58 @@ func (r NodeResultRequest) Normalize() (NodeResultRequest, error) {
 	return r, nil
 }
 
+func (r NodePendingEnqueueRequest) Normalize() (NodePendingEnqueueRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	r.Command = strings.TrimSpace(r.Command)
+	r.IdempotencyKey = strings.TrimSpace(r.IdempotencyKey)
+	if r.NodeID == "" || r.Command == "" {
+		return r, fmt.Errorf("node_id and command are required")
+	}
+	if r.Args == nil {
+		r.Args = map[string]any{}
+	}
+	if r.TTLMS < 0 {
+		r.TTLMS = 0
+	}
+	return r, nil
+}
+
+func (r NodePendingPullRequest) Normalize() (NodePendingPullRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	if r.NodeID == "" {
+		return r, fmt.Errorf("node_id is required")
+	}
+	return r, nil
+}
+
+func (r NodePendingAckRequest) Normalize() (NodePendingAckRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	if r.NodeID == "" {
+		return r, fmt.Errorf("node_id is required")
+	}
+	out := make([]string, 0, len(r.IDs))
+	for _, id := range r.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		out = append(out, id)
+	}
+	r.IDs = out
+	return r, nil
+}
+
+func (r NodePendingDrainRequest) Normalize() (NodePendingDrainRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	if r.NodeID == "" {
+		return r, fmt.Errorf("node_id is required")
+	}
+	if r.MaxItems < 0 {
+		r.MaxItems = 0
+	}
+	return r, nil
+}
+
 func (r CronListRequest) Normalize() (CronListRequest, error) {
 	r.Limit = normalizeLimit(r.Limit, 100, 500)
 	return r, nil
@@ -2096,6 +2175,10 @@ func SupportedMethods() []string {
 		MethodNodeInvokeResult,
 		MethodNodeEvent,
 		MethodNodeResult,
+		MethodNodePendingEnqueue,
+		MethodNodePendingPull,
+		MethodNodePendingAck,
+		MethodNodePendingDrain,
 		MethodNodeCanvasCapabilityRefresh,
 		MethodCanvasGet,
 		MethodCanvasList,
@@ -2125,6 +2208,7 @@ func SupportedMethods() []string {
 		MethodUpdateRun,
 		MethodTalkConfig,
 		MethodTalkMode,
+		MethodGatewayIdentityGet,
 		MethodLastHeartbeat,
 		MethodSetHeartbeats,
 		MethodWake,
@@ -3533,6 +3617,22 @@ func DecodeNodeResultParams(params json.RawMessage) (NodeResultRequest, error) {
 	return decodeMethodParams[NodeResultRequest](params)
 }
 
+func DecodeNodePendingEnqueueParams(params json.RawMessage) (NodePendingEnqueueRequest, error) {
+	return decodeMethodParams[NodePendingEnqueueRequest](params)
+}
+
+func DecodeNodePendingPullParams(params json.RawMessage) (NodePendingPullRequest, error) {
+	return decodeMethodParams[NodePendingPullRequest](params)
+}
+
+func DecodeNodePendingAckParams(params json.RawMessage) (NodePendingAckRequest, error) {
+	return decodeMethodParams[NodePendingAckRequest](params)
+}
+
+func DecodeNodePendingDrainParams(params json.RawMessage) (NodePendingDrainRequest, error) {
+	return decodeMethodParams[NodePendingDrainRequest](params)
+}
+
 func DecodeCronListParams(params json.RawMessage) (CronListRequest, error) {
 	if len(bytes.TrimSpace(params)) == 0 {
 		return CronListRequest{}, nil
@@ -3903,6 +4003,8 @@ var objectParamAliases = map[string]string{
 	"apiKey":           "api_key",
 	"includePlugins":   "include_plugins",
 	"nodeId":           "node_id",
+	"maxItems":         "max_items",
+	"ttlMs":            "ttl_ms",
 	"deviceId":         "device_id",
 	"instanceId":       "instance_id",
 	"lastInputSeconds": "last_input_seconds",

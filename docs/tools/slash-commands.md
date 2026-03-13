@@ -29,6 +29,23 @@ Hard reset the current session, clearing all history.
 /reset
 ```
 
+### `/restart`
+Restart the current session (alias to reset/new semantics).
+
+```
+/restart
+```
+
+### `/session`
+Session management command.
+
+```
+/session show
+/session list
+/session reset
+/session delete <session-id>
+```
+
 ### `/compact`
 Manually compact (summarize) older conversation history to free up context window space.
 Optionally provide instructions for what to focus on.
@@ -79,6 +96,23 @@ Clear a session-scoped configuration value.
 ```
 /unset model
 /unset thinking
+```
+
+### `/fast on|off`
+Convenience toggle for per-session fast mode.
+
+```
+/fast on
+/fast off
+```
+
+### `/usage [off|on|tokens|full]`
+Show token usage counters for this session, or set the response usage mode.
+
+```
+/usage
+/usage tokens
+/usage full
 ```
 
 ## Export and memory

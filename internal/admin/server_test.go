@@ -1507,10 +1507,45 @@ func TestDispatchMethodCallNodeInvokeAndCronMethods(t *testing.T) {
 	}
 
 	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodCronList, map[string]any{"limit": 10})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("cron.list failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodCronStatus, map[string]any{"id": "c1"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("cron.status failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodCronUpdate, map[string]any{"id": "c1", "enabled": false})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("cron.update failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
 	req = newMethodRequest(t, methods.MethodCronRun, map[string]any{"id": "c1"})
 	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("cron.run failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodCronRuns, map[string]any{"limit": 10})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("cron.runs failed status=%d err=%v", status, err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodCronRemove, map[string]any{"id": "c1"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("cron.remove failed status=%d err=%v", status, err)
 	}
 }
 
@@ -1531,8 +1566,29 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		WizardStart: func(context.Context, methods.WizardStartRequest) (map[string]any, error) {
 			return map[string]any{"session_id": "wizard-1", "status": "running"}, nil
 		},
+		WizardNext: func(_ context.Context, req methods.WizardNextRequest) (map[string]any, error) {
+			return map[string]any{"id": req.ID, "status": "running"}, nil
+		},
+		WizardCancel: func(_ context.Context, req methods.WizardCancelRequest) (map[string]any, error) {
+			return map[string]any{"id": req.ID, "status": "cancelled"}, nil
+		},
+		WizardStatus: func(_ context.Context, req methods.WizardStatusRequest) (map[string]any, error) {
+			return map[string]any{"id": req.ID, "status": "running"}, nil
+		},
+		UpdateRun: func(context.Context, methods.UpdateRunRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "channel": "stable"}, nil
+		},
 		TalkConfig: func(context.Context, methods.TalkConfigRequest) (map[string]any, error) {
 			return map[string]any{"config": map[string]any{}}, nil
+		},
+		TalkMode: func(_ context.Context, req methods.TalkModeRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "mode": req.Mode}, nil
+		},
+		LastHeartbeat: func(context.Context, methods.LastHeartbeatRequest) (map[string]any, error) {
+			return map[string]any{"at": time.Now().Unix(), "state": "idle"}, nil
+		},
+		Wake: func(_ context.Context, req methods.WakeRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "source": req.Source, "mode": req.Mode}, nil
 		},
 		SystemPresence: func(context.Context, methods.SystemPresenceRequest) ([]map[string]any, error) {
 			return []map[string]any{{"key": "default"}}, nil
@@ -1548,6 +1604,21 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		},
 		VoicewakeGet: func(context.Context, methods.VoicewakeGetRequest) (map[string]any, error) {
 			return map[string]any{"triggers": []string{"openclaw"}}, nil
+		},
+		VoicewakeSet: func(_ context.Context, req methods.VoicewakeSetRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "triggers": req.Triggers}, nil
+		},
+		TTSStatus: func(context.Context, methods.TTSStatusRequest) (map[string]any, error) {
+			return map[string]any{"enabled": true, "provider": "openai"}, nil
+		},
+		TTSProviders: func(context.Context, methods.TTSProvidersRequest) (map[string]any, error) {
+			return map[string]any{"providers": []string{"openai", "kokoro"}}, nil
+		},
+		TTSEnable: func(context.Context, methods.TTSEnableRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "enabled": true}, nil
+		},
+		TTSDisable: func(context.Context, methods.TTSDisableRequest) (map[string]any, error) {
+			return map[string]any{"ok": true, "enabled": false}, nil
 		},
 		TTSSetProvider: func(_ context.Context, req methods.TTSSetProviderRequest) (map[string]any, error) {
 			return map[string]any{"ok": true, "provider": req.Provider}, nil
@@ -1566,12 +1637,24 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		{method: methods.MethodExecApprovalWaitDecision, params: map[string]any{"id": "approval-1"}},
 		{method: methods.MethodSecretsResolve, params: map[string]any{"commandName": "memory status", "targetIds": []string{"talk.apiKey"}}},
 		{method: methods.MethodWizardStart, params: map[string]any{"mode": "local"}},
+		{method: methods.MethodWizardNext, params: map[string]any{"id": "wizard-1", "input": map[string]any{"step": "confirm"}}},
+		{method: methods.MethodWizardCancel, params: map[string]any{"id": "wizard-1"}},
+		{method: methods.MethodWizardStatus, params: map[string]any{"id": "wizard-1"}},
+		{method: methods.MethodUpdateRun, params: map[string]any{"force": true}},
 		{method: methods.MethodTalkConfig, params: map[string]any{}},
+		{method: methods.MethodTalkMode, params: map[string]any{"mode": "voice"}},
+		{method: methods.MethodLastHeartbeat, params: map[string]any{}},
+		{method: methods.MethodWake, params: map[string]any{"source": "manual", "mode": "now"}},
 		{method: methods.MethodSystemPresence, params: map[string]any{}},
 		{method: methods.MethodSystemEvent, params: map[string]any{"text": "Node: up"}},
 		{method: methods.MethodSend, params: map[string]any{"to": "0000000000000000000000000000000000000000000000000000000000000001", "message": "hello", "idempotencyKey": "idem-1"}},
 		{method: methods.MethodBrowserRequest, params: map[string]any{"method": "GET", "path": "/status"}},
 		{method: methods.MethodVoicewakeGet, params: map[string]any{}},
+		{method: methods.MethodVoicewakeSet, params: map[string]any{"triggers": []string{"openclaw"}}},
+		{method: methods.MethodTTSStatus, params: map[string]any{}},
+		{method: methods.MethodTTSProviders, params: map[string]any{}},
+		{method: methods.MethodTTSEnable, params: map[string]any{}},
+		{method: methods.MethodTTSDisable, params: map[string]any{}},
 		{method: methods.MethodTTSSetProvider, params: map[string]any{"provider": "openai"}},
 		{method: methods.MethodTTSConvert, params: map[string]any{"text": "hello"}},
 	}
@@ -1751,6 +1834,125 @@ func TestEnvelopeParityFixtures(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCallRouteEnvelopeParityFixtures(t *testing.T) {
+	type fixtureCase struct {
+		Name                 string         `json:"name"`
+		NIP86                bool           `json:"nip86"`
+		Body                 map[string]any `json:"body"`
+		Scenario             string         `json:"scenario"`
+		ExpectedHTTPStatus   int            `json:"expected_http_status"`
+		ExpectedContentType  string         `json:"expected_content_type"`
+		ExpectedOK           *bool          `json:"expected_ok,omitempty"`
+		ExpectedErrorContains string        `json:"expected_error_contains"`
+		ExpectedNIP86Code    int            `json:"expected_nip86_code"`
+		ExpectedResultKey    string         `json:"expected_result_key"`
+		ExpectedErrorDataKey string         `json:"expected_error_data_key"`
+	}
+	type fixtureFile struct {
+		Cases []fixtureCase `json:"cases"`
+	}
+
+	raw, err := os.ReadFile(filepath.Join("testdata", "parity", "call_route_envelope_cases.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fx fixtureFile
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+
+	for _, tc := range fx.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			rawBody, err := json.Marshal(tc.Body)
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/call", bytes.NewReader(rawBody))
+			if tc.NIP86 {
+				req.Header.Set("Content-Type", "application/nostr+json+rpc")
+			}
+			result, status, callErr := dispatchMethodCall(context.Background(), rr, req, callRouteFixtureOptions(tc.Scenario))
+			if isNIP86RPC(req) {
+				if callErr != nil {
+					writeNIP86JSON(rr, map[string]any{"error": methods.MapNIP86Error(status, callErr)})
+				} else {
+					writeNIP86JSON(rr, map[string]any{"result": result})
+				}
+			} else {
+				if callErr != nil {
+					writeJSON(rr, status, methods.CallResponse{OK: false, Error: callErr.Error()})
+				} else {
+					writeJSON(rr, status, methods.CallResponse{OK: true, Result: result})
+				}
+			}
+
+			if rr.Code != tc.ExpectedHTTPStatus {
+				t.Fatalf("status=%d want=%d", rr.Code, tc.ExpectedHTTPStatus)
+			}
+			if got := rr.Header().Get("Content-Type"); got != tc.ExpectedContentType {
+				t.Fatalf("content-type=%q want=%q", got, tc.ExpectedContentType)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if tc.ExpectedOK != nil {
+				if body["ok"] != *tc.ExpectedOK {
+					t.Fatalf("ok=%v want=%v body=%#v", body["ok"], *tc.ExpectedOK, body)
+				}
+			}
+			if tc.ExpectedErrorContains != "" {
+				if tc.NIP86 {
+					errObj, _ := body["error"].(map[string]any)
+					msg, _ := errObj["message"].(string)
+					if !strings.Contains(msg, tc.ExpectedErrorContains) {
+						t.Fatalf("error message=%q want contains %q", msg, tc.ExpectedErrorContains)
+					}
+				} else {
+					msg, _ := body["error"].(string)
+					if !strings.Contains(msg, tc.ExpectedErrorContains) {
+						t.Fatalf("error=%q want contains %q", msg, tc.ExpectedErrorContains)
+					}
+				}
+			}
+			if tc.ExpectedNIP86Code != 0 {
+				errObj, _ := body["error"].(map[string]any)
+				if int(errObj["code"].(float64)) != tc.ExpectedNIP86Code {
+					t.Fatalf("nip86 code=%v want=%d", errObj["code"], tc.ExpectedNIP86Code)
+				}
+			}
+			if tc.ExpectedResultKey != "" {
+				resultObj, _ := body["result"].(map[string]any)
+				if _, ok := resultObj[tc.ExpectedResultKey]; !ok {
+					t.Fatalf("result missing key %q: %#v", tc.ExpectedResultKey, resultObj)
+				}
+			}
+			if tc.ExpectedErrorDataKey != "" {
+				errObj, _ := body["error"].(map[string]any)
+				data, _ := errObj["data"].(map[string]any)
+				if _, ok := data[tc.ExpectedErrorDataKey]; !ok {
+					t.Fatalf("error.data missing key %q: %#v", tc.ExpectedErrorDataKey, data)
+				}
+			}
+		})
+	}
+}
+
+func callRouteFixtureOptions(scenario string) ServerOptions {
+	switch scenario {
+	case "list_put_conflict":
+		return ServerOptions{
+			GetListWithEvent: func(_ context.Context, _ string) (state.ListDoc, state.Event, error) {
+				return state.ListDoc{Version: 2, Name: "allowlist"}, state.Event{ID: "evt-2"}, nil
+			},
+			PutList: func(_ context.Context, _ string, _ state.ListDoc) error { return nil },
+		}
+	default:
+		return ServerOptions{}
 	}
 }
 

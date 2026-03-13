@@ -1,6 +1,9 @@
 package channels
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -112,5 +115,41 @@ func TestJoinMessages(t *testing.T) {
 	joined := JoinMessages([]string{"hello", "world"})
 	if joined != "hello\nworld" {
 		t.Fatalf("unexpected join: %q", joined)
+	}
+}
+
+func TestLifecycleRouteContracts_Fixtures(t *testing.T) {
+	type fixtureCase struct {
+		Name               string `json:"name"`
+		ChannelID          string `json:"channel_id"`
+		SenderID           string `json:"sender_id"`
+		ThreadID           string `json:"thread_id"`
+		ExpectedDebounce   string `json:"expected_debounce_key"`
+		ExpectedSessionKey string `json:"expected_session_id"`
+	}
+	type fixtureFile struct {
+		Cases []fixtureCase `json:"cases"`
+	}
+
+	raw, err := os.ReadFile(filepath.Join("testdata", "lifecycle_route_contracts.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fx fixtureFile
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+
+	for _, tc := range fx.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			gotDebounce := DebounceKeyWithThread(tc.ChannelID, tc.SenderID, tc.ThreadID)
+			if gotDebounce != tc.ExpectedDebounce {
+				t.Fatalf("debounce key mismatch got=%q want=%q", gotDebounce, tc.ExpectedDebounce)
+			}
+			gotSession := SessionIDForMessage(tc.ChannelID, tc.SenderID, tc.ThreadID)
+			if gotSession != tc.ExpectedSessionKey {
+				t.Fatalf("session key mismatch got=%q want=%q", gotSession, tc.ExpectedSessionKey)
+			}
+		})
 	}
 }
