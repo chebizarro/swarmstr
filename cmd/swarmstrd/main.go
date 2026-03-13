@@ -2216,7 +2216,7 @@ func main() {
 			}
 
 			var identityParts []string
-			for _, fname := range []string{"SOUL.md", "IDENTITY.md", "USER.md"} {
+			for _, fname := range []string{"SOUL.md", "IDENTITY.md", "USER.md", "AGENTS.md"} {
 				fpath := filepath.Join(wsDir, fname)
 				if raw, ferr := os.ReadFile(fpath); ferr == nil && len(raw) > 0 {
 					identityParts = append(identityParts, strings.TrimSpace(string(raw)))
