@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {
+      "name": "channel_scope_no_thread",
+      "channel_id": "slack-general",
+      "sender_id": "U123",
+      "thread_id": "",
+      "expected_debounce_key": "slack-general:U123",
+      "expected_session_id": "ch:slack-general:U123"
+    },
+    {
+      "name": "thread_scope_enabled",
+      "channel_id": "slack-general",
+      "sender_id": "U123",
+      "thread_id": "1700000000.12345",
+      "expected_debounce_key": "slack-general:U123:thread:1700000000.12345",
+      "expected_session_id": "ch:slack-general:U123:thread:1700000000.12345"
+    },
+    {
+      "name": "group_sender_isolation",
+      "channel_id": "nostr-group-42",
+      "sender_id": "npub1alice",
+      "thread_id": "",
+      "expected_debounce_key": "nostr-group-42:npub1alice",
+      "expected_session_id": "ch:nostr-group-42:npub1alice"
+    }
+  ]
+}

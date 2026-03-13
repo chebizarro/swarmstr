@@ -1,0 +1,105 @@
+{
+  "parse_cases": [
+    {
+      "name": "direct slash new",
+      "input": "/new continue",
+      "trigger": "/new",
+      "remainder": "continue"
+    },
+    {
+      "name": "structural prefix then reset",
+      "input": "[Dec 4 17:35] /reset please",
+      "trigger": "/reset",
+      "remainder": "please"
+    },
+    {
+      "name": "no reset trigger",
+      "input": "hello world",
+      "trigger": "",
+      "remainder": ""
+    }
+  ],
+  "freshness_policy_cases": [
+    {
+      "name": "ttl-based default policy",
+      "cfg": {
+        "ttl_seconds": 3600
+      },
+      "session_type": "direct",
+      "expected": {
+        "idle_minutes": 60,
+        "daily_reset": false
+      }
+    },
+    {
+      "name": "type override",
+      "cfg": {
+        "session_reset": {
+          "default": {
+            "idle_minutes": 120,
+            "daily_reset": false
+          },
+          "group": {
+            "idle_minutes": 30
+          }
+        }
+      },
+      "session_type": "group",
+      "expected": {
+        "idle_minutes": 30,
+        "daily_reset": false
+      }
+    },
+    {
+      "name": "channel override",
+      "cfg": {
+        "session_reset": {
+          "default": {
+            "idle_minutes": 120,
+            "daily_reset": false
+          },
+          "channels": {
+            "telegram-main": {
+              "idle_minutes": 5
+            }
+          }
+        }
+      },
+      "session_type": "group",
+      "channel_id": "telegram-main",
+      "expected": {
+        "idle_minutes": 5,
+        "daily_reset": false
+      }
+    }
+  ],
+  "rotate_cases": [
+    {
+      "name": "idle rotation",
+      "updated_ago_minutes": 120,
+      "policy": {
+        "idle_minutes": 60,
+        "daily_reset": false
+      },
+      "expect_rotate": true
+    },
+    {
+      "name": "no idle rotation",
+      "updated_ago_minutes": 30,
+      "policy": {
+        "idle_minutes": 60,
+        "daily_reset": false
+      },
+      "expect_rotate": false
+    },
+    {
+      "name": "daily rotation",
+      "updated_ago_minutes": 1440,
+      "policy": {
+        "idle_minutes": 0,
+        "daily_reset": true
+      },
+      "expect_rotate": true
+    }
+  ]
+}

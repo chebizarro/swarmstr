@@ -26,10 +26,13 @@ type IndexedMemory struct {
 }
 
 type Index struct {
-	mu      sync.RWMutex
-	path    string
-	docs    map[string]IndexedMemory
-	byToken map[string]map[string]struct{}
+	mu       sync.RWMutex
+	path     string
+	docs     map[string]IndexedMemory
+	byToken  map[string]map[string]struct{}
+	cache    map[string][]IndexedMemory
+	order    []string
+	cacheCap int
 }
 
 type diskIndex struct {
@@ -52,7 +55,13 @@ func OpenIndex(path string) (*Index, error) {
 		}
 		path = defaultPath
 	}
-	idx := &Index{path: path, docs: map[string]IndexedMemory{}, byToken: map[string]map[string]struct{}{}}
+	idx := &Index{
+		path:     path,
+		docs:     map[string]IndexedMemory{},
+		byToken:  map[string]map[string]struct{}{},
+		cache:    map[string][]IndexedMemory{},
+		cacheCap: 256,
+	}
 	if err := idx.load(); err != nil {
 		return nil, err
 	}
@@ -93,6 +102,7 @@ func (i *Index) Delete(id string) bool {
 	}
 	delete(i.docs, id)
 	i.rebuildTokenMapLocked()
+	i.clearCacheLocked()
 	return true
 }
 
@@ -114,6 +124,7 @@ func (i *Index) Add(doc state.MemoryDoc) {
 	}
 	i.docs[im.MemoryID] = im
 	i.rebuildTokenMapLocked()
+	i.clearCacheLocked()
 }
 
 func (i *Index) Search(query string, limit int) []IndexedMemory {
@@ -124,9 +135,13 @@ func (i *Index) Search(query string, limit int) []IndexedMemory {
 	if len(tokens) == 0 {
 		return nil
 	}
+	cacheKey := searchCacheKey("", strings.Join(tokens, " "), limit)
 
 	i.mu.RLock()
-	defer i.mu.RUnlock()
+	if cached, ok := i.getCachedLocked(cacheKey); ok {
+		i.mu.RUnlock()
+		return cloneMemories(cached)
+	}
 
 	scores := map[string]int{}
 	for _, tk := range tokens {
@@ -142,6 +157,8 @@ func (i *Index) Search(query string, limit int) []IndexedMemory {
 			results = append(results, doc)
 		}
 	}
+	i.mu.RUnlock()
+
 	sort.Slice(results, func(a, b int) bool {
 		aScore := scores[results[a].MemoryID]
 		bScore := scores[results[b].MemoryID]
@@ -153,7 +170,11 @@ func (i *Index) Search(query string, limit int) []IndexedMemory {
 	if len(results) > limit {
 		results = results[:limit]
 	}
-	return results
+
+	i.mu.Lock()
+	i.setCachedLocked(cacheKey, results)
+	i.mu.Unlock()
+	return cloneMemories(results)
 }
 
 // ListByTopic returns all entries whose Topic exactly matches the given topic,
@@ -196,6 +217,7 @@ func (i *Index) Compact(maxEntries int) int {
 		delete(i.docs, entries[idx].MemoryID)
 	}
 	i.rebuildTokenMapLocked()
+	i.clearCacheLocked()
 	return toRemove
 }
 
@@ -246,6 +268,14 @@ func (i *Index) SearchSession(sessionID, query string, limit int) []IndexedMemor
 	if limit <= 0 {
 		limit = 8
 	}
+	cacheKey := searchCacheKey(sessionID, query, limit)
+	i.mu.RLock()
+	if cached, ok := i.getCachedLocked(cacheKey); ok {
+		i.mu.RUnlock()
+		return cloneMemories(cached)
+	}
+	i.mu.RUnlock()
+
 	candidates := i.Search(query, limit*4)
 	out := make([]IndexedMemory, 0, limit)
 	seen := map[string]struct{}{}
@@ -259,7 +289,10 @@ func (i *Index) SearchSession(sessionID, query string, limit int) []IndexedMemor
 		seen[doc.MemoryID] = struct{}{}
 		out = append(out, doc)
 		if len(out) >= limit {
-			return out
+			i.mu.Lock()
+			i.setCachedLocked(cacheKey, out)
+			i.mu.Unlock()
+			return cloneMemories(out)
 		}
 	}
 	for _, doc := range i.ListSession(sessionID, limit*2) {
@@ -272,7 +305,10 @@ func (i *Index) SearchSession(sessionID, query string, limit int) []IndexedMemor
 			break
 		}
 	}
-	return out
+	i.mu.Lock()
+	i.setCachedLocked(cacheKey, out)
+	i.mu.Unlock()
+	return cloneMemories(out)
 }
 
 func (i *Index) Save() error {
@@ -315,6 +351,7 @@ func (i *Index) load() error {
 		i.docs[doc.MemoryID] = doc
 	}
 	i.rebuildTokenMapLocked()
+	i.clearCacheLocked()
 	return nil
 }
 
@@ -328,6 +365,52 @@ func (i *Index) rebuildTokenMapLocked() {
 			i.byToken[tk][id] = struct{}{}
 		}
 	}
+}
+
+func searchCacheKey(sessionID, query string, limit int) string {
+	query = strings.TrimSpace(strings.ToLower(query))
+	return fmt.Sprintf("%s|%d|%s", sessionID, limit, query)
+}
+
+func cloneMemories(in []IndexedMemory) []IndexedMemory {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]IndexedMemory, len(in))
+	copy(out, in)
+	return out
+}
+
+func (i *Index) getCachedLocked(key string) ([]IndexedMemory, bool) {
+	if i.cache == nil {
+		return nil, false
+	}
+	v, ok := i.cache[key]
+	return v, ok
+}
+
+func (i *Index) setCachedLocked(key string, value []IndexedMemory) {
+	if i.cacheCap <= 0 {
+		return
+	}
+	if i.cache == nil {
+		i.cache = map[string][]IndexedMemory{}
+	}
+	if _, exists := i.cache[key]; !exists {
+		i.order = append(i.order, key)
+	}
+	i.cache[key] = cloneMemories(value)
+	if len(i.order) <= i.cacheCap {
+		return
+	}
+	victim := i.order[0]
+	i.order = i.order[1:]
+	delete(i.cache, victim)
+}
+
+func (i *Index) clearCacheLocked() {
+	i.cache = map[string][]IndexedMemory{}
+	i.order = nil
 }
 
 func queryTokens(s string) []string {

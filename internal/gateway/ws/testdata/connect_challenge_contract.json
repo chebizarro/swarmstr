@@ -1,0 +1,3 @@
+{
+  "required_keys": ["type", "event", "payload.nonce", "payload.ts"]
+}

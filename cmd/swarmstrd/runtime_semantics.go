@@ -342,6 +342,10 @@ type agentJobSnapshot struct {
 	EndedAt   int64
 	Result    string
 	Err       string
+	FallbackUsed   bool
+	FallbackFrom   string
+	FallbackTo     string
+	FallbackReason string
 }
 
 type agentJobRegistry struct {
@@ -399,6 +403,21 @@ func (r *agentJobRegistry) Finish(runID string, result string, err error) {
 		delete(r.jobs, runID)
 		r.mu.Unlock()
 	}()
+}
+
+func (r *agentJobRegistry) SetFallback(runID, from, to, reason string) {
+	r.mu.Lock()
+	h := r.jobs[runID]
+	r.mu.Unlock()
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.snapshot.FallbackUsed = true
+	h.snapshot.FallbackFrom = strings.TrimSpace(from)
+	h.snapshot.FallbackTo = strings.TrimSpace(to)
+	h.snapshot.FallbackReason = strings.TrimSpace(reason)
+	h.mu.Unlock()
 }
 
 // Get returns a snapshot of the job for runID, or (zero, false) if not found.

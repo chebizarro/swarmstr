@@ -32,28 +32,31 @@ type NIP04Decrypter interface {
 }
 
 type DMBusOptions struct {
-	PrivateKey  string
+	PrivateKey string
 	// Keyer is an optional pre-built nostr.Keyer (e.g. a NIP-46 BunkerSigner).
 	// When set, it is used for NIP-42 AUTH signing. PrivateKey is still needed
 	// for NIP-04 encryption/decryption (which requires a raw secret key).
-	Keyer       nostr.Keyer
-	Relays      []string
-	SinceUnix   int64
-	OnMessage   func(context.Context, InboundDM) error
-	OnError     func(error)
-	SeenCap     int
-	WorkerCount int
-	QueueSize   int
+	Keyer        nostr.Keyer
+	Relays       []string
+	SinceUnix    int64
+	OnMessage    func(context.Context, InboundDM) error
+	OnError      func(error)
+	SeenCap      int
+	WorkerCount  int
+	QueueSize    int
+	ReplayWindow time.Duration
 }
 
 type DMBus struct {
-	pool      *nostr.Pool
-	ks        nostr.Keyer
-	relays    []string
-	relaysMu  sync.RWMutex
-	public    nostr.PubKey
-	onMessage func(context.Context, InboundDM) error
-	onError   func(error)
+	pool         *nostr.Pool
+	ks           nostr.Keyer
+	relays       []string
+	relaysMu     sync.RWMutex
+	public       nostr.PubKey
+	onMessage    func(context.Context, InboundDM) error
+	onError      func(error)
+	health       *RelayHealthTracker
+	replayWindow time.Duration
 
 	seenMu   sync.Mutex
 	seenSet  map[string]struct{}
@@ -114,10 +117,16 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 	}
 	workerCount := max(opts.WorkerCount, 4)
 	queueSize := max(opts.QueueSize, 256)
+	replayWindow := opts.ReplayWindow
+	if replayWindow <= 0 {
+		replayWindow = 30 * time.Minute
+	}
 
 	ctx, cancel := context.WithCancel(parent)
+	health := NewRelayHealthTracker()
+	health.Seed(initialRelays)
 	bus := &DMBus{
-		ks:   ks,
+		ks: ks,
 		pool: nostr.NewPool(nostr.PoolOptions{
 			PenaltyBox: true,
 			RelayOptions: nostr.RelayOptions{
@@ -128,9 +137,11 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 			},
 		}),
 		relays:       initialRelays,
-			public:       public,
+		public:       public,
 		onMessage:    opts.OnMessage,
+		health:       health,
 		onError:      opts.OnError,
+		replayWindow: replayWindow,
 		seenSet:      make(map[string]struct{}),
 		seenCap:      max(opts.SeenCap, 10_000),
 		messageQueue: make(chan InboundDM, queueSize),
@@ -190,7 +201,7 @@ func (b *DMBus) SendDM(ctx context.Context, toPubKey string, text string) error 
 	if err != nil {
 		return err
 	}
-	_, err = publishEncryptedDM(ctx, b.pool, b.ks, b.currentRelays(), pk, text)
+	_, err = publishEncryptedDMWithRetry(ctx, b.pool, b.ks, b.currentRelays(), pk, text, b.health)
 	return err
 }
 
@@ -202,6 +213,9 @@ func (b *DMBus) SetRelays(relays []string) error {
 	b.relaysMu.Lock()
 	b.relays = next
 	b.relaysMu.Unlock()
+	if b.health != nil {
+		b.health.Seed(next)
+	}
 	return nil
 }
 
@@ -235,7 +249,7 @@ func SendDMOnce(ctx context.Context, privateKey string, relays []string, toPubKe
 		},
 	})
 	defer pool.Close("send once finished")
-	return publishEncryptedDM(ctx, pool, onceKS, relays, pk, text)
+	return publishEncryptedDMWithRetry(ctx, pool, onceKS, relays, pk, text, nil)
 }
 
 // nip04KeyerAdapter wraps a raw secret key as a nostr.Keyer that also
@@ -274,6 +288,13 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		b.emitErr(fmt.Errorf("rejected invalid event from relay=%s", re.Relay.URL))
 		return
 	}
+	if b.replayWindow > 0 {
+		now := time.Now().Unix()
+		if int64(re.Event.CreatedAt) < now-int64(b.replayWindow.Seconds()) {
+			// Too old/replayed; drop after signature validation.
+			return
+		}
+	}
 	if !re.Event.Tags.ContainsAny("p", []string{b.public.Hex()}) {
 		return
 	}
@@ -302,6 +323,10 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		return
 	}
 
+	if b.health != nil {
+		b.health.RecordSuccess(re.Relay.URL)
+	}
+
 	msg := InboundDM{
 		EventID:    eventID,
 		FromPubKey: re.Event.PubKey.Hex(),
@@ -313,7 +338,7 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 			if err != nil {
 				return err
 			}
-			_, err := publishEncryptedDM(ctx, b.pool, b.ks, b.currentRelays(), re.Event.PubKey, text)
+			_, err := publishEncryptedDMWithRetry(ctx, b.pool, b.ks, b.currentRelays(), re.Event.PubKey, text, b.health)
 			return err
 		},
 	}
@@ -357,6 +382,10 @@ type NIP04Encrypter interface {
 }
 
 func publishEncryptedDM(ctx context.Context, pool *nostr.Pool, ks nostr.Keyer, relays []string, to nostr.PubKey, text string) (string, error) {
+	return publishEncryptedDMWithRetry(ctx, pool, ks, relays, to, text, nil)
+}
+
+func publishEncryptedDMWithRetry(ctx context.Context, pool *nostr.Pool, ks nostr.Keyer, relays []string, to nostr.PubKey, text string, health *RelayHealthTracker) (string, error) {
 	var err error
 	text, err = sanitizeDMText(text)
 	if err != nil {
@@ -381,24 +410,46 @@ func publishEncryptedDM(ctx context.Context, pool *nostr.Pool, ks nostr.Keyer, r
 		return "", fmt.Errorf("sign dm event: %w", err)
 	}
 
-	published := false
+	maxAttempts := 3
 	var lastErr error
-	for result := range pool.PublishMany(ctx, relays, evt) {
-		if result.Error == nil {
-			published = true
-			continue
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		attemptRelays := relays
+		if health != nil {
+			attemptRelays = health.Candidates(relays, time.Now())
 		}
-		lastErr = fmt.Errorf("relay %s: %w", result.RelayURL, result.Error)
-	}
-
-	if !published {
-		if lastErr == nil {
-			lastErr = fmt.Errorf("no relay accepted publish")
+		published := false
+		for result := range pool.PublishMany(ctx, attemptRelays, evt) {
+			if result.Error == nil {
+				published = true
+				if health != nil {
+					health.RecordSuccess(result.RelayURL)
+				}
+				continue
+			}
+			if health != nil {
+				health.RecordFailure(result.RelayURL)
+			}
+			lastErr = fmt.Errorf("relay %s: %w", result.RelayURL, result.Error)
 		}
-		return "", lastErr
+		if published {
+			return evt.ID.Hex(), nil
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		if attempt < maxAttempts-1 {
+			backoff := time.Duration(150*(1<<attempt)) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
 	}
-
-	return evt.ID.Hex(), nil
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no relay accepted publish")
+	}
+	return "", lastErr
 }
 
 func decryptNIP04(sk nostr.SecretKey, sender nostr.PubKey, content string) (string, error) {

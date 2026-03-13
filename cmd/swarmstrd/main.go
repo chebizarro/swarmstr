@@ -29,38 +29,39 @@ import (
 	"swarmstr/internal/agent"
 	"swarmstr/internal/autoreply"
 	browserpkg "swarmstr/internal/browser"
-	"swarmstr/internal/config"
 	"swarmstr/internal/canvas"
+	"swarmstr/internal/config"
 	"swarmstr/internal/cron"
-	"swarmstr/internal/update"
 	"swarmstr/internal/gateway/channels"
 	"swarmstr/internal/gateway/methods"
+	"swarmstr/internal/gateway/nodepending"
 	gatewayprotocol "swarmstr/internal/gateway/protocol"
 	gatewayws "swarmstr/internal/gateway/ws"
+	hookspkg "swarmstr/internal/hooks"
+	mediapkg "swarmstr/internal/media"
 	"swarmstr/internal/memory"
 	"swarmstr/internal/nostr/dvm"
 	"swarmstr/internal/nostr/nip38"
 	"swarmstr/internal/nostr/nip51"
 	nostruntime "swarmstr/internal/nostr/runtime"
 	"swarmstr/internal/nostr/secure"
-	pluginmanager "swarmstr/internal/plugins/manager"
 	"swarmstr/internal/plugins/installer"
-	skillspkg "swarmstr/internal/skills"
-	hookspkg "swarmstr/internal/hooks"
+	pluginmanager "swarmstr/internal/plugins/manager"
 	"swarmstr/internal/policy"
 	secretspkg "swarmstr/internal/secrets"
+	skillspkg "swarmstr/internal/skills"
 	"swarmstr/internal/store/state"
 	ttspkg "swarmstr/internal/tts"
-	mediapkg "swarmstr/internal/media"
+	"swarmstr/internal/update"
 
 	acppkg "swarmstr/internal/acp"
+	"swarmstr/internal/agent/toolbuiltin"
 	ctxengine "swarmstr/internal/context"
-	"swarmstr/internal/sandbox"
 	exportpkg "swarmstr/internal/export"
 	metricspkg "swarmstr/internal/metrics"
-	ratelimitpkg "swarmstr/internal/ratelimit"
-	"swarmstr/internal/agent/toolbuiltin"
 	"swarmstr/internal/plugins/sdk"
+	ratelimitpkg "swarmstr/internal/ratelimit"
+	"swarmstr/internal/sandbox"
 	securitypkg "swarmstr/internal/security"
 	"swarmstr/internal/webui"
 
@@ -68,6 +69,7 @@ import (
 	// ChannelPlugin implementations with the global channel plugin registry.
 	_ "swarmstr/internal/extensions/bluebubbles"
 	_ "swarmstr/internal/extensions/discord"
+	_ "swarmstr/internal/extensions/email"
 	_ "swarmstr/internal/extensions/feishu"
 	_ "swarmstr/internal/extensions/googlechat"
 	_ "swarmstr/internal/extensions/irc"
@@ -77,7 +79,6 @@ import (
 	_ "swarmstr/internal/extensions/msteams"
 	_ "swarmstr/internal/extensions/nextcloud"
 	_ "swarmstr/internal/extensions/signal"
-	_ "swarmstr/internal/extensions/email"
 	_ "swarmstr/internal/extensions/slack"
 	_ "swarmstr/internal/extensions/synology"
 	_ "swarmstr/internal/extensions/telegram"
@@ -97,7 +98,9 @@ var (
 	controlAgentRuntime    agent.Runtime
 	controlAgentJobs       *agentJobRegistry
 	controlNodeInvocations *nodeInvocationRegistry
+	controlNodePending     *nodepending.Store
 	controlCronJobs        *cronRegistry
+	controlSessionStore    *state.SessionStore
 	controlExecApprovals   *execApprovalsRegistry
 	controlWizards         *wizardRegistry
 	controlOps             *operationsRegistry
@@ -105,7 +108,7 @@ var (
 	controlSessionRouter   *agent.AgentSessionRouter
 	controlChannels        *channels.Registry
 	controlPrivateKey      string
-	controlKeyer           nostr.Keyer    // always set at startup; plain mode wraps key in a keyer
+	controlKeyer           nostr.Keyer      // always set at startup; plain mode wraps key in a keyer
 	controlHeartbeat38     *nip38.Heartbeat // NIP-38 status heartbeat; nil when disabled
 	// controlWsEmitter forwards typed events to connected WS clients.
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
@@ -311,6 +314,7 @@ func main() {
 		log.Printf("session store init failed (non-fatal): %v", ssErr)
 		sessionStore = nil
 	}
+	controlSessionStore = sessionStore
 	baseMemoryIndex, err := memory.OpenIndex("")
 	if err != nil {
 		log.Fatalf("open memory index: %v", err)
@@ -424,12 +428,12 @@ func main() {
 	// These give the agent first-class read/write/DM access to the Nostr network.
 	nostrToolOpts := toolbuiltin.NostrToolOpts{
 		Keyer:  controlKeyer,
-		Relays:     cfg.Relays,
+		Relays: cfg.Relays,
 	}
 	tools.RegisterWithDef("nostr_fetch", toolbuiltin.NostrFetchTool(nostrToolOpts), toolbuiltin.NostrFetchDef)
 	tools.RegisterWithDef("nostr_publish", toolbuiltin.NostrPublishTool(toolbuiltin.NostrToolOpts{
 		Keyer:  controlKeyer,
-		Relays:     cfg.Relays,
+		Relays: cfg.Relays,
 	}), toolbuiltin.NostrPublishDef)
 	// nostr_send_dm uses controlDMBus which is assigned later; capture by reference via closure.
 	tools.Register("nostr_send_dm", func(ctx context.Context, args map[string]any) (string, error) {
@@ -458,8 +462,8 @@ func main() {
 	listStore := nip51.NewListStore()
 	toolbuiltin.RegisterListTools(tools, toolbuiltin.NostrListToolOpts{
 		Keyer:  controlKeyer,
-		Relays:     cfg.Relays,
-		Store:      listStore,
+		Relays: cfg.Relays,
+		Store:  listStore,
 	})
 
 	// NIP-38 status tool — uses controlHeartbeat38 which is set after DM bus starts.
@@ -476,25 +480,25 @@ func main() {
 	// ── Relay-as-memory tools ───────────────────────────────────────────────
 	toolbuiltin.RegisterRelayMemoryTools(tools, toolbuiltin.RelayMemoryToolOpts{
 		Keyer:  controlKeyer,
-		Relays:     cfg.Relays,
+		Relays: cfg.Relays,
 	})
 
 	// ── ContextVM tools ─────────────────────────────────────────────────────
 	toolbuiltin.RegisterContextVMTools(tools, toolbuiltin.ContextVMToolOpts{
 		Keyer:  controlKeyer,
-		Relays:     cfg.Relays,
+		Relays: cfg.Relays,
 	})
 
 	// ── GRASP NIP-34 git repository tools ───────────────────────────────────
 	toolbuiltin.RegisterGRASPTools(tools, toolbuiltin.GRASPToolOpts{
 		Keyer:  controlKeyer,
-		Relays:     cfg.Relays,
+		Relays: cfg.Relays,
 	})
 
 	// ── Loom compute marketplace tools ──────────────────────────────────────
 	toolbuiltin.RegisterLoomTools(tools, toolbuiltin.LoomToolOpts{
 		Keyer:  controlKeyer,
-		Relays:     cfg.Relays,
+		Relays: cfg.Relays,
 	})
 
 	// ── Cashu NUT ecash tools ───────────────────────────────────────────────
@@ -624,7 +628,6 @@ func main() {
 		})
 	}
 
-
 	// ── Early config file sync ──────────────────────────────────────────────
 	// Load config.json synchronously at startup so that configState reflects
 	// file-based settings (e.g. memory.backend) before the backend is initialized.
@@ -640,7 +643,7 @@ func main() {
 		}
 	}
 
-		// Resolve memory backend from live config (Extra["memory"]["backend"]).
+	// Resolve memory backend from live config (Extra["memory"]["backend"]).
 	// The backend abstraction is used to future-proof swappable storage; the
 	// default "memory" backend wraps the in-process JSON inverted index.
 	{
@@ -650,7 +653,7 @@ func main() {
 				memoryBackendName = strings.TrimSpace(beName)
 			}
 		}
-				memoryBackendPath := ""
+		memoryBackendPath := ""
 		if mExtra2, ok2 := configState.Get().Extra["memory"].(map[string]any); ok2 {
 			qdrantURL, _ := mExtra2["url"].(string)
 			ollamaURL, _ := mExtra2["ollama_url"].(string)
@@ -828,6 +831,7 @@ func main() {
 	chatCancels := newChatAbortRegistry()
 	agentJobs := newAgentJobRegistry()
 	nodeInvocations := newNodeInvocationRegistry()
+	nodePending := nodepending.New()
 	cronJobs := newCronRegistry()
 	execApprovals := newExecApprovalsRegistry()
 	wizards := newWizardRegistry()
@@ -841,6 +845,7 @@ func main() {
 	controlAgentRuntime = agentRuntime
 	controlAgentJobs = agentJobs
 	controlNodeInvocations = nodeInvocations
+	controlNodePending = nodePending
 	controlCronJobs = cronJobs
 	// Load persisted cron jobs from the state store so they survive restarts.
 	if loadErr := cronJobs.Load(ctx, docsRepo); loadErr != nil {
@@ -1063,9 +1068,9 @@ func main() {
 			localChanCfg := chanCfg
 			localChanName := chanName
 			ch28, chErr := channels.NewNIP28PublicChannel(ctx, channels.NIP28PublicChannelOptions{
-				ChannelID:  localChanCfg.ChannelID,
-				Keyer:      controlKeyer,
-				Relays:     relays,
+				ChannelID: localChanCfg.ChannelID,
+				Keyer:     controlKeyer,
+				Relays:    relays,
 				OnMessage: func(msg channels.InboundMessage) {
 					// Per-channel allow-from check.
 					if dec := policy.EvaluateGroupMessage(msg.FromPubKey, localChanCfg.AllowFrom, configState.Get()); !dec.Allowed {
@@ -1360,16 +1365,20 @@ func main() {
 		"kill":    policy.AuthTrusted,
 		"new":     policy.AuthTrusted,
 		"reset":   policy.AuthTrusted,
+		"session": policy.AuthTrusted,
+		"fast":    policy.AuthTrusted,
+		"restart": policy.AuthTrusted,
 		// Trusted+: agent routing commands.
 		"focus":   policy.AuthTrusted,
 		"unfocus": policy.AuthTrusted,
 		"spawn":   policy.AuthTrusted,
 		// Public: informational commands (default — listed for documentation).
-		"help":    policy.AuthPublic,
-		"status":  policy.AuthPublic,
-		"info":    policy.AuthPublic,
-		"agents":  policy.AuthPublic,
-		"model":   policy.AuthPublic,
+		"help":   policy.AuthPublic,
+		"status": policy.AuthPublic,
+		"info":   policy.AuthPublic,
+		"agents": policy.AuthPublic,
+		"model":  policy.AuthPublic,
+		"usage":  policy.AuthPublic,
 	}
 	sessionTurns := autoreply.NewSessionTurns()
 	// dmQueues holds per-session pending-turn queues for DMs that arrive while
@@ -1606,9 +1615,15 @@ func main() {
 				if se.ModelOverride != "" {
 					lines = append(lines, fmt.Sprintf("Model:   %s", se.ModelOverride))
 				}
+				if se.ProviderOverride != "" {
+					lines = append(lines, fmt.Sprintf("Provider: %s", se.ProviderOverride))
+				}
 				if se.TotalTokens > 0 {
 					lines = append(lines, fmt.Sprintf("Tokens:  %d in / %d out / %d total",
 						se.InputTokens, se.OutputTokens, se.TotalTokens))
+				}
+				if se.FallbackTo != "" {
+					lines = append(lines, fmt.Sprintf("Fallback: %s → %s", fallbackText(se.FallbackFrom, "primary"), se.FallbackTo))
 				}
 				var flags []string
 				if se.Verbose {
@@ -1620,8 +1635,38 @@ func main() {
 				if se.TTSAuto {
 					flags = append(flags, "tts-auto")
 				}
+				if se.FastMode {
+					flags = append(flags, "fast")
+				}
 				if len(flags) > 0 {
 					lines = append(lines, "Flags:   "+strings.Join(flags, ", "))
+				}
+				if se.VerboseLevel != "" {
+					lines = append(lines, fmt.Sprintf("Verbose: %s", se.VerboseLevel))
+				}
+				if se.ReasoningLevel != "" {
+					lines = append(lines, fmt.Sprintf("Reason:  %s", se.ReasoningLevel))
+				}
+				if se.ThinkingLevel != "" {
+					lines = append(lines, fmt.Sprintf("Think:   %s", se.ThinkingLevel))
+				}
+				if se.ResponseUsage != "" {
+					lines = append(lines, fmt.Sprintf("Usage:   %s", se.ResponseUsage))
+				}
+				if se.QueueMode != "" || se.QueueCap > 0 || se.QueueDrop != "" {
+					qCap := "default"
+					if se.QueueCap > 0 {
+						qCap = strconv.Itoa(se.QueueCap)
+					}
+					qDrop := se.QueueDrop
+					if qDrop == "" {
+						qDrop = "summarize"
+					}
+					qMode := se.QueueMode
+					if qMode == "" {
+						qMode = "collect"
+					}
+					lines = append(lines, fmt.Sprintf("Queue:   mode=%s cap=%s drop=%s", qMode, qCap, qDrop))
 				}
 			}
 		}
@@ -1664,11 +1709,19 @@ func main() {
 	// rotateSession clears transcript and session state, carrying over flags.
 	// For ACP-bound sessions ("acp:*"), the sessionID is preserved (in-place reset).
 	// It returns the response string for the command.
-	rotateSession := func(cmdCtx context.Context, sessionID string) string {
+	rotateSession := func(cmdCtx context.Context, sessionID, reason string) string {
 		isACP := strings.HasPrefix(sessionID, "acp:")
 
-		// Fire session_end hook before clearing state.
-		go controlHooksMgr.Fire("session:end", sessionID, map[string]any{"reason": "reset", "acp": isACP})
+		var priorEntries []state.TranscriptEntryDoc
+		if transcriptRepo != nil {
+			if entries, listErr := transcriptRepo.ListSession(cmdCtx, sessionID, 5000); listErr != nil {
+				log.Printf("session hook context list warning session=%s reason=%s err=%v", sessionID, reason, listErr)
+			} else {
+				priorEntries = entries
+			}
+		}
+		fireSessionResetHooks(controlHooksMgr, sessionID, reason, isACP, priorEntries)
+
 		// Clear first-seen marker so session_start fires again after rotation.
 		seenChannelSessions.Delete(sessionID)
 
@@ -1680,19 +1733,8 @@ func main() {
 			sessionRouter.Assign(sessionID, "")
 		}
 
-		// Clear transcript entries (applies to all session types).
-		if entries, lErr := transcriptRepo.ListSession(cmdCtx, sessionID, 1000); lErr == nil {
-			for _, e := range entries {
-				_ = transcriptRepo.DeleteEntry(cmdCtx, sessionID, e.EntryID)
-			}
-		}
-
-		// Carry over flags in session store (session ID unchanged — in-place reset).
-		if sessionStore != nil {
-			if old, ok := sessionStore.Get(sessionID); ok {
-				newEntry := old.CarryOverFlags(sessionID)
-				_ = sessionStore.Put(sessionID, newEntry)
-			}
+		if _, rErr := rotateSessionLifecycle(cmdCtx, sessionID, reason, configState.Get(), transcriptRepo, sessionStore, time.Now()); rErr != nil {
+			log.Printf("session rotation warning session=%s reason=%s err=%v", sessionID, reason, rErr)
 		}
 
 		if isACP {
@@ -1702,11 +1744,11 @@ func main() {
 	}
 
 	slashRouter.Register("reset", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
-		return rotateSession(cmdCtx, cmd.SessionID), nil
+		return rotateSession(cmdCtx, cmd.SessionID, "slash:/reset"), nil
 	})
 
 	slashRouter.Register("new", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
-		return rotateSession(cmdCtx, cmd.SessionID), nil
+		return rotateSession(cmdCtx, cmd.SessionID, "slash:/new"), nil
 	})
 
 	slashRouter.Register("kill", func(_ context.Context, cmd autoreply.Command) (string, error) {
@@ -1721,10 +1763,9 @@ func main() {
 	})
 
 	// /set <flag> [value] — persist a per-session flag.
-	// flags: verbose on/off, thinking on/off, tts on/off, model <name>, label <text>
 	slashRouter.Register("set", func(_ context.Context, cmd autoreply.Command) (string, error) {
 		if len(cmd.Args) == 0 {
-			return "Usage: /set <flag> [value]\nFlags: verbose, thinking, tts, model <name>, label <text>", nil
+			return "Usage: /set <flag> [value]\nFlags: verbose, thinking, tts, fast, model <name>, provider <name>, label <text>, thinking-level <off|minimal|low|medium|high|xhigh>, reasoning <low|medium|high>, verbose-level <quiet|normal|debug>, response-usage <off|on|tokens|full>, queue-cap <n>, queue-drop <summarize|oldest|newest>, queue-mode <collect|followup|queue>", nil
 		}
 		flag := strings.ToLower(cmd.Args[0])
 		value := ""
@@ -1743,6 +1784,55 @@ func main() {
 			se.Thinking = boolVal
 		case "tts", "tts-auto":
 			se.TTSAuto = boolVal
+		case "fast", "fast-mode":
+			se.FastMode = boolVal
+		case "thinking-level":
+			lvl := normalizeThinkingLevel(value)
+			if lvl == "" {
+				return "Usage: /set thinking-level <off|minimal|low|medium|high|xhigh>", nil
+			}
+			se.ThinkingLevel = lvl
+		case "reasoning":
+			lvl := normalizeReasoningLevel(value)
+			if lvl == "" {
+				return "Usage: /set reasoning <low|medium|high>", nil
+			}
+			se.ReasoningLevel = lvl
+		case "verbose-level":
+			lvl := normalizeVerboseLevel(value)
+			if lvl == "" {
+				return "Usage: /set verbose-level <quiet|normal|debug>", nil
+			}
+			se.VerboseLevel = lvl
+		case "response-usage":
+			mode := normalizeResponseUsage(value)
+			if mode == "" {
+				return "Usage: /set response-usage <off|on|tokens|full>", nil
+			}
+			se.ResponseUsage = mode
+		case "queue-cap":
+			n, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil || n <= 0 {
+				return "Usage: /set queue-cap <positive-int>", nil
+			}
+			se.QueueCap = n
+		case "queue-drop":
+			d := normalizeQueueDrop(value)
+			if d == "" {
+				return "Usage: /set queue-drop <summarize|oldest|newest>", nil
+			}
+			se.QueueDrop = d
+		case "queue-mode":
+			m := normalizeQueueMode(value)
+			if m == "" {
+				return "Usage: /set queue-mode <collect|followup|queue>", nil
+			}
+			se.QueueMode = m
+		case "provider":
+			if strings.TrimSpace(value) == "" {
+				return "Usage: /set provider <name>", nil
+			}
+			se.ProviderOverride = strings.TrimSpace(value)
 		case "model":
 			if value == "" {
 				return "Usage: /set model <model-name>", nil
@@ -1764,7 +1854,7 @@ func main() {
 			}
 			se.Label = value
 		default:
-			return fmt.Sprintf("⚠️  Unknown flag %q. Options: verbose, thinking, tts, model, label", flag), nil
+			return fmt.Sprintf("⚠️  Unknown flag %q.", flag), nil
 		}
 		if err := sessionStore.Put(cmd.SessionID, se); err != nil {
 			return fmt.Sprintf("⚠️  Failed to persist: %v", err), nil
@@ -1775,7 +1865,7 @@ func main() {
 	// /unset <flag> — clear a per-session flag.
 	slashRouter.Register("unset", func(_ context.Context, cmd autoreply.Command) (string, error) {
 		if len(cmd.Args) == 0 {
-			return "Usage: /unset <flag>\nFlags: verbose, thinking, tts, model, label", nil
+			return "Usage: /unset <flag>\nFlags: verbose, thinking, tts, fast, thinking-level, reasoning, verbose-level, response-usage, queue-cap, queue-drop, queue-mode, provider, model, label", nil
 		}
 		flag := strings.ToLower(cmd.Args[0])
 		if sessionStore == nil {
@@ -1789,6 +1879,24 @@ func main() {
 			se.Thinking = false
 		case "tts", "tts-auto":
 			se.TTSAuto = false
+		case "fast", "fast-mode":
+			se.FastMode = false
+		case "thinking-level":
+			se.ThinkingLevel = ""
+		case "reasoning":
+			se.ReasoningLevel = ""
+		case "verbose-level":
+			se.VerboseLevel = ""
+		case "response-usage":
+			se.ResponseUsage = ""
+		case "queue-cap":
+			se.QueueCap = 0
+		case "queue-drop":
+			se.QueueDrop = ""
+		case "queue-mode":
+			se.QueueMode = ""
+		case "provider":
+			se.ProviderOverride = ""
 		case "model":
 			se.ModelOverride = ""
 			sessionRouter.Assign(cmd.SessionID, "")
@@ -1801,6 +1909,120 @@ func main() {
 			return fmt.Sprintf("⚠️  Failed to persist: %v", err), nil
 		}
 		return fmt.Sprintf("✓ Unset %s.", flag), nil
+	})
+
+	// /fast on|off — convenience toggle for fast-mode.
+	slashRouter.Register("fast", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		return applyFastSlash(sessionStore, cmd.SessionID, cmd.Args), nil
+	})
+
+	// /usage [off|on|tokens|full] — show or set per-session usage reporting mode.
+	slashRouter.Register("usage", func(_ context.Context, cmd autoreply.Command) (string, error) {
+		return applyUsageSlash(sessionStore, cmd.SessionID, cmd.Args), nil
+	})
+
+	// /session [show|list|reset|delete] — session management controls.
+	slashRouter.Register("session", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
+		if sessionStore == nil {
+			return "⚠️  Session store unavailable.", nil
+		}
+		sub := "show"
+		if len(cmd.Args) > 0 {
+			sub = strings.ToLower(strings.TrimSpace(cmd.Args[0]))
+		}
+		switch sub {
+		case "show":
+			sessionID := cmd.SessionID
+			if len(cmd.Args) > 1 && strings.TrimSpace(cmd.Args[1]) != "" {
+				sessionID = strings.TrimSpace(cmd.Args[1])
+			}
+			se, ok := sessionStore.Get(sessionID)
+			if !ok {
+				return fmt.Sprintf("Session %q not found.", sessionID), nil
+			}
+			mode := se.ResponseUsage
+			if mode == "" {
+				mode = "off"
+			}
+			lines := []string{
+				fmt.Sprintf("Session: %s", sessionID),
+				fmt.Sprintf("Label:   %s", fallbackText(se.Label, "-")),
+				fmt.Sprintf("Model:   %s", fallbackText(se.ModelOverride, "-")),
+				fmt.Sprintf("Provider:%s", prefixIfNeeded(fallbackText(se.ProviderOverride, "-"), " ")),
+				fmt.Sprintf("Fast:    %t", se.FastMode),
+				fmt.Sprintf("Usage:   %s", mode),
+				fmt.Sprintf("Tokens:  %d in / %d out / %d total", se.InputTokens, se.OutputTokens, se.TotalTokens),
+				fmt.Sprintf("Queue:   mode=%s cap=%d drop=%s", fallbackText(se.QueueMode, "collect"), se.QueueCap, fallbackText(se.QueueDrop, "summarize")),
+			}
+			if se.FallbackTo != "" {
+				lines = append(lines, fmt.Sprintf("Fallback:%s → %s", prefixIfNeeded(fallbackText(se.FallbackFrom, "primary"), " "), se.FallbackTo))
+			}
+			return strings.Join(lines, "\n"), nil
+		case "list":
+			all := sessionStore.List()
+			type row struct {
+				key   string
+				entry state.SessionEntry
+			}
+			rows := make([]row, 0, len(all))
+			for key, entry := range all {
+				rows = append(rows, row{key: key, entry: entry})
+			}
+			sort.Slice(rows, func(i, j int) bool {
+				return rows[i].entry.UpdatedAt.After(rows[j].entry.UpdatedAt)
+			})
+			if len(rows) == 0 {
+				return "No sessions.", nil
+			}
+			limit := 20
+			if len(cmd.Args) > 1 {
+				if n, err := strconv.Atoi(strings.TrimSpace(cmd.Args[1])); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			if len(rows) > limit {
+				rows = rows[:limit]
+			}
+			lines := []string{fmt.Sprintf("Sessions (%d shown):", len(rows))}
+			for _, row := range rows {
+				lines = append(lines, fmt.Sprintf("- %s  label=%s  updated=%s",
+					row.key,
+					fallbackText(row.entry.Label, "-"),
+					row.entry.UpdatedAt.Format(time.RFC3339),
+				))
+			}
+			return strings.Join(lines, "\n"), nil
+		case "reset":
+			target := cmd.SessionID
+			if len(cmd.Args) > 1 && strings.TrimSpace(cmd.Args[1]) != "" {
+				target = strings.TrimSpace(cmd.Args[1])
+			}
+			return rotateSession(cmdCtx, target, "slash:/session reset"), nil
+		case "delete":
+			if len(cmd.Args) < 2 || strings.TrimSpace(cmd.Args[1]) == "" {
+				return "Usage: /session delete <session-id>", nil
+			}
+			target := strings.TrimSpace(cmd.Args[1])
+			chatCancels.Abort(target)
+			sessionRouter.Assign(target, "")
+			seenChannelSessions.Delete(target)
+			if entries, lErr := transcriptRepo.ListSession(cmdCtx, target, 5000); lErr == nil {
+				for _, e := range entries {
+					_ = transcriptRepo.DeleteEntry(cmdCtx, target, e.EntryID)
+				}
+			}
+			if err := sessionStore.Delete(target); err != nil {
+				return fmt.Sprintf("⚠️  Failed to delete session: %v", err), nil
+			}
+			return fmt.Sprintf("🗑️ Session %s deleted.", target), nil
+		default:
+			return "Usage: /session [show|list|reset|delete]", nil
+		}
+	})
+
+	// /restart — restart the current conversational session (alias to reset/new).
+	slashRouter.Register("restart", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
+		return rotateSession(cmdCtx, cmd.SessionID, "slash:/restart"), nil
 	})
 
 	// /send on|off — enable or suppress reply delivery for this session.
@@ -1869,7 +2091,31 @@ func main() {
 		if agentID == "" {
 			agentID = "main"
 		}
-		return fmt.Sprintf("Swarmstr v%s\nPubkey: %s\nAgent:  %s", version, pubkey, agentID), nil
+		lines := []string{
+			fmt.Sprintf("Swarmstr v%s", version),
+			fmt.Sprintf("Pubkey: %s", pubkey),
+			fmt.Sprintf("Agent:  %s", agentID),
+		}
+		if sessionStore != nil {
+			if se, ok := sessionStore.Get(cmd.SessionID); ok {
+				if se.ModelOverride != "" {
+					lines = append(lines, fmt.Sprintf("Model override: %s", se.ModelOverride))
+				}
+				if se.ProviderOverride != "" {
+					lines = append(lines, fmt.Sprintf("Provider override: %s", se.ProviderOverride))
+				}
+				if se.Label != "" {
+					lines = append(lines, fmt.Sprintf("Label: %s", se.Label))
+				}
+				if se.FallbackTo != "" {
+					lines = append(lines, fmt.Sprintf("Fallback: %s → %s", fallbackText(se.FallbackFrom, "primary"), se.FallbackTo))
+					if se.FallbackReason != "" {
+						lines = append(lines, fmt.Sprintf("Fallback reason: %s", truncateRunes(se.FallbackReason, 160)))
+					}
+				}
+			}
+		}
+		return strings.Join(lines, "\n"), nil
 	})
 
 	// /compact — compact conversation history via the context engine.
@@ -2032,20 +2278,44 @@ func main() {
 		replyFn func(context.Context, string) error,
 	) {
 		sessionID := fromPubKey
+		if sessionStore != nil {
+			se := sessionStore.GetOrNew(sessionID)
+			se.LastChannel = "nostr"
+			se.LastTo = fromPubKey
+			_ = sessionStore.Put(sessionID, se)
+		}
 
 		// Per-session turn serialisation.  If the slot is busy, enqueue the
 		// message so it is processed when the current turn finishes.  The queue
 		// drain runs in the defer registered below (LIFO: it executes after
 		// releaseTurnSlot fires, so the slot is free when the goroutine runs).
 		sessionDMQ := dmQueues.Get(sessionID)
+		var sessionEntry *state.SessionEntry
+		if sessionStore != nil {
+			if se, ok := sessionStore.Get(sessionID); ok {
+				tmp := se
+				sessionEntry = &tmp
+			}
+		}
+		queueSettings := resolveQueueRuntimeSettings(configState.Get(), sessionEntry, "", 10)
+		sessionDMQ.Configure(queueSettings.Cap, queueSettings.Drop)
+
 		releaseTurnSlot, acquired := sessionTurns.TryAcquire(sessionID)
 		if !acquired {
+			switch queueSettings.Mode {
+			case "steer":
+				log.Printf("dm session busy, dropped by steer mode: session=%s", sessionID)
+				return
+			case "interrupt":
+				chatCancels.Abort(sessionID)
+				_ = sessionDMQ.Dequeue() // clear backlog before enqueueing latest
+			}
 			sessionDMQ.Enqueue(autoreply.PendingTurn{
 				Text:     combinedText,
 				EventID:  eventID,
 				SenderID: fromPubKey,
 			})
-			log.Printf("dm session busy, queued: session=%s queue_len=%d", sessionID, sessionDMQ.Len())
+			log.Printf("dm session busy, queued: session=%s mode=%s queue_len=%d", sessionID, queueSettings.Mode, sessionDMQ.Len())
 			return
 		}
 
@@ -2057,24 +2327,45 @@ func main() {
 			if len(pending) == 0 {
 				return
 			}
-			var texts []string
-			var latestEventID string
-			var latestCreatedAt int64
-			for _, pt := range pending {
-				texts = append(texts, pt.Text)
-				if pt.EventID != "" {
-					latestEventID = pt.EventID
-				}
-				if pt.EnqueuedAt.Unix() > latestCreatedAt {
-					latestCreatedAt = pt.EnqueuedAt.Unix()
+			mode := queueSettings.Mode
+			if sessionStore != nil {
+				if se, ok := sessionStore.Get(sessionID); ok {
+					mode = resolveQueueRuntimeSettings(configState.Get(), &se, "", 10).Mode
 				}
 			}
-			combined := strings.Join(texts, "\n\n")
-			if len(pending) > 1 {
-				combined = fmt.Sprintf("[%d messages received while agent was busy]\n\n%s", len(pending), combined)
+			if queueModeCollect(mode) {
+				var texts []string
+				var latestEventID string
+				var latestCreatedAt int64
+				for _, pt := range pending {
+					texts = append(texts, pt.Text)
+					if pt.EventID != "" {
+						latestEventID = pt.EventID
+					}
+					if pt.EnqueuedAt.Unix() > latestCreatedAt {
+						latestCreatedAt = pt.EnqueuedAt.Unix()
+					}
+				}
+				combined := strings.Join(texts, "\n\n")
+				if len(pending) > 1 {
+					combined = fmt.Sprintf("[%d messages received while agent was busy]\n\n%s", len(pending), combined)
+				}
+				log.Printf("dm queue drain: session=%s items=%d mode=%s", sessionID, len(pending), mode)
+				go dmRunAgentTurnRef(ctx, fromPubKey, combined, latestEventID, latestCreatedAt, replyFn)
+				return
 			}
-			log.Printf("dm queue drain: session=%s items=%d", sessionID, len(pending))
-			go dmRunAgentTurnRef(ctx, fromPubKey, combined, latestEventID, latestCreatedAt, replyFn)
+
+			if queueModeSequential(mode) {
+				log.Printf("dm queue drain sequential: session=%s items=%d mode=%s", sessionID, len(pending), mode)
+				for _, pt := range pending {
+					go dmRunAgentTurnRef(ctx, fromPubKey, pt.Text, pt.EventID, pt.EnqueuedAt.Unix(), replyFn)
+				}
+				return
+			}
+
+			// Steer/interrupt fallback after drain: run newest only.
+			latest := pending[len(pending)-1]
+			go dmRunAgentTurnRef(ctx, fromPubKey, latest.Text, latest.EventID, latest.EnqueuedAt.Unix(), replyFn)
 		}()
 
 		defer releaseTurnSlot()
@@ -2357,8 +2648,12 @@ func main() {
 		// then the session-level Thinking bool (defaults to medium: 10 000 tokens).
 		var thinkingBudget int
 		if sessionStore != nil {
-			if se, ok := sessionStore.Get(sessionID); ok && se.Thinking {
-				thinkingBudget = thinkingLevelToBudget("medium")
+			if se, ok := sessionStore.Get(sessionID); ok {
+				if se.ThinkingLevel != "" {
+					thinkingBudget = thinkingLevelToBudget(se.ThinkingLevel)
+				} else if se.Thinking {
+					thinkingBudget = thinkingLevelToBudget("medium")
+				}
 			}
 		}
 		for _, ac := range configState.Get().Agents {
@@ -2430,13 +2725,17 @@ func main() {
 
 		if replyFn != nil {
 			sendSuppressed := false
+			var seForUsage *state.SessionEntry
 			if sessionStore != nil {
 				if se, ok := sessionStore.Get(sessionID); ok {
 					sendSuppressed = se.SendSuppressed
+					copy := se
+					seForUsage = &copy
 				}
 			}
+			outboundText := renderResponseWithUsage(turnResult.Text, turnResult.Usage, seForUsage)
 			if !sendSuppressed {
-				if err := replyFn(ctx, turnResult.Text); err != nil {
+				if err := replyFn(ctx, outboundText); err != nil {
 					log.Printf("reply failed event=%s err=%v", eventID, err)
 					logBuffer.Append("error", fmt.Sprintf("dm reply failed event=%s err=%v", eventID, err))
 					return
@@ -2444,6 +2743,7 @@ func main() {
 			} else {
 				log.Printf("reply suppressed (send off) session=%s event=%s", sessionID, eventID)
 			}
+			turnResult.Text = outboundText
 		}
 
 		wsEmitter.Emit(gatewayws.EventChatMessage, gatewayws.ChatMessagePayload{
@@ -2556,6 +2856,15 @@ func main() {
 
 		// Session ID for DM conversations is the sender's pubkey (peer-to-peer session).
 		sessionID := msg.FromPubKey
+		if sessionStore != nil {
+			if entry, ok := sessionStore.Get(sessionID); ok {
+				pol := resolveSessionFreshnessPolicy(configState.Get(), "direct", "")
+				if shouldAutoRotateSession(entry, time.Now(), pol) {
+					_ = rotateSession(ctx, sessionID, "stale:dm")
+					log.Printf("auto session reset (dm) session=%s idle_minutes=%d daily=%v", sessionID, pol.IdleMinutes, pol.DailyReset)
+				}
+			}
+		}
 
 		// ── ACP fast-path ────────────────────────────────────────────────
 		// If the sender is a registered ACP peer and the message is a
@@ -2579,7 +2888,7 @@ func main() {
 		// slash routing) so that "  /new hello" resets the session and
 		// then passes "hello" as the first message of the fresh session.
 		if trigger, remainder := parseResetTrigger(msg.Text); trigger != "" {
-			_ = rotateSession(ctx, sessionID)
+			_ = rotateSession(ctx, sessionID, "trigger:"+trigger)
 			reply := "🔄 Session reset. Starting fresh."
 			if replyErr := msg.Reply(ctx, reply); replyErr != nil {
 				log.Printf("reset trigger reply failed event=%s err=%v", msg.EventID, replyErr)
@@ -2672,11 +2981,11 @@ func main() {
 	// Start DM transport: NIP-17 (gift-wrapped) + NIP-04 (legacy) in parallel.
 	// Both buses share the same dmOnMessage handler so any client protocol works.
 	nip17bus, nip17err := nostruntime.StartNIP17Bus(ctx, nostruntime.NIP17BusOptions{
-		Keyer:      controlKeyer,
-		Relays:     cfg.Relays,
-		SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
-		OnMessage:  dmOnMessage,
-		OnError:    dmOnError,
+		Keyer:     controlKeyer,
+		Relays:    cfg.Relays,
+		SinceUnix: checkpointSinceUnix(checkpoint.LastUnix),
+		OnMessage: dmOnMessage,
+		OnError:   dmOnError,
 	})
 	if nip17err != nil {
 		log.Printf("dm transport: NIP-17 unavailable (%v); NIP-04 only", nip17err)
@@ -2685,11 +2994,11 @@ func main() {
 		defer nip17bus.Close()
 	}
 	nip04bus, nip04err := nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
-		Keyer:      controlKeyer,
-		Relays:     cfg.Relays,
-		SinceUnix:  checkpointSinceUnix(checkpoint.LastUnix),
-		OnMessage:  dmOnMessage,
-		OnError:    dmOnError,
+		Keyer:     controlKeyer,
+		Relays:    cfg.Relays,
+		SinceUnix: checkpointSinceUnix(checkpoint.LastUnix),
+		OnMessage: dmOnMessage,
+		OnError:   dmOnError,
 	})
 	if nip04err != nil {
 		log.Printf("dm transport: NIP-04 unavailable (%v)", nip04err)
@@ -2865,7 +3174,7 @@ func main() {
 	) (turnErr error) {
 		// ── Session start hook (fires once per session) ───────────────────
 		if _, seen := seenChannelSessions.LoadOrStore(sessionID, struct{}{}); !seen {
-			go controlHooksMgr.Fire("session:start", sessionID, map[string]any{
+			fireHookEvent(controlHooksMgr, "session:start", sessionID, map[string]any{
 				"channel_id": chID,
 				"sender_id":  senderID,
 			})
@@ -3059,6 +3368,16 @@ func main() {
 				outboundText = fmt.Sprintf("[audio generated] %s", audioPath)
 			}
 		}
+		if !audioSent {
+			var seForUsage *state.SessionEntry
+			if sessionStore != nil {
+				if se, ok := sessionStore.Get(sessionID); ok {
+					copy := se
+					seForUsage = &copy
+				}
+			}
+			outboundText = renderResponseWithUsage(outboundText, turnResult.Usage, seForUsage)
+		}
 		if !audioSent && handle != nil && outboundText != "" {
 			if sendErr := handle.Send(turnCtx, outboundText); sendErr != nil {
 				log.Printf("channel reply error channel=%s session=%s err=%v", chID, sessionID, sendErr)
@@ -3118,6 +3437,19 @@ func main() {
 		channelHandlesMu.RUnlock()
 
 		sessionID := channels.SessionIDForMessage(chID, senderID, threadID)
+		if sessionStore != nil {
+			if entry, ok := sessionStore.Get(sessionID); ok {
+				sType := "group"
+				if strings.TrimSpace(threadID) != "" {
+					sType = "thread"
+				}
+				pol := resolveSessionFreshnessPolicy(configState.Get(), sType, chID)
+				if shouldAutoRotateSession(entry, time.Now(), pol) {
+					_ = rotateSession(ctx, sessionID, "stale:channel")
+					log.Printf("auto session reset (channel) session=%s type=%s channel=%s idle_minutes=%d daily=%v", sessionID, sType, chID, pol.IdleMinutes, pol.DailyReset)
+				}
+			}
+		}
 
 		// Slash command fast-path: route /commands before hitting the agent.
 		if slashCmd := autoreply.Parse(combined); slashCmd != nil {
@@ -3146,11 +3478,28 @@ func main() {
 		// conversation context.
 		metricspkg.MessagesInbound.Inc()
 		sessionQ := channelQueues.Get(sessionID)
+		var channelSessionEntry *state.SessionEntry
+		if sessionStore != nil {
+			if se, ok := sessionStore.Get(sessionID); ok {
+				tmp := se
+				channelSessionEntry = &tmp
+			}
+		}
+		queueSettings := resolveQueueRuntimeSettings(configState.Get(), channelSessionEntry, chID, 20)
+		sessionQ.Configure(queueSettings.Cap, queueSettings.Drop)
 
 		// Per-session turn serialisation. If busy, queue and return;
 		// the turn loop below drains the queue after each turn.
 		releaseTurnSlot, acquired := sessionTurns.TryAcquire(sessionID)
 		if !acquired {
+			switch queueSettings.Mode {
+			case "steer":
+				log.Printf("channel session busy, dropped by steer mode: session=%s", sessionID)
+				return
+			case "interrupt":
+				chatCancels.Abort(sessionID)
+				_ = sessionQ.Dequeue()
+			}
 			// Enqueue for processing after the current turn finishes.
 			sessionQ.Enqueue(autoreply.PendingTurn{
 				Text:     combined,
@@ -3163,7 +3512,7 @@ func main() {
 					log.Printf("channel queue ack reaction error channel=%s err=%v", chID, rErr)
 				}
 			}
-			log.Printf("channel session busy, queued: session=%s queue_len=%d", sessionID, sessionQ.Len())
+			log.Printf("channel session busy, queued: session=%s mode=%s queue_len=%d", sessionID, queueSettings.Mode, sessionQ.Len())
 			return
 		}
 
@@ -3191,21 +3540,40 @@ func main() {
 			if len(pending) == 0 {
 				break
 			}
-			// Collect all queued items into one combined prompt.
-			var texts []string
-			var latestEventID string
-			for _, pt := range pending {
-				texts = append(texts, pt.Text)
-				if pt.EventID != "" {
-					latestEventID = pt.EventID
+			mode := queueSettings.Mode
+			if sessionStore != nil {
+				if se, ok := sessionStore.Get(sessionID); ok {
+					mode = resolveQueueRuntimeSettings(configState.Get(), &se, chID, 20).Mode
 				}
 			}
-			queuedText := channels.JoinMessages(texts)
-			if len(pending) > 1 {
-				queuedText = fmt.Sprintf("[%d queued messages while agent was busy]\n\n%s", len(pending), queuedText)
+			if queueModeCollect(mode) {
+				// Collect all queued items into one combined prompt.
+				var texts []string
+				var latestEventID string
+				for _, pt := range pending {
+					texts = append(texts, pt.Text)
+					if pt.EventID != "" {
+						latestEventID = pt.EventID
+					}
+				}
+				queuedText := channels.JoinMessages(texts)
+				if len(pending) > 1 {
+					queuedText = fmt.Sprintf("[%d queued messages while agent was busy]\n\n%s", len(pending), queuedText)
+				}
+				queuedCtx := sdk.WithChannelReplyTarget(turnCtx, senderID)
+				_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, queuedText, latestEventID, handle, rawHandle)
+				continue
 			}
+			if queueModeSequential(mode) {
+				for _, pt := range pending {
+					queuedCtx := sdk.WithChannelReplyTarget(turnCtx, senderID)
+					_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, pt.Text, pt.EventID, handle, rawHandle)
+				}
+				continue
+			}
+			latest := pending[len(pending)-1]
 			queuedCtx := sdk.WithChannelReplyTarget(turnCtx, senderID)
-			_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, queuedText, latestEventID, handle, rawHandle)
+			_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, latest.Text, latest.EventID, handle, rawHandle)
 		}
 
 	})
@@ -3506,6 +3874,14 @@ func main() {
 					if snap.Result != "" {
 						out["result"] = snap.Result
 					}
+					if snap.FallbackUsed {
+						out["fallback_used"] = true
+						out["fallback_from"] = snap.FallbackFrom
+						out["fallback_to"] = snap.FallbackTo
+						if snap.FallbackReason != "" {
+							out["fallback_reason"] = truncateRunes(snap.FallbackReason, 200)
+						}
+					}
 					return out, nil
 				},
 				AgentIdentity: func(_ context.Context, req methods.AgentIdentityRequest) (map[string]any, error) {
@@ -3514,6 +3890,14 @@ func main() {
 						agentID = "main"
 					}
 					return map[string]any{"agent_id": agentID, "display_name": "Swarmstr Agent", "session_id": req.SessionID, "pubkey": bus.PublicKey()}, nil
+				},
+				GatewayIdentity: func(_ context.Context) (map[string]any, error) {
+					pk := bus.PublicKey()
+					deviceID := pk
+					if len(deviceID) > 24 {
+						deviceID = deviceID[:24]
+					}
+					return map[string]any{"deviceId": deviceID, "publicKey": pk, "pubkey": pk}, nil
 				},
 				SendDM: func(ctx context.Context, to string, text string) error {
 					sendCtx, release := chatCancels.Begin(to, ctx)
@@ -3870,6 +4254,18 @@ func main() {
 				},
 				NodeResult: func(_ context.Context, req methods.NodeResultRequest) (map[string]any, error) {
 					return applyNodeResult(nodeInvocations, req)
+				},
+				NodePendingEnqueue: func(_ context.Context, req methods.NodePendingEnqueueRequest) (map[string]any, error) {
+					return nodePending.Enqueue(nodepending.EnqueueRequest{NodeID: req.NodeID, Command: req.Command, Args: req.Args, IdempotencyKey: req.IdempotencyKey, TTLMS: req.TTLMS})
+				},
+				NodePendingPull: func(_ context.Context, req methods.NodePendingPullRequest) (map[string]any, error) {
+					return nodePending.Pull(req.NodeID)
+				},
+				NodePendingAck: func(_ context.Context, req methods.NodePendingAckRequest) (map[string]any, error) {
+					return nodePending.Ack(nodepending.AckRequest{NodeID: req.NodeID, IDs: req.IDs})
+				},
+				NodePendingDrain: func(_ context.Context, req methods.NodePendingDrainRequest) (map[string]any, error) {
+					return nodePending.Drain(nodepending.DrainRequest{NodeID: req.NodeID, MaxItems: req.MaxItems})
 				},
 				CronList: func(_ context.Context, req methods.CronListRequest) (map[string]any, error) {
 					return applyCronList(cronJobs, req)
@@ -4862,11 +5258,20 @@ func handleControlRPCRequest(
 		rt = applyAgentProfileFilter(ctx, rt, req.SessionID, cfg, docsRepo)
 		// Build fallback runtimes from the active agent's FallbackModels list.
 		var fallbackRuntimes []agent.Runtime
+		primaryLabel := strings.TrimSpace(cfg.Agent.DefaultModel)
+		if primaryLabel == "" {
+			primaryLabel = "primary"
+		}
+		runtimeLabels := []string{primaryLabel}
 		if controlSessionRouter != nil {
 			activeAgentID := controlSessionRouter.Get(req.SessionID)
 			for _, agCfg := range cfg.Agents {
 				if strings.TrimSpace(agCfg.ID) != strings.TrimSpace(activeAgentID) {
 					continue
+				}
+				if strings.TrimSpace(agCfg.Model) != "" {
+					primaryLabel = strings.TrimSpace(agCfg.Model)
+					runtimeLabels[0] = primaryLabel
 				}
 				providers := cfg.Providers
 				for _, fbModel := range agCfg.FallbackModels {
@@ -4878,6 +5283,7 @@ func handleControlRPCRequest(
 					fbRt, fbErr := agent.BuildRuntimeWithOverride(fbModel, override, controlToolRegistry)
 					if fbErr == nil && fbRt != nil {
 						fallbackRuntimes = append(fallbackRuntimes, fbRt)
+						runtimeLabels = append(runtimeLabels, fbModel)
 					}
 				}
 				break
@@ -4885,7 +5291,7 @@ func handleControlRPCRequest(
 		}
 		runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 		snapshot := controlAgentJobs.Begin(runID, req.SessionID)
-		go executeAgentRunWithFallbacks(runID, req, rt, fallbackRuntimes, controlAgentJobs)
+		go executeAgentRunWithFallbacks(runID, req, rt, fallbackRuntimes, runtimeLabels, controlAgentJobs)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"run_id": runID, "status": "accepted", "accepted_at": snapshot.StartedAt}}, nil
 	case methods.MethodAgentWait:
 		req, err := methods.DecodeAgentWaitParams(in.Params)
@@ -4912,6 +5318,14 @@ func handleControlRPCRequest(
 		}
 		if snap.Result != "" {
 			out["result"] = snap.Result
+		}
+		if snap.FallbackUsed {
+			out["fallback_used"] = true
+			out["fallback_from"] = snap.FallbackFrom
+			out["fallback_to"] = snap.FallbackTo
+			if snap.FallbackReason != "" {
+				out["fallback_reason"] = truncateRunes(snap.FallbackReason, 200)
+			}
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodAgentIdentityGet:
@@ -4945,6 +5359,16 @@ func handleControlRPCRequest(
 			pubkey = dmBus.PublicKey()
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": agentID, "display_name": displayName, "session_id": sessionID, "pubkey": pubkey}}, nil
+	case methods.MethodGatewayIdentityGet:
+		pubkey := strings.TrimSpace(in.FromPubKey)
+		if dmBus != nil {
+			pubkey = dmBus.PublicKey()
+		}
+		deviceID := pubkey
+		if len(deviceID) > 24 {
+			deviceID = deviceID[:24]
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"deviceId": deviceID, "publicKey": pubkey, "pubkey": pubkey}}, nil
 	case methods.MethodChatSend:
 		req, err := methods.DecodeChatSendParams(in.Params)
 		if err != nil {
@@ -5324,11 +5748,11 @@ func handleControlRPCRequest(
 			deletedIDs = append(deletedIDs, sess.SessionID)
 		}
 		result := map[string]any{
-			"ok":             true,
-			"dry_run":        pruneReq.DryRun,
-			"deleted_count":  len(deletedIDs),
-			"deleted":        deletedIDs,
-			"skipped_count":  len(skippedIDs),
+			"ok":            true,
+			"dry_run":       pruneReq.DryRun,
+			"deleted_count": len(deletedIDs),
+			"deleted":       deletedIDs,
+			"skipped_count": len(skippedIDs),
 		}
 		return nostruntime.ControlRPCResult{Result: result}, nil
 
@@ -6172,6 +6596,62 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodePendingEnqueue:
+		req, err := methods.DecodeNodePendingEnqueueParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := controlNodePending.Enqueue(nodepending.EnqueueRequest{NodeID: req.NodeID, Command: req.Command, Args: req.Args, IdempotencyKey: req.IdempotencyKey, TTLMS: req.TTLMS})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodePendingPull:
+		req, err := methods.DecodeNodePendingPullParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := controlNodePending.Pull(req.NodeID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodePendingAck:
+		req, err := methods.DecodeNodePendingAckParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := controlNodePending.Ack(nodepending.AckRequest{NodeID: req.NodeID, IDs: req.IDs})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
+	case methods.MethodNodePendingDrain:
+		req, err := methods.DecodeNodePendingDrainParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := controlNodePending.Drain(nodepending.DrainRequest{NodeID: req.NodeID, MaxItems: req.MaxItems})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodCanvasGet:
 		var req methods.CanvasGetRequest
 		if err := json.Unmarshal(in.Params, &req); err != nil {
@@ -6841,9 +7321,9 @@ func handleControlRPCRequest(
 			statuses = []map[string]any{}
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{
-			"hooks":       statuses,
-			"totalHooks":  len(statuses),
-			"eligible":    countEligible(statuses),
+			"hooks":      statuses,
+			"totalHooks": len(statuses),
+			"eligible":   countEligible(statuses),
 		}}, nil
 
 	case methods.MethodConfigGet:
@@ -6936,7 +7416,7 @@ func handleControlRPCRequest(
 				}
 			}
 		}
-controlListPreconditionsSatisfied:
+	controlListPreconditionsSatisfied:
 		newVersion := 1
 		if req.ExpectedVersionSet && req.ExpectedVersion > 0 {
 			newVersion = req.ExpectedVersion + 1
@@ -7591,12 +8071,13 @@ func emitControlWSEvent(event string, payload any) {
 }
 
 // preprocessAttachments processes media attachments from a chat.send request.
-// - Audio attachments are transcribed via Whisper and their transcripts are
-//   appended to text as "[Transcription]: ...".
-// - PDF attachments are text-extracted via pdftotext and appended similarly.
-// - Image attachments are resolved to agent.ImageRef for multi-modal providers;
-//   when a DM must be used (text-only channel), a URL reference or filename hint
-//   is appended to text instead.
+//   - Audio attachments are transcribed via Whisper and their transcripts are
+//     appended to text as "[Transcription]: ...".
+//   - PDF attachments are text-extracted via pdftotext and appended similarly.
+//   - Image attachments are resolved to agent.ImageRef for multi-modal providers;
+//     when a DM must be used (text-only channel), a URL reference or filename hint
+//     is appended to text instead.
+//
 // Returns the augmented text and image refs (may be empty if no images).
 func preprocessAttachments(ctx context.Context, text string, atts []methods.AttachmentInput, transcriber mediapkg.Transcriber) (string, []agent.ImageRef, error) {
 	var images []agent.ImageRef
@@ -7789,12 +8270,12 @@ func isRetryableAgentError(err error) bool {
 }
 
 func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runtime, jobs *agentJobRegistry) {
-	executeAgentRunWithFallbacks(runID, req, runtime, nil, jobs)
+	executeAgentRunWithFallbacks(runID, req, runtime, nil, nil, jobs)
 }
 
 // executeAgentRunWithFallbacks tries the primary runtime; on retryable errors,
 // it tries each fallback runtime in order before giving up.
-func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, jobs *agentJobRegistry) {
+func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, runtimeLabels []string, jobs *agentJobRegistry) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("panic in executeAgentRun runID=%s panic=%v", runID, r)
@@ -7832,6 +8313,10 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 	runtimesToTry := append([]agent.Runtime{primary}, fallbacks...)
 	var result *agent.TurnResult
 	var lastErr error
+	fallbackUsed := false
+	fallbackFrom := ""
+	fallbackTo := ""
+	fallbackReason := ""
 	for i, rt := range runtimesToTry {
 		if rt == nil {
 			continue
@@ -7839,11 +8324,19 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 		var r agent.TurnResult
 		r, lastErr = rt.ProcessTurn(ctx, agent.Turn{SessionID: req.SessionID, UserText: req.Message, Context: req.Context})
 		if lastErr == nil {
+			if i > 0 {
+				fallbackUsed = true
+				fallbackFrom = runtimeLabelAt(runtimeLabels, i-1)
+				fallbackTo = runtimeLabelAt(runtimeLabels, i)
+			}
 			result = &r
 			break
 		}
 		if i < len(runtimesToTry)-1 && isRetryableAgentError(lastErr) {
 			log.Printf("executeAgentRun runID=%s fallback attempt %d/%d err=%v", runID, i+1, len(runtimesToTry)-1, lastErr)
+			if fallbackReason == "" {
+				fallbackReason = strings.TrimSpace(lastErr.Error())
+			}
 			continue
 		}
 		break
@@ -7864,7 +8357,41 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 		jobs.Finish(runID, "", fmt.Errorf("all runtimes returned nil result"))
 		return
 	}
+	if fallbackUsed {
+		jobs.SetFallback(runID, fallbackFrom, fallbackTo, fallbackReason)
+	}
+	if controlSessionStore != nil {
+		se := controlSessionStore.GetOrNew(req.SessionID)
+		if fallbackUsed {
+			se.FallbackFrom = fallbackFrom
+			se.FallbackTo = fallbackTo
+			se.FallbackReason = truncateRunes(fallbackReason, 200)
+			se.FallbackAt = time.Now().UnixMilli()
+		} else {
+			se.FallbackFrom = ""
+			se.FallbackTo = ""
+			se.FallbackReason = ""
+			se.FallbackAt = 0
+		}
+		_ = controlSessionStore.Put(req.SessionID, se)
+	}
 	jobs.Finish(runID, result.Text, nil)
+}
+
+func runtimeLabelAt(labels []string, idx int) string {
+	if idx < 0 || idx >= len(labels) {
+		if idx == 0 {
+			return "primary"
+		}
+		return fmt.Sprintf("fallback-%d", idx)
+	}
+	if strings.TrimSpace(labels[idx]) == "" {
+		if idx == 0 {
+			return "primary"
+		}
+		return fmt.Sprintf("fallback-%d", idx)
+	}
+	return strings.TrimSpace(labels[idx])
 }
 
 func mapGatewayWSError(err error) *gatewayprotocol.ErrorShape {
@@ -8069,6 +8596,134 @@ func thinkingLevelToBudget(level string) int {
 	}
 }
 
+func normalizeThinkingLevel(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "off", "minimal", "low", "medium", "high", "xhigh":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
+}
+
+func normalizeReasoningLevel(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
+}
+
+func normalizeVerboseLevel(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "quiet", "normal", "debug":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
+}
+
+func normalizeResponseUsage(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "off", "on", "tokens", "full":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
+}
+
+func normalizeQueueDrop(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "summarize":
+		return "summarize"
+	case "old", "oldest":
+		return "oldest"
+	case "new", "newest":
+		return "newest"
+	default:
+		return ""
+	}
+}
+
+func normalizeQueueMode(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "collect", "followup", "queue", "steer", "steer-backlog", "steer+backlog", "interrupt":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
+}
+
+func queueModeCollect(mode string) bool {
+	return mode == "" || mode == "collect"
+}
+
+func queueModeSequential(mode string) bool {
+	switch mode {
+	case "followup", "queue", "steer-backlog", "steer+backlog":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveQueueRuntimeSettings(cfg state.ConfigDoc, sessionEntry *state.SessionEntry, channelID string, defaultCap int) queueRuntimeSettings {
+	resolved := queueRuntimeSettings{Mode: "collect", Cap: defaultCap, Drop: autoreply.QueueDropSummarize}
+	if cfg.Extra != nil {
+		if m, ok := cfg.Extra["messages"].(map[string]any); ok {
+			if q, ok := m["queue"].(map[string]any); ok {
+				if mv, ok := q["mode"].(string); ok {
+					if n := normalizeQueueMode(mv); n != "" {
+						resolved.Mode = n
+					}
+				}
+				if cv, ok := q["cap"].(float64); ok && cv > 0 {
+					resolved.Cap = int(cv)
+				}
+				if dv, ok := q["drop"].(string); ok {
+					switch normalizeQueueDrop(dv) {
+					case "oldest":
+						resolved.Drop = autoreply.QueueDropOldest
+					case "newest":
+						resolved.Drop = autoreply.QueueDropNewest
+					case "summarize":
+						resolved.Drop = autoreply.QueueDropSummarize
+					}
+				}
+				if channelID != "" {
+					if by, ok := q["by_channel"].(map[string]any); ok {
+						if raw, ok := by[channelID].(string); ok {
+							if n := normalizeQueueMode(raw); n != "" {
+								resolved.Mode = n
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if sessionEntry != nil {
+		if n := normalizeQueueMode(sessionEntry.QueueMode); n != "" {
+			resolved.Mode = n
+		}
+		if sessionEntry.QueueCap > 0 {
+			resolved.Cap = sessionEntry.QueueCap
+		}
+		switch normalizeQueueDrop(sessionEntry.QueueDrop) {
+		case "oldest":
+			resolved.Drop = autoreply.QueueDropOldest
+		case "newest":
+			resolved.Drop = autoreply.QueueDropNewest
+		case "summarize":
+			resolved.Drop = autoreply.QueueDropSummarize
+		}
+	}
+	if resolved.Cap <= 0 {
+		resolved.Cap = defaultCap
+	}
+	return resolved
+}
+
 func normalizeStringList(items []string) []string {
 	out := make([]string, 0, len(items))
 	seen := map[string]struct{}{}
@@ -8084,6 +8739,108 @@ func normalizeStringList(items []string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+func fallbackText(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func prefixIfNeeded(value, prefix string) string {
+	if strings.TrimSpace(value) == "" {
+		return value
+	}
+	return prefix + value
+}
+
+func applyFastSlash(sessionStore *state.SessionStore, sessionID string, args []string) string {
+	if sessionStore == nil {
+		return "⚠️  Session store unavailable."
+	}
+	if len(args) == 0 {
+		se := sessionStore.GetOrNew(sessionID)
+		if se.FastMode {
+			return "⚡ fast mode is ON"
+		}
+		return "⚡ fast mode is OFF"
+	}
+	arg := strings.ToLower(strings.TrimSpace(args[0]))
+	on := arg == "on" || arg == "true" || arg == "1"
+	off := arg == "off" || arg == "false" || arg == "0"
+	if !on && !off {
+		return "Usage: /fast on|off"
+	}
+	se := sessionStore.GetOrNew(sessionID)
+	se.FastMode = on
+	if err := sessionStore.Put(sessionID, se); err != nil {
+		return fmt.Sprintf("⚠️  Failed to persist: %v", err)
+	}
+	if on {
+		return "⚡ fast mode enabled"
+	}
+	return "⚡ fast mode disabled"
+}
+
+func applyUsageSlash(sessionStore *state.SessionStore, sessionID string, args []string) string {
+	if sessionStore == nil {
+		return "⚠️  Session store unavailable."
+	}
+	se := sessionStore.GetOrNew(sessionID)
+	if len(args) > 0 {
+		mode := normalizeResponseUsage(strings.Join(args, " "))
+		if mode == "" {
+			return "Usage: /usage [off|on|tokens|full]"
+		}
+		se.ResponseUsage = mode
+		if err := sessionStore.Put(sessionID, se); err != nil {
+			return fmt.Sprintf("⚠️  Failed to persist: %v", err)
+		}
+		return fmt.Sprintf("✓ Usage mode set to %s.", mode)
+	}
+	mode := se.ResponseUsage
+	if mode == "" {
+		mode = "off"
+	}
+	lines := []string{
+		fmt.Sprintf("Usage mode: %s", mode),
+		fmt.Sprintf("Input tokens: %d", se.InputTokens),
+		fmt.Sprintf("Output tokens: %d", se.OutputTokens),
+		fmt.Sprintf("Total tokens: %d", se.TotalTokens),
+	}
+	if se.ContextTokens > 0 || se.CacheRead > 0 || se.CacheWrite > 0 {
+		lines = append(lines,
+			fmt.Sprintf("Context tokens: %d", se.ContextTokens),
+			fmt.Sprintf("Cache read/write: %d / %d", se.CacheRead, se.CacheWrite),
+		)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderResponseWithUsage(base string, usage agent.TurnUsage, sessionEntry *state.SessionEntry) string {
+	if sessionEntry == nil {
+		return base
+	}
+	mode := normalizeResponseUsage(sessionEntry.ResponseUsage)
+	if mode == "" || mode == "off" {
+		return base
+	}
+	total := usage.InputTokens + usage.OutputTokens
+	switch mode {
+	case "on":
+		return strings.TrimRight(base, "\n") + fmt.Sprintf("\n\n[usage: %d tokens]", total)
+	case "tokens":
+		return strings.TrimRight(base, "\n") + fmt.Sprintf("\n\n[usage: in=%d out=%d total=%d]", usage.InputTokens, usage.OutputTokens, total)
+	case "full":
+		projectedTotal := sessionEntry.TotalTokens + total
+		return strings.TrimRight(base, "\n") + fmt.Sprintf(
+			"\n\n[usage: in=%d out=%d total=%d | session_total=%d context=%d cache_read=%d cache_write=%d]",
+			usage.InputTokens, usage.OutputTokens, total, projectedTotal, sessionEntry.ContextTokens, sessionEntry.CacheRead, sessionEntry.CacheWrite,
+		)
+	default:
+		return base
+	}
 }
 
 func truncateRunes(s string, limit int) string {
@@ -10844,11 +11601,11 @@ func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[
 	result := controlUpdateChecker.Check(context.Background(), req.Force)
 
 	out := map[string]any{
-		"ok":              true,
-		"current_version": result.Current,
-		"latest_version":  result.Latest,
+		"ok":               true,
+		"current_version":  result.Current,
+		"latest_version":   result.Latest,
 		"update_available": result.Available,
-		"checked_at_ms":   result.CheckedAt,
+		"checked_at_ms":    result.CheckedAt,
 	}
 	if result.Error != "" {
 		out["error"] = result.Error
@@ -10868,11 +11625,11 @@ func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[
 
 // validTalkModes lists the modes accepted by talk.mode.
 var validTalkModes = map[string]bool{
-	"disabled":      true,
-	"off":           true,
-	"push-to-talk":  true,
-	"always-on":     true,
-	"hotword":       true,
+	"disabled":     true,
+	"off":          true,
+	"push-to-talk": true,
+	"always-on":    true,
+	"hotword":      true,
 }
 
 func applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[string]any, error) {
@@ -11212,6 +11969,253 @@ func (t *memoryIndexTracker) MarkIndexed(ctx context.Context, repo *state.DocsRe
 	return err
 }
 
+type sessionRotationOutcome struct {
+	ArchivePath string
+	Forked      bool
+}
+
+func fireHookEvent(mgr *hookspkg.Manager, eventName, sessionID string, ctx map[string]any) {
+	if mgr == nil {
+		return
+	}
+	errs := mgr.Fire(eventName, sessionID, ctx)
+	for _, err := range errs {
+		log.Printf("hook event error event=%s session=%s err=%v", eventName, sessionID, err)
+	}
+}
+
+func fireSessionResetHooks(mgr *hookspkg.Manager, sessionID, reason string, isACP bool, entries []state.TranscriptEntryDoc) {
+	if mgr == nil {
+		return
+	}
+	beforeCtx := buildBeforeResetHookContext(sessionID, reason, isACP, entries)
+	fireHookEvent(mgr, "session:before_reset", sessionID, beforeCtx)
+	endCtx := map[string]any{
+		"reason":                 "reset",
+		"trigger":                reason,
+		"acp":                    isACP,
+		"previous_message_count": len(beforeCtx["previous_messages"].([]map[string]any)),
+	}
+	fireHookEvent(mgr, "session:end", sessionID, endCtx)
+}
+
+func buildBeforeResetHookContext(sessionID, reason string, isACP bool, entries []state.TranscriptEntryDoc) map[string]any {
+	const maxMessages = 24
+	prev := make([]map[string]any, 0, min(maxMessages, len(entries)))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Role) == "" || entry.Role == "deleted" {
+			continue
+		}
+		text := strings.TrimSpace(entry.Text)
+		if text == "" {
+			continue
+		}
+		prev = append(prev, map[string]any{
+			"entry_id": entry.EntryID,
+			"role":     entry.Role,
+			"text":     truncateRunes(text, 320),
+			"unix":     entry.Unix,
+		})
+		if len(prev) >= maxMessages {
+			break
+		}
+	}
+	ctx := map[string]any{
+		"reason":                 "reset",
+		"trigger":                reason,
+		"acp":                    isACP,
+		"session_id":             sessionID,
+		"previous_messages":      prev,
+		"previous_message_count": len(prev),
+	}
+	if len(prev) > 0 {
+		var sb strings.Builder
+		for _, m := range prev {
+			sb.WriteString("- ")
+			sb.WriteString(fmt.Sprintf("%s: %s", m["role"], m["text"]))
+			sb.WriteByte('\n')
+		}
+		ctx["previous_transcript"] = strings.TrimSpace(sb.String())
+	}
+	return ctx
+}
+
+func rotateSessionLifecycle(
+	ctx context.Context,
+	sessionID string,
+	reason string,
+	cfg state.ConfigDoc,
+	transcriptRepo *state.TranscriptRepository,
+	sessionStore *state.SessionStore,
+	now time.Time,
+) (sessionRotationOutcome, error) {
+	outcome := sessionRotationOutcome{}
+	if strings.TrimSpace(sessionID) == "" {
+		return outcome, fmt.Errorf("session id is required")
+	}
+	if transcriptRepo == nil {
+		return outcome, fmt.Errorf("transcript repository is required")
+	}
+	entries, err := transcriptRepo.ListSession(ctx, sessionID, 5000)
+	if err != nil {
+		return outcome, fmt.Errorf("list transcript: %w", err)
+	}
+	if len(entries) > 0 {
+		archivePath, archiveErr := archiveTranscriptSnapshot(sessionID, reason, entries, now, defaultSessionArchiveDir())
+		if archiveErr != nil {
+			return outcome, archiveErr
+		}
+		outcome.ArchivePath = archivePath
+	}
+	for _, e := range entries {
+		if delErr := transcriptRepo.DeleteEntry(ctx, sessionID, e.EntryID); delErr != nil {
+			return outcome, fmt.Errorf("delete transcript entry %s: %w", e.EntryID, delErr)
+		}
+	}
+
+	forkPolicy := resolveSessionForkPolicy(cfg)
+	if forkPolicy.Enabled && len(entries) > 0 {
+		if seed := buildForkSeedEntry(sessionID, reason, entries, now, forkPolicy.MaxEntries); seed != nil {
+			if _, putErr := transcriptRepo.PutEntry(ctx, *seed); putErr != nil {
+				return outcome, fmt.Errorf("write fork seed entry: %w", putErr)
+			}
+			outcome.Forked = true
+		}
+	}
+
+	if sessionStore != nil {
+		entry := sessionStore.GetOrNew(sessionID)
+		entry = entry.CarryOverFlags(sessionID)
+		entry.SpawnedBy = reason
+		entry.SessionFile = sessionTranscriptPath(sessionID)
+		entry.ForkedFromParent = outcome.Forked
+		if putErr := sessionStore.Put(sessionID, entry); putErr != nil {
+			return outcome, fmt.Errorf("persist session entry: %w", putErr)
+		}
+	}
+	return outcome, nil
+}
+
+type sessionForkPolicy struct {
+	Enabled    bool
+	MaxEntries int
+}
+
+func resolveSessionForkPolicy(cfg state.ConfigDoc) sessionForkPolicy {
+	policy := sessionForkPolicy{Enabled: false, MaxEntries: 8}
+	if cfg.Extra == nil {
+		return policy
+	}
+	raw, ok := cfg.Extra["session_reset"].(map[string]any)
+	if !ok {
+		return policy
+	}
+	if v, ok := raw["fork_parent"].(bool); ok {
+		policy.Enabled = v
+	}
+	if v, ok := raw["fork_max_entries"].(float64); ok && int(v) > 0 {
+		policy.MaxEntries = int(v)
+	}
+	return policy
+}
+
+func sessionTranscriptPath(sessionID string) string {
+	safe := strings.NewReplacer("/", "_", ":", "_", "\\", "_").Replace(strings.TrimSpace(sessionID))
+	return filepath.Join(defaultSessionArtifactsRoot(), "active", safe+".jsonl")
+}
+
+func defaultSessionArtifactsRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "."
+	}
+	return filepath.Join(home, ".swarmstr", "sessions")
+}
+
+func defaultSessionArchiveDir() string {
+	if v := strings.TrimSpace(os.Getenv("SWARMSTR_SESSION_ARCHIVE_DIR")); v != "" {
+		return v
+	}
+	return filepath.Join(defaultSessionArtifactsRoot(), "archive")
+}
+
+func archiveTranscriptSnapshot(sessionID, reason string, entries []state.TranscriptEntryDoc, now time.Time, archiveDir string) (string, error) {
+	if len(entries) == 0 {
+		return "", nil
+	}
+	if err := os.MkdirAll(archiveDir, 0o700); err != nil {
+		return "", fmt.Errorf("create archive dir: %w", err)
+	}
+	safeSession := strings.NewReplacer("/", "_", ":", "_", "\\", "_").Replace(strings.TrimSpace(sessionID))
+	if safeSession == "" {
+		safeSession = "session"
+	}
+	filename := fmt.Sprintf("%s-%s.jsonl", safeSession, now.UTC().Format("20060102T150405Z"))
+	path := filepath.Join(archiveDir, filename)
+
+	var b strings.Builder
+	for _, entry := range entries {
+		row := map[string]any{
+			"session_id": entry.SessionID,
+			"entry_id":   entry.EntryID,
+			"role":       entry.Role,
+			"text":       entry.Text,
+			"unix":       entry.Unix,
+			"meta":       entry.Meta,
+			"reason":     reason,
+		}
+		raw, err := json.Marshal(row)
+		if err != nil {
+			return "", fmt.Errorf("encode archive row: %w", err)
+		}
+		b.Write(raw)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return "", fmt.Errorf("write archive: %w", err)
+	}
+	return path, nil
+}
+
+func buildForkSeedEntry(sessionID, reason string, entries []state.TranscriptEntryDoc, now time.Time, maxEntries int) *state.TranscriptEntryDoc {
+	if len(entries) == 0 {
+		return nil
+	}
+	if maxEntries <= 0 {
+		maxEntries = 8
+	}
+	start := len(entries) - maxEntries
+	if start < 0 {
+		start = 0
+	}
+	selected := entries[start:]
+	lines := make([]string, 0, len(selected))
+	for _, entry := range selected {
+		text := strings.TrimSpace(entry.Text)
+		if text == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- %s: %s", entry.Role, truncateRunes(text, 240)))
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	text := "Parent context carried over from previous transcript reset.\n" + strings.Join(lines, "\n")
+	return &state.TranscriptEntryDoc{
+		Version:   1,
+		SessionID: sessionID,
+		EntryID:   fmt.Sprintf("fork-%d", now.UnixNano()),
+		Role:      "system",
+		Text:      text,
+		Unix:      now.Unix(),
+		Meta: map[string]any{
+			"kind":   "session_fork",
+			"reason": reason,
+			"count":  len(lines),
+		},
+	}
+}
+
 func generateSessionID() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
@@ -11220,12 +12224,95 @@ func generateSessionID() string {
 	return "sess-" + hex.EncodeToString(b)
 }
 
+type sessionFreshnessPolicy struct {
+	IdleMinutes int
+	DailyReset  bool
+}
+
+type queueRuntimeSettings struct {
+	Mode string
+	Cap  int
+	Drop autoreply.QueueDropPolicy
+}
+
+func resolveSessionFreshnessPolicy(cfg state.ConfigDoc, sessionType, channelID string) sessionFreshnessPolicy {
+	policy := sessionFreshnessPolicy{}
+	if cfg.Session.TTLSeconds > 0 {
+		policy.IdleMinutes = cfg.Session.TTLSeconds / 60
+	}
+	apply := func(raw map[string]any) {
+		if raw == nil {
+			return
+		}
+		if v, ok := raw["idle_minutes"].(float64); ok && v >= 0 {
+			policy.IdleMinutes = int(v)
+		}
+		if v, ok := raw["daily_reset"].(bool); ok {
+			policy.DailyReset = v
+		}
+	}
+
+	if extra, ok := cfg.Extra["session_reset"].(map[string]any); ok {
+		if m, ok := extra["default"].(map[string]any); ok {
+			apply(m)
+		}
+		if m, ok := extra[strings.ToLower(strings.TrimSpace(sessionType))].(map[string]any); ok {
+			apply(m)
+		}
+		if channelID != "" {
+			if chans, ok := extra["channels"].(map[string]any); ok {
+				if m, ok := chans[channelID].(map[string]any); ok {
+					apply(m)
+				}
+			}
+		}
+	}
+
+	if policy.IdleMinutes < 0 {
+		policy.IdleMinutes = 0
+	}
+	return policy
+}
+
+func shouldAutoRotateSession(entry state.SessionEntry, now time.Time, policy sessionFreshnessPolicy) bool {
+	if entry.UpdatedAt.IsZero() {
+		return false
+	}
+	if policy.IdleMinutes > 0 {
+		if now.Sub(entry.UpdatedAt) > time.Duration(policy.IdleMinutes)*time.Minute {
+			return true
+		}
+	}
+	if policy.DailyReset {
+		y1, m1, d1 := entry.UpdatedAt.In(time.Local).Date()
+		y2, m2, d2 := now.In(time.Local).Date()
+		if y1 != y2 || m1 != m2 || d1 != d2 {
+			return true
+		}
+	}
+	return false
+}
+
+func stripStructuralPrefixes(text string) string {
+	trimmed := strings.TrimSpace(text)
+	for {
+		if strings.HasPrefix(trimmed, "[") {
+			if idx := strings.Index(trimmed, "]"); idx > 0 && idx <= 48 {
+				trimmed = strings.TrimSpace(trimmed[idx+1:])
+				continue
+			}
+		}
+		break
+	}
+	return trimmed
+}
+
 // parseResetTrigger checks whether text starts with a session-reset trigger
 // (/new or /reset, case-insensitive, optional leading whitespace).
 // It returns the matched trigger word and any text that follows it.
 // Both return values are empty strings when no trigger is found.
 func parseResetTrigger(text string) (trigger, remainder string) {
-	trimmed := strings.TrimSpace(text)
+	trimmed := stripStructuralPrefixes(text)
 	lower := strings.ToLower(trimmed)
 	for _, kw := range []string{"/new", "/reset"} {
 		if lower == kw {

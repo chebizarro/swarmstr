@@ -1,0 +1,25 @@
+{
+  "cases": [
+    {
+      "name": "result_payload",
+      "result": {"ok": true},
+      "expected_has_result": true
+    },
+    {
+      "name": "error_default_code",
+      "error": "boom",
+      "error_code": 0,
+      "expected_error_code": -32000,
+      "expected_error_contains": "boom"
+    },
+    {
+      "name": "error_with_conflict_data",
+      "error": "precondition failed",
+      "error_code": -32010,
+      "error_data": {"resource": "list", "current_version": 2},
+      "expected_error_code": -32010,
+      "expected_error_contains": "precondition failed",
+      "expected_error_data_key": "current_version"
+    }
+  ]
+}

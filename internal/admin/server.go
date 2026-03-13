@@ -60,6 +60,7 @@ type ServerOptions struct {
 	StartAgent           func(context.Context, methods.AgentRequest) (map[string]any, error)
 	WaitAgent            func(context.Context, methods.AgentWaitRequest) (map[string]any, error)
 	AgentIdentity        func(context.Context, methods.AgentIdentityRequest) (map[string]any, error)
+	GatewayIdentity      func(context.Context) (map[string]any, error)
 	SendDM               func(context.Context, string, string) error
 	AbortChat            func(context.Context, string) (int, error)
 	GetSession           func(context.Context, string) (state.SessionDoc, error)
@@ -113,6 +114,10 @@ type ServerOptions struct {
 	NodeInvoke           func(context.Context, methods.NodeInvokeRequest) (map[string]any, error)
 	NodeEvent            func(context.Context, methods.NodeEventRequest) (map[string]any, error)
 	NodeResult           func(context.Context, methods.NodeResultRequest) (map[string]any, error)
+	NodePendingEnqueue   func(context.Context, methods.NodePendingEnqueueRequest) (map[string]any, error)
+	NodePendingPull      func(context.Context, methods.NodePendingPullRequest) (map[string]any, error)
+	NodePendingAck       func(context.Context, methods.NodePendingAckRequest) (map[string]any, error)
+	NodePendingDrain     func(context.Context, methods.NodePendingDrainRequest) (map[string]any, error)
 	CronList             func(context.Context, methods.CronListRequest) (map[string]any, error)
 	CronStatus           func(context.Context, methods.CronStatusRequest) (map[string]any, error)
 	CronAdd              func(context.Context, methods.CronAddRequest) (map[string]any, error)
@@ -466,6 +471,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	if opts.GetConfig != nil {
 		current, err := opts.GetConfig(ctx)
 		if err != nil {
+			log.Printf("admin /call: failed to load config, falling back to secure defaults: %v", err)
 			cfg.Control.RequireAuth = true
 		} else {
 			cfg = current
@@ -670,6 +676,15 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil
+	case methods.MethodGatewayIdentityGet:
+		if opts.GatewayIdentity == nil {
+			return map[string]any{"deviceId": "swarmstr", "publicKey": ""}, http.StatusOK, nil
+		}
+		out, err := opts.GatewayIdentity(ctx)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
 	case methods.MethodChatSend:
 		if opts.SendDM == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("send dm not configured")
@@ -724,6 +739,8 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusBadRequest, err
 		}
 		aborted := 0
+		// OpenClaw parity: RunID-only abort (without SessionID) is a no-op.
+		// This prevents accidental global abort when only a run identifier is provided.
 		if req.RunID != "" && strings.TrimSpace(req.SessionID) == "" {
 			return map[string]any{"ok": true, "run_id": req.RunID, "aborted": false, "aborted_count": 0}, http.StatusOK, nil
 		}
@@ -1719,6 +1736,74 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			if errors.Is(err, state.ErrNotFound) {
 				return nil, http.StatusNotFound, fmt.Errorf("not found")
 			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodNodePendingEnqueue:
+		req, err := methods.DecodeNodePendingEnqueueParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodePendingEnqueue == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node pending provider not configured")
+		}
+		out, err := opts.NodePendingEnqueue(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodNodePendingPull:
+		req, err := methods.DecodeNodePendingPullParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodePendingPull == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node pending provider not configured")
+		}
+		out, err := opts.NodePendingPull(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodNodePendingAck:
+		req, err := methods.DecodeNodePendingAckParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodePendingAck == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node pending provider not configured")
+		}
+		out, err := opts.NodePendingAck(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return out, http.StatusOK, nil
+	case methods.MethodNodePendingDrain:
+		req, err := methods.DecodeNodePendingDrainParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodePendingDrain == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node pending provider not configured")
+		}
+		out, err := opts.NodePendingDrain(ctx, req)
+		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
 		return out, http.StatusOK, nil

@@ -13,4 +13,7 @@ go test ./internal/gateway/ws -run 'TestAllowHandshakeRateLimit|TestHandleWSRate
 echo "[parity] validating control/admin precondition semantics"
 go test ./internal/admin ./cmd/swarmstrd -run 'TestDispatchMethodCallListPutExpectedVersionZeroSemantics|TestDispatchMethodCallConfigPutExpectedVersionZeroSemantics|TestHandleControlRPCRequest_ListPutExpectedVersionZeroSemantics' -count=1
 
+echo "[parity] validating core parity verifier contracts"
+go test ./cmd/swarmstrd -run 'TestCoreParityVerifier_' -count=1
+
 echo "[parity] all parity gates passed"

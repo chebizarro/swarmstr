@@ -44,7 +44,11 @@ type SessionQueue struct {
 	droppedLines []string // summary lines from dropped items
 	cap          int
 	dropPolicy   QueueDropPolicy
+	recentIDs    map[string]time.Time
+	seenTTL      time.Duration
 }
+
+const maxDroppedLines = 100 // Limit dropped line history to prevent unbounded growth
 
 // NewSessionQueue creates a queue with the given capacity and drop policy.
 // cap <= 0 means unlimited (not recommended for production).
@@ -52,7 +56,12 @@ func NewSessionQueue(cap int, policy QueueDropPolicy) *SessionQueue {
 	if policy == "" {
 		policy = QueueDropSummarize
 	}
-	return &SessionQueue{cap: cap, dropPolicy: policy}
+	return &SessionQueue{
+		cap:        cap,
+		dropPolicy: policy,
+		recentIDs:  make(map[string]time.Time),
+		seenTTL:    10 * time.Minute,
+	}
 }
 
 // Enqueue adds a pending turn to the queue. Returns true if the item was
@@ -61,17 +70,26 @@ func (q *SessionQueue) Enqueue(pt PendingTurn) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
+	now := time.Now()
+	q.pruneRecentIDs(now)
+	if pt.EventID != "" {
+		for _, item := range q.items {
+			if item.EventID != "" && item.EventID == pt.EventID {
+				return false
+			}
+		}
+		if seenAt, ok := q.recentIDs[pt.EventID]; ok && now.Sub(seenAt) <= q.seenTTL {
+			return false
+		}
+	}
+
 	if q.cap > 0 && len(q.items) >= q.cap {
 		switch q.dropPolicy {
 		case QueueDropNewest:
 			return false
 		case QueueDropOldest:
 			if len(q.items) > 0 {
-				dropped := q.items[0]
 				q.items = q.items[1:]
-				if dropped.SummaryLine != "" {
-					q.droppedLines = append(q.droppedLines, dropped.SummaryLine)
-				}
 			}
 		default: // QueueDropSummarize
 			// Record a summary of the newest-but-one (keep the most recent).
@@ -83,6 +101,10 @@ func (q *SessionQueue) Enqueue(pt PendingTurn) bool {
 					line = truncate(oldest.Text, 80)
 				}
 				q.droppedLines = append(q.droppedLines, line)
+				// Limit dropped lines history to prevent unbounded growth
+				if len(q.droppedLines) > maxDroppedLines {
+					q.droppedLines = q.droppedLines[len(q.droppedLines)-maxDroppedLines:]
+				}
 			}
 		}
 	}
@@ -90,8 +112,11 @@ func (q *SessionQueue) Enqueue(pt PendingTurn) bool {
 	if pt.SummaryLine == "" {
 		pt.SummaryLine = truncate(pt.Text, 80)
 	}
-	pt.EnqueuedAt = time.Now()
+	pt.EnqueuedAt = now
 	q.items = append(q.items, pt)
+	if pt.EventID != "" {
+		q.recentIDs[pt.EventID] = now
+	}
 	return true
 }
 
@@ -110,6 +135,8 @@ func (q *SessionQueue) Dequeue() []PendingTurn {
 	dropped := q.droppedLines
 	q.items = nil
 	q.droppedLines = nil
+	// Note: EventIDs are already tracked in recentIDs from Enqueue() time.
+	// We don't update timestamps here to avoid extending the TTL window.
 
 	// If items were dropped, prepend a summary to inform the agent.
 	if len(dropped) > 0 && len(items) > 0 {
@@ -117,6 +144,17 @@ func (q *SessionQueue) Dequeue() []PendingTurn {
 		items[0].Text = summary + "\n\n" + items[0].Text
 	}
 	return items
+}
+
+// Configure updates queue capacity and drop policy.
+// cap <= 0 means unlimited; empty policy preserves the current policy.
+func (q *SessionQueue) Configure(cap int, policy QueueDropPolicy) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.cap = cap
+	if policy != "" {
+		q.dropPolicy = policy
+	}
 }
 
 // Len returns the number of queued items without dequeuing.
@@ -165,6 +203,17 @@ func (r *SessionQueueRegistry) Delete(sessionID string) {
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
+
+func (q *SessionQueue) pruneRecentIDs(now time.Time) {
+	if q.seenTTL <= 0 {
+		return
+	}
+	for id, ts := range q.recentIDs {
+		if now.Sub(ts) > q.seenTTL {
+			delete(q.recentIDs, id)
+		}
+	}
+}
 
 func truncate(s string, n int) string {
 	if len(s) <= n {

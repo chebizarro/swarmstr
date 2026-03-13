@@ -1,0 +1,30 @@
+{
+  "agent.status": {
+    "alias": "agent",
+    "required_keys": ["runId", "stream", "ts", "data.phase"]
+  },
+  "chat.message": {
+    "alias": "chat",
+    "required_keys": ["runId", "sessionKey", "state", "text", "message.text"]
+  },
+  "chat.chunk": {
+    "alias": "chat",
+    "required_keys": ["runId", "sessionKey", "state", "chunk"]
+  },
+  "cron.tick": {
+    "alias": "cron",
+    "required_keys": ["action", "jobId", "ts"]
+  },
+  "cron.result": {
+    "alias": "cron",
+    "required_keys": ["action", "jobId", "succeeded", "ts"]
+  },
+  "tick": {
+    "alias": "heartbeat",
+    "required_keys": ["ts", "uptimeMs"]
+  },
+  "voice.wake": {
+    "alias": "voicewake.changed",
+    "required_keys": ["triggers", "ts"]
+  }
+}

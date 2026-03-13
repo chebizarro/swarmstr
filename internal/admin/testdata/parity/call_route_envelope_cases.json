@@ -1,0 +1,56 @@
+{
+  "cases": [
+    {
+      "name": "json_success_health",
+      "nip86": false,
+      "body": {"method": "health"},
+      "expected_http_status": 200,
+      "expected_content_type": "application/json",
+      "expected_ok": true,
+      "expected_result_key": "ok"
+    },
+    {
+      "name": "json_error_missing_method",
+      "nip86": false,
+      "body": {"method": "   "},
+      "expected_http_status": 400,
+      "expected_content_type": "application/json",
+      "expected_ok": false,
+      "expected_error_contains": "method is required"
+    },
+    {
+      "name": "nip86_success_health",
+      "nip86": true,
+      "body": {"method": "health"},
+      "expected_http_status": 200,
+      "expected_content_type": "application/nostr+json+rpc",
+      "expected_result_key": "ok"
+    },
+    {
+      "name": "nip86_error_missing_method",
+      "nip86": true,
+      "body": {"method": "   "},
+      "expected_http_status": 200,
+      "expected_content_type": "application/nostr+json+rpc",
+      "expected_error_contains": "method is required",
+      "expected_nip86_code": -32602
+    },
+    {
+      "name": "nip86_error_list_put_conflict",
+      "nip86": true,
+      "scenario": "list_put_conflict",
+      "body": {
+        "method": "list.put",
+        "params": {
+          "name": "allowlist",
+          "items": ["a"],
+          "expected_version": 1
+        }
+      },
+      "expected_http_status": 200,
+      "expected_content_type": "application/nostr+json+rpc",
+      "expected_nip86_code": -32010,
+      "expected_error_data_key": "current_version"
+    }
+  ]
+}
