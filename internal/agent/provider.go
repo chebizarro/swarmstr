@@ -564,7 +564,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 			if len(calls) > 0 {
 				stubResults := make([]map[string]any, 0, len(calls))
 				for _, c := range calls {
-					res, execErr := turn.Executor.Execute(context.Background(), c)
+					res, execErr := turn.Executor.Execute(ctx, c)
 					if execErr != nil {
 						res = "error: " + execErr.Error()
 					}
@@ -779,7 +779,7 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 			if len(calls) > 0 {
 				stubResults := make([]map[string]any, 0, len(calls))
 				for _, c := range calls {
-					res, execErr := turn.Executor.Execute(context.Background(), c)
+					res, execErr := turn.Executor.Execute(ctx, c)
 					if execErr != nil {
 						res = "error: " + execErr.Error()
 					}

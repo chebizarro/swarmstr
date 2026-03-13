@@ -2061,11 +2061,38 @@ func main() {
 			}
 		}
 
-		turnCtx, releaseTurn := chatCancels.Begin(sessionID, ctx)
+		// Resolve agent ID early so we can apply per-agent turn timeout below.
+		activeAgentID := sessionRouter.Get(sessionID)
+		if activeAgentID == "" {
+			activeAgentID = "main"
+		}
+
+		turnCtxBase, releaseTurn := chatCancels.Begin(sessionID, ctx)
+		// Apply a per-turn hard timeout so a hung Anthropic API call or runaway
+		// tool loop cannot hold the session slot indefinitely.  The timeout is
+		// read from the active agent's config; 180 s is used when not set.
+		const defaultTurnTimeoutSecs = 180
+		turnTimeoutSecs := defaultTurnTimeoutSecs
+		for _, ac := range configState.Get().Agents {
+			if ac.ID == activeAgentID && ac.TurnTimeoutSecs != 0 {
+				turnTimeoutSecs = ac.TurnTimeoutSecs
+				break
+			}
+		}
+		var turnCtx context.Context
+		var cancelTurnTimeout context.CancelFunc
+		if turnTimeoutSecs > 0 {
+			turnCtx, cancelTurnTimeout = context.WithTimeout(turnCtxBase, time.Duration(turnTimeoutSecs)*time.Second)
+		} else {
+			// Negative value: no timeout (operator opted out explicitly).
+			turnCtx = turnCtxBase
+			cancelTurnTimeout = func() {}
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("panic in agent process session=%s panic=%v", sessionID, r)
 			}
+			cancelTurnTimeout()
 			releaseTurn()
 		}()
 
@@ -2119,9 +2146,10 @@ func main() {
 			}
 		}
 
-		activeAgentID := sessionRouter.Get(sessionID)
-		if activeAgentID == "" {
-			activeAgentID = "main"
+		// activeAgentID was resolved before the turn timeout block; refresh in
+		// case the session router changed during context assembly (rare).
+		if resolved := sessionRouter.Get(sessionID); resolved != "" {
+			activeAgentID = resolved
 		}
 		activeRuntime := agentRegistry.Get(activeAgentID)
 
@@ -2326,9 +2354,15 @@ func main() {
 			if controlHeartbeat38 != nil {
 				controlHeartbeat38.SetIdle(ctx)
 			}
-			if errors.Is(turnErr, context.Canceled) {
+			switch {
+			case errors.Is(turnErr, context.DeadlineExceeded):
+				log.Printf("agent turn timed out session=%s timeout_secs=%d", sessionID, turnTimeoutSecs)
+				if replyFn != nil {
+					_ = replyFn(ctx, fmt.Sprintf("⏱️ Turn timed out after %d seconds. The request may have been too complex or the AI service is slow. Please try again.", turnTimeoutSecs))
+				}
+			case errors.Is(turnErr, context.Canceled):
 				log.Printf("agent process aborted session=%s", sessionID)
-			} else {
+			default:
 				log.Printf("agent process failed session=%s err=%v", sessionID, turnErr)
 			}
 			return

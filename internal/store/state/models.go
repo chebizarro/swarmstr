@@ -273,6 +273,12 @@ type AgentConfig struct {
 	// "high" (20 000), "xhigh" (40 000).  Empty string inherits the default
 	// ("medium" when the session's Thinking flag is set).
 	ThinkingLevel string `json:"thinking_level,omitempty"`
+	// TurnTimeoutSecs is the maximum wall-clock seconds a single agent turn
+	// (including the full agentic tool loop) may run before it is cancelled.
+	// When 0 or negative the global default of 180 seconds is used.
+	// Set to a negative value like -1 in config if you truly want no timeout
+	// (not recommended for production).
+	TurnTimeoutSecs int `json:"turn_timeout_secs,omitempty"`
 }
 
 // AgentsConfig is an ordered list of per-agent configurations.
