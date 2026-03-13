@@ -1372,6 +1372,9 @@ func main() {
 		"model":   policy.AuthPublic,
 	}
 	sessionTurns := autoreply.NewSessionTurns()
+	// dmQueues holds per-session pending-turn queues for DMs that arrive while
+	// the session turn slot is busy.  Mirrors channelQueues for the DM path.
+	dmQueues := autoreply.NewSessionQueueRegistry(10, autoreply.QueueDropSummarize)
 
 	// ── Session and node agent tools ─────────────────────────────────
 	// Registered here so they can close over sessionTurns and configState.
@@ -2030,14 +2033,50 @@ func main() {
 	) {
 		sessionID := fromPubKey
 
-		// Per-session turn serialisation.
+		// Per-session turn serialisation.  If the slot is busy, enqueue the
+		// message so it is processed when the current turn finishes.  The queue
+		// drain runs in the defer registered below (LIFO: it executes after
+		// releaseTurnSlot fires, so the slot is free when the goroutine runs).
+		sessionDMQ := dmQueues.Get(sessionID)
 		releaseTurnSlot, acquired := sessionTurns.TryAcquire(sessionID)
 		if !acquired {
-			if replyFn != nil {
-				_ = replyFn(ctx, "⏳ Still processing your previous message. Please wait a moment.")
-			}
+			sessionDMQ.Enqueue(autoreply.PendingTurn{
+				Text:     combinedText,
+				EventID:  eventID,
+				SenderID: fromPubKey,
+			})
+			log.Printf("dm session busy, queued: session=%s queue_len=%d", sessionID, sessionDMQ.Len())
 			return
 		}
+
+		// Queue-drain defer — registered BEFORE releaseTurnSlot so it runs
+		// AFTER the slot is released (Go defers are LIFO).  Any DMs that
+		// arrived while this turn was processing are dispatched here.
+		defer func() {
+			pending := sessionDMQ.Dequeue()
+			if len(pending) == 0 {
+				return
+			}
+			var texts []string
+			var latestEventID string
+			var latestCreatedAt int64
+			for _, pt := range pending {
+				texts = append(texts, pt.Text)
+				if pt.EventID != "" {
+					latestEventID = pt.EventID
+				}
+				if pt.EnqueuedAt.Unix() > latestCreatedAt {
+					latestCreatedAt = pt.EnqueuedAt.Unix()
+				}
+			}
+			combined := strings.Join(texts, "\n\n")
+			if len(pending) > 1 {
+				combined = fmt.Sprintf("[%d messages received while agent was busy]\n\n%s", len(pending), combined)
+			}
+			log.Printf("dm queue drain: session=%s items=%d", sessionID, len(pending))
+			go dmRunAgentTurnRef(ctx, fromPubKey, combined, latestEventID, latestCreatedAt, replyFn)
+		}()
+
 		defer releaseTurnSlot()
 
 		if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, nostruntime.InboundDM{
