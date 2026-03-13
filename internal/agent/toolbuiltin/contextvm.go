@@ -25,6 +25,61 @@ type ContextVMToolOpts struct {
 	Relays     []string
 }
 
+// ToolDefinitions for ContextVM tools.
+var contextVMDiscoverDef = agent.ToolDefinition{
+	Name:        "contextvm_discover",
+	Description: "Discover ContextVM MCP servers on the Nostr network. Fetches kind:11316 server announcement events from relays. Returns a list of servers with their pubkeys and capabilities. Use contextvm_tools_list to see what tools a server offers.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"limit":  {Type: "number", Description: "Maximum number of servers to return (default 20)."},
+			"relays": {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs to search. Defaults to configured relays."},
+		},
+	},
+}
+
+var contextVMToolsListDef = agent.ToolDefinition{
+	Name:        "contextvm_tools_list",
+	Description: "List MCP tools available on a ContextVM server. Sends a tools/list JSON-RPC request via kind:25910 event to the server and returns its tool definitions.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"server_pubkey": {Type: "string", Description: "Hex pubkey of the ContextVM server."},
+			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+		},
+		Required: []string{"server_pubkey"},
+	},
+}
+
+var contextVMCallDef = agent.ToolDefinition{
+	Name:        "contextvm_call",
+	Description: "Call an MCP tool on a ContextVM server over Nostr (kind:25910). Use contextvm_tools_list first to discover available tools and their parameter schemas.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"server_pubkey": {Type: "string", Description: "Hex pubkey of the ContextVM server."},
+			"tool_name":     {Type: "string", Description: "Name of the MCP tool to call."},
+			"arguments":     {Type: "string", Description: "JSON object string of tool arguments (e.g. '{\"prompt\":\"a cat\"}')."},
+			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+		},
+		Required: []string{"server_pubkey", "tool_name"},
+	},
+}
+
+var contextVMRawDef = agent.ToolDefinition{
+	Name:        "contextvm_raw",
+	Description: "Send an arbitrary MCP JSON-RPC message to a ContextVM server over Nostr. Use for advanced operations not covered by contextvm_call (e.g. resources/list, prompts/get).",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"server_pubkey": {Type: "string", Description: "Hex pubkey of the ContextVM server."},
+			"message":       {Type: "string", Description: "Stringified JSON-RPC object (e.g. '{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":1}')."},
+			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+		},
+		Required: []string{"server_pubkey", "message"},
+	},
+}
+
 // RegisterContextVMTools registers ContextVM MCP-over-Nostr tools.
 func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
@@ -37,7 +92,7 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 	}
 
 	// contextvm_discover: find ContextVM MCP servers (kind 11316).
-	tools.Register("contextvm_discover", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("contextvm_discover", func(ctx context.Context, args map[string]any) (string, error) {
 		limit := 20
 		if v, ok := args["limit"].(float64); ok && v > 0 {
 			limit = int(v)
@@ -57,10 +112,10 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			"note":    "Use contextvm_tools_list with a server pubkey to see available tools.",
 		})
 		return string(out), nil
-	})
+	}, contextVMDiscoverDef)
 
 	// contextvm_tools_list: send a tools/list MCP request to a ContextVM server (kind 25910).
-	tools.Register("contextvm_tools_list", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("contextvm_tools_list", func(ctx context.Context, args map[string]any) (string, error) {
 		serverPubKey, _ := args["server_pubkey"].(string)
 		relays := toStringSlice(args["relays"])
 		if len(relays) == 0 {
@@ -86,10 +141,10 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			"count":         len(tools2),
 		})
 		return string(out), nil
-	})
+	}, contextVMToolsListDef)
 
 	// contextvm_call: call an MCP tool on a ContextVM server (kind 25910).
-	tools.Register("contextvm_call", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("contextvm_call", func(ctx context.Context, args map[string]any) (string, error) {
 		serverPubKey, _ := args["server_pubkey"].(string)
 		toolName, _ := args["tool_name"].(string)
 		argsStr, _ := args["arguments"].(string) // JSON object string
@@ -137,10 +192,10 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 
 		out, _ := json.Marshal(result)
 		return string(out), nil
-	})
+	}, contextVMCallDef)
 
 	// contextvm_raw: send an arbitrary MCP JSON-RPC message to a ContextVM server.
-	tools.Register("contextvm_raw", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("contextvm_raw", func(ctx context.Context, args map[string]any) (string, error) {
 		serverPubKey, _ := args["server_pubkey"].(string)
 		messageStr, _ := args["message"].(string) // stringified JSON-RPC object
 		relays := toStringSlice(args["relays"])
@@ -170,5 +225,5 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			return "", err
 		}
 		return string(respRaw), nil
-	})
+	}, contextVMRawDef)
 }
