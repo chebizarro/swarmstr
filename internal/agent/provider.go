@@ -596,9 +596,9 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 				}
 				resp2.Body.Close()
 			}
-			// If still no text, return a safe fallback rather than "tool execution complete".
+			// If still no text, be honest about the failure.
 			if text == "" {
-				text = "I completed the requested operations. Let me know if you need anything else."
+				text = "I wasn't able to complete this — the tool calls kept looping without producing a result. Please try rephrasing or check that the external service is responding."
 				calls = nil
 			}
 		}
@@ -811,9 +811,9 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 				}
 				resp2.Body.Close()
 			}
-			// If still no text after force-summary, return a safe fallback.
+			// If still no text after force-summary, be honest about the failure.
 			if text == "" {
-				text = "I completed the requested operations. Let me know if you need anything else."
+				text = "I wasn't able to complete this — the tool calls kept looping without producing a result. Please try rephrasing or check that the external service is responding."
 				calls = nil
 			}
 		}
