@@ -157,7 +157,7 @@ func (se *SyncEngine) Start(ctx context.Context) error {
 	watchCtx, cancel := context.WithCancel(ctx)
 	se.cancel = cancel
 
-	go se.loop(watchCtx)
+	go se.loop(watchCtx, w)
 	se.log.Info("config file watcher started", "path", se.path, "dir", dir)
 	return nil
 }
@@ -180,7 +180,7 @@ func (se *SyncEngine) Stop() {
 // internal loop
 // ──────────────────────────────────────────────────────────────────────────────
 
-func (se *SyncEngine) loop(ctx context.Context) {
+func (se *SyncEngine) loop(ctx context.Context, watcher *fsnotify.Watcher) {
 	var (
 		timer   *time.Timer
 		pending bool
@@ -223,7 +223,7 @@ func (se *SyncEngine) loop(ctx context.Context) {
 				timer.Stop()
 			}
 			return
-		case ev, ok := <-se.watcher.Events:
+		case ev, ok := <-watcher.Events:
 			if !ok {
 				return
 			}
@@ -239,7 +239,7 @@ func (se *SyncEngine) loop(ctx context.Context) {
 				}
 				se.mu.Unlock()
 			}
-		case err, ok := <-se.watcher.Errors:
+		case err, ok := <-watcher.Errors:
 			if !ok {
 				return
 			}

@@ -60,9 +60,10 @@ func NostrRelayPingTool() agent.ToolFunc {
 		pool := nostr.NewPool(nostr.PoolOptions{})
 		defer pool.Close("ping done")
 
+		ensureRelayFn := ensureRelay
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- ensureRelay(pool, relayURL)
+			errCh <- ensureRelayFn(pool, relayURL)
 		}()
 
 		var err error

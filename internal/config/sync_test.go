@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -64,6 +65,7 @@ func TestWithOnChange_calledOnFileWrite(t *testing.T) {
 	}
 
 	var callCount atomic.Int32
+	var lastDocMu sync.Mutex
 	var lastDoc state.ConfigDoc
 
 	relay := &fakeRelaySync{doc: initial}
@@ -71,7 +73,9 @@ func TestWithOnChange_calledOnFileWrite(t *testing.T) {
 		WithDebounce(50*time.Millisecond),
 		WithOnChange(func(doc state.ConfigDoc) {
 			callCount.Add(1)
+			lastDocMu.Lock()
 			lastDoc = doc
+			lastDocMu.Unlock()
 		}),
 	)
 	if err != nil {
@@ -104,8 +108,11 @@ func TestWithOnChange_calledOnFileWrite(t *testing.T) {
 	if callCount.Load() == 0 {
 		t.Error("OnChange callback was not called after file write")
 	}
-	if lastDoc.DM.Policy != "disabled" {
-		t.Errorf("OnChange received wrong doc: policy = %q, want \"disabled\"", lastDoc.DM.Policy)
+	lastDocMu.Lock()
+	gotLastDoc := lastDoc
+	lastDocMu.Unlock()
+	if gotLastDoc.DM.Policy != "disabled" {
+		t.Errorf("OnChange received wrong doc: policy = %q, want \"disabled\"", gotLastDoc.DM.Policy)
 	}
 }
 
