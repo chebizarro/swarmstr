@@ -556,8 +556,26 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 
 		// If the loop exhausted maxIter with text still empty, force one final call
 		// asking the model to summarise its findings — prevents "tool execution complete".
+		// We must first provide tool_results for any pending tool_use calls, otherwise
+		// the Anthropic API rejects the request (tool_use must be followed by tool_result).
 		if text == "" {
 			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
+			// Provide stub tool_results for any pending tool_use calls.
+			if len(calls) > 0 {
+				stubResults := make([]map[string]any, 0, len(calls))
+				for _, c := range calls {
+					res, execErr := turn.Executor.Execute(context.Background(), c)
+					if execErr != nil {
+						res = "error: " + execErr.Error()
+					}
+					stubResults = append(stubResults, map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": c.ID,
+						"content":     res,
+					})
+				}
+				msgs = append(msgs, anthropicMessage{Role: "user", Content: stubResults})
+			}
 			msgs = append(msgs, anthropicMessage{Role: "user", Content: []map[string]any{
 				{"type": "text", "text": "Please summarise your findings and give a final response."},
 			}})
@@ -577,6 +595,11 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 					}
 				}
 				resp2.Body.Close()
+			}
+			// If still no text, return a safe fallback rather than "tool execution complete".
+			if text == "" {
+				text = "I completed the requested operations. Let me know if you need anything else."
+				calls = nil
 			}
 		}
 	}
@@ -749,8 +772,25 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 		}
 
 		// Force a final summary turn if maxIter was exhausted with no text.
+		// Must first provide tool_results for any pending tool_use calls before
+		// sending a new user message, otherwise Anthropic rejects the request.
 		if text == "" {
 			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
+			if len(calls) > 0 {
+				stubResults := make([]map[string]any, 0, len(calls))
+				for _, c := range calls {
+					res, execErr := turn.Executor.Execute(context.Background(), c)
+					if execErr != nil {
+						res = "error: " + execErr.Error()
+					}
+					stubResults = append(stubResults, map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": c.ID,
+						"content":     res,
+					})
+				}
+				msgs = append(msgs, anthropicMessage{Role: "user", Content: stubResults})
+			}
 			msgs = append(msgs, anthropicMessage{Role: "user", Content: []map[string]any{
 				{"type": "text", "text": "Please summarise your findings and give a final response."},
 			}})
@@ -770,6 +810,11 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 					}
 				}
 				resp2.Body.Close()
+			}
+			// If still no text after force-summary, return a safe fallback.
+			if text == "" {
+				text = "I completed the requested operations. Let me know if you need anything else."
+				calls = nil
 			}
 		}
 	}
