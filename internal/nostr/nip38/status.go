@@ -110,6 +110,8 @@ func NewHeartbeat(parent context.Context, opts HeartbeatOptions) (*Heartbeat, er
 
 // SetStatus publishes a new status event immediately.
 // expiry is an optional Unix timestamp after which the status expires (0 = no expiry).
+// The publish is dispatched asynchronously so callers are never blocked by relay
+// latency or failures (status events are best-effort indicators).
 func (h *Heartbeat) SetStatus(ctx context.Context, status, content string, expiry int64) {
 	if !h.opts.Enabled {
 		return
@@ -118,7 +120,7 @@ func (h *Heartbeat) SetStatus(ctx context.Context, status, content string, expir
 	h.current = status
 	h.currentMsg = content
 	h.mu.Unlock()
-	h.publish(ctx, status, content, expiry)
+	go h.publish(ctx, status, content, expiry)
 }
 
 // SetIdle transitions to idle status (useful when an agent turn completes).
