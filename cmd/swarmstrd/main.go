@@ -2511,7 +2511,11 @@ func main() {
 			}
 
 			var identityParts []string
-			for _, fname := range []string{"SOUL.md", "IDENTITY.md", "USER.md", "AGENTS.md"} {
+			// BOOTSTRAP.md is loaded first so it frames the agent's first session.
+			// It is expected to be deleted by the agent after identity is established —
+			// mirroring OpenClaw's behaviour.  All other identity files are always loaded
+			// when present; the os.ReadFile check is a no-op if the file doesn't exist.
+			for _, fname := range []string{"BOOTSTRAP.md", "SOUL.md", "IDENTITY.md", "USER.md", "AGENTS.md"} {
 				fpath := filepath.Join(wsDir, fname)
 				if raw, ferr := os.ReadFile(fpath); ferr == nil && len(raw) > 0 {
 					identityParts = append(identityParts, strings.TrimSpace(string(raw)))
