@@ -1,0 +1,5 @@
+Starting server with Config HP="127.0.0.1:3307"|T="28800000"|R="false"|L="info"
+time="2026-03-13T18:46:10-07:00" level=info msg="Server ready. Accepting connections."
+time="2026-03-13T18:46:10-07:00" level=warning msg="secure_file_priv is set to \"\", which is insecure."
+time="2026-03-13T18:46:10-07:00" level=warning msg="Any user with GRANT FILE privileges will be able to read any file which the sql-server process can read."
+time="2026-03-13T18:46:10-07:00" level=warning msg="Please consider restarting the server with secure_file_priv set to a safe (or non-existent) directory."

@@ -27,6 +27,9 @@ import (
 func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
 
+	// Early validation: if no keyer, publishEvent will fail
+	// Tools that need signing should check opts.Keyer != nil
+	
 	signEvent := func(ctx context.Context, evt *nostr.Event) error {
 		signFn, err := opts.signerFunc()
 		if err != nil {
@@ -59,13 +62,16 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 
 	// ── NIP-09: Event Deletion ─────────────────────────────────────────────
 
-	tools.Register("nostr_delete", func(ctx context.Context, args map[string]any) (string, error) {
+	deleteTool := func(ctx context.Context, args map[string]any) (string, error) {
 		ids := toStringSlice(args["ids"])
 		if len(ids) == 0 {
 			return "", fmt.Errorf("nostr_delete: ids is required")
 		}
 		reason, _ := args["reason"].(string)
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
+		if len(relays) == 0 {
+			return "", fmt.Errorf("nostr_delete: no relays configured")
+		}
 
 		tags := nostr.Tags{}
 		for _, id := range ids {
@@ -83,7 +89,49 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "deleted_ids": ids})
 		return string(out), nil
-	})
+	}
+	tools.RegisterWithDef("nostr_delete", deleteTool, NostrDeleteDef)
+	tools.RegisterWithDef("nostr_event_delete", deleteTool, NostrEventDeleteDef)
+
+	// ── NIP-56: Reporting (kind 1984) ──────────────────────────────────────
+
+	tools.RegisterWithDef("nostr_report", func(ctx context.Context, args map[string]any) (string, error) {
+		reportType, _ := args["report_type"].(string)
+		reason, _ := args["reason"].(string)
+		eventIDs := uniqueNonEmpty(toStringSlice(args["target_event_ids"]))
+		pubkeys := uniqueNonEmpty(toStringSlice(args["target_pubkeys"]))
+		relays := opts.resolveRelays(toStringSlice(args["relays"]))
+
+		if strings.TrimSpace(reportType) == "" {
+			return "", fmt.Errorf("nostr_report: report_type is required")
+		}
+		if len(eventIDs) == 0 && len(pubkeys) == 0 {
+			return "", fmt.Errorf("nostr_report: provide target_event_ids and/or target_pubkeys")
+		}
+		if len(relays) == 0 {
+			return "", fmt.Errorf("nostr_report: no relays configured")
+		}
+
+		tags := nostr.Tags{{"report", strings.ToLower(strings.TrimSpace(reportType))}}
+		for _, id := range eventIDs {
+			tags = append(tags, nostr.Tag{"e", id})
+		}
+		for _, pk := range pubkeys {
+			tags = append(tags, nostr.Tag{"p", pk})
+		}
+		evt := nostr.Event{
+			Kind:      1984,
+			CreatedAt: nostr.Now(),
+			Tags:      tags,
+			Content:   reason,
+		}
+		evID, err := publishEvent(ctx, evt, relays)
+		if err != nil {
+			return "", err
+		}
+		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "report_type": reportType, "event_targets": eventIDs, "pubkey_targets": pubkeys})
+		return string(out), nil
+	}, NostrReportDef)
 
 	// ── NIP-25: Reactions ──────────────────────────────────────────────────
 
@@ -154,7 +202,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 
 	// ── NIP-23: Long-form content (kind 30023) ─────────────────────────────
 
-	tools.Register("nostr_article_publish", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nostr_article_publish", func(ctx context.Context, args map[string]any) (string, error) {
 		title, _ := args["title"].(string)
 		summary, _ := args["summary"].(string)
 		content, _ := args["content"].(string)
@@ -165,8 +213,17 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		if title == "" || content == "" {
 			return "", fmt.Errorf("nostr_article_publish: title and content are required")
 		}
+		if len(relays) == 0 {
+			return "", fmt.Errorf("nostr_article_publish: no relays configured")
+		}
 		if dTag == "" {
 			dTag = slugify(title)
+		}
+		if strings.TrimSpace(summary) == "" {
+			summary = autoArticleSummary(content)
+		}
+		if strings.TrimSpace(image) == "" {
+			image = firstMarkdownImage(content)
 		}
 
 		publishedAt := time.Now().Unix()
@@ -185,7 +242,11 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		if image != "" {
 			tags = append(tags, nostr.Tag{"image", image})
 		}
-		for _, t := range toStringSlice(args["tags"]) {
+		articleTags := uniqueNonEmpty(toStringSlice(args["tags"]))
+		if len(articleTags) == 0 {
+			articleTags = inferHashtags(content)
+		}
+		for _, t := range articleTags {
 			tags = append(tags, nostr.Tag{"t", t})
 		}
 
@@ -199,9 +260,9 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		if err != nil {
 			return "", err
 		}
-		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "d_tag": dTag})
+		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "d_tag": dTag, "summary": summary, "image": image})
 		return string(out), nil
-	})
+	}, NostrArticlePublishDef)
 
 	tools.Register("nostr_article_get", func(ctx context.Context, args map[string]any) (string, error) {
 		author, _ := args["author"].(string)
@@ -210,6 +271,9 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 
 		if author == "" {
 			return "", fmt.Errorf("nostr_article_get: author pubkey is required")
+		}
+		if len(relays) == 0 {
+			return "", fmt.Errorf("nostr_article_get: no relays configured")
 		}
 
 		filter := nostr.Filter{
@@ -262,9 +326,6 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		filter := nostr.Filter{
 			Limit:  limit,
 			Search: query,
-		}
-		if rawKinds := toStringSlice(args["kinds"]); len(rawKinds) > 0 {
-			// kinds as strings
 		}
 		if kv, ok := args["kinds"]; ok {
 			if ks, ok := kv.([]any); ok {
@@ -444,9 +505,72 @@ func slugify(title string) string {
 	return s
 }
 
+func autoArticleSummary(content string) string {
+	plain := content
+	replacer := strings.NewReplacer("*", " ", "_", " ", "`", " ", "#", " ", "[", " ", "]", " ", "(", " ", ")", " ", "!", " ", "\n", " ", "\r", " ", "\t", " ")
+	plain = replacer.Replace(plain)
+	plain = strings.Join(strings.Fields(plain), " ")
+	// Use rune slicing for proper UTF-8 handling
+	runes := []rune(plain)
+	if len(runes) > 240 {
+		plain = strings.TrimSpace(string(runes[:240])) + "…"
+	}
+	return plain
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
+}
+
+func firstMarkdownImage(content string) string {
+	needle := "!["
+	searchPos := 0
+	for {
+		i := strings.Index(content[searchPos:], needle)
+		if i < 0 {
+			return ""
+		}
+		absPos := searchPos + i
+		rest := content[absPos+len(needle):]
+		closeAlt := strings.Index(rest, "](")
+		if closeAlt < 0 {
+			return ""
+		}
+		after := rest[closeAlt+2:]
+		closeURL := strings.Index(after, ")")
+		if closeURL < 0 {
+			return ""
+		}
+		url := strings.TrimSpace(after[:closeURL])
+		if url != "" {
+			return url
+		}
+		// Move search position past this invalid image
+		searchPos = absPos + len(needle) + closeAlt + 2 + closeURL + 1
+	}
+}
+
+func inferHashtags(content string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 4)
+	for _, tok := range strings.Fields(content) {
+		if !strings.HasPrefix(tok, "#") || len(tok) < 2 {
+			continue
+		}
+		tag := strings.TrimLeft(tok, "#")
+		tag = strings.Trim(tag, ".,;:!?()[]{}\"'")
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag == "" {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		out = append(out, tag)
+	}
+	return out
 }

@@ -1,13 +1,12 @@
-// Package toolbuiltin nostr_outbox.go — NIP-65 outbox model relay hints tool.
-//
-// nostr_relay_hints fetches a pubkey's kind:10002 relay list and returns
-// the read/write relay sets per the NIP-65 outbox model.
+// Package toolbuiltin nostr_outbox.go — NIP-65 outbox model relay hints tools.
 package toolbuiltin
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,14 +29,8 @@ var (
 	outboxCacheTTL = 30 * time.Minute
 )
 
-// ─── nostr_relay_hints ────────────────────────────────────────────────────────
 
-// NostrRelayHintsTool returns an agent tool that fetches a pubkey's NIP-65
-// relay hints (kind:10002 relay list event).
-//
-// Parameters:
-//   - pubkey  string   — hex pubkey or npub (required)
-//   - relays  []string — optional relay override for fetching
+// NostrRelayHintsTool fetches a pubkey's NIP-65 relay hints (kind:10002).
 func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		pubkeyHex, err := requirePubkey(args)
@@ -48,11 +41,7 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 		outboxCacheMu.Lock()
 		if e, ok := outboxCache[pubkeyHex]; ok && time.Since(e.fetchedAt) < outboxCacheTTL {
 			outboxCacheMu.Unlock()
-			out, _ := json.Marshal(map[string]any{
-				"pubkey": pubkeyHex,
-				"read":   e.read,
-				"write":  e.write,
-			})
+			out, _ := json.Marshal(map[string]any{"pubkey": pubkeyHex, "read": e.read, "write": e.write})
 			return string(out), nil
 		}
 		outboxCacheMu.Unlock()
@@ -73,11 +62,7 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 		pool := nostr.NewPool(nostr.PoolOptions{})
 		defer pool.Close("relay_hints done")
 
-		f := nostr.Filter{
-			Kinds:   []nostr.Kind{10002},
-			Authors: []nostr.PubKey{pk},
-			Limit:   1,
-		}
+		f := nostr.Filter{Kinds: []nostr.Kind{10002}, Authors: []nostr.PubKey{pk}, Limit: 1}
 		sub := pool.SubscribeMany(ctx2, relays, f, nostr.SubscriptionOptions{})
 
 		var best *nostr.Event
@@ -89,15 +74,10 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 			}
 		}
 		if best == nil {
-			out, _ := json.Marshal(map[string]any{
-				"pubkey": pubkeyHex,
-				"read":   []string{},
-				"write":  []string{},
-			})
+			out, _ := json.Marshal(map[string]any{"pubkey": pubkeyHex, "read": []string{}, "write": []string{}})
 			return string(out), nil
 		}
 
-		// Parse "r" tags: ["r", relayURL] or ["r", relayURL, "read"/"write"].
 		var readRelays, writeRelays []string
 		for _, tag := range best.Tags {
 			if len(tag) < 2 || tag[0] != "r" {
@@ -105,7 +85,6 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 			}
 			relayURL := tag[1]
 			if len(tag) == 2 {
-				// No marker = both read and write.
 				readRelays = append(readRelays, relayURL)
 				writeRelays = append(writeRelays, relayURL)
 			} else {
@@ -119,18 +98,96 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 		}
 
 		outboxCacheMu.Lock()
-		outboxCache[pubkeyHex] = outboxCacheEntry{
-			read:      readRelays,
-			write:     writeRelays,
-			fetchedAt: time.Now(),
-		}
+		outboxCache[pubkeyHex] = outboxCacheEntry{read: readRelays, write: writeRelays, fetchedAt: time.Now()}
 		outboxCacheMu.Unlock()
 
-		out, _ := json.Marshal(map[string]any{
-			"pubkey": pubkeyHex,
-			"read":   readRelays,
-			"write":  writeRelays,
-		})
+		out, _ := json.Marshal(map[string]any{"pubkey": pubkeyHex, "read": readRelays, "write": writeRelays})
 		return string(out), nil
 	}
+}
+
+// NostrRelayListSetTool publishes the caller's relay list metadata (kind:10002).
+func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
+	return func(ctx context.Context, args map[string]any) (string, error) {
+		signFn, err := opts.signerFunc()
+		if err != nil {
+			return "", fmt.Errorf("nostr_relay_list_set: %w", err)
+		}
+		relays := opts.resolveRelays(toStringSlice(args["relays"]))
+		if len(relays) == 0 {
+			return "", fmt.Errorf("nostr_relay_list_set: no relays configured")
+		}
+
+		readRelays := uniqueNonEmpty(toStringSlice(args["read_relays"]))
+		writeRelays := uniqueNonEmpty(toStringSlice(args["write_relays"]))
+		bothRelays := uniqueNonEmpty(toStringSlice(args["both_relays"]))
+		if len(readRelays)+len(writeRelays)+len(bothRelays) == 0 {
+			bothRelays = uniqueNonEmpty(relays)
+		}
+
+		tags := nostr.Tags{}
+		for _, r := range bothRelays {
+			tags = append(tags, nostr.Tag{"r", r})
+		}
+		for _, r := range readRelays {
+			tags = append(tags, nostr.Tag{"r", r, "read"})
+		}
+		for _, r := range writeRelays {
+			tags = append(tags, nostr.Tag{"r", r, "write"})
+		}
+
+		evt := nostr.Event{Kind: 10002, CreatedAt: nostr.Now(), Tags: tags, Content: ""}
+		if err := signFn(ctx, &evt); err != nil {
+			return "", fmt.Errorf("nostr_relay_list_set: sign: %w", err)
+		}
+
+		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		pool := nostr.NewPool(nostr.PoolOptions{})
+		defer pool.Close("relay_list_set done")
+
+		published := 0
+		var lastErr error
+		for _, relayURL := range relays {
+			r, rErr := pool.EnsureRelay(relayURL)
+			if rErr != nil {
+				lastErr = rErr
+				continue
+			}
+			if pErr := r.Publish(ctx2, evt); pErr != nil {
+				lastErr = pErr
+				continue
+			}
+			published++
+		}
+		if published == 0 && lastErr != nil {
+			return "", fmt.Errorf("nostr_relay_list_set: failed on all relays: %w", lastErr)
+		}
+	
+		// Invalidate cache for this pubkey so subsequent relay_hints calls get fresh data
+		outboxCacheMu.Lock()
+		delete(outboxCache, evt.PubKey.Hex())
+		outboxCacheMu.Unlock()
+	
+		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evt.ID.Hex(), "kind": 10002, "published": published})
+		return string(out), nil
+	}
+}
+
+func uniqueNonEmpty(in []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
