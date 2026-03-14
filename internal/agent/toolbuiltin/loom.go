@@ -39,7 +39,7 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 	}
 
 	// loom_worker_list: discover available compute workers (kind 10100).
-	tools.Register("loom_worker_list", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("loom_worker_list", func(ctx context.Context, args map[string]any) (string, error) {
 		limit := 20
 		if v, ok := args["limit"].(float64); ok && v > 0 {
 			limit = int(v)
@@ -59,12 +59,12 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 			"note":    "Workers accept Cashu tokens for payment. Timeout = payment_amount / price_per_second.",
 		})
 		return string(out), nil
-	})
+	}, LoomWorkerListDef)
 
 	// loom_job_submit: submit a compute job to a worker (kind 5100).
 	// The caller must provide a Cashu token locked to the worker's pubkey.
 	// The timeout is determined by: payment_amount / price_per_second.
-	tools.Register("loom_job_submit", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("loom_job_submit", func(ctx context.Context, args map[string]any) (string, error) {
 		workerPubKey, _ := args["worker_pubkey"].(string)
 		command, _ := args["command"].(string)
 		payment, _ := args["payment"].(string) // Cashu token locked to worker
@@ -133,10 +133,10 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 			"note":   "Use loom_job_status to track progress; loom_job_result to get stdout/stderr URLs.",
 		})
 		return string(out), nil
-	})
+	}, LoomJobSubmitDef)
 
 	// loom_job_status: get the latest status for a submitted job (kind 30100).
-	tools.Register("loom_job_status", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("loom_job_status", func(ctx context.Context, args map[string]any) (string, error) {
 		jobID, _ := args["job_id"].(string)
 		relays := toStringSlice(args["relays"])
 		if len(relays) == 0 {
@@ -153,11 +153,11 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 		}
 		out, _ := json.Marshal(status)
 		return string(out), nil
-	})
+	}, LoomJobStatusDef)
 
 	// loom_job_result: wait for and retrieve the final job result (kind 5101).
 	// stdout_url and stderr_url point to Blossom-hosted output files.
-	tools.Register("loom_job_result", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("loom_job_result", func(ctx context.Context, args map[string]any) (string, error) {
 		jobID, _ := args["job_id"].(string)
 		relays := toStringSlice(args["relays"])
 		if len(relays) == 0 {
@@ -178,10 +178,10 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 		}
 		out, _ := json.Marshal(result)
 		return string(out), nil
-	})
+	}, LoomJobResultDef)
 
 	// loom_job_cancel: cancel a running or queued job (kind 5102).
-	tools.Register("loom_job_cancel", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("loom_job_cancel", func(ctx context.Context, args map[string]any) (string, error) {
 		jobID, _ := args["job_id"].(string)
 		workerPubKey, _ := args["worker_pubkey"].(string)
 		relays := toStringSlice(args["relays"])
@@ -211,5 +211,5 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 			"note":            "Worker will return partial change for unused payment upon cancellation.",
 		})
 		return string(out), nil
-	})
+	}, LoomJobCancelDef)
 }

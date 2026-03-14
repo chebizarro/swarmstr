@@ -28,7 +28,7 @@ func RegisterNutsTools(tools *agent.ToolRegistry, opts NutsToolOpts) {
 	}
 
 	// nuts_mint_info: get mint information.
-	tools.Register("nuts_mint_info", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nuts_mint_info", func(ctx context.Context, args map[string]any) (string, error) {
 		mintURL := resolveMint(args)
 		if mintURL == "" {
 			return "", fmt.Errorf("nuts_mint_info: mint_url is required")
@@ -40,10 +40,10 @@ func RegisterNutsTools(tools *agent.ToolRegistry, opts NutsToolOpts) {
 		}
 		out, _ := json.Marshal(info)
 		return string(out), nil
-	})
+	}, NutsMintInfoDef)
 
 	// nuts_mint_quote: create a Lightning invoice to mint ecash tokens.
-	tools.Register("nuts_mint_quote", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nuts_mint_quote", func(ctx context.Context, args map[string]any) (string, error) {
 		mintURL := resolveMint(args)
 		if mintURL == "" {
 			return "", fmt.Errorf("nuts_mint_quote: mint_url is required")
@@ -72,10 +72,10 @@ func RegisterNutsTools(tools *agent.ToolRegistry, opts NutsToolOpts) {
 			"mint_url": mintURL,
 		})
 		return string(out), nil
-	})
+	}, NutsMintQuoteDef)
 
 	// nuts_mint_status: check if a mint quote has been paid.
-	tools.Register("nuts_mint_status", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nuts_mint_status", func(ctx context.Context, args map[string]any) (string, error) {
 		mintURL := resolveMint(args)
 		quoteID, _ := args["quote_id"].(string)
 		if mintURL == "" || quoteID == "" {
@@ -93,10 +93,10 @@ func RegisterNutsTools(tools *agent.ToolRegistry, opts NutsToolOpts) {
 			"expiry":   quote.Expiry,
 		})
 		return string(out), nil
-	})
+	}, NutsMintStatusDef)
 
 	// nuts_melt_quote: create a quote for paying a Lightning invoice with tokens.
-	tools.Register("nuts_melt_quote", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nuts_melt_quote", func(ctx context.Context, args map[string]any) (string, error) {
 		mintURL := resolveMint(args)
 		invoice, _ := args["invoice"].(string)
 		unit, _ := args["unit"].(string)
@@ -118,10 +118,10 @@ func RegisterNutsTools(tools *agent.ToolRegistry, opts NutsToolOpts) {
 			"expiry":      quote.Expiry,
 		})
 		return string(out), nil
-	})
+	}, NutsMeltQuoteDef)
 
 	// nuts_melt: pay a Lightning invoice by melting ecash proofs.
-	tools.Register("nuts_melt", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nuts_melt", func(ctx context.Context, args map[string]any) (string, error) {
 		mintURL := resolveMint(args)
 		quoteID, _ := args["quote_id"].(string)
 		tokenStr, _ := args["token"].(string)
@@ -150,10 +150,10 @@ func RegisterNutsTools(tools *agent.ToolRegistry, opts NutsToolOpts) {
 			"preimage": preimage,
 		})
 		return string(out), nil
-	})
+	}, NutsMeltDef)
 
 	// nuts_balance: get the total value of a token.
-	tools.Register("nuts_balance", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nuts_balance", func(ctx context.Context, args map[string]any) (string, error) {
 		tokenStr, _ := args["token"].(string)
 		if tokenStr == "" {
 			return "", fmt.Errorf("nuts_balance: token is required")
@@ -170,10 +170,10 @@ func RegisterNutsTools(tools *agent.ToolRegistry, opts NutsToolOpts) {
 			"proofs":  len(token.Token[0].Proofs), // rough count
 		})
 		return string(out), nil
-	})
+	}, NutsBalanceDef)
 
 	// nuts_decode: decode and inspect a token without spending it.
-	tools.Register("nuts_decode", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nuts_decode", func(ctx context.Context, args map[string]any) (string, error) {
 		tokenStr, _ := args["token"].(string)
 		if tokenStr == "" {
 			return "", fmt.Errorf("nuts_decode: token is required")
@@ -189,5 +189,5 @@ func RegisterNutsTools(tools *agent.ToolRegistry, opts NutsToolOpts) {
 			"entries": token.Token,
 		}, "", "  ")
 		return string(out), nil
-	})
+	}, NutsDecodeDef)
 }
