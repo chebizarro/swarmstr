@@ -2,6 +2,7 @@ package toolbuiltin
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,6 +22,35 @@ func TestNostrRelayHintsTool_NoRelays(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error with no relays")
+	}
+}
+
+func TestNostrRelayListSetTool_RequiresKeyer(t *testing.T) {
+	tool := NostrRelayListSetTool(NostrToolOpts{Relays: []string{"wss://example.com"}})
+	_, err := tool(context.Background(), map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "signing keyer not configured") {
+		t.Fatalf("expected keyer error, got: %v", err)
+	}
+}
+
+func TestNostrRelayListSetTool_NoRelays(t *testing.T) {
+	tool := NostrRelayListSetTool(NostrToolOpts{Keyer: testSigner(t)})
+	_, err := tool(context.Background(), map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "no relays configured") {
+		t.Fatalf("expected no-relays error, got: %v", err)
+	}
+}
+
+func TestUniqueNonEmpty_DedupTrimAndSort(t *testing.T) {
+	got := uniqueNonEmpty([]string{" wss://b.example ", "", "wss://a.example", "wss://b.example", "wss://c.example "})
+	want := []string{"wss://a.example", "wss://b.example", "wss://c.example"}
+	if len(got) != len(want) {
+		t.Fatalf("len mismatch: got %d want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("index %d mismatch: got %q want %q", i, got[i], want[i])
+		}
 	}
 }
 

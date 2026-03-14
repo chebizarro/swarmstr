@@ -431,6 +431,7 @@ func main() {
 		Relays: cfg.Relays,
 	}
 	tools.RegisterWithDef("nostr_fetch", toolbuiltin.NostrFetchTool(nostrToolOpts), toolbuiltin.NostrFetchDef)
+	tools.RegisterWithDef("nostr_dm_decrypt", toolbuiltin.NostrDMDecryptTool(nostrToolOpts), toolbuiltin.NostrDMDecryptDef)
 	tools.RegisterWithDef("nostr_publish", toolbuiltin.NostrPublishTool(toolbuiltin.NostrToolOpts{
 		Keyer:  controlKeyer,
 		Relays: cfg.Relays,
@@ -455,16 +456,19 @@ func main() {
 	tools.RegisterWithDef("nostr_followers", toolbuiltin.NostrFollowersTool(nostrToolOpts), toolbuiltin.NostrFollowersDef)
 	tools.RegisterWithDef("nostr_wot_distance", toolbuiltin.NostrWotDistanceTool(nostrToolOpts), toolbuiltin.NostrWotDistanceDef)
 	tools.RegisterWithDef("nostr_relay_hints", toolbuiltin.NostrRelayHintsTool(nostrToolOpts), toolbuiltin.NostrRelayHintsDef)
+	tools.RegisterWithDef("nostr_relay_list_set", toolbuiltin.NostrRelayListSetTool(nostrToolOpts), toolbuiltin.NostrRelayListSetDef)
 	tools.RegisterWithDef("nostr_zap_send", toolbuiltin.NostrZapSendTool(nostrToolOpts), toolbuiltin.NostrZapSendDef)
 	tools.RegisterWithDef("nostr_zap_list", toolbuiltin.NostrZapListTool(nostrToolOpts), toolbuiltin.NostrZapListDef)
 
 	// NIP-51 list management tools (allowlists, blocklists, mute lists, etc.)
 	listStore := nip51.NewListStore()
-	toolbuiltin.RegisterListTools(tools, toolbuiltin.NostrListToolOpts{
+	listToolOpts := toolbuiltin.NostrListToolOpts{
 		Keyer:  controlKeyer,
 		Relays: cfg.Relays,
 		Store:  listStore,
-	})
+	}
+	toolbuiltin.RegisterListTools(tools, listToolOpts)
+	toolbuiltin.RegisterNostrListSemanticTools(tools, listToolOpts)
 
 	// NIP-38 status tool — uses controlHeartbeat38 which is set after DM bus starts.
 	// Wire via closure so it picks up the global after initialization.
