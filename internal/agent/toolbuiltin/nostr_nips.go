@@ -135,7 +135,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 
 	// ── NIP-25: Reactions ──────────────────────────────────────────────────
 
-	tools.Register("nostr_react", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nostr_react", func(ctx context.Context, args map[string]any) (string, error) {
 		eventID, _ := args["event_id"].(string)
 		relayHint, _ := args["relay_hint"].(string)
 		content, _ := args["content"].(string)
@@ -163,11 +163,11 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "reaction": content})
 		return string(out), nil
-	})
+	}, NostrReactDef)
 
 	// ── NIP-22: Comments (kind 1111) ───────────────────────────────────────
 
-	tools.Register("nostr_comment", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nostr_comment", func(ctx context.Context, args map[string]any) (string, error) {
 		rootID, _ := args["root_id"].(string)
 		rootKind, _ := args["root_kind"].(float64)
 		rootRelay, _ := args["root_relay"].(string)
@@ -198,7 +198,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID})
 		return string(out), nil
-	})
+	}, NostrCommentDef)
 
 	// ── NIP-23: Long-form content (kind 30023) ─────────────────────────────
 
@@ -264,7 +264,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		return string(out), nil
 	}, NostrArticlePublishDef)
 
-	tools.Register("nostr_article_get", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nostr_article_get", func(ctx context.Context, args map[string]any) (string, error) {
 		author, _ := args["author"].(string)
 		dTag, _ := args["d_tag"].(string)
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
@@ -304,11 +304,11 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		out, _ := json.Marshal(eventToMap(*best))
 		return string(out), nil
-	})
+	}, NostrArticleGetDef)
 
 	// ── NIP-50: Search ─────────────────────────────────────────────────────
 
-	tools.Register("nostr_search", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nostr_search", func(ctx context.Context, args map[string]any) (string, error) {
 		query, _ := args["query"].(string)
 		if query == "" {
 			return "", fmt.Errorf("nostr_search: query is required")
@@ -353,11 +353,11 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"query": query, "events": events, "count": len(events)})
 		return string(out), nil
-	})
+	}, NostrSearchDef)
 
 	// ── NIP-78: App-specific data (kind 30078) ─────────────────────────────
 
-	tools.Register("nostr_appdata_set", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nostr_appdata_set", func(ctx context.Context, args map[string]any) (string, error) {
 		appID, _ := args["app_id"].(string)
 		key, _ := args["key"].(string)
 		value, _ := args["value"].(string)
@@ -380,9 +380,9 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "app_id": appID, "key": key})
 		return string(out), nil
-	})
+	}, NostrAppDataSetDef)
 
-	tools.Register("nostr_appdata_get", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nostr_appdata_get", func(ctx context.Context, args map[string]any) (string, error) {
 		appID, _ := args["app_id"].(string)
 		key, _ := args["key"].(string)
 		author, _ := args["author"].(string)
@@ -435,11 +435,11 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 			"value":  best.Content,
 		})
 		return string(out), nil
-	})
+	}, NostrAppDataGetDef)
 
 	// ── NIP-94: File metadata (kind 1063) ──────────────────────────────────
 
-	tools.Register("nostr_file_announce", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("nostr_file_announce", func(ctx context.Context, args map[string]any) (string, error) {
 		url, _ := args["url"].(string)
 		mimeType, _ := args["mime_type"].(string)
 		sha256Hex, _ := args["sha256"].(string)
@@ -479,7 +479,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "url": url})
 		return string(out), nil
-	})
+	}, NostrFileAnnounceDef)
 
 	_ = pool // ensure pool is used
 }

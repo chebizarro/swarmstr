@@ -49,7 +49,7 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 	}
 
 	// relay_remember – store a memory note as a replaceable kind:30078 or ephemeral kind:1.
-	tools.Register("relay_remember", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("relay_remember", func(ctx context.Context, args map[string]any) (string, error) {
 		content, _ := args["content"].(string)
 		if content == "" {
 			return "", fmt.Errorf("relay_remember: content is required")
@@ -115,10 +115,10 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 			"kind":     kind,
 		})
 		return string(out), nil
-	})
+	}, RelayRememberDef)
 
 	// relay_recall – search relay event history for memories.
-	tools.Register("relay_recall", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("relay_recall", func(ctx context.Context, args map[string]any) (string, error) {
 		query, _ := args["query"].(string)
 		topic, _ := args["topic"].(string)
 		limit := 10
@@ -211,10 +211,10 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 			"count":    len(memories),
 		})
 		return string(out), nil
-	})
+	}, RelayRecallDef)
 
 	// relay_forget – delete a remembered event via NIP-09.
-	tools.Register("relay_forget", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("relay_forget", func(ctx context.Context, args map[string]any) (string, error) {
 		eventID, _ := args["event_id"].(string)
 		if eventID == "" {
 			return "", fmt.Errorf("relay_forget: event_id is required")
@@ -250,5 +250,5 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 			"deletion_event":  delEvt.ID.Hex(),
 		})
 		return string(out), nil
-	})
+	}, RelayForgetDef)
 }

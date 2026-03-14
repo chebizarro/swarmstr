@@ -35,7 +35,7 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
 
 	// list_get – fetch a NIP-51 list from relays.
-	tools.Register("list_get", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("list_get", func(ctx context.Context, args map[string]any) (string, error) {
 		kind := 0
 		if v, ok := args["kind"].(float64); ok {
 			kind = int(v)
@@ -63,10 +63,10 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 		}
 		out, _ := nip51.MarshalList(list)
 		return out, nil
-	})
+	}, ListGetDef)
 
 	// list_add – add an entry to a list.
-	tools.Register("list_add", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("list_add", func(ctx context.Context, args map[string]any) (string, error) {
 		kind := 0
 		if v, ok := args["kind"].(float64); ok {
 			kind = int(v)
@@ -98,10 +98,10 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID})
 		return string(out), nil
-	})
+	}, ListAddDef)
 
 	// list_remove – remove an entry from a list.
-	tools.Register("list_remove", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("list_remove", func(ctx context.Context, args map[string]any) (string, error) {
 		kind := 0
 		if v, ok := args["kind"].(float64); ok {
 			kind = int(v)
@@ -130,10 +130,10 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID})
 		return string(out), nil
-	})
+	}, ListRemoveDef)
 
 	// list_create – create a new named list (kind 30000 with d-tag).
-	tools.Register("list_create", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("list_create", func(ctx context.Context, args map[string]any) (string, error) {
 		name, _ := args["name"].(string)
 		title, _ := args["title"].(string)
 		kind := 0
@@ -166,10 +166,10 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "d_tag": name})
 		return string(out), nil
-	})
+	}, ListCreateDef)
 
 	// list_delete – clear a list (publish empty replaceable event + NIP-09 deletion).
-	tools.Register("list_delete", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("list_delete", func(ctx context.Context, args map[string]any) (string, error) {
 		kind := 0
 		if v, ok := args["kind"].(float64); ok {
 			kind = int(v)
@@ -207,10 +207,10 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID})
 		return string(out), nil
-	})
+	}, ListDeleteDef)
 
 	// list_check_allowlist – check if a pubkey passes allow/block filtering.
-	tools.Register("list_check_allowlist", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("list_check_allowlist", func(ctx context.Context, args map[string]any) (string, error) {
 		pubkeyHex, _ := args["pubkey"].(string)
 		ownerHex, _ := args["owner_pubkey"].(string)
 
@@ -239,6 +239,6 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 			"pass":    !muted && !blocked && allowed,
 		})
 		return string(out), nil
-	})
+	}, ListCheckAllowlistDef)
 
 }

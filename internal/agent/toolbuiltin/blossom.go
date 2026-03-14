@@ -41,7 +41,7 @@ func RegisterBlossomTools(tools *agent.ToolRegistry, opts BlossomToolOpts) {
 	}
 
 	// blossom_upload: upload a local file or raw content to a Blossom server.
-	tools.Register("blossom_upload", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("blossom_upload", func(ctx context.Context, args map[string]any) (string, error) {
 		client, err := makeClient(ctx)
 		if err != nil {
 			return "", err
@@ -81,10 +81,10 @@ func RegisterBlossomTools(tools *agent.ToolRegistry, opts BlossomToolOpts) {
 		}
 		out, _ := json.Marshal(desc)
 		return string(out), nil
-	})
+	}, BlossomUploadDef)
 
 	// blossom_download: download a blob by SHA256 hash.
-	tools.Register("blossom_download", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("blossom_download", func(ctx context.Context, args map[string]any) (string, error) {
 		client, err := makeClient(ctx)
 		if err != nil {
 			return "", err
@@ -131,10 +131,10 @@ func RegisterBlossomTools(tools *agent.ToolRegistry, opts BlossomToolOpts) {
 		}
 		out, _ := json.Marshal(result)
 		return string(out), nil
-	})
+	}, BlossomDownloadDef)
 
 	// blossom_list: list blobs for a pubkey on a server.
-	tools.Register("blossom_list", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("blossom_list", func(ctx context.Context, args map[string]any) (string, error) {
 		client, err := makeClient(ctx)
 		if err != nil {
 			return "", err
@@ -155,10 +155,10 @@ func RegisterBlossomTools(tools *agent.ToolRegistry, opts BlossomToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"pubkey": pubkeyHex, "blobs": blobs, "count": len(blobs)})
 		return string(out), nil
-	})
+	}, BlossomListDef)
 
 	// blossom_delete: delete a blob by SHA256 hash.
-	tools.Register("blossom_delete", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("blossom_delete", func(ctx context.Context, args map[string]any) (string, error) {
 		client, err := makeClient(ctx)
 		if err != nil {
 			return "", err
@@ -173,10 +173,10 @@ func RegisterBlossomTools(tools *agent.ToolRegistry, opts BlossomToolOpts) {
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "sha256": sha256Hex})
 		return string(out), nil
-	})
+	}, BlossomDeleteDef)
 
 	// blossom_mirror: mirror a blob from one server to another.
-	tools.Register("blossom_mirror", func(ctx context.Context, args map[string]any) (string, error) {
+	tools.RegisterWithDef("blossom_mirror", func(ctx context.Context, args map[string]any) (string, error) {
 		client, err := makeClient(ctx)
 		if err != nil {
 			return "", err
@@ -193,7 +193,7 @@ func RegisterBlossomTools(tools *agent.ToolRegistry, opts BlossomToolOpts) {
 		}
 		out, _ := json.Marshal(desc)
 		return string(out), nil
-	})
+	}, BlossomMirrorDef)
 }
 
 // mimeFromExt returns a basic MIME type from a file extension.
