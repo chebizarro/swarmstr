@@ -560,6 +560,20 @@ func main() {
 	tools.RegisterWithDef("nostr_unwatch", toolbuiltin.NostrUnwatchTool(watchRegistry), toolbuiltin.NostrUnwatchDef)
 	tools.RegisterWithDef("nostr_watch_list", toolbuiltin.NostrWatchListTool(watchRegistry), toolbuiltin.NostrWatchListDef)
 
+	// file_watch_add / file_watch_remove / file_watch_list — filesystem change subscriptions.
+	fileWatchRegistry := toolbuiltin.NewFileWatchRegistry()
+	fileWatchDeliver := func(sessionID, name string, event map[string]any) {
+		if dmRunAgentTurnRef == nil {
+			return
+		}
+		b, _ := json.Marshal(event)
+		text := fmt.Sprintf("[file_watch:%s] %s", name, string(b))
+		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, "", time.Now().Unix(), nil)
+	}
+	tools.RegisterWithDef("file_watch_add", toolbuiltin.FileWatchAddTool(fileWatchRegistry, fileWatchDeliver), toolbuiltin.FileWatchAddDef)
+	tools.RegisterWithDef("file_watch_remove", toolbuiltin.FileWatchRemoveTool(fileWatchRegistry), toolbuiltin.FileWatchRemoveDef)
+	tools.RegisterWithDef("file_watch_list", toolbuiltin.FileWatchListTool(fileWatchRegistry), toolbuiltin.FileWatchListDef)
+
 	// ── System / capability tools ───────────────────────────────────────────
 	// current_time: returns UTC timestamp so the agent always knows "now".
 	tools.RegisterWithDef("current_time", toolbuiltin.CurrentTimeTool, toolbuiltin.CurrentTimeDef)
