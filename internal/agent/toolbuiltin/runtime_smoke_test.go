@@ -108,7 +108,77 @@ func TestRuntimeSmoke_NewNostrWriteHelpers(t *testing.T) {
 				if err := json.Unmarshal([]byte(tr.Result), &body); err != nil {
 					t.Fatalf("result is not valid JSON: %v (result=%q)", err, tr.Result)
 				}
+				switch tc.name {
+				case "nostr_list_put", "nostr_list_remove", "nostr_list_delete", "nostr_relay_list_set", "nostr_event_delete", "nostr_article_publish", "nostr_report":
+					if body["ok"] != true {
+						t.Fatalf("expected ok=true envelope for %s, got: %#v", tc.name, body)
+					}
+					if strings.TrimSpace(anyToString(body["event_id"])) == "" {
+						t.Fatalf("expected event_id in %s result, got: %#v", tc.name, body)
+					}
+					if strings.TrimSpace(anyToString(body["tool"])) == "" {
+						t.Fatalf("expected tool in %s result, got: %#v", tc.name, body)
+					}
+					if _, ok := body["kind"]; !ok {
+						t.Fatalf("expected kind in %s result, got: %#v", tc.name, body)
+					}
+					if _, ok := body["targets"]; !ok {
+						t.Fatalf("expected targets in %s result, got: %#v", tc.name, body)
+					}
+				}
 			}
 		})
 	}
+}
+
+func TestRuntimeSmoke_NewNostrWriteHelpers_ErrorShape(t *testing.T) {
+	signer := testSigner(t)
+	tools := agent.NewToolRegistry()
+	nostrOpts := NostrToolOpts{Keyer: signer}
+	tools.RegisterWithDef("nostr_relay_list_set", NostrRelayListSetTool(nostrOpts), NostrRelayListSetDef)
+	RegisterNIPTools(tools, nostrOpts)
+
+	tests := []struct {
+		name       string
+		call       agent.ToolCall
+		errPrefix  string
+	}{
+		{
+			name:      "nostr_event_delete missing ids",
+			call:      agent.ToolCall{Name: "nostr_event_delete", Args: map[string]any{}},
+			errPrefix: "nostr_event_delete_error:",
+		},
+		{
+			name:      "nostr_report missing targets",
+			call:      agent.ToolCall{Name: "nostr_report", Args: map[string]any{"report_type": "spam"}},
+			errPrefix: "nostr_report_error:",
+		},
+		{
+			name:      "nostr_article_publish missing fields",
+			call:      agent.ToolCall{Name: "nostr_article_publish", Args: map[string]any{"title": "Only title"}},
+			errPrefix: "nostr_article_publish_error:",
+		},
+		{
+			name:      "nostr_relay_list_set no relays",
+			call:      agent.ToolCall{Name: "nostr_relay_list_set", Args: map[string]any{}},
+			errPrefix: "nostr_relay_list_set_error:",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runToolCallThroughRuntime(t, tools, tc.call)
+			tr := res.ToolTraces[0]
+			if strings.TrimSpace(tr.Error) == "" {
+				t.Fatalf("expected tool error, got none (trace=%+v)", tr)
+			}
+			if !strings.HasPrefix(strings.TrimSpace(tr.Error), tc.errPrefix) {
+				t.Fatalf("expected machine-readable error prefix %q, got %q", tc.errPrefix, tr.Error)
+			}
+		})
+	}
+}
+
+func anyToString(v any) string {
+	s, _ := v.(string)
+	return s
 }

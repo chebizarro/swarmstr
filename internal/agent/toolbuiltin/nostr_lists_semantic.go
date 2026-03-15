@@ -117,8 +117,15 @@ func RegisterNostrListSemanticTools(tools *agent.ToolRegistry, opts NostrListToo
 		if err != nil {
 			return "", mapSemanticListErr("nostr_list_put", err)
 		}
-		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "kind": kind, "d_tag": dtag, "count": len(entries)})
-		return string(out), nil
+		return nostrWriteSuccessEnvelope("nostr_list_put", evID, kind, map[string]any{
+			"d_tag": dtag,
+			"values": values,
+		}, map[string]any{
+			"count": len(entries),
+		}, map[string]any{
+			"d_tag": dtag,
+			"count": len(entries),
+		}), nil
 	}, NostrListPutDef)
 
 	tools.RegisterWithDef("nostr_list_remove", func(ctx context.Context, args map[string]any) (string, error) {
@@ -142,8 +149,13 @@ func RegisterNostrListSemanticTools(tools *agent.ToolRegistry, opts NostrListToo
 		if err != nil {
 			return "", mapSemanticListErr("nostr_list_remove", err)
 		}
-		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "kind": kind, "d_tag": dtag, "value": value})
-		return string(out), nil
+		return nostrWriteSuccessEnvelope("nostr_list_remove", evID, kind, map[string]any{
+			"d_tag": dtag,
+			"value": value,
+		}, nil, map[string]any{
+			"d_tag": dtag,
+			"value": value,
+		}), nil
 	}, NostrListRemoveDef)
 
 	tools.RegisterWithDef("nostr_list_delete", func(ctx context.Context, args map[string]any) (string, error) {
@@ -164,8 +176,11 @@ func RegisterNostrListSemanticTools(tools *agent.ToolRegistry, opts NostrListToo
 		if err != nil {
 			return "", mapSemanticListErr("nostr_list_delete", err)
 		}
-		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "kind": kind, "d_tag": dtag})
-		return string(out), nil
+		return nostrWriteSuccessEnvelope("nostr_list_delete", evID, kind, map[string]any{
+			"d_tag": dtag,
+		}, nil, map[string]any{
+			"d_tag": dtag,
+		}), nil
 	}, NostrListDeleteDef)
 }
 

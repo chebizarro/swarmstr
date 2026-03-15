@@ -111,11 +111,11 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		signFn, err := opts.signerFunc()
 		if err != nil {
-			return "", fmt.Errorf("nostr_relay_list_set: %w", err)
+			return "", nostrToolErr("nostr_relay_list_set", "no_keyer", err.Error(), nil)
 		}
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_relay_list_set: no relays configured")
+			return "", nostrToolErr("nostr_relay_list_set", "no_relays", "no relays configured", nil)
 		}
 
 		readRelays := uniqueNonEmpty(toStringSlice(args["read_relays"]))
@@ -138,7 +138,7 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 
 		evt := nostr.Event{Kind: 10002, CreatedAt: nostr.Now(), Tags: tags, Content: ""}
 		if err := signFn(ctx, &evt); err != nil {
-			return "", fmt.Errorf("nostr_relay_list_set: sign: %w", err)
+			return "", nostrToolErr("nostr_relay_list_set", "sign_failed", err.Error(), map[string]any{"kind": 10002})
 		}
 
 		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -161,7 +161,7 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 			published++
 		}
 		if published == 0 && lastErr != nil {
-			return "", fmt.Errorf("nostr_relay_list_set: failed on all relays: %w", lastErr)
+			return "", nostrToolErr("nostr_relay_list_set", "publish_failed", lastErr.Error(), map[string]any{"kind": 10002, "publish_relays": relays})
 		}
 	
 		// Invalidate cache for this pubkey so subsequent relay_hints calls get fresh data
@@ -169,8 +169,16 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 		delete(outboxCache, evt.PubKey.Hex())
 		outboxCacheMu.Unlock()
 	
-		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evt.ID.Hex(), "kind": 10002, "published": published})
-		return string(out), nil
+		return nostrWriteSuccessEnvelope("nostr_relay_list_set", evt.ID.Hex(), 10002, map[string]any{
+			"read_relays":  readRelays,
+			"write_relays": writeRelays,
+			"both_relays":  bothRelays,
+		}, map[string]any{
+			"published":     published,
+			"publish_relays": relays,
+		}, map[string]any{
+			"published": published,
+		}), nil
 	}
 }
 
