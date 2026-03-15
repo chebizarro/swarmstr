@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	nostr "fiatjaf.com/nostr"
 
@@ -63,6 +64,7 @@ var contextVMCallDef = agent.ToolDefinition{
 			"arguments":     {Type: "string", Description: "JSON object string of tool arguments (e.g. '{\"prompt\":\"a cat\"}')."},
 			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
 			"encryption":    {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
+			"timeout_seconds": {Type: "number", Description: "Optional response timeout in seconds (default 60)."},
 		},
 		Required: []string{"server_pubkey", "tool_name"},
 	},
@@ -177,7 +179,14 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 		}
 
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		result, err := contextvm.CallTool(ctx, pool, ks, relays, serverPubKey, toolName, toolArgs, encryption)
+		timeoutSec := 60
+		if v, ok := args["timeout_seconds"].(float64); ok && v > 0 {
+			timeoutSec = int(v)
+		}
+		if timeoutSec > 600 {
+			timeoutSec = 600
+		}
+		result, err := contextvm.CallToolWithTimeout(ctx, pool, ks, relays, serverPubKey, toolName, toolArgs, time.Duration(timeoutSec)*time.Second, encryption)
 		if err != nil {
 			return "", err
 		}

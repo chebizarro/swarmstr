@@ -129,6 +129,12 @@ func ListTools(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays 
 
 // CallTool calls an MCP tool on a ContextVM server via kind 25910.
 func CallTool(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey, toolName string, toolArgs map[string]any, encryption string) (*CallResult, error) {
+	return CallToolWithTimeout(ctx, pool, keyer, relays, serverPubKey, toolName, toolArgs, 30*time.Second, encryption)
+}
+
+// CallToolWithTimeout calls an MCP tool on a ContextVM server via kind 25910
+// with a configurable response timeout.
+func CallToolWithTimeout(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey, toolName string, toolArgs map[string]any, timeout time.Duration, encryption string) (*CallResult, error) {
 	msg := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -138,7 +144,7 @@ func CallTool(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays [
 			"arguments": toolArgs,
 		},
 	}
-	respRaw, err := sendRequest(ctx, pool, keyer, relays, serverPubKey, msg, encryption)
+	respRaw, err := sendRequestWithTimeout(ctx, pool, keyer, relays, serverPubKey, msg, timeout, encryption)
 	if err != nil {
 		return nil, fmt.Errorf("contextvm call %s: %w", toolName, err)
 	}
@@ -169,6 +175,10 @@ func SendRaw(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []
 // sendRequest publishes a kind 25910 MCP message to the server and waits for the response.
 // Per the spec: request has p-tag = server pubkey; response has e-tag = request event ID.
 func sendRequest(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any, encryption string) (json.RawMessage, error) {
+	return sendRequestWithTimeout(ctx, pool, keyer, relays, serverPubKey, msg, 30*time.Second, encryption)
+}
+
+func sendRequestWithTimeout(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any, timeout time.Duration, encryption string) (json.RawMessage, error) {
 	msgJSON, err := json.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("marshal message: %w", err)
@@ -206,7 +216,10 @@ func sendRequest(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relay
 		Tags:  nostr.TagMap{"e": []string{requestID}},
 		Limit: 1,
 	}
-	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	respCh := pool.SubscribeMany(ctx2, relays, respFilter, nostr.SubscriptionOptions{})
