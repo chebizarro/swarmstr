@@ -162,6 +162,10 @@ var NostrSendDMDef = agent.ToolDefinition{
 				Type:        "string",
 				Description: "The message text to send.",
 			},
+			"encryption": {
+				Type:        "string",
+				Description: "Optional encryption mode preference: auto|nip17|nip44|giftwrap|nip04.",
+			},
 		},
 		Required: []string{"to", "message"},
 	},
@@ -346,10 +350,24 @@ func NostrSendDMTool(opts NostrToolOpts) agent.ToolFunc {
 		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 
-		if err := opts.DMTransport.SendDM(ctx2, toPubKey, text); err != nil {
-			return "", fmt.Errorf("nostr_send_dm: %w", err)
+		encryption := strings.ToLower(strings.TrimSpace(argString(args, "encryption")))
+		if encryption != "" {
+			if sender, ok := opts.DMTransport.(interface {
+				SendDMWithScheme(ctx context.Context, toPubKey string, text string, scheme string) error
+			}); ok {
+				if err := sender.SendDMWithScheme(ctx2, toPubKey, text, encryption); err != nil {
+					return "", fmt.Errorf("nostr_send_dm: %w", err)
+				}
+			} else {
+				transportType := fmt.Sprintf("%T", opts.DMTransport)
+				return "", fmt.Errorf("nostr_send_dm: transport %s does not support explicit encryption selection (use default encryption)", transportType)
+			}
+		} else {
+			if err := opts.DMTransport.SendDM(ctx2, toPubKey, text); err != nil {
+				return "", fmt.Errorf("nostr_send_dm: %w", err)
+			}
 		}
-		out, _ := json.Marshal(map[string]any{"sent": true, "to": toPubKey})
+		out, _ := json.Marshal(map[string]any{"sent": true, "to": toPubKey, "encryption": encryption})
 		return string(out), nil
 	}
 }

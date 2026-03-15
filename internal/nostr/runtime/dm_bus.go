@@ -205,6 +205,18 @@ func (b *DMBus) SendDM(ctx context.Context, toPubKey string, text string) error 
 	return err
 }
 
+// SendDMWithScheme sends a DM using an explicit encryption scheme request.
+// DMBus only supports nip04; auto/empty resolves to nip04.
+func (b *DMBus) SendDMWithScheme(ctx context.Context, toPubKey string, text string, scheme string) error {
+	s := strings.ToLower(strings.TrimSpace(scheme))
+	switch s {
+	case "", "auto", "nip04", "nip-04":
+		return b.SendDM(ctx, toPubKey, text)
+	default:
+		return fmt.Errorf("dm scheme %q not supported by NIP-04 transport", scheme)
+	}
+}
+
 func (b *DMBus) SetRelays(relays []string) error {
 	next := sanitizeRelayList(relays)
 	if len(next) == 0 {
