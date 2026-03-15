@@ -119,3 +119,89 @@ func TestFileWatchAdd_ContainsFilter(t *testing.T) {
 	}
 }
 
+func TestFileWatchAdd_ContainsRegexFilter(t *testing.T) {
+	reg := NewFileWatchRegistry()
+	events := make(chan map[string]any, 1)
+	toolAdd := FileWatchAddTool(reg, func(_ string, _ string, event map[string]any) {
+		events <- event
+	})
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "regex.log")
+	if err := os.WriteFile(f, []byte("starting"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	if _, err := toolAdd(context.Background(), map[string]any{
+		"name":           "regex-watch",
+		"session_id":     "sess-3",
+		"path":           f,
+		"contains_regex": "ERROR\\s+\\d+",
+		"event_types":    []any{"write"},
+		"ttl_seconds":    float64(10),
+		"max_events":     float64(1),
+	}); err != nil {
+		t.Fatalf("file_watch_add with regex: %v", err)
+	}
+
+	if err := os.WriteFile(f, []byte("ERROR code"), 0o644); err != nil {
+		t.Fatalf("write non-match: %v", err)
+	}
+	select {
+	case <-events:
+		t.Fatal("unexpected event for non-matching regex")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	if err := os.WriteFile(f, []byte("ERROR 500"), 0o644); err != nil {
+		t.Fatalf("write match: %v", err)
+	}
+	select {
+	case <-events:
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected matching regex event")
+	}
+}
+
+func TestFileWatchAdd_RecursiveDirectoryWatch(t *testing.T) {
+	reg := NewFileWatchRegistry()
+	events := make(chan map[string]any, 2)
+	toolAdd := FileWatchAddTool(reg, func(_ string, _ string, event map[string]any) {
+		events <- event
+	})
+
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	target := filepath.Join(sub, "nested.log")
+	if err := os.WriteFile(target, []byte("start"), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+
+	if _, err := toolAdd(context.Background(), map[string]any{
+		"name":        "recursive-watch",
+		"session_id":  "sess-4",
+		"path":        root,
+		"recursive":   true,
+		"event_types": []any{"write"},
+		"ttl_seconds": float64(10),
+		"max_events":  float64(1),
+	}); err != nil {
+		t.Fatalf("file_watch_add recursive: %v", err)
+	}
+
+	if err := os.WriteFile(target, []byte("changed"), 0o644); err != nil {
+		t.Fatalf("write nested target: %v", err)
+	}
+	select {
+	case ev := <-events:
+		p, _ := ev["path"].(string)
+		if filepath.Clean(p) != filepath.Clean(target) {
+			t.Fatalf("expected nested file path %q, got %#v", target, ev)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected recursive watch event")
+	}
+}
