@@ -13,6 +13,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -168,6 +169,20 @@ func (b *NIP17Bus) SendDM(ctx context.Context, toPubKey string, text string) err
 		pk,
 		nil, // no event modifier
 	)
+}
+
+// SendDMWithScheme sends a DM using an explicit encryption scheme request.
+// NIP17Bus supports nip17/nip44/giftwrap; auto/empty resolves to default NIP-17 flow.
+func (b *NIP17Bus) SendDMWithScheme(ctx context.Context, toPubKey string, text string, scheme string) error {
+	s := strings.ToLower(strings.TrimSpace(scheme))
+	switch s {
+	case "", "auto", "nip17", "nip-17", "nip44", "nip-44", "giftwrap", "nip59", "nip-59":
+		return b.SendDM(ctx, toPubKey, text)
+	case "nip04", "nip-04":
+		return fmt.Errorf("dm scheme %q not supported by NIP-17 transport", scheme)
+	default:
+		return fmt.Errorf("unsupported dm scheme %q", scheme)
+	}
 }
 
 // SetRelays updates the relay list at runtime.

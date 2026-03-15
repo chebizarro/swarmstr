@@ -25,6 +25,15 @@ type DMTransport interface {
 	Close()
 }
 
+// DMSchemeTransport is an optional extension for callers that want to request
+// a specific DM encryption mode at send-time.
+// Supported scheme names: auto, nip17, nip44, giftwrap, nip04.
+type DMSchemeTransport interface {
+	SendDMWithScheme(ctx context.Context, toPubKey string, text string, scheme string) error
+}
+
 // Compile-time checks: both concrete types must satisfy the interface.
 var _ DMTransport = (*DMBus)(nil)
 var _ DMTransport = (*NIP17Bus)(nil)
+var _ DMSchemeTransport = (*DMBus)(nil)
+var _ DMSchemeTransport = (*NIP17Bus)(nil)

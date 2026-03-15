@@ -21,9 +21,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // Event kinds.
@@ -95,14 +98,14 @@ func DiscoverServers(ctx context.Context, pool *nostr.Pool, relays []string, lim
 }
 
 // ListTools sends a tools/list MCP request to a ContextVM server and returns the tool list.
-func ListTools(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string) ([]ToolDef, error) {
+func ListTools(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, encryption string) ([]ToolDef, error) {
 	msg := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "tools/list",
 		"params":  map[string]any{},
 	}
-	respRaw, err := sendRequest(ctx, pool, keyer, relays, serverPubKey, msg)
+	respRaw, err := sendRequest(ctx, pool, keyer, relays, serverPubKey, msg, encryption)
 	if err != nil {
 		return nil, fmt.Errorf("contextvm list tools: %w", err)
 	}
@@ -125,7 +128,7 @@ func ListTools(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays 
 }
 
 // CallTool calls an MCP tool on a ContextVM server via kind 25910.
-func CallTool(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey, toolName string, toolArgs map[string]any) (*CallResult, error) {
+func CallTool(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey, toolName string, toolArgs map[string]any, encryption string) (*CallResult, error) {
 	msg := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -135,7 +138,7 @@ func CallTool(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays [
 			"arguments": toolArgs,
 		},
 	}
-	respRaw, err := sendRequest(ctx, pool, keyer, relays, serverPubKey, msg)
+	respRaw, err := sendRequest(ctx, pool, keyer, relays, serverPubKey, msg, encryption)
 	if err != nil {
 		return nil, fmt.Errorf("contextvm call %s: %w", toolName, err)
 	}
@@ -157,25 +160,39 @@ func CallTool(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays [
 
 // SendRaw sends an arbitrary stringified JSON-RPC MCP message to a server
 // and returns the raw response content.
-func SendRaw(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any) (json.RawMessage, error) {
-	return sendRequest(ctx, pool, keyer, relays, serverPubKey, msg)
+func SendRaw(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any, encryption string) (json.RawMessage, error) {
+	return sendRequest(ctx, pool, keyer, relays, serverPubKey, msg, encryption)
 }
 
 // ── internal ──────────────────────────────────────────────────────────────────
 
 // sendRequest publishes a kind 25910 MCP message to the server and waits for the response.
 // Per the spec: request has p-tag = server pubkey; response has e-tag = request event ID.
-func sendRequest(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any) (json.RawMessage, error) {
+func sendRequest(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any, encryption string) (json.RawMessage, error) {
 	msgJSON, err := json.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("marshal message: %w", err)
+	}
+
+	serverPK, err := nostr.PubKeyFromHex(serverPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("invalid server pubkey: %w", err)
+	}
+	mode := normalizeEncryptionMode(encryption)
+	content := string(msgJSON)
+	if mode != "none" {
+		encContent, encErr := encryptForServer(ctx, keyer, serverPK, content, mode)
+		if encErr != nil {
+			return nil, encErr
+		}
+		content = encContent
 	}
 
 	evt := nostr.Event{
 		Kind:      nostr.Kind(KindMessage),
 		CreatedAt: nostr.Now(),
 		Tags:      nostr.Tags{{"p", serverPubKey}},
-		Content:   string(msgJSON),
+		Content:   content,
 	}
 	if err := keyer.SignEvent(ctx, &evt); err != nil {
 		return nil, fmt.Errorf("sign request: %w", err)
@@ -200,13 +217,89 @@ func sendRequest(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relay
 	}
 
 	// Wait for the server response.
+	var lastDecryptErr error
 	for re := range respCh {
-		if re.Event.Content == "" {
+		if strings.TrimSpace(re.Event.Content) == "" {
 			continue
 		}
-		return json.RawMessage(re.Event.Content), nil
+		content := strings.TrimSpace(re.Event.Content)
+		if json.Valid([]byte(content)) {
+			return json.RawMessage(content), nil
+		}
+		dec, decErr := decryptFromServer(ctx, keyer, re.Event.PubKey, content)
+		if decErr == nil && json.Valid([]byte(dec)) {
+			return json.RawMessage(dec), nil
+		}
+		lastDecryptErr = decErr
+	}
+	if lastDecryptErr != nil {
+		return nil, fmt.Errorf("received response but failed to decrypt or parse (request %s): %w", requestID, lastDecryptErr)
 	}
 	return nil, fmt.Errorf("timed out waiting for ContextVM server response (request %s)", requestID)
+}
+
+func normalizeEncryptionMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "none", "plaintext":
+		return "none"
+	case "nip44", "nip-44":
+		return "nip44"
+	case "nip04", "nip-04":
+		return "nip04"
+	case "auto":
+		return "auto"
+	default:
+		return "auto"
+	}
+}
+
+func encryptForServer(ctx context.Context, keyer nostr.Keyer, serverPubKey nostr.PubKey, plaintext, mode string) (string, error) {
+	// mode is already normalized by caller
+	switch mode {
+	case "none":
+		return plaintext, nil
+	case "nip44":
+		ct, err := keyer.Encrypt(ctx, plaintext, serverPubKey)
+		if err != nil {
+			return "", fmt.Errorf("contextvm encrypt nip44: %w", err)
+		}
+		return ct, nil
+	case "nip04":
+		enc, ok := keyer.(nostruntime.NIP04Encrypter)
+		if !ok {
+			return "", fmt.Errorf("contextvm encrypt nip04: keyer does not support NIP-04")
+		}
+		ct, err := enc.EncryptNIP04(ctx, plaintext, serverPubKey)
+		if err != nil {
+			return "", fmt.Errorf("contextvm encrypt nip04: %w", err)
+		}
+		return ct, nil
+	case "auto":
+		if ct, err := keyer.Encrypt(ctx, plaintext, serverPubKey); err == nil {
+			return ct, nil
+		}
+		if enc, ok := keyer.(nostruntime.NIP04Encrypter); ok {
+			ct, err := enc.EncryptNIP04(ctx, plaintext, serverPubKey)
+			if err == nil {
+				return ct, nil
+			}
+		}
+		return "", fmt.Errorf("contextvm encrypt auto: no supported encryption path")
+	default:
+		return "", fmt.Errorf("contextvm encrypt: unsupported mode %q", mode)
+	}
+}
+
+func decryptFromServer(ctx context.Context, keyer nostr.Keyer, senderPubKey nostr.PubKey, ciphertext string) (string, error) {
+	if pt, err := keyer.Decrypt(ctx, ciphertext, senderPubKey); err == nil {
+		return pt, nil
+	}
+	if dec, ok := keyer.(nostruntime.NIP04Decrypter); ok {
+		if pt04, err04 := dec.DecryptNIP04(ctx, ciphertext, senderPubKey); err04 == nil {
+			return pt04, nil
+		}
+	}
+	return "", fmt.Errorf("contextvm decrypt: unable to decrypt response with nip44 or nip04")
 }
 
 func decodeServerEvent(ev nostr.Event) ServerInfo {

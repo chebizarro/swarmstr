@@ -46,6 +46,7 @@ var contextVMToolsListDef = agent.ToolDefinition{
 		Properties: map[string]agent.ToolParamProp{
 			"server_pubkey": {Type: "string", Description: "Hex pubkey of the ContextVM server."},
 			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+			"encryption":    {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
 		},
 		Required: []string{"server_pubkey"},
 	},
@@ -61,6 +62,7 @@ var contextVMCallDef = agent.ToolDefinition{
 			"tool_name":     {Type: "string", Description: "Name of the MCP tool to call."},
 			"arguments":     {Type: "string", Description: "JSON object string of tool arguments (e.g. '{\"prompt\":\"a cat\"}')."},
 			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+			"encryption":    {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
 		},
 		Required: []string{"server_pubkey", "tool_name"},
 	},
@@ -75,6 +77,7 @@ var contextVMRawDef = agent.ToolDefinition{
 			"server_pubkey": {Type: "string", Description: "Hex pubkey of the ContextVM server."},
 			"message":       {Type: "string", Description: "Stringified JSON-RPC object (e.g. '{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":1}')."},
 			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+			"encryption":    {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
 		},
 		Required: []string{"server_pubkey", "message"},
 	},
@@ -131,7 +134,8 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			return "", fmt.Errorf("contextvm_tools_list: %w", err)
 		}
 
-		tools2, err := contextvm.ListTools(ctx, pool, ks, relays, serverPubKey)
+		encryption := strings.TrimSpace(argString(args, "encryption"))
+		tools2, err := contextvm.ListTools(ctx, pool, ks, relays, serverPubKey, encryption)
 		if err != nil {
 			return "", err
 		}
@@ -172,7 +176,8 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			return "", fmt.Errorf("contextvm_call: %w", err)
 		}
 
-		result, err := contextvm.CallTool(ctx, pool, ks, relays, serverPubKey, toolName, toolArgs)
+		encryption := strings.TrimSpace(argString(args, "encryption"))
+		result, err := contextvm.CallTool(ctx, pool, ks, relays, serverPubKey, toolName, toolArgs, encryption)
 		if err != nil {
 			return "", err
 		}
@@ -220,7 +225,8 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			return "", fmt.Errorf("contextvm_raw: %w", err)
 		}
 
-		respRaw, err := contextvm.SendRaw(ctx, pool, ks, relays, serverPubKey, msg)
+		encryption := strings.TrimSpace(argString(args, "encryption"))
+		respRaw, err := contextvm.SendRaw(ctx, pool, ks, relays, serverPubKey, msg, encryption)
 		if err != nil {
 			return "", err
 		}
