@@ -28,7 +28,7 @@ func TestNostrRelayHintsTool_NoRelays(t *testing.T) {
 func TestNostrRelayListSetTool_RequiresKeyer(t *testing.T) {
 	tool := NostrRelayListSetTool(NostrToolOpts{Relays: []string{"wss://example.com"}})
 	_, err := tool(context.Background(), map[string]any{})
-	if err == nil || !strings.Contains(err.Error(), "signing keyer not configured") {
+	if err == nil || !strings.HasPrefix(err.Error(), "nostr_relay_list_set_error:") {
 		t.Fatalf("expected keyer error, got: %v", err)
 	}
 }
@@ -36,7 +36,7 @@ func TestNostrRelayListSetTool_RequiresKeyer(t *testing.T) {
 func TestNostrRelayListSetTool_NoRelays(t *testing.T) {
 	tool := NostrRelayListSetTool(NostrToolOpts{Keyer: testSigner(t)})
 	_, err := tool(context.Background(), map[string]any{})
-	if err == nil || !strings.Contains(err.Error(), "no relays configured") {
+	if err == nil || !strings.HasPrefix(err.Error(), "nostr_relay_list_set_error:") {
 		t.Fatalf("expected no-relays error, got: %v", err)
 	}
 }

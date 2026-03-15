@@ -62,36 +62,41 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 
 	// ── NIP-09: Event Deletion ─────────────────────────────────────────────
 
-	deleteTool := func(ctx context.Context, args map[string]any) (string, error) {
-		ids := toStringSlice(args["ids"])
-		if len(ids) == 0 {
-			return "", fmt.Errorf("nostr_delete: ids is required")
-		}
-		reason, _ := args["reason"].(string)
-		relays := opts.resolveRelays(toStringSlice(args["relays"]))
-		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_delete: no relays configured")
-		}
+	deleteTool := func(toolName string) agent.ToolFunc {
+		return func(ctx context.Context, args map[string]any) (string, error) {
+			ids := toStringSlice(args["ids"])
+			if len(ids) == 0 {
+				return "", nostrToolErr(toolName, "missing_ids", "ids is required", nil)
+			}
+			reason, _ := args["reason"].(string)
+			relays := opts.resolveRelays(toStringSlice(args["relays"]))
+			if len(relays) == 0 {
+				return "", nostrToolErr(toolName, "no_relays", "no relays configured", nil)
+			}
 
-		tags := nostr.Tags{}
-		for _, id := range ids {
-			tags = append(tags, nostr.Tag{"e", id})
+			tags := nostr.Tags{}
+			for _, id := range ids {
+				tags = append(tags, nostr.Tag{"e", id})
+			}
+			evt := nostr.Event{
+				Kind:      5,
+				CreatedAt: nostr.Now(),
+				Tags:      tags,
+				Content:   reason,
+			}
+			evID, err := publishEvent(ctx, evt, relays)
+			if err != nil {
+				return "", mapNostrPublishErr(toolName, err, map[string]any{"kind": 5, "target_count": len(ids)})
+			}
+			return nostrWriteSuccessEnvelope(toolName, evID, 5, map[string]any{"event_ids": ids}, map[string]any{
+				"publish_relays": relays,
+			}, map[string]any{
+				"deleted_ids": ids,
+			}), nil
 		}
-		evt := nostr.Event{
-			Kind:      5,
-			CreatedAt: nostr.Now(),
-			Tags:      tags,
-			Content:   reason,
-		}
-		evID, err := publishEvent(ctx, evt, relays)
-		if err != nil {
-			return "", err
-		}
-		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "deleted_ids": ids})
-		return string(out), nil
 	}
-	tools.RegisterWithDef("nostr_delete", deleteTool, NostrDeleteDef)
-	tools.RegisterWithDef("nostr_event_delete", deleteTool, NostrEventDeleteDef)
+	tools.RegisterWithDef("nostr_delete", deleteTool("nostr_delete"), NostrDeleteDef)
+	tools.RegisterWithDef("nostr_event_delete", deleteTool("nostr_event_delete"), NostrEventDeleteDef)
 
 	// ── NIP-56: Reporting (kind 1984) ──────────────────────────────────────
 
@@ -103,13 +108,13 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 
 		if strings.TrimSpace(reportType) == "" {
-			return "", fmt.Errorf("nostr_report: report_type is required")
+			return "", nostrToolErr("nostr_report", "missing_report_type", "report_type is required", nil)
 		}
 		if len(eventIDs) == 0 && len(pubkeys) == 0 {
-			return "", fmt.Errorf("nostr_report: provide target_event_ids and/or target_pubkeys")
+			return "", nostrToolErr("nostr_report", "missing_targets", "provide target_event_ids and/or target_pubkeys", nil)
 		}
 		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_report: no relays configured")
+			return "", nostrToolErr("nostr_report", "no_relays", "no relays configured", nil)
 		}
 
 		tags := nostr.Tags{{"report", strings.ToLower(strings.TrimSpace(reportType))}}
@@ -127,10 +132,19 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		evID, err := publishEvent(ctx, evt, relays)
 		if err != nil {
-			return "", err
+			return "", mapNostrPublishErr("nostr_report", err, map[string]any{"kind": 1984})
 		}
-		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "report_type": reportType, "event_targets": eventIDs, "pubkey_targets": pubkeys})
-		return string(out), nil
+		return nostrWriteSuccessEnvelope("nostr_report", evID, 1984, map[string]any{
+			"event_ids": eventIDs,
+			"pubkeys":   pubkeys,
+		}, map[string]any{
+			"report_type":   reportType,
+			"publish_relays": relays,
+		}, map[string]any{
+			"report_type":   reportType,
+			"event_targets": eventIDs,
+			"pubkey_targets": pubkeys,
+		}), nil
 	}, NostrReportDef)
 
 	// ── NIP-25: Reactions ──────────────────────────────────────────────────
@@ -211,10 +225,10 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 
 		if title == "" || content == "" {
-			return "", fmt.Errorf("nostr_article_publish: title and content are required")
+			return "", nostrToolErr("nostr_article_publish", "missing_fields", "title and content are required", nil)
 		}
 		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_article_publish: no relays configured")
+			return "", nostrToolErr("nostr_article_publish", "no_relays", "no relays configured", nil)
 		}
 		if dTag == "" {
 			dTag = slugify(title)
@@ -258,10 +272,21 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		evID, err := publishEvent(ctx, evt, relays)
 		if err != nil {
-			return "", err
+			return "", mapNostrPublishErr("nostr_article_publish", err, map[string]any{"kind": 30023, "d_tag": dTag})
 		}
-		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "d_tag": dTag, "summary": summary, "image": image})
-		return string(out), nil
+		return nostrWriteSuccessEnvelope("nostr_article_publish", evID, 30023, map[string]any{
+			"d_tag": dTag,
+		}, map[string]any{
+			"title":          title,
+			"summary":        summary,
+			"image":          image,
+			"tags":           articleTags,
+			"publish_relays": relays,
+		}, map[string]any{
+			"d_tag":   dTag,
+			"summary": summary,
+			"image":   image,
+		}), nil
 	}, NostrArticlePublishDef)
 
 	tools.RegisterWithDef("nostr_article_get", func(ctx context.Context, args map[string]any) (string, error) {

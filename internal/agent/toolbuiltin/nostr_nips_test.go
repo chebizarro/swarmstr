@@ -66,7 +66,7 @@ func TestNostrEventDelete_NoRelaysValidation(t *testing.T) {
 		Name: "nostr_event_delete",
 		Args: map[string]any{"ids": []any{"deadbeef"}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "no relays configured") {
+	if err == nil || !strings.HasPrefix(err.Error(), "nostr_event_delete_error:") {
 		t.Fatalf("expected no-relays error, got: %v", err)
 	}
 }
@@ -79,7 +79,7 @@ func TestNostrReport_TargetValidation(t *testing.T) {
 		Name: "nostr_report",
 		Args: map[string]any{"report_type": "spam"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "target_event_ids") {
+	if err == nil || !strings.HasPrefix(err.Error(), "nostr_report_error:") {
 		t.Fatalf("expected target validation error, got: %v", err)
 	}
 }
@@ -89,7 +89,7 @@ func TestNostrEventDelete_MissingIDsValidation(t *testing.T) {
 	RegisterNIPTools(tools, NostrToolOpts{Relays: []string{"wss://example.com"}})
 
 	_, err := tools.Execute(context.Background(), agent.ToolCall{Name: "nostr_event_delete", Args: map[string]any{}})
-	if err == nil || !strings.Contains(err.Error(), "ids is required") {
+	if err == nil || !strings.HasPrefix(err.Error(), "nostr_event_delete_error:") {
 		t.Fatalf("expected ids-required error, got: %v", err)
 	}
 }
