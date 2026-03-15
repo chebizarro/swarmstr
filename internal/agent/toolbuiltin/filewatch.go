@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,8 @@ type fileWatchEntry struct {
 	sessionID  string
 	path       string
 	contains   string
+	containsRE string
+	recursive  bool
 	cancel     context.CancelFunc
 	createdAt  time.Time
 	maxEvents  int
@@ -46,6 +49,8 @@ func (r *FileWatchRegistry) start(
 	ttl time.Duration,
 	maxEvents int,
 	contains string,
+	containsRegex string,
+	recursive bool,
 	deliver FileWatchDelivery,
 ) error {
 	r.mu.Lock()
@@ -59,23 +64,40 @@ func (r *FileWatchRegistry) start(
 	if _, err := os.Stat(watchPath); err != nil {
 		return fmt.Errorf("watch path not found: %w", err)
 	}
+	var re *regexp.Regexp
+	if strings.TrimSpace(containsRegex) != "" {
+		compiled, err := regexp.Compile(strings.TrimSpace(containsRegex))
+		if err != nil {
+			return fmt.Errorf("invalid contains_regex: %w", err)
+		}
+		re = compiled
+	}
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("create watcher: %w", err)
 	}
-	if err := watcher.Add(watchPath); err != nil {
+	if recursive {
+		if err := addWatchRecursive(watcher, watchPath); err != nil {
+			_ = watcher.Close()
+			return fmt.Errorf("watch path recursively: %w", err)
+		}
+	} else if err := watcher.Add(watchPath); err != nil {
 		_ = watcher.Close()
 		return fmt.Errorf("watch path: %w", err)
 	}
+
 	subCtx, cancel := context.WithTimeout(ctx, ttl)
 	entry := &fileWatchEntry{
-		name:      name,
-		sessionID: sessionID,
-		path:      watchPath,
-		contains:  contains,
-		cancel:    cancel,
-		createdAt: time.Now(),
-		maxEvents: maxEvents,
+		name:       name,
+		sessionID:  sessionID,
+		path:       watchPath,
+		contains:   contains,
+		containsRE: strings.TrimSpace(containsRegex),
+		recursive:  recursive,
+		cancel:     cancel,
+		createdAt:  time.Now(),
+		maxEvents:  maxEvents,
 	}
 	r.entries[name] = entry
 
@@ -99,8 +121,14 @@ func (r *FileWatchRegistry) start(
 				if !matched {
 					continue
 				}
-				if contains != "" {
-					okContains, err := fileContains(ev.Name, contains)
+				if recursive && ev.Op.Has(fsnotify.Create) {
+					if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
+						_ = addWatchRecursive(watcher, ev.Name)
+						continue
+					}
+				}
+				if contains != "" || re != nil {
+					okContains, err := fileMatchesContent(ev.Name, contains, re)
 					if err != nil || !okContains {
 						continue
 					}
@@ -145,13 +173,15 @@ func (r *FileWatchRegistry) list() []map[string]any {
 	out := make([]map[string]any, 0, len(r.entries))
 	for _, e := range r.entries {
 		out = append(out, map[string]any{
-			"name":       e.name,
-			"session_id": e.sessionID,
-			"path":       e.path,
-			"contains":   e.contains,
-			"created_at": e.createdAt.Unix(),
-			"received":   e.received,
-			"max_events": e.maxEvents,
+			"name":           e.name,
+			"session_id":     e.sessionID,
+			"path":           e.path,
+			"contains":       e.contains,
+			"contains_regex": e.containsRE,
+			"recursive":      e.recursive,
+			"created_at":     e.createdAt.Unix(),
+			"received":       e.received,
+			"max_events":     e.maxEvents,
 		})
 	}
 	return out
@@ -176,12 +206,45 @@ func matchWatchOp(op fsnotify.Op, wanted map[string]bool) (string, bool) {
 	return "", false
 }
 
-func fileContains(path, needle string) (bool, error) {
+func fileMatchesContent(path, contains string, re *regexp.Regexp) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() {
+		return false, nil
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
 	}
-	return strings.Contains(string(b), needle), nil
+	s := string(b)
+	if strings.TrimSpace(contains) != "" && !strings.Contains(s, contains) {
+		return false, nil
+	}
+	if re != nil && !re.MatchString(s) {
+		return false, nil
+	}
+	return true, nil
+}
+
+func addWatchRecursive(watcher *fsnotify.Watcher, root string) error {
+	info, err := os.Stat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return watcher.Add(root)
+	}
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		return watcher.Add(path)
+	})
 }
 
 func parseWatchEventTypes(args map[string]any) map[string]bool {
@@ -215,13 +278,15 @@ var FileWatchAddDef = agent.ToolDefinition{
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
-			"name":          {Type: "string", Description: "Unique watch name."},
-			"session_id":    {Type: "string", Description: "Session ID that should receive watch event notifications."},
-			"path":          {Type: "string", Description: "File or directory path to watch."},
-			"event_types":   {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Optional event type filter: create|write|remove|rename|chmod."},
-			"contains":      {Type: "string", Description: "Optional substring filter; only emit when changed file content includes this text."},
-			"ttl_seconds":   {Type: "number", Description: "Optional watch lifetime in seconds (default 3600)."},
-			"max_events":    {Type: "number", Description: "Optional max events before auto-stop (default 100; 0 = unlimited)."},
+			"name":           {Type: "string", Description: "Unique watch name."},
+			"session_id":     {Type: "string", Description: "Session ID that should receive watch event notifications."},
+			"path":           {Type: "string", Description: "File or directory path to watch."},
+			"event_types":    {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Optional event type filter: create|write|remove|rename|chmod."},
+			"contains":       {Type: "string", Description: "Optional substring filter; only emit when changed file content includes this text."},
+			"contains_regex": {Type: "string", Description: "Optional regex filter; only emit when changed file content matches this regex."},
+			"recursive":      {Type: "boolean", Description: "Optional: when path is a directory, watch all nested subdirectories."},
+			"ttl_seconds":    {Type: "number", Description: "Optional watch lifetime in seconds (default 3600)."},
+			"max_events":     {Type: "number", Description: "Optional max events before auto-stop (default 100; 0 = unlimited)."},
 		},
 		Required: []string{"name", "session_id", "path"},
 	},
@@ -267,18 +332,35 @@ func FileWatchAddTool(reg *FileWatchRegistry, deliver FileWatchDelivery) agent.T
 		if v, ok := args["max_events"].(float64); ok {
 			maxEvents = int(v)
 		}
+		recursive, _ := args["recursive"].(bool)
 		contains, _ := args["contains"].(string)
+		containsRegex, _ := args["contains_regex"].(string)
 		eventTypes := parseWatchEventTypes(args)
-		if err := reg.start(ctx, strings.TrimSpace(name), strings.TrimSpace(sessionID), strings.TrimSpace(watchPath), eventTypes, time.Duration(ttlSec)*time.Second, maxEvents, strings.TrimSpace(contains), deliver); err != nil {
+		if err := reg.start(
+			ctx,
+			strings.TrimSpace(name),
+			strings.TrimSpace(sessionID),
+			strings.TrimSpace(watchPath),
+			eventTypes,
+			time.Duration(ttlSec)*time.Second,
+			maxEvents,
+			strings.TrimSpace(contains),
+			strings.TrimSpace(containsRegex),
+			recursive,
+			deliver,
+		); err != nil {
 			return "", fmt.Errorf("file_watch_add: %w", err)
 		}
 		out, _ := json.Marshal(map[string]any{
-			"watching":    true,
-			"name":        strings.TrimSpace(name),
-			"session_id":  strings.TrimSpace(sessionID),
-			"path":        strings.TrimSpace(watchPath),
-			"ttl_seconds": ttlSec,
-			"max_events":  maxEvents,
+			"watching":       true,
+			"name":           strings.TrimSpace(name),
+			"session_id":     strings.TrimSpace(sessionID),
+			"path":           strings.TrimSpace(watchPath),
+			"recursive":      recursive,
+			"contains":       strings.TrimSpace(contains),
+			"contains_regex": strings.TrimSpace(containsRegex),
+			"ttl_seconds":    ttlSec,
+			"max_events":     maxEvents,
 		})
 		return string(out), nil
 	}
@@ -304,4 +386,3 @@ func FileWatchListTool(reg *FileWatchRegistry) agent.ToolFunc {
 		return string(out), nil
 	}
 }
-
