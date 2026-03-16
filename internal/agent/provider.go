@@ -551,6 +551,10 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 				totalOutput += int64(out2.Usage.OutputTokens)
 			}
 			out = out2
+			// Reset text before parsing so stale text from a previous iteration
+			// (e.g. a pre-tool "Let me check that now...") is never used as the
+			// final reply if this response has no text block.
+			text = ""
 			text, calls = parseAnthropicToolCalls(out.Content)
 		}
 
@@ -768,6 +772,7 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 				totalOutput += int64(out2.Usage.OutputTokens)
 			}
 			out = out2
+			text = ""
 			text, calls = parseAnthropicToolCalls(out.Content)
 		}
 

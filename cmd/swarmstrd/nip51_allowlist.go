@@ -15,6 +15,7 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+	"swarmstr/internal/agent/toolbuiltin"
 	"swarmstr/internal/nostr/nip51"
 	nostruntime "swarmstr/internal/nostr/runtime"
 	"swarmstr/internal/store/state"
@@ -22,14 +23,37 @@ import (
 
 // ── Dynamic allowlist ──────────────────────────────────────────────────────────
 
-// nip51AllowlistMu guards nip51PerListPubkeys.
+// nip51AllowlistMu guards nip51PerListPubkeys and nip51FleetEntries.
 var nip51AllowlistMu sync.RWMutex
 
 // nip51PerListPubkeys maps "ownerHex:dtag" → set of allowed pubkeys.
 // When a list is updated the entire inner set is replaced atomically.
 var nip51PerListPubkeys = make(map[string]map[string]struct{})
 
+// nip51FleetEntries holds the full fleet directory entries (pubkey, name, relay)
+// from all watched NIP-51 lists, keyed by hex pubkey. Updated alongside
+// nip51PerListPubkeys whenever a list is (re-)fetched.
+var nip51FleetEntries = make(map[string]toolbuiltin.FleetEntry)
+
+// setNIP51ListEntries atomically replaces the pubkey set and fleet entries
+// for a single list entry. entries must be the full ListEntry slice from the list.
+func setNIP51ListEntries(ownerHex, dtag string, entries []nip51.ListEntry) {
+	key := ownerHex + ":" + dtag
+	m := make(map[string]struct{}, len(entries))
+	nip51AllowlistMu.Lock()
+	for _, e := range entries {
+		if e.Tag == "p" && e.Value != "" {
+			m[e.Value] = struct{}{}
+			fe := toolbuiltin.FleetEntry{Pubkey: e.Value, Relay: e.Relay, Name: e.Petname}
+			nip51FleetEntries[e.Value] = fe
+		}
+	}
+	nip51PerListPubkeys[key] = m
+	nip51AllowlistMu.Unlock()
+}
+
 // setNIP51ListPubkeys atomically replaces the pubkey set for a single list entry.
+// Kept for backward compatibility; new callers should use setNIP51ListEntries.
 func setNIP51ListPubkeys(ownerHex, dtag string, pubkeys []string) {
 	key := ownerHex + ":" + dtag
 	m := make(map[string]struct{}, len(pubkeys))
@@ -41,6 +65,18 @@ func setNIP51ListPubkeys(ownerHex, dtag string, pubkeys []string) {
 	nip51AllowlistMu.Lock()
 	nip51PerListPubkeys[key] = m
 	nip51AllowlistMu.Unlock()
+}
+
+// fleetDirectory returns a snapshot of all known fleet agents.
+// Called by the fleet_agents and nostr_agent_rpc tools.
+func fleetDirectory() []toolbuiltin.FleetEntry {
+	nip51AllowlistMu.RLock()
+	defer nip51AllowlistMu.RUnlock()
+	out := make([]toolbuiltin.FleetEntry, 0, len(nip51FleetEntries))
+	for _, e := range nip51FleetEntries {
+		out = append(out, e)
+	}
+	return out
 }
 
 // isInDynamicAllowlist returns true if rawPubkey (hex or npub) appears in any
@@ -112,9 +148,8 @@ func watchNIP51List(ctx context.Context, pool *nostr.Pool, ref state.AllowFromLi
 	if fetchErr != nil {
 		log.Printf("nip51: fetch list %q owner=%s: %v (will retry on subscription)", ref.D, logPrefix, fetchErr)
 	} else {
-		pks := pubkeysFromList(list)
-		setNIP51ListPubkeys(ownerHex, ref.D, pks)
-		log.Printf("nip51: loaded %d pubkeys from %q (owner=%s)", len(pks), ref.D, logPrefix)
+		setNIP51ListEntries(ownerHex, ref.D, list.Entries)
+		log.Printf("nip51: loaded %d pubkeys from %q (owner=%s)", len(pubkeysFromList(list)), ref.D, logPrefix)
 	}
 
 	// ── Live subscription ──────────────────────────────────────────────────
@@ -129,9 +164,8 @@ func watchNIP51List(ctx context.Context, pool *nostr.Pool, ref state.AllowFromLi
 		if decoded.DTag != ref.D {
 			continue
 		}
-		pks := pubkeysFromList(decoded)
-		setNIP51ListPubkeys(ownerHex, ref.D, pks)
-		log.Printf("nip51: updated list %q: %d pubkeys (owner=%s)", ref.D, len(pks), logPrefix)
+		setNIP51ListEntries(ownerHex, ref.D, decoded.Entries)
+		log.Printf("nip51: updated list %q: %d pubkeys (owner=%s)", ref.D, len(pubkeysFromList(decoded)), logPrefix)
 	}
 }
 

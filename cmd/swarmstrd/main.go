@@ -167,6 +167,10 @@ var (
 	controlDMBusMu sync.RWMutex
 	controlDMBus   nostruntime.DMTransport
 
+	// controlRPCCorrelator routes synchronous inter-agent RPC replies to
+	// waiting nostr_agent_rpc tool calls instead of the normal agent pipeline.
+	controlRPCCorrelator = newRPCCorrelator()
+
 	// controlCronExecutor dispatches a gateway method from the cron scheduler.
 	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
 	controlCronExecutorMu sync.RWMutex
@@ -444,6 +448,22 @@ func main() {
 		return toolbuiltin.NostrSendDMTool(toolbuiltin.NostrToolOpts{DMTransport: bus})(ctx, args)
 	})
 	tools.SetDefinition("nostr_send_dm", toolbuiltin.NostrSendDMDef)
+
+	// ── Fleet inter-agent tools ─────────────────────────────────────────────
+	// fleet_agents: list known fleet agents from the NIP-51 directory.
+	// nostr_agent_rpc: send DM to a fleet agent and wait for its reply.
+	tools.RegisterWithDef("fleet_agents", toolbuiltin.FleetAgentsTool(fleetDirectory), toolbuiltin.FleetAgentsDef)
+	tools.Register("nostr_agent_rpc", func(ctx context.Context, args map[string]any) (string, error) {
+		controlDMBusMu.RLock()
+		bus := controlDMBus
+		controlDMBusMu.RUnlock()
+		return toolbuiltin.NostrAgentRPCTool(
+			toolbuiltin.NostrToolOpts{DMTransport: bus},
+			fleetDirectory,
+			controlRPCCorrelator.WaiterFunc(),
+		)(ctx, args)
+	})
+	tools.SetDefinition("nostr_agent_rpc", toolbuiltin.NostrAgentRPCDef)
 	tools.RegisterWithDef("nostr_profile", toolbuiltin.NostrProfileTool(nostrToolOpts), toolbuiltin.NostrProfileDef)
 	tools.RegisterWithDef("nostr_resolve_nip05", toolbuiltin.NostrResolveNIP05Tool(), toolbuiltin.NostrResolveNIP05Def)
 	tools.RegisterWithDef("relay_list", toolbuiltin.NostrRelayListTool(toolbuiltin.NostrRelayToolOpts{
@@ -2902,6 +2922,20 @@ func main() {
 				}
 				return nil
 			}
+		}
+		// ─────────────────────────────────────────────────────────────────
+
+		// ── Inter-agent RPC fast-path ─────────────────────────────────────
+		// If a nostr_agent_rpc tool call is pending a reply from this sender,
+		// deliver directly to the waiting goroutine and skip the normal
+		// agent-turn pipeline.  The tool call already holds the conversation
+		// context; we don't need a separate session turn.
+		if controlRPCCorrelator.Deliver(msg.FromPubKey, msg.Text) {
+			log.Printf("dm rpc-reply delivered from=%s event=%s", msg.FromPubKey, msg.EventID)
+			if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
+				log.Printf("checkpoint update (rpc-reply) failed event=%s err=%v", msg.EventID, err)
+			}
+			return nil
 		}
 		// ─────────────────────────────────────────────────────────────────
 
