@@ -104,7 +104,7 @@ func TestWatchRegistry_MaxWatches(t *testing.T) {
 		err := reg.start(ctx, NostrToolOpts{}, func() string {
 			return fmt.Sprintf("watch%d", i)
 		}(), "s1",
-			nostrFilterEmpty(), []string{"wss://unreachable.example.com"},
+			nostrFilterEmpty(), nil, []string{"wss://unreachable.example.com"},
 			time.Hour, 0, func(_, _ string, _ map[string]any) {})
 		if err != nil {
 			t.Fatalf("entry %d: unexpected error: %v", i, err)
@@ -114,7 +114,7 @@ func TestWatchRegistry_MaxWatches(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	err := reg.start(ctx, NostrToolOpts{}, "overflow", "s1",
-		nostrFilterEmpty(), []string{"wss://unreachable.example.com"},
+		nostrFilterEmpty(), nil, []string{"wss://unreachable.example.com"},
 		time.Hour, 0, func(_, _ string, _ map[string]any) {})
 	if err == nil {
 		t.Fatal("expected error when max watches exceeded")
