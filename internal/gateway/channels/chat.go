@@ -139,14 +139,14 @@ func (c *ChatChannel) ID() string { return c.id }
 // Type implements Channel.
 func (c *ChatChannel) Type() string { return "nipc7-chat" }
 
-// Send posts a kind:9 chat message. If parentEventID is non-empty, it adds
-// a `q` tag to create a threaded reply per NIP-C7.
+// Send posts a kind:9 chat message.
 func (c *ChatChannel) Send(ctx context.Context, text string) error {
-	return c.SendWithReply(ctx, text, "")
+	return c.SendWithReply(ctx, text, "", "")
 }
 
 // SendWithReply posts a kind:9 with an optional `q` tag for threading.
-func (c *ChatChannel) SendWithReply(ctx context.Context, text, parentEventID string) error {
+// parentPubKey is the hex pubkey of the author being replied to.
+func (c *ChatChannel) SendWithReply(ctx context.Context, text, parentEventID, parentPubKey string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return fmt.Errorf("text must not be empty")
@@ -155,17 +155,22 @@ func (c *ChatChannel) SendWithReply(ctx context.Context, text, parentEventID str
 	tags := nostr.Tags{}
 
 	// Add the root tag ("-" for relay root chat, or a topic tag).
-	if c.rootTag != "" {
+	// NIP-C7: relay root chat uses a single-element ["-"] tag (no value),
+	// while topic-scoped chats use ["-", "<topic>"].
+	if c.rootTag == "-" {
+		tags = append(tags, nostr.Tag{"-"})
+	} else if c.rootTag != "" {
 		tags = append(tags, nostr.Tag{"-", c.rootTag})
 	}
 
 	// Add quote-reply tag if replying to a specific message.
+	// NIP-C7: ["q", <event-id>, <relay-url>, <pubkey>]
 	if parentEventID != "" {
 		relay := ""
 		if len(c.relays) > 0 {
 			relay = c.relays[0]
 		}
-		tags = append(tags, nostr.Tag{"q", parentEventID, relay, ""})
+		tags = append(tags, nostr.Tag{"q", parentEventID, relay, parentPubKey})
 	}
 
 	evt := nostr.Event{
@@ -216,9 +221,12 @@ func (c *ChatChannel) subscribeLoop(ctx context.Context) {
 		Since: since,
 	}
 
-	// If the root tag is "-" (relay root chat), filter on the "-" tag.
+	// If the root tag is "-" (relay root chat), filter on the "-" tag with
+	// an empty value (matches any event carrying a ["-"] or ["-", ...] tag).
 	// For topic-scoped chats, filter on the "-" tag with the topic value.
-	if c.rootTag != "" {
+	if c.rootTag == "-" {
+		filter.Tags = nostr.TagMap{"-": []string{}}
+	} else if c.rootTag != "" {
 		filter.Tags = nostr.TagMap{"-": []string{c.rootTag}}
 	}
 
@@ -264,7 +272,7 @@ func (c *ChatChannel) subscribeLoop(ctx context.Context) {
 				EventID:    evIDHex,
 				CreatedAt:  int64(ev.CreatedAt),
 				Reply: func(replyCtx context.Context, replyText string) error {
-					return c.SendWithReply(replyCtx, replyText, evIDHex)
+					return c.SendWithReply(replyCtx, replyText, evIDHex, senderHex)
 				},
 			})
 
