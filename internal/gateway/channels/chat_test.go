@@ -1,7 +1,9 @@
 package channels
 
 import (
+	"fmt"
 	"testing"
+	"time"
 )
 
 func TestChatChannelID(t *testing.T) {
@@ -41,5 +43,51 @@ func TestChatChannelRootTagDefault(t *testing.T) {
 	}
 	if rootTag != "-" {
 		t.Errorf("expected default root tag \"-\", got %q", rootTag)
+	}
+}
+
+func TestSeenCacheDuplicateWithinTTL(t *testing.T) {
+	c := &SeenCache{
+		items: make(map[string]time.Time),
+		ttl:   100 * time.Millisecond,
+	}
+
+	if c.Add("evt-1") {
+		t.Fatal("first add should not be duplicate")
+	}
+	if !c.Add("evt-1") {
+		t.Fatal("second add within ttl should be duplicate")
+	}
+}
+
+func TestSeenCacheEntryExpiresByTTL(t *testing.T) {
+	c := &SeenCache{
+		items: make(map[string]time.Time),
+		ttl:   20 * time.Millisecond,
+	}
+
+	if c.Add("evt-1") {
+		t.Fatal("first add should not be duplicate")
+	}
+	time.Sleep(30 * time.Millisecond)
+	if c.Add("evt-1") {
+		t.Fatal("add after ttl should not be duplicate")
+	}
+}
+
+func TestSeenCacheStrictMaxSize(t *testing.T) {
+	c := &SeenCache{
+		items: make(map[string]time.Time),
+		ttl:   time.Hour,
+	}
+
+	for i := 0; i < seenCacheMaxSize+200; i++ {
+		if c.Add(fmt.Sprintf("evt-%d", i)) {
+			t.Fatalf("unexpected duplicate at i=%d", i)
+		}
+	}
+
+	if got := c.Len(); got != seenCacheMaxSize {
+		t.Fatalf("cache size=%d, want %d", got, seenCacheMaxSize)
 	}
 }

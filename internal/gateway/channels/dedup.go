@@ -26,8 +26,7 @@ const DefaultSinceJitter = 30 * time.Second
 // evicted.
 const seenCacheDefaultTTL = 5 * time.Minute
 
-// seenCacheMaxSize is the hard cap on cache entries to bound memory.  When
-// exceeded, all entries older than TTL/2 are swept.
+// seenCacheMaxSize is the hard cap on cache entries to bound memory.
 const seenCacheMaxSize = 10_000
 
 // applyJitter backdates a nostr.Timestamp by the given duration.  If the
@@ -64,18 +63,33 @@ func (c *SeenCache) Add(eventID string) (duplicate bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, ok := c.items[eventID]; ok {
-		return true
+	if seenAt, ok := c.items[eventID]; ok {
+		if now.Sub(seenAt) <= c.ttl {
+			return true
+		}
+		delete(c.items, eventID)
 	}
 
-	// Sweep if we're over the size limit.
-	if len(c.items) >= seenCacheMaxSize {
-		cutoff := now.Add(-c.ttl / 2)
+	cutoff := now.Add(-c.ttl)
+	for k, t := range c.items {
+		if t.Before(cutoff) {
+			delete(c.items, k)
+		}
+	}
+
+	for len(c.items) >= seenCacheMaxSize {
+		var oldestKey string
+		var oldestAt time.Time
 		for k, t := range c.items {
-			if t.Before(cutoff) {
-				delete(c.items, k)
+			if oldestKey == "" || t.Before(oldestAt) {
+				oldestKey = k
+				oldestAt = t
 			}
 		}
+		if oldestKey == "" {
+			break
+		}
+		delete(c.items, oldestKey)
 	}
 
 	c.items[eventID] = now

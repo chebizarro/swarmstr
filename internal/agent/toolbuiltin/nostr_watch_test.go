@@ -126,3 +126,45 @@ func nostrFilterEmpty() nostr.Filter {
 	f, _ := buildNostrFilter(nil, 10)
 	return f
 }
+
+func TestWatchSeenSetDedupAndEviction(t *testing.T) {
+	s := newWatchSeenSet(3)
+
+	if s.Add("a") {
+		t.Fatal("first add of a should not be duplicate")
+	}
+	if s.Add("b") {
+		t.Fatal("first add of b should not be duplicate")
+	}
+	if s.Add("c") {
+		t.Fatal("first add of c should not be duplicate")
+	}
+	if !s.Add("a") {
+		t.Fatal("second add of a should be duplicate")
+	}
+
+	if s.Add("d") {
+		t.Fatal("first add of d should not be duplicate")
+	}
+
+	if s.Add("a") {
+		t.Fatal("a should have been evicted and re-add should not be duplicate")
+	}
+}
+
+func TestWatchSeenSetMinimumCapacity(t *testing.T) {
+	s := newWatchSeenSet(0)
+
+	if s.Add("x") {
+		t.Fatal("first add of x should not be duplicate")
+	}
+	if !s.Add("x") {
+		t.Fatal("second add of x should be duplicate")
+	}
+	if s.Add("y") {
+		t.Fatal("first add of y should not be duplicate")
+	}
+	if s.Add("x") {
+		t.Fatal("x should have been evicted at capacity 1")
+	}
+}
