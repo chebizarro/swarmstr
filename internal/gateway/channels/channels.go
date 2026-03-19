@@ -267,7 +267,9 @@ func (c *NIP29GroupChannel) Close() {
 // subscribeLoop listens for kind-9 messages on the group relay using
 // SubscribeManyNotifyClosed for proper CLOSED signal handling.
 func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
-	since := nostr.Timestamp(time.Now().Unix())
+	seen := NewSeenCache()
+
+	since := applyJitter(nostr.Timestamp(time.Now().Unix()), DefaultSinceJitter)
 	filter := nostr.Filter{
 		Kinds: []nostr.Kind{nostr.KindSimpleGroupChatMessage},
 		Tags:  nostr.TagMap{"h": []string{c.gad.ID}},
@@ -284,6 +286,10 @@ func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
+			evIDHex := ev.ID.Hex()
+			if seen.Add(evIDHex) {
+				continue // duplicate
+			}
 			if ev.PubKey.Hex() == c.pubkey {
 				continue
 			}
@@ -292,7 +298,6 @@ func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
 			}
 			gad := c.gad
 			senderHex := ev.PubKey.Hex()
-			evIDHex := ev.ID.Hex()
 			c.onMsg(InboundMessage{
 				ChannelID:  c.id,
 				GroupID:    gad.ID,
@@ -455,7 +460,9 @@ func (c *NIP28PublicChannel) Close() {
 
 // subscribeLoop listens for kind-42 messages on the configured relays.
 func (c *NIP28PublicChannel) subscribeLoop(ctx context.Context) {
-	since := nostr.Timestamp(time.Now().Unix())
+	seen := NewSeenCache()
+
+	since := applyJitter(nostr.Timestamp(time.Now().Unix()), DefaultSinceJitter)
 	filter := nostr.Filter{
 		Kinds: []nostr.Kind{nostr.KindChannelMessage},
 		Tags:  nostr.TagMap{"e": []string{c.channelID}},
@@ -472,6 +479,10 @@ func (c *NIP28PublicChannel) subscribeLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
+			evIDHex := ev.ID.Hex()
+			if seen.Add(evIDHex) {
+				continue // duplicate
+			}
 			if ev.PubKey.Hex() == c.pubkey {
 				continue
 			}
@@ -479,7 +490,6 @@ func (c *NIP28PublicChannel) subscribeLoop(ctx context.Context) {
 				continue
 			}
 			senderHex := ev.PubKey.Hex()
-			evIDHex := ev.ID.Hex()
 			relayURL := ""
 			if ev.Relay != nil {
 				relayURL = ev.Relay.URL

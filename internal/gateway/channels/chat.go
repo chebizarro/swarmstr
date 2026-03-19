@@ -206,7 +206,9 @@ func (c *ChatChannel) Close() {
 
 // subscribeLoop listens for kind:9 chat messages on configured relays.
 func (c *ChatChannel) subscribeLoop(ctx context.Context) {
-	since := nostr.Now()
+	seen := NewSeenCache()
+
+	since := applyJitter(nostr.Now(), DefaultSinceJitter)
 
 	// Build filter: subscribe to kind:9 events with our root tag.
 	filter := nostr.Filter{
@@ -231,6 +233,10 @@ func (c *ChatChannel) subscribeLoop(ctx context.Context) {
 				return
 			}
 			ev := re.Event
+			evIDHex := ev.ID.Hex()
+			if seen.Add(evIDHex) {
+				continue // duplicate
+			}
 			if ev.PubKey.Hex() == c.pubkey {
 				continue
 			}
@@ -239,7 +245,6 @@ func (c *ChatChannel) subscribeLoop(ctx context.Context) {
 			}
 
 			senderHex := ev.PubKey.Hex()
-			evIDHex := ev.ID.Hex()
 			relayURL := ""
 			if re.Relay != nil {
 				relayURL = re.Relay.URL

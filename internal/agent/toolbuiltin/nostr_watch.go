@@ -20,6 +20,10 @@ import (
 // maxActiveWatches is the maximum number of concurrent subscriptions per registry.
 const maxActiveWatches = 10
 
+// watchSinceJitter is subtracted from the Since timestamp when starting a watch
+// subscription to capture events during the connection setup window.
+const watchSinceJitter = 30 * time.Second
+
 // WatchDelivery is called for each matched event.
 // sessionID identifies the agent session that owns the subscription.
 type WatchDelivery func(sessionID, name string, event map[string]any)
@@ -77,6 +81,16 @@ func (r *WatchRegistry) start(
 	r.entries[name] = entry
 
 	pool, releasePool := opts.AcquirePool("watch " + name + " done")
+
+	// Apply jitter: backdate Since to capture events during connection setup.
+	if filter.Since > 0 {
+		backdated := filter.Since - nostr.Timestamp(watchSinceJitter.Seconds())
+		if backdated < 0 {
+			backdated = 0
+		}
+		filter.Since = backdated
+	}
+
 	sub := pool.SubscribeMany(subCtx, relays, filter, nostr.SubscriptionOptions{})
 
 	go func() {
@@ -87,6 +101,7 @@ func (r *WatchRegistry) start(
 			delete(r.entries, name)
 			r.mu.Unlock()
 		}()
+		seen := make(map[string]struct{}, 256)
 		for {
 			select {
 			case <-subCtx.Done():
@@ -95,6 +110,11 @@ func (r *WatchRegistry) start(
 				if !ok {
 					return
 				}
+				evID := re.Event.ID.Hex()
+				if _, dup := seen[evID]; dup {
+					continue
+				}
+				seen[evID] = struct{}{}
 				deliver(sessionID, name, eventToMap(re.Event))
 				r.mu.Lock()
 				entry.received++
