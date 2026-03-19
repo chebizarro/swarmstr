@@ -31,6 +31,7 @@ var NostrChatSendDef = agent.ToolDefinition{
 			"text":            {Type: "string", Description: "Chat message text"},
 			"root_tag":        {Type: "string", Description: "Root tag for the chat room. \"-\" = relay root chat (default). Any other string = topic-scoped chat."},
 			"parent_event_id": {Type: "string", Description: "Event ID to quote-reply to (optional, adds q tag)"},
+			"parent_pubkey":   {Type: "string", Description: "Hex pubkey of the author being replied to (optional, used as 4th element of q tag)"},
 			"relays":          {Type: "array", Description: "Relay URLs to publish to (optional, uses default relays if omitted)", Items: &agent.ToolParamProp{Type: "string"}},
 		},
 	},
@@ -71,6 +72,7 @@ func NostrChatSendTool(opts NostrToolOpts) agent.ToolFunc {
 		}
 
 		parentEventID := strings.TrimSpace(stringArg(args, "parent_event_id"))
+		parentPubKey := strings.TrimSpace(stringArg(args, "parent_pubkey"))
 
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 		if len(relays) == 0 {
@@ -79,14 +81,18 @@ func NostrChatSendTool(opts NostrToolOpts) agent.ToolFunc {
 
 		// Build tags.
 		tags := nostr.Tags{}
-		tags = append(tags, nostr.Tag{"-", rootTag})
+		if rootTag == "-" {
+			tags = append(tags, nostr.Tag{"-"})
+		} else {
+			tags = append(tags, nostr.Tag{"-", rootTag})
+		}
 
 		if parentEventID != "" {
 			relay := ""
 			if len(relays) > 0 {
 				relay = relays[0]
 			}
-			tags = append(tags, nostr.Tag{"q", parentEventID, relay, ""})
+			tags = append(tags, nostr.Tag{"q", parentEventID, relay, parentPubKey})
 		}
 
 		evt := nostr.Event{
@@ -153,8 +159,12 @@ func NostrChatFetchTool(opts NostrToolOpts) agent.ToolFunc {
 
 		filter := nostr.Filter{
 			Kinds: []nostr.Kind{KindChat},
-			Tags:  nostr.TagMap{"-": []string{rootTag}},
 			Limit: limit,
+		}
+		if rootTag == "-" {
+			filter.Tags = nostr.TagMap{"-": []string{}}
+		} else {
+			filter.Tags = nostr.TagMap{"-": []string{rootTag}}
 		}
 
 		if v, ok := args["since"].(float64); ok && v > 0 {
