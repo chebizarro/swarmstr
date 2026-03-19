@@ -15,9 +15,14 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	nostr "fiatjaf.com/nostr"
 )
+
+// DefaultSinceJitter is the duration subtracted from the Since timestamp
+// on subscription connect to capture events during brief disconnection gaps.
+const DefaultSinceJitter = 30 * time.Second
 
 // NostrHub is the shared Nostr connection layer.  Create one per runtime via
 // NewHub and pass it to every subsystem (channels, tools, buses) so they all
@@ -180,6 +185,20 @@ func (h *NostrHub) Subscribe(ctx context.Context, opts SubOpts) (*ManagedSub, er
 	h.subs[id] = ms
 	h.mu.Unlock()
 
+	// Apply jitter to the Since timestamp to capture events from brief
+	// disconnection gaps.  The pool handles reconnection internally and
+	// re-sends the same filter, so backdating Since ensures gap coverage.
+	// Callers rely on event ID deduplication (or idempotent handlers) to
+	// handle the small overlap window.
+	filter := opts.Filter
+	if filter.Since > 0 {
+		backdated := filter.Since - nostr.Timestamp(DefaultSinceJitter.Seconds())
+		if backdated < 0 {
+			backdated = 0
+		}
+		filter.Since = backdated
+	}
+
 	// Use SubscribeManyNotifyClosed for proper CLOSED handling.
 	// The pool internally handles:
 	//   - auth-required retries (via AuthRequiredHandler)
@@ -188,7 +207,7 @@ func (h *NostrHub) Subscribe(ctx context.Context, opts SubOpts) (*ManagedSub, er
 	// CLOSED signals are dispatched to the caller; EOSE is handled by the pool
 	// internally for its reconnection logic.
 	events, closedCh := h.pool.SubscribeManyNotifyClosed(
-		subCtx, relays, opts.Filter, nostr.SubscriptionOptions{},
+		subCtx, relays, filter, nostr.SubscriptionOptions{},
 	)
 
 	// Start the event dispatch goroutine.
