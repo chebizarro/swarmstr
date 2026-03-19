@@ -29,7 +29,7 @@ type LoomToolOpts struct {
 
 // RegisterLoomTools registers Loom compute marketplace tools.
 func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
 
 	resolveKeyer := func(ctx context.Context) (nostr.Keyer, error) {
 		if opts.Keyer == nil {

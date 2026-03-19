@@ -28,7 +28,7 @@ type GRASPToolOpts struct {
 
 // RegisterGRASPTools registers NIP-34 / GRASP git repository tools.
 func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
 
 	resolveKeyer := func(ctx context.Context) (nostr.Keyer, error) {
 		if opts.Keyer == nil {

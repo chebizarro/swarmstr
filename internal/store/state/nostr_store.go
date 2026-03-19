@@ -33,7 +33,7 @@ func NewNostrStore(keyer nostr.Keyer, relays []string) (*NostrStore, error) {
 		return nil, fmt.Errorf("resolve signer pubkey: %w", err)
 	}
 	return &NostrStore{
-		pool:   nostr.NewPool(nostr.PoolOptions{PenaltyBox: true}),
+		pool:   nostruntime.NewPoolNIP42(keyer),
 		relays: relays,
 		keyer:  keyer,
 		pub:    pk,

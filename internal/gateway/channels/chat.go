@@ -31,6 +31,8 @@ import (
 	"sync"
 
 	nostr "fiatjaf.com/nostr"
+
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // KindChat is the NIP-C7 chat message kind.
@@ -90,14 +92,7 @@ func NewChatChannel(parent context.Context, opts ChatChannelOptions) (*ChatChann
 		return nil, fmt.Errorf("chat: get public key: %w", err)
 	}
 
-	pool := nostr.NewPool(nostr.PoolOptions{
-		PenaltyBox: true,
-		RelayOptions: nostr.RelayOptions{
-			AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-				return opts.Keyer.SignEvent(ctx, evt)
-			},
-		},
-	})
+	pool := nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
 	ctx, cancel := context.WithCancel(parent)
 
 	// Build a stable channel ID from relays + rootTag.

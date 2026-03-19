@@ -57,7 +57,7 @@ func NostrRelayPingTool() agent.ToolFunc {
 		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
-		pool := nostr.NewPool(nostr.PoolOptions{})
+		pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
 		defer pool.Close("ping done")
 
 		ensureRelayFn := ensureRelay

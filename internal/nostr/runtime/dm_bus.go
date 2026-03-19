@@ -127,15 +127,7 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 	health.Seed(initialRelays)
 	bus := &DMBus{
 		ks: ks,
-		pool: nostr.NewPool(nostr.PoolOptions{
-			PenaltyBox: true,
-			RelayOptions: nostr.RelayOptions{
-				// NIP-42: sign AUTH challenges via Keyer (supports both raw keys and bunker).
-				AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-					return ks.SignEvent(ctx, evt)
-				},
-			},
-		}),
+		pool: NewPoolNIP42(ks),
 		relays:       initialRelays,
 		public:       public,
 		onMessage:    opts.OnMessage,
@@ -252,14 +244,7 @@ func SendDMOnce(ctx context.Context, privateKey string, relays []string, toPubKe
 	// Build a NIP-04-capable keyer from the raw secret key so that
 	// publishEncryptedDM can use the unified keyer interface.
 	onceKS := newNIP04KeyerAdapter(sk)
-	pool := nostr.NewPool(nostr.PoolOptions{
-		PenaltyBox: true,
-		RelayOptions: nostr.RelayOptions{
-			AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-				return onceKS.SignEvent(ctx, evt)
-			},
-		},
-	})
+	pool := NewPoolNIP42(onceKS)
 	defer pool.Close("send once finished")
 	return publishEncryptedDMWithRetry(ctx, pool, onceKS, relays, pk, text, nil)
 }

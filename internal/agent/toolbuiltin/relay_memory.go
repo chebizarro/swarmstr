@@ -28,7 +28,7 @@ type RelayMemoryToolOpts struct {
 
 // RegisterRelayMemoryTools registers relay memory tools into the registry.
 func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpts) {
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
 
 	signEvent := func(ctx context.Context, evt *nostr.Event) error {
 		if opts.Keyer == nil {

@@ -96,7 +96,7 @@ func NostrProfileTool(opts NostrToolOpts) agent.ToolFunc {
 			return "", fmt.Errorf("nostr_profile: invalid pubkey: %w", err)
 		}
 
-		pool := nostr.NewPool(nostr.PoolOptions{})
+		pool := opts.NewPoolNIP42()
 		defer pool.Close("profile done")
 
 		f := nostr.Filter{

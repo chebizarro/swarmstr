@@ -87,7 +87,7 @@ var contextVMRawDef = agent.ToolDefinition{
 
 // RegisterContextVMTools registers ContextVM MCP-over-Nostr tools.
 func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
 
 	resolveKeyer := func(ctx context.Context) (nostr.Keyer, error) {
 		if opts.Keyer == nil {

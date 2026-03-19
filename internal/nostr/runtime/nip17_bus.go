@@ -85,20 +85,9 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 		return nil, fmt.Errorf("resolve public key: %w", err)
 	}
 
-	// Build the NIP-42 AUTH handler via keyer-only signing.
-	authHandler := func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-		return ks.SignEvent(ctx, evt)
-	}
-
 	ctx, cancel := context.WithCancel(parent)
 	b := &NIP17Bus{
-		pool: nostr.NewPool(nostr.PoolOptions{
-			PenaltyBox: true,
-			RelayOptions: nostr.RelayOptions{
-				// NIP-42: automatically sign AUTH challenges with the agent's key.
-				AuthHandler: authHandler,
-			},
-		}),
+		pool: NewPoolNIP42(ks),
 		kr:           ks,
 		public:       pub,
 		relays:       initialRelays,

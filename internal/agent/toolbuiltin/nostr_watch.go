@@ -76,7 +76,7 @@ func (r *WatchRegistry) start(
 	}
 	r.entries[name] = entry
 
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := opts.NewPoolNIP42()
 	sub := pool.SubscribeMany(subCtx, relays, filter, nostr.SubscriptionOptions{})
 
 	go func() {

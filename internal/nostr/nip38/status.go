@@ -25,6 +25,8 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // Status values for NIP-38 kind 30315 events.
@@ -90,7 +92,7 @@ func NewHeartbeat(parent context.Context, opts HeartbeatOptions) (*Heartbeat, er
 	ctx, cancel := context.WithCancel(parent)
 	h := &Heartbeat{
 		opts:    opts,
-		pool:    nostr.NewPool(nostr.PoolOptions{PenaltyBox: true}),
+		pool:    nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer)),
 		pubkey:  pk,
 		current: StatusIdle,
 		ticker:  time.NewTicker(opts.IdleInterval),

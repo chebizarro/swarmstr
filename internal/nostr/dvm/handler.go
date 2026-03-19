@@ -14,6 +14,8 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+
+	runtime "swarmstr/internal/nostr/runtime"
 )
 
 // JobHandler is called for each incoming DVM job request.
@@ -78,7 +80,7 @@ func Start(ctx context.Context, opts HandlerOpts) (*Handler, error) {
 		opts:   opts,
 		keyer:  ks,
 		pubkey: pubkey,
-		pool:   nostr.NewPool(nostr.PoolOptions{}),
+		pool:   nostr.NewPool(runtime.PoolOptsNIP42(ks)),
 		ctx:    ctx2,
 		jobSem: make(chan struct{}, opts.MaxConcurrentJobs),
 		cancel: cancel,

@@ -59,7 +59,7 @@ var NostrListDeleteDef = agent.ToolDefinition{
 }
 
 func RegisterNostrListSemanticTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
 
 	tools.RegisterWithDef("nostr_list_get", func(ctx context.Context, args map[string]any) (string, error) {
 		kind, dtag, _, err := resolveSemanticListTarget(args)

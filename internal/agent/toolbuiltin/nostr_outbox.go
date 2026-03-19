@@ -74,7 +74,7 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 			return "", fmt.Errorf("nostr_relay_hints: invalid pubkey: %w", err)
 		}
 
-		pool := nostr.NewPool(nostr.PoolOptions{})
+		pool := opts.NewPoolNIP42()
 		defer pool.Close("relay_hints done")
 
 		f := nostr.Filter{Kinds: []nostr.Kind{10002}, Authors: []nostr.PubKey{pk}, Limit: 1}
@@ -179,7 +179,7 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 
 		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		pool := nostr.NewPool(nostr.PoolOptions{})
+		pool := opts.NewPoolNIP42()
 		defer pool.Close("relay_list_set done")
 
 		published := 0
