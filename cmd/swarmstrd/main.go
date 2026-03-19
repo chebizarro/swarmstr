@@ -171,6 +171,11 @@ var (
 	// waiting nostr_agent_rpc tool calls instead of the normal agent pipeline.
 	controlRPCCorrelator = newRPCCorrelator()
 
+	// controlRelaySelector is the global NIP-65 relay selector implementing the
+	// outbox model. It caches per-pubkey relay lists and provides relay selection
+	// for reading from / writing to specific pubkeys.
+	controlRelaySelector *nostruntime.RelaySelector
+
 	// controlCronExecutor dispatches a gateway method from the cron scheduler.
 	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
 	controlCronExecutorMu sync.RWMutex
@@ -500,6 +505,9 @@ func main() {
 
 	// ── Additional NIP tools (NIP-09/22/23/25/50/78/94) ────────────────────
 	toolbuiltin.RegisterNIPTools(tools, nostrToolOpts)
+
+	// ── NIP-C7 Chat tools ──────────────────────────────────────────────────
+	toolbuiltin.RegisterChatTools(tools, nostrToolOpts)
 
 	// ── Relay-as-memory tools ───────────────────────────────────────────────
 	toolbuiltin.RegisterRelayMemoryTools(tools, toolbuiltin.RelayMemoryToolOpts{
@@ -1148,6 +1156,70 @@ func main() {
 				continue
 			}
 			log.Printf("auto-join nip28 channel joined name=%s channel_id=%s id=%s", localChanName, localChanCfg.ChannelID, ch28.ID())
+		case state.NostrChannelKindChat:
+			// NIP-C7 kind:9 chat channel.
+			relays := chanCfg.Relays
+			if len(relays) == 0 {
+				relays = configState.Get().Relays.Read
+			}
+			if len(relays) == 0 {
+				log.Printf("auto-join skip: nostr_channels.%s (chat) has no relays configured", chanName)
+				continue
+			}
+			localChanCfg := chanCfg
+			localChanName := chanName
+
+			// Extract root_tag from channel config; defaults to "-" (relay root chat).
+			rootTag := "-"
+			if cfgMap := localChanCfg.Config; cfgMap != nil {
+				if rt, ok := cfgMap["root_tag"].(string); ok && rt != "" {
+					rootTag = rt
+				}
+			}
+
+			chatCh, chErr := channels.NewChatChannel(ctx, channels.ChatChannelOptions{
+				Keyer:   controlKeyer,
+				Relays:  relays,
+				RootTag: rootTag,
+				OnMessage: func(msg channels.InboundMessage) {
+					// Per-channel allow-from check.
+					if dec := policy.EvaluateGroupMessage(msg.FromPubKey, localChanCfg.AllowFrom, configState.Get()); !dec.Allowed {
+						log.Printf("chat channel message rejected from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, dec.Reason)
+						return
+					}
+					// Per-sender session: each chat participant gets their own conversation.
+					sessionID := "ch:" + msg.ChannelID + ":" + msg.FromPubKey
+					activeAgentID, rt := resolveInboundChannelRuntime(localChanCfg.AgentID, msg.ChannelID)
+					turnCtx, release := chatCancels.Begin(sessionID, ctx)
+					go func() {
+						defer release()
+						result, turnErr := rt.ProcessTurn(turnCtx, agent.Turn{
+							SessionID: sessionID,
+							UserText:  msg.Text,
+						})
+						if turnErr != nil {
+							log.Printf("auto-join chat agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
+							return
+						}
+						if err := msg.Reply(turnCtx, result.Text); err != nil {
+							log.Printf("auto-join chat reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
+						}
+					}()
+				},
+				OnError: func(err error) {
+					log.Printf("auto-join chat error name=%s root_tag=%s err=%v", localChanName, rootTag, err)
+				},
+			})
+			if chErr != nil {
+				log.Printf("auto-join chat failed name=%s root_tag=%s err=%v", localChanName, rootTag, chErr)
+				continue
+			}
+			if addErr := channelReg.Add(chatCh); addErr != nil {
+				chatCh.Close()
+				log.Printf("auto-join chat channel add failed name=%s err=%v", localChanName, addErr)
+				continue
+			}
+			log.Printf("auto-join chat channel joined name=%s root_tag=%s relays=%d id=%s", localChanName, rootTag, len(relays), chatCh.ID())
 		default:
 			log.Printf("auto-join skip: nostr_channels.%s kind=%q not yet supported for auto-join", chanName, chanCfg.Kind)
 		}
@@ -3091,6 +3163,79 @@ func main() {
 		}
 		if len(liveCfg.Relays.Write) == 0 {
 			liveCfg.Relays.Write = cfg.Relays
+		}
+
+		// ── NIP-65 Relay Selector (outbox model) ────────────────────────────
+		controlRelaySelector = nostruntime.NewRelaySelector(liveCfg.Relays.Read, liveCfg.Relays.Write)
+		toolbuiltin.SetRelaySelector(controlRelaySelector)
+
+		// Publish startup lists (NIP-65 relay list, NIP-02 contacts) if they
+		// don't already exist. Run in background to not block startup.
+		go func() {
+			// Build NIP-02 contacts from allow_from list + fleet entries.
+			var contacts []nostruntime.NIP02Contact
+			for _, pk := range liveCfg.DM.AllowFrom {
+				contacts = append(contacts, nostruntime.NIP02Contact{PubKey: pk})
+			}
+			// Also include agent_list peers if configured.
+			if liveCfg.AgentList != nil && liveCfg.AgentList.DTag != "" {
+				for _, fe := range fleetDirectory() {
+					contacts = append(contacts, nostruntime.NIP02Contact{
+						PubKey:  fe.Pubkey,
+						Relay:   fe.Relay,
+						Petname: fe.Name,
+					})
+				}
+			}
+
+			allRelays := nostruntime.MergeRelayLists(liveCfg.Relays.Read, liveCfg.Relays.Write)
+
+			if err := nostruntime.PublishStartupLists(ctx, nostruntime.StartupListPublishOptions{
+				Keyer:         controlKeyer,
+				Pool:          nip51Pool,
+				PublishRelays: allRelays,
+				ReadRelays:    liveCfg.Relays.Read,
+				WriteRelays:   liveCfg.Relays.Write,
+				Contacts:      contacts,
+			}); err != nil {
+				log.Printf("nip65: startup list publish: %v", err)
+			}
+		}()
+
+		// Subscribe to our own NIP-65 relay list for bidirectional sync.
+		// When an external client publishes a new kind:10002 for our pubkey,
+		// apply the relay changes to the live runtime.
+		if err := nostruntime.NIP65SelfSync(ctx, nostruntime.NIP65SyncOptions{
+			Keyer:  controlKeyer,
+			Pool:   nip51Pool,
+			Relays: nostruntime.MergeRelayLists(liveCfg.Relays.Read, liveCfg.Relays.Write),
+			OnRelayUpdate: func(read, write []string) {
+				log.Printf("nip65: applying remote relay list update (read=%d, write=%d)", len(read), len(write))
+
+				// Update the relay selector fallbacks.
+				controlRelaySelector.SetFallbacks(read, write)
+
+				// Update the runtime config.
+				if configState != nil {
+					current := configState.Get()
+					current.Relays.Read = read
+					current.Relays.Write = write
+					configState.Set(current)
+				}
+
+				// Apply relay changes to DM + control buses.
+				controlDMBusMu.RLock()
+				dmBus := controlDMBus
+				controlDMBusMu.RUnlock()
+				if dmBus != nil {
+					allRelays := nostruntime.MergeRelayLists(read, write)
+					if err := dmBus.SetRelays(allRelays); err != nil {
+						log.Printf("nip65: dm relay update failed: %v", err)
+					}
+				}
+			},
+		}); err != nil {
+			log.Printf("nip65: self-sync init: %v", err)
 		}
 
 		// Start watchers for each allow_from_lists entry.
@@ -8935,6 +9080,30 @@ func applyRuntimeRelayPolicy(dmBus nostruntime.DMTransport, controlBus *nostrunt
 		if err := controlBus.SetRelays(cfg.Relays.Write); err != nil {
 			log.Printf("control relay policy update failed: %v", err)
 		}
+	}
+
+	// Update the NIP-65 relay selector fallbacks when relay config changes.
+	if controlRelaySelector != nil {
+		controlRelaySelector.SetFallbacks(cfg.Relays.Read, cfg.Relays.Write)
+	}
+
+	// Publish updated NIP-65 relay list to reflect local config changes.
+	// This ensures the agent's relay metadata on relays stays in sync with
+	// local configuration, making it the external source of truth.
+	if controlKeyer != nil && (len(cfg.Relays.Read) > 0 || len(cfg.Relays.Write) > 0) {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+			defer pool.Close("relay policy nip65 publish")
+			publishRelays := nostruntime.MergeRelayLists(cfg.Relays.Read, cfg.Relays.Write)
+			eventID, err := nostruntime.PublishNIP65(ctx, pool, controlKeyer, publishRelays, cfg.Relays.Read, cfg.Relays.Write, nil)
+			if err != nil {
+				log.Printf("nip65: relay policy publish failed: %v", err)
+			} else {
+				log.Printf("nip65: published relay policy update (event=%s)", eventID[:nostruntime.MinInt(12, len(eventID))])
+			}
+		}()
 	}
 }
 

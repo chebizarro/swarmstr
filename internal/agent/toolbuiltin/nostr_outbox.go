@@ -13,6 +13,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	"swarmstr/internal/agent"
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // ─── NIP-65 outbox cache ─────────────────────────────────────────────────────
@@ -31,11 +32,25 @@ var (
 
 
 // NostrRelayHintsTool fetches a pubkey's NIP-65 relay hints (kind:10002).
+// It checks both the local outbox cache and the global NIP-65 relay selector.
 func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		pubkeyHex, err := requirePubkey(args)
 		if err != nil {
 			return "", fmt.Errorf("nostr_relay_hints: %w", err)
+		}
+
+		// Check the NIP-65 relay selector cache first (if available).
+		if sel := GetRelaySelector(); sel != nil {
+			if list := sel.Get(pubkeyHex); list != nil {
+				out, _ := json.Marshal(map[string]any{
+					"pubkey": pubkeyHex,
+					"read":   list.ReadRelays(),
+					"write":  list.WriteRelays(),
+					"source": "nip65_selector",
+				})
+				return string(out), nil
+			}
 		}
 
 		outboxCacheMu.Lock()
@@ -101,6 +116,27 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 		outboxCache[pubkeyHex] = outboxCacheEntry{read: readRelays, write: writeRelays, fetchedAt: time.Now()}
 		outboxCacheMu.Unlock()
 
+		// Also populate the global NIP-65 relay selector cache.
+		if sel := GetRelaySelector(); sel != nil {
+			list := &nostruntime.NIP65RelayList{PubKey: pubkeyHex, EventID: best.ID.Hex(), CreatedAt: int64(best.CreatedAt)}
+			for _, tag := range best.Tags {
+				if len(tag) < 2 || tag[0] != "r" {
+					continue
+				}
+				entry := nostruntime.NIP65RelayEntry{URL: tag[1]}
+				if len(tag) == 2 {
+					entry.Read = true
+					entry.Write = true
+				} else if tag[2] == "read" {
+					entry.Read = true
+				} else if tag[2] == "write" {
+					entry.Write = true
+				}
+				list.Entries = append(list.Entries, entry)
+			}
+			sel.Put(list)
+		}
+
 		out, _ := json.Marshal(map[string]any{"pubkey": pubkeyHex, "read": readRelays, "write": writeRelays})
 		return string(out), nil
 	}
@@ -164,10 +200,15 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 			return "", nostrToolErr("nostr_relay_list_set", "publish_failed", lastErr.Error(), map[string]any{"kind": 10002, "publish_relays": relays})
 		}
 	
-		// Invalidate cache for this pubkey so subsequent relay_hints calls get fresh data
+		// Invalidate caches for this pubkey so subsequent relay_hints calls get fresh data
 		outboxCacheMu.Lock()
 		delete(outboxCache, evt.PubKey.Hex())
 		outboxCacheMu.Unlock()
+
+		// Invalidate the global NIP-65 relay selector cache if one is registered.
+		if sel := GetRelaySelector(); sel != nil {
+			sel.Invalidate(evt.PubKey.Hex())
+		}
 	
 		return nostrWriteSuccessEnvelope("nostr_relay_list_set", evt.ID.Hex(), 10002, map[string]any{
 			"read_relays":  readRelays,
