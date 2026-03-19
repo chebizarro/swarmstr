@@ -176,6 +176,11 @@ var (
 	// for reading from / writing to specific pubkeys.
 	controlRelaySelector *nostruntime.RelaySelector
 
+	// controlHub is the shared NostrHub.  All channels, tools, and non-DM
+	// subsystems share this hub's pool so WebSocket connections to the same
+	// relay are deduplicated across the entire runtime.
+	controlHub *nostruntime.NostrHub
+
 	// controlCronExecutor dispatches a gateway method from the cron scheduler.
 	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
 	controlCronExecutorMu sync.RWMutex
@@ -438,6 +443,7 @@ func main() {
 	nostrToolOpts := toolbuiltin.NostrToolOpts{
 		Keyer:  controlKeyer,
 		Relays: cfg.Relays,
+		HubFunc: func() *nostruntime.NostrHub { return controlHub },
 	}
 	tools.RegisterWithDef("nostr_fetch", toolbuiltin.NostrFetchTool(nostrToolOpts), toolbuiltin.NostrFetchDef)
 	tools.RegisterWithDef("nostr_dm_decrypt", toolbuiltin.NostrDMDecryptTool(nostrToolOpts), toolbuiltin.NostrDMDecryptDef)
@@ -488,9 +494,10 @@ func main() {
 	// NIP-51 list management tools (allowlists, blocklists, mute lists, etc.)
 	listStore := nip51.NewListStore()
 	listToolOpts := toolbuiltin.NostrListToolOpts{
-		Keyer:  controlKeyer,
-		Relays: cfg.Relays,
-		Store:  listStore,
+		HubFunc: func() *nostruntime.NostrHub { return controlHub },
+		Keyer:   controlKeyer,
+		Relays:  cfg.Relays,
+		Store:   listStore,
 	}
 	toolbuiltin.RegisterListTools(tools, listToolOpts)
 	toolbuiltin.RegisterNostrListSemanticTools(tools, listToolOpts)
@@ -511,26 +518,30 @@ func main() {
 
 	// ── Relay-as-memory tools ───────────────────────────────────────────────
 	toolbuiltin.RegisterRelayMemoryTools(tools, toolbuiltin.RelayMemoryToolOpts{
-		Keyer:  controlKeyer,
-		Relays: cfg.Relays,
+		HubFunc: func() *nostruntime.NostrHub { return controlHub },
+		Keyer:   controlKeyer,
+		Relays:  cfg.Relays,
 	})
 
 	// ── ContextVM tools ─────────────────────────────────────────────────────
 	toolbuiltin.RegisterContextVMTools(tools, toolbuiltin.ContextVMToolOpts{
-		Keyer:  controlKeyer,
-		Relays: cfg.Relays,
+		HubFunc: func() *nostruntime.NostrHub { return controlHub },
+		Keyer:   controlKeyer,
+		Relays:  cfg.Relays,
 	})
 
 	// ── GRASP NIP-34 git repository tools ───────────────────────────────────
 	toolbuiltin.RegisterGRASPTools(tools, toolbuiltin.GRASPToolOpts{
-		Keyer:  controlKeyer,
-		Relays: cfg.Relays,
+		HubFunc: func() *nostruntime.NostrHub { return controlHub },
+		Keyer:   controlKeyer,
+		Relays:  cfg.Relays,
 	})
 
 	// ── Loom compute marketplace tools ──────────────────────────────────────
 	toolbuiltin.RegisterLoomTools(tools, toolbuiltin.LoomToolOpts{
-		Keyer:  controlKeyer,
-		Relays: cfg.Relays,
+		HubFunc: func() *nostruntime.NostrHub { return controlHub },
+		Keyer:   controlKeyer,
+		Relays:  cfg.Relays,
 	})
 
 	// ── Cashu NUT ecash tools ───────────────────────────────────────────────
@@ -1040,6 +1051,38 @@ func main() {
 	channelReg := channels.NewRegistry()
 	controlChannels = channelReg
 	defer channelReg.CloseAll()
+	defer func() {
+		if controlHub != nil {
+			controlHub.Close()
+		}
+	}()
+
+	// ── Shared control relay selector + hub (for channels/tools) ───────────────
+	// Must be initialized before channel auto-join so startup channels share the
+	// same hub pool and deduplicated relay connections.
+	{
+		liveCfg := configState.Get()
+		if len(liveCfg.Relays.Read) == 0 {
+			liveCfg.Relays.Read = cfg.Relays
+		}
+		if len(liveCfg.Relays.Write) == 0 {
+			liveCfg.Relays.Write = cfg.Relays
+		}
+
+		if controlRelaySelector == nil {
+			controlRelaySelector = nostruntime.NewRelaySelector(liveCfg.Relays.Read, liveCfg.Relays.Write)
+			toolbuiltin.SetRelaySelector(controlRelaySelector)
+		}
+
+		if controlHub == nil && controlKeyer != nil {
+			hub, hubErr := nostruntime.NewHub(ctx, controlKeyer, controlRelaySelector)
+			if hubErr != nil {
+				log.Printf("nostr hub: failed to create: %v (channels/tools will use dedicated pools)", hubErr)
+			} else {
+				controlHub = hub
+			}
+		}
+	}
 
 	// Auto-join any NostrChannels declared in the config with enabled: true.
 	// This provides OpenClaw parity: channels configured in the config file are
@@ -1058,6 +1101,7 @@ func main() {
 			localChanName := chanName
 			ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
 				GroupAddress: localChanCfg.GroupAddress,
+				Hub:          controlHub,
 				Keyer:        controlKeyer,
 				OnMessage: func(msg channels.InboundMessage) {
 					// Per-channel allow-from check.
@@ -1115,6 +1159,7 @@ func main() {
 			localChanName := chanName
 			ch28, chErr := channels.NewNIP28PublicChannel(ctx, channels.NIP28PublicChannelOptions{
 				ChannelID: localChanCfg.ChannelID,
+				Hub:       controlHub,
 				Keyer:     controlKeyer,
 				Relays:    relays,
 				OnMessage: func(msg channels.InboundMessage) {
@@ -1178,6 +1223,7 @@ func main() {
 			}
 
 			chatCh, chErr := channels.NewChatChannel(ctx, channels.ChatChannelOptions{
+				Hub:     controlHub,
 				Keyer:   controlKeyer,
 				Relays:  relays,
 				RootTag: rootTag,
@@ -3166,8 +3212,22 @@ func main() {
 		}
 
 		// ── NIP-65 Relay Selector (outbox model) ────────────────────────────
-		controlRelaySelector = nostruntime.NewRelaySelector(liveCfg.Relays.Read, liveCfg.Relays.Write)
-		toolbuiltin.SetRelaySelector(controlRelaySelector)
+		// Initialize once; keep a single shared selector/hub instance so existing
+		// channels and tools continue to share the same pooled connections.
+		if controlRelaySelector == nil {
+			controlRelaySelector = nostruntime.NewRelaySelector(liveCfg.Relays.Read, liveCfg.Relays.Write)
+			toolbuiltin.SetRelaySelector(controlRelaySelector)
+		}
+
+		// ── Shared NostrHub ──────────────────────────────────────────────────
+		if controlHub == nil && controlKeyer != nil {
+			hub, hubErr := nostruntime.NewHub(ctx, controlKeyer, controlRelaySelector)
+			if hubErr != nil {
+				log.Printf("nostr hub: failed to create: %v (channels/tools will use dedicated pools)", hubErr)
+			} else {
+				controlHub = hub
+			}
+		}
 
 		// Publish startup lists (NIP-65 relay list, NIP-02 contacts) if they
 		// don't already exist. Run in background to not block startup.
@@ -5261,6 +5321,7 @@ func handleControlRPCRequest(
 		}
 		ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
 			GroupAddress: req.GroupAddress,
+			Hub:          controlHub,
 			Keyer:        controlKeyer,
 			OnMessage: func(msg channels.InboundMessage) {
 				emitControlWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{

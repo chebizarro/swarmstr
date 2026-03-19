@@ -40,7 +40,9 @@ const KindChat nostr.Kind = 9
 
 // ChatChannelOptions configure a NIP-C7 chat subscription.
 type ChatChannelOptions struct {
-	// Keyer is the signing interface for sending messages.
+	// Hub is the shared NostrHub.  If set, shares connections with all channels.
+	Hub *nostruntime.NostrHub
+	// Keyer is the signing interface.  Ignored when Hub is set.
 	Keyer nostr.Keyer
 	// Relays is the set of relay URLs to subscribe and publish to.
 	Relays []string
@@ -57,13 +59,14 @@ type ChatChannelOptions struct {
 
 // ChatChannel subscribes to NIP-C7 kind:9 chat messages on one or more relays.
 type ChatChannel struct {
-	id      string
-	rootTag string
-	keyer   nostr.Keyer
-	relays  []string
-	pool    *nostr.Pool
-	ctx     context.Context
-	cancel  context.CancelFunc
+	id       string
+	rootTag  string
+	keyer    nostr.Keyer
+	relays   []string
+	pool     *nostr.Pool
+	ownsPool bool
+	ctx      context.Context
+	cancel   context.CancelFunc
 	onMsg   func(InboundMessage)
 	onErr   func(error)
 	pubkey  string
@@ -75,9 +78,6 @@ type ChatChannel struct {
 
 // NewChatChannel creates and starts a NIP-C7 chat channel subscription.
 func NewChatChannel(parent context.Context, opts ChatChannelOptions) (*ChatChannel, error) {
-	if opts.Keyer == nil {
-		return nil, fmt.Errorf("keyer is required")
-	}
 	if len(opts.Relays) == 0 {
 		return nil, fmt.Errorf("at least one relay is required")
 	}
@@ -87,12 +87,26 @@ func NewChatChannel(parent context.Context, opts ChatChannelOptions) (*ChatChann
 		rootTag = "-"
 	}
 
-	pk, err := opts.Keyer.GetPublicKey(parent)
+	var keyer nostr.Keyer
+	var pool *nostr.Pool
+	ownsPool := false
+
+	if opts.Hub != nil {
+		keyer = opts.Hub.Keyer()
+		pool = opts.Hub.Pool()
+	} else {
+		if opts.Keyer == nil {
+			return nil, fmt.Errorf("keyer is required (or provide Hub)")
+		}
+		keyer = opts.Keyer
+		pool = nostr.NewPool(nostruntime.PoolOptsNIP42(keyer))
+		ownsPool = true
+	}
+
+	pk, err := keyer.GetPublicKey(parent)
 	if err != nil {
 		return nil, fmt.Errorf("chat: get public key: %w", err)
 	}
-
-	pool := nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
 	ctx, cancel := context.WithCancel(parent)
 
 	// Build a stable channel ID from relays + rootTag.
@@ -102,11 +116,12 @@ func NewChatChannel(parent context.Context, opts ChatChannelOptions) (*ChatChann
 	}
 
 	ch := &ChatChannel{
-		id:      channelID,
-		rootTag: rootTag,
-		keyer:   opts.Keyer,
-		relays:  opts.Relays,
-		pool:    pool,
+		id:       channelID,
+		rootTag:  rootTag,
+		keyer:    keyer,
+		relays:   opts.Relays,
+		pool:     pool,
+		ownsPool: ownsPool,
 		ctx:     ctx,
 		cancel:  cancel,
 		onMsg:   opts.OnMessage,
@@ -184,7 +199,9 @@ func (c *ChatChannel) SendWithReply(ctx context.Context, text, parentEventID str
 // Close shuts down the subscription.
 func (c *ChatChannel) Close() {
 	c.cancel()
-	c.pool.Close("chat channel closed")
+	if c.ownsPool {
+		c.pool.Close("chat channel closed")
+	}
 }
 
 // subscribeLoop listens for kind:9 chat messages on configured relays.
@@ -203,52 +220,59 @@ func (c *ChatChannel) subscribeLoop(ctx context.Context) {
 		filter.Tags = nostr.TagMap{"-": []string{c.rootTag}}
 	}
 
-	sub := c.pool.SubscribeMany(ctx, c.relays, filter, nostr.SubscriptionOptions{})
-	for re := range sub {
-		ev := re.Event
-		// Skip our own messages.
-		if ev.PubKey.Hex() == c.pubkey {
-			continue
-		}
-		if c.onMsg == nil {
-			continue
-		}
+	events, closedCh := c.pool.SubscribeManyNotifyClosed(
+		ctx, c.relays, filter, nostr.SubscriptionOptions{},
+	)
 
-		senderHex := ev.PubKey.Hex()
-		evIDHex := ev.ID.Hex()
-		relayURL := ""
-		if re.Relay != nil {
-			relayURL = re.Relay.URL
-		}
-
-		// Extract quoted parent event ID from `q` tag if present.
-		parentID := ""
-		for _, tag := range ev.Tags {
-			if len(tag) >= 2 && tag[0] == "q" {
-				parentID = tag[1]
-				break
+	for {
+		select {
+		case re, ok := <-events:
+			if !ok {
+				return
 			}
+			ev := re.Event
+			if ev.PubKey.Hex() == c.pubkey {
+				continue
+			}
+			if c.onMsg == nil {
+				continue
+			}
+
+			senderHex := ev.PubKey.Hex()
+			evIDHex := ev.ID.Hex()
+			relayURL := ""
+			if re.Relay != nil {
+				relayURL = re.Relay.URL
+			}
+
+			// Track last event for default reply threading.
+			c.lastEventMu.Lock()
+			c.lastEventID = evIDHex
+			c.lastEventMu.Unlock()
+
+			c.onMsg(InboundMessage{
+				ChannelID:  c.id,
+				GroupID:    c.rootTag,
+				Relay:      relayURL,
+				FromPubKey: senderHex,
+				Text:       ev.Content,
+				EventID:    evIDHex,
+				CreatedAt:  int64(ev.CreatedAt),
+				Reply: func(replyCtx context.Context, replyText string) error {
+					return c.SendWithReply(replyCtx, replyText, evIDHex)
+				},
+			})
+
+		case rc, ok := <-closedCh:
+			if !ok {
+				continue
+			}
+			if !rc.HandledAuth && c.onErr != nil {
+				c.onErr(fmt.Errorf("chat sub closed by %s: %s", rc.Relay.URL, rc.Reason))
+			}
+
+		case <-ctx.Done():
+			return
 		}
-
-		// Track last event for default reply threading.
-		c.lastEventMu.Lock()
-		c.lastEventID = evIDHex
-		c.lastEventMu.Unlock()
-
-		c.onMsg(InboundMessage{
-			ChannelID:  c.id,
-			GroupID:    c.rootTag,
-			Relay:      relayURL,
-			FromPubKey: senderHex,
-			Text:       ev.Content,
-			EventID:    evIDHex,
-			CreatedAt:  int64(ev.CreatedAt),
-			Reply: func(replyCtx context.Context, replyText string) error {
-				// Reply as a quoted message threading back to the original.
-				return c.SendWithReply(replyCtx, replyText, evIDHex)
-			},
-		})
-
-		_ = parentID // available for future threading context
 	}
 }

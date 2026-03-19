@@ -21,8 +21,15 @@ import (
 // NostrToolOpts holds the shared credentials and default relay list for all
 // Nostr agent tools.
 type NostrToolOpts struct {
+	// HubFunc returns the shared NostrHub.  When set and non-nil return, tools
+	// use the hub's pool (sharing WebSocket connections with channels and other
+	// subsystems).  If nil or returns nil, each tool invocation creates an
+	// ephemeral pool.  A func is used because the hub may be created after
+	// tool registration.
+	HubFunc func() *nostruntime.NostrHub
 	// Keyer is the signing interface used for all event signing.
 	// This is required in all modes (plain-key and bunker).
+	// Ignored when Hub is set (hub provides keyer).
 	Keyer nostr.Keyer
 	// Relays is the default relay list used when the tool caller doesn't specify.
 	Relays []string
@@ -47,18 +54,55 @@ func (o NostrToolOpts) PoolOptsNIP42() nostr.PoolOptions {
 	return nostruntime.PoolOptsNIP42(o.Keyer)
 }
 
-// NewPoolNIP42 is a convenience that creates a new Pool with full NIP-42 support.
+// NewPoolNIP42 returns the hub's shared pool when available, or creates a new
+// ephemeral pool with NIP-42 support.  Callers that get the hub's pool MUST NOT
+// close it — use PoolIsShared() to check.
+func (o NostrToolOpts) hub() *nostruntime.NostrHub {
+	if o.HubFunc != nil {
+		return o.HubFunc()
+	}
+	return nil
+}
+
 func (o NostrToolOpts) NewPoolNIP42() *nostr.Pool {
-	return nostruntime.NewPoolNIP42(o.Keyer)
+	if h := o.hub(); h != nil {
+		return h.Pool()
+	}
+	return nostr.NewPool(o.PoolOptsNIP42())
+}
+
+// PoolIsShared returns true when the pool returned by NewPoolNIP42 is shared
+// (backed by the hub) and must NOT be closed by the caller.
+func (o NostrToolOpts) PoolIsShared() bool {
+	return o.hub() != nil
+}
+
+// ResolveKeyer returns the hub's keyer or the opts keyer.
+func (o NostrToolOpts) ResolveKeyer() nostr.Keyer {
+	if h := o.hub(); h != nil {
+		return h.Keyer()
+	}
+	return o.Keyer
+}
+
+// AcquirePool returns a pool and a release function.  When backed by the hub,
+// the release function is a no-op.  When ephemeral, release closes the pool.
+func (o NostrToolOpts) AcquirePool(reason string) (*nostr.Pool, func()) {
+	if h := o.hub(); h != nil {
+		return h.Pool(), func() {} // shared — do not close
+	}
+	pool := nostr.NewPool(o.PoolOptsNIP42())
+	return pool, func() { pool.Close(reason) }
 }
 
 // signerFunc returns a function that signs a nostr event using the configured Keyer.
 func (o NostrToolOpts) signerFunc() (func(ctx context.Context, evt *nostr.Event) error, error) {
-	if o.Keyer == nil {
+	keyer := o.ResolveKeyer()
+	if keyer == nil {
 		return nil, fmt.Errorf("signing keyer not configured")
 	}
 	return func(ctx context.Context, evt *nostr.Event) error {
-		return o.Keyer.SignEvent(ctx, evt)
+		return keyer.SignEvent(ctx, evt)
 	}, nil
 }
 
@@ -219,8 +263,8 @@ func NostrFetchTool(opts NostrToolOpts) agent.ToolFunc {
 			return "", fmt.Errorf("nostr_fetch: invalid filter: %w", err)
 		}
 
-		pool := opts.NewPoolNIP42()
-		defer pool.Close("fetch done")
+		pool, releasePool := opts.AcquirePool("fetch done")
+		defer releasePool()
 
 		sub := pool.SubscribeMany(ctx, relays, f, nostr.SubscriptionOptions{})
 		var events []map[string]any
@@ -292,8 +336,8 @@ func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 
-		pool := opts.NewPoolNIP42()
-		defer pool.Close("publish done")
+		pool, releasePool := opts.AcquirePool("publish done")
+		defer releasePool()
 
 		var lastErr error
 		published := 0

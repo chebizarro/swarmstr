@@ -8,22 +8,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	nostr "fiatjaf.com/nostr"
 
 	"swarmstr/internal/agent"
 	"swarmstr/internal/nostr/nip51"
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // NostrListToolOpts configures the NIP-51 list tools.
 type NostrListToolOpts struct {
-	Keyer      nostr.Keyer
-	Relays     []string
-	Store      *nip51.ListStore // shared in-process cache
+	HubFunc func() *nostruntime.NostrHub
+	Keyer   nostr.Keyer
+	Relays  []string
+	Store   *nip51.ListStore // shared in-process cache
 }
 
 // resolveListKeyer resolves the signing keyer from opts.
 func resolveListKeyer(ctx context.Context, opts NostrListToolOpts) (nostr.Keyer, error) {
+	if opts.HubFunc != nil {
+		if h := opts.HubFunc(); h != nil {
+			return h.Keyer(), nil
+		}
+	}
 	if opts.Keyer == nil {
 		return nil, fmt.Errorf("no signing keyer configured")
 	}
@@ -32,7 +40,21 @@ func resolveListKeyer(ctx context.Context, opts NostrListToolOpts) (nostr.Keyer,
 
 // RegisterListTools registers all NIP-51 list tools into the given registry.
 func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
-	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
+	var (
+		fallbackPool *nostr.Pool
+		poolOnce     sync.Once
+	)
+	getPool := func() *nostr.Pool {
+		if opts.HubFunc != nil {
+			if h := opts.HubFunc(); h != nil {
+				return h.Pool()
+			}
+		}
+		poolOnce.Do(func() {
+			fallbackPool = nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
+		})
+		return fallbackPool
+	}
 
 	// list_get – fetch a NIP-51 list from relays.
 	tools.RegisterWithDef("list_get", func(ctx context.Context, args map[string]any) (string, error) {
@@ -57,7 +79,7 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 		if kind == 0 {
 			kind = nip51.KindMuteList
 		}
-		list, err := nip51.Fetch(ctx, pool, opts.Relays, pubkeyHex, kind, dtag)
+		list, err := nip51.Fetch(ctx, getPool(), opts.Relays, pubkeyHex, kind, dtag)
 		if err != nil {
 			return "", err
 		}
@@ -92,7 +114,7 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 			kind = nip51.KindMuteList
 		}
 		entry := nip51.ListEntry{Tag: tag, Value: value, Relay: relayHint, Petname: petname}
-		evID, err := nip51.AddEntry(ctx, pool, ks, opts.Relays, pk.Hex(), kind, dtag, entry)
+		evID, err := nip51.AddEntry(ctx, getPool(), ks, opts.Relays, pk.Hex(), kind, dtag, entry)
 		if err != nil {
 			return "", err
 		}
@@ -124,7 +146,7 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 		if kind == 0 {
 			kind = nip51.KindMuteList
 		}
-		evID, err := nip51.RemoveEntry(ctx, pool, ks, opts.Relays, pk.Hex(), kind, dtag, tag, value)
+		evID, err := nip51.RemoveEntry(ctx, getPool(), ks, opts.Relays, pk.Hex(), kind, dtag, tag, value)
 		if err != nil {
 			return "", err
 		}
@@ -160,7 +182,7 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 			PubKey: pk.Hex(),
 			Title:  title,
 		}
-		evID, err := nip51.Publish(ctx, pool, ks, opts.Relays, list)
+		evID, err := nip51.Publish(ctx, getPool(), ks, opts.Relays, list)
 		if err != nil {
 			return "", err
 		}
@@ -189,7 +211,7 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 		}
 		// Publish empty replaceable event to clear the list.
 		list := &nip51.List{Kind: kind, DTag: dtag, PubKey: pk.Hex()}
-		evID, err := nip51.Publish(ctx, pool, ks, opts.Relays, list)
+		evID, err := nip51.Publish(ctx, getPool(), ks, opts.Relays, list)
 		if err != nil {
 			return "", err
 		}
@@ -202,7 +224,7 @@ func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
 			Content:   "list deleted",
 		}
 		if signErr := ks.SignEvent(ctx, &delEvt); signErr == nil {
-			for range pool.PublishMany(ctx, opts.Relays, delEvt) {
+			for range getPool().PublishMany(ctx, opts.Relays, delEvt) {
 			}
 		}
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID})
