@@ -49,7 +49,14 @@ type DMBusOptions struct {
 
 type DMBus struct {
 	pool         *nostr.Pool
-	ks           nostr.Keyer
+	// authKeyer is used for NIP-42 relay AUTH signing (PoolOptsNIP42).
+	authKeyer nostr.Keyer
+	// signKeyer is used to sign DM events (kind:4).
+	signKeyer nostr.Keyer
+	// nip04Keyer is used for NIP-04 encryption/decryption when a raw secret key
+	// is available locally.
+	nip04Keyer nip04KeyerAdapter
+	hasNIP04Key bool
 	relays       []string
 	relaysMu     sync.RWMutex
 	public       nostr.PubKey
@@ -70,6 +77,13 @@ type DMBus struct {
 	wg     sync.WaitGroup
 }
 
+func (b *DMBus) nip04EncryptKeyer() nostr.Keyer {
+	if b.hasNIP04Key {
+		return b.nip04Keyer
+	}
+	return b.signKeyer
+}
+
 const maxDMPlaintextRunes = 4096
 
 func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
@@ -84,7 +98,10 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 	// NIP-04 always requires a raw secret key for shared-secret computation.
 	// If only a Keyer is provided (e.g. bunker mode), callers should use NIP17Bus instead.
 	var sk nostr.SecretKey
-	var ks nostr.Keyer
+	var authKeyer nostr.Keyer
+	var signKeyer nostr.Keyer
+	var nip04Key nip04KeyerAdapter
+	var hasNIP04Key bool
 	var public nostr.PubKey
 	if opts.PrivateKey != "" {
 		var err error
@@ -93,18 +110,32 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 			return nil, err
 		}
 		public = sk.Public()
-		// Wrap the raw key in a NIP-04-capable adapter.  If the caller also
-		// provided a Keyer (e.g. for bunker AUTH), prefer it for signing but
-		// still use the adapter for NIP-04 encrypt/decrypt via the stored sk.
-		if opts.Keyer == nil {
-			ks = newNIP04KeyerAdapter(sk)
+
+		nip04Key = newNIP04KeyerAdapter(sk)
+		hasNIP04Key = true
+
+		// If the caller provided a Keyer (e.g. bunker mode), use it for signing and
+		// NIP-42 AUTH *only if* it matches the raw private key's identity.
+		// Encryption/decryption always uses the local NIP-04 key.
+		if opts.Keyer != nil {
+			pk2, err := opts.Keyer.GetPublicKey(parent)
+			if err != nil {
+				return nil, fmt.Errorf("dm bus: get public key from keyer: %w", err)
+			}
+			if pk2 != public {
+				return nil, fmt.Errorf("dm bus: provided keyer pubkey does not match private key pubkey")
+			}
+			authKeyer = opts.Keyer
+			signKeyer = opts.Keyer
 		} else {
-			ks = opts.Keyer
+			authKeyer = nip04Key
+			signKeyer = nip04Key
 		}
 	} else {
 		// Keyer-only mode: NIP-04 works if the Keyer implements NIP04Decrypter.
-		ks = opts.Keyer
-		pk, err := ks.GetPublicKey(parent)
+		authKeyer = opts.Keyer
+		signKeyer = opts.Keyer
+		pk, err := authKeyer.GetPublicKey(parent)
 		if err != nil {
 			return nil, fmt.Errorf("dm bus: get public key from keyer: %w", err)
 		}
@@ -126,8 +157,11 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 	health := NewRelayHealthTracker()
 	health.Seed(initialRelays)
 	bus := &DMBus{
-		ks: ks,
-		pool: NewPoolNIP42(ks),
+		authKeyer:  authKeyer,
+		signKeyer:  signKeyer,
+		nip04Keyer: nip04Key,
+		hasNIP04Key: hasNIP04Key,
+		pool:       NewPoolNIP42(authKeyer),
 		relays:       initialRelays,
 		public:       public,
 		onMessage:    opts.OnMessage,
@@ -193,7 +227,7 @@ func (b *DMBus) SendDM(ctx context.Context, toPubKey string, text string) error 
 	if err != nil {
 		return err
 	}
-	_, err = publishEncryptedDMWithRetry(ctx, b.pool, b.ks, b.currentRelays(), pk, text, b.health)
+	_, err = publishEncryptedDMWithRetry(ctx, b.pool, b.signKeyer, b.nip04EncryptKeyer(), b.currentRelays(), pk, text, b.health)
 	return err
 }
 
@@ -246,7 +280,7 @@ func SendDMOnce(ctx context.Context, privateKey string, relays []string, toPubKe
 	onceKS := newNIP04KeyerAdapter(sk)
 	pool := NewPoolNIP42(onceKS)
 	defer pool.Close("send once finished")
-	return publishEncryptedDMWithRetry(ctx, pool, onceKS, relays, pk, text, nil)
+	return publishEncryptedDMWithRetry(ctx, pool, onceKS, onceKS, relays, pk, text, nil)
 }
 
 // nip04KeyerAdapter wraps a raw secret key as a nostr.Keyer that also
@@ -301,7 +335,7 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		return
 	}
 
-	dec, ok := b.ks.(NIP04Decrypter)
+	dec, ok := b.nip04EncryptKeyer().(NIP04Decrypter)
 	if !ok {
 		b.emitErr(fmt.Errorf("decrypt dm %s: keyer does not support NIP-04; use a local key signer", eventID))
 		return
@@ -335,7 +369,7 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 			if err != nil {
 				return err
 			}
-			_, err := publishEncryptedDMWithRetry(ctx, b.pool, b.ks, b.currentRelays(), re.Event.PubKey, text, b.health)
+			_, err := publishEncryptedDMWithRetry(ctx, b.pool, b.signKeyer, b.nip04EncryptKeyer(), b.currentRelays(), re.Event.PubKey, text, b.health)
 			return err
 		},
 	}
@@ -379,16 +413,16 @@ type NIP04Encrypter interface {
 }
 
 func publishEncryptedDM(ctx context.Context, pool *nostr.Pool, ks nostr.Keyer, relays []string, to nostr.PubKey, text string) (string, error) {
-	return publishEncryptedDMWithRetry(ctx, pool, ks, relays, to, text, nil)
+	return publishEncryptedDMWithRetry(ctx, pool, ks, ks, relays, to, text, nil)
 }
 
-func publishEncryptedDMWithRetry(ctx context.Context, pool *nostr.Pool, ks nostr.Keyer, relays []string, to nostr.PubKey, text string, health *RelayHealthTracker) (string, error) {
+func publishEncryptedDMWithRetry(ctx context.Context, pool *nostr.Pool, signer nostr.Keyer, crypto nostr.Keyer, relays []string, to nostr.PubKey, text string, health *RelayHealthTracker) (string, error) {
 	var err error
 	text, err = sanitizeDMText(text)
 	if err != nil {
 		return "", err
 	}
-	enc, ok := ks.(NIP04Encrypter)
+	enc, ok := crypto.(NIP04Encrypter)
 	if !ok {
 		return "", fmt.Errorf("keyer does not support NIP-04 encryption; use a local key signer")
 	}
@@ -403,7 +437,7 @@ func publishEncryptedDMWithRetry(ctx context.Context, pool *nostr.Pool, ks nostr
 		Tags:      nostr.Tags{{"p", to.Hex()}},
 		Content:   ciphertext,
 	}
-	if err := ks.SignEvent(ctx, &evt); err != nil {
+	if err := signer.SignEvent(ctx, &evt); err != nil {
 		return "", fmt.Errorf("sign dm event: %w", err)
 	}
 

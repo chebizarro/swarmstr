@@ -44,26 +44,12 @@ func (o NostrToolOpts) resolveRelays(override []string) []string {
 // (retry after "auth-required:" CLOSED/OK responses) are wired to the keyer.
 // If o.Keyer is nil, returns plain PenaltyBox-only options.
 func (o NostrToolOpts) PoolOptsNIP42() nostr.PoolOptions {
-	if o.Keyer == nil {
-		return nostr.PoolOptions{PenaltyBox: true}
-	}
-	keyer := o.Keyer
-	return nostr.PoolOptions{
-		PenaltyBox: true,
-		AuthRequiredHandler: func(ctx context.Context, evt *nostr.Event) error {
-			return keyer.SignEvent(ctx, evt)
-		},
-		RelayOptions: nostr.RelayOptions{
-			AuthHandler: func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-				return keyer.SignEvent(ctx, evt)
-			},
-		},
-	}
+	return nostruntime.PoolOptsNIP42(o.Keyer)
 }
 
 // NewPoolNIP42 is a convenience that creates a new Pool with full NIP-42 support.
 func (o NostrToolOpts) NewPoolNIP42() *nostr.Pool {
-	return nostr.NewPool(o.PoolOptsNIP42())
+	return nostruntime.NewPoolNIP42(o.Keyer)
 }
 
 // signerFunc returns a function that signs a nostr event using the configured Keyer.

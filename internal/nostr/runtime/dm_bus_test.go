@@ -71,8 +71,12 @@ func TestHandleInboundDropsEventsOutsideReplayWindow(t *testing.T) {
 	}
 
 	msgCh := make(chan InboundDM, 1)
+	recipientKeyer := newNIP04KeyerAdapter(recipientSK)
 	b := &DMBus{
-		ks:           newNIP04KeyerAdapter(recipientSK),
+		authKeyer:    recipientKeyer,
+		signKeyer:    recipientKeyer,
+		nip04Keyer:   recipientKeyer,
+		hasNIP04Key:  true,
 		public:       recipientSK.Public(),
 		replayWindow: 30 * time.Minute,
 		seenSet:      map[string]struct{}{},
