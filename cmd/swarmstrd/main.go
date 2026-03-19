@@ -3154,7 +3154,7 @@ func main() {
 	// Create a dedicated pool for NIP-51 list fetch/subscribe operations so the
 	// DM buses are not disturbed.
 	{
-		nip51Pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+		nip51Pool := nostr.NewPool(nostruntime.PoolOptsNIP42(controlKeyer))
 		liveCfg := configState.Get()
 
 		// When the runtime config has no explicit relays, fall back to bootstrap relays.
@@ -9094,7 +9094,7 @@ func applyRuntimeRelayPolicy(dmBus nostruntime.DMTransport, controlBus *nostrunt
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+			pool := nostr.NewPool(nostruntime.PoolOptsNIP42(controlKeyer))
 			defer pool.Close("relay policy nip65 publish")
 			publishRelays := nostruntime.MergeRelayLists(cfg.Relays.Read, cfg.Relays.Write)
 			eventID, err := nostruntime.PublishNIP65(ctx, pool, controlKeyer, publishRelays, cfg.Relays.Read, cfg.Relays.Write, nil)

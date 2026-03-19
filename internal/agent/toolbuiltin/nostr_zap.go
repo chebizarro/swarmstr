@@ -95,7 +95,7 @@ func NostrZapListTool(opts NostrToolOpts) agent.ToolFunc {
 			return "", fmt.Errorf("nostr_zap_list: invalid pubkey: %w", err)
 		}
 
-		pool := nostr.NewPool(nostr.PoolOptions{})
+		pool := opts.NewPoolNIP42()
 		defer pool.Close("zap_list done")
 
 		f := nostr.Filter{

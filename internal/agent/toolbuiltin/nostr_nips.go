@@ -25,7 +25,7 @@ import (
 
 // RegisterNIPTools registers additional NIP protocol tools.
 func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := opts.NewPoolNIP42()
 
 	// Early validation: if no keyer, publishEvent will fail
 	// Tools that need signing should check opts.Keyer != nil

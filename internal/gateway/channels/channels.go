@@ -14,6 +14,8 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip29"
+
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // ─── InboundMessage ───────────────────────────────────────────────────────────
@@ -178,7 +180,7 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 	}
 	pubkey := pk.Hex()
 
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
 	ctx, cancel := context.WithCancel(parent)
 
 	ch := &NIP29GroupChannel{
@@ -324,7 +326,7 @@ func NewNIP28PublicChannel(parent context.Context, opts NIP28PublicChannelOption
 	}
 	pubkey := pk.Hex()
 
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
 	ctx, cancel := context.WithCancel(parent)
 
 	ch := &NIP28PublicChannel{

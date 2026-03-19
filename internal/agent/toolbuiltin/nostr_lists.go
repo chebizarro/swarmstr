@@ -32,7 +32,7 @@ func resolveListKeyer(ctx context.Context, opts NostrListToolOpts) (nostr.Keyer,
 
 // RegisterListTools registers all NIP-51 list tools into the given registry.
 func RegisterListTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
 
 	// list_get – fetch a NIP-51 list from relays.
 	tools.RegisterWithDef("list_get", func(ctx context.Context, args map[string]any) (string, error) {

@@ -117,19 +117,8 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 	}
 	ctx, cancel := context.WithCancel(parent)
 
-	// Build NIP-42 auth handler.
-	authHandler := func(ctx context.Context, r *nostr.Relay, evt *nostr.Event) error {
-		return ks.SignEvent(ctx, evt)
-	}
-
 	bus := &ControlRPCBus{
-		pool: nostr.NewPool(nostr.PoolOptions{
-			PenaltyBox: true,
-			RelayOptions: nostr.RelayOptions{
-				// NIP-42: automatically sign AUTH challenges with the agent's key.
-				AuthHandler: authHandler,
-			},
-		}),
+		pool: NewPoolNIP42(ks),
 		relays:            initialRelays,
 		keyer:             ks,
 		public:            public,

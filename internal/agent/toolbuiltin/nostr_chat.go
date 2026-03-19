@@ -101,7 +101,7 @@ func NostrChatSendTool(opts NostrToolOpts) agent.ToolFunc {
 
 		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+		pool := opts.NewPoolNIP42()
 		defer pool.Close("chat_send done")
 
 		published := 0
@@ -164,7 +164,7 @@ func NostrChatFetchTool(opts NostrToolOpts) agent.ToolFunc {
 		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
-		pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+		pool := opts.NewPoolNIP42()
 		defer pool.Close("chat_fetch done")
 
 		type chatMsg struct {
