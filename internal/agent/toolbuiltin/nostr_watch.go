@@ -24,6 +24,45 @@ const maxActiveWatches = 10
 // subscription to capture events during the connection setup window.
 const watchSinceJitter = 30 * time.Second
 
+// watchSeenMaxSize bounds in-memory event-ID dedup state per watch.
+const watchSeenMaxSize = 10_000
+
+type watchSeenSet struct {
+	items  map[string]struct{}
+	ring   []string
+	cursor int
+	size   int
+}
+
+func newWatchSeenSet(capacity int) *watchSeenSet {
+	if capacity < 1 {
+		capacity = 1
+	}
+	return &watchSeenSet{
+		items: make(map[string]struct{}, capacity),
+		ring:  make([]string, capacity),
+	}
+}
+
+func (s *watchSeenSet) Add(id string) (duplicate bool) {
+	if _, ok := s.items[id]; ok {
+		return true
+	}
+
+	if s.size < len(s.ring) {
+		s.ring[s.size] = id
+		s.size++
+	} else {
+		evicted := s.ring[s.cursor]
+		delete(s.items, evicted)
+		s.ring[s.cursor] = id
+		s.cursor = (s.cursor + 1) % len(s.ring)
+	}
+
+	s.items[id] = struct{}{}
+	return false
+}
+
 // WatchDelivery is called for each matched event.
 // sessionID identifies the agent session that owns the subscription.
 type WatchDelivery func(sessionID, name string, event map[string]any)
@@ -101,7 +140,7 @@ func (r *WatchRegistry) start(
 			delete(r.entries, name)
 			r.mu.Unlock()
 		}()
-		seen := make(map[string]struct{}, 256)
+		seen := newWatchSeenSet(watchSeenMaxSize)
 		for {
 			select {
 			case <-subCtx.Done():
@@ -111,10 +150,9 @@ func (r *WatchRegistry) start(
 					return
 				}
 				evID := re.Event.ID.Hex()
-				if _, dup := seen[evID]; dup {
+				if seen.Add(evID) {
 					continue
 				}
-				seen[evID] = struct{}{}
 				deliver(sessionID, name, eventToMap(re.Event))
 				r.mu.Lock()
 				entry.received++

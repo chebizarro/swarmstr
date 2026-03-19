@@ -573,27 +573,32 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		// asking the model to summarise its findings — prevents "tool execution complete".
 		// We must first provide tool_results for any pending tool_use calls, otherwise
 		// the Anthropic API rejects the request (tool_use must be followed by tool_result).
+		// IMPORTANT: tool_result blocks and the summary prompt must be combined into a
+		// single user message — Anthropic requires strict user/assistant alternation
+		// and rejects consecutive same-role messages.
 		if text == "" {
 			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
-			// Provide stub tool_results for any pending tool_use calls.
+			// Build a single user message containing both tool results and the
+			// summary prompt to maintain strict user/assistant alternation.
+			var userContent []map[string]any
 			if len(calls) > 0 {
-				stubResults := make([]map[string]any, 0, len(calls))
 				for _, c := range calls {
 					res, execErr := turn.Executor.Execute(ctx, c)
 					if execErr != nil {
 						res = "error: " + execErr.Error()
 					}
-					stubResults = append(stubResults, map[string]any{
+					userContent = append(userContent, map[string]any{
 						"type":        "tool_result",
 						"tool_use_id": c.ID,
 						"content":     res,
 					})
 				}
-				msgs = append(msgs, anthropicMessage{Role: "user", Content: stubResults})
 			}
-			msgs = append(msgs, anthropicMessage{Role: "user", Content: []map[string]any{
-				{"type": "text", "text": "Please summarise your findings and give a final response."},
-			}})
+			userContent = append(userContent, map[string]any{
+				"type": "text",
+				"text": "Please summarise your findings and give a final response.",
+			})
+			msgs = append(msgs, anthropicMessage{Role: "user", Content: userContent})
 			reqBody.Messages = msgs
 			body2, _ := json.Marshal(reqBody)
 			req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
@@ -801,26 +806,29 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 		// Force a final summary turn if maxIter was exhausted with no text.
 		// Must first provide tool_results for any pending tool_use calls before
 		// sending a new user message, otherwise Anthropic rejects the request.
+		// IMPORTANT: tool_result blocks and the summary prompt must be combined
+		// into a single user message — Anthropic requires strict alternation.
 		if text == "" {
 			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
+			var userContent []map[string]any
 			if len(calls) > 0 {
-				stubResults := make([]map[string]any, 0, len(calls))
 				for _, c := range calls {
 					res, execErr := turn.Executor.Execute(ctx, c)
 					if execErr != nil {
 						res = "error: " + execErr.Error()
 					}
-					stubResults = append(stubResults, map[string]any{
+					userContent = append(userContent, map[string]any{
 						"type":        "tool_result",
 						"tool_use_id": c.ID,
 						"content":     res,
 					})
 				}
-				msgs = append(msgs, anthropicMessage{Role: "user", Content: stubResults})
 			}
-			msgs = append(msgs, anthropicMessage{Role: "user", Content: []map[string]any{
-				{"type": "text", "text": "Please summarise your findings and give a final response."},
-			}})
+			userContent = append(userContent, map[string]any{
+				"type": "text",
+				"text": "Please summarise your findings and give a final response.",
+			})
+			msgs = append(msgs, anthropicMessage{Role: "user", Content: userContent})
 			reqBody.Messages = msgs
 			body2, _ := json.Marshal(reqBody)
 			req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
