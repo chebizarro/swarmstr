@@ -205,3 +205,23 @@ func TestFileWatchAdd_RecursiveDirectoryWatch(t *testing.T) {
 		t.Fatal("expected recursive watch event")
 	}
 }
+
+func TestFileWatchAdd_InvalidSessionIDType(t *testing.T) {
+	reg := NewFileWatchRegistry()
+	toolAdd := FileWatchAddTool(reg, func(_ string, _ string, _ map[string]any) {})
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "watch.log")
+	if err := os.WriteFile(f, []byte("boot"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	_, err := toolAdd(context.Background(), map[string]any{
+		"name":       "bad-session",
+		"session_id": float64(42),
+		"path":       f,
+	})
+	if err == nil {
+		t.Fatal("expected error for non-string session_id")
+	}
+}

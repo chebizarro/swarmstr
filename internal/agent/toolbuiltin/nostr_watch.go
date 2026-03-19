@@ -147,7 +147,7 @@ func (r *WatchRegistry) list() []map[string]any {
 // Parameters:
 //   - name        string   — unique subscription label (required)
 //   - filter      object   — NIP-01 filter (required)
-//   - session_id  string   — session to deliver events to (required)
+//   - session_id  string   — session to deliver events to (defaults to current session)
 //   - relays      []string — optional relay override
 //   - ttl_seconds int      — max lifetime in seconds (default 3600)
 //   - max_events  int      — stop after N events (default 100; 0 = unlimited)
@@ -157,9 +157,12 @@ func NostrWatchTool(opts NostrToolOpts, reg *WatchRegistry, deliver WatchDeliver
 		if name == "" {
 			return "", fmt.Errorf("nostr_watch: name is required")
 		}
-		sessionID, _ := args["session_id"].(string)
+		sessionID, err := agent.ResolveSessionIDStrict(ctx, args)
+		if err != nil {
+			return "", fmt.Errorf("nostr_watch: %w", err)
+		}
 		if sessionID == "" {
-			return "", fmt.Errorf("nostr_watch: session_id is required")
+			return "", fmt.Errorf("nostr_watch: session_id is required (not in args and not in context)")
 		}
 
 		ttlSec := 3600
@@ -171,7 +174,10 @@ func NostrWatchTool(opts NostrToolOpts, reg *WatchRegistry, deliver WatchDeliver
 			maxEvents = int(v)
 		}
 
-		filterArg, _ := args["filter"].(map[string]any)
+		filterArg, ok := args["filter"].(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("nostr_watch: filter is required")
+		}
 		f, err := buildNostrFilter(filterArg, maxEvents)
 		if err != nil {
 			return "", fmt.Errorf("nostr_watch: invalid filter: %w", err)

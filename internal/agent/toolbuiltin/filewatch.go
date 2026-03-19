@@ -473,7 +473,7 @@ var FileWatchAddDef = agent.ToolDefinition{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
 			"name":           {Type: "string", Description: "Unique watch name."},
-			"session_id":     {Type: "string", Description: "Session ID that should receive watch event notifications."},
+			"session_id":     {Type: "string", Description: "Session ID to receive notifications. Defaults to current session; only needed for cross-session delivery."},
 			"path":           {Type: "string", Description: "File or directory path to watch."},
 			"event_types":    {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Optional event type filter: create|write|remove|rename|chmod. Default: create,write,remove,rename."},
 			"contains":       {Type: "string", Description: "Optional substring filter; only emit when changed file content includes this text. Use max_lines to avoid reading huge files."},
@@ -485,7 +485,7 @@ var FileWatchAddDef = agent.ToolDefinition{
 			"batch_events":   {Type: "number", Description: "Optional: batch multiple events before delivery (default 0 = immediate). Set to 5-10 for high-activity paths to reduce notification overhead. Events are batched for max 500ms."},
 			"file_timeout_seconds": {Type: "number", Description: "Optional: timeout for file read operations in seconds (default 5). Increase for very large files or slow storage."},
 		},
-		Required: []string{"name", "session_id", "path"},
+		Required: []string{"name", "path"},
 	},
 }
 
@@ -510,13 +510,16 @@ var FileWatchListDef = agent.ToolDefinition{
 func FileWatchAddTool(reg *FileWatchRegistry, deliver FileWatchDelivery) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		name, _ := args["name"].(string)
-		sessionID, _ := args["session_id"].(string)
+		sessionID, err := agent.ResolveSessionIDStrict(ctx, args)
+		if err != nil {
+			return "", fmt.Errorf("file_watch_add: %w", err)
+		}
 		watchPath, _ := args["path"].(string)
 		if strings.TrimSpace(name) == "" {
 			return "", fmt.Errorf("file_watch_add: name is required")
 		}
 		if strings.TrimSpace(sessionID) == "" {
-			return "", fmt.Errorf("file_watch_add: session_id is required")
+			return "", fmt.Errorf("file_watch_add: session_id is required (not in args and not in context)")
 		}
 		if strings.TrimSpace(watchPath) == "" {
 			return "", fmt.Errorf("file_watch_add: path is required")

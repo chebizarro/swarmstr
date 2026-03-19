@@ -541,22 +541,29 @@ var NostrWatchDef = agent.ToolDefinition{
 				Type:        "string",
 				Description: "Short label for this watch (used in delivery messages), e.g. \"btc-news\".",
 			},
-			"kinds": {
-				Type:        "array",
-				Description: "Event kinds to watch.",
-				Items:       &agent.ToolParamProp{Type: "integer"},
+			"filter": {
+				Type:        "object",
+				Description: "NIP-01 filter object. Supports keys like ids, authors, kinds, since, until, limit, and #<tag> arrays.",
 			},
-			"authors": {
+			"session_id": {
+				Type:        "string",
+				Description: "Session ID to deliver events to. Defaults to current session; only needed for cross-session delivery.",
+			},
+			"relays": {
 				Type:        "array",
-				Description: "Filter by author pubkeys.",
+				Description: "Optional relay URL overrides.",
 				Items:       &agent.ToolParamProp{Type: "string"},
 			},
-			"tags": {
-				Type:        "string",
-				Description: "JSON-encoded tag filters, e.g. {\"t\":[\"bitcoin\"]}.",
+			"ttl_seconds": {
+				Type:        "number",
+				Description: "Optional watch lifetime in seconds. Default: 3600.",
+			},
+			"max_events": {
+				Type:        "number",
+				Description: "Optional max events before auto-stop. Default: 100 (0 = unlimited).",
 			},
 		},
-		Required: []string{"name"},
+		Required: []string{"name", "filter"},
 	},
 }
 

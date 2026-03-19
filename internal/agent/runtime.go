@@ -116,6 +116,11 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 	if turn.UserText == "" {
 		return TurnResult{}, fmt.Errorf("empty user turn")
 	}
+	// Inject session ID into context so tools can read it without requiring
+	// the LLM to echo it back as an explicit parameter.
+	if turn.SessionID != "" {
+		ctx = ContextWithSessionID(ctx, turn.SessionID)
+	}
 	// Auto-inject tool definitions when the executor provides them and the
 	// caller hasn't already populated turn.Tools.
 	if len(turn.Tools) == 0 && r.tools != nil {
@@ -143,6 +148,9 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	turn.UserText = strings.TrimSpace(turn.UserText)
 	if turn.UserText == "" {
 		return TurnResult{}, fmt.Errorf("empty user turn")
+	}
+	if turn.SessionID != "" {
+		ctx = ContextWithSessionID(ctx, turn.SessionID)
 	}
 	// Auto-inject tool definitions (same as ProcessTurn).
 	if len(turn.Tools) == 0 && r.tools != nil {
