@@ -201,6 +201,7 @@ const (
 	NostrChannelKindDM          NostrChannelKind = "dm"
 	NostrChannelKindNIP28       NostrChannelKind = "nip28"
 	NostrChannelKindNIP29       NostrChannelKind = "nip29"
+	NostrChannelKindChat        NostrChannelKind = "chat"         // NIP-C7 kind:9 chat
 	NostrChannelKindRelayFilter NostrChannelKind = "relay-filter"
 )
 
