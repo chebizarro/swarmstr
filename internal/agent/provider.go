@@ -459,13 +459,13 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 	if err != nil {
 		return ProviderResult{}, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
 	betaHeaders := []string{"prompt-caching-2024-07-31"}
 	if turn.ThinkingBudget > 0 {
 		betaHeaders = append(betaHeaders, "interleaved-thinking-2025-05-14")
 	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", strings.Join(betaHeaders, ","))
 
 	client := p.Client
@@ -496,9 +496,26 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		totalOutput = int64(out.Usage.OutputTokens)
 	}
 
+	// setReqHeaders applies the standard Anthropic headers to a request,
+	// including beta feature flags.  Factored out so the agentic loop
+	// re-requests get the same headers as the initial request.
+	setReqHeaders := func(r *http.Request) {
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("x-api-key", apiKey)
+		r.Header.Set("anthropic-version", "2023-06-01")
+		if len(betaHeaders) > 0 {
+			r.Header.Set("anthropic-beta", strings.Join(betaHeaders, ","))
+		}
+	}
+
 	// Agentic tool loop: if the model returned tool calls and we have an executor,
 	// run tool→result→continue until the model produces a text response.
 	if out.StopReason == "tool_use" && len(calls) > 0 && turn.Executor != nil {
+		// Clear pre-tool text so stale preamble ("Let me check...") is never
+		// returned as the final reply.  Only the post-tool model response
+		// should be surfaced to the user.
+		text = ""
+
 		const maxIter = 10
 		for iter := 0; iter < maxIter && out.StopReason == "tool_use"; iter++ {
 			// Append the assistant's tool_use turn (preserve raw content blocks).
@@ -530,9 +547,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 			if err2 != nil {
 				break
 			}
-			req2.Header.Set("Content-Type", "application/json")
-			req2.Header.Set("x-api-key", apiKey)
-			req2.Header.Set("anthropic-version", "2023-06-01")
+			setReqHeaders(req2)
 			resp2, err2 := client.Do(req2)
 			if err2 != nil {
 				break
@@ -551,10 +566,6 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 				totalOutput += int64(out2.Usage.OutputTokens)
 			}
 			out = out2
-			// Reset text before parsing so stale text from a previous iteration
-			// (e.g. a pre-tool "Let me check that now...") is never used as the
-			// final reply if this response has no text block.
-			text = ""
 			text, calls = parseAnthropicToolCalls(out.Content)
 		}
 
@@ -586,9 +597,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 			reqBody.Messages = msgs
 			body2, _ := json.Marshal(reqBody)
 			req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
-			req2.Header.Set("Content-Type", "application/json")
-			req2.Header.Set("x-api-key", apiKey)
-			req2.Header.Set("anthropic-version", "2023-06-01")
+			setReqHeaders(req2)
 			if resp2, err2 := client.Do(req2); err2 == nil {
 				var out2 anthropicResponse
 				if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 == nil && out2.Error == nil {
@@ -726,6 +735,22 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 
 	// Agentic tool loop — same as the API-key provider.
 	if out.StopReason == "tool_use" && len(calls) > 0 && turn.Executor != nil {
+		// Clear pre-tool preamble text so stale "Let me check..." is never
+		// returned as the final reply.
+		text = ""
+
+		setOAuthHeaders := func(r *http.Request) {
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("anthropic-version", "2023-06-01")
+			applyAnthropicOAuthHeaders(r, accessToken)
+			existing := strings.TrimSpace(r.Header.Get("anthropic-beta"))
+			if existing == "" {
+				r.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
+			} else if !strings.Contains(existing, "prompt-caching-2024-07-31") {
+				r.Header.Set("anthropic-beta", existing+",prompt-caching-2024-07-31")
+			}
+		}
+
 		const maxIter = 10
 		for iter := 0; iter < maxIter && out.StopReason == "tool_use"; iter++ {
 			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
@@ -751,9 +776,7 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 			if err2 != nil {
 				break
 			}
-			req2.Header.Set("Content-Type", "application/json")
-			req2.Header.Set("anthropic-version", "2023-06-01")
-			applyAnthropicOAuthHeaders(req2, accessToken)
+			setOAuthHeaders(req2)
 			resp2, err2 := client.Do(req2)
 			if err2 != nil {
 				break
@@ -772,7 +795,6 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 				totalOutput += int64(out2.Usage.OutputTokens)
 			}
 			out = out2
-			text = ""
 			text, calls = parseAnthropicToolCalls(out.Content)
 		}
 
@@ -802,9 +824,7 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 			reqBody.Messages = msgs
 			body2, _ := json.Marshal(reqBody)
 			req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
-			req2.Header.Set("Content-Type", "application/json")
-			req2.Header.Set("anthropic-version", "2023-06-01")
-			applyAnthropicOAuthHeaders(req2, accessToken)
+			setOAuthHeaders(req2)
 			if resp2, err2 := client.Do(req2); err2 == nil {
 				var out2 anthropicResponse
 				if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 == nil && out2.Error == nil {
@@ -864,8 +884,10 @@ type openAIFunctionDef struct {
 // content ([]map[string]any). Content is typed as any so json.Marshal produces
 // the correct wire format for each case.
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"` // string or []map[string]any for vision
+	Role       string `json:"role"`
+	Content    any    `json:"content"`                  // string or []map[string]any for vision
+	ToolCalls  any    `json:"tool_calls,omitempty"`      // assistant tool_calls array
+	ToolCallID string `json:"tool_call_id,omitempty"`    // tool result linking
 }
 
 // buildOpenAIContent constructs the message content for a user turn.
@@ -912,11 +934,16 @@ type openAIResponse struct {
 				} `json:"function"`
 			} `json:"tool_calls,omitempty"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error,omitempty"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage,omitempty"`
 }
 
 func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
@@ -985,21 +1012,142 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 	if len(out.Choices) == 0 {
 		return ProviderResult{}, fmt.Errorf("openai returned no choices")
 	}
-	choice := out.Choices[0].Message
+	choice := out.Choices[0]
 	// Parse tool calls if present.
-	var toolCalls []ToolCall
-	for _, tc := range choice.ToolCalls {
-		var args map[string]any
-		if tc.Function.Arguments != "" {
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+	parseOpenAIToolCalls := func(tcs []struct {
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	}) []ToolCall {
+		var calls []ToolCall
+		for _, tc := range tcs {
+			var args map[string]any
+			if tc.Function.Arguments != "" {
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			}
+			calls = append(calls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: args})
 		}
-		toolCalls = append(toolCalls, ToolCall{Name: tc.Function.Name, Args: args})
+		return calls
 	}
-	text := strings.TrimSpace(choice.Content)
+	toolCalls := parseOpenAIToolCalls(choice.Message.ToolCalls)
+	text := strings.TrimSpace(choice.Message.Content)
+
+	// Track token usage.
+	var totalInput, totalOutput int64
+	if out.Usage != nil {
+		totalInput = int64(out.Usage.PromptTokens)
+		totalOutput = int64(out.Usage.CompletionTokens)
+	}
+
+	// Agentic tool loop: if the model returned tool_calls and we have an executor,
+	// run tool→result→continue until the model produces a text-only response.
+	if choice.FinishReason == "tool_calls" && len(toolCalls) > 0 && turn.Executor != nil {
+		// Clear any pre-tool preamble text so only the post-tool model response
+		// is returned to the caller.
+		text = ""
+		var loopErr error
+
+		const maxIter = 10
+		for iter := 0; iter < maxIter && choice.FinishReason == "tool_calls"; iter++ {
+			// Append the assistant's tool_call message.
+			rawTCs := make([]map[string]any, 0, len(choice.Message.ToolCalls))
+			for _, tc := range choice.Message.ToolCalls {
+				rawTCs = append(rawTCs, map[string]any{
+					"id":   tc.ID,
+					"type": "function",
+					"function": map[string]any{
+						"name":      tc.Function.Name,
+						"arguments": tc.Function.Arguments,
+					},
+				})
+			}
+			msgs = append(msgs, openAIMessage{
+				Role:      "assistant",
+				Content:   choice.Message.Content,
+				ToolCalls: rawTCs,
+			})
+
+			// Execute each tool call and collect results.
+			for _, call := range toolCalls {
+				result, execErr := turn.Executor.Execute(ctx, call)
+				if execErr != nil {
+					result = "error: " + execErr.Error()
+				}
+				// OpenAI expects tool results as separate messages with role:tool.
+				msgs = append(msgs, openAIMessage{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					Content:    result,
+				})
+			}
+
+			// Re-call the API with updated messages.
+			reqBody2 := openAIRequest{Model: model, Messages: msgs}
+			if len(turn.Tools) > 0 {
+				reqBody2.Tools = toolDefsToOpenAI(turn.Tools)
+			}
+			body2, _ := json.Marshal(reqBody2)
+			req2, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(body2))
+			if reqErr != nil {
+				loopErr = reqErr
+				break
+			}
+			req2.Header.Set("Content-Type", "application/json")
+			if apiKey != "" {
+				req2.Header.Set("Authorization", "Bearer "+apiKey)
+			}
+			resp2, respErr := client.Do(req2)
+			if respErr != nil {
+				loopErr = respErr
+				break
+			}
+			var out2 openAIResponse
+			if decErr := json.NewDecoder(resp2.Body).Decode(&out2); decErr != nil {
+				resp2.Body.Close()
+				loopErr = fmt.Errorf("openai decode: %w", decErr)
+				break
+			}
+			resp2.Body.Close()
+			if out2.Error != nil {
+				loopErr = fmt.Errorf("openai error %s: %s", out2.Error.Type, out2.Error.Message)
+				break
+			}
+			if resp2.StatusCode >= 300 {
+				loopErr = fmt.Errorf("openai returned %s", resp2.Status)
+				break
+			}
+			if len(out2.Choices) == 0 {
+				loopErr = fmt.Errorf("openai returned no choices")
+				break
+			}
+			choice = out2.Choices[0]
+			toolCalls = parseOpenAIToolCalls(choice.Message.ToolCalls)
+			text = strings.TrimSpace(choice.Message.Content)
+			if out2.Usage != nil {
+				totalInput += int64(out2.Usage.PromptTokens)
+				totalOutput += int64(out2.Usage.CompletionTokens)
+			}
+		}
+
+		if loopErr != nil {
+			return ProviderResult{}, loopErr
+		}
+		if text == "" && len(toolCalls) > 0 {
+			return ProviderResult{}, fmt.Errorf("openai tool loop ended without final content")
+		}
+	}
+
 	if text == "" && len(toolCalls) == 0 {
 		return ProviderResult{}, fmt.Errorf("openai returned no content")
 	}
-	return ProviderResult{Text: text, ToolCalls: toolCalls}, nil
+	return ProviderResult{
+		Text:      text,
+		ToolCalls: toolCalls,
+		Usage:     ProviderUsage{InputTokens: totalInput, OutputTokens: totalOutput},
+	}, nil
 }
 
 // Stream implements StreamingProvider for OpenAIChatProvider.

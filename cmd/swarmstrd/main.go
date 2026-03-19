@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -1084,6 +1085,61 @@ func main() {
 		}
 	}
 
+	// buildAutoJoinTurn assembles a Turn with context, history, and executor
+	// for auto-joined channel sessions.  This mirrors the context assembly in
+	// doChannelTurn (defined later) so auto-join channels get the same context
+	// quality as manually-connected channels.
+	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string) agent.Turn {
+		turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, text, 6)
+		var turnHistory []agent.ConversationMessage
+		if controlContextEngine != nil {
+			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
+				if assembled.SystemPromptAddition != "" {
+					turnContext = assembled.SystemPromptAddition
+				}
+				msgs := assembled.Messages
+				// Deduplicate the current user message if context engine already has it.
+				if n := len(msgs); n > 0 {
+					if last := msgs[n-1]; last.Role == "user" && strings.TrimSpace(last.Content) == strings.TrimSpace(text) {
+						msgs = msgs[:n-1]
+					}
+				}
+				for _, m := range msgs {
+					turnHistory = append(turnHistory, agent.ConversationMessage{
+						Role:       m.Role,
+						Content:    m.Content,
+						ToolCallID: m.ToolCallID,
+					})
+				}
+			}
+		}
+		// Inject pinned agent knowledge.
+		if memoryIndex != nil {
+			if pinned := memoryIndex.ListByTopic("agent_knowledge", 50); len(pinned) > 0 {
+				var sb strings.Builder
+				sb.WriteString("## Pinned Knowledge\n")
+				for _, p := range pinned {
+					sb.WriteString("- ")
+					sb.WriteString(p.Text)
+					sb.WriteString("\n")
+				}
+				pinnedBlock := strings.TrimRight(sb.String(), "\n")
+				if turnContext == "" {
+					turnContext = pinnedBlock
+				} else {
+					turnContext = pinnedBlock + "\n\n" + turnContext
+				}
+			}
+		}
+		return agent.Turn{
+			SessionID: sessionID,
+			UserText:  text,
+			Context:   turnContext,
+			History:   turnHistory,
+			Executor:  tools,
+		}
+	}
+
 	// Auto-join any NostrChannels declared in the config with enabled: true.
 	// This provides OpenClaw parity: channels configured in the config file are
 	// active immediately at startup without a manual channels.join RPC call.
@@ -1115,10 +1171,7 @@ func main() {
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
-						result, turnErr := rt.ProcessTurn(turnCtx, agent.Turn{
-							SessionID: sessionID,
-							UserText:  msg.Text,
-						})
+						result, turnErr := rt.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text))
 						if turnErr != nil {
 							log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
@@ -1174,10 +1227,7 @@ func main() {
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
-						result, turnErr := rt.ProcessTurn(turnCtx, agent.Turn{
-							SessionID: sessionID,
-							UserText:  msg.Text,
-						})
+						result, turnErr := rt.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text))
 						if turnErr != nil {
 							log.Printf("auto-join nip28 agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
@@ -1239,10 +1289,7 @@ func main() {
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
-						result, turnErr := rt.ProcessTurn(turnCtx, agent.Turn{
-							SessionID: sessionID,
-							UserText:  msg.Text,
-						})
+						result, turnErr := rt.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text))
 						if turnErr != nil {
 							log.Printf("auto-join chat agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
@@ -2526,21 +2573,28 @@ func main() {
 
 		defer releaseTurnSlot()
 
+		entryID := eventID
+		if entryID == "" {
+			// Synthesise an entry ID for messages without a Nostr event ID
+			// (e.g. watch delivery, queue drain).  We hash stable message
+			// fields so the ID remains deterministic and content-derived.
+			entryID = synthesizeInboundEventID(fromPubKey, combinedText, createdAt)
+		}
 		if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, nostruntime.InboundDM{
-			EventID:    eventID,
+			EventID:    entryID,
 			FromPubKey: fromPubKey,
 			Text:       combinedText,
 			CreatedAt:  createdAt,
 		}); err != nil {
-			log.Printf("persist inbound text failed event=%s err=%v", eventID, err)
+			log.Printf("persist inbound text failed event=%s err=%v", entryID, err)
 		}
-		persistMemories(ctx, docsRepo, memoryRepo, memoryIndex, memoryTracker, memory.ExtractFromTurn(sessionID, "user", eventID, combinedText, createdAt))
+		persistMemories(ctx, docsRepo, memoryRepo, memoryIndex, memoryTracker, memory.ExtractFromTurn(sessionID, "user", entryID, combinedText, createdAt))
 
 		if controlContextEngine != nil {
 			if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
 				Role:    "user",
 				Content: combinedText,
-				ID:      eventID,
+				ID:      entryID,
 				Unix:    createdAt,
 			}); ingErr != nil {
 				log.Printf("context engine ingest user session=%s err=%v", sessionID, ingErr)
@@ -5157,6 +5211,12 @@ func persistInbound(
 		},
 	})
 	return err
+}
+
+func synthesizeInboundEventID(fromPubKey, text string, createdAt int64) string {
+	seed := fmt.Sprintf("%s\x00%d\x00%s", strings.TrimSpace(fromPubKey), createdAt, strings.TrimSpace(text))
+	sum := sha256.Sum256([]byte(seed))
+	return "auto:" + hex.EncodeToString(sum[:])
 }
 
 func persistAssistant(
