@@ -101,8 +101,8 @@ func NostrChatSendTool(opts NostrToolOpts) agent.ToolFunc {
 
 		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		pool := opts.NewPoolNIP42()
-		defer pool.Close("chat_send done")
+		pool, releasePool := opts.AcquirePool("chat_send done")
+		defer releasePool()
 
 		published := 0
 		var lastErr error
@@ -164,8 +164,8 @@ func NostrChatFetchTool(opts NostrToolOpts) agent.ToolFunc {
 		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
-		pool := opts.NewPoolNIP42()
-		defer pool.Close("chat_fetch done")
+		pool, releasePool := opts.AcquirePool("chat_fetch done")
+		defer releasePool()
 
 		type chatMsg struct {
 			EventID       string `json:"event_id"`

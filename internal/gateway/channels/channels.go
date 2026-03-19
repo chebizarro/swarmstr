@@ -135,7 +135,11 @@ type ChannelInfo struct {
 type NIP29GroupChannelOptions struct {
 	// GroupAddress is the NIP-29 group address: "<relayHost>'<groupID>".
 	GroupAddress string
-	// Keyer is the signing interface used for group sends and identity resolution.
+	// Hub is the shared NostrHub.  If set, the channel uses the hub's pool
+	// (sharing WebSocket connections with all other channels).  If nil, a
+	// dedicated pool is created (legacy behaviour).
+	Hub *nostruntime.NostrHub
+	// Keyer is the signing interface.  Ignored when Hub is set (hub provides keyer).
 	Keyer nostr.Keyer
 	// OnMessage is called for every inbound group message.
 	OnMessage func(InboundMessage)
@@ -146,22 +150,21 @@ type NIP29GroupChannelOptions struct {
 // NIP29GroupChannel subscribes to a NIP-29 relay-based group (kind 9) and
 // allows the agent to send messages back.
 type NIP29GroupChannel struct {
-	id      string
-	gad     nip29.GroupAddress
-	keyer   nostr.Keyer
-	pool    *nostr.Pool
-	ctx     context.Context // saved for keyer.SignEvent calls
-	cancel  context.CancelFunc
-	onMsg   func(InboundMessage)
-	onErr   func(error)
-	pubkey  string // agent's public key hex
+	id       string
+	gad      nip29.GroupAddress
+	hub      *nostruntime.NostrHub // non-nil when using shared hub
+	pool     *nostr.Pool           // non-nil only in legacy (no-hub) mode
+	ownsPool bool                  // true when we created the pool ourselves
+	keyer    nostr.Keyer
+	ctx      context.Context
+	cancel   context.CancelFunc
+	onMsg    func(InboundMessage)
+	onErr    func(error)
+	pubkey   string
 }
 
 // NewNIP29GroupChannel creates and starts a NIP-29 group subscription.
 func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions) (*NIP29GroupChannel, error) {
-	if opts.Keyer == nil {
-		return nil, fmt.Errorf("keyer is required")
-	}
 	if opts.GroupAddress == "" {
 		return nil, fmt.Errorf("group_address is required (format: relay'groupID)")
 	}
@@ -174,25 +177,44 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 		return nil, fmt.Errorf("invalid group_address %q: relay and group ID are required", opts.GroupAddress)
 	}
 
-	pk, err := opts.Keyer.GetPublicKey(parent)
+	// Resolve keyer and pool from hub or opts.
+	var keyer nostr.Keyer
+	var pool *nostr.Pool
+	var hub *nostruntime.NostrHub
+	ownsPool := false
+
+	if opts.Hub != nil {
+		hub = opts.Hub
+		keyer = hub.Keyer()
+		pool = hub.Pool()
+	} else {
+		if opts.Keyer == nil {
+			return nil, fmt.Errorf("keyer is required (or provide Hub)")
+		}
+		keyer = opts.Keyer
+		pool = nostr.NewPool(nostruntime.PoolOptsNIP42(keyer))
+		ownsPool = true
+	}
+
+	pk, err := keyer.GetPublicKey(parent)
 	if err != nil {
 		return nil, fmt.Errorf("nip29: get public key from keyer: %w", err)
 	}
-	pubkey := pk.Hex()
 
-	pool := nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
 	ctx, cancel := context.WithCancel(parent)
 
 	ch := &NIP29GroupChannel{
-		id:     opts.GroupAddress,
-		gad:    gad,
-		keyer:  opts.Keyer,
-		pool:   pool,
-		ctx:    ctx,
-		cancel: cancel,
-		onMsg:  opts.OnMessage,
-		onErr:  opts.OnError,
-		pubkey: pubkey,
+		id:       opts.GroupAddress,
+		gad:      gad,
+		hub:      hub,
+		pool:     pool,
+		ownsPool: ownsPool,
+		keyer:    keyer,
+		ctx:      ctx,
+		cancel:   cancel,
+		onMsg:    opts.OnMessage,
+		onErr:    opts.OnError,
+		pubkey:   pk.Hex(),
 	}
 
 	go ch.subscribeLoop(ctx)
@@ -234,13 +256,16 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 	return nil
 }
 
-// Close shuts down the subscription.
+// Close shuts down the subscription.  Only closes the pool if we own it.
 func (c *NIP29GroupChannel) Close() {
 	c.cancel()
-	c.pool.Close("nip29 channel closed")
+	if c.ownsPool {
+		c.pool.Close("nip29 channel closed")
+	}
 }
 
-// subscribeLoop listens for kind-9 messages on the group relay.
+// subscribeLoop listens for kind-9 messages on the group relay using
+// SubscribeManyNotifyClosed for proper CLOSED signal handling.
 func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
 	since := nostr.Timestamp(time.Now().Unix())
 	filter := nostr.Filter{
@@ -249,32 +274,49 @@ func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
 		Since: since,
 	}
 
-	sub := c.pool.SubscribeMany(ctx, []string{c.gad.Relay}, filter, nostr.SubscriptionOptions{})
+	events, closedCh := c.pool.SubscribeManyNotifyClosed(
+		ctx, []string{c.gad.Relay}, filter, nostr.SubscriptionOptions{},
+	)
 
-	for ev := range sub {
-		// Skip our own messages.
-		if ev.PubKey.Hex() == c.pubkey {
-			continue
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			if ev.PubKey.Hex() == c.pubkey {
+				continue
+			}
+			if c.onMsg == nil {
+				continue
+			}
+			gad := c.gad
+			senderHex := ev.PubKey.Hex()
+			evIDHex := ev.ID.Hex()
+			c.onMsg(InboundMessage{
+				ChannelID:  c.id,
+				GroupID:    gad.ID,
+				Relay:      gad.Relay,
+				FromPubKey: senderHex,
+				Text:       ev.Content,
+				EventID:    evIDHex,
+				CreatedAt:  int64(ev.CreatedAt),
+				Reply: func(ctx context.Context, text string) error {
+					return c.Send(ctx, text)
+				},
+			})
+
+		case rc, ok := <-closedCh:
+			if !ok {
+				continue
+			}
+			if !rc.HandledAuth && c.onErr != nil {
+				c.onErr(fmt.Errorf("nip29 sub closed by %s: %s", rc.Relay.URL, rc.Reason))
+			}
+
+		case <-ctx.Done():
+			return
 		}
-		if c.onMsg == nil {
-			continue
-		}
-		gad := c.gad
-		senderHex := ev.PubKey.Hex()
-		evIDHex := ev.ID.Hex()
-		relay := c.gad.Relay
-		c.onMsg(InboundMessage{
-			ChannelID:  c.id,
-			GroupID:    gad.ID,
-			Relay:      relay,
-			FromPubKey: senderHex,
-			Text:       ev.Content,
-			EventID:    evIDHex,
-			CreatedAt:  int64(ev.CreatedAt),
-			Reply: func(ctx context.Context, text string) error {
-				return c.Send(ctx, text)
-			},
-		})
 	}
 }
 
@@ -284,7 +326,9 @@ func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
 type NIP28PublicChannelOptions struct {
 	// ChannelID is the event ID of the kind-40 channel-creation event.
 	ChannelID string
-	// Keyer is the signing interface used for channel sends and identity resolution.
+	// Hub is the shared NostrHub.  If set, shares connections with all channels.
+	Hub *nostruntime.NostrHub
+	// Keyer is the signing interface.  Ignored when Hub is set.
 	Keyer nostr.Keyer
 	// Relays is the list of relay URLs to connect to.
 	Relays []string
@@ -302,6 +346,7 @@ type NIP28PublicChannel struct {
 	keyer     nostr.Keyer
 	relays    []string
 	pool      *nostr.Pool
+	ownsPool  bool
 	cancel    context.CancelFunc
 	onMsg     func(InboundMessage)
 	onErr     func(error)
@@ -310,9 +355,6 @@ type NIP28PublicChannel struct {
 
 // NewNIP28PublicChannel creates and starts a NIP-28 public channel subscription.
 func NewNIP28PublicChannel(parent context.Context, opts NIP28PublicChannelOptions) (*NIP28PublicChannel, error) {
-	if opts.Keyer == nil {
-		return nil, fmt.Errorf("keyer is required")
-	}
 	if opts.ChannelID == "" {
 		return nil, fmt.Errorf("channel_id is required")
 	}
@@ -320,25 +362,40 @@ func NewNIP28PublicChannel(parent context.Context, opts NIP28PublicChannelOption
 		return nil, fmt.Errorf("at least one relay is required for nip28 channel")
 	}
 
-	pk, err := opts.Keyer.GetPublicKey(parent)
+	var keyer nostr.Keyer
+	var pool *nostr.Pool
+	ownsPool := false
+
+	if opts.Hub != nil {
+		keyer = opts.Hub.Keyer()
+		pool = opts.Hub.Pool()
+	} else {
+		if opts.Keyer == nil {
+			return nil, fmt.Errorf("keyer is required (or provide Hub)")
+		}
+		keyer = opts.Keyer
+		pool = nostr.NewPool(nostruntime.PoolOptsNIP42(keyer))
+		ownsPool = true
+	}
+
+	pk, err := keyer.GetPublicKey(parent)
 	if err != nil {
 		return nil, fmt.Errorf("nip28: get public key from keyer: %w", err)
 	}
-	pubkey := pk.Hex()
 
-	pool := nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
 	ctx, cancel := context.WithCancel(parent)
 
 	ch := &NIP28PublicChannel{
 		id:        opts.ChannelID,
 		channelID: opts.ChannelID,
-		keyer:     opts.Keyer,
+		keyer:     keyer,
 		relays:    opts.Relays,
 		pool:      pool,
+		ownsPool:  ownsPool,
 		cancel:    cancel,
 		onMsg:     opts.OnMessage,
 		onErr:     opts.OnError,
-		pubkey:    pubkey,
+		pubkey:    pk.Hex(),
 	}
 
 	go ch.subscribeLoop(ctx)
@@ -371,28 +428,29 @@ func (c *NIP28PublicChannel) Send(ctx context.Context, text string) error {
 	}
 
 	var lastErr error
-	for _, relay := range c.relays {
-		r, connErr := c.pool.EnsureRelay(relay)
-		if connErr != nil {
-			lastErr = connErr
-			continue
+	published := false
+	for result := range c.pool.PublishMany(ctx, c.relays, evt) {
+		if result.Error == nil {
+			published = true
+		} else {
+			lastErr = fmt.Errorf("relay %s: %w", result.RelayURL, result.Error)
 		}
-		if pubErr := r.Publish(ctx, evt); pubErr != nil {
-			lastErr = pubErr
-			continue
+	}
+	if !published {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no relay accepted publish")
 		}
-		return nil // published to at least one relay
+		return fmt.Errorf("nip28 send: %w", lastErr)
 	}
-	if lastErr != nil {
-		return fmt.Errorf("nip28 send failed on all relays: %w", lastErr)
-	}
-	return fmt.Errorf("no relays available")
+	return nil
 }
 
 // Close shuts down the subscription.
 func (c *NIP28PublicChannel) Close() {
 	c.cancel()
-	c.pool.Close("nip28 channel closed")
+	if c.ownsPool {
+		c.pool.Close("nip28 channel closed")
+	}
 }
 
 // subscribeLoop listens for kind-42 messages on the configured relays.
@@ -404,28 +462,52 @@ func (c *NIP28PublicChannel) subscribeLoop(ctx context.Context) {
 		Since: since,
 	}
 
-	sub := c.pool.SubscribeMany(ctx, c.relays, filter, nostr.SubscriptionOptions{})
-	for ev := range sub {
-		if ev.PubKey.Hex() == c.pubkey {
-			continue // skip our own messages
+	events, closedCh := c.pool.SubscribeManyNotifyClosed(
+		ctx, c.relays, filter, nostr.SubscriptionOptions{},
+	)
+
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			if ev.PubKey.Hex() == c.pubkey {
+				continue
+			}
+			if c.onMsg == nil {
+				continue
+			}
+			senderHex := ev.PubKey.Hex()
+			evIDHex := ev.ID.Hex()
+			relayURL := ""
+			if ev.Relay != nil {
+				relayURL = ev.Relay.URL
+			}
+			c.onMsg(InboundMessage{
+				ChannelID:  c.ID(),
+				GroupID:    c.channelID,
+				Relay:      relayURL,
+				FromPubKey: senderHex,
+				Text:       ev.Content,
+				EventID:    evIDHex,
+				CreatedAt:  int64(ev.CreatedAt),
+				Reply: func(replyCtx context.Context, text string) error {
+					return c.Send(replyCtx, text)
+				},
+			})
+
+		case rc, ok := <-closedCh:
+			if !ok {
+				continue
+			}
+			if !rc.HandledAuth && c.onErr != nil {
+				c.onErr(fmt.Errorf("nip28 sub closed by %s: %s", rc.Relay.URL, rc.Reason))
+			}
+
+		case <-ctx.Done():
+			return
 		}
-		if c.onMsg == nil {
-			continue
-		}
-		channelID := c.channelID
-		senderHex := ev.PubKey.Hex()
-		evIDHex := ev.ID.Hex()
-		c.onMsg(InboundMessage{
-			ChannelID:  c.ID(),
-			GroupID:    channelID,
-			FromPubKey: senderHex,
-			Text:       ev.Content,
-			EventID:    evIDHex,
-			CreatedAt:  int64(ev.CreatedAt),
-			Reply: func(replyCtx context.Context, text string) error {
-				return c.Send(replyCtx, text)
-			},
-		})
 	}
 }
 

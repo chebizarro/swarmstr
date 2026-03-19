@@ -43,8 +43,8 @@ func NostrFollowsTool(opts NostrToolOpts) agent.ToolFunc {
 			return "", fmt.Errorf("nostr_follows: invalid pubkey: %w", err)
 		}
 
-		pool := opts.NewPoolNIP42()
-		defer pool.Close("follows done")
+		pool, releasePool := opts.AcquirePool("follows done")
+		defer releasePool()
 
 		f := nostr.Filter{
 			Kinds:   []nostr.Kind{3},
@@ -121,8 +121,8 @@ func NostrFollowersTool(opts NostrToolOpts) agent.ToolFunc {
 		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 
-		pool := opts.NewPoolNIP42()
-		defer pool.Close("followers done")
+		pool, releasePool := opts.AcquirePool("followers done")
+		defer releasePool()
 
 		f := nostr.Filter{
 			Kinds: []nostr.Kind{3},

@@ -13,23 +13,40 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
 
 	"swarmstr/internal/agent"
 	"swarmstr/internal/loom"
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // LoomToolOpts configures Loom tools.
 type LoomToolOpts struct {
-	Keyer      nostr.Keyer
-	Relays     []string
+	HubFunc func() *nostruntime.NostrHub
+	Keyer   nostr.Keyer
+	Relays  []string
 }
 
 // RegisterLoomTools registers Loom compute marketplace tools.
 func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
-	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
+	var (
+		fallbackPool *nostr.Pool
+		poolOnce     sync.Once
+	)
+	getPool := func() *nostr.Pool {
+		if opts.HubFunc != nil {
+			if h := opts.HubFunc(); h != nil {
+				return h.Pool()
+			}
+		}
+		poolOnce.Do(func() {
+			fallbackPool = nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
+		})
+		return fallbackPool
+	}
 
 	resolveKeyer := func(ctx context.Context) (nostr.Keyer, error) {
 		if opts.Keyer == nil {
@@ -49,7 +66,7 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 			relays = opts.Relays
 		}
 
-		workers, err := loom.ListWorkers(ctx, pool, relays, limit)
+		workers, err := loom.ListWorkers(ctx, getPool(), relays, limit)
 		if err != nil {
 			return "", err
 		}
@@ -123,7 +140,7 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 			return "", fmt.Errorf("loom_job_submit: %w", err)
 		}
 
-		jobID, err := loom.SubmitJob(ctx, pool, ks, relays, req)
+		jobID, err := loom.SubmitJob(ctx, getPool(), ks, relays, req)
 		if err != nil {
 			return "", err
 		}
@@ -147,7 +164,7 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 			return "", fmt.Errorf("loom_job_status: job_id is required")
 		}
 
-		status, err := loom.GetJobStatus(ctx, pool, relays, jobID)
+		status, err := loom.GetJobStatus(ctx, getPool(), relays, jobID)
 		if err != nil {
 			return "", err
 		}
@@ -172,7 +189,7 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 			return "", fmt.Errorf("loom_job_result: job_id is required")
 		}
 
-		result, err := loom.WaitForResult(ctx, pool, relays, jobID, time.Duration(waitSecs)*time.Second)
+		result, err := loom.WaitForResult(ctx, getPool(), relays, jobID, time.Duration(waitSecs)*time.Second)
 		if err != nil {
 			return "", err
 		}
@@ -201,7 +218,7 @@ func RegisterLoomTools(tools *agent.ToolRegistry, opts LoomToolOpts) {
 			return "", fmt.Errorf("loom_job_cancel: %w", err)
 		}
 
-		evID, err := loom.CancelJob(ctx, pool, ks, relays, jobID, workerPubKey)
+		evID, err := loom.CancelJob(ctx, getPool(), ks, relays, jobID, workerPubKey)
 		if err != nil {
 			return "", err
 		}

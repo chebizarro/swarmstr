@@ -16,16 +16,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
 
 	"swarmstr/internal/agent"
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // RegisterNIPTools registers additional NIP protocol tools.
 func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
-	pool := opts.NewPoolNIP42()
+	var (
+		fallbackPool *nostr.Pool
+		poolOnce     sync.Once
+	)
+	getPool := func() *nostr.Pool {
+		if h := opts.hub(); h != nil {
+			return h.Pool()
+		}
+		poolOnce.Do(func() {
+			fallbackPool = nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
+		})
+		return fallbackPool
+	}
 
 	// Early validation: if no keyer, publishEvent will fail
 	// Tools that need signing should check opts.Keyer != nil
@@ -44,7 +58,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		published := false
 		var lastErr error
-		for result := range pool.PublishMany(ctx, relays, evt) {
+		for result := range getPool().PublishMany(ctx, relays, evt) {
 			if result.Error == nil {
 				published = true
 			} else {
@@ -318,7 +332,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		defer cancel()
 
 		var best *nostr.Event
-		for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range getPool().SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			if best == nil || re.Event.CreatedAt > best.CreatedAt {
 				ev := re.Event
 				best = &ev
@@ -370,7 +384,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		defer cancel()
 
 		var events []map[string]any
-		for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range getPool().SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			events = append(events, eventToMap(re.Event))
 			if len(events) >= limit {
 				break
@@ -417,10 +431,11 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 			return "", fmt.Errorf("nostr_appdata_get: app_id and key are required")
 		}
 		if author == "" {
-			if opts.Keyer == nil {
+			keyer := opts.ResolveKeyer()
+			if keyer == nil {
 				return "", fmt.Errorf("nostr_appdata_get: author required: signing keyer not configured")
 			}
-			pk, err := opts.Keyer.GetPublicKey(ctx)
+			pk, err := keyer.GetPublicKey(ctx)
 			if err != nil {
 				return "", fmt.Errorf("nostr_appdata_get: get pubkey: %w", err)
 			}
@@ -443,7 +458,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		defer cancel()
 
 		var best *nostr.Event
-		for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range getPool().SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			if best == nil || re.Event.CreatedAt > best.CreatedAt {
 				ev := re.Event
 				best = &ev
@@ -506,7 +521,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		return string(out), nil
 	}, NostrFileAnnounceDef)
 
-	_ = pool // ensure pool is used
+	_ = getPool // ensure getPool is used
 }
 
 // slugify converts a title to a URL-friendly d-tag.

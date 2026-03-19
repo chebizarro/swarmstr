@@ -76,13 +76,13 @@ func (r *WatchRegistry) start(
 	}
 	r.entries[name] = entry
 
-	pool := opts.NewPoolNIP42()
+	pool, releasePool := opts.AcquirePool("watch " + name + " done")
 	sub := pool.SubscribeMany(subCtx, relays, filter, nostr.SubscriptionOptions{})
 
 	go func() {
 		defer func() {
 			cancel()
-			pool.Close("watch " + name + " done")
+			releasePool()
 			r.mu.Lock()
 			delete(r.entries, name)
 			r.mu.Unlock()

@@ -12,18 +12,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
 
 	"swarmstr/internal/agent"
 	"swarmstr/internal/contextvm"
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // ContextVMToolOpts configures ContextVM tools.
 type ContextVMToolOpts struct {
-	Keyer      nostr.Keyer
-	Relays     []string
+	HubFunc func() *nostruntime.NostrHub
+	Keyer   nostr.Keyer
+	Relays  []string
 }
 
 // ToolDefinitions for ContextVM tools.
@@ -87,9 +90,28 @@ var contextVMRawDef = agent.ToolDefinition{
 
 // RegisterContextVMTools registers ContextVM MCP-over-Nostr tools.
 func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
-	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
+	var (
+		fallbackPool *nostr.Pool
+		poolOnce     sync.Once
+	)
+	getPool := func() *nostr.Pool {
+		if opts.HubFunc != nil {
+			if h := opts.HubFunc(); h != nil {
+				return h.Pool()
+			}
+		}
+		poolOnce.Do(func() {
+			fallbackPool = nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
+		})
+		return fallbackPool
+	}
 
 	resolveKeyer := func(ctx context.Context) (nostr.Keyer, error) {
+		if opts.HubFunc != nil {
+			if h := opts.HubFunc(); h != nil {
+				return h.Keyer(), nil
+			}
+		}
 		if opts.Keyer == nil {
 			return nil, fmt.Errorf("no signing keyer configured")
 		}
@@ -107,7 +129,7 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			relays = opts.Relays
 		}
 
-		servers, err := contextvm.DiscoverServers(ctx, pool, relays, limit)
+		servers, err := contextvm.DiscoverServers(ctx, getPool(), relays, limit)
 		if err != nil {
 			return "", err
 		}
@@ -137,7 +159,7 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 		}
 
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		tools2, err := contextvm.ListTools(ctx, pool, ks, relays, serverPubKey, encryption)
+		tools2, err := contextvm.ListTools(ctx, getPool(), ks, relays, serverPubKey, encryption)
 		if err != nil {
 			return "", err
 		}
@@ -186,7 +208,7 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 		if timeoutSec > 600 {
 			timeoutSec = 600
 		}
-		result, err := contextvm.CallToolWithTimeout(ctx, pool, ks, relays, serverPubKey, toolName, toolArgs, time.Duration(timeoutSec)*time.Second, encryption)
+		result, err := contextvm.CallToolWithTimeout(ctx, getPool(), ks, relays, serverPubKey, toolName, toolArgs, time.Duration(timeoutSec)*time.Second, encryption)
 		if err != nil {
 			return "", err
 		}
@@ -235,7 +257,7 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 		}
 
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		respRaw, err := contextvm.SendRaw(ctx, pool, ks, relays, serverPubKey, msg, encryption)
+		respRaw, err := contextvm.SendRaw(ctx, getPool(), ks, relays, serverPubKey, msg, encryption)
 		if err != nil {
 			return "", err
 		}

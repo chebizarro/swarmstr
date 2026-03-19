@@ -13,35 +13,63 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
 
 	"swarmstr/internal/agent"
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // RelayMemoryToolOpts configures the relay memory tools.
 type RelayMemoryToolOpts struct {
-	Keyer      nostr.Keyer
-	Relays     []string
+	HubFunc func() *nostruntime.NostrHub
+	Keyer   nostr.Keyer
+	Relays  []string
 }
 
 // RegisterRelayMemoryTools registers relay memory tools into the registry.
 func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpts) {
-	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
+	var (
+		fallbackPool *nostr.Pool
+		poolOnce     sync.Once
+	)
+	getPool := func() *nostr.Pool {
+		if opts.HubFunc != nil {
+			if h := opts.HubFunc(); h != nil {
+				return h.Pool()
+			}
+		}
+		poolOnce.Do(func() {
+			fallbackPool = nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
+		})
+		return fallbackPool
+	}
+
+	resolveKeyer := func() nostr.Keyer {
+		if opts.HubFunc != nil {
+			if h := opts.HubFunc(); h != nil {
+				return h.Keyer()
+			}
+		}
+		return opts.Keyer
+	}
 
 	signEvent := func(ctx context.Context, evt *nostr.Event) error {
-		if opts.Keyer == nil {
+		ks := resolveKeyer()
+		if ks == nil {
 			return fmt.Errorf("no signing keyer configured")
 		}
-		return opts.Keyer.SignEvent(ctx, evt)
+		return ks.SignEvent(ctx, evt)
 	}
 
 	ownPubkey := func(ctx context.Context) (string, error) {
-		if opts.Keyer == nil {
+		ks := resolveKeyer()
+		if ks == nil {
 			return "", fmt.Errorf("no signing keyer configured")
 		}
-		pk, err := opts.Keyer.GetPublicKey(ctx)
+		pk, err := ks.GetPublicKey(ctx)
 		if err != nil {
 			return "", err
 		}
@@ -94,7 +122,7 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 
 		published := false
 		var lastErr error
-		for result := range pool.PublishMany(ctx, relays, evt) {
+		for result := range getPool().PublishMany(ctx, relays, evt) {
 			if result.Error == nil {
 				published = true
 			} else {
@@ -174,7 +202,7 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 
 		var memories []map[string]any
 		seen := make(map[string]bool)
-		for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range getPool().SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			id := re.Event.ID.Hex()
 			if seen[id] {
 				continue
@@ -235,7 +263,7 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 		}
 
 		published := false
-		for result := range pool.PublishMany(ctx, relays, delEvt) {
+		for result := range getPool().PublishMany(ctx, relays, delEvt) {
 			if result.Error == nil {
 				published = true
 			}

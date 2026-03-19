@@ -13,22 +13,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	nostr "fiatjaf.com/nostr"
 
 	"swarmstr/internal/agent"
 	"swarmstr/internal/grasp"
+	nostruntime "swarmstr/internal/nostr/runtime"
 )
 
 // GRASPToolOpts configures GRASP tools.
 type GRASPToolOpts struct {
-	Keyer      nostr.Keyer
-	Relays     []string
+	HubFunc func() *nostruntime.NostrHub
+	Keyer   nostr.Keyer
+	Relays  []string
 }
 
 // RegisterGRASPTools registers NIP-34 / GRASP git repository tools.
 func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
-	pool := nostr.NewPool(NostrToolOpts{Keyer: opts.Keyer}.PoolOptsNIP42())
+	var (
+		fallbackPool *nostr.Pool
+		poolOnce     sync.Once
+	)
+	getPool := func() *nostr.Pool {
+		if opts.HubFunc != nil {
+			if h := opts.HubFunc(); h != nil {
+				return h.Pool()
+			}
+		}
+		poolOnce.Do(func() {
+			fallbackPool = nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
+		})
+		return fallbackPool
+	}
 
 	resolveKeyer := func(ctx context.Context) (nostr.Keyer, error) {
 		if opts.Keyer == nil {
@@ -75,7 +92,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 			return "", fmt.Errorf("grasp_repo_announce: %w", err)
 		}
 
-		evID, err := grasp.AnnounceRepo(ctx, pool, ks, relays, r)
+		evID, err := grasp.AnnounceRepo(ctx, getPool(), ks, relays, r)
 		if err != nil {
 			return "", err
 		}
@@ -100,7 +117,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 			relays = opts.Relays
 		}
 
-		repos, err := grasp.ListRepos(ctx, pool, relays, pubkey, limit)
+		repos, err := grasp.ListRepos(ctx, getPool(), relays, pubkey, limit)
 		if err != nil {
 			return "", err
 		}
@@ -141,7 +158,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 			Content:  content,
 			Labels:   labels,
 		}
-		evID, err := grasp.CreateIssue(ctx, pool, ks, relays, issue)
+		evID, err := grasp.CreateIssue(ctx, getPool(), ks, relays, issue)
 		if err != nil {
 			return "", err
 		}
@@ -165,7 +182,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 			return "", fmt.Errorf("grasp_issue_list: repo_addr required")
 		}
 
-		issues, err := grasp.ListIssues(ctx, pool, relays, repoAddr, limit)
+		issues, err := grasp.ListIssues(ctx, getPool(), relays, repoAddr, limit)
 		if err != nil {
 			return "", err
 		}
@@ -200,7 +217,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 			Content:  content,
 			CommitID: commitID,
 		}
-		evID, err := grasp.SubmitPatch(ctx, pool, ks, relays, patch)
+		evID, err := grasp.SubmitPatch(ctx, getPool(), ks, relays, patch)
 		if err != nil {
 			return "", err
 		}
@@ -247,7 +264,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 			BranchName: branchName,
 			Labels:     labels,
 		}
-		evID, err := grasp.CreatePR(ctx, pool, ks, relays, pr)
+		evID, err := grasp.CreatePR(ctx, getPool(), ks, relays, pr)
 		if err != nil {
 			return "", err
 		}
