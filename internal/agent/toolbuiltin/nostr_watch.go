@@ -67,6 +67,20 @@ func (s *watchSeenSet) Add(id string) (duplicate bool) {
 // sessionID identifies the agent session that owns the subscription.
 type WatchDelivery func(sessionID, name string, event map[string]any)
 
+// WatchSpec is a JSON-serializable snapshot of a watch subscription.
+// It captures everything needed to restart the watch after a daemon restart.
+type WatchSpec struct {
+	Name      string         `json:"name"`
+	SessionID string         `json:"session_id"`
+	FilterRaw map[string]any `json:"filter"`      // original args for buildNostrFilter
+	Relays    []string       `json:"relays"`
+	TTLSec    int            `json:"ttl_seconds"`
+	MaxEvents int            `json:"max_events"`
+	Received  int            `json:"received"`
+	CreatedAt int64          `json:"created_at"` // unix seconds
+	Deadline  int64          `json:"deadline"`   // unix seconds, when TTL expires
+}
+
 // watchEntry is a single active subscription.
 type watchEntry struct {
 	name      string
@@ -75,6 +89,10 @@ type watchEntry struct {
 	createdAt time.Time
 	maxEvents int
 	received  int
+	filterRaw map[string]any // original filter args for persistence
+	relays    []string       // resolved relays for persistence
+	ttlSec    int            // original TTL for persistence
+	deadline  time.Time      // absolute expiry
 }
 
 // WatchRegistry manages active named subscriptions.
@@ -89,11 +107,13 @@ func NewWatchRegistry() *WatchRegistry {
 }
 
 // start creates and registers a new watch subscription.
+// filterRaw is the original filter args map for persistence/restore.
 func (r *WatchRegistry) start(
 	ctx context.Context,
 	opts NostrToolOpts,
 	name, sessionID string,
 	filter nostr.Filter,
+	filterRaw map[string]any,
 	relays []string,
 	ttl time.Duration,
 	maxEvents int,
@@ -109,13 +129,18 @@ func (r *WatchRegistry) start(
 		return fmt.Errorf("maximum of %d active watches reached", maxActiveWatches)
 	}
 
+	now := time.Now()
 	subCtx, cancel := context.WithTimeout(ctx, ttl)
 	entry := &watchEntry{
 		name:      name,
 		sessionID: sessionID,
 		cancel:    cancel,
-		createdAt: time.Now(),
+		createdAt: now,
 		maxEvents: maxEvents,
+		filterRaw: filterRaw,
+		relays:    relays,
+		ttlSec:    int(ttl.Seconds()),
+		deadline:  now.Add(ttl),
 	}
 	r.entries[name] = entry
 
@@ -198,6 +223,146 @@ func (r *WatchRegistry) list() []map[string]any {
 	return out
 }
 
+// Specs returns a serializable snapshot of all active watches for persistence.
+func (r *WatchRegistry) Specs() []WatchSpec {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]WatchSpec, 0, len(r.entries))
+	for _, e := range r.entries {
+		out = append(out, WatchSpec{
+			Name:      e.name,
+			SessionID: e.sessionID,
+			FilterRaw: e.filterRaw,
+			Relays:    e.relays,
+			TTLSec:    e.ttlSec,
+			MaxEvents: e.maxEvents,
+			Received:  e.received,
+			CreatedAt: e.createdAt.Unix(),
+			Deadline:  e.deadline.Unix(),
+		})
+	}
+	return out
+}
+
+// Restore re-creates watches from persisted specs.  Watches whose deadline has
+// already passed are silently skipped.  The Since timestamp in each filter is
+// set to "now − jitter" so that events arriving during the restart gap are
+// captured (duplicates are handled by the per-watch dedup set).
+func (r *WatchRegistry) Restore(
+	ctx context.Context,
+	opts NostrToolOpts,
+	specs []WatchSpec,
+	deliver WatchDelivery,
+) (restored int) {
+	now := time.Now()
+	for _, spec := range specs {
+		remaining := time.Until(time.Unix(spec.Deadline, 0))
+		if remaining <= 0 {
+			continue // expired while we were down
+		}
+		remainingMax := spec.MaxEvents - spec.Received
+		if spec.MaxEvents > 0 && remainingMax <= 0 {
+			continue // already hit event limit
+		}
+		// Rebuild the nostr.Filter from the original args.
+		f, err := buildNostrFilter(spec.FilterRaw, remainingMax)
+		if err != nil {
+			continue
+		}
+		// Override Since to now so we pick up from the restart point.
+		f.Since = nostr.Timestamp(now.Unix())
+
+		// Store persistence metadata so a subsequent Save captures this entry.
+		if err := r.startRestored(ctx, opts, spec, f, remaining, deliver); err != nil {
+			continue
+		}
+		restored++
+	}
+	return restored
+}
+
+// startRestored is like start but pre-populates persistence fields from a spec.
+func (r *WatchRegistry) startRestored(
+	ctx context.Context,
+	opts NostrToolOpts,
+	spec WatchSpec,
+	filter nostr.Filter,
+	ttl time.Duration,
+	deliver WatchDelivery,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.entries[spec.Name]; exists {
+		return fmt.Errorf("watch %q already exists", spec.Name)
+	}
+	if len(r.entries) >= maxActiveWatches {
+		return fmt.Errorf("max watches reached")
+	}
+
+	subCtx, cancel := context.WithTimeout(ctx, ttl)
+	entry := &watchEntry{
+		name:      spec.Name,
+		sessionID: spec.SessionID,
+		cancel:    cancel,
+		createdAt: time.Unix(spec.CreatedAt, 0),
+		maxEvents: spec.MaxEvents,
+		received:  spec.Received,
+		filterRaw: spec.FilterRaw,
+		relays:    spec.Relays,
+		ttlSec:    spec.TTLSec,
+		deadline:  time.Unix(spec.Deadline, 0),
+	}
+	r.entries[spec.Name] = entry
+
+	pool, releasePool := opts.AcquirePool("watch " + spec.Name + " done")
+
+	if filter.Since > 0 {
+		backdated := filter.Since - nostr.Timestamp(watchSinceJitter.Seconds())
+		if backdated < 0 {
+			backdated = 0
+		}
+		filter.Since = backdated
+	}
+
+	sub := pool.SubscribeMany(subCtx, spec.Relays, filter, nostr.SubscriptionOptions{})
+
+	go func() {
+		defer func() {
+			cancel()
+			releasePool()
+			r.mu.Lock()
+			delete(r.entries, spec.Name)
+			r.mu.Unlock()
+		}()
+		seen := newWatchSeenSet(watchSeenMaxSize)
+		for {
+			select {
+			case <-subCtx.Done():
+				return
+			case re, ok := <-sub:
+				if !ok {
+					return
+				}
+				evID := re.Event.ID.Hex()
+				if seen.Add(evID) {
+					continue
+				}
+				deliver(spec.SessionID, spec.Name, eventToMap(re.Event))
+				r.mu.Lock()
+				entry.received++
+				done := spec.MaxEvents > 0 && entry.received >= spec.MaxEvents
+				r.mu.Unlock()
+				if done {
+					return
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
 // ─── nostr_watch tool ─────────────────────────────────────────────────────────
 
 // NostrWatchTool returns an agent tool that creates a persistent named subscription.
@@ -246,7 +411,7 @@ func NostrWatchTool(opts NostrToolOpts, reg *WatchRegistry, deliver WatchDeliver
 			return "", fmt.Errorf("nostr_watch: no relays configured")
 		}
 
-		if err := reg.start(ctx, opts, name, sessionID, f, relays,
+		if err := reg.start(ctx, opts, name, sessionID, f, filterArg, relays,
 			time.Duration(ttlSec)*time.Second, maxEvents, deliver); err != nil {
 			return "", fmt.Errorf("nostr_watch: %w", err)
 		}

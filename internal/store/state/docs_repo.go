@@ -271,6 +271,31 @@ func (r *DocsRepository) GetCronJobs(ctx context.Context) (json.RawMessage, erro
 	return env.Jobs, nil
 }
 
+// PutWatches persists the active nostr watch subscriptions so they survive
+// daemon restarts.
+func (r *DocsRepository) PutWatches(ctx context.Context, raw json.RawMessage) (Event, error) {
+	type watchesEnvelope struct {
+		Watches json.RawMessage `json:"watches"`
+	}
+	return r.putStateDoc(ctx, "swarmstr:watches", "watches", watchesEnvelope{Watches: raw})
+}
+
+// GetWatches retrieves the persisted watch specs.  Returns nil and no error if
+// nothing was stored.
+func (r *DocsRepository) GetWatches(ctx context.Context) (json.RawMessage, error) {
+	type watchesEnvelope struct {
+		Watches json.RawMessage `json:"watches"`
+	}
+	var env watchesEnvelope
+	if err := r.getStateDoc(ctx, "swarmstr:watches", &env); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return env.Watches, nil
+}
+
 func (r *DocsRepository) putStateDoc(ctx context.Context, dTag string, typ string, value any) (Event, error) {
 	return r.putStateDocWithTags(ctx, dTag, typ, value, nil)
 }

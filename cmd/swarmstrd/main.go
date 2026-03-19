@@ -596,8 +596,37 @@ func main() {
 		text := fmt.Sprintf("[watch:%s] %s", name, string(b))
 		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, "", time.Now().Unix(), nil)
 	}
-	tools.RegisterWithDef("nostr_watch", toolbuiltin.NostrWatchTool(nostrToolOpts, watchRegistry, watchDeliver), toolbuiltin.NostrWatchDef)
-	tools.RegisterWithDef("nostr_unwatch", toolbuiltin.NostrUnwatchTool(watchRegistry), toolbuiltin.NostrUnwatchDef)
+	// saveWatches persists the active watch specs to the state store so they
+	// survive daemon restarts.
+	saveWatches := func() {
+		specs := watchRegistry.Specs()
+		raw, err := json.Marshal(specs)
+		if err != nil {
+			log.Printf("watches save: marshal: %v", err)
+			return
+		}
+		if _, err := docsRepo.PutWatches(ctx, raw); err != nil {
+			log.Printf("watches save: put: %v", err)
+		}
+	}
+	// Wrap nostr_watch to persist after creation.
+	rawWatchTool := toolbuiltin.NostrWatchTool(nostrToolOpts, watchRegistry, watchDeliver)
+	tools.RegisterWithDef("nostr_watch", func(toolCtx context.Context, args map[string]any) (string, error) {
+		result, err := rawWatchTool(toolCtx, args)
+		if err == nil {
+			saveWatches()
+		}
+		return result, err
+	}, toolbuiltin.NostrWatchDef)
+	// Wrap nostr_unwatch to persist after removal.
+	rawUnwatchTool := toolbuiltin.NostrUnwatchTool(watchRegistry)
+	tools.RegisterWithDef("nostr_unwatch", func(toolCtx context.Context, args map[string]any) (string, error) {
+		result, err := rawUnwatchTool(toolCtx, args)
+		if err == nil {
+			saveWatches()
+		}
+		return result, err
+	}, toolbuiltin.NostrUnwatchDef)
 	tools.RegisterWithDef("nostr_watch_list", toolbuiltin.NostrWatchListTool(watchRegistry), toolbuiltin.NostrWatchListDef)
 
 	// file_watch_add / file_watch_remove / file_watch_list — filesystem change subscriptions.
@@ -2998,6 +3027,18 @@ func main() {
 
 	// Wire dmRunAgentTurn into the watch delivery closure.
 	dmRunAgentTurnRef = dmRunAgentTurn
+
+	// Restore persisted watch subscriptions from the state store.
+	if raw, loadErr := docsRepo.GetWatches(ctx); loadErr != nil {
+		log.Printf("watches load warning: %v", loadErr)
+	} else if len(raw) > 0 {
+		var specs []toolbuiltin.WatchSpec
+		if unmErr := json.Unmarshal(raw, &specs); unmErr != nil {
+			log.Printf("watches load unmarshal warning: %v", unmErr)
+		} else if n := watchRegistry.Restore(watchDeliveryCtx, nostrToolOpts, specs, watchDeliver); n > 0 {
+			log.Printf("watches restored from state store: %d subscriptions", n)
+		}
+	}
 
 	// dmDebouncer coalesces rapid DM messages per sender.
 	// Only created when dmDebounceWindow > 0.
