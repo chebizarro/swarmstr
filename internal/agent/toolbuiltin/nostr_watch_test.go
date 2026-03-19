@@ -27,12 +27,38 @@ func TestNostrWatchTool_MissingSessionID(t *testing.T) {
 	}
 }
 
+func TestNostrWatchTool_MissingFilter(t *testing.T) {
+	reg := NewWatchRegistry()
+	tool := NostrWatchTool(NostrToolOpts{Relays: []string{"wss://example.com"}}, reg, nil)
+	_, err := tool(context.Background(), map[string]any{
+		"name":       "test",
+		"session_id": "s1",
+	})
+	if err == nil {
+		t.Fatal("expected error with missing filter")
+	}
+}
+
+func TestNostrWatchTool_InvalidSessionIDType(t *testing.T) {
+	reg := NewWatchRegistry()
+	tool := NostrWatchTool(NostrToolOpts{Relays: []string{"wss://example.com"}}, reg, nil)
+	_, err := tool(context.Background(), map[string]any{
+		"name":       "test",
+		"session_id": float64(123),
+		"filter":     map[string]any{"kinds": []any{float64(1)}},
+	})
+	if err == nil {
+		t.Fatal("expected error with non-string session_id")
+	}
+}
+
 func TestNostrWatchTool_NoRelays(t *testing.T) {
 	reg := NewWatchRegistry()
 	tool := NostrWatchTool(NostrToolOpts{}, reg, nil)
 	_, err := tool(context.Background(), map[string]any{
 		"name":       "test",
 		"session_id": "s1",
+		"filter":     map[string]any{"kinds": []any{float64(1)}},
 	})
 	if err == nil {
 		t.Fatal("expected error with no relays")

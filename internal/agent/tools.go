@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // ─── Tool definition types ────────────────────────────────────────────────────
@@ -56,6 +57,53 @@ type ToolExecutor interface {
 }
 
 type ToolFunc func(context.Context, map[string]any) (string, error)
+
+// sessionIDKey is the context key for the current session ID.
+type sessionIDKey struct{}
+
+// ContextWithSessionID returns a child context carrying the session ID.
+func ContextWithSessionID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, sessionIDKey{}, id)
+}
+
+// SessionIDFromContext extracts the session ID injected by the runtime.
+// Returns "" if no session ID is set.
+func SessionIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(sessionIDKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// ResolveSessionID returns the explicit arg value if non-empty, otherwise
+// falls back to the session ID from context.  Tools should prefer this over
+// reading args["session_id"] directly — it lets the runtime provide the
+// default while still allowing explicit cross-session overrides.
+func ResolveSessionID(ctx context.Context, args map[string]any) string {
+	if v := ArgString(args, "session_id"); v != "" {
+		return v
+	}
+	return SessionIDFromContext(ctx)
+}
+
+// ResolveSessionIDStrict resolves session_id with strict type validation.
+// If args includes session_id, it must be a string (empty string falls back
+// to context). If args omits session_id, context value is used.
+func ResolveSessionIDStrict(ctx context.Context, args map[string]any) (string, error) {
+	if args != nil {
+		if raw, exists := args["session_id"]; exists {
+			s, ok := raw.(string)
+			if !ok {
+				return "", fmt.Errorf("session_id must be a string")
+			}
+			s = strings.TrimSpace(s)
+			if s != "" {
+				return s, nil
+			}
+		}
+	}
+	return SessionIDFromContext(ctx), nil
+}
 
 // ToolMiddleware is a function that wraps a tool execution.  It receives the
 // tool call and a next function that performs the actual execution.  The

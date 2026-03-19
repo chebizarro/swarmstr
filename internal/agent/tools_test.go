@@ -128,3 +128,22 @@ func TestToolRegistry_RemoveMiddleware(t *testing.T) {
 		t.Fatalf("after removing middleware, expected 'raw', got %q", result)
 	}
 }
+
+func TestResolveSessionIDStrict_UsesContextFallback(t *testing.T) {
+	ctx := ContextWithSessionID(context.Background(), "sess-ctx")
+	got, err := ResolveSessionIDStrict(ctx, map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "sess-ctx" {
+		t.Fatalf("expected context session id, got %q", got)
+	}
+}
+
+func TestResolveSessionIDStrict_RejectsNonStringArg(t *testing.T) {
+	ctx := ContextWithSessionID(context.Background(), "sess-ctx")
+	_, err := ResolveSessionIDStrict(ctx, map[string]any{"session_id": float64(123)})
+	if err == nil {
+		t.Fatal("expected error for non-string session_id")
+	}
+}

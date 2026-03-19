@@ -52,12 +52,15 @@ var MemoryDeleteDef = agent.ToolDefinition{
 }
 
 func MemoryStoreTool(idx memory.Store) agent.ToolFunc {
-	return func(_ context.Context, args map[string]any) (string, error) {
+	return func(ctx context.Context, args map[string]any) (string, error) {
 		text := agent.ArgString(args, "text")
 		if text == "" {
 			return "", fmt.Errorf("memory_store: text is required")
 		}
-		sessionID := agent.ArgString(args, "session_id")
+		sessionID, err := agent.ResolveSessionIDStrict(ctx, args)
+		if err != nil {
+			return "", fmt.Errorf("memory_store: %w", err)
+		}
 
 		// Accept tags as []interface{}, []string, or a plain string.
 		var tags []string
