@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
 	"fmt"
 	"log"
 	"net/http"
@@ -22,6 +24,7 @@ import (
 // AnthropicChatProvider makes a single Anthropic Messages API call.
 type AnthropicChatProvider struct {
 	client      *anthropic.Client
+	model       string               // model name from config, e.g. "claude-haiku-4-5"
 	tokenSource func() (string, error) // for OAuth; nil for API key auth
 	httpClient  *http.Client           // optional custom HTTP client (for testing)
 	baseURL     string                 // optional custom base URL (for testing)
@@ -46,6 +49,14 @@ func NewAnthropicChatProvider(apiKey string, opts ...AnthropicChatOption) *Anthr
 	return p
 }
 
+// modelOrDefault returns the configured model, falling back to claude-haiku-4-5.
+func (p *AnthropicChatProvider) modelOrDefault() string {
+	if p.model != "" {
+		return p.model
+	}
+	return "claude-haiku-4-5"
+}
+
 // AnthropicChatOption configures an AnthropicChatProvider.
 type AnthropicChatOption func(*AnthropicChatProvider)
 
@@ -57,6 +68,11 @@ func WithHTTPClient(c *http.Client) AnthropicChatOption {
 // WithBaseURL sets a custom base URL (useful for testing).
 func WithBaseURL(url string) AnthropicChatOption {
 	return func(p *AnthropicChatProvider) { p.baseURL = url }
+}
+
+// WithModel sets the model for this provider.
+func WithModel(model string) AnthropicChatOption {
+	return func(p *AnthropicChatProvider) { p.model = model }
 }
 
 // NewAnthropicChatProviderOAuth creates a ChatProvider for Anthropic using OAuth.
@@ -128,7 +144,7 @@ func (p *AnthropicChatProvider) Chat(ctx context.Context, messages []LLMMessage,
 	}
 
 	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model("claude-sonnet-4-5"), // overridden below
+		Model:     anthropic.Model(p.modelOrDefault()),
 		Messages:  anthropicMessages,
 		MaxTokens: maxTokens,
 	}
@@ -180,6 +196,15 @@ func (p *AnthropicChatProvider) Chat(ctx context.Context, messages []LLMMessage,
 	// Make the API call.
 	resp, err := p.client.Messages.New(ctx, params, reqOpts...)
 	if err != nil {
+		// Dump the raw request/response for debugging invalid_request_error.
+		var apierr *anthropic.Error
+		if errors.As(err, &apierr) {
+			if f, ferr := os.OpenFile("/tmp/strand-api-debug.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600); ferr == nil {
+				fmt.Fprintf(f, "=== REQUEST ===\n%s\n\n=== RESPONSE ===\n%s\n", apierr.DumpRequest(true), apierr.DumpResponse(true))
+				f.Close()
+			}
+			log.Printf("anthropic DEBUG: request/response dumped to /tmp/strand-api-debug.txt")
+		}
 		return nil, fmt.Errorf("anthropic API: %w", err)
 	}
 
@@ -359,6 +384,10 @@ func (p *AnthropicProvider) chatProvider() ChatProvider {
 	var opts []AnthropicChatOption
 	if p.Client != nil {
 		opts = append(opts, WithHTTPClient(p.Client))
+	}
+	// Pass model from config; falls back to "claude-haiku-4-5" if empty.
+	if m := strings.TrimSpace(p.Model); m != "" {
+		opts = append(opts, WithModel(m))
 	}
 
 	// Check for OAuth credentials.
