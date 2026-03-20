@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -186,6 +186,11 @@ var (
 	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
 	controlCronExecutorMu sync.RWMutex
 	controlCronExecutor   func(ctx context.Context, method string, params json.RawMessage) (any, error)
+
+	relayPolicyPublishMu    sync.Mutex
+	relayPolicyPublishTimer *time.Timer
+	relayPolicyPublishRead  []string
+	relayPolicyPublishWrite []string
 )
 
 func main() {
@@ -442,8 +447,8 @@ func main() {
 	// ── Nostr network tools ─────────────────────────────────────────────────
 	// These give the agent first-class read/write/DM access to the Nostr network.
 	nostrToolOpts := toolbuiltin.NostrToolOpts{
-		Keyer:  controlKeyer,
-		Relays: cfg.Relays,
+		Keyer:   controlKeyer,
+		Relays:  cfg.Relays,
 		HubFunc: func() *nostruntime.NostrHub { return controlHub },
 	}
 	tools.RegisterWithDef("nostr_fetch", toolbuiltin.NostrFetchTool(nostrToolOpts), toolbuiltin.NostrFetchDef)
@@ -9252,23 +9257,54 @@ func applyRuntimeRelayPolicy(dmBus nostruntime.DMTransport, controlBus *nostrunt
 		controlRelaySelector.SetFallbacks(cfg.Relays.Read, cfg.Relays.Write)
 	}
 
-	// Publish updated NIP-65 relay list to reflect local config changes.
-	// This ensures the agent's relay metadata on relays stays in sync with
-	// local configuration, making it the external source of truth.
+	// Publish updated NIP-65 relay list and kind:10050 DM relay list to
+	// reflect local config changes.  Uses categoriseRelays to ensure proper
+	// read/write/both tagging per NIP-65.
 	if controlKeyer != nil && (len(cfg.Relays.Read) > 0 || len(cfg.Relays.Write) > 0) {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			pool := nostr.NewPool(nostruntime.PoolOptsNIP42(controlKeyer))
-			defer pool.Close("relay policy nip65 publish")
-			publishRelays := nostruntime.MergeRelayLists(cfg.Relays.Read, cfg.Relays.Write)
-			eventID, err := nostruntime.PublishNIP65(ctx, pool, controlKeyer, publishRelays, cfg.Relays.Read, cfg.Relays.Write, nil)
-			if err != nil {
-				log.Printf("nip65: relay policy publish failed: %v", err)
-			} else {
-				log.Printf("nip65: published relay policy update (event=%s)", eventID[:nostruntime.MinInt(12, len(eventID))])
-			}
-		}()
+		scheduleRelayPolicyPublish(cfg.Relays.Read, cfg.Relays.Write)
+	}
+}
+
+func scheduleRelayPolicyPublish(readRelays, writeRelays []string) {
+	relayPolicyPublishMu.Lock()
+	defer relayPolicyPublishMu.Unlock()
+
+	relayPolicyPublishRead = append([]string{}, readRelays...)
+	relayPolicyPublishWrite = append([]string{}, writeRelays...)
+
+	if relayPolicyPublishTimer != nil {
+		relayPolicyPublishTimer.Stop()
+	}
+	relayPolicyPublishTimer = time.AfterFunc(750*time.Millisecond, func() {
+		relayPolicyPublishMu.Lock()
+		read := append([]string{}, relayPolicyPublishRead...)
+		write := append([]string{}, relayPolicyPublishWrite...)
+		relayPolicyPublishMu.Unlock()
+
+		publishRelayPolicyLists(read, write)
+	})
+}
+
+func publishRelayPolicyLists(readRelays, writeRelays []string) {
+	if controlKeyer == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := nostr.NewPool(nostruntime.PoolOptsNIP42(controlKeyer))
+	defer pool.Close("relay policy publish")
+	publishRelays := nostruntime.MergeRelayLists(readRelays, writeRelays)
+	if err := nostruntime.PublishStartupLists(ctx, nostruntime.StartupListPublishOptions{
+		Keyer:         controlKeyer,
+		Pool:          pool,
+		PublishRelays: publishRelays,
+		ReadRelays:    readRelays,
+		WriteRelays:   writeRelays,
+		ForcePublish:  true,
+	}); err != nil {
+		log.Printf("relay policy lists publish failed: %v", err)
+	} else {
+		log.Printf("published relay policy lists update")
 	}
 }
 

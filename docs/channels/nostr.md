@@ -142,7 +142,7 @@ Recommended configuration for reliability (in `bootstrap.json`):
 
 **Tips:**
 - Use 2–4 relays for redundancy without excessive duplication.
-- Paid relays (nostr.wine, relay.nostr.band) provide better delivery guarantees.
+- Paid relays (nostr.wine) and well-connected relays (relay.primal.net, relay.sharegap.net) provide better delivery guarantees.
 - Local relays (`ws://localhost:7777`) work for testing.
 - swarmstr deduplicates by Nostr event ID — receiving the same DM from multiple relays
   triggers only one agent turn.

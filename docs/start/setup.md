@@ -53,7 +53,7 @@ mkdir -p ~/.swarmstr
   "private_key": "nsec1...",
   "relays": [
     "wss://relay.damus.io",
-    "wss://relay.nostr.band",
+    "wss://relay.primal.net",
     "wss://nos.lol"
   ],
   "admin_listen_addr": "127.0.0.1:18080",

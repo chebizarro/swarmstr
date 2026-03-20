@@ -116,7 +116,7 @@ if (!$DryRun) {
 #SWARMSTR_NOSTR_KEY=
 
 # Optional: comma-separated relay URLs
-#SWARMSTR_NOSTR_RELAYS=wss://relay.damus.io,wss://relay.nostr.band
+#SWARMSTR_NOSTR_RELAYS=wss://nos.lol,wss://relay.primal.net,wss://relay.sharegap.net
 
 # ── LLM providers ─────────────────────────────────────────────────────────────
 #ANTHROPIC_API_KEY=

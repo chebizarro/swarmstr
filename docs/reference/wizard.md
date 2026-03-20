@@ -26,7 +26,7 @@ Process-level config — key material, network addresses, admin token:
   "private_key": "nsec1...",
   "relays": [
     "wss://relay.damus.io",
-    "wss://relay.nostr.band",
+    "wss://relay.primal.net",
     "wss://nos.lol"
   ],
   "admin_listen_addr": "127.0.0.1:18788",
@@ -102,7 +102,7 @@ mkdir -p ~/.swarmstr
 cat > ~/.swarmstr/bootstrap.json <<EOF
 {
   "private_key": "${SWARMSTR_PRIVATE_KEY}",
-  "relays": ["wss://relay.damus.io", "wss://relay.nostr.band"],
+  "relays": ["wss://nos.lol", "wss://relay.primal.net", "wss://relay.sharegap.net"],
   "admin_listen_addr": "127.0.0.1:18788",
   "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
 }
