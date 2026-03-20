@@ -153,18 +153,27 @@ func (p *AnthropicChatProvider) Chat(ctx context.Context, messages []LLMMessage,
 
 	// Build request options.
 	var reqOpts []option.RequestOption
-	reqOpts = append(reqOpts,
-		option.WithHeader("anthropic-beta", buildAnthropicBetaHeader(opts)),
-	)
 
 	if p.tokenSource != nil {
+		// OAuth path: use Bearer token auth and include the full set of beta
+		// flags required for Claude Code OAuth sessions.  The old HTTP-based
+		// implementation set "claude-code-20250219,oauth-2025-04-20" plus the
+		// x-app and user-agent headers — replicate that here so the API
+		// doesn't reject the request with a generic 400 "Error".
 		tok, err := p.tokenSource()
 		if err != nil {
 			return nil, fmt.Errorf("anthropic oauth: refreshing token: %w", err)
 		}
 		reqOpts = append(reqOpts,
 			option.WithAuthToken(tok),
-			option.WithHeader("anthropic-beta", "oauth-2025-04-20,"+buildAnthropicBetaHeader(opts)),
+			option.WithHeader("anthropic-beta", anthropicOAuthBeta+","+buildAnthropicBetaHeader(opts)),
+			option.WithHeader("x-app", "cli"),
+			option.WithHeader("user-agent", anthropicOAuthUserAgent),
+		)
+	} else {
+		// API-key path: standard beta header only.
+		reqOpts = append(reqOpts,
+			option.WithHeader("anthropic-beta", buildAnthropicBetaHeader(opts)),
 		)
 	}
 
