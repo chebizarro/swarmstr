@@ -517,7 +517,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		// should be surfaced to the user.
 		text = ""
 
-		const maxIter = 10
+		const maxIter = 30
 		for iter := 0; iter < maxIter && out.StopReason == "tool_use"; iter++ {
 			// Log which tools the model is calling on each iteration.
 			toolNames := make([]string, len(calls))
@@ -781,7 +781,7 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 			}
 		}
 
-		const maxIter = 10
+		const maxIter = 30
 		for iter := 0; iter < maxIter && out.StopReason == "tool_use"; iter++ {
 			toolNames := make([]string, len(calls))
 			for i, c := range calls {
@@ -1105,7 +1105,7 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 		text = ""
 		var loopErr error
 
-		const maxIter = 10
+		const maxIter = 30
 		for iter := 0; iter < maxIter && choice.FinishReason == "tool_calls"; iter++ {
 			// Append the assistant's tool_call message.
 			rawTCs := make([]map[string]any, 0, len(choice.Message.ToolCalls))
