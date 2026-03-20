@@ -570,16 +570,16 @@ var NostrWatchDef = agent.ToolDefinition{
 // NostrUnwatchDef is the ToolDefinition for nostr_unwatch.
 var NostrUnwatchDef = agent.ToolDefinition{
 	Name:        "nostr_unwatch",
-	Description: "Cancel an active Nostr watch subscription by its ID.",
+	Description: "Cancel an active Nostr watch subscription by its name.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
-			"id": {
+			"name": {
 				Type:        "string",
-				Description: "Watch ID returned by nostr_watch.",
+				Description: "Name of the watch to cancel (the label given when creating it with nostr_watch).",
 			},
 		},
-		Required: []string{"id"},
+		Required: []string{"name"},
 	},
 }
 

@@ -597,7 +597,8 @@ func main() {
 		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, "", time.Now().Unix(), nil)
 	}
 	// saveWatches persists the active watch specs to the state store so they
-	// survive daemon restarts.
+	// survive daemon restarts.  Runs asynchronously to avoid blocking tool
+	// calls on relay publish latency.
 	saveWatches := func() {
 		specs := watchRegistry.Specs()
 		raw, err := json.Marshal(specs)
@@ -605,9 +606,11 @@ func main() {
 			log.Printf("watches save: marshal: %v", err)
 			return
 		}
-		if _, err := docsRepo.PutWatches(ctx, raw); err != nil {
-			log.Printf("watches save: put: %v", err)
-		}
+		go func() {
+			if _, err := docsRepo.PutWatches(ctx, raw); err != nil {
+				log.Printf("watches save: put: %v", err)
+			}
+		}()
 	}
 	// Wrap nostr_watch to persist after creation.
 	rawWatchTool := toolbuiltin.NostrWatchTool(nostrToolOpts, watchRegistry, watchDeliver)
