@@ -56,7 +56,7 @@ Check connectivity to configured relays:
 ./scripts/relay-check.sh
 # Output:
 # ✓ wss://relay.damus.io (42ms)
-# ✓ wss://relay.nostr.band (95ms)
+# ✓ wss://relay.primal.net (95ms)
 # ✗ wss://nostr.example.com (timeout)
 ```
 

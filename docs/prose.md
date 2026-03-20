@@ -68,7 +68,7 @@ When providing status:
 ```
 Relay status:
 - relay.damus.io: ✅ 42ms
-- relay.nostr.band: ✅ 95ms  
+- relay.primal.net: ✅ 95ms
 - nos.lol: ❌ timeout
 
 All sessions healthy. 3 cron jobs scheduled.

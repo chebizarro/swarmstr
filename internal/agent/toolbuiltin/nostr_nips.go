@@ -359,7 +359,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		relays := toStringSlice(args["relays"])
 		if len(relays) == 0 {
 			// Default to known search-capable relays.
-			relays = []string{"wss://relay.nostr.band", "wss://nostr.wine"}
+			relays = []string{"wss://relay.primal.net", "wss://nostr.wine"}
 		}
 
 		filter := nostr.Filter{

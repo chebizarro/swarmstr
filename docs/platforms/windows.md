@@ -79,7 +79,7 @@ Create `%USERPROFILE%\.swarmstr\bootstrap.json` (process-level config):
 ```json
 {
   "private_key": "${NOSTR_PRIVATE_KEY}",
-  "relays": ["wss://relay.damus.io", "wss://relay.nostr.band"],
+  "relays": ["wss://nos.lol", "wss://relay.primal.net", "wss://relay.sharegap.net"],
   "admin_listen_addr": "127.0.0.1:7423",
   "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
 }

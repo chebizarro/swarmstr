@@ -448,9 +448,9 @@ func FetchNIP02Contacts(ctx context.Context, pool *nostr.Pool, relays []string, 
 
 // NIP65SyncOptions configures the bidirectional NIP-65 relay list sync.
 type NIP65SyncOptions struct {
-	Keyer        nostr.Keyer
-	Pool         *nostr.Pool
-	Relays       []string // bootstrap relays for initial fetch + subscription
+	Keyer         nostr.Keyer
+	Pool          *nostr.Pool
+	Relays        []string                   // bootstrap relays for initial fetch + subscription
 	OnRelayUpdate func(read, write []string) // called when remote NIP-65 changes are detected
 }
 
@@ -521,15 +521,16 @@ func NIP65SelfSync(ctx context.Context, opts NIP65SyncOptions) error {
 
 // StartupListPublishOptions controls what lists are published at startup.
 type StartupListPublishOptions struct {
-	Keyer        nostr.Keyer
-	Pool         *nostr.Pool
+	Keyer         nostr.Keyer
+	Pool          *nostr.Pool
 	PublishRelays []string
 	ReadRelays    []string
 	WriteRelays   []string
 	BothRelays    []string
+	DMRelays      []string       // NIP-17 DM inbox relays (kind:10050); defaults to read+both relays if empty
 	Contacts      []NIP02Contact // NIP-02 contact list (kind:3)
 	// ForcePublish forces republishing even if a list already exists.
-	ForcePublish  bool
+	ForcePublish bool
 }
 
 // PublishStartupLists publishes the agent's NIP-65 relay list (kind:10002)
@@ -550,7 +551,17 @@ func PublishStartupLists(ctx context.Context, opts StartupListPublishOptions) er
 	}
 	pubkey := pk.Hex()
 
-	// ── NIP-65 relay list ──────────────────────────────────────────────────
+	// ── NIP-65 relay list (kind:10002) ─────────────────────────────────────
+	// Categorise relays: URLs appearing in both read and write lists become
+	// "both" (unmarked tag per NIP-65), the rest keep their explicit marker.
+	// This guarantees at least 1 of each type when the user configures both
+	// read and write lists with overlapping entries.
+	both, readOnly, writeOnly := categoriseRelays(opts.ReadRelays, opts.WriteRelays, opts.BothRelays)
+	// If no explicit read/write/both are specified, treat all publish relays as both.
+	if len(both) == 0 && len(readOnly) == 0 && len(writeOnly) == 0 {
+		both = dedupeRelays(opts.PublishRelays)
+	}
+
 	publishNIP65 := opts.ForcePublish
 	if !publishNIP65 {
 		fetchCtx, fetchCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -561,26 +572,50 @@ func PublishStartupLists(ctx context.Context, opts StartupListPublishOptions) er
 		}
 	}
 	if publishNIP65 {
-		// Deduplicate relay lists
-		both := dedupeRelays(opts.BothRelays)
-		read := dedupeRelays(opts.ReadRelays)
-		write := dedupeRelays(opts.WriteRelays)
-		// If no explicit read/write/both are specified, treat all publish relays as both
-		if len(both) == 0 && len(read) == 0 && len(write) == 0 {
-			both = dedupeRelays(opts.PublishRelays)
-		}
-
 		pubCtx, pubCancel := context.WithTimeout(ctx, 15*time.Second)
-		eventID, pubErr := PublishNIP65(pubCtx, opts.Pool, opts.Keyer, opts.PublishRelays, read, write, both)
+		eventID, pubErr := PublishNIP65(pubCtx, opts.Pool, opts.Keyer, opts.PublishRelays, readOnly, writeOnly, both)
 		pubCancel()
 		if pubErr != nil {
 			log.Printf("nip65: startup publish relay list failed: %v", pubErr)
 		} else {
 			log.Printf("nip65: published relay list (event=%s, read=%d, write=%d, both=%d)",
-				eventID[:MinInt(12, len(eventID))], len(read), len(write), len(both))
+				eventID[:MinInt(12, len(eventID))], len(readOnly), len(writeOnly), len(both))
 		}
 	} else {
 		log.Printf("nip65: relay list already exists for %s, skipping publish", pubkey[:MinInt(12, len(pubkey))])
+	}
+
+	// ── NIP-17 DM relay list (kind:10050) ──────────────────────────────────
+	// Publishes the agent's preferred DM inbox relays so other clients know
+	// where to send gift-wrapped messages.  Falls back to read relays.
+	dmRelays := dedupeRelays(opts.DMRelays)
+	if len(dmRelays) == 0 {
+		// Default: use relays where we receive events (read + both).
+		dmRelays = dedupeRelays(append(append([]string{}, opts.ReadRelays...), both...))
+	}
+	if len(dmRelays) > 0 {
+		publishDM := opts.ForcePublish
+		if !publishDM {
+			fetchCtx, fetchCancel := context.WithTimeout(ctx, 10*time.Second)
+			_, fetchErr := fetchKind10050(fetchCtx, opts.Pool, opts.PublishRelays, pk)
+			fetchCancel()
+			if fetchErr != nil {
+				publishDM = true
+			}
+		}
+		if publishDM {
+			pubCtx, pubCancel := context.WithTimeout(ctx, 15*time.Second)
+			eventID, pubErr := publishKind10050(pubCtx, opts.Pool, opts.Keyer, opts.PublishRelays, dmRelays)
+			pubCancel()
+			if pubErr != nil {
+				log.Printf("nip17: startup publish DM relay list (kind:10050) failed: %v", pubErr)
+			} else {
+				log.Printf("nip17: published DM relay list (event=%s, relays=%d)",
+					eventID[:MinInt(12, len(eventID))], len(dmRelays))
+			}
+		} else {
+			log.Printf("nip17: DM relay list already exists for %s, skipping publish", pubkey[:MinInt(12, len(pubkey))])
+		}
 	}
 
 	// ── NIP-02 contact list ────────────────────────────────────────────────
@@ -656,6 +691,122 @@ func MergeRelayLists(read, write []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// categoriseRelays splits read and write relay lists into three categories:
+// relays in both lists → "both" (no NIP-65 marker), read-only, write-only.
+// Explicit bothRelays are always included in the "both" category.
+func categoriseRelays(readRelays, writeRelays, bothRelays []string) (both, readOnly, writeOnly []string) {
+	readSet := make(map[string]string) // lower → original
+	for _, r := range readRelays {
+		r = strings.TrimSpace(r)
+		if r != "" {
+			readSet[strings.ToLower(r)] = r
+		}
+	}
+	writeSet := make(map[string]string)
+	for _, r := range writeRelays {
+		r = strings.TrimSpace(r)
+		if r != "" {
+			writeSet[strings.ToLower(r)] = r
+		}
+	}
+	// Relays in both read and write → "both".
+	bothSet := make(map[string]struct{})
+	for lower, orig := range readSet {
+		if _, inWrite := writeSet[lower]; inWrite {
+			both = append(both, orig)
+			bothSet[lower] = struct{}{}
+		}
+	}
+	// Explicit both relays.
+	for _, r := range bothRelays {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		lower := strings.ToLower(r)
+		if _, ok := bothSet[lower]; !ok {
+			both = append(both, r)
+			bothSet[lower] = struct{}{}
+		}
+	}
+	// Read-only: in read but not in both.
+	for lower, orig := range readSet {
+		if _, ok := bothSet[lower]; !ok {
+			readOnly = append(readOnly, orig)
+		}
+	}
+	// Write-only: in write but not in both.
+	for lower, orig := range writeSet {
+		if _, ok := bothSet[lower]; !ok {
+			writeOnly = append(writeOnly, orig)
+		}
+	}
+	both = dedupeRelays(both)
+	readOnly = dedupeRelays(readOnly)
+	writeOnly = dedupeRelays(writeOnly)
+	return
+}
+
+// fetchKind10050 checks if a kind:10050 DM relay list exists for a pubkey.
+func fetchKind10050(ctx context.Context, pool *nostr.Pool, relays []string, pk nostr.PubKey) ([]string, error) {
+	f := nostr.Filter{
+		Kinds:   []nostr.Kind{10050},
+		Authors: []nostr.PubKey{pk},
+		Limit:   1,
+	}
+	var best *nostr.Event
+	for re := range pool.FetchMany(ctx, relays, f, nostr.SubscriptionOptions{}) {
+		ev := re.Event
+		if best == nil || ev.CreatedAt > best.CreatedAt {
+			best = &ev
+		}
+	}
+	if best == nil {
+		return nil, fmt.Errorf("no kind:10050 event found")
+	}
+	var out []string
+	for _, tag := range best.Tags {
+		if len(tag) >= 2 && tag[0] == "relay" {
+			out = append(out, tag[1])
+		}
+	}
+	return out, nil
+}
+
+// publishKind10050 publishes a NIP-17 DM relay list (kind:10050).
+// Each relay is tagged as ["relay", url].
+func publishKind10050(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, publishRelays, dmRelays []string) (string, error) {
+	tags := nostr.Tags{}
+	for _, r := range dmRelays {
+		tags = append(tags, nostr.Tag{"relay", r})
+	}
+	evt := nostr.Event{
+		Kind:      10050,
+		CreatedAt: nostr.Now(),
+		Tags:      tags,
+		Content:   "",
+	}
+	if err := keyer.SignEvent(ctx, &evt); err != nil {
+		return "", fmt.Errorf("nip17: sign kind:10050: %w", err)
+	}
+	published := 0
+	var lastErr error
+	for result := range pool.PublishMany(ctx, publishRelays, evt) {
+		if result.Error == nil {
+			published++
+		} else {
+			lastErr = fmt.Errorf("relay %s: %w", result.RelayURL, result.Error)
+		}
+	}
+	if published == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no relay accepted publish")
+		}
+		return "", lastErr
+	}
+	return evt.ID.Hex(), nil
 }
 
 // MinInt returns the smaller of a and b.

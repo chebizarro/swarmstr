@@ -48,7 +48,7 @@ Relays are configured in `bootstrap.json` (used for both read and write):
   "private_key": "${NOSTR_NSEC}",
   "relays": [
     "wss://relay.damus.io",
-    "wss://relay.nostr.band",
+    "wss://relay.primal.net",
     "wss://nos.lol",
     "wss://relay.snort.social"
   ]
@@ -61,7 +61,7 @@ For separate read/write relay sets, use `relays` in the runtime config (`config.
 {
   "relays": {
     "read": ["wss://relay.damus.io", "wss://nos.lol"],
-    "write": ["wss://relay.damus.io", "wss://relay.nostr.band"]
+    "write": ["wss://nos.lol", "wss://relay.primal.net"]
   }
 }
 ```
@@ -75,7 +75,8 @@ Good relay choices for reliability:
 | Relay | URL | Notes |
 |-------|-----|-------|
 | Damus | `wss://relay.damus.io` | Reliable, good uptime |
-| nostr.band | `wss://relay.nostr.band` | Good coverage |
+| primal | `wss://relay.primal.net` | Good coverage |
+| sharegap | `wss://relay.sharegap.net` | Good coverage |
 | nos.lol | `wss://nos.lol` | Popular |
 | primal.net | `wss://relay.primal.net` | Primal-operated |
 
