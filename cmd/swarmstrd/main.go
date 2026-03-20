@@ -57,6 +57,7 @@ import (
 
 	acppkg "swarmstr/internal/acp"
 	"swarmstr/internal/agent/toolbuiltin"
+	"swarmstr/internal/agent/toolloop"
 	ctxengine "swarmstr/internal/context"
 	exportpkg "swarmstr/internal/export"
 	metricspkg "swarmstr/internal/metrics"
@@ -1002,7 +1003,45 @@ func main() {
 			}
 		}
 
+		// Tool loop detection: per-session sliding-window history with three
+		// detectors (generic repeat, no-progress polling, ping-pong) plus a
+		// global circuit breaker.  Ported from OpenClaw's tool-loop-detection.ts.
+		loopRegistry := toolloop.NewRegistry()
+		loopConfig := toolloop.DefaultConfig()
+
 		tools.SetMiddleware(func(ctx context.Context, call agent.ToolCall, next func(context.Context, agent.ToolCall) (string, error)) (string, error) {
+			// ── Loop detection (runs before approval gate) ──────────────
+			sessionID := agent.SessionIDFromContext(ctx)
+			if sessionID != "" {
+				loopState := loopRegistry.Get(sessionID)
+				result := toolloop.Detect(loopState, call.Name, call.Args, &loopConfig)
+				if result.Stuck {
+					if result.Level == toolloop.Critical {
+						log.Printf("toolloop: BLOCKED tool=%s session=%s detector=%s count=%d",
+							call.Name, sessionID, result.Detector, result.Count)
+						return "", fmt.Errorf("%s", result.Message)
+					}
+					// Warning: log but allow execution; inject the warning as
+					// part of the result so the model sees it.
+					log.Printf("toolloop: WARNING tool=%s session=%s detector=%s count=%d",
+						call.Name, sessionID, result.Detector, result.Count)
+				}
+				toolloop.RecordCall(loopState, call.Name, call.Args, call.ID, &loopConfig)
+
+				// Wrap next to record outcome after execution.
+				origNext := next
+				next = func(ctx2 context.Context, c2 agent.ToolCall) (string, error) {
+					res, err := origNext(ctx2, c2)
+					errStr := ""
+					if err != nil {
+						errStr = err.Error()
+					}
+					toolloop.RecordOutcome(loopState, c2.Name, c2.Args, c2.ID, res, errStr, &loopConfig)
+					return res, err
+				}
+			}
+
+			// ── Approval gate ───────────────────────────────────────────
 			// Re-read approval tool list from live config on every call so that
 			// config hot-reload (SIGHUP or file change) takes effect immediately.
 			// If Extra["approvals"]["tools"] is present it REPLACES the startup defaults.

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -518,6 +519,13 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 
 		const maxIter = 10
 		for iter := 0; iter < maxIter && out.StopReason == "tool_use"; iter++ {
+			// Log which tools the model is calling on each iteration.
+			toolNames := make([]string, len(calls))
+			for i, c := range calls {
+				toolNames[i] = c.Name
+			}
+			log.Printf("anthropic: agentic loop iter=%d/%d tools=%v", iter+1, maxIter, toolNames)
+
 			// Append the assistant's tool_use turn (preserve raw content blocks).
 			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
 
@@ -527,6 +535,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 				result, execErr := turn.Executor.Execute(ctx, call)
 				if execErr != nil {
 					result = "error: " + execErr.Error()
+					log.Printf("anthropic: tool %s error: %v", call.Name, execErr)
 				}
 				toolResults = append(toolResults, map[string]any{
 					"type":        "tool_result",
@@ -541,6 +550,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 			reqBody.Messages = msgs
 			body2, err2 := json.Marshal(reqBody)
 			if err2 != nil {
+				log.Printf("anthropic: agentic loop marshal error iter=%d: %v", iter+1, err2)
 				break
 			}
 			req2, err2 := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
@@ -550,15 +560,18 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 			setReqHeaders(req2)
 			resp2, err2 := client.Do(req2)
 			if err2 != nil {
+				log.Printf("anthropic: agentic loop HTTP error iter=%d: %v", iter+1, err2)
 				break
 			}
 			var out2 anthropicResponse
 			if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 != nil {
 				resp2.Body.Close()
+				log.Printf("anthropic: agentic loop decode error iter=%d: %v", iter+1, err2)
 				break
 			}
 			resp2.Body.Close()
 			if out2.Error != nil {
+				log.Printf("anthropic: agentic loop API error iter=%d: %s: %s", iter+1, out2.Error.Type, out2.Error.Message)
 				break
 			}
 			if out2.Usage != nil {
@@ -576,7 +589,10 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 		// IMPORTANT: tool_result blocks and the summary prompt must be combined into a
 		// single user message — Anthropic requires strict user/assistant alternation
 		// and rejects consecutive same-role messages.
+		// CRITICAL: Strip tool definitions from the request so the model CANNOT call
+		// more tools and MUST produce a text response.
 		if text == "" {
+			log.Printf("anthropic: agentic loop exhausted %d iterations without text, forcing summary", maxIter)
 			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
 			// Build a single user message containing both tool results and the
 			// summary prompt to maintain strict user/assistant alternation.
@@ -596,10 +612,13 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 			}
 			userContent = append(userContent, map[string]any{
 				"type": "text",
-				"text": "Please summarise your findings and give a final response.",
+				"text": "You have used all available tool calls. Please summarise your findings and give a final answer to the user now. Do not attempt any more tool calls.",
 			})
 			msgs = append(msgs, anthropicMessage{Role: "user", Content: userContent})
 			reqBody.Messages = msgs
+			// Remove tool definitions so the model cannot call tools in this
+			// final turn — it must produce a text response.
+			reqBody.Tools = nil
 			body2, _ := json.Marshal(reqBody)
 			req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
 			setReqHeaders(req2)
@@ -611,8 +630,14 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 						totalInput += int64(out2.Usage.InputTokens)
 						totalOutput += int64(out2.Usage.OutputTokens)
 					}
+				} else if err2 != nil {
+					log.Printf("anthropic: force-summary decode error: %v", err2)
+				} else if out2.Error != nil {
+					log.Printf("anthropic: force-summary API error: %s: %s", out2.Error.Type, out2.Error.Message)
 				}
 				resp2.Body.Close()
+			} else if err2 != nil {
+				log.Printf("anthropic: force-summary HTTP error: %v", err2)
 			}
 			// If still no text, be honest about the failure.
 			if text == "" {
@@ -758,12 +783,19 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 
 		const maxIter = 10
 		for iter := 0; iter < maxIter && out.StopReason == "tool_use"; iter++ {
+			toolNames := make([]string, len(calls))
+			for i, c := range calls {
+				toolNames[i] = c.Name
+			}
+			log.Printf("anthropic oauth: agentic loop iter=%d/%d tools=%v", iter+1, maxIter, toolNames)
+
 			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
 			toolResults := make([]map[string]any, 0, len(calls))
 			for _, call := range calls {
 				result, execErr := turn.Executor.Execute(ctx, call)
 				if execErr != nil {
 					result = "error: " + execErr.Error()
+					log.Printf("anthropic oauth: tool %s error: %v", call.Name, execErr)
 				}
 				toolResults = append(toolResults, map[string]any{
 					"type":        "tool_result",
@@ -775,6 +807,7 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 			reqBody.Messages = msgs
 			body2, err2 := json.Marshal(reqBody)
 			if err2 != nil {
+				log.Printf("anthropic oauth: agentic loop marshal error iter=%d: %v", iter+1, err2)
 				break
 			}
 			req2, err2 := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
@@ -784,15 +817,18 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 			setOAuthHeaders(req2)
 			resp2, err2 := client.Do(req2)
 			if err2 != nil {
+				log.Printf("anthropic oauth: agentic loop HTTP error iter=%d: %v", iter+1, err2)
 				break
 			}
 			var out2 anthropicResponse
 			if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 != nil {
 				resp2.Body.Close()
+				log.Printf("anthropic oauth: agentic loop decode error iter=%d: %v", iter+1, err2)
 				break
 			}
 			resp2.Body.Close()
 			if out2.Error != nil {
+				log.Printf("anthropic oauth: agentic loop API error iter=%d: %s: %s", iter+1, out2.Error.Type, out2.Error.Message)
 				break
 			}
 			if out2.Usage != nil {
@@ -808,7 +844,9 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 		// sending a new user message, otherwise Anthropic rejects the request.
 		// IMPORTANT: tool_result blocks and the summary prompt must be combined
 		// into a single user message — Anthropic requires strict alternation.
+		// CRITICAL: Strip tool definitions so the model MUST produce text.
 		if text == "" {
+			log.Printf("anthropic oauth: agentic loop exhausted %d iterations without text, forcing summary", maxIter)
 			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
 			var userContent []map[string]any
 			if len(calls) > 0 {
@@ -826,10 +864,13 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 			}
 			userContent = append(userContent, map[string]any{
 				"type": "text",
-				"text": "Please summarise your findings and give a final response.",
+				"text": "You have used all available tool calls. Please summarise your findings and give a final answer to the user now. Do not attempt any more tool calls.",
 			})
 			msgs = append(msgs, anthropicMessage{Role: "user", Content: userContent})
 			reqBody.Messages = msgs
+			// Remove tool definitions so the model cannot call tools in this
+			// final turn — it must produce a text response.
+			reqBody.Tools = nil
 			body2, _ := json.Marshal(reqBody)
 			req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
 			setOAuthHeaders(req2)
@@ -841,8 +882,14 @@ func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Tu
 						totalInput += int64(out2.Usage.InputTokens)
 						totalOutput += int64(out2.Usage.OutputTokens)
 					}
+				} else if err2 != nil {
+					log.Printf("anthropic oauth: force-summary decode error: %v", err2)
+				} else if out2.Error != nil {
+					log.Printf("anthropic oauth: force-summary API error: %s: %s", out2.Error.Type, out2.Error.Message)
 				}
 				resp2.Body.Close()
+			} else if err2 != nil {
+				log.Printf("anthropic oauth: force-summary HTTP error: %v", err2)
 			}
 			// If still no text after force-summary, be honest about the failure.
 			if text == "" {
