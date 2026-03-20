@@ -257,6 +257,13 @@ type AgentConfig struct {
 	// primary Model request fails (e.g. 429 rate limit or context-too-long).
 	// Each entry can be a plain model name or "provider/model" to also switch provider.
 	FallbackModels []string `json:"fallback_models,omitempty"`
+	// LightModel is a cheaper/faster model used for simple messages (greetings,
+	// short questions). When set, a ModelRouter scores each inbound message and
+	// routes low-complexity ones to this model instead of the primary Model.
+	LightModel string `json:"light_model,omitempty"`
+	// LightModelThreshold is the complexity score (0.0–1.0) below which messages
+	// are routed to LightModel. Default: 0.3.
+	LightModelThreshold float64 `json:"light_model_threshold,omitempty"`
 	// MaxContextTokens is the approximate token budget for assembled context.
 	// When the context engine estimates the assembled messages exceed 80% of this
 	// value, auto-compaction is triggered before the model call.

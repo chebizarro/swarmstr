@@ -40,6 +40,7 @@ import (
 	gatewayws "swarmstr/internal/gateway/ws"
 	hookspkg "swarmstr/internal/hooks"
 	mediapkg "swarmstr/internal/media"
+	mcppkg "swarmstr/internal/mcp"
 	"swarmstr/internal/memory"
 	"swarmstr/internal/nostr/dvm"
 	"swarmstr/internal/nostr/nip38"
@@ -737,6 +738,83 @@ func main() {
 				log.Printf("config: early sync failed (%v); using Nostr state", earlyErr)
 			}
 		}
+	}
+
+	// ── MCP (Model Context Protocol) client integration ─────────────────
+	// Load MCP config from extra.mcp and register discovered tools.
+	var mcpManager *mcppkg.Manager
+	{
+		mcpCfg := mcppkg.ParseMCPConfig(configState.Get().Extra)
+		if mcpCfg.Enabled && len(mcpCfg.Servers) > 0 {
+			mcpManager = mcppkg.NewManager()
+			if err := mcpManager.LoadFromConfig(ctx, mcpCfg); err != nil {
+				log.Printf("[mcp] initialization error (non-fatal): %v", err)
+			} else {
+				// Register discovered MCP tools into the agent tool registry.
+				for serverName, serverTools := range mcpManager.GetAllTools() {
+					for _, mcpTool := range serverTools {
+						name, fn, params := mcppkg.MCPToolToToolDef(mcpManager, serverName, mcpTool)
+						desc := mcpTool.Description
+						if desc == "" {
+							desc = fmt.Sprintf("MCP tool from %s server", serverName)
+						}
+						def := agent.ToolDefinition{
+							Name:        name,
+							Description: fmt.Sprintf("[MCP:%s] %s", serverName, desc),
+						}
+						if props, ok := params["properties"].(map[string]any); ok {
+							def.Parameters.Type = "object"
+							def.Parameters.Properties = make(map[string]agent.ToolParamProp)
+							for pName, pVal := range props {
+								pm, ok2 := pVal.(map[string]any)
+								if !ok2 {
+									continue
+								}
+								prop := agent.ToolParamProp{}
+								if t, ok3 := pm["type"].(string); ok3 {
+									prop.Type = t
+								}
+								if d, ok3 := pm["description"].(string); ok3 {
+									prop.Description = d
+								}
+								if enumRaw, ok3 := pm["enum"].([]any); ok3 {
+									for _, ev := range enumRaw {
+										es, ok4 := ev.(string)
+										if ok4 {
+											prop.Enum = append(prop.Enum, es)
+										}
+									}
+								}
+								if itemsRaw, ok3 := pm["items"].(map[string]any); ok3 {
+									items := &agent.ToolParamProp{}
+									if it, ok4 := itemsRaw["type"].(string); ok4 {
+										items.Type = it
+									}
+									if id, ok4 := itemsRaw["description"].(string); ok4 {
+										items.Description = id
+									}
+									prop.Items = items
+								}
+								def.Parameters.Properties[pName] = prop
+							}
+							if req, ok := params["required"].([]any); ok {
+								for _, r := range req {
+									s, ok2 := r.(string)
+									if ok2 {
+										def.Parameters.Required = append(def.Parameters.Required, s)
+									}
+								}
+							}
+						}
+						tools.RegisterWithDef(name, fn, def)
+						log.Printf("[mcp] registered tool: %s", name)
+					}
+				}
+			}
+		}
+	}
+	if mcpManager != nil {
+		defer mcpManager.Close()
 	}
 
 	// Resolve memory backend from live config (Extra["memory"]["backend"]).
@@ -1471,11 +1549,79 @@ func main() {
 				override = autoResolveProviderOverride(model, providers)
 				override.SystemPrompt = strings.TrimSpace(agCfg.SystemPrompt)
 			}
-			rt, rtErr := agent.BuildRuntimeWithOverride(model, override, tools)
+			// Determine the effective Provider before building the Runtime.
+			// Layer 1: FallbackChain wraps the primary + fallback ChatProviders.
+			// Layer 2: RoutedProvider selects between primary and light model.
+			var effectiveProvider agent.Provider
+			hasFallbacks := len(agCfg.FallbackModels) > 0
+			hasLightModel := strings.TrimSpace(agCfg.LightModel) != ""
+
+			if hasFallbacks {
+				fbOverrides := make(map[string]agent.ProviderOverride)
+				for _, fbModel := range agCfg.FallbackModels {
+					fbModel = strings.TrimSpace(fbModel)
+					if fbModel == "" {
+						continue
+					}
+					fbOv := autoResolveProviderOverride(fbModel, providers)
+					fbOverrides[fbModel] = fbOv
+				}
+				fbProvider, fbErr := agent.NewFallbackChainProvider(
+					model,
+					override.APIKey,
+					override.BaseURL,
+					agCfg.FallbackModels,
+					fbOverrides,
+					override.SystemPrompt,
+				)
+				if fbErr == nil {
+					effectiveProvider = fbProvider
+					log.Printf("agent config: fallback chain enabled id=%s primary=%q fallbacks=%v", agentID, model, agCfg.FallbackModels)
+				} else {
+					log.Printf("agent config: fallback chain build warning id=%s err=%v — falling back to standard provider", agentID, fbErr)
+				}
+			}
+
+			// Build the base runtime (used when no FallbackChain, or as
+			// the primary for RoutedProvider).
+			if effectiveProvider == nil {
+				baseProv, basErr := agent.NewProviderForModel(model)
+				if basErr != nil {
+					// Fall back to BuildRuntimeWithOverride for full override support.
+					rt, rtErr := agent.BuildRuntimeWithOverride(model, override, tools)
+					if rtErr != nil {
+						log.Printf("agent config auto-provision warning id=%s model=%q provider=%q err=%v", agentID, model, agCfg.Provider, rtErr)
+						continue
+					}
+					// Can't apply routing without a Provider reference; use rt directly.
+					if isMain {
+						agentRegistry.SetDefault(rt)
+						controlAgentRuntime = rt
+						log.Printf("agent config: default runtime updated id=main model=%q provider=%q", model, agCfg.Provider)
+					} else {
+						agentRegistry.Set(agentID, rt)
+						log.Printf("agent config auto-provisioned id=%s model=%q provider=%q", agentID, model, agCfg.Provider)
+					}
+					continue
+				}
+				effectiveProvider = baseProv
+			}
+
+			// Layer 2: Wrap with ModelRouter if light_model is configured.
+			if hasLightModel {
+				lightModel := strings.TrimSpace(agCfg.LightModel)
+				threshold := agCfg.LightModelThreshold
+				routed := agent.NewRoutedProvider(effectiveProvider, model, lightModel, threshold, tools)
+				effectiveProvider = routed
+				log.Printf("agent config: model routing enabled id=%s primary=%q light=%q threshold=%.2f", agentID, model, lightModel, threshold)
+			}
+
+			rt, rtErr := agent.NewProviderRuntime(effectiveProvider, tools)
 			if rtErr != nil {
 				log.Printf("agent config auto-provision warning id=%s model=%q provider=%q err=%v", agentID, model, agCfg.Provider, rtErr)
 				continue
 			}
+
 			if isMain {
 				// Update the registry default so all "main"/"" lookups use this runtime.
 				agentRegistry.SetDefault(rt)

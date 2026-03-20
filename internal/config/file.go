@@ -461,6 +461,47 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 				}
 			}
 		}
+		// fallback_models: ordered list of fallback model identifiers.
+		if v, ok := m["fallback_models"].([]any); ok {
+			for _, fm := range v {
+				if s, ok := fm.(string); ok && strings.TrimSpace(s) != "" {
+					ac.FallbackModels = append(ac.FallbackModels, strings.TrimSpace(s))
+				}
+			}
+		} else if v, ok := m["fallbackModels"].([]any); ok {
+			for _, fm := range v {
+				if s, ok := fm.(string); ok && strings.TrimSpace(s) != "" {
+					ac.FallbackModels = append(ac.FallbackModels, strings.TrimSpace(s))
+				}
+			}
+		}
+		// light_model: cheaper model for simple messages.
+		if v, ok := m["light_model"].(string); ok {
+			ac.LightModel = strings.TrimSpace(v)
+		} else if v, ok := m["lightModel"].(string); ok {
+			ac.LightModel = strings.TrimSpace(v)
+		}
+		// light_model_threshold: complexity score threshold for light model routing.
+		if v, ok := toFloat64(m["light_model_threshold"]); ok {
+			ac.LightModelThreshold = v
+		} else if v, ok := toFloat64(m["lightModelThreshold"]); ok {
+			ac.LightModelThreshold = v
+		}
+		if v, ok := toInt(m["max_context_tokens"]); ok {
+			ac.MaxContextTokens = v
+		} else if v, ok := toInt(m["maxContextTokens"]); ok {
+			ac.MaxContextTokens = v
+		}
+		if v, ok := m["thinking_level"].(string); ok {
+			ac.ThinkingLevel = strings.TrimSpace(v)
+		} else if v, ok := m["thinkingLevel"].(string); ok {
+			ac.ThinkingLevel = strings.TrimSpace(v)
+		}
+		if v, ok := toInt(m["turn_timeout_secs"]); ok {
+			ac.TurnTimeoutSecs = v
+		} else if v, ok := toInt(m["turnTimeoutSecs"]); ok {
+			ac.TurnTimeoutSecs = v
+		}
 		// dm_peers: list of Nostr pubkeys routed to this agent for DMs.
 		if v, ok := m["dm_peers"].([]any); ok {
 			for _, peer := range v {
@@ -506,6 +547,21 @@ func toInt(v any) (int, bool) {
 		return int(n), true
 	case float64:
 		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+func toFloat64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
 	default:
 		return 0, false
 	}

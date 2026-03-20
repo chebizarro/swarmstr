@@ -1,18 +1,24 @@
 package agent
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 )
+
+func init() {
+	getEnvFn = os.Getenv
+}
 
 type Provider interface {
 	Generate(context.Context, Turn) (ProviderResult, error)
@@ -174,510 +180,8 @@ type AnthropicProvider struct {
 	Client       *http.Client
 }
 
-type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    any                `json:"system,omitempty"` // string or []map[string]any (for cache_control)
-	Messages  []anthropicMessage `json:"messages"`
-	Tools     []anthropicToolDef `json:"tools,omitempty"`
-	Thinking  *anthropicThinking `json:"thinking,omitempty"`
-}
-
-// anthropicThinking is the extended-thinking configuration block.
-type anthropicThinking struct {
-	Type         string `json:"type"`          // always "enabled"
-	BudgetTokens int    `json:"budget_tokens"` // must be < max_tokens
-}
-
-// anthropicToolDef is the Anthropic API representation of a tool definition.
-type anthropicToolDef struct {
-	Name         string              `json:"name"`
-	Description  string              `json:"description"`
-	InputSchema  map[string]any      `json:"input_schema"`
-	CacheControl *anthropicCacheCtrl `json:"cache_control,omitempty"`
-}
-
-// anthropicCacheCtrl marks a content block for prompt caching.
-type anthropicCacheCtrl struct {
-	Type string `json:"type"` // always "ephemeral"
-}
-
-// anthropicMessage supports both plain-text content (string) and multi-modal
-// content ([]any with image + text blocks). Content is typed as any so that
-// json.Marshal produces the correct shape for each case.
-type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"` // string or []map[string]any for multi-modal
-}
-
-type anthropicResponse struct {
-	Content []struct {
-		Type  string         `json:"type"`
-		Text  string         `json:"text,omitempty"`
-		// tool_use fields
-		ID    string         `json:"id,omitempty"`
-		Name  string         `json:"name,omitempty"`
-		Input map[string]any `json:"input,omitempty"`
-	} `json:"content"`
-	StopReason string `json:"stop_reason,omitempty"`
-	Error *struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
-	Usage *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage,omitempty"`
-}
-
-// buildSystemWithCache wraps a system prompt string in a content block array
-// with cache_control set, so Anthropic will cache it across turns.
-// Returns nil if text is empty.
-func buildSystemWithCache(text string) any {
-	if text == "" {
-		return nil
-	}
-	return []map[string]any{
-		{
-			"type":          "text",
-			"text":          text,
-			"cache_control": map[string]any{"type": "ephemeral"},
-		},
-	}
-}
-
-// toolDefsToAnthropic converts ToolDefinition slice to Anthropic API format.
-// The last tool is marked with cache_control so the full tool list is cached.
-func toolDefsToAnthropic(defs []ToolDefinition) []anthropicToolDef {
-	out := make([]anthropicToolDef, 0, len(defs))
-	for _, d := range defs {
-		schema := map[string]any{"type": "object"}
-		if len(d.Parameters.Properties) > 0 {
-			props := map[string]any{}
-			for k, v := range d.Parameters.Properties {
-				prop := map[string]any{"type": v.Type}
-				if v.Description != "" {
-					prop["description"] = v.Description
-				}
-				if len(v.Enum) > 0 {
-					prop["enum"] = v.Enum
-				}
-				if v.Items != nil {
-					prop["items"] = map[string]any{"type": v.Items.Type}
-				}
-				props[k] = prop
-			}
-			schema["properties"] = props
-		}
-		if len(d.Parameters.Required) > 0 {
-			schema["required"] = d.Parameters.Required
-		}
-		out = append(out, anthropicToolDef{
-			Name:        d.Name,
-			Description: d.Description,
-			InputSchema: schema,
-		})
-	}
-	// Mark the last tool for caching — the whole tool list is re-sent every
-	// turn and is otherwise billed at full input-token rate each time.
-	if len(out) > 0 {
-		out[len(out)-1].CacheControl = &anthropicCacheCtrl{Type: "ephemeral"}
-	}
-	return out
-}
-
-// parseAnthropicToolCalls extracts ToolCall entries from an Anthropic response.
-func parseAnthropicToolCalls(content []struct {
-	Type  string         `json:"type"`
-	Text  string         `json:"text,omitempty"`
-	ID    string         `json:"id,omitempty"`
-	Name  string         `json:"name,omitempty"`
-	Input map[string]any `json:"input,omitempty"`
-}) (text string, calls []ToolCall) {
-	for _, c := range content {
-		switch c.Type {
-		case "text":
-			if strings.TrimSpace(c.Text) != "" {
-				text = c.Text
-			}
-		case "thinking":
-			// Extended-thinking internal reasoning block — intentionally skipped.
-			// The model's visible answer is in the subsequent "text" block.
-		case "tool_use":
-			if c.Name != "" {
-				args := c.Input
-				if args == nil {
-					args = map[string]any{}
-				}
-				calls = append(calls, ToolCall{ID: c.ID, Name: c.Name, Args: args})
-			}
-		}
-	}
-	return text, calls
-}
-
-// toolDefsToOpenAI converts ToolDefinition slice to the OpenAI tools API format.
-func toolDefsToOpenAI(defs []ToolDefinition) []openAIToolDef {
-	out := make([]openAIToolDef, 0, len(defs))
-	for _, d := range defs {
-		params := map[string]any{"type": "object"}
-		if len(d.Parameters.Properties) > 0 {
-			props := map[string]any{}
-			for k, v := range d.Parameters.Properties {
-				prop := map[string]any{"type": v.Type}
-				if v.Description != "" {
-					prop["description"] = v.Description
-				}
-				if len(v.Enum) > 0 {
-					prop["enum"] = v.Enum
-				}
-				if v.Items != nil {
-					prop["items"] = map[string]any{"type": v.Items.Type}
-				}
-				props[k] = prop
-			}
-			params["properties"] = props
-		}
-		if len(d.Parameters.Required) > 0 {
-			params["required"] = d.Parameters.Required
-		}
-		out = append(out, openAIToolDef{
-			Type: "function",
-			Function: openAIFunctionDef{
-				Name:        d.Name,
-				Description: d.Description,
-				Parameters:  params,
-			},
-		})
-	}
-	return out
-}
-
-// buildAnthropicContent constructs the message content block for a user turn.
-// When images are present the content is a []map[string]any with image blocks
-// followed by the text block (Anthropic multi-modal format).
-func buildAnthropicContent(text string, images []ImageRef) any {
-	if len(images) == 0 {
-		return text
-	}
-	blocks := make([]map[string]any, 0, len(images)+1)
-	for _, img := range images {
-		if img.Base64 != "" {
-			mt := img.MimeType
-			if mt == "" {
-				mt = "image/jpeg"
-			}
-			blocks = append(blocks, map[string]any{
-				"type": "image",
-				"source": map[string]any{
-					"type":       "base64",
-					"media_type": mt,
-					"data":       img.Base64,
-				},
-			})
-		} else if img.URL != "" {
-			blocks = append(blocks, map[string]any{
-				"type": "image",
-				"source": map[string]any{
-					"type": "url",
-					"url":  img.URL,
-				},
-			})
-		}
-	}
-	blocks = append(blocks, map[string]any{"type": "text", "text": text})
-	return blocks
-}
-
 func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
-	model := strings.TrimSpace(p.Model)
-	if model == "" {
-		model = "claude-3-5-sonnet-20241022"
-	}
-	apiKey := strings.TrimSpace(p.APIKey)
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
-	}
-	if apiKey == "" {
-		// Also check the OAuth token env var (OpenClaw compat).
-		apiKey = strings.TrimSpace(os.Getenv("ANTHROPIC_OAUTH_TOKEN"))
-	}
-	if apiKey == "" {
-		return ProviderResult{}, fmt.Errorf("ANTHROPIC_API_KEY is not set")
-	}
-
-	// Detect OAuth credentials (OpenClaw format or sk-ant-oat prefix).
-	if access, refresh, isOAuth := ParseAnthropicOAuthCredential(apiKey); isOAuth {
-		return p.generateWithOAuth(ctx, turn, model, access, refresh)
-	}
-
-	userText := strings.TrimSpace(turn.UserText)
-	// Build messages: prior history + current user turn.
-	msgs := make([]anthropicMessage, 0, len(turn.History)+1)
-	for _, h := range turn.History {
-		msgs = append(msgs, anthropicMessage{Role: h.Role, Content: h.Content})
-	}
-	msgs = append(msgs, anthropicMessage{Role: "user", Content: buildAnthropicContent(userText, turn.Images)})
-
-	// When extended thinking is requested the max_tokens budget must exceed the
-	// thinking budget.  Use 1.5× budget or 16 000, whichever is larger.
-	maxTokens := 4096
-	if turn.ThinkingBudget > 0 {
-		maxTokens = turn.ThinkingBudget + turn.ThinkingBudget/2
-		if maxTokens < 16000 {
-			maxTokens = 16000
-		}
-	}
-	reqBody := anthropicRequest{
-		Model:     model,
-		MaxTokens: maxTokens,
-		Messages:  msgs,
-	}
-	if turn.ThinkingBudget > 0 {
-		reqBody.Thinking = &anthropicThinking{
-			Type:         "enabled",
-			BudgetTokens: turn.ThinkingBudget,
-		}
-	}
-	sys := strings.TrimSpace(turn.Context)
-	if sys == "" {
-		sys = strings.TrimSpace(p.SystemPrompt)
-	} else if p.SystemPrompt != "" {
-		sys = strings.TrimSpace(p.SystemPrompt) + "\n\n" + sys
-	}
-	if sys != "" {
-		reqBody.System = buildSystemWithCache(sys)
-	}
-	if len(turn.Tools) > 0 {
-		reqBody.Tools = toolDefsToAnthropic(turn.Tools)
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	betaHeaders := []string{"prompt-caching-2024-07-31"}
-	if turn.ThinkingBudget > 0 {
-		betaHeaders = append(betaHeaders, "interleaved-thinking-2025-05-14")
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("anthropic-beta", strings.Join(betaHeaders, ","))
-
-	client := p.Client
-	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	defer resp.Body.Close()
-
-	var out anthropicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return ProviderResult{}, fmt.Errorf("anthropic decode: %w", err)
-	}
-	if out.Error != nil {
-		return ProviderResult{}, fmt.Errorf("anthropic error %s: %s", out.Error.Type, out.Error.Message)
-	}
-	if resp.StatusCode >= 300 {
-		return ProviderResult{}, fmt.Errorf("anthropic returned %s", resp.Status)
-	}
-	text, calls := parseAnthropicToolCalls(out.Content)
-	totalInput := int64(0)
-	totalOutput := int64(0)
-	if out.Usage != nil {
-		totalInput = int64(out.Usage.InputTokens)
-		totalOutput = int64(out.Usage.OutputTokens)
-	}
-
-	// setReqHeaders applies the standard Anthropic headers to a request,
-	// including beta feature flags.  Factored out so the agentic loop
-	// re-requests get the same headers as the initial request.
-	setReqHeaders := func(r *http.Request) {
-		r.Header.Set("Content-Type", "application/json")
-		r.Header.Set("x-api-key", apiKey)
-		r.Header.Set("anthropic-version", "2023-06-01")
-		if len(betaHeaders) > 0 {
-			r.Header.Set("anthropic-beta", strings.Join(betaHeaders, ","))
-		}
-	}
-
-	// Agentic tool loop: if the model returned tool calls and we have an executor,
-	// run tool→result→continue until the model produces a text response.
-	if out.StopReason == "tool_use" && len(calls) > 0 && turn.Executor != nil {
-		// Clear pre-tool text so stale preamble ("Let me check...") is never
-		// returned as the final reply.  Only the post-tool model response
-		// should be surfaced to the user.
-		text = ""
-
-		const maxIter = 30
-		for iter := 0; iter < maxIter && out.StopReason == "tool_use"; iter++ {
-			// Log which tools the model is calling on each iteration.
-			toolNames := make([]string, len(calls))
-			for i, c := range calls {
-				toolNames[i] = c.Name
-			}
-			log.Printf("anthropic: agentic loop iter=%d/%d tools=%v", iter+1, maxIter, toolNames)
-
-			// Append the assistant's tool_use turn (preserve raw content blocks).
-			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
-
-			// Execute each tool and collect results.
-			toolResults := make([]map[string]any, 0, len(calls))
-			for _, call := range calls {
-				result, execErr := turn.Executor.Execute(ctx, call)
-				if execErr != nil {
-					result = "error: " + execErr.Error()
-					log.Printf("anthropic: tool %s error: %v", call.Name, execErr)
-				}
-				toolResults = append(toolResults, map[string]any{
-					"type":        "tool_result",
-					"tool_use_id": call.ID,
-					"content":     result,
-				})
-			}
-			// Append the tool results as a user turn.
-			msgs = append(msgs, anthropicMessage{Role: "user", Content: toolResults})
-
-			// Call the API again with the updated message history.
-			reqBody.Messages = msgs
-			body2, err2 := json.Marshal(reqBody)
-			if err2 != nil {
-				log.Printf("anthropic: agentic loop marshal error iter=%d: %v", iter+1, err2)
-				break
-			}
-			req2, err2 := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
-			if err2 != nil {
-				break
-			}
-			setReqHeaders(req2)
-			resp2, err2 := client.Do(req2)
-			if err2 != nil {
-				log.Printf("anthropic: agentic loop HTTP error iter=%d: %v", iter+1, err2)
-				break
-			}
-			var out2 anthropicResponse
-			if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 != nil {
-				resp2.Body.Close()
-				log.Printf("anthropic: agentic loop decode error iter=%d: %v", iter+1, err2)
-				break
-			}
-			resp2.Body.Close()
-			if out2.Error != nil {
-				log.Printf("anthropic: agentic loop API error iter=%d: %s: %s", iter+1, out2.Error.Type, out2.Error.Message)
-				break
-			}
-			if out2.Usage != nil {
-				totalInput += int64(out2.Usage.InputTokens)
-				totalOutput += int64(out2.Usage.OutputTokens)
-			}
-			out = out2
-			text, calls = parseAnthropicToolCalls(out.Content)
-		}
-
-		// If the loop exhausted maxIter with text still empty, force one final call
-		// asking the model to summarise its findings — prevents "tool execution complete".
-		// We must first provide tool_results for any pending tool_use calls, otherwise
-		// the Anthropic API rejects the request (tool_use must be followed by tool_result).
-		// IMPORTANT: tool_result blocks and the summary prompt must be combined into a
-		// single user message — Anthropic requires strict user/assistant alternation
-		// and rejects consecutive same-role messages.
-		// CRITICAL: Strip tool definitions from the request so the model CANNOT call
-		// more tools and MUST produce a text response.
-		if text == "" {
-			log.Printf("anthropic: agentic loop exhausted %d iterations without text, forcing summary", maxIter)
-			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
-			// Build a single user message containing both tool results and the
-			// summary prompt to maintain strict user/assistant alternation.
-			var userContent []map[string]any
-			if len(calls) > 0 {
-				for _, c := range calls {
-					res, execErr := turn.Executor.Execute(ctx, c)
-					if execErr != nil {
-						res = "error: " + execErr.Error()
-					}
-					userContent = append(userContent, map[string]any{
-						"type":        "tool_result",
-						"tool_use_id": c.ID,
-						"content":     res,
-					})
-				}
-			}
-			userContent = append(userContent, map[string]any{
-				"type": "text",
-				"text": "You have used all available tool calls. Please summarise your findings and give a final answer to the user now. Do not attempt any more tool calls.",
-			})
-			msgs = append(msgs, anthropicMessage{Role: "user", Content: userContent})
-			reqBody.Messages = msgs
-			// Remove tool definitions so the model cannot call tools in this
-			// final turn — it must produce a text response.
-			reqBody.Tools = nil
-			body2, _ := json.Marshal(reqBody)
-			req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
-			setReqHeaders(req2)
-			if resp2, err2 := client.Do(req2); err2 == nil {
-				var out2 anthropicResponse
-				if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 == nil && out2.Error == nil {
-					text, calls = parseAnthropicToolCalls(out2.Content)
-					if out2.Usage != nil {
-						totalInput += int64(out2.Usage.InputTokens)
-						totalOutput += int64(out2.Usage.OutputTokens)
-					}
-				} else if err2 != nil {
-					log.Printf("anthropic: force-summary decode error: %v", err2)
-				} else if out2.Error != nil {
-					log.Printf("anthropic: force-summary API error: %s: %s", out2.Error.Type, out2.Error.Message)
-				}
-				resp2.Body.Close()
-			} else if err2 != nil {
-				log.Printf("anthropic: force-summary HTTP error: %v", err2)
-			}
-			// If still no text, be honest about the failure.
-			if text == "" {
-				text = "I wasn't able to complete this — the tool calls kept looping without producing a result. Please try rephrasing or check that the external service is responding."
-				calls = nil
-			}
-		}
-	}
-
-	if text == "" && len(calls) == 0 {
-		return ProviderResult{}, fmt.Errorf("anthropic returned no content")
-	}
-	res := ProviderResult{Text: text, ToolCalls: calls}
-	res.Usage = ProviderUsage{InputTokens: totalInput, OutputTokens: totalOutput}
-	return res, nil
-}
-
-// generateWithOAuth performs an Anthropic API call using OAuth Bearer token auth.
-// On 401, it attempts to refresh the token once and retries.
-func (p *AnthropicProvider) generateWithOAuth(ctx context.Context, turn Turn, model, access, refresh string) (ProviderResult, error) {
-	result, err := p.doAnthropicOAuthRequest(ctx, turn, model, access)
-	if err == nil {
-		return result, nil
-	}
-	// On auth failure, try refreshing if we have a refresh token.
-	if refresh == "" || !isAnthropicAuthError(err) {
-		return ProviderResult{}, fmt.Errorf("anthropic oauth: %w", err)
-	}
-	newAccess, newRefresh, refreshErr := AnthropicOAuthRefresh(ctx, refresh)
-	if refreshErr != nil {
-		return ProviderResult{}, fmt.Errorf("anthropic oauth: request failed (%v); token refresh also failed: %w", err, refreshErr)
-	}
-	// Update in-process cache with new tokens.
-	oauthTokenCache.mu.Lock()
-	oauthTokenCache.access = newAccess
-	oauthTokenCache.refresh = newRefresh
-	oauthTokenCache.expiry = time.Now().Add(55 * time.Minute)
-	oauthTokenCache.mu.Unlock()
-
-	return p.doAnthropicOAuthRequest(ctx, turn, model, newAccess)
+	return generateWithAgenticLoop(ctx, p.chatProvider(), turn, p.SystemPrompt, "anthropic")
 }
 
 // isAnthropicAuthError reports whether err indicates an authentication failure.
@@ -689,223 +193,6 @@ func isAnthropicAuthError(err error) bool {
 	return strings.Contains(s, "401") || strings.Contains(s, "authentication_error") || strings.Contains(s, "permission_error")
 }
 
-// doAnthropicOAuthRequest performs a single Anthropic API call with Bearer auth.
-func (p *AnthropicProvider) doAnthropicOAuthRequest(ctx context.Context, turn Turn, model, accessToken string) (ProviderResult, error) {
-	userText := strings.TrimSpace(turn.UserText)
-	// Build messages: prior history + current user turn.
-	msgs := make([]anthropicMessage, 0, len(turn.History)+1)
-	for _, h := range turn.History {
-		msgs = append(msgs, anthropicMessage{Role: h.Role, Content: h.Content})
-	}
-	msgs = append(msgs, anthropicMessage{Role: "user", Content: buildAnthropicContent(userText, turn.Images)})
-	reqBody := anthropicRequest{
-		Model:     model,
-		MaxTokens: 4096,
-		Messages:  msgs,
-	}
-	sys := strings.TrimSpace(turn.Context)
-	if sys == "" {
-		sys = strings.TrimSpace(p.SystemPrompt)
-	} else if p.SystemPrompt != "" {
-		sys = strings.TrimSpace(p.SystemPrompt) + "\n\n" + sys
-	}
-	if sys != "" {
-		reqBody.System = buildSystemWithCache(sys)
-	}
-	if len(turn.Tools) > 0 {
-		reqBody.Tools = toolDefsToAnthropic(turn.Tools)
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	applyAnthropicOAuthHeaders(req, accessToken)
-	// Add prompt-caching beta alongside any headers already set by applyAnthropicOAuthHeaders.
-	existing := req.Header.Get("anthropic-beta")
-	if existing != "" {
-		req.Header.Set("anthropic-beta", existing+",prompt-caching-2024-07-31")
-	} else {
-		req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
-	}
-
-	client := p.Client
-	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	defer resp.Body.Close()
-
-	var out anthropicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return ProviderResult{}, fmt.Errorf("anthropic oauth decode: %w", err)
-	}
-	if out.Error != nil {
-		return ProviderResult{}, fmt.Errorf("anthropic oauth error %s: %s", out.Error.Type, out.Error.Message)
-	}
-	if resp.StatusCode >= 300 {
-		return ProviderResult{}, fmt.Errorf("anthropic oauth returned %s", resp.Status)
-	}
-	text, calls := parseAnthropicToolCalls(out.Content)
-	totalInput := int64(0)
-	totalOutput := int64(0)
-	if out.Usage != nil {
-		totalInput = int64(out.Usage.InputTokens)
-		totalOutput = int64(out.Usage.OutputTokens)
-	}
-
-	// Agentic tool loop — same as the API-key provider.
-	if out.StopReason == "tool_use" && len(calls) > 0 && turn.Executor != nil {
-		// Clear pre-tool preamble text so stale "Let me check..." is never
-		// returned as the final reply.
-		text = ""
-
-		setOAuthHeaders := func(r *http.Request) {
-			r.Header.Set("Content-Type", "application/json")
-			r.Header.Set("anthropic-version", "2023-06-01")
-			applyAnthropicOAuthHeaders(r, accessToken)
-			existing := strings.TrimSpace(r.Header.Get("anthropic-beta"))
-			if existing == "" {
-				r.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
-			} else if !strings.Contains(existing, "prompt-caching-2024-07-31") {
-				r.Header.Set("anthropic-beta", existing+",prompt-caching-2024-07-31")
-			}
-		}
-
-		const maxIter = 30
-		for iter := 0; iter < maxIter && out.StopReason == "tool_use"; iter++ {
-			toolNames := make([]string, len(calls))
-			for i, c := range calls {
-				toolNames[i] = c.Name
-			}
-			log.Printf("anthropic oauth: agentic loop iter=%d/%d tools=%v", iter+1, maxIter, toolNames)
-
-			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
-			toolResults := make([]map[string]any, 0, len(calls))
-			for _, call := range calls {
-				result, execErr := turn.Executor.Execute(ctx, call)
-				if execErr != nil {
-					result = "error: " + execErr.Error()
-					log.Printf("anthropic oauth: tool %s error: %v", call.Name, execErr)
-				}
-				toolResults = append(toolResults, map[string]any{
-					"type":        "tool_result",
-					"tool_use_id": call.ID,
-					"content":     result,
-				})
-			}
-			msgs = append(msgs, anthropicMessage{Role: "user", Content: toolResults})
-			reqBody.Messages = msgs
-			body2, err2 := json.Marshal(reqBody)
-			if err2 != nil {
-				log.Printf("anthropic oauth: agentic loop marshal error iter=%d: %v", iter+1, err2)
-				break
-			}
-			req2, err2 := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
-			if err2 != nil {
-				break
-			}
-			setOAuthHeaders(req2)
-			resp2, err2 := client.Do(req2)
-			if err2 != nil {
-				log.Printf("anthropic oauth: agentic loop HTTP error iter=%d: %v", iter+1, err2)
-				break
-			}
-			var out2 anthropicResponse
-			if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 != nil {
-				resp2.Body.Close()
-				log.Printf("anthropic oauth: agentic loop decode error iter=%d: %v", iter+1, err2)
-				break
-			}
-			resp2.Body.Close()
-			if out2.Error != nil {
-				log.Printf("anthropic oauth: agentic loop API error iter=%d: %s: %s", iter+1, out2.Error.Type, out2.Error.Message)
-				break
-			}
-			if out2.Usage != nil {
-				totalInput += int64(out2.Usage.InputTokens)
-				totalOutput += int64(out2.Usage.OutputTokens)
-			}
-			out = out2
-			text, calls = parseAnthropicToolCalls(out.Content)
-		}
-
-		// Force a final summary turn if maxIter was exhausted with no text.
-		// Must first provide tool_results for any pending tool_use calls before
-		// sending a new user message, otherwise Anthropic rejects the request.
-		// IMPORTANT: tool_result blocks and the summary prompt must be combined
-		// into a single user message — Anthropic requires strict alternation.
-		// CRITICAL: Strip tool definitions so the model MUST produce text.
-		if text == "" {
-			log.Printf("anthropic oauth: agentic loop exhausted %d iterations without text, forcing summary", maxIter)
-			msgs = append(msgs, anthropicMessage{Role: "assistant", Content: out.Content})
-			var userContent []map[string]any
-			if len(calls) > 0 {
-				for _, c := range calls {
-					res, execErr := turn.Executor.Execute(ctx, c)
-					if execErr != nil {
-						res = "error: " + execErr.Error()
-					}
-					userContent = append(userContent, map[string]any{
-						"type":        "tool_result",
-						"tool_use_id": c.ID,
-						"content":     res,
-					})
-				}
-			}
-			userContent = append(userContent, map[string]any{
-				"type": "text",
-				"text": "You have used all available tool calls. Please summarise your findings and give a final answer to the user now. Do not attempt any more tool calls.",
-			})
-			msgs = append(msgs, anthropicMessage{Role: "user", Content: userContent})
-			reqBody.Messages = msgs
-			// Remove tool definitions so the model cannot call tools in this
-			// final turn — it must produce a text response.
-			reqBody.Tools = nil
-			body2, _ := json.Marshal(reqBody)
-			req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body2))
-			setOAuthHeaders(req2)
-			if resp2, err2 := client.Do(req2); err2 == nil {
-				var out2 anthropicResponse
-				if err2 = json.NewDecoder(resp2.Body).Decode(&out2); err2 == nil && out2.Error == nil {
-					text, calls = parseAnthropicToolCalls(out2.Content)
-					if out2.Usage != nil {
-						totalInput += int64(out2.Usage.InputTokens)
-						totalOutput += int64(out2.Usage.OutputTokens)
-					}
-				} else if err2 != nil {
-					log.Printf("anthropic oauth: force-summary decode error: %v", err2)
-				} else if out2.Error != nil {
-					log.Printf("anthropic oauth: force-summary API error: %s: %s", out2.Error.Type, out2.Error.Message)
-				}
-				resp2.Body.Close()
-			} else if err2 != nil {
-				log.Printf("anthropic oauth: force-summary HTTP error: %v", err2)
-			}
-			// If still no text after force-summary, be honest about the failure.
-			if text == "" {
-				text = "I wasn't able to complete this — the tool calls kept looping without producing a result. Please try rephrasing or check that the external service is responding."
-				calls = nil
-			}
-		}
-	}
-
-	if text == "" && len(calls) == 0 {
-		return ProviderResult{}, fmt.Errorf("anthropic oauth returned no content")
-	}
-	res := ProviderResult{Text: text, ToolCalls: calls}
-	res.Usage = ProviderUsage{InputTokens: totalInput, OutputTokens: totalOutput}
-	return res, nil
-}
 
 // OpenAIChatProvider calls the OpenAI Chat Completions API (POST /v1/chat/completions).
 // Also compatible with Ollama and other OpenAI-compatible endpoints.
@@ -917,401 +204,104 @@ type OpenAIChatProvider struct {
 	Client  *http.Client
 }
 
-type openAIRequest struct {
-	Model    string          `json:"model"`
-	Messages []openAIMessage `json:"messages"`
-	Tools    []openAIToolDef `json:"tools,omitempty"`
-}
-
-// openAIToolDef is the OpenAI API representation of a tool.
-type openAIToolDef struct {
-	Type     string              `json:"type"`     // always "function"
-	Function openAIFunctionDef   `json:"function"`
-}
-
-type openAIFunctionDef struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
-}
-
-// openAIMessage supports both plain-text content (string) and multi-modal
-// content ([]map[string]any). Content is typed as any so json.Marshal produces
-// the correct wire format for each case.
-type openAIMessage struct {
-	Role       string `json:"role"`
-	Content    any    `json:"content"`                  // string or []map[string]any for vision
-	ToolCalls  any    `json:"tool_calls,omitempty"`      // assistant tool_calls array
-	ToolCallID string `json:"tool_call_id,omitempty"`    // tool result linking
-}
-
-// buildOpenAIContent constructs the message content for a user turn.
-// When images are present the content is a []map[string]any with image_url blocks
-// followed by the text block (OpenAI multi-modal format).
-func buildOpenAIContent(text string, images []ImageRef) any {
-	if len(images) == 0 {
-		return text
-	}
-	blocks := make([]map[string]any, 0, len(images)+1)
-	for _, img := range images {
-		if img.Base64 != "" {
-			mt := img.MimeType
-			if mt == "" {
-				mt = "image/jpeg"
-			}
-			// OpenAI requires data URI format: data:<mime>;base64,<data>
-			dataURI := "data:" + mt + ";base64," + img.Base64
-			blocks = append(blocks, map[string]any{
-				"type":      "image_url",
-				"image_url": map[string]any{"url": dataURI},
-			})
-		} else if img.URL != "" {
-			blocks = append(blocks, map[string]any{
-				"type":      "image_url",
-				"image_url": map[string]any{"url": img.URL},
-			})
-		}
-	}
-	blocks = append(blocks, map[string]any{"type": "text", "text": text})
-	return blocks
-}
-
-type openAIResponse struct {
-	Choices []struct {
-		Message struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls,omitempty"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-	} `json:"error,omitempty"`
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage,omitempty"`
-}
-
 func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
+	chatProvider := &OpenAIChatProviderChat{
+		BaseURL: p.BaseURL,
+		APIKey:  p.resolveAPIKey(),
+		Model:   p.resolveModel(),
+		Client:  p.Client,
+	}
+	return generateWithAgenticLoop(ctx, chatProvider, turn, "", "openai")
+}
+
+// resolveModel returns the effective model name.
+func (p *OpenAIChatProvider) resolveModel() string {
 	model := strings.TrimSpace(p.Model)
 	if model == "" {
-		model = "gpt-4o"
+		return "gpt-4o"
 	}
+	return model
+}
+
+// resolveAPIKey returns the effective API key.
+func (p *OpenAIChatProvider) resolveAPIKey() string {
 	apiKey := strings.TrimSpace(p.APIKey)
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	}
-
-	baseURL := strings.TrimSpace(p.BaseURL)
-	if baseURL == "" {
-		baseURL = "https://api.openai.com"
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-
-	// Build messages: system context + prior history + current user turn.
-	msgs := make([]openAIMessage, 0, len(turn.History)+2)
-	if ctxText := strings.TrimSpace(turn.Context); ctxText != "" {
-		msgs = append(msgs, openAIMessage{Role: "system", Content: ctxText})
-	}
-	for _, h := range turn.History {
-		msgs = append(msgs, openAIMessage{Role: h.Role, Content: h.Content})
-	}
-	msgs = append(msgs, openAIMessage{Role: "user", Content: buildOpenAIContent(strings.TrimSpace(turn.UserText), turn.Images)})
-
-	reqBody := openAIRequest{Model: model, Messages: msgs}
-	if len(turn.Tools) > 0 {
-		reqBody.Tools = toolDefsToOpenAI(turn.Tools)
-	}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-
-	client := p.Client
-	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	defer resp.Body.Close()
-
-	var out openAIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return ProviderResult{}, fmt.Errorf("openai decode: %w", err)
-	}
-	if out.Error != nil {
-		return ProviderResult{}, fmt.Errorf("openai error %s: %s", out.Error.Type, out.Error.Message)
-	}
-	if resp.StatusCode >= 300 {
-		return ProviderResult{}, fmt.Errorf("openai returned %s", resp.Status)
-	}
-	if len(out.Choices) == 0 {
-		return ProviderResult{}, fmt.Errorf("openai returned no choices")
-	}
-	choice := out.Choices[0]
-	// Parse tool calls if present.
-	parseOpenAIToolCalls := func(tcs []struct {
-		ID       string `json:"id"`
-		Type     string `json:"type"`
-		Function struct {
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		} `json:"function"`
-	}) []ToolCall {
-		var calls []ToolCall
-		for _, tc := range tcs {
-			var args map[string]any
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
-			}
-			calls = append(calls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: args})
-		}
-		return calls
-	}
-	toolCalls := parseOpenAIToolCalls(choice.Message.ToolCalls)
-	text := strings.TrimSpace(choice.Message.Content)
-
-	// Track token usage.
-	var totalInput, totalOutput int64
-	if out.Usage != nil {
-		totalInput = int64(out.Usage.PromptTokens)
-		totalOutput = int64(out.Usage.CompletionTokens)
-	}
-
-	// Agentic tool loop: if the model returned tool_calls and we have an executor,
-	// run tool→result→continue until the model produces a text-only response.
-	if choice.FinishReason == "tool_calls" && len(toolCalls) > 0 && turn.Executor != nil {
-		// Clear any pre-tool preamble text so only the post-tool model response
-		// is returned to the caller.
-		text = ""
-		var loopErr error
-
-		const maxIter = 30
-		for iter := 0; iter < maxIter && choice.FinishReason == "tool_calls"; iter++ {
-			// Append the assistant's tool_call message.
-			rawTCs := make([]map[string]any, 0, len(choice.Message.ToolCalls))
-			for _, tc := range choice.Message.ToolCalls {
-				rawTCs = append(rawTCs, map[string]any{
-					"id":   tc.ID,
-					"type": "function",
-					"function": map[string]any{
-						"name":      tc.Function.Name,
-						"arguments": tc.Function.Arguments,
-					},
-				})
-			}
-			msgs = append(msgs, openAIMessage{
-				Role:      "assistant",
-				Content:   choice.Message.Content,
-				ToolCalls: rawTCs,
-			})
-
-			// Execute each tool call and collect results.
-			for _, call := range toolCalls {
-				result, execErr := turn.Executor.Execute(ctx, call)
-				if execErr != nil {
-					result = "error: " + execErr.Error()
-				}
-				// OpenAI expects tool results as separate messages with role:tool.
-				msgs = append(msgs, openAIMessage{
-					Role:       "tool",
-					ToolCallID: call.ID,
-					Content:    result,
-				})
-			}
-
-			// Re-call the API with updated messages.
-			reqBody2 := openAIRequest{Model: model, Messages: msgs}
-			if len(turn.Tools) > 0 {
-				reqBody2.Tools = toolDefsToOpenAI(turn.Tools)
-			}
-			body2, _ := json.Marshal(reqBody2)
-			req2, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(body2))
-			if reqErr != nil {
-				loopErr = reqErr
-				break
-			}
-			req2.Header.Set("Content-Type", "application/json")
-			if apiKey != "" {
-				req2.Header.Set("Authorization", "Bearer "+apiKey)
-			}
-			resp2, respErr := client.Do(req2)
-			if respErr != nil {
-				loopErr = respErr
-				break
-			}
-			var out2 openAIResponse
-			if decErr := json.NewDecoder(resp2.Body).Decode(&out2); decErr != nil {
-				resp2.Body.Close()
-				loopErr = fmt.Errorf("openai decode: %w", decErr)
-				break
-			}
-			resp2.Body.Close()
-			if out2.Error != nil {
-				loopErr = fmt.Errorf("openai error %s: %s", out2.Error.Type, out2.Error.Message)
-				break
-			}
-			if resp2.StatusCode >= 300 {
-				loopErr = fmt.Errorf("openai returned %s", resp2.Status)
-				break
-			}
-			if len(out2.Choices) == 0 {
-				loopErr = fmt.Errorf("openai returned no choices")
-				break
-			}
-			choice = out2.Choices[0]
-			toolCalls = parseOpenAIToolCalls(choice.Message.ToolCalls)
-			text = strings.TrimSpace(choice.Message.Content)
-			if out2.Usage != nil {
-				totalInput += int64(out2.Usage.PromptTokens)
-				totalOutput += int64(out2.Usage.CompletionTokens)
-			}
-		}
-
-		if loopErr != nil {
-			return ProviderResult{}, loopErr
-		}
-		if text == "" && len(toolCalls) > 0 {
-			return ProviderResult{}, fmt.Errorf("openai tool loop ended without final content")
-		}
-	}
-
-	if text == "" && len(toolCalls) == 0 {
-		return ProviderResult{}, fmt.Errorf("openai returned no content")
-	}
-	return ProviderResult{
-		Text:      text,
-		ToolCalls: toolCalls,
-		Usage:     ProviderUsage{InputTokens: totalInput, OutputTokens: totalOutput},
-	}, nil
+	return apiKey
 }
+
 
 // Stream implements StreamingProvider for OpenAIChatProvider.
-// It uses Server-Sent Events (SSE) to deliver text tokens incrementally via
-// onChunk and accumulates any tool_call deltas for return in ProviderResult.
+// It uses the openai-go SDK's streaming API to deliver text tokens incrementally
+// via onChunk and accumulates any tool_call deltas for return in ProviderResult.
 func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func(text string)) (ProviderResult, error) {
-	model := strings.TrimSpace(p.Model)
-	if model == "" {
-		model = "gpt-4o"
-	}
-	apiKey := strings.TrimSpace(p.APIKey)
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
-	}
+	model := p.resolveModel()
+	apiKey := p.resolveAPIKey()
 	baseURL := strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
 	if baseURL == "" {
-		baseURL = "https://api.openai.com"
+		baseURL = "https://api.openai.com/v1"
+	} else {
+		if u, err := url.Parse(baseURL); err == nil {
+			host := strings.ToLower(u.Host)
+			if host == "api.openai.com" && (u.Path == "" || u.Path == "/") {
+				baseURL = strings.TrimRight(baseURL, "/") + "/v1"
+			}
+		}
 	}
 
-	// Build messages: system context + prior history + current user turn.
-	msgs := make([]openAIMessage, 0, len(turn.History)+2)
-	if ctxText := strings.TrimSpace(turn.Context); ctxText != "" {
-		msgs = append(msgs, openAIMessage{Role: "system", Content: ctxText})
+	clientOpts := []option.RequestOption{
+		option.WithBaseURL(baseURL),
 	}
-	for _, h := range turn.History {
-		msgs = append(msgs, openAIMessage{Role: h.Role, Content: h.Content})
+	if apiKey != "" {
+		clientOpts = append(clientOpts, option.WithAPIKey(apiKey))
 	}
-	msgs = append(msgs, openAIMessage{Role: "user", Content: buildOpenAIContent(strings.TrimSpace(turn.UserText), turn.Images)})
+	if p.Client != nil {
+		clientOpts = append(clientOpts, option.WithHTTPClient(p.Client))
+	}
 
-	// stream:true makes the API emit SSE data lines.
-	reqBody := map[string]any{
-		"model":    model,
-		"messages": msgs,
-		"stream":   true,
+	client := openai.NewClient(clientOpts...)
+
+	// Build messages using the same converter as the ChatProvider.
+	llmMsgs := buildLLMMessagesFromTurn(turn, "")
+	sdkMsgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(llmMsgs))
+	for _, m := range llmMsgs {
+		switch m.Role {
+		case "system":
+			sdkMsgs = append(sdkMsgs, openai.SystemMessage(m.Content))
+		case "user":
+			sdkMsgs = append(sdkMsgs, buildOpenAISDKUserContent(m))
+		case "assistant":
+			sdkMsgs = append(sdkMsgs, openai.AssistantMessage(m.Content))
+		case "tool":
+			sdkMsgs = append(sdkMsgs, openai.ToolMessage(m.Content, m.ToolCallID))
+		}
+	}
+
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(model),
+		Messages: sdkMsgs,
 	}
 	if len(turn.Tools) > 0 {
-		reqBody["tools"] = toolDefsToOpenAI(turn.Tools)
-	}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		params.Tools = translateToolsToOpenAISDK(turn.Tools)
 	}
 
-	client := p.Client
-	if client == nil {
-		// No overall timeout on the client; rely on ctx cancellation.
-		client = &http.Client{}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(resp.Body)
-		return ProviderResult{}, fmt.Errorf("openai stream: HTTP %d: %s", resp.StatusCode, raw)
-	}
+	stream := client.Chat.Completions.NewStreaming(ctx, params)
+	defer stream.Close()
 
-	// toolCallAccumulators accumulates tool_call deltas by index.
+	// Accumulate text and tool calls from the stream.
 	type toolCallAcc struct {
 		ID        string
 		Name      string
 		Arguments strings.Builder
 	}
 	toolAcc := map[int]*toolCallAcc{}
-
+	maxToolIndex := -1
 	var textBuf strings.Builder
-	scanner := bufio.NewScanner(resp.Body)
-	// Streaming chunks (especially tool_call argument deltas) can exceed the
-	// scanner's default token size (~64 KiB).
-	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
 
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content   string `json:"content"`
-					ToolCalls []struct {
-						Index    int    `json:"index"`
-						ID       string `json:"id,omitempty"`
-						Function struct {
-							Name      string `json:"name,omitempty"`
-							Arguments string `json:"arguments,omitempty"`
-						} `json:"function"`
-					} `json:"tool_calls,omitempty"`
-				} `json:"delta"`
-				FinishReason *string `json:"finish_reason"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
+	for stream.Next() {
+		chunk := stream.Current()
 		if len(chunk.Choices) == 0 {
 			continue
 		}
@@ -1323,10 +313,14 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 			}
 		}
 		for _, tc := range delta.ToolCalls {
-			acc, ok := toolAcc[tc.Index]
+			idx := int(tc.Index)
+			if idx > maxToolIndex {
+				maxToolIndex = idx
+			}
+			acc, ok := toolAcc[idx]
 			if !ok {
 				acc = &toolCallAcc{}
-				toolAcc[tc.Index] = acc
+				toolAcc[idx] = acc
 			}
 			if tc.ID != "" {
 				acc.ID = tc.ID
@@ -1339,13 +333,13 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return ProviderResult{}, fmt.Errorf("openai stream scanner: %w", err)
+	if err := stream.Err(); err != nil {
+		return ProviderResult{}, fmt.Errorf("openai stream: %w", err)
 	}
 
 	// Assemble tool calls from accumulators.
 	var toolCalls []ToolCall
-	for idx := 0; idx < len(toolAcc); idx++ {
+	for idx := 0; idx <= maxToolIndex; idx++ {
 		acc, ok := toolAcc[idx]
 		if !ok {
 			continue
@@ -1355,6 +349,7 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 			_ = json.Unmarshal([]byte(argStr), &args)
 		}
 		toolCalls = append(toolCalls, ToolCall{
+			ID:   acc.ID,
 			Name: acc.Name,
 			Args: args,
 		})
@@ -1382,12 +377,27 @@ type geminiContent struct {
 	Parts []geminiPart `json:"parts"`
 }
 
-// geminiPart supports text, inline_data (base64 image), and file_data (URL image).
+// geminiPart supports text, inline_data (base64 image), file_data (URL image),
+// functionCall (tool request), and functionResponse (tool result).
 // Fields are omitempty so the JSON output only includes the relevant shape.
 type geminiPart struct {
-	Text       string              `json:"text,omitempty"`
-	InlineData *geminiInlineData   `json:"inline_data,omitempty"`
-	FileData   *geminiFileData     `json:"file_data,omitempty"`
+	Text             string                 `json:"text,omitempty"`
+	InlineData       *geminiInlineData      `json:"inline_data,omitempty"`
+	FileData         *geminiFileData        `json:"file_data,omitempty"`
+	FunctionCall     *geminiFunctionCall    `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+}
+
+// geminiFunctionCall represents a model-requested function call.
+type geminiFunctionCall struct {
+	Name string         `json:"name"`
+	Args map[string]any `json:"args,omitempty"`
+}
+
+// geminiFunctionResponse carries a function execution result back to the model.
+type geminiFunctionResponse struct {
+	Name     string         `json:"name"`
+	Response map[string]any `json:"response"`
 }
 
 type geminiInlineData struct {
@@ -1422,11 +432,8 @@ type geminiResponse struct {
 	Candidates []struct {
 		Content struct {
 			Parts []struct {
-				Text         string         `json:"text,omitempty"`
-				FunctionCall *struct {
-					Name string         `json:"name"`
-					Args map[string]any `json:"args"`
-				} `json:"functionCall,omitempty"`
+				Text         string              `json:"text,omitempty"`
+				FunctionCall *geminiFunctionCall  `json:"functionCall,omitempty"`
 			} `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
@@ -1494,101 +501,12 @@ func buildGeminiParts(text string, images []ImageRef) []geminiPart {
 }
 
 func (p *GoogleGeminiProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
-	apiKey := strings.TrimSpace(p.APIKey)
-	if apiKey == "" {
-		for _, envKey := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"} {
-			if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
-				apiKey = v
-				break
-			}
-		}
+	chatProvider := &GeminiChatProvider{
+		APIKey: p.APIKey,
+		Model:  p.Model,
+		Client: p.Client,
 	}
-	if apiKey == "" {
-		return ProviderResult{}, fmt.Errorf("Gemini API key not configured (set GEMINI_API_KEY)")
-	}
-	model := strings.TrimSpace(p.Model)
-	if model == "" {
-		model = "gemini-2.0-flash"
-	}
-
-	// Build contents: prior history + current user turn.
-	contents := make([]geminiContent, 0, len(turn.History)+1)
-	for _, h := range turn.History {
-		role := h.Role
-		if role == "assistant" {
-			role = "model" // Gemini uses "model" for assistant
-		}
-		contents = append(contents, geminiContent{
-			Role:  role,
-			Parts: []geminiPart{{Text: h.Content}},
-		})
-	}
-	contents = append(contents, geminiContent{
-		Role:  "user",
-		Parts: buildGeminiParts(strings.TrimSpace(turn.UserText), turn.Images),
-	})
-	req := geminiRequest{Contents: contents}
-	if turn.Context != "" {
-		req.SystemInstruction = &geminiContent{
-			Parts: []geminiPart{{Text: turn.Context}},
-		}
-	}
-	if len(turn.Tools) > 0 {
-		req.Tools = toolDefsToGemini(turn.Tools)
-	}
-
-	body, err := json.Marshal(req)
-	if err != nil {
-		return ProviderResult{}, err
-	}
-
-	apiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, apiKey)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
-	if err != nil {
-		return ProviderResult{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	client := p.Client
-	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
-	}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return ProviderResult{}, fmt.Errorf("gemini request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var out geminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return ProviderResult{}, fmt.Errorf("gemini decode: %w", err)
-	}
-	if out.Error != nil {
-		return ProviderResult{}, fmt.Errorf("gemini API error %d: %s", out.Error.Code, out.Error.Message)
-	}
-	if len(out.Candidates) == 0 || len(out.Candidates[0].Content.Parts) == 0 {
-		return ProviderResult{}, fmt.Errorf("gemini: empty response")
-	}
-	// Collect text and any function calls from response parts.
-	var textBuf strings.Builder
-	var toolCalls []ToolCall
-	for _, part := range out.Candidates[0].Content.Parts {
-		if part.Text != "" {
-			textBuf.WriteString(part.Text)
-		}
-		if part.FunctionCall != nil && part.FunctionCall.Name != "" {
-			args := part.FunctionCall.Args
-			if args == nil {
-				args = map[string]any{}
-			}
-			toolCalls = append(toolCalls, ToolCall{Name: part.FunctionCall.Name, Args: args})
-		}
-	}
-	text := strings.TrimSpace(textBuf.String())
-	if text == "" && len(toolCalls) == 0 {
-		return ProviderResult{}, fmt.Errorf("gemini: empty response")
-	}
-	return ProviderResult{Text: text, ToolCalls: toolCalls}, nil
+	return generateWithAgenticLoop(ctx, chatProvider, turn, "", "gemini")
 }
 
 // ─── Provider table for OpenAI-compatible endpoints ───────────────────────────
@@ -1676,6 +594,19 @@ func NewProviderForModel(model string) (Provider, error) {
 			BaseURL: "https://api.githubcopilot.com",
 			APIKey:  tok,
 			Model:   "gpt-4o", // default Copilot model; override via ProviderOverride.Model
+		}, nil
+	case norm == "copilot-cli" || strings.HasPrefix(norm, "copilot-cli/"):
+		// GitHub Copilot CLI SDK: connects to a local Copilot CLI server via JSON-RPC.
+		// Model can be specified as "copilot-cli/gpt-4.1" or set via ProviderOverride.
+		cliModel := "gpt-4.1"
+		if strings.HasPrefix(norm, "copilot-cli/") {
+			cliModel = strings.TrimPrefix(norm, "copilot-cli/")
+		}
+		return &CopilotCLIProvider{
+			ChatProvider: &CopilotCLIChatProvider{
+				Model:  cliModel,
+				CLIURL: strings.TrimSpace(os.Getenv("COPILOT_CLI_URL")),
+			},
 		}, nil
 	case norm == "anthropic" || strings.HasPrefix(norm, "claude-"):
 		return &AnthropicProvider{Model: strings.TrimSpace(model)}, nil

@@ -218,15 +218,7 @@ func TestAnthropicProvider_generate(t *testing.T) {
 			http.Error(w, "bad method", http.StatusMethodNotAllowed)
 			return
 		}
-		if r.Header.Get("x-api-key") == "" {
-			http.Error(w, "missing api key", http.StatusUnauthorized)
-			return
-		}
-		resp := map[string]any{
-			"content": []map[string]any{
-				{"type": "text", "text": "Hello from Anthropic mock"},
-			},
-		}
+		resp := anthropicFullResponse("Hello from Anthropic mock")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 	}))
@@ -235,13 +227,8 @@ func TestAnthropicProvider_generate(t *testing.T) {
 	p := &AnthropicProvider{
 		APIKey: "test-key",
 		Model:  "claude-3-5-sonnet-20241022",
-		Client: srv.Client(),
+		Client: newRewriteClient(srv.Client(), "https://api.anthropic.com", srv.URL),
 	}
-	// Override the endpoint via a custom http.Client transport that redirects to the test server.
-	// We patch the URL by constructing a custom Transport instead.
-	// Simpler: just use the OpenAI-style approach with a custom RoundTripper.
-	// For Anthropic, we need to rewrite the URL. Use a helper.
-	p.Client = newRewriteClient(srv.Client(), "https://api.anthropic.com", srv.URL)
 
 	result, err := p.Generate(context.Background(), Turn{UserText: "ping", Context: "you are a test"})
 	if err != nil {
@@ -249,6 +236,24 @@ func TestAnthropicProvider_generate(t *testing.T) {
 	}
 	if result.Text == "" {
 		t.Error("expected non-empty response text")
+	}
+}
+
+// anthropicFullResponse returns a complete Anthropic Messages API response.
+func anthropicFullResponse(text string) map[string]any {
+	return map[string]any{
+		"id":          "msg_test123",
+		"type":        "message",
+		"role":        "assistant",
+		"model":       "claude-3-5-sonnet-20241022",
+		"stop_reason": "end_turn",
+		"content": []map[string]any{
+			{"type": "text", "text": text},
+		},
+		"usage": map[string]any{
+			"input_tokens":  10,
+			"output_tokens": 5,
+		},
 	}
 }
 
@@ -263,8 +268,10 @@ func TestAnthropicProvider_missingAPIKeyErrors(t *testing.T) {
 
 func TestAnthropicProvider_serverErrorPropagated(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
 		json.NewEncoder(w).Encode(map[string]any{
+			"type": "error",
 			"error": map[string]any{"type": "rate_limit_error", "message": "rate limited"},
 		})
 	}))
@@ -285,7 +292,7 @@ func TestAnthropicProvider_serverErrorPropagated(t *testing.T) {
 
 func TestOpenAIChatProvider_generate(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" {
+		if r.URL.Path != "/chat/completions" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -579,11 +586,7 @@ func TestAnthropicProvider_Vision_MultiModal(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&capturedBody)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"content": []map[string]any{
-				{"type": "text", "text": "I see an image"},
-			},
-		})
+		json.NewEncoder(w).Encode(anthropicFullResponse("I see an image"))
 	}))
 	defer srv.Close()
 
@@ -664,20 +667,6 @@ func TestOpenAIChatProvider_Vision_MultiModal(t *testing.T) {
 	}
 	if _, isSlice := userMsg["content"].([]any); !isSlice {
 		t.Errorf("expected content to be array for multi-modal, got %T", userMsg["content"])
-	}
-}
-
-func TestBuildAnthropicContent_TextOnly(t *testing.T) {
-	content := buildAnthropicContent("hello", nil)
-	if s, ok := content.(string); !ok || s != "hello" {
-		t.Errorf("expected plain string content, got %T: %v", content, content)
-	}
-}
-
-func TestBuildOpenAIContent_TextOnly(t *testing.T) {
-	content := buildOpenAIContent("hello", nil)
-	if s, ok := content.(string); !ok || s != "hello" {
-		t.Errorf("expected plain string content, got %T: %v", content, content)
 	}
 }
 
