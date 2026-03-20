@@ -243,26 +243,32 @@ func translateToolsToSDK(defs []ToolDefinition, cacheLastTool bool) []anthropic.
 }
 
 // buildSDKInputSchema converts ToolParameters to the SDK's input schema format.
+//
+// NOTE: Properties is always set (even as an empty map) to ensure the returned
+// ToolInputSchemaParam is never the zero value.  The SDK tags InputSchema with
+// `json:"input_schema,omitzero"`, so a fully-zero struct would be silently
+// dropped from the JSON payload, causing Anthropic to return 400
+// "input_schema: Field required" for tools that take no parameters.
 func buildSDKInputSchema(d ToolDefinition) anthropic.ToolInputSchemaParam {
 	schema := anthropic.ToolInputSchemaParam{}
 
-	if len(d.Parameters.Properties) > 0 {
-		props := make(map[string]any, len(d.Parameters.Properties))
-		for k, v := range d.Parameters.Properties {
-			prop := map[string]any{"type": v.Type}
-			if v.Description != "" {
-				prop["description"] = v.Description
-			}
-			if len(v.Enum) > 0 {
-				prop["enum"] = v.Enum
-			}
-			if v.Items != nil {
-				prop["items"] = map[string]any{"type": v.Items.Type}
-			}
-			props[k] = prop
+	// Always build the properties map; for no-arg tools this is empty but
+	// non-nil, which keeps ToolInputSchemaParam non-zero so omitzero fires.
+	props := make(map[string]any, len(d.Parameters.Properties))
+	for k, v := range d.Parameters.Properties {
+		prop := map[string]any{"type": v.Type}
+		if v.Description != "" {
+			prop["description"] = v.Description
 		}
-		schema.Properties = props
+		if len(v.Enum) > 0 {
+			prop["enum"] = v.Enum
+		}
+		if v.Items != nil {
+			prop["items"] = map[string]any{"type": v.Items.Type}
+		}
+		props[k] = prop
 	}
+	schema.Properties = props
 
 	if len(d.Parameters.Required) > 0 {
 		required := make([]string, len(d.Parameters.Required))
