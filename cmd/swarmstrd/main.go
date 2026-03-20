@@ -1012,8 +1012,10 @@ func main() {
 		tools.SetMiddleware(func(ctx context.Context, call agent.ToolCall, next func(context.Context, agent.ToolCall) (string, error)) (string, error) {
 			// ── Loop detection (runs before approval gate) ──────────────
 			sessionID := agent.SessionIDFromContext(ctx)
+			var loopState *toolloop.State
+			var loopWarningMsg string
 			if sessionID != "" {
-				loopState := loopRegistry.Get(sessionID)
+				loopState = loopRegistry.Get(sessionID)
 				result := toolloop.Detect(loopState, call.Name, call.Args, &loopConfig)
 				if result.Stuck {
 					if result.Level == toolloop.Critical {
@@ -1021,24 +1023,11 @@ func main() {
 							call.Name, sessionID, result.Detector, result.Count)
 						return "", fmt.Errorf("%s", result.Message)
 					}
-					// Warning: log but allow execution; inject the warning as
-					// part of the result so the model sees it.
 					log.Printf("toolloop: WARNING tool=%s session=%s detector=%s count=%d",
 						call.Name, sessionID, result.Detector, result.Count)
+					loopWarningMsg = result.Message
 				}
 				toolloop.RecordCall(loopState, call.Name, call.Args, call.ID, &loopConfig)
-
-				// Wrap next to record outcome after execution.
-				origNext := next
-				next = func(ctx2 context.Context, c2 agent.ToolCall) (string, error) {
-					res, err := origNext(ctx2, c2)
-					errStr := ""
-					if err != nil {
-						errStr = err.Error()
-					}
-					toolloop.RecordOutcome(loopState, c2.Name, c2.Args, c2.ID, res, errStr, &loopConfig)
-					return res, err
-				}
 			}
 
 			// ── Approval gate ───────────────────────────────────────────
@@ -1068,7 +1057,18 @@ func main() {
 			}
 			if !liveApprovalTools[call.Name] {
 				metricspkg.ToolCalls.Inc()
-				return next(ctx, call)
+				res, err := next(ctx, call)
+				errStr := ""
+				if err != nil {
+					errStr = err.Error()
+				}
+				if loopState != nil {
+					toolloop.RecordOutcome(loopState, call.Name, call.Args, call.ID, res, errStr, &loopConfig)
+					if loopWarningMsg != "" && err == nil {
+						res = "[LOOP DETECTION] " + loopWarningMsg + "\n\n" + res
+					}
+				}
+				return res, err
 			}
 
 			// Build an approval request.
@@ -1106,7 +1106,18 @@ func main() {
 
 			log.Printf("exec approval granted id=%s tool=%s", rec.ID, call.Name)
 			metricspkg.ToolCalls.Inc()
-			return next(ctx, call)
+			res, err := next(ctx, call)
+			errStr := ""
+			if err != nil {
+				errStr = err.Error()
+			}
+			if loopState != nil {
+				toolloop.RecordOutcome(loopState, call.Name, call.Args, call.ID, res, errStr, &loopConfig)
+				if loopWarningMsg != "" && err == nil {
+					res = "[LOOP DETECTION] " + loopWarningMsg + "\n\n" + res
+				}
+			}
+			return res, err
 		})
 	}
 
@@ -2952,6 +2963,83 @@ func main() {
 				break
 			}
 		}
+		// ── Inject runtime context (OpenClaw parity) ───────────────────────
+		// Build supplementary system prompt sections: runtime info, time, tool
+		// summaries, model aliases, TTS, reactions, sandbox, skills, docs.
+		{
+			liveCfg := configState.Get()
+			agentModel := ""
+			agentThinkingLevel := ""
+			var agentCapabilities []string
+			for _, ac := range liveCfg.Agents {
+				if ac.ID == activeAgentID {
+					agentModel = ac.Model
+					agentThinkingLevel = ac.ThinkingLevel
+					break
+				}
+			}
+			if agentModel == "" {
+				agentModel = liveCfg.Agent.DefaultModel
+			}
+			if agentThinkingLevel == "" {
+				if sessionStore != nil {
+					if se, ok := sessionStore.Get(sessionID); ok && se.ThinkingLevel != "" {
+						agentThinkingLevel = se.ThinkingLevel
+					}
+				}
+			}
+
+			// Resolve channel capabilities from config if available.
+			if capsRaw, ok := liveCfg.Extra["capabilities"]; ok {
+				switch v := capsRaw.(type) {
+				case []any:
+					for _, c := range v {
+						if s, ok := c.(string); ok {
+							agentCapabilities = append(agentCapabilities, s)
+						}
+					}
+				case []string:
+					agentCapabilities = v
+				}
+			}
+
+			bundledSkillsDir := skillspkg.BundledSkillsDir()
+			skillsWsDir := skillspkg.WorkspaceDir(liveCfg.Extra, activeAgentID)
+			skillsPromptStr := buildSkillsPromptCached(bundledSkillsDir, skillsWsDir)
+
+			wsDir := ""
+			for _, ac := range liveCfg.Agents {
+				if ac.ID == activeAgentID {
+					wsDir = strings.TrimSpace(ac.WorkspaceDir)
+					break
+				}
+			}
+			if wsDir == "" {
+				if home, herr := os.UserHomeDir(); herr == nil {
+					wsDir = filepath.Join(home, ".swarmstr", "workspace")
+				}
+			}
+
+			runtimeCtx := buildTurnRuntimeContext(turnRuntimeParams{
+				AgentID:       activeAgentID,
+				Model:         agentModel,
+				Channel:       "nostr",
+				Capabilities:  agentCapabilities,
+				Tools:         baseTurnTools,
+				Config:        liveCfg,
+				WorkspaceDir:  wsDir,
+				ThinkingLevel: agentThinkingLevel,
+				SkillsPrompt:  skillsPromptStr,
+			})
+			if runtimeCtx != "" {
+				if turnContext == "" {
+					turnContext = runtimeCtx
+				} else {
+					turnContext = turnContext + "\n\n" + runtimeCtx
+				}
+			}
+		}
+
 		baseTurn := agent.Turn{
 			SessionID:      sessionID,
 			UserText:       combinedText,
