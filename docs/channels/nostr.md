@@ -1,7 +1,7 @@
 ---
-summary: "Nostr — the primary channel for swarmstr agent communication"
+summary: "Nostr — the primary channel for metiq agent communication"
 read_when:
-  - Setting up swarmstr for the first time
+  - Setting up metiq for the first time
   - Configuring Nostr relay connections
   - Understanding DM access control and pairing
 title: "Nostr Channel"
@@ -9,9 +9,9 @@ title: "Nostr Channel"
 
 # Nostr Channel
 
-**Status:** Core — always enabled. Nostr is swarmstr's primary transport.
+**Status:** Core — always enabled. Nostr is metiq's primary transport.
 
-Unlike traditional AI agent frameworks where Nostr is an optional plugin, in swarmstr
+Unlike traditional AI agent frameworks where Nostr is an optional plugin, in metiq
 **Nostr IS the architecture**. Every agent interaction flows through Nostr encrypted DMs,
 giving your agent a cryptographic identity, censorship-resistant messaging, and native
 interoperability with the entire Nostr ecosystem.
@@ -21,12 +21,12 @@ interoperability with the entire Nostr ecosystem.
 1. Generate a Nostr keypair:
 
 ```bash
-swarmstr keygen
+metiq keygen
 # nsec: nsec1...   (private key — keep secret)
 # npub: npub1...   (your agent's public identity)
 ```
 
-2. Create `~/.swarmstr/bootstrap.json`:
+2. Create `~/.metiq/bootstrap.json`:
 
 ```json
 {
@@ -54,11 +54,11 @@ export NOSTR_NSEC="nsec1..."
 }
 ```
 
-5. Start swarmstrd:
+5. Start metiqd:
 
 ```bash
-swarmstrd
-# or: systemctl start swarmstrd
+metiqd
+# or: systemctl start metiqd
 ```
 
 ## Configuration reference
@@ -144,12 +144,12 @@ Recommended configuration for reliability (in `bootstrap.json`):
 - Use 2–4 relays for redundancy without excessive duplication.
 - Paid relays (nostr.wine) and well-connected relays (relay.primal.net, relay.sharegap.net) provide better delivery guarantees.
 - Local relays (`ws://localhost:7777`) work for testing.
-- swarmstr deduplicates by Nostr event ID — receiving the same DM from multiple relays
+- metiq deduplicates by Nostr event ID — receiving the same DM from multiple relays
   triggers only one agent turn.
 
 ## Outbox model (NIP-65)
 
-swarmstr respects the NIP-65 outbox model. When sending DMs, it uses the recipient's
+metiq respects the NIP-65 outbox model. When sending DMs, it uses the recipient's
 published relay list (kind:10002) for delivery hints — the `nostr_relay_hints` tool
 exposes this for agents.
 
@@ -168,7 +168,7 @@ exposes this for agents.
 
 ## DVM support (NIP-89/90)
 
-swarmstr can operate as a **Data Vending Machine** (DVM) — accepting job requests from
+metiq can operate as a **Data Vending Machine** (DVM) — accepting job requests from
 the Nostr network and returning results. Enable in config:
 
 ```json
@@ -201,7 +201,7 @@ docker run -p 7777:7777 ghcr.io/hoytech/strfry
 
 ### Manual test
 
-1. Note the agent's npub from `swarmstr status`.
+1. Note the agent's npub from `metiq status`.
 2. Open any Nostr client (Damus, Amethyst, Primal, Snort, etc.).
 3. Send a DM to the agent's npub.
 4. Verify the response.
@@ -209,7 +209,7 @@ docker run -p 7777:7777 ghcr.io/hoytech/strfry
 ### CLI test
 
 ```bash
-swarmstr dm-send --to <agent-npub> --text "Hello!"
+metiq dm-send --to <agent-npub> --text "Hello!"
 ```
 
 ## Troubleshooting
@@ -217,14 +217,14 @@ swarmstr dm-send --to <agent-npub> --text "Hello!"
 ### Not receiving messages
 
 - Verify the private key is valid (`nak key public <nsec>` should show the correct npub).
-- Ensure relay URLs are reachable (`swarmstr relay ping <url>`).
-- Check swarmstrd logs for relay connection errors.
+- Ensure relay URLs are reachable (`metiq relay ping <url>`).
+- Check metiqd logs for relay connection errors.
 - Confirm `dm.policy` is not `disabled`.
 
 ### Not sending responses
 
 - Verify the sending relay accepts writes (some relays are read-only).
-- Check `swarmstr logs --lines 100` for relay write errors.
+- Check `metiq logs --lines 100` for relay write errors.
 
 ### Duplicate responses
 

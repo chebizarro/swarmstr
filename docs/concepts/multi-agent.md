@@ -1,18 +1,18 @@
 ---
-summary: "Multi-agent routing: isolated agents and DM routing in one swarmstrd process"
+summary: "Multi-agent routing: isolated agents and DM routing in one metiqd process"
 title: "Multi-Agent Routing"
 read_when:
-  - You want multiple isolated agents (workspaces + personas) in one swarmstrd process
+  - You want multiple isolated agents (workspaces + personas) in one metiqd process
   - Routing different Nostr DMs to different agent configurations
 ---
 
 # Multi-Agent Routing
 
-swarmstr supports multiple agent configurations in a single daemon process. Each agent can have its own workspace, model, tool set, and thinking level.
+metiq supports multiple agent configurations in a single daemon process. Each agent can have its own workspace, model, tool set, and thinking level.
 
 ## Single-agent mode (default)
 
-If you define no `agents[]` array, swarmstrd runs a single default agent using the global `agent` policy settings.
+If you define no `agents[]` array, metiqd runs a single default agent using the global `agent` policy settings.
 
 ## Adding agents
 
@@ -24,14 +24,14 @@ Define agents as an array in the runtime config:
     {
       "id": "main",
       "model": "claude-opus-4-5",
-      "workspace_dir": "~/.swarmstr/workspace",
+      "workspace_dir": "~/.metiq/workspace",
       "tool_profile": "full"
     },
     {
       "id": "research",
       "model": "claude-opus-4-5",
       "thinking_level": "high",
-      "workspace_dir": "~/.swarmstr/workspace-research"
+      "workspace_dir": "~/.metiq/workspace-research"
     },
     {
       "id": "fast",
@@ -104,11 +104,11 @@ Each agent in the `agents[]` array can override:
 
 Each agent maintains separate sessions. A DM to the default agent and a DM routed to the `research` agent never share context, even from the same sender.
 
-All sessions are stored as Nostr events — the routing metadata is in `~/.swarmstr/sessions.json`.
+All sessions are stored as Nostr events — the routing metadata is in `~/.metiq/sessions.json`.
 
 ## Nostr identity
 
-All agents in a single swarmstrd process share the same Nostr private key (nsec) and thus the same npub. Use separate swarmstrd instances with different bootstrap configs if you need distinct npub identities.
+All agents in a single metiqd process share the same Nostr private key (nsec) and thus the same npub. Use separate metiqd instances with different bootstrap configs if you need distinct npub identities.
 
 ## See Also
 

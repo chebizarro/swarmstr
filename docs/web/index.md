@@ -1,14 +1,14 @@
 ---
-summary: "swarmstr web UI: dashboard, canvas, and webchat"
+summary: "metiq web UI: dashboard, canvas, and webchat"
 read_when:
-  - Accessing the swarmstr web interface
+  - Accessing the metiq web interface
   - Using the canvas or dashboard
 title: "Web UI"
 ---
 
 # Web UI
 
-swarmstr serves a web interface on the same address as the gateway WebSocket (`gateway_ws_listen_addr` in `bootstrap.json`). There is no hardcoded default — you must configure the address to enable the web UI.
+metiq serves a web interface on the same address as the gateway WebSocket (`gateway_ws_listen_addr` in `bootstrap.json`). There is no hardcoded default — you must configure the address to enable the web UI.
 
 ## Enabling the Web UI
 
@@ -42,7 +42,7 @@ Agent sends:
 canvas_update(
   canvas_id="main",
   content_type="html",  # html | json | markdown
-  data="<h1>Hello from swarmstr!</h1>"
+  data="<h1>Hello from metiq!</h1>"
 )
 ```
 

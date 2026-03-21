@@ -105,8 +105,8 @@ func TestTrustedProxyAuthAllowsTokenBypass(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	headers := http.Header{}
-	headers.Set("X-Swarmstr-Trusted-Auth", "true")
-	headers.Set("X-Swarmstr-Proxy-User", "proxy-user")
+	headers.Set("X-Metiq-Trusted-Auth", "true")
+	headers.Set("X-Metiq-Proxy-User", "proxy-user")
 	conn := dialWSWithHeaders(t, ctx, srv.URL, headers)
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 
@@ -146,7 +146,7 @@ func TestNodeRoleRequiresDeviceIdentity(t *testing.T) {
 	writeConnectCustom(t, ctx, conn, map[string]any{
 		"minProtocol": 1,
 		"maxProtocol": 3,
-		"client":      map[string]any{"id": "swarmstr-cli", "version": "0.1.0", "platform": "darwin", "mode": "local"},
+		"client":      map[string]any{"id": "metiq-cli", "version": "0.1.0", "platform": "darwin", "mode": "local"},
 		"role":        "node",
 		"auth":        map[string]any{"token": "secret", "nonce": nonce},
 	})
@@ -572,7 +572,7 @@ func writeConnect(t *testing.T, ctx context.Context, conn *websocket.Conn, token
 		"minProtocol": 1,
 		"maxProtocol": 3,
 		"client": map[string]any{
-			"id":       "swarmstr-cli",
+			"id":       "metiq-cli",
 			"version":  "0.1.0",
 			"platform": "darwin",
 			"mode":     "local",
@@ -586,7 +586,7 @@ func baseNodeConnectParams(nonce string) map[string]any {
 		"minProtocol": 1,
 		"maxProtocol": 3,
 		"client": map[string]any{
-			"id":       "swarmstr-cli",
+			"id":       "metiq-cli",
 			"version":  "0.1.0",
 			"platform": "darwin",
 			"mode":     "local",

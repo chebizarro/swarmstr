@@ -1,8 +1,8 @@
 ---
-summary: "Deploy swarmstr with Ansible and Nix"
+summary: "Deploy metiq with Ansible and Nix"
 read_when:
-  - Automating swarmstr deployment with Ansible
-  - Using Nix/NixOS for swarmstr
+  - Automating metiq deployment with Ansible
+  - Using Nix/NixOS for metiq
 title: "Ansible & Nix Deployment"
 ---
 
@@ -10,30 +10,30 @@ title: "Ansible & Nix Deployment"
 
 ## Ansible
 
-Automate swarmstr deployment across multiple servers with Ansible.
+Automate metiq deployment across multiple servers with Ansible.
 
 ### Inventory
 
 ```ini
 # inventory.ini
-[swarmstr]
-agent1.example.com ansible_user=swarmstr
-agent2.example.com ansible_user=swarmstr
-pi.home ansible_user=swarmstr ansible_host=192.168.1.100
+[metiq]
+agent1.example.com ansible_user=metiq
+agent2.example.com ansible_user=metiq
+pi.home ansible_user=metiq ansible_host=192.168.1.100
 ```
 
 ### Playbook
 
 ```yaml
-# deploy-swarmstr.yml
+# deploy-metiq.yml
 ---
-- name: Deploy swarmstr
-  hosts: swarmstr
+- name: Deploy metiq
+  hosts: metiq
   become: no
   vars:
-    swarmstr_version: "v0.1.0"
-    swarmstr_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
-    swarmstr_home: "{{ ansible_env.HOME }}/.metiq"
+    metiq_version: "v0.1.0"
+    metiq_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+    metiq_home: "{{ ansible_env.HOME }}/.metiq"
 
   tasks:
     - name: Create .local/bin directory
@@ -44,32 +44,32 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
 
     - name: Download metiq binary
       get_url:
-        url: "https://github.com/yourorg/metiq/releases/download/{{ swarmstr_version }}/metiqd-linux-{{ swarmstr_arch }}"
+        url: "https://github.com/yourorg/metiq/releases/download/{{ metiq_version }}/metiqd-linux-{{ metiq_arch }}"
         dest: "{{ ansible_env.HOME }}/.local/bin/metiqd"
         mode: '0755'
 
-    - name: Create swarmstr config directory
+    - name: Create metiq config directory
       file:
-        path: "{{ swarmstr_home }}"
+        path: "{{ metiq_home }}"
         state: directory
         mode: '0700'
 
     - name: Deploy bootstrap.json
       template:
         src: templates/bootstrap.json.j2
-        dest: "{{ swarmstr_home }}/bootstrap.json"
+        dest: "{{ metiq_home }}/bootstrap.json"
         mode: '0600'
 
     - name: Deploy config.json
       template:
         src: templates/config.json.j2
-        dest: "{{ swarmstr_home }}/config.json"
+        dest: "{{ metiq_home }}/config.json"
         mode: '0600'
 
     - name: Deploy env file
       template:
         src: templates/env.j2
-        dest: "{{ swarmstr_home }}/env"
+        dest: "{{ metiq_home }}/env"
         mode: '0600'
 
     - name: Create systemd user directory
@@ -103,7 +103,7 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
 // templates/bootstrap.json.j2
 {
   "private_key": "${NOSTR_PRIVATE_KEY}",
-  "relays": {{ swarmstr_relays | to_json }},
+  "relays": {{ metiq_relays | to_json }},
   "admin_listen_addr": "127.0.0.1:7423",
   "admin_token": "${METIQ_ADMIN_TOKEN}"
 }
@@ -116,7 +116,7 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
   "providers": {
     "anthropic": { "api_key": "${ANTHROPIC_API_KEY}" }
   },
-  "dm": { "policy": "allowlist", "allow_from": {{ swarmstr_allowlist | to_json }} }
+  "dm": { "policy": "allowlist", "allow_from": {{ metiq_allowlist | to_json }} }
 }
 ```
 
@@ -141,36 +141,36 @@ WantedBy=default.target
 
 ```bash
 # Encrypt secrets file
-ansible-vault encrypt group_vars/swarmstr/vault.yml
+ansible-vault encrypt group_vars/metiq/vault.yml
 
 # Run with vault password
-ansible-playbook deploy-swarmstr.yml --ask-vault-pass
+ansible-playbook deploy-metiq.yml --ask-vault-pass
 ```
 
 ```yaml
-# group_vars/swarmstr/vault.yml
+# group_vars/metiq/vault.yml
 vault_nostr_private_key: "nsec1..."
 vault_anthropic_api_key: "sk-ant-..."
 ```
 
 ## Nix / NixOS
 
-For NixOS deployments, a swarmstr module can be defined in your system configuration.
+For NixOS deployments, a metiq module can be defined in your system configuration.
 
 ### Basic NixOS Module
 
 ```nix
-# modules/swarmstr.nix
+# modules/metiq.nix
 { config, lib, pkgs, ... }:
 
 let
   cfg = config.services.metiq;
-  swarmstrd = pkgs.callPackage ./swarmstrd.nix {};
+  metiqd = pkgs.callPackage ./metiqd.nix {};
 in
 {
   options.services.metiq = {
-    enable = lib.mkEnableOption "swarmstr AI agent daemon";
-    user = lib.mkOption { type = lib.types.str; default = "swarmstr"; };
+    enable = lib.mkEnableOption "metiq AI agent daemon";
+    user = lib.mkOption { type = lib.types.str; default = "metiq"; };
     configFile = lib.mkOption { type = lib.types.path; };
     envFile = lib.mkOption { type = lib.types.path; };
   };
@@ -179,19 +179,19 @@ in
     users.users.${cfg.user} = {
       isSystemUser = true;
       group = cfg.user;
-      home = "/var/lib/swarmstr";
+      home = "/var/lib/metiq";
       createHome = true;
     };
 
     systemd.services.metiqd = {
-      description = "swarmstr AI agent daemon";
+      description = "metiq AI agent daemon";
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       wantedBy = [ "multi-user.target" ];
 
       serviceConfig = {
         User = cfg.user;
-        ExecStart = "${swarmstrd}/bin/swarmstrd";
+        ExecStart = "${metiqd}/bin/metiqd";
         EnvironmentFile = cfg.envFile;
         Restart = "always";
         RestartSec = "10s";
@@ -208,12 +208,12 @@ in
 ```nix
 # configuration.nix
 {
-  imports = [ ./modules/swarmstr.nix ];
+  imports = [ ./modules/metiq.nix ];
 
   services.metiq = {
     enable = true;
-    configFile = /etc/swarmstr/config.json;
-    envFile = /etc/swarmstr/env;
+    configFile = /etc/metiq/config.json;
+    envFile = /etc/metiq/env;
   };
 }
 ```

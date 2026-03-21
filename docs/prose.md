@@ -1,5 +1,5 @@
 ---
-summary: "Writing style guidance for swarmstr agent responses"
+summary: "Writing style guidance for metiq agent responses"
 read_when:
   - Writing or reviewing SOUL.md or AGENTS.md for prose style
   - Defining how the agent should communicate
@@ -9,7 +9,7 @@ title: "Prose & Writing Style"
 
 # Prose & Writing Style
 
-Guidelines for how swarmstr agents should write, especially for Nostr DM responses.
+Guidelines for how metiq agents should write, especially for Nostr DM responses.
 
 ## Nostr DM Constraints
 

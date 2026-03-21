@@ -1,5 +1,5 @@
 // Package installer provides real npm and archive installation backends
-// for the swarmstr plugin lifecycle runtime.
+// for the metiq plugin lifecycle runtime.
 package installer
 
 import (

@@ -83,7 +83,7 @@ Shows the daemon version and pubkey:
 ```
 You: /info
 Agent:
-Swarmstr v1.2.3
+Metiq v1.2.3
 Pubkey: a1b2c3d4…
 Agent:  main
 ```
@@ -114,7 +114,7 @@ You: /set label research session
 Agent: ✓ Set label.
 ```
 
-Flags persist in `~/.swarmstr/sessions.json` and survive `/new` (transcript is cleared but flags carry over).
+Flags persist in `~/.metiq/sessions.json` and survive `/new` (transcript is cleared but flags carry over).
 
 ## `/unset` — Remove Flag
 

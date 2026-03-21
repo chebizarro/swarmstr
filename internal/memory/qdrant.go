@@ -22,7 +22,7 @@ import (
 const (
 	qdrantDefaultURL  = "http://localhost:6333"
 	ollamaDefaultURL  = "http://localhost:11434"
-	defaultCollection = "swarmstr"
+	defaultCollection = "metiq"
 	embedModel        = "nomic-embed-text"
 	vectorDim         = 768
 )

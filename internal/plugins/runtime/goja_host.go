@@ -1,4 +1,4 @@
-// Package runtime implements the Goja (ES2015+) plugin host for Swarmstr.
+// Package runtime implements the Goja (ES2015+) plugin host for Metiq.
 //
 // A GojaPlugin is a loaded JS plugin: the script has been compiled, exports.manifest
 // has been read, and the VM is ready to dispatch tool invocations via Invoke().

@@ -1,22 +1,22 @@
 ---
-summary: "Telegram channel plugin for swarmstr (optional extension, not built-in)"
+summary: "Telegram channel plugin for metiq (optional extension, not built-in)"
 read_when:
   - Adding Telegram as a secondary channel alongside Nostr
-  - Setting up a Telegram bot for swarmstr via channel plugin
+  - Setting up a Telegram bot for metiq via channel plugin
 title: "Telegram Channel"
 ---
 
 # Telegram Channel
 
-Telegram is a **secondary channel** for swarmstr delivered via a **channel plugin** — a loadable extension that bridges Telegram into the `nostr_channels` pipeline. Nostr is the primary channel; Telegram is a convenience bridge for users who aren't on Nostr yet.
+Telegram is a **secondary channel** for metiq delivered via a **channel plugin** — a loadable extension that bridges Telegram into the `nostr_channels` pipeline. Nostr is the primary channel; Telegram is a convenience bridge for users who aren't on Nostr yet.
 
-> **Plugin required**: The Telegram channel plugin must be installed and loaded. It is not included in the standard swarmstr build. Check the plugin registry for the current Telegram plugin package.
+> **Plugin required**: The Telegram channel plugin must be installed and loaded. It is not included in the standard metiq build. Check the plugin registry for the current Telegram plugin package.
 
 ## Prerequisites
 
 - A Telegram bot created via [@BotFather](https://t.me/BotFather)
 - Bot token from BotFather
-- swarmstr with the Telegram channel plugin installed
+- metiq with the Telegram channel plugin installed
 
 ## Quick Setup
 
@@ -29,7 +29,7 @@ Telegram is a **secondary channel** for swarmstr delivered via a **channel plugi
 TELEGRAM_BOT_TOKEN=123456:ABC-...
 ```
 
-5. Configure swarmstr (in the runtime ConfigDoc):
+5. Configure metiq (in the runtime ConfigDoc):
 
 ```json5
 {
@@ -46,7 +46,7 @@ TELEGRAM_BOT_TOKEN=123456:ABC-...
 }
 ```
 
-6. Restart swarmstrd and send `/start` to your bot.
+6. Restart metiqd and send `/start` to your bot.
 
 ## Access Control
 
@@ -81,7 +81,7 @@ Where `channelID` is derived from the Telegram chat ID and `senderID` is the Tel
 
 ## Slash Commands
 
-All swarmstr slash commands work in Telegram DMs:
+All metiq slash commands work in Telegram DMs:
 
 ```
 /new

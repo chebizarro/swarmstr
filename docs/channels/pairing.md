@@ -1,7 +1,7 @@
 ---
-summary: "Access control for swarmstr: DM policy modes (pairing, allowlist, open, disabled)"
+summary: "Access control for metiq: DM policy modes (pairing, allowlist, open, disabled)"
 read_when:
-  - Setting up access control for your swarmstr agent
+  - Setting up access control for your metiq agent
   - Onboarding new users to your agent
   - Configuring DM allow lists
 title: "Access Control & Pairing"
@@ -9,7 +9,7 @@ title: "Access Control & Pairing"
 
 # Access Control & Pairing
 
-swarmstr controls who can interact with your agent via the `dm.policy` field in the runtime ConfigDoc. There are four policy modes.
+metiq controls who can interact with your agent via the `dm.policy` field in the runtime ConfigDoc. There are four policy modes.
 
 ## DM Policy Modes
 
@@ -42,7 +42,7 @@ Unknown senders receive a notification that approval is required, rather than be
 
 When an unknown sender DMs your agent, they receive: _"Your message was received, but this node requires pairing approval before processing DMs."_
 
-Once you add their npub to `allow_from` (by editing `config.json` and running `swarmstr config import --file config.json`), subsequent messages from them are processed normally.
+Once you add their npub to `allow_from` (by editing `config.json` and running `metiq config import --file config.json`), subsequent messages from them are processed normally.
 
 ### `allowlist` (Recommended for Production)
 
@@ -90,12 +90,12 @@ To allow a new contact, add their npub or hex pubkey to `allow_from`. Export, ed
 
 ```bash
 # View current config
-swarmstr config get
+metiq config get
 
 # Export, edit, reimport
-swarmstr config export > /tmp/cfg.json
+metiq config export > /tmp/cfg.json
 # (add npub to dm.allow_from in /tmp/cfg.json)
-swarmstr config import --file /tmp/cfg.json
+metiq config import --file /tmp/cfg.json
 ```
 
 Or send a control DM from an admin/owner key with the `config.set` command.
@@ -140,7 +140,7 @@ With NIP-05, users can find your agent by name rather than memorizing a raw npub
 ## Get the Agent's npub
 
 ```bash
-swarmstr status
+metiq status
 # Includes:
 #   pubkey: npub1abc...
 ```

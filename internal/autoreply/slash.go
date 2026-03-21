@@ -1,5 +1,5 @@
 // Package autoreply provides slash command routing and per-session turn
-// serialisation for swarmstrd's inbound message handler.
+// serialisation for metiqd's inbound message handler.
 package autoreply
 
 import (

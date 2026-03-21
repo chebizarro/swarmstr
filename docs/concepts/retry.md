@@ -1,6 +1,6 @@
 # Retry & Error Recovery
 
-swarmstr has two distinct retry layers: **LLM API retries** for model provider failures, and **Nostr delivery retries** for relay connectivity issues. These operate independently.
+metiq has two distinct retry layers: **LLM API retries** for model provider failures, and **Nostr delivery retries** for relay connectivity issues. These operate independently.
 
 ## LLM API Retries
 
@@ -83,7 +83,7 @@ Messages are published to all configured relays concurrently. A message is consi
 
 ### Outbox Model (NIP-65)
 
-Before publishing a reply to a user, swarmstr looks up the user's preferred write relays via NIP-65 (kind:10002 events). This maximizes delivery reliability by writing to relays the recipient is actually reading.
+Before publishing a reply to a user, metiq looks up the user's preferred write relays via NIP-65 (kind:10002 events). This maximizes delivery reliability by writing to relays the recipient is actually reading.
 
 See [Network](../network.md) for relay configuration.
 

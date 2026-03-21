@@ -1,15 +1,15 @@
 ---
-summary: "Deploy swarmstr on a VPS: Hetzner, DigitalOcean, Fly.io, Render, Railway"
+summary: "Deploy metiq on a VPS: Hetzner, DigitalOcean, Fly.io, Render, Railway"
 read_when:
-  - Running swarmstr 24/7 on a cloud VPS
+  - Running metiq 24/7 on a cloud VPS
   - Deploying to Hetzner, DigitalOcean, Fly.io, or similar
-  - Production-grade always-on swarmstr deployment
+  - Production-grade always-on metiq deployment
 title: "VPS Deploy Guides"
 ---
 
 # VPS Deploy Guides
 
-Run swarmstr 24/7 on a cloud VPS for always-on Nostr agent operation.
+Run metiq 24/7 on a cloud VPS for always-on Nostr agent operation.
 
 > **Why a VPS?** Nostr relays are always available — your agent should be too. A VPS ensures your agent responds to DMs even when your laptop is closed.
 
@@ -49,9 +49,9 @@ In the Hetzner Cloud Console:
 ssh root@<your-server-ip>
 
 # Create deploy user
-adduser swarmstr
-usermod -aG sudo swarmstr
-su - swarmstr
+adduser metiq
+usermod -aG sudo metiq
+su - metiq
 ```
 
 ### 3. Install metiq
@@ -137,13 +137,13 @@ EOF
 
 systemctl --user daemon-reload
 systemctl --user enable --now metiqd
-systemctl --user status swarmstrd
+systemctl --user status metiqd
 ```
 
 ### 6. Enable Linger (survive logout)
 
 ```bash
-sudo loginctl enable-linger swarmstr
+sudo loginctl enable-linger metiq
 ```
 
 ### 7. Verify
@@ -152,8 +152,8 @@ sudo loginctl enable-linger swarmstr
 export METIQ_ADMIN_ADDR=127.0.0.1:18788
 export METIQ_ADMIN_TOKEN=$(grep METIQ_ADMIN_TOKEN ~/.metiq/.env | cut -d= -f2)
 
-swarmstr status
-swarmstr daemon status
+metiq status
+metiq daemon status
 
 # Test — send a DM from your Nostr client
 ```
@@ -183,15 +183,15 @@ If you want to expose the web UI or admin API remotely, use an SSH tunnel or Tai
 Create `fly.toml`:
 
 ```toml
-app = "swarmstr-agent"
+app = "metiq-agent"
 primary_region = "iad"
 
 [build]
-  image = "yourorg/swarmstr:latest"
+  image = "yourorg/metiq:latest"
 
 [mounts]
-  source = "swarmstr_data"
-  destination = "/home/swarmstr/.metiq"
+  source = "metiq_data"
+  destination = "/home/metiq/.metiq"
 
 [[services]]
   internal_port = 18789
@@ -227,7 +227,7 @@ npm install -g @railway/cli
 railway login
 
 # Deploy
-railway new swarmstr-agent
+railway new metiq-agent
 railway environment set NOSTR_PRIVATE_KEY=nsec1...
 railway environment set ANTHROPIC_API_KEY=sk-ant-...
 railway up
@@ -250,7 +250,7 @@ All VPS deployments need persistent storage for:
 
 ## Security Checklist for VPS
 
-- [ ] Fresh OS user (not root) running swarmstrd
+- [ ] Fresh OS user (not root) running metiqd
 - [ ] `.env` file has `chmod 600`
 - [ ] SSH key authentication only (disable password auth)
 - [ ] Firewall: only port 22 open (Nostr doesn't need inbound ports!)

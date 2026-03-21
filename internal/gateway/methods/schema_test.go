@@ -963,7 +963,7 @@ func TestDecodeExecSecretsWizardTalkVoicewakeAndTTSParams(t *testing.T) {
 		t.Fatalf("unexpected browser.request request: %#v", browserReq)
 	}
 
-	voicewakeReq, err := DecodeVoicewakeSetParams(json.RawMessage(`{"triggers":[" openclaw ","swarmstr"]}`))
+	voicewakeReq, err := DecodeVoicewakeSetParams(json.RawMessage(`{"triggers":[" openclaw ","metiq"]}`))
 	if err != nil {
 		t.Fatalf("voicewake.set decode error: %v", err)
 	}

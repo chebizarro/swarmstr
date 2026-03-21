@@ -2,7 +2,7 @@
 # Shared helper: verify a daemon binary is installed and functional.
 
 verify_binary() {
-  local binary="${1:-swarmstrd}"
+  local binary="${1:-metiqd}"
   local cmd_path=""
 
   # Search PATH and common install locations.

@@ -7,5 +7,5 @@ read_when:
 
 # BOOT.md
 
-Add short, explicit instructions for what swarmstr should do on startup (requires the boot-md hook to be enabled in config).
+Add short, explicit instructions for what metiq should do on startup (requires the boot-md hook to be enabled in config).
 If the task sends a message, use the message tool and then reply with NO_REPLY.

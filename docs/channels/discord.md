@@ -1,22 +1,22 @@
 ---
-summary: "Discord channel plugin for swarmstr (optional extension, not built-in)"
+summary: "Discord channel plugin for metiq (optional extension, not built-in)"
 read_when:
   - Adding Discord as a secondary channel alongside Nostr
-  - Routing Discord messages to a swarmstr agent via channel plugin
+  - Routing Discord messages to a metiq agent via channel plugin
 title: "Discord Channel"
 ---
 
 # Discord Channel
 
-Discord is a **secondary channel** for swarmstr delivered via a **channel plugin** — a loadable extension that bridges Discord into the `nostr_channels` pipeline. Nostr DMs are the primary channel; Discord is an optional plugin for reaching users who prefer Discord.
+Discord is a **secondary channel** for metiq delivered via a **channel plugin** — a loadable extension that bridges Discord into the `nostr_channels` pipeline. Nostr DMs are the primary channel; Discord is an optional plugin for reaching users who prefer Discord.
 
-> **Plugin required**: The Discord channel plugin must be installed and loaded. It is not included in the standard swarmstr build. Check the plugin registry for the current Discord plugin package.
+> **Plugin required**: The Discord channel plugin must be installed and loaded. It is not included in the standard metiq build. Check the plugin registry for the current Discord plugin package.
 
-> **Nostr-first reminder**: swarmstr is designed around Nostr. Discord support is a convenience bridge for users not on Nostr yet. Consider encouraging your users to use a Nostr client for the best experience.
+> **Nostr-first reminder**: metiq is designed around Nostr. Discord support is a convenience bridge for users not on Nostr yet. Consider encouraging your users to use a Nostr client for the best experience.
 
 ## Overview
 
-When the Discord channel plugin is enabled, swarmstr:
+When the Discord channel plugin is enabled, metiq:
 1. Connects a Discord bot to your server
 2. Routes messages from configured channels/DMs to the agent runtime
 3. Replies via Discord using the same bot
@@ -27,7 +27,7 @@ The agent's responses are identical regardless of channel — the same reasoning
 
 - A Discord bot application created at [discord.com/developers/applications](https://discord.com/developers/applications)
 - Bot token with appropriate permissions
-- swarmstr with the Discord channel plugin installed
+- metiq with the Discord channel plugin installed
 
 ## Configuration
 

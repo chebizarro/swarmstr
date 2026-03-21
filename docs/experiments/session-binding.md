@@ -1,5 +1,5 @@
 ---
-summary: "Experiment: channel-agnostic session binding for swarmstr"
+summary: "Experiment: channel-agnostic session binding for metiq"
 read_when:
   - Researching session binding improvements
   - Planning cross-channel session continuity

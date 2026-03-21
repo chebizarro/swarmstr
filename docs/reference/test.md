@@ -8,7 +8,7 @@ title: "Tests"
 
 # Tests
 
-swarmstr uses the standard Go test toolchain.
+metiq uses the standard Go test toolchain.
 
 ## Running Tests
 

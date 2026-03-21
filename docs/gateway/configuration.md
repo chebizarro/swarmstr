@@ -1,21 +1,21 @@
 ---
-summary: "swarmstr configuration reference: bootstrap config and runtime config"
+summary: "metiq configuration reference: bootstrap config and runtime config"
 read_when:
-  - Setting up swarmstr for the first time
+  - Setting up metiq for the first time
   - Looking for a specific config option
 title: "Configuration"
 ---
 
 # Configuration
 
-swarmstr has two layers of configuration:
+metiq has two layers of configuration:
 
 1. **Bootstrap config** — a local JSON file the daemon reads at startup (contains private key, relays, network settings). Never stored on Nostr.
-2. **Runtime config** — stored as an encrypted Nostr event on your relays (`ConfigDoc`). Editable via `swarmstr config` CLI or the web UI while the daemon runs.
+2. **Runtime config** — stored as an encrypted Nostr event on your relays (`ConfigDoc`). Editable via `metiq config` CLI or the web UI while the daemon runs.
 
 ## Bootstrap Config
 
-Default location: `~/.swarmstr/bootstrap.json` (override with the `--bootstrap` flag).
+Default location: `~/.metiq/bootstrap.json` (override with the `--bootstrap` flag).
 
 ### Minimal bootstrap
 
@@ -42,9 +42,9 @@ Default location: `~/.swarmstr/bootstrap.json` (override with the `--bootstrap` 
 
   "signer_url": "",               // Alternative: bunker://... or env://VAR or file:///path
   "admin_listen_addr": "127.0.0.1:18788",
-  "admin_token": "${SWARMSTR_ADMIN_TOKEN}",
+  "admin_token": "${METIQ_ADMIN_TOKEN}",
   "gateway_ws_listen_addr": "127.0.0.1:18789",
-  "gateway_ws_token": "${SWARMSTR_GATEWAY_TOKEN}",
+  "gateway_ws_token": "${METIQ_GATEWAY_TOKEN}",
   "enable_nip44": true,           // NIP-44 encrypted DMs (recommended)
   "enable_nip17": true            // NIP-17 gift-wrapped DMs
 }
@@ -60,17 +60,17 @@ The runtime config is read/written via RPC and stored as an encrypted Nostr even
 
 ```bash
 # Get a config value (or whole config)
-swarmstr config get
-swarmstr config get agent.default_model
+metiq config get
+metiq config get agent.default_model
 
 # Export full config
-swarmstr config export
+metiq config export
 
 # Import from file (replaces config)
-swarmstr config import --file config.json
+metiq config import --file config.json
 
 # Validate config
-swarmstr config validate
+metiq config validate
 ```
 
 ### Top-level structure
@@ -147,7 +147,7 @@ Override settings for specific named agents:
       "name": "Main Assistant",
       "model": "claude-opus-4-5",
       "thinking_level": "medium",
-      "workspace_dir": "~/.swarmstr/workspace",
+      "workspace_dir": "~/.metiq/workspace",
       "tool_profile": "full",
       "fallback_models": ["claude-sonnet-4-5"],
       "max_context_tokens": 100000
@@ -254,11 +254,11 @@ Arbitrary key-value configuration for features that don't have top-level section
 
 | Path | Purpose |
 |------|---------|
-| `~/.swarmstr/bootstrap.json` | Bootstrap config (private key, relays, ports) |
-| `~/.swarmstr/sessions.json` | Session settings (labels, overrides) |
-| `~/.swarmstr/workspace/` | Default agent workspace (SOUL.md, AGENTS.md, etc.) |
-| `~/.swarmstr/hooks/` | User-managed hooks |
-| `~/.swarmstr/skills/` | User-managed skills |
+| `~/.metiq/bootstrap.json` | Bootstrap config (private key, relays, ports) |
+| `~/.metiq/sessions.json` | Session settings (labels, overrides) |
+| `~/.metiq/workspace/` | Default agent workspace (SOUL.md, AGENTS.md, etc.) |
+| `~/.metiq/hooks/` | User-managed hooks |
+| `~/.metiq/skills/` | User-managed skills |
 
 ## See Also
 

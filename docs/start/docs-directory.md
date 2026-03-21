@@ -1,14 +1,14 @@
 ---
-summary: "Map of all swarmstr documentation — what's where and how to find it"
+summary: "Map of all metiq documentation — what's where and how to find it"
 read_when:
-  - Finding your way around the swarmstr docs
+  - Finding your way around the metiq docs
   - Looking for a specific topic
 title: "Docs Directory"
 ---
 
 # Docs Directory
 
-A map of all swarmstr documentation.
+A map of all metiq documentation.
 
 ## Getting Started
 
@@ -17,14 +17,14 @@ A map of all swarmstr documentation.
 | [Getting Started](/start/getting-started) | Go from zero to first Nostr DM in minutes |
 | [Setup & Onboarding](/start/setup) | Wizard, manual config, workspace init |
 | [Bootstrapping](/start/bootstrapping) | Workspace bootstrap files (AGENTS.md, SOUL.md, etc.) |
-| [Lore](/start/lore) | Why swarmstr, the swarm+Nostr vision, OpenClaw lineage |
+| [Lore](/start/lore) | Why metiq, the swarm+Nostr vision, OpenClaw lineage |
 
 ## Concepts
 
 | Page | What it covers |
 |------|---------------|
 | [Architecture](/concepts/architecture) | Go daemon, controlDMBus, dmRunAgentTurn, agent loop |
-| [Agent Workspace](/concepts/agent-workspace) | `~/.swarmstr/workspace/` layout and bootstrap files |
+| [Agent Workspace](/concepts/agent-workspace) | `~/.metiq/workspace/` layout and bootstrap files |
 | [Agent Loop](/concepts/agent-loop) | Nostr DM → Claude API → reply flow |
 | [Memory](/concepts/memory) | MEMORY.md, memory/ folder, auto-flush, vector search |
 | [Session](/concepts/session) | Session keys, dmScope, sessions.json |
@@ -91,7 +91,7 @@ A map of all swarmstr documentation.
 | [Cron vs Heartbeat](/automation/cron-vs-heartbeat) | Which to use when |
 | [Hooks](/automation/hooks) | Event hooks for /new, /reset, lifecycle events |
 | [Webhooks](/automation/webhook) | External HTTP webhooks, /hooks/wake, /hooks/agent |
-| [Gmail PubSub](/automation/gmail-pubsub) | Bridge Gmail to swarmstr via Pub/Sub push |
+| [Gmail PubSub](/automation/gmail-pubsub) | Bridge Gmail to metiq via Pub/Sub push |
 | [Auth Monitoring](/automation/auth-monitoring) | Monitor model auth expiry |
 | [Troubleshooting](/automation/troubleshooting) | Cron/heartbeat diagnostics |
 
@@ -136,7 +136,7 @@ A map of all swarmstr documentation.
 |------|---------------|
 | [FAQ](/help/faq) | Common questions answered |
 | [Debugging](/help/debugging) | Command ladder, relay issues, log locations |
-| [Environment Variables](/help/environment) | All SWARMSTR_* env vars |
+| [Environment Variables](/help/environment) | All METIQ_* env vars |
 | [Scripts](/help/scripts) | Helper scripts and testing guide |
 
 ## Platforms

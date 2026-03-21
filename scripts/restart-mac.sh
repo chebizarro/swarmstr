@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Rebuild and restart swarmstrd.
+# Rebuild and restart metiqd.
 # Kills the running daemon, rebuilds the Go binary, and relaunches.
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_PATH="${METIQ_RESTART_LOG:-/tmp/swarmstr-restart.log}"
+LOG_PATH="${METIQ_RESTART_LOG:-/tmp/metiq-restart.log}"
 WAIT_FOR_LOCK=0
 LOCK_KEY="$(printf '%s' "${ROOT_DIR}" | shasum -a 256 | cut -c1-8)"
-LOCK_DIR="${TMPDIR:-/tmp}/swarmstr-restart-${LOCK_KEY}"
+LOCK_DIR="${TMPDIR:-/tmp}/metiq-restart-${LOCK_KEY}"
 LOCK_PID_FILE="${LOCK_DIR}/pid"
 
 log()  { printf '%s\n' "$*"; }
@@ -66,9 +66,9 @@ for arg in "$@"; do
       log "  --wait    Wait for other restart to complete instead of exiting"
       log ""
       log "Env:"
-      log "  METIQ_RESTART_LOG=/tmp/swarmstr-restart.log  Log path"
+      log "  METIQ_RESTART_LOG=/tmp/metiq-restart.log  Log path"
       log ""
-      log "After restart, swarmstrd will re-read ~/.metiq/config.json on startup."
+      log "After restart, metiqd will re-read ~/.metiq/config.json on startup."
       exit 0
       ;;
     *) ;;
@@ -83,9 +83,9 @@ log "==> Log: ${LOG_PATH}"
 acquire_lock
 
 # 1) Stop the running daemon.
-log "==> Stopping swarmstrd"
-if systemctl --user is-active swarmstrd >/dev/null 2>&1; then
-  systemctl --user stop swarmstrd
+log "==> Stopping metiqd"
+if systemctl --user is-active metiqd >/dev/null 2>&1; then
+  systemctl --user stop metiqd
   log "    systemd unit stopped"
 elif pgrep -x metiqd >/dev/null 2>&1; then
   pkill -x metiqd || true
@@ -108,13 +108,13 @@ if systemctl --user cat metiqd >/dev/null 2>&1; then
     fail "metiqd failed to start. Check: journalctl --user -u metiqd -n 50"
   fi
 else
-  log "==> No systemd unit found; launching swarmstrd directly (background)"
-  nohup "${ROOT_DIR}/dist/swarmstrd" >"${LOG_PATH}.daemon" 2>&1 &
+  log "==> No systemd unit found; launching metiqd directly (background)"
+  nohup "${ROOT_DIR}/dist/metiqd" >"${LOG_PATH}.daemon" 2>&1 &
   sleep 1
-  if pgrep -x swarmstrd >/dev/null 2>&1; then
-    log "OK: swarmstrd is running (pid $(pgrep -x swarmstrd))."
+  if pgrep -x metiqd >/dev/null 2>&1; then
+    log "OK: metiqd is running (pid $(pgrep -x metiqd))."
     log "    Logs: ${LOG_PATH}.daemon"
   else
-    fail "swarmstrd exited immediately. Check ${LOG_PATH}.daemon"
+    fail "metiqd exited immediately. Check ${LOG_PATH}.daemon"
   fi
 fi

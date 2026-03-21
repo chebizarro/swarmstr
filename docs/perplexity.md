@@ -1,5 +1,5 @@
 ---
-summary: "Perplexity Search is not currently a supported provider for swarmstr's web_search tool"
+summary: "Perplexity Search is not currently a supported provider for metiq's web_search tool"
 read_when:
   - Wondering whether Perplexity can be used for agent web search
 title: "Perplexity Search"

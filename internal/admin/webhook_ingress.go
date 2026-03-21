@@ -8,7 +8,7 @@ package admin
 //	POST /hooks/agent  — run an isolated agent turn (fire-and-forget)
 //	POST /hooks/<name> — matched against hooks.mappings[].match.path
 //
-// Auth: "Authorization: Bearer <token>" or "X-Swarmstr-Token: <token>".
+// Auth: "Authorization: Bearer <token>" or "X-Metiq-Token: <token>".
 // Query-string tokens are not accepted.
 // Repeated auth failures are rate-limited per remote IP.
 
@@ -78,7 +78,7 @@ func hooksExtractToken(r *http.Request) string {
 			return strings.TrimPrefix(auth, "Bearer ")
 		}
 	}
-	if t := r.Header.Get("X-Swarmstr-Token"); t != "" {
+	if t := r.Header.Get("X-Metiq-Token"); t != "" {
 		return t
 	}
 	return ""
@@ -177,12 +177,12 @@ func mountWebhookIngress(mux *http.ServeMux, opts ServerOptions) {
 			return
 		}
 
-		// Require token in Authorization or X-Swarmstr-Token header.
+		// Require token in Authorization or X-Metiq-Token header.
 		// Query-string tokens are intentionally rejected.
 		tok := hooksExtractToken(r)
 		if tok == "" || tok != hcfg.Token {
 			hooksRecordAuthFailure(ip)
-			w.Header().Set("WWW-Authenticate", `Bearer realm="swarmstr hooks"`)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="metiq hooks"`)
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 			return
 		}

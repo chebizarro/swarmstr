@@ -59,7 +59,7 @@ func TestConnectParamsValidate(t *testing.T) {
 		MinProtocol: 1,
 		MaxProtocol: 3,
 		Client: ConnectClient{
-			ID:       "swarmstr-cli",
+			ID:       "metiq-cli",
 			Version:  "0.1.0",
 			Platform: "darwin",
 			Mode:     "local",

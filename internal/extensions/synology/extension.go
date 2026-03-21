@@ -1,4 +1,4 @@
-// Package synology implements a Synology Chat channel extension for swarmstr.
+// Package synology implements a Synology Chat channel extension for metiq.
 //
 // Synology Chat uses an incoming/outgoing webhook model exposed by Synology NAS.
 // Inbound messages arrive via HTTP POST to a registered webhook path.
@@ -15,7 +15,7 @@
 //	  "allowed_senders": []
 //	}
 //
-// To add a Synology Chat channel to your swarmstr config:
+// To add a Synology Chat channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "synology-ops": {

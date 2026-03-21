@@ -11,7 +11,7 @@ title: "Agent Workspace"
 The workspace is the agent's home. It is the only working directory used for
 file tools and for workspace context. Keep it private and treat it as memory.
 
-This is separate from `~/.swarmstr/`, which stores config, credentials, and
+This is separate from `~/.metiq/`, which stores config, credentials, and
 sessions.
 
 **Important:** the workspace is the **default cwd**, not a hard sandbox. Tools
@@ -20,15 +20,15 @@ elsewhere on the host unless sandboxing is enabled.
 
 ## Default location
 
-- Default: `~/.swarmstr/workspace`
-- Override via environment variable: `SWARMSTR_WORKSPACE=/path/to/workspace`
+- Default: `~/.metiq/workspace`
+- Override via environment variable: `METIQ_WORKSPACE=/path/to/workspace`
 - Or in the runtime config:
 
 ```json
 {
   "extra": {
     "workspace": {
-      "dir": "~/.swarmstr/workspace"
+      "dir": "~/.metiq/workspace"
     }
   }
 }
@@ -38,7 +38,7 @@ elsewhere on the host unless sandboxing is enabled.
 
 ## Workspace file map (what each file means)
 
-These are the standard files swarmstr expects inside the workspace:
+These are the standard files metiq expects inside the workspace:
 
 - `AGENTS.md`
   - Operating instructions for the agent and how it should use memory.
@@ -90,19 +90,19 @@ These are the standard files swarmstr expects inside the workspace:
 
 ## What is NOT in the workspace
 
-These live under `~/.swarmstr/` and should NOT be committed to the workspace repo:
+These live under `~/.metiq/` and should NOT be committed to the workspace repo:
 
-- `~/.swarmstr/config.json` (config)
-- `~/.swarmstr/credentials/` (API keys, Nostr keys)
+- `~/.metiq/config.json` (config)
+- `~/.metiq/credentials/` (API keys, Nostr keys)
 - Session transcripts (stored on Nostr, not local files)
-- `~/.swarmstr/skills/` (managed skills)
+- `~/.metiq/skills/` (managed skills)
 
 ## Git backup (recommended, private)
 
 Treat the workspace as private memory. Put it in a **private** git repo.
 
 ```bash
-cd ~/.swarmstr/workspace
+cd ~/.metiq/workspace
 git init
 git add AGENTS.md SOUL.md TOOLS.md IDENTITY.md USER.md HEARTBEAT.md memory/
 git commit -m "Add agent workspace"
@@ -111,7 +111,7 @@ git commit -m "Add agent workspace"
 Add a private remote:
 
 ```bash
-gh repo create swarmstr-workspace --private --source . --remote origin --push
+gh repo create metiq-workspace --private --source . --remote origin --push
 ```
 
 ### Ongoing updates
@@ -128,7 +128,7 @@ git push
 Even in a private repo, avoid:
 
 - nsec private keys, API keys, OAuth tokens, passwords
-- Anything under `~/.swarmstr/`
+- Anything under `~/.metiq/`
 - Raw dumps of private chats or sensitive attachments
 
 Suggested `.gitignore`:
@@ -143,7 +143,7 @@ Suggested `.gitignore`:
 
 ## Moving the workspace to a new machine
 
-1. Clone the repo to the desired path (default `~/.swarmstr/workspace`).
-2. Set `agent.workspace` to that path in `~/.swarmstr/config.json`.
-3. Seed any missing files by starting swarmstrd — it creates default workspace files on first run.
+1. Clone the repo to the desired path (default `~/.metiq/workspace`).
+2. Set `agent.workspace` to that path in `~/.metiq/config.json`.
+3. Seed any missing files by starting metiqd — it creates default workspace files on first run.
 4. Sessions are stored on Nostr relays and will be accessible from the new machine automatically.

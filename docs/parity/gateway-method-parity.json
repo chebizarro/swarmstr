@@ -11,571 +11,571 @@
     {
       "method": "health",
       "status": "implemented",
-      "swarmstr_method": "health",
+      "metiq_method": "health",
       "notes": ""
     },
     {
       "method": "doctor.memory.status",
       "status": "implemented",
-      "swarmstr_method": "doctor.memory.status",
+      "metiq_method": "doctor.memory.status",
       "notes": ""
     },
     {
       "method": "logs.tail",
       "status": "implemented",
-      "swarmstr_method": "logs.tail",
+      "metiq_method": "logs.tail",
       "notes": ""
     },
     {
       "method": "channels.status",
       "status": "implemented",
-      "swarmstr_method": "channels.status",
+      "metiq_method": "channels.status",
       "notes": ""
     },
     {
       "method": "channels.logout",
       "status": "implemented",
-      "swarmstr_method": "channels.logout",
+      "metiq_method": "channels.logout",
       "notes": ""
     },
     {
       "method": "status",
       "status": "implemented",
-      "swarmstr_method": "status",
+      "metiq_method": "status",
       "notes": ""
     },
     {
       "method": "usage.status",
       "status": "implemented",
-      "swarmstr_method": "usage.status",
+      "metiq_method": "usage.status",
       "notes": ""
     },
     {
       "method": "usage.cost",
       "status": "implemented",
-      "swarmstr_method": "usage.cost",
+      "metiq_method": "usage.cost",
       "notes": ""
     },
     {
       "method": "tts.status",
       "status": "implemented",
-      "swarmstr_method": "tts.status",
+      "metiq_method": "tts.status",
       "notes": ""
     },
     {
       "method": "tts.providers",
       "status": "implemented",
-      "swarmstr_method": "tts.providers",
+      "metiq_method": "tts.providers",
       "notes": ""
     },
     {
       "method": "tts.enable",
       "status": "implemented",
-      "swarmstr_method": "tts.enable",
+      "metiq_method": "tts.enable",
       "notes": ""
     },
     {
       "method": "tts.disable",
       "status": "implemented",
-      "swarmstr_method": "tts.disable",
+      "metiq_method": "tts.disable",
       "notes": ""
     },
     {
       "method": "tts.convert",
       "status": "implemented",
-      "swarmstr_method": "tts.convert",
+      "metiq_method": "tts.convert",
       "notes": ""
     },
     {
       "method": "tts.setProvider",
       "status": "implemented",
-      "swarmstr_method": "tts.setProvider",
+      "metiq_method": "tts.setProvider",
       "notes": ""
     },
     {
       "method": "config.get",
       "status": "implemented",
-      "swarmstr_method": "config.get",
+      "metiq_method": "config.get",
       "notes": ""
     },
     {
       "method": "config.set",
       "status": "implemented",
-      "swarmstr_method": "config.set",
+      "metiq_method": "config.set",
       "notes": ""
     },
     {
       "method": "config.apply",
       "status": "implemented",
-      "swarmstr_method": "config.apply",
+      "metiq_method": "config.apply",
       "notes": ""
     },
     {
       "method": "config.patch",
       "status": "implemented",
-      "swarmstr_method": "config.patch",
+      "metiq_method": "config.patch",
       "notes": ""
     },
     {
       "method": "config.schema",
       "status": "implemented",
-      "swarmstr_method": "config.schema",
+      "metiq_method": "config.schema",
       "notes": ""
     },
     {
       "method": "config.schema.lookup",
       "status": "implemented",
-      "swarmstr_method": "config.schema.lookup",
+      "metiq_method": "config.schema.lookup",
       "notes": "Returns schema for a specific config path; full schema when path is empty"
     },
     {
       "method": "exec.approvals.get",
       "status": "implemented",
-      "swarmstr_method": "exec.approvals.get",
+      "metiq_method": "exec.approvals.get",
       "notes": ""
     },
     {
       "method": "exec.approvals.set",
       "status": "implemented",
-      "swarmstr_method": "exec.approvals.set",
+      "metiq_method": "exec.approvals.set",
       "notes": ""
     },
     {
       "method": "exec.approvals.node.get",
       "status": "implemented",
-      "swarmstr_method": "exec.approvals.node.get",
+      "metiq_method": "exec.approvals.node.get",
       "notes": ""
     },
     {
       "method": "exec.approvals.node.set",
       "status": "implemented",
-      "swarmstr_method": "exec.approvals.node.set",
+      "metiq_method": "exec.approvals.node.set",
       "notes": ""
     },
     {
       "method": "exec.approval.request",
       "status": "implemented",
-      "swarmstr_method": "exec.approval.request",
+      "metiq_method": "exec.approval.request",
       "notes": ""
     },
     {
       "method": "exec.approval.waitDecision",
       "status": "implemented",
-      "swarmstr_method": "exec.approval.waitDecision",
+      "metiq_method": "exec.approval.waitDecision",
       "notes": ""
     },
     {
       "method": "exec.approval.resolve",
       "status": "implemented",
-      "swarmstr_method": "exec.approval.resolve",
+      "metiq_method": "exec.approval.resolve",
       "notes": ""
     },
     {
       "method": "wizard.start",
       "status": "implemented",
-      "swarmstr_method": "wizard.start",
+      "metiq_method": "wizard.start",
       "notes": ""
     },
     {
       "method": "wizard.next",
       "status": "implemented",
-      "swarmstr_method": "wizard.next",
+      "metiq_method": "wizard.next",
       "notes": ""
     },
     {
       "method": "wizard.cancel",
       "status": "implemented",
-      "swarmstr_method": "wizard.cancel",
+      "metiq_method": "wizard.cancel",
       "notes": ""
     },
     {
       "method": "wizard.status",
       "status": "implemented",
-      "swarmstr_method": "wizard.status",
+      "metiq_method": "wizard.status",
       "notes": ""
     },
     {
       "method": "talk.config",
       "status": "implemented",
-      "swarmstr_method": "talk.config",
+      "metiq_method": "talk.config",
       "notes": ""
     },
     {
       "method": "talk.mode",
       "status": "implemented",
-      "swarmstr_method": "talk.mode",
+      "metiq_method": "talk.mode",
       "notes": ""
     },
     {
       "method": "models.list",
       "status": "implemented",
-      "swarmstr_method": "models.list",
+      "metiq_method": "models.list",
       "notes": ""
     },
     {
       "method": "tools.catalog",
       "status": "implemented",
-      "swarmstr_method": "tools.catalog",
+      "metiq_method": "tools.catalog",
       "notes": ""
     },
     {
       "method": "agents.list",
       "status": "implemented",
-      "swarmstr_method": "agents.list",
+      "metiq_method": "agents.list",
       "notes": ""
     },
     {
       "method": "agents.create",
       "status": "implemented",
-      "swarmstr_method": "agents.create",
+      "metiq_method": "agents.create",
       "notes": ""
     },
     {
       "method": "agents.update",
       "status": "implemented",
-      "swarmstr_method": "agents.update",
+      "metiq_method": "agents.update",
       "notes": ""
     },
     {
       "method": "agents.delete",
       "status": "implemented",
-      "swarmstr_method": "agents.delete",
+      "metiq_method": "agents.delete",
       "notes": ""
     },
     {
       "method": "agents.files.list",
       "status": "implemented",
-      "swarmstr_method": "agents.files.list",
+      "metiq_method": "agents.files.list",
       "notes": ""
     },
     {
       "method": "agents.files.get",
       "status": "implemented",
-      "swarmstr_method": "agents.files.get",
+      "metiq_method": "agents.files.get",
       "notes": ""
     },
     {
       "method": "agents.files.set",
       "status": "implemented",
-      "swarmstr_method": "agents.files.set",
+      "metiq_method": "agents.files.set",
       "notes": ""
     },
     {
       "method": "skills.status",
       "status": "implemented",
-      "swarmstr_method": "skills.status",
+      "metiq_method": "skills.status",
       "notes": ""
     },
     {
       "method": "skills.bins",
       "status": "implemented",
-      "swarmstr_method": "skills.bins",
+      "metiq_method": "skills.bins",
       "notes": ""
     },
     {
       "method": "skills.install",
       "status": "implemented",
-      "swarmstr_method": "skills.install",
+      "metiq_method": "skills.install",
       "notes": ""
     },
     {
       "method": "skills.update",
       "status": "implemented",
-      "swarmstr_method": "skills.update",
+      "metiq_method": "skills.update",
       "notes": ""
     },
     {
       "method": "update.run",
       "status": "implemented",
-      "swarmstr_method": "update.run",
+      "metiq_method": "update.run",
       "notes": ""
     },
     {
       "method": "voicewake.get",
       "status": "implemented",
-      "swarmstr_method": "voicewake.get",
+      "metiq_method": "voicewake.get",
       "notes": ""
     },
     {
       "method": "voicewake.set",
       "status": "implemented",
-      "swarmstr_method": "voicewake.set",
+      "metiq_method": "voicewake.set",
       "notes": ""
     },
     {
       "method": "secrets.reload",
       "status": "implemented",
-      "swarmstr_method": "secrets.reload",
+      "metiq_method": "secrets.reload",
       "notes": ""
     },
     {
       "method": "secrets.resolve",
       "status": "implemented",
-      "swarmstr_method": "secrets.resolve",
+      "metiq_method": "secrets.resolve",
       "notes": ""
     },
     {
       "method": "sessions.list",
       "status": "implemented",
-      "swarmstr_method": "sessions.list",
+      "metiq_method": "sessions.list",
       "notes": ""
     },
     {
       "method": "sessions.preview",
       "status": "implemented",
-      "swarmstr_method": "sessions.preview",
+      "metiq_method": "sessions.preview",
       "notes": ""
     },
     {
       "method": "sessions.patch",
       "status": "implemented",
-      "swarmstr_method": "sessions.patch",
+      "metiq_method": "sessions.patch",
       "notes": ""
     },
     {
       "method": "sessions.reset",
       "status": "implemented",
-      "swarmstr_method": "sessions.reset",
+      "metiq_method": "sessions.reset",
       "notes": ""
     },
     {
       "method": "sessions.delete",
       "status": "implemented",
-      "swarmstr_method": "sessions.delete",
+      "metiq_method": "sessions.delete",
       "notes": ""
     },
     {
       "method": "sessions.compact",
       "status": "implemented",
-      "swarmstr_method": "sessions.compact",
+      "metiq_method": "sessions.compact",
       "notes": ""
     },
     {
       "method": "last-heartbeat",
       "status": "implemented",
-      "swarmstr_method": "last-heartbeat",
+      "metiq_method": "last-heartbeat",
       "notes": ""
     },
     {
       "method": "set-heartbeats",
       "status": "implemented",
-      "swarmstr_method": "set-heartbeats",
+      "metiq_method": "set-heartbeats",
       "notes": ""
     },
     {
       "method": "wake",
       "status": "implemented",
-      "swarmstr_method": "wake",
+      "metiq_method": "wake",
       "notes": ""
     },
     {
       "method": "node.pair.request",
       "status": "implemented",
-      "swarmstr_method": "node.pair.request",
+      "metiq_method": "node.pair.request",
       "notes": ""
     },
     {
       "method": "node.pair.list",
       "status": "implemented",
-      "swarmstr_method": "node.pair.list",
+      "metiq_method": "node.pair.list",
       "notes": ""
     },
     {
       "method": "node.pair.approve",
       "status": "implemented",
-      "swarmstr_method": "node.pair.approve",
+      "metiq_method": "node.pair.approve",
       "notes": ""
     },
     {
       "method": "node.pair.reject",
       "status": "implemented",
-      "swarmstr_method": "node.pair.reject",
+      "metiq_method": "node.pair.reject",
       "notes": ""
     },
     {
       "method": "node.pair.verify",
       "status": "implemented",
-      "swarmstr_method": "node.pair.verify",
+      "metiq_method": "node.pair.verify",
       "notes": ""
     },
     {
       "method": "device.pair.list",
       "status": "implemented",
-      "swarmstr_method": "device.pair.list",
+      "metiq_method": "device.pair.list",
       "notes": ""
     },
     {
       "method": "device.pair.approve",
       "status": "implemented",
-      "swarmstr_method": "device.pair.approve",
+      "metiq_method": "device.pair.approve",
       "notes": ""
     },
     {
       "method": "device.pair.reject",
       "status": "implemented",
-      "swarmstr_method": "device.pair.reject",
+      "metiq_method": "device.pair.reject",
       "notes": ""
     },
     {
       "method": "device.pair.remove",
       "status": "implemented",
-      "swarmstr_method": "device.pair.remove",
+      "metiq_method": "device.pair.remove",
       "notes": ""
     },
     {
       "method": "device.token.rotate",
       "status": "implemented",
-      "swarmstr_method": "device.token.rotate",
+      "metiq_method": "device.token.rotate",
       "notes": ""
     },
     {
       "method": "device.token.revoke",
       "status": "implemented",
-      "swarmstr_method": "device.token.revoke",
+      "metiq_method": "device.token.revoke",
       "notes": ""
     },
     {
       "method": "node.rename",
       "status": "implemented",
-      "swarmstr_method": "node.rename",
+      "metiq_method": "node.rename",
       "notes": ""
     },
     {
       "method": "node.list",
       "status": "implemented",
-      "swarmstr_method": "node.list",
+      "metiq_method": "node.list",
       "notes": ""
     },
     {
       "method": "node.describe",
       "status": "implemented",
-      "swarmstr_method": "node.describe",
+      "metiq_method": "node.describe",
       "notes": ""
     },
     {
       "method": "node.invoke",
       "status": "implemented",
-      "swarmstr_method": "node.invoke",
+      "metiq_method": "node.invoke",
       "notes": ""
     },
     {
       "method": "node.invoke.result",
       "status": "implemented",
-      "swarmstr_method": "node.invoke.result",
+      "metiq_method": "node.invoke.result",
       "notes": ""
     },
     {
       "method": "node.event",
       "status": "implemented",
-      "swarmstr_method": "node.event",
+      "metiq_method": "node.event",
       "notes": ""
     },
     {
       "method": "node.canvas.capability.refresh",
       "status": "implemented",
-      "swarmstr_method": "node.canvas.capability.refresh",
+      "metiq_method": "node.canvas.capability.refresh",
       "notes": ""
     },
     {
       "method": "cron.list",
       "status": "implemented",
-      "swarmstr_method": "cron.list",
+      "metiq_method": "cron.list",
       "notes": ""
     },
     {
       "method": "cron.status",
       "status": "implemented",
-      "swarmstr_method": "cron.status",
+      "metiq_method": "cron.status",
       "notes": ""
     },
     {
       "method": "cron.add",
       "status": "implemented",
-      "swarmstr_method": "cron.add",
+      "metiq_method": "cron.add",
       "notes": ""
     },
     {
       "method": "cron.update",
       "status": "implemented",
-      "swarmstr_method": "cron.update",
+      "metiq_method": "cron.update",
       "notes": ""
     },
     {
       "method": "cron.remove",
       "status": "implemented",
-      "swarmstr_method": "cron.remove",
+      "metiq_method": "cron.remove",
       "notes": ""
     },
     {
       "method": "cron.run",
       "status": "implemented",
-      "swarmstr_method": "cron.run",
+      "metiq_method": "cron.run",
       "notes": ""
     },
     {
       "method": "cron.runs",
       "status": "implemented",
-      "swarmstr_method": "cron.runs",
+      "metiq_method": "cron.runs",
       "notes": ""
     },
     {
       "method": "system-presence",
       "status": "implemented",
-      "swarmstr_method": "system-presence",
+      "metiq_method": "system-presence",
       "notes": ""
     },
     {
       "method": "system-event",
       "status": "implemented",
-      "swarmstr_method": "system-event",
+      "metiq_method": "system-event",
       "notes": ""
     },
     {
       "method": "send",
       "status": "implemented",
-      "swarmstr_method": "send",
+      "metiq_method": "send",
       "notes": ""
     },
     {
       "method": "agent",
       "status": "implemented",
-      "swarmstr_method": "agent",
+      "metiq_method": "agent",
       "notes": ""
     },
     {
       "method": "agent.identity.get",
       "status": "implemented",
-      "swarmstr_method": "agent.identity.get",
+      "metiq_method": "agent.identity.get",
       "notes": ""
     },
     {
       "method": "agent.wait",
       "status": "implemented",
-      "swarmstr_method": "agent.wait",
+      "metiq_method": "agent.wait",
       "notes": ""
     },
     {
       "method": "browser.request",
       "status": "implemented",
-      "swarmstr_method": "browser.request",
+      "metiq_method": "browser.request",
       "notes": ""
     },
     {
       "method": "chat.history",
       "status": "implemented",
-      "swarmstr_method": "chat.history",
+      "metiq_method": "chat.history",
       "notes": ""
     },
     {
       "method": "chat.abort",
       "status": "implemented",
-      "swarmstr_method": "chat.abort",
+      "metiq_method": "chat.abort",
       "notes": ""
     },
     {
       "method": "chat.send",
       "status": "implemented",
-      "swarmstr_method": "chat.send",
+      "metiq_method": "chat.send",
       "notes": ""
     }
   ]

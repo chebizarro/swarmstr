@@ -1,4 +1,4 @@
-// Package secrets implements secrets loading and resolution for swarmstr.
+// Package secrets implements secrets loading and resolution for metiq.
 //
 // Sources (in priority order):
 //  1. Environment variables (always included, highest priority)

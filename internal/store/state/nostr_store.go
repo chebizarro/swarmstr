@@ -128,7 +128,7 @@ func (s *NostrStore) PutAppend(ctx context.Context, addr Address, content string
 	if addr.DTag != "" {
 		tags = appendTags(tags, []string{"ref", addr.DTag})
 	}
-	tags = appendTags(tags, []string{"swarmstr_nonce", fmt.Sprintf("%d", time.Now().UnixNano())})
+	tags = appendTags(tags, []string{"metiq_nonce", fmt.Sprintf("%d", time.Now().UnixNano())})
 
 	evt := nostr.Event{
 		Kind:      toNostrKind(addr.Kind),

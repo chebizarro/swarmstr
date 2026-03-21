@@ -1,7 +1,7 @@
 ---
-summary: "Plugin manifest format and agent tool plugin development for swarmstr"
+summary: "Plugin manifest format and agent tool plugin development for metiq"
 read_when:
-  - Building a swarmstr plugin
+  - Building a metiq plugin
   - Creating custom agent tools as plugins
   - Understanding the plugin manifest format
 title: "Plugin Manifest & Agent Tools"
@@ -9,17 +9,17 @@ title: "Plugin Manifest & Agent Tools"
 
 # Plugin Manifest & Agent Tools
 
-swarmstr supports a plugin system for extending the agent with custom tools, skills, and channel adapters. Plugins are Go packages or scripted tool bundles.
+metiq supports a plugin system for extending the agent with custom tools, skills, and channel adapters. Plugins are Go packages or scripted tool bundles.
 
-## Plugin Manifest (`swarmstr.plugin.json`)
+## Plugin Manifest (`metiq.plugin.json`)
 
-Every plugin must ship a `swarmstr.plugin.json` manifest in the plugin root directory.
+Every plugin must ship a `metiq.plugin.json` manifest in the plugin root directory.
 
 ```json
 {
   "id": "my-plugin",
   "name": "My Plugin",
-  "description": "A custom plugin for swarmstr",
+  "description": "A custom plugin for metiq",
   "version": "0.1.0",
   "kind": "tool",
   "configSchema": {
@@ -54,7 +54,7 @@ Every plugin must ship a `swarmstr.plugin.json` manifest in the plugin root dire
 
 ```
 my-plugin/
-├── swarmstr.plugin.json   # Manifest (required)
+├── metiq.plugin.json   # Manifest (required)
 ├── README.md              # Documentation
 ├── tools/
 │   └── my_tool.go         # Go tool implementation
@@ -74,7 +74,7 @@ package myplugin
 
 import (
     "context"
-    "github.com/yourorg/swarmstr/internal/agent/toolbuiltin"
+    "github.com/yourorg/metiq/internal/agent/toolbuiltin"
 )
 
 func RegisterMyTool(tools *toolbuiltin.Registry) {
@@ -85,7 +85,7 @@ func RegisterMyTool(tools *toolbuiltin.Registry) {
 }
 ```
 
-Register in `cmd/swarmstrd/main.go` after the other tool registrations:
+Register in `cmd/metiqd/main.go` after the other tool registrations:
 
 ```go
 myplugin.RegisterMyTool(tools)
@@ -115,14 +115,14 @@ The agent should call the script at `skills/my-tool/tool.py` to use it.
 
 ## Plugin Configuration
 
-Enable plugins in `~/.swarmstr/config.json`:
+Enable plugins in `~/.metiq/config.json`:
 
 ```json5
 {
   "plugins": {
     "enabled": true,
     "load": {
-      "paths": ["~/.swarmstr/plugins/my-plugin"]
+      "paths": ["~/.metiq/plugins/my-plugin"]
     },
     "entries": {
       "my-plugin": {
@@ -137,9 +137,9 @@ Enable plugins in `~/.swarmstr/config.json`:
 ## Plugin Discovery Order
 
 1. `<workspace>/plugins/` — per-agent plugins (highest precedence)
-2. `~/.swarmstr/plugins/` — user-installed plugins
+2. `~/.metiq/plugins/` — user-installed plugins
 3. `plugins.load.paths` — additional plugin paths from config
-4. Built-in plugins — compiled into swarmstrd
+4. Built-in plugins — compiled into metiqd
 
 ## Channel Plugins
 
@@ -183,13 +183,13 @@ Plugins with `"kind": "memory"` can provide custom memory backends (vector datab
 
 ```bash
 # List installed plugins
-swarmstr plugins list
+metiq plugins list
 
 # Show plugin details
-swarmstr plugins info my-plugin
+metiq plugins info my-plugin
 
 # Install a plugin (future)
-swarmstr plugins install ./path/to/my-plugin
+metiq plugins install ./path/to/my-plugin
 ```
 
 ## See Also

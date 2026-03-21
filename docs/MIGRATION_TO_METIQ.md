@@ -9,5 +9,5 @@ Migration steps:
 - Update any systemd units, scripts, or automation referencing old binary names or paths.
 
 Notes:
-- Historical references in older docs and fixtures may still mention `swarmstr`; they are not runtime compatibility shims.
+- Historical references in older docs and fixtures may still mention `swarmstr`; they are historical only, not compatibility shims.
 - External registry/repository settings outside this repo should be updated alongside release and deployment infrastructure.

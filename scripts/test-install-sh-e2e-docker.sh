@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_NAME="${METIQ_INSTALL_E2E_IMAGE:-${CLAWDBOT_INSTALL_E2E_IMAGE:-swarmstr-install-e2e:local}}"
-INSTALL_URL="${METIQ_INSTALL_URL:-${CLAWDBOT_INSTALL_URL:-https://swarmstr.bot/install.sh}}"
+IMAGE_NAME="${METIQ_INSTALL_E2E_IMAGE:-${CLAWDBOT_INSTALL_E2E_IMAGE:-metiq-install-e2e:local}}"
+INSTALL_URL="${METIQ_INSTALL_URL:-${CLAWDBOT_INSTALL_URL:-https://metiq.bot/install.sh}}"
 
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"

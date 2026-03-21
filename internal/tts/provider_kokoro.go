@@ -40,7 +40,7 @@ func (p *KokoroProvider) Convert(ctx context.Context, text, voice string) ([]byt
 	}
 
 	// Write text to a temp input file so the CLI doesn't have shell-escaping issues.
-	textFile, ferr := os.CreateTemp("", "swarmstr-kokoro-in-*.txt")
+	textFile, ferr := os.CreateTemp("", "metiq-kokoro-in-*.txt")
 	if ferr != nil {
 		return nil, "", fmt.Errorf("create text temp file: %w", ferr)
 	}
@@ -52,7 +52,7 @@ func (p *KokoroProvider) Convert(ctx context.Context, text, voice string) ([]byt
 	textFile.Close()
 
 	// Output to a temp wav file.
-	outFile, ferr := os.CreateTemp("", "swarmstr-kokoro-out-*.wav")
+	outFile, ferr := os.CreateTemp("", "metiq-kokoro-out-*.wav")
 	if ferr != nil {
 		return nil, "", fmt.Errorf("create wav temp file: %w", ferr)
 	}

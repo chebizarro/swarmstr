@@ -1,8 +1,8 @@
 ---
-summary: "VPS quick-reference for swarmstr deployment"
+summary: "VPS quick-reference for metiq deployment"
 read_when:
   - Quick VPS setup reference
-  - Choosing a VPS for swarmstr
+  - Choosing a VPS for metiq
 title: "VPS Quick Reference"
 ---
 
@@ -36,23 +36,23 @@ For detailed guides, see [VPS Deploy Guides](/install/vps-guides).
 ssh root@<ip>
 
 # Create user
-adduser swarmstr && usermod -aG sudo swarmstr
-su - swarmstr
+adduser metiq && usermod -aG sudo metiq
+su - metiq
 
 # Download binary
-curl -L https://github.com/yourorg/swarmstr/releases/latest/download/swarmstrd-linux-amd64 \
-  -o ~/.local/bin/swarmstrd
-mkdir -p ~/.local/bin && chmod +x ~/.local/bin/swarmstrd
+curl -L https://github.com/yourorg/metiq/releases/latest/download/metiqd-linux-amd64 \
+  -o ~/.local/bin/metiqd
+mkdir -p ~/.local/bin && chmod +x ~/.local/bin/metiqd
 
 # Configure
-mkdir -p ~/.swarmstr
-# Create ~/.swarmstr/bootstrap.json with private_key, relays, admin_listen_addr
-# Create ~/.swarmstr/config.json with providers, agent config
+mkdir -p ~/.metiq
+# Create ~/.metiq/bootstrap.json with private_key, relays, admin_listen_addr
+# Create ~/.metiq/config.json with providers, agent config
 # Install as systemd service:
 mkdir -p ~/.config/systemd/user
-# (create swarmstrd.service unit — see VPS Deploy Guides for template)
+# (create metiqd.service unit — see VPS Deploy Guides for template)
 systemctl --user daemon-reload
-systemctl --user enable --now swarmstrd
+systemctl --user enable --now metiqd
 ```
 
 ## Firewall (UFW)
@@ -60,7 +60,7 @@ systemctl --user enable --now swarmstrd
 ```bash
 sudo ufw allow OpenSSH
 sudo ufw enable
-# That's it — swarmstr only needs outbound ports
+# That's it — metiq only needs outbound ports
 ```
 
 ## See Also

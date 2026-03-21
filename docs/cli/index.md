@@ -1,22 +1,22 @@
 ---
-summary: "swarmstr CLI reference for `swarmstr` commands, subcommands, and options"
+summary: "metiq CLI reference for `metiq` commands, subcommands, and options"
 read_when:
   - Adding or modifying CLI commands or options
   - Documenting new command surfaces
-  - Looking up what `swarmstr <command>` does
+  - Looking up what `metiq <command>` does
 title: "CLI Reference"
 ---
 
 # CLI Reference
 
-The `swarmstr` binary is the control-plane client for the swarmstrd daemon. It communicates over the admin HTTP API (address configured via `admin_listen_addr` in `bootstrap.json`).
+The `metiq` binary is the control-plane client for the metiqd daemon. It communicates over the admin HTTP API (address configured via `admin_listen_addr` in `bootstrap.json`).
 
 **Global flag**: `--bootstrap <path>` — path to bootstrap config JSON (auto-detected by default).
 
 ## Command Tree
 
 ```
-swarmstr <command> [subcommand] [flags]
+metiq <command> [subcommand] [flags]
   version
   status
   health
@@ -89,10 +89,10 @@ swarmstr <command> [subcommand] [flags]
 
 ### `version`
 
-Print swarmstr version.
+Print metiq version.
 
 ```bash
-swarmstr version
+metiq version
 ```
 
 ### `status`
@@ -100,8 +100,8 @@ swarmstr version
 Show daemon health and relay connection status.
 
 ```bash
-swarmstr status
-swarmstr status --json
+metiq status
+metiq status --json
 ```
 
 ### `health`
@@ -109,8 +109,8 @@ swarmstr status --json
 Lightweight health check (exits 0 if healthy).
 
 ```bash
-swarmstr health
-swarmstr health --json
+metiq health
+metiq health --json
 ```
 
 ### `logs`
@@ -118,9 +118,9 @@ swarmstr health --json
 Tail daemon logs.
 
 ```bash
-swarmstr logs
-swarmstr logs --lines 100
-swarmstr logs --lines 50 --level error
+metiq logs
+metiq logs --lines 100
+metiq logs --lines 50 --level error
 ```
 
 ### `doctor`
@@ -128,7 +128,7 @@ swarmstr logs --lines 50 --level error
 Diagnostics: checks config, relay connections, credentials.
 
 ```bash
-swarmstr doctor
+metiq doctor
 ```
 
 ### `keygen`
@@ -136,8 +136,8 @@ swarmstr doctor
 Generate a fresh Nostr keypair (nsec + npub).
 
 ```bash
-swarmstr keygen
-swarmstr keygen --json
+metiq keygen
+metiq keygen --json
 ```
 
 Output includes the generated nsec/npub and instructions for adding to your bootstrap config.
@@ -149,8 +149,8 @@ Output includes the generated nsec/npub and instructions for adding to your boot
 Send a Nostr DM to a pubkey directly (bypasses the daemon).
 
 ```bash
-swarmstr dm-send --to npub1abc... --text "Hello"
-swarmstr dm-send --to npub1abc... --text "Hello" --timeout 30
+metiq dm-send --to npub1abc... --text "Hello"
+metiq dm-send --to npub1abc... --text "Hello" --timeout 30
 ```
 
 Options:
@@ -163,8 +163,8 @@ Options:
 Search the in-process memory index (daemon must be running).
 
 ```bash
-swarmstr memory-search -q "relay configuration"
-swarmstr memory-search -q "deploy pipeline" --limit 20
+metiq memory-search -q "relay configuration"
+metiq memory-search -q "deploy pipeline" --limit 20
 ```
 
 Options:
@@ -178,8 +178,8 @@ Options:
 List all registered agents and their status.
 
 ```bash
-swarmstr agents list
-swarmstr agents list --json
+metiq agents list
+metiq agents list --json
 ```
 
 ## Models
@@ -189,9 +189,9 @@ swarmstr agents list --json
 List available models from the running daemon.
 
 ```bash
-swarmstr models list
-swarmstr models list --agent main
-swarmstr models list --json
+metiq models list
+metiq models list --agent main
+metiq models list --json
 ```
 
 ### `models set <model-id>`
@@ -199,8 +199,8 @@ swarmstr models list --json
 Set the default model for an agent.
 
 ```bash
-swarmstr models set claude-opus-4-5
-swarmstr models set openai/gpt-4o --agent fast-reply
+metiq models set claude-opus-4-5
+metiq models set openai/gpt-4o --agent fast-reply
 ```
 
 ## Channels
@@ -210,8 +210,8 @@ swarmstr models set openai/gpt-4o --agent fast-reply
 List configured Nostr channels.
 
 ```bash
-swarmstr channels list
-swarmstr channels list --json
+metiq channels list
+metiq channels list --json
 ```
 
 ### `channels status`
@@ -219,7 +219,7 @@ swarmstr channels list --json
 Show connection status for all channels.
 
 ```bash
-swarmstr channels status
+metiq channels status
 ```
 
 ## Config
@@ -227,12 +227,12 @@ swarmstr channels status
 Manage the runtime ConfigDoc (stored on Nostr).
 
 ```bash
-swarmstr config get
-swarmstr config get agent.default_model
-swarmstr config validate
-swarmstr config path
-swarmstr config export > config.json
-swarmstr config import --file config.json
+metiq config get
+metiq config get agent.default_model
+metiq config validate
+metiq config path
+metiq config export > config.json
+metiq config import --file config.json
 ```
 
 ## Sessions
@@ -240,9 +240,9 @@ swarmstr config import --file config.json
 ### `sessions list`
 
 ```bash
-swarmstr sessions list
-swarmstr sessions list --json
-swarmstr sessions list --active 60
+metiq sessions list
+metiq sessions list --json
+metiq sessions list --active 60
 ```
 
 ### `sessions get <session-id>`
@@ -250,7 +250,7 @@ swarmstr sessions list --active 60
 Show details for a specific session.
 
 ```bash
-swarmstr sessions get abc123
+metiq sessions get abc123
 ```
 
 ### `sessions export <session-id>`
@@ -258,7 +258,7 @@ swarmstr sessions get abc123
 Export transcript for a session.
 
 ```bash
-swarmstr sessions export abc123
+metiq sessions export abc123
 ```
 
 ### `sessions delete <session-id>`
@@ -266,7 +266,7 @@ swarmstr sessions export abc123
 Delete a session.
 
 ```bash
-swarmstr sessions delete abc123
+metiq sessions delete abc123
 ```
 
 ### `sessions reset <session-id>`
@@ -274,7 +274,7 @@ swarmstr sessions delete abc123
 Reset a session (clear history, keep settings).
 
 ```bash
-swarmstr sessions reset abc123
+metiq sessions reset abc123
 ```
 
 ### `sessions prune`
@@ -282,9 +282,9 @@ swarmstr sessions reset abc123
 Prune old sessions.
 
 ```bash
-swarmstr sessions prune --older-than 30d --dry-run
-swarmstr sessions prune --older-than 30d
-swarmstr sessions prune --all --dry-run
+metiq sessions prune --older-than 30d --dry-run
+metiq sessions prune --older-than 30d
+metiq sessions prune --all --dry-run
 ```
 
 Options:
@@ -297,13 +297,13 @@ Options:
 Manage remote hardware nodes (Raspberry Pi, etc.).
 
 ```bash
-swarmstr nodes list
-swarmstr nodes add --name mypi --pubkey npub1...
-swarmstr nodes status mypi
-swarmstr nodes send --node mypi --command canvas.clear
-swarmstr nodes pending
-swarmstr nodes approve <request-id>
-swarmstr nodes invoke --node mypi --command agent --args '{"text":"ping"}'
+metiq nodes list
+metiq nodes add --name mypi --pubkey npub1...
+metiq nodes status mypi
+metiq nodes send --node mypi --command canvas.clear
+metiq nodes pending
+metiq nodes approve <request-id>
+metiq nodes invoke --node mypi --command agent --args '{"text":"ping"}'
 ```
 
 ## Cron
@@ -311,10 +311,10 @@ swarmstr nodes invoke --node mypi --command agent --args '{"text":"ping"}'
 Manage scheduled jobs. See [Cron Jobs](/automation/cron-jobs).
 
 ```bash
-swarmstr cron list
-swarmstr cron add --name daily-check --every 24h
-swarmstr cron remove <id>
-swarmstr cron run <id>
+metiq cron list
+metiq cron add --name daily-check --every 24h
+metiq cron remove <id>
+metiq cron run <id>
 ```
 
 ## Hooks
@@ -322,15 +322,15 @@ swarmstr cron run <id>
 See [Hooks](/automation/hooks).
 
 ```bash
-swarmstr hooks list
-swarmstr hooks list --json
+metiq hooks list
+metiq hooks list --json
 ```
 
 ## Skills
 
 ```bash
-swarmstr skills list
-swarmstr skills status
+metiq skills list
+metiq skills status
 ```
 
 ## Secrets
@@ -338,9 +338,9 @@ swarmstr skills status
 Manage named secrets in the runtime config.
 
 ```bash
-swarmstr secrets list
-swarmstr secrets get ANTHROPIC_API_KEY
-swarmstr secrets set MY_TOKEN "value"
+metiq secrets list
+metiq secrets get ANTHROPIC_API_KEY
+metiq secrets set MY_TOKEN "value"
 ```
 
 ## Approvals
@@ -348,9 +348,9 @@ swarmstr secrets set MY_TOKEN "value"
 Manage pending tool approval requests (for `exec` tool with approval mode).
 
 ```bash
-swarmstr approvals list
-swarmstr approvals approve <approval-id>
-swarmstr approvals deny <approval-id>
+metiq approvals list
+metiq approvals approve <approval-id>
+metiq approvals deny <approval-id>
 ```
 
 ## Plugins
@@ -358,22 +358,22 @@ swarmstr approvals deny <approval-id>
 Manage plugins (skills written in JavaScript).
 
 ```bash
-swarmstr plugins list
-swarmstr plugins search "nostr"
-swarmstr plugins install my-plugin
-swarmstr plugins publish --path ./my-plugin
+metiq plugins list
+metiq plugins search "nostr"
+metiq plugins install my-plugin
+metiq plugins publish --path ./my-plugin
 ```
 
 ## Daemon
 
-Manage the swarmstrd background process.
+Manage the metiqd background process.
 
 ```bash
-swarmstr daemon start
-swarmstr daemon stop
-swarmstr daemon restart
-swarmstr daemon status
-swarmstr daemon start --bootstrap ~/.swarmstr/bootstrap.json
+metiq daemon start
+metiq daemon stop
+metiq daemon restart
+metiq daemon status
+metiq daemon start --bootstrap ~/.metiq/bootstrap.json
 ```
 
 ## GW (Raw RPC)
@@ -381,9 +381,9 @@ swarmstr daemon start --bootstrap ~/.swarmstr/bootstrap.json
 Send a raw JSON-RPC call to the gateway.
 
 ```bash
-swarmstr gw <method> [key=value ...]
-swarmstr gw --json status.get
-swarmstr gw config.get path=agent.default_model
+metiq gw <method> [key=value ...]
+metiq gw --json status.get
+metiq gw config.get path=agent.default_model
 ```
 
 ## Slash Commands (In-Chat)

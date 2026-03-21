@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Rootless swarmstrd in Podman: run after one-time setup.
+# Rootless metiqd in Podman: run after one-time setup.
 #
 # One-time setup (from repo root): ./setup-podman.sh
 # Then:
-#   ./scripts/run-openclaw-podman.sh launch           # Start swarmstrd
+#   ./scripts/run-openclaw-podman.sh launch           # Start metiqd
 #   ./scripts/run-openclaw-podman.sh launch setup      # Onboarding wizard
 #
-# As the swarmstr user (no repo needed):
-#   sudo -u swarmstr /home/swarmstr/run-openclaw-podman.sh
-#   sudo -u swarmstr /home/swarmstr/run-openclaw-podman.sh setup
+# As the metiq user (no repo needed):
+#   sudo -u metiq /home/metiq/run-openclaw-podman.sh
+#   sudo -u metiq /home/metiq/run-openclaw-podman.sh setup
 #
 # Legacy: "setup-host" delegates to ../setup-podman.sh
 
 set -euo pipefail
 
-METIQ_USER="${METIQ_PODMAN_USER:-swarmstr}"
+METIQ_USER="${METIQ_PODMAN_USER:-metiq}"
 
 resolve_user_home() {
   local user="$1"
@@ -51,7 +51,7 @@ fi
 if [[ "${1:-}" == "launch" ]]; then
   shift
   if [[ -n "${METIQ_UID:-}" && "$(id -u)" -ne "$METIQ_UID" ]]; then
-    # Exec as swarmstr with cwd=/tmp so a nologin user never inherits an invalid cwd.
+    # Exec as metiq with cwd=/tmp so a nologin user never inherits an invalid cwd.
     exec sudo -u "$METIQ_USER" env HOME="$METIQ_HOME" PATH="$PATH" TERM="${TERM:-}" \
       bash -c 'cd /tmp && exec '"$LAUNCH_SCRIPT"' "$@"' _ "$@"
   fi
@@ -70,8 +70,8 @@ fi
 CONFIG_DIR="${METIQ_CONFIG_DIR:-$EFFECTIVE_HOME/.metiq}"
 ENV_FILE="${METIQ_PODMAN_ENV:-$CONFIG_DIR/.env}"
 WORKSPACE_DIR="${METIQ_WORKSPACE_DIR:-$CONFIG_DIR/workspace}"
-CONTAINER_NAME="${METIQ_PODMAN_CONTAINER:-swarmstrd}"
-METIQ_IMAGE="${METIQ_PODMAN_IMAGE:-swarmstrd:local}"
+CONTAINER_NAME="${METIQ_PODMAN_CONTAINER:-metiqd}"
+METIQ_IMAGE="${METIQ_PODMAN_IMAGE:-metiqd:local}"
 PODMAN_PULL="${METIQ_PODMAN_PULL:-never}"
 HOST_GATEWAY_PORT="${METIQ_PODMAN_GATEWAY_HOST_PORT:-${METIQ_GATEWAY_PORT:-18789}}"
 HOST_BRIDGE_PORT="${METIQ_PODMAN_BRIDGE_HOST_PORT:-${METIQ_BRIDGE_PORT:-18790}}"
@@ -187,11 +187,11 @@ if [[ "$RUN_SETUP" == true ]]; then
     "${USERNS_ARGS[@]}" "${RUN_USER_ARGS[@]}" \
     -e HOME=/home/node -e TERM=xterm-256color -e BROWSER=echo \
     -e METIQ_GATEWAY_TOKEN="$METIQ_GATEWAY_TOKEN" \
-    -v "$CONFIG_DIR:/home/swarmstr/.metiq:rw" \
-    -v "$WORKSPACE_DIR:/home/swarmstr/.metiq/workspace:rw" \
+    -v "$CONFIG_DIR:/home/metiq/.metiq:rw" \
+    -v "$WORKSPACE_DIR:/home/metiq/.metiq/workspace:rw" \
     "${ENV_FILE_ARGS[@]}" \
     "$METIQ_IMAGE" \
-    /usr/local/bin/swarmstrd onboard "$@"
+    /usr/local/bin/metiqd onboard "$@"
 fi
 
 podman run --pull="$PODMAN_PULL" -d --replace \
@@ -201,12 +201,12 @@ podman run --pull="$PODMAN_PULL" -d --replace \
   -e HOME=/home/node -e TERM=xterm-256color \
   -e METIQ_GATEWAY_TOKEN="$METIQ_GATEWAY_TOKEN" \
   "${ENV_FILE_ARGS[@]}" \
-  -v "$CONFIG_DIR:/home/swarmstr/.metiq:rw" \
-  -v "$WORKSPACE_DIR:/home/swarmstr/.metiq/workspace:rw" \
+  -v "$CONFIG_DIR:/home/metiq/.metiq:rw" \
+  -v "$WORKSPACE_DIR:/home/metiq/.metiq/workspace:rw" \
   -p "${HOST_GATEWAY_PORT}:18789" \
   -p "${HOST_BRIDGE_PORT}:18790" \
   "$METIQ_IMAGE" \
-  /usr/local/bin/swarmstrd
+  /usr/local/bin/metiqd
 
 echo "Container $CONTAINER_NAME started. Dashboard: http://127.0.0.1:${HOST_GATEWAY_PORT}/"
 echo "Logs: podman logs -f $CONTAINER_NAME"

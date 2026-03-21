@@ -63,10 +63,10 @@ Local TTS using the sherpa-onnx offline CLI.
 
 ## Install
 
-1. Download the runtime for your OS (extracts into `~/.swarmstr/tools/sherpa-onnx-tts/runtime`)
-2. Download a voice model (extracts into `~/.swarmstr/tools/sherpa-onnx-tts/models`)
+1. Download the runtime for your OS (extracts into `~/.metiq/tools/sherpa-onnx-tts/runtime`)
+2. Download a voice model (extracts into `~/.metiq/tools/sherpa-onnx-tts/models`)
 
-Update `~/.swarmstr/config.json`:
+Update `~/.metiq/config.json`:
 
 ```json5
 {
@@ -74,8 +74,8 @@ Update `~/.swarmstr/config.json`:
     entries: {
       "sherpa-onnx-tts": {
         env: {
-          SHERPA_ONNX_RUNTIME_DIR: "~/.swarmstr/tools/sherpa-onnx-tts/runtime",
-          SHERPA_ONNX_MODEL_DIR: "~/.swarmstr/tools/sherpa-onnx-tts/models/vits-piper-en_US-lessac-high",
+          SHERPA_ONNX_RUNTIME_DIR: "~/.metiq/tools/sherpa-onnx-tts/runtime",
+          SHERPA_ONNX_MODEL_DIR: "~/.metiq/tools/sherpa-onnx-tts/models/vits-piper-en_US-lessac-high",
         },
       },
     },

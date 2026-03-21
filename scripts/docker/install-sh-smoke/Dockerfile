@@ -15,7 +15,7 @@ RUN set -eux; \
   && rm -rf /var/lib/apt/lists/*
 
 COPY install-sh-common/verify.sh /usr/local/install-sh-common/verify.sh
-COPY install-sh-smoke/run.sh     /usr/local/bin/swarmstr-install-smoke
-RUN chmod +x /usr/local/bin/swarmstr-install-smoke
+COPY install-sh-smoke/run.sh     /usr/local/bin/metiq-install-smoke
+RUN chmod +x /usr/local/bin/metiq-install-smoke
 
-ENTRYPOINT ["/usr/local/bin/swarmstr-install-smoke"]
+ENTRYPOINT ["/usr/local/bin/metiq-install-smoke"]

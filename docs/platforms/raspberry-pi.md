@@ -1,14 +1,14 @@
 ---
-summary: "swarmstr on Raspberry Pi: ARM64 deployment and low-power optimization"
+summary: "metiq on Raspberry Pi: ARM64 deployment and low-power optimization"
 read_when:
-  - Running swarmstr on a Raspberry Pi
+  - Running metiq on a Raspberry Pi
   - Low-power always-on deployment
 title: "Raspberry Pi"
 ---
 
 # Raspberry Pi
 
-swarmstr runs well on Raspberry Pi (3B+, 4, 5) as an always-on Nostr agent node.
+metiq runs well on Raspberry Pi (3B+, 4, 5) as an always-on Nostr agent node.
 The Go binary compiles to ARM64 and armhf with no runtime dependencies.
 
 ## Hardware recommendations
@@ -23,14 +23,14 @@ The Go binary compiles to ARM64 and armhf with no runtime dependencies.
 
 ```bash
 # ARM64 (Pi 3B+ 64-bit OS, Pi 4, Pi 5)
-curl -fsSL https://github.com/your-org/swarmstr/releases/latest/download/swarmstrd-linux-arm64 \
-  -o /usr/local/bin/swarmstrd
-chmod +x /usr/local/bin/swarmstrd
+curl -fsSL https://github.com/your-org/metiq/releases/latest/download/metiqd-linux-arm64 \
+  -o /usr/local/bin/metiqd
+chmod +x /usr/local/bin/metiqd
 
 # ARMv7 (32-bit Pi OS)
-curl -fsSL https://github.com/your-org/swarmstr/releases/latest/download/swarmstrd-linux-armv7 \
-  -o /usr/local/bin/swarmstrd
-chmod +x /usr/local/bin/swarmstrd
+curl -fsSL https://github.com/your-org/metiq/releases/latest/download/metiqd-linux-armv7 \
+  -o /usr/local/bin/metiqd
+chmod +x /usr/local/bin/metiqd
 ```
 
 ## OS recommendation
@@ -56,7 +56,7 @@ sudo dphys-swapfile swapon
 
 ## Performance tuning
 
-For Pi 3B+ / Pi 4 with 2GB RAM, reduce resource usage in `~/.swarmstr/config.json`:
+For Pi 3B+ / Pi 4 with 2GB RAM, reduce resource usage in `~/.metiq/config.json`:
 
 ```json
 {
@@ -84,7 +84,7 @@ Use a smaller/cheaper model to reduce API costs:
 
 ## Power management
 
-swarmstr makes Nostr outbound connections (no inbound ports needed). The Pi can be on a
+metiq makes Nostr outbound connections (no inbound ports needed). The Pi can be on a
 home network behind NAT without any port forwarding.
 
 For remote access, use Tailscale:
@@ -101,9 +101,9 @@ sudo tailscale up
 free -h
 # Check CPU
 htop
-# Check swarmstr daemon
-swarmstr status
-journalctl -u swarmstrd --since "1 hour ago"
+# Check metiq daemon
+metiq status
+journalctl -u metiqd --since "1 hour ago"
 ```
 
 ## Reliability tips
@@ -111,7 +111,7 @@ journalctl -u swarmstrd --since "1 hour ago"
 - Use a quality SD card (Sandisk Endurance / Samsung Pro Endurance) or USB SSD.
 - Enable watchdog for auto-restart on hang:
   ```bash
-  echo 'RuntimeWatchdogSec=30s' >> /etc/systemd/system/swarmstrd.service
-  sudo systemctl daemon-reload && sudo systemctl restart swarmstrd
+  echo 'RuntimeWatchdogSec=30s' >> /etc/systemd/system/metiqd.service
+  sudo systemctl daemon-reload && sudo systemctl restart metiqd
   ```
-- Store `~/.swarmstr/` on the SD card (or USB drive for better longevity).
+- Store `~/.metiq/` on the SD card (or USB drive for better longevity).

@@ -1,6 +1,6 @@
 {
-  "source": "cmd/swarmstrd/testdata/parity/core_method_surface_deviations.json",
-  "notes": "Accepted core parity deviations for Swarmstr vs OpenClaw. Keep this aligned with the verifier fixtures.",
+  "source": "cmd/metiqd/testdata/parity/core_method_surface_deviations.json",
+  "notes": "Accepted core parity deviations for Metiq vs OpenClaw. Keep this aligned with the verifier fixtures.",
   "accepted_deviations": [
     {
       "id": "nostr-first.session-scoping",

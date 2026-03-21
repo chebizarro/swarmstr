@@ -84,7 +84,7 @@ func (r *MemoryRepository) Put(ctx context.Context, doc MemoryDoc) (Event, error
 		}
 	}
 
-	dTag := fmt.Sprintf("swarmstr:mem:%s", doc.MemoryID)
+	dTag := fmt.Sprintf("metiq:mem:%s", doc.MemoryID)
 	return r.store.PutReplaceable(ctx, Address{Kind: events.KindMemoryDoc, PubKey: r.author, DTag: dTag}, raw, tags)
 }
 

@@ -1,4 +1,4 @@
-// Package msteams implements a Microsoft Teams Bot channel extension for swarmstr.
+// Package msteams implements a Microsoft Teams Bot channel extension for metiq.
 //
 // The bot uses the Azure Bot Framework REST API.  Incoming activities are
 // received via a registered webhook; outbound messages are sent using the Bot
@@ -17,9 +17,9 @@
 //	}
 //
 // Webhook configuration: the bot must be registered in the Azure Bot portal with
-// the swarmstrd webhook endpoint at <admin_addr>/webhooks/msteams/<channel_id>.
+// the metiqd webhook endpoint at <admin_addr>/webhooks/msteams/<channel_id>.
 //
-// To add a Teams channel to your swarmstr config:
+// To add a Teams channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "teams-general": {

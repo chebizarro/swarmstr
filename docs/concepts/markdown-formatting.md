@@ -1,6 +1,6 @@
 # Markdown Formatting
 
-The agent generates Markdown in its responses. How that Markdown renders depends entirely on the **client** receiving the Nostr DM. swarmstr provides guidance to help the agent format appropriately for each channel.
+The agent generates Markdown in its responses. How that Markdown renders depends entirely on the **client** receiving the Nostr DM. metiq provides guidance to help the agent format appropriately for each channel.
 
 ## The Core Challenge
 
@@ -97,7 +97,7 @@ _italic_ → _italic_
 ```code block``` → monospace block
 ```
 
-Note: Telegram MarkdownV2 requires escaping many special characters. The Telegram adapter in swarmstr handles this automatically.
+Note: Telegram MarkdownV2 requires escaping many special characters. The Telegram adapter in metiq handles this automatically.
 
 ## Discord Formatting
 

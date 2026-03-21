@@ -13,7 +13,7 @@ import (
 
 func TestLoadConfigFile_JSON5_basic(t *testing.T) {
 	content := `{
-		// Swarmstr config
+		// Metiq config
 		"relays": {
 			"read":  ["wss://relay.example.com"],
 			"write": ["wss://relay.example.com", "wss://other.relay"]

@@ -3,7 +3,7 @@
 # Runs as an unprivileged user; the binary should land in $HOME/.local/bin.
 set -euo pipefail
 
-INSTALL_URL="${METIQ_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
+INSTALL_URL="${METIQ_INSTALL_URL:-https://raw.githubusercontent.com/metiq/metiq/main/scripts/install.sh}"
 SKIP_DOWNLOAD="${METIQ_INSTALL_SKIP_DOWNLOAD:-0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -23,7 +23,6 @@ if [[ "$SKIP_DOWNLOAD" == "1" ]]; then
   mkdir -p "$HOME/.local/bin"
   cp /tmp/metiqd-linux-amd64 "$HOME/.local/bin/metiqd"
   chmod +x "$HOME/.local/bin/metiqd"
-  ln -sfn metiqd "$HOME/.local/bin/swarmstrd"
   export PATH="$HOME/.local/bin:$PATH"
 else
   echo "==> Run install script (non-root)"
@@ -33,6 +32,6 @@ fi
 
 echo "==> Verify binary"
 verify_binary metiqd
-verify_binary swarmstrd
+verify_binary metiqd
 
 echo "OK"

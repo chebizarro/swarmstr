@@ -1,20 +1,20 @@
 ---
-summary: "swarmstr documentation home"
-title: "swarmstr Docs"
+summary: "metiq documentation home"
+title: "metiq Docs"
 ---
 
-# swarmstr
+# metiq
 
 **A Nostr-native AI agent daemon written in Go.**
 
-swarmstr gives your AI agent a cryptographic identity on Nostr — accessible from any Nostr client,
+metiq gives your AI agent a cryptographic identity on Nostr — accessible from any Nostr client,
 censorship-resistant by design, no platform dependency.
 
 ## Quick links
 
 ### Get started
-- [Getting Started](/start/getting-started) — Install swarmstr and send your first DM
-- [Architecture](/concepts/architecture) — How swarmstr works under the hood
+- [Getting Started](/start/getting-started) — Install metiq and send your first DM
+- [Architecture](/concepts/architecture) — How metiq works under the hood
 - [Agent Workspace](/concepts/agent-workspace) — Workspace files and memory layout
 
 ### Core concepts
@@ -58,9 +58,9 @@ censorship-resistant by design, no platform dependency.
 
 ---
 
-## What makes swarmstr different
+## What makes metiq different
 
-| Feature | swarmstr | Traditional AI agents |
+| Feature | metiq | Traditional AI agents |
 | ------- | -------- | --------------------- |
 | Identity | Cryptographic Nostr keypair | Platform account |
 | Transport | Nostr relays (decentralized) | WhatsApp/Telegram/Discord APIs |
@@ -70,5 +70,5 @@ censorship-resistant by design, no platform dependency.
 | Auth | nsec private key | Platform token |
 | DM encryption | NIP-04 / NIP-17 | Platform-managed |
 
-swarmstr is built on the belief that AI agents deserve the same decentralized,
+metiq is built on the belief that AI agents deserve the same decentralized,
 self-sovereign properties as Nostr users.

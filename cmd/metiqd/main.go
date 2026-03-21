@@ -1914,7 +1914,7 @@ func main() {
 		return string(b), nil
 	})
 
-	// node_invoke: send an ACP task DM to any swarmstr node pubkey and wait.
+	// node_invoke: send an ACP task DM to any metiq node pubkey and wait.
 	tools.Register("node_invoke", func(ctx context.Context, args map[string]any) (string, error) {
 		targetPubKey := agent.ArgString(args, "node_pubkey")
 		instructions := agent.ArgString(args, "instructions")
@@ -1949,7 +1949,7 @@ func main() {
 		return result.Text, nil
 	})
 
-	// node_list: return paired/known swarmstr nodes.
+	// node_list: return paired/known metiq nodes.
 	tools.Register("node_list", func(_ context.Context, _ map[string]any) (string, error) {
 		out, err := applyNodeList(configState, methods.NodeListRequest{Limit: 100})
 		if err != nil {
@@ -2528,7 +2528,7 @@ func main() {
 			agentID = "main"
 		}
 		lines := []string{
-			fmt.Sprintf("Swarmstr v%s", version),
+			fmt.Sprintf("Metiq v%s", version),
 			fmt.Sprintf("Pubkey: %s", pubkey),
 			fmt.Sprintf("Agent:  %s", agentID),
 		}
@@ -4526,7 +4526,7 @@ func main() {
 					if agentID == "" {
 						agentID = "main"
 					}
-					return map[string]any{"agent_id": agentID, "display_name": "Swarmstr Agent", "session_id": req.SessionID, "pubkey": bus.PublicKey()}, nil
+					return map[string]any{"agent_id": agentID, "display_name": "Metiq Agent", "session_id": req.SessionID, "pubkey": bus.PublicKey()}, nil
 				},
 				GatewayIdentity: func(_ context.Context) (map[string]any, error) {
 					pk := bus.PublicKey()
@@ -5992,7 +5992,7 @@ func handleControlRPCRequest(
 		if agentID == "" {
 			agentID = "main"
 		}
-		displayName := "Swarmstr Agent"
+		displayName := "Metiq Agent"
 		if docsRepo != nil {
 			if ag, err2 := docsRepo.GetAgent(ctx, agentID); err2 == nil && ag.Name != "" {
 				displayName = ag.Name
@@ -10226,7 +10226,7 @@ func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any
 		if bundled, err := skillspkg.ScanBundledDir(bundledDir); err == nil {
 			for _, s := range bundled {
 				bundledKeys[s.SkillKey] = struct{}{}
-				skillsList = append(skillsList, skillToMap(s, "swarmstr-bundled", true))
+				skillsList = append(skillsList, skillToMap(s, "metiq-bundled", true))
 			}
 		}
 	}
@@ -10268,7 +10268,7 @@ func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any
 		description, _ := entry["description"].(string)
 		source, _ := entry["source"].(string)
 		if strings.TrimSpace(source) == "" {
-			source = "swarmstr-config"
+			source = "metiq-config"
 		}
 		enabled := true
 		if v, ok := entry["enabled"].(bool); ok {
@@ -12234,7 +12234,7 @@ func applyTalkConfig(cfg state.ConfigDoc, reg *operationsRegistry, req methods.T
 	talk := map[string]any{
 		"enabled":      false,
 		"mode":         "disabled",
-		"hotword":      []string{"openclaw", "swarmstr"},
+		"hotword":      []string{"openclaw", "metiq"},
 		"sensitivity":  0.5,
 		"tts_provider": "openai",
 		"stt_provider": "openai-whisper",

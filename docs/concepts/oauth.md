@@ -1,6 +1,6 @@
 # Credentials & API Keys
 
-swarmstr uses a provider-based credential model. API keys and secrets are stored in the `providers` section of the config (persisted as an encrypted Nostr event on your relays), and can reference environment variables via `${VAR_NAME}` interpolation so that plaintext secrets never live in the config doc itself.
+metiq uses a provider-based credential model. API keys and secrets are stored in the `providers` section of the config (persisted as an encrypted Nostr event on your relays), and can reference environment variables via `${VAR_NAME}` interpolation so that plaintext secrets never live in the config doc itself.
 
 ## Provider Config
 
@@ -21,7 +21,7 @@ Each LLM or service provider has an entry under `providers` in `config.json`:
 }
 ```
 
-The `${VAR_NAME}` syntax is resolved at runtime from the process environment. Keep actual secret values in a `.env` file (chmod 600) and source it before starting swarmstrd, or inject via systemd `EnvironmentFile`.
+The `${VAR_NAME}` syntax is resolved at runtime from the process environment. Keep actual secret values in a `.env` file (chmod 600) and source it before starting metiqd, or inject via systemd `EnvironmentFile`.
 
 ## Multiple API Keys (Round-Robin)
 
@@ -62,7 +62,7 @@ The `provider` field references a key in `providers`. This allows different agen
 
 ## Nostr Identity
 
-Each swarmstr instance uses a single Nostr private key (nsec) as its identity. This is not managed through `providers` — it is set in the bootstrap config:
+Each metiq instance uses a single Nostr private key (nsec) as its identity. This is not managed through `providers` — it is set in the bootstrap config:
 
 ```json
 {
@@ -83,7 +83,7 @@ Or via `signer_url` for remote signing (NIP-46 bunker):
 Generate a fresh Nostr keypair using the CLI:
 
 ```bash
-swarmstr keygen
+metiq keygen
 ```
 
 Output:
@@ -99,11 +99,11 @@ Add to your environment or bootstrap config:
 The `--json` flag outputs a machine-readable result:
 
 ```bash
-swarmstr keygen --json
+metiq keygen --json
 # {"hex":"...","npub":"npub1...","nsec":"nsec1..."}
 ```
 
-Store the nsec in your environment (e.g. `~/.swarmstr/.env`):
+Store the nsec in your environment (e.g. `~/.metiq/.env`):
 
 ```bash
 NOSTR_NSEC=nsec1...
@@ -131,8 +131,8 @@ Variables are resolved from the process environment at startup. Unresolved varia
 To rotate a key without downtime:
 
 1. Add the new key to your environment under a new variable name
-2. Update the provider config to reference the new variable (edit `config.json` and `swarmstr config import --file config.json`)
-3. Reload the daemon (`swarmstr daemon restart` or `systemctl --user restart swarmstrd`)
+2. Update the provider config to reference the new variable (edit `config.json` and `metiq config import --file config.json`)
+3. Reload the daemon (`metiq daemon restart` or `systemctl --user restart metiqd`)
 
 ```bash
 # Old environment

@@ -1,5 +1,5 @@
 ---
-summary: "NIP-38 status heartbeat for swarmstr — publishes presence to Nostr"
+summary: "NIP-38 status heartbeat for metiq — publishes presence to Nostr"
 read_when:
   - Configuring presence/status visibility for your agent on Nostr
   - Deciding between heartbeat and cron for scheduled tasks
@@ -15,7 +15,7 @@ The heartbeat publishes **NIP-38 kind 30315 user status events** so Nostr client
 
 ## What It Does
 
-Every few minutes (configurable), swarmstr publishes a NIP-38 status event showing the agent's current state:
+Every few minutes (configurable), metiq publishes a NIP-38 status event showing the agent's current state:
 
 - `idle` — waiting for messages
 - `typing` — composing a reply

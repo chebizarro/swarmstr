@@ -8,22 +8,22 @@ import (
 
 // ConfigDoc is the canonical runtime configuration persisted to Nostr.
 type ConfigDoc struct {
-	Version   int             `json:"version"`
-	DM        DMPolicy        `json:"dm"`
-	Relays    RelayPolicy     `json:"relays"`
-	Agent     AgentPolicy     `json:"agent"`
-	Control   ControlPolicy   `json:"control,omitempty"`
-	Agents         AgentsConfig         `json:"agents,omitempty"`
-	NostrChannels  NostrChannelsConfig  `json:"nostr_channels,omitempty"`
-	Providers      ProvidersConfig      `json:"providers,omitempty"`
-	Session   SessionConfig   `json:"session,omitempty"`
-	Heartbeat HeartbeatConfig `json:"heartbeat,omitempty"`
-	TTS       TTSConfig       `json:"tts,omitempty"`
-	Secrets   SecretsConfig   `json:"secrets,omitempty"`
-	CronCfg   CronConfig      `json:"cron,omitempty"`
-	Hooks     HooksConfig     `json:"hooks,omitempty"`
-	AgentList *AgentListConfig `json:"agent_list,omitempty"`
-	Extra     map[string]any  `json:"extra,omitempty"`
+	Version       int                 `json:"version"`
+	DM            DMPolicy            `json:"dm"`
+	Relays        RelayPolicy         `json:"relays"`
+	Agent         AgentPolicy         `json:"agent"`
+	Control       ControlPolicy       `json:"control,omitempty"`
+	Agents        AgentsConfig        `json:"agents,omitempty"`
+	NostrChannels NostrChannelsConfig `json:"nostr_channels,omitempty"`
+	Providers     ProvidersConfig     `json:"providers,omitempty"`
+	Session       SessionConfig       `json:"session,omitempty"`
+	Heartbeat     HeartbeatConfig     `json:"heartbeat,omitempty"`
+	TTS           TTSConfig           `json:"tts,omitempty"`
+	Secrets       SecretsConfig       `json:"secrets,omitempty"`
+	CronCfg       CronConfig          `json:"cron,omitempty"`
+	Hooks         HooksConfig         `json:"hooks,omitempty"`
+	AgentList     *AgentListConfig    `json:"agent_list,omitempty"`
+	Extra         map[string]any      `json:"extra,omitempty"`
 }
 
 // AgentListConfig controls Strand's own NIP-51 kind:30000 agent list publishing.
@@ -102,17 +102,17 @@ type ProvidersConfig map[string]ProviderEntry
 
 // SessionConfig controls per-session behaviour.
 type SessionConfig struct {
-	TTLSeconds         int  `json:"ttl_seconds,omitempty"`
-	MaxSessions        int  `json:"max_sessions,omitempty"`
-	HistoryLimit       int  `json:"history_limit,omitempty"`
+	TTLSeconds   int `json:"ttl_seconds,omitempty"`
+	MaxSessions  int `json:"max_sessions,omitempty"`
+	HistoryLimit int `json:"history_limit,omitempty"`
 	// PruneAfterDays deletes transcript entries for sessions whose last
 	// activity is older than this many days.  0 = disabled.
-	PruneAfterDays     int  `json:"prune_after_days,omitempty"`
+	PruneAfterDays int `json:"prune_after_days,omitempty"`
 	// PruneIdleAfterDays deletes sessions that have received no inbound message
 	// for this many days (more aggressive than PruneAfterDays).  0 = disabled.
-	PruneIdleAfterDays int  `json:"prune_idle_after_days,omitempty"`
+	PruneIdleAfterDays int `json:"prune_idle_after_days,omitempty"`
 	// PruneOnBoot runs a pruning pass at daemon startup.
-	PruneOnBoot        bool `json:"prune_on_boot,omitempty"`
+	PruneOnBoot bool `json:"prune_on_boot,omitempty"`
 }
 
 // HeartbeatConfig controls the periodic heartbeat pulse.
@@ -145,7 +145,7 @@ type HooksConfig struct {
 	// Enabled activates the webhook ingress.  Token is required when true.
 	Enabled bool `json:"enabled,omitempty"`
 	// Token is the shared secret used to authenticate inbound requests.
-	// Send via "Authorization: Bearer <token>" or "X-Swarmstr-Token: <token>".
+	// Send via "Authorization: Bearer <token>" or "X-Metiq-Token: <token>".
 	Token string `json:"token,omitempty"`
 	// AllowedAgentIDs restricts which agent IDs callers may target via
 	// /hooks/agent.  Empty slice = no restriction.  Use "*" for wildcard.
@@ -201,7 +201,7 @@ const (
 	NostrChannelKindDM          NostrChannelKind = "dm"
 	NostrChannelKindNIP28       NostrChannelKind = "nip28"
 	NostrChannelKindNIP29       NostrChannelKind = "nip29"
-	NostrChannelKindChat        NostrChannelKind = "chat"         // NIP-C7 kind:9 chat
+	NostrChannelKindChat        NostrChannelKind = "chat" // NIP-C7 kind:9 chat
 	NostrChannelKindRelayFilter NostrChannelKind = "relay-filter"
 )
 
@@ -244,9 +244,9 @@ type AgentConfig struct {
 	Name         string `json:"name,omitempty"`
 	Model        string `json:"model,omitempty"`
 	WorkspaceDir string `json:"workspace_dir,omitempty"`
-	ToolProfile  string   `json:"tool_profile,omitempty"` // minimal|coding|messaging|full
-	HeartbeatMS  int      `json:"heartbeat_ms,omitempty"`
-	HistoryLimit int      `json:"history_limit,omitempty"`
+	ToolProfile  string `json:"tool_profile,omitempty"` // minimal|coding|messaging|full
+	HeartbeatMS  int    `json:"heartbeat_ms,omitempty"`
+	HistoryLimit int    `json:"history_limit,omitempty"`
 	// Provider names the providers[] entry to use for this agent (e.g. "anthropic", "ollama").
 	// When set, credentials from ProvidersConfig[Provider] override the default env-based provider.
 	Provider string `json:"provider,omitempty"`

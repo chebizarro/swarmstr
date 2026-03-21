@@ -1,5 +1,5 @@
 // Package webui embeds a minimal browser-based chat interface for the local
-// swarmstrd gateway.  It is served via an HTTP handler that can be mounted
+// metiqd gateway.  It is served via an HTTP handler that can be mounted
 // alongside the WebSocket gateway runtime.
 //
 // Usage:

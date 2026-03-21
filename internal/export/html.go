@@ -1,4 +1,4 @@
-// Package export provides session export functionality for swarmstr.
+// Package export provides session export functionality for metiq.
 //
 // The primary output is self-contained HTML: a single file with inline CSS and
 // minimal JS that renders a conversation transcript. The file works offline and
@@ -70,7 +70,7 @@ func SessionToHTML(opts SessionHTMLOptions) (string, error) {
 func htmlHeader(opts SessionHTMLOptions) string {
 	title := fmt.Sprintf("Session %s", opts.SessionID)
 	if opts.SessionID == "" {
-		title = "Swarmstr Session Export"
+		title = "Metiq Session Export"
 	}
 	exportedStr := opts.ExportedAt.UTC().Format("2006-01-02 15:04 UTC")
 

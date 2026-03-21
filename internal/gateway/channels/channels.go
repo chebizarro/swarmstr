@@ -1,4 +1,4 @@
-// Package channels provides the multi-channel messaging framework for Swarmstr.
+// Package channels provides the multi-channel messaging framework for Metiq.
 //
 // It supports NIP-17 (private DMs, already handled by nostr/runtime) and
 // NIP-29 (relay-based group chat).  New channel types can be added by

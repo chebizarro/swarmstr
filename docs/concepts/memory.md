@@ -1,6 +1,6 @@
 ---
 title: "Memory"
-summary: "How swarmstr memory works (workspace files + automatic memory flush)"
+summary: "How metiq memory works (workspace files + automatic memory flush)"
 read_when:
   - You want the memory file layout and workflow
   - You want to tune the automatic pre-compaction memory flush
@@ -8,7 +8,7 @@ read_when:
 
 # Memory
 
-swarmstr memory is **plain Markdown in the agent workspace**. The files are the
+metiq memory is **plain Markdown in the agent workspace**. The files are the
 source of truth; the model only "remembers" what gets written to disk.
 
 ## Memory files (Markdown)
@@ -22,11 +22,11 @@ The default workspace layout uses two memory layers:
   - Curated long-term memory.
   - **Only load in the main, private session** (never in group contexts).
 
-These files live under `~/.swarmstr/workspace`. See [Agent workspace](/concepts/agent-workspace).
+These files live under `~/.metiq/workspace`. See [Agent workspace](/concepts/agent-workspace).
 
 ## Memory tools
 
-swarmstr exposes two agent-facing tools for Markdown memory files:
+metiq exposes two agent-facing tools for Markdown memory files:
 
 - `memory_search` — semantic recall over indexed snippets.
 - `memory_get` — targeted read of a specific Markdown file/line range.
@@ -43,7 +43,7 @@ instead of an error).
 
 ## Automatic memory flush (pre-compaction)
 
-When a session nears the context window limit, swarmstr triggers auto-compaction. Before
+When a session nears the context window limit, metiq triggers auto-compaction. Before
 compaction, the agent's AGENTS.md or TOOLS.md prompt should instruct it to write durable
 notes to memory files. The agent then produces a compaction summary of the session.
 
@@ -52,7 +52,7 @@ memory snapshot of the old session via the session-memory hook.
 
 ## Vector memory search
 
-swarmstr can use a vector backend (Qdrant + Ollama embeddings) for semantic memory queries.
+metiq can use a vector backend (Qdrant + Ollama embeddings) for semantic memory queries.
 This is configured via `extra.memory` in `config.json`:
 
 ```json
@@ -62,7 +62,7 @@ This is configured via `extra.memory` in `config.json`:
       "backend": "qdrant",
       "url": "http://localhost:6333",
       "ollama_url": "http://localhost:11434",
-      "collection": "swarmstr_memory"
+      "collection": "metiq_memory"
     }
   }
 }

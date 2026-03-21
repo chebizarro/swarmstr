@@ -55,7 +55,7 @@ func DownloadURL(ctx context.Context, rawURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create download request: %w", err)
 	}
-	req.Header.Set("User-Agent", "swarmstr-plugin-installer/1.0")
+	req.Header.Set("User-Agent", "metiq-plugin-installer/1.0")
 
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(req)
@@ -83,7 +83,7 @@ func DownloadURL(ctx context.Context, rawURL string) (string, error) {
 		}
 	}
 
-	tmp, err := os.CreateTemp("", "swarmstr-plugin-*"+ext)
+	tmp, err := os.CreateTemp("", "metiq-plugin-*"+ext)
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}
@@ -118,7 +118,7 @@ func FetchRegistry(ctx context.Context, registryURL string) (*RegistryIndex, err
 		return nil, fmt.Errorf("create registry request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "swarmstr-plugin-installer/1.0")
+	req.Header.Set("User-Agent", "metiq-plugin-installer/1.0")
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)

@@ -1,8 +1,8 @@
 ---
-summary: "Raspberry Pi quick-reference for swarmstr deployment"
+summary: "Raspberry Pi quick-reference for metiq deployment"
 read_when:
   - Quick Pi setup reference
-  - Running swarmstr on a Raspberry Pi
+  - Running metiq on a Raspberry Pi
 title: "Raspberry Pi Quick Reference"
 ---
 
@@ -21,15 +21,15 @@ For the detailed guide, see [Platforms: Raspberry Pi](/platforms/raspberry-pi).
 
 ```bash
 # Download ARM64 binary
-curl -L https://github.com/yourorg/swarmstr/releases/latest/download/swarmstrd-linux-arm64 \
-  -o /usr/local/bin/swarmstrd
-chmod +x /usr/local/bin/swarmstrd
+curl -L https://github.com/yourorg/metiq/releases/latest/download/metiqd-linux-arm64 \
+  -o /usr/local/bin/metiqd
+chmod +x /usr/local/bin/metiqd
 
 # Configure
-mkdir -p ~/.swarmstr
-# Create ~/.swarmstr/bootstrap.json with your private_key and relays
+mkdir -p ~/.metiq
+# Create ~/.metiq/bootstrap.json with your private_key and relays
 # Then enable as a service:
-systemctl --user enable --now swarmstrd
+systemctl --user enable --now metiqd
 ```
 
 ## Swap (Prevent OOM)

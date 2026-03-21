@@ -1,4 +1,4 @@
-// Package nextcloud implements a Nextcloud Talk channel extension for swarmstr.
+// Package nextcloud implements a Nextcloud Talk channel extension for metiq.
 //
 // Supports two inbound modes:
 //   - Webhook push (preferred): register an HTTP handler at webhook_path;

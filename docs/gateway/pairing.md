@@ -1,15 +1,15 @@
 ---
-summary: "DM access control and discovery for swarmstr"
+summary: "DM access control and discovery for metiq"
 read_when:
   - Setting up DM access control
   - Configuring who can interact with your agent
-  - Understanding how swarmstr handles unknown senders
+  - Understanding how metiq handles unknown senders
 title: "DM Access Control"
 ---
 
 # DM Access Control
 
-swarmstr controls inbound DM access via the `dm` section of the runtime ConfigDoc. Configure `dm.policy` and `dm.allow_from` to control who can interact with your agent.
+metiq controls inbound DM access via the `dm` section of the runtime ConfigDoc. Configure `dm.policy` and `dm.allow_from` to control who can interact with your agent.
 
 ## The Nostr Advantage for Discovery
 
@@ -98,16 +98,16 @@ Example:
 
 ## Adding Contacts
 
-Add a new contact's pubkey to `allow_from` by editing `~/.swarmstr/config.json` and restarting the daemon, or by sending a `config.set` RPC from an admin client:
+Add a new contact's pubkey to `allow_from` by editing `~/.metiq/config.json` and restarting the daemon, or by sending a `config.set` RPC from an admin client:
 
 ```bash
 # View current config
-swarmstr config get
+metiq config get
 
 # Export, edit, and reimport
-swarmstr config export > /tmp/config.json
+metiq config export > /tmp/config.json
 # (edit /tmp/config.json: add npub to dm.allow_from)
-swarmstr config import --file /tmp/config.json
+metiq config import --file /tmp/config.json
 ```
 
 Or send a control DM from an owner-level key: `config.set dm.allow_from npub1owner...,npub1newuser...`
@@ -158,7 +158,7 @@ Each agent in a multi-agent setup uses the same global `dm.allow_from` list, wit
 ## Getting Your Agent's npub
 
 ```bash
-swarmstr status
+metiq status
 # Includes:
 #   pubkey: npub1abc...
 ```

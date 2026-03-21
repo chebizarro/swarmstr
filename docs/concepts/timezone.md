@@ -1,6 +1,6 @@
 # Timezone
 
-swarmstr operates on UTC internally (as does the Nostr protocol — all timestamps are Unix seconds UTC). Timezone configuration controls how the agent formats dates and times in responses, and how scheduled tasks (cron, heartbeat) are expressed.
+metiq operates on UTC internally (as does the Nostr protocol — all timestamps are Unix seconds UTC). Timezone configuration controls how the agent formats dates and times in responses, and how scheduled tasks (cron, heartbeat) are expressed.
 
 ## Default Behavior
 
@@ -13,10 +13,10 @@ By default, the agent uses UTC for all time references:
 
 ## Configuring Agent Timezone
 
-swarmstr does not have a global timezone config field. The most reliable approach is to tell the agent its timezone in `AGENTS.md` or `USER.md` (see below). The `TZ` environment variable also affects Go's `time.Local` if you run the daemon with it set:
+metiq does not have a global timezone config field. The most reliable approach is to tell the agent its timezone in `AGENTS.md` or `USER.md` (see below). The `TZ` environment variable also affects Go's `time.Local` if you run the daemon with it set:
 
 ```bash
-TZ=America/New_York swarmstrd
+TZ=America/New_York metiqd
 ```
 
 This affects log timestamps and time-related output from tools. Valid values are IANA timezone names (e.g., `Europe/London`, `Asia/Tokyo`, `US/Pacific`).
@@ -82,7 +82,7 @@ echo "Heartbeat at $(TZ=America/Denver date '+%H:%M %Z')"
 
 ## Nostr Timestamps
 
-Nostr protocol timestamps (`created_at`) are always **Unix seconds UTC**. swarmstr does not modify these. The `nostr_fetch` tool returns events with `created_at` as integer Unix timestamps.
+Nostr protocol timestamps (`created_at`) are always **Unix seconds UTC**. metiq does not modify these. The `nostr_fetch` tool returns events with `created_at` as integer Unix timestamps.
 
 When presenting event times to users, the agent converts to the configured timezone:
 
@@ -117,7 +117,7 @@ To view logs in local time:
 log stream | TZ=America/Los_Angeles awk '{...}'
 
 # Or use a log viewer that respects TZ env var
-TZ=Europe/Paris journalctl -u swarmstrd -f
+TZ=Europe/Paris journalctl -u metiqd -f
 ```
 
 ## See Also

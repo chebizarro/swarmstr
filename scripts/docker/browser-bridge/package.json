@@ -1,7 +1,7 @@
 {
-  "name": "swarmstr-browser-bridge",
+  "name": "metiq-browser-bridge",
   "version": "1.0.0",
-  "description": "Playwright HTTP bridge server for swarmstr browser automation",
+  "description": "Playwright HTTP bridge server for metiq browser automation",
   "type": "commonjs",
   "main": "server.js",
   "scripts": { "start": "node server.js" },

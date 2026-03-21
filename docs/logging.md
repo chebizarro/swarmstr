@@ -1,5 +1,5 @@
 ---
-summary: "Logging configuration, log locations, and log management for swarmstr"
+summary: "Logging configuration, log locations, and log management for metiq"
 read_when:
   - Configuring log output and log levels
   - Finding log files
@@ -26,13 +26,13 @@ Log verbosity is controlled at startup. The daemon logs to stderr using Go's sta
 
 ```bash
 # Via CLI (last N log lines from running daemon)
-swarmstr logs
-swarmstr logs --lines 100
-swarmstr logs --lines 50 --level error
+metiq logs
+metiq logs --lines 100
+metiq logs --lines 50 --level error
 
 # Via journalctl (systemd)
-journalctl --user -u swarmstrd -f
-journalctl --user -u swarmstrd --since "1 hour ago"
+journalctl --user -u metiqd -f
+journalctl --user -u metiqd --since "1 hour ago"
 ```
 
 ## Log Format
@@ -45,14 +45,14 @@ Logs are Go's standard log format (prefix + message):
 2026/01/16 14:30:02 agent turn started session=agent:main:main
 ```
 
-The `swarmstr logs` CLI fetches recent log lines from the running daemon via the admin API.
+The `metiq logs` CLI fetches recent log lines from the running daemon via the admin API.
 
 ## Log Rotation
 
 Configure logrotate:
 
 ```
-/home/user/.swarmstr/logs/*.log {
+/home/user/.metiq/logs/*.log {
     daily
     rotate 7
     compress
@@ -61,14 +61,14 @@ Configure logrotate:
 }
 ```
 
-For log rotation when using a log file, configure `logrotate` on the daemon's stderr output (redirect stderr to a file in the systemd service with `StandardOutput=append:/var/log/swarmstrd.log`).
+For log rotation when using a log file, configure `logrotate` on the daemon's stderr output (redirect stderr to a file in the systemd service with `StandardOutput=append:/var/log/metiqd.log`).
 
 ## Debug Mode
 
-For maximum verbosity, run swarmstrd and capture stderr:
+For maximum verbosity, run metiqd and capture stderr:
 
 ```bash
-swarmstrd 2>&1 | tee /tmp/swarmstrd-debug.log
+metiqd 2>&1 | tee /tmp/metiqd-debug.log
 ```
 
 For per-session verbose output:

@@ -14,7 +14,7 @@
 
 ## Session Storage
 
-Session transcripts are stored as Nostr events in the configured relay set (encrypted, via the `TranscriptRepository`). A lightweight settings file at `~/.swarmstr/sessions.json` tracks per-session flags (model override, verbose mode, token counts). Pruning removes the Nostr transcript entries and marks the session deleted in the state store.
+Session transcripts are stored as Nostr events in the configured relay set (encrypted, via the `TranscriptRepository`). A lightweight settings file at `~/.metiq/sessions.json` tracks per-session flags (model override, verbose mode, token counts). Pruning removes the Nostr transcript entries and marks the session deleted in the state store.
 
 ## Auto-Pruning
 
@@ -36,23 +36,23 @@ Configure automatic pruning of sessions older than a threshold in `config.json`:
 | `prune_idle_after_days` | 0 (disabled) | Delete sessions with no inbound message for N days |
 | `prune_on_boot` | `false` | Run a pruning pass at daemon startup |
 
-When `prune_on_boot: true`, swarmstrd runs the pruning check immediately after startup.
+When `prune_on_boot: true`, metiqd runs the pruning check immediately after startup.
 
 ## CLI Pruning
 
 ```bash
 # Delete sessions older than 7 days
-swarmstr sessions prune --older-than 7d
+metiq sessions prune --older-than 7d
 
 # Delete sessions older than 30 days (dry run first)
-swarmstr sessions prune --older-than 30d --dry-run
-swarmstr sessions prune --older-than 30d
+metiq sessions prune --older-than 30d --dry-run
+metiq sessions prune --older-than 30d
 
 # Delete ALL sessions
-swarmstr sessions prune --all
+metiq sessions prune --all
 
 # Delete a specific session
-swarmstr sessions delete <session-id>
+metiq sessions delete <session-id>
 ```
 
 ## In-Conversation Reset
@@ -75,13 +75,13 @@ If you want to export the transcript first, use `/export` before `/new`.
 
 ```bash
 # List active sessions
-swarmstr sessions list
+metiq sessions list
 
 # Show a specific session
-swarmstr sessions get <session-id>
+metiq sessions get <session-id>
 
 # Export a session transcript
-swarmstr sessions export <session-id> --output session.html
+metiq sessions export <session-id> --output session.html
 ```
 
 ## Session Scope

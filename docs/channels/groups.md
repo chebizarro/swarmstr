@@ -1,8 +1,8 @@
 ---
-summary: "Group chat support for swarmstr: Nostr groups (NIP-29, NIP-28) and relay-filter channels"
+summary: "Group chat support for metiq: Nostr groups (NIP-29, NIP-28) and relay-filter channels"
 read_when:
-  - Setting up group chat for your swarmstr agent
-  - Using NIP-29 relay-based groups with swarmstr
+  - Setting up group chat for your metiq agent
+  - Using NIP-29 relay-based groups with metiq
   - Configuring NIP-28 public channels
   - Configuring group message handling
 title: "Group Chats"
@@ -10,7 +10,7 @@ title: "Group Chats"
 
 # Group Chats
 
-swarmstr supports group contexts where the agent participates alongside multiple users. The primary group mechanisms are **NIP-29 relay-based groups** and **NIP-28 public channels** on Nostr. Both are configured via the `nostr_channels` map in the runtime ConfigDoc.
+metiq supports group contexts where the agent participates alongside multiple users. The primary group mechanisms are **NIP-29 relay-based groups** and **NIP-28 public channels** on Nostr. Both are configured via the `nostr_channels` map in the runtime ConfigDoc.
 
 ## nostr_channels Configuration
 
@@ -31,7 +31,7 @@ NIP-29 defines relay-managed groups where the relay enforces membership and mess
 
 1. Create or join a NIP-29 group on a relay that supports it (e.g., groups.fiatjaf.com)
 2. Add the agent's npub as a member of the group
-3. Configure swarmstr to subscribe to the group via `nostr_channels`
+3. Configure metiq to subscribe to the group via `nostr_channels`
 4. The agent receives and responds to group messages
 
 ### Configuration

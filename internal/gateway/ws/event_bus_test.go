@@ -8,7 +8,7 @@ import (
 // ─── captureEmitter ────────────────────────────────────────────────────────────
 
 type captureEmitter struct {
-	events []string
+	events   []string
 	payloads []any
 }
 
@@ -106,7 +106,7 @@ func TestNewPayloadTypes(t *testing.T) {
 
 	e.Emit(EventExecApprovalRequested, ExecApprovalRequestedPayload{ID: "req-1", NodeID: "n1"})
 	e.Emit(EventExecApprovalResolved, ExecApprovalResolvedPayload{ID: "req-1", Decision: "approved"})
-	e.Emit(EventVoicewake, VoicewakePayload{Trigger: "hey swarmstr"})
+	e.Emit(EventVoicewake, VoicewakePayload{Trigger: "hey metiq"})
 	e.Emit(EventUpdateAvailable, UpdateAvailablePayload{Version: "2.0"})
 	e.Emit(EventChannelMessage, ChannelMessagePayload{ChannelID: "ch1", Direction: "inbound"})
 

@@ -1,5 +1,5 @@
 ---
-summary: "Model provider setup guides for swarmstr"
+summary: "Model provider setup guides for metiq"
 read_when:
   - Setting up a model provider for the first time
   - Switching model providers
@@ -8,7 +8,7 @@ title: "Providers"
 
 # Model Providers
 
-swarmstr supports LLM providers via the pi-ai catalog and custom OpenAI-compatible endpoints.
+metiq supports LLM providers via the pi-ai catalog and custom OpenAI-compatible endpoints.
 
 ## Built-in providers
 
@@ -51,12 +51,12 @@ Set your API key as an environment variable (referenced in config with `${VAR}`)
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-Or put it in `~/.swarmstr/.env`:
+Or put it in `~/.metiq/.env`:
 ```
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Then in `~/.swarmstr/config.json`:
+Then in `~/.metiq/config.json`:
 
 ```json
 {
@@ -71,7 +71,7 @@ Then in `~/.swarmstr/config.json`:
 
 ## API key rotation
 
-Supply multiple keys via `api_keys` array — swarmstr rotates on 429 (rate limit):
+Supply multiple keys via `api_keys` array — metiq rotates on 429 (rate limit):
 
 ```json
 {

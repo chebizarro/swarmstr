@@ -101,7 +101,7 @@ func Fetch(ctx context.Context, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, fmt.Errorf("build request: %w", err)
 	}
-	httpReq.Header.Set("User-Agent", "swarmstrd/browser-skill")
+	httpReq.Header.Set("User-Agent", "metiqd/browser-skill")
 	for k, v := range req.Headers {
 		httpReq.Header.Set(k, v)
 	}

@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd /repo
 
-export METIQ_STATE_DIR="/tmp/swarmstr-test"
+export METIQ_STATE_DIR="/tmp/metiq-test"
 export METIQ_CONFIG_PATH="${METIQ_STATE_DIR}/config.json"
 
 echo "==> Build"
@@ -17,7 +17,7 @@ echo 'creds' >"${METIQ_STATE_DIR}/credentials/marker.txt"
 echo 'session' >"${METIQ_STATE_DIR}/agents/main/sessions/sessions.json"
 
 echo "==> Reset (config+creds+sessions)"
-swarmstr reset --scope config+creds+sessions --yes --non-interactive
+metiq reset --scope config+creds+sessions --yes --non-interactive
 
 test ! -f "${METIQ_CONFIG_PATH}"
 test ! -d "${METIQ_STATE_DIR}/credentials"
@@ -28,7 +28,7 @@ mkdir -p "${METIQ_STATE_DIR}/credentials"
 echo '{}' >"${METIQ_CONFIG_PATH}"
 
 echo "==> Uninstall (state only)"
-swarmstr uninstall --state --yes --non-interactive
+metiq uninstall --state --yes --non-interactive
 
 test ! -d "${METIQ_STATE_DIR}"
 

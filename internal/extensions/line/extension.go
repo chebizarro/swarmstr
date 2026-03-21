@@ -1,4 +1,4 @@
-// Package line implements a LINE Messaging API channel extension for swarmstr.
+// Package line implements a LINE Messaging API channel extension for metiq.
 //
 // Inbound messages arrive via a LINE webhook.  Outbound messages are sent via
 // the LINE Messaging API reply endpoint (when a replyToken is available) or

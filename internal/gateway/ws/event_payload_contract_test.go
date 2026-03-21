@@ -80,7 +80,7 @@ func samplePayloadForEvent(event string) any {
 }
 
 func TestCanonicalEventPayloads_MatchFixtureContracts(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("testdata", "swarmstr_core_event_payload_contracts.json"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "metiq_core_event_payload_contracts.json"))
 	if err != nil {
 		t.Fatalf("read canonical fixture: %v", err)
 	}

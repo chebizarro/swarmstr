@@ -14,7 +14,7 @@ import (
 
 const (
 	// DefaultCheckURL is the GitHub releases API endpoint used when no override is configured.
-	DefaultCheckURL = "https://api.github.com/repos/swarmstr-org/swarmstr/releases/latest"
+	DefaultCheckURL = "https://api.github.com/repos/metiq-org/metiq/releases/latest"
 
 	// CacheTTL is how long a successful version check result is cached.
 	CacheTTL = time.Hour
@@ -95,7 +95,7 @@ func (c *Checker) fetchLatest(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "swarmstrd/"+c.current)
+	req.Header.Set("User-Agent", "metiqd/"+c.current)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

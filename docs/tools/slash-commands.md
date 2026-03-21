@@ -1,5 +1,5 @@
 ---
-summary: "swarmstr slash commands for session control"
+summary: "metiq slash commands for session control"
 read_when:
   - Using slash commands in chat
   - Implementing or extending slash commands
@@ -8,7 +8,7 @@ title: "Slash Commands"
 
 # Slash Commands
 
-swarmstr supports slash commands sent as DM messages for session and agent control.
+metiq supports slash commands sent as DM messages for session and agent control.
 
 ## Session commands
 

@@ -74,7 +74,7 @@ func TestRegistry_IdempotentLookup(t *testing.T) {
 func TestDefaultRegistry(t *testing.T) {
 	MessagesInbound.Inc()
 	out := Default.Exposition()
-	if !strings.Contains(out, "swarmstr_messages_inbound_total") {
-		t.Errorf("default registry missing swarmstr_messages_inbound_total")
+	if !strings.Contains(out, "metiq_messages_inbound_total") {
+		t.Errorf("default registry missing metiq_messages_inbound_total")
 	}
 }

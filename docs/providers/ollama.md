@@ -1,7 +1,7 @@
 ---
-summary: "Use local Ollama models in swarmstr (no API key required)"
+summary: "Use local Ollama models in metiq (no API key required)"
 read_when:
-  - Running swarmstr with local models
+  - Running metiq with local models
   - Setting up Ollama as the model provider
   - Air-gapped or private deployments
 title: "Ollama (Local Models)"
@@ -30,7 +30,7 @@ ollama pull qwen2.5:14b
 ollama pull mistral-nemo
 ```
 
-## Configure swarmstr
+## Configure metiq
 
 ```json
 {
@@ -79,7 +79,7 @@ Or via Tailscale:
 # List pulled models
 ollama list
 
-# Use in swarmstr as ollama/<model-name>
+# Use in metiq as ollama/<model-name>
 # e.g., ollama/llama3.3, ollama/qwen2.5:14b
 ```
 

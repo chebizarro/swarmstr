@@ -5,7 +5,7 @@
 // PluginManifest.  Authors self-sign their plugin releases; clients verify
 // the signature and optional content checksum before installing.
 //
-// Publishing is done from the swarmstr CLI (plugin-publish).
+// Publishing is done from the metiq CLI (plugin-publish).
 // Searching/fetching is done at install time.
 package registry
 
@@ -281,7 +281,7 @@ func Install(ctx context.Context, entry PluginEntry, destDir string) (string, er
 
 	// Write archive to temp file, then extract.
 	ext := archiveExt(m.DownloadURL)
-	tmp, err := os.CreateTemp("", "swarmstr-plugin-"+sanitizePath(m.ID)+"-*"+ext)
+	tmp, err := os.CreateTemp("", "metiq-plugin-"+sanitizePath(m.ID)+"-*"+ext)
 	if err != nil {
 		return "", fmt.Errorf("create temp archive: %w", err)
 	}

@@ -1,4 +1,4 @@
-// Package slack implements a Slack Bot channel extension for swarmstr.
+// Package slack implements a Slack Bot channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/slack" in the daemon
 // main.go to register this plugin at startup.
@@ -11,7 +11,7 @@
 //	  "bot_user_id": "U0987654321"       // optional: bot's own user ID to skip its messages
 //	}
 //
-// To add a Slack channel to your swarmstr config:
+// To add a Slack channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "slack-main": {

@@ -1,7 +1,7 @@
 ---
 name: bootstrap-extra-files
 description: "Inject additional workspace bootstrap files via glob/path patterns"
-homepage: https://github.com/swarmstr/swarmstr/blob/main/hooks/bootstrap-extra-files/HOOK.md
+homepage: https://github.com/metiq/metiq/blob/main/hooks/bootstrap-extra-files/HOOK.md
 metadata:
   {
     "openclaw":
@@ -9,7 +9,7 @@ metadata:
         "emoji": "📎",
         "events": ["agent:bootstrap"],
         "requires": { "config": ["workspace.dir"] },
-        "install": [{ "id": "bundled", "kind": "bundled", "label": "Bundled with swarmstr" }],
+        "install": [{ "id": "bundled", "kind": "bundled", "label": "Bundled with metiq" }],
       },
   }
 ---

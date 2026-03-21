@@ -1,6 +1,6 @@
 # Context
 
-**Context** is the information the agent has available when generating a response. In swarmstr, context is assembled from multiple sources and cached aggressively to reduce API costs.
+**Context** is the information the agent has available when generating a response. In metiq, context is assembled from multiple sources and cached aggressively to reduce API costs.
 
 ## Context Sources
 
@@ -41,7 +41,7 @@ See [Token Use](../reference/token-use.md) for cost details.
 
 ## Session History
 
-Conversation transcripts are stored as encrypted Nostr events on the configured relays (`TranscriptRepository`). Session metadata (labels, settings) is persisted locally in `~/.swarmstr/sessions.json`.
+Conversation transcripts are stored as encrypted Nostr events on the configured relays (`TranscriptRepository`). Session metadata (labels, settings) is persisted locally in `~/.metiq/sessions.json`.
 
 The full transcript is assembled on each turn (up to the configured window). When the session grows too large, **compaction** summarises older turns into a condensed block, keeping the context window manageable.
 
@@ -52,7 +52,7 @@ See [Session Management](../reference/session-management-compaction.md).
 The `memory/` directory in the workspace holds persistent files that survive across sessions:
 
 ```
-~/.swarmstr/workspace/memory/
+~/.metiq/workspace/memory/
 ├── USER.md           # Facts about the user (auto-updated)
 ├── projects.md       # Ongoing projects
 └── preferences.md    # User preferences

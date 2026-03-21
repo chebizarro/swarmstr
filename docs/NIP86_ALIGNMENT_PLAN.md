@@ -1,10 +1,10 @@
-# Swarmstr Nostr Control Plane: NIP-86 Alignment Plan
+# Metiq Nostr Control Plane: NIP-86 Alignment Plan
 
 _Last updated: 2026-03-02_
 
 ## Goal
 
-Align Swarmstr control-plane behavior with NIP-86 semantics, especially authorization, while preserving Swarmstr-specific methods.
+Align Metiq control-plane behavior with NIP-86 semantics, especially authorization, while preserving Metiq-specific methods.
 
 ## Current state
 
@@ -45,7 +45,7 @@ Use signer-based authorization semantics analogous to NIP-86:
 
 ### 3) Nostr-native transport
 
-- Add request/response control events over Nostr kinds (AI-Hub-aligned control kinds + Swarmstr tags).
+- Add request/response control events over Nostr kinds (AI-Hub-aligned control kinds + Metiq tags).
 - Include correlation tags (`id`, `ref`), requester pubkey, timestamp, and idempotency key.
 - Route responses as signed events and dedupe by request id.
 
@@ -56,7 +56,7 @@ Use signer-based authorization semantics analogous to NIP-86:
 
 ## Method profile
 
-Swarmstr method set remains app-specific but follows NIP-86-style execution semantics:
+Metiq method set remains app-specific but follows NIP-86-style execution semantics:
 
 - `supportedmethods`
 - `status.get`
@@ -75,9 +75,9 @@ Swarmstr method set remains app-specific but follows NIP-86-style execution sema
   - require authenticated + authorized caller
   - deny by default
 
-## Implementation phases under `swarmstr-3.1`
+## Implementation phases under `metiq-3.1`
 
-1. `swarmstr-3.1.1`: Envelope/profile normalization + supportedmethods.
-2. `swarmstr-3.1.2`: Authorization engine and signed-caller semantics.
-3. `swarmstr-3.1.3`: Nostr request/response transport with correlation and idempotency.
-4. `swarmstr-3.1.4`: Dual-surface integration + conformance tests.
+1. `metiq-3.1.1`: Envelope/profile normalization + supportedmethods.
+2. `metiq-3.1.2`: Authorization engine and signed-caller semantics.
+3. `metiq-3.1.3`: Nostr request/response transport with correlation and idempotency.
+4. `metiq-3.1.4`: Dual-surface integration + conformance tests.

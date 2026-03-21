@@ -1,4 +1,4 @@
-// Package googlechat implements a Google Chat channel extension for swarmstr
+// Package googlechat implements a Google Chat channel extension for metiq
 // using the Google Chat REST API with service-account authentication.
 //
 // Inbound messages arrive via an HTTP webhook pushed by Google Chat.
@@ -21,13 +21,13 @@
 // Webhook setup: in the Google Cloud Console, configure your Chat app to push
 // events to <admin_addr><webhook_path>.
 //
-// To add a Google Chat channel to your swarmstr config:
+// To add a Google Chat channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "gchat-main": {
 //	    "kind": "googlechat",
 //	    "config": {
-//	      "service_account_json": "/etc/swarmstr/sa.json",
+//	      "service_account_json": "/etc/metiq/sa.json",
 //	      "space_name": "spaces/AAAAAA"
 //	    }
 //	  }

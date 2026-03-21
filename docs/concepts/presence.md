@@ -1,18 +1,18 @@
 ---
-summary: "Agent presence: online/offline status indicators in swarmstr"
+summary: "Agent presence: online/offline status indicators in metiq"
 read_when:
-  - Understanding how swarmstr signals agent presence
+  - Understanding how metiq signals agent presence
   - Configuring presence indicators
 title: "Presence"
 ---
 
 # Presence
 
-swarmstr can signal agent presence (online/offline status) to Nostr contacts.
+metiq can signal agent presence (online/offline status) to Nostr contacts.
 
 ## Nostr Presence
 
-On Nostr, presence can be signaled via NIP-38 user statuses (kind:30315) or custom status events. swarmstr can publish presence updates when:
+On Nostr, presence can be signaled via NIP-38 user statuses (kind:30315) or custom status events. metiq can publish presence updates when:
 
 - The daemon starts (agent comes online)
 - The daemon stops (agent goes offline)
@@ -36,7 +36,7 @@ To disable: set `extra.heartbeat.enabled` to `false`.
 
 ## Presence Status Events
 
-swarmstr publishes kind:30315 NIP-38 user status events:
+metiq publishes kind:30315 NIP-38 user status events:
 
 ```json
 {
@@ -56,7 +56,7 @@ The status expires automatically — if the daemon crashes, the status expires w
 Check presence and relay connection state:
 
 ```bash
-swarmstr status
+metiq status
 ```
 
 ## Presence in the Dashboard
@@ -64,7 +64,7 @@ swarmstr status
 The web dashboard shows the current agent status (connected relays, active sessions, last heartbeat).
 
 ```bash
-swarmstr status
+metiq status
 ```
 
 ## See Also

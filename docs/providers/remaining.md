@@ -1,5 +1,5 @@
 ---
-summary: "Additional model provider configs for swarmstr: Mistral, Gemini, Bedrock, LiteLLM, and more"
+summary: "Additional model provider configs for metiq: Mistral, Gemini, Bedrock, LiteLLM, and more"
 read_when:
   - Configuring Mistral, Gemini, Bedrock, LiteLLM, vLLM, or other providers
 title: "Additional Providers"
@@ -7,9 +7,9 @@ title: "Additional Providers"
 
 # Additional Model Providers
 
-swarmstr supports all OpenAI-compatible API providers. Below is a quick reference for common ones.
+metiq supports all OpenAI-compatible API providers. Below is a quick reference for common ones.
 
-All provider entries go under `providers.<name>` in `~/.swarmstr/config.json`.
+All provider entries go under `providers.<name>` in `~/.metiq/config.json`.
 Set `agent.default_model` to the desired model string.
 
 ## Mistral AI

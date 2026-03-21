@@ -1,4 +1,4 @@
-// Package bluebubbles implements a BlueBubbles (iMessage) channel extension for swarmstr.
+// Package bluebubbles implements a BlueBubbles (iMessage) channel extension for metiq.
 //
 // BlueBubbles is a self-hosted iMessage relay server.  This plugin connects
 // over its Socket.IO-compatible WebSocket API to receive new messages in

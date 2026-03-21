@@ -8,14 +8,14 @@ title: "Auth Monitoring"
 
 # Auth monitoring
 
-swarmstr does not automatically refresh OAuth tokens; that responsibility stays
+metiq does not automatically refresh OAuth tokens; that responsibility stays
 with the model provider SDK or your own scripts.  The CLI gives you visibility
 into what is configured.
 
 ## Check provider config
 
 ```bash
-swarmstr models list
+metiq models list
 ```
 
 This calls `models.list` on the admin API and shows all available models with
@@ -29,10 +29,10 @@ gateway host and are tuned for systemd + Termux.
 
 - `scripts/auth-monitor.sh`: cron/systemd timer target; sends alerts (ntfy or DM).
 - `scripts/systemd/`: systemd user timer units for periodic auth checks.
-- `scripts/claude-auth-status.sh`: Claude Code + swarmstr auth checker (full/json/simple).
+- `scripts/claude-auth-status.sh`: Claude Code + metiq auth checker (full/json/simple).
 - `scripts/mobile-reauth.sh`: guided re-auth flow over SSH.
 - `scripts/termux-quick-auth.sh`: one-tap widget status + open auth URL.
 - `scripts/termux-auth-widget.sh`: full guided widget flow.
-- `scripts/termux-sync-widget.sh`: sync Claude Code creds → swarmstr.
+- `scripts/termux-sync-widget.sh`: sync Claude Code creds → metiq.
 
 If you don't need phone automation or systemd timers, skip these scripts.

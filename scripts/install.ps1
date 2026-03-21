@@ -108,7 +108,7 @@ if (!$DryRun) {
     }
     if (!(Test-Path $EnvFile)) {
         @"
-# metiq environment configuration (legacy METIQ_* env names remain supported)
+# metiq environment configuration
 # Edit this file and fill in the values you need.
 
 # ── Nostr ─────────────────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 ---
-summary: "Model provider overview with example configs for swarmstr"
+summary: "Model provider overview with example configs for metiq"
 read_when:
   - Setting up a model provider
   - Switching or rotating model providers
@@ -8,7 +8,7 @@ title: "Model Providers"
 
 # Model Providers
 
-swarmstr supports any LLM provider via the pi-ai catalog (built-in) or custom OpenAI-compatible
+metiq supports any LLM provider via the pi-ai catalog (built-in) or custom OpenAI-compatible
 providers. Model refs use `provider/model` format (e.g. `anthropic/claude-sonnet-4-5`).
 
 ## Quick config
@@ -145,8 +145,8 @@ Rotation happens automatically on 429 responses. Non-rate-limit failures fail im
 ## Model selection CLI
 
 ```bash
-swarmstr models list                              # List available models
-swarmstr models set anthropic/claude-opus-4-6    # Set default model
+metiq models list                              # List available models
+metiq models set anthropic/claude-opus-4-6    # Set default model
 ```
 
 ## Failover config

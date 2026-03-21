@@ -8,14 +8,14 @@ title: "Hooks"
 
 # Hooks
 
-Hooks provide an extensible event-driven system for automating actions in response to agent commands and lifecycle events. Hooks are automatically discovered from directories and can be managed via CLI commands, similar to how skills work in swarmstr.
+Hooks provide an extensible event-driven system for automating actions in response to agent commands and lifecycle events. Hooks are automatically discovered from directories and can be managed via CLI commands, similar to how skills work in metiq.
 
 ## Getting Oriented
 
 Hooks are small Go functions (or scripts) that run when something happens. There are two kinds:
 
 - **Hooks** (this page): run inside the daemon when agent events fire, like `/new`, `/reset`, `/stop`, or lifecycle events.
-- **Webhooks**: external HTTP webhooks that let other systems trigger work in swarmstr. See [Webhook Hooks](/automation/webhook).
+- **Webhooks**: external HTTP webhooks that let other systems trigger work in metiq. See [Webhook Hooks](/automation/webhook).
 
 Common uses:
 
@@ -32,41 +32,41 @@ The hooks system allows you to:
 - Save session context to memory when `/new` is issued
 - Log all commands for auditing
 - Trigger custom automations on agent lifecycle events
-- Extend swarmstr's behavior without modifying core code
+- Extend metiq's behavior without modifying core code
 
 ## Getting Started
 
 ### Bundled Hooks
 
-swarmstr ships with four bundled hooks that are automatically discovered:
+metiq ships with four bundled hooks that are automatically discovered:
 
-- **💾 session-memory**: Saves session context to your agent workspace (`~/.swarmstr/workspace/memory/`) when you issue `/new`
+- **💾 session-memory**: Saves session context to your agent workspace (`~/.metiq/workspace/memory/`) when you issue `/new`
 - **📎 bootstrap-extra-files**: Injects additional workspace bootstrap files from configured glob/path patterns during `agent:bootstrap`
-- **📝 command-logger**: Logs all command events to `~/.swarmstr/logs/commands.log`
+- **📝 command-logger**: Logs all command events to `~/.metiq/logs/commands.log`
 - **🚀 boot-md**: Runs `BOOT.md` when the daemon starts (requires the boot-md hook to be enabled in config)
 
 List available hooks:
 
 ```bash
-swarmstr hooks list
+metiq hooks list
 ```
 
 Enable a hook:
 
 ```bash
-swarmstr hooks enable session-memory
+metiq hooks enable session-memory
 ```
 
 Check hook status:
 
 ```bash
-swarmstr hooks check
+metiq hooks check
 ```
 
 Get detailed information:
 
 ```bash
-swarmstr hooks info session-memory
+metiq hooks info session-memory
 ```
 
 ## Hook Discovery
@@ -74,8 +74,8 @@ swarmstr hooks info session-memory
 Hooks are automatically discovered from three directories (in order of precedence):
 
 1. **Workspace hooks**: `<workspace>/hooks/` (per-agent, highest precedence)
-2. **Managed hooks**: `~/.swarmstr/hooks/` (user-installed, shared across workspaces)
-3. **Bundled hooks**: compiled into swarmstrd (shipped with swarmstr)
+2. **Managed hooks**: `~/.metiq/hooks/` (user-installed, shared across workspaces)
+3. **Bundled hooks**: compiled into metiqd (shipped with metiq)
 
 Each hook is a directory containing:
 
@@ -224,13 +224,13 @@ HOOK_CHANNEL_ID      # Always "nostr" for Nostr DMs
 ### 1. Choose Location
 
 - **Workspace hooks** (`<workspace>/hooks/`): Per-agent, highest precedence
-- **Managed hooks** (`~/.swarmstr/hooks/`): Shared across workspaces
+- **Managed hooks** (`~/.metiq/hooks/`): Shared across workspaces
 
 ### 2. Create Directory Structure
 
 ```bash
-mkdir -p ~/.swarmstr/hooks/my-hook
-cd ~/.swarmstr/hooks/my-hook
+mkdir -p ~/.metiq/hooks/my-hook
+cd ~/.metiq/hooks/my-hook
 ```
 
 ### 3. Create HOOK.md
@@ -261,7 +261,7 @@ if [ "$HOOK_TYPE" != "command" ] || [ "$HOOK_ACTION" != "new" ]; then
 fi
 
 echo "[my-hook] New session started: $HOOK_SESSION_KEY" \
-  >> ~/.swarmstr/logs/my-hook.log
+  >> ~/.metiq/logs/my-hook.log
 ```
 
 ```bash
@@ -272,13 +272,13 @@ chmod +x handler.sh
 
 ```bash
 # Verify hook is discovered
-swarmstr hooks list
+metiq hooks list
 
 # Enable it
-swarmstr hooks enable my-hook
+metiq hooks enable my-hook
 
-# Restart swarmstrd so hooks reload
-swarmstr daemon restart
+# Restart metiqd so hooks reload
+metiq daemon restart
 
 # Trigger the event — send /new via Nostr DM
 ```
@@ -344,46 +344,46 @@ Load hooks from additional directories:
 
 ```bash
 # List all hooks
-swarmstr hooks list
+metiq hooks list
 
 # Show only eligible hooks
-swarmstr hooks list --eligible
+metiq hooks list --eligible
 
 # Verbose output (show missing requirements)
-swarmstr hooks list --verbose
+metiq hooks list --verbose
 
 # JSON output
-swarmstr hooks list --json
+metiq hooks list --json
 ```
 
 ### Hook Information
 
 ```bash
 # Show detailed info about a hook
-swarmstr hooks info session-memory
+metiq hooks info session-memory
 
 # JSON output
-swarmstr hooks info session-memory --json
+metiq hooks info session-memory --json
 ```
 
 ### Check Eligibility
 
 ```bash
 # Show eligibility summary
-swarmstr hooks check
+metiq hooks check
 
 # JSON output
-swarmstr hooks check --json
+metiq hooks check --json
 ```
 
 ### Enable/Disable
 
 ```bash
 # Enable a hook
-swarmstr hooks enable session-memory
+metiq hooks enable session-memory
 
 # Disable a hook
-swarmstr hooks disable command-logger
+metiq hooks disable command-logger
 ```
 
 ## Bundled Hook Reference
@@ -396,7 +396,7 @@ Saves session context to memory when you issue `/new`.
 
 **Requirements**: `workspace.dir` must be configured
 
-**Output**: `<workspace>/memory/YYYY-MM-DD-slug.md` (defaults to `~/.swarmstr/workspace`)
+**Output**: `<workspace>/memory/YYYY-MM-DD-slug.md` (defaults to `~/.metiq/workspace`)
 
 **What it does**:
 
@@ -414,7 +414,7 @@ Saves session context to memory when you issue `/new`.
 **Enable**:
 
 ```bash
-swarmstr hooks enable session-memory
+metiq hooks enable session-memory
 ```
 
 ### bootstrap-extra-files
@@ -446,7 +446,7 @@ Injects additional bootstrap files during `agent:bootstrap`.
 **Enable**:
 
 ```bash
-swarmstr hooks enable bootstrap-extra-files
+metiq hooks enable bootstrap-extra-files
 ```
 
 ### command-logger
@@ -457,7 +457,7 @@ Logs all command events to a centralized audit file.
 
 **Requirements**: None
 
-**Output**: `~/.swarmstr/logs/commands.log`
+**Output**: `~/.metiq/logs/commands.log`
 
 **Example log entries**:
 
@@ -470,19 +470,19 @@ Logs all command events to a centralized audit file.
 
 ```bash
 # View recent commands
-tail -n 20 ~/.swarmstr/logs/commands.log
+tail -n 20 ~/.metiq/logs/commands.log
 
 # Pretty-print with jq
-cat ~/.swarmstr/logs/commands.log | jq .
+cat ~/.metiq/logs/commands.log | jq .
 
 # Filter by action
-grep '"action":"new"' ~/.swarmstr/logs/commands.log | jq .
+grep '"action":"new"' ~/.metiq/logs/commands.log | jq .
 ```
 
 **Enable**:
 
 ```bash
-swarmstr hooks enable command-logger
+metiq hooks enable command-logger
 ```
 
 ### boot-md
@@ -503,7 +503,7 @@ Internal hooks must be enabled for this to run.
 **Enable**:
 
 ```bash
-swarmstr hooks enable boot-md
+metiq hooks enable boot-md
 ```
 
 ## Best Practices
@@ -566,7 +566,7 @@ hooks: registered boot-md -> gateway:startup
 List all discovered hooks:
 
 ```bash
-swarmstr hooks list --verbose
+metiq hooks list --verbose
 ```
 
 ### Verify Eligibility
@@ -574,15 +574,15 @@ swarmstr hooks list --verbose
 Check why a hook isn't eligible:
 
 ```bash
-swarmstr hooks info my-hook
+metiq hooks info my-hook
 ```
 
 ### View Daemon Logs
 
 ```bash
-swarmstr logs --follow
+metiq logs --follow
 # or
-journalctl -u swarmstrd -f
+journalctl -u metiqd -f
 ```
 
 ## Troubleshooting
@@ -592,7 +592,7 @@ journalctl -u swarmstrd -f
 1. Check directory structure:
 
    ```bash
-   ls -la ~/.swarmstr/hooks/my-hook/
+   ls -la ~/.metiq/hooks/my-hook/
    # Should show: HOOK.md, handler.sh
    ```
 
@@ -601,7 +601,7 @@ journalctl -u swarmstrd -f
 3. List all discovered hooks:
 
    ```bash
-   swarmstr hooks list
+   metiq hooks list
    ```
 
 ### Hook Not Executing
@@ -609,20 +609,20 @@ journalctl -u swarmstrd -f
 1. Verify hook is enabled:
 
    ```bash
-   swarmstr hooks list
+   metiq hooks list
    # Should show ✓ next to enabled hooks
    ```
 
 2. Restart the daemon so hooks reload:
 
    ```bash
-   swarmstr daemon restart
+   metiq daemon restart
    ```
 
 3. Check daemon logs for errors:
 
    ```bash
-   swarmstr logs | grep hook
+   metiq logs | grep hook
    ```
 
 ## Architecture

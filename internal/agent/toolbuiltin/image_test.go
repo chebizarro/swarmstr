@@ -63,7 +63,7 @@ func TestImageTool_PathNotAllowed(t *testing.T) {
 
 func TestImageTool_PathFileNotFound(t *testing.T) {
 	tool := ImageTool(echoRuntime("ok"), ImageOpts{})
-	_, err := tool(context.Background(), map[string]any{"path": "/tmp/swarmstr-nonexistent-img-99999.png"})
+	_, err := tool(context.Background(), map[string]any{"path": "/tmp/metiq-nonexistent-img-99999.png"})
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}

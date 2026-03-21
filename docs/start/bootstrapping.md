@@ -8,13 +8,13 @@ title: "Bootstrapping"
 
 # Bootstrapping
 
-When swarmstrd starts a new agent session, it **bootstraps** the agent's context by injecting
+When metiqd starts a new agent session, it **bootstraps** the agent's context by injecting
 workspace files into the system prompt. This gives the agent its identity, operating instructions,
 memory, and tool notes before the first message.
 
 ## Bootstrap files
 
-These files live in `~/.swarmstr/workspace/` and are loaded at session start:
+These files live in `~/.metiq/workspace/` and are loaded at session start:
 
 | File           | Purpose                                                    | Always loaded? |
 | -------------- | ---------------------------------------------------------- | -------------- |
@@ -30,7 +30,7 @@ These files live in `~/.swarmstr/workspace/` and are loaded at session start:
 ## Blank and missing files
 
 - **Blank files**: skipped silently.
-- **Missing files**: a single "missing file" marker is injected. `swarmstr init` recreates defaults.
+- **Missing files**: a single "missing file" marker is injected. `metiq init` recreates defaults.
 - **Large files**: truncated at `bootstrapMaxChars` (default: 20000 chars per file).
 
 ## The BOOTSTRAP.md ritual
@@ -49,13 +49,13 @@ After completing the ritual, the agent deletes `BOOTSTRAP.md` — it's a one-tim
 
 ```bash
 # Create workspace and seed default bootstrap files
-swarmstr init
+metiq init
 
 # Or specify a custom workspace path
-swarmstr init --workspace /path/to/my-workspace
+metiq init --workspace /path/to/my-workspace
 
 # Overwrite existing files
-swarmstr init --force
+metiq init --force
 ```
 
 This creates AGENTS.md, SOUL.md, IDENTITY.md, USER.md, and BOOTSTRAP.md if they don't exist.
@@ -87,6 +87,6 @@ The `docs/reference/templates/` directory contains template versions of all boot
 Use these as starting points when setting up a new workspace:
 
 ```bash
-cp docs/reference/templates/SOUL.md ~/.swarmstr/workspace/SOUL.md
+cp docs/reference/templates/SOUL.md ~/.metiq/workspace/SOUL.md
 # Edit to customize
 ```

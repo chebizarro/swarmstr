@@ -1,4 +1,4 @@
-// Package acp implements Swarmstr's Agent Control Protocol.
+// Package acp implements Metiq's Agent Control Protocol.
 //
 // ACP uses Nostr-native NIP-17 encrypted DMs between agent keypairs to
 // coordinate multi-agent workflows without any central broker.

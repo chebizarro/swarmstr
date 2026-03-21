@@ -1,5 +1,5 @@
 ---
-summary: "How to contribute to swarmstr's threat model and security documentation"
+summary: "How to contribute to metiq's threat model and security documentation"
 read_when:
   - Contributing a new threat scenario
   - Reviewing or expanding the threat model
@@ -9,11 +9,11 @@ title: "Contributing to the Threat Model"
 
 # Contributing to the Threat Model
 
-swarmstr's threat model lives at [docs/security/README.md](/security/). This document explains how to contribute new threats, mitigations, and security research.
+metiq's threat model lives at [docs/security/README.md](/security/). This document explains how to contribute new threats, mitigations, and security research.
 
 ## Threat Model Philosophy
 
-swarmstr operates at the intersection of several trust boundaries:
+metiq operates at the intersection of several trust boundaries:
 
 1. **Nostr protocol layer**: cryptographic identity, relay trust, event signatures
 2. **LLM provider layer**: API key protection, prompt injection, output safety
@@ -86,11 +86,11 @@ Nostr relays see metadata even for encrypted DMs (NIP-04):
 - Timing of messages
 - Event sizes
 
-**NIP-17 (Gift Wrap)** hides sender metadata. swarmstr support status is tracked in the [Nostr channel docs](/channels/nostr).
+**NIP-17 (Gift Wrap)** hides sender metadata. metiq support status is tracked in the [Nostr channel docs](/channels/nostr).
 
 ### Event Authenticity
 
-All Nostr events are signed with the sender's private key. swarmstr verifies event signatures before processing — impersonation is cryptographically prevented.
+All Nostr events are signed with the sender's private key. metiq verifies event signatures before processing — impersonation is cryptographically prevented.
 
 ### Key Compromise Scenarios
 

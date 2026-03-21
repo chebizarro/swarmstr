@@ -415,7 +415,7 @@ func TestCheckRequirements_satisfied(t *testing.T) {
 }
 
 func TestCheckRequirements_missingBin(t *testing.T) {
-	req := Requirements{Bins: []string{"definitely-not-a-real-binary-xyz-swarmstr"}}
+	req := Requirements{Bins: []string{"definitely-not-a-real-binary-xyz-metiq"}}
 	missing, eligible := CheckRequirements(req)
 	if eligible {
 		t.Error("expected ineligible for missing binary")

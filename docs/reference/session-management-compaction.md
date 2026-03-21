@@ -1,5 +1,5 @@
 ---
-summary: "Session store, JSONL transcripts, compaction lifecycle, and pruning in swarmstr"
+summary: "Session store, JSONL transcripts, compaction lifecycle, and pruning in metiq"
 read_when:
   - Understanding how sessions are stored and managed
   - Debugging session state or transcript files
@@ -11,10 +11,10 @@ title: "Session Management & Compaction"
 
 ## Session Store
 
-swarmstr persists session state in `~/.swarmstr/agents/<agentId>/sessions/`:
+metiq persists session state in `~/.metiq/agents/<agentId>/sessions/`:
 
 ```
-~/.swarmstr/agents/
+~/.metiq/agents/
 └── main/                           # Default agent
     └── sessions/
         ├── sessions.json           # Session index (all sessions + their current IDs)
@@ -76,7 +76,7 @@ Compaction summarizes old context to keep the session within the model's context
 
 ### Auto-Compaction
 
-swarmstr automatically compacts when the session approaches the model's context limit. You can configure the threshold:
+metiq automatically compacts when the session approaches the model's context limit. You can configure the threshold:
 
 ```json5
 {
@@ -126,7 +126,7 @@ For long-running agents, prune old sessions to reclaim disk:
 
 ```bash
 # List sessions older than 30 days
-swarmstr sessions --json | jq '.[] | select(.updatedAt < (now - 30*86400))'
+metiq sessions --json | jq '.[] | select(.updatedAt < (now - 30*86400))'
 ```
 
 Configure auto-pruning:
@@ -147,13 +147,13 @@ Configure auto-pruning:
 
 ```bash
 # List all sessions
-swarmstr sessions
+metiq sessions
 
 # Active sessions only (last 60 minutes)
-swarmstr sessions --active 60
+metiq sessions --active 60
 
 # JSON output for scripting
-swarmstr sessions --json
+metiq sessions --json
 ```
 
 ## Transcript Hygiene

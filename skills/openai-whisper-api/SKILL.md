@@ -39,7 +39,7 @@ Defaults:
 
 ## API key
 
-Set `OPENAI_API_KEY`, or configure it in `~/.swarmstr/config.json`:
+Set `OPENAI_API_KEY`, or configure it in `~/.metiq/config.json`:
 
 ```json5
 {

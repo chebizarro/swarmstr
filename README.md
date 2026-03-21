@@ -357,4 +357,4 @@ Key packages:
 | `internal/extensions/` | Telegram, Discord, Slack, WhatsApp, Email channel plugins |
 | `internal/store/state` | Nostr-backed config/session/memory document store |
 
-See `docs/MIGRATION_FROM_OPENCLAW.md` for the full OpenClaw → Swarmstr migration guide.
+See `docs/MIGRATION_FROM_OPENCLAW.md` for the full OpenClaw → Metiq migration guide.

@@ -1577,7 +1577,7 @@ var NostrAppDataSetDef = agent.ToolDefinition{
 		Properties: map[string]agent.ToolParamProp{
 			"app_id": {
 				Type:        "string",
-				Description: "Application namespace identifier (e.g. 'swarmstr', 'my-app').",
+				Description: "Application namespace identifier (e.g. 'metiq', 'my-app').",
 			},
 			"key": {
 				Type:        "string",

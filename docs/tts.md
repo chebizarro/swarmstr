@@ -1,7 +1,7 @@
 ---
-summary: "TTS (text-to-speech) configuration and providers for swarmstr"
+summary: "TTS (text-to-speech) configuration and providers for metiq"
 read_when:
-  - Setting up TTS for swarmstr
+  - Setting up TTS for metiq
   - Configuring cloud TTS for agent responses
   - Adding voice output to agent responses
 title: "Text-to-Speech (TTS)"
@@ -9,7 +9,7 @@ title: "Text-to-Speech (TTS)"
 
 # Text-to-Speech (TTS)
 
-swarmstr supports multiple TTS providers for agent voice output.
+metiq supports multiple TTS providers for agent voice output.
 
 ## Providers
 
@@ -67,17 +67,17 @@ Set `ELEVENLABS_API_KEY` and configure the voice ID:
 
 ### Kokoro (Local)
 
-Kokoro is a local TTS server. Run it on your machine and point swarmstr at it via
+Kokoro is a local TTS server. Run it on your machine and point metiq at it via
 `KOKORO_BASE_URL` (or configure in provider settings).
 
 ## Listing & Switching Providers
 
 ```bash
 # List available TTS providers and their configured status
-swarmstr gw tts.providers
+metiq gw tts.providers
 
 # Switch active provider
-swarmstr gw tts.set_provider '{"provider": "elevenlabs", "voice": "pNInz6obpgDQGcFmaJgB"}'
+metiq gw tts.set_provider '{"provider": "elevenlabs", "voice": "pNInz6obpgDQGcFmaJgB"}'
 ```
 
 ## TTS with Node Devices
@@ -86,7 +86,7 @@ When a node device is paired with audio output:
 
 ```bash
 # Invoke TTS on a remote node
-swarmstr nodes invoke --node mypi --command audio.tts \
+metiq nodes invoke --node mypi --command audio.tts \
   --args '{"text": "Hello", "provider": "openai"}'
 ```
 

@@ -1,5 +1,5 @@
 ---
-summary: "Extended thinking mode in swarmstr: enabling deep reasoning for complex tasks"
+summary: "Extended thinking mode in metiq: enabling deep reasoning for complex tasks"
 read_when:
   - Enabling or configuring thinking mode
   - Understanding when thinking is used and its token cost
@@ -8,7 +8,7 @@ title: "Thinking Mode"
 
 # Thinking Mode
 
-swarmstr supports extended thinking mode for Anthropic's Claude models (claude-3-7-sonnet and newer). Thinking mode gives the model additional tokens to reason through complex problems before responding.
+metiq supports extended thinking mode for Anthropic's Claude models (claude-3-7-sonnet and newer). Thinking mode gives the model additional tokens to reason through complex problems before responding.
 
 ## Enabling Thinking
 
@@ -27,7 +27,7 @@ To clear the override and revert to the agent default:
 /unset thinking
 ```
 
-When enabled via `/set thinking on`, swarmstr uses the `medium` thinking level (10,000 budget tokens) by default.
+When enabled via `/set thinking on`, metiq uses the `medium` thinking level (10,000 budget tokens) by default.
 
 ### Per-Agent Default (Config)
 

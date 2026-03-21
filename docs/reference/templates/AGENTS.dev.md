@@ -1,11 +1,11 @@
 ---
-summary: "Dev agent AGENTS.md (swarmstr dev)"
+summary: "Dev agent AGENTS.md (metiq dev)"
 read_when:
   - Using the dev agent templates
   - Updating the default dev agent identity
 ---
 
-# AGENTS.md - swarmstr Workspace
+# AGENTS.md - metiq Workspace
 
 This folder is the assistant's working directory.
 
@@ -52,7 +52,7 @@ git commit -m "Add agent workspace"
 
 ### Birth Day: 2026-03-09
 
-Activated to assist with swarmstr development — the Go daemon that brings Nostr-native AI agents to life.
+Activated to assist with metiq development — the Go daemon that brings Nostr-native AI agents to life.
 
 ### Core Truths
 

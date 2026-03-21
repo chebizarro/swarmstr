@@ -1,5 +1,5 @@
 ---
-summary: "Secrets management: env var interpolation, credential storage, and secret refs for swarmstr"
+summary: "Secrets management: env var interpolation, credential storage, and secret refs for metiq"
 read_when:
   - Storing API keys or the Nostr private key securely
   - Using ${ENV_VAR} interpolation in config
@@ -9,11 +9,11 @@ title: "Secrets Management"
 
 # Secrets Management
 
-swarmstr supports several patterns for keeping secrets out of your config file while still making them available to the daemon.
+metiq supports several patterns for keeping secrets out of your config file while still making them available to the daemon.
 
 ## Environment Variable Interpolation
 
-Any string value in `~/.swarmstr/config.json` can reference an environment variable using `${VAR_NAME}` syntax:
+Any string value in `~/.metiq/config.json` can reference an environment variable using `${VAR_NAME}` syntax:
 
 ```json
 {
@@ -43,33 +43,33 @@ The daemon resolves these at startup. If a referenced variable is not set, the d
 
 ## The `.env` File
 
-For systemd-managed daemons, shell environment variables aren't inherited. Use `~/.swarmstr/.env`:
+For systemd-managed daemons, shell environment variables aren't inherited. Use `~/.metiq/.env`:
 
 ```bash
-cat > ~/.swarmstr/.env <<'EOF'
+cat > ~/.metiq/.env <<'EOF'
 NOSTR_PRIVATE_KEY=nsec1...
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
-SWARMSTR_GATEWAY_TOKEN=my-secure-token
+METIQ_GATEWAY_TOKEN=my-secure-token
 EOF
 
-chmod 600 ~/.swarmstr/.env
+chmod 600 ~/.metiq/.env
 ```
 
 Configure systemd to load it:
 
 ```ini
-# /etc/systemd/system/swarmstrd.service
+# /etc/systemd/system/metiqd.service
 [Service]
-EnvironmentFile=/home/youruser/.swarmstr/.env
+EnvironmentFile=/home/youruser/.metiq/.env
 ```
 
-Alternatively, source `~/.swarmstr/.env` manually before starting swarmstrd, or use systemd's `EnvironmentFile`.
+Alternatively, source `~/.metiq/.env` manually before starting metiqd, or use systemd's `EnvironmentFile`.
 
 ## Credential Storage Layout
 
 ```
-~/.swarmstr/
+~/.metiq/
 ├── .env                        # Env vars for daemon (chmod 600)
 ├── bootstrap.json              # Bootstrap config (private key, relays, ports)
 ├── sessions.json               # Session settings (labels, overrides)
@@ -85,17 +85,17 @@ Runtime config (providers, model, session config) is stored as encrypted Nostr e
 The Nostr private key (nsec) is the most sensitive secret. Best practices:
 
 1. **Never store in `bootstrap.json` directly** — use `${NOSTR_NSEC}`.
-2. **Keep in `~/.swarmstr/.env`** with `chmod 600`.
+2. **Keep in `~/.metiq/.env`** with `chmod 600`.
 3. **Backup securely** — loss of the nsec means losing the agent identity.
 4. **Don't share** — whoever has the nsec can impersonate the agent.
 
 ```bash
 # Generate a new keypair
-swarmstr keygen
-# Copy the nsec output to ~/.swarmstr/.env as NOSTR_NSEC=nsec1...
+metiq keygen
+# Copy the nsec output to ~/.metiq/.env as NOSTR_NSEC=nsec1...
 ```
 
-All agents in a single swarmstrd share one Nostr identity. For separate npub identities, run separate swarmstrd instances with different bootstrap configs.
+All agents in a single metiqd share one Nostr identity. For separate npub identities, run separate metiqd instances with different bootstrap configs.
 
 ## API Key Rotation
 
@@ -117,23 +117,23 @@ Each `${VAR}` reference is resolved from the environment. Keys are rotated round
 
 ```bash
 # Validate config (checks ${VAR} refs resolve)
-swarmstr config validate
+metiq config validate
 
 # List configured models
-swarmstr models list
+metiq models list
 
 # Audit for common security issues
-swarmstr doctor
+metiq doctor
 ```
 
 ## Migrating from Plaintext Secrets
 
 If you've previously stored secrets as plaintext in config.json:
 
-1. Move secrets to `~/.swarmstr/.env`
+1. Move secrets to `~/.metiq/.env`
 2. Replace plaintext values with `${VAR_NAME}` references in config.json
 3. Restart the daemon
-4. Verify with `swarmstr models list`
+4. Verify with `metiq models list`
 
 ```bash
 # Before (in providers config)
@@ -141,7 +141,7 @@ If you've previously stored secrets as plaintext in config.json:
 
 # After
 # "api_key": "${ANTHROPIC_API_KEY}"
-# And in ~/.swarmstr/.env:
+# And in ~/.metiq/.env:
 # ANTHROPIC_API_KEY=sk-ant-abc123
 ```
 

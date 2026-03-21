@@ -1,7 +1,7 @@
 ---
-summary: "Onboarding reference for swarmstr — setup steps and config fields"
+summary: "Onboarding reference for metiq — setup steps and config fields"
 read_when:
-  - Onboarding a new swarmstr installation
+  - Onboarding a new metiq installation
   - Looking up required config fields
   - Automating a fresh deployment
 title: "Onboarding Reference"
@@ -10,14 +10,14 @@ sidebarTitle: "Onboarding Reference"
 
 # Onboarding Reference
 
-swarmstr does not have an interactive setup wizard. Onboarding is done by creating the config
-files manually (or via automation) and running `swarmstr init` to seed the workspace.
+metiq does not have an interactive setup wizard. Onboarding is done by creating the config
+files manually (or via automation) and running `metiq init` to seed the workspace.
 
 For a step-by-step walkthrough, see [Setup & Onboarding](/start/setup).
 
 ## Minimum Required Config
 
-### `~/.swarmstr/bootstrap.json`
+### `~/.metiq/bootstrap.json`
 
 Process-level config — key material, network addresses, admin token:
 
@@ -34,7 +34,7 @@ Process-level config — key material, network addresses, admin token:
 }
 ```
 
-### `~/.swarmstr/config.json`
+### `~/.metiq/config.json`
 
 Runtime agent config — DM policy, provider keys, model:
 
@@ -59,56 +59,56 @@ Runtime agent config — DM policy, provider keys, model:
 
 ```bash
 # Seed default workspace files (AGENTS.md, SOUL.md, IDENTITY.md, USER.md, BOOTSTRAP.md)
-swarmstr init
+metiq init
 
 # Specify a non-default workspace directory
-swarmstr init --workspace /path/to/workspace
+metiq init --workspace /path/to/workspace
 
 # Overwrite existing files
-swarmstr init --force
+metiq init --force
 ```
 
 ## Starting the Daemon
 
 ```bash
 # Foreground (for testing)
-swarmstrd --bootstrap ~/.swarmstr/bootstrap.json
+metiqd --bootstrap ~/.metiq/bootstrap.json
 
 # Background via daemon CLI
-swarmstr daemon start
-swarmstr daemon status
+metiq daemon start
+metiq daemon status
 ```
 
 ## Onboarding Checklist
 
 - [ ] `bootstrap.json` created with private key, relays, admin addr, admin token
 - [ ] `config.json` created with dm policy, provider key, default model
-- [ ] `swarmstr init` run to seed workspace
-- [ ] `swarmstr models list` returns available models
-- [ ] Daemon started and reachable (`swarmstr daemon status`)
+- [ ] `metiq init` run to seed workspace
+- [ ] `metiq models list` returns available models
+- [ ] Daemon started and reachable (`metiq daemon status`)
 - [ ] First DM received and agent replied
 - [ ] (Optional) systemd/launchd service installed for always-on operation
 
 ## Scripted / Automated Setup
 
-For CI or reproducible deployments, write the config files directly and run `swarmstr init`:
+For CI or reproducible deployments, write the config files directly and run `metiq init`:
 
 ```bash
 #!/bin/bash
 set -euo pipefail
 
-mkdir -p ~/.swarmstr
+mkdir -p ~/.metiq
 
-cat > ~/.swarmstr/bootstrap.json <<EOF
+cat > ~/.metiq/bootstrap.json <<EOF
 {
-  "private_key": "${SWARMSTR_PRIVATE_KEY}",
+  "private_key": "${METIQ_PRIVATE_KEY}",
   "relays": ["wss://nos.lol", "wss://relay.primal.net", "wss://relay.sharegap.net"],
   "admin_listen_addr": "127.0.0.1:18788",
-  "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
+  "admin_token": "${METIQ_ADMIN_TOKEN}"
 }
 EOF
 
-cat > ~/.swarmstr/config.json <<EOF
+cat > ~/.metiq/config.json <<EOF
 {
   "dm": { "policy": "allowlist", "allow_from": ["${OWNER_NPUB}"] },
   "providers": { "anthropic": { "api_key": "${ANTHROPIC_API_KEY}" } },
@@ -116,8 +116,8 @@ cat > ~/.swarmstr/config.json <<EOF
 }
 EOF
 
-swarmstr init
-swarmstr daemon start
+metiq init
+metiq daemon start
 ```
 
 ## See Also

@@ -1,5 +1,5 @@
 ---
-summary: "Web search and fetch tools for swarmstr agents"
+summary: "Web search and fetch tools for metiq agents"
 read_when:
   - Enabling web_search or web_fetch for the agent
   - Setting up a search API key (Perplexity, Brave, etc.)
@@ -9,7 +9,7 @@ title: "Web Tools"
 
 # Web Tools
 
-swarmstr ships two lightweight web tools:
+metiq ships two lightweight web tools:
 
 - **`web_search`** — search the web using Perplexity, Brave, Gemini, or Grok
 - **`web_fetch`** — HTTP fetch + readable extraction (HTML → markdown/text)
@@ -50,7 +50,7 @@ web_fetch(url="https://github.com/nostr-protocol/nostr")
 
 ### Provider Auto-Detection
 
-swarmstr checks for API keys in this order:
+metiq checks for API keys in this order:
 
 1. `BRAVE_SEARCH_API_KEY` → Brave Search
 2. `SERPER_API_KEY` → Serper (Google via Serper.dev)

@@ -1,10 +1,10 @@
 # Agent
 
-The swarmstr **agent** is the core runtime that receives messages, manages context, calls tools, and generates replies. Every interaction flows through a single Go function — `dmRunAgentTurn` — which orchestrates the full request/response cycle.
+The metiq **agent** is the core runtime that receives messages, manages context, calls tools, and generates replies. Every interaction flows through a single Go function — `dmRunAgentTurn` — which orchestrates the full request/response cycle.
 
 ## What is an Agent?
 
-In swarmstr, "the agent" refers to the running instance of the AI assistant. It:
+In metiq, "the agent" refers to the running instance of the AI assistant. It:
 
 - Listens for inbound Nostr DMs (and DVM jobs)
 - Maintains per-session conversation history (stored as encrypted Nostr events)
@@ -13,11 +13,11 @@ In swarmstr, "the agent" refers to the running instance of the AI assistant. It:
 - Executes tools (shell, browser, nostr, canvas, …)
 - Sends replies back via Nostr DM
 
-A single `swarmstrd` process runs one agent, identified by its Nostr public key (`npub`). Multiple agents can run on the same machine using separate config files (via `--bootstrap` flag) to isolate their configurations.
+A single `metiqd` process runs one agent, identified by its Nostr public key (`npub`). Multiple agents can run on the same machine using separate config files (via `--bootstrap` flag) to isolate their configurations.
 
 ## Agent Identity
 
-The agent has key files in `~/.swarmstr/workspace/`:
+The agent has key files in `~/.metiq/workspace/`:
 
 | File | Purpose |
 |------|---------|
@@ -26,7 +26,7 @@ The agent has key files in `~/.swarmstr/workspace/`:
 | `AGENTS.md` | Operating instructions, tool policies, memory rules |
 | `USER.md` | Per-user context (updated by memory hooks) |
 
-These files are loaded into the system prompt on every turn. The agent's Nostr private key lives in the bootstrap config (`~/.swarmstr/bootstrap.json`), or is referenced via a `signer_url` (e.g. `env://NOSTR_PRIVATE_KEY`).
+These files are loaded into the system prompt on every turn. The agent's Nostr private key lives in the bootstrap config (`~/.metiq/bootstrap.json`), or is referenced via a `signer_url` (e.g. `env://NOSTR_PRIVATE_KEY`).
 
 ## Turn Lifecycle
 
@@ -56,10 +56,10 @@ The agent loops until the LLM produces a final text response (no more tool calls
 
 ## Workspace
 
-The agent workspace at `~/.swarmstr/workspace/` is the agent's "home":
+The agent workspace at `~/.metiq/workspace/` is the agent's "home":
 
 ```
-~/.swarmstr/workspace/
+~/.metiq/workspace/
 ├── AGENTS.md          # Operating rules (loaded every turn)
 ├── SOUL.md            # Personality
 ├── IDENTITY.md        # Nostr identity
@@ -76,7 +76,7 @@ Any `.md` file placed in the workspace root or `memory/` is loaded as context.
 
 ## Session Isolation
 
-Each conversation partner gets their own **session** keyed by their Nostr public key. Sessions are stored as encrypted Nostr events in the transcript repository. A local `~/.swarmstr/sessions.json` tracks per-session flags and token counts.
+Each conversation partner gets their own **session** keyed by their Nostr public key. Sessions are stored as encrypted Nostr events in the transcript repository. A local `~/.metiq/sessions.json` tracks per-session flags and token counts.
 
 ```
 agent:<agentId>:<senderPubKey>
@@ -90,7 +90,7 @@ An agent can route sessions to different registered agents via the `/focus` and 
 
 ## Configuration
 
-Key agent settings in the bootstrap config (`~/.swarmstr/bootstrap.json`):
+Key agent settings in the bootstrap config (`~/.metiq/bootstrap.json`):
 
 ```json
 {
@@ -101,7 +101,7 @@ Key agent settings in the bootstrap config (`~/.swarmstr/bootstrap.json`):
 }
 ```
 
-Per-agent model and behaviour settings live in the **runtime config** (`~/.swarmstr/config.json`, loaded via `swarmstr config import --file config.json`):
+Per-agent model and behaviour settings live in the **runtime config** (`~/.metiq/config.json`, loaded via `metiq config import --file config.json`):
 
 ```json
 {

@@ -2077,7 +2077,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("expected browser.request to fail when browser control is disabled")
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodVoicewakeSet, Params: json.RawMessage(`{"triggers":["openclaw","swarmstr"]}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodVoicewakeSet, Params: json.RawMessage(`{"triggers":["openclaw","metiq"]}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("voicewake.set error: %v", err)
 	}

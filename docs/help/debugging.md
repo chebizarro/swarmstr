@@ -1,7 +1,7 @@
 ---
-summary: "Debugging swarmstr: logs, diagnostics, and common issues"
+summary: "Debugging metiq: logs, diagnostics, and common issues"
 read_when:
-  - swarmstr is not responding or behaving unexpectedly
+  - metiq is not responding or behaving unexpectedly
   - Diagnosing relay connection issues
   - Agent turns are failing or timing out
 title: "Debugging"
@@ -14,10 +14,10 @@ title: "Debugging"
 Start here when something isn't working:
 
 ```bash
-swarmstr status          # Daemon health + relay connection status
-swarmstr health          # Quick health check (returns 0 if healthy)
-swarmstr logs --lines 100  # Recent log lines
-swarmstr doctor          # Diagnostic check: config, keys, relay connectivity
+metiq status          # Daemon health + relay connection status
+metiq health          # Quick health check (returns 0 if healthy)
+metiq logs --lines 100  # Recent log lines
+metiq doctor          # Diagnostic check: config, keys, relay connectivity
 ```
 
 ## Relay connection issues
@@ -25,8 +25,8 @@ swarmstr doctor          # Diagnostic check: config, keys, relay connectivity
 ### Agent not receiving DMs
 
 ```bash
-swarmstr channels status   # Show configured channels and connection state
-swarmstr logs --lines 100  # Watch for relay connection errors
+metiq channels status   # Show configured channels and connection state
+metiq logs --lines 100  # Watch for relay connection errors
 ```
 
 Check:
@@ -46,8 +46,8 @@ Check:
 ### No response to DM
 
 ```bash
-swarmstr logs --lines 100          # Look for "Processing DM from..." or error lines
-swarmstr sessions list --json      # Check session state
+metiq logs --lines 100          # Look for "Processing DM from..." or error lines
+metiq sessions list --json      # Check session state
 ```
 
 Common causes:
@@ -58,8 +58,8 @@ Common causes:
 ### API errors
 
 ```bash
-swarmstr logs --lines 100  # Look for model provider errors
-swarmstr models list       # Check configured models
+metiq logs --lines 100  # Look for model provider errors
+metiq models list       # Check configured models
 ```
 
 Common errors:
@@ -75,9 +75,9 @@ See [Automation Troubleshooting](/automation/troubleshooting).
 
 | Method | Command/Path |
 | ------ | ------------ |
-| CLI | `swarmstr logs --lines 100` |
-| systemd | `journalctl -u swarmstrd -f` |
-| File | `~/.swarmstr/logs/swarmstrd.log` |
+| CLI | `metiq logs --lines 100` |
+| systemd | `journalctl -u metiqd -f` |
+| File | `~/.metiq/logs/metiqd.log` |
 
 ## Debug mode
 
@@ -87,10 +87,10 @@ Enable verbose logging for a specific session:
 /set verbose on
 ```
 
-For daemon-level verbosity, run swarmstrd in a terminal and watch stderr. To capture:
+For daemon-level verbosity, run metiqd in a terminal and watch stderr. To capture:
 
 ```bash
-swarmstrd 2>&1 | tee /tmp/swarmstrd-debug.log
+metiqd 2>&1 | tee /tmp/metiqd-debug.log
 ```
 
 
@@ -111,8 +111,8 @@ If it fails, the nsec is malformed. Regenerate with `nak key generate`.
 
 The relay URL may be wrong or the relay is down. Try:
 ```bash
-swarmstr relay ping wss://relay.damus.io
-swarmstr relay info wss://relay.damus.io
+metiq relay ping wss://relay.damus.io
+metiq relay info wss://relay.damus.io
 ```
 
 Switch to a different relay temporarily.
@@ -120,14 +120,14 @@ Switch to a different relay temporarily.
 ### "session not found"
 
 The session was pruned (maintenance cleanup). The next DM will create a fresh session.
-Session history lives at `~/.swarmstr/agents/<id>/sessions/`.
+Session history lives at `~/.metiq/agents/<id>/sessions/`.
 
 ### Agent says wrong thing / uses wrong persona
 
-Check bootstrap files in `~/.swarmstr/workspace/`:
+Check bootstrap files in `~/.metiq/workspace/`:
 ```bash
-cat ~/.swarmstr/workspace/SOUL.md
-cat ~/.swarmstr/workspace/AGENTS.md
+cat ~/.metiq/workspace/SOUL.md
+cat ~/.metiq/workspace/AGENTS.md
 ```
 
 If files were recently edited, the change takes effect on the next session start.
@@ -137,4 +137,4 @@ Send `/new` to force a fresh session load.
 
 - Check [FAQ](/help/faq) for common questions.
 - Open an issue on GitHub with logs and config (redact keys).
-- Include output of `swarmstr doctor` in bug reports.
+- Include output of `metiq doctor` in bug reports.

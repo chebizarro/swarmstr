@@ -1,4 +1,4 @@
-# Gateway Method Surface (Swarmstr)
+# Gateway Method Surface (Metiq)
 
 This document defines the initial gateway-style method contract for parity work.
 

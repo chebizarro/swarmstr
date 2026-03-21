@@ -1,6 +1,6 @@
-// Package config provides config file I/O for Swarmstr.
+// Package config provides config file I/O for Metiq.
 // It supports reading OpenClaw-compatible JSON5/YAML config files
-// and mapping them to the Swarmstr ConfigDoc format.
+// and mapping them to the Metiq ConfigDoc format.
 package config
 
 import (
@@ -127,7 +127,7 @@ func ConfigFileModTime(path string) time.Time {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // mapRawToConfigDoc converts a raw parsed map (from JSON5 or YAML) to a
-// ConfigDoc, mapping known OpenClaw config fields to their Swarmstr equivalents.
+// ConfigDoc, mapping known OpenClaw config fields to their Metiq equivalents.
 // Unknown top-level sections are preserved in ConfigDoc.Extra.
 func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 	doc := state.ConfigDoc{Version: 1}
@@ -143,7 +143,7 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		}
 	}
 
-	// ── native Swarmstr DM policy (written by WriteConfigFile) ───────────────
+	// ── native Metiq DM policy (written by WriteConfigFile) ───────────────
 	// When the file was produced by WriteConfigFile it has a top-level "dm"
 	// key that maps directly onto DMPolicy's JSON fields.
 	if dmRaw, ok := raw["dm"].(map[string]any); ok {
@@ -192,7 +192,7 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		}
 	}
 
-	// ── native Swarmstr agent policy ──────────────────────────────────────────
+	// ── native Metiq agent policy ──────────────────────────────────────────
 	if agentRaw, ok := raw["agent"].(map[string]any); ok {
 		if model, ok := agentRaw["default_model"].(string); ok && model != "" {
 			if doc.Agent.DefaultModel == "" {
@@ -242,11 +242,11 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		}
 		doc.Extra["agents"] = agentsRaw
 	case []any:
-		// Swarmstr-native typed format: agents is directly an array.
+		// Metiq-native typed format: agents is directly an array.
 		doc.Agents = parseAgentConfigList(agentsRaw)
 	}
 
-	// ── plugins (map to extensions in extra, matching existing Swarmstr key) ──
+	// ── plugins (map to extensions in extra, matching existing Metiq key) ──
 	if pluginsRaw, ok := raw["plugins"]; ok {
 		doc.Extra["extensions"] = pluginsRaw
 	}

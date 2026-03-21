@@ -1,9 +1,9 @@
 ---
-summary: "Helper scripts, testing workflows, and automation scripts for swarmstr development"
+summary: "Helper scripts, testing workflows, and automation scripts for metiq development"
 read_when:
-  - Using or adding helper scripts in the swarmstr repo
-  - Testing swarmstr components
-  - Automating swarmstr operations from scripts
+  - Using or adding helper scripts in the metiq repo
+  - Testing metiq components
+  - Automating metiq operations from scripts
 title: "Scripts & Testing"
 ---
 
@@ -11,7 +11,7 @@ title: "Scripts & Testing"
 
 ## Go Test Suite
 
-swarmstr uses Go's standard testing framework.
+metiq uses Go's standard testing framework.
 
 ```bash
 # Run all tests
@@ -97,14 +97,14 @@ go test -fuzz=FuzzParseConfig -fuzztime=30s ./internal/config/...
 
 ## Integration Testing
 
-For end-to-end testing, swarmstr supports a test mode that uses a local relay:
+For end-to-end testing, metiq supports a test mode that uses a local relay:
 
 ```bash
 # Start a local test relay
 docker run -d -p 7777:7777 scsibug/nostr-rs-relay
 
 # Run integration tests against local relay
-SWARMSTR_TEST_RELAY=ws://localhost:7777 go test -tags=integration ./...
+METIQ_TEST_RELAY=ws://localhost:7777 go test -tags=integration ./...
 ```
 
 ## CI/CD
@@ -133,14 +133,14 @@ jobs:
 
 ```bash
 # Send a test DM to the agent
-swarmstr dm-send --to <agent-npub> --text "ping"
+metiq dm-send --to <agent-npub> --text "ping"
 ```
 
 ### Test Cron Jobs
 
 ```bash
 # Trigger a cron job immediately (bypasses schedule)
-swarmstr cron run <jobId>
+metiq cron run <jobId>
 ```
 
 ### Test Webhooks
@@ -148,7 +148,7 @@ swarmstr cron run <jobId>
 ```bash
 # Send a test webhook (port matches admin_listen_addr in bootstrap.json)
 curl -X POST http://localhost:7423/hooks/wake \
-  -H "Authorization: Bearer $SWARMSTR_ADMIN_TOKEN" \
+  -H "Authorization: Bearer $METIQ_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"text": "test webhook"}'
 ```
@@ -160,7 +160,7 @@ For stress-testing relay connections:
 ```bash
 # Concurrent DM test (10 concurrent senders)
 # Get agent pubkey first
-AGENT_PUBKEY=$(swarmstr status --json | jq -r '.pubkey')
+AGENT_PUBKEY=$(metiq status --json | jq -r '.pubkey')
 for i in $(seq 1 10); do
   nak event --sec $NSEC -k 4 -c "test message $i" \
     --tag p=$AGENT_PUBKEY \

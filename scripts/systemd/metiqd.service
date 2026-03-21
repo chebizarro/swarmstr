@@ -21,7 +21,7 @@ TimeoutStopSec=30
 # Hardening (user service — no root needed)
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=%h/.metiq %h/.local/share/swarmstr /tmp
+ReadWritePaths=%h/.metiq %h/.local/share/metiq /tmp
 
 [Install]
 WantedBy=default.target

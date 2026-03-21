@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_NAME="${METIQ_IMAGE:-${CLAWDBOT_IMAGE:-swarmstrd:local}}"
+IMAGE_NAME="${METIQ_IMAGE:-${CLAWDBOT_IMAGE:-metiqd:local}}"
 CONFIG_DIR="${METIQ_CONFIG_DIR:-${CLAWDBOT_CONFIG_DIR:-$HOME/.metiq}}"
 WORKSPACE_DIR="${METIQ_WORKSPACE_DIR:-${CLAWDBOT_WORKSPACE_DIR:-$HOME/.metiq/workspace}}"
 PROFILE_FILE="${METIQ_PROFILE_FILE:-${CLAWDBOT_PROFILE_FILE:-$HOME/.profile}}"
@@ -26,8 +26,8 @@ docker run --rm -t \
   -e METIQ_LIVE_GATEWAY_PROVIDERS="${METIQ_LIVE_GATEWAY_PROVIDERS:-${CLAWDBOT_LIVE_GATEWAY_PROVIDERS:-}}" \
   -e METIQ_LIVE_GATEWAY_MAX_MODELS="${METIQ_LIVE_GATEWAY_MAX_MODELS:-${CLAWDBOT_LIVE_GATEWAY_MAX_MODELS:-24}}" \
   -e METIQ_LIVE_GATEWAY_MODEL_TIMEOUT_MS="${METIQ_LIVE_GATEWAY_MODEL_TIMEOUT_MS:-${CLAWDBOT_LIVE_GATEWAY_MODEL_TIMEOUT_MS:-}}" \
-  -v "$CONFIG_DIR":/home/swarmstr/.metiq \
-  -v "$WORKSPACE_DIR":/home/swarmstr/.metiq/workspace \
+  -v "$CONFIG_DIR":/home/metiq/.metiq \
+  -v "$WORKSPACE_DIR":/home/metiq/.metiq/workspace \
   "${PROFILE_MOUNT[@]}" \
   "$IMAGE_NAME" \
   -lc "set -euo pipefail; [ -f \"$HOME/.profile\" ] && source \"$HOME/.profile\" || true; cd /app && pnpm test:live"

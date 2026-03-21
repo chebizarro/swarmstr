@@ -253,7 +253,7 @@ function parseArgs(): Args {
     process.env.METIQ_DISCORD_SMOKE_THREAD_BINDINGS_PATH ||
     defaultBindingsPath;
   const openclawBin =
-    resolveArg("--swarmstr-bin") || process.env.METIQ_DISCORD_SMOKE_METIQ_BIN || "swarmstr";
+    resolveArg("--metiq-bin") || process.env.METIQ_DISCORD_SMOKE_METIQ_BIN || "metiq";
   const json = hasFlag("--json");
 
   if (!channelId) {
@@ -306,7 +306,7 @@ async function readMessagesWithOpenclaw(params: {
       messages?: DiscordMessage[];
     };
   }>({
-    swarmstrBin: params.metiqBin,
+    metiqBin: params.metiqBin,
     args: [
       "message",
       "read",
@@ -489,7 +489,7 @@ async function loadParentRecentMessages(params: {
 }): Promise<DiscordMessage[]> {
   if (params.args.driverMode === "openclaw") {
     return await readMessagesWithOpenclaw({
-      swarmstrBin: params.args.metiqBin,
+      metiqBin: params.args.metiqBin,
       target: params.args.channelId,
       limit: 20,
     });
@@ -674,7 +674,7 @@ async function run(): Promise<SuccessResult | FailureResult> {
           };
         };
       }>({
-        swarmstrBin: args.metiqBin,
+        metiqBin: args.metiqBin,
         args: [
           "message",
           "send",
@@ -757,7 +757,7 @@ async function run(): Promise<SuccessResult | FailureResult> {
         const threadMessages =
           args.driverMode === "openclaw"
             ? await readMessagesWithOpenclaw({
-                swarmstrBin: args.metiqBin,
+                metiqBin: args.metiqBin,
                 target: threadId,
                 limit: 50,
               })

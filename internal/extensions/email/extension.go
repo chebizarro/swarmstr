@@ -1,4 +1,4 @@
-// Package email implements an Email channel extension for swarmstr using IMAP
+// Package email implements an Email channel extension for metiq using IMAP
 // (poll for inbound) and SMTP (send outbound).
 //
 // Registration: import _ "metiq/internal/extensions/email" in the daemon
@@ -173,7 +173,7 @@ func (b *emailBot) Send(ctx context.Context, text string) error {
 		return fmt.Errorf("no recipient known yet for email channel %s", b.channelID)
 	}
 	return sendEmail(b.smtpHost, b.smtpUser, b.smtpPass, b.fromAddr, to,
-		"Re: swarmstr reply", text)
+		"Re: metiq reply", text)
 }
 
 // SendTo sends an email to an explicit recipient address.

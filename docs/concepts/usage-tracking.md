@@ -1,5 +1,5 @@
 ---
-summary: "Token usage tracking and provider quota monitoring in swarmstr"
+summary: "Token usage tracking and provider quota monitoring in metiq"
 read_when:
   - Monitoring API usage and costs
   - Understanding token tracking implementation
@@ -8,7 +8,7 @@ title: "Usage Tracking"
 
 # Usage Tracking
 
-swarmstr tracks token usage per turn and surfaces usage information via the status command and session transcripts.
+metiq tracks token usage per turn and surfaces usage information via the status command and session transcripts.
 
 ## What's Tracked
 
@@ -27,11 +27,11 @@ Accumulated per session:
 
 ```bash
 # Current status
-swarmstr status
-swarmstr status --json
+metiq status
+metiq status --json
 
 # List models (shows which are configured)
-swarmstr models list
+metiq models list
 ```
 
 ## Usage in Transcripts
@@ -44,7 +44,7 @@ Token usage is tracked in session transcript metadata. Per-provider quota inform
 
 ## Usage Alerts
 
-Swarmstr does not currently have built-in token/cost alert thresholds. Monitor usage via `swarmstr status` or `swarmstr models list`, or build alerting around the webhook integration.
+Metiq does not currently have built-in token/cost alert thresholds. Monitor usage via `metiq status` or `metiq models list`, or build alerting around the webhook integration.
 
 ## See Also
 

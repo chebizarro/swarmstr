@@ -1,4 +1,4 @@
-// Package mattermost implements a Mattermost Bot channel extension for swarmstr.
+// Package mattermost implements a Mattermost Bot channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/mattermost" in the daemon
 // main.go to register this plugin at startup.
@@ -18,7 +18,7 @@
 // POST /api/v4/posts for sending, with WebSocket for real-time events when
 // available.  Polling at 3s intervals serves as fallback.
 //
-// To add a Mattermost channel to your swarmstr config:
+// To add a Mattermost channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "mm-general": {
@@ -175,7 +175,7 @@ func (p *MattermostPlugin) Connect(
 
 type mmBot struct {
 	mu             sync.Mutex
-	channelID      string // swarmstr channel ID
+	channelID      string // metiq channel ID
 	baseURL        string
 	token          string
 	teamName       string

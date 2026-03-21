@@ -8,7 +8,7 @@ title: "Session Management"
 
 # Session Management
 
-swarmstr maintains one **session per sender pubkey** for Nostr DMs. Each unique Nostr identity that sends a DM gets its own isolated conversation context.
+metiq maintains one **session per sender pubkey** for Nostr DMs. Each unique Nostr identity that sends a DM gets its own isolated conversation context.
 
 ## Session Scoping
 
@@ -25,7 +25,7 @@ DM sessions are always per-peer — there is no shared context between different
 ## Where State Lives
 
 - **Transcripts**: stored as encrypted Nostr events on your configured relays (`TranscriptRepository`). Each turn is a separate kind event, encrypted and signed with your nsec.
-- **Session settings**: persisted locally in `~/.swarmstr/sessions.json`. This includes labels, model overrides, flags (verbose, thinking, tts), and last-activity timestamps.
+- **Session settings**: persisted locally in `~/.metiq/sessions.json`. This includes labels, model overrides, flags (verbose, thinking, tts), and last-activity timestamps.
 
 No JSONL files are written to disk for session history — everything flows through Nostr.
 
@@ -68,13 +68,13 @@ Old sessions can be pruned manually from the CLI:
 
 ```bash
 # Preview what would be deleted
-swarmstr sessions prune --older-than 30d --dry-run
+metiq sessions prune --older-than 30d --dry-run
 
 # Delete sessions older than 30 days
-swarmstr sessions prune --older-than 30d
+metiq sessions prune --older-than 30d
 
 # Delete all sessions
-swarmstr sessions prune --all
+metiq sessions prune --all
 ```
 
 Or configure automatic pruning in the session config (runs at startup and on a schedule).
@@ -85,13 +85,13 @@ See [Session Pruning](session-pruning.md) for full details.
 
 ```bash
 # List all sessions
-swarmstr sessions list
+metiq sessions list
 
 # Get details for a specific session
-swarmstr sessions get <session-id>
+metiq sessions get <session-id>
 
 # Export session transcript
-swarmstr sessions export <session-id>
+metiq sessions export <session-id>
 ```
 
 In-chat commands:
