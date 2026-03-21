@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/plugins/sdk"
 )
 
 // ── RSA key helper ────────────────────────────────────────────────────────────
@@ -463,4 +463,3 @@ func TestRegisterAndHandleWebhook(t *testing.T) {
 }
 
 // ── helper ────────────────────────────────────────────────────────────────────
-

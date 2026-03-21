@@ -32,7 +32,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	nostruntime "swarmstr/internal/nostr/runtime"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // KindChat is the NIP-C7 chat message kind.
@@ -67,9 +67,9 @@ type ChatChannel struct {
 	ownsPool bool
 	ctx      context.Context
 	cancel   context.CancelFunc
-	onMsg   func(InboundMessage)
-	onErr   func(error)
-	pubkey  string
+	onMsg    func(InboundMessage)
+	onErr    func(error)
+	pubkey   string
 
 	// lastEventMu protects lastEventID for quote-reply threading.
 	lastEventMu sync.Mutex
@@ -122,11 +122,11 @@ func NewChatChannel(parent context.Context, opts ChatChannelOptions) (*ChatChann
 		relays:   opts.Relays,
 		pool:     pool,
 		ownsPool: ownsPool,
-		ctx:     ctx,
-		cancel:  cancel,
-		onMsg:   opts.OnMessage,
-		onErr:   opts.OnError,
-		pubkey:  pk.Hex(),
+		ctx:      ctx,
+		cancel:   cancel,
+		onMsg:    opts.OnMessage,
+		onErr:    opts.OnError,
+		pubkey:   pk.Hex(),
 	}
 
 	go ch.subscribeLoop(ctx)

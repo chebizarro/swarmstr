@@ -1,7 +1,8 @@
 // Package toolbuiltin – Cashu NUT ecash tools.
 //
 // Registers: nuts_mint_quote, nuts_mint_status, nuts_melt_quote, nuts_melt,
-//            nuts_balance, nuts_decode, nuts_mint_info
+//
+//	nuts_balance, nuts_decode, nuts_mint_info
 package toolbuiltin
 
 import (
@@ -9,8 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/nuts"
+	"metiq/internal/agent"
+	"metiq/internal/nuts"
 )
 
 // NutsToolOpts configures the Cashu NUT tools.

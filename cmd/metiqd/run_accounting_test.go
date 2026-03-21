@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/gateway/methods"
-	"swarmstr/internal/store/state"
+	"metiq/internal/agent"
+	"metiq/internal/gateway/methods"
+	"metiq/internal/store/state"
 )
 
 type runtimeFunc func(context.Context, agent.Turn) (agent.TurnResult, error)
@@ -116,4 +116,3 @@ func TestRenderResponseWithUsage_Modes(t *testing.T) {
 		t.Fatalf("full mode footer missing session total: %q", full)
 	}
 }
-

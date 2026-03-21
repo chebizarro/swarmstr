@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/export"
+	"metiq/internal/export"
 )
 
 func TestSessionToHTMLBasic(t *testing.T) {

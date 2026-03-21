@@ -1,7 +1,7 @@
 // Package email implements an Email channel extension for swarmstr using IMAP
 // (poll for inbound) and SMTP (send outbound).
 //
-// Registration: import _ "swarmstr/internal/extensions/email" in the daemon
+// Registration: import _ "metiq/internal/extensions/email" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -34,8 +34,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {
@@ -50,16 +50,16 @@ func (e *EmailPlugin) Type() string { return "Email (IMAP+SMTP)" }
 
 func (e *EmailPlugin) ConfigSchema() map[string]any {
 	return map[string]any{
-		"imap_host":        "imap.example.com:993",
-		"imap_user":        "user@example.com",
-		"imap_pass":        "",
-		"smtp_host":        "smtp.example.com:587",
-		"smtp_user":        "",
-		"smtp_pass":        "",
-		"from_addr":        "user@example.com",
-		"mailbox":          "INBOX",
-		"poll_interval_s":  30,
-		"allowed_senders":  []string{},
+		"imap_host":       "imap.example.com:993",
+		"imap_user":       "user@example.com",
+		"imap_pass":       "",
+		"smtp_host":       "smtp.example.com:587",
+		"smtp_user":       "",
+		"smtp_pass":       "",
+		"from_addr":       "user@example.com",
+		"mailbox":         "INBOX",
+		"poll_interval_s": 30,
+		"allowed_senders": []string{},
 	}
 }
 

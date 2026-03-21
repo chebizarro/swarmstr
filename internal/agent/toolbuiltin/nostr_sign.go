@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 // NostrSignDef is the ToolDefinition for nostr_sign.

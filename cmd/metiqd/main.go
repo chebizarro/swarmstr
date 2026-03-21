@@ -26,68 +26,68 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/admin"
-	"swarmstr/internal/agent"
-	"swarmstr/internal/autoreply"
-	browserpkg "swarmstr/internal/browser"
-	"swarmstr/internal/canvas"
-	"swarmstr/internal/config"
-	"swarmstr/internal/cron"
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/gateway/methods"
-	"swarmstr/internal/gateway/nodepending"
-	gatewayprotocol "swarmstr/internal/gateway/protocol"
-	gatewayws "swarmstr/internal/gateway/ws"
-	hookspkg "swarmstr/internal/hooks"
-	mediapkg "swarmstr/internal/media"
-	mcppkg "swarmstr/internal/mcp"
-	"swarmstr/internal/memory"
-	"swarmstr/internal/nostr/dvm"
-	"swarmstr/internal/nostr/nip38"
-	"swarmstr/internal/nostr/nip51"
-	nostruntime "swarmstr/internal/nostr/runtime"
-	"swarmstr/internal/nostr/secure"
-	"swarmstr/internal/plugins/installer"
-	pluginmanager "swarmstr/internal/plugins/manager"
-	"swarmstr/internal/policy"
-	secretspkg "swarmstr/internal/secrets"
-	skillspkg "swarmstr/internal/skills"
-	"swarmstr/internal/store/state"
-	ttspkg "swarmstr/internal/tts"
-	"swarmstr/internal/update"
+	"metiq/internal/admin"
+	"metiq/internal/agent"
+	"metiq/internal/autoreply"
+	browserpkg "metiq/internal/browser"
+	"metiq/internal/canvas"
+	"metiq/internal/config"
+	"metiq/internal/cron"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/gateway/methods"
+	"metiq/internal/gateway/nodepending"
+	gatewayprotocol "metiq/internal/gateway/protocol"
+	gatewayws "metiq/internal/gateway/ws"
+	hookspkg "metiq/internal/hooks"
+	mcppkg "metiq/internal/mcp"
+	mediapkg "metiq/internal/media"
+	"metiq/internal/memory"
+	"metiq/internal/nostr/dvm"
+	"metiq/internal/nostr/nip38"
+	"metiq/internal/nostr/nip51"
+	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/nostr/secure"
+	"metiq/internal/plugins/installer"
+	pluginmanager "metiq/internal/plugins/manager"
+	"metiq/internal/policy"
+	secretspkg "metiq/internal/secrets"
+	skillspkg "metiq/internal/skills"
+	"metiq/internal/store/state"
+	ttspkg "metiq/internal/tts"
+	"metiq/internal/update"
 
-	acppkg "swarmstr/internal/acp"
-	"swarmstr/internal/agent/toolbuiltin"
-	"swarmstr/internal/agent/toolloop"
-	ctxengine "swarmstr/internal/context"
-	exportpkg "swarmstr/internal/export"
-	metricspkg "swarmstr/internal/metrics"
-	"swarmstr/internal/plugins/sdk"
-	ratelimitpkg "swarmstr/internal/ratelimit"
-	"swarmstr/internal/sandbox"
-	securitypkg "swarmstr/internal/security"
-	"swarmstr/internal/webui"
+	acppkg "metiq/internal/acp"
+	"metiq/internal/agent/toolbuiltin"
+	"metiq/internal/agent/toolloop"
+	ctxengine "metiq/internal/context"
+	exportpkg "metiq/internal/export"
+	metricspkg "metiq/internal/metrics"
+	"metiq/internal/plugins/sdk"
+	ratelimitpkg "metiq/internal/ratelimit"
+	"metiq/internal/sandbox"
+	securitypkg "metiq/internal/security"
+	"metiq/internal/webui"
 
 	// Built-in channel extensions. Importing these packages registers their
 	// ChannelPlugin implementations with the global channel plugin registry.
-	_ "swarmstr/internal/extensions/bluebubbles"
-	_ "swarmstr/internal/extensions/discord"
-	_ "swarmstr/internal/extensions/email"
-	_ "swarmstr/internal/extensions/feishu"
-	_ "swarmstr/internal/extensions/googlechat"
-	_ "swarmstr/internal/extensions/irc"
-	_ "swarmstr/internal/extensions/line"
-	_ "swarmstr/internal/extensions/matrix"
-	_ "swarmstr/internal/extensions/mattermost"
-	_ "swarmstr/internal/extensions/msteams"
-	_ "swarmstr/internal/extensions/nextcloud"
-	_ "swarmstr/internal/extensions/signal"
-	_ "swarmstr/internal/extensions/slack"
-	_ "swarmstr/internal/extensions/synology"
-	_ "swarmstr/internal/extensions/telegram"
-	_ "swarmstr/internal/extensions/twitch"
-	_ "swarmstr/internal/extensions/whatsapp"
-	_ "swarmstr/internal/extensions/zalo"
+	_ "metiq/internal/extensions/bluebubbles"
+	_ "metiq/internal/extensions/discord"
+	_ "metiq/internal/extensions/email"
+	_ "metiq/internal/extensions/feishu"
+	_ "metiq/internal/extensions/googlechat"
+	_ "metiq/internal/extensions/irc"
+	_ "metiq/internal/extensions/line"
+	_ "metiq/internal/extensions/matrix"
+	_ "metiq/internal/extensions/mattermost"
+	_ "metiq/internal/extensions/msteams"
+	_ "metiq/internal/extensions/nextcloud"
+	_ "metiq/internal/extensions/signal"
+	_ "metiq/internal/extensions/slack"
+	_ "metiq/internal/extensions/synology"
+	_ "metiq/internal/extensions/telegram"
+	_ "metiq/internal/extensions/twitch"
+	_ "metiq/internal/extensions/whatsapp"
+	_ "metiq/internal/extensions/zalo"
 )
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
@@ -4310,7 +4310,7 @@ func main() {
 			Token:                  gatewayWSToken,
 			Methods:                wsMethods,
 			Events:                 gatewayws.AllPushEvents,
-			Version:                "swarmstrd",
+			Version:                "metiqd",
 			HandshakeTTL:           10 * time.Second,
 			AuthRateLimitPerMin:    120,
 			UnauthorizedBurstMax:   8,
@@ -4357,7 +4357,7 @@ func main() {
 					})
 					return
 				case <-ticker.C:
-					gatewayws.EmitTick(wsEmitter, startedAt, "swarmstrd")
+					gatewayws.EmitTick(wsEmitter, startedAt, "metiqd")
 				}
 			}
 		}()
@@ -5138,7 +5138,7 @@ func main() {
 		}
 	}()
 
-	fmt.Printf("swarmstrd running pubkey=%s relays=%d state_store=nostr dm_policy=%s admin=%s\n",
+	fmt.Printf("metiqd running pubkey=%s relays=%d state_store=nostr dm_policy=%s admin=%s\n",
 		bus.PublicKey(), len(cfg.Relays), configState.Get().DM.Policy, adminAddr)
 
 	// Fire gateway:startup hook now that all channels and goroutines are ready.
@@ -5158,7 +5158,7 @@ func main() {
 	}
 
 	<-ctx.Done()
-	log.Println("swarmstrd shutting down")
+	log.Println("metiqd shutting down")
 }
 
 func initEnvelopeCodec(cfg config.BootstrapConfig, signer nostr.Keyer) (secure.EnvelopeCodec, error) {
@@ -5818,7 +5818,7 @@ func handleControlRPCRequest(
 			DMPolicy:      cfg.DM.Policy,
 			UptimeSeconds: int(time.Since(startedAt).Seconds()),
 			UptimeMS:      time.Since(startedAt).Milliseconds(),
-			Version:       "swarmstrd",
+			Version:       "metiqd",
 		}}, nil
 	case methods.MethodUsageStatus:
 		if usageState == nil {

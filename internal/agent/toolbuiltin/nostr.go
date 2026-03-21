@@ -14,8 +14,8 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip19"
 
-	"swarmstr/internal/agent"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // NostrToolOpts holds the shared credentials and default relay list for all
@@ -116,6 +116,7 @@ func (o NostrToolOpts) signerFunc() (func(ctx context.Context, evt *nostr.Event)
 //   - relays     []string — relay URLs (optional, overrides configured relays)
 //   - limit      int     — max events to return (default 20, max 100)
 //   - timeout_seconds int (default 10)
+//
 // NostrFetchDef is the ToolDefinition for nostr_fetch.
 var NostrFetchDef = agent.ToolDefinition{
 	Name:        "nostr_fetch",

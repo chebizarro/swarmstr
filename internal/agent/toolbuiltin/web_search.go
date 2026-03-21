@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 const (
@@ -88,6 +88,7 @@ func (c WebSearchConfig) serperURL() string {
 //   - query (string, required) – search query
 //   - provider ("brave"|"serper", optional) – defaults to auto-detect
 //   - count (int, default 5, max 10) – number of results to return
+//
 // WebSearchDef is the ToolDefinition for web_search (native function-calling schema).
 var WebSearchDef = agent.ToolDefinition{
 	Name:        "web_search",

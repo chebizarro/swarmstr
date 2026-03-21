@@ -9,8 +9,8 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/nostr/zap"
+	"metiq/internal/agent"
+	"metiq/internal/nostr/zap"
 )
 
 // ─── nostr_zap_send ───────────────────────────────────────────────────────────

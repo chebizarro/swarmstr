@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/tts"
+	"metiq/internal/tts"
 )
 
 // stubTTSProvider is a minimal tts.Provider for testing.
@@ -15,10 +15,10 @@ type stubTTSProvider struct {
 	configured bool
 }
 
-func (s *stubTTSProvider) ID() string         { return s.id }
-func (s *stubTTSProvider) Name() string       { return "Stub/" + s.id }
-func (s *stubTTSProvider) Voices() []string   { return []string{"stub-voice"} }
-func (s *stubTTSProvider) Configured() bool   { return s.configured }
+func (s *stubTTSProvider) ID() string       { return s.id }
+func (s *stubTTSProvider) Name() string     { return "Stub/" + s.id }
+func (s *stubTTSProvider) Voices() []string { return []string{"stub-voice"} }
+func (s *stubTTSProvider) Configured() bool { return s.configured }
 func (s *stubTTSProvider) Convert(_ context.Context, text, voice string) ([]byte, string, error) {
 	return []byte("audio:" + text), "mp3", nil
 }

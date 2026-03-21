@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"strings"
 
-	nostruntime "swarmstr/internal/nostr/runtime"
-	"swarmstr/internal/store/state"
+	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/store/state"
 )
 
 const (

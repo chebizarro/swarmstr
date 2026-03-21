@@ -17,9 +17,9 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/contextvm"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	"metiq/internal/contextvm"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // ContextVMToolOpts configures ContextVM tools.
@@ -62,11 +62,11 @@ var contextVMCallDef = agent.ToolDefinition{
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
-			"server_pubkey": {Type: "string", Description: "Hex pubkey of the ContextVM server."},
-			"tool_name":     {Type: "string", Description: "Name of the MCP tool to call."},
-			"arguments":     {Type: "string", Description: "JSON object string of tool arguments (e.g. '{\"prompt\":\"a cat\"}')."},
-			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
-			"encryption":    {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
+			"server_pubkey":   {Type: "string", Description: "Hex pubkey of the ContextVM server."},
+			"tool_name":       {Type: "string", Description: "Name of the MCP tool to call."},
+			"arguments":       {Type: "string", Description: "JSON object string of tool arguments (e.g. '{\"prompt\":\"a cat\"}')."},
+			"relays":          {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+			"encryption":      {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
 			"timeout_seconds": {Type: "number", Description: "Optional response timeout in seconds (default 60)."},
 		},
 		Required: []string{"server_pubkey", "tool_name"},

@@ -15,7 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"swarmstr/internal/gateway/protocol"
+	"metiq/internal/gateway/protocol"
 )
 
 func TestHandshakeConnectSuccess(t *testing.T) {

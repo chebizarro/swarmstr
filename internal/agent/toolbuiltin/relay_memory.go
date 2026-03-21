@@ -18,8 +18,8 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // RelayMemoryToolOpts configures the relay memory tools.
@@ -273,9 +273,9 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 		}
 
 		out, _ := json.Marshal(map[string]any{
-			"ok":              true,
-			"deleted_event":   eventID,
-			"deletion_event":  delEvt.ID.Hex(),
+			"ok":             true,
+			"deleted_event":  eventID,
+			"deletion_event": delEvt.ID.Hex(),
 		})
 		return string(out), nil
 	}, RelayForgetDef)

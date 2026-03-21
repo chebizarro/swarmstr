@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/plugins/sdk"
 )
 
 func TestReplyTargetFromContextOrLast_ContextWins(t *testing.T) {

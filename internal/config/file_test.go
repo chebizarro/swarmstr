@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 // ─── JSON5 / HuJSON ─────────────────────────────────────────────────────────

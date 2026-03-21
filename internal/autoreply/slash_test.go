@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"swarmstr/internal/autoreply"
+	"metiq/internal/autoreply"
 )
 
 func TestParse_returnsNilForNonSlash(t *testing.T) {

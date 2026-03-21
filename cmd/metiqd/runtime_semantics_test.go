@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/gateway/methods"
-	"swarmstr/internal/store/state"
+	"metiq/internal/gateway/methods"
+	"metiq/internal/store/state"
 )
 
 func TestExecApprovalsEventDrivenWait(t *testing.T) {

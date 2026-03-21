@@ -10,7 +10,7 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 type ControlAuth struct {

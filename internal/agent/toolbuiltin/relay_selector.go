@@ -6,8 +6,8 @@
 package toolbuiltin
 
 import (
- 	"sync/atomic"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	nostruntime "metiq/internal/nostr/runtime"
+	"sync/atomic"
 )
 
 // globalRelaySelector is the shared NIP-65 relay selector.

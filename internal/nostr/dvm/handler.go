@@ -15,7 +15,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	runtime "swarmstr/internal/nostr/runtime"
+	runtime "metiq/internal/nostr/runtime"
 )
 
 // JobHandler is called for each incoming DVM job request.
@@ -238,10 +238,10 @@ func extractInput(ev nostr.Event) string {
 // PublishJobID is a convenience for agent tools that want to publish a DVM result directly.
 func FormatResult(jobID, requesterPubkey, outputType, content string) string {
 	m := map[string]any{
-		"job_id":          jobID,
-		"requester":       requesterPubkey,
-		"output_type":     outputType,
-		"result_content":  content,
+		"job_id":         jobID,
+		"requester":      requesterPubkey,
+		"output_type":    outputType,
+		"result_content": content,
 	}
 	b, _ := json.Marshal(m)
 	return string(b)

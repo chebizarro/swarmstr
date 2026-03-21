@@ -13,7 +13,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 // KindChat is the NIP-C7 chat message kind.

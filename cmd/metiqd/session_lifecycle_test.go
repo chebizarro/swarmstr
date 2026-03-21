@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 func TestRotateSessionLifecycle_ArchivesAndCarriesFlags(t *testing.T) {
@@ -112,7 +112,7 @@ func TestRotateSessionLifecycle_ForkSeedEnabled(t *testing.T) {
 	cfg := state.ConfigDoc{
 		Extra: map[string]any{
 			"session_reset": map[string]any{
-				"fork_parent":     true,
+				"fork_parent":      true,
 				"fork_max_entries": 1.0,
 			},
 		},
@@ -154,4 +154,3 @@ func putTranscriptEntry(t *testing.T, repo *state.TranscriptRepository, entry st
 		t.Fatalf("put transcript entry %s: %v", entry.EntryID, err)
 	}
 }
-

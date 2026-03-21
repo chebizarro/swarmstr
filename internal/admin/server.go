@@ -15,17 +15,17 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"swarmstr/internal/extensions/feishu"
-	"swarmstr/internal/extensions/line"
-	"swarmstr/internal/extensions/msteams"
-	"swarmstr/internal/extensions/nextcloud"
-	"swarmstr/internal/extensions/synology"
-	"swarmstr/internal/extensions/zalo"
-	"swarmstr/internal/config"
-	"swarmstr/internal/gateway/methods"
-	"swarmstr/internal/memory"
-	"swarmstr/internal/policy"
-	"swarmstr/internal/store/state"
+	"metiq/internal/config"
+	"metiq/internal/extensions/feishu"
+	"metiq/internal/extensions/line"
+	"metiq/internal/extensions/msteams"
+	"metiq/internal/extensions/nextcloud"
+	"metiq/internal/extensions/synology"
+	"metiq/internal/extensions/zalo"
+	"metiq/internal/gateway/methods"
+	"metiq/internal/memory"
+	"metiq/internal/policy"
+	"metiq/internal/store/state"
 )
 
 type StatusProvider struct {
@@ -50,119 +50,119 @@ type contextKey string
 const tokenAuthContextKey contextKey = "admin-token-authenticated"
 
 type ServerOptions struct {
-	Addr                 string
-	Token                string
-	Status               StatusProvider
-	StatusDMPolicy       func() string
-	StatusRelays         func() []string
-	SearchMemory         func(query string, limit int) []memory.IndexedMemory
-	GetCheckpoint        func(context.Context, string) (state.CheckpointDoc, error)
-	StartAgent           func(context.Context, methods.AgentRequest) (map[string]any, error)
-	WaitAgent            func(context.Context, methods.AgentWaitRequest) (map[string]any, error)
-	AgentIdentity        func(context.Context, methods.AgentIdentityRequest) (map[string]any, error)
-	GatewayIdentity      func(context.Context) (map[string]any, error)
-	SendDM               func(context.Context, string, string) error
-	AbortChat            func(context.Context, string) (int, error)
-	GetSession           func(context.Context, string) (state.SessionDoc, error)
-	PutSession           func(context.Context, string, state.SessionDoc) error
-	ListSessions         func(context.Context, int) ([]state.SessionDoc, error)
-	ListTranscript       func(context.Context, string, int) ([]state.TranscriptEntryDoc, error)
-	SessionsPrune        func(context.Context, methods.SessionsPruneRequest) (map[string]any, error)
-	TailLogs             func(context.Context, int64, int, int) (map[string]any, error)
-	ChannelsStatus       func(context.Context, methods.ChannelsStatusRequest) (map[string]any, error)
-	ChannelsLogout       func(context.Context, string) (map[string]any, error)
-	UsageStatus          func(context.Context) (map[string]any, error)
-	UsageCost            func(context.Context, methods.UsageCostRequest) (map[string]any, error)
-	GetList              func(context.Context, string) (state.ListDoc, error)
-	PutList              func(context.Context, string, state.ListDoc) error
-	ListAgents           func(context.Context, methods.AgentsListRequest) (map[string]any, error)
-	CreateAgent          func(context.Context, methods.AgentsCreateRequest) (map[string]any, error)
-	UpdateAgent          func(context.Context, methods.AgentsUpdateRequest) (map[string]any, error)
-	DeleteAgent          func(context.Context, methods.AgentsDeleteRequest) (map[string]any, error)
-	ListAgentFiles       func(context.Context, methods.AgentsFilesListRequest) (map[string]any, error)
-	GetAgentFile         func(context.Context, methods.AgentsFilesGetRequest) (map[string]any, error)
-	SetAgentFile         func(context.Context, methods.AgentsFilesSetRequest) (map[string]any, error)
-	ListModels           func(context.Context, methods.ModelsListRequest) (map[string]any, error)
-	ToolsCatalog         func(context.Context, methods.ToolsCatalogRequest) (map[string]any, error)
-	ToolsProfileGet      func(context.Context, methods.ToolsProfileGetRequest) (map[string]any, error)
-	ToolsProfileSet      func(context.Context, methods.ToolsProfileSetRequest) (map[string]any, error)
-	SkillsStatus         func(context.Context, methods.SkillsStatusRequest) (map[string]any, error)
-	SkillsBins           func(context.Context, methods.SkillsBinsRequest) (map[string]any, error)
-	SkillsInstall        func(context.Context, methods.SkillsInstallRequest) (map[string]any, error)
-	SkillsUpdate         func(context.Context, methods.SkillsUpdateRequest) (map[string]any, error)
-	PluginsInstall          func(context.Context, methods.PluginsInstallRequest) (map[string]any, error)
-	PluginsUninstall        func(context.Context, methods.PluginsUninstallRequest) (map[string]any, error)
-	PluginsUpdate           func(context.Context, methods.PluginsUpdateRequest) (map[string]any, error)
-	PluginsRegistryList     func(context.Context, methods.PluginsRegistryListRequest) (map[string]any, error)
-	PluginsRegistryGet      func(context.Context, methods.PluginsRegistryGetRequest) (map[string]any, error)
-	PluginsRegistrySearch   func(context.Context, methods.PluginsRegistrySearchRequest) (map[string]any, error)
-	NodePairRequest         func(context.Context, methods.NodePairRequest) (map[string]any, error)
-	NodePairList         func(context.Context, methods.NodePairListRequest) (map[string]any, error)
-	NodePairApprove      func(context.Context, methods.NodePairApproveRequest) (map[string]any, error)
-	NodePairReject       func(context.Context, methods.NodePairRejectRequest) (map[string]any, error)
-	NodePairVerify       func(context.Context, methods.NodePairVerifyRequest) (map[string]any, error)
-	NodeList             func(context.Context, methods.NodeListRequest) (map[string]any, error)
-	NodeDescribe         func(context.Context, methods.NodeDescribeRequest) (map[string]any, error)
-	NodeRename           func(context.Context, methods.NodeRenameRequest) (map[string]any, error)
+	Addr                        string
+	Token                       string
+	Status                      StatusProvider
+	StatusDMPolicy              func() string
+	StatusRelays                func() []string
+	SearchMemory                func(query string, limit int) []memory.IndexedMemory
+	GetCheckpoint               func(context.Context, string) (state.CheckpointDoc, error)
+	StartAgent                  func(context.Context, methods.AgentRequest) (map[string]any, error)
+	WaitAgent                   func(context.Context, methods.AgentWaitRequest) (map[string]any, error)
+	AgentIdentity               func(context.Context, methods.AgentIdentityRequest) (map[string]any, error)
+	GatewayIdentity             func(context.Context) (map[string]any, error)
+	SendDM                      func(context.Context, string, string) error
+	AbortChat                   func(context.Context, string) (int, error)
+	GetSession                  func(context.Context, string) (state.SessionDoc, error)
+	PutSession                  func(context.Context, string, state.SessionDoc) error
+	ListSessions                func(context.Context, int) ([]state.SessionDoc, error)
+	ListTranscript              func(context.Context, string, int) ([]state.TranscriptEntryDoc, error)
+	SessionsPrune               func(context.Context, methods.SessionsPruneRequest) (map[string]any, error)
+	TailLogs                    func(context.Context, int64, int, int) (map[string]any, error)
+	ChannelsStatus              func(context.Context, methods.ChannelsStatusRequest) (map[string]any, error)
+	ChannelsLogout              func(context.Context, string) (map[string]any, error)
+	UsageStatus                 func(context.Context) (map[string]any, error)
+	UsageCost                   func(context.Context, methods.UsageCostRequest) (map[string]any, error)
+	GetList                     func(context.Context, string) (state.ListDoc, error)
+	PutList                     func(context.Context, string, state.ListDoc) error
+	ListAgents                  func(context.Context, methods.AgentsListRequest) (map[string]any, error)
+	CreateAgent                 func(context.Context, methods.AgentsCreateRequest) (map[string]any, error)
+	UpdateAgent                 func(context.Context, methods.AgentsUpdateRequest) (map[string]any, error)
+	DeleteAgent                 func(context.Context, methods.AgentsDeleteRequest) (map[string]any, error)
+	ListAgentFiles              func(context.Context, methods.AgentsFilesListRequest) (map[string]any, error)
+	GetAgentFile                func(context.Context, methods.AgentsFilesGetRequest) (map[string]any, error)
+	SetAgentFile                func(context.Context, methods.AgentsFilesSetRequest) (map[string]any, error)
+	ListModels                  func(context.Context, methods.ModelsListRequest) (map[string]any, error)
+	ToolsCatalog                func(context.Context, methods.ToolsCatalogRequest) (map[string]any, error)
+	ToolsProfileGet             func(context.Context, methods.ToolsProfileGetRequest) (map[string]any, error)
+	ToolsProfileSet             func(context.Context, methods.ToolsProfileSetRequest) (map[string]any, error)
+	SkillsStatus                func(context.Context, methods.SkillsStatusRequest) (map[string]any, error)
+	SkillsBins                  func(context.Context, methods.SkillsBinsRequest) (map[string]any, error)
+	SkillsInstall               func(context.Context, methods.SkillsInstallRequest) (map[string]any, error)
+	SkillsUpdate                func(context.Context, methods.SkillsUpdateRequest) (map[string]any, error)
+	PluginsInstall              func(context.Context, methods.PluginsInstallRequest) (map[string]any, error)
+	PluginsUninstall            func(context.Context, methods.PluginsUninstallRequest) (map[string]any, error)
+	PluginsUpdate               func(context.Context, methods.PluginsUpdateRequest) (map[string]any, error)
+	PluginsRegistryList         func(context.Context, methods.PluginsRegistryListRequest) (map[string]any, error)
+	PluginsRegistryGet          func(context.Context, methods.PluginsRegistryGetRequest) (map[string]any, error)
+	PluginsRegistrySearch       func(context.Context, methods.PluginsRegistrySearchRequest) (map[string]any, error)
+	NodePairRequest             func(context.Context, methods.NodePairRequest) (map[string]any, error)
+	NodePairList                func(context.Context, methods.NodePairListRequest) (map[string]any, error)
+	NodePairApprove             func(context.Context, methods.NodePairApproveRequest) (map[string]any, error)
+	NodePairReject              func(context.Context, methods.NodePairRejectRequest) (map[string]any, error)
+	NodePairVerify              func(context.Context, methods.NodePairVerifyRequest) (map[string]any, error)
+	NodeList                    func(context.Context, methods.NodeListRequest) (map[string]any, error)
+	NodeDescribe                func(context.Context, methods.NodeDescribeRequest) (map[string]any, error)
+	NodeRename                  func(context.Context, methods.NodeRenameRequest) (map[string]any, error)
 	NodeCanvasCapabilityRefresh func(context.Context, methods.NodeCanvasCapabilityRefreshRequest) (map[string]any, error)
-	DevicePairList       func(context.Context, methods.DevicePairListRequest) (map[string]any, error)
-	DevicePairApprove    func(context.Context, methods.DevicePairApproveRequest) (map[string]any, error)
-	DevicePairReject     func(context.Context, methods.DevicePairRejectRequest) (map[string]any, error)
-	DevicePairRemove     func(context.Context, methods.DevicePairRemoveRequest) (map[string]any, error)
-	DeviceTokenRotate    func(context.Context, methods.DeviceTokenRotateRequest) (map[string]any, error)
-	DeviceTokenRevoke    func(context.Context, methods.DeviceTokenRevokeRequest) (map[string]any, error)
-	NodeInvoke           func(context.Context, methods.NodeInvokeRequest) (map[string]any, error)
-	NodeEvent            func(context.Context, methods.NodeEventRequest) (map[string]any, error)
-	NodeResult           func(context.Context, methods.NodeResultRequest) (map[string]any, error)
-	NodePendingEnqueue   func(context.Context, methods.NodePendingEnqueueRequest) (map[string]any, error)
-	NodePendingPull      func(context.Context, methods.NodePendingPullRequest) (map[string]any, error)
-	NodePendingAck       func(context.Context, methods.NodePendingAckRequest) (map[string]any, error)
-	NodePendingDrain     func(context.Context, methods.NodePendingDrainRequest) (map[string]any, error)
-	CronList             func(context.Context, methods.CronListRequest) (map[string]any, error)
-	CronStatus           func(context.Context, methods.CronStatusRequest) (map[string]any, error)
-	CronAdd              func(context.Context, methods.CronAddRequest) (map[string]any, error)
-	CronUpdate           func(context.Context, methods.CronUpdateRequest) (map[string]any, error)
-	CronRemove           func(context.Context, methods.CronRemoveRequest) (map[string]any, error)
-	CronRun              func(context.Context, methods.CronRunRequest) (map[string]any, error)
-	CronRuns             func(context.Context, methods.CronRunsRequest) (map[string]any, error)
-	ExecApprovalsGet     func(context.Context, methods.ExecApprovalsGetRequest) (map[string]any, error)
-	ExecApprovalsSet     func(context.Context, methods.ExecApprovalsSetRequest) (map[string]any, error)
-	ExecApprovalsNodeGet func(context.Context, methods.ExecApprovalsNodeGetRequest) (map[string]any, error)
-	ExecApprovalsNodeSet func(context.Context, methods.ExecApprovalsNodeSetRequest) (map[string]any, error)
-	ExecApprovalRequest  func(context.Context, methods.ExecApprovalRequestRequest) (map[string]any, error)
-	ExecApprovalWaitDecision func(context.Context, methods.ExecApprovalWaitDecisionRequest) (map[string]any, error)
-	ExecApprovalResolve  func(context.Context, methods.ExecApprovalResolveRequest) (map[string]any, error)
-	SandboxRun           func(context.Context, methods.SandboxRunRequest) (map[string]any, error)
-	SecretsReload        func(context.Context, methods.SecretsReloadRequest) (map[string]any, error)
-	SecretsResolve       func(context.Context, methods.SecretsResolveRequest) (map[string]any, error)
-	WizardStart          func(context.Context, methods.WizardStartRequest) (map[string]any, error)
-	WizardNext           func(context.Context, methods.WizardNextRequest) (map[string]any, error)
-	WizardCancel         func(context.Context, methods.WizardCancelRequest) (map[string]any, error)
-	WizardStatus         func(context.Context, methods.WizardStatusRequest) (map[string]any, error)
-	UpdateRun            func(context.Context, methods.UpdateRunRequest) (map[string]any, error)
-	TalkConfig           func(context.Context, methods.TalkConfigRequest) (map[string]any, error)
-	TalkMode             func(context.Context, methods.TalkModeRequest) (map[string]any, error)
-	LastHeartbeat        func(context.Context, methods.LastHeartbeatRequest) (map[string]any, error)
-	SetHeartbeats        func(context.Context, methods.SetHeartbeatsRequest) (map[string]any, error)
-	Wake                 func(context.Context, methods.WakeRequest) (map[string]any, error)
-	SystemPresence       func(context.Context, methods.SystemPresenceRequest) ([]map[string]any, error)
-	SystemEvent          func(context.Context, methods.SystemEventRequest) (map[string]any, error)
-	Send                 func(context.Context, methods.SendRequest) (map[string]any, error)
-	BrowserRequest       func(context.Context, methods.BrowserRequestRequest) (map[string]any, error)
-	VoicewakeGet         func(context.Context, methods.VoicewakeGetRequest) (map[string]any, error)
-	VoicewakeSet         func(context.Context, methods.VoicewakeSetRequest) (map[string]any, error)
-	TTSStatus            func(context.Context, methods.TTSStatusRequest) (map[string]any, error)
-	TTSProviders         func(context.Context, methods.TTSProvidersRequest) (map[string]any, error)
-	TTSSetProvider       func(context.Context, methods.TTSSetProviderRequest) (map[string]any, error)
-	TTSEnable            func(context.Context, methods.TTSEnableRequest) (map[string]any, error)
-	TTSDisable           func(context.Context, methods.TTSDisableRequest) (map[string]any, error)
-	TTSConvert           func(context.Context, methods.TTSConvertRequest) (map[string]any, error)
-	GetConfig            func(context.Context) (state.ConfigDoc, error)
-	PutConfig            func(context.Context, state.ConfigDoc) error
-	GetListWithEvent     func(context.Context, string) (state.ListDoc, state.Event, error)
-	GetConfigWithEvent   func(context.Context) (state.ConfigDoc, state.Event, error)
-	GetRelayPolicy       func(context.Context) (methods.RelayPolicyResponse, error)
-	SupportedMethods     func(context.Context) ([]string, error)
+	DevicePairList              func(context.Context, methods.DevicePairListRequest) (map[string]any, error)
+	DevicePairApprove           func(context.Context, methods.DevicePairApproveRequest) (map[string]any, error)
+	DevicePairReject            func(context.Context, methods.DevicePairRejectRequest) (map[string]any, error)
+	DevicePairRemove            func(context.Context, methods.DevicePairRemoveRequest) (map[string]any, error)
+	DeviceTokenRotate           func(context.Context, methods.DeviceTokenRotateRequest) (map[string]any, error)
+	DeviceTokenRevoke           func(context.Context, methods.DeviceTokenRevokeRequest) (map[string]any, error)
+	NodeInvoke                  func(context.Context, methods.NodeInvokeRequest) (map[string]any, error)
+	NodeEvent                   func(context.Context, methods.NodeEventRequest) (map[string]any, error)
+	NodeResult                  func(context.Context, methods.NodeResultRequest) (map[string]any, error)
+	NodePendingEnqueue          func(context.Context, methods.NodePendingEnqueueRequest) (map[string]any, error)
+	NodePendingPull             func(context.Context, methods.NodePendingPullRequest) (map[string]any, error)
+	NodePendingAck              func(context.Context, methods.NodePendingAckRequest) (map[string]any, error)
+	NodePendingDrain            func(context.Context, methods.NodePendingDrainRequest) (map[string]any, error)
+	CronList                    func(context.Context, methods.CronListRequest) (map[string]any, error)
+	CronStatus                  func(context.Context, methods.CronStatusRequest) (map[string]any, error)
+	CronAdd                     func(context.Context, methods.CronAddRequest) (map[string]any, error)
+	CronUpdate                  func(context.Context, methods.CronUpdateRequest) (map[string]any, error)
+	CronRemove                  func(context.Context, methods.CronRemoveRequest) (map[string]any, error)
+	CronRun                     func(context.Context, methods.CronRunRequest) (map[string]any, error)
+	CronRuns                    func(context.Context, methods.CronRunsRequest) (map[string]any, error)
+	ExecApprovalsGet            func(context.Context, methods.ExecApprovalsGetRequest) (map[string]any, error)
+	ExecApprovalsSet            func(context.Context, methods.ExecApprovalsSetRequest) (map[string]any, error)
+	ExecApprovalsNodeGet        func(context.Context, methods.ExecApprovalsNodeGetRequest) (map[string]any, error)
+	ExecApprovalsNodeSet        func(context.Context, methods.ExecApprovalsNodeSetRequest) (map[string]any, error)
+	ExecApprovalRequest         func(context.Context, methods.ExecApprovalRequestRequest) (map[string]any, error)
+	ExecApprovalWaitDecision    func(context.Context, methods.ExecApprovalWaitDecisionRequest) (map[string]any, error)
+	ExecApprovalResolve         func(context.Context, methods.ExecApprovalResolveRequest) (map[string]any, error)
+	SandboxRun                  func(context.Context, methods.SandboxRunRequest) (map[string]any, error)
+	SecretsReload               func(context.Context, methods.SecretsReloadRequest) (map[string]any, error)
+	SecretsResolve              func(context.Context, methods.SecretsResolveRequest) (map[string]any, error)
+	WizardStart                 func(context.Context, methods.WizardStartRequest) (map[string]any, error)
+	WizardNext                  func(context.Context, methods.WizardNextRequest) (map[string]any, error)
+	WizardCancel                func(context.Context, methods.WizardCancelRequest) (map[string]any, error)
+	WizardStatus                func(context.Context, methods.WizardStatusRequest) (map[string]any, error)
+	UpdateRun                   func(context.Context, methods.UpdateRunRequest) (map[string]any, error)
+	TalkConfig                  func(context.Context, methods.TalkConfigRequest) (map[string]any, error)
+	TalkMode                    func(context.Context, methods.TalkModeRequest) (map[string]any, error)
+	LastHeartbeat               func(context.Context, methods.LastHeartbeatRequest) (map[string]any, error)
+	SetHeartbeats               func(context.Context, methods.SetHeartbeatsRequest) (map[string]any, error)
+	Wake                        func(context.Context, methods.WakeRequest) (map[string]any, error)
+	SystemPresence              func(context.Context, methods.SystemPresenceRequest) ([]map[string]any, error)
+	SystemEvent                 func(context.Context, methods.SystemEventRequest) (map[string]any, error)
+	Send                        func(context.Context, methods.SendRequest) (map[string]any, error)
+	BrowserRequest              func(context.Context, methods.BrowserRequestRequest) (map[string]any, error)
+	VoicewakeGet                func(context.Context, methods.VoicewakeGetRequest) (map[string]any, error)
+	VoicewakeSet                func(context.Context, methods.VoicewakeSetRequest) (map[string]any, error)
+	TTSStatus                   func(context.Context, methods.TTSStatusRequest) (map[string]any, error)
+	TTSProviders                func(context.Context, methods.TTSProvidersRequest) (map[string]any, error)
+	TTSSetProvider              func(context.Context, methods.TTSSetProviderRequest) (map[string]any, error)
+	TTSEnable                   func(context.Context, methods.TTSEnableRequest) (map[string]any, error)
+	TTSDisable                  func(context.Context, methods.TTSDisableRequest) (map[string]any, error)
+	TTSConvert                  func(context.Context, methods.TTSConvertRequest) (map[string]any, error)
+	GetConfig                   func(context.Context) (state.ConfigDoc, error)
+	PutConfig                   func(context.Context, state.ConfigDoc) error
+	GetListWithEvent            func(context.Context, string) (state.ListDoc, state.Event, error)
+	GetConfigWithEvent          func(context.Context) (state.ConfigDoc, state.Event, error)
+	GetRelayPolicy              func(context.Context) (methods.RelayPolicyResponse, error)
+	SupportedMethods            func(context.Context) ([]string, error)
 
 	// Metrics is an optional callback that returns the Prometheus text
 	// exposition for /metrics.  If nil the endpoint returns a minimal stub.
@@ -252,7 +252,7 @@ func Start(ctx context.Context, opts ServerOptions) error {
 		if opts.Metrics != nil {
 			exposition = opts.Metrics(r.Context())
 		} else {
-			exposition = "# swarmstrd metrics not configured\n"
+			exposition = "# metiqd metrics not configured\n"
 		}
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -273,7 +273,7 @@ func Start(ctx context.Context, opts ServerOptions) error {
 			DMPolicy:      dmPolicy,
 			UptimeSeconds: int(time.Since(opts.Status.Started).Seconds()),
 			UptimeMS:      time.Since(opts.Status.Started).Milliseconds(),
-			Version:       "swarmstrd",
+			Version:       "metiqd",
 		})
 	}))
 	mux.HandleFunc("/memory/search", withAuth(opts.Token, func(w http.ResponseWriter, r *http.Request) {
@@ -584,7 +584,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			DMPolicy:      dmPolicy,
 			UptimeSeconds: int(time.Since(opts.Status.Started).Seconds()),
 			UptimeMS:      time.Since(opts.Status.Started).Milliseconds(),
-			Version:       "swarmstrd",
+			Version:       "metiqd",
 		}, http.StatusOK, nil
 	case methods.MethodUsageStatus:
 		if opts.UsageStatus == nil {
@@ -678,7 +678,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		return out, http.StatusOK, nil
 	case methods.MethodGatewayIdentityGet:
 		if opts.GatewayIdentity == nil {
-			return map[string]any{"deviceId": "swarmstr", "publicKey": ""}, http.StatusOK, nil
+			return map[string]any{"deviceId": "metiq", "publicKey": ""}, http.StatusOK, nil
 		}
 		out, err := opts.GatewayIdentity(ctx)
 		if err != nil {

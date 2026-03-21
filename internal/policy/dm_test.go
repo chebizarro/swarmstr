@@ -3,7 +3,7 @@ package policy
 import (
 	"testing"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 // ─── ConfigChangedNeedsRestart ────────────────────────────────────────────────

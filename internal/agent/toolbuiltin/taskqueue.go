@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 // Task represents a unit of work in the agent's task queue.
@@ -30,7 +30,7 @@ type Task struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	Description string `json:"description,omitempty"`
-	Status      string `json:"status"` // "pending" | "in_progress" | "done" | "cancelled"
+	Status      string `json:"status"`             // "pending" | "in_progress" | "done" | "cancelled"
 	Priority    string `json:"priority,omitempty"` // "high" | "medium" | "low"
 	Notes       string `json:"notes,omitempty"`
 	CreatedAt   int64  `json:"created_at"`

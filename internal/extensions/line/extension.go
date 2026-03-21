@@ -4,7 +4,7 @@
 // the LINE Messaging API reply endpoint (when a replyToken is available) or
 // the push endpoint.
 //
-// Registration: import _ "swarmstr/internal/extensions/line" in the daemon
+// Registration: import _ "metiq/internal/extensions/line" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -34,8 +34,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {

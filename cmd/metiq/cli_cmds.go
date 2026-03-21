@@ -17,8 +17,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"swarmstr/internal/config"
-	"swarmstr/internal/security"
+	"metiq/internal/config"
+	"metiq/internal/security"
 )
 
 // ─── status ───────────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ func runStatus(args []string) error {
 	dmPolicy := stringField(result, "dm_policy")
 	ver := stringField(result, "version")
 
-	fmt.Printf("● swarmstrd running\n")
+	fmt.Printf("● metiqd running\n")
 	fmt.Printf("  pubkey:    %s\n", pubkey)
 	fmt.Printf("  version:   %s\n", ver)
 	fmt.Printf("  uptime:    %.0fs\n", uptime)
@@ -72,7 +72,7 @@ func runStatus(args []string) error {
 // ─── version ─────────────────────────────────────────────────────────────────
 
 func runVersion(_ []string) error {
-	fmt.Printf("swarmstr %s\n", version)
+	fmt.Printf("metiq %s\n", version)
 	return nil
 }
 
@@ -186,7 +186,7 @@ func runModelsSet(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: swarmstr models set <model-id> [--agent <id>]")
+		return fmt.Errorf("usage: metiq models set <model-id> [--agent <id>]")
 	}
 	modelID := fs.Arg(0)
 
@@ -518,7 +518,7 @@ func runSecretsGet(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: swarmstr secrets get <key>")
+		return fmt.Errorf("usage: metiq secrets get <key>")
 	}
 	key := fs.Arg(0)
 
@@ -564,13 +564,13 @@ func runSecretsSet(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: swarmstr secrets set <key> <value>")
+		return fmt.Errorf("usage: metiq secrets set <key> <value>")
 	}
 	key := fs.Arg(0)
 	value := fs.Arg(1)
 
 	_ = value
-	return fmt.Errorf("secrets set is not supported by the daemon API; set %q in your environment or .env and run `swarmstr secrets list` (reload)", key)
+	return fmt.Errorf("secrets set is not supported by the daemon API; set %q in your environment or .env and run `metiq secrets list` (reload)", key)
 }
 
 // ─── update ───────────────────────────────────────────────────────────────────
@@ -608,7 +608,7 @@ func runUpdate(args []string) error {
 	fmt.Printf("current: %s\n", current)
 	fmt.Printf("latest:  %s\n", latest)
 	if hasUpdate {
-		fmt.Printf("update available — run: curl -fsSL https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh | bash\n")
+		fmt.Printf("update available — run: curl -fsSL https://raw.githubusercontent.com/metiq/metiq/main/scripts/install.sh | bash\n")
 	} else {
 		fmt.Println("up to date")
 	}
@@ -1165,7 +1165,7 @@ func runNodesAdd(args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: swarmstr nodes add <npub|hex-pubkey> [--name <label>]")
+		return fmt.Errorf("usage: metiq nodes add <npub|hex-pubkey> [--name <label>]")
 	}
 	pubkey := fs.Arg(0)
 
@@ -1200,7 +1200,7 @@ func runNodesStatus(args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: swarmstr nodes status <npub|hex-pubkey>")
+		return fmt.Errorf("usage: metiq nodes status <npub|hex-pubkey>")
 	}
 	nodeID := fs.Arg(0)
 
@@ -1237,7 +1237,7 @@ func runNodesSend(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: swarmstr nodes send <npub|hex-pubkey> <message>")
+		return fmt.Errorf("usage: metiq nodes send <npub|hex-pubkey> <message>")
 	}
 	to := fs.Arg(0)
 	message := strings.Join(fs.Args()[1:], " ")
@@ -1372,7 +1372,7 @@ func runNodesApprove(args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: swarmstr nodes approve <request-id>")
+		return fmt.Errorf("usage: metiq nodes approve <request-id>")
 	}
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
 	if err != nil {
@@ -1396,7 +1396,7 @@ func runNodesReject(args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: swarmstr nodes reject <request-id>")
+		return fmt.Errorf("usage: metiq nodes reject <request-id>")
 	}
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
 	if err != nil {
@@ -1420,7 +1420,7 @@ func runNodesDescribe(args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: swarmstr nodes describe <node-id>")
+		return fmt.Errorf("usage: metiq nodes describe <node-id>")
 	}
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
 	if err != nil {
@@ -1449,7 +1449,7 @@ func runNodesInvoke(args []string) error {
 		return err
 	}
 	if nodeID == "" || command == "" {
-		return fmt.Errorf("usage: swarmstr nodes invoke --node <id> --command <cmd> [--args '{...}']")
+		return fmt.Errorf("usage: metiq nodes invoke --node <id> --command <cmd> [--args '{...}']")
 	}
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
 	if err != nil {
@@ -1485,7 +1485,7 @@ func runNodesRename(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: swarmstr nodes rename <node-id> <new-name>")
+		return fmt.Errorf("usage: metiq nodes rename <node-id> <new-name>")
 	}
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
 	if err != nil {
@@ -1601,7 +1601,7 @@ func runSessionsGet(args []string) error {
 		return err
 	}
 	if len(fs.Args()) == 0 {
-		return fmt.Errorf("usage: swarmstr sessions get <session-id>")
+		return fmt.Errorf("usage: metiq sessions get <session-id>")
 	}
 	sessionID := fs.Arg(0)
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
@@ -1627,7 +1627,7 @@ func runSessionsExport(args []string) error {
 		return err
 	}
 	if len(fs.Args()) == 0 {
-		return fmt.Errorf("usage: swarmstr sessions export <session-id> [--output path]")
+		return fmt.Errorf("usage: metiq sessions export <session-id> [--output path]")
 	}
 	sessionID := fs.Arg(0)
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
@@ -1662,7 +1662,7 @@ func runSessionsDelete(args []string) error {
 		return err
 	}
 	if len(fs.Args()) == 0 {
-		return fmt.Errorf("usage: swarmstr sessions delete <session-id>")
+		return fmt.Errorf("usage: metiq sessions delete <session-id>")
 	}
 	sessionID := fs.Arg(0)
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
@@ -1692,7 +1692,7 @@ func runSessionsReset(args []string) error {
 		return err
 	}
 	if len(fs.Args()) == 0 {
-		return fmt.Errorf("usage: swarmstr sessions reset <session-id>")
+		return fmt.Errorf("usage: metiq sessions reset <session-id>")
 	}
 	sessionID := fs.Arg(0)
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
@@ -1721,7 +1721,7 @@ func runSessionsPrune(args []string) error {
 		return err
 	}
 	if !all && olderThanStr == "" {
-		return fmt.Errorf("usage: swarmstr sessions prune --older-than <Nd> [--dry-run]\n  or:  swarmstr sessions prune --all [--dry-run]")
+		return fmt.Errorf("usage: metiq sessions prune --older-than <Nd> [--dry-run]\n  or:  swarmstr sessions prune --all [--dry-run]")
 	}
 
 	olderThanDays := 0
@@ -1834,7 +1834,7 @@ func runApprovalsResolve(args []string, decision string) error {
 		return err
 	}
 	if len(fs.Args()) == 0 {
-		return fmt.Errorf("usage: swarmstr approvals %s <approval-id>", decision)
+		return fmt.Errorf("usage: metiq approvals %s <approval-id>", decision)
 	}
 	approvalID := fs.Arg(0)
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
@@ -1979,7 +1979,7 @@ func runCronRemove(args []string) error {
 		return err
 	}
 	if len(fs.Args()) == 0 {
-		return fmt.Errorf("usage: swarmstr cron remove <job-id>")
+		return fmt.Errorf("usage: metiq cron remove <job-id>")
 	}
 	jobID := fs.Arg(0)
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
@@ -2003,7 +2003,7 @@ func runCronRun(args []string) error {
 		return err
 	}
 	if len(fs.Args()) == 0 {
-		return fmt.Errorf("usage: swarmstr cron run <job-id>")
+		return fmt.Errorf("usage: metiq cron run <job-id>")
 	}
 	jobID := fs.Arg(0)
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
@@ -2182,19 +2182,20 @@ func runCompletion(args []string) error {
 	return nil
 }
 
-const bashCompletion = `# swarmstr bash completion
-# Add to ~/.bashrc:  source <(swarmstr completion bash)
-_swarmstr_completions() {
+const bashCompletion = `# metiq bash completion
+# Add to ~/.bashrc:  source <(metiq completion bash)
+_metiq_completions() {
 	local commands="version status health logs models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw plan bootstrap-check dm-send memory-search"
   local cur="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=($(compgen -W "${commands}" -- "${cur}"))
 }
-complete -F _swarmstr_completions swarmstr
+complete -F _metiq_completions metiq
+complete -F _metiq_completions swarmstr
 `
 
-const zshCompletion = `# swarmstr zsh completion
-# Add to ~/.zshrc:  source <(swarmstr completion zsh)
-_swarmstr() {
+const zshCompletion = `# metiq zsh completion
+# Add to ~/.zshrc:  source <(metiq completion zsh)
+_metiq() {
   local commands=(
     'version:show version'
     'status:show daemon status'
@@ -2206,7 +2207,7 @@ _swarmstr() {
     'skills:skill management'
     'hooks:hook management'
     'secrets:secret management'
-    'update:update swarmstr'
+    'update:update metiq'
     'security:security audit'
     'plugins:plugin management'
     'config:config management'
@@ -2222,12 +2223,13 @@ _swarmstr() {
   )
   _describe 'commands' commands
 }
-compdef _swarmstr swarmstr
+compdef _metiq metiq swarmstr
 `
 
-const fishCompletion = `# swarmstr fish completion
-# Add to ~/.config/fish/completions/swarmstr.fish or: swarmstr completion fish | source
+const fishCompletion = `# metiq fish completion
+# Add to ~/.config/fish/completions/metiq.fish or: metiq completion fish | source
 for cmd in version status health logs models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw
+  complete -c metiq -f -n '__fish_use_subcommand' -a $cmd
   complete -c swarmstr -f -n '__fish_use_subcommand' -a $cmd
 end
 `
@@ -2249,34 +2251,38 @@ func clampLen(s string, n int) int {
 
 // ─── daemon ───────────────────────────────────────────────────────────────────
 
-// defaultPIDFile returns ~/.swarmstr/swarmstrd.pid.
+// defaultPIDFile returns ~/.swarmstr/swarmstrd.pid for legacy compatibility.
 func defaultPIDFile() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".swarmstr", "swarmstrd.pid")
 }
 
-// defaultDaemonLog returns ~/.swarmstr/swarmstrd.log.
+// defaultDaemonLog returns ~/.swarmstr/swarmstrd.log for legacy compatibility.
 func defaultDaemonLog() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".swarmstr", "swarmstrd.log")
 }
 
-// resolveSwarmstrdBin returns the path to the swarmstrd binary.  It first
-// looks for a sibling of the current executable (so "swarmstr" and "swarmstrd"
-// live side-by-side), then falls back to PATH lookup.
+// resolveSwarmstrdBin returns the path to the daemon binary. It prefers the
+// renamed metiqd binary, while still accepting legacy swarmstrd for compatibility.
 func resolveSwarmstrdBin(override string) (string, error) {
 	if override != "" {
 		return override, nil
 	}
 	self, err := os.Executable()
 	if err == nil {
-		candidate := filepath.Join(filepath.Dir(self), "swarmstrd")
-		if runtime.GOOS == "windows" {
-			candidate += ".exe"
+		for _, name := range []string{"metiqd", "swarmstrd"} {
+			candidate := filepath.Join(filepath.Dir(self), name)
+			if runtime.GOOS == "windows" {
+				candidate += ".exe"
+			}
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
 		}
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
+	}
+	if path, err := exec.LookPath("metiqd"); err == nil {
+		return path, nil
 	}
 	return exec.LookPath("swarmstrd")
 }
@@ -2332,7 +2338,7 @@ func looksLikeSwarmstrdCommand(cmdline string) bool {
 	}
 	procPath := strings.ReplaceAll(fields[0], "\\", "/")
 	exe := strings.ToLower(filepath.Base(procPath))
-	return exe == "swarmstrd" || exe == "swarmstrd.exe"
+	return exe == "metiqd" || exe == "metiqd.exe" || exe == "swarmstrd" || exe == "swarmstrd.exe"
 }
 
 // processLooksLikeSwarmstrd performs strict identity validation for daemon PID
@@ -2357,8 +2363,8 @@ func runDaemon(args []string) error {
 	var pidFile, logFile, bin, bootstrapPath, adminAddr, adminToken string
 	fs.StringVar(&pidFile, "pid-file", "", "PID file path (default: ~/.swarmstr/swarmstrd.pid)")
 	fs.StringVar(&logFile, "log-file", "", "log file path for start (default: ~/.swarmstr/swarmstrd.log)")
-	fs.StringVar(&bin, "bin", "", "path to swarmstrd binary (default: sibling or PATH)")
-	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path forwarded to swarmstrd")
+	fs.StringVar(&bin, "bin", "", "path to metiqd binary (default: sibling metiqd/swarmstrd or PATH)")
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path forwarded to metiqd")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (for status check)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
 	if err := fs.Parse(args); err != nil {
@@ -2408,12 +2414,12 @@ func daemonStart(bin, pidFile, logFile, bootstrapPath string, extraArgs []string
 		if isDaemon {
 			return fmt.Errorf("daemon already running (pid=%d, pid-file=%s)", pid, pidFile)
 		}
-		return fmt.Errorf("pid file %s points to non-swarmstrd process pid=%d (%q); remove stale pid file manually", pidFile, pid, cmdline)
+		return fmt.Errorf("pid file %s points to non-metiqd/swarmstrd process pid=%d (%q); remove stale pid file manually", pidFile, pid, cmdline)
 	}
 
-	swarmstrd, err := resolveSwarmstrdBin(bin)
+	metiqd, err := resolveSwarmstrdBin(bin)
 	if err != nil {
-		return fmt.Errorf("cannot find swarmstrd binary: %w\nSet --bin or ensure swarmstrd is on PATH", err)
+		return fmt.Errorf("cannot find metiqd binary: %w\nSet --bin or ensure metiqd (or legacy swarmstrd) is on PATH", err)
 	}
 
 	// Ensure log dir exists.
@@ -2426,21 +2432,21 @@ func daemonStart(bin, pidFile, logFile, bootstrapPath string, extraArgs []string
 	}
 	defer lf.Close()
 
-	// Build args for swarmstrd.
+	// Build args for metiqd.
 	cmdArgs := []string{"--pid-file", pidFile}
 	if bootstrapPath != "" {
 		cmdArgs = append(cmdArgs, "--bootstrap", bootstrapPath)
 	}
 	cmdArgs = append(cmdArgs, extraArgs...)
 
-	cmd := exec.Command(swarmstrd, cmdArgs...)
+	cmd := exec.Command(metiqd, cmdArgs...)
 	cmd.Stdout = lf
 	cmd.Stderr = lf
 	// Detach from this process group so the child survives our exit.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start swarmstrd: %w", err)
+		return fmt.Errorf("start metiqd: %w", err)
 	}
 
 	fmt.Printf("daemon started  pid=%d  log=%s\n", cmd.Process.Pid, logFile)
@@ -2465,7 +2471,7 @@ func daemonStop(pidFile string) error {
 		return fmt.Errorf("cannot validate process identity for pid %d: %w", pid, err)
 	}
 	if !isDaemon {
-		return fmt.Errorf("refusing to signal pid %d from %s: process is not swarmstrd (%q)", pid, pidFile, cmdline)
+		return fmt.Errorf("refusing to signal pid %d from %s: process is not metiqd/swarmstrd (%q)", pid, pidFile, cmdline)
 	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {
@@ -2496,23 +2502,23 @@ func daemonStatus(pidFile, adminAddr, adminToken, bootstrapPath string) error {
 	}
 
 	if pid == 0 {
-		fmt.Printf("● swarmstrd  status=stopped  (no pid file at %s)\n", pidFile)
+		fmt.Printf("● metiqd  status=stopped  (no pid file at %s)\n", pidFile)
 		return nil
 	}
 	if !pidAlive(pid) {
-		fmt.Printf("● swarmstrd  status=stopped  (stale pid=%d, pid-file=%s)\n", pid, pidFile)
+		fmt.Printf("● metiqd  status=stopped  (stale pid=%d, pid-file=%s)\n", pid, pidFile)
 		return nil
 	}
 	isDaemon, cmdline, idErr := processLooksLikeSwarmstrd(pid)
 	if idErr != nil {
-		fmt.Printf("● swarmstrd  status=unknown  pid=%d  (identity check failed: %v)\n", pid, idErr)
+		fmt.Printf("● metiqd  status=unknown  pid=%d  (identity check failed: %v)\n", pid, idErr)
 		return nil
 	}
 	if !isDaemon {
-		fmt.Printf("● swarmstrd  status=unknown  pid=%d  (pid file points to non-swarmstrd process: %q)\n", pid, cmdline)
+		fmt.Printf("● metiqd  status=unknown  pid=%d  (pid file points to non-metiqd/swarmstrd process: %q)\n", pid, cmdline)
 		return nil
 	}
-	fmt.Printf("● swarmstrd  status=running  pid=%d\n", pid)
+	fmt.Printf("● metiqd  status=running  pid=%d\n", pid)
 
 	// Optionally query the admin API for richer info.
 	if adminAddr != "" || bootstrapPath != "" {
@@ -2554,7 +2560,7 @@ func runGW(args []string) error {
 
 	positional := fs.Args()
 	if len(positional) == 0 {
-		return fmt.Errorf("usage: swarmstr gw <method> [json-params]")
+		return fmt.Errorf("usage: metiq gw <method> [json-params]")
 	}
 	method := positional[0]
 

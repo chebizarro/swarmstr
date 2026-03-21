@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/autoreply"
-	gatewayws "swarmstr/internal/gateway/ws"
-	"swarmstr/internal/store/state"
+	"metiq/internal/autoreply"
+	gatewayws "metiq/internal/gateway/ws"
+	"metiq/internal/store/state"
 )
 
 type coreMethodDeviationFixture struct {
@@ -402,4 +402,3 @@ func queueDropPolicyName(policy autoreply.QueueDropPolicy) string {
 		return "summarize"
 	}
 }
-

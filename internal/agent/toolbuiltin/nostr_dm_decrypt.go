@@ -10,8 +10,8 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip59"
 
-	"swarmstr/internal/agent"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // NostrDMDecryptDef is the ToolDefinition for nostr_dm_decrypt.
@@ -21,10 +21,10 @@ var NostrDMDecryptDef = agent.ToolDefinition{
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
-			"event": {Type: "object", Description: "Optional event object to decrypt. Provide kind/content/pubkey/tags fields."},
-			"ciphertext": {Type: "string", Description: "Optional raw ciphertext for direct decrypt mode."},
+			"event":         {Type: "object", Description: "Optional event object to decrypt. Provide kind/content/pubkey/tags fields."},
+			"ciphertext":    {Type: "string", Description: "Optional raw ciphertext for direct decrypt mode."},
 			"sender_pubkey": {Type: "string", Description: "Sender pubkey (hex or npub) for direct decrypt mode."},
-			"scheme": {Type: "string", Description: "Optional override: auto|nip04|nip44|giftwrap"},
+			"scheme":        {Type: "string", Description: "Optional override: auto|nip04|nip44|giftwrap"},
 		},
 	},
 }

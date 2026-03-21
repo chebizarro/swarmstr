@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/canvas"
+	"metiq/internal/canvas"
 )
 
 func TestNewHost_Empty(t *testing.T) {

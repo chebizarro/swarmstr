@@ -7,7 +7,7 @@
 // every tool the agent can call is discoverable via native function-calling.
 package toolbuiltin
 
-import "swarmstr/internal/agent"
+import "metiq/internal/agent"
 
 // ─── Memory ──────────────────────────────────────────────────────────────────
 

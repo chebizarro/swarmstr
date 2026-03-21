@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/browser"
+	"metiq/internal/agent"
+	"metiq/internal/browser"
 )
 
 const (
@@ -26,6 +26,7 @@ type WebFetchOpts struct {
 //   - max_chars (int, default 50000) – truncation limit in Unicode code points
 //   - timeout_seconds (int, default 30) – request timeout
 //   - allow_local (bool) – per-call override of the SSRF guard
+//
 // WebFetchDef is the ToolDefinition for web_fetch (native function-calling schema).
 var WebFetchDef = agent.ToolDefinition{
 	Name:        "web_fetch",

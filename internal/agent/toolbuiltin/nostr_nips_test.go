@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 func TestRegisterNIPTools_RegistersDeleteAliasesWithDefinitions(t *testing.T) {

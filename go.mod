@@ -1,4 +1,4 @@
-module swarmstr
+module metiq
 
 go 1.25
 

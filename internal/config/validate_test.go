@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 func TestValidateConfigDoc_empty(t *testing.T) {

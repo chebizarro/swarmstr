@@ -14,7 +14,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 // RedactedValue is the placeholder used in place of sensitive values.

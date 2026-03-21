@@ -16,9 +16,9 @@ import (
 	"fiatjaf.com/nostr/nip04"
 	"github.com/coder/websocket"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/config"
-	"swarmstr/internal/nostr/nip51"
+	"metiq/internal/agent"
+	"metiq/internal/config"
+	"metiq/internal/nostr/nip51"
 )
 
 type relayFixture struct {

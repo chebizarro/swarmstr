@@ -21,8 +21,8 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // RegisterNIPTools registers additional NIP protocol tools.
@@ -43,7 +43,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 
 	// Early validation: if no keyer, publishEvent will fail
 	// Tools that need signing should check opts.Keyer != nil
-	
+
 	signEvent := func(ctx context.Context, evt *nostr.Event) error {
 		signFn, err := opts.signerFunc()
 		if err != nil {
@@ -152,11 +152,11 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 			"event_ids": eventIDs,
 			"pubkeys":   pubkeys,
 		}, map[string]any{
-			"report_type":   reportType,
+			"report_type":    reportType,
 			"publish_relays": relays,
 		}, map[string]any{
-			"report_type":   reportType,
-			"event_targets": eventIDs,
+			"report_type":    reportType,
+			"event_targets":  eventIDs,
 			"pubkey_targets": pubkeys,
 		}), nil
 	}, NostrReportDef)
@@ -444,9 +444,9 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 
 		dTag := appID + ":" + key
 		filter := nostr.Filter{
-			Kinds:  []nostr.Kind{30078},
-			Tags:   nostr.TagMap{"d": []string{dTag}},
-			Limit:  1,
+			Kinds: []nostr.Kind{30078},
+			Tags:  nostr.TagMap{"d": []string{dTag}},
+			Limit: 1,
 		}
 		pk, err := nostr.PubKeyFromHex(author)
 		if err != nil {

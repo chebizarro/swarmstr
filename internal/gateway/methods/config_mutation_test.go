@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 func TestApplyConfigSetAndPatch(t *testing.T) {
@@ -157,34 +157,34 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 		t.Fatalf("unexpected schema payload: %#v", s)
 	}
 	mustHave := map[string]struct{}{
-		"dm.policy":                     {},
-		"relays.read":                   {},
-		"relays.write":                  {},
-		"agent.verbose":                 {},
-		"control.require_auth":          {},
-		"plugins.deny":                  {},
-		"plugins.load":                  {},
-		"plugins.load.paths":            {},
-		"plugins.entries.<id>.enabled":  {},
-		"plugins.entries.<id>.apiKey":   {},
-		"plugins.entries.<id>.env":      {},
-		"plugins.entries.<id>.tools":    {},
-		"plugins.entries.<id>.gatewayMethods": {},
-		"plugins.installs":                     {},
-		"plugins.installs.<id>":                {},
-		"plugins.installs.<id>.source":         {},
-		"plugins.installs.<id>.spec":           {},
-		"plugins.installs.<id>.sourcePath":     {},
-		"plugins.installs.<id>.installPath":    {},
-		"plugins.installs.<id>.version":        {},
-		"plugins.installs.<id>.resolvedName":   {},
+		"dm.policy":                             {},
+		"relays.read":                           {},
+		"relays.write":                          {},
+		"agent.verbose":                         {},
+		"control.require_auth":                  {},
+		"plugins.deny":                          {},
+		"plugins.load":                          {},
+		"plugins.load.paths":                    {},
+		"plugins.entries.<id>.enabled":          {},
+		"plugins.entries.<id>.apiKey":           {},
+		"plugins.entries.<id>.env":              {},
+		"plugins.entries.<id>.tools":            {},
+		"plugins.entries.<id>.gatewayMethods":   {},
+		"plugins.installs":                      {},
+		"plugins.installs.<id>":                 {},
+		"plugins.installs.<id>.source":          {},
+		"plugins.installs.<id>.spec":            {},
+		"plugins.installs.<id>.sourcePath":      {},
+		"plugins.installs.<id>.installPath":     {},
+		"plugins.installs.<id>.version":         {},
+		"plugins.installs.<id>.resolvedName":    {},
 		"plugins.installs.<id>.resolvedVersion": {},
-		"plugins.installs.<id>.resolvedSpec":   {},
-		"plugins.installs.<id>.integrity":      {},
-		"plugins.installs.<id>.shasum":         {},
-		"plugins.installs.<id>.resolvedAt":     {},
-		"plugins.installs.<id>.installedAt":    {},
-		"plugins.installs.<id>.<field>":        {},
+		"plugins.installs.<id>.resolvedSpec":    {},
+		"plugins.installs.<id>.integrity":       {},
+		"plugins.installs.<id>.shasum":          {},
+		"plugins.installs.<id>.resolvedAt":      {},
+		"plugins.installs.<id>.installedAt":     {},
+		"plugins.installs.<id>.<field>":         {},
 	}
 	for _, field := range fields {
 		delete(mustHave, field)
@@ -233,8 +233,8 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 func TestApplyConfigSetPluginsInstallsLifecycleParity(t *testing.T) {
 	cfg := state.ConfigDoc{Version: 1}
 	next, err := ApplyConfigSet(cfg, "plugins.installs.codegen", map[string]any{
-		"source":      " npm ",
-		"spec":        " @acme/codegen@1.0.0 ",
+		"source":       " npm ",
+		"spec":         " @acme/codegen@1.0.0 ",
 		"install_path": " /tmp/codegen ",
 	})
 	if err != nil {
@@ -490,4 +490,3 @@ func TestApplyPluginUpdateOperation(t *testing.T) {
 		t.Fatalf("expected installedAt to change on update persistence: %#v", codegen)
 	}
 }
-

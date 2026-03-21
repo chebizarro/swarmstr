@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/nostr/nip51"
+	"metiq/internal/agent"
+	"metiq/internal/nostr/nip51"
 )
 
 func TestResolveSemanticListTarget_Defaults(t *testing.T) {

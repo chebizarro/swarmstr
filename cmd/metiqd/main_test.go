@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/agent"
-	gatewayws "swarmstr/internal/gateway/ws"
-	"swarmstr/internal/gateway/methods"
-	"swarmstr/internal/nostr/events"
-	nostruntime "swarmstr/internal/nostr/runtime"
-	"swarmstr/internal/store/state"
+	"metiq/internal/agent"
+	"metiq/internal/gateway/methods"
+	gatewayws "metiq/internal/gateway/ws"
+	"metiq/internal/nostr/events"
+	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/store/state"
 )
 
 func TestHandleControlRPCRequest_SystemAndVoiceMethods(t *testing.T) {
@@ -29,9 +29,9 @@ func TestHandleControlRPCRequest_SystemAndVoiceMethods(t *testing.T) {
 			"allow":   []string{"codegen"},
 			"deny":    []string{"blocked"},
 			"entries": map[string]any{
-				"codegen": map[string]any{"enabled": true, "gateway_methods": []any{"ext.codegen.run", "ext.codegen.status"}},
-				"blocked": map[string]any{"enabled": true, "gateway_methods": []any{"ext.blocked"}},
-				"extra":   map[string]any{"enabled": true, "gateway_methods": []any{"ext.extra"}},
+				"codegen":  map[string]any{"enabled": true, "gateway_methods": []any{"ext.codegen.run", "ext.codegen.status"}},
+				"blocked":  map[string]any{"enabled": true, "gateway_methods": []any{"ext.blocked"}},
+				"extra":    map[string]any{"enabled": true, "gateway_methods": []any{"ext.extra"}},
 				"disabled": map[string]any{"enabled": false, "gateway_methods": []any{"ext.disabled"}},
 			},
 		},
@@ -78,7 +78,14 @@ func TestHandleControlRPCRequest_SystemAndVoiceMethods(t *testing.T) {
 		t.Fatalf("handleControlRPCRequest disabled-extensions error: %v", err)
 	}
 	list, _ = res.Result.([]string)
-	if contains := func(target string) bool { for _, method := range list { if method == target { return true } }; return false }("ext.codegen.run"); contains {
+	if contains := func(target string) bool {
+		for _, method := range list {
+			if method == target {
+				return true
+			}
+		}
+		return false
+	}("ext.codegen.run"); contains {
 		t.Fatalf("expected no extension methods when plugins.enabled=false: %#v", list)
 	}
 
@@ -98,7 +105,14 @@ func TestHandleControlRPCRequest_SystemAndVoiceMethods(t *testing.T) {
 		t.Fatalf("handleControlRPCRequest invalid-allowlist error: %v", err)
 	}
 	list, _ = res.Result.([]string)
-	if contains := func(target string) bool { for _, method := range list { if method == target { return true } }; return false }("ext.codegen.run"); contains {
+	if contains := func(target string) bool {
+		for _, method := range list {
+			if method == target {
+				return true
+			}
+		}
+		return false
+	}("ext.codegen.run"); contains {
 		t.Fatalf("expected invalid allowlist type to fail-closed extension projection: %#v", list)
 	}
 }
@@ -1631,7 +1645,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	docs := state.NewDocsRepository(newTestStore(), "author")
 	cfgState := newRuntimeConfigStore(state.ConfigDoc{
 		Control: state.ControlPolicy{RequireAuth: false},
-		Extra: map[string]any{"pairing": map[string]any{"node_paired": []any{map[string]any{"node_id": "n1", "display_name": "Node One", "caps": []any{"canvas"}, "approved_at_ms": int64(1)}}}},
+		Extra:   map[string]any{"pairing": map[string]any{"node_paired": []any{map[string]any{"node_id": "n1", "display_name": "Node One", "caps": []any{"canvas"}, "approved_at_ms": int64(1)}}}},
 	})
 	prevNode := controlNodeInvocations
 	prevCron := controlCronJobs
@@ -1814,11 +1828,11 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 
 func TestHandleControlRPCRequest_OpenClawHighRiskParityFixtures(t *testing.T) {
 	type fixtureCase struct {
-		Name               string         `json:"name"`
-		Method             string         `json:"method"`
-		Params             map[string]any `json:"params"`
-		ExpectErrorContains string        `json:"expect_error_contains"`
-		ResultKind         string         `json:"result_kind"`
+		Name                string         `json:"name"`
+		Method              string         `json:"method"`
+		Params              map[string]any `json:"params"`
+		ExpectErrorContains string         `json:"expect_error_contains"`
+		ResultKind          string         `json:"result_kind"`
 	}
 	type fixtureFile struct {
 		Cases []fixtureCase `json:"cases"`

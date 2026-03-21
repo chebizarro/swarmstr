@@ -3,7 +3,7 @@ package memory
 import (
 	"testing"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 func newTestIndex(t *testing.T) *Index {

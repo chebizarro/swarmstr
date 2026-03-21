@@ -1,7 +1,7 @@
 // Package matrix implements a Matrix channel extension for swarmstr using the
 // Matrix Client-Server API.
 //
-// Registration: import _ "swarmstr/internal/extensions/matrix" in the daemon
+// Registration: import _ "metiq/internal/extensions/matrix" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -50,8 +50,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {
@@ -383,11 +383,11 @@ type roomTimeline struct {
 }
 
 type matrixEvent struct {
-	EventID  string          `json:"event_id"`
-	Type     string          `json:"type"`
-	Sender   string          `json:"sender"`
-	Content  json.RawMessage `json:"content"`
-	RoomID   string          `json:"room_id"`
+	EventID string          `json:"event_id"`
+	Type    string          `json:"type"`
+	Sender  string          `json:"sender"`
+	Content json.RawMessage `json:"content"`
+	RoomID  string          `json:"room_id"`
 }
 
 func (b *matrixBot) handleEvent(ev matrixEvent) {

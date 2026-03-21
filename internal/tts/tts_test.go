@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/tts"
+	"metiq/internal/tts"
 )
 
 // --- stub provider ---
@@ -25,10 +25,10 @@ type stubProvider struct {
 	err        error
 }
 
-func (p *stubProvider) ID() string                    { return p.id }
-func (p *stubProvider) Name() string                  { return p.name }
-func (p *stubProvider) Voices() []string              { return p.voices }
-func (p *stubProvider) Configured() bool              { return p.configured }
+func (p *stubProvider) ID() string       { return p.id }
+func (p *stubProvider) Name() string     { return p.name }
+func (p *stubProvider) Voices() []string { return p.voices }
+func (p *stubProvider) Configured() bool { return p.configured }
 func (p *stubProvider) Convert(_ context.Context, _, _ string) ([]byte, string, error) {
 	return p.data, p.format, p.err
 }

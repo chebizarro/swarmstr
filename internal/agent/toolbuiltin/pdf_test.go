@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/media"
+	"metiq/internal/media"
 )
 
 func TestPDFTool_MissingPath(t *testing.T) {

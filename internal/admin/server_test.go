@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/gateway/methods"
-	"swarmstr/internal/memory"
-	"swarmstr/internal/store/state"
+	"metiq/internal/gateway/methods"
+	"metiq/internal/memory"
+	"metiq/internal/store/state"
 )
 
 func TestDispatchMethodCallSupportedMethods(t *testing.T) {
@@ -75,7 +75,7 @@ func TestDispatchMethodCallStatusGet(t *testing.T) {
 	if res.PubKey != "pub" || res.DMPolicy != "open" {
 		t.Fatalf("unexpected status response: %+v", res)
 	}
-	if res.Version != "swarmstrd" {
+	if res.Version != "metiqd" {
 		t.Fatalf("unexpected status version: %q", res.Version)
 	}
 	if res.UptimeMS <= 0 {
@@ -102,7 +102,7 @@ func TestDispatchMethodCallStatusAlias(t *testing.T) {
 	if res.PubKey != "pub" || res.DMPolicy != "open" {
 		t.Fatalf("unexpected status response: %+v", res)
 	}
-	if res.Version != "swarmstrd" {
+	if res.Version != "metiqd" {
 		t.Fatalf("unexpected status version: %q", res.Version)
 	}
 	if res.UptimeMS <= 0 {
@@ -134,7 +134,7 @@ func TestDispatchMethodCallStatusGetUsesLiveRelaysProvider(t *testing.T) {
 	if len(res.Relays) != 2 || res.Relays[0] != "wss://live-a" || res.Relays[1] != "wss://live-b" {
 		t.Fatalf("unexpected relays from live provider: %+v", res.Relays)
 	}
-	if res.Version != "swarmstrd" {
+	if res.Version != "metiqd" {
 		t.Fatalf("unexpected status version: %q", res.Version)
 	}
 	if res.UptimeMS <= 0 {
@@ -1688,12 +1688,12 @@ func TestDispatchMethodCallSetHeartbeatsRequiresEnabled(t *testing.T) {
 
 func TestDispatchMethodCall_OpenClawHighRiskParityFixtures(t *testing.T) {
 	type fixtureCase struct {
-		Name               string         `json:"name"`
-		Method             string         `json:"method"`
-		Params             map[string]any `json:"params"`
-		ExpectedStatus     int            `json:"expected_status"`
-		ExpectErrorContains string        `json:"expect_error_contains"`
-		ResultKind         string         `json:"result_kind"`
+		Name                string         `json:"name"`
+		Method              string         `json:"method"`
+		Params              map[string]any `json:"params"`
+		ExpectedStatus      int            `json:"expected_status"`
+		ExpectErrorContains string         `json:"expect_error_contains"`
+		ResultKind          string         `json:"result_kind"`
 	}
 	type fixtureFile struct {
 		Cases []fixtureCase `json:"cases"`
@@ -1839,17 +1839,17 @@ func TestEnvelopeParityFixtures(t *testing.T) {
 
 func TestCallRouteEnvelopeParityFixtures(t *testing.T) {
 	type fixtureCase struct {
-		Name                 string         `json:"name"`
-		NIP86                bool           `json:"nip86"`
-		Body                 map[string]any `json:"body"`
-		Scenario             string         `json:"scenario"`
-		ExpectedHTTPStatus   int            `json:"expected_http_status"`
-		ExpectedContentType  string         `json:"expected_content_type"`
-		ExpectedOK           *bool          `json:"expected_ok,omitempty"`
-		ExpectedErrorContains string        `json:"expected_error_contains"`
-		ExpectedNIP86Code    int            `json:"expected_nip86_code"`
-		ExpectedResultKey    string         `json:"expected_result_key"`
-		ExpectedErrorDataKey string         `json:"expected_error_data_key"`
+		Name                  string         `json:"name"`
+		NIP86                 bool           `json:"nip86"`
+		Body                  map[string]any `json:"body"`
+		Scenario              string         `json:"scenario"`
+		ExpectedHTTPStatus    int            `json:"expected_http_status"`
+		ExpectedContentType   string         `json:"expected_content_type"`
+		ExpectedOK            *bool          `json:"expected_ok,omitempty"`
+		ExpectedErrorContains string         `json:"expected_error_contains"`
+		ExpectedNIP86Code     int            `json:"expected_nip86_code"`
+		ExpectedResultKey     string         `json:"expected_result_key"`
+		ExpectedErrorDataKey  string         `json:"expected_error_data_key"`
 	}
 	type fixtureFile struct {
 		Cases []fixtureCase `json:"cases"`
@@ -1966,12 +1966,12 @@ func TestIsNIP86RPC(t *testing.T) {
 
 func TestProviderNotConfiguredEnvelopeParityFixtures(t *testing.T) {
 	type fixtureCase struct {
-		Name             string         `json:"name"`
-		Method           string         `json:"method"`
-		Params           map[string]any `json:"params"`
-		ExpectedStatus   int            `json:"expected_status"`
-		ErrorContains    string         `json:"error_contains"`
-		ExpectedNIP86Code int           `json:"expected_nip86_code"`
+		Name              string         `json:"name"`
+		Method            string         `json:"method"`
+		Params            map[string]any `json:"params"`
+		ExpectedStatus    int            `json:"expected_status"`
+		ErrorContains     string         `json:"error_contains"`
+		ExpectedNIP86Code int            `json:"expected_nip86_code"`
 	}
 	type fixtureFile struct {
 		Cases []fixtureCase `json:"cases"`

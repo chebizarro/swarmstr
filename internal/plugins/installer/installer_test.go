@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/plugins/installer"
+	"metiq/internal/plugins/installer"
 )
 
 // ---- helpers ---------------------------------------------------------------

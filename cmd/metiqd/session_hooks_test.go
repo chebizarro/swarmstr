@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	hookspkg "swarmstr/internal/hooks"
-	"swarmstr/internal/store/state"
+	hookspkg "metiq/internal/hooks"
+	"metiq/internal/store/state"
 )
 
 func TestFireSessionResetHooks_OrderAndPayload(t *testing.T) {

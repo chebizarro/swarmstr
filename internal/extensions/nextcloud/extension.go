@@ -8,7 +8,7 @@
 //
 // Outbound messages are sent via the OCS v2 chat REST API.
 //
-// Registration: import _ "swarmstr/internal/extensions/nextcloud" in the daemon
+// Registration: import _ "metiq/internal/extensions/nextcloud" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -38,8 +38,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {
@@ -189,8 +189,8 @@ type nextcloudBot struct {
 	done           chan struct{}
 	httpClient     *http.Client
 
-	seenMu   sync.Mutex
-	seenIDs  map[int64]struct{}
+	seenMu    sync.Mutex
+	seenIDs   map[int64]struct{}
 	lastMsgID int64
 }
 

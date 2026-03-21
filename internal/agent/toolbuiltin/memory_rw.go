@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/memory"
+	"metiq/internal/agent"
+	"metiq/internal/memory"
 )
 
 // MemoryStoreTool returns an agent.ToolFunc for the "memory_store" tool.
@@ -15,6 +15,7 @@ import (
 //   - text (string, required) – content to store
 //   - tags ([]string or comma-delimited string, optional) – keywords for retrieval
 //   - session_id (string, optional) – scope the entry to a session
+//
 // MemoryStoreDef is the ToolDefinition for memory_store.
 var MemoryStoreDef = agent.ToolDefinition{
 	Name:        "memory_store",

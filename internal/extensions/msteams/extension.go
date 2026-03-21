@@ -4,7 +4,7 @@
 // received via a registered webhook; outbound messages are sent using the Bot
 // Framework Connector Service.
 //
-// Registration: import _ "swarmstr/internal/extensions/msteams" in the daemon
+// Registration: import _ "metiq/internal/extensions/msteams" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -46,8 +46,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 type botJWTClaims struct {
@@ -216,21 +216,21 @@ func HandleWebhook(channelID string, w http.ResponseWriter, r *http.Request) {
 
 // botFrameworkActivity is a Bot Framework Activity object (simplified).
 type botFrameworkActivity struct {
-	Type           string          `json:"type"`
-	ID             string          `json:"id"`
-	Text           string          `json:"text"`
-	ServiceURL     string          `json:"serviceUrl"`
-	Conversation   json.RawMessage `json:"conversation"`
-	From           struct {
+	Type         string          `json:"type"`
+	ID           string          `json:"id"`
+	Text         string          `json:"text"`
+	ServiceURL   string          `json:"serviceUrl"`
+	Conversation json.RawMessage `json:"conversation"`
+	From         struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"from"`
-	Recipient      struct {
+	Recipient struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"recipient"`
-	ReplyToID      string `json:"replyToId,omitempty"`
-	ChannelID      string `json:"channelId"`
+	ReplyToID string `json:"replyToId,omitempty"`
+	ChannelID string `json:"channelId"`
 }
 
 type teamsBot struct {
@@ -243,8 +243,8 @@ type teamsBot struct {
 	done           chan struct{}
 	httpClient     *http.Client
 	// lastActivity stores the most recent inbound activity for reply routing.
-	lastActivity   *botFrameworkActivity
-	activityMu     sync.Mutex
+	lastActivity *botFrameworkActivity
+	activityMu   sync.Mutex
 }
 
 func (b *teamsBot) ID() string { return b.channelID }
@@ -379,8 +379,8 @@ func (b *teamsBot) Send(ctx context.Context, text string) error {
 	}
 
 	return b.postActivity(ctx, svcURL, conv.ID, last.Recipient.ID, map[string]any{
-		"type":      "message",
-		"text":      text,
+		"type":       "message",
+		"text":       text,
 		"textFormat": "plain",
 	})
 }
@@ -459,12 +459,14 @@ func (b *teamsBot) AddReaction(ctx context.Context, eventID, emoji string) error
 	if last == nil || svcURL == "" {
 		return fmt.Errorf("msteams: no conversation context")
 	}
-	var conv struct{ ID string `json:"id"` }
+	var conv struct {
+		ID string `json:"id"`
+	}
 	_ = json.Unmarshal(last.Conversation, &conv)
 	return b.postActivity(ctx, svcURL, conv.ID, last.Recipient.ID, map[string]any{
-		"type":        "messageReaction",
+		"type":           "messageReaction",
 		"reactionsAdded": []map[string]any{{"type": emoji}},
-		"replyToId":   eventID,
+		"replyToId":      eventID,
 	})
 }
 
@@ -477,12 +479,14 @@ func (b *teamsBot) RemoveReaction(ctx context.Context, eventID, emoji string) er
 	if last == nil || svcURL == "" {
 		return fmt.Errorf("msteams: no conversation context")
 	}
-	var conv struct{ ID string `json:"id"` }
+	var conv struct {
+		ID string `json:"id"`
+	}
 	_ = json.Unmarshal(last.Conversation, &conv)
 	return b.postActivity(ctx, svcURL, conv.ID, last.Recipient.ID, map[string]any{
-		"type":           "messageReaction",
+		"type":             "messageReaction",
 		"reactionsRemoved": []map[string]any{{"type": emoji}},
-		"replyToId":      eventID,
+		"replyToId":        eventID,
 	})
 }
 
@@ -498,7 +502,9 @@ func (b *teamsBot) SendInThread(ctx context.Context, threadID, text string) erro
 	if last == nil || svcURL == "" {
 		return fmt.Errorf("msteams: no conversation context")
 	}
-	var conv struct{ ID string `json:"id"` }
+	var conv struct {
+		ID string `json:"id"`
+	}
 	_ = json.Unmarshal(last.Conversation, &conv)
 	return b.postActivity(ctx, svcURL, conv.ID, last.Recipient.ID, map[string]any{
 		"type":      "message",
@@ -518,7 +524,9 @@ func (b *teamsBot) EditMessage(ctx context.Context, eventID, newText string) err
 	if last == nil || svcURL == "" {
 		return fmt.Errorf("msteams: no conversation context")
 	}
-	var conv struct{ ID string `json:"id"` }
+	var conv struct {
+		ID string `json:"id"`
+	}
 	_ = json.Unmarshal(last.Conversation, &conv)
 
 	token, err := b.acquireToken(ctx)

@@ -18,6 +18,7 @@ package runtime
 import (
 	"bufio"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,9 +28,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	_ "embed"
 
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/plugins/sdk"
 )
 
 //go:embed node_shim.js
@@ -53,9 +53,9 @@ type nodeRequest struct {
 }
 
 type nodeResponse struct {
-	ID     int64          `json:"id"`
-	Result any            `json:"result,omitempty"`
-	Error  string         `json:"error,omitempty"`
+	ID     int64  `json:"id"`
+	Result any    `json:"result,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // IsNodePlugin returns true when the install path looks like a Node.js plugin

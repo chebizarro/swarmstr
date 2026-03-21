@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 // RelayWriter publishes a ConfigDoc to Nostr.

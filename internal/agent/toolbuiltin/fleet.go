@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/agent"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // rpcResultCache prevents the model from looping by caching recent RPC outcomes.

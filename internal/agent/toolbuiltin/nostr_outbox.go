@@ -12,8 +12,8 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // ─── NIP-65 outbox cache ─────────────────────────────────────────────────────
@@ -29,7 +29,6 @@ var (
 	outboxCache    = map[string]outboxCacheEntry{}
 	outboxCacheTTL = 30 * time.Minute
 )
-
 
 // NostrRelayHintsTool fetches a pubkey's NIP-65 relay hints (kind:10002).
 // It checks both the local outbox cache and the global NIP-65 relay selector.
@@ -199,7 +198,7 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 		if published == 0 && lastErr != nil {
 			return "", nostrToolErr("nostr_relay_list_set", "publish_failed", lastErr.Error(), map[string]any{"kind": 10002, "publish_relays": relays})
 		}
-	
+
 		// Invalidate caches for this pubkey so subsequent relay_hints calls get fresh data
 		outboxCacheMu.Lock()
 		delete(outboxCache, evt.PubKey.Hex())
@@ -209,13 +208,13 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 		if sel := GetRelaySelector(); sel != nil {
 			sel.Invalidate(evt.PubKey.Hex())
 		}
-	
+
 		return nostrWriteSuccessEnvelope("nostr_relay_list_set", evt.ID.Hex(), 10002, map[string]any{
 			"read_relays":  readRelays,
 			"write_relays": writeRelays,
 			"both_relays":  bothRelays,
 		}, map[string]any{
-			"published":     published,
+			"published":      published,
 			"publish_relays": relays,
 		}, map[string]any{
 			"published": published,

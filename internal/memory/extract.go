@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 var splitter = regexp.MustCompile(`[^a-zA-Z0-9]+`)

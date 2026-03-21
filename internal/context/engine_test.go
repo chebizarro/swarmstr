@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	ctxengine "swarmstr/internal/context"
+	ctxengine "metiq/internal/context"
 )
 
 func TestWindowedEngineIngestAssemble(t *testing.T) {

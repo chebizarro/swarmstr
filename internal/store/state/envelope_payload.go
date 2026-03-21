@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"swarmstr/internal/nostr/events"
-	"swarmstr/internal/nostr/secure"
+	"metiq/internal/nostr/events"
+	"metiq/internal/nostr/secure"
 )
 
 func ensureCodec(codec secure.EnvelopeCodec) secure.EnvelopeCodec {

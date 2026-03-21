@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/nostr/events"
+	"metiq/internal/nostr/events"
 )
 
 type fakeStateStore struct {

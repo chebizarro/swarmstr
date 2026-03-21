@@ -11,7 +11,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 var ensureRelay = func(pool *nostr.Pool, relayURL string) error {
