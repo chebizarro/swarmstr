@@ -71,18 +71,18 @@ metiqd --version
 ### 4. Configure
 
 ```bash
-mkdir -p ~/.swarmstr
+mkdir -p ~/.metiq
 
 # Create secrets file
-cat > ~/.swarmstr/.env <<'EOF'
+cat > ~/.metiq/.env <<'EOF'
 NOSTR_NSEC=nsec1...
 ANTHROPIC_API_KEY=sk-ant-...
-SWARMSTR_ADMIN_TOKEN=$(openssl rand -hex 32)
+METIQ_ADMIN_TOKEN=$(openssl rand -hex 32)
 EOF
-chmod 600 ~/.swarmstr/.env
+chmod 600 ~/.metiq/.env
 
 # Bootstrap config (keys, relays, admin API)
-cat > ~/.swarmstr/bootstrap.json <<'EOF'
+cat > ~/.metiq/bootstrap.json <<'EOF'
 {
   "private_key": "${NOSTR_NSEC}",
   "relays": [
@@ -91,12 +91,12 @@ cat > ~/.swarmstr/bootstrap.json <<'EOF'
     "wss://nos.lol"
   ],
   "admin_listen_addr": "127.0.0.1:18788",
-  "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
+  "admin_token": "${METIQ_ADMIN_TOKEN}"
 }
 EOF
 
 # Runtime config (agent, model, DM policy)
-cat > ~/.swarmstr/config.json <<'EOF'
+cat > ~/.metiq/config.json <<'EOF'
 {
   "dm": {
     "policy": "allowlist",
@@ -124,7 +124,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h
-EnvironmentFile=%h/.swarmstr/.env
+EnvironmentFile=%h/.metiq/.env
 ExecStart=/usr/local/bin/metiqd
 Restart=always
 RestartSec=10
@@ -149,8 +149,8 @@ sudo loginctl enable-linger swarmstr
 ### 7. Verify
 
 ```bash
-export SWARMSTR_ADMIN_ADDR=127.0.0.1:18788
-export SWARMSTR_ADMIN_TOKEN=$(grep SWARMSTR_ADMIN_TOKEN ~/.swarmstr/.env | cut -d= -f2)
+export METIQ_ADMIN_ADDR=127.0.0.1:18788
+export METIQ_ADMIN_TOKEN=$(grep METIQ_ADMIN_TOKEN ~/.metiq/.env | cut -d= -f2)
 
 swarmstr status
 swarmstr daemon status
@@ -191,7 +191,7 @@ primary_region = "iad"
 
 [mounts]
   source = "swarmstr_data"
-  destination = "/home/swarmstr/.swarmstr"
+  destination = "/home/swarmstr/.metiq"
 
 [[services]]
   internal_port = 18789
@@ -216,7 +216,7 @@ fly deploy
 3. Set environment variables in the Render dashboard:
    - `NOSTR_PRIVATE_KEY`
    - `ANTHROPIC_API_KEY`
-4. Set **Persistent Disk** for `~/.swarmstr` (to preserve workspace across deploys)
+4. Set **Persistent Disk** for `~/.metiq` (to preserve workspace across deploys)
 5. Deploy
 
 ## Railway
@@ -238,7 +238,7 @@ railway up
 All VPS deployments need persistent storage for:
 
 ```
-~/.swarmstr/
+~/.metiq/
 ├── config.json         # Config (can be recreated)
 ├── .env                # Secrets (backup elsewhere!)
 ├── workspace/          # Bootstrap files (backup!)

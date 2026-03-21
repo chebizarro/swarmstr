@@ -62,13 +62,13 @@ type SessionEntry struct {
 	Label string `json:"label,omitempty"`
 
 	// Token / cache metrics — accumulated across turns.
-	InputTokens      int64 `json:"input_tokens,omitempty"`
-	OutputTokens     int64 `json:"output_tokens,omitempty"`
-	TotalTokens      int64 `json:"total_tokens,omitempty"`
-	TotalTokensFresh *bool `json:"total_tokens_fresh,omitempty"`
-	ContextTokens    int64 `json:"context_tokens,omitempty"`
-	CacheRead        int64 `json:"cache_read,omitempty"`
-	CacheWrite       int64 `json:"cache_write,omitempty"`
+	InputTokens      int64  `json:"input_tokens,omitempty"`
+	OutputTokens     int64  `json:"output_tokens,omitempty"`
+	TotalTokens      int64  `json:"total_tokens,omitempty"`
+	TotalTokensFresh *bool  `json:"total_tokens_fresh,omitempty"`
+	ContextTokens    int64  `json:"context_tokens,omitempty"`
+	CacheRead        int64  `json:"cache_read,omitempty"`
+	CacheWrite       int64  `json:"cache_write,omitempty"`
 	FallbackFrom     string `json:"fallback_from,omitempty"`
 	FallbackTo       string `json:"fallback_to,omitempty"`
 	FallbackReason   string `json:"fallback_reason,omitempty"`
@@ -136,10 +136,10 @@ func NewSessionStore(path string) (*SessionStore, error) {
 	return ss, nil
 }
 
-// DefaultSessionStorePath returns ~/.swarmstr/sessions.json.
+// DefaultSessionStorePath returns ~/.metiq/sessions.json.
 func DefaultSessionStorePath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".swarmstr", "sessions.json")
+	return filepath.Join(home, ".metiq", "sessions.json")
 }
 
 // Get returns the entry for key and a boolean indicating whether it was found.

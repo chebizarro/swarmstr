@@ -3,8 +3,8 @@
 # Runs as an unprivileged user; the binary should land in $HOME/.local/bin.
 set -euo pipefail
 
-INSTALL_URL="${SWARMSTR_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
-SKIP_DOWNLOAD="${SWARMSTR_INSTALL_SKIP_DOWNLOAD:-0}"
+INSTALL_URL="${METIQ_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
+SKIP_DOWNLOAD="${METIQ_INSTALL_SKIP_DOWNLOAD:-0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # shellcheck source=../install-sh-common/verify.sh
@@ -18,7 +18,7 @@ fi
 echo "Running as: $(id)"
 
 if [[ "$SKIP_DOWNLOAD" == "1" ]]; then
-  echo "==> Skip download (SWARMSTR_INSTALL_SKIP_DOWNLOAD=1)"
+  echo "==> Skip download (METIQ_INSTALL_SKIP_DOWNLOAD=1)"
   # Binary injected via mount at /tmp/metiqd-linux-amd64 — install manually.
   mkdir -p "$HOME/.local/bin"
   cp /tmp/metiqd-linux-amd64 "$HOME/.local/bin/metiqd"

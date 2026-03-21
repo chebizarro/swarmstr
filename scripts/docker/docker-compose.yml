@@ -3,11 +3,11 @@ version: "3.9"
 # swarmstr daemon + optional Playwright browser sandbox
 #
 # Quick start:
-#   cp .env.example .env   # fill in SWARMSTR_NOSTR_KEY + API keys
+#   cp .env.example .env   # fill in METIQ_NOSTR_KEY + API keys
 #   docker compose up -d
 #
 # To enable browser control, uncomment the `playwright` service and
-# set SWARMSTR_BROWSER_URL=http://playwright:3500 in .env.
+# set METIQ_BROWSER_URL=http://playwright:3500 in .env.
 
 services:
 
@@ -30,7 +30,7 @@ services:
       - swarmstr
 
   # ── Playwright browser sandbox (optional, high-value) ────────────────────────
-  # Set SWARMSTR_BROWSER_URL=http://playwright:3500 in .env to enable.
+  # Set METIQ_BROWSER_URL=http://playwright:3500 in .env to enable.
   playwright:
     image: swarmstr/playwright-sandbox:latest
     build:
@@ -39,7 +39,7 @@ services:
     restart: unless-stopped
     environment:
       - SANDBOX_LISTEN=0.0.0.0:3500
-      - SANDBOX_AUTH_TOKEN=${SWARMSTR_BROWSER_TOKEN:-}
+      - SANDBOX_AUTH_TOKEN=${METIQ_BROWSER_TOKEN:-}
       - EVALUATE_ENABLED=1
       - NOVNC_ENABLED=0
     ports:

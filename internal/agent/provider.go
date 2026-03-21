@@ -131,13 +131,13 @@ func truncateUTF8ByBytes(s string, maxBytes int) string {
 }
 
 func NewProviderFromEnv() (Provider, error) {
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_PROVIDER")))
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("METIQ_AGENT_PROVIDER")))
 	switch mode {
 	case "", "echo":
 		// Fall through to key-based auto-detect: if ANTHROPIC_API_KEY is set,
 		// use Anthropic as the default provider instead of the echo stub.
 		if apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); apiKey != "" {
-			model := strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_MODEL"))
+			model := strings.TrimSpace(os.Getenv("METIQ_AGENT_MODEL"))
 			if model == "" {
 				model = "claude-sonnet-4-5"
 			}
@@ -147,21 +147,21 @@ func NewProviderFromEnv() (Provider, error) {
 	case "anthropic":
 		apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
 		if apiKey == "" {
-			return nil, fmt.Errorf("ANTHROPIC_API_KEY is required when SWARMSTR_AGENT_PROVIDER=anthropic")
+			return nil, fmt.Errorf("ANTHROPIC_API_KEY is required when METIQ_AGENT_PROVIDER=anthropic")
 		}
-		model := strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_MODEL"))
+		model := strings.TrimSpace(os.Getenv("METIQ_AGENT_MODEL"))
 		if model == "" {
 			model = "claude-sonnet-4-5"
 		}
 		return &AnthropicProvider{Model: model, APIKey: apiKey}, nil
 	case "http":
-		url := strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_URL"))
+		url := strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_URL"))
 		if url == "" {
-			return nil, fmt.Errorf("SWARMSTR_AGENT_HTTP_URL is required when SWARMSTR_AGENT_PROVIDER=http")
+			return nil, fmt.Errorf("METIQ_AGENT_HTTP_URL is required when METIQ_AGENT_PROVIDER=http")
 		}
-		return &HTTPProvider{URL: url, APIKey: strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_API_KEY"))}, nil
+		return &HTTPProvider{URL: url, APIKey: strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_API_KEY"))}, nil
 	default:
-		return nil, fmt.Errorf("unknown SWARMSTR_AGENT_PROVIDER %q", mode)
+		return nil, fmt.Errorf("unknown METIQ_AGENT_PROVIDER %q", mode)
 	}
 }
 
@@ -192,7 +192,6 @@ func isAnthropicAuthError(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "401") || strings.Contains(s, "authentication_error") || strings.Contains(s, "permission_error")
 }
-
 
 // OpenAIChatProvider calls the OpenAI Chat Completions API (POST /v1/chat/completions).
 // Also compatible with Ollama and other OpenAI-compatible endpoints.
@@ -231,7 +230,6 @@ func (p *OpenAIChatProvider) resolveAPIKey() string {
 	}
 	return apiKey
 }
-
 
 // Stream implements StreamingProvider for OpenAIChatProvider.
 // It uses the openai-go SDK's streaming API to deliver text tokens incrementally
@@ -373,7 +371,7 @@ type GoogleGeminiProvider struct {
 }
 
 type geminiContent struct {
-	Role  string      `json:"role"`
+	Role  string       `json:"role"`
 	Parts []geminiPart `json:"parts"`
 }
 
@@ -381,10 +379,10 @@ type geminiContent struct {
 // functionCall (tool request), and functionResponse (tool result).
 // Fields are omitempty so the JSON output only includes the relevant shape.
 type geminiPart struct {
-	Text             string                 `json:"text,omitempty"`
-	InlineData       *geminiInlineData      `json:"inline_data,omitempty"`
-	FileData         *geminiFileData        `json:"file_data,omitempty"`
-	FunctionCall     *geminiFunctionCall    `json:"functionCall,omitempty"`
+	Text             string                  `json:"text,omitempty"`
+	InlineData       *geminiInlineData       `json:"inline_data,omitempty"`
+	FileData         *geminiFileData         `json:"file_data,omitempty"`
+	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
 }
 
@@ -433,7 +431,7 @@ type geminiResponse struct {
 		Content struct {
 			Parts []struct {
 				Text         string              `json:"text,omitempty"`
-				FunctionCall *geminiFunctionCall  `json:"functionCall,omitempty"`
+				FunctionCall *geminiFunctionCall `json:"functionCall,omitempty"`
 			} `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
@@ -514,11 +512,11 @@ func (p *GoogleGeminiProvider) Generate(ctx context.Context, turn Turn) (Provide
 // openAICompatProviders maps model prefixes / aliases to their base URL and env key name.
 // All of these use the OpenAI Chat Completions API format.
 var openAICompatProviders = []struct {
-	prefix   string // lowercase prefix (or exact alias) to match
-	alias    string // exact alias (e.g. "groq", "mistral")
-	base     string // default base URL
-	envKey   string // primary env var name for the API key
-	baseEnv  string // optional env var that overrides base URL (for local servers)
+	prefix  string // lowercase prefix (or exact alias) to match
+	alias   string // exact alias (e.g. "groq", "mistral")
+	base    string // default base URL
+	envKey  string // primary env var name for the API key
+	baseEnv string // optional env var that overrides base URL (for local servers)
 }{
 	{prefix: "grok-", alias: "xai", base: "https://api.x.ai/v1", envKey: "XAI_API_KEY"},
 	{prefix: "", alias: "groq", base: "https://api.groq.com/openai/v1", envKey: "GROQ_API_KEY"},
@@ -567,7 +565,7 @@ func resolveOpenAICompat(norm string) (baseURL, envKey string) {
 // NewProviderForModel constructs a Provider for the given model identifier.
 //
 //   - "" / "echo"                         → EchoProvider
-//   - "http" / "http-default"             → HTTPProvider (SWARMSTR_AGENT_HTTP_URL)
+//   - "http" / "http-default"             → HTTPProvider (METIQ_AGENT_HTTP_URL)
 //   - "anthropic" / "claude-*"            → AnthropicProvider (ANTHROPIC_API_KEY)
 //   - "openai" / "gpt-*" / "o1-*" …      → OpenAIChatProvider (OPENAI_API_KEY)
 //   - "gemini" / "gemini-*"              → GoogleGeminiProvider (GEMINI_API_KEY)
@@ -582,11 +580,11 @@ func NewProviderForModel(model string) (Provider, error) {
 	case norm == "" || norm == "echo":
 		return EchoProvider{}, nil
 	case norm == "http" || norm == "http-default":
-		url := strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_URL"))
+		url := strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_URL"))
 		if url == "" {
-			return nil, fmt.Errorf("SWARMSTR_AGENT_HTTP_URL is required for http model")
+			return nil, fmt.Errorf("METIQ_AGENT_HTTP_URL is required for http model")
 		}
-		return &HTTPProvider{URL: url, APIKey: strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_API_KEY"))}, nil
+		return &HTTPProvider{URL: url, APIKey: strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_API_KEY"))}, nil
 	case norm == "github-copilot":
 		// GitHub Copilot: OpenAI-compatible API with OAuth device-flow auth.
 		tok, _, _ := FetchOAuthToken(context.Background(), "github-copilot")
@@ -840,14 +838,14 @@ func BuildRuntimeWithOverride(model string, override ProviderOverride, tools Too
 	// Generic HTTP-compatible endpoint (Ollama, custom servers, etc.)
 	baseURL := overrideBaseURL
 	if baseURL == "" {
-		baseURL = strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_URL"))
+		baseURL = strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_URL"))
 	}
 	if baseURL == "" {
-		return nil, fmt.Errorf("provider base_url is required (set in providers config or SWARMSTR_AGENT_HTTP_URL)")
+		return nil, fmt.Errorf("provider base_url is required (set in providers config or METIQ_AGENT_HTTP_URL)")
 	}
 	apiKey := overrideAPIKey
 	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_HTTP_API_KEY"))
+		apiKey = strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_API_KEY"))
 	}
 	return NewProviderRuntime(&HTTPProvider{URL: baseURL, APIKey: apiKey}, tools)
 }

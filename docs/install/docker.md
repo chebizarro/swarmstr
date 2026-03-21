@@ -12,13 +12,13 @@ metiq can run in Docker as a stateless Go binary with mounted config and state v
 
 ## Quick start
 
-Mount your `~/.swarmstr` directory (which contains `bootstrap.json` and `config.json`):
+Mount your `~/.metiq` directory (which contains `bootstrap.json` and `config.json`):
 
 ```bash
 docker run -d \
   --name metiqd \
   --restart unless-stopped \
-  -v ~/.swarmstr:/data/.swarmstr \
+  -v ~/.metiq:/data/.metiq \
   ghcr.io/your-org/metiq:latest
 ```
 
@@ -28,7 +28,7 @@ If your `bootstrap.json` has `admin_listen_addr` set (e.g. `"127.0.0.1:7423"`), 
 docker run -d \
   --name metiqd \
   --restart unless-stopped \
-  -v ~/.swarmstr:/data/.swarmstr \
+  -v ~/.metiq:/data/.metiq \
   -p 127.0.0.1:7423:7423 \
   ghcr.io/your-org/metiq:latest
 ```
@@ -44,7 +44,7 @@ services:
     container_name: metiqd
     restart: unless-stopped
     volumes:
-      - metiq-data:/data/.swarmstr
+      - metiq-data:/data/.metiq
     # Expose admin API port only if admin_listen_addr is set in bootstrap.json
     # ports:
     #   - "127.0.0.1:7423:7423"
@@ -57,9 +57,9 @@ Seed your config files into the volume before the first run:
 
 ```bash
 docker run --rm \
-  -v metiq-data:/data/.swarmstr \
-  -v ~/.swarmstr:/src:ro \
-  alpine sh -c "mkdir -p /data/.swarmstr && cp -r /src/. /data/.swarmstr/"
+  -v metiq-data:/data/.metiq \
+  -v ~/.metiq:/src:ro \
+  alpine sh -c "mkdir -p /data/.metiq && cp -r /src/. /data/.metiq/"
 docker compose up -d
 docker compose logs -f metiqd
 ```
@@ -71,9 +71,9 @@ Mount individual config files read-only:
 ```bash
 docker run -d \
   --name metiqd \
-  -v /path/to/bootstrap.json:/data/.swarmstr/bootstrap.json:ro \
-  -v /path/to/config.json:/data/.swarmstr/config.json:ro \
-  -v metiq-workspace:/data/.swarmstr/workspace \
+  -v /path/to/bootstrap.json:/data/.metiq/bootstrap.json:ro \
+  -v /path/to/config.json:/data/.metiq/config.json:ro \
+  -v metiq-workspace:/data/.metiq/workspace \
   ghcr.io/your-org/metiq:latest
 ```
 
@@ -117,7 +117,7 @@ metiq needs a persistent volume for:
 - `cron/jobs.json` — cron job store
 - `skills/` — installed skills
 
-Mount everything under one volume at `/data/.swarmstr`. The image sets `HOME=/data`.
+Mount everything under one volume at `/data/.metiq`. The image sets `HOME=/data`.
 
 ## Health check
 

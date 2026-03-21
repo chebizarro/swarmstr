@@ -208,7 +208,7 @@ func main() {
 	var gatewayWSAllowInsecureControlUI bool
 	var pidFile string
 	flag.StringVar(&bootstrapPath, "bootstrap", "", "path to bootstrap config JSON")
-	flag.StringVar(&configFilePath, "config", "", "path to live config JSON/JSON5/YAML file; watched for changes (default: ~/.swarmstr/config.json)")
+	flag.StringVar(&configFilePath, "config", "", "path to live config JSON/JSON5/YAML file; watched for changes (default: ~/.metiq/config.json)")
 	flag.StringVar(&adminAddr, "admin-addr", "", "optional admin API listen address, e.g. 127.0.0.1:8787")
 	flag.StringVar(&adminToken, "admin-token", "", "optional bearer token for admin API")
 	flag.StringVar(&gatewayWSAddr, "gateway-ws-addr", "", "optional gateway websocket listen address, e.g. 127.0.0.1:8788")
@@ -664,7 +664,7 @@ func main() {
 	toolbuiltin.SetIdentityInfo(toolbuiltin.IdentityInfo{
 		Name:   "main",
 		Pubkey: pubkey,
-		Model:  strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_PROVIDER")),
+		Model:  strings.TrimSpace(os.Getenv("METIQ_AGENT_PROVIDER")),
 	})
 	tools.RegisterWithDef("my_identity", toolbuiltin.MyIdentityTool, toolbuiltin.MyIdentityDef)
 	// bash_exec: shell command execution (gated by exec approval policy middleware).
@@ -677,7 +677,7 @@ func main() {
 	// task queue: persistent structured work-item management.
 	{
 		home, _ := os.UserHomeDir()
-		taskPath := filepath.Join(home, ".swarmstr", "tasks.json")
+		taskPath := filepath.Join(home, ".metiq", "tasks.json")
 		if err := toolbuiltin.InitTaskStore(taskPath); err != nil {
 			log.Printf("task store init (non-fatal): %v", err)
 		}
@@ -704,7 +704,7 @@ func main() {
 	configState = newRuntimeConfigStore(runtimeCfg)
 	{
 		identityName := "main"
-		identityModel := strings.TrimSpace(os.Getenv("SWARMSTR_AGENT_PROVIDER"))
+		identityModel := strings.TrimSpace(os.Getenv("METIQ_AGENT_PROVIDER"))
 		for _, ag := range runtimeCfg.Agents {
 			id := strings.TrimSpace(ag.ID)
 			if id != "" && id != "main" {
@@ -893,7 +893,7 @@ func main() {
 			}
 		}
 	}
-	// Load managed hooks from ~/.swarmstr/hooks/.
+	// Load managed hooks from ~/.metiq/hooks/.
 	if managedHooksDir := hookspkg.ManagedHooksDir(); managedHooksDir != "" {
 		if managedHooks, err := hookspkg.ScanDir(managedHooksDir, hookspkg.SourceManaged); err == nil {
 			for _, h := range managedHooks {
@@ -904,7 +904,7 @@ func main() {
 	// Load workspace hooks from the agent's workspace hooks/ subdirectory.
 	if wkspHooksDir := func() string {
 		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".swarmstr", "workspace", "hooks")
+		return filepath.Join(home, ".metiq", "workspace", "hooks")
 	}(); wkspHooksDir != "" {
 		if wkspHooks, err := hookspkg.ScanDir(wkspHooksDir, hookspkg.SourceWorkspace); err == nil {
 			for _, h := range wkspHooks {
@@ -923,11 +923,11 @@ func main() {
 					}
 				}
 			}
-			if d := os.Getenv("SWARMSTR_WORKSPACE"); d != "" {
+			if d := os.Getenv("METIQ_WORKSPACE"); d != "" {
 				return d
 			}
 			home, _ := os.UserHomeDir()
-			return filepath.Join(home, ".swarmstr", "workspace")
+			return filepath.Join(home, ".metiq", "workspace")
 		},
 	})
 	// Attach shell handlers for any managed/workspace hooks that have handler.sh
@@ -936,7 +936,7 @@ func main() {
 	controlHooksMgr = hooksMgr
 
 	// ── Secrets store ─────────────────────────────────────────────────────────
-	secretsStore := secretspkg.NewStore(nil) // uses ~/.swarmstr/.env by default
+	secretsStore := secretspkg.NewStore(nil) // uses ~/.metiq/.env by default
 	if _, warns := secretsStore.Reload(); len(warns) > 0 {
 		for _, w := range warns {
 			log.Printf("secrets: %s", w)
@@ -2500,7 +2500,7 @@ func main() {
 			wsDir := skillspkg.WorkspaceDir(cfg.Extra, activeAgentID)
 			if wsDir == "" {
 				home, _ := os.UserHomeDir()
-				wsDir = filepath.Join(home, ".swarmstr", "workspace")
+				wsDir = filepath.Join(home, ".metiq", "workspace")
 			}
 			candidates := []string{
 				"AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md",
@@ -2945,7 +2945,7 @@ func main() {
 			}
 			if wsDir == "" {
 				if home, herr := os.UserHomeDir(); herr == nil {
-					wsDir = filepath.Join(home, ".swarmstr", "workspace")
+					wsDir = filepath.Join(home, ".metiq", "workspace")
 				}
 			}
 
@@ -3162,7 +3162,7 @@ func main() {
 			}
 			if wsDir == "" {
 				if home, herr := os.UserHomeDir(); herr == nil {
-					wsDir = filepath.Join(home, ".swarmstr", "workspace")
+					wsDir = filepath.Join(home, ".metiq", "workspace")
 				}
 			}
 
@@ -9652,14 +9652,14 @@ func configuredPDFAllowedRoots(cfg state.ConfigDoc) []string {
 			}
 		}
 	}
-	if d := strings.TrimSpace(os.Getenv("SWARMSTR_WORKSPACE")); d != "" {
+	if d := strings.TrimSpace(os.Getenv("METIQ_WORKSPACE")); d != "" {
 		return []string{d}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
 		return []string{"."}
 	}
-	return []string{filepath.Join(home, ".swarmstr", "workspace")}
+	return []string{filepath.Join(home, ".metiq", "workspace")}
 }
 
 func supportedMethods(cfg state.ConfigDoc) []string {
@@ -10242,7 +10242,7 @@ func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any
 		}
 	}
 
-	// ── Managed skills (~/.swarmstr/skills/) ──────────────────────────────────
+	// ── Managed skills (~/.metiq/skills/) ──────────────────────────────────
 	if managedSkillsDir != "" {
 		if managed, err := skillspkg.ScanBundledDir(managedSkillsDir); err == nil {
 			for _, s := range managed {
@@ -10349,7 +10349,7 @@ func applySkillsBins(cfg state.ConfigDoc) map[string]any {
 		}
 	}
 
-	// Managed skills (~/.swarmstr/skills/).
+	// Managed skills (~/.metiq/skills/).
 	if managedDir := skillspkg.ManagedSkillsDir(); managedDir != "" {
 		if managed, err := skillspkg.ScanBundledDir(managedDir); err == nil {
 			for _, b := range skillspkg.AggregateBins(managed) {
@@ -10427,7 +10427,7 @@ func findInstallSpec(cfg state.ConfigDoc, name, installID string) (*skillspkg.In
 	return nil, false
 }
 
-// runDownloadInstall downloads a binary from spec.URL into ~/.swarmstr/bin/.
+// runDownloadInstall downloads a binary from spec.URL into ~/.metiq/bin/.
 func runDownloadInstall(ctx context.Context, spec skillspkg.InstallSpec) (stdout, stderr string, code int, err error) {
 	if spec.URL == "" {
 		return "", "download spec missing url", 1, fmt.Errorf("download spec missing url")
@@ -10450,7 +10450,7 @@ func runDownloadInstall(ctx context.Context, spec skillspkg.InstallSpec) (stdout
 		filename = "download"
 	}
 	homeDir, _ := os.UserHomeDir()
-	binDir := filepath.Join(homeDir, ".swarmstr", "bin")
+	binDir := filepath.Join(homeDir, ".metiq", "bin")
 	if merr := os.MkdirAll(binDir, 0o755); merr != nil {
 		return "", merr.Error(), 1, merr
 	}
@@ -10974,7 +10974,7 @@ func resolveRegistryURL(configState *runtimeConfigStore, requestURL string) (str
 		}
 	}
 	// Fall back to the default public registry.
-	return "https://registry.swarmstr.com/plugins/index.json", nil
+	return "https://registry.metiq.com/plugins/index.json", nil
 }
 
 func handlePluginsRegistryList(ctx context.Context, configState *runtimeConfigStore, req methods.PluginsRegistryListRequest) (map[string]any, error) {
@@ -12416,9 +12416,9 @@ var browserBridgePaths = []string{
 
 func applyBrowserRequest(req methods.BrowserRequestRequest) (map[string]any, error) {
 	// browser.request routes through a local browser proxy (e.g. a Playwright
-	// bridge server).  The proxy base URL is configured via SWARMSTR_BROWSER_URL.
+	// bridge server).  The proxy base URL is configured via METIQ_BROWSER_URL.
 	// When the env var is absent, browser control is disabled.
-	proxyBase := strings.TrimRight(os.Getenv("SWARMSTR_BROWSER_URL"), "/")
+	proxyBase := strings.TrimRight(os.Getenv("METIQ_BROWSER_URL"), "/")
 	if proxyBase == "" {
 		return nil, fmt.Errorf("browser control is disabled")
 	}
@@ -12460,7 +12460,7 @@ func applyBrowserRequest(req methods.BrowserRequestRequest) (map[string]any, err
 	}
 
 	// Pass auth token if configured.
-	if token := os.Getenv("SWARMSTR_BROWSER_TOKEN"); token != "" {
+	if token := os.Getenv("METIQ_BROWSER_TOKEN"); token != "" {
 		headers["Authorization"] = "Bearer " + token
 	}
 
@@ -12828,11 +12828,11 @@ func defaultSessionArtifactsRoot() string {
 	if err != nil || strings.TrimSpace(home) == "" {
 		return "."
 	}
-	return filepath.Join(home, ".swarmstr", "sessions")
+	return filepath.Join(home, ".metiq", "sessions")
 }
 
 func defaultSessionArchiveDir() string {
-	if v := strings.TrimSpace(os.Getenv("SWARMSTR_SESSION_ARCHIVE_DIR")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("METIQ_SESSION_ARCHIVE_DIR")); v != "" {
 		return v
 	}
 	return filepath.Join(defaultSessionArtifactsRoot(), "archive")

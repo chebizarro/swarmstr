@@ -26,12 +26,12 @@ func RegisterBundledHandlers(mgr *Manager, opts BundledHandlerOpts) {
 
 // BundledHandlerOpts provides shared dependencies to bundled hook handlers.
 type BundledHandlerOpts struct {
-	// WorkspaceDir is the base workspace directory (e.g. ~/.swarmstr/workspace).
+	// WorkspaceDir is the base workspace directory (e.g. ~/.metiq/workspace).
 	// If empty, handlers that need it are no-ops.
 	WorkspaceDir func() string
 
 	// LogDir is where command-logger writes its JSONL file.
-	// Defaults to ~/.swarmstr/logs.
+	// Defaults to ~/.metiq/logs.
 	LogDir string
 
 	// GenerateSlug calls the agent LLM to produce a short slug from text.

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_PATH="${SWARMSTR_RESTART_LOG:-/tmp/swarmstr-restart.log}"
+LOG_PATH="${METIQ_RESTART_LOG:-/tmp/swarmstr-restart.log}"
 WAIT_FOR_LOCK=0
 LOCK_KEY="$(printf '%s' "${ROOT_DIR}" | shasum -a 256 | cut -c1-8)"
 LOCK_DIR="${TMPDIR:-/tmp}/swarmstr-restart-${LOCK_KEY}"
@@ -66,9 +66,9 @@ for arg in "$@"; do
       log "  --wait    Wait for other restart to complete instead of exiting"
       log ""
       log "Env:"
-      log "  SWARMSTR_RESTART_LOG=/tmp/swarmstr-restart.log  Log path"
+      log "  METIQ_RESTART_LOG=/tmp/swarmstr-restart.log  Log path"
       log ""
-      log "After restart, swarmstrd will re-read ~/.swarmstr/config.json on startup."
+      log "After restart, swarmstrd will re-read ~/.metiq/config.json on startup."
       exit 0
       ;;
     *) ;;

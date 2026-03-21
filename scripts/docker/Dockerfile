@@ -33,7 +33,7 @@ COPY --from=builder /out/metiqd /usr/local/bin/swarmstrd
 COPY skills/ /app/skills/
 
 # Environment defaults — override at runtime via -e or --env-file
-ENV SWARMSTR_BUNDLED_SKILLS_DIR=/app/skills
+ENV METIQ_BUNDLED_SKILLS_DIR=/app/skills
 
 # Config dir lives in a volume at /data
 ENV HOME=/data

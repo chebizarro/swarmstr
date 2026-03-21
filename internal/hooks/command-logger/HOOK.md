@@ -27,7 +27,7 @@ Log entries are written in JSONL format:
 
 ## Log File Location
 
-`~/.swarmstr/logs/commands.log`
+`~/.metiq/logs/commands.log`
 
 ## Requirements
 

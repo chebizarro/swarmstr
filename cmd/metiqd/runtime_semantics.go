@@ -1152,7 +1152,7 @@ func computeWizardSteps(mode string, input map[string]any) []wizardStep {
 		}
 		// Step 6: Workspace directory.
 		homeDir, _ := os.UserHomeDir()
-		defaultWorkspace := filepath.Join(homeDir, ".swarmstr", "workspace")
+		defaultWorkspace := filepath.Join(homeDir, ".metiq", "workspace")
 		steps = append(steps, wizardStep{ID: "workspace_dir", Type: "text", Prompt: "Workspace directory", Default: defaultWorkspace})
 		// Final: confirm.
 		steps = append(steps, wizardStep{ID: "confirm", Type: "confirm", Prompt: "Apply these settings and start swarmstr?"})

@@ -99,14 +99,14 @@ async function main() {
   await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
 
   const sessionId =
-    process.env.SWARMSTR_ZAI_FALLBACK_SESSION_ID ??
+    process.env.METIQ_ZAI_FALLBACK_SESSION_ID ??
     process.env.CLAWDBOT_ZAI_FALLBACK_SESSION_ID ??
     randomUUID();
 
   const baseEnv: NodeJS.ProcessEnv = {
     ...process.env,
-    SWARMSTR_CONFIG_PATH: configPath,
-    SWARMSTR_STATE_DIR: stateDir,
+    METIQ_CONFIG_PATH: configPath,
+    METIQ_STATE_DIR: stateDir,
     CLAWDBOT_CONFIG_PATH: configPath,
     CLAWDBOT_STATE_DIR: stateDir,
     ZAI_API_KEY: zaiKey,

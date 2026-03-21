@@ -127,7 +127,7 @@ func writeFleetMD(wsDir string) {
 			log.Printf("nip51: writeFleetMD: cannot determine home dir: %v", err)
 			return
 		}
-		wsDir = filepath.Join(home, ".swarmstr", "workspace")
+		wsDir = filepath.Join(home, ".metiq", "workspace")
 	}
 
 	entries := fleetDirectory()
@@ -189,7 +189,7 @@ func startNIP51AllowlistWatcher(ctx context.Context, pool *nostr.Pool, cfg state
 	wsDir, _ := cfg.Extra["workspace_dir"].(string)
 	if wsDir == "" {
 		home, _ := os.UserHomeDir()
-		wsDir = filepath.Join(home, ".swarmstr", "workspace")
+		wsDir = filepath.Join(home, ".metiq", "workspace")
 	}
 
 	for _, ref := range cfg.DM.AllowFromLists {

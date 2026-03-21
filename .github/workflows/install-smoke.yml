@@ -68,7 +68,7 @@ jobs:
         run: |
           docker run --rm \
             -v /tmp/metiqd-linux-amd64:/usr/local/bin/metiqd:ro \
-            -e SWARMSTR_INSTALL_SKIP_DOWNLOAD=1 \
+            -e METIQ_INSTALL_SKIP_DOWNLOAD=1 \
             metiq-install-smoke
 
   install-smoke-nonroot:

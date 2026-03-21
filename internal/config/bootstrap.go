@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-const DefaultBootstrapRelPath = ".swarmstr/bootstrap.json"
+const DefaultBootstrapRelPath = ".metiq/bootstrap.json"
 
 func DefaultBootstrapPath() (string, error) {
 	home, err := os.UserHomeDir()

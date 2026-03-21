@@ -121,14 +121,14 @@ function parseNumber(value: string | undefined, fallback: number): number {
 }
 
 function resolveStateDir(): string {
-  const override = process.env.SWARMSTR_STATE_DIR?.trim() || process.env.CLAWDBOT_STATE_DIR?.trim();
+  const override = process.env.METIQ_STATE_DIR?.trim() || process.env.CLAWDBOT_STATE_DIR?.trim();
   if (override) {
     return override.startsWith("~")
       ? path.resolve(process.env.HOME || "", override.slice(1))
       : path.resolve(override);
   }
-  const home = process.env.SWARMSTR_HOME?.trim() || process.env.HOME || "";
-  return path.join(home, ".swarmstr");
+  const home = process.env.METIQ_HOME?.trim() || process.env.HOME || "";
+  return path.join(home, ".metiq");
 }
 
 function resolveArg(flag: string): string | undefined {
@@ -172,30 +172,30 @@ function usage(): string {
     "  --json                       Emit JSON output\n" +
     "\n" +
     "Environment fallbacks:\n" +
-    "  SWARMSTR_DISCORD_SMOKE_CHANNEL_ID\n" +
-    "  SWARMSTR_DISCORD_SMOKE_DRIVER\n" +
-    "  SWARMSTR_DISCORD_SMOKE_DRIVER_TOKEN\n" +
-    "  SWARMSTR_DISCORD_SMOKE_DRIVER_TOKEN_PREFIX\n" +
-    "  SWARMSTR_DISCORD_SMOKE_BOT_TOKEN\n" +
-    "  SWARMSTR_DISCORD_SMOKE_BOT_TOKEN_PREFIX\n" +
-    "  SWARMSTR_DISCORD_SMOKE_AGENT\n" +
-    "  SWARMSTR_DISCORD_SMOKE_MENTION_USER_ID\n" +
-    "  SWARMSTR_DISCORD_SMOKE_TIMEOUT_MS\n" +
-    "  SWARMSTR_DISCORD_SMOKE_POLL_MS\n" +
-    "  SWARMSTR_DISCORD_SMOKE_THREAD_BINDINGS_PATH\n" +
-    "  SWARMSTR_DISCORD_SMOKE_SWARMSTR_BIN"
+    "  METIQ_DISCORD_SMOKE_CHANNEL_ID\n" +
+    "  METIQ_DISCORD_SMOKE_DRIVER\n" +
+    "  METIQ_DISCORD_SMOKE_DRIVER_TOKEN\n" +
+    "  METIQ_DISCORD_SMOKE_DRIVER_TOKEN_PREFIX\n" +
+    "  METIQ_DISCORD_SMOKE_BOT_TOKEN\n" +
+    "  METIQ_DISCORD_SMOKE_BOT_TOKEN_PREFIX\n" +
+    "  METIQ_DISCORD_SMOKE_AGENT\n" +
+    "  METIQ_DISCORD_SMOKE_MENTION_USER_ID\n" +
+    "  METIQ_DISCORD_SMOKE_TIMEOUT_MS\n" +
+    "  METIQ_DISCORD_SMOKE_POLL_MS\n" +
+    "  METIQ_DISCORD_SMOKE_THREAD_BINDINGS_PATH\n" +
+    "  METIQ_DISCORD_SMOKE_METIQ_BIN"
   );
 }
 
 function parseArgs(): Args {
   const channelId =
     resolveArg("--channel") ||
-    process.env.SWARMSTR_DISCORD_SMOKE_CHANNEL_ID ||
+    process.env.METIQ_DISCORD_SMOKE_CHANNEL_ID ||
     process.env.CLAWDBOT_DISCORD_SMOKE_CHANNEL_ID ||
     "";
   const driverModeRaw =
     resolveArg("--driver") ||
-    process.env.SWARMSTR_DISCORD_SMOKE_DRIVER ||
+    process.env.METIQ_DISCORD_SMOKE_DRIVER ||
     process.env.CLAWDBOT_DISCORD_SMOKE_DRIVER ||
     "token";
   const normalizedDriverMode = driverModeRaw.trim().toLowerCase();
@@ -209,51 +209,51 @@ function parseArgs(): Args {
           : "token";
   const driverToken =
     resolveArg("--token") ||
-    process.env.SWARMSTR_DISCORD_SMOKE_DRIVER_TOKEN ||
+    process.env.METIQ_DISCORD_SMOKE_DRIVER_TOKEN ||
     process.env.CLAWDBOT_DISCORD_SMOKE_DRIVER_TOKEN ||
     "";
   const driverTokenPrefix =
-    resolveArg("--token-prefix") || process.env.SWARMSTR_DISCORD_SMOKE_DRIVER_TOKEN_PREFIX || "Bot";
+    resolveArg("--token-prefix") || process.env.METIQ_DISCORD_SMOKE_DRIVER_TOKEN_PREFIX || "Bot";
   const botToken =
     resolveArg("--bot-token") ||
-    process.env.SWARMSTR_DISCORD_SMOKE_BOT_TOKEN ||
+    process.env.METIQ_DISCORD_SMOKE_BOT_TOKEN ||
     process.env.CLAWDBOT_DISCORD_SMOKE_BOT_TOKEN ||
     process.env.DISCORD_BOT_TOKEN ||
     "";
   const botTokenPrefix =
     resolveArg("--bot-token-prefix") ||
-    process.env.SWARMSTR_DISCORD_SMOKE_BOT_TOKEN_PREFIX ||
+    process.env.METIQ_DISCORD_SMOKE_BOT_TOKEN_PREFIX ||
     "Bot";
   const targetAgent =
     resolveArg("--agent") ||
-    process.env.SWARMSTR_DISCORD_SMOKE_AGENT ||
+    process.env.METIQ_DISCORD_SMOKE_AGENT ||
     process.env.CLAWDBOT_DISCORD_SMOKE_AGENT ||
     "codex";
   const mentionUserId =
     resolveArg("--mention") ||
-    process.env.SWARMSTR_DISCORD_SMOKE_MENTION_USER_ID ||
+    process.env.METIQ_DISCORD_SMOKE_MENTION_USER_ID ||
     process.env.CLAWDBOT_DISCORD_SMOKE_MENTION_USER_ID ||
     undefined;
   const instruction =
     resolveArg("--instruction") ||
-    process.env.SWARMSTR_DISCORD_SMOKE_INSTRUCTION ||
+    process.env.METIQ_DISCORD_SMOKE_INSTRUCTION ||
     process.env.CLAWDBOT_DISCORD_SMOKE_INSTRUCTION ||
     undefined;
   const timeoutMs = parseNumber(
-    resolveArg("--timeout-ms") || process.env.SWARMSTR_DISCORD_SMOKE_TIMEOUT_MS,
+    resolveArg("--timeout-ms") || process.env.METIQ_DISCORD_SMOKE_TIMEOUT_MS,
     240_000,
   );
   const pollMs = parseNumber(
-    resolveArg("--poll-ms") || process.env.SWARMSTR_DISCORD_SMOKE_POLL_MS,
+    resolveArg("--poll-ms") || process.env.METIQ_DISCORD_SMOKE_POLL_MS,
     1_500,
   );
   const defaultBindingsPath = path.join(resolveStateDir(), "discord", "thread-bindings.json");
   const threadBindingsPath =
     resolveArg("--thread-bindings-path") ||
-    process.env.SWARMSTR_DISCORD_SMOKE_THREAD_BINDINGS_PATH ||
+    process.env.METIQ_DISCORD_SMOKE_THREAD_BINDINGS_PATH ||
     defaultBindingsPath;
   const openclawBin =
-    resolveArg("--swarmstr-bin") || process.env.SWARMSTR_DISCORD_SMOKE_SWARMSTR_BIN || "swarmstr";
+    resolveArg("--swarmstr-bin") || process.env.METIQ_DISCORD_SMOKE_METIQ_BIN || "swarmstr";
   const json = hasFlag("--json");
 
   if (!channelId) {
@@ -285,7 +285,7 @@ function parseArgs(): Args {
 }
 
 async function openclawCliJson<T>(params: { openclawBin: string; args: string[] }): Promise<T> {
-  const result = await execFileAsync(params.swarmstrBin, params.args, {
+  const result = await execFileAsync(params.metiqBin, params.args, {
     maxBuffer: 8 * 1024 * 1024,
     env: process.env,
   });
@@ -306,7 +306,7 @@ async function readMessagesWithOpenclaw(params: {
       messages?: DiscordMessage[];
     };
   }>({
-    swarmstrBin: params.swarmstrBin,
+    swarmstrBin: params.metiqBin,
     args: [
       "message",
       "read",
@@ -489,7 +489,7 @@ async function loadParentRecentMessages(params: {
 }): Promise<DiscordMessage[]> {
   if (params.args.driverMode === "openclaw") {
     return await readMessagesWithOpenclaw({
-      swarmstrBin: params.args.swarmstrBin,
+      swarmstrBin: params.args.metiqBin,
       target: params.args.channelId,
       limit: 20,
     });
@@ -674,7 +674,7 @@ async function run(): Promise<SuccessResult | FailureResult> {
           };
         };
       }>({
-        swarmstrBin: args.swarmstrBin,
+        swarmstrBin: args.metiqBin,
         args: [
           "message",
           "send",
@@ -757,7 +757,7 @@ async function run(): Promise<SuccessResult | FailureResult> {
         const threadMessages =
           args.driverMode === "openclaw"
             ? await readMessagesWithOpenclaw({
-                swarmstrBin: args.swarmstrBin,
+                swarmstrBin: args.metiqBin,
                 target: threadId,
                 limit: 50,
               })

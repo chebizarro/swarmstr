@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # Configuration
-SUBSYSTEM="io.swarmstr"
+SUBSYSTEM="io.metiq"
 DEFAULT_LEVEL="info"
 
 # Colors for output
@@ -59,7 +59,7 @@ DESCRIPTION:
     Requires sudo access configured for /usr/bin/log command.
 
 LOG FLOW ARCHITECTURE:
-    swarmstr logs flow through the macOS unified log (subsystem: io.swarmstr).
+    swarmstr logs flow through the macOS unified log (subsystem: io.metiq).
 
 LOG CATEGORIES (examples):
     • voicewake           - Voice wake detection/test harness

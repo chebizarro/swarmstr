@@ -203,7 +203,7 @@ func TestBuildRuntimeWithOverride_withBaseURLBuildsHTTP(t *testing.T) {
 
 func TestBuildRuntimeWithOverride_missingBaseURLErrors(t *testing.T) {
 	// APIKey without BaseURL and no env → error.
-	t.Setenv("SWARMSTR_AGENT_HTTP_URL", "")
+	t.Setenv("METIQ_AGENT_HTTP_URL", "")
 	_, err := BuildRuntimeWithOverride("custom-model", ProviderOverride{APIKey: "key-only"}, nil)
 	if err == nil {
 		t.Error("expected error when base_url is empty and env is unset")
@@ -271,7 +271,7 @@ func TestAnthropicProvider_serverErrorPropagated(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
 		json.NewEncoder(w).Encode(map[string]any{
-			"type": "error",
+			"type":  "error",
 			"error": map[string]any{"type": "rate_limit_error", "message": "rate limited"},
 		})
 	}))

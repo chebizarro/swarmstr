@@ -50,7 +50,7 @@ docker compose up -d
 
 ## What Persists Across Updates
 
-All user data lives in `~/.swarmstr/` and is never touched by binary updates:
+All user data lives in `~/.metiq/` and is never touched by binary updates:
 
 - `config.json` — your configuration
 - `workspace/` — bootstrap files (AGENTS.md, SOUL.md, etc.)
@@ -98,13 +98,13 @@ sudo rm /usr/local/bin/metiqd
 
 ```bash
 # Keep workspace (default — your AGENTS.md etc. are preserved)
-rm -rf ~/.swarmstr/{config.json,.env,agents,logs,cron,sandboxes}
+rm -rf ~/.metiq/{config.json,.env,agents,logs,cron,sandboxes}
 
 # Full removal (removes workspace too)
-rm -rf ~/.swarmstr
+rm -rf ~/.metiq
 ```
 
-> **Warning**: `rm -rf ~/.swarmstr` removes your workspace (AGENTS.md, SOUL.md, memory files). Back up first if needed.
+> **Warning**: `rm -rf ~/.metiq` removes your workspace (AGENTS.md, SOUL.md, memory files). Back up first if needed.
 
 ## Migrating to a New Machine
 
@@ -113,9 +113,9 @@ rm -rf ~/.swarmstr
 ```bash
 # Create migration bundle
 tar czf metiq-backup.tar.gz \
-  ~/.swarmstr/config.json \
-  ~/.swarmstr/workspace/ \
-  ~/.swarmstr/agents/
+  ~/.metiq/config.json \
+  ~/.metiq/workspace/ \
+  ~/.metiq/agents/
 
 # Note: .env is NOT included (secrets!) — migrate separately
 ```
@@ -130,11 +130,11 @@ cd ~/
 tar xzf swarmstr-backup.tar.gz
 
 # Recreate env file with your secrets
-cat > ~/.swarmstr/env <<'EOF'
+cat > ~/.metiq/env <<'EOF'
 NOSTR_PRIVATE_KEY=nsec1...
 ANTHROPIC_API_KEY=sk-ant-...
 EOF
-chmod 600 ~/.swarmstr/env
+chmod 600 ~/.metiq/env
 
 # Verify
 metiq config validate
@@ -148,9 +148,9 @@ metiq daemon start
 
 swarmstr is derived from OpenClaw. If you're migrating an existing OpenClaw agent:
 
-1. **Workspace files**: Copy `~/.openclaw/workspace/` → `~/.swarmstr/workspace/`. Files are compatible (AGENTS.md, SOUL.md, etc. use the same format).
+1. **Workspace files**: Copy `~/.openclaw/workspace/` → `~/.metiq/workspace/`. Files are compatible (AGENTS.md, SOUL.md, etc. use the same format).
 
-2. **Config**: Rewrite `~/.openclaw/openclaw.json` as `~/.swarmstr/config.json`. Key differences:
+2. **Config**: Rewrite `~/.openclaw/openclaw.json` as `~/.metiq/config.json`. Key differences:
    - `channels.whatsapp/telegram` → not applicable (Nostr is primary)
    - `agents.defaults.model` → same structure
    - `workspace.dir` → `agents.defaults.workspace`

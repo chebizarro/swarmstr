@@ -12,9 +12,9 @@ echo "Running plugins Docker E2E..."
 	  set -euo pipefail
 	  home_dir=$(mktemp -d "/tmp/swarmstr-plugins-e2e.XXXXXX")
 	  export HOME="$home_dir"
-  mkdir -p "$HOME/.swarmstr/skills/demo-skill"
+  mkdir -p "$HOME/.metiq/skills/demo-skill"
 
-  cat > "$HOME/.swarmstr/skills/demo-skill/index.js" <<'"'"'JS'"'"'
+  cat > "$HOME/.metiq/skills/demo-skill/index.js" <<'"'"'JS'"'"'
 module.exports = {
   id: "demo-plugin",
   name: "Demo Plugin",
@@ -27,7 +27,7 @@ module.exports = {
   },
 };
 JS
-  cat > "$HOME/.swarmstr/skills/demo-skill/SKILL.md" <<'"'"'JSON'"'"'
+  cat > "$HOME/.metiq/skills/demo-skill/SKILL.md" <<'"'"'JSON'"'"'
 {
   "id": "demo-plugin",
   "configSchema": {
@@ -37,7 +37,7 @@ JS
 }
 JSON
 
-	  "$SWARMSTR_ENTRY" skills list --json > /tmp/plugins.json
+	  "$METIQ_ENTRY" skills list --json > /tmp/plugins.json
 
   node - <<'"'"'NODE'"'"'
 const fs = require("node:fs");
@@ -98,8 +98,8 @@ JS
 JSON
   tar -czf /tmp/demo-plugin-tgz.tgz -C "$pack_dir" package
 
-	  node "$SWARMSTR_ENTRY" plugins install /tmp/demo-plugin-tgz.tgz
-	  node "$SWARMSTR_ENTRY" plugins list --json > /tmp/plugins2.json
+	  node "$METIQ_ENTRY" plugins install /tmp/demo-plugin-tgz.tgz
+	  node "$METIQ_ENTRY" plugins list --json > /tmp/plugins2.json
 
   node - <<'"'"'NODE'"'"'
 const fs = require("node:fs");
@@ -144,8 +144,8 @@ JS
 }
 JSON
 
-	  node "$SWARMSTR_ENTRY" plugins install "$dir_plugin"
-	  node "$SWARMSTR_ENTRY" plugins list --json > /tmp/plugins3.json
+	  node "$METIQ_ENTRY" plugins install "$dir_plugin"
+	  node "$METIQ_ENTRY" plugins list --json > /tmp/plugins3.json
 
   node - <<'"'"'NODE'"'"'
 const fs = require("node:fs");
@@ -191,8 +191,8 @@ JS
 }
 JSON
 
-	  node "$SWARMSTR_ENTRY" plugins install "file:$file_pack_dir/package"
-	  node "$SWARMSTR_ENTRY" plugins list --json > /tmp/plugins4.json
+	  node "$METIQ_ENTRY" plugins install "file:$file_pack_dir/package"
+	  node "$METIQ_ENTRY" plugins list --json > /tmp/plugins4.json
 
   node - <<'"'"'NODE'"'"'
 const fs = require("node:fs");

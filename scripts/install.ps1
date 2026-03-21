@@ -33,7 +33,7 @@ function Write-Banner {
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 $GitHubRepo = if ($env:GITHUB_REPO) { $env:GITHUB_REPO } else { "metiq/metiq" }
-$ConfigDir  = Join-Path $env:USERPROFILE ".swarmstr"
+$ConfigDir  = Join-Path $env:USERPROFILE ".metiq"
 $EnvFile    = Join-Path $ConfigDir ".env"
 
 Write-Banner
@@ -108,15 +108,15 @@ if (!$DryRun) {
     }
     if (!(Test-Path $EnvFile)) {
         @"
-# metiq environment configuration (legacy SWARMSTR_* env names remain supported)
+# metiq environment configuration (legacy METIQ_* env names remain supported)
 # Edit this file and fill in the values you need.
 
 # ── Nostr ─────────────────────────────────────────────────────────────────────
 # Your agent's Nostr private key (hex or nsec bech32)
-#SWARMSTR_NOSTR_KEY=
+#METIQ_NOSTR_KEY=
 
 # Optional: comma-separated relay URLs
-#SWARMSTR_NOSTR_RELAYS=wss://nos.lol,wss://relay.primal.net,wss://relay.sharegap.net
+#METIQ_NOSTR_RELAYS=wss://nos.lol,wss://relay.primal.net,wss://relay.sharegap.net
 
 # ── LLM providers ─────────────────────────────────────────────────────────────
 #ANTHROPIC_API_KEY=
@@ -129,13 +129,13 @@ if (!$DryRun) {
 #TOGETHER_API_KEY=
 
 # Default model (e.g. claude-sonnet-4-5, gpt-4o, gemini-2.0-flash, grok-3)
-#SWARMSTR_DEFAULT_MODEL=claude-sonnet-4-5
+#METIQ_DEFAULT_MODEL=claude-sonnet-4-5
 
 # ── Browser sandbox (optional) ────────────────────────────────────────────────
-#SWARMSTR_BROWSER_URL=http://localhost:3500
+#METIQ_BROWSER_URL=http://localhost:3500
 
 # ── Skills ───────────────────────────────────────────────────────────────────
-#SWARMSTR_MANAGED_SKILLS_DIR=%USERPROFILE%\.swarmstr\skills
+#METIQ_MANAGED_SKILLS_DIR=%USERPROFILE%\.metiq\skills
 "@ | Set-Content -Path $EnvFile -Encoding UTF8
         Write-Success "Created $EnvFile"
     }

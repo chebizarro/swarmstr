@@ -16,7 +16,7 @@ func makeCommandLoggerHandler(opts BundledHandlerOpts) HookHandler {
 			if err != nil {
 				return nil
 			}
-			logDir = filepath.Join(home, ".swarmstr", "logs")
+			logDir = filepath.Join(home, ".metiq", "logs")
 		}
 
 		if err := os.MkdirAll(logDir, 0o750); err != nil {

@@ -29,7 +29,7 @@ PREFIX="${PREFIX:-}"
 TAG="${TAG:-latest}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"   # auto | yes | no
 GITHUB_REPO="${GITHUB_REPO:-metiq/metiq}"
-CONFIG_DIR="${HOME}/.swarmstr"
+CONFIG_DIR="${HOME}/.metiq"
 DRY_RUN="${DRY_RUN:-}"
 
 # ── Arg parse ─────────────────────────────────────────────────────────────────
@@ -136,12 +136,10 @@ else
   mkdir -p "$BIN_DIR"
   if [[ -w "$BIN_DIR" ]]; then
     mv "$TMP_BIN" "${BIN_DIR}/metiqd"
-    ln -sfn metiqd "${BIN_DIR}/swarmstrd"
   else
     sudo mv "$TMP_BIN" "${BIN_DIR}/metiqd"
-    sudo ln -sfn metiqd "${BIN_DIR}/swarmstrd"
   fi
-  success "Installed to ${BIN_DIR}/metiqd (legacy alias: swarmstrd)"
+  success "Installed to ${BIN_DIR}/metiqd"
 fi
 
 # ── Create config dir ─────────────────────────────────────────────────────────
@@ -155,15 +153,15 @@ fi
 
 if [[ -z "$DRY_RUN" && ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<'EOF'
-# metiq environment configuration (legacy SWARMSTR_* env names remain supported)
+# metiq environment configuration (legacy METIQ_* env names remain supported)
 # Copy the relevant keys and fill in your values.
 
 # ── Nostr ─────────────────────────────────────────────────────────────────────
 # Your agent's Nostr private key (hex or nsec bech32)
-#SWARMSTR_NOSTR_KEY=
+#METIQ_NOSTR_KEY=
 
 # Optional: comma-separated relay URLs
-#SWARMSTR_NOSTR_RELAYS=wss://nos.lol,wss://relay.primal.net,wss://relay.sharegap.net
+#METIQ_NOSTR_RELAYS=wss://nos.lol,wss://relay.primal.net,wss://relay.sharegap.net
 
 # ── LLM providers ─────────────────────────────────────────────────────────────
 #ANTHROPIC_API_KEY=
@@ -176,15 +174,15 @@ if [[ -z "$DRY_RUN" && ! -f "$ENV_FILE" ]]; then
 #TOGETHER_API_KEY=
 
 # Default model (e.g. claude-sonnet-4-5, gpt-4o, gemini-2.0-flash, grok-3)
-#SWARMSTR_DEFAULT_MODEL=claude-sonnet-4-5
+#METIQ_DEFAULT_MODEL=claude-sonnet-4-5
 
 # ── Browser sandbox (optional) ────────────────────────────────────────────────
 # URL of a running Playwright proxy (see scripts/docker/)
-#SWARMSTR_BROWSER_URL=http://localhost:3500
+#METIQ_BROWSER_URL=http://localhost:3500
 
 # ── Skills ───────────────────────────────────────────────────────────────────
 # Override location of managed (user-installed) skills
-#SWARMSTR_MANAGED_SKILLS_DIR=${HOME}/.swarmstr/skills
+#METIQ_MANAGED_SKILLS_DIR=${HOME}/.metiq/skills
 EOF
   success "Created ${ENV_FILE}"
 fi
@@ -206,7 +204,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=%h/.swarmstr/.env
+EnvironmentFile=%h/.metiq/.env
 ExecStart=${BIN_DIR}/metiqd
 Restart=on-failure
 RestartSec=5
@@ -260,13 +258,13 @@ if [[ ":$PATH:" != *":${BIN_DIR}:"* ]]; then
 fi
 
 printf "\n"
-printf "${ACCENT}⚡ swarmstr installed!${NC}\n"
+printf "${ACCENT}⚡ metiq installed!${NC}\n"
 printf "\n"
 info "Config:  ${CONFIG_DIR}/.env"
-info "Binary:  ${BIN_DIR}/swarmstrd"
+info "Binary:  ${BIN_DIR}/metiqd"
 printf "\n"
 info "Next steps:"
 info "  1. Edit ${CONFIG_DIR}/.env and add your Nostr key + API keys"
-info "  2. Run: swarmstrd"
+info "  2. Run: metiqd"
 info "  3. Send a DM on Nostr to your agent's pubkey"
 printf "\n"

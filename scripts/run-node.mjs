@@ -128,7 +128,7 @@ const hasSourceMtimeChanged = (stampMtime, deps) => {
 };
 
 const shouldBuild = (deps) => {
-  if (deps.env.SWARMSTR_FORCE_BUILD === "1") {
+  if (deps.env.METIQ_FORCE_BUILD === "1") {
     return true;
   }
   const stamp = readBuildStamp(deps);
@@ -170,7 +170,7 @@ const shouldBuild = (deps) => {
 };
 
 const logRunner = (message, deps) => {
-  if (deps.env.SWARMSTR_RUNNER_LOG === "0") {
+  if (deps.env.METIQ_RUNNER_LOG === "0") {
     return;
   }
   deps.stderr.write(`[openclaw] ${message}\n`);

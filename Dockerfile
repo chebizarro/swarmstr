@@ -2,16 +2,16 @@
 #
 # Two runtime variants:
 #   Default (alpine):  docker build .
-#   Slim (scratch):    docker build --build-arg SWARMSTR_VARIANT=slim .
+#   Slim (scratch):    docker build --build-arg METIQ_VARIANT=slim .
 #
 # Cross-platform:
 #   docker buildx build --platform linux/amd64,linux/arm64 .
 #
 # Build args:
 #   VERSION          — version string injected into binaries (default: dev)
-#   SWARMSTR_VARIANT — runtime base: "default" (alpine) or "slim" (scratch)
+#   METIQ_VARIANT — runtime base: "default" (alpine) or "slim" (scratch)
 
-ARG SWARMSTR_VARIANT=default
+ARG METIQ_VARIANT=default
 
 # ── Stage: CA certificates (shared between variants) ───────────────────────────
 FROM alpine:3.21 AS certs
@@ -56,11 +56,9 @@ WORKDIR /app
 
 COPY --from=builder /out/metiqd /usr/local/bin/metiqd
 COPY --from=builder /out/metiq  /usr/local/bin/metiq
-COPY --from=builder /out/metiqd /usr/local/bin/swarmstrd
-COPY --from=builder /out/metiq  /usr/local/bin/swarmstr
 COPY skills/ /app/skills/
 
-ENV SWARMSTR_BUNDLED_SKILLS_DIR=/app/skills \
+ENV METIQ_BUNDLED_SKILLS_DIR=/app/skills \
     HOME=/data
 
 VOLUME ["/data"]
@@ -79,11 +77,9 @@ COPY --from=certs /usr/share/zoneinfo                 /usr/share/zoneinfo
 
 COPY --from=builder /out/metiqd /usr/local/bin/metiqd
 COPY --from=builder /out/metiq  /usr/local/bin/metiq
-COPY --from=builder /out/metiqd /usr/local/bin/swarmstrd
-COPY --from=builder /out/metiq  /usr/local/bin/swarmstr
 COPY skills/ /app/skills/
 
-ENV SWARMSTR_BUNDLED_SKILLS_DIR=/app/skills \
+ENV METIQ_BUNDLED_SKILLS_DIR=/app/skills \
     HOME=/data
 
 VOLUME ["/data"]
@@ -91,6 +87,6 @@ EXPOSE 7423
 
 ENTRYPOINT ["/usr/local/bin/metiqd"]
 
-# ── Final target (selected by SWARMSTR_VARIANT) ────────────────────────────────
+# ── Final target (selected by METIQ_VARIANT) ────────────────────────────────
 # shellcheck disable=SC2154  (ARG is used via FROM)
-FROM runtime-${SWARMSTR_VARIANT} AS final
+FROM runtime-${METIQ_VARIANT} AS final

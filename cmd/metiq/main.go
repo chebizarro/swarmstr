@@ -263,7 +263,7 @@ func runConfigExport(args []string) error {
 	var path string
 	var outFile string
 	var doRedact bool
-	fs.StringVar(&path, "path", "", "config file path (default: ~/.swarmstr/config.json)")
+	fs.StringVar(&path, "path", "", "config file path (default: ~/.metiq/config.json)")
 	fs.StringVar(&outFile, "out", "", "output file path (default: stdout)")
 	fs.BoolVar(&doRedact, "redact", false, "redact sensitive fields before printing")
 	if err := fs.Parse(args); err != nil {
@@ -301,7 +301,7 @@ func runConfigImport(args []string) error {
 	var path string
 	var srcFile string
 	var dryRun bool
-	fs.StringVar(&path, "path", "", "target config file path (default: ~/.swarmstr/config.json)")
+	fs.StringVar(&path, "path", "", "target config file path (default: ~/.metiq/config.json)")
 	fs.StringVar(&srcFile, "file", "", "source config file (default: stdin)")
 	fs.BoolVar(&dryRun, "dry-run", false, "validate only, do not write")
 	if err := fs.Parse(args); err != nil {
@@ -438,7 +438,7 @@ func runPluginInstall(bootstrapPath string, args []string) error {
 	var timeoutSec int
 	fs.StringVar(&pubkey, "pubkey", "", "author pubkey (hex or npub, required)")
 	fs.StringVar(&pluginID, "id", "", "plugin ID (required)")
-	fs.StringVar(&destDir, "dir", "", "install directory (default: ~/.swarmstr/plugins)")
+	fs.StringVar(&destDir, "dir", "", "install directory (default: ~/.metiq/plugins)")
 	fs.IntVar(&timeoutSec, "timeout", 60, "install timeout seconds")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -451,7 +451,7 @@ func runPluginInstall(bootstrapPath string, args []string) error {
 		if err != nil {
 			return fmt.Errorf("resolve home dir: %w", err)
 		}
-		destDir = home + "/.swarmstr/plugins"
+		destDir = home + "/.metiq/plugins"
 	}
 	cfg, err := config.LoadBootstrap(bootstrapPath)
 	if err != nil {

@@ -15,9 +15,9 @@ function readEnvNumber(name) {
 function parseArgs(argv) {
   const args = {
     config: "vitest.unit.config.ts",
-    maxWallMs: readEnvNumber("SWARMSTR_TEST_PERF_MAX_WALL_MS"),
-    baselineWallMs: readEnvNumber("SWARMSTR_TEST_PERF_BASELINE_WALL_MS"),
-    maxRegressionPct: readEnvNumber("SWARMSTR_TEST_PERF_MAX_REGRESSION_PCT") ?? 10,
+    maxWallMs: readEnvNumber("METIQ_TEST_PERF_MAX_WALL_MS"),
+    baselineWallMs: readEnvNumber("METIQ_TEST_PERF_BASELINE_WALL_MS"),
+    maxRegressionPct: readEnvNumber("METIQ_TEST_PERF_MAX_REGRESSION_PCT") ?? 10,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];

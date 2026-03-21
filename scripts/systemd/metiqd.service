@@ -7,8 +7,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 
-# Load configuration from ~/.swarmstr/.env
-EnvironmentFile=-%h/.swarmstr/.env
+# Load configuration from ~/.metiq/.env
+EnvironmentFile=-%h/.metiq/.env
 
 # The binary is expected to be on PATH or at ~/.local/bin/metiqd
 ExecStart=%h/.local/bin/metiqd
@@ -21,7 +21,7 @@ TimeoutStopSec=30
 # Hardening (user service — no root needed)
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=%h/.swarmstr %h/.local/share/swarmstr /tmp
+ReadWritePaths=%h/.metiq %h/.local/share/swarmstr /tmp
 
 [Install]
 WantedBy=default.target

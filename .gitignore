@@ -2,3 +2,8 @@
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Local build outputs
+/metiq
+/metiqd
+/dist/
