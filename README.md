@@ -1,10 +1,12 @@
-# metiq
+# Metiq - Nostr-native AI Agent Runtime
+
+![metiq logo](docs/assets/metiq_logo.png)
 
 **Nostr-native AI agent runtime.** A full Go port of OpenClaw with first-class Nostr relay transport, end-to-end encryption, and multi-agent orchestration built in.
 
 ## What it is
 
-metiq runs AI agents that communicate over the Nostr relay network. Any device running `metiqd` is instantly addressable by its Nostr pubkey — no pairing servers, no proprietary cloud, no fixed IPs. Agents receive tasks via NIP-17 DMs, channel messages (Telegram, Discord, Slack, etc.), or the local admin API, and reply through the same channels.
+Metiq runs AI agents that communicate over the Nostr relay network. Any device running `metiqd` is instantly addressable by its Nostr pubkey — no pairing servers, no proprietary cloud, no fixed IPs. Agents receive tasks via NIP-17 DMs, channel messages (Telegram, Discord, Slack, etc.), or the local admin API, and reply through the same channels.
 
 ## Feature highlights
 
