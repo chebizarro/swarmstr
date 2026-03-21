@@ -42,10 +42,10 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
         state: directory
         mode: '0755'
 
-    - name: Download swarmstr binary
+    - name: Download metiq binary
       get_url:
-        url: "https://github.com/yourorg/swarmstr/releases/download/{{ swarmstr_version }}/swarmstrd-linux-{{ swarmstr_arch }}"
-        dest: "{{ ansible_env.HOME }}/.local/bin/swarmstrd"
+        url: "https://github.com/yourorg/metiq/releases/download/{{ swarmstr_version }}/metiqd-linux-{{ swarmstr_arch }}"
+        dest: "{{ ansible_env.HOME }}/.local/bin/metiqd"
         mode: '0755'
 
     - name: Create swarmstr config directory
@@ -80,8 +80,8 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
 
     - name: Install systemd service
       template:
-        src: templates/swarmstrd.service.j2
-        dest: "{{ ansible_env.HOME }}/.config/systemd/user/swarmstrd.service"
+        src: templates/metiqd.service.j2
+        dest: "{{ ansible_env.HOME }}/.config/systemd/user/metiqd.service"
         mode: '0644'
 
     - name: Reload systemd user daemon
@@ -89,9 +89,9 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
         daemon_reload: yes
         scope: user
 
-    - name: Start swarmstrd service
+    - name: Start metiqd service
       systemd:
-        name: swarmstrd
+        name: metiqd
         state: started
         enabled: yes
         scope: user
@@ -121,14 +121,14 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
 ```
 
 ```ini
-# templates/swarmstrd.service.j2
+# templates/metiqd.service.j2
 [Unit]
-Description=swarmstr AI agent daemon
+Description=metiq AI agent daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart={{ ansible_env.HOME }}/.local/bin/swarmstrd
+ExecStart={{ ansible_env.HOME }}/.local/bin/metiqd
 Restart=on-failure
 RestartSec=5
 EnvironmentFile={{ ansible_env.HOME }}/.swarmstr/env

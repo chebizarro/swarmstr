@@ -1,10 +1,10 @@
-# swarmstr
+# metiq
 
 **Nostr-native AI agent runtime.** A full Go port of OpenClaw with first-class Nostr relay transport, end-to-end encryption, and multi-agent orchestration built in.
 
 ## What it is
 
-Swarmstr runs AI agents that communicate over the Nostr relay network. Any device running `swarmstrd` is instantly addressable by its Nostr pubkey — no pairing servers, no proprietary cloud, no fixed IPs. Agents receive tasks via NIP-17 DMs, channel messages (Telegram, Discord, Slack, etc.), or the local admin API, and reply through the same channels.
+metiq runs AI agents that communicate over the Nostr relay network. Any device running `metiqd` is instantly addressable by its Nostr pubkey — no pairing servers, no proprietary cloud, no fixed IPs. Agents receive tasks via NIP-17 DMs, channel messages (Telegram, Discord, Slack, etc.), or the local admin API, and reply through the same channels.
 
 ## Feature highlights
 
@@ -34,9 +34,9 @@ Swarmstr runs AI agents that communicate over the Nostr relay network. Any devic
 ### Build
 
 ```sh
-git clone https://github.com/your-org/swarmstr
-cd swarmstr
-go build ./cmd/swarmstrd ./cmd/swarmstr
+git clone https://github.com/your-org/metiq
+cd metiq
+go build ./cmd/metiqd ./cmd/metiq
 ```
 
 ### Minimal bootstrap config
@@ -54,21 +54,21 @@ Create `~/.swarmstr/bootstrap.json`:
 
 ```sh
 export SWARMSTR_PRIVATE_KEY="your-hex-or-nsec-private-key"
-./swarmstrd
+./metiqd
 ```
 
 ### Check it's running
 
 ```sh
-./swarmstr status
-./swarmstr health
+./metiq status
+./metiq health
 ```
 
 ---
 
 ## Configuration
 
-Swarmstr reads a runtime config document from Nostr (kind `30078`). The config is live-reloadable — changes written via the admin API take effect without a daemon restart.
+metiq reads a runtime config document from Nostr (kind `30078`). The config is live-reloadable — changes written via the admin API take effect without a daemon restart.
 
 Key config sections:
 
@@ -103,7 +103,7 @@ See `docs/MIGRATION_FROM_OPENCLAW.md` for a full field reference and OpenClaw mi
 ## CLI reference
 
 ```
-swarmstr <command> [flags]
+metiq <command> [flags]
 
 Daemon:
   status                    show pubkey, uptime, relay connections
@@ -126,7 +126,7 @@ Channels:
   channels send <ch> <msg>  send a message to a channel
 
 Remote nodes (Nostr-native — no pairing required):
-  nodes list                list known remote swarmstr agents
+  nodes list                list known remote metiq agents
   nodes add <npub>          register a remote agent by Nostr pubkey
   nodes status <npub>       check a remote agent's health
   nodes send <npub> <msg>   send a task to a remote agent via DM
@@ -189,7 +189,7 @@ Outbound messages are encrypted to `nip44:<ciphertext>`; inbound messages are de
 
 ## Multi-agent orchestration (ACP)
 
-Agents can delegate tasks to other swarmstr agents (local or remote) via Nostr DMs:
+Agents can delegate tasks to other metiq agents (local or remote) via Nostr DMs:
 
 ```json
 // acp.dispatch — fire-and-forget or blocking
@@ -218,17 +218,17 @@ Agents also have access to the `acp.delegate` built-in tool, letting LLMs orches
 
 ```sh
 # From a local path (goja JS or Node.js)
-swarmstr plugins install --id my-plugin --source path --source-path ./my-plugin/
+metiq plugins install --id my-plugin --source path --source-path ./my-plugin/
 
 # From npm
-swarmstr plugins install --id my-plugin --source npm --spec my-npm-package@1.0.0
+metiq plugins install --id my-plugin --source npm --spec my-npm-package@1.0.0
 
 # From a URL (single JS file or archive)
-swarmstr plugins install --id my-plugin --source url --url https://example.com/plugin.js
+metiq plugins install --id my-plugin --source url --url https://example.com/plugin.js
 
 # From Nostr plugin registry
-swarmstr plugins search --q weather
-swarmstr plugin-install --pubkey <author-npub> --id weather
+metiq plugins search --q weather
+metiq plugin-install --pubkey <author-npub> --id weather
 ```
 
 ### Remote registry
@@ -275,7 +275,7 @@ Drivers: `nop` (os/exec, default) · `docker` (ephemeral container, requires Doc
 
 ## Gateway API
 
-The admin HTTP API and Nostr control-RPC surface share the same method namespace. Call any method via `swarmstr gw <method> [key=value ...]` or POST to `/call`.
+The admin HTTP API and Nostr control-RPC surface share the same method namespace. Call any method via `metiq gw <method> [key=value ...]` or POST to `/call`.
 
 Key method groups:
 
@@ -302,7 +302,7 @@ WebSocket push events: `chat.message`, `chat.chunk` (streaming), `agent.status`,
 
 ## Streaming responses
 
-When the configured LLM provider supports SSE (`stream: true`), swarmstr delivers tokens incrementally:
+When the configured LLM provider supports SSE (`stream: true`), metiq delivers tokens incrementally:
 
 1. The provider streams SSE chunks over HTTP.
 2. The runtime emits `chat.chunk` WebSocket events with `{ text, done }` payloads.
@@ -313,17 +313,17 @@ When the configured LLM provider supports SSE (`stream: true`), swarmstr deliver
 
 ## Nostr-native remote nodes
 
-Every `swarmstrd` instance is reachable via its Nostr pubkey over NIP-17 DMs. There is no separate pairing protocol:
+Every `metiqd` instance is reachable via its Nostr pubkey over NIP-17 DMs. There is no separate pairing protocol:
 
 ```sh
 # Register a remote agent you want to work with
-swarmstr nodes add npub1abc... --name "my-pi"
+metiq nodes add npub1abc... --name "my-pi"
 
 # Send it a task
-swarmstr nodes send npub1abc... "run the daily report"
+metiq nodes send npub1abc... "run the daily report"
 
 # Check its health
-swarmstr nodes status npub1abc...
+metiq nodes status npub1abc...
 ```
 
 Remote agents participate in ACP pipelines the same way as local agents — just specify their `npub` as the `peer_pub_key`.
@@ -337,7 +337,7 @@ Remote agents participate in ACP pipelines the same way as local agents — just
 go test ./...
 
 # Build both binaries
-go build ./cmd/swarmstrd ./cmd/swarmstr
+go build ./cmd/metiqd ./cmd/metiq
 
 # Run parity gate
 bash ./scripts/ci-parity.sh

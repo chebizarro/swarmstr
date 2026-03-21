@@ -1,4 +1,4 @@
-# swarmstr — multi-stage Docker build.
+# metiq — multi-stage Docker build.
 #
 # Two runtime variants:
 #   Default (alpine):  docker build .
@@ -38,13 +38,13 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \
-      -o /out/swarmstrd \
-      ./cmd/swarmstrd && \
+      -o /out/metiqd \
+      ./cmd/metiqd && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \
-      -o /out/swarmstr \
-      ./cmd/swarmstr
+      -o /out/metiq \
+      ./cmd/metiq
 
 # ── Runtime: default (alpine) ──────────────────────────────────────────────────
 FROM alpine:3.21 AS runtime-default
@@ -54,8 +54,10 @@ RUN apk add --no-cache ca-certificates tzdata poppler-utils
 
 WORKDIR /app
 
-COPY --from=builder /out/swarmstrd /usr/local/bin/swarmstrd
-COPY --from=builder /out/swarmstr  /usr/local/bin/swarmstr
+COPY --from=builder /out/metiqd /usr/local/bin/metiqd
+COPY --from=builder /out/metiq  /usr/local/bin/metiq
+COPY --from=builder /out/metiqd /usr/local/bin/swarmstrd
+COPY --from=builder /out/metiq  /usr/local/bin/swarmstr
 COPY skills/ /app/skills/
 
 ENV SWARMSTR_BUNDLED_SKILLS_DIR=/app/skills \
@@ -66,7 +68,7 @@ VOLUME ["/data"]
 # Admin API (optional; enabled via --admin-addr or admin_listen_addr in config).
 EXPOSE 7423
 
-ENTRYPOINT ["/usr/local/bin/swarmstrd"]
+ENTRYPOINT ["/usr/local/bin/metiqd"]
 
 # ── Runtime: slim (scratch + certs only) ──────────────────────────────────────
 FROM scratch AS runtime-slim
@@ -75,8 +77,10 @@ FROM scratch AS runtime-slim
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=certs /usr/share/zoneinfo                 /usr/share/zoneinfo
 
-COPY --from=builder /out/swarmstrd /usr/local/bin/swarmstrd
-COPY --from=builder /out/swarmstr  /usr/local/bin/swarmstr
+COPY --from=builder /out/metiqd /usr/local/bin/metiqd
+COPY --from=builder /out/metiq  /usr/local/bin/metiq
+COPY --from=builder /out/metiqd /usr/local/bin/swarmstrd
+COPY --from=builder /out/metiq  /usr/local/bin/swarmstr
 COPY skills/ /app/skills/
 
 ENV SWARMSTR_BUNDLED_SKILLS_DIR=/app/skills \
@@ -85,7 +89,7 @@ ENV SWARMSTR_BUNDLED_SKILLS_DIR=/app/skills \
 VOLUME ["/data"]
 EXPOSE 7423
 
-ENTRYPOINT ["/usr/local/bin/swarmstrd"]
+ENTRYPOINT ["/usr/local/bin/metiqd"]
 
 # ── Final target (selected by SWARMSTR_VARIANT) ────────────────────────────────
 # shellcheck disable=SC2154  (ARG is used via FROM)

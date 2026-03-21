@@ -1,14 +1,14 @@
 ---
-summary: "swarmstr installation methods overview"
+summary: "metiq installation methods overview"
 read_when:
-  - Installing swarmstr for the first time
+  - Installing metiq for the first time
   - Choosing the right installation method
 title: "Install"
 ---
 
 # Install
 
-swarmstr distributes as a single statically-linked Go binary — no runtime dependencies,
+metiq distributes as a single statically-linked Go binary — no runtime dependencies,
 no npm, no node_modules.
 
 ## Installation methods
@@ -19,22 +19,22 @@ Download the pre-built binary from GitHub Releases:
 
 ```bash
 # Linux x86_64
-curl -fsSL https://github.com/your-org/swarmstr/releases/latest/download/swarmstrd-linux-amd64 \
-  -o /usr/local/bin/swarmstrd && chmod +x /usr/local/bin/swarmstrd
+curl -fsSL https://github.com/your-org/metiq/releases/latest/download/metiqd-linux-amd64 \
+  -o /usr/local/bin/metiqd && chmod +x /usr/local/bin/metiqd
 
 # Linux ARM64 (Raspberry Pi, AWS Graviton)
-curl -fsSL https://github.com/your-org/swarmstr/releases/latest/download/swarmstrd-linux-arm64 \
-  -o /usr/local/bin/swarmstrd && chmod +x /usr/local/bin/swarmstrd
+curl -fsSL https://github.com/your-org/metiq/releases/latest/download/metiqd-linux-arm64 \
+  -o /usr/local/bin/metiqd && chmod +x /usr/local/bin/metiqd
 
 # macOS ARM64 (Apple Silicon)
-curl -fsSL https://github.com/your-org/swarmstr/releases/latest/download/swarmstrd-darwin-arm64 \
-  -o /usr/local/bin/swarmstrd && chmod +x /usr/local/bin/swarmstrd
+curl -fsSL https://github.com/your-org/metiq/releases/latest/download/metiqd-darwin-arm64 \
+  -o /usr/local/bin/metiqd && chmod +x /usr/local/bin/metiqd
 ```
 
 ### Install script
 
 ```bash
-curl -fsSL https://swarmstr.dev/install.sh | bash
+curl -fsSL https://metiq.dev/install.sh | bash
 ```
 
 ### From source
@@ -42,21 +42,22 @@ curl -fsSL https://swarmstr.dev/install.sh | bash
 Requirements: Go 1.22+
 
 ```bash
-git clone https://github.com/your-org/swarmstr.git
-cd swarmstr
-go build -o dist/swarmstrd ./cmd/swarmstrd/
-sudo cp dist/swarmstrd /usr/local/bin/swarmstrd
+git clone https://github.com/your-org/metiq.git
+cd metiq
+go build -o dist/metiqd ./cmd/metiqd/
+go build -o dist/metiq ./cmd/metiq/
+sudo cp dist/swarmstrd /usr/local/bin/metiqd
 ```
 
 ### Docker
 
 ```bash
 docker run -d \
-  --name swarmstrd \
+  --name metiqd \
   -e NOSTR_PRIVATE_KEY="nsec1..." \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
   -v ~/.swarmstr:/data/.swarmstr \
-  ghcr.io/your-org/swarmstr:latest
+  ghcr.io/your-org/metiq:latest
 ```
 
 See [Docker](/install/docker) for full setup.
@@ -72,19 +73,19 @@ See [Docker](/install/docker) for full setup.
 
 1. Create `~/.swarmstr/bootstrap.json` with your private key and relays — see [Setup](/start/setup).
 2. Create `~/.swarmstr/config.json` — see [Configuration](/gateway/configuration).
-3. Start the daemon: `swarmstrd` or `systemctl start swarmstrd`.
-4. Verify: `swarmstr status`.
+3. Start the daemon: `metiqd` or `systemctl start metiqd`. Legacy `swarmstrd` alias remains available where installed.
+4. Verify: `metiq status`. Legacy `swarmstr` alias remains available where installed.
 
 ## Verify installation
 
 ```bash
-swarmstrd --version
-swarmstr health
+metiqd --version
+metiq health
 ```
 
 ## CLI vs daemon
 
-- **`swarmstrd`** — the daemon binary (long-running server process).
-- **`swarmstr`** — the CLI client binary (communicates with running daemon).
+- **`metiqd`** — the daemon binary (long-running server process).
+- **`metiq`** — the CLI client binary (communicates with running daemon).
 
 Both are built from the same source. The CLI is used for management and automation.

@@ -14,8 +14,8 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build \
       -trimpath \
       -ldflags="-s -w" \
-      -o /out/swarmstrd \
-      ./cmd/swarmstrd
+      -o /out/metiqd \
+      ./cmd/metiqd
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM alpine:3.21
@@ -26,7 +26,8 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 
 # Copy the binary
-COPY --from=builder /out/swarmstrd /usr/local/bin/swarmstrd
+COPY --from=builder /out/metiqd /usr/local/bin/metiqd
+COPY --from=builder /out/metiqd /usr/local/bin/swarmstrd
 
 # Copy bundled skills (SKILL.md format)
 COPY skills/ /app/skills/
@@ -38,8 +39,8 @@ ENV SWARMSTR_BUNDLED_SKILLS_DIR=/app/skills
 ENV HOME=/data
 VOLUME ["/data"]
 
-# swarmstrd listens on no fixed port (Nostr relay WS is outbound),
+# metiqd listens on no fixed port (Nostr relay WS is outbound),
 # but expose 8080 in case a local HTTP/RPC listener is added later.
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/swarmstrd"]
+ENTRYPOINT ["/usr/local/bin/metiqd"]

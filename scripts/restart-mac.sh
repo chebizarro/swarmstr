@@ -87,25 +87,25 @@ log "==> Stopping swarmstrd"
 if systemctl --user is-active swarmstrd >/dev/null 2>&1; then
   systemctl --user stop swarmstrd
   log "    systemd unit stopped"
-elif pgrep -x swarmstrd >/dev/null 2>&1; then
-  pkill -x swarmstrd || true
+elif pgrep -x metiqd >/dev/null 2>&1; then
+  pkill -x metiqd || true
   sleep 0.5
   log "    process killed"
 else
-  log "    swarmstrd was not running"
+  log "    metiqd was not running"
 fi
 
 # 2) Rebuild.
-run_step "go build" bash -lc "cd '${ROOT_DIR}' && go build -o dist/swarmstrd ./cmd/swarmstrd"
+run_step "go build" bash -lc "cd '${ROOT_DIR}' && go build -o dist/metiqd ./cmd/metiqd"
 
 # 3) Restart via systemd (or launch directly if no systemd unit).
-if systemctl --user cat swarmstrd >/dev/null 2>&1; then
-  run_step "start swarmstrd (systemd)" systemctl --user start swarmstrd
+if systemctl --user cat metiqd >/dev/null 2>&1; then
+  run_step "start metiqd (systemd)" systemctl --user start metiqd
   sleep 1
-  if systemctl --user is-active swarmstrd >/dev/null 2>&1; then
-    log "OK: swarmstrd is running (systemd)."
+  if systemctl --user is-active metiqd >/dev/null 2>&1; then
+    log "OK: metiqd is running (systemd)."
   else
-    fail "swarmstrd failed to start. Check: journalctl --user -u swarmstrd -n 50"
+    fail "metiqd failed to start. Check: journalctl --user -u metiqd -n 50"
   fi
 else
   log "==> No systemd unit found; launching swarmstrd directly (background)"
