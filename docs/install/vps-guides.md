@@ -54,18 +54,18 @@ usermod -aG sudo swarmstr
 su - swarmstr
 ```
 
-### 3. Install swarmstr
+### 3. Install metiq
 
 ```bash
 # Download latest binary (replace VERSION and ARCH)
-VERSION=$(curl -s https://api.github.com/repos/yourorg/swarmstr/releases/latest | jq -r .tag_name)
+VERSION=$(curl -s https://api.github.com/repos/yourorg/metiq/releases/latest | jq -r .tag_name)
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-curl -L "https://github.com/yourorg/swarmstr/releases/download/${VERSION}/swarmstrd-linux-${ARCH}" \
-  -o /usr/local/bin/swarmstrd
-chmod +x /usr/local/bin/swarmstrd
+curl -L "https://github.com/yourorg/metiq/releases/download/${VERSION}/metiqd-linux-${ARCH}" \
+  -o /usr/local/bin/metiqd
+chmod +x /usr/local/bin/metiqd
 
 # Verify
-swarmstrd --version
+metiqd --version
 ```
 
 ### 4. Configure
@@ -115,9 +115,9 @@ EOF
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/swarmstrd.service <<'EOF'
+cat > ~/.config/systemd/user/metiqd.service <<'EOF'
 [Unit]
-Description=swarmstr AI agent daemon
+Description=metiq AI agent daemon
 After=network-online.target
 Wants=network-online.target
 
@@ -125,7 +125,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h
 EnvironmentFile=%h/.swarmstr/.env
-ExecStart=/usr/local/bin/swarmstrd
+ExecStart=/usr/local/bin/metiqd
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -136,7 +136,7 @@ WantedBy=default.target
 EOF
 
 systemctl --user daemon-reload
-systemctl --user enable --now swarmstrd
+systemctl --user enable --now metiqd
 systemctl --user status swarmstrd
 ```
 

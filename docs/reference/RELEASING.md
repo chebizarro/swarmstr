@@ -1,15 +1,15 @@
 ---
 title: "Release Checklist"
-summary: "Step-by-step release checklist for swarmstr Go binary + Docker releases"
+summary: "Step-by-step release checklist for metiq Go binary + Docker releases"
 read_when:
-  - Cutting a new swarmstr release
+  - Cutting a new metiq release
   - Verifying CI artifacts before publishing
   - Tagging a release
 ---
 
 # Release Checklist
 
-swarmstr releases are driven by Git tags. Pushing a `v*` tag triggers the
+metiq releases are driven by Git tags. Pushing a `v*` tag triggers the
 [Docker Release workflow](/.github/workflows/docker-release.yml), which:
 
 1. Builds and pushes multi-arch Docker images (`linux/amd64`, `linux/arm64`) to GHCR.
@@ -27,7 +27,7 @@ swarmstr releases are driven by Git tags. Pushing a `v*` tag triggers the
 
 ### 2. Bump version
 
-swarmstr uses date-based version tags (`YYYY.MM.DD` or `YYYY.MM.DD-N` for same-day patches):
+metiq uses date-based version tags (`YYYY.MM.DD` or `YYYY.MM.DD-N` for same-day patches):
 
 ```bash
 # Example
@@ -47,26 +47,26 @@ git push origin v2026.03.10
 ```
 
 This triggers:
-- `docker-release.yml` — builds `ghcr.io/<org>/swarmstr:<version>` and `ghcr.io/<org>/swarmstr:latest`
-- Also builds `swarmstrd` and `swarmstr` binaries for all platforms and attaches them to the release
+- `docker-release.yml` — builds `ghcr.io/<org>/metiq:<version>` and `ghcr.io/<org>/metiq:latest`
+- Also builds `metiqd` and `metiq` binaries for all platforms and attaches them to the release
 
 ### 4. Verify release
 
 - [ ] GitHub Actions workflow completes successfully
 - [ ] Docker images are available on GHCR:
-  - `ghcr.io/<org>/swarmstr:<version>`
-  - `ghcr.io/<org>/swarmstr:latest`
-  - `ghcr.io/<org>/swarmstr:<version>-slim`
-  - `ghcr.io/<org>/swarmstr:latest-slim`
+  - `ghcr.io/<org>/metiq:<version>`
+  - `ghcr.io/<org>/metiq:latest`
+  - `ghcr.io/<org>/metiq:<version>-slim`
+  - `ghcr.io/<org>/metiq:latest-slim`
 - [ ] GitHub release has binary assets for all platforms:
-  - `swarmstrd-linux-amd64`
-  - `swarmstrd-linux-arm64`
-  - `swarmstrd-darwin-amd64`
-  - `swarmstrd-darwin-arm64`
-  - `swarmstrd-windows-amd64.exe`
-  - `swarmstr-linux-amd64` (CLI)
-  - `swarmstr-darwin-arm64` (CLI, etc.)
-- [ ] Pull and smoke test the image: `docker run --rm ghcr.io/<org>/swarmstr:<version> swarmstrd --version`
+  - `metiqd-linux-amd64`
+  - `metiqd-linux-arm64`
+  - `metiqd-darwin-amd64`
+  - `metiqd-darwin-arm64`
+  - `metiqd-windows-amd64.exe`
+  - `metiq-linux-amd64` (CLI)
+  - `metiq-darwin-arm64` (CLI, etc.)
+- [ ] Pull and smoke test the image: `docker run --rm ghcr.io/<org>/metiq:<version> metiqd --version`
 - [ ] (Optional) Announce release notes
 
 ## Docker Variants
@@ -84,13 +84,13 @@ To build binaries locally (matching CI flags):
 
 ```bash
 # Daemon
-go build -trimpath -ldflags="-s -w -X main.version=v2026.03.10" -o swarmstrd ./cmd/swarmstrd
+go build -trimpath -ldflags="-s -w -X main.version=v2026.03.10" -o metiqd ./cmd/metiqd
 
 # CLI
-go build -trimpath -ldflags="-s -w -X main.version=v2026.03.10" -o swarmstr ./cmd/swarmstr
+go build -trimpath -ldflags="-s -w -X main.version=v2026.03.10" -o metiq ./cmd/metiq
 
 # Cross-compile (e.g. Linux arm64 from macOS)
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o swarmstrd-linux-arm64 ./cmd/swarmstrd
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o metiqd-linux-arm64 ./cmd/metiqd
 ```
 
 ## See Also

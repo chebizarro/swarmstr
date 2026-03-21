@@ -153,7 +153,7 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
-      - name: Build swarmstrd
+      - name: Build metiqd
         env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
@@ -162,10 +162,10 @@ jobs:
           go build \
             -trimpath \
             -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
-            -o "swarmstrd-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext || '' }}" \
-            ./cmd/swarmstrd
+            -o "metiqd-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext || '' }}" \
+            ./cmd/metiqd
 
-      - name: Build swarmstr (CLI)
+      - name: Build metiq (CLI)
         env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
@@ -174,12 +174,12 @@ jobs:
           go build \
             -trimpath \
             -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
-            -o "swarmstr-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext || '' }}" \
-            ./cmd/swarmstr
+            -o "metiq-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext || '' }}" \
+            ./cmd/metiq
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            swarmstrd-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext || '' }}
-            swarmstr-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext || '' }}
+            metiqd-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext || '' }}
+            metiq-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext || '' }}

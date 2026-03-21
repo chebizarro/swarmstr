@@ -1,44 +1,44 @@
 ---
-summary: "Updating, uninstalling, and migrating swarmstr"
+summary: "Updating, uninstalling, and migrating metiq"
 read_when:
-  - Updating to a new swarmstr version
-  - Uninstalling swarmstr
+  - Updating to a new metiq version
+  - Uninstalling metiq
   - Migrating workspace or config between machines
 title: "Updating, Uninstalling & Migrating"
 ---
 
 # Updating, Uninstalling & Migrating
 
-## Updating swarmstr
+## Updating metiq
 
 ### Binary Update (Recommended)
 
 ```bash
 # Stop the daemon
-swarmstr daemon stop
+metiq daemon stop
 
 # Download new binary (same method as initial install)
-VERSION=$(curl -s https://api.github.com/repos/yourorg/swarmstr/releases/latest | jq -r .tag_name)
+VERSION=$(curl -s https://api.github.com/repos/yourorg/metiq/releases/latest | jq -r .tag_name)
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-curl -L "https://github.com/yourorg/swarmstr/releases/download/${VERSION}/swarmstrd-linux-${ARCH}" \
-  -o /usr/local/bin/swarmstrd
-chmod +x /usr/local/bin/swarmstrd
+curl -L "https://github.com/yourorg/metiq/releases/download/${VERSION}/metiqd-linux-${ARCH}" \
+  -o /usr/local/bin/metiqd
+chmod +x /usr/local/bin/metiqd
 
 # Restart
-swarmstr daemon start
+metiq daemon start
 
 # Verify
-swarmstrd --version
-swarmstr status
+metiqd --version
+metiq status
 ```
 
 ### From Source
 
 ```bash
-cd ~/swarmstr-src
+cd ~/metiq-src
 git pull origin main
-go build -o /usr/local/bin/swarmstrd ./cmd/swarmstrd/
-swarmstr daemon restart
+go build -o /usr/local/bin/metiqd ./cmd/metiqd/
+metiq daemon restart
 ```
 
 ### Docker Update
@@ -57,41 +57,41 @@ All user data lives in `~/.swarmstr/` and is never touched by binary updates:
 - `agents/` — session transcripts, agent state
 - `.env` — secrets
 
-Only the binary itself (`/usr/local/bin/swarmstrd`) is replaced.
+Only the binary itself (`/usr/local/bin/metiqd`) is replaced.
 
 ## Checking for Breaking Changes
 
-Check the [CHANGELOG](https://github.com/yourorg/swarmstr/releases) before upgrading. Config schema changes are noted with migration steps.
+Check the [CHANGELOG](https://github.com/yourorg/metiq/releases) before upgrading. Config schema changes are noted with migration steps.
 
 Validate your config after upgrade:
 
 ```bash
-swarmstr config validate
-swarmstr doctor
+metiq config validate
+metiq doctor
 ```
 
-## Uninstalling swarmstr
+## Uninstalling metiq
 
 ### Stop Service
 
 ```bash
 # If running via systemd
-sudo systemctl stop swarmstrd
-sudo systemctl disable swarmstrd
-sudo rm /etc/systemd/system/swarmstrd.service
+sudo systemctl stop metiqd
+sudo systemctl disable metiqd
+sudo rm /etc/systemd/system/metiqd.service
 sudo systemctl daemon-reload
 
 # Or if running in user mode
-systemctl --user stop swarmstrd
-systemctl --user disable swarmstrd
-rm ~/.config/systemd/user/swarmstrd.service
+systemctl --user stop metiqd
+systemctl --user disable metiqd
+rm ~/.config/systemd/user/metiqd.service
 systemctl --user daemon-reload
 ```
 
 ### Remove Binary
 
 ```bash
-sudo rm /usr/local/bin/swarmstrd
+sudo rm /usr/local/bin/metiqd
 ```
 
 ### Remove State (Optional)
@@ -112,7 +112,7 @@ rm -rf ~/.swarmstr
 
 ```bash
 # Create migration bundle
-tar czf swarmstr-backup.tar.gz \
+tar czf metiq-backup.tar.gz \
   ~/.swarmstr/config.json \
   ~/.swarmstr/workspace/ \
   ~/.swarmstr/agents/
@@ -137,9 +137,9 @@ EOF
 chmod 600 ~/.swarmstr/env
 
 # Verify
-swarmstr config validate
+metiq config validate
 swarmstr models list
-swarmstr daemon start
+metiq daemon start
 ```
 
 > The agent identity (nsec) is in `.env`. The same nsec on the new machine means the same Nostr npub — your agent is immediately reachable at the same address.

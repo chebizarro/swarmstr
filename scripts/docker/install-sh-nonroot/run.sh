@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Non-root install smoke test for swarmstr.
+# Non-root install smoke test for metiq.
 # Runs as an unprivileged user; the binary should land in $HOME/.local/bin.
 set -euo pipefail
 
@@ -19,10 +19,11 @@ echo "Running as: $(id)"
 
 if [[ "$SKIP_DOWNLOAD" == "1" ]]; then
   echo "==> Skip download (SWARMSTR_INSTALL_SKIP_DOWNLOAD=1)"
-  # Binary injected via mount at /tmp/swarmstrd-linux-amd64 — install manually.
+  # Binary injected via mount at /tmp/metiqd-linux-amd64 — install manually.
   mkdir -p "$HOME/.local/bin"
-  cp /tmp/swarmstrd-linux-amd64 "$HOME/.local/bin/swarmstrd"
-  chmod +x "$HOME/.local/bin/swarmstrd"
+  cp /tmp/metiqd-linux-amd64 "$HOME/.local/bin/metiqd"
+  chmod +x "$HOME/.local/bin/metiqd"
+  ln -sfn metiqd "$HOME/.local/bin/swarmstrd"
   export PATH="$HOME/.local/bin:$PATH"
 else
   echo "==> Run install script (non-root)"
@@ -31,6 +32,7 @@ else
 fi
 
 echo "==> Verify binary"
+verify_binary metiqd
 verify_binary swarmstrd
 
 echo "OK"

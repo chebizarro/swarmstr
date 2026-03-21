@@ -1,6 +1,6 @@
 [Unit]
-Description=swarmstr daemon — Nostr-native AI agent
-Documentation=https://github.com/swarmstr/swarmstr
+Description=metiq daemon — Nostr-native AI agent
+Documentation=https://github.com/metiq/metiq
 After=network-online.target
 Wants=network-online.target
 
@@ -10,8 +10,8 @@ Type=simple
 # Load configuration from ~/.swarmstr/.env
 EnvironmentFile=-%h/.swarmstr/.env
 
-# The binary is expected to be on PATH or at ~/.local/bin/swarmstrd
-ExecStart=%h/.local/bin/swarmstrd
+# The binary is expected to be on PATH or at ~/.local/bin/metiqd
+ExecStart=%h/.local/bin/metiqd
 
 # Restart policy
 Restart=on-failure

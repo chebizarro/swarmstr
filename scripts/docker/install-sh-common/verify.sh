@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared helper: verify a swarmstr binary is installed and functional.
+# Shared helper: verify a daemon binary is installed and functional.
 
 verify_binary() {
   local binary="${1:-swarmstrd}"

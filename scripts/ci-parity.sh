@@ -11,9 +11,9 @@ echo "[parity] validating WS auth/rate-limit semantics"
 go test ./internal/gateway/ws -run 'TestAllowHandshakeRateLimit|TestHandleWSRateLimitReturnsHTTP429|TestUnauthorizedBurstClosesConnection' -count=1
 
 echo "[parity] validating control/admin precondition semantics"
-go test ./internal/admin ./cmd/swarmstrd -run 'TestDispatchMethodCallListPutExpectedVersionZeroSemantics|TestDispatchMethodCallConfigPutExpectedVersionZeroSemantics|TestHandleControlRPCRequest_ListPutExpectedVersionZeroSemantics' -count=1
+go test ./internal/admin ./cmd/metiqd -run 'TestDispatchMethodCallListPutExpectedVersionZeroSemantics|TestDispatchMethodCallConfigPutExpectedVersionZeroSemantics|TestHandleControlRPCRequest_ListPutExpectedVersionZeroSemantics' -count=1
 
 echo "[parity] validating core parity verifier contracts"
-go test ./cmd/swarmstrd -run 'TestCoreParityVerifier_' -count=1
+go test ./cmd/metiqd -run 'TestCoreParityVerifier_' -count=1
 
 echo "[parity] all parity gates passed"

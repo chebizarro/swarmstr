@@ -35,13 +35,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build swarmstrd (linux/amd64)
+      - name: Build metiqd (linux/amd64)
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -trimpath \
             -ldflags="-s -w -X main.version=smoke-test" \
-            -o /tmp/swarmstrd-linux-amd64 \
-            ./cmd/swarmstrd
+            -o /tmp/metiqd-linux-amd64 \
+            ./cmd/metiqd
 
       - name: Smoke-test install.sh (dry-run mode)
         run: |
@@ -61,15 +61,15 @@ jobs:
         run: |
           docker build \
             -f scripts/docker/install-sh-smoke/Dockerfile \
-            -t swarmstr-install-smoke \
+            -t metiq-install-smoke \
             scripts/docker/
 
       - name: Run smoke test container
         run: |
           docker run --rm \
-            -v /tmp/swarmstrd-linux-amd64:/usr/local/bin/swarmstrd:ro \
+            -v /tmp/metiqd-linux-amd64:/usr/local/bin/metiqd:ro \
             -e SWARMSTR_INSTALL_SKIP_DOWNLOAD=1 \
-            swarmstr-install-smoke
+            metiq-install-smoke
 
   install-smoke-nonroot:
     name: Install script (non-root) smoke test
@@ -85,23 +85,23 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build swarmstrd (linux/amd64)
+      - name: Build metiqd (linux/amd64)
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -trimpath \
             -ldflags="-s -w -X main.version=smoke-test" \
-            -o /tmp/swarmstrd-linux-amd64 \
-            ./cmd/swarmstrd
+            -o /tmp/metiqd-linux-amd64 \
+            ./cmd/metiqd
 
       - name: Build nonroot smoke Docker image
         run: |
           docker build \
             -f scripts/docker/install-sh-nonroot/Dockerfile \
-            -t swarmstr-install-smoke-nonroot \
+            -t metiq-install-smoke-nonroot \
             scripts/docker/
 
       - name: Run nonroot smoke test container
         run: |
           docker run --rm \
-            -v /tmp/swarmstrd-linux-amd64:/tmp/swarmstrd-linux-amd64:ro \
-            swarmstr-install-smoke-nonroot
+            -v /tmp/metiqd-linux-amd64:/tmp/metiqd-linux-amd64:ro \
+            metiq-install-smoke-nonroot

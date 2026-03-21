@@ -1,6 +1,6 @@
-# swarmstr installer for Windows (PowerShell)
-# Usage: iwr -useb https://swarmstr.com/install.ps1 | iex
-# Or:    & ([scriptblock]::Create((iwr -useb https://swarmstr.com/install.ps1))) -Tag v1.0.0
+# metiq installer for Windows (PowerShell)
+# Usage: iwr -useb https://metiq.dev/install.ps1 | iex
+# Or:    & ([scriptblock]::Create((iwr -useb https://metiq.dev/install.ps1))) -Tag v1.0.0
 
 param(
     [string]$Tag       = "latest",
@@ -26,13 +26,13 @@ function Write-Err     { param([string]$m) Microsoft.PowerShell.Utility\Write-Ho
 
 function Write-Banner {
     Microsoft.PowerShell.Utility\Write-Host ""
-    Microsoft.PowerShell.Utility\Write-Host "${ACCENT}  ⚡ swarmstr installer${NC}"
+    Microsoft.PowerShell.Utility\Write-Host "${ACCENT}  ⚡ metiq installer${NC}"
     Microsoft.PowerShell.Utility\Write-Host "${MUTED}  Nostr-native AI agent daemon.${NC}"
     Microsoft.PowerShell.Utility\Write-Host ""
 }
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-$GitHubRepo = "swarmstr/swarmstr"
+$GitHubRepo = if ($env:GITHUB_REPO) { $env:GITHUB_REPO } else { "metiq/metiq" }
 $ConfigDir  = Join-Path $env:USERPROFILE ".swarmstr"
 $EnvFile    = Join-Path $ConfigDir ".env"
 
@@ -58,7 +58,7 @@ function Get-DownloadUrl {
     param([string]$tag)
     if ($tag -eq "latest") {
         $apiUrl  = "https://api.github.com/repos/$GitHubRepo/releases/latest"
-        $headers = @{ "User-Agent" = "swarmstr-installer" }
+        $headers = @{ "User-Agent" = "metiq-installer" }
         try {
             $resp = Invoke-RestMethod -Uri $apiUrl -Headers $headers
             $tag  = $resp.tag_name
@@ -68,19 +68,19 @@ function Get-DownloadUrl {
         }
         Write-Info "Resolved latest tag: $tag"
     }
-    return "https://github.com/$GitHubRepo/releases/download/$tag/swarmstrd-windows-$GoArch.exe"
+    return "https://github.com/$GitHubRepo/releases/download/$tag/metiqd-windows-$GoArch.exe"
 }
 
 $DownloadUrl = Get-DownloadUrl -tag $Tag
 Write-Info "Download URL: $DownloadUrl"
 
 # ── Download binary ───────────────────────────────────────────────────────────
-$TmpBin = Join-Path $env:TEMP "swarmstrd-install.exe"
+$TmpBin = Join-Path $env:TEMP "metiqd-install.exe"
 
 if ($DryRun) {
-    Write-Info "[DRY RUN] Would download: $DownloadUrl -> $BinDir\swarmstrd.exe"
+    Write-Info "[DRY RUN] Would download: $DownloadUrl -> $BinDir\metiqd.exe"
 } else {
-    Write-Info "Downloading swarmstrd ..."
+    Write-Info "Downloading metiqd ..."
     try {
         Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpBin -UseBasicParsing
         Write-Success "Downloaded"
@@ -91,7 +91,7 @@ if ($DryRun) {
 }
 
 # ── Install binary ────────────────────────────────────────────────────────────
-$Dest = Join-Path $BinDir "swarmstrd.exe"
+$Dest = Join-Path $BinDir "metiqd.exe"
 if ($DryRun) {
     Write-Info "[DRY RUN] Would install to: $Dest"
 } else {
@@ -108,7 +108,7 @@ if (!$DryRun) {
     }
     if (!(Test-Path $EnvFile)) {
         @"
-# swarmstr environment configuration
+# metiq environment configuration (legacy SWARMSTR_* env names remain supported)
 # Edit this file and fill in the values you need.
 
 # ── Nostr ─────────────────────────────────────────────────────────────────────
@@ -157,13 +157,13 @@ if (!$DryRun) {
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 Microsoft.PowerShell.Utility\Write-Host ""
-Microsoft.PowerShell.Utility\Write-Host "${ACCENT}⚡ swarmstr installed!${NC}"
+Microsoft.PowerShell.Utility\Write-Host "${ACCENT}⚡ metiq installed!${NC}"
 Microsoft.PowerShell.Utility\Write-Host ""
 Write-Info "Config:  $EnvFile"
 Write-Info "Binary:  $Dest"
 Microsoft.PowerShell.Utility\Write-Host ""
 Write-Info "Next steps:"
 Write-Info "  1. Edit $EnvFile with your Nostr key + API keys"
-Write-Info "  2. Run:  swarmstrd"
+Write-Info "  2. Run:  metiqd"
 Write-Info "  3. Send a DM on Nostr to your agent's pubkey"
 Microsoft.PowerShell.Utility\Write-Host ""

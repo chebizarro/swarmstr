@@ -13,11 +13,11 @@ docker run --rm -t "$IMAGE_NAME" bash -lc '
 	  trap "" PIPE
 	  export TERM=xterm-256color
 	  ONBOARD_FLAGS="--flow quickstart --auth-choice skip --skip-channels --skip-skills --skip-daemon --skip-ui"
-	  # swarmstrd is a native Go binary compiled to dist/swarmstrd.
-	  if [ -f dist/swarmstrd ]; then
-	    SWARMSTR_ENTRY="dist/swarmstrd"
+	  # metiqd is a native Go binary compiled to dist/metiqd.
+	  if [ -f dist/metiqd ]; then
+	    SWARMSTR_ENTRY="dist/metiqd"
 	  else
-	    echo "Missing dist/swarmstrd (build output — run: go build -o dist/swarmstrd ./cmd/swarmstrd):"
+	    echo "Missing dist/metiqd (build output — run: go build -o dist/metiqd ./cmd/metiqd):"
 	    ls -la dist || true
 	    exit 1
 	  fi

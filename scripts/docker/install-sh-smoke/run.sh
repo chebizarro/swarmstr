@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Smoke test for swarmstr install.sh.
+# Smoke test for metiq install.sh.
 #
 # When SWARMSTR_INSTALL_SKIP_DOWNLOAD=1 the binary is expected to already be
-# present at /usr/local/bin/swarmstrd (mounted by the CI job).
+# present at /usr/local/bin/metiqd (mounted by the CI job).
 set -euo pipefail
 
 INSTALL_URL="${SWARMSTR_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
@@ -25,12 +25,13 @@ fi
 if [[ "$SKIP_DOWNLOAD" == "1" ]]; then
   echo "==> Skip download (SWARMSTR_INSTALL_SKIP_DOWNLOAD=1)"
   echo "==> Verify pre-installed binary"
-  verify_binary swarmstrd
+  verify_binary metiqd
 else
   echo "==> Run install script"
   curl -fsSL "$INSTALL_URL" | bash
 
   echo "==> Verify installed binary"
+  verify_binary metiqd
   verify_binary swarmstrd
 fi
 

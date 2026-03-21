@@ -70,16 +70,16 @@ jobs:
             ${{ runner.os }}-go-build-
 
       - name: Build daemon (linux/amd64)
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /dev/null ./cmd/swarmstrd
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /dev/null ./cmd/metiqd
 
       - name: Build CLI (linux/amd64)
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /dev/null ./cmd/swarmstr
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /dev/null ./cmd/metiq
 
       - name: Build daemon (linux/arm64)
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /dev/null ./cmd/swarmstrd
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /dev/null ./cmd/metiqd
 
       - name: Build daemon (darwin/arm64)
-        run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /dev/null ./cmd/swarmstrd
+        run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /dev/null ./cmd/metiqd
 
   parity:
     name: Parity gate

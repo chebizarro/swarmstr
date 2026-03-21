@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# swarmstr installer
-# Usage: curl -fsSL https://swarmstr.com/install.sh | bash
-# Or:    curl -fsSL https://swarmstr.com/install.sh | bash -s -- --prefix /usr/local
+# metiq installer
+# Usage: curl -fsSL https://metiq.dev/install.sh | bash
+# Or:    curl -fsSL https://metiq.dev/install.sh | bash -s -- --prefix /usr/local
 
 set -euo pipefail
 
@@ -19,7 +19,7 @@ warn()    { printf "${WARN}!${NC} %s\n" "$*" >&2; }
 error()   { printf "${ERR}✗${NC} %s\n" "$*" >&2; }
 banner()  {
   printf "\n"
-  printf "${ACCENT}  ⚡ swarmstr installer${NC}\n"
+  printf "${ACCENT}  ⚡ metiq installer${NC}\n"
   printf "${MUTED}  Nostr-native AI agent daemon.${NC}\n"
   printf "\n"
 }
@@ -28,7 +28,7 @@ banner()  {
 PREFIX="${PREFIX:-}"
 TAG="${TAG:-latest}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"   # auto | yes | no
-GITHUB_REPO="swarmstr/swarmstr"
+GITHUB_REPO="${GITHUB_REPO:-metiq/metiq}"
 CONFIG_DIR="${HOME}/.swarmstr"
 DRY_RUN="${DRY_RUN:-}"
 
@@ -102,7 +102,7 @@ resolve_url() {
     [[ -z "$tag" ]] && { error "Could not determine latest release tag"; exit 1; }
     info "Resolved latest tag: $tag"
   fi
-  echo "https://github.com/${GITHUB_REPO}/releases/download/${tag}/swarmstrd-${GOOS}-${GOARCH}"
+  echo "https://github.com/${GITHUB_REPO}/releases/download/${tag}/metiqd-${GOOS}-${GOARCH}"
 }
 
 DOWNLOAD_URL="$(resolve_url "$TAG")"
@@ -111,12 +111,12 @@ info "Download URL: $DOWNLOAD_URL"
 # ── Download ──────────────────────────────────────────────────────────────────
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
-TMP_BIN="${TMP_DIR}/swarmstrd"
+TMP_BIN="${TMP_DIR}/metiqd"
 
 if [[ -n "$DRY_RUN" ]]; then
-  info "[DRY RUN] Would download: $DOWNLOAD_URL → ${BIN_DIR}/swarmstrd"
+  info "[DRY RUN] Would download: $DOWNLOAD_URL → ${BIN_DIR}/metiqd"
 else
-  info "Downloading swarmstrd …"
+  info "Downloading metiqd …"
   if command -v curl &>/dev/null; then
     curl -fsSL --progress-bar "$DOWNLOAD_URL" -o "$TMP_BIN"
   elif command -v wget &>/dev/null; then
@@ -131,15 +131,17 @@ fi
 
 # ── Install binary ────────────────────────────────────────────────────────────
 if [[ -n "$DRY_RUN" ]]; then
-  info "[DRY RUN] Would install to: ${BIN_DIR}/swarmstrd"
+  info "[DRY RUN] Would install to: ${BIN_DIR}/metiqd"
 else
   mkdir -p "$BIN_DIR"
   if [[ -w "$BIN_DIR" ]]; then
-    mv "$TMP_BIN" "${BIN_DIR}/swarmstrd"
+    mv "$TMP_BIN" "${BIN_DIR}/metiqd"
+    ln -sfn metiqd "${BIN_DIR}/swarmstrd"
   else
-    sudo mv "$TMP_BIN" "${BIN_DIR}/swarmstrd"
+    sudo mv "$TMP_BIN" "${BIN_DIR}/metiqd"
+    sudo ln -sfn metiqd "${BIN_DIR}/swarmstrd"
   fi
-  success "Installed to ${BIN_DIR}/swarmstrd"
+  success "Installed to ${BIN_DIR}/metiqd (legacy alias: swarmstrd)"
 fi
 
 # ── Create config dir ─────────────────────────────────────────────────────────
@@ -153,7 +155,7 @@ fi
 
 if [[ -z "$DRY_RUN" && ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<'EOF'
-# swarmstr environment configuration
+# metiq environment configuration (legacy SWARMSTR_* env names remain supported)
 # Copy the relevant keys and fill in your values.
 
 # ── Nostr ─────────────────────────────────────────────────────────────────────
@@ -191,21 +193,21 @@ fi
 install_systemd() {
   local service_dir="${HOME}/.config/systemd/user"
   local unit_src
-  unit_src="$(dirname "$0")/systemd/swarmstrd.service"
+  unit_src="$(dirname "$0")/systemd/metiqd.service"
 
   if [[ ! -f "$unit_src" ]]; then
     # inline the unit if the scripts/ tree isn't alongside the installer
-    unit_src="${TMP_DIR}/swarmstrd.service"
+    unit_src="${TMP_DIR}/metiqd.service"
     cat > "$unit_src" <<EOF
 [Unit]
-Description=swarmstr daemon
+Description=metiq daemon
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 EnvironmentFile=%h/.swarmstr/.env
-ExecStart=${BIN_DIR}/swarmstrd
+ExecStart=${BIN_DIR}/metiqd
 Restart=on-failure
 RestartSec=5
 
@@ -215,9 +217,9 @@ EOF
   fi
 
   mkdir -p "$service_dir"
-  cp "$unit_src" "${service_dir}/swarmstrd.service"
+  cp "$unit_src" "${service_dir}/metiqd.service"
   systemctl --user daemon-reload
-  systemctl --user enable --now swarmstrd.service
+  systemctl --user enable --now metiqd.service
   success "Systemd user service installed and started"
 }
 
