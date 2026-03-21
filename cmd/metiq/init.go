@@ -12,7 +12,7 @@ func runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	var wsDir string
 	var force bool
-	fs.StringVar(&wsDir, "workspace", "", "workspace directory (default: ~/.swarmstr/workspace)")
+	fs.StringVar(&wsDir, "workspace", "", "workspace directory (default: ~/.metiq/workspace)")
 	fs.BoolVar(&force, "force", false, "overwrite existing files")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -23,7 +23,7 @@ func runInit(args []string) error {
 		if err != nil {
 			return fmt.Errorf("cannot determine home directory: %w", err)
 		}
-		wsDir = filepath.Join(home, ".swarmstr", "workspace")
+		wsDir = filepath.Join(home, ".metiq", "workspace")
 	}
 
 	if err := os.MkdirAll(wsDir, 0o755); err != nil {
@@ -60,7 +60,7 @@ func runInit(args []string) error {
 		fmt.Println("  1. Edit SOUL.md    — define who your agent is")
 		fmt.Println("  2. Edit IDENTITY.md — name, vibe, emoji")
 		fmt.Println("  3. Edit USER.md     — who they're helping")
-		fmt.Println("  4. Start the daemon: metiqd --bootstrap ~/.swarmstr/bootstrap.json")
+		fmt.Println("  4. Start the daemon: metiqd --bootstrap ~/.metiq/bootstrap.json")
 		fmt.Println("  5. Send your agent a DM — BOOTSTRAP.md guides the first conversation")
 		fmt.Println("  6. Delete BOOTSTRAP.md once identity is established")
 	}

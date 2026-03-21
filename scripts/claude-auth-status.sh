@@ -5,7 +5,7 @@
 set -euo pipefail
 
 CLAUDE_CREDS="$HOME/.claude/.credentials.json"
-SWARMSTR_AUTH="$HOME/.swarmstr/agents/main/agent/auth-profiles.json"
+METIQ_AUTH="$HOME/.metiq/agents/main/agent/auth-profiles.json"
 
 # Colors for terminal output
 RED='\033[0;31m'
@@ -122,7 +122,7 @@ check_swarmstr_auth() {
         return $?
     fi
 
-    if [ ! -f "$SWARMSTR_AUTH" ]; then
+    if [ ! -f "$METIQ_AUTH" ]; then
         echo "MISSING"
         return 1
     fi
@@ -131,7 +131,7 @@ check_swarmstr_auth() {
     expires=$(jq -r '
         [.profiles | to_entries[] | select(.value.provider == "anthropic") | .value.expires]
         | max // 0
-    ' "$SWARMSTR_AUTH" 2>/dev/null || echo "0")
+    ' "$METIQ_AUTH" 2>/dev/null || echo "0")
 
     calc_status_from_expires "$expires"
 }
@@ -148,7 +148,7 @@ if [ "$OUTPUT_MODE" = "json" ]; then
         swarmstr_expires=$(json_expires_for_anthropic_any)
     else
         claude_expires=$(jq -r '.claudeAiOauth.expiresAt // 0' "$CLAUDE_CREDS" 2>/dev/null || echo "0")
-        swarmstr_expires=$(jq -r '.profiles["anthropic:default"].expires // 0' "$SWARMSTR_AUTH" 2>/dev/null || echo "0")
+        swarmstr_expires=$(jq -r '.profiles["anthropic:default"].expires // 0' "$METIQ_AUTH" 2>/dev/null || echo "0")
     fi
 
     jq -n \
@@ -173,13 +173,13 @@ if [ "$OUTPUT_MODE" = "simple" ]; then
         echo "CLAUDE_EXPIRED"
         exit 1
     elif [[ "$swarmstr_status" == EXPIRED* ]] || [[ "$swarmstr_status" == MISSING* ]]; then
-        echo "SWARMSTR_EXPIRED"
+        echo "METIQ_EXPIRED"
         exit 1
     elif [[ "$claude_status" == EXPIRING* ]]; then
         echo "CLAUDE_EXPIRING"
         exit 2
     elif [[ "$swarmstr_status" == EXPIRING* ]]; then
-        echo "SWARMSTR_EXPIRING"
+        echo "METIQ_EXPIRING"
         exit 2
     else
         echo "OK"
@@ -228,7 +228,7 @@ else
 fi
 
 echo ""
-echo "swarmstr Auth (~/.swarmstr/agents/main/agent/auth-profiles.json):"
+echo "swarmstr Auth (~/.metiq/agents/main/agent/auth-profiles.json):"
 if [ "$USE_JSON" -eq 1 ]; then
     best_profile=$(json_best_anthropic_profile)
     expires=$(json_expires_for_anthropic_any)
@@ -239,11 +239,11 @@ else
         | map(select(.value.provider == "anthropic"))
         | sort_by(.value.expires) | reverse
         | .[0].key // "none"
-    ' "$SWARMSTR_AUTH" 2>/dev/null || echo "none")
+    ' "$METIQ_AUTH" 2>/dev/null || echo "none")
     expires=$(jq -r '
         [.profiles | to_entries[] | select(.value.provider == "anthropic") | .value.expires]
         | max // 0
-    ' "$SWARMSTR_AUTH" 2>/dev/null || echo "0")
+    ' "$METIQ_AUTH" 2>/dev/null || echo "0")
     api_keys=0
 fi
 

@@ -41,11 +41,11 @@ go build ./cmd/metiqd ./cmd/metiq
 
 ### Minimal bootstrap config
 
-Create `~/.swarmstr/bootstrap.json`:
+Create `~/.metiq/bootstrap.json`:
 
 ```json
 {
-  "private_key": "env://SWARMSTR_PRIVATE_KEY",
+  "private_key": "env://METIQ_PRIVATE_KEY",
   "relays": ["wss://relay.damus.io", "wss://nos.lol"],
   "admin_listen_addr": "127.0.0.1:8787",
   "admin_token": "your-secret-token"
@@ -53,7 +53,7 @@ Create `~/.swarmstr/bootstrap.json`:
 ```
 
 ```sh
-export SWARMSTR_PRIVATE_KEY="your-hex-or-nsec-private-key"
+export METIQ_PRIVATE_KEY="your-hex-or-nsec-private-key"
 ./metiqd
 ```
 

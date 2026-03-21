@@ -170,11 +170,11 @@ swarmdock-cd() {
 }
 
 swarmdock-config() {
-  cd ~/.swarmstr
+  cd ~/.metiq
 }
 
 swarmdock-workspace() {
-  cd ~/.swarmstr/workspace
+  cd ~/.metiq/workspace
 }
 
 # Container Access
@@ -220,7 +220,7 @@ swarmdock-help() {
 
   echo -e "${_CLR_BOLD}${_CLR_MAGENTA}⚙️  Navigation${_CLR_RESET}"
   echo -e "  $(_cmd swarmdock-cd)          ${_CLR_DIM}Jump to swarmstr project directory${_CLR_RESET}"
-  echo -e "  $(_cmd swarmdock-config)      ${_CLR_DIM}Open config directory (~/.swarmstr)${_CLR_RESET}"
+  echo -e "  $(_cmd swarmdock-config)      ${_CLR_DIM}Open config directory (~/.metiq)${_CLR_RESET}"
   echo -e "  $(_cmd swarmdock-workspace)   ${_CLR_DIM}Open workspace directory${_CLR_RESET}"
   echo ""
 
@@ -238,6 +238,6 @@ swarmdock-help() {
   echo ""
 
   echo -e "${_CLR_CYAN}💡 All commands guide you through next steps!${_CLR_RESET}"
-  echo -e "${_CLR_BLUE}📚 Config: ${_CLR_RESET}${_CLR_CYAN}~/.swarmstr/config.json${_CLR_RESET}"
+  echo -e "${_CLR_BLUE}📚 Config: ${_CLR_RESET}${_CLR_CYAN}~/.metiq/config.json${_CLR_RESET}"
   echo ""
 }

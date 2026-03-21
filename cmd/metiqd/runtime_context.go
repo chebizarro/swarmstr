@@ -413,7 +413,7 @@ func buildDocsSection(workspaceDir string) string {
 		filepath.Join(workspaceDir, "docs"),
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".swarmstr", "docs"))
+		candidates = append(candidates, filepath.Join(home, ".metiq", "docs"))
 	}
 	for _, d := range candidates {
 		if info, err := os.Stat(d); err == nil && info.IsDir() {

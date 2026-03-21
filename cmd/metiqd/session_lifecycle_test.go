@@ -12,7 +12,7 @@ import (
 )
 
 func TestRotateSessionLifecycle_ArchivesAndCarriesFlags(t *testing.T) {
-	t.Setenv("SWARMSTR_SESSION_ARCHIVE_DIR", t.TempDir())
+	t.Setenv("METIQ_SESSION_ARCHIVE_DIR", t.TempDir())
 
 	repo := state.NewTranscriptRepository(newTestStore(), "author")
 	sessionID := "npub-test-1"
@@ -85,7 +85,7 @@ func TestRotateSessionLifecycle_ArchivesAndCarriesFlags(t *testing.T) {
 }
 
 func TestRotateSessionLifecycle_ForkSeedEnabled(t *testing.T) {
-	t.Setenv("SWARMSTR_SESSION_ARCHIVE_DIR", t.TempDir())
+	t.Setenv("METIQ_SESSION_ARCHIVE_DIR", t.TempDir())
 
 	repo := state.NewTranscriptRepository(newTestStore(), "author")
 	sessionID := "npub-test-fork"

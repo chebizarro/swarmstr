@@ -43,9 +43,9 @@ func TestRunListsGet(t *testing.T) {
 	defer ts.Close()
 
 	addr := strings.TrimPrefix(ts.URL, "http://")
-	oldAddr := os.Getenv("SWARMSTR_ADMIN_ADDR")
-	defer os.Setenv("SWARMSTR_ADMIN_ADDR", oldAddr)
-	_ = os.Setenv("SWARMSTR_ADMIN_ADDR", addr)
+	oldAddr := os.Getenv("METIQ_ADMIN_ADDR")
+	defer os.Setenv("METIQ_ADMIN_ADDR", oldAddr)
+	_ = os.Setenv("METIQ_ADMIN_ADDR", addr)
 
 	out, err := captureStdout(t, func() error {
 		return runLists([]string{"get", "--name", "allow"})
@@ -71,7 +71,7 @@ func TestRunListsPut(t *testing.T) {
 		gotMethod, _ = req["method"].(string)
 		gotParams, _ = req["params"].(map[string]any)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok": true,
+			"ok":     true,
 			"result": map[string]any{"event_id": "evt-123"},
 		})
 	}))
@@ -83,9 +83,9 @@ func TestRunListsPut(t *testing.T) {
 	}
 
 	addr := strings.TrimPrefix(ts.URL, "http://")
-	oldAddr := os.Getenv("SWARMSTR_ADMIN_ADDR")
-	defer os.Setenv("SWARMSTR_ADMIN_ADDR", oldAddr)
-	_ = os.Setenv("SWARMSTR_ADMIN_ADDR", addr)
+	oldAddr := os.Getenv("METIQ_ADMIN_ADDR")
+	defer os.Setenv("METIQ_ADMIN_ADDR", oldAddr)
+	_ = os.Setenv("METIQ_ADMIN_ADDR", addr)
 
 	out, err := captureStdout(t, func() error {
 		return runLists([]string{"put", "--name", "allow", "--item", "npub1x,npub1z", "--file", itemsPath, "--expected-version", "0"})

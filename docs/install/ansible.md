@@ -33,7 +33,7 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
   vars:
     swarmstr_version: "v0.1.0"
     swarmstr_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
-    swarmstr_home: "{{ ansible_env.HOME }}/.swarmstr"
+    swarmstr_home: "{{ ansible_env.HOME }}/.metiq"
 
   tasks:
     - name: Create .local/bin directory
@@ -105,7 +105,7 @@ pi.home ansible_user=swarmstr ansible_host=192.168.1.100
   "private_key": "${NOSTR_PRIVATE_KEY}",
   "relays": {{ swarmstr_relays | to_json }},
   "admin_listen_addr": "127.0.0.1:7423",
-  "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
+  "admin_token": "${METIQ_ADMIN_TOKEN}"
 }
 ```
 
@@ -131,7 +131,7 @@ Type=simple
 ExecStart={{ ansible_env.HOME }}/.local/bin/metiqd
 Restart=on-failure
 RestartSec=5
-EnvironmentFile={{ ansible_env.HOME }}/.swarmstr/env
+EnvironmentFile={{ ansible_env.HOME }}/.metiq/env
 
 [Install]
 WantedBy=default.target
@@ -164,11 +164,11 @@ For NixOS deployments, a swarmstr module can be defined in your system configura
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.services.swarmstr;
+  cfg = config.services.metiq;
   swarmstrd = pkgs.callPackage ./swarmstrd.nix {};
 in
 {
-  options.services.swarmstr = {
+  options.services.metiq = {
     enable = lib.mkEnableOption "swarmstr AI agent daemon";
     user = lib.mkOption { type = lib.types.str; default = "swarmstr"; };
     configFile = lib.mkOption { type = lib.types.path; };
@@ -183,7 +183,7 @@ in
       createHome = true;
     };
 
-    systemd.services.swarmstrd = {
+    systemd.services.metiqd = {
       description = "swarmstr AI agent daemon";
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
@@ -210,7 +210,7 @@ in
 {
   imports = [ ./modules/swarmstr.nix ];
 
-  services.swarmstr = {
+  services.metiq = {
     enable = true;
     configFile = /etc/swarmstr/config.json;
     envFile = /etc/swarmstr/env;

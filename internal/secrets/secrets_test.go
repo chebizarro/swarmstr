@@ -158,19 +158,19 @@ func TestStore_resolve_plainString(t *testing.T) {
 }
 
 func TestStore_resolve_unknown(t *testing.T) {
-	os.Unsetenv("SWARMSTR_NONEXISTENT_VAR_ABC123")
+	os.Unsetenv("METIQ_NONEXISTENT_VAR_ABC123")
 	s := NewStore(nil)
-	_, found := s.Resolve("$SWARMSTR_NONEXISTENT_VAR_ABC123")
+	_, found := s.Resolve("$METIQ_NONEXISTENT_VAR_ABC123")
 	if found {
 		t.Error("expected found=false for unknown var")
 	}
 }
 
 func TestStore_resolveMany(t *testing.T) {
-	t.Setenv("SWARMSTR_TEST_VAR_456", "hello")
+	t.Setenv("METIQ_TEST_VAR_456", "hello")
 
 	s := NewStore(nil)
-	results := s.ResolveMany([]string{"$SWARMSTR_TEST_VAR_456", "plaintext", "$UNKNOWN_SWARMSTR_VAR_XYZ"})
+	results := s.ResolveMany([]string{"$METIQ_TEST_VAR_456", "plaintext", "$UNKNOWN_METIQ_VAR_XYZ"})
 
 	if len(results) != 3 {
 		t.Fatalf("len = %d, want 3", len(results))

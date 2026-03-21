@@ -12,24 +12,24 @@ import (
 	"metiq/internal/config"
 )
 
-// adminClient is a minimal HTTP client for the swarmstrd admin API.
+// adminClient is a minimal HTTP client for the metiqd admin API.
 type adminClient struct {
 	addr  string
 	token string
 }
 
 // resolveAdminClient builds an adminClient from the --admin-addr flag (or env
-// SWARMSTR_ADMIN_ADDR) and the --admin-token flag (or env SWARMSTR_ADMIN_TOKEN).
+// METIQ_ADMIN_ADDR) and the --admin-token flag (or env METIQ_ADMIN_TOKEN).
 // If neither is set, it falls back to admin_listen_addr in the bootstrap config.
 func resolveAdminClient(addrFlag, tokenFlag, bootstrapPath string) (*adminClient, error) {
 	addr := addrFlag
 	token := tokenFlag
 
 	if addr == "" {
-		addr = os.Getenv("SWARMSTR_ADMIN_ADDR")
+		addr = os.Getenv("METIQ_ADMIN_ADDR")
 	}
 	if token == "" {
-		token = os.Getenv("SWARMSTR_ADMIN_TOKEN")
+		token = os.Getenv("METIQ_ADMIN_TOKEN")
 	}
 
 	// Fall back to bootstrap config (lenient read — no validation).
@@ -60,8 +60,8 @@ func resolveAdminClient(addrFlag, tokenFlag, bootstrapPath string) (*adminClient
 	if addr == "" {
 		return nil, fmt.Errorf(
 			"admin API address not configured.\n" +
-				"Set admin_listen_addr in ~/.swarmstr/bootstrap.json,\n" +
-				"or pass --admin-addr, or set SWARMSTR_ADMIN_ADDR.",
+				"Set admin_listen_addr in ~/.metiq/bootstrap.json,\n" +
+				"or pass --admin-addr, or set METIQ_ADMIN_ADDR.",
 		)
 	}
 

@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-SWARMSTR_USER="${SWARMSTR_PODMAN_USER:-swarmstr}"
+METIQ_USER="${METIQ_PODMAN_USER:-swarmstr}"
 
 resolve_user_home() {
   local user="$1"
@@ -31,9 +31,9 @@ resolve_user_home() {
   printf '%s' "$home"
 }
 
-SWARMSTR_HOME="$(resolve_user_home "$SWARMSTR_USER")"
-SWARMSTR_UID="$(id -u "$SWARMSTR_USER" 2>/dev/null || true)"
-LAUNCH_SCRIPT="$SWARMSTR_HOME/run-openclaw-podman.sh"
+METIQ_HOME="$(resolve_user_home "$METIQ_USER")"
+METIQ_UID="$(id -u "$METIQ_USER" 2>/dev/null || true)"
+LAUNCH_SCRIPT="$METIQ_HOME/run-openclaw-podman.sh"
 
 # Legacy: setup-host → run setup-podman.sh
 if [[ "${1:-}" == "setup-host" ]]; then
@@ -50,9 +50,9 @@ fi
 # --- Step 2: launch (from repo: re-exec as openclaw in safe cwd; from openclaw home: run container) ---
 if [[ "${1:-}" == "launch" ]]; then
   shift
-  if [[ -n "${SWARMSTR_UID:-}" && "$(id -u)" -ne "$SWARMSTR_UID" ]]; then
+  if [[ -n "${METIQ_UID:-}" && "$(id -u)" -ne "$METIQ_UID" ]]; then
     # Exec as swarmstr with cwd=/tmp so a nologin user never inherits an invalid cwd.
-    exec sudo -u "$SWARMSTR_USER" env HOME="$SWARMSTR_HOME" PATH="$PATH" TERM="${TERM:-}" \
+    exec sudo -u "$METIQ_USER" env HOME="$METIQ_HOME" PATH="$PATH" TERM="${TERM:-}" \
       bash -c 'cd /tmp && exec '"$LAUNCH_SCRIPT"' "$@"' _ "$@"
   fi
   # Already openclaw; fall through to container run (with remaining args, e.g. "setup")
@@ -60,24 +60,24 @@ fi
 
 # --- Container run (script in openclaw home, run as openclaw) ---
 EFFECTIVE_HOME="${HOME:-}"
-if [[ -n "${SWARMSTR_UID:-}" && "$(id -u)" -eq "$SWARMSTR_UID" ]]; then
-  EFFECTIVE_HOME="$SWARMSTR_HOME"
-  export HOME="$SWARMSTR_HOME"
+if [[ -n "${METIQ_UID:-}" && "$(id -u)" -eq "$METIQ_UID" ]]; then
+  EFFECTIVE_HOME="$METIQ_HOME"
+  export HOME="$METIQ_HOME"
 fi
 if [[ -z "${EFFECTIVE_HOME:-}" ]]; then
-  EFFECTIVE_HOME="${SWARMSTR_HOME:-/tmp}"
+  EFFECTIVE_HOME="${METIQ_HOME:-/tmp}"
 fi
-CONFIG_DIR="${SWARMSTR_CONFIG_DIR:-$EFFECTIVE_HOME/.swarmstr}"
-ENV_FILE="${SWARMSTR_PODMAN_ENV:-$CONFIG_DIR/.env}"
-WORKSPACE_DIR="${SWARMSTR_WORKSPACE_DIR:-$CONFIG_DIR/workspace}"
-CONTAINER_NAME="${SWARMSTR_PODMAN_CONTAINER:-swarmstrd}"
-SWARMSTR_IMAGE="${SWARMSTR_PODMAN_IMAGE:-swarmstrd:local}"
-PODMAN_PULL="${SWARMSTR_PODMAN_PULL:-never}"
-HOST_GATEWAY_PORT="${SWARMSTR_PODMAN_GATEWAY_HOST_PORT:-${SWARMSTR_GATEWAY_PORT:-18789}}"
-HOST_BRIDGE_PORT="${SWARMSTR_PODMAN_BRIDGE_HOST_PORT:-${SWARMSTR_BRIDGE_PORT:-18790}}"
+CONFIG_DIR="${METIQ_CONFIG_DIR:-$EFFECTIVE_HOME/.metiq}"
+ENV_FILE="${METIQ_PODMAN_ENV:-$CONFIG_DIR/.env}"
+WORKSPACE_DIR="${METIQ_WORKSPACE_DIR:-$CONFIG_DIR/workspace}"
+CONTAINER_NAME="${METIQ_PODMAN_CONTAINER:-swarmstrd}"
+METIQ_IMAGE="${METIQ_PODMAN_IMAGE:-swarmstrd:local}"
+PODMAN_PULL="${METIQ_PODMAN_PULL:-never}"
+HOST_GATEWAY_PORT="${METIQ_PODMAN_GATEWAY_HOST_PORT:-${METIQ_GATEWAY_PORT:-18789}}"
+HOST_BRIDGE_PORT="${METIQ_PODMAN_BRIDGE_HOST_PORT:-${METIQ_BRIDGE_PORT:-18790}}"
 # Keep Podman default local-only unless explicitly overridden.
 # Non-loopback binds require gateway.controlUi.allowedOrigins (security hardening).
-GATEWAY_BIND="${SWARMSTR_GATEWAY_BIND:-loopback}"
+GATEWAY_BIND="${METIQ_GATEWAY_BIND:-loopback}"
 
 # Safe cwd for podman (openclaw is nologin; avoid inherited cwd from sudo)
 cd "$EFFECTIVE_HOME" 2>/dev/null || cd /tmp 2>/dev/null || true
@@ -136,15 +136,15 @@ PY
     od -An -N32 -tx1 /dev/urandom | tr -d " \n"
     return 0
   fi
-  echo "Missing dependency: need openssl or python3 (or od) to generate SWARMSTR_GATEWAY_TOKEN." >&2
+  echo "Missing dependency: need openssl or python3 (or od) to generate METIQ_GATEWAY_TOKEN." >&2
   exit 1
 }
 
-if [[ -z "${SWARMSTR_GATEWAY_TOKEN:-}" ]]; then
-  export SWARMSTR_GATEWAY_TOKEN="$(generate_token_hex_32)"
+if [[ -z "${METIQ_GATEWAY_TOKEN:-}" ]]; then
+  export METIQ_GATEWAY_TOKEN="$(generate_token_hex_32)"
   mkdir -p "$(dirname "$ENV_FILE")"
-  upsert_env_var "$ENV_FILE" "SWARMSTR_GATEWAY_TOKEN" "$SWARMSTR_GATEWAY_TOKEN"
-  echo "Generated SWARMSTR_GATEWAY_TOKEN and wrote it to $ENV_FILE." >&2
+  upsert_env_var "$ENV_FILE" "METIQ_GATEWAY_TOKEN" "$METIQ_GATEWAY_TOKEN"
+  echo "Generated METIQ_GATEWAY_TOKEN and wrote it to $ENV_FILE." >&2
 fi
 
 # The gateway refuses to start unless gateway.mode=local is set in config.
@@ -156,7 +156,7 @@ if [[ ! -f "$CONFIG_JSON" ]]; then
   echo "Created $CONFIG_JSON (minimal gateway.mode=local)." >&2
 fi
 
-PODMAN_USERNS="${SWARMSTR_PODMAN_USERNS:-keep-id}"
+PODMAN_USERNS="${METIQ_PODMAN_USERNS:-keep-id}"
 USERNS_ARGS=()
 RUN_USER_ARGS=()
 case "$PODMAN_USERNS" in
@@ -164,7 +164,7 @@ case "$PODMAN_USERNS" in
   keep-id) USERNS_ARGS=(--userns=keep-id) ;;
   host) USERNS_ARGS=(--userns=host) ;;
   *)
-    echo "Unsupported SWARMSTR_PODMAN_USERNS=$PODMAN_USERNS (expected: keep-id, auto, host)." >&2
+    echo "Unsupported METIQ_PODMAN_USERNS=$PODMAN_USERNS (expected: keep-id, auto, host)." >&2
     exit 2
     ;;
 esac
@@ -175,7 +175,7 @@ if [[ "$PODMAN_USERNS" == "keep-id" ]]; then
   RUN_USER_ARGS=(--user "${RUN_UID}:${RUN_GID}")
   echo "Starting container as uid=${RUN_UID} gid=${RUN_GID} (must match owner of $CONFIG_DIR)" >&2
 else
-  echo "Starting container without --user (SWARMSTR_PODMAN_USERNS=$PODMAN_USERNS), mounts may require ownership fixes." >&2
+  echo "Starting container without --user (METIQ_PODMAN_USERNS=$PODMAN_USERNS), mounts may require ownership fixes." >&2
 fi
 
 ENV_FILE_ARGS=()
@@ -186,11 +186,11 @@ if [[ "$RUN_SETUP" == true ]]; then
     --init \
     "${USERNS_ARGS[@]}" "${RUN_USER_ARGS[@]}" \
     -e HOME=/home/node -e TERM=xterm-256color -e BROWSER=echo \
-    -e SWARMSTR_GATEWAY_TOKEN="$SWARMSTR_GATEWAY_TOKEN" \
-    -v "$CONFIG_DIR:/home/swarmstr/.swarmstr:rw" \
-    -v "$WORKSPACE_DIR:/home/swarmstr/.swarmstr/workspace:rw" \
+    -e METIQ_GATEWAY_TOKEN="$METIQ_GATEWAY_TOKEN" \
+    -v "$CONFIG_DIR:/home/swarmstr/.metiq:rw" \
+    -v "$WORKSPACE_DIR:/home/swarmstr/.metiq/workspace:rw" \
     "${ENV_FILE_ARGS[@]}" \
-    "$SWARMSTR_IMAGE" \
+    "$METIQ_IMAGE" \
     /usr/local/bin/swarmstrd onboard "$@"
 fi
 
@@ -199,13 +199,13 @@ podman run --pull="$PODMAN_PULL" -d --replace \
   --init \
   "${USERNS_ARGS[@]}" "${RUN_USER_ARGS[@]}" \
   -e HOME=/home/node -e TERM=xterm-256color \
-  -e SWARMSTR_GATEWAY_TOKEN="$SWARMSTR_GATEWAY_TOKEN" \
+  -e METIQ_GATEWAY_TOKEN="$METIQ_GATEWAY_TOKEN" \
   "${ENV_FILE_ARGS[@]}" \
-  -v "$CONFIG_DIR:/home/swarmstr/.swarmstr:rw" \
-  -v "$WORKSPACE_DIR:/home/swarmstr/.swarmstr/workspace:rw" \
+  -v "$CONFIG_DIR:/home/swarmstr/.metiq:rw" \
+  -v "$WORKSPACE_DIR:/home/swarmstr/.metiq/workspace:rw" \
   -p "${HOST_GATEWAY_PORT}:18789" \
   -p "${HOST_BRIDGE_PORT}:18790" \
-  "$SWARMSTR_IMAGE" \
+  "$METIQ_IMAGE" \
   /usr/local/bin/swarmstrd
 
 echo "Container $CONTAINER_NAME started. Dashboard: http://127.0.0.1:${HOST_GATEWAY_PORT}/"

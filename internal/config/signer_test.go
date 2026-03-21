@@ -17,8 +17,8 @@ func TestResolvePrivateKeyPrefersPrivateKey(t *testing.T) {
 }
 
 func TestResolvePrivateKeyFromEnv(t *testing.T) {
-	t.Setenv("SWARMSTR_TEST_SIGNER", "nsec1test")
-	got, err := ResolvePrivateKey(BootstrapConfig{SignerURL: "env://SWARMSTR_TEST_SIGNER"})
+	t.Setenv("METIQ_TEST_SIGNER", "nsec1test")
+	got, err := ResolvePrivateKey(BootstrapConfig{SignerURL: "env://METIQ_TEST_SIGNER"})
 	if err != nil {
 		t.Fatalf("resolve error: %v", err)
 	}

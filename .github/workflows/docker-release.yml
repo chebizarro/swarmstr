@@ -85,7 +85,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
-            SWARMSTR_VARIANT=default
+            METIQ_VARIANT=default
           cache-from: type=gha,scope=default
           cache-to: type=gha,mode=max,scope=default
 
@@ -113,7 +113,7 @@ jobs:
           labels: ${{ steps.meta-slim.outputs.labels }}
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
-            SWARMSTR_VARIANT=slim
+            METIQ_VARIANT=slim
           cache-from: type=gha,scope=slim
           cache-to: type=gha,mode=max,scope=slim
 

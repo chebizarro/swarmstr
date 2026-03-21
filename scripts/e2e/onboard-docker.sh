@@ -15,13 +15,13 @@ docker run --rm -t "$IMAGE_NAME" bash -lc '
 	  ONBOARD_FLAGS="--flow quickstart --auth-choice skip --skip-channels --skip-skills --skip-daemon --skip-ui"
 	  # metiqd is a native Go binary compiled to dist/metiqd.
 	  if [ -f dist/metiqd ]; then
-	    SWARMSTR_ENTRY="dist/metiqd"
+	    METIQ_ENTRY="dist/metiqd"
 	  else
 	    echo "Missing dist/metiqd (build output — run: go build -o dist/metiqd ./cmd/metiqd):"
 	    ls -la dist || true
 	    exit 1
 	  fi
-	  export SWARMSTR_ENTRY
+	  export METIQ_ENTRY
 
   # Provide a minimal trash shim to avoid noisy "missing trash" logs in containers.
   export PATH="/tmp/openclaw-bin:$PATH"
@@ -104,7 +104,7 @@ TRASH
   }
 
 	  start_gateway() {
-	    "$SWARMSTR_ENTRY" gateway --port 18789 --bind loopback --allow-unconfigured > /tmp/gateway-e2e.log 2>&1 &
+	    "$METIQ_ENTRY" gateway --port 18789 --bind loopback --allow-unconfigured > /tmp/gateway-e2e.log 2>&1 &
 	    GATEWAY_PID="$!"
 	  }
 
@@ -205,7 +205,7 @@ TRASH
     local validate_fn="${4:-}"
 
 	    # Default onboarding command wrapper.
-	    run_wizard_cmd "$case_name" "$home_dir" ""$SWARMSTR_ENTRY" onboard $ONBOARD_FLAGS" "$send_fn" true "$validate_fn"
+	    run_wizard_cmd "$case_name" "$home_dir" ""$METIQ_ENTRY" onboard $ONBOARD_FLAGS" "$send_fn" true "$validate_fn"
 	  }
 
   make_home() {
@@ -215,10 +215,10 @@ TRASH
   set_isolated_swarmstr_env() {
     local home_dir="$1"
     export HOME="$home_dir"
-    export SWARMSTR_HOME="$home_dir"
-    export SWARMSTR_STATE_DIR="$home_dir/.swarmstr"
-    export SWARMSTR_CONFIG_PATH="$SWARMSTR_STATE_DIR/config.json"
-    mkdir -p "$SWARMSTR_STATE_DIR"
+    export METIQ_HOME="$home_dir"
+    export METIQ_STATE_DIR="$home_dir/.metiq"
+    export METIQ_CONFIG_PATH="$METIQ_STATE_DIR/config.json"
+    mkdir -p "$METIQ_STATE_DIR"
   }
 
   assert_file() {
@@ -292,7 +292,7 @@ TRASH
     local home_dir
     home_dir="$(make_home local-basic)"
     set_isolated_swarmstr_env "$home_dir"
-    "$SWARMSTR_ENTRY" onboard \
+    "$METIQ_ENTRY" onboard \
 	      --non-interactive \
 	      --accept-risk \
       --flow quickstart \
@@ -304,9 +304,9 @@ TRASH
       --skip-health
 
     # Assert config + workspace scaffolding.
-    workspace_dir="$SWARMSTR_STATE_DIR/workspace"
-    config_path="$SWARMSTR_CONFIG_PATH"
-    sessions_dir="$SWARMSTR_STATE_DIR/agents/main/sessions"
+    workspace_dir="$METIQ_STATE_DIR/workspace"
+    config_path="$METIQ_CONFIG_PATH"
+    sessions_dir="$METIQ_STATE_DIR/agents/main/sessions"
 
     assert_file "$config_path"
     assert_dir "$sessions_dir"
@@ -368,14 +368,14 @@ NODE
     home_dir="$(make_home remote-non-interactive)"
     set_isolated_swarmstr_env "$home_dir"
 	    # Smoke test non-interactive remote config write.
-	    "$SWARMSTR_ENTRY" onboard --non-interactive --accept-risk \
+	    "$METIQ_ENTRY" onboard --non-interactive --accept-risk \
 	      --mode remote \
 	      --remote-url ws://gateway.local:18789 \
       --remote-token remote-token \
       --skip-skills \
       --skip-health
 
-    config_path="$SWARMSTR_CONFIG_PATH"
+    config_path="$METIQ_CONFIG_PATH"
     assert_file "$config_path"
 
     CONFIG_PATH="$config_path" node --input-type=module - <<'"'"'NODE'"'"'
@@ -410,7 +410,7 @@ NODE
     home_dir="$(make_home reset-config)"
     set_isolated_swarmstr_env "$home_dir"
     # Seed a remote config to exercise reset path.
-	    cat > "$SWARMSTR_CONFIG_PATH" <<'"'"'JSON'"'"'
+	    cat > "$METIQ_CONFIG_PATH" <<'"'"'JSON'"'"'
 {
   "meta": {},
   "agents": { "defaults": { "workspace": "/root/old" } },
@@ -421,7 +421,7 @@ NODE
 }
 JSON
 
-	    "$SWARMSTR_ENTRY" onboard \
+	    "$METIQ_ENTRY" onboard \
 	      --non-interactive \
 	      --accept-risk \
       --flow quickstart \
@@ -433,7 +433,7 @@ JSON
       --skip-ui \
       --skip-health
 
-    config_path="$SWARMSTR_CONFIG_PATH"
+    config_path="$METIQ_CONFIG_PATH"
     assert_file "$config_path"
 
     CONFIG_PATH="$config_path" node --input-type=module - <<'"'"'NODE'"'"'
@@ -464,9 +464,9 @@ NODE
 	    local home_dir
 	    home_dir="$(make_home channels)"
 	    # Channels-only configure flow.
-	    run_wizard_cmd channels "$home_dir" ""$SWARMSTR_ENTRY" configure --section channels" send_channels_flow
+	    run_wizard_cmd channels "$home_dir" ""$METIQ_ENTRY" configure --section channels" send_channels_flow
 
-    config_path="$SWARMSTR_CONFIG_PATH"
+    config_path="$METIQ_CONFIG_PATH"
     assert_file "$config_path"
 
     CONFIG_PATH="$config_path" node --input-type=module - <<'"'"'NODE'"'"'
@@ -505,7 +505,7 @@ NODE
     home_dir="$(make_home skills)"
     set_isolated_swarmstr_env "$home_dir"
     # Seed skills config to ensure it survives the wizard.
-	    cat > "$SWARMSTR_CONFIG_PATH" <<'"'"'JSON'"'"'
+	    cat > "$METIQ_CONFIG_PATH" <<'"'"'JSON'"'"'
 {
   "meta": {},
   "skills": {
@@ -515,9 +515,9 @@ NODE
 }
 JSON
 
-	    run_wizard_cmd skills "$home_dir" ""$SWARMSTR_ENTRY" configure --section skills" send_skills_flow
+	    run_wizard_cmd skills "$home_dir" ""$METIQ_ENTRY" configure --section skills" send_skills_flow
 
-    config_path="$SWARMSTR_CONFIG_PATH"
+    config_path="$METIQ_CONFIG_PATH"
     assert_file "$config_path"
 
     CONFIG_PATH="$config_path" node --input-type=module - <<'"'"'NODE'"'"'

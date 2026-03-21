@@ -5,7 +5,7 @@
 // be enabled/disabled by the user.
 //
 // Bundled hooks ship with the daemon; managed hooks live in
-// ~/.swarmstr/hooks/.
+// ~/.metiq/hooks/.
 package hooks
 
 import (
@@ -44,10 +44,10 @@ type HookMetaWrap struct {
 
 // OpenClawHookMeta is the `metadata.openclaw:` block.
 type OpenClawHookMeta struct {
-	Emoji    string           `yaml:"emoji"`
-	Events   []string         `yaml:"events"`
-	Always   bool             `yaml:"always"`
-	Requires *HookRequires    `yaml:"requires"`
+	Emoji    string            `yaml:"emoji"`
+	Events   []string          `yaml:"events"`
+	Always   bool              `yaml:"always"`
+	Requires *HookRequires     `yaml:"requires"`
 	Install  []HookInstallSpec `yaml:"install"`
 }
 
@@ -62,11 +62,11 @@ type HookRequires struct {
 
 // HookInstallSpec describes how to install/locate a hook.
 type HookInstallSpec struct {
-	ID         string `yaml:"id"`
-	Kind       string `yaml:"kind"` // "bundled" | "npm" | "git"
-	Label      string `yaml:"label"`
-	Package    string `yaml:"package"`
-	Repository string `yaml:"repository"`
+	ID         string   `yaml:"id"`
+	Kind       string   `yaml:"kind"` // "bundled" | "npm" | "git"
+	Label      string   `yaml:"label"`
+	Package    string   `yaml:"package"`
+	Repository string   `yaml:"repository"`
 	Bins       []string `yaml:"bins"`
 }
 
@@ -171,8 +171,8 @@ type HookHandler func(event *Event) error
 // Manager manages loaded hooks and dispatches events.
 type Manager struct {
 	mu      sync.RWMutex
-	hooks   []*Hook          // all loaded hooks
-	enabled map[string]bool  // overrides: hookKey → enabled
+	hooks   []*Hook         // all loaded hooks
+	enabled map[string]bool // overrides: hookKey → enabled
 }
 
 // NewManager creates an empty Manager.
@@ -287,19 +287,19 @@ func (m *Manager) Info(hookKey string) *HookStatus {
 
 // HookStatus is the data returned by hooks.list / hooks.info.
 type HookStatus struct {
-	HookKey     string              `json:"hookKey"`
-	Name        string              `json:"name"`
-	Description string              `json:"description"`
-	Source      Source              `json:"source"`
-	Emoji       string              `json:"emoji"`
-	Homepage    string              `json:"homepage"`
-	Events      []string            `json:"events"`
-	Always      bool                `json:"always"`
-	Enabled     bool                `json:"enabled"`
-	Eligible    bool                `json:"eligible"`
-	FilePath    string              `json:"filePath"`
-	Install     []HookInstallSpec   `json:"install"`
-	Requires    *HookRequires       `json:"requires,omitempty"`
+	HookKey     string            `json:"hookKey"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Source      Source            `json:"source"`
+	Emoji       string            `json:"emoji"`
+	Homepage    string            `json:"homepage"`
+	Events      []string          `json:"events"`
+	Always      bool              `json:"always"`
+	Enabled     bool              `json:"enabled"`
+	Eligible    bool              `json:"eligible"`
+	FilePath    string            `json:"filePath"`
+	Install     []HookInstallSpec `json:"install"`
+	Requires    *HookRequires     `json:"requires,omitempty"`
 }
 
 func (m *Manager) statusOf(h *Hook) HookStatus {
@@ -392,11 +392,11 @@ func ScanDir(dir string, src Source) ([]*Hook, error) {
 
 // BundledHooksDir returns the directory containing bundled hooks.
 // Resolution order:
-//  1. SWARMSTR_BUNDLED_HOOKS_DIR env
+//  1. METIQ_BUNDLED_HOOKS_DIR env
 //  2. hooks/ sibling to the running binary
 //  3. Walk up from cwd looking for hooks/ (dev mode)
 func BundledHooksDir() string {
-	if d := os.Getenv("SWARMSTR_BUNDLED_HOOKS_DIR"); d != "" {
+	if d := os.Getenv("METIQ_BUNDLED_HOOKS_DIR"); d != "" {
 		return d
 	}
 	// Binary sibling
@@ -439,16 +439,16 @@ func looksLikeBundledHooksDir(dir string) bool {
 }
 
 // ManagedHooksDir returns the directory for user-managed hooks.
-// SWARMSTR_MANAGED_HOOKS_DIR env overrides the default.
+// METIQ_MANAGED_HOOKS_DIR env overrides the default.
 func ManagedHooksDir() string {
-	if d := os.Getenv("SWARMSTR_MANAGED_HOOKS_DIR"); d != "" {
+	if d := os.Getenv("METIQ_MANAGED_HOOKS_DIR"); d != "" {
 		return d
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".swarmstr", "hooks")
+	return filepath.Join(home, ".metiq", "hooks")
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -592,7 +592,7 @@ func MarshalStatus(statuses []HookStatus) (json.RawMessage, error) {
 // ────────────────────────────────────────────────────────────────────────────
 
 // ShellHandlerTimeout is the maximum time a shell hook handler may run.
-// Override via the SWARMSTR_HOOK_TIMEOUT_SEC environment variable.
+// Override via the METIQ_HOOK_TIMEOUT_SEC environment variable.
 const ShellHandlerTimeout = 30 * time.Second
 
 // MakeShellHandler returns a HookHandler that executes scriptPath as a shell

@@ -8,7 +8,7 @@ verify_binary() {
   # Search PATH and common install locations.
   cmd_path="$(command -v "$binary" 2>/dev/null || true)"
   if [[ -z "$cmd_path" ]]; then
-    for dir in /usr/local/bin "$HOME/.local/bin" "$HOME/.swarmstr/bin"; do
+    for dir in /usr/local/bin "$HOME/.local/bin" "$HOME/.metiq/bin"; do
       if [[ -x "$dir/$binary" ]]; then
         cmd_path="$dir/$binary"
         break

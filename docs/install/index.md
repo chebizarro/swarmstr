@@ -46,7 +46,7 @@ git clone https://github.com/your-org/metiq.git
 cd metiq
 go build -o dist/metiqd ./cmd/metiqd/
 go build -o dist/metiq ./cmd/metiq/
-sudo cp dist/swarmstrd /usr/local/bin/metiqd
+sudo cp dist/metiqd /usr/local/bin/metiqd
 ```
 
 ### Docker
@@ -56,7 +56,7 @@ docker run -d \
   --name metiqd \
   -e NOSTR_PRIVATE_KEY="nsec1..." \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
-  -v ~/.swarmstr:/data/.swarmstr \
+  -v ~/.metiq:/data/.metiq \
   ghcr.io/your-org/metiq:latest
 ```
 
@@ -71,10 +71,10 @@ See [Docker](/install/docker) for full setup.
 
 ## After installing
 
-1. Create `~/.swarmstr/bootstrap.json` with your private key and relays — see [Setup](/start/setup).
-2. Create `~/.swarmstr/config.json` — see [Configuration](/gateway/configuration).
-3. Start the daemon: `metiqd` or `systemctl start metiqd`. Legacy `swarmstrd` alias remains available where installed.
-4. Verify: `metiq status`. Legacy `swarmstr` alias remains available where installed.
+1. Create `~/.metiq/bootstrap.json` with your private key and relays — see [Setup](/start/setup).
+2. Create `~/.metiq/config.json` — see [Configuration](/gateway/configuration).
+3. Start the daemon: `metiqd` or `systemctl start metiqd`. 
+4. Verify: `metiq status`. 
 
 ## Verify installation
 

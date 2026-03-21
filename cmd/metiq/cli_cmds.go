@@ -2190,7 +2190,6 @@ _metiq_completions() {
   COMPREPLY=($(compgen -W "${commands}" -- "${cur}"))
 }
 complete -F _metiq_completions metiq
-complete -F _metiq_completions swarmstr
 `
 
 const zshCompletion = `# metiq zsh completion
@@ -2223,14 +2222,13 @@ _metiq() {
   )
   _describe 'commands' commands
 }
-compdef _metiq metiq swarmstr
+compdef _metiq metiq
 `
 
 const fishCompletion = `# metiq fish completion
 # Add to ~/.config/fish/completions/metiq.fish or: metiq completion fish | source
 for cmd in version status health logs models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw
   complete -c metiq -f -n '__fish_use_subcommand' -a $cmd
-  complete -c swarmstr -f -n '__fish_use_subcommand' -a $cmd
 end
 `
 
@@ -2251,40 +2249,34 @@ func clampLen(s string, n int) int {
 
 // ─── daemon ───────────────────────────────────────────────────────────────────
 
-// defaultPIDFile returns ~/.swarmstr/swarmstrd.pid for legacy compatibility.
+// defaultPIDFile returns ~/.metiq/metiqd.pid.
 func defaultPIDFile() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".swarmstr", "swarmstrd.pid")
+	return filepath.Join(home, ".metiq", "metiqd.pid")
 }
 
-// defaultDaemonLog returns ~/.swarmstr/swarmstrd.log for legacy compatibility.
+// defaultDaemonLog returns ~/.metiq/metiqd.log.
 func defaultDaemonLog() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".swarmstr", "swarmstrd.log")
+	return filepath.Join(home, ".metiq", "metiqd.log")
 }
 
-// resolveSwarmstrdBin returns the path to the daemon binary. It prefers the
-// renamed metiqd binary, while still accepting legacy swarmstrd for compatibility.
-func resolveSwarmstrdBin(override string) (string, error) {
+// resolveDaemonBin returns the path to the metiqd binary.
+func resolveDaemonBin(override string) (string, error) {
 	if override != "" {
 		return override, nil
 	}
 	self, err := os.Executable()
 	if err == nil {
-		for _, name := range []string{"metiqd", "swarmstrd"} {
-			candidate := filepath.Join(filepath.Dir(self), name)
-			if runtime.GOOS == "windows" {
-				candidate += ".exe"
-			}
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate, nil
-			}
+		candidate := filepath.Join(filepath.Dir(self), "metiqd")
+		if runtime.GOOS == "windows" {
+			candidate += ".exe"
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
 		}
 	}
-	if path, err := exec.LookPath("metiqd"); err == nil {
-		return path, nil
-	}
-	return exec.LookPath("swarmstrd")
+	return exec.LookPath("metiqd")
 }
 
 // readPID reads and parses the PID from a pid file.  Returns 0 and no error if
@@ -2327,7 +2319,7 @@ func processCommandLine(pid int) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func looksLikeSwarmstrdCommand(cmdline string) bool {
+func looksLikeMetiqdCommand(cmdline string) bool {
 	cmdline = strings.TrimSpace(cmdline)
 	if cmdline == "" {
 		return false
@@ -2338,12 +2330,12 @@ func looksLikeSwarmstrdCommand(cmdline string) bool {
 	}
 	procPath := strings.ReplaceAll(fields[0], "\\", "/")
 	exe := strings.ToLower(filepath.Base(procPath))
-	return exe == "metiqd" || exe == "metiqd.exe" || exe == "swarmstrd" || exe == "swarmstrd.exe"
+	return exe == "metiqd" || exe == "metiqd.exe"
 }
 
-// processLooksLikeSwarmstrd performs strict identity validation for daemon PID
+// processLooksLikeMetiqd performs strict identity validation for daemon PID
 // files to avoid signaling unrelated recycled PIDs.
-func processLooksLikeSwarmstrd(pid int) (bool, string, error) {
+func processLooksLikeMetiqd(pid int) (bool, string, error) {
 	cmdline, err := processCommandLine(pid)
 	if err != nil {
 		return false, "", err
@@ -2351,7 +2343,7 @@ func processLooksLikeSwarmstrd(pid int) (bool, string, error) {
 	if cmdline == "" {
 		return false, "", nil
 	}
-	if looksLikeSwarmstrdCommand(cmdline) {
+	if looksLikeMetiqdCommand(cmdline) {
 		return true, cmdline, nil
 	}
 	return false, cmdline, nil
@@ -2361,9 +2353,9 @@ func runDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var pidFile, logFile, bin, bootstrapPath, adminAddr, adminToken string
-	fs.StringVar(&pidFile, "pid-file", "", "PID file path (default: ~/.swarmstr/swarmstrd.pid)")
-	fs.StringVar(&logFile, "log-file", "", "log file path for start (default: ~/.swarmstr/swarmstrd.log)")
-	fs.StringVar(&bin, "bin", "", "path to metiqd binary (default: sibling metiqd/swarmstrd or PATH)")
+	fs.StringVar(&pidFile, "pid-file", "", "PID file path (default: ~/.metiq/metiqd.pid)")
+	fs.StringVar(&logFile, "log-file", "", "log file path for start (default: ~/.metiq/metiqd.log)")
+	fs.StringVar(&bin, "bin", "", "path to metiqd binary (default: sibling or PATH)")
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path forwarded to metiqd")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (for status check)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
@@ -2407,17 +2399,17 @@ func daemonStart(bin, pidFile, logFile, bootstrapPath string, extraArgs []string
 		return err
 	}
 	if pid > 0 && pidAlive(pid) {
-		isDaemon, cmdline, idErr := processLooksLikeSwarmstrd(pid)
+		isDaemon, cmdline, idErr := processLooksLikeMetiqd(pid)
 		if idErr != nil {
 			return fmt.Errorf("daemon pid %d is alive but identity check failed: %w", pid, idErr)
 		}
 		if isDaemon {
 			return fmt.Errorf("daemon already running (pid=%d, pid-file=%s)", pid, pidFile)
 		}
-		return fmt.Errorf("pid file %s points to non-metiqd/swarmstrd process pid=%d (%q); remove stale pid file manually", pidFile, pid, cmdline)
+		return fmt.Errorf("pid file %s points to non-metiqd process pid=%d (%q); remove stale pid file manually", pidFile, pid, cmdline)
 	}
 
-	metiqd, err := resolveSwarmstrdBin(bin)
+	metiqd, err := resolveDaemonBin(bin)
 	if err != nil {
 		return fmt.Errorf("cannot find metiqd binary: %w\nSet --bin or ensure metiqd (or legacy swarmstrd) is on PATH", err)
 	}
@@ -2466,12 +2458,12 @@ func daemonStop(pidFile string) error {
 		_ = os.Remove(pidFile)
 		return nil
 	}
-	isDaemon, cmdline, err := processLooksLikeSwarmstrd(pid)
+	isDaemon, cmdline, err := processLooksLikeMetiqd(pid)
 	if err != nil {
 		return fmt.Errorf("cannot validate process identity for pid %d: %w", pid, err)
 	}
 	if !isDaemon {
-		return fmt.Errorf("refusing to signal pid %d from %s: process is not metiqd/swarmstrd (%q)", pid, pidFile, cmdline)
+		return fmt.Errorf("refusing to signal pid %d from %s: process is not metiqd (%q)", pid, pidFile, cmdline)
 	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {
@@ -2509,13 +2501,13 @@ func daemonStatus(pidFile, adminAddr, adminToken, bootstrapPath string) error {
 		fmt.Printf("● metiqd  status=stopped  (stale pid=%d, pid-file=%s)\n", pid, pidFile)
 		return nil
 	}
-	isDaemon, cmdline, idErr := processLooksLikeSwarmstrd(pid)
+	isDaemon, cmdline, idErr := processLooksLikeMetiqd(pid)
 	if idErr != nil {
 		fmt.Printf("● metiqd  status=unknown  pid=%d  (identity check failed: %v)\n", pid, idErr)
 		return nil
 	}
 	if !isDaemon {
-		fmt.Printf("● metiqd  status=unknown  pid=%d  (pid file points to non-metiqd/swarmstrd process: %q)\n", pid, cmdline)
+		fmt.Printf("● metiqd  status=unknown  pid=%d  (pid file points to non-metiqd process: %q)\n", pid, cmdline)
 		return nil
 	}
 	fmt.Printf("● metiqd  status=running  pid=%d\n", pid)

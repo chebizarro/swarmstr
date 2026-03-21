@@ -78,7 +78,7 @@ function runCase(params: {
       cwd: process.cwd(),
       env: {
         ...process.env,
-        SWARMSTR_HIDE_BANNER: "1",
+        METIQ_HIDE_BANNER: "1",
       },
       stdio: ["ignore", "ignore", "pipe"],
       encoding: "utf8",

@@ -98,13 +98,13 @@ func ParseConfigBytes(raw []byte, extHint string) (state.ConfigDoc, error) {
 	return mapRawToConfigDoc(obj), nil
 }
 
-// DefaultConfigPath returns ~/.swarmstr/config.json.
+// DefaultConfigPath returns ~/.metiq/config.json.
 func DefaultConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".swarmstr", "config.json"), nil
+	return filepath.Join(home, ".metiq", "config.json"), nil
 }
 
 // ConfigFileExists returns true when a readable config file exists at path.

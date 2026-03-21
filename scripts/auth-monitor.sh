@@ -14,7 +14,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_CREDS="$HOME/.claude/.credentials.json"
-STATE_FILE="$HOME/.swarmstr/auth-monitor-state"
+STATE_FILE="$HOME/.metiq/auth-monitor-state"
 
 # Configuration
 WARN_HOURS="${WARN_HOURS:-2}"

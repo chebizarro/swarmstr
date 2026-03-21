@@ -8,23 +8,23 @@
 #  4. Verify the binary exits cleanly with --version
 set -euo pipefail
 
-INSTALL_URL="${SWARMSTR_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
-INSTALL_TAG="${SWARMSTR_INSTALL_TAG:-latest}"
+INSTALL_URL="${METIQ_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
+INSTALL_TAG="${METIQ_INSTALL_TAG:-latest}"
 DRY_RUN="${DRY_RUN:-0}"
-SWARMSTR_INSTALL_SKIP_DOWNLOAD="${SWARMSTR_INSTALL_SKIP_DOWNLOAD:-0}"
+METIQ_INSTALL_SKIP_DOWNLOAD="${METIQ_INSTALL_SKIP_DOWNLOAD:-0}"
 
 source /usr/local/lib/swarmstr/verify.sh
 
 # ── Install ────────────────────────────────────────────────────────────────
-if [[ "${SWARMSTR_INSTALL_SKIP_DOWNLOAD}" == "1" ]]; then
-	echo "==> Skipping download (SWARMSTR_INSTALL_SKIP_DOWNLOAD=1)"
+if [[ "${METIQ_INSTALL_SKIP_DOWNLOAD}" == "1" ]]; then
+	echo "==> Skipping download (METIQ_INSTALL_SKIP_DOWNLOAD=1)"
 	# Expect the binary already on PATH (e.g. bind-mounted for CI).
 else
 	if [[ "${DRY_RUN}" == "1" ]]; then
 	echo "==> DRY_RUN: would curl ${INSTALL_URL} | sh"
 	else
 	echo "==> Installing swarmstrd from ${INSTALL_URL} (tag=${INSTALL_TAG})"
-	curl -fsSL "${INSTALL_URL}" | SWARMSTR_VERSION="${INSTALL_TAG}" sh
+	curl -fsSL "${INSTALL_URL}" | METIQ_VERSION="${INSTALL_TAG}" sh
   fi
 fi
 

@@ -5,7 +5,7 @@
 // Skills are SKILL.md files (Markdown with YAML frontmatter) stored in:
 //   - The bundled skills directory shipped with the binary (skills/)
 //   - The agent workspace directory (user-authored skills)
-//   - The managed skills directory (~/.swarmstr/skills/)
+//   - The managed skills directory (~/.metiq/skills/)
 //
 // This matches the OpenClaw SKILL.md format for full drop-in compatibility.
 package skills
@@ -362,8 +362,9 @@ func preprocessFrontmatter(data []byte) []byte {
 
 // joinFlowOnNextLine joins lines where a block mapping key has its flow
 // collection start on the next line:
-//   `  "key":\n      {`  →  `  "key": {`
-//   `  "key":\n      [`  →  `  "key": [`
+//
+//	`  "key":\n      {`  →  `  "key": {`
+//	`  "key":\n      [`  →  `  "key": [`
 func joinFlowOnNextLine(data []byte) []byte {
 	lines := bytes.Split(data, []byte("\n"))
 	var out [][]byte
@@ -439,12 +440,12 @@ func LoadManifest(path string) (*Skill, error) {
 
 // BundledSkillsDir returns the directory containing the bundled SKILL.md files.
 // Resolution order:
-//  1. SWARMSTR_BUNDLED_SKILLS_DIR env var
+//  1. METIQ_BUNDLED_SKILLS_DIR env var
 //  2. A `skills/` directory next to the running executable
 //  3. A `skills/` directory walked up from the current working directory (dev mode)
 func BundledSkillsDir() string {
 	// 1. Explicit override.
-	if override := strings.TrimSpace(os.Getenv("SWARMSTR_BUNDLED_SKILLS_DIR")); override != "" {
+	if override := strings.TrimSpace(os.Getenv("METIQ_BUNDLED_SKILLS_DIR")); override != "" {
 		return override
 	}
 
@@ -664,7 +665,7 @@ func BinExists(name string) bool {
 // WorkspaceDir resolves the agent workspace directory from config.
 // Resolution order:
 //  1. extra["skills"]["workspace"] config key
-//  2. SWARMSTR_WORKSPACE env var
+//  2. METIQ_WORKSPACE env var
 //  3. ~/swarmstr/workspace/<agentID>
 func WorkspaceDir(extra map[string]any, agentID string) string {
 	if extra != nil {
@@ -674,7 +675,7 @@ func WorkspaceDir(extra map[string]any, agentID string) string {
 			}
 		}
 	}
-	if ws := os.Getenv("SWARMSTR_WORKSPACE"); strings.TrimSpace(ws) != "" {
+	if ws := os.Getenv("METIQ_WORKSPACE"); strings.TrimSpace(ws) != "" {
 		return strings.TrimSpace(ws)
 	}
 	home, err := os.UserHomeDir()
@@ -688,16 +689,16 @@ func WorkspaceDir(extra map[string]any, agentID string) string {
 }
 
 // ManagedSkillsDir returns the directory where installed/managed skills are stored.
-// Resolution: SWARMSTR_MANAGED_SKILLS_DIR env → ~/.swarmstr/skills
+// Resolution: METIQ_MANAGED_SKILLS_DIR env → ~/.metiq/skills
 func ManagedSkillsDir() string {
-	if d := strings.TrimSpace(os.Getenv("SWARMSTR_MANAGED_SKILLS_DIR")); d != "" {
+	if d := strings.TrimSpace(os.Getenv("METIQ_MANAGED_SKILLS_DIR")); d != "" {
 		return d
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "/tmp"
 	}
-	return filepath.Join(home, ".swarmstr", "skills")
+	return filepath.Join(home, ".metiq", "skills")
 }
 
 // ─── Bins aggregate ──────────────────────────────────────────────────────────

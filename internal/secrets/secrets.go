@@ -2,7 +2,7 @@
 //
 // Sources (in priority order):
 //  1. Environment variables (always included, highest priority)
-//  2. .env files configured in secrets.sources (or ~/.swarmstr/.env by default)
+//  2. .env files configured in secrets.sources (or ~/.metiq/.env by default)
 //
 // Reference formats supported by Resolve:
 //   - $VARNAME or ${VARNAME} — environment variable / loaded .env value
@@ -23,15 +23,15 @@ import (
 
 // Store loads and caches secrets from .env files and the process environment.
 type Store struct {
-	mu      sync.RWMutex
-	values  map[string]string // loaded secret values (env overrides .env)
-	sources []string          // absolute paths to .env files
-	loaded  int               // count from last reload
+	mu       sync.RWMutex
+	values   map[string]string // loaded secret values (env overrides .env)
+	sources  []string          // absolute paths to .env files
+	loaded   int               // count from last reload
 	warnings []string
 }
 
 // NewStore creates a Store with the given .env file paths.
-// If no paths are given, the default path (~/.swarmstr/.env) is used.
+// If no paths are given, the default path (~/.metiq/.env) is used.
 func NewStore(paths []string) *Store {
 	if len(paths) == 0 {
 		paths = defaultPaths()
@@ -47,7 +47,7 @@ func defaultPaths() []string {
 	if err != nil {
 		return nil
 	}
-	return []string{filepath.Join(home, ".swarmstr", ".env")}
+	return []string{filepath.Join(home, ".metiq", ".env")}
 }
 
 // Reload re-reads all source files and merges with live env.

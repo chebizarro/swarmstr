@@ -6,7 +6,7 @@
 termux-toast "Syncing swarmstr auth..."
 
 # Run sync on l36 server
-SERVER="${SWARMSTR_SERVER:-${CLAWDBOT_SERVER:-l36}}"
+SERVER="${METIQ_SERVER:-${CLAWDBOT_SERVER:-l36}}"
 RESULT=$(ssh "$SERVER" '/home/admin/swarmstr/scripts/sync-claude-code-auth.sh' 2>&1)
 EXIT_CODE=$?
 

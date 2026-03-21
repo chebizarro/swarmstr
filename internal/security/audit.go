@@ -7,7 +7,7 @@
 // Usage:
 //
 //	report := security.Audit(security.AuditOptions{
-//	    BootstrapPath: "~/.swarmstr/bootstrap.json",
+//	    BootstrapPath: "~/.metiq/bootstrap.json",
 //	})
 //	for _, f := range report.Findings {
 //	    fmt.Printf("[%s] %s: %s\n", f.Severity, f.CheckID, f.Message)
@@ -54,7 +54,7 @@ type AuditReport struct {
 // AuditOptions controls what the auditor checks.
 type AuditOptions struct {
 	// BootstrapPath is the path to the bootstrap config JSON.
-	// If empty, the default path (~/.swarmstr/bootstrap.json) is used.
+	// If empty, the default path (~/.metiq/bootstrap.json) is used.
 	BootstrapPath string
 	// ConfigDoc is the live config (optional; used for channel and plugin checks).
 	ConfigDoc *state.ConfigDoc
@@ -152,7 +152,7 @@ func checkBootstrapFilePerms(path string) []Finding {
 		if err != nil {
 			return nil
 		}
-		path = home + "/.swarmstr/bootstrap.json"
+		path = home + "/.metiq/bootstrap.json"
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -244,7 +244,7 @@ func loadBootstrapRaw(path string) map[string]any {
 		if err != nil {
 			return nil
 		}
-		path = home + "/.swarmstr/bootstrap.json"
+		path = home + "/.metiq/bootstrap.json"
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {

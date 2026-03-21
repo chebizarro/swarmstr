@@ -446,7 +446,7 @@ func TestCheckRequirements_anyBinsAllMissing(t *testing.T) {
 
 func TestCheckRequirements_missingEnv(t *testing.T) {
 	// Use an env var we're sure is not set.
-	req := Requirements{Env: []string{"SWARMSTR_DEFINITELY_UNSET_XYZ"}}
+	req := Requirements{Env: []string{"METIQ_DEFINITELY_UNSET_XYZ"}}
 	missing, eligible := CheckRequirements(req)
 	if eligible {
 		t.Error("expected ineligible for missing env")
@@ -469,7 +469,7 @@ func TestWorkspaceDir_fromExtra(t *testing.T) {
 }
 
 func TestWorkspaceDir_fromEnv(t *testing.T) {
-	t.Setenv("SWARMSTR_WORKSPACE", "/env/workspace")
+	t.Setenv("METIQ_WORKSPACE", "/env/workspace")
 	dir := WorkspaceDir(nil, "main")
 	if dir != "/env/workspace" {
 		t.Errorf("expected /env/workspace, got %q", dir)
@@ -477,7 +477,7 @@ func TestWorkspaceDir_fromEnv(t *testing.T) {
 }
 
 func TestWorkspaceDir_fallback(t *testing.T) {
-	t.Setenv("SWARMSTR_WORKSPACE", "")
+	t.Setenv("METIQ_WORKSPACE", "")
 	dir := WorkspaceDir(nil, "myagent")
 	if dir == "" {
 		t.Error("expected non-empty fallback dir")

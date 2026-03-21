@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Smoke test for metiq install.sh.
 #
-# When SWARMSTR_INSTALL_SKIP_DOWNLOAD=1 the binary is expected to already be
+# When METIQ_INSTALL_SKIP_DOWNLOAD=1 the binary is expected to already be
 # present at /usr/local/bin/metiqd (mounted by the CI job).
 set -euo pipefail
 
-INSTALL_URL="${SWARMSTR_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
-SKIP_DOWNLOAD="${SWARMSTR_INSTALL_SKIP_DOWNLOAD:-0}"
+INSTALL_URL="${METIQ_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
+SKIP_DOWNLOAD="${METIQ_INSTALL_SKIP_DOWNLOAD:-0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # shellcheck source=../install-sh-common/verify.sh
@@ -23,7 +23,7 @@ else
 fi
 
 if [[ "$SKIP_DOWNLOAD" == "1" ]]; then
-  echo "==> Skip download (SWARMSTR_INSTALL_SKIP_DOWNLOAD=1)"
+  echo "==> Skip download (METIQ_INSTALL_SKIP_DOWNLOAD=1)"
   echo "==> Verify pre-installed binary"
   verify_binary metiqd
 else

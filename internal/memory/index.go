@@ -44,7 +44,7 @@ func DefaultIndexPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".swarmstr", "memory-index.json"), nil
+	return filepath.Join(home, ".metiq", "memory-index.json"), nil
 }
 
 func OpenIndex(path string) (*Index, error) {

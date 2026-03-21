@@ -25,10 +25,10 @@ export async function runWatchMain(params = {}) {
 
   const childEnv = { ...deps.env };
   const watchSession = `${deps.now()}-${deps.process.pid}`;
-  childEnv.SWARMSTR_WATCH_MODE = "1";
-  childEnv.SWARMSTR_WATCH_SESSION = watchSession;
+  childEnv.METIQ_WATCH_MODE = "1";
+  childEnv.METIQ_WATCH_SESSION = watchSession;
   if (deps.args.length > 0) {
-    childEnv.SWARMSTR_WATCH_COMMAND = deps.args.join(" ");
+    childEnv.METIQ_WATCH_COMMAND = deps.args.join(" ");
   }
 
   const watchProcess = deps.spawn(deps.process.execPath, buildWatchArgs(deps.args), {
