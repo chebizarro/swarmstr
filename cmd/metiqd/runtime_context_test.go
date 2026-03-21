@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/store/state"
+	"metiq/internal/agent"
+	"metiq/internal/store/state"
 )
 
 func TestBuildTurnRuntimeContext_ContainsAllSections(t *testing.T) {
@@ -30,8 +30,8 @@ func TestBuildTurnRuntimeContext_ContainsAllSections(t *testing.T) {
 	})
 
 	checks := []struct {
-		name    string
-		substr  string
+		name   string
+		substr string
 	}{
 		{"runtime section", "## Runtime"},
 		{"agent id", "agent=main"},

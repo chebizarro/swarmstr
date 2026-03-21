@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"swarmstr/internal/nostr/events"
+	"metiq/internal/nostr/events"
 )
 
 type Event struct {

@@ -3,7 +3,7 @@
 // Feishu (国内) and Lark (international) are the same platform; this plugin
 // works with both using the open.feishu.cn / open.larksuite.com API.
 //
-// Registration: import _ "swarmstr/internal/extensions/feishu" in the daemon
+// Registration: import _ "metiq/internal/extensions/feishu" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -38,8 +38,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {
@@ -233,9 +233,9 @@ type feishuBot struct {
 	done              chan struct{}
 	httpClient        *http.Client
 
-	tokenMu      sync.RWMutex
-	accessToken  string
-	tokenExpiry  time.Time
+	tokenMu     sync.RWMutex
+	accessToken string
+	tokenExpiry time.Time
 
 	seenMu       sync.Mutex
 	seenEventIDs map[string]struct{}
@@ -358,11 +358,11 @@ func (b *feishuBot) handleEvent(w http.ResponseWriter, r *http.Request) {
 
 	// Parse the outer envelope.
 	var envelope struct {
-		Schema string          `json:"schema"` // "2.0" for v2 events
-		Token  string          `json:"token"`
+		Schema string `json:"schema"` // "2.0" for v2 events
+		Token  string `json:"token"`
 		// v1 URL verification challenge
-		Challenge string        `json:"challenge"`
-		Type      string        `json:"type"` // "url_verification"
+		Challenge string `json:"challenge"`
+		Type      string `json:"type"` // "url_verification"
 		// v2 event
 		Header struct {
 			EventID   string `json:"event_id"`
@@ -418,7 +418,7 @@ func (b *feishuBot) handleEvent(w http.ResponseWriter, r *http.Request) {
 			MessageID   string `json:"message_id"`
 			ChatID      string `json:"chat_id"`
 			MessageType string `json:"message_type"`
-			Content     string `json:"content"` // JSON string
+			Content     string `json:"content"`     // JSON string
 			CreateTime  string `json:"create_time"` // unix ms as string
 		} `json:"message"`
 	}
@@ -490,9 +490,9 @@ func (b *feishuBot) SendTyping(ctx context.Context, durationMS int) error {
 func (b *feishuBot) sendMessage(ctx context.Context, receiveID, receiveIDType, text, replyToMsgID string) error {
 	content, _ := json.Marshal(map[string]string{"text": text})
 	payload := map[string]any{
-		"receive_id":  receiveID,
-		"msg_type":    "text",
-		"content":     string(content),
+		"receive_id": receiveID,
+		"msg_type":   "text",
+		"content":    string(content),
 	}
 	if replyToMsgID != "" {
 		payload["reply_in_thread"] = true
@@ -555,6 +555,6 @@ func (b *feishuBot) RemoveReaction(ctx context.Context, msgID, emoji string) err
 }
 
 // Ensure feishuBot satisfies the optional handle interfaces.
-var _ sdk.TypingHandle   = (*feishuBot)(nil)
+var _ sdk.TypingHandle = (*feishuBot)(nil)
 var _ sdk.ReactionHandle = (*feishuBot)(nil)
-var _ sdk.ThreadHandle   = (*feishuBot)(nil)
+var _ sdk.ThreadHandle = (*feishuBot)(nil)

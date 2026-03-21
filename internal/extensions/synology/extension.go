@@ -4,7 +4,7 @@
 // Inbound messages arrive via HTTP POST to a registered webhook path.
 // Outbound messages are POSTed to the Synology Chat webhook_url.
 //
-// Registration: import _ "swarmstr/internal/extensions/synology" in the daemon
+// Registration: import _ "metiq/internal/extensions/synology" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -43,8 +43,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 const (

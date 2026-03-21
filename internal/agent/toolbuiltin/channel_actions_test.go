@@ -5,17 +5,17 @@ import (
 	"errors"
 	"testing"
 
-	"swarmstr/internal/agent/toolbuiltin"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/agent/toolbuiltin"
+	"metiq/internal/plugins/sdk"
 )
 
 // ── Stub handles ──────────────────────────────────────────────────────────────
 
 type stubBase struct{ id string }
 
-func (s *stubBase) ID() string              { return s.id }
+func (s *stubBase) ID() string                             { return s.id }
 func (s *stubBase) Send(_ context.Context, _ string) error { return nil }
-func (s *stubBase) Close()                  {}
+func (s *stubBase) Close()                                 {}
 
 type stubReactionHandle struct {
 	stubBase

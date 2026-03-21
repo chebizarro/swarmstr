@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/plugins/sdk"
 )
 
 // skipIfNoNode marks the test as skipped when Node.js is not in PATH.

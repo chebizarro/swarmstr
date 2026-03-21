@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"time"
 	"testing"
+	"time"
 
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/plugins/sdk"
 )
 
 // ── Plugin metadata ───────────────────────────────────────────────────────────

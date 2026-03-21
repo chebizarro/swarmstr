@@ -20,7 +20,7 @@ import (
 	"os"
 	"strings"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 // Severity levels for audit findings.

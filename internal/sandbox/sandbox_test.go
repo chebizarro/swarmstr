@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/sandbox"
+	"metiq/internal/sandbox"
 )
 
 // ─── Factory ──────────────────────────────────────────────────────────────────

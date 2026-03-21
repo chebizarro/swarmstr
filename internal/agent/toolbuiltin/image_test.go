@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 // mockRuntime implements agent.Runtime for testing.

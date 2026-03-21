@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/agent"
-	skillspkg "swarmstr/internal/skills"
-	"swarmstr/internal/store/state"
+	"metiq/internal/agent"
+	skillspkg "metiq/internal/skills"
+	"metiq/internal/store/state"
 )
 
 type ttlCacheEntry[T any] struct {

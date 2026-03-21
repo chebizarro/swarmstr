@@ -14,7 +14,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 // ─── kind:0 profile cache ─────────────────────────────────────────────────────
@@ -25,8 +25,8 @@ type profileCacheEntry struct {
 }
 
 var (
-	profileCacheMu sync.Mutex
-	profileCache   = map[string]profileCacheEntry{}
+	profileCacheMu  sync.Mutex
+	profileCache    = map[string]profileCacheEntry{}
 	profileCacheTTL = 10 * time.Minute
 )
 

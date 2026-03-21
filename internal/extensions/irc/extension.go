@@ -1,6 +1,6 @@
 // Package irc implements an IRC channel extension for swarmstr.
 //
-// Registration: import _ "swarmstr/internal/extensions/irc" in the daemon
+// Registration: import _ "metiq/internal/extensions/irc" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -45,8 +45,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {

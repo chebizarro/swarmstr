@@ -3,7 +3,7 @@ package config
 import (
 	"testing"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 func TestRedact_secretsSection(t *testing.T) {

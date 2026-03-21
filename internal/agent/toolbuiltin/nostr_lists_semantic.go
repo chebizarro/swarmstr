@@ -9,9 +9,9 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/nostr/nip51"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	"metiq/internal/nostr/nip51"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 var NostrListGetDef = agent.ToolDefinition{
@@ -134,7 +134,7 @@ func RegisterNostrListSemanticTools(tools *agent.ToolRegistry, opts NostrListToo
 			return "", mapSemanticListErr("nostr_list_put", err)
 		}
 		return nostrWriteSuccessEnvelope("nostr_list_put", evID, kind, map[string]any{
-			"d_tag": dtag,
+			"d_tag":  dtag,
 			"values": values,
 		}, map[string]any{
 			"count": len(entries),

@@ -8,8 +8,8 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/nostr/events"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/nostr/events"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 type NostrStore struct {

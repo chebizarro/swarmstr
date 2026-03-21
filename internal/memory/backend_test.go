@@ -3,8 +3,8 @@ package memory_test
 import (
 	"testing"
 
-	"swarmstr/internal/memory"
-	"swarmstr/internal/store/state"
+	"metiq/internal/memory"
+	"metiq/internal/store/state"
 )
 
 func TestListBackendsIncludesBuiltins(t *testing.T) {

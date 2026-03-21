@@ -4,7 +4,7 @@
 // over its Socket.IO-compatible WebSocket API to receive new messages in
 // real time and sends replies via the REST API.
 //
-// Registration: import _ "swarmstr/internal/extensions/bluebubbles" in the
+// Registration: import _ "metiq/internal/extensions/bluebubbles" in the
 // daemon main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -33,8 +33,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {
@@ -188,11 +188,11 @@ func (b *bbBot) run(ctx context.Context) {
 
 // bbMessage is a partial BlueBubbles message object.
 type bbMessage struct {
-	GUID        string `json:"guid"`
-	Text        string `json:"text"`
-	IsFromMe    bool   `json:"isFromMe"`
+	GUID        string    `json:"guid"`
+	Text        string    `json:"text"`
+	IsFromMe    bool      `json:"isFromMe"`
 	Handle      *bbHandle `json:"handle"`
-	DateCreated int64  `json:"dateCreated"`
+	DateCreated int64     `json:"dateCreated"`
 }
 
 type bbHandle struct {
@@ -278,10 +278,10 @@ func (b *bbBot) poll(ctx context.Context) error {
 // Send posts a text message to the BlueBubbles chat via REST API.
 func (b *bbBot) Send(ctx context.Context, text string) error {
 	payload, _ := json.Marshal(map[string]any{
-		"chatGuid":   b.chatGUID,
-		"message":    text,
-		"method":     "apple-script",
-		"tempGuid":   fmt.Sprintf("temp-%d", time.Now().UnixNano()),
+		"chatGuid": b.chatGUID,
+		"message":  text,
+		"method":   "apple-script",
+		"tempGuid": fmt.Sprintf("temp-%d", time.Now().UnixNano()),
 	})
 	u := fmt.Sprintf("%s/api/v1/message/text?password=%s", b.serverURL, url.QueryEscape(b.password))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
@@ -305,9 +305,9 @@ func (b *bbBot) Send(ctx context.Context, text string) error {
 // emoji should be one of: love, like, dislike, laugh, emphasize, question.
 func (b *bbBot) AddReaction(ctx context.Context, msgGUID, emoji string) error {
 	payload, _ := json.Marshal(map[string]any{
-		"chatGuid":    b.chatGUID,
+		"chatGuid":            b.chatGUID,
 		"selectedMessageGuid": msgGUID,
-		"reaction":    emoji,
+		"reaction":            emoji,
 	})
 	u := fmt.Sprintf("%s/api/v1/message/react?password=%s", b.serverURL, url.QueryEscape(b.password))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))

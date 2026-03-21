@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/tts"
+	"metiq/internal/agent"
+	"metiq/internal/tts"
 )
 
 // MediaPrefix is prepended to the audio file path in the tool result so

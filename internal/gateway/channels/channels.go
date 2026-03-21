@@ -15,7 +15,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip29"
 
-	nostruntime "swarmstr/internal/nostr/runtime"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // ─── InboundMessage ───────────────────────────────────────────────────────────
@@ -522,4 +522,3 @@ func (c *NIP28PublicChannel) subscribeLoop(ctx context.Context) {
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
-

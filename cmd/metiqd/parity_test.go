@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/gateway/methods"
-	nostruntime "swarmstr/internal/nostr/runtime"
-	"swarmstr/internal/store/state"
+	"metiq/internal/agent"
+	"metiq/internal/gateway/methods"
+	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/store/state"
 )
 
 // parityCall is a helper that dispatches a gateway method with zero or

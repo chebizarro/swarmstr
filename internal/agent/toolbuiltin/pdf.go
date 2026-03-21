@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/media"
+	"metiq/internal/agent"
+	"metiq/internal/media"
 )
 
 const defaultPDFMaxChars = 100_000

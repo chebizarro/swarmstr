@@ -22,16 +22,16 @@ import (
 	"log"
 	"sync"
 
-	"swarmstr/internal/plugins/sdk"
-	"swarmstr/internal/store/state"
+	"metiq/internal/plugins/sdk"
+	"metiq/internal/store/state"
 )
 
 // ─── Global plugin registry ───────────────────────────────────────────────────
 
 var (
-	pluginMu      sync.RWMutex
-	pluginsByID   = map[string]sdk.ChannelPlugin{}
-	pluginOrder   []string
+	pluginMu    sync.RWMutex
+	pluginsByID = map[string]sdk.ChannelPlugin{}
+	pluginOrder []string
 )
 
 // RegisterChannelPlugin adds a ChannelPlugin to the global registry.
@@ -74,7 +74,7 @@ type ExtensionHandle struct {
 	handle sdk.ChannelHandle
 }
 
-func (e *ExtensionHandle) ID() string { return e.handle.ID() }
+func (e *ExtensionHandle) ID() string   { return e.handle.ID() }
 func (e *ExtensionHandle) Type() string { return "extension" }
 func (e *ExtensionHandle) Send(ctx context.Context, text string) error {
 	return e.handle.Send(ctx, text)
@@ -85,13 +85,13 @@ func (e *ExtensionHandle) Close() { e.handle.Close() }
 
 // ExtensionConnectResult holds a connected extension channel.
 type ExtensionConnectResult struct {
-	PluginID     string
-	ChannelID    string
-	Handle       Channel
+	PluginID  string
+	ChannelID string
+	Handle    Channel
 	// RawHandle is the underlying sdk.ChannelHandle returned by the plugin.
 	// Callers can perform interface assertions (e.g. sdk.TypingHandle) on it
 	// to access optional channel features.
-	RawHandle    sdk.ChannelHandle
+	RawHandle sdk.ChannelHandle
 	// Capabilities is the declared feature set for this channel instance.
 	// It is populated when the plugin implements sdk.ChannelPluginWithCapabilities.
 	Capabilities sdk.ChannelCapabilities

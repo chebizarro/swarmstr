@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"swarmstr/internal/gateway/protocol"
+	"metiq/internal/gateway/protocol"
 )
 
 func verifyDeviceSignatureForConnect(device *protocol.ConnectDevice, connect protocol.ConnectParams, role string, token string) bool {

@@ -11,8 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/agent"
+	"metiq/internal/plugins/sdk"
 )
 
 // channelHandleKey is the context key used to carry the active channel handle.

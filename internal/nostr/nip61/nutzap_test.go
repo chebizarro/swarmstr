@@ -6,7 +6,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/nostr/nip61"
+	"metiq/internal/nostr/nip61"
 )
 
 // ─── stub signer ─────────────────────────────────────────────────────────────

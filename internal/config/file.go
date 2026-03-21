@@ -13,7 +13,7 @@ import (
 
 	"github.com/tailscale/hujson"
 	"gopkg.in/yaml.v3"
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 // LoadConfigFile reads a JSON5 (or plain JSON) or YAML config file

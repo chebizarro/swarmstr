@@ -1,7 +1,8 @@
 // Package toolbuiltin – NIP-51 list management tools.
 //
 // Registers: list_get, list_add, list_remove, list_create, list_delete,
-//            list_check_allowlist
+//
+//	list_check_allowlist
 package toolbuiltin
 
 import (
@@ -12,9 +13,9 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/nostr/nip51"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	"metiq/internal/nostr/nip51"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // NostrListToolOpts configures the NIP-51 list tools.

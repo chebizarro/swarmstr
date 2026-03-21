@@ -20,7 +20,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"swarmstr/internal/gateway/protocol"
+	"metiq/internal/gateway/protocol"
 )
 
 const (
@@ -73,7 +73,7 @@ type client struct {
 
 	subMu         sync.RWMutex
 	subscriptions map[string]struct{}
-	
+
 	authMu       sync.Mutex
 	unauthorized int
 }

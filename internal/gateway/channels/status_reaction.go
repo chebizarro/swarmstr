@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/plugins/sdk"
 )
 
 // ─── Emoji constants ──────────────────────────────────────────────────────────

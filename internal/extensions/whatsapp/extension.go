@@ -1,6 +1,6 @@
 // Package whatsapp implements a WhatsApp Business channel extension for swarmstr.
 //
-// Registration: import _ "swarmstr/internal/extensions/whatsapp" in the daemon
+// Registration: import _ "metiq/internal/extensions/whatsapp" in the daemon
 // main.go to register this plugin at startup.
 //
 // This extension uses the Meta (Facebook) Graph API for WhatsApp Business.
@@ -44,8 +44,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {

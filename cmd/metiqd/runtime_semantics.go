@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/methods"
-	nostruntime "swarmstr/internal/nostr/runtime"
-	"swarmstr/internal/store/state"
+	"metiq/internal/gateway/methods"
+	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/store/state"
 )
 
 type usageTracker struct {
@@ -335,13 +335,13 @@ func (r *SubagentRegistry) DepthOf(parentSessionID string) int {
 }
 
 type agentJobSnapshot struct {
-	RunID     string
-	SessionID string
-	Status    string
-	StartedAt int64
-	EndedAt   int64
-	Result    string
-	Err       string
+	RunID          string
+	SessionID      string
+	Status         string
+	StartedAt      int64
+	EndedAt        int64
+	Result         string
+	Err            string
 	FallbackUsed   bool
 	FallbackFrom   string
 	FallbackTo     string
@@ -507,13 +507,13 @@ type nodeInvocationRecord struct {
 }
 
 const (
-	maxNodeInvocations = 1000
-	maxCronRuns        = 500
+	maxNodeInvocations  = 1000
+	maxCronRuns         = 500
 	maxPendingApprovals = 200
-	maxWizardSessions  = 100
-	invocationTTL      = 24 * time.Hour
-	approvalTTL        = 1 * time.Hour
-	wizardTTL          = 2 * time.Hour
+	maxWizardSessions   = 100
+	invocationTTL       = 24 * time.Hour
+	approvalTTL         = 1 * time.Hour
+	wizardTTL           = 2 * time.Hour
 )
 
 type nodeInvocationRegistry struct {
@@ -1098,8 +1098,8 @@ type wizardSessionRecord struct {
 }
 
 type wizardRegistry struct {
-	mu               sync.Mutex
-	sessions         map[string]wizardSessionRecord
+	mu       sync.Mutex
+	sessions map[string]wizardSessionRecord
 	// onComplete is called after the wizard reaches the final step.
 	// The caller may use it to persist wizard results to config.
 	onComplete func(rec wizardSessionRecord)

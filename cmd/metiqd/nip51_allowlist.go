@@ -22,10 +22,10 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
-	"swarmstr/internal/agent/toolbuiltin"
-	"swarmstr/internal/nostr/nip51"
-	nostruntime "swarmstr/internal/nostr/runtime"
-	"swarmstr/internal/store/state"
+	"metiq/internal/agent/toolbuiltin"
+	"metiq/internal/nostr/nip51"
+	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/store/state"
 )
 
 // ── Dynamic allowlist ──────────────────────────────────────────────────────────
@@ -379,8 +379,8 @@ func syncAgentList(ctx context.Context, pool *nostr.Pool, cfg state.ConfigDoc) {
 
 	// Build the list to publish.
 	newList := &nip51.List{
-		Kind:  nip51.KindPeopleList,
-		DTag:  alCfg.DTag,
+		Kind:   nip51.KindPeopleList,
+		DTag:   alCfg.DTag,
 		PubKey: strandHex,
 	}
 	// Preserve non-p tags from existing list (e.g. "alt", "title").

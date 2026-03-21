@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 var ErrPluginNotFound = errors.New("plugin not found")
@@ -53,47 +53,47 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"plugins.installs.<id>.resolvedAt",
 			"plugins.installs.<id>.installedAt",
 			"plugins.installs.<id>.<field>",
-		// Typed agent section (multi-agent support)
-		"agents[].id",
-		"agents[].name",
-		"agents[].model",
-		"agents[].workspace_dir",
-		"agents[].tool_profile",
-		"agents[].heartbeat_ms",
-		"agents[].history_limit",
-		// Nostr channel configuration
-		"nostr_channels.<name>.kind",
-		"nostr_channels.<name>.enabled",
-		"nostr_channels.<name>.group_address",
-		"nostr_channels.<name>.channel_id",
-		"nostr_channels.<name>.relays",
-		"nostr_channels.<name>.agent_id",
-		"nostr_channels.<name>.tags",
-		// Provider overrides
-		"providers.<name>.api_key",
-		"providers.<name>.base_url",
-		"providers.<name>.model",
-		// Session tunables
-		"session.ttl_seconds",
-		"session.history_limit",
-		"session.max_tokens",
-		"session.temperature",
-		// Heartbeat
-		"heartbeat.interval_ms",
-		"heartbeat.enabled",
-		// TTS
-		"tts.provider",
-		"tts.voice",
-		"tts.enabled",
-		// Secrets
-		"secrets.<name>",
-		// Cron
-		"cron.enabled",
-		"cron.jobs.<id>",
-		"cron.jobs.<id>.schedule",
-		"cron.jobs.<id>.command",
-		"cron.jobs.<id>.enabled",
-	},
+			// Typed agent section (multi-agent support)
+			"agents[].id",
+			"agents[].name",
+			"agents[].model",
+			"agents[].workspace_dir",
+			"agents[].tool_profile",
+			"agents[].heartbeat_ms",
+			"agents[].history_limit",
+			// Nostr channel configuration
+			"nostr_channels.<name>.kind",
+			"nostr_channels.<name>.enabled",
+			"nostr_channels.<name>.group_address",
+			"nostr_channels.<name>.channel_id",
+			"nostr_channels.<name>.relays",
+			"nostr_channels.<name>.agent_id",
+			"nostr_channels.<name>.tags",
+			// Provider overrides
+			"providers.<name>.api_key",
+			"providers.<name>.base_url",
+			"providers.<name>.model",
+			// Session tunables
+			"session.ttl_seconds",
+			"session.history_limit",
+			"session.max_tokens",
+			"session.temperature",
+			// Heartbeat
+			"heartbeat.interval_ms",
+			"heartbeat.enabled",
+			// TTS
+			"tts.provider",
+			"tts.voice",
+			"tts.enabled",
+			// Secrets
+			"secrets.<name>",
+			// Cron
+			"cron.enabled",
+			"cron.jobs.<id>",
+			"cron.jobs.<id>.schedule",
+			"cron.jobs.<id>.command",
+			"cron.jobs.<id>.enabled",
+		},
 	}
 	if len(cfg) > 0 {
 		schema["plugins"] = extensionSchemaEntries(cfg[0])

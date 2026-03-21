@@ -9,7 +9,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 // ─── nostr_follows ────────────────────────────────────────────────────────────

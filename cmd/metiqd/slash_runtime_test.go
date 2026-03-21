@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 func TestApplyFastSlash_TogglesAndPersists(t *testing.T) {
@@ -61,4 +61,3 @@ func TestApplyUsageSlash_SetAndReport(t *testing.T) {
 		}
 	}
 }
-

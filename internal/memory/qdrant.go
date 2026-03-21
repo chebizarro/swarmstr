@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 const (
@@ -178,8 +178,8 @@ func qdrantIDToString(raw json.RawMessage) string {
 
 func (b *QdrantBackend) vectorSearch(vec []float32, limit int, filter map[string]any) ([]IndexedMemory, error) {
 	req := map[string]any{
-		"vector":      vec,
-		"limit":       limit,
+		"vector":       vec,
+		"limit":        limit,
 		"with_payload": true,
 	}
 	if filter != nil {
@@ -495,7 +495,6 @@ func (h *HybridIndex) Add(doc state.MemoryDoc) {
 	h.Index.Add(doc)
 	h.persistToBackend(doc)
 }
-
 
 // Store is the interface satisfied by both *Index and *HybridIndex.
 type Store interface {

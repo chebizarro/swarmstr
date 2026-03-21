@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/nostr/nip51"
+	"metiq/internal/agent"
+	"metiq/internal/nostr/nip51"
 )
 
 type scriptedProvider struct {
@@ -139,9 +139,9 @@ func TestRuntimeSmoke_NewNostrWriteHelpers_ErrorShape(t *testing.T) {
 	RegisterNIPTools(tools, nostrOpts)
 
 	tests := []struct {
-		name       string
-		call       agent.ToolCall
-		errPrefix  string
+		name      string
+		call      agent.ToolCall
+		errPrefix string
 	}{
 		{
 			name:      "nostr_event_delete missing ids",

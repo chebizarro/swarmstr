@@ -60,7 +60,7 @@ func runInit(args []string) error {
 		fmt.Println("  1. Edit SOUL.md    — define who your agent is")
 		fmt.Println("  2. Edit IDENTITY.md — name, vibe, emoji")
 		fmt.Println("  3. Edit USER.md     — who they're helping")
-		fmt.Println("  4. Start the daemon: swarmstrd --bootstrap ~/.swarmstr/bootstrap.json")
+		fmt.Println("  4. Start the daemon: metiqd --bootstrap ~/.swarmstr/bootstrap.json")
 		fmt.Println("  5. Send your agent a DM — BOOTSTRAP.md guides the first conversation")
 		fmt.Println("  6. Delete BOOTSTRAP.md once identity is established")
 	}

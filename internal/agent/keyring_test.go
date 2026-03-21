@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 func TestKeyRing_Pick_RoundRobin(t *testing.T) {

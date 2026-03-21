@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/plugins/sdk"
 )
 
 // ─── stub implementations ─────────────────────────────────────────────────────

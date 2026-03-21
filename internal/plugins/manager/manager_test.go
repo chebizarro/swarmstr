@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/plugins/sdk"
-	"swarmstr/internal/store/state"
+	"metiq/internal/agent"
+	"metiq/internal/plugins/sdk"
+	"metiq/internal/store/state"
 )
 
 // ─── stub host ────────────────────────────────────────────────────────────────

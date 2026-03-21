@@ -1,6 +1,6 @@
 package config
 
-import "swarmstr/internal/nostr/events"
+import "metiq/internal/nostr/events"
 
 // BootstrapConfig is local-only startup config needed before Nostr state can be fetched.
 type BootstrapConfig struct {

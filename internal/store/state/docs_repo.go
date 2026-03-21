@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"swarmstr/internal/nostr/events"
-	"swarmstr/internal/nostr/secure"
+	"metiq/internal/nostr/events"
+	"metiq/internal/nostr/secure"
 )
 
 type DocsRepository struct {

@@ -24,8 +24,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/methods"
-	"swarmstr/internal/store/state"
+	"metiq/internal/gateway/methods"
+	"metiq/internal/store/state"
 )
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
@@ -92,16 +92,16 @@ type hooksWakePayload struct {
 }
 
 type hooksAgentPayload struct {
-	Message        string  `json:"message"`
-	Name           string  `json:"name,omitempty"`
-	AgentID        string  `json:"agent_id,omitempty"`
-	SessionKey     string  `json:"session_key,omitempty"`
-	WakeMode       string  `json:"wake_mode,omitempty"`
-	Deliver        *bool   `json:"deliver,omitempty"`
-	Channel        string  `json:"channel,omitempty"`
-	To             string  `json:"to,omitempty"`
-	Model          string  `json:"model,omitempty"`
-	TimeoutSeconds int     `json:"timeout_seconds,omitempty"`
+	Message        string `json:"message"`
+	Name           string `json:"name,omitempty"`
+	AgentID        string `json:"agent_id,omitempty"`
+	SessionKey     string `json:"session_key,omitempty"`
+	WakeMode       string `json:"wake_mode,omitempty"`
+	Deliver        *bool  `json:"deliver,omitempty"`
+	Channel        string `json:"channel,omitempty"`
+	To             string `json:"to,omitempty"`
+	Model          string `json:"model,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
 // ─── Template interpolation ───────────────────────────────────────────────────

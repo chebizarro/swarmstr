@@ -26,12 +26,12 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	nostruntime "swarmstr/internal/nostr/runtime"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // Event kinds.
 const (
-	KindMessage           = 25910
+	KindMessage            = 25910
 	KindServerAnnouncement = 11316
 	KindToolsList          = 11317
 	KindResourcesList      = 11318

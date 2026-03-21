@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"swarmstr/internal/config"
+	"metiq/internal/config"
 )
 
 // adminClient is a minimal HTTP client for the swarmstrd admin API.

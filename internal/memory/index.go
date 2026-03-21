@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 type IndexedMemory struct {

@@ -3,7 +3,7 @@
 // Zalo is a Vietnamese messaging platform.  This plugin uses the Zalo OA
 // Open API to receive webhooks and send Customer Service (CS) messages.
 //
-// Registration: import _ "swarmstr/internal/extensions/zalo" in the daemon
+// Registration: import _ "metiq/internal/extensions/zalo" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -37,8 +37,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {
@@ -302,11 +302,11 @@ func (b *zaloBot) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var event struct {
-		AppID    string `json:"app_id"`
-		OAType   int    `json:"oa_type"`
-		Timestamp int64 `json:"timestamp"`
+		AppID     string `json:"app_id"`
+		OAType    int    `json:"oa_type"`
+		Timestamp int64  `json:"timestamp"`
 		EventName string `json:"event_name"`
-		Sender   struct {
+		Sender    struct {
 			ID string `json:"id"`
 		} `json:"sender"`
 		Recipient struct {

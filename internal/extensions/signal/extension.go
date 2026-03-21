@@ -5,7 +5,7 @@
 // a separately-running sidecar process.  The recommended sidecar is
 // bbernhard/signal-cli-rest-api (https://github.com/bbernhard/signal-cli-rest-api).
 //
-// Registration: import _ "swarmstr/internal/extensions/signal" in the daemon
+// Registration: import _ "metiq/internal/extensions/signal" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -42,8 +42,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {
@@ -304,9 +304,9 @@ func (b *signalBot) AddReaction(ctx context.Context, eventID, emoji string) erro
 	sender, timestamp := parts[0], parts[1]
 
 	body, _ := json.Marshal(map[string]any{
-		"recipient":            b.channelID,
-		"reaction":             emoji,
-		"target_author":        sender,
+		"recipient":             b.channelID,
+		"reaction":              emoji,
+		"target_author":         sender,
 		"target_sent_timestamp": timestamp,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -339,11 +339,11 @@ func (b *signalBot) RemoveReaction(ctx context.Context, eventID, emoji string) e
 	sender, timestamp := parts[0], parts[1]
 
 	body, _ := json.Marshal(map[string]any{
-		"recipient":            b.channelID,
-		"reaction":             emoji,
-		"target_author":        sender,
+		"recipient":             b.channelID,
+		"reaction":              emoji,
+		"target_author":         sender,
 		"target_sent_timestamp": timestamp,
-		"remove":               true,
+		"remove":                true,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		b.apiURL+"/v1/react/"+b.account, bytes.NewReader(body))

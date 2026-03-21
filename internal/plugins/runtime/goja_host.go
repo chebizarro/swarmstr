@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/dop251/goja"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/plugins/sdk"
 )
 
 // GojaPlugin is a compiled, host-wired Goja plugin instance.

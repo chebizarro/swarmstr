@@ -13,7 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 const maxReadBytes = 256 * 1024 // 256 KiB max read size

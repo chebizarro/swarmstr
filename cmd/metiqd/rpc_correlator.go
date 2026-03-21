@@ -14,7 +14,7 @@ package main
 import (
 	"sync"
 
-	nostruntime "swarmstr/internal/nostr/runtime"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // rpcWaiter is a single pending reply expectation.

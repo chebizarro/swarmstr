@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/plugins/installer"
+	"metiq/internal/plugins/installer"
 )
 
 // ─── validatePluginURL (indirectly via FetchRegistry / DownloadURL) ───────────

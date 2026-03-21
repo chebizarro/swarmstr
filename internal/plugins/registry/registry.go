@@ -24,8 +24,8 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	nostruntime "swarmstr/internal/nostr/runtime"
-	"swarmstr/internal/plugins/installer"
+	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/plugins/installer"
 )
 
 // KindPluginManifest is the Nostr event kind used for plugin manifests.
@@ -61,11 +61,11 @@ type PluginManifest struct {
 
 // PluginEntry is a plugin manifest together with its Nostr provenance.
 type PluginEntry struct {
-	Manifest    PluginManifest
-	AuthorPubKey string   // hex pubkey of the signer
-	EventID     string    // hex event ID
-	PublishedAt time.Time // event timestamp
-	Relays      []string  // relays this was fetched from
+	Manifest     PluginManifest
+	AuthorPubKey string    // hex pubkey of the signer
+	EventID      string    // hex event ID
+	PublishedAt  time.Time // event timestamp
+	Relays       []string  // relays this was fetched from
 }
 
 // ─── Registry ─────────────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
-	"swarmstr/internal/nostr/events"
+	"metiq/internal/nostr/events"
 )
 
 type ControlRPCInbound struct {
@@ -118,7 +118,7 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 	ctx, cancel := context.WithCancel(parent)
 
 	bus := &ControlRPCBus{
-		pool: NewPoolNIP42(ks),
+		pool:              NewPoolNIP42(ks),
 		relays:            initialRelays,
 		keyer:             ks,
 		public:            public,

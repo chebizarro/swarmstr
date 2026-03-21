@@ -7,7 +7,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip44"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 const (

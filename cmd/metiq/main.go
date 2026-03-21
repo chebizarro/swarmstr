@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"swarmstr/internal/config"
-	"swarmstr/internal/memory"
-	nostruntime "swarmstr/internal/nostr/runtime"
-	"swarmstr/internal/plugins/registry"
+	"metiq/internal/config"
+	"metiq/internal/memory"
+	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/plugins/registry"
 )
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
@@ -487,10 +487,10 @@ func runPluginInstall(bootstrapPath string, args []string) error {
 }
 
 func usage() {
-	fmt.Printf("swarmstr %s\n\n", version)
-	fmt.Println("Usage: swarmstr <command> [flags]")
+	fmt.Printf("metiq %s\n\n", version)
+	fmt.Println("Usage: metiq <command> [flags]")
 	fmt.Println()
-	fmt.Println("Daemon status (requires running swarmstrd with --admin-addr):")
+	fmt.Println("Daemon status (requires running metiqd with --admin-addr):")
 	fmt.Println("  status             show daemon status (pubkey, uptime, relays)")
 	fmt.Println("  health             ping daemon health endpoint")
 	fmt.Println("  logs               tail recent daemon log lines (--lines N)")
@@ -527,7 +527,7 @@ func usage() {
 	fmt.Println("  plugins publish    publish plugin manifest (--manifest)")
 	fmt.Println()
 	fmt.Println("Daemon lifecycle:")
-	fmt.Println("  daemon start       start swarmstrd in background (--bin --bootstrap)")
+	fmt.Println("  daemon start       start metiqd in background (--bin --bootstrap)")
 	fmt.Println("  daemon stop        send SIGTERM to running daemon")
 	fmt.Println("  daemon restart     stop then start daemon")
 	fmt.Println("  daemon status      show daemon liveness and uptime")

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/plugins/sdk"
 )
 
 // ── Plugin metadata ───────────────────────────────────────────────────────────
@@ -69,18 +69,18 @@ func TestMattermostPlugin_Connect_MissingConfig(t *testing.T) {
 func newTestServer(handler http.Handler) (*httptest.Server, *mmBot) {
 	srv := httptest.NewServer(handler)
 	bot := &mmBot{
-		channelID:   "test-ch",
-		baseURL:     srv.URL,
-		token:       "tok",
-		teamName:    "myteam",
-		channelName: "general",
-		teamID:      "team1",
-		mmChannelID: "ch1",
-		selfUserID:  "bot1",
+		channelID:    "test-ch",
+		baseURL:      srv.URL,
+		token:        "tok",
+		teamName:     "myteam",
+		channelName:  "general",
+		teamID:       "team1",
+		mmChannelID:  "ch1",
+		selfUserID:   "bot1",
 		selfUsername: "botname",
 		userNameByID: map[string]string{"bot1": "botname"},
-		httpClient:  srv.Client(),
-		done:        make(chan struct{}),
+		httpClient:   srv.Client(),
+		done:         make(chan struct{}),
 	}
 	return srv, bot
 }

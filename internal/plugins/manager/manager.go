@@ -20,10 +20,10 @@ import (
 	"strings"
 	"sync"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/plugins/runtime"
-	"swarmstr/internal/plugins/sdk"
-	"swarmstr/internal/store/state"
+	"metiq/internal/agent"
+	"metiq/internal/plugins/runtime"
+	"metiq/internal/plugins/sdk"
+	"metiq/internal/store/state"
 )
 
 // pluginInstance is the common interface for Goja and Node.js plugin types.

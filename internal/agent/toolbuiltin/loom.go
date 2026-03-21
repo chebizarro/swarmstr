@@ -18,9 +18,9 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/loom"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	"metiq/internal/loom"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // LoomToolOpts configures Loom tools.

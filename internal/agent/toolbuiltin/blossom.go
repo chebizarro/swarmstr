@@ -13,8 +13,8 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/blossom"
+	"metiq/internal/agent"
+	"metiq/internal/blossom"
 )
 
 // BlossomToolOpts configures the Blossom tools.

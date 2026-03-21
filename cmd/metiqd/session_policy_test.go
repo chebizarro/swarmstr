@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 func TestParseResetTrigger_StripsStructuralPrefixes(t *testing.T) {

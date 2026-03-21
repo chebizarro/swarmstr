@@ -5,7 +5,7 @@
 // Outbound messages are sent via the Chat API using an OAuth2 access token
 // minted from a service-account key.
 //
-// Registration: import _ "swarmstr/internal/extensions/googlechat" in the
+// Registration: import _ "metiq/internal/extensions/googlechat" in the
 // daemon main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -54,8 +54,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {
@@ -351,9 +351,9 @@ func (b *gchatBot) verifyInboundJWT(r *http.Request) bool {
 // ─── Push handler ─────────────────────────────────────────────────────────────
 
 type gchatPushEvent struct {
-	Type    string `json:"type"`
+	Type      string `json:"type"`
 	EventTime string `json:"eventTime"`
-	Message *struct {
+	Message   *struct {
 		Name   string `json:"name"`
 		Sender struct {
 			Name        string `json:"name"`

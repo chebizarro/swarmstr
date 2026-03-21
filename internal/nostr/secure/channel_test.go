@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"swarmstr/internal/nostr/secure"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/nostr/secure"
+	"metiq/internal/plugins/sdk"
 )
 
 // ─── stub ChannelHandle ───────────────────────────────────────────────────────
@@ -17,9 +17,9 @@ type stubHandle struct {
 	sendErr  error
 }
 
-func (h *stubHandle) ID() string                             { return h.id }
+func (h *stubHandle) ID() string                                { return h.id }
 func (h *stubHandle) Send(_ context.Context, text string) error { h.lastSent = text; return h.sendErr }
-func (h *stubHandle) Close()                                 {}
+func (h *stubHandle) Close()                                    {}
 
 // ─── stub ChannelPlugin ───────────────────────────────────────────────────────
 
@@ -28,9 +28,9 @@ type stubPlugin struct {
 	lastOnMessage func(sdk.InboundChannelMessage)
 }
 
-func (p *stubPlugin) ID() string                         { return "stub" }
-func (p *stubPlugin) Type() string                       { return "stub" }
-func (p *stubPlugin) ConfigSchema() map[string]any       { return nil }
+func (p *stubPlugin) ID() string                   { return "stub" }
+func (p *stubPlugin) Type() string                 { return "stub" }
+func (p *stubPlugin) ConfigSchema() map[string]any { return nil }
 func (p *stubPlugin) Connect(
 	_ context.Context,
 	_ string,

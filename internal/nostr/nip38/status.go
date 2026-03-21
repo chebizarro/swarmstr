@@ -26,7 +26,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	nostruntime "swarmstr/internal/nostr/runtime"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // Status values for NIP-38 kind 30315 events.

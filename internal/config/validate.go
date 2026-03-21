@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strings"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 // ValidateConfigDoc validates the semantic constraints of a ConfigDoc.

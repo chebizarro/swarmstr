@@ -14,36 +14,36 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 const (
-	maxActiveFileWatches = 20
+	maxActiveFileWatches        = 20
 	maxFileSizeForContentFilter = 10 * 1024 * 1024 // 10MB
-	maxRecursiveDepth = 100 // warn if more directories
-	defaultFileOpTimeout = 5 * time.Second
-	maxLinesDefault = 0 // 0 = read entire file
+	maxRecursiveDepth           = 100              // warn if more directories
+	defaultFileOpTimeout        = 5 * time.Second
+	maxLinesDefault             = 0 // 0 = read entire file
 )
 
 type FileWatchDelivery func(sessionID, name string, event map[string]any)
 
 type fileWatchEntry struct {
-	name         string
-	sessionID    string
-	path         string
-	contains     string
-	containsRE   string
-	recursive    bool
-	cancel       context.CancelFunc
-	createdAt    time.Time
-	maxEvents    int
-	received     int
-	dirCount     int // number of directories being watched (for recursive mode)
-	maxLines     int // max lines to read for content filtering (0 = all)
-	batchEvents  int // batch multiple events before delivery (0 = immediate)
-	fileTimeout  time.Duration
-	stopped      bool // prevents double-cleanup race
-	mu           sync.Mutex // protects entry fields
+	name        string
+	sessionID   string
+	path        string
+	contains    string
+	containsRE  string
+	recursive   bool
+	cancel      context.CancelFunc
+	createdAt   time.Time
+	maxEvents   int
+	received    int
+	dirCount    int // number of directories being watched (for recursive mode)
+	maxLines    int // max lines to read for content filtering (0 = all)
+	batchEvents int // batch multiple events before delivery (0 = immediate)
+	fileTimeout time.Duration
+	stopped     bool       // prevents double-cleanup race
+	mu          sync.Mutex // protects entry fields
 }
 
 type FileWatchRegistry struct {
@@ -141,14 +141,14 @@ func (r *FileWatchRegistry) start(
 			}
 			entry.stopped = true
 			entry.mu.Unlock()
-			
+
 			cancel()
 			_ = watcher.Close()
 			r.mu.Lock()
 			delete(r.entries, name)
 			r.mu.Unlock()
 		}()
-		
+
 		var eventBatch []map[string]any
 		var batchTimer *time.Timer
 		var batchTimerC <-chan time.Time
@@ -204,7 +204,7 @@ func (r *FileWatchRegistry) start(
 					"watch_path": watchPath,
 					"at":         time.Now().Unix(),
 				}
-				
+
 				// Handle batching if enabled
 				if batchEvents > 1 {
 					eventBatch = append(eventBatch, payload)
@@ -216,7 +216,7 @@ func (r *FileWatchRegistry) start(
 				} else {
 					deliver(sessionID, name, payload)
 				}
-				
+
 				entry.mu.Lock()
 				entry.received++
 				done := maxEvents > 0 && entry.received >= maxEvents
@@ -258,7 +258,7 @@ func (r *FileWatchRegistry) stop(name string) error {
 		return fmt.Errorf("watch %q not found", name)
 	}
 	r.mu.Unlock()
-	
+
 	// Coordinate with goroutine cleanup to prevent race
 	e.mu.Lock()
 	if e.stopped {
@@ -267,15 +267,15 @@ func (r *FileWatchRegistry) stop(name string) error {
 	}
 	e.stopped = true
 	e.mu.Unlock()
-	
+
 	// Cancel will trigger goroutine cleanup
 	e.cancel()
-	
+
 	// Remove from registry
 	r.mu.Lock()
 	delete(r.entries, name)
 	r.mu.Unlock()
-	
+
 	return nil
 }
 
@@ -342,19 +342,19 @@ func fileMatchesContentWithTimeout(ctx context.Context, path, contains string, r
 	if info.IsDir() {
 		return false, nil
 	}
-	
+
 	// Check file size before reading to avoid memory issues
 	if maxLines == 0 && info.Size() > maxFileSizeForContentFilter {
 		return false, fmt.Errorf("file %q is %d bytes (limit: %d bytes for content filtering); consider using max_lines parameter or removing contains/contains_regex filter", path, info.Size(), maxFileSizeForContentFilter)
 	}
-	
+
 	// Use channel to respect context timeout
 	type result struct {
 		matched bool
 		err     error
 	}
 	resultCh := make(chan result, 1)
-	
+
 	go func() {
 		var content string
 		if maxLines > 0 {
@@ -365,7 +365,7 @@ func fileMatchesContentWithTimeout(ctx context.Context, path, contains string, r
 				return
 			}
 			defer f.Close()
-			
+
 			var lines []string
 			scanner := bufio.NewScanner(f)
 			for scanner.Scan() && len(lines) < maxLines {
@@ -385,7 +385,7 @@ func fileMatchesContentWithTimeout(ctx context.Context, path, contains string, r
 			}
 			content = string(b)
 		}
-		
+
 		if strings.TrimSpace(contains) != "" && !strings.Contains(content, contains) {
 			resultCh <- result{false, nil}
 			return
@@ -396,7 +396,7 @@ func fileMatchesContentWithTimeout(ctx context.Context, path, contains string, r
 		}
 		resultCh <- result{true, nil}
 	}()
-	
+
 	select {
 	case <-ctx.Done():
 		return false, fmt.Errorf("file read timeout after %v; consider using max_lines parameter for large files", defaultFileOpTimeout)
@@ -472,17 +472,17 @@ var FileWatchAddDef = agent.ToolDefinition{
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
-			"name":           {Type: "string", Description: "Unique watch name."},
-			"session_id":     {Type: "string", Description: "Session ID to receive notifications. Defaults to current session; only needed for cross-session delivery."},
-			"path":           {Type: "string", Description: "File or directory path to watch."},
-			"event_types":    {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Optional event type filter: create|write|remove|rename|chmod. Default: create,write,remove,rename."},
-			"contains":       {Type: "string", Description: "Optional substring filter; only emit when changed file content includes this text. Use max_lines to avoid reading huge files."},
-			"contains_regex": {Type: "string", Description: "Optional regex filter; only emit when changed file content matches this regex. Use max_lines to avoid reading huge files. If both 'contains' and 'contains_regex' are set, file must match BOTH."},
-			"recursive":      {Type: "boolean", Description: "Optional: when path is a directory, watch all nested subdirectories. WARNING: Limited to 100 directories total. OS may have lower limits (e.g., Linux inotify.max_user_watches)."},
-			"ttl_seconds":    {Type: "number", Description: "Optional watch lifetime in seconds (default 3600). Watch auto-stops after this duration."},
-			"max_events":     {Type: "number", Description: "Optional max events before auto-stop (default 100; 0 = unlimited). Prevents runaway watches on high-activity paths."},
-			"max_lines":      {Type: "number", Description: "Optional: for content filters, only read first N lines of file (default 0 = read all). Use this for large log files to avoid memory issues and timeouts."},
-			"batch_events":   {Type: "number", Description: "Optional: batch multiple events before delivery (default 0 = immediate). Set to 5-10 for high-activity paths to reduce notification overhead. Events are batched for max 500ms."},
+			"name":                 {Type: "string", Description: "Unique watch name."},
+			"session_id":           {Type: "string", Description: "Session ID to receive notifications. Defaults to current session; only needed for cross-session delivery."},
+			"path":                 {Type: "string", Description: "File or directory path to watch."},
+			"event_types":          {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Optional event type filter: create|write|remove|rename|chmod. Default: create,write,remove,rename."},
+			"contains":             {Type: "string", Description: "Optional substring filter; only emit when changed file content includes this text. Use max_lines to avoid reading huge files."},
+			"contains_regex":       {Type: "string", Description: "Optional regex filter; only emit when changed file content matches this regex. Use max_lines to avoid reading huge files. If both 'contains' and 'contains_regex' are set, file must match BOTH."},
+			"recursive":            {Type: "boolean", Description: "Optional: when path is a directory, watch all nested subdirectories. WARNING: Limited to 100 directories total. OS may have lower limits (e.g., Linux inotify.max_user_watches)."},
+			"ttl_seconds":          {Type: "number", Description: "Optional watch lifetime in seconds (default 3600). Watch auto-stops after this duration."},
+			"max_events":           {Type: "number", Description: "Optional max events before auto-stop (default 100; 0 = unlimited). Prevents runaway watches on high-activity paths."},
+			"max_lines":            {Type: "number", Description: "Optional: for content filters, only read first N lines of file (default 0 = read all). Use this for large log files to avoid memory issues and timeouts."},
+			"batch_events":         {Type: "number", Description: "Optional: batch multiple events before delivery (default 0 = immediate). Set to 5-10 for high-activity paths to reduce notification overhead. Events are batched for max 500ms."},
 			"file_timeout_seconds": {Type: "number", Description: "Optional: timeout for file read operations in seconds (default 5). Increase for very large files or slow storage."},
 		},
 		Required: []string{"name", "path"},

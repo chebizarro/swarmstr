@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/memory"
-	"swarmstr/internal/store/state"
+	"metiq/internal/agent"
+	"metiq/internal/memory"
+	"metiq/internal/store/state"
 )
 
 // agentKnowledgeTopic is the dedicated topic name for long-term pinned knowledge.

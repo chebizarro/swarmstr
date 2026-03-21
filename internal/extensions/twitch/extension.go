@@ -1,7 +1,7 @@
 // Package twitch implements a Twitch chat channel extension for swarmstr
 // using the Twitch IRC WebSocket gateway (wss://irc-ws.chat.twitch.tv:443).
 //
-// Registration: import _ "swarmstr/internal/extensions/twitch" in the daemon
+// Registration: import _ "metiq/internal/extensions/twitch" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -39,15 +39,15 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 const (
-	twitchIRCAddr   = "irc-ws.chat.twitch.tv:6697"
-	reconnectDelay  = 5 * time.Second
-	maxReconnects   = 20
-	pingInterval    = 4 * time.Minute
+	twitchIRCAddr  = "irc-ws.chat.twitch.tv:6697"
+	reconnectDelay = 5 * time.Second
+	maxReconnects  = 20
+	pingInterval   = 4 * time.Minute
 )
 
 func init() {

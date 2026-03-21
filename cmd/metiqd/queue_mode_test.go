@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"swarmstr/internal/autoreply"
-	"swarmstr/internal/store/state"
+	"metiq/internal/autoreply"
+	"metiq/internal/store/state"
 )
 
 func TestResolveQueueRuntimeSettings_Defaults(t *testing.T) {

@@ -8,23 +8,23 @@ import (
 	"testing"
 	"time"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/metrics"
-	"swarmstr/internal/ratelimit"
+	"metiq/internal/agent"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/metrics"
+	"metiq/internal/ratelimit"
 )
 
 // ─── Mock channel plugin ───────────────────────────────────────────────────────
 
 // mockChannelHandle captures all outbound sends.
 type mockChannelHandle struct {
-	mu      sync.Mutex
-	id      string
-	sent    []string
-	closed  bool
+	mu     sync.Mutex
+	id     string
+	sent   []string
+	closed bool
 }
 
-func (h *mockChannelHandle) ID() string { return h.id }
+func (h *mockChannelHandle) ID() string   { return h.id }
 func (h *mockChannelHandle) Type() string { return "mock" }
 func (h *mockChannelHandle) Send(_ context.Context, text string) error {
 	h.mu.Lock()

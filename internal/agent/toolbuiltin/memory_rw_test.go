@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"swarmstr/internal/memory"
+	"metiq/internal/memory"
 )
 
 func newTestMemoryIndex(t *testing.T) *memory.Index {

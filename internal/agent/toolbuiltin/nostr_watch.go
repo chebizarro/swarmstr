@@ -14,7 +14,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
+	"metiq/internal/agent"
 )
 
 // maxActiveWatches is the maximum number of concurrent subscriptions per registry.
@@ -72,7 +72,7 @@ type WatchDelivery func(sessionID, name string, event map[string]any)
 type WatchSpec struct {
 	Name      string         `json:"name"`
 	SessionID string         `json:"session_id"`
-	FilterRaw map[string]any `json:"filter"`      // original args for buildNostrFilter
+	FilterRaw map[string]any `json:"filter"` // original args for buildNostrFilter
 	Relays    []string       `json:"relays"`
 	TTLSec    int            `json:"ttl_seconds"`
 	MaxEvents int            `json:"max_events"`

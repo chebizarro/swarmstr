@@ -1,6 +1,6 @@
 // Package discord implements a Discord Bot channel extension for swarmstr.
 //
-// Registration: import _ "swarmstr/internal/extensions/discord" in the daemon
+// Registration: import _ "metiq/internal/extensions/discord" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -41,8 +41,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {

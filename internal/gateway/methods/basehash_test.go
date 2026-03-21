@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"swarmstr/internal/store/state"
+	"metiq/internal/store/state"
 )
 
 func TestCheckBaseHash_emptyPassesThrough(t *testing.T) {

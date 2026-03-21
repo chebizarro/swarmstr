@@ -1,6 +1,6 @@
 // Package mattermost implements a Mattermost Bot channel extension for swarmstr.
 //
-// Registration: import _ "swarmstr/internal/extensions/mattermost" in the daemon
+// Registration: import _ "metiq/internal/extensions/mattermost" in the daemon
 // main.go to register this plugin at startup.
 //
 // Config schema (under nostr_channels.<name>.config):
@@ -46,8 +46,8 @@ import (
 	"sync"
 	"time"
 
-	"swarmstr/internal/gateway/channels"
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/gateway/channels"
+	"metiq/internal/plugins/sdk"
 )
 
 func init() {
@@ -189,9 +189,9 @@ type mmBot struct {
 	onMessage      func(sdk.InboundChannelMessage)
 	userNameByID   map[string]string
 	// lastSince is the cursor for polling (Unix ms).
-	lastSince      int64
-	done           chan struct{}
-	httpClient     *http.Client
+	lastSince  int64
+	done       chan struct{}
+	httpClient *http.Client
 }
 
 func (b *mmBot) ID() string { return b.channelID }
@@ -403,12 +403,12 @@ func (b *mmBot) fetchPosts(ctx context.Context) {
 	var result struct {
 		Order []string `json:"order"`
 		Posts map[string]struct {
-			ID        string `json:"id"`
-			UserID    string `json:"user_id"`
-			Message   string `json:"message"`
-			CreateAt  int64  `json:"create_at"`
-			RootID    string `json:"root_id"`
-			DeleteAt  int64  `json:"delete_at"`
+			ID       string `json:"id"`
+			UserID   string `json:"user_id"`
+			Message  string `json:"message"`
+			CreateAt int64  `json:"create_at"`
+			RootID   string `json:"root_id"`
+			DeleteAt int64  `json:"delete_at"`
 		} `json:"posts"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
@@ -492,8 +492,8 @@ func (b *mmBot) Send(ctx context.Context, text string) error {
 func (b *mmBot) AddReaction(ctx context.Context, eventID, emoji string) error {
 	postID := strings.TrimPrefix(eventID, "mm-")
 	return b.doJSON(ctx, http.MethodPost, "/reactions", map[string]any{
-		"user_id":   b.selfUserID,
-		"post_id":   postID,
+		"user_id":    b.selfUserID,
+		"post_id":    postID,
 		"emoji_name": emoji,
 	}, nil)
 }

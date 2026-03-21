@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/nostr/nip38"
+	"metiq/internal/agent"
+	"metiq/internal/nostr/nip38"
 )
 
 // NostrStatusToolOpts configures the nostr_status_set tool.

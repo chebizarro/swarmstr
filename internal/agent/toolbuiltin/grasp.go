@@ -17,9 +17,9 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
-	"swarmstr/internal/agent"
-	"swarmstr/internal/grasp"
-	nostruntime "swarmstr/internal/nostr/runtime"
+	"metiq/internal/agent"
+	"metiq/internal/grasp"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // GRASPToolOpts configures GRASP tools.

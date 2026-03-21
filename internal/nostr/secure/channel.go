@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"swarmstr/internal/plugins/sdk"
+	"metiq/internal/plugins/sdk"
 )
 
 // EncryptedHandle wraps an sdk.ChannelHandle, transparently applying NIP-44
