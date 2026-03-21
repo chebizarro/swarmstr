@@ -1,14 +1,14 @@
 ---
-summary: "Browser fetch and optional browser proxy for swarmstr agents"
+summary: "Browser fetch and optional browser proxy for metiq agents"
 read_when:
   - Using web_fetch or browser.request gateway method
-  - Connecting swarmstr to a Playwright or CDP browser proxy
+  - Connecting metiq to a Playwright or CDP browser proxy
 title: "Browser"
 ---
 
 # Browser
 
-swarmstr's browser package provides HTTP fetch with HTML-to-text extraction.
+metiq's browser package provides HTTP fetch with HTML-to-text extraction.
 It is the backing implementation for the `web_fetch` agent tool and the
 `browser.request` gateway method.
 
@@ -53,26 +53,26 @@ Response:
 **Parameters:**
 
 - `method`: HTTP method (`GET`, `POST`, etc.)
-- `path`: absolute URL (e.g. `https://example.com/page`) or path relative to `SWARMSTR_BROWSER_URL`
+- `path`: absolute URL (e.g. `https://example.com/page`) or path relative to `METIQ_BROWSER_URL`
 - `query`: optional query parameters map
 - `headers`: optional additional request headers map
 - `body`: optional request body (string, object, or array)
 - `timeout_ms`: request timeout in milliseconds
 
-## Optional browser proxy (`SWARMSTR_BROWSER_URL`)
+## Optional browser proxy (`METIQ_BROWSER_URL`)
 
 For JavaScript-heavy sites or browser automation, you can run a Playwright or CDP
-bridge server and configure swarmstr to route `browser.request` calls through it:
+bridge server and configure metiq to route `browser.request` calls through it:
 
 ```bash
-export SWARMSTR_BROWSER_URL=http://127.0.0.1:19222
-export SWARMSTR_BROWSER_TOKEN=your-bridge-token  # optional
+export METIQ_BROWSER_URL=http://127.0.0.1:19222
+export METIQ_BROWSER_TOKEN=your-bridge-token  # optional
 ```
 
-When `SWARMSTR_BROWSER_URL` is set, `browser.request` calls with relative paths
+When `METIQ_BROWSER_URL` is set, `browser.request` calls with relative paths
 are proxied to the bridge server. Absolute URLs are fetched directly without proxying.
 
-When `SWARMSTR_BROWSER_URL` is **not** set, `browser.request` with relative paths
+When `METIQ_BROWSER_URL` is **not** set, `browser.request` with relative paths
 returns an error (`browser control is disabled`).
 
 ## SSRF protection

@@ -1,19 +1,19 @@
 ---
-summary: "Use OpenAI GPT models in swarmstr"
+summary: "Use OpenAI GPT models in metiq"
 read_when:
-  - Using OpenAI GPT in swarmstr
+  - Using OpenAI GPT in metiq
   - Setting up your OpenAI API key
 title: "OpenAI"
 ---
 
 # OpenAI
 
-swarmstr supports OpenAI GPT models via the OpenAI API.
+metiq supports OpenAI GPT models via the OpenAI API.
 
 ## Setup
 
 1. Create an API key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
-2. Add to `~/.swarmstr/.env`:
+2. Add to `~/.metiq/.env`:
 
 ```
 OPENAI_API_KEY=sk-...
@@ -45,7 +45,7 @@ OPENAI_API_KEY=sk-...
 | `openai/o3-mini` | Latest mini reasoning |
 
 ```bash
-swarmstr models list --provider openai
+metiq models list --provider openai
 ```
 
 ## Azure OpenAI

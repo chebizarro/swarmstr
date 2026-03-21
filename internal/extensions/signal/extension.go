@@ -1,4 +1,4 @@
-// Package signal implements a Signal channel extension for swarmstr via a
+// Package signal implements a Signal channel extension for metiq via a
 // local signal-rest-api (or signal-cli-rest-api) sidecar.
 //
 // Because Signal has no public API, this plugin delegates all protocol work to
@@ -17,7 +17,7 @@
 //	  "poll_interval_ms": 3000                      // default 3000
 //	}
 //
-// To add a Signal channel to your swarmstr config:
+// To add a Signal channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "signal-main": {
@@ -258,7 +258,7 @@ type signalSendRequest struct {
 }
 
 func (b *signalBot) Send(ctx context.Context, text string) error {
-	// Determine recipient from the channel config.  The channel_id in swarmstr
+	// Determine recipient from the channel config.  The channel_id in metiq
 	// config should be set to the recipient number or group ID.  Fall back to
 	// the account itself for self-tests.
 	recipient := b.channelID

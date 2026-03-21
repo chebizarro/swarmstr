@@ -1,5 +1,5 @@
 ---
-summary: "Transcript format, privacy considerations, and hygiene practices for swarmstr session transcripts"
+summary: "Transcript format, privacy considerations, and hygiene practices for metiq session transcripts"
 read_when:
   - Reviewing or auditing session transcripts
   - Privacy considerations for stored conversations
@@ -11,7 +11,7 @@ title: "Transcript Hygiene"
 
 ## What's in a Transcript
 
-Session transcripts are stored as JSONL files at `~/.swarmstr/agents/<agentId>/sessions/<sessionId>.jsonl`. Each line is a turn in the conversation:
+Session transcripts are stored as JSONL files at `~/.metiq/agents/<agentId>/sessions/<sessionId>.jsonl`. Each line is a turn in the conversation:
 
 ```jsonl
 {"role":"user","content":"Check my relay connections","timestamp":1705420800,"fromPubkey":"npub1abc...","eventId":"ev123"}
@@ -38,11 +38,11 @@ Transcripts do **not** contain:
 
 ### Who Can Access Transcripts
 
-Transcripts are local files — only whoever has access to `~/.swarmstr/` can read them. On a shared VPS:
+Transcripts are local files — only whoever has access to `~/.metiq/` can read them. On a shared VPS:
 
 ```bash
 # Ensure only your user can read transcripts
-chmod 700 ~/.swarmstr/agents/
+chmod 700 ~/.metiq/agents/
 ```
 
 ### Nostr DM Privacy
@@ -51,7 +51,7 @@ End-to-end encryption (NIP-04/44) protects DMs **in transit** between clients an
 
 If you're concerned about the transcript storing sensitive conversations:
 1. Use `/compact` to summarize and prune old entries
-2. Delete old session files: `rm ~/.swarmstr/agents/main/sessions/<sessionId>.jsonl`
+2. Delete old session files: `rm ~/.metiq/agents/main/sessions/<sessionId>.jsonl`
 3. Use session-scoped keys so different contacts have isolated transcripts
 
 ### Third-Party Tool Calls
@@ -78,10 +78,10 @@ Manual cleanup:
 
 ```bash
 # List old sessions
-ls -la ~/.swarmstr/agents/main/sessions/*.jsonl
+ls -la ~/.metiq/agents/main/sessions/*.jsonl
 
 # Remove sessions older than 30 days
-find ~/.swarmstr/agents/main/sessions/ -name "*.jsonl" -mtime +30 -delete
+find ~/.metiq/agents/main/sessions/ -name "*.jsonl" -mtime +30 -delete
 ```
 
 ## Tool Result Truncation
@@ -116,7 +116,7 @@ Export a session for review:
 
 ```bash
 # Pretty-print a transcript
-cat ~/.swarmstr/agents/main/sessions/<sessionId>.jsonl | jq .
+cat ~/.metiq/agents/main/sessions/<sessionId>.jsonl | jq .
 
 # Extract just assistant responses
 cat session.jsonl | jq 'select(.role=="assistant") | .content'
@@ -130,8 +130,8 @@ cat session.jsonl | jq 'select(.role=="assistant") | .content'
 The command logger hook creates an audit trail of slash commands:
 
 ```bash
-swarmstr hooks enable command-logger
-cat ~/.swarmstr/logs/commands.log | jq .
+metiq hooks enable command-logger
+cat ~/.metiq/logs/commands.log | jq .
 ```
 
 This is separate from transcripts and only logs command events (not conversation content).

@@ -1,30 +1,30 @@
 ---
-summary: "Running multiple swarmstrd instances on the same machine"
+summary: "Running multiple metiqd instances on the same machine"
 read_when:
-  - Running multiple swarmstrd daemons with different Nostr identities
+  - Running multiple metiqd daemons with different Nostr identities
   - Multi-instance orchestration
 title: "Multiple Instances"
 ---
 
 # Multiple Instances
 
-You can run multiple `swarmstrd` instances on the same machine, each with a different Nostr identity (private key) and configuration. Each instance gets its own bootstrap config pointing to different credentials and listen ports.
+You can run multiple `metiqd` instances on the same machine, each with a different Nostr identity (private key) and configuration. Each instance gets its own bootstrap config pointing to different credentials and listen ports.
 
 ## How It Works
 
-Each `swarmstrd` instance is configured by a separate bootstrap file. Use `--bootstrap` to specify the path:
+Each `metiqd` instance is configured by a separate bootstrap file. Use `--bootstrap` to specify the path:
 
 ```bash
 # First instance (personal agent)
-swarmstrd --bootstrap ~/.swarmstr/personal/bootstrap.json
+metiqd --bootstrap ~/.metiq/personal/bootstrap.json
 
 # Second instance (work agent)
-swarmstrd --bootstrap ~/.swarmstr/work/bootstrap.json
+metiqd --bootstrap ~/.metiq/work/bootstrap.json
 ```
 
 Each bootstrap file should specify different ports to avoid conflicts:
 
-**~/.swarmstr/personal/bootstrap.json:**
+**~/.metiq/personal/bootstrap.json:**
 ```json
 {
   "private_key": "${PERSONAL_NSEC}",
@@ -33,7 +33,7 @@ Each bootstrap file should specify different ports to avoid conflicts:
 }
 ```
 
-**~/.swarmstr/work/bootstrap.json:**
+**~/.metiq/work/bootstrap.json:**
 ```json
 {
   "private_key": "${WORK_NSEC}",
@@ -46,17 +46,17 @@ Each instance loads its own ConfigDoc from Nostr (identified by the instance's p
 
 ## CLI Targeting
 
-Point CLI commands at a specific instance using `--admin-addr` or `SWARMSTR_ADMIN_ADDR`:
+Point CLI commands at a specific instance using `--admin-addr` or `METIQ_ADMIN_ADDR`:
 
 ```bash
 # Target personal agent
-swarmstr status --admin-addr 127.0.0.1:18789
+metiq status --admin-addr 127.0.0.1:18789
 
 # Target work agent
-swarmstr status --admin-addr 127.0.0.1:18790
+metiq status --admin-addr 127.0.0.1:18790
 
 # Or via environment variable
-SWARMSTR_ADMIN_ADDR=127.0.0.1:18790 swarmstr status
+METIQ_ADMIN_ADDR=127.0.0.1:18790 metiq status
 ```
 
 ## Multi-Agent Within One Instance
@@ -89,13 +89,13 @@ See [Multi-Agent Concepts](/concepts/multi-agent) for more on this approach.
 Create separate service units for each bootstrap config:
 
 ```ini
-# /etc/systemd/system/swarmstrd-personal.service
+# /etc/systemd/system/metiqd-personal.service
 [Unit]
-Description=swarmstr personal agent
+Description=metiq personal agent
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/swarmstrd --bootstrap /home/user/.swarmstr/personal/bootstrap.json
+ExecStart=/usr/local/bin/metiqd --bootstrap /home/user/.metiq/personal/bootstrap.json
 Restart=always
 User=user
 
@@ -104,13 +104,13 @@ WantedBy=multi-user.target
 ```
 
 ```ini
-# /etc/systemd/system/swarmstrd-work.service
+# /etc/systemd/system/metiqd-work.service
 [Unit]
-Description=swarmstr work agent
+Description=metiq work agent
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/swarmstrd --bootstrap /home/user/.swarmstr/work/bootstrap.json
+ExecStart=/usr/local/bin/metiqd --bootstrap /home/user/.metiq/work/bootstrap.json
 Restart=always
 User=user
 
@@ -119,7 +119,7 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable --now swarmstrd-personal swarmstrd-work
+sudo systemctl enable --now metiqd-personal metiqd-work
 ```
 
 ## Gateway WebSocket (Multiple Instances)
@@ -139,15 +139,15 @@ For containerized deployments, run each instance in its own container with its o
 
 ```yaml
 services:
-  swarmstrd-personal:
-    image: swarmstr/swarmstrd:latest
+  metiqd-personal:
+    image: metiq/metiqd:latest
     environment:
       - NOSTR_NSEC=${PERSONAL_NSEC}
     ports:
       - "18789:18789"
 
-  swarmstrd-work:
-    image: swarmstr/swarmstrd:latest
+  metiqd-work:
+    image: metiq/metiqd:latest
     environment:
       - NOSTR_NSEC=${WORK_NSEC}
     ports:

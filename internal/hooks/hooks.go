@@ -1,4 +1,4 @@
-// Package hooks implements the swarmstr hook event system.
+// Package hooks implements the metiq hook event system.
 //
 // Hooks are event-driven handlers loaded from HOOK.md files.  They fire on
 // named events (command:new, agent:bootstrap, gateway:startup, …) and can
@@ -78,9 +78,9 @@ type HookInstallSpec struct {
 type Source string
 
 const (
-	SourceBundled   Source = "swarmstr-bundled"
-	SourceManaged   Source = "swarmstr-managed"
-	SourceWorkspace Source = "swarmstr-workspace"
+	SourceBundled   Source = "metiq-bundled"
+	SourceManaged   Source = "metiq-managed"
+	SourceWorkspace Source = "metiq-workspace"
 )
 
 // Hook is a loaded hook definition.

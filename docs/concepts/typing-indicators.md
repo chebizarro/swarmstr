@@ -1,10 +1,10 @@
 # Typing Indicators
 
-swarmstr uses **status reactions** on inbound Nostr events to signal processing state to users. These give users real-time feedback that their message was received and the agent is working — the Nostr equivalent of a typing indicator.
+metiq uses **status reactions** on inbound Nostr events to signal processing state to users. These give users real-time feedback that their message was received and the agent is working — the Nostr equivalent of a typing indicator.
 
 ## How It Works
 
-Nostr has no native "typing" concept. swarmstr implements processing indicators via NIP-25 reactions published against the original inbound event:
+Nostr has no native "typing" concept. metiq implements processing indicators via NIP-25 reactions published against the original inbound event:
 
 ```
 User sends DM → agent receives
@@ -86,7 +86,7 @@ When using NIP-17 gift-wrapped DMs, reaction events are published as plain kind:
 
 ## Comparison to Traditional Typing Indicators
 
-| | Traditional (WhatsApp, Signal) | Nostr / swarmstr |
+| | Traditional (WhatsApp, Signal) | Nostr / metiq |
 |---|---|---|
 | Protocol | Proprietary presence | Open NIP-25 kind:7 |
 | Ephemerality | Disappears instantly | Events stored on relay |

@@ -1,7 +1,7 @@
 ---
-summary: "swarmstr init and manual configuration walkthrough"
+summary: "metiq init and manual configuration walkthrough"
 read_when:
-  - Setting up swarmstr for the first time
+  - Setting up metiq for the first time
   - Configuring your Nostr key and model provider
 title: "Setup & Onboarding"
 ---
@@ -13,10 +13,10 @@ title: "Setup & Onboarding"
 Create your config directory and initialize your workspace:
 
 ```bash
-mkdir -p ~/.swarmstr
+mkdir -p ~/.metiq
 
 # Seed default workspace files (AGENTS.md, SOUL.md, IDENTITY.md, USER.md, BOOTSTRAP.md)
-swarmstr init
+metiq init
 ```
 
 Then follow the [manual setup steps](#manual-setup) below to configure your key and provider.
@@ -41,7 +41,7 @@ Or use any Nostr key generation tool (Alby, nos2x, etc.).
 ### 2. Create Config Directory
 
 ```bash
-mkdir -p ~/.swarmstr
+mkdir -p ~/.metiq
 ```
 
 ### 3. Create `bootstrap.json`
@@ -87,7 +87,7 @@ mkdir -p ~/.swarmstr
 ### 5. Initialize Workspace
 
 ```bash
-swarmstr init
+metiq init
 ```
 
 This creates the workspace directory and writes default bootstrap files (AGENTS.md, SOUL.md,
@@ -97,24 +97,24 @@ passed.
 To use a custom workspace location:
 
 ```bash
-swarmstr init --workspace /path/to/my-workspace
+metiq init --workspace /path/to/my-workspace
 ```
 
 ### 6. Verify Config and Models
 
 ```bash
-swarmstr models list
+metiq models list
 ```
 
 ### 7. Start the Daemon
 
 ```bash
 # Run in foreground (for testing)
-swarmstrd --bootstrap ~/.swarmstr/bootstrap.json
+metiqd --bootstrap ~/.metiq/bootstrap.json
 
 # Or manage via the daemon CLI
-swarmstr daemon start
-swarmstr daemon status
+metiq daemon start
+metiq daemon status
 ```
 
 ## First Conversation
@@ -132,7 +132,7 @@ The agent should respond within a few seconds, beginning the BOOTSTRAP.md first-
 - [ ] At least 3 relays configured (for redundancy)
 - [ ] Model provider API key set in `config.json`
 - [ ] `dm.policy` set to `allowlist` with your own npub
-- [ ] `swarmstr models list` shows models accessible
+- [ ] `metiq models list` shows models accessible
 - [ ] First DM received and agent replied
 - [ ] (Optional) systemd service installed for always-on operation
 
@@ -141,7 +141,7 @@ The agent should respond within a few seconds, beginning the BOOTSTRAP.md first-
 After setup, your workspace contains:
 
 ```
-~/.swarmstr/workspace/
+~/.metiq/workspace/
 ├── AGENTS.md       # Agent instructions and context
 ├── SOUL.md         # Agent personality
 ├── USER.md         # User/owner profile
@@ -156,33 +156,33 @@ Customize these files to shape your agent's behavior. See [Bootstrapping](/start
 Reset workspace to defaults:
 
 ```bash
-swarmstr daemon stop
-rm -rf ~/.swarmstr/workspace
-swarmstr init
+metiq daemon stop
+rm -rf ~/.metiq/workspace
+metiq init
 ```
 
 Full reset (removes all state):
 
 ```bash
-swarmstr daemon stop
-rm -rf ~/.swarmstr
-mkdir -p ~/.swarmstr
+metiq daemon stop
+rm -rf ~/.metiq
+mkdir -p ~/.metiq
 # Recreate bootstrap.json and config.json, then:
-swarmstr init
+metiq init
 ```
 
 ## Migrating from Another Installation
 
 ```bash
 # Copy workspace files
-cp -r /old/path/workspace ~/.swarmstr/workspace
+cp -r /old/path/workspace ~/.metiq/workspace
 
 # Copy config files (update any hardcoded paths)
-cp /old/path/bootstrap.json ~/.swarmstr/bootstrap.json
-cp /old/path/config.json ~/.swarmstr/config.json
+cp /old/path/bootstrap.json ~/.metiq/bootstrap.json
+cp /old/path/config.json ~/.metiq/config.json
 
 # Restart
-swarmstr daemon restart
+metiq daemon restart
 ```
 
 ## See Also

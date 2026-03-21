@@ -1,4 +1,4 @@
-// Package skills implements the Swarmstr skills runtime:
+// Package skills implements the Metiq skills runtime:
 // SKILL.md parsing, workspace scanning, bundled skills discovery,
 // and binary requirement checking.
 //
@@ -666,7 +666,7 @@ func BinExists(name string) bool {
 // Resolution order:
 //  1. extra["skills"]["workspace"] config key
 //  2. METIQ_WORKSPACE env var
-//  3. ~/swarmstr/workspace/<agentID>
+//  3. ~/metiq/workspace/<agentID>
 func WorkspaceDir(extra map[string]any, agentID string) string {
 	if extra != nil {
 		if rawSkills, ok := extra["skills"].(map[string]any); ok {
@@ -685,7 +685,7 @@ func WorkspaceDir(extra map[string]any, agentID string) string {
 	if agentID == "" {
 		agentID = "main"
 	}
-	return filepath.Join(home, "swarmstr", "workspace", agentID)
+	return filepath.Join(home, "metiq", "workspace", agentID)
 }
 
 // ManagedSkillsDir returns the directory where installed/managed skills are stored.

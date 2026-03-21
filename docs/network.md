@@ -1,9 +1,9 @@
 ---
-summary: "Network configuration for swarmstr: relay connections, proxy config, and network model"
+summary: "Network configuration for metiq: relay connections, proxy config, and network model"
 read_when:
   - Configuring relay connections
   - Using a proxy for relay traffic
-  - Understanding swarmstr's network topology
+  - Understanding metiq's network topology
 title: "Network Configuration"
 ---
 
@@ -11,7 +11,7 @@ title: "Network Configuration"
 
 ## Network Model
 
-swarmstr's network topology:
+metiq's network topology:
 
 ```
                     ┌─────────────────────┐
@@ -20,7 +20,7 @@ swarmstr's network topology:
                     └──────────┬──────────┘
                                │  WebSocket (TLS)
                     ┌──────────┴──────────┐
-                    │    swarmstrd         │
+                    │    metiqd         │
                     │    (outbound only)   │
                     └──────────┬──────────┘
                                │
@@ -32,7 +32,7 @@ swarmstr's network topology:
     └────────────┘   └────────────┘   └────────────┘
 ```
 
-swarmstr makes **outbound connections only** to:
+metiq makes **outbound connections only** to:
 - Nostr relays (WebSocket over TLS)
 - Model provider APIs (HTTPS)
 - External services (web search, etc.)
@@ -84,15 +84,15 @@ Always configure at least 3 relays for redundancy. If one relay is down, the age
 
 ## Outbox Model (NIP-65)
 
-swarmstr supports the Nostr outbox model (NIP-65) via the `nostr_relay_hints` agent tool. When publishing replies, the agent can look up the recipient's preferred relays and publish there too. This is automatic — no configuration required beyond having the `nostr_relay_hints` tool available.
+metiq supports the Nostr outbox model (NIP-65) via the `nostr_relay_hints` agent tool. When publishing replies, the agent can look up the recipient's preferred relays and publish there too. This is automatic — no configuration required beyond having the `nostr_relay_hints` tool available.
 
 ## HTTP/SOCKS Proxy
 
 Route relay connections through a proxy using the standard environment variable:
 
 ```bash
-HTTPS_PROXY=socks5://127.0.0.1:1080 swarmstrd
-ALL_PROXY=socks5://127.0.0.1:1080 swarmstrd
+HTTPS_PROXY=socks5://127.0.0.1:1080 metiqd
+ALL_PROXY=socks5://127.0.0.1:1080 metiqd
 ```
 
 The Go HTTP client respects `HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY` automatically.
@@ -107,7 +107,7 @@ docker run -d -p 7777:7777 \
   -v ./nostr-data:/data \
   scsibug/nostr-rs-relay
 
-# Configure swarmstr to use it
+# Configure metiq to use it
 ```
 
 ```json5
@@ -125,7 +125,7 @@ docker run -d -p 7777:7777 \
 
 ## DNS
 
-swarmstr uses Go's built-in DNS resolver. For custom DNS:
+metiq uses Go's built-in DNS resolver. For custom DNS:
 
 ```bash
 # In /etc/resolv.conf or system DNS settings

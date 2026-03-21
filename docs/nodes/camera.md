@@ -1,5 +1,5 @@
 ---
-summary: "Camera nodes and image understanding for swarmstr"
+summary: "Camera nodes and image understanding for metiq"
 read_when:
   - Using camera input from a node device
   - Configuring image understanding (vision models)
@@ -9,7 +9,7 @@ title: "Camera & Images"
 
 # Camera & Images
 
-swarmstr supports camera input from paired node devices and image understanding via vision-capable models.
+metiq supports camera input from paired node devices and image understanding via vision-capable models.
 
 ## Camera Node
 
@@ -17,14 +17,14 @@ When a node with camera capabilities is paired, the agent can request snapshots 
 
 ### Taking a Snapshot
 
-Camera commands are sent to nodes via `swarmstr nodes invoke`:
+Camera commands are sent to nodes via `metiq nodes invoke`:
 
 ```bash
 # Capture a photo from a paired node
-swarmstr nodes invoke --node <node-id> --command camera.snap
+metiq nodes invoke --node <node-id> --command camera.snap
 
 # With options
-swarmstr nodes invoke --node <node-id> --command camera.snap \
+metiq nodes invoke --node <node-id> --command camera.snap \
   --args '{"max_width": 1280, "quality": 0.8}'
 ```
 
@@ -32,17 +32,17 @@ swarmstr nodes invoke --node <node-id> --command camera.snap \
 
 ```bash
 # List cameras available on a node
-swarmstr nodes invoke --node <node-id> --command camera.list
+metiq nodes invoke --node <node-id> --command camera.list
 ```
 
 ### Select Specific Camera
 
 ```bash
-swarmstr nodes invoke --node <node-id> --command camera.snap \
+metiq nodes invoke --node <node-id> --command camera.snap \
   --args '{"device_id": 1}'
 ```
 
-The `--node` flag takes the node ID from `swarmstr nodes list`.
+The `--node` flag takes the node ID from `metiq nodes list`.
 
 ## Image Understanding
 
@@ -95,7 +95,7 @@ sudo apt install libcamera-tools
 libcamera-still -o test.jpg
 ```
 
-The node device runs its own swarmstrd instance configured to pair with your main daemon.
+The node device runs its own metiqd instance configured to pair with your main daemon.
 
 ## USB Camera
 
@@ -114,7 +114,7 @@ The node host uses v4l2 for USB camera access on Linux.
 
 ```bash
 # Capture a short video clip
-swarmstr nodes invoke --node <node-id> --command camera.clip \
+metiq nodes invoke --node <node-id> --command camera.clip \
   --args '{"duration_ms": 5000}'
 ```
 

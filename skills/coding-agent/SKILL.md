@@ -1,6 +1,6 @@
 ---
 name: coding-agent
-description: 'Delegate coding tasks to Codex, Claude Code, or Pi agents via background process. Use when: (1) building/creating new features or apps, (2) reviewing PRs (spawn in temp dir), (3) refactoring large codebases, (4) iterative coding that needs file exploration. NOT for: simple one-liner fixes (just edit), reading code (use read tool), thread-bound ACP harness requests in chat (for example spawn/run Codex or Claude Code in a Discord thread; use sessions_spawn with runtime:"acp"), or any work in ~/.swarmstr/workspace (never spawn agents here). Claude Code: use --print --permission-mode bypassPermissions (no PTY). Codex/Pi/OpenCode: pty:true required.'
+description: 'Delegate coding tasks to Codex, Claude Code, or Pi agents via background process. Use when: (1) building/creating new features or apps, (2) reviewing PRs (spawn in temp dir), (3) refactoring large codebases, (4) iterative coding that needs file exploration. NOT for: simple one-liner fixes (just edit), reading code (use read tool), thread-bound ACP harness requests in chat (for example spawn/run Codex or Claude Code in a Discord thread; use sessions_spawn with runtime:"acp"), or any work in ~/.metiq/workspace (never spawn agents here). Claude Code: use --print --permission-mode bypassPermissions (no PTY). Codex/Pi/OpenCode: pty:true required.'
 metadata:
   {
     "openclaw": { "emoji": "🧩", "requires": { "anyBins": ["claude", "codex", "opencode", "pi"] } },
@@ -129,7 +129,7 @@ bash pty:true workdir:~/project background:true command:"codex --yolo 'Refactor 
 
 ### Reviewing PRs
 
-**⚠️ CRITICAL: Never review PRs in swarmstr's own project folder!**
+**⚠️ CRITICAL: Never review PRs in metiq's own project folder!**
 Clone to temp folder or use git worktree.
 
 ```bash
@@ -242,8 +242,8 @@ git worktree remove /tmp/issue-99
 5. **--full-auto for building** - auto-approves changes
 6. **vanilla for reviewing** - no special flags needed
 7. **Parallel is OK** - run many Codex processes at once for batch work
-8. **NEVER start Codex in ~/.swarmstr/** - it'll read your soul docs and get weird ideas about the org chart!
-9. **NEVER checkout branches in ~/Projects/swarmstr/** - that's the LIVE swarmstr instance!
+8. **NEVER start Codex in ~/.metiq/** - it'll read your soul docs and get weird ideas about the org chart!
+9. **NEVER checkout branches in ~/Projects/metiq/** - that's the LIVE metiq instance!
 
 ---
 
@@ -271,7 +271,7 @@ For long-running background tasks, append a wake trigger to your prompt so OpenC
 ... your task here.
 
 When completely finished, run this command to notify me:
-swarmstr dm-send --to <your-agent-npub> --text "Done: [brief summary of what was built]"
+metiq dm-send --to <your-agent-npub> --text "Done: [brief summary of what was built]"
 ```
 
 **Example:**
@@ -279,7 +279,7 @@ swarmstr dm-send --to <your-agent-npub> --text "Done: [brief summary of what was
 ```bash
 bash pty:true workdir:~/project background:true command:"codex --yolo exec 'Build a REST API for todos.
 
-When completely finished, run: swarmstr dm-send --to <your-agent-npub> --text \"Done: Built todos REST API with CRUD endpoints\"'"
+When completely finished, run: metiq dm-send --to <your-agent-npub> --text \"Done: Built todos REST API with CRUD endpoints\"'"
 ```
 
 This triggers an immediate wake event — Skippy gets pinged in seconds, not 10 minutes.

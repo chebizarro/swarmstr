@@ -1,22 +1,22 @@
 ---
-summary: "How swarmstr rotates API keys and falls back across models on failure"
+summary: "How metiq rotates API keys and falls back across models on failure"
 read_when:
   - Diagnosing model failover or API key rotation issues
   - Configuring fallback models
-  - Understanding swarmstr's resilience to provider failures
+  - Understanding metiq's resilience to provider failures
 title: "Model Failover"
 ---
 
 # Model Failover
 
-swarmstr handles model provider failures in two stages:
+metiq handles model provider failures in two stages:
 
 1. **API key rotation** within the current provider (when rate-limited)
 2. **Model fallback** to the next model in the fallback list
 
 ## API Key Rotation
 
-When a request hits a rate limit (`429` / `rate_limit` / `quota`), swarmstr retries with the next available key from the pool. Configure multiple keys in the runtime config:
+When a request hits a rate limit (`429` / `rate_limit` / `quota`), metiq retries with the next available key from the pool. Configure multiple keys in the runtime config:
 
 ```json
 {
@@ -32,7 +32,7 @@ Keys are used round-robin. A rate-limited key is temporarily moved to the back. 
 
 ## Model Fallbacks
 
-When a model fails (provider down, model unavailable, quota exhausted after all keys are tried), swarmstr falls back to the next model in the `fallback_models` list:
+When a model fails (provider down, model unavailable, quota exhausted after all keys are tried), metiq falls back to the next model in the `fallback_models` list:
 
 ```json
 {
@@ -53,7 +53,7 @@ When a model fails (provider down, model unavailable, quota exhausted after all 
 Change the primary model at runtime:
 
 ```bash
-swarmstr models set claude-sonnet-4-5
+metiq models set claude-sonnet-4-5
 ```
 
 ## Failover Triggers
@@ -70,20 +70,20 @@ swarmstr models set claude-sonnet-4-5
 
 ```bash
 # List configured models and providers
-swarmstr models list
+metiq models list
 
 # Full diagnostics
-swarmstr doctor
+metiq doctor
 ```
 
 ## Monitoring Failover
 
 ```bash
 # List models — shows active model per agent
-swarmstr models list
+metiq models list
 
 # Run full diagnostic checks
-swarmstr doctor
+metiq doctor
 ```
 
 ## See Also

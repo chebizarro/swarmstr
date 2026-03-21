@@ -1,4 +1,4 @@
-module github.com/swarmstr/swarmstr/scripts/docs-i18n
+module github.com/metiq/metiq/scripts/docs-i18n
 
 go 1.24.0
 

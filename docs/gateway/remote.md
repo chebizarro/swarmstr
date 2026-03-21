@@ -1,7 +1,7 @@
 ---
-summary: "Remote access to swarmstr: Tailscale, SSH tunnels, and the Nostr advantage"
+summary: "Remote access to metiq: Tailscale, SSH tunnels, and the Nostr advantage"
 read_when:
-  - Accessing the swarmstr web UI or admin API remotely
+  - Accessing the metiq web UI or admin API remotely
   - Setting up Tailscale or SSH tunnel for remote admin
   - Understanding why Nostr gives you remote access for free
 title: "Remote Access"
@@ -9,7 +9,7 @@ title: "Remote Access"
 
 # Remote Access
 
-swarmstr has a unique advantage over traditional agent frameworks: **Nostr provides built-in remote access to the agent**. Since the agent communicates via Nostr DMs, you can interact with it from anywhere in the world using any Nostr client — no tunnels, no port forwarding, no VPN.
+metiq has a unique advantage over traditional agent frameworks: **Nostr provides built-in remote access to the agent**. Since the agent communicates via Nostr DMs, you can interact with it from anywhere in the world using any Nostr client — no tunnels, no port forwarding, no VPN.
 
 ## The Nostr Advantage
 
@@ -17,7 +17,7 @@ swarmstr has a unique advantage over traditional agent frameworks: **Nostr provi
 Traditional agent:
   You → VPN/tunnel → Gateway HTTP → Agent
 
-swarmstr:
+metiq:
   You → Nostr relay network → Agent
 ```
 
@@ -25,7 +25,7 @@ You can send commands to your agent from your phone using a Nostr client like Da
 
 ## Local HTTP Servers
 
-swarmstr exposes two optional local HTTP servers, both configured in `bootstrap.json`:
+metiq exposes two optional local HTTP servers, both configured in `bootstrap.json`:
 
 | Server | Config key | Default | Purpose |
 |--------|------------|---------|---------|
@@ -49,7 +49,7 @@ Both servers bind to `127.0.0.1` by default and are only reachable locally. To a
 
 ### Tailscale (Recommended)
 
-Tailscale creates a private network between your devices. Your swarmstr admin API and web UI are accessible from any device on your Tailscale network.
+Tailscale creates a private network between your devices. Your metiq admin API and web UI are accessible from any device on your Tailscale network.
 
 ```bash
 # Install Tailscale
@@ -87,7 +87,7 @@ Access from a remote machine via SSH port forwarding:
 ssh -L 8788:localhost:18788 user@yourserver.example.com
 
 # Then use the CLI targeting your local tunnel
-SWARMSTR_ADMIN_ADDR=localhost:8788 swarmstr status
+METIQ_ADMIN_ADDR=localhost:8788 metiq status
 ```
 
 For a persistent tunnel (with autossh):
@@ -102,7 +102,7 @@ For production deployments, put nginx or Caddy in front with TLS:
 
 **Caddy:**
 ```
-admin.swarmstr.example.com {
+admin.metiq.example.com {
     reverse_proxy localhost:18788
 }
 ```
@@ -111,7 +111,7 @@ admin.swarmstr.example.com {
 ```nginx
 server {
     listen 443 ssl;
-    server_name admin.swarmstr.example.com;
+    server_name admin.metiq.example.com;
 
     location / {
         proxy_pass http://localhost:18788;
@@ -140,18 +140,18 @@ When exposing the HTTP servers beyond localhost:
 Set environment variables to point CLI commands at a remote admin API:
 
 ```bash
-export SWARMSTR_ADMIN_ADDR=admin.swarmstr.example.com:18788
-export SWARMSTR_ADMIN_TOKEN=your-secret-token
+export METIQ_ADMIN_ADDR=admin.metiq.example.com:18788
+export METIQ_ADMIN_TOKEN=your-secret-token
 
-swarmstr status
-swarmstr logs --lines 50
-swarmstr config get
+metiq status
+metiq logs --lines 50
+metiq config get
 ```
 
 Or pass flags explicitly:
 
 ```bash
-swarmstr status --admin-addr admin.swarmstr.example.com:18788 --admin-token your-token
+metiq status --admin-addr admin.metiq.example.com:18788 --admin-token your-token
 ```
 
 ## Network Architecture
@@ -159,7 +159,7 @@ swarmstr status --admin-addr admin.swarmstr.example.com:18788 --admin-token your
 ```
 Internet
     │
-    └── Nostr Relay Network ──── swarmstrd ──── Claude API
+    └── Nostr Relay Network ──── metiqd ──── Claude API
                                      │
                           ┌──────────┴──────────────┐
                     Admin API :18788          Gateway WS :18789

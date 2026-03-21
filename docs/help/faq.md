@@ -1,7 +1,7 @@
 ---
-summary: "Frequently asked questions about swarmstr"
+summary: "Frequently asked questions about metiq"
 read_when:
-  - Getting started with swarmstr
+  - Getting started with metiq
   - Troubleshooting common issues
 title: "FAQ"
 ---
@@ -10,20 +10,20 @@ title: "FAQ"
 
 ## General
 
-### What is swarmstr?
+### What is metiq?
 
-swarmstr is a Nostr-native AI agent daemon written in Go. It gives you an AI assistant
+metiq is a Nostr-native AI agent daemon written in Go. It gives you an AI assistant
 with a cryptographic Nostr identity (npub), accessible from any Nostr client via encrypted DMs.
 
-### How is swarmstr different from OpenClaw?
+### How is metiq different from OpenClaw?
 
 OpenClaw is a Node.js AI agent gateway that supports multiple messaging channels (WhatsApp, Telegram, Discord, etc.) with Nostr as an optional plugin.
 
-swarmstr flips this: **Nostr is the primary transport** and the architecture is built around it. swarmstr is written in Go, uses Nostr keypairs for identity, and is designed for decentralized, censorship-resistant operation.
+metiq flips this: **Nostr is the primary transport** and the architecture is built around it. metiq is written in Go, uses Nostr keypairs for identity, and is designed for decentralized, censorship-resistant operation.
 
 ### Do I need to run my own Nostr relay?
 
-No. swarmstr connects to public Nostr relays (Damus, nos.lol, etc.). For better
+No. metiq connects to public Nostr relays (Damus, nos.lol, etc.). For better
 reliability and privacy, you can run your own relay (strfry, nostream, etc.) alongside
 public ones.
 
@@ -48,9 +48,9 @@ nak key generate
 
 Or use any Nostr key manager (Alby, nos2x, etc.).
 
-### Where does swarmstr store its config?
+### Where does metiq store its config?
 
-`~/.swarmstr/config.json` (runtime config) and `~/.swarmstr/bootstrap.json` (keys and network). Use `--config` and `--bootstrap` CLI flags to override paths.
+`~/.metiq/config.json` (runtime config) and `~/.metiq/bootstrap.json` (keys and network). Use `--config` and `--bootstrap` CLI flags to override paths.
 
 ### How do I connect my agent to relays?
 
@@ -83,27 +83,27 @@ Set `dm.policy` in `config.json`:
 
 ## Operations
 
-### How do I restart swarmstr after config changes?
+### How do I restart metiq after config changes?
 
 ```bash
-systemctl restart swarmstrd
+systemctl restart metiqd
 ```
 
 Or send `SIGHUP` to reload config without a full restart (if supported).
 
-### How do I check if swarmstr is healthy?
+### How do I check if metiq is healthy?
 
 ```bash
-swarmstr health
-swarmstr status
+metiq health
+metiq status
 ```
 
 ### How do I view logs?
 
 ```bash
-swarmstr logs --lines 100
+metiq logs --lines 100
 # or
-journalctl -u swarmstrd -f
+journalctl -u metiqd -f
 ```
 
 ### How do I reset a conversation session?
@@ -114,12 +114,12 @@ Send `/new` in the DM chat to start a fresh session.
 
 ### What is a "beads" system?
 
-`.beads/issues.jsonl` is swarmstr's task/issue tracking system. One JSON object per line.
+`.beads/issues.jsonl` is metiq's task/issue tracking system. One JSON object per line.
 Agents can read and update beads to track ongoing work.
 
-### What DVM support does swarmstr have?
+### What DVM support does metiq have?
 
-swarmstr can operate as a Nostr Data Vending Machine (NIP-90). Enable with:
+metiq can operate as a Nostr Data Vending Machine (NIP-90). Enable with:
 
 ```json
 {

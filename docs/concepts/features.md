@@ -1,12 +1,12 @@
 ---
-summary: "Full capabilities list for swarmstr"
+summary: "Full capabilities list for metiq"
 read_when:
-  - Getting an overview of swarmstr's capabilities
-  - Evaluating swarmstr for a use case
+  - Getting an overview of metiq's capabilities
+  - Evaluating metiq for a use case
 title: "Features"
 ---
 
-# swarmstr Features
+# metiq Features
 
 ## Core Capabilities
 
@@ -70,9 +70,9 @@ title: "Features"
 - Single Go binary — no runtime dependencies
 - systemd/launchd service integration
 - Docker support
-- `~/.swarmstr/config.json` with `${ENV_VAR}` interpolation
+- `~/.metiq/config.json` with `${ENV_VAR}` interpolation
 - Multiple instances via separate bootstrap files
-- Full CLI management (`swarmstr` command)
+- Full CLI management (`metiq` command)
 
 ### Security
 - nsec stored separately from config (env var / .env file)
@@ -91,7 +91,7 @@ title: "Features"
 - GPS location
 - VoiceWake word detection
 
-## What swarmstr is NOT
+## What metiq is NOT
 
 - Not a hosted service — you run your own binary
 - Not a mobile app — it's a Go daemon

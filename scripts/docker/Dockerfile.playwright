@@ -1,13 +1,13 @@
-# swarmstr Playwright Browser Sandbox
+# metiq Playwright Browser Sandbox
 #
 # Provides an HTTP bridge server that wraps Playwright/Chromium for browser automation.
-# Used by the swarmstr daemon when METIQ_BROWSER_URL points to this container.
+# Used by the metiq daemon when METIQ_BROWSER_URL points to this container.
 #
 # Build:
-#   docker build -f scripts/docker/Dockerfile.playwright -t swarmstr/playwright-sandbox .
+#   docker build -f scripts/docker/Dockerfile.playwright -t metiq/playwright-sandbox .
 #
 # Run:
-#   docker run -p 3500:3500 swarmstr/playwright-sandbox
+#   docker run -p 3500:3500 metiq/playwright-sandbox
 
 FROM mcr.microsoft.com/playwright:v1.49.0-jammy
 

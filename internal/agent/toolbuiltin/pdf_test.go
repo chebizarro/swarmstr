@@ -27,7 +27,7 @@ func TestPDFTool_PathNotAllowed(t *testing.T) {
 
 func TestPDFTool_FileNotFound(t *testing.T) {
 	tool := PDFTool([]string{os.TempDir()})
-	_, err := tool(context.Background(), map[string]any{"path": "/tmp/swarmstr-nonexistent-99999.pdf"})
+	_, err := tool(context.Background(), map[string]any{"path": "/tmp/metiq-nonexistent-99999.pdf"})
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}

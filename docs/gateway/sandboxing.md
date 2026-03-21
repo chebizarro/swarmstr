@@ -1,5 +1,5 @@
 ---
-summary: "Sandbox execution environment for swarmstr: isolated command execution with resource limits"
+summary: "Sandbox execution environment for metiq: isolated command execution with resource limits"
 title: "Sandboxing"
 read_when:
   - Running agent commands in a sandboxed environment
@@ -9,7 +9,7 @@ read_when:
 
 # Sandboxing
 
-swarmstr supports running commands in an isolated execution environment via the `sandbox.run` gateway method and the `exec` agent tool. Two backends are available:
+metiq supports running commands in an isolated execution environment via the `sandbox.run` gateway method and the `exec` agent tool. Two backends are available:
 
 - **`nop`** (default) — plain `os/exec` with optional timeout; no isolation.
 - **`docker`** — ephemeral Docker container with CPU/memory caps and optional network isolation.
@@ -96,8 +96,8 @@ export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock
 The sandbox is directly accessible via the `sandbox.run` gateway method. This is used by the `exec` tool and can also be called directly:
 
 ```bash
-swarmstr gw sandbox.run '{"cmd": ["echo", "hello"]}'
-swarmstr gw sandbox.run '{"cmd": ["bash", "-c", "echo $HOME"], "driver": "docker", "timeout_seconds": 30}'
+metiq gw sandbox.run '{"cmd": ["echo", "hello"]}'
+metiq gw sandbox.run '{"cmd": ["bash", "-c", "echo $HOME"], "driver": "docker", "timeout_seconds": 30}'
 ```
 
 Request fields:
@@ -131,9 +131,9 @@ Response:
 The `exec` agent tool has its own approval system (independent of the sandbox backend). By default, exec commands require approval before running. Configure approval mode via:
 
 ```bash
-swarmstr approvals list
-swarmstr approvals approve <id>
-swarmstr approvals deny <id>
+metiq approvals list
+metiq approvals approve <id>
+metiq approvals deny <id>
 ```
 
 See [Exec Tool](/tools/exec) for approval configuration.

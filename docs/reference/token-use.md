@@ -1,9 +1,9 @@
 ---
-summary: "Token usage tracking, prompt caching, and API cost management in swarmstr"
+summary: "Token usage tracking, prompt caching, and API cost management in metiq"
 read_when:
   - Monitoring API token usage and costs
   - Configuring prompt caching
-  - Understanding how swarmstr tracks token consumption
+  - Understanding how metiq tracks token consumption
 title: "Token Usage & Prompt Caching"
 ---
 
@@ -11,13 +11,13 @@ title: "Token Usage & Prompt Caching"
 
 ## Token Tracking
 
-swarmstr tracks token usage per session and per agent turn. Token counts are stored in session transcripts and surfaced via the status command.
+metiq tracks token usage per session and per agent turn. Token counts are stored in session transcripts and surfaced via the status command.
 
 ### Viewing Usage
 
 ```bash
-swarmstr status --usage
-swarmstr models list
+metiq status --usage
+metiq models list
 ```
 
 The status output includes:
@@ -43,7 +43,7 @@ Fields:
 
 ### Anthropic Prompt Caching
 
-Anthropic's API supports caching up to 4 cache breakpoints. swarmstr uses this to reduce costs on repeated context (bootstrap files, workspace files).
+Anthropic's API supports caching up to 4 cache breakpoints. metiq uses this to reduce costs on repeated context (bootstrap files, workspace files).
 
 Configure:
 
@@ -97,7 +97,7 @@ For a typical agent session (100 turns, 2k tokens/turn avg):
 
 ```bash
 # Check provider quota status
-swarmstr models list --check
+metiq models list --check
 
 # Exits 0 if healthy, 1 if expired/missing, 2 if expiring soon
 ```

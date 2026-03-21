@@ -1,5 +1,5 @@
 ---
-summary: "Get swarmstr installed and run your first Nostr DM in minutes."
+summary: "Get metiq installed and run your first Nostr DM in minutes."
 read_when:
   - First time setup from zero
   - You want the fastest path to a working agent
@@ -18,29 +18,29 @@ Goal: go from zero to a first working Nostr DM with your AI agent.
 
 ## Quick setup
 
-### Step 1: Install swarmstr
+### Step 1: Install metiq
 
 **From binary (recommended):**
 
 ```bash
 # Download latest release for your platform
-curl -fsSL https://github.com/your-org/swarmstr/releases/latest/download/swarmstrd-linux-amd64 \
-  -o /usr/local/bin/swarmstrd
-chmod +x /usr/local/bin/swarmstrd
+curl -fsSL https://github.com/your-org/metiq/releases/latest/download/metiqd-linux-amd64 \
+  -o /usr/local/bin/metiqd
+chmod +x /usr/local/bin/metiqd
 ```
 
 **From source:**
 
 ```bash
-git clone https://github.com/your-org/swarmstr.git
-cd swarmstr
-go build -o dist/swarmstrd ./cmd/swarmstrd/
+git clone https://github.com/your-org/metiq.git
+cd metiq
+go build -o dist/metiqd ./cmd/metiqd/
 ```
 
 ### Step 2: Generate a Nostr keypair
 
 ```bash
-swarmstr keygen
+metiq keygen
 
 # Output:
 # nsec: nsec1...   (private key — keep secret)
@@ -49,9 +49,9 @@ swarmstr keygen
 
 Save the nsec to your environment.
 
-### Step 3: Configure swarmstr
+### Step 3: Configure metiq
 
-Create `~/.swarmstr/bootstrap.json` (bootstrap config — needed at daemon startup):
+Create `~/.metiq/bootstrap.json` (bootstrap config — needed at daemon startup):
 
 ```json
 {
@@ -63,7 +63,7 @@ Create `~/.swarmstr/bootstrap.json` (bootstrap config — needed at daemon start
 }
 ```
 
-Create `~/.swarmstr/config.json` for model settings:
+Create `~/.metiq/config.json` for model settings:
 
 ```json
 {
@@ -81,10 +81,10 @@ export NOSTR_NSEC="nsec1..."
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-### Step 4: Run swarmstr
+### Step 4: Run metiq
 
 ```bash
-swarmstrd
+metiqd
 ```
 
 The daemon starts, connects to Nostr relays, and begins listening for DMs.
@@ -95,35 +95,35 @@ Find your agent's npub in the startup logs, then DM it from any Nostr client
 (Damus, Amethyst, Primal, Snort, etc.) or via CLI:
 
 ```bash
-swarmstr dm-send --to npub1youragent... --text "Hello!"
+metiq dm-send --to npub1youragent... --text "Hello!"
 ```
 
 ## Health check
 
 ```bash
-swarmstr health
-swarmstr status
+metiq health
+metiq status
 ```
 
 ## Optional: Install as a system service
 
 ```bash
 # Copy systemd service file
-sudo cp scripts/systemd/swarmstrd.service /etc/systemd/system/
-sudo systemctl enable --now swarmstrd
+sudo cp scripts/systemd/metiqd.service /etc/systemd/system/
+sudo systemctl enable --now metiqd
 ```
 
 ## Useful environment variables
 
-- `SWARMSTR_WORKSPACE` — overrides the workspace directory (default: `~/.swarmstr/workspace`).
-- `SWARMSTR_BROWSER_URL` — proxy URL for `browser.request` calls.
-- `SWARMSTR_BROWSER_TOKEN` — auth token for the browser proxy.
+- `METIQ_WORKSPACE` — overrides the workspace directory (default: `~/.metiq/workspace`).
+- `METIQ_BROWSER_URL` — proxy URL for `browser.request` calls.
+- `METIQ_BROWSER_TOKEN` — auth token for the browser proxy.
 
 See [Environment variables](/help/environment) for the full reference.
 
 ## What you will have
 
-- A running swarmstrd daemon connected to Nostr relays
+- A running metiqd daemon connected to Nostr relays
 - An agent with a cryptographic Nostr identity (npub)
 - DM-based AI chat accessible from any Nostr client
 

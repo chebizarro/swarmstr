@@ -1,10 +1,10 @@
 # Canvas Skill
 
-Display HTML, JSON, or Markdown content on connected swarmstr UI clients in real time.
+Display HTML, JSON, or Markdown content on connected metiq UI clients in real time.
 
 ## Overview
 
-The `canvas_update` tool pushes content to a named in-memory canvas surface. Any browser or UI client subscribed to swarmstrd via WebSocket receives the update instantly. Great for:
+The `canvas_update` tool pushes content to a named in-memory canvas surface. Any browser or UI client subscribed to metiqd via WebSocket receives the update instantly. Great for:
 
 - Displaying interactive HTML dashboards or games
 - Streaming JSON data to a live view
@@ -16,16 +16,16 @@ The `canvas_update` tool pushes content to a named in-memory canvas surface. Any
 
 ```
 ┌──────────────┐   canvas_update   ┌──────────────────┐   WebSocket   ┌─────────────┐
-│  AI Agent    │──────────────────▶│  swarmstrd Host  │──────────────▶│  Browser UI │
+│  AI Agent    │──────────────────▶│  metiqd Host  │──────────────▶│  Browser UI │
 │              │                   │  (in-memory)     │               │  /canvas    │
 └──────────────┘                   └──────────────────┘               └─────────────┘
 ```
 
 - **Agent** calls `canvas_update` with a canvas ID, content type, and content string.
-- **swarmstrd** stores the canvas in memory and broadcasts a `canvas.update` WebSocket event.
+- **metiqd** stores the canvas in memory and broadcasts a `canvas.update` WebSocket event.
 - **Browser UI** clients (subscribed to the WebSocket) render the content live.
 
-Canvases are **ephemeral** — they exist only in memory and are lost when swarmstrd restarts.
+Canvases are **ephemeral** — they exist only in memory and are lost when metiqd restarts.
 
 ## Tool: `canvas_update`
 
@@ -86,4 +86,4 @@ Call `canvas_update` again with the same `canvas_id` to replace the content. Sub
 - Use a stable `canvas_id` (e.g. `"main"`) to keep updating the same surface instead of creating new ones each time.
 - HTML is the most powerful option for games, charts, and interactive UIs — everything must be inline since there's no file serving.
 - For charts, embed a CDN-hosted library via `<script src="...">` in your HTML or use inline SVG.
-- Canvases are in-memory only — they reset when swarmstrd restarts.
+- Canvases are in-memory only — they reset when metiqd restarts.

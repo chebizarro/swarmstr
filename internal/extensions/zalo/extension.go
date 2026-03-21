@@ -1,4 +1,4 @@
-// Package zalo implements a Zalo Official Account channel extension for swarmstr.
+// Package zalo implements a Zalo Official Account channel extension for metiq.
 //
 // Zalo is a Vietnamese messaging platform.  This plugin uses the Zalo OA
 // Open API to receive webhooks and send Customer Service (CS) messages.

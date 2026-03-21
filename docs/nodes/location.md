@@ -1,5 +1,5 @@
 ---
-summary: "Location, voicewake, and node troubleshooting for swarmstr"
+summary: "Location, voicewake, and node troubleshooting for metiq"
 read_when:
   - Using GPS location from a node device
   - Configuring voice wake word detection
@@ -15,14 +15,14 @@ title: "Location, VoiceWake & Node Troubleshooting"
 
 When a node device has GPS or location capabilities, the agent can request the current location:
 
-Location commands are sent to nodes via `swarmstr nodes invoke`:
+Location commands are sent to nodes via `metiq nodes invoke`:
 
 ```bash
 # Get location from node
-swarmstr nodes invoke --node <node-id> --command location.get
+metiq nodes invoke --node <node-id> --command location.get
 
 # With options
-swarmstr nodes invoke --node <node-id> --command location.get \
+metiq nodes invoke --node <node-id> --command location.get \
   --args '{"max_age_ms": 60000}'
 ```
 
@@ -37,7 +37,7 @@ The agent can use location data for:
 
 ```bash
 # Cron job that checks GPS location on schedule
-swarmstr cron add \
+metiq cron add \
   --schedule "*/5 * * * *" \
   --message "Check if I've arrived home based on GPS location"
 ```
@@ -64,7 +64,7 @@ Configure in the node service:
     "voicewake": {
       "enabled": true,
       "engine": "porcupine",    // "porcupine" | "openwakeword"
-      "wakeWord": "hey swarmstr",
+      "wakeWord": "hey metiq",
       "sensitivity": 0.5
     }
   }
@@ -84,10 +84,10 @@ Configure in the node service:
 After waking, the user speaks naturally:
 
 ```
-"Hey swarmstr, what's the weather in Berlin?"
+"Hey metiq, what's the weather in Berlin?"
 → Agent looks up weather, responds via TTS
 
-"Hey swarmstr, add reminder to buy milk tomorrow"  
+"Hey metiq, add reminder to buy milk tomorrow"  
 → Agent creates a cron job, confirms via TTS
 ```
 
@@ -97,23 +97,23 @@ After waking, the user speaks naturally:
 
 ```bash
 # Check pending approvals
-swarmstr nodes pending
+metiq nodes pending
 
 # Approve the node
-swarmstr nodes approve <requestId>
+metiq nodes approve <requestId>
 
 # Verify it's listed
-swarmstr nodes list
+metiq nodes list
 ```
 
 ### Node Disconnecting Frequently
 
 ```bash
 # Check node status
-swarmstr nodes status --node <node-id>
+metiq nodes status --node <node-id>
 
 # On the node device
-journalctl -u swarmstrd -f
+journalctl -u metiqd -f
 ```
 
 Common causes:
@@ -125,14 +125,14 @@ Common causes:
 
 ```bash
 # Test a simple command via invoke
-swarmstr nodes invoke --node <node-id> --command echo --args '{"text": "test"}'
+metiq nodes invoke --node <node-id> --command echo --args '{"text": "test"}'
 ```
 
 ### Camera Not Working
 
 ```bash
 # List cameras on node via invoke
-swarmstr nodes invoke --node <node-id> --command camera.list
+metiq nodes invoke --node <node-id> --command camera.list
 
 # Verify camera is accessible on the node itself (SSH into node and test):
 libcamera-still -o /tmp/test.jpg   # Raspberry Pi

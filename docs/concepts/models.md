@@ -1,6 +1,6 @@
 # Models
 
-swarmstr supports multiple LLM providers and models. The model is selected per-agent in `config.json` and can fall back through a priority list on API errors.
+metiq supports multiple LLM providers and models. The model is selected per-agent in `config.json` and can fall back through a priority list on API errors.
 
 ## Model Format
 
@@ -37,10 +37,10 @@ Set the global default model in `config.json` under the `agent` section:
 }
 ```
 
-Or use the `SWARMSTR_AGENT_PROVIDER` env var to override the provider (not the model name) for the default agent:
+Or use the `METIQ_AGENT_PROVIDER` env var to override the provider (not the model name) for the default agent:
 
 ```bash
-SWARMSTR_AGENT_PROVIDER=openai swarmstrd
+METIQ_AGENT_PROVIDER=openai metiqd
 ```
 
 To change the model dynamically (on a running daemon), edit `config.json` and reload, or use `/set model <name>` in a DM session.
@@ -161,7 +161,7 @@ Each provider needs its API key set. See the provider docs:
 | Ollama llama3.3 | 128,000 tokens | Model-dependent |
 | Gemini 2.0 Flash | 1,000,000 tokens | Very large context |
 
-swarmstr automatically compacts session history when approaching ~80% of the model's context window.
+metiq automatically compacts session history when approaching ~80% of the model's context window.
 
 ## See Also
 

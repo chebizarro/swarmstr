@@ -23,7 +23,7 @@ type Address struct {
 	DTag   string
 }
 
-// NostrStateStore defines the canonical persistence API for swarmstr.
+// NostrStateStore defines the canonical persistence API for metiq.
 // Implementations persist state as Nostr events.
 type NostrStateStore interface {
 	GetLatestReplaceable(ctx context.Context, addr Address) (Event, error)

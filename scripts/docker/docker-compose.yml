@@ -1,6 +1,6 @@
 version: "3.9"
 
-# swarmstr daemon + optional Playwright browser sandbox
+# metiq daemon + optional Playwright browser sandbox
 #
 # Quick start:
 #   cp .env.example .env   # fill in METIQ_NOSTR_KEY + API keys
@@ -11,28 +11,28 @@ version: "3.9"
 
 services:
 
-  # ── swarmstr daemon ──────────────────────────────────────────────────────────
-  swarmstrd:
+  # ── metiq daemon ──────────────────────────────────────────────────────────
+  metiqd:
     build:
       context: ../..          # repo root
       dockerfile: scripts/docker/Dockerfile
-    image: swarmstr/swarmstrd:latest
+    image: metiq/metiqd:latest
     restart: unless-stopped
     env_file:
       - .env                  # create from .env.example
     volumes:
-      - swarmstr-data:/data   # persistent config + session storage
+      - metiq-data:/data   # persistent config + session storage
     depends_on:
       playwright:
         condition: service_healthy
         required: false       # still starts if playwright is disabled
     networks:
-      - swarmstr
+      - metiq
 
   # ── Playwright browser sandbox (optional, high-value) ────────────────────────
   # Set METIQ_BROWSER_URL=http://playwright:3500 in .env to enable.
   playwright:
-    image: swarmstr/playwright-sandbox:latest
+    image: metiq/playwright-sandbox:latest
     build:
       context: ../..
       dockerfile: scripts/docker/Dockerfile.playwright
@@ -50,13 +50,13 @@ services:
       timeout: 5s
       retries: 3
     networks:
-      - swarmstr
+      - metiq
     profiles:
       - browser  # opt-in: docker compose --profile browser up
 
 volumes:
-  swarmstr-data:
+  metiq-data:
 
 networks:
-  swarmstr:
+  metiq:
     driver: bridge

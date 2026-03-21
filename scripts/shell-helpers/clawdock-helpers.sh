@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# swarmstrd Docker helpers
-# Shell helpers for managing swarmstrd running in Docker.
+# metiqd Docker helpers
+# Shell helpers for managing metiqd running in Docker.
 #
 # Installation:
-#   mkdir -p ~/.swarmdock && curl -sL https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/shell-helpers/clawdock-helpers.sh -o ~/.swarmdock/clawdock-helpers.sh
+#   mkdir -p ~/.swarmdock && curl -sL https://raw.githubusercontent.com/metiq/metiq/main/scripts/shell-helpers/clawdock-helpers.sh -o ~/.swarmdock/clawdock-helpers.sh
 #   echo 'source ~/.swarmdock/clawdock-helpers.sh' >> ~/.zshrc
 #
 # Usage:
@@ -37,14 +37,14 @@ _cmd() {
 # =============================================================================
 SWARMDOCK_CONFIG="${HOME}/.swarmdock/config"
 
-# Common paths to check for swarmstr
+# Common paths to check for metiq
 SWARMDOCK_COMMON_PATHS=(
-  "${HOME}/swarmstr"
-  "${HOME}/workspace/swarmstr"
-  "${HOME}/projects/swarmstr"
-  "${HOME}/dev/swarmstr"
-  "${HOME}/code/swarmstr"
-  "${HOME}/src/swarmstr"
+  "${HOME}/metiq"
+  "${HOME}/workspace/metiq"
+  "${HOME}/projects/metiq"
+  "${HOME}/dev/metiq"
+  "${HOME}/code/metiq"
+  "${HOME}/src/metiq"
 )
 
 _swarmdock_filter_warnings() {
@@ -96,28 +96,28 @@ _swarmdock_ensure_dir() {
 
   if [[ -n "$found_path" ]]; then
     echo ""
-    echo "🐝 Found swarmstr at: $found_path"
+    echo "🐝 Found metiq at: $found_path"
     echo -n "   Use this location? [Y/n] "
     read -r response
     if [[ "$response" =~ ^[Nn] ]]; then
       echo ""
       echo "Set SWARMDOCK_DIR manually:"
-      echo "  export SWARMDOCK_DIR=/path/to/swarmstr"
+      echo "  export SWARMDOCK_DIR=/path/to/metiq"
       return 1
     fi
     SWARMDOCK_DIR="$found_path"
   else
     echo ""
-    echo "❌ swarmstr not found in common locations."
+    echo "❌ metiq not found in common locations."
     echo ""
     echo "Clone it first:"
     echo ""
-    echo "  git clone https://github.com/swarmstr/swarmstr.git ~/swarmstr"
-    echo "  cd ~/swarmstr && ./docker-setup.sh"
+    echo "  git clone https://github.com/metiq/metiq.git ~/metiq"
+    echo "  cd ~/metiq && ./docker-setup.sh"
     echo ""
     echo "Or set SWARMDOCK_DIR if it's elsewhere:"
     echo ""
-    echo "  export SWARMDOCK_DIR=/path/to/swarmstr"
+    echo "  export SWARMDOCK_DIR=/path/to/metiq"
     echo ""
     return 1
   fi
@@ -144,7 +144,7 @@ _swarmdock_compose() {
 
 # Basic Operations
 swarmdock-start() {
-  _swarmdock_compose up -d swarmstrd
+  _swarmdock_compose up -d metiqd
 }
 
 swarmdock-stop() {
@@ -152,11 +152,11 @@ swarmdock-stop() {
 }
 
 swarmdock-restart() {
-  _swarmdock_compose restart swarmstrd
+  _swarmdock_compose restart metiqd
 }
 
 swarmdock-logs() {
-  _swarmdock_compose logs -f swarmstrd
+  _swarmdock_compose logs -f metiqd
 }
 
 swarmdock-status() {
@@ -179,16 +179,16 @@ swarmdock-workspace() {
 
 # Container Access
 swarmdock-shell() {
-  _swarmdock_compose exec swarmstrd bash
+  _swarmdock_compose exec metiqd bash
 }
 
 swarmdock-exec() {
-  _swarmdock_compose exec swarmstrd "$@"
+  _swarmdock_compose exec metiqd "$@"
 }
 
 # Maintenance
 swarmdock-rebuild() {
-  _swarmdock_compose build swarmstrd
+  _swarmdock_compose build metiqd
 }
 
 swarmdock-clean() {
@@ -198,28 +198,28 @@ swarmdock-clean() {
 # Health check
 swarmdock-health() {
   _swarmdock_ensure_dir || return 1
-  _swarmdock_compose exec swarmstrd swarmstr status
+  _swarmdock_compose exec metiqd metiq status
 }
 
 # Show all available swarmdock helper commands
 swarmdock-help() {
-  echo -e "\n${_CLR_BOLD}${_CLR_CYAN}🐝 SwarmDock - Docker Helpers for swarmstrd${_CLR_RESET}\n"
+  echo -e "\n${_CLR_BOLD}${_CLR_CYAN}🐝 SwarmDock - Docker Helpers for metiqd${_CLR_RESET}\n"
 
   echo -e "${_CLR_BOLD}${_CLR_MAGENTA}⚡ Basic Operations${_CLR_RESET}"
-  echo -e "  $(_cmd swarmdock-start)       ${_CLR_DIM}Start swarmstrd${_CLR_RESET}"
-  echo -e "  $(_cmd swarmdock-stop)        ${_CLR_DIM}Stop swarmstrd${_CLR_RESET}"
-  echo -e "  $(_cmd swarmdock-restart)     ${_CLR_DIM}Restart swarmstrd${_CLR_RESET}"
+  echo -e "  $(_cmd swarmdock-start)       ${_CLR_DIM}Start metiqd${_CLR_RESET}"
+  echo -e "  $(_cmd swarmdock-stop)        ${_CLR_DIM}Stop metiqd${_CLR_RESET}"
+  echo -e "  $(_cmd swarmdock-restart)     ${_CLR_DIM}Restart metiqd${_CLR_RESET}"
   echo -e "  $(_cmd swarmdock-status)      ${_CLR_DIM}Check container status${_CLR_RESET}"
   echo -e "  $(_cmd swarmdock-logs)        ${_CLR_DIM}View live logs (follows)${_CLR_RESET}"
   echo ""
 
   echo -e "${_CLR_BOLD}${_CLR_MAGENTA}🐚 Container Access${_CLR_RESET}"
   echo -e "  $(_cmd swarmdock-shell)       ${_CLR_DIM}Shell into container${_CLR_RESET}"
-  echo -e "  $(_cmd swarmdock-exec) ${_CLR_CYAN}<cmd>${_CLR_RESET}  ${_CLR_DIM}Execute command in swarmstrd container${_CLR_RESET}"
+  echo -e "  $(_cmd swarmdock-exec) ${_CLR_CYAN}<cmd>${_CLR_RESET}  ${_CLR_DIM}Execute command in metiqd container${_CLR_RESET}"
   echo ""
 
   echo -e "${_CLR_BOLD}${_CLR_MAGENTA}⚙️  Navigation${_CLR_RESET}"
-  echo -e "  $(_cmd swarmdock-cd)          ${_CLR_DIM}Jump to swarmstr project directory${_CLR_RESET}"
+  echo -e "  $(_cmd swarmdock-cd)          ${_CLR_DIM}Jump to metiq project directory${_CLR_RESET}"
   echo -e "  $(_cmd swarmdock-config)      ${_CLR_DIM}Open config directory (~/.metiq)${_CLR_RESET}"
   echo -e "  $(_cmd swarmdock-workspace)   ${_CLR_DIM}Open workspace directory${_CLR_RESET}"
   echo ""

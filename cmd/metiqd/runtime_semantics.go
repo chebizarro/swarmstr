@@ -1142,7 +1142,7 @@ func computeWizardSteps(mode string, input map[string]any) []wizardStep {
 			Default: "wss://nos.lol,wss://relay.primal.net,wss://relay.sharegap.net",
 		})
 		// Step 3: Agent display name.
-		steps = append(steps, wizardStep{ID: "agent_name", Type: "text", Prompt: "Agent display name", Default: "swarmstr"})
+		steps = append(steps, wizardStep{ID: "agent_name", Type: "text", Prompt: "Agent display name", Default: "metiq"})
 		// Step 4: AI provider.
 		steps = append(steps, wizardStep{ID: "provider", Type: "choice", Prompt: "Select your AI provider", Options: []string{"anthropic", "openai", "ollama", "google"}, Default: "anthropic"})
 		// Step 5: API key (skip for ollama).
@@ -1155,7 +1155,7 @@ func computeWizardSteps(mode string, input map[string]any) []wizardStep {
 		defaultWorkspace := filepath.Join(homeDir, ".metiq", "workspace")
 		steps = append(steps, wizardStep{ID: "workspace_dir", Type: "text", Prompt: "Workspace directory", Default: defaultWorkspace})
 		// Final: confirm.
-		steps = append(steps, wizardStep{ID: "confirm", Type: "confirm", Prompt: "Apply these settings and start swarmstr?"})
+		steps = append(steps, wizardStep{ID: "confirm", Type: "confirm", Prompt: "Apply these settings and start metiq?"})
 		return steps
 	}
 }
@@ -1342,7 +1342,7 @@ func newOperationsRegistry() *operationsRegistry {
 	now := time.Now().UnixMilli()
 	return &operationsRegistry{
 		talkMode:            "disabled",
-		voicewake:           []string{"openclaw", "swarmstr"},
+		voicewake:           []string{"openclaw", "metiq"},
 		ttsEnabled:          false,
 		ttsProvider:         "openai",
 		heartbeatsEnabled:   true,

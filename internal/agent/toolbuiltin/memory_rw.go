@@ -29,7 +29,7 @@ var MemoryStoreDef = agent.ToolDefinition{
 			},
 			"topic": {
 				Type:        "string",
-				Description: "Short topic label to categorise this memory (e.g. \"preferences\", \"project:swarmstr\").",
+				Description: "Short topic label to categorise this memory (e.g. \"preferences\", \"project:metiq\").",
 			},
 		},
 		Required: []string{"text"},

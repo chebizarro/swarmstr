@@ -1,7 +1,7 @@
 ---
-summary: "Credential surface and secret reference guide for swarmstr: ${VAR} interpolation, .env, and credential file layout"
+summary: "Credential surface and secret reference guide for metiq: ${VAR} interpolation, .env, and credential file layout"
 read_when:
-  - Understanding all places secrets touch in swarmstr
+  - Understanding all places secrets touch in metiq
   - Setting up secure credential management
   - Auditing the credential surface area
 title: "Secrets & Credential Surface"
@@ -9,11 +9,11 @@ title: "Secrets & Credential Surface"
 
 # Secrets & Credential Surface
 
-This reference covers every place swarmstr reads or stores credentials, and how to manage each securely.
+This reference covers every place metiq reads or stores credentials, and how to manage each securely.
 
 ## The ${VAR} Interpolation System
 
-Any string in `~/.swarmstr/config.json` can use `${VAR_NAME}` to reference environment variables:
+Any string in `~/.metiq/config.json` can use `${VAR_NAME}` to reference environment variables:
 
 ```json5
 {
@@ -27,7 +27,7 @@ Any string in `~/.swarmstr/config.json` can use `${VAR_NAME}` to reference envir
 
 Variables are resolved in priority order:
 1. OS environment variables
-2. `~/.swarmstr/.env` file (if configured with `envFile`)
+2. `~/.metiq/.env` file (if configured with `envFile`)
 3. systemd `EnvironmentFile=` (for service deployments)
 
 **Never put literal secrets in config.json.** Always use `${VAR}` references.
@@ -41,15 +41,15 @@ Variables are resolved in priority order:
 | Storage | Path | Notes |
 |---------|------|-------|
 | Env var | `NOSTR_PRIVATE_KEY` | Preferred for systemd |
-| `.env` file | `~/.swarmstr/.env` | chmod 600 required |
+| `.env` file | `~/.metiq/.env` | chmod 600 required |
 | Config ref | `channels.nostr.privateKey: "${NOSTR_PRIVATE_KEY}"` | Use ${VAR} |
-| NOT here | `~/.swarmstr/config.json` directly | Never hardcode |
+| NOT here | `~/.metiq/config.json` directly | Never hardcode |
 
 ```bash
 # Generate and store securely
 NSEC=$(nak key generate | head -1)
-echo "NOSTR_PRIVATE_KEY=$NSEC" >> ~/.swarmstr/.env
-chmod 600 ~/.swarmstr/.env
+echo "NOSTR_PRIVATE_KEY=$NSEC" >> ~/.metiq/.env
+chmod 600 ~/.metiq/.env
 ```
 
 ### Model Provider API Keys
@@ -69,9 +69,9 @@ Protects the HTTP admin API.
 
 | Storage | Path |
 |---------|------|
-| Env var | `SWARMSTR_GATEWAY_TOKEN` |
-| Config ref | `http.token: "${SWARMSTR_GATEWAY_TOKEN}"` |
-| `.env` file | `~/.swarmstr/.env` |
+| Env var | `METIQ_GATEWAY_TOKEN` |
+| Config ref | `http.token: "${METIQ_GATEWAY_TOKEN}"` |
+| `.env` file | `~/.metiq/.env` |
 
 Generate a strong token:
 ```bash
@@ -84,8 +84,8 @@ Protects the webhook endpoints.
 
 | Storage | Path |
 |---------|------|
-| Env var | `SWARMSTR_HOOK_TOKEN` |
-| Config ref | `webhooks.token: "${SWARMSTR_HOOK_TOKEN}"` |
+| Env var | `METIQ_HOOK_TOKEN` |
+| Config ref | `webhooks.token: "${METIQ_HOOK_TOKEN}"` |
 
 ### Search API Keys
 
@@ -106,7 +106,7 @@ Protects agent access for new contacts.
 
 ## `.env` File Reference
 
-Full example `~/.swarmstr/.env`:
+Full example `~/.metiq/.env`:
 
 ```bash
 # Nostr identity
@@ -118,8 +118,8 @@ OPENAI_API_KEY=sk-...
 OPENROUTER_API_KEY=sk-or-...
 
 # Gateway protection
-SWARMSTR_GATEWAY_TOKEN=<32-char-random-hex>
-SWARMSTR_HOOK_TOKEN=<32-char-random-hex>
+METIQ_GATEWAY_TOKEN=<32-char-random-hex>
+METIQ_HOOK_TOKEN=<32-char-random-hex>
 
 # Access control
 PAIRING_CODE=<random-phrase>
@@ -131,7 +131,7 @@ BRAVE_API_KEY=BSA...
 
 Permissions:
 ```bash
-chmod 600 ~/.swarmstr/.env
+chmod 600 ~/.metiq/.env
 ```
 
 ## Auth Profile Files
@@ -139,26 +139,26 @@ chmod 600 ~/.swarmstr/.env
 Provider tokens (OAuth, setup-token) are stored in auth profile JSON files:
 
 ```
-~/.swarmstr/
+~/.metiq/
 └── agents/
     └── <agentId>/
         └── auth-profiles.json    # OAuth tokens, API key profiles (chmod 600)
 ```
 
-These files are managed by `swarmstr models auth`. Do not edit manually.
+These files are managed by `metiq models auth`. Do not edit manually.
 
 ## Security Audit
 
 ```bash
 # Check for plaintext secrets in config
-swarmstr doctor
+metiq doctor
 
 # Validate credential surface
-grep -r "nsec1\|sk-ant-\|sk-or-" ~/.swarmstr/config.json
+grep -r "nsec1\|sk-ant-\|sk-or-" ~/.metiq/config.json
 # Should return nothing (all should be ${VAR} refs)
 
 # Check file permissions
-ls -la ~/.swarmstr/.env ~/.swarmstr/agents/*/auth-profiles.json
+ls -la ~/.metiq/.env ~/.metiq/agents/*/auth-profiles.json
 # Should show -rw------- (600) for both
 ```
 
@@ -179,18 +179,18 @@ nak key generate
 
 ```bash
 # Update .env with new key
-nano ~/.swarmstr/.env
+nano ~/.metiq/.env
 
 # Restart daemon to pick up new env vars
-swarmstr daemon restart
+metiq daemon restart
 ```
 
 ### Rotate Gateway Token
 
 ```bash
 NEW_TOKEN=$(openssl rand -hex 32)
-sed -i "s/SWARMSTR_GATEWAY_TOKEN=.*/SWARMSTR_GATEWAY_TOKEN=$NEW_TOKEN/" ~/.swarmstr/.env
-swarmstr daemon restart
+sed -i "s/METIQ_GATEWAY_TOKEN=.*/METIQ_GATEWAY_TOKEN=$NEW_TOKEN/" ~/.metiq/.env
+metiq daemon restart
 ```
 
 ## See Also

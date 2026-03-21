@@ -1,7 +1,7 @@
 ---
-summary: "Streaming responses and chunking for Nostr DMs in swarmstr"
+summary: "Streaming responses and chunking for Nostr DMs in metiq"
 read_when:
-  - Understanding how swarmstr handles long or streaming responses
+  - Understanding how metiq handles long or streaming responses
   - Configuring response chunking for Nostr DMs
 title: "Streaming & Chunking"
 ---
@@ -10,7 +10,7 @@ title: "Streaming & Chunking"
 
 ## Nostr DM Delivery
 
-swarmstr streams responses from the model API but delivers to Nostr as complete messages (not partial streaming). This is intentional:
+metiq streams responses from the model API but delivers to Nostr as complete messages (not partial streaming). This is intentional:
 
 - Nostr events are immutable once published — you can't "update" a partially-sent event
 - Sending partial content as multiple events creates a confusing reading experience
@@ -18,7 +18,7 @@ swarmstr streams responses from the model API but delivers to Nostr as complete 
 
 ## Response Chunking
 
-For very long responses, swarmstr splits the reply into multiple Nostr DMs automatically. Chunks are numbered: `[1/3] First chunk...`, `[2/3] Second chunk...`, `[3/3] Final chunk.`
+For very long responses, metiq splits the reply into multiple Nostr DMs automatically. Chunks are numbered: `[1/3] First chunk...`, `[2/3] Second chunk...`, `[3/3] Final chunk.`
 
 The chunk size is governed by Nostr event size limits — responses that would produce events over ~64KB are split.
 
@@ -42,7 +42,7 @@ For the webchat and canvas, streaming is fully supported:
 
 ## Loop Detection
 
-swarmstr monitors for infinite tool-use loops. If the agent calls the same tool with the same parameters more than 3 times in a row:
+metiq monitors for infinite tool-use loops. If the agent calls the same tool with the same parameters more than 3 times in a row:
 
 1. The loop is detected and broken
 2. The agent is told it appears to be looping
@@ -52,7 +52,7 @@ Loop detection is always active and requires no configuration.
 
 ## Retry Policy
 
-For transient failures (network errors, relay disconnections), swarmstr retries:
+For transient failures (network errors, relay disconnections), metiq retries:
 
 - Model API calls: 3 retries with exponential backoff (1s, 2s, 4s)
 - Nostr DM delivery: 3 retries, then drops and logs

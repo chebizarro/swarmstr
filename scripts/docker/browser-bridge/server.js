@@ -1,5 +1,5 @@
 /**
- * swarmstr Browser Bridge Server
+ * metiq Browser Bridge Server
  *
  * An HTTP server that wraps Playwright/Chromium for browser automation.
  * Compatible with OpenClaw browser bridge API.
@@ -319,7 +319,7 @@ process.on("SIGTERM", async () => {
 
 // ── Start ─────────────────────────────────────────────────────────────────
 app.listen(PORT, host, () => {
-  console.log(`swarmstr browser bridge listening on http://${host}:${PORT}`);
+  console.log(`metiq browser bridge listening on http://${host}:${PORT}`);
   // Warm up browser at startup
   ensureBrowser().then(() => {
     console.log("Browser started");

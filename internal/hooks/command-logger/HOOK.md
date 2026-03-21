@@ -1,14 +1,14 @@
 ---
 name: command-logger
 description: "Log all command events to a centralized audit file"
-homepage: https://github.com/swarmstr/swarmstr/blob/main/hooks/command-logger/HOOK.md
+homepage: https://github.com/metiq/metiq/blob/main/hooks/command-logger/HOOK.md
 metadata:
   {
     "openclaw":
       {
         "emoji": "📝",
         "events": ["command"],
-        "install": [{ "id": "bundled", "kind": "bundled", "label": "Bundled with swarmstr" }],
+        "install": [{ "id": "bundled", "kind": "bundled", "label": "Bundled with metiq" }],
       },
   }
 ---
@@ -36,5 +36,5 @@ No requirements — works out of the box on all platforms.
 ## Disabling
 
 ```bash
-swarmstrd hooks disable command-logger
+metiqd hooks disable command-logger
 ```

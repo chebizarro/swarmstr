@@ -1,4 +1,4 @@
-// Package matrix implements a Matrix channel extension for swarmstr using the
+// Package matrix implements a Matrix channel extension for metiq using the
 // Matrix Client-Server API.
 //
 // Registration: import _ "metiq/internal/extensions/matrix" in the daemon
@@ -18,11 +18,11 @@
 //
 // The extension uses /sync long-polling for real-time message delivery.
 //
-// Room configuration: the channel_id field in the swarmstr config must be the
+// Room configuration: the channel_id field in the metiq config must be the
 // fully-qualified Matrix room ID (e.g. !roomid:server.com) or a room alias
 // (#alias:server.com).  On connect the alias is resolved to a room ID.
 //
-// To add a Matrix channel to your swarmstr config:
+// To add a Matrix channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "matrix-main": {

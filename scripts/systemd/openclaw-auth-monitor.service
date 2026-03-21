@@ -1,14 +1,14 @@
 [Unit]
-Description=swarmstr Auth Expiry Monitor
+Description=metiq Auth Expiry Monitor
 After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/home/admin/swarmstr/scripts/auth-monitor.sh
+ExecStart=/home/admin/metiq/scripts/auth-monitor.sh
 # Configure notification channels via environment
 Environment=WARN_HOURS=2
 # Environment=NOTIFY_PHONE=+1234567890
-# Environment=NOTIFY_NTFY=swarmstr-alerts
+# Environment=NOTIFY_NTFY=metiq-alerts
 
 [Install]
 WantedBy=default.target

@@ -1,5 +1,5 @@
 ---
-summary: "Model authentication: OAuth, API keys, and credential management for swarmstr"
+summary: "Model authentication: OAuth, API keys, and credential management for metiq"
 read_when:
   - Debugging model auth or API key setup
   - Documenting authentication or credential storage
@@ -9,7 +9,7 @@ title: "Authentication"
 
 # Authentication
 
-swarmstr supports API keys and OAuth for model providers. For always-on daemon
+metiq supports API keys and OAuth for model providers. For always-on daemon
 deployments, API keys are the most predictable option.
 
 **Nostr identity** (the agent's nsec/npub) is separate from model authentication — it's configured in the bootstrap config (`private_key` field) and is only used for Nostr protocol operations.
@@ -21,27 +21,27 @@ See [Secrets Management](/gateway/secrets) for storing credentials securely via 
 If you're running a long-lived daemon, start with an API key for your chosen provider.
 
 1. Create an API key in your provider console.
-2. Put it on the **daemon host** (the machine running `swarmstrd`).
+2. Put it on the **daemon host** (the machine running `metiqd`).
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-swarmstr models list
+metiq models list
 ```
 
-3. For systemd-managed daemons, put the key in `~/.swarmstr/.env`:
+3. For systemd-managed daemons, put the key in `~/.metiq/.env`:
 
 ```bash
-cat >> ~/.swarmstr/.env <<'EOF'
+cat >> ~/.metiq/.env <<'EOF'
 ANTHROPIC_API_KEY=sk-ant-...
 EOF
-chmod 600 ~/.swarmstr/.env
+chmod 600 ~/.metiq/.env
 ```
 
 Then restart and verify:
 
 ```bash
-swarmstr daemon restart
-swarmstr models list
+metiq daemon restart
+metiq models list
 ```
 
 4. Alternatively, configure the key directly in the runtime config using env var interpolation:
@@ -61,11 +61,11 @@ swarmstr models list
 
 ## API Keys are Recommended
 
-For always-on daemon deployments, API keys (set via environment variables) are the most reliable option. OAuth/subscription auth is not currently supported by swarmstr directly.
+For always-on daemon deployments, API keys (set via environment variables) are the most reliable option. OAuth/subscription auth is not currently supported by metiq directly.
 
 ## API Key Rotation
 
-swarmstr supports retrying requests with alternative keys when a provider rate limit is hit. Configure multiple keys in the runtime config:
+metiq supports retrying requests with alternative keys when a provider rate limit is hit. Configure multiple keys in the runtime config:
 
 ```json
 {
@@ -77,7 +77,7 @@ swarmstr supports retrying requests with alternative keys when a provider rate l
 }
 ```
 
-swarmstr only retries with alternate keys for rate-limit errors (`429`, `rate_limit`, `quota`). Keys are tried round-robin; a failed key is temporarily deprioritised.
+metiq only retries with alternate keys for rate-limit errors (`429`, `rate_limit`, `quota`). Keys are tried round-robin; a failed key is temporarily deprioritised.
 
 ## Per-Agent Credentials
 
@@ -114,8 +114,8 @@ The Nostr private key is not used for model API calls — it's only used to sign
 ## Checking Auth Status
 
 ```bash
-swarmstr models list
-swarmstr doctor
+metiq models list
+metiq doctor
 ```
 
 ## Credential Storage Locations
@@ -131,9 +131,9 @@ swarmstr doctor
 ### "No credentials found"
 
 ```bash
-swarmstr models list
+metiq models list
 # Check which provider is configured
-swarmstr config get agent.default_model
+metiq config get agent.default_model
 ```
 
 Make sure the corresponding API key env var is set and accessible to the daemon process.
@@ -141,18 +141,18 @@ Make sure the corresponding API key env var is set and accessible to the daemon 
 ### API Key Invalid
 
 ```bash
-swarmstr models list
+metiq models list
 # Verify the env var is set and exported
 echo $ANTHROPIC_API_KEY
 ```
 
 ### Daemon Can't See Env Vars
 
-If the daemon runs as a systemd service, env vars from your shell session won't be inherited. Use `~/.swarmstr/.env` or configure `EnvironmentFile=` in the systemd unit:
+If the daemon runs as a systemd service, env vars from your shell session won't be inherited. Use `~/.metiq/.env` or configure `EnvironmentFile=` in the systemd unit:
 
 ```ini
 [Service]
-EnvironmentFile=/home/user/.swarmstr/.env
+EnvironmentFile=/home/user/.metiq/.env
 ```
 
 ## See Also

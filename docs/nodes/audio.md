@@ -1,7 +1,7 @@
 ---
-summary: "Audio input/output and TTS for swarmstr nodes"
+summary: "Audio input/output and TTS for metiq nodes"
 read_when:
-  - Adding voice capabilities to swarmstr
+  - Adding voice capabilities to metiq
   - Configuring TTS or STT (speech-to-text)
   - Setting up audio on a node device
 title: "Audio & TTS"
@@ -9,7 +9,7 @@ title: "Audio & TTS"
 
 # Audio & TTS
 
-swarmstr supports text-to-speech (TTS) and speech-to-text (STT) via built-in providers
+metiq supports text-to-speech (TTS) and speech-to-text (STT) via built-in providers
 and node device plugins.
 
 ## Text-to-Speech (TTS)
@@ -42,14 +42,14 @@ The agent will speak its replies via the configured TTS provider.
 
 ## Speech-to-Text (STT)
 
-swarmstr automatically transcribes audio attachments sent via Nostr DM using **OpenAI Whisper** (`whisper-1` model). No configuration is required — it is enabled automatically when `OPENAI_API_KEY` is set.
+metiq automatically transcribes audio attachments sent via Nostr DM using **OpenAI Whisper** (`whisper-1` model). No configuration is required — it is enabled automatically when `OPENAI_API_KEY` is set.
 
 ```bash
-# In ~/.swarmstr/.env
+# In ~/.metiq/.env
 OPENAI_API_KEY=sk-...
 ```
 
-When a user sends a voice message or audio file as a Nostr media attachment, swarmstr:
+When a user sends a voice message or audio file as a Nostr media attachment, metiq:
 
 1. Downloads the audio file
 2. Transcribes it via Whisper
@@ -57,21 +57,21 @@ When a user sends a voice message or audio file as a Nostr media attachment, swa
 
 ## Node Audio Commands
 
-When a swarmstr node device (e.g., Raspberry Pi) has audio hardware and exposes audio commands via ACP, you can invoke them via the CLI or agent tools.
+When a metiq node device (e.g., Raspberry Pi) has audio hardware and exposes audio commands via ACP, you can invoke them via the CLI or agent tools.
 
 ### Via CLI
 
 ```bash
 # Invoke TTS on a paired node
-swarmstr nodes invoke --node <node-id> --command audio.tts \
-  --args '{"text": "Hello from swarmstr"}'
+metiq nodes invoke --node <node-id> --command audio.tts \
+  --args '{"text": "Hello from metiq"}'
 
 # Record from node microphone (duration in ms)
-swarmstr nodes invoke --node <node-id> --command audio.record \
+metiq nodes invoke --node <node-id> --command audio.record \
   --args '{"duration_ms": 5000}'
 ```
 
-The `--node` flag takes the node ID as shown by `swarmstr nodes list`.
+The `--node` flag takes the node ID as shown by `metiq nodes list`.
 
 ### Via Agent Tool
 
@@ -80,7 +80,7 @@ The `node_invoke` tool lets the agent send commands to nodes:
 ```
 node_invoke(
   node_pubkey="<hex-pubkey-of-node>",
-  instructions="Play TTS: Hello from swarmstr",
+  instructions="Play TTS: Hello from metiq",
   timeout_seconds=10
 )
 ```
@@ -90,7 +90,7 @@ node_invoke(
 Audio commands (`audio.tts`, `audio.record`) are implemented by the node device itself.
 The node must:
 
-1. Be paired with the daemon (`swarmstr nodes pending` → `swarmstr nodes approve <id>`)
+1. Be paired with the daemon (`metiq nodes pending` → `metiq nodes approve <id>`)
 2. Implement audio capabilities and expose them via ACP DM replies
 
 See the [Nodes Overview](/nodes/) for pairing setup.

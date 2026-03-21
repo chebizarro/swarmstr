@@ -6,7 +6,7 @@ metadata: { "openclaw": { "emoji": "📜", "requires": { "bins": ["jq"] } } }
 
 # session-logs
 
-Browse your session history stored in the swarmstr sessions index. Use this when a user references older conversations or asks what was discussed before.
+Browse your session history stored in the metiq sessions index. Use this when a user references older conversations or asks what was discussed before.
 
 ## Trigger
 
@@ -14,11 +14,11 @@ Use this skill when the user asks about prior sessions, parent conversations, or
 
 ## Location
 
-Session data lives at: `~/.swarmstr/sessions.json` — a JSON index of all sessions.
+Session data lives at: `~/.metiq/sessions.json` — a JSON index of all sessions.
 
 - **`sessions.json`** - Index of sessions with metadata (session key, start time, channel, user, topic)
 
-> **Note:** swarmstr stores session metadata in the index but does not persist full conversation transcripts to disk. Use memory files (`~/.swarmstr/memory/`) for information you want to recall across sessions.
+> **Note:** metiq stores session metadata in the index but does not persist full conversation transcripts to disk. Use memory files (`~/.metiq/memory/`) for information you want to recall across sessions.
 
 ## Structure
 
@@ -42,44 +42,44 @@ Session data lives at: `~/.swarmstr/sessions.json` — a JSON index of all sessi
 ### List all sessions sorted by date
 
 ```bash
-jq -r 'to_entries | sort_by(.value.startedAt) | reverse | .[] | "\(.value.startedAt[:10]) \(.value.channel) \(.key)"' ~/.swarmstr/sessions.json
+jq -r 'to_entries | sort_by(.value.startedAt) | reverse | .[] | "\(.value.startedAt[:10]) \(.value.channel) \(.key)"' ~/.metiq/sessions.json
 ```
 
 ### Find sessions from a specific day
 
 ```bash
-jq -r 'to_entries | .[] | select(.value.startedAt | startswith("2026-03-01")) | .key' ~/.swarmstr/sessions.json
+jq -r 'to_entries | .[] | select(.value.startedAt | startswith("2026-03-01")) | .key' ~/.metiq/sessions.json
 ```
 
 ### Find sessions by channel
 
 ```bash
-jq -r 'to_entries | .[] | select(.value.channel == "discord") | "\(.value.startedAt[:10]) \(.key)"' ~/.swarmstr/sessions.json
+jq -r 'to_entries | .[] | select(.value.channel == "discord") | "\(.value.startedAt[:10]) \(.key)"' ~/.metiq/sessions.json
 ```
 
 ### Find sessions by user
 
 ```bash
-jq -r 'to_entries | .[] | select(.value.userID == "12345") | "\(.value.startedAt[:10]) \(.key)"' ~/.swarmstr/sessions.json
+jq -r 'to_entries | .[] | select(.value.userID == "12345") | "\(.value.startedAt[:10]) \(.key)"' ~/.metiq/sessions.json
 ```
 
 ### Count sessions per channel
 
 ```bash
-jq -r '[to_entries[] | .value.channel] | group_by(.) | map({channel: .[0], count: length}) | sort_by(.count) | reverse[]' ~/.swarmstr/sessions.json
+jq -r '[to_entries[] | .value.channel] | group_by(.) | map({channel: .[0], count: length}) | sort_by(.count) | reverse[]' ~/.metiq/sessions.json
 ```
 
 ### Show sessions active today
 
 ```bash
 TODAY=$(date -u +%Y-%m-%d)
-jq -r --arg today "$TODAY" 'to_entries | .[] | select(.value.lastActiveAt | startswith($today)) | "\(.value.channel) \(.key)"' ~/.swarmstr/sessions.json
+jq -r --arg today "$TODAY" 'to_entries | .[] | select(.value.lastActiveAt | startswith($today)) | "\(.value.channel) \(.key)"' ~/.metiq/sessions.json
 ```
 
 ## Tips
 
 - Sessions are indexed by their session key (format: `channel:userID:threadID`)
-- For persistent memory across sessions, write to memory files: `~/.swarmstr/memory/`
-- The sessions index is updated by swarmstrd as sessions are created and used
+- For persistent memory across sessions, write to memory files: `~/.metiq/memory/`
+- The sessions index is updated by metiqd as sessions are created and used
 - For conversation context that must survive across sessions, ask the user to use `/compact` or `/export` before ending a session
 

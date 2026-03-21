@@ -1,4 +1,4 @@
-// Package security provides security posture auditing for swarmstr deployments.
+// Package security provides security posture auditing for metiq deployments.
 //
 // The audit system runs a series of checks against the bootstrap config and
 // live config, categorising findings by severity (info, warn, critical).
@@ -199,7 +199,7 @@ func checkPrivateKeyStrength(bs map[string]any) []Finding {
 			CheckID:     "private-key-weak",
 			Severity:    SeverityCritical,
 			Message:     "private_key appears to be too short to be a valid Nostr key",
-			Remediation: "Generate a new key with: swarmstrd --gen-key",
+			Remediation: "Generate a new key with: metiqd --gen-key",
 		}}
 	}
 	return nil
@@ -228,7 +228,7 @@ func checkChannelSecrets(cfg state.ConfigDoc) []Finding {
 					CheckID:     "channel-token-in-config",
 					Severity:    SeverityInfo,
 					Message:     fmt.Sprintf("channel %q has a token stored in config (ensure config is chmod 600)", name),
-					Remediation: "Consider using the secrets store: set token via swarmstr secrets set and reference with $secret:key_name",
+					Remediation: "Consider using the secrets store: set token via metiq secrets set and reference with $secret:key_name",
 				})
 			}
 		}

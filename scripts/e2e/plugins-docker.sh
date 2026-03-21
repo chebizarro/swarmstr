@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-IMAGE_NAME="swarmstr-plugins-e2e"
+IMAGE_NAME="metiq-plugins-e2e"
 
 echo "Building Docker image..."
 docker build -t "$IMAGE_NAME" -f "$ROOT_DIR/scripts/e2e/Dockerfile" "$ROOT_DIR"
@@ -10,7 +10,7 @@ docker build -t "$IMAGE_NAME" -f "$ROOT_DIR/scripts/e2e/Dockerfile" "$ROOT_DIR"
 echo "Running plugins Docker E2E..."
 	docker run --rm -t "$IMAGE_NAME" bash -lc '
 	  set -euo pipefail
-	  home_dir=$(mktemp -d "/tmp/swarmstr-plugins-e2e.XXXXXX")
+	  home_dir=$(mktemp -d "/tmp/metiq-plugins-e2e.XXXXXX")
 	  export HOME="$home_dir"
   mkdir -p "$HOME/.metiq/skills/demo-skill"
 

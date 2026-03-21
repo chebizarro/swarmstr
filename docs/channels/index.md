@@ -1,7 +1,7 @@
 ---
-summary: "swarmstr channels overview: Nostr-first with optional secondary channels"
+summary: "metiq channels overview: Nostr-first with optional secondary channels"
 read_when:
-  - Understanding swarmstr's channel architecture
+  - Understanding metiq's channel architecture
   - Adding a secondary channel
 title: "Channels"
 ---
@@ -10,7 +10,7 @@ title: "Channels"
 
 ## Primary channel: Nostr
 
-swarmstr is **Nostr-first**. The Nostr channel is always active and is the primary way
+metiq is **Nostr-first**. The Nostr channel is always active and is the primary way
 users interact with the agent:
 
 - No account approval required — any Nostr client can DM your agent.

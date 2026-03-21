@@ -25,7 +25,7 @@ func ExtractPDFText(ctx context.Context, data []byte) (string, error) {
 	}
 
 	// Write PDF bytes to a temp file.
-	tmpIn, err := os.CreateTemp("", "swarmstr-pdf-*.pdf")
+	tmpIn, err := os.CreateTemp("", "metiq-pdf-*.pdf")
 	if err != nil {
 		return "", fmt.Errorf("pdf temp input: %w", err)
 	}
@@ -37,7 +37,7 @@ func ExtractPDFText(ctx context.Context, data []byte) (string, error) {
 	tmpIn.Close()
 
 	// Output text file.
-	tmpOut, err := os.CreateTemp("", "swarmstr-pdf-*.txt")
+	tmpOut, err := os.CreateTemp("", "metiq-pdf-*.txt")
 	if err != nil {
 		return "", fmt.Errorf("pdf temp output: %w", err)
 	}

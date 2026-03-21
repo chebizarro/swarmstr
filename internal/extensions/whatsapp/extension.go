@@ -1,4 +1,4 @@
-// Package whatsapp implements a WhatsApp Business channel extension for swarmstr.
+// Package whatsapp implements a WhatsApp Business channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/whatsapp" in the daemon
 // main.go to register this plugin at startup.
@@ -18,7 +18,7 @@
 //	  "default_recipient":  "+15551234567"    // optional: default To number for Send()
 //	}
 //
-// To add a WhatsApp channel to your swarmstr config:
+// To add a WhatsApp channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "whatsapp-main": {

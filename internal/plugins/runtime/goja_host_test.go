@@ -69,7 +69,7 @@ func TestInvoke_echo(t *testing.T) {
 	}
 	res, err := p.Invoke(context.Background(), sdk.InvokeRequest{
 		Tool: "echo",
-		Args: map[string]any{"message": "hello swarmstr"},
+		Args: map[string]any{"message": "hello metiq"},
 	})
 	if err != nil {
 		t.Fatalf("Invoke error: %v", err)
@@ -78,7 +78,7 @@ func TestInvoke_echo(t *testing.T) {
 	if !ok {
 		t.Fatalf("result not a map: %T %v", res.Value, res.Value)
 	}
-	if m["echoed"] != "hello swarmstr" {
+	if m["echoed"] != "hello metiq" {
 		t.Errorf("echoed mismatch: %v", m["echoed"])
 	}
 }

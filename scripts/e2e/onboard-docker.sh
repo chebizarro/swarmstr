@@ -158,7 +158,7 @@ TRASH
     local validate_fn="${6:-}"
 
     echo "== Wizard case: $case_name =="
-    set_isolated_swarmstr_env "$home_dir"
+    set_isolated_metiq_env "$home_dir"
 
     input_fifo="$(mktemp -u "/tmp/openclaw-onboard-${case_name}.XXXXXX")"
     mkfifo "$input_fifo"
@@ -212,7 +212,7 @@ TRASH
     mktemp -d "/tmp/openclaw-e2e-$1.XXXXXX"
   }
 
-  set_isolated_swarmstr_env() {
+  set_isolated_metiq_env() {
     local home_dir="$1"
     export HOME="$home_dir"
     export METIQ_HOME="$home_dir"
@@ -291,7 +291,7 @@ TRASH
   run_case_local_basic() {
     local home_dir
     home_dir="$(make_home local-basic)"
-    set_isolated_swarmstr_env "$home_dir"
+    set_isolated_metiq_env "$home_dir"
     "$METIQ_ENTRY" onboard \
 	      --non-interactive \
 	      --accept-risk \
@@ -366,7 +366,7 @@ NODE
   run_case_remote_non_interactive() {
     local home_dir
     home_dir="$(make_home remote-non-interactive)"
-    set_isolated_swarmstr_env "$home_dir"
+    set_isolated_metiq_env "$home_dir"
 	    # Smoke test non-interactive remote config write.
 	    "$METIQ_ENTRY" onboard --non-interactive --accept-risk \
 	      --mode remote \
@@ -408,7 +408,7 @@ NODE
   run_case_reset() {
     local home_dir
     home_dir="$(make_home reset-config)"
-    set_isolated_swarmstr_env "$home_dir"
+    set_isolated_metiq_env "$home_dir"
     # Seed a remote config to exercise reset path.
 	    cat > "$METIQ_CONFIG_PATH" <<'"'"'JSON'"'"'
 {
@@ -503,7 +503,7 @@ NODE
   run_case_skills() {
     local home_dir
     home_dir="$(make_home skills)"
-    set_isolated_swarmstr_env "$home_dir"
+    set_isolated_metiq_env "$home_dir"
     # Seed skills config to ensure it survives the wizard.
 	    cat > "$METIQ_CONFIG_PATH" <<'"'"'JSON'"'"'
 {

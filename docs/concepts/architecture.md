@@ -1,34 +1,34 @@
 ---
-summary: "swarmstr daemon architecture, components, and Nostr-first design"
+summary: "metiq daemon architecture, components, and Nostr-first design"
 read_when:
   - Working on daemon internals, protocol, or transports
-  - Understanding how swarmstr differs from traditional AI agent frameworks
+  - Understanding how metiq differs from traditional AI agent frameworks
 title: "Architecture"
 ---
 
-# swarmstr Architecture
+# metiq Architecture
 
 Last updated: 2026-03-09
 
 ## Overview
 
-swarmstr is a **Nostr-native AI agent daemon** written in Go. Its defining characteristic is that
+metiq is a **Nostr-native AI agent daemon** written in Go. Its defining characteristic is that
 Nostr is the primary transport — not an optional plugin. Every agent interaction happens over
 Nostr encrypted DMs, giving agents an inherent decentralized identity and censorship-resistant
 communication channel.
 
-- A single long-lived **swarmstrd** process owns all Nostr subscriptions, the agent runtime,
+- A single long-lived **metiqd** process owns all Nostr subscriptions, the agent runtime,
   and optional secondary channels (Discord, Telegram via plugins).
 - Control-plane clients (CLI, web UI, automations) connect over **WebSocket** or **HTTP** on
   the configured bind host (set via `admin_listen_addr` in `bootstrap.json`; off unless configured).
 - **Nodes** (headless, Raspberry Pi, remote) connect over WebSocket, declaring `role: node`
   with explicit capabilities.
-- One swarmstrd per host; it holds the Nostr private key and maintains relay connections.
-- The **canvas host** is served by the daemon HTTP server under `/__swarmstr__/canvas/`.
+- One metiqd per host; it holds the Nostr private key and maintains relay connections.
+- The **canvas host** is served by the daemon HTTP server under `/__metiq__/canvas/`.
 
 ## Components and flows
 
-### Daemon (swarmstrd)
+### Daemon (metiqd)
 
 - Connects to configured Nostr relays over WebSocket.
 - Subscribes to encrypted DMs (NIP-04, NIP-17) addressed to the agent's npub.
@@ -49,7 +49,7 @@ communication channel.
 - `agentRuntime.ProcessTurn(ctx, sessionID, userMsg, replyFn)` is the single entry point.
 - Calls Claude API (or configured provider) with workspace bootstrap context.
 - Executes tool calls, including Nostr-specific tools (nostr_fetch, nostr_publish, etc.).
-- Session state persisted in `~/.swarmstr/sessions.json`.
+- Session state persisted in `~/.metiq/sessions.json`.
 
 ### Control-plane Clients (CLI / web admin)
 
@@ -100,7 +100,7 @@ nostr_send_dm (encrypted reply to sender's npub)
 ## Nostr advantage
 
 Unlike channel-specific AI agents that depend on third-party platforms (WhatsApp Business API,
-Telegram Bot API), swarmstr agents have:
+Telegram Bot API), metiq agents have:
 
 - **Cryptographic identity** — controlled by an nsec private key, not a platform token.
 - **Censorship resistance** — messages route through any willing relay.
@@ -116,13 +116,13 @@ Telegram Bot API), swarmstr agents have:
 
 ## Operations snapshot
 
-- Start: `swarmstrd` (foreground) or `systemctl start swarmstrd` (systemd).
-- Health: `swarmstr health` or `GET /health`.
+- Start: `metiqd` (foreground) or `systemctl start metiqd` (systemd).
+- Health: `metiq health` or `GET /health`.
 - Supervision: systemd or launchd for auto-restart.
 
 ## Invariants
 
-- Exactly one swarmstrd controls a single Nostr identity (nsec) per host.
+- Exactly one metiqd controls a single Nostr identity (nsec) per host.
 - The agent npub is derived from the nsec and is the agent's stable identity.
 - DM deduplication by Nostr event ID prevents double-processing.
 - All relay connections are outbound WebSocket (no inbound port required for Nostr).

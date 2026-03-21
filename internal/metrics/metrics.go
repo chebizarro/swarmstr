@@ -1,5 +1,5 @@
 // Package metrics provides a minimal thread-safe Prometheus-compatible metrics
-// registry for swarmstrd.  It deliberately avoids the official prometheus/client_golang
+// registry for metiqd.  It deliberately avoids the official prometheus/client_golang
 // library to keep the dependency footprint small.
 //
 // Supported metric types: Counter (monotonically increasing) and Gauge (arbitrary value).
@@ -164,15 +164,15 @@ var Default = NewRegistry()
 
 // Standard metric names registered in Default.
 var (
-	MessagesInbound  = Default.Counter("swarmstr_messages_inbound_total", "Total inbound messages processed")
-	MessagesOutbound = Default.Counter("swarmstr_messages_outbound_total", "Total outbound messages sent")
-	ToolCalls        = Default.Counter("swarmstr_tool_calls_total", "Total agent tool calls executed")
-	ToolDenied       = Default.Counter("swarmstr_tool_denied_total", "Total agent tool calls denied by approval gate")
-	TokensIn         = Default.Counter("swarmstr_tokens_in_total", "Total input tokens processed")
-	TokensOut        = Default.Counter("swarmstr_tokens_out_total", "Total output tokens generated")
+	MessagesInbound  = Default.Counter("metiq_messages_inbound_total", "Total inbound messages processed")
+	MessagesOutbound = Default.Counter("metiq_messages_outbound_total", "Total outbound messages sent")
+	ToolCalls        = Default.Counter("metiq_tool_calls_total", "Total agent tool calls executed")
+	ToolDenied       = Default.Counter("metiq_tool_denied_total", "Total agent tool calls denied by approval gate")
+	TokensIn         = Default.Counter("metiq_tokens_in_total", "Total input tokens processed")
+	TokensOut        = Default.Counter("metiq_tokens_out_total", "Total output tokens generated")
 
-	ActiveSessions    = Default.Gauge("swarmstr_active_sessions", "Currently active chat sessions")
-	ApprovalQueueSize = Default.Gauge("swarmstr_approval_queue_size", "Number of pending exec approval requests")
-	RelayConnected    = Default.Gauge("swarmstr_relays_connected", "Number of currently connected relays")
-	UptimeSeconds     = Default.Gauge("swarmstr_uptime_seconds", "Daemon uptime in seconds")
+	ActiveSessions    = Default.Gauge("metiq_active_sessions", "Currently active chat sessions")
+	ApprovalQueueSize = Default.Gauge("metiq_approval_queue_size", "Number of pending exec approval requests")
+	RelayConnected    = Default.Gauge("metiq_relays_connected", "Number of currently connected relays")
+	UptimeSeconds     = Default.Gauge("metiq_uptime_seconds", "Daemon uptime in seconds")
 )

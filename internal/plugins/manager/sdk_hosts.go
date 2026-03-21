@@ -1,7 +1,7 @@
 // Package manager – concrete sdk.Host implementations for main.go wiring.
 //
 // BuildHostForConfig constructs a sdk.Host from the runtime components
-// already present in swarmstrd: configState, DM transport, agent runtime.
+// already present in metiqd: configState, DM transport, agent runtime.
 package manager
 
 import (

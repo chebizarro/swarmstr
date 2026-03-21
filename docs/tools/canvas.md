@@ -1,6 +1,6 @@
 # Canvas
 
-swarmstr has a built-in canvas system that lets the agent render rich content in the web dashboard. The agent uses the `canvas_update` tool to push content to a live in-memory canvas surface. Any browser client connected via WebSocket receives the update instantly.
+metiq has a built-in canvas system that lets the agent render rich content in the web dashboard. The agent uses the `canvas_update` tool to push content to a live in-memory canvas surface. Any browser client connected via WebSocket receives the update instantly.
 
 ## The `canvas_update` Tool
 

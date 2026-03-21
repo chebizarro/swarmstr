@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Swarmstr</title>
+<title>Metiq</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -169,7 +169,7 @@ footer {
 <body>
 <header>
   <div class="status-dot" id="dot"></div>
-  <h1>Swarmstr</h1>
+  <h1>Metiq</h1>
   <div class="header-info">
     <span class="badge" id="agent-badge">agent: main</span>
     <span class="badge warn" id="approvals-badge" style="display:none">⚠ approval pending</span>
@@ -247,7 +247,7 @@ const TOKEN   = '{{.Token}}';
   let connected = false;
   let pendingResolvers = {};
   let seq = 0;
-  let sessionID = localStorage.getItem('swarmstr_session') || null;
+  let sessionID = localStorage.getItem('metiq_session') || null;
   let activeAgentID = 'main';
   // Streaming: the current agent bubble being written to (or null).
   let streamingBubble = null;
@@ -395,7 +395,7 @@ const TOKEN   = '{{.Token}}';
 
   function switchSession(sid) {
     sessionID = sid;
-    localStorage.setItem('swarmstr_session', sid);
+    localStorage.setItem('metiq_session', sid);
     msgs.innerHTML = '';
     addMsg('Switched to session: ' + sid, 'system');
     // Update active state in sidebar.
@@ -453,7 +453,7 @@ const TOKEN   = '{{.Token}}';
 
   $('new-session-btn').addEventListener('click', () => {
     sessionID = null;
-    localStorage.removeItem('swarmstr_session');
+    localStorage.removeItem('metiq_session');
     msgs.innerHTML = '';
     addMsg('New conversation started.', 'system');
     document.querySelectorAll('#sessions-list .sidebar-item').forEach(el => el.classList.remove('active'));
@@ -521,7 +521,7 @@ const TOKEN   = '{{.Token}}';
           sendFrame({
             type: 'request', id, method: 'connect',
             params: {
-              client: { id: 'swarmstr-webui', mode: 'local', platform: navigator.platform || 'browser', version: '0.0.0', instanceId: 'webui-' + Math.random().toString(36).slice(2) },
+              client: { id: 'metiq-webui', mode: 'local', platform: navigator.platform || 'browser', version: '0.0.0', instanceId: 'webui-' + Math.random().toString(36).slice(2) },
               min_protocol: 1, max_protocol: 10,
               auth: { token: TOKEN, nonce }
             }
@@ -585,7 +585,7 @@ const TOKEN   = '{{.Token}}';
       const result = await callMethod('chat.send', { message: text, session_id: sessionID || undefined });
       if (result && result.session_id && result.session_id !== sessionID) {
         sessionID = result.session_id;
-        localStorage.setItem('swarmstr_session', sessionID);
+        localStorage.setItem('metiq_session', sessionID);
       }
       // If no streaming chunks arrived, render the final response from result.text.
       if (!streamingBubble && result && result.text) {

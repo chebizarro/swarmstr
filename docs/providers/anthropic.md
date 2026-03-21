@@ -1,7 +1,7 @@
 ---
-summary: "Use Anthropic Claude models in swarmstr via API key or setup-token"
+summary: "Use Anthropic Claude models in metiq via API key or setup-token"
 read_when:
-  - Using Anthropic Claude in swarmstr
+  - Using Anthropic Claude in metiq
   - Setting up your Anthropic API key
   - Configuring prompt caching or thinking
 title: "Anthropic"
@@ -9,20 +9,20 @@ title: "Anthropic"
 
 # Anthropic (Claude)
 
-Anthropic builds the **Claude** model family. swarmstr supports API key and setup-token authentication.
+Anthropic builds the **Claude** model family. metiq supports API key and setup-token authentication.
 
 ## Option A: API Key (Recommended)
 
 The standard and most reliable approach.
 
 1. Create an API key at [console.anthropic.com](https://console.anthropic.com/)
-2. Add to `~/.swarmstr/.env`:
+2. Add to `~/.metiq/.env`:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-3. Configure in `~/.swarmstr/config.json`:
+3. Configure in `~/.metiq/config.json`:
 
 ```json
 {
@@ -45,8 +45,8 @@ If you have a Claude subscription via Claude Code:
 # On your daemon host
 claude setup-token
 
-# Register with swarmstr (not yet automated — add the token manually to config):
-swarmstr models list
+# Register with metiq (not yet automated — add the token manually to config):
+metiq models list
 ```
 
 Common issues:
@@ -61,7 +61,7 @@ Common issues:
 
 ```bash
 # List available Anthropic models
-swarmstr models list --provider anthropic
+metiq models list --provider anthropic
 ```
 
 ## Thinking Mode
@@ -92,7 +92,7 @@ See [Thinking Mode](/tools/thinking) for details.
 
 ## Prompt Caching
 
-swarmstr automatically applies Anthropic's prompt caching (cache breakpoints on static system context). Cache hits reduce cost to ~10% of the normal input token rate. This is always active when using an API key — no additional configuration needed.
+metiq automatically applies Anthropic's prompt caching (cache breakpoints on static system context). Cache hits reduce cost to ~10% of the normal input token rate. This is always active when using an API key — no additional configuration needed.
 
 ## API Key Rotation
 
@@ -108,18 +108,18 @@ Provide multiple keys for automatic round-robin rotation:
 }
 ```
 
-swarmstr retries with the next key on `429` / rate limit errors.
+metiq retries with the next key on `429` / rate limit errors.
 
 ## Troubleshooting
 
 ```bash
-swarmstr models list
-swarmstr doctor
+metiq models list
+metiq doctor
 ```
 
 Common issues:
 
-- **`No credentials found`**: Check `ANTHROPIC_API_KEY` is set and `~/.swarmstr/.env` is loaded.
+- **`No credentials found`**: Check `ANTHROPIC_API_KEY` is set and `~/.metiq/.env` is loaded.
 - **`Unauthorized`**: API key may be invalid or revoked. Generate a new one.
 - **`Rate limited`**: Add more keys to `providers.anthropic.api_keys` for rotation.
 - **`This credential is only authorized for Claude Code`**: Switch from setup-token to API key.

@@ -669,7 +669,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusBadRequest, err
 		}
 		if opts.AgentIdentity == nil {
-			return map[string]any{"agent_id": "main", "display_name": "Swarmstr Agent", "session_id": req.SessionID}, http.StatusOK, nil
+			return map[string]any{"agent_id": "main", "display_name": "Metiq Agent", "session_id": req.SessionID}, http.StatusOK, nil
 		}
 		out, err := opts.AgentIdentity(ctx, req)
 		if err != nil {

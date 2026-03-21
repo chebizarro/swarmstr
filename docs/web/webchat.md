@@ -1,5 +1,5 @@
 ---
-summary: "swarmstr webchat: browser-based chat interface"
+summary: "metiq webchat: browser-based chat interface"
 read_when:
   - Using the webchat UI to interact with the agent
   - Setting up browser-based agent chat
@@ -8,7 +8,7 @@ title: "Webchat"
 
 # Webchat
 
-swarmstr includes a browser-based chat interface (webchat) that doesn't require a Nostr client.
+metiq includes a browser-based chat interface (webchat) that doesn't require a Nostr client.
 
 > **Note**: Webchat is for local/admin use. For remote access, Nostr DMs are the primary channel and don't require any tunnel or port exposure.
 
@@ -27,7 +27,7 @@ The webchat is served by the **gateway WebSocket server** (`gateway_ws_listen_ad
 
 ```bash
 # Start daemon
-swarmstrd
+metiqd
 
 # Open in browser (use your configured port)
 open http://127.0.0.1:18789

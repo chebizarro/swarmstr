@@ -3,7 +3,7 @@ summary: "bash_exec tool: run shell commands from the agent, with exec approval 
 read_when:
   - Using the bash_exec tool to run shell commands from the agent
   - Managing exec approval requests
-  - Understanding exec security in swarmstr
+  - Understanding exec security in metiq
 title: "Exec Tool (bash_exec)"
 ---
 
@@ -39,16 +39,16 @@ Exec commands are gated by the exec approval system. When a command needs approv
 
 ```bash
 # List pending exec approvals
-swarmstr approvals list
+metiq approvals list
 
 # Approve a pending command
-swarmstr approvals approve <approval-id>
+metiq approvals approve <approval-id>
 
 # Deny a pending command
-swarmstr approvals deny <approval-id>
+metiq approvals deny <approval-id>
 
 # JSON output for scripting
-swarmstr approvals list --json
+metiq approvals list --json
 ```
 
 ### Approval Gateway Methods
@@ -57,13 +57,13 @@ You can also manage approvals via gateway methods:
 
 ```bash
 # Get current global approval settings
-swarmstr gw exec.approvals.get '{}'
+metiq gw exec.approvals.get '{}'
 
 # Set global approval settings
-swarmstr gw exec.approvals.set '{"mode": "allowlist"}'
+metiq gw exec.approvals.set '{"mode": "allowlist"}'
 
 # Resolve a specific pending approval
-swarmstr gw exec.approval.resolve '{"id": "approval-123", "decision": "approved"}'
+metiq gw exec.approval.resolve '{"id": "approval-123", "decision": "approved"}'
 ```
 
 ## Security Notes

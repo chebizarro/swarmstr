@@ -82,7 +82,7 @@ func LoadNodePlugin(ctx context.Context, installPath string) (*NodePlugin, error
 	}
 
 	// Write the embedded shim to a temp file.
-	shimFile, err := os.CreateTemp("", "swarmstr-node-shim-*.js")
+	shimFile, err := os.CreateTemp("", "metiq-node-shim-*.js")
 	if err != nil {
 		return nil, fmt.Errorf("create shim tempfile: %w", err)
 	}

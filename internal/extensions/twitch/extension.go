@@ -1,4 +1,4 @@
-// Package twitch implements a Twitch chat channel extension for swarmstr
+// Package twitch implements a Twitch chat channel extension for metiq
 // using the Twitch IRC WebSocket gateway (wss://irc-ws.chat.twitch.tv:443).
 //
 // Registration: import _ "metiq/internal/extensions/twitch" in the daemon
@@ -14,7 +14,7 @@
 //	  "require_mention": false                 // optional: only process messages that @mention the bot
 //	}
 //
-// To add a Twitch channel to your swarmstr config:
+// To add a Twitch channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "twitch-main": {

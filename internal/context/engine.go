@@ -1,4 +1,4 @@
-// Package context provides a pluggable context engine abstraction for swarmstr.
+// Package context provides a pluggable context engine abstraction for metiq.
 //
 // A ContextEngine manages the conversation history for an agent session.
 // It is responsible for:

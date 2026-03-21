@@ -1,13 +1,13 @@
 // Package mcp provides MCP (Model Context Protocol) client support.
 //
 // It manages connections to external MCP servers (stdio or HTTP/SSE transport),
-// discovers their tools, and adapts them into swarmstr's ToolFunc/ToolDefinition
+// discovers their tools, and adapts them into metiq's ToolFunc/ToolDefinition
 // system so they can be used by the agent runtime.
 package mcp
 
 import (
-	"crypto/sha1"
 	"context"
+	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -121,7 +121,7 @@ func (m *Manager) LoadFromConfig(ctx context.Context, cfg Config) error {
 // ConnectServer connects to a single MCP server.
 func (m *Manager) ConnectServer(ctx context.Context, name string, cfg ServerConfig) error {
 	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "swarmstr",
+		Name:    "metiq",
 		Version: "1.0.0",
 	}, nil)
 
@@ -427,7 +427,7 @@ func extractContentText(content []mcp.Content) string {
 	return strings.Join(parts, "\n")
 }
 
-// MCPToolToToolDef converts an MCP Tool into a swarmstr ToolDefinition and ToolFunc.
+// MCPToolToToolDef converts an MCP Tool into a metiq ToolDefinition and ToolFunc.
 // The returned name is prefixed with "mcp_{serverName}_{toolName}" and sanitized.
 func MCPToolToToolDef(mgr *Manager, serverName string, tool *mcp.Tool) (name string, fn func(context.Context, map[string]any) (string, error), params map[string]any) {
 	// Build sanitized name.
@@ -499,7 +499,7 @@ func sanitize(s string) string {
 }
 
 // toolInputSchemaToMap converts an MCP tool's InputSchema to a map[string]any
-// suitable for swarmstr's ToolParameters.
+// suitable for metiq's ToolParameters.
 func toolInputSchemaToMap(schema any) map[string]any {
 	if schema == nil {
 		return map[string]any{

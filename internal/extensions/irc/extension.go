@@ -1,4 +1,4 @@
-// Package irc implements an IRC channel extension for swarmstr.
+// Package irc implements an IRC channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/irc" in the daemon
 // main.go to register this plugin at startup.
@@ -11,14 +11,14 @@
 //	  "tls":             true,                // default true
 //	  "nick":            "swarmbot",          // required
 //	  "username":        "swarmbot",          // defaults to nick
-//	  "realname":        "Swarmstr Agent",    // defaults to nick
+//	  "realname":        "Metiq Agent",    // defaults to nick
 //	  "password":        "",                  // NickServ password (optional)
 //	  "channels":        ["#general"],        // required: channels to join
 //	  "allowed_senders": [],                  // optional: allowlist of nicks
 //	  "poll_interval_s": 0                    // unused (event-driven)
 //	}
 //
-// To add an IRC channel to your swarmstr config:
+// To add an IRC channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "libera-general": {
@@ -351,7 +351,7 @@ func (b *ircBot) handleLine(line string, joined *bool) {
 			return
 		}
 
-		// Determine the swarmstr channel_id: use the IRC channel name if target
+		// Determine the metiq channel_id: use the IRC channel name if target
 		// is a channel, or the sender's nick for direct messages.
 		msgChannelID := b.channelID
 		if !strings.HasPrefix(target, "#") && !strings.HasPrefix(target, "&") {

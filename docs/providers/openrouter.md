@@ -1,5 +1,5 @@
 ---
-summary: "Use OpenRouter in swarmstr to access 100+ models via one API"
+summary: "Use OpenRouter in metiq to access 100+ models via one API"
 read_when:
   - Using OpenRouter as a multi-model gateway
   - Accessing models from multiple providers via one key
@@ -15,7 +15,7 @@ title: "OpenRouter"
 
 1. Create an account at [openrouter.ai](https://openrouter.ai)
 2. Add credits and get your API key
-3. Add to `~/.swarmstr/.env`:
+3. Add to `~/.metiq/.env`:
 
 ```
 OPENROUTER_API_KEY=sk-or-...
@@ -89,7 +89,7 @@ OpenRouter analytics headers can be set via the `extra` field on the provider en
       "api_key": "${OPENROUTER_API_KEY}",
       "extra": {
         "http_referer": "https://yoursite.com",
-        "x_title": "My swarmstr Agent"
+        "x_title": "My metiq Agent"
       }
     }
   }

@@ -165,7 +165,7 @@ _Fill this in during your first conversation. Make it yours._
   _(your Nostr pubkey — find it in bootstrap.json or daemon logs)_
 - **npub:**
   _(bech32 encoded pubkey)_
-- **Runtime:** Swarmstr
+- **Runtime:** Metiq
 - **Vibe:**
   _(direct? curious? dry? warm? what fits?)_
 - **Emoji:**

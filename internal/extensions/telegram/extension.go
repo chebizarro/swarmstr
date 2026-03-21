@@ -1,4 +1,4 @@
-// Package telegram implements a Telegram Bot channel extension for swarmstr.
+// Package telegram implements a Telegram Bot channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/telegram" in the daemon
 // main.go to register this plugin at startup.
@@ -11,7 +11,7 @@
 //	  "allowed_users": [123456789]            // optional: restrict by Telegram user ID
 //	}
 //
-// To add a Telegram channel to your swarmstr config:
+// To add a Telegram channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "telegram-main": {

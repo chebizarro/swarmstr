@@ -19,10 +19,10 @@ type methodParitySnapshot struct {
 }
 
 type methodParityEntry struct {
-	Method         string `json:"method"`
-	Status         string `json:"status"`
-	SwarmstrMethod string `json:"swarmstr_method"`
-	Notes          string `json:"notes"`
+	Method      string `json:"method"`
+	Status      string `json:"status"`
+	MetiqMethod string `json:"metiq_method"`
+	Notes       string `json:"notes"`
 }
 
 func TestGatewayMethodParityMatrixIsConsistent(t *testing.T) {
@@ -60,20 +60,20 @@ func TestGatewayMethodParityMatrixIsConsistent(t *testing.T) {
 		case "implemented":
 			implemented++
 			if _, ok := supported[entry.Method]; !ok {
-				t.Fatalf("implemented method not supported in swarmstr: %s", entry.Method)
+				t.Fatalf("implemented method not supported in metiq: %s", entry.Method)
 			}
 		case "partial":
 			partial++
-			if entry.SwarmstrMethod == "" {
-				t.Fatalf("partial method must define swarmstr_method: %s", entry.Method)
+			if entry.MetiqMethod == "" {
+				t.Fatalf("partial method must define metiq_method: %s", entry.Method)
 			}
-			if _, ok := supported[entry.SwarmstrMethod]; !ok {
-				t.Fatalf("partial mapping target not supported in swarmstr: %s -> %s", entry.Method, entry.SwarmstrMethod)
+			if _, ok := supported[entry.MetiqMethod]; !ok {
+				t.Fatalf("partial mapping target not supported in metiq: %s -> %s", entry.Method, entry.MetiqMethod)
 			}
 		case "missing":
 			missing++
 			if _, ok := supported[entry.Method]; ok {
-				t.Fatalf("method marked missing but supported in swarmstr: %s", entry.Method)
+				t.Fatalf("method marked missing but supported in metiq: %s", entry.Method)
 			}
 		default:
 			t.Fatalf("unknown status %q for method %s", entry.Status, entry.Method)

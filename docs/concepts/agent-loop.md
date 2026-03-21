@@ -1,12 +1,12 @@
 ---
-summary: "Agent loop lifecycle in swarmstr: Nostr DM receipt to reply"
+summary: "Agent loop lifecycle in metiq: Nostr DM receipt to reply"
 read_when:
   - You need an exact walkthrough of the agent loop or lifecycle
   - Working on agent runtime, session handling, or tool execution
 title: "Agent Loop"
 ---
 
-# Agent Loop (swarmstr)
+# Agent Loop (metiq)
 
 An agentic loop is the full run of the agent: DM receipt → context assembly → model inference →
 tool execution → streaming replies → reply via Nostr. It's the path that turns a Nostr DM
@@ -18,12 +18,12 @@ into actions and a final encrypted reply.
 - **Webhook**: `POST /hooks/agent` → isolated agent turn.
 - **Cron**: scheduled job triggers `dmRunAgentTurn` (isolated or main session).
 - **Heartbeat**: periodic tick → agent turn in main session.
-- **CLI**: Admin API call (e.g. via `swarmstr gw agent` or a webhook trigger).
+- **CLI**: Admin API call (e.g. via `metiq gw agent` or a webhook trigger).
 
 ## How it works (high-level)
 
-1. Nostr relay delivers an encrypted DM event to swarmstrd.
-2. swarmstrd decrypts the DM using the agent's nsec key.
+1. Nostr relay delivers an encrypted DM event to metiqd.
+2. metiqd decrypts the DM using the agent's nsec key.
 3. `controlDMBus` routes the event to registered handlers.
 4. `dmRunAgentTurn(ctx, fromPubKey, text, eventID, createdAt, replyFn)` is called:
    - Uses sender pubkey as the session ID (DM sessions are always per-peer).
@@ -44,13 +44,13 @@ into actions and a final encrypted reply.
 
 ## Session + workspace preparation
 
-- Workspace is resolved (`~/.swarmstr/workspace` by default).
+- Workspace is resolved (`~/.metiq/workspace` by default).
 - Bootstrap/context files are loaded and injected into the system prompt.
 - A session write lock is acquired; session metadata is prepared before inference starts.
 
 ## Prompt assembly
 
-- System prompt: swarmstr base prompt + skills prompt + bootstrap context (AGENTS.md, SOUL.md, etc.).
+- System prompt: metiq base prompt + skills prompt + bootstrap context (AGENTS.md, SOUL.md, etc.).
 - Model-specific context limits are enforced.
 - See [System prompt](/concepts/system-prompt) for full details.
 

@@ -9,7 +9,7 @@ title: "Cron vs Heartbeat"
 
 # Cron vs Heartbeat: When to Use Each
 
-swarmstr has two scheduled mechanisms with very different purposes.
+metiq has two scheduled mechanisms with very different purposes.
 
 ## The Key Difference
 
@@ -60,19 +60,19 @@ Cron jobs call a gateway method on a schedule. The most common use is triggering
 
 ```bash
 # Daily morning briefing at 7am
-swarmstr cron add \
+metiq cron add \
   --id morning-brief \
   --schedule "0 7 * * *" \
   --message "Generate today's briefing: calendar, top messages, any urgent items."
 
 # Recurring check every 4 hours
-swarmstr cron add \
+metiq cron add \
   --id health-check \
   --schedule "@every 4h" \
   --message "Run a quick health check and report any issues."
 
 # Weekly review on Mondays at 9am
-swarmstr cron add \
+metiq cron add \
   --id weekly-review \
   --schedule "0 9 * * 1" \
   --message "Weekly project review: summarize progress and blockers."
@@ -105,9 +105,9 @@ The most common production setup:
 
 ```bash
 # Example cron setup
-swarmstr cron add --id daily-brief --schedule "0 7 * * *" --message "Daily briefing..."
-swarmstr cron add --id weekly-review --schedule "0 9 * * 1" --message "Weekly review..."
-swarmstr cron add --id hourly-check --schedule "@every 1h" --message "Hourly check-in..."
+metiq cron add --id daily-brief --schedule "0 7 * * *" --message "Daily briefing..."
+metiq cron add --id weekly-review --schedule "0 9 * * 1" --message "Weekly review..."
+metiq cron add --id hourly-check --schedule "@every 1h" --message "Hourly check-in..."
 ```
 
 ## Cost Considerations

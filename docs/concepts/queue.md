@@ -1,7 +1,7 @@
 ---
-summary: "Message queue and concurrency model for swarmstr agent turns"
+summary: "Message queue and concurrency model for metiq agent turns"
 read_when:
-  - Understanding how swarmstr handles concurrent messages
+  - Understanding how metiq handles concurrent messages
   - Debugging message ordering or dropped messages
 title: "Message Queue & Concurrency"
 ---
@@ -10,7 +10,7 @@ title: "Message Queue & Concurrency"
 
 ## Per-Session Queuing
 
-swarmstr processes one agent turn at a time per session. Incoming messages while a turn is in progress are queued:
+metiq processes one agent turn at a time per session. Incoming messages while a turn is in progress are queued:
 
 ```
 Session: agent:main:main
@@ -75,7 +75,7 @@ Turns time out after 120 seconds by default. Long tool chains respect individual
 
 ## Goroutine Architecture
 
-swarmstr uses Go goroutines for concurrency:
+metiq uses Go goroutines for concurrency:
 
 ```
 main goroutine
@@ -97,7 +97,7 @@ Ongoing turns can be aborted:
 
 ```bash
 # Via CLI
-swarmstr gw agent.abort --params '{"sessionKey":"agent:main:main"}'
+metiq gw agent.abort --params '{"sessionKey":"agent:main:main"}'
 ```
 
 This sends a context cancellation to the running turn. The agent stops gracefully and acknowledges the abort.

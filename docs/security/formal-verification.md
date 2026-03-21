@@ -1,8 +1,8 @@
 ---
-summary: "Formal verification and security auditing approaches for swarmstr"
+summary: "Formal verification and security auditing approaches for metiq"
 read_when:
   - Security audit planning
-  - Formal verification of swarmstr components
+  - Formal verification of metiq components
   - Understanding the cryptographic guarantees
 title: "Formal Verification & Security Auditing"
 ---
@@ -11,7 +11,7 @@ title: "Formal Verification & Security Auditing"
 
 ## Cryptographic Primitives
 
-swarmstr relies on well-audited cryptographic libraries rather than custom implementations:
+metiq relies on well-audited cryptographic libraries rather than custom implementations:
 
 ### Nostr Cryptography
 
@@ -56,7 +56,7 @@ Run tests with the Go race detector:
 go test -race ./...
 ```
 
-swarmstr uses many goroutines for relay connections and agent turns. Race detection is essential.
+metiq uses many goroutines for relay connections and agent turns. Race detection is essential.
 
 ### Fuzzing
 
@@ -79,7 +79,7 @@ go test -fuzz=FuzzParseEvent ./internal/nostr/...
 
 ## Security Properties
 
-### What swarmstr Guarantees
+### What metiq Guarantees
 
 | Property | Guarantee | Notes |
 |----------|-----------|-------|
@@ -90,7 +90,7 @@ go test -fuzz=FuzzParseEvent ./internal/nostr/...
 | Replay prevention | Partial | Event IDs are unique; relays may re-deliver |
 | Prompt injection prevention | None | LLM-level, not cryptographic |
 
-### What swarmstr Does NOT Guarantee
+### What metiq Does NOT Guarantee
 
 - **Anonymity**: relay operators know which pubkeys are communicating
 - **Forward secrecy**: past DMs are decryptable if nsec is compromised

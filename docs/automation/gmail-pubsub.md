@@ -1,25 +1,25 @@
 ---
-summary: "Gmail Pub/Sub push wired into swarmstr webhooks for email-triggered agent turns"
+summary: "Gmail Pub/Sub push wired into metiq webhooks for email-triggered agent turns"
 read_when:
-  - Wiring Gmail inbox triggers to swarmstr
+  - Wiring Gmail inbox triggers to metiq
   - Setting up Pub/Sub push for agent wake from email
 title: "Gmail PubSub"
 ---
 
-# Gmail Pub/Sub → swarmstr
+# Gmail Pub/Sub → metiq
 
-Goal: Gmail watch → Pub/Sub push → `gog gmail watch serve` → swarmstr webhook → agent turn → Nostr DM reply.
+Goal: Gmail watch → Pub/Sub push → `gog gmail watch serve` → metiq webhook → agent turn → Nostr DM reply.
 
-This is one pattern for bridging email into swarmstr. The agent reads the email, processes it, and can reply back via Nostr DM to the configured contact.
+This is one pattern for bridging email into metiq. The agent reads the email, processes it, and can reply back via Nostr DM to the configured contact.
 
 ## Prereqs
 
 - `gcloud` installed and logged in ([install guide](https://cloud.google.com/sdk/docs/install)).
 - `gog` (gogcli) installed and authorized for the Gmail account ([gogcli.sh](https://gogcli.sh/)).
-- swarmstr webhooks enabled (see [Webhooks](/automation/webhook)).
+- metiq webhooks enabled (see [Webhooks](/automation/webhook)).
 - `tailscale` logged in ([tailscale.com](https://tailscale.com/)) — Tailscale Funnel is the supported way to expose the push endpoint.
 
-> **Why not just use Nostr?** Nostr is the primary swarmstr channel. Gmail Pub/Sub is for cases where you need to bridge external email events into the agent. The agent can reply via Nostr DM to a human who monitors a Nostr client.
+> **Why not just use Nostr?** Nostr is the primary metiq channel. Gmail Pub/Sub is for cases where you need to bridge external email events into the agent. The agent can reply via Nostr DM to a human who monitors a Nostr client.
 
 Example webhook config — add a `gmail` mapping to your ConfigDoc:
 
@@ -27,7 +27,7 @@ Example webhook config — add a `gmail` mapping to your ConfigDoc:
 {
   "hooks": {
     "enabled": true,
-    "token": "${SWARMSTR_HOOK_TOKEN}",
+    "token": "${METIQ_HOOK_TOKEN}",
     "mappings": [
       {
         "match": { "path": "gmail" },
@@ -67,20 +67,20 @@ gcloud services enable gmail.googleapis.com pubsub.googleapis.com
 3. Create a topic:
 
 ```bash
-gcloud pubsub topics create swarmstr-gmail-watch
+gcloud pubsub topics create metiq-gmail-watch
 ```
 
 4. Allow Gmail push to publish:
 
 ```bash
-gcloud pubsub topics add-iam-policy-binding swarmstr-gmail-watch \
+gcloud pubsub topics add-iam-policy-binding metiq-gmail-watch \
   --member=serviceAccount:gmail-api-push@system.gserviceaccount.com \
   --role=roles/pubsub.publisher
 ```
 
 ## Expose the Endpoint
 
-Swarmstr runs the webhook HTTP server on the admin listen address configured in `bootstrap.json`
+Metiq runs the webhook HTTP server on the admin listen address configured in `bootstrap.json`
 (`admin_listen_addr`, e.g. `127.0.0.1:18080`). You need to expose it publicly for Pub/Sub push.
 
 **Tailscale Funnel (recommended)** — expose the admin port:
@@ -106,7 +106,7 @@ ssh -R 80:localhost:<admin_port> serveo.net
 gog gmail watch start \
   --account yourname@gmail.com \
   --label INBOX \
-  --topic projects/<project-id>/topics/swarmstr-gmail-watch
+  --topic projects/<project-id>/topics/metiq-gmail-watch
 ```
 
 Save the `history_id` from the output (for debugging).
@@ -121,7 +121,7 @@ gog gmail watch serve \
   --path /gmail-pubsub \
   --token <shared-token> \
   --hook-url http://127.0.0.1:<admin_port>/hooks/gmail \
-  --hook-token "${SWARMSTR_HOOK_TOKEN}" \
+  --hook-token "${METIQ_HOOK_TOKEN}" \
   --include-body \
   --max-bytes 20000
 ```
@@ -129,14 +129,14 @@ gog gmail watch serve \
 Notes:
 
 - `--token` protects the push endpoint from unauthorized calls.
-- `--hook-url` points to swarmstr's `/hooks/gmail` endpoint (using your `admin_listen_addr` port).
-- `--include-body` and `--max-bytes` control the body snippet sent to swarmstr.
+- `--hook-url` points to metiq's `/hooks/gmail` endpoint (using your `admin_listen_addr` port).
+- `--include-body` and `--max-bytes` control the body snippet sent to metiq.
 
 ## Create the Pub/Sub Push Subscription
 
 ```bash
-gcloud pubsub subscriptions create swarmstr-gmail-watch-push \
-  --topic swarmstr-gmail-watch \
+gcloud pubsub subscriptions create metiq-gmail-watch-push \
+  --topic metiq-gmail-watch \
   --push-endpoint "https://myhost.tail1234.ts.net/gmail-pubsub?token=<shared-token>"
 ```
 
@@ -159,22 +159,22 @@ gog gmail watch status --account yourname@gmail.com
 gog gmail history --account yourname@gmail.com --since <historyId>
 ```
 
-After a few seconds you should receive a Nostr DM from your swarmstr agent summarizing the email.
+After a few seconds you should receive a Nostr DM from your metiq agent summarizing the email.
 
 ## Troubleshooting
 
 - `Invalid topicName`: project mismatch (topic not in the OAuth client project).
 - `User not authorized`: missing `roles/pubsub.publisher` on the topic.
 - Empty messages: Gmail push only provides `historyId`; fetch via `gog gmail history`.
-- No Nostr DM received: check `swarmstr logs --lines 50` for webhook delivery errors; verify `to` npub is correct.
-- Hook not triggered: verify `swarmstr hooks list` shows the gmail hook enabled and `hooks.enabled=true` in config.
+- No Nostr DM received: check `metiq logs --lines 50` for webhook delivery errors; verify `to` npub is correct.
+- Hook not triggered: verify `metiq hooks list` shows the gmail hook enabled and `hooks.enabled=true` in config.
 
 ## Cleanup
 
 ```bash
 gog gmail watch stop --account yourname@gmail.com
-gcloud pubsub subscriptions delete swarmstr-gmail-watch-push
-gcloud pubsub topics delete swarmstr-gmail-watch
+gcloud pubsub subscriptions delete metiq-gmail-watch-push
+gcloud pubsub topics delete metiq-gmail-watch
 ```
 
 ## See Also

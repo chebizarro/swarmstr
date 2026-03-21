@@ -2,23 +2,23 @@
 summary: "Webhook ingress for wake and isolated agent runs"
 read_when:
   - Adding or changing webhook endpoints
-  - Wiring external systems into swarmstr
+  - Wiring external systems into metiq
 title: "Webhooks"
 ---
 
 # Webhooks
 
-swarmstrd can expose a small HTTP webhook endpoint for external triggers.
+metiqd can expose a small HTTP webhook endpoint for external triggers.
 
 ## Enable
 
-Add to your runtime config (`config.json`, loaded via `swarmstr config import --file config.json`):
+Add to your runtime config (`config.json`, loaded via `metiq config import --file config.json`):
 
 ```json
 {
   "hooks": {
     "enabled": true,
-    "token": "${SWARMSTR_HOOKS_TOKEN}"
+    "token": "${METIQ_HOOKS_TOKEN}"
   }
 }
 ```
@@ -35,7 +35,7 @@ Notes:
 Every request must include the hook token:
 
 - `Authorization: Bearer <token>` (recommended)
-- `X-Swarmstr-Token: <token>`
+- `X-Metiq-Token: <token>`
 
 Query-string tokens are rejected.
 
@@ -107,7 +107,7 @@ Map `POST /hooks/<name>` to wake or agent actions via `hooks.mappings`:
 {
   "hooks": {
     "enabled": true,
-    "token": "${SWARMSTR_HOOKS_TOKEN}",
+    "token": "${METIQ_HOOKS_TOKEN}",
     "mappings": [
       {
         "match": { "path": "github" },
@@ -140,7 +140,7 @@ Restrict which `agent_id` values callers may request:
 {
   "hooks": {
     "enabled": true,
-    "token": "${SWARMSTR_HOOKS_TOKEN}",
+    "token": "${METIQ_HOOKS_TOKEN}",
     "allowed_agent_ids": ["hooks", "main"]
   }
 }
@@ -159,7 +159,7 @@ To use a fixed custom default:
 {
   "hooks": {
     "enabled": true,
-    "token": "${SWARMSTR_HOOKS_TOKEN}",
+    "token": "${METIQ_HOOKS_TOKEN}",
     "default_session_key": "hook:ingress"
   }
 }

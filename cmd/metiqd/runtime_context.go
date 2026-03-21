@@ -417,7 +417,7 @@ func buildDocsSection(workspaceDir string) string {
 	}
 	for _, d := range candidates {
 		if info, err := os.Stat(d); err == nil && info.IsDir() {
-			return fmt.Sprintf("## Documentation\nSwarmstr docs: %s\nFor swarmstr behavior, commands, config, or architecture: consult local docs first.", d)
+			return fmt.Sprintf("## Documentation\nMetiq docs: %s\nFor metiq behavior, commands, config, or architecture: consult local docs first.", d)
 		}
 	}
 	return ""

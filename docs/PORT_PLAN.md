@@ -1,4 +1,4 @@
-# Swarmstr Port Plan (OpenClaw -> Go, Nostr-first)
+# Metiq Port Plan (OpenClaw -> Go, Nostr-first)
 
 _Last updated: 2026-03-02_
 
@@ -18,10 +18,10 @@ This plan incorporates prior AI-Hub Nostr planning work and event conventions, e
 3. **Signed events everywhere; sensitive payload encryption by default**.
 4. **Operational control kinds** are useful for orchestration and lifecycle visibility.
 
-## Swarmstr target architecture
+## Metiq target architecture
 
-- `swarmstrd`: long-lived runtime daemon
-- `swarmstr`: local CLI/operator tool
+- `metiqd`: long-lived runtime daemon
+- `metiq`: local CLI/operator tool
 - Nostr relay layer: subscribe/publish/reconnect/dedupe
 - Nostr-backed state layer: config, sessions, lists, checkpoints, transcript entries
 - Agent runtime layer: OpenClaw-core-like message/session processing
@@ -37,16 +37,16 @@ This plan incorporates prior AI-Hub Nostr planning work and event conventions, e
 - `30316` lifecycle
 - `30317` capability descriptor
 
-### Swarmstr core kinds
+### Metiq core kinds
 - `4` NIP-04 DM
 - `44` NIP-44 encrypted payload
 - `30078` app-state docs (NIP-78 style):
-  - `swarmstr:config`
-  - `swarmstr:session:<id>`
-  - `swarmstr:list:<name>`
-  - `swarmstr:checkpoint:<name>`
-- `30079` transcript entry docs (`swarmstr:tx:<session>:<entry-id>`)
-- `30080` memory docs (`swarmstr:mem:<memory-id>`)
+  - `metiq:config`
+  - `metiq:session:<id>`
+  - `metiq:list:<name>`
+  - `metiq:checkpoint:<name>`
+- `30079` transcript entry docs (`metiq:tx:<session>:<entry-id>`)
+- `30080` memory docs (`metiq:mem:<memory-id>`)
 
 ## Persistence policy
 
@@ -80,7 +80,7 @@ Status:
 ### Phase 1
 - relay runtime (connect, sub, publish)
 - inbound DM + outbound DM runtime loop
-- delivered in `internal/nostr/runtime` + `swarmstr dm-send`
+- delivered in `internal/nostr/runtime` + `metiq dm-send`
 
 ### Phase 2
 - Nostr-backed config/list/session persistence

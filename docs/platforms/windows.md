@@ -1,19 +1,19 @@
 ---
-summary: "Running swarmstr on Windows via WSL2 or natively"
+summary: "Running metiq on Windows via WSL2 or natively"
 read_when:
-  - Installing swarmstr on Windows
-  - Using WSL2 for swarmstr development
-  - Running swarmstrd as a Windows service
+  - Installing metiq on Windows
+  - Using WSL2 for metiq development
+  - Running metiqd as a Windows service
 title: "Windows"
 ---
 
 # Windows
 
-swarmstr runs on Windows via WSL2 (recommended) or natively as a Go binary.
+metiq runs on Windows via WSL2 (recommended) or natively as a Go binary.
 
 ## Option A: WSL2 (Recommended)
 
-WSL2 (Windows Subsystem for Linux) gives you a full Linux environment. This is the recommended path for swarmstr on Windows.
+WSL2 (Windows Subsystem for Linux) gives you a full Linux environment. This is the recommended path for metiq on Windows.
 
 ### Install WSL2
 
@@ -25,23 +25,23 @@ wsl --install
 
 After restart, Ubuntu will set up. Create a username and password.
 
-### Install swarmstr in WSL2
+### Install metiq in WSL2
 
 Once in the WSL2 Ubuntu terminal, follow the [Linux guide](/platforms/linux):
 
 ```bash
 # In WSL2 Ubuntu terminal
-VERSION=$(curl -s https://api.github.com/repos/yourorg/swarmstr/releases/latest | jq -r .tag_name)
-curl -L "https://github.com/yourorg/swarmstr/releases/download/${VERSION}/swarmstrd-linux-amd64" \
-  -o /usr/local/bin/swarmstrd
-chmod +x /usr/local/bin/swarmstrd
+VERSION=$(curl -s https://api.github.com/repos/yourorg/metiq/releases/latest | jq -r .tag_name)
+curl -L "https://github.com/yourorg/metiq/releases/download/${VERSION}/metiqd-linux-amd64" \
+  -o /usr/local/bin/metiqd
+chmod +x /usr/local/bin/metiqd
 
 # Configure
-mkdir -p ~/.swarmstr
+mkdir -p ~/.metiq
 # (follow Linux guide for config.json and .env)
 
 # Run
-swarmstrd
+metiqd
 ```
 
 ### Auto-Start with WSL2
@@ -50,7 +50,7 @@ WSL2 doesn't have systemd by default (unless you enable it). Use a startup scrip
 
 ```bash
 # Add to ~/.bashrc or create a Windows startup task
-swarmstrd &
+metiqd &
 ```
 
 For systemd in WSL2 (Ubuntu 22.04+):
@@ -61,31 +61,31 @@ systemd=true' | sudo tee /etc/wsl.conf
 
 # Restart WSL2 (wsl --shutdown from PowerShell, then reopen)
 # Then follow the Linux systemd setup:
-systemctl --user enable --now swarmstrd
+systemctl --user enable --now metiqd
 ```
 
 ## Option B: Native Windows Binary
 
-swarmstr compiles to a native Windows executable (no WSL2 needed).
+metiq compiles to a native Windows executable (no WSL2 needed).
 
 ### Download
 
-Download `swarmstrd-windows-amd64.exe` from the releases page and place it in a directory on your PATH (e.g., `C:\Users\YourName\bin\`).
+Download `metiqd-windows-amd64.exe` from the releases page and place it in a directory on your PATH (e.g., `C:\Users\YourName\bin\`).
 
 ### Configure
 
-Create `%USERPROFILE%\.swarmstr\bootstrap.json` (process-level config):
+Create `%USERPROFILE%\.metiq\bootstrap.json` (process-level config):
 
 ```json
 {
   "private_key": "${NOSTR_PRIVATE_KEY}",
   "relays": ["wss://nos.lol", "wss://relay.primal.net", "wss://relay.sharegap.net"],
   "admin_listen_addr": "127.0.0.1:7423",
-  "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
+  "admin_token": "${METIQ_ADMIN_TOKEN}"
 }
 ```
 
-Create `%USERPROFILE%\.swarmstr\config.json` (runtime agent config):
+Create `%USERPROFILE%\.metiq\config.json` (runtime agent config):
 
 ```json
 {
@@ -95,47 +95,47 @@ Create `%USERPROFILE%\.swarmstr\config.json` (runtime agent config):
 }
 ```
 
-Create `%USERPROFILE%\.swarmstr\env`:
+Create `%USERPROFILE%\.metiq\env`:
 
 ```
 NOSTR_PRIVATE_KEY=nsec1...
 ANTHROPIC_API_KEY=sk-ant-...
-SWARMSTR_ADMIN_TOKEN=change-me
+METIQ_ADMIN_TOKEN=change-me
 ```
 
 ### Run as Windows Service (Task Scheduler)
 
 1. Open Task Scheduler
-2. Create Basic Task → "swarmstrd"
+2. Create Basic Task → "metiqd"
 3. Trigger: At system startup
-4. Action: Start a program → `C:\Users\YourName\bin\swarmstrd.exe`
+4. Action: Start a program → `C:\Users\YourName\bin\metiqd.exe`
 5. Set "Run whether user is logged on or not"
 
 Or use NSSM (Non-Sucking Service Manager):
 
 ```powershell
 # Download NSSM from nssm.cc
-nssm install swarmstrd C:\Users\YourName\bin\swarmstrd.exe
-nssm set swarmstrd AppEnvironmentExtra NOSTR_PRIVATE_KEY=nsec1... ANTHROPIC_API_KEY=sk-ant-...
-nssm start swarmstrd
+nssm install metiqd C:\Users\YourName\bin\metiqd.exe
+nssm set metiqd AppEnvironmentExtra NOSTR_PRIVATE_KEY=nsec1... ANTHROPIC_API_KEY=sk-ant-...
+nssm start metiqd
 ```
 
 ## Data Paths on Windows
 
 | Purpose | Path |
 |---------|------|
-| Config | `%USERPROFILE%\.swarmstr\config.json` |
-| Env file | `%USERPROFILE%\.swarmstr\.env` |
-| Workspace | `%USERPROFILE%\.swarmstr\workspace\` |
-| Logs | `%USERPROFILE%\.swarmstr\logs\` |
+| Config | `%USERPROFILE%\.metiq\config.json` |
+| Env file | `%USERPROFILE%\.metiq\.env` |
+| Workspace | `%USERPROFILE%\.metiq\workspace\` |
+| Logs | `%USERPROFILE%\.metiq\logs\` |
 
 ## Accessing the Admin API
 
-The admin API listens on `admin_listen_addr` from `bootstrap.json` (default `127.0.0.1:7423`). Use the `swarmstr` CLI to communicate with it:
+The admin API listens on `admin_listen_addr` from `bootstrap.json` (default `127.0.0.1:7423`). Use the `metiq` CLI to communicate with it:
 
 ```bash
-swarmstr status
-swarmstr logs --lines 50
+metiq status
+metiq logs --lines 50
 ```
 
 Never expose the admin port on a public interface.

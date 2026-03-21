@@ -22,7 +22,7 @@ USER app
 WORKDIR /home/app
 
 COPY install-sh-common/verify.sh /usr/local/install-sh-common/verify.sh
-COPY install-sh-nonroot/run.sh   /usr/local/bin/swarmstr-install-nonroot
-RUN sudo chmod +x /usr/local/bin/swarmstr-install-nonroot
+COPY install-sh-nonroot/run.sh   /usr/local/bin/metiq-install-nonroot
+RUN sudo chmod +x /usr/local/bin/metiq-install-nonroot
 
-ENTRYPOINT ["/usr/local/bin/swarmstr-install-nonroot"]
+ENTRYPOINT ["/usr/local/bin/metiq-install-nonroot"]

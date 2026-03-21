@@ -1,4 +1,4 @@
-// Package tts implements text-to-speech synthesis for swarmstr.
+// Package tts implements text-to-speech synthesis for metiq.
 // It provides a Provider interface with an OpenAI TTS backend and a local
 // Kokoro backend, wrapped by a Manager that handles provider selection and
 // audio output persistence.
@@ -134,7 +134,7 @@ func (m *Manager) Convert(ctx context.Context, providerID, text, voice string) (
 	}
 
 	ext := "." + strings.TrimPrefix(format, ".")
-	f, ferr := os.CreateTemp("", "swarmstr-tts-*"+ext)
+	f, ferr := os.CreateTemp("", "metiq-tts-*"+ext)
 	if ferr != nil {
 		return nil, fmt.Errorf("create temp file: %w", ferr)
 	}

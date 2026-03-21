@@ -27,7 +27,7 @@ WORKDIR /app
 
 # Copy the binary
 COPY --from=builder /out/metiqd /usr/local/bin/metiqd
-COPY --from=builder /out/metiqd /usr/local/bin/swarmstrd
+COPY --from=builder /out/metiqd /usr/local/bin/metiqd
 
 # Copy bundled skills (SKILL.md format)
 COPY skills/ /app/skills/

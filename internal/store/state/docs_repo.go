@@ -27,12 +27,12 @@ func NewDocsRepositoryWithCodec(store NostrStateStore, authorPubKey string, code
 }
 
 func (r *DocsRepository) PutConfig(ctx context.Context, doc ConfigDoc) (Event, error) {
-	return r.putStateDoc(ctx, "swarmstr:config", "config_doc", doc)
+	return r.putStateDoc(ctx, "metiq:config", "config_doc", doc)
 }
 
 func (r *DocsRepository) GetConfig(ctx context.Context) (ConfigDoc, error) {
 	var out ConfigDoc
-	if err := r.getStateDoc(ctx, "swarmstr:config", &out); err != nil {
+	if err := r.getStateDoc(ctx, "metiq:config", &out); err != nil {
 		return ConfigDoc{}, err
 	}
 	return out, nil
@@ -40,7 +40,7 @@ func (r *DocsRepository) GetConfig(ctx context.Context) (ConfigDoc, error) {
 
 func (r *DocsRepository) GetConfigWithEvent(ctx context.Context) (ConfigDoc, Event, error) {
 	var out ConfigDoc
-	evt, err := r.getStateDocWithEvent(ctx, "swarmstr:config", &out)
+	evt, err := r.getStateDocWithEvent(ctx, "metiq:config", &out)
 	if err != nil {
 		return ConfigDoc{}, Event{}, err
 	}
@@ -52,12 +52,12 @@ func (r *DocsRepository) PutSession(ctx context.Context, sessionID string, doc S
 	if peer := protectedTagValue(doc.PeerPubKey); peer != "" {
 		tags = append(tags, []string{"peer", peer})
 	}
-	return r.putStateDocWithTags(ctx, fmt.Sprintf("swarmstr:session:%s", sessionID), "session_doc", doc, tags)
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:session:%s", sessionID), "session_doc", doc, tags)
 }
 
 func (r *DocsRepository) GetSession(ctx context.Context, sessionID string) (SessionDoc, error) {
 	var out SessionDoc
-	if err := r.getStateDoc(ctx, fmt.Sprintf("swarmstr:session:%s", sessionID), &out); err != nil {
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:session:%s", sessionID), &out); err != nil {
 		return SessionDoc{}, err
 	}
 	return out, nil
@@ -110,12 +110,12 @@ func (r *DocsRepository) ListSessions(ctx context.Context, limit int) ([]Session
 }
 
 func (r *DocsRepository) PutList(ctx context.Context, listName string, doc ListDoc) (Event, error) {
-	return r.putStateDoc(ctx, fmt.Sprintf("swarmstr:list:%s", listName), "list_doc", doc)
+	return r.putStateDoc(ctx, fmt.Sprintf("metiq:list:%s", listName), "list_doc", doc)
 }
 
 func (r *DocsRepository) GetList(ctx context.Context, listName string) (ListDoc, error) {
 	var out ListDoc
-	if err := r.getStateDoc(ctx, fmt.Sprintf("swarmstr:list:%s", listName), &out); err != nil {
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:list:%s", listName), &out); err != nil {
 		return ListDoc{}, err
 	}
 	return out, nil
@@ -123,7 +123,7 @@ func (r *DocsRepository) GetList(ctx context.Context, listName string) (ListDoc,
 
 func (r *DocsRepository) GetListWithEvent(ctx context.Context, listName string) (ListDoc, Event, error) {
 	var out ListDoc
-	evt, err := r.getStateDocWithEvent(ctx, fmt.Sprintf("swarmstr:list:%s", listName), &out)
+	evt, err := r.getStateDocWithEvent(ctx, fmt.Sprintf("metiq:list:%s", listName), &out)
 	if err != nil {
 		return ListDoc{}, Event{}, err
 	}
@@ -131,12 +131,12 @@ func (r *DocsRepository) GetListWithEvent(ctx context.Context, listName string) 
 }
 
 func (r *DocsRepository) PutCheckpoint(ctx context.Context, name string, doc CheckpointDoc) (Event, error) {
-	return r.putStateDoc(ctx, fmt.Sprintf("swarmstr:checkpoint:%s", name), "checkpoint_doc", doc)
+	return r.putStateDoc(ctx, fmt.Sprintf("metiq:checkpoint:%s", name), "checkpoint_doc", doc)
 }
 
 func (r *DocsRepository) GetCheckpoint(ctx context.Context, name string) (CheckpointDoc, error) {
 	var out CheckpointDoc
-	if err := r.getStateDoc(ctx, fmt.Sprintf("swarmstr:checkpoint:%s", name), &out); err != nil {
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:checkpoint:%s", name), &out); err != nil {
 		return CheckpointDoc{}, err
 	}
 	return out, nil
@@ -144,12 +144,12 @@ func (r *DocsRepository) GetCheckpoint(ctx context.Context, name string) (Checkp
 
 func (r *DocsRepository) PutAgent(ctx context.Context, agentID string, doc AgentDoc) (Event, error) {
 	tags := [][]string{{"t", "agent"}, {"agent", protectedTagValue(agentID)}}
-	return r.putStateDocWithTags(ctx, fmt.Sprintf("swarmstr:agent:%s", agentID), "agent_doc", doc, tags)
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:agent:%s", agentID), "agent_doc", doc, tags)
 }
 
 func (r *DocsRepository) GetAgent(ctx context.Context, agentID string) (AgentDoc, error) {
 	var out AgentDoc
-	if err := r.getStateDoc(ctx, fmt.Sprintf("swarmstr:agent:%s", agentID), &out); err != nil {
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:agent:%s", agentID), &out); err != nil {
 		return AgentDoc{}, err
 	}
 	return out, nil
@@ -197,12 +197,12 @@ func (r *DocsRepository) ListAgents(ctx context.Context, limit int) ([]AgentDoc,
 
 func (r *DocsRepository) PutAgentFile(ctx context.Context, agentID string, name string, doc AgentFileDoc) (Event, error) {
 	tags := [][]string{{"t", "agent_file"}, {"agent", protectedTagValue(agentID)}, {"name", protectedTagValue(name)}}
-	return r.putStateDocWithTags(ctx, fmt.Sprintf("swarmstr:agent:%s:file:%s", agentID, name), "agent_file_doc", doc, tags)
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:agent:%s:file:%s", agentID, name), "agent_file_doc", doc, tags)
 }
 
 func (r *DocsRepository) GetAgentFile(ctx context.Context, agentID string, name string) (AgentFileDoc, error) {
 	var out AgentFileDoc
-	if err := r.getStateDoc(ctx, fmt.Sprintf("swarmstr:agent:%s:file:%s", agentID, name), &out); err != nil {
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:agent:%s:file:%s", agentID, name), &out); err != nil {
 		return AgentFileDoc{}, err
 	}
 	return out, nil
@@ -252,7 +252,7 @@ func (r *DocsRepository) PutCronJobs(ctx context.Context, raw json.RawMessage) (
 	type cronJobsEnvelope struct {
 		Jobs json.RawMessage `json:"jobs"`
 	}
-	return r.putStateDoc(ctx, "swarmstr:cron_jobs", "cron_jobs", cronJobsEnvelope{Jobs: raw})
+	return r.putStateDoc(ctx, "metiq:cron_jobs", "cron_jobs", cronJobsEnvelope{Jobs: raw})
 }
 
 // GetCronJobs retrieves the persisted cron jobs payload.  Returns an empty
@@ -262,7 +262,7 @@ func (r *DocsRepository) GetCronJobs(ctx context.Context) (json.RawMessage, erro
 		Jobs json.RawMessage `json:"jobs"`
 	}
 	var env cronJobsEnvelope
-	if err := r.getStateDoc(ctx, "swarmstr:cron_jobs", &env); err != nil {
+	if err := r.getStateDoc(ctx, "metiq:cron_jobs", &env); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil, nil
 		}
@@ -277,7 +277,7 @@ func (r *DocsRepository) PutWatches(ctx context.Context, raw json.RawMessage) (E
 	type watchesEnvelope struct {
 		Watches json.RawMessage `json:"watches"`
 	}
-	return r.putStateDoc(ctx, "swarmstr:watches", "watches", watchesEnvelope{Watches: raw})
+	return r.putStateDoc(ctx, "metiq:watches", "watches", watchesEnvelope{Watches: raw})
 }
 
 // GetWatches retrieves the persisted watch specs.  Returns nil and no error if
@@ -287,7 +287,7 @@ func (r *DocsRepository) GetWatches(ctx context.Context) (json.RawMessage, error
 		Watches json.RawMessage `json:"watches"`
 	}
 	var env watchesEnvelope
-	if err := r.getStateDoc(ctx, "swarmstr:watches", &env); err != nil {
+	if err := r.getStateDoc(ctx, "metiq:watches", &env); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil, nil
 		}

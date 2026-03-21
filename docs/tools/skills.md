@@ -1,8 +1,8 @@
 ---
-summary: "swarmstr skills: Markdown-driven agent instructions and workflow guides"
+summary: "metiq skills: Markdown-driven agent instructions and workflow guides"
 read_when:
   - Installing or managing skills
-  - Creating a new skill for swarmstr
+  - Creating a new skill for metiq
   - Understanding how skills are discovered and loaded
 title: "Skills"
 ---
@@ -14,8 +14,8 @@ Skills are Markdown-driven instruction sets that teach the agent how to use spec
 ## Discovery Locations (precedence order)
 
 1. **Workspace skills**: `<workspace>/skills/` — per-agent, highest precedence.
-2. **Managed/local skills**: `~/.swarmstr/skills/` — shared across all agents on this instance.
-3. **Bundled skills**: shipped with swarmstr installation.
+2. **Managed/local skills**: `~/.metiq/skills/` — shared across all agents on this instance.
+3. **Bundled skills**: shipped with metiq installation.
 
 When a skill name appears in multiple locations, the highest-precedence location wins.
 
@@ -49,20 +49,20 @@ The `name` field in the frontmatter is the skill identifier used for listing and
 
 ```bash
 # List installed skills with status
-swarmstr skills list
+metiq skills list
 
 # Detailed skills status (JSON)
-swarmstr skills status
+metiq skills status
 ```
 
-There is no install/enable/disable CLI command — skills are loaded automatically based on discovery. To add a skill, place the directory in the appropriate location and restart swarmstrd (or send SIGHUP).
+There is no install/enable/disable CLI command — skills are loaded automatically based on discovery. To add a skill, place the directory in the appropriate location and restart metiqd (or send SIGHUP).
 
 ## Creating a Skill
 
-1. Create a directory in `~/.swarmstr/skills/` or your workspace `skills/`:
+1. Create a directory in `~/.metiq/skills/` or your workspace `skills/`:
 
 ```bash
-mkdir -p ~/.swarmstr/skills/my-tool
+mkdir -p ~/.metiq/skills/my-tool
 ```
 
 2. Create `SKILL.md`:
@@ -88,11 +88,11 @@ Fetch top results for "nostr":
 → Call my_tool_fetch with query="nostr"
 ```
 
-3. Restart swarmstrd or send SIGHUP to reload skills.
+3. Restart metiqd or send SIGHUP to reload skills.
 
 ## Per-Agent vs Shared Skills
 
-- Skills in `~/.swarmstr/skills/` are **shared** across all agents on this swarmstrd instance.
+- Skills in `~/.metiq/skills/` are **shared** across all agents on this metiqd instance.
 - Skills in `<workspace>/skills/` are **per-agent** (apply only to the agent using that workspace).
 - Per-agent skills take precedence over shared skills with the same name.
 

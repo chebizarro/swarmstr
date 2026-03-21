@@ -10,7 +10,7 @@ metadata:
 
 You are an orchestrator. Follow these 6 phases exactly. Do not skip phases.
 
-IMPORTANT — No `gh` CLI dependency. This skill uses curl + the GitHub REST API exclusively. The GH_TOKEN env var is already injected by swarmstr. Pass it as a Bearer token in all API calls:
+IMPORTANT — No `gh` CLI dependency. This skill uses curl + the GitHub REST API exclusively. The GH_TOKEN env var is already injected by metiq. Pass it as a Bearer token in all API calls:
 
 ```
 curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" ...
@@ -79,13 +79,13 @@ echo $GH_TOKEN
 If empty, read from config:
 
 ```
-cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat ~/.metiq/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 ```
 
-If still empty, check `/data/.clawdbot/swarmstr.json`:
+If still empty, check `/data/.clawdbot/metiq.json`:
 
 ```
-cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat /data/.clawdbot/metiq.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 ```
 
 Export as GH_TOKEN for subsequent commands:
@@ -114,7 +114,7 @@ If in watch mode: Also filter out any issue numbers already in the PROCESSED_ISS
 Error handling:
 
 - If curl returns an HTTP 401 or 403 → stop and tell the user:
-> "GitHub authentication failed. Please check your apiKey in the swarmstr config or in ~/.swarmstr/config.json under skills.entries.gh-issues."
+> "GitHub authentication failed. Please check your apiKey in the metiq config or in ~/.metiq/config.json under skills.entries.gh-issues."
 - If the response is an empty array (after filtering) → report "No issues found matching filters" and stop (or loop back if in watch mode).
 - If curl fails or returns any other error → report the error verbatim and stop.
 
@@ -161,7 +161,7 @@ Watch mode note: On the first poll, always confirm with the user (unless --yes i
 ## Phase 4 — Pre-flight Checks
 
 Run these checks sequentially via exec:
-cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat ~/.metiq/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 1. **Dirty working tree check:**
 
    ```
@@ -173,7 +173,7 @@ cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empt
    > "Working tree has uncommitted changes. Sub-agents will create branches from HEAD — uncommitted changes will NOT be included. Continue?"
    > Wait for confirmation. If declined, stop.
 
-cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat /data/.clawdbot/metiq.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 
    ```
    git rev-parse --abbrev-ref HEAD
@@ -212,7 +212,7 @@ cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey /
 
    If HTTP status is not 200, stop with:
 
-   > "GitHub authentication failed. Please check your apiKey in the swarmstr config or in ~/.swarmstr/config.json under skills.entries.gh-issues."
+   > "GitHub authentication failed. Please check your apiKey in the metiq config or in ~/.metiq/config.json under skills.entries.gh-issues."
 
 5. **Check for existing PRs:**
    For each confirmed issue number N, run:
@@ -231,7 +231,7 @@ cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey /
 
 6. **Check for in-progress branches (no PR yet = sub-agent still working):**
    For each remaining issue number N (not already skipped by the PR check above), check if a `fix/issue-{N}` branch exists on the **push repo** (which may be a fork, not origin):
-> "GitHub authentication failed. Please check your apiKey in the swarmstr config or in ~/.swarmstr/config.json under skills.entries.gh-issues."
+> "GitHub authentication failed. Please check your apiKey in the metiq config or in ~/.metiq/config.json under skills.entries.gh-issues."
    ```
    curl -s -o /dev/null -w "%{http_code}" \
      -H "Authorization: Bearer $GH_TOKEN" \
@@ -243,7 +243,7 @@ cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey /
    > "Skipping #{N} — branch fix/issue-{N} exists on {PUSH_REPO}, fix likely in progress"
 
    This check uses the GitHub API instead of `git ls-remote` so it works correctly in fork mode (where branches are pushed to the fork, not origin).
-cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat ~/.metiq/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
    If all issues are skipped after this check, report and stop (or loop back if in watch mode).
 
 7. **Check claim-based in-progress tracking:**
@@ -261,7 +261,7 @@ cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empt
 
    Parse the claims file. For each entry, check if the claim timestamp is older than 2 hours. If so, remove it (expired — the sub-agent likely finished or failed silently). Write back the cleaned file:
 
-    cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+    cat /data/.clawdbot/metiq.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
    CLAIMS=$(cat "$CLAIMS_FILE")
    CUTOFF=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)
    CLAIMS=$(echo "$CLAIMS" | jq --arg cutoff "$CUTOFF" 'to_entries | map(select(.value > $cutoff)) | from_entries')
@@ -325,7 +325,7 @@ cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empt
 For each confirmed issue, spawn a sub-agent using sessions_spawn. Launch up to 8 concurrently (matching `subagents.maxConcurrent: 8`). If more than 8 issues, batch them — launch the next agent as each completes.
 
 **Write claims:** After spawning each sub-agent, read the claims file, add `{SOURCE_REPO}#{N}` with the current ISO timestamp, and write it back (same procedure as cron mode above). This covers interactive usage where watch mode might overlap with cron runs.
-cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat ~/.metiq/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 ### Sub-agent Task Prompt
 
 For each issue, construct the following prompt and pass it to sessions_spawn. Variables to inject into the template:
@@ -346,10 +346,10 @@ You are a focused code-fix agent. Your task is to fix a single GitHub issue and 
 IMPORTANT: Do NOT use the gh CLI — it is not installed. Use curl with the GitHub REST API for all GitHub operations.
 
 First, ensure GH_TOKEN is set. Check: `echo $GH_TOKEN`. If empty, read from config:
-GH_TOKEN=$(cat ~/.swarmstr/config.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty') || GH_TOKEN=$(cat /data/.clawdbot/swarmstr.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty')
+GH_TOKEN=$(cat ~/.metiq/config.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty') || GH_TOKEN=$(cat /data/.clawdbot/metiq.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty')
 
-> "GitHub authentication failed. Please check your apiKey in the swarmstr config or in ~/.swarmstr/config.json under skills.entries.gh-issues."
-cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+> "GitHub authentication failed. Please check your apiKey in the metiq config or in ~/.metiq/config.json under skills.entries.gh-issues."
+cat /data/.clawdbot/metiq.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 
 <config>
 Source repo (issues): {SOURCE_REPO}
@@ -375,13 +375,13 @@ Follow these steps in order. If any step fails, report the failure and stop.
 0. SETUP — Ensure GH_TOKEN is available:
 ```
 
-export GH_TOKEN=$(node -e "const fs=require('fs'); const c=JSON.parse(fs.readFileSync('/data/.clawdbot/swarmstr.json','utf8')); console.log(c.skills?.entries?.['gh-issues']?.apiKey || '')")
+export GH_TOKEN=$(node -e "const fs=require('fs'); const c=JSON.parse(fs.readFileSync('/data/.clawdbot/metiq.json','utf8')); console.log(c.skills?.entries?.['gh-issues']?.apiKey || '')")
 
 ```
 If that fails, also try:
 ```
 
-export GH_TOKEN=$(cat ~/.swarmstr/config.json 2>/dev/null | node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync(0,'utf8'));console.log(d.skills?.entries?.['gh-issues']?.apiKey||'')")
+export GH_TOKEN=$(cat ~/.metiq/config.json 2>/dev/null | node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync(0,'utf8'));console.log(d.skills?.entries?.['gh-issues']?.apiKey||'')")
 
 ```
 Verify: echo "Token: ${GH_TOKEN:0:10}..."
@@ -407,7 +407,7 @@ git checkout -b fix/issue-{number} {BASE_BRANCH}
 - Read the relevant files to understand the current behavior
 - Identify the root cause
 
-cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat ~/.metiq/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 - Follow existing code style and conventions
 - Change only what is necessary to fix the issue
 - Do not add unrelated changes or new dependencies without justification
@@ -437,7 +437,7 @@ If FORK_MODE is true, the PR goes from your fork to the source repo:
 - head = "{PUSH_REPO_OWNER}:fix/issue-{number}"
 - base = "{BASE_BRANCH}"
 - PR is created on {SOURCE_REPO}
-cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat /data/.clawdbot/metiq.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 If FORK_MODE is false:
 - head = "fix/issue-{number}"
 - base = "{BASE_BRANCH}"
@@ -465,7 +465,7 @@ Extract the `html_url` from the response — this is the PR link.
 10. NOTIFY (if notify_channel is set) — If {notify_channel} is not empty, send a notification to the Telegram channel:
 ```
 
-> "GitHub authentication failed. Please check your apiKey in the swarmstr config or in ~/.swarmstr/config.json under skills.entries.gh-issues."
+> "GitHub authentication failed. Please check your apiKey in the metiq config or in ~/.metiq/config.json under skills.entries.gh-issues."
 
 - action: "send"
 - channel: "telegram"
@@ -489,7 +489,7 @@ Files changed: {files_changed_list}"
 - Do NOT use the gh CLI — it is not available. Use curl + GitHub REST API for all GitHub operations.
 - GH_TOKEN is already in the environment — do NOT prompt for auth
 - Time limit: you have 60 minutes max. Be thorough — analyze properly, test your fix, don't rush.
-cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat ~/.metiq/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 ```
 
 ### Spawn configuration per sub-agent:
@@ -525,7 +525,7 @@ Present a summary table:
 
 - **PR opened** — success, link to PR
 - **Failed** — sub-agent could not complete (include reason in Notes)
-cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat /data/.clawdbot/metiq.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 - **Skipped** — existing PR detected in pre-flight
 
 End with a one-line summary:
@@ -571,7 +571,7 @@ When both `--cron` and `--reviews-only` are set:
 2. Discover open `fix/issue-*` PRs (Step 6.1)
 3. Fetch review comments (Step 6.2)
 4. **Analyze comment content for actionability** (Step 6.3)
-cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat ~/.metiq/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
    - Use `cleanup: "keep"` and `runTimeoutSeconds: 3600`
    - If `--model` was provided, include `model: "{MODEL}"` in the spawn config
 6. Report: "Spawned review handler for PR #{N} — will push fixes when complete"
@@ -582,7 +582,7 @@ If no actionable comments found, report "No actionable review comments found" an
 **Normal mode (non-cron) continues below:**
 
 ### Step 6.1 — Discover PRs to Monitor
-> "GitHub authentication failed. Please check your apiKey in the swarmstr config or in ~/.swarmstr/config.json under skills.entries.gh-issues."
+> "GitHub authentication failed. Please check your apiKey in the metiq config or in ~/.metiq/config.json under skills.entries.gh-issues."
 Collect PRs to check for review comments:
 
 **If coming from Phase 5:** Use the `OPEN_PRS` list from Results Collection.
@@ -613,7 +613,7 @@ curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+
 
 **Fetch PR review comments (inline/file-level):**
 
-cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat /data/.clawdbot/metiq.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
   "https://api.github.com/repos/{SOURCE_REPO}/pulls/{pr_number}/comments"
 ```
@@ -653,7 +653,7 @@ Store as `BOT_USERNAME`. Exclude any comment where `user.login` equals `BOT_USER
 **NOT actionable (skip):**
 
 - Pure approvals or "LGTM" without suggestions
-cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat ~/.metiq/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 - Comments already addressed (check if bot replied with "Addressed in commit...")
 - Reviews with state `APPROVED` and no inline comments requesting changes
 
@@ -695,13 +695,13 @@ Display a table of PRs with pending actionable comments:
 
 ```
 | PR | Branch | Actionable Comments | Sources |
-GH_TOKEN=$(cat ~/.swarmstr/config.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty') || GH_TOKEN=$(cat /data/.clawdbot/swarmstr.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty')
+GH_TOKEN=$(cat ~/.metiq/config.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty') || GH_TOKEN=$(cat /data/.clawdbot/metiq.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty')
 | #99 | fix/issue-42 | 2 comments | @reviewer1, greptile |
 | #101 | fix/issue-37 | 1 comment | @reviewer2 |
 ```
-> "GitHub authentication failed. Please check your apiKey in the swarmstr config or in ~/.swarmstr/config.json under skills.entries.gh-issues."
+> "GitHub authentication failed. Please check your apiKey in the metiq config or in ~/.metiq/config.json under skills.entries.gh-issues."
 If `--yes` is NOT set and this is not a subsequent watch poll: ask the user to confirm which PRs to address ("all", comma-separated PR numbers, or "skip").
-cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat /data/.clawdbot/metiq.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 ### Step 6.5 — Spawn Review Fix Sub-agents (Parallel)
 
 For each PR with actionable comments, spawn a sub-agent. Launch up to 8 concurrently.
@@ -714,7 +714,7 @@ You are a PR review handler agent. Your task is to address review comments on a 
 IMPORTANT: Do NOT use the gh CLI — it is not installed. Use curl with the GitHub REST API for all GitHub operations.
 
 First, ensure GH_TOKEN is set. Check: echo $GH_TOKEN. If empty, read from config:
-GH_TOKEN=$(cat ~/.swarmstr/config.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty') || GH_TOKEN=$(cat /data/.clawdbot/swarmstr.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty')
+GH_TOKEN=$(cat ~/.metiq/config.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty') || GH_TOKEN=$(cat /data/.clawdbot/metiq.json 2>/dev/null | jq -r '.skills.entries["gh-issues"].apiKey // empty')
 
 <config>
 Repository: {SOURCE_REPO}
@@ -735,7 +735,7 @@ Each comment has:
 - body: the comment text
 - path: file path (for inline comments)
 - line: line number (for inline comments)
-cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat ~/.metiq/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 - source: where the comment came from (review, inline, pr_body, greptile, etc.)
 </review_comments>
 
@@ -745,7 +745,7 @@ Follow these steps in order:
 0. SETUP — Ensure GH_TOKEN is available:
 ```
 
-export GH_TOKEN=$(node -e "const fs=require('fs'); const c=JSON.parse(fs.readFileSync('/data/.clawdbot/swarmstr.json','utf8')); console.log(c.skills?.entries?.['gh-issues']?.apiKey || '')")
+export GH_TOKEN=$(node -e "const fs=require('fs'); const c=JSON.parse(fs.readFileSync('/data/.clawdbot/metiq.json','utf8')); console.log(c.skills?.entries?.['gh-issues']?.apiKey || '')")
 
 ```
 Verify: echo "Token: ${GH_TOKEN:0:10}..."
@@ -753,7 +753,7 @@ Verify: echo "Token: ${GH_TOKEN:0:10}..."
 1. CHECKOUT — Switch to the PR branch:
 git fetch {PUSH_REMOTE} {branch_name}
 git checkout {branch_name}
-export GH_TOKEN=$(node -e "const fs=require('fs'); const c=JSON.parse(fs.readFileSync('/data/.clawdbot/swarmstr.json','utf8')); console.log(c.skills?.entries?.['gh-issues']?.apiKey || '')")
+export GH_TOKEN=$(node -e "const fs=require('fs'); const c=JSON.parse(fs.readFileSync('/data/.clawdbot/metiq.json','utf8')); console.log(c.skills?.entries?.['gh-issues']?.apiKey || '')")
 
 2. UNDERSTAND — Read ALL review comments carefully. Group them by file. Understand what each reviewer is asking for.
 
@@ -765,7 +765,7 @@ export GH_TOKEN=$(node -e "const fs=require('fs'); const c=JSON.parse(fs.readFil
 
 4. TEST — Run existing tests to make sure your changes don't break anything:
 - If tests fail, fix the issue or revert the problematic change
-export GH_TOKEN=$(cat ~/.swarmstr/config.json 2>/dev/null | node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync(0,'utf8'));console.log(d.skills?.entries?.['gh-issues']?.apiKey||'')")
+export GH_TOKEN=$(cat ~/.metiq/config.json 2>/dev/null | node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync(0,'utf8'));console.log(d.skills?.entries?.['gh-issues']?.apiKey||'')")
 
 5. COMMIT — Stage and commit all changes in a single commit:
 git add {changed_files}
@@ -789,7 +789,7 @@ curl -s -X POST \
 
 For general PR comments (issue comments), reply on the PR:
 curl -s -X POST \
-cat /data/.clawdbot/swarmstr.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+cat /data/.clawdbot/metiq.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
   -H "Accept: application/vnd.github+json" \
   https://api.github.com/repos/{SOURCE_REPO}/issues/{pr_number}/comments \
   -d '{"body": "Addressed feedback from @{reviewer}:\n\n{summary_of_changes_made}\n\nUpdated in commit {short_sha}"}'
@@ -816,8 +816,8 @@ For comments you could NOT address, reply explaining why:
 </constraints>
 ```
 
-> "GitHub authentication failed. Please check your apiKey in the swarmstr config or in ~/.swarmstr/config.json under skills.entries.gh-issues."
-cat ~/.swarmstr/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
+> "GitHub authentication failed. Please check your apiKey in the metiq config or in ~/.metiq/config.json under skills.entries.gh-issues."
+cat ~/.metiq/config.json | jq -r '.skills.entries["gh-issues"].apiKey // empty'
 - runTimeoutSeconds: 3600 (60 minutes)
 - cleanup: "keep" (preserve transcripts for review)
 - If `--model` was provided, include `model: "{MODEL}"` in the spawn config

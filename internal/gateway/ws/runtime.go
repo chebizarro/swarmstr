@@ -593,11 +593,11 @@ func (r *Runtime) isTrustedProxyAuth(req *http.Request) bool {
 	if !isTrustedProxyRemote(clientIP(req.RemoteAddr), r.opts.TrustedProxies) {
 		return false
 	}
-	marker := strings.ToLower(strings.TrimSpace(req.Header.Get("X-Swarmstr-Trusted-Auth")))
+	marker := strings.ToLower(strings.TrimSpace(req.Header.Get("X-Metiq-Trusted-Auth")))
 	if marker != "1" && marker != "true" && marker != "yes" {
 		return false
 	}
-	return strings.TrimSpace(req.Header.Get("X-Swarmstr-Proxy-User")) != ""
+	return strings.TrimSpace(req.Header.Get("X-Metiq-Proxy-User")) != ""
 }
 
 func (r *Runtime) allowHandshake(ip string) bool {

@@ -23,9 +23,9 @@ type coreMethodDeviationFixture struct {
 
 type methodParitySnapshot struct {
 	Entries []struct {
-		Method         string `json:"method"`
-		Status         string `json:"status"`
-		SwarmstrMethod string `json:"swarmstr_method"`
+		Method      string `json:"method"`
+		Status      string `json:"status"`
+		MetiqMethod string `json:"metiq_method"`
 	} `json:"entries"`
 }
 
@@ -106,8 +106,8 @@ func TestCoreParityVerifier_MethodSurface(t *testing.T) {
 	for _, entry := range snap.Entries {
 		if strings.EqualFold(strings.TrimSpace(entry.Status), "implemented") {
 			method := strings.TrimSpace(entry.Method)
-			if strings.TrimSpace(entry.SwarmstrMethod) != "" {
-				method = strings.TrimSpace(entry.SwarmstrMethod)
+			if strings.TrimSpace(entry.MetiqMethod) != "" {
+				method = strings.TrimSpace(entry.MetiqMethod)
 			}
 			if method != "" {
 				expected[method] = struct{}{}
@@ -149,7 +149,7 @@ func TestCoreParityVerifier_MethodSurface(t *testing.T) {
 
 	if len(missing) > 0 || len(additional) > 0 {
 		t.Fatalf(
-			"core parity method surface drift detected.\nmissing=%v\nadditional=%v\nAction: update parity fixtures or file follow-up bead with discovered-from:swarmstr-wkb.10",
+			"core parity method surface drift detected.\nmissing=%v\nadditional=%v\nAction: update parity fixtures or file follow-up bead with discovered-from:metiq-wkb.10",
 			missing, additional,
 		)
 	}
@@ -210,7 +210,7 @@ func TestCoreParityVerifier_EventSurface(t *testing.T) {
 	sort.Strings(additional)
 
 	if len(missing) > 0 || len(additional) > 0 {
-		t.Fatalf("core parity event surface drift detected.\nmissing=%v\nadditional=%v\nAction: update event deviation fixture or file discovered-from:swarmstr-v6w.3", missing, additional)
+		t.Fatalf("core parity event surface drift detected.\nmissing=%v\nadditional=%v\nAction: update event deviation fixture or file discovered-from:metiq-v6w.3", missing, additional)
 	}
 }
 
@@ -238,7 +238,7 @@ func TestCoreParityVerifier_SessionEntryShape(t *testing.T) {
 
 	if len(missing) > 0 || len(forbidden) > 0 {
 		t.Fatalf(
-			"session entry shape drift detected.\nmissing_required=%v\nforbidden_present=%v\nAction: preserve core contract or file follow-up bead discovered-from:swarmstr-wkb.10",
+			"session entry shape drift detected.\nmissing_required=%v\nforbidden_present=%v\nAction: preserve core contract or file follow-up bead discovered-from:metiq-wkb.10",
 			missing, forbidden,
 		)
 	}

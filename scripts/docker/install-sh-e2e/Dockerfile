@@ -9,7 +9,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Common verification helper shared across smoke environments.
-COPY install-sh-common/verify.sh /usr/local/lib/swarmstr/verify.sh
+COPY install-sh-common/verify.sh /usr/local/lib/metiq/verify.sh
 
 COPY install-sh-e2e/run.sh /run.sh
 RUN chmod +x /run.sh

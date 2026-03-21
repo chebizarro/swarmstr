@@ -1,6 +1,6 @@
-# Migrating from OpenClaw to Swarmstr
+# Migrating from OpenClaw to Metiq
 
-Swarmstr is a Nostr-native drop-in replacement for OpenClaw. This guide covers everything you need to migrate an existing OpenClaw deployment.
+Metiq is a Nostr-native drop-in replacement for OpenClaw. This guide covers everything you need to migrate an existing OpenClaw deployment.
 
 ---
 
@@ -25,39 +25,39 @@ Locate your existing OpenClaw config file. It is typically one of:
 Copy it somewhere accessible:
 
 ```sh
-cp ~/.openclaw/config.json5 ~/swarmstr-migration.json5
+cp ~/.openclaw/config.json5 ~/metiq-migration.json5
 ```
 
 ---
 
-## Step 2: Import the config into Swarmstr
+## Step 2: Import the config into Metiq
 
-Swarmstr reads OpenClaw-format config files natively (JSON, JSON5, YAML):
+Metiq reads OpenClaw-format config files natively (JSON, JSON5, YAML):
 
 ```sh
 # Validate and preview what will be imported (no write):
-swarmstr config-import --file ~/swarmstr-migration.json5 --dry-run
+metiq config import --file ~/metiq-migration.json5 --dry-run
 
-# Import and write to the default Swarmstr config path:
-swarmstr config-import --file ~/swarmstr-migration.json5
+# Import and write to the default Metiq config path:
+metiq config import --file ~/metiq-migration.json5
 
 # Or import to a specific path:
-swarmstr config-import --file ~/swarmstr-migration.json5 --path ~/.swarmstr/config.json
+metiq config import --file ~/metiq-migration.json5 --path ~/.metiq/config.json
 ```
 
-The importer understands both OpenClaw and Swarmstr config key naming conventions (camelCase and snake_case aliases are both accepted).
+The importer understands both OpenClaw and Metiq config key naming conventions (camelCase and snake_case aliases are both accepted).
 
 ---
 
 ## Step 3: Set your private key
 
-Swarmstr uses a Nostr private key for signing events and encrypting DMs. Set it via environment variable before starting the daemon:
+Metiq uses a Nostr private key for signing events and encrypting DMs. Set it via environment variable before starting the daemon:
 
 ```sh
-export SWARMSTR_PRIVATE_KEY="your-hex-or-nsec-private-key"
+export METIQ_PRIVATE_KEY="your-hex-or-nsec-private-key"
 ```
 
-Or include it in a bootstrap config file (`~/.swarmstr/bootstrap.json`):
+Or include it in a bootstrap config file (`~/.metiq/bootstrap.json`):
 
 ```json
 {
@@ -71,7 +71,7 @@ Or include it in a bootstrap config file (`~/.swarmstr/bootstrap.json`):
 ## Step 4: Start the daemon
 
 ```sh
-swarmstrd
+metiqd
 ```
 
 The daemon binds an HTTP admin server at the address set in `admin_listen_addr` in `bootstrap.json`.
@@ -86,9 +86,9 @@ curl -s http://127.0.0.1:7423/health | jq .
 
 ## Config format compatibility
 
-Swarmstr supports all top-level OpenClaw config sections. The mapping:
+Metiq supports all top-level OpenClaw config sections. The mapping:
 
-| OpenClaw field | Swarmstr field | Notes |
+| OpenClaw field | Metiq field | Notes |
 |---|---|---|
 | `dm.policy` | `dm.policy` | identical |
 | `dm.allow_from` | `dm.allow_from` | identical |
@@ -104,7 +104,7 @@ Swarmstr supports all top-level OpenClaw config sections. The mapping:
 | N/A | `agents[].fallback_models` | Ordered model fallback chain on error |
 | `plugins.*` | `plugins.*` (→ `extensions.*` internally) | mapped |
 | `session.*` | `session.*` | identical |
-| `heartbeat.*` | `extra.heartbeat.*` | moved under `extra` in Swarmstr |
+| `heartbeat.*` | `extra.heartbeat.*` | moved under `extra` in Metiq |
 | `tts.*` | `tts.*` | identical |
 | `secrets.*` | `secrets.*` | identical |
 | `cron.*` | `cron.*` | identical |
@@ -115,7 +115,7 @@ Unknown top-level keys are passed through to `extra` and preserved across config
 
 ## Multi-agent config
 
-Swarmstr supports named agents with per-agent model, workspace, and tool profile:
+Metiq supports named agents with per-agent model, workspace, and tool profile:
 
 ```json
 {
@@ -144,7 +144,7 @@ Swarmstr supports named agents with per-agent model, workspace, and tool profile
 }
 ```
 
-**`dm_peers`** (Swarmstr-native): a list of Nostr pubkeys whose inbound DMs are routed to this specific agent. This replaces OpenClaw's channel routing configuration.
+**`dm_peers`** (Metiq-native): a list of Nostr pubkeys whose inbound DMs are routed to this specific agent. This replaces OpenClaw's channel routing configuration.
 
 Agents declared in the config are auto-provisioned at startup — no `agents.create` API call needed.
 
@@ -152,7 +152,7 @@ Agents declared in the config are auto-provisioned at startup — no `agents.cre
 
 ## Nostr channels
 
-Swarmstr adds a `nostr_channels` config section for Nostr-native channel types (NIP-29 relay groups, etc.):
+Metiq adds a `nostr_channels` config section for Nostr-native channel types (NIP-29 relay groups, etc.):
 
 ```json
 {
@@ -173,11 +173,11 @@ Channels with `enabled: true` are automatically joined at daemon startup.
 
 ## Gateway API compatibility
 
-The Swarmstr HTTP admin server (`/call` endpoint) and WebSocket gateway are wire-compatible with OpenClaw clients. **All 95 OpenClaw gateway methods are implemented** plus 34 Swarmstr-native extensions (129 total as of 2026-03-08).
+The Metiq HTTP admin server (`/call` endpoint) and WebSocket gateway are wire-compatible with OpenClaw clients. **All 95 OpenClaw gateway methods are implemented** plus 34 Metiq-native extensions (129 total as of 2026-03-08).
 
 **Key differences:**
 
-| Feature | OpenClaw | Swarmstr |
+| Feature | OpenClaw | Metiq |
 |---|---|---|
 | Config persistence | Local file | Nostr replaceable events (+ local file sync) |
 | Plugin execution | Node.js/TypeScript | Goja JS runtime (embedded) |
@@ -190,13 +190,13 @@ The Swarmstr HTTP admin server (`/call` endpoint) and WebSocket gateway are wire
 | Model fallback | N/A | Ordered fallback chain on 429/rate-limit |
 | Agent orchestration | N/A | sessions.spawn (depth-limited), sessions.export (HTML), ACP cross-agent coordination |
 | Context management | N/A | Pluggable context engines (windowed, extensible), auto-compaction |
-| Security | N/A | Built-in security audit (8 checks via security.audit / swarmstr security audit) |
+| Security | N/A | Built-in security audit (8 checks via security.audit / metiq security audit) |
 | Identity | Single keypair | Nostr-native: any agent addressable by npub, no pairing needed |
-| Web UI | React SPA | Embedded dark-theme vanilla JS chat UI served from swarmstrd |
+| Web UI | React SPA | Embedded dark-theme vanilla JS chat UI served from metiqd |
 
-## Swarmstr-native extensions (not in OpenClaw)
+## Metiq-native extensions (not in OpenClaw)
 
-The following methods are Swarmstr additions that have no OpenClaw equivalent:
+The following methods are Metiq additions that have no OpenClaw equivalent:
 
 | Method | Description |
 |---|---|
@@ -215,7 +215,7 @@ The following methods are Swarmstr additions that have no OpenClaw equivalent:
 
 ## Media attachments in chat.send
 
-Swarmstr supports media attachments in `chat.send`:
+Metiq supports media attachments in `chat.send`:
 
 ```json
 {
@@ -304,68 +304,68 @@ curl -s -X POST http://localhost:7423/call \
 
 **`config-import: parse error`** — Check that your config file is valid JSON, JSON5, or YAML. Run with `--dry-run` to see the parse output.
 
-**Agent runtime not building** — If `agents[].model` is set to `"http"` and you get a provider error, ensure `providers.<name>.base_url` is set in the config, or set `SWARMSTR_AGENT_HTTP_URL` in the environment.
+**Agent runtime not building** — If `agents[].model` is set to `"http"` and you get a provider error, ensure `providers.<name>.base_url` is set in the config, or set `METIQ_AGENT_HTTP_URL` in the environment.
 
 **DMs not routing to the right agent** — Use `dm_peers` in the agent config to bind specific Nostr pubkeys to an agent. Without `dm_peers`, all DMs go to the default agent.
 
-**Plugin not loading** — Swarmstr uses Goja (embedded JS) rather than Node.js. Pure-JS plugins compatible with ES2015+ will work. TypeScript plugins requiring Node.js built-ins (`fs`, `child_process`, etc.) need to be bundled first.
+**Plugin not loading** — Metiq uses Goja (embedded JS) rather than Node.js. Pure-JS plugins compatible with ES2015+ will work. TypeScript plugins requiring Node.js built-ins (`fs`, `child_process`, etc.) need to be bundled first.
 
 ---
 
 ## Status: OpenClaw parity (updated 2026-03-08)
 
-All swarmstr-22.x beads are **closed**. Swarmstr has reached full OpenClaw gateway method parity plus native extensions.
+All metiq-22.x beads are **closed**. Metiq has reached full OpenClaw gateway method parity plus native extensions.
 
 ### Completed features (22.x series — all implemented)
 
 | Feature | Bead | Status |
 |---------|------|--------|
-| Extensions plugin architecture (Telegram, Discord, Slack, WhatsApp) | swarmstr-22.1 / 23.7 | ✅ Done |
-| Full CLI command parity (40+ commands) | swarmstr-22.2 / 23.6 | ✅ Done |
-| Docker CI/CD: multi-arch builds, ghcr.io publishing | swarmstr-22.3 | ✅ Done |
-| Media transcribers: OpenAI, Groq, Deepgram, Mistral, Google, Moonshot, Minimax | swarmstr-22.4 / 23.4 | ✅ Done |
-| Security audit module | swarmstr-22.5 | ✅ Done |
-| Context engine abstraction (pluggable ingest/compact/assemble) | swarmstr-22.6 | ✅ Done |
-| Auto-reply: slash commands (/help /status /model /reset /agents), session serialization | swarmstr-22.7 | ✅ Done |
-| Web UI (embedded dark-theme chat interface) | swarmstr-22.8 | ✅ Done |
-| ACP (Agent Control Protocol) for cross-agent coordination | swarmstr-22.9 | ✅ Done |
-| Pluggable memory backends (in-memory + JSON FTS) | swarmstr-22.10 | ✅ Done |
-| Provider OAuth (GitHub Copilot device-flow, extensible registry) | swarmstr-22.11 | ✅ Done |
-| Docker install scripts (smoke, e2e, nonroot) | swarmstr-22.12 | ✅ Done |
-| Remote node system (node CLI, nodes CLI, Nostr-native addressing) | swarmstr-22.13 | ✅ Done |
-| Context engine wiring (Ingest/Assemble/Compact hooked into agent turns) | swarmstr-23.2 | ✅ Done |
-| Memory auto-compaction (background goroutine + per-turn budget check) | swarmstr-23.3 | ✅ Done |
-| Session export to HTML | swarmstr-23.8 | ✅ Done |
-| Shell completion (bash/zsh/fish) | swarmstr-23.5 | ✅ Done |
-| CLI: sessions, cron, approvals, doctor, qr | swarmstr-23.6 | ✅ Done |
+| Extensions plugin architecture (Telegram, Discord, Slack, WhatsApp) | metiq-22.1 / 23.7 | ✅ Done |
+| Full CLI command parity (40+ commands) | metiq-22.2 / 23.6 | ✅ Done |
+| Docker CI/CD: multi-arch builds, ghcr.io publishing | metiq-22.3 | ✅ Done |
+| Media transcribers: OpenAI, Groq, Deepgram, Mistral, Google, Moonshot, Minimax | metiq-22.4 / 23.4 | ✅ Done |
+| Security audit module | metiq-22.5 | ✅ Done |
+| Context engine abstraction (pluggable ingest/compact/assemble) | metiq-22.6 | ✅ Done |
+| Auto-reply: slash commands (/help /status /model /reset /agents), session serialization | metiq-22.7 | ✅ Done |
+| Web UI (embedded dark-theme chat interface) | metiq-22.8 | ✅ Done |
+| ACP (Agent Control Protocol) for cross-agent coordination | metiq-22.9 | ✅ Done |
+| Pluggable memory backends (in-memory + JSON FTS) | metiq-22.10 | ✅ Done |
+| Provider OAuth (GitHub Copilot device-flow, extensible registry) | metiq-22.11 | ✅ Done |
+| Docker install scripts (smoke, e2e, nonroot) | metiq-22.12 | ✅ Done |
+| Remote node system (node CLI, nodes CLI, Nostr-native addressing) | metiq-22.13 | ✅ Done |
+| Context engine wiring (Ingest/Assemble/Compact hooked into agent turns) | metiq-23.2 | ✅ Done |
+| Memory auto-compaction (background goroutine + per-turn budget check) | metiq-23.3 | ✅ Done |
+| Session export to HTML | metiq-23.8 | ✅ Done |
+| Shell completion (bash/zsh/fish) | metiq-23.5 | ✅ Done |
+| CLI: sessions, cron, approvals, doctor, qr | metiq-23.6 | ✅ Done |
 
 ### Completed features (23.x/24.x series)
 
 | Feature | Bead | Status |
 |---------|------|--------|
-| Sandbox execution environment (NopSandbox + DockerSandbox, `sandbox.run` gateway method) | swarmstr-23.9 | ✅ Done |
-| Channel plugin interface richness (TypingHandle, ReactionHandle, ThreadHandle, EditHandle, AudioHandle) | swarmstr-24.1 | ✅ Done |
-| Exec approval wired to tool execution | swarmstr-24.2 | ✅ Done |
-| Block streaming — incremental response delivery (`chat.chunk` WS events, SSE provider) | swarmstr-24.3 | ✅ Done |
-| Daemon lifecycle CLI (start/stop/restart/status) | swarmstr-24.4 | ✅ Done |
-| Additional channel plugins (Telegram, Discord, Email) | swarmstr-24.6 | ✅ Done |
-| Multi-agent orchestration (ACP dispatcher, pipeline sequential/parallel) | swarmstr-24.14 | ✅ Done |
-| Plugin/skill marketplace and remote loading (`plugins.registry.*`, `source=url`) | swarmstr-24.13 | ✅ Done |
-| End-to-end encryption for channel messages (NIP-44 EncryptedHandle) | swarmstr-24.18 | ✅ Done |
-| Web UI (sessions sidebar, streaming display, approval modal) | swarmstr-24.12 | ✅ Done |
+| Sandbox execution environment (NopSandbox + DockerSandbox, `sandbox.run` gateway method) | metiq-23.9 | ✅ Done |
+| Channel plugin interface richness (TypingHandle, ReactionHandle, ThreadHandle, EditHandle, AudioHandle) | metiq-24.1 | ✅ Done |
+| Exec approval wired to tool execution | metiq-24.2 | ✅ Done |
+| Block streaming — incremental response delivery (`chat.chunk` WS events, SSE provider) | metiq-24.3 | ✅ Done |
+| Daemon lifecycle CLI (start/stop/restart/status) | metiq-24.4 | ✅ Done |
+| Additional channel plugins (Telegram, Discord, Email) | metiq-24.6 | ✅ Done |
+| Multi-agent orchestration (ACP dispatcher, pipeline sequential/parallel) | metiq-24.14 | ✅ Done |
+| Plugin/skill marketplace and remote loading (`plugins.registry.*`, `source=url`) | metiq-24.13 | ✅ Done |
+| End-to-end encryption for channel messages (NIP-44 EncryptedHandle) | metiq-24.18 | ✅ Done |
+| Web UI (sessions sidebar, streaming display, approval modal) | metiq-24.12 | ✅ Done |
 
-Note: Mobile apps (iOS, Android, macOS) and Swabble (Swift voice app) are out of scope — these are platform-specific applications with no Go equivalent in Swarmstr.
+Note: Mobile apps (iOS, Android, macOS) and Swabble (Swift voice app) are out of scope — these are platform-specific applications with no Go equivalent in Metiq.
 
 ---
 
 ## Nostr-native remote node addressing
 
-Unlike OpenClaw which requires explicit device pairing protocols, Swarmstr agents are inherently addressable over Nostr:
+Unlike OpenClaw which requires explicit device pairing protocols, Metiq agents are inherently addressable over Nostr:
 
-- Every `swarmstrd` instance has a Nostr keypair.  Any device running `swarmstrd` is reachable via NIP-17 DMs routed through the Nostr relay network.
-- Use `swarmstr nodes list` to see registered remote nodes.
-- Use `swarmstr nodes send <npub> <message>` to send a task to a remote agent via DM.
-- Use `swarmstr nodes status <npub>` to check a remote node's health.
+- Every `metiqd` instance has a Nostr keypair.  Any device running `metiqd` is reachable via NIP-17 DMs routed through the Nostr relay network.
+- Use `metiq nodes list` to see registered remote nodes.
+- Use `metiq nodes send <npub> <message>` to send a task to a remote agent via DM.
+- Use `metiq nodes status <npub>` to check a remote node's health.
 - The ACP (Agent Control Protocol) layer handles multi-agent orchestration natively over Nostr DMs, with `acp.dispatch` and `acp.pipeline` for sequential/parallel multi-step workflows.
 
 This means Raspberry Pi embedded runners, cloud VMs, and mobile devices can all participate in the same agent mesh without a separate pairing infrastructure — just share their Nostr pubkey.
@@ -374,6 +374,6 @@ This means Raspberry Pi embedded runners, cloud VMs, and mobile devices can all 
 
 ## See also
 
-- [Swarmstr AGENTS.md](../AGENTS.md) — development guide
+- [Metiq AGENTS.md](../AGENTS.md) — development guide
 - [Parity matrix](parity/gateway-method-parity.json) — method-by-method coverage
 - [Port plan](PORT_PLAN.md) — architecture decisions

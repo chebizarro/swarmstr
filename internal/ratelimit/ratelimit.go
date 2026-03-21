@@ -1,5 +1,5 @@
 // Package ratelimit provides per-user and per-channel rate limiting for
-// swarmstr message processing.  It uses a token-bucket algorithm:
+// metiq message processing.  It uses a token-bucket algorithm:
 // each bucket refills at a configured rate (tokens per second) and has a
 // maximum burst capacity.  A message is allowed when at least one token can
 // be consumed from the bucket.

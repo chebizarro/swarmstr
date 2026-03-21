@@ -1,9 +1,9 @@
 ---
-summary: "Health checks, logging, and process management for swarmstr"
+summary: "Health checks, logging, and process management for metiq"
 read_when:
   - Checking daemon health
   - Tailing daemon logs
-  - Managing swarmstrd as a background service
+  - Managing metiqd as a background service
 title: "Health, Logging & Process Management"
 ---
 
@@ -11,7 +11,7 @@ title: "Health, Logging & Process Management"
 
 ## Prerequisites: Admin API
 
-Most `swarmstr` CLI commands communicate with the running `swarmstrd` daemon via its HTTP admin API. Configure the admin listen address in `bootstrap.json`:
+Most `metiq` CLI commands communicate with the running `metiqd` daemon via its HTTP admin API. Configure the admin listen address in `bootstrap.json`:
 
 ```json
 {
@@ -23,8 +23,8 @@ Most `swarmstr` CLI commands communicate with the running `swarmstrd` daemon via
 Then use:
 
 ```bash
-export SWARMSTR_ADMIN_ADDR=127.0.0.1:18788
-export SWARMSTR_ADMIN_TOKEN=your-secret-token
+export METIQ_ADMIN_ADDR=127.0.0.1:18788
+export METIQ_ADMIN_TOKEN=your-secret-token
 ```
 
 Or pass `--admin-addr` and `--admin-token` to each command.
@@ -35,16 +35,16 @@ Or pass `--admin-addr` and `--admin-token` to each command.
 
 ```bash
 # Show daemon pubkey, version, uptime, relays, dm_policy
-swarmstr status
+metiq status
 
 # Output as JSON
-swarmstr status --json
+metiq status --json
 
 # Ping the /health endpoint (exits 0 if healthy)
-swarmstr health
+metiq health
 
 # Run diagnostic checks (admin reachable, bootstrap file, relay config)
-swarmstr doctor
+metiq doctor
 ```
 
 ### HTTP Health Endpoints
@@ -71,25 +71,25 @@ GET http://<admin-addr>/metrics    → Prometheus text format (requires auth if 
 
 ```bash
 # Tail recent log lines via admin API
-swarmstr logs --lines 100
+metiq logs --lines 100
 
 # Filter by level
-swarmstr logs --lines 200 --level error
+metiq logs --lines 200 --level error
 ```
 
 ### Via journalctl (systemd)
 
 ```bash
 # Follow logs in real time
-journalctl -u swarmstrd -f
+journalctl -u metiqd -f
 
 # Show last 200 lines
-journalctl -u swarmstrd -n 200
+journalctl -u metiqd -n 200
 ```
 
 ### Log Format
 
-swarmstrd logs are structured (Go `log/slog` default):
+metiqd logs are structured (Go `log/slog` default):
 
 ```
 2026-01-16T14:30:00Z INFO relay connected relay=wss://relay.damus.io
@@ -106,34 +106,34 @@ Log verbosity is set via Go's standard `log` package. For verbose debug output, 
 ### Run in Foreground
 
 ```bash
-swarmstrd
+metiqd
 # or with explicit bootstrap path:
-swarmstrd --bootstrap ~/.swarmstr/bootstrap.json
+metiqd --bootstrap ~/.metiq/bootstrap.json
 ```
 
-### Daemon Management (swarmstr daemon)
+### Daemon Management (metiq daemon)
 
 ```bash
-# Start swarmstrd in background
-swarmstr daemon start
+# Start metiqd in background
+metiq daemon start
 
 # Stop running daemon
-swarmstr daemon stop
+metiq daemon stop
 
 # Restart daemon
-swarmstr daemon restart
+metiq daemon restart
 
 # Show daemon liveness and uptime
-swarmstr daemon status
+metiq daemon status
 ```
 
 ### systemd Service (Linux)
 
-For production use, run swarmstrd as a systemd service:
+For production use, run metiqd as a systemd service:
 
 ```ini
 [Unit]
-Description=swarmstr AI agent daemon
+Description=metiq AI agent daemon
 After=network-online.target
 Wants=network-online.target
 
@@ -141,8 +141,8 @@ Wants=network-online.target
 Type=simple
 User=youruser
 WorkingDirectory=/home/youruser
-EnvironmentFile=/home/youruser/.swarmstr/.env
-ExecStart=/usr/local/bin/swarmstrd
+EnvironmentFile=/home/youruser/.metiq/.env
+ExecStart=/usr/local/bin/metiqd
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -155,18 +155,18 @@ WantedBy=multi-user.target
 Install and enable:
 
 ```bash
-sudo cp swarmstrd.service /etc/systemd/system/
+sudo cp metiqd.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now swarmstrd
-sudo systemctl status swarmstrd
+sudo systemctl enable --now metiqd
+sudo systemctl status metiqd
 ```
 
 Or as a user service:
 
 ```bash
-cp swarmstrd.service ~/.config/systemd/user/
+cp metiqd.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now swarmstrd
+systemctl --user enable --now metiqd
 ```
 
 ### Watchdog / Auto-Restart
@@ -184,9 +184,9 @@ OOMScoreAdjust=100
 For production deployments:
 
 - **Liveness**: `curl http://<admin-addr>/healthz` (no auth required)
-- **Process**: `systemctl --user is-active swarmstrd`
-- **Relay health**: `swarmstr status --json | jq .relays`
-- **Doctor checks**: `swarmstr doctor`
+- **Process**: `systemctl --user is-active metiqd`
+- **Relay health**: `metiq status --json | jq .relays`
+- **Doctor checks**: `metiq doctor`
 
 ## See Also
 

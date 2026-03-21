@@ -1,15 +1,15 @@
 ---
-summary: "Subagents and ACP: routing to named agents and the Agent Control Protocol in swarmstr"
+summary: "Subagents and ACP: routing to named agents and the Agent Control Protocol in metiq"
 read_when:
   - Using /spawn to route to a named agent
   - Understanding ACP (Agent Control Protocol)
-  - Building multi-agent workflows with swarmstr
+  - Building multi-agent workflows with metiq
 title: "Subagents & ACP"
 ---
 
 # Subagents & ACP
 
-swarmstr supports multi-agent workflows through two mechanisms:
+metiq supports multi-agent workflows through two mechanisms:
 
 1. **Agent routing** — `/spawn` or `/focus` redirects the current session to a named agent configured in `agents[]`
 2. **ACP delegation** — the `acp_delegate` tool sends tasks to peer agents via Nostr DMs and awaits their response
@@ -35,7 +35,7 @@ To route back to the default agent use `/unfocus` or `/new`.
       "id": "research",
       "model": "claude-opus-4-5",
       "thinking_level": "high",
-      "workspace_dir": "~/.swarmstr/workspace-research"
+      "workspace_dir": "~/.metiq/workspace-research"
     }
   ]
 }
@@ -67,7 +67,7 @@ acp_delegate(
 
 ## ACP (Agent Control Protocol)
 
-ACP is the protocol swarmstr uses for structured agent-to-agent communication over Nostr DMs. An ACP task is a JSON message sent via NIP-04/NIP-17 encrypted DM, containing:
+ACP is the protocol metiq uses for structured agent-to-agent communication over Nostr DMs. An ACP task is a JSON message sent via NIP-04/NIP-17 encrypted DM, containing:
 
 - Task ID
 - Instructions

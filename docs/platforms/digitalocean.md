@@ -1,14 +1,14 @@
 ---
-summary: "Deploy swarmstr on DigitalOcean Droplet"
+summary: "Deploy metiq on DigitalOcean Droplet"
 read_when:
-  - Deploying swarmstr on DigitalOcean
+  - Deploying metiq on DigitalOcean
   - Setting up a Droplet for always-on agent operation
 title: "DigitalOcean"
 ---
 
 # DigitalOcean Deployment
 
-Run swarmstr on a DigitalOcean Droplet for 24/7 Nostr agent operation.
+Run metiq on a DigitalOcean Droplet for 24/7 Nostr agent operation.
 
 ## Recommended Droplet
 
@@ -29,29 +29,29 @@ In the DigitalOcean console, create a Basic Droplet with Ubuntu 22.04. Add your 
 ssh root@<droplet-ip>
 
 # Create deploy user
-adduser swarmstr
-usermod -aG sudo swarmstr
+adduser metiq
+usermod -aG sudo metiq
 
 # Set up SSH for new user
-mkdir -p /home/swarmstr/.ssh
-cp ~/.ssh/authorized_keys /home/swarmstr/.ssh/
-chown -R swarmstr:swarmstr /home/swarmstr/.ssh
-chmod 700 /home/swarmstr/.ssh
-chmod 600 /home/swarmstr/.ssh/authorized_keys
+mkdir -p /home/metiq/.ssh
+cp ~/.ssh/authorized_keys /home/metiq/.ssh/
+chown -R metiq:metiq /home/metiq/.ssh
+chmod 700 /home/metiq/.ssh
+chmod 600 /home/metiq/.ssh/authorized_keys
 
 # Switch to deploy user
-su - swarmstr
+su - metiq
 ```
 
-### 3. Install swarmstr
+### 3. Install metiq
 
 ```bash
 # Install binary
-VERSION=$(curl -s https://api.github.com/repos/yourorg/swarmstr/releases/latest | jq -r .tag_name)
-curl -L "https://github.com/yourorg/swarmstr/releases/download/${VERSION}/swarmstrd-linux-amd64" \
-  -o ~/.local/bin/swarmstrd
+VERSION=$(curl -s https://api.github.com/repos/yourorg/metiq/releases/latest | jq -r .tag_name)
+curl -L "https://github.com/yourorg/metiq/releases/download/${VERSION}/metiqd-linux-amd64" \
+  -o ~/.local/bin/metiqd
 mkdir -p ~/.local/bin
-chmod +x ~/.local/bin/swarmstrd
+chmod +x ~/.local/bin/metiqd
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
@@ -59,28 +59,28 @@ source ~/.bashrc
 ### 4. Configure
 
 ```bash
-mkdir -p ~/.swarmstr
+mkdir -p ~/.metiq
 
 # Create env file with your secrets (keep chmod 600)
-cat > ~/.swarmstr/env <<'EOF'
+cat > ~/.metiq/env <<'EOF'
 NOSTR_PRIVATE_KEY=nsec1...
 ANTHROPIC_API_KEY=sk-ant-...
-SWARMSTR_ADMIN_TOKEN=change-me-use-openssl-rand-hex-32
+METIQ_ADMIN_TOKEN=change-me-use-openssl-rand-hex-32
 EOF
-chmod 600 ~/.swarmstr/env
+chmod 600 ~/.metiq/env
 
 # bootstrap.json — process-level config (key, relays, admin address)
-cat > ~/.swarmstr/bootstrap.json <<'EOF'
+cat > ~/.metiq/bootstrap.json <<'EOF'
 {
   "private_key": "${NOSTR_PRIVATE_KEY}",
   "relays": ["wss://nos.lol", "wss://relay.primal.net", "wss://relay.sharegap.net"],
   "admin_listen_addr": "127.0.0.1:7423",
-  "admin_token": "${SWARMSTR_ADMIN_TOKEN}"
+  "admin_token": "${METIQ_ADMIN_TOKEN}"
 }
 EOF
 
 # config.json — runtime agent config
-cat > ~/.swarmstr/config.json <<'EOF'
+cat > ~/.metiq/config.json <<'EOF'
 {
   "agent": { "default_model": "anthropic/claude-opus-4-6" },
   "providers": { "anthropic": { "api_key": "${ANTHROPIC_API_KEY}" } },
@@ -94,17 +94,17 @@ EOF
 Create a user systemd unit:
 
 ```ini
-# ~/.config/systemd/user/swarmstrd.service
+# ~/.config/systemd/user/metiqd.service
 [Unit]
-Description=swarmstr AI agent daemon
+Description=metiq AI agent daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/swarmstrd
+ExecStart=%h/.local/bin/metiqd
 Restart=on-failure
 RestartSec=5
-EnvironmentFile=-%h/.swarmstr/env
+EnvironmentFile=-%h/.metiq/env
 
 [Install]
 WantedBy=default.target
@@ -114,22 +114,22 @@ WantedBy=default.target
 mkdir -p ~/.config/systemd/user
 # (create the unit file above)
 systemctl --user daemon-reload
-systemctl --user enable --now swarmstrd
+systemctl --user enable --now metiqd
 
 # Enable linger (persists after logout)
-sudo loginctl enable-linger swarmstr
+sudo loginctl enable-linger metiq
 ```
 
 ### 6. Verify
 
 ```bash
-swarmstr status
-journalctl --user -u swarmstrd -n 50
+metiq status
+journalctl --user -u metiqd -n 50
 ```
 
 ## Firewall Setup
 
-swarmstr doesn't need inbound ports for Nostr (agents are always-outbound).
+metiq doesn't need inbound ports for Nostr (agents are always-outbound).
 
 If you want dashboard access:
 
@@ -143,13 +143,13 @@ sudo ufw enable
 For admin API access from your laptop, use SSH tunneling (never expose the admin port publicly):
 ```bash
 # From your laptop (7423 = admin_listen_addr in bootstrap.json)
-ssh -L 7423:localhost:7423 swarmstr@<droplet-ip>
-# Then run: swarmstr --admin-addr localhost:7423 status
+ssh -L 7423:localhost:7423 metiq@<droplet-ip>
+# Then run: metiq --admin-addr localhost:7423 status
 ```
 
 ## DigitalOcean Managed Database (Optional)
 
-For high-availability deployments, you can point swarmstr's state to a managed database (not currently implemented — state is file-based).
+For high-availability deployments, you can point metiq's state to a managed database (not currently implemented — state is file-based).
 
 ## Monitoring with DigitalOcean
 
@@ -159,7 +159,7 @@ Enable the DigitalOcean monitoring agent for CPU/memory alerts:
 curl -sSL https://repos.insights.digitalocean.com/install.sh | sudo bash
 ```
 
-Set up an alert if memory > 90% (swarmstr occasionally spikes during large agent turns).
+Set up an alert if memory > 90% (metiq occasionally spikes during large agent turns).
 
 ## See Also
 

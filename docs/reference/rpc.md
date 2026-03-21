@@ -1,7 +1,7 @@
 ---
-summary: "HTTP and WebSocket API reference for swarmstr's admin and control endpoints"
+summary: "HTTP and WebSocket API reference for metiq's admin and control endpoints"
 read_when:
-  - Integrating with swarmstr programmatically
+  - Integrating with metiq programmatically
   - Calling the admin API from scripts
   - Understanding the WebSocket event stream
 title: "RPC / HTTP API Reference"
@@ -9,15 +9,15 @@ title: "RPC / HTTP API Reference"
 
 # RPC / HTTP API Reference
 
-swarmstr exposes an HTTP API and WebSocket event stream for programmatic integration. This powers the CLI and web dashboard.
+metiq exposes an HTTP API and WebSocket event stream for programmatic integration. This powers the CLI and web dashboard.
 
 ## Base URL
 
 The base URL is your `admin_listen_addr` (from `bootstrap.json`). Set in the CLI via:
 
 ```bash
-export SWARMSTR_ADMIN_ADDR=127.0.0.1:18788
-export SWARMSTR_ADMIN_TOKEN=your-token
+export METIQ_ADMIN_ADDR=127.0.0.1:18788
+export METIQ_ADMIN_TOKEN=your-token
 ```
 
 All endpoints require authentication via the admin token:
@@ -25,9 +25,9 @@ All endpoints require authentication via the admin token:
 Authorization: Bearer <token>
 ```
 
-Or via the `x-swarmstr-token` header:
+Or via the `x-metiq-token` header:
 ```
-x-swarmstr-token: <token>
+x-metiq-token: <token>
 ```
 
 ## HTTP Endpoints
@@ -92,7 +92,7 @@ OpenAI-compatible chat completions endpoint.
 
 ```json
 {
-  "model": "swarmstr",
+  "model": "metiq",
   "messages": [{"role": "user", "content": "Hello!"}],
   "stream": false
 }
@@ -207,14 +207,14 @@ The CLI wraps these RPC calls. For scripting, call directly:
 ```bash
 # Using curl (admin API, port from admin_listen_addr)
 curl -s -X POST http://localhost:18788/call \
-  -H "Authorization: Bearer $SWARMSTR_ADMIN_TOKEN" \
+  -H "Authorization: Bearer $METIQ_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"method":"status.get","params":{}}' | jq .
 
 # Using the CLI gw passthrough
-swarmstr gw status.get
-swarmstr gw cron.list
-swarmstr gw system.event '{"text":"test"}'
+metiq gw status.get
+metiq gw cron.list
+metiq gw system.event '{"text":"test"}'
 ```
 
 ## See Also

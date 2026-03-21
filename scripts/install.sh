@@ -153,7 +153,7 @@ fi
 
 if [[ -z "$DRY_RUN" && ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<'EOF'
-# metiq environment configuration (legacy METIQ_* env names remain supported)
+# metiq environment configuration
 # Copy the relevant keys and fill in your values.
 
 # ── Nostr ─────────────────────────────────────────────────────────────────────

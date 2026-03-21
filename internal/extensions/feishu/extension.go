@@ -1,4 +1,4 @@
-// Package feishu implements a Feishu/Lark IM channel extension for swarmstr.
+// Package feishu implements a Feishu/Lark IM channel extension for metiq.
 //
 // Feishu (国内) and Lark (international) are the same platform; this plugin
 // works with both using the open.feishu.cn / open.larksuite.com API.

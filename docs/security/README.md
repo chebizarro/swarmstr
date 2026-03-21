@@ -1,7 +1,7 @@
 ---
-summary: "swarmstr security overview and threat model"
+summary: "metiq security overview and threat model"
 read_when:
-  - Understanding the swarmstr security posture
+  - Understanding the metiq security posture
   - Reporting a security vulnerability
 title: "Security"
 ---
@@ -11,13 +11,13 @@ title: "Security"
 ## Reporting vulnerabilities
 
 Report security vulnerabilities privately. Do not open public GitHub issues for security bugs.
-Contact: security@swarmstr.dev (or open a private GitHub security advisory).
+Contact: security@metiq.dev (or open a private GitHub security advisory).
 
 ## Core security properties
 
 ### Cryptographic identity
 
-Every swarmstr agent has a Nostr keypair (nsec/npub). The nsec is the agent's private key:
+Every metiq agent has a Nostr keypair (nsec/npub). The nsec is the agent's private key:
 - Never share your nsec with anyone.
 - Store it in environment variables, not config files checked into version control.
 - A leaked nsec means an attacker can impersonate your agent and read past encrypted DMs.
@@ -35,15 +35,15 @@ Configure `dm.policy` in `config.json` based on your threat model:
 
 The agent's model provider API keys grant billing access. Protect them:
 - Use `${ENV_VAR}` interpolation in config (never hardcode keys).
-- Restrict filesystem access to `~/.swarmstr/` to the service user only.
+- Restrict filesystem access to `~/.metiq/` to the service user only.
 - Rotate keys if compromised.
 
 ### Workspace isolation
 
-The workspace (`~/.swarmstr/workspace/`) is the agent's working directory. Files here
+The workspace (`~/.metiq/workspace/`) is the agent's working directory. Files here
 are injected into the agent's context. Ensure:
 - No secrets (API keys, private keys) are stored in workspace files.
-- The workspace is not world-readable (`chmod 700 ~/.swarmstr/`).
+- The workspace is not world-readable (`chmod 700 ~/.metiq/`).
 - Git repos containing workspace files are **private**.
 
 ## Threat model summary
@@ -61,7 +61,7 @@ are injected into the agent's context. Ensure:
 
 ### Out of scope (infrastructure-level)
 
-- Compromise of the host machine running swarmstrd.
+- Compromise of the host machine running metiqd.
 - Compromise of the Nostr relays (relays are untrusted by design).
 - Side-channel attacks on the model provider.
 
@@ -101,7 +101,7 @@ If using HTTP webhooks (`hooks.enabled: true`):
 ## Checklist
 
 - [ ] nsec stored in environment variable, not config file
-- [ ] `~/.swarmstr/` has restricted permissions (`chmod 700`)
+- [ ] `~/.metiq/` has restricted permissions (`chmod 700`)
 - [ ] `dm.policy` set appropriately (`pairing` or `allowlist`)
 - [ ] API keys stored as environment variables
 - [ ] Workspace git repo is private

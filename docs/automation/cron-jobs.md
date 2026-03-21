@@ -1,16 +1,16 @@
 ---
-summary: "Cron jobs for the swarmstr scheduler"
+summary: "Cron jobs for the metiq scheduler"
 read_when:
   - Scheduling background jobs or recurring agent tasks
   - Deciding between heartbeat and cron for scheduled tasks
 title: "Cron Jobs"
 ---
 
-# Cron Jobs (swarmstr Scheduler)
+# Cron Jobs (metiq Scheduler)
 
 > **Cron vs Heartbeat?** See [Cron vs Heartbeat](/automation/cron-vs-heartbeat) first.
 
-Cron is swarmstr's built-in scheduler. Jobs are persisted to Nostr (via the transcript repository), so they survive daemon restarts. When a job fires, it calls a specified gateway method with specified params.
+Cron is metiq's built-in scheduler. Jobs are persisted to Nostr (via the transcript repository), so they survive daemon restarts. When a job fires, it calls a specified gateway method with specified params.
 
 ## Quick Start
 
@@ -28,14 +28,14 @@ Then add a job:
 
 ```bash
 # Daily morning message to the agent at 7am
-swarmstr cron add \
+metiq cron add \
   --id morning-brief \
   --schedule "0 7 * * *" \
   --message "Generate today's briefing: what's on the calendar, any urgent messages?" \
   --agent main
 
 # Every 4 hours
-swarmstr cron add \
+metiq cron add \
   --id health-check \
   --schedule "@every 4h" \
   --message "Run a quick health check on all systems."
@@ -45,19 +45,19 @@ swarmstr cron add \
 
 ```bash
 # List all cron jobs
-swarmstr cron list
+metiq cron list
 
 # Add a job (see flags below)
-swarmstr cron add --id <id> --schedule <expr> --message <text> [--agent <id>]
+metiq cron add --id <id> --schedule <expr> --message <text> [--agent <id>]
 
 # Run a job immediately (ignores schedule)
-swarmstr cron run <job-id>
+metiq cron run <job-id>
 
 # Remove a job
-swarmstr cron remove <job-id>
+metiq cron remove <job-id>
 ```
 
-### swarmstr cron add Flags
+### metiq cron add Flags
 
 | Flag | Required | Description |
 |------|----------|-------------|
@@ -77,7 +77,7 @@ For full control, use `--method` and `--params` directly to call any gateway met
 
 ```bash
 # Call any gateway method
-swarmstr cron add \
+metiq cron add \
   --id weekly-review \
   --schedule "0 9 * * 1" \
   --method agent \
@@ -145,13 +145,13 @@ The `--agent` flag (or `session_id` in params) specifies which agent processes t
 
 ```bash
 # Check job list
-swarmstr cron list
+metiq cron list
 
 # Trigger a job manually to test
-swarmstr cron run <job-id>
+metiq cron run <job-id>
 
 # Check daemon logs for cron activity
-swarmstr logs --lines 100 --level info
+metiq logs --lines 100 --level info
 ```
 
 ## See Also

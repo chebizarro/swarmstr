@@ -1,5 +1,5 @@
 ---
-summary: "System prompt construction in swarmstr: how bootstrap files become the agent's system prompt"
+summary: "System prompt construction in metiq: how bootstrap files become the agent's system prompt"
 read_when:
   - Understanding how the agent's system prompt is assembled
   - Customizing bootstrap files for different agent behaviors
@@ -9,14 +9,14 @@ title: "System Prompt"
 
 # System Prompt
 
-swarmstr assembles the agent's system prompt from workspace bootstrap files at the start of each turn.
+metiq assembles the agent's system prompt from workspace bootstrap files at the start of each turn.
 
 ## Assembly Order
 
 The system prompt is assembled from:
 
 ```
-1. Internal system instructions (swarmstr core)
+1. Internal system instructions (metiq core)
 2. AGENTS.md (agent workspace instructions)
 3. SOUL.md (agent personality)
 4. USER.md (user/owner profile)
@@ -33,7 +33,7 @@ Each file is included with a clear separator indicating its source.
 
 ## Prompt Caching
 
-swarmstr uses Anthropic's prompt caching to reduce costs. Cache breakpoints are inserted after:
+metiq uses Anthropic's prompt caching to reduce costs. Cache breakpoints are inserted after:
 1. Static system instructions
 2. Workspace bootstrap files (AGENTS.md through TOOLS.md)
 3. Memory files
@@ -66,13 +66,13 @@ Edit workspace files to change what the agent knows and how it behaves:
 
 ```bash
 # Edit agent instructions
-nano ~/.swarmstr/workspace/AGENTS.md
+nano ~/.metiq/workspace/AGENTS.md
 
 # Edit personality
-nano ~/.swarmstr/workspace/SOUL.md
+nano ~/.metiq/workspace/SOUL.md
 
 # Edit user profile (what the agent knows about you)
-nano ~/.swarmstr/workspace/USER.md
+nano ~/.metiq/workspace/USER.md
 ```
 
 Changes take effect on the next agent turn (no restart needed).

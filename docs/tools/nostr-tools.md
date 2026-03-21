@@ -1,5 +1,5 @@
 ---
-summary: "swarmstr Nostr-specific agent tools reference"
+summary: "metiq Nostr-specific agent tools reference"
 read_when:
   - Using Nostr tools in agent turns
   - Building Nostr-native automations with your agent
@@ -8,7 +8,7 @@ title: "Nostr Tools"
 
 # Nostr Tools
 
-swarmstr ships built-in Nostr agent tools that give your AI agent native access to the
+metiq ships built-in Nostr agent tools that give your AI agent native access to the
 Nostr protocol. These tools are automatically available in every agent turn.
 
 ## nostr_fetch
@@ -47,8 +47,8 @@ Publish a Nostr event.
 
 **Example:**
 ```
-Publish a kind:1 note: "Hello from swarmstr!"
-→ nostr_publish(kind=1, content="Hello from swarmstr! 🌊")
+Publish a kind:1 note: "Hello from metiq!"
+→ nostr_publish(kind=1, content="Hello from metiq! 🌊")
 ```
 
 ## nostr_send_dm

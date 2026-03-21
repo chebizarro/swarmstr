@@ -1,14 +1,14 @@
 ---
-summary: "Reaction semantics for Nostr events in swarmstr"
+summary: "Reaction semantics for Nostr events in metiq"
 read_when:
   - Working on Nostr reactions (kind:7 events)
-  - Understanding status reactions in swarmstr
+  - Understanding status reactions in metiq
 title: "Reactions"
 ---
 
 # Reactions
 
-swarmstr supports two types of reactions: **Nostr protocol reactions** (NIP-25 kind:7 events published programmatically) and **status reactions** (automatic emoji indicators that reflect the agent's turn lifecycle).
+metiq supports two types of reactions: **Nostr protocol reactions** (NIP-25 kind:7 events published programmatically) and **status reactions** (automatic emoji indicators that reflect the agent's turn lifecycle).
 
 ## Nostr Reactions (NIP-25)
 
@@ -62,7 +62,7 @@ Status reactions are always-on when the channel supports them. There is no user-
 
 ## Typing Indicators
 
-In addition to status reactions, swarmstr sends channel-native typing indicators when the channel plugin supports them (e.g. Telegram's typing action). These are separate from NIP-25 reactions and require no configuration.
+In addition to status reactions, metiq sends channel-native typing indicators when the channel plugin supports them (e.g. Telegram's typing action). These are separate from NIP-25 reactions and require no configuration.
 
 ## See Also
 

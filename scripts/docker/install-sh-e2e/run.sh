@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# End-to-end install + gateway smoke test for swarmstrd.
+# End-to-end install + gateway smoke test for metiqd.
 #
 # Steps:
-#  1. Install swarmstrd via the install script (or use a pre-built binary)
-#  2. Start swarmstrd with a minimal test config
+#  1. Install metiqd via the install script (or use a pre-built binary)
+#  2. Start metiqd with a minimal test config
 #  3. Hit the /health admin endpoint
 #  4. Verify the binary exits cleanly with --version
 set -euo pipefail
 
-INSTALL_URL="${METIQ_INSTALL_URL:-https://raw.githubusercontent.com/swarmstr/swarmstr/main/scripts/install.sh}"
+INSTALL_URL="${METIQ_INSTALL_URL:-https://raw.githubusercontent.com/metiq/metiq/main/scripts/install.sh}"
 INSTALL_TAG="${METIQ_INSTALL_TAG:-latest}"
 DRY_RUN="${DRY_RUN:-0}"
 METIQ_INSTALL_SKIP_DOWNLOAD="${METIQ_INSTALL_SKIP_DOWNLOAD:-0}"
 
-source /usr/local/lib/swarmstr/verify.sh
+source /usr/local/lib/metiq/verify.sh
 
 # ── Install ────────────────────────────────────────────────────────────────
 if [[ "${METIQ_INSTALL_SKIP_DOWNLOAD}" == "1" ]]; then
@@ -23,13 +23,13 @@ else
 	if [[ "${DRY_RUN}" == "1" ]]; then
 	echo "==> DRY_RUN: would curl ${INSTALL_URL} | sh"
 	else
-	echo "==> Installing swarmstrd from ${INSTALL_URL} (tag=${INSTALL_TAG})"
+	echo "==> Installing metiqd from ${INSTALL_URL} (tag=${INSTALL_TAG})"
 	curl -fsSL "${INSTALL_URL}" | METIQ_VERSION="${INSTALL_TAG}" sh
   fi
 fi
 
 # ── Binary verification ────────────────────────────────────────────────────
-verify_binary swarmstrd
+verify_binary metiqd
 
 # ── Gateway smoke test ─────────────────────────────────────────────────────
 if [[ "${DRY_RUN}" == "1" ]]; then
@@ -39,7 +39,7 @@ if [[ "${DRY_RUN}" == "1" ]]; then
 fi
 
 ADMIN_PORT=18787
-BOOTSTRAP_FILE="$(mktemp /tmp/swarmstr-e2e-bootstrap.XXXX.json)"
+BOOTSTRAP_FILE="$(mktemp /tmp/metiq-e2e-bootstrap.XXXX.json)"
 # Minimal bootstrap with a test private key (not real, just 64 hex chars).
 cat > "${BOOTSTRAP_FILE}" <<'JSON'
 {
@@ -50,10 +50,10 @@ cat > "${BOOTSTRAP_FILE}" <<'JSON'
 }
 JSON
 
-echo "==> Starting swarmstrd in background..."
-swarmstrd --bootstrap "${BOOTSTRAP_FILE}" &
-SWARMSTRD_PID=$!
-trap "kill ${SWARMSTRD_PID} 2>/dev/null; rm -f ${BOOTSTRAP_FILE}" EXIT
+echo "==> Starting metiqd in background..."
+metiqd --bootstrap "${BOOTSTRAP_FILE}" &
+METIQD_PID=$!
+trap "kill ${METIQD_PID} 2>/dev/null; rm -f ${BOOTSTRAP_FILE}" EXIT
 
 # Wait for admin API.
 for i in $(seq 1 15); do

@@ -54,7 +54,7 @@ func (r *TranscriptRepository) PutEntry(ctx context.Context, entry TranscriptEnt
 		return Event{}, err
 	}
 
-	dTag := fmt.Sprintf("swarmstr:tx:%s:%s", entry.SessionID, entry.EntryID)
+	dTag := fmt.Sprintf("metiq:tx:%s:%s", entry.SessionID, entry.EntryID)
 	tags := [][]string{
 		{"session", protectedTagValue(entry.SessionID)},
 		{"entry", entry.EntryID},
@@ -132,7 +132,7 @@ func (r *TranscriptRepository) DeleteEntry(ctx context.Context, sessionID, entry
 	if err != nil {
 		return err
 	}
-	dTag := fmt.Sprintf("swarmstr:tx:%s:%s", sessionID, entryID)
+	dTag := fmt.Sprintf("metiq:tx:%s:%s", sessionID, entryID)
 	tags := [][]string{
 		{"session", protectedTagValue(sessionID)},
 		{"entry", entryID},

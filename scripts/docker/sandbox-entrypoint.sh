@@ -26,5 +26,5 @@ cleanup() {
 }
 trap cleanup EXIT TERM INT
 
-echo "Starting swarmstr browser bridge on ${SANDBOX_LISTEN}..."
+echo "Starting metiq browser bridge on ${SANDBOX_LISTEN}..."
 exec node /app/server.js

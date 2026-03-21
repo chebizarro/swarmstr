@@ -1,7 +1,7 @@
 ---
-summary: "Message lifecycle in swarmstr: from Nostr DM received to reply sent"
+summary: "Message lifecycle in metiq: from Nostr DM received to reply sent"
 read_when:
-  - Understanding message processing in swarmstr
+  - Understanding message processing in metiq
   - Debugging message delivery issues
   - Working on the message pipeline
 title: "Message Lifecycle"
@@ -14,7 +14,7 @@ title: "Message Lifecycle"
 ```
 Nostr relay publishes kind:4 DM event
     ↓
-swarmstrd relay subscriber receives event
+metiqd relay subscriber receives event
     ↓
 Verify event signature (reject if invalid)
     ↓

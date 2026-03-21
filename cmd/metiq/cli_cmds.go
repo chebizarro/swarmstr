@@ -1106,7 +1106,7 @@ func runHealth(args []string) error {
 
 // ─── nodes ────────────────────────────────────────────────────────────────────
 
-// runNodesList lists known remote swarmstr nodes via the daemon's node.list method.
+// runNodesList lists known remote metiq nodes via the daemon's node.list method.
 func runNodesList(args []string) error {
 	fs := flag.NewFlagSet("nodes list", flag.ContinueOnError)
 	var adminAddr, adminToken, bootstrapPath string
@@ -1226,7 +1226,7 @@ func runNodesStatus(args []string) error {
 	return nil
 }
 
-// runNodesSend sends a DM to a remote swarmstr node.
+// runNodesSend sends a DM to a remote metiq node.
 func runNodesSend(args []string) error {
 	fs := flag.NewFlagSet("nodes send", flag.ContinueOnError)
 	var adminAddr, adminToken, bootstrapPath string
@@ -1721,7 +1721,7 @@ func runSessionsPrune(args []string) error {
 		return err
 	}
 	if !all && olderThanStr == "" {
-		return fmt.Errorf("usage: metiq sessions prune --older-than <Nd> [--dry-run]\n  or:  swarmstr sessions prune --all [--dry-run]")
+		return fmt.Errorf("usage: metiq sessions prune --older-than <Nd> [--dry-run]\n  or:  metiq sessions prune --all [--dry-run]")
 	}
 
 	olderThanDays := 0
@@ -2054,7 +2054,7 @@ func runDoctor(args []string) error {
 	// Check: bootstrap file exists.
 	if bootstrapPath == "" {
 		if home, err2 := os.UserHomeDir(); err2 == nil {
-			bootstrapPath = home + "/.config/swarmstr/bootstrap.json"
+			bootstrapPath = home + "/.config/metiq/bootstrap.json"
 		}
 	}
 	if bootstrapPath != "" {
@@ -2411,7 +2411,7 @@ func daemonStart(bin, pidFile, logFile, bootstrapPath string, extraArgs []string
 
 	metiqd, err := resolveDaemonBin(bin)
 	if err != nil {
-		return fmt.Errorf("cannot find metiqd binary: %w\nSet --bin or ensure metiqd (or legacy swarmstrd) is on PATH", err)
+		return fmt.Errorf("cannot find metiqd binary: %w\nSet --bin or ensure metiqd is on PATH", err)
 	}
 
 	// Ensure log dir exists.
@@ -2621,7 +2621,7 @@ func runKeygen(args []string) error {
 	// We use the nostr library's hex encoding for nsec/npub bech32.
 	skHex := hex.EncodeToString(skBytes[:])
 
-	// Use swarmstr's config package to produce bech32 keys.
+	// Use metiq's config package to produce bech32 keys.
 	nsec, npub, err := config.KeypairFromHex(skHex)
 	if err != nil {
 		return fmt.Errorf("keygen: %w", err)

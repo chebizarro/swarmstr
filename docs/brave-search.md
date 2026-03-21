@@ -1,5 +1,5 @@
 ---
-summary: "Brave Search API setup for swarmstr's web_search tool"
+summary: "Brave Search API setup for metiq's web_search tool"
 read_when:
   - Setting up Brave Search for the agent
   - Configuring the BRAVE_API_KEY
@@ -16,7 +16,7 @@ title: "Brave Search"
 2. Create an API subscription (free tier available)
 3. Copy your API key
 
-Add to `~/.swarmstr/.env`:
+Add to `~/.metiq/.env`:
 
 ```
 BRAVE_SEARCH_API_KEY=BSAxxxxxxxxxxxxxxxxxx

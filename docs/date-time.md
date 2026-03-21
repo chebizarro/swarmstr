@@ -1,8 +1,8 @@
 ---
-summary: "Date, time, and timezone handling in swarmstr"
+summary: "Date, time, and timezone handling in metiq"
 read_when:
   - Configuring timezone for the agent
-  - Understanding how swarmstr handles timestamps
+  - Understanding how metiq handles timestamps
   - Cron job scheduling in local time
 title: "Date & Time"
 ---
@@ -14,10 +14,10 @@ title: "Date & Time"
 Set the process timezone via the `TZ` environment variable (IANA name):
 
 ```bash
-TZ=Europe/Berlin swarmstrd
+TZ=Europe/Berlin metiqd
 ```
 
-Or in the systemd service `EnvironmentFile` (`~/.swarmstr/.env`):
+Or in the systemd service `EnvironmentFile` (`~/.metiq/.env`):
 
 ```bash
 TZ=Europe/Berlin
@@ -31,7 +31,7 @@ The timezone affects:
 
 ## Nostr Timestamps
 
-Nostr events use Unix timestamps (seconds since epoch, UTC). swarmstr:
+Nostr events use Unix timestamps (seconds since epoch, UTC). metiq:
 - Receives events with UTC timestamps
 - Converts to local time for display and agent context
 - Stores all internal timestamps as UTC
@@ -43,7 +43,7 @@ Cron expressions are evaluated in the configured timezone:
 
 ```bash
 # Runs at 8:00 AM in your configured timezone
-swarmstr cron add --schedule "0 8 * * *" --message "Good morning check"
+metiq cron add --schedule "0 8 * * *" --message "Good morning check"
 ```
 
 If no timezone is configured, UTC is used. This matters especially for cron jobs — always configure your timezone.
@@ -60,14 +60,14 @@ The agent uses this for temporal reasoning about events, schedules, and "now".
 
 ## Date Formatting
 
-swarmstr uses ISO 8601 dates internally:
+metiq uses ISO 8601 dates internally:
 - Memory files: `memory/YYYY-MM-DD.md`
 - Session transcripts: ISO 8601 timestamps
 - Log entries: RFC 3339
 
 ## Nostr Event Timing
 
-Nostr events older than the relays' retention window may not be delivered. swarmstr subscribes from the last-seen timestamp to avoid duplicate processing:
+Nostr events older than the relays' retention window may not be delivered. metiq subscribes from the last-seen timestamp to avoid duplicate processing:
 
 ```
 Last event seen: 1705420800 (Unix timestamp)

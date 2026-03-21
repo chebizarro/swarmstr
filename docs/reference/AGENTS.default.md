@@ -1,41 +1,41 @@
 ---
 title: "Default AGENTS.md"
-summary: "Default swarmstr agent instructions for the personal assistant setup"
+summary: "Default metiq agent instructions for the personal assistant setup"
 read_when:
-  - Starting a new swarmstr agent session
+  - Starting a new metiq agent session
   - Auditing default agent instructions
   - Customizing the default AGENTS.md
 ---
 
-# AGENTS.md — swarmstr Personal Assistant (default)
+# AGENTS.md — metiq Personal Assistant (default)
 
-This is the default `AGENTS.md` content shipped with swarmstr. It's injected at the start of every agent session.
+This is the default `AGENTS.md` content shipped with metiq. It's injected at the start of every agent session.
 
 ## First Run (Recommended)
 
-swarmstr uses a dedicated workspace directory. Default: `~/.swarmstr/workspace/`.
+metiq uses a dedicated workspace directory. Default: `~/.metiq/workspace/`.
 
 1. Run init to initialize workspace with defaults:
 
 ```bash
-swarmstr init
+metiq init
 ```
 
 Or manually:
 
 ```bash
-mkdir -p ~/.swarmstr/workspace
+mkdir -p ~/.metiq/workspace
 
 # Copy default templates
-cp docs/reference/templates/AGENTS.md ~/.swarmstr/workspace/AGENTS.md
-cp docs/reference/templates/SOUL.md ~/.swarmstr/workspace/SOUL.md
-cp docs/reference/templates/TOOLS.md ~/.swarmstr/workspace/TOOLS.md
+cp docs/reference/templates/AGENTS.md ~/.metiq/workspace/AGENTS.md
+cp docs/reference/templates/SOUL.md ~/.metiq/workspace/SOUL.md
+cp docs/reference/templates/TOOLS.md ~/.metiq/workspace/TOOLS.md
 ```
 
 2. Optionally replace AGENTS.md with this personal assistant default:
 
 ```bash
-cp docs/reference/AGENTS.default.md ~/.swarmstr/workspace/AGENTS.md
+cp docs/reference/AGENTS.default.md ~/.metiq/workspace/AGENTS.md
 ```
 
 ---
@@ -98,15 +98,15 @@ At the start of every session, before responding:
 
 ## Workspace Backup (Recommended)
 
-Treat `~/.swarmstr/workspace/` as the agent's brain. Back it up:
+Treat `~/.metiq/workspace/` as the agent's brain. Back it up:
 
 ```bash
-cd ~/.swarmstr/workspace
+cd ~/.metiq/workspace
 git init
 git add -A
 git commit -m "initial workspace"
 # Push to a private repo for off-machine backup
-git remote add origin git@github.com:yourname/swarmstr-workspace.git
+git remote add origin git@github.com:yourname/metiq-workspace.git
 git push -u origin main
 ```
 

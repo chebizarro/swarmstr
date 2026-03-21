@@ -1,4 +1,4 @@
-// Package discord implements a Discord Bot channel extension for swarmstr.
+// Package discord implements a Discord Bot channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/discord" in the daemon
 // main.go to register this plugin at startup.
@@ -11,7 +11,7 @@
 //	  "guild_id":   "0987654321"        // optional: guild ID for filtering
 //	}
 //
-// To add a Discord channel to your swarmstr config:
+// To add a Discord channel to your metiq config:
 //
 //	"nostr_channels": {
 //	  "discord-main": {

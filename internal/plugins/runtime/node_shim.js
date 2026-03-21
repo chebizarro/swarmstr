@@ -1,5 +1,5 @@
 /**
- * swarmstr Node.js plugin shim.
+ * metiq Node.js plugin shim.
  * 
  * Loaded by the Go NodePlugin host to bridge TypeScript/CommonJS plugins that
  * cannot run inside Goja (e.g. plugins using fs, http, child_process, or other

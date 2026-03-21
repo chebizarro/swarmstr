@@ -123,11 +123,11 @@ tar czf metiq-backup.tar.gz \
 ### 2. On New Machine
 
 ```bash
-# Install swarmstrd binary (see install guide)
+# Install metiqd binary (see install guide)
 
 # Extract backup
 cd ~/
-tar xzf swarmstr-backup.tar.gz
+tar xzf metiq-backup.tar.gz
 
 # Recreate env file with your secrets
 cat > ~/.metiq/env <<'EOF'
@@ -138,7 +138,7 @@ chmod 600 ~/.metiq/env
 
 # Verify
 metiq config validate
-swarmstr models list
+metiq models list
 metiq daemon start
 ```
 
@@ -146,7 +146,7 @@ metiq daemon start
 
 ## Migrating from OpenClaw
 
-swarmstr is derived from OpenClaw. If you're migrating an existing OpenClaw agent:
+metiq is derived from OpenClaw. If you're migrating an existing OpenClaw agent:
 
 1. **Workspace files**: Copy `~/.openclaw/workspace/` → `~/.metiq/workspace/`. Files are compatible (AGENTS.md, SOUL.md, etc. use the same format).
 
@@ -157,7 +157,7 @@ swarmstr is derived from OpenClaw. If you're migrating an existing OpenClaw agen
 
 3. **Sessions**: Not migrated (they're specific to OpenClaw's WebSocket gateway format).
 
-4. **Nostr key**: Generate a new nsec with `nak key generate` for the swarmstr identity.
+4. **Nostr key**: Generate a new nsec with `nak key generate` for the metiq identity.
 
 ## See Also
 

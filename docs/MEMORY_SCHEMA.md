@@ -1,11 +1,11 @@
-# Swarmstr Memory Schema (Phase 4.1)
+# Metiq Memory Schema (Phase 4.1)
 
 ## Kind
 
 - `30080` (`KindMemoryDoc`): parameterized memory documents.
 
 Each memory event uses a unique `d` tag value:
-- `swarmstr:mem:<memory-id>`
+- `metiq:mem:<memory-id>`
 
 This preserves immutability/append behavior by generating unique `memory_id` values.
 
@@ -58,10 +58,10 @@ This avoids over-indexing every conversational turn while schema stabilizes.
 
 ## Local index (Phase 4.2)
 
-- Local inverted index path: `~/.swarmstr/memory-index.json`
-- Query command: `swarmstr memory-search --q "<terms>" [--limit N]`
+- Local inverted index path: `~/.metiq/memory-index.json`
+- Query command: `metiq memory-search --q "<terms>" [--limit N]`
 - Index sync checkpoint stored as state checkpoint:
-  - `swarmstr:checkpoint:memory_index`
+  - `metiq:checkpoint:memory_index`
 
 ## Next steps
 

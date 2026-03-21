@@ -106,7 +106,7 @@ func fetchImageURL(ctx context.Context, rawURL string, maxBytes int64) ([]byte, 
 	if err != nil {
 		return nil, "", err
 	}
-	req.Header.Set("User-Agent", "swarmstrd/image-tool")
+	req.Header.Set("User-Agent", "metiqd/image-tool")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

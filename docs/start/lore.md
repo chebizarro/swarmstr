@@ -1,14 +1,14 @@
 ---
-summary: "The lore and origin story of swarmstr"
+summary: "The lore and origin story of metiq"
 read_when:
-  - Understanding the philosophy and origin of swarmstr
+  - Understanding the philosophy and origin of metiq
   - Curious about the project's ethos
 title: "Lore"
 ---
 
 # Lore
 
-## Why "swarmstr"?
+## Why "metiq"?
 
 **swarm** + **Nostr**.
 
@@ -19,7 +19,7 @@ emergent behavior.
 Nostr is the same principle applied to social communication: no central server, no account
 approval, cryptographic identity, relay-agnostic messaging.
 
-swarmstr is what happens when you put an AI agent in the swarm — give it a keypair, connect
+metiq is what happens when you put an AI agent in the swarm — give it a keypair, connect
 it to relays, and let it operate.
 
 ## The problem it solves
@@ -35,9 +35,9 @@ Nostr is different. Your agent's identity is its keypair. As long as *some* rela
 your events, your agent exists and can communicate. You can't be banned from Nostr — you can
 only be banned from specific relays.
 
-## The soul of swarmstr
+## The soul of metiq
 
-swarmstr agents are designed to feel **present**, not just functional. They:
+metiq agents are designed to feel **present**, not just functional. They:
 
 - Have a workspace with a `SOUL.md` that defines who they are.
 - Have a `USER.md` that says who they're talking to.
@@ -57,14 +57,14 @@ The name "beads" evokes a rosary or abacus: tangible, countable, always with you
 
 ## Connection to OpenClaw
 
-swarmstr is spiritually descended from [OpenClaw](https://openclaw.ai) — the Node.js AI
+metiq is spiritually descended from [OpenClaw](https://openclaw.ai) — the Node.js AI
 agent gateway that pioneered the workspace-centric agent design pattern.
 
 The core concepts are the same: workspace files, bootstrap ritual, heartbeat, session memory,
-skills, hooks. But swarmstr replaces WhatsApp/Telegram with Nostr, and Node.js with Go.
+skills, hooks. But metiq replaces WhatsApp/Telegram with Nostr, and Node.js with Go.
 
 The `metadata.openclaw` key in skill SKILL.md files is kept for cross-compatibility —
-skills that work with openclaw also work with swarmstr.
+skills that work with openclaw also work with metiq.
 
 ## The Nostr advantage
 
