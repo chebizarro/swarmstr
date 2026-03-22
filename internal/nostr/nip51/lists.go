@@ -30,8 +30,21 @@ const (
 	KindPinList        = 10001 // Pinned note IDs
 	KindPeopleList     = 30000 // Categorized people list (replaceable, d-tag)
 	KindBookmarkSet    = 30001 // Categorized bookmark set
+	KindRelaySet       = 30002 // Categorized relay set (replaceable, d-tag)
 	KindBlockList      = 30000 // Alias: use d-tag "blocklist" for blocking
 	KindAllowList      = 30000 // Alias: use d-tag "allowlist" for allowing
+)
+
+// Well-known d-tag identifiers for relay sets (kind 30002).
+// Each identifies a purpose-specific relay list published by the agent.
+const (
+	RelaySetDMInbox   = "dm-inbox"       // NIP-17 DM inbox relays (mirrors kind:10050)
+	RelaySetNIP29     = "nip29-relays"   // NIP-29 relay-managed group relays
+	RelaySetChat      = "chat-relays"    // NIP-C7 kind:9 chat relays
+	RelaySetNIP28     = "nip28-relays"   // NIP-28 public channel relays
+	RelaySetSearch    = "search-relays"  // NIP-50 search relays
+	RelaySetDVM       = "dvm-relays"     // NIP-90 DVM relays
+	RelaySetGrasp     = "grasp-servers"  // Grasp protocol server endpoints
 )
 
 // ListEntry is a single entry in a NIP-51 list.
@@ -51,6 +64,34 @@ type List struct {
 	Entries   []ListEntry
 	CreatedAt int64
 	EventID   string
+}
+
+// RelaysFromList extracts relay URLs from "r" tag entries in a list.
+// This is the standard way to read relay sets (kind 30002).
+func RelaysFromList(list *List) []string {
+	var out []string
+	for _, e := range list.Entries {
+		if e.Tag == "r" && e.Value != "" {
+			out = append(out, e.Value)
+		}
+	}
+	return out
+}
+
+// NewRelaySetList creates a kind:30002 relay set list with the given d-tag and relay URLs.
+func NewRelaySetList(pubkey, dtag string, relays []string) *List {
+	entries := make([]ListEntry, 0, len(relays))
+	for _, r := range relays {
+		if r != "" {
+			entries = append(entries, ListEntry{Tag: "r", Value: r})
+		}
+	}
+	return &List{
+		Kind:    KindRelaySet,
+		DTag:    dtag,
+		PubKey:  pubkey,
+		Entries: entries,
+	}
 }
 
 // ListStore is an in-process cache of fetched NIP-51 lists.
