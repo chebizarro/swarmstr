@@ -466,9 +466,11 @@ func main() {
 	// and other sensitive data before publishing. Policy defaults to "block" which
 	// rejects any event containing detected secrets.
 	var publishGuardPolicy secure.PublishPolicy
-	if pgExtra, ok := configState.Get().Extra["publish_guard"].(map[string]any); ok {
-		if p, ok := pgExtra["policy"].(string); ok {
-			publishGuardPolicy = secure.ParsePublishPolicy(p)
+	if configState != nil {
+		if pgExtra, ok := configState.Get().Extra["publish_guard"].(map[string]any); ok {
+			if p, ok := pgExtra["policy"].(string); ok {
+				publishGuardPolicy = secure.ParsePublishPolicy(p)
+			}
 		}
 	}
 	if publishGuardPolicy == "" {
