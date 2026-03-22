@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +75,7 @@ type ControlRPCBus struct {
 	onError     func(error)
 	maxReqAge   time.Duration
 	responseCap int
+	health      *RelayHealthTracker
 
 	seenMu    sync.Mutex
 	seenSet   map[string]struct{}
@@ -117,6 +119,8 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 	}
 	ctx, cancel := context.WithCancel(parent)
 
+	health := NewRelayHealthTracker()
+	health.Seed(initialRelays)
 	bus := &ControlRPCBus{
 		pool:              NewPoolNIP42(ks),
 		relays:            initialRelays,
@@ -127,6 +131,7 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 		onError:           opts.OnError,
 		maxReqAge:         opts.MaxRequestAge,
 		responseCap:       max(opts.ResponseCap, 2_000),
+		health:            health,
 		seenSet:           map[string]struct{}{},
 		seenCap:           max(opts.SeenCap, 10_000),
 		respCache:         map[string]controlCachedResponse{},
@@ -166,6 +171,9 @@ func (b *ControlRPCBus) SetRelays(relays []string) error {
 	b.relaysMu.Lock()
 	b.relays = next
 	b.relaysMu.Unlock()
+	if b.health != nil {
+		b.health.Seed(next)
+	}
 	return nil
 }
 
@@ -186,6 +194,9 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	evt := re.Event
 	if evt.Kind != nostr.Kind(events.KindControl) {
 		return
+	}
+	if b.health != nil {
+		b.health.RecordSuccess(re.Relay.URL)
 	}
 	if evt.PubKey == b.public {
 		return
@@ -304,21 +315,54 @@ func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requestID string, p
 		b.emitErr(fmt.Errorf("sign control response req=%s: %w", requestID, err))
 		return
 	}
-	published := false
+	maxAttempts := 3
+	preferredRelay := strings.TrimSpace(re.Relay.URL)
+	preferOnlyAttempts := 1
 	var lastErr error
-	for res := range b.pool.PublishMany(b.ctx, b.currentRelays(), evt) {
-		if res.Error == nil {
-			published = true
-			continue
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// On the first pass, try the request relay alone to maximize the chance
+		// the requester sees the response on the relay they used.
+		attemptRelays := b.responseRelayCandidates(preferredRelay, time.Now())
+		if preferredRelay != "" && attempt < preferOnlyAttempts {
+			attemptRelays = []string{preferredRelay}
 		}
-		lastErr = fmt.Errorf("relay %s: %w", res.RelayURL, res.Error)
-	}
-	if !published {
-		if lastErr == nil {
-			lastErr = fmt.Errorf("no relay accepted control response publish")
+		published := false
+		for res := range b.pool.PublishMany(b.ctx, attemptRelays, evt) {
+			if res.Error == nil {
+				published = true
+				if b.health != nil {
+					b.health.RecordSuccess(res.RelayURL)
+				}
+				continue
+			}
+			if b.health != nil {
+				b.health.RecordFailure(res.RelayURL)
+			}
+			lastErr = fmt.Errorf("relay %s: %w", res.RelayURL, res.Error)
 		}
-		b.emitErr(lastErr)
+		// Success means at least one relay accepted the publish.
+		// We prefer the request relay but do not fail the overall operation if it rejects.
+		if published {
+			return
+		}
+		if b.ctx.Err() != nil {
+			b.emitErr(b.ctx.Err())
+			return
+		}
+		if attempt < maxAttempts-1 {
+			backoff := time.Duration(150*(1<<attempt)) * time.Millisecond
+			select {
+			case <-b.ctx.Done():
+				b.emitErr(b.ctx.Err())
+				return
+			case <-time.After(backoff):
+			}
+		}
 	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no relay accepted control response publish")
+	}
+	b.emitErr(lastErr)
 }
 
 func (b *ControlRPCBus) respondError(re nostr.RelayEvent, msg string, requestID string) {
@@ -439,6 +483,31 @@ func decodeControlCallRequest(content string) (controlCallRequest, error) {
 
 func trimMethod(method string) string {
 	return string(bytes.TrimSpace([]byte(method)))
+}
+
+func (b *ControlRPCBus) responseRelayCandidates(preferred string, now time.Time) []string {
+	base := b.currentRelays()
+	if b.health != nil {
+		base = b.health.Candidates(base, now)
+	}
+	preferred = strings.TrimSpace(preferred)
+	if preferred == "" {
+		return base
+	}
+	out := make([]string, 0, len(base))
+	seen := map[string]struct{}{}
+	for _, relay := range append([]string{preferred}, base...) {
+		relay = strings.TrimSpace(relay)
+		if relay == "" {
+			continue
+		}
+		if _, ok := seen[relay]; ok {
+			continue
+		}
+		seen[relay] = struct{}{}
+		out = append(out, relay)
+	}
+	return out
 }
 
 func (b *ControlRPCBus) currentRelays() []string {

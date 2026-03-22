@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -67,6 +68,27 @@ func (r *TranscriptRepository) PutEntry(ctx context.Context, entry TranscriptEnt
 		PubKey: r.author,
 		DTag:   dTag,
 	}, raw, tags)
+}
+
+func (r *TranscriptRepository) HasEntry(ctx context.Context, sessionID, entryID string) (bool, error) {
+	if sessionID == "" {
+		return false, fmt.Errorf("session_id is required")
+	}
+	if entryID == "" {
+		return false, fmt.Errorf("entry_id is required")
+	}
+	_, err := r.store.GetLatestReplaceable(ctx, Address{
+		Kind:   events.KindTranscriptDoc,
+		PubKey: r.author,
+		DTag:   fmt.Sprintf("metiq:tx:%s:%s", sessionID, entryID),
+	})
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *TranscriptRepository) ListSession(ctx context.Context, sessionID string, limit int) ([]TranscriptEntryDoc, error) {

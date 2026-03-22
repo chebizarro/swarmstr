@@ -33,12 +33,20 @@ func NewRelayHealthTracker() *RelayHealthTracker {
 func (t *RelayHealthTracker) Seed(relays []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	keep := make(map[string]struct{}, len(relays))
 	for _, relay := range relays {
 		if relay == "" {
 			continue
 		}
+		keep[relay] = struct{}{}
 		if _, ok := t.entries[relay]; !ok {
 			t.entries[relay] = &relayHealthEntry{}
+		}
+	}
+	// Prune relays that are no longer present.
+	for relay := range t.entries {
+		if _, ok := keep[relay]; !ok {
+			delete(t.entries, relay)
 		}
 	}
 }

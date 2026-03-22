@@ -22,6 +22,13 @@ import (
 	"fiatjaf.com/nostr/nip17"
 )
 
+const (
+	// NIP-59 gift wraps are intentionally backdated. Our current producer path
+	// may skew CreatedAt by up to 599 minutes, so subscribe far enough back that
+	// valid inbound 1059 events are still seen after unwrap.
+	nip17GiftWrapBackfill = 10*time.Hour + 5*time.Minute
+)
+
 // NIP17BusOptions mirrors DMBusOptions so the two buses are interchangeable.
 type NIP17BusOptions struct {
 	Relays      []string
@@ -70,10 +77,7 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 		return nil, fmt.Errorf("keyer is required")
 	}
 
-	since := opts.SinceUnix
-	if since <= 0 {
-		since = time.Now().Add(-30 * time.Minute).Unix()
-	}
+	since := normalizeNIP17Since(opts.SinceUnix)
 	workerCount := max(opts.WorkerCount, 4)
 	queueSize := max(opts.QueueSize, 256)
 
@@ -192,6 +196,21 @@ func (b *NIP17Bus) Relays() []string { return b.currentRelays() }
 // ──────────────────────────────────────────────────────────────────────────────
 // internal
 // ──────────────────────────────────────────────────────────────────────────────
+
+func normalizeNIP17Since(sinceUnix int64) int64 {
+	floor := time.Now().Add(-nip17GiftWrapBackfill).Unix()
+	if sinceUnix <= 0 {
+		return floor
+	}
+	adjusted := sinceUnix - int64(nip17GiftWrapBackfill.Seconds())
+	if adjusted < floor {
+		adjusted = floor
+	}
+	if adjusted < 0 {
+		return 0
+	}
+	return adjusted
+}
 
 func (b *NIP17Bus) receiveLoop(since nostr.Timestamp) {
 	defer b.wg.Done()
