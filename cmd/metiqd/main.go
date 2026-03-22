@@ -517,6 +517,7 @@ func main() {
 	})
 	tools.SetDefinition("nostr_agent_rpc", toolbuiltin.NostrAgentRPCDef)
 	tools.RegisterWithDef("nostr_profile", toolbuiltin.NostrProfileTool(nostrToolOpts), toolbuiltin.NostrProfileDef)
+	tools.RegisterWithDef("nostr_profile_set", toolbuiltin.NostrProfileSetTool(nostrToolOpts), toolbuiltin.NostrProfileSetDef)
 	tools.RegisterWithDef("nostr_resolve_nip05", toolbuiltin.NostrResolveNIP05Tool(), toolbuiltin.NostrResolveNIP05Def)
 	tools.RegisterWithDef("relay_list", toolbuiltin.NostrRelayListTool(toolbuiltin.NostrRelayToolOpts{
 		ReadRelays:  cfg.Relays,
@@ -524,11 +525,15 @@ func main() {
 	}), toolbuiltin.NostrRelayListDef)
 	tools.RegisterWithDef("relay_ping", toolbuiltin.NostrRelayPingTool(), toolbuiltin.NostrRelayPingDef)
 	tools.RegisterWithDef("relay_info", toolbuiltin.NostrRelayInfoTool(), toolbuiltin.NostrRelayInfoDef)
+	tools.RegisterWithDef("relay_score", toolbuiltin.NostrRelayScoreTool(), toolbuiltin.NostrRelayScoreDef)
 	tools.RegisterWithDef("nostr_follows", toolbuiltin.NostrFollowsTool(nostrToolOpts), toolbuiltin.NostrFollowsDef)
 	tools.RegisterWithDef("nostr_followers", toolbuiltin.NostrFollowersTool(nostrToolOpts), toolbuiltin.NostrFollowersDef)
 	tools.RegisterWithDef("nostr_wot_distance", toolbuiltin.NostrWotDistanceTool(nostrToolOpts), toolbuiltin.NostrWotDistanceDef)
 	tools.RegisterWithDef("nostr_relay_hints", toolbuiltin.NostrRelayHintsTool(nostrToolOpts), toolbuiltin.NostrRelayHintsDef)
 	tools.RegisterWithDef("nostr_relay_list_set", toolbuiltin.NostrRelayListSetTool(nostrToolOpts), toolbuiltin.NostrRelayListSetDef)
+	tools.RegisterWithDef("nostr_dvm_request", toolbuiltin.NostrDVMRequestTool(nostrToolOpts), toolbuiltin.NostrDVMRequestDef)
+	tools.RegisterWithDef("nostr_publish_batch", toolbuiltin.NostrPublishBatchTool(nostrToolOpts), toolbuiltin.NostrPublishBatchDef)
+	tools.RegisterWithDef("nostr_compose", toolbuiltin.NostrComposeTool(), toolbuiltin.NostrComposeDef)
 	tools.RegisterWithDef("nostr_zap_send", toolbuiltin.NostrZapSendTool(nostrToolOpts), toolbuiltin.NostrZapSendDef)
 	tools.RegisterWithDef("nostr_zap_list", toolbuiltin.NostrZapListTool(nostrToolOpts), toolbuiltin.NostrZapListDef)
 

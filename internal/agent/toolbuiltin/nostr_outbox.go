@@ -225,6 +225,55 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 	}
 }
 
+// OutboxRelaysFor returns cached NIP-65 relays for a pubkey (union of read
+// and write).  Returns nil if no cached data is available.  Does NOT trigger
+// a network fetch — callers should use nostr_relay_hints or the relay selector
+// for that.
+func OutboxRelaysFor(pubkeyHex string) []string {
+	// Check global relay selector first.
+	if sel := GetRelaySelector(); sel != nil {
+		if list := sel.Get(pubkeyHex); list != nil {
+			// Union of read + write relays, deduplicated.
+			seen := make(map[string]bool)
+			var out []string
+			for _, r := range list.WriteRelays() {
+				if !seen[r] {
+					seen[r] = true
+					out = append(out, r)
+				}
+			}
+			for _, r := range list.ReadRelays() {
+				if !seen[r] {
+					seen[r] = true
+					out = append(out, r)
+				}
+			}
+			return out
+		}
+	}
+	// Fall back to local outbox cache (union of read + write).
+	outboxCacheMu.Lock()
+	defer outboxCacheMu.Unlock()
+	if e, ok := outboxCache[pubkeyHex]; ok && time.Since(e.fetchedAt) < outboxCacheTTL {
+		seen := make(map[string]bool)
+		var out []string
+		for _, r := range e.write {
+			if !seen[r] {
+				seen[r] = true
+				out = append(out, r)
+			}
+		}
+		for _, r := range e.read {
+			if !seen[r] {
+				seen[r] = true
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 func uniqueNonEmpty(in []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(in))
