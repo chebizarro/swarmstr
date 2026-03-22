@@ -157,7 +157,7 @@ func NostrChatFetchTool(opts NostrToolOpts) agent.ToolFunc {
 
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_chat_fetch: no relays configured")
+			return "", nostrToolErr("nostr_chat_fetch", "no_relays", "no relays configured", nil)
 		}
 
 		filter := nostr.Filter{
@@ -190,8 +190,14 @@ func NostrChatFetchTool(opts NostrToolOpts) agent.ToolFunc {
 			Relay         string `json:"relay,omitempty"`
 		}
 
+		seen := make(map[string]bool)
 		var messages []chatMsg
 		for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+			id := re.Event.ID.Hex()
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
 			ev := re.Event
 			msg := chatMsg{
 				EventID:   ev.ID.Hex(),

@@ -5,12 +5,78 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
 )
+
+// ─── Follow list cache (for BFS) ──────────────────────────────────────────────
+
+type followsCacheEntry struct {
+	follows   []string
+	fetchedAt time.Time
+}
+
+var (
+	followsCacheMu  sync.Mutex
+	followsCache    = map[string]followsCacheEntry{}
+	followsCacheTTL = 15 * time.Minute
+)
+
+func cachedFollows(pubkeyHex string) ([]string, bool) {
+	followsCacheMu.Lock()
+	defer followsCacheMu.Unlock()
+	e, ok := followsCache[pubkeyHex]
+	if !ok || time.Since(e.fetchedAt) > followsCacheTTL {
+		return nil, false
+	}
+	return e.follows, true
+}
+
+func storeFollows(pubkeyHex string, follows []string) {
+	followsCacheMu.Lock()
+	defer followsCacheMu.Unlock()
+	followsCache[pubkeyHex] = followsCacheEntry{follows: follows, fetchedAt: time.Now()}
+}
+
+// ─── WoT distance cache ──────────────────────────────────────────────────────
+
+type wotDistanceCacheEntry struct {
+	distance  int
+	path      []string
+	fetchedAt time.Time
+}
+
+var (
+	wotDistanceCacheMu  sync.Mutex
+	wotDistanceCache    = map[string]wotDistanceCacheEntry{}
+	wotDistanceCacheTTL = 10 * time.Minute
+)
+
+func wotDistanceCacheKey(from, to string) string {
+	return from + "→" + to
+}
+
+func cachedWotDistance(from, to string) (int, []string, bool) {
+	wotDistanceCacheMu.Lock()
+	defer wotDistanceCacheMu.Unlock()
+	e, ok := wotDistanceCache[wotDistanceCacheKey(from, to)]
+	if !ok || time.Since(e.fetchedAt) > wotDistanceCacheTTL {
+		return 0, nil, false
+	}
+	return e.distance, e.path, true
+}
+
+func storeWotDistance(from, to string, distance int, path []string) {
+	wotDistanceCacheMu.Lock()
+	defer wotDistanceCacheMu.Unlock()
+	wotDistanceCache[wotDistanceCacheKey(from, to)] = wotDistanceCacheEntry{
+		distance: distance, path: path, fetchedAt: time.Now(),
+	}
+}
 
 // ─── nostr_follows ────────────────────────────────────────────────────────────
 
@@ -24,11 +90,11 @@ func NostrFollowsTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		pubkeyHex, err := requirePubkey(args)
 		if err != nil {
-			return "", fmt.Errorf("nostr_follows: %w", err)
+			return "", nostrToolErr("nostr_follows", "invalid_input", err.Error(), nil)
 		}
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_follows: no relays configured")
+			return "", nostrToolErr("nostr_follows", "no_relays", "no relays configured", nil)
 		}
 		limit := 100
 		if v, ok := args["limit"].(float64); ok && v > 0 {
@@ -40,7 +106,7 @@ func NostrFollowsTool(opts NostrToolOpts) agent.ToolFunc {
 
 		pk, err := nostr.PubKeyFromHex(pubkeyHex)
 		if err != nil {
-			return "", fmt.Errorf("nostr_follows: invalid pubkey: %w", err)
+			return "", nostrToolErr("nostr_follows", "invalid_input", fmt.Sprintf("invalid pubkey: %v", err), nil)
 		}
 
 		pool, releasePool := opts.AcquirePool("follows done")
@@ -107,11 +173,11 @@ func NostrFollowersTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		pubkeyHex, err := requirePubkey(args)
 		if err != nil {
-			return "", fmt.Errorf("nostr_followers: %w", err)
+			return "", nostrToolErr("nostr_followers", "invalid_input", err.Error(), nil)
 		}
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_followers: no relays configured")
+			return "", nostrToolErr("nostr_followers", "no_relays", "no relays configured", nil)
 		}
 		limit := 50
 		if v, ok := args["limit"].(float64); ok && v > 0 {
@@ -167,11 +233,11 @@ func NostrWotDistanceTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		fromHex, err := resolveNostrPubkey(stringArg(args, "from_pubkey"))
 		if err != nil || fromHex == "" {
-			return "", fmt.Errorf("nostr_wot_distance: from_pubkey is required")
+			return "", nostrToolErr("nostr_wot_distance", "invalid_input", "from_pubkey is required", nil)
 		}
 		toHex, err := resolveNostrPubkey(stringArg(args, "to_pubkey"))
 		if err != nil || toHex == "" {
-			return "", fmt.Errorf("nostr_wot_distance: to_pubkey is required")
+			return "", nostrToolErr("nostr_wot_distance", "invalid_input", "to_pubkey is required", nil)
 		}
 
 		maxHops := 3
@@ -181,7 +247,17 @@ func NostrWotDistanceTool(opts NostrToolOpts) agent.ToolFunc {
 
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_wot_distance: no relays configured")
+			return "", nostrToolErr("nostr_wot_distance", "no_relays", "no relays configured", nil)
+		}
+
+		// Check cache first.
+		if dist, path, ok := cachedWotDistance(fromHex, toHex); ok {
+			out, _ := json.Marshal(map[string]any{
+				"distance": dist,
+				"path":     path,
+				"cached":   true,
+			})
+			return string(out), nil
 		}
 
 		type qItem struct {
@@ -198,6 +274,7 @@ func NostrWotDistanceTool(opts NostrToolOpts) agent.ToolFunc {
 			queue = queue[1:]
 
 			if item.pubkey == toHex {
+				storeWotDistance(fromHex, toHex, item.hops, item.path)
 				out, _ := json.Marshal(map[string]any{
 					"distance": item.hops,
 					"path":     item.path,
@@ -224,13 +301,19 @@ func NostrWotDistanceTool(opts NostrToolOpts) agent.ToolFunc {
 			}
 		}
 
+		storeWotDistance(fromHex, toHex, -1, nil)
 		out, _ := json.Marshal(map[string]any{"distance": -1, "path": nil})
 		return string(out), nil
 	}
 }
 
 // fetchFollows retrieves the p-tag pubkeys from the latest kind:3 event for a pubkey.
+// Results are cached for 15 minutes to speed up repeated BFS traversals.
 func fetchFollows(ctx context.Context, pubkeyHex string, relays []string) ([]string, error) {
+	if cached, ok := cachedFollows(pubkeyHex); ok {
+		return cached, nil
+	}
+
 	ctx2, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
@@ -258,6 +341,7 @@ func fetchFollows(ctx context.Context, pubkeyHex string, relays []string) ([]str
 		}
 	}
 	if best == nil {
+		storeFollows(pubkeyHex, nil)
 		return nil, nil
 	}
 
@@ -267,6 +351,7 @@ func fetchFollows(ctx context.Context, pubkeyHex string, relays []string) ([]str
 			out = append(out, tag[1])
 		}
 	}
+	storeFollows(pubkeyHex, out)
 	return out, nil
 }
 

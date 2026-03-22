@@ -387,8 +387,14 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		ctx2, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 		defer cancel()
 
+		seen := make(map[string]bool)
 		var events []map[string]any
 		for re := range getPool().SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+			id := re.Event.ID.Hex()
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
 			events = append(events, eventToMap(re.Event))
 			if len(events) >= limit {
 				break

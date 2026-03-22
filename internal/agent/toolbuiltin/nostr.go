@@ -273,22 +273,47 @@ func NostrFetchTool(opts NostrToolOpts) agent.ToolFunc {
 		}
 		relays := opts.resolveRelays(overrideRelays)
 		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_fetch: no relays configured")
+			return "", nostrToolErr("nostr_fetch", "no_relays", "no relays configured", nil)
 		}
 
 		// Build NIP-01 filter directly from top-level tool arguments to match
 		// NostrFetchDef (kinds/authors/ids/since/until/#tags).
 		f, err := buildNostrFilter(args, limit)
 		if err != nil {
-			return "", fmt.Errorf("nostr_fetch: invalid filter: %w", err)
+			return "", nostrToolErr("nostr_fetch", "invalid_input", err.Error(), nil)
+		}
+
+		// Outbox-aware relay augmentation: if filtering by authors, merge
+		// their cached NIP-65 relays (read + write union) into the relay set.
+		// This makes fetch "just work" for users whose data lives on relays
+		// the caller doesn't know about, without an extra nostr_relay_hints call.
+		if len(f.Authors) > 0 {
+			relaySet := make(map[string]bool, len(relays))
+			for _, r := range relays {
+				relaySet[r] = true
+			}
+			for _, author := range f.Authors {
+				for _, or := range OutboxRelaysFor(author.Hex()) {
+					if !relaySet[or] {
+						relaySet[or] = true
+						relays = append(relays, or)
+					}
+				}
+			}
 		}
 
 		pool, releasePool := opts.AcquirePool("fetch done")
 		defer releasePool()
 
 		sub := pool.SubscribeMany(ctx, relays, f, nostr.SubscriptionOptions{})
+		seen := make(map[string]bool)
 		var events []map[string]any
 		for re := range sub {
+			id := re.Event.ID.Hex()
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
 			events = append(events, eventToMap(re.Event))
 			if len(events) >= limit {
 				break
@@ -314,12 +339,12 @@ func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 		// Build signer: prefer Keyer (supports NIP-46), fall back to raw private key.
 		signFn, err := opts.signerFunc()
 		if err != nil {
-			return "", fmt.Errorf("nostr_publish: %w", err)
+			return "", nostrToolErr("nostr_publish", "no_keyer", err.Error(), nil)
 		}
 
 		kindVal, ok := args["kind"].(float64)
 		if !ok {
-			return "", fmt.Errorf("nostr_publish: kind (int) is required")
+			return "", nostrToolErr("nostr_publish", "invalid_input", "kind (int) is required", nil)
 		}
 
 		content, _ := args["content"].(string)
@@ -330,7 +355,7 @@ func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 			var parseErr error
 			tags, parseErr = parseTagsArg(tagsRaw)
 			if parseErr != nil {
-				return "", fmt.Errorf("nostr_publish: invalid tags: %w", parseErr)
+				return "", nostrToolErr("nostr_publish", "invalid_input", fmt.Sprintf("invalid tags: %v", parseErr), nil)
 			}
 		}
 
@@ -340,7 +365,7 @@ func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 		}
 		relays := opts.resolveRelays(overrideRelays)
 		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_publish: no relays configured")
+			return "", nostrToolErr("nostr_publish", "no_relays", "no relays configured", nil)
 		}
 
 		evt := nostr.Event{
@@ -350,10 +375,10 @@ func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 			CreatedAt: nostr.Timestamp(time.Now().Unix()),
 		}
 		if err := opts.checkOutboundEvent(&evt); err != nil {
-			return "", fmt.Errorf("nostr_publish: %w", err)
+			return "", nostrToolErr("nostr_publish", "content_blocked", err.Error(), nil)
 		}
 		if err := signFn(ctx, &evt); err != nil {
-			return "", fmt.Errorf("nostr_publish: sign: %w", err)
+			return "", nostrToolErr("nostr_publish", "sign_failed", err.Error(), nil)
 		}
 
 		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -377,7 +402,7 @@ func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 			published++
 		}
 		if published == 0 && lastErr != nil {
-			return "", fmt.Errorf("nostr_publish: failed on all relays: %w", lastErr)
+			return "", nostrToolErr("nostr_publish", "publish_failed", lastErr.Error(), map[string]any{"kind": evt.Kind})
 		}
 
 		result := map[string]any{
@@ -402,7 +427,7 @@ func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 func NostrSendDMTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		if opts.DMTransport == nil {
-			return "", fmt.Errorf("nostr_send_dm: DM transport not available")
+			return "", nostrToolErr("nostr_send_dm", "no_transport", "DM transport not available", nil)
 		}
 		// Accept "to" (schema name) or "to_pubkey" (legacy) for the recipient.
 		toPubKey, _ := args["to"].(string)
@@ -410,7 +435,7 @@ func NostrSendDMTool(opts NostrToolOpts) agent.ToolFunc {
 			toPubKey, _ = args["to_pubkey"].(string)
 		}
 		if toPubKey == "" {
-			return "", fmt.Errorf("nostr_send_dm: to (recipient pubkey or npub) is required")
+			return "", nostrToolErr("nostr_send_dm", "invalid_input", "to (recipient pubkey or npub) is required", nil)
 		}
 		// Accept "message" (schema name) or "text" (legacy) for the body.
 		text, _ := args["message"].(string)
@@ -418,18 +443,18 @@ func NostrSendDMTool(opts NostrToolOpts) agent.ToolFunc {
 			text, _ = args["text"].(string)
 		}
 		if strings.TrimSpace(text) == "" {
-			return "", fmt.Errorf("nostr_send_dm: message is required")
+			return "", nostrToolErr("nostr_send_dm", "invalid_input", "message is required", nil)
 		}
 
 		// Resolve npub → hex.
 		toPubKey, err := resolveNostrPubkey(toPubKey)
 		if err != nil {
-			return "", fmt.Errorf("nostr_send_dm: %w", err)
+			return "", nostrToolErr("nostr_send_dm", "invalid_input", err.Error(), nil)
 		}
 
 		// Scan DM plaintext before encryption to prevent secret leakage.
 		if err := opts.checkOutboundContent(text); err != nil {
-			return "", fmt.Errorf("nostr_send_dm: %w", err)
+			return "", nostrToolErr("nostr_send_dm", "content_blocked", err.Error(), nil)
 		}
 
 		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -441,15 +466,15 @@ func NostrSendDMTool(opts NostrToolOpts) agent.ToolFunc {
 				SendDMWithScheme(ctx context.Context, toPubKey string, text string, scheme string) error
 			}); ok {
 				if err := sender.SendDMWithScheme(ctx2, toPubKey, text, encryption); err != nil {
-					return "", fmt.Errorf("nostr_send_dm: %w", err)
+					return "", nostrToolErr("nostr_send_dm", "send_failed", err.Error(), map[string]any{"encryption": encryption})
 				}
 			} else {
 				transportType := fmt.Sprintf("%T", opts.DMTransport)
-				return "", fmt.Errorf("nostr_send_dm: transport %s does not support explicit encryption selection (use default encryption)", transportType)
+				return "", nostrToolErr("nostr_send_dm", "unsupported_encryption", fmt.Sprintf("transport %s does not support explicit encryption selection", transportType), nil)
 			}
 		} else {
 			if err := opts.DMTransport.SendDM(ctx2, toPubKey, text); err != nil {
-				return "", fmt.Errorf("nostr_send_dm: %w", err)
+				return "", nostrToolErr("nostr_send_dm", "send_failed", err.Error(), nil)
 			}
 		}
 		out, _ := json.Marshal(map[string]any{"sent": true, "to": toPubKey, "encryption": encryption})

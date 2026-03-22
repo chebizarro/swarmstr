@@ -26,26 +26,26 @@ import (
 func NostrZapSendTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		if opts.Keyer == nil {
-			return "", fmt.Errorf("nostr_zap_send: signing keyer not configured")
+			return "", nostrToolErr("nostr_zap_send", "no_keyer", "signing keyer not configured", nil)
 		}
 
 		toPubkeyRaw, _ := args["to_pubkey"].(string)
 		if toPubkeyRaw == "" {
-			return "", fmt.Errorf("nostr_zap_send: to_pubkey is required")
+			return "", nostrToolErr("nostr_zap_send", "invalid_input", "to_pubkey is required", nil)
 		}
 		toPubkey, err := resolveNostrPubkey(toPubkeyRaw)
 		if err != nil {
-			return "", fmt.Errorf("nostr_zap_send: %w", err)
+			return "", nostrToolErr("nostr_zap_send", "invalid_input", err.Error(), nil)
 		}
 
 		lud16, _ := args["lud16"].(string)
 		if lud16 == "" {
-			return "", fmt.Errorf("nostr_zap_send: lud16 (lightning address) is required")
+			return "", nostrToolErr("nostr_zap_send", "invalid_input", "lud16 (lightning address) is required", nil)
 		}
 
 		amountSats, ok := args["amount_sats"].(float64)
 		if !ok || amountSats <= 0 {
-			return "", fmt.Errorf("nostr_zap_send: amount_sats (positive integer) is required")
+			return "", nostrToolErr("nostr_zap_send", "invalid_input", "amount_sats (positive integer) is required", nil)
 		}
 
 		comment, _ := args["comment"].(string)
@@ -54,7 +54,7 @@ func NostrZapSendTool(opts NostrToolOpts) agent.ToolFunc {
 		// Scan zap comment for secrets before publishing.
 		if comment != "" {
 			if err := opts.checkOutboundContent(comment); err != nil {
-				return "", fmt.Errorf("nostr_zap_send: %w", err)
+				return "", nostrToolErr("nostr_zap_send", "content_blocked", err.Error(), nil)
 			}
 		}
 
@@ -63,7 +63,7 @@ func NostrZapSendTool(opts NostrToolOpts) agent.ToolFunc {
 			Relays: opts.Relays,
 		}, lud16, toPubkey, noteID, int64(amountSats), comment)
 		if err != nil {
-			return "", fmt.Errorf("nostr_zap_send: %w", err)
+			return "", nostrToolErr("nostr_zap_send", "operation_failed", err.Error(), nil)
 		}
 
 		out, _ := json.Marshal(result)
@@ -83,11 +83,11 @@ func NostrZapListTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		pubkeyHex, err := requirePubkey(args)
 		if err != nil {
-			return "", fmt.Errorf("nostr_zap_list: %w", err)
+			return "", nostrToolErr("nostr_zap_list", "invalid_input", err.Error(), nil)
 		}
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 		if len(relays) == 0 {
-			return "", fmt.Errorf("nostr_zap_list: no relays configured")
+			return "", nostrToolErr("nostr_zap_list", "no_relays", "no relays configured", nil)
 		}
 		limit := 20
 		if v, ok := args["limit"].(float64); ok && v > 0 {
@@ -99,7 +99,7 @@ func NostrZapListTool(opts NostrToolOpts) agent.ToolFunc {
 
 		pk, err := nostr.PubKeyFromHex(pubkeyHex)
 		if err != nil {
-			return "", fmt.Errorf("nostr_zap_list: invalid pubkey: %w", err)
+			return "", nostrToolErr("nostr_zap_list", "invalid_input", fmt.Sprintf("invalid pubkey: %v", err), nil)
 		}
 
 		pool, releasePool := opts.AcquirePool("zap_list done")
