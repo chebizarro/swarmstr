@@ -172,6 +172,9 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 		}
 
 		evt := nostr.Event{Kind: 10002, CreatedAt: nostr.Now(), Tags: tags, Content: ""}
+		if err := opts.checkOutboundEvent(&evt); err != nil {
+			return "", nostrToolErr("nostr_relay_list_set", "content_blocked", err.Error(), map[string]any{"kind": 10002})
+		}
 		if err := signFn(ctx, &evt); err != nil {
 			return "", nostrToolErr("nostr_relay_list_set", "sign_failed", err.Error(), map[string]any{"kind": 10002})
 		}

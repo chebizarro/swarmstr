@@ -51,6 +51,13 @@ func NostrZapSendTool(opts NostrToolOpts) agent.ToolFunc {
 		comment, _ := args["comment"].(string)
 		noteID, _ := args["note_id"].(string)
 
+		// Scan zap comment for secrets before publishing.
+		if comment != "" {
+			if err := opts.checkOutboundContent(comment); err != nil {
+				return "", fmt.Errorf("nostr_zap_send: %w", err)
+			}
+		}
+
 		result, err := zap.Send(ctx, zap.SendOpts{
 			Keyer:  opts.Keyer,
 			Relays: opts.Relays,

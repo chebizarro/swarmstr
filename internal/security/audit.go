@@ -74,6 +74,9 @@ func Audit(opts AuditOptions) AuditReport {
 	findings = append(findings, checkGatewayWSToken(bs)...)
 	findings = append(findings, checkPrivateKeyStrength(bs)...)
 
+	findings = append(findings, checkNIP44Disabled(bs)...)
+	findings = append(findings, checkPublishGuardPolicy(bs, opts.ConfigDoc)...)
+
 	if opts.ConfigDoc != nil {
 		findings = append(findings, checkOpenDMPolicy(*opts.ConfigDoc)...)
 		findings = append(findings, checkChannelSecrets(*opts.ConfigDoc)...)
@@ -234,6 +237,57 @@ func checkChannelSecrets(cfg state.ConfigDoc) []Finding {
 		}
 	}
 	return findings
+}
+
+func checkNIP44Disabled(bs map[string]any) []Finding {
+	enabled, ok := bs["enable_nip44"].(bool)
+	if ok && enabled {
+		return nil // NIP-44 is on — good
+	}
+	return []Finding{{
+		CheckID:  "nip44-disabled",
+		Severity: SeverityWarn,
+		Message:  "NIP-44 envelope encryption is disabled: config, sessions, transcripts, and memory docs are stored on relays in plaintext",
+		Remediation: "Set enable_nip44: true in bootstrap config. " +
+			"This encrypts all state documents with NIP-44 self-encryption before publishing to relays.",
+	}}
+}
+
+func checkPublishGuardPolicy(bs map[string]any, cfg *state.ConfigDoc) []Finding {
+	// Check for publish_guard.policy in either live config or bootstrap config.
+	// Live config takes precedence when both are present.
+	var policy string
+	if cfg != nil && cfg.Extra != nil {
+		if pgExtra, ok := cfg.Extra["publish_guard"].(map[string]any); ok {
+			policy, _ = pgExtra["policy"].(string)
+		}
+	}
+	if strings.TrimSpace(policy) == "" && bs != nil {
+		if extra, ok := bs["extra"].(map[string]any); ok {
+			if pgExtra, ok := extra["publish_guard"].(map[string]any); ok {
+				policy, _ = pgExtra["policy"].(string)
+			}
+		}
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(policy))
+	if lower == "off" || lower == "disabled" || lower == "none" {
+		return []Finding{{
+			CheckID:     "publish-guard-disabled",
+			Severity:    SeverityCritical,
+			Message:     "Outbound publish content guard is disabled: agent tools can publish secrets, API keys, and credentials to relays without detection",
+			Remediation: "Remove extra.publish_guard.policy or set it to \"block\" (recommended) or \"warn\"",
+		}}
+	}
+	if lower == "warn" {
+		return []Finding{{
+			CheckID:     "publish-guard-warn-only",
+			Severity:    SeverityWarn,
+			Message:     "Outbound publish content guard is in warn-only mode: secrets detected in outbound events are logged but NOT blocked",
+			Remediation: "Set extra.publish_guard.policy to \"block\" for production deployments",
+		}}
+	}
+	return nil
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
