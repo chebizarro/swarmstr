@@ -727,6 +727,20 @@ func main() {
 	tools.RegisterWithDef("my_identity", toolbuiltin.MyIdentityTool, toolbuiltin.MyIdentityDef)
 	// bash_exec: shell command execution (gated by exec approval policy middleware).
 	tools.RegisterWithDef("bash_exec", toolbuiltin.BashExecTool, toolbuiltin.BashExecDef)
+	// Git tools: structured status and diff output.
+	tools.RegisterWithDef("git_status", toolbuiltin.GitStatusTool, toolbuiltin.GitStatusDef)
+	tools.RegisterWithDef("git_diff", toolbuiltin.GitDiffTool, toolbuiltin.GitDiffDef)
+	// Test runner: structured go test -json results.
+	tools.RegisterWithDef("test_run", toolbuiltin.TestRunTool, toolbuiltin.TestRunDef)
+	// Process handles: spawn/read/send/kill background processes.
+	processReg := toolbuiltin.NewProcessRegistry()
+	defer processReg.Shutdown()
+	tools.RegisterWithDef("process_spawn", toolbuiltin.ProcessSpawnTool(processReg), toolbuiltin.ProcessSpawnDef)
+	tools.RegisterWithDef("process_read", toolbuiltin.ProcessReadTool(processReg), toolbuiltin.ProcessReadDef)
+	tools.RegisterWithDef("process_send", toolbuiltin.ProcessSendTool(processReg), toolbuiltin.ProcessSendDef)
+	tools.RegisterWithDef("process_kill", toolbuiltin.ProcessKillTool(processReg), toolbuiltin.ProcessKillDef)
+	tools.RegisterWithDef("process_list", toolbuiltin.ProcessListTool(processReg), toolbuiltin.ProcessListDef)
+	tools.RegisterWithDef("process_exec", toolbuiltin.ProcessExecTool, toolbuiltin.ProcessExecDef)
 	// Filesystem tools: read/write files, list and create directories.
 	tools.RegisterWithDef("read_file", toolbuiltin.ReadFileTool, toolbuiltin.ReadFileDef)
 	tools.RegisterWithDef("write_file", toolbuiltin.WriteFileTool, toolbuiltin.WriteFileDef)
@@ -1102,7 +1116,7 @@ func main() {
 		// Default tool names that require approval.
 		// If Extra["approvals"]["tools"] is present (even empty), it REPLACES the defaults.
 		// Set to [] for fully autonomous operation; omit the key to use defaults.
-		defaultApprovalTools := []string{"bash", "shell", "exec", "run_command", "terminal", "sh", "bash_exec"}
+		defaultApprovalTools := []string{"bash", "shell", "exec", "run_command", "terminal", "sh", "bash_exec", "process_spawn", "process_send", "process_kill", "process_exec", "git_status", "git_diff", "test_run"}
 		approvalTools := make(map[string]bool)
 		configOverride := false
 		if aExtra, ok := configState.Get().Extra["approvals"].(map[string]any); ok {
