@@ -28,6 +28,15 @@ import (
 
 // ─── Core types ───────────────────────────────────────────────────────────────
 
+// ToolCallRef identifies a tool invocation within an assistant message.
+// This mirrors agent.ToolCallRef but lives in the context package to avoid
+// an import cycle.
+type ToolCallRef struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	ArgsJSON string `json:"args_json,omitempty"`
+}
+
 // Message is a single message in the context window.
 type Message struct {
 	// Role is one of "user", "assistant", "system", "tool".
@@ -36,6 +45,9 @@ type Message struct {
 	Content string `json:"content"`
 	// ToolCallID links tool results back to a tool call (role "tool" only).
 	ToolCallID string `json:"tool_call_id,omitempty"`
+	// ToolCalls records which tools the assistant invoked (role "assistant" only).
+	// Present when the assistant message triggered tool use during the turn.
+	ToolCalls []ToolCallRef `json:"tool_calls,omitempty"`
 	// ID is an optional stable identifier for the message (e.g. event ID).
 	ID string `json:"id,omitempty"`
 	// Unix is the message timestamp (seconds since epoch).

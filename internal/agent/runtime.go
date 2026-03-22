@@ -2,9 +2,20 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// ToolCallRef identifies a tool invocation within an assistant message.
+// It mirrors the structure of ToolCall but stores args as a JSON string
+// for lossless serialisation in conversation history.
+type ToolCallRef struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	ArgsJSON string `json:"args_json,omitempty"`
+}
 
 // ConversationMessage is one message in the prior conversation history passed
 // to the provider.  Role is "user", "assistant", "system", or "tool".
@@ -13,6 +24,8 @@ type ConversationMessage struct {
 	Content    string `json:"content"`
 	// ToolCallID is set for role="tool" messages linking results to calls.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+	// ToolCalls is set on role="assistant" messages that requested tool use.
+	ToolCalls []ToolCallRef `json:"tool_calls,omitempty"`
 }
 
 type Turn struct {
@@ -51,6 +64,12 @@ type ImageRef struct {
 type TurnResult struct {
 	Text       string
 	ToolTraces []ToolTrace
+	// HistoryDelta is the ordered sequence of conversation messages produced
+	// during this turn.  On a plain text turn it contains one assistant message.
+	// On tool turns it contains assistant tool-call messages, tool result
+	// messages, and the final assistant text (if any).  Callers should persist
+	// these into the context engine so future turns see prior tool usage.
+	HistoryDelta []ConversationMessage
 	// Usage reports token consumption for the turn (if the provider supports it).
 	Usage TurnUsage
 }
@@ -59,6 +78,31 @@ type TurnResult struct {
 type TurnUsage struct {
 	InputTokens  int64
 	OutputTokens int64
+}
+
+// TurnExecutionError wraps a turn failure while carrying any tool work that
+// completed before the error occurred.  Callers can extract the partial result
+// via PartialTurnResult to persist completed tool interactions even when the
+// overall turn fails (e.g. timeout or context cancellation).
+type TurnExecutionError struct {
+	Cause   error
+	Partial TurnResult
+}
+
+func (e *TurnExecutionError) Error() string { return e.Cause.Error() }
+func (e *TurnExecutionError) Unwrap() error { return e.Cause }
+
+// PartialTurnResult extracts completed tool work from a failed turn.
+// Returns the partial result and true if err wraps a TurnExecutionError
+// with non-empty HistoryDelta or ToolTraces; otherwise returns zero and false.
+func PartialTurnResult(err error) (TurnResult, bool) {
+	var te *TurnExecutionError
+	if errors.As(err, &te) {
+		if len(te.Partial.HistoryDelta) > 0 || len(te.Partial.ToolTraces) > 0 {
+			return te.Partial, true
+		}
+	}
+	return TurnResult{}, false
 }
 
 type Runtime interface {
@@ -79,6 +123,18 @@ type StreamingRuntime interface {
 type ProviderRuntime struct {
 	provider Provider
 	tools    ToolExecutor
+}
+
+// ToolCallToRef converts a ToolCall (with map args) to a ToolCallRef (with
+// JSON-string args) suitable for conversation history storage.
+func ToolCallToRef(tc ToolCall) ToolCallRef {
+	ref := ToolCallRef{ID: tc.ID, Name: tc.Name}
+	if len(tc.Args) > 0 {
+		if b, err := json.Marshal(tc.Args); err == nil {
+			ref.ArgsJSON = string(b)
+		}
+	}
+	return ref
 }
 
 func NewProviderRuntime(provider Provider, tools ToolExecutor) (*ProviderRuntime, error) {
@@ -183,8 +239,9 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 // buildResult executes any tool calls from gen and assembles the TurnResult.
 func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult) (TurnResult, error) {
 	result := TurnResult{
-		Text:  strings.TrimSpace(gen.Text),
-		Usage: TurnUsage{InputTokens: gen.Usage.InputTokens, OutputTokens: gen.Usage.OutputTokens},
+		Text:         strings.TrimSpace(gen.Text),
+		HistoryDelta: gen.HistoryDelta,
+		Usage:        TurnUsage{InputTokens: gen.Usage.InputTokens, OutputTokens: gen.Usage.OutputTokens},
 	}
 	for _, call := range gen.ToolCalls {
 		trace := ToolTrace{Call: call}

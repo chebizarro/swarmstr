@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 )
 
@@ -46,6 +47,10 @@ type LLMResponse struct {
 	// tool results before continuing (e.g., Anthropic stop_reason="tool_use",
 	// OpenAI finish_reason="tool_calls").
 	NeedsToolResults bool
+
+	// HistoryDelta is populated by RunAgenticLoop with the ordered sequence of
+	// assistant tool-call and tool-result messages produced during the turn.
+	HistoryDelta []ConversationMessage
 }
 
 // ChatProvider makes a single LLM API call and returns the response.
@@ -84,9 +89,21 @@ func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessa
 		msgs = append(msgs, sysMsg)
 	}
 
-	// Append conversation history.
-	for _, h := range turn.History {
-		msgs = append(msgs, LLMMessage{Role: h.Role, Content: h.Content, ToolCallID: h.ToolCallID})
+	// Sanitize conversation history before building LLM messages.
+	sanitized, _ := SanitizeConversationHistory(turn.History)
+
+	// Append conversation history, converting ToolCallRef → ToolCall for
+	// assistant messages that requested tool use.
+	for _, h := range sanitized {
+		lm := LLMMessage{Role: h.Role, Content: h.Content, ToolCallID: h.ToolCallID}
+		for _, ref := range h.ToolCalls {
+			tc := ToolCall{ID: ref.ID, Name: ref.Name}
+			if ref.ArgsJSON != "" {
+				_ = json.Unmarshal([]byte(ref.ArgsJSON), &tc.Args)
+			}
+			lm.ToolCalls = append(lm.ToolCalls, tc)
+		}
+		msgs = append(msgs, lm)
 	}
 
 	// Append current user message.
@@ -136,9 +153,10 @@ func chatOptionsFromTurn(turn Turn) ChatOptions {
 // llmResponseToProviderResult converts an LLMResponse to a ProviderResult.
 func llmResponseToProviderResult(resp *LLMResponse) ProviderResult {
 	return ProviderResult{
-		Text:      resp.Content,
-		ToolCalls: resp.ToolCalls,
-		Usage:     resp.Usage,
+		Text:         resp.Content,
+		ToolCalls:    resp.ToolCalls,
+		Usage:        resp.Usage,
+		HistoryDelta: resp.HistoryDelta,
 	}
 }
 

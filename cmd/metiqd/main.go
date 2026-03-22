@@ -1323,11 +1323,19 @@ func main() {
 					}
 				}
 				for _, m := range msgs {
-					turnHistory = append(turnHistory, agent.ConversationMessage{
+					cm := agent.ConversationMessage{
 						Role:       m.Role,
 						Content:    m.Content,
 						ToolCallID: m.ToolCallID,
-					})
+					}
+					for _, tc := range m.ToolCalls {
+						cm.ToolCalls = append(cm.ToolCalls, agent.ToolCallRef{
+							ID:       tc.ID,
+							Name:     tc.Name,
+							ArgsJSON: tc.ArgsJSON,
+						})
+					}
+					turnHistory = append(turnHistory, cm)
 				}
 			}
 		}
@@ -2958,11 +2966,19 @@ func main() {
 					}
 				}
 				for _, m := range msgs {
-					turnHistory = append(turnHistory, agent.ConversationMessage{
+					cm := agent.ConversationMessage{
 						Role:       m.Role,
 						Content:    m.Content,
 						ToolCallID: m.ToolCallID,
-					})
+					}
+					for _, tc := range m.ToolCalls {
+						cm.ToolCalls = append(cm.ToolCalls, agent.ToolCallRef{
+							ID:       tc.ID,
+							Name:     tc.Name,
+							ArgsJSON: tc.ArgsJSON,
+						})
+					}
+					turnHistory = append(turnHistory, cm)
 				}
 				if len(turnHistory) > 0 {
 					log.Printf("context engine history session=%s messages=%d", sessionID, len(turnHistory))
@@ -3265,6 +3281,16 @@ func main() {
 			if controlHeartbeat38 != nil {
 				controlHeartbeat38.SetIdle(ctx)
 			}
+			// Persist any completed tool work from the failed turn so future
+			// turns know what was attempted and what succeeded before the error.
+			if partial, ok := agent.PartialTurnResult(turnErr); ok {
+				if len(partial.ToolTraces) > 0 {
+					if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, partial.ToolTraces); err != nil {
+						log.Printf("persist partial tool traces session=%s err=%v", sessionID, err)
+					}
+				}
+				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta)
+			}
 			switch {
 			case errors.Is(turnErr, context.DeadlineExceeded):
 				log.Printf("agent turn timed out session=%s timeout_secs=%d", sessionID, turnTimeoutSecs)
@@ -3287,6 +3313,9 @@ func main() {
 		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
 			log.Printf("persist tool traces failed session=%s err=%v", sessionID, err)
 		}
+		// Persist the full tool-call/tool-result history so future turns can
+		// see prior tool usage — fixes the "announce and forget" behaviour.
+		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta)
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 			TS:      time.Now().UnixMilli(),
 			AgentID: activeAgentID,
@@ -3343,15 +3372,8 @@ func main() {
 		if sessionStore != nil && (turnResult.Usage.InputTokens > 0 || turnResult.Usage.OutputTokens > 0) {
 			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens)
 		}
-		if controlContextEngine != nil && turnResult.Text != "" {
-			if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
-				Role:    "assistant",
-				Content: turnResult.Text,
-				Unix:    time.Now().Unix(),
-			}); ingErr != nil {
-				log.Printf("context engine ingest assistant session=%s err=%v", sessionID, ingErr)
-			}
-		}
+		// Note: assistant text is already ingested via persistAndIngestTurnHistory
+		// above (as part of HistoryDelta), so we don't duplicate it here.
 		if eventID != "" && createdAt > 0 && !strings.HasPrefix(eventID, "watch:") {
 			if err := tracker.MarkProcessed(ctx, docsRepo, eventID, createdAt); err != nil {
 				log.Printf("checkpoint update failed event=%s err=%v", eventID, err)
@@ -4140,6 +4162,15 @@ func main() {
 		closeStatus(success)
 
 		if turnErr != nil {
+			// Persist completed tool work from the failed channel turn.
+			if partial, ok := agent.PartialTurnResult(turnErr); ok {
+				if len(partial.ToolTraces) > 0 {
+					if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, partial.ToolTraces); err != nil {
+						log.Printf("persist partial tool traces (channel) session=%s err=%v", sessionID, err)
+					}
+				}
+				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta)
+			}
 			if errors.Is(turnErr, context.Canceled) {
 				log.Printf("channel agent aborted session=%s", sessionID)
 			} else {
@@ -4158,6 +4189,7 @@ func main() {
 		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
 			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
 		}
+		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta)
 
 		// ── Deliver reply ─────────────────────────────────────────────────
 		outboundText := turnResult.Text
@@ -5757,6 +5789,97 @@ func nostrWatchDeliveryMeta(name string, event map[string]any) (string, int64) {
 		return synthesizeInboundEventID("watch:"+strings.TrimSpace(name), fmt.Sprintf("%v", event), createdAt), createdAt
 	}
 	return "watch:" + strings.TrimSpace(name) + ":" + sourceID, createdAt
+}
+
+// persistAndIngestTurnHistory writes the ordered HistoryDelta from a completed
+// (or partially completed) turn into both the transcript store and context
+// engine.  This makes tool interactions visible to future turns.
+func persistAndIngestTurnHistory(
+	ctx context.Context,
+	transcriptRepo *state.TranscriptRepository,
+	contextEngine ctxengine.Engine,
+	sessionID string,
+	requestEventID string,
+	delta []agent.ConversationMessage,
+) {
+	if len(delta) == 0 {
+		return
+	}
+	// Guard against empty requestEventID — generate a fallback to prevent
+	// colliding entry IDs across turns.
+	if requestEventID == "" {
+		requestEventID = fmt.Sprintf("anon:%d", time.Now().UnixNano())
+	}
+	nowUnix := time.Now().Unix()
+	for i, m := range delta {
+		// Build a deterministic entry ID.
+		var entryID string
+		switch {
+		case m.Role == "assistant" && len(m.ToolCalls) > 0:
+			entryID = fmt.Sprintf("turn:%s:toolcall:%d", requestEventID, i)
+		case m.Role == "tool" && m.ToolCallID != "":
+			entryID = fmt.Sprintf("turn:%s:tool:%s", requestEventID, m.ToolCallID)
+		case m.Role == "assistant":
+			entryID = fmt.Sprintf("turn:%s:assistant:%d", requestEventID, i)
+		default:
+			entryID = fmt.Sprintf("turn:%s:msg:%d", requestEventID, i)
+		}
+
+		// Build transcript metadata.
+		meta := map[string]any{"request_event_id": requestEventID}
+		if len(m.ToolCalls) > 0 {
+			meta["message_kind"] = "tool_call"
+			tcRefs := make([]map[string]any, len(m.ToolCalls))
+			for j, tc := range m.ToolCalls {
+				tcRefs[j] = map[string]any{"id": tc.ID, "name": tc.Name}
+				if tc.ArgsJSON != "" {
+					tcRefs[j]["args_json"] = tc.ArgsJSON
+				}
+			}
+			meta["tool_calls"] = tcRefs
+		}
+		if m.ToolCallID != "" {
+			meta["message_kind"] = "tool_result"
+			meta["tool_call_id"] = m.ToolCallID
+		}
+
+		// Persist to transcript store.
+		if transcriptRepo != nil {
+			if _, err := transcriptRepo.PutEntry(ctx, state.TranscriptEntryDoc{
+				Version:   1,
+				SessionID: sessionID,
+				EntryID:   entryID,
+				Role:      m.Role,
+				Text:      m.Content,
+				Unix:      nowUnix,
+				Meta:      meta,
+			}); err != nil {
+				log.Printf("persist turn history entry=%s err=%v", entryID, err)
+			}
+		}
+
+		// Ingest into context engine.
+		if contextEngine != nil {
+			ctxMsg := ctxengine.Message{
+				Role:       m.Role,
+				Content:    m.Content,
+				ToolCallID: m.ToolCallID,
+				ID:         entryID,
+				Unix:       nowUnix,
+			}
+			// Convert tool call refs to context engine format.
+			for _, tc := range m.ToolCalls {
+				ctxMsg.ToolCalls = append(ctxMsg.ToolCalls, ctxengine.ToolCallRef{
+					ID:       tc.ID,
+					Name:     tc.Name,
+					ArgsJSON: tc.ArgsJSON,
+				})
+			}
+			if _, err := contextEngine.Ingest(ctx, sessionID, ctxMsg); err != nil {
+				log.Printf("context engine ingest turn history session=%s entry=%s err=%v", sessionID, entryID, err)
+			}
+		}
+	}
 }
 
 func persistAssistant(

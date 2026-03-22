@@ -179,7 +179,7 @@ func (r *TranscriptRepository) decodeTranscriptEvent(evt Event) (TranscriptEntry
 
 func isValidRole(role string) bool {
 	switch role {
-	case "user", "assistant", "system":
+	case "user", "assistant", "system", "tool":
 		return true
 	default:
 		return false
