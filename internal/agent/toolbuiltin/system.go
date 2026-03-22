@@ -5,7 +5,9 @@
 package toolbuiltin
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -71,8 +73,18 @@ var MyIdentityDef = agent.ToolDefinition{
 
 // ─── bash_exec ────────────────────────────────────────────────────────────────
 
-// BashExecTool executes a shell command and returns combined stdout+stderr.
+// bashExecResult is the structured response from bash_exec.
+type bashExecResult struct {
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+	ExitCode   int    `json:"exit_code"`
+	DurationMs int64  `json:"duration_ms"`
+	TimedOut   bool   `json:"timed_out,omitempty"`
+}
+
+// BashExecTool executes a shell command and returns structured output.
 // The command is run via /bin/sh -c. Execution is time-bounded to 30 seconds.
+// Returns JSON with separated stdout, stderr, exit_code, and duration_ms.
 // IMPORTANT: this tool should only be registered when exec_approval is enabled
 // in the agent config — the policy gate is enforced at the ToolMiddleware level.
 func BashExecTool(ctx context.Context, args map[string]any) (string, error) {
@@ -87,30 +99,47 @@ func BashExecTool(ctx context.Context, args map[string]any) (string, error) {
 		timeout = time.Duration(t) * time.Second
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
-	out, err := cmd.CombinedOutput()
-	result := strings.TrimSpace(string(out))
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd := exec.CommandContext(execCtx, "/bin/sh", "-c", command)
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	start := time.Now()
+	err := cmd.Run()
+	elapsed := time.Since(start)
+
+	result := bashExecResult{
+		Stdout:     strings.TrimRight(stdoutBuf.String(), "\n"),
+		Stderr:     strings.TrimRight(stderrBuf.String(), "\n"),
+		DurationMs: elapsed.Milliseconds(),
+	}
+
 	if err != nil {
-		if ctx.Err() != nil {
-			return result, fmt.Errorf("bash_exec: command timed out after %v", timeout)
+		if execCtx.Err() != nil {
+			result.TimedOut = true
+			result.ExitCode = -1
+			raw, _ := json.Marshal(result)
+			return string(raw), fmt.Errorf("bash_exec: command timed out after %v", timeout)
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+			raw, _ := json.Marshal(result)
+			return string(raw), fmt.Errorf("exit status %d", result.ExitCode)
+		} else {
+			// Could not even start the process.
+			return "", fmt.Errorf("bash_exec: %v", err)
 		}
-		if result != "" {
-			return result, fmt.Errorf("exit error: %v", err)
-		}
-		return "", fmt.Errorf("bash_exec: %v", err)
 	}
-	if result == "" {
-		return "(no output)", nil
-	}
-	return result, nil
+
+	raw, _ := json.Marshal(result)
+	return string(raw), nil
 }
 
 var BashExecDef = agent.ToolDefinition{
 	Name:        "bash_exec",
-	Description: "Execute a shell command via /bin/sh and return the combined stdout+stderr output. Use for running scripts, inspecting files, calling system tools, or any task requiring shell access. Commands are time-limited (default 30s, max 300s).",
+	Description: "Execute a shell command via /bin/sh and return structured JSON output with separated stdout, stderr, exit_code, and duration_ms. Use for running scripts, inspecting files, calling system tools, or any task requiring shell access. Commands are time-limited (default 30s, max 300s). A non-zero exit_code indicates the command failed; check stderr for details.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
