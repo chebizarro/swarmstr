@@ -35,6 +35,11 @@ type rpcCacheEntry struct {
 	at        time.Time
 }
 
+const (
+	defaultFleetRPCTimeoutSeconds = 60
+	maxFleetRPCTimeoutSeconds     = 300
+)
+
 func rpcCacheLookup(agentHex string) (result string, found bool) {
 	rpcCacheMu.Lock()
 	defer rpcCacheMu.Unlock()
@@ -152,13 +157,7 @@ func NostrAgentRPCTool(opts NostrToolOpts, getAgents FleetDirectoryFunc, waitRep
 		if msgText == "" {
 			return "", fmt.Errorf("nostr_agent_rpc: 'message' is required")
 		}
-		timeoutSec := 10
-		if v, ok := args["timeout_seconds"].(float64); ok && v > 0 {
-			timeoutSec = int(v)
-			if timeoutSec > 60 {
-				timeoutSec = 60
-			}
-		}
+		timeoutSec := normalizeFleetRPCTimeout(args)
 
 		// Resolve target to hex pubkey.
 		toPubkeyHex, resolvedName, err := resolveFleetTarget(toRaw, getAgents)
@@ -216,6 +215,17 @@ func NostrAgentRPCTool(opts NostrToolOpts, getAgents FleetDirectoryFunc, waitRep
 			return result, nil
 		}
 	}
+}
+
+func normalizeFleetRPCTimeout(args map[string]any) int {
+	timeoutSec := agent.ArgInt(args, "timeout_seconds", defaultFleetRPCTimeoutSeconds)
+	if timeoutSec < 1 {
+		timeoutSec = defaultFleetRPCTimeoutSeconds
+	}
+	if timeoutSec > maxFleetRPCTimeoutSeconds {
+		timeoutSec = maxFleetRPCTimeoutSeconds
+	}
+	return timeoutSec
 }
 
 // resolveFleetTarget turns a name, npub, or hex pubkey into a hex pubkey.

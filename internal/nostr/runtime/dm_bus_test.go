@@ -9,6 +9,17 @@ import (
 	nostr "fiatjaf.com/nostr"
 )
 
+type keyerWithoutNIP04 struct{ pub nostr.PubKey }
+
+func (k keyerWithoutNIP04) GetPublicKey(context.Context) (nostr.PubKey, error) { return k.pub, nil }
+func (k keyerWithoutNIP04) SignEvent(context.Context, *nostr.Event) error       { return nil }
+func (k keyerWithoutNIP04) Encrypt(context.Context, string, nostr.PubKey) (string, error) {
+	return "", nil
+}
+func (k keyerWithoutNIP04) Decrypt(context.Context, string, nostr.PubKey) (string, error) {
+	return "", nil
+}
+
 func TestDMBusSetRelays(t *testing.T) {
 	b := &DMBus{relays: []string{"wss://one"}}
 	in := []string{"wss://two", "wss://two", " wss://three "}
@@ -54,6 +65,16 @@ func TestDMBusMarkSeenDeduplicatesAndEvicts(t *testing.T) {
 	_ = b.markSeen("evt-3")
 	if b.markSeen("evt-1") {
 		t.Fatal("oldest event should have been evicted from seen cache")
+	}
+}
+
+func TestStartDMBusRejectsKeyerWithoutNIP04Support(t *testing.T) {
+	_, err := StartDMBus(context.Background(), DMBusOptions{
+		Keyer:  keyerWithoutNIP04{pub: nostr.Generate().Public()},
+		Relays: []string{"wss://relay.example"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not support NIP-04 decrypt") {
+		t.Fatalf("expected NIP-04 support error, got %v", err)
 	}
 }
 

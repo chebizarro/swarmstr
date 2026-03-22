@@ -135,6 +135,36 @@ func TestAllowCallerDisabledWhenIntervalZero(t *testing.T) {
 	}
 }
 
+func TestControlRPCBusResponseRelayCandidatesPreferRequestRelay(t *testing.T) {
+	b := &ControlRPCBus{
+		relays: []string{"wss://b", "wss://a"},
+		health: NewRelayHealthTracker(),
+	}
+	b.health.Seed(b.relays)
+	got := b.responseRelayCandidates("wss://request", time.Now())
+	if len(got) != 3 {
+		t.Fatalf("unexpected relay count: %v", got)
+	}
+	if got[0] != "wss://request" {
+		t.Fatalf("expected request relay first, got %v", got)
+	}
+}
+
+func TestControlRPCBusResponseRelayCandidatesDedupesPreferred(t *testing.T) {
+	b := &ControlRPCBus{
+		relays: []string{"wss://b", "wss://a"},
+		health: NewRelayHealthTracker(),
+	}
+	b.health.Seed(b.relays)
+	got := b.responseRelayCandidates("wss://a", time.Now())
+	if len(got) != 2 {
+		t.Fatalf("unexpected relay count: %v", got)
+	}
+	if got[0] != "wss://a" {
+		t.Fatalf("expected preferred relay first, got %v", got)
+	}
+}
+
 func TestControlRPCEnvelopeParityFixtures(t *testing.T) {
 	type fixtureCase struct {
 		Name                  string         `json:"name"`

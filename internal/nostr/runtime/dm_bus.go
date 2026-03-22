@@ -132,9 +132,17 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 			signKeyer = nip04Key
 		}
 	} else {
-		// Keyer-only mode: NIP-04 works if the Keyer implements NIP04Decrypter.
+		// Keyer-only mode requires explicit NIP-04 support for inbound decrypt and
+		// outbound encrypt. This matters for bunker/remote signers, where raw key
+		// access is unavailable.
 		authKeyer = opts.Keyer
 		signKeyer = opts.Keyer
+		if _, ok := opts.Keyer.(NIP04Decrypter); !ok {
+			return nil, fmt.Errorf("dm bus: provided keyer does not support NIP-04 decrypt")
+		}
+		if _, ok := opts.Keyer.(NIP04Encrypter); !ok {
+			return nil, fmt.Errorf("dm bus: provided keyer does not support NIP-04 encrypt")
+		}
 		pk, err := authKeyer.GetPublicKey(parent)
 		if err != nil {
 			return nil, fmt.Errorf("dm bus: get public key from keyer: %w", err)

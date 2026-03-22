@@ -601,7 +601,16 @@ func main() {
 		}
 		b, _ := json.Marshal(event)
 		text := fmt.Sprintf("[watch:%s] %s", name, string(b))
-		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, "", time.Now().Unix(), nil)
+		eventID, createdAt := nostrWatchDeliveryMeta(name, event)
+		if eventID != "" && transcriptRepo != nil {
+			exists, err := transcriptRepo.HasEntry(watchDeliveryCtx, sessionID, eventID)
+			if err != nil {
+				log.Printf("watch delivery dedupe check failed watch=%s event=%s err=%v", name, eventID, err)
+			} else if exists {
+				return
+			}
+		}
+		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, eventID, createdAt, nil)
 	}
 	// saveWatches persists the active watch specs to the state store so they
 	// survive daemon restarts.  Runs asynchronously to avoid blocking tool
@@ -647,7 +656,16 @@ func main() {
 		}
 		b, _ := json.Marshal(event)
 		text := fmt.Sprintf("[file_watch:%s] %s", name, string(b))
-		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, "", time.Now().Unix(), nil)
+		eventID, createdAt := nostrWatchDeliveryMeta("file_watch:"+name, event)
+		if eventID != "" && transcriptRepo != nil {
+			exists, err := transcriptRepo.HasEntry(watchDeliveryCtx, sessionID, eventID)
+			if err != nil {
+				log.Printf("file watch delivery dedupe check failed watch=%s event=%s err=%v", name, eventID, err)
+			} else if exists {
+				return
+			}
+		}
+		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, eventID, createdAt, nil)
 	}
 	tools.RegisterWithDef("file_watch_add", toolbuiltin.FileWatchAddTool(fileWatchRegistry, fileWatchDeliver), toolbuiltin.FileWatchAddDef)
 	tools.RegisterWithDef("file_watch_remove", toolbuiltin.FileWatchRemoveTool(fileWatchRegistry), toolbuiltin.FileWatchRemoveDef)
@@ -3299,7 +3317,7 @@ func main() {
 				log.Printf("context engine ingest assistant session=%s err=%v", sessionID, ingErr)
 			}
 		}
-		if eventID != "" && createdAt > 0 {
+		if eventID != "" && createdAt > 0 && !strings.HasPrefix(eventID, "watch:") {
 			if err := tracker.MarkProcessed(ctx, docsRepo, eventID, createdAt); err != nil {
 				log.Printf("checkpoint update failed event=%s err=%v", eventID, err)
 			}
@@ -5539,6 +5557,32 @@ func synthesizeInboundEventID(fromPubKey, text string, createdAt int64) string {
 	seed := fmt.Sprintf("%s\x00%d\x00%s", strings.TrimSpace(fromPubKey), createdAt, strings.TrimSpace(text))
 	sum := sha256.Sum256([]byte(seed))
 	return "auto:" + hex.EncodeToString(sum[:])
+}
+
+func nostrWatchDeliveryMeta(name string, event map[string]any) (string, int64) {
+	createdAt := time.Now().Unix()
+	sourceID := ""
+	if rawID, ok := event["id"].(string); ok {
+		sourceID = strings.TrimSpace(rawID)
+	}
+	switch v := event["created_at"].(type) {
+	case int64:
+		if v > 0 {
+			createdAt = v
+		}
+	case int:
+		if v > 0 {
+			createdAt = int64(v)
+		}
+	case float64:
+		if v > 0 {
+			createdAt = int64(v)
+		}
+	}
+	if sourceID == "" {
+		return synthesizeInboundEventID("watch:"+strings.TrimSpace(name), fmt.Sprintf("%v", event), createdAt), createdAt
+	}
+	return "watch:" + strings.TrimSpace(name) + ":" + sourceID, createdAt
 }
 
 func persistAssistant(
