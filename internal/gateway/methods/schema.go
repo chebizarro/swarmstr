@@ -201,6 +201,27 @@ type StatusResponse struct {
 	UptimeSeconds int      `json:"uptime_seconds"`
 	UptimeMS      int64    `json:"uptime_ms"`
 	Version       string   `json:"version"`
+
+	// Subscriptions reports health snapshots for long-lived subscriptions.
+	// Omitted when empty (e.g. during early startup).
+	Subscriptions []SubHealthInfo `json:"subscriptions,omitempty"`
+
+	// RelaySets reports current NIP-51 kind:30002 relay sets.
+	// Omitted when no relay sets are loaded.
+	RelaySets map[string][]string `json:"relay_sets,omitempty"`
+}
+
+// SubHealthInfo is the JSON-friendly representation of a subscription health
+// snapshot, suitable for the status.get response and /status slash command.
+type SubHealthInfo struct {
+	Label            string   `json:"label"`
+	BoundRelays      []string `json:"bound_relays"`
+	LastEventAt      int64    `json:"last_event_at,omitempty"`
+	LastReconnectAt  int64    `json:"last_reconnect_at,omitempty"`
+	LastClosedReason string   `json:"last_closed_reason,omitempty"`
+	ReplayWindowMS   int64    `json:"replay_window_ms"`
+	EventCount       int64    `json:"event_count"`
+	ReconnectCount   int64    `json:"reconnect_count"`
 }
 
 type MemorySearchRequest struct {

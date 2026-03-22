@@ -37,6 +37,7 @@ type DMBusOptions struct {
 	// When set, it is used for NIP-42 AUTH signing. PrivateKey is still needed
 	// for NIP-04 encryption/decryption (which requires a raw secret key).
 	Keyer        nostr.Keyer
+	Hub          *NostrHub
 	Relays       []string
 	SinceUnix    int64
 	OnMessage    func(context.Context, InboundDM) error
@@ -48,21 +49,24 @@ type DMBusOptions struct {
 }
 
 type DMBus struct {
-	pool         *nostr.Pool
+	pool *nostr.Pool
+	hub  *NostrHub
+	ownsPool bool
 	// authKeyer is used for NIP-42 relay AUTH signing (PoolOptsNIP42).
 	authKeyer nostr.Keyer
 	// signKeyer is used to sign DM events (kind:4).
 	signKeyer nostr.Keyer
 	// nip04Keyer is used for NIP-04 encryption/decryption when a raw secret key
 	// is available locally.
-	nip04Keyer nip04KeyerAdapter
-	hasNIP04Key bool
+	nip04Keyer   nip04KeyerAdapter
+	hasNIP04Key  bool
 	relays       []string
 	relaysMu     sync.RWMutex
 	public       nostr.PubKey
 	onMessage    func(context.Context, InboundDM) error
 	onError      func(error)
 	health       *RelayHealthTracker
+	subHealth    *SubHealthTracker
 	replayWindow time.Duration
 
 	seenMu   sync.Mutex
@@ -71,6 +75,7 @@ type DMBus struct {
 	seenCap  int
 
 	messageQueue chan InboundDM
+	rebindCh     chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -152,24 +157,32 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 
 	since := opts.SinceUnix
 	if since <= 0 {
-		since = time.Now().Add(-30 * time.Minute).Unix()
+		since = ResubscribeSince(DMReplayWindowDefault)
 	}
 	workerCount := max(opts.WorkerCount, 4)
 	queueSize := max(opts.QueueSize, 256)
 	replayWindow := opts.ReplayWindow
 	if replayWindow <= 0 {
-		replayWindow = 30 * time.Minute
+		replayWindow = DMReplayWindowDefault
 	}
 
 	ctx, cancel := context.WithCancel(parent)
 	health := NewRelayHealthTracker()
 	health.Seed(initialRelays)
+	pool := NewPoolNIP42(authKeyer)
+	ownsPool := true
+	if opts.Hub != nil {
+		pool = opts.Hub.Pool()
+		ownsPool = false
+	}
 	bus := &DMBus{
-		authKeyer:  authKeyer,
-		signKeyer:  signKeyer,
-		nip04Keyer: nip04Key,
-		hasNIP04Key: hasNIP04Key,
-		pool:       NewPoolNIP42(authKeyer),
+		authKeyer:    authKeyer,
+		signKeyer:    signKeyer,
+		nip04Keyer:   nip04Key,
+		hasNIP04Key:  hasNIP04Key,
+		pool:         pool,
+		hub:          opts.Hub,
+		ownsPool:     ownsPool,
 		relays:       initialRelays,
 		public:       public,
 		onMessage:    opts.OnMessage,
@@ -179,6 +192,7 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 		seenSet:      make(map[string]struct{}),
 		seenCap:      max(opts.SeenCap, 10_000),
 		messageQueue: make(chan InboundDM, queueSize),
+		rebindCh:     make(chan struct{}, 1),
 		ctx:          ctx,
 		cancel:       cancel,
 	}
@@ -197,21 +211,10 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 		}
 	}
 
-	filter := nostr.Filter{
-		Kinds: []nostr.Kind{nostr.KindEncryptedDirectMessage},
-		Tags:  nostr.TagMap{"p": {bus.public.Hex()}},
-		Since: nostr.Timestamp(since),
-	}
-	stream := bus.pool.SubscribeMany(ctx, bus.currentRelays(), filter, nostr.SubscriptionOptions{})
-
+	bus.subHealth = NewSubHealthTracker("dm")
+	bus.subHealth.RecordReconnect()
 	bus.wg.Add(1)
-	go func() {
-		defer bus.wg.Done()
-		defer close(bus.messageQueue)
-		for relayEvent := range stream {
-			bus.handleInbound(relayEvent)
-		}
-	}()
+	go bus.subscriptionLoop(since)
 
 	return bus, nil
 }
@@ -222,7 +225,9 @@ func (b *DMBus) PublicKey() string {
 
 func (b *DMBus) Close() {
 	b.cancel()
-	b.pool.Close("dm bus closed")
+	if b.ownsPool {
+		b.pool.Close("dm bus closed")
+	}
 	b.wg.Wait()
 }
 
@@ -262,7 +267,20 @@ func (b *DMBus) SetRelays(relays []string) error {
 	if b.health != nil {
 		b.health.Seed(next)
 	}
+	b.requestRebind()
 	return nil
+}
+
+// HealthSnapshot returns a point-in-time view of the DM subscription's health.
+func (b *DMBus) HealthSnapshot() SubHealthSnapshot {
+	rw := b.replayWindow
+	if rw <= 0 {
+		rw = DMReplayWindowDefault
+	}
+	if b.subHealth == nil {
+		return SubHealthSnapshot{Label: "dm", BoundRelays: b.currentRelays(), ReplayWindowMS: int64(rw / time.Millisecond)}
+	}
+	return b.subHealth.Snapshot(b.currentRelays(), rw)
 }
 
 func (b *DMBus) Relays() []string {
@@ -337,6 +355,9 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 	if !re.Event.Tags.ContainsAny("p", []string{b.public.Hex()}) {
 		return
 	}
+	if b.subHealth != nil {
+		b.subHealth.RecordEvent()
+	}
 
 	eventID := re.Event.ID.Hex()
 	if b.markSeen(eventID) {
@@ -348,7 +369,9 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		b.emitErr(fmt.Errorf("decrypt dm %s: keyer does not support NIP-04; use a local key signer", eventID))
 		return
 	}
-	plaintext, err := dec.DecryptNIP04(context.Background(), re.Event.Content, re.Event.PubKey)
+	decryptCtx, decryptCancel := context.WithTimeout(b.ctx, 10*time.Second)
+	plaintext, err := dec.DecryptNIP04(decryptCtx, re.Event.Content, re.Event.PubKey)
+	decryptCancel()
 	if err != nil {
 		b.emitErr(fmt.Errorf("decrypt dm %s: %w", eventID, err))
 		return
@@ -387,6 +410,244 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 	case <-b.ctx.Done():
 	case <-time.After(2 * time.Second):
 		b.emitErr(fmt.Errorf("dropped dm event=%s due to full queue", eventID))
+	}
+}
+
+func (b *DMBus) requestRebind() {
+	select {
+	case b.rebindCh <- struct{}{}:
+	default:
+	}
+}
+
+func (b *DMBus) resubscribeSinceUnix() int64 {
+	if b.replayWindow > 0 {
+		return ResubscribeSince(b.replayWindow)
+	}
+	return ResubscribeSince(DMReplayWindowDefault)
+}
+
+func (b *DMBus) subscriptionLoop(initialSince int64) {
+	defer b.wg.Done()
+	defer close(b.messageQueue)
+	since := initialSince
+	for {
+		if b.ctx.Err() != nil {
+			return
+		}
+		restart := b.runSubscription(since)
+		if b.ctx.Err() != nil {
+			return
+		}
+		if b.subHealth != nil {
+			b.subHealth.RecordReconnect()
+		}
+		since = b.resubscribeSinceUnix()
+		if !restart {
+			select {
+			case <-b.ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+	}
+}
+
+func (b *DMBus) runSubscription(since int64) bool {
+	filter := b.dmFilter(since)
+	if b.hub != nil {
+		return b.runHubSubscription(filter)
+	}
+	stream := b.pool.SubscribeMany(b.ctx, b.currentRelays(), filter, nostr.SubscriptionOptions{})
+	for {
+		select {
+		case <-b.ctx.Done():
+			return true
+		case <-b.rebindCh:
+			return true
+		case relayEvent, ok := <-stream:
+			if !ok {
+				b.emitErr(fmt.Errorf("dm subscription closed; restarting"))
+				return false
+			}
+			b.handleInbound(relayEvent)
+		}
+	}
+}
+
+type dmRelayClose struct {
+	relayURL   string
+	reason     string
+	generation int
+}
+
+type dmRelayRetry struct {
+	relayURL   string
+	generation int
+}
+
+func (b *DMBus) dmFilter(since int64) nostr.Filter {
+	return nostr.Filter{
+		Kinds: []nostr.Kind{nostr.KindEncryptedDirectMessage},
+		Tags:  nostr.TagMap{"p": {b.public.Hex()}},
+		Since: nostr.Timestamp(since),
+	}
+}
+
+func (b *DMBus) dmSubID(relay string, generation int) string {
+	return fmt.Sprintf("dm-bus:%s:%d", strings.TrimSpace(relay), generation)
+}
+
+func (b *DMBus) runHubSubscription(filter nostr.Filter) bool {
+	subCtx, cancel := context.WithCancel(b.ctx)
+	defer cancel()
+
+	relays := b.currentRelays()
+	queueCap := max(len(relays)*2, 8)
+	closedCh := make(chan dmRelayClose, queueCap)
+	resubscribeCh := make(chan dmRelayRetry, queueCap)
+	pending := map[string]int{}
+	generation := map[string]int{}
+
+	nextGeneration := func(relay string) int {
+		relay = strings.TrimSpace(relay)
+		generation[relay]++
+		return generation[relay]
+	}
+
+	emitRelayClose := func(close dmRelayClose) {
+		select {
+		case closedCh <- close:
+		default:
+			go func() {
+				select {
+				case <-subCtx.Done():
+				case closedCh <- close:
+				}
+			}()
+		}
+	}
+
+	subscribeRelay := func(relay string, filter nostr.Filter, gen int) bool {
+		relayKey := strings.TrimSpace(relay)
+		if relayKey == "" {
+			return true
+		}
+		if _, err := b.hub.Subscribe(subCtx, SubOpts{
+			ID:      b.dmSubID(relayKey, gen),
+			Filter:  filter,
+			Relays:  []string{relayKey},
+			OnEvent: b.handleInbound,
+			OnClosed: func(closedRelay *nostr.Relay, reason string, handledAuth bool) {
+				if handledAuth {
+					return
+				}
+				reportedRelay := relayKey
+				if closedRelay != nil && strings.TrimSpace(closedRelay.URL) != "" {
+					reportedRelay = strings.TrimSpace(closedRelay.URL)
+				}
+				if b.health != nil {
+					b.health.RecordFailure(reportedRelay)
+				}
+				if b.subHealth != nil {
+					b.subHealth.RecordClosed(reason)
+				}
+				b.emitErr(fmt.Errorf("dm subscription closed relay=%s reason=%s", reportedRelay, reason))
+				emitRelayClose(dmRelayClose{relayURL: relayKey, reason: reason, generation: gen})
+			},
+		}); err != nil {
+			if b.health != nil {
+				b.health.RecordFailure(relayKey)
+			}
+			b.emitErr(fmt.Errorf("dm subscription start relay=%s: %w", relayKey, err))
+			return false
+		}
+		return true
+	}
+
+	scheduleResubscribe := func(relay string, gen int) {
+		relay = strings.TrimSpace(relay)
+		if relay == "" {
+			return
+		}
+		if pendingGen, ok := pending[relay]; ok && pendingGen >= gen {
+			return
+		}
+		pending[relay] = gen
+		go func(relay string, gen int) {
+			for {
+				if subCtx.Err() != nil {
+					return
+				}
+				if b.health == nil || b.health.Allowed(relay, time.Now()) {
+					break
+				}
+				select {
+				case <-subCtx.Done():
+					return
+				case <-time.After(200 * time.Millisecond):
+				}
+			}
+			select {
+			case <-subCtx.Done():
+			case resubscribeCh <- dmRelayRetry{relayURL: relay, generation: gen}:
+			}
+		}(relay, gen)
+	}
+
+	started := 0
+	for _, relay := range relays {
+		gen := nextGeneration(relay)
+		if subscribeRelay(relay, filter, gen) {
+			started++
+			continue
+		}
+		scheduleResubscribe(relay, gen)
+	}
+	if started == 0 {
+		return false
+	}
+
+	for {
+		select {
+		case <-b.ctx.Done():
+			for relay, gen := range generation {
+				b.hub.Unsubscribe(b.dmSubID(relay, gen))
+			}
+			return true
+		case <-b.rebindCh:
+			for relay, gen := range generation {
+				b.hub.Unsubscribe(b.dmSubID(relay, gen))
+			}
+			return true
+		case closed := <-closedCh:
+			relay := strings.TrimSpace(closed.relayURL)
+			if relay == "" {
+				return false
+			}
+			if generation[relay] != closed.generation {
+				continue
+			}
+			b.hub.Unsubscribe(b.dmSubID(relay, closed.generation))
+			scheduleResubscribe(relay, closed.generation)
+		case retry := <-resubscribeCh:
+			relay := strings.TrimSpace(retry.relayURL)
+			if relay == "" {
+				continue
+			}
+			if pending[relay] != retry.generation {
+				continue
+			}
+			delete(pending, relay)
+			if !containsRelay(b.currentRelays(), relay) {
+				continue
+			}
+			gen := nextGeneration(relay)
+			resubscribeFilter := b.dmFilter(b.resubscribeSinceUnix())
+			if !subscribeRelay(relay, resubscribeFilter, gen) {
+				scheduleResubscribe(relay, gen)
+			}
+		}
 	}
 }
 

@@ -37,6 +37,7 @@ type controlCallRequest struct {
 
 type ControlRPCBusOptions struct {
 	Keyer             nostr.Keyer // required signing interface
+	Hub               *NostrHub
 	Relays            []string
 	SinceUnix         int64
 	MaxRequestAge     time.Duration
@@ -66,6 +67,8 @@ type controlRPCError struct {
 
 type ControlRPCBus struct {
 	pool        *nostr.Pool
+	hub         *NostrHub
+	ownsPool    bool
 	relays      []string
 	relaysMu    sync.RWMutex
 	keyer       nostr.Keyer
@@ -76,6 +79,7 @@ type ControlRPCBus struct {
 	maxReqAge   time.Duration
 	responseCap int
 	health      *RelayHealthTracker
+	subHealth   *SubHealthTracker
 
 	seenMu    sync.Mutex
 	seenSet   map[string]struct{}
@@ -85,12 +89,16 @@ type ControlRPCBus struct {
 	respCache map[string]controlCachedResponse
 	respList  []string
 
+	rebindCh chan struct{}
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
 	throttleMu        sync.Mutex
 	callerLastRequest map[string]time.Time
+	callerList        []string
+	callerCap         int
 	minCallerInterval time.Duration
 }
 
@@ -115,14 +123,22 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 
 	since := opts.SinceUnix
 	if since <= 0 {
-		since = time.Now().Add(-10 * time.Minute).Unix()
+		since = ResubscribeSince(ControlRPCResubscribeWindow)
 	}
 	ctx, cancel := context.WithCancel(parent)
 
 	health := NewRelayHealthTracker()
 	health.Seed(initialRelays)
+	pool := NewPoolNIP42(ks)
+	ownsPool := true
+	if opts.Hub != nil {
+		pool = opts.Hub.Pool()
+		ownsPool = false
+	}
 	bus := &ControlRPCBus{
-		pool:              NewPoolNIP42(ks),
+		pool:              pool,
+		hub:               opts.Hub,
+		ownsPool:          ownsPool,
 		relays:            initialRelays,
 		keyer:             ks,
 		public:            public,
@@ -136,30 +152,72 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 		seenCap:           max(opts.SeenCap, 10_000),
 		respCache:         map[string]controlCachedResponse{},
 		callerLastRequest: map[string]time.Time{},
+		callerCap:         10_000,
 		minCallerInterval: opts.MinCallerInterval,
+		rebindCh:          make(chan struct{}, 1),
 		ctx:               ctx,
 		cancel:            cancel,
 	}
 
-	filter := nostr.Filter{
-		Kinds: []nostr.Kind{nostr.Kind(events.KindControl)},
-		Tags:  nostr.TagMap{"p": {bus.public.Hex()}},
-		Since: nostr.Timestamp(since),
-	}
-	stream := bus.pool.SubscribeMany(ctx, bus.currentRelays(), filter, nostr.SubscriptionOptions{})
+	bus.subHealth = NewSubHealthTracker("control-rpc")
+	bus.subHealth.RecordReconnect()
 	bus.wg.Add(1)
-	go func() {
-		defer bus.wg.Done()
-		for re := range stream {
-			bus.handleInbound(re)
-		}
-	}()
+	go bus.subscriptionLoop(since)
 	return bus, nil
+}
+
+func (b *ControlRPCBus) subscriptionLoop(initialSince int64) {
+	defer b.wg.Done()
+	since := initialSince
+	for {
+		if b.ctx.Err() != nil {
+			return
+		}
+		restart := b.runSubscription(since)
+		if b.ctx.Err() != nil {
+			return
+		}
+		if b.subHealth != nil {
+			b.subHealth.RecordReconnect()
+		}
+		since = ResubscribeSince(ControlRPCResubscribeWindow)
+		if !restart {
+			select {
+			case <-b.ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+	}
+}
+
+func (b *ControlRPCBus) runSubscription(since int64) bool {
+	filter := b.controlFilter(since)
+	if b.hub != nil {
+		return b.runHubSubscription(filter)
+	}
+	stream := b.pool.SubscribeMany(b.ctx, b.currentRelays(), filter, nostr.SubscriptionOptions{})
+	for {
+		select {
+		case <-b.ctx.Done():
+			return true
+		case <-b.rebindCh:
+			return true
+		case re, ok := <-stream:
+			if !ok {
+				b.emitErr(fmt.Errorf("control subscription closed; restarting"))
+				return false
+			}
+			b.handleInbound(re)
+		}
+	}
 }
 
 func (b *ControlRPCBus) Close() {
 	b.cancel()
-	b.pool.Close("control rpc bus closed")
+	if b.ownsPool {
+		b.pool.Close("control rpc bus closed")
+	}
 	b.wg.Wait()
 }
 
@@ -174,11 +232,23 @@ func (b *ControlRPCBus) SetRelays(relays []string) error {
 	if b.health != nil {
 		b.health.Seed(next)
 	}
+	select {
+	case b.rebindCh <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
 func (b *ControlRPCBus) Relays() []string {
 	return b.currentRelays()
+}
+
+// HealthSnapshot returns a point-in-time view of the control RPC subscription's health.
+func (b *ControlRPCBus) HealthSnapshot() SubHealthSnapshot {
+	if b.subHealth == nil {
+		return SubHealthSnapshot{Label: "control-rpc", BoundRelays: b.currentRelays(), ReplayWindowMS: ControlRPCResubscribeWindow.Milliseconds()}
+	}
+	return b.subHealth.Snapshot(b.currentRelays(), ControlRPCResubscribeWindow)
 }
 
 func (b *ControlRPCBus) emitErr(err error) {
@@ -198,6 +268,9 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	if b.health != nil {
 		b.health.RecordSuccess(re.Relay.URL)
 	}
+	if b.subHealth != nil {
+		b.subHealth.RecordEvent()
+	}
 	if evt.PubKey == b.public {
 		return
 	}
@@ -208,45 +281,45 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	if !evt.Tags.ContainsAny("p", []string{b.public.Hex()}) {
 		return
 	}
+	requestID := firstTagValue(evt.Tags, "req")
+	if requestID == "" {
+		requestID = evt.ID.Hex()
+	}
+	if len(requestID) > 256 {
+		requestID = requestID[:256]
+	}
 
 	eventID := evt.ID.Hex()
 	if b.markSeen(eventID) {
 		return
 	}
 	if !b.allowCaller(evt.PubKey.Hex(), time.Now()) {
-		b.respondErrorCode(re, "control request rate limited", firstTagValue(evt.Tags, "req"), -32029, nil)
+		b.respondErrorCode(re, "control request rate limited", requestID, -32029, nil)
 		return
 	}
 	nowUnix := time.Now().Unix()
 	if b.maxReqAge > 0 {
 		threshold := time.Now().Add(-b.maxReqAge).Unix()
 		if int64(evt.CreatedAt) < threshold {
-			b.respondError(re, "control request expired", firstTagValue(evt.Tags, "req"))
+			b.respondError(re, "control request expired", requestID)
 			return
 		}
 	}
 	const maxFutureSkewSeconds = 30
 	if int64(evt.CreatedAt) > nowUnix+maxFutureSkewSeconds {
-		b.respondError(re, "control request from the future", firstTagValue(evt.Tags, "req"))
+		b.respondError(re, "control request from the future", requestID)
 		return
 	}
 
 	call, err := decodeControlCallRequest(evt.Content)
 	if err != nil {
-		b.respondError(re, "invalid control request body", "")
+		b.respondError(re, "invalid control request body", requestID)
 		return
 	}
 	call.Method = trimMethod(call.Method)
 	if call.Method == "" {
-		b.respondError(re, "missing method", "")
+		b.respondError(re, "missing method", requestID)
 		return
-	}
-	requestID := firstTagValue(evt.Tags, "req")
-	if requestID == "" {
-		requestID = eventID
-	}
-	if len(requestID) > 256 {
-		requestID = requestID[:256]
 	}
 	cacheKey := fmt.Sprintf("%s:%s", evt.PubKey.Hex(), requestID)
 	if cached, ok := b.getCachedResponse(cacheKey); ok {
@@ -365,6 +438,184 @@ func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requestID string, p
 	b.emitErr(lastErr)
 }
 
+type controlRelayClose struct {
+	relayURL   string
+	reason     string
+	generation int
+}
+
+type controlRelayRetry struct {
+	relayURL   string
+	generation int
+}
+
+func (b *ControlRPCBus) controlFilter(since int64) nostr.Filter {
+	return nostr.Filter{
+		Kinds: []nostr.Kind{nostr.Kind(events.KindControl)},
+		Tags:  nostr.TagMap{"p": {b.public.Hex()}},
+		Since: nostr.Timestamp(since),
+	}
+}
+
+func (b *ControlRPCBus) controlSubID(relay string, generation int) string {
+	return fmt.Sprintf("control-rpc-bus:%s:%d", strings.TrimSpace(relay), generation)
+}
+
+func (b *ControlRPCBus) runHubSubscription(filter nostr.Filter) bool {
+	subCtx, cancel := context.WithCancel(b.ctx)
+	defer cancel()
+
+	closedCh := make(chan controlRelayClose, 8)
+	resubscribeCh := make(chan controlRelayRetry, 8)
+	pending := map[string]int{}
+	generation := map[string]int{}
+	relays := b.currentRelays()
+
+	nextGeneration := func(relay string) int {
+		relay = strings.TrimSpace(relay)
+		generation[relay]++
+		return generation[relay]
+	}
+
+	subscribeRelay := func(relay string, filter nostr.Filter, gen int) bool {
+		relay = strings.TrimSpace(relay)
+		if relay == "" {
+			return true
+		}
+		if _, err := b.hub.Subscribe(subCtx, SubOpts{
+			ID:      b.controlSubID(relay, gen),
+			Filter:  filter,
+			Relays:  []string{relay},
+			OnEvent: b.handleInbound,
+			OnClosed: func(closedRelay *nostr.Relay, reason string, handledAuth bool) {
+				if handledAuth {
+					return
+				}
+				relayURL := relay
+				if closedRelay != nil && strings.TrimSpace(closedRelay.URL) != "" {
+					relayURL = strings.TrimSpace(closedRelay.URL)
+				}
+				if b.health != nil {
+					b.health.RecordFailure(relayURL)
+				}
+				if b.subHealth != nil {
+					b.subHealth.RecordClosed(reason)
+				}
+				b.emitErr(fmt.Errorf("control subscription closed relay=%s reason=%s", relayURL, reason))
+				select {
+				case closedCh <- controlRelayClose{relayURL: relayURL, reason: reason, generation: gen}:
+				default:
+				}
+			},
+		}); err != nil {
+			if b.health != nil {
+				b.health.RecordFailure(relay)
+			}
+			b.emitErr(fmt.Errorf("control subscription start relay=%s: %w", relay, err))
+			return false
+		}
+		return true
+	}
+
+	scheduleResubscribe := func(relay string, gen int) {
+		relay = strings.TrimSpace(relay)
+		if relay == "" {
+			return
+		}
+		if pendingGen, ok := pending[relay]; ok && pendingGen >= gen {
+			return
+		}
+		pending[relay] = gen
+		go func(relay string, gen int) {
+			for {
+				if subCtx.Err() != nil {
+					return
+				}
+				if b.health == nil || b.health.Allowed(relay, time.Now()) {
+					break
+				}
+				select {
+				case <-subCtx.Done():
+					return
+				case <-time.After(200 * time.Millisecond):
+				}
+			}
+			select {
+			case <-subCtx.Done():
+			case resubscribeCh <- controlRelayRetry{relayURL: relay, generation: gen}:
+			}
+		}(relay, gen)
+	}
+
+	started := 0
+	for _, relay := range relays {
+		gen := nextGeneration(relay)
+		if subscribeRelay(relay, filter, gen) {
+			started++
+			continue
+		}
+		scheduleResubscribe(relay, gen)
+	}
+	if started == 0 {
+		return false
+	}
+
+	for {
+		select {
+		case <-b.ctx.Done():
+			for relay, gen := range generation {
+				b.hub.Unsubscribe(b.controlSubID(relay, gen))
+			}
+			return true
+		case <-b.rebindCh:
+			for relay, gen := range generation {
+				b.hub.Unsubscribe(b.controlSubID(relay, gen))
+			}
+			return true
+		case closed := <-closedCh:
+			relay := strings.TrimSpace(closed.relayURL)
+			if relay == "" {
+				return false
+			}
+			if generation[relay] != closed.generation {
+				continue
+			}
+			b.hub.Unsubscribe(b.controlSubID(relay, closed.generation))
+			scheduleResubscribe(relay, closed.generation)
+		case retry := <-resubscribeCh:
+			relay := strings.TrimSpace(retry.relayURL)
+			if relay == "" {
+				continue
+			}
+			if pending[relay] != retry.generation {
+				continue
+			}
+			delete(pending, relay)
+			if !containsRelay(b.currentRelays(), relay) {
+				continue
+			}
+			gen := nextGeneration(relay)
+			resubscribeFilter := b.controlFilter(ResubscribeSince(ControlRPCResubscribeWindow))
+			if !subscribeRelay(relay, resubscribeFilter, gen) {
+				scheduleResubscribe(relay, gen)
+			}
+		}
+	}
+}
+
+func containsRelay(relays []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, relay := range relays {
+		if strings.TrimSpace(relay) == target {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *ControlRPCBus) respondError(re nostr.RelayEvent, msg string, requestID string) {
 	b.respondErrorCode(re, msg, requestID, -32000, nil)
 }
@@ -460,9 +711,20 @@ func (b *ControlRPCBus) allowCaller(caller string, now time.Time) bool {
 	}
 	b.throttleMu.Lock()
 	defer b.throttleMu.Unlock()
+	if b.callerCap <= 0 {
+		b.callerCap = 10_000
+	}
 	last, ok := b.callerLastRequest[caller]
 	if ok && now.Sub(last) < b.minCallerInterval {
 		return false
+	}
+	if !ok {
+		b.callerList = append(b.callerList, caller)
+		if len(b.callerList) > b.callerCap {
+			victim := b.callerList[0]
+			b.callerList = b.callerList[1:]
+			delete(b.callerLastRequest, victim)
+		}
 	}
 	b.callerLastRequest[caller] = now
 	return true

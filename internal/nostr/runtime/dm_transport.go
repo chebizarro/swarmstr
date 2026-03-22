@@ -32,8 +32,16 @@ type DMSchemeTransport interface {
 	SendDMWithScheme(ctx context.Context, toPubKey string, text string, scheme string) error
 }
 
+// SubHealthReporter is an optional interface for transports that expose
+// subscription health snapshots.
+type SubHealthReporter interface {
+	HealthSnapshot() SubHealthSnapshot
+}
+
 // Compile-time checks: both concrete types must satisfy the interface.
 var _ DMTransport = (*DMBus)(nil)
 var _ DMTransport = (*NIP17Bus)(nil)
+var _ SubHealthReporter = (*DMBus)(nil)
+var _ SubHealthReporter = (*NIP17Bus)(nil)
 var _ DMSchemeTransport = (*DMBus)(nil)
 var _ DMSchemeTransport = (*NIP17Bus)(nil)

@@ -163,16 +163,18 @@ var (
 	// controlKeyRings manages multi-key rotation pools for each provider.
 	controlKeyRings *agent.ProviderKeyRingRegistry
 
-	// controlDMBus is the active DM transport (NIP-17 or NIP-04).
-	// Set after the bus is initialised in main() so node-pairing and
-	// node.invoke handlers can send DMs without threading the bus through
-	// every function signature.
-	controlDMBusMu sync.RWMutex
-	controlDMBus   nostruntime.DMTransport
+	// controlDMBus is the preferred outbound DM transport (NIP-17 first, then NIP-04).
+	// Separate concrete bus pointers are kept so relay policy changes can rebind
+	// every active inbound subscription, not just the preferred sender.
+	controlDMBusMu  sync.RWMutex
+	controlDMBus    nostruntime.DMTransport
+	controlNIP04Bus *nostruntime.DMBus
+	controlNIP17Bus *nostruntime.NIP17Bus
 
 	// controlRPCCorrelator routes synchronous inter-agent RPC replies to
 	// waiting nostr_agent_rpc tool calls instead of the normal agent pipeline.
 	controlRPCCorrelator = newRPCCorrelator()
+	controlRPCBus        *nostruntime.ControlRPCBus
 
 	// controlRelaySelector is the global NIP-65 relay selector implementing the
 	// outbox model. It caches per-pubkey relay lists and provides relay selection
@@ -183,6 +185,19 @@ var (
 	// subsystems share this hub's pool so WebSocket connections to the same
 	// relay are deduplicated across the entire runtime.
 	controlHub *nostruntime.NostrHub
+
+	// watchRegistry is the global watch subscription registry, promoted to
+	// package level so relay policy update functions can rebind active watches.
+	watchRegistry *toolbuiltin.WatchRegistry
+
+	// dvmHandler is the global DVM handler, promoted to package level so
+	// relay policy updates and status introspection can reach it.
+	dvmHandler *dvm.Handler
+
+	// relaySetRegistry manages NIP-51 kind:30002 relay sets (nip29-relays,
+	// chat-relays, nip28-relays, search-relays, dvm-relays, grasp-servers).
+	// Promoted to package level so relay policy updates can re-publish sets.
+	relaySetRegistry *nostruntime.RelaySetRegistry
 
 	// controlCronExecutor dispatches a gateway method from the cron scheduler.
 	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
@@ -591,7 +606,8 @@ func main() {
 	// nostr_watch / nostr_unwatch / nostr_watch_list — persistent subscriptions.
 	// Delivery fires back into the DM pipeline via dmRunAgentTurnRef which is
 	// populated once dmRunAgentTurn is defined below.
-	watchRegistry := toolbuiltin.NewWatchRegistry()
+	watchRegistry = toolbuiltin.NewWatchRegistry()
+	watchRegistry.SetHubFunc(func() *nostruntime.NostrHub { return controlHub })
 	watchDeliveryCtx, watchDeliveryCancel := context.WithCancel(ctx)
 	defer watchDeliveryCancel()
 	var dmRunAgentTurnRef func(ctx context.Context, fromPubKey, text, eventID string, createdAt int64, replyFn func(context.Context, string) error)
@@ -3548,6 +3564,19 @@ func main() {
 
 	// Start DM transport: NIP-17 (gift-wrapped) + NIP-04 (legacy) in parallel.
 	// Both buses share the same dmOnMessage handler so any client protocol works.
+	if controlRelaySelector == nil {
+		controlRelaySelector = nostruntime.NewRelaySelector(cfg.Relays, cfg.Relays)
+		toolbuiltin.SetRelaySelector(controlRelaySelector)
+	}
+	if controlHub == nil && controlKeyer != nil {
+		hub, hubErr := nostruntime.NewHub(ctx, controlKeyer, controlRelaySelector)
+		if hubErr != nil {
+			log.Printf("nostr hub: failed to create before DM/control startup: %v", hubErr)
+		} else {
+			controlHub = hub
+		}
+	}
+
 	nip17bus, nip17err := nostruntime.StartNIP17Bus(ctx, nostruntime.NIP17BusOptions{
 		Keyer:     controlKeyer,
 		Relays:    cfg.Relays,
@@ -3558,11 +3587,13 @@ func main() {
 	if nip17err != nil {
 		log.Printf("dm transport: NIP-17 unavailable (%v); NIP-04 only", nip17err)
 	} else {
+		controlNIP17Bus = nip17bus
 		log.Printf("dm transport: NIP-17 (gift-wrapped) active")
 		defer nip17bus.Close()
 	}
 	nip04bus, nip04err := nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
 		Keyer:     controlKeyer,
+		Hub:       controlHub,
 		Relays:    cfg.Relays,
 		SinceUnix: checkpointSinceUnix(checkpoint.LastUnix),
 		OnMessage: dmOnMessage,
@@ -3571,6 +3602,7 @@ func main() {
 	if nip04err != nil {
 		log.Printf("dm transport: NIP-04 unavailable (%v)", nip04err)
 	} else {
+		controlNIP04Bus = nip04bus
 		log.Printf("dm transport: NIP-04 (legacy) active")
 		defer nip04bus.Close()
 	}
@@ -3677,19 +3709,137 @@ func main() {
 					configState.Set(current)
 				}
 
-				// Apply relay changes to DM + control buses.
-				controlDMBusMu.RLock()
-				dmBus := controlDMBus
-				controlDMBusMu.RUnlock()
-				if dmBus != nil {
-					allRelays := nostruntime.MergeRelayLists(read, write)
-					if err := dmBus.SetRelays(allRelays); err != nil {
-						log.Printf("nip65: dm relay update failed: %v", err)
-					}
-				}
+				allRelays := nostruntime.MergeRelayLists(read, write)
+				applyDMRelayPolicy(allRelays)
+				applyControlRelayPolicy(allRelays)
+				watchRegistry.RebindRelays(allRelays)
 			},
 		}); err != nil {
 			log.Printf("nip65: self-sync init: %v", err)
+		}
+
+		// ── NIP-51 kind:30002 Relay Sets ───────────────────────────────────
+		// Create the relay set registry and seed it with relays from channel
+		// configs.  Then subscribe to our own kind:30002 events so changes
+		// made by external clients are applied at runtime.
+		{
+			relaySetRegistry = nostruntime.NewRelaySetRegistry()
+
+			// Seed relay sets from nostr_channels config.
+			nip29Relays := map[string]struct{}{}
+			nip28Relays := map[string]struct{}{}
+			chatRelays := map[string]struct{}{}
+			for _, chanCfg := range liveCfg.NostrChannels {
+				switch state.NostrChannelKind(chanCfg.Kind) {
+				case state.NostrChannelKindNIP29:
+					for _, r := range chanCfg.Relays {
+						nip29Relays[r] = struct{}{}
+					}
+				case state.NostrChannelKindNIP28:
+					for _, r := range chanCfg.Relays {
+						nip28Relays[r] = struct{}{}
+					}
+				case state.NostrChannelKindChat:
+					for _, r := range chanCfg.Relays {
+						chatRelays[r] = struct{}{}
+					}
+				}
+			}
+			seedSet := func(dtag string, m map[string]struct{}) {
+				if len(m) > 0 {
+					rs := make([]string, 0, len(m))
+					for r := range m {
+						rs = append(rs, r)
+					}
+					relaySetRegistry.Set(dtag, rs)
+				}
+			}
+			seedSet(nip51.RelaySetNIP29, nip29Relays)
+			seedSet(nip51.RelaySetNIP28, nip28Relays)
+			seedSet(nip51.RelaySetChat, chatRelays)
+
+			// Seed DVM relays from config if DVM is configured.
+			if dvmHandler != nil {
+				relaySetRegistry.Set(nip51.RelaySetDVM, cfg.Relays)
+			}
+
+			// Seed search relays from extra config if present.
+			if searchExtra, ok := liveCfg.Extra["search"].(map[string]any); ok {
+				if rawRelays, ok := searchExtra["relays"].([]any); ok {
+					var sr []string
+					for _, r := range rawRelays {
+						if s, ok := r.(string); ok {
+							sr = append(sr, s)
+						}
+					}
+					if len(sr) > 0 {
+						relaySetRegistry.Set(nip51.RelaySetSearch, sr)
+					}
+				}
+			}
+
+			// Seed grasp servers from extra config if present.
+			if graspExtra, ok := liveCfg.Extra["grasp"].(map[string]any); ok {
+				if rawServers, ok := graspExtra["servers"].([]any); ok {
+					var gs []string
+					for _, s := range rawServers {
+						if str, ok := s.(string); ok {
+							gs = append(gs, str)
+						}
+					}
+					if len(gs) > 0 {
+						relaySetRegistry.Set(nip51.RelaySetGrasp, gs)
+					}
+				}
+			}
+
+			// Register change callback to rebind affected subscriptions.
+			relaySetRegistry.OnChange(func(dtag string, relays []string) {
+				log.Printf("relay-set: %q updated → %v", dtag, relays)
+				switch dtag {
+				case nip51.RelaySetDVM:
+					if dvmHandler != nil {
+						dvmHandler.SetRelays(relays)
+					}
+				}
+				// NIP-29/NIP-28/chat channel rebinding is handled by the
+				// channel registry — channels read relay sets at join time.
+			})
+
+			// Subscribe to our own kind:30002 relay set events.
+			allRelays := nostruntime.MergeRelayLists(liveCfg.Relays.Read, liveCfg.Relays.Write)
+			if syncErr := nostruntime.RelaySetSelfSync(ctx, nostruntime.RelaySetSyncOptions{
+				Keyer:    controlKeyer,
+				Pool:     nip51Pool,
+				Relays:   allRelays,
+				Registry: relaySetRegistry,
+				WatchDTags: []string{
+					nip51.RelaySetDMInbox,
+					nip51.RelaySetNIP29,
+					nip51.RelaySetChat,
+					nip51.RelaySetNIP28,
+					nip51.RelaySetSearch,
+					nip51.RelaySetDVM,
+					nip51.RelaySetGrasp,
+				},
+			}); syncErr != nil {
+				log.Printf("relay-set-sync: init failed: %v", syncErr)
+			}
+
+			// Publish current relay sets in the background.
+			go func() {
+				sets := relaySetRegistry.All()
+				for dtag, entry := range sets {
+					if len(entry.Relays) == 0 {
+						continue
+					}
+					if _, err := nostruntime.PublishRelaySet(ctx, nip51Pool, controlKeyer, allRelays, dtag, entry.Relays); err != nil {
+						log.Printf("relay-set: publish %q failed: %v", dtag, err)
+					} else {
+						log.Printf("relay-set: published %q (%d relays)", dtag, len(entry.Relays))
+					}
+				}
+			}()
 		}
 
 		// Start watchers for each allow_from_lists entry.
@@ -3758,7 +3908,8 @@ func main() {
 					}
 				}
 			}
-			dvmHandler, dvmErr := dvm.Start(ctx, dvm.HandlerOpts{
+			var dvmErr error
+			dvmHandler, dvmErr = dvm.Start(ctx, dvm.HandlerOpts{
 				Keyer:         controlKeyer,
 				Relays:        cfg.Relays,
 				AcceptedKinds: acceptedKinds,
@@ -4291,6 +4442,7 @@ func main() {
 	var controlBus *nostruntime.ControlRPCBus
 	controlBus, err = nostruntime.StartControlRPCBus(ctx, nostruntime.ControlRPCBusOptions{
 		Keyer:             controlKeyer,
+		Hub:               controlHub,
 		Relays:            cfg.Relays,
 		SinceUnix:         checkpointSinceUnix(controlCheckpoint.LastUnix),
 		MaxRequestAge:     2 * time.Minute,
@@ -4313,6 +4465,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("start control rpc bus: %v", err)
 	}
+	controlRPCBus = controlBus
 	defer controlBus.Close()
 
 	if gatewayWSAddr != "" {
@@ -5236,11 +5389,13 @@ func ensureIngestCheckpoint(ctx context.Context, repo *state.DocsRepository) (st
 }
 
 func checkpointSinceUnix(lastUnix int64) int64 {
-	// Always look back at least 30 minutes so that agents reconstruct
-	// recent conversation context after a restart, even if the checkpoint
-	// is current.  The AlreadyProcessed gate prevents re-replies to
-	// messages that were handled before the restart.
-	floor := time.Now().Add(-30 * time.Minute).Unix()
+	// Always look back at least DMReplayWindowDefault (30min) so that agents
+	// reconstruct recent conversation context after a restart, even if the
+	// checkpoint is current.  The AlreadyProcessed gate prevents re-replies
+	// to messages that were handled before the restart.
+	//
+	// See runtime/replay.go for the full replay policy documentation.
+	floor := nostruntime.ResubscribeSince(nostruntime.DMReplayWindowDefault)
 	if lastUnix <= 0 {
 		return floor
 	}
@@ -5856,6 +6011,29 @@ func handleControlRPCRequest(
 		if dmBus != nil {
 			pubkey = dmBus.PublicKey()
 		}
+		var subs []methods.SubHealthInfo
+		if controlBus != nil {
+			subs = append(subs, subHealthToInfo(controlBus.HealthSnapshot()))
+		}
+		if dmBus != nil {
+			if reporter, ok := dmBus.(nostruntime.SubHealthReporter); ok {
+				subs = append(subs, subHealthToInfo(reporter.HealthSnapshot()))
+			}
+		}
+		if dvmHandler != nil {
+			subs = append(subs, subHealthToInfo(dvmHandler.HealthSnapshot()))
+		}
+		// Collect relay sets for status response.
+		var relaySets map[string][]string
+		if relaySetRegistry != nil {
+			all := relaySetRegistry.All()
+			if len(all) > 0 {
+				relaySets = make(map[string][]string, len(all))
+				for dtag, entry := range all {
+					relaySets[dtag] = entry.Relays
+				}
+			}
+		}
 		return nostruntime.ControlRPCResult{Result: methods.StatusResponse{
 			PubKey:        pubkey,
 			Relays:        cfg.Relays.Read,
@@ -5863,6 +6041,8 @@ func handleControlRPCRequest(
 			UptimeSeconds: int(time.Since(startedAt).Seconds()),
 			UptimeMS:      time.Since(startedAt).Milliseconds(),
 			Version:       "metiqd",
+			Subscriptions: subs,
+			RelaySets:     relaySets,
 		}}, nil
 	case methods.MethodUsageStatus:
 		if usageState == nil {
@@ -9557,15 +9737,73 @@ func mergeSessionMeta(base map[string]any, patch map[string]any) map[string]any 
 	return out
 }
 
-func applyRuntimeRelayPolicy(dmBus nostruntime.DMTransport, controlBus *nostruntime.ControlRPCBus, cfg state.ConfigDoc) {
-	if dmBus != nil && len(cfg.Relays.Write) > 0 {
-		if err := dmBus.SetRelays(cfg.Relays.Write); err != nil {
-			log.Printf("dm relay policy update failed: %v", err)
+func applyDMRelayPolicy(relays []string) {
+	if len(relays) == 0 {
+		return
+	}
+	if controlNIP17Bus != nil {
+		if err := controlNIP17Bus.SetRelays(relays); err != nil {
+			log.Printf("nip17 relay policy update failed: %v", err)
 		}
 	}
-	if controlBus != nil && len(cfg.Relays.Write) > 0 {
-		if err := controlBus.SetRelays(cfg.Relays.Write); err != nil {
+	if controlNIP04Bus != nil {
+		if err := controlNIP04Bus.SetRelays(relays); err != nil {
+			log.Printf("nip04 relay policy update failed: %v", err)
+		}
+	}
+	if controlNIP17Bus == nil && controlNIP04Bus == nil {
+		controlDMBusMu.RLock()
+		dmBus := controlDMBus
+		controlDMBusMu.RUnlock()
+		if dmBus != nil {
+			if err := dmBus.SetRelays(relays); err != nil {
+				log.Printf("dm relay policy update failed: %v", err)
+			}
+		}
+	}
+}
+
+func applyControlRelayPolicy(relays []string) {
+	if len(relays) == 0 {
+		return
+	}
+	if controlRPCBus != nil {
+		if err := controlRPCBus.SetRelays(relays); err != nil {
 			log.Printf("control relay policy update failed: %v", err)
+		}
+	}
+}
+
+func subHealthToInfo(s nostruntime.SubHealthSnapshot) methods.SubHealthInfo {
+	var lastEvtMS, lastReconnMS int64
+	if !s.LastEventAt.IsZero() {
+		lastEvtMS = s.LastEventAt.UnixMilli()
+	}
+	if !s.LastReconnectAt.IsZero() {
+		lastReconnMS = s.LastReconnectAt.UnixMilli()
+	}
+	return methods.SubHealthInfo{
+		Label:            s.Label,
+		BoundRelays:      s.BoundRelays,
+		LastEventAt:      lastEvtMS,
+		LastReconnectAt:  lastReconnMS,
+		LastClosedReason: s.LastClosedReason,
+		ReplayWindowMS:   s.ReplayWindowMS,
+		EventCount:       s.EventCount,
+		ReconnectCount:   s.ReconnectCount,
+	}
+}
+
+func applyRuntimeRelayPolicy(_ nostruntime.DMTransport, _ *nostruntime.ControlRPCBus, cfg state.ConfigDoc) {
+	relays := nostruntime.MergeRelayLists(cfg.Relays.Read, cfg.Relays.Write)
+	if len(relays) > 0 {
+		applyDMRelayPolicy(relays)
+		applyControlRelayPolicy(relays)
+		if watchRegistry != nil {
+			watchRegistry.RebindRelays(relays)
+		}
+		if dvmHandler != nil {
+			dvmHandler.SetRelays(relays)
 		}
 	}
 

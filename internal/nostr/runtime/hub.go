@@ -234,7 +234,11 @@ func (h *NostrHub) Subscribe(ctx context.Context, opts SubOpts) (*ManagedSub, er
 					opts.OnClosed(rc.Relay, rc.Reason, rc.HandledAuth)
 				}
 				if !rc.HandledAuth {
-					log.Printf("nostr hub: sub %q closed by %s: %s", id, rc.Relay.URL, rc.Reason)
+					if rc.Relay != nil {
+						log.Printf("nostr hub: sub %q closed by %s: %s", id, rc.Relay.URL, rc.Reason)
+					} else {
+						log.Printf("nostr hub: sub %q closed: %s", id, rc.Reason)
+					}
 				}
 
 			case <-subCtx.Done():

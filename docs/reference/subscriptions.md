@@ -10,6 +10,23 @@ The relay sets referenced below are sourced from the agent's own published lists
 | `10050` | NIP-17 | DM inbox relays |
 | `3` | NIP-02 | Contact / follows list |
 | `30000` | NIP-51 | Categorised people lists (allowlist, fleet, etc.) |
+| `30002` | NIP-51 | Categorised relay sets (purpose-specific relay lists) |
+
+### Kind 30002 Relay Sets
+
+The agent publishes and subscribes to `kind:30002` (NIP-51 parameterised replaceable) events to manage purpose-specific relay lists. Each relay set is identified by a `d`-tag:
+
+| d-tag | Purpose | Seeded from |
+|-------|---------|-------------|
+| `dm-inbox` | NIP-17 DM inbox relays (mirrors kind:10050) | DM bus config |
+| `nip29-relays` | NIP-29 relay-managed group relays | Channel configs with `kind: nip29` |
+| `chat-relays` | NIP-C7 kind:9 chat relays | Channel configs with `kind: chat` |
+| `nip28-relays` | NIP-28 public channel relays | Channel configs with `kind: nip28` |
+| `search-relays` | NIP-50 search relays | `extra.search.relays` config |
+| `dvm-relays` | NIP-90 DVM relays | Bootstrap relays (when DVM enabled) |
+| `grasp-servers` | Grasp protocol server endpoints | `extra.grasp.servers` config |
+
+At startup, the `RelaySetRegistry` is seeded from config, then a self-sync subscription loads any remote updates. Changes to a relay set (whether local or remote) fire callbacks that rebind affected subscriptions.
 
 ---
 
@@ -199,6 +216,28 @@ The agent can create temporary subscriptions at runtime via the `nostr_watch` to
 
 ---
 
+## 11. NIP-51 Relay Set Self-Sync
+
+Watches the agent's own `kind:30002` relay set events for remote updates.
+
+| Field | Value |
+|-------|-------|
+| **NIP** | NIP-51 |
+| **Kind** | `30002` (Categorised Relay Set) |
+| **Authors** | `[<own-pubkey>]` |
+| **Tags** | `#d` = `[dm-inbox, nip29-relays, chat-relays, nip28-relays, search-relays, dvm-relays, grasp-servers]` |
+| **Since** | — (replaceable, fetches latest) |
+| **Relays** | Config `relays.read` ∪ `relays.write` |
+| **Lifetime** | Permanent |
+| **Behaviour** | EOSE-aware (like NIP-65 self-sync). Pre-EOSE events populate the registry silently; post-EOSE events trigger `OnChange` callbacks that rebind subscriptions. The registry applies timestamp ordering to handle out-of-order events. |
+| **Registry** | `RelaySetRegistry` — thread-safe in-memory cache with change callbacks |
+| **Startup publish** | After seeding from config, publishes all non-empty relay sets in a background goroutine |
+| **Reconnect** | Automatic (pool-level, EOSE-aware via `SubscribeManyNotifyEOSE`) |
+| **Restart on** | Only on full daemon restart |
+| **Status** | Relay sets appear in `status.get` response under `relay_sets` field |
+
+---
+
 ## Summary: Event Kinds Table
 
 All event kinds the agent subscribes to or produces, for quick reference:
@@ -219,6 +258,7 @@ All event kinds the agent subscribes to or produces, for quick reference:
 | `10002` | NIP-65 | Read/Write | Relay list metadata |
 | `10050` | NIP-17 | Write | DM inbox relay list |
 | `30000` | NIP-51 | Read/Write | Categorised people list |
+| `30002` | NIP-51 | Read/Write | Categorised relay set (purpose-specific relay lists) |
 | `30023` | NIP-23 | Read (on-demand) | Long-form content |
 | `30078` | NIP-78 | Read/Write | Application-specific data (state docs) |
 | `30315` | Custom | Write | Log / status |
@@ -231,7 +271,7 @@ All event kinds the agent subscribes to or produces, for quick reference:
 
 ## Subscription Lifecycle Rules
 
-1. **Startup**: All subscriptions in sections 1–9 are opened during daemon initialisation, after key material and relay lists are resolved.
+1. **Startup**: All subscriptions in sections 1–11 are opened during daemon initialisation, after key material and relay lists are resolved.
 
 2. **Reconnect jitter**: Subscriptions that set `Since` apply a 30-second backdate (jitter) on every connect/reconnect to cover events that may have arrived during brief disconnection windows.
 
@@ -239,7 +279,7 @@ All event kinds the agent subscribes to or produces, for quick reference:
    - `SeenCache`: TTL-based (5 min), capped at 10 000 entries — used by channel subscriptions.
    - Ring-buffer seen set: Fixed-size FIFO — used by DM bus, control bus, and watches.
 
-4. **Config-driven restart**: When the agent's relay lists change (detected via NIP-65 self-sync or config file change), affected subscriptions are torn down and re-opened with the new relay set. This includes re-publishing kind:10002 and kind:10050 with `ForcePublish: true`.
+4. **Config-driven restart**: When the agent's relay lists change (detected via NIP-65 self-sync, relay set self-sync, or config file change), affected subscriptions are torn down and re-opened with the new relay set. This includes re-publishing kind:10002, kind:10050, and kind:30002 relay sets with `ForcePublish: true`.
 
 5. **Self-filtering**: All inbound subscriptions skip events authored by the agent's own pubkey to prevent feedback loops.
 

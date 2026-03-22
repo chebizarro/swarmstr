@@ -9,12 +9,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // maxActiveWatches is the maximum number of concurrent subscriptions per registry.
@@ -74,6 +76,7 @@ type WatchSpec struct {
 	SessionID string         `json:"session_id"`
 	FilterRaw map[string]any `json:"filter"` // original args for buildNostrFilter
 	Relays    []string       `json:"relays"`
+	ExplicitRelays bool      `json:"explicit_relays,omitempty"`
 	TTLSec    int            `json:"ttl_seconds"`
 	MaxEvents int            `json:"max_events"`
 	Received  int            `json:"received"`
@@ -86,11 +89,16 @@ type watchEntry struct {
 	name      string
 	sessionID string
 	cancel    context.CancelFunc
+	done      chan struct{}
 	createdAt time.Time
+	mu        sync.Mutex
 	maxEvents int
 	received  int
 	filterRaw map[string]any // original filter args for persistence
 	relays    []string       // resolved relays for persistence
+	relaysMu  sync.RWMutex   // protects relays during rebind
+	explicitRelays bool      // true if the watch was created with explicit relays
+	rebindCh  chan struct{}  // signals the watch loop to restart with new relays
 	ttlSec    int            // original TTL for persistence
 	deadline  time.Time      // absolute expiry
 }
@@ -99,11 +107,27 @@ type watchEntry struct {
 type WatchRegistry struct {
 	mu      sync.Mutex
 	entries map[string]*watchEntry // key: name
+	stopping map[string]chan struct{} // key: name -> done channel
+	hubFunc func() *nostruntime.NostrHub
 }
 
 // NewWatchRegistry creates an empty WatchRegistry.
 func NewWatchRegistry() *WatchRegistry {
-	return &WatchRegistry{entries: map[string]*watchEntry{}}
+	return &WatchRegistry{entries: map[string]*watchEntry{}, stopping: map[string]chan struct{}{}}
+}
+
+// SetHubFunc sets the hub provider so watches can use managed subscriptions.
+func (r *WatchRegistry) SetHubFunc(fn func() *nostruntime.NostrHub) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hubFunc = fn
+}
+
+func (r *WatchRegistry) hub() *nostruntime.NostrHub {
+	if r.hubFunc != nil {
+		return r.hubFunc()
+	}
+	return nil
 }
 
 // start creates and registers a new watch subscription.
@@ -115,6 +139,7 @@ func (r *WatchRegistry) start(
 	filter nostr.Filter,
 	filterRaw map[string]any,
 	relays []string,
+	explicitRelays bool,
 	ttl time.Duration,
 	maxEvents int,
 	deliver WatchDelivery,
@@ -124,6 +149,9 @@ func (r *WatchRegistry) start(
 
 	if _, exists := r.entries[name]; exists {
 		return fmt.Errorf("watch %q already exists; unwatch first", name)
+	}
+	if _, stopping := r.stopping[name]; stopping {
+		return fmt.Errorf("watch %q is stopping; try again shortly", name)
 	}
 	if len(r.entries) >= maxActiveWatches {
 		return fmt.Errorf("maximum of %d active watches reached", maxActiveWatches)
@@ -135,59 +163,50 @@ func (r *WatchRegistry) start(
 		name:      name,
 		sessionID: sessionID,
 		cancel:    cancel,
+		done:      make(chan struct{}),
 		createdAt: now,
 		maxEvents: maxEvents,
 		filterRaw: filterRaw,
 		relays:    relays,
+		explicitRelays: explicitRelays,
+		rebindCh:  make(chan struct{}, 1),
 		ttlSec:    int(ttl.Seconds()),
 		deadline:  now.Add(ttl),
 	}
 	r.entries[name] = entry
 
-	pool, releasePool := opts.AcquirePool("watch " + name + " done")
-
-	// Apply jitter: backdate Since to capture events during connection setup.
-	if filter.Since > 0 {
-		backdated := filter.Since - nostr.Timestamp(watchSinceJitter.Seconds())
-		if backdated < 0 {
-			backdated = 0
-		}
-		filter.Since = backdated
-	}
-
-	sub := pool.SubscribeMany(subCtx, relays, filter, nostr.SubscriptionOptions{})
+	filter = applyWatchSinceJitter(filter)
 
 	go func() {
+		pool, releasePool := opts.AcquirePool("watch " + name + " done")
 		defer func() {
+			close(entry.done)
 			cancel()
 			releasePool()
 			r.mu.Lock()
 			delete(r.entries, name)
+			if ch, ok := r.stopping[name]; ok && ch == entry.done {
+				delete(r.stopping, name)
+			}
 			r.mu.Unlock()
 		}()
 		seen := newWatchSeenSet(watchSeenMaxSize)
-		for {
-			select {
-			case <-subCtx.Done():
+		eventHandler := func(re nostr.RelayEvent) {
+			evID := re.Event.ID.Hex()
+			if seen.Add(evID) {
 				return
-			case re, ok := <-sub:
-				if !ok {
-					return
-				}
-				evID := re.Event.ID.Hex()
-				if seen.Add(evID) {
-					continue
-				}
-				deliver(sessionID, name, eventToMap(re.Event))
-				r.mu.Lock()
-				entry.received++
-				done := maxEvents > 0 && entry.received >= maxEvents
-				r.mu.Unlock()
-				if done {
-					return
-				}
+			}
+			deliver(sessionID, name, eventToMap(re.Event))
+			entry.mu.Lock()
+			entry.received++
+			done := maxEvents > 0 && entry.received >= maxEvents
+			entry.mu.Unlock()
+			if done {
+				cancel()
 			}
 		}
+
+		r.runWatchLoop(subCtx, pool, entry, filter, relays, eventHandler)
 	}()
 
 	return nil
@@ -196,13 +215,31 @@ func (r *WatchRegistry) start(
 // stop cancels a named watch.
 func (r *WatchRegistry) stop(name string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	e, ok := r.entries[name]
 	if !ok {
+		if _, stopping := r.stopping[name]; stopping {
+			r.mu.Unlock()
+			return fmt.Errorf("watch %q is stopping", name)
+		}
+		r.mu.Unlock()
 		return fmt.Errorf("watch %q not found", name)
 	}
-	e.cancel()
 	delete(r.entries, name)
+	r.stopping[name] = e.done
+	r.mu.Unlock()
+
+	e.cancel()
+
+	select {
+	case <-e.done:
+	case <-time.After(5 * time.Second):
+	}
+
+	r.mu.Lock()
+	if ch, ok := r.stopping[name]; ok && ch == e.done {
+		delete(r.stopping, name)
+	}
+	r.mu.Unlock()
 	return nil
 }
 
@@ -212,12 +249,19 @@ func (r *WatchRegistry) list() []map[string]any {
 	defer r.mu.Unlock()
 	out := make([]map[string]any, 0, len(r.entries))
 	for _, e := range r.entries {
+		e.mu.Lock()
+		received := e.received
+		maxEvents := e.maxEvents
+		createdAt := e.createdAt.Unix()
+		sessionID := e.sessionID
+		name := e.name
+		e.mu.Unlock()
 		out = append(out, map[string]any{
-			"name":       e.name,
-			"session_id": e.sessionID,
-			"created_at": e.createdAt.Unix(),
-			"received":   e.received,
-			"max_events": e.maxEvents,
+			"name":       name,
+			"session_id": sessionID,
+			"created_at": createdAt,
+			"received":   received,
+			"max_events": maxEvents,
 		})
 	}
 	return out
@@ -229,16 +273,32 @@ func (r *WatchRegistry) Specs() []WatchSpec {
 	defer r.mu.Unlock()
 	out := make([]WatchSpec, 0, len(r.entries))
 	for _, e := range r.entries {
+		e.relaysMu.RLock()
+		relays := make([]string, len(e.relays))
+		copy(relays, e.relays)
+		e.relaysMu.RUnlock()
+		e.mu.Lock()
+		received := e.received
+		maxEvents := e.maxEvents
+		createdAt := e.createdAt.Unix()
+		deadline := e.deadline.Unix()
+		sessionID := e.sessionID
+		name := e.name
+		filterRaw := e.filterRaw
+		ttlSec := e.ttlSec
+		explicit := e.explicitRelays
+		e.mu.Unlock()
 		out = append(out, WatchSpec{
-			Name:      e.name,
-			SessionID: e.sessionID,
-			FilterRaw: e.filterRaw,
-			Relays:    e.relays,
-			TTLSec:    e.ttlSec,
-			MaxEvents: e.maxEvents,
-			Received:  e.received,
-			CreatedAt: e.createdAt.Unix(),
-			Deadline:  e.deadline.Unix(),
+			Name:      name,
+			SessionID: sessionID,
+			FilterRaw: filterRaw,
+			Relays:    relays,
+			ExplicitRelays: explicit,
+			TTLSec:    ttlSec,
+			MaxEvents: maxEvents,
+			Received:  received,
+			CreatedAt: createdAt,
+			Deadline:  deadline,
 		})
 	}
 	return out
@@ -305,18 +365,59 @@ func (r *WatchRegistry) startRestored(
 		name:      spec.Name,
 		sessionID: spec.SessionID,
 		cancel:    cancel,
+		done:      make(chan struct{}),
 		createdAt: time.Unix(spec.CreatedAt, 0),
 		maxEvents: spec.MaxEvents,
 		received:  spec.Received,
 		filterRaw: spec.FilterRaw,
 		relays:    spec.Relays,
+		explicitRelays: spec.ExplicitRelays,
+		rebindCh:  make(chan struct{}, 1),
 		ttlSec:    spec.TTLSec,
 		deadline:  time.Unix(spec.Deadline, 0),
 	}
 	r.entries[spec.Name] = entry
 
-	pool, releasePool := opts.AcquirePool("watch " + spec.Name + " done")
+	filter = applyWatchSinceJitter(filter)
 
+	go func() {
+		pool, releasePool := opts.AcquirePool("watch " + spec.Name + " done")
+		defer func() {
+			close(entry.done)
+			cancel()
+			releasePool()
+			r.mu.Lock()
+			delete(r.entries, spec.Name)
+			if ch, ok := r.stopping[spec.Name]; ok && ch == entry.done {
+				delete(r.stopping, spec.Name)
+			}
+			r.mu.Unlock()
+		}()
+		seen := newWatchSeenSet(watchSeenMaxSize)
+		eventHandler := func(re nostr.RelayEvent) {
+			evID := re.Event.ID.Hex()
+			if seen.Add(evID) {
+				return
+			}
+			deliver(spec.SessionID, spec.Name, eventToMap(re.Event))
+			entry.mu.Lock()
+			entry.received++
+			done := spec.MaxEvents > 0 && entry.received >= spec.MaxEvents
+			entry.mu.Unlock()
+			if done {
+				cancel()
+			}
+		}
+
+		r.runWatchLoop(subCtx, pool, entry, filter, spec.Relays, eventHandler)
+	}()
+
+	return nil
+}
+
+// ─── Subscription lifecycle ───────────────────────────────────────────────────
+
+func applyWatchSinceJitter(filter nostr.Filter) nostr.Filter {
 	if filter.Since > 0 {
 		backdated := filter.Since - nostr.Timestamp(watchSinceJitter.Seconds())
 		if backdated < 0 {
@@ -324,43 +425,150 @@ func (r *WatchRegistry) startRestored(
 		}
 		filter.Since = backdated
 	}
+	return filter
+}
 
-	sub := pool.SubscribeMany(subCtx, spec.Relays, filter, nostr.SubscriptionOptions{})
+// runWatchLoop runs the subscription for a single watch entry, retrying on
+// stream close until the context (TTL) expires. When the registry has a hub,
+// it uses managed subscriptions with CLOSED visibility; otherwise it falls
+// back to raw pool.SubscribeMany.
+func (r *WatchRegistry) runWatchLoop(
+	ctx context.Context,
+	pool *nostr.Pool,
+	entry *watchEntry,
+	filter nostr.Filter,
+	relays []string,
+	onEvent func(nostr.RelayEvent),
+) {
+	hub := r.hub()
+	currentRelays := relays
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		// Check if relays were updated by RebindRelays.
+		entry.relaysMu.RLock()
+		currentRelays = make([]string, len(entry.relays))
+		copy(currentRelays, entry.relays)
+		entry.relaysMu.RUnlock()
 
-	go func() {
-		defer func() {
-			cancel()
-			releasePool()
-			r.mu.Lock()
-			delete(r.entries, spec.Name)
-			r.mu.Unlock()
-		}()
-		seen := newWatchSeenSet(watchSeenMaxSize)
-		for {
+		var restarted bool
+		if hub != nil {
+			restarted = r.runHubWatch(ctx, hub, entry, filter, currentRelays, onEvent)
+		} else {
+			restarted = r.runRawWatch(ctx, pool, entry, filter, currentRelays, onEvent)
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		// Update since for retry: pick up from now minus jitter.
+		filter.Since = nostr.Timestamp(time.Now().Unix())
+		filter = applyWatchSinceJitter(filter)
+		if !restarted {
 			select {
-			case <-subCtx.Done():
+			case <-ctx.Done():
 				return
-			case re, ok := <-sub:
-				if !ok {
-					return
-				}
-				evID := re.Event.ID.Hex()
-				if seen.Add(evID) {
-					continue
-				}
-				deliver(spec.SessionID, spec.Name, eventToMap(re.Event))
-				r.mu.Lock()
-				entry.received++
-				done := spec.MaxEvents > 0 && entry.received >= spec.MaxEvents
-				r.mu.Unlock()
-				if done {
-					return
-				}
+			case <-time.After(500 * time.Millisecond):
 			}
 		}
-	}()
+	}
+}
 
-	return nil
+func (r *WatchRegistry) runRawWatch(
+	ctx context.Context,
+	pool *nostr.Pool,
+	entry *watchEntry,
+	filter nostr.Filter,
+	relays []string,
+	onEvent func(nostr.RelayEvent),
+) bool {
+	cycleCtx, cycleCancel := context.WithCancel(ctx)
+	defer cycleCancel()
+	sub := pool.SubscribeMany(cycleCtx, relays, filter, nostr.SubscriptionOptions{})
+	for {
+		select {
+		case <-ctx.Done():
+			return true
+		case <-entry.rebindCh:
+			return true // rebind requested, restart with new relays
+		case re, ok := <-sub:
+			if !ok {
+				return false // stream closed, retry
+			}
+			onEvent(re)
+			if ctx.Err() != nil {
+				return true
+			}
+		}
+	}
+}
+
+func (r *WatchRegistry) runHubWatch(
+	ctx context.Context,
+	hub *nostruntime.NostrHub,
+	entry *watchEntry,
+	filter nostr.Filter,
+	relays []string,
+	onEvent func(nostr.RelayEvent),
+) bool {
+	subID := fmt.Sprintf("watch:%s", strings.TrimSpace(entry.name))
+	closedCh := make(chan string, 4)
+
+	ms, err := hub.Subscribe(ctx, nostruntime.SubOpts{
+		ID:      subID,
+		Filter:  filter,
+		Relays:  relays,
+		OnEvent: onEvent,
+		OnClosed: func(relay *nostr.Relay, reason string, handledAuth bool) {
+			if handledAuth {
+				return
+			}
+			select {
+			case closedCh <- reason:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		return false // failed to subscribe, caller will retry
+	}
+	_ = ms
+
+	select {
+	case <-ctx.Done():
+		hub.Unsubscribe(subID)
+		return true
+	case <-entry.rebindCh:
+		hub.Unsubscribe(subID)
+		return true // rebind requested, restart with new relays
+	case <-closedCh:
+		hub.Unsubscribe(subID)
+		return false // closed by relay, retry
+	}
+}
+
+// RebindRelays updates the default relay list for all active watches and
+// restarts their subscriptions with the new relay set. Watches that specified
+// explicit relays at creation time are NOT rebindn — they keep their original
+// relay list.
+func (r *WatchRegistry) RebindRelays(newRelays []string) {
+	r.mu.Lock()
+	for _, e := range r.entries {
+		e.mu.Lock()
+		explicit := e.explicitRelays
+		e.mu.Unlock()
+		if explicit {
+			continue
+		}
+		e.relaysMu.Lock()
+		e.relays = newRelays
+		e.relaysMu.Unlock()
+		select {
+		case e.rebindCh <- struct{}{}:
+		default:
+		}
+	}
+	r.mu.Unlock()
 }
 
 // ─── nostr_watch tool ─────────────────────────────────────────────────────────
@@ -406,12 +614,13 @@ func NostrWatchTool(opts NostrToolOpts, reg *WatchRegistry, deliver WatchDeliver
 			return "", fmt.Errorf("nostr_watch: invalid filter: %w", err)
 		}
 
+		explicitRelays := len(toStringSlice(args["relays"])) > 0
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 		if len(relays) == 0 {
 			return "", fmt.Errorf("nostr_watch: no relays configured")
 		}
 
-		if err := reg.start(ctx, opts, name, sessionID, f, filterArg, relays,
+		if err := reg.start(ctx, opts, name, sessionID, f, filterArg, relays, explicitRelays,
 			time.Duration(ttlSec)*time.Second, maxEvents, deliver); err != nil {
 			return "", fmt.Errorf("nostr_watch: %w", err)
 		}

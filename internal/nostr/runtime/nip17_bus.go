@@ -52,6 +52,7 @@ type NIP17Bus struct {
 
 	onMessage func(context.Context, InboundDM) error
 	onError   func(error)
+	subHealth *SubHealthTracker
 
 	seenMu   sync.Mutex
 	seenSet  map[string]struct{}
@@ -59,6 +60,7 @@ type NIP17Bus struct {
 	seenCap  int
 
 	messageQueue chan InboundDM
+	rebindCh     chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -91,7 +93,7 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 
 	ctx, cancel := context.WithCancel(parent)
 	b := &NIP17Bus{
-		pool: NewPoolNIP42(ks),
+		pool:         NewPoolNIP42(ks),
 		kr:           ks,
 		public:       pub,
 		relays:       initialRelays,
@@ -100,6 +102,7 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 		seenSet:      make(map[string]struct{}),
 		seenCap:      max(opts.SeenCap, 10_000),
 		messageQueue: make(chan InboundDM, queueSize),
+		rebindCh:     make(chan struct{}, 1),
 		ctx:          ctx,
 		cancel:       cancel,
 	}
@@ -118,6 +121,8 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 		}
 	}
 
+	b.subHealth = NewSubHealthTracker("nip17")
+	b.subHealth.RecordReconnect()
 	b.wg.Add(1)
 	go b.receiveLoop(nostr.Timestamp(since))
 
@@ -187,10 +192,22 @@ func (b *NIP17Bus) SetRelays(relays []string) error {
 	b.relaysMu.Lock()
 	b.relays = next
 	b.relaysMu.Unlock()
+	select {
+	case b.rebindCh <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
 // Relays returns the current relay list.
+// HealthSnapshot returns a point-in-time view of the NIP-17 subscription's health.
+func (b *NIP17Bus) HealthSnapshot() SubHealthSnapshot {
+	if b.subHealth == nil {
+		return SubHealthSnapshot{Label: "nip17", BoundRelays: b.currentRelays(), ReplayWindowMS: int64(NIP17GiftWrapBackfill / time.Millisecond)}
+	}
+	return b.subHealth.Snapshot(b.currentRelays(), NIP17GiftWrapBackfill)
+}
+
 func (b *NIP17Bus) Relays() []string { return b.currentRelays() }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -216,13 +233,50 @@ func (b *NIP17Bus) receiveLoop(since nostr.Timestamp) {
 	defer b.wg.Done()
 	defer close(b.messageQueue)
 
-	rumCh := nip17.ListenForMessages(b.ctx, b.pool, b.kr, b.currentRelays(), since)
-	for rumor := range rumCh {
-		b.handleRumor(rumor)
+	currentSince := since
+	for {
+		if b.ctx.Err() != nil {
+			return
+		}
+		cycleCtx, cycleCancel := context.WithCancel(b.ctx)
+		rumCh := nip17.ListenForMessages(cycleCtx, b.pool, b.kr, b.currentRelays(), currentSince)
+		closed := false
+		for !closed {
+			select {
+			case <-b.ctx.Done():
+				cycleCancel()
+				return
+			case <-b.rebindCh:
+				cycleCancel()
+				closed = true
+			case rumor, ok := <-rumCh:
+				if !ok {
+					cycleCancel()
+					b.emitErr(fmt.Errorf("nip17 subscription closed; restarting"))
+					closed = true
+					continue
+				}
+				b.handleRumor(rumor)
+			}
+		}
+		cycleCancel()
+		if b.subHealth != nil {
+			b.subHealth.RecordReconnect()
+		}
+		currentSince = nostr.Timestamp(normalizeNIP17Since(time.Now().Unix()))
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		default:
+		}
 	}
 }
 
 func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
+	if b.subHealth != nil {
+		b.subHealth.RecordEvent()
+	}
 	// Only process kind 14 (NIP-17 DM rumor).
 	if rumor.Kind != nostr.KindDirectMessage {
 		return
@@ -253,7 +307,7 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 		EventID:    eventID,
 		FromPubKey: senderPubkey.Hex(),
 		Text:       text,
-		RelayURL:   "",   // gift wraps hide relay; not available here
+		RelayURL:   "", // gift wraps hide relay; not available here
 		CreatedAt:  int64(rumor.CreatedAt),
 		Reply: func(ctx context.Context, reply string) error {
 			return b.SendDM(ctx, senderPubkey.Hex(), reply)

@@ -39,14 +39,26 @@ type HandlerOpts struct {
 
 // Handler manages NIP-90 DVM subscriptions and result publishing.
 type Handler struct {
-	opts   HandlerOpts
-	keyer  nostr.Keyer
-	pubkey nostr.PubKey
-	pool   *nostr.Pool
-	ctx    context.Context // saved for keyer.SignEvent calls
-	jobSem chan struct{}
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	opts      HandlerOpts
+	keyer     nostr.Keyer
+	pubkey    nostr.PubKey
+	pool      *nostr.Pool
+	ctx       context.Context
+	jobSem    chan struct{}
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	subHealth *runtime.SubHealthTracker
+
+	// Relay rebind support.
+	relaysMu sync.RWMutex
+	relays   []string
+	rebindCh chan struct{}
+
+	// Deduplication.
+	seenMu   sync.Mutex
+	seenSet  map[string]struct{}
+	seenList []string
+	seenCap  int
 }
 
 // Start creates a Handler and begins listening for job requests.
@@ -75,19 +87,28 @@ func Start(ctx context.Context, opts HandlerOpts) (*Handler, error) {
 		opts.MaxConcurrentJobs = 8
 	}
 
+	relays := make([]string, len(opts.Relays))
+	copy(relays, opts.Relays)
+
 	ctx2, cancel := context.WithCancel(ctx)
 	h := &Handler{
-		opts:   opts,
-		keyer:  ks,
-		pubkey: pubkey,
-		pool:   nostr.NewPool(runtime.PoolOptsNIP42(ks)),
-		ctx:    ctx2,
-		jobSem: make(chan struct{}, opts.MaxConcurrentJobs),
-		cancel: cancel,
+		opts:      opts,
+		keyer:     ks,
+		pubkey:    pubkey,
+		pool:      nostr.NewPool(runtime.PoolOptsNIP42(ks)),
+		ctx:       ctx2,
+		jobSem:    make(chan struct{}, opts.MaxConcurrentJobs),
+		cancel:    cancel,
+		subHealth: runtime.NewSubHealthTracker("dvm"),
+		relays:    relays,
+		rebindCh:  make(chan struct{}, 1),
+		seenSet:   make(map[string]struct{}),
+		seenCap:   10_000,
 	}
+	h.subHealth.RecordReconnect()
 
 	h.wg.Add(1)
-	go h.run(ctx2)
+	go h.subscriptionLoop()
 	return h, nil
 }
 
@@ -98,9 +119,76 @@ func (h *Handler) Stop() {
 	h.pool.Close("dvm stopped")
 }
 
-func (h *Handler) run(ctx context.Context) {
+// SetRelays replaces the relay list and triggers a subscription rebind.
+func (h *Handler) SetRelays(relays []string) {
+	next := make([]string, 0, len(relays))
+	for _, r := range relays {
+		if r != "" {
+			next = append(next, r)
+		}
+	}
+	if len(next) == 0 {
+		return
+	}
+	h.relaysMu.Lock()
+	h.relays = next
+	h.relaysMu.Unlock()
+	select {
+	case h.rebindCh <- struct{}{}:
+	default:
+	}
+}
+
+// Relays returns the currently active relay list.
+func (h *Handler) Relays() []string {
+	h.relaysMu.RLock()
+	defer h.relaysMu.RUnlock()
+	out := make([]string, len(h.relays))
+	copy(out, h.relays)
+	return out
+}
+
+// HealthSnapshot returns a point-in-time view of the DVM subscription's health.
+func (h *Handler) HealthSnapshot() runtime.SubHealthSnapshot {
+	if h.subHealth == nil {
+		return runtime.SubHealthSnapshot{Label: "dvm", BoundRelays: h.Relays(), ReplayWindowMS: runtime.DVMResubscribeWindow.Milliseconds()}
+	}
+	return h.subHealth.Snapshot(h.Relays(), runtime.DVMResubscribeWindow)
+}
+
+func (h *Handler) currentRelays() []string {
+	h.relaysMu.RLock()
+	defer h.relaysMu.RUnlock()
+	out := make([]string, len(h.relays))
+	copy(out, h.relays)
+	return out
+}
+
+func (h *Handler) subscriptionLoop() {
 	defer h.wg.Done()
 
+	since := runtime.ResubscribeSince(runtime.DVMResubscribeWindow)
+	for {
+		if h.ctx.Err() != nil {
+			return
+		}
+		h.runSubscription(since)
+		if h.ctx.Err() != nil {
+			return
+		}
+		if h.subHealth != nil {
+			h.subHealth.RecordReconnect()
+		}
+		since = runtime.ResubscribeSince(runtime.DVMResubscribeWindow)
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func (h *Handler) runSubscription(since int64) {
 	kinds := make([]nostr.Kind, len(h.opts.AcceptedKinds))
 	for i, k := range h.opts.AcceptedKinds {
 		kinds[i] = nostr.Kind(k)
@@ -109,31 +197,64 @@ func (h *Handler) run(ctx context.Context) {
 	f := nostr.Filter{
 		Kinds: kinds,
 		Tags:  nostr.TagMap{"p": []string{h.pubkey.Hex()}},
+		Since: nostr.Timestamp(since),
 	}
 
-	sub := h.pool.SubscribeMany(ctx, h.opts.Relays, f, nostr.SubscriptionOptions{})
+	sub := h.pool.SubscribeMany(h.ctx, h.currentRelays(), f, nostr.SubscriptionOptions{})
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-h.ctx.Done():
+			return
+		case <-h.rebindCh:
 			return
 		case re, ok := <-sub:
 			if !ok {
+				log.Printf("dvm: subscription closed; restarting")
 				return
+			}
+			if !re.Event.CheckID() || !re.Event.VerifySignature() {
+				continue
+			}
+			if !re.Event.Tags.ContainsAny("p", []string{h.pubkey.Hex()}) {
+				continue
+			}
+			if h.markSeen(re.Event.ID.Hex()) {
+				continue
+			}
+			if h.subHealth != nil {
+				h.subHealth.RecordEvent()
 			}
 			select {
 			case h.jobSem <- struct{}{}:
-			case <-ctx.Done():
+			case <-h.ctx.Done():
 				return
 			}
 			h.wg.Add(1)
 			go func(ev nostr.Event) {
 				defer h.wg.Done()
 				defer func() { <-h.jobSem }()
-				h.handleJob(ctx, ev)
+				h.handleJob(h.ctx, ev)
 			}(re.Event)
 		}
 	}
+}
+
+// markSeen returns true if the ID was already seen (duplicate).
+func (h *Handler) markSeen(id string) bool {
+	h.seenMu.Lock()
+	defer h.seenMu.Unlock()
+	if _, exists := h.seenSet[id]; exists {
+		return true
+	}
+	h.seenSet[id] = struct{}{}
+	h.seenList = append(h.seenList, id)
+	if len(h.seenList) > h.seenCap {
+		evict := h.seenList[0]
+		h.seenList = h.seenList[1:]
+		delete(h.seenSet, evict)
+	}
+	return false
 }
 
 func (h *Handler) handleJob(ctx context.Context, ev nostr.Event) {
@@ -213,7 +334,7 @@ func (h *Handler) publishStatus(ctx context.Context, jobID, requesterPubkey, sta
 func (h *Handler) publish(ctx context.Context, evt nostr.Event) {
 	ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	for _, relayURL := range h.opts.Relays {
+	for _, relayURL := range h.currentRelays() {
 		r, err := h.pool.EnsureRelay(relayURL)
 		if err != nil {
 			continue
@@ -235,7 +356,7 @@ func extractInput(ev nostr.Event) string {
 	return ev.Content
 }
 
-// PublishJobID is a convenience for agent tools that want to publish a DVM result directly.
+// FormatResult is a convenience for agent tools that want to publish a DVM result directly.
 func FormatResult(jobID, requesterPubkey, outputType, content string) string {
 	m := map[string]any{
 		"job_id":         jobID,
