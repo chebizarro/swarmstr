@@ -59,6 +59,10 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 
 	messages := cfg.InitialMessages
 
+	// historyDelta accumulates the ordered assistant/tool messages produced
+	// during this turn so callers can persist them for future context.
+	var historyDelta []ConversationMessage
+
 	// Initial LLM call.
 	resp, err := cfg.Provider.Chat(ctx, messages, cfg.Tools, cfg.Options)
 	if err != nil {
@@ -68,12 +72,19 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	totalUsage := resp.Usage
 
 	// If no tool calls or no executor, return immediately.
+	// For plain text responses, emit a single assistant message in the delta.
 	if !resp.NeedsToolResults || len(resp.ToolCalls) == 0 || cfg.Executor == nil {
+		if resp.Content != "" {
+			resp.HistoryDelta = []ConversationMessage{{Role: "assistant", Content: resp.Content}}
+		}
 		return resp, nil
 	}
 
-	// Clear any pre-tool preamble text so stale "Let me check..." is never
-	// returned as the final reply.
+	// Save the preamble text for history (e.g. "Let me check...") before
+	// clearing it from the user-visible reply.  The preamble is preserved in
+	// HistoryDelta so future turns can see what the model said alongside its
+	// tool calls, but it is NOT returned as the final reply text.
+	toolPreamble := resp.Content
 	resp.Content = ""
 	calls := resp.ToolCalls
 
@@ -86,6 +97,23 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			toolNames[i] = c.Name
 		}
 		log.Printf("%s: agentic loop iter=%d/%d tools=%v", cfg.LogPrefix, iter+1, cfg.MaxIterations, toolNames)
+
+		// Build the assistant tool-call ConversationMessage for history delta.
+		// On the first iteration, include the saved preamble text; on
+		// subsequent iterations use resp.Content (which is cleared to "").
+		deltaContent := resp.Content
+		if iter == 0 && toolPreamble != "" {
+			deltaContent = toolPreamble
+		}
+		refs := make([]ToolCallRef, len(calls))
+		for i, c := range calls {
+			refs[i] = ToolCallToRef(c)
+		}
+		historyDelta = append(historyDelta, ConversationMessage{
+			Role:      "assistant",
+			Content:   deltaContent,
+			ToolCalls: refs,
+		})
 
 		// Append the assistant's tool-use message.
 		messages = append(messages, LLMMessage{
@@ -104,6 +132,11 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 				Content:    r.Content,
 				ToolCallID: r.ToolCallID,
 			})
+			historyDelta = append(historyDelta, ConversationMessage{
+				Role:       "tool",
+				Content:    r.Content,
+				ToolCallID: r.ToolCallID,
+			})
 			if r.LoopBlocked {
 				log.Printf("%s: loop detector blocked tool, breaking agentic loop", cfg.LogPrefix)
 				loopBlocked = true
@@ -118,7 +151,13 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		resp, err = cfg.Provider.Chat(ctx, messages, cfg.Tools, cfg.Options)
 		if err != nil {
 			log.Printf("%s: agentic loop LLM error iter=%d: %v", cfg.LogPrefix, iter+1, err)
-			break
+			// Return partial history so callers can persist completed tool work.
+			return nil, &TurnExecutionError{
+				Cause: err,
+				Partial: TurnResult{
+					HistoryDelta: historyDelta,
+				},
+			}
 		}
 
 		totalUsage.InputTokens += resp.Usage.InputTokens
@@ -127,7 +166,14 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 
 		// If the model produced text (no more tool calls), we're done.
 		if !resp.NeedsToolResults || len(calls) == 0 {
+			if resp.Content != "" {
+				historyDelta = append(historyDelta, ConversationMessage{
+					Role:    "assistant",
+					Content: resp.Content,
+				})
+			}
 			resp.Usage = totalUsage
+			resp.HistoryDelta = historyDelta
 			return resp, nil
 		}
 
@@ -139,19 +185,39 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	if cfg.ForceText && (resp == nil || resp.Content == "") {
 		summaryResp := forceSummary(ctx, cfg, messages, calls, totalUsage)
 		if summaryResp != nil {
+			summaryResp.HistoryDelta = historyDelta
+			if summaryResp.Content != "" {
+				summaryResp.HistoryDelta = append(summaryResp.HistoryDelta, ConversationMessage{
+					Role:    "assistant",
+					Content: summaryResp.Content,
+				})
+			}
 			return summaryResp, nil
 		}
 	}
 
 	// If still no text, return a failure message.
 	if resp == nil || resp.Content == "" {
+		failContent := "I wasn't able to complete this — the tool calls kept looping without producing a result. Please try rephrasing or check that the external service is responding."
+		historyDelta = append(historyDelta, ConversationMessage{
+			Role:    "assistant",
+			Content: failContent,
+		})
 		return &LLMResponse{
-			Content: "I wasn't able to complete this — the tool calls kept looping without producing a result. Please try rephrasing or check that the external service is responding.",
-			Usage:   totalUsage,
+			Content:      failContent,
+			Usage:        totalUsage,
+			HistoryDelta: historyDelta,
 		}, nil
 	}
 
+	if resp.Content != "" {
+		historyDelta = append(historyDelta, ConversationMessage{
+			Role:    "assistant",
+			Content: resp.Content,
+		})
+	}
 	resp.Usage = totalUsage
+	resp.HistoryDelta = historyDelta
 	return resp, nil
 }
 

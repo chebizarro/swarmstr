@@ -206,6 +206,172 @@ func TestRunAgenticLoop_MaxIterationsExhausted(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_HistoryDelta_PlainText(t *testing.T) {
+	provider := &mockChatProvider{
+		responses: []*LLMResponse{
+			{Content: "just text", NeedsToolResults: false},
+		},
+	}
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "hello"}},
+		Executor:        &mockToolExecutor{},
+		LogPrefix:       "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.HistoryDelta) != 1 {
+		t.Fatalf("expected 1 delta message, got %d", len(resp.HistoryDelta))
+	}
+	if resp.HistoryDelta[0].Role != "assistant" || resp.HistoryDelta[0].Content != "just text" {
+		t.Errorf("delta[0] = %+v, want assistant/'just text'", resp.HistoryDelta[0])
+	}
+}
+
+func TestRunAgenticLoop_HistoryDelta_WithTools(t *testing.T) {
+	provider := &mockChatProvider{
+		responses: []*LLMResponse{
+			{
+				ToolCalls:        []ToolCall{{ID: "tc1", Name: "read_file", Args: map[string]any{"path": "/tmp"}}},
+				NeedsToolResults: true,
+			},
+			{Content: "file contents are xyz", NeedsToolResults: false},
+		},
+	}
+	executor := &mockToolExecutor{results: map[string]string{"read_file": "xyz"}}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "read file"}},
+		Executor:        executor,
+		LogPrefix:       "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expected delta: assistant(tool_call) + tool(result) + assistant(text)
+	if len(resp.HistoryDelta) != 3 {
+		t.Fatalf("expected 3 delta messages, got %d: %+v", len(resp.HistoryDelta), resp.HistoryDelta)
+	}
+	// 1. Assistant tool-call
+	d0 := resp.HistoryDelta[0]
+	if d0.Role != "assistant" || len(d0.ToolCalls) != 1 {
+		t.Errorf("delta[0]: want assistant with 1 tool call, got %+v", d0)
+	}
+	if d0.ToolCalls[0].Name != "read_file" || d0.ToolCalls[0].ID != "tc1" {
+		t.Errorf("delta[0].ToolCalls[0] = %+v", d0.ToolCalls[0])
+	}
+	// 2. Tool result
+	d1 := resp.HistoryDelta[1]
+	if d1.Role != "tool" || d1.ToolCallID != "tc1" || d1.Content != "xyz" {
+		t.Errorf("delta[1]: want tool/tc1/xyz, got %+v", d1)
+	}
+	// 3. Final assistant text
+	d2 := resp.HistoryDelta[2]
+	if d2.Role != "assistant" || d2.Content != "file contents are xyz" {
+		t.Errorf("delta[2]: want assistant/'file contents are xyz', got %+v", d2)
+	}
+}
+
+func TestRunAgenticLoop_HistoryDelta_MultipleIterations(t *testing.T) {
+	provider := &mockChatProvider{
+		responses: []*LLMResponse{
+			{ToolCalls: []ToolCall{{ID: "a1", Name: "tool_a"}}, NeedsToolResults: true},
+			{ToolCalls: []ToolCall{{ID: "b1", Name: "tool_b"}, {ID: "b2", Name: "tool_c"}}, NeedsToolResults: true},
+			{Content: "done after two rounds", NeedsToolResults: false},
+		},
+	}
+	executor := &mockToolExecutor{results: map[string]string{
+		"tool_a": "ra", "tool_b": "rb", "tool_c": "rc",
+	}}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "multi"}},
+		Executor:        executor,
+		LogPrefix:       "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Iter 1: assistant(a1) + tool(a1) = 2
+	// Iter 2: assistant(b1,b2) + tool(b1) + tool(b2) = 3
+	// Final: assistant(text) = 1
+	// Total = 6
+	if len(resp.HistoryDelta) != 6 {
+		t.Fatalf("expected 6 delta messages, got %d", len(resp.HistoryDelta))
+	}
+	// Verify structure
+	if resp.HistoryDelta[0].Role != "assistant" || len(resp.HistoryDelta[0].ToolCalls) != 1 {
+		t.Error("delta[0] should be assistant with 1 tool call")
+	}
+	if resp.HistoryDelta[1].Role != "tool" {
+		t.Error("delta[1] should be tool result")
+	}
+	if resp.HistoryDelta[2].Role != "assistant" || len(resp.HistoryDelta[2].ToolCalls) != 2 {
+		t.Error("delta[2] should be assistant with 2 tool calls")
+	}
+	if resp.HistoryDelta[5].Role != "assistant" || resp.HistoryDelta[5].Content != "done after two rounds" {
+		t.Errorf("delta[5] should be final assistant text, got %+v", resp.HistoryDelta[5])
+	}
+}
+
+func TestRunAgenticLoop_HistoryDelta_LLMError_PartialResult(t *testing.T) {
+	callCount := 0
+	provider := &mockChatProvider{}
+	// Override the Chat method to fail on second call
+	originalChat := provider.Chat
+	_ = originalChat
+	failProvider := &failOnSecondCallProvider{
+		first: &LLMResponse{
+			ToolCalls:        []ToolCall{{ID: "tc1", Name: "tool_a"}},
+			NeedsToolResults: true,
+		},
+	}
+
+	executor := &mockToolExecutor{results: map[string]string{"tool_a": "ok"}}
+	_ = callCount
+
+	_, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        failProvider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "fail mid-loop"}},
+		Executor:        executor,
+		LogPrefix:       "test",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	partial, ok := PartialTurnResult(err)
+	if !ok {
+		t.Fatal("expected TurnExecutionError with partial result")
+	}
+	// Should have: assistant(tool_call) + tool(result) = 2 messages
+	if len(partial.HistoryDelta) != 2 {
+		t.Fatalf("expected 2 partial delta messages, got %d: %+v", len(partial.HistoryDelta), partial.HistoryDelta)
+	}
+	if partial.HistoryDelta[0].Role != "assistant" || len(partial.HistoryDelta[0].ToolCalls) != 1 {
+		t.Error("partial delta[0] should be assistant tool-call")
+	}
+	if partial.HistoryDelta[1].Role != "tool" || partial.HistoryDelta[1].Content != "ok" {
+		t.Errorf("partial delta[1] should be tool result, got %+v", partial.HistoryDelta[1])
+	}
+}
+
+// failOnSecondCallProvider returns the first response, then errors.
+type failOnSecondCallProvider struct {
+	first     *LLMResponse
+	callCount int
+}
+
+func (p *failOnSecondCallProvider) Chat(_ context.Context, _ []LLMMessage, _ []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
+	p.callCount++
+	if p.callCount == 1 {
+		return p.first, nil
+	}
+	return nil, fmt.Errorf("API error: 500 internal server error")
+}
+
 func TestRunAgenticLoop_ForceSummary(t *testing.T) {
 	callCount := 0
 	// Provider that returns tool calls N times, then text on final call

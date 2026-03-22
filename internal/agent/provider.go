@@ -29,6 +29,9 @@ type ProviderResult struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 	// Usage reports token consumption, populated by providers that support it.
 	Usage ProviderUsage `json:"usage,omitempty"`
+	// HistoryDelta carries the ordered tool-call/tool-result history from
+	// an agentic loop.  Propagated to TurnResult.HistoryDelta.
+	HistoryDelta []ConversationMessage `json:"-"`
 }
 
 // ProviderUsage holds token counts from the provider API response.
