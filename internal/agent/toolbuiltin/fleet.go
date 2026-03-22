@@ -159,6 +159,11 @@ func NostrAgentRPCTool(opts NostrToolOpts, getAgents FleetDirectoryFunc, waitRep
 		}
 		timeoutSec := normalizeFleetRPCTimeout(args)
 
+		// Scan message for secrets before sending via DM.
+		if err := opts.checkOutboundContent(msgText); err != nil {
+			return "", fmt.Errorf("nostr_agent_rpc: %w", err)
+		}
+
 		// Resolve target to hex pubkey.
 		toPubkeyHex, resolvedName, err := resolveFleetTarget(toRaw, getAgents)
 		if err != nil {

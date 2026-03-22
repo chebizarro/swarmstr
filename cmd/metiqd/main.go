@@ -461,25 +461,43 @@ func main() {
 	tools.Register("send_in_thread", toolbuiltin.SendInThreadTool())
 	tools.Register("edit_message", toolbuiltin.EditMessageTool())
 
+	// ── Outbound content guard ───────────────────────────────────────────────
+	// Scans all outbound Nostr event content for secrets, API keys, private keys,
+	// and other sensitive data before publishing. Policy defaults to "block" which
+	// rejects any event containing detected secrets.
+	var publishGuardPolicy secure.PublishPolicy
+	if pgExtra, ok := configState.Get().Extra["publish_guard"].(map[string]any); ok {
+		if p, ok := pgExtra["policy"].(string); ok {
+			publishGuardPolicy = secure.ParsePublishPolicy(p)
+		}
+	}
+	if publishGuardPolicy == "" {
+		publishGuardPolicy = secure.PublishPolicyBlock
+	}
+	publishGuard := secure.NewPublishGuard(publishGuardPolicy)
+	log.Printf("publish guard: policy=%s patterns=%d", publishGuard.Policy(), publishGuard.PatternCount())
+
 	// ── Nostr network tools ─────────────────────────────────────────────────
 	// These give the agent first-class read/write/DM access to the Nostr network.
 	nostrToolOpts := toolbuiltin.NostrToolOpts{
-		Keyer:   controlKeyer,
-		Relays:  cfg.Relays,
-		HubFunc: func() *nostruntime.NostrHub { return controlHub },
+		Keyer:        controlKeyer,
+		Relays:       cfg.Relays,
+		HubFunc:      func() *nostruntime.NostrHub { return controlHub },
+		PublishGuard: publishGuard,
 	}
 	tools.RegisterWithDef("nostr_fetch", toolbuiltin.NostrFetchTool(nostrToolOpts), toolbuiltin.NostrFetchDef)
 	tools.RegisterWithDef("nostr_dm_decrypt", toolbuiltin.NostrDMDecryptTool(nostrToolOpts), toolbuiltin.NostrDMDecryptDef)
 	tools.RegisterWithDef("nostr_publish", toolbuiltin.NostrPublishTool(toolbuiltin.NostrToolOpts{
-		Keyer:  controlKeyer,
-		Relays: cfg.Relays,
+		Keyer:        controlKeyer,
+		Relays:       cfg.Relays,
+		PublishGuard: publishGuard,
 	}), toolbuiltin.NostrPublishDef)
 	// nostr_send_dm uses controlDMBus which is assigned later; capture by reference via closure.
 	tools.Register("nostr_send_dm", func(ctx context.Context, args map[string]any) (string, error) {
 		controlDMBusMu.RLock()
 		bus := controlDMBus
 		controlDMBusMu.RUnlock()
-		return toolbuiltin.NostrSendDMTool(toolbuiltin.NostrToolOpts{DMTransport: bus})(ctx, args)
+		return toolbuiltin.NostrSendDMTool(toolbuiltin.NostrToolOpts{DMTransport: bus, PublishGuard: publishGuard})(ctx, args)
 	})
 	tools.SetDefinition("nostr_send_dm", toolbuiltin.NostrSendDMDef)
 
@@ -492,7 +510,7 @@ func main() {
 		bus := controlDMBus
 		controlDMBusMu.RUnlock()
 		return toolbuiltin.NostrAgentRPCTool(
-			toolbuiltin.NostrToolOpts{DMTransport: bus},
+			toolbuiltin.NostrToolOpts{DMTransport: bus, PublishGuard: publishGuard},
 			fleetDirectory,
 			controlRPCCorrelator.WaiterFunc(),
 		)(ctx, args)
@@ -541,9 +559,10 @@ func main() {
 
 	// ── Relay-as-memory tools ───────────────────────────────────────────────
 	toolbuiltin.RegisterRelayMemoryTools(tools, toolbuiltin.RelayMemoryToolOpts{
-		HubFunc: func() *nostruntime.NostrHub { return controlHub },
-		Keyer:   controlKeyer,
-		Relays:  cfg.Relays,
+		HubFunc:      func() *nostruntime.NostrHub { return controlHub },
+		Keyer:        controlKeyer,
+		Relays:       cfg.Relays,
+		PublishGuard: publishGuard,
 	})
 
 	// ── ContextVM tools ─────────────────────────────────────────────────────

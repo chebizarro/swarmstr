@@ -20,6 +20,7 @@ import (
 
 	"metiq/internal/agent"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/nostr/secure"
 )
 
 // RelayMemoryToolOpts configures the relay memory tools.
@@ -27,6 +28,9 @@ type RelayMemoryToolOpts struct {
 	HubFunc func() *nostruntime.NostrHub
 	Keyer   nostr.Keyer
 	Relays  []string
+	// PublishGuard gates outbound publishes by scanning for sensitive content.
+	// Nil means no guard (all publishes allowed).
+	PublishGuard *secure.PublishGuard
 }
 
 // RegisterRelayMemoryTools registers relay memory tools into the registry.
@@ -110,6 +114,12 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 			CreatedAt: nostr.Now(),
 			Tags:      tags,
 			Content:   content,
+		}
+		// Content guard: block publishing secrets to relays as memory notes.
+		if opts.PublishGuard != nil {
+			if err := opts.PublishGuard.CheckEvent(&evt); err != nil {
+				return "", fmt.Errorf("relay_remember: %w", err)
+			}
 		}
 		if err := signEvent(ctx, &evt); err != nil {
 			return "", fmt.Errorf("relay_remember: sign: %w", err)

@@ -16,6 +16,7 @@ import (
 
 	"metiq/internal/agent"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/nostr/secure"
 )
 
 // NostrToolOpts holds the shared credentials and default relay list for all
@@ -36,6 +37,24 @@ type NostrToolOpts struct {
 	// DMTransport is used by NostrSendDMTool to deliver DMs. May be nil
 	// (in which case the tool returns an error).
 	DMTransport nostruntime.DMTransport
+	// PublishGuard gates outbound publishes by scanning for sensitive content.
+	// Nil means no guard (all publishes allowed). When set, every tool that
+	// publishes events calls guard.CheckEvent before signing and sending.
+	PublishGuard *secure.PublishGuard
+}
+
+func (o NostrToolOpts) checkOutboundEvent(evt *nostr.Event) error {
+	if o.PublishGuard == nil {
+		return nil
+	}
+	return o.PublishGuard.CheckEvent(evt)
+}
+
+func (o NostrToolOpts) checkOutboundContent(text string) error {
+	if o.PublishGuard == nil {
+		return nil
+	}
+	return o.PublishGuard.CheckContent(text)
 }
 
 // resolveRelays returns the caller-supplied list or falls back to opts.Relays.
@@ -330,6 +349,9 @@ func NostrPublishTool(opts NostrToolOpts) agent.ToolFunc {
 			Tags:      tags,
 			CreatedAt: nostr.Timestamp(time.Now().Unix()),
 		}
+		if err := opts.checkOutboundEvent(&evt); err != nil {
+			return "", fmt.Errorf("nostr_publish: %w", err)
+		}
 		if err := signFn(ctx, &evt); err != nil {
 			return "", fmt.Errorf("nostr_publish: sign: %w", err)
 		}
@@ -402,6 +424,11 @@ func NostrSendDMTool(opts NostrToolOpts) agent.ToolFunc {
 		// Resolve npub → hex.
 		toPubKey, err := resolveNostrPubkey(toPubKey)
 		if err != nil {
+			return "", fmt.Errorf("nostr_send_dm: %w", err)
+		}
+
+		// Scan DM plaintext before encryption to prevent secret leakage.
+		if err := opts.checkOutboundContent(text); err != nil {
 			return "", fmt.Errorf("nostr_send_dm: %w", err)
 		}
 

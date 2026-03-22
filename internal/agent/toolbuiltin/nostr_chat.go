@@ -101,6 +101,9 @@ func NostrChatSendTool(opts NostrToolOpts) agent.ToolFunc {
 			CreatedAt: nostr.Now(),
 			Tags:      tags,
 		}
+		if err := opts.checkOutboundEvent(&evt); err != nil {
+			return "", nostrToolErr("nostr_chat_send", "content_blocked", err.Error(), nil)
+		}
 		if err := signFn(ctx, &evt); err != nil {
 			return "", nostrToolErr("nostr_chat_send", "sign_failed", err.Error(), nil)
 		}

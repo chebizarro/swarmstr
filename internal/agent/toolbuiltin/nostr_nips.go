@@ -53,6 +53,10 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 	}
 
 	publishEvent := func(ctx context.Context, evt nostr.Event, relays []string) (string, error) {
+		// Content guard: scan for secrets before signing and publishing.
+		if err := opts.checkOutboundEvent(&evt); err != nil {
+			return "", err
+		}
 		if err := signEvent(ctx, &evt); err != nil {
 			return "", fmt.Errorf("sign event: %w", err)
 		}
