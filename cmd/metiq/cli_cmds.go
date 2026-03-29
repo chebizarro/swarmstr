@@ -19,6 +19,8 @@ import (
 
 	"metiq/internal/config"
 	"metiq/internal/security"
+
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 // ─── status ───────────────────────────────────────────────────────────────────
@@ -2141,25 +2143,48 @@ func runQR(args []string) error {
 	fmt.Printf("Nostr URI: %s\n\n", nostrURI)
 	fmt.Println("(Install a QR-capable terminal or scan the URI with a Nostr client)")
 	fmt.Println()
-	printASCIIQR(nostrURI)
+	printTerminalQR(nostrURI)
 	return nil
 }
 
-// printASCIIQR prints a simple terminal-friendly hint. A real QR implementation
-// would use a QR encoding library; this is a placeholder that shows the URI
-// prominently for copy/paste into QR generator tools.
-func printASCIIQR(data string) {
-	border := "████████████████████"
-	fmt.Println(border)
-	fmt.Println("██  Scan with Nostr  ██")
-	fmt.Printf("██  %s\n", data[:clampLen(data, 30)])
-	if len(data) > 30 {
-		fmt.Printf("██  %s\n", data[30:clampLen(data, 60)])
+// printTerminalQR renders a QR code to the terminal using Unicode half-block
+// characters (▀▄█ ) for a compact, scannable representation.
+func printTerminalQR(data string) {
+	qr, err := qrcode.New(data, qrcode.Medium)
+	if err != nil {
+		// Fall back to plain text if QR encoding fails.
+		fmt.Printf("(QR encode failed: %v)\n", err)
+		fmt.Printf("URI: %s\n", data)
+		return
 	}
-	if len(data) > 60 {
-		fmt.Printf("██  %s\n", data[60:])
+	bitmap := qr.Bitmap()
+	rows := len(bitmap)
+	cols := 0
+	if rows > 0 {
+		cols = len(bitmap[0])
 	}
-	fmt.Println(border)
+	// Use pairs of rows to combine into Unicode half-block characters.
+	// ▀ = top set, ▄ = bottom set, █ = both set, " " = neither.
+	for y := 0; y < rows; y += 2 {
+		for x := 0; x < cols; x++ {
+			top := bitmap[y][x]
+			bottom := false
+			if y+1 < rows {
+				bottom = bitmap[y+1][x]
+			}
+			switch {
+			case top && bottom:
+				fmt.Print("█")
+			case top && !bottom:
+				fmt.Print("▀")
+			case !top && bottom:
+				fmt.Print("▄")
+			default:
+				fmt.Print(" ")
+			}
+		}
+		fmt.Println()
+	}
 }
 
 // ─── completion ───────────────────────────────────────────────────────────────
@@ -2238,13 +2263,6 @@ func floatFieldAny(m map[string]any, key string) float64 {
 		return v
 	}
 	return 0
-}
-
-func clampLen(s string, n int) int {
-	if len(s) < n {
-		return len(s)
-	}
-	return n
 }
 
 // ─── daemon ───────────────────────────────────────────────────────────────────

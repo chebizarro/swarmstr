@@ -56,6 +56,7 @@ type ServerOptions struct {
 	StatusDMPolicy              func() string
 	StatusRelays                func() []string
 	SearchMemory                func(query string, limit int) []memory.IndexedMemory
+	MemoryStats                 func() (count int, sessionCount int)
 	GetCheckpoint               func(context.Context, string) (state.CheckpointDoc, error)
 	StartAgent                  func(context.Context, methods.AgentRequest) (map[string]any, error)
 	WaitAgent                   func(context.Context, methods.AgentWaitRequest) (map[string]any, error)
@@ -517,7 +518,13 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	case methods.MethodHealth:
 		return map[string]any{"ok": true}, http.StatusOK, nil
 	case methods.MethodDoctorMemoryStatus:
-		return map[string]any{"ok": true, "index": map[string]any{"available": opts.SearchMemory != nil}}, http.StatusOK, nil
+		indexInfo := map[string]any{"available": opts.SearchMemory != nil}
+		if opts.MemoryStats != nil {
+			count, sessionCount := opts.MemoryStats()
+			indexInfo["entry_count"] = count
+			indexInfo["session_count"] = sessionCount
+		}
+		return map[string]any{"ok": true, "index": indexInfo}, http.StatusOK, nil
 	case methods.MethodLogsTail:
 		req, err := methods.DecodeLogsTailParams(call.Params)
 		if err != nil {

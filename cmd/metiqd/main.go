@@ -1961,7 +1961,9 @@ func main() {
 				removed := memoryIndex.Compact(maxEntries)
 				if removed > 0 {
 					log.Printf("memory index compaction: removed %d oldest entries (max=%d)", removed, maxEntries)
-					_ = memoryIndex.Save()
+					if saveErr := memoryIndex.Save(); saveErr != nil {
+						log.Printf("memory index save after compaction failed: %v", saveErr)
+					}
 				}
 			}
 		}
@@ -2329,7 +2331,9 @@ func main() {
 		if sessionStore != nil {
 			se := sessionStore.GetOrNew(cmd.SessionID)
 			se.ModelOverride = modelName
-			_ = sessionStore.Put(cmd.SessionID, se)
+			if putErr := sessionStore.Put(cmd.SessionID, se); putErr != nil {
+				log.Printf("session store put failed session=%s: %v", cmd.SessionID, putErr)
+			}
 		}
 		return fmt.Sprintf("✓ Switched to model %q for this session.", modelName), nil
 	})
@@ -2884,7 +2888,9 @@ func main() {
 			se := sessionStore.GetOrNew(sessionID)
 			se.LastChannel = "nostr"
 			se.LastTo = fromPubKey
-			_ = sessionStore.Put(sessionID, se)
+			if putErr := sessionStore.Put(sessionID, se); putErr != nil {
+				log.Printf("session store put failed session=%s: %v", sessionID, putErr)
+			}
 		}
 
 		// Per-session turn serialisation.  If the slot is busy, enqueue the
@@ -4818,6 +4824,9 @@ func main() {
 				SearchMemory: func(query string, limit int) []memory.IndexedMemory {
 					return memoryIndex.Search(query, limit)
 				},
+				MemoryStats: func() (int, int) {
+					return memoryIndex.Count(), memoryIndex.SessionCount()
+				},
 				GetCheckpoint: func(ctx context.Context, name string) (state.CheckpointDoc, error) {
 					return docsRepo.GetCheckpoint(ctx, name)
 				},
@@ -4859,12 +4868,16 @@ func main() {
 					}
 					return out, nil
 				},
-				AgentIdentity: func(_ context.Context, req methods.AgentIdentityRequest) (map[string]any, error) {
+				AgentIdentity: func(ctx context.Context, req methods.AgentIdentityRequest) (map[string]any, error) {
 					agentID := strings.TrimSpace(req.AgentID)
 					if agentID == "" {
 						agentID = "main"
 					}
-					return map[string]any{"agent_id": agentID, "display_name": "Metiq Agent", "session_id": req.SessionID, "pubkey": bus.PublicKey()}, nil
+					displayName := "Metiq Agent"
+					if doc, err := docsRepo.GetAgent(ctx, agentID); err == nil && doc.Name != "" {
+						displayName = doc.Name
+					}
+					return map[string]any{"agent_id": agentID, "display_name": displayName, "session_id": req.SessionID, "pubkey": bus.PublicKey()}, nil
 				},
 				GatewayIdentity: func(_ context.Context) (map[string]any, error) {
 					pk := bus.PublicKey()
@@ -4907,8 +4920,7 @@ func main() {
 				TailLogs: func(_ context.Context, cursor int64, limit int, maxBytes int) (map[string]any, error) {
 					return logBuffer.Tail(cursor, limit, maxBytes), nil
 				},
-				ChannelsStatus: func(_ context.Context, req methods.ChannelsStatusRequest) (map[string]any, error) {
-					_ = req
+				ChannelsStatus: func(_ context.Context, _ methods.ChannelsStatusRequest) (map[string]any, error) {
 					current := configState.Get()
 					status := channelState.Status(bus, controlBus, current)
 					return map[string]any{"channels": []map[string]any{{
@@ -4927,9 +4939,12 @@ func main() {
 				UsageStatus: func(_ context.Context) (map[string]any, error) {
 					return map[string]any{"ok": true, "totals": usageState.Status()}, nil
 				},
-				UsageCost: func(_ context.Context, _ methods.UsageCostRequest) (map[string]any, error) {
+				UsageCost: func(_ context.Context, req methods.UsageCostRequest) (map[string]any, error) {
+					if req.StartDate != "" || req.EndDate != "" || req.Days > 0 {
+						return nil, fmt.Errorf("usage.cost: date filtering is not supported")
+					}
 					cost := usageState.Cost()
-					return map[string]any{"ok": true, "total_usd": cost["total_usd"], "estimate": cost}, nil
+					return map[string]any{"ok": true, "total_usd": cost["total_usd"], "estimate": cost, "filtered": false}, nil
 				},
 				GetList: func(ctx context.Context, name string) (state.ListDoc, error) {
 					return docsRepo.GetList(ctx, strings.ToLower(strings.TrimSpace(name)))
@@ -5034,7 +5049,7 @@ func main() {
 					return map[string]any{"ok": true, "agent_id": req.AgentID, "file": map[string]any{"name": req.Name, "missing": false, "content": req.Content}}, nil
 				},
 				ListModels: func(_ context.Context, _ methods.ModelsListRequest) (map[string]any, error) {
-					return map[string]any{"models": defaultModelsCatalog()}, nil
+					return map[string]any{"models": defaultModelsCatalog(configState.Get().Providers)}, nil
 				},
 				ToolsCatalog: func(ctx context.Context, req methods.ToolsCatalogRequest) (map[string]any, error) {
 					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
@@ -5091,8 +5106,7 @@ func main() {
 					}
 					return buildSkillsStatusReport(configState.Get(), defaultAgentID(req.AgentID)), nil
 				},
-				SkillsBins: func(_ context.Context, req methods.SkillsBinsRequest) (map[string]any, error) {
-					_ = req
+				SkillsBins: func(_ context.Context, _ methods.SkillsBinsRequest) (map[string]any, error) {
 					return applySkillsBins(configState.Get()), nil
 				},
 				SkillsInstall: func(ctx context.Context, req methods.SkillsInstallRequest) (map[string]any, error) {
@@ -6155,9 +6169,8 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		_ = req
 		if channelState == nil {
-			return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{{"id": "nostr", "connected": true}}}}, nil
+			return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{{"id": "nostr", "connected": false, "status": "channel_state_unavailable"}}}}, nil
 		}
 		status := channelState.Status(dmBus, controlBus, cfg)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{{
@@ -6356,12 +6369,15 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		_ = req
 		if usageState == nil {
-			return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "total_usd": 0}}, nil
+			return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "total_usd": 0, "filtered": false}}, nil
+		}
+		if req.StartDate != "" || req.EndDate != "" || req.Days > 0 {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("usage.cost: date filtering is not supported")
 		}
 		cost := usageState.Cost()
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "total_usd": cost["total_usd"], "estimate": cost}}, nil
+		result := map[string]any{"ok": true, "total_usd": cost["total_usd"], "estimate": cost, "filtered": false}
+		return nostruntime.ControlRPCResult{Result: result}, nil
 	case methods.MethodMemorySearch:
 		req, err := methods.DecodeMemorySearchParams(in.Params)
 		if err != nil {
@@ -7205,7 +7221,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"models": defaultModelsCatalog()}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"models": defaultModelsCatalog(cfg.Providers)}}, nil
 	case methods.MethodToolsCatalog:
 		req, err := methods.DecodeToolsCatalogParams(in.Params)
 		if err != nil {
@@ -7298,7 +7314,6 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		_ = req
 		return nostruntime.ControlRPCResult{Result: applySkillsBins(cfg)}, nil
 	case methods.MethodSkillsInstall:
 		req, err := methods.DecodeSkillsInstallParams(in.Params)
@@ -9511,7 +9526,9 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 			se.FallbackReason = ""
 			se.FallbackAt = 0
 		}
-		_ = controlSessionStore.Put(req.SessionID, se)
+		if putErr := controlSessionStore.Put(req.SessionID, se); putErr != nil {
+			log.Printf("session store put failed session=%s: %v", req.SessionID, putErr)
+		}
 	}
 	jobs.Finish(runID, result.Text, nil)
 }
@@ -9708,7 +9725,9 @@ func pruneSessions(ctx context.Context, docsRepo *state.DocsRepository, transcri
 			}
 			entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
 			for _, e := range entries {
-				_ = transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID)
+				if delErr := transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID); delErr != nil {
+					log.Printf("transcript delete failed session=%s entry=%s: %v", sess.SessionID, e.EntryID, delErr)
+				}
 			}
 			_, err = updateExistingSessionDoc(ctx, docsRepo, sess.SessionID, current.PeerPubKey, func(session *state.SessionDoc) error {
 				session.Meta = mergeSessionMeta(session.Meta, map[string]any{
@@ -10115,7 +10134,9 @@ func runSessionsPrune(
 			}
 			entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
 			for _, e := range entries {
-				_ = transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID)
+				if delErr := transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID); delErr != nil {
+					log.Printf("transcript delete failed session=%s entry=%s: %v", sess.SessionID, e.EntryID, delErr)
+				}
 			}
 			_, err = updateExistingSessionDoc(ctx, docsRepo, sess.SessionID, current.PeerPubKey, func(session *state.SessionDoc) error {
 				session.Meta = mergeSessionMeta(session.Meta, map[string]any{
@@ -10305,11 +10326,63 @@ func isKnownAgentID(ctx context.Context, docsRepo *state.DocsRepository, id stri
 	return fmt.Errorf("failed to get agent: %w", err)
 }
 
-func defaultModelsCatalog() []map[string]any {
-	return []map[string]any{
+func defaultModelsCatalog(configProviders map[string]state.ProviderEntry) []map[string]any {
+	catalog := []map[string]any{
 		{"id": "echo", "name": "Echo (built-in)", "provider": "echo", "context_window": 8192, "reasoning": false},
-		{"id": "http-default", "name": "HTTP Provider", "provider": "http", "context_window": 16384, "reasoning": true},
 	}
+
+	// HTTP provider — available when METIQ_AGENT_HTTP_URL is set.
+	if strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_URL")) != "" {
+		catalog = append(catalog, map[string]any{"id": "http-default", "name": "HTTP Provider", "provider": "http", "context_window": 16384, "reasoning": true, "configured": true})
+	}
+
+	// Well-known LLM providers — listed when their API key env var is set.
+	type providerEntry struct {
+		id, name, envKey string
+		contextWindow    int
+		reasoning        bool
+	}
+	knownProviders := []providerEntry{
+		{"claude-sonnet-4-20250514", "Anthropic Claude", "ANTHROPIC_API_KEY", 200000, true},
+		{"gpt-4o", "OpenAI GPT-4o", "OPENAI_API_KEY", 128000, true},
+		{"gemini-2.5-pro", "Google Gemini", "GEMINI_API_KEY", 1000000, true},
+		{"grok-3", "xAI Grok", "XAI_API_KEY", 131072, true},
+		{"command-r-plus", "Cohere Command", "COHERE_API_KEY", 128000, false},
+		{"groq/llama-4-scout-17b-16e-instruct", "Groq", "GROQ_API_KEY", 131072, false},
+		{"mistral-large-latest", "Mistral AI", "MISTRAL_API_KEY", 128000, true},
+		{"together/meta-llama/Llama-4-Scout-17B-16E-Instruct", "Together AI", "TOGETHER_API_KEY", 131072, false},
+		{"openrouter/anthropic/claude-sonnet-4", "OpenRouter", "OPENROUTER_API_KEY", 200000, true},
+	}
+	for _, p := range knownProviders {
+		configured := strings.TrimSpace(os.Getenv(p.envKey)) != ""
+		catalog = append(catalog, map[string]any{
+			"id": p.id, "name": p.name, "provider": strings.SplitN(p.id, "/", 2)[0],
+			"context_window": p.contextWindow, "reasoning": p.reasoning, "configured": configured,
+		})
+	}
+
+	// Providers from runtime config (extra entries from providers[] config section).
+	if configProviders != nil {
+		for providerID := range configProviders {
+			// Skip if already covered by known entries.
+			found := false
+			for _, c := range catalog {
+				id, _ := c["id"].(string)
+				provider, _ := c["provider"].(string)
+				if id == providerID || provider == providerID || strings.HasPrefix(id, providerID+"/") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				catalog = append(catalog, map[string]any{
+					"id": providerID, "name": providerID + " (config)", "provider": providerID,
+					"context_window": 128000, "reasoning": true, "configured": true,
+				})
+			}
+		}
+	}
+	return catalog
 }
 
 func defaultToolProfiles() []map[string]any {
@@ -13313,22 +13386,20 @@ func applyTTSConvert(ctx context.Context, reg *operationsRegistry, req methods.T
 		}, nil
 	}
 
-	// Stub / metadata-only response when synthesis is not available.
-	voice := req.Voice
-	if voice == "" && controlTTSMgr != nil {
-		if p := controlTTSMgr.Get(providerID); p != nil && len(p.Voices()) > 0 {
-			voice = p.Voices()[0]
-		}
+	// Synthesis is not available — return an error with diagnostics so the
+	// caller knows *why* conversion was skipped rather than silently getting
+	// empty audio fields.
+	reason := "tts disabled"
+	if !enabled {
+		reason = "tts is disabled (call tts.enable first)"
+	} else if controlTTSMgr == nil {
+		reason = "tts manager not initialised"
+	} else if p := controlTTSMgr.Get(providerID); p == nil {
+		reason = fmt.Sprintf("unknown tts provider %q", providerID)
+	} else if !p.Configured() {
+		reason = fmt.Sprintf("tts provider %q is not configured (check environment variables)", providerID)
 	}
-	return map[string]any{
-		"ok":           false,
-		"audioPath":    "",
-		"audioBase64":  "",
-		"provider":     providerID,
-		"voice":        voice,
-		"outputFormat": "mp3",
-		"text":         req.Text,
-	}, nil
+	return nil, fmt.Errorf("tts.convert: %s", reason)
 }
 
 func persistMemories(
@@ -13506,7 +13577,9 @@ func deleteSessionCoordinated(
 		if transcriptRepo != nil {
 			if entries, lErr := transcriptRepo.ListSession(ctx, sessionID, 5000); lErr == nil {
 				for _, e := range entries {
-					_ = transcriptRepo.DeleteEntry(ctx, sessionID, e.EntryID)
+					if delErr := transcriptRepo.DeleteEntry(ctx, sessionID, e.EntryID); delErr != nil {
+						log.Printf("transcript delete failed session=%s entry=%s: %v", sessionID, e.EntryID, delErr)
+					}
 				}
 			}
 		}
