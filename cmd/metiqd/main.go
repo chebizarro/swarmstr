@@ -587,10 +587,21 @@ func main() {
 		PublishGuard: publishGuard,
 	}), toolbuiltin.NostrPublishDef)
 	// nostr_send_dm uses controlDMBus which is assigned later; capture by reference via closure.
+	// When the caller requests nip04 encryption explicitly, route to controlNIP04Bus so the
+	// NIP-04 bus handles it directly (NIP-17 bus rejects nip04 scheme requests).
 	tools.Register("nostr_send_dm", func(ctx context.Context, args map[string]any) (string, error) {
 		controlDMBusMu.RLock()
 		bus := controlDMBus
 		controlDMBusMu.RUnlock()
+		encryption := ""
+		if v, ok := args["encryption"]; ok {
+			if s, ok := v.(string); ok {
+				encryption = strings.ToLower(strings.TrimSpace(s))
+			}
+		}
+		if (encryption == "nip04" || encryption == "nip-04") && controlNIP04Bus != nil {
+			bus = controlNIP04Bus
+		}
 		return toolbuiltin.NostrSendDMTool(toolbuiltin.NostrToolOpts{DMTransport: bus, PublishGuard: publishGuard})(ctx, args)
 	})
 	tools.SetDefinition("nostr_send_dm", toolbuiltin.NostrSendDMDef)
