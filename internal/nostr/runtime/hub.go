@@ -228,7 +228,10 @@ func (h *NostrHub) Subscribe(ctx context.Context, opts SubOpts) (*ManagedSub, er
 
 			case rc, ok := <-closedCh:
 				if !ok {
-					continue // channel closed, events chan will also close
+					// Avoid tight-looping on a closed channel; the events channel will
+					// also close, at which point we will return.
+					closedCh = nil
+					continue
 				}
 				if opts.OnClosed != nil {
 					opts.OnClosed(rc.Relay, rc.Reason, rc.HandledAuth)

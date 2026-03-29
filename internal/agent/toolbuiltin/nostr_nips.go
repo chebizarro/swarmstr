@@ -336,7 +336,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		defer cancel()
 
 		var best *nostr.Event
-		for re := range getPool().SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range getPool().FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			if best == nil || re.Event.CreatedAt > best.CreatedAt {
 				ev := re.Event
 				best = &ev
@@ -389,7 +389,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 
 		seen := make(map[string]bool)
 		var events []map[string]any
-		for re := range getPool().SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range getPool().FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			id := re.Event.ID.Hex()
 			if seen[id] {
 				continue
@@ -468,7 +468,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		defer cancel()
 
 		var best *nostr.Event
-		for re := range getPool().SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range getPool().FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			if best == nil || re.Event.CreatedAt > best.CreatedAt {
 				ev := re.Event
 				best = &ev

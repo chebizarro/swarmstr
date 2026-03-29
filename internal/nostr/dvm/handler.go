@@ -172,7 +172,7 @@ func (h *Handler) subscriptionLoop() {
 		if h.ctx.Err() != nil {
 			return
 		}
-		h.runSubscription(since)
+		restart := h.runSubscription(since)
 		if h.ctx.Err() != nil {
 			return
 		}
@@ -180,15 +180,23 @@ func (h *Handler) subscriptionLoop() {
 			h.subHealth.RecordReconnect()
 		}
 		since = runtime.ResubscribeSince(runtime.DVMResubscribeWindow)
-		select {
-		case <-h.ctx.Done():
-			return
-		case <-time.After(500 * time.Millisecond):
+		if !restart {
+			// Only pause before retry when the subscription was closed by
+			// the relay (not a deliberate rebind).  This replaces the old
+			// unconditional 500ms sleep.
+			select {
+			case <-h.ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
 		}
 	}
 }
 
-func (h *Handler) runSubscription(since int64) {
+// runSubscription uses SubscribeManyNotifyClosed for proper CLOSED-signal
+// handling instead of relying on channel close.  Returns true when the caller
+// should restart immediately (rebind), false when a brief backoff is appropriate.
+func (h *Handler) runSubscription(since int64) bool {
 	kinds := make([]nostr.Kind, len(h.opts.AcceptedKinds))
 	for i, k := range h.opts.AcceptedKinds {
 		kinds[i] = nostr.Kind(k)
@@ -200,18 +208,39 @@ func (h *Handler) runSubscription(since int64) {
 		Since: nostr.Timestamp(since),
 	}
 
-	sub := h.pool.SubscribeMany(h.ctx, h.currentRelays(), f, nostr.SubscriptionOptions{})
+	events, closedCh := h.pool.SubscribeManyNotifyClosed(
+		h.ctx, h.currentRelays(), f, nostr.SubscriptionOptions{},
+	)
 
 	for {
 		select {
 		case <-h.ctx.Done():
-			return
+			return true
 		case <-h.rebindCh:
-			return
-		case re, ok := <-sub:
+			return true
+		case rc, ok := <-closedCh:
 			if !ok {
-				log.Printf("dvm: subscription closed; restarting")
-				return
+				// Avoid tight-looping on a closed channel; the events channel will
+				// also close, at which point we will restart.
+				closedCh = nil
+				continue
+			}
+			if rc.HandledAuth {
+				continue // auth retry handled internally by pool
+			}
+			relayURL := ""
+			if rc.Relay != nil {
+				relayURL = rc.Relay.URL
+			}
+			log.Printf("dvm: subscription closed by relay=%s reason=%s; restarting", relayURL, rc.Reason)
+			if h.subHealth != nil {
+				h.subHealth.RecordClosed(rc.Reason)
+			}
+			return false
+		case re, ok := <-events:
+			if !ok {
+				log.Printf("dvm: event channel closed; restarting")
+				return false
 			}
 			if !re.Event.CheckID() || !re.Event.VerifySignature() {
 				continue
@@ -228,7 +257,7 @@ func (h *Handler) runSubscription(since int64) {
 			select {
 			case h.jobSem <- struct{}{}:
 			case <-h.ctx.Done():
-				return
+				return true
 			}
 			h.wg.Add(1)
 			go func(ev nostr.Event) {

@@ -81,7 +81,7 @@ func DiscoverServers(ctx context.Context, pool *nostr.Pool, relays []string, lim
 	var servers []ServerInfo
 	// Deduplicate by pubkey (replaceable events – keep latest per pubkey).
 	byPubkey := make(map[string]ServerInfo)
-	for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 		pk := re.Event.PubKey.Hex()
 		existing, ok := byPubkey[pk]
 		if !ok || re.Event.CreatedAt > nostr.Timestamp(existing.CreatedAt) {
@@ -222,6 +222,8 @@ func sendRequestWithTimeout(ctx context.Context, pool *nostr.Pool, keyer nostr.K
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// SubscribeMany is correct here: the server response arrives after our
+	// request is published, so we need live event delivery past EOSE.
 	respCh := pool.SubscribeMany(ctx2, relays, respFilter, nostr.SubscriptionOptions{})
 
 	// Publish the request.

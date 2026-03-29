@@ -77,10 +77,8 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 		defer releasePool()
 
 		f := nostr.Filter{Kinds: []nostr.Kind{10002}, Authors: []nostr.PubKey{pk}, Limit: 1}
-		sub := pool.SubscribeMany(ctx2, relays, f, nostr.SubscriptionOptions{})
-
 		var best *nostr.Event
-		for re := range sub {
+		for re := range pool.FetchMany(ctx2, relays, f, nostr.SubscriptionOptions{}) {
 			ev := re.Event
 			if best == nil || ev.CreatedAt > best.CreatedAt {
 				cp := ev

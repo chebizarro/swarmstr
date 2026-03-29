@@ -313,6 +313,9 @@ func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
 
 		case rc, ok := <-closedCh:
 			if !ok {
+				// Avoid tight-looping on a closed channel; the events channel will
+				// also close, at which point we will exit.
+				closedCh = nil
 				continue
 			}
 			if !rc.HandledAuth && c.onErr != nil {
@@ -509,6 +512,9 @@ func (c *NIP28PublicChannel) subscribeLoop(ctx context.Context) {
 
 		case rc, ok := <-closedCh:
 			if !ok {
+				// Avoid tight-looping on a closed channel; the events channel will
+				// also close, at which point we will exit.
+				closedCh = nil
 				continue
 			}
 			if !rc.HandledAuth && c.onErr != nil {

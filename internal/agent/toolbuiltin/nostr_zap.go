@@ -110,10 +110,8 @@ func NostrZapListTool(opts NostrToolOpts) agent.ToolFunc {
 			Tags:  nostr.TagMap{"p": []string{pk.Hex()}},
 			Limit: limit,
 		}
-		sub := pool.SubscribeMany(ctx2, relays, f, nostr.SubscriptionOptions{})
-
 		var receipts []map[string]any
-		for re := range sub {
+		for re := range pool.FetchMany(ctx2, relays, f, nostr.SubscriptionOptions{}) {
 			ev := re.Event
 			receipt := map[string]any{
 				"id":         ev.ID.Hex(),

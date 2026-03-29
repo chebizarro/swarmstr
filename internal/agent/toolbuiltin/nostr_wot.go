@@ -117,10 +117,8 @@ func NostrFollowsTool(opts NostrToolOpts) agent.ToolFunc {
 			Authors: []nostr.PubKey{pk},
 			Limit:   1,
 		}
-		sub := pool.SubscribeMany(ctx2, relays, f, nostr.SubscriptionOptions{})
-
 		var best *nostr.Event
-		for re := range sub {
+		for re := range pool.FetchMany(ctx2, relays, f, nostr.SubscriptionOptions{}) {
 			ev := re.Event
 			if best == nil || ev.CreatedAt > best.CreatedAt {
 				cp := ev
@@ -195,14 +193,12 @@ func NostrFollowersTool(opts NostrToolOpts) agent.ToolFunc {
 			Tags:  nostr.TagMap{"p": []string{pubkeyHex}},
 			Limit: limit,
 		}
-		sub := pool.SubscribeMany(ctx2, relays, f, nostr.SubscriptionOptions{})
-
 		type followerEntry struct {
 			Pubkey string `json:"pubkey"`
 		}
 		seen := map[string]bool{}
 		var followers []followerEntry
-		for re := range sub {
+		for re := range pool.FetchMany(ctx2, relays, f, nostr.SubscriptionOptions{}) {
 			pk := re.Event.PubKey.Hex()
 			if seen[pk] {
 				continue
@@ -330,10 +326,8 @@ func fetchFollows(ctx context.Context, pubkeyHex string, relays []string) ([]str
 		Authors: []nostr.PubKey{pk},
 		Limit:   1,
 	}
-	sub := pool.SubscribeMany(ctx2, relays, f, nostr.SubscriptionOptions{})
-
 	var best *nostr.Event
-	for re := range sub {
+	for re := range pool.FetchMany(ctx2, relays, f, nostr.SubscriptionOptions{}) {
 		ev := re.Event
 		if best == nil || ev.CreatedAt > best.CreatedAt {
 			cp := ev
