@@ -1,6 +1,7 @@
 package autoreply
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -75,4 +76,24 @@ func (s *SessionTurns) TryAcquire(sessionID string) (release func(), acquired bo
 		return nil, false
 	}
 	return func() { m.Unlock() }, true
+}
+
+// Acquire waits until the processing slot for sessionID is available or the
+// context is canceled.
+func (s *SessionTurns) Acquire(ctx context.Context, sessionID string) (release func(), err error) {
+	if release, ok := s.TryAcquire(sessionID); ok {
+		return release, nil
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+			if release, ok := s.TryAcquire(sessionID); ok {
+				return release, nil
+			}
+		}
+	}
 }

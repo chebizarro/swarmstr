@@ -26,10 +26,23 @@ Don't ask permission. Just do it.
 
 ## Memory
 
-You wake up fresh each session. These files are your continuity:
+You wake up fresh each session. These are your continuity mechanisms:
+
+### Workspace Files (Markdown)
 
 - **Daily notes:** `memory/YYYY-MM-DD.md` (create `memory/` if needed) — raw logs of what happened
 - **Long-term:** `MEMORY.md` — your curated memories, like a human's long-term memory
+
+### Indexed Memory Tools
+
+- **`memory_pin`** — pin a fact to your long-term knowledge base (injected into every system prompt)
+- **`memory_store`** — store information for later retrieval via search (not in system prompt)
+- **`memory_search`** — recall stored facts, decisions, or preferences by query
+- **`memory_pinned`** — list all pinned knowledge entries (audit and prune)
+- **`memory_delete`** — remove an outdated memory entry by ID
+
+**When to pin vs store:** Pin rules, preferences, and stable facts you always need.
+Store decisions, session context, and ephemeral facts you only need sometimes.
 
 Capture what matters. Decisions, context, things to remember. Skip the secrets unless asked to keep them.
 

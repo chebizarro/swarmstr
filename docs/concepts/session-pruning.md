@@ -100,7 +100,7 @@ Session transcript entries are stored as encrypted Nostr events on the configure
 
 After a session is pruned, the next message from that user starts a fresh session. The agent has no memory of prior conversations unless:
 
-- Facts were saved to the memory index via the `memory_store` tool
+- Facts were saved to the memory index via `memory_store` or `memory_pin` (see [Memory](memory.md))
 - The user explicitly provides context in their new message
 
 ## See Also

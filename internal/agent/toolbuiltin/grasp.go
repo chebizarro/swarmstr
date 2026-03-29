@@ -49,7 +49,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 
 	resolveKeyer := func(ctx context.Context) (nostr.Keyer, error) {
 		if opts.Keyer == nil {
-			return nil, fmt.Errorf("no signing keyer configured")
+			return nil, fmt.Errorf("no signing keyer configured — set a private key or NIP-46 bunker in config to sign events")
 		}
 		return opts.Keyer, nil
 	}
@@ -135,8 +135,8 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 			relays = opts.Relays
 		}
 
-		if repoAddr == "" {
-			return "", fmt.Errorf("grasp_issue_create: repo_addr required (format: 30617:<owner-pubkey>:<repo-id>)")
+		if err := grasp.ValidateRepoAddr(repoAddr); err != nil {
+			return "", fmt.Errorf("grasp_issue_create: %w", err)
 		}
 		if content == "" {
 			return "", fmt.Errorf("grasp_issue_create: content is required")
@@ -178,8 +178,8 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 			relays = opts.Relays
 		}
 
-		if repoAddr == "" {
-			return "", fmt.Errorf("grasp_issue_list: repo_addr required")
+		if err := grasp.ValidateRepoAddr(repoAddr); err != nil {
+			return "", fmt.Errorf("grasp_issue_list: %w", err)
 		}
 
 		issues, err := grasp.ListIssues(ctx, getPool(), relays, repoAddr, limit)
@@ -200,8 +200,8 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 			relays = opts.Relays
 		}
 
-		if repoAddr == "" {
-			return "", fmt.Errorf("grasp_patch_submit: repo_addr required")
+		if err := grasp.ValidateRepoAddr(repoAddr); err != nil {
+			return "", fmt.Errorf("grasp_patch_submit: %w", err)
 		}
 		if content == "" {
 			return "", fmt.Errorf("grasp_patch_submit: content (git format-patch output) is required")
@@ -237,8 +237,8 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 			relays = opts.Relays
 		}
 
-		if repoAddr == "" {
-			return "", fmt.Errorf("grasp_pr_create: repo_addr required")
+		if err := grasp.ValidateRepoAddr(repoAddr); err != nil {
+			return "", fmt.Errorf("grasp_pr_create: %w", err)
 		}
 
 		var cloneURLs []string

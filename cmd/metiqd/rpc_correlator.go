@@ -13,6 +13,7 @@ package main
 
 import (
 	"sync"
+	"time"
 
 	nostruntime "metiq/internal/nostr/runtime"
 )
@@ -23,15 +24,24 @@ type rpcWaiter struct {
 	cancel chan struct{}
 }
 
-// RPCCorrelator manages pending agent RPC reply waiters.
+// inboxEntry is a received message stored for async polling.
+type inboxEntry struct {
+	From string `json:"from"`
+	Text string `json:"text"`
+	Unix int64  `json:"unix"`
+}
+
+// RPCCorrelator manages pending agent RPC reply waiters and an async inbox.
 type RPCCorrelator struct {
 	mu      sync.Mutex
 	waiters map[string]*rpcWaiter // key: hex pubkey of expected sender
+	inbox   map[string][]inboxEntry // key: hex pubkey of sender
 }
 
 func newRPCCorrelator() *RPCCorrelator {
 	return &RPCCorrelator{
 		waiters: make(map[string]*rpcWaiter),
+		inbox:   make(map[string][]inboxEntry),
 	}
 }
 
@@ -119,6 +129,73 @@ func (c *RPCCorrelator) Deliver(fromPubkeyHex, text string) bool {
 	}
 
 	return true
+}
+
+// StoreInbox stores a message in the async inbox for polling.
+// This is called for inbound messages that don't match a synchronous waiter
+// but may be checked later via nostr_agent_inbox.
+func (c *RPCCorrelator) StoreInbox(fromPubkeyHex, text string) {
+	pk, err := nostruntime.ParsePubKey(fromPubkeyHex)
+	if err != nil {
+		return
+	}
+	hex := pk.Hex()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	const maxInboxPerAgent = 50
+	entries := c.inbox[hex]
+	entries = append(entries, inboxEntry{
+		From: hex,
+		Text: text,
+		Unix: time.Now().Unix(),
+	})
+	if len(entries) > maxInboxPerAgent {
+		entries = entries[len(entries)-maxInboxPerAgent:]
+	}
+	c.inbox[hex] = entries
+}
+
+// DrainInbox returns and removes all inbox entries for the given sender.
+func (c *RPCCorrelator) DrainInbox(fromPubkeyHex string) []inboxEntry {
+	pk, err := nostruntime.ParsePubKey(fromPubkeyHex)
+	if err != nil {
+		return nil
+	}
+	hex := pk.Hex()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entries := c.inbox[hex]
+	delete(c.inbox, hex)
+	return entries
+}
+
+// PeekInbox returns inbox entries without removing them.
+func (c *RPCCorrelator) PeekInbox(fromPubkeyHex string) []inboxEntry {
+	pk, err := nostruntime.ParsePubKey(fromPubkeyHex)
+	if err != nil {
+		return nil
+	}
+	hex := pk.Hex()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entries := c.inbox[hex]
+	out := make([]inboxEntry, len(entries))
+	copy(out, entries)
+	return out
+}
+
+// InboxCount returns the total number of inbox entries across all senders.
+func (c *RPCCorrelator) InboxCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, entries := range c.inbox {
+		n += len(entries)
+	}
+	return n
 }
 
 // WaiterFunc returns a toolbuiltin.RPCWaiter compatible closure backed by this correlator.

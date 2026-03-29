@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
@@ -52,6 +53,7 @@ import (
 	"metiq/internal/policy"
 	secretspkg "metiq/internal/secrets"
 	skillspkg "metiq/internal/skills"
+	"metiq/internal/social"
 	"metiq/internal/store/state"
 	ttspkg "metiq/internal/tts"
 	"metiq/internal/update"
@@ -98,8 +100,15 @@ var version = "0.0.0-dev"
 var controlUpdateChecker *update.Checker
 
 var (
-	controlAgentRuntime    agent.Runtime
-	controlAgentJobs       *agentJobRegistry
+	controlAgentRuntime agent.Runtime
+	controlAgentJobs    *agentJobRegistry
+	// sessionDocUpdateLocks serializes in-process SessionDoc read/modify/write
+	// cycles for a given session ID so concurrent DM hot paths do not lose
+	// fields like active_turn, LastInboundAt, or LastReplyAt.
+	sessionDocUpdateLocks [256]sync.Mutex
+	// controlSessionTurns is the shared per-session turn-slot registry used by
+	// live turns and destructive session lifecycle operations.
+	controlSessionTurns    *autoreply.SessionTurns
 	controlNodeInvocations *nodeInvocationRegistry
 	controlNodePending     *nodepending.Store
 	controlCronJobs        *cronRegistry
@@ -209,6 +218,85 @@ var (
 	relayPolicyPublishRead  []string
 	relayPolicyPublishWrite []string
 )
+
+func conversationMessageFromContext(m ctxengine.Message) agent.ConversationMessage {
+	cm := agent.ConversationMessage{
+		Role:       m.Role,
+		Content:    annotateConversationContentTimestamp(m),
+		ToolCallID: m.ToolCallID,
+	}
+	for _, tc := range m.ToolCalls {
+		cm.ToolCalls = append(cm.ToolCalls, agent.ToolCallRef{
+			ID:       tc.ID,
+			Name:     tc.Name,
+			ArgsJSON: tc.ArgsJSON,
+		})
+	}
+	return cm
+}
+
+func annotateConversationContentTimestamp(m ctxengine.Message) string {
+	if m.Unix <= 0 {
+		return m.Content
+	}
+	ts := time.Unix(m.Unix, 0).UTC().Format(time.RFC3339)
+	return fmt.Sprintf("[message_time=%s unix=%d]\n%s", ts, m.Unix, m.Content)
+}
+
+func defaultBootstrapWatchSpecs(sessionID, selfPubKey string, now time.Time) []toolbuiltin.WatchSpec {
+	const defaultTTLSeconds = 365 * 24 * 60 * 60
+	createdAt := now.Unix()
+	deadline := now.Add(time.Duration(defaultTTLSeconds) * time.Second).Unix()
+	return []toolbuiltin.WatchSpec{
+		{
+			Name:      "gift-wrapped-dms",
+			SessionID: sessionID,
+			FilterRaw: map[string]any{
+				"kinds": []any{float64(1059)},
+				"tag_p": []any{selfPubKey},
+			},
+			TTLSec:    defaultTTLSeconds,
+			MaxEvents: 0,
+			CreatedAt: createdAt,
+			Deadline:  deadline,
+		},
+		{
+			Name:      "social-mentions",
+			SessionID: sessionID,
+			FilterRaw: map[string]any{
+				"kinds": []any{float64(1), float64(7), float64(1111)},
+				"tag_e": []any{selfPubKey},
+			},
+			TTLSec:    defaultTTLSeconds,
+			MaxEvents: 0,
+			CreatedAt: createdAt,
+			Deadline:  deadline,
+		},
+		{
+			Name:      "direct-mentions",
+			SessionID: sessionID,
+			FilterRaw: map[string]any{
+				"kinds": []any{float64(1)},
+				"tag_p": []any{selfPubKey},
+			},
+			TTLSec:    defaultTTLSeconds,
+			MaxEvents: 0,
+			CreatedAt: createdAt,
+			Deadline:  deadline,
+		},
+	}
+}
+
+func loadOrDefaultWatchSpecs(raw json.RawMessage, sessionID, selfPubKey string, now time.Time) ([]toolbuiltin.WatchSpec, bool, error) {
+	if len(raw) == 0 {
+		return defaultBootstrapWatchSpecs(sessionID, selfPubKey, now), true, nil
+	}
+	var specs []toolbuiltin.WatchSpec
+	if err := json.Unmarshal(raw, &specs); err != nil {
+		return nil, false, err
+	}
+	return specs, false, nil
+}
 
 func main() {
 	var bootstrapPath string
@@ -362,6 +450,10 @@ func main() {
 		}
 	}()
 	var memoryIndex memory.Store = baseMemoryIndex
+
+	// Social planner: manages social action plans, rate limits, and history.
+	socialPlanner := social.NewPlanner(social.DefaultRateLimitConfig())
+
 	tools := agent.NewToolRegistry()
 	controlToolRegistry = tools
 	var configState *runtimeConfigStore
@@ -518,6 +610,32 @@ func main() {
 		)(ctx, args)
 	})
 	tools.SetDefinition("nostr_agent_rpc", toolbuiltin.NostrAgentRPCDef)
+
+	// nostr_agent_send: async (non-blocking) DM to a fleet agent.
+	tools.Register("nostr_agent_send", func(ctx context.Context, args map[string]any) (string, error) {
+		controlDMBusMu.RLock()
+		bus := controlDMBus
+		controlDMBusMu.RUnlock()
+		return toolbuiltin.NostrAgentSendTool(
+			toolbuiltin.NostrToolOpts{DMTransport: bus, PublishGuard: publishGuard},
+			fleetDirectory,
+		)(ctx, args)
+	})
+	tools.SetDefinition("nostr_agent_send", toolbuiltin.NostrAgentSendDef)
+
+	// nostr_agent_inbox: poll for async replies from a fleet agent.
+	tools.RegisterWithDef("nostr_agent_inbox", toolbuiltin.NostrAgentInboxTool(
+		fleetDirectory,
+		func(fromPubkeyHex string) []toolbuiltin.InboxMessage {
+			raw := controlRPCCorrelator.DrainInbox(fromPubkeyHex)
+			out := make([]toolbuiltin.InboxMessage, len(raw))
+			for i, e := range raw {
+				out[i] = toolbuiltin.InboxMessage{From: e.From, Text: e.Text, Unix: e.Unix}
+			}
+			return out
+		},
+	), toolbuiltin.NostrAgentInboxDef)
+
 	tools.RegisterWithDef("nostr_profile", toolbuiltin.NostrProfileTool(nostrToolOpts), toolbuiltin.NostrProfileDef)
 	tools.RegisterWithDef("nostr_profile_set", toolbuiltin.NostrProfileSetTool(nostrToolOpts), toolbuiltin.NostrProfileSetDef)
 	tools.RegisterWithDef("nostr_resolve_nip05", toolbuiltin.NostrResolveNIP05Tool(), toolbuiltin.NostrResolveNIP05Def)
@@ -1329,7 +1447,7 @@ func main() {
 	// doChannelTurn (defined later) so auto-join channels get the same context
 	// quality as manually-connected channels.
 	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string) agent.Turn {
-		turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, text, 6)
+		turnContext := assembleSessionMemoryContext(ctx, memoryIndex, sessionID, text, 6)
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
 			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
@@ -1344,19 +1462,7 @@ func main() {
 					}
 				}
 				for _, m := range msgs {
-					cm := agent.ConversationMessage{
-						Role:       m.Role,
-						Content:    m.Content,
-						ToolCallID: m.ToolCallID,
-					}
-					for _, tc := range m.ToolCalls {
-						cm.ToolCalls = append(cm.ToolCalls, agent.ToolCallRef{
-							ID:       tc.ID,
-							Name:     tc.Name,
-							ArgsJSON: tc.ArgsJSON,
-						})
-					}
-					turnHistory = append(turnHistory, cm)
+					turnHistory = append(turnHistory, conversationMessageFromContext(m))
 				}
 			}
 		}
@@ -1899,6 +2005,7 @@ func main() {
 		"usage":  policy.AuthPublic,
 	}
 	sessionTurns := autoreply.NewSessionTurns()
+	controlSessionTurns = sessionTurns
 	// dmQueues holds per-session pending-turn queues for DMs that arrive while
 	// the session turn slot is busy.  Mirrors channelQueues for the DM path.
 	dmQueues := autoreply.NewSessionQueueRegistry(10, autoreply.QueueDropSummarize)
@@ -1935,7 +2042,7 @@ func main() {
 				return "", fmt.Errorf("session_spawn: session %q is busy", sessionID)
 			}
 			defer releaseTurn()
-			turnCtx := assembleSessionMemoryContext(memoryIndex, sessionID, instructions, 6)
+			turnCtx := assembleSessionMemoryContext(ctx, memoryIndex, sessionID, instructions, 6)
 			result, err := agentRuntime.ProcessTurn(ctx, agent.Turn{
 				SessionID: sessionID,
 				UserText:  instructions,
@@ -1983,7 +2090,7 @@ func main() {
 			return "", fmt.Errorf("session_send: session %q is busy", sessionID)
 		}
 		defer releaseTurn()
-		turnCtx := assembleSessionMemoryContext(memoryIndex, sessionID, text, 6)
+		turnCtx := assembleSessionMemoryContext(ctx, memoryIndex, sessionID, text, 6)
 		result, err := agentRuntime.ProcessTurn(ctx, agent.Turn{
 			SessionID: sessionID,
 			UserText:  text,
@@ -2104,6 +2211,13 @@ func main() {
 		b, _ := json.Marshal(map[string]any{"ok": true, "job_id": jobID, "removed": true})
 		return string(b), nil
 	})
+
+	// ─── Social planning tools ──────────────────────────────────────────────────
+	tools.RegisterWithDef("social_plan_add", toolbuiltin.SocialPlanAddTool(socialPlanner), toolbuiltin.SocialPlanAddDef)
+	tools.RegisterWithDef("social_plan_list", toolbuiltin.SocialPlanListTool(socialPlanner), toolbuiltin.SocialPlanListDef)
+	tools.RegisterWithDef("social_plan_remove", toolbuiltin.SocialPlanRemoveTool(socialPlanner), toolbuiltin.SocialPlanRemoveDef)
+	tools.RegisterWithDef("social_history", toolbuiltin.SocialHistoryTool(socialPlanner), toolbuiltin.SocialHistoryDef)
+	tools.RegisterWithDef("social_record", toolbuiltin.SocialRecordTool(socialPlanner), toolbuiltin.SocialRecordDef)
 
 	slashRouter.Register("help", func(_ context.Context, cmd autoreply.Command) (string, error) {
 		cmds := slashRouter.Registered()
@@ -2229,30 +2343,8 @@ func main() {
 	// It returns the response string for the command.
 	rotateSession := func(cmdCtx context.Context, sessionID, reason string) string {
 		isACP := strings.HasPrefix(sessionID, "acp:")
-
-		var priorEntries []state.TranscriptEntryDoc
-		if transcriptRepo != nil {
-			if entries, listErr := transcriptRepo.ListSession(cmdCtx, sessionID, 5000); listErr != nil {
-				log.Printf("session hook context list warning session=%s reason=%s err=%v", sessionID, reason, listErr)
-			} else {
-				priorEntries = entries
-			}
-		}
-		fireSessionResetHooks(controlHooksMgr, sessionID, reason, isACP, priorEntries)
-
-		// Clear first-seen marker so session_start fires again after rotation.
-		seenChannelSessions.Delete(sessionID)
-
-		// Abort any in-flight turn for this session.
-		chatCancels.Abort(sessionID)
-
-		// For non-ACP sessions, also reset the agent router assignment.
-		if !isACP {
-			sessionRouter.Assign(sessionID, "")
-		}
-
-		if _, rErr := rotateSessionLifecycle(cmdCtx, sessionID, reason, configState.Get(), transcriptRepo, sessionStore, time.Now()); rErr != nil {
-			log.Printf("session rotation warning session=%s reason=%s err=%v", sessionID, reason, rErr)
+		if err := rotateSessionCoordinated(cmdCtx, sessionID, reason, isACP, chatCancels, sessionRouter, &seenChannelSessions, controlHooksMgr, transcriptRepo, sessionStore, configState.Get()); err != nil {
+			log.Printf("session rotation warning session=%s reason=%s err=%v", sessionID, reason, err)
 		}
 
 		if isACP {
@@ -2521,15 +2613,7 @@ func main() {
 				return "Usage: /session delete <session-id>", nil
 			}
 			target := strings.TrimSpace(cmd.Args[1])
-			chatCancels.Abort(target)
-			sessionRouter.Assign(target, "")
-			seenChannelSessions.Delete(target)
-			if entries, lErr := transcriptRepo.ListSession(cmdCtx, target, 5000); lErr == nil {
-				for _, e := range entries {
-					_ = transcriptRepo.DeleteEntry(cmdCtx, target, e.EntryID)
-				}
-			}
-			if err := sessionStore.Delete(target); err != nil {
+			if err := deleteSessionCoordinated(cmdCtx, target, chatCancels, sessionRouter, &seenChannelSessions, docsRepo, transcriptRepo, sessionStore); err != nil {
 				return fmt.Sprintf("⚠️  Failed to delete session: %v", err), nil
 			}
 			return fmt.Sprintf("🗑️ Session %s deleted.", target), nil
@@ -2887,6 +2971,12 @@ func main() {
 		}()
 
 		defer releaseTurnSlot()
+		defer func() {
+			clearCtx, clearCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer clearCancel()
+			setSessionActiveTurn(clearCtx, docsRepo, sessionID, fromPubKey, false)
+		}()
+		setSessionActiveTurn(ctx, docsRepo, sessionID, fromPubKey, true)
 
 		entryID := eventID
 		if entryID == "" {
@@ -2903,29 +2993,13 @@ func main() {
 		}); err != nil {
 			log.Printf("persist inbound text failed event=%s err=%v", entryID, err)
 		}
-		persistMemories(ctx, docsRepo, memoryRepo, memoryIndex, memoryTracker, memory.ExtractFromTurn(sessionID, "user", entryID, combinedText, createdAt))
-
-		if controlContextEngine != nil {
-			if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
-				Role:    "user",
-				Content: combinedText,
-				ID:      entryID,
-				Unix:    createdAt,
-			}); ingErr != nil {
-				log.Printf("context engine ingest user session=%s err=%v", sessionID, ingErr)
-			}
-		}
-
-		// Resolve agent ID early so we can apply per-agent turn timeout below.
+		// Resolve agent ID and create the per-turn timeout context before any
+		// potentially blocking memory embedding/search work.
 		activeAgentID := sessionRouter.Get(sessionID)
 		if activeAgentID == "" {
 			activeAgentID = "main"
 		}
-
 		turnCtxBase, releaseTurn := chatCancels.Begin(sessionID, ctx)
-		// Apply a per-turn hard timeout so a hung Anthropic API call or runaway
-		// tool loop cannot hold the session slot indefinitely.  The timeout is
-		// read from the active agent's config; 180 s is used when not set.
 		const defaultTurnTimeoutSecs = 180
 		turnTimeoutSecs := defaultTurnTimeoutSecs
 		for _, ac := range configState.Get().Agents {
@@ -2939,7 +3013,6 @@ func main() {
 		if turnTimeoutSecs > 0 {
 			turnCtx, cancelTurnTimeout = context.WithTimeout(turnCtxBase, time.Duration(turnTimeoutSecs)*time.Second)
 		} else {
-			// Negative value: no timeout (operator opted out explicitly).
 			turnCtx = turnCtxBase
 			cancelTurnTimeout = func() {}
 		}
@@ -2951,7 +3024,27 @@ func main() {
 			releaseTurn()
 		}()
 
-		turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, combinedText, 6)
+		userMemoryDocs := memory.ExtractFromTurn(sessionID, "user", entryID, combinedText, createdAt)
+		if len(userMemoryDocs) > 0 {
+			go func(docs []state.MemoryDoc) {
+				persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				persistMemories(persistCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
+			}(userMemoryDocs)
+		}
+
+		if controlContextEngine != nil {
+			if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
+				Role:    "user",
+				Content: combinedText,
+				ID:      entryID,
+				Unix:    createdAt,
+			}); ingErr != nil {
+				log.Printf("context engine ingest user session=%s err=%v", sessionID, ingErr)
+			}
+		}
+
+		turnContext := assembleSessionMemoryContext(turnCtx, memoryIndex, sessionID, combinedText, 6)
 		// turnHistory carries prior conversation turns for multi-turn LLM context.
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -2987,18 +3080,7 @@ func main() {
 					}
 				}
 				for _, m := range msgs {
-					cm := agent.ConversationMessage{
-						Role:       m.Role,
-						Content:    m.Content,
-						ToolCallID: m.ToolCallID,
-					}
-					for _, tc := range m.ToolCalls {
-						cm.ToolCalls = append(cm.ToolCalls, agent.ToolCallRef{
-							ID:       tc.ID,
-							Name:     tc.Name,
-							ArgsJSON: tc.ArgsJSON,
-						})
-					}
+					cm := conversationMessageFromContext(m)
 					turnHistory = append(turnHistory, cm)
 				}
 				if len(turnHistory) > 0 {
@@ -3388,8 +3470,14 @@ func main() {
 		}
 		// Also extract assistant reply into memory so both sides of the
 		// conversation are searchable — not just user messages.
-		persistMemories(ctx, docsRepo, memoryRepo, memoryIndex, memoryTracker,
-			memory.ExtractFromTurn(sessionID, "assistant", eventID, turnResult.Text, time.Now().Unix()))
+		assistantMemoryDocs := memory.ExtractFromTurn(sessionID, "assistant", eventID, turnResult.Text, time.Now().Unix())
+		if len(assistantMemoryDocs) > 0 {
+			go func(docs []state.MemoryDoc) {
+				persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				persistMemories(persistCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
+			}(assistantMemoryDocs)
+		}
 		if sessionStore != nil && (turnResult.Usage.InputTokens > 0 || turnResult.Usage.OutputTokens > 0) {
 			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens)
 		}
@@ -3408,12 +3496,21 @@ func main() {
 	// Restore persisted watch subscriptions from the state store.
 	if raw, loadErr := docsRepo.GetWatches(ctx); loadErr != nil {
 		log.Printf("watches load warning: %v", loadErr)
-	} else if len(raw) > 0 {
-		var specs []toolbuiltin.WatchSpec
-		if unmErr := json.Unmarshal(raw, &specs); unmErr != nil {
-			log.Printf("watches load unmarshal warning: %v", unmErr)
+	} else {
+		specs, bootstrapped, specErr := loadOrDefaultWatchSpecs(raw, controlPrivateKey, controlPrivateKey, time.Now())
+		if specErr != nil {
+			log.Printf("watches load unmarshal warning: %v", specErr)
 		} else if n := watchRegistry.Restore(watchDeliveryCtx, nostrToolOpts, specs, watchDeliver); n > 0 {
-			log.Printf("watches restored from state store: %d subscriptions", n)
+			if bootstrapped {
+				log.Printf("watches bootstrapped with defaults: %d subscriptions", n)
+				if rawSpecs, err := json.Marshal(specs); err != nil {
+					log.Printf("watches bootstrap marshal warning: %v", err)
+				} else if _, err := docsRepo.PutWatches(ctx, rawSpecs); err != nil {
+					log.Printf("watches bootstrap persist warning: %v", err)
+				}
+			} else {
+				log.Printf("watches restored from state store: %d subscriptions", n)
+			}
 		}
 	}
 
@@ -3527,6 +3624,8 @@ func main() {
 			}
 			return nil
 		}
+		// Store in async inbox for nostr_agent_inbox polling.
+		controlRPCCorrelator.StoreInbox(msg.FromPubKey, msg.Text)
 		// ─────────────────────────────────────────────────────────────────
 
 		// ── Reset trigger detection ───────────────────────────────────────
@@ -4090,7 +4189,7 @@ func main() {
 			return fmt.Errorf("no runtime for agent %s", activeAgentID)
 		}
 
-		turnContext := assembleSessionMemoryContext(memoryIndex, sessionID, text, 6)
+		turnContext := assembleSessionMemoryContext(ctx, memoryIndex, sessionID, text, 6)
 		var chTurnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
 			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
@@ -4104,11 +4203,7 @@ func main() {
 					}
 				}
 				for _, m := range msgs {
-					chTurnHistory = append(chTurnHistory, agent.ConversationMessage{
-						Role:       m.Role,
-						Content:    m.Content,
-						ToolCallID: m.ToolCallID,
-					})
+					chTurnHistory = append(chTurnHistory, conversationMessageFromContext(m))
 				}
 			}
 		}
@@ -4798,8 +4893,7 @@ func main() {
 					return docsRepo.GetSession(ctx, sessionID)
 				},
 				PutSession: func(ctx context.Context, sessionID string, doc state.SessionDoc) error {
-					_, err := docsRepo.PutSession(ctx, sessionID, doc)
-					return err
+					return replaceSessionDoc(ctx, docsRepo, sessionID, doc)
 				},
 				ListSessions: func(ctx context.Context, limit int) ([]state.SessionDoc, error) {
 					return docsRepo.ListSessions(ctx, limit)
@@ -4808,55 +4902,7 @@ func main() {
 					return transcriptRepo.ListSession(ctx, sessionID, limit)
 				},
 				SessionsPrune: func(ctx context.Context, req methods.SessionsPruneRequest) (map[string]any, error) {
-					if !req.All && req.OlderThanDays <= 0 {
-						return nil, fmt.Errorf("older_than_days must be > 0 unless all=true")
-					}
-					sessions, err := docsRepo.ListSessions(ctx, 10000)
-					if err != nil {
-						return nil, fmt.Errorf("sessions.prune: list: %w", err)
-					}
-					cutoff := time.Now()
-					var deletedIDs []string
-					var skippedIDs []string
-					for _, sess := range sessions {
-						eligible := req.All
-						if !eligible && req.OlderThanDays > 0 {
-							lastActivity := sess.LastInboundAt
-							if sess.LastReplyAt > lastActivity {
-								lastActivity = sess.LastReplyAt
-							}
-							if lastActivity == 0 {
-								eligible = true
-							} else {
-								age := cutoff.Sub(time.Unix(lastActivity, 0))
-								eligible = age >= time.Duration(req.OlderThanDays)*24*time.Hour
-							}
-						}
-						if !eligible {
-							skippedIDs = append(skippedIDs, sess.SessionID)
-							continue
-						}
-						if req.DryRun {
-							deletedIDs = append(deletedIDs, sess.SessionID)
-							continue
-						}
-						entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
-						for _, e := range entries {
-							_ = transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID)
-						}
-						sess.Meta = mergeSessionMeta(sess.Meta, map[string]any{
-							"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "manual",
-						})
-						_, _ = docsRepo.PutSession(ctx, sess.SessionID, sess)
-						deletedIDs = append(deletedIDs, sess.SessionID)
-					}
-					return map[string]any{
-						"ok":            true,
-						"dry_run":       req.DryRun,
-						"deleted_count": len(deletedIDs),
-						"deleted":       deletedIDs,
-						"skipped_count": len(skippedIDs),
-					}, nil
+					return runSessionsPrune(ctx, docsRepo, transcriptRepo, req, "manual")
 				},
 				TailLogs: func(_ context.Context, cursor int64, limit int, maxBytes int) (map[string]any, error) {
 					return logBuffer.Tail(cursor, limit, maxBytes), nil
@@ -5745,28 +5791,18 @@ func persistInbound(
 	msg nostruntime.InboundDM,
 ) error {
 	now := time.Now().Unix()
-	session, err := docsRepo.GetSession(ctx, sessionID)
-	if err != nil && !errors.Is(err, state.ErrNotFound) {
-		return err
-	}
-	if errors.Is(err, state.ErrNotFound) {
-		session = state.SessionDoc{
-			Version:    1,
-			SessionID:  sessionID,
-			PeerPubKey: msg.FromPubKey,
-			Meta:       map[string]any{},
+	if err := updateSessionDoc(ctx, docsRepo, sessionID, msg.FromPubKey, func(session *state.SessionDoc) error {
+		if msg.CreatedAt > 0 {
+			session.LastInboundAt = msg.CreatedAt
+		} else {
+			session.LastInboundAt = now
 		}
-	}
-	if msg.CreatedAt > 0 {
-		session.LastInboundAt = msg.CreatedAt
-	} else {
-		session.LastInboundAt = now
-	}
-	if _, err := docsRepo.PutSession(ctx, sessionID, session); err != nil {
+		return nil
+	}); err != nil {
 		return err
 	}
 
-	_, err = transcriptRepo.PutEntry(ctx, state.TranscriptEntryDoc{
+	_, err := transcriptRepo.PutEntry(ctx, state.TranscriptEntryDoc{
 		Version:   1,
 		SessionID: sessionID,
 		EntryID:   msg.EventID,
@@ -5903,6 +5939,115 @@ func persistAndIngestTurnHistory(
 	}
 }
 
+func setSessionActiveTurn(ctx context.Context, docsRepo *state.DocsRepository, sessionID, peerPubKey string, active bool) {
+	if err := updateSessionDoc(ctx, docsRepo, sessionID, peerPubKey, func(session *state.SessionDoc) error {
+		session.Meta = mergeSessionMeta(session.Meta, map[string]any{"active_turn": active})
+		return nil
+	}); err != nil {
+		log.Printf("session active_turn persist failed session=%s err=%v", sessionID, err)
+	}
+}
+
+func updateSessionDoc(
+	ctx context.Context,
+	docsRepo *state.DocsRepository,
+	sessionID string,
+	peerPubKey string,
+	mutate func(*state.SessionDoc) error,
+) error {
+	_, err := mutateSessionDoc(ctx, docsRepo, sessionID, peerPubKey, true, mutate)
+	return err
+}
+
+func updateExistingSessionDoc(
+	ctx context.Context,
+	docsRepo *state.DocsRepository,
+	sessionID string,
+	peerPubKey string,
+	mutate func(*state.SessionDoc) error,
+) (state.SessionDoc, error) {
+	return mutateSessionDoc(ctx, docsRepo, sessionID, peerPubKey, false, mutate)
+}
+
+func replaceSessionDoc(ctx context.Context, docsRepo *state.DocsRepository, sessionID string, doc state.SessionDoc) error {
+	return updateSessionDoc(ctx, docsRepo, sessionID, doc.PeerPubKey, func(session *state.SessionDoc) error {
+		replacement := doc
+		if replacement.Version == 0 {
+			replacement.Version = 1
+		}
+		if strings.TrimSpace(replacement.SessionID) == "" {
+			replacement.SessionID = strings.TrimSpace(sessionID)
+		}
+		if strings.TrimSpace(replacement.PeerPubKey) == "" {
+			replacement.PeerPubKey = session.PeerPubKey
+		}
+		*session = replacement
+		return nil
+	})
+}
+
+func sessionDocUpdateLockFor(sessionID string) *sync.Mutex {
+	// Use a small striped lock set to avoid unbounded growth while still
+	// serializing concurrent read/modify/write cycles for a given session.
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(sessionID))
+	idx := h.Sum32() % uint32(len(sessionDocUpdateLocks))
+	return &sessionDocUpdateLocks[idx]
+}
+
+func mutateSessionDoc(
+	ctx context.Context,
+	docsRepo *state.DocsRepository,
+	sessionID string,
+	peerPubKey string,
+	createIfMissing bool,
+	mutate func(*state.SessionDoc) error,
+) (state.SessionDoc, error) {
+	if docsRepo == nil {
+		return state.SessionDoc{}, fmt.Errorf("docs repository is nil")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return state.SessionDoc{}, fmt.Errorf("session id is empty")
+	}
+	if mutate == nil {
+		return state.SessionDoc{}, fmt.Errorf("session mutator is nil")
+	}
+	mu := sessionDocUpdateLockFor(sessionID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	session, err := docsRepo.GetSession(ctx, sessionID)
+	if err != nil {
+		if !errors.Is(err, state.ErrNotFound) {
+			return state.SessionDoc{}, err
+		}
+		if !createIfMissing {
+			return state.SessionDoc{}, err
+		}
+		session = state.SessionDoc{
+			Version:    1,
+			SessionID:  sessionID,
+			PeerPubKey: strings.TrimSpace(peerPubKey),
+			Meta:       map[string]any{},
+		}
+	}
+	if session.Version == 0 {
+		session.Version = 1
+	}
+	if strings.TrimSpace(session.SessionID) == "" {
+		session.SessionID = sessionID
+	}
+	if strings.TrimSpace(session.PeerPubKey) == "" && strings.TrimSpace(peerPubKey) != "" {
+		session.PeerPubKey = strings.TrimSpace(peerPubKey)
+	}
+	if err := mutate(&session); err != nil {
+		return state.SessionDoc{}, err
+	}
+	_, err = docsRepo.PutSession(ctx, sessionID, session)
+	return session, err
+}
+
 func persistAssistant(
 	ctx context.Context,
 	docsRepo *state.DocsRepository,
@@ -5912,24 +6057,14 @@ func persistAssistant(
 	requestEventID string,
 ) error {
 	now := time.Now().Unix()
-	session, err := docsRepo.GetSession(ctx, sessionID)
-	if err != nil && !errors.Is(err, state.ErrNotFound) {
-		return err
-	}
-	if errors.Is(err, state.ErrNotFound) {
-		session = state.SessionDoc{
-			Version:    1,
-			SessionID:  sessionID,
-			PeerPubKey: sessionID,
-			Meta:       map[string]any{},
-		}
-	}
-	session.LastReplyAt = now
-	if _, err := docsRepo.PutSession(ctx, sessionID, session); err != nil {
+	if err := updateSessionDoc(ctx, docsRepo, sessionID, sessionID, func(session *state.SessionDoc) error {
+		session.LastReplyAt = now
+		return nil
+	}); err != nil {
 		return err
 	}
 
-	_, err = transcriptRepo.PutEntry(ctx, state.TranscriptEntryDoc{
+	_, err := transcriptRepo.PutEntry(ctx, state.TranscriptEntryDoc{
 		Version:   1,
 		SessionID: sessionID,
 		EntryID:   fmt.Sprintf("reply:%d:%s", now, requestEventID),
@@ -6534,12 +6669,11 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		session, err := docsRepo.GetSession(ctx, req.SessionID)
+		session, err := updateExistingSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
+			session.Meta = mergeSessionMeta(session.Meta, req.Meta)
+			return nil
+		})
 		if err != nil {
-			return nostruntime.ControlRPCResult{}, err
-		}
-		session.Meta = mergeSessionMeta(session.Meta, req.Meta)
-		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session": session}}, nil
@@ -6552,14 +6686,21 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		session, err := docsRepo.GetSession(ctx, req.SessionID)
-		if err != nil {
-			return nostruntime.ControlRPCResult{}, err
+		var session state.SessionDoc
+		if chatCancels != nil {
+			chatCancels.Abort(req.SessionID)
 		}
-		session.LastInboundAt = 0
-		session.LastReplyAt = 0
-		session.Meta = map[string]any{}
-		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
+		err = withExclusiveSessionTurn(ctx, req.SessionID, 15*time.Second, func() error {
+			var innerErr error
+			session, innerErr = updateExistingSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
+				session.LastInboundAt = 0
+				session.LastReplyAt = 0
+				session.Meta = map[string]any{}
+				return nil
+			})
+			return innerErr
+		})
+		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		// Fire hook event.
@@ -6576,12 +6717,17 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		session, err := docsRepo.GetSession(ctx, req.SessionID)
-		if err != nil {
-			return nostruntime.ControlRPCResult{}, err
+		if chatCancels != nil {
+			chatCancels.Abort(req.SessionID)
 		}
-		session.Meta = mergeSessionMeta(session.Meta, map[string]any{"deleted": true, "deleted_at": time.Now().Unix()})
-		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
+		err = withExclusiveSessionTurn(ctx, req.SessionID, 15*time.Second, func() error {
+			_, innerErr := updateExistingSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
+				session.Meta = mergeSessionMeta(session.Meta, map[string]any{"deleted": true, "deleted_at": time.Now().Unix()})
+				return nil
+			})
+			return innerErr
+		})
+		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "deleted": true}}, nil
@@ -6594,94 +6740,103 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		session, err := docsRepo.GetSession(ctx, req.SessionID)
-		if err != nil {
-			return nostruntime.ControlRPCResult{}, err
+		var compactResult map[string]any
+		if chatCancels != nil {
+			chatCancels.Abort(req.SessionID)
 		}
-		entries, err := transcriptRepo.ListSession(ctx, req.SessionID, 2000)
-		if err != nil {
-			return nostruntime.ControlRPCResult{}, err
-		}
-		dropped := len(entries) - req.Keep
-		if dropped < 0 {
-			dropped = 0
-		}
+		err = withExclusiveSessionTurn(ctx, req.SessionID, 15*time.Second, func() error {
+			if _, err := docsRepo.GetSession(ctx, req.SessionID); err != nil {
+				return err
+			}
+			entries, err := transcriptRepo.ListSession(ctx, req.SessionID, 2000)
+			if err != nil {
+				return err
+			}
+			dropped := len(entries) - req.Keep
+			if dropped < 0 {
+				dropped = 0
+			}
 
-		// ── LLM summary generation ─────────────────────────────────────────
-		// Before tombstoning, generate a compact summary of the entries that
-		// are about to be removed and inject it as a system-role entry.
-		summaryGenerated := false
-		if dropped > 0 && controlAgentRuntime != nil {
-			compactedEntries := entries[:dropped]
-			// Build a compact transcript snippet for the prompt.
-			var sb strings.Builder
-			for _, e := range compactedEntries {
-				if e.Role == "deleted" {
-					continue
+			// ── LLM summary generation ─────────────────────────────────────────
+			// Before tombstoning, generate a compact summary of the entries that
+			// are about to be removed and inject it as a system-role entry.
+			summaryGenerated := false
+			if dropped > 0 && controlAgentRuntime != nil {
+				compactedEntries := entries[:dropped]
+				var sb strings.Builder
+				for _, e := range compactedEntries {
+					if e.Role == "deleted" {
+						continue
+					}
+					sb.WriteString(e.Role)
+					sb.WriteString(": ")
+					text := e.Text
+					if len(text) > 400 {
+						text = text[:400] + "…"
+					}
+					sb.WriteString(text)
+					sb.WriteString("\n")
 				}
-				sb.WriteString(e.Role)
-				sb.WriteString(": ")
-				text := e.Text
-				if len(text) > 400 {
-					text = text[:400] + "…"
+				snippet := sb.String()
+				if len(snippet) > 6000 {
+					snippet = snippet[:6000] + "…"
 				}
-				sb.WriteString(text)
-				sb.WriteString("\n")
+				if snippet != "" {
+					summaryPrompt := "You are a session-memory assistant. Summarize the following conversation history concisely in 2-4 sentences, capturing the key topics, decisions, and context needed to continue the conversation later. Do NOT include greetings or meta-commentary; only output the summary.\n\n" + snippet
+					summaryCtx, summaryCancel := context.WithTimeout(ctx, 30*time.Second)
+					result, summaryErr := controlAgentRuntime.ProcessTurn(summaryCtx, agent.Turn{
+						SessionID: req.SessionID + ":compact",
+						UserText:  summaryPrompt,
+					})
+					summaryCancel()
+					if summaryErr == nil && strings.TrimSpace(result.Text) != "" {
+						summaryEntryID := fmt.Sprintf("compact-summary-%d", time.Now().UnixMilli())
+						summaryEntry := state.TranscriptEntryDoc{
+							Version:   1,
+							SessionID: req.SessionID,
+							EntryID:   summaryEntryID,
+							Role:      "system",
+							Text:      "[Compact summary of " + strconv.Itoa(dropped) + " earlier messages]\n\n" + strings.TrimSpace(result.Text),
+							Unix:      time.Now().Unix(),
+							Meta:      map[string]any{"compact": true, "compact_from": dropped},
+						}
+						if _, putErr := transcriptRepo.PutEntry(ctx, summaryEntry); putErr != nil {
+							log.Printf("sessions.compact: insert summary entry: %v", putErr)
+						} else {
+							summaryGenerated = true
+						}
+					} else if summaryErr != nil {
+						log.Printf("sessions.compact: LLM summary skipped: %v", summaryErr)
+					}
+				}
 			}
-			snippet := sb.String()
-			if len(snippet) > 6000 {
-				snippet = snippet[:6000] + "…"
+
+			deleteErrors := 0
+			for i := 0; i < dropped; i++ {
+				if delErr := transcriptRepo.DeleteEntry(ctx, req.SessionID, entries[i].EntryID); delErr != nil {
+					log.Printf("sessions.compact: delete entry %s: %v", entries[i].EntryID, delErr)
+					deleteErrors++
+				}
 			}
-			if snippet != "" {
-				summaryPrompt := "You are a session-memory assistant. Summarize the following conversation history concisely in 2-4 sentences, capturing the key topics, decisions, and context needed to continue the conversation later. Do NOT include greetings or meta-commentary; only output the summary.\n\n" + snippet
-				summaryCtx, summaryCancel := context.WithTimeout(ctx, 30*time.Second)
-				result, summaryErr := controlAgentRuntime.ProcessTurn(summaryCtx, agent.Turn{
-					SessionID: req.SessionID + ":compact",
-					UserText:  summaryPrompt,
+			if _, err := updateExistingSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
+				session.Meta = mergeSessionMeta(session.Meta, map[string]any{
+					"compacted_at":              time.Now().Unix(),
+					"compacted_keep":            req.Keep,
+					"compacted_from_entries":    len(entries),
+					"compacted_dropped_entries": dropped - deleteErrors,
+					"compacted_summary":         summaryGenerated,
 				})
-				summaryCancel()
-				if summaryErr == nil && strings.TrimSpace(result.Text) != "" {
-					summaryEntryID := fmt.Sprintf("compact-summary-%d", time.Now().UnixMilli())
-					summaryEntry := state.TranscriptEntryDoc{
-						Version:   1,
-						SessionID: req.SessionID,
-						EntryID:   summaryEntryID,
-						Role:      "system",
-						Text:      "[Compact summary of " + strconv.Itoa(dropped) + " earlier messages]\n\n" + strings.TrimSpace(result.Text),
-						Unix:      time.Now().Unix(),
-						Meta:      map[string]any{"compact": true, "compact_from": dropped},
-					}
-					if _, putErr := transcriptRepo.PutEntry(ctx, summaryEntry); putErr != nil {
-						log.Printf("sessions.compact: insert summary entry: %v", putErr)
-					} else {
-						summaryGenerated = true
-					}
-				} else if summaryErr != nil {
-					log.Printf("sessions.compact: LLM summary skipped: %v", summaryErr)
-				}
+				return nil
+			}); err != nil {
+				return err
 			}
-		}
-
-		// Tombstone entries that are older than the keep window.
-		// entries is sorted oldest-first; drop the first `dropped` entries.
-		deleteErrors := 0
-		for i := 0; i < dropped; i++ {
-			if delErr := transcriptRepo.DeleteEntry(ctx, req.SessionID, entries[i].EntryID); delErr != nil {
-				log.Printf("sessions.compact: delete entry %s: %v", entries[i].EntryID, delErr)
-				deleteErrors++
-			}
-		}
-		session.Meta = mergeSessionMeta(session.Meta, map[string]any{
-			"compacted_at":              time.Now().Unix(),
-			"compacted_keep":            req.Keep,
-			"compacted_from_entries":    len(entries),
-			"compacted_dropped_entries": dropped - deleteErrors,
-			"compacted_summary":         summaryGenerated,
+			compactResult = map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped - deleteErrors, "summary_generated": summaryGenerated}
+			return nil
 		})
-		if _, err := docsRepo.PutSession(ctx, req.SessionID, session); err != nil {
+		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped - deleteErrors, "summary_generated": summaryGenerated}}, nil
+		return nostruntime.ControlRPCResult{Result: compactResult}, nil
 	case methods.MethodSessionsExport:
 		var exportReq methods.SessionsExportRequest
 		if len(in.Params) > 0 {
@@ -6737,53 +6892,9 @@ func handleControlRPCRequest(
 		if len(in.Params) > 0 {
 			_ = json.Unmarshal(in.Params, &pruneReq)
 		}
-		sessions, listErr := docsRepo.ListSessions(ctx, 10000)
-		if listErr != nil {
-			return nostruntime.ControlRPCResult{}, fmt.Errorf("sessions.prune: list: %w", listErr)
-		}
-		cutoff := time.Now()
-		var deletedIDs []string
-		var skippedIDs []string
-		for _, sess := range sessions {
-			eligible := pruneReq.All
-			if !eligible && pruneReq.OlderThanDays > 0 {
-				lastActivity := sess.LastInboundAt
-				if sess.LastReplyAt > lastActivity {
-					lastActivity = sess.LastReplyAt
-				}
-				if lastActivity == 0 {
-					eligible = true // never used — always prune
-				} else {
-					age := cutoff.Sub(time.Unix(lastActivity, 0))
-					eligible = age >= time.Duration(pruneReq.OlderThanDays)*24*time.Hour
-				}
-			}
-			if !eligible {
-				skippedIDs = append(skippedIDs, sess.SessionID)
-				continue
-			}
-			if pruneReq.DryRun {
-				deletedIDs = append(deletedIDs, sess.SessionID)
-				continue
-			}
-			// Delete session document and all transcript entries.
-			entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
-			for _, e := range entries {
-				_ = transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID)
-			}
-			// Mark session deleted in the store.
-			sess.Meta = mergeSessionMeta(sess.Meta, map[string]any{
-				"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "manual",
-			})
-			_, _ = docsRepo.PutSession(ctx, sess.SessionID, sess)
-			deletedIDs = append(deletedIDs, sess.SessionID)
-		}
-		result := map[string]any{
-			"ok":            true,
-			"dry_run":       pruneReq.DryRun,
-			"deleted_count": len(deletedIDs),
-			"deleted":       deletedIDs,
-			"skipped_count": len(skippedIDs),
+		result, err := runSessionsPrune(ctx, docsRepo, transcriptRepo, pruneReq, "manual")
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: result}, nil
 
@@ -6925,12 +7036,16 @@ func handleControlRPCRequest(
 			if aid != req.AgentID {
 				continue
 			}
-			delete(sess.Meta, "agent_id")
 			sessionID := strings.TrimSpace(sess.SessionID)
 			if sessionID == "" {
 				continue
 			}
-			if _, err := docsRepo.PutSession(ctx, sessionID, sess); err != nil {
+			if _, err := updateExistingSessionDoc(ctx, docsRepo, sessionID, sess.PeerPubKey, func(session *state.SessionDoc) error {
+				if session.Meta != nil {
+					delete(session.Meta, "agent_id")
+				}
+				return nil
+			}); err != nil {
 				return nostruntime.ControlRPCResult{}, fmt.Errorf("agents.delete: cleanup session %q: %w", sessionID, err)
 			}
 			if controlSessionRouter != nil {
@@ -6956,18 +7071,10 @@ func handleControlRPCRequest(
 		}
 		// Persist assignment in session meta so it survives restarts.
 		persisted := true
-		sess, sessErr := docsRepo.GetSession(ctx, req.SessionID)
-		if sessErr != nil && !errors.Is(sessErr, state.ErrNotFound) {
-			return nostruntime.ControlRPCResult{}, sessErr
-		}
-		if sess.SessionID == "" {
-			sess = state.SessionDoc{Version: 1, SessionID: req.SessionID, PeerPubKey: req.SessionID}
-		}
-		if sess.Meta == nil {
-			sess.Meta = map[string]any{}
-		}
-		sess.Meta["agent_id"] = req.AgentID
-		if _, err := docsRepo.PutSession(ctx, req.SessionID, sess); err != nil {
+		if err := updateSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
+			session.Meta = mergeSessionMeta(session.Meta, map[string]any{"agent_id": req.AgentID})
+			return nil
+		}); err != nil {
 			persisted = false
 			log.Printf("agents.assign: persist session meta warning session=%s err=%v", req.SessionID, err)
 		}
@@ -6992,16 +7099,16 @@ func handleControlRPCRequest(
 		}
 		// Remove the persisted agent_id from session meta.
 		persisted := true
-		sess, sessErr := docsRepo.GetSession(ctx, req.SessionID)
-		if sessErr == nil && sess.Meta != nil {
-			delete(sess.Meta, "agent_id")
-			if _, err := docsRepo.PutSession(ctx, req.SessionID, sess); err != nil {
-				persisted = false
-				log.Printf("agents.unassign: persist session meta warning session=%s err=%v", req.SessionID, err)
+		if _, err := updateExistingSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
+			if session.Meta != nil {
+				delete(session.Meta, "agent_id")
 			}
-		} else if sessErr != nil && !errors.Is(sessErr, state.ErrNotFound) {
-			persisted = false
-			log.Printf("agents.unassign: load session warning session=%s err=%v", req.SessionID, sessErr)
+			return nil
+		}); err != nil {
+			if !errors.Is(err, state.ErrNotFound) {
+				persisted = false
+				log.Printf("agents.unassign: load session warning session=%s err=%v", req.SessionID, err)
+			}
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{
 			"ok":         true,
@@ -9453,7 +9560,7 @@ func mapGatewayWSError(err error) *gatewayprotocol.ErrorShape {
 	return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeUnavailable, msg, nil)
 }
 
-func assembleSessionMemoryContext(index memory.Store, sessionID string, userText string, limit int) string {
+func assembleSessionMemoryContext(ctx context.Context, index memory.Store, sessionID string, userText string, limit int) string {
 	if index == nil || strings.TrimSpace(sessionID) == "" {
 		return ""
 	}
@@ -9462,7 +9569,7 @@ func assembleSessionMemoryContext(index memory.Store, sessionID string, userText
 	}
 
 	// Session-scoped search: most relevant to this conversation.
-	sessionItems := index.SearchSession(sessionID, userText, limit)
+	sessionItems := memory.SearchSessionDocs(ctx, index, sessionID, userText, limit)
 
 	// Global search: cross-session knowledge (different topics, other sessions).
 	// Deduplicate against session results to avoid repetition.
@@ -9470,7 +9577,7 @@ func assembleSessionMemoryContext(index memory.Store, sessionID string, userText
 	for _, it := range sessionItems {
 		seen[it.MemoryID] = struct{}{}
 	}
-	globalItems := index.Search(userText, limit)
+	globalItems := memory.SearchDocs(ctx, index, userText, limit)
 	var crossItems []memory.IndexedMemory
 	for _, it := range globalItems {
 		if _, dup := seen[it.MemoryID]; !dup && it.SessionID != sessionID {
@@ -9586,22 +9693,42 @@ func pruneSessions(ctx context.Context, docsRepo *state.DocsRepository, transcri
 	cutoff := time.Now().Add(-time.Duration(olderThanDays) * 24 * time.Hour)
 	pruned := 0
 	for _, sess := range sessions {
-		lastActivity := sess.LastInboundAt
-		if sess.LastReplyAt > lastActivity {
-			lastActivity = sess.LastReplyAt
+		if !shouldPruneSession(sess, cutoff) {
+			continue
 		}
-		if lastActivity > 0 && time.Unix(lastActivity, 0).After(cutoff) {
-			continue // recently active
-		}
-		entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
-		for _, e := range entries {
-			_ = transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID)
-		}
-		sess.Meta = mergeSessionMeta(sess.Meta, map[string]any{
-			"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "auto",
+		exclusiveCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+		didPrune := false
+		err := withExclusiveSessionTurn(exclusiveCtx, sess.SessionID, 0, func() error {
+			current, err := docsRepo.GetSession(ctx, sess.SessionID)
+			if err != nil {
+				return err
+			}
+			if !shouldPruneSession(current, cutoff) {
+				return nil
+			}
+			entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
+			for _, e := range entries {
+				_ = transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID)
+			}
+			_, err = updateExistingSessionDoc(ctx, docsRepo, sess.SessionID, current.PeerPubKey, func(session *state.SessionDoc) error {
+				session.Meta = mergeSessionMeta(session.Meta, map[string]any{
+					"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "auto",
+				})
+				return nil
+			})
+			if err == nil {
+				didPrune = true
+			}
+			return err
 		})
-		_, _ = docsRepo.PutSession(ctx, sess.SessionID, sess)
-		pruned++
+		cancel()
+		if err != nil {
+			log.Printf("session prune: skip busy session=%s err=%v", sess.SessionID, err)
+			continue
+		}
+		if didPrune {
+			pruned++
+		}
 	}
 	if pruned > 0 {
 		log.Printf("session prune: deleted %d sessions older than %d days", pruned, olderThanDays)
@@ -9898,6 +10025,132 @@ func mergeSessionMeta(base map[string]any, patch map[string]any) map[string]any 
 		out[k] = v
 	}
 	return out
+}
+
+func withExclusiveSessionTurn(ctx context.Context, sessionID string, timeout time.Duration, fn func() error) error {
+	if fn == nil {
+		return fmt.Errorf("exclusive session function is nil")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || controlSessionTurns == nil {
+		return fn()
+	}
+	lockCtx := ctx
+	var cancel context.CancelFunc
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline && timeout > 0 {
+		lockCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	release, err := controlSessionTurns.Acquire(lockCtx, sessionID)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return fmt.Errorf("session %q lock canceled: %w", sessionID, err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("session %q lock timed out: %w", sessionID, err)
+		}
+		return fmt.Errorf("session %q busy: %w", sessionID, err)
+	}
+	defer release()
+	return fn()
+}
+
+func sessionLastActivityUnix(doc state.SessionDoc) int64 {
+	lastActivity := doc.LastInboundAt
+	if doc.LastReplyAt > lastActivity {
+		lastActivity = doc.LastReplyAt
+	}
+	return lastActivity
+}
+
+func shouldPruneSession(doc state.SessionDoc, cutoff time.Time) bool {
+	lastActivity := sessionLastActivityUnix(doc)
+	if lastActivity == 0 {
+		return true
+	}
+	return !time.Unix(lastActivity, 0).After(cutoff)
+}
+
+func runSessionsPrune(
+	ctx context.Context,
+	docsRepo *state.DocsRepository,
+	transcriptRepo *state.TranscriptRepository,
+	req methods.SessionsPruneRequest,
+	pruneReason string,
+) (map[string]any, error) {
+	if docsRepo == nil {
+		return nil, fmt.Errorf("sessions.prune: docs repository is nil")
+	}
+	if transcriptRepo == nil {
+		return nil, fmt.Errorf("sessions.prune: transcript repository is nil")
+	}
+	if !req.All && req.OlderThanDays <= 0 {
+		return nil, fmt.Errorf("older_than_days must be > 0 unless all=true")
+	}
+	sessions, err := docsRepo.ListSessions(ctx, 10000)
+	if err != nil {
+		return nil, fmt.Errorf("sessions.prune: list: %w", err)
+	}
+	cutoff := time.Now().Add(-time.Duration(req.OlderThanDays) * 24 * time.Hour)
+	var deletedIDs []string
+	var skippedIDs []string
+	var ineligibleIDs []string
+	for _, sess := range sessions {
+		eligible := req.All || shouldPruneSession(sess, cutoff)
+		if !eligible {
+			ineligibleIDs = append(ineligibleIDs, sess.SessionID)
+			continue
+		}
+		if req.DryRun {
+			deletedIDs = append(deletedIDs, sess.SessionID)
+			continue
+		}
+		err := withExclusiveSessionTurn(ctx, sess.SessionID, 500*time.Millisecond, func() error {
+			current, err := docsRepo.GetSession(ctx, sess.SessionID)
+			if err != nil {
+				return err
+			}
+			if !req.All && !shouldPruneSession(current, cutoff) {
+				return nil
+			}
+			entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
+			for _, e := range entries {
+				_ = transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID)
+			}
+			_, err = updateExistingSessionDoc(ctx, docsRepo, sess.SessionID, current.PeerPubKey, func(session *state.SessionDoc) error {
+				session.Meta = mergeSessionMeta(session.Meta, map[string]any{
+					"deleted":      true,
+					"deleted_at":   time.Now().Unix(),
+					"prune_reason": pruneReason,
+				})
+				return nil
+			})
+			return err
+		})
+		if err != nil {
+			skippedIDs = append(skippedIDs, sess.SessionID)
+			continue
+		}
+		current, currentErr := docsRepo.GetSession(ctx, sess.SessionID)
+		if currentErr != nil {
+			skippedIDs = append(skippedIDs, sess.SessionID)
+			continue
+		}
+		if deleted, _ := current.Meta["deleted"].(bool); !deleted {
+			skippedIDs = append(skippedIDs, sess.SessionID)
+			continue
+		}
+		deletedIDs = append(deletedIDs, sess.SessionID)
+	}
+	return map[string]any{
+		"ok":            true,
+		"dry_run":       req.DryRun,
+		"deleted_count": len(deletedIDs),
+		"deleted":       deletedIDs,
+		"skipped_count": len(skippedIDs),
+		"ineligible_count": len(ineligibleIDs),
+		"ineligible":       ineligibleIDs,
+	}, nil
 }
 
 func applyDMRelayPolicy(relays []string) {
@@ -10307,6 +10560,15 @@ var coreToolCatalog = []coreToolDef{
 	{ID: "cron_add", Label: "cron_add", Description: "Schedule recurring task", SectionID: "automation", Profiles: []string{"coding"}},
 	{ID: "cron_list", Label: "cron_list", Description: "List scheduled tasks", SectionID: "automation", Profiles: []string{"coding"}},
 	{ID: "cron_remove", Label: "cron_remove", Description: "Remove scheduled task", SectionID: "automation", Profiles: []string{"coding"}},
+	{ID: "social_plan_add", Label: "social_plan_add", Description: "Add social action plan", SectionID: "social", Profiles: []string{"coding"}},
+	{ID: "social_plan_list", Label: "social_plan_list", Description: "List social plans & usage", SectionID: "social", Profiles: []string{"coding"}},
+	{ID: "social_plan_remove", Label: "social_plan_remove", Description: "Remove social plan", SectionID: "social", Profiles: []string{"coding"}},
+	{ID: "social_history", Label: "social_history", Description: "Query social action history", SectionID: "social", Profiles: []string{"coding"}},
+	{ID: "social_record", Label: "social_record", Description: "Record social action", SectionID: "social", Profiles: []string{"coding"}},
+	{ID: "fleet_agents", Label: "fleet_agents", Description: "List fleet agents", SectionID: "fleet", Profiles: []string{"coding"}},
+	{ID: "nostr_agent_rpc", Label: "nostr_agent_rpc", Description: "Sync RPC to fleet agent", SectionID: "fleet", Profiles: []string{"coding"}},
+	{ID: "nostr_agent_send", Label: "nostr_agent_send", Description: "Async send to fleet agent", SectionID: "fleet", Profiles: []string{"coding"}},
+	{ID: "nostr_agent_inbox", Label: "nostr_agent_inbox", Description: "Poll fleet agent replies", SectionID: "fleet", Profiles: []string{"coding"}},
 	{ID: "node_invoke", Label: "node_invoke", Description: "Invoke a remote node", SectionID: "nodes", Profiles: []string{}},
 	{ID: "node_list", Label: "node_list", Description: "List known nodes", SectionID: "nodes", Profiles: []string{}},
 	{ID: "acp_delegate", Label: "acp_delegate", Description: "Delegate ACP task to peer", SectionID: "nodes", Profiles: []string{}},
@@ -13082,7 +13344,7 @@ func persistMemories(
 			log.Printf("persist memory failed memory_id=%s err=%v", doc.MemoryID, err)
 			continue
 		}
-		index.Add(doc)
+		memory.AddDoc(ctx, index, doc)
 		if err := index.Save(); err != nil {
 			log.Printf("memory index save failed memory_id=%s err=%v", doc.MemoryID, err)
 		}
@@ -13182,6 +13444,85 @@ func buildBeforeResetHookContext(sessionID, reason string, isACP bool, entries [
 		ctx["previous_transcript"] = strings.TrimSpace(sb.String())
 	}
 	return ctx
+}
+
+func rotateSessionCoordinated(
+	ctx context.Context,
+	sessionID string,
+	reason string,
+	isACP bool,
+	chatCancels *chatAbortRegistry,
+	sessionRouter *agent.AgentSessionRouter,
+	seenChannelSessions *sync.Map,
+	hooksMgr *hookspkg.Manager,
+	transcriptRepo *state.TranscriptRepository,
+	sessionStore *state.SessionStore,
+	cfg state.ConfigDoc,
+) error {
+	var priorEntries []state.TranscriptEntryDoc
+	if transcriptRepo != nil {
+		if entries, listErr := transcriptRepo.ListSession(ctx, sessionID, 5000); listErr != nil {
+			log.Printf("session hook context list warning session=%s reason=%s err=%v", sessionID, reason, listErr)
+		} else {
+			priorEntries = entries
+		}
+	}
+	fireSessionResetHooks(hooksMgr, sessionID, reason, isACP, priorEntries)
+	if chatCancels != nil {
+		chatCancels.Abort(sessionID)
+	}
+	return withExclusiveSessionTurn(ctx, sessionID, 15*time.Second, func() error {
+		if seenChannelSessions != nil {
+			seenChannelSessions.Delete(sessionID)
+		}
+		if !isACP && sessionRouter != nil {
+			sessionRouter.Assign(sessionID, "")
+		}
+		_, err := rotateSessionLifecycle(ctx, sessionID, reason, cfg, transcriptRepo, sessionStore, time.Now())
+		return err
+	})
+}
+
+func deleteSessionCoordinated(
+	ctx context.Context,
+	sessionID string,
+	chatCancels *chatAbortRegistry,
+	sessionRouter *agent.AgentSessionRouter,
+	seenChannelSessions *sync.Map,
+	docsRepo *state.DocsRepository,
+	transcriptRepo *state.TranscriptRepository,
+	sessionStore *state.SessionStore,
+) error {
+	if chatCancels != nil {
+		chatCancels.Abort(sessionID)
+	}
+	return withExclusiveSessionTurn(ctx, sessionID, 15*time.Second, func() error {
+		if sessionRouter != nil {
+			sessionRouter.Assign(sessionID, "")
+		}
+		if seenChannelSessions != nil {
+			seenChannelSessions.Delete(sessionID)
+		}
+		if transcriptRepo != nil {
+			if entries, lErr := transcriptRepo.ListSession(ctx, sessionID, 5000); lErr == nil {
+				for _, e := range entries {
+					_ = transcriptRepo.DeleteEntry(ctx, sessionID, e.EntryID)
+				}
+			}
+		}
+		if docsRepo != nil {
+			if _, err := updateExistingSessionDoc(ctx, docsRepo, sessionID, "", func(session *state.SessionDoc) error {
+				session.Meta = mergeSessionMeta(session.Meta, map[string]any{"deleted": true, "deleted_at": time.Now().Unix()})
+				return nil
+			}); err != nil && !errors.Is(err, state.ErrNotFound) {
+				return err
+			}
+		}
+		if sessionStore != nil {
+			return sessionStore.Delete(sessionID)
+		}
+		return nil
+	})
 }
 
 func rotateSessionLifecycle(
