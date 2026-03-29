@@ -27,6 +27,7 @@ type IndexedMemory struct {
 
 type Index struct {
 	mu       sync.RWMutex
+	saveMu   sync.Mutex
 	path     string
 	docs     map[string]IndexedMemory
 	byToken  map[string]map[string]struct{}
@@ -312,6 +313,9 @@ func (i *Index) SearchSession(sessionID, query string, limit int) []IndexedMemor
 }
 
 func (i *Index) Save() error {
+	i.saveMu.Lock()
+	defer i.saveMu.Unlock()
+
 	i.mu.RLock()
 	docs := make([]IndexedMemory, 0, len(i.docs))
 	for _, doc := range i.docs {
@@ -328,7 +332,7 @@ func (i *Index) Save() error {
 	if err := os.MkdirAll(filepath.Dir(i.path), 0o700); err != nil {
 		return err
 	}
-	tmp := i.path + ".tmp"
+	tmp := fmt.Sprintf("%s.%d.tmp", i.path, time.Now().UnixNano())
 	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
 		return err
 	}
