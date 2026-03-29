@@ -591,10 +591,15 @@ func (b *DMBus) runHubSubscription(filter nostr.Filter) bool {
 				if b.health == nil || b.health.Allowed(relay, time.Now()) {
 					break
 				}
+				// Sleep for the exact remaining cooldown instead of polling.
+				wait := b.health.NextAllowedIn(relay, time.Now())
+				if wait <= 0 {
+					break
+				}
 				select {
 				case <-subCtx.Done():
 					return
-				case <-time.After(200 * time.Millisecond):
+				case <-time.After(wait):
 				}
 			}
 			select {

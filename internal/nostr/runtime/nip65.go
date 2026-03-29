@@ -260,7 +260,7 @@ func FetchNIP65(ctx context.Context, pool *nostr.Pool, relays []string, pubkey s
 	}
 
 	var best *nostr.Event
-	for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 		ev := re.Event
 		if best == nil || ev.CreatedAt > best.CreatedAt {
 			cp := ev
@@ -416,7 +416,7 @@ func FetchNIP02Contacts(ctx context.Context, pool *nostr.Pool, relays []string, 
 	}
 
 	var best *nostr.Event
-	for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 		ev := re.Event
 		if best == nil || ev.CreatedAt > best.CreatedAt {
 			cp := ev

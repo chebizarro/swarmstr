@@ -225,6 +225,10 @@ func pollDVMResult(ctx context.Context, pool *nostr.Pool, relays []string, jobID
 		Tags:  nostr.TagMap{"e": []string{jobID}},
 	}
 
+	// SubscribeMany is correct here: the DVM result event is published
+	// asynchronously after the job completes, so we need live event delivery
+	// past EOSE (FetchMany would close at EOSE and miss it).  The timeout
+	// context provides the hard upper bound.
 	sub := pool.SubscribeMany(pollCtx, relays, f, nostr.SubscriptionOptions{})
 
 	var lastStatus string

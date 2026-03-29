@@ -123,7 +123,7 @@ func ListWorkers(ctx context.Context, pool *nostr.Pool, relays []string, limit i
 
 	var workers []Worker
 	seen := make(map[string]bool)
-	for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 		id := re.Event.ID.Hex()
 		if seen[id] {
 			continue
@@ -190,7 +190,7 @@ func GetJobStatus(ctx context.Context, pool *nostr.Pool, relays []string, jobReq
 	ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 		return decodeJobStatusEvent(re.Event), nil
 	}
 	return nil, fmt.Errorf("loom: no status found for job %s", jobRequestID)
@@ -207,7 +207,7 @@ func WaitForResult(ctx context.Context, pool *nostr.Pool, relays []string, jobRe
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 		return decodeJobResultEvent(re.Event), nil
 	}
 	return nil, fmt.Errorf("loom: timed out waiting for result of job %s", jobRequestID)
