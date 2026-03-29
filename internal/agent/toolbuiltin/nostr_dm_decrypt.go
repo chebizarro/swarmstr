@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -178,6 +179,8 @@ func mapDMDecryptErr(err error) error {
 	msg := strings.TrimSpace(err.Error())
 	lmsg := strings.ToLower(msg)
 	switch {
+	case errors.Is(err, nostruntime.ErrInvalidPadding), errors.Is(err, nostruntime.ErrInvalidPlaintext):
+		return dmDecryptErr("decrypt_failed", "ciphertext failed NIP-04 integrity validation")
 	case strings.Contains(lmsg, "keyer does not support nip-04"):
 		return dmDecryptErr("unsupported_nip04", "keyer does not support NIP-04 decryption")
 	case strings.Contains(lmsg, "base64") || strings.Contains(lmsg, "invalid byte"):

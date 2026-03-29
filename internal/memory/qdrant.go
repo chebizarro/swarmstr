@@ -69,12 +69,17 @@ type QdrantBackend struct {
 
 // -- embedding --
 
-func (b *QdrantBackend) embed(text string) ([]float32, error) {
+func (b *QdrantBackend) embed(ctx context.Context, text string) ([]float32, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	body, _ := json.Marshal(map[string]any{
 		"model":  embedModel,
 		"prompt": text,
 	})
-	resp, err := b.client.Post(b.ollamaURL+"/api/embeddings", "application/json", bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, b.ollamaURL+"/api/embeddings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("ollama embed: %w", err)
 	}
@@ -127,7 +132,10 @@ func (b *QdrantBackend) ensureCollection() error {
 	return nil
 }
 
-func (b *QdrantBackend) upsert(id string, vec []float32, payload map[string]any) error {
+func (b *QdrantBackend) upsert(ctx context.Context, id string, vec []float32, payload map[string]any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Qdrant requires UUID or unsigned int point IDs.
 	qdrantID := stringToUUID(id)
 	body, _ := json.Marshal(map[string]any{
@@ -135,7 +143,7 @@ func (b *QdrantBackend) upsert(id string, vec []float32, payload map[string]any)
 			{"id": qdrantID, "vector": vec, "payload": payload},
 		},
 	})
-	req, _ := http.NewRequest(http.MethodPut,
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPut,
 		fmt.Sprintf("%s/collections/%s/points", b.qdrantURL, b.collection),
 		bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -176,7 +184,10 @@ func qdrantIDToString(raw json.RawMessage) string {
 	return string(raw)
 }
 
-func (b *QdrantBackend) vectorSearch(vec []float32, limit int, filter map[string]any) ([]IndexedMemory, error) {
+func (b *QdrantBackend) vectorSearch(ctx context.Context, vec []float32, limit int, filter map[string]any) ([]IndexedMemory, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	req := map[string]any{
 		"vector":       vec,
 		"limit":        limit,
@@ -186,9 +197,11 @@ func (b *QdrantBackend) vectorSearch(vec []float32, limit int, filter map[string
 		req["filter"] = filter
 	}
 	body, _ := json.Marshal(req)
-	resp, err := b.client.Post(
+	reqHTTP, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		fmt.Sprintf("%s/collections/%s/points/search", b.qdrantURL, b.collection),
-		"application/json", bytes.NewReader(body))
+		bytes.NewReader(body))
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	resp, err := b.client.Do(reqHTTP)
 	if err != nil {
 		return nil, err
 	}
@@ -235,11 +248,15 @@ func payloadToIndexedMemory(id string, p map[string]any) IndexedMemory {
 // -- Backend interface --
 
 func (b *QdrantBackend) Add(doc state.MemoryDoc) {
+	b.AddWithContext(context.Background(), doc)
+}
+
+func (b *QdrantBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
 	text := strings.TrimSpace(doc.Text)
 	if text == "" {
 		return
 	}
-	vec, err := b.embed(text)
+	vec, err := b.embed(ctx, text)
 	if err != nil {
 		log.Printf("qdrant: embed failed: %v", err)
 		return
@@ -254,14 +271,14 @@ func (b *QdrantBackend) Add(doc state.MemoryDoc) {
 		"role":       doc.Role,
 		"unix":       time.Now().Unix(),
 	}
-	if err := b.upsert(id, vec, payload); err != nil {
+	if err := b.upsert(ctx, id, vec, payload); err != nil {
 		log.Printf("qdrant: upsert failed: %v", err)
 	}
 }
 
 func (b *QdrantBackend) Store(sessionID, text string, tags []string) string {
 	id := randomID()
-	vec, err := b.embed(text)
+	vec, err := b.embed(context.Background(), text)
 	if err != nil {
 		log.Printf("qdrant: embed failed: %v", err)
 		return id
@@ -272,19 +289,23 @@ func (b *QdrantBackend) Store(sessionID, text string, tags []string) string {
 		"keywords":   tags,
 		"unix":       time.Now().Unix(),
 	}
-	if err := b.upsert(id, vec, payload); err != nil {
+	if err := b.upsert(context.Background(), id, vec, payload); err != nil {
 		log.Printf("qdrant: upsert failed: %v", err)
 	}
 	return id
 }
 
 func (b *QdrantBackend) Search(query string, limit int) []IndexedMemory {
-	vec, err := b.embed(query)
+	return b.SearchWithContext(context.Background(), query, limit)
+}
+
+func (b *QdrantBackend) SearchWithContext(ctx context.Context, query string, limit int) []IndexedMemory {
+	vec, err := b.embed(ctx, query)
 	if err != nil {
 		log.Printf("qdrant: embed for search failed: %v", err)
 		return nil
 	}
-	results, err := b.vectorSearch(vec, limit, nil)
+	results, err := b.vectorSearch(ctx, vec, limit, nil)
 	if err != nil {
 		log.Printf("qdrant: search failed: %v", err)
 		return nil
@@ -293,7 +314,11 @@ func (b *QdrantBackend) Search(query string, limit int) []IndexedMemory {
 }
 
 func (b *QdrantBackend) SearchSession(sessionID, query string, limit int) []IndexedMemory {
-	vec, err := b.embed(query)
+	return b.SearchSessionWithContext(context.Background(), sessionID, query, limit)
+}
+
+func (b *QdrantBackend) SearchSessionWithContext(ctx context.Context, sessionID, query string, limit int) []IndexedMemory {
+	vec, err := b.embed(ctx, query)
 	if err != nil {
 		return nil
 	}
@@ -302,7 +327,7 @@ func (b *QdrantBackend) SearchSession(sessionID, query string, limit int) []Inde
 			{"key": "session_id", "match": map[string]any{"value": sessionID}},
 		},
 	}
-	results, err := b.vectorSearch(vec, limit, filter)
+	results, err := b.vectorSearch(ctx, vec, limit, filter)
 	if err != nil {
 		log.Printf("qdrant: session search failed: %v", err)
 		return nil
@@ -412,7 +437,7 @@ func (b *QdrantBackend) Save() error { return nil } // Qdrant persists automatic
 
 func (b *QdrantBackend) Delete(id string) bool {
 	body, _ := json.Marshal(map[string]any{
-		"points": []string{id},
+		"points": []string{stringToUUID(id)},
 	})
 	req, _ := http.NewRequest(http.MethodPost,
 		fmt.Sprintf("%s/collections/%s/points/delete", b.qdrantURL, b.collection),
@@ -459,27 +484,62 @@ type HybridIndex struct {
 	backend Backend
 }
 
+func (h *HybridIndex) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
+	h.Index.Add(doc)
+	if ctxBackend, ok := h.backend.(interface {
+		AddWithContext(context.Context, state.MemoryDoc)
+	}); ok {
+		ctxBackend.AddWithContext(ctx, doc)
+		return
+	}
+	h.persistToBackend(doc)
+}
+
+func (h *HybridIndex) SearchWithContext(ctx context.Context, query string, limit int) []IndexedMemory {
+	if ctxBackend, ok := h.backend.(interface {
+		SearchWithContext(context.Context, string, int) []IndexedMemory
+	}); ok {
+		results := ctxBackend.SearchWithContext(ctx, query, limit)
+		if len(results) > 0 {
+			return results
+		}
+	} else {
+		results := h.backend.Search(query, limit)
+		if len(results) > 0 {
+			return results
+		}
+	}
+	return h.Index.Search(query, limit)
+}
+
+func (h *HybridIndex) SearchSessionWithContext(ctx context.Context, sessionID, query string, limit int) []IndexedMemory {
+	if ctxBackend, ok := h.backend.(interface {
+		SearchSessionWithContext(context.Context, string, string, int) []IndexedMemory
+	}); ok {
+		results := ctxBackend.SearchSessionWithContext(ctx, sessionID, query, limit)
+		if len(results) > 0 {
+			return results
+		}
+	} else {
+		results := h.backend.SearchSession(sessionID, query, limit)
+		if len(results) > 0 {
+			return results
+		}
+	}
+	return h.Index.SearchSession(sessionID, query, limit)
+}
+
 // NewHybridIndex creates a HybridIndex that writes to both stores.
 func NewHybridIndex(idx *Index, backend Backend) *HybridIndex {
 	return &HybridIndex{Index: idx, backend: backend}
 }
 
 func (h *HybridIndex) Search(query string, limit int) []IndexedMemory {
-	// Prefer semantic search from backend
-	results := h.backend.Search(query, limit)
-	if len(results) > 0 {
-		return results
-	}
-	// Fallback to FTS
-	return h.Index.Search(query, limit)
+	return h.SearchWithContext(context.Background(), query, limit)
 }
 
 func (h *HybridIndex) SearchSession(sessionID, query string, limit int) []IndexedMemory {
-	results := h.backend.SearchSession(sessionID, query, limit)
-	if len(results) > 0 {
-		return results
-	}
-	return h.Index.SearchSession(sessionID, query, limit)
+	return h.SearchSessionWithContext(context.Background(), sessionID, query, limit)
 }
 
 // persistToBackend asynchronously mirrors an Add to the vector backend.
@@ -492,8 +552,7 @@ func (h *HybridIndex) persistToBackend(doc state.MemoryDoc) {
 	}()
 }
 func (h *HybridIndex) Add(doc state.MemoryDoc) {
-	h.Index.Add(doc)
-	h.persistToBackend(doc)
+	h.AddWithContext(context.Background(), doc)
 }
 
 // Store is the interface satisfied by both *Index and *HybridIndex.

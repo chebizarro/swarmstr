@@ -7,12 +7,16 @@ import (
 	"testing"
 
 	nostr "fiatjaf.com/nostr"
+
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 type stubDecryptKeyer struct{}
 
-func (stubDecryptKeyer) GetPublicKey(context.Context) (nostr.PubKey, error) { return nostr.PubKey{}, nil }
-func (stubDecryptKeyer) SignEvent(context.Context, *nostr.Event) error       { return nil }
+func (stubDecryptKeyer) GetPublicKey(context.Context) (nostr.PubKey, error) {
+	return nostr.PubKey{}, nil
+}
+func (stubDecryptKeyer) SignEvent(context.Context, *nostr.Event) error { return nil }
 func (stubDecryptKeyer) Encrypt(context.Context, string, nostr.PubKey) (string, error) {
 	return "", nil
 }
@@ -88,14 +92,38 @@ func TestNostrDMDecryptToolDirectNIP04_InvalidFormat(t *testing.T) {
 	}
 }
 
+type invalidPaddingKeyer struct{ stubDecryptKeyer }
+
+func (invalidPaddingKeyer) DecryptNIP04(_ context.Context, _ string, _ nostr.PubKey) (string, error) {
+	return "", nostruntime.ErrInvalidPadding
+}
+
+func TestNostrDMDecryptToolDirectNIP04_InvalidPaddingSurfacesMachineReadableError(t *testing.T) {
+	tool := NostrDMDecryptTool(NostrToolOpts{Keyer: invalidPaddingKeyer{}})
+	_, err := tool(context.Background(), map[string]any{
+		"ciphertext":    "eHl6?iv=aXYxMjM0NTY3ODkwMTIzNA==",
+		"sender_pubkey": validSenderHex(t),
+		"scheme":        "nip04",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.HasPrefix(err.Error(), "nostr_dm_decrypt_error:") {
+		t.Fatalf("expected machine-readable error prefix, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "\"code\":\"decrypt_failed\"") {
+		t.Fatalf("expected decrypt_failed code, got: %v", err)
+	}
+}
+
 func TestNostrDMDecryptToolEventKind14ReturnsContent(t *testing.T) {
 	tool := NostrDMDecryptTool(NostrToolOpts{Keyer: stubDecryptKeyer{}})
 	out, err := tool(context.Background(), map[string]any{
 		"event": map[string]any{
-			"kind":      14,
-			"content":   "hello",
+			"kind":       14,
+			"content":    "hello",
 			"created_at": 1,
-			"pubkey":    validSenderHex(t),
+			"pubkey":     validSenderHex(t),
 		},
 	})
 	if err != nil {

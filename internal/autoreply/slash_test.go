@@ -3,6 +3,7 @@ package autoreply_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"metiq/internal/autoreply"
 )
@@ -111,4 +112,48 @@ func TestSessionTurns_acquire(t *testing.T) {
 		t.Error("TryAcquire should succeed after release")
 	}
 	release3()
+}
+
+func TestSessionTurns_AcquireWaitsAndCancels(t *testing.T) {
+	st := autoreply.NewSessionTurns()
+	release, ok := st.TryAcquire("s1")
+	if !ok {
+		t.Fatal("initial TryAcquire should succeed")
+	}
+
+	acquired := make(chan struct{})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		release2, err := st.Acquire(ctx, "s1")
+		if err != nil {
+			t.Errorf("Acquire wait failed: %v", err)
+			close(acquired)
+			return
+		}
+		release2()
+		close(acquired)
+	}()
+
+	time.Sleep(60 * time.Millisecond)
+	release()
+	<-acquired
+
+	release3, ok := st.TryAcquire("s1")
+	if !ok {
+		t.Fatal("slot should be available after waiting acquire completes")
+	}
+	release3()
+
+	release4, ok := st.TryAcquire("s2")
+	if !ok {
+		t.Fatal("TryAcquire for cancellation test should succeed")
+	}
+	defer release4()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if _, err := st.Acquire(ctx, "s2"); err == nil {
+		t.Fatal("expected Acquire to fail on context timeout")
+	}
 }
