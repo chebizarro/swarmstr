@@ -1,7 +1,13 @@
-
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Dotenv
+.env
+.env.*
+!.env.example
+
+scripts/docker/.env
 
 # Local build outputs
 /metiq

@@ -2105,13 +2105,12 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 		t.Fatalf("expected invalid provider to default to openai, got: %#v", payload)
 	}
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSConvert, Params: json.RawMessage(`{"text":"hello"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
-	if err != nil {
-		t.Fatalf("tts.convert error: %v", err)
+	_, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodTTSConvert, Params: json.RawMessage(`{"text":"hello","provider":"openai"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	if err == nil {
+		t.Fatalf("tts.convert should return error when TTS is disabled, got nil")
 	}
-	payload, _ = res.Result.(map[string]any)
-	if payload["provider"] == "" {
-		t.Fatalf("unexpected tts.convert payload: %#v", res.Result)
+	if !strings.Contains(err.Error(), "tts") {
+		t.Fatalf("tts.convert error should mention tts, got: %v", err)
 	}
 }
 

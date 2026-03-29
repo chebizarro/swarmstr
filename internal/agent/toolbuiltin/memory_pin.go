@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"metiq/internal/agent"
@@ -69,7 +70,9 @@ func MemoryPinTool(idx memory.Store) agent.ToolFunc {
 			doc.Keywords = append(doc.Keywords, label)
 		}
 		idx.Add(doc)
-		_ = idx.Save()
+		if saveErr := idx.Save(); saveErr != nil {
+			log.Printf("memory_pin: index save failed: %v", saveErr)
+		}
 
 		out, _ := json.Marshal(map[string]any{"id": id, "pinned": true})
 		return string(out), nil
