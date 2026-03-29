@@ -13,6 +13,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -123,10 +124,19 @@ type IndexBackend struct {
 }
 
 func (b *IndexBackend) Add(doc state.MemoryDoc) { b.idx.Add(doc) }
+func (b *IndexBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
+	b.idx.Add(doc)
+}
 func (b *IndexBackend) Search(query string, limit int) []IndexedMemory {
 	return b.idx.Search(query, limit)
 }
+func (b *IndexBackend) SearchWithContext(ctx context.Context, query string, limit int) []IndexedMemory {
+	return b.idx.Search(query, limit)
+}
 func (b *IndexBackend) SearchSession(sid, q string, limit int) []IndexedMemory {
+	return b.idx.SearchSession(sid, q, limit)
+}
+func (b *IndexBackend) SearchSessionWithContext(ctx context.Context, sid, q string, limit int) []IndexedMemory {
 	return b.idx.SearchSession(sid, q, limit)
 }
 func (b *IndexBackend) ListSession(sid string, limit int) []IndexedMemory {
@@ -143,6 +153,40 @@ func (b *IndexBackend) ListByTopic(topic string, limit int) []IndexedMemory {
 }
 func (b *IndexBackend) Save() error  { return b.idx.Save() }
 func (b *IndexBackend) Close() error { return b.idx.Save() }
+
+type contextAdder interface {
+	AddWithContext(context.Context, state.MemoryDoc)
+}
+
+type contextSearcher interface {
+	SearchWithContext(context.Context, string, int) []IndexedMemory
+}
+
+type contextSessionSearcher interface {
+	SearchSessionWithContext(context.Context, string, string, int) []IndexedMemory
+}
+
+func AddDoc(ctx context.Context, store Store, doc state.MemoryDoc) {
+	if ctxStore, ok := any(store).(contextAdder); ok {
+		ctxStore.AddWithContext(ctx, doc)
+		return
+	}
+	store.Add(doc)
+}
+
+func SearchDocs(ctx context.Context, store Store, query string, limit int) []IndexedMemory {
+	if ctxStore, ok := any(store).(contextSearcher); ok {
+		return ctxStore.SearchWithContext(ctx, query, limit)
+	}
+	return store.Search(query, limit)
+}
+
+func SearchSessionDocs(ctx context.Context, store Store, sessionID, query string, limit int) []IndexedMemory {
+	if ctxStore, ok := any(store).(contextSessionSearcher); ok {
+		return ctxStore.SearchSessionWithContext(ctx, sessionID, query, limit)
+	}
+	return store.SearchSession(sessionID, query, limit)
+}
 
 // Compact removes the oldest (lowest-Unix) entries to reduce total count.
 func (b *IndexBackend) Compact(maxEntries int) int {

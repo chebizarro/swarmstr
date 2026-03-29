@@ -1,13 +1,22 @@
-version: "3.9"
-
-# metiq daemon + optional Playwright browser sandbox
+# metiq daemon + optional services
 #
-# Quick start:
+# Quick start (minimal):
 #   cp .env.example .env   # fill in METIQ_NOSTR_KEY + API keys
 #   docker compose up -d
 #
-# To enable browser control, uncomment the `playwright` service and
-# set METIQ_BROWSER_URL=http://playwright:3500 in .env.
+# Full AI agent (Python + Node + browser baked in):
+#   docker compose --profile browser --profile full up -d
+#
+# Build variants:
+#   METIQ_VARIANT=default          Debian bookworm (recommended for agents)
+#   METIQ_VARIANT=slim             Debian bookworm-slim (smaller footprint)
+#
+# Optional build-time flags (set in .env or pass via CLI):
+#   METIQ_INSTALL_PYTHON=1         Python 3 + pip + uv for MCP servers
+#   METIQ_INSTALL_NODE=1           Node.js 24 for JS/TS MCP servers
+#   METIQ_INSTALL_BROWSER=1        Chromium + Xvfb for browser automation
+#   METIQ_INSTALL_DOCKER_CLI=1     Docker CLI for sandbox management
+#   METIQ_APT_PACKAGES="pkg1 pkg2" Additional apt packages
 
 services:
 
@@ -16,20 +25,48 @@ services:
     build:
       context: ../..          # repo root
       dockerfile: scripts/docker/Dockerfile
-    image: metiq/metiqd:latest
+      args:
+        VERSION: ${METIQ_VERSION:-dev}
+        METIQ_VARIANT: ${METIQ_VARIANT:-default}
+        METIQ_INSTALL_PYTHON: ${METIQ_INSTALL_PYTHON:-}
+        METIQ_INSTALL_NODE: ${METIQ_INSTALL_NODE:-}
+        METIQ_INSTALL_BROWSER: ${METIQ_INSTALL_BROWSER:-}
+        METIQ_INSTALL_DOCKER_CLI: ${METIQ_INSTALL_DOCKER_CLI:-}
+        METIQ_APT_PACKAGES: ${METIQ_APT_PACKAGES:-}
+    image: metiq/metiqd:${METIQ_VERSION:-latest}
     restart: unless-stopped
     env_file:
       - .env                  # create from .env.example
     volumes:
-      - metiq-data:/data   # persistent config + session storage
+      - metiq-data:/data      # persistent config + session storage
     depends_on:
       playwright:
         condition: service_healthy
         required: false       # still starts if playwright is disabled
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7423/health"]
+      interval: 60s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
     networks:
       - metiq
 
-  # ── Playwright browser sandbox (optional, high-value) ────────────────────────
+  # ── Full agent variant (Python + Node + browser pre-installed) ───────────
+  # Activate with: docker compose --profile full up -d
+  metiqd-full:
+    extends:
+      service: metiqd
+    build:
+      args:
+        METIQ_INSTALL_PYTHON: "1"
+        METIQ_INSTALL_NODE: "1"
+        METIQ_INSTALL_BROWSER: "1"
+    image: metiq/metiqd-full:${METIQ_VERSION:-latest}
+    profiles:
+      - full
+
+  # ── Playwright browser sandbox (optional, standalone) ────────────────────
   # Set METIQ_BROWSER_URL=http://playwright:3500 in .env to enable.
   playwright:
     image: metiq/playwright-sandbox:latest
@@ -52,7 +89,7 @@ services:
     networks:
       - metiq
     profiles:
-      - browser  # opt-in: docker compose --profile browser up
+      - browser               # opt-in: docker compose --profile browser up
 
 volumes:
   metiq-data:

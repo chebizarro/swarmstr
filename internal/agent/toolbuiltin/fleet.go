@@ -235,6 +235,126 @@ func normalizeFleetRPCTimeout(args map[string]any) int {
 
 // resolveFleetTarget turns a name, npub, or hex pubkey into a hex pubkey.
 // Name lookup is case-insensitive against the fleet directory.
+// ─── nostr_agent_send tool (async, non-blocking) ─────────────────────────────
+
+// NostrAgentSendDef is the ToolDefinition for nostr_agent_send.
+var NostrAgentSendDef = agent.ToolDefinition{
+	Name: "nostr_agent_send",
+	Description: "Send a DM to a fleet agent without waiting for a reply. " +
+		"Use when you don't need an immediate response, or for async workflows. " +
+		"Check for replies later with nostr_agent_inbox.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"to": {
+				Type:        "string",
+				Description: "Target agent: display name (e.g. \"Stew\"), npub, or hex pubkey.",
+			},
+			"message": {
+				Type:        "string",
+				Description: "Message to send to the agent.",
+			},
+		},
+		Required: []string{"to", "message"},
+	},
+}
+
+// NostrAgentSendTool returns a non-blocking tool that sends a DM to a fleet agent.
+func NostrAgentSendTool(opts NostrToolOpts, getAgents FleetDirectoryFunc) agent.ToolFunc {
+	return func(ctx context.Context, args map[string]any) (string, error) {
+		if opts.DMTransport == nil {
+			return "", fmt.Errorf("nostr_agent_send: DM transport not available")
+		}
+		toRaw := strings.TrimSpace(agent.ArgString(args, "to"))
+		if toRaw == "" {
+			return "", fmt.Errorf("nostr_agent_send: 'to' is required")
+		}
+		msgText := strings.TrimSpace(agent.ArgString(args, "message"))
+		if msgText == "" {
+			return "", fmt.Errorf("nostr_agent_send: 'message' is required")
+		}
+		if err := opts.checkOutboundContent(msgText); err != nil {
+			return "", fmt.Errorf("nostr_agent_send: %w", err)
+		}
+
+		toPubkeyHex, resolvedName, err := resolveFleetTarget(toRaw, getAgents)
+		if err != nil {
+			return "", fmt.Errorf("nostr_agent_send: %w", err)
+		}
+
+		sendCtx, sendCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer sendCancel()
+		if err := opts.DMTransport.SendDM(sendCtx, toPubkeyHex, msgText); err != nil {
+			return "", fmt.Errorf("nostr_agent_send: send failed to %s: %w", resolvedName, err)
+		}
+
+		out, _ := json.Marshal(map[string]any{
+			"status": "sent",
+			"to":     resolvedName,
+			"pubkey": toPubkeyHex,
+			"note":   "Message sent. Use nostr_agent_inbox to check for replies later.",
+		})
+		return string(out), nil
+	}
+}
+
+// ─── nostr_agent_inbox tool (async reply polling) ────────────────────────────
+
+// InboxDrainFunc drains the inbox for a given pubkey, returning received messages.
+type InboxDrainFunc func(fromPubkeyHex string) []InboxMessage
+
+// InboxMessage is a message received from a fleet agent.
+type InboxMessage struct {
+	From string `json:"from"`
+	Text string `json:"text"`
+	Unix int64  `json:"unix"`
+}
+
+// NostrAgentInboxDef is the ToolDefinition for nostr_agent_inbox.
+var NostrAgentInboxDef = agent.ToolDefinition{
+	Name: "nostr_agent_inbox",
+	Description: "Check for replies from a fleet agent. " +
+		"Returns and clears any messages received since the last check. " +
+		"Use after nostr_agent_send to poll for async responses.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"from": {
+				Type:        "string",
+				Description: "Agent to check: display name, npub, or hex pubkey.",
+			},
+		},
+		Required: []string{"from"},
+	},
+}
+
+// NostrAgentInboxTool returns a tool that drains the async inbox for a fleet agent.
+func NostrAgentInboxTool(getAgents FleetDirectoryFunc, drain InboxDrainFunc) agent.ToolFunc {
+	return func(ctx context.Context, args map[string]any) (string, error) {
+		if drain == nil {
+			return "", fmt.Errorf("nostr_agent_inbox: inbox not available")
+		}
+		fromRaw := strings.TrimSpace(agent.ArgString(args, "from"))
+		if fromRaw == "" {
+			return "", fmt.Errorf("nostr_agent_inbox: 'from' is required")
+		}
+
+		fromPubkeyHex, resolvedName, err := resolveFleetTarget(fromRaw, getAgents)
+		if err != nil {
+			return "", fmt.Errorf("nostr_agent_inbox: %w", err)
+		}
+
+		messages := drain(fromPubkeyHex)
+		out, _ := json.Marshal(map[string]any{
+			"from":     resolvedName,
+			"pubkey":   fromPubkeyHex,
+			"messages": messages,
+			"count":    len(messages),
+		})
+		return string(out), nil
+	}
+}
+
 func resolveFleetTarget(raw string, getAgents FleetDirectoryFunc) (hexPubkey, displayName string, err error) {
 	// Try direct pubkey parse first.
 	pk, pkErr := nostruntime.ParsePubKey(raw)

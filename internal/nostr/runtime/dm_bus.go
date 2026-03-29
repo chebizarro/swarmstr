@@ -2,6 +2,10 @@ package runtime
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,6 +15,11 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/keyer"
 	"fiatjaf.com/nostr/nip04"
+)
+
+var (
+	ErrInvalidPadding   = errors.New("invalid padding")
+	ErrInvalidPlaintext = errors.New("invalid plaintext")
 )
 
 type InboundDM struct {
@@ -49,8 +58,8 @@ type DMBusOptions struct {
 }
 
 type DMBus struct {
-	pool *nostr.Pool
-	hub  *NostrHub
+	pool     *nostr.Pool
+	hub      *NostrHub
 	ownsPool bool
 	// authKeyer is used for NIP-42 relay AUTH signing (PoolOptsNIP42).
 	authKeyer nostr.Keyer
@@ -757,11 +766,62 @@ func decryptNIP04(sk nostr.SecretKey, sender nostr.PubKey, content string) (stri
 	if err != nil {
 		return "", fmt.Errorf("compute shared secret: %w", err)
 	}
-	plaintext, err := nip04.Decrypt(content, shared)
+	plaintext, err := decryptNIP04WithSharedSecret(shared, content)
 	if err != nil {
 		return "", err
 	}
 	return plaintext, nil
+}
+
+func decryptNIP04WithSharedSecret(shared []byte, content string) (string, error) {
+	parts := strings.SplitN(strings.TrimSpace(content), "?iv=", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", fmt.Errorf("invalid ciphertext format")
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", fmt.Errorf("decode ciphertext: %w", err)
+	}
+	iv, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("decode iv: %w", err)
+	}
+	if len(iv) != aes.BlockSize {
+		return "", fmt.Errorf("invalid iv length: %d", len(iv))
+	}
+	if len(ciphertext) == 0 || len(ciphertext)%aes.BlockSize != 0 {
+		return "", fmt.Errorf("invalid ciphertext length")
+	}
+	block, err := aes.NewCipher(shared)
+	if err != nil {
+		return "", fmt.Errorf("create cipher: %w", err)
+	}
+	plaintext := make([]byte, len(ciphertext))
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plaintext, ciphertext)
+	plaintext, err = pkcs7Unpad(plaintext, aes.BlockSize)
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(plaintext) {
+		return "", ErrInvalidPlaintext
+	}
+	return string(plaintext), nil
+}
+
+func pkcs7Unpad(plaintext []byte, blockSize int) ([]byte, error) {
+	if len(plaintext) == 0 || len(plaintext)%blockSize != 0 {
+		return nil, ErrInvalidPadding
+	}
+	padding := int(plaintext[len(plaintext)-1])
+	if padding == 0 || padding > blockSize || padding > len(plaintext) {
+		return nil, ErrInvalidPadding
+	}
+	for _, b := range plaintext[len(plaintext)-padding:] {
+		if int(b) != padding {
+			return nil, ErrInvalidPadding
+		}
+	}
+	return plaintext[:len(plaintext)-padding], nil
 }
 
 func encryptNIP04(sk nostr.SecretKey, recipient nostr.PubKey, plaintext string) (string, error) {

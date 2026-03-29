@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"metiq/internal/agent"
+	"metiq/internal/autoreply"
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/nostr/events"
@@ -2247,6 +2248,7 @@ func (e *capturingEmitter) eventsByName(name string) []any {
 }
 
 type testStore struct {
+	mu          sync.Mutex
 	replaceable map[string]state.Event
 }
 
@@ -2255,6 +2257,8 @@ func newTestStore() *testStore {
 }
 
 func (s *testStore) GetLatestReplaceable(_ context.Context, addr state.Address) (state.Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	evt, ok := s.replaceable[s.key(addr)]
 	if !ok {
 		return state.Event{}, state.ErrNotFound
@@ -2263,6 +2267,8 @@ func (s *testStore) GetLatestReplaceable(_ context.Context, addr state.Address) 
 }
 
 func (s *testStore) PutReplaceable(_ context.Context, addr state.Address, content string, extraTags [][]string) (state.Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	evt := state.Event{
 		ID:        fmt.Sprintf("evt:%s", s.key(addr)),
 		PubKey:    addr.PubKey,
@@ -2288,6 +2294,8 @@ func (s *testStore) ListByTagForAuthor(_ context.Context, kind events.Kind, auth
 }
 
 func (s *testStore) listByTag(kind events.Kind, authorPubKey, tagName, tagValue string, limit int) []state.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if limit <= 0 {
 		limit = 100
 	}
@@ -2316,6 +2324,361 @@ func (s *testStore) key(addr state.Address) string {
 	return fmt.Sprintf("%d|%s|%s", addr.Kind, addr.PubKey, addr.DTag)
 }
 
+func TestUpdateSessionDocSerializesConcurrentMutations(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		<-start
+		err := updateSessionDoc(context.Background(), docs, "session-race", "peer-a", func(doc *state.SessionDoc) error {
+			doc.LastInboundAt = 111
+			if doc.Meta == nil {
+				doc.Meta = map[string]any{}
+			}
+			doc.Meta["source"] = "inbound"
+			time.Sleep(25 * time.Millisecond)
+			return nil
+		})
+		if err != nil {
+			t.Errorf("update inbound: %v", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		<-start
+		err := updateSessionDoc(context.Background(), docs, "session-race", "peer-b", func(doc *state.SessionDoc) error {
+			doc.LastReplyAt = 222
+			doc.Meta = mergeSessionMeta(doc.Meta, map[string]any{"active_turn": true})
+			return nil
+		})
+		if err != nil {
+			t.Errorf("update reply: %v", err)
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+
+	session, err := docs.GetSession(context.Background(), "session-race")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.LastInboundAt != 111 {
+		t.Fatalf("expected LastInboundAt=111, got %d", session.LastInboundAt)
+	}
+	if session.LastReplyAt != 222 {
+		t.Fatalf("expected LastReplyAt=222, got %d", session.LastReplyAt)
+	}
+	if got, _ := session.Meta["active_turn"].(bool); !got {
+		t.Fatalf("expected active_turn=true in meta, got %#v", session.Meta)
+	}
+	if got, _ := session.Meta["source"].(string); got != "inbound" {
+		t.Fatalf("expected source=inbound in meta, got %#v", session.Meta)
+	}
+	if session.PeerPubKey == "" {
+		t.Fatalf("expected peer pubkey to be populated: %#v", session)
+	}
+}
+
+func TestHandleControlRPCRequest_SessionsResetWaitsForTurnRelease(t *testing.T) {
+	prevTurns := controlSessionTurns
+	controlSessionTurns = autoreply.NewSessionTurns()
+	defer func() { controlSessionTurns = prevTurns }()
+
+	release, ok := controlSessionTurns.TryAcquire("s1")
+	if !ok {
+		t.Fatal("expected to acquire session turn slot")
+	}
+
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	transcript := state.NewTranscriptRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	if _, err := docs.PutSession(context.Background(), "s1", state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer", LastInboundAt: 10, LastReplyAt: 20, Meta: map[string]any{"active_turn": true}}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{
+			FromPubKey: "caller",
+			Method:     methods.MethodSessionsReset,
+			Params:     json.RawMessage(`{"session_id":"s1"}`),
+		}, nil, nil, newChatAbortRegistry(), nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
+		done <- err
+	}()
+
+	time.Sleep(75 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("reset returned before turn release: %v", err)
+	default:
+	}
+
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("reset after release: %v", err)
+	}
+
+	session, err := docs.GetSession(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.LastInboundAt != 0 || session.LastReplyAt != 0 {
+		t.Fatalf("expected reset timestamps cleared, got %#v", session)
+	}
+	if len(session.Meta) != 0 {
+		t.Fatalf("expected reset meta cleared, got %#v", session.Meta)
+	}
+}
+
+func TestRunSessionsPruneSkipsBusySession(t *testing.T) {
+	prevTurns := controlSessionTurns
+	controlSessionTurns = autoreply.NewSessionTurns()
+	defer func() { controlSessionTurns = prevTurns }()
+
+	release, ok := controlSessionTurns.TryAcquire("s1")
+	if !ok {
+		t.Fatal("expected to acquire session turn slot")
+	}
+	defer release()
+
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	transcript := state.NewTranscriptRepository(store, "author")
+	oldUnix := time.Now().Add(-48 * time.Hour).Unix()
+	if _, err := docs.PutSession(context.Background(), "s1", state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer", LastInboundAt: oldUnix}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if _, err := transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{Version: 1, SessionID: "s1", EntryID: "e1", Role: "user", Text: "hello", Unix: oldUnix}); err != nil {
+		t.Fatalf("seed transcript: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	result, err := runSessionsPrune(ctx, docs, transcript, methods.SessionsPruneRequest{OlderThanDays: 1}, "manual")
+	if err != nil {
+		t.Fatalf("runSessionsPrune: %v", err)
+	}
+	if got := result["deleted_count"].(int); got != 0 {
+		t.Fatalf("expected deleted_count=0, got %d", got)
+	}
+	if got := result["skipped_count"].(int); got != 1 {
+		t.Fatalf("expected skipped_count=1, got %d", got)
+	}
+	session, err := docs.GetSession(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if deleted, _ := session.Meta["deleted"].(bool); deleted {
+		t.Fatalf("expected busy session to remain undeleted: %#v", session)
+	}
+	entries, err := transcript.ListSession(context.Background(), "s1", 10)
+	if err != nil {
+		t.Fatalf("list transcript: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected transcript entry to remain, got %d", len(entries))
+	}
+}
+
+func TestRunSessionsPruneRechecksEligibilityAfterRelease(t *testing.T) {
+	prevTurns := controlSessionTurns
+	controlSessionTurns = autoreply.NewSessionTurns()
+	defer func() { controlSessionTurns = prevTurns }()
+
+	release, ok := controlSessionTurns.TryAcquire("s1")
+	if !ok {
+		t.Fatal("expected to acquire session turn slot")
+	}
+
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	transcript := state.NewTranscriptRepository(store, "author")
+	oldUnix := time.Now().Add(-48 * time.Hour).Unix()
+	if _, err := docs.PutSession(context.Background(), "s1", state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer", LastInboundAt: oldUnix}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if _, err := transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{Version: 1, SessionID: "s1", EntryID: "e1", Role: "user", Text: "hello", Unix: oldUnix}); err != nil {
+		t.Fatalf("seed transcript: %v", err)
+	}
+
+	done := make(chan struct {
+		result map[string]any
+		err    error
+	}, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		result, err := runSessionsPrune(ctx, docs, transcript, methods.SessionsPruneRequest{OlderThanDays: 1}, "manual")
+		done <- struct {
+			result map[string]any
+			err    error
+		}{result: result, err: err}
+	}()
+
+	time.Sleep(75 * time.Millisecond)
+	if err := updateSessionDoc(context.Background(), docs, "s1", "peer", func(session *state.SessionDoc) error {
+		session.LastInboundAt = time.Now().Unix()
+		return nil
+	}); err != nil {
+		t.Fatalf("refresh session activity: %v", err)
+	}
+	release()
+
+	out := <-done
+	if out.err != nil {
+		t.Fatalf("runSessionsPrune: %v", out.err)
+	}
+	if got := out.result["deleted_count"].(int); got != 0 {
+		t.Fatalf("expected deleted_count=0 after activity refresh, got %d", got)
+	}
+	if got := out.result["skipped_count"].(int); got != 1 {
+		t.Fatalf("expected skipped_count=1 after activity refresh, got %d", got)
+	}
+	session, err := docs.GetSession(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if deleted, _ := session.Meta["deleted"].(bool); deleted {
+		t.Fatalf("expected reactivated session to remain undeleted: %#v", session)
+	}
+	entries, err := transcript.ListSession(context.Background(), "s1", 10)
+	if err != nil {
+		t.Fatalf("list transcript: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected transcript entry to remain, got %d", len(entries))
+	}
+}
+
+func TestRotateSessionCoordinatedWaitsBeforeMutatingRouterState(t *testing.T) {
+	prevTurns := controlSessionTurns
+	controlSessionTurns = autoreply.NewSessionTurns()
+	defer func() { controlSessionTurns = prevTurns }()
+
+	release, ok := controlSessionTurns.TryAcquire("s1")
+	if !ok {
+		t.Fatal("expected to acquire session turn slot")
+	}
+
+	store := newTestStore()
+	transcript := state.NewTranscriptRepository(store, "author")
+	if _, err := transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{Version: 1, SessionID: "s1", EntryID: "e1", Role: "user", Text: "hello", Unix: time.Now().Unix()}); err != nil {
+		t.Fatalf("seed transcript: %v", err)
+	}
+	sessionRouter := agent.NewAgentSessionRouter()
+	sessionRouter.Assign("s1", "agent-x")
+	var seen sync.Map
+	seen.Store("s1", struct{}{})
+
+	dir := t.TempDir()
+	sessionStore, err := state.NewSessionStore(filepath.Join(dir, "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	if err := sessionStore.Put("s1", state.SessionEntry{SessionID: "s1", SessionFile: "x"}); err != nil {
+		t.Fatalf("seed session store: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		done <- rotateSessionCoordinated(ctx, "s1", "test", false, newChatAbortRegistry(), sessionRouter, &seen, nil, transcript, sessionStore, state.ConfigDoc{})
+	}()
+
+	time.Sleep(75 * time.Millisecond)
+	if got := sessionRouter.Get("s1"); got != "agent-x" {
+		t.Fatalf("router mutated before turn release: %q", got)
+	}
+	if _, ok := seen.Load("s1"); !ok {
+		t.Fatal("seenChannelSessions mutated before turn release")
+	}
+
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("rotateSessionCoordinated: %v", err)
+	}
+	if got := sessionRouter.Get("s1"); got != "" {
+		t.Fatalf("expected router cleared after release, got %q", got)
+	}
+	if _, ok := seen.Load("s1"); ok {
+		t.Fatal("expected seenChannelSessions cleared after release")
+	}
+}
+
+func TestDeleteSessionCoordinatedWaitsAndDoesNotCreatePhantomSessionDoc(t *testing.T) {
+	prevTurns := controlSessionTurns
+	controlSessionTurns = autoreply.NewSessionTurns()
+	defer func() { controlSessionTurns = prevTurns }()
+
+	release, ok := controlSessionTurns.TryAcquire("missing")
+	if !ok {
+		t.Fatal("expected to acquire session turn slot")
+	}
+
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	transcript := state.NewTranscriptRepository(store, "author")
+	sessionRouter := agent.NewAgentSessionRouter()
+	sessionRouter.Assign("missing", "agent-x")
+	var seen sync.Map
+	seen.Store("missing", struct{}{})
+
+	dir := t.TempDir()
+	sessionStore, err := state.NewSessionStore(filepath.Join(dir, "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	if err := sessionStore.Put("missing", state.SessionEntry{SessionID: "missing", SessionFile: "x"}); err != nil {
+		t.Fatalf("seed session store: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		done <- deleteSessionCoordinated(ctx, "missing", newChatAbortRegistry(), sessionRouter, &seen, docs, transcript, sessionStore)
+	}()
+
+	time.Sleep(75 * time.Millisecond)
+	if got := sessionRouter.Get("missing"); got != "agent-x" {
+		t.Fatalf("router mutated before turn release: %q", got)
+	}
+	if _, ok := seen.Load("missing"); !ok {
+		t.Fatal("seenChannelSessions mutated before turn release")
+	}
+	if _, err := docs.GetSession(context.Background(), "missing"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("expected no session doc before release, got err=%v", err)
+	}
+
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("deleteSessionCoordinated: %v", err)
+	}
+	if got := sessionRouter.Get("missing"); got != "" {
+		t.Fatalf("expected router cleared after release, got %q", got)
+	}
+	if _, ok := seen.Load("missing"); ok {
+		t.Fatal("expected seenChannelSessions cleared after release")
+	}
+	if _, err := docs.GetSession(context.Background(), "missing"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("expected no phantom session doc after delete, got err=%v", err)
+	}
+	if _, ok := sessionStore.Get("missing"); ok {
+		t.Fatal("expected session store entry deleted")
+	}
+}
+
 func methodsAnyToStringMapForTest(value any) (map[string]string, error) {
 	out := map[string]string{}
 	switch typed := value.(type) {
@@ -2335,5 +2698,92 @@ func methodsAnyToStringMapForTest(value any) (map[string]string, error) {
 		return out, nil
 	default:
 		return nil, fmt.Errorf("unsupported map type %T", value)
+	}
+}
+
+// ─── RPCCorrelator inbox tests ──────────────────────────────────────────────
+
+func TestRPCCorrelatorInboxStoreAndDrain(t *testing.T) {
+	c := newRPCCorrelator()
+	pk := "cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400"
+
+	c.StoreInbox(pk, "hello from agent")
+	c.StoreInbox(pk, "second message")
+
+	if c.InboxCount() != 2 {
+		t.Fatalf("expected 2 inbox entries, got %d", c.InboxCount())
+	}
+
+	// Peek should return entries without removing them.
+	peeked := c.PeekInbox(pk)
+	if len(peeked) != 2 {
+		t.Fatalf("peek expected 2, got %d", len(peeked))
+	}
+	if c.InboxCount() != 2 {
+		t.Fatal("peek should not remove entries")
+	}
+
+	// Drain should return and remove entries.
+	drained := c.DrainInbox(pk)
+	if len(drained) != 2 {
+		t.Fatalf("drain expected 2, got %d", len(drained))
+	}
+	if drained[0].Text != "hello from agent" {
+		t.Errorf("unexpected text: %s", drained[0].Text)
+	}
+	if c.InboxCount() != 0 {
+		t.Fatal("inbox should be empty after drain")
+	}
+
+	// Second drain should be empty.
+	if len(c.DrainInbox(pk)) != 0 {
+		t.Fatal("expected empty after second drain")
+	}
+}
+
+func TestRPCCorrelatorInboxCapacity(t *testing.T) {
+	c := newRPCCorrelator()
+	pk := "cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400"
+
+	// Store more than maxInboxPerAgent (50).
+	for i := 0; i < 60; i++ {
+		c.StoreInbox(pk, fmt.Sprintf("msg-%d", i))
+	}
+
+	entries := c.DrainInbox(pk)
+	if len(entries) != 50 {
+		t.Fatalf("expected 50 (capped), got %d", len(entries))
+	}
+	// Should have the newest 50 (msg-10 through msg-59).
+	if entries[0].Text != "msg-10" {
+		t.Errorf("expected oldest kept to be msg-10, got %s", entries[0].Text)
+	}
+}
+
+func TestRPCCorrelatorDeliverDoesNotStoreInInbox(t *testing.T) {
+	c := newRPCCorrelator()
+	pk := "cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400"
+
+	// Register a synchronous waiter.
+	replyCh, cancel := c.Register(pk)
+	defer cancel()
+
+	// Deliver should go to the waiter, not the inbox.
+	if !c.Deliver(pk, "sync reply") {
+		t.Fatal("expected deliver to succeed")
+	}
+
+	select {
+	case reply := <-replyCh:
+		if reply != "sync reply" {
+			t.Errorf("unexpected reply: %s", reply)
+		}
+	default:
+		t.Fatal("expected reply on channel")
+	}
+
+	// Inbox should be empty since it went to the synchronous waiter.
+	if len(c.DrainInbox(pk)) != 0 {
+		t.Fatal("inbox should be empty when sync waiter consumed the message")
 	}
 }

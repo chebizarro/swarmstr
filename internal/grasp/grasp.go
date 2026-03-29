@@ -188,8 +188,8 @@ func ListRepos(ctx context.Context, pool *nostr.Pool, relays []string, pubkey st
 
 // CreateIssue publishes a NIP-34 issue (kind 1621).
 func CreateIssue(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, issue Issue) (string, error) {
-	if issue.RepoAddr == "" {
-		return "", fmt.Errorf("grasp: repo_addr is required for issue")
+	if err := ValidateRepoAddr(issue.RepoAddr); err != nil {
+		return "", fmt.Errorf("grasp: issue: %w", err)
 	}
 	if issue.Content == "" {
 		return "", fmt.Errorf("grasp: content is required for issue")
@@ -221,6 +221,9 @@ func CreateIssue(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relay
 
 // ListIssues fetches issues for a repository (kind 1621).
 func ListIssues(ctx context.Context, pool *nostr.Pool, relays []string, repoAddr string, limit int) ([]Issue, error) {
+	if err := ValidateRepoAddr(repoAddr); err != nil {
+		return nil, fmt.Errorf("grasp: list issues: %w", err)
+	}
 	if limit <= 0 {
 		limit = 20
 	}
@@ -251,8 +254,8 @@ func ListIssues(ctx context.Context, pool *nostr.Pool, relays []string, repoAddr
 
 // SubmitPatch publishes a NIP-34 patch (kind 1617).
 func SubmitPatch(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, patch Patch) (string, error) {
-	if patch.RepoAddr == "" {
-		return "", fmt.Errorf("grasp: repo_addr is required for patch")
+	if err := ValidateRepoAddr(patch.RepoAddr); err != nil {
+		return "", fmt.Errorf("grasp: patch: %w", err)
 	}
 	if patch.Content == "" {
 		return "", fmt.Errorf("grasp: content (git format-patch output) is required")
@@ -285,8 +288,8 @@ func SubmitPatch(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relay
 
 // CreatePR publishes a NIP-34 pull request (kind 1618).
 func CreatePR(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, pr PR) (string, error) {
-	if pr.RepoAddr == "" {
-		return "", fmt.Errorf("grasp: repo_addr is required for PR")
+	if err := ValidateRepoAddr(pr.RepoAddr); err != nil {
+		return "", fmt.Errorf("grasp: PR: %w", err)
 	}
 
 	ownerPubkey := extractAddrPubkey(pr.RepoAddr)
@@ -390,6 +393,34 @@ func decodeIssueEvent(ev nostr.Event) Issue {
 	return issue
 }
 
+// ValidateRepoAddr checks that a NIP-34 repository address has the correct
+// format: "30617:<hex-pubkey>:<repo-id>".
+// Returns a descriptive error if the format is wrong.
+func ValidateRepoAddr(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("repo_addr is empty — expected format: 30617:<owner-hex-pubkey>:<repo-id>")
+	}
+	parts := strings.SplitN(addr, ":", 3)
+	if len(parts) != 3 {
+		return fmt.Errorf("repo_addr %q has %d colon-separated parts, expected 3 (format: 30617:<owner-hex-pubkey>:<repo-id>)", addr, len(parts))
+	}
+	if parts[0] != "30617" {
+		return fmt.Errorf("repo_addr kind prefix is %q, expected \"30617\" (format: 30617:<owner-hex-pubkey>:<repo-id>)", parts[0])
+	}
+	if len(parts[1]) != 64 {
+		return fmt.Errorf("repo_addr pubkey %q is %d chars, expected 64-char hex pubkey", parts[1], len(parts[1]))
+	}
+	for _, c := range parts[1] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return fmt.Errorf("repo_addr pubkey %q contains non-hex character %q — must be lowercase hex", parts[1], string(c))
+		}
+	}
+	if parts[2] == "" {
+		return fmt.Errorf("repo_addr repo-id (d-tag) is empty — expected format: 30617:<owner-hex-pubkey>:<repo-id>")
+	}
+	return nil
+}
+
 // extractAddrPubkey extracts the pubkey from a NIP-34 address "kind:pubkey:d-tag".
 func extractAddrPubkey(addr string) string {
 	parts := strings.SplitN(addr, ":", 3)
@@ -400,20 +431,26 @@ func extractAddrPubkey(addr string) string {
 }
 
 func publishEvent(ctx context.Context, pool *nostr.Pool, relays []string, evt nostr.Event) (string, error) {
+	if len(relays) == 0 {
+		return "", fmt.Errorf("no relays configured — set relays in config or pass relay URLs explicitly")
+	}
 	published := false
-	var lastErr error
+	var errs []string
 	for result := range pool.PublishMany(ctx, relays, evt) {
 		if result.Error == nil {
 			published = true
 		} else {
-			lastErr = fmt.Errorf("relay %s: %w", result.RelayURL, result.Error)
+			errs = append(errs, fmt.Sprintf("%s: %v", result.RelayURL, result.Error))
 		}
 	}
 	if !published {
-		if lastErr == nil {
-			lastErr = fmt.Errorf("no relay accepted the event")
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("publish timed out or was cancelled (tried %d relays: %s)", len(relays), strings.Join(errs, "; "))
 		}
-		return "", lastErr
+		if len(errs) == 0 {
+			return "", fmt.Errorf("no relay accepted the event (tried %d relays, no error details returned)", len(relays))
+		}
+		return "", fmt.Errorf("all %d relays rejected the event: %s", len(relays), strings.Join(errs, "; "))
 	}
 	return evt.ID.Hex(), nil
 }
