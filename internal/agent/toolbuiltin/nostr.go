@@ -305,10 +305,9 @@ func NostrFetchTool(opts NostrToolOpts) agent.ToolFunc {
 		pool, releasePool := opts.AcquirePool("fetch done")
 		defer releasePool()
 
-		sub := pool.SubscribeMany(ctx, relays, f, nostr.SubscriptionOptions{})
 		seen := make(map[string]bool)
 		var events []map[string]any
-		for re := range sub {
+		for re := range pool.FetchMany(ctx, relays, f, nostr.SubscriptionOptions{}) {
 			id := re.Event.ID.Hex()
 			if seen[id] {
 				continue

@@ -104,10 +104,8 @@ func NostrProfileTool(opts NostrToolOpts) agent.ToolFunc {
 			Authors: []nostr.PubKey{pk},
 			Limit:   1,
 		}
-		sub := pool.SubscribeMany(ctx2, relays, f, nostr.SubscriptionOptions{})
-
 		var best *nostr.Event
-		for re := range sub {
+		for re := range pool.FetchMany(ctx2, relays, f, nostr.SubscriptionOptions{}) {
 			ev := re.Event
 			if best == nil || ev.CreatedAt > best.CreatedAt {
 				cp := ev
@@ -213,7 +211,7 @@ func NostrProfileSetTool(opts NostrToolOpts) agent.ToolFunc {
 			Limit:   1,
 		}
 		var best *nostr.Event
-		for re := range pool.SubscribeMany(fetchCtx, relays, f, nostr.SubscriptionOptions{}) {
+		for re := range pool.FetchMany(fetchCtx, relays, f, nostr.SubscriptionOptions{}) {
 			ev := re.Event
 			if best == nil || ev.CreatedAt > best.CreatedAt {
 				cp := ev
