@@ -192,7 +192,7 @@ func NostrChatFetchTool(opts NostrToolOpts) agent.ToolFunc {
 
 		seen := make(map[string]bool)
 		var messages []chatMsg
-		for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			id := re.Event.ID.Hex()
 			if seen[id] {
 				continue

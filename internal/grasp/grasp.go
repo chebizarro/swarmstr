@@ -172,7 +172,7 @@ func ListRepos(ctx context.Context, pool *nostr.Pool, relays []string, pubkey st
 
 	var repos []Repo
 	seen := make(map[string]bool)
-	for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 		id := re.Event.ID.Hex()
 		if seen[id] {
 			continue
@@ -238,7 +238,7 @@ func ListIssues(ctx context.Context, pool *nostr.Pool, relays []string, repoAddr
 
 	var issues []Issue
 	seen := make(map[string]bool)
-	for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 		id := re.Event.ID.Hex()
 		if seen[id] {
 			continue

@@ -186,7 +186,7 @@ func Fetch(ctx context.Context, pool *nostr.Pool, relays []string, pubkey string
 	defer cancel()
 
 	var best *nostr.Event
-	for re := range pool.SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 		if best == nil || re.Event.CreatedAt > best.CreatedAt {
 			ev := re.Event
 			best = &ev

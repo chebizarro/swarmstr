@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"metiq/internal/agent"
 	"metiq/internal/memory"
@@ -81,8 +82,9 @@ func MemoryStoreTool(idx memory.Store) agent.ToolFunc {
 		}
 
 		id := idx.Store(sessionID, text, tags)
-		// Best-effort persist; non-fatal if it fails.
-		_ = idx.Save()
+		if saveErr := idx.Save(); saveErr != nil {
+			log.Printf("memory_store: index save failed: %v", saveErr)
+		}
 
 		out, _ := json.Marshal(map[string]any{"id": id, "stored": true})
 		return string(out), nil
@@ -102,7 +104,9 @@ func MemoryDeleteTool(idx memory.Store) agent.ToolFunc {
 		if !idx.Delete(id) {
 			return "", fmt.Errorf("memory_delete: entry %q not found", id)
 		}
-		_ = idx.Save()
+		if saveErr := idx.Save(); saveErr != nil {
+			log.Printf("memory_delete: index save failed: %v", saveErr)
+		}
 		out, _ := json.Marshal(map[string]any{"deleted": true, "id": id})
 		return string(out), nil
 	}

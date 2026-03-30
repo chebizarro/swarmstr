@@ -212,7 +212,7 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 
 		var memories []map[string]any
 		seen := make(map[string]bool)
-		for re := range getPool().SubscribeMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range getPool().FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			id := re.Event.ID.Hex()
 			if seen[id] {
 				continue

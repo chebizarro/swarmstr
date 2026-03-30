@@ -107,6 +107,26 @@ func (t *RelayHealthTracker) Allowed(relay string, now time.Time) bool {
 	return now.Sub(e.lastFailure) >= backoff
 }
 
+// NextAllowedIn returns how long until the relay will be allowed again.
+// Returns 0 if the relay is already allowed.
+func (t *RelayHealthTracker) NextAllowedIn(relay string, now time.Time) time.Duration {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	e, ok := t.entries[relay]
+	if !ok || e.consecutive < 2 {
+		return 0
+	}
+	backoff := t.baseBackoff << minInt(e.consecutive-2, 6)
+	if backoff > t.maxBackoff {
+		backoff = t.maxBackoff
+	}
+	remaining := backoff - now.Sub(e.lastFailure)
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining
+}
+
 func (t *RelayHealthTracker) SortRelays(relays []string) []string {
 	out := make([]string, len(relays))
 	copy(out, relays)

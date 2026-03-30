@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -95,7 +96,9 @@ func (s *taskStore) saveLocked() {
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt < tasks[j].CreatedAt })
 	raw, _ := json.MarshalIndent(tasks, "", "  ")
-	_ = os.WriteFile(s.filePath, raw, 0644)
+	if writeErr := os.WriteFile(s.filePath, raw, 0644); writeErr != nil {
+		log.Printf("taskqueue: persist failed path=%s: %v", s.filePath, writeErr)
+	}
 }
 
 func (s *taskStore) nextID() string {
