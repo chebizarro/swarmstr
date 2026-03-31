@@ -862,10 +862,28 @@ func main() {
 	tools.RegisterWithDef("process_list", toolbuiltin.ProcessListTool(processReg), toolbuiltin.ProcessListDef)
 	tools.RegisterWithDef("process_exec", toolbuiltin.ProcessExecTool, toolbuiltin.ProcessExecDef)
 	// Filesystem tools: read/write files, list and create directories.
-	tools.RegisterWithDef("read_file", toolbuiltin.ReadFileTool, toolbuiltin.ReadFileDef)
-	tools.RegisterWithDef("write_file", toolbuiltin.WriteFileTool, toolbuiltin.WriteFileDef)
-	tools.RegisterWithDef("list_dir", toolbuiltin.ListDirTool, toolbuiltin.ListDirDef)
-	tools.RegisterWithDef("make_dir", toolbuiltin.MakeDirTool, toolbuiltin.MakeDirDef)
+	// Relative paths are resolved against the agent's workspace directory.
+	fsOpts := toolbuiltin.FilesystemOpts{
+		WorkspaceDir: func() string {
+			cfg := configState.Get()
+			if cfg.Extra != nil {
+				if ws, ok := cfg.Extra["workspace"].(map[string]any); ok {
+					if d, ok := ws["dir"].(string); ok && d != "" {
+						return d
+					}
+				}
+			}
+			if d := os.Getenv("METIQ_WORKSPACE"); d != "" {
+				return d
+			}
+			home, _ := os.UserHomeDir()
+			return filepath.Join(home, ".metiq", "workspace")
+		},
+	}
+	tools.RegisterWithDef("read_file", toolbuiltin.ReadFileTool(fsOpts), toolbuiltin.ReadFileDef)
+	tools.RegisterWithDef("write_file", toolbuiltin.WriteFileTool(fsOpts), toolbuiltin.WriteFileDef)
+	tools.RegisterWithDef("list_dir", toolbuiltin.ListDirTool(fsOpts), toolbuiltin.ListDirDef)
+	tools.RegisterWithDef("make_dir", toolbuiltin.MakeDirTool(fsOpts), toolbuiltin.MakeDirDef)
 	// task queue: persistent structured work-item management.
 	{
 		home, _ := os.UserHomeDir()
