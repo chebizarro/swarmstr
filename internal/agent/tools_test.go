@@ -327,6 +327,13 @@ func TestToolRegistry_EffectiveTraits_UsesResolversAndDefaults(t *testing.T) {
 	r.RegisterTool("traits", ToolRegistration{
 		Func: func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil },
 		Descriptor: ToolDescriptor{
+			Parameters: ToolParameters{
+				Type: "object",
+				Properties: map[string]ToolParamProp{
+					"mode":   {Type: "string"},
+					"action": {Type: "string"},
+				},
+			},
 			Traits: ToolTraits{ReadOnly: true},
 		},
 		Traits: ToolTraitResolvers{
@@ -342,6 +349,60 @@ func TestToolRegistry_EffectiveTraits_UsesResolversAndDefaults(t *testing.T) {
 	}
 	if !traits.ConcurrencySafe || !traits.ReadOnly || !traits.Destructive || traits.InterruptBehavior != ToolInterruptBehaviorCancel {
 		t.Fatalf("unexpected effective traits: %+v", traits)
+	}
+}
+
+func TestToolRegistry_EffectiveTraits_ValidationFailureDefaultsUnsafe(t *testing.T) {
+	r := NewToolRegistry()
+	r.RegisterTool("traits", ToolRegistration{
+		Func: func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil },
+		Descriptor: ToolDescriptor{
+			Parameters: ToolParameters{
+				Type: "object",
+				Properties: map[string]ToolParamProp{
+					"mode": {Type: "string"},
+				},
+			},
+			Traits: ToolTraits{ReadOnly: true},
+		},
+		Traits: ToolTraitResolvers{
+			IsConcurrencySafe: func(args map[string]any) bool { return ArgString(args, "mode") == "parallel" },
+		},
+	})
+
+	traits, ok := r.EffectiveTraits(ToolCall{Name: "traits", Args: map[string]any{"mode": "parallel", "extra": true}})
+	if !ok {
+		t.Fatal("expected traits")
+	}
+	if traits.ConcurrencySafe {
+		t.Fatalf("expected validation failure to force unsafe traits, got %+v", traits)
+	}
+	if !traits.ReadOnly {
+		t.Fatalf("expected descriptor defaults to survive validation failure, got %+v", traits)
+	}
+}
+
+func TestToolRegistry_EffectiveTraits_PanicDefaultsUnsafe(t *testing.T) {
+	r := NewToolRegistry()
+	r.RegisterTool("traits", ToolRegistration{
+		Func: func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil },
+		Descriptor: ToolDescriptor{
+			Traits: ToolTraits{ReadOnly: true},
+		},
+		Traits: ToolTraitResolvers{
+			IsConcurrencySafe: func(map[string]any) bool { panic("boom") },
+		},
+	})
+
+	traits, ok := r.EffectiveTraits(ToolCall{Name: "traits"})
+	if !ok {
+		t.Fatal("expected traits")
+	}
+	if traits.ConcurrencySafe {
+		t.Fatalf("expected panic fallback to force unsafe traits, got %+v", traits)
+	}
+	if !traits.ReadOnly {
+		t.Fatalf("expected descriptor defaults to survive panic fallback, got %+v", traits)
 	}
 }
 

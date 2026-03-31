@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // mockChatProvider is a ChatProvider that returns preconfigured responses.
@@ -25,12 +27,32 @@ func (m *mockChatProvider) Chat(_ context.Context, messages []LLMMessage, tools 
 
 // mockToolExecutor counts executions and returns a fixed result.
 type mockToolExecutor struct {
-	execCount atomic.Int32
-	results   map[string]string
+	execCount    atomic.Int32
+	results      map[string]string
+	traits       map[string]ToolTraits
+	delays       map[string]time.Duration
+	inFlight     atomic.Int32
+	maxInFlight  atomic.Int32
+	executeOrder []string
+	mu           sync.Mutex
 }
 
 func (m *mockToolExecutor) Execute(_ context.Context, call ToolCall) (string, error) {
 	m.execCount.Add(1)
+	current := m.inFlight.Add(1)
+	for {
+		maxCurrent := m.maxInFlight.Load()
+		if current <= maxCurrent || m.maxInFlight.CompareAndSwap(maxCurrent, current) {
+			break
+		}
+	}
+	defer m.inFlight.Add(-1)
+	if delay, ok := m.delays[call.Name]; ok && delay > 0 {
+		time.Sleep(delay)
+	}
+	m.mu.Lock()
+	m.executeOrder = append(m.executeOrder, call.Name)
+	m.mu.Unlock()
 	if r, ok := m.results[call.Name]; ok {
 		return r, nil
 	}
@@ -38,6 +60,14 @@ func (m *mockToolExecutor) Execute(_ context.Context, call ToolCall) (string, er
 }
 
 func (m *mockToolExecutor) Definitions() []ToolDefinition { return nil }
+
+func (m *mockToolExecutor) EffectiveTraits(call ToolCall) (ToolTraits, bool) {
+	if m.traits == nil {
+		return ToolTraits{}, false
+	}
+	traits, ok := m.traits[call.Name]
+	return traits, ok
+}
 
 func TestRunAgenticLoop_NoToolCalls(t *testing.T) {
 	provider := &mockChatProvider{
@@ -123,11 +153,23 @@ func TestRunAgenticLoop_ParallelExecution(t *testing.T) {
 		},
 	}
 
-	executor := &mockToolExecutor{results: map[string]string{
-		"tool_a": "a_result",
-		"tool_b": "b_result",
-		"tool_c": "c_result",
-	}}
+	executor := &mockToolExecutor{
+		results: map[string]string{
+			"tool_a": "a_result",
+			"tool_b": "b_result",
+			"tool_c": "c_result",
+		},
+		traits: map[string]ToolTraits{
+			"tool_a": {ConcurrencySafe: true},
+			"tool_b": {ConcurrencySafe: true},
+			"tool_c": {ConcurrencySafe: true},
+		},
+		delays: map[string]time.Duration{
+			"tool_a": 20 * time.Millisecond,
+			"tool_b": 20 * time.Millisecond,
+			"tool_c": 20 * time.Millisecond,
+		},
+	}
 
 	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
 		Provider:        provider,
@@ -142,9 +184,115 @@ func TestRunAgenticLoop_ParallelExecution(t *testing.T) {
 	if resp.Content != "all done" {
 		t.Errorf("got %q, want %q", resp.Content, "all done")
 	}
-	// All 3 tools should have been executed
 	if executor.execCount.Load() != 3 {
 		t.Errorf("expected 3 tool executions, got %d", executor.execCount.Load())
+	}
+	if executor.maxInFlight.Load() < 2 {
+		t.Fatalf("expected concurrency-safe batch to execute concurrently, max in flight = %d", executor.maxInFlight.Load())
+	}
+}
+
+func TestPartitionToolCalls_ConsecutiveConcurrencySafeBatches(t *testing.T) {
+	executor := &mockToolExecutor{traits: map[string]ToolTraits{
+		"safe_a":   {ConcurrencySafe: true},
+		"safe_b":   {ConcurrencySafe: true},
+		"unsafe_c": {},
+		"safe_d":   {ConcurrencySafe: true},
+	}}
+	batches := partitionToolCalls(executor, []ToolCall{
+		{ID: "1", Name: "safe_a"},
+		{ID: "2", Name: "safe_b"},
+		{ID: "3", Name: "unsafe_c"},
+		{ID: "4", Name: "safe_d"},
+	})
+	if len(batches) != 3 {
+		t.Fatalf("expected 3 batches, got %d", len(batches))
+	}
+	if !batches[0].isConcurrencySafe || len(batches[0].calls) != 2 {
+		t.Fatalf("unexpected first batch: %+v", batches[0])
+	}
+	if batches[1].isConcurrencySafe || len(batches[1].calls) != 1 || batches[1].calls[0].Name != "unsafe_c" {
+		t.Fatalf("unexpected second batch: %+v", batches[1])
+	}
+	if !batches[2].isConcurrencySafe || len(batches[2].calls) != 1 || batches[2].calls[0].Name != "safe_d" {
+		t.Fatalf("unexpected third batch: %+v", batches[2])
+	}
+}
+
+func TestExecuteToolBatches_PreservesResultOrderAcrossBatches(t *testing.T) {
+	executor := &mockToolExecutor{
+		results: map[string]string{
+			"safe_a":   "A",
+			"safe_b":   "B",
+			"unsafe_c": "C",
+			"safe_d":   "D",
+		},
+		traits: map[string]ToolTraits{
+			"safe_a":   {ConcurrencySafe: true},
+			"safe_b":   {ConcurrencySafe: true},
+			"unsafe_c": {},
+			"safe_d":   {ConcurrencySafe: true},
+		},
+		delays: map[string]time.Duration{
+			"safe_a": 25 * time.Millisecond,
+			"safe_b": 5 * time.Millisecond,
+			"safe_d": 5 * time.Millisecond,
+		},
+	}
+	results := executeToolBatches(context.Background(), executor, []ToolCall{
+		{ID: "1", Name: "safe_a"},
+		{ID: "2", Name: "safe_b"},
+		{ID: "3", Name: "unsafe_c"},
+		{ID: "4", Name: "safe_d"},
+	})
+	if got, want := len(results), 4; got != want {
+		t.Fatalf("expected %d results, got %d", want, got)
+	}
+	for i, wantID := range []string{"1", "2", "3", "4"} {
+		if results[i].ToolCallID != wantID {
+			t.Fatalf("result[%d].ToolCallID = %q, want %q", i, results[i].ToolCallID, wantID)
+		}
+	}
+	for i, wantContent := range []string{"A", "B", "C", "D"} {
+		if results[i].Content != wantContent {
+			t.Fatalf("result[%d].Content = %q, want %q", i, results[i].Content, wantContent)
+		}
+	}
+	if executor.maxInFlight.Load() < 2 {
+		t.Fatalf("expected first safe batch to overlap, max in flight = %d", executor.maxInFlight.Load())
+	}
+}
+
+func TestExecuteToolBatches_RespectsConcurrencyLimit(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY", "2")
+	executor := &mockToolExecutor{
+		results: map[string]string{
+			"safe_a": "A",
+			"safe_b": "B",
+			"safe_c": "C",
+			"safe_d": "D",
+		},
+		traits: map[string]ToolTraits{
+			"safe_a": {ConcurrencySafe: true},
+			"safe_b": {ConcurrencySafe: true},
+			"safe_c": {ConcurrencySafe: true},
+			"safe_d": {ConcurrencySafe: true},
+		},
+		delays: map[string]time.Duration{
+			"safe_a": 20 * time.Millisecond,
+			"safe_b": 20 * time.Millisecond,
+			"safe_c": 20 * time.Millisecond,
+			"safe_d": 20 * time.Millisecond,
+		},
+	}
+	_ = executeToolBatches(context.Background(), executor, []ToolCall{
+		{ID: "1", Name: "safe_a"},
+		{ID: "2", Name: "safe_b"},
+		{ID: "3", Name: "safe_c"},
+		{ID: "4", Name: "safe_d"},
+	})
+	if got := executor.maxInFlight.Load(); got > 2 {
+		t.Fatalf("expected concurrency limit 2, got max in flight %d", got)
 	}
 }
 

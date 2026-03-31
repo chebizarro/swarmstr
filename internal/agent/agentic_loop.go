@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -42,6 +44,15 @@ type ToolExecResult struct {
 	ToolCallID  string
 	Content     string
 	LoopBlocked bool // true if loop detection returned CRITICAL
+}
+
+type toolTraitResolver interface {
+	EffectiveTraits(ToolCall) (ToolTraits, bool)
+}
+
+type toolCallBatch struct {
+	isConcurrencySafe bool
+	calls             []ToolCall
 }
 
 // RunAgenticLoop executes the agentic tool loop:
@@ -125,8 +136,9 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			ToolCalls: calls,
 		})
 
-		// Execute all tool calls in parallel.
-		results := executeToolsParallel(ctx, cfg.Executor, calls)
+		// Execute tool calls using src-shaped batch partitioning: consecutive
+		// concurrency-safe calls run together, others run serially.
+		results := executeToolBatches(ctx, cfg.Executor, calls)
 
 		// Append tool results and check for loop blocking.
 		for _, r := range results {
@@ -240,37 +252,85 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	return resp, nil
 }
 
-// executeToolsParallel runs all tool calls concurrently and returns results
-// in the same order as the input calls.
-func executeToolsParallel(ctx context.Context, executor ToolExecutor, calls []ToolCall) []ToolExecResult {
+// executeToolBatches partitions calls using canonical src-style scheduling:
+// consecutive concurrency-safe calls are grouped into parallel batches, while
+// all other calls run serially. Returned results preserve the original call order.
+func executeToolBatches(ctx context.Context, executor ToolExecutor, calls []ToolCall) []ToolExecResult {
+	batches := partitionToolCalls(executor, calls)
+	results := make([]ToolExecResult, 0, len(calls))
+	for _, batch := range batches {
+		if batch.isConcurrencySafe {
+			results = append(results, executeToolBatchParallel(ctx, executor, batch.calls)...)
+			continue
+		}
+		results = append(results, executeToolBatchSerial(ctx, executor, batch.calls)...)
+	}
+	return results
+}
+
+func partitionToolCalls(executor ToolExecutor, calls []ToolCall) []toolCallBatch {
+	if len(calls) == 0 {
+		return nil
+	}
+	resolver, _ := executor.(toolTraitResolver)
+	batches := make([]toolCallBatch, 0, len(calls))
+	for _, call := range calls {
+		isConcurrencySafe := false
+		if resolver != nil {
+			if traits, ok := resolver.EffectiveTraits(call); ok {
+				isConcurrencySafe = traits.ConcurrencySafe
+			}
+		}
+		if isConcurrencySafe && len(batches) > 0 && batches[len(batches)-1].isConcurrencySafe {
+			batches[len(batches)-1].calls = append(batches[len(batches)-1].calls, call)
+			continue
+		}
+		batches = append(batches, toolCallBatch{isConcurrencySafe: isConcurrencySafe, calls: []ToolCall{call}})
+	}
+	return batches
+}
+
+func executeToolBatchParallel(ctx context.Context, executor ToolExecutor, calls []ToolCall) []ToolExecResult {
 	results := make([]ToolExecResult, len(calls))
 	var wg sync.WaitGroup
-
+	limit := getMaxToolUseConcurrency()
+	sem := make(chan struct{}, limit)
 	for i, call := range calls {
 		results[i].ToolCallID = call.ID
-
 		wg.Add(1)
 		go func(idx int, c ToolCall) {
 			defer wg.Done()
-
-			result, execErr := executor.Execute(ctx, c)
-			if execErr != nil {
-				errMsg := execErr.Error()
-				results[idx].Content = "error: " + errMsg
-				log.Printf("tool %s error: %v", c.Name, execErr)
-				// If the loop detector blocked the call (CRITICAL level),
-				// signal the loop to stop immediately.
-				if isCriticalToolError(execErr) {
-					results[idx].LoopBlocked = true
-				}
-			} else {
-				results[idx].Content = result
-			}
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[idx] = executeSingleToolCall(ctx, executor, c)
 		}(i, call)
 	}
-
 	wg.Wait()
 	return results
+}
+
+func executeToolBatchSerial(ctx context.Context, executor ToolExecutor, calls []ToolCall) []ToolExecResult {
+	results := make([]ToolExecResult, len(calls))
+	for i, call := range calls {
+		results[i] = executeSingleToolCall(ctx, executor, call)
+	}
+	return results
+}
+
+func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call ToolCall) ToolExecResult {
+	result := ToolExecResult{ToolCallID: call.ID}
+	value, execErr := executor.Execute(ctx, call)
+	if execErr != nil {
+		errMsg := execErr.Error()
+		result.Content = "error: " + errMsg
+		log.Printf("tool %s error: %v", call.Name, execErr)
+		if isCriticalToolError(execErr) {
+			result.LoopBlocked = true
+		}
+		return result
+	}
+	result.Content = value
+	return result
 }
 
 // forceSummary makes a final LLM call with Tools=nil, forcing the model to
@@ -294,7 +354,7 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 			ToolCalls: pendingCalls,
 		})
 
-		results := executeToolsParallel(ctx, cfg.Executor, pendingCalls)
+		results := executeToolBatches(ctx, cfg.Executor, pendingCalls)
 		for _, r := range results {
 			messages = append(messages, LLMMessage{
 				Role:       "tool",
@@ -331,6 +391,13 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 		OutputTokens: usage.OutputTokens + summaryResp.Usage.OutputTokens,
 	}
 	return summaryResp, summaryDelta
+}
+
+func getMaxToolUseConcurrency() int {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY"))); err == nil && v > 0 {
+		return v
+	}
+	return 10
 }
 
 func blockedOutcome(loopBlocked bool) TurnOutcome {

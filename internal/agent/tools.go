@@ -398,13 +398,25 @@ func (r *ToolRegistry) Descriptors() []ToolDescriptor {
 
 // EffectiveTraits resolves the runtime-effective traits for a call, applying any
 // input-aware trait resolvers on top of the descriptor defaults.
-func (r *ToolRegistry) EffectiveTraits(call ToolCall) (ToolTraits, bool) {
+func (r *ToolRegistry) EffectiveTraits(call ToolCall) (traits ToolTraits, ok bool) {
 	entry, ok := r.entries[call.Name]
 	if !ok || entry == nil {
 		return ToolTraits{}, false
 	}
 	prepared := normalizeToolCall(call)
-	traits := normalizeToolDescriptor(call.Name, entry.descriptor).Traits
+	traits = normalizeToolDescriptor(call.Name, entry.descriptor).Traits
+	validatedArgs, err := entry.validatedArgs(prepared.Args)
+	if err != nil {
+		traits.ConcurrencySafe = false
+		return traits, true
+	}
+	prepared.Args = validatedArgs
+	defer func() {
+		if recover() != nil {
+			traits.ConcurrencySafe = false
+			ok = true
+		}
+	}()
 	if entry.traits.IsConcurrencySafe != nil {
 		traits.ConcurrencySafe = entry.traits.IsConcurrencySafe(prepared.Args)
 	}
