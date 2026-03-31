@@ -228,6 +228,13 @@ func TestProfileFilteredExecutor_DefinitionsFiltered(t *testing.T) {
 	if len(descs) != 1 || descs[0].Name != "allowed_tool" {
 		t.Fatalf("unexpected descriptors: %+v", descs)
 	}
+	traits, ok := exec.EffectiveTraits(ToolCall{Name: "allowed_tool"})
+	if !ok || !traits.ReadOnly {
+		t.Fatalf("unexpected effective traits for allowed tool: %+v ok=%v", traits, ok)
+	}
+	if _, ok := exec.EffectiveTraits(ToolCall{Name: "blocked_tool"}); ok {
+		t.Fatal("expected blocked tool traits lookup to fail")
+	}
 }
 
 // echoExecutor is a minimal ToolExecutor stub for testing.
@@ -243,4 +250,15 @@ func (e *echoExecutor) Definitions() []ToolDefinition {
 
 func (e *echoExecutor) Descriptors() []ToolDescriptor {
 	return []ToolDescriptor{{Name: "allowed_tool"}, {Name: "blocked_tool"}}
+}
+
+func (e *echoExecutor) EffectiveTraits(call ToolCall) (ToolTraits, bool) {
+	switch call.Name {
+	case "allowed_tool":
+		return ToolTraits{ReadOnly: true}, true
+	case "blocked_tool":
+		return ToolTraits{Destructive: true}, true
+	default:
+		return ToolTraits{}, false
+	}
 }

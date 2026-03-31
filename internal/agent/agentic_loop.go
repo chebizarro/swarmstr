@@ -260,7 +260,7 @@ func executeToolsParallel(ctx context.Context, executor ToolExecutor, calls []To
 				log.Printf("tool %s error: %v", c.Name, execErr)
 				// If the loop detector blocked the call (CRITICAL level),
 				// signal the loop to stop immediately.
-				if strings.HasPrefix(errMsg, "CRITICAL:") {
+				if isCriticalToolError(execErr) {
 					results[idx].LoopBlocked = true
 				}
 			} else {
@@ -345,6 +345,15 @@ func blockedStopReason(loopBlocked bool) TurnStopReason {
 		return TurnStopReasonLoopBlocked
 	}
 	return TurnStopReasonMaxIterations
+}
+
+func isCriticalToolError(err error) bool {
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		if strings.HasPrefix(current.Error(), "CRITICAL:") {
+			return true
+		}
+	}
+	return false
 }
 
 // generateWithAgenticLoop is a helper that providers call from Generate().

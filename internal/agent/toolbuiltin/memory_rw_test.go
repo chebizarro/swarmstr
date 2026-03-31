@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"metiq/internal/agent"
 	"metiq/internal/memory"
 )
 
@@ -53,11 +54,16 @@ func TestMemoryStoreTool_Basic(t *testing.T) {
 
 func TestMemoryStoreTool_WithSessionID(t *testing.T) {
 	idx := newTestMemoryIndex(t)
-	tool := MemoryStoreTool(idx)
+	r := agent.NewToolRegistry()
+	r.RegisterWithDef("memory_store", MemoryStoreTool(idx), MemoryStoreDef)
 
-	_, err := tool(context.Background(), map[string]any{
-		"text":       "session scoped note",
-		"session_id": "sess-abc",
+	_, err := r.Execute(agent.ContextWithSessionID(context.Background(), "sess-ctx"), agent.ToolCall{
+		Name: "memory_store",
+		Args: map[string]any{
+			"text":       "session scoped note",
+			"session_id": "sess-abc",
+			"tags":       []any{"project", "note"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -71,11 +77,15 @@ func TestMemoryStoreTool_WithSessionID(t *testing.T) {
 
 func TestMemoryStoreTool_TagsAsString(t *testing.T) {
 	idx := newTestMemoryIndex(t)
-	tool := MemoryStoreTool(idx)
-	// Tags provided as a single string (not slice) — should not error.
-	_, err := tool(context.Background(), map[string]any{
-		"text": "tagged entry",
-		"tags": "work",
+	r := agent.NewToolRegistry()
+	r.RegisterWithDef("memory_store", MemoryStoreTool(idx), MemoryStoreDef)
+	// Tags provided as a single string should remain valid through the schema path.
+	_, err := r.Execute(context.Background(), agent.ToolCall{
+		Name: "memory_store",
+		Args: map[string]any{
+			"text": "tagged entry",
+			"tags": "work",
+		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -84,10 +94,27 @@ func TestMemoryStoreTool_TagsAsString(t *testing.T) {
 
 func TestMemoryStoreTool_MissingText(t *testing.T) {
 	idx := newTestMemoryIndex(t)
-	tool := MemoryStoreTool(idx)
-	_, err := tool(context.Background(), map[string]any{})
+	r := agent.NewToolRegistry()
+	r.RegisterWithDef("memory_store", MemoryStoreTool(idx), MemoryStoreDef)
+	_, err := r.Execute(context.Background(), agent.ToolCall{Name: "memory_store"})
 	if err == nil {
 		t.Error("expected error for missing text")
+	}
+}
+
+func TestMemoryStoreTool_RejectsUndeclaredArgs(t *testing.T) {
+	idx := newTestMemoryIndex(t)
+	r := agent.NewToolRegistry()
+	r.RegisterWithDef("memory_store", MemoryStoreTool(idx), MemoryStoreDef)
+	_, err := r.Execute(context.Background(), agent.ToolCall{
+		Name: "memory_store",
+		Args: map[string]any{
+			"text":  "tagged entry",
+			"topic": "not-supported",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected validation error for undeclared topic")
 	}
 }
 

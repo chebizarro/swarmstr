@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,6 +76,27 @@ exports.invoke = function(tool, args) {
 };
 `
 
+const typedPluginSrc = `
+exports.manifest = {
+	id: "typed-plugin",
+	version: "1.0.0",
+	description: "typed args",
+	tools: [{
+		name: "sum",
+		description: "sum the count",
+		parameters: {
+			type: "object",
+			properties: { count: { type: "integer" } },
+			required: ["count"]
+		}
+	}],
+};
+exports.invoke = function(tool, args) {
+	if (tool === "sum") return { count: args.count };
+	return {};
+};
+`
+
 // ─── tests ────────────────────────────────────────────────────────────────────
 
 func TestManager_loadAndRegister(t *testing.T) {
@@ -133,6 +155,31 @@ func TestManager_toolExecution(t *testing.T) {
 	// Should be JSON-encoded map.
 	if result[0] != '{' {
 		t.Errorf("expected JSON object result, got: %q", result)
+	}
+}
+
+func TestManager_pluginSchemaValidation(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := writePlugin(t, dir, "index.js", typedPluginSrc)
+	cfg := configWithPlugin(t, "typed", scriptPath)
+
+	mgr := New(testHost())
+	if err := mgr.Load(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	reg := agent.NewToolRegistry()
+	mgr.RegisterTools(reg)
+
+	_, err := reg.Execute(context.Background(), agent.ToolCall{
+		Name: "typed/sum",
+		Args: map[string]any{"count": "oops"},
+	})
+	if err == nil {
+		t.Fatal("expected schema validation error")
+	}
+	var execErr *agent.ToolExecutionError
+	if !errors.As(err, &execErr) || execErr.Phase != agent.ToolExecutionPhaseSchemaValidation {
+		t.Fatalf("expected schema validation phase, got %T %v", err, err)
 	}
 }
 
