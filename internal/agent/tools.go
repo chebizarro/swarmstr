@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	jsonschema "github.com/google/jsonschema-go/jsonschema"
+	"metiq/internal/agent/toolloop"
 )
 
 // ─── Tool definition types ────────────────────────────────────────────────────
@@ -252,11 +253,13 @@ type toolEntry struct {
 }
 
 type ToolRegistry struct {
-	entries    map[string]*toolEntry
-	middleware ToolMiddleware
-	preHooks   []ToolPreExecuteHook
-	postHooks  []ToolPostExecuteHook
-	errorHooks []ToolExecuteErrorHook
+	entries      map[string]*toolEntry
+	middleware   ToolMiddleware
+	preHooks     []ToolPreExecuteHook
+	postHooks    []ToolPostExecuteHook
+	errorHooks   []ToolExecuteErrorHook
+	loopRegistry *toolloop.Registry
+	loopConfig   *toolloop.Config
 }
 
 func NewToolRegistry() *ToolRegistry {
@@ -289,6 +292,18 @@ func (r *ToolRegistry) AddExecuteErrorHook(h ToolExecuteErrorHook) {
 	if h != nil {
 		r.errorHooks = append(r.errorHooks, h)
 	}
+}
+
+// SetLoopDetection configures per-session loop detection for shared agentic tool loops.
+func (r *ToolRegistry) SetLoopDetection(registry *toolloop.Registry, cfg toolloop.Config) {
+	if registry == nil {
+		r.loopRegistry = nil
+		r.loopConfig = nil
+		return
+	}
+	cfgCopy := cfg
+	r.loopRegistry = registry
+	r.loopConfig = &cfgCopy
 }
 
 func (r *ToolRegistry) Register(name string, fn ToolFunc) {
@@ -398,6 +413,35 @@ func (r *ToolRegistry) Descriptors() []ToolDescriptor {
 
 // EffectiveTraits resolves the runtime-effective traits for a call, applying any
 // input-aware trait resolvers on top of the descriptor defaults.
+func (r *ToolRegistry) PrepareLoopExecution(ctx context.Context, call ToolCall) (toolloop.Result, bool) {
+	if r.loopRegistry == nil || r.loopConfig == nil {
+		return toolloop.Result{}, false
+	}
+	sessionID := SessionIDFromContext(ctx)
+	if sessionID == "" {
+		return toolloop.Result{}, false
+	}
+	loopState := r.loopRegistry.Get(sessionID)
+	result := toolloop.Detect(loopState, call.Name, call.Args, r.loopConfig)
+	if result.Stuck && result.Level == toolloop.Critical {
+		return result, true
+	}
+	toolloop.RecordCall(loopState, call.Name, call.Args, call.ID, r.loopConfig)
+	return result, true
+}
+
+func (r *ToolRegistry) RecordLoopOutcome(ctx context.Context, call ToolCall, result, errStr string) {
+	if r.loopRegistry == nil || r.loopConfig == nil {
+		return
+	}
+	sessionID := SessionIDFromContext(ctx)
+	if sessionID == "" {
+		return
+	}
+	loopState := r.loopRegistry.Get(sessionID)
+	toolloop.RecordOutcome(loopState, call.Name, call.Args, call.ID, result, errStr, r.loopConfig)
+}
+
 func (r *ToolRegistry) EffectiveTraits(call ToolCall) (traits ToolTraits, ok bool) {
 	entry, ok := r.entries[call.Name]
 	if !ok || entry == nil {

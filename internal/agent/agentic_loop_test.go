@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"metiq/internal/agent/toolloop"
 )
 
 // mockChatProvider is a ChatProvider that returns preconfigured responses.
@@ -329,6 +331,92 @@ func TestRunAgenticLoop_LoopBlocked(t *testing.T) {
 	}
 	if resp.Outcome != TurnOutcomeBlocked || resp.StopReason != TurnStopReasonLoopBlocked {
 		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", resp.Outcome, resp.StopReason)
+	}
+}
+
+func TestRunAgenticLoop_LoopWarning_VisibleInHistory(t *testing.T) {
+	provider := &mockChatProvider{
+		responses: []*LLMResponse{
+			{ToolCalls: []ToolCall{{ID: "tc1", Name: "poll", Args: map[string]any{"job": "123"}}}, NeedsToolResults: true},
+			{Content: "done", NeedsToolResults: false},
+		},
+	}
+	reg := NewToolRegistry()
+	loopReg := toolloop.NewRegistry()
+	cfg := toolloop.DefaultConfig()
+	cfg.WarningThreshold = 2
+	cfg.CriticalThreshold = 4
+	cfg.GlobalCircuitBreakerThreshold = 6
+	reg.SetLoopDetection(loopReg, cfg)
+	reg.Register("poll", func(_ context.Context, _ map[string]any) (string, error) {
+		return "tool output", nil
+	})
+	ctx := ContextWithSessionID(context.Background(), "sess-warning")
+	state := loopReg.Get("sess-warning")
+	for i := 0; i < 2; i++ {
+		toolloop.RecordCall(state, "poll", map[string]any{"job": "123"}, fmt.Sprintf("prior-%d", i), &cfg)
+	}
+
+	resp, err := RunAgenticLoop(ctx, AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "poll"}},
+		Executor:        reg,
+		MaxIterations:   10,
+		LogPrefix:       "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.HistoryDelta) < 2 {
+		t.Fatalf("expected tool result in history delta, got %+v", resp.HistoryDelta)
+	}
+	if !strings.Contains(resp.HistoryDelta[1].Content, "[LOOP DETECTION]") {
+		t.Fatalf("expected loop warning in tool result history, got %q", resp.HistoryDelta[1].Content)
+	}
+}
+
+func TestRunAgenticLoop_LoopCritical_BlocksExecution(t *testing.T) {
+	provider := &mockChatProvider{
+		responses: []*LLMResponse{{ToolCalls: []ToolCall{{ID: "tc1", Name: "poll", Args: map[string]any{"job": "123"}}}, NeedsToolResults: true}},
+	}
+	reg := NewToolRegistry()
+	loopReg := toolloop.NewRegistry()
+	cfg := toolloop.DefaultConfig()
+	cfg.WarningThreshold = 2
+	cfg.CriticalThreshold = 3
+	cfg.GlobalCircuitBreakerThreshold = 6
+	var executed atomic.Int32
+	reg.SetLoopDetection(loopReg, cfg)
+	reg.Register("poll", func(_ context.Context, _ map[string]any) (string, error) {
+		executed.Add(1)
+		return "tool output", nil
+	})
+	ctx := ContextWithSessionID(context.Background(), "sess-critical")
+	state := loopReg.Get("sess-critical")
+	for i := 0; i < 3; i++ {
+		toolloop.RecordCall(state, "poll", map[string]any{"job": "123"}, fmt.Sprintf("prior-%d", i), &cfg)
+		toolloop.RecordOutcome(state, "poll", map[string]any{"job": "123"}, fmt.Sprintf("prior-%d", i), "same", "", &cfg)
+	}
+
+	resp, err := RunAgenticLoop(ctx, AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "poll"}},
+		Executor:        reg,
+		MaxIterations:   10,
+		ForceText:       false,
+		LogPrefix:       "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if executed.Load() != 0 {
+		t.Fatalf("expected critical detection to block execution, got %d executions", executed.Load())
+	}
+	if resp.Outcome != TurnOutcomeBlocked || resp.StopReason != TurnStopReasonLoopBlocked {
+		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", resp.Outcome, resp.StopReason)
+	}
+	if len(resp.HistoryDelta) < 2 || !strings.Contains(resp.HistoryDelta[1].Content, "CRITICAL:") {
+		t.Fatalf("expected critical loop block in tool result history, got %+v", resp.HistoryDelta)
 	}
 }
 
