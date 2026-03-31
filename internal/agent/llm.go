@@ -13,11 +13,11 @@ import (
 
 // LLMMessage is a provider-agnostic message for multi-turn LLM conversations.
 type LLMMessage struct {
-	Role       string     `json:"role"`                  // "system", "user", "assistant", "tool"
-	Content    string     `json:"content"`               // text content
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`  // for assistant messages requesting tool use
+	Role       string     `json:"role"`                   // "system", "user", "assistant", "tool"
+	Content    string     `json:"content"`                // text content
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // for assistant messages requesting tool use
 	ToolCallID string     `json:"tool_call_id,omitempty"` // for tool result messages
-	Images     []ImageRef `json:"images,omitempty"`      // for user messages with images
+	Images     []ImageRef `json:"images,omitempty"`       // for user messages with images
 
 	// SystemParts splits the system prompt into structured blocks for cache_control.
 	// Only meaningful when Role == "system". Providers that support prompt caching
@@ -39,9 +39,11 @@ type CacheControl struct {
 
 // LLMResponse is the result of a single LLM API call.
 type LLMResponse struct {
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-	Usage     ProviderUsage
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Usage      ProviderUsage
+	Outcome    TurnOutcome
+	StopReason TurnStopReason
 
 	// NeedsToolResults is true when the model's stop reason indicates it wants
 	// tool results before continuing (e.g., Anthropic stop_reason="tool_use",
@@ -68,6 +70,15 @@ type ChatOptions struct {
 	CacheTools     bool // apply cache_control to the last tool definition
 }
 
+// PromptAssembly preserves the canonical src split between static system prompt
+// prefix material and dynamic per-turn additions. The combined text is still
+// emitted as one provider-agnostic system message, but cache-aware providers
+// receive per-part cache boundaries.
+type PromptAssembly struct {
+	StaticSystemPrompt    string
+	DynamicSystemAddition string
+}
+
 // ─── Helpers for converting between Turn and LLMMessage ──────────────────────
 
 // buildLLMMessagesFromTurn converts a Turn into a slice of LLMMessage suitable
@@ -77,15 +88,9 @@ func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessa
 	msgs := make([]LLMMessage, 0, len(turn.History)+2)
 
 	// Build system prompt.
-	sys := combineSystemPrompts(providerSystemPrompt, turn.Context)
-	if sys != "" {
-		sysMsg := LLMMessage{Role: "system", Content: sys}
-		// Set up SystemParts for cache_control: the static system prompt is
-		// marked ephemeral so providers that support prompt caching (Anthropic)
-		// can reuse the KV cache across turns.
-		sysMsg.SystemParts = []ContentBlock{
-			{Text: sys, CacheControl: &CacheControl{Type: "ephemeral"}},
-		}
+	assembly := buildPromptAssembly(providerSystemPrompt, turn.Context)
+	if sys := assembly.Combined(); sys != "" {
+		sysMsg := LLMMessage{Role: "system", Content: sys, SystemParts: assembly.SystemParts()}
 		msgs = append(msgs, sysMsg)
 	}
 
@@ -116,21 +121,38 @@ func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessa
 	return msgs
 }
 
-// combineSystemPrompts merges a provider-level system prompt with a turn-level
-// context string. Returns the combined prompt or "" if both are empty.
-func combineSystemPrompts(providerPrompt, turnContext string) string {
-	p := trimOrEmpty(providerPrompt)
-	c := trimOrEmpty(turnContext)
+func buildPromptAssembly(providerPrompt, turnContext string) PromptAssembly {
+	return PromptAssembly{
+		StaticSystemPrompt:    trimOrEmpty(providerPrompt),
+		DynamicSystemAddition: trimOrEmpty(turnContext),
+	}
+}
+
+func (p PromptAssembly) Combined() string {
 	switch {
-	case p != "" && c != "":
-		return p + "\n\n" + c
-	case p != "":
-		return p
-	case c != "":
-		return c
+	case p.StaticSystemPrompt != "" && p.DynamicSystemAddition != "":
+		return p.StaticSystemPrompt + "\n\n" + p.DynamicSystemAddition
+	case p.StaticSystemPrompt != "":
+		return p.StaticSystemPrompt
+	case p.DynamicSystemAddition != "":
+		return p.DynamicSystemAddition
 	default:
 		return ""
 	}
+}
+
+func (p PromptAssembly) SystemParts() []ContentBlock {
+	parts := make([]ContentBlock, 0, 2)
+	if p.StaticSystemPrompt != "" {
+		parts = append(parts, ContentBlock{
+			Text:         p.StaticSystemPrompt,
+			CacheControl: &CacheControl{Type: "ephemeral"},
+		})
+	}
+	if p.DynamicSystemAddition != "" {
+		parts = append(parts, ContentBlock{Text: p.DynamicSystemAddition})
+	}
+	return parts
 }
 
 // chatOptionsFromTurn derives ChatOptions from a Turn.
@@ -157,6 +179,8 @@ func llmResponseToProviderResult(resp *LLMResponse) ProviderResult {
 		ToolCalls:    resp.ToolCalls,
 		Usage:        resp.Usage,
 		HistoryDelta: resp.HistoryDelta,
+		Outcome:      resp.Outcome,
+		StopReason:   resp.StopReason,
 	}
 }
 

@@ -29,6 +29,74 @@ func TestToolRegistry_UnknownTool(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_RegisterWithDescriptor_ProjectsDefinition(t *testing.T) {
+	r := NewToolRegistry()
+	r.RegisterWithDescriptor("plugin/echo", func(_ context.Context, args map[string]any) (string, error) {
+		return ArgString(args, "message"), nil
+	}, ToolDescriptor{
+		Description: "echo a plugin message",
+		Parameters: ToolParameters{
+			Type: "object",
+			Properties: map[string]ToolParamProp{
+				"message": {Type: "string", Description: "message to echo"},
+			},
+			Required: []string{"message"},
+		},
+		Origin: ToolOrigin{
+			Kind:          ToolOriginKindPlugin,
+			PluginID:      "plugin",
+			CanonicalName: "echo",
+		},
+	})
+
+	desc, ok := r.Descriptor("plugin/echo")
+	if !ok {
+		t.Fatal("expected descriptor")
+	}
+	if desc.Traits.InterruptBehavior != ToolInterruptBehaviorBlock {
+		t.Fatalf("expected default interrupt behavior %q, got %q", ToolInterruptBehaviorBlock, desc.Traits.InterruptBehavior)
+	}
+	if desc.Origin.Kind != ToolOriginKindPlugin || desc.Origin.PluginID != "plugin" || desc.Origin.CanonicalName != "echo" {
+		t.Fatalf("unexpected origin: %+v", desc.Origin)
+	}
+
+	defs := r.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected 1 definition, got %d", len(defs))
+	}
+	if defs[0].Name != "plugin/echo" || defs[0].Description != "echo a plugin message" {
+		t.Fatalf("unexpected definition: %+v", defs[0])
+	}
+}
+
+func TestToolInputSchemaMap_PreservesRawJSONSchema(t *testing.T) {
+	schema := toolInputSchemaMap(ToolDefinition{
+		Name: "plugin/raw",
+		InputJSONSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"filters": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"kind": map[string]any{"type": "integer"},
+						},
+					},
+				},
+			},
+		},
+	})
+	props, _ := schema["properties"].(map[string]any)
+	filters, _ := props["filters"].(map[string]any)
+	items, _ := filters["items"].(map[string]any)
+	itemProps, _ := items["properties"].(map[string]any)
+	kind, _ := itemProps["kind"].(map[string]any)
+	if kind["type"] != "integer" {
+		t.Fatalf("expected nested raw schema to survive, got %+v", schema)
+	}
+}
+
 func TestToolRegistry_MiddlewarePassthrough(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register("greet", func(_ context.Context, args map[string]any) (string, error) {

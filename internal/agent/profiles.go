@@ -58,7 +58,7 @@ var BuiltinProfiles = []ProfileDef{
 		ID:          "full",
 		Label:       "Full",
 		Description: "All available tools enabled.",
-		MatchTool: func(_ string, _ []string) bool { return true },
+		MatchTool:   func(_ string, _ []string) bool { return true },
 	},
 }
 
@@ -149,6 +149,42 @@ func (e *ProfileFilteredExecutor) Execute(ctx context.Context, call ToolCall) (s
 		return "", fmt.Errorf("tool %q is not available in the current profile", call.Name)
 	}
 	return e.Base.Execute(ctx, call)
+}
+
+func (e *ProfileFilteredExecutor) Definitions() []ToolDefinition {
+	provider, ok := e.Base.(interface{ Definitions() []ToolDefinition })
+	if !ok {
+		return nil
+	}
+	defs := provider.Definitions()
+	if e.Allowed == nil {
+		return defs
+	}
+	out := make([]ToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		if e.Allowed[def.Name] {
+			out = append(out, def)
+		}
+	}
+	return out
+}
+
+func (e *ProfileFilteredExecutor) Descriptors() []ToolDescriptor {
+	provider, ok := e.Base.(interface{ Descriptors() []ToolDescriptor })
+	if !ok {
+		return nil
+	}
+	descs := provider.Descriptors()
+	if e.Allowed == nil {
+		return descs
+	}
+	out := make([]ToolDescriptor, 0, len(descs))
+	for _, desc := range descs {
+		if e.Allowed[desc.Name] {
+			out = append(out, desc)
+		}
+	}
+	return out
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

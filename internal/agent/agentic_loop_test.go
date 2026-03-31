@@ -59,6 +59,9 @@ func TestRunAgenticLoop_NoToolCalls(t *testing.T) {
 	if resp.Content != "direct answer" {
 		t.Errorf("got %q, want %q", resp.Content, "direct answer")
 	}
+	if resp.Outcome != TurnOutcomeCompleted || resp.StopReason != TurnStopReasonModelText {
+		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", resp.Outcome, resp.StopReason)
+	}
 	if provider.callCount != 1 {
 		t.Errorf("expected 1 LLM call, got %d", provider.callCount)
 	}
@@ -92,6 +95,9 @@ func TestRunAgenticLoop_SingleToolCall(t *testing.T) {
 	}
 	if resp.Content != "tool result processed" {
 		t.Errorf("got %q, want %q", resp.Content, "tool result processed")
+	}
+	if resp.Outcome != TurnOutcomeCompletedWithTools || resp.StopReason != TurnStopReasonModelText {
+		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", resp.Outcome, resp.StopReason)
 	}
 	if provider.callCount != 2 {
 		t.Errorf("expected 2 LLM calls, got %d", provider.callCount)
@@ -157,7 +163,7 @@ func TestRunAgenticLoop_LoopBlocked(t *testing.T) {
 		"stuck_tool": func(_ context.Context, _ map[string]any) (string, error) {
 			return "", fmt.Errorf("CRITICAL: tool loop detected")
 		},
-	}, definitions: map[string]ToolDefinition{}}
+	}, descriptors: map[string]ToolDescriptor{}}
 
 	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
 		Provider:        provider,
@@ -173,6 +179,9 @@ func TestRunAgenticLoop_LoopBlocked(t *testing.T) {
 	// Should return the failure message since ForceText is false
 	if !strings.Contains(resp.Content, "looping") {
 		t.Errorf("expected loop failure message, got %q", resp.Content)
+	}
+	if resp.Outcome != TurnOutcomeBlocked || resp.StopReason != TurnStopReasonLoopBlocked {
+		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", resp.Outcome, resp.StopReason)
 	}
 }
 
@@ -203,6 +212,9 @@ func TestRunAgenticLoop_MaxIterationsExhausted(t *testing.T) {
 	}
 	if !strings.Contains(resp.Content, "looping") {
 		t.Errorf("expected loop failure message, got %q", resp.Content)
+	}
+	if resp.Outcome != TurnOutcomeFailed || resp.StopReason != TurnStopReasonMaxIterations {
+		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", resp.Outcome, resp.StopReason)
 	}
 }
 
@@ -373,25 +385,13 @@ func (p *failOnSecondCallProvider) Chat(_ context.Context, _ []LLMMessage, _ []T
 }
 
 func TestRunAgenticLoop_ForceSummary(t *testing.T) {
-	callCount := 0
-	// Provider that returns tool calls N times, then text on final call
-	provider := &mockChatProvider{
-		responses: []*LLMResponse{
-			// Initial: tool call
-			{ToolCalls: []ToolCall{{ID: "tc1", Name: "tool"}}, NeedsToolResults: true},
-			// Iteration 1: another tool call
-			{ToolCalls: []ToolCall{{ID: "tc2", Name: "tool"}}, NeedsToolResults: true},
-			// Force summary call (with nil tools): text
-			{Content: "forced summary response"},
-		},
-	}
-	_ = callCount
-
+	provider := &forceSummaryProvider{}
 	executor := &mockToolExecutor{}
 
 	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
 		Provider:        provider,
 		InitialMessages: []LLMMessage{{Role: "user", Content: "summarize"}},
+		Tools:           []ToolDefinition{{Name: "tool"}},
 		Executor:        executor,
 		MaxIterations:   2,
 		ForceText:       true,
@@ -403,4 +403,25 @@ func TestRunAgenticLoop_ForceSummary(t *testing.T) {
 	if resp.Content != "forced summary response" {
 		t.Errorf("got %q, want %q", resp.Content, "forced summary response")
 	}
+	if resp.Outcome != TurnOutcomeForcedSummary || resp.StopReason != TurnStopReasonForcedSummary {
+		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", resp.Outcome, resp.StopReason)
+	}
+	if len(resp.HistoryDelta) != 7 {
+		t.Fatalf("expected pending force-summary tool activity in history, got %d messages", len(resp.HistoryDelta))
+	}
+}
+
+type forceSummaryProvider struct {
+	callCount int
+}
+
+func (p *forceSummaryProvider) Chat(_ context.Context, _ []LLMMessage, tools []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
+	p.callCount++
+	if tools == nil {
+		return &LLMResponse{Content: "forced summary response"}, nil
+	}
+	return &LLMResponse{
+		ToolCalls:        []ToolCall{{ID: fmt.Sprintf("tc%d", p.callCount), Name: "tool"}},
+		NeedsToolResults: true,
+	}, nil
 }

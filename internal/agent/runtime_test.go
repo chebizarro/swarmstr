@@ -39,6 +39,9 @@ func TestProviderRuntime_ProcessTurn(t *testing.T) {
 	if !strings.Contains(result.Text, "hello") {
 		t.Fatalf("expected 'hello' in result, got %q", result.Text)
 	}
+	if result.Outcome != TurnOutcomeCompleted || result.StopReason != TurnStopReasonModelText {
+		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", result.Outcome, result.StopReason)
+	}
 }
 
 func TestProviderRuntime_ProcessTurnStreaming_WithStreamingProvider(t *testing.T) {

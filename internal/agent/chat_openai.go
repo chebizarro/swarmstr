@@ -166,27 +166,7 @@ func buildOpenAISDKUserContent(msg LLMMessage) openai.ChatCompletionMessageParam
 func translateToolsToOpenAISDK(defs []ToolDefinition) []openai.ChatCompletionToolUnionParam {
 	out := make([]openai.ChatCompletionToolUnionParam, 0, len(defs))
 	for _, d := range defs {
-		params := map[string]any{"type": "object"}
-		if len(d.Parameters.Properties) > 0 {
-			props := map[string]any{}
-			for k, v := range d.Parameters.Properties {
-				prop := map[string]any{"type": v.Type}
-				if v.Description != "" {
-					prop["description"] = v.Description
-				}
-				if len(v.Enum) > 0 {
-					prop["enum"] = v.Enum
-				}
-				if v.Items != nil {
-					prop["items"] = map[string]any{"type": v.Items.Type}
-				}
-				props[k] = prop
-			}
-			params["properties"] = props
-		}
-		if len(d.Parameters.Required) > 0 {
-			params["required"] = d.Parameters.Required
-		}
+		params := toolInputSchemaMap(d)
 
 		// Convert params map to shared.FunctionParameters via JSON round-trip.
 		paramsJSON, _ := json.Marshal(params)
