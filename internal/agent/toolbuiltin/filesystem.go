@@ -8,6 +8,7 @@ package toolbuiltin
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,37 +19,91 @@ import (
 
 const maxReadBytes = 256 * 1024 // 256 KiB max read size
 
-// ReadFileTool reads a text file and returns its content.
-func ReadFileTool(_ context.Context, args map[string]any) (string, error) {
-	path := agent.ArgString(args, "path")
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("read_file: 'path' is required")
+// FilesystemOpts configures workspace-aware path resolution for filesystem tools.
+type FilesystemOpts struct {
+	// WorkspaceDir returns the agent's workspace directory.  Relative paths
+	// supplied to any filesystem tool are resolved against this directory.
+	// When nil or returning "", paths are used as-is (legacy behaviour).
+	WorkspaceDir func() string
+}
+
+// resolvePath makes path absolute by joining it with the workspace directory
+// when the path is relative, then verifies the resolved path stays within the
+// workspace root (defense-in-depth containment).  Absolute paths that fall
+// outside the workspace are rejected.  If no workspace is configured, paths
+// are used as-is (legacy behaviour).
+func (o FilesystemOpts) resolvePath(path string) (string, error) {
+	ws := ""
+	if o.WorkspaceDir != nil {
+		ws = o.WorkspaceDir()
 	}
-	// Clamp to maxReadBytes to avoid huge payloads to the model.
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("read_file: %v", err)
+	if ws == "" {
+		// No workspace configured — legacy mode, pass through.
+		return path, nil
 	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("read_file: %q is not a regular file", path)
+	// Normalize workspace to an absolute, clean path.
+	ws = filepath.Clean(ws)
+
+	var resolved string
+	if filepath.IsAbs(path) {
+		resolved = filepath.Clean(path)
+	} else {
+		resolved = filepath.Join(ws, path) // Join calls Clean internally.
 	}
-	size := info.Size()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read_file: %v", err)
+
+	// Containment check: resolved must be within (or equal to) the workspace.
+	// We compare with a trailing separator so that "/home/agent/workspace2"
+	// doesn't match workspace "/home/agent/workspace".
+	if resolved != ws && !strings.HasPrefix(resolved, ws+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q resolves to %q which is outside the workspace %q", path, resolved, ws)
 	}
-	truncated := false
-	if int64(len(raw)) > maxReadBytes {
-		raw = truncateUTF8Bytes(raw, maxReadBytes)
-		truncated = true
+	return resolved, nil
+}
+
+// ReadFileTool returns a ToolFunc that reads a text file and returns its content.
+// Relative paths are resolved against the configured workspace directory.
+func ReadFileTool(opts FilesystemOpts) agent.ToolFunc {
+	return func(_ context.Context, args map[string]any) (string, error) {
+		path := agent.ArgString(args, "path")
+		if strings.TrimSpace(path) == "" {
+			return "", fmt.Errorf("read_file: 'path' is required")
+		}
+		resolved, err := opts.resolvePath(path)
+		if err != nil {
+			return "", fmt.Errorf("read_file: %v", err)
+		}
+		path = resolved
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", fmt.Errorf("read_file: %v", err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("read_file: %q is not a regular file", path)
+		}
+		size := info.Size()
+
+		// Read at most maxReadBytes+1 so we can detect truncation without
+		// loading the entire file into memory.
+		f, err := os.Open(path)
+		if err != nil {
+			return "", fmt.Errorf("read_file: %v", err)
+		}
+		defer f.Close()
+		raw, err := io.ReadAll(io.LimitReader(f, maxReadBytes+1))
+		if err != nil {
+			return "", fmt.Errorf("read_file: %v", err)
+		}
+
+		truncated := int64(len(raw)) > maxReadBytes
+		if truncated {
+			raw = truncateUTF8Bytes(raw, maxReadBytes)
+		}
+		content := string(raw)
+		if truncated {
+			content += fmt.Sprintf("\n\n[truncated: file is %d bytes, read first %d bytes]", size, len(raw))
+		}
+		return content, nil
 	}
-	content := string(raw)
-	if size > maxReadBytes {
-		content += fmt.Sprintf("\n\n[truncated: file is %d bytes, read first %d bytes]", size, len(raw))
-	} else if truncated {
-		content += fmt.Sprintf("\n\n[truncated to valid UTF-8 boundary at %d bytes]", len(raw))
-	}
-	return content, nil
 }
 
 func truncateUTF8Bytes(raw []byte, max int64) []byte {
@@ -80,23 +135,31 @@ var ReadFileDef = agent.ToolDefinition{
 	},
 }
 
-// WriteFileTool creates or overwrites a file with the given content.
-func WriteFileTool(_ context.Context, args map[string]any) (string, error) {
-	path := agent.ArgString(args, "path")
-	content := agent.ArgString(args, "content")
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("write_file: 'path' is required")
-	}
-	// Ensure parent directory exists.
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return "", fmt.Errorf("write_file: create parent dirs: %v", err)
+// WriteFileTool returns a ToolFunc that creates or overwrites a file with the given content.
+// Relative paths are resolved against the configured workspace directory.
+func WriteFileTool(opts FilesystemOpts) agent.ToolFunc {
+	return func(_ context.Context, args map[string]any) (string, error) {
+		path := agent.ArgString(args, "path")
+		content := agent.ArgString(args, "content")
+		if strings.TrimSpace(path) == "" {
+			return "", fmt.Errorf("write_file: 'path' is required")
 		}
+		resolved, err := opts.resolvePath(path)
+		if err != nil {
+			return "", fmt.Errorf("write_file: %v", err)
+		}
+		path = resolved
+		// Ensure parent directory exists.
+		if dir := filepath.Dir(path); dir != "" {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return "", fmt.Errorf("write_file: create parent dirs: %v", err)
+			}
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return "", fmt.Errorf("write_file: %v", err)
+		}
+		return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 	}
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("write_file: %v", err)
-	}
-	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 }
 
 var WriteFileDef = agent.ToolDefinition{
@@ -118,31 +181,40 @@ var WriteFileDef = agent.ToolDefinition{
 	},
 }
 
-// ListDirTool lists entries in a directory.
-func ListDirTool(_ context.Context, args map[string]any) (string, error) {
-	path := agent.ArgString(args, "path")
-	if strings.TrimSpace(path) == "" {
-		path = "."
-	}
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return "", fmt.Errorf("list_dir: %v", err)
-	}
-	if len(entries) == 0 {
-		return "(empty directory)", nil
-	}
-	var sb strings.Builder
-	for _, e := range entries {
-		info, _ := e.Info()
-		if e.IsDir() {
-			sb.WriteString(fmt.Sprintf("d  %s/\n", e.Name()))
-		} else if info != nil {
-			sb.WriteString(fmt.Sprintf("f  %-40s %d bytes\n", e.Name(), info.Size()))
-		} else {
-			sb.WriteString(fmt.Sprintf("?  %s\n", e.Name()))
+// ListDirTool returns a ToolFunc that lists entries in a directory.
+// Relative paths (including the default ".") are resolved against the
+// configured workspace directory, so omitting path lists the workspace root.
+func ListDirTool(opts FilesystemOpts) agent.ToolFunc {
+	return func(_ context.Context, args map[string]any) (string, error) {
+		path := agent.ArgString(args, "path")
+		if strings.TrimSpace(path) == "" {
+			path = "."
 		}
+		resolved, err := opts.resolvePath(path)
+		if err != nil {
+			return "", fmt.Errorf("list_dir: %v", err)
+		}
+		path = resolved
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return "", fmt.Errorf("list_dir: %v", err)
+		}
+		if len(entries) == 0 {
+			return "(empty directory)", nil
+		}
+		var sb strings.Builder
+		for _, e := range entries {
+			info, _ := e.Info()
+			if e.IsDir() {
+				sb.WriteString(fmt.Sprintf("d  %s/\n", e.Name()))
+			} else if info != nil {
+				sb.WriteString(fmt.Sprintf("f  %-40s %d bytes\n", e.Name(), info.Size()))
+			} else {
+				sb.WriteString(fmt.Sprintf("?  %s\n", e.Name()))
+			}
+		}
+		return strings.TrimRight(sb.String(), "\n"), nil
 	}
-	return strings.TrimRight(sb.String(), "\n"), nil
 }
 
 var ListDirDef = agent.ToolDefinition{
@@ -159,16 +231,24 @@ var ListDirDef = agent.ToolDefinition{
 	},
 }
 
-// MakeDirTool creates a directory (including parents).
-func MakeDirTool(_ context.Context, args map[string]any) (string, error) {
-	path := agent.ArgString(args, "path")
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("make_dir: 'path' is required")
+// MakeDirTool returns a ToolFunc that creates a directory (including parents).
+// Relative paths are resolved against the configured workspace directory.
+func MakeDirTool(opts FilesystemOpts) agent.ToolFunc {
+	return func(_ context.Context, args map[string]any) (string, error) {
+		path := agent.ArgString(args, "path")
+		if strings.TrimSpace(path) == "" {
+			return "", fmt.Errorf("make_dir: 'path' is required")
+		}
+		resolved, err := opts.resolvePath(path)
+		if err != nil {
+			return "", fmt.Errorf("make_dir: %v", err)
+		}
+		path = resolved
+		if err := os.MkdirAll(path, 0755); err != nil {
+			return "", fmt.Errorf("make_dir: %v", err)
+		}
+		return fmt.Sprintf("directory created: %s", path), nil
 	}
-	if err := os.MkdirAll(path, 0755); err != nil {
-		return "", fmt.Errorf("make_dir: %v", err)
-	}
-	return fmt.Sprintf("directory created: %s", path), nil
 }
 
 var MakeDirDef = agent.ToolDefinition{
