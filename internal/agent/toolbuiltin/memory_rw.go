@@ -21,19 +21,32 @@ import (
 var MemoryStoreDef = agent.ToolDefinition{
 	Name:        "memory_store",
 	Description: "Persist a piece of information to memory so it can be retrieved in future sessions. Use to remember facts, preferences, decisions, or anything worth retaining across conversations.",
-	Parameters: agent.ToolParameters{
-		Type: "object",
-		Properties: map[string]agent.ToolParamProp{
-			"text": {
-				Type:        "string",
-				Description: "The information to store (plain text).",
+	InputJSONSchema: map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"text": map[string]any{
+				"type":        "string",
+				"description": "The information to store (plain text).",
 			},
-			"topic": {
-				Type:        "string",
-				Description: "Short topic label to categorise this memory (e.g. \"preferences\", \"project:metiq\").",
+			"tags": map[string]any{
+				"description": "Optional keywords for retrieval. Accepts either an array of strings or a single string.",
+				"oneOf": []any{
+					map[string]any{
+						"type":  "array",
+						"items": map[string]any{"type": "string"},
+					},
+					map[string]any{
+						"type": "string",
+					},
+				},
+			},
+			"session_id": map[string]any{
+				"type":        "string",
+				"description": "Optional session scope for the stored entry.",
 			},
 		},
-		Required: []string{"text"},
+		"required": []any{"text"},
 	},
 }
 

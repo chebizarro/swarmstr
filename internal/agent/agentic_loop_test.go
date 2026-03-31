@@ -159,11 +159,10 @@ func TestRunAgenticLoop_LoopBlocked(t *testing.T) {
 	}
 
 	// Executor that returns CRITICAL error
-	criticalExec := &ToolRegistry{tools: map[string]ToolFunc{
-		"stuck_tool": func(_ context.Context, _ map[string]any) (string, error) {
-			return "", fmt.Errorf("CRITICAL: tool loop detected")
-		},
-	}, descriptors: map[string]ToolDescriptor{}}
+	criticalExec := NewToolRegistry()
+	criticalExec.Register("stuck_tool", func(_ context.Context, _ map[string]any) (string, error) {
+		return "", fmt.Errorf("CRITICAL: tool loop detected")
+	})
 
 	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
 		Provider:        provider,

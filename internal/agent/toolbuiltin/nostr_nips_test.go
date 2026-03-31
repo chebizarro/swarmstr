@@ -2,6 +2,7 @@ package toolbuiltin
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -89,7 +90,14 @@ func TestNostrEventDelete_MissingIDsValidation(t *testing.T) {
 	RegisterNIPTools(tools, NostrToolOpts{Relays: []string{"wss://example.com"}})
 
 	_, err := tools.Execute(context.Background(), agent.ToolCall{Name: "nostr_event_delete", Args: map[string]any{}})
-	if err == nil || !strings.HasPrefix(err.Error(), "nostr_event_delete_error:") {
-		t.Fatalf("expected ids-required error, got: %v", err)
+	if err == nil {
+		t.Fatal("expected ids-required error")
+	}
+	var execErr *agent.ToolExecutionError
+	if !errors.As(err, &execErr) || execErr.Phase != agent.ToolExecutionPhaseSchemaValidation {
+		t.Fatalf("expected schema validation error, got: %T %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "missing properties") {
+		t.Fatalf("expected required-field validation detail, got: %v", err)
 	}
 }

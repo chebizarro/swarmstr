@@ -187,6 +187,19 @@ func (e *ProfileFilteredExecutor) Descriptors() []ToolDescriptor {
 	return out
 }
 
+func (e *ProfileFilteredExecutor) EffectiveTraits(call ToolCall) (ToolTraits, bool) {
+	if e.Allowed != nil && !e.Allowed[call.Name] {
+		return ToolTraits{}, false
+	}
+	provider, ok := e.Base.(interface {
+		EffectiveTraits(ToolCall) (ToolTraits, bool)
+	})
+	if !ok {
+		return ToolTraits{}, false
+	}
+	return provider.EffectiveTraits(call)
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 func profileContains(list []string, target string) bool {

@@ -139,14 +139,15 @@ func TestRuntimeSmoke_NewNostrWriteHelpers_ErrorShape(t *testing.T) {
 	RegisterNIPTools(tools, nostrOpts)
 
 	tests := []struct {
-		name      string
-		call      agent.ToolCall
-		errPrefix string
+		name        string
+		call        agent.ToolCall
+		errPrefix   string
+		errContains string
 	}{
 		{
-			name:      "nostr_event_delete missing ids",
-			call:      agent.ToolCall{Name: "nostr_event_delete", Args: map[string]any{}},
-			errPrefix: "nostr_event_delete_error:",
+			name:        "nostr_event_delete missing ids",
+			call:        agent.ToolCall{Name: "nostr_event_delete", Args: map[string]any{}},
+			errContains: "missing properties: [\"ids\"]",
 		},
 		{
 			name:      "nostr_report missing targets",
@@ -154,9 +155,9 @@ func TestRuntimeSmoke_NewNostrWriteHelpers_ErrorShape(t *testing.T) {
 			errPrefix: "nostr_report_error:",
 		},
 		{
-			name:      "nostr_article_publish missing fields",
-			call:      agent.ToolCall{Name: "nostr_article_publish", Args: map[string]any{"title": "Only title"}},
-			errPrefix: "nostr_article_publish_error:",
+			name:        "nostr_article_publish missing fields",
+			call:        agent.ToolCall{Name: "nostr_article_publish", Args: map[string]any{"title": "Only title"}},
+			errContains: "missing properties: [\"content\"]",
 		},
 		{
 			name:      "nostr_relay_list_set no relays",
@@ -171,8 +172,16 @@ func TestRuntimeSmoke_NewNostrWriteHelpers_ErrorShape(t *testing.T) {
 			if strings.TrimSpace(tr.Error) == "" {
 				t.Fatalf("expected tool error, got none (trace=%+v)", tr)
 			}
-			if !strings.HasPrefix(strings.TrimSpace(tr.Error), tc.errPrefix) {
-				t.Fatalf("expected machine-readable error prefix %q, got %q", tc.errPrefix, tr.Error)
+			errText := strings.TrimSpace(tr.Error)
+			if tc.errPrefix != "" {
+				if !strings.HasPrefix(errText, tc.errPrefix) {
+					t.Fatalf("expected machine-readable error prefix %q, got %q", tc.errPrefix, tr.Error)
+				}
+			}
+			if tc.errContains != "" {
+				if !strings.Contains(errText, tc.errContains) {
+					t.Fatalf("expected error containing %q, got %q", tc.errContains, tr.Error)
+				}
 			}
 		})
 	}
