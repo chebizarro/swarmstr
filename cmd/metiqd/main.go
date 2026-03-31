@@ -1293,31 +1293,12 @@ func main() {
 
 		// Tool loop detection: per-session sliding-window history with three
 		// detectors (generic repeat, no-progress polling, ping-pong) plus a
-		// global circuit breaker.  Ported from OpenClaw's tool-loop-detection.ts.
+		// global circuit breaker. Ported from OpenClaw's tool-loop-detection.ts.
 		loopRegistry := toolloop.NewRegistry()
 		loopConfig := toolloop.DefaultConfig()
+		tools.SetLoopDetection(loopRegistry, loopConfig)
 
 		tools.SetMiddleware(func(ctx context.Context, call agent.ToolCall, next func(context.Context, agent.ToolCall) (string, error)) (string, error) {
-			// ── Loop detection (runs before approval gate) ──────────────
-			sessionID := agent.SessionIDFromContext(ctx)
-			var loopState *toolloop.State
-			var loopWarningMsg string
-			if sessionID != "" {
-				loopState = loopRegistry.Get(sessionID)
-				result := toolloop.Detect(loopState, call.Name, call.Args, &loopConfig)
-				if result.Stuck {
-					if result.Level == toolloop.Critical {
-						log.Printf("toolloop: BLOCKED tool=%s session=%s detector=%s count=%d",
-							call.Name, sessionID, result.Detector, result.Count)
-						return "", fmt.Errorf("%s", result.Message)
-					}
-					log.Printf("toolloop: WARNING tool=%s session=%s detector=%s count=%d",
-						call.Name, sessionID, result.Detector, result.Count)
-					loopWarningMsg = result.Message
-				}
-				toolloop.RecordCall(loopState, call.Name, call.Args, call.ID, &loopConfig)
-			}
-
 			// ── Approval gate ───────────────────────────────────────────
 			// Re-read approval tool list from live config on every call so that
 			// config hot-reload (SIGHUP or file change) takes effect immediately.
@@ -1345,18 +1326,7 @@ func main() {
 			}
 			if !liveApprovalTools[call.Name] {
 				metricspkg.ToolCalls.Inc()
-				res, err := next(ctx, call)
-				errStr := ""
-				if err != nil {
-					errStr = err.Error()
-				}
-				if loopState != nil {
-					toolloop.RecordOutcome(loopState, call.Name, call.Args, call.ID, res, errStr, &loopConfig)
-					if loopWarningMsg != "" && err == nil {
-						res = "[LOOP DETECTION] " + loopWarningMsg + "\n\n" + res
-					}
-				}
-				return res, err
+				return next(ctx, call)
 			}
 
 			// Build an approval request.
@@ -1394,18 +1364,7 @@ func main() {
 
 			log.Printf("exec approval granted id=%s tool=%s", rec.ID, call.Name)
 			metricspkg.ToolCalls.Inc()
-			res, err := next(ctx, call)
-			errStr := ""
-			if err != nil {
-				errStr = err.Error()
-			}
-			if loopState != nil {
-				toolloop.RecordOutcome(loopState, call.Name, call.Args, call.ID, res, errStr, &loopConfig)
-				if loopWarningMsg != "" && err == nil {
-					res = "[LOOP DETECTION] " + loopWarningMsg + "\n\n" + res
-				}
-			}
-			return res, err
+			return next(ctx, call)
 		})
 	}
 
@@ -10182,11 +10141,11 @@ func runSessionsPrune(
 		deletedIDs = append(deletedIDs, sess.SessionID)
 	}
 	return map[string]any{
-		"ok":            true,
-		"dry_run":       req.DryRun,
-		"deleted_count": len(deletedIDs),
-		"deleted":       deletedIDs,
-		"skipped_count": len(skippedIDs),
+		"ok":               true,
+		"dry_run":          req.DryRun,
+		"deleted_count":    len(deletedIDs),
+		"deleted":          deletedIDs,
+		"skipped_count":    len(skippedIDs),
 		"ineligible_count": len(ineligibleIDs),
 		"ineligible":       ineligibleIDs,
 	}, nil

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"metiq/internal/agent/toolloop"
 )
 
 // ─── Shared agentic tool loop ─────────────────────────────────────────────────
@@ -48,6 +50,11 @@ type ToolExecResult struct {
 
 type toolTraitResolver interface {
 	EffectiveTraits(ToolCall) (ToolTraits, bool)
+}
+
+type toolLoopResolver interface {
+	PrepareLoopExecution(context.Context, ToolCall) (toolloop.Result, bool)
+	RecordLoopOutcome(context.Context, ToolCall, string, string)
 }
 
 type toolCallBatch struct {
@@ -319,15 +326,40 @@ func executeToolBatchSerial(ctx context.Context, executor ToolExecutor, calls []
 
 func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call ToolCall) ToolExecResult {
 	result := ToolExecResult{ToolCallID: call.ID}
+	loopAware, _ := executor.(toolLoopResolver)
+	var loopResult toolloop.Result
+	var loopEnabled bool
+	if loopAware != nil {
+		loopResult, loopEnabled = loopAware.PrepareLoopExecution(ctx, call)
+		if loopEnabled && loopResult.Stuck {
+			sessionID := SessionIDFromContext(ctx)
+			if loopResult.Level == toolloop.Critical {
+				log.Printf("toolloop: BLOCKED tool=%s session=%s detector=%s count=%d", call.Name, sessionID, loopResult.Detector, loopResult.Count)
+				result.Content = "error: " + loopResult.Message
+				result.LoopBlocked = true
+				return result
+			}
+			log.Printf("toolloop: WARNING tool=%s session=%s detector=%s count=%d", call.Name, sessionID, loopResult.Detector, loopResult.Count)
+		}
+	}
 	value, execErr := executor.Execute(ctx, call)
 	if execErr != nil {
 		errMsg := execErr.Error()
 		result.Content = "error: " + errMsg
 		log.Printf("tool %s error: %v", call.Name, execErr)
+		if loopAware != nil {
+			loopAware.RecordLoopOutcome(ctx, call, value, errMsg)
+		}
 		if isCriticalToolError(execErr) {
 			result.LoopBlocked = true
 		}
 		return result
+	}
+	if loopAware != nil {
+		loopAware.RecordLoopOutcome(ctx, call, value, "")
+	}
+	if loopEnabled && loopResult.Stuck && loopResult.Level == toolloop.Warning {
+		value = "[LOOP DETECTION] " + loopResult.Message + "\n\n" + value
 	}
 	result.Content = value
 	return result
