@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -24,7 +24,7 @@ import (
 // AnthropicChatProvider makes a single Anthropic Messages API call.
 type AnthropicChatProvider struct {
 	client      *anthropic.Client
-	model       string               // model name from config, e.g. "claude-haiku-4-5"
+	model       string                 // model name from config, e.g. "claude-haiku-4-5"
 	tokenSource func() (string, error) // for OAuth; nil for API key auth
 	httpClient  *http.Client           // optional custom HTTP client (for testing)
 	baseURL     string                 // optional custom base URL (for testing)
@@ -284,32 +284,16 @@ func translateToolsToSDK(defs []ToolDefinition, cacheLastTool bool) []anthropic.
 // dropped from the JSON payload, causing Anthropic to return 400
 // "input_schema: Field required" for tools that take no parameters.
 func buildSDKInputSchema(d ToolDefinition) anthropic.ToolInputSchemaParam {
-	schema := anthropic.ToolInputSchemaParam{}
-
-	// Always build the properties map; for no-arg tools this is empty but
-	// non-nil, which keeps ToolInputSchemaParam non-zero so omitzero fires.
-	props := make(map[string]any, len(d.Parameters.Properties))
-	for k, v := range d.Parameters.Properties {
-		prop := map[string]any{"type": v.Type}
-		if v.Description != "" {
-			prop["description"] = v.Description
-		}
-		if len(v.Enum) > 0 {
-			prop["enum"] = v.Enum
-		}
-		if v.Items != nil {
-			prop["items"] = map[string]any{"type": v.Items.Type}
-		}
-		props[k] = prop
+	schemaMap := toolInputSchemaMap(d)
+	if _, ok := schemaMap["properties"]; !ok {
+		schemaMap["properties"] = map[string]any{}
 	}
-	schema.Properties = props
-
-	if len(d.Parameters.Required) > 0 {
-		required := make([]string, len(d.Parameters.Required))
-		copy(required, d.Parameters.Required)
-		schema.Required = required
+	b, _ := json.Marshal(schemaMap)
+	var schema anthropic.ToolInputSchemaParam
+	_ = json.Unmarshal(b, &schema)
+	if schema.Properties == nil {
+		schema.Properties = map[string]any{}
 	}
-
 	return schema
 }
 

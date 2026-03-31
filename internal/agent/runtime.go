@@ -20,8 +20,8 @@ type ToolCallRef struct {
 // ConversationMessage is one message in the prior conversation history passed
 // to the provider.  Role is "user", "assistant", "system", or "tool".
 type ConversationMessage struct {
-	Role       string `json:"role"`
-	Content    string `json:"content"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
 	// ToolCallID is set for role="tool" messages linking results to calls.
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	// ToolCalls is set on role="assistant" messages that requested tool use.
@@ -64,6 +64,8 @@ type ImageRef struct {
 type TurnResult struct {
 	Text       string
 	ToolTraces []ToolTrace
+	Outcome    TurnOutcome
+	StopReason TurnStopReason
 	// HistoryDelta is the ordered sequence of conversation messages produced
 	// during this turn.  On a plain text turn it contains one assistant message.
 	// On tool turns it contains assistant tool-call messages, tool result
@@ -79,6 +81,33 @@ type TurnUsage struct {
 	InputTokens  int64
 	OutputTokens int64
 }
+
+// TurnOutcome classifies the terminal result shape of a turn.
+// It is runtime-only in this tranche and intentionally not persisted yet.
+type TurnOutcome string
+
+const (
+	TurnOutcomeCompleted          TurnOutcome = "completed"
+	TurnOutcomeCompletedWithTools TurnOutcome = "completed_with_tools"
+	TurnOutcomeToolOnlyCompleted  TurnOutcome = "tool_only_completed"
+	TurnOutcomeForcedSummary      TurnOutcome = "forced_summary"
+	TurnOutcomeBlocked            TurnOutcome = "blocked"
+	TurnOutcomeAborted            TurnOutcome = "aborted"
+	TurnOutcomeFailed             TurnOutcome = "failed"
+)
+
+// TurnStopReason explains why a turn terminated.
+type TurnStopReason string
+
+const (
+	TurnStopReasonModelText     TurnStopReason = "model_text"
+	TurnStopReasonToolExecution TurnStopReason = "tool_execution"
+	TurnStopReasonForcedSummary TurnStopReason = "forced_summary"
+	TurnStopReasonLoopBlocked   TurnStopReason = "loop_blocked"
+	TurnStopReasonMaxIterations TurnStopReason = "max_iterations"
+	TurnStopReasonProviderError TurnStopReason = "provider_error"
+	TurnStopReasonCancelled     TurnStopReason = "cancelled"
+)
 
 // TurnExecutionError wraps a turn failure while carrying any tool work that
 // completed before the error occurred.  Callers can extract the partial result
@@ -240,6 +269,9 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult) (TurnResult, error) {
 	result := TurnResult{
 		Text:         strings.TrimSpace(gen.Text),
+		ToolTraces:   nil,
+		Outcome:      gen.Outcome,
+		StopReason:   gen.StopReason,
 		HistoryDelta: gen.HistoryDelta,
 		Usage:        TurnUsage{InputTokens: gen.Usage.InputTokens, OutputTokens: gen.Usage.OutputTokens},
 	}
@@ -265,5 +297,28 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult) (
 	if result.Text == "" && len(result.ToolTraces) > 0 {
 		result.Text = "tool execution complete"
 	}
+	if result.Outcome == "" || result.StopReason == "" {
+		inferredOutcome, inferredStopReason := inferTurnClassification(result)
+		if result.Outcome == "" {
+			result.Outcome = inferredOutcome
+		}
+		if result.StopReason == "" {
+			result.StopReason = inferredStopReason
+		}
+	}
 	return result, nil
+}
+
+func inferTurnClassification(result TurnResult) (TurnOutcome, TurnStopReason) {
+	switch {
+	case len(result.ToolTraces) > 0 && strings.TrimSpace(result.Text) != "":
+		if strings.TrimSpace(result.Text) == "tool execution complete" {
+			return TurnOutcomeToolOnlyCompleted, TurnStopReasonToolExecution
+		}
+		return TurnOutcomeCompletedWithTools, TurnStopReasonModelText
+	case len(result.ToolTraces) > 0:
+		return TurnOutcomeToolOnlyCompleted, TurnStopReasonToolExecution
+	default:
+		return TurnOutcomeCompleted, TurnStopReasonModelText
+	}
 }

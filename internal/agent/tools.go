@@ -20,24 +20,89 @@ type ToolDefinition struct {
 	// Description explains what the tool does. Good descriptions dramatically
 	// improve how reliably the model chooses and parameterises the tool.
 	Description string `json:"description"`
-	// Parameters is a JSON Schema object describing the tool's input.
+	// Parameters is the normalized JSON Schema object describing the tool's input.
+	// Built-in tools generally use this path.
 	Parameters ToolParameters `json:"input_schema,omitempty"`
+	// InputJSONSchema preserves richer raw JSON Schema when the canonical source
+	// defines it directly (matching src inputJSONSchema semantics for MCP/plugin tools).
+	InputJSONSchema map[string]any `json:"-"`
 }
 
 // ToolParameters is a JSON Schema object for a tool's input.
 type ToolParameters struct {
-	Type       string                    `json:"type"`
-	Properties map[string]ToolParamProp  `json:"properties,omitempty"`
-	Required   []string                  `json:"required,omitempty"`
+	Type       string                   `json:"type"`
+	Properties map[string]ToolParamProp `json:"properties,omitempty"`
+	Required   []string                 `json:"required,omitempty"`
 }
 
 // ToolParamProp describes a single parameter property.
 type ToolParamProp struct {
-	Type        string      `json:"type"`
-	Description string      `json:"description,omitempty"`
-	Enum        []string    `json:"enum,omitempty"`
-	Items       *ToolParamProp `json:"items,omitempty"`   // for array types
-	Default     interface{} `json:"default,omitempty"`
+	Type        string         `json:"type"`
+	Description string         `json:"description,omitempty"`
+	Enum        []string       `json:"enum,omitempty"`
+	Items       *ToolParamProp `json:"items,omitempty"` // for array types
+	Default     interface{}    `json:"default,omitempty"`
+}
+
+// ToolOriginKind identifies where a tool came from.
+// Mirrors the provenance split used in the canonical src tool pool assembly.
+type ToolOriginKind string
+
+const (
+	ToolOriginKindUnknown ToolOriginKind = "unknown"
+	ToolOriginKindBuiltin ToolOriginKind = "builtin"
+	ToolOriginKindPlugin  ToolOriginKind = "plugin"
+	ToolOriginKindMCP     ToolOriginKind = "mcp"
+)
+
+// ToolInterruptBehavior describes what should happen when a new user message
+// arrives while a tool is still running. The canonical src default is "block".
+type ToolInterruptBehavior string
+
+const (
+	ToolInterruptBehaviorBlock  ToolInterruptBehavior = "block"
+	ToolInterruptBehaviorCancel ToolInterruptBehavior = "cancel"
+)
+
+// ToolOrigin captures the descriptor provenance for a registered tool.
+type ToolOrigin struct {
+	Kind          ToolOriginKind `json:"kind,omitempty"`
+	PluginID      string         `json:"plugin_id,omitempty"`
+	ServerName    string         `json:"server_name,omitempty"`
+	CanonicalName string         `json:"canonical_name,omitempty"`
+}
+
+// ToolTraits captures runtime traits ported from the canonical src Tool type.
+// Defaults fail closed to match src/Tool.ts TOOL_DEFAULTS:
+// concurrency safe=false, read only=false, destructive=false, interrupt=block.
+type ToolTraits struct {
+	ConcurrencySafe   bool                  `json:"concurrency_safe,omitempty"`
+	ReadOnly          bool                  `json:"read_only,omitempty"`
+	Destructive       bool                  `json:"destructive,omitempty"`
+	InterruptBehavior ToolInterruptBehavior `json:"interrupt_behavior,omitempty"`
+}
+
+// ToolDescriptor is the canonical metadata contract for registered tools.
+// Provider-facing ToolDefinition values are projected from descriptors.
+type ToolDescriptor struct {
+	Name            string         `json:"name"`
+	Description     string         `json:"description,omitempty"`
+	Parameters      ToolParameters `json:"input_schema,omitempty"`
+	InputJSONSchema map[string]any `json:"-"`
+	Origin          ToolOrigin     `json:"origin,omitempty"`
+	Traits          ToolTraits     `json:"traits,omitempty"`
+}
+
+// Definition projects a provider-facing ToolDefinition from the canonical
+// descriptor contract.
+func (d ToolDescriptor) Definition() ToolDefinition {
+	d = normalizeToolDescriptor(d.Name, d)
+	return ToolDefinition{
+		Name:            d.Name,
+		Description:     d.Description,
+		Parameters:      d.Parameters,
+		InputJSONSchema: cloneJSONMap(d.InputJSONSchema),
+	}
 }
 
 type ToolCall struct {
@@ -114,13 +179,13 @@ type ToolMiddleware func(ctx context.Context, call ToolCall, next func(context.C
 type ToolRegistry struct {
 	tools       map[string]ToolFunc
 	middleware  ToolMiddleware
-	definitions map[string]ToolDefinition
+	descriptors map[string]ToolDescriptor
 }
 
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
 		tools:       map[string]ToolFunc{},
-		definitions: map[string]ToolDefinition{},
+		descriptors: map[string]ToolDescriptor{},
 	}
 }
 
@@ -141,32 +206,53 @@ func (r *ToolRegistry) Register(name string, fn ToolFunc) {
 // RegisterWithDef registers a tool alongside its ToolDefinition for provider-side
 // native function-calling.  If def.Name is empty it is set to name.
 func (r *ToolRegistry) RegisterWithDef(name string, fn ToolFunc, def ToolDefinition) {
+	r.RegisterWithDescriptor(name, fn, descriptorFromDefinition(name, def))
+}
+
+// RegisterWithDescriptor registers a tool alongside its canonical descriptor.
+func (r *ToolRegistry) RegisterWithDescriptor(name string, fn ToolFunc, desc ToolDescriptor) {
 	if name == "" || fn == nil {
 		return
 	}
-	if def.Name == "" {
-		def.Name = name
-	}
 	r.tools[name] = fn
-	r.definitions[name] = def
+	r.descriptors[name] = normalizeToolDescriptor(name, desc)
 }
 
 // SetDefinition attaches or updates a ToolDefinition for an already-registered
 // tool.  Useful when tools are registered via Register() and descriptions are
 // added later.
 func (r *ToolRegistry) SetDefinition(name string, def ToolDefinition) {
-	if def.Name == "" {
-		def.Name = name
-	}
-	r.definitions[name] = def
+	r.SetDescriptor(name, descriptorFromDefinition(name, def))
+}
+
+// SetDescriptor attaches or updates a ToolDescriptor for an already-registered
+// tool. Useful when execution and metadata are wired in separate phases.
+func (r *ToolRegistry) SetDescriptor(name string, desc ToolDescriptor) {
+	r.descriptors[name] = normalizeToolDescriptor(name, desc)
 }
 
 // Definitions returns the ToolDefinitions for all tools that have them,
 // sorted by name for deterministic ordering.
 func (r *ToolRegistry) Definitions() []ToolDefinition {
-	out := make([]ToolDefinition, 0, len(r.definitions))
-	for _, def := range r.definitions {
-		out = append(out, def)
+	out := make([]ToolDefinition, 0, len(r.descriptors))
+	for _, desc := range r.descriptors {
+		out = append(out, desc.Definition())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// Descriptor returns the canonical descriptor for a registered tool.
+func (r *ToolRegistry) Descriptor(name string) (ToolDescriptor, bool) {
+	desc, ok := r.descriptors[name]
+	return desc, ok
+}
+
+// Descriptors returns all canonical tool descriptors sorted by name.
+func (r *ToolRegistry) Descriptors() []ToolDescriptor {
+	out := make([]ToolDescriptor, 0, len(r.descriptors))
+	for _, desc := range r.descriptors {
+		out = append(out, desc)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -237,4 +323,93 @@ func ArgInt(args map[string]any, key string, def int) int {
 		}
 	}
 	return def
+}
+
+func normalizeToolDescriptor(name string, desc ToolDescriptor) ToolDescriptor {
+	if desc.Name == "" {
+		desc.Name = name
+	}
+	if desc.Origin.Kind == "" {
+		desc.Origin.Kind = ToolOriginKindUnknown
+	}
+	if desc.Traits.InterruptBehavior == "" {
+		desc.Traits.InterruptBehavior = ToolInterruptBehaviorBlock
+	}
+	return desc
+}
+
+func descriptorFromDefinition(name string, def ToolDefinition) ToolDescriptor {
+	if def.Name == "" {
+		def.Name = name
+	}
+	return normalizeToolDescriptor(name, ToolDescriptor{
+		Name:            def.Name,
+		Description:     def.Description,
+		Parameters:      def.Parameters,
+		InputJSONSchema: cloneJSONMap(def.InputJSONSchema),
+		Origin:          ToolOrigin{Kind: ToolOriginKindBuiltin},
+	})
+}
+
+func toolInputSchemaMap(d ToolDefinition) map[string]any {
+	if len(d.InputJSONSchema) > 0 {
+		schema := cloneJSONMap(d.InputJSONSchema)
+		if schema == nil {
+			schema = map[string]any{}
+		}
+		if _, ok := schema["type"]; !ok {
+			schema["type"] = "object"
+		}
+		if _, ok := schema["properties"]; !ok {
+			schema["properties"] = map[string]any{}
+		}
+		return schema
+	}
+
+	schema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	}
+	props := schema["properties"].(map[string]any)
+	for k, v := range d.Parameters.Properties {
+		props[k] = toolParamPropSchemaMap(v)
+	}
+	if len(d.Parameters.Required) > 0 {
+		required := make([]string, len(d.Parameters.Required))
+		copy(required, d.Parameters.Required)
+		schema["required"] = required
+	}
+	return schema
+}
+
+func toolParamPropSchemaMap(v ToolParamProp) map[string]any {
+	prop := map[string]any{"type": v.Type}
+	if v.Description != "" {
+		prop["description"] = v.Description
+	}
+	if len(v.Enum) > 0 {
+		prop["enum"] = append([]string(nil), v.Enum...)
+	}
+	if v.Items != nil {
+		prop["items"] = toolParamPropSchemaMap(*v.Items)
+	}
+	if v.Default != nil {
+		prop["default"] = v.Default
+	}
+	return prop
+}
+
+func cloneJSONMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil
+	}
+	return out
 }

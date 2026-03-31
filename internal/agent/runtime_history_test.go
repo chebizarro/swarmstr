@@ -93,6 +93,9 @@ func TestPartialTurnResult_WithPartial(t *testing.T) {
 	if len(got.ToolTraces) != 1 {
 		t.Errorf("expected 1 trace, got %d", len(got.ToolTraces))
 	}
+	if got.Outcome != "" || got.StopReason != "" {
+		t.Errorf("expected zero classification for tool-only partial extraction, got outcome=%q stop_reason=%q", got.Outcome, got.StopReason)
+	}
 }
 
 func TestPartialTurnResult_EmptyPartial(t *testing.T) {

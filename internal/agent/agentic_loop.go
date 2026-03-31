@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -77,6 +78,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		if resp.Content != "" {
 			resp.HistoryDelta = []ConversationMessage{{Role: "assistant", Content: resp.Content}}
 		}
+		resp.Outcome = TurnOutcomeCompleted
+		resp.StopReason = TurnStopReasonModelText
 		return resp, nil
 	}
 
@@ -152,10 +155,18 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		if err != nil {
 			log.Printf("%s: agentic loop LLM error iter=%d: %v", cfg.LogPrefix, iter+1, err)
 			// Return partial history so callers can persist completed tool work.
+			outcome := TurnOutcomeFailed
+			stopReason := TurnStopReasonProviderError
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				outcome = TurnOutcomeAborted
+				stopReason = TurnStopReasonCancelled
+			}
 			return nil, &TurnExecutionError{
 				Cause: err,
 				Partial: TurnResult{
 					HistoryDelta: historyDelta,
+					Outcome:      outcome,
+					StopReason:   stopReason,
 				},
 			}
 		}
@@ -174,6 +185,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			}
 			resp.Usage = totalUsage
 			resp.HistoryDelta = historyDelta
+			resp.Outcome = TurnOutcomeCompletedWithTools
+			resp.StopReason = TurnStopReasonModelText
 			return resp, nil
 		}
 
@@ -183,15 +196,17 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 
 	// Loop exhausted or blocked — attempt force-summary.
 	if cfg.ForceText && (resp == nil || resp.Content == "") {
-		summaryResp := forceSummary(ctx, cfg, messages, calls, totalUsage)
+		summaryResp, summaryDelta := forceSummary(ctx, cfg, messages, calls, totalUsage)
 		if summaryResp != nil {
-			summaryResp.HistoryDelta = historyDelta
+			summaryResp.HistoryDelta = append(historyDelta, summaryDelta...)
 			if summaryResp.Content != "" {
 				summaryResp.HistoryDelta = append(summaryResp.HistoryDelta, ConversationMessage{
 					Role:    "assistant",
 					Content: summaryResp.Content,
 				})
 			}
+			summaryResp.Outcome = TurnOutcomeForcedSummary
+			summaryResp.StopReason = TurnStopReasonForcedSummary
 			return summaryResp, nil
 		}
 	}
@@ -207,6 +222,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			Content:      failContent,
 			Usage:        totalUsage,
 			HistoryDelta: historyDelta,
+			Outcome:      blockedOutcome(loopBlocked),
+			StopReason:   blockedStopReason(loopBlocked),
 		}, nil
 	}
 
@@ -218,6 +235,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	}
 	resp.Usage = totalUsage
 	resp.HistoryDelta = historyDelta
+	resp.Outcome = TurnOutcomeCompletedWithTools
+	resp.StopReason = TurnStopReasonModelText
 	return resp, nil
 }
 
@@ -257,11 +276,18 @@ func executeToolsParallel(ctx context.Context, executor ToolExecutor, calls []To
 // forceSummary makes a final LLM call with Tools=nil, forcing the model to
 // produce a text response. Any pending tool calls are executed first so the
 // model has their results as context.
-func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMessage, pendingCalls []ToolCall, usage ProviderUsage) *LLMResponse {
+func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMessage, pendingCalls []ToolCall, usage ProviderUsage) (*LLMResponse, []ConversationMessage) {
 	log.Printf("%s: agentic loop exhausted, forcing summary", cfg.LogPrefix)
+
+	var summaryDelta []ConversationMessage
 
 	// Execute any remaining pending tool calls.
 	if len(pendingCalls) > 0 && cfg.Executor != nil {
+		refs := make([]ToolCallRef, len(pendingCalls))
+		for i, c := range pendingCalls {
+			refs[i] = ToolCallToRef(c)
+		}
+		summaryDelta = append(summaryDelta, ConversationMessage{Role: "assistant", ToolCalls: refs})
 		// Append the assistant message with pending calls.
 		messages = append(messages, LLMMessage{
 			Role:      "assistant",
@@ -271,6 +297,11 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 		results := executeToolsParallel(ctx, cfg.Executor, pendingCalls)
 		for _, r := range results {
 			messages = append(messages, LLMMessage{
+				Role:       "tool",
+				Content:    r.Content,
+				ToolCallID: r.ToolCallID,
+			})
+			summaryDelta = append(summaryDelta, ConversationMessage{
 				Role:       "tool",
 				Content:    r.Content,
 				ToolCallID: r.ToolCallID,
@@ -289,17 +320,31 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 	summaryResp, err := cfg.Provider.Chat(ctx, messages, nil, opts)
 	if err != nil {
 		log.Printf("%s: force-summary error: %v", cfg.LogPrefix, err)
-		return nil
+		return nil, nil
 	}
 	if summaryResp == nil || summaryResp.Content == "" {
-		return nil
+		return nil, nil
 	}
 
 	summaryResp.Usage = ProviderUsage{
 		InputTokens:  usage.InputTokens + summaryResp.Usage.InputTokens,
 		OutputTokens: usage.OutputTokens + summaryResp.Usage.OutputTokens,
 	}
-	return summaryResp
+	return summaryResp, summaryDelta
+}
+
+func blockedOutcome(loopBlocked bool) TurnOutcome {
+	if loopBlocked {
+		return TurnOutcomeBlocked
+	}
+	return TurnOutcomeFailed
+}
+
+func blockedStopReason(loopBlocked bool) TurnStopReason {
+	if loopBlocked {
+		return TurnStopReasonLoopBlocked
+	}
+	return TurnStopReasonMaxIterations
 }
 
 // generateWithAgenticLoop is a helper that providers call from Generate().

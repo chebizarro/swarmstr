@@ -99,6 +99,13 @@ func TestManager_loadAndRegister(t *testing.T) {
 	if len(list) != 1 || list[0] != "my-echo/echo" {
 		t.Errorf("tool list: %v", list)
 	}
+	desc, ok := reg.Descriptor("my-echo/echo")
+	if !ok {
+		t.Fatal("expected plugin tool descriptor")
+	}
+	if desc.Origin.Kind != agent.ToolOriginKindPlugin || desc.Origin.PluginID != "my-echo" || desc.Origin.CanonicalName != "echo" {
+		t.Fatalf("unexpected descriptor origin: %+v", desc.Origin)
+	}
 }
 
 func TestManager_toolExecution(t *testing.T) {

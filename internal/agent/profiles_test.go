@@ -7,9 +7,9 @@ import (
 
 func TestLookupProfile(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantID   string
-		wantNil  bool
+		input   string
+		wantID  string
+		wantNil bool
 	}{
 		{"full", "full", false},
 		{"FULL", "full", false},
@@ -217,9 +217,30 @@ func TestProfileFilteredExecutor_nilAllowed(t *testing.T) {
 	}
 }
 
+func TestProfileFilteredExecutor_DefinitionsFiltered(t *testing.T) {
+	base := &echoExecutor{}
+	exec := &ProfileFilteredExecutor{Base: base, Allowed: map[string]bool{"allowed_tool": true}}
+	defs := exec.Definitions()
+	if len(defs) != 1 || defs[0].Name != "allowed_tool" {
+		t.Fatalf("unexpected definitions: %+v", defs)
+	}
+	descs := exec.Descriptors()
+	if len(descs) != 1 || descs[0].Name != "allowed_tool" {
+		t.Fatalf("unexpected descriptors: %+v", descs)
+	}
+}
+
 // echoExecutor is a minimal ToolExecutor stub for testing.
 type echoExecutor struct{}
 
 func (e *echoExecutor) Execute(_ context.Context, call ToolCall) (string, error) {
 	return "echo:" + call.Name, nil
+}
+
+func (e *echoExecutor) Definitions() []ToolDefinition {
+	return []ToolDefinition{{Name: "allowed_tool"}, {Name: "blocked_tool"}}
+}
+
+func (e *echoExecutor) Descriptors() []ToolDescriptor {
+	return []ToolDescriptor{{Name: "allowed_tool"}, {Name: "blocked_tool"}}
 }
