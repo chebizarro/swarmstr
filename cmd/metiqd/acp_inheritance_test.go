@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	acppkg "metiq/internal/acp"
 	"metiq/internal/agent"
@@ -16,10 +20,14 @@ import (
 type capturingProvider struct {
 	lastTurn agent.Turn
 	result   agent.ProviderResult
+	generate func(context.Context, agent.Turn) (agent.ProviderResult, error)
 }
 
-func (p *capturingProvider) Generate(_ context.Context, turn agent.Turn) (agent.ProviderResult, error) {
+func (p *capturingProvider) Generate(ctx context.Context, turn agent.Turn) (agent.ProviderResult, error) {
 	p.lastTurn = turn
+	if p.generate != nil {
+		return p.generate(ctx, turn)
+	}
 	if p.result.Text == "" && p.result.Usage.InputTokens == 0 && p.result.Usage.OutputTokens == 0 && len(p.result.HistoryDelta) == 0 && p.result.Outcome == "" && p.result.StopReason == "" {
 		return agent.ProviderResult{Text: "ok"}, nil
 	}
@@ -177,7 +185,9 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	controlSessionStore = ss
 	controlToolRegistry = tools
 	controlRuntimeConfig = newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{ID: "worker"}}})
-	transcriptRepo := state.NewTranscriptRepository(newTestStore(), "author")
+	store := newTestStore()
+	docsRepo := state.NewDocsRepository(store, "author")
+	transcriptRepo := state.NewTranscriptRepository(store, "author")
 	defer func() {
 		controlSessionStore = prevSessionStore
 		controlToolRegistry = prevToolRegistry
@@ -198,7 +208,7 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 		replied = text
 		return nil
 	}}
-	if err := handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agentReg, sessionRouter, tools, nil, transcriptRepo); err != nil {
+	if err := handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agentReg, sessionRouter, tools, docsRepo, transcriptRepo); err != nil {
 		t.Fatalf("handleACPMessage: %v", err)
 	}
 
@@ -277,5 +287,268 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	}
 	if got := turnResult["outcome"]; got != string(agent.TurnOutcomeCompleted) {
 		t.Fatalf("terminal outcome = %#v", got)
+	}
+}
+
+func setupACPWorkerTestRuntime(t *testing.T, provider *capturingProvider) (*agent.AgentRuntimeRegistry, *agent.AgentSessionRouter, *agent.ToolRegistry, *state.SessionStore, *state.DocsRepository, *state.TranscriptRepository, func()) {
+	t.Helper()
+	tools := agent.NewToolRegistry()
+	runtime, err := agent.NewProviderRuntime(provider, tools)
+	if err != nil {
+		t.Fatalf("new provider runtime: %v", err)
+	}
+	agentReg := agent.NewAgentRuntimeRegistry(runtime)
+	sessionRouter := agent.NewAgentSessionRouter()
+	sessionRouter.Assign("peer-pubkey", "worker")
+	ss, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	store := newTestStore()
+	docsRepo := state.NewDocsRepository(store, "author")
+	transcriptRepo := state.NewTranscriptRepository(store, "author")
+	prevSessionStore := controlSessionStore
+	prevToolRegistry := controlToolRegistry
+	prevRuntimeConfig := controlRuntimeConfig
+	controlSessionStore = ss
+	controlToolRegistry = tools
+	controlRuntimeConfig = newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{ID: "worker"}}})
+	cleanup := func() {
+		controlSessionStore = prevSessionStore
+		controlToolRegistry = prevToolRegistry
+		controlRuntimeConfig = prevRuntimeConfig
+	}
+	return agentReg, sessionRouter, tools, ss, docsRepo, transcriptRepo, cleanup
+}
+
+func readACPWorkerSessionDoc(t *testing.T, docsRepo *state.DocsRepository, sessionID string) state.SessionDoc {
+	t.Helper()
+	doc, err := docsRepo.GetSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("get session %s: %v", sessionID, err)
+	}
+	return doc
+}
+
+func requireACPWorkerTaskActive(t *testing.T, docsRepo *state.DocsRepository, sessionID, taskID string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		doc, err := docsRepo.GetSession(context.Background(), sessionID)
+		if err == nil {
+			if active, _ := doc.Meta["active_turn"].(bool); active {
+				taskMeta, ok := doc.Meta[acpWorkerTaskMetaKey].(map[string]any)
+				if !ok {
+					t.Fatalf("expected %s metadata, got %#v", acpWorkerTaskMetaKey, doc.Meta)
+				}
+				if got, _ := taskMeta["task_id"].(string); got != taskID {
+					t.Fatalf("task_id = %q, want %q (%#v)", got, taskID, taskMeta)
+				}
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for active ACP worker task state")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func requireACPWorkerTaskCleared(t *testing.T, docsRepo *state.DocsRepository, sessionID string) {
+	t.Helper()
+	doc := readACPWorkerSessionDoc(t, docsRepo, sessionID)
+	if active, _ := doc.Meta["active_turn"].(bool); active {
+		t.Fatalf("expected active_turn cleared, got %#v", doc.Meta)
+	}
+	if _, ok := doc.Meta[acpWorkerTaskMetaKey]; ok {
+		t.Fatalf("expected %s cleared, got %#v", acpWorkerTaskMetaKey, doc.Meta[acpWorkerTaskMetaKey])
+	}
+}
+
+func TestHandleACPMessage_CleansUpWorkerTaskState_OnSuccess(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	provider := &capturingProvider{
+		generate: func(ctx context.Context, turn agent.Turn) (agent.ProviderResult, error) {
+			once.Do(func() { close(entered) })
+			select {
+			case <-release:
+				return agent.ProviderResult{Text: "ok"}, nil
+			case <-ctx.Done():
+				return agent.ProviderResult{}, ctx.Err()
+			}
+		},
+	}
+	agentReg, sessionRouter, tools, _, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
+	defer cleanup()
+
+	msg := acppkg.NewTask("task-clean-success", "sender", acppkg.TaskPayload{Instructions: "handle this"})
+	done := make(chan error, 1)
+	go func() {
+		dm := nostruntime.InboundDM{Reply: func(context.Context, string) error { return nil }}
+		done <- handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agentReg, sessionRouter, tools, docsRepo, transcriptRepo)
+	}()
+	<-entered
+	requireACPWorkerTaskActive(t, docsRepo, "acp:peer-pubkey", "task-clean-success")
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("handleACPMessage: %v", err)
+	}
+	requireACPWorkerTaskCleared(t, docsRepo, "acp:peer-pubkey")
+}
+
+func TestHandleACPMessage_CleansUpWorkerTaskState_OnError(t *testing.T) {
+	provider := &capturingProvider{
+		generate: func(context.Context, agent.Turn) (agent.ProviderResult, error) {
+			return agent.ProviderResult{}, fmt.Errorf("worker failed")
+		},
+	}
+	agentReg, sessionRouter, tools, _, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
+	defer cleanup()
+
+	var replied string
+	msg := acppkg.NewTask("task-clean-error", "sender", acppkg.TaskPayload{Instructions: "handle this"})
+	dm := nostruntime.InboundDM{Reply: func(_ context.Context, text string) error {
+		replied = text
+		return nil
+	}}
+	if err := handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agentReg, sessionRouter, tools, docsRepo, transcriptRepo); err != nil {
+		t.Fatalf("handleACPMessage: %v", err)
+	}
+	requireACPWorkerTaskCleared(t, docsRepo, "acp:peer-pubkey")
+	if !strings.Contains(replied, "worker failed") {
+		t.Fatalf("expected worker error in reply, got %q", replied)
+	}
+}
+
+func TestHandleACPMessage_CleansUpWorkerTaskState_OnCancel(t *testing.T) {
+	entered := make(chan struct{})
+	var once sync.Once
+	provider := &capturingProvider{
+		generate: func(ctx context.Context, turn agent.Turn) (agent.ProviderResult, error) {
+			once.Do(func() { close(entered) })
+			<-ctx.Done()
+			return agent.ProviderResult{}, ctx.Err()
+		},
+	}
+	agentReg, sessionRouter, tools, _, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
+	defer cleanup()
+
+	var replied string
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	msg := acppkg.NewTask("task-clean-cancel", "sender", acppkg.TaskPayload{Instructions: "handle this"})
+	go func() {
+		dm := nostruntime.InboundDM{Reply: func(_ context.Context, text string) error {
+			replied = text
+			return nil
+		}}
+		done <- handleACPMessage(ctx, msg, "peer-pubkey", dm, agentReg, sessionRouter, tools, docsRepo, transcriptRepo)
+	}()
+	<-entered
+	requireACPWorkerTaskActive(t, docsRepo, "acp:peer-pubkey", "task-clean-cancel")
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("handleACPMessage: %v", err)
+	}
+	requireACPWorkerTaskCleared(t, docsRepo, "acp:peer-pubkey")
+	if !strings.Contains(replied, "context canceled") {
+		t.Fatalf("expected cancellation in reply, got %q", replied)
+	}
+}
+
+func TestHandleACPMessage_CleansUpWorkerTaskState_OnTimeout(t *testing.T) {
+	entered := make(chan struct{})
+	var once sync.Once
+	provider := &capturingProvider{
+		generate: func(ctx context.Context, turn agent.Turn) (agent.ProviderResult, error) {
+			once.Do(func() { close(entered) })
+			<-ctx.Done()
+			return agent.ProviderResult{}, ctx.Err()
+		},
+	}
+	agentReg, sessionRouter, tools, _, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
+	defer cleanup()
+
+	var replied string
+	msg := acppkg.NewTask("task-clean-timeout", "sender", acppkg.TaskPayload{
+		Instructions: "handle this",
+		TimeoutMS:    25,
+	})
+	done := make(chan error, 1)
+	go func() {
+		dm := nostruntime.InboundDM{Reply: func(_ context.Context, text string) error {
+			replied = text
+			return nil
+		}}
+		done <- handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agentReg, sessionRouter, tools, docsRepo, transcriptRepo)
+	}()
+	<-entered
+	requireACPWorkerTaskActive(t, docsRepo, "acp:peer-pubkey", "task-clean-timeout")
+	if err := <-done; err != nil {
+		t.Fatalf("handleACPMessage: %v", err)
+	}
+	requireACPWorkerTaskCleared(t, docsRepo, "acp:peer-pubkey")
+	if !strings.Contains(replied, "deadline exceeded") {
+		t.Fatalf("expected timeout in reply, got %q", replied)
+	}
+}
+
+func TestHandleACPMessage_CleansUpWorkerTaskState_OnReplyFailure(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	provider := &capturingProvider{
+		generate: func(ctx context.Context, turn agent.Turn) (agent.ProviderResult, error) {
+			once.Do(func() { close(entered) })
+			select {
+			case <-release:
+				return agent.ProviderResult{Text: "ok"}, nil
+			case <-ctx.Done():
+				return agent.ProviderResult{}, ctx.Err()
+			}
+		},
+	}
+	agentReg, sessionRouter, tools, _, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
+	defer cleanup()
+
+	msg := acppkg.NewTask("task-clean-reply-fail", "sender", acppkg.TaskPayload{Instructions: "handle this"})
+	done := make(chan error, 1)
+	go func() {
+		dm := nostruntime.InboundDM{Reply: func(context.Context, string) error { return fmt.Errorf("reply failed") }}
+		done <- handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agentReg, sessionRouter, tools, docsRepo, transcriptRepo)
+	}()
+	<-entered
+	requireACPWorkerTaskActive(t, docsRepo, "acp:peer-pubkey", "task-clean-reply-fail")
+	close(release)
+	err := <-done
+	if err == nil || !strings.Contains(err.Error(), "reply failed") {
+		t.Fatalf("expected reply failure, got %v", err)
+	}
+	requireACPWorkerTaskCleared(t, docsRepo, "acp:peer-pubkey")
+}
+
+func TestHandleACPMessage_CleansUpWorkerTaskState_OnPanic(t *testing.T) {
+	provider := &capturingProvider{
+		generate: func(context.Context, agent.Turn) (agent.ProviderResult, error) {
+			panic("boom")
+		},
+	}
+	agentReg, sessionRouter, tools, _, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
+	defer cleanup()
+
+	var replied string
+	msg := acppkg.NewTask("task-clean-panic", "sender", acppkg.TaskPayload{Instructions: "handle this"})
+	dm := nostruntime.InboundDM{Reply: func(_ context.Context, text string) error {
+		replied = text
+		return nil
+	}}
+	if err := handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agentReg, sessionRouter, tools, docsRepo, transcriptRepo); err != nil {
+		t.Fatalf("handleACPMessage: %v", err)
+	}
+	requireACPWorkerTaskCleared(t, docsRepo, "acp:peer-pubkey")
+	if !strings.Contains(replied, "acp worker panic: boom") {
+		t.Fatalf("expected panic in reply, got %q", replied)
 	}
 }

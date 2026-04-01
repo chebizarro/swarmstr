@@ -9087,9 +9087,19 @@ func handleACPMessage(
 		defer cancel()
 		var result agent.TurnResult
 		var historyEntryIDs []string
-		procErr := withExclusiveSessionTurn(processCtx, sessionID, taskTimeout, func() error {
+		procErr := withExclusiveSessionTurn(processCtx, sessionID, taskTimeout, func() (err error) {
 			scopeCtx := resolveMemoryScopeContext(processCtx, cfg, docsRepo, controlSessionStore, sessionID, agentID, taskPayload.MemoryScope)
 			persistSessionMemoryScope(controlSessionStore, sessionID, agentID, scopeCtx.Scope)
+			cleanupWorkerTask, err := beginACPWorkerTask(processCtx, docsRepo, sessionID, fromPubKey, agentID, msg.TaskID, taskPayload, turnStartedAt)
+			if err != nil {
+				return fmt.Errorf("acp worker task start: %w", err)
+			}
+			defer cleanupWorkerTask()
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("acp worker panic: %v", r)
+				}
+			}()
 			turnCtx := contextWithMemoryScope(processCtx, scopeCtx)
 			turnCtx = contextWithACPTaskPayload(turnCtx, taskPayload)
 			filteredRuntime := applyACPTaskRuntimeConstraints(turnCtx, rt, agentID, taskPayload, cfg, docsRepo)
@@ -9107,7 +9117,6 @@ func handleACPMessage(
 				mergedHistory = append(mergedHistory, seedHistory...)
 				turn.History = mergedHistory
 			}
-			var err error
 			result, err = filteredRuntime.ProcessTurn(turnCtx, turn)
 			if err != nil {
 				if partial, ok := agent.PartialTurnResult(err); ok {
