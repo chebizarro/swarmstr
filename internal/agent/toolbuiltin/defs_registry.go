@@ -14,7 +14,7 @@ import "metiq/internal/agent"
 // MemorySearchDef is the ToolDefinition for memory.search (global search).
 var MemorySearchDef = agent.ToolDefinition{
 	Name:        "memory_search",
-	Description: "Search the persistent memory store for records matching a query. Returns ranked results across all sessions. Use to recall stored facts, past decisions, user preferences, or any information you've previously saved.",
+	Description: "Search the persistent memory store for records matching a narrow, concrete query. Returns ranked results across all sessions. Use to recall stored facts, past decisions, user preferences, project context, or external references you've previously saved.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{

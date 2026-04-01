@@ -102,19 +102,26 @@ func TestMemoryStoreTool_MissingText(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreTool_RejectsUndeclaredArgs(t *testing.T) {
+func TestMemoryStoreTool_WithTopic(t *testing.T) {
 	idx := newTestMemoryIndex(t)
 	r := agent.NewToolRegistry()
 	r.RegisterWithDef("memory_store", MemoryStoreTool(idx), MemoryStoreDef)
 	_, err := r.Execute(context.Background(), agent.ToolCall{
 		Name: "memory_store",
 		Args: map[string]any{
-			"text":  "tagged entry",
-			"topic": "not-supported",
+			"text":  "user prefers UTC timestamps",
+			"topic": "user",
 		},
 	})
-	if err == nil {
-		t.Fatal("expected validation error for undeclared topic")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	hits := idx.Search("UTC", 5)
+	if len(hits) != 1 {
+		t.Fatalf("expected one stored memory, got %d", len(hits))
+	}
+	if hits[0].Topic != "user" {
+		t.Fatalf("expected topic=user, got %+v", hits[0])
 	}
 }
 

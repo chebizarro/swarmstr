@@ -19,10 +19,10 @@ const agentKnowledgeTopic = "agent_knowledge"
 // MemoryPinDef is the ToolDefinition for memory_pin.
 var MemoryPinDef = agent.ToolDefinition{
 	Name: "memory_pin",
-	Description: "Persist a piece of knowledge to your long-term knowledge base. " +
+	Description: "Persist stable long-term knowledge to your pinned memory. " +
 		"Pinned entries are always included in your system prompt at the start of every turn, " +
 		"so they persist across all sessions and conversations. " +
-		"Use for stable facts, preferences, rules, or anything you always need to remember.",
+		"Use for stable facts, durable preferences, rules, or anything you always need to remember.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
@@ -42,7 +42,7 @@ var MemoryPinDef = agent.ToolDefinition{
 // MemoryPinnedDef is the ToolDefinition for memory_pinned.
 var MemoryPinnedDef = agent.ToolDefinition{
 	Name:        "memory_pinned",
-	Description: "List all entries in your long-term knowledge base (pinned with memory_pin). Returns IDs and text so you can remove outdated entries with memory_delete.",
+	Description: "List all entries in your pinned long-term knowledge base. Returns IDs and text so you can audit or remove outdated entries with memory_delete.",
 	Parameters: agent.ToolParameters{
 		Type:       "object",
 		Properties: map[string]agent.ToolParamProp{},

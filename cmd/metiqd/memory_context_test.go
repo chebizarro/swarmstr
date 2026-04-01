@@ -8,6 +8,7 @@ import (
 
 	"metiq/internal/agent"
 	ctxengine "metiq/internal/context"
+	"metiq/internal/gateway/methods"
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
 )
@@ -15,6 +16,7 @@ import (
 type memoryStoreStub struct {
 	session []memory.IndexedMemory
 	global  []memory.IndexedMemory
+	pinned  []memory.IndexedMemory
 }
 
 func (m *memoryStoreStub) Add(doc state.MemoryDoc) {}
@@ -28,7 +30,13 @@ func (m *memoryStoreStub) Save() error                                        { 
 func (m *memoryStoreStub) Store(sessionID, text string, tags []string) string { return "" }
 func (m *memoryStoreStub) Delete(id string) bool                              { return false }
 func (m *memoryStoreStub) ListByTopic(topic string, limit int) []memory.IndexedMemory {
-	return nil
+	if topic != pinnedKnowledgeTopic {
+		return nil
+	}
+	if len(m.pinned) > limit {
+		return m.pinned[:limit]
+	}
+	return m.pinned
 }
 func (m *memoryStoreStub) Search(query string, limit int) []memory.IndexedMemory {
 	if len(m.global) > limit {
@@ -43,7 +51,7 @@ func (m *memoryStoreStub) SearchSession(sessionID, query string, limit int) []me
 	return m.session
 }
 
-func TestAssembleSessionMemoryContext_IncludesSessionAndCrossSession(t *testing.T) {
+func TestAssembleMemoryRecallContext_IncludesSessionAndCrossSession(t *testing.T) {
 	idx := &memoryStoreStub{
 		session: []memory.IndexedMemory{
 			{MemoryID: "s1", SessionID: "session-a", Topic: "task", Text: "user asked about deployment"},
@@ -57,11 +65,14 @@ func TestAssembleSessionMemoryContext_IncludesSessionAndCrossSession(t *testing.
 		},
 	}
 
-	ctx := assembleSessionMemoryContext(context.Background(), idx, "session-a", "deployment", 6)
-	if !strings.Contains(ctx, "Session memory records") {
+	ctx := assembleMemoryRecallContext(context.Background(), idx, "session-a", "deployment", 6)
+	if !strings.Contains(ctx, "## Relevant Memory Recall") {
+		t.Fatalf("expected recall header, got: %s", ctx)
+	}
+	if !strings.Contains(ctx, "### From this session") {
 		t.Fatalf("expected session section, got: %s", ctx)
 	}
-	if !strings.Contains(ctx, "Related knowledge from other sessions") {
+	if !strings.Contains(ctx, "### Related from other sessions") {
 		t.Fatalf("expected cross-session section, got: %s", ctx)
 	}
 	if strings.Contains(ctx, "duplicate should be skipped") {
@@ -70,13 +81,64 @@ func TestAssembleSessionMemoryContext_IncludesSessionAndCrossSession(t *testing.
 	if strings.Contains(ctx, "should be capped out") {
 		t.Fatal("expected cross-session results to be capped at 3")
 	}
+	if strings.Contains(ctx, `{"topic":`) {
+		t.Fatalf("expected model-facing formatting, not raw backend dump: %s", ctx)
+	}
+	if !strings.Contains(ctx, "memory_search") {
+		t.Fatalf("expected explicit recall guidance, got: %s", ctx)
+	}
 }
 
-func TestAssembleSessionMemoryContext_EmptyWhenNoMatches(t *testing.T) {
+func TestAssembleMemoryRecallContext_EmptyWhenNoMatches(t *testing.T) {
 	idx := &memoryStoreStub{}
-	ctx := assembleSessionMemoryContext(context.Background(), idx, "session-a", "deployment", 6)
+	ctx := assembleMemoryRecallContext(context.Background(), idx, "session-a", "deployment", 6)
 	if strings.TrimSpace(ctx) != "" {
 		t.Fatalf("expected empty context, got: %q", ctx)
+	}
+}
+
+func TestAssembleMemorySystemPrompt_IncludesGuidanceAndPinnedKnowledge(t *testing.T) {
+	idx := &memoryStoreStub{
+		pinned: []memory.IndexedMemory{{MemoryID: "p1", Topic: pinnedKnowledgeTopic, Text: "user prefers terse responses"}},
+	}
+	got := assembleMemorySystemPrompt(idx)
+	for _, want := range []string{
+		"## Memory",
+		"## Types of memory",
+		"## What NOT to save in memory",
+		"## How to save memories",
+		"## When to access memories",
+		"## Before recommending from memory",
+		"## Pinned Knowledge",
+		"user prefers terse responses",
+		"memory_search",
+		"Do not apply remembered facts, cite, compare against, or mention memory content.",
+		"If the memory names a file path: check that the file exists.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in prompt, got: %s", want, got)
+		}
+	}
+}
+
+func TestBuildAgentRunTurn_JoinsRecallAndRequestContext(t *testing.T) {
+	idx := &memoryStoreStub{
+		session: []memory.IndexedMemory{{MemoryID: "s1", SessionID: "session-a", Topic: "project", Text: "merge freeze begins 2026-03-05"}},
+		pinned:  []memory.IndexedMemory{{MemoryID: "p1", Topic: pinnedKnowledgeTopic, Text: "user prefers terse responses"}},
+	}
+	req := methods.AgentRequest{SessionID: "session-a", Message: "what should I know", Context: "extra runtime context"}
+	turn := buildAgentRunTurn(context.Background(), req, idx)
+	if turn.SessionID != req.SessionID || turn.UserText != req.Message {
+		t.Fatalf("unexpected turn identity: %#v", turn)
+	}
+	if !strings.Contains(turn.StaticSystemPrompt, "## Pinned Knowledge") {
+		t.Fatalf("expected static memory system prompt, got: %s", turn.StaticSystemPrompt)
+	}
+	if !strings.Contains(turn.Context, "## Relevant Memory Recall") {
+		t.Fatalf("expected recall context, got: %s", turn.Context)
+	}
+	if !strings.Contains(turn.Context, req.Context) {
+		t.Fatalf("expected request context to be preserved, got: %s", turn.Context)
 	}
 }
 
