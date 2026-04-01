@@ -88,7 +88,7 @@ func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessa
 	msgs := make([]LLMMessage, 0, len(turn.History)+2)
 
 	// Build system prompt.
-	assembly := buildPromptAssembly(providerSystemPrompt, turn.Context)
+	assembly := buildPromptAssembly(providerSystemPrompt, turn.StaticSystemPrompt, turn.Context)
 	if sys := assembly.Combined(); sys != "" {
 		sysMsg := LLMMessage{Role: "system", Content: sys, SystemParts: assembly.SystemParts()}
 		msgs = append(msgs, sysMsg)
@@ -121,9 +121,9 @@ func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessa
 	return msgs
 }
 
-func buildPromptAssembly(providerPrompt, turnContext string) PromptAssembly {
+func buildPromptAssembly(providerPrompt, turnStaticPrompt, turnContext string) PromptAssembly {
 	return PromptAssembly{
-		StaticSystemPrompt:    trimOrEmpty(providerPrompt),
+		StaticSystemPrompt:    joinPromptParts(providerPrompt, turnStaticPrompt),
 		DynamicSystemAddition: trimOrEmpty(turnContext),
 	}
 }
@@ -186,4 +186,14 @@ func llmResponseToProviderResult(resp *LLMResponse) ProviderResult {
 
 func trimOrEmpty(s string) string {
 	return strings.TrimSpace(s)
+}
+
+func joinPromptParts(parts ...string) string {
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := trimOrEmpty(part); trimmed != "" {
+			filtered = append(filtered, trimmed)
+		}
+	}
+	return strings.Join(filtered, "\n\n")
 }
