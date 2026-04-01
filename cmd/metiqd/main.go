@@ -4874,6 +4874,7 @@ func main() {
 				ListSessions: func(ctx context.Context, limit int) ([]state.SessionDoc, error) {
 					return docsRepo.ListSessions(ctx, limit)
 				},
+				SessionStore: sessionStore,
 				ListTranscript: func(ctx context.Context, sessionID string, limit int) ([]state.TranscriptEntryDoc, error) {
 					return transcriptRepo.ListSession(ctx, sessionID, limit)
 				},
@@ -6655,11 +6656,16 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		sessions, err := docsRepo.ListSessions(ctx, req.Limit)
+		result, err := admin.BuildSessionsListResponse(ctx, req, admin.SessionsListResponseOptions{
+			Config:         cfg,
+			SessionStore:   controlSessionStore,
+			ListSessions:   docsRepo.ListSessions,
+			ListTranscript: transcriptRepo.ListSession,
+		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"sessions": sessions}}, nil
+		return nostruntime.ControlRPCResult{Result: result}, nil
 	case methods.MethodSessionsPreview:
 		req, err := methods.DecodeSessionsPreviewParams(in.Params)
 		if err != nil {
@@ -8486,6 +8492,7 @@ func handleControlRPCRequest(
 		// Include base_hash so OpenClaw clients can use optimistic-lock semantics on mutations.
 		return nostruntime.ControlRPCResult{Result: map[string]any{
 			"config":    redacted,
+			"hash":      cfg.Hash(),
 			"base_hash": cfg.Hash(),
 		}}, nil
 	case methods.MethodRelayPolicyGet:
