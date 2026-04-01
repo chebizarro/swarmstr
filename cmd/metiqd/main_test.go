@@ -2758,6 +2758,121 @@ func TestRotateSessionCoordinatedWaitsBeforeMutatingRouterState(t *testing.T) {
 	}
 }
 
+func TestPersistAndIngestTurnHistory_PersistsTurnResultMetadata(t *testing.T) {
+	store := newTestStore()
+	transcript := state.NewTranscriptRepository(store, "author")
+	delta := []agent.ConversationMessage{
+		{Role: "assistant", Content: "Calling fetch", ToolCalls: []agent.ToolCallRef{{ID: "call-1", Name: "fetch", ArgsJSON: `{"q":"nostr"}`}}},
+		{Role: "tool", ToolCallID: "call-1", Content: "ok"},
+		{Role: "assistant", Content: "done"},
+	}
+	turnMeta, ok := agent.BuildTurnResultMetadata(agent.TurnResult{
+		Text:         "done",
+		HistoryDelta: delta,
+		Outcome:      agent.TurnOutcomeCompletedWithTools,
+		StopReason:   agent.TurnStopReasonModelText,
+		Usage:        agent.TurnUsage{InputTokens: 11, OutputTokens: 7},
+	}, nil)
+	if !ok {
+		t.Fatal("expected turn metadata")
+	}
+
+	persistAndIngestTurnHistory(context.Background(), transcript, nil, "s1", "evt-1", delta, &turnMeta)
+
+	entries, err := transcript.ListSession(context.Background(), "s1", 10)
+	if err != nil {
+		t.Fatalf("list transcript: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 transcript entries, got %d", len(entries))
+	}
+	turnResultCount := 0
+	for _, entry := range entries {
+		if got := entry.Meta["request_event_id"]; got != "evt-1" {
+			t.Fatalf("entry %s missing request_event_id, got %#v", entry.EntryID, got)
+		}
+		turnResult, ok := entry.Meta["turn_result"].(map[string]any)
+		if !ok {
+			continue
+		}
+		turnResultCount++
+		if entry.EntryID != "turn:evt-1:assistant:2" {
+			t.Fatalf("unexpected terminal metadata entry: %s", entry.EntryID)
+		}
+		if got := turnResult["outcome"]; got != string(agent.TurnOutcomeCompletedWithTools) {
+			t.Fatalf("entry %s outcome = %#v", entry.EntryID, got)
+		}
+		if got := turnResult["stop_reason"]; got != string(agent.TurnStopReasonModelText) {
+			t.Fatalf("entry %s stop_reason = %#v", entry.EntryID, got)
+		}
+		usage, ok := turnResult["usage"].(map[string]any)
+		if !ok {
+			t.Fatalf("entry %s missing usage metadata: %#v", entry.EntryID, turnResult)
+		}
+		if got, ok := usage["input_tokens"].(float64); !ok || int64(got) != 11 {
+			t.Fatalf("entry %s input_tokens = %#v", entry.EntryID, usage["input_tokens"])
+		}
+		if got, ok := usage["output_tokens"].(float64); !ok || int64(got) != 7 {
+			t.Fatalf("entry %s output_tokens = %#v", entry.EntryID, usage["output_tokens"])
+		}
+	}
+	if turnResultCount != 1 {
+		t.Fatalf("expected 1 terminal turn_result metadata entry, got %d", turnResultCount)
+	}
+}
+
+func TestPersistAndIngestTurnHistory_PersistsPartialTurnResultMetadata(t *testing.T) {
+	store := newTestStore()
+	transcript := state.NewTranscriptRepository(store, "author")
+	delta := []agent.ConversationMessage{
+		{Role: "assistant", Content: "Calling fetch", ToolCalls: []agent.ToolCallRef{{ID: "call-1", Name: "fetch"}}},
+		{Role: "tool", ToolCallID: "call-1", Content: "blocked"},
+	}
+	turnErr := &agent.TurnExecutionError{
+		Cause: fmt.Errorf("tool loop blocked"),
+		Partial: agent.TurnResult{
+			HistoryDelta: delta,
+			Outcome:      agent.TurnOutcomeBlocked,
+			StopReason:   agent.TurnStopReasonLoopBlocked,
+			Usage:        agent.TurnUsage{InputTokens: 9},
+		},
+	}
+	turnMeta := turnResultMetadataPtr(agent.TurnResult{}, turnErr)
+	if turnMeta == nil {
+		t.Fatal("expected partial turn metadata")
+	}
+
+	persistAndIngestTurnHistory(context.Background(), transcript, nil, "s1", "evt-2", delta, turnMeta)
+
+	entries, err := transcript.ListSession(context.Background(), "s1", 10)
+	if err != nil {
+		t.Fatalf("list transcript: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 transcript entries, got %d", len(entries))
+	}
+	turnResultCount := 0
+	for _, entry := range entries {
+		turnResult, ok := entry.Meta["turn_result"].(map[string]any)
+		if !ok {
+			continue
+		}
+		turnResultCount++
+		if entry.EntryID != "turn:evt-2:tool:call-1" {
+			t.Fatalf("unexpected terminal metadata entry: %s", entry.EntryID)
+		}
+		if got := turnResult["outcome"]; got != string(agent.TurnOutcomeBlocked) {
+			t.Fatalf("entry %s outcome = %#v", entry.EntryID, got)
+		}
+		if got := turnResult["stop_reason"]; got != string(agent.TurnStopReasonLoopBlocked) {
+			t.Fatalf("entry %s stop_reason = %#v", entry.EntryID, got)
+		}
+	}
+	if turnResultCount != 1 {
+		t.Fatalf("expected 1 terminal turn_result metadata entry, got %d", turnResultCount)
+	}
+}
+
 func TestDeleteSessionCoordinatedWaitsAndDoesNotCreatePhantomSessionDoc(t *testing.T) {
 	prevTurns := controlSessionTurns
 	controlSessionTurns = autoreply.NewSessionTurns()
