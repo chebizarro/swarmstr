@@ -193,6 +193,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 					HistoryDelta: historyDelta,
 					Outcome:      outcome,
 					StopReason:   stopReason,
+					Usage:        TurnUsage{InputTokens: totalUsage.InputTokens, OutputTokens: totalUsage.OutputTokens},
 				},
 			}
 		}

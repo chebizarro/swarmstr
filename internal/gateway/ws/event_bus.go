@@ -78,6 +78,9 @@ const (
 	EventToolResult = "tool.result"
 	// EventToolError is emitted when a tool call fails or is blocked.
 	EventToolError = "tool.error"
+	// EventTurnResult is emitted when a turn completes or fails with its final
+	// outcome classification and lightweight runtime telemetry.
+	EventTurnResult = "turn.result"
 
 	// OpenClaw compatibility alias events.
 	EventCompatAgent            = "agent"
@@ -119,6 +122,7 @@ var AllPushEvents = []string{
 	EventToolProgress,
 	EventToolResult,
 	EventToolError,
+	EventTurnResult,
 	// OpenClaw compatibility aliases.
 	EventCompatAgent,
 	EventCompatChat,
@@ -436,6 +440,27 @@ type ToolLifecyclePayload struct {
 	Result     string `json:"result,omitempty"`
 	Error      string `json:"error,omitempty"`
 	Data       any    `json:"data,omitempty"`
+}
+
+// TurnResultPayload is the payload for EventTurnResult events.
+type TurnResultPayload struct {
+	TS             int64  `json:"ts_ms"`
+	AgentID        string `json:"agent_id,omitempty"`
+	SessionID      string `json:"session_id"`
+	TurnID         string `json:"turn_id,omitempty"`
+	StartedAtMS    int64  `json:"started_at_ms,omitempty"`
+	EndedAtMS      int64  `json:"ended_at_ms,omitempty"`
+	DurationMS     int64  `json:"duration_ms,omitempty"`
+	Outcome        string `json:"outcome,omitempty"`
+	StopReason     string `json:"stop_reason,omitempty"`
+	LoopBlocked    bool   `json:"loop_blocked,omitempty"`
+	Error          string `json:"error,omitempty"`
+	FallbackUsed   bool   `json:"fallback_used,omitempty"`
+	FallbackFrom   string `json:"fallback_from,omitempty"`
+	FallbackTo     string `json:"fallback_to,omitempty"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+	InputTokens    int64  `json:"input_tokens,omitempty"`
+	OutputTokens   int64  `json:"output_tokens,omitempty"`
 }
 
 // TalkModePayload is the payload for EventTalkMode events.

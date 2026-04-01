@@ -88,6 +88,25 @@ type TurnUsage struct {
 	OutputTokens int64
 }
 
+// TurnTelemetry is the minimal structured runtime snapshot for a completed or
+// failed turn. metiqd persists and emits this without adding a separate
+// analytics pipeline.
+type TurnTelemetry struct {
+	TurnID         string
+	StartedAtMS    int64
+	EndedAtMS      int64
+	DurationMS     int64
+	Outcome        TurnOutcome
+	StopReason     TurnStopReason
+	LoopBlocked    bool
+	Error          string
+	FallbackUsed   bool
+	FallbackFrom   string
+	FallbackTo     string
+	FallbackReason string
+	Usage          TurnUsage
+}
+
 // TurnOutcome classifies the terminal result shape of a turn.
 // It is runtime-only in this tranche and intentionally not persisted yet.
 type TurnOutcome string
@@ -138,6 +157,32 @@ func PartialTurnResult(err error) (TurnResult, bool) {
 		}
 	}
 	return TurnResult{}, false
+}
+
+// ClassifyTurnError maps a failed turn to the canonical outcome/stop-reason
+// taxonomy. If err carries a TurnExecutionError partial classification, that
+// wins; otherwise context cancellation/deadline map to aborted/cancelled and
+// all other failures map to failed/provider_error.
+func ClassifyTurnError(err error) (TurnOutcome, TurnStopReason, bool) {
+	if err == nil {
+		return "", "", false
+	}
+	var te *TurnExecutionError
+	if errors.As(err, &te) {
+		if te.Partial.Outcome != "" || te.Partial.StopReason != "" {
+			return te.Partial.Outcome, te.Partial.StopReason, true
+		}
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return TurnOutcomeAborted, TurnStopReasonCancelled, true
+	}
+	return TurnOutcomeFailed, TurnStopReasonProviderError, true
+}
+
+// ClassifyTurnResult infers terminal classification when a runtime returns a
+// plain TurnResult without explicitly populating Outcome/StopReason.
+func ClassifyTurnResult(result TurnResult) (TurnOutcome, TurnStopReason) {
+	return inferTurnClassification(result)
 }
 
 type Runtime interface {

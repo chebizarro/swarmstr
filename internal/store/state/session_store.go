@@ -62,21 +62,41 @@ type SessionEntry struct {
 	Label string `json:"label,omitempty"`
 
 	// Token / cache metrics — accumulated across turns.
-	InputTokens      int64  `json:"input_tokens,omitempty"`
-	OutputTokens     int64  `json:"output_tokens,omitempty"`
-	TotalTokens      int64  `json:"total_tokens,omitempty"`
-	TotalTokensFresh *bool  `json:"total_tokens_fresh,omitempty"`
-	ContextTokens    int64  `json:"context_tokens,omitempty"`
-	CacheRead        int64  `json:"cache_read,omitempty"`
-	CacheWrite       int64  `json:"cache_write,omitempty"`
-	FallbackFrom     string `json:"fallback_from,omitempty"`
-	FallbackTo       string `json:"fallback_to,omitempty"`
-	FallbackReason   string `json:"fallback_reason,omitempty"`
-	FallbackAt       int64  `json:"fallback_at,omitempty"`
+	InputTokens      int64          `json:"input_tokens,omitempty"`
+	OutputTokens     int64          `json:"output_tokens,omitempty"`
+	TotalTokens      int64          `json:"total_tokens,omitempty"`
+	TotalTokensFresh *bool          `json:"total_tokens_fresh,omitempty"`
+	ContextTokens    int64          `json:"context_tokens,omitempty"`
+	CacheRead        int64          `json:"cache_read,omitempty"`
+	CacheWrite       int64          `json:"cache_write,omitempty"`
+	FallbackFrom     string         `json:"fallback_from,omitempty"`
+	FallbackTo       string         `json:"fallback_to,omitempty"`
+	FallbackReason   string         `json:"fallback_reason,omitempty"`
+	FallbackAt       int64          `json:"fallback_at,omitempty"`
+	LastTurn         *TurnTelemetry `json:"last_turn,omitempty"`
 
 	// Housekeeping.
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TurnTelemetry is the persisted latest-turn snapshot for a session.
+// It is intentionally lightweight and operationally focused.
+type TurnTelemetry struct {
+	TurnID         string `json:"turn_id,omitempty"`
+	StartedAtMS    int64  `json:"started_at_ms,omitempty"`
+	EndedAtMS      int64  `json:"ended_at_ms,omitempty"`
+	DurationMS     int64  `json:"duration_ms,omitempty"`
+	Outcome        string `json:"outcome,omitempty"`
+	StopReason     string `json:"stop_reason,omitempty"`
+	LoopBlocked    bool   `json:"loop_blocked,omitempty"`
+	Error          string `json:"error,omitempty"`
+	FallbackUsed   bool   `json:"fallback_used,omitempty"`
+	FallbackFrom   string `json:"fallback_from,omitempty"`
+	FallbackTo     string `json:"fallback_to,omitempty"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+	InputTokens    int64  `json:"input_tokens,omitempty"`
+	OutputTokens   int64  `json:"output_tokens,omitempty"`
 }
 
 // CarryOverFlags returns a new SessionEntry that inherits the flag-based
@@ -198,6 +218,23 @@ func (s *SessionStore) AddTokens(key string, input, output int64) error {
 	e.InputTokens += input
 	e.OutputTokens += output
 	e.TotalTokens += input + output
+	e.UpdatedAt = time.Now().UTC()
+	s.entries[key] = e
+	s.mu.Unlock()
+	return s.Save()
+}
+
+// RecordTurn atomically stores the latest turn telemetry snapshot for key.
+func (s *SessionStore) RecordTurn(key string, telemetry TurnTelemetry) error {
+	s.mu.Lock()
+	e := s.entries[key]
+	if e.SessionID == "" {
+		e.SessionID = key
+	}
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = time.Now().UTC()
+	}
+	e.LastTurn = &telemetry
 	e.UpdatedAt = time.Now().UTC()
 	s.entries[key] = e
 	s.mu.Unlock()

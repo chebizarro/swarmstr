@@ -2204,6 +2204,71 @@ func TestExecuteAgentRun_EmitsAgentStatusWithSession(t *testing.T) {
 	}
 }
 
+func TestExecuteAgentRun_EmitsAndPersistsTurnTelemetry(t *testing.T) {
+	prevRouter := controlSessionRouter
+	prevEmitter := controlWsEmitter
+	prevSessionStore := controlSessionStore
+	defer func() {
+		controlSessionRouter = prevRouter
+		setControlWSEmitter(prevEmitter)
+		controlSessionStore = prevSessionStore
+	}()
+
+	controlSessionRouter = agent.NewAgentSessionRouter()
+	controlSessionRouter.Assign("session-telemetry", "alpha")
+
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	controlSessionStore = sessionStore
+
+	capture := &capturingEmitter{}
+	setControlWSEmitter(capture)
+
+	jobs := newAgentJobRegistry()
+	runID := "run-turn-telemetry"
+	jobs.Begin(runID, "session-telemetry")
+	executeAgentRun(runID, methods.AgentRequest{SessionID: "session-telemetry", Message: "hello", TimeoutMS: 500}, runtimeFunc(func(_ context.Context, turn agent.Turn) (agent.TurnResult, error) {
+		return agent.TurnResult{
+			Text:  "ack: " + turn.UserText,
+			Usage: agent.TurnUsage{InputTokens: 7, OutputTokens: 3},
+		}, nil
+	}), jobs)
+
+	events := capture.eventsByName(gatewayws.EventTurnResult)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 turn.result event, got %d", len(events))
+	}
+	payload, ok := events[0].(gatewayws.TurnResultPayload)
+	if !ok {
+		t.Fatalf("unexpected turn.result payload type: %T", events[0])
+	}
+	if payload.SessionID != "session-telemetry" || payload.AgentID != "alpha" {
+		t.Fatalf("unexpected turn.result payload: %+v", payload)
+	}
+	if payload.Outcome != string(agent.TurnOutcomeCompleted) || payload.StopReason != string(agent.TurnStopReasonModelText) {
+		t.Fatalf("unexpected turn classification payload: %+v", payload)
+	}
+	if payload.InputTokens != 7 || payload.OutputTokens != 3 {
+		t.Fatalf("unexpected turn usage payload: %+v", payload)
+	}
+
+	se, ok := sessionStore.Get("session-telemetry")
+	if !ok {
+		t.Fatal("expected session entry")
+	}
+	if se.LastTurn == nil {
+		t.Fatal("expected persisted last_turn telemetry")
+	}
+	if se.LastTurn.Outcome != string(agent.TurnOutcomeCompleted) || se.LastTurn.StopReason != string(agent.TurnStopReasonModelText) {
+		t.Fatalf("unexpected persisted turn telemetry: %+v", se.LastTurn)
+	}
+	if se.LastTurn.InputTokens != 7 || se.LastTurn.OutputTokens != 3 {
+		t.Fatalf("unexpected persisted turn usage: %+v", se.LastTurn)
+	}
+}
+
 func TestToolLifecycleEmitter_MapsAgentEventsToWSPayloads(t *testing.T) {
 	capture := &capturingEmitter{}
 	sink := toolLifecycleEmitter(capture, "alpha")

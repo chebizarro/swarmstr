@@ -18,6 +18,7 @@
     "tool.progress",
     "tool.result",
     "tool.start",
+    "turn.result",
     "voice.wake",
     "canvas.update"
   ]
