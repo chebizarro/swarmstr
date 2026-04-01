@@ -71,6 +71,31 @@ func (m *mockToolExecutor) EffectiveTraits(call ToolCall) (ToolTraits, bool) {
 	return traits, ok
 }
 
+type capturedToolLifecycle struct {
+	mu     sync.Mutex
+	events []ToolLifecycleEvent
+}
+
+func (c *capturedToolLifecycle) sink(evt ToolLifecycleEvent) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, evt)
+}
+
+func (c *capturedToolLifecycle) snapshot() []ToolLifecycleEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]ToolLifecycleEvent, len(c.events))
+	copy(out, c.events)
+	return out
+}
+
+type toolExecutorFunc func(context.Context, ToolCall) (string, error)
+
+func (f toolExecutorFunc) Execute(ctx context.Context, call ToolCall) (string, error) {
+	return f(ctx, call)
+}
+
 func TestRunAgenticLoop_NoToolCalls(t *testing.T) {
 	provider := &mockChatProvider{
 		responses: []*LLMResponse{
@@ -136,6 +161,73 @@ func TestRunAgenticLoop_SingleToolCall(t *testing.T) {
 	}
 	if executor.execCount.Load() != 1 {
 		t.Errorf("expected 1 tool execution, got %d", executor.execCount.Load())
+	}
+}
+
+func TestRunAgenticLoop_EmitsToolLifecycleEvents(t *testing.T) {
+	provider := &mockChatProvider{
+		responses: []*LLMResponse{
+			{
+				ToolCalls:        []ToolCall{{ID: "tc1", Name: "test_tool"}},
+				NeedsToolResults: true,
+			},
+			{Content: "done", NeedsToolResults: false},
+		},
+	}
+	executor := &mockToolExecutor{results: map[string]string{"test_tool": "tool output"}}
+	capture := &capturedToolLifecycle{}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "use tool"}},
+		Executor:        executor,
+		MaxIterations:   10,
+		LogPrefix:       "test",
+		SessionID:       "sess-1",
+		TurnID:          "turn-1",
+		ToolEventSink:   capture.sink,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("unexpected response content: %q", resp.Content)
+	}
+	events := capture.snapshot()
+	if len(events) != 2 {
+		t.Fatalf("expected 2 lifecycle events, got %d", len(events))
+	}
+	if events[0].Type != ToolLifecycleEventStart || events[1].Type != ToolLifecycleEventResult {
+		t.Fatalf("unexpected lifecycle order: %+v", events)
+	}
+	if events[0].SessionID != "sess-1" || events[0].TurnID != "turn-1" {
+		t.Fatalf("missing correlation fields on start event: %+v", events[0])
+	}
+	if events[1].ToolCallID != "tc1" || events[1].ToolName != "test_tool" || events[1].Result != "tool output" {
+		t.Fatalf("unexpected result event: %+v", events[1])
+	}
+}
+
+func TestExecuteSingleToolCall_EmitsToolError(t *testing.T) {
+	capture := &capturedToolLifecycle{}
+	call := ToolCall{ID: "tc-err", Name: "bad_tool"}
+	failing := toolExecutorFunc(func(_ context.Context, _ ToolCall) (string, error) {
+		return "", fmt.Errorf("boom")
+	})
+
+	result := executeSingleToolCall(context.Background(), failing, call, "sess-err", "turn-err", capture.sink)
+	if result.Content != "error: boom" {
+		t.Fatalf("unexpected result content: %q", result.Content)
+	}
+	events := capture.snapshot()
+	if len(events) != 2 {
+		t.Fatalf("expected 2 lifecycle events, got %d", len(events))
+	}
+	if events[0].Type != ToolLifecycleEventStart || events[1].Type != ToolLifecycleEventError {
+		t.Fatalf("unexpected lifecycle order: %+v", events)
+	}
+	if events[1].Error != "boom" || events[1].ToolCallID != "tc-err" || events[1].ToolName != "bad_tool" {
+		t.Fatalf("unexpected error event: %+v", events[1])
 	}
 }
 
@@ -246,7 +338,7 @@ func TestExecuteToolBatches_PreservesResultOrderAcrossBatches(t *testing.T) {
 		{ID: "2", Name: "safe_b"},
 		{ID: "3", Name: "unsafe_c"},
 		{ID: "4", Name: "safe_d"},
-	})
+	}, "", "", nil)
 	if got, want := len(results), 4; got != want {
 		t.Fatalf("expected %d results, got %d", want, got)
 	}
@@ -292,7 +384,7 @@ func TestExecuteToolBatches_RespectsConcurrencyLimit(t *testing.T) {
 		{ID: "2", Name: "safe_b"},
 		{ID: "3", Name: "safe_c"},
 		{ID: "4", Name: "safe_d"},
-	})
+	}, "", "", nil)
 	if got := executor.maxInFlight.Load(); got > 2 {
 		t.Fatalf("expected concurrency limit 2, got max in flight %d", got)
 	}

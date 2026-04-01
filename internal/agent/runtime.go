@@ -30,8 +30,11 @@ type ConversationMessage struct {
 
 type Turn struct {
 	SessionID string
-	UserText  string
-	Context   string
+	// TurnID is an optional caller-supplied correlation identifier for
+	// observability. metiq maps Nostr event IDs into this field.
+	TurnID   string
+	UserText string
+	Context  string
 	// Images carries vision content for multi-modal providers.
 	// Each element is either a URL reference or inline base64 data.
 	// Text-only providers (echo, http, ollama) ignore this field.
@@ -51,6 +54,9 @@ type Turn struct {
 	// thinking config block).  The caller should ensure MaxTokens (if set) is
 	// strictly greater than ThinkingBudget.
 	ThinkingBudget int
+	// ToolEventSink receives start/progress/result/error events emitted by the
+	// shared tool loop. Leave nil when runtime tool events are not needed.
+	ToolEventSink ToolLifecycleSink
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.

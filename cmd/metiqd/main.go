@@ -3343,12 +3343,14 @@ func main() {
 
 		baseTurn := agent.Turn{
 			SessionID:      sessionID,
+			TurnID:         eventID,
 			UserText:       combinedText,
 			Context:        turnContext,
 			History:        turnHistory,
 			Tools:          baseTurnTools,
 			Executor:       tools, // wire executor so agentic tool loop continues past first call
 			ThinkingBudget: thinkingBudget,
+			ToolEventSink:  toolLifecycleEmitter(wsEmitter, activeAgentID),
 		}
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, func(chunk string) {
@@ -4227,11 +4229,13 @@ func main() {
 
 		// ── Run agent turn ──────────────────────────────────────────
 		chBaseTurn := agent.Turn{
-			SessionID: sessionID,
-			UserText:  text,
-			Context:   turnContext,
-			History:   chTurnHistory,
-			Executor:  tools,
+			SessionID:     sessionID,
+			TurnID:        eventID,
+			UserText:      text,
+			Context:       turnContext,
+			History:       chTurnHistory,
+			Executor:      tools,
+			ToolEventSink: toolLifecycleEmitter(wsEmitter, activeAgentID),
 		}
 		var turnResult agent.TurnResult
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
@@ -9198,6 +9202,35 @@ func emitControlWSEvent(event string, payload any) {
 	emitter := controlWsEmitter
 	controlWsEmitterMu.RUnlock()
 	emitter.Emit(event, payload)
+}
+
+func toolLifecycleEmitter(emitter gatewayws.EventEmitter, agentID string) agent.ToolLifecycleSink {
+	if emitter == nil {
+		return nil
+	}
+	return func(evt agent.ToolLifecycleEvent) {
+		payload := gatewayws.ToolLifecyclePayload{
+			TS:         evt.TS,
+			AgentID:    agentID,
+			SessionID:  evt.SessionID,
+			TurnID:     evt.TurnID,
+			ToolCallID: evt.ToolCallID,
+			ToolName:   evt.ToolName,
+			Result:     evt.Result,
+			Error:      evt.Error,
+			Data:       evt.Data,
+		}
+		switch evt.Type {
+		case agent.ToolLifecycleEventStart:
+			emitter.Emit(gatewayws.EventToolStart, payload)
+		case agent.ToolLifecycleEventProgress:
+			emitter.Emit(gatewayws.EventToolProgress, payload)
+		case agent.ToolLifecycleEventResult:
+			emitter.Emit(gatewayws.EventToolResult, payload)
+		case agent.ToolLifecycleEventError:
+			emitter.Emit(gatewayws.EventToolError, payload)
+		}
+	}
 }
 
 // preprocessAttachments processes media attachments from a chat.send request.

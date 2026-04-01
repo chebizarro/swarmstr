@@ -70,12 +70,21 @@ const (
 	// EventCanvasUpdate is emitted when an agent writes to a named canvas.
 	EventCanvasUpdate = "canvas.update"
 
+	// EventToolStart is emitted when the shared loop begins executing a tool call.
+	EventToolStart = "tool.start"
+	// EventToolProgress is emitted for in-flight tool progress updates.
+	EventToolProgress = "tool.progress"
+	// EventToolResult is emitted when a tool call completes successfully.
+	EventToolResult = "tool.result"
+	// EventToolError is emitted when a tool call fails or is blocked.
+	EventToolError = "tool.error"
+
 	// OpenClaw compatibility alias events.
-	EventCompatAgent          = "agent"
-	EventCompatChat           = "chat"
-	EventCompatCron           = "cron"
-	EventCompatPresence       = "presence"
-	EventCompatHeartbeat      = "heartbeat"
+	EventCompatAgent            = "agent"
+	EventCompatChat             = "chat"
+	EventCompatCron             = "cron"
+	EventCompatPresence         = "presence"
+	EventCompatHeartbeat        = "heartbeat"
 	EventCompatVoicewakeChanged = "voicewake.changed"
 )
 
@@ -106,6 +115,10 @@ var AllPushEvents = []string{
 	"connect.challenge",
 	EventChatChunk,
 	EventCanvasUpdate,
+	EventToolStart,
+	EventToolProgress,
+	EventToolResult,
+	EventToolError,
 	// OpenClaw compatibility aliases.
 	EventCompatAgent,
 	EventCompatChat,
@@ -306,11 +319,11 @@ type CronTickPayload struct {
 
 // CronResultPayload is the payload for EventCronResult events.
 type CronResultPayload struct {
-	TS        int64  `json:"ts_ms"`
-	AgentID   string `json:"agent_id,omitempty"`
-	JobID     string `json:"job_id"`
-	Succeeded bool   `json:"succeeded"`
-	DurationMS int64 `json:"duration_ms,omitempty"`
+	TS         int64  `json:"ts_ms"`
+	AgentID    string `json:"agent_id,omitempty"`
+	JobID      string `json:"job_id"`
+	Succeeded  bool   `json:"succeeded"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
 }
 
 // ConfigUpdatedPayload is the payload for EventConfigUpdated events.
@@ -409,6 +422,20 @@ type CanvasUpdatePayload struct {
 	CanvasID    string `json:"canvas_id"`
 	ContentType string `json:"content_type"`
 	Data        string `json:"data"`
+}
+
+// ToolLifecyclePayload is the payload for tool lifecycle events.
+// It carries the correlation fields needed to inspect shared-loop execution.
+type ToolLifecyclePayload struct {
+	TS         int64  `json:"ts_ms"`
+	AgentID    string `json:"agent_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	TurnID     string `json:"turn_id,omitempty"`
+	ToolCallID string `json:"tool_call_id"`
+	ToolName   string `json:"tool_name"`
+	Result     string `json:"result,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Data       any    `json:"data,omitempty"`
 }
 
 // TalkModePayload is the payload for EventTalkMode events.
