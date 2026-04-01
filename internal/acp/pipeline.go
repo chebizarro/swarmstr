@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"metiq/internal/store/state"
 )
 
 // Step describes one task in a multi-agent pipeline.
@@ -14,6 +16,8 @@ type Step struct {
 	PeerPubKey string `json:"peer_pubkey"`
 	// Instructions is the natural-language task text sent to the worker.
 	Instructions string `json:"instructions"`
+	// MemoryScope carries the explicit worker memory scope contract.
+	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
 	// TimeoutMS is the per-step timeout in milliseconds.  0 = 60 s default.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 }
@@ -33,7 +37,7 @@ type PipelineResult struct {
 // SendFunc is the callback that actually sends an ACP task DM.
 // Callers inject this from the main daemon so the pipeline stays importable
 // without direct dependencies on the Nostr runtime.
-type SendFunc func(ctx context.Context, peerPubKey, instructions, taskID string) error
+type SendFunc func(ctx context.Context, peerPubKey, instructions, taskID string, memoryScope state.AgentMemoryScope) error
 
 // Pipeline orchestrates a sequence of ACP sub-tasks.
 type Pipeline struct {
@@ -65,7 +69,7 @@ func (p *Pipeline) RunSequential(ctx context.Context, d *Dispatcher, send SendFu
 		}
 
 		ch := d.Register(taskID)
-		if err := send(ctx, step.PeerPubKey, instructions, taskID); err != nil {
+		if err := send(ctx, step.PeerPubKey, instructions, taskID, step.MemoryScope); err != nil {
 			d.Cancel(taskID)
 			return results, fmt.Errorf("pipeline step %d send: %w", i, err)
 		}
@@ -102,7 +106,7 @@ func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc
 		taskID := GenerateTaskID()
 		taskIDs[i] = taskID
 		d.Register(taskID)
-		if err := send(ctx, step.PeerPubKey, step.Instructions, taskID); err != nil {
+		if err := send(ctx, step.PeerPubKey, step.Instructions, taskID, step.MemoryScope); err != nil {
 			// Cancel all already-registered sibling tasks on send failure.
 			for j := 0; j <= i; j++ {
 				if taskIDs[j] != "" {

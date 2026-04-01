@@ -65,7 +65,7 @@ func TestAssembleMemoryRecallContext_IncludesSessionAndCrossSession(t *testing.T
 		},
 	}
 
-	ctx := assembleMemoryRecallContext(context.Background(), idx, "session-a", "deployment", 6)
+	ctx := assembleMemoryRecallContext(context.Background(), idx, memory.ScopedContext{}, "session-a", "deployment", 6)
 	if !strings.Contains(ctx, "## Relevant Memory Recall") {
 		t.Fatalf("expected recall header, got: %s", ctx)
 	}
@@ -91,7 +91,7 @@ func TestAssembleMemoryRecallContext_IncludesSessionAndCrossSession(t *testing.T
 
 func TestAssembleMemoryRecallContext_EmptyWhenNoMatches(t *testing.T) {
 	idx := &memoryStoreStub{}
-	ctx := assembleMemoryRecallContext(context.Background(), idx, "session-a", "deployment", 6)
+	ctx := assembleMemoryRecallContext(context.Background(), idx, memory.ScopedContext{}, "session-a", "deployment", 6)
 	if strings.TrimSpace(ctx) != "" {
 		t.Fatalf("expected empty context, got: %q", ctx)
 	}
@@ -101,7 +101,7 @@ func TestAssembleMemorySystemPrompt_IncludesGuidanceAndPinnedKnowledge(t *testin
 	idx := &memoryStoreStub{
 		pinned: []memory.IndexedMemory{{MemoryID: "p1", Topic: pinnedKnowledgeTopic, Text: "user prefers terse responses"}},
 	}
-	got := assembleMemorySystemPrompt(idx)
+	got := assembleMemorySystemPrompt(idx, memory.ScopedContext{})
 	for _, want := range []string{
 		"## Memory",
 		"## Types of memory",
@@ -121,13 +121,89 @@ func TestAssembleMemorySystemPrompt_IncludesGuidanceAndPinnedKnowledge(t *testin
 	}
 }
 
+func TestAssembleMemorySystemPrompt_IncludesScopedGuidance(t *testing.T) {
+	got := assembleMemorySystemPrompt(&memoryStoreStub{}, memory.ScopedContext{
+		Scope:        state.AgentMemoryScopeProject,
+		AgentID:      "builder",
+		WorkspaceDir: "/tmp/worktree",
+	})
+	if !strings.Contains(got, "## Memory Scope") {
+		t.Fatalf("expected memory scope section, got: %s", got)
+	}
+	if !strings.Contains(got, "Since this memory is project-scope, tailor memories to this agent and workspace.") {
+		t.Fatalf("expected project scope note, got: %s", got)
+	}
+}
+
+func TestAssembleMemoryRecallContext_FiltersByScope(t *testing.T) {
+	projectDoc := memory.ApplyScope(state.MemoryDoc{
+		MemoryID: "p1",
+		Text:     "project deployment detail",
+	}, memory.ScopedContext{
+		Scope:        state.AgentMemoryScopeProject,
+		AgentID:      "builder",
+		WorkspaceDir: "/tmp/worktree",
+	})
+	otherProjectDoc := memory.ApplyScope(state.MemoryDoc{
+		MemoryID: "p2",
+		Text:     "other workspace detail",
+	}, memory.ScopedContext{
+		Scope:        state.AgentMemoryScopeProject,
+		AgentID:      "builder",
+		WorkspaceDir: "/tmp/other",
+	})
+	localDoc := memory.ApplyScope(state.MemoryDoc{
+		MemoryID:  "l1",
+		SessionID: "session-a",
+		Text:      "session local detail",
+	}, memory.ScopedContext{
+		Scope:     state.AgentMemoryScopeLocal,
+		AgentID:   "builder",
+		SessionID: "session-a",
+	})
+	idx := &memoryStoreStub{
+		session: []memory.IndexedMemory{
+			{MemoryID: projectDoc.MemoryID, SessionID: "session-a", Text: projectDoc.Text, Keywords: append([]string(nil), projectDoc.Keywords...)},
+			{MemoryID: localDoc.MemoryID, SessionID: "session-a", Text: localDoc.Text, Keywords: append([]string(nil), localDoc.Keywords...)},
+		},
+		global: []memory.IndexedMemory{
+			{MemoryID: projectDoc.MemoryID, SessionID: "session-a", Text: projectDoc.Text, Keywords: append([]string(nil), projectDoc.Keywords...)},
+			{MemoryID: otherProjectDoc.MemoryID, SessionID: "session-b", Text: otherProjectDoc.Text, Keywords: append([]string(nil), otherProjectDoc.Keywords...)},
+		},
+	}
+
+	projectCtx := assembleMemoryRecallContext(context.Background(), idx, memory.ScopedContext{
+		Scope:        state.AgentMemoryScopeProject,
+		AgentID:      "builder",
+		WorkspaceDir: "/tmp/worktree",
+	}, "session-a", "deployment", 6)
+	if !strings.Contains(projectCtx, "project deployment detail") {
+		t.Fatalf("expected scoped project memory, got: %s", projectCtx)
+	}
+	if strings.Contains(projectCtx, "other workspace detail") {
+		t.Fatalf("unexpected cross-workspace memory in scoped recall: %s", projectCtx)
+	}
+
+	localCtx := assembleMemoryRecallContext(context.Background(), idx, memory.ScopedContext{
+		Scope:     state.AgentMemoryScopeLocal,
+		AgentID:   "builder",
+		SessionID: "session-a",
+	}, "session-a", "deployment", 6)
+	if !strings.Contains(localCtx, "session local detail") {
+		t.Fatalf("expected local session memory, got: %s", localCtx)
+	}
+	if strings.Contains(localCtx, "### Related from other sessions") {
+		t.Fatalf("did not expect cross-session section for local scope: %s", localCtx)
+	}
+}
+
 func TestBuildAgentRunTurn_JoinsRecallAndRequestContext(t *testing.T) {
 	idx := &memoryStoreStub{
 		session: []memory.IndexedMemory{{MemoryID: "s1", SessionID: "session-a", Topic: "project", Text: "merge freeze begins 2026-03-05"}},
 		pinned:  []memory.IndexedMemory{{MemoryID: "p1", Topic: pinnedKnowledgeTopic, Text: "user prefers terse responses"}},
 	}
 	req := methods.AgentRequest{SessionID: "session-a", Message: "what should I know", Context: "extra runtime context"}
-	turn := buildAgentRunTurn(context.Background(), req, idx)
+	turn := buildAgentRunTurn(context.Background(), req, idx, memory.ScopedContext{})
 	if turn.SessionID != req.SessionID || turn.UserText != req.Message {
 		t.Fatalf("unexpected turn identity: %#v", turn)
 	}

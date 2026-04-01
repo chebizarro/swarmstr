@@ -8,6 +8,7 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/memory"
+	"metiq/internal/store/state"
 )
 
 const (
@@ -20,10 +21,11 @@ const (
 // assembleMemorySystemPrompt packages the stable, model-facing memory contract
 // into the static prompt lane. It adapts the canonical src memory prompt
 // packaging onto metiq's indexed backend without importing src's file layout.
-func assembleMemorySystemPrompt(index memory.Store) string {
+func assembleMemorySystemPrompt(index memory.Store, scope memory.ScopedContext) string {
 	return joinPromptSections(
 		buildMemoryMechanicsPrompt(),
-		buildPinnedKnowledgePrompt(index),
+		buildMemoryScopePrompt(scope),
+		buildPinnedKnowledgePrompt(index, scope),
 	)
 }
 
@@ -74,11 +76,36 @@ func buildMemoryMechanicsPrompt() string {
 	return strings.Join(lines, "\n")
 }
 
-func buildPinnedKnowledgePrompt(index memory.Store) string {
+func buildMemoryScopePrompt(scope memory.ScopedContext) string {
+	if !scope.Enabled() {
+		return ""
+	}
+	switch scope.Scope {
+	case state.AgentMemoryScopeUser:
+		return strings.Join([]string{
+			"## Memory Scope",
+			"- Since this memory is user-scope, keep learnings general because they apply across projects.",
+		}, "\n")
+	case state.AgentMemoryScopeProject:
+		return strings.Join([]string{
+			"## Memory Scope",
+			"- Since this memory is project-scope, tailor memories to this agent and workspace.",
+		}, "\n")
+	case state.AgentMemoryScopeLocal:
+		return strings.Join([]string{
+			"## Memory Scope",
+			"- Since this memory is local-scope, tailor memories to this routed session and workspace surface.",
+		}, "\n")
+	default:
+		return ""
+	}
+}
+
+func buildPinnedKnowledgePrompt(index memory.Store, scope memory.ScopedContext) string {
 	if index == nil {
 		return ""
 	}
-	pinned := index.ListByTopic(pinnedKnowledgeTopic, 50)
+	pinned := memory.FilterByScope(index.ListByTopic(pinnedKnowledgeTopic, 50), scope)
 	if len(pinned) == 0 {
 		return ""
 	}
@@ -104,7 +131,7 @@ func buildPinnedKnowledgePrompt(index memory.Store) string {
 // per-turn context lane. It preserves metiq's session-first and cross-session
 // recall behavior while formatting the output for the model instead of as a
 // raw backend dump.
-func assembleMemoryRecallContext(ctx context.Context, index memory.Store, sessionID string, userText string, limit int) string {
+func assembleMemoryRecallContext(ctx context.Context, index memory.Store, scope memory.ScopedContext, sessionID string, userText string, limit int) string {
 	if index == nil || strings.TrimSpace(sessionID) == "" {
 		return ""
 	}
@@ -112,13 +139,16 @@ func assembleMemoryRecallContext(ctx context.Context, index memory.Store, sessio
 		limit = defaultMemoryRecallLimit
 	}
 
-	sessionItems := memory.SearchSessionDocs(ctx, index, sessionID, userText, limit)
+	sessionItems := memory.FilterByScope(memory.SearchSessionDocs(ctx, index, sessionID, userText, limit), scope)
 	seen := make(map[string]struct{}, len(sessionItems))
 	for _, item := range sessionItems {
 		seen[item.MemoryID] = struct{}{}
 	}
 
-	globalItems := memory.SearchDocs(ctx, index, userText, limit)
+	globalItems := []memory.IndexedMemory(nil)
+	if scope.Scope != state.AgentMemoryScopeLocal {
+		globalItems = memory.FilterByScope(memory.SearchDocs(ctx, index, userText, limit), scope)
+	}
 	crossItems := make([]memory.IndexedMemory, 0, crossSessionMemoryRecallLimit)
 	for _, item := range globalItems {
 		if _, dup := seen[item.MemoryID]; dup || item.SessionID == sessionID {
@@ -170,15 +200,15 @@ func formatMemoryRecallItem(item memory.IndexedMemory) string {
 	return "- " + text
 }
 
-func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store) agent.Turn {
+func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store, scope memory.ScopedContext) agent.Turn {
 	turnContext := joinPromptSections(
-		assembleMemoryRecallContext(ctx, index, req.SessionID, req.Message, defaultMemoryRecallLimit),
+		assembleMemoryRecallContext(ctx, index, scope, req.SessionID, req.Message, defaultMemoryRecallLimit),
 		req.Context,
 	)
 	return agent.Turn{
 		SessionID:          req.SessionID,
 		UserText:           req.Message,
-		StaticSystemPrompt: assembleMemorySystemPrompt(index),
+		StaticSystemPrompt: assembleMemorySystemPrompt(index, scope),
 		Context:            turnContext,
 	}
 }

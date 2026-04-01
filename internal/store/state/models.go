@@ -272,6 +272,9 @@ type AgentConfig struct {
 	// SystemPrompt is injected as the system/context for every turn processed
 	// by this agent. It is prepended before any memory or context-engine additions.
 	SystemPrompt string `json:"system_prompt,omitempty"`
+	// MemoryScope mirrors the canonical src worker-memory contract.
+	// Values: user | project | local. Empty preserves legacy unscoped behavior.
+	MemoryScope AgentMemoryScope `json:"memory_scope,omitempty"`
 	// EnabledTools is an explicit allowlist of tool names to expose to this agent.
 	// When non-empty, only listed tools are included in the model's tool schema.
 	// When empty, all registered tools are available (subject to ToolProfile).

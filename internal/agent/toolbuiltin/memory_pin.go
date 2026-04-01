@@ -51,21 +51,24 @@ var MemoryPinnedDef = agent.ToolDefinition{
 
 // MemoryPinTool returns an agent.ToolFunc for the "memory_pin" tool.
 func MemoryPinTool(idx memory.Store) agent.ToolFunc {
-	return func(_ context.Context, args map[string]any) (string, error) {
+	return func(ctx context.Context, args map[string]any) (string, error) {
 		text := agent.ArgString(args, "text")
 		if text == "" {
 			return "", fmt.Errorf("memory_pin: text is required")
 		}
 		label := agent.ArgString(args, "label")
 
+		scope := memory.ScopedContextFromAgent(agent.MemoryScopeFromContext(ctx))
 		id := generatePinID()
 		doc := state.MemoryDoc{
-			MemoryID: id,
-			Text:     text,
-			Topic:    agentKnowledgeTopic,
-			Keywords: []string{agentKnowledgeTopic},
-			Unix:     time.Now().Unix(),
+			MemoryID:  id,
+			SessionID: scope.SessionID,
+			Text:      text,
+			Topic:     agentKnowledgeTopic,
+			Keywords:  []string{agentKnowledgeTopic},
+			Unix:      time.Now().Unix(),
 		}
+		doc = memory.ApplyScope(doc, scope)
 		if label != "" {
 			doc.Keywords = append(doc.Keywords, label)
 		}
@@ -81,8 +84,8 @@ func MemoryPinTool(idx memory.Store) agent.ToolFunc {
 
 // MemoryPinnedTool returns an agent.ToolFunc for the "memory_pinned" tool.
 func MemoryPinnedTool(idx memory.Store) agent.ToolFunc {
-	return func(_ context.Context, _ map[string]any) (string, error) {
-		entries := idx.ListByTopic(agentKnowledgeTopic, 200)
+	return func(ctx context.Context, _ map[string]any) (string, error) {
+		entries := memory.FilterByScope(idx.ListByTopic(agentKnowledgeTopic, 200), memory.ScopedContextFromAgent(agent.MemoryScopeFromContext(ctx)))
 		type row struct {
 			ID   string `json:"id"`
 			Text string `json:"text"`

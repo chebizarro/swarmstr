@@ -193,9 +193,28 @@ type ToolExecuteErrorHook func(ctx context.Context, call ToolCall, desc ToolDesc
 // sessionIDKey is the context key for the current session ID.
 type sessionIDKey struct{}
 
+// memoryScopeKey is the context key for the current scoped-memory contract.
+type memoryScopeKey struct{}
+
+// MemoryScopeContext carries the resolved worker/agent memory contract for the
+// current turn. The canonical scope values come from src (`user|project|local`)
+// while metiq supplies the concrete agent/workspace/session namespace.
+type MemoryScopeContext struct {
+	Scope        string
+	AgentID      string
+	WorkspaceDir string
+	SessionID    string
+}
+
 // ContextWithSessionID returns a child context carrying the session ID.
 func ContextWithSessionID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, sessionIDKey{}, id)
+}
+
+// ContextWithMemoryScope returns a child context carrying the resolved
+// memory-scope contract for the current turn.
+func ContextWithMemoryScope(ctx context.Context, scope MemoryScopeContext) context.Context {
+	return context.WithValue(ctx, memoryScopeKey{}, scope)
 }
 
 // SessionIDFromContext extracts the session ID injected by the runtime.
@@ -205,6 +224,14 @@ func SessionIDFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// MemoryScopeFromContext extracts the resolved worker/agent memory scope.
+func MemoryScopeFromContext(ctx context.Context) MemoryScopeContext {
+	if v, ok := ctx.Value(memoryScopeKey{}).(MemoryScopeContext); ok {
+		return v
+	}
+	return MemoryScopeContext{}
 }
 
 // ResolveSessionID returns the explicit arg value if non-empty, otherwise

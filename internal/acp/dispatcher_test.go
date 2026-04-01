@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"metiq/internal/store/state"
 )
 
 func TestDispatcher_RegisterAndDeliver(t *testing.T) {
@@ -93,7 +95,7 @@ func TestPipeline_Sequential(t *testing.T) {
 	d := NewDispatcher()
 	var capturedTaskIDs []string
 
-	sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string) error {
+	sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string, memoryScope state.AgentMemoryScope) error {
 		capturedTaskIDs = append(capturedTaskIDs, taskID)
 		// Simulate async result delivery.
 		go func() {
@@ -126,7 +128,7 @@ func TestPipeline_Sequential(t *testing.T) {
 func TestPipeline_Parallel(t *testing.T) {
 	d := NewDispatcher()
 
-	sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string) error {
+	sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string, memoryScope state.AgentMemoryScope) error {
 		go func() {
 			time.Sleep(10 * time.Millisecond)
 			d.Deliver(TaskResult{TaskID: taskID, Text: "par-" + peerPubKey})
@@ -153,7 +155,7 @@ func TestPipeline_Parallel_SendFailureCancelsDispatched(t *testing.T) {
 	d := NewDispatcher()
 	callCount := 0
 
-	sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string) error {
+	sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string, memoryScope state.AgentMemoryScope) error {
 		callCount++
 		if callCount == 2 {
 			return context.DeadlineExceeded
