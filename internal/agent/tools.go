@@ -402,18 +402,25 @@ func (r *ToolRegistry) SetDescriptor(name string, desc ToolDescriptor) {
 	entry.resetSchemaCache()
 }
 
-// Definitions returns the provider-visible ToolDefinitions, sorted by name for
-// deterministic ordering.
-func (r *ToolRegistry) Definitions() []ToolDefinition {
-	out := make([]ToolDefinition, 0, len(r.entries))
+// ProviderDescriptors returns the provider-visible canonical tool descriptors
+// ordered through the shared tool-pool assembly path. This mirrors the
+// canonical src built-in-prefix assembly semantics: built-ins stay as a
+// contiguous, name-sorted prefix and non-builtins are sorted separately.
+func (r *ToolRegistry) ProviderDescriptors() []ToolDescriptor {
+	out := make([]ToolDescriptor, 0, len(r.entries))
 	for _, entry := range r.entries {
 		if entry == nil || !entry.providerVisible {
 			continue
 		}
-		out = append(out, entry.descriptor.Definition())
+		out = append(out, entry.descriptor)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return AssembleToolDescriptors(out, nil)
+}
+
+// Definitions returns the provider-visible ToolDefinitions, sorted by name for
+// deterministic ordering.
+func (r *ToolRegistry) Definitions() []ToolDefinition {
+	return ToolDefinitionsFromDescriptors(r.ProviderDescriptors())
 }
 
 // Descriptor returns the canonical descriptor for a registered tool.
@@ -434,8 +441,84 @@ func (r *ToolRegistry) Descriptors() []ToolDescriptor {
 		}
 		out = append(out, entry.descriptor)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return AssembleToolDescriptors(out, nil)
+}
+
+// AssembleToolDescriptors is the canonical Go tool-pool assembly helper. It
+// ports the src/tools.ts ordering semantics onto normalized descriptors:
+// built-ins remain a contiguous sorted prefix, non-builtins are sorted
+// separately, and earlier partitions win on name conflict.
+func AssembleToolDescriptors(descs []ToolDescriptor, allowed map[string]bool) []ToolDescriptor {
+	if len(descs) == 0 {
+		return nil
+	}
+
+	builtin := make([]ToolDescriptor, 0, len(descs))
+	external := make([]ToolDescriptor, 0, len(descs))
+	for _, desc := range descs {
+		desc = normalizeToolDescriptor(desc.Name, desc)
+		if desc.Name == "" {
+			continue
+		}
+		if allowed != nil && !allowed[desc.Name] {
+			continue
+		}
+		switch desc.Origin.Kind {
+		case ToolOriginKindPlugin, ToolOriginKindMCP:
+			external = append(external, desc)
+		default:
+			builtin = append(builtin, desc)
+		}
+	}
+
+	sort.Slice(builtin, func(i, j int) bool { return builtin[i].Name < builtin[j].Name })
+	sort.Slice(external, func(i, j int) bool { return external[i].Name < external[j].Name })
+
+	out := make([]ToolDescriptor, 0, len(builtin)+len(external))
+	seen := make(map[string]struct{}, len(out))
+	appendUnique := func(list []ToolDescriptor) {
+		for _, desc := range list {
+			if _, ok := seen[desc.Name]; ok {
+				continue
+			}
+			seen[desc.Name] = struct{}{}
+			out = append(out, desc)
+		}
+	}
+	appendUnique(builtin)
+	appendUnique(external)
+	if len(out) == 0 {
+		return nil
+	}
 	return out
+}
+
+// ToolDefinitionsFromDescriptors projects provider-visible definitions from an
+// assembled descriptor list without re-sorting or re-deduplicating.
+func ToolDefinitionsFromDescriptors(descs []ToolDescriptor) []ToolDefinition {
+	if len(descs) == 0 {
+		return nil
+	}
+	out := make([]ToolDefinition, 0, len(descs))
+	for _, desc := range descs {
+		out = append(out, normalizeToolDescriptor(desc.Name, desc).Definition())
+	}
+	return out
+}
+
+// ToolDefinitions returns the provider-visible definitions surfaced by an
+// executor when available.
+func ToolDefinitions(executor ToolExecutor) []ToolDefinition {
+	if executor == nil {
+		return nil
+	}
+	if provider, ok := executor.(interface{ Definitions() []ToolDefinition }); ok {
+		return provider.Definitions()
+	}
+	if provider, ok := executor.(interface{ ProviderDescriptors() []ToolDescriptor }); ok {
+		return ToolDefinitionsFromDescriptors(provider.ProviderDescriptors())
+	}
+	return nil
 }
 
 // EffectiveTraits resolves the runtime-effective traits for a call, applying any

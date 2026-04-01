@@ -1031,7 +1031,17 @@ func main() {
 								}
 							}
 						}
-						tools.RegisterWithDef(name, fn, def)
+						tools.RegisterWithDescriptor(name, fn, agent.ToolDescriptor{
+							Name:            def.Name,
+							Description:     def.Description,
+							Parameters:      def.Parameters,
+							InputJSONSchema: params,
+							Origin: agent.ToolOrigin{
+								Kind:          agent.ToolOriginKindMCP,
+								ServerName:    serverName,
+								CanonicalName: mcpTool.Name,
+							},
+						})
 						log.Printf("[mcp] registered tool: %s", name)
 					}
 				}
@@ -1439,7 +1449,7 @@ func main() {
 	// for auto-joined channel sessions.  This mirrors the context assembly in
 	// doChannelTurn (defined later) so auto-join channels get the same context
 	// quality as manually-connected channels.
-	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string) agent.Turn {
+	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string, turnTools []agent.ToolDefinition, turnExecutor agent.ToolExecutor) agent.Turn {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, sessionRouter.Get(sessionID), "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
@@ -1468,7 +1478,8 @@ func main() {
 			StaticSystemPrompt: staticSystemPrompt,
 			Context:            turnContext,
 			History:            turnHistory,
-			Executor:           tools,
+			Tools:              turnTools,
+			Executor:           turnExecutor,
 		}
 	}
 
@@ -1503,7 +1514,8 @@ func main() {
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
-						result, turnErr := rt.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text))
+						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, rt, tools)
+						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor))
 						if turnErr != nil {
 							log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
@@ -1559,7 +1571,8 @@ func main() {
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
-						result, turnErr := rt.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text))
+						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, rt, tools)
+						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor))
 						if turnErr != nil {
 							log.Printf("auto-join nip28 agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
@@ -1621,7 +1634,8 @@ func main() {
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
-						result, turnErr := rt.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text))
+						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, rt, tools)
+						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor))
 						if turnErr != nil {
 							log.Printf("auto-join chat agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
@@ -2030,11 +2044,14 @@ func main() {
 			turnCtx := contextWithMemoryScope(ctx, scopeCtx)
 			turnPrompt := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, instructions, 6)
 			staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
-			result, err := agentRuntime.ProcessTurn(turnCtx, agent.Turn{
+			filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, spawnAgentID, agentRuntime, tools)
+			result, err := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
 				SessionID:          sessionID,
 				UserText:           instructions,
 				StaticSystemPrompt: staticPrompt,
 				Context:            turnPrompt,
+				Tools:              turnTools,
+				Executor:           turnExecutor,
 			})
 			if err != nil {
 				return "", err
@@ -2082,11 +2099,18 @@ func main() {
 		turnCtx := contextWithMemoryScope(ctx, scopeCtx)
 		turnPrompt := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
 		staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
-		result, err := agentRuntime.ProcessTurn(turnCtx, agent.Turn{
+		activeAgentID := ""
+		if sessionRouter != nil {
+			activeAgentID = sessionRouter.Get(sessionID)
+		}
+		filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, agentRuntime, tools)
+		result, err := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
 			SessionID:          sessionID,
 			UserText:           text,
 			StaticSystemPrompt: staticPrompt,
 			Context:            turnPrompt,
+			Tools:              turnTools,
+			Executor:           turnExecutor,
 		})
 		if err != nil {
 			return "", fmt.Errorf("session_send: %w", err)
@@ -2848,25 +2872,6 @@ func main() {
 
 	// dmRunAgentTurn is the core DM agent-dispatch logic, called either directly
 	// from dmOnMessage (no debounce) or from the dmDebouncer flush.
-	// filterEnabledTools returns only the tool definitions whose names appear in
-	// the allowlist.  If allowlist is empty every tool is returned unchanged.
-	filterEnabledTools := func(defs []agent.ToolDefinition, allowlist []string) []agent.ToolDefinition {
-		if len(allowlist) == 0 {
-			return defs
-		}
-		allow := make(map[string]struct{}, len(allowlist))
-		for _, n := range allowlist {
-			allow[n] = struct{}{}
-		}
-		out := make([]agent.ToolDefinition, 0, len(allowlist))
-		for _, d := range defs {
-			if _, ok := allow[d.Name]; ok {
-				out = append(out, d)
-			}
-		}
-		return out
-	}
-
 	dmRunAgentTurn := func(
 		ctx context.Context,
 		fromPubKey, combinedText, eventID string,
@@ -3096,6 +3101,7 @@ func main() {
 			activeAgentID = resolved
 		}
 		activeRuntime := agentRegistry.Get(activeAgentID)
+		activeRuntime, turnExecutor, baseTurnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, activeRuntime, tools)
 
 		// Inject workspace identity files + system_prompt into turnContext.
 		// Loads SOUL.md, IDENTITY.md, USER.md from the agent workspace dir,
@@ -3223,21 +3229,6 @@ func main() {
 		var turnResult agent.TurnResult
 		var turnErr error
 		turnStartedAt := time.Now()
-		// Resolve enabled tools for this agent from config.
-		var baseTurnTools []agent.ToolDefinition
-		if controlToolRegistry != nil {
-			if dp, ok := interface{}(controlToolRegistry).(interface{ Definitions() []agent.ToolDefinition }); ok {
-				defs := dp.Definitions()
-				var agentEnabledTools []string
-				for _, ac := range configState.Get().Agents {
-					if ac.ID == activeAgentID {
-						agentEnabledTools = ac.EnabledTools
-						break
-					}
-				}
-				baseTurnTools = filterEnabledTools(defs, agentEnabledTools)
-			}
-		}
 		// Resolve thinking budget: per-agent ThinkingLevel takes precedence,
 		// then the session-level Thinking bool (defaults to medium: 10 000 tokens).
 		var thinkingBudget int
@@ -3336,7 +3327,7 @@ func main() {
 			Context:            turnContext,
 			History:            turnHistory,
 			Tools:              baseTurnTools,
-			Executor:           tools, // wire executor so agentic tool loop continues past first call
+			Executor:           turnExecutor, // canonical filtered turn tool pool
 			ThinkingBudget:     thinkingBudget,
 			ToolEventSink:      toolLifecycleEmitter(wsEmitter, activeAgentID),
 		}
@@ -4055,10 +4046,12 @@ func main() {
 				Relays:        cfg.Relays,
 				AcceptedKinds: acceptedKinds,
 				OnJob: func(jobCtx context.Context, jobID string, kind int, input string) (string, error) {
-					result, err := agentRuntime.ProcessTurn(jobCtx, agent.Turn{
+					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(jobCtx, configState.Get(), docsRepo, "", agentRuntime, tools)
+					result, err := filteredRuntime.ProcessTurn(jobCtx, agent.Turn{
 						SessionID: "dvm:" + jobID,
 						UserText:  input,
-						Executor:  tools,
+						Tools:     turnTools,
+						Executor:  turnExecutor,
 					})
 					if err != nil {
 						return "", err
@@ -4168,6 +4161,7 @@ func main() {
 			log.Printf("channel dispatch: no runtime for agent=%s session=%s", activeAgentID, sessionID)
 			return fmt.Errorf("no runtime for agent %s", activeAgentID)
 		}
+		activeRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, activeRuntime, tools)
 
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
@@ -4214,7 +4208,8 @@ func main() {
 			StaticSystemPrompt: staticSystemPrompt,
 			Context:            turnContext,
 			History:            chTurnHistory,
-			Executor:           tools,
+			Tools:              turnTools,
+			Executor:           turnExecutor,
 			ToolEventSink:      toolLifecycleEmitter(wsEmitter, activeAgentID),
 		}
 		var turnResult agent.TurnResult
@@ -6231,9 +6226,12 @@ func handleControlRPCRequest(
 				turnCtx, release := chatCancels.Begin(msg.ChannelID, ctx)
 				go func() {
 					defer release()
-					result, turnErr := rt.ProcessTurn(turnCtx, agent.Turn{
+					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, "", rt, tools)
+					result, turnErr := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
 						SessionID: msg.ChannelID,
 						UserText:  msg.Text,
+						Tools:     turnTools,
+						Executor:  turnExecutor,
 					})
 					if turnErr != nil {
 						log.Printf("channel agent turn error channel=%s err=%v", msg.ChannelID, turnErr)
@@ -6436,6 +6434,10 @@ func handleControlRPCRequest(
 		if rt == nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("agent runtime not configured")
 		}
+		activeAgentID := ""
+		if controlSessionRouter != nil {
+			activeAgentID = controlSessionRouter.Get(req.SessionID)
+		}
 		// Apply profile-based tool filtering when the agent has a non-full profile.
 		rt = applyAgentProfileFilter(ctx, rt, req.SessionID, cfg, docsRepo)
 		// Build fallback runtimes from the active agent's FallbackModels list.
@@ -6446,7 +6448,6 @@ func handleControlRPCRequest(
 		}
 		runtimeLabels := []string{primaryLabel}
 		if controlSessionRouter != nil {
-			activeAgentID := controlSessionRouter.Get(req.SessionID)
 			for _, agCfg := range cfg.Agents {
 				if strings.TrimSpace(agCfg.ID) != strings.TrimSpace(activeAgentID) {
 					continue
@@ -6464,6 +6465,7 @@ func handleControlRPCRequest(
 					override := autoResolveProviderOverride(fbModel, providers)
 					fbRt, fbErr := agent.BuildRuntimeWithOverride(fbModel, override, controlToolRegistry)
 					if fbErr == nil && fbRt != nil {
+						fbRt = applyAgentProfileFilterForAgent(ctx, fbRt, activeAgentID, cfg, docsRepo)
 						fallbackRuntimes = append(fallbackRuntimes, fbRt)
 						runtimeLabels = append(runtimeLabels, fbModel)
 					}
@@ -9217,9 +9219,10 @@ func handleACPMessage(
 	}
 }
 
-// applyAgentProfileFilter resolves the tool profile for an agent/session and
-// returns a profile-filtered Runtime.  If no profile is set, or the profile is
-// "full", the original runtime is returned unchanged.
+// applyAgentProfileFilter resolves the runtime tool contract for an
+// agent/session and returns a filtered Runtime. Configured enabled_tools are
+// intersected with the profile-derived allowlist through the shared assembly
+// path.
 func applyAgentProfileFilter(ctx context.Context, rt agent.Runtime, sessionID string, cfg state.ConfigDoc, docsRepo *state.DocsRepository) agent.Runtime {
 	agentID := ""
 	if controlSessionRouter != nil {
@@ -10874,7 +10877,11 @@ func buildToolCatalogGroups(cfg state.ConfigDoc, registry *agent.ToolRegistry, i
 	for _, tool := range coreToolCatalog {
 		addCore(tool.SectionID, tool.ID, tool.Label, tool.Description, tool.Profiles)
 	}
-	_ = registry
+	for _, tool := range coreToolCatalog {
+		if tool.ID != "" {
+			seen[tool.ID] = struct{}{}
+		}
+	}
 	groups := make([]map[string]any, 0, len(coreToolSections)+4)
 	for _, section := range coreToolSections {
 		tools := sectionTools[section.ID]

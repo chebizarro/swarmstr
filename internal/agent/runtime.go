@@ -295,7 +295,7 @@ func (r *ProviderRuntime) Filtered(allowed map[string]bool) Runtime {
 	}
 	return &ProviderRuntime{
 		provider: r.provider,
-		tools:    &ProfileFilteredExecutor{Base: r.tools, Allowed: allowed},
+		tools:    FilteredToolExecutor(r.tools, allowed),
 	}
 }
 
