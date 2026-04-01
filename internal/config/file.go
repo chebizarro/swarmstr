@@ -454,6 +454,11 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 		} else if v, ok := m["systemPrompt"].(string); ok {
 			ac.SystemPrompt = strings.TrimSpace(v)
 		}
+		if v, ok := m["memory_scope"].(string); ok {
+			ac.MemoryScope = state.AgentMemoryScope(strings.TrimSpace(v))
+		} else if v, ok := m["memoryScope"].(string); ok {
+			ac.MemoryScope = state.AgentMemoryScope(strings.TrimSpace(v))
+		}
 		if v, ok := m["enabled_tools"].([]any); ok {
 			for _, t := range v {
 				if s, ok := t.(string); ok && strings.TrimSpace(s) != "" {

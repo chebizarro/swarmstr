@@ -80,6 +80,24 @@ memory_store(text: "Project deadline is 2026-04-15", topic: "project:metiq")
 **Use for:** session context, decisions, ephemeral facts, anything that
 should be findable but doesn't need to be in every system prompt.
 
+### Scoped worker / agent memory
+
+For routed agents and ACP workers, metiq can apply the canonical `src`
+memory-scope contract:
+
+- `user` — share memory across projects for the same agent identity
+- `project` — restrict memory to the same agent + workspace
+- `local` — restrict memory to the same agent + routed session/workspace surface
+
+This is implemented through metiq's indexed backend and runtime/session/workspace
+surfaces rather than `src`'s filesystem layout. The scope is resolved by the
+runtime and then applied consistently to:
+
+- pinned memory loaded into the static prompt
+- retrieved recall added to per-turn context
+- `memory_store` / `memory_pin` writes
+- ACP worker task envelopes and spawned child sessions
+
 ### `memory_search` — semantic/full-text recall
 
 Search the memory index for entries matching a query. Returns ranked results

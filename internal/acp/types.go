@@ -18,7 +18,11 @@
 // starts with an "acp_type" discriminator field.
 package acp
 
-import "time"
+import (
+	"time"
+
+	"metiq/internal/store/state"
+)
 
 // Version is the current ACP wire format version.
 const Version = 1
@@ -45,6 +49,8 @@ type TaskPayload struct {
 	Instructions string `json:"instructions"`
 	// ContextMessages is an optional slice of prior messages to seed context.
 	ContextMessages []map[string]any `json:"context_messages,omitempty"`
+	// MemoryScope carries the explicit worker memory scope contract.
+	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
 	// TimeoutMS, when > 0, sets the maximum processing time in milliseconds.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 	// ReplyTo is the Nostr pubkey the worker should send its result DM to.
@@ -73,6 +79,7 @@ func NewTask(taskID, senderPubKey string, p TaskPayload) Message {
 		Payload: map[string]any{
 			"instructions":     p.Instructions,
 			"context_messages": p.ContextMessages,
+			"memory_scope":     p.MemoryScope,
 			"timeout_ms":       p.TimeoutMS,
 			"reply_to":         p.ReplyTo,
 		},

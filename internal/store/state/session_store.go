@@ -26,11 +26,12 @@ type SessionEntry struct {
 	MemoryFlushCount int64  `json:"memory_flush_compaction_count,omitempty"`
 
 	// Agent / model / provider routing state.
-	AgentID          string `json:"agent_id,omitempty"`
-	ProviderOverride string `json:"provider_override,omitempty"`
-	ModelOverride    string `json:"model_override,omitempty"`
-	ModelProvider    string `json:"model_provider,omitempty"`
-	Model            string `json:"model,omitempty"`
+	AgentID          string           `json:"agent_id,omitempty"`
+	MemoryScope      AgentMemoryScope `json:"memory_scope,omitempty"`
+	ProviderOverride string           `json:"provider_override,omitempty"`
+	ModelOverride    string           `json:"model_override,omitempty"`
+	ModelProvider    string           `json:"model_provider,omitempty"`
+	Model            string           `json:"model,omitempty"`
 
 	// Per-session behavior levels and flags.
 	Verbose        bool   `json:"verbose,omitempty"`
@@ -106,6 +107,7 @@ func (e SessionEntry) CarryOverFlags(newSessionID string) SessionEntry {
 	return SessionEntry{
 		SessionID:        newSessionID,
 		AgentID:          e.AgentID,
+		MemoryScope:      e.MemoryScope,
 		ProviderOverride: e.ProviderOverride,
 		ModelOverride:    e.ModelOverride,
 		ModelProvider:    e.ModelProvider,

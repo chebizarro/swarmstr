@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"metiq/internal/store/state"
@@ -272,6 +273,42 @@ agents:
 	}
 	if doc.Agents[0].HeartbeatMS != 1500 || doc.Agents[0].HistoryLimit != 25 {
 		t.Fatalf("unexpected YAML numeric mapping: %#v", doc.Agents[0])
+	}
+}
+
+func TestParseConfigBytes_AgentMemoryScopeMapping(t *testing.T) {
+	raw := []byte(`{
+		"agents": [
+			{"id":"main","model":"echo","memory_scope":"project"},
+			{"id":"worker","model":"echo","memoryScope":"local"}
+		]
+	}`)
+	doc, err := ParseConfigBytes(raw, ".json")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if len(doc.Agents) != 2 {
+		t.Fatalf("expected two agents, got %#v", doc.Agents)
+	}
+	if doc.Agents[0].MemoryScope != state.AgentMemoryScopeProject {
+		t.Fatalf("expected project memory scope, got %#v", doc.Agents[0])
+	}
+	if doc.Agents[1].MemoryScope != state.AgentMemoryScopeLocal {
+		t.Fatalf("expected local memory scope, got %#v", doc.Agents[1])
+	}
+}
+
+func TestValidateConfigDoc_RejectsInvalidAgentMemoryScope(t *testing.T) {
+	errs := ValidateConfigDoc(state.ConfigDoc{
+		Agents: state.AgentsConfig{
+			{ID: "main", MemoryScope: state.AgentMemoryScope("invalid")},
+		},
+	})
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for invalid agent memory scope")
+	}
+	if got := errs[0].Error(); !strings.Contains(got, "agents[0].memory_scope") {
+		t.Fatalf("unexpected validation error: %v", errs[0])
 	}
 }
 

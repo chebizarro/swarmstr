@@ -249,10 +249,11 @@ type MemoryCompactResponse struct {
 }
 
 type AgentRequest struct {
-	SessionID string `json:"session_id,omitempty"`
-	Message   string `json:"message"`
-	Context   string `json:"context,omitempty"`
-	TimeoutMS int    `json:"timeout_ms,omitempty"`
+	SessionID   string                 `json:"session_id,omitempty"`
+	Message     string                 `json:"message"`
+	Context     string                 `json:"context,omitempty"`
+	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
+	TimeoutMS   int                    `json:"timeout_ms,omitempty"`
 }
 
 // ── ACP (Agent Control Protocol) request/response types ─────────────────────
@@ -278,6 +279,8 @@ type ACPDispatchRequest struct {
 	TargetPubKey string `json:"target_pubkey"`
 	// Instructions is the task description.
 	Instructions string `json:"instructions"`
+	// MemoryScope carries the explicit worker memory scope contract.
+	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
 	// TimeoutMS, when > 0, limits the round-trip wait in milliseconds.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 	// Wait, when true, blocks until the worker sends a result DM and returns
@@ -291,6 +294,8 @@ type ACPPipelineStepRequest struct {
 	PeerPubKey string `json:"peer_pubkey"`
 	// Instructions is the task text for this step.
 	Instructions string `json:"instructions"`
+	// MemoryScope carries the explicit worker memory scope contract.
+	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
 	// TimeoutMS is the per-step timeout.  0 = 60 s default.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 }
@@ -426,6 +431,8 @@ type SessionsSpawnRequest struct {
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	// AgentID selects which configured agent handles the sub-session.
 	AgentID string `json:"agent_id,omitempty"`
+	// MemoryScope carries the explicit worker memory scope contract.
+	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
 	// Context is extra system context to inject into the child session.
 	Context string `json:"context,omitempty"`
 	// TimeoutMS limits how long the caller will wait via agent.wait.
@@ -439,6 +446,13 @@ func (r SessionsSpawnRequest) Normalize() (SessionsSpawnRequest, error) {
 	}
 	r.ParentSessionID = strings.TrimSpace(r.ParentSessionID)
 	r.AgentID = normalizeAgentID(r.AgentID)
+	if raw := strings.TrimSpace(string(r.MemoryScope)); raw != "" {
+		scope, ok := state.ParseAgentMemoryScope(raw)
+		if !ok {
+			return r, fmt.Errorf("memory_scope must be one of: user, project, local")
+		}
+		r.MemoryScope = scope
+	}
 	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 60_000, 300_000)
 	return r, nil
 }
@@ -1033,6 +1047,13 @@ func (r AgentRequest) Normalize() (AgentRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
 	r.Message = strings.TrimSpace(r.Message)
 	r.Context = strings.TrimSpace(r.Context)
+	if raw := strings.TrimSpace(string(r.MemoryScope)); raw != "" {
+		scope, ok := state.ParseAgentMemoryScope(raw)
+		if !ok {
+			return r, fmt.Errorf("memory_scope must be one of: user, project, local")
+		}
+		r.MemoryScope = scope
+	}
 	if r.Message == "" {
 		return r, fmt.Errorf("message is required")
 	}

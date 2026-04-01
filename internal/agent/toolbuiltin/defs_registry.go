@@ -52,6 +52,11 @@ var ACPDelegateDef = agent.ToolDefinition{
 				Type:        "integer",
 				Description: "Milliseconds to wait for the peer's reply (default 60 000, i.e. 60 s).",
 			},
+			"memory_scope": {
+				Type:        "string",
+				Description: "Optional worker memory scope. One of: user, project, local.",
+				Enum:        []string{"user", "project", "local"},
+			},
 		},
 		Required: []string{"peer_pubkey", "instructions"},
 	},
@@ -109,6 +114,11 @@ var SessionSpawnDef = agent.ToolDefinition{
 			"model": {
 				Type:        "string",
 				Description: "LLM model for this session (e.g. \"gpt-4o\", \"claude-3-5-sonnet-20241022\"). Defaults to parent's model.",
+			},
+			"memory_scope": {
+				Type:        "string",
+				Description: "Optional child memory scope. One of: user, project, local.",
+				Enum:        []string{"user", "project", "local"},
 			},
 		},
 	},

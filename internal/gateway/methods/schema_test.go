@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"metiq/internal/store/state"
 )
 
 func TestDecodeMemorySearchParams_ObjectAndPositionalParity(t *testing.T) {
@@ -28,6 +30,59 @@ func TestDecodeSessionGetParams_RejectFractionalLimit(t *testing.T) {
 	_, err := DecodeSessionGetParams(json.RawMessage(`["session-1",1.5]`))
 	if err == nil {
 		t.Fatal("expected error for fractional positional limit")
+	}
+}
+
+func TestAgentRequestNormalize_ParsesMemoryScope(t *testing.T) {
+	req, err := (AgentRequest{
+		SessionID:   " sess-1 ",
+		Message:     " hello ",
+		Context:     " extra ",
+		MemoryScope: state.AgentMemoryScope("project"),
+		TimeoutMS:   500,
+	}).Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.SessionID != "sess-1" || req.Message != "hello" || req.Context != "extra" {
+		t.Fatalf("unexpected normalized request: %#v", req)
+	}
+	if req.MemoryScope != state.AgentMemoryScopeProject {
+		t.Fatalf("expected project memory scope, got %#v", req.MemoryScope)
+	}
+	if req.TimeoutMS != 500 {
+		t.Fatalf("expected timeout to be preserved, got %d", req.TimeoutMS)
+	}
+}
+
+func TestAgentRequestNormalize_RejectsInvalidMemoryScope(t *testing.T) {
+	_, err := (AgentRequest{
+		Message:     "hello",
+		MemoryScope: state.AgentMemoryScope("bogus"),
+	}).Normalize()
+	if err == nil || !strings.Contains(err.Error(), "memory_scope must be one of") {
+		t.Fatalf("expected memory_scope validation error, got %v", err)
+	}
+}
+
+func TestSessionsSpawnRequestNormalize_ParsesMemoryScope(t *testing.T) {
+	req, err := (SessionsSpawnRequest{
+		Message:     " run task ",
+		AgentID:     " worker ",
+		MemoryScope: state.AgentMemoryScope("local"),
+		TimeoutMS:   500,
+	}).Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.AgentID != "worker" || req.Message != "run task" {
+		t.Fatalf("unexpected normalized request: %#v", req)
+	}
+	if req.MemoryScope != state.AgentMemoryScopeLocal {
+		t.Fatalf("expected local memory scope, got %#v", req.MemoryScope)
+	}
+	if req.TimeoutMS != 500 {
+		t.Fatalf("expected timeout to be preserved, got %d", req.TimeoutMS)
 	}
 }
 

@@ -113,6 +113,7 @@ var (
 	controlNodePending     *nodepending.Store
 	controlCronJobs        *cronRegistry
 	controlSessionStore    *state.SessionStore
+	controlMemoryStore     memory.Store
 	controlExecApprovals   *execApprovalsRegistry
 	controlWizards         *wizardRegistry
 	controlOps             *operationsRegistry
@@ -135,6 +136,9 @@ var (
 	// controlToolRegistry is the base tool registry used by agent runtimes.
 	// Stored globally so the MethodAgent handler can build profile-filtered runtimes.
 	controlToolRegistry *agent.ToolRegistry
+	// controlRuntimeConfig is the live runtime config store used by shared
+	// helper paths outside main() (for example agent.run fallbacks).
+	controlRuntimeConfig *runtimeConfigStore
 
 	// controlPluginMgr is the live Goja plugin manager; nil if no plugins are loaded.
 	controlPluginMgr *pluginmanager.GojaPluginManager
@@ -450,6 +454,7 @@ func main() {
 		}
 	}()
 	var memoryIndex memory.Store = baseMemoryIndex
+	controlMemoryStore = memoryIndex
 
 	// Social planner: manages social action plans, rate limits, and history.
 	socialPlanner := social.NewPlanner(social.DefaultRateLimitConfig())
@@ -457,7 +462,7 @@ func main() {
 	tools := agent.NewToolRegistry()
 	controlToolRegistry = tools
 	var configState *runtimeConfigStore
-	tools.Register("memory_search", func(_ context.Context, args map[string]any) (string, error) {
+	tools.Register("memory_search", func(ctx context.Context, args map[string]any) (string, error) {
 		query := agent.ArgString(args, "query")
 		if query == "" {
 			return "", fmt.Errorf("memory.search requires query")
@@ -469,7 +474,8 @@ func main() {
 		if limit > 50 {
 			limit = 50
 		}
-		results := memoryIndex.Search(query, limit)
+		scope := memory.ScopedContextFromAgent(agent.MemoryScopeFromContext(ctx))
+		results := memory.FilterByScope(memory.SearchDocs(ctx, memoryIndex, query, limit), scope)
 		b, err := json.Marshal(results)
 		if err != nil {
 			return "", err
@@ -482,6 +488,7 @@ func main() {
 	tools.Register("acp_delegate", func(ctx context.Context, args map[string]any) (string, error) {
 		peerPubKey := agent.ArgString(args, "peer_pubkey")
 		instructions := agent.ArgString(args, "instructions")
+		memoryScope := state.NormalizeAgentMemoryScope(agent.ArgString(args, "memory_scope"))
 		timeoutMS := int64(agent.ArgInt(args, "timeout_ms", 60000))
 		if peerPubKey == "" || instructions == "" {
 			return "", fmt.Errorf("acp.delegate: peer_pubkey and instructions are required")
@@ -499,6 +506,7 @@ func main() {
 		senderPubKey := dmBus.PublicKey()
 		acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
 			Instructions: instructions,
+			MemoryScope:  memoryScope,
 			TimeoutMS:    timeoutMS,
 			ReplyTo:      senderPubKey,
 		})
@@ -912,6 +920,7 @@ func main() {
 		log.Fatalf("load runtime config: %v", err)
 	}
 	configState = newRuntimeConfigStore(runtimeCfg)
+	controlRuntimeConfig = configState
 	{
 		identityName := "main"
 		identityModel := strings.TrimSpace(os.Getenv("METIQ_AGENT_PROVIDER"))
@@ -1052,6 +1061,7 @@ func main() {
 		} else {
 			log.Printf("memory backend: %s path=%q", memoryBackendName, memoryBackendPath)
 			memoryIndex = memory.NewHybridIndex(baseMemoryIndex, be)
+			controlMemoryStore = memoryIndex
 		}
 	}
 
@@ -1424,8 +1434,10 @@ func main() {
 	// doChannelTurn (defined later) so auto-join channels get the same context
 	// quality as manually-connected channels.
 	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string) agent.Turn {
-		turnContext := assembleMemoryRecallContext(ctx, memoryIndex, sessionID, text, 6)
-		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex)
+		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, sessionRouter.Get(sessionID), "")
+		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
+		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
+		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
 			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
@@ -1995,9 +2007,12 @@ func main() {
 		}
 		waitFor := args["wait"] == true
 		timeoutSec := agent.ArgInt(args, "timeout_seconds", 60)
+		memoryScope := state.NormalizeAgentMemoryScope(agent.ArgString(args, "memory_scope"))
+		spawnAgentID := agent.ArgString(args, "agent_id")
 
 		sessionID := generateSessionID()
-		sessionTurns.Track(sessionID, agent.ArgString(args, "agent_id"))
+		sessionTurns.Track(sessionID, spawnAgentID)
+		persistSessionMemoryScope(sessionStore, sessionID, spawnAgentID, memoryScope)
 
 		runTurn := func(ctx context.Context) (string, error) {
 			releaseTurn, acquired := sessionTurns.TryAcquire(sessionID)
@@ -2005,13 +2020,15 @@ func main() {
 				return "", fmt.Errorf("session_spawn: session %q is busy", sessionID)
 			}
 			defer releaseTurn()
-			turnCtx := assembleMemoryRecallContext(ctx, memoryIndex, sessionID, instructions, 6)
-			staticPrompt := assembleMemorySystemPrompt(memoryIndex)
-			result, err := agentRuntime.ProcessTurn(ctx, agent.Turn{
+			scopeCtx := resolveMemoryScopeContext(ctx, configState.Get(), docsRepo, sessionStore, sessionID, spawnAgentID, memoryScope)
+			turnCtx := contextWithMemoryScope(ctx, scopeCtx)
+			turnPrompt := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, instructions, 6)
+			staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
+			result, err := agentRuntime.ProcessTurn(turnCtx, agent.Turn{
 				SessionID:          sessionID,
 				UserText:           instructions,
 				StaticSystemPrompt: staticPrompt,
-				Context:            turnCtx,
+				Context:            turnPrompt,
 			})
 			if err != nil {
 				return "", err
@@ -2055,13 +2072,15 @@ func main() {
 			return "", fmt.Errorf("session_send: session %q is busy", sessionID)
 		}
 		defer releaseTurn()
-		turnCtx := assembleMemoryRecallContext(ctx, memoryIndex, sessionID, text, 6)
-		staticPrompt := assembleMemorySystemPrompt(memoryIndex)
-		result, err := agentRuntime.ProcessTurn(ctx, agent.Turn{
+		scopeCtx := resolveMemoryScopeContext(ctx, configState.Get(), docsRepo, sessionStore, sessionID, "", "")
+		turnCtx := contextWithMemoryScope(ctx, scopeCtx)
+		turnPrompt := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
+		staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
+		result, err := agentRuntime.ProcessTurn(turnCtx, agent.Turn{
 			SessionID:          sessionID,
 			UserText:           text,
 			StaticSystemPrompt: staticPrompt,
-			Context:            turnCtx,
+			Context:            turnPrompt,
 		})
 		if err != nil {
 			return "", fmt.Errorf("session_send: %w", err)
@@ -3015,8 +3034,10 @@ func main() {
 			}
 		}
 
-		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, sessionID, combinedText, 6)
-		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex)
+		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, sessionRouter.Get(sessionID), "")
+		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
+		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, 6)
+		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
 		// turnHistory carries prior conversation turns for multi-turn LLM context.
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -4141,8 +4162,10 @@ func main() {
 			return fmt.Errorf("no runtime for agent %s", activeAgentID)
 		}
 
-		turnContext := assembleMemoryRecallContext(ctx, memoryIndex, sessionID, text, 6)
-		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex)
+		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
+		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
+		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
+		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
 		var chTurnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
 			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
@@ -8798,6 +8821,13 @@ func handleControlRPCRequest(
 		if err := json.Unmarshal(in.Params, &req); err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: invalid params: %w", err)
 		}
+		if raw := strings.TrimSpace(string(req.MemoryScope)); raw != "" {
+			scope, ok := state.ParseAgentMemoryScope(raw)
+			if !ok {
+				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: memory_scope must be one of: user, project, local")
+			}
+			req.MemoryScope = scope
+		}
 		target := strings.TrimSpace(req.TargetPubKey)
 		if target == "" {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: target_pubkey required")
@@ -8819,6 +8849,7 @@ func handleControlRPCRequest(
 		}
 		acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
 			Instructions: req.Instructions,
+			MemoryScope:  req.MemoryScope,
 			TimeoutMS:    req.TimeoutMS,
 			ReplyTo:      senderPubKey,
 		})
@@ -8869,9 +8900,10 @@ func handleControlRPCRequest(
 		}
 
 		senderPubKey := dmBus.PublicKey()
-		sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string) error {
+		sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string, memoryScope state.AgentMemoryScope) error {
 			acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
 				Instructions: instructions,
+				MemoryScope:  memoryScope,
 				ReplyTo:      senderPubKey,
 			})
 			payload, _ := json.Marshal(acpMsg)
@@ -8879,10 +8911,18 @@ func handleControlRPCRequest(
 		}
 
 		steps := make([]acppkg.Step, 0, len(req.Steps))
-		for _, s := range req.Steps {
+		for i, s := range req.Steps {
+			if raw := strings.TrimSpace(string(s.MemoryScope)); raw != "" {
+				scope, ok := state.ParseAgentMemoryScope(raw)
+				if !ok {
+					return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: steps[%d].memory_scope must be one of: user, project, local", i)
+				}
+				s.MemoryScope = scope
+			}
 			steps = append(steps, acppkg.Step{
 				PeerPubKey:   s.PeerPubKey,
 				Instructions: s.Instructions,
+				MemoryScope:  s.MemoryScope,
 				TimeoutMS:    s.TimeoutMS,
 			})
 		}
@@ -8935,9 +8975,13 @@ func handleACPMessage(
 	switch msg.ACPType {
 	case "task":
 		instructions := ""
+		memoryScope := state.AgentMemoryScope("")
 		if msg.Payload != nil {
 			if v, ok := msg.Payload["instructions"].(string); ok {
 				instructions = v
+			}
+			if v, ok := msg.Payload["memory_scope"].(string); ok {
+				memoryScope = state.NormalizeAgentMemoryScope(v)
 			}
 		}
 		if strings.TrimSpace(instructions) == "" {
@@ -8953,10 +8997,19 @@ func handleACPMessage(
 		}
 		rt := agentReg.Get(agentID) // returns default if agentID == ""
 
-		result, err := rt.ProcessTurn(ctx, agent.Turn{
-			SessionID: "acp:" + fromPubKey,
-			UserText:  instructions,
-		})
+		sessionID := "acp:" + fromPubKey
+		cfg := state.ConfigDoc{}
+		if controlRuntimeConfig != nil {
+			cfg = controlRuntimeConfig.Get()
+		}
+		scopeCtx := resolveMemoryScopeContext(ctx, cfg, nil, controlSessionStore, sessionID, agentID, memoryScope)
+		persistSessionMemoryScope(controlSessionStore, sessionID, agentID, scopeCtx.Scope)
+		turnCtx := contextWithMemoryScope(ctx, scopeCtx)
+		result, err := rt.ProcessTurn(turnCtx, buildAgentRunTurn(turnCtx, methods.AgentRequest{
+			SessionID:   sessionID,
+			Message:     instructions,
+			MemoryScope: scopeCtx.Scope,
+		}, controlMemoryStore, scopeCtx))
 
 		// Build and send result DM back to the sender.
 		var resultMsg acppkg.Message
@@ -9463,11 +9516,13 @@ func applySessionsSpawn(ctx context.Context, req methods.SessionsSpawnRequest, c
 
 	// Build the agent request for the child session.
 	agentReq := methods.AgentRequest{
-		SessionID: sessionID,
-		Message:   req.Message,
-		Context:   req.Context,
-		TimeoutMS: req.TimeoutMS,
+		SessionID:   sessionID,
+		Message:     req.Message,
+		Context:     req.Context,
+		MemoryScope: req.MemoryScope,
+		TimeoutMS:   req.TimeoutMS,
 	}
+	persistSessionMemoryScope(controlSessionStore, sessionID, req.AgentID, req.MemoryScope)
 
 	// Start the agent job and track in SubagentRegistry.
 	snapshot := controlAgentJobs.Begin(runID, sessionID)
@@ -9547,7 +9602,14 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 	})
 
 	runtimesToTry := append([]agent.Runtime{primary}, fallbacks...)
-	turn := buildAgentRunTurn(ctx, req, memoryIndex)
+	cfg := state.ConfigDoc{}
+	if controlRuntimeConfig != nil {
+		cfg = controlRuntimeConfig.Get()
+	}
+	scopeCtx := resolveMemoryScopeContext(ctx, cfg, nil, controlSessionStore, req.SessionID, agentID, req.MemoryScope)
+	persistSessionMemoryScope(controlSessionStore, req.SessionID, agentID, scopeCtx.Scope)
+	ctx = contextWithMemoryScope(ctx, scopeCtx)
+	turn := buildAgentRunTurn(ctx, req, memoryIndex, scopeCtx)
 	var result *agent.TurnResult
 	var lastErr error
 	fallbackUsed := false
