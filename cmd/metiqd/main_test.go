@@ -2204,6 +2204,58 @@ func TestExecuteAgentRun_EmitsAgentStatusWithSession(t *testing.T) {
 	}
 }
 
+func TestToolLifecycleEmitter_MapsAgentEventsToWSPayloads(t *testing.T) {
+	capture := &capturingEmitter{}
+	sink := toolLifecycleEmitter(capture, "alpha")
+	sink(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventStart,
+		TS:         123,
+		SessionID:  "session-42",
+		TurnID:     "turn-7",
+		ToolCallID: "call-1",
+		ToolName:   "fetch",
+	})
+	sink(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventResult,
+		TS:         124,
+		SessionID:  "session-42",
+		TurnID:     "turn-7",
+		ToolCallID: "call-1",
+		ToolName:   "fetch",
+		Result:     "ok",
+	})
+	sink(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventError,
+		TS:         125,
+		SessionID:  "session-42",
+		TurnID:     "turn-7",
+		ToolCallID: "call-2",
+		ToolName:   "write",
+		Error:      "permission denied",
+	})
+
+	starts := capture.eventsByName(gatewayws.EventToolStart)
+	results := capture.eventsByName(gatewayws.EventToolResult)
+	errors := capture.eventsByName(gatewayws.EventToolError)
+	if len(starts) != 1 || len(results) != 1 || len(errors) != 1 {
+		t.Fatalf("unexpected lifecycle event counts start=%d result=%d error=%d", len(starts), len(results), len(errors))
+	}
+	startPayload, ok := starts[0].(gatewayws.ToolLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected start payload type: %T", starts[0])
+	}
+	if startPayload.AgentID != "alpha" || startPayload.SessionID != "session-42" || startPayload.TurnID != "turn-7" {
+		t.Fatalf("unexpected start payload: %+v", startPayload)
+	}
+	errorPayload, ok := errors[0].(gatewayws.ToolLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected error payload type: %T", errors[0])
+	}
+	if errorPayload.ToolCallID != "call-2" || errorPayload.ToolName != "write" || errorPayload.Error != "permission denied" {
+		t.Fatalf("unexpected error payload: %+v", errorPayload)
+	}
+}
+
 type stubAgentRuntime struct{}
 
 func (stubAgentRuntime) ProcessTurn(_ context.Context, turn agent.Turn) (agent.TurnResult, error) {

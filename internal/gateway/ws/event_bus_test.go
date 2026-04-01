@@ -53,6 +53,7 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 		EventChannelMessage,
 		EventNodePairRequested, EventNodePairResolved,
 		EventDevicePairResolved, EventPluginLoaded,
+		EventToolStart, EventToolProgress, EventToolResult, EventToolError,
 	}
 	set := make(map[string]struct{}, len(AllPushEvents))
 	for _, e := range AllPushEvents {
@@ -148,5 +149,29 @@ func TestPairingAndPluginPayloads(t *testing.T) {
 	}
 	if pp.Action != "installed" {
 		t.Errorf("expected action=installed, got %q", pp.Action)
+	}
+}
+
+func TestToolLifecyclePayloads(t *testing.T) {
+	e := &captureEmitter{}
+
+	e.Emit(EventToolStart, ToolLifecyclePayload{ToolCallID: "call-1", ToolName: "fetch", SessionID: "sess-1", TurnID: "turn-1"})
+	e.Emit(EventToolProgress, ToolLifecyclePayload{ToolCallID: "call-1", ToolName: "fetch", Data: map[string]any{"phase": "stream"}})
+	e.Emit(EventToolResult, ToolLifecyclePayload{ToolCallID: "call-1", ToolName: "fetch", Result: "ok"})
+	e.Emit(EventToolError, ToolLifecyclePayload{ToolCallID: "call-2", ToolName: "write", Error: "permission denied"})
+
+	if e.Count() != 4 {
+		t.Fatalf("expected 4 events, got %d", e.Count())
+	}
+	name, payload := e.Last()
+	if name != EventToolError {
+		t.Fatalf("expected %q, got %q", EventToolError, name)
+	}
+	lp, ok := payload.(ToolLifecyclePayload)
+	if !ok {
+		t.Fatalf("expected ToolLifecyclePayload, got %T", payload)
+	}
+	if lp.ToolCallID != "call-2" || lp.ToolName != "write" || lp.Error != "permission denied" {
+		t.Fatalf("unexpected lifecycle payload: %+v", lp)
 	}
 }
