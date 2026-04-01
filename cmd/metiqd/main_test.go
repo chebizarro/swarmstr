@@ -2328,7 +2328,7 @@ func TestToolLifecycleEmitter_MapsAgentEventsToWSPayloads(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected progress payload type: %T", progress[0])
 	}
-	if progressDecision, ok := progressPayload.Data.(agent.ToolSchedulerDecision); !ok || progressDecision.Mode != "parallel" {
+	if progressDecision, ok := progressPayload.Data.(gatewayws.ToolSchedulerDecisionPayload); !ok || progressDecision.Mode != "parallel" || progressDecision.Kind != gatewayws.ToolDecisionKindScheduler {
 		t.Fatalf("unexpected progress payload data: %+v", progressPayload)
 	}
 	startPayload, ok := starts[0].(gatewayws.ToolLifecyclePayload)
@@ -2344,6 +2344,46 @@ func TestToolLifecycleEmitter_MapsAgentEventsToWSPayloads(t *testing.T) {
 	}
 	if errorPayload.ToolCallID != "call-2" || errorPayload.ToolName != "write" || errorPayload.Error != "permission denied" {
 		t.Fatalf("unexpected error payload: %+v", errorPayload)
+	}
+}
+
+func TestToolLifecycleEmitter_ProjectsLoopDecisionPayloads(t *testing.T) {
+	capture := &capturingEmitter{}
+	sink := toolLifecycleEmitter(capture, "alpha")
+	sink(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventError,
+		TS:         130,
+		SessionID:  "session-42",
+		TurnID:     "turn-8",
+		ToolCallID: "call-9",
+		ToolName:   "poll",
+		Error:      "CRITICAL: tool loop blocked",
+		Data: agent.ToolLoopDecision{
+			Kind:           agent.ToolDecisionKindLoopDetection,
+			Blocked:        true,
+			Level:          "critical",
+			Detector:       "generic_repeat",
+			Count:          4,
+			WarningKey:     "poll-repeat",
+			PairedToolName: "fetch",
+			Message:        "tool loop blocked",
+		},
+	})
+
+	errors := capture.eventsByName(gatewayws.EventToolError)
+	if len(errors) != 1 {
+		t.Fatalf("unexpected tool.error count: %d", len(errors))
+	}
+	errorPayload, ok := errors[0].(gatewayws.ToolLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected error payload type: %T", errors[0])
+	}
+	decision, ok := errorPayload.Data.(gatewayws.ToolLoopDecisionPayload)
+	if !ok {
+		t.Fatalf("unexpected error payload data type: %T", errorPayload.Data)
+	}
+	if decision.Kind != gatewayws.ToolDecisionKindLoopDetection || !decision.Blocked || decision.Detector != "generic_repeat" || decision.PairedToolName != "fetch" {
+		t.Fatalf("unexpected loop decision payload: %+v", decision)
 	}
 }
 

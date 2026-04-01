@@ -9444,7 +9444,7 @@ func toolLifecycleEmitter(emitter gatewayws.EventEmitter, agentID string) agent.
 			ToolName:   evt.ToolName,
 			Result:     evt.Result,
 			Error:      evt.Error,
-			Data:       evt.Data,
+			Data:       projectToolLifecycleData(evt.Data),
 		}
 		switch evt.Type {
 		case agent.ToolLifecycleEventStart:
@@ -9456,6 +9456,35 @@ func toolLifecycleEmitter(emitter gatewayws.EventEmitter, agentID string) agent.
 		case agent.ToolLifecycleEventError:
 			emitter.Emit(gatewayws.EventToolError, payload)
 		}
+	}
+}
+
+func projectToolLifecycleData(data any) any {
+	switch decision := data.(type) {
+	case agent.ToolSchedulerDecision:
+		return gatewayws.ToolSchedulerDecisionPayload{
+			Kind:             gatewayws.ToolDecisionKind(decision.Kind),
+			Mode:             decision.Mode,
+			BatchIndex:       decision.BatchIndex,
+			BatchCount:       decision.BatchCount,
+			BatchSize:        decision.BatchSize,
+			BatchPosition:    decision.BatchPosition,
+			ConcurrencySafe:  decision.ConcurrencySafe,
+			ConcurrencyLimit: decision.ConcurrencyLimit,
+		}
+	case agent.ToolLoopDecision:
+		return gatewayws.ToolLoopDecisionPayload{
+			Kind:           gatewayws.ToolDecisionKind(decision.Kind),
+			Blocked:        decision.Blocked,
+			Level:          decision.Level,
+			Detector:       decision.Detector,
+			Count:          decision.Count,
+			WarningKey:     decision.WarningKey,
+			PairedToolName: decision.PairedToolName,
+			Message:        decision.Message,
+		}
+	default:
+		return data
 	}
 }
 
