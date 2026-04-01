@@ -9,7 +9,7 @@ title: "CLI Reference"
 
 # CLI Reference
 
-The `metiq` binary is the control-plane client for the metiqd daemon. It communicates over the admin HTTP API (address configured via `admin_listen_addr` in `bootstrap.json`).
+The `metiq` binary is the control-plane client for the metiqd daemon. For raw gateway method calls, `metiq gw` defaults to transport `auto`: it uses Nostr control RPC when `control_target_pubkey` is configured in `bootstrap.json`; otherwise it uses the local admin HTTP API.
 
 **Global flag**: `--bootstrap <path>` — path to bootstrap config JSON (auto-detected by default).
 
@@ -378,11 +378,12 @@ metiq daemon start --bootstrap ~/.metiq/bootstrap.json
 
 ## GW (Raw RPC)
 
-Send a raw JSON-RPC call to the gateway.
+Send a raw method call to the shared gateway namespace. By default, `metiq gw` uses transport `auto`: Nostr control RPC when `control_target_pubkey` is configured, otherwise the local HTTP compatibility path. Force HTTP with `--transport http`.
 
 ```bash
 metiq gw <method> [key=value ...]
 metiq gw --json status.get
+metiq gw --transport http status.get
 metiq gw config.get path=agent.default_model
 ```
 

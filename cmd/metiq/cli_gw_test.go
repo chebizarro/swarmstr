@@ -88,6 +88,28 @@ func TestRunGW_UsesConfiguredNostrTransport(t *testing.T) {
 	}
 }
 
+func TestRunGW_DefaultsToAutoTransport(t *testing.T) {
+	oldResolver := resolveGWClientFn
+	defer func() { resolveGWClientFn = oldResolver }()
+
+	stub := &stubGatewayClient{result: map[string]any{"ok": true}}
+	var gotTransport string
+	resolveGWClientFn = func(transport, addrFlag, tokenFlag, bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+		gotTransport = transport
+		return stub, nil
+	}
+
+	_, err := captureStdout(t, func() error {
+		return runGW([]string{"status.get"})
+	})
+	if err != nil {
+		t.Fatalf("runGW error: %v", err)
+	}
+	if gotTransport != "auto" {
+		t.Fatalf("unexpected default transport: %q", gotTransport)
+	}
+}
+
 func TestResolveNostrControlClientRequiresTargetPubKey(t *testing.T) {
 	bootstrapPath := writeBootstrapFile(t, `{
   "private_key":"1111111111111111111111111111111111111111111111111111111111111111",
@@ -134,5 +156,156 @@ func TestResolveNostrControlClientPrefersExplicitControlSigner(t *testing.T) {
 	}
 	if client.targetPubKey != targetPubKey {
 		t.Fatalf("unexpected target pubkey: got %s want %s", client.targetPubKey, targetPubKey)
+	}
+}
+
+func TestResolveGWClient_AutoFallsBackToHTTPWithoutNostrHints(t *testing.T) {
+	oldAdmin := resolveAdminGatewayClientFn
+	oldNostr := resolveNostrGatewayClientFn
+	defer func() {
+		resolveAdminGatewayClientFn = oldAdmin
+		resolveNostrGatewayClientFn = oldNostr
+	}()
+
+	admin := &stubGatewayClient{result: map[string]any{"transport": "http"}}
+	var adminCalls, nostrCalls int
+	resolveAdminGatewayClientFn = func(addrFlag, tokenFlag, bootstrapPath string) (gatewayCaller, error) {
+		adminCalls++
+		return admin, nil
+	}
+	resolveNostrGatewayClientFn = func(bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+		nostrCalls++
+		return &stubGatewayClient{result: map[string]any{"transport": "nostr"}}, nil
+	}
+
+	client, err := resolveGWClient("auto", "", "", writeBootstrapFile(t, `{
+  "private_key":"1111111111111111111111111111111111111111111111111111111111111111",
+  "relays":["wss://relay.example.com"]
+}`), "", "", time.Second)
+	if err != nil {
+		t.Fatalf("resolveGWClient error: %v", err)
+	}
+	result, err := client.call("status.get", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("auto client call error: %v", err)
+	}
+	if result["transport"] != "http" {
+		t.Fatalf("unexpected transport result: %#v", result)
+	}
+	if adminCalls != 1 || nostrCalls != 0 {
+		t.Fatalf("unexpected resolver counts admin=%d nostr=%d", adminCalls, nostrCalls)
+	}
+}
+
+func TestResolveGWClient_AutoIgnoresSignerOnlyHintWithoutTarget(t *testing.T) {
+	oldAdmin := resolveAdminGatewayClientFn
+	oldNostr := resolveNostrGatewayClientFn
+	defer func() {
+		resolveAdminGatewayClientFn = oldAdmin
+		resolveNostrGatewayClientFn = oldNostr
+	}()
+
+	var adminCalls, nostrCalls int
+	resolveAdminGatewayClientFn = func(addrFlag, tokenFlag, bootstrapPath string) (gatewayCaller, error) {
+		adminCalls++
+		return &stubGatewayClient{result: map[string]any{"transport": "http"}}, nil
+	}
+	resolveNostrGatewayClientFn = func(bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+		nostrCalls++
+		return &stubGatewayClient{result: map[string]any{"transport": "nostr"}}, nil
+	}
+
+	client, err := resolveGWClient("auto", "", "", writeBootstrapFile(t, `{
+  "private_key":"1111111111111111111111111111111111111111111111111111111111111111",
+  "relays":["wss://relay.example.com"]
+}`), "", "env://METIQ_CONTROL_SIGNER", time.Second)
+	if err != nil {
+		t.Fatalf("resolveGWClient error: %v", err)
+	}
+	result, err := client.call("status.get", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("auto client call error: %v", err)
+	}
+	if result["transport"] != "http" {
+		t.Fatalf("unexpected transport result: %#v", result)
+	}
+	if adminCalls != 1 || nostrCalls != 0 {
+		t.Fatalf("unexpected resolver counts admin=%d nostr=%d", adminCalls, nostrCalls)
+	}
+}
+
+func TestResolveGWClient_AutoPrefersNostrWithConfiguredTarget(t *testing.T) {
+	oldAdmin := resolveAdminGatewayClientFn
+	oldNostr := resolveNostrGatewayClientFn
+	defer func() {
+		resolveAdminGatewayClientFn = oldAdmin
+		resolveNostrGatewayClientFn = oldNostr
+	}()
+
+	var adminCalls, nostrCalls int
+	resolveAdminGatewayClientFn = func(addrFlag, tokenFlag, bootstrapPath string) (gatewayCaller, error) {
+		adminCalls++
+		return &stubGatewayClient{result: map[string]any{"transport": "http"}}, nil
+	}
+	resolveNostrGatewayClientFn = func(bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+		nostrCalls++
+		return &stubGatewayClient{result: map[string]any{"transport": "nostr"}}, nil
+	}
+
+	client, err := resolveGWClient("auto", "", "", writeBootstrapFile(t, `{
+  "private_key":"1111111111111111111111111111111111111111111111111111111111111111",
+  "relays":["wss://relay.example.com"],
+  "control_target_pubkey":"npub1target"
+}`), "", "", time.Second)
+	if err != nil {
+		t.Fatalf("resolveGWClient error: %v", err)
+	}
+	result, err := client.call("status.get", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("auto client call error: %v", err)
+	}
+	if result["transport"] != "nostr" {
+		t.Fatalf("unexpected transport result: %#v", result)
+	}
+	if adminCalls != 0 || nostrCalls != 1 {
+		t.Fatalf("unexpected resolver counts admin=%d nostr=%d", adminCalls, nostrCalls)
+	}
+}
+
+func TestResolveGWClient_HTTPOverrideUsesAdminEvenWithConfiguredTarget(t *testing.T) {
+	oldAdmin := resolveAdminGatewayClientFn
+	oldNostr := resolveNostrGatewayClientFn
+	defer func() {
+		resolveAdminGatewayClientFn = oldAdmin
+		resolveNostrGatewayClientFn = oldNostr
+	}()
+
+	var adminCalls, nostrCalls int
+	resolveAdminGatewayClientFn = func(addrFlag, tokenFlag, bootstrapPath string) (gatewayCaller, error) {
+		adminCalls++
+		return &stubGatewayClient{result: map[string]any{"transport": "http"}}, nil
+	}
+	resolveNostrGatewayClientFn = func(bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+		nostrCalls++
+		return &stubGatewayClient{result: map[string]any{"transport": "nostr"}}, nil
+	}
+
+	client, err := resolveGWClient("http", "", "", writeBootstrapFile(t, `{
+  "private_key":"1111111111111111111111111111111111111111111111111111111111111111",
+  "relays":["wss://relay.example.com"],
+  "control_target_pubkey":"npub1target"
+}`), "", "", time.Second)
+	if err != nil {
+		t.Fatalf("resolveGWClient error: %v", err)
+	}
+	result, err := client.call("status.get", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("http override client call error: %v", err)
+	}
+	if result["transport"] != "http" {
+		t.Fatalf("unexpected transport result: %#v", result)
+	}
+	if adminCalls != 1 || nostrCalls != 0 {
+		t.Fatalf("unexpected resolver counts admin=%d nostr=%d", adminCalls, nostrCalls)
 	}
 }

@@ -156,7 +156,7 @@ Other:
   doctor memory-status      inspect memory index health
   qr                        display QR code for daemon pubkey
   completion bash|zsh|fish  generate shell completion script
-  gw <method> [params]      call any gateway method directly
+  gw <method> [params]      call any gateway method directly (auto prefers Nostr when control_target_pubkey is configured; use --transport http to force /call)
   update                    check for daemon updates
 ```
 

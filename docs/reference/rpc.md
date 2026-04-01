@@ -9,7 +9,7 @@ title: "RPC / HTTP API Reference"
 
 # RPC / HTTP API Reference
 
-metiq exposes an HTTP API and WebSocket event stream for programmatic integration. This powers the CLI and web dashboard.
+metiq exposes an HTTP API and WebSocket event stream for programmatic integration. The raw `metiq gw` client shares the same method namespace as the Nostr control-RPC surface and uses HTTP `/call` as the compatibility path when Nostr control is not selected.
 
 ## Base URL
 
@@ -47,7 +47,7 @@ Returns daemon health status.
 
 ### `POST /call`
 
-Generic RPC endpoint for method calls.
+Compatibility HTTP RPC endpoint for method calls. `metiq gw` can still be forced onto this path with `--transport http`.
 
 ```json
 // Request
