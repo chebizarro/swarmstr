@@ -5319,6 +5319,15 @@ func main() {
 					applyRuntimeRelayPolicy(bus, controlBus, newCfg)
 					return nil
 				},
+				ConfigSet: func(ctx context.Context, req methods.ConfigSetRequest) (map[string]any, int, error) {
+					return dispatchAdminControlConfigMutation(ctx, bus.PublicKey(), methods.MethodConfigSet, req, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+				},
+				ConfigApply: func(ctx context.Context, req methods.ConfigApplyRequest) (map[string]any, int, error) {
+					return dispatchAdminControlConfigMutation(ctx, bus.PublicKey(), methods.MethodConfigApply, req, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+				},
+				ConfigPatch: func(ctx context.Context, req methods.ConfigPatchRequest) (map[string]any, int, error) {
+					return dispatchAdminControlConfigMutation(ctx, bus.PublicKey(), methods.MethodConfigPatch, req, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+				},
 			})
 			if err != nil {
 				log.Printf("admin API error: %v", err)
@@ -5483,6 +5492,66 @@ func ensureIngestCheckpoint(ctx context.Context, repo *state.DocsRepository) (st
 		return state.CheckpointDoc{}, err
 	}
 	return fallback, nil
+}
+
+func dispatchAdminControlConfigMutation(
+	ctx context.Context,
+	fromPubKey string,
+	method string,
+	params any,
+	dmBus nostruntime.DMTransport,
+	controlBus *nostruntime.ControlRPCBus,
+	chatCancels *chatAbortRegistry,
+	usageState *usageTracker,
+	logBuffer *runtimeLogBuffer,
+	channelState *channelRuntimeState,
+	docsRepo *state.DocsRepository,
+	transcriptRepo *state.TranscriptRepository,
+	memoryIndex memory.Store,
+	configState *runtimeConfigStore,
+	tools *agent.ToolRegistry,
+	pluginMgr *pluginmanager.GojaPluginManager,
+	startedAt time.Time,
+) (map[string]any, int, error) {
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	res, err := handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{
+		FromPubKey: fromPubKey,
+		Method:     method,
+		Params:     raw,
+	}, dmBus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+	if err != nil {
+		return nil, controlConfigMutationStatus(err), err
+	}
+	out, ok := res.Result.(map[string]any)
+	if ok {
+		return out, http.StatusOK, nil
+	}
+	encoded, err := json.Marshal(res.Result)
+	if err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("marshal %s admin parity result: %w", method, err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("decode %s admin parity result: %w", method, err)
+	}
+	return decoded, http.StatusOK, nil
+}
+
+func controlConfigMutationStatus(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	if errors.Is(err, methods.ErrConfigConflict) {
+		return http.StatusConflict
+	}
+	var precondition *methods.PreconditionConflictError
+	if errors.As(err, &precondition) {
+		return http.StatusConflict
+	}
+	return http.StatusBadRequest
 }
 
 func checkpointSinceUnix(lastUnix int64) int64 {
@@ -7400,7 +7469,7 @@ func handleControlRPCRequest(
 			}
 			groups = agent.FilterCatalogByProfile(groups, profileID)
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": groups}}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"agentId": agentID, "profiles": defaultToolProfiles(), "groups": groups})}, nil
 	case methods.MethodToolsProfileGet:
 		req, err := methods.DecodeToolsProfileGetParams(in.Params)
 		if err != nil {
@@ -7419,7 +7488,7 @@ func handleControlRPCRequest(
 		if p, ok := doc.Meta[agent.AgentProfileKey].(string); ok && p != "" {
 			profileID = p
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agentId": agentID, "profile": profileID}}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"agentId": agentID, "profile": profileID})}, nil
 	case methods.MethodToolsProfileSet:
 		req, err := methods.DecodeToolsProfileSetParams(in.Params)
 		if err != nil {
@@ -7447,7 +7516,7 @@ func handleControlRPCRequest(
 		if _, err := docsRepo.PutAgent(ctx, agentID, doc); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agentId": agentID, "profile": req.Profile}}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"agentId": agentID, "profile": req.Profile})}, nil
 	case methods.MethodSkillsStatus:
 		req, err := methods.DecodeSkillsStatusParams(in.Params)
 		if err != nil {
