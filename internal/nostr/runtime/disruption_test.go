@@ -6,14 +6,14 @@
 // invariants without requiring real relay connections.
 //
 // Coverage targets from swarmstr-3.11.8:
-//   1. Relay disconnect/reconnect → subscription loop restarts
-//   2. Auth-required CLOSED → generation advances, stale close ignored
-//   3. Relay policy change while running → rebind signal, relay list updated
-//   4. Daemon restart with checkpoint replay → Since within replay window
-//   5. Duplicate event observation across relays → seen set dedup
-//   6. Watch restore after restart → Since jitter applied
-//   7. NIP-17 backdated event recovery → backfill window covers gift wraps
-//   8. Control RPC across degraded relays → health tracker gates retry
+//  1. Relay disconnect/reconnect → subscription loop restarts
+//  2. Auth-required CLOSED → generation advances, stale close ignored
+//  3. Relay policy change while running → rebind signal, relay list updated
+//  4. Daemon restart with checkpoint replay → Since within replay window
+//  5. Duplicate event observation across relays → seen set dedup
+//  6. Watch restore after restart → Since jitter applied
+//  7. NIP-17 backdated event recovery → backfill window covers gift wraps
+//  8. Control RPC across degraded relays → health tracker gates retry
 package runtime
 
 import (
@@ -506,7 +506,7 @@ func TestDisruption_ControlBusResponseRelayCandidatesPreferHealthy(t *testing.T)
 		health: h,
 	}
 
-	candidates := b.responseRelayCandidates("", time.Now())
+	candidates := b.responseRelayCandidates("", "requester", time.Now())
 	if len(candidates) == 0 {
 		t.Fatal("should have at least one candidate")
 	}

@@ -63,6 +63,17 @@ Compatibility HTTP RPC endpoint for method calls. `metiq gw` can still be forced
 }
 ```
 
+### Nostr control relay routing
+
+For the Nostr control-RPC path, relay selection is deterministic:
+
+- request publish relays = caller write relays + target read relays
+- response publish relays = request relay first, then responder write relays + requester read relays
+- requester response subscriptions listen on the request relays plus the responder/write and requester/read relay sets
+- when NIP-65 relay metadata is unavailable, the configured control relay set remains the fallback/override source
+
+In practice, the daemon runtime control relay set is exposed via `relay.policy.get -> runtime_control_relays`, and CLI-side Nostr control uses the relay configuration from `bootstrap.json`.
+
 ### `POST /hooks/wake`
 
 Wake the agent with a system event (webhook trigger).

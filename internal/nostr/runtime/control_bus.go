@@ -323,7 +323,7 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	}
 	cacheKey := fmt.Sprintf("%s:%s", evt.PubKey.Hex(), requestID)
 	if cached, ok := b.getCachedResponse(cacheKey); ok {
-		b.publishResponse(re, requestID, cached.Payload, withETag(cached.Tags, eventID))
+		b.publishResponse(re, evt.PubKey.Hex(), requestID, cached.Payload, withETag(cached.Tags, eventID))
 		return
 	}
 
@@ -361,7 +361,7 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		tags := nostr.Tags{{"e", eventID}, {"p", evt.PubKey.Hex()}, {"req", requestID}, {"status", "error"}, {"t", "control_rpc"}}
 		payload := string(payloadRaw)
 		b.setCachedResponse(cacheKey, controlCachedResponse{Payload: payload, Tags: tags})
-		b.publishResponse(re, requestID, payload, tags)
+		b.publishResponse(re, evt.PubKey.Hex(), requestID, payload, tags)
 		if b.onHandled != nil {
 			b.onHandled(b.ctx, eventID, int64(evt.CreatedAt))
 		}
@@ -376,13 +376,13 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	}
 	payload := string(payloadRaw)
 	b.setCachedResponse(cacheKey, controlCachedResponse{Payload: payload, Tags: tags})
-	b.publishResponse(re, requestID, payload, tags)
+	b.publishResponse(re, evt.PubKey.Hex(), requestID, payload, tags)
 	if b.onHandled != nil {
 		b.onHandled(b.ctx, eventID, int64(evt.CreatedAt))
 	}
 }
 
-func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requestID string, payload string, tags nostr.Tags) {
+func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey string, requestID string, payload string, tags nostr.Tags) {
 	evt := nostr.Event{Kind: nostr.Kind(events.KindMCPResult), CreatedAt: nostr.Now(), Tags: tags, Content: payload}
 	if err := b.keyer.SignEvent(b.ctx, &evt); err != nil {
 		b.emitErr(fmt.Errorf("sign control response req=%s: %w", requestID, err))
@@ -395,7 +395,7 @@ func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requestID string, p
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		// On the first pass, try the request relay alone to maximize the chance
 		// the requester sees the response on the relay they used.
-		attemptRelays := b.responseRelayCandidates(preferredRelay, time.Now())
+		attemptRelays := b.responseRelayCandidates(preferredRelay, requesterPubKey, time.Now())
 		if preferredRelay != "" && attempt < preferOnlyAttempts {
 			attemptRelays = []string{preferredRelay}
 		}
@@ -631,7 +631,7 @@ func (b *ControlRPCBus) respondErrorCode(re nostr.RelayEvent, msg string, reques
 	}
 	tags := nostr.Tags{{"e", re.Event.ID.Hex()}, {"p", re.Event.PubKey.Hex()}, {"req", requestID}, {"status", "error"}, {"t", "control_rpc"}}
 	payloadRaw, _ := json.Marshal(map[string]any{"error": buildControlRPCError(msg, code, data)})
-	b.publishResponse(re, requestID, string(payloadRaw), tags)
+	b.publishResponse(re, re.Event.PubKey.Hex(), requestID, string(payloadRaw), tags)
 }
 
 func (b *ControlRPCBus) markSeen(id string) bool {
@@ -752,29 +752,25 @@ func trimMethod(method string) string {
 	return string(bytes.TrimSpace([]byte(method)))
 }
 
-func (b *ControlRPCBus) responseRelayCandidates(preferred string, now time.Time) []string {
-	base := b.currentRelays()
-	if b.health != nil {
-		base = b.health.Candidates(base, now)
+func (b *ControlRPCBus) responseRelayCandidates(preferred string, requesterPubKey string, now time.Time) []string {
+	var selector *RelaySelector
+	if b.hub != nil {
+		selector = b.hub.Selector()
 	}
-	preferred = strings.TrimSpace(preferred)
-	if preferred == "" {
+	base := ControlResponseRelayCandidates(b.ctx, selector, b.pool, b.currentRelays(), b.public.Hex(), requesterPubKey, preferred)
+	if b.health == nil {
 		return base
 	}
-	out := make([]string, 0, len(base))
-	seen := map[string]struct{}{}
-	for _, relay := range append([]string{preferred}, base...) {
-		relay = strings.TrimSpace(relay)
-		if relay == "" {
-			continue
+	allowed := make([]string, 0, len(base))
+	for _, relay := range base {
+		if b.health.Allowed(relay, now) {
+			allowed = append(allowed, relay)
 		}
-		if _, ok := seen[relay]; ok {
-			continue
-		}
-		seen[relay] = struct{}{}
-		out = append(out, relay)
 	}
-	return out
+	if len(allowed) == 0 {
+		return base
+	}
+	return allowed
 }
 
 func (b *ControlRPCBus) currentRelays() []string {
