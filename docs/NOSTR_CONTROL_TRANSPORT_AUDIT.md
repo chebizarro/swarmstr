@@ -44,18 +44,20 @@ As of `swarmstr-3.1.7.1`, the CLI now has the missing prerequisites for an expli
 
 The CLI now rejects self-request configurations where the caller signer resolves to the same pubkey as the target daemon. The remaining `swarmstr-3.1.7` work is to make that path the default client behavior rather than an explicit opt-in.
 
-### 2. Operator-facing docs still present `/call` as the practical primary path
+### 2. Operator-facing docs no longer treat `/call` as the practical primary path
 
-Current docs still teach the HTTP/admin path first:
+This gap is now closed by `swarmstr-3.1.11`.
 
-- `README.md:150-159` describes `metiq gw <method>` generically, but not as a Nostr-backed call path.
-- `docs/reference/rpc.md:48-77` opens with `POST /call` and treats it as the generic RPC endpoint.
-- `docs/cli/index.md:381-387` describes `metiq gw` as a raw gateway call without any Nostr transport semantics.
-- `docs/NIP86_ALIGNMENT_PLAN.md:11-15` is stale and still states that no Nostr-native control transport exists.
+The operator-facing docs now state the actual control transport contract:
 
-Classification: **docs and operator guidance gap**.
+- `README.md` explains that `metiq gw` defaults to transport `auto` and prefers Nostr when `control_target_pubkey` is configured.
+- `docs/gateway/nostr-control.md` provides the operator and migration guide for Nostr-first raw control.
+- `docs/gateway/configuration.md` documents `control_target_pubkey` and `control_signer_url` as bootstrap knobs.
+- `docs/reference/rpc.md` describes Nostr control RPC as the primary raw method path and `/call` as compatibility.
+- `docs/cli/index.md` documents the CLI selection rules and explicit override flags.
+- `docs/NIP86_ALIGNMENT_PLAN.md` is marked as historical and no longer claims that Nostr-native control is missing.
 
-Follow-on bead: `swarmstr-3.1.11`.
+Classification: **docs and operator guidance gap — closed by `swarmstr-3.1.11`**.
 
 ### 3. Relay-routing behavior exists, but the defaults are not yet an operator-level contract
 
@@ -125,8 +127,8 @@ Follow-on bead: `swarmstr-3.1.12`.
 5. `swarmstr-3.1.11` — update operator and migration docs.
 6. `swarmstr-3.1.12` — close the epic or spin out real follow-on work.
 
-## Immediate conclusion
+## Current conclusion
 
-The highest-impact next implementation bead is `swarmstr-3.1.7`.
+The transport, relay-routing, replay, parity, and operator-doc slices are now all landed.
 
-Reason: the server-side Nostr control transport already exists, but the primary shipped CLI entrypoint (`metiq gw`) still routes through HTTP `/call` only. Until that changes, swarmstr is still operationally local-admin-first from a user and operator perspective.
+The remaining work under `swarmstr-3.1` is closure hygiene: either close the epic via `swarmstr-3.1.12` or spin out any newly discovered follow-on work explicitly.
