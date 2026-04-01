@@ -32,6 +32,18 @@ Classification: **implementation gap**.
 
 Follow-on bead: `swarmstr-3.1.7`.
 
+As of `swarmstr-3.1.7.1`, the CLI now has the missing prerequisites for an explicit Nostr control caller:
+
+- bootstrap fields:
+  - `control_target_pubkey`
+  - `control_signer_url`
+- `metiq gw` flags:
+  - `--transport nostr`
+  - `--control-target-pubkey`
+  - `--control-signer-url`
+
+The CLI now rejects self-request configurations where the caller signer resolves to the same pubkey as the target daemon. The remaining `swarmstr-3.1.7` work is to make that path the default client behavior rather than an explicit opt-in.
+
 ### 2. Operator-facing docs still present `/call` as the practical primary path
 
 Current docs still teach the HTTP/admin path first:

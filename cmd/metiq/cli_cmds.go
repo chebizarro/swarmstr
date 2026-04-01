@@ -2559,10 +2559,16 @@ func runGW(args []string) error {
 	fs := flag.NewFlagSet("gw", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var adminAddr, adminToken, bootstrapPath string
+	var transport, controlTargetPubKey, controlSignerURL string
+	var timeoutSec int
 	var jsonOut bool
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&transport, "transport", "http", "gateway transport: http or nostr")
+	fs.StringVar(&controlTargetPubKey, "control-target-pubkey", "", "target daemon pubkey for Nostr control RPC")
+	fs.StringVar(&controlSignerURL, "control-signer-url", "", "caller signer override for Nostr control RPC (URL, env://, file://, bunker://, or direct key material)")
+	fs.IntVar(&timeoutSec, "timeout", 30, "request timeout seconds")
 	fs.BoolVar(&jsonOut, "json", true, "output raw JSON (default true)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -2598,9 +2604,12 @@ func runGW(args []string) error {
 		rawParams = json.RawMessage("{}")
 	}
 
-	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	cl, err := resolveGWClientFn(transport, adminAddr, adminToken, bootstrapPath, controlTargetPubKey, controlSignerURL, time.Duration(timeoutSec)*time.Second)
 	if err != nil {
 		return err
+	}
+	if closer, ok := cl.(gatewayCloser); ok {
+		defer closer.Close()
 	}
 
 	// Use cl.call; json.RawMessage marshals as-is so params stay intact.
