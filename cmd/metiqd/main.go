@@ -3378,7 +3378,7 @@ func main() {
 						log.Printf("persist partial tool traces session=%s err=%v", sessionID, err)
 					}
 				}
-				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta)
+				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
 			}
 			switch {
 			case errors.Is(turnErr, context.DeadlineExceeded):
@@ -3407,7 +3407,7 @@ func main() {
 		}
 		// Persist the full tool-call/tool-result history so future turns can
 		// see prior tool usage — fixes the "announce and forget" behaviour.
-		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta)
+		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 			TS:      time.Now().UnixMilli(),
 			AgentID: activeAgentID,
@@ -4280,7 +4280,7 @@ func main() {
 						log.Printf("persist partial tool traces (channel) session=%s err=%v", sessionID, err)
 					}
 				}
-				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta)
+				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
 			}
 			if errors.Is(turnErr, context.Canceled) {
 				log.Printf("channel agent aborted session=%s", sessionID)
@@ -4303,7 +4303,7 @@ func main() {
 		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
 			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
 		}
-		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta)
+		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
 
 		// ── Deliver reply ─────────────────────────────────────────────────
 		outboundText := turnResult.Text
@@ -5867,6 +5867,7 @@ func persistAndIngestTurnHistory(
 	sessionID string,
 	requestEventID string,
 	delta []agent.ConversationMessage,
+	turnResultMeta *agent.TurnResultMetadata,
 ) {
 	if len(delta) == 0 {
 		return
@@ -5877,6 +5878,7 @@ func persistAndIngestTurnHistory(
 		requestEventID = fmt.Sprintf("anon:%d", time.Now().UnixNano())
 	}
 	nowUnix := time.Now().Unix()
+	persistedTurnResultMeta := transcriptTurnResultMeta(turnResultMeta)
 	for i, m := range delta {
 		// Build a deterministic entry ID.
 		var entryID string
@@ -5893,6 +5895,9 @@ func persistAndIngestTurnHistory(
 
 		// Build transcript metadata.
 		meta := map[string]any{"request_event_id": requestEventID}
+		if persistedTurnResultMeta != nil && i == len(delta)-1 {
+			meta["turn_result"] = persistedTurnResultMeta
+		}
 		if len(m.ToolCalls) > 0 {
 			meta["message_kind"] = "tool_call"
 			tcRefs := make([]map[string]any, len(m.ToolCalls))
@@ -5946,6 +5951,33 @@ func persistAndIngestTurnHistory(
 			}
 		}
 	}
+}
+
+func transcriptTurnResultMeta(meta *agent.TurnResultMetadata) map[string]any {
+	if meta == nil {
+		return nil
+	}
+	out := map[string]any{}
+	if meta.Outcome != "" {
+		out["outcome"] = string(meta.Outcome)
+	}
+	if meta.StopReason != "" {
+		out["stop_reason"] = string(meta.StopReason)
+	}
+	usage := map[string]any{}
+	if meta.Usage.InputTokens > 0 {
+		usage["input_tokens"] = meta.Usage.InputTokens
+	}
+	if meta.Usage.OutputTokens > 0 {
+		usage["output_tokens"] = meta.Usage.OutputTokens
+	}
+	if len(usage) > 0 {
+		out["usage"] = usage
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func setSessionActiveTurn(ctx context.Context, docsRepo *state.DocsRepository, sessionID, peerPubKey string, active bool) {
@@ -9228,34 +9260,25 @@ func buildTurnTelemetry(turnID string, startedAt, endedAt time.Time, result agen
 		FallbackFrom:   strings.TrimSpace(fallbackFrom),
 		FallbackTo:     strings.TrimSpace(fallbackTo),
 		FallbackReason: strings.TrimSpace(fallbackReason),
-		Usage:          result.Usage,
+	}
+	if meta, ok := agent.BuildTurnResultMetadata(result, turnErr); ok {
+		telemetry.Outcome = meta.Outcome
+		telemetry.StopReason = meta.StopReason
+		telemetry.Usage = meta.Usage
 	}
 	if turnErr != nil {
-		if partial, ok := agent.PartialTurnResult(turnErr); ok {
-			if partial.Usage.InputTokens > 0 || partial.Usage.OutputTokens > 0 {
-				telemetry.Usage = partial.Usage
-			}
-		}
 		telemetry.Error = truncateRunes(strings.TrimSpace(turnErr.Error()), 200)
-		if outcome, stopReason, ok := agent.ClassifyTurnError(turnErr); ok {
-			telemetry.Outcome = outcome
-			telemetry.StopReason = stopReason
-		}
-	} else {
-		telemetry.Outcome = result.Outcome
-		telemetry.StopReason = result.StopReason
-		if telemetry.Outcome == "" || telemetry.StopReason == "" {
-			inferredOutcome, inferredStopReason := agent.ClassifyTurnResult(result)
-			if telemetry.Outcome == "" {
-				telemetry.Outcome = inferredOutcome
-			}
-			if telemetry.StopReason == "" {
-				telemetry.StopReason = inferredStopReason
-			}
-		}
 	}
 	telemetry.LoopBlocked = telemetry.StopReason == agent.TurnStopReasonLoopBlocked
 	return telemetry
+}
+
+func turnResultMetadataPtr(result agent.TurnResult, turnErr error) *agent.TurnResultMetadata {
+	meta, ok := agent.BuildTurnResultMetadata(result, turnErr)
+	if !ok {
+		return nil
+	}
+	return &meta
 }
 
 func persistTurnTelemetry(sessionStore *state.SessionStore, sessionID string, telemetry agent.TurnTelemetry) {

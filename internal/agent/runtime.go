@@ -84,8 +84,8 @@ type TurnResult struct {
 
 // TurnUsage holds provider-reported token counts for a single turn.
 type TurnUsage struct {
-	InputTokens  int64
-	OutputTokens int64
+	InputTokens  int64 `json:"input_tokens,omitempty"`
+	OutputTokens int64 `json:"output_tokens,omitempty"`
 }
 
 // TurnTelemetry is the minimal structured runtime snapshot for a completed or
@@ -105,6 +105,15 @@ type TurnTelemetry struct {
 	FallbackTo     string
 	FallbackReason string
 	Usage          TurnUsage
+}
+
+// TurnResultMetadata is the canonical persisted subset of a terminal turn
+// result. metiqd stores this alongside HistoryDelta so callers do not have to
+// reconstruct terminal state from logs.
+type TurnResultMetadata struct {
+	Outcome    TurnOutcome    `json:"outcome,omitempty"`
+	StopReason TurnStopReason `json:"stop_reason,omitempty"`
+	Usage      TurnUsage      `json:"usage,omitempty"`
 }
 
 // TurnOutcome classifies the terminal result shape of a turn.
@@ -183,6 +192,41 @@ func ClassifyTurnError(err error) (TurnOutcome, TurnStopReason, bool) {
 // plain TurnResult without explicitly populating Outcome/StopReason.
 func ClassifyTurnResult(result TurnResult) (TurnOutcome, TurnStopReason) {
 	return inferTurnClassification(result)
+}
+
+// BuildTurnResultMetadata projects the canonical terminal classification and
+// usage into a persisted form. When err wraps a TurnExecutionError, any partial
+// usage/classification carried by the error wins.
+func BuildTurnResultMetadata(result TurnResult, err error) (TurnResultMetadata, bool) {
+	meta := TurnResultMetadata{Usage: result.Usage}
+	if err != nil {
+		var te *TurnExecutionError
+		if errors.As(err, &te) {
+			if te.Partial.Usage.InputTokens > 0 || te.Partial.Usage.OutputTokens > 0 {
+				meta.Usage = te.Partial.Usage
+			}
+		}
+		if outcome, stopReason, ok := ClassifyTurnError(err); ok {
+			meta.Outcome = outcome
+			meta.StopReason = stopReason
+		}
+	} else {
+		meta.Outcome = result.Outcome
+		meta.StopReason = result.StopReason
+		if meta.Outcome == "" || meta.StopReason == "" {
+			inferredOutcome, inferredStopReason := ClassifyTurnResult(result)
+			if meta.Outcome == "" {
+				meta.Outcome = inferredOutcome
+			}
+			if meta.StopReason == "" {
+				meta.StopReason = inferredStopReason
+			}
+		}
+	}
+	if meta.Outcome == "" && meta.StopReason == "" && meta.Usage.InputTokens == 0 && meta.Usage.OutputTokens == 0 {
+		return TurnResultMetadata{}, false
+	}
+	return meta, true
 }
 
 type Runtime interface {
