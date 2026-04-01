@@ -2565,7 +2565,7 @@ func runGW(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.StringVar(&transport, "transport", "http", "gateway transport: http or nostr")
+	fs.StringVar(&transport, "transport", "auto", "gateway transport: auto, http, or nostr")
 	fs.StringVar(&controlTargetPubKey, "control-target-pubkey", "", "target daemon pubkey for Nostr control RPC")
 	fs.StringVar(&controlSignerURL, "control-signer-url", "", "caller signer override for Nostr control RPC (URL, env://, file://, bunker://, or direct key material)")
 	fs.IntVar(&timeoutSec, "timeout", 30, "request timeout seconds")

@@ -533,7 +533,7 @@ func usage() {
 	fmt.Println("  daemon status      show daemon liveness and uptime")
 	fmt.Println()
 	fmt.Println("Gateway passthrough:")
-	fmt.Println("  gw <method> [params]  call any gateway method and print JSON result (--transport http|nostr)")
+	fmt.Println("  gw <method> [params]  call any gateway method and print JSON result (--transport auto|http|nostr)")
 	fmt.Println("                        params: JSON object or key=value pairs")
 	fmt.Println()
 	fmt.Println("Other:")

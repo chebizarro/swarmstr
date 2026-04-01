@@ -27,6 +27,9 @@ type gatewayCloser interface {
 	Close()
 }
 
+type adminGatewayResolver func(addrFlag, tokenFlag, bootstrapPath string) (gatewayCaller, error)
+type nostrGatewayResolver func(bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error)
+
 // adminClient is a minimal HTTP client for the metiqd admin API.
 type adminClient struct {
 	addr  string
@@ -43,16 +46,72 @@ type nostrControlClient struct {
 }
 
 var resolveGWClientFn = resolveGWClient
+var resolveAdminGatewayClientFn adminGatewayResolver = func(addrFlag, tokenFlag, bootstrapPath string) (gatewayCaller, error) {
+	return resolveAdminClient(addrFlag, tokenFlag, bootstrapPath)
+}
+var resolveNostrGatewayClientFn nostrGatewayResolver = func(bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+	return resolveNostrControlClient(bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
+}
 
 func resolveGWClient(transport, addrFlag, tokenFlag, bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
 	switch strings.ToLower(strings.TrimSpace(transport)) {
-	case "", "http":
-		return resolveAdminClient(addrFlag, tokenFlag, bootstrapPath)
+	case "http":
+		return resolveAdminGatewayClientFn(addrFlag, tokenFlag, bootstrapPath)
 	case "nostr":
-		return resolveNostrControlClient(bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
+		return resolveNostrGatewayClientFn(bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
+	case "", "auto":
+		return resolveAutoGWClient(addrFlag, tokenFlag, bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
 	default:
-		return nil, fmt.Errorf("unsupported gw transport %q (expected http or nostr)", transport)
+		return nil, fmt.Errorf("unsupported gw transport %q (expected auto, http, or nostr)", transport)
 	}
+}
+
+func resolveAutoGWClient(addrFlag, tokenFlag, bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+	preferNostr, err := shouldPreferNostrControl(bootstrapPath, controlTargetPubKey, controlSignerURL)
+	if err != nil {
+		return nil, err
+	}
+	if !preferNostr {
+		return resolveAdminGatewayClientFn(addrFlag, tokenFlag, bootstrapPath)
+	}
+	return resolveNostrGatewayClientFn(bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
+}
+
+func shouldPreferNostrControl(bootstrapPath, controlTargetPubKey, controlSignerURL string) (bool, error) {
+	if strings.TrimSpace(controlTargetPubKey) != "" {
+		return true, nil
+	}
+	target, err := lookupBootstrapString(bootstrapPath, "control_target_pubkey")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(target) != "", nil
+}
+
+func lookupBootstrapString(bootstrapPath, key string) (string, error) {
+	bsPath := bootstrapPath
+	if bsPath == "" {
+		defaultPath, err := config.DefaultBootstrapPath()
+		if err != nil {
+			return "", err
+		}
+		bsPath = defaultPath
+	}
+	raw, err := os.ReadFile(bsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return "", nil
+	}
+	if v, ok := m[key].(string); ok {
+		return strings.TrimSpace(v), nil
+	}
+	return "", nil
 }
 
 func resolveNostrControlClient(bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (*nostrControlClient, error) {
