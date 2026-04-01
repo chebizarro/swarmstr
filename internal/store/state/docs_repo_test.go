@@ -147,7 +147,19 @@ func TestDocsRepository_ConfigListSessionCheckpointRoundTrip(t *testing.T) {
 		t.Fatalf("expected latest session activity, got %d", sessions[0].LastInboundAt)
 	}
 
-	if _, err := repo.PutCheckpoint(ctx, "dm_ingest", CheckpointDoc{Version: 1, Name: "dm_ingest", LastEvent: "evt-9", LastUnix: 99}); err != nil {
+	if _, err := repo.PutCheckpoint(ctx, "dm_ingest", CheckpointDoc{
+		Version:   1,
+		Name:      "dm_ingest",
+		LastEvent: "evt-9",
+		LastUnix:  99,
+		ControlResponses: []ControlResponseCacheDoc{{
+			CallerPubKey: "caller-a",
+			RequestID:    "req-1",
+			Payload:      `{"result":{"ok":true}}`,
+			Tags:         [][]string{{"req", "req-1"}, {"status", "ok"}},
+			EventUnix:    99,
+		}},
+	}); err != nil {
 		t.Fatalf("PutCheckpoint: %v", err)
 	}
 	cp, err := repo.GetCheckpoint(ctx, "dm_ingest")
@@ -156,5 +168,8 @@ func TestDocsRepository_ConfigListSessionCheckpointRoundTrip(t *testing.T) {
 	}
 	if cp.LastEvent != "evt-9" || cp.LastUnix != 99 {
 		t.Fatalf("unexpected checkpoint %+v", cp)
+	}
+	if len(cp.ControlResponses) != 1 || cp.ControlResponses[0].RequestID != "req-1" {
+		t.Fatalf("unexpected control response checkpoint payload %+v", cp.ControlResponses)
 	}
 }

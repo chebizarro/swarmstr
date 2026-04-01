@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	nostr "fiatjaf.com/nostr"
+
 	"metiq/internal/agent"
 	"metiq/internal/autoreply"
 	"metiq/internal/gateway/methods"
@@ -2472,6 +2474,63 @@ func (e *capturingEmitter) eventsByName(name string) []any {
 type testStore struct {
 	mu          sync.Mutex
 	replaceable map[string]state.Event
+}
+
+func TestControlTrackerPersistsHandledResponsesAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	tracker := newControlTracker(state.CheckpointDoc{})
+	handled := nostruntime.ControlRPCHandled{
+		EventID:      "evt-2",
+		EventUnix:    time.Now().Unix(),
+		CallerPubKey: "caller-a",
+		RequestID:    "req-1",
+		Response: nostruntime.ControlRPCCachedResponse{
+			Payload: `{"result":{"ok":true}}`,
+			Tags:    nostr.Tags{{"req", "req-1"}, {"status", "ok"}},
+		},
+	}
+	if err := tracker.MarkHandled(ctx, docs, handled); err != nil {
+		t.Fatalf("MarkHandled: %v", err)
+	}
+	cached, ok := tracker.LookupResponse("caller-a", "req-1")
+	if !ok {
+		t.Fatal("expected tracker cache hit")
+	}
+	if cached.Payload != handled.Response.Payload {
+		t.Fatalf("unexpected cached payload: %q", cached.Payload)
+	}
+	checkpoint, err := docs.GetCheckpoint(ctx, "control_ingest")
+	if err != nil {
+		t.Fatalf("GetCheckpoint: %v", err)
+	}
+	if checkpoint.LastEvent != handled.EventID {
+		t.Fatalf("unexpected checkpoint event id: %q", checkpoint.LastEvent)
+	}
+	if len(checkpoint.ControlResponses) != 1 {
+		t.Fatalf("expected one persisted control response, got %d", len(checkpoint.ControlResponses))
+	}
+	restarted := newControlTracker(checkpoint)
+	cached, ok = restarted.LookupResponse("caller-a", "req-1")
+	if !ok {
+		t.Fatal("expected restart cache hit")
+	}
+	if cached.Payload != handled.Response.Payload {
+		t.Fatalf("unexpected restarted payload: %q", cached.Payload)
+	}
+}
+
+func TestControlTrackerDropsExpiredResponsesOnLoad(t *testing.T) {
+	tracker := newControlTracker(state.CheckpointDoc{ControlResponses: []state.ControlResponseCacheDoc{{
+		CallerPubKey: "caller-a",
+		RequestID:    "req-1",
+		Payload:      `{"result":{"ok":true}}`,
+		Tags:         [][]string{{"req", "req-1"}},
+		EventUnix:    time.Now().Add(-controlResponseCheckpointTTL - time.Minute).Unix(),
+	}}})
+	if _, ok := tracker.LookupResponse("caller-a", "req-1"); ok {
+		t.Fatal("expected expired control response to be pruned")
+	}
 }
 
 func newTestStore() *testStore {

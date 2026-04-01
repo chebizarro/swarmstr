@@ -313,10 +313,19 @@ type ListDoc struct {
 }
 
 type CheckpointDoc struct {
-	Version   int    `json:"version"`
-	Name      string `json:"name"`
-	LastEvent string `json:"last_event,omitempty"`
-	LastUnix  int64  `json:"last_unix,omitempty"`
+	Version          int                       `json:"version"`
+	Name             string                    `json:"name"`
+	LastEvent        string                    `json:"last_event,omitempty"`
+	LastUnix         int64                     `json:"last_unix,omitempty"`
+	ControlResponses []ControlResponseCacheDoc `json:"control_responses,omitempty"`
+}
+
+type ControlResponseCacheDoc struct {
+	CallerPubKey string     `json:"caller_pubkey"`
+	RequestID    string     `json:"request_id"`
+	Payload      string     `json:"payload"`
+	Tags         [][]string `json:"tags,omitempty"`
+	EventUnix    int64      `json:"event_unix,omitempty"`
 }
 
 type TranscriptEntryDoc struct {

@@ -90,11 +90,11 @@ Primary anchors:
 - `internal/nostr/runtime/control_bus.go:284-379`
 - `cmd/metiqd/main.go:1238` and `5758-5760` for control checkpoint wiring.
 
-The remaining work is to verify and document restart/replay behavior as an operational contract rather than treating the current implementation as implicitly sufficient.
+The remaining work was to verify and document restart/replay behavior as an operational contract rather than treating the current implementation as implicitly sufficient.
 
-Classification: **hardening / verification gap**.
+That gap is now closed by persisting recent caller + request ID response envelopes in the control checkpoint and replaying them before method execution on restart/replay paths.
 
-Follow-on bead: `swarmstr-3.1.9`.
+Classification: **hardening / verification gap — closed by `swarmstr-3.1.9`**.
 
 ### 5. Dual-surface parity exists in implementation, but not yet as an explicit maintained matrix
 

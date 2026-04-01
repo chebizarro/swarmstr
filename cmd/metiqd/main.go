@@ -4583,15 +4583,16 @@ func main() {
 		SinceUnix:         checkpointSinceUnix(controlCheckpoint.LastUnix),
 		MaxRequestAge:     2 * time.Minute,
 		MinCallerInterval: 100 * time.Millisecond,
+		CachedLookup:      controlTracker.LookupResponse,
 		OnRequest: func(ctx context.Context, in nostruntime.ControlRPCInbound) (nostruntime.ControlRPCResult, error) {
 			if controlTracker.AlreadyProcessed(in.EventID, in.CreatedAt) {
 				return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "duplicate": true}}, nil
 			}
 			return handleControlRPCRequest(ctx, in, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
 		},
-		OnHandled: func(ctx context.Context, eventID string, eventUnix int64) {
-			if err := controlTracker.MarkProcessed(ctx, docsRepo, eventID, eventUnix); err != nil {
-				log.Printf("control checkpoint update failed event=%s err=%v", eventID, err)
+		OnHandled: func(ctx context.Context, handled nostruntime.ControlRPCHandled) {
+			if err := controlTracker.MarkHandled(ctx, docsRepo, handled); err != nil {
+				log.Printf("control checkpoint update failed event=%s req=%s err=%v", handled.EventID, handled.RequestID, err)
 			}
 		},
 		OnError: func(err error) {
@@ -5542,9 +5543,11 @@ type memoryIndexTracker struct {
 }
 
 type controlTracker struct {
-	mu        sync.Mutex
-	lastEvent string
-	lastUnix  int64
+	mu            sync.Mutex
+	lastEvent     string
+	lastUnix      int64
+	responses     map[string]state.ControlResponseCacheDoc
+	responseOrder []string
 }
 
 type chatAbortHandle struct {
@@ -5656,8 +5659,34 @@ func newMemoryIndexTracker(doc state.CheckpointDoc) *memoryIndexTracker {
 	return &memoryIndexTracker{lastEvent: doc.LastEvent, lastUnix: doc.LastUnix}
 }
 
+const (
+	controlResponseCheckpointCap = 256
+	controlResponseCheckpointTTL = 30 * time.Minute
+)
+
 func newControlTracker(doc state.CheckpointDoc) *controlTracker {
-	return &controlTracker{lastEvent: doc.LastEvent, lastUnix: doc.LastUnix}
+	t := &controlTracker{
+		lastEvent: doc.LastEvent,
+		lastUnix:  doc.LastUnix,
+		responses: map[string]state.ControlResponseCacheDoc{},
+	}
+	nowUnix := time.Now().Unix()
+	for _, entry := range doc.ControlResponses {
+		callerPubKey := strings.TrimSpace(entry.CallerPubKey)
+		requestID := strings.TrimSpace(entry.RequestID)
+		if callerPubKey == "" || requestID == "" {
+			continue
+		}
+		entry.CallerPubKey = callerPubKey
+		entry.RequestID = requestID
+		key := controlResponseCacheKey(callerPubKey, requestID)
+		if _, exists := t.responses[key]; !exists {
+			t.responseOrder = append(t.responseOrder, key)
+		}
+		t.responses[key] = entry
+	}
+	t.pruneResponsesLocked(nowUnix)
+	return t
 }
 
 func ensureControlCheckpoint(ctx context.Context, repo *state.DocsRepository) (state.CheckpointDoc, error) {
@@ -5737,28 +5766,148 @@ func (t *controlTracker) AlreadyProcessed(eventID string, createdAt int64) bool 
 	return false
 }
 
-func (t *controlTracker) MarkProcessed(ctx context.Context, repo *state.DocsRepository, eventID string, eventUnix int64) error {
-	if eventID == "" {
+func (t *controlTracker) LookupResponse(callerPubKey string, requestID string) (nostruntime.ControlRPCCachedResponse, bool) {
+	callerPubKey = strings.TrimSpace(callerPubKey)
+	requestID = strings.TrimSpace(requestID)
+	if callerPubKey == "" || requestID == "" {
+		return nostruntime.ControlRPCCachedResponse{}, false
+	}
+	cutoff := time.Now().Add(-controlResponseCheckpointTTL).Unix()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := controlResponseCacheKey(callerPubKey, requestID)
+	entry, ok := t.responses[key]
+	if !ok {
+		return nostruntime.ControlRPCCachedResponse{}, false
+	}
+	if entry.EventUnix > 0 && entry.EventUnix < cutoff {
+		delete(t.responses, key)
+		for i, existing := range t.responseOrder {
+			if existing == key {
+				t.responseOrder = append(t.responseOrder[:i], t.responseOrder[i+1:]...)
+				break
+			}
+		}
+		return nostruntime.ControlRPCCachedResponse{}, false
+	}
+	return nostruntime.ControlRPCCachedResponse{Payload: entry.Payload, Tags: controlResponseTags(entry.Tags)}, true
+}
+
+func (t *controlTracker) MarkHandled(ctx context.Context, repo *state.DocsRepository, handled nostruntime.ControlRPCHandled) error {
+	if strings.TrimSpace(handled.EventID) == "" {
 		return nil
 	}
 	nowUnix := time.Now().Unix()
-	if eventUnix <= 0 {
-		eventUnix = nowUnix
-	}
-	if eventUnix > nowUnix+30 {
+	eventUnix := handled.EventUnix
+	if eventUnix <= 0 || eventUnix > nowUnix+30 {
 		eventUnix = nowUnix
 	}
 	t.mu.Lock()
-	if eventUnix < t.lastUnix || (eventUnix == t.lastUnix && eventID <= t.lastEvent) {
-		t.mu.Unlock()
-		return nil
+	if eventUnix > t.lastUnix || (eventUnix == t.lastUnix && handled.EventID > t.lastEvent) {
+		t.lastEvent = handled.EventID
+		t.lastUnix = eventUnix
 	}
-	t.lastEvent = eventID
-	t.lastUnix = eventUnix
-	checkpoint := state.CheckpointDoc{Version: 1, Name: "control_ingest", LastEvent: t.lastEvent, LastUnix: t.lastUnix}
+	callerPubKey := strings.TrimSpace(handled.CallerPubKey)
+	requestID := strings.TrimSpace(handled.RequestID)
+	if callerPubKey != "" && requestID != "" {
+		key := controlResponseCacheKey(callerPubKey, requestID)
+		if _, exists := t.responses[key]; !exists {
+			t.responseOrder = append(t.responseOrder, key)
+		}
+		t.responses[key] = state.ControlResponseCacheDoc{
+			CallerPubKey: callerPubKey,
+			RequestID:    requestID,
+			Payload:      handled.Response.Payload,
+			Tags:         controlResponseDocTags(handled.Response.Tags),
+			EventUnix:    eventUnix,
+		}
+	}
+	t.pruneResponsesLocked(nowUnix)
+	checkpoint := state.CheckpointDoc{
+		Version:          1,
+		Name:             "control_ingest",
+		LastEvent:        t.lastEvent,
+		LastUnix:         t.lastUnix,
+		ControlResponses: t.snapshotResponsesLocked(),
+	}
 	t.mu.Unlock()
 	_, err := repo.PutCheckpoint(ctx, "control_ingest", checkpoint)
 	return err
+}
+
+func controlResponseCacheKey(callerPubKey string, requestID string) string {
+	return strings.TrimSpace(callerPubKey) + "\x00" + strings.TrimSpace(requestID)
+}
+
+func (t *controlTracker) pruneResponsesLocked(nowUnix int64) {
+	if nowUnix <= 0 {
+		nowUnix = time.Now().Unix()
+	}
+	cutoff := nowUnix - int64(controlResponseCheckpointTTL/time.Second)
+	kept := t.responseOrder[:0]
+	for _, key := range t.responseOrder {
+		entry, ok := t.responses[key]
+		if !ok {
+			continue
+		}
+		if entry.EventUnix > 0 && entry.EventUnix < cutoff {
+			delete(t.responses, key)
+			continue
+		}
+		kept = append(kept, key)
+	}
+	t.responseOrder = kept
+	for len(t.responseOrder) > controlResponseCheckpointCap {
+		victim := t.responseOrder[0]
+		t.responseOrder = t.responseOrder[1:]
+		delete(t.responses, victim)
+	}
+}
+
+func (t *controlTracker) snapshotResponsesLocked() []state.ControlResponseCacheDoc {
+	if len(t.responseOrder) == 0 {
+		return nil
+	}
+	out := make([]state.ControlResponseCacheDoc, 0, len(t.responseOrder))
+	for _, key := range t.responseOrder {
+		entry, ok := t.responses[key]
+		if !ok {
+			continue
+		}
+		out = append(out, state.ControlResponseCacheDoc{
+			CallerPubKey: entry.CallerPubKey,
+			RequestID:    entry.RequestID,
+			Payload:      entry.Payload,
+			Tags:         controlResponseDocTags(controlResponseTags(entry.Tags)),
+			EventUnix:    entry.EventUnix,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func controlResponseDocTags(tags nostr.Tags) [][]string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([][]string, 0, len(tags))
+	for _, tag := range tags {
+		out = append(out, append([]string(nil), tag...))
+	}
+	return out
+}
+
+func controlResponseTags(tags [][]string) nostr.Tags {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make(nostr.Tags, 0, len(tags))
+	for _, tag := range tags {
+		out = append(out, nostr.Tag(append([]string(nil), tag...)))
+	}
+	return out
 }
 
 func persistInbound(
