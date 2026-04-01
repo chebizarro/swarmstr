@@ -247,6 +247,41 @@ func TestPipeline_Sequential_PreservesRuntimeHints(t *testing.T) {
 	}
 }
 
+func TestPipeline_Sequential_PreservesWorkerMetadata(t *testing.T) {
+	d := NewDispatcher()
+	sendFn := func(ctx context.Context, peerPubKey, taskID string, payload TaskPayload) error {
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			d.Deliver(TaskResult{
+				TaskID:       taskID,
+				Text:         "ok",
+				SenderPubKey: peerPubKey,
+				Worker: &WorkerMetadata{
+					SessionID:       "acp:" + peerPubKey,
+					AgentID:         "worker",
+					HistoryEntryIDs: []string{"acp:task:seed:0", "turn:task:assistant:0"},
+				},
+			})
+		}()
+		return nil
+	}
+
+	p := &Pipeline{Steps: []Step{{PeerPubKey: "peer1", Instructions: "task1"}}}
+	results, err := p.RunSequential(context.Background(), d, sendFn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].SenderPubKey != "peer1" {
+		t.Fatalf("sender_pubkey = %q, want peer1", results[0].SenderPubKey)
+	}
+	if results[0].Worker == nil || results[0].Worker.SessionID != "acp:peer1" || len(results[0].Worker.HistoryEntryIDs) != 2 {
+		t.Fatalf("worker metadata = %#v", results[0].Worker)
+	}
+}
+
 func TestAggregateResults(t *testing.T) {
 	results := []PipelineResult{
 		{Text: "hello"},

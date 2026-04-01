@@ -15,11 +15,15 @@ import (
 
 type capturingProvider struct {
 	lastTurn agent.Turn
+	result   agent.ProviderResult
 }
 
 func (p *capturingProvider) Generate(_ context.Context, turn agent.Turn) (agent.ProviderResult, error) {
 	p.lastTurn = turn
-	return agent.ProviderResult{Text: "ok"}, nil
+	if p.result.Text == "" && p.result.Usage.InputTokens == 0 && p.result.Usage.OutputTokens == 0 && len(p.result.HistoryDelta) == 0 && p.result.Outcome == "" && p.result.StopReason == "" {
+		return agent.ProviderResult{Text: "ok"}, nil
+	}
+	return p.result, nil
 }
 
 type stubContextEngine struct {
@@ -114,7 +118,7 @@ func TestHandleACPMessageReturnsACPErrorForMalformedTask(t *testing.T) {
 		TaskID:  "task-bad",
 		Payload: map[string]any{"instructions": []any{"bad"}},
 	}
-	if err := handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agent.NewAgentRuntimeRegistry(nil), agent.NewAgentSessionRouter(), nil, nil); err != nil {
+	if err := handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agent.NewAgentRuntimeRegistry(nil), agent.NewAgentSessionRouter(), nil, nil, nil); err != nil {
 		t.Fatalf("handleACPMessage malformed task: %v", err)
 	}
 	parsed, err := acppkg.Parse([]byte(replied))
@@ -148,7 +152,10 @@ func TestApplyACPTaskRuntimeConstraintsUsesRuntimeFilteredCapability(t *testing.
 }
 
 func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
-	provider := &capturingProvider{}
+	provider := &capturingProvider{result: agent.ProviderResult{
+		Text:  "ok",
+		Usage: agent.ProviderUsage{InputTokens: 3, OutputTokens: 2},
+	}}
 	tools := agent.NewToolRegistry()
 	tools.RegisterWithDef("memory_search", func(context.Context, map[string]any) (string, error) { return "", nil }, toolbuiltin.MemorySearchDef)
 	tools.RegisterWithDef("memory_store", func(context.Context, map[string]any) (string, error) { return "", nil }, toolbuiltin.MemoryStoreDef)
@@ -170,6 +177,7 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	controlSessionStore = ss
 	controlToolRegistry = tools
 	controlRuntimeConfig = newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{ID: "worker"}}})
+	transcriptRepo := state.NewTranscriptRepository(newTestStore(), "author")
 	defer func() {
 		controlSessionStore = prevSessionStore
 		controlToolRegistry = prevToolRegistry
@@ -185,8 +193,12 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 			Content: "existing parent transcript",
 		}}),
 	})
-	dm := nostruntime.InboundDM{Reply: func(context.Context, string) error { return nil }}
-	if err := handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agentReg, sessionRouter, tools, nil); err != nil {
+	var replied string
+	dm := nostruntime.InboundDM{Reply: func(_ context.Context, text string) error {
+		replied = text
+		return nil
+	}}
+	if err := handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agentReg, sessionRouter, tools, nil, transcriptRepo); err != nil {
 		t.Fatalf("handleACPMessage: %v", err)
 	}
 
@@ -211,5 +223,59 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	}
 	if entry.AgentID != "worker" {
 		t.Fatalf("persisted agent id = %q, want worker", entry.AgentID)
+	}
+	if entry.LastTurn == nil {
+		t.Fatal("expected persisted ACP worker last_turn telemetry")
+	}
+	if entry.LastTurn.Outcome != string(agent.TurnOutcomeCompleted) || entry.LastTurn.StopReason != string(agent.TurnStopReasonModelText) {
+		t.Fatalf("last_turn = %+v", entry.LastTurn)
+	}
+
+	parsed, err := acppkg.Parse([]byte(replied))
+	if err != nil {
+		t.Fatalf("parse ACP result: %v", err)
+	}
+	resultPayload, err := acppkg.DecodeResultPayload(parsed.Payload)
+	if err != nil {
+		t.Fatalf("decode ACP result payload: %v", err)
+	}
+	if resultPayload.Worker == nil {
+		t.Fatal("expected worker metadata in ACP result")
+	}
+	if resultPayload.Worker.SessionID != "acp:peer-pubkey" || resultPayload.Worker.AgentID != "worker" {
+		t.Fatalf("worker metadata = %+v", resultPayload.Worker)
+	}
+	if resultPayload.Worker.TurnResult == nil {
+		t.Fatal("expected worker turn_result metadata")
+	}
+	if resultPayload.Worker.TurnResult.Outcome != agent.TurnOutcomeCompleted || resultPayload.Worker.TurnResult.StopReason != agent.TurnStopReasonModelText {
+		t.Fatalf("worker turn_result = %+v", resultPayload.Worker.TurnResult)
+	}
+	if resultPayload.Worker.TurnResult.Usage.InputTokens != 3 || resultPayload.Worker.TurnResult.Usage.OutputTokens != 2 {
+		t.Fatalf("worker usage = %+v", resultPayload.Worker.TurnResult.Usage)
+	}
+	if got := len(resultPayload.Worker.HistoryEntryIDs); got != 2 {
+		t.Fatalf("history entry ids len = %d, want 2 (%v)", got, resultPayload.Worker.HistoryEntryIDs)
+	}
+
+	entries, err := transcriptRepo.ListSession(context.Background(), "acp:peer-pubkey", 10)
+	if err != nil {
+		t.Fatalf("list transcript: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 transcript entries, got %d", len(entries))
+	}
+	if got := entries[0].Meta["acp_task_id"]; got != "task-1" {
+		t.Fatalf("seed entry acp_task_id = %#v", got)
+	}
+	if got := entries[0].Meta["message_kind"]; got != "context_seed" {
+		t.Fatalf("seed entry message_kind = %#v", got)
+	}
+	turnResult, ok := entries[1].Meta["turn_result"].(map[string]any)
+	if !ok {
+		t.Fatalf("terminal ACP transcript entry missing turn_result: %#v", entries[1].Meta)
+	}
+	if got := turnResult["outcome"]; got != string(agent.TurnOutcomeCompleted) {
+		t.Fatalf("terminal outcome = %#v", got)
 	}
 }
