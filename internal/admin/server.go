@@ -161,6 +161,9 @@ type ServerOptions struct {
 	TTSConvert                  func(context.Context, methods.TTSConvertRequest) (map[string]any, error)
 	GetConfig                   func(context.Context) (state.ConfigDoc, error)
 	PutConfig                   func(context.Context, state.ConfigDoc) error
+	ConfigSet                   func(context.Context, methods.ConfigSetRequest) (map[string]any, int, error)
+	ConfigApply                 func(context.Context, methods.ConfigApplyRequest) (map[string]any, int, error)
+	ConfigPatch                 func(context.Context, methods.ConfigPatchRequest) (map[string]any, int, error)
 	GetListWithEvent            func(context.Context, string) (state.ListDoc, state.Event, error)
 	GetConfigWithEvent          func(context.Context) (state.ConfigDoc, state.Event, error)
 	GetRelayPolicy              func(context.Context) (methods.RelayPolicyResponse, error)
@@ -2711,6 +2714,13 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+		if opts.ConfigSet != nil {
+			out, status, err := opts.ConfigSet(ctx, req)
+			if err != nil {
+				return nil, status, err
+			}
+			return methods.ApplyCompatResponseAliases(out), status, nil
+		}
 		current, err := opts.GetConfig(ctx)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
@@ -2748,6 +2758,13 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+		if opts.ConfigApply != nil {
+			out, status, err := opts.ConfigApply(ctx, req)
+			if err != nil {
+				return nil, status, err
+			}
+			return methods.ApplyCompatResponseAliases(out), status, nil
+		}
 		next := req.Config
 		if req.Raw != "" {
 			next, err = methods.DecodeConfigDocFromRaw(req.Raw)
@@ -2782,6 +2799,13 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		req, err = req.Normalize()
 		if err != nil {
 			return nil, http.StatusBadRequest, err
+		}
+		if opts.ConfigPatch != nil {
+			out, status, err := opts.ConfigPatch(ctx, req)
+			if err != nil {
+				return nil, status, err
+			}
+			return methods.ApplyCompatResponseAliases(out), status, nil
 		}
 		current, err := opts.GetConfig(ctx)
 		if err != nil {
