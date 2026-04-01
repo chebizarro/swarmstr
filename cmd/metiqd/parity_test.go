@@ -115,6 +115,11 @@ func TestParity_ConfigGet(t *testing.T) {
 	if len(hash) != 64 {
 		t.Errorf("config.get: base_hash should be 64-char hex, got len=%d val=%q", len(hash), hash)
 	}
+	if hashAlias, _ := out["hash"].(string); hashAlias == "" {
+		t.Errorf("config.get: missing or empty 'hash': %v", out)
+	} else if hashAlias != hash {
+		t.Errorf("config.get: hash alias mismatch hash=%q base_hash=%q", hashAlias, hash)
+	}
 }
 
 // ── config.set ───────────────────────────────────────────────────────────────
@@ -198,6 +203,12 @@ func TestParity_SessionsList(t *testing.T) {
 	// OpenClaw: {sessions: [...], total: N}
 	if _, ok := out["sessions"]; !ok {
 		t.Errorf("sessions.list: missing 'sessions' key: %v", out)
+	}
+	if _, ok := out["total"]; !ok {
+		t.Errorf("sessions.list: missing 'total' key: %v", out)
+	}
+	if _, ok := out["path"]; !ok {
+		t.Errorf("sessions.list: missing 'path' key: %v", out)
 	}
 }
 

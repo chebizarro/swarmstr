@@ -145,6 +145,14 @@ type SessionStore struct {
 	entries map[string]SessionEntry // keyed by session key (not necessarily SessionID)
 }
 
+// Path returns the backing file path for this session store.
+func (s *SessionStore) Path() string {
+	if s == nil {
+		return ""
+	}
+	return s.path
+}
+
 // NewSessionStore returns a SessionStore backed by the given file path.
 // The file is created on the first Save if it does not exist.
 func NewSessionStore(path string) (*SessionStore, error) {

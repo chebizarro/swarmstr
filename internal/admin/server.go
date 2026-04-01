@@ -67,6 +67,7 @@ type ServerOptions struct {
 	GetSession                  func(context.Context, string) (state.SessionDoc, error)
 	PutSession                  func(context.Context, string, state.SessionDoc) error
 	ListSessions                func(context.Context, int) ([]state.SessionDoc, error)
+	SessionStore                *state.SessionStore
 	ListTranscript              func(context.Context, string, int) ([]state.TranscriptEntryDoc, error)
 	SessionsPrune               func(context.Context, methods.SessionsPruneRequest) (map[string]any, error)
 	TailLogs                    func(context.Context, int64, int, int) (map[string]any, error)
@@ -798,17 +799,20 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
-		sessions, err := opts.ListSessions(ctx, req.Limit)
+		cfg := state.ConfigDoc{}
+		if opts.GetConfig != nil {
+			cfg, _ = opts.GetConfig(ctx)
+		}
+		result, err := BuildSessionsListResponse(ctx, req, SessionsListResponseOptions{
+			Config:         cfg,
+			SessionStore:   opts.SessionStore,
+			ListSessions:   opts.ListSessions,
+			ListTranscript: opts.ListTranscript,
+		})
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{
-			"ts":       time.Now().UnixMilli(),
-			"path":     "nostr://state/sessions",
-			"count":    len(sessions),
-			"defaults": map[string]any{"modelProvider": nil, "model": nil, "contextTokens": nil},
-			"sessions": sessions,
-		}, http.StatusOK, nil
+		return result, http.StatusOK, nil
 	case methods.MethodSessionsPreview:
 		if opts.GetSession == nil || opts.ListTranscript == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -2517,6 +2521,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		redacted := config.Redact(cfg)
 		return map[string]any{
 			"config":    redacted,
+			"hash":      cfg.Hash(),
 			"base_hash": cfg.Hash(),
 		}, http.StatusOK, nil
 	case methods.MethodRelayPolicyGet:

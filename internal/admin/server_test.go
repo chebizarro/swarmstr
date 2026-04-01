@@ -718,6 +718,9 @@ func TestDispatchMethodCallConfigGetResponseShape(t *testing.T) {
 	if hash, _ := out["base_hash"].(string); hash == "" {
 		t.Fatalf("config.get result missing 'base_hash': %#v", out)
 	}
+	if hash, _ := out["hash"].(string); hash == "" {
+		t.Fatalf("config.get result missing 'hash': %#v", out)
+	}
 }
 
 func TestDispatchMethodCallConfigRawMutationsRequireMatchingBaseHash(t *testing.T) {
@@ -933,8 +936,18 @@ func TestDispatchMethodCallRuntimeCallbacks(t *testing.T) {
 }
 
 func TestDispatchMethodCallChatHistoryAndSessionViews(t *testing.T) {
-	session := state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer"}
-	entries := []state.TranscriptEntryDoc{{EntryID: "1", SessionID: "s1"}, {EntryID: "2", SessionID: "s1"}}
+	session := state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer", LastInboundAt: time.Now().Unix()}
+	entries := []state.TranscriptEntryDoc{
+		{EntryID: "1", SessionID: "s1", Role: "user", Text: "Need briefing", Unix: time.Now().Unix()},
+		{EntryID: "2", SessionID: "s1", Role: "assistant", Text: "Here is the latest update", Unix: time.Now().Unix() + 1},
+	}
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	if err := sessionStore.Put("s1", state.SessionEntry{SessionID: "s1", AgentID: "main", Label: "Briefing", LastChannel: "nostr", LastTo: "peer", UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed session store: %v", err)
+	}
 	opts := ServerOptions{
 		GetSession: func(_ context.Context, id string) (state.SessionDoc, error) {
 			if id == "missing" {
@@ -945,22 +958,30 @@ func TestDispatchMethodCallChatHistoryAndSessionViews(t *testing.T) {
 		ListSessions: func(context.Context, int) ([]state.SessionDoc, error) {
 			return []state.SessionDoc{session}, nil
 		},
+		SessionStore: sessionStore,
+		GetConfig: func(context.Context) (state.ConfigDoc, error) {
+			return state.ConfigDoc{Agent: state.AgentPolicy{DefaultModel: "gpt-test"}}, nil
+		},
 		ListTranscript: func(context.Context, string, int) ([]state.TranscriptEntryDoc, error) {
 			return entries, nil
 		},
 	}
 
 	rr := httptest.NewRecorder()
-	req := newMethodRequest(t, methods.MethodSessionsList, map[string]any{"limit": 10})
+	req := newMethodRequest(t, methods.MethodSessionsList, map[string]any{"limit": 10, "label": "Briefing", "agentId": "main", "includeDerivedTitles": true, "includeLastMessage": true})
 	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("sessions.list failed status=%d err=%v", status, err)
 	}
 	out, _ := result.(map[string]any)
-	if len(out["sessions"].([]state.SessionDoc)) != 1 {
+	sessions, ok := out["sessions"].([]map[string]any)
+	if !ok || len(sessions) != 1 {
 		t.Fatalf("unexpected sessions.list result: %#v", result)
 	}
-	if out["count"].(int) != 1 || out["defaults"] == nil {
+	if sessions[0]["key"] != "s1" || sessions[0]["label"] != "Briefing" || sessions[0]["lastMessagePreview"] != "Here is the latest update" {
+		t.Fatalf("unexpected sessions.list session row: %#v", sessions[0])
+	}
+	if out["count"].(int) != 1 || out["total"].(int) != 1 || out["defaults"] == nil {
 		t.Fatalf("unexpected sessions.list compatibility fields: %#v", result)
 	}
 

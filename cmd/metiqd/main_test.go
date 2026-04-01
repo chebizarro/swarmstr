@@ -614,6 +614,9 @@ func TestHandleControlRPCRequest_ConfigGetResponseShape(t *testing.T) {
 	if hash, _ := out["base_hash"].(string); hash == "" {
 		t.Fatalf("config.get result missing 'base_hash': %#v", out)
 	}
+	if hash, _ := out["hash"].(string); hash == "" {
+		t.Fatalf("config.get result missing 'hash': %#v", out)
+	}
 }
 
 func TestHandleControlRPCRequest_ConfigPutBaseHashConflict(t *testing.T) {
@@ -668,26 +671,48 @@ func TestHandleControlRPCRequest_ChatHistoryAndSessionViews(t *testing.T) {
 	store := newTestStore()
 	docs := state.NewDocsRepository(store, "author")
 	transcript := state.NewTranscriptRepository(store, "author")
-	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Agent: state.AgentPolicy{DefaultModel: "gpt-test"}})
 
-	if _, err := docs.PutSession(context.Background(), "s1", state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer"}); err != nil {
+	if _, err := docs.PutSession(context.Background(), "s1", state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer", LastInboundAt: time.Now().Unix()}); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
-	for i := 0; i < 2; i++ {
-		_, _ = transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{Version: 1, SessionID: "s1", EntryID: fmt.Sprintf("e%d", i), Role: "user", Text: "hi", Unix: time.Now().Unix() + int64(i)})
+	for i, text := range []string{"Need briefing", "Here is the latest update"} {
+		role := "user"
+		if i == 1 {
+			role = "assistant"
+		}
+		_, _ = transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{Version: 1, SessionID: "s1", EntryID: fmt.Sprintf("e%d", i), Role: role, Text: text, Unix: time.Now().Unix() + int64(i)})
 	}
+	oldSessionStore := controlSessionStore
+	t.Cleanup(func() { controlSessionStore = oldSessionStore })
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	fresh := true
+	if err := sessionStore.Put("s1", state.SessionEntry{SessionID: "s1", AgentID: "main", Label: "Briefing", LastChannel: "nostr", LastTo: "peer", InputTokens: 12, OutputTokens: 7, TotalTokens: 19, TotalTokensFresh: &fresh, UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed session store: %v", err)
+	}
+	controlSessionStore = sessionStore
 
 	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
 		Method:     methods.MethodSessionsList,
-		Params:     json.RawMessage(`{"limit":10}`),
+		Params:     json.RawMessage(`{"limit":10,"label":"Briefing","agentId":"main","includeDerivedTitles":true,"includeLastMessage":true}`),
 	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("sessions.list error: %v", err)
 	}
 	payload, _ := res.Result.(map[string]any)
-	if len(payload["sessions"].([]state.SessionDoc)) != 1 {
+	sessions, ok := payload["sessions"].([]map[string]any)
+	if !ok || len(sessions) != 1 {
 		t.Fatalf("unexpected sessions.list payload: %#v", res.Result)
+	}
+	if payload["path"] != sessionStore.Path() || payload["count"].(int) != 1 || payload["total"].(int) != 1 {
+		t.Fatalf("unexpected sessions.list envelope: %#v", payload)
+	}
+	if sessions[0]["key"] != "s1" || sessions[0]["label"] != "Briefing" || sessions[0]["lastMessagePreview"] != "Here is the latest update" || sessions[0]["model"] != "gpt-test" {
+		t.Fatalf("unexpected sessions.list row: %#v", sessions[0])
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
