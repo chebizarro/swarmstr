@@ -3580,7 +3580,7 @@ func main() {
 		// of the user-facing agent pipeline.
 		if controlACPPeers != nil && controlACPPeers.IsPeer(msg.FromPubKey) && acppkg.IsACPMessage([]byte(msg.Text)) {
 			if acpMsg, acpErr := acppkg.Parse([]byte(msg.Text)); acpErr == nil {
-				if err := handleACPMessage(ctx, acpMsg, msg.FromPubKey, msg, agentRegistry, sessionRouter, tools, docsRepo); err != nil {
+				if err := handleACPMessage(ctx, acpMsg, msg.FromPubKey, msg, agentRegistry, sessionRouter, tools, docsRepo, transcriptRepo); err != nil {
 					log.Printf("acp message handler error from=%s task_id=%s err=%v", msg.FromPubKey, acpMsg.TaskID, err)
 					return err
 				}
@@ -8896,10 +8896,23 @@ func handleControlRPCRequest(
 			if result.Error != "" {
 				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: worker error: %s", result.Error)
 			}
-			return nostruntime.ControlRPCResult{Result: map[string]any{
+			out := map[string]any{
 				"ok": true, "task_id": taskID, "target": target,
 				"text": result.Text,
-			}}, nil
+			}
+			if result.SenderPubKey != "" {
+				out["sender_pubkey"] = result.SenderPubKey
+			}
+			if result.Worker != nil {
+				out["worker"] = result.Worker
+			}
+			if result.TokensUsed > 0 {
+				out["tokens_used"] = result.TokensUsed
+			}
+			if result.CompletedAt > 0 {
+				out["completed_at"] = result.CompletedAt
+			}
+			return nostruntime.ControlRPCResult{Result: out}, nil
 		}
 
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "task_id": taskID, "target": target}}, nil
@@ -8962,12 +8975,25 @@ func handleControlRPCRequest(
 
 		out := make([]map[string]any, 0, len(pipelineResults))
 		for _, r := range pipelineResults {
-			out = append(out, map[string]any{
+			item := map[string]any{
 				"step_index": r.StepIndex,
 				"task_id":    r.TaskID,
 				"text":       r.Text,
 				"error":      r.Error,
-			})
+			}
+			if r.SenderPubKey != "" {
+				item["sender_pubkey"] = r.SenderPubKey
+			}
+			if r.Worker != nil {
+				item["worker"] = r.Worker
+			}
+			if r.TokensUsed > 0 {
+				item["tokens_used"] = r.TokensUsed
+			}
+			if r.CompletedAt > 0 {
+				item["completed_at"] = r.CompletedAt
+			}
+			out = append(out, item)
 		}
 		aggregate := acppkg.AggregateResults(pipelineResults)
 
@@ -8996,6 +9022,7 @@ func handleACPMessage(
 	sessRouter *agent.AgentSessionRouter,
 	tools *agent.ToolRegistry,
 	docsRepo *state.DocsRepository,
+	transcriptRepo *state.TranscriptRepository,
 ) error {
 	switch msg.ACPType {
 	case "task":
@@ -9047,6 +9074,7 @@ func handleACPMessage(
 		rt := agentReg.Get(agentID)
 
 		sessionID := "acp:" + fromPubKey
+		turnStartedAt := time.Now()
 		cfg := state.ConfigDoc{}
 		if controlRuntimeConfig != nil {
 			cfg = controlRuntimeConfig.Get()
@@ -9058,32 +9086,84 @@ func handleACPMessage(
 		processCtx, cancel := context.WithTimeout(ctx, taskTimeout)
 		defer cancel()
 		var result agent.TurnResult
+		var historyEntryIDs []string
 		procErr := withExclusiveSessionTurn(processCtx, sessionID, taskTimeout, func() error {
 			scopeCtx := resolveMemoryScopeContext(processCtx, cfg, docsRepo, controlSessionStore, sessionID, agentID, taskPayload.MemoryScope)
 			persistSessionMemoryScope(controlSessionStore, sessionID, agentID, scopeCtx.Scope)
 			turnCtx := contextWithMemoryScope(processCtx, scopeCtx)
 			turnCtx = contextWithACPTaskPayload(turnCtx, taskPayload)
 			filteredRuntime := applyACPTaskRuntimeConstraints(turnCtx, rt, agentID, taskPayload, cfg, docsRepo)
+			seedHistory := decodeACPConversationMessages(taskPayload.ContextMessages)
+			historyEntryIDs = append(historyEntryIDs, persistACPContextHistory(processCtx, transcriptRepo, controlContextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, seedHistory)...)
 			turn := buildAgentRunTurn(turnCtx, methods.AgentRequest{
 				SessionID:   sessionID,
 				Message:     instructions,
 				MemoryScope: scopeCtx.Scope,
 			}, controlMemoryStore, scopeCtx)
-			turn.History = decodeACPConversationMessages(taskPayload.ContextMessages)
+			turn.TurnID = msg.TaskID
+			if len(seedHistory) > 0 {
+				mergedHistory := make([]agent.ConversationMessage, 0, len(turn.History)+len(seedHistory))
+				mergedHistory = append(mergedHistory, turn.History...)
+				mergedHistory = append(mergedHistory, seedHistory...)
+				turn.History = mergedHistory
+			}
 			var err error
 			result, err = filteredRuntime.ProcessTurn(turnCtx, turn)
+			if err != nil {
+				if partial, ok := agent.PartialTurnResult(err); ok {
+					historyEntryIDs = append(historyEntryIDs, persistACPTurnHistory(processCtx, transcriptRepo, controlContextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, partial.HistoryDelta, turnResultMetadataPtr(result, err))...)
+				}
+				return err
+			}
+			delta := result.HistoryDelta
+			if len(delta) == 0 && strings.TrimSpace(result.Text) != "" {
+				delta = []agent.ConversationMessage{{Role: "assistant", Content: strings.TrimSpace(result.Text)}}
+			}
+			historyEntryIDs = append(historyEntryIDs, persistACPTurnHistory(processCtx, transcriptRepo, controlContextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, delta, turnResultMetadataPtr(result, nil))...)
 			return err
 		})
+		if controlSessionStore != nil && (result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0) {
+			_ = controlSessionStore.AddTokens(sessionID, result.Usage.InputTokens, result.Usage.OutputTokens)
+		}
+		turnTelemetry := buildTurnTelemetry(msg.TaskID, turnStartedAt, time.Now(), result, procErr, false, "", "", "")
+		persistTurnTelemetry(controlSessionStore, sessionID, turnTelemetry)
+		emitControlWSEvent(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, sessionID, turnTelemetry))
+
+		var parentContext *acppkg.ParentContext
+		if taskPayload.ParentContext != nil {
+			parentContext = &acppkg.ParentContext{
+				SessionID: strings.TrimSpace(taskPayload.ParentContext.SessionID),
+				AgentID:   strings.TrimSpace(taskPayload.ParentContext.AgentID),
+			}
+		}
+		worker := &acppkg.WorkerMetadata{
+			SessionID:       sessionID,
+			AgentID:         agentID,
+			ParentContext:   parentContext,
+			HistoryEntryIDs: cloneACPStringSlice(historyEntryIDs),
+			TurnResult:      turnResultMetadataPtr(result, procErr),
+		}
+		senderPubKey := ""
+		controlDMBusMu.RLock()
+		if controlDMBus != nil {
+			senderPubKey = controlDMBus.PublicKey()
+		}
+		controlDMBusMu.RUnlock()
 
 		// Build and send result DM back to the sender.
 		var resultMsg acppkg.Message
 		if procErr != nil {
-			resultMsg = acppkg.NewResult(msg.TaskID, "", acppkg.ResultPayload{
-				Error: procErr.Error(),
+			resultMsg = acppkg.NewResult(msg.TaskID, senderPubKey, acppkg.ResultPayload{
+				Error:       procErr.Error(),
+				CompletedAt: time.Now().Unix(),
+				Worker:      worker,
 			})
 		} else {
-			resultMsg = acppkg.NewResult(msg.TaskID, "", acppkg.ResultPayload{
-				Text: result.Text,
+			resultMsg = acppkg.NewResult(msg.TaskID, senderPubKey, acppkg.ResultPayload{
+				Text:        result.Text,
+				TokensUsed:  int(result.Usage.InputTokens + result.Usage.OutputTokens),
+				CompletedAt: time.Now().Unix(),
+				Worker:      worker,
 			})
 		}
 
@@ -9092,20 +9172,24 @@ func handleACPMessage(
 	case "result":
 		// Incoming result from a peer for a previously dispatched task.
 		taskID := msg.TaskID
-		text := ""
-		errStr := ""
-		if msg.Payload != nil {
-			if v, ok := msg.Payload["text"].(string); ok {
-				text = v
-			}
-			if v, ok := msg.Payload["error"].(string); ok {
-				errStr = v
-			}
+		resultPayload, err := acppkg.DecodeResultPayload(msg.Payload)
+		if err != nil {
+			return fmt.Errorf("acp result decode task_id=%s: %w", taskID, err)
 		}
+		text := resultPayload.Text
+		errStr := resultPayload.Error
 		log.Printf("acp result from=%s task_id=%s ok=%v text=%q err=%q", fromPubKey, taskID, errStr == "", text, errStr)
 		// Deliver to any waiting Dispatch() caller.
 		if controlACPDispatcher != nil {
-			controlACPDispatcher.Deliver(acppkg.TaskResult{TaskID: taskID, Text: text, Error: errStr})
+			controlACPDispatcher.Deliver(acppkg.TaskResult{
+				TaskID:       taskID,
+				Text:         text,
+				Error:        errStr,
+				SenderPubKey: strings.TrimSpace(msg.SenderPubKey),
+				Worker:       cloneACPWorkerMetadata(resultPayload.Worker),
+				TokensUsed:   resultPayload.TokensUsed,
+				CompletedAt:  resultPayload.CompletedAt,
+			})
 		}
 		return nil
 

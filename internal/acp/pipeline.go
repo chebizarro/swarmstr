@@ -40,6 +40,14 @@ type PipelineResult struct {
 	Text string `json:"text,omitempty"`
 	// Error is set when the worker reported an error or the step timed out.
 	Error string `json:"error,omitempty"`
+	// SenderPubKey is the worker pubkey that returned the result.
+	SenderPubKey string `json:"sender_pubkey,omitempty"`
+	// Worker carries structured worker-side completion/history metadata.
+	Worker *WorkerMetadata `json:"worker,omitempty"`
+	// TokensUsed is the top-level completion usage hint from the worker result.
+	TokensUsed int `json:"tokens_used,omitempty"`
+	// CompletedAt is the worker-reported completion timestamp.
+	CompletedAt int64 `json:"completed_at,omitempty"`
 }
 
 // SendFunc is the callback that actually sends an ACP task DM.
@@ -100,7 +108,7 @@ func (p *Pipeline) RunSequential(ctx context.Context, d *Dispatcher, send SendFu
 		}
 
 		results = append(results, PipelineResult{
-			StepIndex: i, TaskID: taskID, Text: res.Text, Error: res.Error,
+			StepIndex: i, TaskID: taskID, Text: res.Text, Error: res.Error, SenderPubKey: res.SenderPubKey, Worker: cloneWorkerMetadata(res.Worker), TokensUsed: res.TokensUsed, CompletedAt: res.CompletedAt,
 		})
 		if res.Error != "" {
 			return results, fmt.Errorf("pipeline step %d worker error: %s", i, res.Error)
@@ -160,7 +168,7 @@ func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc
 					firstErr = err
 				}
 			} else {
-				results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Text: res.Text, Error: res.Error}
+				results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Text: res.Text, Error: res.Error, SenderPubKey: res.SenderPubKey, Worker: cloneWorkerMetadata(res.Worker), TokensUsed: res.TokensUsed, CompletedAt: res.CompletedAt}
 				if res.Error != "" && firstErr == nil {
 					firstErr = fmt.Errorf("pipeline step %d worker error: %s", i, res.Error)
 				}
@@ -216,4 +224,21 @@ func cloneParentContext(parent *ParentContext) *ParentContext {
 	}
 	cp := *parent
 	return &cp
+}
+
+func cloneWorkerMetadata(worker *WorkerMetadata) *WorkerMetadata {
+	if worker == nil {
+		return nil
+	}
+	cp := &WorkerMetadata{
+		SessionID:       worker.SessionID,
+		AgentID:         worker.AgentID,
+		ParentContext:   cloneParentContext(worker.ParentContext),
+		HistoryEntryIDs: cloneStrings(worker.HistoryEntryIDs),
+	}
+	if worker.TurnResult != nil {
+		turnResult := *worker.TurnResult
+		cp.TurnResult = &turnResult
+	}
+	return cp
 }

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"metiq/internal/agent"
 	"metiq/internal/store/state"
 )
 
@@ -72,6 +73,22 @@ type TaskPayload struct {
 }
 
 // ResultPayload is the Payload for messages with ACPType = "result".
+type WorkerMetadata struct {
+	// SessionID identifies the worker-side session that processed the task.
+	SessionID string `json:"session_id,omitempty"`
+	// AgentID identifies the worker-side agent/runtime that processed the task.
+	AgentID string `json:"agent_id,omitempty"`
+	// ParentContext preserves the originating parent context when the worker
+	// reflects completion metadata back to the caller.
+	ParentContext *ParentContext `json:"parent_context,omitempty"`
+	// HistoryEntryIDs identifies the worker transcript entries persisted for this
+	// task in order, including inherited seed history and turn-produced messages.
+	HistoryEntryIDs []string `json:"history_entry_ids,omitempty"`
+	// TurnResult carries canonical terminal completion metadata aligned with the
+	// shared runtime taxonomy.
+	TurnResult *agent.TurnResultMetadata `json:"turn_result,omitempty"`
+}
+
 type ResultPayload struct {
 	// Text is the agent's text response.
 	Text string `json:"text"`
@@ -81,6 +98,9 @@ type ResultPayload struct {
 	TokensUsed int `json:"tokens_used,omitempty"`
 	// CompletedAt is the Unix timestamp of task completion.
 	CompletedAt int64 `json:"completed_at,omitempty"`
+	// Worker carries the worker-side session/history/completion metadata needed
+	// to correlate parent/worker execution after the fact.
+	Worker *WorkerMetadata `json:"worker,omitempty"`
 }
 
 // NewTask builds a task Message ready to send.
@@ -132,9 +152,26 @@ func NewResult(taskID, senderPubKey string, p ResultPayload) Message {
 			"error":        p.Error,
 			"tokens_used":  p.TokensUsed,
 			"completed_at": p.CompletedAt,
+			"worker":       p.Worker,
 		},
 		CreatedAt: time.Now().Unix(),
 	}
+}
+
+// DecodeResultPayload normalizes a generic ACP payload map into the typed result payload.
+func DecodeResultPayload(payload map[string]any) (ResultPayload, error) {
+	if payload == nil {
+		return ResultPayload{}, nil
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ResultPayload{}, err
+	}
+	var out ResultPayload
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return ResultPayload{}, err
+	}
+	return out, nil
 }
 
 // IsACPMessage reports whether raw JSON bytes look like an ACP message.

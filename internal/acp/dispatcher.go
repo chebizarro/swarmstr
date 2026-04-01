@@ -11,9 +11,13 @@ import (
 
 // TaskResult carries the result of a dispatched ACP task.
 type TaskResult struct {
-	TaskID string
-	Text   string
-	Error  string
+	TaskID       string
+	Text         string
+	Error        string
+	SenderPubKey string
+	Worker       *WorkerMetadata
+	TokensUsed   int
+	CompletedAt  int64
 }
 
 // Dispatcher manages in-flight ACP task dispatches.
