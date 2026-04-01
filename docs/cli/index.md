@@ -378,14 +378,31 @@ metiq daemon start --bootstrap ~/.metiq/bootstrap.json
 
 ## GW (Raw RPC)
 
-Send a raw method call to the shared gateway namespace. By default, `metiq gw` uses transport `auto`: Nostr control RPC when `control_target_pubkey` is configured, otherwise the local HTTP compatibility path. Force HTTP with `--transport http`.
+Send a raw method call to the shared gateway namespace. By default, `metiq gw` uses transport `auto`:
+
+- Nostr control RPC when `control_target_pubkey` is configured
+- local HTTP `POST /call` when `control_target_pubkey` is not configured
+- `--transport http` to force the compatibility HTTP path
+- `--transport nostr` to require Nostr control explicitly
+
+Operator rules:
+
+- `control_target_pubkey` is the switch that makes auto mode prefer Nostr
+- `control_signer_url` provides a distinct caller identity for Nostr control
+- signer-only configuration does not switch auto mode to Nostr without a target pubkey
+- the control caller pubkey must not match the target daemon pubkey
 
 ```bash
 metiq gw <method> [key=value ...]
 metiq gw --json status.get
+metiq gw --transport nostr status.get
 metiq gw --transport http status.get
+metiq gw --control-target-pubkey npub1...daemon... status.get
+metiq gw --control-signer-url env://METIQ_CONTROL_CALLER_NSEC status.get
 metiq gw config.get path=agent.default_model
 ```
+
+See [Nostr Control RPC](/gateway/nostr-control) for the full operator and migration guide.
 
 ## Slash Commands (In-Chat)
 

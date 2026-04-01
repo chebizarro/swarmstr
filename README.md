@@ -54,6 +54,15 @@ Create `~/.metiq/bootstrap.json`:
 }
 ```
 
+For Nostr-first raw control calls with `metiq gw`, add:
+
+```json
+{
+  "control_target_pubkey": "npub1...daemon...",
+  "control_signer_url": "env://METIQ_CONTROL_CALLER_NSEC"
+}
+```
+
 ```sh
 export METIQ_PRIVATE_KEY="your-hex-or-nsec-private-key"
 ./metiqd
@@ -65,6 +74,33 @@ export METIQ_PRIVATE_KEY="your-hex-or-nsec-private-key"
 ./metiq status
 ./metiq health
 ```
+
+### Nostr-first control path
+
+`metiq gw` now defaults to transport `auto`:
+
+- if `control_target_pubkey` is configured, raw gateway method calls go over signed Nostr control RPC
+- if `control_target_pubkey` is not configured, `metiq gw` falls back to local HTTP `POST /call`
+- `--transport http` forces the compatibility HTTP path
+
+The Nostr control caller must be a different pubkey from the target daemon. Use `control_signer_url` or `--control-signer-url` when the operator/automation client should sign separately from the daemon.
+
+```sh
+# Auto-select Nostr when control_target_pubkey is configured
+./metiq gw status.get
+
+# Force Nostr with explicit overrides
+./metiq gw \
+  --transport nostr \
+  --control-target-pubkey npub1...daemon... \
+  --control-signer-url env://METIQ_CONTROL_CALLER_NSEC \
+  status.get
+
+# Force local HTTP compatibility mode
+./metiq gw --transport http status.get
+```
+
+See `docs/gateway/nostr-control.md` for the operator and migration guide.
 
 ---
 
@@ -277,7 +313,7 @@ Drivers: `nop` (os/exec, default) · `docker` (ephemeral container, requires Doc
 
 ## Gateway API
 
-The admin HTTP API and Nostr control-RPC surface share the same method namespace. Call any method via `metiq gw <method> [key=value ...]` or POST to `/call`.
+The admin HTTP API and Nostr control-RPC surface share the same method namespace. For raw gateway method execution, `metiq gw` now prefers Nostr when `control_target_pubkey` is configured. `POST /call` remains the compatibility path.
 
 Key method groups:
 

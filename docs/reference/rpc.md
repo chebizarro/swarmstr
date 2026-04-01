@@ -9,11 +9,26 @@ title: "RPC / HTTP API Reference"
 
 # RPC / HTTP API Reference
 
-metiq exposes an HTTP API and WebSocket event stream for programmatic integration. The raw `metiq gw` client shares the same method namespace as the Nostr control-RPC surface and uses HTTP `/call` as the compatibility path when Nostr control is not selected.
+metiq exposes two raw method ingress paths for the same gateway method namespace:
 
-## Base URL
+- **Nostr control RPC** — the primary raw method path for `metiq gw` when `control_target_pubkey` is configured
+- **HTTP `POST /call`** — the compatibility path for local admin workflows and explicit `--transport http` usage
 
-The base URL is your `admin_listen_addr` (from `bootstrap.json`). Set in the CLI via:
+The WebSocket event stream remains an HTTP/WebSocket surface.
+
+## Nostr control prerequisites
+
+For `metiq gw` to use Nostr control RPC, the caller needs:
+
+- `control_target_pubkey` in bootstrap or `--control-target-pubkey`
+- a signer that resolves to a pubkey different from the target daemon pubkey
+- relay access through the bootstrap `relays` set
+
+If `control_target_pubkey` is absent, `metiq gw --transport auto` falls back to HTTP `/call`.
+
+## HTTP base URL
+
+The base URL for the compatibility HTTP/admin surface is your `admin_listen_addr` (from `bootstrap.json`). Set in the CLI via:
 
 ```bash
 export METIQ_ADMIN_ADDR=127.0.0.1:18788
@@ -47,7 +62,7 @@ Returns daemon health status.
 
 ### `POST /call`
 
-Compatibility HTTP RPC endpoint for method calls. `metiq gw` can still be forced onto this path with `--transport http`.
+Compatibility HTTP RPC endpoint for method calls. `metiq gw` can be forced onto this path with `--transport http`.
 
 ```json
 // Request
@@ -63,7 +78,7 @@ Compatibility HTTP RPC endpoint for method calls. `metiq gw` can still be forced
 }
 ```
 
-### Nostr control relay routing
+## Nostr control relay routing
 
 For the Nostr control-RPC path, relay selection is deterministic:
 
@@ -74,7 +89,7 @@ For the Nostr control-RPC path, relay selection is deterministic:
 
 In practice, the daemon runtime control relay set is exposed via `relay.policy.get -> runtime_control_relays`, and CLI-side Nostr control uses the relay configuration from `bootstrap.json`.
 
-### Nostr control replay, timeout, and idempotency
+## Nostr control replay, timeout, and idempotency
 
 The Nostr control path uses the requester pubkey plus the `req` tag as the idempotency key. If a request omits `req`, the event ID is used instead.
 
@@ -162,7 +177,7 @@ ws://localhost:18789/ws?token=<token>
 
 ## RPC Methods
 
-Called via `POST /call` with `{ "method": "...", "params": { ... } }`.
+The method namespace is shared across Nostr control RPC and HTTP `POST /call`. When using HTTP, the envelope is `{ "method": "...", "params": { ... } }`.
 
 ### Status & Health
 
@@ -227,20 +242,25 @@ Called via `POST /call` with `{ "method": "...", "params": { ... } }`.
 
 ## CLI RPC Calls
 
-The CLI wraps these RPC calls. For scripting, call directly:
+The CLI wraps these RPC calls. For scripting, use the path that matches your deployment:
 
 ```bash
-# Using curl (admin API, port from admin_listen_addr)
+# Using the CLI gw passthrough in auto mode
+metiq gw status.get
+metiq gw cron.list
+metiq gw system.event '{"text":"test"}'
+
+# Force the compatibility HTTP /call path
+metiq gw --transport http status.get
+
+# Using curl against the admin API directly
 curl -s -X POST http://localhost:18788/call \
   -H "Authorization: Bearer $METIQ_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"method":"status.get","params":{}}' | jq .
-
-# Using the CLI gw passthrough
-metiq gw status.get
-metiq gw cron.list
-metiq gw system.event '{"text":"test"}'
 ```
+
+For operator setup and migration guidance, see [Nostr Control RPC](/gateway/nostr-control).
 
 ## See Also
 

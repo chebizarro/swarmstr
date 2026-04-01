@@ -1,6 +1,8 @@
 # Metiq Nostr Control Plane: NIP-86 Alignment Plan
 
-_Last updated: 2026-03-02_
+_Last updated: 2026-04-01_
+
+> Historical planning note: this document described the original `swarmstr-3.1.x` implementation plan. The Nostr-native control transport now exists. For current operator behavior, use `docs/gateway/nostr-control.md`, `docs/reference/rpc.md`, and `docs/cli/index.md`.
 
 ## Goal
 
@@ -8,11 +10,11 @@ Align Metiq control-plane behavior with NIP-86 semantics, especially authorizati
 
 ## Current state
 
-- Local `POST /call` control endpoint exists.
-- Method envelope uses `{ method, params }` and `{ ok, result, error }` response shape.
+- Local `POST /call` control endpoint exists as a compatibility path.
+- Nostr-native request/response control transport exists for the shared gateway method namespace.
+- Method envelope uses `{ method, params }` and `{ ok, result, error }` response shape on HTTP `/call`.
 - Param validation is strict and method-specific.
-- No Nostr-native control transport yet.
-- Authorization is token-based for local admin API, not NIP-86-style signer authorization.
+- Signed caller authorization semantics exist for control evaluation; bearer-token local admin compatibility also remains available.
 
 ## Target compatibility profile (NIP-86 in spirit and behavior)
 
@@ -75,9 +77,19 @@ Metiq method set remains app-specific but follows NIP-86-style execution semanti
   - require authenticated + authorized caller
   - deny by default
 
-## Implementation phases under `metiq-3.1`
+## Implementation phases under `swarmstr-3.1`
 
-1. `metiq-3.1.1`: Envelope/profile normalization + supportedmethods.
-2. `metiq-3.1.2`: Authorization engine and signed-caller semantics.
-3. `metiq-3.1.3`: Nostr request/response transport with correlation and idempotency.
-4. `metiq-3.1.4`: Dual-surface integration + conformance tests.
+These original implementation slices are now landed:
+
+1. `swarmstr-3.1.1`: Envelope/profile normalization + supportedmethods.
+2. `swarmstr-3.1.2`: Authorization engine and signed-caller semantics.
+3. `swarmstr-3.1.3`: Nostr request/response transport with correlation and idempotency.
+4. `swarmstr-3.1.4`: Dual-surface integration + conformance tests.
+
+Later closure slices completed the operational contract:
+
+5. `swarmstr-3.1.7`: Nostr control as the default `metiq gw` path when `control_target_pubkey` is configured.
+6. `swarmstr-3.1.8`: deterministic relay-routing defaults.
+7. `swarmstr-3.1.9`: restart-safe replay and idempotency behavior.
+8. `swarmstr-3.1.10`: maintained HTTP/Nostr parity matrix.
+9. `swarmstr-3.1.11`: operator and migration guidance.
