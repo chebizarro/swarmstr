@@ -308,11 +308,14 @@ func (c *nostrControlClient) call(method string, params any) (map[string]any, er
 		return nil, err
 	}
 
+	requestRelays := nostruntime.ControlRequestRelayCandidates(ctx, c.hub.Selector(), c.hub.Pool(), c.fallbackRelays, c.callerPubKey, c.targetPubKey)
+	responseRelays := nostruntime.ControlResponseListenRelayCandidates(ctx, c.hub.Selector(), c.hub.Pool(), c.fallbackRelays, c.targetPubKey, c.callerPubKey, requestRelays)
+
 	responseCh := make(chan nostr.Event, 1)
 	subscriptionID := "gw-control-" + requestID
 	_, err = c.hub.Subscribe(ctx, nostruntime.SubOpts{
 		ID:     subscriptionID,
-		Relays: append([]string{}, c.fallbackRelays...),
+		Relays: append([]string{}, responseRelays...),
 		Filter: nostr.Filter{
 			Kinds:   []nostr.Kind{nostr.Kind(events.KindMCPResult)},
 			Authors: []nostr.PubKey{c.targetPub},
@@ -350,7 +353,7 @@ func (c *nostrControlClient) call(method string, params any) (map[string]any, er
 	if err := c.hub.SignEvent(ctx, &evt); err != nil {
 		return nil, fmt.Errorf("sign control request: %w", err)
 	}
-	if err := c.publishRequest(ctx, evt, requestID); err != nil {
+	if err := c.publishRequest(ctx, evt, requestID, requestRelays); err != nil {
 		return nil, err
 	}
 
@@ -362,10 +365,10 @@ func (c *nostrControlClient) call(method string, params any) (map[string]any, er
 	}
 }
 
-func (c *nostrControlClient) publishRequest(ctx context.Context, evt nostr.Event, requestID string) error {
+func (c *nostrControlClient) publishRequest(ctx context.Context, evt nostr.Event, requestID string, relays []string) error {
 	published := false
 	var lastErr error
-	for res := range c.hub.Publish(ctx, append([]string{}, c.fallbackRelays...), evt) {
+	for res := range c.hub.Publish(ctx, append([]string{}, relays...), evt) {
 		if res.Error == nil {
 			published = true
 			continue

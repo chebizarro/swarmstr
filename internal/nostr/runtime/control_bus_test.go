@@ -143,7 +143,7 @@ func TestControlRPCBusResponseRelayCandidatesPreferRequestRelay(t *testing.T) {
 		health: NewRelayHealthTracker(),
 	}
 	b.health.Seed(b.relays)
-	got := b.responseRelayCandidates("wss://request", time.Now())
+	got := b.responseRelayCandidates("wss://request", "requester", time.Now())
 	if len(got) != 3 {
 		t.Fatalf("unexpected relay count: %v", got)
 	}
@@ -158,7 +158,7 @@ func TestControlRPCBusResponseRelayCandidatesDedupesPreferred(t *testing.T) {
 		health: NewRelayHealthTracker(),
 	}
 	b.health.Seed(b.relays)
-	got := b.responseRelayCandidates("wss://a", time.Now())
+	got := b.responseRelayCandidates("wss://a", "requester", time.Now())
 	if len(got) != 2 {
 		t.Fatalf("unexpected relay count: %v", got)
 	}
