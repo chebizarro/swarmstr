@@ -278,11 +278,12 @@ Bring `src`'s explicit runtime state and memory packaging into metiq without sac
 
 #### MEM-03a - Defer LLM memory reranking until retrieval quality is measured
 - **Scope:** Track as follow-on work, not part of the initial port.
-- **Files:** future context/memory work
+- **Files:** `docs/refactor/src-memory-reranking-readiness.md`, future context/memory work
 - **Depends on:** `MEM-01a`
 - **Acceptance criteria:**
   - Deterministic retrieval quality is measured first.
   - No second-model recall path is added until recall misses are a proven problem.
+  - Readiness criteria are documented before any reranking implementation bead is opened.
 
 ## Workstream WS4 - ACP and Multi-Agent Runtime Inheritance
 
