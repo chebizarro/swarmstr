@@ -1425,11 +1425,12 @@ func main() {
 	// quality as manually-connected channels.
 	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string) agent.Turn {
 		turnContext := assembleSessionMemoryContext(ctx, memoryIndex, sessionID, text, 6)
+		staticSystemPrompt := assemblePinnedKnowledgePrompt(memoryIndex)
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
 			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
 				if assembled.SystemPromptAddition != "" {
-					turnContext = assembled.SystemPromptAddition
+					turnContext = joinPromptSections(turnContext, assembled.SystemPromptAddition)
 				}
 				msgs := assembled.Messages
 				// Deduplicate the current user message if context engine already has it.
@@ -1443,30 +1444,13 @@ func main() {
 				}
 			}
 		}
-		// Inject pinned agent knowledge.
-		if memoryIndex != nil {
-			if pinned := memoryIndex.ListByTopic("agent_knowledge", 50); len(pinned) > 0 {
-				var sb strings.Builder
-				sb.WriteString("## Pinned Knowledge\n")
-				for _, p := range pinned {
-					sb.WriteString("- ")
-					sb.WriteString(p.Text)
-					sb.WriteString("\n")
-				}
-				pinnedBlock := strings.TrimRight(sb.String(), "\n")
-				if turnContext == "" {
-					turnContext = pinnedBlock
-				} else {
-					turnContext = pinnedBlock + "\n\n" + turnContext
-				}
-			}
-		}
 		return agent.Turn{
-			SessionID: sessionID,
-			UserText:  text,
-			Context:   turnContext,
-			History:   turnHistory,
-			Executor:  tools,
+			SessionID:          sessionID,
+			UserText:           text,
+			StaticSystemPrompt: staticSystemPrompt,
+			Context:            turnContext,
+			History:            turnHistory,
+			Executor:           tools,
 		}
 	}
 
@@ -3028,6 +3012,7 @@ func main() {
 		}
 
 		turnContext := assembleSessionMemoryContext(turnCtx, memoryIndex, sessionID, combinedText, 6)
+		staticSystemPrompt := assemblePinnedKnowledgePrompt(memoryIndex)
 		// turnHistory carries prior conversation turns for multi-turn LLM context.
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -3050,7 +3035,7 @@ func main() {
 					}
 				}
 				if assembled.SystemPromptAddition != "" {
-					turnContext = assembled.SystemPromptAddition
+					turnContext = joinPromptSections(turnContext, assembled.SystemPromptAddition)
 				}
 				// Convert assembled.Messages → turn.History.
 				// Exclude the last message if it is the current user turn (just ingested)
@@ -3162,33 +3147,8 @@ func main() {
 			}
 			if len(contextParts) > 0 {
 				prefix := strings.Join(contextParts, "\n\n")
-				if turnContext == "" {
-					turnContext = prefix
-				} else {
-					turnContext = prefix + "\n\n" + turnContext
-				}
-				log.Printf("DEBUG workspace_context agent=%s identity_files=%d total_len=%d", activeAgentID, len(identityParts), len(turnContext))
-			}
-		}
-
-		// Inject pinned agent knowledge (topic=agent_knowledge) into the system prompt.
-		// These entries are written by memory_pin and represent stable, always-needed facts.
-		if memoryIndex != nil {
-			pinned := memoryIndex.ListByTopic("agent_knowledge", 50)
-			if len(pinned) > 0 {
-				var sb strings.Builder
-				sb.WriteString("## Pinned Knowledge\n")
-				for _, p := range pinned {
-					sb.WriteString("- ")
-					sb.WriteString(p.Text)
-					sb.WriteString("\n")
-				}
-				pinnedBlock := strings.TrimRight(sb.String(), "\n")
-				if turnContext == "" {
-					turnContext = pinnedBlock
-				} else {
-					turnContext = pinnedBlock + "\n\n" + turnContext
-				}
+				staticSystemPrompt = joinPromptSections(staticSystemPrompt, prefix)
+				log.Printf("DEBUG workspace_context agent=%s identity_files=%d total_len=%d", activeAgentID, len(identityParts), len(staticSystemPrompt))
 			}
 		}
 
@@ -3322,7 +3282,7 @@ func main() {
 				}
 			}
 
-			runtimeCtx := buildTurnRuntimeContext(turnRuntimeParams{
+			runtimeParams := turnRuntimeParams{
 				AgentID:       activeAgentID,
 				Model:         agentModel,
 				Channel:       "nostr",
@@ -3332,26 +3292,22 @@ func main() {
 				WorkspaceDir:  wsDir,
 				ThinkingLevel: agentThinkingLevel,
 				SkillsPrompt:  skillsPromptStr,
-			})
-			if runtimeCtx != "" {
-				if turnContext == "" {
-					turnContext = runtimeCtx
-				} else {
-					turnContext = turnContext + "\n\n" + runtimeCtx
-				}
 			}
+			staticSystemPrompt = joinPromptSections(staticSystemPrompt, buildTurnRuntimeStaticContext(runtimeParams))
+			turnContext = joinPromptSections(turnContext, buildTurnRuntimeDynamicContext())
 		}
 
 		baseTurn := agent.Turn{
-			SessionID:      sessionID,
-			TurnID:         eventID,
-			UserText:       combinedText,
-			Context:        turnContext,
-			History:        turnHistory,
-			Tools:          baseTurnTools,
-			Executor:       tools, // wire executor so agentic tool loop continues past first call
-			ThinkingBudget: thinkingBudget,
-			ToolEventSink:  toolLifecycleEmitter(wsEmitter, activeAgentID),
+			SessionID:          sessionID,
+			TurnID:             eventID,
+			UserText:           combinedText,
+			StaticSystemPrompt: staticSystemPrompt,
+			Context:            turnContext,
+			History:            turnHistory,
+			Tools:              baseTurnTools,
+			Executor:           tools, // wire executor so agentic tool loop continues past first call
+			ThinkingBudget:     thinkingBudget,
+			ToolEventSink:      toolLifecycleEmitter(wsEmitter, activeAgentID),
 		}
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, func(chunk string) {
@@ -4182,11 +4138,12 @@ func main() {
 		}
 
 		turnContext := assembleSessionMemoryContext(ctx, memoryIndex, sessionID, text, 6)
+		staticSystemPrompt := assemblePinnedKnowledgePrompt(memoryIndex)
 		var chTurnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
 			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
 				if assembled.SystemPromptAddition != "" {
-					turnContext = assembled.SystemPromptAddition
+					turnContext = joinPromptSections(turnContext, assembled.SystemPromptAddition)
 				}
 				msgs := assembled.Messages
 				if n := len(msgs); n > 0 {
@@ -4196,25 +4153,6 @@ func main() {
 				}
 				for _, m := range msgs {
 					chTurnHistory = append(chTurnHistory, conversationMessageFromContext(m))
-				}
-			}
-		}
-
-		// Inject pinned agent knowledge into channel turn context.
-		if memoryIndex != nil {
-			if pinned := memoryIndex.ListByTopic("agent_knowledge", 50); len(pinned) > 0 {
-				var sb strings.Builder
-				sb.WriteString("## Pinned Knowledge\n")
-				for _, p := range pinned {
-					sb.WriteString("- ")
-					sb.WriteString(p.Text)
-					sb.WriteString("\n")
-				}
-				pinnedBlock := strings.TrimRight(sb.String(), "\n")
-				if turnContext == "" {
-					turnContext = pinnedBlock
-				} else {
-					turnContext = pinnedBlock + "\n\n" + turnContext
 				}
 			}
 		}
@@ -4236,13 +4174,14 @@ func main() {
 
 		// ── Run agent turn ──────────────────────────────────────────
 		chBaseTurn := agent.Turn{
-			SessionID:     sessionID,
-			TurnID:        eventID,
-			UserText:      text,
-			Context:       turnContext,
-			History:       chTurnHistory,
-			Executor:      tools,
-			ToolEventSink: toolLifecycleEmitter(wsEmitter, activeAgentID),
+			SessionID:          sessionID,
+			TurnID:             eventID,
+			UserText:           text,
+			StaticSystemPrompt: staticSystemPrompt,
+			Context:            turnContext,
+			History:            chTurnHistory,
+			Executor:           tools,
+			ToolEventSink:      toolLifecycleEmitter(wsEmitter, activeAgentID),
 		}
 		var turnResult agent.TurnResult
 		turnStartedAt := time.Now()
@@ -9725,6 +9664,34 @@ func mapGatewayWSError(err error) *gatewayprotocol.ErrorShape {
 		return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeNotLinked, msg, nil)
 	}
 	return gatewayprotocol.NewError(gatewayprotocol.ErrorCodeUnavailable, msg, nil)
+}
+
+func joinPromptSections(parts ...string) string {
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			filtered = append(filtered, trimmed)
+		}
+	}
+	return strings.Join(filtered, "\n\n")
+}
+
+func assemblePinnedKnowledgePrompt(index memory.Store) string {
+	if index == nil {
+		return ""
+	}
+	pinned := index.ListByTopic("agent_knowledge", 50)
+	if len(pinned) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Pinned Knowledge\n")
+	for _, p := range pinned {
+		sb.WriteString("- ")
+		sb.WriteString(p.Text)
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 func assembleSessionMemoryContext(ctx context.Context, index memory.Store, sessionID string, userText string, limit int) string {

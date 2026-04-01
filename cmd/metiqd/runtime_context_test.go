@@ -58,6 +58,37 @@ func TestBuildTurnRuntimeContext_ContainsAllSections(t *testing.T) {
 	}
 }
 
+func TestBuildTurnRuntimeContext_SplitsStaticAndDynamicSections(t *testing.T) {
+	params := turnRuntimeParams{
+		AgentID:       "main",
+		Model:         "claude-3-5-sonnet-20241022",
+		Channel:       "nostr",
+		Tools:         []agent.ToolDefinition{{Name: "memory_search", Description: "Search agent memory for relevant entries."}},
+		Config:        state.ConfigDoc{},
+		WorkspaceDir:  "/tmp/test-ws",
+		ThinkingLevel: "medium",
+		SkillsPrompt:  "<available_skills>\n- test-skill: Does testing\n</available_skills>",
+	}
+	staticCtx := buildTurnRuntimeStaticContext(params)
+	dynamicCtx := buildTurnRuntimeDynamicContext()
+	combined := buildTurnRuntimeContext(params)
+
+	if strings.Contains(staticCtx, "## Current Date & Time") {
+		t.Fatal("static runtime context should not contain time section")
+	}
+	for _, want := range []string{"## Runtime", "## Available Tools", "## Skills (mandatory)"} {
+		if !strings.Contains(staticCtx, want) {
+			t.Fatalf("static runtime context missing %q", want)
+		}
+	}
+	if dynamicCtx == "" || !strings.Contains(dynamicCtx, "## Current Date & Time") {
+		t.Fatalf("dynamic runtime context should contain only time section, got %q", dynamicCtx)
+	}
+	if got := joinPromptSections(staticCtx, dynamicCtx); got != combined {
+		t.Fatalf("combined runtime context mismatch")
+	}
+}
+
 func TestBuildTurnRuntimeContext_NoTTS_WhenDisabled(t *testing.T) {
 	result := buildTurnRuntimeContext(turnRuntimeParams{
 		AgentID: "main",

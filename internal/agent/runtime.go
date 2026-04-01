@@ -34,7 +34,15 @@ type Turn struct {
 	// observability. metiq maps Nostr event IDs into this field.
 	TurnID   string
 	UserText string
-	Context  string
+	// StaticSystemPrompt carries long-lived system prompt additions that should
+	// remain in the cacheable/static prompt lane (for example pinned knowledge
+	// or workspace bootstrap material). Providers that support prompt caching
+	// treat this as part of the static system prefix rather than per-turn
+	// dynamic context.
+	StaticSystemPrompt string
+	// Context carries genuinely per-turn dynamic prompt additions (for example
+	// memory search results or engine-supplied dynamic turn context).
+	Context string
 	// Images carries vision content for multi-modal providers.
 	// Each element is either a URL reference or inline base64 data.
 	// Text-only providers (echo, http, ollama) ignore this field.

@@ -79,7 +79,7 @@ type httpResponse struct {
 }
 
 func (p *HTTPProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
-	contextText := turn.Context
+	contextText := buildPromptAssembly("", turn.StaticSystemPrompt, turn.Context).Combined()
 	const maxContextBytes = 16 * 1024
 	if len(contextText) > maxContextBytes {
 		contextText = truncateUTF8ByBytes(contextText, maxContextBytes)
@@ -697,8 +697,8 @@ func (p *CohereProvider) Generate(ctx context.Context, turn Turn) (ProviderResul
 			{Role: "user", Content: strings.TrimSpace(turn.UserText)},
 		},
 	}
-	if turn.Context != "" {
-		req.Preamble = turn.Context
+	if preamble := buildPromptAssembly("", turn.StaticSystemPrompt, turn.Context).Combined(); preamble != "" {
+		req.Preamble = preamble
 	}
 
 	body, err := json.Marshal(req)

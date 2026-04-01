@@ -163,13 +163,14 @@ func buildBootstrapWarningSectionCached(workspaceDir string) string {
 // that OpenClaw injects on every turn: runtime info, time, tool summaries,
 // model aliases, TTS, reactions, sandbox, skills, docs, and bootstrap warnings.
 func buildTurnRuntimeContext(p turnRuntimeParams) string {
+	return joinPromptSections(buildTurnRuntimeStaticContext(p), buildTurnRuntimeDynamicContext())
+}
+
+func buildTurnRuntimeStaticContext(p turnRuntimeParams) string {
 	var sections []string
 
 	// ── Runtime info ────────────────────────────────────────────────────────
 	sections = append(sections, buildRuntimeSection(p))
-
-	// ── Current Date & Time ─────────────────────────────────────────────────
-	sections = append(sections, buildTimeSection())
 
 	// ── Tool summaries ──────────────────────────────────────────────────────
 	if ts := buildToolSummarySection(p.Tools); ts != "" {
@@ -212,6 +213,10 @@ func buildTurnRuntimeContext(p turnRuntimeParams) string {
 	}
 
 	return strings.Join(sections, "\n\n")
+}
+
+func buildTurnRuntimeDynamicContext() string {
+	return buildTimeSection()
 }
 
 // ─── Section builders ─────────────────────────────────────────────────────────
