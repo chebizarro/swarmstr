@@ -713,3 +713,8 @@
 {"actor":"Biz","comment":null,"created_at":"2026-04-01T09:23:36Z","event_type":"closed","id":713,"issue_id":"swarmstr-r7u","new_value":"All planned src→metiq transfer workstreams completed and merged","old_value":""}
 {"actor":"Biz","comment":null,"created_at":"2026-04-01T09:41:44Z","event_type":"closed","id":714,"issue_id":"swarmstr-914.6.2.1","new_value":"Implemented sessions.list filter/envelope parity on admin + control RPC and added config.get hash alias","old_value":""}
 {"actor":"Biz","comment":null,"created_at":"2026-04-01T10:06:25Z","event_type":"closed","id":715,"issue_id":"swarmstr-914.6.2.8","new_value":"Completed","old_value":""}
+{"actor":"Biz","comment":null,"created_at":"2026-04-01T10:48:15Z","event_type":"created","id":716,"issue_id":"swarmstr-3.1.6","new_value":"","old_value":""}
+{"actor":"Biz","comment":"Added label: control-plane","created_at":"2026-04-01T10:48:15Z","event_type":"label_added","id":717,"issue_id":"swarmstr-3.1.6","new_value":null,"old_value":null}
+{"actor":"Biz","comment":"Added label: nostr","created_at":"2026-04-01T10:48:15Z","event_type":"label_added","id":718,"issue_id":"swarmstr-3.1.6","new_value":null,"old_value":null}
+{"actor":"Biz","comment":"Added label: nip86","created_at":"2026-04-01T10:48:15Z","event_type":"label_added","id":719,"issue_id":"swarmstr-3.1.6","new_value":null,"old_value":null}
+{"actor":"Biz","comment":"Added label: audit","created_at":"2026-04-01T10:48:15Z","event_type":"label_added","id":720,"issue_id":"swarmstr-3.1.6","new_value":null,"old_value":null}
