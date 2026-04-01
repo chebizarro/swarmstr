@@ -74,6 +74,20 @@ For the Nostr control-RPC path, relay selection is deterministic:
 
 In practice, the daemon runtime control relay set is exposed via `relay.policy.get -> runtime_control_relays`, and CLI-side Nostr control uses the relay configuration from `bootstrap.json`.
 
+### Nostr control replay, timeout, and idempotency
+
+The Nostr control path uses the requester pubkey plus the `req` tag as the idempotency key. If a request omits `req`, the event ID is used instead.
+
+The daemon applies these rules:
+
+- fresh requests older than 2 minutes are rejected as expired
+- requests more than 30 seconds in the future are rejected
+- repeated deliveries of the same signed event are suppressed by event ID
+- repeated deliveries of the same caller + request ID replay the original response envelope instead of re-executing the method
+- recent caller + request ID responses are persisted in the control checkpoint so restart/replay does not cause divergent replies during the control replay window
+
+Client-side wait time remains a caller concern. Retrying with the same `req` value is the supported way to recover from reply loss or caller-side timeout without causing duplicate execution.
+
 ### `POST /hooks/wake`
 
 Wake the agent with a system event (webhook trigger).

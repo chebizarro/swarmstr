@@ -42,16 +42,25 @@ type ControlRPCBusOptions struct {
 	SinceUnix         int64
 	MaxRequestAge     time.Duration
 	MinCallerInterval time.Duration
+	CachedLookup      func(callerPubKey, requestID string) (ControlRPCCachedResponse, bool)
 	OnRequest         func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
-	OnHandled         func(context.Context, string, int64)
+	OnHandled         func(context.Context, ControlRPCHandled)
 	OnError           func(error)
 	SeenCap           int
 	ResponseCap       int
 }
 
-type controlCachedResponse struct {
+type ControlRPCCachedResponse struct {
 	Payload string
 	Tags    nostr.Tags
+}
+
+type ControlRPCHandled struct {
+	EventID      string
+	EventUnix    int64
+	CallerPubKey string
+	RequestID    string
+	Response     ControlRPCCachedResponse
 }
 
 type codedDataError interface {
@@ -66,27 +75,28 @@ type controlRPCError struct {
 }
 
 type ControlRPCBus struct {
-	pool        *nostr.Pool
-	hub         *NostrHub
-	ownsPool    bool
-	relays      []string
-	relaysMu    sync.RWMutex
-	keyer       nostr.Keyer
-	public      nostr.PubKey
-	onReq       func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
-	onHandled   func(context.Context, string, int64)
-	onError     func(error)
-	maxReqAge   time.Duration
-	responseCap int
-	health      *RelayHealthTracker
-	subHealth   *SubHealthTracker
+	pool         *nostr.Pool
+	hub          *NostrHub
+	ownsPool     bool
+	relays       []string
+	relaysMu     sync.RWMutex
+	keyer        nostr.Keyer
+	public       nostr.PubKey
+	cachedLookup func(callerPubKey, requestID string) (ControlRPCCachedResponse, bool)
+	onReq        func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
+	onHandled    func(context.Context, ControlRPCHandled)
+	onError      func(error)
+	maxReqAge    time.Duration
+	responseCap  int
+	health       *RelayHealthTracker
+	subHealth    *SubHealthTracker
 
 	seenMu    sync.Mutex
 	seenSet   map[string]struct{}
 	seenList  []string
 	seenCap   int
 	cacheMu   sync.Mutex
-	respCache map[string]controlCachedResponse
+	respCache map[string]ControlRPCCachedResponse
 	respList  []string
 
 	rebindCh chan struct{}
@@ -142,6 +152,7 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 		relays:            initialRelays,
 		keyer:             ks,
 		public:            public,
+		cachedLookup:      opts.CachedLookup,
 		onReq:             opts.OnRequest,
 		onHandled:         opts.OnHandled,
 		onError:           opts.OnError,
@@ -150,7 +161,7 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 		health:            health,
 		seenSet:           map[string]struct{}{},
 		seenCap:           max(opts.SeenCap, 10_000),
-		respCache:         map[string]controlCachedResponse{},
+		respCache:         map[string]ControlRPCCachedResponse{},
 		callerLastRequest: map[string]time.Time{},
 		callerCap:         10_000,
 		minCallerInterval: opts.MinCallerInterval,
@@ -293,7 +304,13 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	if b.markSeen(eventID) {
 		return
 	}
-	if !b.allowCaller(evt.PubKey.Hex(), time.Now()) {
+	callerPubKey := evt.PubKey.Hex()
+	cacheKey := fmt.Sprintf("%s:%s", callerPubKey, requestID)
+	if cached, ok := b.lookupCachedResponse(cacheKey, callerPubKey, requestID); ok {
+		b.publishResponse(re, callerPubKey, requestID, cached.Payload, withETag(cached.Tags, eventID))
+		return
+	}
+	if !b.allowCaller(callerPubKey, time.Now()) {
 		b.respondErrorCode(re, "control request rate limited", requestID, -32029, nil)
 		return
 	}
@@ -321,18 +338,13 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		b.respondError(re, "missing method", requestID)
 		return
 	}
-	cacheKey := fmt.Sprintf("%s:%s", evt.PubKey.Hex(), requestID)
-	if cached, ok := b.getCachedResponse(cacheKey); ok {
-		b.publishResponse(re, evt.PubKey.Hex(), requestID, cached.Payload, withETag(cached.Tags, eventID))
-		return
-	}
 
 	result := ControlRPCResult{}
 	if b.onReq != nil {
 		out, err := b.onReq(b.ctx, ControlRPCInbound{
 			EventID:    eventID,
 			RequestID:  requestID,
-			FromPubKey: evt.PubKey.Hex(),
+			FromPubKey: callerPubKey,
 			RelayURL:   re.Relay.URL,
 			Method:     call.Method,
 			Params:     call.Params,
@@ -360,10 +372,11 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		payloadRaw = []byte(`{"error":"internal error: invalid result payload"}`)
 		tags := nostr.Tags{{"e", eventID}, {"p", evt.PubKey.Hex()}, {"req", requestID}, {"status", "error"}, {"t", "control_rpc"}}
 		payload := string(payloadRaw)
-		b.setCachedResponse(cacheKey, controlCachedResponse{Payload: payload, Tags: tags})
+		cached := ControlRPCCachedResponse{Payload: payload, Tags: tags}
+		b.setCachedResponse(cacheKey, cached)
 		b.publishResponse(re, evt.PubKey.Hex(), requestID, payload, tags)
 		if b.onHandled != nil {
-			b.onHandled(b.ctx, eventID, int64(evt.CreatedAt))
+			b.onHandled(b.ctx, ControlRPCHandled{EventID: eventID, EventUnix: int64(evt.CreatedAt), CallerPubKey: callerPubKey, RequestID: requestID, Response: cached})
 		}
 		return
 	}
@@ -375,10 +388,11 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		{"t", "control_rpc"},
 	}
 	payload := string(payloadRaw)
-	b.setCachedResponse(cacheKey, controlCachedResponse{Payload: payload, Tags: tags})
+	cached := ControlRPCCachedResponse{Payload: payload, Tags: tags}
+	b.setCachedResponse(cacheKey, cached)
 	b.publishResponse(re, evt.PubKey.Hex(), requestID, payload, tags)
 	if b.onHandled != nil {
-		b.onHandled(b.ctx, eventID, int64(evt.CreatedAt))
+		b.onHandled(b.ctx, ControlRPCHandled{EventID: eventID, EventUnix: int64(evt.CreatedAt), CallerPubKey: callerPubKey, RequestID: requestID, Response: cached})
 	}
 }
 
@@ -650,14 +664,29 @@ func (b *ControlRPCBus) markSeen(id string) bool {
 	return false
 }
 
-func (b *ControlRPCBus) getCachedResponse(key string) (controlCachedResponse, bool) {
+func (b *ControlRPCBus) lookupCachedResponse(cacheKey string, callerPubKey string, requestID string) (ControlRPCCachedResponse, bool) {
+	if cached, ok := b.getCachedResponse(cacheKey); ok {
+		return cached, true
+	}
+	if b.cachedLookup == nil {
+		return ControlRPCCachedResponse{}, false
+	}
+	cached, ok := b.cachedLookup(callerPubKey, requestID)
+	if !ok {
+		return ControlRPCCachedResponse{}, false
+	}
+	b.setCachedResponse(cacheKey, cached)
+	return cached, true
+}
+
+func (b *ControlRPCBus) getCachedResponse(key string) (ControlRPCCachedResponse, bool) {
 	b.cacheMu.Lock()
 	defer b.cacheMu.Unlock()
 	resp, ok := b.respCache[key]
 	return resp, ok
 }
 
-func (b *ControlRPCBus) setCachedResponse(key string, resp controlCachedResponse) {
+func (b *ControlRPCBus) setCachedResponse(key string, resp ControlRPCCachedResponse) {
 	b.cacheMu.Lock()
 	defer b.cacheMu.Unlock()
 	if _, exists := b.respCache[key]; !exists {

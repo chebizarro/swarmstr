@@ -33,10 +33,10 @@ func TestWithETagAddsWhenMissing(t *testing.T) {
 }
 
 func TestSetCachedResponseEvictsOldest(t *testing.T) {
-	b := &ControlRPCBus{respCache: map[string]controlCachedResponse{}, responseCap: 2}
-	b.setCachedResponse("a", controlCachedResponse{Payload: "1"})
-	b.setCachedResponse("b", controlCachedResponse{Payload: "2"})
-	b.setCachedResponse("c", controlCachedResponse{Payload: "3"})
+	b := &ControlRPCBus{respCache: map[string]ControlRPCCachedResponse{}, responseCap: 2}
+	b.setCachedResponse("a", ControlRPCCachedResponse{Payload: "1"})
+	b.setCachedResponse("b", ControlRPCCachedResponse{Payload: "2"})
+	b.setCachedResponse("c", ControlRPCCachedResponse{Payload: "3"})
 
 	if _, ok := b.respCache["a"]; ok {
 		t.Fatal("expected oldest cache entry to be evicted")
@@ -62,6 +62,41 @@ func TestControlRPCBusSetRelays(t *testing.T) {
 	}
 	if got[0] != "wss://two" || got[1] != "wss://three" {
 		t.Fatalf("unexpected relays: %v", got)
+	}
+}
+
+func TestLookupCachedResponseHydratesLocalCache(t *testing.T) {
+	lookupCalls := 0
+	b := &ControlRPCBus{
+		respCache:   map[string]ControlRPCCachedResponse{},
+		responseCap: 2,
+		cachedLookup: func(callerPubKey string, requestID string) (ControlRPCCachedResponse, bool) {
+			lookupCalls++
+			if callerPubKey != "caller-a" || requestID != "req-1" {
+				t.Fatalf("unexpected lookup args caller=%s req=%s", callerPubKey, requestID)
+			}
+			return ControlRPCCachedResponse{Payload: "cached", Tags: nostr.Tags{{"req", requestID}}}, true
+		},
+	}
+	cached, ok := b.lookupCachedResponse("caller-a:req-1", "caller-a", "req-1")
+	if !ok {
+		t.Fatal("expected persistent cache hit")
+	}
+	if cached.Payload != "cached" {
+		t.Fatalf("unexpected payload: %q", cached.Payload)
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("expected one lookup call, got %d", lookupCalls)
+	}
+	cached, ok = b.lookupCachedResponse("caller-a:req-1", "caller-a", "req-1")
+	if !ok {
+		t.Fatal("expected in-memory cache hit")
+	}
+	if cached.Payload != "cached" {
+		t.Fatalf("unexpected in-memory payload: %q", cached.Payload)
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("expected persistent lookup to be memoized, got %d calls", lookupCalls)
 	}
 }
 
