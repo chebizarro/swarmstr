@@ -442,6 +442,41 @@ type ToolLifecyclePayload struct {
 	Data       any    `json:"data,omitempty"`
 }
 
+// ToolDecisionKind classifies projected tool decision payloads carried on
+// tool.progress/tool.error lifecycle events.
+type ToolDecisionKind string
+
+const (
+	ToolDecisionKindScheduler     ToolDecisionKind = "scheduler"
+	ToolDecisionKindLoopDetection ToolDecisionKind = "loop_detection"
+)
+
+// ToolSchedulerDecisionPayload is the gateway-owned projection of scheduler
+// batch decisions emitted by the shared agent loop.
+type ToolSchedulerDecisionPayload struct {
+	Kind             ToolDecisionKind `json:"kind"`
+	Mode             string           `json:"mode"` // "serial" | "parallel"
+	BatchIndex       int              `json:"batch_index"`
+	BatchCount       int              `json:"batch_count"`
+	BatchSize        int              `json:"batch_size"`
+	BatchPosition    int              `json:"batch_position"`
+	ConcurrencySafe  bool             `json:"concurrency_safe"`
+	ConcurrencyLimit int              `json:"concurrency_limit,omitempty"`
+}
+
+// ToolLoopDecisionPayload is the gateway-owned projection of loop-detection
+// decisions emitted before a tool continues or is blocked.
+type ToolLoopDecisionPayload struct {
+	Kind           ToolDecisionKind `json:"kind"`
+	Blocked        bool             `json:"blocked"`
+	Level          string           `json:"level,omitempty"`
+	Detector       string           `json:"detector,omitempty"`
+	Count          int              `json:"count,omitempty"`
+	WarningKey     string           `json:"warning_key,omitempty"`
+	PairedToolName string           `json:"paired_tool_name,omitempty"`
+	Message        string           `json:"message,omitempty"`
+}
+
 // TurnResultPayload is the payload for EventTurnResult events.
 type TurnResultPayload struct {
 	TS             int64  `json:"ts_ms"`
