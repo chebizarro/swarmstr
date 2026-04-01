@@ -101,7 +101,7 @@ func configuredAgentEnabledTools(cfg state.ConfigDoc, agentID string) []string {
 		if strings.TrimSpace(ac.ID) != agentID {
 			continue
 		}
-		return normalizeACPEnabledTools(ac.EnabledTools)
+		return agent.NormalizeAllowedToolNames(ac.EnabledTools)
 	}
 	return nil
 }
@@ -170,47 +170,6 @@ func allowedToolIDsForProfile(cfg state.ConfigDoc, profileID string) map[string]
 	return agent.AllowedToolIDs(groups, profileID)
 }
 
-func allowedToolIDsFromNames(names []string) map[string]bool {
-	names = normalizeACPEnabledTools(names)
-	if len(names) == 0 {
-		return nil
-	}
-	allowed := make(map[string]bool, len(names))
-	for _, name := range names {
-		allowed[name] = true
-	}
-	return allowed
-}
-
-func cloneAllowedToolIDs(allowed map[string]bool) map[string]bool {
-	if allowed == nil {
-		return nil
-	}
-	out := make(map[string]bool, len(allowed))
-	for name, ok := range allowed {
-		if ok {
-			out[name] = true
-		}
-	}
-	return out
-}
-
-func intersectAllowedToolIDs(left, right map[string]bool) map[string]bool {
-	if left == nil {
-		return cloneAllowedToolIDs(right)
-	}
-	if right == nil {
-		return cloneAllowedToolIDs(left)
-	}
-	out := make(map[string]bool)
-	for name := range left {
-		if right[name] {
-			out[name] = true
-		}
-	}
-	return out
-}
-
 func filterRuntimeByAllowedTools(rt agent.Runtime, allowed map[string]bool) agent.Runtime {
 	if allowed == nil {
 		return rt
@@ -224,17 +183,21 @@ func filterRuntimeByAllowedTools(rt agent.Runtime, allowed map[string]bool) agen
 	return filterable.Filtered(allowed)
 }
 
+func resolvedAgentRuntimeToolAllowlist(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, agentID string) map[string]bool {
+	allowed := allowedToolIDsForProfile(cfg, configuredAgentToolProfile(ctx, cfg, docsRepo, agentID))
+	return agent.IntersectAllowedToolIDs(allowed, agent.AllowedToolIDsFromNames(configuredAgentEnabledTools(cfg, agentID)))
+}
+
 func applyAgentProfileFilterForAgent(ctx context.Context, rt agent.Runtime, agentID string, cfg state.ConfigDoc, docsRepo *state.DocsRepository) agent.Runtime {
-	return filterRuntimeByAllowedTools(rt, allowedToolIDsForProfile(cfg, configuredAgentToolProfile(ctx, cfg, docsRepo, agentID)))
+	return filterRuntimeByAllowedTools(rt, resolvedAgentRuntimeToolAllowlist(ctx, cfg, docsRepo, agentID))
 }
 
 func applyACPTaskRuntimeConstraints(ctx context.Context, rt agent.Runtime, agentID string, payload acppkg.TaskPayload, cfg state.ConfigDoc, docsRepo *state.DocsRepository) agent.Runtime {
-	allowed := allowedToolIDsForProfile(cfg, configuredAgentToolProfile(ctx, cfg, docsRepo, agentID))
-	allowed = intersectAllowedToolIDs(allowed, allowedToolIDsFromNames(configuredAgentEnabledTools(cfg, agentID)))
+	allowed := resolvedAgentRuntimeToolAllowlist(ctx, cfg, docsRepo, agentID)
 	if profileID := strings.TrimSpace(payload.ToolProfile); profileID != "" {
-		allowed = intersectAllowedToolIDs(allowed, allowedToolIDsForProfile(cfg, profileID))
+		allowed = agent.IntersectAllowedToolIDs(allowed, allowedToolIDsForProfile(cfg, profileID))
 	}
-	allowed = intersectAllowedToolIDs(allowed, allowedToolIDsFromNames(payload.EnabledTools))
+	allowed = agent.IntersectAllowedToolIDs(allowed, agent.AllowedToolIDsFromNames(payload.EnabledTools))
 	return filterRuntimeByAllowedTools(rt, allowed)
 }
 
@@ -277,12 +240,12 @@ func buildInheritedACPTaskPayload(ctx context.Context, cfg state.ConfigDoc, docs
 	}
 	if len(out.EnabledTools) == 0 {
 		if len(inherited.EnabledTools) > 0 {
-			out.EnabledTools = normalizeACPEnabledTools(inherited.EnabledTools)
+			out.EnabledTools = agent.NormalizeAllowedToolNames(inherited.EnabledTools)
 		} else {
 			out.EnabledTools = configuredAgentEnabledTools(cfg, agentID)
 		}
 	} else {
-		out.EnabledTools = normalizeACPEnabledTools(out.EnabledTools)
+		out.EnabledTools = agent.NormalizeAllowedToolNames(out.EnabledTools)
 	}
 	if len(out.ContextMessages) == 0 {
 		if len(inherited.ContextMessages) > 0 {

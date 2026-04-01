@@ -86,6 +86,26 @@ func TestToolRegistry_RegisterWithDescriptor_ProjectsDefinition(t *testing.T) {
 	}
 }
 
+func TestAssembleToolDescriptors_BuiltinPrefixWinsNameConflicts(t *testing.T) {
+	descs := []ToolDescriptor{
+		{Name: "plugin/zeta", Origin: ToolOrigin{Kind: ToolOriginKindPlugin}},
+		{Name: "conflict", Description: "plugin", Origin: ToolOrigin{Kind: ToolOriginKindPlugin}},
+		{Name: "alpha", Origin: ToolOrigin{Kind: ToolOriginKindBuiltin}},
+		{Name: "conflict", Description: "builtin", Origin: ToolOrigin{Kind: ToolOriginKindBuiltin}},
+	}
+
+	got := AssembleToolDescriptors(descs, nil)
+	if len(got) != 3 {
+		t.Fatalf("assembled len = %d, want 3 (%+v)", len(got), got)
+	}
+	if got[0].Name != "alpha" || got[1].Name != "conflict" || got[2].Name != "plugin/zeta" {
+		t.Fatalf("assembled order = %+v", got)
+	}
+	if got[1].Description != "builtin" || got[1].Origin.Kind != ToolOriginKindBuiltin {
+		t.Fatalf("expected builtin descriptor to win conflict, got %+v", got[1])
+	}
+}
+
 func TestToolInputSchemaMap_PreservesRawJSONSchema(t *testing.T) {
 	schema := toolInputSchemaMap(ToolDefinition{
 		Name: "plugin/raw",
