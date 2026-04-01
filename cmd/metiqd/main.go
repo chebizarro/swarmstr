@@ -3231,6 +3231,7 @@ func main() {
 
 		var turnResult agent.TurnResult
 		var turnErr error
+		turnStartedAt := time.Now()
 		// Resolve enabled tools for this agent from config.
 		var baseTurnTools []agent.ToolDefinition
 		if controlToolRegistry != nil {
@@ -3390,6 +3391,9 @@ func main() {
 			default:
 				log.Printf("agent process failed session=%s err=%v", sessionID, turnErr)
 			}
+			turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, turnErr, false, "", "", "")
+			persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
+			emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
 			return
 		}
 		stopHeartbeat()
@@ -3416,6 +3420,9 @@ func main() {
 			SessionID: sessionID,
 			Done:      true,
 		})
+		turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, nil, false, "", "", "")
+		persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
+		emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
 
 		if replyFn != nil {
 			sendSuppressed := false
@@ -4238,6 +4245,7 @@ func main() {
 			ToolEventSink: toolLifecycleEmitter(wsEmitter, activeAgentID),
 		}
 		var turnResult agent.TurnResult
+		turnStartedAt := time.Now()
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, chBaseTurn, func(chunk string) {
 				wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
@@ -4279,6 +4287,9 @@ func main() {
 			} else {
 				log.Printf("channel agent error session=%s err=%v", sessionID, turnErr)
 			}
+			turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, turnErr, false, "", "", "")
+			persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
+			emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
 			return turnErr
 		}
 
@@ -4357,6 +4368,9 @@ func main() {
 		if sessionStore != nil && (turnResult.Usage.InputTokens > 0 || turnResult.Usage.OutputTokens > 0) {
 			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens)
 		}
+		turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, nil, false, "", "", "")
+		persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
+		emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
 		return nil
 	}
 
@@ -9204,6 +9218,99 @@ func emitControlWSEvent(event string, payload any) {
 	emitter.Emit(event, payload)
 }
 
+func buildTurnTelemetry(turnID string, startedAt, endedAt time.Time, result agent.TurnResult, turnErr error, fallbackUsed bool, fallbackFrom, fallbackTo, fallbackReason string) agent.TurnTelemetry {
+	telemetry := agent.TurnTelemetry{
+		TurnID:         strings.TrimSpace(turnID),
+		StartedAtMS:    startedAt.UnixMilli(),
+		EndedAtMS:      endedAt.UnixMilli(),
+		DurationMS:     endedAt.Sub(startedAt).Milliseconds(),
+		FallbackUsed:   fallbackUsed,
+		FallbackFrom:   strings.TrimSpace(fallbackFrom),
+		FallbackTo:     strings.TrimSpace(fallbackTo),
+		FallbackReason: strings.TrimSpace(fallbackReason),
+		Usage:          result.Usage,
+	}
+	if turnErr != nil {
+		if partial, ok := agent.PartialTurnResult(turnErr); ok {
+			if partial.Usage.InputTokens > 0 || partial.Usage.OutputTokens > 0 {
+				telemetry.Usage = partial.Usage
+			}
+		}
+		telemetry.Error = truncateRunes(strings.TrimSpace(turnErr.Error()), 200)
+		if outcome, stopReason, ok := agent.ClassifyTurnError(turnErr); ok {
+			telemetry.Outcome = outcome
+			telemetry.StopReason = stopReason
+		}
+	} else {
+		telemetry.Outcome = result.Outcome
+		telemetry.StopReason = result.StopReason
+		if telemetry.Outcome == "" || telemetry.StopReason == "" {
+			inferredOutcome, inferredStopReason := agent.ClassifyTurnResult(result)
+			if telemetry.Outcome == "" {
+				telemetry.Outcome = inferredOutcome
+			}
+			if telemetry.StopReason == "" {
+				telemetry.StopReason = inferredStopReason
+			}
+		}
+	}
+	telemetry.LoopBlocked = telemetry.StopReason == agent.TurnStopReasonLoopBlocked
+	return telemetry
+}
+
+func persistTurnTelemetry(sessionStore *state.SessionStore, sessionID string, telemetry agent.TurnTelemetry) {
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	if err := sessionStore.RecordTurn(sessionID, state.TurnTelemetry{
+		TurnID:         telemetry.TurnID,
+		StartedAtMS:    telemetry.StartedAtMS,
+		EndedAtMS:      telemetry.EndedAtMS,
+		DurationMS:     telemetry.DurationMS,
+		Outcome:        string(telemetry.Outcome),
+		StopReason:     string(telemetry.StopReason),
+		LoopBlocked:    telemetry.LoopBlocked,
+		Error:          telemetry.Error,
+		FallbackUsed:   telemetry.FallbackUsed,
+		FallbackFrom:   telemetry.FallbackFrom,
+		FallbackTo:     telemetry.FallbackTo,
+		FallbackReason: telemetry.FallbackReason,
+		InputTokens:    telemetry.Usage.InputTokens,
+		OutputTokens:   telemetry.Usage.OutputTokens,
+	}); err != nil {
+		log.Printf("session store turn telemetry failed session=%s: %v", sessionID, err)
+	}
+}
+
+func emitTurnTelemetry(emitter gatewayws.EventEmitter, agentID, sessionID string, telemetry agent.TurnTelemetry) {
+	if emitter == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	emitter.Emit(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, sessionID, telemetry))
+}
+
+func turnTelemetryPayload(agentID, sessionID string, telemetry agent.TurnTelemetry) gatewayws.TurnResultPayload {
+	return gatewayws.TurnResultPayload{
+		TS:             telemetry.EndedAtMS,
+		AgentID:        agentID,
+		SessionID:      sessionID,
+		TurnID:         telemetry.TurnID,
+		StartedAtMS:    telemetry.StartedAtMS,
+		EndedAtMS:      telemetry.EndedAtMS,
+		DurationMS:     telemetry.DurationMS,
+		Outcome:        string(telemetry.Outcome),
+		StopReason:     string(telemetry.StopReason),
+		LoopBlocked:    telemetry.LoopBlocked,
+		Error:          telemetry.Error,
+		FallbackUsed:   telemetry.FallbackUsed,
+		FallbackFrom:   telemetry.FallbackFrom,
+		FallbackTo:     telemetry.FallbackTo,
+		FallbackReason: telemetry.FallbackReason,
+		InputTokens:    telemetry.Usage.InputTokens,
+		OutputTokens:   telemetry.Usage.OutputTokens,
+	}
+}
+
 func toolLifecycleEmitter(emitter gatewayws.EventEmitter, agentID string) agent.ToolLifecycleSink {
 	if emitter == nil {
 		return nil
@@ -9480,6 +9587,7 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 	fallbackFrom := ""
 	fallbackTo := ""
 	fallbackReason := ""
+	turnStartedAt := time.Now()
 	for i, rt := range runtimesToTry {
 		if rt == nil {
 			continue
@@ -9513,10 +9621,16 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 	})
 
 	if lastErr != nil {
+		turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), agent.TurnResult{}, lastErr, fallbackUsed, fallbackFrom, fallbackTo, fallbackReason)
+		persistTurnTelemetry(controlSessionStore, req.SessionID, turnTelemetry)
+		emitControlWSEvent(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, req.SessionID, turnTelemetry))
 		jobs.Finish(runID, "", lastErr)
 		return
 	}
 	if result == nil {
+		turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), agent.TurnResult{}, fmt.Errorf("all runtimes returned nil result"), fallbackUsed, fallbackFrom, fallbackTo, fallbackReason)
+		persistTurnTelemetry(controlSessionStore, req.SessionID, turnTelemetry)
+		emitControlWSEvent(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, req.SessionID, turnTelemetry))
 		jobs.Finish(runID, "", fmt.Errorf("all runtimes returned nil result"))
 		return
 	}
@@ -9540,6 +9654,9 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 			log.Printf("session store put failed session=%s: %v", req.SessionID, putErr)
 		}
 	}
+	turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), *result, nil, fallbackUsed, fallbackFrom, fallbackTo, fallbackReason)
+	persistTurnTelemetry(controlSessionStore, req.SessionID, turnTelemetry)
+	emitControlWSEvent(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, req.SessionID, turnTelemetry))
 	jobs.Finish(runID, result.Text, nil)
 }
 

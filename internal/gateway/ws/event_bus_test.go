@@ -54,6 +54,7 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 		EventNodePairRequested, EventNodePairResolved,
 		EventDevicePairResolved, EventPluginLoaded,
 		EventToolStart, EventToolProgress, EventToolResult, EventToolError,
+		EventTurnResult,
 	}
 	set := make(map[string]struct{}, len(AllPushEvents))
 	for _, e := range AllPushEvents {
@@ -173,5 +174,31 @@ func TestToolLifecyclePayloads(t *testing.T) {
 	}
 	if lp.ToolCallID != "call-2" || lp.ToolName != "write" || lp.Error != "permission denied" {
 		t.Fatalf("unexpected lifecycle payload: %+v", lp)
+	}
+}
+
+func TestTurnResultPayload(t *testing.T) {
+	e := &captureEmitter{}
+	e.Emit(EventTurnResult, TurnResultPayload{
+		SessionID:   "sess-1",
+		TurnID:      "turn-1",
+		Outcome:     "completed_with_tools",
+		StopReason:  "model_text",
+		DurationMS:  250,
+		LoopBlocked: false,
+	})
+	if e.Count() != 1 {
+		t.Fatalf("expected 1 event, got %d", e.Count())
+	}
+	name, payload := e.Last()
+	if name != EventTurnResult {
+		t.Fatalf("expected %q, got %q", EventTurnResult, name)
+	}
+	tp, ok := payload.(TurnResultPayload)
+	if !ok {
+		t.Fatalf("expected TurnResultPayload, got %T", payload)
+	}
+	if tp.SessionID != "sess-1" || tp.TurnID != "turn-1" || tp.Outcome != "completed_with_tools" {
+		t.Fatalf("unexpected turn result payload: %+v", tp)
 	}
 }

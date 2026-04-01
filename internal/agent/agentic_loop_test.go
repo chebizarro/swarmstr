@@ -777,6 +777,7 @@ func TestRunAgenticLoop_HistoryDelta_LLMError_PartialResult(t *testing.T) {
 		first: &LLMResponse{
 			ToolCalls:        []ToolCall{{ID: "tc1", Name: "tool_a"}},
 			NeedsToolResults: true,
+			Usage:            ProviderUsage{InputTokens: 11, OutputTokens: 7},
 		},
 	}
 
@@ -805,6 +806,9 @@ func TestRunAgenticLoop_HistoryDelta_LLMError_PartialResult(t *testing.T) {
 	}
 	if partial.HistoryDelta[1].Role != "tool" || partial.HistoryDelta[1].Content != "ok" {
 		t.Errorf("partial delta[1] should be tool result, got %+v", partial.HistoryDelta[1])
+	}
+	if partial.Usage.InputTokens != 11 || partial.Usage.OutputTokens != 7 {
+		t.Fatalf("expected partial usage to be preserved, got %+v", partial.Usage)
 	}
 }
 

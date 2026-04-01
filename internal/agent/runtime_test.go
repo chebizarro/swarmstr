@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -104,5 +105,28 @@ func TestProviderRuntime_StreamingRuntime_InterfaceCheck(t *testing.T) {
 	rt, _ := NewProviderRuntime(streamingEchoProvider{}, nil)
 	if _, ok := any(rt).(StreamingRuntime); !ok {
 		t.Fatal("ProviderRuntime should implement StreamingRuntime")
+	}
+}
+
+func TestClassifyTurnError(t *testing.T) {
+	if outcome, stopReason, ok := ClassifyTurnError(context.DeadlineExceeded); !ok || outcome != TurnOutcomeAborted || stopReason != TurnStopReasonCancelled {
+		t.Fatalf("deadline classification mismatch outcome=%q stop_reason=%q ok=%v", outcome, stopReason, ok)
+	}
+	err := &TurnExecutionError{
+		Cause: errors.New("provider failed"),
+		Partial: TurnResult{
+			Outcome:    TurnOutcomeBlocked,
+			StopReason: TurnStopReasonLoopBlocked,
+		},
+	}
+	if outcome, stopReason, ok := ClassifyTurnError(err); !ok || outcome != TurnOutcomeBlocked || stopReason != TurnStopReasonLoopBlocked {
+		t.Fatalf("partial classification mismatch outcome=%q stop_reason=%q ok=%v", outcome, stopReason, ok)
+	}
+}
+
+func TestClassifyTurnResult(t *testing.T) {
+	outcome, stopReason := ClassifyTurnResult(TurnResult{Text: "ok"})
+	if outcome != TurnOutcomeCompleted || stopReason != TurnStopReasonModelText {
+		t.Fatalf("plain text classification mismatch outcome=%q stop_reason=%q", outcome, stopReason)
 	}
 }

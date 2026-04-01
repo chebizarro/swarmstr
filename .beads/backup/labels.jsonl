@@ -196,6 +196,10 @@
 {"issue_id":"swarmstr-r7u.23","label":"architecture"}
 {"issue_id":"swarmstr-r7u.23","label":"metiq"}
 {"issue_id":"swarmstr-r7u.23","label":"src-transfer"}
+{"issue_id":"swarmstr-r7u.23.1","label":"agent-runtime"}
+{"issue_id":"swarmstr-r7u.23.1","label":"architecture"}
+{"issue_id":"swarmstr-r7u.23.1","label":"metiq"}
+{"issue_id":"swarmstr-r7u.23.1","label":"src-transfer"}
 {"issue_id":"swarmstr-r7u.24","label":"agent-runtime"}
 {"issue_id":"swarmstr-r7u.24","label":"architecture"}
 {"issue_id":"swarmstr-r7u.24","label":"metiq"}
