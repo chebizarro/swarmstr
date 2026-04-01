@@ -11,6 +11,10 @@
 {"issue_id":"swarmstr-283","label":"memory"}
 {"issue_id":"swarmstr-283","label":"metiq"}
 {"issue_id":"swarmstr-283","label":"src-transfer"}
+{"issue_id":"swarmstr-3.1.6","label":"audit"}
+{"issue_id":"swarmstr-3.1.6","label":"control-plane"}
+{"issue_id":"swarmstr-3.1.6","label":"nip86"}
+{"issue_id":"swarmstr-3.1.6","label":"nostr"}
 {"issue_id":"swarmstr-4l8","label":"nostr"}
 {"issue_id":"swarmstr-4l8","label":"security"}
 {"issue_id":"swarmstr-4l8","label":"tools"}
