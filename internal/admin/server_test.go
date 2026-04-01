@@ -1041,7 +1041,7 @@ func TestDispatchMethodCallAgentMethods(t *testing.T) {
 			return map[string]any{"run_id": req.RunID, "status": "ok"}, nil
 		},
 		AgentIdentity: func(_ context.Context, req methods.AgentIdentityRequest) (map[string]any, error) {
-			return map[string]any{"agent_id": "main", "session_id": req.SessionID}, nil
+			return map[string]any{"agent_id": "main", "display_name": "Main Agent", "session_id": req.SessionID}, nil
 		},
 	}
 
@@ -1052,7 +1052,7 @@ func TestDispatchMethodCallAgentMethods(t *testing.T) {
 		t.Fatalf("agent failed status=%d err=%v", status, err)
 	}
 	out, _ := result.(map[string]any)
-	if out["status"] != "accepted" {
+	if out["status"] != "accepted" || out["run_id"] != "run-1" || out["runId"] != "run-1" {
 		t.Fatalf("unexpected agent result: %#v", result)
 	}
 
@@ -1063,7 +1063,7 @@ func TestDispatchMethodCallAgentMethods(t *testing.T) {
 		t.Fatalf("agent.wait failed status=%d err=%v", status, err)
 	}
 	out, _ = result.(map[string]any)
-	if out["status"] != "ok" {
+	if out["status"] != "ok" || out["run_id"] != "run-1" || out["runId"] != "run-1" {
 		t.Fatalf("unexpected agent.wait result: %#v", result)
 	}
 
@@ -1074,7 +1074,7 @@ func TestDispatchMethodCallAgentMethods(t *testing.T) {
 		t.Fatalf("agent.identity.get failed status=%d err=%v", status, err)
 	}
 	out, _ = result.(map[string]any)
-	if out["agent_id"] != "main" {
+	if out["agent_id"] != "main" || out["agentId"] != "main" || out["displayName"] != "Main Agent" || out["sessionId"] != "s1" {
 		t.Fatalf("unexpected identity result: %#v", result)
 	}
 }
@@ -1226,7 +1226,7 @@ func TestDispatchMethodCallSessionMutations(t *testing.T) {
 		t.Fatalf("sessions.compact failed status=%d err=%v", status, err)
 	}
 	out, _ := result.(map[string]any)
-	if out["dropped"].(int) != 2 || out["key"] != "s1" {
+	if out["dropped"].(int) != 2 || out["key"] != "s1" || out["sessionId"] != "s1" || out["fromEntries"].(int) != 3 {
 		t.Fatalf("unexpected compact result: %#v", out)
 	}
 
@@ -1237,7 +1237,7 @@ func TestDispatchMethodCallSessionMutations(t *testing.T) {
 		t.Fatalf("chat.abort failed status=%d err=%v", status, err)
 	}
 	out, _ = result.(map[string]any)
-	if out["aborted"] != true || out["aborted_count"].(int) != 1 || out["key"] != "s1" {
+	if out["aborted"] != true || out["aborted_count"].(int) != 1 || out["abortedCount"].(int) != 1 || out["key"] != "s1" || out["sessionId"] != "s1" {
 		t.Fatalf("unexpected chat.abort result: %#v", out)
 	}
 
@@ -1248,7 +1248,7 @@ func TestDispatchMethodCallSessionMutations(t *testing.T) {
 		t.Fatalf("chat.abort (runId only) failed status=%d err=%v", status, err)
 	}
 	out, _ = result.(map[string]any)
-	if out["aborted"] != false || out["run_id"] != "run-1" {
+	if out["aborted"] != false || out["run_id"] != "run-1" || out["runId"] != "run-1" || out["abortedCount"].(int) != 0 {
 		t.Fatalf("unexpected run-only chat.abort result: %#v", out)
 	}
 	if abortCalls != 1 {

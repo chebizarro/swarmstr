@@ -217,8 +217,8 @@ func TestParity_SessionsList(t *testing.T) {
 func TestParity_AgentIdentityGet(t *testing.T) {
 	cfgState := newRuntimeConfigStore(minimalOpenCfg())
 	out := parityCallWithDocs(t, methods.MethodAgentIdentityGet, map[string]any{"session_id": "test-session"}, cfgState, newParityDocs())
-	// OpenClaw: {agent_id, display_name, session_id, pubkey}
-	for _, key := range []string{"agent_id", "display_name", "session_id"} {
+	// OpenClaw-compatible: preserve snake_case while exposing camelCase aliases.
+	for _, key := range []string{"agent_id", "display_name", "session_id", "agentId", "displayName", "sessionId"} {
 		if _, ok := out[key]; !ok {
 			t.Errorf("agent.identity.get: missing %q field: %v", key, out)
 		}
@@ -316,8 +316,8 @@ func TestParity_AgentRun(t *testing.T) {
 	if !ok {
 		t.Fatalf("agent: expected map[string]any, got %T", res.Result)
 	}
-	// OpenClaw: {run_id, status: "accepted", accepted_at}
-	for _, key := range []string{"run_id", "status", "accepted_at"} {
+	// OpenClaw-compatible: preserve snake_case while exposing camelCase aliases.
+	for _, key := range []string{"run_id", "status", "accepted_at", "runId", "acceptedAt"} {
 		if _, ok := out[key]; !ok {
 			t.Errorf("agent: missing %q field: %v", key, out)
 		}
