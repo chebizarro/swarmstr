@@ -270,16 +270,50 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 // consecutive concurrency-safe calls are grouped into parallel batches, while
 // all other calls run serially. Returned results preserve the original call order.
 func executeToolBatches(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink) []ToolExecResult {
+	if sessionID == "" {
+		sessionID = SessionIDFromContext(ctx)
+	}
 	batches := partitionToolCalls(executor, calls)
 	results := make([]ToolExecResult, 0, len(calls))
-	for _, batch := range batches {
+	concurrencyLimit := getMaxToolUseConcurrency()
+	for batchIndex, batch := range batches {
+		emitSchedulerEvents(batch, batchIndex, len(batches), concurrencyLimit, sessionID, turnID, sink)
 		if batch.isConcurrencySafe {
-			results = append(results, executeToolBatchParallel(ctx, executor, batch.calls, sessionID, turnID, sink)...)
+			results = append(results, executeToolBatchParallel(ctx, executor, batch.calls, concurrencyLimit, sessionID, turnID, sink)...)
 			continue
 		}
 		results = append(results, executeToolBatchSerial(ctx, executor, batch.calls, sessionID, turnID, sink)...)
 	}
 	return results
+}
+
+func emitSchedulerEvents(batch toolCallBatch, batchIndex, batchCount, concurrencyLimit int, sessionID, turnID string, sink ToolLifecycleSink) {
+	mode := "serial"
+	limit := 0
+	if batch.isConcurrencySafe {
+		mode = "parallel"
+		limit = concurrencyLimit
+	}
+	for i, call := range batch.calls {
+		emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+			Type:       ToolLifecycleEventProgress,
+			TS:         time.Now().UnixMilli(),
+			SessionID:  sessionID,
+			TurnID:     turnID,
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Data: ToolSchedulerDecision{
+				Kind:             ToolDecisionKindScheduler,
+				Mode:             mode,
+				BatchIndex:       batchIndex,
+				BatchCount:       batchCount,
+				BatchSize:        len(batch.calls),
+				BatchPosition:    i,
+				ConcurrencySafe:  batch.isConcurrencySafe,
+				ConcurrencyLimit: limit,
+			},
+		})
+	}
 }
 
 func partitionToolCalls(executor ToolExecutor, calls []ToolCall) []toolCallBatch {
@@ -304,11 +338,10 @@ func partitionToolCalls(executor ToolExecutor, calls []ToolCall) []toolCallBatch
 	return batches
 }
 
-func executeToolBatchParallel(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink) []ToolExecResult {
+func executeToolBatchParallel(ctx context.Context, executor ToolExecutor, calls []ToolCall, concurrencyLimit int, sessionID, turnID string, sink ToolLifecycleSink) []ToolExecResult {
 	results := make([]ToolExecResult, len(calls))
 	var wg sync.WaitGroup
-	limit := getMaxToolUseConcurrency()
-	sem := make(chan struct{}, limit)
+	sem := make(chan struct{}, concurrencyLimit)
 	for i, call := range calls {
 		results[i].ToolCallID = call.ID
 		wg.Add(1)
@@ -333,21 +366,34 @@ func executeToolBatchSerial(ctx context.Context, executor ToolExecutor, calls []
 
 func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call ToolCall, sessionID, turnID string, sink ToolLifecycleSink) ToolExecResult {
 	result := ToolExecResult{ToolCallID: call.ID}
-	emitToolLifecycleEvent(sink, ToolLifecycleEvent{
-		Type:       ToolLifecycleEventStart,
-		TS:         time.Now().UnixMilli(),
-		SessionID:  sessionID,
-		TurnID:     turnID,
-		ToolCallID: call.ID,
-		ToolName:   call.Name,
-	})
+	if sessionID == "" {
+		sessionID = SessionIDFromContext(ctx)
+	}
 	loopAware, _ := executor.(toolLoopResolver)
 	var loopResult toolloop.Result
 	var loopEnabled bool
 	if loopAware != nil {
 		loopResult, loopEnabled = loopAware.PrepareLoopExecution(ctx, call)
 		if loopEnabled && loopResult.Stuck {
-			sessionID := SessionIDFromContext(ctx)
+			decision := ToolLoopDecision{
+				Kind:           ToolDecisionKindLoopDetection,
+				Blocked:        loopResult.Level == toolloop.Critical,
+				Level:          string(loopResult.Level),
+				Detector:       string(loopResult.Detector),
+				Count:          loopResult.Count,
+				WarningKey:     loopResult.WarningKey,
+				PairedToolName: loopResult.PairedToolName,
+				Message:        loopResult.Message,
+			}
+			emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+				Type:       ToolLifecycleEventProgress,
+				TS:         time.Now().UnixMilli(),
+				SessionID:  sessionID,
+				TurnID:     turnID,
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Data:       decision,
+			})
 			if loopResult.Level == toolloop.Critical {
 				log.Printf("toolloop: BLOCKED tool=%s session=%s detector=%s count=%d", call.Name, sessionID, loopResult.Detector, loopResult.Count)
 				result.Content = "error: " + loopResult.Message
@@ -360,12 +406,21 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 					ToolCallID: call.ID,
 					ToolName:   call.Name,
 					Error:      loopResult.Message,
+					Data:       decision,
 				})
 				return result
 			}
 			log.Printf("toolloop: WARNING tool=%s session=%s detector=%s count=%d", call.Name, sessionID, loopResult.Detector, loopResult.Count)
 		}
 	}
+	emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+		Type:       ToolLifecycleEventStart,
+		TS:         time.Now().UnixMilli(),
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		ToolCallID: call.ID,
+		ToolName:   call.Name,
+	})
 	value, execErr := executor.Execute(ctx, call)
 	if execErr != nil {
 		errMsg := execErr.Error()

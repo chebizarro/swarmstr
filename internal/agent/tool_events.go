@@ -26,6 +26,40 @@ type ToolLifecycleEvent struct {
 	Data       any                    `json:"data,omitempty"`
 }
 
+// ToolDecisionKind identifies the runtime decision source carried in Data.
+type ToolDecisionKind string
+
+const (
+	ToolDecisionKindScheduler     ToolDecisionKind = "scheduler"
+	ToolDecisionKindLoopDetection ToolDecisionKind = "loop_detection"
+)
+
+// ToolSchedulerDecision records how the shared src-shaped scheduler chose to
+// run a tool call within the current batch.
+type ToolSchedulerDecision struct {
+	Kind             ToolDecisionKind `json:"kind"`
+	Mode             string           `json:"mode"` // "serial" | "parallel"
+	BatchIndex       int              `json:"batch_index"`
+	BatchCount       int              `json:"batch_count"`
+	BatchSize        int              `json:"batch_size"`
+	BatchPosition    int              `json:"batch_position"`
+	ConcurrencySafe  bool             `json:"concurrency_safe"`
+	ConcurrencyLimit int              `json:"concurrency_limit,omitempty"`
+}
+
+// ToolLoopDecision records a loop-detector decision before execution continues
+// or is blocked.
+type ToolLoopDecision struct {
+	Kind           ToolDecisionKind `json:"kind"`
+	Blocked        bool             `json:"blocked"`
+	Level          string           `json:"level,omitempty"`
+	Detector       string           `json:"detector,omitempty"`
+	Count          int              `json:"count,omitempty"`
+	WarningKey     string           `json:"warning_key,omitempty"`
+	PairedToolName string           `json:"paired_tool_name,omitempty"`
+	Message        string           `json:"message,omitempty"`
+}
+
 // ToolLifecycleSink receives structured tool lifecycle events from the shared
 // loop. Callers may leave this nil when no runtime event projection is needed.
 type ToolLifecycleSink func(ToolLifecycleEvent)

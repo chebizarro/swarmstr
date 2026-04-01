@@ -194,17 +194,24 @@ func TestRunAgenticLoop_EmitsToolLifecycleEvents(t *testing.T) {
 		t.Fatalf("unexpected response content: %q", resp.Content)
 	}
 	events := capture.snapshot()
-	if len(events) != 2 {
-		t.Fatalf("expected 2 lifecycle events, got %d", len(events))
+	if len(events) != 3 {
+		t.Fatalf("expected 3 lifecycle events, got %d", len(events))
 	}
-	if events[0].Type != ToolLifecycleEventStart || events[1].Type != ToolLifecycleEventResult {
+	if events[0].Type != ToolLifecycleEventProgress || events[1].Type != ToolLifecycleEventStart || events[2].Type != ToolLifecycleEventResult {
 		t.Fatalf("unexpected lifecycle order: %+v", events)
 	}
-	if events[0].SessionID != "sess-1" || events[0].TurnID != "turn-1" {
-		t.Fatalf("missing correlation fields on start event: %+v", events[0])
+	scheduler, ok := events[0].Data.(ToolSchedulerDecision)
+	if !ok {
+		t.Fatalf("expected ToolSchedulerDecision, got %T", events[0].Data)
 	}
-	if events[1].ToolCallID != "tc1" || events[1].ToolName != "test_tool" || events[1].Result != "tool output" {
-		t.Fatalf("unexpected result event: %+v", events[1])
+	if scheduler.Kind != ToolDecisionKindScheduler || scheduler.Mode != "serial" || scheduler.BatchSize != 1 || scheduler.BatchPosition != 0 {
+		t.Fatalf("unexpected scheduler decision: %+v", scheduler)
+	}
+	if events[1].SessionID != "sess-1" || events[1].TurnID != "turn-1" {
+		t.Fatalf("missing correlation fields on start event: %+v", events[1])
+	}
+	if events[2].ToolCallID != "tc1" || events[2].ToolName != "test_tool" || events[2].Result != "tool output" {
+		t.Fatalf("unexpected result event: %+v", events[2])
 	}
 }
 
@@ -228,6 +235,51 @@ func TestExecuteSingleToolCall_EmitsToolError(t *testing.T) {
 	}
 	if events[1].Error != "boom" || events[1].ToolCallID != "tc-err" || events[1].ToolName != "bad_tool" {
 		t.Fatalf("unexpected error event: %+v", events[1])
+	}
+}
+
+func TestExecuteToolBatches_EmitsSchedulerDecisions(t *testing.T) {
+	executor := &mockToolExecutor{
+		results: map[string]string{
+			"safe_a":   "A",
+			"safe_b":   "B",
+			"unsafe_c": "C",
+		},
+		traits: map[string]ToolTraits{
+			"safe_a":   {ConcurrencySafe: true},
+			"safe_b":   {ConcurrencySafe: true},
+			"unsafe_c": {},
+		},
+	}
+	capture := &capturedToolLifecycle{}
+	_ = executeToolBatches(context.Background(), executor, []ToolCall{
+		{ID: "1", Name: "safe_a"},
+		{ID: "2", Name: "safe_b"},
+		{ID: "3", Name: "unsafe_c"},
+	}, "sess-1", "turn-1", capture.sink)
+
+	var schedulerEvents []ToolLifecycleEvent
+	for _, evt := range capture.snapshot() {
+		if evt.Type == ToolLifecycleEventProgress {
+			if _, ok := evt.Data.(ToolSchedulerDecision); ok {
+				schedulerEvents = append(schedulerEvents, evt)
+			}
+		}
+	}
+	if len(schedulerEvents) != 3 {
+		t.Fatalf("expected 3 scheduler events, got %d", len(schedulerEvents))
+	}
+	first := schedulerEvents[0].Data.(ToolSchedulerDecision)
+	second := schedulerEvents[1].Data.(ToolSchedulerDecision)
+	third := schedulerEvents[2].Data.(ToolSchedulerDecision)
+	if first.Mode != "parallel" || first.BatchSize != 2 || first.BatchIndex != 0 || first.BatchPosition != 0 {
+		t.Fatalf("unexpected first scheduler decision: %+v", first)
+	}
+	if second.Mode != "parallel" || second.BatchSize != 2 || second.BatchPosition != 1 || second.ConcurrencyLimit != 10 {
+		t.Fatalf("unexpected second scheduler decision: %+v", second)
+	}
+	if third.Mode != "serial" || third.BatchIndex != 1 || third.BatchSize != 1 || third.ConcurrencySafe {
+		t.Fatalf("unexpected third scheduler decision: %+v", third)
 	}
 }
 
@@ -444,6 +496,7 @@ func TestRunAgenticLoop_LoopWarning_VisibleInHistory(t *testing.T) {
 		return "tool output", nil
 	})
 	ctx := ContextWithSessionID(context.Background(), "sess-warning")
+	capture := &capturedToolLifecycle{}
 	state := loopReg.Get("sess-warning")
 	for i := 0; i < 2; i++ {
 		toolloop.RecordCall(state, "poll", map[string]any{"job": "123"}, fmt.Sprintf("prior-%d", i), &cfg)
@@ -455,6 +508,7 @@ func TestRunAgenticLoop_LoopWarning_VisibleInHistory(t *testing.T) {
 		Executor:        reg,
 		MaxIterations:   10,
 		LogPrefix:       "test",
+		ToolEventSink:   capture.sink,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -464,6 +518,31 @@ func TestRunAgenticLoop_LoopWarning_VisibleInHistory(t *testing.T) {
 	}
 	if !strings.Contains(resp.HistoryDelta[1].Content, "[LOOP DETECTION]") {
 		t.Fatalf("expected loop warning in tool result history, got %q", resp.HistoryDelta[1].Content)
+	}
+	var loopDecision ToolLoopDecision
+	found := false
+	for _, evt := range capture.snapshot() {
+		if evt.Type != ToolLifecycleEventProgress {
+			continue
+		}
+		decision, ok := evt.Data.(ToolLoopDecision)
+		if !ok {
+			continue
+		}
+		loopDecision = decision
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("expected loop decision event")
+	}
+	if loopDecision.Kind != ToolDecisionKindLoopDetection || loopDecision.Blocked || loopDecision.Level != string(toolloop.Warning) || loopDecision.Detector == "" {
+		t.Fatalf("unexpected loop decision: %+v", loopDecision)
+	}
+	for _, evt := range capture.snapshot() {
+		if evt.ToolCallID == "tc1" && evt.SessionID != "sess-warning" {
+			t.Fatalf("expected consistent session id, got event %+v", evt)
+		}
 	}
 }
 
@@ -484,6 +563,7 @@ func TestRunAgenticLoop_LoopCritical_BlocksExecution(t *testing.T) {
 		return "tool output", nil
 	})
 	ctx := ContextWithSessionID(context.Background(), "sess-critical")
+	capture := &capturedToolLifecycle{}
 	state := loopReg.Get("sess-critical")
 	for i := 0; i < 3; i++ {
 		toolloop.RecordCall(state, "poll", map[string]any{"job": "123"}, fmt.Sprintf("prior-%d", i), &cfg)
@@ -497,6 +577,7 @@ func TestRunAgenticLoop_LoopCritical_BlocksExecution(t *testing.T) {
 		MaxIterations:   10,
 		ForceText:       false,
 		LogPrefix:       "test",
+		ToolEventSink:   capture.sink,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -509,6 +590,36 @@ func TestRunAgenticLoop_LoopCritical_BlocksExecution(t *testing.T) {
 	}
 	if len(resp.HistoryDelta) < 2 || !strings.Contains(resp.HistoryDelta[1].Content, "CRITICAL:") {
 		t.Fatalf("expected critical loop block in tool result history, got %+v", resp.HistoryDelta)
+	}
+	var loopDecision ToolLoopDecision
+	var errorEvent *ToolLifecycleEvent
+	for _, evt := range capture.snapshot() {
+		if evt.Type == ToolLifecycleEventProgress {
+			if decision, ok := evt.Data.(ToolLoopDecision); ok {
+				loopDecision = decision
+			}
+		}
+		if evt.Type == ToolLifecycleEventError {
+			copy := evt
+			errorEvent = &copy
+		}
+	}
+	if loopDecision.Kind != ToolDecisionKindLoopDetection || !loopDecision.Blocked || loopDecision.Level != string(toolloop.Critical) {
+		t.Fatalf("unexpected loop decision: %+v", loopDecision)
+	}
+	if errorEvent == nil {
+		t.Fatal("expected loop block error event")
+	}
+	if errorDecision, ok := errorEvent.Data.(ToolLoopDecision); !ok || !errorDecision.Blocked {
+		t.Fatalf("expected loop decision on error event, got %+v", errorEvent)
+	}
+	for _, evt := range capture.snapshot() {
+		if evt.Type == ToolLifecycleEventStart {
+			t.Fatalf("critical loop block should not emit start event: %+v", evt)
+		}
+		if evt.ToolCallID == "tc1" && evt.SessionID != "sess-critical" {
+			t.Fatalf("expected consistent session id, got event %+v", evt)
+		}
 	}
 }
 

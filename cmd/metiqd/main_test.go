@@ -2208,6 +2208,24 @@ func TestToolLifecycleEmitter_MapsAgentEventsToWSPayloads(t *testing.T) {
 	capture := &capturingEmitter{}
 	sink := toolLifecycleEmitter(capture, "alpha")
 	sink(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventProgress,
+		TS:         122,
+		SessionID:  "session-42",
+		TurnID:     "turn-7",
+		ToolCallID: "call-1",
+		ToolName:   "fetch",
+		Data: agent.ToolSchedulerDecision{
+			Kind:             agent.ToolDecisionKindScheduler,
+			Mode:             "parallel",
+			BatchIndex:       0,
+			BatchCount:       1,
+			BatchSize:        1,
+			BatchPosition:    0,
+			ConcurrencySafe:  true,
+			ConcurrencyLimit: 10,
+		},
+	})
+	sink(agent.ToolLifecycleEvent{
 		Type:       agent.ToolLifecycleEventStart,
 		TS:         123,
 		SessionID:  "session-42",
@@ -2234,11 +2252,19 @@ func TestToolLifecycleEmitter_MapsAgentEventsToWSPayloads(t *testing.T) {
 		Error:      "permission denied",
 	})
 
+	progress := capture.eventsByName(gatewayws.EventToolProgress)
 	starts := capture.eventsByName(gatewayws.EventToolStart)
 	results := capture.eventsByName(gatewayws.EventToolResult)
 	errors := capture.eventsByName(gatewayws.EventToolError)
-	if len(starts) != 1 || len(results) != 1 || len(errors) != 1 {
-		t.Fatalf("unexpected lifecycle event counts start=%d result=%d error=%d", len(starts), len(results), len(errors))
+	if len(progress) != 1 || len(starts) != 1 || len(results) != 1 || len(errors) != 1 {
+		t.Fatalf("unexpected lifecycle event counts progress=%d start=%d result=%d error=%d", len(progress), len(starts), len(results), len(errors))
+	}
+	progressPayload, ok := progress[0].(gatewayws.ToolLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected progress payload type: %T", progress[0])
+	}
+	if progressDecision, ok := progressPayload.Data.(agent.ToolSchedulerDecision); !ok || progressDecision.Mode != "parallel" {
+		t.Fatalf("unexpected progress payload data: %+v", progressPayload)
 	}
 	startPayload, ok := starts[0].(gatewayws.ToolLifecyclePayload)
 	if !ok {
