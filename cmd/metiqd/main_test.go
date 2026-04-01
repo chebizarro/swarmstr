@@ -307,7 +307,7 @@ func TestHandleControlRPCRequest_ChatAbortUsesRegistry(t *testing.T) {
 		t.Fatalf("chat.abort error: %v", err)
 	}
 	payload, ok := res.Result.(map[string]any)
-	if !ok || payload["aborted"] != true || payload["aborted_count"] != 1 {
+	if !ok || payload["aborted"] != true || payload["aborted_count"] != 1 || payload["abortedCount"] != 1 || payload["sessionId"] != "s1" {
 		t.Fatalf("unexpected chat.abort result: %#v", res.Result)
 	}
 }
@@ -395,8 +395,11 @@ func TestHandleControlRPCRequest_AgentMethods(t *testing.T) {
 	}
 	out, _ := res.Result.(map[string]any)
 	runID, _ := out["run_id"].(string)
-	if strings.TrimSpace(runID) == "" {
-		t.Fatalf("expected run_id, got: %#v", res.Result)
+	if strings.TrimSpace(runID) == "" || out["runId"] != runID {
+		t.Fatalf("expected compatibility run id fields, got: %#v", res.Result)
+	}
+	if _, ok := out["acceptedAt"]; !ok {
+		t.Fatalf("expected acceptedAt alias, got: %#v", res.Result)
 	}
 
 	waitRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -408,8 +411,14 @@ func TestHandleControlRPCRequest_AgentMethods(t *testing.T) {
 		t.Fatalf("agent.wait error: %v", err)
 	}
 	out, _ = waitRes.Result.(map[string]any)
-	if out["status"] != "ok" {
+	if out["status"] != "ok" || out["runId"] != runID {
 		t.Fatalf("unexpected wait result: %#v", waitRes.Result)
+	}
+	if _, ok := out["startedAt"]; !ok {
+		t.Fatalf("expected startedAt alias, got: %#v", waitRes.Result)
+	}
+	if _, ok := out["endedAt"]; !ok {
+		t.Fatalf("expected endedAt alias, got: %#v", waitRes.Result)
 	}
 
 	identityRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -421,8 +430,11 @@ func TestHandleControlRPCRequest_AgentMethods(t *testing.T) {
 		t.Fatalf("agent.identity.get error: %v", err)
 	}
 	out, _ = identityRes.Result.(map[string]any)
-	if out["agent_id"] != "main" {
+	if out["agent_id"] != "main" || out["agentId"] != "main" || out["sessionId"] != "s1" {
 		t.Fatalf("unexpected identity result: %#v", identityRes.Result)
+	}
+	if _, ok := out["displayName"]; !ok {
+		t.Fatalf("expected displayName alias, got: %#v", identityRes.Result)
 	}
 }
 
@@ -792,8 +804,11 @@ func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
 		t.Fatalf("sessions.compact error: %v", err)
 	}
 	payload, _ = res.Result.(map[string]any)
-	if payload["dropped"].(int) < 1 {
+	if payload["dropped"].(int) < 1 || payload["sessionId"] != "s1" {
 		t.Fatalf("unexpected sessions.compact result: %#v", res.Result)
+	}
+	if _, ok := payload["fromEntries"]; !ok {
+		t.Fatalf("expected fromEntries alias, got: %#v", res.Result)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -805,7 +820,7 @@ func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
 		t.Fatalf("sessions.delete error: %v", err)
 	}
 	payload, _ = res.Result.(map[string]any)
-	if payload["deleted"] != true {
+	if payload["deleted"] != true || payload["sessionId"] != "s1" {
 		t.Fatalf("unexpected sessions.delete result: %#v", res.Result)
 	}
 }

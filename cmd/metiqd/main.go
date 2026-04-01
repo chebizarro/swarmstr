@@ -6477,7 +6477,7 @@ func handleControlRPCRequest(
 		runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 		snapshot := controlAgentJobs.Begin(runID, req.SessionID)
 		go executeAgentRunWithFallbacks(runID, req, rt, fallbackRuntimes, runtimeLabels, memoryIndex, controlAgentJobs)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"run_id": runID, "status": "accepted", "accepted_at": snapshot.StartedAt}}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"run_id": runID, "status": "accepted", "accepted_at": snapshot.StartedAt})}, nil
 	case methods.MethodAgentWait:
 		req, err := methods.DecodeAgentWaitParams(in.Params)
 		if err != nil {
@@ -6495,7 +6495,7 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("run not found")
 		}
 		if snap.Status == "pending" {
-			return nostruntime.ControlRPCResult{Result: map[string]any{"run_id": req.RunID, "status": "timeout"}}, nil
+			return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"run_id": req.RunID, "status": "timeout"})}, nil
 		}
 		out := map[string]any{"run_id": req.RunID, "status": snap.Status, "started_at": snap.StartedAt, "ended_at": snap.EndedAt}
 		if snap.Err != "" {
@@ -6512,7 +6512,7 @@ func handleControlRPCRequest(
 				out["fallback_reason"] = truncateRunes(snap.FallbackReason, 200)
 			}
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodAgentIdentityGet:
 		req, err := methods.DecodeAgentIdentityParams(in.Params)
 		if err != nil {
@@ -6543,7 +6543,7 @@ func handleControlRPCRequest(
 		if dmBus != nil {
 			pubkey = dmBus.PublicKey()
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": agentID, "display_name": displayName, "session_id": sessionID, "pubkey": pubkey}}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"agent_id": agentID, "display_name": displayName, "session_id": sessionID, "pubkey": pubkey})}, nil
 	case methods.MethodGatewayIdentityGet:
 		pubkey := strings.TrimSpace(in.FromPubKey)
 		if dmBus != nil {
@@ -6607,7 +6607,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"session_id": req.SessionID, "entries": transcript}}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"session_id": req.SessionID, "entries": transcript})}, nil
 	case methods.MethodChatAbort:
 		req, err := methods.DecodeChatAbortParams(in.Params)
 		if err != nil {
@@ -6628,7 +6628,7 @@ func handleControlRPCRequest(
 		if usageState != nil {
 			usageState.RecordAbort(aborted)
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "aborted": aborted > 0, "aborted_count": aborted}}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "aborted": aborted > 0, "aborted_count": aborted})}, nil
 	case methods.MethodSessionGet:
 		req, err := methods.DecodeSessionGetParams(in.Params)
 		if err != nil {
@@ -6754,7 +6754,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session_id": req.SessionID, "deleted": true}}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "deleted": true})}, nil
 	case methods.MethodSessionsCompact:
 		req, err := methods.DecodeSessionsCompactParams(in.Params)
 		if err != nil {
@@ -6854,7 +6854,7 @@ func handleControlRPCRequest(
 			}); err != nil {
 				return err
 			}
-			compactResult = map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped - deleteErrors, "summary_generated": summaryGenerated}
+			compactResult = methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped - deleteErrors, "summary_generated": summaryGenerated})
 			return nil
 		})
 		if err != nil {
@@ -6935,7 +6935,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 
 	case methods.MethodAgentsList:
 		req, err := methods.DecodeAgentsListParams(in.Params)
@@ -7364,7 +7364,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodPluginsUninstall:
 		req, err := methods.DecodePluginsUninstallParams(in.Params)
 		if err != nil {
@@ -7378,7 +7378,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodPluginsUpdate:
 		req, err := methods.DecodePluginsUpdateParams(in.Params)
 		if err != nil {
@@ -7392,7 +7392,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodPluginsRegistryList:
 		req, err := methods.DecodePluginsRegistryListParams(in.Params)
 		if err != nil {
@@ -7402,7 +7402,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodPluginsRegistryGet:
 		req, err := methods.DecodePluginsRegistryGetParams(in.Params)
 		if err != nil {
@@ -7412,7 +7412,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodPluginsRegistrySearch:
 		req, err := methods.DecodePluginsRegistrySearchParams(in.Params)
 		if err != nil {
@@ -7422,7 +7422,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodePairRequest:
 		req, err := methods.DecodeNodePairRequestParams(in.Params)
 		if err != nil {
@@ -7445,7 +7445,7 @@ func handleControlRPCRequest(
 			RequestID: requestID,
 			Label:     req.DisplayName,
 		})
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodePairList:
 		req, err := methods.DecodeNodePairListParams(in.Params)
 		if err != nil {
@@ -7459,7 +7459,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodePairApprove:
 		req, err := methods.DecodeNodePairApproveParams(in.Params)
 		if err != nil {
@@ -7493,7 +7493,7 @@ func handleControlRPCRequest(
 		if nodeID != "" && approvalToken != "" {
 			go sendControlDM(ctx, nodeID, fmt.Sprintf(`{"type":"pair.approved","request_id":%q,"token":%q}`, req.RequestID, approvalToken))
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodePairReject:
 		req, err := methods.DecodeNodePairRejectParams(in.Params)
 		if err != nil {
@@ -7521,7 +7521,7 @@ func handleControlRPCRequest(
 		if nodeID != "" {
 			go sendControlDM(ctx, nodeID, fmt.Sprintf(`{"type":"pair.rejected","request_id":%q}`, req.RequestID))
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodePairVerify:
 		req, err := methods.DecodeNodePairVerifyParams(in.Params)
 		if err != nil {
@@ -7535,7 +7535,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodDevicePairList:
 		req, err := methods.DecodeDevicePairListParams(in.Params)
 		if err != nil {
@@ -7549,7 +7549,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodDevicePairApprove:
 		req, err := methods.DecodeDevicePairApproveParams(in.Params)
 		if err != nil {
@@ -7579,7 +7579,7 @@ func handleControlRPCRequest(
 			Label:    label,
 			Decision: "approved",
 		})
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodDevicePairReject:
 		req, err := methods.DecodeDevicePairRejectParams(in.Params)
 		if err != nil {
@@ -7604,7 +7604,7 @@ func handleControlRPCRequest(
 			DeviceID: deviceID,
 			Decision: "rejected",
 		})
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodDevicePairRemove:
 		req, err := methods.DecodeDevicePairRemoveParams(in.Params)
 		if err != nil {
@@ -7618,7 +7618,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodDeviceTokenRotate:
 		req, err := methods.DecodeDeviceTokenRotateParams(in.Params)
 		if err != nil {
@@ -7632,7 +7632,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodDeviceTokenRevoke:
 		req, err := methods.DecodeDeviceTokenRevokeParams(in.Params)
 		if err != nil {
@@ -7646,7 +7646,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodeList:
 		req, err := methods.DecodeNodeListParams(in.Params)
 		if err != nil {
@@ -7660,7 +7660,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodeDescribe:
 		req, err := methods.DecodeNodeDescribeParams(in.Params)
 		if err != nil {
@@ -7674,7 +7674,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodeRename:
 		req, err := methods.DecodeNodeRenameParams(in.Params)
 		if err != nil {
@@ -7688,7 +7688,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodeCanvasCapabilityRefresh:
 		req, err := methods.DecodeNodeCanvasCapabilityRefreshParams(in.Params)
 		if err != nil {
@@ -7702,7 +7702,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodeInvoke:
 		req, err := methods.DecodeNodeInvokeParams(in.Params)
 		if err != nil {
@@ -7728,7 +7728,7 @@ func handleControlRPCRequest(
 			})
 			go sendControlDM(ctx, req.NodeID, string(payload))
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodeEvent:
 		req, err := methods.DecodeNodeEventParams(in.Params)
 		if err != nil {
@@ -7742,7 +7742,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodeResult, methods.MethodNodeInvokeResult:
 		req, err := methods.DecodeNodeResultParams(in.Params)
 		if err != nil {
@@ -7756,7 +7756,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodePendingEnqueue:
 		req, err := methods.DecodeNodePendingEnqueueParams(in.Params)
 		if err != nil {
@@ -7770,7 +7770,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodePendingPull:
 		req, err := methods.DecodeNodePendingPullParams(in.Params)
 		if err != nil {
@@ -7784,7 +7784,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodePendingAck:
 		req, err := methods.DecodeNodePendingAckParams(in.Params)
 		if err != nil {
@@ -7798,7 +7798,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodNodePendingDrain:
 		req, err := methods.DecodeNodePendingDrainParams(in.Params)
 		if err != nil {
@@ -7812,7 +7812,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodCanvasGet:
 		var req methods.CanvasGetRequest
 		if err := json.Unmarshal(in.Params, &req); err != nil {
@@ -7855,7 +7855,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodCronStatus:
 		req, err := methods.DecodeCronStatusParams(in.Params)
 		if err != nil {
@@ -7869,7 +7869,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodCronAdd:
 		req, err := methods.DecodeCronAddParams(in.Params)
 		if err != nil {
@@ -7886,7 +7886,7 @@ func handleControlRPCRequest(
 		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
 			log.Printf("cron jobs save warning (add): %v", saveErr)
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodCronUpdate:
 		req, err := methods.DecodeCronUpdateParams(in.Params)
 		if err != nil {
@@ -7903,7 +7903,7 @@ func handleControlRPCRequest(
 		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
 			log.Printf("cron jobs save warning (update): %v", saveErr)
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodCronRemove:
 		req, err := methods.DecodeCronRemoveParams(in.Params)
 		if err != nil {
@@ -7920,7 +7920,7 @@ func handleControlRPCRequest(
 		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
 			log.Printf("cron jobs save warning (remove): %v", saveErr)
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodCronRun:
 		req, err := methods.DecodeCronRunParams(in.Params)
 		if err != nil {
@@ -7934,7 +7934,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodCronRuns:
 		req, err := methods.DecodeCronRunsParams(in.Params)
 		if err != nil {
@@ -7948,7 +7948,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodExecApprovalsGet:
 		req, err := methods.DecodeExecApprovalsGetParams(in.Params)
 		if err != nil {
@@ -7962,7 +7962,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodExecApprovalsSet:
 		req, err := methods.DecodeExecApprovalsSetParams(in.Params)
 		if err != nil {
@@ -7976,7 +7976,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodExecApprovalsNodeGet:
 		req, err := methods.DecodeExecApprovalsNodeGetParams(in.Params)
 		if err != nil {
@@ -7990,7 +7990,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodExecApprovalsNodeSet:
 		req, err := methods.DecodeExecApprovalsNodeSetParams(in.Params)
 		if err != nil {
@@ -8004,7 +8004,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodExecApprovalRequest:
 		req, err := methods.DecodeExecApprovalRequestParams(in.Params)
 		if err != nil {
@@ -8018,7 +8018,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodExecApprovalWaitDecision:
 		req, err := methods.DecodeExecApprovalWaitDecisionParams(in.Params)
 		if err != nil {
@@ -8032,7 +8032,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodExecApprovalResolve:
 		req, err := methods.DecodeExecApprovalResolveParams(in.Params)
 		if err != nil {
@@ -8046,7 +8046,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodSandboxRun:
 		req, err := methods.DecodeSandboxRunParams(in.Params)
 		if err != nil {
@@ -8056,7 +8056,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodSecretsReload:
 		req, err := methods.DecodeSecretsReloadParams(in.Params)
 		if err != nil {
@@ -8070,7 +8070,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodSecretsResolve:
 		req, err := methods.DecodeSecretsResolveParams(in.Params)
 		if err != nil {
@@ -8084,7 +8084,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodWizardStart:
 		req, err := methods.DecodeWizardStartParams(in.Params)
 		if err != nil {
@@ -8098,7 +8098,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodWizardNext:
 		req, err := methods.DecodeWizardNextParams(in.Params)
 		if err != nil {
@@ -8112,7 +8112,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodWizardCancel:
 		req, err := methods.DecodeWizardCancelParams(in.Params)
 		if err != nil {
@@ -8126,7 +8126,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodWizardStatus:
 		req, err := methods.DecodeWizardStatusParams(in.Params)
 		if err != nil {
@@ -8140,7 +8140,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodUpdateRun:
 		req, err := methods.DecodeUpdateRunParams(in.Params)
 		if err != nil {
@@ -8154,7 +8154,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodTalkConfig:
 		req, err := methods.DecodeTalkConfigParams(in.Params)
 		if err != nil {
@@ -8168,7 +8168,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodTalkMode:
 		req, err := methods.DecodeTalkModeParams(in.Params)
 		if err != nil {
@@ -8182,7 +8182,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodLastHeartbeat:
 		req, err := methods.DecodeLastHeartbeatParams(in.Params)
 		if err != nil {
@@ -8196,7 +8196,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodSetHeartbeats:
 		req, err := methods.DecodeSetHeartbeatsParams(in.Params)
 		if err != nil {
@@ -8210,7 +8210,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodWake:
 		req, err := methods.DecodeWakeParams(in.Params)
 		if err != nil {
@@ -8224,7 +8224,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodSystemPresence:
 		req, err := methods.DecodeSystemPresenceParams(in.Params)
 		if err != nil {
@@ -8238,7 +8238,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodSystemEvent:
 		req, err := methods.DecodeSystemEventParams(in.Params)
 		if err != nil {
@@ -8252,7 +8252,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodSend:
 		req, err := methods.DecodeSendParams(in.Params)
 		if err != nil {
@@ -8266,7 +8266,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodBrowserRequest:
 		req, err := methods.DecodeBrowserRequestParams(in.Params)
 		if err != nil {
@@ -8280,7 +8280,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodVoicewakeGet:
 		req, err := methods.DecodeVoicewakeGetParams(in.Params)
 		if err != nil {
@@ -8294,7 +8294,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodVoicewakeSet:
 		req, err := methods.DecodeVoicewakeSetParams(in.Params)
 		if err != nil {
@@ -8308,7 +8308,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodTTSStatus:
 		req, err := methods.DecodeTTSStatusParams(in.Params)
 		if err != nil {
@@ -8322,7 +8322,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodTTSProviders:
 		req, err := methods.DecodeTTSProvidersParams(in.Params)
 		if err != nil {
@@ -8336,7 +8336,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodTTSSetProvider:
 		req, err := methods.DecodeTTSSetProviderParams(in.Params)
 		if err != nil {
@@ -8350,7 +8350,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodTTSEnable:
 		req, err := methods.DecodeTTSEnableParams(in.Params)
 		if err != nil {
@@ -8364,7 +8364,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodTTSDisable:
 		req, err := methods.DecodeTTSDisableParams(in.Params)
 		if err != nil {
@@ -8378,7 +8378,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 	case methods.MethodTTSConvert:
 		req, err := methods.DecodeTTSConvertParams(in.Params)
 		if err != nil {
@@ -8392,7 +8392,7 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
-		return nostruntime.ControlRPCResult{Result: out}, nil
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 
 	// ── Hooks ────────────────────────────────────────────────────────────────
 	case methods.MethodHooksList:
@@ -8921,7 +8921,7 @@ func handleControlRPCRequest(
 			if result.CompletedAt > 0 {
 				out["completed_at"] = result.CompletedAt
 			}
-			return nostruntime.ControlRPCResult{Result: out}, nil
+			return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
 		}
 
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "task_id": taskID, "target": target}}, nil
@@ -9670,14 +9670,14 @@ func applySessionsSpawn(ctx context.Context, req methods.SessionsSpawnRequest, c
 		}
 	}()
 
-	return map[string]any{
+	return methods.ApplyCompatResponseAliases(map[string]any{
 		"run_id":            runID,
 		"session_id":        sessionID,
 		"parent_session_id": rec.ParentSessionID,
 		"depth":             rec.Depth,
 		"status":            "accepted",
 		"accepted_at":       snapshot.StartedAt,
-	}, nil
+	}), nil
 }
 
 // isRetryableAgentError returns true if the error indicates a rate-limit or

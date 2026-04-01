@@ -542,7 +542,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodChannelsStatus:
 		req, err := methods.DecodeChannelsStatusParams(call.Params)
 		if err != nil {
@@ -559,7 +559,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodChannelsLogout:
 		req, err := methods.DecodeChannelsLogoutParams(call.Params)
 		if err != nil {
@@ -576,7 +576,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodStatus, methods.MethodStatusAlias:
 		dmPolicy := opts.Status.DMPolicy
 		if opts.StatusDMPolicy != nil {
@@ -602,7 +602,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodUsageCost:
 		req, err := methods.DecodeUsageCostParams(call.Params)
 		if err != nil {
@@ -619,7 +619,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodMemorySearch:
 		if opts.SearchMemory == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("memory search not configured")
@@ -649,7 +649,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodAgentWait:
 		req, err := methods.DecodeAgentWaitParams(call.Params)
 		if err != nil {
@@ -666,7 +666,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodAgentIdentityGet:
 		req, err := methods.DecodeAgentIdentityParams(call.Params)
 		if err != nil {
@@ -677,13 +677,13 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusBadRequest, err
 		}
 		if opts.AgentIdentity == nil {
-			return map[string]any{"agent_id": "main", "display_name": "Metiq Agent", "session_id": req.SessionID}, http.StatusOK, nil
+			return methods.ApplyCompatResponseAliases(map[string]any{"agent_id": "main", "display_name": "Metiq Agent", "session_id": req.SessionID}), http.StatusOK, nil
 		}
 		out, err := opts.AgentIdentity(ctx, req)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodGatewayIdentityGet:
 		if opts.GatewayIdentity == nil {
 			return map[string]any{"deviceId": "metiq", "publicKey": ""}, http.StatusOK, nil
@@ -692,7 +692,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodChatSend:
 		if opts.SendDM == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("send dm not configured")
@@ -713,7 +713,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if req.RunID != "" {
 			result["run_id"] = req.RunID
 		}
-		return result, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(result), http.StatusOK, nil
 	case methods.MethodChatHistory:
 		if opts.GetSession == nil || opts.ListTranscript == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -736,7 +736,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"session_id": req.SessionID, "key": req.SessionID, "entries": transcript}, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(map[string]any{"session_id": req.SessionID, "key": req.SessionID, "entries": transcript}), http.StatusOK, nil
 	case methods.MethodChatAbort:
 		req, err := methods.DecodeChatAbortParams(call.Params)
 		if err != nil {
@@ -750,7 +750,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		// OpenClaw parity: RunID-only abort (without SessionID) is a no-op.
 		// This prevents accidental global abort when only a run identifier is provided.
 		if req.RunID != "" && strings.TrimSpace(req.SessionID) == "" {
-			return map[string]any{"ok": true, "run_id": req.RunID, "aborted": false, "aborted_count": 0}, http.StatusOK, nil
+			return methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "run_id": req.RunID, "aborted": false, "aborted_count": 0}), http.StatusOK, nil
 		}
 		if opts.AbortChat != nil {
 			aborted, err = opts.AbortChat(ctx, req.SessionID)
@@ -762,7 +762,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if req.RunID != "" {
 			result["run_id"] = req.RunID
 		}
-		return result, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(result), http.StatusOK, nil
 	case methods.MethodSessionGet:
 		if opts.GetSession == nil || opts.ListTranscript == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -812,7 +812,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return result, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(result), http.StatusOK, nil
 	case methods.MethodSessionsPreview:
 		if opts.GetSession == nil || opts.ListTranscript == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -959,7 +959,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err := opts.PutSession(ctx, req.SessionID, session); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true, "session_id": req.SessionID, "key": req.SessionID, "deleted": true}, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "key": req.SessionID, "deleted": true}), http.StatusOK, nil
 	case methods.MethodSessionsCompact:
 		if opts.GetSession == nil || opts.PutSession == nil || opts.ListTranscript == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("session providers not configured")
@@ -996,7 +996,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err := opts.PutSession(ctx, req.SessionID, session); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return map[string]any{"ok": true, "session_id": req.SessionID, "key": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped}, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "key": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped}), http.StatusOK, nil
 	case methods.MethodSessionsPrune:
 		if opts.SessionsPrune == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("sessions prune provider not configured")
@@ -1014,7 +1014,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodAgentsList:
 		req, err := methods.DecodeAgentsListParams(call.Params)
 		if err != nil {
@@ -1031,7 +1031,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodAgentsCreate:
 		req, err := methods.DecodeAgentsCreateParams(call.Params)
 		if err != nil {
@@ -1048,7 +1048,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodAgentsUpdate:
 		req, err := methods.DecodeAgentsUpdateParams(call.Params)
 		if err != nil {
@@ -1068,7 +1068,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodAgentsDelete:
 		req, err := methods.DecodeAgentsDeleteParams(call.Params)
 		if err != nil {
@@ -1088,7 +1088,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodAgentsFilesList:
 		req, err := methods.DecodeAgentsFilesListParams(call.Params)
 		if err != nil {
@@ -1108,7 +1108,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodAgentsFilesGet:
 		req, err := methods.DecodeAgentsFilesGetParams(call.Params)
 		if err != nil {
@@ -1128,7 +1128,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodAgentsFilesSet:
 		req, err := methods.DecodeAgentsFilesSetParams(call.Params)
 		if err != nil {
@@ -1148,7 +1148,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodModelsList:
 		req, err := methods.DecodeModelsListParams(call.Params)
 		if err != nil {
@@ -1165,7 +1165,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodToolsCatalog:
 		req, err := methods.DecodeToolsCatalogParams(call.Params)
 		if err != nil {
@@ -1185,7 +1185,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodToolsProfileGet:
 		req, err := methods.DecodeToolsProfileGetParams(call.Params)
 		if err != nil {
@@ -1205,7 +1205,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodToolsProfileSet:
 		req, err := methods.DecodeToolsProfileSetParams(call.Params)
 		if err != nil {
@@ -1225,7 +1225,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSkillsStatus:
 		req, err := methods.DecodeSkillsStatusParams(call.Params)
 		if err != nil {
@@ -1245,7 +1245,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSkillsBins:
 		req, err := methods.DecodeSkillsBinsParams(call.Params)
 		if err != nil {
@@ -1265,7 +1265,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSkillsInstall:
 		req, err := methods.DecodeSkillsInstallParams(call.Params)
 		if err != nil {
@@ -1282,7 +1282,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSkillsUpdate:
 		req, err := methods.DecodeSkillsUpdateParams(call.Params)
 		if err != nil {
@@ -1302,7 +1302,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodPluginsInstall:
 		req, err := methods.DecodePluginsInstallParams(call.Params)
 		if err != nil {
@@ -1322,7 +1322,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodPluginsUninstall:
 		req, err := methods.DecodePluginsUninstallParams(call.Params)
 		if err != nil {
@@ -1342,7 +1342,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodPluginsUpdate:
 		req, err := methods.DecodePluginsUpdateParams(call.Params)
 		if err != nil {
@@ -1362,7 +1362,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodPluginsRegistryList:
 		req, err := methods.DecodePluginsRegistryListParams(call.Params)
 		if err != nil {
@@ -1375,7 +1375,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodPluginsRegistryGet:
 		req, err := methods.DecodePluginsRegistryGetParams(call.Params)
 		if err != nil {
@@ -1391,7 +1391,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodPluginsRegistrySearch:
 		req, err := methods.DecodePluginsRegistrySearchParams(call.Params)
 		if err != nil {
@@ -1404,7 +1404,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodePairRequest:
 		req, err := methods.DecodeNodePairRequestParams(call.Params)
 		if err != nil {
@@ -1421,7 +1421,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodePairList:
 		req, err := methods.DecodeNodePairListParams(call.Params)
 		if err != nil {
@@ -1438,7 +1438,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodePairApprove:
 		req, err := methods.DecodeNodePairApproveParams(call.Params)
 		if err != nil {
@@ -1458,7 +1458,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodePairReject:
 		req, err := methods.DecodeNodePairRejectParams(call.Params)
 		if err != nil {
@@ -1478,7 +1478,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodePairVerify:
 		req, err := methods.DecodeNodePairVerifyParams(call.Params)
 		if err != nil {
@@ -1498,7 +1498,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodDevicePairList:
 		req, err := methods.DecodeDevicePairListParams(call.Params)
 		if err != nil {
@@ -1515,7 +1515,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodDevicePairApprove:
 		req, err := methods.DecodeDevicePairApproveParams(call.Params)
 		if err != nil {
@@ -1535,7 +1535,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodDevicePairReject:
 		req, err := methods.DecodeDevicePairRejectParams(call.Params)
 		if err != nil {
@@ -1555,7 +1555,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodDevicePairRemove:
 		req, err := methods.DecodeDevicePairRemoveParams(call.Params)
 		if err != nil {
@@ -1575,7 +1575,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodDeviceTokenRotate:
 		req, err := methods.DecodeDeviceTokenRotateParams(call.Params)
 		if err != nil {
@@ -1595,7 +1595,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodDeviceTokenRevoke:
 		req, err := methods.DecodeDeviceTokenRevokeParams(call.Params)
 		if err != nil {
@@ -1615,7 +1615,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodeList:
 		req, err := methods.DecodeNodeListParams(call.Params)
 		if err != nil {
@@ -1632,7 +1632,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodeDescribe:
 		req, err := methods.DecodeNodeDescribeParams(call.Params)
 		if err != nil {
@@ -1652,7 +1652,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodeRename:
 		req, err := methods.DecodeNodeRenameParams(call.Params)
 		if err != nil {
@@ -1672,7 +1672,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodeCanvasCapabilityRefresh:
 		req, err := methods.DecodeNodeCanvasCapabilityRefreshParams(call.Params)
 		if err != nil {
@@ -1692,7 +1692,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodeInvoke:
 		req, err := methods.DecodeNodeInvokeParams(call.Params)
 		if err != nil {
@@ -1709,7 +1709,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodeEvent:
 		req, err := methods.DecodeNodeEventParams(call.Params)
 		if err != nil {
@@ -1729,7 +1729,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodeResult, methods.MethodNodeInvokeResult:
 		req, err := methods.DecodeNodeResultParams(call.Params)
 		if err != nil {
@@ -1749,7 +1749,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodePendingEnqueue:
 		req, err := methods.DecodeNodePendingEnqueueParams(call.Params)
 		if err != nil {
@@ -1766,7 +1766,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodePendingPull:
 		req, err := methods.DecodeNodePendingPullParams(call.Params)
 		if err != nil {
@@ -1783,7 +1783,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodePendingAck:
 		req, err := methods.DecodeNodePendingAckParams(call.Params)
 		if err != nil {
@@ -1800,7 +1800,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodePendingDrain:
 		req, err := methods.DecodeNodePendingDrainParams(call.Params)
 		if err != nil {
@@ -1817,7 +1817,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodCronList:
 		req, err := methods.DecodeCronListParams(call.Params)
 		if err != nil {
@@ -1834,7 +1834,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodCronStatus:
 		req, err := methods.DecodeCronStatusParams(call.Params)
 		if err != nil {
@@ -1854,7 +1854,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodCronAdd:
 		req, err := methods.DecodeCronAddParams(call.Params)
 		if err != nil {
@@ -1871,7 +1871,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodCronUpdate:
 		req, err := methods.DecodeCronUpdateParams(call.Params)
 		if err != nil {
@@ -1891,7 +1891,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodCronRemove:
 		req, err := methods.DecodeCronRemoveParams(call.Params)
 		if err != nil {
@@ -1911,7 +1911,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodCronRun:
 		req, err := methods.DecodeCronRunParams(call.Params)
 		if err != nil {
@@ -1931,7 +1931,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodCronRuns:
 		req, err := methods.DecodeCronRunsParams(call.Params)
 		if err != nil {
@@ -1951,7 +1951,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodExecApprovalsGet:
 		req, err := methods.DecodeExecApprovalsGetParams(call.Params)
 		if err != nil {
@@ -1968,7 +1968,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodExecApprovalsSet:
 		req, err := methods.DecodeExecApprovalsSetParams(call.Params)
 		if err != nil {
@@ -1985,7 +1985,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodExecApprovalsNodeGet:
 		req, err := methods.DecodeExecApprovalsNodeGetParams(call.Params)
 		if err != nil {
@@ -2002,7 +2002,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodExecApprovalsNodeSet:
 		req, err := methods.DecodeExecApprovalsNodeSetParams(call.Params)
 		if err != nil {
@@ -2019,7 +2019,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodExecApprovalRequest:
 		req, err := methods.DecodeExecApprovalRequestParams(call.Params)
 		if err != nil {
@@ -2036,7 +2036,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodExecApprovalWaitDecision:
 		req, err := methods.DecodeExecApprovalWaitDecisionParams(call.Params)
 		if err != nil {
@@ -2056,7 +2056,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodExecApprovalResolve:
 		req, err := methods.DecodeExecApprovalResolveParams(call.Params)
 		if err != nil {
@@ -2076,7 +2076,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSandboxRun:
 		req, err := methods.DecodeSandboxRunParams(call.Params)
 		if err != nil {
@@ -2089,7 +2089,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSecretsReload:
 		req, err := methods.DecodeSecretsReloadParams(call.Params)
 		if err != nil {
@@ -2106,7 +2106,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSecretsResolve:
 		req, err := methods.DecodeSecretsResolveParams(call.Params)
 		if err != nil {
@@ -2123,7 +2123,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodWizardStart:
 		req, err := methods.DecodeWizardStartParams(call.Params)
 		if err != nil {
@@ -2140,7 +2140,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodWizardNext:
 		req, err := methods.DecodeWizardNextParams(call.Params)
 		if err != nil {
@@ -2160,7 +2160,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodWizardCancel:
 		req, err := methods.DecodeWizardCancelParams(call.Params)
 		if err != nil {
@@ -2180,7 +2180,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodWizardStatus:
 		req, err := methods.DecodeWizardStatusParams(call.Params)
 		if err != nil {
@@ -2200,7 +2200,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodUpdateRun:
 		req, err := methods.DecodeUpdateRunParams(call.Params)
 		if err != nil {
@@ -2217,7 +2217,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodTalkConfig:
 		req, err := methods.DecodeTalkConfigParams(call.Params)
 		if err != nil {
@@ -2234,7 +2234,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodTalkMode:
 		req, err := methods.DecodeTalkModeParams(call.Params)
 		if err != nil {
@@ -2251,7 +2251,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodLastHeartbeat:
 		req, err := methods.DecodeLastHeartbeatParams(call.Params)
 		if err != nil {
@@ -2268,7 +2268,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSetHeartbeats:
 		req, err := methods.DecodeSetHeartbeatsParams(call.Params)
 		if err != nil {
@@ -2285,7 +2285,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodWake:
 		req, err := methods.DecodeWakeParams(call.Params)
 		if err != nil {
@@ -2302,7 +2302,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSystemPresence:
 		req, err := methods.DecodeSystemPresenceParams(call.Params)
 		if err != nil {
@@ -2319,7 +2319,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSystemEvent:
 		req, err := methods.DecodeSystemEventParams(call.Params)
 		if err != nil {
@@ -2336,7 +2336,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodSend:
 		req, err := methods.DecodeSendParams(call.Params)
 		if err != nil {
@@ -2353,7 +2353,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodBrowserRequest:
 		req, err := methods.DecodeBrowserRequestParams(call.Params)
 		if err != nil {
@@ -2370,7 +2370,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodVoicewakeGet:
 		req, err := methods.DecodeVoicewakeGetParams(call.Params)
 		if err != nil {
@@ -2387,7 +2387,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodVoicewakeSet:
 		req, err := methods.DecodeVoicewakeSetParams(call.Params)
 		if err != nil {
@@ -2404,7 +2404,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodTTSStatus:
 		req, err := methods.DecodeTTSStatusParams(call.Params)
 		if err != nil {
@@ -2421,7 +2421,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodTTSProviders:
 		req, err := methods.DecodeTTSProvidersParams(call.Params)
 		if err != nil {
@@ -2438,7 +2438,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodTTSSetProvider:
 		req, err := methods.DecodeTTSSetProviderParams(call.Params)
 		if err != nil {
@@ -2455,7 +2455,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodTTSEnable:
 		req, err := methods.DecodeTTSEnableParams(call.Params)
 		if err != nil {
@@ -2472,7 +2472,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodTTSDisable:
 		req, err := methods.DecodeTTSDisableParams(call.Params)
 		if err != nil {
@@ -2489,7 +2489,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodTTSConvert:
 		req, err := methods.DecodeTTSConvertParams(call.Params)
 		if err != nil {
@@ -2506,7 +2506,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-		return out, http.StatusOK, nil
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodConfigGet:
 		if opts.GetConfig == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("config provider not configured")
