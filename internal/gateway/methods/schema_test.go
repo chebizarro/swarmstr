@@ -193,6 +193,38 @@ func TestDecodeSessionsParams_OpenClawShapeCompatibility(t *testing.T) {
 	}
 }
 
+func TestDecodeACPParams_CamelCaseCompatibility(t *testing.T) {
+	dispatchReq, err := DecodeACPDispatchParams(json.RawMessage(`{"targetPubKey":"peer-1","instructions":"do it","contextMessages":[{"role":"user","content":"prior"}],"memoryScope":"project","toolProfile":"coding","enabledTools":["memory_search","memory_search"],"parentContext":{"sessionId":"sess-1","agentId":"worker"},"timeoutMs":1000}`))
+	if err != nil {
+		t.Fatalf("acp.dispatch decode error: %v", err)
+	}
+	dispatchReq, err = dispatchReq.Normalize()
+	if err != nil {
+		t.Fatalf("acp.dispatch normalize error: %v", err)
+	}
+	if dispatchReq.TargetPubKey != "peer-1" || dispatchReq.MemoryScope != state.AgentMemoryScopeProject {
+		t.Fatalf("unexpected acp.dispatch request: %#v", dispatchReq)
+	}
+	if dispatchReq.ParentContext == nil || dispatchReq.ParentContext.SessionID != "sess-1" || dispatchReq.ParentContext.AgentID != "worker" {
+		t.Fatalf("unexpected parent context: %#v", dispatchReq.ParentContext)
+	}
+	if len(dispatchReq.EnabledTools) != 1 || dispatchReq.EnabledTools[0] != "memory_search" {
+		t.Fatalf("unexpected enabled tools: %#v", dispatchReq.EnabledTools)
+	}
+
+	pipelineReq, err := DecodeACPPipelineParams(json.RawMessage(`{"steps":[{"peerPubKey":"peer-1","instructions":"step","contextMessages":[{"role":"assistant","content":"ctx"}],"memoryScope":"local","toolProfile":"coding","enabledTools":["memory_store"],"parentContext":{"sessionId":"sess-2","agentId":"worker"},"timeoutMs":500}],"parallel":true}`))
+	if err != nil {
+		t.Fatalf("acp.pipeline decode error: %v", err)
+	}
+	pipelineReq, err = pipelineReq.Normalize()
+	if err != nil {
+		t.Fatalf("acp.pipeline normalize error: %v", err)
+	}
+	if len(pipelineReq.Steps) != 1 || pipelineReq.Steps[0].PeerPubKey != "peer-1" || pipelineReq.Steps[0].MemoryScope != state.AgentMemoryScopeLocal {
+		t.Fatalf("unexpected acp.pipeline request: %#v", pipelineReq)
+	}
+}
+
 func TestDecodeConfigPutParams_ArrayMode(t *testing.T) {
 	raw := json.RawMessage(`[{"dm":{"policy":"open"}}]`)
 	req, err := DecodeConfigPutParams(raw)

@@ -19,6 +19,7 @@
 package acp
 
 import (
+	"encoding/json"
 	"time"
 
 	"metiq/internal/store/state"
@@ -44,6 +45,13 @@ type Message struct {
 }
 
 // TaskPayload is the Payload for messages with ACPType = "task".
+type ParentContext struct {
+	// SessionID identifies the parent session that originated the task.
+	SessionID string `json:"session_id,omitempty"`
+	// AgentID identifies the parent agent/runtime that originated the task.
+	AgentID string `json:"agent_id,omitempty"`
+}
+
 type TaskPayload struct {
 	// Instructions is the natural-language task description for the worker agent.
 	Instructions string `json:"instructions"`
@@ -51,6 +59,12 @@ type TaskPayload struct {
 	ContextMessages []map[string]any `json:"context_messages,omitempty"`
 	// MemoryScope carries the explicit worker memory scope contract.
 	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
+	// ToolProfile carries the inherited worker tool profile contract.
+	ToolProfile string `json:"tool_profile,omitempty"`
+	// EnabledTools carries an explicit inherited tool allowlist.
+	EnabledTools []string `json:"enabled_tools,omitempty"`
+	// ParentContext carries optional metadata about the originating runtime.
+	ParentContext *ParentContext `json:"parent_context,omitempty"`
 	// TimeoutMS, when > 0, sets the maximum processing time in milliseconds.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 	// ReplyTo is the Nostr pubkey the worker should send its result DM to.
@@ -80,11 +94,30 @@ func NewTask(taskID, senderPubKey string, p TaskPayload) Message {
 			"instructions":     p.Instructions,
 			"context_messages": p.ContextMessages,
 			"memory_scope":     p.MemoryScope,
+			"tool_profile":     p.ToolProfile,
+			"enabled_tools":    p.EnabledTools,
+			"parent_context":   p.ParentContext,
 			"timeout_ms":       p.TimeoutMS,
 			"reply_to":         p.ReplyTo,
 		},
 		CreatedAt: time.Now().Unix(),
 	}
+}
+
+// DecodeTaskPayload normalizes a generic ACP payload map into the typed task payload.
+func DecodeTaskPayload(payload map[string]any) (TaskPayload, error) {
+	if payload == nil {
+		return TaskPayload{}, nil
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return TaskPayload{}, err
+	}
+	var out TaskPayload
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return TaskPayload{}, err
+	}
+	return out, nil
 }
 
 // NewResult builds a result Message in response to a task.

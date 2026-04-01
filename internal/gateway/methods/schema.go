@@ -273,14 +273,27 @@ type ACPUnregisterRequest struct {
 	PubKey string `json:"pubkey"`
 }
 
+type ACPParentContextHint struct {
+	SessionID string `json:"session_id,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+}
+
 // ACPDispatchRequest sends an ACP task to a registered peer.
 type ACPDispatchRequest struct {
 	// TargetPubKey is the Nostr pubkey of the destination agent.
 	TargetPubKey string `json:"target_pubkey"`
 	// Instructions is the task description.
 	Instructions string `json:"instructions"`
+	// ContextMessages seeds the worker with prior parent history/context.
+	ContextMessages []map[string]any `json:"context_messages,omitempty"`
 	// MemoryScope carries the explicit worker memory scope contract.
 	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
+	// ToolProfile carries the inherited worker tool profile contract.
+	ToolProfile string `json:"tool_profile,omitempty"`
+	// EnabledTools carries an explicit inherited tool allowlist.
+	EnabledTools []string `json:"enabled_tools,omitempty"`
+	// ParentContext carries optional metadata about the originating runtime.
+	ParentContext *ACPParentContextHint `json:"parent_context,omitempty"`
 	// TimeoutMS, when > 0, limits the round-trip wait in milliseconds.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 	// Wait, when true, blocks until the worker sends a result DM and returns
@@ -294,8 +307,16 @@ type ACPPipelineStepRequest struct {
 	PeerPubKey string `json:"peer_pubkey"`
 	// Instructions is the task text for this step.
 	Instructions string `json:"instructions"`
+	// ContextMessages seeds the worker with prior parent history/context.
+	ContextMessages []map[string]any `json:"context_messages,omitempty"`
 	// MemoryScope carries the explicit worker memory scope contract.
 	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
+	// ToolProfile carries the inherited worker tool profile contract.
+	ToolProfile string `json:"tool_profile,omitempty"`
+	// EnabledTools carries an explicit inherited tool allowlist.
+	EnabledTools []string `json:"enabled_tools,omitempty"`
+	// ParentContext carries optional metadata about the originating runtime.
+	ParentContext *ACPParentContextHint `json:"parent_context,omitempty"`
 	// TimeoutMS is the per-step timeout.  0 = 60 s default.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 }
@@ -308,6 +329,221 @@ type ACPPipelineRequest struct {
 	// When false (default), steps run sequentially and each step receives
 	// the previous step's result as context.
 	Parallel bool `json:"parallel,omitempty"`
+}
+
+func normalizeACPParentContext(parent *ACPParentContextHint) *ACPParentContextHint {
+	if parent == nil {
+		return nil
+	}
+	out := &ACPParentContextHint{
+		SessionID: strings.TrimSpace(parent.SessionID),
+		AgentID:   strings.TrimSpace(parent.AgentID),
+	}
+	if out.SessionID == "" && out.AgentID == "" {
+		return nil
+	}
+	return out
+}
+
+func normalizeACPEnabledToolList(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (r ACPDispatchRequest) Normalize() (ACPDispatchRequest, error) {
+	r.TargetPubKey = strings.TrimSpace(r.TargetPubKey)
+	r.Instructions = strings.TrimSpace(r.Instructions)
+	r.ToolProfile = strings.TrimSpace(r.ToolProfile)
+	r.EnabledTools = normalizeACPEnabledToolList(r.EnabledTools)
+	r.ParentContext = normalizeACPParentContext(r.ParentContext)
+	r.ContextMessages = compactObjectSlice(r.ContextMessages)
+	if raw := strings.TrimSpace(string(r.MemoryScope)); raw != "" {
+		scope, ok := state.ParseAgentMemoryScope(raw)
+		if !ok {
+			return r, fmt.Errorf("memory_scope must be one of: user, project, local")
+		}
+		r.MemoryScope = scope
+	}
+	if r.TargetPubKey == "" {
+		return r, fmt.Errorf("target_pubkey required")
+	}
+	if r.Instructions == "" {
+		return r, fmt.Errorf("instructions required")
+	}
+	if r.TimeoutMS < 0 {
+		r.TimeoutMS = 0
+	}
+	return r, nil
+}
+
+func (r ACPPipelineRequest) Normalize() (ACPPipelineRequest, error) {
+	if len(r.Steps) == 0 {
+		return r, fmt.Errorf("steps required")
+	}
+	for i := range r.Steps {
+		r.Steps[i].PeerPubKey = strings.TrimSpace(r.Steps[i].PeerPubKey)
+		r.Steps[i].Instructions = strings.TrimSpace(r.Steps[i].Instructions)
+		r.Steps[i].ToolProfile = strings.TrimSpace(r.Steps[i].ToolProfile)
+		r.Steps[i].EnabledTools = normalizeACPEnabledToolList(r.Steps[i].EnabledTools)
+		r.Steps[i].ParentContext = normalizeACPParentContext(r.Steps[i].ParentContext)
+		r.Steps[i].ContextMessages = compactObjectSlice(r.Steps[i].ContextMessages)
+		if raw := strings.TrimSpace(string(r.Steps[i].MemoryScope)); raw != "" {
+			scope, ok := state.ParseAgentMemoryScope(raw)
+			if !ok {
+				return r, fmt.Errorf("steps[%d].memory_scope must be one of: user, project, local", i)
+			}
+			r.Steps[i].MemoryScope = scope
+		}
+		if r.Steps[i].PeerPubKey == "" {
+			return r, fmt.Errorf("steps[%d].peer_pubkey required", i)
+		}
+		if r.Steps[i].Instructions == "" {
+			return r, fmt.Errorf("steps[%d].instructions required", i)
+		}
+		if r.Steps[i].TimeoutMS < 0 {
+			r.Steps[i].TimeoutMS = 0
+		}
+	}
+	return r, nil
+}
+
+func DecodeACPDispatchParams(params json.RawMessage) (ACPDispatchRequest, error) {
+	params = normalizeObjectParamAliases(params)
+	type acpParentContextCompat struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		AgentID        string `json:"agent_id,omitempty"`
+		AgentIDCamel   string `json:"agentId,omitempty"`
+	}
+	type acpDispatchCompat struct {
+		TargetPubKey    string                  `json:"target_pubkey"`
+		Instructions    string                  `json:"instructions"`
+		ContextMessages []map[string]any        `json:"context_messages,omitempty"`
+		MemoryScope     state.AgentMemoryScope  `json:"memory_scope,omitempty"`
+		ToolProfile     string                  `json:"tool_profile,omitempty"`
+		EnabledTools    []string                `json:"enabled_tools,omitempty"`
+		ParentContext   *acpParentContextCompat `json:"parent_context,omitempty"`
+		TimeoutMS       int64                   `json:"timeout_ms,omitempty"`
+		Wait            bool                    `json:"wait,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat acpDispatchCompat
+	if err := dec.Decode(&compat); err != nil {
+		return ACPDispatchRequest{}, fmt.Errorf("invalid params")
+	}
+	req := ACPDispatchRequest{
+		TargetPubKey:    compat.TargetPubKey,
+		Instructions:    compat.Instructions,
+		ContextMessages: compat.ContextMessages,
+		MemoryScope:     compat.MemoryScope,
+		ToolProfile:     compat.ToolProfile,
+		EnabledTools:    compat.EnabledTools,
+		TimeoutMS:       compat.TimeoutMS,
+		Wait:            compat.Wait,
+	}
+	if compat.ParentContext != nil {
+		req.ParentContext = &ACPParentContextHint{
+			SessionID: firstNonEmpty(compat.ParentContext.SessionID, compat.ParentContext.SessionIDCamel),
+			AgentID:   firstNonEmpty(compat.ParentContext.AgentID, compat.ParentContext.AgentIDCamel),
+		}
+	}
+	return req, nil
+}
+
+func DecodeACPPipelineParams(params json.RawMessage) (ACPPipelineRequest, error) {
+	params = normalizeObjectParamAliases(params)
+	type acpParentContextCompat struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		AgentID        string `json:"agent_id,omitempty"`
+		AgentIDCamel   string `json:"agentId,omitempty"`
+	}
+	type acpPipelineStepCompat struct {
+		PeerPubKey           string                  `json:"peer_pubkey"`
+		PeerPubKeyCamel      string                  `json:"peerPubKey,omitempty"`
+		Instructions         string                  `json:"instructions"`
+		ContextMessages      []map[string]any        `json:"context_messages,omitempty"`
+		ContextMessagesCamel []map[string]any        `json:"contextMessages,omitempty"`
+		MemoryScope          state.AgentMemoryScope  `json:"memory_scope,omitempty"`
+		MemoryScopeCamel     state.AgentMemoryScope  `json:"memoryScope,omitempty"`
+		ToolProfile          string                  `json:"tool_profile,omitempty"`
+		ToolProfileCamel     string                  `json:"toolProfile,omitempty"`
+		EnabledTools         []string                `json:"enabled_tools,omitempty"`
+		EnabledToolsCamel    []string                `json:"enabledTools,omitempty"`
+		ParentContext        *acpParentContextCompat `json:"parent_context,omitempty"`
+		ParentContextCamel   *acpParentContextCompat `json:"parentContext,omitempty"`
+		TimeoutMS            int64                   `json:"timeout_ms,omitempty"`
+		TimeoutMSCamel       int64                   `json:"timeoutMs,omitempty"`
+	}
+	type acpPipelineCompat struct {
+		Steps    []acpPipelineStepCompat `json:"steps"`
+		Parallel bool                    `json:"parallel,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat acpPipelineCompat
+	if err := dec.Decode(&compat); err != nil {
+		return ACPPipelineRequest{}, fmt.Errorf("invalid params")
+	}
+	req := ACPPipelineRequest{Parallel: compat.Parallel}
+	for _, step := range compat.Steps {
+		contextMessages := step.ContextMessages
+		if len(contextMessages) == 0 {
+			contextMessages = step.ContextMessagesCamel
+		}
+		enabledTools := step.EnabledTools
+		if len(enabledTools) == 0 {
+			enabledTools = step.EnabledToolsCamel
+		}
+		parentContext := step.ParentContext
+		if parentContext == nil {
+			parentContext = step.ParentContextCamel
+		}
+		memoryScope := step.MemoryScope
+		if memoryScope == "" {
+			memoryScope = step.MemoryScopeCamel
+		}
+		timeoutMS := step.TimeoutMS
+		if timeoutMS == 0 {
+			timeoutMS = step.TimeoutMSCamel
+		}
+		next := ACPPipelineStepRequest{
+			PeerPubKey:      firstNonEmpty(step.PeerPubKey, step.PeerPubKeyCamel),
+			Instructions:    step.Instructions,
+			ContextMessages: contextMessages,
+			MemoryScope:     memoryScope,
+			ToolProfile:     firstNonEmpty(step.ToolProfile, step.ToolProfileCamel),
+			EnabledTools:    enabledTools,
+			TimeoutMS:       timeoutMS,
+		}
+		if parentContext != nil {
+			next.ParentContext = &ACPParentContextHint{
+				SessionID: firstNonEmpty(parentContext.SessionID, parentContext.SessionIDCamel),
+				AgentID:   firstNonEmpty(parentContext.AgentID, parentContext.AgentIDCamel),
+			}
+		}
+		req.Steps = append(req.Steps, next)
+	}
+	return req, nil
 }
 
 type AgentWaitRequest struct {
@@ -4036,6 +4272,13 @@ var objectParamAliases = map[string]string{
 	"session_key":      "sessionKey",
 	"runId":            "run_id",
 	"timeoutMs":        "timeout_ms",
+	"targetPubKey":     "target_pubkey",
+	"peerPubKey":       "peer_pubkey",
+	"contextMessages":  "context_messages",
+	"memoryScope":      "memory_scope",
+	"toolProfile":      "tool_profile",
+	"enabledTools":     "enabled_tools",
+	"parentContext":    "parent_context",
 	"requestId":        "request_id",
 	"expectedVersion":  "expected_version",
 	"expectedEvent":    "expected_event",
@@ -4172,6 +4415,15 @@ func truncateRunes(s string, maxRunes int) string {
 	return string(r[:maxRunes])
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func compactStringSlice(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -4183,6 +4435,27 @@ func compactStringSlice(values []string) []string {
 			continue
 		}
 		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func compactObjectSlice(values []map[string]any) []map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		if len(value) == 0 {
+			continue
+		}
+		cp := make(map[string]any, len(value))
+		for k, v := range value {
+			cp[k] = v
+		}
+		out = append(out, cp)
 	}
 	if len(out) == 0 {
 		return nil
