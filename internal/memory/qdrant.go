@@ -265,11 +265,21 @@ func (b *QdrantBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc)
 	if id == "" {
 		id = randomID()
 	}
+	unix := doc.Unix
+	if unix == 0 {
+		unix = time.Now().Unix()
+	}
 	payload := map[string]any{
 		"text":       text,
 		"session_id": doc.SessionID,
 		"role":       doc.Role,
-		"unix":       time.Now().Unix(),
+		"unix":       unix,
+	}
+	if topic := strings.TrimSpace(doc.Topic); topic != "" {
+		payload["topic"] = topic
+	}
+	if len(doc.Keywords) > 0 {
+		payload["keywords"] = append([]string(nil), doc.Keywords...)
 	}
 	if err := b.upsert(ctx, id, vec, payload); err != nil {
 		log.Printf("qdrant: upsert failed: %v", err)
@@ -286,8 +296,10 @@ func (b *QdrantBackend) Store(sessionID, text string, tags []string) string {
 	payload := map[string]any{
 		"text":       text,
 		"session_id": sessionID,
-		"keywords":   tags,
 		"unix":       time.Now().Unix(),
+	}
+	if len(tags) > 0 {
+		payload["keywords"] = append([]string(nil), tags...)
 	}
 	if err := b.upsert(context.Background(), id, vec, payload); err != nil {
 		log.Printf("qdrant: upsert failed: %v", err)

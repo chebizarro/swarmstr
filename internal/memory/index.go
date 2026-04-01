@@ -69,8 +69,8 @@ func OpenIndex(path string) (*Index, error) {
 	return idx, nil
 }
 
-// generateMemoryID generates a random 8-byte hex string for use as a MemoryID.
-func generateMemoryID() string {
+// GenerateMemoryID generates a random 8-byte hex string for use as a MemoryID.
+func GenerateMemoryID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Sprintf("mem-%d", time.Now().UnixNano())
@@ -82,7 +82,7 @@ func generateMemoryID() string {
 // generated MemoryID.  It is a convenience wrapper around Add that generates
 // a unique ID and sets the current Unix timestamp.
 func (i *Index) Store(sessionID, text string, tags []string) string {
-	id := generateMemoryID()
+	id := GenerateMemoryID()
 	i.Add(state.MemoryDoc{
 		MemoryID:  id,
 		SessionID: sessionID,

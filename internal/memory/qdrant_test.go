@@ -101,6 +101,58 @@ func TestContextAwareHelpersUseHybridIndexContextMethods(t *testing.T) {
 	}
 }
 
+func TestQdrantAddWithContextPersistsTopicKeywordsAndUnix(t *testing.T) {
+	var upsert struct {
+		Points []struct {
+			Payload map[string]any `json:"payload"`
+		} `json:"points"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/embeddings":
+			_ = json.NewDecoder(r.Body).Decode(&map[string]any{})
+			_ = json.NewEncoder(w).Encode(map[string]any{"embedding": []float32{0.1, 0.2, 0.3}})
+		case "/collections/test/points":
+			if err := json.NewDecoder(r.Body).Decode(&upsert); err != nil {
+				t.Fatalf("decode upsert body: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	backend := &QdrantBackend{
+		qdrantURL:  server.URL,
+		ollamaURL:  server.URL,
+		collection: "test",
+		client:     server.Client(),
+	}
+	backend.AddWithContext(context.Background(), state.MemoryDoc{
+		MemoryID:  "mem-1",
+		SessionID: "session-a",
+		Text:      "remember this",
+		Topic:     "project",
+		Keywords:  []string{"project", "deadline"},
+		Unix:      1712345678,
+	})
+	if len(upsert.Points) != 1 {
+		t.Fatalf("expected one point payload, got %#v", upsert.Points)
+	}
+	payload := upsert.Points[0].Payload
+	if got, _ := payload["topic"].(string); got != "project" {
+		t.Fatalf("expected topic to persist, got %#v", payload["topic"])
+	}
+	keywords, _ := payload["keywords"].([]any)
+	if len(keywords) != 2 || keywords[0] != "project" || keywords[1] != "deadline" {
+		t.Fatalf("expected keywords to persist, got %#v", payload["keywords"])
+	}
+	if got, _ := payload["unix"].(float64); int64(got) != 1712345678 {
+		t.Fatalf("expected unix to persist, got %#v", payload["unix"])
+	}
+}
+
 func TestQdrantDeleteNormalizesIDs(t *testing.T) {
 	var got struct {
 		Points []string `json:"points"`

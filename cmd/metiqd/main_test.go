@@ -2177,7 +2177,7 @@ func TestExecuteAgentRun_EmitsAgentStatusWithSession(t *testing.T) {
 	jobs := newAgentJobRegistry()
 	runID := "run-session-event"
 	jobs.Begin(runID, "session-42")
-	executeAgentRun(runID, methods.AgentRequest{SessionID: "session-42", Message: "hello", TimeoutMS: 500}, stubAgentRuntime{}, jobs)
+	executeAgentRun(runID, methods.AgentRequest{SessionID: "session-42", Message: "hello", TimeoutMS: 500}, stubAgentRuntime{}, nil, jobs)
 
 	events := capture.eventsByName(gatewayws.EventAgentStatus)
 	if len(events) != 2 {
@@ -2234,7 +2234,7 @@ func TestExecuteAgentRun_EmitsAndPersistsTurnTelemetry(t *testing.T) {
 			Text:  "ack: " + turn.UserText,
 			Usage: agent.TurnUsage{InputTokens: 7, OutputTokens: 3},
 		}, nil
-	}), jobs)
+	}), nil, jobs)
 
 	events := capture.eventsByName(gatewayws.EventTurnResult)
 	if len(events) != 1 {

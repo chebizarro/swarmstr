@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"metiq/internal/agent"
 	"metiq/internal/memory"
+	"metiq/internal/store/state"
 )
 
 // MemoryStoreTool returns an agent.ToolFunc for the "memory_store" tool.
@@ -20,7 +23,7 @@ import (
 // MemoryStoreDef is the ToolDefinition for memory_store.
 var MemoryStoreDef = agent.ToolDefinition{
 	Name:        "memory_store",
-	Description: "Persist a piece of information to memory so it can be retrieved in future sessions. Use to remember facts, preferences, decisions, or anything worth retaining across conversations.",
+	Description: "Persist durable searchable memory for later recall. Use for user facts, validated feedback, project context, or external references that are not derivable from the current repo state.",
 	InputJSONSchema: map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
@@ -44,6 +47,10 @@ var MemoryStoreDef = agent.ToolDefinition{
 			"session_id": map[string]any{
 				"type":        "string",
 				"description": "Optional session scope for the stored entry.",
+			},
+			"topic": map[string]any{
+				"type":        "string",
+				"description": "Optional memory category/topic. Prefer durable labels such as user, feedback, project, or reference when they apply.",
 			},
 		},
 		"required": []any{"text"},
@@ -94,7 +101,23 @@ func MemoryStoreTool(idx memory.Store) agent.ToolFunc {
 			}
 		}
 
-		id := idx.Store(sessionID, text, tags)
+		topic := strings.TrimSpace(agent.ArgString(args, "topic"))
+		id := ""
+		if topic == "" {
+			id = idx.Store(sessionID, text, tags)
+		} else {
+			allKeywords := append([]string(nil), tags...)
+			allKeywords = append(allKeywords, topic)
+			id = memory.GenerateMemoryID()
+			memory.AddDoc(ctx, idx, state.MemoryDoc{
+				MemoryID:  id,
+				SessionID: sessionID,
+				Text:      text,
+				Keywords:  allKeywords,
+				Topic:     topic,
+				Unix:      time.Now().Unix(),
+			})
+		}
 		if saveErr := idx.Save(); saveErr != nil {
 			log.Printf("memory_store: index save failed: %v", saveErr)
 		}
