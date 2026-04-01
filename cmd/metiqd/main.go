@@ -504,15 +504,21 @@ func main() {
 		}
 		taskID := acppkg.GenerateTaskID()
 		senderPubKey := dmBus.PublicKey()
-		acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
+		cfg := state.ConfigDoc{}
+		if configState != nil {
+			cfg = configState.Get()
+		}
+		taskPayload := buildInheritedACPTaskPayload(ctx, cfg, docsRepo, sessionStore, acppkg.TaskPayload{
 			Instructions: instructions,
 			MemoryScope:  memoryScope,
 			TimeoutMS:    timeoutMS,
 			ReplyTo:      senderPubKey,
 		})
+		acpMsg := acppkg.NewTask(taskID, senderPubKey, taskPayload)
 		controlACPDispatcher.Register(taskID)
 		payload, _ := json.Marshal(acpMsg)
 		if err := dmBus.SendDM(ctx, peerPubKey, string(payload)); err != nil {
+			controlACPDispatcher.Cancel(taskID)
 			return "", fmt.Errorf("acp.delegate: send: %w", err)
 		}
 		result, err := controlACPDispatcher.Wait(ctx, taskID, time.Duration(timeoutMS)*time.Millisecond)
@@ -3574,8 +3580,9 @@ func main() {
 		// of the user-facing agent pipeline.
 		if controlACPPeers != nil && controlACPPeers.IsPeer(msg.FromPubKey) && acppkg.IsACPMessage([]byte(msg.Text)) {
 			if acpMsg, acpErr := acppkg.Parse([]byte(msg.Text)); acpErr == nil {
-				if err := handleACPMessage(ctx, acpMsg, msg.FromPubKey, msg, agentRegistry, sessionRouter, tools); err != nil {
+				if err := handleACPMessage(ctx, acpMsg, msg.FromPubKey, msg, agentRegistry, sessionRouter, tools, docsRepo); err != nil {
 					log.Printf("acp message handler error from=%s task_id=%s err=%v", msg.FromPubKey, acpMsg.TaskID, err)
+					return err
 				}
 				if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
 					log.Printf("checkpoint update (acp) failed event=%s err=%v", msg.EventID, err)
@@ -8817,26 +8824,17 @@ func handleControlRPCRequest(
 		return nostruntime.ControlRPCResult{Result: map[string]any{"peers": out}}, nil
 
 	case methods.MethodACPDispatch:
-		var req methods.ACPDispatchRequest
-		if err := json.Unmarshal(in.Params, &req); err != nil {
+		req, err := methods.DecodeACPDispatchParams(in.Params)
+		if err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: invalid params: %w", err)
 		}
-		if raw := strings.TrimSpace(string(req.MemoryScope)); raw != "" {
-			scope, ok := state.ParseAgentMemoryScope(raw)
-			if !ok {
-				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: memory_scope must be one of: user, project, local")
-			}
-			req.MemoryScope = scope
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: %w", err)
 		}
-		target := strings.TrimSpace(req.TargetPubKey)
-		if target == "" {
-			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: target_pubkey required")
-		}
+		target := req.TargetPubKey
 		if !controlACPPeers.IsPeer(target) {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: unknown peer %q — register via acp.register first", target)
-		}
-		if strings.TrimSpace(req.Instructions) == "" {
-			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: instructions required")
 		}
 		taskID := fmt.Sprintf("acp-%d-%x", time.Now().UnixNano(), func() []byte {
 			b := make([]byte, 4)
@@ -8847,11 +8845,24 @@ func handleControlRPCRequest(
 		if dmBus != nil {
 			senderPubKey = dmBus.PublicKey()
 		}
+		req.ToolProfile = strings.TrimSpace(req.ToolProfile)
+		req.EnabledTools = normalizeACPEnabledTools(req.EnabledTools)
+		var parentContext *acppkg.ParentContext
+		if req.ParentContext != nil {
+			parentContext = &acppkg.ParentContext{
+				SessionID: strings.TrimSpace(req.ParentContext.SessionID),
+				AgentID:   strings.TrimSpace(req.ParentContext.AgentID),
+			}
+		}
 		acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
-			Instructions: req.Instructions,
-			MemoryScope:  req.MemoryScope,
-			TimeoutMS:    req.TimeoutMS,
-			ReplyTo:      senderPubKey,
+			Instructions:    req.Instructions,
+			ContextMessages: cloneACPContextMessages(req.ContextMessages),
+			MemoryScope:     req.MemoryScope,
+			ToolProfile:     req.ToolProfile,
+			EnabledTools:    req.EnabledTools,
+			ParentContext:   parentContext,
+			TimeoutMS:       req.TimeoutMS,
+			ReplyTo:         senderPubKey,
 		})
 		payload, err := json.Marshal(acpMsg)
 		if err != nil {
@@ -8860,14 +8871,20 @@ func handleControlRPCRequest(
 		if dmBus == nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: DM transport not available")
 		}
+		waitRegistered := false
+		if req.Wait {
+			controlACPDispatcher.Register(taskID)
+			waitRegistered = true
+		}
 		if err := dmBus.SendDM(ctx, target, string(payload)); err != nil {
+			if waitRegistered {
+				controlACPDispatcher.Cancel(taskID)
+			}
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: send DM: %w", err)
 		}
 
-		// If wait==true, register in dispatcher and block until result arrives.
+		// If wait==true, block until result arrives.
 		if req.Wait {
-			ch := controlACPDispatcher.Register(taskID)
-			_ = ch // Wait() handles the channel internally
 			timeout := time.Duration(req.TimeoutMS) * time.Millisecond
 			if timeout == 0 {
 				timeout = 60 * time.Second
@@ -8888,42 +8905,49 @@ func handleControlRPCRequest(
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "task_id": taskID, "target": target}}, nil
 
 	case methods.MethodACPPipeline:
-		var req methods.ACPPipelineRequest
-		if err := json.Unmarshal(in.Params, &req); err != nil {
+		req, err := methods.DecodeACPPipelineParams(in.Params)
+		if err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: invalid params: %w", err)
 		}
-		if len(req.Steps) == 0 {
-			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: steps required")
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: %w", err)
 		}
 		if dmBus == nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: DM transport not available")
 		}
 
 		senderPubKey := dmBus.PublicKey()
-		sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string, memoryScope state.AgentMemoryScope) error {
-			acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
-				Instructions: instructions,
-				MemoryScope:  memoryScope,
-				ReplyTo:      senderPubKey,
-			})
-			payload, _ := json.Marshal(acpMsg)
-			return dmBus.SendDM(ctx, peerPubKey, string(payload))
+		sendFn := func(ctx context.Context, peerPubKey, taskID string, payload acppkg.TaskPayload) error {
+			payload.ReplyTo = senderPubKey
+			acpMsg := acppkg.NewTask(taskID, senderPubKey, payload)
+			encoded, _ := json.Marshal(acpMsg)
+			return dmBus.SendDM(ctx, peerPubKey, string(encoded))
 		}
 
 		steps := make([]acppkg.Step, 0, len(req.Steps))
 		for i, s := range req.Steps {
-			if raw := strings.TrimSpace(string(s.MemoryScope)); raw != "" {
-				scope, ok := state.ParseAgentMemoryScope(raw)
-				if !ok {
-					return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: steps[%d].memory_scope must be one of: user, project, local", i)
+			if !controlACPPeers.IsPeer(s.PeerPubKey) {
+				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: unknown peer %q at steps[%d] — register via acp.register first", s.PeerPubKey, i)
+			}
+			s.ToolProfile = strings.TrimSpace(s.ToolProfile)
+			s.EnabledTools = normalizeACPEnabledTools(s.EnabledTools)
+			var parentContext *acppkg.ParentContext
+			if s.ParentContext != nil {
+				parentContext = &acppkg.ParentContext{
+					SessionID: strings.TrimSpace(s.ParentContext.SessionID),
+					AgentID:   strings.TrimSpace(s.ParentContext.AgentID),
 				}
-				s.MemoryScope = scope
 			}
 			steps = append(steps, acppkg.Step{
-				PeerPubKey:   s.PeerPubKey,
-				Instructions: s.Instructions,
-				MemoryScope:  s.MemoryScope,
-				TimeoutMS:    s.TimeoutMS,
+				PeerPubKey:      s.PeerPubKey,
+				Instructions:    s.Instructions,
+				ContextMessages: cloneACPContextMessages(s.ContextMessages),
+				MemoryScope:     s.MemoryScope,
+				ToolProfile:     s.ToolProfile,
+				EnabledTools:    s.EnabledTools,
+				ParentContext:   parentContext,
+				TimeoutMS:       s.TimeoutMS,
 			})
 		}
 		pipeline := &acppkg.Pipeline{Steps: steps}
@@ -8971,22 +8995,46 @@ func handleACPMessage(
 	agentReg *agent.AgentRuntimeRegistry,
 	sessRouter *agent.AgentSessionRouter,
 	tools *agent.ToolRegistry,
+	docsRepo *state.DocsRepository,
 ) error {
 	switch msg.ACPType {
 	case "task":
-		instructions := ""
-		memoryScope := state.AgentMemoryScope("")
-		if msg.Payload != nil {
-			if v, ok := msg.Payload["instructions"].(string); ok {
-				instructions = v
+		sendResult := func(resultMsg acppkg.Message) error {
+			payload, marshalErr := json.Marshal(resultMsg)
+			if marshalErr != nil {
+				return fmt.Errorf("acp result marshal: %w", marshalErr)
 			}
-			if v, ok := msg.Payload["memory_scope"].(string); ok {
-				memoryScope = state.NormalizeAgentMemoryScope(v)
+			replyTo := fromPubKey
+			if msg.Payload != nil {
+				if v, ok := msg.Payload["reply_to"].(string); ok && strings.TrimSpace(v) != "" {
+					replyTo = strings.TrimSpace(v)
+				}
 			}
-		}
-		if strings.TrimSpace(instructions) == "" {
-			log.Printf("acp task from=%s task_id=%s: missing instructions", fromPubKey, msg.TaskID)
+			if replyTo != "" && replyTo != fromPubKey {
+				controlDMBusMu.RLock()
+				bus := controlDMBus
+				controlDMBusMu.RUnlock()
+				if bus == nil {
+					return fmt.Errorf("acp result send failed to=%s task_id=%s: DM transport not available", replyTo, msg.TaskID)
+				}
+				if sendErr := bus.SendDM(ctx, replyTo, string(payload)); sendErr != nil {
+					return fmt.Errorf("acp result send failed to=%s task_id=%s: %w", replyTo, msg.TaskID, sendErr)
+				}
+				return nil
+			}
+			if sendErr := dm.Reply(ctx, string(payload)); sendErr != nil {
+				return fmt.Errorf("acp result send failed to=%s task_id=%s: %w", replyTo, msg.TaskID, sendErr)
+			}
 			return nil
+		}
+		taskPayload, err := acppkg.DecodeTaskPayload(msg.Payload)
+		if err != nil {
+			return sendResult(acppkg.NewResult(msg.TaskID, "", acppkg.ResultPayload{Error: fmt.Sprintf("invalid task payload: %v", err)}))
+		}
+		instructions := strings.TrimSpace(taskPayload.Instructions)
+		if instructions == "" {
+			log.Printf("acp task from=%s task_id=%s: missing instructions", fromPubKey, msg.TaskID)
+			return sendResult(acppkg.NewResult(msg.TaskID, "", acppkg.ResultPayload{Error: "instructions are required"}))
 		}
 		log.Printf("acp task from=%s task_id=%s instructions=%q", fromPubKey, msg.TaskID, instructions)
 
@@ -8995,27 +9043,43 @@ func handleACPMessage(
 		if sessRouter != nil {
 			agentID = sessRouter.Get(fromPubKey)
 		}
-		rt := agentReg.Get(agentID) // returns default if agentID == ""
+		agentID = defaultAgentID(agentID)
+		rt := agentReg.Get(agentID)
 
 		sessionID := "acp:" + fromPubKey
 		cfg := state.ConfigDoc{}
 		if controlRuntimeConfig != nil {
 			cfg = controlRuntimeConfig.Get()
 		}
-		scopeCtx := resolveMemoryScopeContext(ctx, cfg, nil, controlSessionStore, sessionID, agentID, memoryScope)
-		persistSessionMemoryScope(controlSessionStore, sessionID, agentID, scopeCtx.Scope)
-		turnCtx := contextWithMemoryScope(ctx, scopeCtx)
-		result, err := rt.ProcessTurn(turnCtx, buildAgentRunTurn(turnCtx, methods.AgentRequest{
-			SessionID:   sessionID,
-			Message:     instructions,
-			MemoryScope: scopeCtx.Scope,
-		}, controlMemoryStore, scopeCtx))
+		taskTimeout := 60 * time.Second
+		if taskPayload.TimeoutMS > 0 {
+			taskTimeout = time.Duration(taskPayload.TimeoutMS) * time.Millisecond
+		}
+		processCtx, cancel := context.WithTimeout(ctx, taskTimeout)
+		defer cancel()
+		var result agent.TurnResult
+		procErr := withExclusiveSessionTurn(processCtx, sessionID, taskTimeout, func() error {
+			scopeCtx := resolveMemoryScopeContext(processCtx, cfg, docsRepo, controlSessionStore, sessionID, agentID, taskPayload.MemoryScope)
+			persistSessionMemoryScope(controlSessionStore, sessionID, agentID, scopeCtx.Scope)
+			turnCtx := contextWithMemoryScope(processCtx, scopeCtx)
+			turnCtx = contextWithACPTaskPayload(turnCtx, taskPayload)
+			filteredRuntime := applyACPTaskRuntimeConstraints(turnCtx, rt, agentID, taskPayload, cfg, docsRepo)
+			turn := buildAgentRunTurn(turnCtx, methods.AgentRequest{
+				SessionID:   sessionID,
+				Message:     instructions,
+				MemoryScope: scopeCtx.Scope,
+			}, controlMemoryStore, scopeCtx)
+			turn.History = decodeACPConversationMessages(taskPayload.ContextMessages)
+			var err error
+			result, err = filteredRuntime.ProcessTurn(turnCtx, turn)
+			return err
+		})
 
 		// Build and send result DM back to the sender.
 		var resultMsg acppkg.Message
-		if err != nil {
+		if procErr != nil {
 			resultMsg = acppkg.NewResult(msg.TaskID, "", acppkg.ResultPayload{
-				Error: err.Error(),
+				Error: procErr.Error(),
 			})
 		} else {
 			resultMsg = acppkg.NewResult(msg.TaskID, "", acppkg.ResultPayload{
@@ -9023,22 +9087,7 @@ func handleACPMessage(
 			})
 		}
 
-		payload, marshalErr := json.Marshal(resultMsg)
-		if marshalErr != nil {
-			return fmt.Errorf("acp result marshal: %w", marshalErr)
-		}
-		// Determine reply-to pubkey: prefer explicit reply_to from payload, else sender.
-		replyTo := fromPubKey
-		if msg.Payload != nil {
-			if v, ok := msg.Payload["reply_to"].(string); ok && strings.TrimSpace(v) != "" {
-				replyTo = strings.TrimSpace(v)
-			}
-		}
-		if sendErr := dm.Reply(ctx, string(payload)); sendErr != nil {
-			// dm.Reply goes to the DM sender; if replyTo differs we log but continue.
-			log.Printf("acp result send failed to=%s task_id=%s err=%v", replyTo, msg.TaskID, sendErr)
-		}
-		return nil
+		return sendResult(resultMsg)
 
 	case "result":
 		// Incoming result from a peer for a previously dispatched task.
@@ -9079,56 +9128,11 @@ func handleACPMessage(
 // returns a profile-filtered Runtime.  If no profile is set, or the profile is
 // "full", the original runtime is returned unchanged.
 func applyAgentProfileFilter(ctx context.Context, rt agent.Runtime, sessionID string, cfg state.ConfigDoc, docsRepo *state.DocsRepository) agent.Runtime {
-	pr, ok := rt.(*agent.ProviderRuntime)
-	if !ok || pr == nil {
-		return rt // can't filter non-ProviderRuntime implementations
-	}
-
-	// Resolve agent ID for this session.
 	agentID := ""
 	if controlSessionRouter != nil {
 		agentID = controlSessionRouter.Get(sessionID)
 	}
-	if agentID == "" {
-		agentID = "main"
-	}
-
-	// 1. Check typed AgentsConfig in ConfigDoc for an explicit tool_profile.
-	profileID := ""
-	for _, ac := range cfg.Agents {
-		if ac.ID == agentID && ac.ToolProfile != "" {
-			profileID = ac.ToolProfile
-			break
-		}
-	}
-
-	// 2. Fall back to the agent's runtime Meta (set via tools.profile.set).
-	if profileID == "" && docsRepo != nil {
-		if agentDoc, err := docsRepo.GetAgent(ctx, agentID); err == nil {
-			if p, ok := agentDoc.Meta[agent.AgentProfileKey].(string); ok {
-				profileID = strings.TrimSpace(p)
-			}
-		}
-	}
-
-	// No profile or full profile = no filtering.
-	if profileID == "" || profileID == agent.DefaultProfile {
-		return rt
-	}
-	if agent.LookupProfile(profileID) == nil {
-		return pr.Filtered(map[string]bool{})
-	}
-	if controlToolRegistry == nil {
-		return pr.Filtered(map[string]bool{})
-	}
-
-	// Build the allowed tool ID set from the catalog.
-	groups := buildToolCatalogGroups(cfg, controlToolRegistry, nil, controlPluginMgr)
-	if len(groups) == 0 {
-		return pr.Filtered(map[string]bool{})
-	}
-	allowed := agent.AllowedToolIDs(groups, profileID)
-	return pr.Filtered(allowed)
+	return applyAgentProfileFilterForAgent(ctx, rt, agentID, cfg, docsRepo)
 }
 
 // scheduleRestartIfNeeded compares old and next ConfigDoc.  If the change
