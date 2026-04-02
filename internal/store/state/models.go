@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 )
 
 // ConfigDoc is the canonical runtime configuration persisted to Nostr.
@@ -13,10 +14,12 @@ type ConfigDoc struct {
 	Relays        RelayPolicy         `json:"relays"`
 	Agent         AgentPolicy         `json:"agent"`
 	Control       ControlPolicy       `json:"control,omitempty"`
+	ACP           ACPConfig           `json:"acp,omitempty"`
 	Agents        AgentsConfig        `json:"agents,omitempty"`
 	NostrChannels NostrChannelsConfig `json:"nostr_channels,omitempty"`
 	Providers     ProvidersConfig     `json:"providers,omitempty"`
 	Session       SessionConfig       `json:"session,omitempty"`
+	Storage       StorageConfig       `json:"storage,omitempty"`
 	Heartbeat     HeartbeatConfig     `json:"heartbeat,omitempty"`
 	TTS           TTSConfig           `json:"tts,omitempty"`
 	Secrets       SecretsConfig       `json:"secrets,omitempty"`
@@ -44,6 +47,46 @@ func (c ConfigDoc) Hash() string {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func (c ConfigDoc) StorageEncryptEnabled() bool {
+	return c.Storage.EncryptEnabled()
+}
+
+func (c ConfigDoc) ACPTransportMode() string {
+	return c.ACP.TransportMode()
+}
+
+func BoolPtr(v bool) *bool {
+	return &v
+}
+
+// ACPConfig controls outbound ACP DM transport selection.
+type ACPConfig struct {
+	// Transport selects which DM family ACP uses when sending tasks/results.
+	// Supported values: auto, nip17, nip04.
+	Transport string `json:"transport,omitempty"`
+}
+
+// ParseACPTransportMode normalizes a configured ACP transport mode.
+func ParseACPTransportMode(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "auto":
+		return "auto", true
+	case "nip17", "nip-17":
+		return "nip17", true
+	case "nip04", "nip-04":
+		return "nip04", true
+	default:
+		return "", false
+	}
+}
+
+func (c ACPConfig) TransportMode() string {
+	if mode, ok := ParseACPTransportMode(c.Transport); ok {
+		return mode
+	}
+	return "auto"
 }
 
 type DMPolicy struct {
@@ -113,6 +156,17 @@ type SessionConfig struct {
 	PruneIdleAfterDays int `json:"prune_idle_after_days,omitempty"`
 	// PruneOnBoot runs a pruning pass at daemon startup.
 	PruneOnBoot bool `json:"prune_on_boot,omitempty"`
+}
+
+// StorageConfig controls how relay-persisted state documents are stored.
+type StorageConfig struct {
+	// Encrypt enables NIP-44 self-encryption for config, transcript, memory,
+	// and other relay-persisted state documents.
+	Encrypt *bool `json:"encrypt,omitempty"`
+}
+
+func (s StorageConfig) EncryptEnabled() bool {
+	return s.Encrypt == nil || *s.Encrypt
 }
 
 // HeartbeatConfig controls the periodic heartbeat pulse.
@@ -195,6 +249,7 @@ type HookMapping struct {
 // "nip28" uses NIP-28 public channel events (kind 40/42).
 // "nip29" uses NIP-29 relay-managed groups.
 // "relay-filter" subscribes to arbitrary relay filters and routes to an agent.
+// "nip34-inbox" is a repo-targeted NIP-34 relay-filter preset.
 type NostrChannelKind = string
 
 const (
@@ -203,11 +258,12 @@ const (
 	NostrChannelKindNIP29       NostrChannelKind = "nip29"
 	NostrChannelKindChat        NostrChannelKind = "chat" // NIP-C7 kind:9 chat
 	NostrChannelKindRelayFilter NostrChannelKind = "relay-filter"
+	NostrChannelKindNIP34Inbox  NostrChannelKind = "nip34-inbox"
 )
 
 // NostrChannelConfig describes a single Nostr transport subscription.
 type NostrChannelConfig struct {
-	// Kind identifies the transport type (dm, nip28, nip29, relay-filter).
+	// Kind identifies the transport type (dm, nip28, nip29, relay-filter, nip34-inbox).
 	Kind string `json:"kind"`
 	// Enabled controls whether this channel is active at startup.
 	Enabled bool `json:"enabled,omitempty"`

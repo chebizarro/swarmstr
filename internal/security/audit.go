@@ -74,7 +74,7 @@ func Audit(opts AuditOptions) AuditReport {
 	findings = append(findings, checkGatewayWSToken(bs)...)
 	findings = append(findings, checkPrivateKeyStrength(bs)...)
 
-	findings = append(findings, checkNIP44Disabled(bs)...)
+	findings = append(findings, checkStateDocEncryption(bs, opts.ConfigDoc)...)
 	findings = append(findings, checkPublishGuardPolicy(bs, opts.ConfigDoc)...)
 
 	if opts.ConfigDoc != nil {
@@ -239,17 +239,30 @@ func checkChannelSecrets(cfg state.ConfigDoc) []Finding {
 	return findings
 }
 
-func checkNIP44Disabled(bs map[string]any) []Finding {
-	enabled, ok := bs["enable_nip44"].(bool)
-	if ok && enabled {
-		return nil // NIP-44 is on — good
+func checkStateDocEncryption(bs map[string]any, cfg *state.ConfigDoc) []Finding {
+	if cfg != nil {
+		if cfg.StorageEncryptEnabled() {
+			return nil
+		}
+		return []Finding{{
+			CheckID:  "nip44-disabled",
+			Severity: SeverityWarn,
+			Message:  "State document encryption is disabled: config, transcripts, and memory docs are stored on relays in plaintext",
+			Remediation: "Set storage.encrypt: true in runtime config. " +
+				"Legacy plaintext docs remain readable for migration and will be re-encrypted on the next write.",
+		}}
+	}
+	enabled, _ := bs["enable_nip44"].(bool)
+	message := "Runtime storage encryption could not be verified without a live config document"
+	if !enabled {
+		message = "Runtime storage encryption could not be verified and bootstrap NIP-44 transport encryption is disabled"
 	}
 	return []Finding{{
 		CheckID:  "nip44-disabled",
 		Severity: SeverityWarn,
-		Message:  "NIP-44 envelope encryption is disabled: config, sessions, transcripts, and memory docs are stored on relays in plaintext",
-		Remediation: "Set enable_nip44: true in bootstrap config. " +
-			"This encrypts all state documents with NIP-44 self-encryption before publishing to relays.",
+		Message:  message,
+		Remediation: "Verify storage.encrypt: true in runtime config. " +
+			"bootstrap enable_nip44 protects DM/control transport, not relay-persisted state docs.",
 	}}
 }
 

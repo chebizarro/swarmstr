@@ -183,9 +183,52 @@ func filterRuntimeByAllowedTools(rt agent.Runtime, allowed map[string]bool) agen
 	return filterable.Filtered(allowed)
 }
 
+type turnToolConstraints struct {
+	ToolProfile  string
+	EnabledTools []string
+}
+
+func intersectTurnToolConstraints(allowed map[string]bool, cfg state.ConfigDoc, constraints turnToolConstraints) map[string]bool {
+	if profileID := strings.TrimSpace(constraints.ToolProfile); profileID != "" {
+		allowed = agent.IntersectAllowedToolIDs(allowed, allowedToolIDsForProfile(cfg, profileID))
+	}
+	allowed = agent.IntersectAllowedToolIDs(allowed, agent.AllowedToolIDsFromNames(constraints.EnabledTools))
+	return allowed
+}
+
+func sessionTurnToolConstraints(ctx context.Context, docsRepo *state.DocsRepository, sessionID string) turnToolConstraints {
+	if docsRepo == nil || strings.TrimSpace(sessionID) == "" {
+		return turnToolConstraints{}
+	}
+	doc, err := docsRepo.GetSession(ctx, sessionID)
+	if err != nil || doc.Meta == nil {
+		return turnToolConstraints{}
+	}
+	rawConstraints, ok := doc.Meta["turn_constraints"].(map[string]any)
+	if !ok {
+		return turnToolConstraints{}
+	}
+	constraints := turnToolConstraints{}
+	if rawProfile, ok := rawConstraints["tool_profile"].(string); ok {
+		constraints.ToolProfile = strings.TrimSpace(strings.ToLower(rawProfile))
+	}
+	constraints.EnabledTools = agent.NormalizeAllowedToolNames(stringSliceValue(rawConstraints["enabled_tools"]))
+	return constraints
+}
+
 func resolvedAgentRuntimeToolAllowlist(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, agentID string) map[string]bool {
 	allowed := allowedToolIDsForProfile(cfg, configuredAgentToolProfile(ctx, cfg, docsRepo, agentID))
 	return agent.IntersectAllowedToolIDs(allowed, agent.AllowedToolIDsFromNames(configuredAgentEnabledTools(cfg, agentID)))
+}
+
+func resolvedSessionRuntimeToolAllowlist(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, sessionID, agentID string) map[string]bool {
+	allowed := resolvedAgentRuntimeToolAllowlist(ctx, cfg, docsRepo, agentID)
+	return intersectTurnToolConstraints(allowed, cfg, sessionTurnToolConstraints(ctx, docsRepo, sessionID))
+}
+
+func resolvedTurnRuntimeToolAllowlist(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, sessionID, agentID string, constraints turnToolConstraints) map[string]bool {
+	allowed := resolvedSessionRuntimeToolAllowlist(ctx, cfg, docsRepo, sessionID, agentID)
+	return intersectTurnToolConstraints(allowed, cfg, constraints)
 }
 
 func applyAgentProfileFilterForAgent(ctx context.Context, rt agent.Runtime, agentID string, cfg state.ConfigDoc, docsRepo *state.DocsRepository) agent.Runtime {
@@ -194,10 +237,7 @@ func applyAgentProfileFilterForAgent(ctx context.Context, rt agent.Runtime, agen
 
 func applyACPTaskRuntimeConstraints(ctx context.Context, rt agent.Runtime, agentID string, payload acppkg.TaskPayload, cfg state.ConfigDoc, docsRepo *state.DocsRepository) agent.Runtime {
 	allowed := resolvedAgentRuntimeToolAllowlist(ctx, cfg, docsRepo, agentID)
-	if profileID := strings.TrimSpace(payload.ToolProfile); profileID != "" {
-		allowed = agent.IntersectAllowedToolIDs(allowed, allowedToolIDsForProfile(cfg, profileID))
-	}
-	allowed = agent.IntersectAllowedToolIDs(allowed, agent.AllowedToolIDsFromNames(payload.EnabledTools))
+	allowed = intersectTurnToolConstraints(allowed, cfg, turnToolConstraints{ToolProfile: payload.ToolProfile, EnabledTools: payload.EnabledTools})
 	return filterRuntimeByAllowedTools(rt, allowed)
 }
 

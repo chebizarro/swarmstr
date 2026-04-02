@@ -122,6 +122,70 @@ func TestValidateAgents_invalidToolProfile(t *testing.T) {
 	}
 }
 
+func TestValidateACPTransportRejectsInvalidMode(t *testing.T) {
+	d := baseDoc()
+	d.ACP.Transport = "nip004"
+	if err := ValidateConfig(d); err == nil {
+		t.Fatal("expected invalid acp.transport error")
+	}
+}
+
+func TestValidateNostrChannels_relayFilterNIP34RequiresRepoAddr(t *testing.T) {
+	d := baseDoc()
+	d.NostrChannels = state.NostrChannelsConfig{
+		"repo-events": {
+			Kind:   string(state.NostrChannelKindRelayFilter),
+			Config: map[string]any{"mode": "nip34"},
+			Relays: []string{"wss://relay.example"},
+		},
+	}
+	if err := ValidateConfig(d); err == nil {
+		t.Fatal("expected error when relay-filter mode=nip34 omits tags.a")
+	}
+}
+
+func TestValidateNostrChannels_NIP34AutoReviewRejectsInvalidToolProfile(t *testing.T) {
+	d := baseDoc()
+	d.NostrChannels = state.NostrChannelsConfig{
+		"repo-events": {
+			Kind:   string(state.NostrChannelKindNIP34Inbox),
+			Relays: []string{"wss://relay.example"},
+			Tags:   map[string][]string{"a": {"30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:metiq"}},
+			Config: map[string]any{
+				"auto_review": map[string]any{
+					"enabled":      true,
+					"tool_profile": "ultra",
+				},
+			},
+		},
+	}
+	if err := ValidateConfig(d); err == nil {
+		t.Fatal("expected invalid tool_profile error for auto_review config")
+	}
+}
+
+func TestValidateNostrChannels_NIP34AutoReviewAcceptsValidConfig(t *testing.T) {
+	d := baseDoc()
+	d.NostrChannels = state.NostrChannelsConfig{
+		"repo-events": {
+			Kind:   string(state.NostrChannelKindNIP34Inbox),
+			Relays: []string{"wss://relay.example"},
+			Tags:   map[string][]string{"a": {"30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:metiq"}},
+			Config: map[string]any{
+				"auto_review": map[string]any{
+					"enabled":       true,
+					"tool_profile":  "coding",
+					"enabled_tools": []any{"memory_search"},
+					"trigger_types": []any{"pull_request", "pull_request_update"},
+				},
+			},
+		},
+	}
+	if err := ValidateConfig(d); err != nil {
+		t.Fatalf("expected valid auto_review config, got %v", err)
+	}
+}
+
 func TestNormalizeConfigRelaySets(t *testing.T) {
 	cfg := NormalizeConfig(state.ConfigDoc{
 		DM: state.DMPolicy{Policy: ""},
@@ -138,6 +202,16 @@ func TestNormalizeConfigRelaySets(t *testing.T) {
 	}
 	if len(cfg.Relays.Write) != 2 {
 		t.Fatalf("expected normalized write relays, got %v", cfg.Relays.Write)
+	}
+	if !cfg.StorageEncryptEnabled() {
+		t.Fatalf("expected storage encryption default to be enabled, got %#v", cfg.Storage)
+	}
+}
+
+func TestNormalizeConfigACPTransport(t *testing.T) {
+	cfg := NormalizeConfig(state.ConfigDoc{ACP: state.ACPConfig{Transport: "nip-04"}})
+	if cfg.ACP.Transport != "nip04" {
+		t.Fatalf("expected acp.transport to normalize to nip04, got %#v", cfg.ACP)
 	}
 }
 

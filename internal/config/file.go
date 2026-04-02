@@ -364,6 +364,15 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		}
 	}
 
+	// ── acp (typed) ───────────────────────────────────────────────────────────
+	if acpRaw, ok := raw["acp"].(map[string]any); ok {
+		acp := state.ACPConfig{}
+		if v, ok := acpRaw["transport"].(string); ok {
+			acp.Transport = strings.TrimSpace(v)
+		}
+		doc.ACP = acp
+	}
+
 	// ── session (typed) ───────────────────────────────────────────────────────
 	if sessionRaw, ok := raw["session"].(map[string]any); ok {
 		sess := state.SessionConfig{}
@@ -377,6 +386,15 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 			sess.HistoryLimit = int(v)
 		}
 		doc.Session = sess
+	}
+
+	// ── storage (typed) ───────────────────────────────────────────────────────
+	if storageRaw, ok := raw["storage"].(map[string]any); ok {
+		storage := state.StorageConfig{}
+		if v, ok := storageRaw["encrypt"].(bool); ok {
+			storage.Encrypt = state.BoolPtr(v)
+		}
+		doc.Storage = storage
 	}
 
 	// ── heartbeat (typed) ─────────────────────────────────────────────────────

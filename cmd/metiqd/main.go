@@ -39,11 +39,13 @@ import (
 	"metiq/internal/gateway/nodepending"
 	gatewayprotocol "metiq/internal/gateway/protocol"
 	gatewayws "metiq/internal/gateway/ws"
+	"metiq/internal/grasp"
 	hookspkg "metiq/internal/hooks"
 	mcppkg "metiq/internal/mcp"
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
 	"metiq/internal/nostr/dvm"
+	"metiq/internal/nostr/events"
 	"metiq/internal/nostr/nip38"
 	"metiq/internal/nostr/nip51"
 	nostruntime "metiq/internal/nostr/runtime"
@@ -113,6 +115,7 @@ var (
 	controlNodePending     *nodepending.Store
 	controlCronJobs        *cronRegistry
 	controlSessionStore    *state.SessionStore
+	controlDocsRepo        *state.DocsRepository
 	controlMemoryStore     memory.Store
 	controlExecApprovals   *execApprovalsRegistry
 	controlWizards         *wizardRegistry
@@ -139,6 +142,9 @@ var (
 	// controlRuntimeConfig is the live runtime config store used by shared
 	// helper paths outside main() (for example agent.run fallbacks).
 	controlRuntimeConfig *runtimeConfigStore
+	// controlStateEnvelopeCodec switches relay-persisted state docs between
+	// plaintext and NIP-44 self-encryption based on runtime config.
+	controlStateEnvelopeCodec *secure.MutableSelfEnvelopeCodec
 	// controlConfigFilePath is the runtime config file path used for durable
 	// write-back on successful config mutations.
 	controlConfigFilePath string
@@ -218,6 +224,17 @@ var (
 	// Promoted to package level so relay policy updates can re-publish sets.
 	relaySetRegistry *nostruntime.RelaySetRegistry
 
+	// relayHealthMonitor performs startup and periodic relay smoke-tests so
+	// reachability issues are surfaced in logs before message delivery fails.
+	relayHealthMonitor *nostruntime.RelayHealthMonitor
+	relayHealthStateMu sync.Mutex
+	relayHealthState   = map[string]bool{}
+
+	// capabilityMonitor publishes the local kind:30317 capability descriptor and
+	// subscribes to fleet peers' capability events for dynamic discovery.
+	capabilityMonitor  *nostruntime.CapabilityMonitor
+	capabilityRegistry *nostruntime.CapabilityRegistry
+
 	// controlCronExecutor dispatches a gateway method from the cron scheduler.
 	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
 	controlCronExecutorMu sync.RWMutex
@@ -262,7 +279,7 @@ func defaultBootstrapWatchSpecs(sessionID, selfPubKey string, now time.Time) []t
 			Name:      "gift-wrapped-dms",
 			SessionID: sessionID,
 			FilterRaw: map[string]any{
-				"kinds": []any{float64(1059)},
+				"kinds": []any{float64(events.KindGiftWrap)},
 				"tag_p": []any{selfPubKey},
 			},
 			TTLSec:    defaultTTLSeconds,
@@ -435,12 +452,14 @@ func main() {
 
 	pubkey := controlPrivateKey
 
-	codec, err := initEnvelopeCodec(cfg, controlKeyer)
+	codec, err := initEnvelopeCodec(controlKeyer)
 	if err != nil {
 		log.Fatalf("init envelope codec: %v", err)
 	}
+	controlStateEnvelopeCodec = codec
 
 	docsRepo := state.NewDocsRepositoryWithCodec(store, pubkey, codec)
+	controlDocsRepo = docsRepo
 	transcriptRepo := state.NewTranscriptRepositoryWithCodec(store, pubkey, codec)
 	memoryRepo := state.NewMemoryRepositoryWithCodec(store, pubkey, codec)
 
@@ -492,28 +511,27 @@ func main() {
 	// acp.delegate — allows the agent to dispatch a sub-task to a peer agent
 	// and wait for the result.  Uses the global DM transport + dispatcher.
 	tools.Register("acp_delegate", func(ctx context.Context, args map[string]any) (string, error) {
-		peerPubKey := agent.ArgString(args, "peer_pubkey")
+		peerTarget := agent.ArgString(args, "peer_pubkey")
 		instructions := agent.ArgString(args, "instructions")
 		memoryScope := state.NormalizeAgentMemoryScope(agent.ArgString(args, "memory_scope"))
 		timeoutMS := int64(agent.ArgInt(args, "timeout_ms", 60000))
-		if peerPubKey == "" || instructions == "" {
+		if peerTarget == "" || instructions == "" {
 			return "", fmt.Errorf("acp.delegate: peer_pubkey and instructions are required")
 		}
-		if controlACPPeers == nil || !controlACPPeers.IsPeer(peerPubKey) {
-			return "", fmt.Errorf("acp.delegate: unknown peer %q (register via acp.register first)", peerPubKey)
-		}
-		controlDMBusMu.RLock()
-		dmBus := controlDMBus
-		controlDMBusMu.RUnlock()
-		if dmBus == nil {
-			return "", fmt.Errorf("acp.delegate: DM transport not available")
-		}
-		taskID := acppkg.GenerateTaskID()
-		senderPubKey := dmBus.PublicKey()
 		cfg := state.ConfigDoc{}
 		if configState != nil {
 			cfg = configState.Get()
 		}
+		peerPubKey, _, err := resolveACPFleetTargetForConfig(peerTarget, cfg)
+		if err != nil {
+			return "", fmt.Errorf("acp.delegate: %w", err)
+		}
+		dmBus, dmScheme, err := resolveACPDMTransport(cfg, peerPubKey)
+		if err != nil {
+			return "", fmt.Errorf("acp.delegate: %w", err)
+		}
+		taskID := acppkg.GenerateTaskID()
+		senderPubKey := dmBus.PublicKey()
 		taskPayload := buildInheritedACPTaskPayload(ctx, cfg, docsRepo, sessionStore, acppkg.TaskPayload{
 			Instructions: instructions,
 			MemoryScope:  memoryScope,
@@ -523,7 +541,7 @@ func main() {
 		acpMsg := acppkg.NewTask(taskID, senderPubKey, taskPayload)
 		controlACPDispatcher.Register(taskID)
 		payload, _ := json.Marshal(acpMsg)
-		if err := dmBus.SendDM(ctx, peerPubKey, string(payload)); err != nil {
+		if err := sendACPDMWithTransport(ctx, dmBus, dmScheme, peerPubKey, string(payload)); err != nil {
 			controlACPDispatcher.Cancel(taskID)
 			return "", fmt.Errorf("acp.delegate: send: %w", err)
 		}
@@ -774,7 +792,8 @@ func main() {
 	watchRegistry.SetHubFunc(func() *nostruntime.NostrHub { return controlHub })
 	watchDeliveryCtx, watchDeliveryCancel := context.WithCancel(ctx)
 	defer watchDeliveryCancel()
-	var dmRunAgentTurnRef func(ctx context.Context, fromPubKey, text, eventID string, createdAt int64, replyFn func(context.Context, string) error)
+	relayFilterInFlight := newEventInFlightRegistry()
+	var dmRunAgentTurnRef func(ctx context.Context, sessionID, senderID, text, eventID string, createdAt int64, replyFn func(context.Context, string) error, overrideAgentID string, constraints turnToolConstraints)
 	watchDeliver := func(sessionID, name string, event map[string]any) {
 		if dmRunAgentTurnRef == nil {
 			return
@@ -790,7 +809,7 @@ func main() {
 				return
 			}
 		}
-		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, eventID, createdAt, nil)
+		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, sessionID, text, eventID, createdAt, nil, "", turnToolConstraints{})
 	}
 	// saveWatches persists the active watch specs to the state store so they
 	// survive daemon restarts.  Runs asynchronously to avoid blocking tool
@@ -845,7 +864,7 @@ func main() {
 				return
 			}
 		}
-		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, text, eventID, createdAt, nil)
+		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, sessionID, text, eventID, createdAt, nil, "", turnToolConstraints{})
 	}
 	tools.RegisterWithDef("file_watch_add", toolbuiltin.FileWatchAddTool(fileWatchRegistry, fileWatchDeliver), toolbuiltin.FileWatchAddDef)
 	tools.RegisterWithDef("file_watch_remove", toolbuiltin.FileWatchRemoveTool(fileWatchRegistry), toolbuiltin.FileWatchRemoveDef)
@@ -931,6 +950,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("load runtime config: %v", err)
 	}
+	codec.SetEncrypt(runtimeCfg.StorageEncryptEnabled())
 	configState = newRuntimeConfigStore(runtimeCfg)
 	controlRuntimeConfig = configState
 	{
@@ -964,6 +984,7 @@ func main() {
 		if config.ConfigFileExists(cfgPath) {
 			if earlyDoc, earlyErr := config.LoadConfigFile(cfgPath); earlyErr == nil {
 				configState.Set(earlyDoc)
+				codec.SetEncrypt(earlyDoc.StorageEncryptEnabled())
 				log.Printf("config: early sync from %s", cfgPath)
 			} else {
 				log.Printf("config: early sync failed (%v); using Nostr state", earlyErr)
@@ -1489,6 +1510,10 @@ func main() {
 		}
 	}
 
+	if anyEnabledNIP34AutoReviewFollowedOnly(configState.Get()) {
+		loadInitialRepoBookmarks(ctx, controlKeyer, configState.Get())
+	}
+
 	// Auto-join any NostrChannels declared in the config with enabled: true.
 	// This provides OpenClaw parity: channels configured in the config file are
 	// active immediately at startup without a manual channels.join RPC call.
@@ -1520,7 +1545,7 @@ func main() {
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
-						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, rt, tools)
+						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor))
 						if turnErr != nil {
 							log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
@@ -1577,7 +1602,7 @@ func main() {
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
-						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, rt, tools)
+						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor))
 						if turnErr != nil {
 							log.Printf("auto-join nip28 agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
@@ -1640,7 +1665,7 @@ func main() {
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
-						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, rt, tools)
+						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor))
 						if turnErr != nil {
 							log.Printf("auto-join chat agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
@@ -1665,6 +1690,129 @@ func main() {
 				continue
 			}
 			log.Printf("auto-join chat channel joined name=%s root_tag=%s relays=%d id=%s", localChanName, rootTag, len(relays), chatCh.ID())
+		case state.NostrChannelKindRelayFilter, state.NostrChannelKindNIP34Inbox:
+			relays := chanCfg.Relays
+			if len(relays) == 0 {
+				relays = configState.Get().Relays.Read
+			}
+			if len(relays) == 0 {
+				log.Printf("auto-join skip: nostr_channels.%s (%s) has no relays configured", chanName, chanCfg.Kind)
+				continue
+			}
+			filter, filterErr := buildRelayFilterFilter(chanCfg)
+			if filterErr != nil {
+				log.Printf("auto-join skip: nostr_channels.%s invalid relay filter err=%v", chanName, filterErr)
+				continue
+			}
+			localChanCfg := chanCfg
+			localChanName := chanName
+			localChanID := "relay-filter:" + localChanName
+			localMode := relayFilterMode(localChanCfg)
+			rfCh, chErr := channels.NewRelayFilterChannel(ctx, channels.RelayFilterChannelOptions{
+				ID:     localChanID,
+				Hub:    controlHub,
+				Keyer:  controlKeyer,
+				Relays: relays,
+				Filter: filter,
+				OnEvent: func(msg channels.RelayFilterEvent) {
+					if dmRunAgentTurnRef == nil {
+						return
+					}
+					activeChanCfg := localChanCfg
+					if liveChanCfg, ok := configState.Get().NostrChannels[localChanName]; ok {
+						activeChanCfg = liveChanCfg
+					}
+					if !activeChanCfg.Enabled {
+						return
+					}
+					if dec := policy.EvaluateGroupMessage(msg.FromPubKey, activeChanCfg.AllowFrom, configState.Get()); !dec.Allowed {
+						log.Printf("relay-filter message rejected from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, dec.Reason)
+						return
+					}
+					mode := relayFilterMode(activeChanCfg)
+					sessionID := relayFilterSessionID(msg.ChannelID, msg.FromPubKey)
+					senderID := msg.FromPubKey
+					text := renderRelayFilterInboxText(localChanName, msg.Event, msg.Relay)
+					overrideAgentID := ""
+					turnConstraints := turnToolConstraints{}
+					if mode == relayFilterModeNIP34 {
+						parsed, parseErr := grasp.ParseInboundEvent(&msg.Event)
+						if parseErr != nil {
+							log.Printf("auto-join nip34 parse error name=%s event=%s err=%v", localChanName, msg.Event.ID.Hex(), parseErr)
+							return
+						}
+						sessionID = nip34InboxSessionID(localChanName, parsed)
+						text = renderNIP34InboxText(localChanName, parsed, msg.Relay)
+						autoReviewCfg, autoReviewEnabled := parseNIP34AutoReviewConfig(activeChanCfg)
+						autoReviewMatched := autoReviewEnabled && shouldAutoReviewNIP34Event(autoReviewCfg, parsed, nip34RepoBookmarks)
+						if transcriptRepo != nil {
+							exists, err := transcriptRepo.HasEntry(watchDeliveryCtx, sessionID, msg.Event.ID.Hex())
+							if err != nil {
+								log.Printf("relay-filter delivery dedupe check failed channel=%s event=%s err=%v", localChanName, msg.Event.ID.Hex(), err)
+							} else if exists {
+								return
+							}
+						}
+						if autoReviewMatched {
+							text = renderNIP34AutoReviewText(localChanName, parsed, msg.Relay, autoReviewCfg)
+							overrideAgentID = strings.TrimSpace(autoReviewCfg.AgentID)
+							turnConstraints = turnToolConstraints{ToolProfile: autoReviewCfg.ToolProfile, EnabledTools: append([]string(nil), autoReviewCfg.EnabledTools...)}
+						}
+					} else if transcriptRepo != nil {
+						exists, err := transcriptRepo.HasEntry(watchDeliveryCtx, sessionID, msg.Event.ID.Hex())
+						if err != nil {
+							log.Printf("relay-filter delivery dedupe check failed channel=%s event=%s err=%v", localChanName, msg.Event.ID.Hex(), err)
+						} else if exists {
+							return
+						}
+					}
+					eventID := msg.Event.ID.Hex()
+					inFlightKey := sessionID + "\x00" + eventID
+					if !relayFilterInFlight.Begin(inFlightKey) {
+						return
+					}
+					if baseAgentID := strings.TrimSpace(activeChanCfg.AgentID); baseAgentID != "" {
+						sessionRouter.Assign(sessionID, baseAgentID)
+					}
+					createdAt := int64(msg.Event.CreatedAt)
+					peerPubKey := msg.FromPubKey
+					turnConstraintsCopy := turnToolConstraints{
+						ToolProfile:  turnConstraints.ToolProfile,
+						EnabledTools: append([]string(nil), turnConstraints.EnabledTools...),
+					}
+					go func() {
+						defer relayFilterInFlight.End(inFlightKey)
+						dmRunAgentTurnRef(watchDeliveryCtx, sessionID, senderID, text, eventID, createdAt, nil, overrideAgentID, turnConstraintsCopy)
+						if sessionStore != nil {
+							se := sessionStore.GetOrNew(sessionID)
+							se.LastChannel = "nostr"
+							se.LastTo = peerPubKey
+							if putErr := sessionStore.Put(sessionID, se); putErr != nil {
+								log.Printf("relay-filter session store put failed session=%s err=%v", sessionID, putErr)
+							}
+						}
+						if err := updateSessionDoc(watchDeliveryCtx, docsRepo, sessionID, peerPubKey, func(session *state.SessionDoc) error {
+							session.PeerPubKey = peerPubKey
+							return nil
+						}); err != nil {
+							log.Printf("relay-filter session identity update failed session=%s err=%v", sessionID, err)
+						}
+					}()
+				},
+				OnError: func(err error) {
+					log.Printf("auto-join %s error name=%s err=%v", localChanCfg.Kind, localChanName, err)
+				},
+			})
+			if chErr != nil {
+				log.Printf("auto-join %s failed name=%s err=%v", localChanCfg.Kind, localChanName, chErr)
+				continue
+			}
+			if addErr := channelReg.Add(rfCh); addErr != nil {
+				rfCh.Close()
+				log.Printf("auto-join %s channel add failed name=%s err=%v", localChanCfg.Kind, localChanName, addErr)
+				continue
+			}
+			log.Printf("auto-join %s channel joined name=%s relays=%d id=%s mode=%s", localChanCfg.Kind, localChanName, len(relays), rfCh.ID(), localMode)
 		default:
 			log.Printf("auto-join skip: nostr_channels.%s kind=%q not yet supported for auto-join", chanName, chanCfg.Kind)
 		}
@@ -2007,6 +2155,7 @@ func main() {
 	}
 	sessionTurns := autoreply.NewSessionTurns()
 	controlSessionTurns = sessionTurns
+	turnHandoffs := newSessionTurnHandoffRegistry()
 	// dmQueues holds per-session pending-turn queues for DMs that arrive while
 	// the session turn slot is busy.  Mirrors channelQueues for the DM path.
 	dmQueues := autoreply.NewSessionQueueRegistry(10, autoreply.QueueDropSummarize)
@@ -2050,7 +2199,7 @@ func main() {
 			turnCtx := contextWithMemoryScope(ctx, scopeCtx)
 			turnPrompt := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, instructions, 6)
 			staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
-			filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, spawnAgentID, agentRuntime, tools)
+			filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, spawnAgentID, agentRuntime, tools, turnToolConstraints{})
 			result, err := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
 				SessionID:          sessionID,
 				UserText:           instructions,
@@ -2109,7 +2258,7 @@ func main() {
 		if sessionRouter != nil {
 			activeAgentID = sessionRouter.Get(sessionID)
 		}
-		filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, agentRuntime, tools)
+		filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, agentRuntime, tools, turnToolConstraints{})
 		result, err := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
 			SessionID:          sessionID,
 			UserText:           text,
@@ -2133,21 +2282,25 @@ func main() {
 		if targetPubKey == "" || instructions == "" {
 			return "", fmt.Errorf("node_invoke: node_pubkey and instructions are required")
 		}
-		controlDMBusMu.RLock()
-		dmBus := controlDMBus
-		controlDMBusMu.RUnlock()
-		if dmBus == nil {
-			return "", fmt.Errorf("node_invoke: DM transport not available")
+		cfg := state.ConfigDoc{}
+		if configState != nil {
+			cfg = configState.Get()
+		}
+		dmBus, dmScheme, err := resolveACPDMTransport(cfg, targetPubKey)
+		if err != nil {
+			return "", fmt.Errorf("node_invoke: %w", err)
 		}
 		taskID := acppkg.GenerateTaskID()
-		acpMsg := acppkg.NewTask(taskID, dmBus.PublicKey(), acppkg.TaskPayload{
+		senderPubKey := dmBus.PublicKey()
+		acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
 			Instructions: instructions,
 			TimeoutMS:    timeoutMS,
-			ReplyTo:      dmBus.PublicKey(),
+			ReplyTo:      senderPubKey,
 		})
 		controlACPDispatcher.Register(taskID)
 		payload, _ := json.Marshal(acpMsg)
-		if err := dmBus.SendDM(ctx, targetPubKey, string(payload)); err != nil {
+		if err := sendACPDMWithTransport(ctx, dmBus, dmScheme, targetPubKey, string(payload)); err != nil {
+			controlACPDispatcher.Cancel(taskID)
 			return "", fmt.Errorf("node_invoke: send: %w", err)
 		}
 		result, err := controlACPDispatcher.Wait(ctx, taskID, time.Duration(timeoutMS)*time.Millisecond)
@@ -2878,17 +3031,33 @@ func main() {
 
 	// dmRunAgentTurn is the core DM agent-dispatch logic, called either directly
 	// from dmOnMessage (no debounce) or from the dmDebouncer flush.
-	dmRunAgentTurn := func(
+	var runInboundTurn func(
 		ctx context.Context,
-		fromPubKey, combinedText, eventID string,
+		sessionID, senderID, combinedText, eventID string,
 		createdAt int64,
 		replyFn func(context.Context, string) error,
+		overrideAgentID string,
+		constraints turnToolConstraints,
+		handoffToken uint64,
+	)
+	runInboundTurn = func(
+		ctx context.Context,
+		sessionID, senderID, combinedText, eventID string,
+		createdAt int64,
+		replyFn func(context.Context, string) error,
+		overrideAgentID string,
+		constraints turnToolConstraints,
+		handoffToken uint64,
 	) {
-		sessionID := fromPubKey
+		sessionID = strings.TrimSpace(sessionID)
+		senderID = strings.TrimSpace(senderID)
+		if sessionID == "" {
+			sessionID = senderID
+		}
 		if sessionStore != nil {
 			se := sessionStore.GetOrNew(sessionID)
 			se.LastChannel = "nostr"
-			se.LastTo = fromPubKey
+			se.LastTo = senderID
 			if putErr := sessionStore.Put(sessionID, se); putErr != nil {
 				log.Printf("session store put failed session=%s: %v", sessionID, putErr)
 			}
@@ -2909,7 +3078,28 @@ func main() {
 		queueSettings := resolveQueueRuntimeSettings(configState.Get(), sessionEntry, "", 10)
 		sessionDMQ.Configure(queueSettings.Cap, queueSettings.Drop)
 
-		releaseTurnSlot, acquired := sessionTurns.TryAcquire(sessionID)
+		acquireTurnSlot := func() (func(), bool) {
+			if handoffToken == 0 && turnHandoffs.Has(sessionID) {
+				return nil, false
+			}
+			release, ok := sessionTurns.TryAcquire(sessionID)
+			if !ok {
+				return nil, false
+			}
+			if handoffToken != 0 {
+				if !turnHandoffs.ConsumeIfMatch(sessionID, handoffToken) {
+					release()
+					return nil, false
+				}
+				return release, true
+			}
+			if turnHandoffs.Has(sessionID) {
+				release()
+				return nil, false
+			}
+			return release, true
+		}
+		releaseTurnSlot, acquired := acquireTurnSlot()
 		if !acquired {
 			switch queueSettings.Mode {
 			case "steer":
@@ -2920,9 +3110,13 @@ func main() {
 				_ = sessionDMQ.Dequeue() // clear backlog before enqueueing latest
 			}
 			sessionDMQ.Enqueue(autoreply.PendingTurn{
-				Text:     combinedText,
-				EventID:  eventID,
-				SenderID: fromPubKey,
+				Text:         combinedText,
+				EventID:      eventID,
+				SenderID:     senderID,
+				AgentID:      strings.TrimSpace(overrideAgentID),
+				ToolProfile:  constraints.ToolProfile,
+				EnabledTools: append([]string(nil), constraints.EnabledTools...),
+				CreatedAt:    createdAt,
 			})
 			log.Printf("dm session busy, queued: session=%s mode=%s queue_len=%d", sessionID, queueSettings.Mode, sessionDMQ.Len())
 			return
@@ -2931,6 +3125,7 @@ func main() {
 		// Queue-drain defer — registered BEFORE releaseTurnSlot so it runs
 		// AFTER the slot is released (Go defers are LIFO).  Any DMs that
 		// arrived while this turn was processing are dispatched here.
+		var nextHandoffToken uint64
 		defer func() {
 			pending := sessionDMQ.Dequeue()
 			if len(pending) == 0 {
@@ -2943,6 +3138,15 @@ func main() {
 				}
 			}
 			if queueModeCollect(mode) {
+				if !pendingTurnsShareExecutionContext(pending) {
+					log.Printf("dm queue drain collect->sequential fallback: session=%s items=%d", sessionID, len(pending))
+					first := pending[0]
+					for _, pt := range pending[1:] {
+						sessionDMQ.Enqueue(pt)
+					}
+					go runInboundTurn(ctx, sessionID, first.SenderID, first.Text, first.EventID, pendingTurnCreatedAt(first), replyFn, first.AgentID, turnToolConstraints{ToolProfile: first.ToolProfile, EnabledTools: append([]string(nil), first.EnabledTools...)}, nextHandoffToken)
+					return
+				}
 				var texts []string
 				var latestEventID string
 				var latestCreatedAt int64
@@ -2951,8 +3155,8 @@ func main() {
 					if pt.EventID != "" {
 						latestEventID = pt.EventID
 					}
-					if pt.EnqueuedAt.Unix() > latestCreatedAt {
-						latestCreatedAt = pt.EnqueuedAt.Unix()
+					if pendingTurnCreatedAt(pt) > latestCreatedAt {
+						latestCreatedAt = pendingTurnCreatedAt(pt)
 					}
 				}
 				combined := strings.Join(texts, "\n\n")
@@ -2960,41 +3164,49 @@ func main() {
 					combined = fmt.Sprintf("[%d messages received while agent was busy]\n\n%s", len(pending), combined)
 				}
 				log.Printf("dm queue drain: session=%s items=%d mode=%s", sessionID, len(pending), mode)
-				go dmRunAgentTurnRef(ctx, fromPubKey, combined, latestEventID, latestCreatedAt, replyFn)
+				latest := pending[len(pending)-1]
+				go runInboundTurn(ctx, sessionID, latest.SenderID, combined, latestEventID, latestCreatedAt, replyFn, latest.AgentID, turnToolConstraints{ToolProfile: latest.ToolProfile, EnabledTools: append([]string(nil), latest.EnabledTools...)}, nextHandoffToken)
 				return
 			}
 
 			if queueModeSequential(mode) {
 				log.Printf("dm queue drain sequential: session=%s items=%d mode=%s", sessionID, len(pending), mode)
-				for _, pt := range pending {
-					go dmRunAgentTurnRef(ctx, fromPubKey, pt.Text, pt.EventID, pt.EnqueuedAt.Unix(), replyFn)
+				first := pending[0]
+				for _, pt := range pending[1:] {
+					sessionDMQ.Enqueue(pt)
 				}
+				go runInboundTurn(ctx, sessionID, first.SenderID, first.Text, first.EventID, pendingTurnCreatedAt(first), replyFn, first.AgentID, turnToolConstraints{ToolProfile: first.ToolProfile, EnabledTools: append([]string(nil), first.EnabledTools...)}, nextHandoffToken)
 				return
 			}
 
 			// Steer/interrupt fallback after drain: run newest only.
 			latest := pending[len(pending)-1]
-			go dmRunAgentTurnRef(ctx, fromPubKey, latest.Text, latest.EventID, latest.EnqueuedAt.Unix(), replyFn)
+			go runInboundTurn(ctx, sessionID, latest.SenderID, latest.Text, latest.EventID, pendingTurnCreatedAt(latest), replyFn, latest.AgentID, turnToolConstraints{ToolProfile: latest.ToolProfile, EnabledTools: append([]string(nil), latest.EnabledTools...)}, nextHandoffToken)
 		}()
 
 		defer releaseTurnSlot()
 		defer func() {
+			if sessionDMQ.Len() > 0 {
+				nextHandoffToken = turnHandoffs.Reserve(sessionID)
+			}
+		}()
+		defer func() {
 			clearCtx, clearCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer clearCancel()
-			setSessionActiveTurn(clearCtx, docsRepo, sessionID, fromPubKey, false)
+			setSessionActiveTurn(clearCtx, docsRepo, sessionID, senderID, false)
 		}()
-		setSessionActiveTurn(ctx, docsRepo, sessionID, fromPubKey, true)
+		setSessionActiveTurn(ctx, docsRepo, sessionID, senderID, true)
 
 		entryID := eventID
 		if entryID == "" {
 			// Synthesise an entry ID for messages without a Nostr event ID
 			// (e.g. watch delivery, queue drain).  We hash stable message
 			// fields so the ID remains deterministic and content-derived.
-			entryID = synthesizeInboundEventID(fromPubKey, combinedText, createdAt)
+			entryID = synthesizeInboundEventID(senderID, combinedText, createdAt)
 		}
 		if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, nostruntime.InboundDM{
 			EventID:    entryID,
-			FromPubKey: fromPubKey,
+			FromPubKey: senderID,
 			Text:       combinedText,
 			CreatedAt:  createdAt,
 		}); err != nil {
@@ -3002,9 +3214,9 @@ func main() {
 		}
 		// Resolve agent ID and create the per-turn timeout context before any
 		// potentially blocking memory embedding/search work.
-		activeAgentID := sessionRouter.Get(sessionID)
-		if activeAgentID == "" {
-			activeAgentID = "main"
+		activeAgentID := defaultAgentID(overrideAgentID)
+		if strings.TrimSpace(overrideAgentID) == "" {
+			activeAgentID = defaultAgentID(sessionRouter.Get(sessionID))
 		}
 		turnCtxBase, releaseTurn := chatCancels.Begin(sessionID, ctx)
 		const defaultTurnTimeoutSecs = 180
@@ -3051,7 +3263,7 @@ func main() {
 			}
 		}
 
-		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, sessionRouter.Get(sessionID), "")
+		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, 6)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
@@ -3059,9 +3271,9 @@ func main() {
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
 			maxCtxTokens := 100_000
-			if agID := sessionRouter.Get(sessionID); agID != "" {
+			if activeAgentID != "" {
 				for _, ac := range configState.Get().Agents {
-					if ac.ID == agID && ac.MaxContextTokens > 0 {
+					if ac.ID == activeAgentID && ac.MaxContextTokens > 0 {
 						maxCtxTokens = ac.MaxContextTokens
 						break
 					}
@@ -3101,13 +3313,14 @@ func main() {
 			}
 		}
 
-		// activeAgentID was resolved before the turn timeout block; refresh in
-		// case the session router changed during context assembly (rare).
-		if resolved := sessionRouter.Get(sessionID); resolved != "" {
-			activeAgentID = resolved
+		// Refresh routed agent only for normal session-routed turns.
+		if strings.TrimSpace(overrideAgentID) == "" {
+			if resolved := sessionRouter.Get(sessionID); resolved != "" {
+				activeAgentID = defaultAgentID(resolved)
+			}
 		}
 		activeRuntime := agentRegistry.Get(activeAgentID)
-		activeRuntime, turnExecutor, baseTurnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, activeRuntime, tools)
+		activeRuntime, turnExecutor, baseTurnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, activeRuntime, tools, constraints)
 
 		// Inject workspace identity files + system_prompt into turnContext.
 		// Loads SOUL.md, IDENTITY.md, USER.md from the agent workspace dir,
@@ -3440,7 +3653,7 @@ func main() {
 		})
 		usageState.RecordOutbound(turnResult.Text)
 		metricspkg.MessagesOutbound.Inc()
-		logBuffer.Append("info", fmt.Sprintf("dm reply sent to=%s event=%s", fromPubKey, eventID))
+		logBuffer.Append("info", fmt.Sprintf("dm reply sent to=%s event=%s", senderID, eventID))
 		if err := persistAssistant(ctx, docsRepo, transcriptRepo, sessionID, turnResult.Text, eventID); err != nil {
 			log.Printf("persist assistant failed session=%s err=%v", sessionID, err)
 		}
@@ -3466,8 +3679,19 @@ func main() {
 		}
 	}
 
+	dmRunAgentTurn := func(
+		ctx context.Context,
+		fromPubKey, combinedText, eventID string,
+		createdAt int64,
+		replyFn func(context.Context, string) error,
+	) {
+		runInboundTurn(ctx, fromPubKey, fromPubKey, combinedText, eventID, createdAt, replyFn, "", turnToolConstraints{}, 0)
+	}
+
 	// Wire dmRunAgentTurn into the watch delivery closure.
-	dmRunAgentTurnRef = dmRunAgentTurn
+	dmRunAgentTurnRef = func(ctx context.Context, sessionID, senderID, text, eventID string, createdAt int64, replyFn func(context.Context, string) error, overrideAgentID string, constraints turnToolConstraints) {
+		runInboundTurn(ctx, sessionID, senderID, text, eventID, createdAt, replyFn, overrideAgentID, constraints, 0)
+	}
 
 	// Restore persisted watch subscriptions from the state store.
 	if raw, loadErr := docsRepo.GetWatches(ctx); loadErr != nil {
@@ -3774,6 +3998,7 @@ func main() {
 		if len(liveCfg.Relays.Write) == 0 {
 			liveCfg.Relays.Write = cfg.Relays
 		}
+		startRelayHealthMonitor(ctx, nostruntime.MergeRelayLists(liveCfg.Relays.Read, liveCfg.Relays.Write))
 
 		// ── NIP-65 Relay Selector (outbox model) ────────────────────────────
 		// Initialize once; keep a single shared selector/hub instance so existing
@@ -3987,6 +4212,28 @@ func main() {
 		// Start watchers for each allow_from_lists entry.
 		log.Printf("nip51: starting watcher for %d allow_from_lists entries", len(liveCfg.DM.AllowFromLists))
 		startNIP51AllowlistWatcher(ctx, nip51Pool, liveCfg)
+		startRepoBookmarkWatcher(ctx, nip51Pool, controlKeyer, liveCfg)
+
+		// Publish local kind:30317 capabilities and subscribe to fleet peers'
+		// capability advertisements for dynamic discovery.
+		capabilityRegistry = nostruntime.NewCapabilityRegistry()
+		capabilityRegistry.OnChange(func(pubkey string, cap nostruntime.CapabilityAnnouncement) {
+			log.Printf("capability-sync: peer=%s runtime=%s version=%s tools=%d", pubkey, cap.Runtime, cap.RuntimeVersion, len(cap.Tools))
+			writeFleetMD(getFleetWorkspaceDir())
+		})
+		capabilityMonitor = nostruntime.NewCapabilityMonitor(nostruntime.CapabilityMonitorOptions{
+			Pool:            nip51Pool,
+			Keyer:           controlKeyer,
+			Registry:        capabilityRegistry,
+			PublishRelays:   currentCapabilityPublishRelays(liveCfg),
+			SubscribeRelays: currentCapabilitySubscriptionRelays(liveCfg),
+			Peers:           fleetPeerPubkeys(),
+			Local:           buildLocalCapabilityAnnouncement(context.Background(), liveCfg, docsRepo),
+			OnPublished:     func(eventID string) { log.Printf("capability-sync: published local capability event=%s", eventID) },
+		})
+		capabilityMonitor.Start(ctx)
+		refreshCapabilityPeerWatch()
+		capabilityMonitor.TriggerPublish()
 
 		// Publish/update Strand's own kind:30000 agent list if auto_sync is enabled.
 		// Run in background so startup is not blocked on relay I/O.
@@ -4056,7 +4303,7 @@ func main() {
 				Relays:        cfg.Relays,
 				AcceptedKinds: acceptedKinds,
 				OnJob: func(jobCtx context.Context, jobID string, kind int, input string) (string, error) {
-					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(jobCtx, configState.Get(), docsRepo, "", agentRuntime, tools)
+					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(jobCtx, configState.Get(), docsRepo, "dvm:"+jobID, "", agentRuntime, tools, turnToolConstraints{})
 					result, err := filteredRuntime.ProcessTurn(jobCtx, agent.Turn{
 						SessionID: "dvm:" + jobID,
 						UserText:  input,
@@ -4171,7 +4418,7 @@ func main() {
 			log.Printf("channel dispatch: no runtime for agent=%s session=%s", activeAgentID, sessionID)
 			return fmt.Errorf("no runtime for agent %s", activeAgentID)
 		}
-		activeRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, activeAgentID, activeRuntime, tools)
+		activeRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, activeRuntime, tools, turnToolConstraints{})
 
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
@@ -4699,6 +4946,7 @@ func main() {
 	if configFilePath != "" && config.ConfigFileExists(configFilePath) {
 		syncEngine, syncErr := config.NewSyncEngine(configFilePath, docsRepo,
 			config.WithOnChange(func(doc state.ConfigDoc) {
+				doc = policy.NormalizeConfig(doc)
 				log.Printf("config file changed: applying live reload path=%s", configFilePath)
 				// Use the internal field directly to avoid triggering disk write-back
 				// (the file already has the new content).
@@ -5440,18 +5688,14 @@ func main() {
 	log.Println("metiqd shutting down")
 }
 
-func initEnvelopeCodec(cfg config.BootstrapConfig, signer nostr.Keyer) (secure.EnvelopeCodec, error) {
-	if !cfg.EnableNIP44 {
-		codec := secure.NewPlaintextCodec()
-		return codec, nil
-	}
-	return secure.NewNIP44SelfCodec(signer)
+func initEnvelopeCodec(signer nostr.Keyer) (*secure.MutableSelfEnvelopeCodec, error) {
+	return secure.NewMutableSelfEnvelopeCodec(signer, true)
 }
 
 func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays []string, adminPubKey string) (state.ConfigDoc, error) {
 	doc, err := repo.GetConfig(ctx)
 	if err == nil {
-		return doc, nil
+		return policy.NormalizeConfig(doc), nil
 	}
 	if !errors.Is(err, state.ErrNotFound) {
 		return state.ConfigDoc{}, err
@@ -5462,7 +5706,8 @@ func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays
 		DM: state.DMPolicy{
 			Policy: policy.DMPolicyPairing,
 		},
-		Relays: state.RelayPolicy{Read: relays, Write: relays},
+		Relays:  state.RelayPolicy{Read: relays, Write: relays},
+		Storage: state.StorageConfig{Encrypt: state.BoolPtr(true)},
 		Control: state.ControlPolicy{
 			RequireAuth:        true,
 			AllowUnauthMethods: []string{"supportedmethods"},
@@ -5475,7 +5720,7 @@ func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays
 	if _, err := repo.PutConfig(ctx, fallback); err != nil {
 		return state.ConfigDoc{}, err
 	}
-	return fallback, nil
+	return policy.NormalizeConfig(fallback), nil
 }
 
 func ensureIngestCheckpoint(ctx context.Context, repo *state.DocsRepository) (state.CheckpointDoc, error) {
@@ -5698,7 +5943,7 @@ func (r *chatAbortRegistry) AbortAll() int {
 }
 
 func newRuntimeConfigStore(cfg state.ConfigDoc) *runtimeConfigStore {
-	return &runtimeConfigStore{cfg: cfg}
+	return &runtimeConfigStore{cfg: policy.NormalizeConfig(cfg)}
 }
 
 func (s *runtimeConfigStore) Get() state.ConfigDoc {
@@ -5708,6 +5953,7 @@ func (s *runtimeConfigStore) Get() state.ConfigDoc {
 }
 
 func (s *runtimeConfigStore) Set(cfg state.ConfigDoc) {
+	cfg = policy.NormalizeConfig(cfg)
 	s.mu.Lock()
 	s.cfg = cfg
 	onChange := s.onChange
@@ -6242,6 +6488,122 @@ func transcriptTurnResultMeta(meta *agent.TurnResultMetadata) map[string]any {
 	return out
 }
 
+func pendingTurnCreatedAt(pt autoreply.PendingTurn) int64 {
+	if pt.CreatedAt > 0 {
+		return pt.CreatedAt
+	}
+	if !pt.EnqueuedAt.IsZero() {
+		return pt.EnqueuedAt.Unix()
+	}
+	return 0
+}
+
+type sessionTurnHandoffRegistry struct {
+	mu     sync.Mutex
+	nextID uint64
+	tokens map[string]uint64
+}
+
+func newSessionTurnHandoffRegistry() *sessionTurnHandoffRegistry {
+	return &sessionTurnHandoffRegistry{tokens: map[string]uint64{}}
+}
+
+func (r *sessionTurnHandoffRegistry) Reserve(sessionID string) uint64 {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID++
+	r.tokens[sessionID] = r.nextID
+	return r.nextID
+}
+
+func (r *sessionTurnHandoffRegistry) Has(sessionID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.tokens[sessionID]
+	return ok
+}
+
+func (r *sessionTurnHandoffRegistry) ConsumeIfMatch(sessionID string, token uint64) bool {
+	if r == nil || token == 0 {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if current, ok := r.tokens[sessionID]; ok && current == token {
+		delete(r.tokens, sessionID)
+		return true
+	}
+	return false
+}
+
+type eventInFlightRegistry struct {
+	mu   sync.Mutex
+	keys map[string]int
+}
+
+func newEventInFlightRegistry() *eventInFlightRegistry {
+	return &eventInFlightRegistry{keys: map[string]int{}}
+}
+
+func (r *eventInFlightRegistry) Begin(key string) bool {
+	if r == nil || strings.TrimSpace(key) == "" {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.keys[key] > 0 {
+		return false
+	}
+	r.keys[key] = 1
+	return true
+}
+
+func (r *eventInFlightRegistry) End(key string) {
+	if r == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.keys[key] <= 1 {
+		delete(r.keys, key)
+		return
+	}
+	r.keys[key]--
+}
+
+func pendingTurnsShareExecutionContext(pending []autoreply.PendingTurn) bool {
+	if len(pending) < 2 {
+		return true
+	}
+	first := pending[0]
+	for _, pt := range pending[1:] {
+		if strings.TrimSpace(pt.SenderID) != strings.TrimSpace(first.SenderID) {
+			return false
+		}
+		if defaultAgentID(pt.AgentID) != defaultAgentID(first.AgentID) {
+			return false
+		}
+		if strings.TrimSpace(strings.ToLower(pt.ToolProfile)) != strings.TrimSpace(strings.ToLower(first.ToolProfile)) {
+			return false
+		}
+		if len(pt.EnabledTools) != len(first.EnabledTools) {
+			return false
+		}
+		for i := range pt.EnabledTools {
+			if strings.TrimSpace(pt.EnabledTools[i]) != strings.TrimSpace(first.EnabledTools[i]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func setSessionActiveTurn(ctx context.Context, docsRepo *state.DocsRepository, sessionID, peerPubKey string, active bool) {
 	if err := updateSessionDoc(ctx, docsRepo, sessionID, peerPubKey, func(session *state.SessionDoc) error {
 		session.Meta = mergeSessionMeta(session.Meta, map[string]any{"active_turn": active})
@@ -6512,7 +6874,7 @@ func handleControlRPCRequest(
 				turnCtx, release := chatCancels.Begin(msg.ChannelID, ctx)
 				go func() {
 					defer release()
-					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, "", rt, tools)
+					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, msg.ChannelID, "", rt, tools, turnToolConstraints{})
 					result, turnErr := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
 						SessionID: msg.ChannelID,
 						UserText:  msg.Text,
@@ -9134,19 +9496,24 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: %w", err)
 		}
-		target := req.TargetPubKey
-		if !controlACPPeers.IsPeer(target) {
-			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: unknown peer %q — register via acp.register first", target)
+		cfg := state.ConfigDoc{}
+		if configState != nil {
+			cfg = configState.Get()
+		}
+		target, _, err := resolveACPFleetTargetForConfig(req.TargetPubKey, cfg)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: %w", err)
+		}
+		dmBus, dmScheme, err := resolveACPDMTransport(cfg, target)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: %w", err)
 		}
 		taskID := fmt.Sprintf("acp-%d-%x", time.Now().UnixNano(), func() []byte {
 			b := make([]byte, 4)
 			_, _ = rand.Read(b)
 			return b
 		}())
-		senderPubKey := ""
-		if dmBus != nil {
-			senderPubKey = dmBus.PublicKey()
-		}
+		senderPubKey := dmBus.PublicKey()
 		req.ToolProfile = strings.TrimSpace(req.ToolProfile)
 		req.EnabledTools = normalizeACPEnabledTools(req.EnabledTools)
 		var parentContext *acppkg.ParentContext
@@ -9170,15 +9537,12 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: marshal: %w", err)
 		}
-		if dmBus == nil {
-			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: DM transport not available")
-		}
 		waitRegistered := false
 		if req.Wait {
 			controlACPDispatcher.Register(taskID)
 			waitRegistered = true
 		}
-		if err := dmBus.SendDM(ctx, target, string(payload)); err != nil {
+		if err := sendACPDMWithTransport(ctx, dmBus, dmScheme, target, string(payload)); err != nil {
 			if waitRegistered {
 				controlACPDispatcher.Cancel(taskID)
 			}
@@ -9228,23 +9592,30 @@ func handleControlRPCRequest(
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: %w", err)
 		}
-		if dmBus == nil {
-			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: DM transport not available")
+		cfg := state.ConfigDoc{}
+		if configState != nil {
+			cfg = configState.Get()
 		}
 
-		senderPubKey := dmBus.PublicKey()
 		sendFn := func(ctx context.Context, peerPubKey, taskID string, payload acppkg.TaskPayload) error {
+			dmBus, dmScheme, err := resolveACPDMTransport(cfg, peerPubKey)
+			if err != nil {
+				return err
+			}
+			senderPubKey := dmBus.PublicKey()
 			payload.ReplyTo = senderPubKey
 			acpMsg := acppkg.NewTask(taskID, senderPubKey, payload)
 			encoded, _ := json.Marshal(acpMsg)
-			return dmBus.SendDM(ctx, peerPubKey, string(encoded))
+			return sendACPDMWithTransport(ctx, dmBus, dmScheme, peerPubKey, string(encoded))
 		}
 
 		steps := make([]acppkg.Step, 0, len(req.Steps))
 		for i, s := range req.Steps {
-			if !controlACPPeers.IsPeer(s.PeerPubKey) {
-				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: unknown peer %q at steps[%d] — register via acp.register first", s.PeerPubKey, i)
+			resolvedPeer, _, routeErr := resolveACPFleetTargetForConfig(s.PeerPubKey, cfg)
+			if routeErr != nil {
+				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: %w at steps[%d]", routeErr, i)
 			}
+			s.PeerPubKey = resolvedPeer
 			s.ToolProfile = strings.TrimSpace(s.ToolProfile)
 			s.EnabledTools = normalizeACPEnabledTools(s.EnabledTools)
 			var parentContext *acppkg.ParentContext
@@ -9340,13 +9711,15 @@ func handleACPMessage(
 				}
 			}
 			if replyTo != "" && replyTo != fromPubKey {
-				controlDMBusMu.RLock()
-				bus := controlDMBus
-				controlDMBusMu.RUnlock()
-				if bus == nil {
-					return fmt.Errorf("acp result send failed to=%s task_id=%s: DM transport not available", replyTo, msg.TaskID)
+				cfg := state.ConfigDoc{}
+				if controlRuntimeConfig != nil {
+					cfg = controlRuntimeConfig.Get()
 				}
-				if sendErr := bus.SendDM(ctx, replyTo, string(payload)); sendErr != nil {
+				bus, scheme, transportErr := resolveACPDMTransport(cfg, replyTo)
+				if transportErr != nil {
+					return fmt.Errorf("acp result send failed to=%s task_id=%s: %w", replyTo, msg.TaskID, transportErr)
+				}
+				if sendErr := sendACPDMWithTransport(ctx, bus, scheme, replyTo, string(payload)); sendErr != nil {
 					return fmt.Errorf("acp result send failed to=%s task_id=%s: %w", replyTo, msg.TaskID, sendErr)
 				}
 				return nil
@@ -9585,8 +9958,12 @@ func refreshKeyRings(providers map[string]state.ProviderEntry) {
 }
 
 func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
+	if controlStateEnvelopeCodec != nil {
+		controlStateEnvelopeCodec.SetEncrypt(cfg.StorageEncryptEnabled())
+	}
 	refreshKeyRings(cfg.Providers)
 	applyRuntimeRelayPolicy(nil, nil, cfg)
+	applyCapabilityRuntimeState(cfg)
 }
 
 func persistRuntimeConfigFile(doc state.ConfigDoc) error {
@@ -10804,6 +11181,10 @@ func applyRuntimeRelayPolicy(_ nostruntime.DMTransport, _ *nostruntime.ControlRP
 	relays := nostruntime.MergeRelayLists(cfg.Relays.Read, cfg.Relays.Write)
 	applyDMRelayPolicy(relays)
 	applyControlRelayPolicy(relays)
+	if relayHealthMonitor != nil {
+		relayHealthMonitor.UpdateRelays(relays)
+		relayHealthMonitor.Trigger()
+	}
 	if watchRegistry != nil {
 		watchRegistry.RebindRelays(relays)
 	}
@@ -10864,6 +11245,57 @@ func publishRelayPolicyLists(readRelays, writeRelays []string) {
 		log.Printf("relay policy lists publish failed: %v", err)
 	} else {
 		log.Printf("published relay policy lists update")
+	}
+}
+
+func startRelayHealthMonitor(ctx context.Context, relays []string) {
+	if relayHealthMonitor != nil {
+		relayHealthMonitor.UpdateRelays(relays)
+		relayHealthMonitor.Trigger()
+		return
+	}
+	relayHealthMonitor = nostruntime.NewRelayHealthMonitor(relays, nostruntime.RelayHealthMonitorOptions{
+		Timeout:  8 * time.Second,
+		Interval: 15 * time.Minute,
+		OnResults: func(initial bool, results []nostruntime.RelayHealthResult) {
+			logRelayHealthResults(initial, results)
+		},
+	})
+	relayHealthMonitor.Start(ctx)
+}
+
+func logRelayHealthResults(initial bool, results []nostruntime.RelayHealthResult) {
+	relayHealthStateMu.Lock()
+	defer relayHealthStateMu.Unlock()
+
+	if initial {
+		failures := 0
+		for _, res := range results {
+			relayHealthState[res.URL] = res.Reachable
+			if res.Reachable {
+				continue
+			}
+			failures++
+			log.Printf("WARN relay healthcheck startup unreachable relay=%s err=%v", res.URL, res.Err)
+		}
+		if failures == 0 && len(results) > 0 {
+			log.Printf("relay healthcheck startup ok relays=%d", len(results))
+		}
+		return
+	}
+
+	for _, res := range results {
+		prev, seen := relayHealthState[res.URL]
+		relayHealthState[res.URL] = res.Reachable
+		if res.Reachable {
+			if seen && !prev {
+				log.Printf("relay healthcheck recovered relay=%s latency_ms=%d", res.URL, res.Latency.Milliseconds())
+			}
+			continue
+		}
+		if !seen || prev {
+			log.Printf("WARN relay healthcheck unreachable relay=%s err=%v", res.URL, res.Err)
+		}
 	}
 }
 

@@ -22,7 +22,7 @@ Metiq runs AI agents that communicate over the Nostr relay network. Any device r
 | **Streaming** | Server-Sent Events from OpenAI-compatible providers; `chat.chunk` WebSocket events for incremental display; streaming runtime interface |
 | **Web UI** | Embedded dark-theme chat interface; sessions sidebar; streaming text bubbles; exec approval modal; channels/agents tabs |
 | **CLI** | 40+ commands across agents, channels, sessions, cron, nodes, config, plugins, secrets, security, and more |
-| **Nostr transport** | NIP-17 gift-wrapped DMs; NIP-44 encryption; NIP-86-style control RPC; Nostr-backed state store |
+| **Nostr transport** | NIP-17 gift-wrapped DMs and NIP-04 compatibility paths; NIP-44 encryption; NIP-86-style control RPC; Nostr-backed state store |
 
 ---
 
@@ -48,7 +48,7 @@ Create `~/.metiq/bootstrap.json`:
 ```json
 {
   "private_key": "env://METIQ_PRIVATE_KEY",
-  "relays": ["wss://relay.damus.io", "wss://nos.lol"],
+  "relays": ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.sharegap.net", "wss://armada.sharegap.net"],
   "admin_listen_addr": "127.0.0.1:8787",
   "admin_token": "your-secret-token"
 }
@@ -227,7 +227,7 @@ Outbound messages are encrypted to `nip44:<ciphertext>`; inbound messages are de
 
 ## Multi-agent orchestration (ACP)
 
-Agents can delegate tasks to other metiq agents (local or remote) via Nostr DMs:
+Agents can delegate tasks to other metiq agents (local or remote) via transport-neutral ACP messages sent over Nostr DMs:
 
 ```json
 // acp.dispatch — fire-and-forget or blocking
@@ -247,6 +247,14 @@ Agents can delegate tasks to other metiq agents (local or remote) via Nostr DMs:
 ```
 
 Agents also have access to the `acp.delegate` built-in tool, letting LLMs orchestrate sub-agents inline during a turn.
+
+### ACP transport compatibility
+
+- `acp.transport` supports `auto`, `nip17`, or `nip04`.
+- `auto` consults the target peer's advertised `dm_schemes` from kind:30317 capability events and chooses a compatible transport family.
+- Because kind:30317 currently advertises DM schemes as a set rather than an ordered preference list, `auto` prefers `nip17` when a peer advertises both `nip17` and `nip04`, and falls back to `nip04` when that is the only discovered compatible option.
+- When a peer has not published capability metadata yet, `auto` uses the compatibility-safe fallback and prefers `nip04` before `nip17`.
+- For cross-runtime fleets such as OpenClaw, set `acp.transport: nip04` to force the NIP-04 compatibility profile end to end.
 
 ---
 

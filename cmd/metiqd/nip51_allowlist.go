@@ -37,41 +37,76 @@ var nip51AllowlistMu sync.RWMutex
 // When a list is updated the entire inner set is replaced atomically.
 var nip51PerListPubkeys = make(map[string]map[string]struct{})
 
-// nip51FleetEntries holds the full fleet directory entries (pubkey, name, relay)
-// from all watched NIP-51 lists, keyed by hex pubkey. Updated alongside
-// nip51PerListPubkeys whenever a list is (re-)fetched.
+// nip51PerListEntries keeps the full fleet-entry view for each watched list.
+// The merged fleet directory is rebuilt from this map so removals do not leave
+// stale peers behind.
+var nip51PerListEntries = make(map[string]map[string]toolbuiltin.FleetEntry)
+
+// nip51FleetEntries holds the merged fleet directory entries (pubkey, name,
+// relay) from all watched NIP-51 lists, keyed by hex pubkey.
 var nip51FleetEntries = make(map[string]toolbuiltin.FleetEntry)
+
+// fleetWorkspaceDir is the current workspace location where FLEET.md is kept.
+var (
+	fleetWorkspaceDirMu sync.RWMutex
+	fleetWorkspaceDir   string
+)
+
+// fleetMarkdownMu serializes FLEET.md rewrites across NIP-51 and capability updates.
+var fleetMarkdownMu sync.Mutex
+
+func setFleetWorkspaceDir(wsDir string) {
+	fleetWorkspaceDirMu.Lock()
+	fleetWorkspaceDir = wsDir
+	fleetWorkspaceDirMu.Unlock()
+}
+
+func getFleetWorkspaceDir() string {
+	fleetWorkspaceDirMu.RLock()
+	defer fleetWorkspaceDirMu.RUnlock()
+	return fleetWorkspaceDir
+}
 
 // setNIP51ListEntries atomically replaces the pubkey set and fleet entries
 // for a single list entry. entries must be the full ListEntry slice from the list.
 func setNIP51ListEntries(ownerHex, dtag string, entries []nip51.ListEntry) {
 	key := ownerHex + ":" + dtag
-	m := make(map[string]struct{}, len(entries))
+	pubkeys := make(map[string]struct{}, len(entries))
+	fleetEntries := make(map[string]toolbuiltin.FleetEntry, len(entries))
 	nip51AllowlistMu.Lock()
 	for _, e := range entries {
-		if e.Tag == "p" && e.Value != "" {
-			m[e.Value] = struct{}{}
-			fe := toolbuiltin.FleetEntry{Pubkey: e.Value, Relay: e.Relay, Name: e.Petname}
-			nip51FleetEntries[e.Value] = fe
+		if e.Tag != "p" || e.Value == "" {
+			continue
 		}
+		pubkeys[e.Value] = struct{}{}
+		fleetEntries[e.Value] = toolbuiltin.FleetEntry{Pubkey: e.Value, Relay: e.Relay, Name: e.Petname}
 	}
-	nip51PerListPubkeys[key] = m
+	nip51PerListPubkeys[key] = pubkeys
+	nip51PerListEntries[key] = fleetEntries
+	rebuildFleetEntriesLocked()
 	nip51AllowlistMu.Unlock()
+	refreshCapabilityPeerWatch()
 }
 
 // setNIP51ListPubkeys atomically replaces the pubkey set for a single list entry.
 // Kept for backward compatibility; new callers should use setNIP51ListEntries.
 func setNIP51ListPubkeys(ownerHex, dtag string, pubkeys []string) {
 	key := ownerHex + ":" + dtag
-	m := make(map[string]struct{}, len(pubkeys))
+	pubkeySet := make(map[string]struct{}, len(pubkeys))
+	fleetEntries := make(map[string]toolbuiltin.FleetEntry, len(pubkeys))
 	for _, pk := range pubkeys {
-		if pk != "" {
-			m[pk] = struct{}{}
+		if pk == "" {
+			continue
 		}
+		pubkeySet[pk] = struct{}{}
+		fleetEntries[pk] = toolbuiltin.FleetEntry{Pubkey: pk}
 	}
 	nip51AllowlistMu.Lock()
-	nip51PerListPubkeys[key] = m
+	nip51PerListPubkeys[key] = pubkeySet
+	nip51PerListEntries[key] = fleetEntries
+	rebuildFleetEntriesLocked()
 	nip51AllowlistMu.Unlock()
+	refreshCapabilityPeerWatch()
 }
 
 // fleetDirectory returns a snapshot of all known fleet agents.
@@ -81,9 +116,73 @@ func fleetDirectory() []toolbuiltin.FleetEntry {
 	defer nip51AllowlistMu.RUnlock()
 	out := make([]toolbuiltin.FleetEntry, 0, len(nip51FleetEntries))
 	for _, e := range nip51FleetEntries {
-		out = append(out, e)
+		merged := e
+		if capabilityRegistry != nil {
+			if cap, ok := capabilityRegistry.Get(e.Pubkey); ok {
+				merged.Runtime = cap.Runtime
+				merged.RuntimeVersion = cap.RuntimeVersion
+				merged.DMSchemes = append([]string{}, cap.DMSchemes...)
+				merged.ACPVersion = cap.ACPVersion
+				merged.Tools = append([]string{}, cap.Tools...)
+				merged.Relays = append([]string{}, cap.Relays...)
+				if merged.Relay == "" && len(cap.Relays) > 0 {
+					merged.Relay = cap.Relays[0]
+				}
+			}
+		}
+		out = append(out, merged)
 	}
 	return out
+}
+
+func rebuildFleetEntriesLocked() {
+	merged := make(map[string]toolbuiltin.FleetEntry)
+	keys := make([]string, 0, len(nip51PerListEntries))
+	for key := range nip51PerListEntries {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		entries := nip51PerListEntries[key]
+		for pubkey, entry := range entries {
+			current, ok := merged[pubkey]
+			if !ok {
+				merged[pubkey] = entry
+				continue
+			}
+			if current.Name == "" && entry.Name != "" {
+				current.Name = entry.Name
+			}
+			if current.Relay == "" && entry.Relay != "" {
+				current.Relay = entry.Relay
+			}
+			merged[pubkey] = current
+		}
+	}
+	nip51FleetEntries = merged
+}
+
+func fleetPeerPubkeys() []string {
+	nip51AllowlistMu.RLock()
+	defer nip51AllowlistMu.RUnlock()
+	out := make([]string, 0, len(nip51FleetEntries))
+	for pubkey := range nip51FleetEntries {
+		out = append(out, pubkey)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func refreshCapabilityPeerWatch() {
+	if capabilityMonitor == nil {
+		return
+	}
+	capabilityMonitor.UpdatePeers(fleetPeerPubkeys())
+	cfg := state.ConfigDoc{}
+	if controlRuntimeConfig != nil {
+		cfg = controlRuntimeConfig.Get()
+	}
+	capabilityMonitor.UpdateSubscribeRelays(currentCapabilitySubscriptionRelays(cfg))
 }
 
 // isInDynamicAllowlist returns true if rawPubkey (hex or npub) appears in any
@@ -121,6 +220,8 @@ func pubkeysFromList(list *nip51.List) []string {
 // Called after EOSE and on every live list update so the LLM can read it
 // directly without needing a fleet_agents tool call.
 func writeFleetMD(wsDir string) {
+	fleetMarkdownMu.Lock()
+	defer fleetMarkdownMu.Unlock()
 	if wsDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -144,7 +245,7 @@ func writeFleetMD(wsDir string) {
 
 	var sb strings.Builder
 	sb.WriteString("# FLEET.md — Cascadia Agent Roster\n")
-	sb.WriteString(fmt.Sprintf("_Synced from NIP-51 cascadia-agents list · %s_\n\n", time.Now().UTC().Format("2006-01-02 15:04 UTC")))
+	sb.WriteString(fmt.Sprintf("_Synced from NIP-51 fleet lists + kind:30317 capability events · %s_\n\n", time.Now().UTC().Format("2006-01-02 15:04 UTC")))
 	sb.WriteString(fmt.Sprintf("Fleet size: %d agents\n\n", len(entries)))
 
 	for _, e := range entries {
@@ -158,7 +259,27 @@ func writeFleetMD(wsDir string) {
 		}
 		sb.WriteString(fmt.Sprintf("## %s\n", name))
 		sb.WriteString(fmt.Sprintf("- **pubkey:** `%s`\n", e.Pubkey))
-		sb.WriteString(fmt.Sprintf("- **relay:** %s\n\n", relay))
+		sb.WriteString(fmt.Sprintf("- **relay:** %s\n", relay))
+		if e.Runtime != "" {
+			if e.RuntimeVersion != "" {
+				sb.WriteString(fmt.Sprintf("- **runtime:** %s %s\n", e.Runtime, e.RuntimeVersion))
+			} else {
+				sb.WriteString(fmt.Sprintf("- **runtime:** %s\n", e.Runtime))
+			}
+		}
+		if e.ACPVersion > 0 {
+			sb.WriteString(fmt.Sprintf("- **acp_version:** %d\n", e.ACPVersion))
+		}
+		if len(e.DMSchemes) > 0 {
+			sb.WriteString(fmt.Sprintf("- **dm_schemes:** %s\n", strings.Join(e.DMSchemes, ", ")))
+		}
+		if len(e.Relays) > 0 {
+			sb.WriteString(fmt.Sprintf("- **relays:** %s\n", strings.Join(e.Relays, ", ")))
+		}
+		if len(e.Tools) > 0 {
+			sb.WriteString(fmt.Sprintf("- **tools (%d):** %s\n", len(e.Tools), strings.Join(e.Tools, ", ")))
+		}
+		sb.WriteString("\n")
 	}
 
 	dest := filepath.Join(wsDir, "FLEET.md")
@@ -181,15 +302,20 @@ func writeFleetMD(wsDir string) {
 //   - Subscribe to real-time replaceable updates.
 //
 // The function returns quickly; goroutines run until ctx is cancelled.
+func fleetWorkspaceDirFromConfig(cfg state.ConfigDoc) string {
+	wsDir, _ := cfg.Extra["workspace_dir"].(string)
+	if wsDir != "" {
+		return wsDir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".metiq", "workspace")
+}
+
 func startNIP51AllowlistWatcher(ctx context.Context, pool *nostr.Pool, cfg state.ConfigDoc) {
+	wsDir := fleetWorkspaceDirFromConfig(cfg)
+	setFleetWorkspaceDir(wsDir)
 	if len(cfg.DM.AllowFromLists) == 0 {
 		return
-	}
-
-	wsDir, _ := cfg.Extra["workspace_dir"].(string)
-	if wsDir == "" {
-		home, _ := os.UserHomeDir()
-		wsDir = filepath.Join(home, ".metiq", "workspace")
 	}
 
 	for _, ref := range cfg.DM.AllowFromLists {

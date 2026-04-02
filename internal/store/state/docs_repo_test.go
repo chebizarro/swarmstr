@@ -9,7 +9,11 @@ import (
 	"testing"
 	"time"
 
+	nostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/keyer"
+	"fiatjaf.com/nostr/nip44"
 	"metiq/internal/nostr/events"
+	"metiq/internal/nostr/secure"
 )
 
 type fakeStateStore struct {
@@ -92,6 +96,36 @@ func (s *fakeStateStore) ListByTagForAuthor(_ context.Context, kind events.Kind,
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+type stateTestKeyer struct {
+	keyer.KeySigner
+	sk nostr.SecretKey
+}
+
+func newStateTestKeyer(t *testing.T) nostr.Keyer {
+	t.Helper()
+	sk, err := nostr.SecretKeyFromHex("1111111111111111111111111111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("SecretKeyFromHex: %v", err)
+	}
+	return stateTestKeyer{KeySigner: keyer.NewPlainKeySigner([32]byte(sk)), sk: sk}
+}
+
+func (k stateTestKeyer) Encrypt(_ context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
+	ck, err := nip44.GenerateConversationKey(recipient, k.sk)
+	if err != nil {
+		return "", err
+	}
+	return nip44.Encrypt(plaintext, ck)
+}
+
+func (k stateTestKeyer) Decrypt(_ context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	ck, err := nip44.GenerateConversationKey(sender, k.sk)
+	if err != nil {
+		return "", err
+	}
+	return nip44.Decrypt(ciphertext, ck)
 }
 
 func TestDocsRepository_ConfigListSessionCheckpointRoundTrip(t *testing.T) {
@@ -198,5 +232,80 @@ func TestDocsRepositoryListSessionsPrefersLatestPersistedDoc(t *testing.T) {
 	}
 	if deleted, _ := sessions[0].Meta["deleted"].(bool); !deleted {
 		t.Fatalf("expected latest metadata to win, got %+v", sessions[0].Meta)
+	}
+}
+
+func TestDocsRepositoryConfigMigratesPlaintextToEncryptedOnWrite(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	plainRepo := NewDocsRepository(store, "author-pub")
+	if _, err := plainRepo.PutConfig(ctx, ConfigDoc{Version: 1, DM: DMPolicy{Policy: "open"}}); err != nil {
+		t.Fatalf("PutConfig plaintext: %v", err)
+	}
+
+	addr := Address{Kind: events.KindStateDoc, PubKey: "author-pub", DTag: "metiq:config"}
+	store.mu.Lock()
+	legacyContent := store.repl[addr].Content
+	store.mu.Unlock()
+	if strings.Contains(legacyContent, `"enc":"nip44"`) {
+		t.Fatalf("expected plaintext envelope, got %s", legacyContent)
+	}
+	if !strings.Contains(legacyContent, `"payload":"{\"version\":1`) {
+		t.Fatalf("expected visible plaintext payload, got %s", legacyContent)
+	}
+
+	codec, err := secure.NewMutableSelfEnvelopeCodec(newStateTestKeyer(t), true)
+	if err != nil {
+		t.Fatalf("NewMutableSelfEnvelopeCodec: %v", err)
+	}
+	encRepo := NewDocsRepositoryWithCodec(store, "author-pub", codec)
+	got, err := encRepo.GetConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetConfig with encrypted codec: %v", err)
+	}
+	if got.DM.Policy != "open" {
+		t.Fatalf("unexpected config round-trip: %+v", got)
+	}
+	if _, err := encRepo.PutConfig(ctx, got); err != nil {
+		t.Fatalf("PutConfig re-encrypted: %v", err)
+	}
+
+	store.mu.Lock()
+	encryptedContent := store.repl[addr].Content
+	store.mu.Unlock()
+	if !strings.Contains(encryptedContent, `"enc":"nip44"`) {
+		t.Fatalf("expected nip44 envelope after rewrite, got %s", encryptedContent)
+	}
+	if strings.Contains(encryptedContent, `"policy":"open"`) {
+		t.Fatalf("expected ciphertext payload after rewrite, got %s", encryptedContent)
+	}
+}
+
+func TestDocsRepositoryConfigReadsLegacyRawJSON(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	addr := Address{Kind: events.KindStateDoc, PubKey: "author-pub", DTag: "metiq:config"}
+	store.mu.Lock()
+	store.repl[addr] = Event{
+		ID:        "legacy-1",
+		PubKey:    "author-pub",
+		Kind:      events.KindStateDoc,
+		CreatedAt: time.Now().Unix(),
+		Tags:      [][]string{{"d", "metiq:config"}},
+		Content:   `{"version":1,"dm":{"policy":"open"}}`,
+	}
+	store.mu.Unlock()
+
+	codec, err := secure.NewMutableSelfEnvelopeCodec(newStateTestKeyer(t), true)
+	if err != nil {
+		t.Fatalf("NewMutableSelfEnvelopeCodec: %v", err)
+	}
+	repo := NewDocsRepositoryWithCodec(store, "author-pub", codec)
+	cfg, err := repo.GetConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetConfig legacy raw JSON: %v", err)
+	}
+	if cfg.DM.Policy != "open" {
+		t.Fatalf("unexpected legacy config decode: %+v", cfg)
 	}
 }

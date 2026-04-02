@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip44"
@@ -51,6 +52,60 @@ func NewNIP44SelfCodec(keyer nostr.Keyer) (*NIP44SelfCodec, error) {
 		return nil, fmt.Errorf("nip44 self codec: get public key: %w", err)
 	}
 	return &NIP44SelfCodec{keyer: keyer, pub: pk}, nil
+}
+
+// MutableSelfEnvelopeCodec can decrypt both legacy plaintext envelopes and
+// NIP-44 self-encrypted envelopes while switching future writes at runtime.
+type MutableSelfEnvelopeCodec struct {
+	mu        sync.RWMutex
+	encrypt   bool
+	plaintext PlaintextCodec
+	nip44     *NIP44SelfCodec
+}
+
+func NewMutableSelfEnvelopeCodec(keyer nostr.Keyer, encrypt bool) (*MutableSelfEnvelopeCodec, error) {
+	nip44Codec, err := NewNIP44SelfCodec(keyer)
+	if err != nil {
+		return nil, err
+	}
+	return &MutableSelfEnvelopeCodec{
+		encrypt:   encrypt,
+		plaintext: NewPlaintextCodec(),
+		nip44:     nip44Codec,
+	}, nil
+}
+
+func (c *MutableSelfEnvelopeCodec) SetEncrypt(encrypt bool) {
+	c.mu.Lock()
+	c.encrypt = encrypt
+	c.mu.Unlock()
+}
+
+func (c *MutableSelfEnvelopeCodec) EncryptEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.encrypt
+}
+
+func (c *MutableSelfEnvelopeCodec) Encrypt(plaintext string) (string, string, error) {
+	c.mu.RLock()
+	encrypt := c.encrypt
+	c.mu.RUnlock()
+	if encrypt {
+		return c.nip44.Encrypt(plaintext)
+	}
+	return c.plaintext.Encrypt(plaintext)
+}
+
+func (c *MutableSelfEnvelopeCodec) Decrypt(ciphertext string, enc string) (string, error) {
+	plaintext, err := c.nip44.Decrypt(ciphertext, enc)
+	if err == nil {
+		return plaintext, nil
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "unsupported envelope encoding") {
+		return c.plaintext.Decrypt(ciphertext, EncNone)
+	}
+	return "", err
 }
 
 func (c *NIP44SelfCodec) Encrypt(plaintext string) (string, string, error) {

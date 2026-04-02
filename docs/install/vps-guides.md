@@ -88,7 +88,9 @@ cat > ~/.metiq/bootstrap.json <<'EOF'
   "relays": [
     "wss://relay.damus.io",
     "wss://relay.primal.net",
-    "wss://nos.lol"
+    "wss://nos.lol",
+    "wss://relay.sharegap.net",
+    "wss://armada.sharegap.net"
   ],
   "admin_listen_addr": "127.0.0.1:18788",
   "admin_token": "${METIQ_ADMIN_TOKEN}"
@@ -102,6 +104,9 @@ cat > ~/.metiq/config.json <<'EOF'
     "policy": "allowlist",
     "allow_from": ["<your-npub-hex>"]
   },
+  "storage": {
+    "encrypt": true
+  },
   "providers": {
     "anthropic": {
       "api_key": "${ANTHROPIC_API_KEY}"
@@ -110,6 +115,21 @@ cat > ~/.metiq/config.json <<'EOF'
 }
 EOF
 ```
+
+### Relay reachability note
+
+`metiqd` now runs a relay connectivity smoke-test at startup and logs `WARN` for relays that accept neither a websocket connection nor a lightweight subscription request.
+
+If your relay DNS name resolves back to the same host and the host network cannot hairpin that route, the daemon may fail to reach the relay even though containers on that machine can. A common pattern is:
+
+- relay container on host `max`
+- public relay URL like `wss://relay.sharegap.net`
+- host processes cannot hairpin to that public address
+- sibling Docker containers on the same Docker bridge can
+
+Workaround: run `metiqd` on the same Docker network as the relay, or configure an internal relay URL that the host can actually reach. See [Docker](/install/docker) for a compose-network example.
+
+For shared-relay or fleet deployments, keep `storage.encrypt: true` so config, transcript, and memory documents are self-encrypted before they are published to relays. New deployments should treat this as required unless every relay is private and fully trusted.
 
 ### 5. Install as systemd Service
 

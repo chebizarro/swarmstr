@@ -4,19 +4,16 @@
 // hosting git repositories on Nostr relays with git smart HTTP access.
 // Spec: https://github.com/GRASP-Protocol/grasp
 //
-// NIP-34 event kinds:
+// NIP-34 event roles used by this package:
 //
-//	30617 – Repository announcement (parameterized replaceable)
-//	30618 – Repository state announcement (parameterized replaceable)
-//	1617  – Patch (git format-patch output)
-//	1618  – Pull request
-//	1619  – Pull request update
-//	1621  – Issue
-//	1630  – Status: Open
-//	1631  – Status: Applied/Merged/Resolved
-//	1632  – Status: Closed
-//	1633  – Status: Draft
-//	10317 – User GRASP server list
+//   - Repository announcement (parameterized replaceable)
+//   - Repository state announcement (parameterized replaceable)
+//   - Patch (git format-patch output)
+//   - Pull request
+//   - Pull request update
+//   - Issue
+//   - Status: Open / Applied / Closed / Draft
+//   - User GRASP server list
 package grasp
 
 import (
@@ -24,28 +21,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+	"metiq/internal/nostr/events"
 )
 
-// NIP-34 event kinds.
 const (
-	KindRepoAnnouncement = 30617
-	KindRepoState        = 30618
-	KindPatch            = 1617
-	KindPR               = 1618
-	KindPRUpdate         = 1619
-	KindIssue            = 1621
-	KindStatusOpen       = 1630
-	KindStatusMerged     = 1631
-	KindStatusClosed     = 1632
-	KindStatusDraft      = 1633
+	// Backward-compatible aliases for shared NIP-34 event kinds.
+	KindRepoAnnouncement = int(events.KindRepoAnnouncement)
+	KindRepoState        = int(events.KindRepoState)
+	KindPatch            = int(events.KindPatch)
+	KindPR               = int(events.KindPR)
+	KindPRUpdate         = int(events.KindPRUpdate)
+	KindIssue            = int(events.KindIssue)
+	KindStatusOpen       = int(events.KindStatusOpen)
+	KindStatusApplied    = int(events.KindStatusApplied)
+	KindStatusMerged     = int(events.KindStatusApplied)
+	KindStatusClosed     = int(events.KindStatusClosed)
+	KindStatusDraft      = int(events.KindStatusDraft)
 	KindGRASPList        = 10317
 )
 
-// Repo represents a NIP-34 repository announcement (kind 30617).
+// Repo represents a NIP-34 repository announcement event.
 type Repo struct {
 	ID             string   `json:"id"`                        // d-tag (kebab-case identifier)
 	Name           string   `json:"name,omitempty"`            // human-readable name
@@ -62,9 +62,9 @@ type Repo struct {
 	CreatedAt      int64    `json:"created_at,omitempty"`
 }
 
-// Issue represents a NIP-34 issue (kind 1621).
+// Issue represents a NIP-34 issue event.
 type Issue struct {
-	RepoAddr  string   `json:"repo_addr"`         // "30617:<owner-pubkey>:<repo-id>"
+	RepoAddr  string   `json:"repo_addr"`         // "<repo-announcement-kind>:<owner-pubkey>:<repo-id>"
 	Subject   string   `json:"subject,omitempty"` // optional subject/title
 	Content   string   `json:"content"`           // markdown text
 	Labels    []string `json:"labels,omitempty"`
@@ -73,9 +73,9 @@ type Issue struct {
 	CreatedAt int64    `json:"created_at,omitempty"`
 }
 
-// Patch represents a NIP-34 patch (kind 1617).
+// Patch represents a NIP-34 patch event.
 type Patch struct {
-	RepoAddr  string `json:"repo_addr"`           // "30617:<owner-pubkey>:<repo-id>"
+	RepoAddr  string `json:"repo_addr"`           // "<repo-announcement-kind>:<owner-pubkey>:<repo-id>"
 	Content   string `json:"content"`             // git format-patch output
 	CommitID  string `json:"commit_id,omitempty"` // current commit id
 	PubKey    string `json:"pubkey,omitempty"`
@@ -83,9 +83,9 @@ type Patch struct {
 	CreatedAt int64  `json:"created_at,omitempty"`
 }
 
-// PR represents a NIP-34 pull request (kind 1618).
+// PR represents a NIP-34 pull request event.
 type PR struct {
-	RepoAddr   string   `json:"repo_addr"`            // "30617:<owner-pubkey>:<repo-id>"
+	RepoAddr   string   `json:"repo_addr"` // "<repo-announcement-kind>:<owner-pubkey>:<repo-id>"
 	Subject    string   `json:"subject,omitempty"`
 	Content    string   `json:"content"`              // markdown description
 	CommitTip  string   `json:"commit_tip,omitempty"` // tip commit (c tag)
@@ -98,7 +98,7 @@ type PR struct {
 	CreatedAt  int64    `json:"created_at,omitempty"`
 }
 
-// AnnounceRepo publishes a NIP-34 repository announcement (kind 30617).
+// AnnounceRepo publishes a NIP-34 repository announcement event.
 func AnnounceRepo(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, r Repo) (string, error) {
 	if r.ID == "" {
 		return "", fmt.Errorf("grasp: repo ID (d-tag) is required")
@@ -138,7 +138,7 @@ func AnnounceRepo(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, rela
 	}
 
 	evt := nostr.Event{
-		Kind:      nostr.Kind(KindRepoAnnouncement),
+		Kind:      nostr.Kind(events.KindRepoAnnouncement),
 		CreatedAt: nostr.Now(),
 		Tags:      tags,
 		Content:   "",
@@ -149,14 +149,14 @@ func AnnounceRepo(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, rela
 	return publishEvent(ctx, pool, relays, evt)
 }
 
-// ListRepos fetches repository announcements (kind 30617) from relays.
+// ListRepos fetches NIP-34 repository announcement events from relays.
 // If pubkey is empty, fetches from all authors.
 func ListRepos(ctx context.Context, pool *nostr.Pool, relays []string, pubkey string, limit int) ([]Repo, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	filter := nostr.Filter{
-		Kinds: []nostr.Kind{nostr.Kind(KindRepoAnnouncement)},
+		Kinds: []nostr.Kind{nostr.Kind(events.KindRepoAnnouncement)},
 		Limit: limit,
 	}
 	if pubkey != "" {
@@ -186,7 +186,7 @@ func ListRepos(ctx context.Context, pool *nostr.Pool, relays []string, pubkey st
 	return repos, nil
 }
 
-// CreateIssue publishes a NIP-34 issue (kind 1621).
+// CreateIssue publishes a NIP-34 issue event.
 func CreateIssue(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, issue Issue) (string, error) {
 	if err := ValidateRepoAddr(issue.RepoAddr); err != nil {
 		return "", fmt.Errorf("grasp: issue: %w", err)
@@ -208,7 +208,7 @@ func CreateIssue(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relay
 	}
 
 	evt := nostr.Event{
-		Kind:      nostr.Kind(KindIssue),
+		Kind:      nostr.Kind(events.KindIssue),
 		CreatedAt: nostr.Now(),
 		Tags:      tags,
 		Content:   issue.Content,
@@ -219,7 +219,7 @@ func CreateIssue(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relay
 	return publishEvent(ctx, pool, relays, evt)
 }
 
-// ListIssues fetches issues for a repository (kind 1621).
+// ListIssues fetches NIP-34 issue events for a repository.
 func ListIssues(ctx context.Context, pool *nostr.Pool, relays []string, repoAddr string, limit int) ([]Issue, error) {
 	if err := ValidateRepoAddr(repoAddr); err != nil {
 		return nil, fmt.Errorf("grasp: list issues: %w", err)
@@ -228,7 +228,7 @@ func ListIssues(ctx context.Context, pool *nostr.Pool, relays []string, repoAddr
 		limit = 20
 	}
 	filter := nostr.Filter{
-		Kinds: []nostr.Kind{nostr.Kind(KindIssue)},
+		Kinds: []nostr.Kind{nostr.Kind(events.KindIssue)},
 		Tags:  nostr.TagMap{"a": []string{repoAddr}},
 		Limit: limit,
 	}
@@ -252,7 +252,7 @@ func ListIssues(ctx context.Context, pool *nostr.Pool, relays []string, repoAddr
 	return issues, nil
 }
 
-// SubmitPatch publishes a NIP-34 patch (kind 1617).
+// SubmitPatch publishes a NIP-34 patch event.
 func SubmitPatch(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, patch Patch) (string, error) {
 	if err := ValidateRepoAddr(patch.RepoAddr); err != nil {
 		return "", fmt.Errorf("grasp: patch: %w", err)
@@ -275,7 +275,7 @@ func SubmitPatch(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relay
 	}
 
 	evt := nostr.Event{
-		Kind:      nostr.Kind(KindPatch),
+		Kind:      nostr.Kind(events.KindPatch),
 		CreatedAt: nostr.Now(),
 		Tags:      tags,
 		Content:   patch.Content,
@@ -286,7 +286,7 @@ func SubmitPatch(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relay
 	return publishEvent(ctx, pool, relays, evt)
 }
 
-// CreatePR publishes a NIP-34 pull request (kind 1618).
+// CreatePR publishes a NIP-34 pull request event.
 func CreatePR(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, pr PR) (string, error) {
 	if err := ValidateRepoAddr(pr.RepoAddr); err != nil {
 		return "", fmt.Errorf("grasp: PR: %w", err)
@@ -317,7 +317,7 @@ func CreatePR(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays [
 	}
 
 	evt := nostr.Event{
-		Kind:      nostr.Kind(KindPR),
+		Kind:      nostr.Kind(events.KindPR),
 		CreatedAt: nostr.Now(),
 		Tags:      tags,
 		Content:   pr.Content,
@@ -394,18 +394,20 @@ func decodeIssueEvent(ev nostr.Event) Issue {
 }
 
 // ValidateRepoAddr checks that a NIP-34 repository address has the correct
-// format: "30617:<hex-pubkey>:<repo-id>".
+// format: "<repo-announcement-kind>:<hex-pubkey>:<repo-id>".
 // Returns a descriptive error if the format is wrong.
 func ValidateRepoAddr(addr string) error {
+	repoKindPrefix := strconv.Itoa(int(events.KindRepoAnnouncement))
+	format := repoKindPrefix + ":<owner-hex-pubkey>:<repo-id>"
 	if addr == "" {
-		return fmt.Errorf("repo_addr is empty — expected format: 30617:<owner-hex-pubkey>:<repo-id>")
+		return fmt.Errorf("repo_addr is empty — expected format: %s", format)
 	}
 	parts := strings.SplitN(addr, ":", 3)
 	if len(parts) != 3 {
-		return fmt.Errorf("repo_addr %q has %d colon-separated parts, expected 3 (format: 30617:<owner-hex-pubkey>:<repo-id>)", addr, len(parts))
+		return fmt.Errorf("repo_addr %q has %d colon-separated parts, expected 3 (format: %s)", addr, len(parts), format)
 	}
-	if parts[0] != "30617" {
-		return fmt.Errorf("repo_addr kind prefix is %q, expected \"30617\" (format: 30617:<owner-hex-pubkey>:<repo-id>)", parts[0])
+	if parts[0] != repoKindPrefix {
+		return fmt.Errorf("repo_addr kind prefix is %q, expected %q (format: %s)", parts[0], repoKindPrefix, format)
 	}
 	if len(parts[1]) != 64 {
 		return fmt.Errorf("repo_addr pubkey %q is %d chars, expected 64-char hex pubkey", parts[1], len(parts[1]))
@@ -416,12 +418,12 @@ func ValidateRepoAddr(addr string) error {
 		}
 	}
 	if parts[2] == "" {
-		return fmt.Errorf("repo_addr repo-id (d-tag) is empty — expected format: 30617:<owner-hex-pubkey>:<repo-id>")
+		return fmt.Errorf("repo_addr repo-id (d-tag) is empty — expected format: %s", format)
 	}
 	return nil
 }
 
-// extractAddrPubkey extracts the pubkey from a NIP-34 address "kind:pubkey:d-tag".
+// extractAddrPubkey extracts the pubkey from a NIP-34 address "<kind>:<pubkey>:<d-tag>".
 func extractAddrPubkey(addr string) string {
 	parts := strings.SplitN(addr, ":", 3)
 	if len(parts) >= 2 {

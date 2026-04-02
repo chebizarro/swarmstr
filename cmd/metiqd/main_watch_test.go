@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"metiq/internal/agent/toolbuiltin"
+	"metiq/internal/nostr/events"
 )
 
 func TestNostrWatchDeliveryMetaUsesSourceEventIdentity(t *testing.T) {
@@ -24,7 +25,7 @@ func TestNostrWatchDeliveryMetaUsesSourceEventIdentity(t *testing.T) {
 }
 
 func TestNostrWatchDeliveryMetaFallsBackToSyntheticID(t *testing.T) {
-	event := map[string]any{"kind": float64(1059), "content": "wrapped"}
+	event := map[string]any{"kind": float64(events.KindGiftWrap), "content": "wrapped"}
 	id, createdAt := nostrWatchDeliveryMeta("dm-watch", event)
 	if !strings.HasPrefix(id, "auto:") {
 		t.Fatalf("expected synthetic id, got %s", id)
