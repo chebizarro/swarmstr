@@ -62,7 +62,7 @@ Or include it in a bootstrap config file (`~/.metiq/bootstrap.json`):
 ```json
 {
   "private_key": "your-hex-private-key",
-  "relays": ["wss://relay.damus.io", "wss://nos.lol"]
+  "relays": ["wss://<relay-1>", "wss://<relay-2>"]
 }
 ```
 
@@ -160,7 +160,7 @@ Metiq adds a `nostr_channels` config section for Nostr-native channel types (NIP
     "my-group": {
       "kind": "nip29",
       "enabled": true,
-      "group_address": "wss://groups.fiatjaf.com'my-group-id",
+      "group_address": "wss://<group-relay>'my-group-id",
       "agent_id": "main"
     }
   }

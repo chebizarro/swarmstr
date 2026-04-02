@@ -37,7 +37,7 @@ Example daemon bootstrap:
 ```json
 {
   "private_key": "env://METIQ_DAEMON_NSEC",
-  "relays": ["wss://relay.damus.io", "wss://nos.lol"],
+  "relays": ["wss://<relay-1>", "wss://<relay-2>"],
   "admin_listen_addr": "127.0.0.1:18788",
   "admin_token": "env://METIQ_ADMIN_TOKEN"
 }
@@ -48,7 +48,7 @@ Example control-client bootstrap for Nostr-first `metiq gw`:
 ```json
 {
   "private_key": "env://METIQ_CONTROL_CALLER_NSEC",
-  "relays": ["wss://relay.damus.io", "wss://nos.lol"],
+  "relays": ["wss://<relay-1>", "wss://<relay-2>"],
   "control_target_pubkey": "npub1...daemon...",
   "admin_listen_addr": "127.0.0.1:18788",
   "admin_token": "env://METIQ_ADMIN_TOKEN"
@@ -62,7 +62,7 @@ If you want a distinct control signer without changing the main bootstrap signer
   "private_key": "env://METIQ_DAEMON_NSEC",
   "control_signer_url": "env://METIQ_CONTROL_CALLER_NSEC",
   "control_target_pubkey": "npub1...daemon...",
-  "relays": ["wss://relay.damus.io", "wss://nos.lol"]
+  "relays": ["wss://<relay-1>", "wss://<relay-2>"]
 }
 ```
 

@@ -55,8 +55,8 @@ Check connectivity to configured relays:
 ```bash
 ./scripts/relay-check.sh
 # Output:
-# ✓ wss://relay.damus.io (42ms)
-# ✓ wss://relay.primal.net (95ms)
+# ✓ wss://<relay-1> (42ms)
+# ✓ wss://<relay-3> (95ms)
 # ✗ wss://nostr.example.com (timeout)
 ```
 
@@ -164,7 +164,7 @@ AGENT_PUBKEY=$(metiq status --json | jq -r '.pubkey')
 for i in $(seq 1 10); do
   nak event --sec $NSEC -k 4 -c "test message $i" \
     --tag p=$AGENT_PUBKEY \
-    wss://relay.damus.io &
+    wss://<relay-1> &
 done
 wait
 ```

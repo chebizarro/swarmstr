@@ -40,7 +40,7 @@ journalctl --user -u metiqd --since "1 hour ago"
 Logs are Go's standard log format (prefix + message):
 
 ```
-2026/01/16 14:30:00 relay connected relay=wss://relay.damus.io
+2026/01/16 14:30:00 relay connected relay=wss://<relay-1>
 2026/01/16 14:30:01 DM received from=npub1abc...
 2026/01/16 14:30:02 agent turn started session=agent:main:main
 ```

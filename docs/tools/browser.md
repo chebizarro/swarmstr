@@ -32,7 +32,7 @@ Low-level HTTP fetch callable from the gateway API:
   "method": "browser.request",
   "params": {
     "method": "GET",
-    "path": "https://relay.damus.io",
+    "path": "https://example.com",
     "timeout_ms": 10000
   }
 }
@@ -45,7 +45,7 @@ Response:
   "ok": true,
   "status_code": 200,
   "content_type": "text/html; charset=utf-8",
-  "url": "https://relay.damus.io",
+  "url": "https://example.com",
   "text": "..."
 }
 ```

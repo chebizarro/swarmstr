@@ -50,7 +50,7 @@ or `nostr_channels[].agent_id`:
   "nostr_channels": {
     "work-group": {
       "kind": "nip29",
-      "group_address": "groups.example.com'work",
+      "group_address": "<group-relay-host>'work",
       "agent_id": "work-agent"   // routes this channel to a specific agent
     }
   },
