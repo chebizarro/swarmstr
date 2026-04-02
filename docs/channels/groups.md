@@ -30,7 +30,7 @@ NIP-29 defines relay-managed groups where the relay enforces membership and mess
 
 ### How It Works
 
-1. Create or join a NIP-29 group on a relay that supports it (e.g., groups.fiatjaf.com)
+1. Create or join a NIP-29 group on a relay that supports it (e.g., <group-relay-host>)
 2. Add the agent's npub as a member of the group
 3. Configure metiq to subscribe to the group via `nostr_channels`
 4. The agent receives and responds to group messages
@@ -43,8 +43,8 @@ NIP-29 defines relay-managed groups where the relay enforces membership and mess
     "my-group": {
       "kind": "nip29",
       "enabled": true,
-      "group_address": "groups.fiatjaf.com'my-group-id",  // relay'groupID
-      "relays": ["wss://groups.fiatjaf.com"],              // optional: defaults to global relays
+      "group_address": "<group-relay-host>'my-group-id",  // relay'groupID
+      "relays": ["wss://<group-relay>"],              // optional: defaults to global relays
       "agent_id": "",                                       // optional: route to specific agent
       "allow_from": ["*"]                                   // "*" = anyone in group; or list pubkeys
     }
@@ -75,7 +75,7 @@ NIP-28 defines open public channels anchored by a channel creation event on Nost
       "kind": "nip28",
       "enabled": true,
       "channel_id": "abc123def456...",  // NIP-28 channel event ID (hex)
-      "relays": ["wss://relay.nostr.com"],
+      "relays": ["wss://<relay-1>"],
       "allow_from": ["*"]
     }
   }
@@ -92,7 +92,7 @@ For custom subscriptions beyond NIP-28/29, use `relay-filter`:
     "mentions": {
       "kind": "relay-filter",
       "enabled": true,
-      "relays": ["wss://relay.nostr.com"],
+      "relays": ["wss://<relay-1>"],
       "tags": {
         "p": ["<agent-pubkey-hex>"]
       },
@@ -114,7 +114,7 @@ For inbound GRASP repository activity (patches, pull requests, issue updates), u
     "repo-events": {
       "kind": "nip34-inbox",
       "enabled": true,
-      "relays": ["wss://relay.sharegap.net"],
+      "relays": ["wss://<relay-4>"],
       "tags": {
         "a": ["30617:<repo-owner-pubkey-hex>:<repo-id>"]
       },
@@ -135,7 +135,7 @@ You can also enable a concrete inbound automation hook for PR review:
     "repo-events": {
       "kind": "nip34-inbox",
       "enabled": true,
-      "relays": ["wss://relay.sharegap.net"],
+      "relays": ["wss://<relay-4>"],
       "tags": {
         "a": ["30617:<repo-owner-pubkey-hex>:<repo-id>"]
       },
@@ -167,7 +167,7 @@ You can define multiple channels simultaneously:
     "team-group": {
       "kind": "nip29",
       "enabled": true,
-      "group_address": "groups.fiatjaf.com'team-abc",
+      "group_address": "<group-relay-host>'team-abc",
       "agent_id": "coding-agent",
       "allow_from": ["*"]
     },
@@ -198,7 +198,7 @@ Set `agent_id` to route a channel's messages to a named agent from `agents[]`:
   "nostr_channels": {
     "coding-group": {
       "kind": "nip29",
-      "group_address": "groups.fiatjaf.com'code-review",
+      "group_address": "<group-relay-host>'code-review",
       "agent_id": "coding-agent",
       "enabled": true
     }

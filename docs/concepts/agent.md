@@ -95,7 +95,7 @@ Key agent settings in the bootstrap config (`~/.metiq/bootstrap.json`):
 ```json
 {
   "private_key": "${NOSTR_PRIVATE_KEY}",
-  "relays": ["wss://relay.damus.io", "wss://nos.lol"],
+  "relays": ["wss://<relay-1>", "wss://<relay-2>"],
   "admin_listen_addr": "127.0.0.1:8787",
   "admin_token": "${ADMIN_TOKEN}"
 }

@@ -39,7 +39,7 @@ Example of good vs bad:
 explain the background context before providing my detailed answer..."
 
 ✓ Good:
-"The relay.damus.io has 42ms latency and is fully connected. The other
+"relay.example.com has 42ms latency and is fully connected. The other
 two relays are responding normally."
 ```
 
@@ -67,9 +67,9 @@ For heartbeat turns:
 When providing status:
 ```
 Relay status:
-- relay.damus.io: ✅ 42ms
-- relay.primal.net: ✅ 95ms
-- nos.lol: ❌ timeout
+- relay.example.com: ✅ 42ms
+- relay3.example.com: ✅ 95ms
+- relay2.example.com: ❌ timeout
 
 All sessions healthy. 3 cron jobs scheduled.
 ```
@@ -79,7 +79,7 @@ All sessions healthy. 3 cron jobs scheduled.
 Be specific about errors:
 ```
 ✗ "Something went wrong"
-✓ "relay.damus.io connection failed: dial tcp: i/o timeout after 10s"
+✓ "relay.example.com connection failed: dial tcp: i/o timeout after 10s"
 ```
 
 ## Technical Content

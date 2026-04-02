@@ -1138,8 +1138,7 @@ func computeWizardSteps(mode string, input map[string]any) []wizardStep {
 		// Step 2: Relay URLs.
 		steps = append(steps, wizardStep{
 			ID: "relays", Type: "text",
-			Prompt:  "Enter relay URLs (comma-separated)",
-			Default: "wss://nos.lol,wss://relay.primal.net,wss://relay.sharegap.net",
+			Prompt: "Enter relay URLs (comma-separated)",
 		})
 		// Step 3: Agent display name.
 		steps = append(steps, wizardStep{ID: "agent_name", Type: "text", Prompt: "Agent display name", Default: "metiq"})

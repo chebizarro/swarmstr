@@ -253,13 +253,11 @@ func writeFleetMD(wsDir string) {
 		if name == "" {
 			name = e.Pubkey
 		}
-		relay := e.Relay
-		if relay == "" {
-			relay = "wss://relay.sharegap.net"
-		}
 		sb.WriteString(fmt.Sprintf("## %s\n", name))
 		sb.WriteString(fmt.Sprintf("- **pubkey:** `%s`\n", e.Pubkey))
-		sb.WriteString(fmt.Sprintf("- **relay:** %s\n", relay))
+		if strings.TrimSpace(e.Relay) != "" {
+			sb.WriteString(fmt.Sprintf("- **relay:** %s\n", e.Relay))
+		}
 		if e.Runtime != "" {
 			if e.RuntimeVersion != "" {
 				sb.WriteString(fmt.Sprintf("- **runtime:** %s %s\n", e.Runtime, e.RuntimeVersion))

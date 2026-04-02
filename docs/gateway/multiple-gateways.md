@@ -28,7 +28,7 @@ Each bootstrap file should specify different ports to avoid conflicts:
 ```json
 {
   "private_key": "${PERSONAL_NSEC}",
-  "relays": ["wss://relay.damus.io"],
+  "relays": ["wss://<relay-1>"],
   "admin_listen_addr": "127.0.0.1:18789"
 }
 ```
@@ -37,7 +37,7 @@ Each bootstrap file should specify different ports to avoid conflicts:
 ```json
 {
   "private_key": "${WORK_NSEC}",
-  "relays": ["wss://relay.damus.io"],
+  "relays": ["wss://<relay-1>"],
   "admin_listen_addr": "127.0.0.1:18790"
 }
 ```

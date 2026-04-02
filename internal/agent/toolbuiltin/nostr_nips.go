@@ -360,10 +360,9 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		if v, ok := args["limit"].(float64); ok && v > 0 {
 			limit = min(int(v), 100)
 		}
-		relays := toStringSlice(args["relays"])
+		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 		if len(relays) == 0 {
-			// Default to known search-capable relays.
-			relays = []string{"wss://relay.primal.net", "wss://nostr.wine"}
+			return "", nostrToolErr("nostr_search", "no_relays", "no relays configured", nil)
 		}
 
 		filter := nostr.Filter{

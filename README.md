@@ -43,12 +43,12 @@ go build ./cmd/metiqd ./cmd/metiq
 
 ### Minimal bootstrap config
 
-Create `~/.metiq/bootstrap.json`:
+Create `~/.metiq/bootstrap.json` with your explicit relay set:
 
 ```json
 {
   "private_key": "env://METIQ_PRIVATE_KEY",
-  "relays": ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.sharegap.net", "wss://armada.sharegap.net"],
+  "relays": ["wss://<relay-1>", "wss://<relay-2>", "wss://<relay-4>", "wss://<relay-5>"],
   "admin_listen_addr": "127.0.0.1:8787",
   "admin_token": "your-secret-token"
 }

@@ -33,7 +33,7 @@ For bootstrap config (private key and relays), use `${VAR}` references too:
 ```json
 {
   "private_key": "${NOSTR_NSEC}",
-  "relays": ["wss://relay.damus.io"]
+  "relays": ["wss://<relay-1>"]
 }
 ```
 

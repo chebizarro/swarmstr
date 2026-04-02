@@ -25,11 +25,11 @@ Process-level config — key material, network addresses, admin token:
 {
   "private_key": "nsec1...",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://relay.primal.net",
-    "wss://nos.lol",
-    "wss://relay.sharegap.net",
-    "wss://armada.sharegap.net"
+    "wss://<relay-1>",
+    "wss://<relay-3>",
+    "wss://<relay-2>",
+    "wss://<relay-4>",
+    "wss://<relay-5>"
   ],
   "admin_listen_addr": "127.0.0.1:18788",
   "admin_token": "your-admin-token-here"
@@ -104,7 +104,7 @@ mkdir -p ~/.metiq
 cat > ~/.metiq/bootstrap.json <<EOF
 {
   "private_key": "${METIQ_PRIVATE_KEY}",
-  "relays": ["wss://nos.lol", "wss://relay.primal.net", "wss://relay.sharegap.net", "wss://armada.sharegap.net"],
+  "relays": ["wss://<relay-2>", "wss://<relay-3>", "wss://<relay-4>", "wss://<relay-5>"],
   "admin_listen_addr": "127.0.0.1:18788",
   "admin_token": "${METIQ_ADMIN_TOKEN}"
 }

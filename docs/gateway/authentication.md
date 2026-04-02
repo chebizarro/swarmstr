@@ -103,7 +103,7 @@ The agent's Nostr identity is configured in the bootstrap config:
 ```json
 {
   "private_key": "${NOSTR_NSEC}",
-  "relays": ["wss://relay.damus.io"]
+  "relays": ["wss://<relay-1>"]
 }
 ```
 

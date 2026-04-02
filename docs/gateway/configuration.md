@@ -23,8 +23,8 @@ Default location: `~/.metiq/bootstrap.json` (override with the `--bootstrap` fla
 {
   "private_key": "${NOSTR_NSEC}",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://nos.lol"
+    "wss://<relay-1>",
+    "wss://<relay-2>"
   ]
 }
 ```
@@ -35,9 +35,9 @@ Default location: `~/.metiq/bootstrap.json` (override with the `--bootstrap` fla
 {
   "private_key": "${NOSTR_NSEC}",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-    "wss://nostr.wine"
+    "wss://<relay-1>",
+    "wss://<relay-2>",
+    "wss://<search-relay>"
   ],
 
   "signer_url": "",               // Alternative: bunker://... or env://VAR or file:///path
@@ -134,8 +134,8 @@ metiq config validate
 ```json
 {
   "relays": {
-    "read": ["wss://relay.damus.io", "wss://nos.lol"],
-    "write": ["wss://relay.damus.io"]
+    "read": ["wss://<relay-1>", "wss://<relay-2>"],
+    "write": ["wss://<relay-1>"]
   }
 }
 ```

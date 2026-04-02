@@ -249,7 +249,7 @@ var NostrRelayPingDef = agent.ToolDefinition{
 		Properties: map[string]agent.ToolParamProp{
 			"url": {
 				Type:        "string",
-				Description: "WebSocket URL of the relay, e.g. \"wss://nos.lol\".",
+				Description: "WebSocket URL of the relay, e.g. \"wss://<relay-url>\".",
 			},
 		},
 		Required: []string{"url"},
@@ -265,7 +265,7 @@ var NostrRelayInfoDef = agent.ToolDefinition{
 		Properties: map[string]agent.ToolParamProp{
 			"url": {
 				Type:        "string",
-				Description: "WebSocket URL of the relay, e.g. \"wss://nos.lol\".",
+				Description: "WebSocket URL of the relay, e.g. \"wss://<relay-url>\".",
 			},
 		},
 		Required: []string{"url"},
@@ -1547,7 +1547,7 @@ var NostrArticleGetDef = agent.ToolDefinition{
 // NostrSearchDef is the ToolDefinition for nostr_search.
 var NostrSearchDef = agent.ToolDefinition{
 	Name:        "nostr_search",
-	Description: "Search Nostr events by keyword using NIP-50. Queries search-capable relays (relay.primal.net, nostr.wine by default). Optionally filter by event kinds.",
+	Description: "Search Nostr events by keyword using NIP-50. Queries the supplied relays, or the agent's configured relays when no override is provided. Optionally filter by event kinds.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
@@ -1570,7 +1570,7 @@ var NostrSearchDef = agent.ToolDefinition{
 			},
 			"relays": {
 				Type:        "array",
-				Description: "Relay URLs to query. Defaults to relay.primal.net and nostr.wine.",
+				Description: "Relay URLs to query. Defaults to the agent's configured relays when omitted.",
 				Items:       &agent.ToolParamProp{Type: "string"},
 			},
 		},

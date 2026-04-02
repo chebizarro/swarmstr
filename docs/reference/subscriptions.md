@@ -291,6 +291,6 @@ All event kinds the agent subscribes to or produces, for quick reference:
 
 | Context | Relays |
 |---------|--------|
-| Wizard default (new install) | `wss://nos.lol`, `wss://relay.primal.net`, `wss://relay.sharegap.net`, `wss://armada.sharegap.net` |
-| NIP-50 search | `wss://relay.primal.net`, `wss://nostr.wine` |
+| Wizard default (new install) | `wss://<relay-2>`, `wss://<relay-3>`, `wss://<relay-4>`, `wss://<relay-5>` |
+| NIP-50 search | `wss://<relay-3>`, `wss://<search-relay>` |
 | Fallback (no NIP-65 list found) | Merge of config `relays.read` + `relays.write` |

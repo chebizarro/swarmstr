@@ -57,8 +57,8 @@ Create `~/.metiq/bootstrap.json` (bootstrap config — needed at daemon startup)
 {
   "private_key": "${NOSTR_NSEC}",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://nos.lol"
+    "wss://<relay-1>",
+    "wss://<relay-2>"
   ]
 }
 ```

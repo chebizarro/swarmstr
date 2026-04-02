@@ -86,11 +86,11 @@ cat > ~/.metiq/bootstrap.json <<'EOF'
 {
   "private_key": "${NOSTR_NSEC}",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://relay.primal.net",
-    "wss://nos.lol",
-    "wss://relay.sharegap.net",
-    "wss://armada.sharegap.net"
+    "wss://<relay-1>",
+    "wss://<relay-3>",
+    "wss://<relay-2>",
+    "wss://<relay-4>",
+    "wss://<relay-5>"
   ],
   "admin_listen_addr": "127.0.0.1:18788",
   "admin_token": "${METIQ_ADMIN_TOKEN}"
@@ -123,7 +123,7 @@ EOF
 If your relay DNS name resolves back to the same host and the host network cannot hairpin that route, the daemon may fail to reach the relay even though containers on that machine can. A common pattern is:
 
 - relay container on host `max`
-- public relay URL like `wss://relay.sharegap.net`
+- public relay URL like `wss://<relay-4>`
 - host processes cannot hairpin to that public address
 - sibling Docker containers on the same Docker bridge can
 

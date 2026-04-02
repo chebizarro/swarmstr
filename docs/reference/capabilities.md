@@ -26,8 +26,8 @@ The event is authored by the agent pubkey and uses that same pubkey as its `d` t
     ["dm_schemes", "nip17", "nip44", "giftwrap", "nip04"],
     ["acp_version", "1"],
     ["tools", "memory_search", "nostr_agent_rpc", "web_search"],
-    ["relay", "wss://relay.sharegap.net"],
-    ["relay", "wss://armada.sharegap.net"]
+    ["relay", "wss://<relay-4>"],
+    ["relay", "wss://<relay-5>"]
   ]
 }
 ```

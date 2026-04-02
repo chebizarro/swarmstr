@@ -92,7 +92,7 @@ journalctl -u metiqd -n 200
 metiqd logs are structured (Go `log/slog` default):
 
 ```
-2026-01-16T14:30:00Z INFO relay connected relay=wss://relay.damus.io
+2026-01-16T14:30:00Z INFO relay connected relay=wss://<relay-1>
 2026-01-16T14:30:01Z INFO DM received from=npub1abc...
 2026-01-16T14:30:02Z INFO agent turn started session=abc123
 ```
