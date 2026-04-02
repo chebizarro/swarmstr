@@ -185,6 +185,9 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		if policy, ok := dmRaw["policy"].(string); ok && strings.TrimSpace(policy) != "" {
 			doc.DM.Policy = strings.TrimSpace(policy)
 		}
+		if replyScheme, ok := dmRaw["reply_scheme"].(string); ok && strings.TrimSpace(replyScheme) != "" {
+			doc.DM.ReplyScheme = strings.TrimSpace(replyScheme)
+		}
 		if doc.DM.AllowFrom == nil {
 			doc.DM.AllowFrom = toStringSlice(dmRaw["allow_from"])
 		}
@@ -251,6 +254,9 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 			if dmRaw, ok := webRaw["dm"].(map[string]any); ok {
 				if policy, ok := dmRaw["policy"].(string); ok {
 					doc.DM.Policy = strings.TrimSpace(policy)
+				}
+				if replyScheme, ok := dmRaw["reply_scheme"].(string); ok && strings.TrimSpace(replyScheme) != "" {
+					doc.DM.ReplyScheme = strings.TrimSpace(replyScheme)
 				}
 				doc.DM.AllowFrom = toStringSlice(dmRaw["allow_from"])
 				if doc.DM.AllowFrom == nil {

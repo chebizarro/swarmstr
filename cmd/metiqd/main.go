@@ -3747,6 +3747,12 @@ func main() {
 
 	// Shared inbound DM handler used by both NIP-04 and NIP-17 buses.
 	dmOnMessage := func(ctx context.Context, msg nostruntime.InboundDM) error {
+		msg = wrapInboundDMReply(func() state.ConfigDoc {
+			if configState != nil {
+				return configState.Get()
+			}
+			return state.ConfigDoc{}
+		}, msg)
 		if tracker.AlreadyProcessed(msg.EventID, msg.CreatedAt) {
 			return nil
 		}

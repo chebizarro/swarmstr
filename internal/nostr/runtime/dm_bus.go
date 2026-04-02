@@ -28,6 +28,7 @@ type InboundDM struct {
 	Text       string
 	RelayURL   string
 	CreatedAt  int64
+	Scheme     string
 	Reply      func(ctx context.Context, text string) error
 }
 
@@ -401,6 +402,7 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		Text:       plaintext,
 		RelayURL:   re.Relay.URL,
 		CreatedAt:  int64(re.Event.CreatedAt),
+		Scheme:     "nip04",
 		Reply: func(ctx context.Context, text string) error {
 			text, err = sanitizeDMText(text)
 			if err != nil {

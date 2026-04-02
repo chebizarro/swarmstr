@@ -71,6 +71,11 @@ func ValidateConfig(cfg state.ConfigDoc) error {
 	if err := validateControlPolicy(cfg.Control); err != nil {
 		return err
 	}
+	if strings.TrimSpace(cfg.DM.ReplyScheme) != "" {
+		if _, ok := state.ParseDMReplyScheme(cfg.DM.ReplyScheme); !ok {
+			return fmt.Errorf("dm.reply_scheme must be one of auto, nip17, nip04")
+		}
+	}
 	if strings.TrimSpace(cfg.ACP.Transport) != "" {
 		if _, ok := state.ParseACPTransportMode(cfg.ACP.Transport); !ok {
 			return fmt.Errorf("acp.transport must be one of auto, nip17, nip04")
@@ -385,6 +390,9 @@ func validateHeartbeat(h state.HeartbeatConfig) error {
 
 func NormalizeConfig(cfg state.ConfigDoc) state.ConfigDoc {
 	cfg.DM.Policy = NormalizeDMPolicy(cfg.DM.Policy)
+	if mode, ok := state.ParseDMReplyScheme(cfg.DM.ReplyScheme); ok {
+		cfg.DM.ReplyScheme = mode
+	}
 	cfg.Relays.Read = normalizeRelaySet(cfg.Relays.Read)
 	cfg.Relays.Write = normalizeRelaySet(cfg.Relays.Write)
 	if mode, ok := state.ParseACPTransportMode(cfg.ACP.Transport); ok {

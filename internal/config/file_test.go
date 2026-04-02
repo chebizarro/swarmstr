@@ -21,3 +21,13 @@ func TestParseConfigBytesACPTransport(t *testing.T) {
 		t.Fatalf("expected acp.transport=nip04, got %#v", doc.ACP)
 	}
 }
+
+func TestParseConfigBytesDMReplyScheme(t *testing.T) {
+	doc, err := ParseConfigBytes([]byte(`{"dm":{"reply_scheme":"nip17"}}`), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	if doc.DM.ReplyScheme != "nip17" {
+		t.Fatalf("expected dm.reply_scheme=nip17, got %#v", doc.DM)
+	}
+}

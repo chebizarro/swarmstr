@@ -16,6 +16,7 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 	schema := map[string]any{
 		"fields": []string{
 			"dm.policy",
+			"dm.reply_scheme",
 			"dm.allow_from",
 			"relays.read",
 			"relays.write",
@@ -281,6 +282,16 @@ func ApplyConfigSet(cfg state.ConfigDoc, key string, value any) (state.ConfigDoc
 			return cfg, fmt.Errorf("dm.policy must be string")
 		}
 		cfg.DM.Policy = strings.TrimSpace(s)
+	case "dm.reply_scheme":
+		s, ok := value.(string)
+		if !ok {
+			return cfg, fmt.Errorf("dm.reply_scheme must be string")
+		}
+		mode, valid := state.ParseDMReplyScheme(s)
+		if !valid {
+			return cfg, fmt.Errorf("dm.reply_scheme must be one of auto, nip17, nip04")
+		}
+		cfg.DM.ReplyScheme = mode
 	case "dm.allow_from":
 		items, err := anyToStringSlice(value)
 		if err != nil {
