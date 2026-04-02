@@ -317,6 +317,7 @@ type CheckpointDoc struct {
 	Name             string                    `json:"name"`
 	LastEvent        string                    `json:"last_event,omitempty"`
 	LastUnix         int64                     `json:"last_unix,omitempty"`
+	RecentEventIDs   []string                  `json:"recent_event_ids,omitempty"`
 	ControlResponses []ControlResponseCacheDoc `json:"control_responses,omitempty"`
 }
 

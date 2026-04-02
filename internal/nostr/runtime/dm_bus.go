@@ -267,9 +267,6 @@ func (b *DMBus) SendDMWithScheme(ctx context.Context, toPubKey string, text stri
 
 func (b *DMBus) SetRelays(relays []string) error {
 	next := sanitizeRelayList(relays)
-	if len(next) == 0 {
-		return fmt.Errorf("at least one relay is required")
-	}
 	b.relaysMu.Lock()
 	b.relays = next
 	b.relaysMu.Unlock()
@@ -467,7 +464,18 @@ func (b *DMBus) runSubscription(since int64) bool {
 	if b.hub != nil {
 		return b.runHubSubscription(filter)
 	}
-	stream := b.pool.SubscribeMany(b.ctx, b.currentRelays(), filter, nostr.SubscriptionOptions{})
+	relays := b.currentRelays()
+	if len(relays) == 0 {
+		select {
+		case <-b.ctx.Done():
+			return true
+		case <-b.rebindCh:
+			return true
+		case <-time.After(500 * time.Millisecond):
+			return false
+		}
+	}
+	stream := b.pool.SubscribeMany(b.ctx, relays, filter, nostr.SubscriptionOptions{})
 	for {
 		select {
 		case <-b.ctx.Done():

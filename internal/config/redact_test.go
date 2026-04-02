@@ -158,6 +158,7 @@ func TestRedact_typedSections(t *testing.T) {
 			"openai": {
 				Enabled: true,
 				APIKey:  "sk-real",
+				APIKeys: []string{"sk-1", "sk-2"},
 				BaseURL: "https://api.openai.com/v1",
 				Model:   "gpt-4o-mini",
 				Extra:   map[string]any{"temperature": 0.1},
@@ -167,6 +168,7 @@ func TestRedact_typedSections(t *testing.T) {
 		Heartbeat: state.HeartbeatConfig{Enabled: true, IntervalMS: 15000},
 		TTS:       state.TTSConfig{Enabled: true, Provider: "elevenlabs", Voice: "alloy"},
 		Secrets:   state.SecretsConfig{"openai_api_key": "env:OPENAI_API_KEY"},
+		Hooks:     state.HooksConfig{Enabled: true, Token: "hook-secret"},
 		CronCfg:   state.CronConfig{Enabled: true},
 	}
 
@@ -174,6 +176,9 @@ func TestRedact_typedSections(t *testing.T) {
 
 	if out.Providers["openai"].APIKey != RedactedValue {
 		t.Fatalf("typed provider api_key not redacted: %#v", out.Providers["openai"].APIKey)
+	}
+	if got := out.Providers["openai"].APIKeys; len(got) != 2 || got[0] != RedactedValue || got[1] != RedactedValue {
+		t.Fatalf("typed provider api_keys not redacted: %#v", got)
 	}
 	if out.Providers["openai"].BaseURL != "https://api.openai.com/v1" {
 		t.Fatalf("typed provider base_url should be preserved: %#v", out.Providers["openai"].BaseURL)
@@ -184,6 +189,9 @@ func TestRedact_typedSections(t *testing.T) {
 
 	if out.Secrets["openai_api_key"] != RedactedValue {
 		t.Fatalf("typed secrets value not redacted: %#v", out.Secrets)
+	}
+	if out.Hooks.Token != RedactedValue {
+		t.Fatalf("hook token not redacted: %#v", out.Hooks.Token)
 	}
 
 	if out.Session != doc.Session {

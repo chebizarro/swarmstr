@@ -139,6 +139,12 @@ var (
 	// controlRuntimeConfig is the live runtime config store used by shared
 	// helper paths outside main() (for example agent.run fallbacks).
 	controlRuntimeConfig *runtimeConfigStore
+	// controlConfigFilePath is the runtime config file path used for durable
+	// write-back on successful config mutations.
+	controlConfigFilePath string
+	// controlPairingConfigMu serializes pairing/device/node mutations that do
+	// read-modify-write updates against the live ConfigDoc.
+	controlPairingConfigMu sync.Mutex
 
 	// controlPluginMgr is the live Goja plugin manager; nil if no plugins are loaded.
 	controlPluginMgr *pluginmanager.GojaPluginManager
@@ -3838,7 +3844,11 @@ func main() {
 					current := configState.Get()
 					current.Relays.Read = read
 					current.Relays.Write = write
-					configState.Set(current)
+					if err := persistRuntimeConfigFile(current); err != nil {
+						log.Printf("nip65: config write-back failed: %v", err)
+					} else {
+						configState.Set(current)
+					}
 				}
 
 				allRelays := nostruntime.MergeRelayLists(read, write)
@@ -4671,16 +4681,13 @@ func main() {
 		}()
 	}
 
-	// configState.Set hook: write-back to disk + WS event on every config mutation
-	// (API-triggered or relay-pulled).  The atomic rename of WriteConfigFile means
-	// the SyncEngine's fsnotify will fire once, but the re-read will produce the
-	// same content, so the secondary relay push is idempotent.
+	controlConfigFilePath = configFilePath
+
+	// configState.Set hook: apply live runtime side effects + WS event on every
+	// config mutation. Disk persistence is handled before successful Set() calls
+	// in mutation paths so callers do not observe success when write-back fails.
 	configState.SetOnChange(func(doc state.ConfigDoc) {
-		if configFilePath != "" {
-			if err := config.WriteConfigFile(configFilePath, doc); err != nil {
-				log.Printf("config write-back to disk failed path=%s err=%v", configFilePath, err)
-			}
-		}
+		applyRuntimeConfigSideEffects(doc)
 		wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
 			TS: time.Now().UnixMilli(),
 		})
@@ -4698,6 +4705,7 @@ func main() {
 				configState.mu.Lock()
 				configState.cfg = doc
 				configState.mu.Unlock()
+				applyRuntimeConfigSideEffects(doc)
 				wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
 					TS: time.Now().UnixMilli(),
 				})
@@ -4888,15 +4896,7 @@ func main() {
 				ChannelsStatus: func(_ context.Context, _ methods.ChannelsStatusRequest) (map[string]any, error) {
 					current := configState.Get()
 					status := channelState.Status(bus, controlBus, current)
-					return map[string]any{"channels": []map[string]any{{
-						"id":                     "nostr",
-						"connected":              status["connected"],
-						"logged_out":             status["logged_out"],
-						"read_relays":            status["read_relays"],
-						"write_relays":           status["write_relays"],
-						"runtime_dm_relays":      status["runtime_dm_relays"],
-						"runtime_control_relays": status["runtime_ctrl_relays"],
-					}}}, nil
+					return map[string]any{"channels": []map[string]any{buildNostrChannelStatusRow(status, "")}}, nil
 				},
 				ChannelsLogout: func(_ context.Context, channel string) (map[string]any, error) {
 					return channelState.Logout(channel)
@@ -5312,11 +5312,13 @@ func main() {
 					if err := policy.ValidateConfig(newCfg); err != nil {
 						return err
 					}
+					if err := persistRuntimeConfigFile(newCfg); err != nil {
+						return err
+					}
 					if _, err := docsRepo.PutConfig(ctx, newCfg); err != nil {
 						return err
 					}
 					configState.Set(newCfg)
-					applyRuntimeRelayPolicy(bus, controlBus, newCfg)
 					return nil
 				},
 				ConfigSet: func(ctx context.Context, req methods.ConfigSetRequest) (map[string]any, int, error) {
@@ -5600,9 +5602,10 @@ type runtimeConfigStore struct {
 }
 
 type ingestTracker struct {
-	mu        sync.Mutex
-	lastEvent string
-	lastUnix  int64
+	mu             sync.Mutex
+	lastEvent      string
+	lastUnix       int64
+	recentEventIDs []string
 }
 
 type memoryIndexTracker struct {
@@ -5612,11 +5615,12 @@ type memoryIndexTracker struct {
 }
 
 type controlTracker struct {
-	mu            sync.Mutex
-	lastEvent     string
-	lastUnix      int64
-	responses     map[string]state.ControlResponseCacheDoc
-	responseOrder []string
+	mu             sync.Mutex
+	lastEvent      string
+	lastUnix       int64
+	recentEventIDs []string
+	responses      map[string]state.ControlResponseCacheDoc
+	responseOrder  []string
 }
 
 type chatAbortHandle struct {
@@ -5721,7 +5725,11 @@ func (s *runtimeConfigStore) SetOnChange(fn func(state.ConfigDoc)) {
 }
 
 func newIngestTracker(doc state.CheckpointDoc) *ingestTracker {
-	return &ingestTracker{lastEvent: doc.LastEvent, lastUnix: doc.LastUnix}
+	return &ingestTracker{
+		lastEvent:      doc.LastEvent,
+		lastUnix:       doc.LastUnix,
+		recentEventIDs: normalizeCheckpointEventIDs(doc.RecentEventIDs),
+	}
 }
 
 func newMemoryIndexTracker(doc state.CheckpointDoc) *memoryIndexTracker {
@@ -5731,13 +5739,15 @@ func newMemoryIndexTracker(doc state.CheckpointDoc) *memoryIndexTracker {
 const (
 	controlResponseCheckpointCap = 256
 	controlResponseCheckpointTTL = 30 * time.Minute
+	checkpointRecentEventCap     = 2048
 )
 
 func newControlTracker(doc state.CheckpointDoc) *controlTracker {
 	t := &controlTracker{
-		lastEvent: doc.LastEvent,
-		lastUnix:  doc.LastUnix,
-		responses: map[string]state.ControlResponseCacheDoc{},
+		lastEvent:      doc.LastEvent,
+		lastUnix:       doc.LastUnix,
+		recentEventIDs: normalizeCheckpointEventIDs(doc.RecentEventIDs),
+		responses:      map[string]state.ControlResponseCacheDoc{},
 	}
 	nowUnix := time.Now().Unix()
 	for _, entry := range doc.ControlResponses {
@@ -5785,8 +5795,7 @@ func (t *ingestTracker) AlreadyProcessed(eventID string, createdAt int64) bool {
 	if createdAt < t.lastUnix {
 		return true
 	}
-	// Note: Assumes event IDs sort lexicographically by creation time within same timestamp
-	if createdAt == t.lastUnix && eventID <= t.lastEvent {
+	if createdAt == t.lastUnix && checkpointEventSeen(t.recentEventIDs, eventID) {
 		return true
 	}
 	return false
@@ -5801,17 +5810,17 @@ func (t *ingestTracker) MarkProcessed(ctx context.Context, repo *state.DocsRepos
 	}
 
 	t.mu.Lock()
-	if eventUnix < t.lastUnix || (eventUnix == t.lastUnix && eventID <= t.lastEvent) {
+	if eventUnix < t.lastUnix || (eventUnix == t.lastUnix && checkpointEventSeen(t.recentEventIDs, eventID)) {
 		t.mu.Unlock()
 		return nil
 	}
-	t.lastEvent = eventID
-	t.lastUnix = eventUnix
+	t.lastEvent, t.lastUnix, t.recentEventIDs = checkpointAdvanceState(t.lastEvent, t.lastUnix, t.recentEventIDs, eventID, eventUnix)
 	checkpoint := state.CheckpointDoc{
-		Version:   1,
-		Name:      "dm_ingest",
-		LastEvent: t.lastEvent,
-		LastUnix:  t.lastUnix,
+		Version:        1,
+		Name:           "dm_ingest",
+		LastEvent:      t.lastEvent,
+		LastUnix:       t.lastUnix,
+		RecentEventIDs: append([]string{}, t.recentEventIDs...),
 	}
 	t.mu.Unlock()
 
@@ -5828,8 +5837,7 @@ func (t *controlTracker) AlreadyProcessed(eventID string, createdAt int64) bool 
 	if createdAt < t.lastUnix {
 		return true
 	}
-	// Note: Assumes event IDs sort lexicographically by creation time within same timestamp
-	if createdAt == t.lastUnix && eventID <= t.lastEvent {
+	if createdAt == t.lastUnix && checkpointEventSeen(t.recentEventIDs, eventID) {
 		return true
 	}
 	return false
@@ -5872,13 +5880,10 @@ func (t *controlTracker) MarkHandled(ctx context.Context, repo *state.DocsReposi
 		eventUnix = nowUnix
 	}
 	t.mu.Lock()
-	if eventUnix > t.lastUnix || (eventUnix == t.lastUnix && handled.EventID > t.lastEvent) {
-		t.lastEvent = handled.EventID
-		t.lastUnix = eventUnix
-	}
+	t.lastEvent, t.lastUnix, t.recentEventIDs = checkpointAdvanceState(t.lastEvent, t.lastUnix, t.recentEventIDs, handled.EventID, eventUnix)
 	callerPubKey := strings.TrimSpace(handled.CallerPubKey)
 	requestID := strings.TrimSpace(handled.RequestID)
-	if callerPubKey != "" && requestID != "" {
+	if callerPubKey != "" && requestID != "" && isCacheableControlMethod(handled.Method) {
 		key := controlResponseCacheKey(callerPubKey, requestID)
 		if _, exists := t.responses[key]; !exists {
 			t.responseOrder = append(t.responseOrder, key)
@@ -5897,6 +5902,7 @@ func (t *controlTracker) MarkHandled(ctx context.Context, repo *state.DocsReposi
 		Name:             "control_ingest",
 		LastEvent:        t.lastEvent,
 		LastUnix:         t.lastUnix,
+		RecentEventIDs:   append([]string{}, t.recentEventIDs...),
 		ControlResponses: t.snapshotResponsesLocked(),
 	}
 	t.mu.Unlock()
@@ -5906,6 +5912,75 @@ func (t *controlTracker) MarkHandled(ctx context.Context, repo *state.DocsReposi
 
 func controlResponseCacheKey(callerPubKey string, requestID string) string {
 	return strings.TrimSpace(callerPubKey) + "\x00" + strings.TrimSpace(requestID)
+}
+
+func normalizeCheckpointEventIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+		if len(out) >= checkpointRecentEventCap {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func checkpointEventSeen(ids []string, eventID string) bool {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return false
+	}
+	for _, existing := range ids {
+		if existing == eventID {
+			return true
+		}
+	}
+	return false
+}
+
+func checkpointAdvanceState(lastEvent string, lastUnix int64, recentEventIDs []string, eventID string, eventUnix int64) (string, int64, []string) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return lastEvent, lastUnix, recentEventIDs
+	}
+	if eventUnix > lastUnix {
+		return eventID, eventUnix, []string{eventID}
+	}
+	if eventUnix < lastUnix {
+		return lastEvent, lastUnix, recentEventIDs
+	}
+	if checkpointEventSeen(recentEventIDs, eventID) {
+		return lastEvent, lastUnix, recentEventIDs
+	}
+	updated := append(append([]string{}, recentEventIDs...), eventID)
+	if len(updated) > checkpointRecentEventCap {
+		updated = updated[len(updated)-checkpointRecentEventCap:]
+	}
+	return eventID, lastUnix, updated
+}
+
+func isCacheableControlMethod(method string) bool {
+	switch strings.TrimSpace(method) {
+	case methods.MethodSecretsResolve:
+		return false
+	default:
+		return true
+	}
 }
 
 func (t *controlTracker) pruneResponsesLocked(nowUnix int64) {
@@ -6384,18 +6459,10 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		if channelState == nil {
-			return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{{"id": "nostr", "connected": false, "status": "channel_state_unavailable"}}}}, nil
+			return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{buildNostrChannelStatusRow(map[string]any{}, "channel_state_unavailable")}}}, nil
 		}
 		status := channelState.Status(dmBus, controlBus, cfg)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{{
-			"id":                     "nostr",
-			"connected":              status["connected"],
-			"logged_out":             status["logged_out"],
-			"read_relays":            status["read_relays"],
-			"write_relays":           status["write_relays"],
-			"runtime_dm_relays":      status["runtime_dm_relays"],
-			"runtime_control_relays": status["runtime_ctrl_relays"],
-		}}}}, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{buildNostrChannelStatusRow(status, "")}}}, nil
 	case methods.MethodChannelsLogout:
 		req, err := methods.DecodeChannelsLogoutParams(in.Params)
 		if err != nil {
@@ -8872,11 +8939,13 @@ func handleControlRPCRequest(
 			newVersion = req.ExpectedVersion + 1
 		}
 		req.Config.Version = newVersion
+		if err := persistRuntimeConfigFile(req.Config); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
 		if _, err := docsRepo.PutConfig(ctx, req.Config); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		configState.Set(req.Config)
-		applyRuntimeRelayPolicy(dmBus, controlBus, req.Config)
 		restartPending := scheduleRestartIfNeeded(cfg, req.Config, 0)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": req.Config.Hash(), "restart_pending": restartPending}}, nil
 	case methods.MethodConfigSet:
@@ -8899,11 +8968,13 @@ func handleControlRPCRequest(
 		if err := policy.ValidateConfig(next); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		if err := persistRuntimeConfigFile(next); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
 		if _, err := docsRepo.PutConfig(ctx, next); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		configState.Set(next)
-		applyRuntimeRelayPolicy(dmBus, controlBus, next)
 		restartPending := scheduleRestartIfNeeded(cfg, next, 0)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash(), "restart_pending": restartPending}}, nil
 	case methods.MethodConfigApply:
@@ -8922,11 +8993,13 @@ func handleControlRPCRequest(
 		if err := policy.ValidateConfig(next); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		if err := persistRuntimeConfigFile(next); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
 		if _, err := docsRepo.PutConfig(ctx, next); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		configState.Set(next)
-		applyRuntimeRelayPolicy(dmBus, controlBus, next)
 		restartPending := scheduleRestartIfNeeded(cfg, next, req.RestartDelayMS)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash(), "restart_pending": restartPending}}, nil
 	case methods.MethodConfigPatch:
@@ -8949,11 +9022,13 @@ func handleControlRPCRequest(
 		if err := policy.ValidateConfig(next); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
+		if err := persistRuntimeConfigFile(next); err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
 		if _, err := docsRepo.PutConfig(ctx, next); err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
 		configState.Set(next)
-		applyRuntimeRelayPolicy(dmBus, controlBus, next)
 		restartPending := scheduleRestartIfNeeded(cfg, next, req.RestartDelayMS)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash(), "restart_pending": restartPending}}, nil
 	case methods.MethodConfigSchema:
@@ -9494,6 +9569,7 @@ func refreshKeyRings(providers map[string]state.ProviderEntry) {
 	if controlKeyRings == nil {
 		return
 	}
+	rings := make(map[string]*agent.KeyRing, len(providers))
 	for providerID, pe := range providers {
 		// Build the full key pool: APIKeys list + single APIKey if non-empty.
 		keys := make([]string, 0, len(pe.APIKeys)+1)
@@ -9502,9 +9578,22 @@ func refreshKeyRings(providers map[string]state.ProviderEntry) {
 			keys = append(keys, pe.APIKey)
 		}
 		if len(keys) > 0 {
-			controlKeyRings.Set(providerID, agent.NewKeyRing(keys))
+			rings[providerID] = agent.NewKeyRing(keys)
 		}
 	}
+	controlKeyRings.Replace(rings)
+}
+
+func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
+	refreshKeyRings(cfg.Providers)
+	applyRuntimeRelayPolicy(nil, nil, cfg)
+}
+
+func persistRuntimeConfigFile(doc state.ConfigDoc) error {
+	if strings.TrimSpace(controlConfigFilePath) == "" {
+		return nil
+	}
+	return config.WriteConfigFile(controlConfigFilePath, doc)
 }
 
 func autoResolveProviderOverride(model string, providers map[string]state.ProviderEntry) agent.ProviderOverride {
@@ -10631,9 +10720,6 @@ func runSessionsPrune(
 }
 
 func applyDMRelayPolicy(relays []string) {
-	if len(relays) == 0 {
-		return
-	}
 	if controlNIP17Bus != nil {
 		if err := controlNIP17Bus.SetRelays(relays); err != nil {
 			log.Printf("nip17 relay policy update failed: %v", err)
@@ -10657,13 +10743,40 @@ func applyDMRelayPolicy(relays []string) {
 }
 
 func applyControlRelayPolicy(relays []string) {
-	if len(relays) == 0 {
-		return
-	}
 	if controlRPCBus != nil {
 		if err := controlRPCBus.SetRelays(relays); err != nil {
 			log.Printf("control relay policy update failed: %v", err)
 		}
+	}
+}
+
+func resolveNostrChannelStatus(connected bool, loggedOut bool, fallback string) string {
+	if loggedOut {
+		return "logged_out"
+	}
+	if connected {
+		return "connected"
+	}
+	if strings.TrimSpace(fallback) != "" {
+		return strings.TrimSpace(fallback)
+	}
+	return "disconnected"
+}
+
+func buildNostrChannelStatusRow(status map[string]any, fallbackStatus string) map[string]any {
+	connected, _ := status["connected"].(bool)
+	loggedOut, _ := status["logged_out"].(bool)
+	return map[string]any{
+		"id":                     "nostr",
+		"kind":                   "nostr",
+		"channel":                "nostr",
+		"status":                 resolveNostrChannelStatus(connected, loggedOut, fallbackStatus),
+		"connected":              connected,
+		"logged_out":             loggedOut,
+		"read_relays":            status["read_relays"],
+		"write_relays":           status["write_relays"],
+		"runtime_dm_relays":      status["runtime_dm_relays"],
+		"runtime_control_relays": status["runtime_ctrl_relays"],
 	}
 }
 
@@ -10689,15 +10802,13 @@ func subHealthToInfo(s nostruntime.SubHealthSnapshot) methods.SubHealthInfo {
 
 func applyRuntimeRelayPolicy(_ nostruntime.DMTransport, _ *nostruntime.ControlRPCBus, cfg state.ConfigDoc) {
 	relays := nostruntime.MergeRelayLists(cfg.Relays.Read, cfg.Relays.Write)
-	if len(relays) > 0 {
-		applyDMRelayPolicy(relays)
-		applyControlRelayPolicy(relays)
-		if watchRegistry != nil {
-			watchRegistry.RebindRelays(relays)
-		}
-		if dvmHandler != nil {
-			dvmHandler.SetRelays(relays)
-		}
+	applyDMRelayPolicy(relays)
+	applyControlRelayPolicy(relays)
+	if watchRegistry != nil {
+		watchRegistry.RebindRelays(relays)
+	}
+	if dvmHandler != nil {
+		dvmHandler.SetRelays(relays)
 	}
 
 	// Update the NIP-65 relay selector fallbacks when relay config changes.
@@ -11821,6 +11932,9 @@ func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, conf
 	entry["updated_at"] = time.Now().Unix()
 	entries[key] = entry
 	next := configWithSkillEntries(cfg, entries)
+	if err := persistRuntimeConfigFile(next); err != nil {
+		return state.ConfigDoc{}, installResult, err
+	}
 	if _, err := docsRepo.PutConfig(ctx, next); err != nil {
 		return state.ConfigDoc{}, installResult, err
 	}
@@ -11889,6 +12003,9 @@ func applySkillUpdate(ctx context.Context, docsRepo *state.DocsRepository, confi
 	entry["updated_at"] = time.Now().Unix()
 	entries[skillKey] = entry
 	next := configWithSkillEntries(cfg, entries)
+	if err := persistRuntimeConfigFile(next); err != nil {
+		return state.ConfigDoc{}, nil, err
+	}
 	if _, err := docsRepo.PutConfig(ctx, next); err != nil {
 		return state.ConfigDoc{}, nil, err
 	}
@@ -12048,6 +12165,9 @@ func applyPluginInstallRuntime(ctx context.Context, docsRepo *state.DocsReposito
 	if err != nil {
 		return nil, err
 	}
+	if err := persistRuntimeConfigFile(next); err != nil {
+		return nil, err
+	}
 	if _, err := docsRepo.PutConfig(ctx, next); err != nil {
 		return nil, err
 	}
@@ -12100,6 +12220,9 @@ func applyPluginUninstallRuntime(ctx context.Context, docsRepo *state.DocsReposi
 		if errors.Is(err, methods.ErrPluginNotFound) {
 			return nil, state.ErrNotFound
 		}
+		return nil, err
+	}
+	if err := persistRuntimeConfigFile(next); err != nil {
 		return nil, err
 	}
 	if _, err := docsRepo.PutConfig(ctx, next); err != nil {
@@ -12188,6 +12311,9 @@ func applyPluginUpdateRuntime(ctx context.Context, docsRepo *state.DocsRepositor
 	}
 	next, changed, outcomes := methods.ApplyPluginUpdateOperation(cfg, req.PluginIDs, req.DryRun, runner)
 	if changed {
+		if err := persistRuntimeConfigFile(next); err != nil {
+			return nil, err
+		}
 		if _, err := docsRepo.PutConfig(ctx, next); err != nil {
 			return nil, err
 		}
@@ -12429,6 +12555,9 @@ func toRecordSlice(raw any) []map[string]any {
 }
 
 func applyPairingConfigUpdate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, mutator func(map[string]any) (map[string]any, map[string]any, error)) (map[string]any, error) {
+	controlPairingConfigMu.Lock()
+	defer controlPairingConfigMu.Unlock()
+
 	cfg := configState.Get()
 	pairing := pairingData(cfg)
 	nextPairing, result, err := mutator(pairing)
@@ -12439,6 +12568,9 @@ func applyPairingConfigUpdate(ctx context.Context, docsRepo *state.DocsRepositor
 		cfg.Extra = map[string]any{}
 	}
 	cfg.Extra["pairing"] = nextPairing
+	if err := persistRuntimeConfigFile(cfg); err != nil {
+		return nil, err
+	}
 	if _, err := docsRepo.PutConfig(ctx, cfg); err != nil {
 		return nil, err
 	}

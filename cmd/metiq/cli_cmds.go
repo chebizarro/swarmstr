@@ -266,7 +266,16 @@ func runChannelsList(args []string) error {
 		}
 		id := stringField(ch, "id")
 		kind := stringField(ch, "kind")
+		if kind == "" {
+			kind = stringFieldAny(ch, "channel")
+		}
+		if kind == "" {
+			kind = id
+		}
 		status := stringField(ch, "status")
+		if status == "" {
+			status = channelStatusLabel(ch)
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", id, kind, status)
 	}
 	return w.Flush()
@@ -1511,6 +1520,26 @@ func stringFieldAny(m map[string]any, key string) string {
 	return ""
 }
 
+func boolFieldAny(m map[string]any, key string) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return false
+}
+
+func channelStatusLabel(m map[string]any) string {
+	if status := stringFieldAny(m, "status"); status != "" {
+		return status
+	}
+	if boolFieldAny(m, "logged_out") {
+		return "logged_out"
+	}
+	if boolFieldAny(m, "connected") {
+		return "connected"
+	}
+	return "disconnected"
+}
+
 // ─── sessions ─────────────────────────────────────────────────────────────────
 
 func runSessions(args []string) error {
@@ -2070,8 +2099,14 @@ func runDoctor(args []string) error {
 	// Check: memory usage (from admin if reachable).
 	if cl != nil {
 		if result, err := cl.call("doctor.memory.status", map[string]any{}); err == nil {
-			docs := floatFieldAny(result, "doc_count")
-			checks = append(checks, check{"memory index", true, fmt.Sprintf("%.0f docs", docs)})
+			if index, ok := result["index"].(map[string]any); ok {
+				docs := floatFieldAny(index, "entry_count")
+				sessions := floatFieldAny(index, "session_count")
+				checks = append(checks, check{"memory index", true, fmt.Sprintf("%.0f docs / %.0f sessions", docs, sessions)})
+			} else {
+				docs := floatFieldAny(result, "doc_count")
+				checks = append(checks, check{"memory index", true, fmt.Sprintf("%.0f docs", docs)})
+			}
 		}
 	}
 

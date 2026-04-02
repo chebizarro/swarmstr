@@ -186,9 +186,6 @@ func (b *NIP17Bus) SendDMWithScheme(ctx context.Context, toPubKey string, text s
 // SetRelays updates the relay list at runtime.
 func (b *NIP17Bus) SetRelays(relays []string) error {
 	next := sanitizeRelayList(relays)
-	if len(next) == 0 {
-		return fmt.Errorf("at least one relay is required")
-	}
 	b.relaysMu.Lock()
 	b.relays = next
 	b.relaysMu.Unlock()
@@ -237,6 +234,16 @@ func (b *NIP17Bus) receiveLoop(since nostr.Timestamp) {
 	for {
 		if b.ctx.Err() != nil {
 			return
+		}
+		if len(b.currentRelays()) == 0 {
+			select {
+			case <-b.ctx.Done():
+				return
+			case <-b.rebindCh:
+				continue
+			case <-time.After(500 * time.Millisecond):
+				continue
+			}
 		}
 		cycleCtx, cycleCancel := context.WithCancel(b.ctx)
 		rumCh := nip17.ListenForMessages(cycleCtx, b.pool, b.kr, b.currentRelays(), currentSince)

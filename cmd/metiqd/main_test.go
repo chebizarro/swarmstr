@@ -2533,6 +2533,46 @@ func TestControlTrackerDropsExpiredResponsesOnLoad(t *testing.T) {
 	}
 }
 
+func TestControlTrackerDoesNotPersistSecretsResolveResponses(t *testing.T) {
+	ctx := context.Background()
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	tracker := newControlTracker(state.CheckpointDoc{})
+	handled := nostruntime.ControlRPCHandled{
+		EventID:      "evt-secret",
+		EventUnix:    time.Now().Unix(),
+		CallerPubKey: "caller-a",
+		RequestID:    "req-secret",
+		Method:       methods.MethodSecretsResolve,
+		Response: nostruntime.ControlRPCCachedResponse{
+			Payload: `{"result":{"assignments":[{"value":"super-secret"}]}}`,
+			Tags:    nostr.Tags{{"req", "req-secret"}, {"status", "ok"}},
+		},
+	}
+	if err := tracker.MarkHandled(ctx, docs, handled); err != nil {
+		t.Fatalf("MarkHandled: %v", err)
+	}
+	if _, ok := tracker.LookupResponse("caller-a", "req-secret"); ok {
+		t.Fatal("expected secrets.resolve response to skip cache persistence")
+	}
+	checkpoint, err := docs.GetCheckpoint(ctx, "control_ingest")
+	if err != nil {
+		t.Fatalf("GetCheckpoint: %v", err)
+	}
+	if len(checkpoint.ControlResponses) != 0 {
+		t.Fatalf("expected no persisted control responses, got %+v", checkpoint.ControlResponses)
+	}
+}
+
+func TestIngestTrackerSameSecondEventDedupUsesExplicitIDs(t *testing.T) {
+	tracker := newIngestTracker(state.CheckpointDoc{LastUnix: 100, RecentEventIDs: []string{"evt-b"}})
+	if !tracker.AlreadyProcessed("evt-b", 100) {
+		t.Fatal("expected known same-second event to be treated as processed")
+	}
+	if tracker.AlreadyProcessed("evt-a", 100) {
+		t.Fatal("unexpected same-second event dedupe based on lexical ordering")
+	}
+}
+
 func newTestStore() *testStore {
 	return &testStore{replaceable: map[string]state.Event{}}
 }

@@ -56,6 +56,12 @@ func Redact(doc state.ConfigDoc) state.ConfigDoc {
 			if entry.APIKey != "" {
 				entry.APIKey = RedactedValue
 			}
+			if len(entry.APIKeys) > 0 {
+				entry.APIKeys = make([]string, len(entry.APIKeys))
+				for i := range entry.APIKeys {
+					entry.APIKeys[i] = RedactedValue
+				}
+			}
 			redacted[name] = entry
 		}
 		out.Providers = redacted
@@ -68,6 +74,10 @@ func Redact(doc state.ConfigDoc) state.ConfigDoc {
 			redactedSecrets[k] = RedactedValue
 		}
 		out.Secrets = redactedSecrets
+	}
+
+	if out.Hooks.Token != "" {
+		out.Hooks.Token = RedactedValue
 	}
 
 	if out.Extra == nil {
