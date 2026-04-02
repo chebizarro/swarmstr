@@ -1,0 +1,158 @@
+package main
+
+import (
+	"context"
+	"sort"
+	"strings"
+
+	acppkg "metiq/internal/acp"
+	"metiq/internal/agent"
+	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/store/state"
+)
+
+func buildLocalCapabilityAnnouncement(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository) nostruntime.CapabilityAnnouncement {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return nostruntime.CapabilityAnnouncement{
+		Runtime:        "metiq",
+		RuntimeVersion: version,
+		DMSchemes:      currentCapabilityDMSchemes(),
+		ACPVersion:     acppkg.Version,
+		Tools:          currentCapabilityToolNames(ctx, cfg, docsRepo),
+		Relays:         currentCapabilityPublishRelays(cfg),
+	}
+}
+
+func currentCapabilityToolNames(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository) []string {
+	if controlToolRegistry == nil {
+		return nil
+	}
+	allowed := resolvedAgentRuntimeToolAllowlist(ctx, cfg, docsRepo, "")
+	exec := agent.FilteredToolExecutor(controlToolRegistry, allowed)
+	defs := agent.ToolDefinitions(exec)
+	if len(defs) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		if def.Name == "" {
+			continue
+		}
+		names = append(names, def.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func currentCapabilityDMSchemes() []string {
+	seen := map[string]struct{}{}
+	add := func(values ...string) {
+		for _, value := range values {
+			if value == "" {
+				continue
+			}
+			seen[value] = struct{}{}
+		}
+	}
+	controlDMBusMu.RLock()
+	defer controlDMBusMu.RUnlock()
+	if controlNIP17Bus != nil {
+		add("giftwrap", "nip17", "nip44")
+	}
+	if controlNIP04Bus != nil {
+		add("nip04")
+	}
+	if len(seen) == 0 {
+		switch controlDMBus.(type) {
+		case *nostruntime.NIP17Bus:
+			add("giftwrap", "nip17", "nip44")
+		case *nostruntime.DMBus:
+			add("nip04")
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeCapabilityRelayURLs(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]string{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = trimmed
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, seen[key])
+	}
+	return out
+}
+
+func currentCapabilityPublishRelays(cfg state.ConfigDoc) []string {
+	relays := nostruntime.MergeRelayLists(cfg.Relays.Read, cfg.Relays.Write)
+	if len(relays) > 0 {
+		return relays
+	}
+	controlDMBusMu.RLock()
+	if controlDMBus != nil {
+		relays = append(relays, controlDMBus.Relays()...)
+	}
+	controlDMBusMu.RUnlock()
+	if controlRPCBus != nil {
+		relays = append(relays, controlRPCBus.Relays()...)
+	}
+	return normalizeCapabilityRelayURLs(relays)
+}
+
+func currentCapabilitySubscriptionRelays(cfg state.ConfigDoc) []string {
+	relays := append([]string{}, currentCapabilityPublishRelays(cfg)...)
+	nip51AllowlistMu.RLock()
+	for _, entry := range nip51FleetEntries {
+		if entry.Relay != "" {
+			relays = append(relays, entry.Relay)
+		}
+	}
+	nip51AllowlistMu.RUnlock()
+	if capabilityRegistry != nil {
+		for _, cap := range capabilityRegistry.All() {
+			relays = append(relays, cap.Relays...)
+		}
+	}
+	return normalizeCapabilityRelayURLs(relays)
+}
+
+func applyCapabilityRuntimeState(cfg state.ConfigDoc) {
+	if capabilityMonitor == nil {
+		return
+	}
+	capabilityMonitor.UpdatePublishRelays(currentCapabilityPublishRelays(cfg))
+	capabilityMonitor.UpdateSubscribeRelays(currentCapabilitySubscriptionRelays(cfg))
+	capabilityMonitor.UpdateLocal(buildLocalCapabilityAnnouncement(context.Background(), cfg, controlDocsRepo))
+	capabilityMonitor.TriggerPublish()
+}

@@ -71,6 +71,11 @@ func ValidateConfig(cfg state.ConfigDoc) error {
 	if err := validateControlPolicy(cfg.Control); err != nil {
 		return err
 	}
+	if strings.TrimSpace(cfg.ACP.Transport) != "" {
+		if _, ok := state.ParseACPTransportMode(cfg.ACP.Transport); !ok {
+			return fmt.Errorf("acp.transport must be one of auto, nip17, nip04")
+		}
+	}
 	if len(cfg.Relays.Read) == 0 {
 		return fmt.Errorf("relays.read must include at least one relay")
 	}
@@ -158,7 +163,9 @@ var validNostrChannelKinds = map[string]bool{
 	state.NostrChannelKindDM:          true,
 	state.NostrChannelKindNIP28:       true,
 	state.NostrChannelKindNIP29:       true,
+	state.NostrChannelKindChat:        true,
 	state.NostrChannelKindRelayFilter: true,
+	state.NostrChannelKindNIP34Inbox:  true,
 }
 
 func validateNostrChannels(channels state.NostrChannelsConfig) error {
@@ -167,7 +174,7 @@ func validateNostrChannels(channels state.NostrChannelsConfig) error {
 			return fmt.Errorf("nostr_channels.%s: kind is required", name)
 		}
 		if !validNostrChannelKinds[ch.Kind] {
-			return fmt.Errorf("nostr_channels.%s: unknown kind %q (valid: dm, nip28, nip29, relay-filter)", name, ch.Kind)
+			return fmt.Errorf("nostr_channels.%s: unknown kind %q (valid: dm, nip28, nip29, chat, relay-filter, nip34-inbox)", name, ch.Kind)
 		}
 		switch ch.Kind {
 		case state.NostrChannelKindNIP29:
@@ -178,10 +185,127 @@ func validateNostrChannels(channels state.NostrChannelsConfig) error {
 			if ch.ChannelID == "" {
 				return fmt.Errorf("nostr_channels.%s: channel_id is required for nip28 channels", name)
 			}
+		case state.NostrChannelKindNIP34Inbox:
+			if len(ch.Tags["a"]) == 0 {
+				return fmt.Errorf("nostr_channels.%s: tags.a is required for nip34-inbox channels", name)
+			}
+		case state.NostrChannelKindRelayFilter:
+			if relayFilterUsesNIP34Mode(ch) && len(ch.Tags["a"]) == 0 {
+				return fmt.Errorf("nostr_channels.%s: tags.a is required when relay-filter config.mode is nip34", name)
+			}
+		}
+		if err := validateNIP34AutoReviewConfig(name, ch); err != nil {
+			return err
 		}
 		for i, relay := range ch.Relays {
 			if _, err := normalizeRelayURL(relay); err != nil {
 				return fmt.Errorf("nostr_channels.%s.relays[%d]: %w", name, i, err)
+			}
+		}
+	}
+	return nil
+}
+
+func relayFilterUsesNIP34Mode(ch state.NostrChannelConfig) bool {
+	if ch.Config == nil {
+		return false
+	}
+	for _, key := range []string{"mode", "type"} {
+		if raw, ok := ch.Config[key].(string); ok {
+			switch strings.TrimSpace(strings.ToLower(raw)) {
+			case "nip34", string(state.NostrChannelKindNIP34Inbox):
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func validateNIP34AutoReviewConfig(name string, ch state.NostrChannelConfig) error {
+	if ch.Config == nil {
+		return nil
+	}
+	raw, ok := ch.Config["auto_review"]
+	if !ok {
+		return nil
+	}
+	if _, ok := raw.(bool); ok {
+		return nil
+	}
+	cfg, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("nostr_channels.%s.config.auto_review must be a boolean or object", name)
+	}
+	if rawProfile, exists := cfg["tool_profile"]; exists {
+		profile, ok := rawProfile.(string)
+		if !ok {
+			return fmt.Errorf("nostr_channels.%s.config.auto_review.tool_profile must be a string", name)
+		}
+		profile = strings.TrimSpace(strings.ToLower(profile))
+		if !validToolProfiles[profile] {
+			return fmt.Errorf("nostr_channels.%s.config.auto_review.tool_profile %q is not valid (valid: minimal, coding, messaging, full)", name, profile)
+		}
+	}
+	for _, key := range []string{"agent_id", "instructions"} {
+		if rawValue, exists := cfg[key]; exists {
+			if _, ok := rawValue.(string); !ok {
+				return fmt.Errorf("nostr_channels.%s.config.auto_review.%s must be a string", name, key)
+			}
+		}
+	}
+	for _, key := range []string{"enabled", "followed_only"} {
+		if rawValue, exists := cfg[key]; exists {
+			if _, ok := rawValue.(bool); !ok {
+				return fmt.Errorf("nostr_channels.%s.config.auto_review.%s must be a boolean", name, key)
+			}
+		}
+	}
+	if rawTools, exists := cfg["enabled_tools"]; exists {
+		switch values := rawTools.(type) {
+		case []string:
+			for _, value := range values {
+				if strings.TrimSpace(value) == "" {
+					return fmt.Errorf("nostr_channels.%s.config.auto_review.enabled_tools must not contain empty tool names", name)
+				}
+			}
+		case []any:
+			for _, value := range values {
+				toolName, ok := value.(string)
+				if !ok || strings.TrimSpace(toolName) == "" {
+					return fmt.Errorf("nostr_channels.%s.config.auto_review.enabled_tools must be an array of non-empty strings", name)
+				}
+			}
+		default:
+			return fmt.Errorf("nostr_channels.%s.config.auto_review.enabled_tools must be an array of strings", name)
+		}
+	}
+	if rawTriggerTypes, exists := cfg["trigger_types"]; exists {
+		var values []string
+		switch v := rawTriggerTypes.(type) {
+		case []string:
+			values = v
+		case []any:
+			values = make([]string, 0, len(v))
+			for _, value := range v {
+				s, ok := value.(string)
+				if !ok {
+					return fmt.Errorf("nostr_channels.%s.config.auto_review.trigger_types must be an array of strings", name)
+				}
+				values = append(values, s)
+			}
+		default:
+			return fmt.Errorf("nostr_channels.%s.config.auto_review.trigger_types must be an array of strings", name)
+		}
+		validTriggerTypes := map[string]bool{
+			"patch":               true,
+			"pull_request":        true,
+			"pull_request_update": true,
+			"issue":               true,
+			"status":              true,
+		}
+		for _, value := range values {
+			if !validTriggerTypes[strings.TrimSpace(strings.ToLower(value))] {
+				return fmt.Errorf("nostr_channels.%s.config.auto_review.trigger_types contains unsupported value %q", name, value)
 			}
 		}
 	}
@@ -263,6 +387,12 @@ func NormalizeConfig(cfg state.ConfigDoc) state.ConfigDoc {
 	cfg.DM.Policy = NormalizeDMPolicy(cfg.DM.Policy)
 	cfg.Relays.Read = normalizeRelaySet(cfg.Relays.Read)
 	cfg.Relays.Write = normalizeRelaySet(cfg.Relays.Write)
+	if mode, ok := state.ParseACPTransportMode(cfg.ACP.Transport); ok {
+		cfg.ACP.Transport = mode
+	}
+	if cfg.Storage.Encrypt == nil {
+		cfg.Storage.Encrypt = state.BoolPtr(true)
+	}
 	return cfg
 }
 

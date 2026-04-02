@@ -1,7 +1,8 @@
 // Package acp implements Metiq's Agent Control Protocol.
 //
-// ACP uses Nostr-native NIP-17 encrypted DMs between agent keypairs to
-// coordinate multi-agent workflows without any central broker.
+// ACP uses Nostr-native encrypted DMs between agent keypairs to coordinate
+// multi-agent workflows without any central broker. metiq can deliver the same
+// ACP task/result envelopes over NIP-17 or NIP-04 transports.
 //
 // Message flow:
 //

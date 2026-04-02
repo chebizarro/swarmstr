@@ -60,9 +60,15 @@ func rpcCacheStore(agentHex, result string, isTimeout bool) {
 
 // FleetEntry describes a known fleet agent.
 type FleetEntry struct {
-	Pubkey string `json:"pubkey"`
-	Name   string `json:"name,omitempty"`
-	Relay  string `json:"relay,omitempty"`
+	Pubkey         string   `json:"pubkey"`
+	Name           string   `json:"name,omitempty"`
+	Relay          string   `json:"relay,omitempty"`
+	Runtime        string   `json:"runtime,omitempty"`
+	RuntimeVersion string   `json:"runtime_version,omitempty"`
+	DMSchemes      []string `json:"dm_schemes,omitempty"`
+	ACPVersion     int      `json:"acp_version,omitempty"`
+	Tools          []string `json:"tools,omitempty"`
+	Relays         []string `json:"relays,omitempty"`
 }
 
 // FleetDirectoryFunc returns the current set of known fleet agents.
@@ -80,7 +86,7 @@ type RPCWaiter func(fromPubkeyHex string) (replyCh <-chan string, cancel func())
 
 var FleetAgentsDef = agent.ToolDefinition{
 	Name:        "fleet_agents",
-	Description: "List the known Cascadia fleet agents loaded from the NIP-51 agent directory. Returns each agent's pubkey, display name, and preferred relay.",
+	Description: "List the known Cascadia fleet agents loaded from the NIP-51 directory, enriched with any discovered capability metadata from kind:30317 events. Returns each agent's pubkey, display name, relay hints, runtime version, DM schemes, and tools when available.",
 	Parameters: agent.ToolParameters{
 		Type:       "object",
 		Properties: map[string]agent.ToolParamProp{},
@@ -355,39 +361,65 @@ func NostrAgentInboxTool(getAgents FleetDirectoryFunc, drain InboxDrainFunc) age
 	}
 }
 
-func resolveFleetTarget(raw string, getAgents FleetDirectoryFunc) (hexPubkey, displayName string, err error) {
-	// Try direct pubkey parse first.
-	pk, pkErr := nostruntime.ParsePubKey(raw)
-	if pkErr == nil {
-		hexPubkey = pk.Hex()
-		// Try to find a name for it in the directory.
-		if getAgents != nil {
-			for _, a := range getAgents() {
-				if strings.EqualFold(a.Pubkey, hexPubkey) && a.Name != "" {
-					displayName = a.Name
-					break
-				}
-			}
-		}
-		if displayName == "" {
-			displayName = hexPubkey[:12] + "..."
-		}
-		return hexPubkey, displayName, nil
+func fleetDisplayName(entry FleetEntry, hexPubkey string) string {
+	if strings.TrimSpace(entry.Name) != "" {
+		return entry.Name
 	}
+	if len(hexPubkey) >= 12 {
+		return hexPubkey[:12] + "..."
+	}
+	return hexPubkey
+}
 
-	// Try name lookup in fleet directory.
+// ResolveFleetTargetEntry turns a name, npub, or hex pubkey into a fleet entry.
+// Generic fleet tools stay strict here: if multiple agents share a display
+// name, callers must disambiguate with npub or hex pubkey.
+func ResolveFleetTargetEntry(raw string, getAgents FleetDirectoryFunc) (FleetEntry, string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return FleetEntry{}, "", fmt.Errorf("agent target is required")
+	}
+	var agents []FleetEntry
 	if getAgents != nil {
-		lowerRaw := strings.ToLower(strings.TrimSpace(raw))
-		for _, a := range getAgents() {
-			if strings.ToLower(a.Name) == lowerRaw {
-				pk2, err2 := nostruntime.ParsePubKey(a.Pubkey)
-				if err2 != nil {
-					return "", "", fmt.Errorf("fleet agent %q has invalid pubkey: %w", a.Name, err2)
-				}
-				return pk2.Hex(), a.Name, nil
-			}
-		}
+		agents = getAgents()
 	}
 
-	return "", "", fmt.Errorf("could not resolve agent %q — provide a name, npub, or hex pubkey", raw)
+	if pk, pkErr := nostruntime.ParsePubKey(raw); pkErr == nil {
+		hexPubkey := pk.Hex()
+		for _, a := range agents {
+			if strings.EqualFold(a.Pubkey, hexPubkey) {
+				return a, fleetDisplayName(a, hexPubkey), nil
+			}
+		}
+		return FleetEntry{Pubkey: hexPubkey}, fleetDisplayName(FleetEntry{}, hexPubkey), nil
+	}
+
+	lowerRaw := strings.ToLower(raw)
+	matches := make([]FleetEntry, 0, len(agents))
+	for _, a := range agents {
+		if strings.ToLower(strings.TrimSpace(a.Name)) == lowerRaw {
+			matches = append(matches, a)
+		}
+	}
+	if len(matches) == 0 {
+		return FleetEntry{}, "", fmt.Errorf("could not resolve agent %q — provide a name, npub, or hex pubkey", raw)
+	}
+	if len(matches) > 1 {
+		return FleetEntry{}, "", fmt.Errorf("multiple fleet agents named %q — use npub or hex pubkey", raw)
+	}
+	best := matches[0]
+	pk, err := nostruntime.ParsePubKey(best.Pubkey)
+	if err != nil {
+		return FleetEntry{}, "", fmt.Errorf("fleet agent %q has invalid pubkey: %w", best.Name, err)
+	}
+	best.Pubkey = pk.Hex()
+	return best, fleetDisplayName(best, best.Pubkey), nil
+}
+
+func resolveFleetTarget(raw string, getAgents FleetDirectoryFunc) (hexPubkey, displayName string, err error) {
+	entry, displayName, err := ResolveFleetTargetEntry(raw, getAgents)
+	if err != nil {
+		return "", "", err
+	}
+	return entry.Pubkey, displayName, nil
 }

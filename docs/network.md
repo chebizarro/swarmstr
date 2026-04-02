@@ -77,6 +77,7 @@ Good relay choices for reliability:
 | Damus | `wss://relay.damus.io` | Reliable, good uptime |
 | primal | `wss://relay.primal.net` | Good coverage |
 | sharegap | `wss://relay.sharegap.net` | Good coverage |
+| armada | `wss://armada.sharegap.net` | Sharegap fleet relay |
 | nos.lol | `wss://nos.lol` | Popular |
 | primal.net | `wss://relay.primal.net` | Primal-operated |
 

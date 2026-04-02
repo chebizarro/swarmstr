@@ -42,7 +42,7 @@ var ACPDelegateDef = agent.ToolDefinition{
 		Properties: map[string]agent.ToolParamProp{
 			"peer_pubkey": {
 				Type:        "string",
-				Description: "Hex Nostr pubkey of the peer agent to delegate to.",
+				Description: "Target peer agent as a fleet name, npub, or hex Nostr pubkey. Capability-aware routing prefers registered peers with discovered ACP support when names collide.",
 			},
 			"instructions": {
 				Type:        "string",
@@ -859,7 +859,7 @@ var BlossomMirrorDef = agent.ToolDefinition{
 // GRASPRepoAnnounceDef is the ToolDefinition for grasp_repo_announce.
 var GRASPRepoAnnounceDef = agent.ToolDefinition{
 	Name:        "grasp_repo_announce",
-	Description: "Publish a NIP-34 git repository announcement (kind 30617) to Nostr relays. Makes the repository discoverable by GRASP-compatible clients and other agents.",
+	Description: "Publish a NIP-34 git repository announcement event to Nostr relays. Makes the repository discoverable by GRASP-compatible clients and other agents.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
@@ -908,7 +908,7 @@ var GRASPRepoAnnounceDef = agent.ToolDefinition{
 // GRASPRepoListDef is the ToolDefinition for grasp_repo_list.
 var GRASPRepoListDef = agent.ToolDefinition{
 	Name:        "grasp_repo_list",
-	Description: "Fetch NIP-34 repository announcements (kind 30617) from relays. Optionally filter by owner pubkey.",
+	Description: "Fetch NIP-34 repository announcement events from relays. Optionally filter by owner pubkey.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
@@ -932,13 +932,13 @@ var GRASPRepoListDef = agent.ToolDefinition{
 // GRASPIssueCreateDef is the ToolDefinition for grasp_issue_create.
 var GRASPIssueCreateDef = agent.ToolDefinition{
 	Name:        "grasp_issue_create",
-	Description: "Publish a NIP-34 issue (kind 1621) on a GRASP repository. Issues are addressable Nostr events linked to a repository via its address tag.",
+	Description: "Publish a NIP-34 issue event on a GRASP repository. Issues are addressable Nostr events linked to a repository via its address tag.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
 			"repo_addr": {
 				Type:        "string",
-				Description: "Repository address in format '30617:<owner-pubkey>:<repo-id>'.",
+				Description: "Repository address in NIP-34 address format '<repo-announcement-kind>:<owner-pubkey>:<repo-id>'.",
 			},
 			"subject": {
 				Type:        "string",
@@ -965,13 +965,13 @@ var GRASPIssueCreateDef = agent.ToolDefinition{
 // GRASPIssueListDef is the ToolDefinition for grasp_issue_list.
 var GRASPIssueListDef = agent.ToolDefinition{
 	Name:        "grasp_issue_list",
-	Description: "Fetch open issues for a GRASP repository (kind 1621).",
+	Description: "Fetch open NIP-34 issue events for a GRASP repository.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
 			"repo_addr": {
 				Type:        "string",
-				Description: "Repository address in format '30617:<owner-pubkey>:<repo-id>'.",
+				Description: "Repository address in NIP-34 address format '<repo-announcement-kind>:<owner-pubkey>:<repo-id>'.",
 			},
 			"limit": {
 				Type:        "number",
@@ -990,13 +990,13 @@ var GRASPIssueListDef = agent.ToolDefinition{
 // GRASPPatchSubmitDef is the ToolDefinition for grasp_patch_submit.
 var GRASPPatchSubmitDef = agent.ToolDefinition{
 	Name:        "grasp_patch_submit",
-	Description: "Publish a NIP-34 patch (kind 1617) to a GRASP repository. The content should be the output of 'git format-patch'.",
+	Description: "Publish a NIP-34 patch event to a GRASP repository. The content should be the output of 'git format-patch'.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
 			"repo_addr": {
 				Type:        "string",
-				Description: "Repository address in format '30617:<owner-pubkey>:<repo-id>'.",
+				Description: "Repository address in NIP-34 address format '<repo-announcement-kind>:<owner-pubkey>:<repo-id>'.",
 			},
 			"content": {
 				Type:        "string",
@@ -1019,13 +1019,13 @@ var GRASPPatchSubmitDef = agent.ToolDefinition{
 // GRASPPRCreateDef is the ToolDefinition for grasp_pr_create.
 var GRASPPRCreateDef = agent.ToolDefinition{
 	Name:        "grasp_pr_create",
-	Description: "Publish a NIP-34 pull request (kind 1618) to a GRASP repository, proposing a branch or set of commits for merge.",
+	Description: "Publish a NIP-34 pull request event to a GRASP repository, proposing a branch or set of commits for merge.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
 			"repo_addr": {
 				Type:        "string",
-				Description: "Repository address in format '30617:<owner-pubkey>:<repo-id>'.",
+				Description: "Repository address in NIP-34 address format '<repo-announcement-kind>:<owner-pubkey>:<repo-id>'.",
 			},
 			"subject": {
 				Type:        "string",

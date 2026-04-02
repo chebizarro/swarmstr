@@ -14,6 +14,8 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/keyer"
+	"fiatjaf.com/nostr/nip44"
 
 	"metiq/internal/agent"
 	"metiq/internal/autoreply"
@@ -21,8 +23,70 @@ import (
 	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/nostr/events"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/nostr/secure"
 	"metiq/internal/store/state"
 )
+
+type mainTestKeyer struct {
+	keyer.KeySigner
+	sk nostr.SecretKey
+}
+
+func newMainTestKeyer(t *testing.T) nostr.Keyer {
+	t.Helper()
+	sk, err := nostr.SecretKeyFromHex("1111111111111111111111111111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("SecretKeyFromHex: %v", err)
+	}
+	return mainTestKeyer{KeySigner: keyer.NewPlainKeySigner([32]byte(sk)), sk: sk}
+}
+
+func (k mainTestKeyer) Encrypt(_ context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
+	ck, err := nip44.GenerateConversationKey(recipient, k.sk)
+	if err != nil {
+		return "", err
+	}
+	return nip44.Encrypt(plaintext, ck)
+}
+
+func (k mainTestKeyer) Decrypt(_ context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	ck, err := nip44.GenerateConversationKey(sender, k.sk)
+	if err != nil {
+		return "", err
+	}
+	return nip44.Decrypt(ciphertext, ck)
+}
+
+func TestEnsureRuntimeConfigDefaultsStorageEncryption(t *testing.T) {
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	cfg, err := ensureRuntimeConfig(context.Background(), docs, []string{"wss://relay.example"}, "admin")
+	if err != nil {
+		t.Fatalf("ensureRuntimeConfig: %v", err)
+	}
+	if !cfg.StorageEncryptEnabled() {
+		t.Fatalf("expected storage encryption enabled by default, got %#v", cfg.Storage)
+	}
+}
+
+func TestApplyRuntimeConfigSideEffectsUpdatesStorageCodec(t *testing.T) {
+	prevCodec := controlStateEnvelopeCodec
+	codec, err := secure.NewMutableSelfEnvelopeCodec(newMainTestKeyer(t), true)
+	if err != nil {
+		t.Fatalf("NewMutableSelfEnvelopeCodec: %v", err)
+	}
+	controlStateEnvelopeCodec = codec
+	defer func() { controlStateEnvelopeCodec = prevCodec }()
+
+	applyRuntimeConfigSideEffects(state.ConfigDoc{Storage: state.StorageConfig{Encrypt: state.BoolPtr(false)}})
+	if codec.EncryptEnabled() {
+		t.Fatal("expected storage codec to switch to plaintext mode")
+	}
+
+	applyRuntimeConfigSideEffects(state.ConfigDoc{Storage: state.StorageConfig{Encrypt: state.BoolPtr(true)}})
+	if !codec.EncryptEnabled() {
+		t.Fatal("expected storage codec to switch back to encrypted mode")
+	}
+}
 
 func TestHandleControlRPCRequest_SystemAndVoiceMethods(t *testing.T) {
 	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Extra: map[string]any{

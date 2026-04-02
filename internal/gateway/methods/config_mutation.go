@@ -69,6 +69,13 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"nostr_channels.<name>.relays",
 			"nostr_channels.<name>.agent_id",
 			"nostr_channels.<name>.tags",
+			"nostr_channels.<name>.config.auto_review.enabled",
+			"nostr_channels.<name>.config.auto_review.agent_id",
+			"nostr_channels.<name>.config.auto_review.tool_profile",
+			"nostr_channels.<name>.config.auto_review.enabled_tools",
+			"nostr_channels.<name>.config.auto_review.trigger_types",
+			"nostr_channels.<name>.config.auto_review.followed_only",
+			"nostr_channels.<name>.config.auto_review.instructions",
 			// Provider overrides
 			"providers.<name>.api_key",
 			"providers.<name>.base_url",
@@ -78,6 +85,8 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"session.history_limit",
 			"session.max_tokens",
 			"session.temperature",
+			"storage.encrypt",
+			"acp.transport",
 			// Heartbeat
 			"heartbeat.interval_ms",
 			"heartbeat.enabled",
@@ -290,6 +299,22 @@ func ApplyConfigSet(cfg state.ConfigDoc, key string, value any) (state.ConfigDoc
 			return cfg, fmt.Errorf("relays.write must be string array")
 		}
 		cfg.Relays.Write = items
+	case "storage.encrypt":
+		b, ok := value.(bool)
+		if !ok {
+			return cfg, fmt.Errorf("storage.encrypt must be bool")
+		}
+		cfg.Storage.Encrypt = state.BoolPtr(b)
+	case "acp.transport":
+		s, ok := value.(string)
+		if !ok {
+			return cfg, fmt.Errorf("acp.transport must be string")
+		}
+		mode, valid := state.ParseACPTransportMode(s)
+		if !valid {
+			return cfg, fmt.Errorf("acp.transport must be one of auto, nip17, nip04")
+		}
+		cfg.ACP.Transport = mode
 	case "agent.default_model":
 		s, ok := value.(string)
 		if !ok {

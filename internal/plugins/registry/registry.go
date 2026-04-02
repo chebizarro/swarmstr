@@ -1,6 +1,6 @@
 // Package registry implements Nostr-native plugin discovery and distribution.
 //
-// Plugins are published as kind 30617 parameterized-replaceable events.
+// Plugins are published as parameterized-replaceable repository-announcement events.
 // The event's "d" tag is the plugin ID; the content is a JSON-encoded
 // PluginManifest.  Authors self-sign their plugin releases; clients verify
 // the signature and optional content checksum before installing.
@@ -24,13 +24,14 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
+	"metiq/internal/nostr/events"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/plugins/installer"
 )
 
 // KindPluginManifest is the Nostr event kind used for plugin manifests.
-// We use kind 30617 (parameterized replaceable, in the 30000–39999 range).
-const KindPluginManifest = nostr.Kind(30617)
+// We reuse the shared repository-announcement kind (a parameterized replaceable kind in the 30000–39999 range).
+const KindPluginManifest = nostr.Kind(events.KindRepoAnnouncement)
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,7 +42,7 @@ type ToolSpec struct {
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
-// PluginManifest is the JSON content of a kind 30617 event.
+// PluginManifest is the JSON content of a plugin manifest event.
 type PluginManifest struct {
 	ID          string     `json:"id"`
 	Version     string     `json:"version"`

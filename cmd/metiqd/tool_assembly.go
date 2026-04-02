@@ -7,8 +7,8 @@ import (
 	"metiq/internal/store/state"
 )
 
-func resolveAgentTurnToolSurface(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, agentID string, rt agent.Runtime, base agent.ToolExecutor) (agent.Runtime, agent.ToolExecutor, []agent.ToolDefinition) {
-	allowed := resolvedAgentRuntimeToolAllowlist(ctx, cfg, docsRepo, agentID)
+func resolveAgentTurnToolSurface(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, sessionID, agentID string, rt agent.Runtime, base agent.ToolExecutor, constraints turnToolConstraints) (agent.Runtime, agent.ToolExecutor, []agent.ToolDefinition) {
+	allowed := resolvedTurnRuntimeToolAllowlist(ctx, cfg, docsRepo, sessionID, agentID, constraints)
 	rt = filterRuntimeByAllowedTools(rt, allowed)
 	exec := agent.FilteredToolExecutor(base, allowed)
 	return rt, exec, agent.ToolDefinitions(exec)

@@ -21,6 +21,7 @@ All group channels are defined as named entries in `nostr_channels`. Each entry 
 | `nip29` | Relay-managed group (NIP-29) |
 | `nip28` | Public channel (NIP-28) |
 | `relay-filter` | Arbitrary Nostr filter subscription |
+| `nip34-inbox` | Repo-targeted NIP-34 inbox subscription |
 | `dm` | Direct message (default DM handling) |
 
 ## Nostr Groups (NIP-29)
@@ -102,6 +103,59 @@ For custom subscriptions beyond NIP-28/29, use `relay-filter`:
 ```
 
 The `tags` field maps Nostr tag names to lists of values, forming the subscription filter.
+
+## NIP-34 Inbox Channels
+
+For inbound GRASP repository activity (patches, pull requests, issue updates), use `nip34-inbox`:
+
+```json5
+{
+  "nostr_channels": {
+    "repo-events": {
+      "kind": "nip34-inbox",
+      "enabled": true,
+      "relays": ["wss://relay.sharegap.net"],
+      "tags": {
+        "a": ["30617:<repo-owner-pubkey-hex>:<repo-id>"]
+      },
+      "agent_id": "coding-agent",
+      "allow_from": ["*"]
+    }
+  }
+}
+```
+
+By default this subscribes to patch, pull-request, pull-request-update, and issue kinds for the configured repository address. Override `config.kinds` if you also want status events or other repo-scoped kinds.
+
+You can also enable a concrete inbound automation hook for PR review:
+
+```json5
+{
+  "nostr_channels": {
+    "repo-events": {
+      "kind": "nip34-inbox",
+      "enabled": true,
+      "relays": ["wss://relay.sharegap.net"],
+      "tags": {
+        "a": ["30617:<repo-owner-pubkey-hex>:<repo-id>"]
+      },
+      "agent_id": "coding-agent",
+      "config": {
+        "auto_review": {
+          "enabled": true,
+          "tool_profile": "coding",
+          "enabled_tools": ["memory_search", "grasp_repo_list"],
+          "trigger_types": ["pull_request", "pull_request_update"],
+          "followed_only": true,
+          "instructions": "Review inbound PRs for bugs, regressions, and missing tests. If the diff is incomplete, explain what extra context is needed."
+        }
+      }
+    }
+  }
+}
+```
+
+When `followed_only` is true, metiq only auto-reviews repos present in the local agent's NIP-51 bookmark list using `d=git-repo-bookmark`. The watcher reads public repo `a` tags from the newest usable local bookmark event (kind `30003`, with compatibility fallback to `30001` when that is the decodable source of repo bookmarks). Private bookmark events that do not expose repo `a` tags are ignored for follow-matching so they do not wipe a usable public fallback set. Matched events are still routed into the repo session as structured NIP-34 messages; the automation simply augments that inbound turn with review instructions instead of creating a second parallel delivery.
 
 ## Multiple Channels
 

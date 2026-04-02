@@ -1,8 +1,8 @@
 // Package runtime – NIP-17 gift-wrapped DM bus.
 //
 // NIP17Bus sends and receives private DMs using the NIP-17 protocol:
-//   - Outbound:  kind 14 rumor → kind 13 seal → kind 1059 gift wrap (per NIP-59)
-//   - Inbound:   subscribe to kind 1059 events tagged with our pubkey, unwrap each one
+//   - Outbound:  rumor event → seal event → gift-wrap event (per NIP-17/NIP-59)
+//   - Inbound:   subscribe to gift-wrap events tagged with our pubkey, unwrap each one
 //   - Encryption: NIP-44 (via fiatjaf.com/nostr/keyer.KeySigner)
 //   - Relay lookup: queries recipient's DM relay list (kind 10050) before falling back
 //     to the configured write relays
@@ -25,7 +25,7 @@ import (
 const (
 	// NIP-59 gift wraps are intentionally backdated. Our current producer path
 	// may skew CreatedAt by up to 599 minutes, so subscribe far enough back that
-	// valid inbound 1059 events are still seen after unwrap.
+	// valid inbound gift-wrap events are still seen after unwrap.
 	nip17GiftWrapBackfill = 10*time.Hour + 5*time.Minute
 )
 

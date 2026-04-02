@@ -160,6 +160,8 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 		"dm.policy":                             {},
 		"relays.read":                           {},
 		"relays.write":                          {},
+		"storage.encrypt":                       {},
+		"acp.transport":                         {},
 		"agent.verbose":                         {},
 		"control.require_auth":                  {},
 		"plugins.deny":                          {},
@@ -227,6 +229,31 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 	envKeys, _ := entries[0]["env"].([]string)
 	if len(envKeys) != 1 || envKeys[0] != "OPENAI_API_KEY" {
 		t.Fatalf("expected env key projection in plugin schema entries: %#v", entries)
+	}
+}
+
+func TestApplyConfigSetStorageEncrypt(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	next, err := ApplyConfigSet(cfg, "storage.encrypt", false)
+	if err != nil {
+		t.Fatalf("ApplyConfigSet storage.encrypt error: %v", err)
+	}
+	if next.Storage.Encrypt == nil || *next.Storage.Encrypt {
+		t.Fatalf("expected storage.encrypt=false, got %#v", next.Storage)
+	}
+}
+
+func TestApplyConfigSetACPTransport(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	next, err := ApplyConfigSet(cfg, "acp.transport", "nip-04")
+	if err != nil {
+		t.Fatalf("ApplyConfigSet acp.transport error: %v", err)
+	}
+	if next.ACP.Transport != "nip04" {
+		t.Fatalf("expected acp.transport=nip04, got %#v", next.ACP)
+	}
+	if _, err := ApplyConfigSet(cfg, "acp.transport", "smtp"); err == nil {
+		t.Fatalf("expected acp.transport validation error")
 	}
 }
 

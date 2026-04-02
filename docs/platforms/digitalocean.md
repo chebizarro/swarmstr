@@ -73,7 +73,7 @@ chmod 600 ~/.metiq/env
 cat > ~/.metiq/bootstrap.json <<'EOF'
 {
   "private_key": "${NOSTR_PRIVATE_KEY}",
-  "relays": ["wss://nos.lol", "wss://relay.primal.net", "wss://relay.sharegap.net"],
+  "relays": ["wss://nos.lol", "wss://relay.primal.net", "wss://relay.sharegap.net", "wss://armada.sharegap.net"],
   "admin_listen_addr": "127.0.0.1:7423",
   "admin_token": "${METIQ_ADMIN_TOKEN}"
 }

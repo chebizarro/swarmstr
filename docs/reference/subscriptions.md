@@ -263,7 +263,7 @@ All event kinds the agent subscribes to or produces, for quick reference:
 | `30078` | NIP-78 | Read/Write | Application-specific data (state docs) |
 | `30315` | Custom | Write | Log / status |
 | `30316` | Custom | Write | Lifecycle |
-| `30317` | Custom | Write | Capability advertisement |
+| `30317` | Custom | Read/Write | Capability advertisement and fleet discovery |
 | `38384` | Custom | Read | Control RPC request |
 | `38386` | Custom | Write | Control RPC result |
 
@@ -279,7 +279,7 @@ All event kinds the agent subscribes to or produces, for quick reference:
    - `SeenCache`: TTL-based (5 min), capped at 10 000 entries — used by channel subscriptions.
    - Ring-buffer seen set: Fixed-size FIFO — used by DM bus, control bus, and watches.
 
-4. **Config-driven restart**: When the agent's relay lists change (detected via NIP-65 self-sync, relay set self-sync, or config file change), affected subscriptions are torn down and re-opened with the new relay set. This includes re-publishing kind:10002, kind:10050, and kind:30002 relay sets with `ForcePublish: true`.
+4. **Config-driven restart**: When the agent's relay lists change (detected via NIP-65 self-sync, relay set self-sync, or config file change), affected subscriptions are torn down and re-opened with the new relay set. This includes re-publishing kind:10002, kind:10050, kind:30002 relay sets, and kind:30317 capability advertisements.
 
 5. **Self-filtering**: All inbound subscriptions skip events authored by the agent's own pubkey to prevent feedback loops.
 
@@ -291,6 +291,6 @@ All event kinds the agent subscribes to or produces, for quick reference:
 
 | Context | Relays |
 |---------|--------|
-| Wizard default (new install) | `wss://nos.lol`, `wss://relay.primal.net`, `wss://relay.sharegap.net` |
+| Wizard default (new install) | `wss://nos.lol`, `wss://relay.primal.net`, `wss://relay.sharegap.net`, `wss://armada.sharegap.net` |
 | NIP-50 search | `wss://relay.primal.net`, `wss://nostr.wine` |
 | Fallback (no NIP-65 list found) | Merge of config `relays.read` + `relays.write` |

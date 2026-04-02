@@ -173,7 +173,7 @@ func TestResolveAgentTurnToolSurfaceUsesSharedAllowlist(t *testing.T) {
 		EnabledTools: []string{"memory_search", "memory_search"},
 	}}}
 
-	rt, exec, defs := resolveAgentTurnToolSurface(context.Background(), cfg, nil, "worker", &filterableRuntime{}, baseTools)
+	rt, exec, defs := resolveAgentTurnToolSurface(context.Background(), cfg, nil, "session-worker", "worker", &filterableRuntime{}, baseTools, turnToolConstraints{})
 	filteredRuntime, ok := rt.(*filterableRuntime)
 	if !ok {
 		t.Fatalf("runtime type = %T, want *filterableRuntime", rt)
@@ -189,6 +189,48 @@ func TestResolveAgentTurnToolSurfaceUsesSharedAllowlist(t *testing.T) {
 	}
 	if execDefs := agent.ToolDefinitions(exec); len(execDefs) != 1 || execDefs[0].Name != "memory_search" {
 		t.Fatalf("executor definitions = %+v, want memory_search only", execDefs)
+	}
+}
+
+func TestResolveAgentTurnToolSurfaceIntersectsPerTurnConstraints(t *testing.T) {
+	baseTools := agent.NewToolRegistry()
+	baseTools.RegisterWithDef("memory_search", func(context.Context, map[string]any) (string, error) { return "", nil }, toolbuiltin.MemorySearchDef)
+	baseTools.RegisterWithDef("memory_store", func(context.Context, map[string]any) (string, error) { return "", nil }, toolbuiltin.MemoryStoreDef)
+
+	prevToolRegistry := controlToolRegistry
+	controlToolRegistry = baseTools
+	defer func() { controlToolRegistry = prevToolRegistry }()
+
+	cfg := state.ConfigDoc{Agents: []state.AgentConfig{{
+		ID:           "worker",
+		EnabledTools: []string{"memory_search", "memory_store"},
+	}}}
+
+	rt, exec, defs := resolveAgentTurnToolSurface(
+		context.Background(),
+		cfg,
+		nil,
+		"session-worker",
+		"worker",
+		&filterableRuntime{},
+		baseTools,
+		turnToolConstraints{EnabledTools: []string{"memory_store"}},
+	)
+	filteredRuntime, ok := rt.(*filterableRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want *filterableRuntime", rt)
+	}
+	if filteredRuntime.allowed == nil || filteredRuntime.allowed["memory_search"] || !filteredRuntime.allowed["memory_store"] {
+		t.Fatalf("runtime allowed tools = %v", filteredRuntime.allowed)
+	}
+	if got, want := len(defs), 1; got != want {
+		t.Fatalf("definitions len = %d, want %d (%+v)", got, want, defs)
+	}
+	if defs[0].Name != "memory_store" {
+		t.Fatalf("definitions = %+v, want memory_store only", defs)
+	}
+	if execDefs := agent.ToolDefinitions(exec); len(execDefs) != 1 || execDefs[0].Name != "memory_store" {
+		t.Fatalf("executor definitions = %+v, want memory_store only", execDefs)
 	}
 }
 
