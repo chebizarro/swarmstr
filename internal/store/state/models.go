@@ -53,6 +53,10 @@ func (c ConfigDoc) StorageEncryptEnabled() bool {
 	return c.Storage.EncryptEnabled()
 }
 
+func (c ConfigDoc) DMReplyScheme() string {
+	return c.DM.ReplySchemeMode()
+}
+
 func (c ConfigDoc) ACPTransportMode() string {
 	return c.ACP.TransportMode()
 }
@@ -91,8 +95,30 @@ func (c ACPConfig) TransportMode() string {
 
 type DMPolicy struct {
 	Policy         string             `json:"policy"` // pairing|allowlist|open|disabled
+	ReplyScheme    string             `json:"reply_scheme,omitempty"`
 	AllowFrom      []string           `json:"allow_from,omitempty"`
 	AllowFromLists []AllowFromListRef `json:"allow_from_lists,omitempty"`
+}
+
+// ParseDMReplyScheme normalizes a configured DM reply scheme.
+func ParseDMReplyScheme(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "auto":
+		return "auto", true
+	case "nip17", "nip-17":
+		return "nip17", true
+	case "nip04", "nip-04":
+		return "nip04", true
+	default:
+		return "", false
+	}
+}
+
+func (p DMPolicy) ReplySchemeMode() string {
+	if mode, ok := ParseDMReplyScheme(p.ReplyScheme); ok {
+		return mode
+	}
+	return "auto"
 }
 
 // AllowFromListRef references a NIP-51 kind:30000 list whose "p" tags are

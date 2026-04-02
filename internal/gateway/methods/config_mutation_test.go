@@ -158,6 +158,7 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 	}
 	mustHave := map[string]struct{}{
 		"dm.policy":                             {},
+		"dm.reply_scheme":                       {},
 		"relays.read":                           {},
 		"relays.write":                          {},
 		"storage.encrypt":                       {},
@@ -254,6 +255,20 @@ func TestApplyConfigSetACPTransport(t *testing.T) {
 	}
 	if _, err := ApplyConfigSet(cfg, "acp.transport", "smtp"); err == nil {
 		t.Fatalf("expected acp.transport validation error")
+	}
+}
+
+func TestApplyConfigSetDMReplyScheme(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	next, err := ApplyConfigSet(cfg, "dm.reply_scheme", "nip-17")
+	if err != nil {
+		t.Fatalf("ApplyConfigSet dm.reply_scheme error: %v", err)
+	}
+	if next.DM.ReplyScheme != "nip17" {
+		t.Fatalf("expected dm.reply_scheme=nip17, got %#v", next.DM)
+	}
+	if _, err := ApplyConfigSet(cfg, "dm.reply_scheme", "smtp"); err == nil {
+		t.Fatalf("expected dm.reply_scheme validation error")
 	}
 }
 

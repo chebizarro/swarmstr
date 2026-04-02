@@ -316,6 +316,7 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 		Text:       text,
 		RelayURL:   "", // gift wraps hide relay; not available here
 		CreatedAt:  int64(rumor.CreatedAt),
+		Scheme:     "nip17",
 		Reply: func(ctx context.Context, reply string) error {
 			return b.SendDM(ctx, senderPubkey.Hex(), reply)
 		},

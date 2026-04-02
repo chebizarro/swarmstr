@@ -130,6 +130,14 @@ func TestValidateACPTransportRejectsInvalidMode(t *testing.T) {
 	}
 }
 
+func TestValidateDMReplySchemeRejectsInvalidMode(t *testing.T) {
+	d := baseDoc()
+	d.DM.ReplyScheme = "giftwrap"
+	if err := ValidateConfig(d); err == nil {
+		t.Fatal("expected invalid dm.reply_scheme error")
+	}
+}
+
 func TestValidateNostrChannels_relayFilterNIP34RequiresRepoAddr(t *testing.T) {
 	d := baseDoc()
 	d.NostrChannels = state.NostrChannelsConfig{
@@ -212,6 +220,13 @@ func TestNormalizeConfigACPTransport(t *testing.T) {
 	cfg := NormalizeConfig(state.ConfigDoc{ACP: state.ACPConfig{Transport: "nip-04"}})
 	if cfg.ACP.Transport != "nip04" {
 		t.Fatalf("expected acp.transport to normalize to nip04, got %#v", cfg.ACP)
+	}
+}
+
+func TestNormalizeConfigDMReplyScheme(t *testing.T) {
+	cfg := NormalizeConfig(state.ConfigDoc{DM: state.DMPolicy{ReplyScheme: "nip-17"}})
+	if cfg.DM.ReplyScheme != "nip17" {
+		t.Fatalf("expected dm.reply_scheme to normalize to nip17, got %#v", cfg.DM)
 	}
 }
 
