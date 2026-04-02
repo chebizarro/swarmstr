@@ -687,14 +687,12 @@ func TestDisruption_SanitizeRelayListRemovesBlanksAndDuplicates(t *testing.T) {
 	}
 }
 
-func TestDisruption_EmptyRelayListRejected(t *testing.T) {
+func TestDisruption_EmptyRelayListClearsRuntimeRelays(t *testing.T) {
 	b := &ControlRPCBus{relays: []string{"wss://keep"}, rebindCh: make(chan struct{}, 1)}
-	err := b.SetRelays([]string{""})
-	if err == nil {
-		t.Fatal("expected error for all-blank relay list")
+	if err := b.SetRelays([]string{""}); err != nil {
+		t.Fatalf("SetRelays: %v", err)
 	}
-	// Original relays preserved.
-	if got := b.currentRelays(); len(got) != 1 || got[0] != "wss://keep" {
-		t.Fatalf("relays should be unchanged: %v", got)
+	if got := b.currentRelays(); len(got) != 0 {
+		t.Fatalf("expected relays to be cleared: %v", got)
 	}
 }

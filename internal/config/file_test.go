@@ -403,6 +403,30 @@ func TestWriteConfigFile_createsParentDirs(t *testing.T) {
 	}
 }
 
+func TestWriteConfigFile_leavesNoTempFilesAndUsesPrivatePermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := WriteConfigFile(path, state.ConfigDoc{Version: 1}); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp") {
+			t.Fatalf("unexpected temp file left behind: %s", entry.Name())
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("unexpected file mode: %o", info.Mode().Perm())
+	}
+}
+
 // ─── Error cases ─────────────────────────────────────────────────────────────
 
 func TestLoadConfigFile_missingFile(t *testing.T) {

@@ -273,18 +273,17 @@ func TestControlBusRebindChannelCoalesces(t *testing.T) {
 	}
 }
 
-func TestControlBusSetRelaysRejectsEmpty(t *testing.T) {
+func TestControlBusSetRelaysAllowsClearingRelays(t *testing.T) {
 	b := &ControlRPCBus{
 		relays:   []string{"wss://existing"},
 		rebindCh: make(chan struct{}, 1),
 	}
-	if err := b.SetRelays([]string{"", "  "}); err == nil {
-		t.Fatal("expected error for empty relay list")
+	if err := b.SetRelays([]string{"", "  "}); err != nil {
+		t.Fatalf("SetRelays: %v", err)
 	}
-	// Original relays should be unchanged.
 	got := b.currentRelays()
-	if len(got) != 1 || got[0] != "wss://existing" {
-		t.Fatalf("relays should be unchanged after rejected SetRelays: %v", got)
+	if len(got) != 0 {
+		t.Fatalf("expected relay list to be cleared, got %v", got)
 	}
 }
 

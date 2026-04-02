@@ -14,6 +14,7 @@ package admin
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -180,7 +181,7 @@ func mountWebhookIngress(mux *http.ServeMux, opts ServerOptions) {
 		// Require token in Authorization or X-Metiq-Token header.
 		// Query-string tokens are intentionally rejected.
 		tok := hooksExtractToken(r)
-		if tok == "" || tok != hcfg.Token {
+		if tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(hcfg.Token)) != 1 {
 			hooksRecordAuthFailure(ip)
 			w.Header().Set("WWW-Authenticate", `Bearer realm="metiq hooks"`)
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})

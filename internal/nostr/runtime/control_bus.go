@@ -60,6 +60,7 @@ type ControlRPCHandled struct {
 	EventUnix    int64
 	CallerPubKey string
 	RequestID    string
+	Method       string
 	Response     ControlRPCCachedResponse
 }
 
@@ -207,7 +208,18 @@ func (b *ControlRPCBus) runSubscription(since int64) bool {
 	if b.hub != nil {
 		return b.runHubSubscription(filter)
 	}
-	stream := b.pool.SubscribeMany(b.ctx, b.currentRelays(), filter, nostr.SubscriptionOptions{})
+	relays := b.currentRelays()
+	if len(relays) == 0 {
+		select {
+		case <-b.ctx.Done():
+			return true
+		case <-b.rebindCh:
+			return true
+		case <-time.After(500 * time.Millisecond):
+			return false
+		}
+	}
+	stream := b.pool.SubscribeMany(b.ctx, relays, filter, nostr.SubscriptionOptions{})
 	for {
 		select {
 		case <-b.ctx.Done():
@@ -234,9 +246,6 @@ func (b *ControlRPCBus) Close() {
 
 func (b *ControlRPCBus) SetRelays(relays []string) error {
 	next := sanitizeRelayList(relays)
-	if len(next) == 0 {
-		return fmt.Errorf("at least one relay is required")
-	}
 	b.relaysMu.Lock()
 	b.relays = next
 	b.relaysMu.Unlock()
@@ -306,10 +315,6 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	}
 	callerPubKey := evt.PubKey.Hex()
 	cacheKey := fmt.Sprintf("%s:%s", callerPubKey, requestID)
-	if cached, ok := b.lookupCachedResponse(cacheKey, callerPubKey, requestID); ok {
-		b.publishResponse(re, callerPubKey, requestID, cached.Payload, withETag(cached.Tags, eventID))
-		return
-	}
 	if !b.allowCaller(callerPubKey, time.Now()) {
 		b.respondErrorCode(re, "control request rate limited", requestID, -32029, nil)
 		return
@@ -337,6 +342,12 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	if call.Method == "" {
 		b.respondError(re, "missing method", requestID)
 		return
+	}
+	if shouldCacheControlMethod(call.Method) {
+		if cached, ok := b.lookupCachedResponse(cacheKey, callerPubKey, requestID); ok {
+			b.publishResponse(re, callerPubKey, requestID, cached.Payload, withETag(cached.Tags, eventID))
+			return
+		}
 	}
 
 	result := ControlRPCResult{}
@@ -373,10 +384,12 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		tags := nostr.Tags{{"e", eventID}, {"p", evt.PubKey.Hex()}, {"req", requestID}, {"status", "error"}, {"t", "control_rpc"}}
 		payload := string(payloadRaw)
 		cached := ControlRPCCachedResponse{Payload: payload, Tags: tags}
-		b.setCachedResponse(cacheKey, cached)
+		if shouldCacheControlMethod(call.Method) {
+			b.setCachedResponse(cacheKey, cached)
+		}
 		b.publishResponse(re, evt.PubKey.Hex(), requestID, payload, tags)
 		if b.onHandled != nil {
-			b.onHandled(b.ctx, ControlRPCHandled{EventID: eventID, EventUnix: int64(evt.CreatedAt), CallerPubKey: callerPubKey, RequestID: requestID, Response: cached})
+			b.onHandled(b.ctx, ControlRPCHandled{EventID: eventID, EventUnix: int64(evt.CreatedAt), CallerPubKey: callerPubKey, RequestID: requestID, Method: call.Method, Response: cached})
 		}
 		return
 	}
@@ -389,10 +402,12 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	}
 	payload := string(payloadRaw)
 	cached := ControlRPCCachedResponse{Payload: payload, Tags: tags}
-	b.setCachedResponse(cacheKey, cached)
+	if shouldCacheControlMethod(call.Method) {
+		b.setCachedResponse(cacheKey, cached)
+	}
 	b.publishResponse(re, evt.PubKey.Hex(), requestID, payload, tags)
 	if b.onHandled != nil {
-		b.onHandled(b.ctx, ControlRPCHandled{EventID: eventID, EventUnix: int64(evt.CreatedAt), CallerPubKey: callerPubKey, RequestID: requestID, Response: cached})
+		b.onHandled(b.ctx, ControlRPCHandled{EventID: eventID, EventUnix: int64(evt.CreatedAt), CallerPubKey: callerPubKey, RequestID: requestID, Method: call.Method, Response: cached})
 	}
 }
 
@@ -726,6 +741,10 @@ func firstTagValue(tags nostr.Tags, key string) string {
 		}
 	}
 	return ""
+}
+
+func shouldCacheControlMethod(method string) bool {
+	return strings.TrimSpace(method) != "secrets.resolve"
 }
 
 func buildControlRPCError(message string, code int, data map[string]any) controlRPCError {

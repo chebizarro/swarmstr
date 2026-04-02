@@ -173,3 +173,30 @@ func TestDocsRepository_ConfigListSessionCheckpointRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected control response checkpoint payload %+v", cp.ControlResponses)
 	}
 }
+
+func TestDocsRepositoryListSessionsPrefersLatestPersistedDoc(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	if _, err := repo.PutSession(ctx, "s1", SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer-a", LastInboundAt: 20}); err != nil {
+		t.Fatalf("PutSession first: %v", err)
+	}
+	if _, err := repo.PutSession(ctx, "s1", SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer-a", LastInboundAt: 5, Meta: map[string]any{"deleted": true}}); err != nil {
+		t.Fatalf("PutSession second: %v", err)
+	}
+
+	sessions, err := repo.ListSessions(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected one session, got %d", len(sessions))
+	}
+	if sessions[0].LastInboundAt != 5 {
+		t.Fatalf("expected latest persisted session doc, got %+v", sessions[0])
+	}
+	if deleted, _ := sessions[0].Meta["deleted"].(bool); !deleted {
+		t.Fatalf("expected latest metadata to win, got %+v", sessions[0].Meta)
+	}
+}
