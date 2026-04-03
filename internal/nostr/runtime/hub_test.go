@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	nostr "fiatjaf.com/nostr"
@@ -144,5 +145,30 @@ func TestHub_Subscriptions(t *testing.T) {
 	subs := hub.Subscriptions()
 	if len(subs) != 0 {
 		t.Fatalf("expected 0 subscriptions, got %d", len(subs))
+	}
+}
+
+func TestSubOptsDoesNotAdvertiseUnsupportedEOSECallback(t *testing.T) {
+	typ := reflect.TypeOf(SubOpts{})
+	if _, ok := typ.FieldByName("OnEOSE"); ok {
+		t.Fatal("SubOpts must not expose unsupported OnEOSE callback")
+	}
+	if _, ok := typ.FieldByName("OnClosed"); !ok {
+		t.Fatal("SubOpts should expose OnClosed callback")
+	}
+	if _, ok := typ.FieldByName("OnEnd"); !ok {
+		t.Fatal("SubOpts should expose OnEnd callback")
+	}
+}
+
+func TestShouldEmitOnEnd(t *testing.T) {
+	if !shouldEmitOnEnd(context.Background()) {
+		t.Fatal("expected active context to emit OnEnd")
+	}
+
+	subCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if shouldEmitOnEnd(subCtx) {
+		t.Fatal("expected canceled context to suppress OnEnd")
 	}
 }

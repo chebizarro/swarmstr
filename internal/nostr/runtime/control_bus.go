@@ -534,7 +534,7 @@ func (b *ControlRPCBus) runHubSubscription(filter nostr.Filter) bool {
 					b.health.RecordFailure(relayURL)
 				}
 				if b.subHealth != nil {
-					b.subHealth.RecordClosed(reason)
+					b.subHealth.RecordClosed(relayURL, reason)
 				}
 				b.emitErr(fmt.Errorf("control subscription closed relay=%s reason=%s", relayURL, reason))
 				select {

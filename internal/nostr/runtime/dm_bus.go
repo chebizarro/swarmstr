@@ -569,7 +569,7 @@ func (b *DMBus) runHubSubscription(filter nostr.Filter) bool {
 					b.health.RecordFailure(reportedRelay)
 				}
 				if b.subHealth != nil {
-					b.subHealth.RecordClosed(reason)
+					b.subHealth.RecordClosed(reportedRelay, reason)
 				}
 				b.emitErr(fmt.Errorf("dm subscription closed relay=%s reason=%s", reportedRelay, reason))
 				emitRelayClose(dmRelayClose{relayURL: relayKey, reason: reason, generation: gen})

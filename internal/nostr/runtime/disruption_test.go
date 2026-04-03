@@ -530,7 +530,7 @@ func TestDisruption_SubHealthTrackerRecordsDisruptionSequence(t *testing.T) {
 	}
 
 	// Relay sends CLOSED.
-	tr.RecordClosed("rate-limited:")
+	tr.RecordClosed("wss://relay.example", "rate-limited:")
 
 	// Reconnect.
 	tr.RecordReconnect()

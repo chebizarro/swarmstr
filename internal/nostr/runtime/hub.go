@@ -5,8 +5,8 @@
 // relay use ONE connection, not five.
 //
 // The hub also provides a subscription manager that tracks named subscriptions,
-// supports dynamic add/remove, and properly handles EOSE and CLOSED signals
-// instead of relying on timeouts or polling.
+// supports dynamic add/remove, and propagates relay closure and subscription-end
+// lifecycle signals instead of relying on timeouts or polling.
 package runtime
 
 import (
@@ -51,11 +51,12 @@ type SubOpts struct {
 	Relays []string
 	// OnEvent is called for each matching event (required).
 	OnEvent func(nostr.RelayEvent)
-	// OnEOSE is called when all relays have sent EOSE.  Optional.
-	OnEOSE func()
 	// OnClosed is called when a relay sends a CLOSED message.  Optional.
 	// If the closure was caused by auth-required and was handled, handledAuth is true.
 	OnClosed func(relay *nostr.Relay, reason string, handledAuth bool)
+	// OnEnd is called when the subscription event stream ends unexpectedly
+	// without the caller cancelling the subscription. Optional.
+	OnEnd func()
 }
 
 // ManagedSub is an active subscription tracked by the hub.
@@ -144,10 +145,9 @@ func (h *NostrHub) ResolveRelays(override []string) []string {
 
 // Subscribe creates a named subscription on the hub's shared pool.
 //
-// The subscription uses SubscribeManyNotifyClosed for proper protocol handling:
-// EOSE and CLOSED signals are dispatched to the caller's callbacks instead of
-// using timeouts.  The underlying pool handles auth-required retries and
-// automatic reconnection.
+// The subscription uses SubscribeManyNotifyClosed for proper CLOSED/lifecycle
+// handling instead of timeout-driven polling. The underlying pool handles
+// auth-required retries and automatic reconnection.
 //
 // The subscription lives until cancelled via Unsubscribe or the hub is closed.
 func (h *NostrHub) Subscribe(ctx context.Context, opts SubOpts) (*ManagedSub, error) {
@@ -204,8 +204,9 @@ func (h *NostrHub) Subscribe(ctx context.Context, opts SubOpts) (*ManagedSub, er
 	//   - auth-required retries (via AuthRequiredHandler)
 	//   - automatic reconnection on disconnect
 	//   - deduplication of events
-	// CLOSED signals are dispatched to the caller; EOSE is handled by the pool
-	// internally for its reconnection logic.
+	// CLOSED signals are dispatched to the caller. This hub API does not expose
+	// aggregated EOSE callbacks; callers that need explicit EOSE handling should
+	// use a pool method that provides EOSE directly.
 	events, closedCh := h.pool.SubscribeManyNotifyClosed(
 		subCtx, relays, filter, nostr.SubscriptionOptions{},
 	)
@@ -222,6 +223,9 @@ func (h *NostrHub) Subscribe(ctx context.Context, opts SubOpts) (*ManagedSub, er
 			select {
 			case re, ok := <-events:
 				if !ok {
+					if opts.OnEnd != nil && shouldEmitOnEnd(subCtx) {
+						opts.OnEnd()
+					}
 					return
 				}
 				opts.OnEvent(re)
@@ -251,6 +255,10 @@ func (h *NostrHub) Subscribe(ctx context.Context, opts SubOpts) (*ManagedSub, er
 	}()
 
 	return ms, nil
+}
+
+func shouldEmitOnEnd(ctx context.Context) bool {
+	return ctx.Err() == nil
 }
 
 // Unsubscribe cancels and removes a named subscription.
