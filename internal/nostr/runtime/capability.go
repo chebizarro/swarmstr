@@ -22,16 +22,17 @@ func canonicalCapabilityDTag(pubkey string) string {
 
 // CapabilityAnnouncement is the normalized kind:30317 capability descriptor.
 type CapabilityAnnouncement struct {
-	PubKey         string
-	DTag           string
-	Runtime        string
-	RuntimeVersion string
-	DMSchemes      []string
-	ACPVersion     int
-	Tools          []string
-	Relays         []string
-	EventID        string
-	CreatedAt      int64
+	PubKey            string
+	DTag              string
+	Runtime           string
+	RuntimeVersion    string
+	DMSchemes         []string
+	ACPVersion        int
+	Tools             []string
+	ContextVMFeatures []string
+	Relays            []string
+	EventID           string
+	CreatedAt         int64
 }
 
 func normalizeCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnouncement {
@@ -47,9 +48,14 @@ func normalizeCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnoun
 	in.RuntimeVersion = strings.TrimSpace(in.RuntimeVersion)
 	in.DMSchemes = normalizeCapabilityStrings(in.DMSchemes)
 	in.Tools = normalizeCapabilityStrings(in.Tools)
+	in.ContextVMFeatures = normalizeCapabilityStrings(in.ContextVMFeatures)
 	in.Relays = normalizeRelayURLs(in.Relays)
 	in.EventID = strings.TrimSpace(strings.ToLower(in.EventID))
 	return in
+}
+
+func NormalizeCapabilityValues(values []string) []string {
+	return normalizeCapabilityStrings(values)
 }
 
 func normalizeCapabilityStrings(values []string) []string {
@@ -106,6 +112,9 @@ func BuildCapabilityTags(cap CapabilityAnnouncement) nostr.Tags {
 	if len(cap.Tools) > 0 {
 		tags = append(tags, append([]string{"tools"}, cap.Tools...))
 	}
+	if len(cap.ContextVMFeatures) > 0 {
+		tags = append(tags, append([]string{"contextvm_features"}, cap.ContextVMFeatures...))
+	}
 	for _, relay := range cap.Relays {
 		tags = append(tags, []string{"relay", relay})
 	}
@@ -145,6 +154,8 @@ func ParseCapabilityEvent(ev *nostr.Event) (CapabilityAnnouncement, error) {
 			}
 		case "tools":
 			out.Tools = append(out.Tools, tag[1:]...)
+		case "contextvm_features":
+			out.ContextVMFeatures = append(out.ContextVMFeatures, tag[1:]...)
 		case "relay":
 			out.Relays = append(out.Relays, strings.TrimSpace(tag[1]))
 		}
@@ -286,12 +297,14 @@ func capabilitySemanticEqual(a, b CapabilityAnnouncement) bool {
 		a.ACPVersion == b.ACPVersion &&
 		relaySliceEqual(a.DMSchemes, b.DMSchemes) &&
 		relaySliceEqual(a.Tools, b.Tools) &&
+		relaySliceEqual(a.ContextVMFeatures, b.ContextVMFeatures) &&
 		relaySliceEqual(a.Relays, b.Relays)
 }
 
 func cloneCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnouncement {
 	in.DMSchemes = append([]string{}, in.DMSchemes...)
 	in.Tools = append([]string{}, in.Tools...)
+	in.ContextVMFeatures = append([]string{}, in.ContextVMFeatures...)
 	in.Relays = append([]string{}, in.Relays...)
 	return in
 }

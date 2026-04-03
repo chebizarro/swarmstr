@@ -430,9 +430,14 @@ metiq gw --transport http status.get
 metiq gw --control-target-pubkey npub1...daemon... status.get
 metiq gw --control-signer-url env://METIQ_CONTROL_CALLER_NSEC status.get
 metiq gw config.get path=agent.default_model
+
+# ACP dispatch with an explicit worker tool contract (JSON params form)
+metiq gw acp.dispatch '{"target_pubkey":"Wizard","instructions":"Read the remote MCP resource and summarize it","enabled_tools":["contextvm_resources_read"],"wait":true}'
 ```
 
-See [Nostr Control RPC](/gateway/nostr-control) for the full operator and migration guide.
+For capability-aware ACP routing, `enabled_tools` and `tool_profile` are not just worker constraints — they also influence peer selection when multiple discovered peers share the same target name. metiq prefers peers whose discovered `kind:30317` capability metadata advertises the required `tools` / `contextvm_features` surface.
+
+See [Nostr Control RPC](/gateway/nostr-control) for the full operator and migration guide, and [Capability Advertisement](/reference/capabilities) for the `kind:30317` contract.
 
 ## Slash Commands (In-Chat)
 

@@ -521,7 +521,14 @@ func main() {
 		if configState != nil {
 			cfg = configState.Get()
 		}
-		peerPubKey, _, err := resolveACPFleetTargetForConfig(peerTarget, cfg)
+		taskID := acppkg.GenerateTaskID()
+		taskPayload := buildInheritedACPTaskPayload(ctx, cfg, docsRepo, sessionStore, acppkg.TaskPayload{
+			Instructions: instructions,
+			MemoryScope:  memoryScope,
+			TimeoutMS:    timeoutMS,
+		})
+		req := buildACPTargetRequirements(cfg, turnToolConstraints{ToolProfile: taskPayload.ToolProfile, EnabledTools: taskPayload.EnabledTools})
+		peerPubKey, _, err := resolveACPFleetTargetForConfigAndRequirements(peerTarget, cfg, req)
 		if err != nil {
 			return "", fmt.Errorf("acp.delegate: %w", err)
 		}
@@ -529,14 +536,8 @@ func main() {
 		if err != nil {
 			return "", fmt.Errorf("acp.delegate: %w", err)
 		}
-		taskID := acppkg.GenerateTaskID()
 		senderPubKey := dmBus.PublicKey()
-		taskPayload := buildInheritedACPTaskPayload(ctx, cfg, docsRepo, sessionStore, acppkg.TaskPayload{
-			Instructions: instructions,
-			MemoryScope:  memoryScope,
-			TimeoutMS:    timeoutMS,
-			ReplyTo:      senderPubKey,
-		})
+		taskPayload.ReplyTo = senderPubKey
 		acpMsg := acppkg.NewTask(taskID, senderPubKey, taskPayload)
 		controlACPDispatcher.Register(taskID)
 		payload, _ := json.Marshal(acpMsg)
@@ -9554,7 +9555,8 @@ func handleControlRPCRequest(
 		if configState != nil {
 			cfg = configState.Get()
 		}
-		target, _, err := resolveACPFleetTargetForConfig(req.TargetPubKey, cfg)
+		targetReqs := buildACPTargetRequirements(cfg, turnToolConstraints{ToolProfile: req.ToolProfile, EnabledTools: req.EnabledTools})
+		target, _, err := resolveACPFleetTargetForConfigAndRequirements(req.TargetPubKey, cfg, targetReqs)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: %w", err)
 		}
@@ -9665,7 +9667,8 @@ func handleControlRPCRequest(
 
 		steps := make([]acppkg.Step, 0, len(req.Steps))
 		for i, s := range req.Steps {
-			resolvedPeer, _, routeErr := resolveACPFleetTargetForConfig(s.PeerPubKey, cfg)
+			stepReqs := buildACPTargetRequirements(cfg, turnToolConstraints{ToolProfile: s.ToolProfile, EnabledTools: s.EnabledTools})
+			resolvedPeer, _, routeErr := resolveACPFleetTargetForConfigAndRequirements(s.PeerPubKey, cfg, stepReqs)
 			if routeErr != nil {
 				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: %w at steps[%d]", routeErr, i)
 			}

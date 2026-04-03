@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"testing"
 
+	"metiq/internal/agent"
 	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/nostr/nip51"
 	nostruntime "metiq/internal/nostr/runtime"
@@ -22,15 +24,16 @@ func TestFleetDirectoryIncludesCapabilityOverlay(t *testing.T) {
 	}
 	capabilityRegistry = nostruntime.NewCapabilityRegistry()
 	capabilityRegistry.Set(nostruntime.CapabilityAnnouncement{
-		PubKey:         "peer",
-		Runtime:        "metiq",
-		RuntimeVersion: "1.2.3",
-		DMSchemes:      []string{"nip17", "giftwrap"},
-		ACPVersion:     1,
-		Tools:          []string{"memory_search", "web_search"},
-		Relays:         []string{"wss://relay-a", "wss://relay-b"},
-		CreatedAt:      10,
-		EventID:        "cap1",
+		PubKey:            "peer",
+		Runtime:           "metiq",
+		RuntimeVersion:    "1.2.3",
+		DMSchemes:         []string{"nip17", "giftwrap"},
+		ACPVersion:        1,
+		Tools:             []string{"memory_search", "web_search"},
+		ContextVMFeatures: []string{"discover", "resources_read"},
+		Relays:            []string{"wss://relay-a", "wss://relay-b"},
+		CreatedAt:         10,
+		EventID:           "cap1",
 	})
 
 	entries := fleetDirectory()
@@ -44,8 +47,46 @@ func TestFleetDirectoryIncludesCapabilityOverlay(t *testing.T) {
 	if len(entry.Tools) != 2 || entry.Tools[0] != "memory_search" || entry.Tools[1] != "web_search" {
 		t.Fatalf("unexpected tools: %+v", entry.Tools)
 	}
+	if len(entry.ContextVMFeatures) != 2 || entry.ContextVMFeatures[0] != "discover" || entry.ContextVMFeatures[1] != "resources_read" {
+		t.Fatalf("unexpected contextvm features: %+v", entry.ContextVMFeatures)
+	}
 	if len(entry.Relays) != 2 || entry.Relays[1] != "wss://relay-b" {
 		t.Fatalf("unexpected relays: %+v", entry.Relays)
+	}
+}
+
+func TestCurrentCapabilityToolSurfaceIncludesContextVMFeatures(t *testing.T) {
+	prevRegistry := controlToolRegistry
+	defer func() { controlToolRegistry = prevRegistry }()
+
+	tools := agent.NewToolRegistry()
+	register := func(name string) {
+		tools.RegisterWithDef(name, func(context.Context, map[string]any) (string, error) { return "", nil }, agent.ToolDefinition{Name: name})
+	}
+	register("memory_search")
+	register("contextvm_discover")
+	register("contextvm_resources_read")
+	register("contextvm_prompts_get")
+	controlToolRegistry = tools
+
+	surface := currentCapabilityToolSurface(context.Background(), state.ConfigDoc{}, nil)
+	wantTools := []string{"contextvm_discover", "contextvm_prompts_get", "contextvm_resources_read", "memory_search"}
+	if len(surface.ToolNames) != len(wantTools) {
+		t.Fatalf("tool names = %v, want %v", surface.ToolNames, wantTools)
+	}
+	for i := range wantTools {
+		if surface.ToolNames[i] != wantTools[i] {
+			t.Fatalf("tool names = %v, want %v", surface.ToolNames, wantTools)
+		}
+	}
+	wantFeatures := []string{"discover", "prompts_get", "resources_read"}
+	if len(surface.ContextVMFeatures) != len(wantFeatures) {
+		t.Fatalf("contextvm features = %v, want %v", surface.ContextVMFeatures, wantFeatures)
+	}
+	for i := range wantFeatures {
+		if surface.ContextVMFeatures[i] != wantFeatures[i] {
+			t.Fatalf("contextvm features = %v, want %v", surface.ContextVMFeatures, wantFeatures)
+		}
 	}
 }
 

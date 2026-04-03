@@ -60,15 +60,16 @@ func rpcCacheStore(agentHex, result string, isTimeout bool) {
 
 // FleetEntry describes a known fleet agent.
 type FleetEntry struct {
-	Pubkey         string   `json:"pubkey"`
-	Name           string   `json:"name,omitempty"`
-	Relay          string   `json:"relay,omitempty"`
-	Runtime        string   `json:"runtime,omitempty"`
-	RuntimeVersion string   `json:"runtime_version,omitempty"`
-	DMSchemes      []string `json:"dm_schemes,omitempty"`
-	ACPVersion     int      `json:"acp_version,omitempty"`
-	Tools          []string `json:"tools,omitempty"`
-	Relays         []string `json:"relays,omitempty"`
+	Pubkey            string   `json:"pubkey"`
+	Name              string   `json:"name,omitempty"`
+	Relay             string   `json:"relay,omitempty"`
+	Runtime           string   `json:"runtime,omitempty"`
+	RuntimeVersion    string   `json:"runtime_version,omitempty"`
+	DMSchemes         []string `json:"dm_schemes,omitempty"`
+	ACPVersion        int      `json:"acp_version,omitempty"`
+	Tools             []string `json:"tools,omitempty"`
+	ContextVMFeatures []string `json:"contextvm_features,omitempty"`
+	Relays            []string `json:"relays,omitempty"`
 }
 
 // FleetDirectoryFunc returns the current set of known fleet agents.
@@ -86,7 +87,7 @@ type RPCWaiter func(fromPubkeyHex string) (replyCh <-chan string, cancel func())
 
 var FleetAgentsDef = agent.ToolDefinition{
 	Name:        "fleet_agents",
-	Description: "List the known Cascadia fleet agents loaded from the NIP-51 directory, enriched with any discovered capability metadata from kind:30317 events. Returns each agent's pubkey, display name, relay hints, runtime version, DM schemes, and tools when available.",
+	Description: "List the known Cascadia fleet agents loaded from the NIP-51 directory, enriched with any discovered capability metadata from kind:30317 events. Returns each agent's pubkey, display name, relay hints, runtime version, DM schemes, tools, and explicit ContextVM feature metadata when available.",
 	Parameters: agent.ToolParameters{
 		Type:       "object",
 		Properties: map[string]agent.ToolParamProp{},

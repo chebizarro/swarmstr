@@ -11,39 +11,71 @@ import (
 	"metiq/internal/store/state"
 )
 
+type capabilityToolSurface struct {
+	ToolNames         []string
+	ContextVMFeatures []string
+}
+
 func buildLocalCapabilityAnnouncement(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository) nostruntime.CapabilityAnnouncement {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	surface := currentCapabilityToolSurface(ctx, cfg, docsRepo)
 	return nostruntime.CapabilityAnnouncement{
-		Runtime:        "metiq",
-		RuntimeVersion: version,
-		DMSchemes:      currentCapabilityDMSchemes(),
-		ACPVersion:     acppkg.Version,
-		Tools:          currentCapabilityToolNames(ctx, cfg, docsRepo),
-		Relays:         currentCapabilityPublishRelays(cfg),
+		Runtime:           "metiq",
+		RuntimeVersion:    version,
+		DMSchemes:         currentCapabilityDMSchemes(),
+		ACPVersion:        acppkg.Version,
+		Tools:             surface.ToolNames,
+		ContextVMFeatures: surface.ContextVMFeatures,
+		Relays:            currentCapabilityPublishRelays(cfg),
 	}
 }
 
-func currentCapabilityToolNames(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository) []string {
-	if controlToolRegistry == nil {
-		return nil
-	}
-	allowed := resolvedAgentRuntimeToolAllowlist(ctx, cfg, docsRepo, "")
-	exec := agent.FilteredToolExecutor(controlToolRegistry, allowed)
-	defs := agent.ToolDefinitions(exec)
+func capabilityToolSurfaceFromDefinitions(defs []agent.ToolDefinition) capabilityToolSurface {
 	if len(defs) == 0 {
-		return nil
+		return capabilityToolSurface{}
 	}
 	names := make([]string, 0, len(defs))
+	ctxvm := make([]string, 0, 8)
 	for _, def := range defs {
 		if def.Name == "" {
 			continue
 		}
 		names = append(names, def.Name)
+		switch def.Name {
+		case "contextvm_discover":
+			ctxvm = append(ctxvm, "discover")
+		case "contextvm_tools_list":
+			ctxvm = append(ctxvm, "tools_list")
+		case "contextvm_call":
+			ctxvm = append(ctxvm, "tools_call")
+		case "contextvm_resources_list":
+			ctxvm = append(ctxvm, "resources_list")
+		case "contextvm_resources_read":
+			ctxvm = append(ctxvm, "resources_read")
+		case "contextvm_prompts_list":
+			ctxvm = append(ctxvm, "prompts_list")
+		case "contextvm_prompts_get":
+			ctxvm = append(ctxvm, "prompts_get")
+		case "contextvm_raw":
+			ctxvm = append(ctxvm, "raw")
+		}
 	}
 	sort.Strings(names)
-	return names
+	return capabilityToolSurface{
+		ToolNames:         names,
+		ContextVMFeatures: nostruntime.NormalizeCapabilityValues(ctxvm),
+	}
+}
+
+func currentCapabilityToolSurface(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository) capabilityToolSurface {
+	if controlToolRegistry == nil {
+		return capabilityToolSurface{}
+	}
+	allowed := resolvedAgentRuntimeToolAllowlist(ctx, cfg, docsRepo, "")
+	exec := agent.FilteredToolExecutor(controlToolRegistry, allowed)
+	return capabilityToolSurfaceFromDefinitions(agent.ToolDefinitions(exec))
 }
 
 func currentCapabilityDMSchemes() []string {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"metiq/internal/agent"
 	"metiq/internal/agent/toolbuiltin"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
@@ -15,6 +16,17 @@ const (
 	acpDMCompatibilityUnknown
 	acpDMCompatibilityCompatible
 )
+
+const (
+	acpCapabilityCompatibilityIncompatible = iota
+	acpCapabilityCompatibilityUnknown
+	acpCapabilityCompatibilityCompatible
+)
+
+type acpTargetRequirements struct {
+	ToolNames         []string
+	ContextVMFeatures []string
+}
 
 func normalizeACPAdvertisedScheme(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
@@ -144,11 +156,112 @@ func acpTargetDisplayName(pubkey string) string {
 	return pubkey
 }
 
+func contextVMFeaturesFromToolNames(toolNames []string) []string {
+	if len(toolNames) == 0 {
+		return nil
+	}
+	defs := make([]agent.ToolDefinition, 0, len(toolNames))
+	for _, name := range toolNames {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		defs = append(defs, agent.ToolDefinition{Name: trimmed})
+	}
+	surface := capabilityToolSurfaceFromDefinitions(defs)
+	return surface.ContextVMFeatures
+}
+
+func advertisedContextVMFeatureSet(entry toolbuiltin.FleetEntry) map[string]struct{} {
+	values := append([]string{}, entry.ContextVMFeatures...)
+	values = append(values, contextVMFeaturesFromToolNames(entry.Tools)...)
+	if len(values) == 0 {
+		return nil
+	}
+	out := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		out[value] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func buildACPTargetRequirements(cfg state.ConfigDoc, constraints turnToolConstraints) acpTargetRequirements {
+	if controlToolRegistry == nil {
+		return acpTargetRequirements{}
+	}
+	allowed := intersectTurnToolConstraints(nil, cfg, constraints)
+	if allowed == nil {
+		return acpTargetRequirements{}
+	}
+	exec := agent.FilteredToolExecutor(controlToolRegistry, allowed)
+	surface := capabilityToolSurfaceFromDefinitions(agent.ToolDefinitions(exec))
+	return acpTargetRequirements{ToolNames: surface.ToolNames, ContextVMFeatures: surface.ContextVMFeatures}
+}
+
+func fleetEntryCapabilityCompatibility(entry toolbuiltin.FleetEntry, req acpTargetRequirements) int {
+	if len(req.ToolNames) == 0 && len(req.ContextVMFeatures) == 0 {
+		return acpCapabilityCompatibilityCompatible
+	}
+	toolSet := map[string]struct{}{}
+	for _, name := range entry.Tools {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		toolSet[trimmed] = struct{}{}
+	}
+	featureSet := advertisedContextVMFeatureSet(entry)
+	knownTools := len(toolSet) > 0
+	knownFeatures := len(featureSet) > 0
+	if !knownTools && !knownFeatures {
+		return acpCapabilityCompatibilityUnknown
+	}
+	for _, name := range req.ToolNames {
+		if _, ok := toolSet[name]; !ok {
+			return acpCapabilityCompatibilityIncompatible
+		}
+	}
+	for _, feature := range req.ContextVMFeatures {
+		if !knownFeatures {
+			return acpCapabilityCompatibilityUnknown
+		}
+		if _, ok := featureSet[strings.ToLower(strings.TrimSpace(feature))]; !ok {
+			return acpCapabilityCompatibilityIncompatible
+		}
+	}
+	return acpCapabilityCompatibilityCompatible
+}
+
+func describeACPTargetRequirements(req acpTargetRequirements) string {
+	parts := make([]string, 0, len(req.ToolNames)+len(req.ContextVMFeatures))
+	if len(req.ToolNames) > 0 {
+		parts = append(parts, "tools: "+strings.Join(req.ToolNames, ", "))
+	}
+	if len(req.ContextVMFeatures) > 0 {
+		parts = append(parts, "contextvm_features: "+strings.Join(req.ContextVMFeatures, ", "))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ")
+}
+
 func betterACPTargetCandidate(a, b toolbuiltin.FleetEntry) bool {
-	return betterACPTargetCandidateForConfig(a, b, state.ConfigDoc{})
+	return betterACPTargetCandidateForConfigAndRequirements(a, b, state.ConfigDoc{}, acpTargetRequirements{})
 }
 
 func betterACPTargetCandidateForConfig(a, b toolbuiltin.FleetEntry, cfg state.ConfigDoc) bool {
+	return betterACPTargetCandidateForConfigAndRequirements(a, b, cfg, acpTargetRequirements{})
+}
+
+func betterACPTargetCandidateForConfigAndRequirements(a, b toolbuiltin.FleetEntry, cfg state.ConfigDoc, req acpTargetRequirements) bool {
 	aRegistered := controlACPPeers != nil && controlACPPeers.IsPeer(a.Pubkey)
 	bRegistered := controlACPPeers != nil && controlACPPeers.IsPeer(b.Pubkey)
 	if aRegistered != bRegistered {
@@ -158,6 +271,11 @@ func betterACPTargetCandidateForConfig(a, b toolbuiltin.FleetEntry, cfg state.Co
 	bDM := fleetEntryDMCompatibilityForConfig(b, cfg)
 	if aDM != bDM {
 		return aDM > bDM
+	}
+	aCaps := fleetEntryCapabilityCompatibility(a, req)
+	bCaps := fleetEntryCapabilityCompatibility(b, req)
+	if aCaps != bCaps {
+		return aCaps > bCaps
 	}
 	aACP := a.ACPVersion > 0
 	bACP := b.ACPVersion > 0
@@ -171,10 +289,14 @@ func betterACPTargetCandidateForConfig(a, b toolbuiltin.FleetEntry, cfg state.Co
 }
 
 func resolveACPFleetTarget(raw string) (string, string, error) {
-	return resolveACPFleetTargetForConfig(raw, state.ConfigDoc{})
+	return resolveACPFleetTargetForConfigAndRequirements(raw, state.ConfigDoc{}, acpTargetRequirements{})
 }
 
 func resolveACPFleetTargetForConfig(raw string, cfg state.ConfigDoc) (string, string, error) {
+	return resolveACPFleetTargetForConfigAndRequirements(raw, cfg, acpTargetRequirements{})
+}
+
+func resolveACPFleetTargetForConfigAndRequirements(raw string, cfg state.ConfigDoc, req acpTargetRequirements) (string, string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", "", fmt.Errorf("ACP peer target is required")
@@ -210,17 +332,19 @@ func resolveACPFleetTargetForConfig(raw string, cfg state.ConfigDoc) (string, st
 	}
 	best := candidates[0]
 	for _, candidate := range candidates[1:] {
-		if betterACPTargetCandidateForConfig(candidate, best, cfg) {
+		if betterACPTargetCandidateForConfigAndRequirements(candidate, best, cfg, req) {
 			best = candidate
 		}
 	}
 	registeredSeen := false
-	bestIncompatible := toolbuiltin.FleetEntry{}
-	bestIncompatibleSet := false
+	bestIncompatibleDM := toolbuiltin.FleetEntry{}
+	bestIncompatibleDMSet := false
+	bestIncompatibleCaps := toolbuiltin.FleetEntry{}
+	bestIncompatibleCapsSet := false
 	ordered := append([]toolbuiltin.FleetEntry{}, candidates...)
 	for i := 0; i < len(ordered); i++ {
 		for j := i + 1; j < len(ordered); j++ {
-			if betterACPTargetCandidateForConfig(ordered[j], ordered[i], cfg) {
+			if betterACPTargetCandidateForConfigAndRequirements(ordered[j], ordered[i], cfg, req) {
 				ordered[i], ordered[j] = ordered[j], ordered[i]
 			}
 		}
@@ -231,16 +355,30 @@ func resolveACPFleetTargetForConfig(raw string, cfg state.ConfigDoc) (string, st
 		}
 		registeredSeen = true
 		if fleetEntryDMCompatibilityForConfig(candidate, cfg) == acpDMCompatibilityIncompatible {
-			if !bestIncompatibleSet {
-				bestIncompatible = candidate
-				bestIncompatibleSet = true
+			if !bestIncompatibleDMSet {
+				bestIncompatibleDM = candidate
+				bestIncompatibleDMSet = true
+			}
+			continue
+		}
+		if fleetEntryCapabilityCompatibility(candidate, req) == acpCapabilityCompatibilityIncompatible {
+			if !bestIncompatibleCapsSet {
+				bestIncompatibleCaps = candidate
+				bestIncompatibleCapsSet = true
 			}
 			continue
 		}
 		return candidate.Pubkey, fleetDisplayNameForACP(candidate), nil
 	}
-	if registeredSeen && bestIncompatibleSet {
-		return "", "", fmt.Errorf("ACP peer %q does not advertise a compatible DM scheme", fleetDisplayNameForACP(bestIncompatible))
+	if registeredSeen && bestIncompatibleDMSet {
+		return "", "", fmt.Errorf("ACP peer %q does not advertise a compatible DM scheme", fleetDisplayNameForACP(bestIncompatibleDM))
+	}
+	if registeredSeen && bestIncompatibleCapsSet {
+		details := describeACPTargetRequirements(req)
+		if details == "" {
+			details = "required tool surface"
+		}
+		return "", "", fmt.Errorf("ACP peer %q does not advertise %s", fleetDisplayNameForACP(bestIncompatibleCaps), details)
 	}
 	return "", "", fmt.Errorf("ACP peer %q is known in fleet discovery but not registered; register via acp.register first", fleetDisplayNameForACP(best))
 }

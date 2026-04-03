@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	acppkg "metiq/internal/acp"
+	"metiq/internal/agent"
 	"metiq/internal/agent/toolbuiltin"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
@@ -18,6 +20,7 @@ func withACPRoutingTestState(t *testing.T, fn func()) {
 	prevBus := controlDMBus
 	prevNIP17 := controlNIP17Bus
 	prevNIP04 := controlNIP04Bus
+	prevToolRegistry := controlToolRegistry
 	defer func() {
 		nip51FleetEntries = prevFleet
 		capabilityRegistry = prevRegistry
@@ -25,8 +28,19 @@ func withACPRoutingTestState(t *testing.T, fn func()) {
 		controlDMBus = prevBus
 		controlNIP17Bus = prevNIP17
 		controlNIP04Bus = prevNIP04
+		controlToolRegistry = prevToolRegistry
 	}()
 	fn()
+}
+
+func agentRegistryForACPRoutingTest() *agent.ToolRegistry {
+	tools := agent.NewToolRegistry()
+	register := func(name string) {
+		tools.RegisterWithDef(name, func(context.Context, map[string]any) (string, error) { return "", nil }, agent.ToolDefinition{Name: name})
+	}
+	register("memory_search")
+	register("contextvm_resources_read")
+	return tools
 }
 
 func TestResolveACPFleetTargetPrefersRegisteredCapablePeer(t *testing.T) {
@@ -139,6 +153,57 @@ func TestResolveACPFleetTargetForConfigPrefersConfiguredTransport(t *testing.T) 
 		}
 		if pubkey != nip04PubKey {
 			t.Fatalf("pubkey = %q, want %q", pubkey, nip04PubKey)
+		}
+	})
+}
+
+func TestResolveACPFleetTargetForConfigAndRequirementsPrefersMatchingContextVMSurface(t *testing.T) {
+	withACPRoutingTestState(t, func() {
+		plainPubKey := "abababababababababababababababababababababababababababababababab"
+		ctxvmPubKey := "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+		nip51FleetEntries = map[string]toolbuiltin.FleetEntry{
+			plainPubKey: {Pubkey: plainPubKey, Name: "Worker", Relay: "wss://relay-a", DMSchemes: []string{"nip17"}, ACPVersion: 1, Tools: []string{"memory_search"}},
+			ctxvmPubKey: {Pubkey: ctxvmPubKey, Name: "Worker", Relay: "wss://relay-b", DMSchemes: []string{"nip17"}, ACPVersion: 1, Tools: []string{"memory_search", "contextvm_resources_read"}},
+		}
+		controlACPPeers = acppkg.NewPeerRegistry()
+		for _, pubkey := range []string{plainPubKey, ctxvmPubKey} {
+			if err := controlACPPeers.Register(acppkg.PeerEntry{PubKey: pubkey, Alias: "Worker"}); err != nil {
+				t.Fatalf("Register(%s): %v", pubkey, err)
+			}
+		}
+		controlNIP17Bus = &nostruntime.NIP17Bus{}
+		controlDMBus = controlNIP17Bus
+		controlToolRegistry = agentRegistryForACPRoutingTest()
+
+		req := buildACPTargetRequirements(state.ConfigDoc{}, turnToolConstraints{EnabledTools: []string{"contextvm_resources_read"}})
+		pubkey, _, err := resolveACPFleetTargetForConfigAndRequirements("worker", state.ConfigDoc{}, req)
+		if err != nil {
+			t.Fatalf("resolveACPFleetTargetForConfigAndRequirements: %v", err)
+		}
+		if pubkey != ctxvmPubKey {
+			t.Fatalf("pubkey = %q, want %q", pubkey, ctxvmPubKey)
+		}
+	})
+}
+
+func TestResolveACPFleetTargetForConfigAndRequirementsRejectsExplicitlyIncompatibleSurface(t *testing.T) {
+	withACPRoutingTestState(t, func() {
+		peerPubKey := "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+		nip51FleetEntries = map[string]toolbuiltin.FleetEntry{
+			peerPubKey: {Pubkey: peerPubKey, Name: "Worker", Relay: "wss://relay-a", DMSchemes: []string{"nip17"}, ACPVersion: 1, Tools: []string{"memory_search"}},
+		}
+		controlACPPeers = acppkg.NewPeerRegistry()
+		if err := controlACPPeers.Register(acppkg.PeerEntry{PubKey: peerPubKey, Alias: "Worker"}); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		controlNIP17Bus = &nostruntime.NIP17Bus{}
+		controlDMBus = controlNIP17Bus
+		controlToolRegistry = agentRegistryForACPRoutingTest()
+
+		req := buildACPTargetRequirements(state.ConfigDoc{}, turnToolConstraints{EnabledTools: []string{"contextvm_resources_read"}})
+		_, _, err := resolveACPFleetTargetForConfigAndRequirements("worker", state.ConfigDoc{}, req)
+		if err == nil || !strings.Contains(err.Error(), "contextvm_features: resources_read") {
+			t.Fatalf("err = %v, want contextvm feature mismatch", err)
 		}
 	})
 }

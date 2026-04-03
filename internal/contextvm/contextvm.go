@@ -65,6 +65,31 @@ type CallResult struct {
 	IsError bool             `json:"isError,omitempty"`
 }
 
+var sendContextVMRequestWithTimeout = sendRequestWithTimeout
+
+func executeJSONRPC(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any, timeout time.Duration, encryption string) (json.RawMessage, error) {
+	respRaw, err := sendContextVMRequestWithTimeout(ctx, pool, keyer, relays, serverPubKey, msg, timeout, encryption)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respRaw, &resp); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("contextvm server error: %s", resp.Error.Message)
+	}
+	if len(resp.Result) == 0 || string(resp.Result) == "null" {
+		return nil, fmt.Errorf("response missing result")
+	}
+	return resp.Result, nil
+}
+
 // DiscoverServers fetches ContextVM server announcements (kind 11316) from relays.
 func DiscoverServers(ctx context.Context, pool *nostr.Pool, relays []string, limit int) ([]ServerInfo, error) {
 	if limit <= 0 {
@@ -127,6 +152,104 @@ func ListTools(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays 
 	return resp.Result.Tools, nil
 }
 
+// ListResources sends a resources/list MCP request to a ContextVM server.
+func ListResources(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, encryption string) ([]map[string]any, error) {
+	resultRaw, err := executeJSONRPC(ctx, pool, keyer, relays, serverPubKey, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "resources/list",
+		"params":  map[string]any{},
+	}, 30*time.Second, encryption)
+	if err != nil {
+		return nil, fmt.Errorf("contextvm list resources: %w", err)
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(resultRaw, &result); err != nil {
+		return nil, fmt.Errorf("contextvm list resources: parse result: %w", err)
+	}
+	resourcesRaw, ok := result["resources"]
+	if !ok {
+		return nil, fmt.Errorf("contextvm list resources: response missing resources")
+	}
+	var resources []map[string]any
+	if err := json.Unmarshal(resourcesRaw, &resources); err != nil {
+		return nil, fmt.Errorf("contextvm list resources: parse resources: %w", err)
+	}
+	return resources, nil
+}
+
+// ReadResource sends a resources/read MCP request to a ContextVM server.
+func ReadResource(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, uri string, encryption string) (map[string]any, error) {
+	resultRaw, err := executeJSONRPC(ctx, pool, keyer, relays, serverPubKey, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      4,
+		"method":  "resources/read",
+		"params":  map[string]any{"uri": uri},
+	}, 30*time.Second, encryption)
+	if err != nil {
+		return nil, fmt.Errorf("contextvm read resource: %w", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resultRaw, &result); err != nil {
+		return nil, fmt.Errorf("contextvm read resource: parse result: %w", err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("contextvm read resource: response missing result object")
+	}
+	return result, nil
+}
+
+// ListPrompts sends a prompts/list MCP request to a ContextVM server.
+func ListPrompts(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, encryption string) ([]map[string]any, error) {
+	resultRaw, err := executeJSONRPC(ctx, pool, keyer, relays, serverPubKey, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      5,
+		"method":  "prompts/list",
+		"params":  map[string]any{},
+	}, 30*time.Second, encryption)
+	if err != nil {
+		return nil, fmt.Errorf("contextvm list prompts: %w", err)
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(resultRaw, &result); err != nil {
+		return nil, fmt.Errorf("contextvm list prompts: parse result: %w", err)
+	}
+	promptsRaw, ok := result["prompts"]
+	if !ok {
+		return nil, fmt.Errorf("contextvm list prompts: response missing prompts")
+	}
+	var prompts []map[string]any
+	if err := json.Unmarshal(promptsRaw, &prompts); err != nil {
+		return nil, fmt.Errorf("contextvm list prompts: parse prompts: %w", err)
+	}
+	return prompts, nil
+}
+
+// GetPrompt sends a prompts/get MCP request to a ContextVM server.
+func GetPrompt(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, name string, args map[string]any, encryption string) (map[string]any, error) {
+	params := map[string]any{"name": name}
+	if len(args) > 0 {
+		params["arguments"] = args
+	}
+	resultRaw, err := executeJSONRPC(ctx, pool, keyer, relays, serverPubKey, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      6,
+		"method":  "prompts/get",
+		"params":  params,
+	}, 30*time.Second, encryption)
+	if err != nil {
+		return nil, fmt.Errorf("contextvm get prompt: %w", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resultRaw, &result); err != nil {
+		return nil, fmt.Errorf("contextvm get prompt: parse result: %w", err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("contextvm get prompt: response missing result object")
+	}
+	return result, nil
+}
+
 // CallTool calls an MCP tool on a ContextVM server via kind 25910.
 func CallTool(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey, toolName string, toolArgs map[string]any, encryption string) (*CallResult, error) {
 	return CallToolWithTimeout(ctx, pool, keyer, relays, serverPubKey, toolName, toolArgs, 30*time.Second, encryption)
@@ -144,24 +267,15 @@ func CallToolWithTimeout(ctx context.Context, pool *nostr.Pool, keyer nostr.Keye
 			"arguments": toolArgs,
 		},
 	}
-	respRaw, err := sendRequestWithTimeout(ctx, pool, keyer, relays, serverPubKey, msg, timeout, encryption)
+	resultRaw, err := executeJSONRPC(ctx, pool, keyer, relays, serverPubKey, msg, timeout, encryption)
 	if err != nil {
 		return nil, fmt.Errorf("contextvm call %s: %w", toolName, err)
 	}
-
-	var resp struct {
-		Result CallResult `json:"result"`
-		Error  *struct {
-			Message string `json:"message"`
-		} `json:"error"`
+	var result CallResult
+	if err := json.Unmarshal(resultRaw, &result); err != nil {
+		return nil, fmt.Errorf("contextvm call %s: parse result: %w", toolName, err)
 	}
-	if err := json.Unmarshal(respRaw, &resp); err != nil {
-		return nil, fmt.Errorf("contextvm call %s: parse response: %w", toolName, err)
-	}
-	if resp.Error != nil {
-		return nil, fmt.Errorf("contextvm tool error: %s", resp.Error.Message)
-	}
-	return &resp.Result, nil
+	return &result, nil
 }
 
 // SendRaw sends an arbitrary stringified JSON-RPC MCP message to a server
