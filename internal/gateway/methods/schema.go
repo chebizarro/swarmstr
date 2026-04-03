@@ -39,6 +39,7 @@ const (
 	MethodHealth                      = "health"
 	MethodDoctorMemoryStatus          = "doctor.memory.status"
 	MethodLogsTail                    = "logs.tail"
+	MethodRuntimeObserve              = "runtime.observe"
 	MethodChannelsStatus              = "channels.status"
 	MethodChannelsLogout              = "channels.logout"
 	MethodChannelsJoin                = "channels.join"
@@ -752,6 +753,24 @@ type LogsTailRequest struct {
 	Limit    int   `json:"limit,omitempty"`
 	MaxBytes int   `json:"max_bytes,omitempty"`
 	Lines    int   `json:"lines,omitempty"`
+}
+
+type RuntimeObserveRequest struct {
+	IncludeEvents *bool    `json:"include_events,omitempty"`
+	IncludeLogs   *bool    `json:"include_logs,omitempty"`
+	EventCursor   int64    `json:"event_cursor,omitempty"`
+	LogCursor     int64    `json:"log_cursor,omitempty"`
+	EventLimit    int      `json:"event_limit,omitempty"`
+	LogLimit      int      `json:"log_limit,omitempty"`
+	MaxBytes      int      `json:"max_bytes,omitempty"`
+	WaitTimeoutMS int      `json:"wait_timeout_ms,omitempty"`
+	Events        []string `json:"events,omitempty"`
+	AgentID       string   `json:"agent_id,omitempty"`
+	SessionID     string   `json:"session_id,omitempty"`
+	ChannelID     string   `json:"channel_id,omitempty"`
+	Direction     string   `json:"direction,omitempty"`
+	Subsystem     string   `json:"subsystem,omitempty"`
+	Source        string   `json:"source,omitempty"`
 }
 
 type ChannelsStatusRequest struct {
@@ -1549,6 +1568,45 @@ func (r LogsTailRequest) Normalize() (LogsTailRequest, error) {
 	if r.Cursor < 0 {
 		r.Cursor = 0
 	}
+	return r, nil
+}
+
+func (r RuntimeObserveRequest) Normalize() (RuntimeObserveRequest, error) {
+	includeEvents := true
+	if r.IncludeEvents != nil {
+		includeEvents = *r.IncludeEvents
+	}
+	includeLogs := true
+	if r.IncludeLogs != nil {
+		includeLogs = *r.IncludeLogs
+	}
+	if !includeEvents && !includeLogs {
+		return r, fmt.Errorf("at least one of include_events or include_logs must be true")
+	}
+	r.IncludeEvents = boolPtr(includeEvents)
+	r.IncludeLogs = boolPtr(includeLogs)
+	if r.EventCursor < 0 {
+		r.EventCursor = 0
+	}
+	if r.LogCursor < 0 {
+		r.LogCursor = 0
+	}
+	r.EventLimit = normalizeLimit(r.EventLimit, 20, 200)
+	r.LogLimit = normalizeLimit(r.LogLimit, 20, 200)
+	r.MaxBytes = normalizeLimit(r.MaxBytes, 32*1024, 256*1024)
+	if r.WaitTimeoutMS < 0 {
+		r.WaitTimeoutMS = 0
+	}
+	if r.WaitTimeoutMS > 60_000 {
+		r.WaitTimeoutMS = 60_000
+	}
+	r.AgentID = strings.TrimSpace(r.AgentID)
+	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.ChannelID = strings.TrimSpace(r.ChannelID)
+	r.Direction = strings.TrimSpace(r.Direction)
+	r.Subsystem = strings.TrimSpace(r.Subsystem)
+	r.Source = strings.TrimSpace(r.Source)
+	r.Events = compactStringSlice(r.Events)
 	return r, nil
 }
 
@@ -2367,6 +2425,7 @@ func SupportedMethods() []string {
 		MethodHealth,
 		MethodDoctorMemoryStatus,
 		MethodLogsTail,
+		MethodRuntimeObserve,
 		MethodChannelsStatus,
 		MethodChannelsLogout,
 		MethodChannelsJoin,
@@ -3310,6 +3369,13 @@ func DecodeLogsTailParams(params json.RawMessage) (LogsTailRequest, error) {
 		return req, nil
 	}
 	return decodeMethodParams[LogsTailRequest](params)
+}
+
+func DecodeRuntimeObserveParams(params json.RawMessage) (RuntimeObserveRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return RuntimeObserveRequest{}, nil
+	}
+	return decodeMethodParams[RuntimeObserveRequest](params)
 }
 
 func DecodeChannelsStatusParams(params json.RawMessage) (ChannelsStatusRequest, error) {
@@ -4287,6 +4353,15 @@ var objectParamAliases = map[string]string{
 	"skillKey":         "skill_key",
 	"apiKey":           "api_key",
 	"includePlugins":   "include_plugins",
+	"includeEvents":    "include_events",
+	"includeLogs":      "include_logs",
+	"eventCursor":      "event_cursor",
+	"logCursor":        "log_cursor",
+	"eventLimit":       "event_limit",
+	"logLimit":         "log_limit",
+	"maxBytes":         "max_bytes",
+	"waitTimeoutMs":    "wait_timeout_ms",
+	"channelId":        "channel_id",
 	"nodeId":           "node_id",
 	"maxItems":         "max_items",
 	"ttlMs":            "ttl_ms",
@@ -4422,6 +4497,10 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func compactStringSlice(values []string) []string {

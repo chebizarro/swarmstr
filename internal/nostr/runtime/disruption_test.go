@@ -547,8 +547,8 @@ func TestDisruption_SubHealthTrackerRecordsDisruptionSequence(t *testing.T) {
 	if snap.ReconnectCount != 2 {
 		t.Fatalf("reconnect_count = %d, want 2", snap.ReconnectCount)
 	}
-	if snap.LastClosedReason != "rate-limited:" {
-		t.Fatalf("last_closed_reason = %q, want %q", snap.LastClosedReason, "rate-limited:")
+	if snap.LastClosedReason != "" {
+		t.Fatalf("last_closed_reason = %q, want empty after reconnect", snap.LastClosedReason)
 	}
 	if snap.LastEventAt.IsZero() {
 		t.Fatal("last_event_at should be set")

@@ -41,6 +41,8 @@ var (
 type turnRuntimeParams struct {
 	// Agent identity
 	AgentID      string
+	SelfPubkey   string
+	SelfNPub     string
 	Model        string
 	Channel      string // e.g. "nostr", "telegram", "discord"
 	Capabilities []string
@@ -228,6 +230,12 @@ func buildRuntimeSection(p turnRuntimeParams) string {
 		fmt.Sprintf("host=%s", hostname),
 		fmt.Sprintf("os=%s (%s)", runtime.GOOS, runtime.GOARCH),
 		fmt.Sprintf("go=%s", runtime.Version()),
+	}
+	if p.SelfPubkey != "" {
+		parts = append(parts, fmt.Sprintf("self_pubkey=%s", p.SelfPubkey))
+	}
+	if p.SelfNPub != "" {
+		parts = append(parts, fmt.Sprintf("self_npub=%s", p.SelfNPub))
 	}
 	if p.Model != "" {
 		parts = append(parts, fmt.Sprintf("model=%s", p.Model))

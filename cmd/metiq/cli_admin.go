@@ -32,8 +32,9 @@ type nostrGatewayResolver func(bootstrapPath, controlTargetPubKey, controlSigner
 
 // adminClient is a minimal HTTP client for the metiqd admin API.
 type adminClient struct {
-	addr  string
-	token string
+	addr    string
+	token   string
+	timeout time.Duration
 }
 
 type nostrControlClient struct {
@@ -261,7 +262,11 @@ func (c *adminClient) call(method string, params any) (map[string]any, error) {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	cl := &http.Client{Timeout: 30 * time.Second}
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	cl := &http.Client{Timeout: timeout}
 	resp, err := cl.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("could not reach daemon at %s: %w", c.addr, err)
@@ -424,7 +429,11 @@ func (c *adminClient) get(path string) (map[string]any, error) {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	cl := &http.Client{Timeout: 10 * time.Second}
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	cl := &http.Client{Timeout: timeout}
 	resp, err := cl.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("could not reach daemon at %s: %w", c.addr, err)

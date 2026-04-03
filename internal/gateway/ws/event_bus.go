@@ -51,6 +51,10 @@ const (
 	// EventChannelMessage is emitted when a message arrives on or is sent to
 	// a channel (NIP-29 group or other).
 	EventChannelMessage = "channel.message"
+	// EventRelayHealth is emitted when the relay health monitor probes a relay.
+	EventRelayHealth = "relay.health"
+	// EventDMHealth is emitted when a DM transport health snapshot changes.
+	EventDMHealth = "dm.health"
 
 	// EventNodePairRequested is emitted when a node pair request is received.
 	EventNodePairRequested = "node.pair.requested"
@@ -109,6 +113,8 @@ var AllPushEvents = []string{
 	EventVoicewake,
 	EventUpdateAvailable,
 	EventChannelMessage,
+	EventRelayHealth,
+	EventDMHealth,
 	EventNodePairRequested,
 	EventNodePairResolved,
 	EventDevicePairResolved,
@@ -376,6 +382,32 @@ type ChannelMessagePayload struct {
 	From      string `json:"from,omitempty"`
 	Text      string `json:"text,omitempty"`
 	EventID   string `json:"event_id,omitempty"`
+}
+
+// RelayHealthPayload is the payload for EventRelayHealth.
+type RelayHealthPayload struct {
+	TS        int64  `json:"ts_ms"`
+	URL       string `json:"url"`
+	Reachable bool   `json:"reachable"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Initial   bool   `json:"initial,omitempty"`
+	Source    string `json:"source,omitempty"`
+}
+
+// DMHealthPayload is the payload for EventDMHealth.
+type DMHealthPayload struct {
+	TS               int64    `json:"ts_ms"`
+	Label            string   `json:"label"`
+	BoundRelays      []string `json:"bound_relays,omitempty"`
+	LastEventAt      int64    `json:"last_event_at_ms,omitempty"`
+	LastReconnectAt  int64    `json:"last_reconnect_at_ms,omitempty"`
+	LastClosedReason string   `json:"last_closed_reason,omitempty"`
+	ReplayWindowMS   int64    `json:"replay_window_ms,omitempty"`
+	EventCount       int64    `json:"event_count,omitempty"`
+	ReconnectCount   int64    `json:"reconnect_count,omitempty"`
+	Healthy          bool     `json:"healthy"`
+	Source           string   `json:"source,omitempty"`
 }
 
 // PluginLoadedPayload is the payload for EventPluginLoaded.

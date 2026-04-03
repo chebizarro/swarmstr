@@ -420,6 +420,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	shutdownEmitter := newRuntimeShutdownEmitter(emitControlWSEvent)
+
 	// Restart scheduler: drains controlRestartCh, emits EventShutdown, then stops the daemon.
 	// The supervisor (systemd / launchd / Docker restart policy) is expected to re-launch it.
 	go func() {
@@ -431,10 +433,7 @@ func main() {
 				if delayMS < 0 {
 					delayMS = 0
 				}
-				emitControlWSEvent(gatewayws.EventShutdown, gatewayws.ShutdownPayload{
-					TS:     time.Now().UnixMilli(),
-					Reason: "config change requires restart",
-				})
+				shutdownEmitter.Emit("config change requires restart")
 				if delayMS > 0 {
 					time.Sleep(time.Duration(delayMS) * time.Millisecond)
 				}
@@ -881,9 +880,11 @@ func main() {
 	toolbuiltin.SetIdentityInfo(toolbuiltin.IdentityInfo{
 		Name:   "main",
 		Pubkey: pubkey,
+		NPub:   toolbuiltin.NostrNPubFromHex(pubkey),
 		Model:  strings.TrimSpace(os.Getenv("METIQ_AGENT_PROVIDER")),
 	})
 	tools.RegisterWithDef("my_identity", toolbuiltin.MyIdentityTool, toolbuiltin.MyIdentityDef)
+	tools.RegisterWithDef("runtime_observe", toolbuiltin.RuntimeObserveTool, toolbuiltin.RuntimeObserveDef)
 	// bash_exec: shell command execution (gated by exec approval policy middleware).
 	tools.RegisterWithDef("bash_exec", toolbuiltin.BashExecTool, toolbuiltin.BashExecDef)
 	// Git tools: structured status and diff output.
@@ -972,6 +973,7 @@ func main() {
 		toolbuiltin.SetIdentityInfo(toolbuiltin.IdentityInfo{
 			Name:   identityName,
 			Pubkey: pubkey,
+			NPub:   toolbuiltin.NostrNPubFromHex(pubkey),
 			Model:  identityModel,
 		})
 	}
@@ -1135,6 +1137,13 @@ func main() {
 		if def, err2 := config.DefaultConfigPath(); err2 == nil {
 			configFilePath = def
 		}
+	}
+	if configFilePath != "" {
+		validatedPath, err := config.ValidateConfigFilePath(configFilePath)
+		if err != nil {
+			log.Fatalf("invalid --config path: %v", err)
+		}
+		configFilePath = validatedPath
 	}
 
 	// Load Goja (JS) plugins from config and register their tools.
@@ -2002,6 +2011,18 @@ func main() {
 	}
 	usageState := newUsageTracker(startedAt)
 	logBuffer := newRuntimeLogBuffer(2000)
+	eventBuffer := newRuntimeEventBuffer(2000)
+	toolbuiltin.SetRuntimeObserveProvider(toolbuiltin.RuntimeObserveProvider{
+		Observe: func(obsCtx context.Context, req toolbuiltin.RuntimeObserveRequest) (map[string]any, error) {
+			return observeRuntimeActivity(obsCtx, eventBuffer, logBuffer, req)
+		},
+		TailEvents: func(cursor int64, limit int, maxBytes int, filters toolbuiltin.RuntimeObserveFilters) map[string]any {
+			return eventBuffer.Tail(cursor, limit, maxBytes, filters)
+		},
+		TailLogs: func(cursor int64, limit int, maxBytes int) map[string]any {
+			return logBuffer.Tail(cursor, limit, maxBytes)
+		},
+	})
 
 	// ── Rate limiter ──────────────────────────────────────────────────────────
 	// Per-user and per-channel rate limits. Configurable via Extra["rate_limit"].
@@ -2119,7 +2140,9 @@ func main() {
 	// wsEmitter pushes typed events to connected WebSocket clients.
 	// It starts as a no-op and is upgraded to the real runtime emitter once the
 	// WS gateway starts.  The dmOnMessage closure captures this variable.
-	var wsEmitter gatewayws.EventEmitter = gatewayws.NoopEmitter{}
+	var wsEmitter gatewayws.EventEmitter = newObservedEventEmitter(gatewayws.NoopEmitter{}, eventBuffer)
+	setControlWSEmitter(wsEmitter)
+	heartbeatDone := startRuntimeHeartbeatLoop(ctx, startedAt, "metiqd", 30*time.Second, shutdownEmitter)
 
 	// ── Slash command router ──────────────────────────────────────────────────
 	// Registers built-in /commands that are intercepted before the message
@@ -3525,6 +3548,8 @@ func main() {
 
 			runtimeParams := turnRuntimeParams{
 				AgentID:       activeAgentID,
+				SelfPubkey:    pubkey,
+				SelfNPub:      toolbuiltin.NostrNPubFromHex(pubkey),
 				Model:         agentModel,
 				Channel:       "nostr",
 				Capabilities:  agentCapabilities,
@@ -3989,6 +4014,30 @@ func main() {
 	controlDMBusMu.Lock()
 	controlDMBus = bus
 	controlDMBusMu.Unlock()
+
+	dmHealthReporters := make([]dmHealthReporter, 0, 2)
+	if controlNIP17Bus != nil {
+		dmHealthReporters = append(dmHealthReporters, controlNIP17Bus)
+	}
+	if controlNIP04Bus != nil {
+		dmHealthReporters = append(dmHealthReporters, controlNIP04Bus)
+	}
+	if len(dmHealthReporters) > 0 {
+		dmHealthObserver := newDMHealthObserverFunc(emitControlWSEvent)
+		dmHealthObserver.EmitStartup(dmHealthReporters...)
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					dmHealthObserver.EmitTick(dmHealthReporters...)
+				}
+			}
+		}()
+	}
 
 	// ── NIP-51 allowlist watcher + agent list sync ─────────────────────────────
 	// Create a dedicated pool for NIP-51 list fetch/subscribe operations so the
@@ -4907,31 +4956,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("start gateway ws runtime: %v", err)
 		}
-		wsEmitter = gatewayws.NewRuntimeEmitter(wsRuntime)
+		wsEmitter = newObservedEventEmitter(gatewayws.NewRuntimeEmitter(wsRuntime), eventBuffer)
 		setControlWSEmitter(wsEmitter)
-
-		// Periodic tick event and startup health pulse.
-		go func() {
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			// Emit initial health on connect.
-			wsEmitter.Emit(gatewayws.EventHealth, gatewayws.HealthPayload{
-				TS: time.Now().UnixMilli(),
-				OK: true,
-			})
-			for {
-				select {
-				case <-ctx.Done():
-					wsEmitter.Emit(gatewayws.EventShutdown, gatewayws.ShutdownPayload{
-						TS:     time.Now().UnixMilli(),
-						Reason: "daemon stopping",
-					})
-					return
-				case <-ticker.C:
-					gatewayws.EmitTick(wsEmitter, startedAt, "metiqd")
-				}
-			}
-		}()
 	}
 
 	controlConfigFilePath = configFilePath
@@ -5146,6 +5172,9 @@ func main() {
 				},
 				TailLogs: func(_ context.Context, cursor int64, limit int, maxBytes int) (map[string]any, error) {
 					return logBuffer.Tail(cursor, limit, maxBytes), nil
+				},
+				ObserveRuntime: func(obsCtx context.Context, req methods.RuntimeObserveRequest) (map[string]any, error) {
+					return toolbuiltin.ObserveRuntime(obsCtx, runtimeObserveToolRequest(req))
 				},
 				ChannelsStatus: func(_ context.Context, _ methods.ChannelsStatusRequest) (map[string]any, error) {
 					current := configState.Get()
@@ -5691,6 +5720,11 @@ func main() {
 	}
 
 	<-ctx.Done()
+	shutdownEmitter.Emit("daemon stopping")
+	select {
+	case <-heartbeatDone:
+	case <-time.After(250 * time.Millisecond):
+	}
 	log.Println("metiqd shutting down")
 }
 
@@ -6817,6 +6851,20 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{Result: map[string]any{"cursor": req.Cursor, "lines": []string{}, "truncated": false, "reset": false}}, nil
 		}
 		return nostruntime.ControlRPCResult{Result: logBuffer.Tail(req.Cursor, req.Limit, req.MaxBytes)}, nil
+	case methods.MethodRuntimeObserve:
+		req, err := methods.DecodeRuntimeObserveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		out, err := toolbuiltin.ObserveRuntime(ctx, runtimeObserveToolRequest(req))
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, nil
 	case methods.MethodChannelsStatus:
 		req, err := methods.DecodeChannelsStatusParams(in.Params)
 		if err != nil {
@@ -11278,6 +11326,15 @@ func logRelayHealthResults(initial bool, results []nostruntime.RelayHealthResult
 		failures := 0
 		for _, res := range results {
 			relayHealthState[res.URL] = res.Reachable
+			emitControlWSEvent(gatewayws.EventRelayHealth, gatewayws.RelayHealthPayload{
+				TS:        time.Now().UnixMilli(),
+				URL:       res.URL,
+				Reachable: res.Reachable,
+				LatencyMS: res.Latency.Milliseconds(),
+				Error:     relayHealthErrorString(res.Err),
+				Initial:   true,
+				Source:    "relay-monitor",
+			})
 			if res.Reachable {
 				continue
 			}
@@ -11293,6 +11350,14 @@ func logRelayHealthResults(initial bool, results []nostruntime.RelayHealthResult
 	for _, res := range results {
 		prev, seen := relayHealthState[res.URL]
 		relayHealthState[res.URL] = res.Reachable
+		emitControlWSEvent(gatewayws.EventRelayHealth, gatewayws.RelayHealthPayload{
+			TS:        time.Now().UnixMilli(),
+			URL:       res.URL,
+			Reachable: res.Reachable,
+			LatencyMS: res.Latency.Milliseconds(),
+			Error:     relayHealthErrorString(res.Err),
+			Source:    "relay-monitor",
+		})
 		if res.Reachable {
 			if seen && !prev {
 				log.Printf("relay healthcheck recovered relay=%s latency_ms=%d", res.URL, res.Latency.Milliseconds())
@@ -11303,6 +11368,13 @@ func logRelayHealthResults(initial bool, results []nostruntime.RelayHealthResult
 			log.Printf("WARN relay healthcheck unreachable relay=%s err=%v", res.URL, res.Err)
 		}
 	}
+}
+
+func relayHealthErrorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func defaultAgentID(id string) string {
@@ -13167,6 +13239,10 @@ func redactDeviceForList(record map[string]any) map[string]any {
 	return out
 }
 
+func redactNodeForList(record map[string]any) map[string]any {
+	return config.RedactMap(record)
+}
+
 func buildNodePendingRecord(req methods.NodePairRequest, isRepair bool, requestID string, ts int64) map[string]any {
 	record := map[string]any{
 		"request_id": requestID,
@@ -13567,19 +13643,23 @@ func applyNodeList(configState *runtimeConfigStore, req methods.NodeListRequest)
 	if req.Limit > 0 && len(nodes) > req.Limit {
 		nodes = nodes[:req.Limit]
 	}
-	return map[string]any{"nodes": nodes, "count": len(nodes)}, nil
+	redacted := make([]map[string]any, 0, len(nodes))
+	for _, node := range nodes {
+		redacted = append(redacted, redactNodeForList(node))
+	}
+	return map[string]any{"nodes": redacted, "count": len(redacted)}, nil
 }
 
 func applyNodeDescribe(configState *runtimeConfigStore, req methods.NodeDescribeRequest) (map[string]any, error) {
 	pairing := pairingData(configState.Get())
 	for _, node := range toRecordSlice(pairing["node_paired"]) {
 		if getString(node, "node_id") == req.NodeID {
-			return map[string]any{"node": node, "status": "paired"}, nil
+			return map[string]any{"node": redactNodeForList(node), "status": "paired"}, nil
 		}
 	}
 	for _, node := range toRecordSlice(pairing["node_pending"]) {
 		if getString(node, "node_id") == req.NodeID {
-			return map[string]any{"node": node, "status": "pending"}, nil
+			return map[string]any{"node": redactNodeForList(node), "status": "pending"}, nil
 		}
 	}
 	return nil, state.ErrNotFound

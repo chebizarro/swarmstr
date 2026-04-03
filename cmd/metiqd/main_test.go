@@ -18,7 +18,9 @@ import (
 	"fiatjaf.com/nostr/nip44"
 
 	"metiq/internal/agent"
+	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/autoreply"
+	"metiq/internal/config"
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/nostr/events"
@@ -387,6 +389,11 @@ func TestHandleControlRPCRequest_OperationalSemantics(t *testing.T) {
 	logs := newRuntimeLogBuffer(32)
 	logs.Append("info", "first")
 	channels := newChannelRuntimeState()
+	prevObserve := toolbuiltin.RuntimeObserveProvider{}
+	toolbuiltin.SetRuntimeObserveProvider(toolbuiltin.RuntimeObserveProvider{Observe: func(_ context.Context, req toolbuiltin.RuntimeObserveRequest) (map[string]any, error) {
+		return map[string]any{"events": map[string]any{"cursor": req.EventCursor, "events": []map[string]any{{"event": "tool.start", "agent_id": req.Filters.AgentID}}, "truncated": false, "reset": false}, "timed_out": false, "waited_ms": int64(0)}, nil
+	}})
+	defer toolbuiltin.SetRuntimeObserveProvider(prevObserve)
 
 	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
@@ -403,6 +410,24 @@ func TestHandleControlRPCRequest_OperationalSemantics(t *testing.T) {
 	lines, _ := out["lines"].([]string)
 	if len(lines) == 0 {
 		t.Fatalf("expected log lines, got: %#v", out)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodRuntimeObserve,
+		Params:     json.RawMessage(`{"include_events":true,"include_logs":false,"event_cursor":12,"event_limit":5,"agent_id":"agent-1"}`),
+	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("runtime.observe error: %v", err)
+	}
+	obsOut, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected runtime.observe result: %#v", res.Result)
+	}
+	eventsSection, _ := obsOut["events"].(map[string]any)
+	events, _ := eventsSection["events"].([]map[string]any)
+	if len(events) != 1 || events[0]["event"] != "tool.start" || events[0]["agent_id"] != "agent-1" {
+		t.Fatalf("unexpected runtime.observe payload: %#v", obsOut)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -1752,7 +1777,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	docs := state.NewDocsRepository(newTestStore(), "author")
 	cfgState := newRuntimeConfigStore(state.ConfigDoc{
 		Control: state.ControlPolicy{RequireAuth: false},
-		Extra:   map[string]any{"pairing": map[string]any{"node_paired": []any{map[string]any{"node_id": "n1", "display_name": "Node One", "caps": []any{"canvas"}, "approved_at_ms": int64(1)}}}},
+		Extra:   map[string]any{"pairing": map[string]any{"node_paired": []any{map[string]any{"node_id": "n1", "display_name": "Node One", "token": "secret-node-token", "caps": []any{"canvas"}, "approved_at_ms": int64(1)}}}},
 	})
 	prevNode := controlNodeInvocations
 	prevCron := controlCronJobs
@@ -1776,6 +1801,9 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	if len(nodes) != 1 {
 		t.Fatalf("unexpected node.list payload: %#v", res.Result)
 	}
+	if nodes[0]["token"] != config.RedactedValue {
+		t.Fatalf("expected node.list token to be redacted, got: %#v", nodes[0])
+	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
@@ -1788,6 +1816,10 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	payload, _ = res.Result.(map[string]any)
 	if payload["status"] != "paired" {
 		t.Fatalf("unexpected node.describe payload: %#v", res.Result)
+	}
+	describedNode, _ := payload["node"].(map[string]any)
+	if describedNode["token"] != config.RedactedValue {
+		t.Fatalf("expected node.describe token to be redacted, got: %#v", payload)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -1930,6 +1962,23 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	payload, _ = res.Result.(map[string]any)
 	if payload["ok"] != true {
 		t.Fatalf("unexpected cron.remove payload: %#v", res.Result)
+	}
+}
+
+func TestApplyNodeDescribe_RedactsPendingNodeToken(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Extra: map[string]any{"pairing": map[string]any{"node_pending": []any{map[string]any{"node_id": "pending-1", "token": "pending-secret", "display_name": "Pending Node"}}}},
+	})
+	result, err := applyNodeDescribe(cfgState, methods.NodeDescribeRequest{NodeID: "pending-1"})
+	if err != nil {
+		t.Fatalf("applyNodeDescribe error: %v", err)
+	}
+	if result["status"] != "pending" {
+		t.Fatalf("unexpected status: %#v", result)
+	}
+	node, _ := result["node"].(map[string]any)
+	if node["token"] != config.RedactedValue {
+		t.Fatalf("expected pending node token to be redacted, got: %#v", result)
 	}
 }
 

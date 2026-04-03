@@ -50,7 +50,7 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 		EventConfigUpdated,
 		EventExecApprovalRequested, EventExecApprovalResolved,
 		EventVoicewake, EventUpdateAvailable,
-		EventChannelMessage,
+		EventChannelMessage, EventRelayHealth, EventDMHealth,
 		EventNodePairRequested, EventNodePairResolved,
 		EventDevicePairResolved, EventPluginLoaded,
 		EventToolStart, EventToolProgress, EventToolResult, EventToolError,
@@ -111,21 +111,23 @@ func TestNewPayloadTypes(t *testing.T) {
 	e.Emit(EventVoicewake, VoicewakePayload{Trigger: "hey metiq"})
 	e.Emit(EventUpdateAvailable, UpdateAvailablePayload{Version: "2.0"})
 	e.Emit(EventChannelMessage, ChannelMessagePayload{ChannelID: "ch1", Direction: "inbound"})
+	e.Emit(EventRelayHealth, RelayHealthPayload{URL: "wss://relay", Reachable: true})
+	e.Emit(EventDMHealth, DMHealthPayload{Label: "nip17", Healthy: true})
 
-	if e.Count() != 5 {
-		t.Fatalf("expected 5 events, got %d", e.Count())
+	if e.Count() != 7 {
+		t.Fatalf("expected 7 events, got %d", e.Count())
 	}
 	// Spot-check last payload
 	name, payload := e.Last()
-	if name != EventChannelMessage {
-		t.Errorf("expected channel.message, got %q", name)
+	if name != EventDMHealth {
+		t.Errorf("expected dm.health, got %q", name)
 	}
-	cp, ok := payload.(ChannelMessagePayload)
+	dp, ok := payload.(DMHealthPayload)
 	if !ok {
-		t.Fatalf("expected ChannelMessagePayload, got %T", payload)
+		t.Fatalf("expected DMHealthPayload, got %T", payload)
 	}
-	if cp.ChannelID != "ch1" {
-		t.Errorf("expected ch1, got %q", cp.ChannelID)
+	if dp.Label != "nip17" || !dp.Healthy {
+		t.Errorf("unexpected dm health payload: %+v", dp)
 	}
 }
 
