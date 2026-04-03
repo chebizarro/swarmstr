@@ -50,7 +50,8 @@ func NewRelayFilterChannel(parent context.Context, opts RelayFilterChannelOption
 	if strings.TrimSpace(opts.ID) == "" {
 		return nil, fmt.Errorf("relay-filter channel id is required")
 	}
-	if len(opts.Relays) == 0 {
+	relays := sanitizeRelayFilterRelays(opts.Relays)
+	if len(relays) == 0 {
 		return nil, fmt.Errorf("at least one relay is required for relay-filter channel")
 	}
 
@@ -83,7 +84,7 @@ func NewRelayFilterChannel(parent context.Context, opts RelayFilterChannelOption
 		id:       strings.TrimSpace(opts.ID),
 		filter:   filter,
 		keyer:    keyer,
-		relays:   append([]string(nil), opts.Relays...),
+		relays:   relays,
 		pool:     pool,
 		ownsPool: ownsPool,
 		cancel:   cancel,
@@ -122,6 +123,9 @@ func (c *RelayFilterChannel) subscribeLoop(ctx context.Context) {
 				return
 			}
 			ev := re.Event
+			if !isVerifiedRelayFilterEvent(ev) {
+				continue
+			}
 			evIDHex := ev.ID.Hex()
 			if seen.Add(evIDHex) {
 				continue
@@ -148,14 +152,48 @@ func (c *RelayFilterChannel) subscribeLoop(ctx context.Context) {
 				closedCh = nil
 				continue
 			}
-			if !rc.HandledAuth && c.onErr != nil {
-				c.onErr(fmt.Errorf("relay-filter sub closed by %s: %s", rc.Relay.URL, rc.Reason))
+			if c.onErr != nil {
+				if err := relayFilterClosedError(rc); err != nil {
+					c.onErr(err)
+				}
 			}
 
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+func sanitizeRelayFilterRelays(relays []string) []string {
+	out := make([]string, 0, len(relays))
+	seen := make(map[string]struct{}, len(relays))
+	for _, relay := range relays {
+		cleaned := strings.TrimSpace(relay)
+		if cleaned == "" {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out
+}
+
+func isVerifiedRelayFilterEvent(ev nostr.Event) bool {
+	return ev.CheckID() && ev.VerifySignature()
+}
+
+func relayFilterClosedError(rc nostr.RelayClosed) error {
+	if rc.HandledAuth {
+		return nil
+	}
+	relayURL := "<unknown relay>"
+	if rc.Relay != nil && strings.TrimSpace(rc.Relay.URL) != "" {
+		relayURL = rc.Relay.URL
+	}
+	return fmt.Errorf("relay-filter sub closed by %s: %s", relayURL, rc.Reason)
 }
 
 func cloneNostrFilter(in nostr.Filter) nostr.Filter {
