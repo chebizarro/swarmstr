@@ -19,13 +19,14 @@ func TestBuildAndParseCapabilityEventRoundTrip(t *testing.T) {
 		t.Fatalf("GetPublicKey: %v", err)
 	}
 	want := CapabilityAnnouncement{
-		PubKey:         pubkey.Hex(),
-		Runtime:        "metiq",
-		RuntimeVersion: "1.2.3",
-		DMSchemes:      []string{"giftwrap", "nip17", "nip44", "nip04", "nip17"},
-		ACPVersion:     1,
-		Tools:          []string{"web_search", "memory_search", "web_search"},
-		Relays:         []string{"wss://b", "wss://a", "wss://a"},
+		PubKey:            pubkey.Hex(),
+		Runtime:           "metiq",
+		RuntimeVersion:    "1.2.3",
+		DMSchemes:         []string{"giftwrap", "nip17", "nip44", "nip04", "nip17"},
+		ACPVersion:        1,
+		Tools:             []string{"web_search", "memory_search", "web_search"},
+		ContextVMFeatures: []string{"tools_call", "discover", "discover"},
+		Relays:            []string{"wss://b", "wss://a", "wss://a"},
 	}
 	evt := nostr.Event{
 		Kind:      nostr.Kind(events.KindCapability),
@@ -58,6 +59,9 @@ func TestBuildAndParseCapabilityEventRoundTrip(t *testing.T) {
 	if !relaySliceEqual(got.Tools, []string{"memory_search", "web_search"}) {
 		t.Fatalf("Tools = %v", got.Tools)
 	}
+	if !relaySliceEqual(got.ContextVMFeatures, []string{"discover", "tools_call"}) {
+		t.Fatalf("ContextVMFeatures = %v", got.ContextVMFeatures)
+	}
 	if !relaySliceEqual(got.Relays, []string{"wss://b", "wss://a"}) {
 		t.Fatalf("Relays = %v", got.Relays)
 	}
@@ -70,7 +74,7 @@ func TestCapabilityRegistryPrefersNewestEvent(t *testing.T) {
 		calls = append(calls, cap)
 	})
 
-	first := CapabilityAnnouncement{PubKey: "peer", Runtime: "metiq", RuntimeVersion: "1.0.0", Tools: []string{"a"}, CreatedAt: 100, EventID: "a1"}
+	first := CapabilityAnnouncement{PubKey: "peer", Runtime: "metiq", RuntimeVersion: "1.0.0", Tools: []string{"a"}, ContextVMFeatures: []string{"discover"}, CreatedAt: 100, EventID: "a1"}
 	if !reg.Set(first) {
 		t.Fatal("expected first set to be accepted")
 	}
@@ -87,7 +91,7 @@ func TestCapabilityRegistryPrefersNewestEvent(t *testing.T) {
 		t.Fatalf("stored version = %+v", stored)
 	}
 
-	sameStateNewer := CapabilityAnnouncement{PubKey: "peer", Runtime: "metiq", RuntimeVersion: "1.0.0", Tools: []string{"a"}, CreatedAt: 110, EventID: "a2"}
+	sameStateNewer := CapabilityAnnouncement{PubKey: "peer", Runtime: "metiq", RuntimeVersion: "1.0.0", Tools: []string{"a"}, ContextVMFeatures: []string{"discover"}, CreatedAt: 110, EventID: "a2"}
 	if !reg.Set(sameStateNewer) {
 		t.Fatal("expected newer metadata update to be accepted")
 	}
@@ -95,7 +99,7 @@ func TestCapabilityRegistryPrefersNewestEvent(t *testing.T) {
 		t.Fatalf("callback count = %d, want unchanged semantic count 1", len(calls))
 	}
 
-	newer := CapabilityAnnouncement{PubKey: "peer", Runtime: "metiq", RuntimeVersion: "1.1.0", Tools: []string{"a", "b"}, CreatedAt: 120, EventID: "a3"}
+	newer := CapabilityAnnouncement{PubKey: "peer", Runtime: "metiq", RuntimeVersion: "1.1.0", Tools: []string{"a", "b"}, ContextVMFeatures: []string{"discover", "tools_list"}, CreatedAt: 120, EventID: "a3"}
 	if !reg.Set(newer) {
 		t.Fatal("expected newer event to be accepted")
 	}
@@ -103,8 +107,16 @@ func TestCapabilityRegistryPrefersNewestEvent(t *testing.T) {
 		t.Fatalf("callback count = %d, want 2", len(calls))
 	}
 	stored, ok = reg.Get("peer")
-	if !ok || stored.RuntimeVersion != "1.1.0" || !relaySliceEqual(stored.Tools, []string{"a", "b"}) {
+	if !ok || stored.RuntimeVersion != "1.1.0" || !relaySliceEqual(stored.Tools, []string{"a", "b"}) || !relaySliceEqual(stored.ContextVMFeatures, []string{"discover", "tools_list"}) {
 		t.Fatalf("stored = %+v", stored)
+	}
+
+	reordered := CapabilityAnnouncement{PubKey: "peer", Runtime: "metiq", RuntimeVersion: "1.1.0", Tools: []string{"b", "a"}, ContextVMFeatures: []string{"tools_list", "discover"}, CreatedAt: 121, EventID: "a4"}
+	if !reg.Set(reordered) {
+		t.Fatal("expected reordered metadata update to be accepted")
+	}
+	if len(calls) != 2 {
+		t.Fatalf("callback count = %d, want semantic count to remain 2", len(calls))
 	}
 }
 

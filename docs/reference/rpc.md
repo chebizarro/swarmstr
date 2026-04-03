@@ -234,6 +234,46 @@ The method namespace is shared across Nostr control RPC and HTTP `POST /call`. W
 | `models.list` | List available models |
 | `models.status` | Auth/quota status |
 
+### ACP / Fleet Routing
+
+| Method | Description |
+|--------|-------------|
+| `acp.dispatch` | Dispatch a single ACP task to a registered fleet peer |
+| `acp.pipeline` | Dispatch a multi-step ACP workflow across registered fleet peers |
+
+#### ACP capability-aware routing
+
+When `acp.dispatch` or `acp.pipeline` resolves a target peer, metiq applies these checks in order:
+
+1. the peer must be registered in the local ACP peer registry
+2. the peer must advertise a compatible DM family for the active ACP transport mode
+3. if the request carries `tool_profile` and/or `enabled_tools`, metiq derives the required worker tool surface from that contract and compares it against discovered capability metadata
+
+Capability comparison uses the discovered `kind:30317` metadata:
+- `tools` is treated as the broad provider-visible tool set
+- `contextvm_features` is treated as the precise MCP/ContextVM surface
+- when `contextvm_features` is absent, metiq still derives a compatibility fallback from advertised `contextvm_*` tool names
+- peers with no capability metadata remain eligible as `unknown`
+- peers that explicitly advertise an incompatible surface are rejected
+
+Example dispatch request:
+
+```json
+{
+  "method": "acp.dispatch",
+  "params": {
+    "target_pubkey": "Wizard",
+    "instructions": "Read the remote repository resource and summarize the open review concerns.",
+    "enabled_tools": ["contextvm_resources_read"],
+    "wait": true
+  }
+}
+```
+
+In the example above, metiq prefers a peer that advertises `contextvm_resources_read` in `tools` or `resources_read` in `contextvm_features`. A peer that explicitly lacks that surface is rejected even if it is otherwise ACP-registered and DM-compatible.
+
+For the capability event schema itself, see [Capability Advertisement](/reference/capabilities).
+
 ### Logs & Runtime Observability
 
 | Method | Description |
@@ -335,6 +375,7 @@ For operator setup and migration guidance, see [Nostr Control RPC](/gateway/nost
 ## See Also
 
 - [CLI Reference](/cli/)
+- [Capability Advertisement](/reference/capabilities)
 - [Webhooks](/automation/webhook)
 - [Configuration](/gateway/configuration)
 - [Multiple Gateways](/gateway/multiple-gateways)

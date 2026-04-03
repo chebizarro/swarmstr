@@ -124,6 +124,7 @@ func fleetDirectory() []toolbuiltin.FleetEntry {
 				merged.DMSchemes = append([]string{}, cap.DMSchemes...)
 				merged.ACPVersion = cap.ACPVersion
 				merged.Tools = append([]string{}, cap.Tools...)
+				merged.ContextVMFeatures = append([]string{}, cap.ContextVMFeatures...)
 				merged.Relays = append([]string{}, cap.Relays...)
 				if merged.Relay == "" && len(cap.Relays) > 0 {
 					merged.Relay = cap.Relays[0]
@@ -276,6 +277,9 @@ func writeFleetMD(wsDir string) {
 		}
 		if len(e.Tools) > 0 {
 			sb.WriteString(fmt.Sprintf("- **tools (%d):** %s\n", len(e.Tools), strings.Join(e.Tools, ", ")))
+		}
+		if len(e.ContextVMFeatures) > 0 {
+			sb.WriteString(fmt.Sprintf("- **contextvm_features:** %s\n", strings.Join(e.ContextVMFeatures, ", ")))
 		}
 		sb.WriteString("\n")
 	}

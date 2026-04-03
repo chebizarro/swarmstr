@@ -1,6 +1,7 @@
 // Package toolbuiltin – ContextVM MCP-over-Nostr tools.
 //
-// Registers: contextvm_discover, contextvm_tools_list, contextvm_call, contextvm_raw
+// Registers: contextvm_discover, contextvm_tools_list, contextvm_call, contextvm_resources_list,
+// contextvm_resources_read, contextvm_prompts_list, contextvm_prompts_get, contextvm_raw
 //
 // ContextVM transports Model Context Protocol (MCP) messages over the Nostr relay network
 // using kind 25910 ephemeral events. Clients discover servers via kind 11316 replaceable events.
@@ -73,9 +74,68 @@ var contextVMCallDef = agent.ToolDefinition{
 	},
 }
 
+var contextVMResourcesListDef = agent.ToolDefinition{
+	Name:        "contextvm_resources_list",
+	Description: "List MCP resources available on a ContextVM server. Sends a resources/list request and returns structured resource metadata.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"server_pubkey": {Type: "string", Description: "Hex pubkey of the ContextVM server."},
+			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+			"encryption":    {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
+		},
+		Required: []string{"server_pubkey"},
+	},
+}
+
+var contextVMResourcesReadDef = agent.ToolDefinition{
+	Name:        "contextvm_resources_read",
+	Description: "Read a specific MCP resource from a ContextVM server. Sends a resources/read request using the provided resource URI.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"server_pubkey": {Type: "string", Description: "Hex pubkey of the ContextVM server."},
+			"uri":           {Type: "string", Description: "Resource URI to read."},
+			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+			"encryption":    {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
+		},
+		Required: []string{"server_pubkey", "uri"},
+	},
+}
+
+var contextVMPromptsListDef = agent.ToolDefinition{
+	Name:        "contextvm_prompts_list",
+	Description: "List MCP prompts available on a ContextVM server. Sends a prompts/list request and returns structured prompt metadata.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"server_pubkey": {Type: "string", Description: "Hex pubkey of the ContextVM server."},
+			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+			"encryption":    {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
+		},
+		Required: []string{"server_pubkey"},
+	},
+}
+
+var contextVMPromptsGetDef = agent.ToolDefinition{
+	Name:        "contextvm_prompts_get",
+	Description: "Fetch a named MCP prompt from a ContextVM server. Sends a prompts/get request and optionally passes prompt arguments as JSON.",
+	Parameters: agent.ToolParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolParamProp{
+			"server_pubkey": {Type: "string", Description: "Hex pubkey of the ContextVM server."},
+			"name":          {Type: "string", Description: "Prompt name to fetch."},
+			"arguments":     {Type: "string", Description: "Optional JSON object string of prompt arguments."},
+			"relays":        {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
+			"encryption":    {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
+		},
+		Required: []string{"server_pubkey", "name"},
+	},
+}
+
 var contextVMRawDef = agent.ToolDefinition{
 	Name:        "contextvm_raw",
-	Description: "Send an arbitrary MCP JSON-RPC message to a ContextVM server over Nostr. Use for advanced operations not covered by contextvm_call (e.g. resources/list, prompts/get).",
+	Description: "Send an arbitrary MCP JSON-RPC message to a ContextVM server over Nostr. Use for advanced operations not covered by the typed ContextVM tools.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
@@ -229,6 +289,111 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 		out, _ := json.Marshal(result)
 		return string(out), nil
 	}, contextVMCallDef)
+
+	tools.RegisterWithDef("contextvm_resources_list", func(ctx context.Context, args map[string]any) (string, error) {
+		serverPubKey, _ := args["server_pubkey"].(string)
+		relays := toStringSlice(args["relays"])
+		if len(relays) == 0 {
+			relays = opts.Relays
+		}
+		if serverPubKey == "" {
+			return "", fmt.Errorf("contextvm_resources_list: server_pubkey is required")
+		}
+		ks, err := resolveKeyer(ctx)
+		if err != nil {
+			return "", fmt.Errorf("contextvm_resources_list: %w", err)
+		}
+		encryption := strings.TrimSpace(argString(args, "encryption"))
+		resources, err := contextvm.ListResources(ctx, getPool(), ks, relays, serverPubKey, encryption)
+		if err != nil {
+			return "", err
+		}
+		out, _ := json.Marshal(map[string]any{"server_pubkey": serverPubKey, "resources": resources, "count": len(resources)})
+		return string(out), nil
+	}, contextVMResourcesListDef)
+
+	tools.RegisterWithDef("contextvm_resources_read", func(ctx context.Context, args map[string]any) (string, error) {
+		serverPubKey, _ := args["server_pubkey"].(string)
+		uri, _ := args["uri"].(string)
+		relays := toStringSlice(args["relays"])
+		if len(relays) == 0 {
+			relays = opts.Relays
+		}
+		if serverPubKey == "" {
+			return "", fmt.Errorf("contextvm_resources_read: server_pubkey is required")
+		}
+		uri = strings.TrimSpace(uri)
+		if uri == "" {
+			return "", fmt.Errorf("contextvm_resources_read: uri is required")
+		}
+		ks, err := resolveKeyer(ctx)
+		if err != nil {
+			return "", fmt.Errorf("contextvm_resources_read: %w", err)
+		}
+		encryption := strings.TrimSpace(argString(args, "encryption"))
+		result, err := contextvm.ReadResource(ctx, getPool(), ks, relays, serverPubKey, uri, encryption)
+		if err != nil {
+			return "", err
+		}
+		out, _ := json.Marshal(result)
+		return string(out), nil
+	}, contextVMResourcesReadDef)
+
+	tools.RegisterWithDef("contextvm_prompts_list", func(ctx context.Context, args map[string]any) (string, error) {
+		serverPubKey, _ := args["server_pubkey"].(string)
+		relays := toStringSlice(args["relays"])
+		if len(relays) == 0 {
+			relays = opts.Relays
+		}
+		if serverPubKey == "" {
+			return "", fmt.Errorf("contextvm_prompts_list: server_pubkey is required")
+		}
+		ks, err := resolveKeyer(ctx)
+		if err != nil {
+			return "", fmt.Errorf("contextvm_prompts_list: %w", err)
+		}
+		encryption := strings.TrimSpace(argString(args, "encryption"))
+		prompts, err := contextvm.ListPrompts(ctx, getPool(), ks, relays, serverPubKey, encryption)
+		if err != nil {
+			return "", err
+		}
+		out, _ := json.Marshal(map[string]any{"server_pubkey": serverPubKey, "prompts": prompts, "count": len(prompts)})
+		return string(out), nil
+	}, contextVMPromptsListDef)
+
+	tools.RegisterWithDef("contextvm_prompts_get", func(ctx context.Context, args map[string]any) (string, error) {
+		serverPubKey, _ := args["server_pubkey"].(string)
+		name, _ := args["name"].(string)
+		argsStr, _ := args["arguments"].(string)
+		relays := toStringSlice(args["relays"])
+		if len(relays) == 0 {
+			relays = opts.Relays
+		}
+		if serverPubKey == "" {
+			return "", fmt.Errorf("contextvm_prompts_get: server_pubkey is required")
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return "", fmt.Errorf("contextvm_prompts_get: name is required")
+		}
+		var promptArgs map[string]any
+		if strings.TrimSpace(argsStr) != "" {
+			if err := json.Unmarshal([]byte(argsStr), &promptArgs); err != nil {
+				return "", fmt.Errorf("contextvm_prompts_get: parse arguments JSON: %w", err)
+			}
+		}
+		ks, err := resolveKeyer(ctx)
+		if err != nil {
+			return "", fmt.Errorf("contextvm_prompts_get: %w", err)
+		}
+		encryption := strings.TrimSpace(argString(args, "encryption"))
+		result, err := contextvm.GetPrompt(ctx, getPool(), ks, relays, serverPubKey, name, promptArgs, encryption)
+		if err != nil {
+			return "", err
+		}
+		out, _ := json.Marshal(result)
+		return string(out), nil
+	}, contextVMPromptsGetDef)
 
 	// contextvm_raw: send an arbitrary MCP JSON-RPC message to a ContextVM server.
 	tools.RegisterWithDef("contextvm_raw", func(ctx context.Context, args map[string]any) (string, error) {
