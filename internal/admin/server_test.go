@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"metiq/internal/config"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
@@ -681,7 +682,7 @@ func TestDispatchMethodCallConfigRawMutations(t *testing.T) {
 	}
 
 	rr = httptest.NewRecorder()
-	req = newMethodRequest(t, methods.MethodConfigSet, map[string]any{"raw": `{"version":5,"dm":{"policy":"open"},"relays":{"read":["wss://b"],"write":["wss://b"]}}`})
+	req = newMethodRequest(t, methods.MethodConfigSet, map[string]any{"raw": `{"version":5,"dm":{"policy":"open"},"relays":{"read":["wss://b"],"write":["wss://b"]},"secrets":{"api_key":"supersecret"}}`})
 	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("config.set raw failed status=%d err=%v", status, err)
@@ -689,9 +690,19 @@ func TestDispatchMethodCallConfigRawMutations(t *testing.T) {
 	if cfg.Version != 5 || cfg.DM.Policy != "open" {
 		t.Fatalf("unexpected config after set raw: %#v", cfg)
 	}
+	if cfg.Secrets["api_key"] != "supersecret" {
+		t.Fatalf("expected stored config to retain secret, got: %#v", cfg.Secrets)
+	}
 	out, _ := result.(map[string]any)
 	if out["path"] != "raw" {
 		t.Fatalf("expected raw path response, got: %#v", out)
+	}
+	redactedCfg, ok := out["config"].(state.ConfigDoc)
+	if !ok {
+		t.Fatalf("expected config.set raw response config to be ConfigDoc, got: %#v", out["config"])
+	}
+	if redactedCfg.Secrets["api_key"] != config.RedactedValue {
+		t.Fatalf("expected config.set raw response to redact secrets, got: %#v", redactedCfg.Secrets)
 	}
 }
 
@@ -865,10 +876,15 @@ func TestDispatchMethodCallRuntimeCallbacks(t *testing.T) {
 	var gotLimit int
 	var gotMaxBytes int
 	var gotLogout string
+	var gotObserve methods.RuntimeObserveRequest
 	opts := ServerOptions{
 		TailLogs: func(_ context.Context, cursor int64, limit int, maxBytes int) (map[string]any, error) {
 			gotCursor, gotLimit, gotMaxBytes = cursor, limit, maxBytes
 			return map[string]any{"cursor": cursor, "lines": []string{"a"}, "truncated": false, "reset": false}, nil
+		},
+		ObserveRuntime: func(_ context.Context, req methods.RuntimeObserveRequest) (map[string]any, error) {
+			gotObserve = req
+			return map[string]any{"events": map[string]any{"cursor": req.EventCursor, "events": []map[string]any{{"event": "tool.start"}}, "truncated": false, "reset": false}, "timed_out": false, "waited_ms": int64(0)}, nil
 		},
 		ChannelsStatus: func(context.Context, methods.ChannelsStatusRequest) (map[string]any, error) {
 			return map[string]any{"channels": []map[string]any{{"id": "nostr", "connected": true}}}, nil
@@ -896,6 +912,19 @@ func TestDispatchMethodCallRuntimeCallbacks(t *testing.T) {
 	}
 	if gotCursor != 9 || gotLimit != 5 || gotMaxBytes != 99 {
 		t.Fatalf("unexpected logs params cursor=%d limit=%d maxBytes=%d", gotCursor, gotLimit, gotMaxBytes)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodRuntimeObserve, map[string]any{"include_events": true, "include_logs": false, "event_cursor": 11, "event_limit": 4, "events": []string{"tool.start"}, "agent_id": "agent-1"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("runtime.observe failed status=%d err=%v", status, err)
+	}
+	if gotObserve.EventCursor != 11 || gotObserve.EventLimit != 4 || gotObserve.AgentID != "agent-1" {
+		t.Fatalf("unexpected runtime.observe params: %#v", gotObserve)
+	}
+	if gotObserve.IncludeLogs == nil || *gotObserve.IncludeLogs {
+		t.Fatalf("expected include_logs=false to be preserved: %#v", gotObserve)
 	}
 
 	rr = httptest.NewRecorder()

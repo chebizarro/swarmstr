@@ -42,6 +42,7 @@
     "plugins.uninstall",
     "plugins.update",
     "relay.policy.get",
+    "runtime.observe",
     "sandbox.run",
     "security.audit",
     "session.get",

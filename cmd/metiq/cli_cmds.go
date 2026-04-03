@@ -109,6 +109,179 @@ func runLogs(args []string) error {
 	return printJSON(result)
 }
 
+type csvListFlag []string
+
+func (f *csvListFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *csvListFlag) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		*f = append(*f, part)
+	}
+	return nil
+}
+
+func parseObserveWait(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	if digitsOnly(raw) {
+		ms, err := strconv.Atoi(raw)
+		if err != nil {
+			return 0, fmt.Errorf("invalid --wait value %q: %w", raw, err)
+		}
+		if ms < 0 {
+			return 0, fmt.Errorf("--wait must be >= 0")
+		}
+		return ms, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --wait duration %q: %w", raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("--wait must be >= 0")
+	}
+	return int(d.Milliseconds()), nil
+}
+
+func digitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func runObserve(args []string) error {
+	fs := flag.NewFlagSet("observe", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var transport, controlTargetPubKey, controlSignerURL string
+	var timeoutSec int
+	var includeEvents, includeLogs bool
+	var eventCursor, logCursor int64
+	var eventLimit, logLimit, maxBytes int
+	var waitRaw string
+	var agentID, sessionID, channelID, direction, subsystem, source string
+	var eventNames csvListFlag
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&transport, "transport", "auto", "gateway transport: auto, http, or nostr")
+	fs.StringVar(&controlTargetPubKey, "control-target-pubkey", "", "target daemon pubkey for Nostr control RPC")
+	fs.StringVar(&controlSignerURL, "control-signer-url", "", "caller signer override for Nostr control RPC")
+	fs.IntVar(&timeoutSec, "timeout", 30, "request timeout seconds")
+	fs.BoolVar(&includeEvents, "include-events", true, "include structured runtime events")
+	fs.BoolVar(&includeLogs, "include-logs", true, "include runtime log tail")
+	fs.Int64Var(&eventCursor, "event-cursor", 0, "resume events after this cursor")
+	fs.Int64Var(&logCursor, "log-cursor", 0, "resume logs after this cursor")
+	fs.IntVar(&eventLimit, "event-limit", 20, "maximum number of events to return")
+	fs.IntVar(&logLimit, "log-limit", 20, "maximum number of log lines to return")
+	fs.IntVar(&maxBytes, "max-bytes", 32*1024, "response size cap in bytes")
+	fs.StringVar(&waitRaw, "wait", "", "long-poll for changes (duration like 15s, 500ms, or integer milliseconds)")
+	fs.Var(&eventNames, "event", "filter by event name (repeatable or comma-separated)")
+	fs.StringVar(&agentID, "agent", "", "filter events by agent ID")
+	fs.StringVar(&sessionID, "session", "", "filter events by session ID")
+	fs.StringVar(&channelID, "channel", "", "filter events by channel ID")
+	fs.StringVar(&direction, "direction", "", "filter events by direction (inbound|outbound)")
+	fs.StringVar(&subsystem, "subsystem", "", "filter events by subsystem (relay|dm|tool|session|chat|channel|config|agent|cron|voice|update|plugin|node|device|exec|canvas)")
+	fs.StringVar(&source, "source", "", "filter events by source (for example inbound, reply, stream)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !includeEvents && !includeLogs {
+		return fmt.Errorf("at least one of --include-events or --include-logs must be true")
+	}
+	waitTimeoutMS, err := parseObserveWait(waitRaw)
+	if err != nil {
+		return err
+	}
+
+	timeout := time.Duration(timeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if waitTimeoutMS > 0 {
+		minTimeout := time.Duration(waitTimeoutMS)*time.Millisecond + 5*time.Second
+		if timeout < minTimeout {
+			timeout = minTimeout
+		}
+	}
+	cl, err := resolveGWClientFn(transport, adminAddr, adminToken, bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
+	if err != nil {
+		return err
+	}
+	if closer, ok := cl.(gatewayCloser); ok {
+		defer closer.Close()
+	}
+	if admin, ok := cl.(*adminClient); ok {
+		admin.timeout = timeout
+	}
+
+	params := map[string]any{
+		"include_events": includeEvents,
+		"include_logs":   includeLogs,
+	}
+	if eventCursor > 0 {
+		params["event_cursor"] = eventCursor
+	}
+	if logCursor > 0 {
+		params["log_cursor"] = logCursor
+	}
+	if eventLimit > 0 {
+		params["event_limit"] = eventLimit
+	}
+	if logLimit > 0 {
+		params["log_limit"] = logLimit
+	}
+	if maxBytes > 0 {
+		params["max_bytes"] = maxBytes
+	}
+	if waitTimeoutMS > 0 {
+		params["wait_timeout_ms"] = waitTimeoutMS
+	}
+	if len(eventNames) > 0 {
+		params["events"] = []string(eventNames)
+	}
+	if agentID = strings.TrimSpace(agentID); agentID != "" {
+		params["agent_id"] = agentID
+	}
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		params["session_id"] = sessionID
+	}
+	if channelID = strings.TrimSpace(channelID); channelID != "" {
+		params["channel_id"] = channelID
+	}
+	if direction = strings.TrimSpace(direction); direction != "" {
+		params["direction"] = direction
+	}
+	if subsystem = strings.TrimSpace(subsystem); subsystem != "" {
+		params["subsystem"] = subsystem
+	}
+	if source = strings.TrimSpace(source); source != "" {
+		params["source"] = source
+	}
+
+	result, err := cl.call("runtime.observe", params)
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
+}
+
 // ─── models ──────────────────────────────────────────────────────────────────
 
 func runModels(args []string) error {
@@ -2245,7 +2418,7 @@ func runCompletion(args []string) error {
 const bashCompletion = `# metiq bash completion
 # Add to ~/.bashrc:  source <(metiq completion bash)
 _metiq_completions() {
-	local commands="version status health logs models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw plan bootstrap-check dm-send memory-search"
+	local commands="version status health logs observe models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw plan bootstrap-check dm-send memory-search"
   local cur="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=($(compgen -W "${commands}" -- "${cur}"))
 }
@@ -2260,6 +2433,7 @@ _metiq() {
     'status:show daemon status'
     'health:health check'
     'logs:stream logs'
+    'observe:structured runtime observability'
     'models:model management'
     'channels:channel management'
     'agents:agent management'
@@ -2287,7 +2461,7 @@ compdef _metiq metiq
 
 const fishCompletion = `# metiq fish completion
 # Add to ~/.config/fish/completions/metiq.fish or: metiq completion fish | source
-for cmd in version status health logs models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw
+for cmd in version status health logs observe models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw
   complete -c metiq -f -n '__fish_use_subcommand' -a $cmd
 end
 `

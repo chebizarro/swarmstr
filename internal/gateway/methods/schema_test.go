@@ -1204,3 +1204,49 @@ func TestSupportedMethodsIncludesNodeSurfaceBundle(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeObserveRequestDecodeAndNormalize(t *testing.T) {
+	req, err := DecodeRuntimeObserveParams(json.RawMessage(`{"includeEvents":true,"includeLogs":false,"eventCursor":3,"logCursor":4,"eventLimit":7,"logLimit":8,"maxBytes":2048,"waitTimeoutMs":25,"events":["tool.start","turn.result"],"agentId":" agent-1 ","sessionId":" sess-1 ","channelId":" ch-1 ","direction":" outbound ","subsystem":" tool ","source":" reply "}`))
+	if err != nil {
+		t.Fatalf("runtime.observe decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("runtime.observe normalize error: %v", err)
+	}
+	if req.IncludeEvents == nil || !*req.IncludeEvents {
+		t.Fatalf("expected include_events to remain true: %#v", req)
+	}
+	if req.IncludeLogs == nil || *req.IncludeLogs {
+		t.Fatalf("expected include_logs to remain false: %#v", req)
+	}
+	if req.AgentID != "agent-1" || req.SessionID != "sess-1" || req.ChannelID != "ch-1" {
+		t.Fatalf("expected trimmed identity filters, got %#v", req)
+	}
+	if req.Direction != "outbound" || req.Subsystem != "tool" || req.Source != "reply" {
+		t.Fatalf("expected trimmed routing filters, got %#v", req)
+	}
+	if req.EventLimit != 7 || req.LogLimit != 8 || req.MaxBytes != 2048 || req.WaitTimeoutMS != 25 {
+		t.Fatalf("unexpected normalized bounds: %#v", req)
+	}
+	if len(req.Events) != 2 || req.Events[0] != "tool.start" || req.Events[1] != "turn.result" {
+		t.Fatalf("unexpected events filter list: %#v", req.Events)
+	}
+
+	invalid, err := DecodeRuntimeObserveParams(json.RawMessage(`{"include_events":false,"include_logs":false}`))
+	if err != nil {
+		t.Fatalf("runtime.observe invalid decode error: %v", err)
+	}
+	if _, err := invalid.Normalize(); err == nil {
+		t.Fatal("expected normalize error when both include flags are false")
+	}
+}
+
+func TestSupportedMethodsIncludesRuntimeObserve(t *testing.T) {
+	for _, method := range SupportedMethods() {
+		if method == MethodRuntimeObserve {
+			return
+		}
+	}
+	t.Fatalf("%s not found in supported methods", MethodRuntimeObserve)
+}

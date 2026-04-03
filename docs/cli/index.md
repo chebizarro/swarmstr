@@ -21,6 +21,7 @@ metiq <command> [subcommand] [flags]
   status
   health
   logs
+  observe
   doctor
   keygen
   dm-send
@@ -122,6 +123,35 @@ metiq logs
 metiq logs --lines 100
 metiq logs --lines 50 --level error
 ```
+
+### `observe`
+
+Inspect the structured runtime observability surface exposed by `runtime.observe`. Output is JSON and can include buffered runtime events, buffered daemon log lines, or both.
+
+```bash
+# Recent structured events + logs
+metiq observe
+
+# Events only, filtered to a specific agent and event types
+metiq observe --include-logs=false --agent main --event tool.start --event turn.finish
+
+# Resume from prior cursors and long-poll for up to 15 seconds
+metiq observe --event-cursor 120 --log-cursor 75 --wait 15s
+```
+
+Common flags:
+- `--include-events` / `--include-logs` — choose which sections to return (default: both)
+- `--event-cursor` / `--log-cursor` — resume after a previously returned cursor
+- `--event-limit` / `--log-limit` — cap returned items per section
+- `--max-bytes` — cap total payload size
+- `--wait` — long-poll for new matching data (`500ms`, `15s`, or integer milliseconds)
+- `--transport`, `--control-target-pubkey`, `--control-signer-url`, `--timeout` — choose the gateway transport and request routing/timeout behavior
+- `--event` — filter by event name; repeat the flag or pass a comma-separated list
+- `--agent`, `--session`, `--channel`, `--direction`, `--subsystem`, `--source` — event metadata filters
+
+The response includes section-local cursors plus top-level `timed_out` and `waited_ms` fields so operators can build incremental polling or live-tail loops.
+
+Like `metiq gw`, `metiq observe` defaults to transport `auto`: it uses Nostr control RPC when `control_target_pubkey` is configured, otherwise it uses the local admin HTTP API. Use `--transport http|nostr`, `--control-target-pubkey`, and `--control-signer-url` to override routing explicitly.
 
 ### `doctor`
 

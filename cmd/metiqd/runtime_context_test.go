@@ -4,11 +4,20 @@ import (
 	"strings"
 	"testing"
 
+	nostr "fiatjaf.com/nostr"
 	"metiq/internal/agent"
+	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/store/state"
 )
 
 func TestBuildTurnRuntimeContext_ContainsAllSections(t *testing.T) {
+	var sk [32]byte
+	sk[31] = 1
+	selfPubkey := nostr.GetPublicKey(sk).Hex()
+	selfNPub := toolbuiltin.NostrNPubFromHex(selfPubkey)
+	if selfNPub == "" {
+		t.Fatal("expected test pubkey to encode to npub")
+	}
 	tools := []agent.ToolDefinition{
 		{Name: "memory_search", Description: "Search agent memory for relevant entries."},
 		{Name: "nostr_fetch", Description: "Fetch Nostr events matching a filter."},
@@ -21,6 +30,8 @@ func TestBuildTurnRuntimeContext_ContainsAllSections(t *testing.T) {
 	}
 	result := buildTurnRuntimeContext(turnRuntimeParams{
 		AgentID:       "main",
+		SelfPubkey:    selfPubkey,
+		SelfNPub:      selfNPub,
 		Model:         "claude-3-5-sonnet-20241022",
 		Channel:       "nostr",
 		Tools:         tools,
@@ -35,6 +46,8 @@ func TestBuildTurnRuntimeContext_ContainsAllSections(t *testing.T) {
 	}{
 		{"runtime section", "## Runtime"},
 		{"agent id", "agent=main"},
+		{"self pubkey", "self_pubkey=" + selfPubkey},
+		{"self npub", "self_npub=" + selfNPub},
 		{"model", "model=claude-3-5-sonnet-20241022"},
 		{"channel", "channel=nostr"},
 		{"thinking", "thinking=medium"},

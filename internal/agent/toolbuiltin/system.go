@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	nostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip19"
 	"metiq/internal/agent"
 )
 
@@ -36,14 +38,35 @@ var CurrentTimeDef = agent.ToolDefinition{
 type IdentityInfo struct {
 	Name   string
 	Pubkey string // hex nostr pubkey
+	NPub   string // bech32 npub
 	Model  string
 }
 
 var identityInfo IdentityInfo
 
+// NostrNPubFromHex converts a hex pubkey to its bech32 npub form.
+func NostrNPubFromHex(hexPubkey string) string {
+	hexPubkey = strings.TrimSpace(hexPubkey)
+	if hexPubkey == "" {
+		return ""
+	}
+	pk, err := nostr.PubKeyFromHex(hexPubkey)
+	if err != nil {
+		return ""
+	}
+	return nip19.EncodeNpub(pk)
+}
+
 // SetIdentityInfo configures the identity returned by my_identity.
 // Call this once from main after config is loaded.
 func SetIdentityInfo(info IdentityInfo) {
+	info.Name = strings.TrimSpace(info.Name)
+	info.Pubkey = strings.TrimSpace(info.Pubkey)
+	info.NPub = strings.TrimSpace(info.NPub)
+	info.Model = strings.TrimSpace(info.Model)
+	if info.NPub == "" && info.Pubkey != "" {
+		info.NPub = NostrNPubFromHex(info.Pubkey)
+	}
 	identityInfo = info
 }
 
@@ -56,6 +79,9 @@ func MyIdentityTool(_ context.Context, _ map[string]any) (string, error) {
 	if identityInfo.Pubkey != "" {
 		parts = append(parts, "nostr_pubkey: "+identityInfo.Pubkey)
 	}
+	if identityInfo.NPub != "" {
+		parts = append(parts, "nostr_npub: "+identityInfo.NPub)
+	}
 	if identityInfo.Model != "" {
 		parts = append(parts, "model: "+identityInfo.Model)
 	}
@@ -67,7 +93,7 @@ func MyIdentityTool(_ context.Context, _ map[string]any) (string, error) {
 
 var MyIdentityDef = agent.ToolDefinition{
 	Name:        "my_identity",
-	Description: "Returns this agent's own identity: its name, Nostr public key (hex), and the LLM model it uses. Useful for self-referential tasks like publishing notes signed as this agent or routing replies.",
+	Description: "Returns this agent's own identity: its name, Nostr public key in both hex and npub form, and the LLM model it uses. Useful for self-referential tasks like publishing notes signed as this agent or routing replies.",
 	Parameters:  agent.ToolParameters{Type: "object"},
 }
 

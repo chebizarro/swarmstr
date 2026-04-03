@@ -24,7 +24,8 @@ type SubHealthSnapshot struct {
 	LastReconnectAt time.Time `json:"last_reconnect_at,omitempty"`
 
 	// LastClosedReason is the reason string from the most recent CLOSED
-	// signal, or "" if none received.
+	// signal in the current disruption window. It is cleared on reconnect
+	// so recovered subscriptions do not remain latched unhealthy.
 	LastClosedReason string `json:"last_closed_reason,omitempty"`
 
 	// ReplayWindow is the configured replay/backfill duration for this
@@ -63,10 +64,12 @@ func (t *SubHealthTracker) RecordEvent() {
 	t.mu.Unlock()
 }
 
-// RecordReconnect marks that a subscription restart occurred.
+// RecordReconnect marks that a subscription restart occurred and clears any
+// stale CLOSED reason from the prior disruption window.
 func (t *SubHealthTracker) RecordReconnect() {
 	t.mu.Lock()
 	t.lastReconnectAt = time.Now()
+	t.lastClosedReason = ""
 	t.reconnectCount++
 	t.mu.Unlock()
 }
@@ -95,9 +98,10 @@ func (t *SubHealthTracker) Snapshot(boundRelays []string, replayWindow time.Dura
 	if replayWindow > 0 {
 		windowMS = int64(replayWindow / time.Millisecond)
 	}
+	relays := append([]string(nil), boundRelays...)
 	return SubHealthSnapshot{
 		Label:            t.label,
-		BoundRelays:      boundRelays,
+		BoundRelays:      relays,
 		LastEventAt:      t.lastEventAt,
 		LastReconnectAt:  t.lastReconnectAt,
 		LastClosedReason: t.lastClosedReason,

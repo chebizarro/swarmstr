@@ -71,6 +71,7 @@ type ServerOptions struct {
 	ListTranscript              func(context.Context, string, int) ([]state.TranscriptEntryDoc, error)
 	SessionsPrune               func(context.Context, methods.SessionsPruneRequest) (map[string]any, error)
 	TailLogs                    func(context.Context, int64, int, int) (map[string]any, error)
+	ObserveRuntime              func(context.Context, methods.RuntimeObserveRequest) (map[string]any, error)
 	ChannelsStatus              func(context.Context, methods.ChannelsStatusRequest) (map[string]any, error)
 	ChannelsLogout              func(context.Context, string) (map[string]any, error)
 	UsageStatus                 func(context.Context) (map[string]any, error)
@@ -542,6 +543,23 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return map[string]any{"cursor": req.Cursor, "lines": []string{}, "truncated": false, "reset": false}, http.StatusOK, nil
 		}
 		out, err := opts.TailLogs(ctx, req.Cursor, req.Limit, req.MaxBytes)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodRuntimeObserve:
+		req, err := methods.DecodeRuntimeObserveParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.ObserveRuntime == nil {
+			return map[string]any{"events": map[string]any{"cursor": req.EventCursor, "events": []map[string]any{}, "truncated": false, "reset": false}, "logs": map[string]any{"cursor": req.LogCursor, "lines": []string{}, "truncated": false, "reset": false}, "timed_out": false, "waited_ms": int64(0)}, http.StatusOK, nil
+		}
+		out, err := opts.ObserveRuntime(ctx, req)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
@@ -2736,7 +2754,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			if err := opts.PutConfig(ctx, next); err != nil {
 				return nil, http.StatusInternalServerError, err
 			}
-			return map[string]any{"ok": true, "path": "raw", "config": next, "hash": next.Hash()}, http.StatusOK, nil
+			return map[string]any{"ok": true, "path": "raw", "config": config.Redact(next), "hash": next.Hash()}, http.StatusOK, nil
 		}
 		next, err := methods.ApplyConfigSet(current, req.Key, req.Value)
 		if err != nil {

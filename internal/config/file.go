@@ -16,12 +16,49 @@ import (
 	"metiq/internal/store/state"
 )
 
+var supportedConfigExtensions = map[string]struct{}{
+	".json":  {},
+	".json5": {},
+	".yaml":  {},
+	".yml":   {},
+}
+
+// ValidateConfigFilePath normalizes and validates a config file path used by
+// import/load/reload/sync flows.
+func ValidateConfigFilePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("config file path is required")
+	}
+	path = filepath.Clean(path)
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return "", fmt.Errorf("config file path must be a file")
+	}
+	return path, nil
+}
+
+// ValidateConfigWritePath validates a config file path intended as a write
+// target. New config files must use a supported extension so the parser mode is
+// explicit on subsequent reload/sync operations.
+func ValidateConfigWritePath(path string) (string, error) {
+	path, err := ValidateConfigFilePath(path)
+	if err != nil {
+		return "", err
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if _, ok := supportedConfigExtensions[ext]; !ok {
+		return "", fmt.Errorf("config file path must end in .json, .json5, .yaml, or .yml")
+	}
+	return path, nil
+}
+
 // LoadConfigFile reads a JSON5 (or plain JSON) or YAML config file
 // and returns a ConfigDoc. OpenClaw config fields are mapped automatically.
 func LoadConfigFile(path string) (state.ConfigDoc, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return state.ConfigDoc{}, fmt.Errorf("config file path is required")
+	var err error
+	path, err = ValidateConfigFilePath(path)
+	if err != nil {
+		return state.ConfigDoc{}, err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -53,9 +90,10 @@ func LoadConfigFile(path string) (state.ConfigDoc, error) {
 // WriteConfigFile serialises a ConfigDoc to a JSON file at path.
 // Parent directories are created as needed.
 func WriteConfigFile(path string, doc state.ConfigDoc) error {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return fmt.Errorf("config file path is required")
+	var err error
+	path, err = ValidateConfigWritePath(path)
+	if err != nil {
+		return err
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

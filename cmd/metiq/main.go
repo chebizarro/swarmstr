@@ -49,9 +49,11 @@ func main() {
 	case "health":
 		run("health", runHealth, args[1:])
 
-	// ── logs ─────────────────────────────────────────────────────────────────
+	// ── logs / observability ────────────────────────────────────────────────
 	case "logs":
 		run("logs", runLogs, args[1:])
+	case "observe":
+		run("observe", runObserve, args[1:])
 
 	// ── models ───────────────────────────────────────────────────────────────
 	case "models":
@@ -314,6 +316,11 @@ func runConfigImport(args []string) error {
 		}
 		path = def
 	}
+	var err error
+	path, err = config.ValidateConfigWritePath(path)
+	if err != nil {
+		return err
+	}
 	// Read source.
 	var raw []byte
 	if srcFile == "" {
@@ -324,6 +331,10 @@ func runConfigImport(args []string) error {
 		}
 	} else {
 		var err error
+		srcFile, err = config.ValidateConfigFilePath(srcFile)
+		if err != nil {
+			return err
+		}
 		raw, err = os.ReadFile(srcFile)
 		if err != nil {
 			return fmt.Errorf("read source file: %w", err)
@@ -494,6 +505,7 @@ func usage() {
 	fmt.Println("  status             show daemon status (pubkey, uptime, relays)")
 	fmt.Println("  health             ping daemon health endpoint")
 	fmt.Println("  logs               tail recent daemon log lines (--lines N)")
+	fmt.Println("  observe            inspect structured runtime events/logs (--event, --wait)")
 	fmt.Println()
 	fmt.Println("Agent management:")
 	fmt.Println("  agents list        list configured agents")

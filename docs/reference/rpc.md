@@ -234,11 +234,81 @@ The method namespace is shared across Nostr control RPC and HTTP `POST /call`. W
 | `models.list` | List available models |
 | `models.status` | Auth/quota status |
 
-### Logs
+### Logs & Runtime Observability
 
 | Method | Description |
 |--------|-------------|
 | `logs.tail` | Stream recent logs |
+| `runtime.observe` | Return structured runtime events and/or log tail data with cursors, filters, and long-poll support |
+
+#### `runtime.observe`
+
+`runtime.observe` exposes the daemon's bounded runtime event buffer plus the buffered log tail through the shared gateway method namespace.
+
+Common request fields:
+- `include_events`, `include_logs` — booleans controlling which sections are returned (default: both)
+- `event_cursor`, `log_cursor` — resume after a previous cursor
+- `event_limit`, `log_limit` — cap returned items per section
+- `max_bytes` — cap total returned payload size
+- `wait_timeout_ms` — long-poll for up to this many milliseconds (max 60000)
+- `events` — list of event names to include
+- `agent_id`, `session_id`, `channel_id`, `direction`, `subsystem`, `source` — event metadata filters
+
+Example request:
+
+```json
+{
+  "method": "runtime.observe",
+  "params": {
+    "include_events": true,
+    "include_logs": false,
+    "event_cursor": 120,
+    "event_limit": 10,
+    "wait_timeout_ms": 15000,
+    "events": ["tool.start", "turn.finish"],
+    "agent_id": "main"
+  }
+}
+```
+
+Example response:
+
+```json
+{
+  "events": {
+    "cursor": 124,
+    "size": 312,
+    "events": [
+      {
+        "id": 123,
+        "ts_ms": 1762100000123,
+        "event": "tool.start",
+        "agent_id": "main",
+        "subsystem": "tool",
+        "payload": {"tool_name": "search_query"}
+      }
+    ],
+    "truncated": false,
+    "reset": false
+  },
+  "waited_ms": 23,
+  "timed_out": false
+}
+```
+
+Cursor/live-tail workflow:
+- store the latest `events.cursor` and/or `logs.cursor`
+- pass them back on the next request via `event_cursor` / `log_cursor`
+- set `wait_timeout_ms` to long-poll for new matching data
+- if `reset=true`, the cursor fell behind the bounded buffer and should be replaced with the returned cursor
+
+Operators can use the first-class CLI wrapper instead of constructing raw envelopes manually. `metiq observe` follows the same transport rules as `metiq gw`: `auto` prefers Nostr control RPC when `control_target_pubkey` is configured, otherwise it falls back to HTTP admin RPC.
+
+```bash
+metiq observe --event tool.start --agent main --wait 15s
+metiq observe --transport nostr --control-target-pubkey npub1... --event-cursor 124 --log-cursor 77
+metiq gw runtime.observe '{"include_events":true,"include_logs":false,"subsystem":"dm"}'
+```
 
 ## CLI RPC Calls
 

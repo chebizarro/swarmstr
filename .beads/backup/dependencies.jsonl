@@ -23,6 +23,7 @@
 {"created_at":null,"created_by":"Biz","depends_on_id":"swarmstr-1.6","issue_id":"swarmstr-1.6.1","type":"parent-child"}
 {"created_at":null,"created_by":"Biz","depends_on_id":"swarmstr-1.6","issue_id":"swarmstr-1.6.2","type":"parent-child"}
 {"created_at":null,"created_by":"Biz","depends_on_id":"swarmstr-1.6","issue_id":"swarmstr-1.6.3","type":"parent-child"}
+{"created_at":"2026-04-02T18:18:38Z","created_by":"Biz","depends_on_id":"swarmstr-j7z","issue_id":"swarmstr-1f1","type":"parent-child"}
 {"created_at":"2026-03-13T17:41:47Z","created_by":"Biz","depends_on_id":"swarmstr-iwv","issue_id":"swarmstr-1ia","type":"parent-child"}
 {"created_at":null,"created_by":"Biz","depends_on_id":"swarmstr-2","issue_id":"swarmstr-2.1","type":"parent-child"}
 {"created_at":null,"created_by":"Biz","depends_on_id":"swarmstr-2.1","issue_id":"swarmstr-2.1.1","type":"parent-child"}
@@ -56,6 +57,7 @@
 {"created_at":"2026-03-13T17:41:47Z","created_by":"Biz","depends_on_id":"swarmstr-iwv","issue_id":"swarmstr-52j","type":"parent-child"}
 {"created_at":"2026-03-13T17:41:48Z","created_by":"Biz","depends_on_id":"swarmstr-iwv","issue_id":"swarmstr-56c","type":"parent-child"}
 {"created_at":"2026-03-13T18:37:54Z","created_by":"Biz","depends_on_id":"swarmstr-7oc","issue_id":"swarmstr-5ag","type":"discovered-from"}
+{"created_at":"2026-04-02T01:05:44Z","created_by":"Biz","depends_on_id":"swarmstr-5jz","issue_id":"swarmstr-5js","type":"discovered-from"}
 {"created_at":"2026-03-13T14:12:11Z","created_by":"Biz","depends_on_id":"swarmstr-790","issue_id":"swarmstr-8br","type":"parent-child"}
 {"created_at":"2026-03-02T01:00:35Z","created_by":"Biz","depends_on_id":"swarmstr-914","issue_id":"swarmstr-914.1","type":"parent-child"}
 {"created_at":"2026-03-02T01:00:37Z","created_by":"Biz","depends_on_id":"swarmstr-914.1","issue_id":"swarmstr-914.1.1","type":"parent-child"}
@@ -93,7 +95,9 @@
 {"created_at":"2026-03-04T09:01:16Z","created_by":"Biz","depends_on_id":"swarmstr-914.6.3","issue_id":"swarmstr-914.6.3.2","type":"parent-child"}
 {"created_at":"2026-03-04T09:01:16Z","created_by":"Biz","depends_on_id":"swarmstr-914.6.3","issue_id":"swarmstr-914.6.3.3","type":"parent-child"}
 {"created_at":"2026-03-31T13:40:23Z","created_by":"Biz","depends_on_id":"swarmstr-283","issue_id":"swarmstr-be8","type":"blocks"}
+{"created_at":"2026-04-02T13:18:32Z","created_by":"Biz","depends_on_id":"swarmstr-j7z","issue_id":"swarmstr-gz6","type":"parent-child"}
 {"created_at":"2026-03-31T13:40:22Z","created_by":"Biz","depends_on_id":"swarmstr-c0d","issue_id":"swarmstr-j39","type":"blocks"}
+{"created_at":"2026-04-02T01:05:44Z","created_by":"Biz","depends_on_id":"swarmstr-5jz","issue_id":"swarmstr-j7z","type":"discovered-from"}
 {"created_at":"2026-03-13T17:41:48Z","created_by":"Biz","depends_on_id":"swarmstr-iwv","issue_id":"swarmstr-m2p","type":"parent-child"}
 {"created_at":"2026-03-13T17:41:48Z","created_by":"Biz","depends_on_id":"swarmstr-iwv","issue_id":"swarmstr-mlu","type":"parent-child"}
 {"created_at":"2026-03-13T14:12:11Z","created_by":"Biz","depends_on_id":"swarmstr-790","issue_id":"swarmstr-pp9","type":"parent-child"}
@@ -150,7 +154,9 @@
 {"created_at":"2026-03-31T13:54:02Z","created_by":"Biz","depends_on_id":"swarmstr-r7u.23","issue_id":"swarmstr-r7u.8","type":"parent-child"}
 {"created_at":"2026-03-31T13:54:02Z","created_by":"Biz","depends_on_id":"swarmstr-r7u.23","issue_id":"swarmstr-r7u.9","type":"parent-child"}
 {"created_at":"2026-03-31T13:40:27Z","created_by":"Biz","depends_on_id":"swarmstr-r7u.8","issue_id":"swarmstr-r7u.9","type":"blocks"}
+{"created_at":"2026-04-02T13:18:32Z","created_by":"Biz","depends_on_id":"swarmstr-j7z","issue_id":"swarmstr-rby","type":"parent-child"}
 {"created_at":"2026-03-31T13:40:23Z","created_by":"Biz","depends_on_id":"swarmstr-s3r","issue_id":"swarmstr-uj7","type":"blocks"}
+{"created_at":"2026-04-02T13:18:32Z","created_by":"Biz","depends_on_id":"swarmstr-j7z","issue_id":"swarmstr-uww","type":"parent-child"}
 {"created_at":"2026-03-13T14:04:36Z","created_by":"Biz","depends_on_id":"swarmstr-v6w","issue_id":"swarmstr-v6w.1","type":"parent-child"}
 {"created_at":"2026-03-13T14:04:36Z","created_by":"Biz","depends_on_id":"swarmstr-v6w","issue_id":"swarmstr-v6w.2","type":"parent-child"}
 {"created_at":"2026-03-13T14:04:36Z","created_by":"Biz","depends_on_id":"swarmstr-v6w","issue_id":"swarmstr-v6w.3","type":"parent-child"}
@@ -166,3 +172,4 @@
 {"created_at":"2026-03-13T09:34:41Z","created_by":"Biz","depends_on_id":"swarmstr-wkb","issue_id":"swarmstr-wkb.7","type":"parent-child"}
 {"created_at":"2026-03-13T09:34:41Z","created_by":"Biz","depends_on_id":"swarmstr-wkb","issue_id":"swarmstr-wkb.8","type":"parent-child"}
 {"created_at":"2026-03-13T09:34:42Z","created_by":"Biz","depends_on_id":"swarmstr-wkb","issue_id":"swarmstr-wkb.9","type":"parent-child"}
+{"created_at":"2026-04-02T01:05:44Z","created_by":"Biz","depends_on_id":"swarmstr-5jz","issue_id":"swarmstr-zs2","type":"discovered-from"}
