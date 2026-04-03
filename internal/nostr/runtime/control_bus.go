@@ -278,15 +278,16 @@ func (b *ControlRPCBus) emitErr(err error) {
 }
 
 func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
-	if re.Relay == nil {
-		return
+	relayURL := ""
+	if re.Relay != nil {
+		relayURL = strings.TrimSpace(re.Relay.URL)
 	}
 	evt := re.Event
 	if evt.Kind != nostr.Kind(events.KindControl) {
 		return
 	}
-	if b.health != nil {
-		b.health.RecordSuccess(re.Relay.URL)
+	if relayURL != "" && b.health != nil {
+		b.health.RecordSuccess(relayURL)
 	}
 	if b.subHealth != nil {
 		b.subHealth.RecordEvent()
@@ -295,7 +296,7 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		return
 	}
 	if !evt.CheckID() || !evt.VerifySignature() {
-		b.emitErr(fmt.Errorf("rejected invalid control event relay=%s", re.Relay.URL))
+		b.emitErr(fmt.Errorf("rejected invalid control event relay=%s", relayURL))
 		return
 	}
 	if !evt.Tags.ContainsAny("p", []string{b.public.Hex()}) {
@@ -315,23 +316,6 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	}
 	callerPubKey := evt.PubKey.Hex()
 	cacheKey := fmt.Sprintf("%s:%s", callerPubKey, requestID)
-	if !b.allowCaller(callerPubKey, time.Now()) {
-		b.respondErrorCode(re, "control request rate limited", requestID, -32029, nil)
-		return
-	}
-	nowUnix := time.Now().Unix()
-	if b.maxReqAge > 0 {
-		threshold := time.Now().Add(-b.maxReqAge).Unix()
-		if int64(evt.CreatedAt) < threshold {
-			b.respondError(re, "control request expired", requestID)
-			return
-		}
-	}
-	const maxFutureSkewSeconds = 30
-	if int64(evt.CreatedAt) > nowUnix+maxFutureSkewSeconds {
-		b.respondError(re, "control request from the future", requestID)
-		return
-	}
 
 	call, err := decodeControlCallRequest(evt.Content)
 	if err != nil {
@@ -350,13 +334,32 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		}
 	}
 
+	now := time.Now()
+	if !b.allowCaller(callerPubKey, now) {
+		b.respondErrorCode(re, "control request rate limited", requestID, -32029, nil)
+		return
+	}
+	nowUnix := now.Unix()
+	if b.maxReqAge > 0 {
+		threshold := now.Add(-b.maxReqAge).Unix()
+		if int64(evt.CreatedAt) < threshold {
+			b.respondError(re, "control request expired", requestID)
+			return
+		}
+	}
+	const maxFutureSkewSeconds = 30
+	if int64(evt.CreatedAt) > nowUnix+maxFutureSkewSeconds {
+		b.respondError(re, "control request from the future", requestID)
+		return
+	}
+
 	result := ControlRPCResult{}
 	if b.onReq != nil {
 		out, err := b.onReq(b.ctx, ControlRPCInbound{
 			EventID:    eventID,
 			RequestID:  requestID,
 			FromPubKey: callerPubKey,
-			RelayURL:   re.Relay.URL,
+			RelayURL:   relayURL,
 			Method:     call.Method,
 			Params:     call.Params,
 			CreatedAt:  int64(evt.CreatedAt),
@@ -418,7 +421,10 @@ func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey str
 		return
 	}
 	maxAttempts := 3
-	preferredRelay := strings.TrimSpace(re.Relay.URL)
+	preferredRelay := ""
+	if re.Relay != nil {
+		preferredRelay = strings.TrimSpace(re.Relay.URL)
+	}
 	preferOnlyAttempts := 1
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {

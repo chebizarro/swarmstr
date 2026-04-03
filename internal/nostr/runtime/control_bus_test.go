@@ -11,6 +11,7 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+	"metiq/internal/nostr/events"
 )
 
 func TestWithETagReplacesExisting(t *testing.T) {
@@ -97,6 +98,227 @@ func TestLookupCachedResponseHydratesLocalCache(t *testing.T) {
 	}
 	if lookupCalls != 1 {
 		t.Fatalf("expected persistent lookup to be memoized, got %d calls", lookupCalls)
+	}
+}
+
+func testControlKeyer(t *testing.T, skHex string) nostr.Keyer {
+	t.Helper()
+	sk, err := ParseSecretKey(skHex)
+	if err != nil {
+		t.Fatalf("ParseSecretKey: %v", err)
+	}
+	return newNIP04KeyerAdapter(sk)
+}
+
+func mustControlPubKey(t *testing.T, k nostr.Keyer) nostr.PubKey {
+	t.Helper()
+	pk, err := k.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatalf("GetPublicKey: %v", err)
+	}
+	return pk
+}
+
+func mustSignedControlRequestEvent(t *testing.T, caller nostr.Keyer, targetPubKey string, createdAt time.Time, requestID string, method string) nostr.Event {
+	t.Helper()
+	contentRaw, err := json.Marshal(map[string]any{
+		"method": method,
+		"params": map[string]any{"probe": true},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	evt := nostr.Event{
+		Kind:      nostr.Kind(events.KindControl),
+		CreatedAt: nostr.Timestamp(createdAt.Unix()),
+		Tags: nostr.Tags{
+			{"p", targetPubKey},
+			{"req", requestID},
+			{"t", "control_rpc"},
+		},
+		Content: string(contentRaw),
+	}
+	if err := caller.SignEvent(context.Background(), &evt); err != nil {
+		t.Fatalf("SignEvent: %v", err)
+	}
+	return evt
+}
+
+func TestHandleInboundCacheableDuplicateReplaysBeforeThrottleAndExpiry(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	callerPub := mustControlPubKey(t, caller).Hex()
+	requestID := "req-replay"
+	cacheKey := callerPub + ":" + requestID
+	seededLast := time.Now()
+	lookupCalls := 0
+	onReqCalls := 0
+	b := &ControlRPCBus{
+		pool:   NewPoolNIP42(responder),
+		keyer:  responder,
+		public: responderPub,
+		ctx:    context.Background(),
+		onReq: func(context.Context, ControlRPCInbound) (ControlRPCResult, error) {
+			onReqCalls++
+			return ControlRPCResult{Result: map[string]any{"unexpected": true}}, nil
+		},
+		onError:           func(error) {},
+		maxReqAge:         1 * time.Second,
+		minCallerInterval: 1 * time.Hour,
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{callerPub: seededLast},
+		cachedLookup: func(gotCaller string, gotRequestID string) (ControlRPCCachedResponse, bool) {
+			lookupCalls++
+			if gotCaller != callerPub || gotRequestID != requestID {
+				t.Fatalf("unexpected lookup args caller=%s req=%s", gotCaller, gotRequestID)
+			}
+			return ControlRPCCachedResponse{
+				Payload: `{"result":{"ok":true}}`,
+				Tags:    nostr.Tags{{"req", gotRequestID}, {"p", gotCaller}, {"status", "ok"}},
+			}, true
+		},
+	}
+	defer b.pool.Close("test done")
+
+	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now().Add(-1*time.Hour), requestID, "status.get")
+	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{}})
+
+	if lookupCalls != 1 {
+		t.Fatalf("expected cached lookup before throttle/expiry, got %d calls", lookupCalls)
+	}
+	if got := b.callerLastRequest[callerPub]; !got.Equal(seededLast) {
+		t.Fatalf("expected throttle state unchanged on cached replay, got %v want %v", got, seededLast)
+	}
+	if _, ok := b.getCachedResponse(cacheKey); !ok {
+		t.Fatal("expected replayed response to hydrate local cache")
+	}
+	if onReqCalls != 0 {
+		t.Fatalf("expected cached replay to skip request handler, got %d calls", onReqCalls)
+	}
+}
+
+func TestHandleInboundCacheableRequestChecksCacheBeforeExpiry(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	callerPub := mustControlPubKey(t, caller).Hex()
+	requestID := "req-expired"
+	lookupCalls := 0
+	onReqCalls := 0
+	b := &ControlRPCBus{
+		pool:   NewPoolNIP42(responder),
+		keyer:  responder,
+		public: responderPub,
+		ctx:    context.Background(),
+		onReq: func(context.Context, ControlRPCInbound) (ControlRPCResult, error) {
+			onReqCalls++
+			return ControlRPCResult{Result: map[string]any{"unexpected": true}}, nil
+		},
+		onError:           func(error) {},
+		maxReqAge:         1 * time.Second,
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{},
+		cachedLookup: func(gotCaller string, gotRequestID string) (ControlRPCCachedResponse, bool) {
+			lookupCalls++
+			if gotCaller != callerPub || gotRequestID != requestID {
+				t.Fatalf("unexpected lookup args caller=%s req=%s", gotCaller, gotRequestID)
+			}
+			return ControlRPCCachedResponse{}, false
+		},
+	}
+	defer b.pool.Close("test done")
+
+	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now().Add(-1*time.Hour), requestID, "status.get")
+	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{}})
+
+	if lookupCalls != 1 {
+		t.Fatalf("expected cached lookup before expiry rejection, got %d calls", lookupCalls)
+	}
+	if onReqCalls != 0 {
+		t.Fatalf("expected expired request to skip request handler, got %d calls", onReqCalls)
+	}
+}
+
+func TestHandleInboundNonCacheableRequestSkipsCachedLookup(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	lookupCalls := 0
+	onReqCalls := 0
+	b := &ControlRPCBus{
+		pool:   NewPoolNIP42(responder),
+		keyer:  responder,
+		public: responderPub,
+		ctx:    context.Background(),
+		onReq: func(context.Context, ControlRPCInbound) (ControlRPCResult, error) {
+			onReqCalls++
+			return ControlRPCResult{Result: map[string]any{"unexpected": true}}, nil
+		},
+		onError:           func(error) {},
+		maxReqAge:         1 * time.Second,
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{},
+		cachedLookup: func(string, string) (ControlRPCCachedResponse, bool) {
+			lookupCalls++
+			return ControlRPCCachedResponse{}, true
+		},
+	}
+	defer b.pool.Close("test done")
+
+	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now().Add(-1*time.Hour), "req-secret", "secrets.resolve")
+	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{}})
+
+	if lookupCalls != 0 {
+		t.Fatalf("expected non-cacheable method to skip cache lookup, got %d calls", lookupCalls)
+	}
+	if onReqCalls != 0 {
+		t.Fatalf("expected expired non-cacheable request to skip request handler, got %d calls", onReqCalls)
+	}
+}
+
+func TestHandleInboundProcessesNilRelay(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	onReqCalls := 0
+	gotRelayURL := "not-set"
+	b := &ControlRPCBus{
+		pool:   NewPoolNIP42(responder),
+		keyer:  responder,
+		public: responderPub,
+		ctx:    context.Background(),
+		onReq: func(_ context.Context, in ControlRPCInbound) (ControlRPCResult, error) {
+			onReqCalls++
+			gotRelayURL = in.RelayURL
+			return ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+		},
+		onError:           func(error) {},
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{},
+	}
+	defer b.pool.Close("test done")
+
+	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now(), "req-nil-relay", "status.get")
+	b.handleInbound(nostr.RelayEvent{Event: evt})
+
+	if onReqCalls != 1 {
+		t.Fatalf("expected nil-relay event to be processed, got %d handler calls", onReqCalls)
+	}
+	if gotRelayURL != "" {
+		t.Fatalf("expected empty relay URL fallback, got %q", gotRelayURL)
 	}
 }
 
@@ -312,7 +534,6 @@ func TestControlBusStaleCloseIgnored(t *testing.T) {
 	generation := map[string]int{}
 	relay := "wss://relay.example"
 	generation[relay] = 3 // current generation
-
 	staleClose := controlRelayClose{
 		relayURL:   relay,
 		generation: 1, // old generation

@@ -259,19 +259,130 @@ func FetchNIP65(ctx context.Context, pool *nostr.Pool, relays []string, pubkey s
 		Limit:   1,
 	}
 
-	var best *nostr.Event
-	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
-		ev := re.Event
-		if best == nil || ev.CreatedAt > best.CreatedAt {
-			cp := ev
-			best = &cp
-		}
-	}
+	best := selectLatestVerifiedMetadataEvent(
+		pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}),
+		pk,
+		10002,
+	)
 	if best == nil {
 		return nil, fmt.Errorf("nip65: no relay list found for %s", pubkey)
 	}
 
 	return DecodeNIP65Event(*best), nil
+}
+
+func isVerifiedMetadataEvent(ev nostr.Event, expectedAuthor nostr.PubKey, expectedKind nostr.Kind) bool {
+	if ev.Kind != expectedKind {
+		return false
+	}
+	if ev.PubKey != expectedAuthor {
+		return false
+	}
+	return ev.CheckID() && ev.VerifySignature()
+}
+
+func selectLatestVerifiedMetadataEvent(events <-chan nostr.RelayEvent, expectedAuthor nostr.PubKey, expectedKind nostr.Kind) *nostr.Event {
+	var best *nostr.Event
+	for re := range events {
+		ev := re.Event
+		if !isVerifiedMetadataEvent(ev, expectedAuthor, expectedKind) {
+			continue
+		}
+		if isNewerReplaceableMetadataEvent(best, ev) {
+			cp := ev
+			best = &cp
+		}
+	}
+	return best
+}
+
+func isNewerReplaceableMetadataEvent(current *nostr.Event, candidate nostr.Event) bool {
+	if current == nil {
+		return true
+	}
+	if candidate.CreatedAt > current.CreatedAt {
+		return true
+	}
+	if candidate.CreatedAt < current.CreatedAt {
+		return false
+	}
+	return strings.Compare(candidate.ID.Hex(), current.ID.Hex()) > 0
+}
+
+func runNIP65SelfSyncLoop(ctx context.Context, pk nostr.PubKey, events <-chan nostr.RelayEvent, eoseCh <-chan struct{}, onRelayUpdate func(read, write []string)) {
+	var best *nostr.Event
+	var lastAppliedRead []string
+	var lastAppliedWrite []string
+	eoseDone := false
+	consider := func(ev nostr.Event) bool {
+		if !isVerifiedMetadataEvent(ev, pk, 10002) {
+			return false
+		}
+		if !isNewerReplaceableMetadataEvent(best, ev) {
+			return false
+		}
+		cp := ev
+		best = &cp
+		return true
+	}
+	apply := func(ev nostr.Event, startup bool) {
+		list := DecodeNIP65Event(ev)
+		readRelays := list.ReadRelays()
+		writeRelays := list.WriteRelays()
+		if relaySliceEqual(lastAppliedRead, readRelays) && relaySliceEqual(lastAppliedWrite, writeRelays) {
+			return
+		}
+		lastAppliedRead = append([]string{}, readRelays...)
+		lastAppliedWrite = append([]string{}, writeRelays...)
+		if startup {
+			log.Printf("nip65: applying initial remote relay list after EOSE (event=%s, read=%d, write=%d)",
+				ev.ID.Hex()[:MinInt(12, len(ev.ID.Hex()))], len(readRelays), len(writeRelays))
+		} else {
+			log.Printf("nip65: detected remote relay list update (event=%s, read=%d, write=%d)",
+				ev.ID.Hex()[:MinInt(12, len(ev.ID.Hex()))], len(readRelays), len(writeRelays))
+		}
+		if onRelayUpdate != nil {
+			onRelayUpdate(readRelays, writeRelays)
+		}
+	}
+	drainBufferedEvents := func() {
+		for {
+			select {
+			case re, ok := <-events:
+				if !ok {
+					events = nil
+					return
+				}
+				consider(re.Event)
+			default:
+				return
+			}
+		}
+	}
+
+	for {
+		select {
+		case re, ok := <-events:
+			if !ok {
+				return
+			}
+			if consider(re.Event) && eoseDone && best != nil {
+				apply(*best, false)
+			}
+		case <-eoseCh:
+			if !eoseDone {
+				drainBufferedEvents()
+				eoseDone = true
+				if best != nil {
+					apply(*best, true)
+				}
+				log.Printf("nip65: self-sync EOSE received, watching for remote relay list changes")
+				eoseCh = nil
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // DecodeNIP65Event parses a kind:10002 event into a NIP65RelayList.
@@ -475,43 +586,9 @@ func NIP65SelfSync(ctx context.Context, opts NIP65SyncOptions) error {
 		Authors: []nostr.PubKey{pk},
 	}
 
-	var lastEventID string
-
 	go func() {
 		events, eoseCh := opts.Pool.SubscribeManyNotifyEOSE(ctx, opts.Relays, filter, nostr.SubscriptionOptions{})
-		eoseDone := false
-		for {
-			select {
-			case re, ok := <-events:
-				if !ok {
-					return
-				}
-				eventID := re.Event.ID.Hex()
-				if eventID == lastEventID {
-					continue
-				}
-				lastEventID = eventID
-
-				list := DecodeNIP65Event(re.Event)
-				readRelays := list.ReadRelays()
-				writeRelays := list.WriteRelays()
-
-				if eoseDone && opts.OnRelayUpdate != nil {
-					log.Printf("nip65: detected remote relay list update (event=%s, read=%d, write=%d)",
-						eventID[:MinInt(12, len(eventID))], len(readRelays), len(writeRelays))
-					opts.OnRelayUpdate(readRelays, writeRelays)
-				}
-
-			case <-eoseCh:
-				if !eoseDone {
-					eoseDone = true
-					log.Printf("nip65: self-sync EOSE received, watching for remote relay list changes")
-				}
-
-			case <-ctx.Done():
-				return
-			}
-		}
+		runNIP65SelfSyncLoop(ctx, pk, events, eoseCh, opts.OnRelayUpdate)
 	}()
 
 	return nil
@@ -756,13 +833,11 @@ func fetchKind10050(ctx context.Context, pool *nostr.Pool, relays []string, pk n
 		Authors: []nostr.PubKey{pk},
 		Limit:   1,
 	}
-	var best *nostr.Event
-	for re := range pool.FetchMany(ctx, relays, f, nostr.SubscriptionOptions{}) {
-		ev := re.Event
-		if best == nil || ev.CreatedAt > best.CreatedAt {
-			best = &ev
-		}
-	}
+	best := selectLatestVerifiedMetadataEvent(
+		pool.FetchMany(ctx, relays, f, nostr.SubscriptionOptions{}),
+		pk,
+		10050,
+	)
 	if best == nil {
 		return nil, fmt.Errorf("no kind:10050 event found")
 	}
