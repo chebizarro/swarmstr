@@ -35,21 +35,27 @@ func TestSubHealthTrackerRecordReconnect(t *testing.T) {
 
 func TestSubHealthTrackerReconnectClearsClosedReason(t *testing.T) {
 	tr := NewSubHealthTracker("test")
-	tr.RecordClosed("relay closed")
+	tr.RecordClosed("wss://relay.example", "relay closed")
 	tr.RecordReconnect()
 	snap := tr.Snapshot(nil, 0)
 	if snap.LastClosedReason != "" {
 		t.Fatalf("last_closed_reason = %q, want empty after reconnect", snap.LastClosedReason)
 	}
+	if snap.LastClosedRelay != "" {
+		t.Fatalf("last_closed_relay = %q, want empty after reconnect", snap.LastClosedRelay)
+	}
 }
 
 func TestSubHealthTrackerRecordClosed(t *testing.T) {
 	tr := NewSubHealthTracker("test")
-	tr.RecordClosed("auth-required:")
-	tr.RecordClosed("rate-limited:")
+	tr.RecordClosed("wss://relay-a", "auth-required:")
+	tr.RecordClosed("wss://relay-b", "rate-limited:")
 	snap := tr.Snapshot(nil, 0)
 	if snap.LastClosedReason != "rate-limited:" {
 		t.Fatalf("last_closed_reason = %q, want %q", snap.LastClosedReason, "rate-limited:")
+	}
+	if snap.LastClosedRelay != "wss://relay-b" {
+		t.Fatalf("last_closed_relay = %q, want %q", snap.LastClosedRelay, "wss://relay-b")
 	}
 }
 
@@ -83,6 +89,9 @@ func TestSubHealthTrackerSnapshotZeroValues(t *testing.T) {
 	}
 	if snap.LastClosedReason != "" {
 		t.Fatalf("last_closed_reason should be empty, got %q", snap.LastClosedReason)
+	}
+	if snap.LastClosedRelay != "" {
+		t.Fatalf("last_closed_relay should be empty, got %q", snap.LastClosedRelay)
 	}
 	if snap.EventCount != 0 {
 		t.Fatalf("event_count = %d, want 0", snap.EventCount)

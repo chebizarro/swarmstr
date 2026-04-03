@@ -271,27 +271,89 @@ func FetchNIP65(ctx context.Context, pool *nostr.Pool, relays []string, pubkey s
 	return DecodeNIP65Event(*best), nil
 }
 
-func isVerifiedMetadataEvent(ev nostr.Event, expectedAuthor nostr.PubKey, expectedKind nostr.Kind) bool {
+func metadataValidationFailure(ev nostr.Event, expectedAuthor nostr.PubKey, expectedKind nostr.Kind) string {
 	if ev.Kind != expectedKind {
-		return false
+		return fmt.Sprintf("unexpected_kind:%d", ev.Kind)
 	}
 	if ev.PubKey != expectedAuthor {
-		return false
+		return "unexpected_author"
 	}
-	return ev.CheckID() && ev.VerifySignature()
+	if !ev.CheckID() {
+		return "invalid_id"
+	}
+	if !ev.VerifySignature() {
+		return "invalid_signature"
+	}
+	return ""
+}
+
+func isVerifiedMetadataEvent(ev nostr.Event, expectedAuthor nostr.PubKey, expectedKind nostr.Kind) bool {
+	return metadataValidationFailure(ev, expectedAuthor, expectedKind) == ""
+}
+
+func metadataRelayURL(re nostr.RelayEvent) string {
+	if re.Relay == nil {
+		return ""
+	}
+	return strings.TrimSpace(re.Relay.URL)
+}
+
+func shortPubKey(pk nostr.PubKey) string {
+	hex := pk.Hex()
+	return hex[:MinInt(12, len(hex))]
+}
+
+func shortEventID(id nostr.ID) string {
+	hex := id.Hex()
+	return hex[:MinInt(12, len(hex))]
+}
+
+func logInvalidMetadataEvent(fn string, re nostr.RelayEvent, expectedAuthor nostr.PubKey, expectedKind nostr.Kind, reason string) {
+	ev := re.Event
+	log.Printf("nip65: dropped invalid metadata event func=%s reason=%s relay=%s event=%s kind=%d author=%s expected_kind=%d expected_author=%s",
+		fn,
+		reason,
+		metadataRelayURL(re),
+		shortEventID(ev.ID),
+		ev.Kind,
+		shortPubKey(ev.PubKey),
+		expectedKind,
+		shortPubKey(expectedAuthor),
+	)
+}
+
+func logStaleMetadataEvent(fn string, re nostr.RelayEvent, current *nostr.Event) {
+	ev := re.Event
+	currentID := ""
+	currentCreatedAt := int64(0)
+	if current != nil {
+		currentID = shortEventID(current.ID)
+		currentCreatedAt = int64(current.CreatedAt)
+	}
+	log.Printf("nip65: ignored stale replaceable metadata func=%s relay=%s event=%s created_at=%d best_event=%s best_created_at=%d",
+		fn,
+		metadataRelayURL(re),
+		shortEventID(ev.ID),
+		int64(ev.CreatedAt),
+		currentID,
+		currentCreatedAt,
+	)
 }
 
 func selectLatestVerifiedMetadataEvent(events <-chan nostr.RelayEvent, expectedAuthor nostr.PubKey, expectedKind nostr.Kind) *nostr.Event {
 	var best *nostr.Event
 	for re := range events {
 		ev := re.Event
-		if !isVerifiedMetadataEvent(ev, expectedAuthor, expectedKind) {
+		if reason := metadataValidationFailure(ev, expectedAuthor, expectedKind); reason != "" {
+			logInvalidMetadataEvent("selectLatestVerifiedMetadataEvent", re, expectedAuthor, expectedKind, reason)
 			continue
 		}
-		if isNewerReplaceableMetadataEvent(best, ev) {
-			cp := ev
-			best = &cp
+		if !isNewerReplaceableMetadataEvent(best, ev) {
+			logStaleMetadataEvent("selectLatestVerifiedMetadataEvent", re, best)
+			continue
 		}
+		cp := ev
+		best = &cp
 	}
 	return best
 }
@@ -314,11 +376,14 @@ func runNIP65SelfSyncLoop(ctx context.Context, pk nostr.PubKey, events <-chan no
 	var lastAppliedRead []string
 	var lastAppliedWrite []string
 	eoseDone := false
-	consider := func(ev nostr.Event) bool {
-		if !isVerifiedMetadataEvent(ev, pk, 10002) {
+	consider := func(re nostr.RelayEvent) bool {
+		ev := re.Event
+		if reason := metadataValidationFailure(ev, pk, 10002); reason != "" {
+			logInvalidMetadataEvent("runNIP65SelfSyncLoop", re, pk, 10002, reason)
 			return false
 		}
 		if !isNewerReplaceableMetadataEvent(best, ev) {
+			logStaleMetadataEvent("runNIP65SelfSyncLoop", re, best)
 			return false
 		}
 		cp := ev
@@ -353,7 +418,7 @@ func runNIP65SelfSyncLoop(ctx context.Context, pk nostr.PubKey, events <-chan no
 					events = nil
 					return
 				}
-				consider(re.Event)
+				consider(re)
 			default:
 				return
 			}
@@ -366,7 +431,7 @@ func runNIP65SelfSyncLoop(ctx context.Context, pk nostr.PubKey, events <-chan no
 			if !ok {
 				return
 			}
-			if consider(re.Event) && eoseDone && best != nil {
+			if consider(re) && eoseDone && best != nil {
 				apply(*best, false)
 			}
 		case <-eoseCh:

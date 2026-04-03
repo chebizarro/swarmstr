@@ -181,4 +181,5 @@
 {"created_at":"2026-03-13T09:34:41Z","created_by":"Biz","depends_on_id":"swarmstr-wkb","issue_id":"swarmstr-wkb.7","type":"parent-child"}
 {"created_at":"2026-03-13T09:34:41Z","created_by":"Biz","depends_on_id":"swarmstr-wkb","issue_id":"swarmstr-wkb.8","type":"parent-child"}
 {"created_at":"2026-03-13T09:34:42Z","created_by":"Biz","depends_on_id":"swarmstr-wkb","issue_id":"swarmstr-wkb.9","type":"parent-child"}
+{"created_at":"2026-04-02T23:35:30Z","created_by":"Biz","depends_on_id":"swarmstr-2xq","issue_id":"swarmstr-xll","type":"discovered-from"}
 {"created_at":"2026-04-02T01:05:44Z","created_by":"Biz","depends_on_id":"swarmstr-5jz","issue_id":"swarmstr-zs2","type":"discovered-from"}

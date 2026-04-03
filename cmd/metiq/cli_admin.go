@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
@@ -37,8 +38,18 @@ type adminClient struct {
 	timeout time.Duration
 }
 
+type nostrControlHub interface {
+	Selector() *nostruntime.RelaySelector
+	Pool() *nostr.Pool
+	Subscribe(ctx context.Context, opts nostruntime.SubOpts) (*nostruntime.ManagedSub, error)
+	Unsubscribe(id string) bool
+	Publish(ctx context.Context, relays []string, evt nostr.Event) <-chan nostr.PublishResult
+	SignEvent(ctx context.Context, evt *nostr.Event) error
+	Close()
+}
+
 type nostrControlClient struct {
-	hub            *nostruntime.NostrHub
+	hub            nostrControlHub
 	callerPubKey   string
 	targetPub      nostr.PubKey
 	targetPubKey   string
@@ -315,12 +326,26 @@ func (c *nostrControlClient) call(method string, params any) (map[string]any, er
 
 	requestRelays := nostruntime.ControlRequestRelayCandidates(ctx, c.hub.Selector(), c.hub.Pool(), c.fallbackRelays, c.callerPubKey, c.targetPubKey)
 	responseRelays := nostruntime.ControlResponseListenRelayCandidates(ctx, c.hub.Selector(), c.hub.Pool(), c.fallbackRelays, c.targetPubKey, c.callerPubKey, requestRelays)
+	responseRelaySet := uniqueTrimmedRelays(responseRelays)
 
 	responseCh := make(chan nostr.Event, 1)
+	subErrCh := make(chan error, 1)
+	var closedMu sync.Mutex
+	closedReasons := make(map[string]string, len(responseRelaySet))
+	sendSubErr := func(err error) {
+		if err == nil {
+			return
+		}
+		select {
+		case subErrCh <- err:
+		default:
+		}
+	}
+
 	subscriptionID := "gw-control-" + requestID
 	_, err = c.hub.Subscribe(ctx, nostruntime.SubOpts{
 		ID:     subscriptionID,
-		Relays: append([]string{}, responseRelays...),
+		Relays: append([]string{}, responseRelaySet...),
 		Filter: nostr.Filter{
 			Kinds:   []nostr.Kind{nostr.Kind(events.KindMCPResult)},
 			Authors: []nostr.PubKey{c.targetPub},
@@ -338,6 +363,29 @@ func (c *nostrControlClient) call(method string, params any) (map[string]any, er
 			case responseCh <- evt:
 			default:
 			}
+		},
+		OnClosed: func(relay *nostr.Relay, reason string, handledAuth bool) {
+			if handledAuth {
+				return
+			}
+			relayURL := ""
+			if relay != nil {
+				relayURL = strings.TrimSpace(relay.URL)
+			}
+			if relayURL == "" {
+				sendSubErr(fmt.Errorf("nostr control response subscription closed req=%s: %s", requestID, reason))
+				return
+			}
+			closedMu.Lock()
+			closedReasons[relayURL] = reason
+			exhausted := len(closedReasons) >= len(responseRelaySet)
+			closedMu.Unlock()
+			if exhausted {
+				sendSubErr(fmt.Errorf("nostr control response subscription closed on all relays req=%s: %s", requestID, formatRelayCloseReasons(closedReasons)))
+			}
+		},
+		OnEnd: func() {
+			sendSubErr(fmt.Errorf("nostr control response subscription ended before response req=%s", requestID))
 		},
 	})
 	if err != nil {
@@ -362,11 +410,25 @@ func (c *nostrControlClient) call(method string, params any) (map[string]any, er
 		return nil, err
 	}
 
-	select {
-	case response := <-responseCh:
-		return decodeControlResponse(response.Content)
-	case <-ctx.Done():
-		return nil, fmt.Errorf("timed out waiting for nostr control response req=%s: %w", requestID, ctx.Err())
+	for {
+		select {
+		case response := <-responseCh:
+			return decodeControlResponse(response.Content)
+		case err := <-subErrCh:
+			select {
+			case response := <-responseCh:
+				return decodeControlResponse(response.Content)
+			default:
+			}
+			return nil, err
+		case <-ctx.Done():
+			select {
+			case response := <-responseCh:
+				return decodeControlResponse(response.Content)
+			default:
+			}
+			return nil, fmt.Errorf("timed out waiting for nostr control response req=%s: %w", requestID, ctx.Err())
+		}
 	}
 }
 
@@ -387,6 +449,42 @@ func (c *nostrControlClient) publishRequest(ctx context.Context, evt nostr.Event
 		return fmt.Errorf("publish nostr control request req=%s: %w", requestID, lastErr)
 	}
 	return fmt.Errorf("publish nostr control request req=%s: no relays accepted the event", requestID)
+}
+
+func uniqueTrimmedRelays(relays []string) []string {
+	out := make([]string, 0, len(relays))
+	seen := make(map[string]struct{}, len(relays))
+	for _, relay := range relays {
+		cleaned := strings.TrimSpace(relay)
+		if cleaned == "" {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out
+}
+
+func formatRelayCloseReasons(reasons map[string]string) string {
+	if len(reasons) == 0 {
+		return "no relay detail"
+	}
+	parts := make([]string, 0, len(reasons))
+	for _, relay := range uniqueTrimmedRelays(mapKeys(reasons)) {
+		parts = append(parts, fmt.Sprintf("%s=%s", relay, reasons[relay]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func mapKeys(in map[string]string) []string {
+	out := make([]string, 0, len(in))
+	for key := range in {
+		out = append(out, key)
+	}
+	return out
 }
 
 func decodeControlResponse(content string) (map[string]any, error) {

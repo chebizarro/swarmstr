@@ -501,3 +501,39 @@ func TestRunNIP65SelfSyncLoopSuppressesSemanticallyIdenticalRepublish(t *testing
 	events <- nostr.RelayEvent{Event: republish}
 	assertNoRelayUpdate(t, updates)
 }
+
+func TestMetadataValidationFailure(t *testing.T) {
+	valid := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		10002,
+		nostr.Timestamp(20),
+		nostr.Tags{{"r", "wss://valid.example"}},
+	)
+	if reason := metadataValidationFailure(valid, valid.PubKey, 10002); reason != "" {
+		t.Fatalf("expected valid metadata event, got reason %q", reason)
+	}
+
+	wrongKind := valid
+	wrongKind.Kind = 1
+	if reason := metadataValidationFailure(wrongKind, valid.PubKey, 10002); reason != "unexpected_kind:1" {
+		t.Fatalf("wrong kind reason = %q", reason)
+	}
+
+	wrongAuthor := valid
+	wrongAuthor.PubKey = nostr.Generate().Public()
+	if reason := metadataValidationFailure(wrongAuthor, valid.PubKey, 10002); reason != "unexpected_author" {
+		t.Fatalf("wrong author reason = %q", reason)
+	}
+
+	invalidID := valid
+	invalidID.ID[0] ^= 0x01
+	if reason := metadataValidationFailure(invalidID, valid.PubKey, 10002); reason != "invalid_id" {
+		t.Fatalf("invalid id reason = %q", reason)
+	}
+
+	invalidSig := valid
+	invalidSig.Sig[0] ^= 0x01
+	if reason := metadataValidationFailure(invalidSig, valid.PubKey, 10002); reason != "invalid_signature" {
+		t.Fatalf("invalid signature reason = %q", reason)
+	}
+}
