@@ -1004,6 +1004,9 @@ func main() {
 	// Load MCP config from extra.mcp and register discovered tools after the
 	// secrets/auth controller is available.
 	var mcpManager *mcppkg.Manager
+	toolbuiltin.RegisterMCPResourceTools(tools, toolbuiltin.MCPResourceToolOpts{
+		Manager: func() *mcppkg.Manager { return mcpManager },
+	})
 	defer func() {
 		if mcpManager != nil {
 			_ = mcpManager.Close()

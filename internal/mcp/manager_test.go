@@ -496,6 +496,105 @@ func TestManagerBuildTransportMergesDynamicAuthHeaders(t *testing.T) {
 	}
 }
 
+func TestManagerListResourcesRequiresCapability(t *testing.T) {
+	mgr := NewManager()
+	mgr.SetConnectFunc(func(_ context.Context, name string, _ ServerConfig) (*ServerConnection, error) {
+		return &ServerConnection{
+			Name:         name,
+			Capabilities: CapabilitySnapshot{Tools: true},
+		}, nil
+	})
+	if err := mgr.ApplyConfig(context.Background(), Config{
+		Enabled: true,
+		Servers: map[string]ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: ServerConfig{Enabled: true, Command: "npx"},
+				Signature:    "sig-demo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyConfig error: %v", err)
+	}
+
+	_, err := mgr.ListResources(context.Background(), "demo")
+	if err == nil || !strings.Contains(err.Error(), "does not support resources") {
+		t.Fatalf("err = %v, want capability-gated failure", err)
+	}
+}
+
+func TestManagerReadResourceReturnsResult(t *testing.T) {
+	mgr := NewManager()
+	mgr.SetConnectFunc(func(_ context.Context, name string, _ ServerConfig) (*ServerConnection, error) {
+		return &ServerConnection{
+			Name:         name,
+			Capabilities: CapabilitySnapshot{Resources: true},
+			ReadResourceFunc: func(_ context.Context, params *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error) {
+				if params == nil || params.URI != "file:///demo.txt" {
+					t.Fatalf("unexpected read params: %#v", params)
+				}
+				return &mcp.ReadResourceResult{
+					Contents: []*mcp.ResourceContents{{
+						URI:      params.URI,
+						MIMEType: "text/plain",
+						Text:     "hello",
+					}},
+				}, nil
+			},
+		}, nil
+	})
+	if err := mgr.ApplyConfig(context.Background(), Config{
+		Enabled: true,
+		Servers: map[string]ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: ServerConfig{Enabled: true, Command: "npx"},
+				Signature:    "sig-demo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyConfig error: %v", err)
+	}
+
+	result, err := mgr.ReadResource(context.Background(), "demo", "file:///demo.txt")
+	if err != nil {
+		t.Fatalf("ReadResource error: %v", err)
+	}
+	if result == nil || len(result.Contents) != 1 || result.Contents[0].Text != "hello" {
+		t.Fatalf("unexpected read result: %#v", result)
+	}
+}
+
+func TestManagerReadResourcePropagatesReadError(t *testing.T) {
+	mgr := NewManager()
+	mgr.SetConnectFunc(func(_ context.Context, name string, _ ServerConfig) (*ServerConnection, error) {
+		return &ServerConnection{
+			Name:         name,
+			Capabilities: CapabilitySnapshot{Resources: true},
+			ReadResourceFunc: func(context.Context, *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error) {
+				return nil, fmt.Errorf("boom")
+			},
+		}, nil
+	})
+	if err := mgr.ApplyConfig(context.Background(), Config{
+		Enabled: true,
+		Servers: map[string]ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: ServerConfig{Enabled: true, Command: "npx"},
+				Signature:    "sig-demo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyConfig error: %v", err)
+	}
+
+	_, err := mgr.ReadResource(context.Background(), "demo", "file:///demo.txt")
+	if err == nil || !strings.Contains(err.Error(), "failed to read resource: boom") {
+		t.Fatalf("err = %v, want read failure", err)
+	}
+}
+
 func TestSanitize(t *testing.T) {
 	tests := []struct {
 		in, want string
