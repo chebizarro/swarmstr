@@ -49,6 +49,12 @@ func TestRotateSessionLifecycle_ArchivesAndCarriesFlags(t *testing.T) {
 	entry.SessionMemoryPendingToolCalls = 2
 	entry.SessionMemoryLastEntryID = "a1"
 	entry.SessionMemoryUpdatedAt = now.Add(-30 * time.Second).Unix()
+	entry.RecentMemoryRecall = []state.MemoryRecallSample{{
+		TurnID:      "turn-1",
+		Strategy:    "deterministic",
+		QueryHash:   "abc123",
+		InjectedAny: true,
+	}}
 	if err := ss.Put(sessionID, entry); err != nil {
 		t.Fatalf("seed session store: %v", err)
 	}
@@ -97,6 +103,9 @@ func TestRotateSessionLifecycle_ArchivesAndCarriesFlags(t *testing.T) {
 	}
 	if got.SessionMemoryLastEntryID != "" {
 		t.Fatalf("expected rotation to clear transcript checkpoint, got %+v", got)
+	}
+	if len(got.RecentMemoryRecall) != 0 {
+		t.Fatalf("expected recent recall samples to be cleared on rotation, got %+v", got.RecentMemoryRecall)
 	}
 	if got.SessionFile == "" {
 		t.Fatalf("expected session_file to be set: %+v", got)

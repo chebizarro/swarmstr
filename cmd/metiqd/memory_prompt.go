@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
-	"sort"
+	"log"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
@@ -19,7 +23,6 @@ const (
 	memoryRecallSnippetLimitRunes = 280
 	defaultFileMemoryRecallLimit  = 2
 	fileMemoryRecallContentRunes  = 900
-	fileMemoryRecallStateCap      = 64
 )
 
 // assembleMemorySystemPrompt packages the stable, model-facing memory contract
@@ -146,60 +149,7 @@ func buildPinnedKnowledgePrompt(index memory.Store, scope memory.ScopedContext) 
 // recall behavior while formatting the output for the model instead of as a
 // raw backend dump.
 func assembleMemoryRecallContext(ctx context.Context, index memory.Store, scope memory.ScopedContext, sessionID string, userText string, limit int) string {
-	if index == nil || strings.TrimSpace(sessionID) == "" {
-		return ""
-	}
-	if limit <= 0 {
-		limit = defaultMemoryRecallLimit
-	}
-
-	sessionItems := memory.FilterByScope(memory.SearchSessionDocs(ctx, index, sessionID, userText, limit), scope)
-	seen := make(map[string]struct{}, len(sessionItems))
-	for _, item := range sessionItems {
-		seen[item.MemoryID] = struct{}{}
-	}
-
-	globalItems := []memory.IndexedMemory(nil)
-	if scope.Scope != state.AgentMemoryScopeLocal {
-		globalItems = memory.FilterByScope(memory.SearchDocs(ctx, index, userText, limit), scope)
-	}
-	crossItems := make([]memory.IndexedMemory, 0, crossSessionMemoryRecallLimit)
-	for _, item := range globalItems {
-		if _, dup := seen[item.MemoryID]; dup || item.SessionID == sessionID {
-			continue
-		}
-		crossItems = append(crossItems, item)
-		if len(crossItems) >= crossSessionMemoryRecallLimit {
-			break
-		}
-	}
-
-	if len(sessionItems) == 0 && len(crossItems) == 0 {
-		return ""
-	}
-
-	lines := []string{
-		"## Relevant Memory Recall",
-		"These are retrieved memory notes, provided as context only. Verify them against the current repository state and user intent before relying on them.",
-	}
-	if len(sessionItems) > 0 {
-		lines = append(lines, "", "### From this session")
-		for _, item := range sessionItems {
-			if line := formatMemoryRecallItem(item); line != "" {
-				lines = append(lines, line)
-			}
-		}
-	}
-	if len(crossItems) > 0 {
-		lines = append(lines, "", "### Related from other sessions")
-		for _, item := range crossItems {
-			if line := formatMemoryRecallItem(item); line != "" {
-				lines = append(lines, line)
-			}
-		}
-	}
-	lines = append(lines, "", "If you need more memory context, call `memory_search` with a narrow, concrete query.")
-	return strings.Join(lines, "\n")
+	return buildIndexedMemoryRecallResult(ctx, index, scope, sessionID, userText, limit).Prompt
 }
 
 func formatMemoryRecallItem(item memory.IndexedMemory) string {
@@ -217,48 +167,101 @@ func formatMemoryRecallItem(item memory.IndexedMemory) string {
 type preparedAgentRunTurn struct {
 	Turn               agent.Turn
 	SurfacedFileMemory map[string]string
+	MemoryRecallSample *state.MemoryRecallSample
 }
 
 func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store, scope memory.ScopedContext, workspaceDir string, sessionStore *state.SessionStore) preparedAgentRunTurn {
-	memoryContext, surfaced := buildDynamicMemoryRecallContext(ctx, index, scope, req.SessionID, req.Message, workspaceDir, sessionStore)
+	memoryContext, surfaced, sample := buildDynamicMemoryRecallContext(ctx, index, scope, req.SessionID, req.Message, workspaceDir, sessionStore)
 	turnContext := joinPromptSections(memoryContext, req.Context)
 	return preparedAgentRunTurn{
 		Turn: agent.Turn{
 			SessionID:          req.SessionID,
+			TurnID:             nextDeterministicRecallTurnID(),
 			UserText:           req.Message,
 			StaticSystemPrompt: assembleMemorySystemPrompt(index, scope, workspaceDir),
 			Context:            turnContext,
 		},
 		SurfacedFileMemory: surfaced,
+		MemoryRecallSample: sample,
 	}
 }
 
-func buildDynamicMemoryRecallContext(ctx context.Context, index memory.Store, scope memory.ScopedContext, sessionID, userText, workspaceDir string, sessionStore *state.SessionStore) (string, map[string]string) {
-	indexedRecall := assembleMemoryRecallContext(ctx, index, scope, sessionID, userText, defaultMemoryRecallLimit)
-	fileRecall, surfaced := assembleFileMemoryRecallContext(scope, workspaceDir, sessionID, userText, sessionStore)
-	return joinPromptSections(indexedRecall, fileRecall), surfaced
+func buildDynamicMemoryRecallContext(ctx context.Context, index memory.Store, scope memory.ScopedContext, sessionID, userText, workspaceDir string, sessionStore *state.SessionStore) (string, map[string]string, *state.MemoryRecallSample) {
+	startedAt := time.Now()
+	indexedRecall := buildIndexedMemoryRecallResult(ctx, index, scope, sessionID, userText, defaultMemoryRecallLimit)
+	fileRecall := buildFileMemoryRecallResult(scope, workspaceDir, sessionID, userText, sessionStore)
+	combined := joinPromptSections(indexedRecall.Prompt, fileRecall.Prompt)
+	return combined, fileRecall.Surfaced, &state.MemoryRecallSample{
+		Strategy:          "deterministic",
+		QueryHash:         memoryRecallQueryHash(userText),
+		QueryRuneCount:    utf8.RuneCountInString(strings.TrimSpace(userText)),
+		QueryTokenCount:   len(strings.Fields(strings.ToLower(strings.TrimSpace(userText)))),
+		Scope:             string(scope.Scope),
+		IndexedSession:    indexedRecall.SessionHits,
+		IndexedGlobal:     indexedRecall.GlobalHits,
+		FileSelected:      fileRecall.Hits,
+		IndexedLatencyMS:  indexedRecall.LatencyMS,
+		FileLatencyMS:     fileRecall.LatencyMS,
+		TotalLatencyMS:    time.Since(startedAt).Milliseconds(),
+		IndexedBlockRunes: indexedRecall.BlockRunes,
+		FileBlockRunes:    fileRecall.BlockRunes,
+		TotalBlockRunes:   utf8.RuneCountInString(combined),
+		IndexedInjected:   indexedRecall.Injected,
+		FileInjected:      fileRecall.Injected,
+		InjectedAny:       indexedRecall.Injected || fileRecall.Injected,
+	}
 }
 
 func assembleFileMemoryRecallContext(scope memory.ScopedContext, workspaceDir, sessionID, userText string, sessionStore *state.SessionStore) (string, map[string]string) {
+	result := buildFileMemoryRecallResult(scope, workspaceDir, sessionID, userText, sessionStore)
+	return result.Prompt, result.Surfaced
+}
+
+type indexedRecallResult struct {
+	Prompt      string
+	SessionHits []state.MemoryRecallIndexedHit
+	GlobalHits  []state.MemoryRecallIndexedHit
+	LatencyMS   int64
+	BlockRunes  int
+	Injected    bool
+}
+
+type fileRecallResult struct {
+	Prompt     string
+	Surfaced   map[string]string
+	Hits       []state.MemoryRecallFileHit
+	LatencyMS  int64
+	BlockRunes int
+	Injected   bool
+}
+
+func buildFileMemoryRecallResult(scope memory.ScopedContext, workspaceDir, sessionID, userText string, sessionStore *state.SessionStore) fileRecallResult {
+	startedAt := time.Now()
 	fileMemorySurface := memory.ResolveFileMemorySurface(scope, workspaceDir)
 	rootDir := strings.TrimSpace(fileMemorySurface.RootDir)
 	if rootDir == "" {
-		return "", nil
+		return fileRecallResult{LatencyMS: time.Since(startedAt).Milliseconds()}
 	}
 	previouslySurfaced := surfacedFileMemoryState(sessionStore, sessionID)
 	surfaceScoped := surfacedFileMemoryStateForRoot(rootDir, previouslySurfaced)
 	items, err := memory.RetrieveRelevantFileMemories(rootDir, userText, surfaceScoped, defaultFileMemoryRecallLimit, fileMemoryRecallContentRunes)
 	if err != nil {
-		return fmt.Sprintf("## Relevant File-backed Memory\n> WARNING: file-memory retrieval failed: %v", err), nil
+		prompt := fmt.Sprintf("## Relevant File-backed Memory\n> WARNING: file-memory retrieval failed: %v", err)
+		return fileRecallResult{
+			Prompt:     prompt,
+			LatencyMS:  time.Since(startedAt).Milliseconds(),
+			BlockRunes: utf8.RuneCountInString(prompt),
+		}
 	}
 	if len(items) == 0 {
-		return "", nil
+		return fileRecallResult{LatencyMS: time.Since(startedAt).Milliseconds()}
 	}
 	lines := []string{
 		"## Relevant File-backed Memory",
 		"These typed file memories were selected deterministically from file-backed memory headers. Treat them as possibly stale and verify them against current user intent and repository state before relying on them.",
 	}
 	pending := make(map[string]string, len(items))
+	hits := make([]state.MemoryRecallFileHit, 0, len(items))
 	for _, item := range items {
 		header := fmt.Sprintf("### `%s` [%s] %s — %s", item.Candidate.RelativePath, item.Candidate.Type, item.Candidate.Name, item.Candidate.Description)
 		lines = append(lines, "", header)
@@ -273,8 +276,23 @@ func assembleFileMemoryRecallContext(scope memory.ScopedContext, workspaceDir, s
 			lines = append(lines, "- note: content excerpt was truncated for context budget")
 		}
 		pending[fileMemorySurfaceStateKey(rootDir, item.Candidate.RelativePath)] = item.Candidate.ContentSignal
+		hits = append(hits, state.MemoryRecallFileHit{
+			RelativePath:  item.Candidate.RelativePath,
+			Reasons:       append([]string(nil), item.Candidate.MatchReasons...),
+			UpdatedAtUnix: item.Candidate.UpdatedAtUnix,
+			Score:         item.Candidate.Score,
+			Truncated:     item.Truncated,
+		})
 	}
-	return strings.Join(lines, "\n"), pending
+	prompt := strings.Join(lines, "\n")
+	return fileRecallResult{
+		Prompt:     prompt,
+		Surfaced:   pending,
+		Hits:       hits,
+		LatencyMS:  time.Since(startedAt).Milliseconds(),
+		BlockRunes: utf8.RuneCountInString(prompt),
+		Injected:   true,
+	}
 }
 
 func surfacedFileMemoryState(sessionStore *state.SessionStore, sessionID string) map[string]string {
@@ -325,39 +343,114 @@ func surfacedFileMemoryStateForRoot(rootDir string, surfaced map[string]string) 
 }
 
 func commitSurfacedFileMemory(sessionStore *state.SessionStore, sessionID string, surfaced map[string]string) {
-	if sessionStore == nil || strings.TrimSpace(sessionID) == "" || len(surfaced) == 0 {
+	commitMemoryRecallArtifacts(sessionStore, sessionID, "", nil, surfaced)
+}
+
+func commitMemoryRecallArtifacts(sessionStore *state.SessionStore, sessionID, turnID string, sample *state.MemoryRecallSample, surfaced map[string]string) {
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	entry := sessionStore.GetOrNew(sessionID)
-	merged := make(map[string]string, len(entry.FileMemorySurfaced)+len(surfaced))
-	for key, signal := range entry.FileMemorySurfaced {
-		if strings.TrimSpace(key) == "" || strings.TrimSpace(signal) == "" {
-			continue
-		}
-		merged[key] = signal
+	if err := sessionStore.RecordMemoryRecall(sessionID, turnID, sample, surfaced); err != nil {
+		log.Printf("session store memory recall failed session=%s: %v", sessionID, err)
 	}
-	for key, signal := range surfaced {
-		if strings.TrimSpace(key) == "" || strings.TrimSpace(signal) == "" {
-			continue
-		}
-		merged[key] = signal
-	}
-	if len(merged) > fileMemoryRecallStateCap {
-		keys := make([]string, 0, len(merged))
-		for key := range merged {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		trimmed := make(map[string]string, fileMemoryRecallStateCap)
-		for _, key := range keys[:fileMemoryRecallStateCap] {
-			trimmed[key] = merged[key]
-		}
-		merged = trimmed
-	}
-	entry.FileMemorySurfaced = merged
-	_ = sessionStore.Put(sessionID, entry)
 }
 
 func fileMemorySurfaceStateKey(rootDir, relativePath string) string {
 	return strings.TrimSpace(rootDir) + "::" + strings.TrimSpace(relativePath)
+}
+
+func buildIndexedMemoryRecallResult(ctx context.Context, index memory.Store, scope memory.ScopedContext, sessionID string, userText string, limit int) indexedRecallResult {
+	startedAt := time.Now()
+	if index == nil || strings.TrimSpace(sessionID) == "" {
+		return indexedRecallResult{LatencyMS: time.Since(startedAt).Milliseconds()}
+	}
+	if limit <= 0 {
+		limit = defaultMemoryRecallLimit
+	}
+
+	sessionItems := memory.FilterByScope(memory.SearchSessionDocs(ctx, index, sessionID, userText, limit), scope)
+	seen := make(map[string]struct{}, len(sessionItems))
+	sessionHits := make([]state.MemoryRecallIndexedHit, 0, len(sessionItems))
+	for _, item := range sessionItems {
+		seen[item.MemoryID] = struct{}{}
+		sessionHits = append(sessionHits, state.MemoryRecallIndexedHit{
+			MemoryID: item.MemoryID,
+			Topic:    strings.TrimSpace(item.Topic),
+		})
+	}
+
+	globalItems := []memory.IndexedMemory(nil)
+	if scope.Scope != state.AgentMemoryScopeLocal {
+		globalItems = memory.FilterByScope(memory.SearchDocs(ctx, index, userText, limit), scope)
+	}
+	crossItems := make([]memory.IndexedMemory, 0, crossSessionMemoryRecallLimit)
+	globalHits := make([]state.MemoryRecallIndexedHit, 0, crossSessionMemoryRecallLimit)
+	for _, item := range globalItems {
+		if _, dup := seen[item.MemoryID]; dup || item.SessionID == sessionID {
+			continue
+		}
+		crossItems = append(crossItems, item)
+		globalHits = append(globalHits, state.MemoryRecallIndexedHit{
+			MemoryID: item.MemoryID,
+			Topic:    strings.TrimSpace(item.Topic),
+		})
+		if len(crossItems) >= crossSessionMemoryRecallLimit {
+			break
+		}
+	}
+
+	if len(sessionItems) == 0 && len(crossItems) == 0 {
+		return indexedRecallResult{
+			SessionHits: sessionHits,
+			GlobalHits:  globalHits,
+			LatencyMS:   time.Since(startedAt).Milliseconds(),
+		}
+	}
+
+	lines := []string{
+		"## Relevant Memory Recall",
+		"These are retrieved memory notes, provided as context only. Verify them against the current repository state and user intent before relying on them.",
+	}
+	if len(sessionItems) > 0 {
+		lines = append(lines, "", "### From this session")
+		for _, item := range sessionItems {
+			if line := formatMemoryRecallItem(item); line != "" {
+				lines = append(lines, line)
+			}
+		}
+	}
+	if len(crossItems) > 0 {
+		lines = append(lines, "", "### Related from other sessions")
+		for _, item := range crossItems {
+			if line := formatMemoryRecallItem(item); line != "" {
+				lines = append(lines, line)
+			}
+		}
+	}
+	lines = append(lines, "", "If you need more memory context, call `memory_search` with a narrow, concrete query.")
+	prompt := strings.Join(lines, "\n")
+	return indexedRecallResult{
+		Prompt:      prompt,
+		SessionHits: sessionHits,
+		GlobalHits:  globalHits,
+		LatencyMS:   time.Since(startedAt).Milliseconds(),
+		BlockRunes:  utf8.RuneCountInString(prompt),
+		Injected:    true,
+	}
+}
+
+func memoryRecallQueryHash(userText string) string {
+	normalized := strings.ToLower(strings.TrimSpace(userText))
+	if normalized == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(sum[:])
+}
+
+func nextDeterministicRecallTurnID() string {
+	if id, err := randomRequestID("turn"); err == nil {
+		return id
+	}
+	return fmt.Sprintf("turn-%d", time.Now().UnixNano())
 }
