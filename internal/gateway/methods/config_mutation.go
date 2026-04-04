@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	mcppkg "metiq/internal/mcp"
 	"metiq/internal/store/state"
 )
 
@@ -54,6 +55,16 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"plugins.installs.<id>.resolvedAt",
 			"plugins.installs.<id>.installedAt",
 			"plugins.installs.<id>.<field>",
+			"mcp.enabled",
+			"mcp.servers",
+			"mcp.servers.<id>",
+			"mcp.servers.<id>.enabled",
+			"mcp.servers.<id>.command",
+			"mcp.servers.<id>.args",
+			"mcp.servers.<id>.env",
+			"mcp.servers.<id>.type",
+			"mcp.servers.<id>.url",
+			"mcp.servers.<id>.headers",
 			// Typed agent section (multi-agent support)
 			"agents[].id",
 			"agents[].name",
@@ -107,6 +118,7 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 	}
 	if len(cfg) > 0 {
 		schema["plugins"] = extensionSchemaEntries(cfg[0])
+		schema["mcp"] = mcpSchemaEntries(cfg[0])
 		schema["agents"] = agentSchemaEntries(cfg[0])
 		schema["nostr_channels"] = nostrChannelSchemaEntries(cfg[0])
 	}
@@ -206,6 +218,44 @@ func extensionSchemaEntries(cfg state.ConfigDoc) map[string]any {
 		"loadPaths": loadPaths,
 		"installs":  installIDs,
 		"entries":   out,
+	}
+}
+
+func mcpSchemaEntries(cfg state.ConfigDoc) map[string]any {
+	resolved := mcppkg.ResolveConfigDoc(cfg)
+	servers := make([]map[string]any, 0, len(resolved.Servers))
+	names := make([]string, 0, len(resolved.Servers))
+	for name := range resolved.Servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		server := resolved.Servers[name]
+		servers = append(servers, map[string]any{
+			"name":       server.Name,
+			"source":     server.Source,
+			"precedence": server.Precedence,
+			"signature":  server.Signature,
+			"type":       server.Type,
+			"command":    server.Command,
+			"url":        server.URL,
+		})
+	}
+	suppressed := make([]map[string]any, 0, len(resolved.Suppressed))
+	for _, server := range resolved.Suppressed {
+		suppressed = append(suppressed, map[string]any{
+			"name":        server.Name,
+			"source":      server.Source,
+			"precedence":  server.Precedence,
+			"signature":   server.Signature,
+			"duplicateOf": server.DuplicateOf,
+			"reason":      server.Reason,
+		})
+	}
+	return map[string]any{
+		"enabled":    resolved.Enabled,
+		"servers":    servers,
+		"suppressed": suppressed,
 	}
 }
 
@@ -363,7 +413,15 @@ func ApplyConfigSet(cfg state.ConfigDoc, key string, value any) (state.ConfigDoc
 		}
 		cfg.Control.LegacyTokenFallback = b
 	default:
-		next, applied, err := applyPluginConfigSet(cfg, key, value)
+		next, applied, err := applyMCPConfigSet(cfg, key, value)
+		if err != nil {
+			return cfg, err
+		}
+		if applied {
+			cfg = next
+			break
+		}
+		next, applied, err = applyPluginConfigSet(cfg, key, value)
 		if err != nil {
 			return cfg, err
 		}
@@ -396,6 +454,9 @@ func applyConfigPatchValue(cfg state.ConfigDoc, key string, value any) (state.Co
 	if child, ok := value.(map[string]any); ok {
 		if strings.HasPrefix(key, "plugins.entries.") && strings.HasSuffix(key, ".env") {
 			return applyPluginEnvPatch(cfg, key, child)
+		}
+		if strings.HasPrefix(key, "mcp.servers.") && (strings.HasSuffix(key, ".env") || strings.HasSuffix(key, ".headers")) {
+			return applyMCPStringMapPatch(cfg, key, child)
 		}
 		for nestedKey, nestedValue := range child {
 			nextKey := strings.TrimSpace(nestedKey)
@@ -491,6 +552,37 @@ func anyToStringSlice(value any) ([]string, error) {
 		out = append(out, s)
 	}
 	return sanitizeStrings(out), nil
+}
+
+func anyToTrimmedStringList(value any) ([]string, error) {
+	raw, ok := value.([]any)
+	if !ok {
+		if direct, ok := value.([]string); ok {
+			out := make([]string, 0, len(direct))
+			for _, item := range direct {
+				item = strings.TrimSpace(item)
+				if item == "" {
+					continue
+				}
+				out = append(out, item)
+			}
+			return out, nil
+		}
+		return nil, fmt.Errorf("value must be array")
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("value must be string array")
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 func anyToStringMap(value any) (map[string]string, error) {
@@ -642,6 +734,264 @@ func updateInstallRecordField(entry map[string]any, field string, value any) err
 	}
 	entry["installedAt"] = next
 	return nil
+}
+
+func applyMCPConfigSet(cfg state.ConfigDoc, key string, value any) (state.ConfigDoc, bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return cfg, false, nil
+	}
+	segments := strings.Split(key, ".")
+	if len(segments) == 0 || segments[0] != "mcp" {
+		return cfg, false, nil
+	}
+	if cfg.Extra == nil {
+		cfg.Extra = map[string]any{}
+	}
+	rawMCP, _ := cfg.Extra["mcp"].(map[string]any)
+	if rawMCP == nil {
+		rawMCP = map[string]any{}
+		cfg.Extra["mcp"] = rawMCP
+	}
+	if len(segments) == 2 && segments[1] == "enabled" {
+		b, ok := value.(bool)
+		if !ok {
+			return cfg, true, fmt.Errorf("mcp.enabled must be bool")
+		}
+		rawMCP["enabled"] = b
+		return cleanupMCPConfig(cfg), true, nil
+	}
+	if len(segments) < 2 || segments[1] != "servers" {
+		return cfg, false, nil
+	}
+	if len(segments) == 2 {
+		if value == nil {
+			delete(rawMCP, "servers")
+			return cleanupMCPConfig(cfg), true, nil
+		}
+		rawServers, ok := value.(map[string]any)
+		if !ok {
+			return cfg, true, fmt.Errorf("mcp.servers must be object")
+		}
+		normalized := map[string]any{}
+		for serverID, serverValue := range rawServers {
+			serverID = strings.TrimSpace(serverID)
+			if serverID == "" {
+				continue
+			}
+			entry, err := normalizeMCPServerEntry(serverID, serverValue)
+			if err != nil {
+				return cfg, true, fmt.Errorf("mcp.servers.%s invalid: %w", serverID, err)
+			}
+			if len(entry) > 0 {
+				normalized[serverID] = entry
+			}
+		}
+		if len(normalized) == 0 {
+			delete(rawMCP, "servers")
+		} else {
+			rawMCP["servers"] = normalized
+		}
+		return cleanupMCPConfig(cfg), true, nil
+	}
+	serverID := strings.TrimSpace(segments[2])
+	if serverID == "" {
+		return cfg, true, fmt.Errorf("mcp.servers.<id> requires non-empty id")
+	}
+	rawServers, _ := rawMCP["servers"].(map[string]any)
+	if rawServers == nil {
+		rawServers = map[string]any{}
+		rawMCP["servers"] = rawServers
+	}
+	if len(segments) == 3 {
+		if value == nil {
+			delete(rawServers, serverID)
+			return cleanupMCPConfig(cfg), true, nil
+		}
+		entry, err := normalizeMCPServerEntry(serverID, value)
+		if err != nil {
+			return cfg, true, fmt.Errorf("mcp.servers.%s must be object with valid fields: %w", serverID, err)
+		}
+		if len(entry) == 0 {
+			delete(rawServers, serverID)
+		} else {
+			rawServers[serverID] = entry
+		}
+		return cleanupMCPConfig(cfg), true, nil
+	}
+	if len(segments) != 4 {
+		return cfg, true, fmt.Errorf("unsupported config key %q", key)
+	}
+	entry, _ := rawServers[serverID].(map[string]any)
+	if entry == nil {
+		entry = map[string]any{}
+		rawServers[serverID] = entry
+	}
+	if err := applyMCPServerField(entry, serverID, strings.TrimSpace(segments[3]), value); err != nil {
+		return cfg, true, err
+	}
+	if len(entry) == 0 {
+		delete(rawServers, serverID)
+	}
+	return cleanupMCPConfig(cfg), true, nil
+}
+
+func normalizeMCPServerEntry(serverID string, value any) (map[string]any, error) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("value must be object")
+	}
+	entry := map[string]any{}
+	for field, fieldValue := range raw {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if err := applyMCPServerField(entry, serverID, field, fieldValue); err != nil {
+			return nil, err
+		}
+	}
+	return entry, nil
+}
+
+func applyMCPServerField(entry map[string]any, serverID, field string, value any) error {
+	switch field {
+	case "enabled":
+		b, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("mcp.servers.%s.enabled must be bool", serverID)
+		}
+		entry["enabled"] = b
+	case "command", "url":
+		s, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("mcp.servers.%s.%s must be string", serverID, field)
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			delete(entry, field)
+		} else {
+			entry[field] = s
+		}
+	case "type":
+		s, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("mcp.servers.%s.type must be string", serverID)
+		}
+		s = strings.ToLower(strings.TrimSpace(s))
+		switch s {
+		case "":
+			delete(entry, "type")
+		case "stdio", "sse", "http":
+			entry["type"] = s
+		default:
+			return fmt.Errorf("mcp.servers.%s.type must be one of stdio, sse, http", serverID)
+		}
+	case "args":
+		items, err := anyToTrimmedStringList(value)
+		if err != nil {
+			return fmt.Errorf("mcp.servers.%s.args must be string array", serverID)
+		}
+		if len(items) == 0 {
+			delete(entry, "args")
+		} else {
+			entry["args"] = items
+		}
+	case "env", "headers":
+		items, err := anyToStringMap(value)
+		if err != nil {
+			return fmt.Errorf("mcp.servers.%s.%s must be object<string,string>", serverID, field)
+		}
+		if len(items) == 0 {
+			delete(entry, field)
+		} else {
+			entry[field] = items
+		}
+	default:
+		return fmt.Errorf("unsupported config key %q", "mcp.servers."+serverID+"."+field)
+	}
+	return nil
+}
+
+func applyMCPStringMapPatch(cfg state.ConfigDoc, key string, patch map[string]any) (state.ConfigDoc, error) {
+	segments := strings.Split(strings.TrimSpace(key), ".")
+	if len(segments) != 4 || segments[0] != "mcp" || segments[1] != "servers" || (segments[3] != "env" && segments[3] != "headers") {
+		return cfg, fmt.Errorf("invalid MCP map patch key %q", key)
+	}
+	serverID := strings.TrimSpace(segments[2])
+	if serverID == "" {
+		return cfg, fmt.Errorf("mcp.servers.<id>.%s requires non-empty id", segments[3])
+	}
+	merged := map[string]string{}
+	if cfg.Extra != nil {
+		if rawMCP, ok := cfg.Extra["mcp"].(map[string]any); ok {
+			if rawServers, ok := rawMCP["servers"].(map[string]any); ok {
+				if entry, ok := rawServers[serverID].(map[string]any); ok {
+					switch existing := entry[segments[3]].(type) {
+					case map[string]string:
+						for existingKey, existingVal := range existing {
+							existingKey = strings.TrimSpace(existingKey)
+							existingVal = strings.TrimSpace(existingVal)
+							if existingKey == "" || existingVal == "" {
+								continue
+							}
+							merged[existingKey] = existingVal
+						}
+					case map[string]any:
+						for existingKey, raw := range existing {
+							existingVal, ok := raw.(string)
+							if !ok {
+								continue
+							}
+							existingKey = strings.TrimSpace(existingKey)
+							existingVal = strings.TrimSpace(existingVal)
+							if existingKey == "" || existingVal == "" {
+								continue
+							}
+							merged[existingKey] = existingVal
+						}
+					}
+				}
+			}
+		}
+	}
+	for patchKey, raw := range patch {
+		patchVal, ok := raw.(string)
+		if !ok {
+			return cfg, fmt.Errorf("mcp.servers.%s.%s must be object<string,string>", serverID, segments[3])
+		}
+		patchKey = strings.TrimSpace(patchKey)
+		if patchKey == "" {
+			continue
+		}
+		patchVal = strings.TrimSpace(patchVal)
+		if patchVal == "" {
+			delete(merged, patchKey)
+			continue
+		}
+		merged[patchKey] = patchVal
+	}
+	return ApplyConfigSet(cfg, key, merged)
+}
+
+func cleanupMCPConfig(cfg state.ConfigDoc) state.ConfigDoc {
+	if cfg.Extra == nil {
+		return cfg
+	}
+	rawMCP, _ := cfg.Extra["mcp"].(map[string]any)
+	if rawMCP == nil {
+		return cfg
+	}
+	if rawServers, ok := rawMCP["servers"].(map[string]any); ok && len(rawServers) == 0 {
+		delete(rawMCP, "servers")
+	}
+	if len(rawMCP) == 0 {
+		delete(cfg.Extra, "mcp")
+	}
+	if len(cfg.Extra) == 0 {
+		cfg.Extra = nil
+	}
+	return cfg
 }
 
 func applyPluginConfigSet(cfg state.ConfigDoc, key string, value any) (state.ConfigDoc, bool, error) {

@@ -1,7 +1,10 @@
 package mcp
 
 import (
+	"strings"
 	"testing"
+
+	"metiq/internal/store/state"
 )
 
 func TestParseMCPConfig_empty(t *testing.T) {
@@ -11,6 +14,9 @@ func TestParseMCPConfig_empty(t *testing.T) {
 	}
 	if len(cfg.Servers) != 0 {
 		t.Errorf("expected no servers, got %d", len(cfg.Servers))
+	}
+	if len(cfg.Suppressed) != 0 {
+		t.Errorf("expected no suppressed servers, got %d", len(cfg.Suppressed))
 	}
 }
 
@@ -41,6 +47,9 @@ func TestParseMCPConfig_full(t *testing.T) {
 	if len(cfg.Servers) != 2 {
 		t.Fatalf("expected 2 servers, got %d", len(cfg.Servers))
 	}
+	if len(cfg.Suppressed) != 0 {
+		t.Fatalf("expected no suppressed servers, got %d", len(cfg.Suppressed))
+	}
 
 	fs := cfg.Servers["filesystem"]
 	if !fs.Enabled {
@@ -55,6 +64,15 @@ func TestParseMCPConfig_full(t *testing.T) {
 	if fs.Env["NODE_ENV"] != "production" {
 		t.Errorf("filesystem: env NODE_ENV = %q", fs.Env["NODE_ENV"])
 	}
+	if fs.Source != ConfigSourceExtraMCP {
+		t.Errorf("filesystem: source = %q, want %q", fs.Source, ConfigSourceExtraMCP)
+	}
+	if fs.Precedence != extraMCPPrecedence {
+		t.Errorf("filesystem: precedence = %d, want %d", fs.Precedence, extraMCPPrecedence)
+	}
+	if fs.Signature == "" {
+		t.Error("filesystem: expected non-empty signature")
+	}
 
 	remote := cfg.Servers["remote"]
 	if remote.URL != "https://mcp.example.com/sse" {
@@ -62,6 +80,123 @@ func TestParseMCPConfig_full(t *testing.T) {
 	}
 	if remote.Headers["Authorization"] != "Bearer tok" {
 		t.Errorf("remote: auth header = %q", remote.Headers["Authorization"])
+	}
+	if !strings.Contains(remote.Signature, "https://mcp.example.com/sse") {
+		t.Errorf("remote: signature = %q", remote.Signature)
+	}
+}
+
+func TestResolveSourceConfigs_namePrecedence(t *testing.T) {
+	cfg := ResolveSourceConfigs(
+		SourceConfig{
+			Source:     "low",
+			Enabled:    true,
+			Precedence: 10,
+			Servers: map[string]ServerConfig{
+				"shared": {Enabled: true, Command: "low-cmd"},
+			},
+		},
+		SourceConfig{
+			Source:     "high",
+			Enabled:    true,
+			Precedence: 20,
+			Servers: map[string]ServerConfig{
+				"shared": {Enabled: true, Command: "high-cmd"},
+				"other":  {Enabled: true, URL: "https://example.com/sse"},
+			},
+		},
+	)
+
+	if !cfg.Enabled {
+		t.Fatal("expected resolved config enabled")
+	}
+	if len(cfg.Servers) != 2 {
+		t.Fatalf("expected 2 resolved servers, got %d", len(cfg.Servers))
+	}
+	shared := cfg.Servers["shared"]
+	if shared.Command != "high-cmd" {
+		t.Fatalf("expected highest precedence server to win, got %#v", shared)
+	}
+	if len(cfg.Suppressed) != 1 {
+		t.Fatalf("expected 1 suppressed server, got %d", len(cfg.Suppressed))
+	}
+	if cfg.Suppressed[0].Reason != SuppressionReasonNameConflict {
+		t.Fatalf("expected name conflict suppression, got %#v", cfg.Suppressed[0])
+	}
+	if cfg.Suppressed[0].Name != "shared" || cfg.Suppressed[0].Source != "low" {
+		t.Fatalf("unexpected suppressed server metadata: %#v", cfg.Suppressed[0])
+	}
+}
+
+func TestResolveSourceConfigs_duplicateSignature(t *testing.T) {
+	cfg := ResolveSourceConfigs(SourceConfig{
+		Source:     "extra.mcp",
+		Enabled:    true,
+		Precedence: 100,
+		Servers: map[string]ServerConfig{
+			"filesystem": {Enabled: true, Command: "npx", Args: []string{"-y", "server-filesystem", "/tmp"}},
+			"duplicate":  {Enabled: true, Command: "npx", Args: []string{"-y", "server-filesystem", "/tmp"}},
+		},
+	})
+
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("expected 1 resolved server after dedup, got %d", len(cfg.Servers))
+	}
+	if len(cfg.Suppressed) != 1 {
+		t.Fatalf("expected 1 suppressed server, got %d", len(cfg.Suppressed))
+	}
+	if cfg.Suppressed[0].Reason != SuppressionReasonDuplicateSignature {
+		t.Fatalf("expected duplicate signature suppression, got %#v", cfg.Suppressed[0])
+	}
+	if cfg.Suppressed[0].DuplicateOf != "duplicate" && cfg.Suppressed[0].DuplicateOf != "filesystem" {
+		t.Fatalf("expected duplicate-of metadata, got %#v", cfg.Suppressed[0])
+	}
+}
+
+func TestResolveSourceConfigs_distinctConnectionMetadataNotSuppressed(t *testing.T) {
+	cfg := ResolveSourceConfigs(SourceConfig{
+		Source:     "extra.mcp",
+		Enabled:    true,
+		Precedence: 100,
+		Servers: map[string]ServerConfig{
+			"env-a":    {Enabled: true, Command: "npx", Args: []string{"-y", "server-filesystem", "/tmp"}, Env: map[string]string{"MODE": "a"}},
+			"env-b":    {Enabled: true, Command: "npx", Args: []string{"-y", "server-filesystem", "/tmp"}, Env: map[string]string{"MODE": "b"}},
+			"remote-a": {Enabled: true, URL: "https://mcp.example.com/sse", Headers: map[string]string{"Authorization": "Bearer a"}},
+			"remote-b": {Enabled: true, URL: "https://mcp.example.com/sse", Headers: map[string]string{"Authorization": "Bearer b"}},
+		},
+	})
+
+	if len(cfg.Servers) != 4 {
+		t.Fatalf("expected 4 resolved servers, got %d", len(cfg.Servers))
+	}
+	if len(cfg.Suppressed) != 0 {
+		t.Fatalf("expected no suppressed servers, got %#v", cfg.Suppressed)
+	}
+}
+
+func TestResolveConfigDoc(t *testing.T) {
+	doc := state.ConfigDoc{Extra: map[string]any{
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": map[string]any{
+				"remote": map[string]any{
+					"enabled": true,
+					"type":    "HTTP",
+					"url":     " https://mcp.example.com/http ",
+				},
+			},
+		},
+	}}
+	cfg := ResolveConfigDoc(doc)
+	remote := cfg.Servers["remote"]
+	if remote.Type != "http" {
+		t.Fatalf("expected normalized transport type, got %#v", remote)
+	}
+	if remote.URL != "https://mcp.example.com/http" {
+		t.Fatalf("expected trimmed URL, got %#v", remote)
+	}
+	if !strings.Contains(remote.Signature, "https://mcp.example.com/http") {
+		t.Fatalf("unexpected signature: %#v", remote)
 	}
 }
 
@@ -85,7 +220,6 @@ func TestSanitize(t *testing.T) {
 }
 
 func TestExtractContentText(t *testing.T) {
-	// No content.
 	if got := extractContentText(nil); got != "" {
 		t.Errorf("expected empty, got %q", got)
 	}
@@ -103,7 +237,6 @@ func TestNewManager_close(t *testing.T) {
 	if err := mgr.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
-	// Double close should be fine.
 	if err := mgr.Close(); err != nil {
 		t.Errorf("double Close: %v", err)
 	}

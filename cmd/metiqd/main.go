@@ -1002,7 +1002,7 @@ func main() {
 	// Load MCP config from extra.mcp and register discovered tools.
 	var mcpManager *mcppkg.Manager
 	{
-		mcpCfg := mcppkg.ParseMCPConfig(configState.Get().Extra)
+		mcpCfg := mcppkg.ResolveConfigDoc(configState.Get())
 		if mcpCfg.Enabled && len(mcpCfg.Servers) > 0 {
 			mcpManager = mcppkg.NewManager()
 			if err := mcpManager.LoadFromConfig(ctx, mcpCfg); err != nil {
