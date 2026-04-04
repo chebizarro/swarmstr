@@ -86,8 +86,10 @@ func resolveMemoryScopeContext(ctx context.Context, cfg state.ConfigDoc, docsRep
 			return memory.ScopedContext{}
 		}
 	}
-	if resolved.Scope == state.AgentMemoryScopeLocal && resolved.SessionID == "" {
-		return memory.ScopedContext{}
+	if resolved.Scope == state.AgentMemoryScopeLocal {
+		if resolved.SessionID == "" || strings.TrimSpace(sessionWorkspaceDir) == "" {
+			return memory.ScopedContext{}
+		}
 	}
 	return resolved
 }

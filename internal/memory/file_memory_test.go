@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTruncateMemoryEntrypointContent_LineAndByteCaps(t *testing.T) {
@@ -201,5 +202,93 @@ outside
 	}
 	if scan.InvalidFileCount != 1 {
 		t.Fatalf("expected one ignored symlinked topic, got %d", scan.InvalidFileCount)
+	}
+}
+
+func TestBuildFileMemoryCandidateManifest_OrdersAndSuppressesByUpdatedAt(t *testing.T) {
+	workspaceDir := t.TempDir()
+	memoryDir := filepath.Join(workspaceDir, "memory")
+	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alphaPath := filepath.Join(memoryDir, "alpha.md")
+	betaPath := filepath.Join(memoryDir, "beta.md")
+	if err := os.WriteFile(alphaPath, []byte(`---
+name: alpha deployment
+description: Deployment checklist and rollout notes
+type: project
+---
+Alpha body
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(betaPath, []byte(`---
+name: deployment prefs
+description: User deployment preferences
+type: feedback
+---
+Beta body
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	older := time.Now().Add(-2 * time.Hour)
+	newer := time.Now().Add(-1 * time.Hour)
+	if err := os.Chtimes(alphaPath, older, older); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(betaPath, newer, newer); err != nil {
+		t.Fatal(err)
+	}
+
+	betaRaw, err := readLimitedMemoryFile(betaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	betaSignal := fileMemoryRecallSignal(newer, fileMemoryContentChecksum(betaRaw))
+	manifest, err := BuildFileMemoryCandidateManifest(workspaceDir, "deployment", map[string]string{"beta.md": betaSignal}, 5)
+	if err != nil {
+		t.Fatalf("BuildFileMemoryCandidateManifest: %v", err)
+	}
+	if len(manifest) != 1 {
+		t.Fatalf("expected one unsuppressed candidate, got %#v", manifest)
+	}
+	if manifest[0].RelativePath != "alpha.md" {
+		t.Fatalf("expected alpha candidate, got %#v", manifest)
+	}
+	if manifest[0].Score <= 0 || len(manifest[0].MatchReasons) == 0 {
+		t.Fatalf("expected scored candidate with reasons, got %#v", manifest[0])
+	}
+	if !strings.Contains(manifest[0].FreshnessHint, "updated") {
+		t.Fatalf("expected freshness hint, got %#v", manifest[0])
+	}
+}
+
+func TestRetrieveRelevantFileMemories_LoadsBodyExcerptAndTruncates(t *testing.T) {
+	workspaceDir := t.TempDir()
+	memoryDir := filepath.Join(workspaceDir, "memory")
+	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memoryDir, "prefs.md"), []byte(`---
+name: deployment prefs
+description: User deployment preferences
+type: feedback
+---
+This is a long deployment note that should be truncated once it exceeds the excerpt budget.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := RetrieveRelevantFileMemories(workspaceDir, "deployment", nil, 3, 32)
+	if err != nil {
+		t.Fatalf("RetrieveRelevantFileMemories: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one retrieved item, got %#v", items)
+	}
+	if items[0].Candidate.RelativePath != "prefs.md" {
+		t.Fatalf("unexpected candidate: %#v", items[0])
+	}
+	if !items[0].Truncated || !strings.HasSuffix(items[0].Content, "…") {
+		t.Fatalf("expected truncated content excerpt, got %#v", items[0])
 	}
 }
