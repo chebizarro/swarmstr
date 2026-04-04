@@ -700,7 +700,7 @@ func TestDecodeModelsToolsSkillsParams(t *testing.T) {
 		t.Fatalf("unexpected tools catalog agent id: %#v", toolsReq)
 	}
 
-	installReq, err := DecodeSkillsInstallParams(json.RawMessage(`{"name":"nostr-core","install_id":"builtin"}`))
+	installReq, err := DecodeSkillsInstallParams(json.RawMessage(`{"agent_id":"Main","name":"nostr-core","install_id":"builtin"}`))
 	if err != nil {
 		t.Fatalf("skills.install decode error: %v", err)
 	}
@@ -708,11 +708,11 @@ func TestDecodeModelsToolsSkillsParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skills.install normalize error: %v", err)
 	}
-	if installReq.TimeoutMS <= 0 {
-		t.Fatalf("expected normalized timeout, got: %#v", installReq)
+	if installReq.AgentID != "main" || installReq.TimeoutMS <= 0 {
+		t.Fatalf("expected normalized install request, got: %#v", installReq)
 	}
 
-	updateReq, err := DecodeSkillsUpdateParams(json.RawMessage(`{"skill_key":"Nostr-Core","api_key":"  abc  ","env":{" K ":" V "}}`))
+	updateReq, err := DecodeSkillsUpdateParams(json.RawMessage(`{"agent_id":"Main","skill_key":"Nostr-Core","api_key":"  abc  ","env":{" K ":" V "}}`))
 	if err != nil {
 		t.Fatalf("skills.update decode error: %v", err)
 	}
@@ -725,6 +725,9 @@ func TestDecodeModelsToolsSkillsParams(t *testing.T) {
 	}
 	if updateReq.APIKey == nil || *updateReq.APIKey != "abc" {
 		t.Fatalf("unexpected api key normalization: %#v", updateReq)
+	}
+	if updateReq.AgentID != "main" {
+		t.Fatalf("unexpected agent id normalization: %#v", updateReq)
 	}
 	if updateReq.Env["K"] != "V" {
 		t.Fatalf("unexpected env normalization: %#v", updateReq.Env)

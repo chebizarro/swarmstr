@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -173,5 +175,71 @@ func TestBuildToolSummarySection_Empty(t *testing.T) {
 	result := buildToolSummarySection(nil)
 	if result != "" {
 		t.Error("should return empty for no tools")
+	}
+}
+
+func TestBuildSkillsPromptCached_UsesMergedCatalogAndAlwaysWarnings(t *testing.T) {
+	bundledDir := t.TempDir()
+	workspaceDir := t.TempDir()
+	managedDir := t.TempDir()
+	t.Setenv("METIQ_BUNDLED_SKILLS_DIR", bundledDir)
+	t.Setenv("METIQ_MANAGED_SKILLS_DIR", managedDir)
+	t.Setenv("METIQ_WORKSPACE", workspaceDir)
+
+	writeSkill := func(root, name, content string) {
+		t.Helper()
+		skillDir := filepath.Join(root, name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeSkill(bundledDir, "dup", `---
+name: dup
+description: bundled version
+---
+# Bundled
+`)
+	writeSkill(managedDir, "managed", `---
+name: managed
+description: managed skill
+---
+# Managed
+`)
+	writeSkill(workspaceDir, "dup", `---
+name: dup
+description: workspace version
+when_to_use: Use when a workspace-specific override exists.
+---
+# Workspace
+`)
+	writeSkill(workspaceDir, "always-skill", `---
+name: always-skill
+description: always included
+metadata:
+  openclaw:
+    always: true
+    requires:
+      env: ["MISSING_PROMPT_TOKEN"]
+---
+# Always
+`)
+	cfg := state.ConfigDoc{}
+
+	prompt := buildSkillsPromptCached(cfg, "main")
+	if !strings.Contains(prompt, "workspace version") {
+		t.Fatalf("expected workspace skill in prompt: %s", prompt)
+	}
+	if strings.Contains(prompt, "bundled version") {
+		t.Fatalf("expected bundled duplicate to be shadowed: %s", prompt)
+	}
+	if !strings.Contains(prompt, "managed skill") {
+		t.Fatalf("expected managed skill in prompt: %s", prompt)
+	}
+	if !strings.Contains(prompt, "always; missing env: MISSING_PROMPT_TOKEN") {
+		t.Fatalf("expected always skill warning in prompt: %s", prompt)
 	}
 }

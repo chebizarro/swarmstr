@@ -38,6 +38,7 @@
 {"created_at":null,"created_by":"Biz","depends_on_id":"swarmstr-2.3","issue_id":"swarmstr-2.3.2","type":"parent-child"}
 {"created_at":null,"created_by":"Biz","depends_on_id":"swarmstr-2.3","issue_id":"swarmstr-2.3.3","type":"parent-child"}
 {"created_at":"2026-03-31T13:40:23Z","created_by":"Biz","depends_on_id":"swarmstr-uj7","issue_id":"swarmstr-283","type":"blocks"}
+{"created_at":"2026-04-03T16:16:19Z","created_by":"Biz","depends_on_id":"swarmstr-dju","issue_id":"swarmstr-2fm","type":"discovered-from"}
 {"created_at":"2026-04-02T20:32:33Z","created_by":"Biz","depends_on_id":"swarmstr-2xq","issue_id":"swarmstr-2xq.1","type":"parent-child"}
 {"created_at":"2026-04-02T20:32:33Z","created_by":"Biz","depends_on_id":"swarmstr-2xq","issue_id":"swarmstr-2xq.2","type":"parent-child"}
 {"created_at":"2026-04-02T20:32:33Z","created_by":"Biz","depends_on_id":"swarmstr-2xq","issue_id":"swarmstr-2xq.3","type":"parent-child"}
@@ -66,6 +67,7 @@
 {"created_at":"2026-03-13T17:41:48Z","created_by":"Biz","depends_on_id":"swarmstr-iwv","issue_id":"swarmstr-56c","type":"parent-child"}
 {"created_at":"2026-03-13T18:37:54Z","created_by":"Biz","depends_on_id":"swarmstr-7oc","issue_id":"swarmstr-5ag","type":"discovered-from"}
 {"created_at":"2026-04-02T01:05:44Z","created_by":"Biz","depends_on_id":"swarmstr-5jz","issue_id":"swarmstr-5js","type":"discovered-from"}
+{"created_at":"2026-04-03T16:16:20Z","created_by":"Biz","depends_on_id":"swarmstr-dju","issue_id":"swarmstr-5tj","type":"discovered-from"}
 {"created_at":"2026-03-13T14:12:11Z","created_by":"Biz","depends_on_id":"swarmstr-790","issue_id":"swarmstr-8br","type":"parent-child"}
 {"created_at":"2026-03-02T01:00:35Z","created_by":"Biz","depends_on_id":"swarmstr-914","issue_id":"swarmstr-914.1","type":"parent-child"}
 {"created_at":"2026-03-02T01:00:37Z","created_by":"Biz","depends_on_id":"swarmstr-914.1","issue_id":"swarmstr-914.1.1","type":"parent-child"}
@@ -102,12 +104,16 @@
 {"created_at":"2026-03-04T09:01:16Z","created_by":"Biz","depends_on_id":"swarmstr-914.6.3","issue_id":"swarmstr-914.6.3.1","type":"parent-child"}
 {"created_at":"2026-03-04T09:01:16Z","created_by":"Biz","depends_on_id":"swarmstr-914.6.3","issue_id":"swarmstr-914.6.3.2","type":"parent-child"}
 {"created_at":"2026-03-04T09:01:16Z","created_by":"Biz","depends_on_id":"swarmstr-914.6.3","issue_id":"swarmstr-914.6.3.3","type":"parent-child"}
+{"created_at":"2026-04-03T16:16:20Z","created_by":"Biz","depends_on_id":"swarmstr-dju","issue_id":"swarmstr-9bm","type":"discovered-from"}
+{"created_at":"2026-04-03T16:16:19Z","created_by":"Biz","depends_on_id":"swarmstr-dju","issue_id":"swarmstr-9r6","type":"discovered-from"}
+{"created_at":"2026-04-03T16:16:19Z","created_by":"Biz","depends_on_id":"swarmstr-dju","issue_id":"swarmstr-9t9","type":"discovered-from"}
 {"created_at":"2026-03-31T13:40:23Z","created_by":"Biz","depends_on_id":"swarmstr-283","issue_id":"swarmstr-be8","type":"blocks"}
 {"created_at":"2026-04-02T13:18:32Z","created_by":"Biz","depends_on_id":"swarmstr-j7z","issue_id":"swarmstr-gz6","type":"parent-child"}
 {"created_at":"2026-03-31T13:40:22Z","created_by":"Biz","depends_on_id":"swarmstr-c0d","issue_id":"swarmstr-j39","type":"blocks"}
 {"created_at":"2026-04-02T01:05:44Z","created_by":"Biz","depends_on_id":"swarmstr-5jz","issue_id":"swarmstr-j7z","type":"discovered-from"}
 {"created_at":"2026-03-13T17:41:48Z","created_by":"Biz","depends_on_id":"swarmstr-iwv","issue_id":"swarmstr-m2p","type":"parent-child"}
 {"created_at":"2026-03-13T17:41:48Z","created_by":"Biz","depends_on_id":"swarmstr-iwv","issue_id":"swarmstr-mlu","type":"parent-child"}
+{"created_at":"2026-04-03T19:25:31Z","created_by":"Biz","depends_on_id":"swarmstr-dju","issue_id":"swarmstr-p2q","type":"discovered-from"}
 {"created_at":"2026-03-13T14:12:11Z","created_by":"Biz","depends_on_id":"swarmstr-790","issue_id":"swarmstr-pp9","type":"parent-child"}
 {"created_at":"2026-04-02T22:28:37Z","created_by":"Biz","depends_on_id":"swarmstr-2xq","issue_id":"swarmstr-qn7","type":"discovered-from"}
 {"created_at":"2026-03-13T14:12:11Z","created_by":"Biz","depends_on_id":"swarmstr-790","issue_id":"swarmstr-qq7","type":"parent-child"}

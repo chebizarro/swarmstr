@@ -82,6 +82,9 @@ func TestLoadSkillMD_withInstallSpecs(t *testing.T) {
 	writeSkillMD(t, dir, "github", `---
 name: github
 description: "GitHub CLI operations."
+when_to_use: Use when GitHub CLI operations are needed.
+user-invocable: false
+disable-model-invocation: true
 metadata:
 	{
 	"openclaw":
@@ -119,6 +122,35 @@ metadata:
 	if specs[0].Formula != "gh" {
 		t.Errorf("spec.formula: %q", specs[0].Formula)
 	}
+	if s.WhenToUse() == "" || s.UserInvocable() || !s.DisableModelInvocation() {
+		t.Fatalf("expected extended frontmatter fields to round-trip: when=%q userInvocable=%v disableModelInvocation=%v", s.WhenToUse(), s.UserInvocable(), s.DisableModelInvocation())
+	}
+}
+
+func TestLoadSkillMD_normalizesNodeInstallKind(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillMD(t, dir, "node-skill", `---
+name: node-skill
+description: Node install alias test
+metadata:
+  openclaw:
+    install:
+      - id: node
+        kind: npm
+        package: prettier
+        bins: [prettier]
+        label: Install prettier
+---
+# Node
+`)
+	s, err := LoadSkillMD(filepath.Join(dir, "node-skill", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("LoadSkillMD: %v", err)
+	}
+	specs := s.InstallSpecs()
+	if len(specs) != 1 || specs[0].Kind != "node" {
+		t.Fatalf("expected npm kind to normalize to node, got %#v", specs)
+	}
 }
 
 func TestLoadSkillMD_osFilter(t *testing.T) {
@@ -143,6 +175,26 @@ metadata: { "openclaw": { "emoji": "💬", "os": ["darwin"], "requires": { "bins
 	}
 	if !found {
 		t.Errorf("OS constraint 'darwin' not in effective requirements: %v", req.OS)
+	}
+}
+
+func TestLoadSkillMD_rememberSkillFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillMD(t, dir, "remember", `---
+name: remember
+description: Review memory entries.
+when_to_use: Use when reviewing or cleaning up memory.
+user-invocable: true
+disable-model-invocation: false
+---
+# Remember
+`)
+	s, err := LoadSkillMD(filepath.Join(dir, "remember", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("LoadSkillMD: %v", err)
+	}
+	if s.WhenToUse() == "" || !s.UserInvocable() || s.DisableModelInvocation() {
+		t.Fatalf("expected remember-style frontmatter fields to round-trip: when=%q userInvocable=%v disableModelInvocation=%v", s.WhenToUse(), s.UserInvocable(), s.DisableModelInvocation())
 	}
 }
 
@@ -210,6 +262,37 @@ func TestScanBundledDir_missingDir(t *testing.T) {
 	}
 }
 
+func TestScanBundledDir_skipsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+	writeSkillMD(t, external, "escaped", "---\nname: escaped\ndescription: external\n---\n# Escaped\n")
+	if err := os.Symlink(filepath.Join(external, "escaped"), filepath.Join(root, "escaped")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	skills, err := ScanBundledDir(root)
+	if err != nil {
+		t.Fatalf("ScanBundledDir: %v", err)
+	}
+	if len(skills) != 0 {
+		t.Fatalf("expected escaped symlink skill to be skipped, got %d", len(skills))
+	}
+}
+
+func TestLoadSkillMD_rejectsOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "huge")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	large := strings.Repeat("a", MaxSkillFileBytes+1)
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(large), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSkillMD(filepath.Join(skillDir, "SKILL.md")); err == nil {
+		t.Fatal("expected oversized skill file to fail")
+	}
+}
+
 // ─── looksLikeBundledSkillsDir ────────────────────────────────────────────────
 
 func TestLooksLikeBundledSkillsDir(t *testing.T) {
@@ -226,6 +309,26 @@ func TestLooksLikeBundledSkillsDir(t *testing.T) {
 }
 
 // ─── ScanWorkspace with SKILL.md ─────────────────────────────────────────────
+
+func TestBundledSkillsDir_containsRememberSkill(t *testing.T) {
+	dir := BundledSkillsDir()
+	if dir == "" {
+		t.Fatal("BundledSkillsDir returned empty path")
+	}
+	skills, err := ScanBundledDir(dir)
+	if err != nil {
+		t.Fatalf("ScanBundledDir: %v", err)
+	}
+	for _, s := range skills {
+		if s != nil && s.SkillKey == "remember" {
+			if s.WhenToUse() == "" {
+				t.Fatalf("remember skill missing when_to_use: %#v", s.Manifest)
+			}
+			return
+		}
+	}
+	t.Fatal("expected bundled remember skill to be present")
+}
 
 func TestScanWorkspace_findsSkillMDandYAML(t *testing.T) {
 	dir := t.TempDir()
