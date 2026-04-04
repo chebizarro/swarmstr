@@ -1,9 +1,12 @@
 package mcp
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"metiq/internal/store/state"
 )
 
@@ -197,6 +200,156 @@ func TestResolveConfigDoc(t *testing.T) {
 	}
 	if !strings.Contains(remote.Signature, "https://mcp.example.com/http") {
 		t.Fatalf("unexpected signature: %#v", remote)
+	}
+}
+
+func TestResolveConfigDoc_globalDisabledPreservesInventory(t *testing.T) {
+	doc := state.ConfigDoc{Extra: map[string]any{
+		"mcp": map[string]any{
+			"enabled": false,
+			"servers": map[string]any{
+				"remote": map[string]any{
+					"enabled": true,
+					"type":    "http",
+					"url":     "https://mcp.example.com/http",
+				},
+			},
+		},
+	}}
+	cfg := ResolveConfigDoc(doc)
+	if cfg.Enabled {
+		t.Fatalf("expected global config to remain disabled")
+	}
+	if _, ok := cfg.DisabledServers["remote"]; !ok {
+		t.Fatalf("expected disabled inventory to preserve globally disabled server, got %#v", cfg)
+	}
+}
+
+func TestResolveSourceConfigs_preservesDisabledServers(t *testing.T) {
+	cfg := ResolveSourceConfigs(
+		SourceConfig{
+			Source:     "high",
+			Enabled:    true,
+			Precedence: 20,
+			Servers: map[string]ServerConfig{
+				"shared":   {Enabled: false, Command: "disabled-high"},
+				"disabled": {Enabled: false, Command: "disabled-only"},
+			},
+		},
+		SourceConfig{
+			Source:     "low",
+			Enabled:    true,
+			Precedence: 10,
+			Servers: map[string]ServerConfig{
+				"shared": {Enabled: true, Command: "enabled-low"},
+			},
+		},
+	)
+
+	shared := cfg.Servers["shared"]
+	if shared.Command != "enabled-low" || !shared.Enabled {
+		t.Fatalf("expected enabled server to win over disabled conflict, got %#v", shared)
+	}
+	disabled := cfg.DisabledServers["disabled"]
+	if disabled.Command != "disabled-only" || disabled.Enabled {
+		t.Fatalf("expected disabled inventory entry, got %#v", disabled)
+	}
+	if _, ok := cfg.DisabledServers["shared"]; ok {
+		t.Fatalf("expected disabled conflict to be suppressed, got %#v", cfg.DisabledServers)
+	}
+}
+
+func TestManagerReconnectTransitionsFromFailedToConnected(t *testing.T) {
+	mgr := NewManager()
+	attempts := 0
+	mgr.connectFn = func(_ context.Context, name string, _ ServerConfig) (*ServerConnection, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, fmt.Errorf("dial tcp timeout")
+		}
+		return &ServerConnection{
+			Name:         name,
+			Tools:        []*mcp.Tool{{Name: "echo"}},
+			Capabilities: CapabilitySnapshot{Tools: true, Resources: true},
+		}, nil
+	}
+
+	cfg := Config{
+		Enabled: true,
+		Servers: map[string]ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: ServerConfig{Enabled: true, Command: "npx"},
+				Signature:    "stdio:demo",
+			},
+		},
+	}
+
+	if err := mgr.ApplyConfig(context.Background(), cfg); err == nil {
+		t.Fatalf("expected initial connect error")
+	}
+	snap := mgr.Snapshot()
+	if len(snap.Servers) != 1 || snap.Servers[0].State != ConnectionStateFailed {
+		t.Fatalf("expected failed snapshot after initial connect, got %#v", snap)
+	}
+	if snap.Servers[0].ReconnectAttempts != 1 {
+		t.Fatalf("expected reconnect attempt count=1, got %#v", snap.Servers[0])
+	}
+
+	if err := mgr.ReconnectServer(context.Background(), "demo"); err != nil {
+		t.Fatalf("ReconnectServer error: %v", err)
+	}
+	snap = mgr.Snapshot()
+	if snap.Servers[0].State != ConnectionStateConnected {
+		t.Fatalf("expected connected snapshot after reconnect, got %#v", snap.Servers[0])
+	}
+	if snap.Servers[0].ToolCount != 1 || !snap.Servers[0].Capabilities.Tools || !snap.Servers[0].Capabilities.Resources {
+		t.Fatalf("expected refreshed capability/tool snapshot, got %#v", snap.Servers[0])
+	}
+	if snap.Servers[0].ReconnectAttempts != 2 {
+		t.Fatalf("expected reconnect attempt count=2, got %#v", snap.Servers[0])
+	}
+}
+
+func TestManagerApplyConfigClassifiesNeedsAuthAndDisabled(t *testing.T) {
+	mgr := NewManager()
+	mgr.connectFn = func(_ context.Context, _ string, _ ServerConfig) (*ServerConnection, error) {
+		return nil, fmt.Errorf("401 unauthorized")
+	}
+
+	cfg := Config{
+		Enabled: true,
+		Servers: map[string]ResolvedServerConfig{
+			"remote": {
+				Name:         "remote",
+				ServerConfig: ServerConfig{Enabled: true, Type: "http", URL: "https://mcp.example.com"},
+				Signature:    "http:https://mcp.example.com",
+			},
+		},
+	}
+	if err := mgr.ApplyConfig(context.Background(), cfg); err == nil {
+		t.Fatalf("expected auth connect error")
+	}
+	snap := mgr.Snapshot()
+	if len(snap.Servers) != 1 || snap.Servers[0].State != ConnectionStateNeedsAuth {
+		t.Fatalf("expected needs-auth snapshot, got %#v", snap)
+	}
+
+	if err := mgr.ApplyConfig(context.Background(), Config{
+		Enabled: true,
+		DisabledServers: map[string]ResolvedServerConfig{
+			"remote": {
+				Name:         "remote",
+				ServerConfig: ServerConfig{Enabled: false, Type: "http", URL: "https://mcp.example.com"},
+				Signature:    "http:https://mcp.example.com",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyConfig disable error: %v", err)
+	}
+	snap = mgr.Snapshot()
+	if snap.Servers[0].State != ConnectionStateDisabled || snap.Servers[0].Enabled {
+		t.Fatalf("expected disabled snapshot, got %#v", snap.Servers[0])
 	}
 }
 

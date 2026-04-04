@@ -1003,7 +1003,7 @@ func main() {
 	var mcpManager *mcppkg.Manager
 	{
 		mcpCfg := mcppkg.ResolveConfigDoc(configState.Get())
-		if mcpCfg.Enabled && len(mcpCfg.Servers) > 0 {
+		if len(mcpCfg.Servers) > 0 || len(mcpCfg.DisabledServers) > 0 {
 			mcpManager = mcppkg.NewManager()
 			if err := mcpManager.LoadFromConfig(ctx, mcpCfg); err != nil {
 				log.Printf("[mcp] initialization error (non-fatal): %v", err)
@@ -2029,7 +2029,14 @@ func main() {
 	eventBuffer := newRuntimeEventBuffer(2000)
 	toolbuiltin.SetRuntimeObserveProvider(toolbuiltin.RuntimeObserveProvider{
 		Observe: func(obsCtx context.Context, req toolbuiltin.RuntimeObserveRequest) (map[string]any, error) {
-			return observeRuntimeActivity(obsCtx, eventBuffer, logBuffer, req)
+			out, err := observeRuntimeActivity(obsCtx, eventBuffer, logBuffer, req)
+			if err != nil {
+				return nil, err
+			}
+			if mcpManager != nil {
+				out["mcp"] = mcpManager.Snapshot()
+			}
+			return out, nil
 		},
 		TailEvents: func(cursor int64, limit int, maxBytes int, filters toolbuiltin.RuntimeObserveFilters) map[string]any {
 			return eventBuffer.Tail(cursor, limit, maxBytes, filters)
@@ -2157,6 +2164,17 @@ func main() {
 	// WS gateway starts.  The dmOnMessage closure captures this variable.
 	var wsEmitter gatewayws.EventEmitter = newObservedEventEmitter(gatewayws.NoopEmitter{}, eventBuffer)
 	setControlWSEmitter(wsEmitter)
+	if mcpManager != nil {
+		mcpManager.SetStateObserver(func(change mcppkg.StateChange) {
+			wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
+		})
+		for _, snapshot := range mcpManager.ListServerStates() {
+			wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(mcppkg.StateChange{
+				Server: snapshot,
+				Reason: "startup.snapshot",
+			}, time.Now().UnixMilli()))
+		}
+	}
 	heartbeatDone := startRuntimeHeartbeatLoop(ctx, startedAt, "metiqd", 30*time.Second, shutdownEmitter)
 
 	// ── Slash command router ──────────────────────────────────────────────────
@@ -4998,6 +5016,18 @@ func main() {
 	// in mutation paths so callers do not observe success when write-back fails.
 	configState.SetOnChange(func(doc state.ConfigDoc) {
 		applyRuntimeConfigSideEffects(doc)
+		resolvedMCP := mcppkg.ResolveConfigDoc(doc)
+		if mcpManager == nil && (len(resolvedMCP.Servers) > 0 || len(resolvedMCP.DisabledServers) > 0) {
+			mcpManager = mcppkg.NewManager()
+			mcpManager.SetStateObserver(func(change mcppkg.StateChange) {
+				wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
+			})
+		}
+		if mcpManager != nil {
+			if err := mcpManager.ApplyConfig(ctx, resolvedMCP); err != nil {
+				log.Printf("[mcp] live config apply error (non-fatal): %v", err)
+			}
+		}
 		wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
 			TS: time.Now().UnixMilli(),
 		})
@@ -5017,6 +5047,18 @@ func main() {
 				configState.cfg = doc
 				configState.mu.Unlock()
 				applyRuntimeConfigSideEffects(doc)
+				resolvedMCP := mcppkg.ResolveConfigDoc(doc)
+				if mcpManager == nil && (len(resolvedMCP.Servers) > 0 || len(resolvedMCP.DisabledServers) > 0) {
+					mcpManager = mcppkg.NewManager()
+					mcpManager.SetStateObserver(func(change mcppkg.StateChange) {
+						wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
+					})
+				}
+				if mcpManager != nil {
+					if err := mcpManager.ApplyConfig(ctx, resolvedMCP); err != nil {
+						log.Printf("[mcp] live file-reload apply error (non-fatal): %v", err)
+					}
+				}
 				wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
 					TS: time.Now().UnixMilli(),
 				})
@@ -10131,6 +10173,40 @@ func emitControlWSEvent(event string, payload any) {
 	emitter := controlWsEmitter
 	controlWsEmitterMu.RUnlock()
 	emitter.Emit(event, payload)
+}
+
+func buildMCPLifecyclePayload(change mcppkg.StateChange, ts int64) gatewayws.MCPLifecyclePayload {
+	caps := map[string]bool{}
+	if change.Server.Capabilities.Tools {
+		caps["tools"] = true
+	}
+	if change.Server.Capabilities.Resources {
+		caps["resources"] = true
+	}
+	if change.Server.Capabilities.Prompts {
+		caps["prompts"] = true
+	}
+	if change.Server.Capabilities.Logging {
+		caps["logging"] = true
+	}
+	if len(caps) == 0 {
+		caps = nil
+	}
+	return gatewayws.MCPLifecyclePayload{
+		TS:            ts,
+		Name:          change.Server.Name,
+		State:         string(change.Server.State),
+		PreviousState: string(change.PreviousState),
+		Reason:        change.Reason,
+		Removed:       change.Removed,
+		Enabled:       change.Server.Enabled,
+		Source:        string(change.Server.Source),
+		Transport:     change.Server.Transport,
+		URL:           change.Server.URL,
+		ToolCount:     change.Server.ToolCount,
+		LastError:     change.Server.LastError,
+		Capabilities:  caps,
+	}
 }
 
 func buildTurnTelemetry(turnID string, startedAt, endedAt time.Time, result agent.TurnResult, turnErr error, fallbackUsed bool, fallbackFrom, fallbackTo, fallbackReason string) agent.TurnTelemetry {

@@ -47,7 +47,7 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 		EventTick, EventHealth, EventShutdown,
 		EventAgentStatus, EventChatMessage,
 		EventCronTick, EventCronResult,
-		EventConfigUpdated,
+		EventConfigUpdated, EventMCPLifecycle,
 		EventExecApprovalRequested, EventExecApprovalResolved,
 		EventVoicewake, EventUpdateAvailable,
 		EventChannelMessage, EventRelayHealth, EventDMHealth,
@@ -113,21 +113,22 @@ func TestNewPayloadTypes(t *testing.T) {
 	e.Emit(EventChannelMessage, ChannelMessagePayload{ChannelID: "ch1", Direction: "inbound"})
 	e.Emit(EventRelayHealth, RelayHealthPayload{URL: "wss://relay", Reachable: true})
 	e.Emit(EventDMHealth, DMHealthPayload{Label: "nip17", Healthy: true})
+	e.Emit(EventMCPLifecycle, MCPLifecyclePayload{Name: "demo", State: "connected"})
 
-	if e.Count() != 7 {
-		t.Fatalf("expected 7 events, got %d", e.Count())
+	if e.Count() != 8 {
+		t.Fatalf("expected 8 events, got %d", e.Count())
 	}
 	// Spot-check last payload
 	name, payload := e.Last()
-	if name != EventDMHealth {
-		t.Errorf("expected dm.health, got %q", name)
+	if name != EventMCPLifecycle {
+		t.Errorf("expected mcp.lifecycle, got %q", name)
 	}
-	dp, ok := payload.(DMHealthPayload)
+	mp, ok := payload.(MCPLifecyclePayload)
 	if !ok {
-		t.Fatalf("expected DMHealthPayload, got %T", payload)
+		t.Fatalf("expected MCPLifecyclePayload, got %T", payload)
 	}
-	if dp.Label != "nip17" || !dp.Healthy {
-		t.Errorf("unexpected dm health payload: %+v", dp)
+	if mp.Name != "demo" || mp.State != "connected" {
+		t.Errorf("unexpected mcp lifecycle payload: %+v", mp)
 	}
 }
 

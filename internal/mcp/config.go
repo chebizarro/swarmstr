@@ -82,23 +82,24 @@ func ParseMCPConfig(extra map[string]any) Config {
 
 // ResolveSourceConfigs merges source-local MCP definitions into one resolved
 // inventory. Higher-precedence sources win. Ties are broken deterministically
-// by source name then server name. Disabled servers never suppress enabled
-// candidates; this matches the intended future behavior for dynamic/plugin
-// sources.
+// by source name then server name. Disabled servers are preserved separately so
+// the lifecycle manager can surface explicit disabled state without letting
+// disabled definitions suppress enabled candidates.
 func ResolveSourceConfigs(sources ...SourceConfig) Config {
 	resolved := Config{
-		Servers: make(map[string]ResolvedServerConfig),
+		Servers:         make(map[string]ResolvedServerConfig),
+		DisabledServers: make(map[string]ResolvedServerConfig),
 	}
 	if len(sources) == 0 {
 		return resolved
 	}
 
-	candidates := make([]serverCandidate, 0)
+	activeCandidates := make([]serverCandidate, 0)
+	disabledCandidates := make([]serverCandidate, 0)
 	for _, src := range sources {
-		if !src.Enabled {
-			continue
+		if src.Enabled {
+			resolved.Enabled = true
 		}
-		resolved.Enabled = true
 		if len(src.Servers) == 0 {
 			continue
 		}
@@ -113,19 +114,40 @@ func ResolveSourceConfigs(sources ...SourceConfig) Config {
 				continue
 			}
 			cfg := normalizeServerConfig(src.Servers[name])
-			if !cfg.Enabled {
-				continue
-			}
-			candidates = append(candidates, serverCandidate{
+			candidate := serverCandidate{
 				name:       trimmedName,
 				config:     cfg,
 				source:     src.Source,
 				precedence: src.Precedence,
 				signature:  getServerSignature(cfg),
-			})
+			}
+			if src.Enabled && cfg.Enabled {
+				activeCandidates = append(activeCandidates, candidate)
+			} else {
+				candidate.config.Enabled = false
+				disabledCandidates = append(disabledCandidates, candidate)
+			}
 		}
 	}
 
+	sortCandidates(activeCandidates)
+	sortCandidates(disabledCandidates)
+
+	seenNames := make(map[string]ResolvedServerConfig, len(activeCandidates)+len(disabledCandidates))
+	seenSigs := make(map[string]string, len(activeCandidates)+len(disabledCandidates))
+	resolveCandidates(resolved.Servers, activeCandidates, seenNames, seenSigs, &resolved.Suppressed)
+	resolveCandidates(resolved.DisabledServers, disabledCandidates, seenNames, seenSigs, &resolved.Suppressed)
+
+	if len(resolved.Servers) == 0 {
+		resolved.Servers = nil
+	}
+	if len(resolved.DisabledServers) == 0 {
+		resolved.DisabledServers = nil
+	}
+	return resolved
+}
+
+func sortCandidates(candidates []serverCandidate) {
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].precedence != candidates[j].precedence {
 			return candidates[i].precedence > candidates[j].precedence
@@ -135,12 +157,12 @@ func ResolveSourceConfigs(sources ...SourceConfig) Config {
 		}
 		return candidates[i].name < candidates[j].name
 	})
+}
 
-	seenNames := make(map[string]ResolvedServerConfig, len(candidates))
-	seenSigs := make(map[string]string, len(candidates))
+func resolveCandidates(dest map[string]ResolvedServerConfig, candidates []serverCandidate, seenNames map[string]ResolvedServerConfig, seenSigs map[string]string, suppressed *[]SuppressedServer) {
 	for _, candidate := range candidates {
 		if existing, ok := seenNames[candidate.name]; ok {
-			resolved.Suppressed = append(resolved.Suppressed, SuppressedServer{
+			*suppressed = append(*suppressed, SuppressedServer{
 				Name:        candidate.name,
 				Source:      candidate.source,
 				Precedence:  candidate.precedence,
@@ -152,7 +174,7 @@ func ResolveSourceConfigs(sources ...SourceConfig) Config {
 		}
 		if candidate.signature != "" {
 			if duplicateOf, ok := seenSigs[candidate.signature]; ok && duplicateOf != candidate.name {
-				resolved.Suppressed = append(resolved.Suppressed, SuppressedServer{
+				*suppressed = append(*suppressed, SuppressedServer{
 					Name:        candidate.name,
 					Source:      candidate.source,
 					Precedence:  candidate.precedence,
@@ -170,17 +192,12 @@ func ResolveSourceConfigs(sources ...SourceConfig) Config {
 			Precedence:   candidate.precedence,
 			Signature:    candidate.signature,
 		}
-		resolved.Servers[candidate.name] = entry
+		dest[candidate.name] = entry
 		seenNames[candidate.name] = entry
 		if candidate.signature != "" {
 			seenSigs[candidate.signature] = candidate.name
 		}
 	}
-
-	if len(resolved.Servers) == 0 {
-		resolved.Servers = nil
-	}
-	return resolved
 }
 
 func parseExtraMCPSource(extra map[string]any) SourceConfig {

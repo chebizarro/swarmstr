@@ -223,16 +223,23 @@ func extensionSchemaEntries(cfg state.ConfigDoc) map[string]any {
 
 func mcpSchemaEntries(cfg state.ConfigDoc) map[string]any {
 	resolved := mcppkg.ResolveConfigDoc(cfg)
-	servers := make([]map[string]any, 0, len(resolved.Servers))
-	names := make([]string, 0, len(resolved.Servers))
+	servers := make([]map[string]any, 0, len(resolved.Servers)+len(resolved.DisabledServers))
+	names := make([]string, 0, len(resolved.Servers)+len(resolved.DisabledServers))
 	for name := range resolved.Servers {
+		names = append(names, name)
+	}
+	for name := range resolved.DisabledServers {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		server := resolved.Servers[name]
+		server, ok := resolved.Servers[name]
+		if !ok {
+			server = resolved.DisabledServers[name]
+		}
 		servers = append(servers, map[string]any{
 			"name":       server.Name,
+			"enabled":    server.Enabled,
 			"source":     server.Source,
 			"precedence": server.Precedence,
 			"signature":  server.Signature,

@@ -33,6 +33,8 @@ const (
 
 	// EventConfigUpdated is emitted when the live config is reloaded.
 	EventConfigUpdated = "config.updated"
+	// EventMCPLifecycle is emitted when an external MCP server changes runtime state.
+	EventMCPLifecycle = "mcp.lifecycle"
 
 	// EventPluginLoaded is emitted when a Goja plugin is loaded or reloaded.
 	EventPluginLoaded = "plugin.loaded"
@@ -107,6 +109,7 @@ var AllPushEvents = []string{
 	EventCronTick,
 	EventCronResult,
 	EventConfigUpdated,
+	EventMCPLifecycle,
 	EventPluginLoaded,
 	EventExecApprovalRequested,
 	EventExecApprovalResolved,
@@ -339,6 +342,23 @@ type CronResultPayload struct {
 // ConfigUpdatedPayload is the payload for EventConfigUpdated events.
 type ConfigUpdatedPayload struct {
 	TS int64 `json:"ts_ms"`
+}
+
+// MCPLifecyclePayload is the payload for EventMCPLifecycle events.
+type MCPLifecyclePayload struct {
+	TS            int64           `json:"ts_ms"`
+	Name          string          `json:"name"`
+	State         string          `json:"state,omitempty"`
+	PreviousState string          `json:"previous_state,omitempty"`
+	Reason        string          `json:"reason,omitempty"`
+	Removed       bool            `json:"removed,omitempty"`
+	Enabled       bool            `json:"enabled,omitempty"`
+	Source        string          `json:"source,omitempty"`
+	Transport     string          `json:"transport,omitempty"`
+	URL           string          `json:"url,omitempty"`
+	ToolCount     int             `json:"tool_count,omitempty"`
+	LastError     string          `json:"last_error,omitempty"`
+	Capabilities  map[string]bool `json:"capabilities,omitempty"`
 }
 
 // ExecApprovalRequestedPayload is the payload for EventExecApprovalRequested.
