@@ -78,6 +78,8 @@ func main() {
 	// ── secrets ──────────────────────────────────────────────────────────────
 	case "secrets":
 		run("secrets", runSecrets, args[1:])
+	case "mcp":
+		run("mcp", runMCP, args[1:])
 
 	// ── update ───────────────────────────────────────────────────────────────
 	case "update":

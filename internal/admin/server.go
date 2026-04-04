@@ -136,6 +136,9 @@ type ServerOptions struct {
 	ExecApprovalWaitDecision    func(context.Context, methods.ExecApprovalWaitDecisionRequest) (map[string]any, error)
 	ExecApprovalResolve         func(context.Context, methods.ExecApprovalResolveRequest) (map[string]any, error)
 	SandboxRun                  func(context.Context, methods.SandboxRunRequest) (map[string]any, error)
+	MCPAuthStart                func(context.Context, methods.MCPAuthStartRequest) (map[string]any, error)
+	MCPAuthRefresh              func(context.Context, methods.MCPAuthRefreshRequest) (map[string]any, error)
+	MCPAuthClear                func(context.Context, methods.MCPAuthClearRequest) (map[string]any, error)
 	SecretsReload               func(context.Context, methods.SecretsReloadRequest) (map[string]any, error)
 	SecretsResolve              func(context.Context, methods.SecretsResolveRequest) (map[string]any, error)
 	WizardStart                 func(context.Context, methods.WizardStartRequest) (map[string]any, error)
@@ -2107,6 +2110,57 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusNotImplemented, fmt.Errorf("sandbox not configured")
 		}
 		out, err := opts.SandboxRun(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodMCPAuthStart:
+		req, err := methods.DecodeMCPAuthStartParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.MCPAuthStart == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("mcp auth not configured")
+		}
+		out, err := opts.MCPAuthStart(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodMCPAuthRefresh:
+		req, err := methods.DecodeMCPAuthRefreshParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.MCPAuthRefresh == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("mcp auth not configured")
+		}
+		out, err := opts.MCPAuthRefresh(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodMCPAuthClear:
+		req, err := methods.DecodeMCPAuthClearParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.MCPAuthClear == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("mcp auth not configured")
+		}
+		out, err := opts.MCPAuthClear(ctx, req)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}

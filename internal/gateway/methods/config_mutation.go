@@ -65,6 +65,17 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"mcp.servers.<id>.type",
 			"mcp.servers.<id>.url",
 			"mcp.servers.<id>.headers",
+			"mcp.servers.<id>.oauth",
+			"mcp.servers.<id>.oauth.enabled",
+			"mcp.servers.<id>.oauth.client_id",
+			"mcp.servers.<id>.oauth.client_secret_ref",
+			"mcp.servers.<id>.oauth.authorize_url",
+			"mcp.servers.<id>.oauth.token_url",
+			"mcp.servers.<id>.oauth.revoke_url",
+			"mcp.servers.<id>.oauth.scopes",
+			"mcp.servers.<id>.oauth.callback_host",
+			"mcp.servers.<id>.oauth.callback_port",
+			"mcp.servers.<id>.oauth.use_pkce",
 			// Typed agent section (multi-agent support)
 			"agents[].id",
 			"agents[].name",
@@ -246,6 +257,7 @@ func mcpSchemaEntries(cfg state.ConfigDoc) map[string]any {
 			"type":       server.Type,
 			"command":    server.Command,
 			"url":        server.URL,
+			"oauth":      server.OAuth != nil,
 		})
 	}
 	suppressed := make([]map[string]any, 0, len(resolved.Suppressed))
@@ -628,6 +640,26 @@ func anyToStringMap(value any) (map[string]string, error) {
 	return out, nil
 }
 
+func anyToInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int8:
+		return int(v), true
+	case int16:
+		return int(v), true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case float64:
+		if float64(int(v)) == v {
+			return int(v), true
+		}
+	}
+	return 0, false
+}
+
 func canonicalInstallField(field string) (string, bool) {
 	switch strings.TrimSpace(field) {
 	case "source":
@@ -826,6 +858,20 @@ func applyMCPConfigSet(cfg state.ConfigDoc, key string, value any) (state.Config
 		}
 		return cleanupMCPConfig(cfg), true, nil
 	}
+	if len(segments) == 5 && strings.TrimSpace(segments[3]) == "oauth" {
+		entry, _ := rawServers[serverID].(map[string]any)
+		if entry == nil {
+			entry = map[string]any{}
+			rawServers[serverID] = entry
+		}
+		if err := applyMCPOAuthField(entry, serverID, strings.TrimSpace(segments[4]), value); err != nil {
+			return cfg, true, err
+		}
+		if len(entry) == 0 {
+			delete(rawServers, serverID)
+		}
+		return cleanupMCPConfig(cfg), true, nil
+	}
 	if len(segments) != 4 {
 		return cfg, true, fmt.Errorf("unsupported config key %q", key)
 	}
@@ -914,9 +960,95 @@ func applyMCPServerField(entry map[string]any, serverID, field string, value any
 		} else {
 			entry[field] = items
 		}
+	case "oauth":
+		if value == nil {
+			delete(entry, "oauth")
+			return nil
+		}
+		oauthEntry, err := normalizeMCPOAuthEntry(serverID, value)
+		if err != nil {
+			return err
+		}
+		if len(oauthEntry) == 0 {
+			delete(entry, "oauth")
+		} else {
+			entry["oauth"] = oauthEntry
+		}
 	default:
 		return fmt.Errorf("unsupported config key %q", "mcp.servers."+serverID+"."+field)
 	}
+	return nil
+}
+
+func normalizeMCPOAuthEntry(serverID string, value any) (map[string]any, error) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("mcp.servers.%s.oauth must be object", serverID)
+	}
+	entry := map[string]any{}
+	for field, fieldValue := range raw {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if err := applyMCPOAuthField(map[string]any{"oauth": entry}, serverID, field, fieldValue); err != nil {
+			return nil, err
+		}
+	}
+	return entry, nil
+}
+
+func applyMCPOAuthField(entry map[string]any, serverID, field string, value any) error {
+	oauthEntry, _ := entry["oauth"].(map[string]any)
+	if oauthEntry == nil {
+		oauthEntry = map[string]any{}
+	}
+	switch field {
+	case "enabled", "use_pkce":
+		b, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("mcp.servers.%s.oauth.%s must be bool", serverID, field)
+		}
+		oauthEntry[field] = b
+	case "client_id", "client_secret_ref", "authorize_url", "token_url", "revoke_url", "callback_host":
+		s, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("mcp.servers.%s.oauth.%s must be string", serverID, field)
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			delete(oauthEntry, field)
+		} else {
+			oauthEntry[field] = s
+		}
+	case "callback_port":
+		n, ok := anyToInt(value)
+		if !ok || n < 0 {
+			return fmt.Errorf("mcp.servers.%s.oauth.callback_port must be integer >= 0", serverID)
+		}
+		if n == 0 {
+			delete(oauthEntry, "callback_port")
+		} else {
+			oauthEntry["callback_port"] = n
+		}
+	case "scopes":
+		items, err := anyToTrimmedStringList(value)
+		if err != nil {
+			return fmt.Errorf("mcp.servers.%s.oauth.scopes must be string array", serverID)
+		}
+		if len(items) == 0 {
+			delete(oauthEntry, "scopes")
+		} else {
+			oauthEntry["scopes"] = items
+		}
+	default:
+		return fmt.Errorf("unsupported config key %q", "mcp.servers."+serverID+".oauth."+field)
+	}
+	if len(oauthEntry) == 0 {
+		delete(entry, "oauth")
+		return nil
+	}
+	entry["oauth"] = oauthEntry
 	return nil
 }
 

@@ -151,6 +151,9 @@ const (
 	MethodExecApprovalRequest      = "exec.approval.request"
 	MethodExecApprovalWaitDecision = "exec.approval.waitDecision"
 	MethodExecApprovalResolve      = "exec.approval.resolve"
+	MethodMCPAuthStart             = "mcp.auth.start"
+	MethodMCPAuthRefresh           = "mcp.auth.refresh"
+	MethodMCPAuthClear             = "mcp.auth.clear"
 	MethodSecretsReload            = "secrets.reload"
 	MethodSandboxRun               = "sandbox.run"
 	MethodSecretsResolve           = "secrets.resolve"
@@ -1175,6 +1178,20 @@ type SandboxRunRequest struct {
 	TimeoutSeconds int `json:"timeout_s,omitempty"`
 	// Driver overrides the daemon's configured sandbox driver.
 	Driver string `json:"driver,omitempty"`
+}
+
+type MCPAuthStartRequest struct {
+	Server       string `json:"server"`
+	ClientSecret string `json:"client_secret,omitempty"`
+	TimeoutMS    int    `json:"timeout_ms,omitempty"`
+}
+
+type MCPAuthRefreshRequest struct {
+	Server string `json:"server"`
+}
+
+type MCPAuthClearRequest struct {
+	Server string `json:"server"`
 }
 
 type SecretsReloadRequest struct{}
@@ -2423,6 +2440,34 @@ func (r TTSConvertRequest) Normalize() (TTSConvertRequest, error) {
 	return r, nil
 }
 
+func (r MCPAuthStartRequest) Normalize() (MCPAuthStartRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	r.ClientSecret = strings.TrimSpace(r.ClientSecret)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	if r.TimeoutMS < 0 {
+		return r, fmt.Errorf("timeout_ms must be >= 0")
+	}
+	return r, nil
+}
+
+func (r MCPAuthRefreshRequest) Normalize() (MCPAuthRefreshRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	return r, nil
+}
+
+func (r MCPAuthClearRequest) Normalize() (MCPAuthClearRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	return r, nil
+}
+
 func SupportedMethods() []string {
 	return []string{
 		MethodSupportedMethods,
@@ -2539,6 +2584,9 @@ func SupportedMethods() []string {
 		MethodExecApprovalRequest,
 		MethodExecApprovalWaitDecision,
 		MethodExecApprovalResolve,
+		MethodMCPAuthStart,
+		MethodMCPAuthRefresh,
+		MethodMCPAuthClear,
 		MethodSecretsReload,
 		MethodSandboxRun,
 		MethodSecretsResolve,
@@ -4145,6 +4193,18 @@ func DecodeExecApprovalResolveParams(params json.RawMessage) (ExecApprovalResolv
 
 func DecodeSandboxRunParams(params json.RawMessage) (SandboxRunRequest, error) {
 	return decodeMethodParams[SandboxRunRequest](params)
+}
+
+func DecodeMCPAuthStartParams(params json.RawMessage) (MCPAuthStartRequest, error) {
+	return decodeMethodParams[MCPAuthStartRequest](params)
+}
+
+func DecodeMCPAuthRefreshParams(params json.RawMessage) (MCPAuthRefreshRequest, error) {
+	return decodeMethodParams[MCPAuthRefreshRequest](params)
+}
+
+func DecodeMCPAuthClearParams(params json.RawMessage) (MCPAuthClearRequest, error) {
+	return decodeMethodParams[MCPAuthClearRequest](params)
 }
 
 func DecodeSecretsReloadParams(params json.RawMessage) (SecretsReloadRequest, error) {

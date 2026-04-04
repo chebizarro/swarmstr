@@ -38,6 +38,22 @@ type SourceConfig struct {
 	Servers    map[string]ServerConfig `json:"servers,omitempty"`
 }
 
+// OAuthConfig defines optional OAuth settings for remote SSE/HTTP MCP servers.
+// Credentials are stored outside plain config; this block only describes how to
+// acquire or refresh them.
+type OAuthConfig struct {
+	Enabled         bool     `json:"enabled,omitempty"`
+	ClientID        string   `json:"client_id,omitempty"`
+	ClientSecretRef string   `json:"client_secret_ref,omitempty"`
+	AuthorizeURL    string   `json:"authorize_url,omitempty"`
+	TokenURL        string   `json:"token_url,omitempty"`
+	RevokeURL       string   `json:"revoke_url,omitempty"`
+	Scopes          []string `json:"scopes,omitempty"`
+	CallbackHost    string   `json:"callback_host,omitempty"`
+	CallbackPort    int      `json:"callback_port,omitempty"`
+	UsePKCE         bool     `json:"use_pkce,omitempty"`
+}
+
 // ResolvedServerConfig is the canonical MCP inventory entry consumed by the
 // runtime. It embeds the executable ServerConfig and adds provenance metadata
 // needed for future policy, lifecycle, and CLI work.
@@ -261,6 +277,9 @@ func parseServerConfigMap(raw map[string]any) ServerConfig {
 	if headersRaw, ok := raw["headers"]; ok {
 		sc.Headers = parseStringMap(headersRaw)
 	}
+	if oauthRaw, ok := raw["oauth"]; ok {
+		sc.OAuth = parseOAuthConfig(oauthRaw)
+	}
 	return normalizeServerConfig(sc)
 }
 
@@ -271,7 +290,87 @@ func normalizeServerConfig(cfg ServerConfig) ServerConfig {
 	cfg.Args = trimStringArray(cfg.Args)
 	cfg.Env = trimStringMap(cfg.Env)
 	cfg.Headers = trimStringMap(cfg.Headers)
+	cfg.OAuth = normalizeOAuthConfig(cfg.OAuth)
 	return cfg
+}
+
+func parseOAuthConfig(raw any) *OAuthConfig {
+	switch value := raw.(type) {
+	case *OAuthConfig:
+		return normalizeOAuthConfig(value)
+	case OAuthConfig:
+		return normalizeOAuthConfig(&value)
+	case map[string]any:
+		cfg := &OAuthConfig{}
+		if enabled, ok := value["enabled"].(bool); ok {
+			cfg.Enabled = enabled
+		}
+		if clientID, ok := value["client_id"].(string); ok {
+			cfg.ClientID = clientID
+		}
+		if clientSecretRef, ok := value["client_secret_ref"].(string); ok {
+			cfg.ClientSecretRef = clientSecretRef
+		}
+		if authorizeURL, ok := value["authorize_url"].(string); ok {
+			cfg.AuthorizeURL = authorizeURL
+		}
+		if tokenURL, ok := value["token_url"].(string); ok {
+			cfg.TokenURL = tokenURL
+		}
+		if revokeURL, ok := value["revoke_url"].(string); ok {
+			cfg.RevokeURL = revokeURL
+		}
+		if callbackHost, ok := value["callback_host"].(string); ok {
+			cfg.CallbackHost = callbackHost
+		}
+		switch port := value["callback_port"].(type) {
+		case int:
+			cfg.CallbackPort = port
+		case int64:
+			cfg.CallbackPort = int(port)
+		case float64:
+			cfg.CallbackPort = int(port)
+		}
+		if usePKCE, ok := value["use_pkce"].(bool); ok {
+			cfg.UsePKCE = usePKCE
+		}
+		if scopesRaw, ok := value["scopes"]; ok {
+			cfg.Scopes = parseStringArray(scopesRaw)
+		}
+		return normalizeOAuthConfig(cfg)
+	default:
+		return nil
+	}
+}
+
+func normalizeOAuthConfig(cfg *OAuthConfig) *OAuthConfig {
+	if cfg == nil {
+		return nil
+	}
+	cp := *cfg
+	cp.ClientID = strings.TrimSpace(cp.ClientID)
+	cp.ClientSecretRef = strings.TrimSpace(cp.ClientSecretRef)
+	cp.AuthorizeURL = strings.TrimSpace(cp.AuthorizeURL)
+	cp.TokenURL = strings.TrimSpace(cp.TokenURL)
+	cp.RevokeURL = strings.TrimSpace(cp.RevokeURL)
+	cp.CallbackHost = strings.TrimSpace(cp.CallbackHost)
+	cp.Scopes = trimStringArray(cp.Scopes)
+	if cp.CallbackPort < 0 {
+		cp.CallbackPort = 0
+	}
+	if !cp.Enabled &&
+		cp.ClientID == "" &&
+		cp.ClientSecretRef == "" &&
+		cp.AuthorizeURL == "" &&
+		cp.TokenURL == "" &&
+		cp.RevokeURL == "" &&
+		len(cp.Scopes) == 0 &&
+		cp.CallbackHost == "" &&
+		cp.CallbackPort == 0 &&
+		!cp.UsePKCE {
+		return nil
+	}
+	return &cp
 }
 
 func trimStringArray(in []string) []string {
@@ -384,10 +483,12 @@ func getServerSignature(cfg ServerConfig) string {
 			Transport string            `json:"transport"`
 			URL       string            `json:"url"`
 			Headers   map[string]string `json:"headers,omitempty"`
+			OAuth     any               `json:"oauth,omitempty"`
 		}{
 			Transport: transportType,
 			URL:       cfg.URL,
 			Headers:   cfg.Headers,
+			OAuth:     oauthSignatureDescriptor(cfg.OAuth),
 		})
 		if err != nil {
 			return ""
@@ -399,6 +500,98 @@ func getServerSignature(cfg ServerConfig) string {
 		return ""
 	}
 	return "unknown:" + string(data)
+}
+
+// CredentialKey returns the stable persistence key for stored remote OAuth
+// credentials. It excludes ephemeral callback settings so credentials survive
+// harmless local flow config changes.
+func CredentialKey(cfg ServerConfig) string {
+	cfg = normalizeServerConfig(cfg)
+	transportType := transportTypeForSignature(cfg)
+	if transportType != "sse" && transportType != "http" {
+		return ""
+	}
+	if cfg.URL == "" {
+		return ""
+	}
+	data, err := json.Marshal(struct {
+		Transport string            `json:"transport"`
+		URL       string            `json:"url"`
+		Headers   map[string]string `json:"headers,omitempty"`
+		OAuth     any               `json:"oauth,omitempty"`
+	}{
+		Transport: transportType,
+		URL:       cfg.URL,
+		Headers:   headersWithoutAuthorization(cfg.Headers),
+		OAuth:     oauthCredentialDescriptor(cfg.OAuth),
+	})
+	if err != nil {
+		return ""
+	}
+	return transportType + ":" + string(data)
+}
+
+func oauthSignatureDescriptor(cfg *OAuthConfig) any {
+	if cfg == nil {
+		return nil
+	}
+	return struct {
+		Enabled         bool     `json:"enabled,omitempty"`
+		ClientID        string   `json:"client_id,omitempty"`
+		ClientSecretRef string   `json:"client_secret_ref,omitempty"`
+		AuthorizeURL    string   `json:"authorize_url,omitempty"`
+		TokenURL        string   `json:"token_url,omitempty"`
+		RevokeURL       string   `json:"revoke_url,omitempty"`
+		Scopes          []string `json:"scopes,omitempty"`
+		UsePKCE         bool     `json:"use_pkce,omitempty"`
+	}{
+		Enabled:         cfg.Enabled,
+		ClientID:        cfg.ClientID,
+		ClientSecretRef: cfg.ClientSecretRef,
+		AuthorizeURL:    cfg.AuthorizeURL,
+		TokenURL:        cfg.TokenURL,
+		RevokeURL:       cfg.RevokeURL,
+		Scopes:          cfg.Scopes,
+		UsePKCE:         cfg.UsePKCE,
+	}
+}
+
+func oauthCredentialDescriptor(cfg *OAuthConfig) any {
+	if cfg == nil {
+		return nil
+	}
+	return struct {
+		Enabled      bool     `json:"enabled,omitempty"`
+		ClientID     string   `json:"client_id,omitempty"`
+		AuthorizeURL string   `json:"authorize_url,omitempty"`
+		TokenURL     string   `json:"token_url,omitempty"`
+		RevokeURL    string   `json:"revoke_url,omitempty"`
+		Scopes       []string `json:"scopes,omitempty"`
+	}{
+		Enabled:      cfg.Enabled,
+		ClientID:     cfg.ClientID,
+		AuthorizeURL: cfg.AuthorizeURL,
+		TokenURL:     cfg.TokenURL,
+		RevokeURL:    cfg.RevokeURL,
+		Scopes:       cfg.Scopes,
+	}
+}
+
+func headersWithoutAuthorization(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	filtered := make(map[string]string, len(headers))
+	for key, value := range headers {
+		if strings.EqualFold(strings.TrimSpace(key), "authorization") {
+			continue
+		}
+		filtered[key] = value
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
 }
 
 func transportTypeForSignature(cfg ServerConfig) string {

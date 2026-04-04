@@ -41,6 +41,8 @@ type ServerConfig struct {
 	URL string `json:"url,omitempty"`
 	// Headers are HTTP headers to send with requests (SSE/HTTP only).
 	Headers map[string]string `json:"headers,omitempty"`
+	// OAuth config describes optional remote OAuth acquisition/refresh behavior.
+	OAuth *OAuthConfig `json:"oauth,omitempty"`
 }
 
 // Config defines configuration for all MCP servers.
@@ -145,6 +147,7 @@ type serverRecord struct {
 }
 
 type connectFunc func(context.Context, string, ServerConfig) (*ServerConnection, error)
+type RemoteAuthHeaderProvider func(context.Context, string, ServerConfig) (map[string]string, error)
 
 // Manager manages multiple MCP server connections.
 type Manager struct {
@@ -156,14 +159,18 @@ type Manager struct {
 	wg         sync.WaitGroup // tracks in-flight CallTool calls
 	observe    StateObserver
 	connectFn  connectFunc
+	authHeader RemoteAuthHeaderProvider
 }
 
 // NewManager creates a new MCP manager.
 func NewManager() *Manager {
-	return &Manager{
-		servers:   make(map[string]*serverRecord),
-		connectFn: defaultConnectServer,
+	m := &Manager{
+		servers: make(map[string]*serverRecord),
 	}
+	m.connectFn = func(ctx context.Context, name string, cfg ServerConfig) (*ServerConnection, error) {
+		return m.defaultConnectServer(ctx, name, cfg)
+	}
+	return m
 }
 
 // SetStateObserver installs a lifecycle observer for state transitions.
@@ -179,10 +186,20 @@ func (m *Manager) SetConnectFunc(fn func(context.Context, string, ServerConfig) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if fn == nil {
-		m.connectFn = defaultConnectServer
+		m.connectFn = func(ctx context.Context, name string, cfg ServerConfig) (*ServerConnection, error) {
+			return m.defaultConnectServer(ctx, name, cfg)
+		}
 		return
 	}
 	m.connectFn = fn
+}
+
+// SetRemoteAuthHeaderProvider installs a callback that can supply dynamic
+// headers, such as OAuth bearer tokens, for remote SSE/HTTP servers.
+func (m *Manager) SetRemoteAuthHeaderProvider(provider RemoteAuthHeaderProvider) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.authHeader = provider
 }
 
 // LoadFromConfig loads and connects all configured MCP servers from
@@ -687,13 +704,13 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-func defaultConnectServer(ctx context.Context, name string, cfg ServerConfig) (*ServerConnection, error) {
+func (m *Manager) defaultConnectServer(ctx context.Context, name string, cfg ServerConfig) (*ServerConnection, error) {
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "metiq",
 		Version: "1.0.0",
 	}, nil)
 
-	transport, err := buildTransport(ctx, cfg)
+	transport, err := m.buildTransport(ctx, name, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -744,7 +761,7 @@ func refreshConnectedServer(ctx context.Context, name string, conn *ServerConnec
 	return &refreshed, nil
 }
 
-func buildTransport(ctx context.Context, cfg ServerConfig) (mcp.Transport, error) {
+func (m *Manager) buildTransport(ctx context.Context, serverName string, cfg ServerConfig) (mcp.Transport, error) {
 	// Build transport based on configuration.
 	transportType := cfg.Type
 
@@ -764,10 +781,33 @@ func buildTransport(ctx context.Context, cfg ServerConfig) (mcp.Transport, error
 		if cfg.URL == "" {
 			return nil, fmt.Errorf("URL is required for SSE/HTTP transport")
 		}
+		headers := trimStringMap(cfg.Headers)
+		m.mu.RLock()
+		authProvider := m.authHeader
+		m.mu.RUnlock()
+		if authProvider != nil {
+			dynamicHeaders, err := authProvider(ctx, serverName, cfg)
+			if err != nil {
+				return nil, err
+			}
+			if len(dynamicHeaders) > 0 {
+				if headers == nil {
+					headers = map[string]string{}
+				}
+				for key, value := range dynamicHeaders {
+					key = strings.TrimSpace(key)
+					value = strings.TrimSpace(value)
+					if key == "" || value == "" {
+						continue
+					}
+					headers[key] = value
+				}
+			}
+		}
 		st := &mcp.StreamableClientTransport{Endpoint: cfg.URL}
-		if len(cfg.Headers) > 0 {
+		if len(headers) > 0 {
 			st.HTTPClient = &http.Client{
-				Transport: &headerTransport{base: http.DefaultTransport, headers: cfg.Headers},
+				Transport: &headerTransport{base: http.DefaultTransport, headers: headers},
 			}
 		}
 		return st, nil

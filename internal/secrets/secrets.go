@@ -14,20 +14,38 @@ package secrets
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Store loads and caches secrets from .env files and the process environment.
 type Store struct {
-	mu       sync.RWMutex
-	values   map[string]string // loaded secret values (env overrides .env)
-	sources  []string          // absolute paths to .env files
-	loaded   int               // count from last reload
-	warnings []string
+	mu          sync.RWMutex
+	values      map[string]string // loaded secret values (env overrides .env)
+	sources     []string          // absolute paths to .env files
+	loaded      int               // count from last reload
+	warnings    []string
+	mcpAuthPath string
+	mcpAuth     map[string]MCPAuthCredential
+}
+
+type MCPAuthCredential struct {
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	TokenType    string    `json:"token_type,omitempty"`
+	Expiry       time.Time `json:"expiry,omitempty"`
+	ClientSecret string    `json:"client_secret,omitempty"`
+	Scopes       []string  `json:"scopes,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+}
+
+type mcpAuthFile struct {
+	Records map[string]MCPAuthCredential `json:"records,omitempty"`
 }
 
 // NewStore creates a Store with the given .env file paths.
@@ -37,8 +55,10 @@ func NewStore(paths []string) *Store {
 		paths = defaultPaths()
 	}
 	return &Store{
-		sources: paths,
-		values:  map[string]string{},
+		sources:     paths,
+		values:      map[string]string{},
+		mcpAuthPath: defaultMCPAuthPath(),
+		mcpAuth:     map[string]MCPAuthCredential{},
 	}
 }
 
@@ -48,6 +68,14 @@ func defaultPaths() []string {
 		return nil
 	}
 	return []string{filepath.Join(home, ".metiq", ".env")}
+}
+
+func defaultMCPAuthPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".metiq", "mcp-auth.json")
 }
 
 // Reload re-reads all source files and merges with live env.
@@ -78,6 +106,9 @@ func (s *Store) Reload() (int, []string) {
 
 	s.values = newValues
 	s.loaded = count
+	if err := s.loadMCPAuthLocked(); err != nil {
+		warnings = append(warnings, fmt.Sprintf("mcp auth: %v", err))
+	}
 	s.warnings = warnings
 	return count, warnings
 }
@@ -144,6 +175,56 @@ func (s *Store) Warnings() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]string{}, s.warnings...)
+}
+
+// SetMCPAuthPath overrides the credential persistence path. Primarily useful
+// for tests.
+func (s *Store) SetMCPAuthPath(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mcpAuthPath = strings.TrimSpace(path)
+}
+
+func (s *Store) GetMCPCredential(key string) (MCPAuthCredential, bool) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return MCPAuthCredential{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cred, ok := s.mcpAuth[key]
+	if !ok {
+		return MCPAuthCredential{}, false
+	}
+	return normalizeMCPAuthCredential(cred), true
+}
+
+func (s *Store) PutMCPCredential(key string, cred MCPAuthCredential) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("credential key is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mcpAuth == nil {
+		s.mcpAuth = map[string]MCPAuthCredential{}
+	}
+	s.mcpAuth[key] = normalizeMCPAuthCredential(cred)
+	return s.saveMCPAuthLocked()
+}
+
+func (s *Store) DeleteMCPCredential(key string) (bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false, fmt.Errorf("credential key is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.mcpAuth[key]; !ok {
+		return false, nil
+	}
+	delete(s.mcpAuth, key)
+	return true, s.saveMCPAuthLocked()
 }
 
 // Resolution is the result of resolving a single reference.
@@ -224,4 +305,113 @@ func parseSecretRef(ref string) (varName string, isRef bool) {
 		return ref[4:], true
 	}
 	return "", false
+}
+
+func normalizeMCPAuthCredential(cred MCPAuthCredential) MCPAuthCredential {
+	cred.AccessToken = strings.TrimSpace(cred.AccessToken)
+	cred.RefreshToken = strings.TrimSpace(cred.RefreshToken)
+	cred.TokenType = strings.TrimSpace(cred.TokenType)
+	cred.ClientSecret = strings.TrimSpace(cred.ClientSecret)
+	cred.Scopes = trimStringSlice(cred.Scopes)
+	if cred.UpdatedAt.IsZero() {
+		cred.UpdatedAt = time.Now().UTC()
+	} else {
+		cred.UpdatedAt = cred.UpdatedAt.UTC()
+	}
+	if !cred.Expiry.IsZero() {
+		cred.Expiry = cred.Expiry.UTC()
+	}
+	return cred
+}
+
+func trimStringSlice(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (s *Store) loadMCPAuthLocked() error {
+	if strings.TrimSpace(s.mcpAuthPath) == "" {
+		s.mcpAuth = map[string]MCPAuthCredential{}
+		return nil
+	}
+	raw, err := os.ReadFile(s.mcpAuthPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.mcpAuth = map[string]MCPAuthCredential{}
+			return nil
+		}
+		return err
+	}
+	file := mcpAuthFile{}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return err
+	}
+	records := make(map[string]MCPAuthCredential, len(file.Records))
+	for key, cred := range file.Records {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		records[key] = normalizeMCPAuthCredential(cred)
+	}
+	s.mcpAuth = records
+	return nil
+}
+
+func (s *Store) saveMCPAuthLocked() error {
+	if strings.TrimSpace(s.mcpAuthPath) == "" {
+		return nil
+	}
+	dir := filepath.Dir(s.mcpAuthPath)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	file := mcpAuthFile{Records: map[string]MCPAuthCredential{}}
+	for key, cred := range s.mcpAuth {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		file.Records[key] = normalizeMCPAuthCredential(cred)
+	}
+	raw, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".mcp-auth-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, s.mcpAuthPath)
 }

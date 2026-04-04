@@ -3,6 +3,9 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -203,6 +206,53 @@ func TestResolveConfigDoc(t *testing.T) {
 	}
 }
 
+func TestResolveConfigDoc_parsesOAuthConfigAndCredentialKey(t *testing.T) {
+	doc := state.ConfigDoc{Extra: map[string]any{
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": map[string]any{
+				"remote": map[string]any{
+					"enabled": true,
+					"type":    "http",
+					"url":     "https://mcp.example.com/http",
+					"headers": map[string]any{
+						"Authorization": "Bearer static",
+						"X-Tenant":      "tenant-a",
+					},
+					"oauth": map[string]any{
+						"enabled":           true,
+						"client_id":         "client-1",
+						"client_secret_ref": "env:MCP_SECRET",
+						"authorize_url":     "https://mcp.example.com/oauth/authorize",
+						"token_url":         "https://mcp.example.com/oauth/token",
+						"scopes":            []any{"profile", "offline_access"},
+						"callback_port":     4317,
+						"use_pkce":          true,
+					},
+				},
+			},
+		},
+	}}
+	cfg := ResolveConfigDoc(doc)
+	remote := cfg.Servers["remote"]
+	if remote.OAuth == nil || !remote.OAuth.Enabled {
+		t.Fatalf("expected oauth config to be parsed, got %#v", remote)
+	}
+	if remote.OAuth.ClientID != "client-1" || remote.OAuth.TokenURL != "https://mcp.example.com/oauth/token" {
+		t.Fatalf("unexpected oauth config: %#v", remote.OAuth)
+	}
+	credentialKey := CredentialKey(remote.ServerConfig)
+	if strings.Contains(strings.ToLower(credentialKey), "authorization") || strings.Contains(credentialKey, "Bearer static") {
+		t.Fatalf("credential key should ignore Authorization header, got %q", credentialKey)
+	}
+	if !strings.Contains(credentialKey, "tenant-a") || !strings.Contains(credentialKey, "client-1") {
+		t.Fatalf("credential key missing stable identity fields: %q", credentialKey)
+	}
+	if !strings.Contains(remote.Signature, "oauth") || !strings.Contains(remote.Signature, "client_secret_ref") {
+		t.Fatalf("expected signature to include oauth config, got %q", remote.Signature)
+	}
+}
+
 func TestResolveConfigDoc_globalDisabledPreservesInventory(t *testing.T) {
 	doc := state.ConfigDoc{Extra: map[string]any{
 		"mcp": map[string]any{
@@ -393,6 +443,56 @@ func TestManagerApplyConfigClassifiesNeedsAuthAndDisabled(t *testing.T) {
 	snap = mgr.Snapshot()
 	if snap.Servers[0].State != ConnectionStateDisabled || snap.Servers[0].Enabled {
 		t.Fatalf("expected disabled snapshot, got %#v", snap.Servers[0])
+	}
+}
+
+func TestManagerBuildTransportMergesDynamicAuthHeaders(t *testing.T) {
+	mgr := NewManager()
+	mgr.SetRemoteAuthHeaderProvider(func(_ context.Context, serverName string, cfg ServerConfig) (map[string]string, error) {
+		if serverName != "remote" || cfg.URL == "" {
+			t.Fatalf("unexpected auth provider inputs: %s %#v", serverName, cfg)
+		}
+		return map[string]string{"Authorization": "Bearer dynamic"}, nil
+	})
+	transport, err := mgr.buildTransport(context.Background(), "remote", ServerConfig{
+		Enabled: true,
+		Type:    "http",
+		URL:     "https://mcp.example.com/http",
+		Headers: map[string]string{"X-Tenant": "tenant-a"},
+		OAuth:   &OAuthConfig{Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("buildTransport error: %v", err)
+	}
+	streamable, ok := transport.(*mcp.StreamableClientTransport)
+	if !ok {
+		t.Fatalf("expected StreamableClientTransport, got %T", transport)
+	}
+	if streamable.HTTPClient == nil {
+		t.Fatalf("expected HTTP client with header transport")
+	}
+	requestHeaders := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestHeaders <- r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest error: %v", err)
+	}
+	resp, err := streamable.HTTPClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTPClient.Do error: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	headers := <-requestHeaders
+	if got := headers.Get("Authorization"); got != "Bearer dynamic" {
+		t.Fatalf("authorization header = %q", got)
+	}
+	if got := headers.Get("X-Tenant"); got != "tenant-a" {
+		t.Fatalf("tenant header = %q", got)
 	}
 }
 
