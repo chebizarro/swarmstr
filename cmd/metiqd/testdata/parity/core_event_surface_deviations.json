@@ -10,6 +10,7 @@
     "chat.chunk",
     "chat.message",
     "config.updated",
+    "mcp.lifecycle",
     "cron.result",
     "cron.tick",
     "dm.health",

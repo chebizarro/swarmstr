@@ -260,6 +260,8 @@ func runtimeEventSubsystem(event string, payload map[string]any) string {
 		return "channel"
 	case strings.HasPrefix(event, "config."):
 		return "config"
+	case strings.HasPrefix(event, "mcp."):
+		return "mcp"
 	case strings.HasPrefix(event, "agent."):
 		return "agent"
 	case strings.HasPrefix(event, "cron."):

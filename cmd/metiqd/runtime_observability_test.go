@@ -35,6 +35,12 @@ func TestRuntimeEventBufferTailFiltersStructuredEvents(t *testing.T) {
 		Reachable: true,
 		Source:    "relay-monitor",
 	})
+	buf.Append(gatewayws.EventMCPLifecycle, gatewayws.MCPLifecyclePayload{
+		TS:        13,
+		Name:      "demo",
+		State:     "connected",
+		ToolCount: 2,
+	})
 
 	got := buf.Tail(0, 10, 32*1024, toolbuiltin.RuntimeObserveFilters{
 		Events:    []string{gatewayws.EventToolStart},
@@ -83,6 +89,15 @@ func TestRuntimeEventBufferTailFiltersStructuredEvents(t *testing.T) {
 	}
 	if chatEvents[0]["subsystem"] != "chat" || chatEvents[0]["source"] != "inbound" {
 		t.Fatalf("missing derived chat fields: %#v", chatEvents[0])
+	}
+
+	mcpTail := buf.Tail(0, 10, 32*1024, toolbuiltin.RuntimeObserveFilters{Subsystem: "mcp"})
+	mcpEvents, ok := mcpTail["events"].([]map[string]any)
+	if !ok || len(mcpEvents) != 1 {
+		t.Fatalf("expected one mcp event, got %#v", mcpTail["events"])
+	}
+	if mcpEvents[0]["event"] != gatewayws.EventMCPLifecycle || mcpEvents[0]["subsystem"] != "mcp" {
+		t.Fatalf("unexpected mcp event projection: %#v", mcpEvents[0])
 	}
 }
 
