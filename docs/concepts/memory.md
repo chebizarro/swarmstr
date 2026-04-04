@@ -23,16 +23,83 @@ The model only "remembers" what is written to disk.
 
 | File | Purpose | Loaded when |
 |------|---------|-------------|
-| `MEMORY.md` | Curated long-term memory | Main/private session only |
-| `memory/YYYY-MM-DD.md` | Daily append-only log | Today + yesterday at session start |
+| `MEMORY.md` | Concise long-term memory index | Main/private session prompt assembly |
+| `memory/*.md` with typed frontmatter | Detailed durable topic memories | Summarized in the file-memory prompt contract |
+| `memory/YYYY-MM-DD.md` or similar logs | Daily / raw working notes | Operator/session workflows, not treated as typed topic memory by default |
 
-These files live under `~/.metiq/workspace`. See [Agent workspace](/concepts/agent-workspace).
+These files live under the active agent workspace. See [Agent workspace](/concepts/agent-workspace).
+
+### File-backed memory contract
+
+metiq now treats `MEMORY.md` as an **index**, not the place for long-form dumps.
+Keep it concise and move detailed durable memories into topic files under `memory/`.
+
+Typed topic files should use frontmatter like:
+
+```yaml
+---
+name: user-prefs
+description: Durable response-style and workflow preferences
+type: feedback # user | feedback | project | reference
+---
+```
+
+Files under `memory/` without valid typed frontmatter can still exist, but they are treated as raw notes/logs rather than canonical typed topic memory.
+
+Safety and prompt-budget rules for the canonical file-backed contract:
+
+- `MEMORY.md` is treated as a concise prompt-facing index and is truncated to a bounded prompt budget when rendered.
+- If `MEMORY.md` exceeds the safe read limit, metiq ignores the file content for prompt assembly and emits guidance to move detail into typed topic files under `memory/`.
+- Unreadable `MEMORY.md` files or typed-topic scan failures surface prompt warnings instead of being presented as empty memory.
+- Typed topic discovery is restricted to files that resolve inside the active workspace root; symlink escapes are ignored.
 
 **When to write:**
 
-- Decisions, preferences, and durable facts → `MEMORY.md`
-- Day-to-day notes and running context → `memory/YYYY-MM-DD.md`
-- If someone says "remember this" → write it immediately
+- Durable high-level index entries → `MEMORY.md`
+- Detailed durable facts, rules, project context, or references → typed topic files in `memory/`
+- Day-to-day notes and running context → raw note files under `memory/`
+- If someone says "remember this" → save the durable fact in the smallest relevant file-backed memory surface
+
+### Maintained session memory
+
+Separate from durable file-backed memory, metiq now maintains a **per-session working summary artifact** under:
+
+```text
+<workspace>/.metiq/session-memory/<session>.md
+```
+
+This file is:
+
+- updated during the session lifetime rather than only on `/new` or `/reset`
+- thresholded and bounded, so it does not rewrite on every turn
+- managed by the daemon with a fixed template/validation contract
+- intended for continuity and working-state capture, not as canonical durable project memory
+
+Operationally:
+
+- successful turns accumulate pending session-memory progress in the background
+- `/summary` forces the maintained session-memory artifact to be brought current for the active session
+- `/compact`, automatic context compaction, and `sessions.compact`/`memory.compact` wait for or refresh the artifact before compacting
+- `/new` and `/reset` flush the artifact before transcript rollover, then keep the maintained file for the next phase of the session while resetting transcript checkpoints and pending counters
+
+Current configuration lives under `extra.memory.session_memory`, for example:
+
+```json
+{
+  "extra": {
+    "memory": {
+      "session_memory": {
+        "enabled": true,
+        "init_chars": 8000,
+        "update_chars": 4000,
+        "tool_calls_between_updates": 3,
+        "max_excerpt_chars": 16000,
+        "max_output_bytes": 24000
+      }
+    }
+  }
+}
+```
 
 ---
 
@@ -232,11 +299,17 @@ consider periodic compaction or switching to Qdrant.
 ## 7. Automatic Memory Flush (Pre-Compaction)
 
 When a session nears the context window limit, metiq triggers auto-compaction.
-Before compaction, the agent writes durable notes to memory (via `memory_store`
-or `memory_pin`), then produces a compaction summary.
+Before compaction, metiq now ensures the maintained session-memory artifact is
+current for that session. Session-level compaction and rollover paths use the
+same policy:
+
+- wait for any in-flight session-memory extraction to finish
+- run a bounded refresh if the maintained artifact is missing or stale for the session
+- only then compact transcript/context state or clear the session transcript
 
 - `/compact` — manually trigger compaction
-- `/new` — start fresh (saves a memory snapshot of the old session first)
+- `/summary` — manually refresh the maintained session-memory artifact
+- `/new` / `/reset` — start fresh after flushing the maintained artifact and preserving it across the rollover
 
 ---
 

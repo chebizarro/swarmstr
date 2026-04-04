@@ -110,22 +110,23 @@ var (
 	sessionDocUpdateLocks [256]sync.Mutex
 	// controlSessionTurns is the shared per-session turn-slot registry used by
 	// live turns and destructive session lifecycle operations.
-	controlSessionTurns    *autoreply.SessionTurns
-	controlNodeInvocations *nodeInvocationRegistry
-	controlNodePending     *nodepending.Store
-	controlCronJobs        *cronRegistry
-	controlSessionStore    *state.SessionStore
-	controlDocsRepo        *state.DocsRepository
-	controlMemoryStore     memory.Store
-	controlExecApprovals   *execApprovalsRegistry
-	controlWizards         *wizardRegistry
-	controlOps             *operationsRegistry
-	controlAgentRegistry   *agent.AgentRuntimeRegistry
-	controlSessionRouter   *agent.AgentSessionRouter
-	controlChannels        *channels.Registry
-	controlPrivateKey      string
-	controlKeyer           nostr.Keyer      // always set at startup; plain mode wraps key in a keyer
-	controlHeartbeat38     *nip38.Heartbeat // NIP-38 status heartbeat; nil when disabled
+	controlSessionTurns         *autoreply.SessionTurns
+	controlNodeInvocations      *nodeInvocationRegistry
+	controlNodePending          *nodepending.Store
+	controlCronJobs             *cronRegistry
+	controlSessionStore         *state.SessionStore
+	controlSessionMemoryRuntime *sessionMemoryRuntime
+	controlDocsRepo             *state.DocsRepository
+	controlMemoryStore          memory.Store
+	controlExecApprovals        *execApprovalsRegistry
+	controlWizards              *wizardRegistry
+	controlOps                  *operationsRegistry
+	controlAgentRegistry        *agent.AgentRuntimeRegistry
+	controlSessionRouter        *agent.AgentSessionRouter
+	controlChannels             *channels.Registry
+	controlPrivateKey           string
+	controlKeyer                nostr.Keyer      // always set at startup; plain mode wraps key in a keyer
+	controlHeartbeat38          *nip38.Heartbeat // NIP-38 status heartbeat; nil when disabled
 	// controlWsEmitter forwards typed events to connected WS clients.
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
 	controlWsEmitter   gatewayws.EventEmitter = gatewayws.NoopEmitter{}
@@ -468,6 +469,8 @@ func main() {
 		sessionStore = nil
 	}
 	controlSessionStore = sessionStore
+	sessionMemoryRuntime := newSessionMemoryRuntime(sessionStore, transcriptRepo)
+	controlSessionMemoryRuntime = sessionMemoryRuntime
 	baseMemoryIndex, err := memory.OpenIndex("")
 	if err != nil {
 		log.Fatalf("open memory index: %v", err)
@@ -1490,7 +1493,7 @@ func main() {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, sessionRouter.Get(sessionID), "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
-		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
+		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)))
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
 			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
@@ -2222,7 +2225,7 @@ func main() {
 			scopeCtx := resolveMemoryScopeContext(ctx, configState.Get(), docsRepo, sessionStore, sessionID, spawnAgentID, memoryScope)
 			turnCtx := contextWithMemoryScope(ctx, scopeCtx)
 			turnPrompt := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, instructions, 6)
-			staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
+			staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), spawnAgentID))
 			filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, spawnAgentID, agentRuntime, tools, turnToolConstraints{})
 			result, err := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
 				SessionID:          sessionID,
@@ -2277,7 +2280,7 @@ func main() {
 		scopeCtx := resolveMemoryScopeContext(ctx, configState.Get(), docsRepo, sessionStore, sessionID, "", "")
 		turnCtx := contextWithMemoryScope(ctx, scopeCtx)
 		turnPrompt := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
-		staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
+		staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), ""))
 		activeAgentID := ""
 		if sessionRouter != nil {
 			activeAgentID = sessionRouter.Get(sessionID)
@@ -2921,15 +2924,35 @@ func main() {
 		return strings.Join(lines, "\n"), nil
 	})
 
+	// /summary — force the maintained session-memory artifact to be current.
+	slashRouter.Register("summary", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
+		outcome, err := ensureSessionMemoryCurrent(cmdCtx, configState.Get(), cmd.SessionID, sessionStore)
+		if err != nil {
+			return fmt.Sprintf("⚠️  Session memory update failed: %v", err), nil
+		}
+		if strings.TrimSpace(outcome.Path) == "" {
+			return "⚠️  Session memory is not available for this session.", nil
+		}
+		if outcome.Updated {
+			return fmt.Sprintf("✓ Session memory updated: %s", outcome.Path), nil
+		}
+		return fmt.Sprintf("✓ Session memory already current: %s", outcome.Path), nil
+	})
+
 	// /compact — compact conversation history via the context engine.
 	slashRouter.Register("compact", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
 		if controlContextEngine == nil {
 			return "⚠️  No context engine active.", nil
 		}
+		flushOutcome, err := ensureSessionMemoryCurrent(cmdCtx, configState.Get(), cmd.SessionID, sessionStore)
+		if err != nil {
+			return fmt.Sprintf("⚠️  Session memory flush failed: %v", err), nil
+		}
 		cr, cErr := controlContextEngine.Compact(cmdCtx, cmd.SessionID)
 		if cErr != nil {
 			return fmt.Sprintf("⚠️  Compact failed: %v", cErr), nil
 		}
+		recordSessionCompaction(sessionStore, cmd.SessionID, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
 		if !cr.Compacted {
 			return "Nothing to compact yet.", nil
 		}
@@ -2942,7 +2965,7 @@ func main() {
 
 	// /export — export session transcript as HTML and return a summary.
 	slashRouter.Register("export", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
-		entries, lErr := transcriptRepo.ListSession(cmdCtx, cmd.SessionID, 5000)
+		entries, lErr := transcriptRepo.ListSessionAll(cmdCtx, cmd.SessionID)
 		if lErr != nil {
 			return fmt.Sprintf("⚠️  Export failed: %v", lErr), nil
 		}
@@ -3290,7 +3313,7 @@ func main() {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, 6)
-		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
+		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		// turnHistory carries prior conversation turns for multi-turn LLM context.
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -3307,7 +3330,11 @@ func main() {
 			if asmErr == nil {
 				threshold := int(float64(maxCtxTokens) * 0.80)
 				if assembled.EstimatedTokens > 0 && threshold > 0 && assembled.EstimatedTokens > threshold {
-					if cr, cErr := controlContextEngine.Compact(turnCtx, sessionID); cErr == nil && cr.Compacted {
+					flushOutcome, flushErr := ensureSessionMemoryCurrent(turnCtx, configState.Get(), sessionID, sessionStore)
+					if flushErr != nil {
+						log.Printf("context engine auto-compact skipped session=%s session_memory_err=%v", sessionID, flushErr)
+					} else if cr, cErr := controlContextEngine.Compact(turnCtx, sessionID); cErr == nil && cr.Compacted {
+						recordSessionCompaction(sessionStore, sessionID, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
 						log.Printf("context engine auto-compact session=%s tokens_before=%d tokens_after=%d", sessionID, cr.TokensBefore, cr.TokensAfter)
 						assembled, _ = controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
 					}
@@ -3600,6 +3627,7 @@ func main() {
 					}
 				}
 				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
+				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, fileMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
 			}
 			switch {
 			case errors.Is(turnErr, context.DeadlineExceeded):
@@ -3629,6 +3657,7 @@ func main() {
 		// Persist the full tool-call/tool-result history so future turns can
 		// see prior tool usage — fixes the "announce and forget" behaviour.
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
+		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, fileMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 			TS:      time.Now().UnixMilli(),
 			AgentID: activeAgentID,
@@ -4477,7 +4506,7 @@ func main() {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
-		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx)
+		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		var chTurnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
 			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
@@ -4560,6 +4589,7 @@ func main() {
 					}
 				}
 				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
+				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, fileMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
 			}
 			if errors.Is(turnErr, context.Canceled) {
 				log.Printf("channel agent aborted session=%s", sessionID)
@@ -4583,6 +4613,7 @@ func main() {
 			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
 		}
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
+		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, fileMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
 
 		// ── Deliver reply ─────────────────────────────────────────────────
 		outboundText := turnResult.Text
@@ -7100,10 +7131,15 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{Result: methods.MemoryCompactResponse{OK: false, Summary: "no context engine active"}}, nil
 		}
 		sessionToCompact := compactReq.SessionID
+		flushOutcome, err := ensureSessionMemoryCurrent(ctx, configState.Get(), sessionToCompact, controlSessionStore)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("memory.compact session memory flush: %w", err)
+		}
 		cr, cErr := controlContextEngine.Compact(ctx, sessionToCompact)
 		if cErr != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("memory.compact: %w", cErr)
 		}
+		recordSessionCompaction(controlSessionStore, sessionToCompact, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
 		return nostruntime.ControlRPCResult{Result: methods.MemoryCompactResponse{
 			OK:           cr.OK,
 			SessionsRun:  1,
@@ -7475,7 +7511,11 @@ func handleControlRPCRequest(
 			if _, err := docsRepo.GetSession(ctx, req.SessionID); err != nil {
 				return err
 			}
-			entries, err := transcriptRepo.ListSession(ctx, req.SessionID, 2000)
+			flushOutcome, err := ensureSessionMemoryCurrent(ctx, configState.Get(), req.SessionID, controlSessionStore)
+			if err != nil {
+				return fmt.Errorf("sessions.compact session memory flush: %w", err)
+			}
+			entries, err := transcriptRepo.ListSessionAll(ctx, req.SessionID)
 			if err != nil {
 				return err
 			}
@@ -7558,6 +7598,7 @@ func handleControlRPCRequest(
 				return err
 			}
 			compactResult = methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped - deleteErrors, "summary_generated": summaryGenerated})
+			recordSessionCompaction(controlSessionStore, req.SessionID, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
 			return nil
 		})
 		if err != nil {
@@ -7580,7 +7621,7 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("sessions.export: unsupported format %q (only 'html' is supported)", exportFormat)
 		}
 		// Load transcript entries for the session.
-		entries, err := transcriptRepo.ListSession(ctx, exportReq.SessionID, 5000)
+		entries, err := transcriptRepo.ListSessionAll(ctx, exportReq.SessionID)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("sessions.export: load transcript: %w", err)
 		}
@@ -9842,7 +9883,7 @@ func handleACPMessage(
 				SessionID:   sessionID,
 				Message:     instructions,
 				MemoryScope: scopeCtx.Scope,
-			}, controlMemoryStore, scopeCtx)
+			}, controlMemoryStore, scopeCtx, workspaceDirForAgent(cfg, agentID))
 			turn.TurnID = msg.TaskID
 			if len(seedHistory) > 0 {
 				mergedHistory := make([]agent.ConversationMessage, 0, len(turn.History)+len(seedHistory))
@@ -10487,7 +10528,7 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 	scopeCtx := resolveMemoryScopeContext(ctx, cfg, nil, controlSessionStore, req.SessionID, agentID, req.MemoryScope)
 	persistSessionMemoryScope(controlSessionStore, req.SessionID, agentID, scopeCtx.Scope)
 	ctx = contextWithMemoryScope(ctx, scopeCtx)
-	turn := buildAgentRunTurn(ctx, req, memoryIndex, scopeCtx)
+	turn := buildAgentRunTurn(ctx, req, memoryIndex, scopeCtx, workspaceDirForAgent(cfg, agentID))
 	var result *agent.TurnResult
 	var lastErr error
 	fallbackUsed := false
@@ -10703,7 +10744,7 @@ func pruneSessions(ctx context.Context, docsRepo *state.DocsRepository, transcri
 			if !shouldPruneSession(current, cutoff) {
 				return nil
 			}
-			entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
+			entries, _ := transcriptRepo.ListSessionAll(ctx, sess.SessionID)
 			for _, e := range entries {
 				if delErr := transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID); delErr != nil {
 					log.Printf("transcript delete failed session=%s entry=%s: %v", sess.SessionID, e.EntryID, delErr)
@@ -11112,7 +11153,7 @@ func runSessionsPrune(
 			if !req.All && !shouldPruneSession(current, cutoff) {
 				return nil
 			}
-			entries, _ := transcriptRepo.ListSession(ctx, sess.SessionID, 100000)
+			entries, _ := transcriptRepo.ListSessionAll(ctx, sess.SessionID)
 			for _, e := range entries {
 				if delErr := transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID); delErr != nil {
 					log.Printf("transcript delete failed session=%s entry=%s: %v", sess.SessionID, e.EntryID, delErr)
@@ -14552,7 +14593,7 @@ func rotateSessionCoordinated(
 ) error {
 	var priorEntries []state.TranscriptEntryDoc
 	if transcriptRepo != nil {
-		if entries, listErr := transcriptRepo.ListSession(ctx, sessionID, 5000); listErr != nil {
+		if entries, listErr := transcriptRepo.ListSessionTail(ctx, sessionID, 24); listErr != nil {
 			log.Printf("session hook context list warning session=%s reason=%s err=%v", sessionID, reason, listErr)
 		} else {
 			priorEntries = entries
@@ -14572,6 +14613,91 @@ func rotateSessionCoordinated(
 		_, err := rotateSessionLifecycle(ctx, sessionID, reason, cfg, transcriptRepo, sessionStore, time.Now())
 		return err
 	})
+}
+
+type sessionMemoryLifecycleOutcome struct {
+	Path    string
+	Updated bool
+}
+
+func ensureSessionMemoryCurrent(ctx context.Context, cfg state.ConfigDoc, sessionID string, sessionStore *state.SessionStore) (sessionMemoryLifecycleOutcome, error) {
+	outcome := sessionMemoryLifecycleOutcome{}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || controlSessionMemoryRuntime == nil {
+		return outcome, nil
+	}
+	generator, workspaceDir := resolveSessionMemoryRuntimeDependencies(cfg, sessionID, sessionStore)
+	if generator == nil || strings.TrimSpace(workspaceDir) == "" {
+		return outcome, nil
+	}
+	path, updated, err := controlSessionMemoryRuntime.EnsureCurrent(ctx, cfg, generator, sessionID, workspaceDir)
+	if err != nil {
+		return outcome, err
+	}
+	outcome.Path = path
+	outcome.Updated = updated
+	return outcome, nil
+}
+
+func resolveSessionMemoryRuntimeDependencies(cfg state.ConfigDoc, sessionID string, sessionStore *state.SessionStore) (sessionMemoryGenerator, string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, ""
+	}
+	agentID := "main"
+	workspaceDir := ""
+	if sessionStore != nil {
+		if entry, ok := sessionStore.Get(sessionID); ok {
+			if strings.TrimSpace(entry.AgentID) != "" {
+				agentID = defaultAgentID(entry.AgentID)
+			}
+			workspaceDir = strings.TrimSpace(entry.SpawnedWorkspace)
+		}
+	}
+	if workspaceDir == "" {
+		workspaceDir = workspaceDirForAgent(cfg, agentID)
+	}
+	rt := controlAgentRuntime
+	if controlAgentRegistry != nil {
+		if candidate := controlAgentRegistry.Get(agentID); candidate != nil {
+			rt = candidate
+		}
+	}
+	if rt == nil || strings.TrimSpace(workspaceDir) == "" {
+		return nil, ""
+	}
+	return runtimeSessionMemoryGenerator{runtime: rt}, workspaceDir
+}
+
+func recordSessionCompaction(sessionStore *state.SessionStore, sessionID string, sessionMemoryReady bool, now time.Time) {
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	entry := sessionStore.GetOrNew(sessionID)
+	entry.CompactionCount++
+	if sessionMemoryReady {
+		entry.MemoryFlushAt = now.Unix()
+		entry.MemoryFlushCount = entry.CompactionCount
+	}
+	if err := sessionStore.Put(sessionID, entry); err != nil {
+		log.Printf("session compaction metadata save failed session=%s err=%v", sessionID, err)
+	}
+}
+
+func carrySessionMemoryAcrossRotation(entry *state.SessionEntry, prior state.SessionEntry, checkpointEntryID string) {
+	if entry == nil {
+		return
+	}
+	if strings.TrimSpace(prior.SessionMemoryFile) == "" && !prior.SessionMemoryInitialized && prior.SessionMemoryUpdatedAt == 0 {
+		return
+	}
+	entry.SessionMemoryFile = prior.SessionMemoryFile
+	entry.SessionMemoryInitialized = prior.SessionMemoryInitialized || strings.TrimSpace(prior.SessionMemoryFile) != ""
+	entry.SessionMemoryObservedChars = 0
+	entry.SessionMemoryPendingChars = 0
+	entry.SessionMemoryPendingToolCalls = 0
+	entry.SessionMemoryLastEntryID = strings.TrimSpace(checkpointEntryID)
+	entry.SessionMemoryUpdatedAt = prior.SessionMemoryUpdatedAt
 }
 
 func deleteSessionCoordinated(
@@ -14595,7 +14721,7 @@ func deleteSessionCoordinated(
 			seenChannelSessions.Delete(sessionID)
 		}
 		if transcriptRepo != nil {
-			if entries, lErr := transcriptRepo.ListSession(ctx, sessionID, 5000); lErr == nil {
+			if entries, lErr := transcriptRepo.ListSessionAll(ctx, sessionID); lErr == nil {
 				for _, e := range entries {
 					if delErr := transcriptRepo.DeleteEntry(ctx, sessionID, e.EntryID); delErr != nil {
 						log.Printf("transcript delete failed session=%s entry=%s: %v", sessionID, e.EntryID, delErr)
@@ -14634,7 +14760,10 @@ func rotateSessionLifecycle(
 	if transcriptRepo == nil {
 		return outcome, fmt.Errorf("transcript repository is required")
 	}
-	entries, err := transcriptRepo.ListSession(ctx, sessionID, 5000)
+	if _, err := ensureSessionMemoryCurrent(ctx, cfg, sessionID, sessionStore); err != nil {
+		return outcome, fmt.Errorf("flush session memory: %w", err)
+	}
+	entries, err := transcriptRepo.ListSessionAll(ctx, sessionID)
 	if err != nil {
 		return outcome, fmt.Errorf("list transcript: %w", err)
 	}
@@ -14652,21 +14781,24 @@ func rotateSessionLifecycle(
 	}
 
 	forkPolicy := resolveSessionForkPolicy(cfg)
+	forkCheckpointEntryID := ""
 	if forkPolicy.Enabled && len(entries) > 0 {
 		if seed := buildForkSeedEntry(sessionID, reason, entries, now, forkPolicy.MaxEntries); seed != nil {
 			if _, putErr := transcriptRepo.PutEntry(ctx, *seed); putErr != nil {
 				return outcome, fmt.Errorf("write fork seed entry: %w", putErr)
 			}
+			forkCheckpointEntryID = seed.EntryID
 			outcome.Forked = true
 		}
 	}
 
 	if sessionStore != nil {
-		entry := sessionStore.GetOrNew(sessionID)
-		entry = entry.CarryOverFlags(sessionID)
+		priorEntry := sessionStore.GetOrNew(sessionID)
+		entry := priorEntry.CarryOverFlags(sessionID)
 		entry.SpawnedBy = reason
 		entry.SessionFile = sessionTranscriptPath(sessionID)
 		entry.ForkedFromParent = outcome.Forked
+		carrySessionMemoryAcrossRotation(&entry, priorEntry, forkCheckpointEntryID)
 		if putErr := sessionStore.Put(sessionID, entry); putErr != nil {
 			return outcome, fmt.Errorf("persist session entry: %w", putErr)
 		}

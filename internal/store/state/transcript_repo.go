@@ -18,6 +18,15 @@ type TranscriptRepository struct {
 	codec  secure.EnvelopeCodec
 }
 
+const transcriptSessionPageLimit = 1024
+
+var ErrTranscriptCheckpointNotFound = errors.New("transcript checkpoint not found")
+
+type TranscriptPage struct {
+	Entries []TranscriptEntryDoc
+	HasMore bool
+}
+
 func NewTranscriptRepository(store NostrStateStore, authorPubKey string) *TranscriptRepository {
 	return NewTranscriptRepositoryWithCodec(store, authorPubKey, nil)
 }
@@ -92,6 +101,83 @@ func (r *TranscriptRepository) HasEntry(ctx context.Context, sessionID, entryID 
 }
 
 func (r *TranscriptRepository) ListSession(ctx context.Context, sessionID string, limit int) ([]TranscriptEntryDoc, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	out, err := r.listSessionOrdered(ctx, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *TranscriptRepository) ListSessionAll(ctx context.Context, sessionID string) ([]TranscriptEntryDoc, error) {
+	return r.listSessionOrderedAll(ctx, sessionID)
+}
+
+func (r *TranscriptRepository) ListSessionTail(ctx context.Context, sessionID string, limit int) ([]TranscriptEntryDoc, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	out, err := r.ListSessionAll(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
+
+func (r *TranscriptRepository) ListSessionAfter(ctx context.Context, sessionID, afterEntryID string, limit int) ([]TranscriptEntryDoc, error) {
+	page, err := r.ListSessionPage(ctx, sessionID, afterEntryID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return page.Entries, nil
+}
+
+func (r *TranscriptRepository) ListSessionPage(ctx context.Context, sessionID, afterEntryID string, limit int) (TranscriptPage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	out, err := r.ListSessionAll(ctx, sessionID)
+	if err != nil {
+		return TranscriptPage{}, err
+	}
+	start := 0
+	if trimmed := strings.TrimSpace(afterEntryID); trimmed != "" {
+		found := false
+		for i, entry := range out {
+			if entry.EntryID != trimmed {
+				continue
+			}
+			start = i + 1
+			found = true
+			break
+		}
+		if !found {
+			return TranscriptPage{}, ErrTranscriptCheckpointNotFound
+		}
+	}
+	if start >= len(out) {
+		return TranscriptPage{}, nil
+	}
+	end := start + limit
+	hasMore := end < len(out)
+	if end > len(out) {
+		end = len(out)
+	}
+	return TranscriptPage{
+		Entries: out[start:end],
+		HasMore: hasMore,
+	}, nil
+}
+
+func (r *TranscriptRepository) listSessionOrdered(ctx context.Context, sessionID string, limit int) ([]TranscriptEntryDoc, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
@@ -102,6 +188,39 @@ func (r *TranscriptRepository) ListSession(ctx context.Context, sessionID string
 	if err != nil {
 		return nil, err
 	}
+	return r.decodeOrderedSessionRows(sessionID, rows), nil
+}
+
+func (r *TranscriptRepository) listSessionOrderedAll(ctx context.Context, sessionID string) ([]TranscriptEntryDoc, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+	var (
+		cursor *EventPageCursor
+		rows   []Event
+	)
+	for {
+		page, err := r.store.ListByTagForAuthorPage(
+			ctx,
+			events.KindTranscriptDoc,
+			r.author,
+			"session",
+			protectedTagValue(sessionID),
+			transcriptSessionPageLimit,
+			cursor,
+		)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, page.Events...)
+		if page.NextCursor == nil || len(page.Events) == 0 {
+			return r.decodeOrderedSessionRows(sessionID, rows), nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func (r *TranscriptRepository) decodeOrderedSessionRows(sessionID string, rows []Event) []TranscriptEntryDoc {
 	byEntryID := make(map[string]TranscriptEntryDoc, len(rows))
 	for _, row := range rows {
 		doc, err := r.decodeTranscriptEvent(row)
@@ -126,10 +245,7 @@ func (r *TranscriptRepository) ListSession(ctx context.Context, sessionID string
 		}
 		return out[i].Unix < out[j].Unix
 	})
-	if len(out) > limit {
-		out = out[:limit]
-	}
-	return out, nil
+	return out
 }
 
 // DeleteEntry tombstones a transcript entry so it is excluded from future ListSession results.

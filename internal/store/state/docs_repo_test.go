@@ -3,7 +3,6 @@ package state
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -65,8 +64,19 @@ func (s *fakeStateStore) PutAppend(_ context.Context, addr Address, content stri
 }
 
 func (s *fakeStateStore) ListByTag(_ context.Context, kind events.Kind, tagName, tagValue string, limit int) ([]Event, error) {
+	page, err := s.ListByTagPage(context.Background(), kind, tagName, tagValue, limit, nil)
+	if err != nil {
+		return nil, err
+	}
+	return page.Events, nil
+}
+
+func (s *fakeStateStore) ListByTagPage(_ context.Context, kind events.Kind, tagName, tagValue string, limit int, cursor *EventPageCursor) (EventPage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 100
+	}
 	out := make([]Event, 0, limit)
 	for _, evt := range s.repl {
 		if evt.Kind != kind || !hasTagValue(evt.Tags, tagName, tagValue) {
@@ -74,16 +84,30 @@ func (s *fakeStateStore) ListByTag(_ context.Context, kind events.Kind, tagName,
 		}
 		out = append(out, evt)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+	sortEventsNewestFirst(out)
+	filtered := filterEventsForPage(out, cursor)
+	page := EventPage{Events: filtered}
+	if len(filtered) > limit {
+		page.Events = filtered[:limit]
+		page.NextCursor = nextCursorForPage(cursor, page.Events)
 	}
-	return out, nil
+	return page, nil
 }
 
 func (s *fakeStateStore) ListByTagForAuthor(_ context.Context, kind events.Kind, authorPubKey, tagName, tagValue string, limit int) ([]Event, error) {
+	page, err := s.ListByTagForAuthorPage(context.Background(), kind, authorPubKey, tagName, tagValue, limit, nil)
+	if err != nil {
+		return nil, err
+	}
+	return page.Events, nil
+}
+
+func (s *fakeStateStore) ListByTagForAuthorPage(_ context.Context, kind events.Kind, authorPubKey, tagName, tagValue string, limit int, cursor *EventPageCursor) (EventPage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 100
+	}
 	out := make([]Event, 0, limit)
 	for _, evt := range s.repl {
 		if evt.Kind != kind || evt.PubKey != authorPubKey || !hasTagValue(evt.Tags, tagName, tagValue) {
@@ -91,11 +115,14 @@ func (s *fakeStateStore) ListByTagForAuthor(_ context.Context, kind events.Kind,
 		}
 		out = append(out, evt)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+	sortEventsNewestFirst(out)
+	filtered := filterEventsForPage(out, cursor)
+	page := EventPage{Events: filtered}
+	if len(filtered) > limit {
+		page.Events = filtered[:limit]
+		page.NextCursor = nextCursorForPage(cursor, page.Events)
 	}
-	return out, nil
+	return page, nil
 }
 
 type stateTestKeyer struct {

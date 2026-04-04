@@ -47,6 +47,7 @@ func resolveMemoryScopeContext(ctx context.Context, cfg state.ConfigDoc, docsRep
 	sessionID = strings.TrimSpace(sessionID)
 	agentID := defaultAgentID(explicitAgentID)
 	scope := explicitScope
+	var sessionWorkspaceDir string
 	if sessionStore != nil && sessionID != "" {
 		if se, ok := sessionStore.Get(sessionID); ok {
 			if agentID == "main" && strings.TrimSpace(explicitAgentID) == "" && strings.TrimSpace(se.AgentID) != "" {
@@ -55,6 +56,7 @@ func resolveMemoryScopeContext(ctx context.Context, cfg state.ConfigDoc, docsRep
 			if !scope.Valid() && se.MemoryScope.Valid() {
 				scope = se.MemoryScope
 			}
+			sessionWorkspaceDir = strings.TrimSpace(se.SpawnedWorkspace)
 		}
 	}
 	if agentID == "main" && strings.TrimSpace(explicitAgentID) == "" && controlSessionRouter != nil && sessionID != "" {
@@ -73,8 +75,13 @@ func resolveMemoryScopeContext(ctx context.Context, cfg state.ConfigDoc, docsRep
 	if !resolved.Enabled() {
 		return memory.ScopedContext{}
 	}
-	if resolved.Scope == state.AgentMemoryScopeProject {
+	if resolved.Scope == state.AgentMemoryScopeProject || resolved.Scope == state.AgentMemoryScopeLocal {
 		resolved.WorkspaceDir = workspaceDirForAgent(cfg, agentID)
+		if resolved.Scope == state.AgentMemoryScopeLocal && strings.TrimSpace(sessionWorkspaceDir) != "" {
+			resolved.WorkspaceDir = sessionWorkspaceDir
+		}
+	}
+	if resolved.Scope == state.AgentMemoryScopeProject {
 		if strings.TrimSpace(resolved.WorkspaceDir) == "" {
 			return memory.ScopedContext{}
 		}
