@@ -136,6 +136,8 @@ type ServerConnection struct {
 	CallToolFunc      func(context.Context, *mcp.CallToolParams) (*mcp.CallToolResult, error)
 	ListResourcesFunc func(context.Context, *mcp.ListResourcesParams) (*mcp.ListResourcesResult, error)
 	ReadResourceFunc  func(context.Context, *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error)
+	ListPromptsFunc   func(context.Context, *mcp.ListPromptsParams) (*mcp.ListPromptsResult, error)
+	GetPromptFunc     func(context.Context, *mcp.GetPromptParams) (*mcp.GetPromptResult, error)
 }
 
 func (c *ServerConnection) callTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
@@ -175,6 +177,32 @@ func (c *ServerConnection) readResource(ctx context.Context, params *mcp.ReadRes
 		return nil, fmt.Errorf("server session unavailable")
 	}
 	return c.Session.ReadResource(ctx, params)
+}
+
+func (c *ServerConnection) listPrompts(ctx context.Context, params *mcp.ListPromptsParams) (*mcp.ListPromptsResult, error) {
+	if c == nil {
+		return nil, fmt.Errorf("server is not connected")
+	}
+	if c.ListPromptsFunc != nil {
+		return c.ListPromptsFunc(ctx, params)
+	}
+	if c.Session == nil {
+		return nil, fmt.Errorf("server session unavailable")
+	}
+	return c.Session.ListPrompts(ctx, params)
+}
+
+func (c *ServerConnection) getPrompt(ctx context.Context, params *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
+	if c == nil {
+		return nil, fmt.Errorf("server is not connected")
+	}
+	if c.GetPromptFunc != nil {
+		return c.GetPromptFunc(ctx, params)
+	}
+	if c.Session == nil {
+		return nil, fmt.Errorf("server session unavailable")
+	}
+	return c.Session.GetPrompt(ctx, params)
 }
 
 type serverRecord struct {
@@ -742,6 +770,47 @@ func (m *Manager) ReadResource(ctx context.Context, serverName, uri string) (*mc
 	result, err := conn.readResource(ctx, &mcp.ReadResourceParams{URI: uri})
 	if err != nil {
 		return nil, fmt.Errorf("failed to read resource: %w", err)
+	}
+	return result, nil
+}
+
+// ListPrompts lists prompts from a specific connected MCP server.
+func (m *Manager) ListPrompts(ctx context.Context, serverName string) (*mcp.ListPromptsResult, error) {
+	conn, err := m.acquireConnection(serverName)
+	if err != nil {
+		return nil, err
+	}
+	defer m.wg.Done()
+
+	if !conn.Capabilities.Prompts {
+		return nil, fmt.Errorf("server %s does not support prompts", serverName)
+	}
+
+	result, err := conn.listPrompts(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list prompts: %w", err)
+	}
+	return result, nil
+}
+
+// GetPrompt fetches a prompt from a connected MCP server, optionally applying prompt arguments.
+func (m *Manager) GetPrompt(ctx context.Context, serverName, promptName string, arguments map[string]string) (*mcp.GetPromptResult, error) {
+	conn, err := m.acquireConnection(serverName)
+	if err != nil {
+		return nil, err
+	}
+	defer m.wg.Done()
+
+	if !conn.Capabilities.Prompts {
+		return nil, fmt.Errorf("server %s does not support prompts", serverName)
+	}
+
+	result, err := conn.getPrompt(ctx, &mcp.GetPromptParams{
+		Name:      promptName,
+		Arguments: arguments,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get prompt: %w", err)
 	}
 	return result, nil
 }

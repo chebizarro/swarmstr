@@ -1007,6 +1007,9 @@ func main() {
 	toolbuiltin.RegisterMCPResourceTools(tools, toolbuiltin.MCPResourceToolOpts{
 		Manager: func() *mcppkg.Manager { return mcpManager },
 	})
+	toolbuiltin.RegisterMCPPromptTools(tools, toolbuiltin.MCPPromptToolOpts{
+		Manager: func() *mcppkg.Manager { return mcpManager },
+	})
 	defer func() {
 		if mcpManager != nil {
 			_ = mcpManager.Close()
