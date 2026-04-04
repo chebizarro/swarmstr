@@ -24,6 +24,7 @@ import (
 	"metiq/internal/config"
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
+	mcppkg "metiq/internal/mcp"
 	"metiq/internal/nostr/events"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/nostr/secure"
@@ -549,6 +550,63 @@ func TestHandleControlRPCRequest_RelayPolicyGet(t *testing.T) {
 	}
 	if len(view.ReadRelays) != 1 || view.ReadRelays[0] != "wss://read" {
 		t.Fatalf("unexpected read relays: %+v", view.ReadRelays)
+	}
+}
+
+func TestHandleControlRPCRequest_MCPMethods(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Relays: state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}}})
+	var mgr *mcppkg.Manager
+	oldMCPOps := controlMCPOps
+	controlMCPOps = newMCPOpsController(&mgr, agent.NewToolRegistry(), nil, cfgState, docs)
+	defer func() { controlMCPOps = oldMCPOps }()
+
+	putRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodMCPPut,
+		Params:     json.RawMessage(`{"server":"demo","config":{"type":"stdio","command":"npx"}}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, agent.NewToolRegistry(), nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("mcp.put error: %v", err)
+	}
+	putOut, ok := putRes.Result.(map[string]any)
+	if !ok || putOut["ok"] != true {
+		t.Fatalf("unexpected mcp.put result: %#v", putRes.Result)
+	}
+
+	getRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodMCPGet,
+		Params:     json.RawMessage(`{"server":"demo"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, agent.NewToolRegistry(), nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("mcp.get error: %v", err)
+	}
+	getOut, ok := getRes.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected mcp.get result: %#v", getRes.Result)
+	}
+	server, _ := getOut["server"].(map[string]any)
+	if fmt.Sprint(server["name"]) != "demo" {
+		t.Fatalf("unexpected mcp.get server payload: %#v", getOut)
+	}
+
+	listRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodMCPList,
+		Params:     nil,
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, agent.NewToolRegistry(), nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("mcp.list error: %v", err)
+	}
+	listOut, ok := listRes.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected mcp.list result: %#v", listRes.Result)
+	}
+	servers, _ := listOut["servers"].([]map[string]any)
+	if len(servers) != 1 {
+		t.Fatalf("unexpected mcp.list result: %#v", listRes.Result)
 	}
 }
 

@@ -163,6 +163,8 @@ var (
 	controlSecrets *secretspkg.Store
 	// controlMCPAuth manages remote MCP OAuth lifecycle against the live runtime.
 	controlMCPAuth *mcpAuthController
+	// controlMCPOps manages operator-facing MCP list/get/put/remove/test/reconnect flows.
+	controlMCPOps *mcpOpsController
 
 	// controlTTSMgr is the TTS provider manager (OpenAI, Kokoro, …).
 	controlTTSMgr *ttspkg.Manager
@@ -1152,6 +1154,7 @@ func main() {
 	controlSecrets = secretsStore
 	mcpAuthController := newMCPAuthController(&mcpManager, tools, secretsStore, func() state.ConfigDoc { return configState.Get() })
 	controlMCPAuth = mcpAuthController
+	controlMCPOps = newMCPOpsController(&mcpManager, tools, mcpAuthController, configState, docsRepo)
 	{
 		mcpCfg := mcppkg.ResolveConfigDoc(configState.Get())
 		if len(mcpCfg.Servers) > 0 || len(mcpCfg.DisabledServers) > 0 {
@@ -5511,6 +5514,24 @@ func main() {
 				SandboxRun: func(ctx context.Context, req methods.SandboxRunRequest) (map[string]any, error) {
 					return applySandboxRun(ctx, configState, req)
 				},
+				MCPList: func(ctx context.Context, req methods.MCPListRequest) (map[string]any, error) {
+					return controlMCPOps.applyList(ctx, req)
+				},
+				MCPGet: func(ctx context.Context, req methods.MCPGetRequest) (map[string]any, error) {
+					return controlMCPOps.applyGet(ctx, req)
+				},
+				MCPPut: func(ctx context.Context, req methods.MCPPutRequest) (map[string]any, error) {
+					return controlMCPOps.applyPut(ctx, req)
+				},
+				MCPRemove: func(ctx context.Context, req methods.MCPRemoveRequest) (map[string]any, error) {
+					return controlMCPOps.applyRemove(ctx, req)
+				},
+				MCPTest: func(ctx context.Context, req methods.MCPTestRequest) (map[string]any, error) {
+					return controlMCPOps.applyTest(ctx, req)
+				},
+				MCPReconnect: func(ctx context.Context, req methods.MCPReconnectRequest) (map[string]any, error) {
+					return controlMCPOps.applyReconnect(ctx, req)
+				},
 				MCPAuthStart: func(ctx context.Context, req methods.MCPAuthStartRequest) (map[string]any, error) {
 					return mcpAuthController.applyStart(ctx, req)
 				},
@@ -8780,6 +8801,108 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		out, err := applySandboxRun(ctx, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
+	case methods.MethodMCPList:
+		req, err := methods.DecodeMCPListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlMCPOps == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := controlMCPOps.applyList(ctx, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
+	case methods.MethodMCPGet:
+		req, err := methods.DecodeMCPGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlMCPOps == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := controlMCPOps.applyGet(ctx, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
+	case methods.MethodMCPPut:
+		req, err := methods.DecodeMCPPutParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlMCPOps == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := controlMCPOps.applyPut(ctx, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
+	case methods.MethodMCPRemove:
+		req, err := methods.DecodeMCPRemoveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlMCPOps == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := controlMCPOps.applyRemove(ctx, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
+	case methods.MethodMCPTest:
+		req, err := methods.DecodeMCPTestParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlMCPOps == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := controlMCPOps.applyTest(ctx, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
+	case methods.MethodMCPReconnect:
+		req, err := methods.DecodeMCPReconnectParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlMCPOps == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := controlMCPOps.applyReconnect(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}
