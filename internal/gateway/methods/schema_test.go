@@ -257,6 +257,39 @@ func TestDecodeConfigPutParams_ExpectedVersionZeroIsExplicit(t *testing.T) {
 	}
 }
 
+func TestDecodeMCPListParams_EmptyAllowed(t *testing.T) {
+	req, err := DecodeMCPListParams(nil)
+	if err != nil {
+		t.Fatalf("DecodeMCPListParams error: %v", err)
+	}
+	if _, err := req.Normalize(); err != nil {
+		t.Fatalf("Normalize error: %v", err)
+	}
+}
+
+func TestMCPPutRequestNormalize_RequiresServerAndConfig(t *testing.T) {
+	if _, err := (MCPPutRequest{Server: " ", Config: map[string]any{"type": "stdio"}}).Normalize(); err == nil {
+		t.Fatal("expected missing server error")
+	}
+	if _, err := (MCPPutRequest{Server: "demo"}).Normalize(); err == nil || !strings.Contains(err.Error(), "config is required") {
+		t.Fatalf("expected missing config error, got %v", err)
+	}
+	req, err := (MCPPutRequest{Server: " demo ", Config: map[string]any{"type": "stdio"}}).Normalize()
+	if err != nil {
+		t.Fatalf("Normalize error: %v", err)
+	}
+	if req.Server != "demo" {
+		t.Fatalf("expected trimmed server, got %#v", req)
+	}
+}
+
+func TestMCPTestRequestNormalize_RejectsNegativeTimeout(t *testing.T) {
+	_, err := (MCPTestRequest{Server: "demo", TimeoutMS: -1}).Normalize()
+	if err == nil || !strings.Contains(err.Error(), "timeout_ms") {
+		t.Fatalf("expected timeout validation error, got %v", err)
+	}
+}
+
 func TestDecodeListPutParams_ArrayMode(t *testing.T) {
 	raw := json.RawMessage(`["allowlist",["npub1","npub2","npub1"," "]]`)
 	req, err := DecodeListPutParams(raw)

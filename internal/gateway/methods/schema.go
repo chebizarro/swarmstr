@@ -151,6 +151,12 @@ const (
 	MethodExecApprovalRequest      = "exec.approval.request"
 	MethodExecApprovalWaitDecision = "exec.approval.waitDecision"
 	MethodExecApprovalResolve      = "exec.approval.resolve"
+	MethodMCPList                  = "mcp.list"
+	MethodMCPGet                   = "mcp.get"
+	MethodMCPPut                   = "mcp.put"
+	MethodMCPRemove                = "mcp.remove"
+	MethodMCPTest                  = "mcp.test"
+	MethodMCPReconnect             = "mcp.reconnect"
 	MethodMCPAuthStart             = "mcp.auth.start"
 	MethodMCPAuthRefresh           = "mcp.auth.refresh"
 	MethodMCPAuthClear             = "mcp.auth.clear"
@@ -1178,6 +1184,31 @@ type SandboxRunRequest struct {
 	TimeoutSeconds int `json:"timeout_s,omitempty"`
 	// Driver overrides the daemon's configured sandbox driver.
 	Driver string `json:"driver,omitempty"`
+}
+
+type MCPListRequest struct{}
+
+type MCPGetRequest struct {
+	Server string `json:"server"`
+}
+
+type MCPPutRequest struct {
+	Server string         `json:"server"`
+	Config map[string]any `json:"config"`
+}
+
+type MCPRemoveRequest struct {
+	Server string `json:"server"`
+}
+
+type MCPTestRequest struct {
+	Server    string         `json:"server"`
+	Config    map[string]any `json:"config,omitempty"`
+	TimeoutMS int            `json:"timeout_ms,omitempty"`
+}
+
+type MCPReconnectRequest struct {
+	Server string `json:"server"`
 }
 
 type MCPAuthStartRequest struct {
@@ -2440,6 +2471,54 @@ func (r TTSConvertRequest) Normalize() (TTSConvertRequest, error) {
 	return r, nil
 }
 
+func (r MCPListRequest) Normalize() (MCPListRequest, error) { return r, nil }
+
+func (r MCPGetRequest) Normalize() (MCPGetRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	return r, nil
+}
+
+func (r MCPPutRequest) Normalize() (MCPPutRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	if len(r.Config) == 0 {
+		return r, fmt.Errorf("config is required")
+	}
+	return r, nil
+}
+
+func (r MCPRemoveRequest) Normalize() (MCPRemoveRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	return r, nil
+}
+
+func (r MCPTestRequest) Normalize() (MCPTestRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	if r.TimeoutMS < 0 {
+		return r, fmt.Errorf("timeout_ms must be >= 0")
+	}
+	return r, nil
+}
+
+func (r MCPReconnectRequest) Normalize() (MCPReconnectRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	return r, nil
+}
+
 func (r MCPAuthStartRequest) Normalize() (MCPAuthStartRequest, error) {
 	r.Server = strings.TrimSpace(r.Server)
 	r.ClientSecret = strings.TrimSpace(r.ClientSecret)
@@ -2584,6 +2663,12 @@ func SupportedMethods() []string {
 		MethodExecApprovalRequest,
 		MethodExecApprovalWaitDecision,
 		MethodExecApprovalResolve,
+		MethodMCPList,
+		MethodMCPGet,
+		MethodMCPPut,
+		MethodMCPRemove,
+		MethodMCPTest,
+		MethodMCPReconnect,
 		MethodMCPAuthStart,
 		MethodMCPAuthRefresh,
 		MethodMCPAuthClear,
@@ -4193,6 +4278,33 @@ func DecodeExecApprovalResolveParams(params json.RawMessage) (ExecApprovalResolv
 
 func DecodeSandboxRunParams(params json.RawMessage) (SandboxRunRequest, error) {
 	return decodeMethodParams[SandboxRunRequest](params)
+}
+
+func DecodeMCPListParams(params json.RawMessage) (MCPListRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return MCPListRequest{}, nil
+	}
+	return decodeMethodParams[MCPListRequest](params)
+}
+
+func DecodeMCPGetParams(params json.RawMessage) (MCPGetRequest, error) {
+	return decodeMethodParams[MCPGetRequest](params)
+}
+
+func DecodeMCPPutParams(params json.RawMessage) (MCPPutRequest, error) {
+	return decodeMethodParams[MCPPutRequest](params)
+}
+
+func DecodeMCPRemoveParams(params json.RawMessage) (MCPRemoveRequest, error) {
+	return decodeMethodParams[MCPRemoveRequest](params)
+}
+
+func DecodeMCPTestParams(params json.RawMessage) (MCPTestRequest, error) {
+	return decodeMethodParams[MCPTestRequest](params)
+}
+
+func DecodeMCPReconnectParams(params json.RawMessage) (MCPReconnectRequest, error) {
+	return decodeMethodParams[MCPReconnectRequest](params)
 }
 
 func DecodeMCPAuthStartParams(params json.RawMessage) (MCPAuthStartRequest, error) {

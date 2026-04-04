@@ -136,6 +136,12 @@ type ServerOptions struct {
 	ExecApprovalWaitDecision    func(context.Context, methods.ExecApprovalWaitDecisionRequest) (map[string]any, error)
 	ExecApprovalResolve         func(context.Context, methods.ExecApprovalResolveRequest) (map[string]any, error)
 	SandboxRun                  func(context.Context, methods.SandboxRunRequest) (map[string]any, error)
+	MCPList                     func(context.Context, methods.MCPListRequest) (map[string]any, error)
+	MCPGet                      func(context.Context, methods.MCPGetRequest) (map[string]any, error)
+	MCPPut                      func(context.Context, methods.MCPPutRequest) (map[string]any, error)
+	MCPRemove                   func(context.Context, methods.MCPRemoveRequest) (map[string]any, error)
+	MCPTest                     func(context.Context, methods.MCPTestRequest) (map[string]any, error)
+	MCPReconnect                func(context.Context, methods.MCPReconnectRequest) (map[string]any, error)
 	MCPAuthStart                func(context.Context, methods.MCPAuthStartRequest) (map[string]any, error)
 	MCPAuthRefresh              func(context.Context, methods.MCPAuthRefreshRequest) (map[string]any, error)
 	MCPAuthClear                func(context.Context, methods.MCPAuthClearRequest) (map[string]any, error)
@@ -2110,6 +2116,108 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return nil, http.StatusNotImplemented, fmt.Errorf("sandbox not configured")
 		}
 		out, err := opts.SandboxRun(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodMCPList:
+		req, err := methods.DecodeMCPListParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.MCPList == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := opts.MCPList(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodMCPGet:
+		req, err := methods.DecodeMCPGetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.MCPGet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := opts.MCPGet(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodMCPPut:
+		req, err := methods.DecodeMCPPutParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.MCPPut == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := opts.MCPPut(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodMCPRemove:
+		req, err := methods.DecodeMCPRemoveParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.MCPRemove == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := opts.MCPRemove(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodMCPTest:
+		req, err := methods.DecodeMCPTestParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.MCPTest == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := opts.MCPTest(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodMCPReconnect:
+		req, err := methods.DecodeMCPReconnectParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.MCPReconnect == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("mcp operations not configured")
+		}
+		out, err := opts.MCPReconnect(ctx, req)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
