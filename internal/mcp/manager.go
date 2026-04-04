@@ -43,8 +43,9 @@ type ServerConfig struct {
 
 // Config defines configuration for all MCP servers.
 type Config struct {
-	Enabled bool                    `json:"enabled"`
-	Servers map[string]ServerConfig `json:"servers,omitempty"`
+	Enabled    bool                            `json:"enabled"`
+	Servers    map[string]ResolvedServerConfig `json:"servers,omitempty"`
+	Suppressed []SuppressedServer              `json:"suppressed,omitempty"`
 }
 
 // ServerConnection represents a connection to an MCP server.
@@ -89,9 +90,9 @@ func (m *Manager) LoadFromConfig(ctx context.Context, cfg Config) error {
 		}
 		enabledCount++
 		wg.Add(1)
-		go func(name string, serverCfg ServerConfig) {
+		go func(name string, serverCfg ResolvedServerConfig) {
 			defer wg.Done()
-			if err := m.ConnectServer(ctx, name, serverCfg); err != nil {
+			if err := m.ConnectServer(ctx, name, serverCfg.ServerConfig); err != nil {
 				log.Printf("[mcp] failed to connect to server %s: %v", name, err)
 				errs <- fmt.Errorf("server %s: %w", name, err)
 			}
@@ -316,99 +317,6 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		base = http.DefaultTransport
 	}
 	return base.RoundTrip(req)
-}
-
-// ParseMCPConfig extracts MCP configuration from the extra config map.
-// Expected format:
-//
-//	extra:
-//	  mcp:
-//	    enabled: true
-//	    servers:
-//	      myserver:
-//	        enabled: true
-//	        command: "npx"
-//	        args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-//	      remote:
-//	        enabled: true
-//	        url: "https://mcp.example.com/sse"
-//	        headers:
-//	          Authorization: "Bearer tok"
-func ParseMCPConfig(extra map[string]any) Config {
-	var cfg Config
-	mcpRaw, ok := extra["mcp"]
-	if !ok {
-		return cfg
-	}
-	mcpMap, ok := mcpRaw.(map[string]any)
-	if !ok {
-		return cfg
-	}
-
-	if enabled, ok := mcpMap["enabled"].(bool); ok {
-		cfg.Enabled = enabled
-	}
-
-	serversRaw, ok := mcpMap["servers"]
-	if !ok {
-		return cfg
-	}
-	serversMap, ok := serversRaw.(map[string]any)
-	if !ok {
-		return cfg
-	}
-
-	cfg.Servers = make(map[string]ServerConfig, len(serversMap))
-	for name, raw := range serversMap {
-		sm, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		var sc ServerConfig
-		if v, ok := sm["enabled"].(bool); ok {
-			sc.Enabled = v
-		}
-		if v, ok := sm["command"].(string); ok {
-			sc.Command = v
-		}
-		if v, ok := sm["type"].(string); ok {
-			sc.Type = v
-		}
-		if v, ok := sm["url"].(string); ok {
-			sc.URL = v
-		}
-		// Parse args.
-		if argsRaw, ok := sm["args"]; ok {
-			if argsSlice, ok := argsRaw.([]any); ok {
-				for _, a := range argsSlice {
-					if s, ok := a.(string); ok {
-						sc.Args = append(sc.Args, s)
-					}
-				}
-			}
-		}
-		// Parse env.
-		if envRaw, ok := sm["env"].(map[string]any); ok {
-			sc.Env = make(map[string]string, len(envRaw))
-			for k, v := range envRaw {
-				if s, ok := v.(string); ok {
-					sc.Env[k] = s
-				}
-			}
-		}
-		// Parse headers.
-		if headersRaw, ok := sm["headers"].(map[string]any); ok {
-			sc.Headers = make(map[string]string, len(headersRaw))
-			for k, v := range headersRaw {
-				if s, ok := v.(string); ok {
-					sc.Headers[k] = s
-				}
-			}
-		}
-		cfg.Servers[name] = sc
-	}
-
-	return cfg
 }
 
 // extractContentText extracts text from MCP content array.
