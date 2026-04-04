@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -913,6 +914,59 @@ func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
 	payload, _ = res.Result.(map[string]any)
 	if payload["deleted"] != true || payload["sessionId"] != "s1" {
 		t.Fatalf("unexpected sessions.delete result: %#v", res.Result)
+	}
+}
+
+func TestHandleControlRPCRequest_SessionsCompactHandlesLargeTranscripts(t *testing.T) {
+	oldRuntime := controlAgentRuntime
+	controlAgentRuntime = nil
+	t.Cleanup(func() { controlAgentRuntime = oldRuntime })
+
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	transcript := state.NewTranscriptRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	if _, err := docs.PutSession(context.Background(), "s-large", state.SessionDoc{Version: 1, SessionID: "s-large", PeerPubKey: "peer", LastInboundAt: time.Now().Unix()}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	for i := 0; i < 2505; i++ {
+		_, err := transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{
+			Version:   1,
+			SessionID: "s-large",
+			EntryID:   fmt.Sprintf("e%04d", i),
+			Role:      "user",
+			Text:      fmt.Sprintf("msg %d", i),
+			Unix:      int64(i + 1),
+		})
+		if err != nil {
+			t.Fatalf("put transcript entry %d: %v", i, err)
+		}
+	}
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSessionsCompact,
+		Params:     json.RawMessage(`{"session_id":"s-large","keep":5}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("sessions.compact error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	if got := payload["fromEntries"]; got != 2505 {
+		t.Fatalf("expected fromEntries=2505, got %#v", got)
+	}
+	if got := payload["dropped"]; got != 2500 {
+		t.Fatalf("expected dropped=2500, got %#v", got)
+	}
+	entries, err := transcript.ListSessionAll(context.Background(), "s-large")
+	if err != nil {
+		t.Fatalf("list session: %v", err)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 remaining entries, got %d", len(entries))
+	}
+	if entries[0].EntryID != "e2500" || entries[4].EntryID != "e2504" {
+		t.Fatalf("unexpected remaining entries: first=%s last=%s", entries[0].EntryID, entries[4].EntryID)
 	}
 }
 
@@ -2721,6 +2775,14 @@ func (s *testStore) ListByTagForAuthor(_ context.Context, kind events.Kind, auth
 	return s.listByTag(kind, authorPubKey, tagName, tagValue, limit), nil
 }
 
+func (s *testStore) ListByTagPage(_ context.Context, kind events.Kind, tagName, tagValue string, limit int, cursor *state.EventPageCursor) (state.EventPage, error) {
+	return s.listByTagPage(kind, "", tagName, tagValue, limit, cursor), nil
+}
+
+func (s *testStore) ListByTagForAuthorPage(_ context.Context, kind events.Kind, authorPubKey, tagName, tagValue string, limit int, cursor *state.EventPageCursor) (state.EventPage, error) {
+	return s.listByTagPage(kind, authorPubKey, tagName, tagValue, limit, cursor), nil
+}
+
 func (s *testStore) listByTag(kind events.Kind, authorPubKey, tagName, tagValue string, limit int) []state.Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2746,6 +2808,90 @@ func (s *testStore) listByTag(kind events.Kind, authorPubKey, tagName, tagValue 
 		}
 	}
 	return out
+}
+
+func (s *testStore) listByTagPage(kind events.Kind, authorPubKey, tagName, tagValue string, limit int, cursor *state.EventPageCursor) state.EventPage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]state.Event, 0, len(s.replaceable))
+	for _, evt := range s.replaceable {
+		if evt.Kind != kind {
+			continue
+		}
+		if authorPubKey != "" && evt.PubKey != authorPubKey {
+			continue
+		}
+		for _, tag := range evt.Tags {
+			if len(tag) >= 2 && tag[0] == tagName && tag[1] == tagValue {
+				out = append(out, evt)
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt > out[j].CreatedAt
+		}
+		return out[i].ID > out[j].ID
+	})
+	skip := make(map[string]struct{})
+	if cursor != nil {
+		for _, id := range cursor.SkipIDs {
+			if id == "" {
+				continue
+			}
+			skip[id] = struct{}{}
+		}
+	}
+	filtered := make([]state.Event, 0, len(out))
+	for _, evt := range out {
+		if cursor != nil && cursor.Until > 0 {
+			if evt.CreatedAt > cursor.Until {
+				continue
+			}
+			if evt.CreatedAt == cursor.Until {
+				if _, ok := skip[evt.ID]; ok {
+					continue
+				}
+			}
+		}
+		filtered = append(filtered, evt)
+	}
+	page := state.EventPage{Events: filtered}
+	if len(filtered) > limit {
+		page.Events = filtered[:limit]
+		boundaryUnix := page.Events[len(page.Events)-1].CreatedAt
+		nextSkip := make(map[string]struct{})
+		var skipIDs []string
+		if cursor != nil && cursor.Until == boundaryUnix {
+			for _, id := range cursor.SkipIDs {
+				if id == "" {
+					continue
+				}
+				if _, ok := nextSkip[id]; ok {
+					continue
+				}
+				nextSkip[id] = struct{}{}
+				skipIDs = append(skipIDs, id)
+			}
+		}
+		for _, evt := range page.Events {
+			if evt.CreatedAt != boundaryUnix || evt.ID == "" {
+				continue
+			}
+			if _, ok := nextSkip[evt.ID]; ok {
+				continue
+			}
+			nextSkip[evt.ID] = struct{}{}
+			skipIDs = append(skipIDs, evt.ID)
+		}
+		sort.Strings(skipIDs)
+		page.NextCursor = &state.EventPageCursor{Until: boundaryUnix, SkipIDs: skipIDs}
+	}
+	return page
 }
 
 func (s *testStore) key(addr state.Address) string {

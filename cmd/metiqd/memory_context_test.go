@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,7 +103,7 @@ func TestAssembleMemorySystemPrompt_IncludesGuidanceAndPinnedKnowledge(t *testin
 	idx := &memoryStoreStub{
 		pinned: []memory.IndexedMemory{{MemoryID: "p1", Topic: pinnedKnowledgeTopic, Text: "user prefers terse responses"}},
 	}
-	got := assembleMemorySystemPrompt(idx, memory.ScopedContext{})
+	got := assembleMemorySystemPrompt(idx, memory.ScopedContext{}, "")
 	for _, want := range []string{
 		"## Memory",
 		"## Types of memory",
@@ -126,7 +128,7 @@ func TestAssembleMemorySystemPrompt_IncludesScopedGuidance(t *testing.T) {
 		Scope:        state.AgentMemoryScopeProject,
 		AgentID:      "builder",
 		WorkspaceDir: "/tmp/worktree",
-	})
+	}, "")
 	if !strings.Contains(got, "## Memory Scope") {
 		t.Fatalf("expected memory scope section, got: %s", got)
 	}
@@ -203,7 +205,7 @@ func TestBuildAgentRunTurn_JoinsRecallAndRequestContext(t *testing.T) {
 		pinned:  []memory.IndexedMemory{{MemoryID: "p1", Topic: pinnedKnowledgeTopic, Text: "user prefers terse responses"}},
 	}
 	req := methods.AgentRequest{SessionID: "session-a", Message: "what should I know", Context: "extra runtime context"}
-	turn := buildAgentRunTurn(context.Background(), req, idx, memory.ScopedContext{})
+	turn := buildAgentRunTurn(context.Background(), req, idx, memory.ScopedContext{}, "")
 	if turn.SessionID != req.SessionID || turn.UserText != req.Message {
 		t.Fatalf("unexpected turn identity: %#v", turn)
 	}
@@ -215,6 +217,157 @@ func TestBuildAgentRunTurn_JoinsRecallAndRequestContext(t *testing.T) {
 	}
 	if !strings.Contains(turn.Context, req.Context) {
 		t.Fatalf("expected request context to be preserved, got: %s", turn.Context)
+	}
+}
+
+func TestBuildAgentRunTurn_IncludesFileBackedMemoryPrompt(t *testing.T) {
+	workspaceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspaceDir, memory.FileMemoryEntrypointName), []byte("- [prefs](memory/prefs.md) — user response preferences"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	memoryDir := filepath.Join(workspaceDir, "memory")
+	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memoryDir, "prefs.md"), []byte(`---
+name: prefs
+description: Stable formatting preferences
+type: feedback
+---
+Use terse bullets.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	turn := buildAgentRunTurn(context.Background(), methods.AgentRequest{
+		SessionID: "session-a",
+		Message:   "what should I remember",
+	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir)
+
+	if !strings.Contains(turn.StaticSystemPrompt, "## File-backed Memory") {
+		t.Fatalf("expected file-backed memory section, got: %s", turn.StaticSystemPrompt)
+	}
+	if !strings.Contains(turn.StaticSystemPrompt, "`prefs.md` [feedback] prefs — Stable formatting preferences") {
+		t.Fatalf("expected typed topic listing, got: %s", turn.StaticSystemPrompt)
+	}
+}
+
+func TestResolveMemoryScopeContext_LocalScopeUsesSessionWorkspaceSurface(t *testing.T) {
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	fallbackWorkspaceDir := t.TempDir()
+	sessionWorkspaceDir := t.TempDir()
+	if err := sessionStore.Put("sess-local", state.SessionEntry{
+		SessionID:        "sess-local",
+		AgentID:          "builder",
+		MemoryScope:      state.AgentMemoryScopeLocal,
+		SpawnedWorkspace: sessionWorkspaceDir,
+	}); err != nil {
+		t.Fatalf("seed session store: %v", err)
+	}
+	cfg := state.ConfigDoc{Agents: []state.AgentConfig{{ID: "builder", WorkspaceDir: fallbackWorkspaceDir}}}
+
+	scope := resolveMemoryScopeContext(context.Background(), cfg, nil, sessionStore, "sess-local", "", "")
+	if scope.Scope != state.AgentMemoryScopeLocal {
+		t.Fatalf("expected local scope, got %+v", scope)
+	}
+	if scope.AgentID != "builder" {
+		t.Fatalf("expected routed agent, got %+v", scope)
+	}
+	if scope.WorkspaceDir != sessionWorkspaceDir {
+		t.Fatalf("expected session workspace %q, got %+v", sessionWorkspaceDir, scope)
+	}
+}
+
+func TestAssembleMemorySystemPrompt_PrefersScopedWorkspaceForFileMemory(t *testing.T) {
+	fallbackWorkspaceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fallbackWorkspaceDir, memory.FileMemoryEntrypointName), []byte("fallback entrypoint"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	scopedWorkspaceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(scopedWorkspaceDir, memory.FileMemoryEntrypointName), []byte("scoped entrypoint"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(scopedWorkspaceDir, "memory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scopedWorkspaceDir, "memory", "prefs.md"), []byte(`---
+name: prefs
+description: Scoped workspace memory
+type: feedback
+---
+Use the scoped workspace.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := assembleMemorySystemPrompt(&memoryStoreStub{}, memory.ScopedContext{
+		Scope:        state.AgentMemoryScopeProject,
+		AgentID:      "builder",
+		WorkspaceDir: scopedWorkspaceDir,
+	}, fallbackWorkspaceDir)
+
+	if !strings.Contains(prompt, "scoped entrypoint") {
+		t.Fatalf("expected scoped workspace entrypoint, got: %s", prompt)
+	}
+	if strings.Contains(prompt, "fallback entrypoint") {
+		t.Fatalf("did not expect fallback workspace entrypoint, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "`prefs.md` [feedback] prefs — Scoped workspace memory") {
+		t.Fatalf("expected scoped typed topic listing, got: %s", prompt)
+	}
+}
+
+func TestAssembleMemorySystemPrompt_PrefersLocalSessionWorkspaceForFileMemory(t *testing.T) {
+	fallbackWorkspaceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fallbackWorkspaceDir, memory.FileMemoryEntrypointName), []byte("fallback entrypoint"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionWorkspaceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sessionWorkspaceDir, memory.FileMemoryEntrypointName), []byte("session entrypoint"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(sessionWorkspaceDir, "memory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionWorkspaceDir, "memory", "prefs.md"), []byte(`---
+name: prefs
+description: Session workspace memory
+type: feedback
+---
+Use the session workspace.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	if err := sessionStore.Put("sess-local", state.SessionEntry{
+		SessionID:        "sess-local",
+		AgentID:          "builder",
+		MemoryScope:      state.AgentMemoryScopeLocal,
+		SpawnedWorkspace: sessionWorkspaceDir,
+	}); err != nil {
+		t.Fatalf("seed session store: %v", err)
+	}
+	cfg := state.ConfigDoc{Agents: []state.AgentConfig{{ID: "builder", WorkspaceDir: fallbackWorkspaceDir}}}
+	scope := resolveMemoryScopeContext(context.Background(), cfg, nil, sessionStore, "sess-local", "", "")
+
+	prompt := assembleMemorySystemPrompt(&memoryStoreStub{}, scope, fallbackWorkspaceDir)
+	if !strings.Contains(prompt, "session entrypoint") {
+		t.Fatalf("expected session workspace entrypoint, got: %s", prompt)
+	}
+	if strings.Contains(prompt, "fallback entrypoint") {
+		t.Fatalf("did not expect fallback workspace entrypoint, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "`prefs.md` [feedback] prefs — Session workspace memory") {
+		t.Fatalf("expected session typed topic listing, got: %s", prompt)
 	}
 }
 

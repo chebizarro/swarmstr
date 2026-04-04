@@ -21,12 +21,20 @@ const (
 // assembleMemorySystemPrompt packages the stable, model-facing memory contract
 // into the static prompt lane. It adapts the canonical src memory prompt
 // packaging onto metiq's indexed backend without importing src's file layout.
-func assembleMemorySystemPrompt(index memory.Store, scope memory.ScopedContext) string {
+func assembleMemorySystemPrompt(index memory.Store, scope memory.ScopedContext, workspaceDir string) string {
 	return joinPromptSections(
 		buildMemoryMechanicsPrompt(),
 		buildMemoryScopePrompt(scope),
 		buildPinnedKnowledgePrompt(index, scope),
+		memory.BuildFileMemoryPrompt(fileMemoryWorkspaceDir(scope, workspaceDir)),
 	)
+}
+
+func fileMemoryWorkspaceDir(scope memory.ScopedContext, fallback string) string {
+	if workspaceDir := strings.TrimSpace(scope.WorkspaceDir); workspaceDir != "" {
+		return workspaceDir
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func buildMemoryMechanicsPrompt() string {
@@ -200,7 +208,7 @@ func formatMemoryRecallItem(item memory.IndexedMemory) string {
 	return "- " + text
 }
 
-func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store, scope memory.ScopedContext) agent.Turn {
+func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store, scope memory.ScopedContext, workspaceDir string) agent.Turn {
 	turnContext := joinPromptSections(
 		assembleMemoryRecallContext(ctx, index, scope, req.SessionID, req.Message, defaultMemoryRecallLimit),
 		req.Context,
@@ -208,7 +216,7 @@ func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memo
 	return agent.Turn{
 		SessionID:          req.SessionID,
 		UserText:           req.Message,
-		StaticSystemPrompt: assembleMemorySystemPrompt(index, scope),
+		StaticSystemPrompt: assembleMemorySystemPrompt(index, scope, workspaceDir),
 		Context:            turnContext,
 	}
 }

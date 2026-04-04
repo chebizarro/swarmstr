@@ -17,13 +17,20 @@ type SessionEntry struct {
 	SessionID string `json:"session_id"`
 
 	// Session lifecycle / fork metadata.
-	SessionFile      string `json:"session_file,omitempty"`
-	SpawnedBy        string `json:"spawned_by,omitempty"`
-	SpawnedWorkspace string `json:"spawned_workspace_dir,omitempty"`
-	ForkedFromParent bool   `json:"forked_from_parent,omitempty"`
-	CompactionCount  int64  `json:"compaction_count,omitempty"`
-	MemoryFlushAt    int64  `json:"memory_flush_at,omitempty"`
-	MemoryFlushCount int64  `json:"memory_flush_compaction_count,omitempty"`
+	SessionFile                   string `json:"session_file,omitempty"`
+	SpawnedBy                     string `json:"spawned_by,omitempty"`
+	SpawnedWorkspace              string `json:"spawned_workspace_dir,omitempty"`
+	ForkedFromParent              bool   `json:"forked_from_parent,omitempty"`
+	CompactionCount               int64  `json:"compaction_count,omitempty"`
+	MemoryFlushAt                 int64  `json:"memory_flush_at,omitempty"`
+	MemoryFlushCount              int64  `json:"memory_flush_compaction_count,omitempty"`
+	SessionMemoryFile             string `json:"session_memory_file,omitempty"`
+	SessionMemoryInitialized      bool   `json:"session_memory_initialized,omitempty"`
+	SessionMemoryObservedChars    int    `json:"session_memory_observed_chars,omitempty"`
+	SessionMemoryPendingChars     int    `json:"session_memory_pending_chars,omitempty"`
+	SessionMemoryPendingToolCalls int    `json:"session_memory_pending_tool_calls,omitempty"`
+	SessionMemoryLastEntryID      string `json:"session_memory_last_entry_id,omitempty"`
+	SessionMemoryUpdatedAt        int64  `json:"session_memory_updated_at,omitempty"`
 
 	// Agent / model / provider routing state.
 	AgentID          string           `json:"agent_id,omitempty"`
@@ -106,6 +113,7 @@ func (e SessionEntry) CarryOverFlags(newSessionID string) SessionEntry {
 	now := time.Now().UTC()
 	return SessionEntry{
 		SessionID:        newSessionID,
+		SpawnedWorkspace: e.SpawnedWorkspace,
 		AgentID:          e.AgentID,
 		MemoryScope:      e.MemoryScope,
 		ProviderOverride: e.ProviderOverride,
