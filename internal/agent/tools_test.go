@@ -86,6 +86,32 @@ func TestToolRegistry_RegisterWithDescriptor_ProjectsDefinition(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_Remove(t *testing.T) {
+	r := NewToolRegistry()
+	r.RegisterWithDescriptor("mcp_demo_echo", func(_ context.Context, _ map[string]any) (string, error) {
+		return "ok", nil
+	}, ToolDescriptor{
+		Description: "demo",
+		Origin:      ToolOrigin{Kind: ToolOriginKindMCP, ServerName: "demo", CanonicalName: "echo"},
+	})
+
+	if !r.Remove("mcp_demo_echo") {
+		t.Fatal("expected Remove to report success")
+	}
+	if r.Remove("mcp_demo_echo") {
+		t.Fatal("expected second Remove to report no-op")
+	}
+	if _, ok := r.Descriptor("mcp_demo_echo"); ok {
+		t.Fatal("expected descriptor to be removed")
+	}
+	if defs := r.Definitions(); len(defs) != 0 {
+		t.Fatalf("expected provider definitions to be empty after remove, got %+v", defs)
+	}
+	if _, err := r.Execute(context.Background(), ToolCall{Name: "mcp_demo_echo"}); err == nil {
+		t.Fatal("expected removed tool execution to fail")
+	}
+}
+
 func TestAssembleToolDescriptors_BuiltinPrefixWinsNameConflicts(t *testing.T) {
 	descs := []ToolDescriptor{
 		{Name: "plugin/zeta", Origin: ToolOrigin{Kind: ToolOriginKindPlugin}},

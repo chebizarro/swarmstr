@@ -309,22 +309,23 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 	if turn.SessionID != "" {
 		ctx = ContextWithSessionID(ctx, turn.SessionID)
 	}
+	frozenTools := SnapshotToolExecutor(r.tools)
 	// Auto-inject tool definitions when the executor provides them and the
 	// caller hasn't already populated turn.Tools.
-	if len(turn.Tools) == 0 && r.tools != nil {
-		if dp, ok := r.tools.(interface{ Definitions() []ToolDefinition }); ok {
+	if len(turn.Tools) == 0 && frozenTools != nil {
+		if dp, ok := frozenTools.(interface{ Definitions() []ToolDefinition }); ok {
 			turn.Tools = dp.Definitions()
 		}
 	}
 	// Inject the executor so providers can run the agentic tool loop internally.
 	if turn.Executor == nil {
-		turn.Executor = r.tools
+		turn.Executor = frozenTools
 	}
 	gen, err := r.provider.Generate(ctx, turn)
 	if err != nil {
 		return TurnResult{}, err
 	}
-	return r.buildResult(ctx, gen)
+	return r.buildResult(ctx, gen, frozenTools)
 }
 
 // ProcessTurnStreaming processes a turn with incremental text delivery.
@@ -340,14 +341,15 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	if turn.SessionID != "" {
 		ctx = ContextWithSessionID(ctx, turn.SessionID)
 	}
+	frozenTools := SnapshotToolExecutor(r.tools)
 	// Auto-inject tool definitions (same as ProcessTurn).
-	if len(turn.Tools) == 0 && r.tools != nil {
-		if dp, ok := r.tools.(interface{ Definitions() []ToolDefinition }); ok {
+	if len(turn.Tools) == 0 && frozenTools != nil {
+		if dp, ok := frozenTools.(interface{ Definitions() []ToolDefinition }); ok {
 			turn.Tools = dp.Definitions()
 		}
 	}
 	if turn.Executor == nil {
-		turn.Executor = r.tools
+		turn.Executor = frozenTools
 	}
 
 	var gen ProviderResult
@@ -365,11 +367,11 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		return TurnResult{}, err
 	}
 
-	return r.buildResult(ctx, gen)
+	return r.buildResult(ctx, gen, frozenTools)
 }
 
 // buildResult executes any tool calls from gen and assembles the TurnResult.
-func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult) (TurnResult, error) {
+func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult, tools ToolExecutor) (TurnResult, error) {
 	result := TurnResult{
 		Text:         strings.TrimSpace(gen.Text),
 		ToolTraces:   nil,
@@ -380,12 +382,12 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult) (
 	}
 	for _, call := range gen.ToolCalls {
 		trace := ToolTrace{Call: call}
-		if r.tools == nil {
+		if tools == nil {
 			trace.Error = "no tool executor configured"
 			result.ToolTraces = append(result.ToolTraces, trace)
 			continue
 		}
-		value, err := r.tools.Execute(ctx, call)
+		value, err := tools.Execute(ctx, call)
 		if err != nil {
 			trace.Error = err.Error()
 		} else {
