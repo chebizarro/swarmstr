@@ -205,7 +205,8 @@ func TestBuildAgentRunTurn_JoinsRecallAndRequestContext(t *testing.T) {
 		pinned:  []memory.IndexedMemory{{MemoryID: "p1", Topic: pinnedKnowledgeTopic, Text: "user prefers terse responses"}},
 	}
 	req := methods.AgentRequest{SessionID: "session-a", Message: "what should I know", Context: "extra runtime context"}
-	turn := buildAgentRunTurn(context.Background(), req, idx, memory.ScopedContext{}, "")
+	prepared := buildAgentRunTurn(context.Background(), req, idx, memory.ScopedContext{}, "", nil)
+	turn := prepared.Turn
 	if turn.SessionID != req.SessionID || turn.UserText != req.Message {
 		t.Fatalf("unexpected turn identity: %#v", turn)
 	}
@@ -239,16 +240,104 @@ Use terse bullets.
 		t.Fatal(err)
 	}
 
-	turn := buildAgentRunTurn(context.Background(), methods.AgentRequest{
+	prepared := buildAgentRunTurn(context.Background(), methods.AgentRequest{
 		SessionID: "session-a",
 		Message:   "what should I remember",
-	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir)
+	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir, nil)
+	turn := prepared.Turn
 
 	if !strings.Contains(turn.StaticSystemPrompt, "## File-backed Memory") {
 		t.Fatalf("expected file-backed memory section, got: %s", turn.StaticSystemPrompt)
 	}
 	if !strings.Contains(turn.StaticSystemPrompt, "`prefs.md` [feedback] prefs — Stable formatting preferences") {
 		t.Fatalf("expected typed topic listing, got: %s", turn.StaticSystemPrompt)
+	}
+}
+
+func TestBuildAgentRunTurn_IncludesRelevantFileMemoryRecallAndSuppressesRepeat(t *testing.T) {
+	workspaceDir := t.TempDir()
+	memoryDir := filepath.Join(workspaceDir, "memory")
+	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prefsPath := filepath.Join(memoryDir, "prefs.md")
+	if err := os.WriteFile(prefsPath, []byte(`---
+name: deployment prefs
+description: Stable deployment preferences
+type: feedback
+---
+Use canary releases for production deploys.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	first := buildAgentRunTurn(context.Background(), methods.AgentRequest{
+		SessionID: "session-a",
+		Message:   "how should I handle deployment",
+	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir, sessionStore)
+	if !strings.Contains(first.Turn.Context, "## Relevant File-backed Memory") {
+		t.Fatalf("expected file-memory recall context, got: %s", first.Turn.Context)
+	}
+	if !strings.Contains(first.Turn.Context, "Use canary releases for production deploys.") {
+		t.Fatalf("expected retrieved file-memory body, got: %s", first.Turn.Context)
+	}
+	commitSurfacedFileMemory(sessionStore, "session-a", first.SurfacedFileMemory)
+	entry, ok := sessionStore.Get("session-a")
+	if !ok || len(entry.FileMemorySurfaced) != 1 {
+		t.Fatalf("expected surfaced file-memory state, got %+v", entry)
+	}
+	second := buildAgentRunTurn(context.Background(), methods.AgentRequest{
+		SessionID: "session-a",
+		Message:   "how should I handle deployment",
+	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir, sessionStore)
+	if strings.Contains(second.Turn.Context, "## Relevant File-backed Memory") {
+		t.Fatalf("expected repeated file-memory recall to be suppressed, got: %s", second.Turn.Context)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(prefsPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	third := buildAgentRunTurn(context.Background(), methods.AgentRequest{
+		SessionID: "session-a",
+		Message:   "how should I handle deployment",
+	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir, sessionStore)
+	if !strings.Contains(third.Turn.Context, "## Relevant File-backed Memory") {
+		t.Fatalf("expected updated file memory to resurface, got: %s", third.Turn.Context)
+	}
+}
+
+func TestAssembleMemorySystemPrompt_UsesUserScopeAgentMemorySurface(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	userMemoryDir := filepath.Join(homeDir, ".metiq", "agent-memory", "builder")
+	if err := os.MkdirAll(filepath.Join(userMemoryDir, "memory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userMemoryDir, memory.FileMemoryEntrypointName), []byte("user scope entrypoint"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userMemoryDir, "memory", "prefs.md"), []byte(`---
+name: prefs
+description: User-scoped memory
+type: feedback
+---
+Use terse bullets.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := assembleMemorySystemPrompt(&memoryStoreStub{}, memory.ScopedContext{
+		Scope:   state.AgentMemoryScopeUser,
+		AgentID: "builder",
+	}, t.TempDir())
+	if !strings.Contains(prompt, "user scope entrypoint") {
+		t.Fatalf("expected user-scope entrypoint, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "`prefs.md` [feedback] prefs — User-scoped memory") {
+		t.Fatalf("expected user-scope typed topic listing, got: %s", prompt)
 	}
 }
 
@@ -281,6 +370,27 @@ func TestResolveMemoryScopeContext_LocalScopeUsesSessionWorkspaceSurface(t *test
 	}
 }
 
+func TestResolveMemoryScopeContext_LocalScopeRequiresSessionWorkspaceSurface(t *testing.T) {
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	agentWorkspaceDir := t.TempDir()
+	if err := sessionStore.Put("sess-local", state.SessionEntry{
+		SessionID:   "sess-local",
+		AgentID:     "builder",
+		MemoryScope: state.AgentMemoryScopeLocal,
+	}); err != nil {
+		t.Fatalf("seed session store: %v", err)
+	}
+	cfg := state.ConfigDoc{Agents: []state.AgentConfig{{ID: "builder", WorkspaceDir: agentWorkspaceDir}}}
+
+	scope := resolveMemoryScopeContext(context.Background(), cfg, nil, sessionStore, "sess-local", "", "")
+	if scope.Enabled() {
+		t.Fatalf("expected local scope to be disabled without a session workspace surface, got %+v", scope)
+	}
+}
+
 func TestAssembleMemorySystemPrompt_PrefersScopedWorkspaceForFileMemory(t *testing.T) {
 	fallbackWorkspaceDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(fallbackWorkspaceDir, memory.FileMemoryEntrypointName), []byte("fallback entrypoint"), 0o644); err != nil {
@@ -288,13 +398,14 @@ func TestAssembleMemorySystemPrompt_PrefersScopedWorkspaceForFileMemory(t *testi
 	}
 
 	scopedWorkspaceDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(scopedWorkspaceDir, memory.FileMemoryEntrypointName), []byte("scoped entrypoint"), 0o644); err != nil {
+	projectMemoryDir := filepath.Join(scopedWorkspaceDir, ".metiq", "agent-memory", "builder")
+	if err := os.MkdirAll(filepath.Join(projectMemoryDir, "memory"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(scopedWorkspaceDir, "memory"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(projectMemoryDir, memory.FileMemoryEntrypointName), []byte("scoped entrypoint"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(scopedWorkspaceDir, "memory", "prefs.md"), []byte(`---
+	if err := os.WriteFile(filepath.Join(projectMemoryDir, "memory", "prefs.md"), []byte(`---
 name: prefs
 description: Scoped workspace memory
 type: feedback
@@ -328,13 +439,14 @@ func TestAssembleMemorySystemPrompt_PrefersLocalSessionWorkspaceForFileMemory(t 
 	}
 
 	sessionWorkspaceDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(sessionWorkspaceDir, memory.FileMemoryEntrypointName), []byte("session entrypoint"), 0o644); err != nil {
+	localMemoryDir := filepath.Join(sessionWorkspaceDir, ".metiq", "agent-memory-local", "builder")
+	if err := os.MkdirAll(filepath.Join(localMemoryDir, "memory"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(sessionWorkspaceDir, "memory"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(localMemoryDir, memory.FileMemoryEntrypointName), []byte("session entrypoint"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sessionWorkspaceDir, "memory", "prefs.md"), []byte(`---
+	if err := os.WriteFile(filepath.Join(localMemoryDir, "memory", "prefs.md"), []byte(`---
 name: prefs
 description: Session workspace memory
 type: feedback

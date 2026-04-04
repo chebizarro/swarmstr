@@ -2,6 +2,8 @@ package memory
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,12 +38,13 @@ type FileMemoryManifest struct {
 }
 
 type FileMemoryTopic struct {
-	Path         string
-	RelativePath string
-	Name         string
-	Description  string
-	Type         FileMemoryType
-	UpdatedAt    time.Time
+	Path            string
+	RelativePath    string
+	Name            string
+	Description     string
+	Type            FileMemoryType
+	UpdatedAt       time.Time
+	ContentChecksum string
 }
 
 type FileMemoryScanResult struct {
@@ -55,6 +58,26 @@ type MemoryEntrypointTruncation struct {
 	ByteCount        int
 	WasLineTruncated bool
 	WasByteTruncated bool
+}
+
+type FileMemoryCandidate struct {
+	RelativePath    string
+	Name            string
+	Description     string
+	Type            FileMemoryType
+	UpdatedAt       time.Time
+	UpdatedAtUnix   int64
+	ContentChecksum string
+	ContentSignal   string
+	Score           int
+	MatchReasons    []string
+	FreshnessHint   string
+}
+
+type RetrievedFileMemory struct {
+	Candidate FileMemoryCandidate
+	Content   string
+	Truncated bool
 }
 
 func (t FileMemoryType) Valid() bool {
@@ -309,12 +332,13 @@ func loadFileMemoryTopic(memoryDir, path string) (FileMemoryTopic, bool) {
 		relPath = filepath.Base(path)
 	}
 	return FileMemoryTopic{
-		Path:         path,
-		RelativePath: filepath.ToSlash(relPath),
-		Name:         manifest.Name,
-		Description:  manifest.Description,
-		Type:         manifest.Type,
-		UpdatedAt:    info.ModTime(),
+		Path:            path,
+		RelativePath:    filepath.ToSlash(relPath),
+		Name:            manifest.Name,
+		Description:     manifest.Description,
+		Type:            manifest.Type,
+		UpdatedAt:       info.ModTime(),
+		ContentChecksum: fileMemoryContentChecksum(data),
 	}, true
 }
 
@@ -448,4 +472,217 @@ func resolvePathThroughExistingParent(candidate string) (string, error) {
 		current = parent
 	}
 	return filepath.Clean(abs), nil
+}
+
+func BuildFileMemoryCandidateManifest(workspaceDir, query string, previouslySurfaced map[string]string, limit int) ([]FileMemoryCandidate, error) {
+	tokens := fileMemoryQueryTokens(query)
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+	scan, err := ScanFileMemoryTopics(workspaceDir)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]FileMemoryCandidate, 0, len(scan.Topics))
+	for _, topic := range scan.Topics {
+		score, reasons := scoreFileMemoryTopic(topic, tokens)
+		if score <= 0 {
+			continue
+		}
+		updatedAtUnix := topic.UpdatedAt.UTC().UnixNano()
+		contentSignal := fileMemoryRecallSignal(topic.UpdatedAt, topic.ContentChecksum)
+		if previouslySurfaced != nil {
+			if seenSignal, ok := previouslySurfaced[topic.RelativePath]; ok && seenSignal == contentSignal {
+				continue
+			}
+		}
+		candidates = append(candidates, FileMemoryCandidate{
+			RelativePath:    topic.RelativePath,
+			Name:            topic.Name,
+			Description:     topic.Description,
+			Type:            topic.Type,
+			UpdatedAt:       topic.UpdatedAt,
+			UpdatedAtUnix:   updatedAtUnix,
+			ContentChecksum: topic.ContentChecksum,
+			ContentSignal:   contentSignal,
+			Score:           score,
+			MatchReasons:    reasons,
+			FreshnessHint:   fileMemoryFreshnessHint(topic.UpdatedAt),
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Score != candidates[j].Score {
+			return candidates[i].Score > candidates[j].Score
+		}
+		if !candidates[i].UpdatedAt.Equal(candidates[j].UpdatedAt) {
+			return candidates[i].UpdatedAt.After(candidates[j].UpdatedAt)
+		}
+		return candidates[i].RelativePath < candidates[j].RelativePath
+	})
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
+}
+
+func RetrieveRelevantFileMemories(workspaceDir, query string, previouslySurfaced map[string]string, limit, maxChars int) ([]RetrievedFileMemory, error) {
+	candidates, err := BuildFileMemoryCandidateManifest(workspaceDir, query, previouslySurfaced, limit)
+	if err != nil || len(candidates) == 0 {
+		return nil, err
+	}
+	out := make([]RetrievedFileMemory, 0, len(candidates))
+	for _, candidate := range candidates {
+		content, truncated, ok := loadFileMemoryBodyExcerpt(workspaceDir, candidate.RelativePath, maxChars)
+		if !ok {
+			continue
+		}
+		out = append(out, RetrievedFileMemory{Candidate: candidate, Content: content, Truncated: truncated})
+	}
+	return out, nil
+}
+
+func loadFileMemoryBodyExcerpt(workspaceDir, relativePath string, maxChars int) (string, bool, bool) {
+	workspaceDir = strings.TrimSpace(workspaceDir)
+	relativePath = strings.TrimSpace(relativePath)
+	if workspaceDir == "" || relativePath == "" {
+		return "", false, false
+	}
+	memoryDir := filepath.Join(workspaceDir, fileMemoryDirName)
+	path := filepath.Join(memoryDir, filepath.FromSlash(relativePath))
+	if !isContainedWithin(resolvedWorkspaceRoot(workspaceDir), path) {
+		return "", false, false
+	}
+	raw, err := readLimitedMemoryFile(path)
+	if err != nil {
+		return "", false, false
+	}
+	_, body, err := parseMemoryFrontmatter(raw)
+	if err != nil {
+		return "", false, false
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return "", false, true
+	}
+	content, truncated := truncateFileMemoryBody(trimmed, maxChars)
+	return content, truncated, true
+}
+
+func truncateFileMemoryBody(raw string, maxChars int) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || maxChars <= 0 {
+		return trimmed, false
+	}
+	runes := []rune(trimmed)
+	if len(runes) <= maxChars {
+		return trimmed, false
+	}
+	if maxChars <= 1 {
+		return string(runes[:maxChars]), true
+	}
+	return string(runes[:maxChars-1]) + "…", true
+}
+
+func fileMemoryQueryTokens(query string) []string {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(query, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	})
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if len(part) < 2 {
+			continue
+		}
+		if _, ok := seen[part]; ok {
+			continue
+		}
+		seen[part] = struct{}{}
+		out = append(out, part)
+	}
+	return out
+}
+
+func scoreFileMemoryTopic(topic FileMemoryTopic, tokens []string) (int, []string) {
+	name := strings.ToLower(topic.Name)
+	description := strings.ToLower(topic.Description)
+	relativePath := strings.ToLower(topic.RelativePath)
+	typeText := strings.ToLower(string(topic.Type))
+	score := 0
+	reasonSeen := map[string]struct{}{}
+	reasons := make([]string, 0, 4)
+	for _, token := range tokens {
+		matched := false
+		if strings.Contains(relativePath, token) {
+			score += 5
+			matched = true
+			if _, ok := reasonSeen["path"]; !ok {
+				reasonSeen["path"] = struct{}{}
+				reasons = append(reasons, "path")
+			}
+		}
+		if strings.Contains(name, token) {
+			score += 4
+			matched = true
+			if _, ok := reasonSeen["name"]; !ok {
+				reasonSeen["name"] = struct{}{}
+				reasons = append(reasons, "name")
+			}
+		}
+		if strings.Contains(description, token) {
+			score += 3
+			matched = true
+			if _, ok := reasonSeen["description"]; !ok {
+				reasonSeen["description"] = struct{}{}
+				reasons = append(reasons, "description")
+			}
+		}
+		if strings.Contains(typeText, token) {
+			score += 2
+			matched = true
+			if _, ok := reasonSeen["type"]; !ok {
+				reasonSeen["type"] = struct{}{}
+				reasons = append(reasons, "type")
+			}
+		}
+		if matched {
+			score++
+		}
+	}
+	return score, reasons
+}
+
+func fileMemoryRecallSignal(updatedAt time.Time, checksum string) string {
+	stamp := fmt.Sprintf("%d", updatedAt.UTC().UnixNano())
+	checksum = strings.TrimSpace(checksum)
+	if checksum == "" {
+		return stamp
+	}
+	return stamp + ":" + checksum
+}
+
+func fileMemoryContentChecksum(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func fileMemoryFreshnessHint(updatedAt time.Time) string {
+	if updatedAt.IsZero() {
+		return "last updated at an unknown time; verify carefully"
+	}
+	age := time.Since(updatedAt)
+	stamp := updatedAt.UTC().Format(time.RFC3339)
+	switch {
+	case age < 24*time.Hour:
+		return fmt.Sprintf("updated within the last day (%s)", stamp)
+	case age < 7*24*time.Hour:
+		return fmt.Sprintf("updated within the last week (%s)", stamp)
+	case age > 90*24*time.Hour:
+		return fmt.Sprintf("older memory last updated at %s; verify carefully", stamp)
+	default:
+		return fmt.Sprintf("last updated at %s", stamp)
+	}
 }

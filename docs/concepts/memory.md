@@ -53,12 +53,60 @@ Safety and prompt-budget rules for the canonical file-backed contract:
 - Unreadable `MEMORY.md` files or typed-topic scan failures surface prompt warnings instead of being presented as empty memory.
 - Typed topic discovery is restricted to files that resolve inside the active workspace root; symlink escapes are ignored.
 
+### Scoped file-memory surfaces
+
+When agent memory scope is enabled, metiq applies the same `user` / `project` / `local`
+contract to the writable file-backed memory surface, not only to indexed memory.
+
+| Scope | File-backed surface |
+|------|----------------------|
+| `user` | `~/.metiq/agent-memory/<agent>/` |
+| `project` | `<workspace>/.metiq/agent-memory/<agent>/` |
+| `local` | `<session-workspace>/.metiq/agent-memory-local/<agent>/` |
+
+Operationally:
+
+- project-scope agent memory is isolated per workspace + agent
+- local-scope agent memory is isolated per routed session/workspace surface
+- user/local agent-memory surfaces can be **seeded from a project snapshot** stored under `<workspace>/.metiq/agent-memory-snapshots/<agent>/`
+- if a newer project snapshot exists after seeding, metiq warns in the prompt instead of overwriting the existing user/local memory automatically
+- when memory scope is unset, metiq falls back to the legacy workspace-root `MEMORY.md` + `memory/` surface
+
 **When to write:**
 
 - Durable high-level index entries → `MEMORY.md`
 - Detailed durable facts, rules, project context, or references → typed topic files in `memory/`
 - Day-to-day notes and running context → raw note files under `memory/`
 - If someone says "remember this" → save the durable fact in the smallest relevant file-backed memory surface
+
+### Team/shared memory foundation
+
+metiq now has a **project-scoped shared memory foundation** for repo/team knowledge under:
+
+```text
+<workspace>/.metiq/team-memory/
+<workspace>/.metiq/team-memory-sync/state.json
+```
+
+This is the canonical local surface for future shared-memory sync work. The current foundation provides:
+
+- a dedicated shared-memory root instead of ad hoc file sharing
+- relative-key validation for shared memory entries (Markdown only)
+- traversal and symlink-escape protection against paths resolving outside the workspace root
+- secret scanning before shared-memory writes and before sync/export packaging
+- optimistic-concurrency write semantics via expected checksums
+- a local sync-state file for checksums/version/timestamps and future push/pull status
+
+Operationally:
+
+- shared-memory files are Markdown files rooted under `.metiq/team-memory/`
+- `MEMORY.md` can act as the shared high-level index, with additional topic files under nested paths such as `memory/*.md`
+- hidden files/directories are ignored by export packaging
+- oversized shared-memory files are rejected on write and on export
+- if a file contains detected secrets, the write/export is blocked and the affected relative path plus finding type are surfaced
+- current behavior is **foundation only**: metiq does not yet run watcher-based automatic team-memory sync or remote push/pull transport from this surface
+
+Use this surface only for project knowledge that should be shareable across collaborators. Keep personal or per-session material in the scoped file-memory and session-memory surfaces instead.
 
 ### Maintained session memory
 

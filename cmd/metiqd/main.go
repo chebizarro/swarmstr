@@ -1489,10 +1489,10 @@ func main() {
 	// for auto-joined channel sessions.  This mirrors the context assembly in
 	// doChannelTurn (defined later) so auto-join channels get the same context
 	// quality as manually-connected channels.
-	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string, turnTools []agent.ToolDefinition, turnExecutor agent.ToolExecutor) agent.Turn {
+	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string, turnTools []agent.ToolDefinition, turnExecutor agent.ToolExecutor) preparedAgentRunTurn {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, sessionRouter.Get(sessionID), "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
-		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
+		turnContext, surfacedFileMemory := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)), sessionStore)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)))
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -1512,14 +1512,17 @@ func main() {
 				}
 			}
 		}
-		return agent.Turn{
-			SessionID:          sessionID,
-			UserText:           text,
-			StaticSystemPrompt: staticSystemPrompt,
-			Context:            turnContext,
-			History:            turnHistory,
-			Tools:              turnTools,
-			Executor:           turnExecutor,
+		return preparedAgentRunTurn{
+			Turn: agent.Turn{
+				SessionID:          sessionID,
+				UserText:           text,
+				StaticSystemPrompt: staticSystemPrompt,
+				Context:            turnContext,
+				History:            turnHistory,
+				Tools:              turnTools,
+				Executor:           turnExecutor,
+			},
+			SurfacedFileMemory: surfacedFileMemory,
 		}
 	}
 
@@ -1559,11 +1562,13 @@ func main() {
 					go func() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor))
+						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
+						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
 						if turnErr != nil {
 							log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
 						}
+						commitSurfacedFileMemory(sessionStore, sessionID, prepared.SurfacedFileMemory)
 						if err := msg.Reply(turnCtx, result.Text); err != nil {
 							log.Printf("auto-join channel reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
 						}
@@ -1616,11 +1621,13 @@ func main() {
 					go func() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor))
+						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
+						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
 						if turnErr != nil {
 							log.Printf("auto-join nip28 agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
 						}
+						commitSurfacedFileMemory(sessionStore, sessionID, prepared.SurfacedFileMemory)
 						if err := msg.Reply(turnCtx, result.Text); err != nil {
 							log.Printf("auto-join nip28 reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
 						}
@@ -1679,11 +1686,13 @@ func main() {
 					go func() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor))
+						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
+						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
 						if turnErr != nil {
 							log.Printf("auto-join chat agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
 						}
+						commitSurfacedFileMemory(sessionStore, sessionID, prepared.SurfacedFileMemory)
 						if err := msg.Reply(turnCtx, result.Text); err != nil {
 							log.Printf("auto-join chat reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
 						}
@@ -2224,20 +2233,15 @@ func main() {
 			defer releaseTurn()
 			scopeCtx := resolveMemoryScopeContext(ctx, configState.Get(), docsRepo, sessionStore, sessionID, spawnAgentID, memoryScope)
 			turnCtx := contextWithMemoryScope(ctx, scopeCtx)
-			turnPrompt := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, instructions, 6)
-			staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), spawnAgentID))
+			prepared := buildAgentRunTurn(turnCtx, methods.AgentRequest{SessionID: sessionID, Message: instructions}, memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), spawnAgentID), sessionStore)
 			filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, spawnAgentID, agentRuntime, tools, turnToolConstraints{})
-			result, err := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
-				SessionID:          sessionID,
-				UserText:           instructions,
-				StaticSystemPrompt: staticPrompt,
-				Context:            turnPrompt,
-				Tools:              turnTools,
-				Executor:           turnExecutor,
-			})
+			prepared.Turn.Tools = turnTools
+			prepared.Turn.Executor = turnExecutor
+			result, err := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
 			if err != nil {
 				return "", err
 			}
+			commitSurfacedFileMemory(sessionStore, sessionID, prepared.SurfacedFileMemory)
 			return result.Text, nil
 		}
 
@@ -2279,24 +2283,19 @@ func main() {
 		defer releaseTurn()
 		scopeCtx := resolveMemoryScopeContext(ctx, configState.Get(), docsRepo, sessionStore, sessionID, "", "")
 		turnCtx := contextWithMemoryScope(ctx, scopeCtx)
-		turnPrompt := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
-		staticPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), ""))
 		activeAgentID := ""
 		if sessionRouter != nil {
 			activeAgentID = sessionRouter.Get(sessionID)
 		}
+		prepared := buildAgentRunTurn(turnCtx, methods.AgentRequest{SessionID: sessionID, Message: text}, memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
 		filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, agentRuntime, tools, turnToolConstraints{})
-		result, err := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
-			SessionID:          sessionID,
-			UserText:           text,
-			StaticSystemPrompt: staticPrompt,
-			Context:            turnPrompt,
-			Tools:              turnTools,
-			Executor:           turnExecutor,
-		})
+		prepared.Turn.Tools = turnTools
+		prepared.Turn.Executor = turnExecutor
+		result, err := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
 		if err != nil {
 			return "", fmt.Errorf("session_send: %w", err)
 		}
+		commitSurfacedFileMemory(sessionStore, sessionID, prepared.SurfacedFileMemory)
 		b, _ := json.Marshal(map[string]any{"session_id": sessionID, "result": result.Text})
 		return string(b), nil
 	})
@@ -3135,7 +3134,6 @@ func main() {
 			}
 			if handoffToken != 0 {
 				if !turnHandoffs.ConsumeIfMatch(sessionID, handoffToken) {
-					release()
 					return nil, false
 				}
 				return release, true
@@ -3312,7 +3310,7 @@ func main() {
 
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
-		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, 6)
+		turnContext, surfacedFileMemory := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		// turnHistory carries prior conversation turns for multi-turn LLM context.
 		var turnHistory []agent.ConversationMessage
@@ -3627,7 +3625,7 @@ func main() {
 					}
 				}
 				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
-				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, fileMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
+				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
 			}
 			switch {
 			case errors.Is(turnErr, context.DeadlineExceeded):
@@ -3657,7 +3655,8 @@ func main() {
 		// Persist the full tool-call/tool-result history so future turns can
 		// see prior tool usage — fixes the "announce and forget" behaviour.
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
-		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, fileMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
+		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
+		commitSurfacedFileMemory(sessionStore, sessionID, surfacedFileMemory)
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 			TS:      time.Now().UnixMilli(),
 			AgentID: activeAgentID,
@@ -4505,7 +4504,7 @@ func main() {
 
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
-		turnContext := assembleMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, 6)
+		turnContext, surfacedFileMemory := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		var chTurnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -4589,7 +4588,7 @@ func main() {
 					}
 				}
 				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
-				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, fileMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
+				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
 			}
 			if errors.Is(turnErr, context.Canceled) {
 				log.Printf("channel agent aborted session=%s", sessionID)
@@ -4613,7 +4612,8 @@ func main() {
 			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
 		}
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
-		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, fileMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
+		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
+		commitSurfacedFileMemory(sessionStore, sessionID, surfacedFileMemory)
 
 		// ── Deliver reply ─────────────────────────────────────────────────
 		outboundText := turnResult.Text
@@ -4706,7 +4706,6 @@ func main() {
 		channelEventIDsMu.Lock()
 		eventID := channelEventIDs[key]
 		delete(channelEventIDs, key)
-		channelEventIDsMu.Unlock()
 
 		preview := combined
 		if len(preview) > 120 {
@@ -6277,9 +6276,6 @@ func checkpointAdvanceState(lastEvent string, lastUnix int64, recentEventIDs []s
 	if eventID == "" {
 		return lastEvent, lastUnix, recentEventIDs
 	}
-	if eventUnix > lastUnix {
-		return eventID, eventUnix, []string{eventID}
-	}
 	if eventUnix < lastUnix {
 		return lastEvent, lastUnix, recentEventIDs
 	}
@@ -7848,7 +7844,6 @@ func handleControlRPCRequest(
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{
 			"ok":         true,
-			"session_id": req.SessionID,
 			"agent_id":   req.AgentID,
 			"persisted":  persisted,
 			"durability": "best_effort",
@@ -9879,25 +9874,25 @@ func handleACPMessage(
 			filteredRuntime := applyACPTaskRuntimeConstraints(turnCtx, rt, agentID, taskPayload, cfg, docsRepo)
 			seedHistory := decodeACPConversationMessages(taskPayload.ContextMessages)
 			historyEntryIDs = append(historyEntryIDs, persistACPContextHistory(processCtx, transcriptRepo, controlContextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, seedHistory)...)
-			turn := buildAgentRunTurn(turnCtx, methods.AgentRequest{
-				SessionID:   sessionID,
-				Message:     instructions,
-				MemoryScope: scopeCtx.Scope,
-			}, controlMemoryStore, scopeCtx, workspaceDirForAgent(cfg, agentID))
-			turn.TurnID = msg.TaskID
+			prepared := buildAgentRunTurn(turnCtx, methods.AgentRequest{
+				SessionID: sessionID,
+				Message:   instructions,
+			}, controlMemoryStore, scopeCtx, workspaceDirForAgent(cfg, agentID), controlSessionStore)
+			prepared.Turn.TurnID = msg.TaskID
 			if len(seedHistory) > 0 {
-				mergedHistory := make([]agent.ConversationMessage, 0, len(turn.History)+len(seedHistory))
-				mergedHistory = append(mergedHistory, turn.History...)
+				mergedHistory := make([]agent.ConversationMessage, 0, len(prepared.Turn.History)+len(seedHistory))
+				mergedHistory = append(mergedHistory, prepared.Turn.History...)
 				mergedHistory = append(mergedHistory, seedHistory...)
-				turn.History = mergedHistory
+				prepared.Turn.History = mergedHistory
 			}
-			result, err = filteredRuntime.ProcessTurn(turnCtx, turn)
+			result, err = filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
 			if err != nil {
 				if partial, ok := agent.PartialTurnResult(err); ok {
 					historyEntryIDs = append(historyEntryIDs, persistACPTurnHistory(processCtx, transcriptRepo, controlContextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, partial.HistoryDelta, turnResultMetadataPtr(result, err))...)
 				}
 				return err
 			}
+			commitSurfacedFileMemory(controlSessionStore, sessionID, prepared.SurfacedFileMemory)
 			delta := result.HistoryDelta
 			if len(delta) == 0 && strings.TrimSpace(result.Text) != "" {
 				delta = []agent.ConversationMessage{{Role: "assistant", Content: strings.TrimSpace(result.Text)}}
@@ -10528,7 +10523,8 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 	scopeCtx := resolveMemoryScopeContext(ctx, cfg, nil, controlSessionStore, req.SessionID, agentID, req.MemoryScope)
 	persistSessionMemoryScope(controlSessionStore, req.SessionID, agentID, scopeCtx.Scope)
 	ctx = contextWithMemoryScope(ctx, scopeCtx)
-	turn := buildAgentRunTurn(ctx, req, memoryIndex, scopeCtx, workspaceDirForAgent(cfg, agentID))
+	prepared := buildAgentRunTurn(ctx, req, memoryIndex, scopeCtx, workspaceDirForAgent(cfg, agentID), controlSessionStore)
+	turn := prepared.Turn
 	var result *agent.TurnResult
 	var lastErr error
 	fallbackUsed := false
@@ -10585,6 +10581,7 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 	if fallbackUsed {
 		jobs.SetFallback(runID, fallbackFrom, fallbackTo, fallbackReason)
 	}
+	commitSurfacedFileMemory(controlSessionStore, req.SessionID, prepared.SurfacedFileMemory)
 	if controlSessionStore != nil {
 		se := controlSessionStore.GetOrNew(req.SessionID)
 		if fallbackUsed {
@@ -12562,7 +12559,6 @@ func applyPluginInstallRuntime(ctx context.Context, docsRepo *state.DocsReposito
 		}
 		install["installPath"] = installPath
 	case "url":
-		// Download a plugin from a URL (single .js file or archive).
 		srcURL := strings.TrimSpace(getString(install, "url"))
 		if srcURL == "" {
 			srcURL = sourcePath
@@ -14133,7 +14129,6 @@ func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[
 	checkedAt := reg.RecordUpdateCheck()
 
 	// Use the shared version checker (initialised in main).
-	// Fall back gracefully if it hasn't been set up yet (test environments).
 	if controlUpdateChecker == nil {
 		return map[string]any{"ok": true, "status": "checker_unavailable", "checked_at_ms": checkedAt}, nil
 	}

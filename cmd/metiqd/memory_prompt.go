@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"metiq/internal/agent"
@@ -16,21 +17,26 @@ const (
 	defaultMemoryRecallLimit      = 6
 	crossSessionMemoryRecallLimit = 3
 	memoryRecallSnippetLimitRunes = 280
+	defaultFileMemoryRecallLimit  = 2
+	fileMemoryRecallContentRunes  = 900
+	fileMemoryRecallStateCap      = 64
 )
 
 // assembleMemorySystemPrompt packages the stable, model-facing memory contract
 // into the static prompt lane. It adapts the canonical src memory prompt
 // packaging onto metiq's indexed backend without importing src's file layout.
 func assembleMemorySystemPrompt(index memory.Store, scope memory.ScopedContext, workspaceDir string) string {
+	fileMemorySurface := memory.ResolveFileMemorySurface(scope, workspaceDir)
 	return joinPromptSections(
 		buildMemoryMechanicsPrompt(),
 		buildMemoryScopePrompt(scope),
 		buildPinnedKnowledgePrompt(index, scope),
-		memory.BuildFileMemoryPrompt(fileMemoryWorkspaceDir(scope, workspaceDir)),
+		memory.BuildFileMemoryPrompt(fileMemorySurface.RootDir),
+		fileMemorySurface.SnapshotNotice,
 	)
 }
 
-func fileMemoryWorkspaceDir(scope memory.ScopedContext, fallback string) string {
+func sessionMemoryWorkspaceDir(scope memory.ScopedContext, fallback string) string {
 	if workspaceDir := strings.TrimSpace(scope.WorkspaceDir); workspaceDir != "" {
 		return workspaceDir
 	}
@@ -208,15 +214,150 @@ func formatMemoryRecallItem(item memory.IndexedMemory) string {
 	return "- " + text
 }
 
-func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store, scope memory.ScopedContext, workspaceDir string) agent.Turn {
-	turnContext := joinPromptSections(
-		assembleMemoryRecallContext(ctx, index, scope, req.SessionID, req.Message, defaultMemoryRecallLimit),
-		req.Context,
-	)
-	return agent.Turn{
-		SessionID:          req.SessionID,
-		UserText:           req.Message,
-		StaticSystemPrompt: assembleMemorySystemPrompt(index, scope, workspaceDir),
-		Context:            turnContext,
+type preparedAgentRunTurn struct {
+	Turn               agent.Turn
+	SurfacedFileMemory map[string]string
+}
+
+func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store, scope memory.ScopedContext, workspaceDir string, sessionStore *state.SessionStore) preparedAgentRunTurn {
+	memoryContext, surfaced := buildDynamicMemoryRecallContext(ctx, index, scope, req.SessionID, req.Message, workspaceDir, sessionStore)
+	turnContext := joinPromptSections(memoryContext, req.Context)
+	return preparedAgentRunTurn{
+		Turn: agent.Turn{
+			SessionID:          req.SessionID,
+			UserText:           req.Message,
+			StaticSystemPrompt: assembleMemorySystemPrompt(index, scope, workspaceDir),
+			Context:            turnContext,
+		},
+		SurfacedFileMemory: surfaced,
 	}
+}
+
+func buildDynamicMemoryRecallContext(ctx context.Context, index memory.Store, scope memory.ScopedContext, sessionID, userText, workspaceDir string, sessionStore *state.SessionStore) (string, map[string]string) {
+	indexedRecall := assembleMemoryRecallContext(ctx, index, scope, sessionID, userText, defaultMemoryRecallLimit)
+	fileRecall, surfaced := assembleFileMemoryRecallContext(scope, workspaceDir, sessionID, userText, sessionStore)
+	return joinPromptSections(indexedRecall, fileRecall), surfaced
+}
+
+func assembleFileMemoryRecallContext(scope memory.ScopedContext, workspaceDir, sessionID, userText string, sessionStore *state.SessionStore) (string, map[string]string) {
+	fileMemorySurface := memory.ResolveFileMemorySurface(scope, workspaceDir)
+	rootDir := strings.TrimSpace(fileMemorySurface.RootDir)
+	if rootDir == "" {
+		return "", nil
+	}
+	previouslySurfaced := surfacedFileMemoryState(sessionStore, sessionID)
+	surfaceScoped := surfacedFileMemoryStateForRoot(rootDir, previouslySurfaced)
+	items, err := memory.RetrieveRelevantFileMemories(rootDir, userText, surfaceScoped, defaultFileMemoryRecallLimit, fileMemoryRecallContentRunes)
+	if err != nil {
+		return fmt.Sprintf("## Relevant File-backed Memory\n> WARNING: file-memory retrieval failed: %v", err), nil
+	}
+	if len(items) == 0 {
+		return "", nil
+	}
+	lines := []string{
+		"## Relevant File-backed Memory",
+		"These typed file memories were selected deterministically from file-backed memory headers. Treat them as possibly stale and verify them against current user intent and repository state before relying on them.",
+	}
+	pending := make(map[string]string, len(items))
+	for _, item := range items {
+		header := fmt.Sprintf("### `%s` [%s] %s — %s", item.Candidate.RelativePath, item.Candidate.Type, item.Candidate.Name, item.Candidate.Description)
+		lines = append(lines, "", header)
+		lines = append(lines, fmt.Sprintf("- freshness: %s", item.Candidate.FreshnessHint))
+		if len(item.Candidate.MatchReasons) > 0 {
+			lines = append(lines, fmt.Sprintf("- matched on: %s", strings.Join(item.Candidate.MatchReasons, ", ")))
+		}
+		if strings.TrimSpace(item.Content) != "" {
+			lines = append(lines, item.Content)
+		}
+		if item.Truncated {
+			lines = append(lines, "- note: content excerpt was truncated for context budget")
+		}
+		pending[fileMemorySurfaceStateKey(rootDir, item.Candidate.RelativePath)] = item.Candidate.ContentSignal
+	}
+	return strings.Join(lines, "\n"), pending
+}
+
+func surfacedFileMemoryState(sessionStore *state.SessionStore, sessionID string) map[string]string {
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	entry, ok := sessionStore.Get(sessionID)
+	if !ok || len(entry.FileMemorySurfaced) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(entry.FileMemorySurfaced))
+	for key, signal := range entry.FileMemorySurfaced {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(signal) == "" {
+			continue
+		}
+		out[key] = signal
+	}
+	return out
+}
+
+func surfacedFileMemoryStateForRoot(rootDir string, surfaced map[string]string) map[string]string {
+	rootDir = strings.TrimSpace(rootDir)
+	if rootDir == "" || len(surfaced) == 0 {
+		return nil
+	}
+	prefix := rootDir + "::"
+	out := make(map[string]string)
+	for key, signal := range surfaced {
+		key = strings.TrimSpace(key)
+		signal = strings.TrimSpace(signal)
+		if key == "" || signal == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(key, prefix):
+			rel := strings.TrimSpace(strings.TrimPrefix(key, prefix))
+			if rel != "" {
+				out[rel] = signal
+			}
+		case !strings.Contains(key, "::"):
+			out[key] = signal
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func commitSurfacedFileMemory(sessionStore *state.SessionStore, sessionID string, surfaced map[string]string) {
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" || len(surfaced) == 0 {
+		return
+	}
+	entry := sessionStore.GetOrNew(sessionID)
+	merged := make(map[string]string, len(entry.FileMemorySurfaced)+len(surfaced))
+	for key, signal := range entry.FileMemorySurfaced {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(signal) == "" {
+			continue
+		}
+		merged[key] = signal
+	}
+	for key, signal := range surfaced {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(signal) == "" {
+			continue
+		}
+		merged[key] = signal
+	}
+	if len(merged) > fileMemoryRecallStateCap {
+		keys := make([]string, 0, len(merged))
+		for key := range merged {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		trimmed := make(map[string]string, fileMemoryRecallStateCap)
+		for _, key := range keys[:fileMemoryRecallStateCap] {
+			trimmed[key] = merged[key]
+		}
+		merged = trimmed
+	}
+	entry.FileMemorySurfaced = merged
+	_ = sessionStore.Put(sessionID, entry)
+}
+
+func fileMemorySurfaceStateKey(rootDir, relativePath string) string {
+	return strings.TrimSpace(rootDir) + "::" + strings.TrimSpace(relativePath)
 }
