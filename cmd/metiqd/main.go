@@ -161,6 +161,8 @@ var (
 
 	// controlSecrets is the runtime secrets store (dotenv + env passthrough).
 	controlSecrets *secretspkg.Store
+	// controlMCPAuth manages remote MCP OAuth lifecycle against the live runtime.
+	controlMCPAuth *mcpAuthController
 
 	// controlTTSMgr is the TTS provider manager (OpenAI, Kokoro, …).
 	controlTTSMgr *ttspkg.Manager
@@ -999,15 +1001,14 @@ func main() {
 	}
 
 	// ── MCP (Model Context Protocol) client integration ─────────────────
-	// Load MCP config from extra.mcp and register discovered tools.
+	// Load MCP config from extra.mcp and register discovered tools after the
+	// secrets/auth controller is available.
 	var mcpManager *mcppkg.Manager
-	{
-		mcpCfg := mcppkg.ResolveConfigDoc(configState.Get())
-		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, mcpCfg, "initialization")
-	}
-	if mcpManager != nil {
-		defer mcpManager.Close()
-	}
+	defer func() {
+		if mcpManager != nil {
+			_ = mcpManager.Close()
+		}
+	}()
 
 	// Resolve memory backend from live config (Extra["memory"]["backend"]).
 	// The backend abstraction is used to future-proof swappable storage; the
@@ -1143,6 +1144,16 @@ func main() {
 		}
 	}
 	controlSecrets = secretsStore
+	mcpAuthController := newMCPAuthController(&mcpManager, tools, secretsStore, func() state.ConfigDoc { return configState.Get() })
+	controlMCPAuth = mcpAuthController
+	{
+		mcpCfg := mcppkg.ResolveConfigDoc(configState.Get())
+		if len(mcpCfg.Servers) > 0 || len(mcpCfg.DisabledServers) > 0 {
+			mcpManager = mcppkg.NewManager()
+			mcpAuthController.InstallOnManager(mcpManager)
+		}
+		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, mcpCfg, "initialization")
+	}
 
 	// TTS manager — initialise before the server starts so method handlers have it.
 	controlTTSMgr = ttspkg.NewManager()
@@ -4943,6 +4954,7 @@ func main() {
 		resolvedMCP := mcppkg.ResolveConfigDoc(doc)
 		if mcpManager == nil && (len(resolvedMCP.Servers) > 0 || len(resolvedMCP.DisabledServers) > 0) {
 			mcpManager = mcppkg.NewManager()
+			mcpAuthController.InstallOnManager(mcpManager)
 			mcpManager.SetStateObserver(func(change mcppkg.StateChange) {
 				wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
 			})
@@ -4970,6 +4982,7 @@ func main() {
 				resolvedMCP := mcppkg.ResolveConfigDoc(doc)
 				if mcpManager == nil && (len(resolvedMCP.Servers) > 0 || len(resolvedMCP.DisabledServers) > 0) {
 					mcpManager = mcppkg.NewManager()
+					mcpAuthController.InstallOnManager(mcpManager)
 					mcpManager.SetStateObserver(func(change mcppkg.StateChange) {
 						wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
 					})
@@ -5491,6 +5504,15 @@ func main() {
 				},
 				SandboxRun: func(ctx context.Context, req methods.SandboxRunRequest) (map[string]any, error) {
 					return applySandboxRun(ctx, configState, req)
+				},
+				MCPAuthStart: func(ctx context.Context, req methods.MCPAuthStartRequest) (map[string]any, error) {
+					return mcpAuthController.applyStart(ctx, req)
+				},
+				MCPAuthRefresh: func(ctx context.Context, req methods.MCPAuthRefreshRequest) (map[string]any, error) {
+					return mcpAuthController.applyRefresh(ctx, req)
+				},
+				MCPAuthClear: func(ctx context.Context, req methods.MCPAuthClearRequest) (map[string]any, error) {
+					return mcpAuthController.applyClear(ctx, req)
 				},
 				SecretsReload: func(_ context.Context, req methods.SecretsReloadRequest) (map[string]any, error) {
 					return applySecretsReload(req)
@@ -8752,6 +8774,57 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		out, err := applySandboxRun(ctx, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
+	case methods.MethodMCPAuthStart:
+		req, err := methods.DecodeMCPAuthStartParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlMCPAuth == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("mcp auth not configured")
+		}
+		out, err := controlMCPAuth.applyStart(ctx, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
+	case methods.MethodMCPAuthRefresh:
+		req, err := methods.DecodeMCPAuthRefreshParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlMCPAuth == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("mcp auth not configured")
+		}
+		out, err := controlMCPAuth.applyRefresh(ctx, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
+	case methods.MethodMCPAuthClear:
+		req, err := methods.DecodeMCPAuthClearParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if controlMCPAuth == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("mcp auth not configured")
+		}
+		out, err := controlMCPAuth.applyClear(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, err
 		}

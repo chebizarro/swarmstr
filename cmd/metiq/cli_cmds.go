@@ -1052,6 +1052,168 @@ func runSecretsSet(args []string) error {
 	return fmt.Errorf("secrets set is not supported by the daemon API; set %q in your environment or .env and run `metiq secrets list` (reload)", key)
 }
 
+// ─── mcp auth ────────────────────────────────────────────────────────────────
+
+func runMCP(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "mcp subcommands: auth\n")
+		return fmt.Errorf("missing subcommand")
+	}
+	switch args[0] {
+	case "auth":
+		return runMCPAuth(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "mcp subcommands: auth\n")
+		return fmt.Errorf("unknown subcommand: %s", args[0])
+	}
+}
+
+func runMCPAuth(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "mcp auth subcommands: start, refresh, clear\n")
+		return fmt.Errorf("missing subcommand")
+	}
+	switch args[0] {
+	case "start":
+		return runMCPAuthStart(args[1:])
+	case "refresh":
+		return runMCPAuthRefresh(args[1:])
+	case "clear":
+		return runMCPAuthClear(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "mcp auth subcommands: start, refresh, clear\n")
+		return fmt.Errorf("unknown subcommand: %s", args[0])
+	}
+}
+
+func runMCPAuthStart(args []string) error {
+	fs := flag.NewFlagSet("mcp auth start", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath, clientSecret string
+	var jsonOut, openBrowser bool
+	var timeoutMS int
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&clientSecret, "client-secret", "", "optional oauth client secret to persist outside config")
+	fs.IntVar(&timeoutMS, "timeout-ms", 0, "optional auth flow timeout in milliseconds")
+	fs.BoolVar(&openBrowser, "open", true, "open the returned authorize URL in the default browser")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq mcp auth start <server>")
+	}
+	server := strings.TrimSpace(fs.Arg(0))
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	params := map[string]any{"server": server}
+	if strings.TrimSpace(clientSecret) != "" {
+		params["client_secret"] = clientSecret
+	}
+	if timeoutMS > 0 {
+		params["timeout_ms"] = timeoutMS
+	}
+	result, err := cl.call("mcp.auth.start", params)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	authorizeURL := stringField(result, "authorize_url")
+	callbackURL := stringField(result, "callback_url")
+	fmt.Printf("server:        %s\n", server)
+	fmt.Printf("authorize_url: %s\n", authorizeURL)
+	fmt.Printf("callback_url:  %s\n", callbackURL)
+	if openBrowser && authorizeURL != "" {
+		if err := openBrowserURL(authorizeURL); err != nil {
+			return fmt.Errorf("open browser: %w", err)
+		}
+		fmt.Println("browser:       opened")
+	}
+	return nil
+}
+
+func runMCPAuthRefresh(args []string) error {
+	fs := flag.NewFlagSet("mcp auth refresh", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq mcp auth refresh <server>")
+	}
+	server := strings.TrimSpace(fs.Arg(0))
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("mcp.auth.refresh", map[string]any{"server": server})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	fmt.Printf("refreshed auth for %s\n", server)
+	return nil
+}
+
+func runMCPAuthClear(args []string) error {
+	fs := flag.NewFlagSet("mcp auth clear", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq mcp auth clear <server>")
+	}
+	server := strings.TrimSpace(fs.Arg(0))
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("mcp.auth.clear", map[string]any{"server": server})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	fmt.Printf("cleared auth for %s\n", server)
+	return nil
+}
+
+func openBrowserURL(rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return fmt.Errorf("url is required")
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", rawURL)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+	default:
+		cmd = exec.Command("xdg-open", rawURL)
+	}
+	return cmd.Start()
+}
+
 // ─── update ───────────────────────────────────────────────────────────────────
 
 func runUpdate(args []string) error {

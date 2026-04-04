@@ -124,6 +124,14 @@ func TestApplyConfigSetAndPatch(t *testing.T) {
 		"type":    " HTTP ",
 		"url":     " https://mcp.example.com/http ",
 		"headers": map[string]any{" Authorization ": " Bearer tok "},
+		"oauth": map[string]any{
+			"enabled":       true,
+			"client_id":     " client-1 ",
+			"authorize_url": " https://mcp.example.com/oauth/authorize ",
+			"token_url":     " https://mcp.example.com/oauth/token ",
+			"scopes":        []string{" profile ", "offline_access"},
+			"use_pkce":      true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("ApplyConfigSet mcp server object error: %v", err)
@@ -158,6 +166,29 @@ func TestApplyConfigSetAndPatch(t *testing.T) {
 	remote, _ := rawServers["remote"].(map[string]any)
 	if remote["type"] != "http" || remote["url"] != "https://mcp.example.com/http" {
 		t.Fatalf("unexpected mcp.servers.remote normalization: %#v", remote)
+	}
+	oauth, _ := remote["oauth"].(map[string]any)
+	if oauth["client_id"] != "client-1" || oauth["authorize_url"] != "https://mcp.example.com/oauth/authorize" {
+		t.Fatalf("unexpected mcp oauth normalization: %#v", oauth)
+	}
+	scopes, _ := oauth["scopes"].([]string)
+	if len(scopes) != 2 || scopes[0] != "profile" || scopes[1] != "offline_access" {
+		t.Fatalf("unexpected mcp oauth scopes: %#v", oauth)
+	}
+	next, err = ApplyConfigSet(next, "mcp.servers.remote.oauth.callback_port", 4317)
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp oauth callback_port error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.servers.remote.oauth.client_secret_ref", " env:MCP_SECRET ")
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp oauth client_secret_ref error: %v", err)
+	}
+	rawMCP, _ = next.Extra["mcp"].(map[string]any)
+	rawServers, _ = rawMCP["servers"].(map[string]any)
+	remote, _ = rawServers["remote"].(map[string]any)
+	oauth, _ = remote["oauth"].(map[string]any)
+	if oauth["callback_port"] != 4317 || oauth["client_secret_ref"] != "env:MCP_SECRET" {
+		t.Fatalf("unexpected nested mcp oauth fields: %#v", oauth)
 	}
 
 	next, err = ApplyConfigPatch(next, map[string]any{
@@ -262,47 +293,58 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 		t.Fatalf("unexpected schema payload: %#v", s)
 	}
 	mustHave := map[string]struct{}{
-		"dm.policy":                             {},
-		"dm.reply_scheme":                       {},
-		"relays.read":                           {},
-		"relays.write":                          {},
-		"storage.encrypt":                       {},
-		"acp.transport":                         {},
-		"agent.verbose":                         {},
-		"control.require_auth":                  {},
-		"plugins.deny":                          {},
-		"plugins.load":                          {},
-		"plugins.load.paths":                    {},
-		"plugins.entries.<id>.enabled":          {},
-		"plugins.entries.<id>.apiKey":           {},
-		"plugins.entries.<id>.env":              {},
-		"plugins.entries.<id>.tools":            {},
-		"plugins.entries.<id>.gatewayMethods":   {},
-		"plugins.installs":                      {},
-		"plugins.installs.<id>":                 {},
-		"plugins.installs.<id>.source":          {},
-		"plugins.installs.<id>.spec":            {},
-		"plugins.installs.<id>.sourcePath":      {},
-		"plugins.installs.<id>.installPath":     {},
-		"plugins.installs.<id>.version":         {},
-		"plugins.installs.<id>.resolvedName":    {},
-		"plugins.installs.<id>.resolvedVersion": {},
-		"plugins.installs.<id>.resolvedSpec":    {},
-		"plugins.installs.<id>.integrity":       {},
-		"plugins.installs.<id>.shasum":          {},
-		"plugins.installs.<id>.resolvedAt":      {},
-		"plugins.installs.<id>.installedAt":     {},
-		"plugins.installs.<id>.<field>":         {},
-		"mcp.enabled":                           {},
-		"mcp.servers":                           {},
-		"mcp.servers.<id>":                      {},
-		"mcp.servers.<id>.enabled":              {},
-		"mcp.servers.<id>.command":              {},
-		"mcp.servers.<id>.args":                 {},
-		"mcp.servers.<id>.env":                  {},
-		"mcp.servers.<id>.type":                 {},
-		"mcp.servers.<id>.url":                  {},
-		"mcp.servers.<id>.headers":              {},
+		"dm.policy":                                {},
+		"dm.reply_scheme":                          {},
+		"relays.read":                              {},
+		"relays.write":                             {},
+		"storage.encrypt":                          {},
+		"acp.transport":                            {},
+		"agent.verbose":                            {},
+		"control.require_auth":                     {},
+		"plugins.deny":                             {},
+		"plugins.load":                             {},
+		"plugins.load.paths":                       {},
+		"plugins.entries.<id>.enabled":             {},
+		"plugins.entries.<id>.apiKey":              {},
+		"plugins.entries.<id>.env":                 {},
+		"plugins.entries.<id>.tools":               {},
+		"plugins.entries.<id>.gatewayMethods":      {},
+		"plugins.installs":                         {},
+		"plugins.installs.<id>":                    {},
+		"plugins.installs.<id>.source":             {},
+		"plugins.installs.<id>.spec":               {},
+		"plugins.installs.<id>.sourcePath":         {},
+		"plugins.installs.<id>.installPath":        {},
+		"plugins.installs.<id>.version":            {},
+		"plugins.installs.<id>.resolvedName":       {},
+		"plugins.installs.<id>.resolvedVersion":    {},
+		"plugins.installs.<id>.resolvedSpec":       {},
+		"plugins.installs.<id>.integrity":          {},
+		"plugins.installs.<id>.shasum":             {},
+		"plugins.installs.<id>.resolvedAt":         {},
+		"plugins.installs.<id>.installedAt":        {},
+		"plugins.installs.<id>.<field>":            {},
+		"mcp.enabled":                              {},
+		"mcp.servers":                              {},
+		"mcp.servers.<id>":                         {},
+		"mcp.servers.<id>.enabled":                 {},
+		"mcp.servers.<id>.command":                 {},
+		"mcp.servers.<id>.args":                    {},
+		"mcp.servers.<id>.env":                     {},
+		"mcp.servers.<id>.type":                    {},
+		"mcp.servers.<id>.url":                     {},
+		"mcp.servers.<id>.headers":                 {},
+		"mcp.servers.<id>.oauth":                   {},
+		"mcp.servers.<id>.oauth.enabled":           {},
+		"mcp.servers.<id>.oauth.client_id":         {},
+		"mcp.servers.<id>.oauth.client_secret_ref": {},
+		"mcp.servers.<id>.oauth.authorize_url":     {},
+		"mcp.servers.<id>.oauth.token_url":         {},
+		"mcp.servers.<id>.oauth.revoke_url":        {},
+		"mcp.servers.<id>.oauth.scopes":            {},
+		"mcp.servers.<id>.oauth.callback_host":     {},
+		"mcp.servers.<id>.oauth.callback_port":     {},
+		"mcp.servers.<id>.oauth.use_pkce":          {},
 	}
 	for _, field := range fields {
 		delete(mustHave, field)

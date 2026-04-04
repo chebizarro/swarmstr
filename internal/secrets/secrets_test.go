@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeEnvFile(t *testing.T, dir, name, content string) string {
@@ -201,5 +202,52 @@ func TestStore_envOverrideDotenv(t *testing.T) {
 	}
 	if v != "from-env" {
 		t.Errorf("env should take priority: got %q, want from-env", v)
+	}
+}
+
+func TestStore_mcpCredentialPersistence(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "mcp-auth.json")
+	s := NewStore(nil)
+	s.SetMCPAuthPath(authPath)
+	expiry := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	if err := s.PutMCPCredential("demo", MCPAuthCredential{
+		AccessToken:  "token-a",
+		RefreshToken: "refresh-a",
+		TokenType:    "Bearer",
+		Expiry:       expiry,
+		ClientSecret: "secret-a",
+		Scopes:       []string{"profile", "offline_access"},
+	}); err != nil {
+		t.Fatalf("PutMCPCredential error: %v", err)
+	}
+	got, ok := s.GetMCPCredential("demo")
+	if !ok {
+		t.Fatalf("expected stored credential")
+	}
+	if got.AccessToken != "token-a" || got.RefreshToken != "refresh-a" || got.ClientSecret != "secret-a" {
+		t.Fatalf("unexpected stored credential: %#v", got)
+	}
+	reloaded := NewStore(nil)
+	reloaded.SetMCPAuthPath(authPath)
+	if _, warnings := reloaded.Reload(); len(warnings) != 0 {
+		t.Fatalf("unexpected reload warnings: %v", warnings)
+	}
+	got, ok = reloaded.GetMCPCredential("demo")
+	if !ok {
+		t.Fatalf("expected persisted credential")
+	}
+	if !got.Expiry.Equal(expiry) {
+		t.Fatalf("expected expiry %v, got %v", expiry, got.Expiry)
+	}
+	deleted, err := reloaded.DeleteMCPCredential("demo")
+	if err != nil {
+		t.Fatalf("DeleteMCPCredential error: %v", err)
+	}
+	if !deleted {
+		t.Fatalf("expected credential deletion")
+	}
+	if _, ok := reloaded.GetMCPCredential("demo"); ok {
+		t.Fatalf("expected credential to be removed")
 	}
 }
