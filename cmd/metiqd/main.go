@@ -1492,7 +1492,7 @@ func main() {
 	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string, turnTools []agent.ToolDefinition, turnExecutor agent.ToolExecutor) preparedAgentRunTurn {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, sessionRouter.Get(sessionID), "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
-		turnContext, surfacedFileMemory := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)), sessionStore)
+		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)), sessionStore)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)))
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -1515,6 +1515,7 @@ func main() {
 		return preparedAgentRunTurn{
 			Turn: agent.Turn{
 				SessionID:          sessionID,
+				TurnID:             nextDeterministicRecallTurnID(),
 				UserText:           text,
 				StaticSystemPrompt: staticSystemPrompt,
 				Context:            turnContext,
@@ -1523,6 +1524,7 @@ func main() {
 				Executor:           turnExecutor,
 			},
 			SurfacedFileMemory: surfacedFileMemory,
+			MemoryRecallSample: memoryRecallSample,
 		}
 	}
 
@@ -1568,7 +1570,7 @@ func main() {
 							log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
 						}
-						commitSurfacedFileMemory(sessionStore, sessionID, prepared.SurfacedFileMemory)
+						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
 						if err := msg.Reply(turnCtx, result.Text); err != nil {
 							log.Printf("auto-join channel reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
 						}
@@ -1627,7 +1629,7 @@ func main() {
 							log.Printf("auto-join nip28 agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
 						}
-						commitSurfacedFileMemory(sessionStore, sessionID, prepared.SurfacedFileMemory)
+						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
 						if err := msg.Reply(turnCtx, result.Text); err != nil {
 							log.Printf("auto-join nip28 reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
 						}
@@ -1692,7 +1694,7 @@ func main() {
 							log.Printf("auto-join chat agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
 						}
-						commitSurfacedFileMemory(sessionStore, sessionID, prepared.SurfacedFileMemory)
+						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
 						if err := msg.Reply(turnCtx, result.Text); err != nil {
 							log.Printf("auto-join chat reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
 						}
@@ -2241,7 +2243,7 @@ func main() {
 			if err != nil {
 				return "", err
 			}
-			commitSurfacedFileMemory(sessionStore, sessionID, prepared.SurfacedFileMemory)
+			commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
 			return result.Text, nil
 		}
 
@@ -2295,7 +2297,7 @@ func main() {
 		if err != nil {
 			return "", fmt.Errorf("session_send: %w", err)
 		}
-		commitSurfacedFileMemory(sessionStore, sessionID, prepared.SurfacedFileMemory)
+		commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
 		b, _ := json.Marshal(map[string]any{"session_id": sessionID, "result": result.Text})
 		return string(b), nil
 	})
@@ -3310,7 +3312,7 @@ func main() {
 
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
-		turnContext, surfacedFileMemory := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
+		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		// turnHistory carries prior conversation turns for multi-turn LLM context.
 		var turnHistory []agent.ConversationMessage
@@ -3656,7 +3658,7 @@ func main() {
 		// see prior tool usage — fixes the "announce and forget" behaviour.
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
 		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
-		commitSurfacedFileMemory(sessionStore, sessionID, surfacedFileMemory)
+		commitMemoryRecallArtifacts(sessionStore, sessionID, eventID, memoryRecallSample, surfacedFileMemory)
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 			TS:      time.Now().UnixMilli(),
 			AgentID: activeAgentID,
@@ -4504,7 +4506,7 @@ func main() {
 
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
-		turnContext, surfacedFileMemory := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
+		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		var chTurnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -4613,7 +4615,7 @@ func main() {
 		}
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
 		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
-		commitSurfacedFileMemory(sessionStore, sessionID, surfacedFileMemory)
+		commitMemoryRecallArtifacts(sessionStore, sessionID, eventID, memoryRecallSample, surfacedFileMemory)
 
 		// ── Deliver reply ─────────────────────────────────────────────────
 		outboundText := turnResult.Text
@@ -9892,7 +9894,7 @@ func handleACPMessage(
 				}
 				return err
 			}
-			commitSurfacedFileMemory(controlSessionStore, sessionID, prepared.SurfacedFileMemory)
+			commitMemoryRecallArtifacts(controlSessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
 			delta := result.HistoryDelta
 			if len(delta) == 0 && strings.TrimSpace(result.Text) != "" {
 				delta = []agent.ConversationMessage{{Role: "assistant", Content: strings.TrimSpace(result.Text)}}
@@ -10581,7 +10583,7 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 	if fallbackUsed {
 		jobs.SetFallback(runID, fallbackFrom, fallbackTo, fallbackReason)
 	}
-	commitSurfacedFileMemory(controlSessionStore, req.SessionID, prepared.SurfacedFileMemory)
+	commitMemoryRecallArtifacts(controlSessionStore, req.SessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
 	if controlSessionStore != nil {
 		se := controlSessionStore.GetOrNew(req.SessionID)
 		if fallbackUsed {

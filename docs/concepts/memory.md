@@ -213,6 +213,12 @@ runtime and then applied consistently to:
 - `memory_store` / `memory_pin` writes
 - ACP worker task envelopes and spawned child sessions
 
+metiq also records a bounded `recent_memory_recall` sample in local session
+state for successful turns. These samples capture redacted deterministic recall
+metadata (selected memory IDs/paths, counts, latency, injected-block size) so
+retrieval quality can be reviewed before any reranker is considered. There is
+currently **no** LLM reranker in the runtime.
+
 ### `memory_search` — semantic/full-text recall
 
 Search the memory index for entries matching a query. Returns ranked results

@@ -210,6 +210,9 @@ func TestBuildAgentRunTurn_JoinsRecallAndRequestContext(t *testing.T) {
 	if turn.SessionID != req.SessionID || turn.UserText != req.Message {
 		t.Fatalf("unexpected turn identity: %#v", turn)
 	}
+	if strings.TrimSpace(turn.TurnID) == "" {
+		t.Fatalf("expected generated turn id, got: %#v", turn)
+	}
 	if !strings.Contains(turn.StaticSystemPrompt, "## Pinned Knowledge") {
 		t.Fatalf("expected static memory system prompt, got: %s", turn.StaticSystemPrompt)
 	}
@@ -218,6 +221,81 @@ func TestBuildAgentRunTurn_JoinsRecallAndRequestContext(t *testing.T) {
 	}
 	if !strings.Contains(turn.Context, req.Context) {
 		t.Fatalf("expected request context to be preserved, got: %s", turn.Context)
+	}
+	if prepared.MemoryRecallSample == nil || !prepared.MemoryRecallSample.IndexedInjected {
+		t.Fatalf("expected indexed recall sample, got: %+v", prepared.MemoryRecallSample)
+	}
+}
+
+func TestBuildDynamicMemoryRecallContext_RecordsDeterministicRecallSample(t *testing.T) {
+	workspaceDir := t.TempDir()
+	memoryDir := filepath.Join(workspaceDir, "memory")
+	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memoryDir, "prefs.md"), []byte(`---
+name: deployment prefs
+description: Stable deployment preferences
+type: feedback
+---
+Use canary releases for production deploys.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	idx := &memoryStoreStub{
+		session: []memory.IndexedMemory{{MemoryID: "s1", SessionID: "session-a", Topic: "task", Text: "deployment checklist for the current session"}},
+		global:  []memory.IndexedMemory{{MemoryID: "g1", SessionID: "session-b", Topic: "project", Text: "deployment freeze begins Monday"}},
+	}
+
+	ctx, surfaced, sample := buildDynamicMemoryRecallContext(context.Background(), idx, memory.ScopedContext{}, "session-a", "deployment", workspaceDir, sessionStore)
+	if !strings.Contains(ctx, "## Relevant Memory Recall") || !strings.Contains(ctx, "## Relevant File-backed Memory") {
+		t.Fatalf("expected indexed and file recall in context, got: %s", ctx)
+	}
+	if len(surfaced) != 1 {
+		t.Fatalf("expected surfaced file-memory state, got: %+v", surfaced)
+	}
+	if sample == nil {
+		t.Fatal("expected recall sample")
+	}
+	if sample.Strategy != "deterministic" || sample.QueryHash == "" {
+		t.Fatalf("expected deterministic redacted sample, got: %+v", sample)
+	}
+	if !sample.IndexedInjected || !sample.FileInjected || !sample.InjectedAny {
+		t.Fatalf("expected both recall paths marked injected, got: %+v", sample)
+	}
+	if len(sample.IndexedSession) != 1 || sample.IndexedSession[0].MemoryID != "s1" {
+		t.Fatalf("expected session indexed hit, got: %+v", sample.IndexedSession)
+	}
+	if len(sample.IndexedGlobal) != 1 || sample.IndexedGlobal[0].MemoryID != "g1" {
+		t.Fatalf("expected global indexed hit, got: %+v", sample.IndexedGlobal)
+	}
+	if len(sample.FileSelected) != 1 || sample.FileSelected[0].RelativePath != "prefs.md" {
+		t.Fatalf("expected selected file-memory hit, got: %+v", sample.FileSelected)
+	}
+	if sample.TotalBlockRunes <= 0 || sample.TotalLatencyMS < 0 {
+		t.Fatalf("expected bounded measurement sizes, got: %+v", sample)
+	}
+}
+
+func TestBuildDynamicMemoryRecallContext_FileRetrievalWarningDoesNotCountAsInjected(t *testing.T) {
+	rootDir := filepath.Join(t.TempDir(), "workspace-file")
+	if err := os.WriteFile(rootDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, surfaced, sample := buildDynamicMemoryRecallContext(context.Background(), &memoryStoreStub{}, memory.ScopedContext{}, "session-a", "deployment", rootDir, nil)
+	if !strings.Contains(ctx, "file-memory retrieval failed") {
+		t.Fatalf("expected file retrieval warning, got: %s", ctx)
+	}
+	if len(surfaced) != 0 {
+		t.Fatalf("expected no surfaced file-memory state, got: %+v", surfaced)
+	}
+	if sample == nil || sample.FileInjected || sample.InjectedAny {
+		t.Fatalf("expected warning-only sample to stay non-injected, got: %+v", sample)
 	}
 }
 
@@ -284,10 +362,16 @@ Use canary releases for production deploys.
 	if !strings.Contains(first.Turn.Context, "Use canary releases for production deploys.") {
 		t.Fatalf("expected retrieved file-memory body, got: %s", first.Turn.Context)
 	}
-	commitSurfacedFileMemory(sessionStore, "session-a", first.SurfacedFileMemory)
+	if first.MemoryRecallSample == nil || !first.MemoryRecallSample.FileInjected || len(first.MemoryRecallSample.FileSelected) != 1 {
+		t.Fatalf("expected file recall sample on first turn, got: %+v", first.MemoryRecallSample)
+	}
+	commitMemoryRecallArtifacts(sessionStore, "session-a", "turn-1", first.MemoryRecallSample, first.SurfacedFileMemory)
 	entry, ok := sessionStore.Get("session-a")
 	if !ok || len(entry.FileMemorySurfaced) != 1 {
 		t.Fatalf("expected surfaced file-memory state, got %+v", entry)
+	}
+	if len(entry.RecentMemoryRecall) != 1 || entry.RecentMemoryRecall[0].TurnID != "turn-1" {
+		t.Fatalf("expected persisted recall sample, got %+v", entry.RecentMemoryRecall)
 	}
 	second := buildAgentRunTurn(context.Background(), methods.AgentRequest{
 		SessionID: "session-a",
@@ -295,6 +379,9 @@ Use canary releases for production deploys.
 	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir, sessionStore)
 	if strings.Contains(second.Turn.Context, "## Relevant File-backed Memory") {
 		t.Fatalf("expected repeated file-memory recall to be suppressed, got: %s", second.Turn.Context)
+	}
+	if second.MemoryRecallSample == nil || second.MemoryRecallSample.FileInjected || len(second.MemoryRecallSample.FileSelected) != 0 {
+		t.Fatalf("expected suppressed file recall sample on second turn, got: %+v", second.MemoryRecallSample)
 	}
 	future := time.Now().Add(2 * time.Second)
 	if err := os.Chtimes(prefsPath, future, future); err != nil {
@@ -306,6 +393,9 @@ Use canary releases for production deploys.
 	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir, sessionStore)
 	if !strings.Contains(third.Turn.Context, "## Relevant File-backed Memory") {
 		t.Fatalf("expected updated file memory to resurface, got: %s", third.Turn.Context)
+	}
+	if third.MemoryRecallSample == nil || !third.MemoryRecallSample.FileInjected || len(third.MemoryRecallSample.FileSelected) != 1 {
+		t.Fatalf("expected resurfaced file recall sample on third turn, got: %+v", third.MemoryRecallSample)
 	}
 }
 

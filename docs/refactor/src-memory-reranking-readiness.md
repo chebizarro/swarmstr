@@ -47,6 +47,28 @@ Today metiq retrieval works like this:
 
 This is the baseline that must be measured first.
 
+## Measurement status in metiq
+
+metiq now records bounded deterministic recall samples in local session state so
+the current baseline can be reviewed before any reranker bead is opened.
+
+Implementation anchors:
+- `swarmstr/cmd/metiqd/memory_prompt.go`
+- `swarmstr/internal/store/state/session_store.go`
+
+Session samples are stored in `sessions.json` as `recent_memory_recall` and are:
+- bounded to a small recent ring
+- redacted (`query_hash`, counts, selected IDs/paths only)
+- limited to deterministic retrieval metadata, not raw prompt text
+
+What this bead does **not** add:
+- no second model call
+- no reranking override
+- no ranking change to the current deterministic path
+
+This means metiq can now gather evidence about actual recall behavior while
+keeping reranking fully deferred.
+
 ## Why reranking is deferred
 
 Reranking is explicitly deferred because the current open question is not “can a model select memories?” — `src` already proves that it can. The open question is whether metiq’s current deterministic retrieval is materially failing in a way that reranking would actually fix.

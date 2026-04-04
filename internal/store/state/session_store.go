@@ -6,8 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	sessionFileMemorySurfacedCap = 64
+	memoryRecallSampleCap        = 8
 )
 
 // SessionEntry holds persisted settings and metrics for a single session.
@@ -17,21 +24,22 @@ type SessionEntry struct {
 	SessionID string `json:"session_id"`
 
 	// Session lifecycle / fork metadata.
-	SessionFile                   string            `json:"session_file,omitempty"`
-	SpawnedBy                     string            `json:"spawned_by,omitempty"`
-	SpawnedWorkspace              string            `json:"spawned_workspace_dir,omitempty"`
-	ForkedFromParent              bool              `json:"forked_from_parent,omitempty"`
-	CompactionCount               int64             `json:"compaction_count,omitempty"`
-	MemoryFlushAt                 int64             `json:"memory_flush_at,omitempty"`
-	MemoryFlushCount              int64             `json:"memory_flush_compaction_count,omitempty"`
-	SessionMemoryFile             string            `json:"session_memory_file,omitempty"`
-	SessionMemoryInitialized      bool              `json:"session_memory_initialized,omitempty"`
-	SessionMemoryObservedChars    int               `json:"session_memory_observed_chars,omitempty"`
-	SessionMemoryPendingChars     int               `json:"session_memory_pending_chars,omitempty"`
-	SessionMemoryPendingToolCalls int               `json:"session_memory_pending_tool_calls,omitempty"`
-	SessionMemoryLastEntryID      string            `json:"session_memory_last_entry_id,omitempty"`
-	SessionMemoryUpdatedAt        int64             `json:"session_memory_updated_at,omitempty"`
-	FileMemorySurfaced            map[string]string `json:"file_memory_surfaced,omitempty"`
+	SessionFile                   string               `json:"session_file,omitempty"`
+	SpawnedBy                     string               `json:"spawned_by,omitempty"`
+	SpawnedWorkspace              string               `json:"spawned_workspace_dir,omitempty"`
+	ForkedFromParent              bool                 `json:"forked_from_parent,omitempty"`
+	CompactionCount               int64                `json:"compaction_count,omitempty"`
+	MemoryFlushAt                 int64                `json:"memory_flush_at,omitempty"`
+	MemoryFlushCount              int64                `json:"memory_flush_compaction_count,omitempty"`
+	SessionMemoryFile             string               `json:"session_memory_file,omitempty"`
+	SessionMemoryInitialized      bool                 `json:"session_memory_initialized,omitempty"`
+	SessionMemoryObservedChars    int                  `json:"session_memory_observed_chars,omitempty"`
+	SessionMemoryPendingChars     int                  `json:"session_memory_pending_chars,omitempty"`
+	SessionMemoryPendingToolCalls int                  `json:"session_memory_pending_tool_calls,omitempty"`
+	SessionMemoryLastEntryID      string               `json:"session_memory_last_entry_id,omitempty"`
+	SessionMemoryUpdatedAt        int64                `json:"session_memory_updated_at,omitempty"`
+	FileMemorySurfaced            map[string]string    `json:"file_memory_surfaced,omitempty"`
+	RecentMemoryRecall            []MemoryRecallSample `json:"recent_memory_recall,omitempty"`
 
 	// Agent / model / provider routing state.
 	AgentID          string           `json:"agent_id,omitempty"`
@@ -106,6 +114,43 @@ type TurnTelemetry struct {
 	FallbackReason string `json:"fallback_reason,omitempty"`
 	InputTokens    int64  `json:"input_tokens,omitempty"`
 	OutputTokens   int64  `json:"output_tokens,omitempty"`
+}
+
+// MemoryRecallSample captures a bounded, redacted snapshot of the
+// deterministic recall block assembled for a successful turn.
+type MemoryRecallSample struct {
+	RecordedAtMS      int64                    `json:"recorded_at_ms,omitempty"`
+	TurnID            string                   `json:"turn_id,omitempty"`
+	Strategy          string                   `json:"strategy,omitempty"`
+	QueryHash         string                   `json:"query_hash,omitempty"`
+	QueryRuneCount    int                      `json:"query_rune_count,omitempty"`
+	QueryTokenCount   int                      `json:"query_token_count,omitempty"`
+	Scope             string                   `json:"scope,omitempty"`
+	IndexedSession    []MemoryRecallIndexedHit `json:"indexed_session,omitempty"`
+	IndexedGlobal     []MemoryRecallIndexedHit `json:"indexed_global,omitempty"`
+	FileSelected      []MemoryRecallFileHit    `json:"file_selected,omitempty"`
+	IndexedLatencyMS  int64                    `json:"indexed_latency_ms,omitempty"`
+	FileLatencyMS     int64                    `json:"file_latency_ms,omitempty"`
+	TotalLatencyMS    int64                    `json:"total_latency_ms,omitempty"`
+	IndexedBlockRunes int                      `json:"indexed_block_runes,omitempty"`
+	FileBlockRunes    int                      `json:"file_block_runes,omitempty"`
+	TotalBlockRunes   int                      `json:"total_block_runes,omitempty"`
+	IndexedInjected   bool                     `json:"indexed_injected,omitempty"`
+	FileInjected      bool                     `json:"file_injected,omitempty"`
+	InjectedAny       bool                     `json:"injected_any,omitempty"`
+}
+
+type MemoryRecallIndexedHit struct {
+	MemoryID string `json:"memory_id,omitempty"`
+	Topic    string `json:"topic,omitempty"`
+}
+
+type MemoryRecallFileHit struct {
+	RelativePath  string   `json:"relative_path,omitempty"`
+	Reasons       []string `json:"reasons,omitempty"`
+	UpdatedAtUnix int64    `json:"updated_at_unix,omitempty"`
+	Score         int      `json:"score,omitempty"`
+	Truncated     bool     `json:"truncated,omitempty"`
 }
 
 // CarryOverFlags returns a new SessionEntry that inherits the flag-based
@@ -260,6 +305,79 @@ func (s *SessionStore) RecordTurn(key string, telemetry TurnTelemetry) error {
 	return s.Save()
 }
 
+// RecordMemoryRecall atomically merges surfaced file-memory suppression state
+// and appends a bounded deterministic recall sample for later review.
+func (s *SessionStore) RecordMemoryRecall(key, turnID string, sample *MemoryRecallSample, surfaced map[string]string) error {
+	if s == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	if sample == nil && len(surfaced) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	e := s.entries[key]
+	now := time.Now().UTC()
+	if e.SessionID == "" {
+		e.SessionID = key
+	}
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = now
+	}
+	if len(surfaced) > 0 {
+		merged := make(map[string]string, len(e.FileMemorySurfaced)+len(surfaced))
+		for key, signal := range e.FileMemorySurfaced {
+			key = strings.TrimSpace(key)
+			signal = strings.TrimSpace(signal)
+			if key == "" || signal == "" {
+				continue
+			}
+			merged[key] = signal
+		}
+		for key, signal := range surfaced {
+			key = strings.TrimSpace(key)
+			signal = strings.TrimSpace(signal)
+			if key == "" || signal == "" {
+				continue
+			}
+			merged[key] = signal
+		}
+		if len(merged) > sessionFileMemorySurfacedCap {
+			keys := make([]string, 0, len(merged))
+			for key := range merged {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			trimmed := make(map[string]string, sessionFileMemorySurfacedCap)
+			for _, key := range keys[:sessionFileMemorySurfacedCap] {
+				trimmed[key] = merged[key]
+			}
+			merged = trimmed
+		}
+		e.FileMemorySurfaced = merged
+	}
+	if sample != nil {
+		copied := cloneMemoryRecallSample(*sample)
+		if copied.RecordedAtMS == 0 {
+			copied.RecordedAtMS = now.UnixMilli()
+		}
+		if strings.TrimSpace(copied.TurnID) == "" {
+			copied.TurnID = strings.TrimSpace(turnID)
+		}
+		if strings.TrimSpace(copied.Strategy) == "" {
+			copied.Strategy = "deterministic"
+		}
+		e.RecentMemoryRecall = append(e.RecentMemoryRecall, copied)
+		if len(e.RecentMemoryRecall) > memoryRecallSampleCap {
+			e.RecentMemoryRecall = append([]MemoryRecallSample(nil), e.RecentMemoryRecall[len(e.RecentMemoryRecall)-memoryRecallSampleCap:]...)
+		}
+	}
+	e.UpdatedAt = now
+	s.entries[key] = e
+	s.mu.Unlock()
+	return s.Save()
+}
+
 // Save persists all entries to disk atomically.
 func (s *SessionStore) Save() error {
 	s.mu.Lock()
@@ -312,4 +430,24 @@ func (s *SessionStore) migrateLoadedEntries() {
 		}
 		s.entries[key] = entry
 	}
+}
+
+func cloneMemoryRecallSample(in MemoryRecallSample) MemoryRecallSample {
+	out := in
+	if len(in.IndexedSession) > 0 {
+		out.IndexedSession = append([]MemoryRecallIndexedHit(nil), in.IndexedSession...)
+	}
+	if len(in.IndexedGlobal) > 0 {
+		out.IndexedGlobal = append([]MemoryRecallIndexedHit(nil), in.IndexedGlobal...)
+	}
+	if len(in.FileSelected) > 0 {
+		out.FileSelected = make([]MemoryRecallFileHit, len(in.FileSelected))
+		for i, hit := range in.FileSelected {
+			out.FileSelected[i] = hit
+			if len(hit.Reasons) > 0 {
+				out.FileSelected[i].Reasons = append([]string(nil), hit.Reasons...)
+			}
+		}
+	}
+	return out
 }
