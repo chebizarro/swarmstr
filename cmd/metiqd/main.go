@@ -3530,9 +3530,7 @@ func main() {
 				}
 			}
 
-			bundledSkillsDir := skillspkg.BundledSkillsDir()
-			skillsWsDir := skillspkg.WorkspaceDir(liveCfg.Extra, activeAgentID)
-			skillsPromptStr := buildSkillsPromptCached(bundledSkillsDir, skillsWsDir)
+			skillsPromptStr := buildSkillsPromptCached(liveCfg, activeAgentID)
 
 			wsDir := ""
 			for _, ac := range liveCfg.Agents {
@@ -5359,6 +5357,9 @@ func main() {
 					return applySkillsBins(configState.Get()), nil
 				},
 				SkillsInstall: func(ctx context.Context, req methods.SkillsInstallRequest) (map[string]any, error) {
+					if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+						return nil, err
+					}
 					_, result, err := applySkillInstall(ctx, docsRepo, configState, req)
 					if err != nil {
 						return nil, err
@@ -11952,6 +11953,12 @@ func configWithSkillEntries(cfg state.ConfigDoc, entries map[string]map[string]a
 	if next.Extra == nil {
 		next.Extra = map[string]any{}
 	}
+	rawSkills := map[string]any{}
+	if existing, ok := next.Extra["skills"].(map[string]any); ok {
+		for key, value := range existing {
+			rawSkills[key] = value
+		}
+	}
 	rawEntries := map[string]any{}
 	for key, entry := range entries {
 		entryCopy := map[string]any{}
@@ -11960,32 +11967,12 @@ func configWithSkillEntries(cfg state.ConfigDoc, entries map[string]map[string]a
 		}
 		rawEntries[key] = entryCopy
 	}
-	next.Extra["skills"] = map[string]any{"entries": rawEntries}
+	rawSkills["entries"] = rawEntries
+	next.Extra["skills"] = rawSkills
 	return next
 }
 
-func currentSkillEntries(cfg state.ConfigDoc) []map[string]any {
-	entries := extractSkillEntries(cfg)
-	keys := make([]string, 0, len(entries))
-	for key := range entries {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make([]map[string]any, 0, len(keys))
-	for _, key := range keys {
-		entry := map[string]any{"skillKey": key}
-		for ek, ev := range entries[key] {
-			entry[ek] = ev
-		}
-		out = append(out, entry)
-	}
-	return out
-}
-
 func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any {
-	emptyRequirements := func() map[string]any {
-		return map[string]any{"bins": []string{}, "anyBins": []string{}, "env": []string{}, "config": []string{}, "os": []string{}}
-	}
 	requirementsToMap := func(r skillspkg.Requirements) map[string]any {
 		bins := r.Bins
 		if bins == nil {
@@ -12010,28 +11997,22 @@ func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any
 		return map[string]any{"bins": bins, "anyBins": anyBins, "env": env, "os": osReq, "config": config}
 	}
 
-	agentIDNorm := defaultAgentID(agentID)
-	// Prefer workspace_dir from the typed Agents config for this agent.
-	workspaceDir := ""
-	for _, agCfg := range cfg.Agents {
-		if strings.TrimSpace(agCfg.ID) == agentIDNorm && strings.TrimSpace(agCfg.WorkspaceDir) != "" {
-			workspaceDir = strings.TrimSpace(agCfg.WorkspaceDir)
-			break
+	catalog, err := skillspkg.BuildSkillCatalog(cfg, agentID)
+	if err != nil || catalog == nil {
+		return map[string]any{
+			"workspaceDir":     skillspkg.ResolveAgentWorkspaceDir(cfg, agentID),
+			"managedSkillsDir": skillspkg.ManagedSkillsDir(),
+			"skills":           []map[string]any{},
 		}
 	}
-	if workspaceDir == "" {
-		workspaceDir = skillspkg.WorkspaceDir(cfg.Extra, agentIDNorm)
-	}
-	managedSkillsDir := skillspkg.ManagedSkillsDir()
 
-	skillsList := make([]map[string]any, 0)
-
-	// skillToMap converts a loaded Skill to the wire format expected by clients.
-	skillToMap := func(s *skillspkg.Skill, source string, bundled bool) map[string]any {
-		req := s.EffectiveRequirements()
-		// Build structured install specs from OpenClaw metadata.
+	skillsList := make([]map[string]any, 0, len(catalog.Skills))
+	for _, resolved := range catalog.Skills {
+		if resolved == nil || resolved.Skill == nil {
+			continue
+		}
 		installSpecs := make([]map[string]any, 0)
-		for _, spec := range s.InstallSpecs() {
+		for _, spec := range resolved.Skill.InstallSpecs() {
 			m := map[string]any{
 				"id":    spec.ID,
 				"kind":  spec.Kind,
@@ -12052,131 +12033,55 @@ func buildSkillsStatusReport(cfg state.ConfigDoc, agentID string) map[string]any
 			}
 			installSpecs = append(installSpecs, m)
 		}
-		// Fall back to legacy install steps if no structured specs.
 		if len(installSpecs) == 0 {
-			for _, step := range s.Manifest.Install {
+			for _, step := range resolved.Skill.Manifest.Install {
 				installSpecs = append(installSpecs, map[string]any{"cmd": step.Cmd, "cwd": step.Cwd})
 			}
 		}
-		always := false
-		if oc := s.Manifest.Metadata; oc != nil && oc.OpenClaw != nil {
-			always = oc.OpenClaw.Always
+		configChecks := make([]map[string]any, 0, len(resolved.ConfigChecks))
+		for _, check := range resolved.ConfigChecks {
+			configChecks = append(configChecks, map[string]any{"path": check.Path, "satisfied": check.Satisfied})
 		}
-		return map[string]any{
-			"name":               s.Manifest.Name,
-			"description":        s.Manifest.Description,
-			"source":             coalesceString(s.Manifest.Source, source),
-			"bundled":            bundled,
-			"filePath":           s.FilePath,
-			"baseDir":            s.BaseDir,
-			"skillKey":           s.SkillKey,
-			"emoji":              s.Emoji(),
-			"homepage":           s.Manifest.Homepage,
-			"always":             always,
-			"disabled":           !s.IsEnabled(),
-			"blockedByAllowlist": false,
-			"eligible":           s.Eligible && s.IsEnabled(),
-			"requirements":       requirementsToMap(req),
-			"missing":            requirementsToMap(s.Missing),
-			"configChecks":       []map[string]any{},
-			"install":            installSpecs,
-		}
-	}
-
-	// ── Bundled skills (SKILL.md files shipped with the binary) ───────────────
-	bundledDir := skillspkg.BundledSkillsDir()
-	bundledKeys := map[string]struct{}{}
-	if bundledDir != "" {
-		if bundled, err := skillspkg.ScanBundledDir(bundledDir); err == nil {
-			for _, s := range bundled {
-				bundledKeys[s.SkillKey] = struct{}{}
-				skillsList = append(skillsList, skillToMap(s, "metiq-bundled", true))
-			}
-		}
-	}
-
-	// ── Workspace-scanned skills (SKILL.md + legacy .yaml, user-authored) ─────
-	if scanned, err := skillspkg.ScanWorkspace(workspaceDir); err == nil {
-		for _, s := range scanned {
-			if _, alreadyBundled := bundledKeys[s.SkillKey]; alreadyBundled {
-				continue // workspace overrides bundled? no — bundled takes precedence unless
-				// user wants to override; for now skip duplicates (bundled wins).
-			}
-			skillsList = append(skillsList, skillToMap(s, "workspace", false))
-		}
-	}
-
-	// ── Managed skills (~/.metiq/skills/) ──────────────────────────────────
-	if managedSkillsDir != "" {
-		if managed, err := skillspkg.ScanBundledDir(managedSkillsDir); err == nil {
-			for _, s := range managed {
-				if _, alreadyBundled := bundledKeys[s.SkillKey]; alreadyBundled {
-					continue
-				}
-				skillsList = append(skillsList, skillToMap(s, "managed", false))
-			}
-		}
-	}
-
-	// ── Config-persisted skill entries (legacy / manually added) ─────────────
-	for _, entry := range currentSkillEntries(cfg) {
-		skillKey := strings.TrimSpace(fmt.Sprintf("%v", entry["skillKey"]))
-		if skillKey == "" {
-			continue
-		}
-		name, _ := entry["name"].(string)
-		name = strings.TrimSpace(name)
+		name := strings.TrimSpace(resolved.Skill.Manifest.Name)
 		if name == "" {
-			name = skillKey
+			name = resolved.Skill.SkillKey
 		}
-		description, _ := entry["description"].(string)
-		source, _ := entry["source"].(string)
-		if strings.TrimSpace(source) == "" {
-			source = "metiq-config"
+		entry := map[string]any{
+			"id":                     resolved.Skill.SkillKey,
+			"status":                 resolved.Status,
+			"name":                   name,
+			"description":            strings.TrimSpace(resolved.Skill.Manifest.Description),
+			"source":                 string(resolved.SourceKind),
+			"bundled":                resolved.SourceKind == skillspkg.SkillSourceBundled,
+			"filePath":               strings.TrimSpace(resolved.Skill.FilePath),
+			"baseDir":                strings.TrimSpace(resolved.Skill.BaseDir),
+			"skillKey":               resolved.Skill.SkillKey,
+			"primaryEnv":             resolved.PrimaryEnv,
+			"emoji":                  resolved.Skill.Emoji(),
+			"homepage":               resolved.Skill.Manifest.Homepage,
+			"always":                 resolved.Always,
+			"disabled":               resolved.Disabled,
+			"blockedByAllowlist":     resolved.BlockedByAllowlist,
+			"eligible":               resolved.Eligible,
+			"requirements":           requirementsToMap(resolved.EffectiveRequirements),
+			"missing":                requirementsToMap(resolved.Missing),
+			"configChecks":           configChecks,
+			"install":                installSpecs,
+			"whenToUse":              resolved.WhenToUse,
+			"userInvocable":          resolved.UserInvocable,
+			"disableModelInvocation": resolved.DisableModelInvocation,
 		}
-		enabled := true
-		if v, ok := entry["enabled"].(bool); ok {
-			enabled = v
+		if resolved.SelectedInstallID != "" {
+			entry["selectedInstallId"] = resolved.SelectedInstallID
 		}
-		requirements := emptyRequirements()
-		if reqMap, ok := entry["requirements"].(map[string]any); ok {
-			requirements = map[string]any{
-				"bins":    getStringSlice(reqMap, "bins"),
-				"anyBins": getStringSlice(reqMap, "anyBins"),
-				"env":     getStringSlice(reqMap, "env"),
-				"config":  getStringSlice(reqMap, "config"),
-				"os":      getStringSlice(reqMap, "os"),
-			}
-		}
-		filePath, _ := entry["filePath"].(string)
-		baseDir, _ := entry["baseDir"].(string)
-		skillsList = append(skillsList, map[string]any{
-			"name":               strings.TrimSpace(name),
-			"description":        strings.TrimSpace(description),
-			"source":             strings.TrimSpace(source),
-			"bundled":            false,
-			"filePath":           strings.TrimSpace(filePath),
-			"baseDir":            strings.TrimSpace(baseDir),
-			"skillKey":           skillKey,
-			"always":             false,
-			"disabled":           !enabled,
-			"blockedByAllowlist": false,
-			"eligible":           enabled,
-			"requirements":       requirements,
-			"missing":            emptyRequirements(),
-			"configChecks":       []map[string]any{},
-			"install":            []map[string]any{},
-		})
+		skillsList = append(skillsList, entry)
 	}
-
 	sort.Slice(skillsList, func(i, j int) bool {
-		ki := fmt.Sprintf("%v", skillsList[i]["skillKey"])
-		kj := fmt.Sprintf("%v", skillsList[j]["skillKey"])
-		return ki < kj
+		return fmt.Sprintf("%v", skillsList[i]["skillKey"]) < fmt.Sprintf("%v", skillsList[j]["skillKey"])
 	})
 	return map[string]any{
-		"workspaceDir":     workspaceDir,
-		"managedSkillsDir": managedSkillsDir,
+		"workspaceDir":     catalog.WorkspaceDir,
+		"managedSkillsDir": catalog.ManagedSkillsDir,
 		"skills":           skillsList,
 	}
 }
@@ -12196,50 +12101,32 @@ func applySkillsBins(cfg state.ConfigDoc) map[string]any {
 		bins = append(bins, v)
 	}
 
-	// Bundled skills.
-	if bundledDir := skillspkg.BundledSkillsDir(); bundledDir != "" {
-		if bundled, err := skillspkg.ScanBundledDir(bundledDir); err == nil {
-			for _, b := range skillspkg.AggregateBins(bundled) {
-				push(b)
-			}
+	agentIDs := []string{"main"}
+	for _, ag := range cfg.Agents {
+		if id := defaultAgentID(ag.ID); id != "main" {
+			agentIDs = append(agentIDs, id)
 		}
 	}
-
-	// Workspace-scanned skills (SKILL.md + legacy YAML).
-	wsDir := skillspkg.WorkspaceDir(cfg.Extra, "main")
-	if scanned, err := skillspkg.ScanWorkspace(wsDir); err == nil {
-		for _, b := range skillspkg.AggregateBins(scanned) {
+	seenAgents := map[string]struct{}{}
+	for _, agentID := range agentIDs {
+		agentID = defaultAgentID(agentID)
+		if _, ok := seenAgents[agentID]; ok {
+			continue
+		}
+		seenAgents[agentID] = struct{}{}
+		catalog, err := skillspkg.BuildSkillCatalog(cfg, agentID)
+		if err != nil || catalog == nil {
+			continue
+		}
+		finalSkills := make([]*skillspkg.Skill, 0, len(catalog.Skills))
+		for _, resolved := range catalog.Skills {
+			if resolved == nil || resolved.Skill == nil || resolved.SourceKind == skillspkg.SkillSourceConfig {
+				continue
+			}
+			finalSkills = append(finalSkills, resolved.Skill)
+		}
+		for _, b := range skillspkg.AggregateBins(finalSkills) {
 			push(b)
-		}
-	}
-
-	// Managed skills (~/.metiq/skills/).
-	if managedDir := skillspkg.ManagedSkillsDir(); managedDir != "" {
-		if managed, err := skillspkg.ScanBundledDir(managedDir); err == nil {
-			for _, b := range skillspkg.AggregateBins(managed) {
-				push(b)
-			}
-		}
-	}
-
-	// Config-persisted entries.
-	for _, entry := range currentSkillEntries(cfg) {
-		if binRaw, ok := entry["bin"].(string); ok {
-			push(binRaw)
-		} else if skillKey, ok := entry["skillKey"].(string); ok {
-			push(skillKey)
-		}
-		switch rawBins := entry["bins"].(type) {
-		case []string:
-			for _, b := range rawBins {
-				push(b)
-			}
-		case []any:
-			for _, raw := range rawBins {
-				if b, ok := raw.(string); ok {
-					push(b)
-				}
-			}
 		}
 	}
 	sort.Strings(bins)
@@ -12253,42 +12140,34 @@ func coalesceString(a, b string) string {
 	return b
 }
 
-// findInstallSpec searches bundled, workspace and managed skill directories for the
-// install spec with the given ID on the named skill.
-func findInstallSpec(cfg state.ConfigDoc, name, installID string) (*skillspkg.InstallSpec, bool) {
+var execCommandContext = exec.CommandContext
+
+// findInstallSpec searches the merged skill catalog for the install spec with the
+// given ID on the named skill.
+func findInstallSpec(cfg state.ConfigDoc, agentID, name, installID string) (*skillspkg.InstallSpec, *skillspkg.ResolvedSkill, bool) {
 	nameNorm := strings.ToLower(strings.TrimSpace(name))
 	idNorm := strings.ToLower(strings.TrimSpace(installID))
 
-	var allSkills []*skillspkg.Skill
-	if dir := skillspkg.BundledSkillsDir(); dir != "" {
-		if skills, err := skillspkg.ScanBundledDir(dir); err == nil {
-			allSkills = append(allSkills, skills...)
-		}
+	catalog, err := skillspkg.BuildSkillCatalog(cfg, agentID)
+	if err != nil || catalog == nil {
+		return nil, nil, false
 	}
-	if workspaceDir := skillspkg.WorkspaceDir(cfg.Extra, "default"); workspaceDir != "" {
-		if skills, err := skillspkg.ScanWorkspace(workspaceDir); err == nil {
-			allSkills = append(allSkills, skills...)
-		}
-	}
-	if dir := skillspkg.ManagedSkillsDir(); dir != "" {
-		if skills, err := skillspkg.ScanBundledDir(dir); err == nil {
-			allSkills = append(allSkills, skills...)
-		}
-	}
-
-	for _, s := range allSkills {
-		skillName := strings.ToLower(strings.TrimSpace(s.Manifest.Name))
-		if skillName != nameNorm && strings.ToLower(s.SkillKey) != nameNorm {
+	for _, resolved := range catalog.Skills {
+		if resolved == nil || resolved.Skill == nil {
 			continue
 		}
-		for _, spec := range s.InstallSpecs() {
+		skillName := strings.ToLower(strings.TrimSpace(resolved.Skill.Manifest.Name))
+		if skillName != nameNorm && strings.ToLower(resolved.Skill.SkillKey) != nameNorm {
+			continue
+		}
+		for _, spec := range resolved.Skill.InstallSpecs() {
 			if strings.ToLower(spec.ID) == idNorm {
 				cp := spec
-				return &cp, true
+				return &cp, resolved, true
 			}
 		}
 	}
-	return nil, false
+	return nil, nil, false
 }
 
 // runDownloadInstall downloads a binary from spec.URL into ~/.metiq/bin/.
@@ -12332,9 +12211,13 @@ func runDownloadInstall(ctx context.Context, spec skillspkg.InstallSpec) (stdout
 
 // runInstallSpec executes the installation command described by spec, using ctx
 // (which should already have a deadline set from req.TimeoutMS).
-func runInstallSpec(ctx context.Context, spec skillspkg.InstallSpec) (stdout, stderr string, code int, err error) {
+func runInstallSpec(ctx context.Context, spec skillspkg.InstallSpec, prefs skillspkg.InstallPreferences) (stdout, stderr string, code int, err error) {
 	var cmd *exec.Cmd
-	switch strings.ToLower(spec.Kind) {
+	kind := strings.ToLower(strings.TrimSpace(spec.Kind))
+	if kind == "npm" {
+		kind = "node"
+	}
+	switch kind {
 	case "brew":
 		formula := spec.Formula
 		if formula == "" {
@@ -12343,27 +12226,40 @@ func runInstallSpec(ctx context.Context, spec skillspkg.InstallSpec) (stdout, st
 		if formula == "" {
 			return "", "brew spec missing formula/package", 1, fmt.Errorf("brew spec missing formula/package")
 		}
-		cmd = exec.CommandContext(ctx, "brew", "install", formula)
-	case "npm":
+		cmd = execCommandContext(ctx, "brew", "install", formula)
+	case "npm", "node":
 		if spec.Package == "" {
-			return "", "npm spec missing package", 1, fmt.Errorf("npm spec missing package")
+			return "", "node spec missing package", 1, fmt.Errorf("node spec missing package")
 		}
-		cmd = exec.CommandContext(ctx, "npm", "install", "-g", spec.Package)
+		nodeManager := strings.TrimSpace(prefs.NodeManager)
+		if nodeManager == "" {
+			nodeManager = "npm"
+		}
+		switch nodeManager {
+		case "pnpm":
+			cmd = execCommandContext(ctx, "pnpm", "add", "-g", spec.Package)
+		case "yarn":
+			cmd = execCommandContext(ctx, "yarn", "global", "add", spec.Package)
+		case "bun":
+			cmd = execCommandContext(ctx, "bun", "install", "-g", spec.Package)
+		default:
+			cmd = execCommandContext(ctx, "npm", "install", "-g", spec.Package)
+		}
 	case "go":
 		if spec.Module == "" {
 			return "", "go spec missing module", 1, fmt.Errorf("go spec missing module")
 		}
-		cmd = exec.CommandContext(ctx, "go", "install", spec.Module+"@latest")
+		cmd = execCommandContext(ctx, "go", "install", spec.Module+"@latest")
 	case "uv":
 		if spec.Package == "" {
 			return "", "uv spec missing package", 1, fmt.Errorf("uv spec missing package")
 		}
-		cmd = exec.CommandContext(ctx, "uv", "tool", "install", spec.Package)
+		cmd = execCommandContext(ctx, "uv", "tool", "install", spec.Package)
 	case "apt":
 		if spec.Package == "" {
 			return "", "apt spec missing package", 1, fmt.Errorf("apt spec missing package")
 		}
-		cmd = exec.CommandContext(ctx, "apt-get", "install", "-y", spec.Package)
+		cmd = execCommandContext(ctx, "apt-get", "install", "-y", spec.Package)
 	case "download":
 		return runDownloadInstall(ctx, spec)
 	default:
@@ -12390,27 +12286,29 @@ func runInstallSpec(ctx context.Context, spec skillspkg.InstallSpec) (stdout, st
 
 func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.SkillsInstallRequest) (state.ConfigDoc, map[string]any, error) {
 	cfg := configState.Get()
+	agentID := defaultAgentID(req.AgentID)
+	installPrefs := skillspkg.ResolveInstallPreferences(cfg)
 
-	// Find the install spec in bundled/workspace/managed skills.
-	spec, found := findInstallSpec(cfg, req.Name, req.InstallID)
+	// Find the install spec in the merged skill catalog.
+	spec, resolved, found := findInstallSpec(cfg, agentID, req.Name, req.InstallID)
 
 	var installResult map[string]any
 	if !found {
-		// Spec not found — still mark as installed (legacy / config-only behaviour).
 		installResult = map[string]any{
-			"ok":      true,
-			"message": "Installed (spec not found — marked in config only)",
+			"ok":      false,
+			"message": "Skill install option not found",
 			"stdout":  "",
 			"stderr":  "",
-			"code":    0,
+			"code":    1,
 		}
+		return state.ConfigDoc{}, installResult, nil
 	} else {
 		// Apply timeout from the request.
 		timeout := time.Duration(req.TimeoutMS) * time.Millisecond
 		installCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
-		outStr, errStr, exitCode, runErr := runInstallSpec(installCtx, *spec)
+		outStr, errStr, exitCode, runErr := runInstallSpec(installCtx, *spec, installPrefs)
 		if runErr != nil {
 			installResult = map[string]any{
 				"ok":      false,
@@ -12434,11 +12332,18 @@ func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, conf
 	// Persist the install record in config.
 	entries := extractSkillEntries(cfg)
 	key := strings.ToLower(strings.TrimSpace(req.Name))
+	if resolved != nil && resolved.Skill != nil && strings.TrimSpace(resolved.Skill.SkillKey) != "" {
+		key = strings.ToLower(strings.TrimSpace(resolved.Skill.SkillKey))
+	}
 	entry, ok := entries[key]
 	if !ok {
 		entry = map[string]any{}
 	}
-	entry["name"] = req.Name
+	if resolved != nil && resolved.Skill != nil && strings.TrimSpace(resolved.Skill.Manifest.Name) != "" {
+		entry["name"] = resolved.Skill.Manifest.Name
+	} else {
+		entry["name"] = req.Name
+	}
 	entry["install_id"] = req.InstallID
 	entry["enabled"] = true
 	entry["status"] = "installed"
@@ -12452,6 +12357,7 @@ func applySkillInstall(ctx context.Context, docsRepo *state.DocsRepository, conf
 		return state.ConfigDoc{}, installResult, err
 	}
 	configState.Set(next)
+	skillspkg.InvalidateSkillCatalogCache()
 	return next, installResult, nil
 }
 
@@ -12523,6 +12429,7 @@ func applySkillUpdate(ctx context.Context, docsRepo *state.DocsRepository, confi
 		return state.ConfigDoc{}, nil, err
 	}
 	configState.Set(next)
+	skillspkg.InvalidateSkillCatalogCache()
 	entryCopy := map[string]any{}
 	for key, value := range entry {
 		entryCopy[key] = value

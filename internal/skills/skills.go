@@ -13,6 +13,8 @@ package skills
 import (
 	"bytes"
 	"fmt"
+	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +34,15 @@ type Manifest struct {
 
 	// Description explains what the skill does (used by the agent for skill selection).
 	Description string `yaml:"description"`
+
+	// WhenToUse gives the model explicit invocation guidance.
+	WhenToUse string `yaml:"when_to_use"`
+
+	// UserInvocable allows a skill to be hidden from direct user invocation surfaces.
+	UserInvocable *bool `yaml:"user-invocable"`
+
+	// DisableModelInvocation keeps a skill out of automatic prompt discovery.
+	DisableModelInvocation *bool `yaml:"disable-model-invocation"`
 
 	// Homepage is an optional reference URL.
 	Homepage string `yaml:"homepage"`
@@ -178,6 +189,9 @@ type Skill struct {
 	Eligible bool
 }
 
+// MaxSkillFileBytes caps manifest size loaded from disk to avoid oversized prompt assets.
+const MaxSkillFileBytes = 256 * 1024
+
 // IsEnabled returns true unless explicitly disabled in the manifest.
 func (s *Skill) IsEnabled() bool {
 	if s.Manifest.Enabled != nil {
@@ -225,9 +239,47 @@ func (s *Skill) Emoji() string {
 // InstallSpecs returns structured install specs for the skill.
 func (s *Skill) InstallSpecs() []InstallSpec {
 	if oc := s.openClawMeta(); oc != nil {
-		return oc.Install
+		specs := make([]InstallSpec, 0, len(oc.Install))
+		for _, spec := range oc.Install {
+			if normalized, ok := normalizeAndValidateInstallSpec(spec); ok {
+				specs = append(specs, normalized)
+			}
+		}
+		return specs
 	}
 	return nil
+}
+
+func (s *Skill) PrimaryEnv() string {
+	if oc := s.openClawMeta(); oc != nil {
+		return strings.TrimSpace(oc.PrimaryEnv)
+	}
+	return ""
+}
+
+func (s *Skill) Always() bool {
+	if oc := s.openClawMeta(); oc != nil {
+		return oc.Always
+	}
+	return false
+}
+
+func (s *Skill) WhenToUse() string {
+	return strings.TrimSpace(s.Manifest.WhenToUse)
+}
+
+func (s *Skill) UserInvocable() bool {
+	if s.Manifest.UserInvocable != nil {
+		return *s.Manifest.UserInvocable
+	}
+	return true
+}
+
+func (s *Skill) DisableModelInvocation() bool {
+	if s.Manifest.DisableModelInvocation != nil {
+		return *s.Manifest.DisableModelInvocation
+	}
+	return false
 }
 
 func (s *Skill) openClawMeta() *OpenClawMeta {
@@ -271,7 +323,7 @@ func parseFrontmatter(data []byte) (frontmatter []byte, body []byte, err error) 
 // LoadSkillMD parses a SKILL.md file into a Skill.
 // The skill key is taken from the parent directory name.
 func LoadSkillMD(path string) (*Skill, error) {
-	data, err := os.ReadFile(path)
+	data, err := readLimitedFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read SKILL.md %q: %w", path, err)
 	}
@@ -289,6 +341,7 @@ func LoadSkillMD(path string) (*Skill, error) {
 			return nil, fmt.Errorf("parse YAML frontmatter %q: %w", path, yamlErr)
 		}
 	}
+	sanitizeManifest(&m)
 	m.Body = string(bytes.TrimSpace(body))
 
 	// Skill key = parent directory name.
@@ -411,7 +464,7 @@ func trailingCommaPass(data []byte) []byte {
 
 // LoadManifest parses a legacy YAML skill manifest file (.yaml/.yml) into a Skill.
 func LoadManifest(path string) (*Skill, error) {
-	data, err := os.ReadFile(path)
+	data, err := readLimitedFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read skill manifest %q: %w", path, err)
 	}
@@ -419,6 +472,7 @@ func LoadManifest(path string) (*Skill, error) {
 	if err := yaml.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parse skill manifest %q: %w", path, err)
 	}
+	sanitizeManifest(&m)
 	base := filepath.Base(path)
 	ext := filepath.Ext(base)
 	skillKey := strings.TrimSuffix(base, ext)
@@ -506,6 +560,10 @@ func ScanBundledDir(dir string) ([]*Skill, error) {
 	if dir == "" {
 		return nil, nil
 	}
+	rootReal, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		rootReal = dir
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -516,15 +574,21 @@ func ScanBundledDir(dir string) ([]*Skill, error) {
 
 	var skills []*Skill
 	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		fullPath := filepath.Join(dir, entry.Name())
+		if !isDirOrSymlinkDir(fullPath, entry) || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
-		skillMDPath := filepath.Join(dir, entry.Name(), "SKILL.md")
+		if !isPathContained(rootReal, fullPath) {
+			log.Printf("skills: skipping bundled skill outside root: %s", fullPath)
+			continue
+		}
+		skillMDPath := filepath.Join(fullPath, "SKILL.md")
 		if _, err := os.Stat(skillMDPath); err != nil {
 			continue // no SKILL.md in this subdir, skip
 		}
 		s, err := LoadSkillMD(skillMDPath)
 		if err != nil {
+			log.Printf("skills: skipping bundled skill %s: %v", skillMDPath, err)
 			continue // skip malformed skills
 		}
 		s.Bundled = true
@@ -556,6 +620,10 @@ func ScanWorkspace(dir string) ([]*Skill, error) {
 		return nil, fmt.Errorf("workspace path %q is not a directory", dir)
 	}
 
+	rootReal, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		rootReal = dir
+	}
 	var skills []*Skill
 
 	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
@@ -567,12 +635,18 @@ func ScanWorkspace(dir string) ([]*Skill, error) {
 			if strings.HasPrefix(base, ".") || base == "node_modules" {
 				return filepath.SkipDir
 			}
+			if !isPathContained(rootReal, path) {
+				log.Printf("skills: skipping workspace directory outside root: %s", path)
+				return filepath.SkipDir
+			}
 			// Check for SKILL.md in this subdirectory.
 			skillMDPath := filepath.Join(path, "SKILL.md")
 			if _, statErr := os.Stat(skillMDPath); statErr == nil {
 				s, loadErr := LoadSkillMD(skillMDPath)
 				if loadErr == nil {
 					skills = append(skills, s)
+				} else {
+					log.Printf("skills: skipping workspace skill %s: %v", skillMDPath, loadErr)
 				}
 				return filepath.SkipDir // don't recurse further into skill dirs
 			}
@@ -584,6 +658,8 @@ func ScanWorkspace(dir string) ([]*Skill, error) {
 			s, loadErr := LoadManifest(path)
 			if loadErr == nil {
 				skills = append(skills, s)
+			} else {
+				log.Printf("skills: skipping workspace manifest %s: %v", path, loadErr)
 			}
 		}
 		return nil
@@ -739,4 +815,133 @@ func AggregateBins(skills []*Skill) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func readLimitedFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > MaxSkillFileBytes {
+		return nil, fmt.Errorf("skill file exceeds max size (%d bytes)", MaxSkillFileBytes)
+	}
+	return os.ReadFile(path)
+}
+
+func sanitizeManifest(m *Manifest) {
+	if m.Metadata == nil || m.Metadata.OpenClaw == nil {
+		return
+	}
+	specs := make([]InstallSpec, 0, len(m.Metadata.OpenClaw.Install))
+	for _, spec := range m.Metadata.OpenClaw.Install {
+		if normalized, ok := normalizeAndValidateInstallSpec(spec); ok {
+			specs = append(specs, normalized)
+		}
+	}
+	m.Metadata.OpenClaw.Install = specs
+}
+
+func normalizeAndValidateInstallSpec(spec InstallSpec) (InstallSpec, bool) {
+	spec.ID = strings.TrimSpace(spec.ID)
+	spec.Kind = normalizeInstallKind(spec.Kind)
+	spec.Formula = strings.TrimSpace(spec.Formula)
+	spec.Package = strings.TrimSpace(spec.Package)
+	spec.Module = strings.TrimSpace(spec.Module)
+	spec.URL = strings.TrimSpace(spec.URL)
+	spec.Label = strings.TrimSpace(spec.Label)
+	spec.Bins = compactStringSlice(spec.Bins)
+	spec.OS = compactStringSlice(spec.OS)
+
+	switch spec.Kind {
+	case "brew":
+		if spec.Formula == "" && spec.Package == "" {
+			return InstallSpec{}, false
+		}
+		if !isSafePackageToken(coalesceInstallValue(spec.Formula, spec.Package)) {
+			return InstallSpec{}, false
+		}
+	case "node", "apt", "uv":
+		if spec.Package == "" || !isSafePackageToken(spec.Package) {
+			return InstallSpec{}, false
+		}
+	case "go":
+		if spec.Module == "" || strings.Contains(spec.Module, "://") || strings.HasPrefix(spec.Module, "-") {
+			return InstallSpec{}, false
+		}
+	case "download":
+		u, err := url.Parse(spec.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return InstallSpec{}, false
+		}
+	default:
+		return InstallSpec{}, false
+	}
+	return spec, true
+}
+
+func normalizeInstallKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "npm", "node":
+		return "node"
+	case "brew", "go", "uv", "download", "apt":
+		return strings.ToLower(strings.TrimSpace(kind))
+	default:
+		return strings.ToLower(strings.TrimSpace(kind))
+	}
+}
+
+func compactStringSlice(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func isSafePackageToken(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" || strings.HasPrefix(v, "-") {
+		return false
+	}
+	return !strings.ContainsAny(v, " \t\r\n")
+}
+
+func coalesceInstallValue(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return strings.TrimSpace(a)
+	}
+	return strings.TrimSpace(b)
+}
+
+func isDirOrSymlinkDir(fullPath string, entry os.DirEntry) bool {
+	if entry.IsDir() {
+		return true
+	}
+	if entry.Type()&os.ModeSymlink == 0 {
+		return false
+	}
+	info, err := os.Stat(fullPath)
+	return err == nil && info.IsDir()
+}
+
+func isPathContained(rootReal, candidate string) bool {
+	candidateReal, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		candidateReal = candidate
+	}
+	rel, err := filepath.Rel(rootReal, candidateReal)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, "..") && rel != "..")
 }

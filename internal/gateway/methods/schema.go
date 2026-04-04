@@ -902,12 +902,14 @@ type SkillsStatusRequest struct {
 type SkillsBinsRequest struct{}
 
 type SkillsInstallRequest struct {
+	AgentID   string `json:"agent_id,omitempty"`
 	Name      string `json:"name"`
 	InstallID string `json:"install_id"`
 	TimeoutMS int    `json:"timeout_ms,omitempty"`
 }
 
 type SkillsUpdateRequest struct {
+	AgentID  string            `json:"agent_id,omitempty"`
 	SkillKey string            `json:"skill_key"`
 	Enabled  *bool             `json:"enabled,omitempty"`
 	APIKey   *string           `json:"api_key,omitempty"`
@@ -1803,6 +1805,7 @@ func (r SkillsBinsRequest) Normalize() (SkillsBinsRequest, error) {
 }
 
 func (r SkillsInstallRequest) Normalize() (SkillsInstallRequest, error) {
+	r.AgentID = normalizeAgentID(r.AgentID)
 	r.Name = strings.TrimSpace(r.Name)
 	r.InstallID = strings.TrimSpace(r.InstallID)
 	if r.Name == "" {
@@ -1816,6 +1819,7 @@ func (r SkillsInstallRequest) Normalize() (SkillsInstallRequest, error) {
 }
 
 func (r SkillsUpdateRequest) Normalize() (SkillsUpdateRequest, error) {
+	r.AgentID = normalizeAgentID(r.AgentID)
 	r.SkillKey = strings.ToLower(strings.TrimSpace(r.SkillKey))
 	if r.SkillKey == "" {
 		return r, fmt.Errorf("skill_key is required")

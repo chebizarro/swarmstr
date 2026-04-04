@@ -243,7 +243,7 @@ func (h *Handler) runSubscription(since int64) bool {
 			}
 			log.Printf("dvm: subscription closed by relay=%s reason=%s; restarting", relayURL, rc.Reason)
 			if h.subHealth != nil {
-				h.subHealth.RecordClosed(rc.Reason)
+				h.subHealth.RecordClosed(relayURL, rc.Reason)
 			}
 			return false
 		case re, ok := <-events:
