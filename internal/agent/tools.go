@@ -280,6 +280,7 @@ type toolEntry struct {
 }
 
 type ToolRegistry struct {
+	mu           sync.RWMutex
 	entries      map[string]*toolEntry
 	middleware   ToolMiddleware
 	preHooks     []ToolPreExecuteHook
@@ -297,12 +298,16 @@ func NewToolRegistry() *ToolRegistry {
 // Execute call. Calling SetMiddleware again replaces the previous middleware.
 // Pass nil to remove it.
 func (r *ToolRegistry) SetMiddleware(mw ToolMiddleware) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.middleware = mw
 }
 
 // AddPreExecuteHook appends a pre-execute hook to the registry pipeline.
 func (r *ToolRegistry) AddPreExecuteHook(h ToolPreExecuteHook) {
 	if h != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
 		r.preHooks = append(r.preHooks, h)
 	}
 }
@@ -310,6 +315,8 @@ func (r *ToolRegistry) AddPreExecuteHook(h ToolPreExecuteHook) {
 // AddPostExecuteHook appends a post-execute hook to the registry pipeline.
 func (r *ToolRegistry) AddPostExecuteHook(h ToolPostExecuteHook) {
 	if h != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
 		r.postHooks = append(r.postHooks, h)
 	}
 }
@@ -317,12 +324,16 @@ func (r *ToolRegistry) AddPostExecuteHook(h ToolPostExecuteHook) {
 // AddExecuteErrorHook appends an execute-error hook to the registry pipeline.
 func (r *ToolRegistry) AddExecuteErrorHook(h ToolExecuteErrorHook) {
 	if h != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
 		r.errorHooks = append(r.errorHooks, h)
 	}
 }
 
 // SetLoopDetection configures per-session loop detection for shared agentic tool loops.
 func (r *ToolRegistry) SetLoopDetection(registry *toolloop.Registry, cfg toolloop.Config) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if registry == nil {
 		r.loopRegistry = nil
 		r.loopConfig = nil
@@ -368,7 +379,9 @@ func (r *ToolRegistry) RegisterTool(name string, reg ToolRegistration) {
 	if name == "" {
 		return
 	}
-	entry := r.entry(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry := r.entryForUpdateLocked(name)
 	if reg.Func != nil {
 		entry.fn = reg.Func
 	}
@@ -396,10 +409,26 @@ func (r *ToolRegistry) SetDescriptor(name string, desc ToolDescriptor) {
 	if name == "" {
 		return
 	}
-	entry := r.entry(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry := r.entryForUpdateLocked(name)
 	entry.descriptor = normalizeToolDescriptor(name, desc)
 	entry.providerVisible = true
 	entry.resetSchemaCache()
+}
+
+// Remove unregisters a tool from the registry.
+func (r *ToolRegistry) Remove(name string) bool {
+	if name == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.entries[name]; !ok {
+		return false
+	}
+	delete(r.entries, name)
+	return true
 }
 
 // ProviderDescriptors returns the provider-visible canonical tool descriptors
@@ -407,6 +436,8 @@ func (r *ToolRegistry) SetDescriptor(name string, desc ToolDescriptor) {
 // canonical src built-in-prefix assembly semantics: built-ins stay as a
 // contiguous, name-sorted prefix and non-builtins are sorted separately.
 func (r *ToolRegistry) ProviderDescriptors() []ToolDescriptor {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]ToolDescriptor, 0, len(r.entries))
 	for _, entry := range r.entries {
 		if entry == nil || !entry.providerVisible {
@@ -425,6 +456,8 @@ func (r *ToolRegistry) Definitions() []ToolDefinition {
 
 // Descriptor returns the canonical descriptor for a registered tool.
 func (r *ToolRegistry) Descriptor(name string) (ToolDescriptor, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	entry, ok := r.entries[name]
 	if !ok || entry == nil {
 		return ToolDescriptor{}, false
@@ -434,6 +467,8 @@ func (r *ToolRegistry) Descriptor(name string) (ToolDescriptor, bool) {
 
 // Descriptors returns all canonical tool descriptors sorted by name.
 func (r *ToolRegistry) Descriptors() []ToolDescriptor {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]ToolDescriptor, 0, len(r.entries))
 	for _, entry := range r.entries {
 		if entry == nil {
@@ -521,39 +556,89 @@ func ToolDefinitions(executor ToolExecutor) []ToolDefinition {
 	return nil
 }
 
+// SnapshotToolExecutor freezes an executor into a per-turn view when supported.
+func SnapshotToolExecutor(executor ToolExecutor) ToolExecutor {
+	if executor == nil {
+		return nil
+	}
+	if snapper, ok := executor.(interface{ SnapshotToolExecutor() ToolExecutor }); ok {
+		return snapper.SnapshotToolExecutor()
+	}
+	return executor
+}
+
+// Snapshot returns an immutable point-in-time view of the registry suitable for
+// per-turn tool execution. Entries are shared because they are published
+// immutably; the registry map and hook slices are copied.
+func (r *ToolRegistry) Snapshot() *ToolRegistry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	snapshot := &ToolRegistry{
+		entries:      make(map[string]*toolEntry, len(r.entries)),
+		middleware:   r.middleware,
+		preHooks:     append([]ToolPreExecuteHook(nil), r.preHooks...),
+		postHooks:    append([]ToolPostExecuteHook(nil), r.postHooks...),
+		errorHooks:   append([]ToolExecuteErrorHook(nil), r.errorHooks...),
+		loopRegistry: r.loopRegistry,
+	}
+	if r.loopConfig != nil {
+		cfgCopy := *r.loopConfig
+		snapshot.loopConfig = &cfgCopy
+	}
+	for name, entry := range r.entries {
+		snapshot.entries[name] = entry
+	}
+	return snapshot
+}
+
+// SnapshotToolExecutor freezes the registry into a per-turn executor snapshot.
+func (r *ToolRegistry) SnapshotToolExecutor() ToolExecutor {
+	return r.Snapshot()
+}
+
 // EffectiveTraits resolves the runtime-effective traits for a call, applying any
 // input-aware trait resolvers on top of the descriptor defaults.
 func (r *ToolRegistry) PrepareLoopExecution(ctx context.Context, call ToolCall) (toolloop.Result, bool) {
-	if r.loopRegistry == nil || r.loopConfig == nil {
+	r.mu.RLock()
+	loopRegistry := r.loopRegistry
+	loopConfig := r.loopConfig
+	r.mu.RUnlock()
+	if loopRegistry == nil || loopConfig == nil {
 		return toolloop.Result{}, false
 	}
 	sessionID := SessionIDFromContext(ctx)
 	if sessionID == "" {
 		return toolloop.Result{}, false
 	}
-	loopState := r.loopRegistry.Get(sessionID)
-	result := toolloop.Detect(loopState, call.Name, call.Args, r.loopConfig)
+	loopState := loopRegistry.Get(sessionID)
+	result := toolloop.Detect(loopState, call.Name, call.Args, loopConfig)
 	if result.Stuck && result.Level == toolloop.Critical {
 		return result, true
 	}
-	toolloop.RecordCall(loopState, call.Name, call.Args, call.ID, r.loopConfig)
+	toolloop.RecordCall(loopState, call.Name, call.Args, call.ID, loopConfig)
 	return result, true
 }
 
 func (r *ToolRegistry) RecordLoopOutcome(ctx context.Context, call ToolCall, result, errStr string) {
-	if r.loopRegistry == nil || r.loopConfig == nil {
+	r.mu.RLock()
+	loopRegistry := r.loopRegistry
+	loopConfig := r.loopConfig
+	r.mu.RUnlock()
+	if loopRegistry == nil || loopConfig == nil {
 		return
 	}
 	sessionID := SessionIDFromContext(ctx)
 	if sessionID == "" {
 		return
 	}
-	loopState := r.loopRegistry.Get(sessionID)
-	toolloop.RecordOutcome(loopState, call.Name, call.Args, call.ID, result, errStr, r.loopConfig)
+	loopState := loopRegistry.Get(sessionID)
+	toolloop.RecordOutcome(loopState, call.Name, call.Args, call.ID, result, errStr, loopConfig)
 }
 
 func (r *ToolRegistry) EffectiveTraits(call ToolCall) (traits ToolTraits, ok bool) {
+	r.mu.RLock()
 	entry, ok := r.entries[call.Name]
+	r.mu.RUnlock()
 	if !ok || entry == nil {
 		return ToolTraits{}, false
 	}
@@ -589,7 +674,13 @@ func (r *ToolRegistry) EffectiveTraits(call ToolCall) (traits ToolTraits, ok boo
 }
 
 func (r *ToolRegistry) Execute(ctx context.Context, call ToolCall) (string, error) {
+	r.mu.RLock()
 	entry, ok := r.entries[call.Name]
+	middleware := r.middleware
+	preHooks := append([]ToolPreExecuteHook(nil), r.preHooks...)
+	postHooks := append([]ToolPostExecuteHook(nil), r.postHooks...)
+	errorHooks := append([]ToolExecuteErrorHook(nil), r.errorHooks...)
+	r.mu.RUnlock()
 	if !ok || entry == nil || entry.fn == nil {
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}
@@ -607,7 +698,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, call ToolCall) (string, erro
 			return "", newToolExecutionError(call.Name, ToolExecutionPhaseSemanticValidation, err)
 		}
 	}
-	for _, hook := range r.preHooks {
+	for _, hook := range preHooks {
 		nextCall, err := hook(ctx, prepared, desc)
 		if err != nil {
 			return "", newToolExecutionError(call.Name, ToolExecutionPhasePreExecute, err)
@@ -622,20 +713,22 @@ func (r *ToolRegistry) Execute(ctx context.Context, call ToolCall) (string, erro
 		return entry.fn(ctx, c.Args)
 	}
 
-	result, err := r.executePhase(ctx, prepared, rawExec)
+	result, err := executePhase(middleware, ctx, prepared, rawExec)
 	if err != nil {
-		return "", r.runErrorHooks(ctx, prepared, desc, ToolExecutionPhaseExecute, err)
+		return "", runErrorHooks(errorHooks, ctx, prepared, desc, ToolExecutionPhaseExecute, err)
 	}
-	for _, hook := range r.postHooks {
+	for _, hook := range postHooks {
 		result, err = hook(ctx, prepared, desc, result)
 		if err != nil {
-			return "", r.runErrorHooks(ctx, prepared, desc, ToolExecutionPhasePostExecute, err)
+			return "", runErrorHooks(errorHooks, ctx, prepared, desc, ToolExecutionPhasePostExecute, err)
 		}
 	}
 	return result, nil
 }
 
 func (r *ToolRegistry) List() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]string, 0, len(r.entries))
 	for name, entry := range r.entries {
 		if entry != nil && entry.fn != nil {
@@ -646,16 +739,16 @@ func (r *ToolRegistry) List() []string {
 	return out
 }
 
-func (r *ToolRegistry) executePhase(ctx context.Context, call ToolCall, rawExec func(context.Context, ToolCall) (string, error)) (string, error) {
-	if r.middleware != nil {
-		return r.middleware(ctx, call, rawExec)
+func executePhase(middleware ToolMiddleware, ctx context.Context, call ToolCall, rawExec func(context.Context, ToolCall) (string, error)) (string, error) {
+	if middleware != nil {
+		return middleware(ctx, call, rawExec)
 	}
 	return rawExec(ctx, call)
 }
 
-func (r *ToolRegistry) runErrorHooks(ctx context.Context, call ToolCall, desc ToolDescriptor, phase ToolExecutionPhase, err error) error {
+func runErrorHooks(hooks []ToolExecuteErrorHook, ctx context.Context, call ToolCall, desc ToolDescriptor, phase ToolExecutionPhase, err error) error {
 	wrapped := newToolExecutionError(call.Name, phase, err)
-	for _, hook := range r.errorHooks {
+	for _, hook := range hooks {
 		next := hook(ctx, call, desc, wrapped)
 		if next == nil {
 			continue
@@ -669,12 +762,20 @@ func (r *ToolRegistry) runErrorHooks(ctx context.Context, call ToolCall, desc To
 	return wrapped
 }
 
-func (r *ToolRegistry) entry(name string) *toolEntry {
+func (r *ToolRegistry) entryForUpdateLocked(name string) *toolEntry {
 	if r.entries == nil {
 		r.entries = map[string]*toolEntry{}
 	}
 	if entry, ok := r.entries[name]; ok && entry != nil {
-		return entry
+		cloned := &toolEntry{
+			fn:              entry.fn,
+			descriptor:      entry.descriptor,
+			providerVisible: entry.providerVisible,
+			validate:        entry.validate,
+			traits:          entry.traits,
+		}
+		r.entries[name] = cloned
+		return cloned
 	}
 	entry := &toolEntry{descriptor: normalizeToolDescriptor(name, ToolDescriptor{Name: name, Origin: ToolOrigin{Kind: ToolOriginKindUnknown}})}
 	r.entries[name] = entry

@@ -1003,83 +1003,7 @@ func main() {
 	var mcpManager *mcppkg.Manager
 	{
 		mcpCfg := mcppkg.ResolveConfigDoc(configState.Get())
-		if len(mcpCfg.Servers) > 0 || len(mcpCfg.DisabledServers) > 0 {
-			mcpManager = mcppkg.NewManager()
-			if err := mcpManager.LoadFromConfig(ctx, mcpCfg); err != nil {
-				log.Printf("[mcp] initialization error (non-fatal): %v", err)
-			} else {
-				// Register discovered MCP tools into the agent tool registry.
-				for serverName, serverTools := range mcpManager.GetAllTools() {
-					for _, mcpTool := range serverTools {
-						name, fn, params := mcppkg.MCPToolToToolDef(mcpManager, serverName, mcpTool)
-						desc := mcpTool.Description
-						if desc == "" {
-							desc = fmt.Sprintf("MCP tool from %s server", serverName)
-						}
-						def := agent.ToolDefinition{
-							Name:        name,
-							Description: fmt.Sprintf("[MCP:%s] %s", serverName, desc),
-						}
-						if props, ok := params["properties"].(map[string]any); ok {
-							def.Parameters.Type = "object"
-							def.Parameters.Properties = make(map[string]agent.ToolParamProp)
-							for pName, pVal := range props {
-								pm, ok2 := pVal.(map[string]any)
-								if !ok2 {
-									continue
-								}
-								prop := agent.ToolParamProp{}
-								if t, ok3 := pm["type"].(string); ok3 {
-									prop.Type = t
-								}
-								if d, ok3 := pm["description"].(string); ok3 {
-									prop.Description = d
-								}
-								if enumRaw, ok3 := pm["enum"].([]any); ok3 {
-									for _, ev := range enumRaw {
-										es, ok4 := ev.(string)
-										if ok4 {
-											prop.Enum = append(prop.Enum, es)
-										}
-									}
-								}
-								if itemsRaw, ok3 := pm["items"].(map[string]any); ok3 {
-									items := &agent.ToolParamProp{}
-									if it, ok4 := itemsRaw["type"].(string); ok4 {
-										items.Type = it
-									}
-									if id, ok4 := itemsRaw["description"].(string); ok4 {
-										items.Description = id
-									}
-									prop.Items = items
-								}
-								def.Parameters.Properties[pName] = prop
-							}
-							if req, ok := params["required"].([]any); ok {
-								for _, r := range req {
-									s, ok2 := r.(string)
-									if ok2 {
-										def.Parameters.Required = append(def.Parameters.Required, s)
-									}
-								}
-							}
-						}
-						tools.RegisterWithDescriptor(name, fn, agent.ToolDescriptor{
-							Name:            def.Name,
-							Description:     def.Description,
-							Parameters:      def.Parameters,
-							InputJSONSchema: params,
-							Origin: agent.ToolOrigin{
-								Kind:          agent.ToolOriginKindMCP,
-								ServerName:    serverName,
-								CanonicalName: mcpTool.Name,
-							},
-						})
-						log.Printf("[mcp] registered tool: %s", name)
-					}
-				}
-			}
-		}
+		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, mcpCfg, "initialization")
 	}
 	if mcpManager != nil {
 		defer mcpManager.Close()
@@ -5023,11 +4947,7 @@ func main() {
 				wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
 			})
 		}
-		if mcpManager != nil {
-			if err := mcpManager.ApplyConfig(ctx, resolvedMCP); err != nil {
-				log.Printf("[mcp] live config apply error (non-fatal): %v", err)
-			}
-		}
+		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live config apply")
 		wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
 			TS: time.Now().UnixMilli(),
 		})
@@ -5054,11 +4974,7 @@ func main() {
 						wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
 					})
 				}
-				if mcpManager != nil {
-					if err := mcpManager.ApplyConfig(ctx, resolvedMCP); err != nil {
-						log.Printf("[mcp] live file-reload apply error (non-fatal): %v", err)
-					}
-				}
+				applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live file-reload apply")
 				wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
 					TS: time.Now().UnixMilli(),
 				})

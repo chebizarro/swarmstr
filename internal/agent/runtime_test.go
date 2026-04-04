@@ -11,8 +11,21 @@ import (
 // delivering the response word by word.
 type streamingEchoProvider struct{}
 
+type mutatingToolProvider struct {
+	tools     *ToolRegistry
+	seenTools []ToolDefinition
+}
+
 func (streamingEchoProvider) Generate(_ context.Context, turn Turn) (ProviderResult, error) {
 	return ProviderResult{Text: "ack: " + turn.UserText}, nil
+}
+
+func (p *mutatingToolProvider) Generate(_ context.Context, turn Turn) (ProviderResult, error) {
+	p.seenTools = append([]ToolDefinition(nil), turn.Tools...)
+	if p.tools != nil {
+		p.tools.Remove("mcp_demo_echo")
+	}
+	return ProviderResult{ToolCalls: []ToolCall{{Name: "mcp_demo_echo"}}}, nil
 }
 
 func (streamingEchoProvider) Stream(_ context.Context, turn Turn, onChunk func(string)) (ProviderResult, error) {
@@ -42,6 +55,29 @@ func TestProviderRuntime_ProcessTurn(t *testing.T) {
 	}
 	if result.Outcome != TurnOutcomeCompleted || result.StopReason != TurnStopReasonModelText {
 		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", result.Outcome, result.StopReason)
+	}
+}
+
+func TestProviderRuntime_ProcessTurn_UsesPerTurnToolSnapshot(t *testing.T) {
+	tools := NewToolRegistry()
+	tools.RegisterWithDef("mcp_demo_echo", func(_ context.Context, _ map[string]any) (string, error) {
+		return "snapshot-ok", nil
+	}, ToolDefinition{Name: "mcp_demo_echo", Description: "demo"})
+	provider := &mutatingToolProvider{tools: tools}
+	rt, _ := NewProviderRuntime(provider, tools)
+
+	result, err := rt.ProcessTurn(context.Background(), Turn{UserText: "hello"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(provider.seenTools) != 1 || provider.seenTools[0].Name != "mcp_demo_echo" {
+		t.Fatalf("expected provider to see frozen MCP tool surface, got %+v", provider.seenTools)
+	}
+	if len(result.ToolTraces) != 1 || result.ToolTraces[0].Result != "snapshot-ok" || result.ToolTraces[0].Error != "" {
+		t.Fatalf("expected frozen tool snapshot to execute successfully, got %+v", result.ToolTraces)
+	}
+	if _, ok := tools.Descriptor("mcp_demo_echo"); ok {
+		t.Fatal("expected live registry mutation to remove the original tool")
 	}
 }
 

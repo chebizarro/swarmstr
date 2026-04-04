@@ -173,6 +173,18 @@ func (m *Manager) SetStateObserver(observer StateObserver) {
 	m.observe = observer
 }
 
+// SetConnectFunc overrides the server connector used for future connects.
+// Passing nil restores the default connector.
+func (m *Manager) SetConnectFunc(fn func(context.Context, string, ServerConfig) (*ServerConnection, error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fn == nil {
+		m.connectFn = defaultConnectServer
+		return
+	}
+	m.connectFn = fn
+}
+
 // LoadFromConfig loads and connects all configured MCP servers from
 // configuration.
 func (m *Manager) LoadFromConfig(ctx context.Context, cfg Config) error {
@@ -479,9 +491,6 @@ func (m *Manager) ensureRecordLocked(name string, resolved ResolvedServerConfig)
 		m.servers = make(map[string]*serverRecord)
 	}
 	if record, ok := m.servers[name]; ok && record != nil {
-		if resolved.Name != "" {
-			record.config = resolved
-		}
 		return record
 	}
 	record := &serverRecord{config: resolved}

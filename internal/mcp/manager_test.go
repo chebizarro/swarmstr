@@ -311,6 +311,49 @@ func TestManagerReconnectTransitionsFromFailedToConnected(t *testing.T) {
 	}
 }
 
+func TestManagerApplyConfigReconnectsWhenSignatureChanges(t *testing.T) {
+	mgr := NewManager()
+	toolSets := [][]*mcp.Tool{{{Name: "echo"}}, {{Name: "echo"}, {Name: "sum"}}}
+	attempt := 0
+	mgr.connectFn = func(_ context.Context, name string, _ ServerConfig) (*ServerConnection, error) {
+		tools := toolSets[attempt]
+		attempt++
+		return &ServerConnection{
+			Name:         name,
+			Tools:        tools,
+			Capabilities: CapabilitySnapshot{Tools: true},
+		}, nil
+	}
+
+	apply := func(signature string) {
+		t.Helper()
+		if err := mgr.ApplyConfig(context.Background(), Config{
+			Enabled: true,
+			Servers: map[string]ResolvedServerConfig{
+				"demo": {
+					Name:         "demo",
+					ServerConfig: ServerConfig{Enabled: true, Command: "npx"},
+					Signature:    signature,
+				},
+			},
+		}); err != nil {
+			t.Fatalf("ApplyConfig(%q) error: %v", signature, err)
+		}
+	}
+
+	apply("sig-1")
+	if got := len(mgr.GetAllTools()["demo"]); got != 1 {
+		t.Fatalf("expected initial tool count=1, got %d", got)
+	}
+	apply("sig-2")
+	if got := len(mgr.GetAllTools()["demo"]); got != 2 {
+		t.Fatalf("expected refreshed tool count=2 after signature change, got %d", got)
+	}
+	if attempt != 2 {
+		t.Fatalf("expected reconnect attempt count=2, got %d", attempt)
+	}
+}
+
 func TestManagerApplyConfigClassifiesNeedsAuthAndDisabled(t *testing.T) {
 	mgr := NewManager()
 	mgr.connectFn = func(_ context.Context, _ string, _ ServerConfig) (*ServerConnection, error) {

@@ -276,6 +276,13 @@ func (e *ProfileFilteredExecutor) EffectiveTraits(call ToolCall) (ToolTraits, bo
 	return provider.EffectiveTraits(call)
 }
 
+func (e *ProfileFilteredExecutor) SnapshotToolExecutor() ToolExecutor {
+	return &ProfileFilteredExecutor{
+		Base:    SnapshotToolExecutor(e.Base),
+		Allowed: CloneAllowedToolIDs(e.Allowed),
+	}
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 func profileContains(list []string, target string) bool {
