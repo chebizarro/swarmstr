@@ -132,6 +132,49 @@ type ServerConnection struct {
 	Capabilities CapabilitySnapshot
 	ServerInfo   *ServerInfoSnapshot
 	Instructions string
+	// Optional RPC overrides primarily used by tests and synthetic connections.
+	CallToolFunc      func(context.Context, *mcp.CallToolParams) (*mcp.CallToolResult, error)
+	ListResourcesFunc func(context.Context, *mcp.ListResourcesParams) (*mcp.ListResourcesResult, error)
+	ReadResourceFunc  func(context.Context, *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error)
+}
+
+func (c *ServerConnection) callTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	if c == nil {
+		return nil, fmt.Errorf("server is not connected")
+	}
+	if c.CallToolFunc != nil {
+		return c.CallToolFunc(ctx, params)
+	}
+	if c.Session == nil {
+		return nil, fmt.Errorf("server session unavailable")
+	}
+	return c.Session.CallTool(ctx, params)
+}
+
+func (c *ServerConnection) listResources(ctx context.Context, params *mcp.ListResourcesParams) (*mcp.ListResourcesResult, error) {
+	if c == nil {
+		return nil, fmt.Errorf("server is not connected")
+	}
+	if c.ListResourcesFunc != nil {
+		return c.ListResourcesFunc(ctx, params)
+	}
+	if c.Session == nil {
+		return nil, fmt.Errorf("server session unavailable")
+	}
+	return c.Session.ListResources(ctx, params)
+}
+
+func (c *ServerConnection) readResource(ctx context.Context, params *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error) {
+	if c == nil {
+		return nil, fmt.Errorf("server is not connected")
+	}
+	if c.ReadResourceFunc != nil {
+		return c.ReadResourceFunc(ctx, params)
+	}
+	if c.Session == nil {
+		return nil, fmt.Errorf("server session unavailable")
+	}
+	return c.Session.ReadResource(ctx, params)
 }
 
 type serverRecord struct {
@@ -617,8 +660,7 @@ func (m *Manager) GetServers() map[string]*ServerConnection {
 	return result
 }
 
-// CallTool calls a tool on a specific server.
-func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, arguments map[string]any) (*mcp.CallToolResult, error) {
+func (m *Manager) acquireConnection(serverName string) (*ServerConnection, error) {
 	if m.closed.Load() {
 		return nil, fmt.Errorf("manager is closed")
 	}
@@ -633,20 +675,29 @@ func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, arg
 	if ok {
 		conn = record.connection
 	}
-	if ok && conn != nil {
-		m.wg.Add(1)
-	}
-	m.mu.RUnlock()
-
 	if !ok {
+		m.mu.RUnlock()
 		return nil, fmt.Errorf("server %s not found", serverName)
 	}
-	if record.state != ConnectionStateConnected || conn == nil || conn.Session == nil {
-		return nil, fmt.Errorf("server %s is %s", serverName, record.state)
+	if record.state != ConnectionStateConnected || conn == nil {
+		state := record.state
+		m.mu.RUnlock()
+		return nil, fmt.Errorf("server %s is %s", serverName, state)
+	}
+	m.wg.Add(1)
+	m.mu.RUnlock()
+	return conn, nil
+}
+
+// CallTool calls a tool on a specific server.
+func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, arguments map[string]any) (*mcp.CallToolResult, error) {
+	conn, err := m.acquireConnection(serverName)
+	if err != nil {
+		return nil, err
 	}
 	defer m.wg.Done()
 
-	result, err := conn.Session.CallTool(ctx, &mcp.CallToolParams{
+	result, err := conn.callTool(ctx, &mcp.CallToolParams{
 		Name:      toolName,
 		Arguments: arguments,
 	})
@@ -654,6 +705,44 @@ func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, arg
 		return nil, fmt.Errorf("failed to call tool: %w", err)
 	}
 
+	return result, nil
+}
+
+// ListResources lists resources from a specific connected MCP server.
+func (m *Manager) ListResources(ctx context.Context, serverName string) (*mcp.ListResourcesResult, error) {
+	conn, err := m.acquireConnection(serverName)
+	if err != nil {
+		return nil, err
+	}
+	defer m.wg.Done()
+
+	if !conn.Capabilities.Resources {
+		return nil, fmt.Errorf("server %s does not support resources", serverName)
+	}
+
+	result, err := conn.listResources(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list resources: %w", err)
+	}
+	return result, nil
+}
+
+// ReadResource reads a specific resource from a connected MCP server.
+func (m *Manager) ReadResource(ctx context.Context, serverName, uri string) (*mcp.ReadResourceResult, error) {
+	conn, err := m.acquireConnection(serverName)
+	if err != nil {
+		return nil, err
+	}
+	defer m.wg.Done()
+
+	if !conn.Capabilities.Resources {
+		return nil, fmt.Errorf("server %s does not support resources", serverName)
+	}
+
+	result, err := conn.readResource(ctx, &mcp.ReadResourceParams{URI: uri})
+	if err != nil {
+		return nil, fmt.Errorf("failed to read resource: %w", err)
+	}
 	return result, nil
 }
 
