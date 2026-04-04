@@ -595,6 +595,99 @@ func TestManagerReadResourcePropagatesReadError(t *testing.T) {
 	}
 }
 
+func TestManagerListPromptsRequiresCapability(t *testing.T) {
+	mgr := NewManager()
+	mgr.SetConnectFunc(func(_ context.Context, name string, _ ServerConfig) (*ServerConnection, error) {
+		return &ServerConnection{
+			Name:         name,
+			Capabilities: CapabilitySnapshot{Tools: true},
+		}, nil
+	})
+	if err := mgr.ApplyConfig(context.Background(), Config{
+		Enabled: true,
+		Servers: map[string]ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: ServerConfig{Enabled: true, Command: "npx"},
+				Signature:    "sig-demo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyConfig error: %v", err)
+	}
+
+	_, err := mgr.ListPrompts(context.Background(), "demo")
+	if err == nil || !strings.Contains(err.Error(), "does not support prompts") {
+		t.Fatalf("err = %v, want capability-gated failure", err)
+	}
+}
+
+func TestManagerGetPromptPassesArguments(t *testing.T) {
+	mgr := NewManager()
+	mgr.SetConnectFunc(func(_ context.Context, name string, _ ServerConfig) (*ServerConnection, error) {
+		return &ServerConnection{
+			Name:         name,
+			Capabilities: CapabilitySnapshot{Prompts: true},
+			ListPromptsFunc: func(_ context.Context, _ *mcp.ListPromptsParams) (*mcp.ListPromptsResult, error) {
+				return &mcp.ListPromptsResult{
+					Prompts: []*mcp.Prompt{{
+						Name: "review",
+						Arguments: []*mcp.PromptArgument{{
+							Name:     "topic",
+							Required: true,
+						}},
+					}},
+				}, nil
+			},
+			GetPromptFunc: func(_ context.Context, params *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
+				if params == nil || params.Name != "review" {
+					t.Fatalf("unexpected get prompt params: %#v", params)
+				}
+				if params.Arguments["topic"] != "mcp" || params.Arguments["mode"] != "full" {
+					t.Fatalf("unexpected prompt arguments: %#v", params.Arguments)
+				}
+				return &mcp.GetPromptResult{
+					Description: "review prompt",
+					Messages: []*mcp.PromptMessage{{
+						Role:    mcp.Role("user"),
+						Content: &mcp.TextContent{Text: "Review MCP support"},
+					}},
+				}, nil
+			},
+		}, nil
+	})
+	if err := mgr.ApplyConfig(context.Background(), Config{
+		Enabled: true,
+		Servers: map[string]ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: ServerConfig{Enabled: true, Command: "npx"},
+				Signature:    "sig-demo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyConfig error: %v", err)
+	}
+
+	list, err := mgr.ListPrompts(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("ListPrompts error: %v", err)
+	}
+	if list == nil || len(list.Prompts) != 1 || list.Prompts[0].Name != "review" {
+		t.Fatalf("unexpected list result: %#v", list)
+	}
+	result, err := mgr.GetPrompt(context.Background(), "demo", "review", map[string]string{
+		"topic": "mcp",
+		"mode":  "full",
+	})
+	if err != nil {
+		t.Fatalf("GetPrompt error: %v", err)
+	}
+	if result == nil || len(result.Messages) != 1 || result.Description != "review prompt" {
+		t.Fatalf("unexpected get result: %#v", result)
+	}
+}
+
 func TestSanitize(t *testing.T) {
 	tests := []struct {
 		in, want string
