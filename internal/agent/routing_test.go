@@ -143,3 +143,36 @@ func TestModelRouter_NoLightModel(t *testing.T) {
 		t.Errorf("got model %q, want claude-sonnet", model)
 	}
 }
+
+func TestExtractTurnFeatures_UsesToolHistoryAndImages(t *testing.T) {
+	features := ExtractTurnFeatures(Turn{
+		UserText: "continue",
+		History: []ConversationMessage{
+			{Role: "assistant", Content: "calling tools", ToolCalls: []ToolCallRef{{ID: "call-1", Name: "bash"}, {ID: "call-2", Name: "read"}}},
+		},
+		Images: []ImageRef{{URL: "https://example.com/image.png", MimeType: "image/png"}},
+	})
+	if features.RecentToolCalls != 2 {
+		t.Fatalf("expected 2 recent tool calls, got %d", features.RecentToolCalls)
+	}
+	if !features.HasAttachments {
+		t.Fatal("expected turn images to force attachment routing")
+	}
+}
+
+func TestModelRouter_SelectTurn_WithAttachmentsUsesPrimary(t *testing.T) {
+	router := NewModelRouter("claude-haiku", 0.35)
+	model, usedLight, score := router.SelectTurn(Turn{
+		UserText: "what's in this image?",
+		Images:   []ImageRef{{URL: "https://example.com/cat.png", MimeType: "image/png"}},
+	}, "claude-sonnet")
+	if usedLight {
+		t.Fatal("expected attachments to stay on primary model")
+	}
+	if model != "claude-sonnet" {
+		t.Fatalf("got model %q, want claude-sonnet", model)
+	}
+	if score != 1.0 {
+		t.Fatalf("expected attachment score 1.0, got %.2f", score)
+	}
+}

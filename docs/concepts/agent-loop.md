@@ -17,8 +17,9 @@ into actions and a final encrypted reply.
 - **Nostr DM**: inbound NIP-04/NIP-17 DM routed through `controlDMBus` → `dmRunAgentTurn`.
 - **Webhook**: `POST /hooks/agent` → isolated agent turn.
 - **Cron**: scheduled job triggers `dmRunAgentTurn` (isolated or main session).
-- **Heartbeat**: periodic tick → agent turn in main session.
 - **CLI**: Admin API call (e.g. via `metiq gw agent` or a webhook trigger).
+
+`extra.heartbeat` is not an agent-loop entry point today: it publishes NIP-38 presence/status events only.
 
 ## How it works (high-level)
 

@@ -177,6 +177,70 @@ func TestRoutedProvider_UsesPrimaryForComplex(t *testing.T) {
 	}
 }
 
+func TestRoutedProvider_UsesPrimaryWhenHistoryShowsToolCalls(t *testing.T) {
+	primaryCalled := false
+	lightCalled := false
+
+	rp := &RoutedProvider{
+		primary: &mockProvider{fn: func(ctx context.Context, turn Turn) (ProviderResult, error) {
+			primaryCalled = true
+			return ProviderResult{Text: "primary"}, nil
+		}},
+		light: &mockProvider{fn: func(ctx context.Context, turn Turn) (ProviderResult, error) {
+			lightCalled = true
+			return ProviderResult{Text: "light"}, nil
+		}},
+		router:       NewModelRouter("light-model", 0.05),
+		primaryModel: "primary-model",
+	}
+
+	_, err := rp.Generate(context.Background(), Turn{
+		UserText: "continue",
+		History:  []ConversationMessage{{Role: "assistant", Content: "running tools", ToolCalls: []ToolCallRef{{ID: "1", Name: "bash"}, {ID: "2", Name: "read"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !primaryCalled {
+		t.Fatal("expected primary model to be used when tool history raises complexity")
+	}
+	if lightCalled {
+		t.Fatal("expected light model to stay unused when tool history is present")
+	}
+}
+
+func TestRoutedProvider_UsesPrimaryWhenTurnHasImages(t *testing.T) {
+	primaryCalled := false
+	lightCalled := false
+
+	rp := &RoutedProvider{
+		primary: &mockProvider{fn: func(ctx context.Context, turn Turn) (ProviderResult, error) {
+			primaryCalled = true
+			return ProviderResult{Text: "primary"}, nil
+		}},
+		light: &mockProvider{fn: func(ctx context.Context, turn Turn) (ProviderResult, error) {
+			lightCalled = true
+			return ProviderResult{Text: "light"}, nil
+		}},
+		router:       NewModelRouter("light-model", 0.9),
+		primaryModel: "primary-model",
+	}
+
+	_, err := rp.Generate(context.Background(), Turn{
+		UserText: "describe this",
+		Images:   []ImageRef{{URL: "https://example.com/cat.png", MimeType: "image/png"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !primaryCalled {
+		t.Fatal("expected primary model for image turns")
+	}
+	if lightCalled {
+		t.Fatal("expected light model to stay unused for image turns")
+	}
+}
+
 // mockProvider implements Provider for testing.
 type mockProvider struct {
 	fn func(ctx context.Context, turn Turn) (ProviderResult, error)

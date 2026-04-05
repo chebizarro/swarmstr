@@ -1843,23 +1843,7 @@ func main() {
 				log.Printf("agent config: id=%s already loaded from Nostr docs, skipping auto-provision", agentID)
 				continue
 			}
-			// Resolve provider override: explicit provider name wins; if none is
-			// specified, auto-resolve from model name (e.g. "claude-*" → "anthropic"
-			// providers entry, "gpt-*" → "openai" providers entry).
-			var override agent.ProviderOverride
-			if provName := strings.TrimSpace(agCfg.Provider); provName != "" {
-				if pe, ok := providers[provName]; ok {
-					override = agent.ProviderOverride{
-						BaseURL:      pe.BaseURL,
-						APIKey:       pe.APIKey,
-						Model:        pe.Model,
-						SystemPrompt: strings.TrimSpace(agCfg.SystemPrompt),
-					}
-				}
-			} else {
-				override = autoResolveProviderOverride(model, providers)
-				override.SystemPrompt = strings.TrimSpace(agCfg.SystemPrompt)
-			}
+			override := resolveModelProviderOverride(configState.Get(), agCfg, model)
 			// Determine the effective Provider before building the Runtime.
 			// Layer 1: FallbackChain wraps the primary + fallback ChatProviders.
 			// Layer 2: RoutedProvider selects between primary and light model.
@@ -1874,8 +1858,7 @@ func main() {
 					if fbModel == "" {
 						continue
 					}
-					fbOv := autoResolveProviderOverride(fbModel, providers)
-					fbOverrides[fbModel] = fbOv
+					fbOverrides[fbModel] = resolveModelProviderOverride(configState.Get(), agCfg, fbModel)
 				}
 				fbProvider, fbErr := agent.NewFallbackChainProvider(
 					model,
@@ -1896,23 +1879,9 @@ func main() {
 			// Build the base runtime (used when no FallbackChain, or as
 			// the primary for RoutedProvider).
 			if effectiveProvider == nil {
-				baseProv, basErr := agent.NewProviderForModel(model)
+				baseProv, basErr := buildProviderForAgentModel(configState.Get(), agCfg, model)
 				if basErr != nil {
-					// Fall back to BuildRuntimeWithOverride for full override support.
-					rt, rtErr := agent.BuildRuntimeWithOverride(model, override, tools)
-					if rtErr != nil {
-						log.Printf("agent config auto-provision warning id=%s model=%q provider=%q err=%v", agentID, model, agCfg.Provider, rtErr)
-						continue
-					}
-					// Can't apply routing without a Provider reference; use rt directly.
-					if isMain {
-						agentRegistry.SetDefault(rt)
-						controlAgentRuntime = rt
-						log.Printf("agent config: default runtime updated id=main model=%q provider=%q", model, agCfg.Provider)
-					} else {
-						agentRegistry.Set(agentID, rt)
-						log.Printf("agent config auto-provisioned id=%s model=%q provider=%q", agentID, model, agCfg.Provider)
-					}
+					log.Printf("agent config auto-provision warning id=%s model=%q provider=%q err=%v", agentID, model, agCfg.Provider, basErr)
 					continue
 				}
 				effectiveProvider = baseProv
@@ -1922,9 +1891,14 @@ func main() {
 			if hasLightModel {
 				lightModel := strings.TrimSpace(agCfg.LightModel)
 				threshold := agCfg.LightModelThreshold
-				routed := agent.NewRoutedProvider(effectiveProvider, model, lightModel, threshold, tools)
-				effectiveProvider = routed
-				log.Printf("agent config: model routing enabled id=%s primary=%q light=%q threshold=%.2f", agentID, model, lightModel, threshold)
+				lightProv, lightErr := buildProviderForAgentModel(configState.Get(), agCfg, lightModel)
+				if lightErr != nil {
+					log.Printf("agent config: light model build warning id=%s light=%q err=%v — routing disabled", agentID, lightModel, lightErr)
+				} else {
+					routed := agent.NewRoutedProvider(effectiveProvider, model, lightProv, lightModel, threshold)
+					effectiveProvider = routed
+					log.Printf("agent config: model routing enabled id=%s primary=%q light=%q threshold=%.2f", agentID, model, lightModel, threshold)
+				}
 			}
 
 			rt, rtErr := agent.NewProviderRuntime(effectiveProvider, tools)
@@ -6974,12 +6948,11 @@ func handleControlRPCRequest(
 					Text:      msg.Text,
 					EventID:   msg.EventID,
 				})
-				// Route inbound group messages through the default agent runtime.
-				rt := controlAgentRuntime
+				activeAgentID, rt := resolveInboundChannelRuntime("", msg.ChannelID)
 				turnCtx, release := chatCancels.Begin(msg.ChannelID, ctx)
 				go func() {
 					defer release()
-					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, msg.ChannelID, "", rt, tools, turnToolConstraints{})
+					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, msg.ChannelID, activeAgentID, rt, tools, turnToolConstraints{})
 					result, turnErr := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
 						SessionID: msg.ChannelID,
 						UserText:  msg.Text,
@@ -7210,30 +7183,22 @@ func handleControlRPCRequest(
 			primaryLabel = "primary"
 		}
 		runtimeLabels := []string{primaryLabel}
-		if controlSessionRouter != nil {
-			for _, agCfg := range cfg.Agents {
-				if strings.TrimSpace(agCfg.ID) != strings.TrimSpace(activeAgentID) {
+		if agCfg, ok := resolveAgentConfigByID(cfg, activeAgentID); ok {
+			if strings.TrimSpace(agCfg.Model) != "" {
+				primaryLabel = strings.TrimSpace(agCfg.Model)
+				runtimeLabels[0] = primaryLabel
+			}
+			for _, fbModel := range agCfg.FallbackModels {
+				fbModel = strings.TrimSpace(fbModel)
+				if fbModel == "" {
 					continue
 				}
-				if strings.TrimSpace(agCfg.Model) != "" {
-					primaryLabel = strings.TrimSpace(agCfg.Model)
-					runtimeLabels[0] = primaryLabel
+				fbRt, fbErr := buildRuntimeForAgentModel(cfg, agCfg, fbModel, controlToolRegistry)
+				if fbErr == nil && fbRt != nil {
+					fbRt = applyAgentProfileFilterForAgent(ctx, fbRt, activeAgentID, cfg, docsRepo)
+					fallbackRuntimes = append(fallbackRuntimes, fbRt)
+					runtimeLabels = append(runtimeLabels, fbModel)
 				}
-				providers := cfg.Providers
-				for _, fbModel := range agCfg.FallbackModels {
-					fbModel = strings.TrimSpace(fbModel)
-					if fbModel == "" {
-						continue
-					}
-					override := autoResolveProviderOverride(fbModel, providers)
-					fbRt, fbErr := agent.BuildRuntimeWithOverride(fbModel, override, controlToolRegistry)
-					if fbErr == nil && fbRt != nil {
-						fbRt = applyAgentProfileFilterForAgent(ctx, fbRt, activeAgentID, cfg, docsRepo)
-						fallbackRuntimes = append(fallbackRuntimes, fbRt)
-						runtimeLabels = append(runtimeLabels, fbModel)
-					}
-				}
-				break
 			}
 		}
 		runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
@@ -7551,7 +7516,8 @@ func handleControlRPCRequest(
 			// Before tombstoning, generate a compact summary of the entries that
 			// are about to be removed and inject it as a system-role entry.
 			summaryGenerated := false
-			if dropped > 0 && controlAgentRuntime != nil {
+			activeAgentID, summaryRuntime := resolveInboundChannelRuntime("", req.SessionID)
+			if dropped > 0 && summaryRuntime != nil {
 				compactedEntries := entries[:dropped]
 				var sb strings.Builder
 				for _, e := range compactedEntries {
@@ -7573,12 +7539,32 @@ func handleControlRPCRequest(
 				}
 				if snippet != "" {
 					summaryPrompt := "You are a session-memory assistant. Summarize the following conversation history concisely in 2-4 sentences, capturing the key topics, decisions, and context needed to continue the conversation later. Do NOT include greetings or meta-commentary; only output the summary.\n\n" + snippet
-					summaryCtx, summaryCancel := context.WithTimeout(ctx, 30*time.Second)
-					result, summaryErr := controlAgentRuntime.ProcessTurn(summaryCtx, agent.Turn{
-						SessionID: req.SessionID + ":compact",
-						UserText:  summaryPrompt,
-					})
-					summaryCancel()
+					selectedRuntime := summaryRuntime
+					usedAuxiliaryRuntime := false
+					if agCfg, ok := resolveAgentConfigByID(cfg, activeAgentID); ok {
+						if auxiliaryModel := resolveAuxiliaryModelForAgent(agCfg, auxiliaryModelUseCaseCompaction); auxiliaryModel != "" {
+							lightRuntime, lightErr := buildRuntimeForAgentModel(cfg, agCfg, auxiliaryModel, controlToolRegistry)
+							if lightErr != nil {
+								log.Printf("sessions.compact: light summary runtime unavailable agent=%s model=%q err=%v", activeAgentID, auxiliaryModel, lightErr)
+							} else if lightRuntime != nil {
+								selectedRuntime = lightRuntime
+								usedAuxiliaryRuntime = true
+							}
+						}
+					}
+					runSummary := func(rt agent.Runtime) (agent.TurnResult, error) {
+						summaryCtx, summaryCancel := context.WithTimeout(ctx, 30*time.Second)
+						defer summaryCancel()
+						return rt.ProcessTurn(summaryCtx, agent.Turn{
+							SessionID: req.SessionID + ":compact",
+							UserText:  summaryPrompt,
+						})
+					}
+					result, summaryErr := runSummary(selectedRuntime)
+					if summaryErr != nil && usedAuxiliaryRuntime && summaryRuntime != nil {
+						log.Printf("sessions.compact: light summary failed agent=%s err=%v — retrying primary runtime", activeAgentID, summaryErr)
+						result, summaryErr = runSummary(summaryRuntime)
+					}
 					if summaryErr == nil && strings.TrimSpace(result.Text) != "" {
 						summaryEntryID := fmt.Sprintf("compact-summary-%d", time.Now().UnixMilli())
 						summaryEntry := state.TranscriptEntryDoc{
@@ -10247,6 +10233,18 @@ func persistRuntimeConfigFile(doc state.ConfigDoc) error {
 	return config.WriteConfigFile(controlConfigFilePath, doc)
 }
 
+func providerOverrideForEntry(name string, pe state.ProviderEntry) agent.ProviderOverride {
+	apiKey := pe.APIKey
+	if controlKeyRings != nil {
+		if ring := controlKeyRings.Get(name); ring != nil && ring.Len() > 0 {
+			if picked, ok := ring.Pick(); ok && picked != "" {
+				apiKey = picked
+			}
+		}
+	}
+	return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: apiKey, Model: pe.Model}
+}
+
 func autoResolveProviderOverride(model string, providers map[string]state.ProviderEntry) agent.ProviderOverride {
 	if providers == nil {
 		return agent.ProviderOverride{}
@@ -10276,32 +10274,75 @@ func autoResolveProviderOverride(model string, providers map[string]state.Provid
 		return agent.ProviderOverride{}
 	}
 
-	// resolveKeyForEntry picks the best API key from the entry, consulting the
-	// KeyRing for rotation if multiple keys are configured.
-	resolveKeyForEntry := func(family string, pe state.ProviderEntry) string {
-		if controlKeyRings != nil {
-			if ring := controlKeyRings.Get(family); ring != nil && ring.Len() > 0 {
-				if k, ok := ring.Pick(); ok && k != "" {
-					return k
-				}
-			}
-		}
-		return pe.APIKey
-	}
-
 	// Look for an exact match first (e.g. providers["anthropic"]).
 	if pe, ok := providers[family]; ok {
-		apiKey := resolveKeyForEntry(family, pe)
-		return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: apiKey, Model: pe.Model}
+		return providerOverrideForEntry(family, pe)
 	}
 	// Also scan for any entry with a matching family prefix in its key.
 	for key, pe := range providers {
 		if strings.HasPrefix(strings.ToLower(key), family) {
-			apiKey := resolveKeyForEntry(key, pe)
-			return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: apiKey, Model: pe.Model}
+			return providerOverrideForEntry(key, pe)
 		}
 	}
 	return agent.ProviderOverride{}
+}
+
+type auxiliaryModelUseCase string
+
+const (
+	auxiliaryModelUseCaseHeartbeat  auxiliaryModelUseCase = "heartbeat"
+	auxiliaryModelUseCaseCompaction auxiliaryModelUseCase = "compaction"
+)
+
+func resolveAgentConfigByID(cfg state.ConfigDoc, agentID string) (state.AgentConfig, bool) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		agentID = "main"
+	}
+	for _, agCfg := range cfg.Agents {
+		if strings.TrimSpace(agCfg.ID) == agentID {
+			return agCfg, true
+		}
+	}
+	return state.AgentConfig{}, false
+}
+
+func resolveModelProviderOverride(cfg state.ConfigDoc, agCfg state.AgentConfig, model string) agent.ProviderOverride {
+	model = strings.TrimSpace(model)
+	var override agent.ProviderOverride
+	if strings.Contains(model, "/") {
+		override = autoResolveProviderOverride(model, cfg.Providers)
+	} else if provName := strings.TrimSpace(agCfg.Provider); provName != "" {
+		if pe, ok := cfg.Providers[provName]; ok {
+			override = providerOverrideForEntry(provName, pe)
+		}
+	}
+	if override.BaseURL == "" && override.APIKey == "" && override.Model == "" {
+		override = autoResolveProviderOverride(model, cfg.Providers)
+	}
+	override.SystemPrompt = strings.TrimSpace(agCfg.SystemPrompt)
+	return override
+}
+
+func buildProviderForAgentModel(cfg state.ConfigDoc, agCfg state.AgentConfig, model string) (agent.Provider, error) {
+	override := resolveModelProviderOverride(cfg, agCfg, model)
+	return agent.BuildProviderWithOverride(strings.TrimSpace(model), override)
+}
+
+func buildRuntimeForAgentModel(cfg state.ConfigDoc, agCfg state.AgentConfig, model string, tools agent.ToolExecutor) (agent.Runtime, error) {
+	override := resolveModelProviderOverride(cfg, agCfg, model)
+	return agent.BuildRuntimeWithOverride(strings.TrimSpace(model), override, tools)
+}
+
+func resolveAuxiliaryModelForAgent(agCfg state.AgentConfig, useCase auxiliaryModelUseCase) string {
+	switch useCase {
+	case auxiliaryModelUseCaseHeartbeat:
+		return strings.TrimSpace(agCfg.Heartbeat.Model)
+	case auxiliaryModelUseCaseCompaction:
+		return strings.TrimSpace(agCfg.LightModel)
+	default:
+		return ""
+	}
 }
 
 func emitControlWSEvent(event string, payload any) {

@@ -1242,6 +1242,60 @@ func TestHandleControlRPCRequest_SessionsCompactHandlesLargeTranscripts(t *testi
 	}
 }
 
+func TestHandleControlRPCRequest_SessionsCompactPrefersLightModelSummary(t *testing.T) {
+	prevRuntime := controlAgentRuntime
+	prevRegistry := controlAgentRegistry
+	prevRouter := controlSessionRouter
+	prevTools := controlToolRegistry
+	defer func() {
+		controlAgentRuntime = prevRuntime
+		controlAgentRegistry = prevRegistry
+		controlSessionRouter = prevRouter
+		controlToolRegistry = prevTools
+	}()
+
+	controlAgentRuntime = namedStubRuntime{name: "primary"}
+	controlAgentRegistry = agent.NewAgentRuntimeRegistry(controlAgentRuntime)
+	controlSessionRouter = agent.NewAgentSessionRouter()
+	controlToolRegistry = agent.NewToolRegistry()
+
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	transcript := state.NewTranscriptRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		Agents:  state.AgentsConfig{{ID: "main", Model: "gpt-4o", LightModel: "echo"}},
+	})
+	if _, err := docs.PutSession(context.Background(), "s-light", state.SessionDoc{Version: 1, SessionID: "s-light", PeerPubKey: "peer", LastInboundAt: time.Now().Unix()}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		_, err := transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{Version: 1, SessionID: "s-light", EntryID: fmt.Sprintf("e%d", i), Role: "user", Text: fmt.Sprintf("message %d", i), Unix: time.Now().Unix() + int64(i)})
+		if err != nil {
+			t.Fatalf("seed transcript: %v", err)
+		}
+	}
+
+	_, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSessionsCompact,
+		Params:     json.RawMessage(`{"session_id":"s-light","keep":1}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("sessions.compact error: %v", err)
+	}
+	entries, err := transcript.ListSessionAll(context.Background(), "s-light")
+	if err != nil {
+		t.Fatalf("list session: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected summary + kept entry, got %d entries", len(entries))
+	}
+	if !strings.Contains(entries[0].Text, "ack: You are a session-memory assistant") {
+		t.Fatalf("expected compact summary to come from light model, got %q", entries[0].Text)
+	}
+}
+
 func TestHandleControlRPCRequest_AgentCrudAndFiles(t *testing.T) {
 	store := newTestStore()
 	docs := state.NewDocsRepository(store, "author")
@@ -2586,6 +2640,42 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tts") {
 		t.Fatalf("tts.convert error should mention tts, got: %v", err)
+	}
+}
+
+func TestResolveModelProviderOverride_PrefersAgentProviderForUnqualifiedModel(t *testing.T) {
+	cfg := state.ConfigDoc{
+		Providers: state.ProvidersConfig{
+			"edge": {BaseURL: "https://edge.example/v1", APIKey: "edge-key"},
+		},
+	}
+	agCfg := state.AgentConfig{ID: "main", Provider: "edge", SystemPrompt: "system prompt"}
+	override := resolveModelProviderOverride(cfg, agCfg, "gpt-4o-mini")
+	if override.BaseURL != "https://edge.example/v1" {
+		t.Fatalf("expected agent provider base URL, got %#v", override)
+	}
+	if override.APIKey != "edge-key" {
+		t.Fatalf("expected agent provider API key, got %#v", override)
+	}
+	if override.SystemPrompt != "system prompt" {
+		t.Fatalf("expected system prompt to propagate, got %#v", override)
+	}
+}
+
+func TestResolveModelProviderOverride_ProviderQualifiedModelWins(t *testing.T) {
+	cfg := state.ConfigDoc{
+		Providers: state.ProvidersConfig{
+			"edge":       {BaseURL: "https://edge.example/v1", APIKey: "edge-key"},
+			"openrouter": {BaseURL: "https://openrouter.example/api/v1", APIKey: "or-key"},
+		},
+	}
+	agCfg := state.AgentConfig{ID: "main", Provider: "edge"}
+	override := resolveModelProviderOverride(cfg, agCfg, "openrouter/meta-llama/llama-3.1-8b-instruct")
+	if override.BaseURL != "https://openrouter.example/api/v1" {
+		t.Fatalf("expected provider-qualified model to pick openrouter override, got %#v", override)
+	}
+	if override.APIKey != "or-key" {
+		t.Fatalf("expected provider-qualified model API key, got %#v", override)
 	}
 }
 

@@ -210,6 +210,20 @@ func TestBuildRuntimeWithOverride_missingBaseURLErrors(t *testing.T) {
 	}
 }
 
+func TestBuildProviderWithOverride_ModelArgumentWins(t *testing.T) {
+	provider, err := BuildProviderWithOverride("gpt-4o-mini", ProviderOverride{BaseURL: "https://api.openai.com/v1", Model: "gpt-4o"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	op, ok := provider.(*OpenAIChatProvider)
+	if !ok {
+		t.Fatalf("expected *OpenAIChatProvider, got %T", provider)
+	}
+	if op.Model != "gpt-4o-mini" {
+		t.Fatalf("expected explicit model argument to win, got %q", op.Model)
+	}
+}
+
 // ─── AnthropicProvider ────────────────────────────────────────────────────────
 
 func TestAnthropicProvider_generate(t *testing.T) {

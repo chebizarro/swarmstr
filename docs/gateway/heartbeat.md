@@ -48,6 +48,8 @@ Configure via `extra.heartbeat` in the runtime ConfigDoc:
 | `interval_seconds` | number | `300` | How often to publish an idle status event (seconds) |
 | `content` | string | `""` | Optional text content for idle status events |
 
+Per-agent `agents[].heartbeat.model` may exist in runtime config, but it is only plumbing for a future LLM-backed heartbeat turn runner. It does not affect the current NIP-38 presence heartbeat.
+
 ## Disabling
 
 ```json5

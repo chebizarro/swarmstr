@@ -169,11 +169,22 @@ Override settings for specific named agents:
       "workspace_dir": "~/.metiq/workspace",
       "tool_profile": "full",
       "fallback_models": ["claude-sonnet-4-5"],
+      "light_model": "claude-haiku-4-5",
+      "light_model_threshold": 0.35,
+      "heartbeat": {
+        "model": "claude-haiku-4-5"
+      },
       "max_context_tokens": 100000
     }
   ]
 }
 ```
+
+Notes:
+
+- `light_model` enables heuristic routing for simple inbound turns.
+- `light_model_threshold` must be between `0` and `1`; when omitted, metiq uses its default router threshold.
+- `heartbeat.model` is additive config for future LLM-backed heartbeat turns. Current heartbeat behavior is still presence-only via `extra.heartbeat`.
 
 ### Provider Config (`providers`)
 

@@ -58,6 +58,34 @@ func ExtractFeatures(msg string, history []LLMMessage) Features {
 	}
 }
 
+// ExtractTurnFeatures computes routing features from a full agent turn.
+func ExtractTurnFeatures(turn Turn) Features {
+	history := conversationHistoryToLLMMessages(turn.History)
+	features := ExtractFeatures(turn.UserText, history)
+	if len(turn.Images) > 0 {
+		features.HasAttachments = true
+	}
+	return features
+}
+
+func conversationHistoryToLLMMessages(history []ConversationMessage) []LLMMessage {
+	if len(history) == 0 {
+		return nil
+	}
+	out := make([]LLMMessage, 0, len(history))
+	for _, msg := range history {
+		converted := LLMMessage{Role: msg.Role, Content: msg.Content, ToolCallID: msg.ToolCallID}
+		if len(msg.ToolCalls) > 0 {
+			converted.ToolCalls = make([]ToolCall, 0, len(msg.ToolCalls))
+			for _, call := range msg.ToolCalls {
+				converted.ToolCalls = append(converted.ToolCalls, ToolCall{ID: call.ID, Name: call.Name})
+			}
+		}
+		out = append(out, converted)
+	}
+	return out
+}
+
 // estimateTokens returns a token count proxy that handles both CJK and Latin text.
 // CJK runes (U+2E80–U+9FFF, U+F900–U+FAFF, U+AC00–U+D7AF) map to roughly one
 // token each, while non-CJK runes average ~0.25 tokens/rune (≈4 chars per token
@@ -229,5 +257,19 @@ func (r *ModelRouter) SelectModel(userMsg string, primaryModel string, history .
 		return r.lightModel, true, score
 	}
 
+	return primaryModel, false, score
+}
+
+// SelectTurn returns the model to use for a full runtime turn.
+func (r *ModelRouter) SelectTurn(turn Turn, primaryModel string) (model string, usedLight bool, score float64) {
+	if r.lightModel == "" {
+		return primaryModel, false, 1.0
+	}
+	features := ExtractTurnFeatures(turn)
+	score = r.classifier.Score(features)
+	if score < r.threshold {
+		log.Printf("routing: light model selected (score=%.2f < threshold=%.2f)", score, r.threshold)
+		return r.lightModel, true, score
+	}
 	return primaryModel, false, score
 }

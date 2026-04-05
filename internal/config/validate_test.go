@@ -153,6 +153,30 @@ func TestValidateHeartbeat_disabled_negative_interval_ok(t *testing.T) {
 	}
 }
 
+func TestValidateAgents_lightModelThresholdRequiresLightModel(t *testing.T) {
+	errs := ValidateConfigDoc(state.ConfigDoc{
+		Agents: state.AgentsConfig{{ID: "main", Model: "gpt-4o", LightModelThreshold: 0.4}},
+	})
+	if len(errs) == 0 {
+		t.Fatal("expected error when light_model_threshold is set without light_model")
+	}
+	if !strings.Contains(errs[0].Error(), "light_model_threshold") {
+		t.Fatalf("expected light_model_threshold error, got: %v", errs[0])
+	}
+}
+
+func TestValidateAgents_lightModelThresholdRange(t *testing.T) {
+	errs := ValidateConfigDoc(state.ConfigDoc{
+		Agents: state.AgentsConfig{{ID: "main", Model: "gpt-4o", LightModel: "gpt-4o-mini", LightModelThreshold: 1.2}},
+	})
+	if len(errs) == 0 {
+		t.Fatal("expected error for out-of-range light_model_threshold")
+	}
+	if !strings.Contains(errs[0].Error(), "light_model_threshold") {
+		t.Fatalf("expected light_model_threshold error, got: %v", errs[0])
+	}
+}
+
 // ── Multi-error ───────────────────────────────────────────────────────────────
 
 func TestValidateConfigDoc_multipleErrors(t *testing.T) {

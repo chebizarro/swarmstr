@@ -589,6 +589,11 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 		} else if v, ok := toFloat64(m["lightModelThreshold"]); ok {
 			ac.LightModelThreshold = v
 		}
+		if hb, ok := m["heartbeat"].(map[string]any); ok {
+			if v, ok := hb["model"].(string); ok {
+				ac.Heartbeat.Model = strings.TrimSpace(v)
+			}
+		}
 		if v, ok := toInt(m["max_context_tokens"]); ok {
 			ac.MaxContextTokens = v
 		} else if v, ok := toInt(m["maxContextTokens"]); ok {

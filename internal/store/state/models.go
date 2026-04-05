@@ -201,6 +201,12 @@ type HeartbeatConfig struct {
 	IntervalMS int  `json:"interval_ms,omitempty"`
 }
 
+// AgentHeartbeatConfig holds per-agent heartbeat overrides for future
+// LLM-backed heartbeat turns.
+type AgentHeartbeatConfig struct {
+	Model string `json:"model,omitempty"`
+}
+
 // TTSConfig controls text-to-speech.
 type TTSConfig struct {
 	Enabled  bool   `json:"enabled,omitempty"`
@@ -346,6 +352,9 @@ type AgentConfig struct {
 	// LightModelThreshold is the complexity score (0.0–1.0) below which messages
 	// are routed to LightModel. Default: 0.3.
 	LightModelThreshold float64 `json:"light_model_threshold,omitempty"`
+	// Heartbeat holds per-agent heartbeat overrides for future LLM-backed
+	// heartbeat turns. Current heartbeat handling is presence-only.
+	Heartbeat AgentHeartbeatConfig `json:"heartbeat,omitempty"`
 	// MaxContextTokens is the approximate token budget for assembled context.
 	// When the context engine estimates the assembled messages exceed 80% of this
 	// value, auto-compaction is triggered before the model call.

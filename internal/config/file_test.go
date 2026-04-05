@@ -31,3 +31,16 @@ func TestParseConfigBytesDMReplyScheme(t *testing.T) {
 		t.Fatalf("expected dm.reply_scheme=nip17, got %#v", doc.DM)
 	}
 }
+
+func TestParseConfigBytesAgentHeartbeatModel(t *testing.T) {
+	doc, err := ParseConfigBytes([]byte(`{"agents":[{"id":"main","model":"gpt-4o","heartbeat":{"model":"gpt-4o-mini"}}]}`), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	if len(doc.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(doc.Agents))
+	}
+	if doc.Agents[0].Heartbeat.Model != "gpt-4o-mini" {
+		t.Fatalf("expected agents[0].heartbeat.model=gpt-4o-mini, got %#v", doc.Agents[0].Heartbeat)
+	}
+}

@@ -115,6 +115,12 @@ func validateAgents(agents state.AgentsConfig) []error {
 		if raw := strings.TrimSpace(string(ag.MemoryScope)); raw != "" && !ag.MemoryScope.Valid() {
 			errs = append(errs, fmt.Errorf("agents[%d].memory_scope: unknown value %q (valid: user, project, local)", i, raw))
 		}
+		if ag.LightModelThreshold < 0 || ag.LightModelThreshold > 1 {
+			errs = append(errs, fmt.Errorf("agents[%d].light_model_threshold must be between 0 and 1 (got %v)", i, ag.LightModelThreshold))
+		}
+		if ag.LightModelThreshold != 0 && strings.TrimSpace(ag.LightModel) == "" {
+			errs = append(errs, fmt.Errorf("agents[%d].light_model_threshold requires light_model", i))
+		}
 	}
 	return errs
 }
