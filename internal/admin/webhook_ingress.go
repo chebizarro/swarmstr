@@ -4,7 +4,7 @@ package admin
 //
 // When hooks.enabled=true in the runtime ConfigDoc, the admin server exposes:
 //
-//	POST /hooks/wake   — enqueue a system event (fire-and-forget)
+//	POST /hooks/wake   — queue a heartbeat wake (fire-and-forget)
 //	POST /hooks/agent  — run an isolated agent turn (fire-and-forget)
 //	POST /hooks/<name> — matched against hooks.mappings[].match.path
 //
@@ -88,8 +88,9 @@ func hooksExtractToken(r *http.Request) string {
 // ─── Request payload types ────────────────────────────────────────────────────
 
 type hooksWakePayload struct {
-	Text string `json:"text"`
-	Mode string `json:"mode,omitempty"`
+	AgentID string `json:"agent_id,omitempty"`
+	Text    string `json:"text"`
+	Mode    string `json:"mode,omitempty"`
 }
 
 type hooksAgentPayload struct {
@@ -206,7 +207,7 @@ func mountWebhookIngress(mux *http.ServeMux, opts ServerOptions) {
 	})
 }
 
-// ─── /hooks/wake ─────────────────────────────────────────────────────────────
+// ─── /hooks/wake (heartbeat wake trigger) ───────────────────────────────────
 
 func handleHooksWake(w http.ResponseWriter, r *http.Request, opts ServerOptions) {
 	var p hooksWakePayload
@@ -230,9 +231,10 @@ func handleHooksWake(w http.ResponseWriter, r *http.Request, opts ServerOptions)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		req := methods.WakeRequest{
-			Source: "webhook",
-			Text:   p.Text,
-			Mode:   p.Mode,
+			AgentID: strings.TrimSpace(p.AgentID),
+			Source:  "webhook",
+			Text:    p.Text,
+			Mode:    p.Mode,
 		}
 		if _, err := opts.Wake(ctx, req); err != nil {
 			log.Printf("webhook /hooks/wake: %v", err)
@@ -380,6 +382,7 @@ func handleHooksMapped(w http.ResponseWriter, r *http.Request, opts ServerOption
 			if _, err := opts.Wake(ctx, methods.WakeRequest{
 				Source: "webhook:" + sub,
 				Text:   msgText,
+				Mode:   "now",
 			}); err != nil {
 				log.Printf("webhook mapped [%s] wake: %v", sub, err)
 			}

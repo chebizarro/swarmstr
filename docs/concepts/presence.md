@@ -1,5 +1,5 @@
 ---
-summary: "Agent presence: online/offline status indicators in metiq"
+summary: "Agent presence: NIP-38 status indicators in metiq"
 read_when:
   - Understanding how metiq signals agent presence
   - Configuring presence indicators
@@ -8,17 +8,32 @@ title: "Presence"
 
 # Presence
 
-metiq can signal agent presence (online/offline status) to Nostr contacts.
+metiq can signal agent presence to Nostr contacts via **NIP-38 status events**.
 
-## Nostr Presence
+## Status publishing
 
-On Nostr, presence can be signaled via NIP-38 user statuses (kind:30315) or custom status events. metiq can publish presence updates when:
+Presence updates are emitted when:
 
-- The daemon starts (agent comes online)
-- The daemon stops (agent goes offline)
-- The heartbeat fires (agent is alive)
+- the daemon starts
+- the daemon stops
+- a turn begins or ends
+- the idle status is re-published on the configured status interval
 
-The NIP-38 heartbeat is enabled by default and configured via `extra.heartbeat`:
+Configure NIP-38 status via `extra.status` (preferred) or the legacy alias `extra.heartbeat`:
+
+```json
+{
+  "extra": {
+    "status": {
+      "enabled": true,
+      "interval_seconds": 300,
+      "content": "online"
+    }
+  }
+}
+```
+
+Legacy alias:
 
 ```json
 {
@@ -32,40 +47,18 @@ The NIP-38 heartbeat is enabled by default and configured via `extra.heartbeat`:
 }
 ```
 
-To disable: set `extra.heartbeat.enabled` to `false`.
+To disable status publishing, set `enabled` to `false`.
 
-## Presence Status Events
+## What this is not
 
-metiq publishes kind:30315 NIP-38 user status events:
+This presence/status feature is separate from the top-level `heartbeat` runner.
 
-```json
-{
-  "kind": 30315,
-  "content": "online",
-  "tags": [
-    ["d", "general"],
-    ["expiration", "1705424400"]    // expires after 30 minutes
-  ]
-}
-```
+- `extra.status` / `extra.heartbeat` = NIP-38 presence only
+- `heartbeat` = LLM-backed periodic runner
 
-The status expires automatically — if the daemon crashes, the status expires without needing a clean shutdown.
+## Dashboard and status checks
 
-## Status Check
-
-Check presence and relay connection state:
-
-```bash
-metiq status
-```
-
-## Presence in the Dashboard
-
-The web dashboard shows the current agent status (connected relays, active sessions, last heartbeat).
-
-```bash
-metiq status
-```
+The dashboard and `metiq status` show runtime state such as relay connectivity, sessions, and last heartbeat-run metadata.
 
 ## See Also
 

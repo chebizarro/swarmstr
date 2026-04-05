@@ -43,14 +43,17 @@ Query-string tokens are rejected.
 
 ### `POST /hooks/wake`
 
-Enqueue a system event for the main session and trigger a wake.
+Queue a heartbeat wake for the main session.
 
 ```json
-{ "text": "New email received", "mode": "now" }
+{ "agent_id": "main", "text": "New email received", "mode": "now" }
 ```
 
+- `agent_id` (optional): target agent for the wake; defaults to `main`.
 - `text` **(required)**: Event description.
 - `mode` (optional, default `now`): `now` | `next-heartbeat`.
+  - `now` runs on the next available heartbeat cycle immediately.
+  - `next-heartbeat` holds the wake until the next scheduled heartbeat interval.
 
 ### `POST /hooks/agent`
 

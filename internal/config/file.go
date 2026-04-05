@@ -195,6 +195,29 @@ func syncDir(path string) error {
 	return dir.Sync()
 }
 
+func parseConfigDurationMS(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return 0, false
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, false
+		}
+		return int(d / time.Millisecond), true
+	default:
+		return 0, false
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // OpenClaw → ConfigDoc field mapping
 // ──────────────────────────────────────────────────────────────────────────────
@@ -313,6 +336,12 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		if defaults, ok := agentsRaw["defaults"].(map[string]any); ok {
 			if model, ok := defaults["model"].(string); ok {
 				doc.Agent.DefaultModel = strings.TrimSpace(model)
+			}
+			if hbDefaults, ok := defaults["heartbeat"].(map[string]any); ok {
+				if intervalMS, ok := parseConfigDurationMS(hbDefaults["every"]); ok {
+					doc.Heartbeat.IntervalMS = intervalMS
+					doc.Heartbeat.Enabled = intervalMS > 0
+				}
 			}
 		}
 		// Parse typed agent list if present under "list" key.

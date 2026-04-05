@@ -1273,9 +1273,10 @@ type SetHeartbeatsRequest struct {
 }
 
 type WakeRequest struct {
-	Source string `json:"source,omitempty"`
-	Text   string `json:"text,omitempty"`
-	Mode   string `json:"mode,omitempty"`
+	AgentID string `json:"agent_id,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Text    string `json:"text,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 }
 
 type SystemPresenceRequest struct{}
@@ -2353,9 +2354,21 @@ func (r SetHeartbeatsRequest) Normalize() (SetHeartbeatsRequest, error) {
 }
 
 func (r WakeRequest) Normalize() (WakeRequest, error) {
+	r.AgentID = strings.TrimSpace(r.AgentID)
 	r.Source = strings.TrimSpace(r.Source)
 	r.Text = strings.TrimSpace(r.Text)
-	r.Mode = strings.TrimSpace(r.Mode)
+	if r.Text == "" {
+		return r, fmt.Errorf("text is required")
+	}
+	r.Mode = strings.ToLower(strings.TrimSpace(r.Mode))
+	if r.Mode == "" {
+		r.Mode = "now"
+	}
+	switch r.Mode {
+	case "now", "next-heartbeat":
+	default:
+		return r, fmt.Errorf("mode must be one of: now, next-heartbeat")
+	}
 	return r, nil
 }
 

@@ -1,127 +1,84 @@
 ---
-summary: "Guidance for choosing between heartbeat and cron jobs for automation"
+summary: "Guidance for choosing between status, heartbeat, and cron for automation"
 read_when:
   - Deciding how to schedule recurring tasks
   - Setting up background monitoring or notifications
-  - Understanding the difference between NIP-38 heartbeat and cron
+  - Understanding the difference between NIP-38 status, heartbeat, and cron
 title: "Cron vs Heartbeat"
 ---
 
-# Cron vs Heartbeat: When to Use Each
+# Cron vs Heartbeat
 
-metiq has two scheduled mechanisms with very different purposes.
+metiq now has three distinct mechanisms:
 
-## The Key Difference
+- **status** = NIP-38 presence publishing
+- **heartbeat** = LLM-backed periodic runner
+- **cron** = explicit scheduled jobs
 
-| | Heartbeat | Cron |
-|--|-----------|------|
-| What it does | Publishes NIP-38 status events (kind:30315) | Calls a gateway method on schedule |
-| Purpose | Presence visibility (idle/typing/busy/offline) | Trigger periodic agent tasks |
-| Runs LLM? | No | Yes (via `agent` method) |
-| Config | `extra.heartbeat.*` | `cron.enabled: true` + CLI |
+## Quick comparison
 
-**Heartbeat = "show I'm available"** — other Nostr clients see your status.
-**Cron = "do something on a schedule"** — runs agent turns, sends messages, etc.
+| | Status | Heartbeat | Cron |
+|--|--------|-----------|------|
+| What it does | Publishes NIP-38 status events | Runs periodic agent turns | Calls a gateway method on schedule |
+| Purpose | Presence visibility | Background agent checks / wake handling | Fixed-time or repeated automation |
+| Runs LLM? | No | Yes | Usually yes |
+| Config | `extra.status.*` or legacy `extra.heartbeat.*` | `heartbeat.*` | `cron.enabled: true` + CLI |
 
-## Quick Decision Guide
+## When to use each
 
-| Use Case | Use |
-|----------|-----|
-| Show "available" status on Nostr | Heartbeat |
-| Keep clients informed of agent state (typing, running tools) | Heartbeat (automatic) |
-| Check inbox every 30 minutes | Cron (`@every 30m`) |
-| Send daily report at 9am sharp | Cron (`0 9 * * *`) |
-| Run weekly deep analysis | Cron (`0 9 * * 1`) |
-| Periodic health checks | Cron |
+- Use **status** when you want Nostr clients to see that the agent is idle, typing, busy, or offline.
+- Use **heartbeat** when you want the built-in periodic runner to check for work or consume queued wakes.
+- Use **cron** when you need explicit prompts, multiple jobs, or exact schedules.
 
-## Heartbeat: NIP-38 Presence Status
-
-The heartbeat publishes **NIP-38 status events** (kind:30315) at a regular interval so other Nostr clients can see whether your agent is idle, busy, typing, or offline. It does **not** run agent turns or trigger model calls.
-
-The agent automatically transitions through statuses during turns (typing → running tools → done). The heartbeat interval just controls how often the idle status is re-published.
+## Status example
 
 ```json5
 {
   "extra": {
-    "heartbeat": {
+    "status": {
       "enabled": true,
-      "interval_seconds": 300,   // publish idle status every 5 minutes
-      "content": "Available 🟢"  // optional text for idle status
+      "interval_seconds": 300,
+      "content": "Available 🟢"
     }
   }
 }
 ```
 
-See [Heartbeat](/gateway/heartbeat) for full details.
+## Heartbeat example
 
-## Cron: Scheduled Agent Tasks
+```json5
+{
+  "heartbeat": {
+    "enabled": true,
+    "interval_ms": 1800000
+  },
+  "agents": [
+    {
+      "id": "main",
+      "heartbeat": {
+        "model": "claude-haiku-4-5"
+      }
+    }
+  ]
+}
+```
 
-Cron jobs call a gateway method on a schedule. The most common use is triggering agent turns via the `agent` method.
+## Cron example
 
 ```bash
-# Daily morning briefing at 7am
 metiq cron add \
   --id morning-brief \
   --schedule "0 7 * * *" \
-  --message "Generate today's briefing: calendar, top messages, any urgent items."
-
-# Recurring check every 4 hours
-metiq cron add \
-  --id health-check \
-  --schedule "@every 4h" \
-  --message "Run a quick health check and report any issues."
-
-# Weekly review on Mondays at 9am
-metiq cron add \
-  --id weekly-review \
-  --schedule "0 9 * * 1" \
-  --message "Weekly project review: summarize progress and blockers."
+  --message "Generate today's briefing."
 ```
 
-See [Cron Jobs](/automation/cron-jobs) for the full CLI reference.
+## Cost notes
 
-## Decision Flowchart
-
-```
-Is this about signaling availability to Nostr contacts?
-  YES → Heartbeat (already on by default)
-  NO  → Continue...
-
-Does the task need to run at a specific time?
-  YES → Cron
-  NO  → Continue...
-
-Is it a recurring background task?
-  YES → Cron with @every or cron expression
-  NO  → Run it manually or from a DM command
-```
-
-## Combining Both
-
-The most common production setup:
-
-- **Heartbeat** on (default) so contacts can see the agent is available
-- **Cron** for all scheduled agent work
-
-```bash
-# Example cron setup
-metiq cron add --id daily-brief --schedule "0 7 * * *" --message "Daily briefing..."
-metiq cron add --id weekly-review --schedule "0 9 * * 1" --message "Weekly review..."
-metiq cron add --id hourly-check --schedule "@every 1h" --message "Hourly check-in..."
-```
-
-## Cost Considerations
-
-| Mechanism | LLM Cost |
-|-----------|----------|
-| Heartbeat | Zero (no LLM calls) |
-| Cron job | One agent turn per trigger (varies by model and context) |
-
-Tips:
-- Keep cron messages concise to minimize token usage
-- Use a less powerful (cheaper) model for routine cron tasks via `agents[].model`
+- **Status** has no LLM cost.
+- **Heartbeat** incurs one agent turn per run.
+- **Cron** incurs one run per trigger.
 
 ## Related
 
-- [Heartbeat](/gateway/heartbeat) — NIP-38 status heartbeat configuration
-- [Cron Jobs](/automation/cron-jobs) — full cron CLI and API reference
+- [Heartbeat](/gateway/heartbeat)
+- [Cron Jobs](/automation/cron-jobs)

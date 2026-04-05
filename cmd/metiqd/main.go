@@ -126,7 +126,7 @@ var (
 	controlChannels             *channels.Registry
 	controlPrivateKey           string
 	controlKeyer                nostr.Keyer      // always set at startup; plain mode wraps key in a keyer
-	controlHeartbeat38          *nip38.Heartbeat // NIP-38 status heartbeat; nil when disabled
+	controlPresenceHeartbeat38  *nip38.Heartbeat // NIP-38 presence/status heartbeat; nil when disabled
 	// controlWsEmitter forwards typed events to connected WS clients.
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
 	controlWsEmitter   gatewayws.EventEmitter = gatewayws.NoopEmitter{}
@@ -724,11 +724,11 @@ func main() {
 	toolbuiltin.RegisterListTools(tools, listToolOpts)
 	toolbuiltin.RegisterNostrListSemanticTools(tools, listToolOpts)
 
-	// NIP-38 status tool — uses controlHeartbeat38 which is set after DM bus starts.
+	// NIP-38 status tool — uses controlPresenceHeartbeat38 which is set after DM bus starts.
 	// Wire via closure so it picks up the global after initialization.
 	tools.RegisterWithDef("nostr_status_set", func(ctx context.Context, args map[string]any) (string, error) {
 		return toolbuiltin.NostrStatusTool(toolbuiltin.NostrStatusToolOpts{
-			Heartbeat: controlHeartbeat38,
+			Heartbeat: controlPresenceHeartbeat38,
 		})(ctx, args)
 	}, toolbuiltin.NostrStatusSetDef)
 
@@ -1263,6 +1263,7 @@ func main() {
 	controlSubagents = subagents
 	controlKeyRings = keyRings
 	controlOps = ops
+	ops.SyncHeartbeatConfig(configState.Get().Heartbeat)
 
 	// ── Exec approval middleware ──────────────────────────────────────────────
 	// Hook the tool registry so that tools matching the configured approval list
@@ -1950,6 +1951,7 @@ func main() {
 	} else {
 		log.Printf("pre-seed session routes warning: %v", sessErr)
 	}
+	newHeartbeatRunner(ops, func() state.ConfigDoc { return configState.Get() }).Start(ctx)
 	usageState := newUsageTracker(startedAt)
 	logBuffer := newRuntimeLogBuffer(2000)
 	eventBuffer := newRuntimeEventBuffer(2000)
@@ -3414,8 +3416,8 @@ func main() {
 			LastActivityAt: lastActivityAt,
 		})
 		// NIP-38: signal to Nostr network that the agent is composing a response.
-		if controlHeartbeat38 != nil {
-			controlHeartbeat38.SetTyping(turnCtx, "processing request…")
+		if controlPresenceHeartbeat38 != nil {
+			controlPresenceHeartbeat38.SetTyping(turnCtx, "processing request…")
 		}
 
 		heartbeatDone := make(chan struct{})
@@ -3561,8 +3563,8 @@ func main() {
 		}
 		if turnErr != nil {
 			stopHeartbeat()
-			if controlHeartbeat38 != nil {
-				controlHeartbeat38.SetIdle(ctx)
+			if controlPresenceHeartbeat38 != nil {
+				controlPresenceHeartbeat38.SetIdle(ctx)
 			}
 			// Persist any completed tool work from the failed turn so future
 			// turns know what was attempted and what succeeded before the error.
@@ -3593,8 +3595,8 @@ func main() {
 		}
 		stopHeartbeat()
 		// NIP-38: return to idle once the agent turn is complete.
-		if controlHeartbeat38 != nil {
-			controlHeartbeat38.SetIdle(ctx)
+		if controlPresenceHeartbeat38 != nil {
+			controlPresenceHeartbeat38.SetIdle(ctx)
 		}
 
 		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
@@ -4272,14 +4274,18 @@ func main() {
 		}
 	}
 
-	// ── NIP-38 Heartbeat ────────────────────────────────────────────────────────
+	// ── NIP-38 presence/status ──────────────────────────────────────────────────
 	// Publishes kind 30315 status events so other Nostr clients can see whether
 	// the agent is idle, typing, or running tools.
 	{
 		hbEnabled := true // default on
 		hbInterval := 5 * time.Minute
 		var hbDefaultContent string
-		if hbExtra, ok := configState.Get().Extra["heartbeat"].(map[string]any); ok {
+		hbExtra, _ := configState.Get().Extra["status"].(map[string]any)
+		if hbExtra == nil {
+			hbExtra, _ = configState.Get().Extra["heartbeat"].(map[string]any)
+		}
+		if hbExtra != nil {
 			if v, ok := hbExtra["enabled"].(bool); ok {
 				hbEnabled = v
 			}
@@ -4300,18 +4306,18 @@ func main() {
 				Enabled:        true,
 			})
 			if hbErr != nil {
-				log.Printf("warn: NIP-38 heartbeat init failed: %v", hbErr)
+				log.Printf("warn: NIP-38 presence/status init failed: %v", hbErr)
 			} else {
-				controlHeartbeat38 = hb
-				defer controlHeartbeat38.Stop()
-				log.Printf("NIP-38 heartbeat active (interval=%s)", hbInterval)
+				controlPresenceHeartbeat38 = hb
+				defer controlPresenceHeartbeat38.Stop()
+				log.Printf("NIP-38 presence/status active (interval=%s)", hbInterval)
 			}
 		} else if !hbEnabled {
-			log.Printf("NIP-38 heartbeat disabled by config")
+			log.Printf("NIP-38 presence/status disabled by config")
 		} else {
-			log.Printf("NIP-38 heartbeat skipped: no signing key available")
+			log.Printf("NIP-38 presence/status skipped: no signing key available")
 		}
-		_ = controlHeartbeat38 // referenced in dmRunAgentTurn closure
+		_ = controlPresenceHeartbeat38 // referenced in dmRunAgentTurn closure
 	}
 
 	// ── NIP-90 DVM handler ─────────────────────────────────────────────────────
@@ -10224,6 +10230,9 @@ func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
 	refreshKeyRings(cfg.Providers)
 	applyRuntimeRelayPolicy(nil, nil, cfg)
 	applyCapabilityRuntimeState(cfg)
+	if controlOps != nil {
+		controlOps.SyncHeartbeatConfig(cfg.Heartbeat)
+	}
 }
 
 func persistRuntimeConfigFile(doc state.ConfigDoc) error {
@@ -10825,26 +10834,24 @@ func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runti
 	executeAgentRunWithFallbacks(runID, req, runtime, nil, nil, memoryIndex, jobs)
 }
 
-// executeAgentRunWithFallbacks tries the primary runtime; on retryable errors,
-// it tries each fallback runtime in order before giving up.
-func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, runtimeLabels []string, memoryIndex memory.Store, jobs *agentJobRegistry) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("panic in executeAgentRun runID=%s panic=%v", runID, r)
-			if jobs != nil {
-				jobs.Finish(runID, "", fmt.Errorf("agent runtime panic: %v", r))
-			}
-		}
-	}()
+type agentRunAttemptResult struct {
+	Result         *agent.TurnResult
+	Err            error
+	FallbackUsed   bool
+	FallbackFrom   string
+	FallbackTo     string
+	FallbackReason string
+}
 
-	if primary == nil || jobs == nil {
-		return
+func runAgentTurnWithFallbacks(baseCtx context.Context, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, runtimeLabels []string, memoryIndex memory.Store) agentRunAttemptResult {
+	if primary == nil {
+		return agentRunAttemptResult{Err: fmt.Errorf("agent runtime not configured")}
 	}
 	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 	// Resolve the active agent ID so WS clients see per-agent status events.
 	agentID := ""
@@ -10861,6 +10868,14 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 		Status:  "thinking",
 		Session: req.SessionID,
 	})
+	defer func() {
+		emitControlWSEvent(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
+			TS:      time.Now().UnixMilli(),
+			AgentID: agentID,
+			Status:  "idle",
+			Session: req.SessionID,
+		})
+	}()
 
 	runtimesToTry := append([]agent.Runtime{primary}, fallbacks...)
 	cfg := state.ConfigDoc{}
@@ -10874,10 +10889,7 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 	turn := prepared.Turn
 	var result *agent.TurnResult
 	var lastErr error
-	fallbackUsed := false
-	fallbackFrom := ""
-	fallbackTo := ""
-	fallbackReason := ""
+	attempt := agentRunAttemptResult{}
 	turnStartedAt := time.Now()
 	for i, rt := range runtimesToTry {
 		if rt == nil {
@@ -10887,54 +10899,45 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 		r, lastErr = rt.ProcessTurn(ctx, turn)
 		if lastErr == nil {
 			if i > 0 {
-				fallbackUsed = true
-				fallbackFrom = runtimeLabelAt(runtimeLabels, i-1)
-				fallbackTo = runtimeLabelAt(runtimeLabels, i)
+				attempt.FallbackUsed = true
+				attempt.FallbackFrom = runtimeLabelAt(runtimeLabels, i-1)
+				attempt.FallbackTo = runtimeLabelAt(runtimeLabels, i)
 			}
 			result = &r
 			break
 		}
 		if i < len(runtimesToTry)-1 && isRetryableAgentError(lastErr) {
-			log.Printf("executeAgentRun runID=%s fallback attempt %d/%d err=%v", runID, i+1, len(runtimesToTry)-1, lastErr)
-			if fallbackReason == "" {
-				fallbackReason = strings.TrimSpace(lastErr.Error())
+			log.Printf("executeAgentRun session=%s fallback attempt %d/%d err=%v", req.SessionID, i+1, len(runtimesToTry)-1, lastErr)
+			if attempt.FallbackReason == "" {
+				attempt.FallbackReason = strings.TrimSpace(lastErr.Error())
 			}
 			continue
 		}
 		break
 	}
 
-	emitControlWSEvent(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
-		TS:      time.Now().UnixMilli(),
-		AgentID: agentID,
-		Status:  "idle",
-		Session: req.SessionID,
-	})
-
 	if lastErr != nil {
-		turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), agent.TurnResult{}, lastErr, fallbackUsed, fallbackFrom, fallbackTo, fallbackReason)
+		turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), agent.TurnResult{}, lastErr, attempt.FallbackUsed, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason)
 		persistTurnTelemetry(controlSessionStore, req.SessionID, turnTelemetry)
 		emitControlWSEvent(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, req.SessionID, turnTelemetry))
-		jobs.Finish(runID, "", lastErr)
-		return
+		attempt.Err = lastErr
+		return attempt
 	}
 	if result == nil {
-		turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), agent.TurnResult{}, fmt.Errorf("all runtimes returned nil result"), fallbackUsed, fallbackFrom, fallbackTo, fallbackReason)
+		err := fmt.Errorf("all runtimes returned nil result")
+		turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), agent.TurnResult{}, err, attempt.FallbackUsed, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason)
 		persistTurnTelemetry(controlSessionStore, req.SessionID, turnTelemetry)
 		emitControlWSEvent(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, req.SessionID, turnTelemetry))
-		jobs.Finish(runID, "", fmt.Errorf("all runtimes returned nil result"))
-		return
-	}
-	if fallbackUsed {
-		jobs.SetFallback(runID, fallbackFrom, fallbackTo, fallbackReason)
+		attempt.Err = err
+		return attempt
 	}
 	commitMemoryRecallArtifacts(controlSessionStore, req.SessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
 	if controlSessionStore != nil {
 		se := controlSessionStore.GetOrNew(req.SessionID)
-		if fallbackUsed {
-			se.FallbackFrom = fallbackFrom
-			se.FallbackTo = fallbackTo
-			se.FallbackReason = truncateRunes(fallbackReason, 200)
+		if attempt.FallbackUsed {
+			se.FallbackFrom = attempt.FallbackFrom
+			se.FallbackTo = attempt.FallbackTo
+			se.FallbackReason = truncateRunes(attempt.FallbackReason, 200)
 			se.FallbackAt = time.Now().UnixMilli()
 		} else {
 			se.FallbackFrom = ""
@@ -10946,10 +10949,41 @@ func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primar
 			log.Printf("session store put failed session=%s: %v", req.SessionID, putErr)
 		}
 	}
-	turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), *result, nil, fallbackUsed, fallbackFrom, fallbackTo, fallbackReason)
+	turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), *result, nil, attempt.FallbackUsed, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason)
 	persistTurnTelemetry(controlSessionStore, req.SessionID, turnTelemetry)
 	emitControlWSEvent(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, req.SessionID, turnTelemetry))
-	jobs.Finish(runID, result.Text, nil)
+	attempt.Result = result
+	return attempt
+}
+
+// executeAgentRunWithFallbacks tries the primary runtime; on retryable errors,
+// it tries each fallback runtime in order before giving up.
+func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, runtimeLabels []string, memoryIndex memory.Store, jobs *agentJobRegistry) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("panic in executeAgentRun runID=%s panic=%v", runID, r)
+			if jobs != nil {
+				jobs.Finish(runID, "", fmt.Errorf("agent runtime panic: %v", r))
+			}
+		}
+	}()
+
+	if jobs == nil {
+		return
+	}
+	attempt := runAgentTurnWithFallbacks(context.Background(), req, primary, fallbacks, runtimeLabels, memoryIndex)
+	if attempt.FallbackUsed {
+		jobs.SetFallback(runID, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason)
+	}
+	if attempt.Err != nil {
+		jobs.Finish(runID, "", attempt.Err)
+		return
+	}
+	if attempt.Result == nil {
+		jobs.Finish(runID, "", fmt.Errorf("all runtimes returned nil result"))
+		return
+	}
+	jobs.Finish(runID, attempt.Result.Text, nil)
 }
 
 func runtimeLabelAt(labels []string, idx int) string {
@@ -14532,27 +14566,47 @@ func applyLastHeartbeat(reg *operationsRegistry, _ methods.LastHeartbeatRequest)
 	if reg == nil {
 		return nil, fmt.Errorf("heartbeat runtime not configured")
 	}
-	lastAt, enabled, interval := reg.LastHeartbeat()
-	return map[string]any{"last_heartbeat_ms": lastAt, "enabled": enabled, "interval_ms": interval}, nil
+	status := reg.HeartbeatStatus()
+	return map[string]any{
+		"last_heartbeat_ms": status.LastRunMS,
+		"last_run_ms":       status.LastRunMS,
+		"last_wake_ms":      status.LastWakeMS,
+		"enabled":           status.Enabled,
+		"interval_ms":       status.IntervalMS,
+		"pending_wakes":     status.PendingWakes,
+	}, nil
 }
 
 func applySetHeartbeats(reg *operationsRegistry, req methods.SetHeartbeatsRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("heartbeat runtime not configured")
 	}
-	enabled, interval := reg.SetHeartbeats(req.Enabled, req.IntervalMS)
-	return map[string]any{"ok": true, "enabled": enabled, "interval_ms": interval}, nil
+	status := reg.SetHeartbeats(req.Enabled, req.IntervalMS)
+	return map[string]any{
+		"ok":                true,
+		"enabled":           status.Enabled,
+		"interval_ms":       status.IntervalMS,
+		"last_heartbeat_ms": status.LastRunMS,
+		"last_run_ms":       status.LastRunMS,
+		"last_wake_ms":      status.LastWakeMS,
+		"pending_wakes":     status.PendingWakes,
+	}, nil
 }
 
 func applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("wake runtime not configured")
 	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		agentID = "main"
+	}
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
 		source = "control"
 	}
-	at := reg.Wake(source)
+	status := reg.QueueHeartbeatWake(agentID, source, req.Text, req.Mode)
+	at := status.LastWakeMS
 	// Emit voice.wake when the source is voice-related.
 	if source == "voice" || source == "voicewake" || source == "hotword" {
 		emitControlWSEvent(gatewayws.EventVoicewake, gatewayws.VoicewakePayload{
@@ -14560,7 +14614,19 @@ func applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any
 			Source: source,
 		})
 	}
-	return map[string]any{"ok": true, "woken": true, "source": source, "mode": req.Mode, "text": req.Text, "wake_at_ms": at}, nil
+	return map[string]any{
+		"ok":                true,
+		"woken":             true,
+		"agent_id":          agentID,
+		"source":            source,
+		"mode":              req.Mode,
+		"text":              req.Text,
+		"wake_at_ms":        at,
+		"last_heartbeat_ms": status.LastRunMS,
+		"last_run_ms":       status.LastRunMS,
+		"last_wake_ms":      status.LastWakeMS,
+		"pending_wakes":     status.PendingWakes,
+	}, nil
 }
 
 func applySystemPresence(reg *operationsRegistry, _ methods.SystemPresenceRequest) ([]map[string]any, error) {

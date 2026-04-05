@@ -195,14 +195,14 @@ func (s StorageConfig) EncryptEnabled() bool {
 	return s.Encrypt == nil || *s.Encrypt
 }
 
-// HeartbeatConfig controls the periodic heartbeat pulse.
+// HeartbeatConfig controls the LLM heartbeat runner schedule.
+// This is distinct from NIP-38 presence/status publishing, which lives in Extra.
 type HeartbeatConfig struct {
 	Enabled    bool `json:"enabled,omitempty"`
 	IntervalMS int  `json:"interval_ms,omitempty"`
 }
 
-// AgentHeartbeatConfig holds per-agent heartbeat overrides for future
-// LLM-backed heartbeat turns.
+// AgentHeartbeatConfig holds per-agent overrides for LLM heartbeat turns.
 type AgentHeartbeatConfig struct {
 	Model string `json:"model,omitempty"`
 }

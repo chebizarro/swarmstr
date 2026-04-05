@@ -1346,33 +1346,52 @@ func (r *wizardRegistry) Status(req methods.WizardStatusRequest) (wizardSessionR
 	return rec, nil
 }
 
+type heartbeatWakeRecord struct {
+	AtMS    int64
+	AgentID string
+	Source  string
+	Text    string
+	Mode    string
+}
+
+type heartbeatRunnerStatus struct {
+	Enabled      bool
+	IntervalMS   int
+	LastRunMS    int64
+	LastWakeMS   int64
+	PendingWakes int
+}
+
 type operationsRegistry struct {
-	mu                  sync.Mutex
-	talkMode            string
-	voicewake           []string
-	ttsEnabled          bool
-	ttsProvider         string
-	heartbeatsEnabled   bool
-	heartbeatIntervalMS int
-	lastHeartbeatMS     int64
-	lastUpdateCheckMS   int64
-	systemPresence      map[string]map[string]any
-	systemEvents        []map[string]any
+	mu                        sync.Mutex
+	talkMode                  string
+	voicewake                 []string
+	ttsEnabled                bool
+	ttsProvider               string
+	heartbeatRunnerEnabled    bool
+	heartbeatRunnerIntervalMS int
+	lastHeartbeatRunMS        int64
+	lastHeartbeatWakeMS       int64
+	heartbeatNotify           chan struct{}
+	pendingHeartbeatWakes     []heartbeatWakeRecord
+	lastUpdateCheckMS         int64
+	systemPresence            map[string]map[string]any
+	systemEvents              []map[string]any
 }
 
 func newOperationsRegistry() *operationsRegistry {
 	now := time.Now().UnixMilli()
 	return &operationsRegistry{
-		talkMode:            "disabled",
-		voicewake:           []string{"openclaw", "metiq"},
-		ttsEnabled:          false,
-		ttsProvider:         "openai",
-		heartbeatsEnabled:   true,
-		heartbeatIntervalMS: 60_000,
-		lastHeartbeatMS:     now,
-		lastUpdateCheckMS:   now,
-		systemPresence:      map[string]map[string]any{},
-		systemEvents:        []map[string]any{},
+		talkMode:                  "disabled",
+		voicewake:                 []string{"openclaw", "metiq"},
+		ttsEnabled:                false,
+		ttsProvider:               "openai",
+		heartbeatRunnerEnabled:    false,
+		heartbeatRunnerIntervalMS: 0,
+		heartbeatNotify:           make(chan struct{}),
+		lastUpdateCheckMS:         now,
+		systemPresence:            map[string]map[string]any{},
+		systemEvents:              []map[string]any{},
 	}
 }
 
@@ -1429,29 +1448,95 @@ func (r *operationsRegistry) SetTTSProvider(provider string) string {
 	return r.ttsProvider
 }
 
-func (r *operationsRegistry) LastHeartbeat() (int64, bool, int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.lastHeartbeatMS, r.heartbeatsEnabled, r.heartbeatIntervalMS
+func (r *operationsRegistry) notifyHeartbeatLocked() {
+	if r.heartbeatNotify != nil {
+		close(r.heartbeatNotify)
+	}
+	r.heartbeatNotify = make(chan struct{})
 }
 
-func (r *operationsRegistry) SetHeartbeats(enabled *bool, intervalMS int) (bool, int) {
+func (r *operationsRegistry) heartbeatStatusLocked() heartbeatRunnerStatus {
+	return heartbeatRunnerStatus{
+		Enabled:      r.heartbeatRunnerEnabled,
+		IntervalMS:   r.heartbeatRunnerIntervalMS,
+		LastRunMS:    r.lastHeartbeatRunMS,
+		LastWakeMS:   r.lastHeartbeatWakeMS,
+		PendingWakes: len(r.pendingHeartbeatWakes),
+	}
+}
+
+func (r *operationsRegistry) HeartbeatStatus() heartbeatRunnerStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.heartbeatStatusLocked()
+}
+
+func (r *operationsRegistry) SyncHeartbeatConfig(cfg state.HeartbeatConfig) heartbeatRunnerStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.heartbeatRunnerEnabled = cfg.Enabled
+	if cfg.IntervalMS >= 0 {
+		r.heartbeatRunnerIntervalMS = cfg.IntervalMS
+	}
+	r.notifyHeartbeatLocked()
+	return r.heartbeatStatusLocked()
+}
+
+func (r *operationsRegistry) SetHeartbeats(enabled *bool, intervalMS int) heartbeatRunnerStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if enabled != nil {
-		r.heartbeatsEnabled = *enabled
+		r.heartbeatRunnerEnabled = *enabled
 	}
-	if intervalMS > 0 {
-		r.heartbeatIntervalMS = intervalMS
+	if intervalMS >= 0 {
+		r.heartbeatRunnerIntervalMS = intervalMS
 	}
-	return r.heartbeatsEnabled, r.heartbeatIntervalMS
+	r.notifyHeartbeatLocked()
+	return r.heartbeatStatusLocked()
 }
 
-func (r *operationsRegistry) Wake(source string) int64 {
+func (r *operationsRegistry) QueueHeartbeatWake(agentID, source, text, mode string) heartbeatRunnerStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.lastHeartbeatMS = time.Now().UnixMilli()
-	return r.lastHeartbeatMS
+	now := time.Now().UnixMilli()
+	r.lastHeartbeatWakeMS = now
+	r.pendingHeartbeatWakes = append(r.pendingHeartbeatWakes, heartbeatWakeRecord{
+		AtMS:    now,
+		AgentID: strings.TrimSpace(agentID),
+		Source:  strings.TrimSpace(source),
+		Text:    strings.TrimSpace(text),
+		Mode:    strings.ToLower(strings.TrimSpace(mode)),
+	})
+	r.notifyHeartbeatLocked()
+	return r.heartbeatStatusLocked()
+}
+
+func (r *operationsRegistry) HeartbeatSnapshot() (heartbeatRunnerStatus, []heartbeatWakeRecord, <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	wakes := append([]heartbeatWakeRecord(nil), r.pendingHeartbeatWakes...)
+	return r.heartbeatStatusLocked(), wakes, r.heartbeatNotify
+}
+
+func (r *operationsRegistry) ConsumeHeartbeatWakes() []heartbeatWakeRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.pendingHeartbeatWakes) == 0 {
+		return nil
+	}
+	wakes := append([]heartbeatWakeRecord(nil), r.pendingHeartbeatWakes...)
+	r.pendingHeartbeatWakes = nil
+	return wakes
+}
+
+func (r *operationsRegistry) MarkHeartbeatRun(tsMS int64) heartbeatRunnerStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if tsMS <= 0 {
+		tsMS = time.Now().UnixMilli()
+	}
+	r.lastHeartbeatRunMS = tsMS
+	return r.heartbeatStatusLocked()
 }
 
 func (r *operationsRegistry) RecordUpdateCheck() int64 {

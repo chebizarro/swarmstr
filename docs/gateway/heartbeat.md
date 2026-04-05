@@ -1,104 +1,111 @@
 ---
-summary: "NIP-38 status heartbeat for metiq — publishes presence to Nostr"
+summary: "Heartbeat runner and NIP-38 status semantics in metiq"
 read_when:
-  - Configuring presence/status visibility for your agent on Nostr
-  - Deciding between heartbeat and cron for scheduled tasks
-  - Understanding NIP-38 user status events
-title: "Heartbeat (NIP-38 Status)"
+  - Configuring the LLM heartbeat runner
+  - Configuring NIP-38 presence/status visibility for your agent on Nostr
+  - Deciding between status, heartbeat, and cron
+title: "Heartbeat"
 ---
 
-# Heartbeat (NIP-38 Status)
+# Heartbeat
 
-> **Heartbeat vs Cron?** See [Cron vs Heartbeat](/automation/cron-vs-heartbeat) for guidance.
+> **Status vs Heartbeat vs Cron?** See [Cron vs Heartbeat](/automation/cron-vs-heartbeat) for guidance.
 
-The heartbeat publishes **NIP-38 kind 30315 user status events** so Nostr clients can see whether the agent is idle, typing, running tools, or offline. It does **not** trigger agent turns or send DMs — for periodic agent tasks, use [Cron](/automation/cron-jobs).
+In metiq, **heartbeat** means the **LLM-backed periodic runner**. It schedules agent turns, consumes queued wakes, and can use a dedicated per-agent heartbeat model.
 
-## What It Does
+NIP-38 presence publishing is a separate feature. That is documented here as **status**.
 
-Every few minutes (configurable), metiq publishes a NIP-38 status event showing the agent's current state:
+## Heartbeat runner
 
-- `idle` — waiting for messages
-- `typing` — composing a reply
-- `dnd` — do not disturb
-- `offline` — shutting down
+Configure the runner with the top-level `heartbeat` block:
 
-These events are visible in Nostr clients that support NIP-38 (e.g., alongside the agent's npub in your contact list).
+```json5
+{
+  "heartbeat": {
+    "enabled": true,
+    "interval_ms": 1800000 // 30 minutes
+  },
+  "agents": [
+    {
+      "id": "main",
+      "model": "claude-opus-4-5",
+      "heartbeat": {
+        "model": "claude-haiku-4-5"
+      }
+    }
+  ]
+}
+```
 
-## Configuration
+### What it does
 
-Configure via `extra.heartbeat` in the runtime ConfigDoc:
+- Runs periodic agent turns on the configured interval.
+- Consumes queued `wake` requests.
+- Supports `mode: "now"` and `mode: "next-heartbeat"` for deferred wake handling.
+- Uses `agents[].heartbeat.model` when configured; otherwise it falls back to the agent's normal runtime.
+
+### Control methods
+
+- `last-heartbeat` — returns runner state (`last_run_ms`, `last_wake_ms`, `pending_wakes`, etc.)
+- `set-heartbeats` — enables/disables the runner and updates its interval
+- `wake` — queues a wake for immediate or next-interval execution; accepts optional `agent_id` and defaults to `main`
+
+## Status (NIP-38 presence)
+
+Status publishes **NIP-38 kind 30315 user status events** so Nostr clients can see whether the agent is idle, typing, running tools, or offline. It does **not** trigger agent turns.
+
+Configure status via `extra.status` (preferred) or the legacy alias `extra.heartbeat`:
 
 ```json5
 {
   "extra": {
-    "heartbeat": {
-      "enabled": true,             // default: true
-      "interval_seconds": 300,     // default: 300 (5 minutes)
-      "content": "Available 🟢"   // optional: text for idle status events
+    "status": {
+      "enabled": true,
+      "interval_seconds": 300,
+      "content": "Available 🟢"
     }
   }
 }
 ```
 
-### Fields
+Legacy config still works:
+
+```json5
+{
+  "extra": {
+    "heartbeat": {
+      "enabled": true,
+      "interval_seconds": 300,
+      "content": "Available 🟢"
+    }
+  }
+}
+```
+
+### Status fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `true` | Enable/disable NIP-38 heartbeat |
-| `interval_seconds` | number | `300` | How often to publish an idle status event (seconds) |
-| `content` | string | `""` | Optional text content for idle status events |
+| `enabled` | bool | `true` | Enable/disable NIP-38 status publishing |
+| `interval_seconds` | number | `300` | How often to re-publish idle status |
+| `content` | string | `""` | Optional text for idle status events |
 
-Per-agent `agents[].heartbeat.model` may exist in runtime config, but it is only plumbing for a future LLM-backed heartbeat turn runner. It does not affect the current NIP-38 presence heartbeat.
-
-## Disabling
-
-```json5
-{
-  "extra": {
-    "heartbeat": {
-      "enabled": false
-    }
-  }
-}
-```
-
-Or remove the `extra.heartbeat` block entirely to keep the default (enabled, 5-minute interval).
-
-## Status Values
-
-The agent automatically transitions through statuses during its lifecycle:
+### Status values
 
 | Status | When |
 |--------|------|
-| `idle` | Waiting for messages (published on the heartbeat interval) |
-| `typing` | Composing a reply to a DM |
-| `dnd` | Running tools during an agent turn |
+| `idle` | Waiting for messages |
+| `typing` | Composing a reply |
+| `dnd` | Running tools during a turn |
 | `offline` | Daemon shutting down |
 
-Status updates are published to the configured write relays using the agent's signing key.
+Agents can also publish a custom NIP-38 status via the `nostr_status` tool.
 
-## Manual Status (Tool)
+## Scheduled agent tasks
 
-Agents can publish a custom NIP-38 status via the `nostr_status` tool:
-
-```
-nostr_status(status="dnd", content="Working on a long task...")
-nostr_status(status="idle", content="Done!")
-```
-
-## Scheduled Agent Tasks
-
-The heartbeat is for **presence visibility only**. To run periodic agent turns (e.g., checking feeds, summarizing events), use the Cron system:
-
-```json5
-{
-  "cron": {
-    "enabled": true
-  }
-}
-```
-
-See [Cron Jobs](/automation/cron-jobs) for scheduling agent tasks.
+- Use **heartbeat** for the built-in periodic runner.
+- Use **cron** when you need fixed schedules, multiple jobs, or explicit prompts.
+- Use **status** when you only want presence visibility on Nostr.
 
 ## See Also
 

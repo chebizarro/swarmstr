@@ -1040,6 +1040,23 @@ func TestDecodeExecSecretsWizardTalkVoicewakeAndTTSParams(t *testing.T) {
 	if _, err := missingEnabledReq.Normalize(); err == nil {
 		t.Fatalf("expected set-heartbeats normalize to require enabled")
 	}
+	wakeReq, err := DecodeWakeParams(json.RawMessage(`{"agent_id":" main ","source":"manual","mode":"now","text":"wake now"}`))
+	if err != nil {
+		t.Fatalf("wake decode error: %v", err)
+	}
+	wakeReq, err = wakeReq.Normalize()
+	if err != nil {
+		t.Fatalf("wake normalize error: %v", err)
+	}
+	if wakeReq.AgentID != "main" || wakeReq.Mode != "now" || wakeReq.Text != "wake now" {
+		t.Fatalf("unexpected wake request: %#v", wakeReq)
+	}
+	if _, err := (WakeRequest{Source: "manual", Mode: "typo", Text: "wake now"}).Normalize(); err == nil {
+		t.Fatalf("expected wake normalize to reject invalid mode")
+	}
+	if _, err := (WakeRequest{Source: "manual", Mode: "now"}).Normalize(); err == nil {
+		t.Fatalf("expected wake normalize to require text")
+	}
 
 	systemEventReq, err := DecodeSystemEventParams(json.RawMessage(`{"text":"Node: up","deviceId":"mac-1","roles":["control"]}`))
 	if err != nil {
