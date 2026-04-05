@@ -46,6 +46,8 @@ type AgenticLoopConfig struct {
 	TurnID    string
 	// ToolEventSink receives canonical start/progress/result/error tool signals.
 	ToolEventSink ToolLifecycleSink
+	// ContextWindowTokens bounds tool-result context guards between LLM calls.
+	ContextWindowTokens int
 }
 
 // ToolExecResult holds the outcome of a single tool execution.
@@ -90,7 +92,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	var historyDelta []ConversationMessage
 
 	// Initial LLM call.
-	resp, err := cfg.Provider.Chat(ctx, messages, cfg.Tools, cfg.Options)
+	resp, err := cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), cfg.Tools, cfg.Options)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +179,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		}
 
 		// Next LLM call.
-		resp, err = cfg.Provider.Chat(ctx, messages, cfg.Tools, cfg.Options)
+		resp, err = cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), cfg.Tools, cfg.Options)
 		if err != nil {
 			log.Printf("%s: agentic loop LLM error iter=%d: %v", cfg.LogPrefix, iter+1, err)
 			// Return partial history so callers can persist completed tool work.
@@ -507,7 +509,7 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 
 	// Call without tools so the model MUST produce text.
 	opts := cfg.Options
-	summaryResp, err := cfg.Provider.Chat(ctx, messages, nil, opts)
+	summaryResp, err := cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), nil, opts)
 	if err != nil {
 		log.Printf("%s: force-summary error: %v", cfg.LogPrefix, err)
 		return nil, nil
@@ -572,17 +574,18 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 
 	// Run the agentic loop.
 	resp, err := RunAgenticLoop(ctx, AgenticLoopConfig{
-		Provider:        provider,
-		InitialMessages: messages,
-		Tools:           turn.Tools,
-		Executor:        turn.Executor,
-		Options:         opts,
-		MaxIterations:   30,
-		ForceText:       true,
-		LogPrefix:       logPrefix,
-		SessionID:       turn.SessionID,
-		TurnID:          turn.TurnID,
-		ToolEventSink:   turn.ToolEventSink,
+		Provider:            provider,
+		InitialMessages:     messages,
+		Tools:               turn.Tools,
+		Executor:            turn.Executor,
+		Options:             opts,
+		MaxIterations:       30,
+		ForceText:           true,
+		LogPrefix:           logPrefix,
+		SessionID:           turn.SessionID,
+		TurnID:              turn.TurnID,
+		ToolEventSink:       turn.ToolEventSink,
+		ContextWindowTokens: turn.ContextWindowTokens,
 	})
 	if err != nil {
 		return ProviderResult{}, err

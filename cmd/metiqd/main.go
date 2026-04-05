@@ -1465,16 +1465,28 @@ func main() {
 				}
 			}
 		}
+		promptEnvelope := buildTurnPromptEnvelope(turnPromptBuilderParams{
+			Config:             configState.Get(),
+			SessionID:          sessionID,
+			AgentID:            sessionRouter.Get(sessionID),
+			Channel:            "nostr",
+			SelfPubkey:         pubkey,
+			SelfNPub:           toolbuiltin.NostrNPubFromHex(pubkey),
+			StaticSystemPrompt: staticSystemPrompt,
+			Context:            turnContext,
+			Tools:              turnTools,
+		})
 		return preparedAgentRunTurn{
 			Turn: agent.Turn{
-				SessionID:          sessionID,
-				TurnID:             nextDeterministicRecallTurnID(),
-				UserText:           text,
-				StaticSystemPrompt: staticSystemPrompt,
-				Context:            turnContext,
-				History:            turnHistory,
-				Tools:              turnTools,
-				Executor:           turnExecutor,
+				SessionID:           sessionID,
+				TurnID:              nextDeterministicRecallTurnID(),
+				UserText:            text,
+				StaticSystemPrompt:  promptEnvelope.StaticSystemPrompt,
+				Context:             promptEnvelope.Context,
+				History:             turnHistory,
+				Tools:               turnTools,
+				Executor:            turnExecutor,
+				ContextWindowTokens: promptEnvelope.ContextWindowTokens,
 			},
 			SurfacedFileMemory: surfacedFileMemory,
 			MemoryRecallSample: memoryRecallSample,
@@ -2187,6 +2199,7 @@ func main() {
 			filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, spawnAgentID, agentRuntime, tools, turnToolConstraints{})
 			prepared.Turn.Tools = turnTools
 			prepared.Turn.Executor = turnExecutor
+			prepared = applyPromptEnvelopeToPreparedTurn(prepared, turnPromptBuilderParams{Config: configState.Get(), SessionID: sessionID, AgentID: spawnAgentID, Channel: "nostr", SelfPubkey: pubkey, SelfNPub: toolbuiltin.NostrNPubFromHex(pubkey), StaticSystemPrompt: prepared.Turn.StaticSystemPrompt, Context: prepared.Turn.Context, Tools: turnTools})
 			result, err := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
 			if err != nil {
 				return "", err
@@ -2241,6 +2254,7 @@ func main() {
 		filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, agentRuntime, tools, turnToolConstraints{})
 		prepared.Turn.Tools = turnTools
 		prepared.Turn.Executor = turnExecutor
+		prepared = applyPromptEnvelopeToPreparedTurn(prepared, turnPromptBuilderParams{Config: configState.Get(), SessionID: sessionID, AgentID: activeAgentID, Channel: "nostr", SelfPubkey: pubkey, SelfNPub: toolbuiltin.NostrNPubFromHex(pubkey), StaticSystemPrompt: prepared.Turn.StaticSystemPrompt, Context: prepared.Turn.Context, Tools: turnTools})
 		result, err := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
 		if err != nil {
 			return "", fmt.Errorf("session_send: %w", err)
@@ -3321,91 +3335,26 @@ func main() {
 		activeRuntime := agentRegistry.Get(activeAgentID)
 		activeRuntime, turnExecutor, baseTurnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, activeRuntime, tools, constraints)
 
-		// Inject workspace identity files + system_prompt into turnContext.
-		// Loads SOUL.md, IDENTITY.md, USER.md from the agent workspace dir,
-		// then prepends the config system_prompt. Runs at turn time so
-		// hot-reloaded config and edited files are always reflected.
-		{
-			liveAgents := configState.Get().Agents
-			log.Printf("DEBUG turn agent=%s live_agents=%d context_before=%d", activeAgentID, len(liveAgents), len(turnContext))
-
-			wsDir := ""
-			var agentSystemPrompt string
-			for _, ac := range liveAgents {
-				if ac.ID == activeAgentID {
-					agentSystemPrompt = strings.TrimSpace(ac.SystemPrompt)
-					wsDir = strings.TrimSpace(ac.WorkspaceDir)
-					break
-				}
-			}
-			if wsDir == "" {
-				if home, herr := os.UserHomeDir(); herr == nil {
-					wsDir = filepath.Join(home, ".metiq", "workspace")
-				}
-			}
-
-			var identityParts []string
-			// BOOTSTRAP.md is loaded first so it frames the agent's first session.
-			// It is expected to be deleted by the agent after identity is established —
-			// mirroring OpenClaw's behaviour.  All other identity files are always loaded
-			// when present; the os.ReadFile check is a no-op if the file doesn't exist.
-			for _, fname := range []string{"BOOTSTRAP.md", "SOUL.md", "IDENTITY.md", "USER.md", "AGENTS.md"} {
-				fpath := filepath.Join(wsDir, fname)
-				if raw, ferr := os.ReadFile(fpath); ferr == nil && len(raw) > 0 {
-					identityParts = append(identityParts, strings.TrimSpace(string(raw)))
-				}
-			}
-
-			// Fire agent:bootstrap to allow extra file injection via the
-			// bootstrap-extra-files hook.  Extra file patterns are read from
-			// extra.bootstrap_extra_files.paths in the runtime config.
-			if controlHooksMgr != nil {
-				liveCfg := configState.Get()
-				var extraPaths []string
-				if befRaw, ok := liveCfg.Extra["bootstrap_extra_files"]; ok {
-					if befMap, ok := befRaw.(map[string]any); ok {
-						for _, key := range []string{"paths", "patterns", "files"} {
-							if v, ok2 := befMap[key]; ok2 {
-								switch tv := v.(type) {
-								case []any:
-									for _, p := range tv {
-										if s, ok3 := p.(string); ok3 {
-											extraPaths = append(extraPaths, s)
-										}
-									}
-								case []string:
-									extraPaths = append(extraPaths, tv...)
-								}
-							}
-						}
-					}
-				}
-				if len(extraPaths) > 0 {
-					evCtx := map[string]any{"paths": extraPaths}
-					errs := controlHooksMgr.Fire("agent:bootstrap", sessionID, evCtx)
-					for _, herr := range errs {
-						log.Printf("agent:bootstrap hook: %v", herr)
-					}
-					if injected, ok := evCtx["injectedFiles"].([]string); ok {
-						identityParts = append(identityParts, injected...)
-					}
-				}
-			}
-
-			var contextParts []string
-			if len(identityParts) > 0 {
-				contextParts = append(contextParts, strings.Join(identityParts, "\n\n---\n\n"))
-			}
-			if agentSystemPrompt != "" {
-				contextParts = append(contextParts, agentSystemPrompt)
-				log.Printf("DEBUG system_prompt injected agent=%s len=%d", activeAgentID, len(agentSystemPrompt))
-			}
-			if len(contextParts) > 0 {
-				prefix := strings.Join(contextParts, "\n\n")
-				staticSystemPrompt = joinPromptSections(staticSystemPrompt, prefix)
-				log.Printf("DEBUG workspace_context agent=%s identity_files=%d total_len=%d", activeAgentID, len(identityParts), len(staticSystemPrompt))
+		sessionThinkingLevel := ""
+		if sessionStore != nil {
+			if se, ok := sessionStore.Get(sessionID); ok {
+				sessionThinkingLevel = strings.TrimSpace(se.ThinkingLevel)
 			}
 		}
+		promptEnvelope := buildTurnPromptEnvelope(turnPromptBuilderParams{
+			Config:               configState.Get(),
+			SessionID:            sessionID,
+			AgentID:              activeAgentID,
+			Channel:              "nostr",
+			SelfPubkey:           pubkey,
+			SelfNPub:             toolbuiltin.NostrNPubFromHex(pubkey),
+			StaticSystemPrompt:   staticSystemPrompt,
+			Context:              turnContext,
+			Tools:                baseTurnTools,
+			SessionThinkingLevel: sessionThinkingLevel,
+		})
+		staticSystemPrompt = promptEnvelope.StaticSystemPrompt
+		turnContext = promptEnvelope.Context
 
 		lastActivityAt := time.Now().UnixMilli()
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
@@ -3465,89 +3414,19 @@ func main() {
 				break
 			}
 		}
-		// ── Inject runtime context (OpenClaw parity) ───────────────────────
-		// Build supplementary system prompt sections: runtime info, time, tool
-		// summaries, model aliases, TTS, reactions, sandbox, skills, docs.
-		{
-			liveCfg := configState.Get()
-			agentModel := ""
-			agentThinkingLevel := ""
-			var agentCapabilities []string
-			for _, ac := range liveCfg.Agents {
-				if ac.ID == activeAgentID {
-					agentModel = ac.Model
-					agentThinkingLevel = ac.ThinkingLevel
-					break
-				}
-			}
-			if agentModel == "" {
-				agentModel = liveCfg.Agent.DefaultModel
-			}
-			if agentThinkingLevel == "" {
-				if sessionStore != nil {
-					if se, ok := sessionStore.Get(sessionID); ok && se.ThinkingLevel != "" {
-						agentThinkingLevel = se.ThinkingLevel
-					}
-				}
-			}
-
-			// Resolve channel capabilities from config if available.
-			if capsRaw, ok := liveCfg.Extra["capabilities"]; ok {
-				switch v := capsRaw.(type) {
-				case []any:
-					for _, c := range v {
-						if s, ok := c.(string); ok {
-							agentCapabilities = append(agentCapabilities, s)
-						}
-					}
-				case []string:
-					agentCapabilities = v
-				}
-			}
-
-			skillsPromptStr := buildSkillsPromptCached(liveCfg, activeAgentID)
-
-			wsDir := ""
-			for _, ac := range liveCfg.Agents {
-				if ac.ID == activeAgentID {
-					wsDir = strings.TrimSpace(ac.WorkspaceDir)
-					break
-				}
-			}
-			if wsDir == "" {
-				if home, herr := os.UserHomeDir(); herr == nil {
-					wsDir = filepath.Join(home, ".metiq", "workspace")
-				}
-			}
-
-			runtimeParams := turnRuntimeParams{
-				AgentID:       activeAgentID,
-				SelfPubkey:    pubkey,
-				SelfNPub:      toolbuiltin.NostrNPubFromHex(pubkey),
-				Model:         agentModel,
-				Channel:       "nostr",
-				Capabilities:  agentCapabilities,
-				Tools:         baseTurnTools,
-				Config:        liveCfg,
-				WorkspaceDir:  wsDir,
-				ThinkingLevel: agentThinkingLevel,
-				SkillsPrompt:  skillsPromptStr,
-			}
-			staticSystemPrompt = joinPromptSections(staticSystemPrompt, buildTurnRuntimeStaticContext(runtimeParams))
-			turnContext = joinPromptSections(turnContext, buildTurnRuntimeDynamicContext())
-		}
 
 		baseTurn := agent.Turn{
-			SessionID:          sessionID,
-			TurnID:             eventID,
-			UserText:           combinedText,
-			StaticSystemPrompt: staticSystemPrompt,
-			Context:            turnContext,
-			History:            turnHistory,
-			Tools:              baseTurnTools,
-			Executor:           turnExecutor, // canonical filtered turn tool pool
-			ThinkingBudget:     thinkingBudget,
-			ToolEventSink:      toolLifecycleEmitter(wsEmitter, activeAgentID),
+			SessionID:           sessionID,
+			TurnID:              eventID,
+			UserText:            combinedText,
+			StaticSystemPrompt:  staticSystemPrompt,
+			Context:             turnContext,
+			History:             turnHistory,
+			Tools:               baseTurnTools,
+			Executor:            turnExecutor, // canonical filtered turn tool pool
+			ThinkingBudget:      thinkingBudget,
+			ToolEventSink:       toolLifecycleEmitter(wsEmitter, activeAgentID),
+			ContextWindowTokens: promptEnvelope.ContextWindowTokens,
 		}
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, func(chunk string) {
@@ -4341,10 +4220,11 @@ func main() {
 				OnJob: func(jobCtx context.Context, jobID string, kind int, input string) (string, error) {
 					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(jobCtx, configState.Get(), docsRepo, "dvm:"+jobID, "", agentRuntime, tools, turnToolConstraints{})
 					result, err := filteredRuntime.ProcessTurn(jobCtx, agent.Turn{
-						SessionID: "dvm:" + jobID,
-						UserText:  input,
-						Tools:     turnTools,
-						Executor:  turnExecutor,
+						SessionID:           "dvm:" + jobID,
+						UserText:            input,
+						Tools:               turnTools,
+						Executor:            turnExecutor,
+						ContextWindowTokens: maxContextTokensForAgent(configState.Get(), ""),
 					})
 					if err != nil {
 						return "", err
@@ -4494,16 +4374,28 @@ func main() {
 		}
 
 		// ── Run agent turn ──────────────────────────────────────────
-		chBaseTurn := agent.Turn{
+		promptEnvelope := buildTurnPromptEnvelope(turnPromptBuilderParams{
+			Config:             configState.Get(),
 			SessionID:          sessionID,
-			TurnID:             eventID,
-			UserText:           text,
+			AgentID:            activeAgentID,
+			Channel:            "nostr",
+			SelfPubkey:         pubkey,
+			SelfNPub:           toolbuiltin.NostrNPubFromHex(pubkey),
 			StaticSystemPrompt: staticSystemPrompt,
 			Context:            turnContext,
-			History:            chTurnHistory,
 			Tools:              turnTools,
-			Executor:           turnExecutor,
-			ToolEventSink:      toolLifecycleEmitter(wsEmitter, activeAgentID),
+		})
+		chBaseTurn := agent.Turn{
+			SessionID:           sessionID,
+			TurnID:              eventID,
+			UserText:            text,
+			StaticSystemPrompt:  promptEnvelope.StaticSystemPrompt,
+			Context:             promptEnvelope.Context,
+			History:             chTurnHistory,
+			Tools:               turnTools,
+			Executor:            turnExecutor,
+			ToolEventSink:       toolLifecycleEmitter(wsEmitter, activeAgentID),
+			ContextWindowTokens: promptEnvelope.ContextWindowTokens,
 		}
 		var turnResult agent.TurnResult
 		turnStartedAt := time.Now()
@@ -6960,10 +6852,11 @@ func handleControlRPCRequest(
 					defer release()
 					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, msg.ChannelID, activeAgentID, rt, tools, turnToolConstraints{})
 					result, turnErr := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
-						SessionID: msg.ChannelID,
-						UserText:  msg.Text,
-						Tools:     turnTools,
-						Executor:  turnExecutor,
+						SessionID:           msg.ChannelID,
+						UserText:            msg.Text,
+						Tools:               turnTools,
+						Executor:            turnExecutor,
+						ContextWindowTokens: maxContextTokensForAgent(configState.Get(), activeAgentID),
 					})
 					if turnErr != nil {
 						log.Printf("channel agent turn error channel=%s err=%v", msg.ChannelID, turnErr)
@@ -7562,8 +7455,9 @@ func handleControlRPCRequest(
 						summaryCtx, summaryCancel := context.WithTimeout(ctx, 30*time.Second)
 						defer summaryCancel()
 						return rt.ProcessTurn(summaryCtx, agent.Turn{
-							SessionID: req.SessionID + ":compact",
-							UserText:  summaryPrompt,
+							SessionID:           req.SessionID + ":compact",
+							UserText:            summaryPrompt,
+							ContextWindowTokens: maxContextTokensForAgent(configState.Get(), activeAgentID),
 						})
 					}
 					result, summaryErr := runSummary(selectedRuntime)
@@ -10050,6 +9944,7 @@ func handleACPMessage(
 				SessionID: sessionID,
 				Message:   instructions,
 			}, controlMemoryStore, scopeCtx, workspaceDirForAgent(cfg, agentID), controlSessionStore)
+			prepared = applyPromptEnvelopeToPreparedTurn(prepared, turnPromptBuilderParams{Config: cfg, SessionID: sessionID, AgentID: agentID, Channel: "nostr", StaticSystemPrompt: prepared.Turn.StaticSystemPrompt, Context: prepared.Turn.Context, Tools: prepared.Turn.Tools})
 			prepared.Turn.TurnID = msg.TaskID
 			if len(seedHistory) > 0 {
 				mergedHistory := make([]agent.ConversationMessage, 0, len(prepared.Turn.History)+len(seedHistory))
@@ -10886,6 +10781,7 @@ func runAgentTurnWithFallbacks(baseCtx context.Context, req methods.AgentRequest
 	persistSessionMemoryScope(controlSessionStore, req.SessionID, agentID, scopeCtx.Scope)
 	ctx = contextWithMemoryScope(ctx, scopeCtx)
 	prepared := buildAgentRunTurn(ctx, req, memoryIndex, scopeCtx, workspaceDirForAgent(cfg, agentID), controlSessionStore)
+	prepared = applyPromptEnvelopeToPreparedTurn(prepared, turnPromptBuilderParams{Config: cfg, SessionID: req.SessionID, AgentID: agentID, Channel: "nostr", StaticSystemPrompt: prepared.Turn.StaticSystemPrompt, Context: prepared.Turn.Context, Tools: prepared.Turn.Tools})
 	turn := prepared.Turn
 	var result *agent.TurnResult
 	var lastErr error

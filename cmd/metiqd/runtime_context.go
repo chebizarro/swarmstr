@@ -29,9 +29,6 @@ type ttlCacheEntry[T any] struct {
 var (
 	docsSectionCacheMu sync.Mutex
 	docsSectionCache   = map[string]ttlCacheEntry[string]{}
-
-	bootstrapWarnCacheMu sync.Mutex
-	bootstrapWarnCache   = map[string]ttlCacheEntry[string]{}
 )
 
 // turnRuntimeParams holds the data needed to build the runtime context.
@@ -58,6 +55,9 @@ type turnRuntimeParams struct {
 
 	// Skills prompt (pre-rendered list of available skills).
 	SkillsPrompt string
+	// BootstrapWarnings reports truncation / boundary warnings from the current
+	// bootstrap prompt assembly pass.
+	BootstrapWarnings []string
 }
 
 func buildSkillsPromptCached(cfg state.ConfigDoc, agentID string) string {
@@ -79,19 +79,19 @@ func buildSkillsPromptCached(cfg state.ConfigDoc, agentID string) string {
 			truncated = true
 			break
 		}
-		name := strings.TrimSpace(resolved.Skill.Manifest.Name)
+		name := agent.SanitizePromptLiteral(strings.TrimSpace(resolved.Skill.Manifest.Name))
 		if name == "" {
-			name = resolved.Skill.SkillKey
+			name = agent.SanitizePromptLiteral(resolved.Skill.SkillKey)
 		}
-		desc := strings.TrimSpace(resolved.Skill.Manifest.Description)
+		desc := agent.SanitizePromptLiteral(strings.TrimSpace(resolved.Skill.Manifest.Description))
 		if desc == "" {
 			desc = "No description provided."
 		}
-		if when := strings.TrimSpace(resolved.WhenToUse); when != "" {
+		if when := agent.SanitizePromptLiteral(strings.TrimSpace(resolved.WhenToUse)); when != "" {
 			desc += fmt.Sprintf(" (when: %s)", when)
 		}
 		line := fmt.Sprintf("- %s: %s", name, desc)
-		if path := strings.TrimSpace(skillspkg.PromptSkillPath(catalog, resolved, mirrorPaths)); path != "" {
+		if path := agent.SanitizePromptLiteral(strings.TrimSpace(skillspkg.PromptSkillPath(catalog, resolved, mirrorPaths))); path != "" {
 			line += fmt.Sprintf(" (location: %s)", path)
 		}
 		if resolved.Always && !resolved.Eligible {
@@ -157,26 +157,6 @@ func buildDocsSectionCached(workspaceDir string) string {
 	return out
 }
 
-func buildBootstrapWarningSectionCached(workspaceDir string) string {
-	const ttl = 5 * time.Minute
-	key := strings.TrimSpace(workspaceDir)
-	now := time.Now()
-
-	bootstrapWarnCacheMu.Lock()
-	if ent, ok := bootstrapWarnCache[key]; ok && now.Before(ent.expiresAt) {
-		v := ent.value
-		bootstrapWarnCacheMu.Unlock()
-		return v
-	}
-	bootstrapWarnCacheMu.Unlock()
-
-	out := buildBootstrapWarningSection(workspaceDir)
-	bootstrapWarnCacheMu.Lock()
-	bootstrapWarnCache[key] = ttlCacheEntry[string]{value: out, expiresAt: now.Add(ttl)}
-	bootstrapWarnCacheMu.Unlock()
-	return out
-}
-
 // buildTurnRuntimeContext generates the supplementary system prompt sections
 // that OpenClaw injects on every turn: runtime info, time, tool summaries,
 // model aliases, TTS, reactions, sandbox, skills, docs, and bootstrap warnings.
@@ -226,7 +206,7 @@ func buildTurnRuntimeStaticContext(p turnRuntimeParams) string {
 	}
 
 	// ── Bootstrap truncation warnings ───────────────────────────────────────
-	if bw := buildBootstrapWarningSectionCached(p.WorkspaceDir); bw != "" {
+	if bw := buildBootstrapWarningSection(p.BootstrapWarnings); bw != "" {
 		sections = append(sections, bw)
 	}
 
@@ -241,31 +221,37 @@ func buildTurnRuntimeDynamicContext() string {
 
 func buildRuntimeSection(p turnRuntimeParams) string {
 	hostname, _ := os.Hostname()
+	safeCaps := make([]string, 0, len(p.Capabilities))
+	for _, cap := range p.Capabilities {
+		if safe := agent.SanitizePromptLiteral(strings.TrimSpace(cap)); safe != "" {
+			safeCaps = append(safeCaps, safe)
+		}
+	}
 	parts := []string{
-		fmt.Sprintf("agent=%s", p.AgentID),
-		fmt.Sprintf("host=%s", hostname),
-		fmt.Sprintf("os=%s (%s)", runtime.GOOS, runtime.GOARCH),
-		fmt.Sprintf("go=%s", runtime.Version()),
+		fmt.Sprintf("agent=%s", agent.SanitizePromptLiteral(p.AgentID)),
+		fmt.Sprintf("host=%s", agent.SanitizePromptLiteral(hostname)),
+		fmt.Sprintf("os=%s (%s)", agent.SanitizePromptLiteral(runtime.GOOS), agent.SanitizePromptLiteral(runtime.GOARCH)),
+		fmt.Sprintf("go=%s", agent.SanitizePromptLiteral(runtime.Version())),
 	}
 	if p.SelfPubkey != "" {
-		parts = append(parts, fmt.Sprintf("self_pubkey=%s", p.SelfPubkey))
+		parts = append(parts, fmt.Sprintf("self_pubkey=%s", agent.SanitizePromptLiteral(p.SelfPubkey)))
 	}
 	if p.SelfNPub != "" {
-		parts = append(parts, fmt.Sprintf("self_npub=%s", p.SelfNPub))
+		parts = append(parts, fmt.Sprintf("self_npub=%s", agent.SanitizePromptLiteral(p.SelfNPub)))
 	}
 	if p.Model != "" {
-		parts = append(parts, fmt.Sprintf("model=%s", p.Model))
+		parts = append(parts, fmt.Sprintf("model=%s", agent.SanitizePromptLiteral(p.Model)))
 	}
 	if p.Channel != "" {
-		parts = append(parts, fmt.Sprintf("channel=%s", p.Channel))
+		parts = append(parts, fmt.Sprintf("channel=%s", agent.SanitizePromptLiteral(p.Channel)))
 	}
-	if len(p.Capabilities) > 0 {
-		parts = append(parts, fmt.Sprintf("capabilities=%s", strings.Join(p.Capabilities, ",")))
+	if len(safeCaps) > 0 {
+		parts = append(parts, fmt.Sprintf("capabilities=%s", strings.Join(safeCaps, ",")))
 	} else if p.Channel != "" {
 		parts = append(parts, "capabilities=none")
 	}
 	if p.ThinkingLevel != "" && p.ThinkingLevel != "off" {
-		parts = append(parts, fmt.Sprintf("thinking=%s", p.ThinkingLevel))
+		parts = append(parts, fmt.Sprintf("thinking=%s", agent.SanitizePromptLiteral(p.ThinkingLevel)))
 	} else {
 		parts = append(parts, "thinking=off")
 	}
@@ -295,7 +281,8 @@ func buildToolSummarySection(tools []agent.ToolDefinition) string {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
 	for _, t := range sorted {
-		desc := strings.TrimSpace(t.Description)
+		name := agent.SanitizePromptLiteral(strings.TrimSpace(t.Name))
+		desc := agent.SanitizePromptLiteral(strings.TrimSpace(t.Description))
 		if desc != "" {
 			// Use just the first sentence for the summary line.
 			if idx := strings.Index(desc, ". "); idx > 0 && idx < 120 {
@@ -304,9 +291,9 @@ func buildToolSummarySection(tools []agent.ToolDefinition) string {
 			if len(desc) > 120 {
 				desc = desc[:117] + "..."
 			}
-			lines = append(lines, fmt.Sprintf("- %s: %s", t.Name, desc))
+			lines = append(lines, fmt.Sprintf("- %s: %s", name, desc))
 		} else {
-			lines = append(lines, fmt.Sprintf("- %s", t.Name))
+			lines = append(lines, fmt.Sprintf("- %s", name))
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -346,10 +333,10 @@ func buildTTSSection(cfg state.ConfigDoc) string {
 	lines = append(lines, "## Voice (TTS)")
 	lines = append(lines, "Text-to-speech is enabled.")
 	if cfg.TTS.Provider != "" {
-		lines = append(lines, fmt.Sprintf("Provider: %s", cfg.TTS.Provider))
+		lines = append(lines, fmt.Sprintf("Provider: %s", agent.SanitizePromptLiteral(cfg.TTS.Provider)))
 	}
 	if cfg.TTS.Voice != "" {
-		lines = append(lines, fmt.Sprintf("Voice: %s", cfg.TTS.Voice))
+		lines = append(lines, fmt.Sprintf("Voice: %s", agent.SanitizePromptLiteral(cfg.TTS.Voice)))
 	}
 	lines = append(lines, "When replying to a voice message, keep responses natural and conversational.")
 	return strings.Join(lines, "\n")
@@ -376,6 +363,7 @@ func buildReactionSection(cfg state.ConfigDoc, channel string) string {
 	if channel == "" {
 		channel = "nostr"
 	}
+	channel = agent.SanitizePromptLiteral(channel)
 
 	var lines []string
 	lines = append(lines, "## Reactions")
@@ -416,7 +404,7 @@ func buildSandboxSection(cfg state.ConfigDoc) string {
 	lines = append(lines, "You are running in a sandboxed runtime (exec commands run in an isolated environment).")
 	lines = append(lines, "Some tools may be unavailable due to sandbox policy.")
 	if ws, ok := sandboxMap["workspace_dir"].(string); ok && ws != "" {
-		lines = append(lines, fmt.Sprintf("Sandbox workspace: %s", ws))
+		lines = append(lines, fmt.Sprintf("Sandbox workspace: %s", agent.SanitizePromptLiteral(ws)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -446,31 +434,26 @@ func buildDocsSection(workspaceDir string) string {
 	}
 	for _, d := range candidates {
 		if info, err := os.Stat(d); err == nil && info.IsDir() {
-			return fmt.Sprintf("## Documentation\nMetiq docs: %s\nFor metiq behavior, commands, config, or architecture: consult local docs first.", d)
+			return fmt.Sprintf("## Documentation\nMetiq docs: %s\nFor metiq behavior, commands, config, or architecture: consult local docs first.", agent.SanitizePromptLiteral(d))
 		}
 	}
 	return ""
 }
 
-func buildBootstrapWarningSection(workspaceDir string) string {
-	// Check if any bootstrap files were large enough to warrant a truncation
-	// warning.  We warn if any single file exceeds 50 KB.
-	const warnThreshold = 50 * 1024
-	bootstrapFiles := []string{"BOOTSTRAP.md", "SOUL.md", "IDENTITY.md", "USER.md", "AGENTS.md"}
-	var warnings []string
-	for _, fname := range bootstrapFiles {
-		fpath := filepath.Join(workspaceDir, fname)
-		info, err := os.Stat(fpath)
-		if err != nil {
-			continue
-		}
-		if info.Size() > warnThreshold {
-			warnings = append(warnings, fmt.Sprintf("- %s is large (%d KB); consider trimming to improve cache efficiency",
-				fname, info.Size()/1024))
-		}
-	}
+func buildBootstrapWarningSection(warnings []string) string {
 	if len(warnings) == 0 {
 		return ""
 	}
-	return "⚠ Bootstrap truncation warning:\n" + strings.Join(warnings, "\n")
+	lines := []string{"⚠ Bootstrap prompt warnings:"}
+	for _, warning := range warnings {
+		warning = strings.TrimSpace(agent.SanitizePromptLiteral(warning))
+		if warning == "" {
+			continue
+		}
+		lines = append(lines, "- "+warning)
+	}
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
 }
