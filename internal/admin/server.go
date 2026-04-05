@@ -21,6 +21,7 @@ import (
 	"metiq/internal/extensions/msteams"
 	"metiq/internal/extensions/nextcloud"
 	"metiq/internal/extensions/synology"
+	"metiq/internal/extensions/telegram"
 	"metiq/internal/extensions/zalo"
 	"metiq/internal/gateway/methods"
 	mcppkg "metiq/internal/mcp"
@@ -236,6 +237,14 @@ func Start(ctx context.Context, opts ServerOptions) error {
 			return
 		}
 		feishu.HandleWebhook(channelID, w, r)
+	})
+	mux.HandleFunc("/webhooks/telegram/", func(w http.ResponseWriter, r *http.Request) {
+		channelID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webhooks/telegram/"))
+		if channelID == "" {
+			http.Error(w, "missing channel id", http.StatusBadRequest)
+			return
+		}
+		telegram.HandleWebhook(channelID, w, r)
 	})
 	mux.HandleFunc("/webhooks/zalo/", func(w http.ResponseWriter, r *http.Request) {
 		channelID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webhooks/zalo/"))

@@ -11,6 +11,9 @@
 //	  "allowed_users": [123456789]            // optional: restrict by Telegram user ID
 //	}
 //
+// Inbound webhook endpoint: <admin_addr>/webhooks/telegram/<channel_id>
+// When config.webhook_url is set, point it at that admin endpoint.
+//
 // To add a Telegram channel to your metiq config:
 //
 //	"nostr_channels": {
@@ -24,6 +27,9 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,6 +48,10 @@ func init() {
 	channels.RegisterChannelPlugin(&TelegramPlugin{})
 }
 
+var newTelegramHTTPClient = func(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout}
+}
+
 // TelegramPlugin is the factory for Telegram Bot channel instances.
 type TelegramPlugin struct{}
 
@@ -58,7 +68,7 @@ func (t *TelegramPlugin) ConfigSchema() map[string]any {
 			},
 			"webhook_url": map[string]any{
 				"type":        "string",
-				"description": "Optional: HTTPS webhook URL. If absent, long-polling is used.",
+				"description": "Optional: HTTPS webhook URL to register with Telegram (typically <admin_addr>/webhooks/telegram/<channel_id>). If absent, long-polling is used.",
 			},
 			"allowed_users": map[string]any{
 				"type":        "array",
@@ -113,6 +123,8 @@ func (t *TelegramPlugin) Connect(
 	if token == "" {
 		return nil, fmt.Errorf("telegram channel %q: config.token is required", channelID)
 	}
+	webhookURL, _ := cfg["webhook_url"].(string)
+	webhookURL = strings.TrimSpace(webhookURL)
 
 	var allowedUsers []int64
 	if users, ok := cfg["allowed_users"].([]any); ok {
@@ -124,30 +136,99 @@ func (t *TelegramPlugin) Connect(
 	}
 
 	bot := &telegramBot{
-		channelID:    channelID,
-		token:        token,
-		allowedUsers: allowedUsers,
-		onMessage:    onMessage,
-		done:         make(chan struct{}),
+		channelID:     channelID,
+		token:         token,
+		allowedUsers:  allowedUsers,
+		onMessage:     onMessage,
+		done:          make(chan struct{}),
+		webhookURL:    webhookURL,
+		webhookSecret: deriveTelegramWebhookSecret(token, channelID),
 	}
 
+	if webhookURL != "" {
+		registerWebhook(channelID, bot)
+		if err := bot.configureWebhook(ctx); err != nil {
+			webhookMu.Lock()
+			delete(webhookHandlers, channelID)
+			webhookMu.Unlock()
+			return nil, fmt.Errorf("telegram channel %q: configure webhook: %w", channelID, err)
+		}
+		log.Printf("telegram: webhook registered for channel %s", channelID)
+		return bot, nil
+	}
+
+	if err := bot.deleteWebhook(ctx); err != nil {
+		log.Printf("telegram: failed clearing webhook before polling channel=%s: %v", channelID, err)
+	}
 	go bot.poll(ctx)
 	log.Printf("telegram: polling started for channel %s", channelID)
 	return bot, nil
 }
 
+type telegramUpdate struct {
+	UpdateID int64            `json:"update_id"`
+	Message  *telegramMessage `json:"message"`
+}
+
+type telegramMessage struct {
+	MessageID       int64  `json:"message_id"`
+	MessageThreadID int64  `json:"message_thread_id,omitempty"`
+	Text            string `json:"text"`
+	Date            int64  `json:"date"`
+	ReplyToMessage  *struct {
+		MessageID int64 `json:"message_id"`
+	} `json:"reply_to_message,omitempty"`
+	From *struct {
+		ID       int64  `json:"id"`
+		Username string `json:"username"`
+	} `json:"from"`
+	Chat *struct {
+		ID int64 `json:"id"`
+	} `json:"chat"`
+}
+
+var (
+	webhookMu       sync.RWMutex
+	webhookHandlers = map[string]*telegramBot{}
+)
+
+func registerWebhook(channelID string, bot *telegramBot) {
+	webhookMu.Lock()
+	webhookHandlers[channelID] = bot
+	webhookMu.Unlock()
+}
+
+// HandleWebhook dispatches an inbound Telegram webhook update to the registered bot.
+func HandleWebhook(channelID string, w http.ResponseWriter, r *http.Request) {
+	webhookMu.RLock()
+	bot, ok := webhookHandlers[channelID]
+	webhookMu.RUnlock()
+	if !ok {
+		http.Error(w, "unknown channel", http.StatusNotFound)
+		return
+	}
+	bot.handlePush(w, r)
+}
+
+func deriveTelegramWebhookSecret(token, channelID string) string {
+	sum := sha256.Sum256([]byte(token + "\x00" + channelID))
+	return hex.EncodeToString(sum[:16])
+}
+
 // ─── Bot implementation ───────────────────────────────────────────────────────
 
 type telegramBot struct {
-	mu           sync.Mutex
-	channelID    string
-	token        string
-	allowedUsers []int64
-	onMessage    func(sdk.InboundChannelMessage)
-	lastUpdateID int64
-	lastChatID   string
-	done         chan struct{}
-	httpClient   *http.Client
+	mu            sync.Mutex
+	channelID     string
+	token         string
+	allowedUsers  []int64
+	onMessage     func(sdk.InboundChannelMessage)
+	lastUpdateID  int64
+	lastChatID    string
+	done          chan struct{}
+	httpClient    *http.Client
+	webhookURL    string
+	webhookSecret string
 }
 
 func (b *telegramBot) ID() string { return b.channelID }
@@ -156,7 +237,7 @@ func (b *telegramBot) client(timeout time.Duration) *http.Client {
 	if b.httpClient != nil {
 		return b.httpClient
 	}
-	return &http.Client{Timeout: timeout}
+	return newTelegramHTTPClient(timeout)
 }
 
 func (b *telegramBot) Send(ctx context.Context, text string) error {
@@ -172,7 +253,172 @@ func (b *telegramBot) Send(ctx context.Context, text string) error {
 }
 
 func (b *telegramBot) Close() {
-	close(b.done)
+	select {
+	case <-b.done:
+	default:
+		close(b.done)
+	}
+	if strings.TrimSpace(b.webhookURL) != "" {
+		webhookMu.Lock()
+		delete(webhookHandlers, b.channelID)
+		webhookMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = b.deleteWebhook(ctx)
+	}
+}
+
+func (b *telegramBot) configureWebhook(ctx context.Context) error {
+	if strings.TrimSpace(b.webhookURL) == "" {
+		return nil
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"url":          b.webhookURL,
+		"secret_token": b.webhookSecret,
+	})
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/setWebhook", b.token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.client(15 * time.Second).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("telegram setWebhook: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description,omitempty"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&result); err != nil {
+		return fmt.Errorf("telegram setWebhook: decode response: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("telegram setWebhook: %s", strings.TrimSpace(result.Description))
+	}
+	return nil
+}
+
+func (b *telegramBot) deleteWebhook(ctx context.Context) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook", b.token)
+	payload, _ := json.Marshal(map[string]any{"drop_pending_updates": false})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.client(15 * time.Second).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("telegram deleteWebhook: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description,omitempty"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&result); err != nil {
+		return fmt.Errorf("telegram deleteWebhook: decode response: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("telegram deleteWebhook: %s", strings.TrimSpace(result.Description))
+	}
+	return nil
+}
+
+func (b *telegramBot) handlePush(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if b.webhookSecret != "" {
+		provided := strings.TrimSpace(r.Header.Get("X-Telegram-Bot-Api-Secret-Token"))
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(b.webhookSecret)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	var update telegramUpdate
+	if err := json.Unmarshal(body, &update); err != nil {
+		http.Error(w, "parse body", http.StatusBadRequest)
+		return
+	}
+	b.processUpdate(update)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("{}"))
+}
+
+func (b *telegramBot) processUpdate(update telegramUpdate) {
+	if update.UpdateID > 0 {
+		b.mu.Lock()
+		if update.UpdateID > b.lastUpdateID {
+			b.lastUpdateID = update.UpdateID
+		}
+		b.mu.Unlock()
+	}
+
+	msg := update.Message
+	if msg == nil || msg.Text == "" {
+		return
+	}
+
+	if len(b.allowedUsers) > 0 && msg.From != nil {
+		allowed := false
+		for _, uid := range b.allowedUsers {
+			if msg.From.ID == uid {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return
+		}
+	}
+
+	senderID := ""
+	chatIDStr := ""
+	if msg.From != nil {
+		senderID = fmt.Sprintf("%d", msg.From.ID)
+	}
+	if msg.Chat != nil {
+		chatIDStr = fmt.Sprintf("%d", msg.Chat.ID)
+		b.mu.Lock()
+		b.lastChatID = chatIDStr
+		b.mu.Unlock()
+	}
+
+	threadID := ""
+	replyToEventID := ""
+	if msg.ReplyToMessage != nil && msg.ReplyToMessage.MessageID > 0 {
+		replyToEventID = fmt.Sprintf("tg-%d", msg.ReplyToMessage.MessageID)
+	}
+	if msg.MessageThreadID > 0 {
+		threadID = fmt.Sprintf("%d", msg.MessageThreadID)
+	}
+
+	b.onMessage(sdk.InboundChannelMessage{
+		ChannelID:      b.channelID,
+		SenderID:       senderID,
+		Text:           msg.Text,
+		EventID:        fmt.Sprintf("tg-%d", msg.MessageID),
+		CreatedAt:      msg.Date,
+		ThreadID:       threadID,
+		ReplyToEventID: replyToEventID,
+	})
 }
 
 // ─── TypingHandle ─────────────────────────────────────────────────────────────
@@ -314,26 +560,8 @@ func (b *telegramBot) fetchUpdates(ctx context.Context) {
 	}
 
 	var result struct {
-		OK     bool `json:"ok"`
-		Result []struct {
-			UpdateID int64 `json:"update_id"`
-			Message  *struct {
-				MessageID       int64  `json:"message_id"`
-				MessageThreadID int64  `json:"message_thread_id,omitempty"`
-				Text            string `json:"text"`
-				Date            int64  `json:"date"`
-				ReplyToMessage  *struct {
-					MessageID int64 `json:"message_id"`
-				} `json:"reply_to_message,omitempty"`
-				From *struct {
-					ID       int64  `json:"id"`
-					Username string `json:"username"`
-				} `json:"from"`
-				Chat *struct {
-					ID int64 `json:"id"`
-				} `json:"chat"`
-			} `json:"message"`
-		} `json:"result"`
+		OK     bool             `json:"ok"`
+		Result []telegramUpdate `json:"result"`
 	}
 
 	if err := json.Unmarshal(raw, &result); err != nil || !result.OK {
@@ -341,63 +569,7 @@ func (b *telegramBot) fetchUpdates(ctx context.Context) {
 	}
 
 	for _, update := range result.Result {
-		if update.UpdateID >= offset {
-			b.mu.Lock()
-			if update.UpdateID > b.lastUpdateID {
-				b.lastUpdateID = update.UpdateID
-			}
-			b.mu.Unlock()
-		}
-
-		msg := update.Message
-		if msg == nil || msg.Text == "" {
-			continue
-		}
-
-		// Check allowed users.
-		if len(b.allowedUsers) > 0 && msg.From != nil {
-			allowed := false
-			for _, uid := range b.allowedUsers {
-				if msg.From.ID == uid {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				continue
-			}
-		}
-
-		senderID := ""
-		chatIDStr := ""
-		if msg.From != nil {
-			senderID = fmt.Sprintf("%d", msg.From.ID)
-		}
-		if msg.Chat != nil {
-			chatIDStr = fmt.Sprintf("%d", msg.Chat.ID)
-			b.mu.Lock()
-			b.lastChatID = chatIDStr
-			b.mu.Unlock()
-		}
-
-		threadID := ""
-		replyToEventID := ""
-		if msg.ReplyToMessage != nil && msg.ReplyToMessage.MessageID > 0 {
-			replyToEventID = fmt.Sprintf("tg-%d", msg.ReplyToMessage.MessageID)
-		}
-		if msg.MessageThreadID > 0 {
-			threadID = fmt.Sprintf("%d", msg.MessageThreadID)
-		}
-
-		b.onMessage(sdk.InboundChannelMessage{
-			ChannelID:      b.channelID,
-			SenderID:       senderID,
-			Text:           msg.Text,
-			EventID:        fmt.Sprintf("tg-%d", msg.MessageID),
-			CreatedAt:      msg.Date,
-			ThreadID:       threadID,
-			ReplyToEventID: replyToEventID,
-		})
+		b.processUpdate(update)
 	}
 }
 
