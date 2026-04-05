@@ -48,8 +48,10 @@ type ServerConfig struct {
 // Config defines configuration for all MCP servers.
 type Config struct {
 	Enabled         bool                            `json:"enabled"`
+	Policy          Policy                          `json:"policy,omitempty"`
 	Servers         map[string]ResolvedServerConfig `json:"servers,omitempty"`
 	DisabledServers map[string]ResolvedServerConfig `json:"disabled_servers,omitempty"`
+	FilteredServers map[string]FilteredServer       `json:"filtered_servers,omitempty"`
 	Suppressed      []SuppressedServer              `json:"suppressed,omitempty"`
 }
 

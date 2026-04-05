@@ -76,6 +76,11 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"mcp.servers.<id>.oauth.callback_host",
 			"mcp.servers.<id>.oauth.callback_port",
 			"mcp.servers.<id>.oauth.use_pkce",
+			"mcp.policy",
+			"mcp.policy.allowed",
+			"mcp.policy.denied",
+			"mcp.policy.require_remote_approval",
+			"mcp.policy.approved_servers",
 			// Typed agent section (multi-agent support)
 			"agents[].id",
 			"agents[].name",
@@ -235,6 +240,7 @@ func extensionSchemaEntries(cfg state.ConfigDoc) map[string]any {
 func mcpSchemaEntries(cfg state.ConfigDoc) map[string]any {
 	resolved := mcppkg.ResolveConfigDoc(cfg)
 	servers := make([]map[string]any, 0, len(resolved.Servers)+len(resolved.DisabledServers))
+	filtered := make([]map[string]any, 0, len(resolved.FilteredServers))
 	names := make([]string, 0, len(resolved.Servers)+len(resolved.DisabledServers))
 	for name := range resolved.Servers {
 		names = append(names, name)
@@ -260,6 +266,27 @@ func mcpSchemaEntries(cfg state.ConfigDoc) map[string]any {
 			"oauth":      server.OAuth != nil,
 		})
 	}
+	filteredNames := make([]string, 0, len(resolved.FilteredServers))
+	for name := range resolved.FilteredServers {
+		filteredNames = append(filteredNames, name)
+	}
+	sort.Strings(filteredNames)
+	for _, name := range filteredNames {
+		server := resolved.FilteredServers[name]
+		filtered = append(filtered, map[string]any{
+			"name":          server.Name,
+			"enabled":       server.Enabled,
+			"source":        server.Source,
+			"precedence":    server.Precedence,
+			"signature":     server.Signature,
+			"type":          server.Type,
+			"command":       server.Command,
+			"url":           server.URL,
+			"oauth":         server.OAuth != nil,
+			"policy_status": server.PolicyStatus,
+			"policy_reason": server.PolicyReason,
+		})
+	}
 	suppressed := make([]map[string]any, 0, len(resolved.Suppressed))
 	for _, server := range resolved.Suppressed {
 		suppressed = append(suppressed, map[string]any{
@@ -274,8 +301,42 @@ func mcpSchemaEntries(cfg state.ConfigDoc) map[string]any {
 	return map[string]any{
 		"enabled":    resolved.Enabled,
 		"servers":    servers,
+		"filtered":   filtered,
 		"suppressed": suppressed,
+		"policy": map[string]any{
+			"allowed":                 policyMatcherMaps(resolved.Policy.Allowed),
+			"allowed_defined":         resolved.Policy.AllowedDefined,
+			"denied":                  policyMatcherMaps(resolved.Policy.Denied),
+			"require_remote_approval": resolved.Policy.RequireRemoteApproval,
+			"approved_servers":        append([]string(nil), resolved.Policy.ApprovedServers...),
+		},
 	}
+}
+
+func policyMatcherMaps(matchers []mcppkg.PolicyMatcher) []map[string]any {
+	if len(matchers) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(matchers))
+	for _, matcher := range matchers {
+		entry := map[string]any{}
+		if matcher.Name != "" {
+			entry["name"] = matcher.Name
+		}
+		if len(matcher.Command) > 0 {
+			entry["command"] = append([]string(nil), matcher.Command...)
+		}
+		if matcher.URL != "" {
+			entry["url"] = matcher.URL
+		}
+		if len(entry) > 0 {
+			out = append(out, entry)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func extensionEntries(cfg state.ConfigDoc) map[string]map[string]any {
@@ -800,6 +861,39 @@ func applyMCPConfigSet(cfg state.ConfigDoc, key string, value any) (state.Config
 		rawMCP["enabled"] = b
 		return cleanupMCPConfig(cfg), true, nil
 	}
+	if len(segments) >= 2 && segments[1] == "policy" {
+		if len(segments) == 2 {
+			if value == nil {
+				delete(rawMCP, "policy")
+				return cleanupMCPConfig(cfg), true, nil
+			}
+			entry, err := normalizeMCPPolicyEntry(value)
+			if err != nil {
+				return cfg, true, fmt.Errorf("mcp.policy must be object with valid fields: %w", err)
+			}
+			if len(entry) == 0 {
+				delete(rawMCP, "policy")
+			} else {
+				rawMCP["policy"] = entry
+			}
+			return cleanupMCPConfig(cfg), true, nil
+		}
+		if len(segments) != 3 {
+			return cfg, true, fmt.Errorf("unsupported config key %q", key)
+		}
+		rawPolicy, _ := rawMCP["policy"].(map[string]any)
+		if rawPolicy == nil {
+			rawPolicy = map[string]any{}
+			rawMCP["policy"] = rawPolicy
+		}
+		if err := applyMCPPolicyField(rawPolicy, strings.TrimSpace(segments[2]), value); err != nil {
+			return cfg, true, err
+		}
+		if len(rawPolicy) == 0 {
+			delete(rawMCP, "policy")
+		}
+		return cleanupMCPConfig(cfg), true, nil
+	}
 	if len(segments) < 2 || segments[1] != "servers" {
 		return cfg, false, nil
 	}
@@ -905,6 +999,102 @@ func normalizeMCPServerEntry(serverID string, value any) (map[string]any, error)
 		}
 	}
 	return entry, nil
+}
+
+func normalizeMCPPolicyEntry(value any) (map[string]any, error) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("value must be object")
+	}
+	entry := map[string]any{}
+	for field, fieldValue := range raw {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if err := applyMCPPolicyField(entry, field, fieldValue); err != nil {
+			return nil, err
+		}
+	}
+	return entry, nil
+}
+
+func applyMCPPolicyField(entry map[string]any, field string, value any) error {
+	switch field {
+	case "allowed", "denied":
+		if value == nil {
+			delete(entry, field)
+			return nil
+		}
+		matchers, err := normalizeMCPPolicyMatchers(field, value)
+		if err != nil {
+			return err
+		}
+		entry[field] = matchers
+	case "require_remote_approval":
+		b, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("mcp.policy.require_remote_approval must be bool")
+		}
+		entry["require_remote_approval"] = b
+	case "approved_servers":
+		items, err := anyToTrimmedStringList(value)
+		if err != nil {
+			return fmt.Errorf("mcp.policy.approved_servers must be string array")
+		}
+		entry["approved_servers"] = items
+	default:
+		return fmt.Errorf("unsupported config key %q", "mcp.policy."+field)
+	}
+	return nil
+}
+
+func normalizeMCPPolicyMatchers(field string, value any) ([]map[string]any, error) {
+	raw, ok := value.([]any)
+	if !ok {
+		if direct, ok := value.([]map[string]any); ok {
+			raw = make([]any, 0, len(direct))
+			for _, item := range direct {
+				raw = append(raw, item)
+			}
+		} else {
+			return nil, fmt.Errorf("mcp.policy.%s must be array<object>", field)
+		}
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		matcher, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("mcp.policy.%s must be array<object>", field)
+		}
+		entry := map[string]any{}
+		if name, ok := matcher["name"].(string); ok {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				entry["name"] = name
+			}
+		}
+		if command, exists := matcher["command"]; exists {
+			items, err := anyToTrimmedStringList(command)
+			if err != nil {
+				return nil, fmt.Errorf("mcp.policy.%s.command must be string array", field)
+			}
+			if len(items) > 0 {
+				entry["command"] = items
+			}
+		}
+		if url, ok := matcher["url"].(string); ok {
+			url = strings.TrimSpace(url)
+			if url != "" {
+				entry["url"] = url
+			}
+		}
+		if len(entry) == 0 {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, nil
 }
 
 func applyMCPServerField(entry map[string]any, serverID, field string, value any) error {
@@ -1123,6 +1313,9 @@ func cleanupMCPConfig(cfg state.ConfigDoc) state.ConfigDoc {
 	}
 	if rawServers, ok := rawMCP["servers"].(map[string]any); ok && len(rawServers) == 0 {
 		delete(rawMCP, "servers")
+	}
+	if rawPolicy, ok := rawMCP["policy"].(map[string]any); ok && len(rawPolicy) == 0 {
+		delete(rawMCP, "policy")
 	}
 	if len(rawMCP) == 0 {
 		delete(cfg.Extra, "mcp")
