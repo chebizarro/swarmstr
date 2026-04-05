@@ -25,6 +25,7 @@ type GeminiChatProvider struct {
 
 // Chat implements ChatProvider.
 func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
+	messages = PrepareTranscriptMessages(messages, ResolveGeminiTranscriptPolicy(p.Model))
 	apiKey := strings.TrimSpace(p.APIKey)
 	if apiKey == "" {
 		for _, envKey := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"} {
@@ -46,6 +47,7 @@ func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, to
 	// Build contents and system instruction from LLMMessages.
 	var systemInstruction *geminiContent
 	contents := make([]geminiContent, 0, len(messages))
+	toolNamesByID := make(map[string]string)
 
 	for _, m := range messages {
 		switch m.Role {
@@ -70,6 +72,7 @@ func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, to
 			}
 			// Encode tool calls as functionCall parts.
 			for _, tc := range m.ToolCalls {
+				toolNamesByID[tc.ID] = tc.Name
 				gc.Parts = append(gc.Parts, geminiPart{
 					FunctionCall: &geminiFunctionCall{
 						Name: tc.Name,
@@ -82,13 +85,17 @@ func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, to
 			}
 
 		case "tool":
-			// Gemini expects function results in a special format.
+			// Gemini function responses key on function name rather than opaque tool IDs.
+			responseName := m.ToolCallID
+			if name := toolNamesByID[m.ToolCallID]; name != "" {
+				responseName = name
+			}
 			contents = append(contents, geminiContent{
 				Role: "function",
 				Parts: []geminiPart{
 					{
 						FunctionResponse: &geminiFunctionResponse{
-							Name: m.ToolCallID, // Gemini uses function name as the ID
+							Name: responseName,
 							Response: map[string]any{
 								"result": m.Content,
 							},

@@ -29,6 +29,7 @@ type OpenAIChatProviderChat struct {
 
 // Chat implements ChatProvider.
 func (p *OpenAIChatProviderChat) Chat(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
+	messages = PrepareTranscriptMessages(messages, ResolveOpenAITranscriptPolicy(p.Model, p.BaseURL))
 	model := strings.TrimSpace(p.Model)
 	if model == "" {
 		model = "gpt-4o"

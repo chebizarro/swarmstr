@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.:/-]+$`)
 
 const syntheticHistoryBootstrapText = "(session bootstrap)"
 
