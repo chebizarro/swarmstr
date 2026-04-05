@@ -346,19 +346,31 @@ type ConfigUpdatedPayload struct {
 
 // MCPLifecyclePayload is the payload for EventMCPLifecycle events.
 type MCPLifecyclePayload struct {
-	TS            int64           `json:"ts_ms"`
-	Name          string          `json:"name"`
-	State         string          `json:"state,omitempty"`
-	PreviousState string          `json:"previous_state,omitempty"`
-	Reason        string          `json:"reason,omitempty"`
-	Removed       bool            `json:"removed,omitempty"`
-	Enabled       bool            `json:"enabled,omitempty"`
-	Source        string          `json:"source,omitempty"`
-	Transport     string          `json:"transport,omitempty"`
-	URL           string          `json:"url,omitempty"`
-	ToolCount     int             `json:"tool_count,omitempty"`
-	LastError     string          `json:"last_error,omitempty"`
-	Capabilities  map[string]bool `json:"capabilities,omitempty"`
+	TS                int64           `json:"ts_ms"`
+	Name              string          `json:"name"`
+	State             string          `json:"state,omitempty"`
+	PreviousState     string          `json:"previous_state,omitempty"`
+	Reason            string          `json:"reason,omitempty"`
+	Removed           bool            `json:"removed,omitempty"`
+	Healthy           bool            `json:"healthy,omitempty"`
+	Enabled           bool            `json:"enabled,omitempty"`
+	RuntimePresent    bool            `json:"runtime_present,omitempty"`
+	Source            string          `json:"source,omitempty"`
+	Precedence        int             `json:"precedence,omitempty"`
+	Signature         string          `json:"signature,omitempty"`
+	Transport         string          `json:"transport,omitempty"`
+	Command           string          `json:"command,omitempty"`
+	URL               string          `json:"url,omitempty"`
+	ToolCount         int             `json:"tool_count,omitempty"`
+	LastError         string          `json:"last_error,omitempty"`
+	ReconnectAttempts int             `json:"reconnect_attempts,omitempty"`
+	LastAttemptAtMS   int64           `json:"last_attempt_at_ms,omitempty"`
+	LastConnectedAtMS int64           `json:"last_connected_at_ms,omitempty"`
+	LastFailedAtMS    int64           `json:"last_failed_at_ms,omitempty"`
+	UpdatedAtMS       int64           `json:"updated_at_ms,omitempty"`
+	PolicyStatus      string          `json:"policy_status,omitempty"`
+	PolicyReason      string          `json:"policy_reason,omitempty"`
+	Capabilities      map[string]bool `json:"capabilities,omitempty"`
 }
 
 // ExecApprovalRequestedPayload is the payload for EventExecApprovalRequested.
