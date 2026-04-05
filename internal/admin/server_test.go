@@ -1729,7 +1729,7 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		{method: methods.MethodTalkConfig, params: map[string]any{}},
 		{method: methods.MethodTalkMode, params: map[string]any{"mode": "voice"}},
 		{method: methods.MethodLastHeartbeat, params: map[string]any{}},
-		{method: methods.MethodWake, params: map[string]any{"source": "manual", "mode": "now"}},
+		{method: methods.MethodWake, params: map[string]any{"source": "manual", "mode": "now", "text": "wake now"}},
 		{method: methods.MethodSystemPresence, params: map[string]any{}},
 		{method: methods.MethodSystemEvent, params: map[string]any{"text": "Node: up"}},
 		{method: methods.MethodSend, params: map[string]any{"to": "0000000000000000000000000000000000000000000000000000000000000001", "message": "hello", "idempotencyKey": "idem-1"}},

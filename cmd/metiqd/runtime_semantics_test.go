@@ -125,6 +125,27 @@ func TestExecApprovalsTimeout(t *testing.T) {
 	}
 }
 
+func TestOperationsRegistryHeartbeatState(t *testing.T) {
+	reg := newOperationsRegistry()
+	enabled := true
+	status := reg.SetHeartbeats(&enabled, 30000)
+	if !status.Enabled || status.IntervalMS != 30000 {
+		t.Fatalf("unexpected heartbeat status after set: %#v", status)
+	}
+	status = reg.QueueHeartbeatWake("main", "control", "wake", "now")
+	if status.PendingWakes != 1 || status.LastWakeMS == 0 {
+		t.Fatalf("unexpected heartbeat wake status: %#v", status)
+	}
+	wakes := reg.ConsumeHeartbeatWakes()
+	if len(wakes) != 1 || wakes[0].AgentID != "main" || wakes[0].Source != "control" || wakes[0].Text != "wake" {
+		t.Fatalf("unexpected consumed wakes: %#v", wakes)
+	}
+	status = reg.MarkHeartbeatRun(1234)
+	if status.LastRunMS != 1234 || status.PendingWakes != 0 {
+		t.Fatalf("unexpected heartbeat status after run: %#v", status)
+	}
+}
+
 func TestTTSProviderValidation(t *testing.T) {
 	reg := newOperationsRegistry()
 

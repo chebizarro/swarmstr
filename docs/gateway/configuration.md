@@ -184,7 +184,7 @@ Notes:
 
 - `light_model` enables heuristic routing for simple inbound turns.
 - `light_model_threshold` must be between `0` and `1`; when omitted, metiq uses its default router threshold.
-- `heartbeat.model` is additive config for future LLM-backed heartbeat turns. Current heartbeat behavior is still presence-only via `extra.heartbeat`.
+- `heartbeat.model` selects the model used by the LLM heartbeat runner for that agent.
 
 ### Provider Config (`providers`)
 
@@ -220,14 +220,27 @@ Notes:
 }
 ```
 
-### Heartbeat (NIP-38 status, `extra.heartbeat`)
+### Heartbeat runner (`heartbeat`)
 
-The NIP-38 status heartbeat is configured under `extra.heartbeat`:
+The LLM heartbeat runner is configured at the top level:
+
+```json
+{
+  "heartbeat": {
+    "enabled": true,
+    "interval_ms": 1800000
+  }
+}
+```
+
+### Status publishing (`extra.status`, legacy `extra.heartbeat`)
+
+NIP-38 presence/status publishing is configured separately:
 
 ```json
 {
   "extra": {
-    "heartbeat": {
+    "status": {
       "enabled": true,
       "interval_seconds": 300,
       "content": "Available 🟢"
@@ -236,7 +249,7 @@ The NIP-38 status heartbeat is configured under `extra.heartbeat`:
 }
 ```
 
-See [Heartbeat](/gateway/heartbeat) for full details.
+See [Heartbeat](/gateway/heartbeat) for the semantics split and control surface.
 
 ### TTS (`tts`)
 

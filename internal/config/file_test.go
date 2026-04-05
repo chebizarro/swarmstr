@@ -44,3 +44,26 @@ func TestParseConfigBytesAgentHeartbeatModel(t *testing.T) {
 		t.Fatalf("expected agents[0].heartbeat.model=gpt-4o-mini, got %#v", doc.Agents[0].Heartbeat)
 	}
 }
+
+func TestParseConfigBytesOpenClawDefaultHeartbeatEvery(t *testing.T) {
+	doc, err := ParseConfigBytes([]byte(`{"agents":{"defaults":{"heartbeat":{"every":"2h"}}}}`), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	if !doc.Heartbeat.Enabled {
+		t.Fatalf("expected heartbeat to be enabled, got %#v", doc.Heartbeat)
+	}
+	if want := 2 * 60 * 60 * 1000; doc.Heartbeat.IntervalMS != want {
+		t.Fatalf("expected heartbeat interval %d, got %#v", want, doc.Heartbeat)
+	}
+}
+
+func TestParseConfigBytesTopLevelHeartbeatOverridesDefaults(t *testing.T) {
+	doc, err := ParseConfigBytes([]byte(`{"agents":{"defaults":{"heartbeat":{"every":"2h"}}},"heartbeat":{"enabled":true,"interval_ms":15000}}`), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	if !doc.Heartbeat.Enabled || doc.Heartbeat.IntervalMS != 15000 {
+		t.Fatalf("expected explicit top-level heartbeat override, got %#v", doc.Heartbeat)
+	}
+}
