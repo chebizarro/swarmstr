@@ -147,9 +147,17 @@ type telegramBot struct {
 	lastUpdateID int64
 	lastChatID   string
 	done         chan struct{}
+	httpClient   *http.Client
 }
 
 func (b *telegramBot) ID() string { return b.channelID }
+
+func (b *telegramBot) client(timeout time.Duration) *http.Client {
+	if b.httpClient != nil {
+		return b.httpClient
+	}
+	return &http.Client{Timeout: timeout}
+}
 
 func (b *telegramBot) Send(ctx context.Context, text string) error {
 	// When used as a reply-to-all bot, we need to track the last chat ID.
@@ -184,8 +192,7 @@ func (b *telegramBot) SendTyping(ctx context.Context, _ int) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	cl := &http.Client{Timeout: 10 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(10 * time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("telegram sendChatAction: %w", err)
 	}
@@ -220,8 +227,7 @@ func (b *telegramBot) EditMessage(ctx context.Context, eventID, newText string) 
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	cl := &http.Client{Timeout: 15 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(15 * time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("telegram editMessageText: %w", err)
 	}
@@ -259,8 +265,7 @@ func (b *telegramBot) SendInThread(ctx context.Context, threadID, text string) e
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	cl := &http.Client{Timeout: 15 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(15 * time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("telegram sendInThread: %w", err)
 	}
@@ -298,8 +303,7 @@ func (b *telegramBot) fetchUpdates(ctx context.Context) {
 		return
 	}
 
-	cl := &http.Client{Timeout: 10 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(10 * time.Second).Do(req)
 	if err != nil {
 		return
 	}
@@ -314,10 +318,14 @@ func (b *telegramBot) fetchUpdates(ctx context.Context) {
 		Result []struct {
 			UpdateID int64 `json:"update_id"`
 			Message  *struct {
-				MessageID int64  `json:"message_id"`
-				Text      string `json:"text"`
-				Date      int64  `json:"date"`
-				From      *struct {
+				MessageID       int64  `json:"message_id"`
+				MessageThreadID int64  `json:"message_thread_id,omitempty"`
+				Text            string `json:"text"`
+				Date            int64  `json:"date"`
+				ReplyToMessage  *struct {
+					MessageID int64 `json:"message_id"`
+				} `json:"reply_to_message,omitempty"`
+				From *struct {
 					ID       int64  `json:"id"`
 					Username string `json:"username"`
 				} `json:"from"`
@@ -372,12 +380,23 @@ func (b *telegramBot) fetchUpdates(ctx context.Context) {
 			b.mu.Unlock()
 		}
 
+		threadID := ""
+		replyToEventID := ""
+		if msg.ReplyToMessage != nil && msg.ReplyToMessage.MessageID > 0 {
+			replyToEventID = fmt.Sprintf("tg-%d", msg.ReplyToMessage.MessageID)
+		}
+		if msg.MessageThreadID > 0 {
+			threadID = fmt.Sprintf("%d", msg.MessageThreadID)
+		}
+
 		b.onMessage(sdk.InboundChannelMessage{
-			ChannelID: b.channelID,
-			SenderID:  senderID,
-			Text:      msg.Text,
-			EventID:   fmt.Sprintf("tg-%d", msg.MessageID),
-			CreatedAt: msg.Date,
+			ChannelID:      b.channelID,
+			SenderID:       senderID,
+			Text:           msg.Text,
+			EventID:        fmt.Sprintf("tg-%d", msg.MessageID),
+			CreatedAt:      msg.Date,
+			ThreadID:       threadID,
+			ReplyToEventID: replyToEventID,
 		})
 	}
 }
@@ -395,8 +414,7 @@ func sendTelegramMessage(ctx context.Context, token, chatID, text string) error 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	cl := &http.Client{Timeout: 15 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
 		return fmt.Errorf("telegram sendMessage: %w", err)
 	}

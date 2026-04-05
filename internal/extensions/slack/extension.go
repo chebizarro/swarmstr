@@ -153,11 +153,19 @@ type slackBot struct {
 	botUserID      string
 	onMessage      func(sdk.InboundChannelMessage)
 	// lastTS is the Slack message timestamp cursor (float string like "1234567890.123456").
-	lastTS string
-	done   chan struct{}
+	lastTS     string
+	done       chan struct{}
+	httpClient *http.Client
 }
 
 func (b *slackBot) ID() string { return b.channelID }
+
+func (b *slackBot) client(timeout time.Duration) *http.Client {
+	if b.httpClient != nil {
+		return b.httpClient
+	}
+	return &http.Client{Timeout: timeout}
+}
 
 func (b *slackBot) Send(ctx context.Context, text string) error {
 	_, err := postSlackMessage(ctx, b.token, b.slackChannelID, text)
@@ -228,8 +236,7 @@ func (b *slackBot) slackPost(ctx context.Context, apiURL string, body []byte) er
 	}
 	req.Header.Set("Authorization", "Bearer "+b.token)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	cl := &http.Client{Timeout: 15 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(15 * time.Second).Do(req)
 	if err != nil {
 		return err
 	}
@@ -285,8 +292,7 @@ func (b *slackBot) fetchMessages(ctx context.Context) {
 	}
 	req.Header.Set("Authorization", "Bearer "+b.token)
 
-	cl := &http.Client{Timeout: 10 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(10 * time.Second).Do(req)
 	if err != nil {
 		return
 	}
@@ -300,12 +306,13 @@ func (b *slackBot) fetchMessages(ctx context.Context) {
 		OK       bool   `json:"ok"`
 		Error    string `json:"error,omitempty"`
 		Messages []struct {
-			Type    string `json:"type"`
-			User    string `json:"user"`
-			BotID   string `json:"bot_id,omitempty"`
-			Text    string `json:"text"`
-			Ts      string `json:"ts"`
-			Subtype string `json:"subtype,omitempty"`
+			Type     string `json:"type"`
+			User     string `json:"user"`
+			BotID    string `json:"bot_id,omitempty"`
+			Text     string `json:"text"`
+			Ts       string `json:"ts"`
+			ThreadTS string `json:"thread_ts,omitempty"`
+			Subtype  string `json:"subtype,omitempty"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil || !result.OK {
@@ -340,11 +347,21 @@ func (b *slackBot) fetchMessages(ctx context.Context) {
 			continue
 		}
 
+		rawThreadID := strings.TrimSpace(msg.ThreadTS)
+		threadID := ""
+		replyToEventID := ""
+		if rawThreadID != "" && rawThreadID != msg.Ts {
+			threadID = rawThreadID
+			replyToEventID = "slack-" + rawThreadID
+		}
+
 		b.onMessage(sdk.InboundChannelMessage{
-			ChannelID: b.channelID,
-			SenderID:  msg.User,
-			Text:      msg.Text,
-			EventID:   "slack-" + msg.Ts,
+			ChannelID:      b.channelID,
+			SenderID:       msg.User,
+			Text:           msg.Text,
+			EventID:        "slack-" + msg.Ts,
+			ThreadID:       threadID,
+			ReplyToEventID: replyToEventID,
 		})
 	}
 }

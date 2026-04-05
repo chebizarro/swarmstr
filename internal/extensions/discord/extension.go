@@ -143,16 +143,72 @@ func (d *DiscordPlugin) Connect(
 const discordAPIBase = "https://discord.com/api/v10"
 
 type discordBot struct {
-	mu               sync.Mutex
-	channelID        string
-	token            string
-	discordChannelID string
-	onMessage        func(sdk.InboundChannelMessage)
-	lastMessageID    string
-	done             chan struct{}
+	mu                sync.Mutex
+	channelID         string
+	token             string
+	discordChannelID  string
+	onMessage         func(sdk.InboundChannelMessage)
+	lastMessageID     string
+	done              chan struct{}
+	httpClient        *http.Client
+	channelMetaLoaded bool
+	isThreadChannel   bool
 }
 
 func (b *discordBot) ID() string { return b.channelID }
+
+func (b *discordBot) client(timeout time.Duration) *http.Client {
+	if b.httpClient != nil {
+		return b.httpClient
+	}
+	return &http.Client{Timeout: timeout}
+}
+
+func isDiscordThreadType(kind int) bool {
+	switch kind {
+	case 10, 11, 12:
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *discordBot) ensureChannelMetadata(ctx context.Context) {
+	b.mu.Lock()
+	if b.channelMetaLoaded {
+		b.mu.Unlock()
+		return
+	}
+	b.mu.Unlock()
+
+	apiURL := fmt.Sprintf("%s/channels/%s", discordAPIBase, b.discordChannelID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", b.token)
+
+	resp, err := b.client(10 * time.Second).Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return
+	}
+
+	var channel struct {
+		Type int `json:"type"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&channel); err != nil {
+		return
+	}
+
+	b.mu.Lock()
+	b.channelMetaLoaded = true
+	b.isThreadChannel = isDiscordThreadType(channel.Type)
+	b.mu.Unlock()
+}
 
 func (b *discordBot) Send(ctx context.Context, text string) error {
 	return sendDiscordMessage(ctx, b.token, b.discordChannelID, text)
@@ -172,8 +228,7 @@ func (b *discordBot) SendTyping(ctx context.Context, _ int) error {
 		return err
 	}
 	req.Header.Set("Authorization", b.token)
-	cl := &http.Client{Timeout: 10 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(10 * time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("discord sendTyping: %w", err)
 	}
@@ -194,8 +249,7 @@ func (b *discordBot) AddReaction(ctx context.Context, eventID, emoji string) err
 		return err
 	}
 	req.Header.Set("Authorization", b.token)
-	cl := &http.Client{Timeout: 10 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(10 * time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("discord addReaction: %w", err)
 	}
@@ -217,8 +271,7 @@ func (b *discordBot) RemoveReaction(ctx context.Context, eventID, emoji string) 
 		return err
 	}
 	req.Header.Set("Authorization", b.token)
-	cl := &http.Client{Timeout: 10 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(10 * time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("discord removeReaction: %w", err)
 	}
@@ -244,8 +297,7 @@ func (b *discordBot) EditMessage(ctx context.Context, eventID, newText string) e
 	}
 	req.Header.Set("Authorization", b.token)
 	req.Header.Set("Content-Type", "application/json")
-	cl := &http.Client{Timeout: 15 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(15 * time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("discord editMessage: %w", err)
 	}
@@ -281,8 +333,11 @@ func (b *discordBot) poll(ctx context.Context) {
 }
 
 func (b *discordBot) fetchMessages(ctx context.Context) {
+	b.ensureChannelMetadata(ctx)
+
 	b.mu.Lock()
 	afterID := b.lastMessageID
+	isThreadChannel := b.isThreadChannel
 	b.mu.Unlock()
 
 	url := fmt.Sprintf("%s/channels/%s/messages?limit=10", discordAPIBase, b.discordChannelID)
@@ -296,8 +351,7 @@ func (b *discordBot) fetchMessages(ctx context.Context) {
 	}
 	req.Header.Set("Authorization", b.token)
 
-	cl := &http.Client{Timeout: 10 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := b.client(10 * time.Second).Do(req)
 	if err != nil {
 		return
 	}
@@ -308,10 +362,13 @@ func (b *discordBot) fetchMessages(ctx context.Context) {
 	}
 
 	var messages []struct {
-		ID        string `json:"id"`
-		Content   string `json:"content"`
-		Timestamp string `json:"timestamp"`
-		Author    *struct {
+		ID               string `json:"id"`
+		Content          string `json:"content"`
+		Timestamp        string `json:"timestamp"`
+		MessageReference *struct {
+			MessageID string `json:"message_id"`
+		} `json:"message_reference,omitempty"`
+		Author *struct {
 			ID       string `json:"id"`
 			Username string `json:"username"`
 			Bot      bool   `json:"bot"`
@@ -353,11 +410,22 @@ func (b *discordBot) fetchMessages(ctx context.Context) {
 			senderID = msg.Author.Username + "#" + msg.Author.ID
 		}
 
+		replyToEventID := ""
+		if msg.MessageReference != nil && strings.TrimSpace(msg.MessageReference.MessageID) != "" {
+			replyToEventID = "discord-" + strings.TrimSpace(msg.MessageReference.MessageID)
+		}
+		threadID := ""
+		if isThreadChannel {
+			threadID = b.discordChannelID
+		}
+
 		b.onMessage(sdk.InboundChannelMessage{
-			ChannelID: b.channelID,
-			SenderID:  senderID,
-			Text:      msg.Content,
-			EventID:   "discord-" + msg.ID,
+			ChannelID:      b.channelID,
+			SenderID:       senderID,
+			Text:           msg.Content,
+			EventID:        "discord-" + msg.ID,
+			ThreadID:       threadID,
+			ReplyToEventID: replyToEventID,
 		})
 	}
 }
