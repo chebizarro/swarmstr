@@ -98,6 +98,7 @@ func NewAnthropicChatProviderOAuth(initialToken string, tokenSource func() (stri
 // Chat implements ChatProvider. It converts LLMMessage to the Anthropic format,
 // makes a single API call, and converts the response back.
 func (p *AnthropicChatProvider) Chat(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
+	messages = PrepareTranscriptMessages(messages, ResolveAnthropicTranscriptPolicy(p.modelOrDefault()))
 	var system []anthropic.TextBlockParam
 	var anthropicMessages []anthropic.MessageParam
 

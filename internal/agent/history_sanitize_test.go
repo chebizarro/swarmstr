@@ -246,6 +246,26 @@ func TestSanitize_ToolResultsNotMerged(t *testing.T) {
 	}
 }
 
+func TestSanitize_PreservesDottedAndSlashedToolNames(t *testing.T) {
+	in := []ConversationMessage{{
+		Role: "assistant",
+		ToolCalls: []ToolCallRef{
+			{ID: "c1", Name: "memory.search", ArgsJSON: `{}`},
+			{ID: "c2", Name: "plugin/raw", ArgsJSON: `{}`},
+		},
+	}}
+	out, stats := SanitizeConversationHistory(in)
+	if stats.InvalidToolCallsDropped != 0 {
+		t.Fatalf("expected dotted/slashed tool names to survive, got stats %+v", stats)
+	}
+	if len(out) != 3 || len(out[0].ToolCalls) != 2 {
+		t.Fatalf("unexpected sanitized output: %+v", out)
+	}
+	if out[0].ToolCalls[0].Name != "memory.search" || out[0].ToolCalls[1].Name != "plugin/raw" {
+		t.Fatalf("expected dotted/slashed tool names to survive, got %+v", out[0].ToolCalls)
+	}
+}
+
 func TestSanitize_InvalidToolCallsDropped(t *testing.T) {
 	in := []ConversationMessage{{
 		Role: "assistant",

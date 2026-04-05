@@ -51,8 +51,8 @@ func (p *CopilotCLIChatProvider) ensureSession(ctx context.Context) error {
 	}
 
 	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
-		Model: model,
-		Hooks: &copilot.SessionHooks{},
+		Model:               model,
+		Hooks:               &copilot.SessionHooks{},
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 	})
 	if err != nil {
@@ -67,6 +67,7 @@ func (p *CopilotCLIChatProvider) ensureSession(ctx context.Context) error {
 
 // Chat implements ChatProvider.
 func (p *CopilotCLIChatProvider) Chat(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
+	messages = PrepareTranscriptMessages(messages, ResolveCopilotCLITranscriptPolicy(p.Model))
 	if err := p.ensureSession(ctx); err != nil {
 		return nil, err
 	}
@@ -75,12 +76,14 @@ func (p *CopilotCLIChatProvider) Chat(ctx context.Context, messages []LLMMessage
 	// The Copilot CLI SDK takes a single prompt string; we serialise
 	// the conversation as JSON so the model receives full context.
 	type promptMsg struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
+		Role       string     `json:"role"`
+		Content    string     `json:"content"`
+		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+		ToolCallID string     `json:"tool_call_id,omitempty"`
 	}
 	out := make([]promptMsg, 0, len(messages))
 	for _, m := range messages {
-		out = append(out, promptMsg{Role: m.Role, Content: m.Content})
+		out = append(out, promptMsg{Role: m.Role, Content: m.Content, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID})
 	}
 	prompt, err := json.Marshal(out)
 	if err != nil {

@@ -14,19 +14,19 @@ func TestGeminiChatProvider_NoToolCalls(t *testing.T) {
 			Candidates: []struct {
 				Content struct {
 					Parts []struct {
-						Text         string             `json:"text,omitempty"`
+						Text         string              `json:"text,omitempty"`
 						FunctionCall *geminiFunctionCall `json:"functionCall,omitempty"`
 					} `json:"parts"`
 				} `json:"content"`
 			}{
 				{Content: struct {
 					Parts []struct {
-						Text         string             `json:"text,omitempty"`
+						Text         string              `json:"text,omitempty"`
 						FunctionCall *geminiFunctionCall `json:"functionCall,omitempty"`
 					} `json:"parts"`
 				}{
 					Parts: []struct {
-						Text         string             `json:"text,omitempty"`
+						Text         string              `json:"text,omitempty"`
 						FunctionCall *geminiFunctionCall `json:"functionCall,omitempty"`
 					}{
 						{Text: "Hello from Gemini!"},
@@ -75,6 +75,34 @@ func TestGeminiChatProvider_ToolCallConversion(t *testing.T) {
 	}
 	if msgs[3].Role != "tool" || msgs[3].ToolCallID != "search" {
 		t.Errorf("expected tool result with ID 'search'")
+	}
+}
+
+func TestGeminiChatProvider_UsesFunctionNamesForHistoricalToolResults(t *testing.T) {
+	var captured geminiRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"done"}]}}]}`))
+	}))
+	defer srv.Close()
+
+	p := &GeminiChatProvider{
+		APIKey: "test-key",
+		Model:  "gemini-2.0-flash",
+		Client: newRewriteClient(srv.Client(), "https://generativelanguage.googleapis.com", srv.URL),
+	}
+	_, err := p.Chat(context.Background(), []LLMMessage{
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "tool:1", Name: "search", Args: map[string]any{"q": "cats"}}}},
+		{Role: "tool", ToolCallID: "tool:1", Content: "Found cats"},
+	}, nil, ChatOptions{})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got := captured.Contents[1].Parts[0].FunctionResponse.Name; got != "search" {
+		t.Fatalf("expected function response name to use tool name, got %q", got)
 	}
 }
 
