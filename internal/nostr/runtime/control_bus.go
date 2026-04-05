@@ -42,16 +42,26 @@ type ControlRPCBusOptions struct {
 	SinceUnix         int64
 	MaxRequestAge     time.Duration
 	MinCallerInterval time.Duration
+	CachedLookup      func(callerPubKey, requestID string) (ControlRPCCachedResponse, bool)
 	OnRequest         func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
-	OnHandled         func(context.Context, string, int64)
+	OnHandled         func(context.Context, ControlRPCHandled)
 	OnError           func(error)
 	SeenCap           int
 	ResponseCap       int
 }
 
-type controlCachedResponse struct {
+type ControlRPCCachedResponse struct {
 	Payload string
 	Tags    nostr.Tags
+}
+
+type ControlRPCHandled struct {
+	EventID      string
+	EventUnix    int64
+	CallerPubKey string
+	RequestID    string
+	Method       string
+	Response     ControlRPCCachedResponse
 }
 
 type codedDataError interface {
@@ -66,27 +76,28 @@ type controlRPCError struct {
 }
 
 type ControlRPCBus struct {
-	pool        *nostr.Pool
-	hub         *NostrHub
-	ownsPool    bool
-	relays      []string
-	relaysMu    sync.RWMutex
-	keyer       nostr.Keyer
-	public      nostr.PubKey
-	onReq       func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
-	onHandled   func(context.Context, string, int64)
-	onError     func(error)
-	maxReqAge   time.Duration
-	responseCap int
-	health      *RelayHealthTracker
-	subHealth   *SubHealthTracker
+	pool         *nostr.Pool
+	hub          *NostrHub
+	ownsPool     bool
+	relays       []string
+	relaysMu     sync.RWMutex
+	keyer        nostr.Keyer
+	public       nostr.PubKey
+	cachedLookup func(callerPubKey, requestID string) (ControlRPCCachedResponse, bool)
+	onReq        func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
+	onHandled    func(context.Context, ControlRPCHandled)
+	onError      func(error)
+	maxReqAge    time.Duration
+	responseCap  int
+	health       *RelayHealthTracker
+	subHealth    *SubHealthTracker
 
 	seenMu    sync.Mutex
 	seenSet   map[string]struct{}
 	seenList  []string
 	seenCap   int
 	cacheMu   sync.Mutex
-	respCache map[string]controlCachedResponse
+	respCache map[string]ControlRPCCachedResponse
 	respList  []string
 
 	rebindCh chan struct{}
@@ -142,6 +153,7 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 		relays:            initialRelays,
 		keyer:             ks,
 		public:            public,
+		cachedLookup:      opts.CachedLookup,
 		onReq:             opts.OnRequest,
 		onHandled:         opts.OnHandled,
 		onError:           opts.OnError,
@@ -150,7 +162,7 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 		health:            health,
 		seenSet:           map[string]struct{}{},
 		seenCap:           max(opts.SeenCap, 10_000),
-		respCache:         map[string]controlCachedResponse{},
+		respCache:         map[string]ControlRPCCachedResponse{},
 		callerLastRequest: map[string]time.Time{},
 		callerCap:         10_000,
 		minCallerInterval: opts.MinCallerInterval,
@@ -196,7 +208,18 @@ func (b *ControlRPCBus) runSubscription(since int64) bool {
 	if b.hub != nil {
 		return b.runHubSubscription(filter)
 	}
-	stream := b.pool.SubscribeMany(b.ctx, b.currentRelays(), filter, nostr.SubscriptionOptions{})
+	relays := b.currentRelays()
+	if len(relays) == 0 {
+		select {
+		case <-b.ctx.Done():
+			return true
+		case <-b.rebindCh:
+			return true
+		case <-time.After(500 * time.Millisecond):
+			return false
+		}
+	}
+	stream := b.pool.SubscribeMany(b.ctx, relays, filter, nostr.SubscriptionOptions{})
 	for {
 		select {
 		case <-b.ctx.Done():
@@ -223,9 +246,6 @@ func (b *ControlRPCBus) Close() {
 
 func (b *ControlRPCBus) SetRelays(relays []string) error {
 	next := sanitizeRelayList(relays)
-	if len(next) == 0 {
-		return fmt.Errorf("at least one relay is required")
-	}
 	b.relaysMu.Lock()
 	b.relays = next
 	b.relaysMu.Unlock()
@@ -258,15 +278,16 @@ func (b *ControlRPCBus) emitErr(err error) {
 }
 
 func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
-	if re.Relay == nil {
-		return
+	relayURL := ""
+	if re.Relay != nil {
+		relayURL = strings.TrimSpace(re.Relay.URL)
 	}
 	evt := re.Event
 	if evt.Kind != nostr.Kind(events.KindControl) {
 		return
 	}
-	if b.health != nil {
-		b.health.RecordSuccess(re.Relay.URL)
+	if relayURL != "" && b.health != nil {
+		b.health.RecordSuccess(relayURL)
 	}
 	if b.subHealth != nil {
 		b.subHealth.RecordEvent()
@@ -275,7 +296,7 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		return
 	}
 	if !evt.CheckID() || !evt.VerifySignature() {
-		b.emitErr(fmt.Errorf("rejected invalid control event relay=%s", re.Relay.URL))
+		b.emitErr(fmt.Errorf("rejected invalid control event relay=%s", relayURL))
 		return
 	}
 	if !evt.Tags.ContainsAny("p", []string{b.public.Hex()}) {
@@ -293,23 +314,8 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	if b.markSeen(eventID) {
 		return
 	}
-	if !b.allowCaller(evt.PubKey.Hex(), time.Now()) {
-		b.respondErrorCode(re, "control request rate limited", requestID, -32029, nil)
-		return
-	}
-	nowUnix := time.Now().Unix()
-	if b.maxReqAge > 0 {
-		threshold := time.Now().Add(-b.maxReqAge).Unix()
-		if int64(evt.CreatedAt) < threshold {
-			b.respondError(re, "control request expired", requestID)
-			return
-		}
-	}
-	const maxFutureSkewSeconds = 30
-	if int64(evt.CreatedAt) > nowUnix+maxFutureSkewSeconds {
-		b.respondError(re, "control request from the future", requestID)
-		return
-	}
+	callerPubKey := evt.PubKey.Hex()
+	cacheKey := fmt.Sprintf("%s:%s", callerPubKey, requestID)
 
 	call, err := decodeControlCallRequest(evt.Content)
 	if err != nil {
@@ -321,9 +327,29 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		b.respondError(re, "missing method", requestID)
 		return
 	}
-	cacheKey := fmt.Sprintf("%s:%s", evt.PubKey.Hex(), requestID)
-	if cached, ok := b.getCachedResponse(cacheKey); ok {
-		b.publishResponse(re, requestID, cached.Payload, withETag(cached.Tags, eventID))
+	if shouldCacheControlMethod(call.Method) {
+		if cached, ok := b.lookupCachedResponse(cacheKey, callerPubKey, requestID); ok {
+			b.publishResponse(re, callerPubKey, requestID, cached.Payload, withETag(cached.Tags, eventID))
+			return
+		}
+	}
+
+	now := time.Now()
+	if !b.allowCaller(callerPubKey, now) {
+		b.respondErrorCode(re, "control request rate limited", requestID, -32029, nil)
+		return
+	}
+	nowUnix := now.Unix()
+	if b.maxReqAge > 0 {
+		threshold := now.Add(-b.maxReqAge).Unix()
+		if int64(evt.CreatedAt) < threshold {
+			b.respondError(re, "control request expired", requestID)
+			return
+		}
+	}
+	const maxFutureSkewSeconds = 30
+	if int64(evt.CreatedAt) > nowUnix+maxFutureSkewSeconds {
+		b.respondError(re, "control request from the future", requestID)
 		return
 	}
 
@@ -332,8 +358,8 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		out, err := b.onReq(b.ctx, ControlRPCInbound{
 			EventID:    eventID,
 			RequestID:  requestID,
-			FromPubKey: evt.PubKey.Hex(),
-			RelayURL:   re.Relay.URL,
+			FromPubKey: callerPubKey,
+			RelayURL:   relayURL,
 			Method:     call.Method,
 			Params:     call.Params,
 			CreatedAt:  int64(evt.CreatedAt),
@@ -360,10 +386,13 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		payloadRaw = []byte(`{"error":"internal error: invalid result payload"}`)
 		tags := nostr.Tags{{"e", eventID}, {"p", evt.PubKey.Hex()}, {"req", requestID}, {"status", "error"}, {"t", "control_rpc"}}
 		payload := string(payloadRaw)
-		b.setCachedResponse(cacheKey, controlCachedResponse{Payload: payload, Tags: tags})
-		b.publishResponse(re, requestID, payload, tags)
+		cached := ControlRPCCachedResponse{Payload: payload, Tags: tags}
+		if shouldCacheControlMethod(call.Method) {
+			b.setCachedResponse(cacheKey, cached)
+		}
+		b.publishResponse(re, evt.PubKey.Hex(), requestID, payload, tags)
 		if b.onHandled != nil {
-			b.onHandled(b.ctx, eventID, int64(evt.CreatedAt))
+			b.onHandled(b.ctx, ControlRPCHandled{EventID: eventID, EventUnix: int64(evt.CreatedAt), CallerPubKey: callerPubKey, RequestID: requestID, Method: call.Method, Response: cached})
 		}
 		return
 	}
@@ -375,27 +404,33 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		{"t", "control_rpc"},
 	}
 	payload := string(payloadRaw)
-	b.setCachedResponse(cacheKey, controlCachedResponse{Payload: payload, Tags: tags})
-	b.publishResponse(re, requestID, payload, tags)
+	cached := ControlRPCCachedResponse{Payload: payload, Tags: tags}
+	if shouldCacheControlMethod(call.Method) {
+		b.setCachedResponse(cacheKey, cached)
+	}
+	b.publishResponse(re, evt.PubKey.Hex(), requestID, payload, tags)
 	if b.onHandled != nil {
-		b.onHandled(b.ctx, eventID, int64(evt.CreatedAt))
+		b.onHandled(b.ctx, ControlRPCHandled{EventID: eventID, EventUnix: int64(evt.CreatedAt), CallerPubKey: callerPubKey, RequestID: requestID, Method: call.Method, Response: cached})
 	}
 }
 
-func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requestID string, payload string, tags nostr.Tags) {
+func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey string, requestID string, payload string, tags nostr.Tags) {
 	evt := nostr.Event{Kind: nostr.Kind(events.KindMCPResult), CreatedAt: nostr.Now(), Tags: tags, Content: payload}
 	if err := b.keyer.SignEvent(b.ctx, &evt); err != nil {
 		b.emitErr(fmt.Errorf("sign control response req=%s: %w", requestID, err))
 		return
 	}
 	maxAttempts := 3
-	preferredRelay := strings.TrimSpace(re.Relay.URL)
+	preferredRelay := ""
+	if re.Relay != nil {
+		preferredRelay = strings.TrimSpace(re.Relay.URL)
+	}
 	preferOnlyAttempts := 1
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		// On the first pass, try the request relay alone to maximize the chance
 		// the requester sees the response on the relay they used.
-		attemptRelays := b.responseRelayCandidates(preferredRelay, time.Now())
+		attemptRelays := b.responseRelayCandidates(preferredRelay, requesterPubKey, time.Now())
 		if preferredRelay != "" && attempt < preferOnlyAttempts {
 			attemptRelays = []string{preferredRelay}
 		}
@@ -499,7 +534,7 @@ func (b *ControlRPCBus) runHubSubscription(filter nostr.Filter) bool {
 					b.health.RecordFailure(relayURL)
 				}
 				if b.subHealth != nil {
-					b.subHealth.RecordClosed(reason)
+					b.subHealth.RecordClosed(relayURL, reason)
 				}
 				b.emitErr(fmt.Errorf("control subscription closed relay=%s reason=%s", relayURL, reason))
 				select {
@@ -631,7 +666,7 @@ func (b *ControlRPCBus) respondErrorCode(re nostr.RelayEvent, msg string, reques
 	}
 	tags := nostr.Tags{{"e", re.Event.ID.Hex()}, {"p", re.Event.PubKey.Hex()}, {"req", requestID}, {"status", "error"}, {"t", "control_rpc"}}
 	payloadRaw, _ := json.Marshal(map[string]any{"error": buildControlRPCError(msg, code, data)})
-	b.publishResponse(re, requestID, string(payloadRaw), tags)
+	b.publishResponse(re, re.Event.PubKey.Hex(), requestID, string(payloadRaw), tags)
 }
 
 func (b *ControlRPCBus) markSeen(id string) bool {
@@ -650,14 +685,29 @@ func (b *ControlRPCBus) markSeen(id string) bool {
 	return false
 }
 
-func (b *ControlRPCBus) getCachedResponse(key string) (controlCachedResponse, bool) {
+func (b *ControlRPCBus) lookupCachedResponse(cacheKey string, callerPubKey string, requestID string) (ControlRPCCachedResponse, bool) {
+	if cached, ok := b.getCachedResponse(cacheKey); ok {
+		return cached, true
+	}
+	if b.cachedLookup == nil {
+		return ControlRPCCachedResponse{}, false
+	}
+	cached, ok := b.cachedLookup(callerPubKey, requestID)
+	if !ok {
+		return ControlRPCCachedResponse{}, false
+	}
+	b.setCachedResponse(cacheKey, cached)
+	return cached, true
+}
+
+func (b *ControlRPCBus) getCachedResponse(key string) (ControlRPCCachedResponse, bool) {
 	b.cacheMu.Lock()
 	defer b.cacheMu.Unlock()
 	resp, ok := b.respCache[key]
 	return resp, ok
 }
 
-func (b *ControlRPCBus) setCachedResponse(key string, resp controlCachedResponse) {
+func (b *ControlRPCBus) setCachedResponse(key string, resp ControlRPCCachedResponse) {
 	b.cacheMu.Lock()
 	defer b.cacheMu.Unlock()
 	if _, exists := b.respCache[key]; !exists {
@@ -697,6 +747,10 @@ func firstTagValue(tags nostr.Tags, key string) string {
 		}
 	}
 	return ""
+}
+
+func shouldCacheControlMethod(method string) bool {
+	return strings.TrimSpace(method) != "secrets.resolve"
 }
 
 func buildControlRPCError(message string, code int, data map[string]any) controlRPCError {
@@ -752,29 +806,25 @@ func trimMethod(method string) string {
 	return string(bytes.TrimSpace([]byte(method)))
 }
 
-func (b *ControlRPCBus) responseRelayCandidates(preferred string, now time.Time) []string {
-	base := b.currentRelays()
-	if b.health != nil {
-		base = b.health.Candidates(base, now)
+func (b *ControlRPCBus) responseRelayCandidates(preferred string, requesterPubKey string, now time.Time) []string {
+	var selector *RelaySelector
+	if b.hub != nil {
+		selector = b.hub.Selector()
 	}
-	preferred = strings.TrimSpace(preferred)
-	if preferred == "" {
+	base := ControlResponseRelayCandidates(b.ctx, selector, b.pool, b.currentRelays(), b.public.Hex(), requesterPubKey, preferred)
+	if b.health == nil {
 		return base
 	}
-	out := make([]string, 0, len(base))
-	seen := map[string]struct{}{}
-	for _, relay := range append([]string{preferred}, base...) {
-		relay = strings.TrimSpace(relay)
-		if relay == "" {
-			continue
+	allowed := make([]string, 0, len(base))
+	for _, relay := range base {
+		if b.health.Allowed(relay, now) {
+			allowed = append(allowed, relay)
 		}
-		if _, ok := seen[relay]; ok {
-			continue
-		}
-		seen[relay] = struct{}{}
-		out = append(out, relay)
 	}
-	return out
+	if len(allowed) == 0 {
+		return base
+	}
+	return allowed
 }
 
 func (b *ControlRPCBus) currentRelays() []string {

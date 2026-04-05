@@ -8,19 +8,89 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	nostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/keyer"
+	"fiatjaf.com/nostr/nip44"
+
 	"metiq/internal/agent"
+	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/autoreply"
+	"metiq/internal/config"
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
+	mcppkg "metiq/internal/mcp"
 	"metiq/internal/nostr/events"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/nostr/secure"
 	"metiq/internal/store/state"
 )
+
+type mainTestKeyer struct {
+	keyer.KeySigner
+	sk nostr.SecretKey
+}
+
+func newMainTestKeyer(t *testing.T) nostr.Keyer {
+	t.Helper()
+	sk, err := nostr.SecretKeyFromHex("1111111111111111111111111111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("SecretKeyFromHex: %v", err)
+	}
+	return mainTestKeyer{KeySigner: keyer.NewPlainKeySigner([32]byte(sk)), sk: sk}
+}
+
+func (k mainTestKeyer) Encrypt(_ context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
+	ck, err := nip44.GenerateConversationKey(recipient, k.sk)
+	if err != nil {
+		return "", err
+	}
+	return nip44.Encrypt(plaintext, ck)
+}
+
+func (k mainTestKeyer) Decrypt(_ context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	ck, err := nip44.GenerateConversationKey(sender, k.sk)
+	if err != nil {
+		return "", err
+	}
+	return nip44.Decrypt(ciphertext, ck)
+}
+
+func TestEnsureRuntimeConfigDefaultsStorageEncryption(t *testing.T) {
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	cfg, err := ensureRuntimeConfig(context.Background(), docs, []string{"wss://relay.example"}, "admin")
+	if err != nil {
+		t.Fatalf("ensureRuntimeConfig: %v", err)
+	}
+	if !cfg.StorageEncryptEnabled() {
+		t.Fatalf("expected storage encryption enabled by default, got %#v", cfg.Storage)
+	}
+}
+
+func TestApplyRuntimeConfigSideEffectsUpdatesStorageCodec(t *testing.T) {
+	prevCodec := controlStateEnvelopeCodec
+	codec, err := secure.NewMutableSelfEnvelopeCodec(newMainTestKeyer(t), true)
+	if err != nil {
+		t.Fatalf("NewMutableSelfEnvelopeCodec: %v", err)
+	}
+	controlStateEnvelopeCodec = codec
+	defer func() { controlStateEnvelopeCodec = prevCodec }()
+
+	applyRuntimeConfigSideEffects(state.ConfigDoc{Storage: state.StorageConfig{Encrypt: state.BoolPtr(false)}})
+	if codec.EncryptEnabled() {
+		t.Fatal("expected storage codec to switch to plaintext mode")
+	}
+
+	applyRuntimeConfigSideEffects(state.ConfigDoc{Storage: state.StorageConfig{Encrypt: state.BoolPtr(true)}})
+	if !codec.EncryptEnabled() {
+		t.Fatal("expected storage codec to switch back to encrypted mode")
+	}
+}
 
 func TestHandleControlRPCRequest_SystemAndVoiceMethods(t *testing.T) {
 	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Extra: map[string]any{
@@ -307,7 +377,7 @@ func TestHandleControlRPCRequest_ChatAbortUsesRegistry(t *testing.T) {
 		t.Fatalf("chat.abort error: %v", err)
 	}
 	payload, ok := res.Result.(map[string]any)
-	if !ok || payload["aborted"] != true || payload["aborted_count"] != 1 {
+	if !ok || payload["aborted"] != true || payload["aborted_count"] != 1 || payload["abortedCount"] != 1 || payload["sessionId"] != "s1" {
 		t.Fatalf("unexpected chat.abort result: %#v", res.Result)
 	}
 }
@@ -321,6 +391,11 @@ func TestHandleControlRPCRequest_OperationalSemantics(t *testing.T) {
 	logs := newRuntimeLogBuffer(32)
 	logs.Append("info", "first")
 	channels := newChannelRuntimeState()
+	prevObserve := toolbuiltin.RuntimeObserveProvider{}
+	toolbuiltin.SetRuntimeObserveProvider(toolbuiltin.RuntimeObserveProvider{Observe: func(_ context.Context, req toolbuiltin.RuntimeObserveRequest) (map[string]any, error) {
+		return map[string]any{"events": map[string]any{"cursor": req.EventCursor, "events": []map[string]any{{"event": "tool.start", "agent_id": req.Filters.AgentID}}, "truncated": false, "reset": false}, "timed_out": false, "waited_ms": int64(0)}, nil
+	}})
+	defer toolbuiltin.SetRuntimeObserveProvider(prevObserve)
 
 	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
@@ -337,6 +412,24 @@ func TestHandleControlRPCRequest_OperationalSemantics(t *testing.T) {
 	lines, _ := out["lines"].([]string)
 	if len(lines) == 0 {
 		t.Fatalf("expected log lines, got: %#v", out)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodRuntimeObserve,
+		Params:     json.RawMessage(`{"include_events":true,"include_logs":false,"event_cursor":12,"event_limit":5,"agent_id":"agent-1"}`),
+	}, nil, nil, nil, usage, logs, channels, nil, nil, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("runtime.observe error: %v", err)
+	}
+	obsOut, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected runtime.observe result: %#v", res.Result)
+	}
+	eventsSection, _ := obsOut["events"].(map[string]any)
+	events, _ := eventsSection["events"].([]map[string]any)
+	if len(events) != 1 || events[0]["event"] != "tool.start" || events[0]["agent_id"] != "agent-1" {
+		t.Fatalf("unexpected runtime.observe payload: %#v", obsOut)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -395,8 +488,11 @@ func TestHandleControlRPCRequest_AgentMethods(t *testing.T) {
 	}
 	out, _ := res.Result.(map[string]any)
 	runID, _ := out["run_id"].(string)
-	if strings.TrimSpace(runID) == "" {
-		t.Fatalf("expected run_id, got: %#v", res.Result)
+	if strings.TrimSpace(runID) == "" || out["runId"] != runID {
+		t.Fatalf("expected compatibility run id fields, got: %#v", res.Result)
+	}
+	if _, ok := out["acceptedAt"]; !ok {
+		t.Fatalf("expected acceptedAt alias, got: %#v", res.Result)
 	}
 
 	waitRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -408,8 +504,14 @@ func TestHandleControlRPCRequest_AgentMethods(t *testing.T) {
 		t.Fatalf("agent.wait error: %v", err)
 	}
 	out, _ = waitRes.Result.(map[string]any)
-	if out["status"] != "ok" {
+	if out["status"] != "ok" || out["runId"] != runID {
 		t.Fatalf("unexpected wait result: %#v", waitRes.Result)
+	}
+	if _, ok := out["startedAt"]; !ok {
+		t.Fatalf("expected startedAt alias, got: %#v", waitRes.Result)
+	}
+	if _, ok := out["endedAt"]; !ok {
+		t.Fatalf("expected endedAt alias, got: %#v", waitRes.Result)
 	}
 
 	identityRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -421,8 +523,11 @@ func TestHandleControlRPCRequest_AgentMethods(t *testing.T) {
 		t.Fatalf("agent.identity.get error: %v", err)
 	}
 	out, _ = identityRes.Result.(map[string]any)
-	if out["agent_id"] != "main" {
+	if out["agent_id"] != "main" || out["agentId"] != "main" || out["sessionId"] != "s1" {
 		t.Fatalf("unexpected identity result: %#v", identityRes.Result)
+	}
+	if _, ok := out["displayName"]; !ok {
+		t.Fatalf("expected displayName alias, got: %#v", identityRes.Result)
 	}
 }
 
@@ -445,6 +550,277 @@ func TestHandleControlRPCRequest_RelayPolicyGet(t *testing.T) {
 	}
 	if len(view.ReadRelays) != 1 || view.ReadRelays[0] != "wss://read" {
 		t.Fatalf("unexpected read relays: %+v", view.ReadRelays)
+	}
+}
+
+func TestHandleControlRPCRequest_MCPMethods(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Relays: state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}}})
+	var mgr *mcppkg.Manager
+	oldMCPOps := controlMCPOps
+	controlMCPOps = newMCPOpsController(&mgr, agent.NewToolRegistry(), nil, cfgState, docs)
+	defer func() { controlMCPOps = oldMCPOps }()
+
+	putRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodMCPPut,
+		Params:     json.RawMessage(`{"server":"demo","config":{"type":"stdio","command":"npx"}}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, agent.NewToolRegistry(), nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("mcp.put error: %v", err)
+	}
+	putOut, ok := putRes.Result.(map[string]any)
+	if !ok || putOut["ok"] != true {
+		t.Fatalf("unexpected mcp.put result: %#v", putRes.Result)
+	}
+
+	getRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodMCPGet,
+		Params:     json.RawMessage(`{"server":"demo"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, agent.NewToolRegistry(), nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("mcp.get error: %v", err)
+	}
+	getOut, ok := getRes.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected mcp.get result: %#v", getRes.Result)
+	}
+	server, _ := getOut["server"].(map[string]any)
+	if fmt.Sprint(server["name"]) != "demo" {
+		t.Fatalf("unexpected mcp.get server payload: %#v", getOut)
+	}
+
+	listRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodMCPList,
+		Params:     nil,
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, agent.NewToolRegistry(), nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("mcp.list error: %v", err)
+	}
+	listOut, ok := listRes.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected mcp.list result: %#v", listRes.Result)
+	}
+	servers, _ := listOut["servers"].([]map[string]any)
+	if len(servers) != 1 {
+		t.Fatalf("unexpected mcp.list result: %#v", listRes.Result)
+	}
+}
+
+func TestHandleControlRPCRequest_StatusIncludesMCPTelemetry(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		DM:      state.DMPolicy{Policy: "open"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}},
+		Extra: map[string]any{
+			"mcp": map[string]any{
+				"enabled": true,
+				"servers": map[string]any{
+					"remote": map[string]any{
+						"enabled": true,
+						"type":    "http",
+						"url":     "https://mcp.example.com/http",
+					},
+				},
+			},
+		},
+	})
+	resolved := mcppkg.ResolveConfigDoc(cfgState.Get())
+	mgr := mcppkg.NewManager()
+	mgr.SetConnectFunc(func(_ context.Context, _ string, _ mcppkg.ServerConfig) (*mcppkg.ServerConnection, error) {
+		return nil, errors.New("401 unauthorized")
+	})
+	if err := mgr.ApplyConfig(context.Background(), resolved); err == nil {
+		t.Fatal("expected auth-required apply error for status telemetry test")
+	}
+
+	oldMCPOps := controlMCPOps
+	controlMCPOps = newMCPOpsController(&mgr, agent.NewToolRegistry(), nil, cfgState, state.NewDocsRepository(newTestStore(), "author"))
+	defer func() {
+		controlMCPOps = oldMCPOps
+		_ = mgr.Close()
+	}()
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodStatus,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("status.get error: %v", err)
+	}
+	status, ok := res.Result.(methods.StatusResponse)
+	if !ok {
+		t.Fatalf("unexpected status result type: %T", res.Result)
+	}
+	if status.MCP == nil {
+		t.Fatalf("expected mcp telemetry in status response, got %+v", status)
+	}
+	if status.MCP.Summary.NeedsAuthServers != 1 || status.MCP.Summary.TotalServers != 1 {
+		t.Fatalf("unexpected mcp summary: %#v", status.MCP.Summary)
+	}
+	if len(status.MCP.Servers) != 1 || status.MCP.Servers[0].State != string(mcppkg.ConnectionStateNeedsAuth) {
+		t.Fatalf("unexpected mcp server telemetry: %#v", status.MCP.Servers)
+	}
+}
+
+func TestFilteredMCPLifecycleTrackerEmitsSnapshotsAndRemovals(t *testing.T) {
+	capture := &capturingEmitter{}
+	tracker := newFilteredMCPLifecycleTracker()
+	resolved := mcppkg.Config{
+		Enabled: true,
+		FilteredServers: map[string]mcppkg.FilteredServer{
+			"pending-remote": {
+				ResolvedServerConfig: mcppkg.ResolvedServerConfig{
+					Name:         "pending-remote",
+					ServerConfig: mcppkg.ServerConfig{Enabled: true, Type: "http", URL: "https://pending.example.com/http"},
+					Source:       mcppkg.ConfigSourceExtraMCP,
+					Precedence:   100,
+					Signature:    "pending-sig",
+				},
+				PolicyStatus: mcppkg.PolicyStatusApprovalRequired,
+				PolicyReason: mcppkg.PolicyReasonRemoteApproval,
+			},
+		},
+	}
+
+	tracker.Emit(capture, resolved, "config.snapshot", 123)
+	events := capture.eventsByName(gatewayws.EventMCPLifecycle)
+	if len(events) != 1 {
+		t.Fatalf("expected one filtered lifecycle event, got %d", len(events))
+	}
+	payload, ok := events[0].(gatewayws.MCPLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected filtered lifecycle payload type: %T", events[0])
+	}
+	if payload.Name != "pending-remote" || payload.State != string(mcppkg.PolicyStatusApprovalRequired) {
+		t.Fatalf("unexpected filtered lifecycle payload: %+v", payload)
+	}
+	if payload.PolicyStatus != string(mcppkg.PolicyStatusApprovalRequired) || payload.PolicyReason != string(mcppkg.PolicyReasonRemoteApproval) {
+		t.Fatalf("expected policy metadata on lifecycle payload, got %+v", payload)
+	}
+	if payload.RuntimePresent || payload.Healthy {
+		t.Fatalf("expected filtered lifecycle payload to remain non-runtime/unhealthy, got %+v", payload)
+	}
+
+	tracker.Emit(capture, mcppkg.Config{Enabled: true}, "config.snapshot", 124)
+	events = capture.eventsByName(gatewayws.EventMCPLifecycle)
+	if len(events) != 2 {
+		t.Fatalf("expected tombstone lifecycle event after removal, got %d", len(events))
+	}
+	removed, ok := events[1].(gatewayws.MCPLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected tombstone lifecycle payload type: %T", events[1])
+	}
+	if !removed.Removed || removed.Name != "pending-remote" || removed.Reason != "config.snapshot.removed" {
+		t.Fatalf("unexpected filtered removal payload: %+v", removed)
+	}
+}
+
+func TestFilteredMCPLifecycleTrackerSuppressesTombstoneWhenServerBecomesActive(t *testing.T) {
+	capture := &capturingEmitter{}
+	tracker := newFilteredMCPLifecycleTracker()
+	filtered := mcppkg.Config{
+		Enabled: true,
+		FilteredServers: map[string]mcppkg.FilteredServer{
+			"demo": {
+				ResolvedServerConfig: mcppkg.ResolvedServerConfig{
+					Name:         "demo",
+					ServerConfig: mcppkg.ServerConfig{Enabled: true, Type: "http", URL: "https://pending.example.com/http"},
+					Source:       mcppkg.ConfigSourceExtraMCP,
+					Precedence:   100,
+					Signature:    "demo-sig",
+				},
+				PolicyStatus: mcppkg.PolicyStatusApprovalRequired,
+				PolicyReason: mcppkg.PolicyReasonRemoteApproval,
+			},
+		},
+	}
+
+	tracker.Emit(capture, filtered, "config.snapshot", 123)
+	tracker.Emit(capture, mcppkg.Config{
+		Enabled: true,
+		Servers: map[string]mcppkg.ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: mcppkg.ServerConfig{Enabled: true, Type: "http", URL: "https://allowed.example.com/http"},
+				Source:       mcppkg.ConfigSourceExtraMCP,
+				Precedence:   100,
+				Signature:    "demo-sig",
+			},
+		},
+	}, "config.snapshot", 124)
+
+	events := capture.eventsByName(gatewayws.EventMCPLifecycle)
+	if len(events) != 1 {
+		t.Fatalf("expected no filtered tombstone when server remains in resolved inventory, got %d events", len(events))
+	}
+}
+
+func TestFilteredMCPLifecycleTrackerEmitsDisabledReplacement(t *testing.T) {
+	capture := &capturingEmitter{}
+	tracker := newFilteredMCPLifecycleTracker()
+	tracker.Emit(capture, mcppkg.Config{
+		Enabled: true,
+		FilteredServers: map[string]mcppkg.FilteredServer{
+			"demo": {
+				ResolvedServerConfig: mcppkg.ResolvedServerConfig{
+					Name:         "demo",
+					ServerConfig: mcppkg.ServerConfig{Enabled: true, Type: "http", URL: "https://pending.example.com/http"},
+					Source:       mcppkg.ConfigSourceExtraMCP,
+					Precedence:   100,
+					Signature:    "demo-sig",
+				},
+				PolicyStatus: mcppkg.PolicyStatusApprovalRequired,
+				PolicyReason: mcppkg.PolicyReasonRemoteApproval,
+			},
+		},
+	}, "config.snapshot", 123)
+	tracker.Emit(capture, mcppkg.Config{
+		Enabled: true,
+		DisabledServers: map[string]mcppkg.ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: mcppkg.ServerConfig{Enabled: false, Type: "http", URL: "https://pending.example.com/http"},
+				Source:       mcppkg.ConfigSourceExtraMCP,
+				Precedence:   100,
+				Signature:    "demo-sig",
+			},
+		},
+	}, "config.snapshot", 124)
+
+	events := capture.eventsByName(gatewayws.EventMCPLifecycle)
+	if len(events) != 2 {
+		t.Fatalf("expected disabled replacement event, got %d", len(events))
+	}
+	payload, ok := events[1].(gatewayws.MCPLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected disabled replacement payload type: %T", events[1])
+	}
+	if payload.State != string(mcppkg.ConnectionStateDisabled) || payload.PreviousState != string(mcppkg.PolicyStatusApprovalRequired) {
+		t.Fatalf("unexpected disabled replacement lifecycle payload: %+v", payload)
+	}
+}
+
+func TestBuildMCPLifecyclePayloadRemovalClearsRuntimePresence(t *testing.T) {
+	payload := buildMCPLifecyclePayload(mcppkg.StateChange{
+		Server: mcppkg.ServerStateSnapshot{
+			Name:    "demo",
+			State:   mcppkg.ConnectionStateConnected,
+			Enabled: true,
+		},
+		PreviousState: mcppkg.ConnectionStateConnected,
+		Reason:        "config.removed",
+		Removed:       true,
+	}, 123)
+	if !payload.Removed {
+		t.Fatalf("expected removed payload, got %+v", payload)
+	}
+	if payload.RuntimePresent || payload.Healthy {
+		t.Fatalf("expected removed payload to clear runtime/healthy flags, got %+v", payload)
 	}
 }
 
@@ -614,6 +990,9 @@ func TestHandleControlRPCRequest_ConfigGetResponseShape(t *testing.T) {
 	if hash, _ := out["base_hash"].(string); hash == "" {
 		t.Fatalf("config.get result missing 'base_hash': %#v", out)
 	}
+	if hash, _ := out["hash"].(string); hash == "" {
+		t.Fatalf("config.get result missing 'hash': %#v", out)
+	}
 }
 
 func TestHandleControlRPCRequest_ConfigPutBaseHashConflict(t *testing.T) {
@@ -668,26 +1047,48 @@ func TestHandleControlRPCRequest_ChatHistoryAndSessionViews(t *testing.T) {
 	store := newTestStore()
 	docs := state.NewDocsRepository(store, "author")
 	transcript := state.NewTranscriptRepository(store, "author")
-	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Agent: state.AgentPolicy{DefaultModel: "gpt-test"}})
 
-	if _, err := docs.PutSession(context.Background(), "s1", state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer"}); err != nil {
+	if _, err := docs.PutSession(context.Background(), "s1", state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer", LastInboundAt: time.Now().Unix()}); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
-	for i := 0; i < 2; i++ {
-		_, _ = transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{Version: 1, SessionID: "s1", EntryID: fmt.Sprintf("e%d", i), Role: "user", Text: "hi", Unix: time.Now().Unix() + int64(i)})
+	for i, text := range []string{"Need briefing", "Here is the latest update"} {
+		role := "user"
+		if i == 1 {
+			role = "assistant"
+		}
+		_, _ = transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{Version: 1, SessionID: "s1", EntryID: fmt.Sprintf("e%d", i), Role: role, Text: text, Unix: time.Now().Unix() + int64(i)})
 	}
+	oldSessionStore := controlSessionStore
+	t.Cleanup(func() { controlSessionStore = oldSessionStore })
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	fresh := true
+	if err := sessionStore.Put("s1", state.SessionEntry{SessionID: "s1", AgentID: "main", Label: "Briefing", LastChannel: "nostr", LastTo: "peer", InputTokens: 12, OutputTokens: 7, TotalTokens: 19, TotalTokensFresh: &fresh, UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed session store: %v", err)
+	}
+	controlSessionStore = sessionStore
 
 	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
 		Method:     methods.MethodSessionsList,
-		Params:     json.RawMessage(`{"limit":10}`),
+		Params:     json.RawMessage(`{"limit":10,"label":"Briefing","agentId":"main","includeDerivedTitles":true,"includeLastMessage":true}`),
 	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("sessions.list error: %v", err)
 	}
 	payload, _ := res.Result.(map[string]any)
-	if len(payload["sessions"].([]state.SessionDoc)) != 1 {
+	sessions, ok := payload["sessions"].([]map[string]any)
+	if !ok || len(sessions) != 1 {
 		t.Fatalf("unexpected sessions.list payload: %#v", res.Result)
+	}
+	if payload["path"] != sessionStore.Path() || payload["count"].(int) != 1 || payload["total"].(int) != 1 {
+		t.Fatalf("unexpected sessions.list envelope: %#v", payload)
+	}
+	if sessions[0]["key"] != "s1" || sessions[0]["label"] != "Briefing" || sessions[0]["lastMessagePreview"] != "Here is the latest update" || sessions[0]["model"] != "gpt-test" {
+		t.Fatalf("unexpected sessions.list row: %#v", sessions[0])
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -767,8 +1168,11 @@ func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
 		t.Fatalf("sessions.compact error: %v", err)
 	}
 	payload, _ = res.Result.(map[string]any)
-	if payload["dropped"].(int) < 1 {
+	if payload["dropped"].(int) < 1 || payload["sessionId"] != "s1" {
 		t.Fatalf("unexpected sessions.compact result: %#v", res.Result)
+	}
+	if _, ok := payload["fromEntries"]; !ok {
+		t.Fatalf("expected fromEntries alias, got: %#v", res.Result)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -780,8 +1184,61 @@ func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
 		t.Fatalf("sessions.delete error: %v", err)
 	}
 	payload, _ = res.Result.(map[string]any)
-	if payload["deleted"] != true {
+	if payload["deleted"] != true || payload["sessionId"] != "s1" {
 		t.Fatalf("unexpected sessions.delete result: %#v", res.Result)
+	}
+}
+
+func TestHandleControlRPCRequest_SessionsCompactHandlesLargeTranscripts(t *testing.T) {
+	oldRuntime := controlAgentRuntime
+	controlAgentRuntime = nil
+	t.Cleanup(func() { controlAgentRuntime = oldRuntime })
+
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	transcript := state.NewTranscriptRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	if _, err := docs.PutSession(context.Background(), "s-large", state.SessionDoc{Version: 1, SessionID: "s-large", PeerPubKey: "peer", LastInboundAt: time.Now().Unix()}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	for i := 0; i < 2505; i++ {
+		_, err := transcript.PutEntry(context.Background(), state.TranscriptEntryDoc{
+			Version:   1,
+			SessionID: "s-large",
+			EntryID:   fmt.Sprintf("e%04d", i),
+			Role:      "user",
+			Text:      fmt.Sprintf("msg %d", i),
+			Unix:      int64(i + 1),
+		})
+		if err != nil {
+			t.Fatalf("put transcript entry %d: %v", i, err)
+		}
+	}
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSessionsCompact,
+		Params:     json.RawMessage(`{"session_id":"s-large","keep":5}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("sessions.compact error: %v", err)
+	}
+	payload, _ := res.Result.(map[string]any)
+	if got := payload["fromEntries"]; got != 2505 {
+		t.Fatalf("expected fromEntries=2505, got %#v", got)
+	}
+	if got := payload["dropped"]; got != 2500 {
+		t.Fatalf("expected dropped=2500, got %#v", got)
+	}
+	entries, err := transcript.ListSessionAll(context.Background(), "s-large")
+	if err != nil {
+		t.Fatalf("list session: %v", err)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 remaining entries, got %d", len(entries))
+	}
+	if entries[0].EntryID != "e2500" || entries[4].EntryID != "e2504" {
+		t.Fatalf("unexpected remaining entries: first=%s last=%s", entries[0].EntryID, entries[4].EntryID)
 	}
 }
 
@@ -1144,7 +1601,7 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 		t.Fatalf("skills.install error: %v", err)
 	}
 	payload, _ = res.Result.(map[string]any)
-	if payload["ok"] != true || payload["code"] != 0 {
+	if payload["ok"] != false || payload["code"] != 1 {
 		t.Fatalf("unexpected skills.install payload: %#v", payload)
 	}
 	if _, ok := payload["installId"]; ok {
@@ -1184,16 +1641,10 @@ func TestHandleControlRPCRequest_ModelsToolsSkillsMethods(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected skills.bins payload shape: %#v", res.Result)
 	}
-	// "nostr-core" must appear somewhere in the bins list (bundled skills may also be present).
-	foundNostrCore := false
 	for _, b := range bins {
 		if b == "nostr-core" {
-			foundNostrCore = true
-			break
+			t.Fatalf("did not expect config-only install failure to add nostr-core bin: %#v", res.Result)
 		}
-	}
-	if !foundNostrCore {
-		t.Fatalf("expected 'nostr-core' in skills.bins, got: %#v", res.Result)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -1646,7 +2097,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	docs := state.NewDocsRepository(newTestStore(), "author")
 	cfgState := newRuntimeConfigStore(state.ConfigDoc{
 		Control: state.ControlPolicy{RequireAuth: false},
-		Extra:   map[string]any{"pairing": map[string]any{"node_paired": []any{map[string]any{"node_id": "n1", "display_name": "Node One", "caps": []any{"canvas"}, "approved_at_ms": int64(1)}}}},
+		Extra:   map[string]any{"pairing": map[string]any{"node_paired": []any{map[string]any{"node_id": "n1", "display_name": "Node One", "token": "secret-node-token", "caps": []any{"canvas"}, "approved_at_ms": int64(1)}}}},
 	})
 	prevNode := controlNodeInvocations
 	prevCron := controlCronJobs
@@ -1670,6 +2121,9 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	if len(nodes) != 1 {
 		t.Fatalf("unexpected node.list payload: %#v", res.Result)
 	}
+	if nodes[0]["token"] != config.RedactedValue {
+		t.Fatalf("expected node.list token to be redacted, got: %#v", nodes[0])
+	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",
@@ -1682,6 +2136,10 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	payload, _ = res.Result.(map[string]any)
 	if payload["status"] != "paired" {
 		t.Fatalf("unexpected node.describe payload: %#v", res.Result)
+	}
+	describedNode, _ := payload["node"].(map[string]any)
+	if describedNode["token"] != config.RedactedValue {
+		t.Fatalf("expected node.describe token to be redacted, got: %#v", payload)
 	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
@@ -1824,6 +2282,23 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 	payload, _ = res.Result.(map[string]any)
 	if payload["ok"] != true {
 		t.Fatalf("unexpected cron.remove payload: %#v", res.Result)
+	}
+}
+
+func TestApplyNodeDescribe_RedactsPendingNodeToken(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Extra: map[string]any{"pairing": map[string]any{"node_pending": []any{map[string]any{"node_id": "pending-1", "token": "pending-secret", "display_name": "Pending Node"}}}},
+	})
+	result, err := applyNodeDescribe(cfgState, methods.NodeDescribeRequest{NodeID: "pending-1"})
+	if err != nil {
+		t.Fatalf("applyNodeDescribe error: %v", err)
+	}
+	if result["status"] != "pending" {
+		t.Fatalf("unexpected status: %#v", result)
+	}
+	node, _ := result["node"].(map[string]any)
+	if node["token"] != config.RedactedValue {
+		t.Fatalf("expected pending node token to be redacted, got: %#v", result)
 	}
 }
 
@@ -2177,7 +2652,7 @@ func TestExecuteAgentRun_EmitsAgentStatusWithSession(t *testing.T) {
 	jobs := newAgentJobRegistry()
 	runID := "run-session-event"
 	jobs.Begin(runID, "session-42")
-	executeAgentRun(runID, methods.AgentRequest{SessionID: "session-42", Message: "hello", TimeoutMS: 500}, stubAgentRuntime{}, jobs)
+	executeAgentRun(runID, methods.AgentRequest{SessionID: "session-42", Message: "hello", TimeoutMS: 500}, stubAgentRuntime{}, nil, jobs)
 
 	events := capture.eventsByName(gatewayws.EventAgentStatus)
 	if len(events) != 2 {
@@ -2201,6 +2676,189 @@ func TestExecuteAgentRun_EmitsAgentStatusWithSession(t *testing.T) {
 	}
 	if thinking.AgentID != "alpha" || idle.AgentID != "alpha" {
 		t.Fatalf("expected routed agent id alpha in status events, got thinking=%q idle=%q", thinking.AgentID, idle.AgentID)
+	}
+}
+
+func TestExecuteAgentRun_EmitsAndPersistsTurnTelemetry(t *testing.T) {
+	prevRouter := controlSessionRouter
+	prevEmitter := controlWsEmitter
+	prevSessionStore := controlSessionStore
+	defer func() {
+		controlSessionRouter = prevRouter
+		setControlWSEmitter(prevEmitter)
+		controlSessionStore = prevSessionStore
+	}()
+
+	controlSessionRouter = agent.NewAgentSessionRouter()
+	controlSessionRouter.Assign("session-telemetry", "alpha")
+
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	controlSessionStore = sessionStore
+
+	capture := &capturingEmitter{}
+	setControlWSEmitter(capture)
+
+	jobs := newAgentJobRegistry()
+	runID := "run-turn-telemetry"
+	jobs.Begin(runID, "session-telemetry")
+	executeAgentRun(runID, methods.AgentRequest{SessionID: "session-telemetry", Message: "hello", TimeoutMS: 500}, runtimeFunc(func(_ context.Context, turn agent.Turn) (agent.TurnResult, error) {
+		return agent.TurnResult{
+			Text:  "ack: " + turn.UserText,
+			Usage: agent.TurnUsage{InputTokens: 7, OutputTokens: 3},
+		}, nil
+	}), nil, jobs)
+
+	events := capture.eventsByName(gatewayws.EventTurnResult)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 turn.result event, got %d", len(events))
+	}
+	payload, ok := events[0].(gatewayws.TurnResultPayload)
+	if !ok {
+		t.Fatalf("unexpected turn.result payload type: %T", events[0])
+	}
+	if payload.SessionID != "session-telemetry" || payload.AgentID != "alpha" {
+		t.Fatalf("unexpected turn.result payload: %+v", payload)
+	}
+	if payload.Outcome != string(agent.TurnOutcomeCompleted) || payload.StopReason != string(agent.TurnStopReasonModelText) {
+		t.Fatalf("unexpected turn classification payload: %+v", payload)
+	}
+	if payload.InputTokens != 7 || payload.OutputTokens != 3 {
+		t.Fatalf("unexpected turn usage payload: %+v", payload)
+	}
+
+	se, ok := sessionStore.Get("session-telemetry")
+	if !ok {
+		t.Fatal("expected session entry")
+	}
+	if se.LastTurn == nil {
+		t.Fatal("expected persisted last_turn telemetry")
+	}
+	if se.LastTurn.Outcome != string(agent.TurnOutcomeCompleted) || se.LastTurn.StopReason != string(agent.TurnStopReasonModelText) {
+		t.Fatalf("unexpected persisted turn telemetry: %+v", se.LastTurn)
+	}
+	if se.LastTurn.InputTokens != 7 || se.LastTurn.OutputTokens != 3 {
+		t.Fatalf("unexpected persisted turn usage: %+v", se.LastTurn)
+	}
+}
+
+func TestToolLifecycleEmitter_MapsAgentEventsToWSPayloads(t *testing.T) {
+	capture := &capturingEmitter{}
+	sink := toolLifecycleEmitter(capture, "alpha")
+	sink(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventProgress,
+		TS:         122,
+		SessionID:  "session-42",
+		TurnID:     "turn-7",
+		ToolCallID: "call-1",
+		ToolName:   "fetch",
+		Data: agent.ToolSchedulerDecision{
+			Kind:             agent.ToolDecisionKindScheduler,
+			Mode:             "parallel",
+			BatchIndex:       0,
+			BatchCount:       1,
+			BatchSize:        1,
+			BatchPosition:    0,
+			ConcurrencySafe:  true,
+			ConcurrencyLimit: 10,
+		},
+	})
+	sink(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventStart,
+		TS:         123,
+		SessionID:  "session-42",
+		TurnID:     "turn-7",
+		ToolCallID: "call-1",
+		ToolName:   "fetch",
+	})
+	sink(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventResult,
+		TS:         124,
+		SessionID:  "session-42",
+		TurnID:     "turn-7",
+		ToolCallID: "call-1",
+		ToolName:   "fetch",
+		Result:     "ok",
+	})
+	sink(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventError,
+		TS:         125,
+		SessionID:  "session-42",
+		TurnID:     "turn-7",
+		ToolCallID: "call-2",
+		ToolName:   "write",
+		Error:      "permission denied",
+	})
+
+	progress := capture.eventsByName(gatewayws.EventToolProgress)
+	starts := capture.eventsByName(gatewayws.EventToolStart)
+	results := capture.eventsByName(gatewayws.EventToolResult)
+	errors := capture.eventsByName(gatewayws.EventToolError)
+	if len(progress) != 1 || len(starts) != 1 || len(results) != 1 || len(errors) != 1 {
+		t.Fatalf("unexpected lifecycle event counts progress=%d start=%d result=%d error=%d", len(progress), len(starts), len(results), len(errors))
+	}
+	progressPayload, ok := progress[0].(gatewayws.ToolLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected progress payload type: %T", progress[0])
+	}
+	if progressDecision, ok := progressPayload.Data.(gatewayws.ToolSchedulerDecisionPayload); !ok || progressDecision.Mode != "parallel" || progressDecision.Kind != gatewayws.ToolDecisionKindScheduler {
+		t.Fatalf("unexpected progress payload data: %+v", progressPayload)
+	}
+	startPayload, ok := starts[0].(gatewayws.ToolLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected start payload type: %T", starts[0])
+	}
+	if startPayload.AgentID != "alpha" || startPayload.SessionID != "session-42" || startPayload.TurnID != "turn-7" {
+		t.Fatalf("unexpected start payload: %+v", startPayload)
+	}
+	errorPayload, ok := errors[0].(gatewayws.ToolLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected error payload type: %T", errors[0])
+	}
+	if errorPayload.ToolCallID != "call-2" || errorPayload.ToolName != "write" || errorPayload.Error != "permission denied" {
+		t.Fatalf("unexpected error payload: %+v", errorPayload)
+	}
+}
+
+func TestToolLifecycleEmitter_ProjectsLoopDecisionPayloads(t *testing.T) {
+	capture := &capturingEmitter{}
+	sink := toolLifecycleEmitter(capture, "alpha")
+	sink(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventError,
+		TS:         130,
+		SessionID:  "session-42",
+		TurnID:     "turn-8",
+		ToolCallID: "call-9",
+		ToolName:   "poll",
+		Error:      "CRITICAL: tool loop blocked",
+		Data: agent.ToolLoopDecision{
+			Kind:           agent.ToolDecisionKindLoopDetection,
+			Blocked:        true,
+			Level:          "critical",
+			Detector:       "generic_repeat",
+			Count:          4,
+			WarningKey:     "poll-repeat",
+			PairedToolName: "fetch",
+			Message:        "tool loop blocked",
+		},
+	})
+
+	errors := capture.eventsByName(gatewayws.EventToolError)
+	if len(errors) != 1 {
+		t.Fatalf("unexpected tool.error count: %d", len(errors))
+	}
+	errorPayload, ok := errors[0].(gatewayws.ToolLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected error payload type: %T", errors[0])
+	}
+	decision, ok := errorPayload.Data.(gatewayws.ToolLoopDecisionPayload)
+	if !ok {
+		t.Fatalf("unexpected error payload data type: %T", errorPayload.Data)
+	}
+	if decision.Kind != gatewayws.ToolDecisionKindLoopDetection || !decision.Blocked || decision.Detector != "generic_repeat" || decision.PairedToolName != "fetch" {
+		t.Fatalf("unexpected loop decision payload: %+v", decision)
 	}
 }
 
@@ -2251,6 +2909,103 @@ type testStore struct {
 	replaceable map[string]state.Event
 }
 
+func TestControlTrackerPersistsHandledResponsesAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	tracker := newControlTracker(state.CheckpointDoc{})
+	handled := nostruntime.ControlRPCHandled{
+		EventID:      "evt-2",
+		EventUnix:    time.Now().Unix(),
+		CallerPubKey: "caller-a",
+		RequestID:    "req-1",
+		Response: nostruntime.ControlRPCCachedResponse{
+			Payload: `{"result":{"ok":true}}`,
+			Tags:    nostr.Tags{{"req", "req-1"}, {"status", "ok"}},
+		},
+	}
+	if err := tracker.MarkHandled(ctx, docs, handled); err != nil {
+		t.Fatalf("MarkHandled: %v", err)
+	}
+	cached, ok := tracker.LookupResponse("caller-a", "req-1")
+	if !ok {
+		t.Fatal("expected tracker cache hit")
+	}
+	if cached.Payload != handled.Response.Payload {
+		t.Fatalf("unexpected cached payload: %q", cached.Payload)
+	}
+	checkpoint, err := docs.GetCheckpoint(ctx, "control_ingest")
+	if err != nil {
+		t.Fatalf("GetCheckpoint: %v", err)
+	}
+	if checkpoint.LastEvent != handled.EventID {
+		t.Fatalf("unexpected checkpoint event id: %q", checkpoint.LastEvent)
+	}
+	if len(checkpoint.ControlResponses) != 1 {
+		t.Fatalf("expected one persisted control response, got %d", len(checkpoint.ControlResponses))
+	}
+	restarted := newControlTracker(checkpoint)
+	cached, ok = restarted.LookupResponse("caller-a", "req-1")
+	if !ok {
+		t.Fatal("expected restart cache hit")
+	}
+	if cached.Payload != handled.Response.Payload {
+		t.Fatalf("unexpected restarted payload: %q", cached.Payload)
+	}
+}
+
+func TestControlTrackerDropsExpiredResponsesOnLoad(t *testing.T) {
+	tracker := newControlTracker(state.CheckpointDoc{ControlResponses: []state.ControlResponseCacheDoc{{
+		CallerPubKey: "caller-a",
+		RequestID:    "req-1",
+		Payload:      `{"result":{"ok":true}}`,
+		Tags:         [][]string{{"req", "req-1"}},
+		EventUnix:    time.Now().Add(-controlResponseCheckpointTTL - time.Minute).Unix(),
+	}}})
+	if _, ok := tracker.LookupResponse("caller-a", "req-1"); ok {
+		t.Fatal("expected expired control response to be pruned")
+	}
+}
+
+func TestControlTrackerDoesNotPersistSecretsResolveResponses(t *testing.T) {
+	ctx := context.Background()
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	tracker := newControlTracker(state.CheckpointDoc{})
+	handled := nostruntime.ControlRPCHandled{
+		EventID:      "evt-secret",
+		EventUnix:    time.Now().Unix(),
+		CallerPubKey: "caller-a",
+		RequestID:    "req-secret",
+		Method:       methods.MethodSecretsResolve,
+		Response: nostruntime.ControlRPCCachedResponse{
+			Payload: `{"result":{"assignments":[{"value":"super-secret"}]}}`,
+			Tags:    nostr.Tags{{"req", "req-secret"}, {"status", "ok"}},
+		},
+	}
+	if err := tracker.MarkHandled(ctx, docs, handled); err != nil {
+		t.Fatalf("MarkHandled: %v", err)
+	}
+	if _, ok := tracker.LookupResponse("caller-a", "req-secret"); ok {
+		t.Fatal("expected secrets.resolve response to skip cache persistence")
+	}
+	checkpoint, err := docs.GetCheckpoint(ctx, "control_ingest")
+	if err != nil {
+		t.Fatalf("GetCheckpoint: %v", err)
+	}
+	if len(checkpoint.ControlResponses) != 0 {
+		t.Fatalf("expected no persisted control responses, got %+v", checkpoint.ControlResponses)
+	}
+}
+
+func TestIngestTrackerSameSecondEventDedupUsesExplicitIDs(t *testing.T) {
+	tracker := newIngestTracker(state.CheckpointDoc{LastUnix: 100, RecentEventIDs: []string{"evt-b"}})
+	if !tracker.AlreadyProcessed("evt-b", 100) {
+		t.Fatal("expected known same-second event to be treated as processed")
+	}
+	if tracker.AlreadyProcessed("evt-a", 100) {
+		t.Fatal("unexpected same-second event dedupe based on lexical ordering")
+	}
+}
+
 func newTestStore() *testStore {
 	return &testStore{replaceable: map[string]state.Event{}}
 }
@@ -2292,6 +3047,14 @@ func (s *testStore) ListByTagForAuthor(_ context.Context, kind events.Kind, auth
 	return s.listByTag(kind, authorPubKey, tagName, tagValue, limit), nil
 }
 
+func (s *testStore) ListByTagPage(_ context.Context, kind events.Kind, tagName, tagValue string, limit int, cursor *state.EventPageCursor) (state.EventPage, error) {
+	return s.listByTagPage(kind, "", tagName, tagValue, limit, cursor), nil
+}
+
+func (s *testStore) ListByTagForAuthorPage(_ context.Context, kind events.Kind, authorPubKey, tagName, tagValue string, limit int, cursor *state.EventPageCursor) (state.EventPage, error) {
+	return s.listByTagPage(kind, authorPubKey, tagName, tagValue, limit, cursor), nil
+}
+
 func (s *testStore) listByTag(kind events.Kind, authorPubKey, tagName, tagValue string, limit int) []state.Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2317,6 +3080,90 @@ func (s *testStore) listByTag(kind events.Kind, authorPubKey, tagName, tagValue 
 		}
 	}
 	return out
+}
+
+func (s *testStore) listByTagPage(kind events.Kind, authorPubKey, tagName, tagValue string, limit int, cursor *state.EventPageCursor) state.EventPage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]state.Event, 0, len(s.replaceable))
+	for _, evt := range s.replaceable {
+		if evt.Kind != kind {
+			continue
+		}
+		if authorPubKey != "" && evt.PubKey != authorPubKey {
+			continue
+		}
+		for _, tag := range evt.Tags {
+			if len(tag) >= 2 && tag[0] == tagName && tag[1] == tagValue {
+				out = append(out, evt)
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt > out[j].CreatedAt
+		}
+		return out[i].ID > out[j].ID
+	})
+	skip := make(map[string]struct{})
+	if cursor != nil {
+		for _, id := range cursor.SkipIDs {
+			if id == "" {
+				continue
+			}
+			skip[id] = struct{}{}
+		}
+	}
+	filtered := make([]state.Event, 0, len(out))
+	for _, evt := range out {
+		if cursor != nil && cursor.Until > 0 {
+			if evt.CreatedAt > cursor.Until {
+				continue
+			}
+			if evt.CreatedAt == cursor.Until {
+				if _, ok := skip[evt.ID]; ok {
+					continue
+				}
+			}
+		}
+		filtered = append(filtered, evt)
+	}
+	page := state.EventPage{Events: filtered}
+	if len(filtered) > limit {
+		page.Events = filtered[:limit]
+		boundaryUnix := page.Events[len(page.Events)-1].CreatedAt
+		nextSkip := make(map[string]struct{})
+		var skipIDs []string
+		if cursor != nil && cursor.Until == boundaryUnix {
+			for _, id := range cursor.SkipIDs {
+				if id == "" {
+					continue
+				}
+				if _, ok := nextSkip[id]; ok {
+					continue
+				}
+				nextSkip[id] = struct{}{}
+				skipIDs = append(skipIDs, id)
+			}
+		}
+		for _, evt := range page.Events {
+			if evt.CreatedAt != boundaryUnix || evt.ID == "" {
+				continue
+			}
+			if _, ok := nextSkip[evt.ID]; ok {
+				continue
+			}
+			nextSkip[evt.ID] = struct{}{}
+			skipIDs = append(skipIDs, evt.ID)
+		}
+		sort.Strings(skipIDs)
+		page.NextCursor = &state.EventPageCursor{Until: boundaryUnix, SkipIDs: skipIDs}
+	}
+	return page
 }
 
 func (s *testStore) key(addr state.Address) string {
@@ -2612,6 +3459,121 @@ func TestRotateSessionCoordinatedWaitsBeforeMutatingRouterState(t *testing.T) {
 	}
 	if _, ok := seen.Load("s1"); ok {
 		t.Fatal("expected seenChannelSessions cleared after release")
+	}
+}
+
+func TestPersistAndIngestTurnHistory_PersistsTurnResultMetadata(t *testing.T) {
+	store := newTestStore()
+	transcript := state.NewTranscriptRepository(store, "author")
+	delta := []agent.ConversationMessage{
+		{Role: "assistant", Content: "Calling fetch", ToolCalls: []agent.ToolCallRef{{ID: "call-1", Name: "fetch", ArgsJSON: `{"q":"nostr"}`}}},
+		{Role: "tool", ToolCallID: "call-1", Content: "ok"},
+		{Role: "assistant", Content: "done"},
+	}
+	turnMeta, ok := agent.BuildTurnResultMetadata(agent.TurnResult{
+		Text:         "done",
+		HistoryDelta: delta,
+		Outcome:      agent.TurnOutcomeCompletedWithTools,
+		StopReason:   agent.TurnStopReasonModelText,
+		Usage:        agent.TurnUsage{InputTokens: 11, OutputTokens: 7},
+	}, nil)
+	if !ok {
+		t.Fatal("expected turn metadata")
+	}
+
+	persistAndIngestTurnHistory(context.Background(), transcript, nil, "s1", "evt-1", delta, &turnMeta)
+
+	entries, err := transcript.ListSession(context.Background(), "s1", 10)
+	if err != nil {
+		t.Fatalf("list transcript: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 transcript entries, got %d", len(entries))
+	}
+	turnResultCount := 0
+	for _, entry := range entries {
+		if got := entry.Meta["request_event_id"]; got != "evt-1" {
+			t.Fatalf("entry %s missing request_event_id, got %#v", entry.EntryID, got)
+		}
+		turnResult, ok := entry.Meta["turn_result"].(map[string]any)
+		if !ok {
+			continue
+		}
+		turnResultCount++
+		if entry.EntryID != "turn:evt-1:assistant:2" {
+			t.Fatalf("unexpected terminal metadata entry: %s", entry.EntryID)
+		}
+		if got := turnResult["outcome"]; got != string(agent.TurnOutcomeCompletedWithTools) {
+			t.Fatalf("entry %s outcome = %#v", entry.EntryID, got)
+		}
+		if got := turnResult["stop_reason"]; got != string(agent.TurnStopReasonModelText) {
+			t.Fatalf("entry %s stop_reason = %#v", entry.EntryID, got)
+		}
+		usage, ok := turnResult["usage"].(map[string]any)
+		if !ok {
+			t.Fatalf("entry %s missing usage metadata: %#v", entry.EntryID, turnResult)
+		}
+		if got, ok := usage["input_tokens"].(float64); !ok || int64(got) != 11 {
+			t.Fatalf("entry %s input_tokens = %#v", entry.EntryID, usage["input_tokens"])
+		}
+		if got, ok := usage["output_tokens"].(float64); !ok || int64(got) != 7 {
+			t.Fatalf("entry %s output_tokens = %#v", entry.EntryID, usage["output_tokens"])
+		}
+	}
+	if turnResultCount != 1 {
+		t.Fatalf("expected 1 terminal turn_result metadata entry, got %d", turnResultCount)
+	}
+}
+
+func TestPersistAndIngestTurnHistory_PersistsPartialTurnResultMetadata(t *testing.T) {
+	store := newTestStore()
+	transcript := state.NewTranscriptRepository(store, "author")
+	delta := []agent.ConversationMessage{
+		{Role: "assistant", Content: "Calling fetch", ToolCalls: []agent.ToolCallRef{{ID: "call-1", Name: "fetch"}}},
+		{Role: "tool", ToolCallID: "call-1", Content: "blocked"},
+	}
+	turnErr := &agent.TurnExecutionError{
+		Cause: fmt.Errorf("tool loop blocked"),
+		Partial: agent.TurnResult{
+			HistoryDelta: delta,
+			Outcome:      agent.TurnOutcomeBlocked,
+			StopReason:   agent.TurnStopReasonLoopBlocked,
+			Usage:        agent.TurnUsage{InputTokens: 9},
+		},
+	}
+	turnMeta := turnResultMetadataPtr(agent.TurnResult{}, turnErr)
+	if turnMeta == nil {
+		t.Fatal("expected partial turn metadata")
+	}
+
+	persistAndIngestTurnHistory(context.Background(), transcript, nil, "s1", "evt-2", delta, turnMeta)
+
+	entries, err := transcript.ListSession(context.Background(), "s1", 10)
+	if err != nil {
+		t.Fatalf("list transcript: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 transcript entries, got %d", len(entries))
+	}
+	turnResultCount := 0
+	for _, entry := range entries {
+		turnResult, ok := entry.Meta["turn_result"].(map[string]any)
+		if !ok {
+			continue
+		}
+		turnResultCount++
+		if entry.EntryID != "turn:evt-2:tool:call-1" {
+			t.Fatalf("unexpected terminal metadata entry: %s", entry.EntryID)
+		}
+		if got := turnResult["outcome"]; got != string(agent.TurnOutcomeBlocked) {
+			t.Fatalf("entry %s outcome = %#v", entry.EntryID, got)
+		}
+		if got := turnResult["stop_reason"]; got != string(agent.TurnStopReasonLoopBlocked) {
+			t.Fatalf("entry %s stop_reason = %#v", entry.EntryID, got)
+		}
+	}
+	if turnResultCount != 1 {
+		t.Fatalf("expected 1 terminal turn_result metadata entry, got %d", turnResultCount)
 	}
 }
 

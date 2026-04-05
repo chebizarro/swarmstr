@@ -7,9 +7,9 @@ import (
 
 func TestLookupProfile(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantID   string
-		wantNil  bool
+		input   string
+		wantID  string
+		wantNil bool
 	}{
 		{"full", "full", false},
 		{"FULL", "full", false},
@@ -217,9 +217,48 @@ func TestProfileFilteredExecutor_nilAllowed(t *testing.T) {
 	}
 }
 
+func TestProfileFilteredExecutor_DefinitionsFiltered(t *testing.T) {
+	base := &echoExecutor{}
+	exec := &ProfileFilteredExecutor{Base: base, Allowed: map[string]bool{"allowed_tool": true}}
+	defs := exec.Definitions()
+	if len(defs) != 1 || defs[0].Name != "allowed_tool" {
+		t.Fatalf("unexpected definitions: %+v", defs)
+	}
+	descs := exec.Descriptors()
+	if len(descs) != 1 || descs[0].Name != "allowed_tool" {
+		t.Fatalf("unexpected descriptors: %+v", descs)
+	}
+	traits, ok := exec.EffectiveTraits(ToolCall{Name: "allowed_tool"})
+	if !ok || !traits.ReadOnly {
+		t.Fatalf("unexpected effective traits for allowed tool: %+v ok=%v", traits, ok)
+	}
+	if _, ok := exec.EffectiveTraits(ToolCall{Name: "blocked_tool"}); ok {
+		t.Fatal("expected blocked tool traits lookup to fail")
+	}
+}
+
 // echoExecutor is a minimal ToolExecutor stub for testing.
 type echoExecutor struct{}
 
 func (e *echoExecutor) Execute(_ context.Context, call ToolCall) (string, error) {
 	return "echo:" + call.Name, nil
+}
+
+func (e *echoExecutor) Definitions() []ToolDefinition {
+	return []ToolDefinition{{Name: "allowed_tool"}, {Name: "blocked_tool"}}
+}
+
+func (e *echoExecutor) Descriptors() []ToolDescriptor {
+	return []ToolDescriptor{{Name: "allowed_tool"}, {Name: "blocked_tool"}}
+}
+
+func (e *echoExecutor) EffectiveTraits(call ToolCall) (ToolTraits, bool) {
+	switch call.Name {
+	case "allowed_tool":
+		return ToolTraits{ReadOnly: true}, true
+	case "blocked_tool":
+		return ToolTraits{Destructive: true}, true
+	default:
+		return ToolTraits{}, false
+	}
 }

@@ -22,7 +22,7 @@ Metiq runs AI agents that communicate over the Nostr relay network. Any device r
 | **Streaming** | Server-Sent Events from OpenAI-compatible providers; `chat.chunk` WebSocket events for incremental display; streaming runtime interface |
 | **Web UI** | Embedded dark-theme chat interface; sessions sidebar; streaming text bubbles; exec approval modal; channels/agents tabs |
 | **CLI** | 40+ commands across agents, channels, sessions, cron, nodes, config, plugins, secrets, security, and more |
-| **Nostr transport** | NIP-17 gift-wrapped DMs; NIP-44 encryption; NIP-86-style control RPC; Nostr-backed state store |
+| **Nostr transport** | NIP-17 gift-wrapped DMs and NIP-04 compatibility paths; NIP-44 encryption; NIP-86-style control RPC; Nostr-backed state store |
 
 ---
 
@@ -43,14 +43,23 @@ go build ./cmd/metiqd ./cmd/metiq
 
 ### Minimal bootstrap config
 
-Create `~/.metiq/bootstrap.json`:
+Create `~/.metiq/bootstrap.json` with your explicit relay set:
 
 ```json
 {
   "private_key": "env://METIQ_PRIVATE_KEY",
-  "relays": ["wss://relay.damus.io", "wss://nos.lol"],
+  "relays": ["wss://<relay-1>", "wss://<relay-2>", "wss://<relay-4>", "wss://<relay-5>"],
   "admin_listen_addr": "127.0.0.1:8787",
   "admin_token": "your-secret-token"
+}
+```
+
+For Nostr-first raw control calls with `metiq gw`, add:
+
+```json
+{
+  "control_target_pubkey": "npub1...daemon...",
+  "control_signer_url": "env://METIQ_CONTROL_CALLER_NSEC"
 }
 ```
 
@@ -65,6 +74,33 @@ export METIQ_PRIVATE_KEY="your-hex-or-nsec-private-key"
 ./metiq status
 ./metiq health
 ```
+
+### Nostr-first control path
+
+`metiq gw` now defaults to transport `auto`:
+
+- if `control_target_pubkey` is configured, raw gateway method calls go over signed Nostr control RPC
+- if `control_target_pubkey` is not configured, `metiq gw` falls back to local HTTP `POST /call`
+- `--transport http` forces the compatibility HTTP path
+
+The Nostr control caller must be a different pubkey from the target daemon. Use `control_signer_url` or `--control-signer-url` when the operator/automation client should sign separately from the daemon.
+
+```sh
+# Auto-select Nostr when control_target_pubkey is configured
+./metiq gw status.get
+
+# Force Nostr with explicit overrides
+./metiq gw \
+  --transport nostr \
+  --control-target-pubkey npub1...daemon... \
+  --control-signer-url env://METIQ_CONTROL_CALLER_NSEC \
+  status.get
+
+# Force local HTTP compatibility mode
+./metiq gw --transport http status.get
+```
+
+See `docs/gateway/nostr-control.md` for the operator and migration guide.
 
 ---
 
@@ -156,7 +192,7 @@ Other:
   doctor memory-status      inspect memory index health
   qr                        display QR code for daemon pubkey
   completion bash|zsh|fish  generate shell completion script
-  gw <method> [params]      call any gateway method directly
+  gw <method> [params]      call any gateway method directly (auto prefers Nostr when control_target_pubkey is configured; use --transport http to force /call)
   update                    check for daemon updates
 ```
 
@@ -191,7 +227,7 @@ Outbound messages are encrypted to `nip44:<ciphertext>`; inbound messages are de
 
 ## Multi-agent orchestration (ACP)
 
-Agents can delegate tasks to other metiq agents (local or remote) via Nostr DMs:
+Agents can delegate tasks to other metiq agents (local or remote) via transport-neutral ACP messages sent over Nostr DMs:
 
 ```json
 // acp.dispatch — fire-and-forget or blocking
@@ -211,6 +247,14 @@ Agents can delegate tasks to other metiq agents (local or remote) via Nostr DMs:
 ```
 
 Agents also have access to the `acp.delegate` built-in tool, letting LLMs orchestrate sub-agents inline during a turn.
+
+### ACP transport compatibility
+
+- `acp.transport` supports `auto`, `nip17`, or `nip04`.
+- `auto` consults the target peer's advertised `dm_schemes` from kind:30317 capability events and chooses a compatible transport family.
+- Because kind:30317 currently advertises DM schemes as a set rather than an ordered preference list, `auto` prefers `nip17` when a peer advertises both `nip17` and `nip04`, and falls back to `nip04` when that is the only discovered compatible option.
+- When a peer has not published capability metadata yet, `auto` uses the compatibility-safe fallback and prefers `nip04` before `nip17`.
+- For cross-runtime fleets such as OpenClaw, set `acp.transport: nip04` to force the NIP-04 compatibility profile end to end.
 
 ---
 
@@ -277,7 +321,7 @@ Drivers: `nop` (os/exec, default) · `docker` (ephemeral container, requires Doc
 
 ## Gateway API
 
-The admin HTTP API and Nostr control-RPC surface share the same method namespace. Call any method via `metiq gw <method> [key=value ...]` or POST to `/call`.
+The admin HTTP API and Nostr control-RPC surface share the same method namespace. For raw gateway method execution, `metiq gw` now prefers Nostr when `control_target_pubkey` is configured. `POST /call` remains the compatibility path.
 
 Key method groups:
 

@@ -2,20 +2,202 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
+	nostr "fiatjaf.com/nostr"
 	"metiq/internal/config"
+	"metiq/internal/nostr/events"
+	nostruntime "metiq/internal/nostr/runtime"
 )
+
+type gatewayCaller interface {
+	call(method string, params any) (map[string]any, error)
+}
+
+type gatewayCloser interface {
+	Close()
+}
+
+type adminGatewayResolver func(addrFlag, tokenFlag, bootstrapPath string) (gatewayCaller, error)
+type nostrGatewayResolver func(bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error)
 
 // adminClient is a minimal HTTP client for the metiqd admin API.
 type adminClient struct {
-	addr  string
-	token string
+	addr    string
+	token   string
+	timeout time.Duration
+}
+
+type nostrControlHub interface {
+	Selector() *nostruntime.RelaySelector
+	Pool() *nostr.Pool
+	Subscribe(ctx context.Context, opts nostruntime.SubOpts) (*nostruntime.ManagedSub, error)
+	Unsubscribe(id string) bool
+	Publish(ctx context.Context, relays []string, evt nostr.Event) <-chan nostr.PublishResult
+	SignEvent(ctx context.Context, evt *nostr.Event) error
+	Close()
+}
+
+type nostrControlClient struct {
+	hub            nostrControlHub
+	callerPubKey   string
+	targetPub      nostr.PubKey
+	targetPubKey   string
+	fallbackRelays []string
+	timeout        time.Duration
+}
+
+var resolveGWClientFn = resolveGWClient
+var resolveAdminGatewayClientFn adminGatewayResolver = func(addrFlag, tokenFlag, bootstrapPath string) (gatewayCaller, error) {
+	return resolveAdminClient(addrFlag, tokenFlag, bootstrapPath)
+}
+var resolveNostrGatewayClientFn nostrGatewayResolver = func(bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+	return resolveNostrControlClient(bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
+}
+
+func resolveGWClient(transport, addrFlag, tokenFlag, bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+	switch strings.ToLower(strings.TrimSpace(transport)) {
+	case "http":
+		return resolveAdminGatewayClientFn(addrFlag, tokenFlag, bootstrapPath)
+	case "nostr":
+		return resolveNostrGatewayClientFn(bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
+	case "", "auto":
+		return resolveAutoGWClient(addrFlag, tokenFlag, bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
+	default:
+		return nil, fmt.Errorf("unsupported gw transport %q (expected auto, http, or nostr)", transport)
+	}
+}
+
+func resolveAutoGWClient(addrFlag, tokenFlag, bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+	preferNostr, err := shouldPreferNostrControl(bootstrapPath, controlTargetPubKey, controlSignerURL)
+	if err != nil {
+		return nil, err
+	}
+	if !preferNostr {
+		return resolveAdminGatewayClientFn(addrFlag, tokenFlag, bootstrapPath)
+	}
+	return resolveNostrGatewayClientFn(bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
+}
+
+func shouldPreferNostrControl(bootstrapPath, controlTargetPubKey, controlSignerURL string) (bool, error) {
+	if strings.TrimSpace(controlTargetPubKey) != "" {
+		return true, nil
+	}
+	target, err := lookupBootstrapString(bootstrapPath, "control_target_pubkey")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(target) != "", nil
+}
+
+func lookupBootstrapString(bootstrapPath, key string) (string, error) {
+	bsPath := bootstrapPath
+	if bsPath == "" {
+		defaultPath, err := config.DefaultBootstrapPath()
+		if err != nil {
+			return "", err
+		}
+		bsPath = defaultPath
+	}
+	raw, err := os.ReadFile(bsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return "", nil
+	}
+	if v, ok := m[key].(string); ok {
+		return strings.TrimSpace(v), nil
+	}
+	return "", nil
+}
+
+func resolveNostrControlClient(bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (*nostrControlClient, error) {
+	cfg, err := config.LoadBootstrapForControl(bootstrapPath)
+	if err != nil {
+		return nil, fmt.Errorf("load bootstrap: %w", err)
+	}
+
+	targetRaw := strings.TrimSpace(controlTargetPubKey)
+	if targetRaw == "" {
+		targetRaw = strings.TrimSpace(cfg.ControlTargetPubKey)
+	}
+	if targetRaw == "" {
+		return nil, fmt.Errorf(
+			"nostr control target pubkey not configured.\n" +
+				"Set control_target_pubkey in ~/.metiq/bootstrap.json,\n" +
+				"or pass --control-target-pubkey.",
+		)
+	}
+	target, err := nostruntime.ParsePubKey(targetRaw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid control target pubkey: %w", err)
+	}
+
+	resolveCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	keyer, err := config.ResolveSigner(resolveCtx, effectiveControlSignerConfig(cfg, controlSignerURL), nil)
+	if err != nil {
+		return nil, fmt.Errorf("resolve control signer: %w", err)
+	}
+	caller, err := keyer.GetPublicKey(resolveCtx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve control signer pubkey: %w", err)
+	}
+	if caller.Hex() == target.Hex() {
+		return nil, fmt.Errorf(
+			"nostr control caller pubkey %s matches target daemon pubkey %s; configure a distinct control signer via control_signer_url or --control-signer-url",
+			caller.Hex(), target.Hex(),
+		)
+	}
+
+	selector := nostruntime.NewRelaySelector(cfg.Relays, cfg.Relays)
+	hub, err := nostruntime.NewHub(context.Background(), keyer, selector)
+	if err != nil {
+		return nil, fmt.Errorf("create nostr control hub: %w", err)
+	}
+
+	return &nostrControlClient{
+		hub:            hub,
+		callerPubKey:   caller.Hex(),
+		targetPub:      target,
+		targetPubKey:   target.Hex(),
+		fallbackRelays: append([]string{}, cfg.Relays...),
+		timeout:        timeout,
+	}, nil
+}
+
+func effectiveControlSignerConfig(cfg config.BootstrapConfig, signerURLOverride string) config.BootstrapConfig {
+	override := strings.TrimSpace(signerURLOverride)
+	if override != "" {
+		return config.BootstrapConfig{SignerURL: override}
+	}
+	if control := strings.TrimSpace(cfg.ControlSignerURL); control != "" {
+		cfg.PrivateKey = ""
+		cfg.SignerURL = control
+	}
+	return cfg
+}
+
+func (c *nostrControlClient) Close() {
+	if c != nil && c.hub != nil {
+		c.hub.Close()
+	}
 }
 
 // resolveAdminClient builds an adminClient from the --admin-addr flag (or env
@@ -91,7 +273,11 @@ func (c *adminClient) call(method string, params any) (map[string]any, error) {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	cl := &http.Client{Timeout: 30 * time.Second}
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	cl := &http.Client{Timeout: timeout}
 	resp, err := cl.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("could not reach daemon at %s: %w", c.addr, err)
@@ -121,6 +307,216 @@ func (c *adminClient) call(method string, params any) (map[string]any, error) {
 	return envelope.Result, nil
 }
 
+func (c *nostrControlClient) call(method string, params any) (map[string]any, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	defer cancel()
+
+	requestID, err := newControlRequestID()
+	if err != nil {
+		return nil, fmt.Errorf("generate request id: %w", err)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"method": method,
+		"params": params,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	requestRelays := nostruntime.ControlRequestRelayCandidates(ctx, c.hub.Selector(), c.hub.Pool(), c.fallbackRelays, c.callerPubKey, c.targetPubKey)
+	responseRelays := nostruntime.ControlResponseListenRelayCandidates(ctx, c.hub.Selector(), c.hub.Pool(), c.fallbackRelays, c.targetPubKey, c.callerPubKey, requestRelays)
+	responseRelaySet := uniqueTrimmedRelays(responseRelays)
+
+	responseCh := make(chan nostr.Event, 1)
+	subErrCh := make(chan error, 1)
+	var closedMu sync.Mutex
+	closedReasons := make(map[string]string, len(responseRelaySet))
+	sendSubErr := func(err error) {
+		if err == nil {
+			return
+		}
+		select {
+		case subErrCh <- err:
+		default:
+		}
+	}
+
+	subscriptionID := "gw-control-" + requestID
+	_, err = c.hub.Subscribe(ctx, nostruntime.SubOpts{
+		ID:     subscriptionID,
+		Relays: append([]string{}, responseRelaySet...),
+		Filter: nostr.Filter{
+			Kinds:   []nostr.Kind{nostr.Kind(events.KindMCPResult)},
+			Authors: []nostr.PubKey{c.targetPub},
+			Tags: nostr.TagMap{
+				"p":   []string{c.callerPubKey},
+				"req": []string{requestID},
+			},
+		},
+		OnEvent: func(re nostr.RelayEvent) {
+			evt := re.Event
+			if !evt.CheckID() || !evt.VerifySignature() {
+				return
+			}
+			select {
+			case responseCh <- evt:
+			default:
+			}
+		},
+		OnClosed: func(relay *nostr.Relay, reason string, handledAuth bool) {
+			if handledAuth {
+				return
+			}
+			relayURL := ""
+			if relay != nil {
+				relayURL = strings.TrimSpace(relay.URL)
+			}
+			if relayURL == "" {
+				sendSubErr(fmt.Errorf("nostr control response subscription closed req=%s: %s", requestID, reason))
+				return
+			}
+			closedMu.Lock()
+			closedReasons[relayURL] = reason
+			exhausted := len(closedReasons) >= len(responseRelaySet)
+			closedMu.Unlock()
+			if exhausted {
+				sendSubErr(fmt.Errorf("nostr control response subscription closed on all relays req=%s: %s", requestID, formatRelayCloseReasons(closedReasons)))
+			}
+		},
+		OnEnd: func() {
+			sendSubErr(fmt.Errorf("nostr control response subscription ended before response req=%s", requestID))
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("subscribe for control response: %w", err)
+	}
+	defer c.hub.Unsubscribe(subscriptionID)
+
+	evt := nostr.Event{
+		Kind:      nostr.Kind(events.KindControl),
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"p", c.targetPubKey},
+			{"req", requestID},
+			{"t", "control_rpc"},
+		},
+		Content: string(body),
+	}
+	if err := c.hub.SignEvent(ctx, &evt); err != nil {
+		return nil, fmt.Errorf("sign control request: %w", err)
+	}
+	if err := c.publishRequest(ctx, evt, requestID, requestRelays); err != nil {
+		return nil, err
+	}
+
+	for {
+		select {
+		case response := <-responseCh:
+			return decodeControlResponse(response.Content)
+		case err := <-subErrCh:
+			select {
+			case response := <-responseCh:
+				return decodeControlResponse(response.Content)
+			default:
+			}
+			return nil, err
+		case <-ctx.Done():
+			select {
+			case response := <-responseCh:
+				return decodeControlResponse(response.Content)
+			default:
+			}
+			return nil, fmt.Errorf("timed out waiting for nostr control response req=%s: %w", requestID, ctx.Err())
+		}
+	}
+}
+
+func (c *nostrControlClient) publishRequest(ctx context.Context, evt nostr.Event, requestID string, relays []string) error {
+	published := false
+	var lastErr error
+	for res := range c.hub.Publish(ctx, append([]string{}, relays...), evt) {
+		if res.Error == nil {
+			published = true
+			continue
+		}
+		lastErr = fmt.Errorf("relay %s: %w", res.RelayURL, res.Error)
+	}
+	if published {
+		return nil
+	}
+	if lastErr != nil {
+		return fmt.Errorf("publish nostr control request req=%s: %w", requestID, lastErr)
+	}
+	return fmt.Errorf("publish nostr control request req=%s: no relays accepted the event", requestID)
+}
+
+func uniqueTrimmedRelays(relays []string) []string {
+	out := make([]string, 0, len(relays))
+	seen := make(map[string]struct{}, len(relays))
+	for _, relay := range relays {
+		cleaned := strings.TrimSpace(relay)
+		if cleaned == "" {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out
+}
+
+func formatRelayCloseReasons(reasons map[string]string) string {
+	if len(reasons) == 0 {
+		return "no relay detail"
+	}
+	parts := make([]string, 0, len(reasons))
+	for _, relay := range uniqueTrimmedRelays(mapKeys(reasons)) {
+		parts = append(parts, fmt.Sprintf("%s=%s", relay, reasons[relay]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func mapKeys(in map[string]string) []string {
+	out := make([]string, 0, len(in))
+	for key := range in {
+		out = append(out, key)
+	}
+	return out
+}
+
+func decodeControlResponse(content string) (map[string]any, error) {
+	var envelope struct {
+		Result map[string]any `json:"result,omitempty"`
+		Error  *struct {
+			Code    int            `json:"code"`
+			Message string         `json:"message"`
+			Data    map[string]any `json:"data,omitempty"`
+		} `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(content), &envelope); err != nil {
+		return nil, fmt.Errorf("invalid nostr control response: %w", err)
+	}
+	if envelope.Error != nil {
+		msg := envelope.Error.Message
+		if msg == "" {
+			msg = "unknown daemon error"
+		}
+		return nil, fmt.Errorf("daemon error: %s", msg)
+	}
+	return envelope.Result, nil
+}
+
+func newControlRequestID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
 // get performs an HTTP GET and decodes the JSON response.
 func (c *adminClient) get(path string) (map[string]any, error) {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL()+path, nil)
@@ -131,7 +527,11 @@ func (c *adminClient) get(path string) (map[string]any, error) {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	cl := &http.Client{Timeout: 10 * time.Second}
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	cl := &http.Client{Timeout: timeout}
 	resp, err := cl.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("could not reach daemon at %s: %w", c.addr, err)

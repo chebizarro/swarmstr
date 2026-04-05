@@ -52,9 +52,9 @@ mkdir -p ~/.metiq
 {
   "private_key": "nsec1...",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://relay.primal.net",
-    "wss://nos.lol"
+    "wss://<relay-1>",
+    "wss://<relay-3>",
+    "wss://<relay-2>"
   ],
   "admin_listen_addr": "127.0.0.1:18080",
   "admin_token": "your-admin-token-here"

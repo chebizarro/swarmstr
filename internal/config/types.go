@@ -7,6 +7,8 @@ type BootstrapConfig struct {
 	PrivateKey                      string   `json:"private_key"`
 	Relays                          []string `json:"relays"`
 	SignerURL                       string   `json:"signer_url,omitempty"`
+	ControlSignerURL                string   `json:"control_signer_url,omitempty"`
+	ControlTargetPubKey             string   `json:"control_target_pubkey,omitempty"`
 	ConfigAddress                   string   `json:"config_address,omitempty"`
 	StateKind                       int      `json:"state_kind,omitempty"`
 	TranscriptKind                  int      `json:"transcript_kind,omitempty"`

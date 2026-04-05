@@ -47,10 +47,10 @@ Relays are configured in `bootstrap.json` (used for both read and write):
 {
   "private_key": "${NOSTR_NSEC}",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://relay.primal.net",
-    "wss://nos.lol",
-    "wss://relay.snort.social"
+    "wss://<relay-1>",
+    "wss://<relay-3>",
+    "wss://<relay-2>",
+    "wss://<relay-6>"
   ]
 }
 ```
@@ -60,8 +60,8 @@ For separate read/write relay sets, use `relays` in the runtime config (`config.
 ```json
 {
   "relays": {
-    "read": ["wss://relay.damus.io", "wss://nos.lol"],
-    "write": ["wss://nos.lol", "wss://relay.primal.net"]
+    "read": ["wss://<relay-1>", "wss://<relay-2>"],
+    "write": ["wss://<relay-2>", "wss://<relay-3>"]
   }
 }
 ```
@@ -70,17 +70,14 @@ Relay reconnection uses exponential backoff automatically. Always configure at l
 
 ## Relay Selection
 
-Good relay choices for reliability:
+metiq does not prescribe a public relay set. Configure the relays that fit your network, trust, and delivery requirements.
 
-| Relay | URL | Notes |
-|-------|-----|-------|
-| Damus | `wss://relay.damus.io` | Reliable, good uptime |
-| primal | `wss://relay.primal.net` | Good coverage |
-| sharegap | `wss://relay.sharegap.net` | Good coverage |
-| nos.lol | `wss://nos.lol` | Popular |
-| primal.net | `wss://relay.primal.net` | Primal-operated |
+General guidance:
 
-Always configure at least 3 relays for redundancy. If one relay is down, the agent continues via the others.
+- Configure at least 3 relays for redundancy.
+- Keep read/write relay policy in config, then publish or mirror it via NIP-65 when appropriate.
+- Prefer relay URLs that are reachable from the machine or container where the agent actually runs.
+- If one relay is down, the agent continues via the others.
 
 ## Outbox Model (NIP-65)
 
@@ -116,7 +113,7 @@ docker run -d -p 7777:7777 \
     "nostr": {
       "relays": [
         "ws://localhost:7777",    // private relay (no TLS needed locally)
-        "wss://relay.damus.io"   // public relay for discoverability
+        "wss://<relay-1>"         // an explicitly chosen external relay
       ]
     }
   }

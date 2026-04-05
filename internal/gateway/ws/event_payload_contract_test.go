@@ -143,6 +143,8 @@ func sampleCanonicalPayloadForEvent(event string) any {
 		return ChannelMessagePayload{TS: 10, ChannelID: "ch-1", Direction: "inbound", Text: "hello"}
 	case EventConfigUpdated:
 		return ConfigUpdatedPayload{TS: 11}
+	case EventMCPLifecycle:
+		return MCPLifecyclePayload{TS: 12, Name: "demo", State: "connected", ToolCount: 1}
 	case EventPluginLoaded:
 		return PluginLoadedPayload{TS: 12, PluginID: "p1", Action: "loaded"}
 	case EventCanvasUpdate:

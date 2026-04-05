@@ -32,8 +32,8 @@ metiq keygen
 {
   "private_key": "${NOSTR_NSEC}",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://nos.lol"
+    "wss://<relay-1>",
+    "wss://<relay-2>"
   ]
 }
 ```
@@ -124,25 +124,25 @@ See [Agent Workspace](/concepts/agent-workspace) for the IDENTITY.md format.
 
 ## Relays
 
-Defaults: `wss://relay.damus.io` and `wss://nos.lol`.
+Configure relay URLs explicitly in `bootstrap.json` or runtime config. metiq does not ship with a baked-in public relay set.
 
-Recommended configuration for reliability (in `bootstrap.json`):
+Example configuration (`bootstrap.json`):
 
 ```json
 {
   "private_key": "${NOSTR_NSEC}",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://relay.primal.net",
-    "wss://nostr.wine",
-    "wss://nos.lol"
+    "wss://<relay-1>",
+    "wss://<relay-3>",
+    "wss://<search-relay>",
+    "wss://<relay-2>"
   ]
 }
 ```
 
 **Tips:**
 - Use 2–4 relays for redundancy without excessive duplication.
-- Paid relays (nostr.wine) and well-connected relays (relay.primal.net, relay.sharegap.net) provide better delivery guarantees.
+- Keep relay selection under your control and sync it with your NIP-65 / NIP-51 state where applicable.
 - Local relays (`ws://localhost:7777`) work for testing.
 - metiq deduplicates by Nostr event ID — receiving the same DM from multiple relays
   triggers only one agent turn.

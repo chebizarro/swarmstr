@@ -28,6 +28,7 @@ type InboundDM struct {
 	Text       string
 	RelayURL   string
 	CreatedAt  int64
+	Scheme     string
 	Reply      func(ctx context.Context, text string) error
 }
 
@@ -267,9 +268,6 @@ func (b *DMBus) SendDMWithScheme(ctx context.Context, toPubKey string, text stri
 
 func (b *DMBus) SetRelays(relays []string) error {
 	next := sanitizeRelayList(relays)
-	if len(next) == 0 {
-		return fmt.Errorf("at least one relay is required")
-	}
 	b.relaysMu.Lock()
 	b.relays = next
 	b.relaysMu.Unlock()
@@ -404,6 +402,7 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		Text:       plaintext,
 		RelayURL:   re.Relay.URL,
 		CreatedAt:  int64(re.Event.CreatedAt),
+		Scheme:     "nip04",
 		Reply: func(ctx context.Context, text string) error {
 			text, err = sanitizeDMText(text)
 			if err != nil {
@@ -467,7 +466,18 @@ func (b *DMBus) runSubscription(since int64) bool {
 	if b.hub != nil {
 		return b.runHubSubscription(filter)
 	}
-	stream := b.pool.SubscribeMany(b.ctx, b.currentRelays(), filter, nostr.SubscriptionOptions{})
+	relays := b.currentRelays()
+	if len(relays) == 0 {
+		select {
+		case <-b.ctx.Done():
+			return true
+		case <-b.rebindCh:
+			return true
+		case <-time.After(500 * time.Millisecond):
+			return false
+		}
+	}
+	stream := b.pool.SubscribeMany(b.ctx, relays, filter, nostr.SubscriptionOptions{})
 	for {
 		select {
 		case <-b.ctx.Done():
@@ -559,7 +569,7 @@ func (b *DMBus) runHubSubscription(filter nostr.Filter) bool {
 					b.health.RecordFailure(reportedRelay)
 				}
 				if b.subHealth != nil {
-					b.subHealth.RecordClosed(reason)
+					b.subHealth.RecordClosed(reportedRelay, reason)
 				}
 				b.emitErr(fmt.Errorf("dm subscription closed relay=%s reason=%s", reportedRelay, reason))
 				emitRelayClose(dmRelayClose{relayURL: relayKey, reason: reason, generation: gen})

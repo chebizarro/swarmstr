@@ -11,9 +11,15 @@ if [ ! -f "${BOOTSTRAP_PATH}" ]; then
     exit 1
   fi
 
+  if [ -z "${METIQ_NOSTR_RELAYS:-}" ]; then
+    echo "ERROR: missing relay configuration for ${BOOTSTRAP_PATH}." >&2
+    echo "Set METIQ_NOSTR_RELAYS to a comma-separated list of wss:// relay URLs, or mount an existing bootstrap.json into /data/.metiq/." >&2
+    exit 1
+  fi
+
   mkdir -p "${BOOTSTRAP_DIR}"
 
-  relays_csv="${METIQ_NOSTR_RELAYS:-wss://nos.lol,wss://relay.primal.net,wss://relay.damus.io}"
+  relays_csv="${METIQ_NOSTR_RELAYS}"
 
   relays_json="$(printf '%s' "${relays_csv}" | jq -Rn 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length>0))')"
 

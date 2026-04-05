@@ -97,6 +97,7 @@ type runtimeLogBuffer struct {
 	cap     int
 	nextID  int64
 	entries []runtimeLogEntry
+	notify  chan struct{}
 }
 
 type runtimeLogEntry struct {
@@ -110,7 +111,7 @@ func newRuntimeLogBuffer(capacity int) *runtimeLogBuffer {
 	if capacity <= 0 {
 		capacity = 2000
 	}
-	return &runtimeLogBuffer{cap: capacity}
+	return &runtimeLogBuffer{cap: capacity, notify: make(chan struct{})}
 }
 
 func (b *runtimeLogBuffer) Append(level string, message string) {
@@ -133,6 +134,10 @@ func (b *runtimeLogBuffer) Append(level string, message string) {
 	b.nextID++
 	entry := runtimeLogEntry{ID: b.nextID, TS: time.Now().UnixMilli(), Level: level, Message: message}
 	b.entries = append(b.entries, entry)
+	if b.notify != nil {
+		close(b.notify)
+	}
+	b.notify = make(chan struct{})
 }
 
 func (b *runtimeLogBuffer) Tail(cursor int64, limit int, maxBytes int) map[string]any {
@@ -167,20 +172,25 @@ func (b *runtimeLogBuffer) Tail(cursor int64, limit int, maxBytes int) map[strin
 	usedBytes := 0
 	truncated := false
 	lastProcessedIdx := -1
+	nextCursor := cursor
 	for i, entry := range selected {
 		line := fmt.Sprintf("%d [%s] %s", entry.TS, entry.Level, entry.Message)
 		lineBytes := len(line)
 		if usedBytes+lineBytes > maxBytes {
 			truncated = true
+			if lastProcessedIdx < 0 {
+				nextCursor = entry.ID
+			}
 			break
 		}
 		usedBytes += lineBytes
 		lines = append(lines, line)
 		lastProcessedIdx = i
 	}
-	nextCursor := cursor
 	if lastProcessedIdx >= 0 && lastProcessedIdx < len(selected) {
 		nextCursor = selected[lastProcessedIdx].ID
+	} else if reset && len(selected) == 0 && len(b.entries) > 0 {
+		nextCursor = b.entries[len(b.entries)-1].ID
 	}
 	if nextCursor < 0 {
 		nextCursor = 0
@@ -192,6 +202,19 @@ func (b *runtimeLogBuffer) Tail(cursor int64, limit int, maxBytes int) map[strin
 		"truncated": truncated,
 		"reset":     reset,
 	}
+}
+
+func (b *runtimeLogBuffer) hasChangesAfterLocked(cursor int64) bool {
+	if b.nextID > cursor {
+		return true
+	}
+	return len(b.entries) > 0 && cursor < b.entries[0].ID
+}
+
+func (b *runtimeLogBuffer) snapshotNotifier(cursor int64) (bool, <-chan struct{}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.hasChangesAfterLocked(cursor), b.notify
 }
 
 type channelRuntimeState struct {
@@ -1138,8 +1161,7 @@ func computeWizardSteps(mode string, input map[string]any) []wizardStep {
 		// Step 2: Relay URLs.
 		steps = append(steps, wizardStep{
 			ID: "relays", Type: "text",
-			Prompt:  "Enter relay URLs (comma-separated)",
-			Default: "wss://nos.lol,wss://relay.primal.net,wss://relay.sharegap.net",
+			Prompt: "Enter relay URLs (comma-separated)",
 		})
 		// Step 3: Agent display name.
 		steps = append(steps, wizardStep{ID: "agent_name", Type: "text", Prompt: "Agent display name", Default: "metiq"})

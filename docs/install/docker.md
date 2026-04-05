@@ -64,6 +64,37 @@ docker compose up -d
 docker compose logs -f metiqd
 ```
 
+## Relay hairpin NAT workaround
+
+If a relay lives on the same machine and its public `wss://` hostname hairpins back to that host, `metiqd` running on the host network may not be able to reach it even though other Docker containers can. This usually shows up as startup `WARN relay healthcheck ... unreachable` logs.
+
+In that case, attach `metiqd` to the same Docker network as the relay and use the relay URL that is reachable from that network.
+
+```yaml
+version: "3.8"
+
+services:
+  relay:
+    image: ghcr.io/your-org/relay:latest
+    networks: [nostr]
+
+  metiqd:
+    image: ghcr.io/your-org/metiq:latest
+    volumes:
+      - metiq-data:/data/.metiq
+    networks: [nostr]
+
+networks:
+  nostr:
+
+volumes:
+  metiq-data:
+```
+
+If you must keep `metiqd` on the host network, use a relay address that is routable from the host instead of the public hostname that loops back through NAT.
+
+When using shared relays, set `storage.encrypt: true` in `~/.metiq/config.json` so relay-persisted config, transcript, and memory documents are self-encrypted before publication.
+
 ## Config in the container
 
 Mount individual config files read-only:

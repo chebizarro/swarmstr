@@ -35,7 +35,7 @@ metiq exposes two optional local HTTP servers, both configured in `bootstrap.jso
 ```json
 {
   "private_key": "...",
-  "relays": ["wss://relay.damus.io"],
+  "relays": ["wss://<relay-1>"],
   "admin_listen_addr": "127.0.0.1:18788",
   "admin_token": "your-secret-token",
   "gateway_ws_listen_addr": "127.0.0.1:18789",

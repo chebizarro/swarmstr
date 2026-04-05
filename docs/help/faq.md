@@ -23,9 +23,9 @@ metiq flips this: **Nostr is the primary transport** and the architecture is bui
 
 ### Do I need to run my own Nostr relay?
 
-No. metiq connects to public Nostr relays (Damus, nos.lol, etc.). For better
-reliability and privacy, you can run your own relay (strfry, nostream, etc.) alongside
-public ones.
+No. metiq connects to the relays you configure. For better reliability and privacy,
+you can run your own relay (strfry, nostream, etc.) and publish that policy via NIP-65
+or related fleet lists.
 
 ### Which Nostr clients can I use to chat with my agent?
 
@@ -58,7 +58,7 @@ Relays are set in `bootstrap.json` under `relays`:
 
 ```json
 {
-  "relays": ["wss://relay.damus.io", "wss://nos.lol", "wss://nostr.wine"]
+  "relays": ["wss://<relay-1>", "wss://<relay-2>", "wss://<search-relay>"]
 }
 ```
 

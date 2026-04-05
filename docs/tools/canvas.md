@@ -90,8 +90,8 @@ canvas_update(
     <h2>Relay Status</h2>
     <table>
       <tr><th>Relay</th><th>Status</th><th>Latency</th></tr>
-      <tr><td>wss://relay.damus.io</td><td>✅</td><td>45ms</td></tr>
-      <tr><td>wss://nos.lol</td><td>✅</td><td>112ms</td></tr>
+      <tr><td>wss://<relay-1></td><td>✅</td><td>45ms</td></tr>
+      <tr><td>wss://<relay-2></td><td>✅</td><td>112ms</td></tr>
     </table>
   </body></html>"
 )

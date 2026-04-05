@@ -60,8 +60,11 @@ type AssembleResult struct {
 	Messages []Message `json:"messages"`
 	// EstimatedTokens is a rough token count estimate.
 	EstimatedTokens int `json:"estimated_tokens"`
-	// SystemPromptAddition is optional engine-supplied text prepended to the
-	// runtime system prompt (e.g. memory context).
+	// SystemPromptAddition is optional engine-supplied dynamic text appended to
+	// the runtime system prompt at turn assembly time (e.g. memory context).
+	// Unlike the static provider/system prompt prefix, this addition is treated
+	// as non-cacheable prompt material so per-turn context churn does not bust
+	// the reusable system-prompt cache prefix.
 	SystemPromptAddition string `json:"system_prompt_addition,omitempty"`
 }
 

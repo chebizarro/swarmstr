@@ -115,6 +115,11 @@ func TestParity_ConfigGet(t *testing.T) {
 	if len(hash) != 64 {
 		t.Errorf("config.get: base_hash should be 64-char hex, got len=%d val=%q", len(hash), hash)
 	}
+	if hashAlias, _ := out["hash"].(string); hashAlias == "" {
+		t.Errorf("config.get: missing or empty 'hash': %v", out)
+	} else if hashAlias != hash {
+		t.Errorf("config.get: hash alias mismatch hash=%q base_hash=%q", hashAlias, hash)
+	}
 }
 
 // ── config.set ───────────────────────────────────────────────────────────────
@@ -199,6 +204,12 @@ func TestParity_SessionsList(t *testing.T) {
 	if _, ok := out["sessions"]; !ok {
 		t.Errorf("sessions.list: missing 'sessions' key: %v", out)
 	}
+	if _, ok := out["total"]; !ok {
+		t.Errorf("sessions.list: missing 'total' key: %v", out)
+	}
+	if _, ok := out["path"]; !ok {
+		t.Errorf("sessions.list: missing 'path' key: %v", out)
+	}
 }
 
 // ── agent.identity.get ───────────────────────────────────────────────────────
@@ -206,8 +217,8 @@ func TestParity_SessionsList(t *testing.T) {
 func TestParity_AgentIdentityGet(t *testing.T) {
 	cfgState := newRuntimeConfigStore(minimalOpenCfg())
 	out := parityCallWithDocs(t, methods.MethodAgentIdentityGet, map[string]any{"session_id": "test-session"}, cfgState, newParityDocs())
-	// OpenClaw: {agent_id, display_name, session_id, pubkey}
-	for _, key := range []string{"agent_id", "display_name", "session_id"} {
+	// OpenClaw-compatible: preserve snake_case while exposing camelCase aliases.
+	for _, key := range []string{"agent_id", "display_name", "session_id", "agentId", "displayName", "sessionId"} {
 		if _, ok := out[key]; !ok {
 			t.Errorf("agent.identity.get: missing %q field: %v", key, out)
 		}
@@ -305,8 +316,8 @@ func TestParity_AgentRun(t *testing.T) {
 	if !ok {
 		t.Fatalf("agent: expected map[string]any, got %T", res.Result)
 	}
-	// OpenClaw: {run_id, status: "accepted", accepted_at}
-	for _, key := range []string{"run_id", "status", "accepted_at"} {
+	// OpenClaw-compatible: preserve snake_case while exposing camelCase aliases.
+	for _, key := range []string{"run_id", "status", "accepted_at", "runId", "acceptedAt"} {
 		if _, ok := out[key]; !ok {
 			t.Errorf("agent: missing %q field: %v", key, out)
 		}

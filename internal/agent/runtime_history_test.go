@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -93,6 +94,9 @@ func TestPartialTurnResult_WithPartial(t *testing.T) {
 	if len(got.ToolTraces) != 1 {
 		t.Errorf("expected 1 trace, got %d", len(got.ToolTraces))
 	}
+	if got.Outcome != "" || got.StopReason != "" {
+		t.Errorf("expected zero classification for tool-only partial extraction, got outcome=%q stop_reason=%q", got.Outcome, got.StopReason)
+	}
 }
 
 func TestPartialTurnResult_EmptyPartial(t *testing.T) {
@@ -118,5 +122,71 @@ func TestTurnExecutionError_Unwrap(t *testing.T) {
 	}
 	if err.Error() != "deadline exceeded" {
 		t.Errorf("Error() = %q, want %q", err.Error(), "deadline exceeded")
+	}
+}
+
+func TestBuildTurnResultMetadata_InfersSuccessfulTurn(t *testing.T) {
+	meta, ok := BuildTurnResultMetadata(TurnResult{
+		Text:  "Done.",
+		Usage: TurnUsage{InputTokens: 5, OutputTokens: 2},
+	}, nil)
+	if !ok {
+		t.Fatal("expected successful turn metadata")
+	}
+	if meta.Outcome != TurnOutcomeCompleted {
+		t.Fatalf("Outcome = %q, want %q", meta.Outcome, TurnOutcomeCompleted)
+	}
+	if meta.StopReason != TurnStopReasonModelText {
+		t.Fatalf("StopReason = %q, want %q", meta.StopReason, TurnStopReasonModelText)
+	}
+	if meta.Usage.InputTokens != 5 || meta.Usage.OutputTokens != 2 {
+		t.Fatalf("unexpected usage: %+v", meta.Usage)
+	}
+}
+
+func TestBuildTurnResultMetadata_UsesPartialTurnClassification(t *testing.T) {
+	err := &TurnExecutionError{
+		Cause: fmt.Errorf("tool loop blocked"),
+		Partial: TurnResult{
+			HistoryDelta: []ConversationMessage{{Role: "assistant", Content: "blocked"}},
+			Outcome:      TurnOutcomeBlocked,
+			StopReason:   TurnStopReasonLoopBlocked,
+			Usage:        TurnUsage{InputTokens: 8, OutputTokens: 1},
+		},
+	}
+	meta, ok := BuildTurnResultMetadata(TurnResult{}, err)
+	if !ok {
+		t.Fatal("expected partial turn metadata")
+	}
+	if meta.Outcome != TurnOutcomeBlocked {
+		t.Fatalf("Outcome = %q, want %q", meta.Outcome, TurnOutcomeBlocked)
+	}
+	if meta.StopReason != TurnStopReasonLoopBlocked {
+		t.Fatalf("StopReason = %q, want %q", meta.StopReason, TurnStopReasonLoopBlocked)
+	}
+	if meta.Usage.InputTokens != 8 || meta.Usage.OutputTokens != 1 {
+		t.Fatalf("unexpected usage: %+v", meta.Usage)
+	}
+}
+
+func TestBuildTurnResultMetadata_UsesPartialUsageWithoutHistory(t *testing.T) {
+	err := &TurnExecutionError{
+		Cause: context.DeadlineExceeded,
+		Partial: TurnResult{
+			Usage: TurnUsage{InputTokens: 13, OutputTokens: 3},
+		},
+	}
+	meta, ok := BuildTurnResultMetadata(TurnResult{}, err)
+	if !ok {
+		t.Fatal("expected metadata for partial usage without history")
+	}
+	if meta.Outcome != TurnOutcomeAborted {
+		t.Fatalf("Outcome = %q, want %q", meta.Outcome, TurnOutcomeAborted)
+	}
+	if meta.StopReason != TurnStopReasonCancelled {
+		t.Fatalf("StopReason = %q, want %q", meta.StopReason, TurnStopReasonCancelled)
+	}
+	if meta.Usage.InputTokens != 13 || meta.Usage.OutputTokens != 3 {
+		t.Fatalf("unexpected usage: %+v", meta.Usage)
 	}
 }

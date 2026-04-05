@@ -86,7 +86,7 @@ func (r *KeyRing) Len() int {
 // ProviderKeyRingRegistry maps provider IDs to their KeyRings.
 // It is safe for concurrent use.
 type ProviderKeyRingRegistry struct {
-	mu   sync.RWMutex
+	mu    sync.RWMutex
 	rings map[string]*KeyRing
 }
 
@@ -107,4 +107,14 @@ func (r *ProviderKeyRingRegistry) Get(providerID string) *KeyRing {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.rings[providerID]
+}
+
+// Replace swaps the registry contents with the provided provider→ring map.
+func (r *ProviderKeyRingRegistry) Replace(rings map[string]*KeyRing) {
+	r.mu.Lock()
+	r.rings = make(map[string]*KeyRing, len(rings))
+	for providerID, ring := range rings {
+		r.rings[providerID] = ring
+	}
+	r.mu.Unlock()
 }

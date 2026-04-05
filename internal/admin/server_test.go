@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"metiq/internal/config"
 	"metiq/internal/gateway/methods"
+	mcppkg "metiq/internal/mcp"
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
 )
@@ -139,6 +141,40 @@ func TestDispatchMethodCallStatusGetUsesLiveRelaysProvider(t *testing.T) {
 	}
 	if res.UptimeMS <= 0 {
 		t.Fatalf("expected uptime_ms > 0, got %d", res.UptimeMS)
+	}
+}
+
+func TestDispatchMethodCallStatusGetIncludesMCPProvider(t *testing.T) {
+	opts := ServerOptions{
+		Status: StatusProvider{PubKey: "pub", Relays: []string{"wss://r"}, DMPolicy: "open", Started: time.Now().Add(-5 * time.Second)},
+		StatusMCP: func() *mcppkg.TelemetrySnapshot {
+			return &mcppkg.TelemetrySnapshot{
+				Enabled: true,
+				Summary: mcppkg.TelemetrySummary{Healthy: false, TotalServers: 1, NeedsAuthServers: 1},
+				Servers: []mcppkg.TelemetryServer{{
+					Name:           "remote",
+					State:          string(mcppkg.ConnectionStateNeedsAuth),
+					RuntimePresent: true,
+				}},
+			}
+		},
+	}
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodStatus, nil)
+
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil {
+		t.Fatalf("dispatchMethodCall error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	res, ok := result.(methods.StatusResponse)
+	if !ok {
+		t.Fatalf("result type = %T", result)
+	}
+	if res.MCP == nil || res.MCP.Summary.NeedsAuthServers != 1 {
+		t.Fatalf("unexpected mcp status payload: %+v", res.MCP)
 	}
 }
 
@@ -681,7 +717,7 @@ func TestDispatchMethodCallConfigRawMutations(t *testing.T) {
 	}
 
 	rr = httptest.NewRecorder()
-	req = newMethodRequest(t, methods.MethodConfigSet, map[string]any{"raw": `{"version":5,"dm":{"policy":"open"},"relays":{"read":["wss://b"],"write":["wss://b"]}}`})
+	req = newMethodRequest(t, methods.MethodConfigSet, map[string]any{"raw": `{"version":5,"dm":{"policy":"open"},"relays":{"read":["wss://b"],"write":["wss://b"]},"secrets":{"api_key":"supersecret"}}`})
 	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("config.set raw failed status=%d err=%v", status, err)
@@ -689,9 +725,19 @@ func TestDispatchMethodCallConfigRawMutations(t *testing.T) {
 	if cfg.Version != 5 || cfg.DM.Policy != "open" {
 		t.Fatalf("unexpected config after set raw: %#v", cfg)
 	}
+	if cfg.Secrets["api_key"] != "supersecret" {
+		t.Fatalf("expected stored config to retain secret, got: %#v", cfg.Secrets)
+	}
 	out, _ := result.(map[string]any)
 	if out["path"] != "raw" {
 		t.Fatalf("expected raw path response, got: %#v", out)
+	}
+	redactedCfg, ok := out["config"].(state.ConfigDoc)
+	if !ok {
+		t.Fatalf("expected config.set raw response config to be ConfigDoc, got: %#v", out["config"])
+	}
+	if redactedCfg.Secrets["api_key"] != config.RedactedValue {
+		t.Fatalf("expected config.set raw response to redact secrets, got: %#v", redactedCfg.Secrets)
 	}
 }
 
@@ -717,6 +763,9 @@ func TestDispatchMethodCallConfigGetResponseShape(t *testing.T) {
 	}
 	if hash, _ := out["base_hash"].(string); hash == "" {
 		t.Fatalf("config.get result missing 'base_hash': %#v", out)
+	}
+	if hash, _ := out["hash"].(string); hash == "" {
+		t.Fatalf("config.get result missing 'hash': %#v", out)
 	}
 }
 
@@ -862,10 +911,15 @@ func TestDispatchMethodCallRuntimeCallbacks(t *testing.T) {
 	var gotLimit int
 	var gotMaxBytes int
 	var gotLogout string
+	var gotObserve methods.RuntimeObserveRequest
 	opts := ServerOptions{
 		TailLogs: func(_ context.Context, cursor int64, limit int, maxBytes int) (map[string]any, error) {
 			gotCursor, gotLimit, gotMaxBytes = cursor, limit, maxBytes
 			return map[string]any{"cursor": cursor, "lines": []string{"a"}, "truncated": false, "reset": false}, nil
+		},
+		ObserveRuntime: func(_ context.Context, req methods.RuntimeObserveRequest) (map[string]any, error) {
+			gotObserve = req
+			return map[string]any{"events": map[string]any{"cursor": req.EventCursor, "events": []map[string]any{{"event": "tool.start"}}, "truncated": false, "reset": false}, "timed_out": false, "waited_ms": int64(0)}, nil
 		},
 		ChannelsStatus: func(context.Context, methods.ChannelsStatusRequest) (map[string]any, error) {
 			return map[string]any{"channels": []map[string]any{{"id": "nostr", "connected": true}}}, nil
@@ -893,6 +947,19 @@ func TestDispatchMethodCallRuntimeCallbacks(t *testing.T) {
 	}
 	if gotCursor != 9 || gotLimit != 5 || gotMaxBytes != 99 {
 		t.Fatalf("unexpected logs params cursor=%d limit=%d maxBytes=%d", gotCursor, gotLimit, gotMaxBytes)
+	}
+
+	rr = httptest.NewRecorder()
+	req = newMethodRequest(t, methods.MethodRuntimeObserve, map[string]any{"include_events": true, "include_logs": false, "event_cursor": 11, "event_limit": 4, "events": []string{"tool.start"}, "agent_id": "agent-1"})
+	_, status, err = dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("runtime.observe failed status=%d err=%v", status, err)
+	}
+	if gotObserve.EventCursor != 11 || gotObserve.EventLimit != 4 || gotObserve.AgentID != "agent-1" {
+		t.Fatalf("unexpected runtime.observe params: %#v", gotObserve)
+	}
+	if gotObserve.IncludeLogs == nil || *gotObserve.IncludeLogs {
+		t.Fatalf("expected include_logs=false to be preserved: %#v", gotObserve)
 	}
 
 	rr = httptest.NewRecorder()
@@ -933,8 +1000,18 @@ func TestDispatchMethodCallRuntimeCallbacks(t *testing.T) {
 }
 
 func TestDispatchMethodCallChatHistoryAndSessionViews(t *testing.T) {
-	session := state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer"}
-	entries := []state.TranscriptEntryDoc{{EntryID: "1", SessionID: "s1"}, {EntryID: "2", SessionID: "s1"}}
+	session := state.SessionDoc{Version: 1, SessionID: "s1", PeerPubKey: "peer", LastInboundAt: time.Now().Unix()}
+	entries := []state.TranscriptEntryDoc{
+		{EntryID: "1", SessionID: "s1", Role: "user", Text: "Need briefing", Unix: time.Now().Unix()},
+		{EntryID: "2", SessionID: "s1", Role: "assistant", Text: "Here is the latest update", Unix: time.Now().Unix() + 1},
+	}
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	if err := sessionStore.Put("s1", state.SessionEntry{SessionID: "s1", AgentID: "main", Label: "Briefing", LastChannel: "nostr", LastTo: "peer", UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed session store: %v", err)
+	}
 	opts := ServerOptions{
 		GetSession: func(_ context.Context, id string) (state.SessionDoc, error) {
 			if id == "missing" {
@@ -945,22 +1022,30 @@ func TestDispatchMethodCallChatHistoryAndSessionViews(t *testing.T) {
 		ListSessions: func(context.Context, int) ([]state.SessionDoc, error) {
 			return []state.SessionDoc{session}, nil
 		},
+		SessionStore: sessionStore,
+		GetConfig: func(context.Context) (state.ConfigDoc, error) {
+			return state.ConfigDoc{Agent: state.AgentPolicy{DefaultModel: "gpt-test"}}, nil
+		},
 		ListTranscript: func(context.Context, string, int) ([]state.TranscriptEntryDoc, error) {
 			return entries, nil
 		},
 	}
 
 	rr := httptest.NewRecorder()
-	req := newMethodRequest(t, methods.MethodSessionsList, map[string]any{"limit": 10})
+	req := newMethodRequest(t, methods.MethodSessionsList, map[string]any{"limit": 10, "label": "Briefing", "agentId": "main", "includeDerivedTitles": true, "includeLastMessage": true})
 	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("sessions.list failed status=%d err=%v", status, err)
 	}
 	out, _ := result.(map[string]any)
-	if len(out["sessions"].([]state.SessionDoc)) != 1 {
+	sessions, ok := out["sessions"].([]map[string]any)
+	if !ok || len(sessions) != 1 {
 		t.Fatalf("unexpected sessions.list result: %#v", result)
 	}
-	if out["count"].(int) != 1 || out["defaults"] == nil {
+	if sessions[0]["key"] != "s1" || sessions[0]["label"] != "Briefing" || sessions[0]["lastMessagePreview"] != "Here is the latest update" {
+		t.Fatalf("unexpected sessions.list session row: %#v", sessions[0])
+	}
+	if out["count"].(int) != 1 || out["total"].(int) != 1 || out["defaults"] == nil {
 		t.Fatalf("unexpected sessions.list compatibility fields: %#v", result)
 	}
 
@@ -1020,7 +1105,7 @@ func TestDispatchMethodCallAgentMethods(t *testing.T) {
 			return map[string]any{"run_id": req.RunID, "status": "ok"}, nil
 		},
 		AgentIdentity: func(_ context.Context, req methods.AgentIdentityRequest) (map[string]any, error) {
-			return map[string]any{"agent_id": "main", "session_id": req.SessionID}, nil
+			return map[string]any{"agent_id": "main", "display_name": "Main Agent", "session_id": req.SessionID}, nil
 		},
 	}
 
@@ -1031,7 +1116,7 @@ func TestDispatchMethodCallAgentMethods(t *testing.T) {
 		t.Fatalf("agent failed status=%d err=%v", status, err)
 	}
 	out, _ := result.(map[string]any)
-	if out["status"] != "accepted" {
+	if out["status"] != "accepted" || out["run_id"] != "run-1" || out["runId"] != "run-1" {
 		t.Fatalf("unexpected agent result: %#v", result)
 	}
 
@@ -1042,7 +1127,7 @@ func TestDispatchMethodCallAgentMethods(t *testing.T) {
 		t.Fatalf("agent.wait failed status=%d err=%v", status, err)
 	}
 	out, _ = result.(map[string]any)
-	if out["status"] != "ok" {
+	if out["status"] != "ok" || out["run_id"] != "run-1" || out["runId"] != "run-1" {
 		t.Fatalf("unexpected agent.wait result: %#v", result)
 	}
 
@@ -1053,7 +1138,7 @@ func TestDispatchMethodCallAgentMethods(t *testing.T) {
 		t.Fatalf("agent.identity.get failed status=%d err=%v", status, err)
 	}
 	out, _ = result.(map[string]any)
-	if out["agent_id"] != "main" {
+	if out["agent_id"] != "main" || out["agentId"] != "main" || out["displayName"] != "Main Agent" || out["sessionId"] != "s1" {
 		t.Fatalf("unexpected identity result: %#v", result)
 	}
 }
@@ -1205,7 +1290,7 @@ func TestDispatchMethodCallSessionMutations(t *testing.T) {
 		t.Fatalf("sessions.compact failed status=%d err=%v", status, err)
 	}
 	out, _ := result.(map[string]any)
-	if out["dropped"].(int) != 2 || out["key"] != "s1" {
+	if out["dropped"].(int) != 2 || out["key"] != "s1" || out["sessionId"] != "s1" || out["fromEntries"].(int) != 3 {
 		t.Fatalf("unexpected compact result: %#v", out)
 	}
 
@@ -1216,7 +1301,7 @@ func TestDispatchMethodCallSessionMutations(t *testing.T) {
 		t.Fatalf("chat.abort failed status=%d err=%v", status, err)
 	}
 	out, _ = result.(map[string]any)
-	if out["aborted"] != true || out["aborted_count"].(int) != 1 || out["key"] != "s1" {
+	if out["aborted"] != true || out["aborted_count"].(int) != 1 || out["abortedCount"].(int) != 1 || out["key"] != "s1" || out["sessionId"] != "s1" {
 		t.Fatalf("unexpected chat.abort result: %#v", out)
 	}
 
@@ -1227,7 +1312,7 @@ func TestDispatchMethodCallSessionMutations(t *testing.T) {
 		t.Fatalf("chat.abort (runId only) failed status=%d err=%v", status, err)
 	}
 	out, _ = result.(map[string]any)
-	if out["aborted"] != false || out["run_id"] != "run-1" {
+	if out["aborted"] != false || out["run_id"] != "run-1" || out["runId"] != "run-1" || out["abortedCount"].(int) != 0 {
 		t.Fatalf("unexpected run-only chat.abort result: %#v", out)
 	}
 	if abortCalls != 1 {

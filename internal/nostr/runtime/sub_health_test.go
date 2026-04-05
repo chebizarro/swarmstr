@@ -33,24 +33,45 @@ func TestSubHealthTrackerRecordReconnect(t *testing.T) {
 	}
 }
 
+func TestSubHealthTrackerReconnectClearsClosedReason(t *testing.T) {
+	tr := NewSubHealthTracker("test")
+	tr.RecordClosed("wss://relay.example", "relay closed")
+	tr.RecordReconnect()
+	snap := tr.Snapshot(nil, 0)
+	if snap.LastClosedReason != "" {
+		t.Fatalf("last_closed_reason = %q, want empty after reconnect", snap.LastClosedReason)
+	}
+	if snap.LastClosedRelay != "" {
+		t.Fatalf("last_closed_relay = %q, want empty after reconnect", snap.LastClosedRelay)
+	}
+}
+
 func TestSubHealthTrackerRecordClosed(t *testing.T) {
 	tr := NewSubHealthTracker("test")
-	tr.RecordClosed("auth-required:")
-	tr.RecordClosed("rate-limited:")
+	tr.RecordClosed("wss://relay-a", "auth-required:")
+	tr.RecordClosed("wss://relay-b", "rate-limited:")
 	snap := tr.Snapshot(nil, 0)
 	if snap.LastClosedReason != "rate-limited:" {
 		t.Fatalf("last_closed_reason = %q, want %q", snap.LastClosedReason, "rate-limited:")
+	}
+	if snap.LastClosedRelay != "wss://relay-b" {
+		t.Fatalf("last_closed_relay = %q, want %q", snap.LastClosedRelay, "wss://relay-b")
 	}
 }
 
 func TestSubHealthTrackerSnapshotIncludesLabel(t *testing.T) {
 	tr := NewSubHealthTracker("control-rpc")
-	snap := tr.Snapshot([]string{"wss://a", "wss://b"}, 10*time.Minute)
+	relays := []string{"wss://a", "wss://b"}
+	snap := tr.Snapshot(relays, 10*time.Minute)
 	if snap.Label != "control-rpc" {
 		t.Fatalf("label = %q, want %q", snap.Label, "control-rpc")
 	}
 	if len(snap.BoundRelays) != 2 {
 		t.Fatalf("bound_relays len = %d, want 2", len(snap.BoundRelays))
+	}
+	relays[0] = "wss://mutated"
+	if snap.BoundRelays[0] != "wss://a" {
+		t.Fatalf("bound_relays should be copied, got %#v", snap.BoundRelays)
 	}
 	if snap.ReplayWindowMS != int64((10*time.Minute)/time.Millisecond) {
 		t.Fatalf("replay_window_ms = %d, want %d", snap.ReplayWindowMS, int64((10*time.Minute)/time.Millisecond))
@@ -68,6 +89,9 @@ func TestSubHealthTrackerSnapshotZeroValues(t *testing.T) {
 	}
 	if snap.LastClosedReason != "" {
 		t.Fatalf("last_closed_reason should be empty, got %q", snap.LastClosedReason)
+	}
+	if snap.LastClosedRelay != "" {
+		t.Fatalf("last_closed_relay should be empty, got %q", snap.LastClosedRelay)
 	}
 	if snap.EventCount != 0 {
 		t.Fatalf("event_count = %d, want 0", snap.EventCount)

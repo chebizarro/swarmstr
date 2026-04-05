@@ -32,7 +32,7 @@ metiq logs --lines 100  # Watch for relay connection errors
 Check:
 - Relay URLs use `wss://` (not `ws://` for public relays).
 - The nsec key is valid: `nak key public nsec1...` should return your npub.
-- Relays are reachable: `curl -I https://relay.damus.io` should return 200.
+- Relays are reachable: `metiq relay ping wss://<relay-1>` should succeed.
 
 ### DMs sent but not received
 
@@ -111,8 +111,8 @@ If it fails, the nsec is malformed. Regenerate with `nak key generate`.
 
 The relay URL may be wrong or the relay is down. Try:
 ```bash
-metiq relay ping wss://relay.damus.io
-metiq relay info wss://relay.damus.io
+metiq relay ping wss://<relay-1>
+metiq relay info wss://<relay-1>
 ```
 
 Switch to a different relay temporarily.

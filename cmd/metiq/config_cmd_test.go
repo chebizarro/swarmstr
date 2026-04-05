@@ -152,3 +152,25 @@ func TestRunConfigImport_createsParentDirs(t *testing.T) {
 		t.Errorf("config file was not written: %v", err)
 	}
 }
+
+func TestRunConfigImport_rejectsInvalidTargetPath(t *testing.T) {
+	srcPath := writeTmpConfig(t, sampleConfigJSON)
+	err := runConfigImport([]string{"--file", srcPath, "--path", filepath.Join(t.TempDir(), "config.txt")})
+	if err == nil {
+		t.Fatal("expected error for unsupported target config extension")
+	}
+	if !strings.Contains(err.Error(), ".json, .json5, .yaml, or .yml") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunConfigImport_rejectsInvalidSourcePath(t *testing.T) {
+	dir := t.TempDir()
+	err := runConfigImport([]string{"--file", dir, "--path", filepath.Join(dir, "out.json")})
+	if err == nil {
+		t.Fatal("expected error for directory source path")
+	}
+	if !strings.Contains(err.Error(), "config file path must be a file") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

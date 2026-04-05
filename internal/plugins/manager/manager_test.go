@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,6 +76,27 @@ exports.invoke = function(tool, args) {
 };
 `
 
+const typedPluginSrc = `
+exports.manifest = {
+	id: "typed-plugin",
+	version: "1.0.0",
+	description: "typed args",
+	tools: [{
+		name: "sum",
+		description: "sum the count",
+		parameters: {
+			type: "object",
+			properties: { count: { type: "integer" } },
+			required: ["count"]
+		}
+	}],
+};
+exports.invoke = function(tool, args) {
+	if (tool === "sum") return { count: args.count };
+	return {};
+};
+`
+
 // ─── tests ────────────────────────────────────────────────────────────────────
 
 func TestManager_loadAndRegister(t *testing.T) {
@@ -98,6 +120,17 @@ func TestManager_loadAndRegister(t *testing.T) {
 	list := reg.List()
 	if len(list) != 1 || list[0] != "my-echo/echo" {
 		t.Errorf("tool list: %v", list)
+	}
+	desc, ok := reg.Descriptor("my-echo/echo")
+	if !ok {
+		t.Fatal("expected plugin tool descriptor")
+	}
+	if desc.Origin.Kind != agent.ToolOriginKindPlugin || desc.Origin.PluginID != "my-echo" || desc.Origin.CanonicalName != "echo" {
+		t.Fatalf("unexpected descriptor origin: %+v", desc.Origin)
+	}
+	defs := reg.Definitions()
+	if len(defs) != 1 || defs[0].Name != "my-echo/echo" {
+		t.Fatalf("expected plugin tool to be provider-visible via Definitions, got %+v", defs)
 	}
 }
 
@@ -126,6 +159,44 @@ func TestManager_toolExecution(t *testing.T) {
 	// Should be JSON-encoded map.
 	if result[0] != '{' {
 		t.Errorf("expected JSON object result, got: %q", result)
+	}
+}
+
+func TestManager_pluginSchemaValidation(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := writePlugin(t, dir, "index.js", typedPluginSrc)
+	cfg := configWithPlugin(t, "typed", scriptPath)
+
+	mgr := New(testHost())
+	if err := mgr.Load(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	reg := agent.NewToolRegistry()
+	mgr.RegisterTools(reg)
+
+	defs := reg.Definitions()
+	if len(defs) != 1 || defs[0].Name != "typed/sum" {
+		t.Fatalf("expected typed plugin definition, got %+v", defs)
+	}
+	if defs[0].InputJSONSchema == nil {
+		t.Fatalf("expected raw plugin schema to be preserved on provider definition, got %+v", defs[0])
+	}
+	props, _ := defs[0].InputJSONSchema["properties"].(map[string]any)
+	countProp, _ := props["count"].(map[string]any)
+	if countProp["type"] != "integer" {
+		t.Fatalf("expected raw plugin schema to survive, got %+v", defs[0].InputJSONSchema)
+	}
+
+	_, err := reg.Execute(context.Background(), agent.ToolCall{
+		Name: "typed/sum",
+		Args: map[string]any{"count": "oops"},
+	})
+	if err == nil {
+		t.Fatal("expected schema validation error")
+	}
+	var execErr *agent.ToolExecutionError
+	if !errors.As(err, &execErr) || execErr.Phase != agent.ToolExecutionPhaseSchemaValidation {
+		t.Fatalf("expected schema validation phase, got %T %v", err, err)
 	}
 }
 

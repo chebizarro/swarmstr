@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"metiq/internal/agent"
 	"metiq/internal/memory"
+	"metiq/internal/store/state"
 )
 
 // MemoryStoreTool returns an agent.ToolFunc for the "memory_store" tool.
@@ -20,20 +23,37 @@ import (
 // MemoryStoreDef is the ToolDefinition for memory_store.
 var MemoryStoreDef = agent.ToolDefinition{
 	Name:        "memory_store",
-	Description: "Persist a piece of information to memory so it can be retrieved in future sessions. Use to remember facts, preferences, decisions, or anything worth retaining across conversations.",
-	Parameters: agent.ToolParameters{
-		Type: "object",
-		Properties: map[string]agent.ToolParamProp{
-			"text": {
-				Type:        "string",
-				Description: "The information to store (plain text).",
+	Description: "Persist durable searchable memory for later recall. Use for user facts, validated feedback, project context, or external references that are not derivable from the current repo state.",
+	InputJSONSchema: map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"text": map[string]any{
+				"type":        "string",
+				"description": "The information to store (plain text).",
 			},
-			"topic": {
-				Type:        "string",
-				Description: "Short topic label to categorise this memory (e.g. \"preferences\", \"project:metiq\").",
+			"tags": map[string]any{
+				"description": "Optional keywords for retrieval. Accepts either an array of strings or a single string.",
+				"oneOf": []any{
+					map[string]any{
+						"type":  "array",
+						"items": map[string]any{"type": "string"},
+					},
+					map[string]any{
+						"type": "string",
+					},
+				},
+			},
+			"session_id": map[string]any{
+				"type":        "string",
+				"description": "Optional session scope for the stored entry.",
+			},
+			"topic": map[string]any{
+				"type":        "string",
+				"description": "Optional memory category/topic. Prefer durable labels such as user, feedback, project, or reference when they apply.",
 			},
 		},
-		Required: []string{"text"},
+		"required": []any{"text"},
 	},
 }
 
@@ -81,7 +101,28 @@ func MemoryStoreTool(idx memory.Store) agent.ToolFunc {
 			}
 		}
 
-		id := idx.Store(sessionID, text, tags)
+		topic := strings.TrimSpace(agent.ArgString(args, "topic"))
+		scope := memory.ScopedContextFromAgent(agent.MemoryScopeFromContext(ctx))
+		id := ""
+		if topic == "" && !scope.Enabled() {
+			id = idx.Store(sessionID, text, tags)
+		} else {
+			allKeywords := append([]string(nil), tags...)
+			if topic != "" {
+				allKeywords = append(allKeywords, topic)
+			}
+			id = memory.GenerateMemoryID()
+			doc := state.MemoryDoc{
+				MemoryID:  id,
+				SessionID: sessionID,
+				Text:      text,
+				Keywords:  allKeywords,
+				Topic:     topic,
+				Unix:      time.Now().Unix(),
+			}
+			doc = memory.ApplyScope(doc, scope)
+			memory.AddDoc(ctx, idx, doc)
+		}
 		if saveErr := idx.Save(); saveErr != nil {
 			log.Printf("memory_store: index save failed: %v", saveErr)
 		}

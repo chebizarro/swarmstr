@@ -115,8 +115,8 @@ if (!$DryRun) {
 # Your agent's Nostr private key (hex or nsec bech32)
 #METIQ_NOSTR_KEY=
 
-# Optional: comma-separated relay URLs
-#METIQ_NOSTR_RELAYS=wss://nos.lol,wss://relay.primal.net,wss://relay.sharegap.net
+# Relay URLs (comma-separated)
+#METIQ_NOSTR_RELAYS=wss://<relay-1>,wss://<relay-2>,wss://<relay-3>
 
 # ── LLM providers ─────────────────────────────────────────────────────────────
 #ANTHROPIC_API_KEY=

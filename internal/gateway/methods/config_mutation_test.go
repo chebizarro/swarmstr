@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	mcppkg "metiq/internal/mcp"
 	"metiq/internal/store/state"
 )
 
@@ -98,6 +99,136 @@ func TestApplyConfigSetAndPatch(t *testing.T) {
 		t.Fatalf("expected plugins.installs.codegen.installedAt to be set: %#v", installCodegen)
 	}
 
+	next, err = ApplyConfigSet(next, "mcp.enabled", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp.enabled error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.servers.files.enabled", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp server enabled error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.servers.files.command", " npx ")
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp server command error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.servers.files.args", []string{" -y ", "server-filesystem", "/tmp", "/tmp"})
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp server args error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.servers.files.env", map[string]any{" NODE_ENV ": " production ", "EMPTY": " "})
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp server env error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.servers.remote", map[string]any{
+		"enabled": true,
+		"type":    " HTTP ",
+		"url":     " https://mcp.example.com/http ",
+		"headers": map[string]any{" Authorization ": " Bearer tok "},
+		"oauth": map[string]any{
+			"enabled":       true,
+			"client_id":     " client-1 ",
+			"authorize_url": " https://mcp.example.com/oauth/authorize ",
+			"token_url":     " https://mcp.example.com/oauth/token ",
+			"scopes":        []string{" profile ", "offline_access"},
+			"use_pkce":      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp server object error: %v", err)
+	}
+	rawMCP, _ := next.Extra["mcp"].(map[string]any)
+	if enabled, _ := rawMCP["enabled"].(bool); !enabled {
+		t.Fatalf("expected mcp.enabled=true, got %#v", rawMCP)
+	}
+	rawServers, _ := rawMCP["servers"].(map[string]any)
+	files, _ := rawServers["files"].(map[string]any)
+	if files["command"] != "npx" {
+		t.Fatalf("unexpected mcp.servers.files.command: %#v", files)
+	}
+	args, _ := files["args"].([]string)
+	if len(args) != 4 || args[0] != "-y" || args[1] != "server-filesystem" || args[2] != "/tmp" || args[3] != "/tmp" {
+		t.Fatalf("expected ordered duplicate-preserving args, got %#v", files["args"])
+	}
+	envRaw, ok := files["env"]
+	if !ok {
+		t.Fatalf("expected mcp.servers.files.env: %#v", files)
+	}
+	envMap, err = anyToStringMap(envRaw)
+	if err != nil {
+		t.Fatalf("unexpected mcp.servers.files.env type: %v (%#v)", err, envRaw)
+	}
+	if envMap["NODE_ENV"] != "production" {
+		t.Fatalf("unexpected mcp.servers.files.env: %#v", envMap)
+	}
+	if _, ok := envMap["EMPTY"]; ok {
+		t.Fatalf("expected EMPTY key to be dropped from mcp.servers.files.env: %#v", envMap)
+	}
+	remote, _ := rawServers["remote"].(map[string]any)
+	if remote["type"] != "http" || remote["url"] != "https://mcp.example.com/http" {
+		t.Fatalf("unexpected mcp.servers.remote normalization: %#v", remote)
+	}
+	oauth, _ := remote["oauth"].(map[string]any)
+	if oauth["client_id"] != "client-1" || oauth["authorize_url"] != "https://mcp.example.com/oauth/authorize" {
+		t.Fatalf("unexpected mcp oauth normalization: %#v", oauth)
+	}
+	scopes, _ := oauth["scopes"].([]string)
+	if len(scopes) != 2 || scopes[0] != "profile" || scopes[1] != "offline_access" {
+		t.Fatalf("unexpected mcp oauth scopes: %#v", oauth)
+	}
+	next, err = ApplyConfigSet(next, "mcp.servers.remote.oauth.callback_port", 4317)
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp oauth callback_port error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.servers.remote.oauth.client_secret_ref", " env:MCP_SECRET ")
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp oauth client_secret_ref error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.policy.allowed", []any{
+		map[string]any{"name": " remote "},
+		map[string]any{"url": " https://mcp.example.com/* "},
+	})
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp policy allowed error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.policy.denied", []any{
+		map[string]any{"command": []any{" npx ", " -y ", "server-filesystem", "/tmp", "/tmp"}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp policy denied error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.policy.require_remote_approval", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp policy require_remote_approval error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.policy.approved_servers", []string{" remote "})
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp policy approved_servers error: %v", err)
+	}
+	rawMCP, _ = next.Extra["mcp"].(map[string]any)
+	rawServers, _ = rawMCP["servers"].(map[string]any)
+	remote, _ = rawServers["remote"].(map[string]any)
+	oauth, _ = remote["oauth"].(map[string]any)
+	if oauth["callback_port"] != 4317 || oauth["client_secret_ref"] != "env:MCP_SECRET" {
+		t.Fatalf("unexpected nested mcp oauth fields: %#v", oauth)
+	}
+	rawPolicy, _ := rawMCP["policy"].(map[string]any)
+	if rawPolicy["require_remote_approval"] != true {
+		t.Fatalf("expected mcp.policy.require_remote_approval=true, got %#v", rawPolicy)
+	}
+	approvedServers, _ := rawPolicy["approved_servers"].([]string)
+	if len(approvedServers) != 1 || approvedServers[0] != "remote" {
+		t.Fatalf("unexpected mcp.policy.approved_servers: %#v", rawPolicy)
+	}
+	allowedMatchers, _ := rawPolicy["allowed"].([]map[string]any)
+	if len(allowedMatchers) != 2 || allowedMatchers[0]["name"] != "remote" || allowedMatchers[1]["url"] != "https://mcp.example.com/*" {
+		t.Fatalf("unexpected mcp.policy.allowed normalization: %#v", rawPolicy["allowed"])
+	}
+	deniedMatchers, _ := rawPolicy["denied"].([]map[string]any)
+	deniedCommand, _ := deniedMatchers[0]["command"].([]string)
+	if len(deniedCommand) != 5 || deniedCommand[0] != "npx" || deniedCommand[1] != "-y" {
+		t.Fatalf("unexpected mcp.policy.denied normalization: %#v", rawPolicy["denied"])
+	}
+
 	next, err = ApplyConfigPatch(next, map[string]any{
 		"plugins": map[string]any{
 			"entries": map[string]any{
@@ -107,6 +238,21 @@ func TestApplyConfigSetAndPatch(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ApplyConfigPatch plugins nested error: %v", err)
+	}
+	next, err = ApplyConfigPatch(next, map[string]any{
+		"mcp": map[string]any{
+			"servers": map[string]any{
+				"files": map[string]any{
+					"env": map[string]any{
+						"NODE_ENV": "",
+						"OTHER":    "still",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyConfigPatch mcp nested error: %v", err)
 	}
 	rawExt, _ = next.Extra["extensions"].(map[string]any)
 	rawEntries, _ = rawExt["entries"].(map[string]any)
@@ -135,6 +281,27 @@ func TestApplyConfigSetAndPatch(t *testing.T) {
 			t.Fatalf("expected OTHER to remain after env patch merge: %#v", envAfter)
 		}
 	}
+	rawMCP, _ = next.Extra["mcp"].(map[string]any)
+	rawServers, _ = rawMCP["servers"].(map[string]any)
+	files, _ = rawServers["files"].(map[string]any)
+	envRaw = files["env"]
+	envMap, err = anyToStringMap(envRaw)
+	if err != nil {
+		t.Fatalf("unexpected MCP env type after patch: %v (%#v)", err, envRaw)
+	}
+	if _, ok := envMap["NODE_ENV"]; ok {
+		t.Fatalf("expected NODE_ENV to be removed from MCP env patch merge: %#v", envMap)
+	}
+	if envMap["OTHER"] != "still" {
+		t.Fatalf("expected OTHER to remain after MCP env patch merge: %#v", envMap)
+	}
+}
+
+func TestApplyConfigSetMCPRejectsInvalidType(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	if _, err := ApplyConfigSet(cfg, "mcp.servers.demo.type", "ws"); err == nil {
+		t.Fatalf("expected invalid MCP transport type error")
+	}
 }
 
 func TestConfigSchemaContainsCoreFields(t *testing.T) {
@@ -150,6 +317,18 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 				"codegen": map[string]any{"enabled": true, "tools": []string{"codegen.apply"}, "gateway_methods": []string{"ext.codegen.run"}},
 			},
 		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": map[string]any{
+				"filesystem": map[string]any{"enabled": true, "command": "npx", "args": []string{"-y", "server-filesystem", "/tmp"}},
+				"duplicate":  map[string]any{"enabled": true, "command": "npx", "args": []string{"-y", "server-filesystem", "/tmp"}},
+				"remote":     map[string]any{"enabled": true, "type": "http", "url": "https://remote.example.com/mcp"},
+			},
+			"policy": map[string]any{
+				"require_remote_approval": true,
+				"approved_servers":        []string{},
+			},
+		},
 	}}
 	s := ConfigSchema(cfg)
 	fields, ok := s["fields"].([]string)
@@ -157,34 +336,63 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 		t.Fatalf("unexpected schema payload: %#v", s)
 	}
 	mustHave := map[string]struct{}{
-		"dm.policy":                             {},
-		"relays.read":                           {},
-		"relays.write":                          {},
-		"agent.verbose":                         {},
-		"control.require_auth":                  {},
-		"plugins.deny":                          {},
-		"plugins.load":                          {},
-		"plugins.load.paths":                    {},
-		"plugins.entries.<id>.enabled":          {},
-		"plugins.entries.<id>.apiKey":           {},
-		"plugins.entries.<id>.env":              {},
-		"plugins.entries.<id>.tools":            {},
-		"plugins.entries.<id>.gatewayMethods":   {},
-		"plugins.installs":                      {},
-		"plugins.installs.<id>":                 {},
-		"plugins.installs.<id>.source":          {},
-		"plugins.installs.<id>.spec":            {},
-		"plugins.installs.<id>.sourcePath":      {},
-		"plugins.installs.<id>.installPath":     {},
-		"plugins.installs.<id>.version":         {},
-		"plugins.installs.<id>.resolvedName":    {},
-		"plugins.installs.<id>.resolvedVersion": {},
-		"plugins.installs.<id>.resolvedSpec":    {},
-		"plugins.installs.<id>.integrity":       {},
-		"plugins.installs.<id>.shasum":          {},
-		"plugins.installs.<id>.resolvedAt":      {},
-		"plugins.installs.<id>.installedAt":     {},
-		"plugins.installs.<id>.<field>":         {},
+		"dm.policy":                                {},
+		"dm.reply_scheme":                          {},
+		"relays.read":                              {},
+		"relays.write":                             {},
+		"storage.encrypt":                          {},
+		"acp.transport":                            {},
+		"agent.verbose":                            {},
+		"control.require_auth":                     {},
+		"plugins.deny":                             {},
+		"plugins.load":                             {},
+		"plugins.load.paths":                       {},
+		"plugins.entries.<id>.enabled":             {},
+		"plugins.entries.<id>.apiKey":              {},
+		"plugins.entries.<id>.env":                 {},
+		"plugins.entries.<id>.tools":               {},
+		"plugins.entries.<id>.gatewayMethods":      {},
+		"plugins.installs":                         {},
+		"plugins.installs.<id>":                    {},
+		"plugins.installs.<id>.source":             {},
+		"plugins.installs.<id>.spec":               {},
+		"plugins.installs.<id>.sourcePath":         {},
+		"plugins.installs.<id>.installPath":        {},
+		"plugins.installs.<id>.version":            {},
+		"plugins.installs.<id>.resolvedName":       {},
+		"plugins.installs.<id>.resolvedVersion":    {},
+		"plugins.installs.<id>.resolvedSpec":       {},
+		"plugins.installs.<id>.integrity":          {},
+		"plugins.installs.<id>.shasum":             {},
+		"plugins.installs.<id>.resolvedAt":         {},
+		"plugins.installs.<id>.installedAt":        {},
+		"plugins.installs.<id>.<field>":            {},
+		"mcp.enabled":                              {},
+		"mcp.policy":                               {},
+		"mcp.policy.allowed":                       {},
+		"mcp.policy.denied":                        {},
+		"mcp.policy.require_remote_approval":       {},
+		"mcp.policy.approved_servers":              {},
+		"mcp.servers":                              {},
+		"mcp.servers.<id>":                         {},
+		"mcp.servers.<id>.enabled":                 {},
+		"mcp.servers.<id>.command":                 {},
+		"mcp.servers.<id>.args":                    {},
+		"mcp.servers.<id>.env":                     {},
+		"mcp.servers.<id>.type":                    {},
+		"mcp.servers.<id>.url":                     {},
+		"mcp.servers.<id>.headers":                 {},
+		"mcp.servers.<id>.oauth":                   {},
+		"mcp.servers.<id>.oauth.enabled":           {},
+		"mcp.servers.<id>.oauth.client_id":         {},
+		"mcp.servers.<id>.oauth.client_secret_ref": {},
+		"mcp.servers.<id>.oauth.authorize_url":     {},
+		"mcp.servers.<id>.oauth.token_url":         {},
+		"mcp.servers.<id>.oauth.revoke_url":        {},
+		"mcp.servers.<id>.oauth.scopes":            {},
+		"mcp.servers.<id>.oauth.callback_host":     {},
+		"mcp.servers.<id>.oauth.callback_port":     {},
+		"mcp.servers.<id>.oauth.use_pkce":          {},
 	}
 	for _, field := range fields {
 		delete(mustHave, field)
@@ -216,6 +424,26 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 	if len(entries) != 1 || entries[0]["id"] != "codegen" {
 		t.Fatalf("unexpected plugin schema entries: %#v", s["plugins"])
 	}
+	mcpSummary, _ := s["mcp"].(map[string]any)
+	if mcpSummary["enabled"] != true {
+		t.Fatalf("expected mcp schema enabled summary: %#v", mcpSummary)
+	}
+	mcpServers, _ := mcpSummary["servers"].([]map[string]any)
+	if len(mcpServers) != 1 || mcpServers[0]["name"] != "duplicate" {
+		t.Fatalf("expected deduplicated mcp schema servers summary: %#v", mcpSummary)
+	}
+	mcpSuppressed, _ := mcpSummary["suppressed"].([]map[string]any)
+	if len(mcpSuppressed) != 1 || mcpSuppressed[0]["reason"] != mcppkg.SuppressionReasonDuplicateSignature {
+		t.Fatalf("expected suppressed mcp schema summary: %#v", mcpSummary)
+	}
+	mcpFiltered, _ := mcpSummary["filtered"].([]map[string]any)
+	if len(mcpFiltered) != 1 || mcpFiltered[0]["name"] != "remote" || mcpFiltered[0]["policy_status"] != mcppkg.PolicyStatusApprovalRequired {
+		t.Fatalf("expected filtered mcp schema summary: %#v", mcpSummary)
+	}
+	policySummary, _ := mcpSummary["policy"].(map[string]any)
+	if policySummary["require_remote_approval"] != true {
+		t.Fatalf("expected mcp policy schema summary: %#v", mcpSummary)
+	}
 
 	cfg = state.ConfigDoc{Extra: map[string]any{"extensions": map[string]any{"entries": map[string]any{"codegen": map[string]any{"enabled": true, "api_key": "secret", "env": map[string]string{"OPENAI_API_KEY": "present"}}}}}}
 	s = ConfigSchema(cfg)
@@ -227,6 +455,45 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 	envKeys, _ := entries[0]["env"].([]string)
 	if len(envKeys) != 1 || envKeys[0] != "OPENAI_API_KEY" {
 		t.Fatalf("expected env key projection in plugin schema entries: %#v", entries)
+	}
+}
+
+func TestApplyConfigSetStorageEncrypt(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	next, err := ApplyConfigSet(cfg, "storage.encrypt", false)
+	if err != nil {
+		t.Fatalf("ApplyConfigSet storage.encrypt error: %v", err)
+	}
+	if next.Storage.Encrypt == nil || *next.Storage.Encrypt {
+		t.Fatalf("expected storage.encrypt=false, got %#v", next.Storage)
+	}
+}
+
+func TestApplyConfigSetACPTransport(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	next, err := ApplyConfigSet(cfg, "acp.transport", "nip-04")
+	if err != nil {
+		t.Fatalf("ApplyConfigSet acp.transport error: %v", err)
+	}
+	if next.ACP.Transport != "nip04" {
+		t.Fatalf("expected acp.transport=nip04, got %#v", next.ACP)
+	}
+	if _, err := ApplyConfigSet(cfg, "acp.transport", "smtp"); err == nil {
+		t.Fatalf("expected acp.transport validation error")
+	}
+}
+
+func TestApplyConfigSetDMReplyScheme(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1}
+	next, err := ApplyConfigSet(cfg, "dm.reply_scheme", "nip-17")
+	if err != nil {
+		t.Fatalf("ApplyConfigSet dm.reply_scheme error: %v", err)
+	}
+	if next.DM.ReplyScheme != "nip17" {
+		t.Fatalf("expected dm.reply_scheme=nip17, got %#v", next.DM)
+	}
+	if _, err := ApplyConfigSet(cfg, "dm.reply_scheme", "smtp"); err == nil {
+		t.Fatalf("expected dm.reply_scheme validation error")
 	}
 }
 
