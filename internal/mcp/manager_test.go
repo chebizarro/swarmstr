@@ -275,6 +275,121 @@ func TestResolveConfigDoc_globalDisabledPreservesInventory(t *testing.T) {
 	}
 }
 
+func TestParseMCPConfig_appliesAllowDenyPolicy(t *testing.T) {
+	cfg := ParseMCPConfig(map[string]any{
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": map[string]any{
+				"filesystem": map[string]any{
+					"enabled": true,
+					"command": "npx",
+					"args":    []any{"-y", "server-filesystem", "/tmp"},
+				},
+				"notes": map[string]any{
+					"enabled": true,
+					"type":    "http",
+					"url":     "https://notes.example.com/mcp",
+				},
+			},
+			"policy": map[string]any{
+				"allowed": []any{
+					map[string]any{"command": []any{"npx", "-y", "server-filesystem", "/tmp"}},
+				},
+				"denied": []any{
+					map[string]any{"name": "notes"},
+				},
+			},
+		},
+	})
+
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("expected one allowed server, got %#v", cfg.Servers)
+	}
+	if _, ok := cfg.Servers["filesystem"]; !ok {
+		t.Fatalf("expected filesystem to remain active, got %#v", cfg.Servers)
+	}
+	blocked, ok := cfg.FilteredServers["notes"]
+	if !ok {
+		t.Fatalf("expected denied server to remain inspectable, got %#v", cfg.FilteredServers)
+	}
+	if blocked.PolicyStatus != PolicyStatusBlocked || blocked.PolicyReason != PolicyReasonDenied {
+		t.Fatalf("unexpected denied policy outcome: %#v", blocked)
+	}
+}
+
+func TestResolveConfigDoc_requiresRemoteApproval(t *testing.T) {
+	cfg := ResolveConfigDoc(state.ConfigDoc{Extra: map[string]any{
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": map[string]any{
+				"approved-remote": map[string]any{
+					"enabled": true,
+					"type":    "http",
+					"url":     "https://approved.example.com/mcp",
+				},
+				"pending-remote": map[string]any{
+					"enabled": true,
+					"type":    "http",
+					"url":     "https://pending.example.com/mcp",
+				},
+				"stdio": map[string]any{
+					"enabled": true,
+					"command": "demo-mcp",
+				},
+			},
+			"policy": map[string]any{
+				"require_remote_approval": true,
+				"approved_servers":        []any{"approved-remote"},
+			},
+		},
+	}})
+
+	if len(cfg.Servers) != 2 {
+		t.Fatalf("expected approved remote + stdio to remain active, got %#v", cfg.Servers)
+	}
+	if _, ok := cfg.Servers["approved-remote"]; !ok {
+		t.Fatalf("expected approved remote server to remain active, got %#v", cfg.Servers)
+	}
+	if _, ok := cfg.Servers["stdio"]; !ok {
+		t.Fatalf("expected stdio server to bypass remote approval gate, got %#v", cfg.Servers)
+	}
+	pending, ok := cfg.FilteredServers["pending-remote"]
+	if !ok {
+		t.Fatalf("expected unapproved remote server to be filtered, got %#v", cfg.FilteredServers)
+	}
+	if pending.PolicyStatus != PolicyStatusApprovalRequired || pending.PolicyReason != PolicyReasonRemoteApproval {
+		t.Fatalf("unexpected approval-required policy outcome: %#v", pending)
+	}
+}
+
+func TestResolveConfigDoc_emptyAllowlistBlocksAllEnabledServers(t *testing.T) {
+	cfg := ResolveConfigDoc(state.ConfigDoc{Extra: map[string]any{
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": map[string]any{
+				"filesystem": map[string]any{
+					"enabled": true,
+					"command": "npx",
+				},
+			},
+			"policy": map[string]any{
+				"allowed": []any{},
+			},
+		},
+	}})
+
+	if len(cfg.Servers) != 0 {
+		t.Fatalf("expected empty allowlist to block all enabled servers, got %#v", cfg.Servers)
+	}
+	blocked, ok := cfg.FilteredServers["filesystem"]
+	if !ok {
+		t.Fatalf("expected blocked server to remain inspectable, got %#v", cfg.FilteredServers)
+	}
+	if blocked.PolicyStatus != PolicyStatusBlocked || blocked.PolicyReason != PolicyReasonAllowlist {
+		t.Fatalf("unexpected allowlist policy outcome: %#v", blocked)
+	}
+}
+
 func TestResolveSourceConfigs_preservesDisabledServers(t *testing.T) {
 	cfg := ResolveSourceConfigs(
 		SourceConfig{

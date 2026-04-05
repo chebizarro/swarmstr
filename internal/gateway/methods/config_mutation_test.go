@@ -183,12 +183,50 @@ func TestApplyConfigSetAndPatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyConfigSet mcp oauth client_secret_ref error: %v", err)
 	}
+	next, err = ApplyConfigSet(next, "mcp.policy.allowed", []any{
+		map[string]any{"name": " remote "},
+		map[string]any{"url": " https://mcp.example.com/* "},
+	})
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp policy allowed error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.policy.denied", []any{
+		map[string]any{"command": []any{" npx ", " -y ", "server-filesystem", "/tmp", "/tmp"}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp policy denied error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.policy.require_remote_approval", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp policy require_remote_approval error: %v", err)
+	}
+	next, err = ApplyConfigSet(next, "mcp.policy.approved_servers", []string{" remote "})
+	if err != nil {
+		t.Fatalf("ApplyConfigSet mcp policy approved_servers error: %v", err)
+	}
 	rawMCP, _ = next.Extra["mcp"].(map[string]any)
 	rawServers, _ = rawMCP["servers"].(map[string]any)
 	remote, _ = rawServers["remote"].(map[string]any)
 	oauth, _ = remote["oauth"].(map[string]any)
 	if oauth["callback_port"] != 4317 || oauth["client_secret_ref"] != "env:MCP_SECRET" {
 		t.Fatalf("unexpected nested mcp oauth fields: %#v", oauth)
+	}
+	rawPolicy, _ := rawMCP["policy"].(map[string]any)
+	if rawPolicy["require_remote_approval"] != true {
+		t.Fatalf("expected mcp.policy.require_remote_approval=true, got %#v", rawPolicy)
+	}
+	approvedServers, _ := rawPolicy["approved_servers"].([]string)
+	if len(approvedServers) != 1 || approvedServers[0] != "remote" {
+		t.Fatalf("unexpected mcp.policy.approved_servers: %#v", rawPolicy)
+	}
+	allowedMatchers, _ := rawPolicy["allowed"].([]map[string]any)
+	if len(allowedMatchers) != 2 || allowedMatchers[0]["name"] != "remote" || allowedMatchers[1]["url"] != "https://mcp.example.com/*" {
+		t.Fatalf("unexpected mcp.policy.allowed normalization: %#v", rawPolicy["allowed"])
+	}
+	deniedMatchers, _ := rawPolicy["denied"].([]map[string]any)
+	deniedCommand, _ := deniedMatchers[0]["command"].([]string)
+	if len(deniedCommand) != 5 || deniedCommand[0] != "npx" || deniedCommand[1] != "-y" {
+		t.Fatalf("unexpected mcp.policy.denied normalization: %#v", rawPolicy["denied"])
 	}
 
 	next, err = ApplyConfigPatch(next, map[string]any{
@@ -284,6 +322,11 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 			"servers": map[string]any{
 				"filesystem": map[string]any{"enabled": true, "command": "npx", "args": []string{"-y", "server-filesystem", "/tmp"}},
 				"duplicate":  map[string]any{"enabled": true, "command": "npx", "args": []string{"-y", "server-filesystem", "/tmp"}},
+				"remote":     map[string]any{"enabled": true, "type": "http", "url": "https://remote.example.com/mcp"},
+			},
+			"policy": map[string]any{
+				"require_remote_approval": true,
+				"approved_servers":        []string{},
 			},
 		},
 	}}
@@ -325,6 +368,11 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 		"plugins.installs.<id>.installedAt":        {},
 		"plugins.installs.<id>.<field>":            {},
 		"mcp.enabled":                              {},
+		"mcp.policy":                               {},
+		"mcp.policy.allowed":                       {},
+		"mcp.policy.denied":                        {},
+		"mcp.policy.require_remote_approval":       {},
+		"mcp.policy.approved_servers":              {},
 		"mcp.servers":                              {},
 		"mcp.servers.<id>":                         {},
 		"mcp.servers.<id>.enabled":                 {},
@@ -387,6 +435,14 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 	mcpSuppressed, _ := mcpSummary["suppressed"].([]map[string]any)
 	if len(mcpSuppressed) != 1 || mcpSuppressed[0]["reason"] != mcppkg.SuppressionReasonDuplicateSignature {
 		t.Fatalf("expected suppressed mcp schema summary: %#v", mcpSummary)
+	}
+	mcpFiltered, _ := mcpSummary["filtered"].([]map[string]any)
+	if len(mcpFiltered) != 1 || mcpFiltered[0]["name"] != "remote" || mcpFiltered[0]["policy_status"] != mcppkg.PolicyStatusApprovalRequired {
+		t.Fatalf("expected filtered mcp schema summary: %#v", mcpSummary)
+	}
+	policySummary, _ := mcpSummary["policy"].(map[string]any)
+	if policySummary["require_remote_approval"] != true {
+		t.Fatalf("expected mcp policy schema summary: %#v", mcpSummary)
 	}
 
 	cfg = state.ConfigDoc{Extra: map[string]any{"extensions": map[string]any{"entries": map[string]any{"codegen": map[string]any{"enabled": true, "api_key": "secret", "env": map[string]string{"OPENAI_API_KEY": "present"}}}}}}

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -28,6 +29,43 @@ const (
 	SuppressionReasonNameConflict       SuppressionReason = "name_conflict"
 	SuppressionReasonDuplicateSignature SuppressionReason = "duplicate_signature"
 )
+
+// PolicyStatus identifies why an otherwise-enabled MCP server was filtered from
+// the connectable inventory.
+type PolicyStatus string
+
+const (
+	PolicyStatusBlocked          PolicyStatus = "blocked"
+	PolicyStatusApprovalRequired PolicyStatus = "approval-required"
+)
+
+// PolicyReason identifies which policy gate filtered a server from the active
+// inventory.
+type PolicyReason string
+
+const (
+	PolicyReasonDenied         PolicyReason = "policy.denied"
+	PolicyReasonAllowlist      PolicyReason = "policy.allowlist"
+	PolicyReasonRemoteApproval PolicyReason = "policy.remote-approval"
+)
+
+// PolicyMatcher matches MCP servers by name, full stdio command vector, and/or
+// remote URL pattern.
+type PolicyMatcher struct {
+	Name    string   `json:"name,omitempty"`
+	Command []string `json:"command,omitempty"`
+	URL     string   `json:"url,omitempty"`
+}
+
+// Policy captures MCP trust and approval rules applied during inventory
+// resolution.
+type Policy struct {
+	Allowed               []PolicyMatcher `json:"allowed,omitempty"`
+	AllowedDefined        bool            `json:"allowed_defined,omitempty"`
+	Denied                []PolicyMatcher `json:"denied,omitempty"`
+	RequireRemoteApproval bool            `json:"require_remote_approval,omitempty"`
+	ApprovedServers       []string        `json:"approved_servers,omitempty"`
+}
 
 // SourceConfig is a source-local MCP configuration block before precedence and
 // deduplication are applied.
@@ -65,6 +103,14 @@ type ResolvedServerConfig struct {
 	Signature  string       `json:"signature,omitempty"`
 }
 
+// FilteredServer records an enabled MCP server that was removed from the active
+// runtime inventory by trust/approval policy.
+type FilteredServer struct {
+	ResolvedServerConfig
+	PolicyStatus PolicyStatus `json:"policy_status"`
+	PolicyReason PolicyReason `json:"policy_reason"`
+}
+
 // SuppressedServer records a server definition that lost during inventory
 // resolution due to precedence/name conflict or duplicate launch signature.
 type SuppressedServer struct {
@@ -87,13 +133,13 @@ type serverCandidate struct {
 // ResolveConfigDoc returns the canonical resolved MCP inventory for a runtime
 // configuration document.
 func ResolveConfigDoc(doc state.ConfigDoc) Config {
-	return ResolveSourceConfigs(parseExtraMCPSource(doc.Extra))
+	return resolveSourceConfigsWithPolicy(parseMCPPolicy(doc.Extra), parseExtraMCPSource(doc.Extra))
 }
 
 // ParseMCPConfig preserves the historical manager API but now returns the
 // resolved inventory rather than a direct parse of extra["mcp"].
 func ParseMCPConfig(extra map[string]any) Config {
-	return ResolveSourceConfigs(parseExtraMCPSource(extra))
+	return resolveSourceConfigsWithPolicy(parseMCPPolicy(extra), parseExtraMCPSource(extra))
 }
 
 // ResolveSourceConfigs merges source-local MCP definitions into one resolved
@@ -102,7 +148,12 @@ func ParseMCPConfig(extra map[string]any) Config {
 // the lifecycle manager can surface explicit disabled state without letting
 // disabled definitions suppress enabled candidates.
 func ResolveSourceConfigs(sources ...SourceConfig) Config {
+	return resolveSourceConfigsWithPolicy(Policy{}, sources...)
+}
+
+func resolveSourceConfigsWithPolicy(policy Policy, sources ...SourceConfig) Config {
 	resolved := Config{
+		Policy:          normalizePolicy(policy),
 		Servers:         make(map[string]ResolvedServerConfig),
 		DisabledServers: make(map[string]ResolvedServerConfig),
 	}
@@ -153,6 +204,7 @@ func ResolveSourceConfigs(sources ...SourceConfig) Config {
 	seenSigs := make(map[string]string, len(activeCandidates)+len(disabledCandidates))
 	resolveCandidates(resolved.Servers, activeCandidates, seenNames, seenSigs, &resolved.Suppressed)
 	resolveCandidates(resolved.DisabledServers, disabledCandidates, seenNames, seenSigs, &resolved.Suppressed)
+	resolved = applyPolicyFilters(resolved)
 
 	if len(resolved.Servers) == 0 {
 		resolved.Servers = nil
@@ -221,15 +273,8 @@ func parseExtraMCPSource(extra map[string]any) SourceConfig {
 		Source:     ConfigSourceExtraMCP,
 		Precedence: extraMCPPrecedence,
 	}
-	if extra == nil {
-		return source
-	}
-	mcpRaw, ok := extra["mcp"]
-	if !ok {
-		return source
-	}
-	mcpMap, ok := mcpRaw.(map[string]any)
-	if !ok {
+	mcpMap := rawMCPConfig(extra)
+	if mcpMap == nil {
 		return source
 	}
 	if enabled, ok := mcpMap["enabled"].(bool); ok {
@@ -252,6 +297,256 @@ func parseExtraMCPSource(extra map[string]any) SourceConfig {
 		source.Servers[name] = parseServerConfigMap(serverMap)
 	}
 	return source
+}
+
+func parseMCPPolicy(extra map[string]any) Policy {
+	mcpMap := rawMCPConfig(extra)
+	if mcpMap == nil {
+		return Policy{}
+	}
+	rawPolicy, ok := mcpMap["policy"].(map[string]any)
+	if !ok {
+		return Policy{}
+	}
+	var policy Policy
+	if rawAllowed, exists := rawPolicy["allowed"]; exists {
+		policy.AllowedDefined = true
+		policy.Allowed = parsePolicyMatchers(rawAllowed)
+	}
+	if rawDenied, exists := rawPolicy["denied"]; exists {
+		policy.Denied = parsePolicyMatchers(rawDenied)
+	}
+	if requireRemoteApproval, ok := rawPolicy["require_remote_approval"].(bool); ok {
+		policy.RequireRemoteApproval = requireRemoteApproval
+	}
+	if rawApproved, exists := rawPolicy["approved_servers"]; exists {
+		policy.ApprovedServers = parseStringArray(rawApproved)
+	}
+	return normalizePolicy(policy)
+}
+
+func rawMCPConfig(extra map[string]any) map[string]any {
+	if extra == nil {
+		return nil
+	}
+	raw, ok := extra["mcp"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return raw
+}
+
+func parsePolicyMatchers(raw any) []PolicyMatcher {
+	switch values := raw.(type) {
+	case []PolicyMatcher:
+		return normalizePolicyMatchers(values)
+	case []any:
+		out := make([]PolicyMatcher, 0, len(values))
+		for _, value := range values {
+			matcher, ok := parsePolicyMatcher(value)
+			if !ok {
+				continue
+			}
+			out = append(out, matcher)
+		}
+		return normalizePolicyMatchers(out)
+	default:
+		return nil
+	}
+}
+
+func parsePolicyMatcher(raw any) (PolicyMatcher, bool) {
+	switch value := raw.(type) {
+	case PolicyMatcher:
+		matcher := normalizePolicyMatcher(value)
+		return matcher, matcherDefined(matcher)
+	case map[string]any:
+		matcher := PolicyMatcher{}
+		if name, ok := value["name"].(string); ok {
+			matcher.Name = name
+		}
+		if command, exists := value["command"]; exists {
+			matcher.Command = parseStringArray(command)
+		}
+		if url, ok := value["url"].(string); ok {
+			matcher.URL = url
+		}
+		matcher = normalizePolicyMatcher(matcher)
+		return matcher, matcherDefined(matcher)
+	default:
+		return PolicyMatcher{}, false
+	}
+}
+
+func normalizePolicy(policy Policy) Policy {
+	policy.Allowed = normalizePolicyMatchers(policy.Allowed)
+	policy.Denied = normalizePolicyMatchers(policy.Denied)
+	policy.ApprovedServers = trimStringArray(policy.ApprovedServers)
+	if !policy.AllowedDefined {
+		policy.Allowed = nil
+	}
+	return policy
+}
+
+func normalizePolicyMatchers(matchers []PolicyMatcher) []PolicyMatcher {
+	if len(matchers) == 0 {
+		return nil
+	}
+	out := make([]PolicyMatcher, 0, len(matchers))
+	for _, matcher := range matchers {
+		matcher = normalizePolicyMatcher(matcher)
+		if !matcherDefined(matcher) {
+			continue
+		}
+		out = append(out, matcher)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizePolicyMatcher(matcher PolicyMatcher) PolicyMatcher {
+	matcher.Name = strings.TrimSpace(matcher.Name)
+	matcher.Command = trimStringArray(matcher.Command)
+	matcher.URL = strings.TrimSpace(matcher.URL)
+	return matcher
+}
+
+func matcherDefined(matcher PolicyMatcher) bool {
+	return matcher.Name != "" || len(matcher.Command) > 0 || matcher.URL != ""
+}
+
+func applyPolicyFilters(cfg Config) Config {
+	if len(cfg.Servers) == 0 {
+		return cfg
+	}
+	filtered := make(map[string]FilteredServer)
+	allowed := make(map[string]ResolvedServerConfig, len(cfg.Servers))
+	names := make([]string, 0, len(cfg.Servers))
+	for name := range cfg.Servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		server := cfg.Servers[name]
+		status, reason, blocked := policyDecision(cfg.Policy, server)
+		if blocked {
+			filtered[name] = FilteredServer{
+				ResolvedServerConfig: server,
+				PolicyStatus:         status,
+				PolicyReason:         reason,
+			}
+			continue
+		}
+		allowed[name] = server
+	}
+	cfg.Servers = allowed
+	if len(filtered) > 0 {
+		cfg.FilteredServers = filtered
+	} else {
+		cfg.FilteredServers = nil
+	}
+	return cfg
+}
+
+func policyDecision(policy Policy, server ResolvedServerConfig) (PolicyStatus, PolicyReason, bool) {
+	if matchesAnyPolicyMatcher(policy.Denied, server) {
+		return PolicyStatusBlocked, PolicyReasonDenied, true
+	}
+	if policy.AllowedDefined && !matchesAnyPolicyMatcher(policy.Allowed, server) {
+		return PolicyStatusBlocked, PolicyReasonAllowlist, true
+	}
+	if policy.RequireRemoteApproval && isRemoteServer(server.ServerConfig) && !serverApproved(policy, server.Name) {
+		return PolicyStatusApprovalRequired, PolicyReasonRemoteApproval, true
+	}
+	return "", "", false
+}
+
+func matchesAnyPolicyMatcher(matchers []PolicyMatcher, server ResolvedServerConfig) bool {
+	for _, matcher := range matchers {
+		if policyMatcherMatches(matcher, server) {
+			return true
+		}
+	}
+	return false
+}
+
+func policyMatcherMatches(matcher PolicyMatcher, server ResolvedServerConfig) bool {
+	matchedField := false
+	if matcher.Name != "" {
+		matchedField = true
+		if !strings.EqualFold(matcher.Name, server.Name) {
+			return false
+		}
+	}
+	if len(matcher.Command) > 0 {
+		matchedField = true
+		if !stringSliceEqual(matcher.Command, serverCommandVector(server.ServerConfig)) {
+			return false
+		}
+	}
+	if matcher.URL != "" {
+		matchedField = true
+		if !wildcardMatchFold(matcher.URL, server.URL) {
+			return false
+		}
+	}
+	return matchedField
+}
+
+func serverApproved(policy Policy, name string) bool {
+	for _, approved := range policy.ApprovedServers {
+		if strings.EqualFold(strings.TrimSpace(approved), strings.TrimSpace(name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRemoteServer(cfg ServerConfig) bool {
+	switch transportTypeForSignature(cfg) {
+	case "sse", "http":
+		return true
+	default:
+		return false
+	}
+}
+
+func serverCommandVector(cfg ServerConfig) []string {
+	cfg = normalizeServerConfig(cfg)
+	if cfg.Command == "" {
+		return nil
+	}
+	out := make([]string, 0, 1+len(cfg.Args))
+	out = append(out, cfg.Command)
+	out = append(out, cfg.Args...)
+	return out
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func wildcardMatchFold(pattern, value string) bool {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	value = strings.ToLower(strings.TrimSpace(value))
+	if pattern == "" || value == "" {
+		return false
+	}
+	if !strings.Contains(pattern, "*") {
+		return pattern == value
+	}
+	re := "^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", ".*") + "$"
+	return regexp.MustCompile(re).MatchString(value)
 }
 
 func parseServerConfigMap(raw map[string]any) ServerConfig {

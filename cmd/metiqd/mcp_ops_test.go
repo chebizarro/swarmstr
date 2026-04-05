@@ -116,6 +116,72 @@ func TestMCPOpsControllerApplyPutAndRemovePersistConfig(t *testing.T) {
 	}
 }
 
+func TestMCPOpsControllerApplyPutReturnsPolicyFilteredServer(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}},
+		Extra: map[string]any{
+			"mcp": map[string]any{
+				"policy": map[string]any{
+					"denied": []any{
+						map[string]any{"name": "demo"},
+					},
+				},
+			},
+		},
+	})
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	ctrl := newMCPOpsController(nil, nil, nil, cfgState, docs)
+
+	putResult, err := ctrl.applyPut(context.Background(), methods.MCPPutRequest{
+		Server: "demo",
+		Config: map[string]any{"type": "stdio", "command": "npx"},
+	})
+	if err != nil {
+		t.Fatalf("applyPut error: %v", err)
+	}
+	server, _ := putResult["server"].(map[string]any)
+	if server["policy_status"] != mcppkg.PolicyStatusBlocked || server["policy_reason"] != mcppkg.PolicyReasonDenied {
+		t.Fatalf("expected blocked server payload after put, got %#v", server)
+	}
+}
+
+func TestMCPOpsControllerApplyListIncludesPolicyFilteredServers(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Extra: map[string]any{
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": map[string]any{
+				"remote": map[string]any{
+					"enabled": true,
+					"type":    "http",
+					"url":     "https://mcp.example.com/http",
+				},
+			},
+			"policy": map[string]any{
+				"require_remote_approval": true,
+				"approved_servers":        []string{},
+			},
+		},
+	}})
+	ctrl := newMCPOpsController(nil, agent.NewToolRegistry(), nil, cfgState, state.NewDocsRepository(newTestStore(), "author"))
+
+	result, err := ctrl.applyList(context.Background(), methods.MCPListRequest{})
+	if err != nil {
+		t.Fatalf("applyList error: %v", err)
+	}
+	servers, ok := result["servers"].([]map[string]any)
+	if !ok || len(servers) != 1 {
+		t.Fatalf("unexpected servers payload: %#v", result["servers"])
+	}
+	server := servers[0]
+	if server["name"] != "remote" || server["policy_status"] != mcppkg.PolicyStatusApprovalRequired {
+		t.Fatalf("expected approval-required policy payload, got %#v", server)
+	}
+	if server["state"] != string(mcppkg.PolicyStatusApprovalRequired) || server["runtime_present"] != false {
+		t.Fatalf("unexpected approval-required runtime payload: %#v", server)
+	}
+}
+
 func TestMCPOpsControllerApplyTestReturnsFailurePayload(t *testing.T) {
 	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}, Relays: state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}}})
 	ctrl := newMCPOpsController(nil, nil, nil, cfgState, state.NewDocsRepository(newTestStore(), "author"))

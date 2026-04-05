@@ -113,7 +113,9 @@ func (c *mcpOpsController) applyRemove(ctx context.Context, req methods.MCPRemov
 	resolved := mcppkg.ResolveConfigDoc(cfg)
 	if _, ok := resolved.Servers[req.Server]; !ok {
 		if _, ok := resolved.DisabledServers[req.Server]; !ok {
-			return nil, fmt.Errorf("mcp server %s not configured", req.Server)
+			if _, ok := resolved.FilteredServers[req.Server]; !ok {
+				return nil, fmt.Errorf("mcp server %s not configured", req.Server)
+			}
 		}
 	}
 	next, err := methods.ApplyConfigSet(cfg, "mcp.servers."+req.Server, nil)
@@ -284,6 +286,12 @@ func (c *mcpOpsController) resolveTestServer(req methods.MCPTestRequest) (mcppkg
 			current, ok = resolved.DisabledServers[req.Server]
 		}
 		if !ok {
+			if filtered, found := resolved.FilteredServers[req.Server]; found {
+				current = filtered.ResolvedServerConfig
+				ok = true
+			}
+		}
+		if !ok {
 			return mcppkg.ResolvedServerConfig{}, false, fmt.Errorf("mcp server %s not configured", req.Server)
 		}
 		serverMap = serverConfigMap(current.ServerConfig)
@@ -310,28 +318,37 @@ func (c *mcpOpsController) resolveTestServer(req methods.MCPTestRequest) (mcppkg
 }
 
 func (c *mcpOpsController) buildInventory(resolved mcppkg.Config, snapshot mcppkg.ManagerSnapshot) []map[string]any {
-	byName := make(map[string]map[string]any, len(snapshot.Servers)+len(resolved.Servers)+len(resolved.DisabledServers))
+	byName := make(map[string]map[string]any, len(snapshot.Servers)+len(resolved.Servers)+len(resolved.DisabledServers)+len(resolved.FilteredServers))
 	for name, server := range resolved.Servers {
 		s := server
-		byName[name] = c.buildServerPayload(name, &s, nil)
+		byName[name] = c.buildServerPayload(name, &s, nil, nil)
 	}
 	for name, server := range resolved.DisabledServers {
 		s := server
-		byName[name] = c.buildServerPayload(name, &s, nil)
+		byName[name] = c.buildServerPayload(name, &s, nil, nil)
+	}
+	for name, server := range resolved.FilteredServers {
+		s := server
+		byName[name] = c.buildServerPayload(name, &s.ResolvedServerConfig, &s, nil)
 	}
 	for _, runtime := range snapshot.Servers {
 		rt := runtime
 		if resolvedServer, ok := resolved.Servers[runtime.Name]; ok {
 			rs := resolvedServer
-			byName[runtime.Name] = c.buildServerPayload(runtime.Name, &rs, &rt)
+			byName[runtime.Name] = c.buildServerPayload(runtime.Name, &rs, nil, &rt)
 			continue
 		}
 		if resolvedServer, ok := resolved.DisabledServers[runtime.Name]; ok {
 			rs := resolvedServer
-			byName[runtime.Name] = c.buildServerPayload(runtime.Name, &rs, &rt)
+			byName[runtime.Name] = c.buildServerPayload(runtime.Name, &rs, nil, &rt)
 			continue
 		}
-		byName[runtime.Name] = c.buildServerPayload(runtime.Name, nil, &rt)
+		if filteredServer, ok := resolved.FilteredServers[runtime.Name]; ok {
+			fs := filteredServer
+			byName[runtime.Name] = c.buildServerPayload(runtime.Name, &fs.ResolvedServerConfig, &fs, &rt)
+			continue
+		}
+		byName[runtime.Name] = c.buildServerPayload(runtime.Name, nil, nil, &rt)
 	}
 	names := make([]string, 0, len(byName))
 	for name := range byName {
@@ -354,7 +371,7 @@ func (c *mcpOpsController) lookupInventoryServer(name string, resolved mcppkg.Co
 	return nil, false
 }
 
-func (c *mcpOpsController) buildServerPayload(name string, resolved *mcppkg.ResolvedServerConfig, runtime *mcppkg.ServerStateSnapshot) map[string]any {
+func (c *mcpOpsController) buildServerPayload(name string, resolved *mcppkg.ResolvedServerConfig, filtered *mcppkg.FilteredServer, runtime *mcppkg.ServerStateSnapshot) map[string]any {
 	payload := map[string]any{"name": name}
 	if resolved != nil {
 		payload["configured"] = true
@@ -407,6 +424,10 @@ func (c *mcpOpsController) buildServerPayload(name string, resolved *mcppkg.Reso
 			}
 		}
 	}
+	if filtered != nil {
+		payload["policy_status"] = filtered.PolicyStatus
+		payload["policy_reason"] = filtered.PolicyReason
+	}
 	if runtime != nil {
 		payload["runtime_present"] = true
 		payload["state"] = runtime.State
@@ -443,7 +464,9 @@ func (c *mcpOpsController) buildServerPayload(name string, resolved *mcppkg.Reso
 		}
 	} else {
 		payload["runtime_present"] = false
-		if resolved != nil {
+		if filtered != nil {
+			payload["state"] = string(filtered.PolicyStatus)
+		} else if resolved != nil {
 			if resolved.Enabled {
 				payload["state"] = mcppkg.ConnectionStatePending
 			} else {
