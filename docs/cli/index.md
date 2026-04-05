@@ -9,7 +9,7 @@ title: "CLI Reference"
 
 # CLI Reference
 
-The `metiq` binary is the control-plane client for the metiqd daemon. It communicates over the admin HTTP API (address configured via `admin_listen_addr` in `bootstrap.json`).
+The `metiq` binary is the control-plane client for the metiqd daemon. For raw gateway method calls, `metiq gw` defaults to transport `auto`: it uses Nostr control RPC when `control_target_pubkey` is configured in `bootstrap.json`; otherwise it uses the local admin HTTP API.
 
 **Global flag**: `--bootstrap <path>` — path to bootstrap config JSON (auto-detected by default).
 
@@ -21,6 +21,7 @@ metiq <command> [subcommand] [flags]
   status
   health
   logs
+  observe
   doctor
   keygen
   dm-send
@@ -122,6 +123,35 @@ metiq logs
 metiq logs --lines 100
 metiq logs --lines 50 --level error
 ```
+
+### `observe`
+
+Inspect the structured runtime observability surface exposed by `runtime.observe`. Output is JSON and can include buffered runtime events, buffered daemon log lines, or both.
+
+```bash
+# Recent structured events + logs
+metiq observe
+
+# Events only, filtered to a specific agent and event types
+metiq observe --include-logs=false --agent main --event tool.start --event turn.finish
+
+# Resume from prior cursors and long-poll for up to 15 seconds
+metiq observe --event-cursor 120 --log-cursor 75 --wait 15s
+```
+
+Common flags:
+- `--include-events` / `--include-logs` — choose which sections to return (default: both)
+- `--event-cursor` / `--log-cursor` — resume after a previously returned cursor
+- `--event-limit` / `--log-limit` — cap returned items per section
+- `--max-bytes` — cap total payload size
+- `--wait` — long-poll for new matching data (`500ms`, `15s`, or integer milliseconds)
+- `--transport`, `--control-target-pubkey`, `--control-signer-url`, `--timeout` — choose the gateway transport and request routing/timeout behavior
+- `--event` — filter by event name; repeat the flag or pass a comma-separated list
+- `--agent`, `--session`, `--channel`, `--direction`, `--subsystem`, `--source` — event metadata filters
+
+The response includes section-local cursors plus top-level `timed_out` and `waited_ms` fields so operators can build incremental polling or live-tail loops.
+
+Like `metiq gw`, `metiq observe` defaults to transport `auto`: it uses Nostr control RPC when `control_target_pubkey` is configured, otherwise it uses the local admin HTTP API. Use `--transport http|nostr`, `--control-target-pubkey`, and `--control-signer-url` to override routing explicitly.
 
 ### `doctor`
 
@@ -378,13 +408,36 @@ metiq daemon start --bootstrap ~/.metiq/bootstrap.json
 
 ## GW (Raw RPC)
 
-Send a raw JSON-RPC call to the gateway.
+Send a raw method call to the shared gateway namespace. By default, `metiq gw` uses transport `auto`:
+
+- Nostr control RPC when `control_target_pubkey` is configured
+- local HTTP `POST /call` when `control_target_pubkey` is not configured
+- `--transport http` to force the compatibility HTTP path
+- `--transport nostr` to require Nostr control explicitly
+
+Operator rules:
+
+- `control_target_pubkey` is the switch that makes auto mode prefer Nostr
+- `control_signer_url` provides a distinct caller identity for Nostr control
+- signer-only configuration does not switch auto mode to Nostr without a target pubkey
+- the control caller pubkey must not match the target daemon pubkey
 
 ```bash
 metiq gw <method> [key=value ...]
 metiq gw --json status.get
+metiq gw --transport nostr status.get
+metiq gw --transport http status.get
+metiq gw --control-target-pubkey npub1...daemon... status.get
+metiq gw --control-signer-url env://METIQ_CONTROL_CALLER_NSEC status.get
 metiq gw config.get path=agent.default_model
+
+# ACP dispatch with an explicit worker tool contract (JSON params form)
+metiq gw acp.dispatch '{"target_pubkey":"Wizard","instructions":"Read the remote MCP resource and summarize it","enabled_tools":["contextvm_resources_read"],"wait":true}'
 ```
+
+For capability-aware ACP routing, `enabled_tools` and `tool_profile` are not just worker constraints — they also influence peer selection when multiple discovered peers share the same target name. metiq prefers peers whose discovered `kind:30317` capability metadata advertises the required `tools` / `contextvm_features` surface.
+
+See [Nostr Control RPC](/gateway/nostr-control) for the full operator and migration guide, and [Capability Advertisement](/reference/capabilities) for the `kind:30317` contract.
 
 ## Slash Commands (In-Chat)
 

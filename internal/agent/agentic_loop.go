@@ -2,10 +2,16 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"metiq/internal/agent/toolloop"
 )
 
 // ─── Shared agentic tool loop ─────────────────────────────────────────────────
@@ -34,6 +40,12 @@ type AgenticLoopConfig struct {
 	ForceText bool
 	// LogPrefix is prepended to log messages (e.g. "anthropic", "openai").
 	LogPrefix string
+	// SessionID and TurnID correlate runtime tool lifecycle events back to the
+	// enclosing metiq turn when ToolEventSink is set.
+	SessionID string
+	TurnID    string
+	// ToolEventSink receives canonical start/progress/result/error tool signals.
+	ToolEventSink ToolLifecycleSink
 }
 
 // ToolExecResult holds the outcome of a single tool execution.
@@ -41,6 +53,20 @@ type ToolExecResult struct {
 	ToolCallID  string
 	Content     string
 	LoopBlocked bool // true if loop detection returned CRITICAL
+}
+
+type toolTraitResolver interface {
+	EffectiveTraits(ToolCall) (ToolTraits, bool)
+}
+
+type toolLoopResolver interface {
+	PrepareLoopExecution(context.Context, ToolCall) (toolloop.Result, bool)
+	RecordLoopOutcome(context.Context, ToolCall, string, string)
+}
+
+type toolCallBatch struct {
+	isConcurrencySafe bool
+	calls             []ToolCall
 }
 
 // RunAgenticLoop executes the agentic tool loop:
@@ -77,6 +103,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		if resp.Content != "" {
 			resp.HistoryDelta = []ConversationMessage{{Role: "assistant", Content: resp.Content}}
 		}
+		resp.Outcome = TurnOutcomeCompleted
+		resp.StopReason = TurnStopReasonModelText
 		return resp, nil
 	}
 
@@ -122,8 +150,9 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			ToolCalls: calls,
 		})
 
-		// Execute all tool calls in parallel.
-		results := executeToolsParallel(ctx, cfg.Executor, calls)
+		// Execute tool calls using src-shaped batch partitioning: consecutive
+		// concurrency-safe calls run together, others run serially.
+		results := executeToolBatches(ctx, cfg.Executor, calls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink)
 
 		// Append tool results and check for loop blocking.
 		for _, r := range results {
@@ -152,10 +181,19 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		if err != nil {
 			log.Printf("%s: agentic loop LLM error iter=%d: %v", cfg.LogPrefix, iter+1, err)
 			// Return partial history so callers can persist completed tool work.
+			outcome := TurnOutcomeFailed
+			stopReason := TurnStopReasonProviderError
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				outcome = TurnOutcomeAborted
+				stopReason = TurnStopReasonCancelled
+			}
 			return nil, &TurnExecutionError{
 				Cause: err,
 				Partial: TurnResult{
 					HistoryDelta: historyDelta,
+					Outcome:      outcome,
+					StopReason:   stopReason,
+					Usage:        TurnUsage{InputTokens: totalUsage.InputTokens, OutputTokens: totalUsage.OutputTokens},
 				},
 			}
 		}
@@ -174,6 +212,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			}
 			resp.Usage = totalUsage
 			resp.HistoryDelta = historyDelta
+			resp.Outcome = TurnOutcomeCompletedWithTools
+			resp.StopReason = TurnStopReasonModelText
 			return resp, nil
 		}
 
@@ -183,15 +223,17 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 
 	// Loop exhausted or blocked — attempt force-summary.
 	if cfg.ForceText && (resp == nil || resp.Content == "") {
-		summaryResp := forceSummary(ctx, cfg, messages, calls, totalUsage)
+		summaryResp, summaryDelta := forceSummary(ctx, cfg, messages, calls, totalUsage)
 		if summaryResp != nil {
-			summaryResp.HistoryDelta = historyDelta
+			summaryResp.HistoryDelta = append(historyDelta, summaryDelta...)
 			if summaryResp.Content != "" {
 				summaryResp.HistoryDelta = append(summaryResp.HistoryDelta, ConversationMessage{
 					Role:    "assistant",
 					Content: summaryResp.Content,
 				})
 			}
+			summaryResp.Outcome = TurnOutcomeForcedSummary
+			summaryResp.StopReason = TurnStopReasonForcedSummary
 			return summaryResp, nil
 		}
 	}
@@ -207,6 +249,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			Content:      failContent,
 			Usage:        totalUsage,
 			HistoryDelta: historyDelta,
+			Outcome:      blockedOutcome(loopBlocked),
+			StopReason:   blockedStopReason(loopBlocked),
 		}, nil
 	}
 
@@ -218,59 +262,236 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	}
 	resp.Usage = totalUsage
 	resp.HistoryDelta = historyDelta
+	resp.Outcome = TurnOutcomeCompletedWithTools
+	resp.StopReason = TurnStopReasonModelText
 	return resp, nil
 }
 
-// executeToolsParallel runs all tool calls concurrently and returns results
-// in the same order as the input calls.
-func executeToolsParallel(ctx context.Context, executor ToolExecutor, calls []ToolCall) []ToolExecResult {
+// executeToolBatches partitions calls using canonical src-style scheduling:
+// consecutive concurrency-safe calls are grouped into parallel batches, while
+// all other calls run serially. Returned results preserve the original call order.
+func executeToolBatches(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink) []ToolExecResult {
+	if sessionID == "" {
+		sessionID = SessionIDFromContext(ctx)
+	}
+	batches := partitionToolCalls(executor, calls)
+	results := make([]ToolExecResult, 0, len(calls))
+	concurrencyLimit := getMaxToolUseConcurrency()
+	for batchIndex, batch := range batches {
+		emitSchedulerEvents(batch, batchIndex, len(batches), concurrencyLimit, sessionID, turnID, sink)
+		if batch.isConcurrencySafe {
+			results = append(results, executeToolBatchParallel(ctx, executor, batch.calls, concurrencyLimit, sessionID, turnID, sink)...)
+			continue
+		}
+		results = append(results, executeToolBatchSerial(ctx, executor, batch.calls, sessionID, turnID, sink)...)
+	}
+	return results
+}
+
+func emitSchedulerEvents(batch toolCallBatch, batchIndex, batchCount, concurrencyLimit int, sessionID, turnID string, sink ToolLifecycleSink) {
+	mode := "serial"
+	limit := 0
+	if batch.isConcurrencySafe {
+		mode = "parallel"
+		limit = concurrencyLimit
+	}
+	for i, call := range batch.calls {
+		emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+			Type:       ToolLifecycleEventProgress,
+			TS:         time.Now().UnixMilli(),
+			SessionID:  sessionID,
+			TurnID:     turnID,
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Data: ToolSchedulerDecision{
+				Kind:             ToolDecisionKindScheduler,
+				Mode:             mode,
+				BatchIndex:       batchIndex,
+				BatchCount:       batchCount,
+				BatchSize:        len(batch.calls),
+				BatchPosition:    i,
+				ConcurrencySafe:  batch.isConcurrencySafe,
+				ConcurrencyLimit: limit,
+			},
+		})
+	}
+}
+
+func partitionToolCalls(executor ToolExecutor, calls []ToolCall) []toolCallBatch {
+	if len(calls) == 0 {
+		return nil
+	}
+	resolver, _ := executor.(toolTraitResolver)
+	batches := make([]toolCallBatch, 0, len(calls))
+	for _, call := range calls {
+		isConcurrencySafe := false
+		if resolver != nil {
+			if traits, ok := resolver.EffectiveTraits(call); ok {
+				isConcurrencySafe = traits.ConcurrencySafe
+			}
+		}
+		if isConcurrencySafe && len(batches) > 0 && batches[len(batches)-1].isConcurrencySafe {
+			batches[len(batches)-1].calls = append(batches[len(batches)-1].calls, call)
+			continue
+		}
+		batches = append(batches, toolCallBatch{isConcurrencySafe: isConcurrencySafe, calls: []ToolCall{call}})
+	}
+	return batches
+}
+
+func executeToolBatchParallel(ctx context.Context, executor ToolExecutor, calls []ToolCall, concurrencyLimit int, sessionID, turnID string, sink ToolLifecycleSink) []ToolExecResult {
 	results := make([]ToolExecResult, len(calls))
 	var wg sync.WaitGroup
-
+	sem := make(chan struct{}, concurrencyLimit)
 	for i, call := range calls {
 		results[i].ToolCallID = call.ID
-
 		wg.Add(1)
 		go func(idx int, c ToolCall) {
 			defer wg.Done()
-
-			result, execErr := executor.Execute(ctx, c)
-			if execErr != nil {
-				errMsg := execErr.Error()
-				results[idx].Content = "error: " + errMsg
-				log.Printf("tool %s error: %v", c.Name, execErr)
-				// If the loop detector blocked the call (CRITICAL level),
-				// signal the loop to stop immediately.
-				if strings.HasPrefix(errMsg, "CRITICAL:") {
-					results[idx].LoopBlocked = true
-				}
-			} else {
-				results[idx].Content = result
-			}
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[idx] = executeSingleToolCall(ctx, executor, c, sessionID, turnID, sink)
 		}(i, call)
 	}
-
 	wg.Wait()
 	return results
+}
+
+func executeToolBatchSerial(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink) []ToolExecResult {
+	results := make([]ToolExecResult, len(calls))
+	for i, call := range calls {
+		results[i] = executeSingleToolCall(ctx, executor, call, sessionID, turnID, sink)
+	}
+	return results
+}
+
+func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call ToolCall, sessionID, turnID string, sink ToolLifecycleSink) ToolExecResult {
+	result := ToolExecResult{ToolCallID: call.ID}
+	if sessionID == "" {
+		sessionID = SessionIDFromContext(ctx)
+	}
+	loopAware, _ := executor.(toolLoopResolver)
+	var loopResult toolloop.Result
+	var loopEnabled bool
+	if loopAware != nil {
+		loopResult, loopEnabled = loopAware.PrepareLoopExecution(ctx, call)
+		if loopEnabled && loopResult.Stuck {
+			decision := ToolLoopDecision{
+				Kind:           ToolDecisionKindLoopDetection,
+				Blocked:        loopResult.Level == toolloop.Critical,
+				Level:          string(loopResult.Level),
+				Detector:       string(loopResult.Detector),
+				Count:          loopResult.Count,
+				WarningKey:     loopResult.WarningKey,
+				PairedToolName: loopResult.PairedToolName,
+				Message:        loopResult.Message,
+			}
+			emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+				Type:       ToolLifecycleEventProgress,
+				TS:         time.Now().UnixMilli(),
+				SessionID:  sessionID,
+				TurnID:     turnID,
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Data:       decision,
+			})
+			if loopResult.Level == toolloop.Critical {
+				log.Printf("toolloop: BLOCKED tool=%s session=%s detector=%s count=%d", call.Name, sessionID, loopResult.Detector, loopResult.Count)
+				result.Content = "error: " + loopResult.Message
+				result.LoopBlocked = true
+				emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+					Type:       ToolLifecycleEventError,
+					TS:         time.Now().UnixMilli(),
+					SessionID:  sessionID,
+					TurnID:     turnID,
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Error:      loopResult.Message,
+					Data:       decision,
+				})
+				return result
+			}
+			log.Printf("toolloop: WARNING tool=%s session=%s detector=%s count=%d", call.Name, sessionID, loopResult.Detector, loopResult.Count)
+		}
+	}
+	emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+		Type:       ToolLifecycleEventStart,
+		TS:         time.Now().UnixMilli(),
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		ToolCallID: call.ID,
+		ToolName:   call.Name,
+	})
+	value, execErr := executor.Execute(ctx, call)
+	if execErr != nil {
+		errMsg := execErr.Error()
+		result.Content = "error: " + errMsg
+		log.Printf("tool %s error: %v", call.Name, execErr)
+		emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+			Type:       ToolLifecycleEventError,
+			TS:         time.Now().UnixMilli(),
+			SessionID:  sessionID,
+			TurnID:     turnID,
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Error:      errMsg,
+		})
+		if loopAware != nil {
+			loopAware.RecordLoopOutcome(ctx, call, value, errMsg)
+		}
+		if isCriticalToolError(execErr) {
+			result.LoopBlocked = true
+		}
+		return result
+	}
+	if loopAware != nil {
+		loopAware.RecordLoopOutcome(ctx, call, value, "")
+	}
+	if loopEnabled && loopResult.Stuck && loopResult.Level == toolloop.Warning {
+		value = "[LOOP DETECTION] " + loopResult.Message + "\n\n" + value
+	}
+	result.Content = value
+	emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+		Type:       ToolLifecycleEventResult,
+		TS:         time.Now().UnixMilli(),
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		ToolCallID: call.ID,
+		ToolName:   call.Name,
+		Result:     value,
+	})
+	return result
 }
 
 // forceSummary makes a final LLM call with Tools=nil, forcing the model to
 // produce a text response. Any pending tool calls are executed first so the
 // model has their results as context.
-func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMessage, pendingCalls []ToolCall, usage ProviderUsage) *LLMResponse {
+func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMessage, pendingCalls []ToolCall, usage ProviderUsage) (*LLMResponse, []ConversationMessage) {
 	log.Printf("%s: agentic loop exhausted, forcing summary", cfg.LogPrefix)
+
+	var summaryDelta []ConversationMessage
 
 	// Execute any remaining pending tool calls.
 	if len(pendingCalls) > 0 && cfg.Executor != nil {
+		refs := make([]ToolCallRef, len(pendingCalls))
+		for i, c := range pendingCalls {
+			refs[i] = ToolCallToRef(c)
+		}
+		summaryDelta = append(summaryDelta, ConversationMessage{Role: "assistant", ToolCalls: refs})
 		// Append the assistant message with pending calls.
 		messages = append(messages, LLMMessage{
 			Role:      "assistant",
 			ToolCalls: pendingCalls,
 		})
 
-		results := executeToolsParallel(ctx, cfg.Executor, pendingCalls)
+		results := executeToolBatches(ctx, cfg.Executor, pendingCalls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink)
 		for _, r := range results {
 			messages = append(messages, LLMMessage{
+				Role:       "tool",
+				Content:    r.Content,
+				ToolCallID: r.ToolCallID,
+			})
+			summaryDelta = append(summaryDelta, ConversationMessage{
 				Role:       "tool",
 				Content:    r.Content,
 				ToolCallID: r.ToolCallID,
@@ -289,17 +510,47 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 	summaryResp, err := cfg.Provider.Chat(ctx, messages, nil, opts)
 	if err != nil {
 		log.Printf("%s: force-summary error: %v", cfg.LogPrefix, err)
-		return nil
+		return nil, nil
 	}
 	if summaryResp == nil || summaryResp.Content == "" {
-		return nil
+		return nil, nil
 	}
 
 	summaryResp.Usage = ProviderUsage{
 		InputTokens:  usage.InputTokens + summaryResp.Usage.InputTokens,
 		OutputTokens: usage.OutputTokens + summaryResp.Usage.OutputTokens,
 	}
-	return summaryResp
+	return summaryResp, summaryDelta
+}
+
+func getMaxToolUseConcurrency() int {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY"))); err == nil && v > 0 {
+		return v
+	}
+	return 10
+}
+
+func blockedOutcome(loopBlocked bool) TurnOutcome {
+	if loopBlocked {
+		return TurnOutcomeBlocked
+	}
+	return TurnOutcomeFailed
+}
+
+func blockedStopReason(loopBlocked bool) TurnStopReason {
+	if loopBlocked {
+		return TurnStopReasonLoopBlocked
+	}
+	return TurnStopReasonMaxIterations
+}
+
+func isCriticalToolError(err error) bool {
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		if strings.HasPrefix(current.Error(), "CRITICAL:") {
+			return true
+		}
+	}
+	return false
 }
 
 // generateWithAgenticLoop is a helper that providers call from Generate().
@@ -329,6 +580,9 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 		MaxIterations:   30,
 		ForceText:       true,
 		LogPrefix:       logPrefix,
+		SessionID:       turn.SessionID,
+		TurnID:          turn.TurnID,
+		ToolEventSink:   turn.ToolEventSink,
 	})
 	if err != nil {
 		return ProviderResult{}, err

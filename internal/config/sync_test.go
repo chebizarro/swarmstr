@@ -53,6 +53,13 @@ func TestNewSyncEngine_ok(t *testing.T) {
 	}
 }
 
+func TestNewSyncEngine_invalidPathError(t *testing.T) {
+	_, err := NewSyncEngine(t.TempDir(), &fakeRelaySync{})
+	if err == nil {
+		t.Fatal("expected error for directory config path")
+	}
+}
+
 // ─── WithOnChange callback ────────────────────────────────────────────────────
 
 func TestWithOnChange_calledOnFileWrite(t *testing.T) {

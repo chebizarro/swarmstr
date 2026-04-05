@@ -23,8 +23,8 @@ Default location: `~/.metiq/bootstrap.json` (override with the `--bootstrap` fla
 {
   "private_key": "${NOSTR_NSEC}",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://nos.lol"
+    "wss://<relay-1>",
+    "wss://<relay-2>"
   ]
 }
 ```
@@ -35,12 +35,14 @@ Default location: `~/.metiq/bootstrap.json` (override with the `--bootstrap` fla
 {
   "private_key": "${NOSTR_NSEC}",
   "relays": [
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-    "wss://nostr.wine"
+    "wss://<relay-1>",
+    "wss://<relay-2>",
+    "wss://<search-relay>"
   ],
 
   "signer_url": "",               // Alternative: bunker://... or env://VAR or file:///path
+  "control_signer_url": "",       // Optional distinct signer for metiq gw over Nostr control RPC
+  "control_target_pubkey": "",    // Optional daemon pubkey that makes metiq gw auto mode prefer Nostr
   "admin_listen_addr": "127.0.0.1:18788",
   "admin_token": "${METIQ_ADMIN_TOKEN}",
   "gateway_ws_listen_addr": "127.0.0.1:18789",
@@ -51,6 +53,23 @@ Default location: `~/.metiq/bootstrap.json` (override with the `--bootstrap` fla
 ```
 
 Use `${VAR_NAME}` for any value — resolved from the process environment at startup.
+
+### Nostr-first control bootstrap fields
+
+These bootstrap fields control raw gateway method routing for `metiq gw`:
+
+- `control_target_pubkey`
+  - if set, `metiq gw --transport auto` prefers Nostr control RPC
+  - if not set, `metiq gw --transport auto` falls back to local HTTP `/call`
+- `control_signer_url`
+  - optional signer override for the control caller identity
+  - use this when the operator/automation caller should sign separately from the daemon signer
+- `private_key` / `signer_url`
+  - still provide the default signer context if `control_signer_url` is not set
+
+The control caller pubkey must not resolve to the same pubkey as `control_target_pubkey`.
+
+See [Nostr Control RPC](/gateway/nostr-control) for the full operator and migration guide.
 
 ## Runtime Config (`ConfigDoc`)
 
@@ -115,8 +134,8 @@ metiq config validate
 ```json
 {
   "relays": {
-    "read": ["wss://relay.damus.io", "wss://nos.lol"],
-    "write": ["wss://relay.damus.io"]
+    "read": ["wss://<relay-1>", "wss://<relay-2>"],
+    "write": ["wss://<relay-1>"]
   }
 }
 ```

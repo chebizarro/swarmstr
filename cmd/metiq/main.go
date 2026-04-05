@@ -49,9 +49,11 @@ func main() {
 	case "health":
 		run("health", runHealth, args[1:])
 
-	// ── logs ─────────────────────────────────────────────────────────────────
+	// ── logs / observability ────────────────────────────────────────────────
 	case "logs":
 		run("logs", runLogs, args[1:])
+	case "observe":
+		run("observe", runObserve, args[1:])
 
 	// ── models ───────────────────────────────────────────────────────────────
 	case "models":
@@ -76,6 +78,8 @@ func main() {
 	// ── secrets ──────────────────────────────────────────────────────────────
 	case "secrets":
 		run("secrets", runSecrets, args[1:])
+	case "mcp":
+		run("mcp", runMCP, args[1:])
 
 	// ── update ───────────────────────────────────────────────────────────────
 	case "update":
@@ -314,6 +318,11 @@ func runConfigImport(args []string) error {
 		}
 		path = def
 	}
+	var err error
+	path, err = config.ValidateConfigWritePath(path)
+	if err != nil {
+		return err
+	}
 	// Read source.
 	var raw []byte
 	if srcFile == "" {
@@ -324,6 +333,10 @@ func runConfigImport(args []string) error {
 		}
 	} else {
 		var err error
+		srcFile, err = config.ValidateConfigFilePath(srcFile)
+		if err != nil {
+			return err
+		}
 		raw, err = os.ReadFile(srcFile)
 		if err != nil {
 			return fmt.Errorf("read source file: %w", err)
@@ -494,6 +507,7 @@ func usage() {
 	fmt.Println("  status             show daemon status (pubkey, uptime, relays)")
 	fmt.Println("  health             ping daemon health endpoint")
 	fmt.Println("  logs               tail recent daemon log lines (--lines N)")
+	fmt.Println("  observe            inspect structured runtime events/logs (--event, --wait)")
 	fmt.Println()
 	fmt.Println("Agent management:")
 	fmt.Println("  agents list        list configured agents")
@@ -504,6 +518,11 @@ func usage() {
 	fmt.Println("  channels list      list configured channels and their status")
 	fmt.Println("  skills list        list installed skills")
 	fmt.Println("  skills status      detailed skills status")
+	fmt.Println("  skills check       check skill readiness")
+	fmt.Println("  skills info <id>   show one skill in detail")
+	fmt.Println("  skills install     install a skill option")
+	fmt.Println("  skills enable <id> enable a skill")
+	fmt.Println("  skills disable <id> disable a skill")
 	fmt.Println("  hooks list         list installed hooks")
 	fmt.Println()
 	fmt.Println("Config:")
@@ -533,7 +552,7 @@ func usage() {
 	fmt.Println("  daemon status      show daemon liveness and uptime")
 	fmt.Println()
 	fmt.Println("Gateway passthrough:")
-	fmt.Println("  gw <method> [params]  call any gateway method and print JSON result")
+	fmt.Println("  gw <method> [params]  call any gateway method and print JSON result (--transport auto|http|nostr)")
 	fmt.Println("                        params: JSON object or key=value pairs")
 	fmt.Println()
 	fmt.Println("Other:")

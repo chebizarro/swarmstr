@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"metiq/internal/store/state"
 )
 
 func TestDispatcher_RegisterAndDeliver(t *testing.T) {
@@ -93,8 +95,11 @@ func TestPipeline_Sequential(t *testing.T) {
 	d := NewDispatcher()
 	var capturedTaskIDs []string
 
-	sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string) error {
+	sendFn := func(ctx context.Context, peerPubKey, taskID string, payload TaskPayload) error {
 		capturedTaskIDs = append(capturedTaskIDs, taskID)
+		if payload.Instructions == "" {
+			t.Fatal("expected instructions in payload")
+		}
 		// Simulate async result delivery.
 		go func() {
 			time.Sleep(5 * time.Millisecond)
@@ -126,7 +131,10 @@ func TestPipeline_Sequential(t *testing.T) {
 func TestPipeline_Parallel(t *testing.T) {
 	d := NewDispatcher()
 
-	sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string) error {
+	sendFn := func(ctx context.Context, peerPubKey, taskID string, payload TaskPayload) error {
+		if payload.Instructions == "" {
+			t.Fatal("expected instructions in payload")
+		}
 		go func() {
 			time.Sleep(10 * time.Millisecond)
 			d.Deliver(TaskResult{TaskID: taskID, Text: "par-" + peerPubKey})
@@ -149,11 +157,31 @@ func TestPipeline_Parallel(t *testing.T) {
 	}
 }
 
+func TestPipeline_Parallel_PropagatesWorkerError(t *testing.T) {
+	d := NewDispatcher()
+	sendFn := func(ctx context.Context, peerPubKey, taskID string, payload TaskPayload) error {
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			d.Deliver(TaskResult{TaskID: taskID, Text: "", Error: "worker failed"})
+		}()
+		return nil
+	}
+
+	p := &Pipeline{Steps: []Step{{PeerPubKey: "p1", Instructions: "a"}}}
+	results, err := p.RunParallel(context.Background(), d, sendFn)
+	if err == nil {
+		t.Fatal("expected worker error from parallel pipeline")
+	}
+	if len(results) != 1 || results[0].Error != "worker failed" {
+		t.Fatalf("unexpected results: %#v", results)
+	}
+}
+
 func TestPipeline_Parallel_SendFailureCancelsDispatched(t *testing.T) {
 	d := NewDispatcher()
 	callCount := 0
 
-	sendFn := func(ctx context.Context, peerPubKey, instructions, taskID string) error {
+	sendFn := func(ctx context.Context, peerPubKey, taskID string, payload TaskPayload) error {
 		callCount++
 		if callCount == 2 {
 			return context.DeadlineExceeded
@@ -173,6 +201,84 @@ func TestPipeline_Parallel_SendFailureCancelsDispatched(t *testing.T) {
 	}
 	if d.PendingCount() != 0 {
 		t.Fatalf("expected all dispatched tasks cancelled, pending=%d", d.PendingCount())
+	}
+}
+
+func TestPipeline_Sequential_PreservesRuntimeHints(t *testing.T) {
+	d := NewDispatcher()
+	var got TaskPayload
+
+	sendFn := func(ctx context.Context, peerPubKey, taskID string, payload TaskPayload) error {
+		got = payload
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			d.Deliver(TaskResult{TaskID: taskID, Text: "ok"})
+		}()
+		return nil
+	}
+
+	p := &Pipeline{Steps: []Step{{
+		PeerPubKey:      "peer1",
+		Instructions:    "task1",
+		ContextMessages: []map[string]any{{"role": "user", "content": "prior"}},
+		MemoryScope:     state.AgentMemoryScopeProject,
+		ToolProfile:     "coding",
+		EnabledTools:    []string{"memory_search", "session_spawn"},
+		ParentContext:   &ParentContext{SessionID: "session-a", AgentID: "main"},
+	}}}
+
+	if _, err := p.RunSequential(context.Background(), d, sendFn); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.MemoryScope != state.AgentMemoryScopeProject {
+		t.Fatalf("expected memory scope to propagate, got %#v", got.MemoryScope)
+	}
+	if got.ToolProfile != "coding" {
+		t.Fatalf("expected tool profile to propagate, got %#v", got.ToolProfile)
+	}
+	if len(got.EnabledTools) != 2 || got.EnabledTools[0] != "memory_search" {
+		t.Fatalf("expected enabled tools to propagate, got %#v", got.EnabledTools)
+	}
+	if got.ParentContext == nil || got.ParentContext.SessionID != "session-a" || got.ParentContext.AgentID != "main" {
+		t.Fatalf("expected parent context to propagate, got %#v", got.ParentContext)
+	}
+	if len(got.ContextMessages) != 1 || got.ContextMessages[0]["content"] != "prior" {
+		t.Fatalf("expected context messages to propagate, got %#v", got.ContextMessages)
+	}
+}
+
+func TestPipeline_Sequential_PreservesWorkerMetadata(t *testing.T) {
+	d := NewDispatcher()
+	sendFn := func(ctx context.Context, peerPubKey, taskID string, payload TaskPayload) error {
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			d.Deliver(TaskResult{
+				TaskID:       taskID,
+				Text:         "ok",
+				SenderPubKey: peerPubKey,
+				Worker: &WorkerMetadata{
+					SessionID:       "acp:" + peerPubKey,
+					AgentID:         "worker",
+					HistoryEntryIDs: []string{"acp:task:seed:0", "turn:task:assistant:0"},
+				},
+			})
+		}()
+		return nil
+	}
+
+	p := &Pipeline{Steps: []Step{{PeerPubKey: "peer1", Instructions: "task1"}}}
+	results, err := p.RunSequential(context.Background(), d, sendFn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].SenderPubKey != "peer1" {
+		t.Fatalf("sender_pubkey = %q, want peer1", results[0].SenderPubKey)
+	}
+	if results[0].Worker == nil || results[0].Worker.SessionID != "acp:peer1" || len(results[0].Worker.HistoryEntryIDs) != 2 {
+		t.Fatalf("worker metadata = %#v", results[0].Worker)
 	}
 }
 

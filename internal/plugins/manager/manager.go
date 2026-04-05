@@ -125,7 +125,7 @@ func (m *GojaPluginManager) RegisterTools(registry *agent.ToolRegistry) {
 		for _, tool := range p.Manifest().Tools {
 			toolName := pluginToolName(pid, tool.Name)
 			toolFn := makeToolFunc(plugin, pid, tool.Name)
-			registry.Register(toolName, toolFn)
+			registry.RegisterWithDescriptor(toolName, toolFn, descriptorFromPluginTool(pid, tool))
 			m.log.Debug("registered plugin tool", "tool", toolName)
 		}
 	}
@@ -306,4 +306,48 @@ func makeToolFunc(p pluginInstance, pluginID, toolName string) agent.ToolFunc {
 		}
 		return string(b), nil
 	}
+}
+
+func descriptorFromPluginTool(pluginID string, tool sdk.ToolSchema) agent.ToolDescriptor {
+	return agent.ToolDescriptor{
+		Name:            pluginToolName(pluginID, tool.Name),
+		Description:     tool.Description,
+		Parameters:      toolParametersFromMap(tool.Parameters),
+		InputJSONSchema: cloneJSONMap(tool.Parameters),
+		Origin: agent.ToolOrigin{
+			Kind:          agent.ToolOriginKindPlugin,
+			PluginID:      pluginID,
+			CanonicalName: tool.Name,
+		},
+	}
+}
+
+func toolParametersFromMap(raw map[string]any) agent.ToolParameters {
+	if len(raw) == 0 {
+		return agent.ToolParameters{}
+	}
+	var params agent.ToolParameters
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return agent.ToolParameters{}
+	}
+	if err := json.Unmarshal(b, &params); err != nil {
+		return agent.ToolParameters{}
+	}
+	return params
+}
+
+func cloneJSONMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil
+	}
+	return out
 }

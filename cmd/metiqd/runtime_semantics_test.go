@@ -182,15 +182,12 @@ func TestSkillsBinsNilSafety(t *testing.T) {
 		t.Fatalf("expected bins []string, got %T", result["bins"])
 	}
 
-	// Verify the 3 config-specified bins are present (bundled skills from the
-	// project's skills/ dir may also be included when running in dev mode).
-	binsSet := map[string]bool{}
-	for _, b := range bins {
-		binsSet[b] = true
-	}
+	// Config-only entries should not leak bins; only final resolved catalog skills count.
 	for _, want := range []string{"test-skill", "test-skill-2", "test-skill-3"} {
-		if !binsSet[want] {
-			t.Errorf("expected bin %q in result, got bins: %v", want, bins)
+		for _, got := range bins {
+			if got == want {
+				t.Errorf("did not expect config-only bin %q in result, got bins: %v", want, bins)
+			}
 		}
 	}
 }

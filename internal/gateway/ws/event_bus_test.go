@@ -47,12 +47,14 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 		EventTick, EventHealth, EventShutdown,
 		EventAgentStatus, EventChatMessage,
 		EventCronTick, EventCronResult,
-		EventConfigUpdated,
+		EventConfigUpdated, EventMCPLifecycle,
 		EventExecApprovalRequested, EventExecApprovalResolved,
 		EventVoicewake, EventUpdateAvailable,
-		EventChannelMessage,
+		EventChannelMessage, EventRelayHealth, EventDMHealth,
 		EventNodePairRequested, EventNodePairResolved,
 		EventDevicePairResolved, EventPluginLoaded,
+		EventToolStart, EventToolProgress, EventToolResult, EventToolError,
+		EventTurnResult,
 	}
 	set := make(map[string]struct{}, len(AllPushEvents))
 	for _, e := range AllPushEvents {
@@ -109,21 +111,24 @@ func TestNewPayloadTypes(t *testing.T) {
 	e.Emit(EventVoicewake, VoicewakePayload{Trigger: "hey metiq"})
 	e.Emit(EventUpdateAvailable, UpdateAvailablePayload{Version: "2.0"})
 	e.Emit(EventChannelMessage, ChannelMessagePayload{ChannelID: "ch1", Direction: "inbound"})
+	e.Emit(EventRelayHealth, RelayHealthPayload{URL: "wss://relay", Reachable: true})
+	e.Emit(EventDMHealth, DMHealthPayload{Label: "nip17", Healthy: true})
+	e.Emit(EventMCPLifecycle, MCPLifecyclePayload{Name: "demo", State: "connected"})
 
-	if e.Count() != 5 {
-		t.Fatalf("expected 5 events, got %d", e.Count())
+	if e.Count() != 8 {
+		t.Fatalf("expected 8 events, got %d", e.Count())
 	}
 	// Spot-check last payload
 	name, payload := e.Last()
-	if name != EventChannelMessage {
-		t.Errorf("expected channel.message, got %q", name)
+	if name != EventMCPLifecycle {
+		t.Errorf("expected mcp.lifecycle, got %q", name)
 	}
-	cp, ok := payload.(ChannelMessagePayload)
+	mp, ok := payload.(MCPLifecyclePayload)
 	if !ok {
-		t.Fatalf("expected ChannelMessagePayload, got %T", payload)
+		t.Fatalf("expected MCPLifecyclePayload, got %T", payload)
 	}
-	if cp.ChannelID != "ch1" {
-		t.Errorf("expected ch1, got %q", cp.ChannelID)
+	if mp.Name != "demo" || mp.State != "connected" {
+		t.Errorf("unexpected mcp lifecycle payload: %+v", mp)
 	}
 }
 
@@ -148,5 +153,55 @@ func TestPairingAndPluginPayloads(t *testing.T) {
 	}
 	if pp.Action != "installed" {
 		t.Errorf("expected action=installed, got %q", pp.Action)
+	}
+}
+
+func TestToolLifecyclePayloads(t *testing.T) {
+	e := &captureEmitter{}
+
+	e.Emit(EventToolStart, ToolLifecyclePayload{ToolCallID: "call-1", ToolName: "fetch", SessionID: "sess-1", TurnID: "turn-1"})
+	e.Emit(EventToolProgress, ToolLifecyclePayload{ToolCallID: "call-1", ToolName: "fetch", Data: map[string]any{"phase": "stream"}})
+	e.Emit(EventToolResult, ToolLifecyclePayload{ToolCallID: "call-1", ToolName: "fetch", Result: "ok"})
+	e.Emit(EventToolError, ToolLifecyclePayload{ToolCallID: "call-2", ToolName: "write", Error: "permission denied"})
+
+	if e.Count() != 4 {
+		t.Fatalf("expected 4 events, got %d", e.Count())
+	}
+	name, payload := e.Last()
+	if name != EventToolError {
+		t.Fatalf("expected %q, got %q", EventToolError, name)
+	}
+	lp, ok := payload.(ToolLifecyclePayload)
+	if !ok {
+		t.Fatalf("expected ToolLifecyclePayload, got %T", payload)
+	}
+	if lp.ToolCallID != "call-2" || lp.ToolName != "write" || lp.Error != "permission denied" {
+		t.Fatalf("unexpected lifecycle payload: %+v", lp)
+	}
+}
+
+func TestTurnResultPayload(t *testing.T) {
+	e := &captureEmitter{}
+	e.Emit(EventTurnResult, TurnResultPayload{
+		SessionID:   "sess-1",
+		TurnID:      "turn-1",
+		Outcome:     "completed_with_tools",
+		StopReason:  "model_text",
+		DurationMS:  250,
+		LoopBlocked: false,
+	})
+	if e.Count() != 1 {
+		t.Fatalf("expected 1 event, got %d", e.Count())
+	}
+	name, payload := e.Last()
+	if name != EventTurnResult {
+		t.Fatalf("expected %q, got %q", EventTurnResult, name)
+	}
+	tp, ok := payload.(TurnResultPayload)
+	if !ok {
+		t.Fatalf("expected TurnResultPayload, got %T", payload)
+	}
+	if tp.SessionID != "sess-1" || tp.TurnID != "turn-1" || tp.Outcome != "completed_with_tools" {
+		t.Fatalf("unexpected turn result payload: %+v", tp)
 	}
 }

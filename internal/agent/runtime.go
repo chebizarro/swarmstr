@@ -20,8 +20,8 @@ type ToolCallRef struct {
 // ConversationMessage is one message in the prior conversation history passed
 // to the provider.  Role is "user", "assistant", "system", or "tool".
 type ConversationMessage struct {
-	Role       string `json:"role"`
-	Content    string `json:"content"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
 	// ToolCallID is set for role="tool" messages linking results to calls.
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	// ToolCalls is set on role="assistant" messages that requested tool use.
@@ -30,8 +30,19 @@ type ConversationMessage struct {
 
 type Turn struct {
 	SessionID string
-	UserText  string
-	Context   string
+	// TurnID is an optional caller-supplied correlation identifier for
+	// observability. metiq maps Nostr event IDs into this field.
+	TurnID   string
+	UserText string
+	// StaticSystemPrompt carries long-lived system prompt additions that should
+	// remain in the cacheable/static prompt lane (for example pinned knowledge
+	// or workspace bootstrap material). Providers that support prompt caching
+	// treat this as part of the static system prefix rather than per-turn
+	// dynamic context.
+	StaticSystemPrompt string
+	// Context carries genuinely per-turn dynamic prompt additions (for example
+	// memory search results or engine-supplied dynamic turn context).
+	Context string
 	// Images carries vision content for multi-modal providers.
 	// Each element is either a URL reference or inline base64 data.
 	// Text-only providers (echo, http, ollama) ignore this field.
@@ -51,6 +62,9 @@ type Turn struct {
 	// thinking config block).  The caller should ensure MaxTokens (if set) is
 	// strictly greater than ThinkingBudget.
 	ThinkingBudget int
+	// ToolEventSink receives start/progress/result/error events emitted by the
+	// shared tool loop. Leave nil when runtime tool events are not needed.
+	ToolEventSink ToolLifecycleSink
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.
@@ -64,6 +78,8 @@ type ImageRef struct {
 type TurnResult struct {
 	Text       string
 	ToolTraces []ToolTrace
+	Outcome    TurnOutcome
+	StopReason TurnStopReason
 	// HistoryDelta is the ordered sequence of conversation messages produced
 	// during this turn.  On a plain text turn it contains one assistant message.
 	// On tool turns it contains assistant tool-call messages, tool result
@@ -76,9 +92,64 @@ type TurnResult struct {
 
 // TurnUsage holds provider-reported token counts for a single turn.
 type TurnUsage struct {
-	InputTokens  int64
-	OutputTokens int64
+	InputTokens  int64 `json:"input_tokens,omitempty"`
+	OutputTokens int64 `json:"output_tokens,omitempty"`
 }
+
+// TurnTelemetry is the minimal structured runtime snapshot for a completed or
+// failed turn. metiqd persists and emits this without adding a separate
+// analytics pipeline.
+type TurnTelemetry struct {
+	TurnID         string
+	StartedAtMS    int64
+	EndedAtMS      int64
+	DurationMS     int64
+	Outcome        TurnOutcome
+	StopReason     TurnStopReason
+	LoopBlocked    bool
+	Error          string
+	FallbackUsed   bool
+	FallbackFrom   string
+	FallbackTo     string
+	FallbackReason string
+	Usage          TurnUsage
+}
+
+// TurnResultMetadata is the canonical persisted subset of a terminal turn
+// result. metiqd stores this alongside HistoryDelta so callers do not have to
+// reconstruct terminal state from logs.
+type TurnResultMetadata struct {
+	Outcome    TurnOutcome    `json:"outcome,omitempty"`
+	StopReason TurnStopReason `json:"stop_reason,omitempty"`
+	Usage      TurnUsage      `json:"usage,omitempty"`
+}
+
+// TurnOutcome classifies the terminal result shape of a turn.
+// It is runtime-only in this tranche and intentionally not persisted yet.
+type TurnOutcome string
+
+const (
+	TurnOutcomeCompleted          TurnOutcome = "completed"
+	TurnOutcomeCompletedWithTools TurnOutcome = "completed_with_tools"
+	TurnOutcomeToolOnlyCompleted  TurnOutcome = "tool_only_completed"
+	TurnOutcomeForcedSummary      TurnOutcome = "forced_summary"
+	TurnOutcomeBlocked            TurnOutcome = "blocked"
+	TurnOutcomeAborted            TurnOutcome = "aborted"
+	TurnOutcomeFailed             TurnOutcome = "failed"
+)
+
+// TurnStopReason explains why a turn terminated.
+type TurnStopReason string
+
+const (
+	TurnStopReasonModelText     TurnStopReason = "model_text"
+	TurnStopReasonToolExecution TurnStopReason = "tool_execution"
+	TurnStopReasonForcedSummary TurnStopReason = "forced_summary"
+	TurnStopReasonLoopBlocked   TurnStopReason = "loop_blocked"
+	TurnStopReasonMaxIterations TurnStopReason = "max_iterations"
+	TurnStopReasonProviderError TurnStopReason = "provider_error"
+	TurnStopReasonCancelled     TurnStopReason = "cancelled"
+)
 
 // TurnExecutionError wraps a turn failure while carrying any tool work that
 // completed before the error occurred.  Callers can extract the partial result
@@ -103,6 +174,67 @@ func PartialTurnResult(err error) (TurnResult, bool) {
 		}
 	}
 	return TurnResult{}, false
+}
+
+// ClassifyTurnError maps a failed turn to the canonical outcome/stop-reason
+// taxonomy. If err carries a TurnExecutionError partial classification, that
+// wins; otherwise context cancellation/deadline map to aborted/cancelled and
+// all other failures map to failed/provider_error.
+func ClassifyTurnError(err error) (TurnOutcome, TurnStopReason, bool) {
+	if err == nil {
+		return "", "", false
+	}
+	var te *TurnExecutionError
+	if errors.As(err, &te) {
+		if te.Partial.Outcome != "" || te.Partial.StopReason != "" {
+			return te.Partial.Outcome, te.Partial.StopReason, true
+		}
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return TurnOutcomeAborted, TurnStopReasonCancelled, true
+	}
+	return TurnOutcomeFailed, TurnStopReasonProviderError, true
+}
+
+// ClassifyTurnResult infers terminal classification when a runtime returns a
+// plain TurnResult without explicitly populating Outcome/StopReason.
+func ClassifyTurnResult(result TurnResult) (TurnOutcome, TurnStopReason) {
+	return inferTurnClassification(result)
+}
+
+// BuildTurnResultMetadata projects the canonical terminal classification and
+// usage into a persisted form. When err wraps a TurnExecutionError, any partial
+// usage/classification carried by the error wins.
+func BuildTurnResultMetadata(result TurnResult, err error) (TurnResultMetadata, bool) {
+	meta := TurnResultMetadata{Usage: result.Usage}
+	if err != nil {
+		var te *TurnExecutionError
+		if errors.As(err, &te) {
+			if te.Partial.Usage.InputTokens > 0 || te.Partial.Usage.OutputTokens > 0 {
+				meta.Usage = te.Partial.Usage
+			}
+		}
+		if outcome, stopReason, ok := ClassifyTurnError(err); ok {
+			meta.Outcome = outcome
+			meta.StopReason = stopReason
+		}
+	} else {
+		meta.Outcome = result.Outcome
+		meta.StopReason = result.StopReason
+		if meta.Outcome == "" || meta.StopReason == "" {
+			inferredOutcome, inferredStopReason := ClassifyTurnResult(result)
+			if meta.Outcome == "" {
+				meta.Outcome = inferredOutcome
+			}
+			if meta.StopReason == "" {
+				meta.StopReason = inferredStopReason
+			}
+		}
+	}
+	if meta.Outcome == "" && meta.StopReason == "" && meta.Usage.InputTokens == 0 && meta.Usage.OutputTokens == 0 {
+		return TurnResultMetadata{}, false
+	}
+	return meta, true
 }
 
 type Runtime interface {
@@ -163,7 +295,7 @@ func (r *ProviderRuntime) Filtered(allowed map[string]bool) Runtime {
 	}
 	return &ProviderRuntime{
 		provider: r.provider,
-		tools:    &ProfileFilteredExecutor{Base: r.tools, Allowed: allowed},
+		tools:    FilteredToolExecutor(r.tools, allowed),
 	}
 }
 
@@ -177,22 +309,23 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 	if turn.SessionID != "" {
 		ctx = ContextWithSessionID(ctx, turn.SessionID)
 	}
+	frozenTools := SnapshotToolExecutor(r.tools)
 	// Auto-inject tool definitions when the executor provides them and the
 	// caller hasn't already populated turn.Tools.
-	if len(turn.Tools) == 0 && r.tools != nil {
-		if dp, ok := r.tools.(interface{ Definitions() []ToolDefinition }); ok {
+	if len(turn.Tools) == 0 && frozenTools != nil {
+		if dp, ok := frozenTools.(interface{ Definitions() []ToolDefinition }); ok {
 			turn.Tools = dp.Definitions()
 		}
 	}
 	// Inject the executor so providers can run the agentic tool loop internally.
 	if turn.Executor == nil {
-		turn.Executor = r.tools
+		turn.Executor = frozenTools
 	}
 	gen, err := r.provider.Generate(ctx, turn)
 	if err != nil {
 		return TurnResult{}, err
 	}
-	return r.buildResult(ctx, gen)
+	return r.buildResult(ctx, gen, frozenTools)
 }
 
 // ProcessTurnStreaming processes a turn with incremental text delivery.
@@ -208,14 +341,15 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	if turn.SessionID != "" {
 		ctx = ContextWithSessionID(ctx, turn.SessionID)
 	}
+	frozenTools := SnapshotToolExecutor(r.tools)
 	// Auto-inject tool definitions (same as ProcessTurn).
-	if len(turn.Tools) == 0 && r.tools != nil {
-		if dp, ok := r.tools.(interface{ Definitions() []ToolDefinition }); ok {
+	if len(turn.Tools) == 0 && frozenTools != nil {
+		if dp, ok := frozenTools.(interface{ Definitions() []ToolDefinition }); ok {
 			turn.Tools = dp.Definitions()
 		}
 	}
 	if turn.Executor == nil {
-		turn.Executor = r.tools
+		turn.Executor = frozenTools
 	}
 
 	var gen ProviderResult
@@ -233,24 +367,27 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		return TurnResult{}, err
 	}
 
-	return r.buildResult(ctx, gen)
+	return r.buildResult(ctx, gen, frozenTools)
 }
 
 // buildResult executes any tool calls from gen and assembles the TurnResult.
-func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult) (TurnResult, error) {
+func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult, tools ToolExecutor) (TurnResult, error) {
 	result := TurnResult{
 		Text:         strings.TrimSpace(gen.Text),
+		ToolTraces:   nil,
+		Outcome:      gen.Outcome,
+		StopReason:   gen.StopReason,
 		HistoryDelta: gen.HistoryDelta,
 		Usage:        TurnUsage{InputTokens: gen.Usage.InputTokens, OutputTokens: gen.Usage.OutputTokens},
 	}
 	for _, call := range gen.ToolCalls {
 		trace := ToolTrace{Call: call}
-		if r.tools == nil {
+		if tools == nil {
 			trace.Error = "no tool executor configured"
 			result.ToolTraces = append(result.ToolTraces, trace)
 			continue
 		}
-		value, err := r.tools.Execute(ctx, call)
+		value, err := tools.Execute(ctx, call)
 		if err != nil {
 			trace.Error = err.Error()
 		} else {
@@ -265,5 +402,28 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult) (
 	if result.Text == "" && len(result.ToolTraces) > 0 {
 		result.Text = "tool execution complete"
 	}
+	if result.Outcome == "" || result.StopReason == "" {
+		inferredOutcome, inferredStopReason := inferTurnClassification(result)
+		if result.Outcome == "" {
+			result.Outcome = inferredOutcome
+		}
+		if result.StopReason == "" {
+			result.StopReason = inferredStopReason
+		}
+	}
 	return result, nil
+}
+
+func inferTurnClassification(result TurnResult) (TurnOutcome, TurnStopReason) {
+	switch {
+	case len(result.ToolTraces) > 0 && strings.TrimSpace(result.Text) != "":
+		if strings.TrimSpace(result.Text) == "tool execution complete" {
+			return TurnOutcomeToolOnlyCompleted, TurnStopReasonToolExecution
+		}
+		return TurnOutcomeCompletedWithTools, TurnStopReasonModelText
+	case len(result.ToolTraces) > 0:
+		return TurnOutcomeToolOnlyCompleted, TurnStopReasonToolExecution
+	default:
+		return TurnOutcomeCompleted, TurnStopReasonModelText
+	}
 }

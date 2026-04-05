@@ -32,6 +32,9 @@ type ProviderResult struct {
 	// HistoryDelta carries the ordered tool-call/tool-result history from
 	// an agentic loop.  Propagated to TurnResult.HistoryDelta.
 	HistoryDelta []ConversationMessage `json:"-"`
+	// Outcome and StopReason classify the terminal shape of the turn.
+	Outcome    TurnOutcome    `json:"outcome,omitempty"`
+	StopReason TurnStopReason `json:"stop_reason,omitempty"`
 }
 
 // ProviderUsage holds token counts from the provider API response.
@@ -76,7 +79,7 @@ type httpResponse struct {
 }
 
 func (p *HTTPProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
-	contextText := turn.Context
+	contextText := buildPromptAssembly("", turn.StaticSystemPrompt, turn.Context).Combined()
 	const maxContextBytes = 16 * 1024
 	if len(contextText) > maxContextBytes {
 		contextText = truncateUTF8ByBytes(contextText, maxContextBytes)
@@ -448,25 +451,7 @@ type geminiResponse struct {
 func toolDefsToGemini(defs []ToolDefinition) []geminiToolBundle {
 	decls := make([]geminiFuncDecl, 0, len(defs))
 	for _, d := range defs {
-		params := map[string]any{"type": "OBJECT"}
-		if len(d.Parameters.Properties) > 0 {
-			props := map[string]any{}
-			for k, v := range d.Parameters.Properties {
-				// Gemini uses uppercase type names.
-				prop := map[string]any{"type": strings.ToUpper(v.Type)}
-				if v.Description != "" {
-					prop["description"] = v.Description
-				}
-				if len(v.Enum) > 0 {
-					prop["enum"] = v.Enum
-				}
-				props[k] = prop
-			}
-			params["properties"] = props
-		}
-		if len(d.Parameters.Required) > 0 {
-			params["required"] = d.Parameters.Required
-		}
+		params, _ := geminiSchemaMap(toolInputSchemaMap(d)).(map[string]any)
 		decls = append(decls, geminiFuncDecl{
 			Name:        d.Name,
 			Description: d.Description,
@@ -477,6 +462,31 @@ func toolDefsToGemini(defs []ToolDefinition) []geminiToolBundle {
 		return nil
 	}
 	return []geminiToolBundle{{FunctionDeclarations: decls}}
+}
+
+func geminiSchemaMap(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			if k == "type" {
+				if s, ok := val.(string); ok {
+					out[k] = strings.ToUpper(s)
+					continue
+				}
+			}
+			out[k] = geminiSchemaMap(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = geminiSchemaMap(val)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // buildGeminiParts constructs the parts slice for a user turn.
@@ -687,8 +697,8 @@ func (p *CohereProvider) Generate(ctx context.Context, turn Turn) (ProviderResul
 			{Role: "user", Content: strings.TrimSpace(turn.UserText)},
 		},
 	}
-	if turn.Context != "" {
-		req.Preamble = turn.Context
+	if preamble := buildPromptAssembly("", turn.StaticSystemPrompt, turn.Context).Combined(); preamble != "" {
+		req.Preamble = preamble
 	}
 
 	body, err := json.Marshal(req)

@@ -16,9 +16,9 @@ Session transcripts are stored as JSONL files at `~/.metiq/agents/<agentId>/sess
 ```jsonl
 {"role":"user","content":"Check my relay connections","timestamp":1705420800,"fromPubkey":"npub1abc...","eventId":"ev123"}
 {"role":"assistant","content":"Checking your relays...","timestamp":1705420801,"tokenCount":{"input":2100,"output":45}}
-{"role":"tool_use","id":"tu1","name":"relay_ping","input":{"relay":"wss://relay.damus.io"},"timestamp":1705420802}
+{"role":"tool_use","id":"tu1","name":"relay_ping","input":{"relay":"wss://<relay-1>"},"timestamp":1705420802}
 {"role":"tool_result","id":"tu1","name":"relay_ping","output":"{\"latency_ms\":42,\"connected\":true}","timestamp":1705420803}
-{"role":"assistant","content":"Your relay wss://relay.damus.io is healthy (42ms).","timestamp":1705420804}
+{"role":"assistant","content":"Your relay wss://<relay-1> is healthy (42ms).","timestamp":1705420804}
 ```
 
 ### Sensitive Data in Transcripts

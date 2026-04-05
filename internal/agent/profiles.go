@@ -58,7 +58,7 @@ var BuiltinProfiles = []ProfileDef{
 		ID:          "full",
 		Label:       "Full",
 		Description: "All available tools enabled.",
-		MatchTool: func(_ string, _ []string) bool { return true },
+		MatchTool:   func(_ string, _ []string) bool { return true },
 	},
 }
 
@@ -135,6 +135,76 @@ func AllowedToolIDs(groups []map[string]any, profileID string) map[string]bool {
 	return allowed
 }
 
+// AllowedToolIDsFromNames normalizes an explicit allowlist into a set while
+// preserving nil as "no additional constraint".
+func AllowedToolIDsFromNames(names []string) map[string]bool {
+	names = NormalizeAllowedToolNames(names)
+	if len(names) == 0 {
+		return nil
+	}
+	allowed := make(map[string]bool, len(names))
+	for _, name := range names {
+		allowed[name] = true
+	}
+	return allowed
+}
+
+// NormalizeAllowedToolNames trims, de-duplicates, and preserves order.
+func NormalizeAllowedToolNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(names))
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// CloneAllowedToolIDs copies an allowlist set, preserving nil.
+func CloneAllowedToolIDs(allowed map[string]bool) map[string]bool {
+	if allowed == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(allowed))
+	for name, ok := range allowed {
+		if ok {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// IntersectAllowedToolIDs intersects two allowlist sets while preserving nil as
+// "no additional constraint".
+func IntersectAllowedToolIDs(left, right map[string]bool) map[string]bool {
+	if left == nil {
+		return CloneAllowedToolIDs(right)
+	}
+	if right == nil {
+		return CloneAllowedToolIDs(left)
+	}
+	out := make(map[string]bool)
+	for name := range left {
+		if right[name] {
+			out[name] = true
+		}
+	}
+	return out
+}
+
 // ─── Filtered executor ────────────────────────────────────────────────────────
 
 // ProfileFilteredExecutor wraps a base ToolExecutor and rejects calls to
@@ -144,11 +214,73 @@ type ProfileFilteredExecutor struct {
 	Allowed map[string]bool // nil = allow all
 }
 
+// FilteredToolExecutor returns base unchanged when no allowlist applies, or a
+// profile-filtered wrapper otherwise.
+func FilteredToolExecutor(base ToolExecutor, allowed map[string]bool) ToolExecutor {
+	if base == nil || allowed == nil {
+		return base
+	}
+	return &ProfileFilteredExecutor{Base: base, Allowed: allowed}
+}
+
 func (e *ProfileFilteredExecutor) Execute(ctx context.Context, call ToolCall) (string, error) {
 	if e.Allowed != nil && !e.Allowed[call.Name] {
 		return "", fmt.Errorf("tool %q is not available in the current profile", call.Name)
 	}
 	return e.Base.Execute(ctx, call)
+}
+
+func (e *ProfileFilteredExecutor) Definitions() []ToolDefinition {
+	if provider, ok := e.Base.(interface{ ProviderDescriptors() []ToolDescriptor }); ok {
+		return ToolDefinitionsFromDescriptors(AssembleToolDescriptors(provider.ProviderDescriptors(), e.Allowed))
+	}
+	if provider, ok := e.Base.(interface{ Descriptors() []ToolDescriptor }); ok {
+		return ToolDefinitionsFromDescriptors(AssembleToolDescriptors(provider.Descriptors(), e.Allowed))
+	}
+	if provider, ok := e.Base.(interface{ Definitions() []ToolDefinition }); ok {
+		defs := provider.Definitions()
+		if e.Allowed == nil {
+			return defs
+		}
+		out := make([]ToolDefinition, 0, len(defs))
+		for _, def := range defs {
+			if e.Allowed[def.Name] {
+				out = append(out, def)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func (e *ProfileFilteredExecutor) Descriptors() []ToolDescriptor {
+	if provider, ok := e.Base.(interface{ ProviderDescriptors() []ToolDescriptor }); ok {
+		return AssembleToolDescriptors(provider.ProviderDescriptors(), e.Allowed)
+	}
+	if provider, ok := e.Base.(interface{ Descriptors() []ToolDescriptor }); ok {
+		return AssembleToolDescriptors(provider.Descriptors(), e.Allowed)
+	}
+	return nil
+}
+
+func (e *ProfileFilteredExecutor) EffectiveTraits(call ToolCall) (ToolTraits, bool) {
+	if e.Allowed != nil && !e.Allowed[call.Name] {
+		return ToolTraits{}, false
+	}
+	provider, ok := e.Base.(interface {
+		EffectiveTraits(ToolCall) (ToolTraits, bool)
+	})
+	if !ok {
+		return ToolTraits{}, false
+	}
+	return provider.EffectiveTraits(call)
+}
+
+func (e *ProfileFilteredExecutor) SnapshotToolExecutor() ToolExecutor {
+	return &ProfileFilteredExecutor{
+		Base:    SnapshotToolExecutor(e.Base),
+		Allowed: CloneAllowedToolIDs(e.Allowed),
+	}
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

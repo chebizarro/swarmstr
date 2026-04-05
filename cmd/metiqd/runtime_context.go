@@ -27,9 +27,6 @@ type ttlCacheEntry[T any] struct {
 }
 
 var (
-	skillsPromptCacheMu sync.Mutex
-	skillsPromptCache   = map[string]ttlCacheEntry[string]{}
-
 	docsSectionCacheMu sync.Mutex
 	docsSectionCache   = map[string]ttlCacheEntry[string]{}
 
@@ -41,6 +38,8 @@ var (
 type turnRuntimeParams struct {
 	// Agent identity
 	AgentID      string
+	SelfPubkey   string
+	SelfNPub     string
 	Model        string
 	Channel      string // e.g. "nostr", "telegram", "discord"
 	Capabilities []string
@@ -61,62 +60,81 @@ type turnRuntimeParams struct {
 	SkillsPrompt string
 }
 
-func buildSkillsPromptCached(bundledSkillsDir, skillsWsDir string) string {
-	const ttl = 60 * time.Second
-	key := strings.TrimSpace(bundledSkillsDir) + "\n" + strings.TrimSpace(skillsWsDir)
-	now := time.Now()
-
-	skillsPromptCacheMu.Lock()
-	if ent, ok := skillsPromptCache[key]; ok && now.Before(ent.expiresAt) {
-		v := ent.value
-		skillsPromptCacheMu.Unlock()
-		return v
+func buildSkillsPromptCached(cfg state.ConfigDoc, agentID string) string {
+	catalog, err := skillspkg.BuildSkillCatalog(cfg, agentID)
+	if err != nil || catalog == nil {
+		return ""
 	}
-	skillsPromptCacheMu.Unlock()
+	mirrorPaths, _ := skillspkg.SyncPromptSkillsToWorkspace(catalog)
+	limits := skillspkg.ResolvePromptLimits(cfg)
+	visible := skillspkg.PromptVisibleSkills(catalog)
+	if len(visible) == 0 {
+		return ""
+	}
 
-	var skillLines []string
-	if dir := strings.TrimSpace(bundledSkillsDir); dir != "" {
-		if skills, err := skillspkg.ScanBundledDir(dir); err == nil {
-			for _, s := range skills {
-				if s.IsEnabled() {
-					name := s.Manifest.Name
-					if name == "" {
-						name = s.SkillKey
-					}
-					desc := strings.TrimSpace(s.Manifest.Description)
-					if desc != "" {
-						skillLines = append(skillLines, fmt.Sprintf("- %s: %s (location: %s)", name, desc, s.FilePath))
-					}
-				}
+	var lines []string
+	truncated := false
+	for _, resolved := range visible {
+		if limits.MaxCount > 0 && len(lines) >= limits.MaxCount {
+			truncated = true
+			break
+		}
+		name := strings.TrimSpace(resolved.Skill.Manifest.Name)
+		if name == "" {
+			name = resolved.Skill.SkillKey
+		}
+		desc := strings.TrimSpace(resolved.Skill.Manifest.Description)
+		if desc == "" {
+			desc = "No description provided."
+		}
+		if when := strings.TrimSpace(resolved.WhenToUse); when != "" {
+			desc += fmt.Sprintf(" (when: %s)", when)
+		}
+		line := fmt.Sprintf("- %s: %s", name, desc)
+		if path := strings.TrimSpace(skillspkg.PromptSkillPath(catalog, resolved, mirrorPaths)); path != "" {
+			line += fmt.Sprintf(" (location: %s)", path)
+		}
+		if resolved.Always && !resolved.Eligible {
+			if missing := formatSkillMissingSummary(resolved.Missing); missing != "" {
+				line += fmt.Sprintf(" [always; missing %s]", missing)
 			}
 		}
-	}
-	if dir := strings.TrimSpace(skillsWsDir); dir != "" {
-		if skills, err := skillspkg.ScanWorkspace(dir); err == nil {
-			for _, s := range skills {
-				if s.IsEnabled() {
-					name := s.Manifest.Name
-					if name == "" {
-						name = s.SkillKey
-					}
-					desc := strings.TrimSpace(s.Manifest.Description)
-					if desc != "" {
-						skillLines = append(skillLines, fmt.Sprintf("- %s: %s (location: %s)", name, desc, s.FilePath))
-					}
-				}
-			}
+		candidate := append(lines, line)
+		joined := strings.Join(candidate, "\n")
+		if limits.MaxChars > 0 && len(joined) > limits.MaxChars {
+			truncated = true
+			break
 		}
+		lines = candidate
 	}
-
-	out := ""
-	if len(skillLines) > 0 {
-		out = "<available_skills>\n" + strings.Join(skillLines, "\n") + "\n</available_skills>"
+	if len(lines) == 0 {
+		return ""
 	}
+	prefix := ""
+	if truncated {
+		prefix = fmt.Sprintf("⚠ Skills truncated: included %d of %d.\n", len(lines), len(visible))
+	}
+	return prefix + "<available_skills>\n" + strings.Join(lines, "\n") + "\n</available_skills>"
+}
 
-	skillsPromptCacheMu.Lock()
-	skillsPromptCache[key] = ttlCacheEntry[string]{value: out, expiresAt: now.Add(ttl)}
-	skillsPromptCacheMu.Unlock()
-	return out
+func formatSkillMissingSummary(missing skillspkg.Requirements) string {
+	var parts []string
+	if len(missing.Bins) > 0 {
+		parts = append(parts, "bins: "+strings.Join(missing.Bins, ","))
+	}
+	if len(missing.AnyBins) > 0 {
+		parts = append(parts, "anyBins: "+strings.Join(missing.AnyBins, ","))
+	}
+	if len(missing.Env) > 0 {
+		parts = append(parts, "env: "+strings.Join(missing.Env, ","))
+	}
+	if len(missing.Config) > 0 {
+		parts = append(parts, "config: "+strings.Join(missing.Config, ","))
+	}
+	if len(missing.OS) > 0 {
+		parts = append(parts, "os: "+strings.Join(missing.OS, ","))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func buildDocsSectionCached(workspaceDir string) string {
@@ -163,13 +181,14 @@ func buildBootstrapWarningSectionCached(workspaceDir string) string {
 // that OpenClaw injects on every turn: runtime info, time, tool summaries,
 // model aliases, TTS, reactions, sandbox, skills, docs, and bootstrap warnings.
 func buildTurnRuntimeContext(p turnRuntimeParams) string {
+	return joinPromptSections(buildTurnRuntimeStaticContext(p), buildTurnRuntimeDynamicContext())
+}
+
+func buildTurnRuntimeStaticContext(p turnRuntimeParams) string {
 	var sections []string
 
 	// ── Runtime info ────────────────────────────────────────────────────────
 	sections = append(sections, buildRuntimeSection(p))
-
-	// ── Current Date & Time ─────────────────────────────────────────────────
-	sections = append(sections, buildTimeSection())
 
 	// ── Tool summaries ──────────────────────────────────────────────────────
 	if ts := buildToolSummarySection(p.Tools); ts != "" {
@@ -214,6 +233,10 @@ func buildTurnRuntimeContext(p turnRuntimeParams) string {
 	return strings.Join(sections, "\n\n")
 }
 
+func buildTurnRuntimeDynamicContext() string {
+	return buildTimeSection()
+}
+
 // ─── Section builders ─────────────────────────────────────────────────────────
 
 func buildRuntimeSection(p turnRuntimeParams) string {
@@ -223,6 +246,12 @@ func buildRuntimeSection(p turnRuntimeParams) string {
 		fmt.Sprintf("host=%s", hostname),
 		fmt.Sprintf("os=%s (%s)", runtime.GOOS, runtime.GOARCH),
 		fmt.Sprintf("go=%s", runtime.Version()),
+	}
+	if p.SelfPubkey != "" {
+		parts = append(parts, fmt.Sprintf("self_pubkey=%s", p.SelfPubkey))
+	}
+	if p.SelfNPub != "" {
+		parts = append(parts, fmt.Sprintf("self_npub=%s", p.SelfNPub))
 	}
 	if p.Model != "" {
 		parts = append(parts, fmt.Sprintf("model=%s", p.Model))
@@ -399,9 +428,9 @@ func buildSkillsSection(skillsPrompt string) string {
 	}
 	var lines []string
 	lines = append(lines, "## Skills (mandatory)")
-	lines = append(lines, "Before replying: scan <available_skills> <description> entries.")
-	lines = append(lines, "- If exactly one skill clearly applies: read its SKILL.md, then follow it.")
-	lines = append(lines, "- If multiple could apply: choose the most specific one.")
+	lines = append(lines, "Before replying: scan <available_skills> descriptions and choose the narrowest matching skill.")
+	lines = append(lines, "- Read exactly one skill unless multiple are clearly required for the task.")
+	lines = append(lines, "- If multiple could apply: choose the most specific one first.")
 	lines = append(lines, "- If none clearly apply: do not read any SKILL.md.")
 	lines = append(lines, trimmed)
 	return strings.Join(lines, "\n")

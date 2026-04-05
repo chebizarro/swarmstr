@@ -3,7 +3,6 @@ package state
 import (
 	"context"
 	"fmt"
-	"sort"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
@@ -146,42 +145,72 @@ func (s *NostrStore) PutAppend(ctx context.Context, addr Address, content string
 }
 
 func (s *NostrStore) ListByTag(ctx context.Context, kind events.Kind, tagName, tagValue string, limit int) ([]Event, error) {
-	return s.listByTag(ctx, kind, "", tagName, tagValue, limit)
+	page, err := s.listByTagPage(ctx, kind, "", tagName, tagValue, limit, nil)
+	if err != nil {
+		return nil, err
+	}
+	return page.Events, nil
 }
 
 func (s *NostrStore) ListByTagForAuthor(ctx context.Context, kind events.Kind, authorPubKey, tagName, tagValue string, limit int) ([]Event, error) {
-	return s.listByTag(ctx, kind, authorPubKey, tagName, tagValue, limit)
+	page, err := s.listByTagPage(ctx, kind, authorPubKey, tagName, tagValue, limit, nil)
+	if err != nil {
+		return nil, err
+	}
+	return page.Events, nil
 }
 
-func (s *NostrStore) listByTag(ctx context.Context, kind events.Kind, authorPubKey, tagName, tagValue string, limit int) ([]Event, error) {
+func (s *NostrStore) ListByTagPage(ctx context.Context, kind events.Kind, tagName, tagValue string, limit int, cursor *EventPageCursor) (EventPage, error) {
+	return s.listByTagPage(ctx, kind, "", tagName, tagValue, limit, cursor)
+}
+
+func (s *NostrStore) ListByTagForAuthorPage(ctx context.Context, kind events.Kind, authorPubKey, tagName, tagValue string, limit int, cursor *EventPageCursor) (EventPage, error) {
+	return s.listByTagPage(ctx, kind, authorPubKey, tagName, tagValue, limit, cursor)
+}
+
+func (s *NostrStore) listByTagPage(ctx context.Context, kind events.Kind, authorPubKey, tagName, tagValue string, limit int, cursor *EventPageCursor) (EventPage, error) {
 	if tagName == "" || tagValue == "" {
-		return nil, fmt.Errorf("tag name and value are required")
+		return EventPage{}, fmt.Errorf("tag name and value are required")
 	}
 	if limit <= 0 {
 		limit = 100
+	}
+	fetchLimit := limit + 1
+	if cursor != nil {
+		fetchLimit += len(cursor.SkipIDs)
 	}
 
 	filter := nostr.Filter{
 		Kinds: []nostr.Kind{toNostrKind(kind)},
 		Tags:  nostr.TagMap{tagName: {tagValue}},
-		Limit: limit,
+		Limit: fetchLimit,
+	}
+	if cursor != nil && cursor.Until > 0 {
+		filter.Until = nostr.Timestamp(cursor.Until)
 	}
 	var author nostr.PubKey
 	var hasAuthor bool
 	if authorPubKey != "" {
 		parsed, err := nostruntime.ParsePubKey(authorPubKey)
 		if err != nil {
-			return nil, err
+			return EventPage{}, err
 		}
 		author = parsed
 		hasAuthor = true
 		filter.Authors = []nostr.PubKey{author}
 	}
 
+	received := map[string]struct{}{}
+	receivedCount := 0
 	seen := map[string]struct{}{}
 	res := make([]Event, 0, limit)
 	for relayEvent := range s.pool.FetchMany(ctx, s.relays, filter, nostr.SubscriptionOptions{}) {
 		evt := relayEvent.Event
+		id := evt.ID.Hex()
+		if _, ok := received[id]; !ok {
+			received[id] = struct{}{}
+			receivedCount++
+		}
 		if !evt.CheckID() || !evt.VerifySignature() {
 			continue
 		}
@@ -191,7 +220,6 @@ func (s *NostrStore) listByTag(ctx context.Context, kind events.Kind, authorPubK
 		if hasAuthor && evt.PubKey != author {
 			continue
 		}
-		id := evt.ID.Hex()
 		if _, ok := seen[id]; ok {
 			continue
 		}
@@ -199,13 +227,17 @@ func (s *NostrStore) listByTag(ctx context.Context, kind events.Kind, authorPubK
 		res = append(res, fromNostrEvent(evt))
 	}
 
-	sort.Slice(res, func(i, j int) bool {
-		return isNewerEvent(res[i], res[j])
-	})
-	if len(res) > limit {
-		res = res[:limit]
+	sortEventsNewestFirst(res)
+	filtered := filterEventsForPage(res, cursor)
+	hasMore := len(filtered) > limit || receivedCount == fetchLimit
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
 	}
-	return res, nil
+	page := EventPage{Events: filtered}
+	if hasMore && len(filtered) > 0 {
+		page.NextCursor = nextCursorForPage(cursor, filtered)
+	}
+	return page, nil
 }
 
 func (s *NostrStore) addressAuthor(addr Address) (nostr.PubKey, error) {

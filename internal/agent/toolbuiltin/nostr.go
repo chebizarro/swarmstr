@@ -539,6 +539,12 @@ func buildNostrFilter(m map[string]any, limit int) (nostr.Filter, error) {
 	return f, nil
 }
 
+// BuildNostrFilter exposes the generic Nostr filter parser for daemon paths
+// that need to translate config-driven subscriptions into runtime filters.
+func BuildNostrFilter(m map[string]any, limit int) (nostr.Filter, error) {
+	return buildNostrFilter(m, limit)
+}
+
 // eventToMap converts a nostr.Event to a plain map for JSON serialization.
 func eventToMap(ev nostr.Event) map[string]any {
 	tags := make([][]string, 0, len(ev.Tags))
@@ -604,19 +610,51 @@ func toStringSlice(v any) []string {
 }
 
 func toFloat64Slice(v any) []float64 {
-	switch t := v.(type) {
-	case []float64:
-		return t
-	case []any:
-		out := make([]float64, 0, len(t))
-		for _, item := range t {
-			if f, ok := item.(float64); ok {
-				out = append(out, f)
+	appendNumber := func(out []float64, raw any) []float64 {
+		switch n := raw.(type) {
+		case float64:
+			return append(out, n)
+		case float32:
+			return append(out, float64(n))
+		case int:
+			return append(out, float64(n))
+		case int32:
+			return append(out, float64(n))
+		case int64:
+			return append(out, float64(n))
+		case json.Number:
+			if f, err := n.Float64(); err == nil {
+				return append(out, f)
 			}
 		}
 		return out
-	case float64:
-		return []float64{t}
+	}
+	switch t := v.(type) {
+	case []float64:
+		return t
+	case []int:
+		out := make([]float64, 0, len(t))
+		for _, item := range t {
+			out = append(out, float64(item))
+		}
+		return out
+	case []int64:
+		out := make([]float64, 0, len(t))
+		for _, item := range t {
+			out = append(out, float64(item))
+		}
+		return out
+	case []any:
+		out := make([]float64, 0, len(t))
+		for _, item := range t {
+			out = appendNumber(out, item)
+		}
+		return out
+	default:
+		out := appendNumber(nil, t)
+		if len(out) > 0 {
+			return out
+		}
 	}
 	return nil
 }

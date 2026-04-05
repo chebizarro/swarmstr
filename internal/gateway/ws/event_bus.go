@@ -33,6 +33,8 @@ const (
 
 	// EventConfigUpdated is emitted when the live config is reloaded.
 	EventConfigUpdated = "config.updated"
+	// EventMCPLifecycle is emitted when an external MCP server changes runtime state.
+	EventMCPLifecycle = "mcp.lifecycle"
 
 	// EventPluginLoaded is emitted when a Goja plugin is loaded or reloaded.
 	EventPluginLoaded = "plugin.loaded"
@@ -51,6 +53,10 @@ const (
 	// EventChannelMessage is emitted when a message arrives on or is sent to
 	// a channel (NIP-29 group or other).
 	EventChannelMessage = "channel.message"
+	// EventRelayHealth is emitted when the relay health monitor probes a relay.
+	EventRelayHealth = "relay.health"
+	// EventDMHealth is emitted when a DM transport health snapshot changes.
+	EventDMHealth = "dm.health"
 
 	// EventNodePairRequested is emitted when a node pair request is received.
 	EventNodePairRequested = "node.pair.requested"
@@ -70,12 +76,24 @@ const (
 	// EventCanvasUpdate is emitted when an agent writes to a named canvas.
 	EventCanvasUpdate = "canvas.update"
 
+	// EventToolStart is emitted when the shared loop begins executing a tool call.
+	EventToolStart = "tool.start"
+	// EventToolProgress is emitted for in-flight tool progress updates.
+	EventToolProgress = "tool.progress"
+	// EventToolResult is emitted when a tool call completes successfully.
+	EventToolResult = "tool.result"
+	// EventToolError is emitted when a tool call fails or is blocked.
+	EventToolError = "tool.error"
+	// EventTurnResult is emitted when a turn completes or fails with its final
+	// outcome classification and lightweight runtime telemetry.
+	EventTurnResult = "turn.result"
+
 	// OpenClaw compatibility alias events.
-	EventCompatAgent          = "agent"
-	EventCompatChat           = "chat"
-	EventCompatCron           = "cron"
-	EventCompatPresence       = "presence"
-	EventCompatHeartbeat      = "heartbeat"
+	EventCompatAgent            = "agent"
+	EventCompatChat             = "chat"
+	EventCompatCron             = "cron"
+	EventCompatPresence         = "presence"
+	EventCompatHeartbeat        = "heartbeat"
 	EventCompatVoicewakeChanged = "voicewake.changed"
 )
 
@@ -91,12 +109,15 @@ var AllPushEvents = []string{
 	EventCronTick,
 	EventCronResult,
 	EventConfigUpdated,
+	EventMCPLifecycle,
 	EventPluginLoaded,
 	EventExecApprovalRequested,
 	EventExecApprovalResolved,
 	EventVoicewake,
 	EventUpdateAvailable,
 	EventChannelMessage,
+	EventRelayHealth,
+	EventDMHealth,
 	EventNodePairRequested,
 	EventNodePairResolved,
 	EventDevicePairResolved,
@@ -106,6 +127,11 @@ var AllPushEvents = []string{
 	"connect.challenge",
 	EventChatChunk,
 	EventCanvasUpdate,
+	EventToolStart,
+	EventToolProgress,
+	EventToolResult,
+	EventToolError,
+	EventTurnResult,
 	// OpenClaw compatibility aliases.
 	EventCompatAgent,
 	EventCompatChat,
@@ -306,16 +332,45 @@ type CronTickPayload struct {
 
 // CronResultPayload is the payload for EventCronResult events.
 type CronResultPayload struct {
-	TS        int64  `json:"ts_ms"`
-	AgentID   string `json:"agent_id,omitempty"`
-	JobID     string `json:"job_id"`
-	Succeeded bool   `json:"succeeded"`
-	DurationMS int64 `json:"duration_ms,omitempty"`
+	TS         int64  `json:"ts_ms"`
+	AgentID    string `json:"agent_id,omitempty"`
+	JobID      string `json:"job_id"`
+	Succeeded  bool   `json:"succeeded"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
 }
 
 // ConfigUpdatedPayload is the payload for EventConfigUpdated events.
 type ConfigUpdatedPayload struct {
 	TS int64 `json:"ts_ms"`
+}
+
+// MCPLifecyclePayload is the payload for EventMCPLifecycle events.
+type MCPLifecyclePayload struct {
+	TS                int64           `json:"ts_ms"`
+	Name              string          `json:"name"`
+	State             string          `json:"state,omitempty"`
+	PreviousState     string          `json:"previous_state,omitempty"`
+	Reason            string          `json:"reason,omitempty"`
+	Removed           bool            `json:"removed,omitempty"`
+	Healthy           bool            `json:"healthy,omitempty"`
+	Enabled           bool            `json:"enabled,omitempty"`
+	RuntimePresent    bool            `json:"runtime_present,omitempty"`
+	Source            string          `json:"source,omitempty"`
+	Precedence        int             `json:"precedence,omitempty"`
+	Signature         string          `json:"signature,omitempty"`
+	Transport         string          `json:"transport,omitempty"`
+	Command           string          `json:"command,omitempty"`
+	URL               string          `json:"url,omitempty"`
+	ToolCount         int             `json:"tool_count,omitempty"`
+	LastError         string          `json:"last_error,omitempty"`
+	ReconnectAttempts int             `json:"reconnect_attempts,omitempty"`
+	LastAttemptAtMS   int64           `json:"last_attempt_at_ms,omitempty"`
+	LastConnectedAtMS int64           `json:"last_connected_at_ms,omitempty"`
+	LastFailedAtMS    int64           `json:"last_failed_at_ms,omitempty"`
+	UpdatedAtMS       int64           `json:"updated_at_ms,omitempty"`
+	PolicyStatus      string          `json:"policy_status,omitempty"`
+	PolicyReason      string          `json:"policy_reason,omitempty"`
+	Capabilities      map[string]bool `json:"capabilities,omitempty"`
 }
 
 // ExecApprovalRequestedPayload is the payload for EventExecApprovalRequested.
@@ -359,6 +414,32 @@ type ChannelMessagePayload struct {
 	From      string `json:"from,omitempty"`
 	Text      string `json:"text,omitempty"`
 	EventID   string `json:"event_id,omitempty"`
+}
+
+// RelayHealthPayload is the payload for EventRelayHealth.
+type RelayHealthPayload struct {
+	TS        int64  `json:"ts_ms"`
+	URL       string `json:"url"`
+	Reachable bool   `json:"reachable"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Initial   bool   `json:"initial,omitempty"`
+	Source    string `json:"source,omitempty"`
+}
+
+// DMHealthPayload is the payload for EventDMHealth.
+type DMHealthPayload struct {
+	TS               int64    `json:"ts_ms"`
+	Label            string   `json:"label"`
+	BoundRelays      []string `json:"bound_relays,omitempty"`
+	LastEventAt      int64    `json:"last_event_at_ms,omitempty"`
+	LastReconnectAt  int64    `json:"last_reconnect_at_ms,omitempty"`
+	LastClosedReason string   `json:"last_closed_reason,omitempty"`
+	ReplayWindowMS   int64    `json:"replay_window_ms,omitempty"`
+	EventCount       int64    `json:"event_count,omitempty"`
+	ReconnectCount   int64    `json:"reconnect_count,omitempty"`
+	Healthy          bool     `json:"healthy"`
+	Source           string   `json:"source,omitempty"`
 }
 
 // PluginLoadedPayload is the payload for EventPluginLoaded.
@@ -409,6 +490,76 @@ type CanvasUpdatePayload struct {
 	CanvasID    string `json:"canvas_id"`
 	ContentType string `json:"content_type"`
 	Data        string `json:"data"`
+}
+
+// ToolLifecyclePayload is the payload for tool lifecycle events.
+// It carries the correlation fields needed to inspect shared-loop execution.
+type ToolLifecyclePayload struct {
+	TS         int64  `json:"ts_ms"`
+	AgentID    string `json:"agent_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	TurnID     string `json:"turn_id,omitempty"`
+	ToolCallID string `json:"tool_call_id"`
+	ToolName   string `json:"tool_name"`
+	Result     string `json:"result,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Data       any    `json:"data,omitempty"`
+}
+
+// ToolDecisionKind classifies projected tool decision payloads carried on
+// tool.progress/tool.error lifecycle events.
+type ToolDecisionKind string
+
+const (
+	ToolDecisionKindScheduler     ToolDecisionKind = "scheduler"
+	ToolDecisionKindLoopDetection ToolDecisionKind = "loop_detection"
+)
+
+// ToolSchedulerDecisionPayload is the gateway-owned projection of scheduler
+// batch decisions emitted by the shared agent loop.
+type ToolSchedulerDecisionPayload struct {
+	Kind             ToolDecisionKind `json:"kind"`
+	Mode             string           `json:"mode"` // "serial" | "parallel"
+	BatchIndex       int              `json:"batch_index"`
+	BatchCount       int              `json:"batch_count"`
+	BatchSize        int              `json:"batch_size"`
+	BatchPosition    int              `json:"batch_position"`
+	ConcurrencySafe  bool             `json:"concurrency_safe"`
+	ConcurrencyLimit int              `json:"concurrency_limit,omitempty"`
+}
+
+// ToolLoopDecisionPayload is the gateway-owned projection of loop-detection
+// decisions emitted before a tool continues or is blocked.
+type ToolLoopDecisionPayload struct {
+	Kind           ToolDecisionKind `json:"kind"`
+	Blocked        bool             `json:"blocked"`
+	Level          string           `json:"level,omitempty"`
+	Detector       string           `json:"detector,omitempty"`
+	Count          int              `json:"count,omitempty"`
+	WarningKey     string           `json:"warning_key,omitempty"`
+	PairedToolName string           `json:"paired_tool_name,omitempty"`
+	Message        string           `json:"message,omitempty"`
+}
+
+// TurnResultPayload is the payload for EventTurnResult events.
+type TurnResultPayload struct {
+	TS             int64  `json:"ts_ms"`
+	AgentID        string `json:"agent_id,omitempty"`
+	SessionID      string `json:"session_id"`
+	TurnID         string `json:"turn_id,omitempty"`
+	StartedAtMS    int64  `json:"started_at_ms,omitempty"`
+	EndedAtMS      int64  `json:"ended_at_ms,omitempty"`
+	DurationMS     int64  `json:"duration_ms,omitempty"`
+	Outcome        string `json:"outcome,omitempty"`
+	StopReason     string `json:"stop_reason,omitempty"`
+	LoopBlocked    bool   `json:"loop_blocked,omitempty"`
+	Error          string `json:"error,omitempty"`
+	FallbackUsed   bool   `json:"fallback_used,omitempty"`
+	FallbackFrom   string `json:"fallback_from,omitempty"`
+	FallbackTo     string `json:"fallback_to,omitempty"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+	InputTokens    int64  `json:"input_tokens,omitempty"`
+	OutputTokens   int64  `json:"output_tokens,omitempty"`
 }
 
 // TalkModePayload is the payload for EventTalkMode events.

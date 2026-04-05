@@ -30,7 +30,7 @@ import "time"
 //     Rationale:   DMs should be surfaced if sent recently; 30min covers
 //                  typical reconnect gaps while avoiding re-processing old history.
 //
-//   NIP-17 DM (kind:1059 gift wrap)
+//   NIP-17 DM (gift-wrap event)
 //     Startup:     normalizeNIP17Since(checkpoint) — up to NIP17GiftWrapBackfill
 //     Resubscribe: normalizeNIP17Since(now) — same backfill window
 //     Inbound:     no time-based drop (dedup by event ID only)

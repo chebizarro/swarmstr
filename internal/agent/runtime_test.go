@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -10,8 +11,21 @@ import (
 // delivering the response word by word.
 type streamingEchoProvider struct{}
 
+type mutatingToolProvider struct {
+	tools     *ToolRegistry
+	seenTools []ToolDefinition
+}
+
 func (streamingEchoProvider) Generate(_ context.Context, turn Turn) (ProviderResult, error) {
 	return ProviderResult{Text: "ack: " + turn.UserText}, nil
+}
+
+func (p *mutatingToolProvider) Generate(_ context.Context, turn Turn) (ProviderResult, error) {
+	p.seenTools = append([]ToolDefinition(nil), turn.Tools...)
+	if p.tools != nil {
+		p.tools.Remove("mcp_demo_echo")
+	}
+	return ProviderResult{ToolCalls: []ToolCall{{Name: "mcp_demo_echo"}}}, nil
 }
 
 func (streamingEchoProvider) Stream(_ context.Context, turn Turn, onChunk func(string)) (ProviderResult, error) {
@@ -38,6 +52,32 @@ func TestProviderRuntime_ProcessTurn(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "hello") {
 		t.Fatalf("expected 'hello' in result, got %q", result.Text)
+	}
+	if result.Outcome != TurnOutcomeCompleted || result.StopReason != TurnStopReasonModelText {
+		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", result.Outcome, result.StopReason)
+	}
+}
+
+func TestProviderRuntime_ProcessTurn_UsesPerTurnToolSnapshot(t *testing.T) {
+	tools := NewToolRegistry()
+	tools.RegisterWithDef("mcp_demo_echo", func(_ context.Context, _ map[string]any) (string, error) {
+		return "snapshot-ok", nil
+	}, ToolDefinition{Name: "mcp_demo_echo", Description: "demo"})
+	provider := &mutatingToolProvider{tools: tools}
+	rt, _ := NewProviderRuntime(provider, tools)
+
+	result, err := rt.ProcessTurn(context.Background(), Turn{UserText: "hello"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(provider.seenTools) != 1 || provider.seenTools[0].Name != "mcp_demo_echo" {
+		t.Fatalf("expected provider to see frozen MCP tool surface, got %+v", provider.seenTools)
+	}
+	if len(result.ToolTraces) != 1 || result.ToolTraces[0].Result != "snapshot-ok" || result.ToolTraces[0].Error != "" {
+		t.Fatalf("expected frozen tool snapshot to execute successfully, got %+v", result.ToolTraces)
+	}
+	if _, ok := tools.Descriptor("mcp_demo_echo"); ok {
+		t.Fatal("expected live registry mutation to remove the original tool")
 	}
 }
 
@@ -101,5 +141,28 @@ func TestProviderRuntime_StreamingRuntime_InterfaceCheck(t *testing.T) {
 	rt, _ := NewProviderRuntime(streamingEchoProvider{}, nil)
 	if _, ok := any(rt).(StreamingRuntime); !ok {
 		t.Fatal("ProviderRuntime should implement StreamingRuntime")
+	}
+}
+
+func TestClassifyTurnError(t *testing.T) {
+	if outcome, stopReason, ok := ClassifyTurnError(context.DeadlineExceeded); !ok || outcome != TurnOutcomeAborted || stopReason != TurnStopReasonCancelled {
+		t.Fatalf("deadline classification mismatch outcome=%q stop_reason=%q ok=%v", outcome, stopReason, ok)
+	}
+	err := &TurnExecutionError{
+		Cause: errors.New("provider failed"),
+		Partial: TurnResult{
+			Outcome:    TurnOutcomeBlocked,
+			StopReason: TurnStopReasonLoopBlocked,
+		},
+	}
+	if outcome, stopReason, ok := ClassifyTurnError(err); !ok || outcome != TurnOutcomeBlocked || stopReason != TurnStopReasonLoopBlocked {
+		t.Fatalf("partial classification mismatch outcome=%q stop_reason=%q ok=%v", outcome, stopReason, ok)
+	}
+}
+
+func TestClassifyTurnResult(t *testing.T) {
+	outcome, stopReason := ClassifyTurnResult(TurnResult{Text: "ok"})
+	if outcome != TurnOutcomeCompleted || stopReason != TurnStopReasonModelText {
+		t.Fatalf("plain text classification mismatch outcome=%q stop_reason=%q", outcome, stopReason)
 	}
 }

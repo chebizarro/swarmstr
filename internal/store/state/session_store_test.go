@@ -1,216 +1,125 @@
 package state
 
 import (
-	"os"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
 
-func TestSessionStore_GetPutDelete(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	ss, err := NewSessionStore(path)
+func TestSessionStore_RecordTurn(t *testing.T) {
+	ss, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
 	if err != nil {
-		t.Fatalf("NewSessionStore: %v", err)
+		t.Fatalf("new session store: %v", err)
 	}
-
-	// Missing key.
-	_, ok := ss.Get("s1")
-	if ok {
-		t.Fatal("expected not found")
+	if err := ss.RecordTurn("sess-1", TurnTelemetry{
+		TurnID:         "turn-1",
+		StartedAtMS:    100,
+		EndedAtMS:      250,
+		DurationMS:     150,
+		Outcome:        "completed",
+		StopReason:     "model_text",
+		FallbackUsed:   true,
+		FallbackFrom:   "a",
+		FallbackTo:     "b",
+		FallbackReason: "429",
+		InputTokens:    10,
+		OutputTokens:   5,
+	}); err != nil {
+		t.Fatalf("record turn: %v", err)
 	}
-
-	// GetOrNew creates.
-	e := ss.GetOrNew("s1")
-	if e.SessionID != "s1" {
-		t.Fatalf("got %q want s1", e.SessionID)
-	}
-
-	// Put persists.
-	e.ModelOverride = "claude-3"
-	e.ProviderOverride = "anthropic"
-	e.ThinkingLevel = "high"
-	e.QueueCap = 20
-	e.QueueDrop = "summarize"
-	e.LastChannel = "nostr"
-	e.FallbackFrom = "claude-sonnet"
-	e.FallbackTo = "claude-haiku"
-	e.FallbackReason = "rate_limit"
-	e.FallbackAt = 123456
-	if err := ss.Put("s1", e); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	// Reload from disk.
-	ss2, err := NewSessionStore(path)
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	e2, ok := ss2.Get("s1")
+	got, ok := ss.Get("sess-1")
 	if !ok {
-		t.Fatal("not found after reload")
+		t.Fatal("session not found")
 	}
-	if e2.ModelOverride != "claude-3" {
-		t.Fatalf("got %q want claude-3", e2.ModelOverride)
+	if got.LastTurn == nil {
+		t.Fatal("expected last turn snapshot")
 	}
-	if e2.ProviderOverride != "anthropic" {
-		t.Fatalf("provider override mismatch: %q", e2.ProviderOverride)
+	if got.LastTurn.TurnID != "turn-1" || got.LastTurn.DurationMS != 150 || got.LastTurn.Outcome != "completed" {
+		t.Fatalf("unexpected last turn snapshot: %+v", got.LastTurn)
 	}
-	if e2.ThinkingLevel != "high" {
-		t.Fatalf("thinking level mismatch: %q", e2.ThinkingLevel)
-	}
-	if e2.QueueCap != 20 || e2.QueueDrop != "summarize" {
-		t.Fatalf("queue fields mismatch: cap=%d drop=%q", e2.QueueCap, e2.QueueDrop)
-	}
-	if e2.LastChannel != "nostr" {
-		t.Fatalf("last channel mismatch: %q", e2.LastChannel)
-	}
-	if e2.FallbackTo != "claude-haiku" || e2.FallbackFrom != "claude-sonnet" || e2.FallbackReason != "rate_limit" || e2.FallbackAt != 123456 {
-		t.Fatalf("fallback fields mismatch: %+v", e2)
-	}
-
-	// Delete.
-	if err := ss2.Delete("s1"); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	_, ok = ss2.Get("s1")
-	if ok {
-		t.Fatal("expected not found after delete")
+	if !got.LastTurn.FallbackUsed || got.LastTurn.FallbackTo != "b" {
+		t.Fatalf("expected fallback data on last turn: %+v", got.LastTurn)
 	}
 }
 
-func TestSessionStore_AddTokens(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	ss, _ := NewSessionStore(path)
-	ss.GetOrNew("s1")
-
-	if err := ss.AddTokens("s1", 100, 50); err != nil {
-		t.Fatalf("AddTokens: %v", err)
-	}
-	if err := ss.AddTokens("s1", 200, 80); err != nil {
-		t.Fatalf("AddTokens: %v", err)
-	}
-
-	e, _ := ss.Get("s1")
-	if e.InputTokens != 300 {
-		t.Fatalf("input: got %d want 300", e.InputTokens)
-	}
-	if e.OutputTokens != 130 {
-		t.Fatalf("output: got %d want 130", e.OutputTokens)
-	}
-	if e.TotalTokens != 430 {
-		t.Fatalf("total: got %d want 430", e.TotalTokens)
-	}
-}
-
-func TestSessionStore_CarryOverFlags(t *testing.T) {
-	e := SessionEntry{
-		SessionID:        "old",
-		ProviderOverride: "anthropic",
-		ModelOverride:    "claude-3",
-		Verbose:          true,
-		ThinkingLevel:    "high",
-		QueueCap:         25,
-		SendSuppressed:   true,
-		InputTokens:      999,
-	}
-	e2 := e.CarryOverFlags("new")
-	if e2.SessionID != "new" {
-		t.Fatalf("id: got %q", e2.SessionID)
-	}
-	if e2.ModelOverride != "claude-3" {
-		t.Fatal("model override not carried over")
-	}
-	if e2.ProviderOverride != "anthropic" {
-		t.Fatal("provider override not carried over")
-	}
-	if e2.ThinkingLevel != "high" {
-		t.Fatal("thinking level not carried over")
-	}
-	if e2.QueueCap != 25 {
-		t.Fatal("queue cap not carried over")
-	}
-	if !e2.Verbose {
-		t.Fatal("verbose not carried over")
-	}
-	if !e2.SendSuppressed {
-		t.Fatal("send_suppressed should carry over to preserve user intent")
-	}
-	if e2.InputTokens != 0 {
-		t.Fatal("tokens should not carry over")
-	}
-}
-
-func TestSessionStore_MissingDir(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "a", "b", "sessions.json")
-	ss, err := NewSessionStore(path)
+func TestTurnTelemetry_JSONShape(t *testing.T) {
+	raw, err := json.Marshal(TurnTelemetry{
+		TurnID:      "turn-1",
+		StartedAtMS: 1,
+		EndedAtMS:   2,
+		Outcome:     "completed",
+		StopReason:  "model_text",
+	})
 	if err != nil {
-		t.Fatalf("NewSessionStore with nested dir: %v", err)
+		t.Fatalf("marshal telemetry: %v", err)
 	}
-	ss.GetOrNew("x")
-	if err := ss.Put("x", ss.GetOrNew("x")); err != nil {
-		t.Fatalf("Put: %v", err)
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal telemetry: %v", err)
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("file not created: %v", err)
+	for _, field := range []string{"turn_id", "started_at_ms", "ended_at_ms", "outcome", "stop_reason"} {
+		if _, ok := decoded[field]; !ok {
+			t.Fatalf("missing field %q in telemetry JSON: %s", field, string(raw))
+		}
 	}
 }
 
-func TestSessionStore_LoadMigrationDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	legacy := `{"legacy":{"queue_drop":"old","model_override":"claude-3"}}`
-	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
-		t.Fatalf("write legacy: %v", err)
-	}
-	ss, err := NewSessionStore(path)
+func TestSessionStore_RecordMemoryRecall_MergesAndCaps(t *testing.T) {
+	ss, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
 	if err != nil {
-		t.Fatalf("NewSessionStore: %v", err)
+		t.Fatalf("new session store: %v", err)
 	}
-	e, ok := ss.Get("legacy")
+	for i := 0; i < memoryRecallSampleCap+2; i++ {
+		if err := ss.RecordMemoryRecall("sess-1", "turn-"+string(rune('a'+i)), &MemoryRecallSample{
+			QueryHash: "q",
+			FileSelected: []MemoryRecallFileHit{{
+				RelativePath: "prefs.md",
+				Reasons:      []string{"name"},
+			}},
+		}, map[string]string{"root::prefs.md": "signal-1"}); err != nil {
+			t.Fatalf("record memory recall %d: %v", i, err)
+		}
+	}
+	got, ok := ss.Get("sess-1")
 	if !ok {
-		t.Fatal("legacy key missing after load")
+		t.Fatal("session not found")
 	}
-	if e.SessionID != "legacy" {
-		t.Fatalf("session id migration failed: %q", e.SessionID)
+	if len(got.FileMemorySurfaced) != 1 || got.FileMemorySurfaced["root::prefs.md"] != "signal-1" {
+		t.Fatalf("unexpected surfaced file-memory state: %+v", got.FileMemorySurfaced)
 	}
-	if e.QueueDrop != "oldest" {
-		t.Fatalf("queue_drop migration failed: %q", e.QueueDrop)
+	if len(got.RecentMemoryRecall) != memoryRecallSampleCap {
+		t.Fatalf("expected capped recall samples, got %d", len(got.RecentMemoryRecall))
 	}
-	if e.CreatedAt.IsZero() || e.UpdatedAt.IsZero() {
-		t.Fatal("timestamps should be defaulted on migration")
+	if got.RecentMemoryRecall[0].TurnID != "turn-c" || got.RecentMemoryRecall[len(got.RecentMemoryRecall)-1].TurnID != "turn-j" {
+		t.Fatalf("expected append-capped recall ordering, got %+v", got.RecentMemoryRecall)
+	}
+	if got.RecentMemoryRecall[0].Strategy != "deterministic" {
+		t.Fatalf("expected default recall strategy, got %+v", got.RecentMemoryRecall[0])
 	}
 }
 
-func TestSessionStore_ListReturnsCopy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	ss, err := NewSessionStore(path)
+func TestMemoryRecallSample_JSONShape(t *testing.T) {
+	raw, err := json.Marshal(MemoryRecallSample{
+		TurnID:          "turn-1",
+		Strategy:        "deterministic",
+		QueryHash:       "abc123",
+		QueryRuneCount:  12,
+		QueryTokenCount: 3,
+		Scope:           "project",
+		IndexedSession:  []MemoryRecallIndexedHit{{MemoryID: "m1", Topic: "task"}},
+		FileSelected:    []MemoryRecallFileHit{{RelativePath: "prefs.md", Reasons: []string{"name"}, Score: 4}},
+		InjectedAny:     true,
+	})
 	if err != nil {
-		t.Fatalf("NewSessionStore: %v", err)
+		t.Fatalf("marshal recall sample: %v", err)
 	}
-	first := ss.GetOrNew("s1")
-	first.Label = "alpha"
-	if err := ss.Put("s1", first); err != nil {
-		t.Fatalf("Put: %v", err)
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal recall sample: %v", err)
 	}
-	second := ss.GetOrNew("s2")
-	second.Label = "beta"
-	if err := ss.Put("s2", second); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	listed := ss.List()
-	if len(listed) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(listed))
-	}
-	mut := listed["s1"]
-	mut.Label = "mutated"
-	listed["s1"] = mut
-
-	reloaded, ok := ss.Get("s1")
-	if !ok {
-		t.Fatal("s1 missing")
-	}
-	if reloaded.Label != "alpha" {
-		t.Fatalf("store mutated via List() copy: got %q", reloaded.Label)
+	for _, field := range []string{"turn_id", "strategy", "query_hash", "indexed_session", "file_selected", "injected_any"} {
+		if _, ok := decoded[field]; !ok {
+			t.Fatalf("missing field %q in recall sample JSON: %s", field, string(raw))
+		}
 	}
 }

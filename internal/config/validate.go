@@ -26,6 +26,7 @@ func ValidateConfigDoc(doc state.ConfigDoc) []error {
 	errs = append(errs, validateDMPolicy(doc.DM)...)
 	errs = append(errs, validateRelays(doc.Relays)...)
 	errs = append(errs, validateAgentPolicy(doc.Agent)...)
+	errs = append(errs, validateAgents(doc.Agents)...)
 	errs = append(errs, validateProviders(doc.Providers)...)
 	errs = append(errs, validateSession(doc.Session)...)
 	errs = append(errs, validateHeartbeat(doc.Heartbeat)...)
@@ -104,6 +105,16 @@ func validateAgentPolicy(a state.AgentPolicy) []error {
 		// Warn only – third-party model strings like "gpt-4o" are valid too.
 		// We record the error so callers can emit a warning without blocking.
 		errs = append(errs, fmt.Errorf("agent.default_model: unrecognised model %q (may still work at runtime)", a.DefaultModel))
+	}
+	return errs
+}
+
+func validateAgents(agents state.AgentsConfig) []error {
+	var errs []error
+	for i, ag := range agents {
+		if raw := strings.TrimSpace(string(ag.MemoryScope)); raw != "" && !ag.MemoryScope.Valid() {
+			errs = append(errs, fmt.Errorf("agents[%d].memory_scope: unknown value %q (valid: user, project, local)", i, raw))
+		}
 	}
 	return errs
 }

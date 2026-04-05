@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"metiq/internal/store/state"
 )
 
 func TestDecodeMemorySearchParams_ObjectAndPositionalParity(t *testing.T) {
@@ -28,6 +30,59 @@ func TestDecodeSessionGetParams_RejectFractionalLimit(t *testing.T) {
 	_, err := DecodeSessionGetParams(json.RawMessage(`["session-1",1.5]`))
 	if err == nil {
 		t.Fatal("expected error for fractional positional limit")
+	}
+}
+
+func TestAgentRequestNormalize_ParsesMemoryScope(t *testing.T) {
+	req, err := (AgentRequest{
+		SessionID:   " sess-1 ",
+		Message:     " hello ",
+		Context:     " extra ",
+		MemoryScope: state.AgentMemoryScope("project"),
+		TimeoutMS:   500,
+	}).Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.SessionID != "sess-1" || req.Message != "hello" || req.Context != "extra" {
+		t.Fatalf("unexpected normalized request: %#v", req)
+	}
+	if req.MemoryScope != state.AgentMemoryScopeProject {
+		t.Fatalf("expected project memory scope, got %#v", req.MemoryScope)
+	}
+	if req.TimeoutMS != 500 {
+		t.Fatalf("expected timeout to be preserved, got %d", req.TimeoutMS)
+	}
+}
+
+func TestAgentRequestNormalize_RejectsInvalidMemoryScope(t *testing.T) {
+	_, err := (AgentRequest{
+		Message:     "hello",
+		MemoryScope: state.AgentMemoryScope("bogus"),
+	}).Normalize()
+	if err == nil || !strings.Contains(err.Error(), "memory_scope must be one of") {
+		t.Fatalf("expected memory_scope validation error, got %v", err)
+	}
+}
+
+func TestSessionsSpawnRequestNormalize_ParsesMemoryScope(t *testing.T) {
+	req, err := (SessionsSpawnRequest{
+		Message:     " run task ",
+		AgentID:     " worker ",
+		MemoryScope: state.AgentMemoryScope("local"),
+		TimeoutMS:   500,
+	}).Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.AgentID != "worker" || req.Message != "run task" {
+		t.Fatalf("unexpected normalized request: %#v", req)
+	}
+	if req.MemoryScope != state.AgentMemoryScopeLocal {
+		t.Fatalf("expected local memory scope, got %#v", req.MemoryScope)
+	}
+	if req.TimeoutMS != 500 {
+		t.Fatalf("expected timeout to be preserved, got %d", req.TimeoutMS)
 	}
 }
 
@@ -138,6 +193,38 @@ func TestDecodeSessionsParams_OpenClawShapeCompatibility(t *testing.T) {
 	}
 }
 
+func TestDecodeACPParams_CamelCaseCompatibility(t *testing.T) {
+	dispatchReq, err := DecodeACPDispatchParams(json.RawMessage(`{"targetPubKey":"peer-1","instructions":"do it","contextMessages":[{"role":"user","content":"prior"}],"memoryScope":"project","toolProfile":"coding","enabledTools":["memory_search","memory_search"],"parentContext":{"sessionId":"sess-1","agentId":"worker"},"timeoutMs":1000}`))
+	if err != nil {
+		t.Fatalf("acp.dispatch decode error: %v", err)
+	}
+	dispatchReq, err = dispatchReq.Normalize()
+	if err != nil {
+		t.Fatalf("acp.dispatch normalize error: %v", err)
+	}
+	if dispatchReq.TargetPubKey != "peer-1" || dispatchReq.MemoryScope != state.AgentMemoryScopeProject {
+		t.Fatalf("unexpected acp.dispatch request: %#v", dispatchReq)
+	}
+	if dispatchReq.ParentContext == nil || dispatchReq.ParentContext.SessionID != "sess-1" || dispatchReq.ParentContext.AgentID != "worker" {
+		t.Fatalf("unexpected parent context: %#v", dispatchReq.ParentContext)
+	}
+	if len(dispatchReq.EnabledTools) != 1 || dispatchReq.EnabledTools[0] != "memory_search" {
+		t.Fatalf("unexpected enabled tools: %#v", dispatchReq.EnabledTools)
+	}
+
+	pipelineReq, err := DecodeACPPipelineParams(json.RawMessage(`{"steps":[{"peerPubKey":"peer-1","instructions":"step","contextMessages":[{"role":"assistant","content":"ctx"}],"memoryScope":"local","toolProfile":"coding","enabledTools":["memory_store"],"parentContext":{"sessionId":"sess-2","agentId":"worker"},"timeoutMs":500}],"parallel":true}`))
+	if err != nil {
+		t.Fatalf("acp.pipeline decode error: %v", err)
+	}
+	pipelineReq, err = pipelineReq.Normalize()
+	if err != nil {
+		t.Fatalf("acp.pipeline normalize error: %v", err)
+	}
+	if len(pipelineReq.Steps) != 1 || pipelineReq.Steps[0].PeerPubKey != "peer-1" || pipelineReq.Steps[0].MemoryScope != state.AgentMemoryScopeLocal {
+		t.Fatalf("unexpected acp.pipeline request: %#v", pipelineReq)
+	}
+}
+
 func TestDecodeConfigPutParams_ArrayMode(t *testing.T) {
 	raw := json.RawMessage(`[{"dm":{"policy":"open"}}]`)
 	req, err := DecodeConfigPutParams(raw)
@@ -167,6 +254,39 @@ func TestDecodeConfigPutParams_ExpectedVersionZeroIsExplicit(t *testing.T) {
 	}
 	if !req.ExpectedVersionSet || req.ExpectedVersion != 0 {
 		t.Fatalf("expected explicit expected_version=0, got: %+v", req)
+	}
+}
+
+func TestDecodeMCPListParams_EmptyAllowed(t *testing.T) {
+	req, err := DecodeMCPListParams(nil)
+	if err != nil {
+		t.Fatalf("DecodeMCPListParams error: %v", err)
+	}
+	if _, err := req.Normalize(); err != nil {
+		t.Fatalf("Normalize error: %v", err)
+	}
+}
+
+func TestMCPPutRequestNormalize_RequiresServerAndConfig(t *testing.T) {
+	if _, err := (MCPPutRequest{Server: " ", Config: map[string]any{"type": "stdio"}}).Normalize(); err == nil {
+		t.Fatal("expected missing server error")
+	}
+	if _, err := (MCPPutRequest{Server: "demo"}).Normalize(); err == nil || !strings.Contains(err.Error(), "config is required") {
+		t.Fatalf("expected missing config error, got %v", err)
+	}
+	req, err := (MCPPutRequest{Server: " demo ", Config: map[string]any{"type": "stdio"}}).Normalize()
+	if err != nil {
+		t.Fatalf("Normalize error: %v", err)
+	}
+	if req.Server != "demo" {
+		t.Fatalf("expected trimmed server, got %#v", req)
+	}
+}
+
+func TestMCPTestRequestNormalize_RejectsNegativeTimeout(t *testing.T) {
+	_, err := (MCPTestRequest{Server: "demo", TimeoutMS: -1}).Normalize()
+	if err == nil || !strings.Contains(err.Error(), "timeout_ms") {
+		t.Fatalf("expected timeout validation error, got %v", err)
 	}
 }
 
@@ -613,7 +733,7 @@ func TestDecodeModelsToolsSkillsParams(t *testing.T) {
 		t.Fatalf("unexpected tools catalog agent id: %#v", toolsReq)
 	}
 
-	installReq, err := DecodeSkillsInstallParams(json.RawMessage(`{"name":"nostr-core","install_id":"builtin"}`))
+	installReq, err := DecodeSkillsInstallParams(json.RawMessage(`{"agent_id":"Main","name":"nostr-core","install_id":"builtin"}`))
 	if err != nil {
 		t.Fatalf("skills.install decode error: %v", err)
 	}
@@ -621,11 +741,11 @@ func TestDecodeModelsToolsSkillsParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skills.install normalize error: %v", err)
 	}
-	if installReq.TimeoutMS <= 0 {
-		t.Fatalf("expected normalized timeout, got: %#v", installReq)
+	if installReq.AgentID != "main" || installReq.TimeoutMS <= 0 {
+		t.Fatalf("expected normalized install request, got: %#v", installReq)
 	}
 
-	updateReq, err := DecodeSkillsUpdateParams(json.RawMessage(`{"skill_key":"Nostr-Core","api_key":"  abc  ","env":{" K ":" V "}}`))
+	updateReq, err := DecodeSkillsUpdateParams(json.RawMessage(`{"agent_id":"Main","skill_key":"Nostr-Core","api_key":"  abc  ","env":{" K ":" V "}}`))
 	if err != nil {
 		t.Fatalf("skills.update decode error: %v", err)
 	}
@@ -638,6 +758,9 @@ func TestDecodeModelsToolsSkillsParams(t *testing.T) {
 	}
 	if updateReq.APIKey == nil || *updateReq.APIKey != "abc" {
 		t.Fatalf("unexpected api key normalization: %#v", updateReq)
+	}
+	if updateReq.AgentID != "main" {
+		t.Fatalf("unexpected agent id normalization: %#v", updateReq)
 	}
 	if updateReq.Env["K"] != "V" {
 		t.Fatalf("unexpected env normalization: %#v", updateReq.Env)
@@ -1116,4 +1239,50 @@ func TestSupportedMethodsIncludesNodeSurfaceBundle(t *testing.T) {
 			t.Fatalf("%s not found in supported methods", want)
 		}
 	}
+}
+
+func TestRuntimeObserveRequestDecodeAndNormalize(t *testing.T) {
+	req, err := DecodeRuntimeObserveParams(json.RawMessage(`{"includeEvents":true,"includeLogs":false,"eventCursor":3,"logCursor":4,"eventLimit":7,"logLimit":8,"maxBytes":2048,"waitTimeoutMs":25,"events":["tool.start","turn.result"],"agentId":" agent-1 ","sessionId":" sess-1 ","channelId":" ch-1 ","direction":" outbound ","subsystem":" tool ","source":" reply "}`))
+	if err != nil {
+		t.Fatalf("runtime.observe decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("runtime.observe normalize error: %v", err)
+	}
+	if req.IncludeEvents == nil || !*req.IncludeEvents {
+		t.Fatalf("expected include_events to remain true: %#v", req)
+	}
+	if req.IncludeLogs == nil || *req.IncludeLogs {
+		t.Fatalf("expected include_logs to remain false: %#v", req)
+	}
+	if req.AgentID != "agent-1" || req.SessionID != "sess-1" || req.ChannelID != "ch-1" {
+		t.Fatalf("expected trimmed identity filters, got %#v", req)
+	}
+	if req.Direction != "outbound" || req.Subsystem != "tool" || req.Source != "reply" {
+		t.Fatalf("expected trimmed routing filters, got %#v", req)
+	}
+	if req.EventLimit != 7 || req.LogLimit != 8 || req.MaxBytes != 2048 || req.WaitTimeoutMS != 25 {
+		t.Fatalf("unexpected normalized bounds: %#v", req)
+	}
+	if len(req.Events) != 2 || req.Events[0] != "tool.start" || req.Events[1] != "turn.result" {
+		t.Fatalf("unexpected events filter list: %#v", req.Events)
+	}
+
+	invalid, err := DecodeRuntimeObserveParams(json.RawMessage(`{"include_events":false,"include_logs":false}`))
+	if err != nil {
+		t.Fatalf("runtime.observe invalid decode error: %v", err)
+	}
+	if _, err := invalid.Normalize(); err == nil {
+		t.Fatal("expected normalize error when both include flags are false")
+	}
+}
+
+func TestSupportedMethodsIncludesRuntimeObserve(t *testing.T) {
+	for _, method := range SupportedMethods() {
+		if method == MethodRuntimeObserve {
+			return
+		}
+	}
+	t.Fatalf("%s not found in supported methods", MethodRuntimeObserve)
 }

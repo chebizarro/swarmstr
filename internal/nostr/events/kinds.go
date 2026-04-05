@@ -5,8 +5,10 @@ type Kind int
 
 const (
 	// Standard Nostr kinds.
-	KindDMNIP04 Kind = 4
-	KindDMNIP44 Kind = 44
+	KindDMNIP04  Kind = 4
+	KindSeal     Kind = 13
+	KindDMNIP44  Kind = 44
+	KindGiftWrap Kind = 1059
 
 	// AI-Hub-derived operational kinds.
 	KindTask       Kind = 38383
@@ -25,6 +27,18 @@ const (
 	// NIP-61 Nutzap event kinds.
 	KindNIP61NutzapInfo Kind = 10019 // replaceable: advertise supported mints + P2PK pubkey
 	KindNIP61Nutzap     Kind = 9321  // nutzap: send Cashu proofs to a recipient
+
+	// NIP-34 repository collaboration kinds.
+	KindRepoAnnouncement Kind = 30617
+	KindRepoState        Kind = 30618
+	KindPatch            Kind = 1617
+	KindPR               Kind = 1618
+	KindPRUpdate         Kind = 1619
+	KindIssue            Kind = 1621
+	KindStatusOpen       Kind = 1630
+	KindStatusApplied    Kind = 1631
+	KindStatusClosed     Kind = 1632
+	KindStatusDraft      Kind = 1633
 
 	// Metiq application state kinds.
 	// We use parameterized-replaceable addressing via `d` tag.

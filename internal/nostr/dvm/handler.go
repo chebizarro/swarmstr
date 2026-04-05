@@ -127,9 +127,6 @@ func (h *Handler) SetRelays(relays []string) {
 			next = append(next, r)
 		}
 	}
-	if len(next) == 0 {
-		return
-	}
 	h.relaysMu.Lock()
 	h.relays = next
 	h.relaysMu.Unlock()
@@ -208,8 +205,20 @@ func (h *Handler) runSubscription(since int64) bool {
 		Since: nostr.Timestamp(since),
 	}
 
+	relays := h.currentRelays()
+	if len(relays) == 0 {
+		select {
+		case <-h.ctx.Done():
+			return true
+		case <-h.rebindCh:
+			return true
+		case <-time.After(500 * time.Millisecond):
+			return false
+		}
+	}
+
 	events, closedCh := h.pool.SubscribeManyNotifyClosed(
-		h.ctx, h.currentRelays(), f, nostr.SubscriptionOptions{},
+		h.ctx, relays, f, nostr.SubscriptionOptions{},
 	)
 
 	for {
@@ -234,7 +243,7 @@ func (h *Handler) runSubscription(since int64) bool {
 			}
 			log.Printf("dvm: subscription closed by relay=%s reason=%s; restarting", relayURL, rc.Reason)
 			if h.subHealth != nil {
-				h.subHealth.RecordClosed(rc.Reason)
+				h.subHealth.RecordClosed(relayURL, rc.Reason)
 			}
 			return false
 		case re, ok := <-events:

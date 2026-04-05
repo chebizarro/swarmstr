@@ -54,7 +54,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 		return opts.Keyer, nil
 	}
 
-	// grasp_repo_announce: publish a NIP-34 repository announcement (kind 30617).
+	// grasp_repo_announce: publish a NIP-34 repository announcement event.
 	tools.RegisterWithDef("grasp_repo_announce", func(ctx context.Context, args map[string]any) (string, error) {
 		id, _ := args["id"].(string)
 		name, _ := args["name"].(string)
@@ -105,7 +105,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 		return string(out), nil
 	}, GRASPRepoAnnounceDef)
 
-	// grasp_repo_list: fetch repository announcements (kind 30617) from relays.
+	// grasp_repo_list: fetch NIP-34 repository announcement events from relays.
 	tools.RegisterWithDef("grasp_repo_list", func(ctx context.Context, args map[string]any) (string, error) {
 		pubkey, _ := args["pubkey"].(string)
 		limit := 20
@@ -125,7 +125,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 		return string(out), nil
 	}, GRASPRepoListDef)
 
-	// grasp_issue_create: publish a NIP-34 issue (kind 1621) on a repository.
+	// grasp_issue_create: publish a NIP-34 issue event on a repository.
 	tools.RegisterWithDef("grasp_issue_create", func(ctx context.Context, args map[string]any) (string, error) {
 		repoAddr, _ := args["repo_addr"].(string)
 		subject, _ := args["subject"].(string)
@@ -166,7 +166,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 		return string(out), nil
 	}, GRASPIssueCreateDef)
 
-	// grasp_issue_list: fetch issues for a repository (kind 1621).
+	// grasp_issue_list: fetch NIP-34 issue events for a repository.
 	tools.RegisterWithDef("grasp_issue_list", func(ctx context.Context, args map[string]any) (string, error) {
 		repoAddr, _ := args["repo_addr"].(string)
 		limit := 20
@@ -190,7 +190,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 		return string(out), nil
 	}, GRASPIssueListDef)
 
-	// grasp_patch_submit: publish a NIP-34 patch (kind 1617).
+	// grasp_patch_submit: publish a NIP-34 patch event.
 	tools.RegisterWithDef("grasp_patch_submit", func(ctx context.Context, args map[string]any) (string, error) {
 		repoAddr, _ := args["repo_addr"].(string)
 		content, _ := args["content"].(string) // git format-patch output
@@ -225,7 +225,7 @@ func RegisterGRASPTools(tools *agent.ToolRegistry, opts GRASPToolOpts) {
 		return string(out), nil
 	}, GRASPPatchSubmitDef)
 
-	// grasp_pr_create: publish a NIP-34 pull request (kind 1618).
+	// grasp_pr_create: publish a NIP-34 pull request event.
 	tools.RegisterWithDef("grasp_pr_create", func(ctx context.Context, args map[string]any) (string, error) {
 		repoAddr, _ := args["repo_addr"].(string)
 		subject, _ := args["subject"].(string)

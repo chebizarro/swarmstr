@@ -10,10 +10,18 @@
     "chat.chunk",
     "chat.message",
     "config.updated",
+    "mcp.lifecycle",
     "cron.result",
     "cron.tick",
+    "dm.health",
     "plugin.loaded",
     "presence.updated",
+    "relay.health",
+    "tool.error",
+    "tool.progress",
+    "tool.result",
+    "tool.start",
+    "turn.result",
     "voice.wake",
     "canvas.update"
   ]

@@ -28,6 +28,14 @@ type PendingTurn struct {
 	EventID string
 	// SenderID is the sender's identifier (pubkey, Slack user ID, etc.).
 	SenderID string
+	// AgentID is an optional per-turn agent override.
+	AgentID string
+	// ToolProfile is an optional per-turn tool profile override.
+	ToolProfile string
+	// EnabledTools is an optional per-turn tool allowlist override.
+	EnabledTools []string
+	// CreatedAt is the original inbound event timestamp (unix seconds).
+	CreatedAt int64
 	// EnqueuedAt is when the item was added to the queue.
 	EnqueuedAt time.Time
 	// SummaryLine is a brief description used when the item is dropped under

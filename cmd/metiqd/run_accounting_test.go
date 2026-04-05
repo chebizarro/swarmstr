@@ -39,7 +39,7 @@ func TestExecuteAgentRunWithFallbacks_PersistsFallbackState(t *testing.T) {
 		return agent.TurnResult{Text: "ok"}, nil
 	})
 
-	executeAgentRunWithFallbacks(runID, req, primary, []agent.Runtime{fallback}, []string{"claude-sonnet", "claude-haiku"}, jobs)
+	executeAgentRunWithFallbacks(runID, req, primary, []agent.Runtime{fallback}, []string{"claude-sonnet", "claude-haiku"}, nil, jobs)
 
 	se, ok := ss.Get(req.SessionID)
 	if !ok {
@@ -86,7 +86,7 @@ func TestExecuteAgentRunWithFallbacks_ClearsFallbackStateOnPrimarySuccess(t *tes
 		return agent.TurnResult{Text: "ok"}, nil
 	})
 
-	executeAgentRunWithFallbacks(runID, req, primary, nil, []string{"claude-sonnet"}, jobs)
+	executeAgentRunWithFallbacks(runID, req, primary, nil, []string{"claude-sonnet"}, nil, jobs)
 
 	se, ok := ss.Get(req.SessionID)
 	if !ok {

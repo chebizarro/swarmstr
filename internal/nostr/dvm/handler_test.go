@@ -137,12 +137,11 @@ func TestDVMSetRelaysUpdatesRelays(t *testing.T) {
 	}
 }
 
-func TestDVMSetRelaysIgnoresEmpty(t *testing.T) {
+func TestDVMSetRelaysClearsRelays(t *testing.T) {
 	h := startTestHandler(t)
-	original := h.Relays()
 	h.SetRelays([]string{})
-	if got := h.Relays(); len(got) != len(original) {
-		t.Fatalf("empty SetRelays should be no-op, got %v", got)
+	if got := h.Relays(); len(got) != 0 {
+		t.Fatalf("empty SetRelays should clear relays, got %v", got)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	mcppkg "metiq/internal/mcp"
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
 )
@@ -39,6 +40,7 @@ const (
 	MethodHealth                      = "health"
 	MethodDoctorMemoryStatus          = "doctor.memory.status"
 	MethodLogsTail                    = "logs.tail"
+	MethodRuntimeObserve              = "runtime.observe"
 	MethodChannelsStatus              = "channels.status"
 	MethodChannelsLogout              = "channels.logout"
 	MethodChannelsJoin                = "channels.join"
@@ -150,6 +152,15 @@ const (
 	MethodExecApprovalRequest      = "exec.approval.request"
 	MethodExecApprovalWaitDecision = "exec.approval.waitDecision"
 	MethodExecApprovalResolve      = "exec.approval.resolve"
+	MethodMCPList                  = "mcp.list"
+	MethodMCPGet                   = "mcp.get"
+	MethodMCPPut                   = "mcp.put"
+	MethodMCPRemove                = "mcp.remove"
+	MethodMCPTest                  = "mcp.test"
+	MethodMCPReconnect             = "mcp.reconnect"
+	MethodMCPAuthStart             = "mcp.auth.start"
+	MethodMCPAuthRefresh           = "mcp.auth.refresh"
+	MethodMCPAuthClear             = "mcp.auth.clear"
 	MethodSecretsReload            = "secrets.reload"
 	MethodSandboxRun               = "sandbox.run"
 	MethodSecretsResolve           = "secrets.resolve"
@@ -209,6 +220,9 @@ type StatusResponse struct {
 	// RelaySets reports current NIP-51 kind:30002 relay sets.
 	// Omitted when no relay sets are loaded.
 	RelaySets map[string][]string `json:"relay_sets,omitempty"`
+
+	// MCP reports external MCP lifecycle/health telemetry when MCP is configured.
+	MCP *mcppkg.TelemetrySnapshot `json:"mcp,omitempty"`
 }
 
 // SubHealthInfo is the JSON-friendly representation of a subscription health
@@ -249,10 +263,11 @@ type MemoryCompactResponse struct {
 }
 
 type AgentRequest struct {
-	SessionID string `json:"session_id,omitempty"`
-	Message   string `json:"message"`
-	Context   string `json:"context,omitempty"`
-	TimeoutMS int    `json:"timeout_ms,omitempty"`
+	SessionID   string                 `json:"session_id,omitempty"`
+	Message     string                 `json:"message"`
+	Context     string                 `json:"context,omitempty"`
+	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
+	TimeoutMS   int                    `json:"timeout_ms,omitempty"`
 }
 
 // ── ACP (Agent Control Protocol) request/response types ─────────────────────
@@ -272,12 +287,27 @@ type ACPUnregisterRequest struct {
 	PubKey string `json:"pubkey"`
 }
 
+type ACPParentContextHint struct {
+	SessionID string `json:"session_id,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+}
+
 // ACPDispatchRequest sends an ACP task to a registered peer.
 type ACPDispatchRequest struct {
 	// TargetPubKey is the Nostr pubkey of the destination agent.
 	TargetPubKey string `json:"target_pubkey"`
 	// Instructions is the task description.
 	Instructions string `json:"instructions"`
+	// ContextMessages seeds the worker with prior parent history/context.
+	ContextMessages []map[string]any `json:"context_messages,omitempty"`
+	// MemoryScope carries the explicit worker memory scope contract.
+	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
+	// ToolProfile carries the inherited worker tool profile contract.
+	ToolProfile string `json:"tool_profile,omitempty"`
+	// EnabledTools carries an explicit inherited tool allowlist.
+	EnabledTools []string `json:"enabled_tools,omitempty"`
+	// ParentContext carries optional metadata about the originating runtime.
+	ParentContext *ACPParentContextHint `json:"parent_context,omitempty"`
 	// TimeoutMS, when > 0, limits the round-trip wait in milliseconds.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 	// Wait, when true, blocks until the worker sends a result DM and returns
@@ -291,6 +321,16 @@ type ACPPipelineStepRequest struct {
 	PeerPubKey string `json:"peer_pubkey"`
 	// Instructions is the task text for this step.
 	Instructions string `json:"instructions"`
+	// ContextMessages seeds the worker with prior parent history/context.
+	ContextMessages []map[string]any `json:"context_messages,omitempty"`
+	// MemoryScope carries the explicit worker memory scope contract.
+	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
+	// ToolProfile carries the inherited worker tool profile contract.
+	ToolProfile string `json:"tool_profile,omitempty"`
+	// EnabledTools carries an explicit inherited tool allowlist.
+	EnabledTools []string `json:"enabled_tools,omitempty"`
+	// ParentContext carries optional metadata about the originating runtime.
+	ParentContext *ACPParentContextHint `json:"parent_context,omitempty"`
 	// TimeoutMS is the per-step timeout.  0 = 60 s default.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 }
@@ -303,6 +343,221 @@ type ACPPipelineRequest struct {
 	// When false (default), steps run sequentially and each step receives
 	// the previous step's result as context.
 	Parallel bool `json:"parallel,omitempty"`
+}
+
+func normalizeACPParentContext(parent *ACPParentContextHint) *ACPParentContextHint {
+	if parent == nil {
+		return nil
+	}
+	out := &ACPParentContextHint{
+		SessionID: strings.TrimSpace(parent.SessionID),
+		AgentID:   strings.TrimSpace(parent.AgentID),
+	}
+	if out.SessionID == "" && out.AgentID == "" {
+		return nil
+	}
+	return out
+}
+
+func normalizeACPEnabledToolList(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (r ACPDispatchRequest) Normalize() (ACPDispatchRequest, error) {
+	r.TargetPubKey = strings.TrimSpace(r.TargetPubKey)
+	r.Instructions = strings.TrimSpace(r.Instructions)
+	r.ToolProfile = strings.TrimSpace(r.ToolProfile)
+	r.EnabledTools = normalizeACPEnabledToolList(r.EnabledTools)
+	r.ParentContext = normalizeACPParentContext(r.ParentContext)
+	r.ContextMessages = compactObjectSlice(r.ContextMessages)
+	if raw := strings.TrimSpace(string(r.MemoryScope)); raw != "" {
+		scope, ok := state.ParseAgentMemoryScope(raw)
+		if !ok {
+			return r, fmt.Errorf("memory_scope must be one of: user, project, local")
+		}
+		r.MemoryScope = scope
+	}
+	if r.TargetPubKey == "" {
+		return r, fmt.Errorf("target_pubkey required")
+	}
+	if r.Instructions == "" {
+		return r, fmt.Errorf("instructions required")
+	}
+	if r.TimeoutMS < 0 {
+		r.TimeoutMS = 0
+	}
+	return r, nil
+}
+
+func (r ACPPipelineRequest) Normalize() (ACPPipelineRequest, error) {
+	if len(r.Steps) == 0 {
+		return r, fmt.Errorf("steps required")
+	}
+	for i := range r.Steps {
+		r.Steps[i].PeerPubKey = strings.TrimSpace(r.Steps[i].PeerPubKey)
+		r.Steps[i].Instructions = strings.TrimSpace(r.Steps[i].Instructions)
+		r.Steps[i].ToolProfile = strings.TrimSpace(r.Steps[i].ToolProfile)
+		r.Steps[i].EnabledTools = normalizeACPEnabledToolList(r.Steps[i].EnabledTools)
+		r.Steps[i].ParentContext = normalizeACPParentContext(r.Steps[i].ParentContext)
+		r.Steps[i].ContextMessages = compactObjectSlice(r.Steps[i].ContextMessages)
+		if raw := strings.TrimSpace(string(r.Steps[i].MemoryScope)); raw != "" {
+			scope, ok := state.ParseAgentMemoryScope(raw)
+			if !ok {
+				return r, fmt.Errorf("steps[%d].memory_scope must be one of: user, project, local", i)
+			}
+			r.Steps[i].MemoryScope = scope
+		}
+		if r.Steps[i].PeerPubKey == "" {
+			return r, fmt.Errorf("steps[%d].peer_pubkey required", i)
+		}
+		if r.Steps[i].Instructions == "" {
+			return r, fmt.Errorf("steps[%d].instructions required", i)
+		}
+		if r.Steps[i].TimeoutMS < 0 {
+			r.Steps[i].TimeoutMS = 0
+		}
+	}
+	return r, nil
+}
+
+func DecodeACPDispatchParams(params json.RawMessage) (ACPDispatchRequest, error) {
+	params = normalizeObjectParamAliases(params)
+	type acpParentContextCompat struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		AgentID        string `json:"agent_id,omitempty"`
+		AgentIDCamel   string `json:"agentId,omitempty"`
+	}
+	type acpDispatchCompat struct {
+		TargetPubKey    string                  `json:"target_pubkey"`
+		Instructions    string                  `json:"instructions"`
+		ContextMessages []map[string]any        `json:"context_messages,omitempty"`
+		MemoryScope     state.AgentMemoryScope  `json:"memory_scope,omitempty"`
+		ToolProfile     string                  `json:"tool_profile,omitempty"`
+		EnabledTools    []string                `json:"enabled_tools,omitempty"`
+		ParentContext   *acpParentContextCompat `json:"parent_context,omitempty"`
+		TimeoutMS       int64                   `json:"timeout_ms,omitempty"`
+		Wait            bool                    `json:"wait,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat acpDispatchCompat
+	if err := dec.Decode(&compat); err != nil {
+		return ACPDispatchRequest{}, fmt.Errorf("invalid params")
+	}
+	req := ACPDispatchRequest{
+		TargetPubKey:    compat.TargetPubKey,
+		Instructions:    compat.Instructions,
+		ContextMessages: compat.ContextMessages,
+		MemoryScope:     compat.MemoryScope,
+		ToolProfile:     compat.ToolProfile,
+		EnabledTools:    compat.EnabledTools,
+		TimeoutMS:       compat.TimeoutMS,
+		Wait:            compat.Wait,
+	}
+	if compat.ParentContext != nil {
+		req.ParentContext = &ACPParentContextHint{
+			SessionID: firstNonEmpty(compat.ParentContext.SessionID, compat.ParentContext.SessionIDCamel),
+			AgentID:   firstNonEmpty(compat.ParentContext.AgentID, compat.ParentContext.AgentIDCamel),
+		}
+	}
+	return req, nil
+}
+
+func DecodeACPPipelineParams(params json.RawMessage) (ACPPipelineRequest, error) {
+	params = normalizeObjectParamAliases(params)
+	type acpParentContextCompat struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		AgentID        string `json:"agent_id,omitempty"`
+		AgentIDCamel   string `json:"agentId,omitempty"`
+	}
+	type acpPipelineStepCompat struct {
+		PeerPubKey           string                  `json:"peer_pubkey"`
+		PeerPubKeyCamel      string                  `json:"peerPubKey,omitempty"`
+		Instructions         string                  `json:"instructions"`
+		ContextMessages      []map[string]any        `json:"context_messages,omitempty"`
+		ContextMessagesCamel []map[string]any        `json:"contextMessages,omitempty"`
+		MemoryScope          state.AgentMemoryScope  `json:"memory_scope,omitempty"`
+		MemoryScopeCamel     state.AgentMemoryScope  `json:"memoryScope,omitempty"`
+		ToolProfile          string                  `json:"tool_profile,omitempty"`
+		ToolProfileCamel     string                  `json:"toolProfile,omitempty"`
+		EnabledTools         []string                `json:"enabled_tools,omitempty"`
+		EnabledToolsCamel    []string                `json:"enabledTools,omitempty"`
+		ParentContext        *acpParentContextCompat `json:"parent_context,omitempty"`
+		ParentContextCamel   *acpParentContextCompat `json:"parentContext,omitempty"`
+		TimeoutMS            int64                   `json:"timeout_ms,omitempty"`
+		TimeoutMSCamel       int64                   `json:"timeoutMs,omitempty"`
+	}
+	type acpPipelineCompat struct {
+		Steps    []acpPipelineStepCompat `json:"steps"`
+		Parallel bool                    `json:"parallel,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat acpPipelineCompat
+	if err := dec.Decode(&compat); err != nil {
+		return ACPPipelineRequest{}, fmt.Errorf("invalid params")
+	}
+	req := ACPPipelineRequest{Parallel: compat.Parallel}
+	for _, step := range compat.Steps {
+		contextMessages := step.ContextMessages
+		if len(contextMessages) == 0 {
+			contextMessages = step.ContextMessagesCamel
+		}
+		enabledTools := step.EnabledTools
+		if len(enabledTools) == 0 {
+			enabledTools = step.EnabledToolsCamel
+		}
+		parentContext := step.ParentContext
+		if parentContext == nil {
+			parentContext = step.ParentContextCamel
+		}
+		memoryScope := step.MemoryScope
+		if memoryScope == "" {
+			memoryScope = step.MemoryScopeCamel
+		}
+		timeoutMS := step.TimeoutMS
+		if timeoutMS == 0 {
+			timeoutMS = step.TimeoutMSCamel
+		}
+		next := ACPPipelineStepRequest{
+			PeerPubKey:      firstNonEmpty(step.PeerPubKey, step.PeerPubKeyCamel),
+			Instructions:    step.Instructions,
+			ContextMessages: contextMessages,
+			MemoryScope:     memoryScope,
+			ToolProfile:     firstNonEmpty(step.ToolProfile, step.ToolProfileCamel),
+			EnabledTools:    enabledTools,
+			TimeoutMS:       timeoutMS,
+		}
+		if parentContext != nil {
+			next.ParentContext = &ACPParentContextHint{
+				SessionID: firstNonEmpty(parentContext.SessionID, parentContext.SessionIDCamel),
+				AgentID:   firstNonEmpty(parentContext.AgentID, parentContext.AgentIDCamel),
+			}
+		}
+		req.Steps = append(req.Steps, next)
+	}
+	return req, nil
 }
 
 type AgentWaitRequest struct {
@@ -426,6 +681,8 @@ type SessionsSpawnRequest struct {
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	// AgentID selects which configured agent handles the sub-session.
 	AgentID string `json:"agent_id,omitempty"`
+	// MemoryScope carries the explicit worker memory scope contract.
+	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
 	// Context is extra system context to inject into the child session.
 	Context string `json:"context,omitempty"`
 	// TimeoutMS limits how long the caller will wait via agent.wait.
@@ -439,6 +696,13 @@ func (r SessionsSpawnRequest) Normalize() (SessionsSpawnRequest, error) {
 	}
 	r.ParentSessionID = strings.TrimSpace(r.ParentSessionID)
 	r.AgentID = normalizeAgentID(r.AgentID)
+	if raw := strings.TrimSpace(string(r.MemoryScope)); raw != "" {
+		scope, ok := state.ParseAgentMemoryScope(raw)
+		if !ok {
+			return r, fmt.Errorf("memory_scope must be one of: user, project, local")
+		}
+		r.MemoryScope = scope
+	}
 	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 60_000, 300_000)
 	return r, nil
 }
@@ -502,6 +766,24 @@ type LogsTailRequest struct {
 	Limit    int   `json:"limit,omitempty"`
 	MaxBytes int   `json:"max_bytes,omitempty"`
 	Lines    int   `json:"lines,omitempty"`
+}
+
+type RuntimeObserveRequest struct {
+	IncludeEvents *bool    `json:"include_events,omitempty"`
+	IncludeLogs   *bool    `json:"include_logs,omitempty"`
+	EventCursor   int64    `json:"event_cursor,omitempty"`
+	LogCursor     int64    `json:"log_cursor,omitempty"`
+	EventLimit    int      `json:"event_limit,omitempty"`
+	LogLimit      int      `json:"log_limit,omitempty"`
+	MaxBytes      int      `json:"max_bytes,omitempty"`
+	WaitTimeoutMS int      `json:"wait_timeout_ms,omitempty"`
+	Events        []string `json:"events,omitempty"`
+	AgentID       string   `json:"agent_id,omitempty"`
+	SessionID     string   `json:"session_id,omitempty"`
+	ChannelID     string   `json:"channel_id,omitempty"`
+	Direction     string   `json:"direction,omitempty"`
+	Subsystem     string   `json:"subsystem,omitempty"`
+	Source        string   `json:"source,omitempty"`
 }
 
 type ChannelsStatusRequest struct {
@@ -633,12 +915,14 @@ type SkillsStatusRequest struct {
 type SkillsBinsRequest struct{}
 
 type SkillsInstallRequest struct {
+	AgentID   string `json:"agent_id,omitempty"`
 	Name      string `json:"name"`
 	InstallID string `json:"install_id"`
 	TimeoutMS int    `json:"timeout_ms,omitempty"`
 }
 
 type SkillsUpdateRequest struct {
+	AgentID  string            `json:"agent_id,omitempty"`
 	SkillKey string            `json:"skill_key"`
 	Enabled  *bool             `json:"enabled,omitempty"`
 	APIKey   *string           `json:"api_key,omitempty"`
@@ -906,6 +1190,45 @@ type SandboxRunRequest struct {
 	Driver string `json:"driver,omitempty"`
 }
 
+type MCPListRequest struct{}
+
+type MCPGetRequest struct {
+	Server string `json:"server"`
+}
+
+type MCPPutRequest struct {
+	Server string         `json:"server"`
+	Config map[string]any `json:"config"`
+}
+
+type MCPRemoveRequest struct {
+	Server string `json:"server"`
+}
+
+type MCPTestRequest struct {
+	Server    string         `json:"server"`
+	Config    map[string]any `json:"config,omitempty"`
+	TimeoutMS int            `json:"timeout_ms,omitempty"`
+}
+
+type MCPReconnectRequest struct {
+	Server string `json:"server"`
+}
+
+type MCPAuthStartRequest struct {
+	Server       string `json:"server"`
+	ClientSecret string `json:"client_secret,omitempty"`
+	TimeoutMS    int    `json:"timeout_ms,omitempty"`
+}
+
+type MCPAuthRefreshRequest struct {
+	Server string `json:"server"`
+}
+
+type MCPAuthClearRequest struct {
+	Server string `json:"server"`
+}
+
 type SecretsReloadRequest struct{}
 
 type SecretsResolveRequest struct {
@@ -1033,6 +1356,13 @@ func (r AgentRequest) Normalize() (AgentRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
 	r.Message = strings.TrimSpace(r.Message)
 	r.Context = strings.TrimSpace(r.Context)
+	if raw := strings.TrimSpace(string(r.MemoryScope)); raw != "" {
+		scope, ok := state.ParseAgentMemoryScope(raw)
+		if !ok {
+			return r, fmt.Errorf("memory_scope must be one of: user, project, local")
+		}
+		r.MemoryScope = scope
+	}
 	if r.Message == "" {
 		return r, fmt.Errorf("message is required")
 	}
@@ -1295,6 +1625,45 @@ func (r LogsTailRequest) Normalize() (LogsTailRequest, error) {
 	return r, nil
 }
 
+func (r RuntimeObserveRequest) Normalize() (RuntimeObserveRequest, error) {
+	includeEvents := true
+	if r.IncludeEvents != nil {
+		includeEvents = *r.IncludeEvents
+	}
+	includeLogs := true
+	if r.IncludeLogs != nil {
+		includeLogs = *r.IncludeLogs
+	}
+	if !includeEvents && !includeLogs {
+		return r, fmt.Errorf("at least one of include_events or include_logs must be true")
+	}
+	r.IncludeEvents = boolPtr(includeEvents)
+	r.IncludeLogs = boolPtr(includeLogs)
+	if r.EventCursor < 0 {
+		r.EventCursor = 0
+	}
+	if r.LogCursor < 0 {
+		r.LogCursor = 0
+	}
+	r.EventLimit = normalizeLimit(r.EventLimit, 20, 200)
+	r.LogLimit = normalizeLimit(r.LogLimit, 20, 200)
+	r.MaxBytes = normalizeLimit(r.MaxBytes, 32*1024, 256*1024)
+	if r.WaitTimeoutMS < 0 {
+		r.WaitTimeoutMS = 0
+	}
+	if r.WaitTimeoutMS > 60_000 {
+		r.WaitTimeoutMS = 60_000
+	}
+	r.AgentID = strings.TrimSpace(r.AgentID)
+	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.ChannelID = strings.TrimSpace(r.ChannelID)
+	r.Direction = strings.TrimSpace(r.Direction)
+	r.Subsystem = strings.TrimSpace(r.Subsystem)
+	r.Source = strings.TrimSpace(r.Source)
+	r.Events = compactStringSlice(r.Events)
+	return r, nil
+}
+
 func (r ChannelsStatusRequest) Normalize() (ChannelsStatusRequest, error) {
 	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 10_000, 60_000)
 	return r, nil
@@ -1488,6 +1857,7 @@ func (r SkillsBinsRequest) Normalize() (SkillsBinsRequest, error) {
 }
 
 func (r SkillsInstallRequest) Normalize() (SkillsInstallRequest, error) {
+	r.AgentID = normalizeAgentID(r.AgentID)
 	r.Name = strings.TrimSpace(r.Name)
 	r.InstallID = strings.TrimSpace(r.InstallID)
 	if r.Name == "" {
@@ -1501,6 +1871,7 @@ func (r SkillsInstallRequest) Normalize() (SkillsInstallRequest, error) {
 }
 
 func (r SkillsUpdateRequest) Normalize() (SkillsUpdateRequest, error) {
+	r.AgentID = normalizeAgentID(r.AgentID)
 	r.SkillKey = strings.ToLower(strings.TrimSpace(r.SkillKey))
 	if r.SkillKey == "" {
 		return r, fmt.Errorf("skill_key is required")
@@ -2104,12 +2475,89 @@ func (r TTSConvertRequest) Normalize() (TTSConvertRequest, error) {
 	return r, nil
 }
 
+func (r MCPListRequest) Normalize() (MCPListRequest, error) { return r, nil }
+
+func (r MCPGetRequest) Normalize() (MCPGetRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	return r, nil
+}
+
+func (r MCPPutRequest) Normalize() (MCPPutRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	if len(r.Config) == 0 {
+		return r, fmt.Errorf("config is required")
+	}
+	return r, nil
+}
+
+func (r MCPRemoveRequest) Normalize() (MCPRemoveRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	return r, nil
+}
+
+func (r MCPTestRequest) Normalize() (MCPTestRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	if r.TimeoutMS < 0 {
+		return r, fmt.Errorf("timeout_ms must be >= 0")
+	}
+	return r, nil
+}
+
+func (r MCPReconnectRequest) Normalize() (MCPReconnectRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	return r, nil
+}
+
+func (r MCPAuthStartRequest) Normalize() (MCPAuthStartRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	r.ClientSecret = strings.TrimSpace(r.ClientSecret)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	if r.TimeoutMS < 0 {
+		return r, fmt.Errorf("timeout_ms must be >= 0")
+	}
+	return r, nil
+}
+
+func (r MCPAuthRefreshRequest) Normalize() (MCPAuthRefreshRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	return r, nil
+}
+
+func (r MCPAuthClearRequest) Normalize() (MCPAuthClearRequest, error) {
+	r.Server = strings.TrimSpace(r.Server)
+	if r.Server == "" {
+		return r, fmt.Errorf("server is required")
+	}
+	return r, nil
+}
+
 func SupportedMethods() []string {
 	return []string{
 		MethodSupportedMethods,
 		MethodHealth,
 		MethodDoctorMemoryStatus,
 		MethodLogsTail,
+		MethodRuntimeObserve,
 		MethodChannelsStatus,
 		MethodChannelsLogout,
 		MethodChannelsJoin,
@@ -2219,6 +2667,15 @@ func SupportedMethods() []string {
 		MethodExecApprovalRequest,
 		MethodExecApprovalWaitDecision,
 		MethodExecApprovalResolve,
+		MethodMCPList,
+		MethodMCPGet,
+		MethodMCPPut,
+		MethodMCPRemove,
+		MethodMCPTest,
+		MethodMCPReconnect,
+		MethodMCPAuthStart,
+		MethodMCPAuthRefresh,
+		MethodMCPAuthClear,
 		MethodSecretsReload,
 		MethodSandboxRun,
 		MethodSecretsResolve,
@@ -3055,6 +3512,13 @@ func DecodeLogsTailParams(params json.RawMessage) (LogsTailRequest, error) {
 	return decodeMethodParams[LogsTailRequest](params)
 }
 
+func DecodeRuntimeObserveParams(params json.RawMessage) (RuntimeObserveRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return RuntimeObserveRequest{}, nil
+	}
+	return decodeMethodParams[RuntimeObserveRequest](params)
+}
+
 func DecodeChannelsStatusParams(params json.RawMessage) (ChannelsStatusRequest, error) {
 	if isJSONArray(params) {
 		var arr []any
@@ -3820,6 +4284,45 @@ func DecodeSandboxRunParams(params json.RawMessage) (SandboxRunRequest, error) {
 	return decodeMethodParams[SandboxRunRequest](params)
 }
 
+func DecodeMCPListParams(params json.RawMessage) (MCPListRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return MCPListRequest{}, nil
+	}
+	return decodeMethodParams[MCPListRequest](params)
+}
+
+func DecodeMCPGetParams(params json.RawMessage) (MCPGetRequest, error) {
+	return decodeMethodParams[MCPGetRequest](params)
+}
+
+func DecodeMCPPutParams(params json.RawMessage) (MCPPutRequest, error) {
+	return decodeMethodParams[MCPPutRequest](params)
+}
+
+func DecodeMCPRemoveParams(params json.RawMessage) (MCPRemoveRequest, error) {
+	return decodeMethodParams[MCPRemoveRequest](params)
+}
+
+func DecodeMCPTestParams(params json.RawMessage) (MCPTestRequest, error) {
+	return decodeMethodParams[MCPTestRequest](params)
+}
+
+func DecodeMCPReconnectParams(params json.RawMessage) (MCPReconnectRequest, error) {
+	return decodeMethodParams[MCPReconnectRequest](params)
+}
+
+func DecodeMCPAuthStartParams(params json.RawMessage) (MCPAuthStartRequest, error) {
+	return decodeMethodParams[MCPAuthStartRequest](params)
+}
+
+func DecodeMCPAuthRefreshParams(params json.RawMessage) (MCPAuthRefreshRequest, error) {
+	return decodeMethodParams[MCPAuthRefreshRequest](params)
+}
+
+func DecodeMCPAuthClearParams(params json.RawMessage) (MCPAuthClearRequest, error) {
+	return decodeMethodParams[MCPAuthClearRequest](params)
+}
+
 func DecodeSecretsReloadParams(params json.RawMessage) (SecretsReloadRequest, error) {
 	if len(bytes.TrimSpace(params)) == 0 {
 		return SecretsReloadRequest{}, nil
@@ -4015,6 +4518,13 @@ var objectParamAliases = map[string]string{
 	"session_key":      "sessionKey",
 	"runId":            "run_id",
 	"timeoutMs":        "timeout_ms",
+	"targetPubKey":     "target_pubkey",
+	"peerPubKey":       "peer_pubkey",
+	"contextMessages":  "context_messages",
+	"memoryScope":      "memory_scope",
+	"toolProfile":      "tool_profile",
+	"enabledTools":     "enabled_tools",
+	"parentContext":    "parent_context",
 	"requestId":        "request_id",
 	"expectedVersion":  "expected_version",
 	"expectedEvent":    "expected_event",
@@ -4023,6 +4533,15 @@ var objectParamAliases = map[string]string{
 	"skillKey":         "skill_key",
 	"apiKey":           "api_key",
 	"includePlugins":   "include_plugins",
+	"includeEvents":    "include_events",
+	"includeLogs":      "include_logs",
+	"eventCursor":      "event_cursor",
+	"logCursor":        "log_cursor",
+	"eventLimit":       "event_limit",
+	"logLimit":         "log_limit",
+	"maxBytes":         "max_bytes",
+	"waitTimeoutMs":    "wait_timeout_ms",
+	"channelId":        "channel_id",
 	"nodeId":           "node_id",
 	"maxItems":         "max_items",
 	"ttlMs":            "ttl_ms",
@@ -4151,6 +4670,19 @@ func truncateRunes(s string, maxRunes int) string {
 	return string(r[:maxRunes])
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
 func compactStringSlice(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -4162,6 +4694,27 @@ func compactStringSlice(values []string) []string {
 			continue
 		}
 		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func compactObjectSlice(values []map[string]any) []map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		if len(value) == 0 {
+			continue
+		}
+		cp := make(map[string]any, len(value))
+		for k, v := range value {
+			cp[k] = v
+		}
+		out = append(out, cp)
 	}
 	if len(out) == 0 {
 		return nil

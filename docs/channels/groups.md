@@ -21,6 +21,7 @@ All group channels are defined as named entries in `nostr_channels`. Each entry 
 | `nip29` | Relay-managed group (NIP-29) |
 | `nip28` | Public channel (NIP-28) |
 | `relay-filter` | Arbitrary Nostr filter subscription |
+| `nip34-inbox` | Repo-targeted NIP-34 inbox subscription |
 | `dm` | Direct message (default DM handling) |
 
 ## Nostr Groups (NIP-29)
@@ -29,7 +30,7 @@ NIP-29 defines relay-managed groups where the relay enforces membership and mess
 
 ### How It Works
 
-1. Create or join a NIP-29 group on a relay that supports it (e.g., groups.fiatjaf.com)
+1. Create or join a NIP-29 group on a relay that supports it (e.g., <group-relay-host>)
 2. Add the agent's npub as a member of the group
 3. Configure metiq to subscribe to the group via `nostr_channels`
 4. The agent receives and responds to group messages
@@ -42,8 +43,8 @@ NIP-29 defines relay-managed groups where the relay enforces membership and mess
     "my-group": {
       "kind": "nip29",
       "enabled": true,
-      "group_address": "groups.fiatjaf.com'my-group-id",  // relay'groupID
-      "relays": ["wss://groups.fiatjaf.com"],              // optional: defaults to global relays
+      "group_address": "<group-relay-host>'my-group-id",  // relay'groupID
+      "relays": ["wss://<group-relay>"],              // optional: defaults to global relays
       "agent_id": "",                                       // optional: route to specific agent
       "allow_from": ["*"]                                   // "*" = anyone in group; or list pubkeys
     }
@@ -74,7 +75,7 @@ NIP-28 defines open public channels anchored by a channel creation event on Nost
       "kind": "nip28",
       "enabled": true,
       "channel_id": "abc123def456...",  // NIP-28 channel event ID (hex)
-      "relays": ["wss://relay.nostr.com"],
+      "relays": ["wss://<relay-1>"],
       "allow_from": ["*"]
     }
   }
@@ -91,7 +92,7 @@ For custom subscriptions beyond NIP-28/29, use `relay-filter`:
     "mentions": {
       "kind": "relay-filter",
       "enabled": true,
-      "relays": ["wss://relay.nostr.com"],
+      "relays": ["wss://<relay-1>"],
       "tags": {
         "p": ["<agent-pubkey-hex>"]
       },
@@ -103,6 +104,59 @@ For custom subscriptions beyond NIP-28/29, use `relay-filter`:
 
 The `tags` field maps Nostr tag names to lists of values, forming the subscription filter.
 
+## NIP-34 Inbox Channels
+
+For inbound GRASP repository activity (patches, pull requests, issue updates), use `nip34-inbox`:
+
+```json5
+{
+  "nostr_channels": {
+    "repo-events": {
+      "kind": "nip34-inbox",
+      "enabled": true,
+      "relays": ["wss://<relay-4>"],
+      "tags": {
+        "a": ["30617:<repo-owner-pubkey-hex>:<repo-id>"]
+      },
+      "agent_id": "coding-agent",
+      "allow_from": ["*"]
+    }
+  }
+}
+```
+
+By default this subscribes to patch, pull-request, pull-request-update, and issue kinds for the configured repository address. Override `config.kinds` if you also want status events or other repo-scoped kinds.
+
+You can also enable a concrete inbound automation hook for PR review:
+
+```json5
+{
+  "nostr_channels": {
+    "repo-events": {
+      "kind": "nip34-inbox",
+      "enabled": true,
+      "relays": ["wss://<relay-4>"],
+      "tags": {
+        "a": ["30617:<repo-owner-pubkey-hex>:<repo-id>"]
+      },
+      "agent_id": "coding-agent",
+      "config": {
+        "auto_review": {
+          "enabled": true,
+          "tool_profile": "coding",
+          "enabled_tools": ["memory_search", "grasp_repo_list"],
+          "trigger_types": ["pull_request", "pull_request_update"],
+          "followed_only": true,
+          "instructions": "Review inbound PRs for bugs, regressions, and missing tests. If the diff is incomplete, explain what extra context is needed."
+        }
+      }
+    }
+  }
+}
+```
+
+When `followed_only` is true, metiq only auto-reviews repos present in the local agent's NIP-51 bookmark list using `d=git-repo-bookmark`. The watcher reads public repo `a` tags from the newest usable local bookmark event (kind `30003`, with compatibility fallback to `30001` when that is the decodable source of repo bookmarks). Private bookmark events that do not expose repo `a` tags are ignored for follow-matching so they do not wipe a usable public fallback set. Matched events are still routed into the repo session as structured NIP-34 messages; the automation simply augments that inbound turn with review instructions instead of creating a second parallel delivery.
+
 ## Multiple Channels
 
 You can define multiple channels simultaneously:
@@ -113,7 +167,7 @@ You can define multiple channels simultaneously:
     "team-group": {
       "kind": "nip29",
       "enabled": true,
-      "group_address": "groups.fiatjaf.com'team-abc",
+      "group_address": "<group-relay-host>'team-abc",
       "agent_id": "coding-agent",
       "allow_from": ["*"]
     },
@@ -144,7 +198,7 @@ Set `agent_id` to route a channel's messages to a named agent from `agents[]`:
   "nostr_channels": {
     "coding-group": {
       "kind": "nip29",
-      "group_address": "groups.fiatjaf.com'code-review",
+      "group_address": "<group-relay-host>'code-review",
       "agent_id": "coding-agent",
       "enabled": true
     }

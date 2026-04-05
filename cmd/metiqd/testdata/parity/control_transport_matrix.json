@@ -1,0 +1,96 @@
+{
+  "source": "internal/admin/server.go + cmd/metiqd/main.go",
+  "notes": "Core semantic parity cases for HTTP /call versus Nostr control RPC. Transport envelopes differ by design; these cases compare normalized method results/errors after removing transport-specific wrapping.",
+  "cases": [
+    {
+      "name": "supported methods",
+      "method": "supportedmethods",
+      "params": {},
+      "scenario": "default"
+    },
+    {
+      "name": "status",
+      "method": "status.get",
+      "params": {},
+      "scenario": "default",
+      "ignore_result_keys": ["uptime_ms", "uptime_seconds"]
+    },
+    {
+      "name": "config get",
+      "method": "config.get",
+      "params": {},
+      "scenario": "default"
+    },
+    {
+      "name": "config set",
+      "method": "config.set",
+      "params": {
+        "key": "dm.policy",
+        "value": "open"
+      },
+      "scenario": "pairing_config"
+    },
+    {
+      "name": "config apply",
+      "method": "config.apply",
+      "params": {
+        "config": {
+          "version": 1,
+          "dm": {"policy": "pairing"},
+          "relays": {
+            "read": ["wss://relay.example.com"],
+            "write": ["wss://relay.example.com"]
+          }
+        }
+      },
+      "scenario": "default"
+    },
+    {
+      "name": "config patch",
+      "method": "config.patch",
+      "params": {
+        "patch": {
+          "dm": {"policy": "pairing"}
+        }
+      },
+      "scenario": "default"
+    },
+    {
+      "name": "sessions list seeded",
+      "method": "sessions.list",
+      "params": {
+        "limit": 10,
+        "includeDerivedTitles": true,
+        "includeLastMessage": true
+      },
+      "scenario": "seeded_sessions",
+      "ignore_result_keys": ["ts", "path"],
+      "ignore_result_paths": ["sessions[*].updatedAt"]
+    },
+    {
+      "name": "agent identity get",
+      "method": "agent.identity.get",
+      "params": {
+        "session_id": "session-1"
+      },
+      "scenario": "default"
+    },
+    {
+      "name": "tools catalog",
+      "method": "tools.catalog",
+      "params": {},
+      "scenario": "default"
+    },
+    {
+      "name": "send runtime unavailable",
+      "method": "send",
+      "params": {
+        "to": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "message": "hello",
+        "idempotencyKey": "idem-transport"
+      },
+      "scenario": "default",
+      "expect_error_contains": "send runtime not configured"
+    }
+  ]
+}

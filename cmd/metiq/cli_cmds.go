@@ -109,6 +109,224 @@ func runLogs(args []string) error {
 	return printJSON(result)
 }
 
+type csvListFlag []string
+
+func (f *csvListFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *csvListFlag) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		*f = append(*f, part)
+	}
+	return nil
+}
+
+type stringListFlag []string
+
+func (f *stringListFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
+type keyValueFlag map[string]string
+
+func (f *keyValueFlag) String() string {
+	if f == nil || *f == nil {
+		return ""
+	}
+	keys := make([]string, 0, len(*f))
+	for key := range *f {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+(*f)[key])
+	}
+	return strings.Join(parts, ",")
+}
+
+func (f *keyValueFlag) Set(value string) error {
+	key, val, ok := strings.Cut(value, "=")
+	key = strings.TrimSpace(key)
+	if !ok || key == "" {
+		return fmt.Errorf("expected KEY=VALUE")
+	}
+	if *f == nil {
+		*f = map[string]string{}
+	}
+	(*f)[key] = val
+	return nil
+}
+
+func parseObserveWait(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	if digitsOnly(raw) {
+		ms, err := strconv.Atoi(raw)
+		if err != nil {
+			return 0, fmt.Errorf("invalid --wait value %q: %w", raw, err)
+		}
+		if ms < 0 {
+			return 0, fmt.Errorf("--wait must be >= 0")
+		}
+		return ms, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --wait duration %q: %w", raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("--wait must be >= 0")
+	}
+	return int(d.Milliseconds()), nil
+}
+
+func digitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func runObserve(args []string) error {
+	fs := flag.NewFlagSet("observe", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var transport, controlTargetPubKey, controlSignerURL string
+	var timeoutSec int
+	var includeEvents, includeLogs bool
+	var eventCursor, logCursor int64
+	var eventLimit, logLimit, maxBytes int
+	var waitRaw string
+	var agentID, sessionID, channelID, direction, subsystem, source string
+	var eventNames csvListFlag
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&transport, "transport", "auto", "gateway transport: auto, http, or nostr")
+	fs.StringVar(&controlTargetPubKey, "control-target-pubkey", "", "target daemon pubkey for Nostr control RPC")
+	fs.StringVar(&controlSignerURL, "control-signer-url", "", "caller signer override for Nostr control RPC")
+	fs.IntVar(&timeoutSec, "timeout", 30, "request timeout seconds")
+	fs.BoolVar(&includeEvents, "include-events", true, "include structured runtime events")
+	fs.BoolVar(&includeLogs, "include-logs", true, "include runtime log tail")
+	fs.Int64Var(&eventCursor, "event-cursor", 0, "resume events after this cursor")
+	fs.Int64Var(&logCursor, "log-cursor", 0, "resume logs after this cursor")
+	fs.IntVar(&eventLimit, "event-limit", 20, "maximum number of events to return")
+	fs.IntVar(&logLimit, "log-limit", 20, "maximum number of log lines to return")
+	fs.IntVar(&maxBytes, "max-bytes", 32*1024, "response size cap in bytes")
+	fs.StringVar(&waitRaw, "wait", "", "long-poll for changes (duration like 15s, 500ms, or integer milliseconds)")
+	fs.Var(&eventNames, "event", "filter by event name (repeatable or comma-separated)")
+	fs.StringVar(&agentID, "agent", "", "filter events by agent ID")
+	fs.StringVar(&sessionID, "session", "", "filter events by session ID")
+	fs.StringVar(&channelID, "channel", "", "filter events by channel ID")
+	fs.StringVar(&direction, "direction", "", "filter events by direction (inbound|outbound)")
+	fs.StringVar(&subsystem, "subsystem", "", "filter events by subsystem (relay|dm|tool|session|chat|channel|config|agent|cron|voice|update|plugin|node|device|exec|canvas)")
+	fs.StringVar(&source, "source", "", "filter events by source (for example inbound, reply, stream)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !includeEvents && !includeLogs {
+		return fmt.Errorf("at least one of --include-events or --include-logs must be true")
+	}
+	waitTimeoutMS, err := parseObserveWait(waitRaw)
+	if err != nil {
+		return err
+	}
+
+	timeout := time.Duration(timeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if waitTimeoutMS > 0 {
+		minTimeout := time.Duration(waitTimeoutMS)*time.Millisecond + 5*time.Second
+		if timeout < minTimeout {
+			timeout = minTimeout
+		}
+	}
+	cl, err := resolveGWClientFn(transport, adminAddr, adminToken, bootstrapPath, controlTargetPubKey, controlSignerURL, timeout)
+	if err != nil {
+		return err
+	}
+	if closer, ok := cl.(gatewayCloser); ok {
+		defer closer.Close()
+	}
+	if admin, ok := cl.(*adminClient); ok {
+		admin.timeout = timeout
+	}
+
+	params := map[string]any{
+		"include_events": includeEvents,
+		"include_logs":   includeLogs,
+	}
+	if eventCursor > 0 {
+		params["event_cursor"] = eventCursor
+	}
+	if logCursor > 0 {
+		params["log_cursor"] = logCursor
+	}
+	if eventLimit > 0 {
+		params["event_limit"] = eventLimit
+	}
+	if logLimit > 0 {
+		params["log_limit"] = logLimit
+	}
+	if maxBytes > 0 {
+		params["max_bytes"] = maxBytes
+	}
+	if waitTimeoutMS > 0 {
+		params["wait_timeout_ms"] = waitTimeoutMS
+	}
+	if len(eventNames) > 0 {
+		params["events"] = []string(eventNames)
+	}
+	if agentID = strings.TrimSpace(agentID); agentID != "" {
+		params["agent_id"] = agentID
+	}
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		params["session_id"] = sessionID
+	}
+	if channelID = strings.TrimSpace(channelID); channelID != "" {
+		params["channel_id"] = channelID
+	}
+	if direction = strings.TrimSpace(direction); direction != "" {
+		params["direction"] = direction
+	}
+	if subsystem = strings.TrimSpace(subsystem); subsystem != "" {
+		params["subsystem"] = subsystem
+	}
+	if source = strings.TrimSpace(source); source != "" {
+		params["source"] = source
+	}
+
+	result, err := cl.call("runtime.observe", params)
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
+}
+
 // ─── models ──────────────────────────────────────────────────────────────────
 
 func runModels(args []string) error {
@@ -266,7 +484,16 @@ func runChannelsList(args []string) error {
 		}
 		id := stringField(ch, "id")
 		kind := stringField(ch, "kind")
+		if kind == "" {
+			kind = stringFieldAny(ch, "channel")
+		}
+		if kind == "" {
+			kind = id
+		}
 		status := stringField(ch, "status")
+		if status == "" {
+			status = channelStatusLabel(ch)
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", id, kind, status)
 	}
 	return w.Flush()
@@ -305,30 +532,130 @@ func runSkills(args []string) error {
 		return runSkillsList(args[1:])
 	case "status":
 		return runSkillsStatus(args[1:])
+	case "check":
+		return runSkillsCheck(args[1:])
+	case "info":
+		return runSkillsInfo(args[1:])
+	case "install":
+		return runSkillsInstall(args[1:])
+	case "enable":
+		return runSkillsEnable(args[1:])
+	case "disable":
+		return runSkillsDisable(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "skills subcommands: list, status\n")
+		fmt.Fprintf(os.Stderr, "skills subcommands: list, status, check, info, install, enable, disable\n")
 		return fmt.Errorf("unknown subcommand: %s", args[0])
+	}
+}
+
+func fetchSkillsStatus(adminAddr, adminToken, bootstrapPath, agentID string) (map[string]any, []map[string]any, error) {
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	params := map[string]any{}
+	if agentID = strings.TrimSpace(agentID); agentID != "" {
+		params["agent_id"] = agentID
+	}
+	result, err := cl.call("skills.status", params)
+	if err != nil {
+		return nil, nil, err
+	}
+	return result, normalizeSkillStatusEntries(result["skills"]), nil
+}
+
+func normalizeSkillStatusEntries(raw any) []map[string]any {
+	switch v := raw.(type) {
+	case []map[string]any:
+		return v
+	case []any:
+		out := make([]map[string]any, 0, len(v))
+		for _, item := range v {
+			entry, ok := item.(map[string]any)
+			if ok {
+				out = append(out, entry)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func findSkillStatusEntry(skills []map[string]any, needle string) (map[string]any, bool) {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return nil, false
+	}
+	for _, entry := range skills {
+		if strings.EqualFold(stringField(entry, "id"), needle) || strings.EqualFold(stringField(entry, "skillKey"), needle) || strings.EqualFold(stringField(entry, "name"), needle) {
+			return entry, true
+		}
+	}
+	return nil, false
+}
+
+func missingSummary(entry map[string]any) string {
+	if entry == nil {
+		return ""
+	}
+	if stringField(entry, "status") == "disabled" {
+		return "disabled"
+	}
+	if blocked, _ := entry["blockedByAllowlist"].(bool); blocked {
+		return "blocked by allowlist"
+	}
+	missing, _ := entry["missing"].(map[string]any)
+	parts := make([]string, 0)
+	appendMissing := func(label string, raw any) {
+		switch v := raw.(type) {
+		case []string:
+			if len(v) > 0 {
+				parts = append(parts, label+": "+strings.Join(v, ","))
+			}
+		case []any:
+			vals := make([]string, 0, len(v))
+			for _, item := range v {
+				if s := strings.TrimSpace(fmt.Sprintf("%v", item)); s != "" {
+					vals = append(vals, s)
+				}
+			}
+			if len(vals) > 0 {
+				parts = append(parts, label+": "+strings.Join(vals, ","))
+			}
+		}
+	}
+	appendMissing("bins", missing["bins"])
+	appendMissing("anyBins", missing["anyBins"])
+	appendMissing("env", missing["env"])
+	appendMissing("os", missing["os"])
+	appendMissing("config", missing["config"])
+	return strings.Join(parts, "; ")
+}
+
+func skillStatusHealthy(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "ready", "always":
+		return true
+	default:
+		return false
 	}
 }
 
 func runSkillsList(args []string) error {
 	fs := flag.NewFlagSet("skills list", flag.ContinueOnError)
-	var adminAddr, adminToken, bootstrapPath string
+	var adminAddr, adminToken, bootstrapPath, agentID string
 	var jsonOut bool
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&agentID, "agent", "", "agent id")
 	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
-	if err != nil {
-		return err
-	}
-
-	result, err := cl.call("skills.status", map[string]any{})
+	result, all, err := fetchSkillsStatus(adminAddr, adminToken, bootstrapPath, agentID)
 	if err != nil {
 		return err
 	}
@@ -337,10 +664,6 @@ func runSkillsList(args []string) error {
 		return printJSON(result)
 	}
 
-	skills, _ := result["skills"].([]any)
-	managed, _ := result["managedSkills"].([]any)
-	all := append(skills, managed...)
-
 	if len(all) == 0 {
 		fmt.Println("no skills installed")
 		return nil
@@ -348,11 +671,7 @@ func runSkillsList(args []string) error {
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tSTATUS\tDESCRIPTION")
-	for _, s := range all {
-		sk, ok := s.(map[string]any)
-		if !ok {
-			continue
-		}
+	for _, sk := range all {
 		id := stringField(sk, "id")
 		status := stringField(sk, "status")
 		desc := stringField(sk, "description")
@@ -366,24 +685,227 @@ func runSkillsList(args []string) error {
 
 func runSkillsStatus(args []string) error {
 	fs := flag.NewFlagSet("skills status", flag.ContinueOnError)
-	var adminAddr, adminToken, bootstrapPath string
+	var adminAddr, adminToken, bootstrapPath, agentID string
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&agentID, "agent", "", "agent id")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	result, _, err := fetchSkillsStatus(adminAddr, adminToken, bootstrapPath, agentID)
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
+}
+
+func runSkillsCheck(args []string) error {
+	fs := flag.NewFlagSet("skills check", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath, agentID string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&agentID, "agent", "", "agent id")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 1 {
+		return fmt.Errorf("usage: metiq skills check [flags] [skill]")
+	}
+	_, skills, err := fetchSkillsStatus(adminAddr, adminToken, bootstrapPath, agentID)
+	if err != nil {
+		return err
+	}
+	selected := skills
+	if fs.NArg() == 1 {
+		entry, ok := findSkillStatusEntry(skills, fs.Arg(0))
+		if !ok {
+			return fmt.Errorf("skill not found: %s", fs.Arg(0))
+		}
+		selected = []map[string]any{entry}
+	}
+	issues := make([]map[string]any, 0)
+	for _, entry := range selected {
+		if !skillStatusHealthy(stringField(entry, "status")) {
+			issues = append(issues, entry)
+		}
+	}
+	if jsonOut {
+		payload := map[string]any{"ok": len(issues) == 0, "skills": selected}
+		if err := printJSON(payload); err != nil {
+			return err
+		}
+		if len(issues) > 0 {
+			return fmt.Errorf("%d skill checks failed", len(issues))
+		}
+		return nil
+	}
+	if len(selected) == 0 {
+		fmt.Println("no skills installed")
+		return nil
+	}
+	if len(issues) == 0 {
+		if len(selected) == 1 {
+			fmt.Printf("%s: %s\n", stringField(selected[0], "id"), stringField(selected[0], "status"))
+		} else {
+			fmt.Println("all checked skills ready")
+		}
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSTATUS\tDETAILS")
+	for _, entry := range issues {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", stringField(entry, "id"), stringField(entry, "status"), missingSummary(entry))
+	}
+	_ = w.Flush()
+	return fmt.Errorf("%d skill checks failed", len(issues))
+}
+
+func runSkillsInfo(args []string) error {
+	fs := flag.NewFlagSet("skills info", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath, agentID string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&agentID, "agent", "", "agent id")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq skills info [flags] <skill>")
+	}
+	_, skills, err := fetchSkillsStatus(adminAddr, adminToken, bootstrapPath, agentID)
+	if err != nil {
+		return err
+	}
+	entry, ok := findSkillStatusEntry(skills, fs.Arg(0))
+	if !ok {
+		return fmt.Errorf("skill not found: %s", fs.Arg(0))
+	}
+	if jsonOut {
+		return printJSON(entry)
+	}
+	fmt.Printf("id: %s\n", stringField(entry, "id"))
+	fmt.Printf("name: %s\n", stringField(entry, "name"))
+	fmt.Printf("status: %s\n", stringField(entry, "status"))
+	fmt.Printf("source: %s\n", stringField(entry, "source"))
+	if desc := stringField(entry, "description"); desc != "" {
+		fmt.Printf("description: %s\n", desc)
+	}
+	if when := stringField(entry, "whenToUse"); when != "" {
+		fmt.Printf("whenToUse: %s\n", when)
+	}
+	if env := stringField(entry, "primaryEnv"); env != "" {
+		fmt.Printf("primaryEnv: %s\n", env)
+	}
+	if installID := stringField(entry, "selectedInstallId"); installID != "" {
+		fmt.Printf("selectedInstallId: %s\n", installID)
+	}
+	if path := stringField(entry, "filePath"); path != "" {
+		fmt.Printf("filePath: %s\n", path)
+	}
+	if details := missingSummary(entry); details != "" {
+		fmt.Printf("details: %s\n", details)
+	}
+	return nil
+}
+
+func runSkillsInstall(args []string) error {
+	fs := flag.NewFlagSet("skills install", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var installID string
+	var agentID string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&installID, "install-id", "", "installer option id")
+	fs.StringVar(&agentID, "agent", "main", "agent id")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq skills install [flags] <skill>")
+	}
+	if strings.TrimSpace(installID) == "" {
+		return fmt.Errorf("--install-id is required")
 	}
 
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
 	if err != nil {
 		return err
 	}
-
-	result, err := cl.call("skills.status", map[string]any{})
+	result, err := cl.call("skills.install", map[string]any{
+		"agent_id":   agentID,
+		"name":       fs.Arg(0),
+		"install_id": installID,
+	})
 	if err != nil {
 		return err
 	}
-	return printJSON(result)
+	if jsonOut {
+		return printJSON(result)
+	}
+	if ok, _ := result["ok"].(bool); ok {
+		fmt.Println(stringField(result, "message"))
+		return nil
+	}
+	return fmt.Errorf("skills install failed: %s", stringField(result, "message"))
+}
+
+func runSkillsSetEnabled(args []string, enabled bool) error {
+	label := "enable"
+	verb := "Enabled"
+	if !enabled {
+		label = "disable"
+		verb = "Disabled"
+	}
+	fs := flag.NewFlagSet("skills "+label, flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath, agentID string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&agentID, "agent", "main", "agent id")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq skills %s [flags] <skill>", label)
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("skills.update", map[string]any{
+		"agent_id":  agentID,
+		"skill_key": fs.Arg(0),
+		"enabled":   enabled,
+	})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	fmt.Printf("%s %s\n", verb, stringField(result, "skillKey"))
+	return nil
+}
+
+func runSkillsEnable(args []string) error {
+	return runSkillsSetEnabled(args, true)
+}
+
+func runSkillsDisable(args []string) error {
+	return runSkillsSetEnabled(args, false)
 }
 
 // ─── hooks ────────────────────────────────────────────────────────────────────
@@ -573,6 +1095,664 @@ func runSecretsSet(args []string) error {
 
 	_ = value
 	return fmt.Errorf("secrets set is not supported by the daemon API; set %q in your environment or .env and run `metiq secrets list` (reload)", key)
+}
+
+// ─── mcp auth ────────────────────────────────────────────────────────────────
+
+func runMCP(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "mcp subcommands: list, get, put, add, remove, test, reconnect, auth\n")
+		return fmt.Errorf("missing subcommand")
+	}
+	switch args[0] {
+	case "list", "ls":
+		return runMCPList(args[1:])
+	case "get", "show":
+		return runMCPGet(args[1:])
+	case "put", "set":
+		return runMCPPut(args[1:])
+	case "add":
+		return runMCPPut(args[1:])
+	case "remove", "rm", "delete":
+		return runMCPRemove(args[1:])
+	case "test":
+		return runMCPTest(args[1:])
+	case "reconnect":
+		return runMCPReconnect(args[1:])
+	case "auth":
+		return runMCPAuth(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "mcp subcommands: list, get, put, add, remove, test, reconnect, auth\n")
+		return fmt.Errorf("unknown subcommand: %s", args[0])
+	}
+}
+
+func normalizeLeadingPositionalArg(args []string) []string {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return args
+	}
+	reordered := append([]string{}, args[1:]...)
+	reordered = append(reordered, args[0])
+	return reordered
+}
+
+func runMCPList(args []string) error {
+	fs := flag.NewFlagSet("mcp list", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: metiq mcp list")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("mcp.list", map[string]any{})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		if err := printJSON(result); err != nil {
+			return err
+		}
+		return nil
+	}
+	servers := mcpServers(result)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tSTATE\tENABLED\tTRANSPORT\tTOOLS\tAUTH\tTARGET")
+	for _, server := range servers {
+		fmt.Fprintf(w, "%s\t%s\t%t\t%s\t%d\t%s\t%s\n",
+			stringFieldAny(server, "name"),
+			stringFieldAny(server, "state"),
+			boolFieldAny(server, "enabled"),
+			stringFieldAny(server, "transport"),
+			intFieldAny(server, "tool_count"),
+			mcpAuthStatus(server),
+			mcpTarget(server),
+		)
+	}
+	_ = w.Flush()
+	if suppressed := len(anySlice(result["suppressed"])); suppressed > 0 {
+		fmt.Printf("suppressed: %d\n", suppressed)
+	}
+	return nil
+}
+
+func runMCPGet(args []string) error {
+	args = normalizeLeadingPositionalArg(args)
+	fs := flag.NewFlagSet("mcp get", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq mcp get <server>")
+	}
+	serverName := strings.TrimSpace(fs.Arg(0))
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("mcp.get", map[string]any{"server": serverName})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	server := mcpServer(result)
+	if len(server) == 0 {
+		return fmt.Errorf("server payload missing")
+	}
+	printMCPServer(server)
+	return nil
+}
+
+func runMCPPut(args []string) error {
+	serverName, config, jsonOut, cl, err := prepareMCPMutationCommand("mcp put", args)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("mcp.put", map[string]any{"server": serverName, "config": config})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	server := mcpServer(result)
+	fmt.Printf("updated mcp server %s state=%s transport=%s\n", serverName, stringFieldAny(server, "state"), stringFieldAny(server, "transport"))
+	return nil
+}
+
+func runMCPRemove(args []string) error {
+	args = normalizeLeadingPositionalArg(args)
+	fs := flag.NewFlagSet("mcp remove", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq mcp remove <server>")
+	}
+	serverName := strings.TrimSpace(fs.Arg(0))
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("mcp.remove", map[string]any{"server": serverName})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	fmt.Printf("removed mcp server %s\n", serverName)
+	return nil
+}
+
+func runMCPTest(args []string) error {
+	serverName, config, jsonOut, cl, timeoutMS, err := prepareMCPProbeCommand("mcp test", args)
+	if err != nil {
+		return err
+	}
+	params := map[string]any{"server": serverName}
+	if len(config) > 0 {
+		params["config"] = config
+	}
+	if timeoutMS > 0 {
+		params["timeout_ms"] = timeoutMS
+	}
+	result, err := cl.call("mcp.test", params)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		if err := printJSON(result); err != nil {
+			return err
+		}
+		if !boolFieldAny(result, "ok") {
+			return fmt.Errorf("%s", stringFieldAny(result, "error"))
+		}
+		return nil
+	}
+	server := mcpServer(result)
+	if boolFieldAny(result, "ok") {
+		fmt.Printf("mcp test passed for %s state=%s transport=%s\n", serverName, stringFieldAny(server, "state"), stringFieldAny(server, "transport"))
+		return nil
+	}
+	fmt.Printf("mcp test failed for %s state=%s error=%s\n", serverName, stringFieldAny(server, "state"), stringFieldAny(result, "error"))
+	return fmt.Errorf("%s", stringFieldAny(result, "error"))
+}
+
+func runMCPReconnect(args []string) error {
+	args = normalizeLeadingPositionalArg(args)
+	fs := flag.NewFlagSet("mcp reconnect", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq mcp reconnect <server>")
+	}
+	serverName := strings.TrimSpace(fs.Arg(0))
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("mcp.reconnect", map[string]any{"server": serverName})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		if err := printJSON(result); err != nil {
+			return err
+		}
+		if !boolFieldAny(result, "ok") {
+			return fmt.Errorf("%s", stringFieldAny(result, "error"))
+		}
+		return nil
+	}
+	server := mcpServer(result)
+	if boolFieldAny(result, "ok") {
+		fmt.Printf("reconnected mcp server %s state=%s\n", serverName, stringFieldAny(server, "state"))
+		return nil
+	}
+	fmt.Printf("mcp reconnect failed for %s state=%s error=%s\n", serverName, stringFieldAny(server, "state"), stringFieldAny(result, "error"))
+	return fmt.Errorf("%s", stringFieldAny(result, "error"))
+}
+
+func runMCPAuth(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "mcp auth subcommands: start, refresh, clear\n")
+		return fmt.Errorf("missing subcommand")
+	}
+	switch args[0] {
+	case "start":
+		return runMCPAuthStart(args[1:])
+	case "refresh":
+		return runMCPAuthRefresh(args[1:])
+	case "clear":
+		return runMCPAuthClear(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "mcp auth subcommands: start, refresh, clear\n")
+		return fmt.Errorf("unknown subcommand: %s", args[0])
+	}
+}
+
+func runMCPAuthStart(args []string) error {
+	args = normalizeLeadingPositionalArg(args)
+	fs := flag.NewFlagSet("mcp auth start", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath, clientSecret string
+	var jsonOut, openBrowser bool
+	var timeoutMS int
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&clientSecret, "client-secret", "", "optional oauth client secret to persist outside config")
+	fs.IntVar(&timeoutMS, "timeout-ms", 0, "optional auth flow timeout in milliseconds")
+	fs.BoolVar(&openBrowser, "open", true, "open the returned authorize URL in the default browser")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq mcp auth start <server>")
+	}
+	server := strings.TrimSpace(fs.Arg(0))
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	params := map[string]any{"server": server}
+	if strings.TrimSpace(clientSecret) != "" {
+		params["client_secret"] = clientSecret
+	}
+	if timeoutMS > 0 {
+		params["timeout_ms"] = timeoutMS
+	}
+	result, err := cl.call("mcp.auth.start", params)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	authorizeURL := stringField(result, "authorize_url")
+	callbackURL := stringField(result, "callback_url")
+	fmt.Printf("server:        %s\n", server)
+	fmt.Printf("authorize_url: %s\n", authorizeURL)
+	fmt.Printf("callback_url:  %s\n", callbackURL)
+	if openBrowser && authorizeURL != "" {
+		if err := openBrowserURL(authorizeURL); err != nil {
+			return fmt.Errorf("open browser: %w", err)
+		}
+		fmt.Println("browser:       opened")
+	}
+	return nil
+}
+
+func runMCPAuthRefresh(args []string) error {
+	args = normalizeLeadingPositionalArg(args)
+	fs := flag.NewFlagSet("mcp auth refresh", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq mcp auth refresh <server>")
+	}
+	server := strings.TrimSpace(fs.Arg(0))
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("mcp.auth.refresh", map[string]any{"server": server})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	fmt.Printf("refreshed auth for %s\n", server)
+	return nil
+}
+
+func runMCPAuthClear(args []string) error {
+	args = normalizeLeadingPositionalArg(args)
+	fs := flag.NewFlagSet("mcp auth clear", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq mcp auth clear <server>")
+	}
+	server := strings.TrimSpace(fs.Arg(0))
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("mcp.auth.clear", map[string]any{"server": server})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	fmt.Printf("cleared auth for %s\n", server)
+	return nil
+}
+
+func prepareMCPMutationCommand(name string, args []string) (string, map[string]any, bool, gatewayCaller, error) {
+	args = normalizeLeadingPositionalArg(args)
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var transport, command, url string
+	var disabled, jsonOut bool
+	var argList stringListFlag
+	var env keyValueFlag
+	var headers keyValueFlag
+	var oauthScopes stringListFlag
+	var oauthClientID, oauthAuthorizeURL, oauthTokenURL, oauthClientSecretRef string
+	var oauthUsePKCE bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&transport, "transport", "", "transport: stdio, sse, or http")
+	fs.StringVar(&command, "command", "", "stdio command")
+	fs.StringVar(&url, "url", "", "remote MCP URL")
+	fs.BoolVar(&disabled, "disabled", false, "store the server disabled in config")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.Var(&argList, "arg", "repeatable stdio arg")
+	fs.Var(&env, "env", "repeatable KEY=VALUE environment override")
+	fs.Var(&headers, "header", "repeatable KEY=VALUE request header")
+	fs.StringVar(&oauthClientID, "oauth-client-id", "", "oauth client id")
+	fs.StringVar(&oauthAuthorizeURL, "oauth-authorize-url", "", "oauth authorize URL")
+	fs.StringVar(&oauthTokenURL, "oauth-token-url", "", "oauth token URL")
+	fs.StringVar(&oauthClientSecretRef, "oauth-client-secret-ref", "", "oauth client secret ref (env:NAME, $NAME, etc)")
+	fs.BoolVar(&oauthUsePKCE, "oauth-use-pkce", false, "enable PKCE for OAuth")
+	fs.Var(&oauthScopes, "oauth-scope", "repeatable oauth scope")
+	if err := fs.Parse(args); err != nil {
+		return "", nil, false, nil, err
+	}
+	if fs.NArg() != 1 {
+		return "", nil, false, nil, fmt.Errorf("usage: metiq %s <server> [flags]", name)
+	}
+	serverName := strings.TrimSpace(fs.Arg(0))
+	config, err := buildMCPServerConfig(transport, command, url, []string(argList), map[string]string(env), map[string]string(headers), disabled, oauthClientID, oauthAuthorizeURL, oauthTokenURL, oauthClientSecretRef, []string(oauthScopes), oauthUsePKCE)
+	if err != nil {
+		return "", nil, false, nil, err
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return "", nil, false, nil, err
+	}
+	return serverName, config, jsonOut, cl, nil
+}
+
+func prepareMCPProbeCommand(name string, args []string) (string, map[string]any, bool, gatewayCaller, int, error) {
+	args = normalizeLeadingPositionalArg(args)
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var transport, command, url string
+	var jsonOut bool
+	var timeoutMS int
+	var argList stringListFlag
+	var env keyValueFlag
+	var headers keyValueFlag
+	var oauthScopes stringListFlag
+	var oauthClientID, oauthAuthorizeURL, oauthTokenURL, oauthClientSecretRef string
+	var oauthUsePKCE bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&transport, "transport", "", "transport: stdio, sse, or http")
+	fs.StringVar(&command, "command", "", "stdio command")
+	fs.StringVar(&url, "url", "", "remote MCP URL")
+	fs.IntVar(&timeoutMS, "timeout-ms", 0, "optional test timeout in milliseconds")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.Var(&argList, "arg", "repeatable stdio arg")
+	fs.Var(&env, "env", "repeatable KEY=VALUE environment override")
+	fs.Var(&headers, "header", "repeatable KEY=VALUE request header")
+	fs.StringVar(&oauthClientID, "oauth-client-id", "", "oauth client id")
+	fs.StringVar(&oauthAuthorizeURL, "oauth-authorize-url", "", "oauth authorize URL")
+	fs.StringVar(&oauthTokenURL, "oauth-token-url", "", "oauth token URL")
+	fs.StringVar(&oauthClientSecretRef, "oauth-client-secret-ref", "", "oauth client secret ref (env:NAME, $NAME, etc)")
+	fs.BoolVar(&oauthUsePKCE, "oauth-use-pkce", false, "enable PKCE for OAuth")
+	fs.Var(&oauthScopes, "oauth-scope", "repeatable oauth scope")
+	if err := fs.Parse(args); err != nil {
+		return "", nil, false, nil, 0, err
+	}
+	if fs.NArg() != 1 {
+		return "", nil, false, nil, 0, fmt.Errorf("usage: metiq %s <server> [flags]", name)
+	}
+	serverName := strings.TrimSpace(fs.Arg(0))
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return "", nil, false, nil, 0, err
+	}
+	hasInlineConfig := strings.TrimSpace(transport) != "" || strings.TrimSpace(command) != "" || strings.TrimSpace(url) != "" || len(argList) > 0 || len(env) > 0 || len(headers) > 0 || strings.TrimSpace(oauthClientID) != "" || strings.TrimSpace(oauthAuthorizeURL) != "" || strings.TrimSpace(oauthTokenURL) != "" || strings.TrimSpace(oauthClientSecretRef) != "" || len(oauthScopes) > 0 || oauthUsePKCE
+	if !hasInlineConfig {
+		return serverName, nil, jsonOut, cl, timeoutMS, nil
+	}
+	config, err := buildMCPServerConfig(transport, command, url, []string(argList), map[string]string(env), map[string]string(headers), false, oauthClientID, oauthAuthorizeURL, oauthTokenURL, oauthClientSecretRef, []string(oauthScopes), oauthUsePKCE)
+	if err != nil {
+		return "", nil, false, nil, 0, err
+	}
+	return serverName, config, jsonOut, cl, timeoutMS, nil
+}
+
+func buildMCPServerConfig(transport, command, url string, args []string, env, headers map[string]string, disabled bool, oauthClientID, oauthAuthorizeURL, oauthTokenURL, oauthClientSecretRef string, oauthScopes []string, oauthUsePKCE bool) (map[string]any, error) {
+	transport = strings.ToLower(strings.TrimSpace(transport))
+	command = strings.TrimSpace(command)
+	url = strings.TrimSpace(url)
+	if transport != "" && transport != "stdio" && transport != "sse" && transport != "http" {
+		return nil, fmt.Errorf("transport must be one of stdio, sse, or http")
+	}
+	if command != "" && url != "" {
+		return nil, fmt.Errorf("command and url are mutually exclusive")
+	}
+	if transport == "" {
+		switch {
+		case command != "":
+			transport = "stdio"
+		case url != "":
+			transport = "sse"
+		default:
+			return nil, fmt.Errorf("one of --command or --url is required")
+		}
+	}
+	if transport == "stdio" && command == "" {
+		return nil, fmt.Errorf("--command is required for stdio transport")
+	}
+	if (transport == "sse" || transport == "http") && url == "" {
+		return nil, fmt.Errorf("--url is required for remote MCP transport")
+	}
+	config := map[string]any{"enabled": !disabled, "type": transport}
+	if command != "" {
+		config["command"] = command
+	}
+	if len(args) > 0 {
+		config["args"] = args
+	}
+	if len(env) > 0 {
+		config["env"] = env
+	}
+	if url != "" {
+		config["url"] = url
+	}
+	if len(headers) > 0 {
+		config["headers"] = headers
+	}
+	oauthEnabled := strings.TrimSpace(oauthClientID) != "" || strings.TrimSpace(oauthAuthorizeURL) != "" || strings.TrimSpace(oauthTokenURL) != "" || strings.TrimSpace(oauthClientSecretRef) != "" || len(oauthScopes) > 0 || oauthUsePKCE
+	if oauthEnabled {
+		if transport != "sse" && transport != "http" {
+			return nil, fmt.Errorf("oauth flags require remote MCP transport")
+		}
+		if strings.TrimSpace(oauthClientID) == "" || strings.TrimSpace(oauthAuthorizeURL) == "" || strings.TrimSpace(oauthTokenURL) == "" {
+			return nil, fmt.Errorf("oauth requires client id, authorize url, and token url")
+		}
+		config["oauth"] = map[string]any{
+			"enabled":           true,
+			"client_id":         strings.TrimSpace(oauthClientID),
+			"authorize_url":     strings.TrimSpace(oauthAuthorizeURL),
+			"token_url":         strings.TrimSpace(oauthTokenURL),
+			"client_secret_ref": strings.TrimSpace(oauthClientSecretRef),
+			"scopes":            oauthScopes,
+			"use_pkce":          oauthUsePKCE,
+		}
+	}
+	return config, nil
+}
+
+func mcpServers(result map[string]any) []map[string]any {
+	items := anySlice(result["servers"])
+	servers := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if server, ok := item.(map[string]any); ok {
+			servers = append(servers, server)
+		}
+	}
+	return servers
+}
+
+func mcpServer(result map[string]any) map[string]any {
+	server, _ := result["server"].(map[string]any)
+	return server
+}
+
+func mcpTarget(server map[string]any) string {
+	if url := stringFieldAny(server, "url"); url != "" {
+		return url
+	}
+	return stringFieldAny(server, "command")
+}
+
+func mcpAuthStatus(server map[string]any) string {
+	if !boolFieldAny(server, "oauth_configured") {
+		return "-"
+	}
+	if boolFieldAny(server, "has_credentials") {
+		return "stored"
+	}
+	if stringFieldAny(server, "state") == "needs-auth" {
+		return "needed"
+	}
+	return "configured"
+}
+
+func printMCPServer(server map[string]any) {
+	fmt.Printf("name: %s\n", stringFieldAny(server, "name"))
+	fmt.Printf("state: %s\n", stringFieldAny(server, "state"))
+	fmt.Printf("enabled: %t\n", boolFieldAny(server, "enabled"))
+	if transport := stringFieldAny(server, "transport"); transport != "" {
+		fmt.Printf("transport: %s\n", transport)
+	}
+	if command := stringFieldAny(server, "command"); command != "" {
+		fmt.Printf("command: %s\n", command)
+	}
+	if url := stringFieldAny(server, "url"); url != "" {
+		fmt.Printf("url: %s\n", url)
+	}
+	fmt.Printf("tool_count: %d\n", intFieldAny(server, "tool_count"))
+	if source := stringFieldAny(server, "source"); source != "" {
+		fmt.Printf("source: %s\n", source)
+	}
+	if keys := stringSliceAny(server["env_keys"]); len(keys) > 0 {
+		fmt.Printf("env_keys: %s\n", strings.Join(keys, ", "))
+	}
+	if keys := stringSliceAny(server["header_keys"]); len(keys) > 0 {
+		fmt.Printf("header_keys: %s\n", strings.Join(keys, ", "))
+	}
+	fmt.Printf("oauth: %s\n", mcpAuthStatus(server))
+	if lastErr := stringFieldAny(server, "last_error"); lastErr != "" {
+		fmt.Printf("last_error: %s\n", lastErr)
+	}
+}
+
+func anySlice(v any) []any {
+	items, _ := v.([]any)
+	return items
+}
+
+func stringSliceAny(v any) []string {
+	switch raw := v.(type) {
+	case []string:
+		return append([]string(nil), raw...)
+	case []any:
+		out := make([]string, 0, len(raw))
+		for _, item := range raw {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func intFieldAny(m map[string]any, key string) int {
+	switch v := m[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func openBrowserURL(rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return fmt.Errorf("url is required")
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", rawURL)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+	default:
+		cmd = exec.Command("xdg-open", rawURL)
+	}
+	return cmd.Start()
 }
 
 // ─── update ───────────────────────────────────────────────────────────────────
@@ -1511,6 +2691,26 @@ func stringFieldAny(m map[string]any, key string) string {
 	return ""
 }
 
+func boolFieldAny(m map[string]any, key string) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return false
+}
+
+func channelStatusLabel(m map[string]any) string {
+	if status := stringFieldAny(m, "status"); status != "" {
+		return status
+	}
+	if boolFieldAny(m, "logged_out") {
+		return "logged_out"
+	}
+	if boolFieldAny(m, "connected") {
+		return "connected"
+	}
+	return "disconnected"
+}
+
 // ─── sessions ─────────────────────────────────────────────────────────────────
 
 func runSessions(args []string) error {
@@ -2070,8 +3270,14 @@ func runDoctor(args []string) error {
 	// Check: memory usage (from admin if reachable).
 	if cl != nil {
 		if result, err := cl.call("doctor.memory.status", map[string]any{}); err == nil {
-			docs := floatFieldAny(result, "doc_count")
-			checks = append(checks, check{"memory index", true, fmt.Sprintf("%.0f docs", docs)})
+			if index, ok := result["index"].(map[string]any); ok {
+				docs := floatFieldAny(index, "entry_count")
+				sessions := floatFieldAny(index, "session_count")
+				checks = append(checks, check{"memory index", true, fmt.Sprintf("%.0f docs / %.0f sessions", docs, sessions)})
+			} else {
+				docs := floatFieldAny(result, "doc_count")
+				checks = append(checks, check{"memory index", true, fmt.Sprintf("%.0f docs", docs)})
+			}
 		}
 	}
 
@@ -2210,7 +3416,7 @@ func runCompletion(args []string) error {
 const bashCompletion = `# metiq bash completion
 # Add to ~/.bashrc:  source <(metiq completion bash)
 _metiq_completions() {
-	local commands="version status health logs models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw plan bootstrap-check dm-send memory-search"
+	local commands="version status health logs observe models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw plan bootstrap-check dm-send memory-search"
   local cur="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=($(compgen -W "${commands}" -- "${cur}"))
 }
@@ -2225,6 +3431,7 @@ _metiq() {
     'status:show daemon status'
     'health:health check'
     'logs:stream logs'
+    'observe:structured runtime observability'
     'models:model management'
     'channels:channel management'
     'agents:agent management'
@@ -2252,7 +3459,7 @@ compdef _metiq metiq
 
 const fishCompletion = `# metiq fish completion
 # Add to ~/.config/fish/completions/metiq.fish or: metiq completion fish | source
-for cmd in version status health logs models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw
+for cmd in version status health logs observe models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw
   complete -c metiq -f -n '__fish_use_subcommand' -a $cmd
 end
 `
@@ -2559,10 +3766,16 @@ func runGW(args []string) error {
 	fs := flag.NewFlagSet("gw", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var adminAddr, adminToken, bootstrapPath string
+	var transport, controlTargetPubKey, controlSignerURL string
+	var timeoutSec int
 	var jsonOut bool
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&transport, "transport", "auto", "gateway transport: auto, http, or nostr")
+	fs.StringVar(&controlTargetPubKey, "control-target-pubkey", "", "target daemon pubkey for Nostr control RPC")
+	fs.StringVar(&controlSignerURL, "control-signer-url", "", "caller signer override for Nostr control RPC (URL, env://, file://, bunker://, or direct key material)")
+	fs.IntVar(&timeoutSec, "timeout", 30, "request timeout seconds")
 	fs.BoolVar(&jsonOut, "json", true, "output raw JSON (default true)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -2598,9 +3811,12 @@ func runGW(args []string) error {
 		rawParams = json.RawMessage("{}")
 	}
 
-	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	cl, err := resolveGWClientFn(transport, adminAddr, adminToken, bootstrapPath, controlTargetPubKey, controlSignerURL, time.Duration(timeoutSec)*time.Second)
 	if err != nil {
 		return err
+	}
+	if closer, ok := cl.(gatewayCloser); ok {
+		defer closer.Close()
 	}
 
 	// Use cl.call; json.RawMessage marshals as-is so params stay intact.

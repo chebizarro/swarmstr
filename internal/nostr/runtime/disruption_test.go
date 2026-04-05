@@ -6,14 +6,14 @@
 // invariants without requiring real relay connections.
 //
 // Coverage targets from swarmstr-3.11.8:
-//   1. Relay disconnect/reconnect → subscription loop restarts
-//   2. Auth-required CLOSED → generation advances, stale close ignored
-//   3. Relay policy change while running → rebind signal, relay list updated
-//   4. Daemon restart with checkpoint replay → Since within replay window
-//   5. Duplicate event observation across relays → seen set dedup
-//   6. Watch restore after restart → Since jitter applied
-//   7. NIP-17 backdated event recovery → backfill window covers gift wraps
-//   8. Control RPC across degraded relays → health tracker gates retry
+//  1. Relay disconnect/reconnect → subscription loop restarts
+//  2. Auth-required CLOSED → generation advances, stale close ignored
+//  3. Relay policy change while running → rebind signal, relay list updated
+//  4. Daemon restart with checkpoint replay → Since within replay window
+//  5. Duplicate event observation across relays → seen set dedup
+//  6. Watch restore after restart → Since jitter applied
+//  7. NIP-17 backdated event recovery → backfill window covers gift wraps
+//  8. Control RPC across degraded relays → health tracker gates retry
 package runtime
 
 import (
@@ -506,7 +506,7 @@ func TestDisruption_ControlBusResponseRelayCandidatesPreferHealthy(t *testing.T)
 		health: h,
 	}
 
-	candidates := b.responseRelayCandidates("", time.Now())
+	candidates := b.responseRelayCandidates("", "requester", time.Now())
 	if len(candidates) == 0 {
 		t.Fatal("should have at least one candidate")
 	}
@@ -530,7 +530,7 @@ func TestDisruption_SubHealthTrackerRecordsDisruptionSequence(t *testing.T) {
 	}
 
 	// Relay sends CLOSED.
-	tr.RecordClosed("rate-limited:")
+	tr.RecordClosed("wss://relay.example", "rate-limited:")
 
 	// Reconnect.
 	tr.RecordReconnect()
@@ -547,8 +547,8 @@ func TestDisruption_SubHealthTrackerRecordsDisruptionSequence(t *testing.T) {
 	if snap.ReconnectCount != 2 {
 		t.Fatalf("reconnect_count = %d, want 2", snap.ReconnectCount)
 	}
-	if snap.LastClosedReason != "rate-limited:" {
-		t.Fatalf("last_closed_reason = %q, want %q", snap.LastClosedReason, "rate-limited:")
+	if snap.LastClosedReason != "" {
+		t.Fatalf("last_closed_reason = %q, want empty after reconnect", snap.LastClosedReason)
 	}
 	if snap.LastEventAt.IsZero() {
 		t.Fatal("last_event_at should be set")
@@ -687,14 +687,12 @@ func TestDisruption_SanitizeRelayListRemovesBlanksAndDuplicates(t *testing.T) {
 	}
 }
 
-func TestDisruption_EmptyRelayListRejected(t *testing.T) {
+func TestDisruption_EmptyRelayListClearsRuntimeRelays(t *testing.T) {
 	b := &ControlRPCBus{relays: []string{"wss://keep"}, rebindCh: make(chan struct{}, 1)}
-	err := b.SetRelays([]string{""})
-	if err == nil {
-		t.Fatal("expected error for all-blank relay list")
+	if err := b.SetRelays([]string{""}); err != nil {
+		t.Fatalf("SetRelays: %v", err)
 	}
-	// Original relays preserved.
-	if got := b.currentRelays(); len(got) != 1 || got[0] != "wss://keep" {
-		t.Fatalf("relays should be unchanged: %v", got)
+	if got := b.currentRelays(); len(got) != 0 {
+		t.Fatalf("expected relays to be cleared: %v", got)
 	}
 }

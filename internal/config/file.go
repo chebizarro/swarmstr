@@ -16,12 +16,49 @@ import (
 	"metiq/internal/store/state"
 )
 
+var supportedConfigExtensions = map[string]struct{}{
+	".json":  {},
+	".json5": {},
+	".yaml":  {},
+	".yml":   {},
+}
+
+// ValidateConfigFilePath normalizes and validates a config file path used by
+// import/load/reload/sync flows.
+func ValidateConfigFilePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("config file path is required")
+	}
+	path = filepath.Clean(path)
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return "", fmt.Errorf("config file path must be a file")
+	}
+	return path, nil
+}
+
+// ValidateConfigWritePath validates a config file path intended as a write
+// target. New config files must use a supported extension so the parser mode is
+// explicit on subsequent reload/sync operations.
+func ValidateConfigWritePath(path string) (string, error) {
+	path, err := ValidateConfigFilePath(path)
+	if err != nil {
+		return "", err
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if _, ok := supportedConfigExtensions[ext]; !ok {
+		return "", fmt.Errorf("config file path must end in .json, .json5, .yaml, or .yml")
+	}
+	return path, nil
+}
+
 // LoadConfigFile reads a JSON5 (or plain JSON) or YAML config file
 // and returns a ConfigDoc. OpenClaw config fields are mapped automatically.
 func LoadConfigFile(path string) (state.ConfigDoc, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return state.ConfigDoc{}, fmt.Errorf("config file path is required")
+	var err error
+	path, err = ValidateConfigFilePath(path)
+	if err != nil {
+		return state.ConfigDoc{}, err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -53,22 +90,49 @@ func LoadConfigFile(path string) (state.ConfigDoc, error) {
 // WriteConfigFile serialises a ConfigDoc to a JSON file at path.
 // Parent directories are created as needed.
 func WriteConfigFile(path string, doc state.ConfigDoc) error {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return fmt.Errorf("config file path is required")
+	var err error
+	path, err = ValidateConfigWritePath(path)
+	if err != nil {
+		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir for config file: %w", err)
 	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create config temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("write config temp file: %w", err)
 	}
-	return os.Rename(tmp, path)
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync config temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close config temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename config temp file: %w", err)
+	}
+	cleanup = false
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("sync config directory: %w", err)
+	}
+	return nil
 }
 
 // ParseConfigBytes parses raw bytes (JSON5, plain JSON, or YAML if ext hint
@@ -122,6 +186,15 @@ func ConfigFileModTime(path string) time.Time {
 	return info.ModTime()
 }
 
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // OpenClaw → ConfigDoc field mapping
 // ──────────────────────────────────────────────────────────────────────────────
@@ -149,6 +222,9 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 	if dmRaw, ok := raw["dm"].(map[string]any); ok {
 		if policy, ok := dmRaw["policy"].(string); ok && strings.TrimSpace(policy) != "" {
 			doc.DM.Policy = strings.TrimSpace(policy)
+		}
+		if replyScheme, ok := dmRaw["reply_scheme"].(string); ok && strings.TrimSpace(replyScheme) != "" {
+			doc.DM.ReplyScheme = strings.TrimSpace(replyScheme)
 		}
 		if doc.DM.AllowFrom == nil {
 			doc.DM.AllowFrom = toStringSlice(dmRaw["allow_from"])
@@ -216,6 +292,9 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 			if dmRaw, ok := webRaw["dm"].(map[string]any); ok {
 				if policy, ok := dmRaw["policy"].(string); ok {
 					doc.DM.Policy = strings.TrimSpace(policy)
+				}
+				if replyScheme, ok := dmRaw["reply_scheme"].(string); ok && strings.TrimSpace(replyScheme) != "" {
+					doc.DM.ReplyScheme = strings.TrimSpace(replyScheme)
 				}
 				doc.DM.AllowFrom = toStringSlice(dmRaw["allow_from"])
 				if doc.DM.AllowFrom == nil {
@@ -329,6 +408,15 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		}
 	}
 
+	// ── acp (typed) ───────────────────────────────────────────────────────────
+	if acpRaw, ok := raw["acp"].(map[string]any); ok {
+		acp := state.ACPConfig{}
+		if v, ok := acpRaw["transport"].(string); ok {
+			acp.Transport = strings.TrimSpace(v)
+		}
+		doc.ACP = acp
+	}
+
 	// ── session (typed) ───────────────────────────────────────────────────────
 	if sessionRaw, ok := raw["session"].(map[string]any); ok {
 		sess := state.SessionConfig{}
@@ -342,6 +430,15 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 			sess.HistoryLimit = int(v)
 		}
 		doc.Session = sess
+	}
+
+	// ── storage (typed) ───────────────────────────────────────────────────────
+	if storageRaw, ok := raw["storage"].(map[string]any); ok {
+		storage := state.StorageConfig{}
+		if v, ok := storageRaw["encrypt"].(bool); ok {
+			storage.Encrypt = state.BoolPtr(v)
+		}
+		doc.Storage = storage
 	}
 
 	// ── heartbeat (typed) ─────────────────────────────────────────────────────
@@ -453,6 +550,11 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 			ac.SystemPrompt = strings.TrimSpace(v)
 		} else if v, ok := m["systemPrompt"].(string); ok {
 			ac.SystemPrompt = strings.TrimSpace(v)
+		}
+		if v, ok := m["memory_scope"].(string); ok {
+			ac.MemoryScope = state.AgentMemoryScope(strings.TrimSpace(v))
+		} else if v, ok := m["memoryScope"].(string); ok {
+			ac.MemoryScope = state.AgentMemoryScope(strings.TrimSpace(v))
 		}
 		if v, ok := m["enabled_tools"].([]any); ok {
 			for _, t := range v {

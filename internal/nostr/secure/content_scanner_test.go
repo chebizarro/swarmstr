@@ -26,7 +26,7 @@ func TestContentScanner_NormalText(t *testing.T) {
 	normals := []string{
 		"Hello, how are you today?",
 		"The weather in Portland is nice",
-		"Let me check relay wss://nos.lol for your profile",
+		"Let me check relay wss://relay.example.com for your profile",
 		"Your pubkey is npub1abc123def456",
 		"Event ID: abc123def456",
 		"I found 42 results matching your search query",
@@ -348,9 +348,9 @@ func TestContentScanner_NoFalsePositive_EventIDs(t *testing.T) {
 func TestContentScanner_NoFalsePositive_RelayURLs(t *testing.T) {
 	s := NewContentScanner()
 	urls := []string{
-		"wss://relay.damus.io",
-		"wss://nos.lol",
-		"wss://relay.nostr.band",
+		"wss://relay.example.com",
+		"wss://relay2.example.com",
+		"wss://relay.example.com",
 	}
 	for _, u := range urls {
 		r := s.Scan(u)
@@ -363,8 +363,8 @@ func TestContentScanner_NoFalsePositive_RelayURLs(t *testing.T) {
 func TestContentScanner_NoFalsePositive_ShortWords(t *testing.T) {
 	s := NewContentScanner()
 	texts := []string{
-		"skip this section",        // contains "sk" prefix but is a word
-		"the skeleton key was old", // "sk" prefix
+		"skip this section",                 // contains "sk" prefix but is a word
+		"the skeleton key was old",          // "sk" prefix
 		"password policy requires 12 chars", // mentions password but no assignment
 		"secret santa gift exchange",        // mentions secret but no assignment
 	}

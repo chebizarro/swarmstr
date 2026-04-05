@@ -36,10 +36,7 @@ func encodeEnvelopePayload(typ string, value any, codec secure.EnvelopeCodec) (s
 func decodeEnvelopePayload(content string, out any, codec secure.EnvelopeCodec) error {
 	codec = ensureCodec(codec)
 	var env events.Envelope
-	if err := json.Unmarshal([]byte(content), &env); err == nil {
-		if env.Payload == "" {
-			return fmt.Errorf("decode envelope: empty payload")
-		}
+	if err := json.Unmarshal([]byte(content), &env); err == nil && env.Payload != "" {
 		plaintext, err := codec.Decrypt(env.Payload, env.Enc)
 		if err != nil {
 			return fmt.Errorf("decrypt envelope payload: %w", err)

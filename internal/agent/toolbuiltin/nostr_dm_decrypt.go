@@ -18,7 +18,7 @@ import (
 // NostrDMDecryptDef is the ToolDefinition for nostr_dm_decrypt.
 var NostrDMDecryptDef = agent.ToolDefinition{
 	Name:        "nostr_dm_decrypt",
-	Description: "Decrypt DM-like Nostr payloads (NIP-04 kind:4, NIP-59 gift wrap kind:1059, or direct ciphertext with sender pubkey).",
+	Description: "Decrypt DM-like Nostr payloads (NIP-04 direct-message events, NIP-59 gift-wrap events, or direct ciphertext with sender pubkey).",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{

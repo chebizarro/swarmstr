@@ -1,11 +1,15 @@
 package grasp
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+
+	"metiq/internal/nostr/events"
 )
 
 func TestValidateRepoAddr(t *testing.T) {
+	repoKindPrefix := strconv.Itoa(int(events.KindRepoAnnouncement))
 	tests := []struct {
 		name    string
 		addr    string
@@ -13,7 +17,7 @@ func TestValidateRepoAddr(t *testing.T) {
 	}{
 		{
 			name:    "valid",
-			addr:    "30617:cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400:swarmstr",
+			addr:    repoKindPrefix + ":cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400:swarmstr",
 			wantErr: "",
 		},
 		{
@@ -23,12 +27,12 @@ func TestValidateRepoAddr(t *testing.T) {
 		},
 		{
 			name:    "one part",
-			addr:    "30617",
+			addr:    repoKindPrefix,
 			wantErr: "1 colon-separated parts, expected 3",
 		},
 		{
 			name:    "two parts",
-			addr:    "30617:cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400",
+			addr:    repoKindPrefix + ":cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400",
 			wantErr: "2 colon-separated parts, expected 3",
 		},
 		{
@@ -38,17 +42,17 @@ func TestValidateRepoAddr(t *testing.T) {
 		},
 		{
 			name:    "short pubkey",
-			addr:    "30617:abc123:swarmstr",
+			addr:    repoKindPrefix + ":abc123:swarmstr",
 			wantErr: "6 chars, expected 64",
 		},
 		{
 			name:    "uppercase hex",
-			addr:    "30617:CDEE943CBB19C51AB847A66D5D774373AA9F63D287246BB59B0827FA5E637400:swarmstr",
+			addr:    repoKindPrefix + ":CDEE943CBB19C51AB847A66D5D774373AA9F63D287246BB59B0827FA5E637400:swarmstr",
 			wantErr: "non-hex character",
 		},
 		{
 			name:    "empty repo id",
-			addr:    "30617:cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400:",
+			addr:    repoKindPrefix + ":cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400:",
 			wantErr: "repo-id (d-tag) is empty",
 		},
 	}
@@ -73,7 +77,8 @@ func TestValidateRepoAddr(t *testing.T) {
 }
 
 func TestExtractAddrPubkey(t *testing.T) {
-	got := extractAddrPubkey("30617:cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400:swarmstr")
+	repoKindPrefix := strconv.Itoa(int(events.KindRepoAnnouncement))
+	got := extractAddrPubkey(repoKindPrefix + ":cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400:swarmstr")
 	if got != "cdee943cbb19c51ab847a66d5d774373aa9f63d287246bb59b0827fa5e637400" {
 		t.Errorf("unexpected pubkey: %s", got)
 	}

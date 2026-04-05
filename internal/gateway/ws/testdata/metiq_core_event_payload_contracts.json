@@ -32,6 +32,9 @@
   "config.updated": {
     "required_keys": ["ts_ms"]
   },
+  "mcp.lifecycle": {
+    "required_keys": ["ts_ms", "name", "state"]
+  },
   "plugin.loaded": {
     "required_keys": ["ts_ms", "plugin_id", "action"]
   },

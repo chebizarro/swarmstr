@@ -53,8 +53,10 @@ type SyncEngine struct {
 
 // NewSyncEngine creates a SyncEngine. Call Start to activate file watching.
 func NewSyncEngine(configPath string, relay RelaySync, opts ...SyncOption) (*SyncEngine, error) {
-	if configPath == "" {
-		return nil, fmt.Errorf("configPath must not be empty")
+	var err error
+	configPath, err = ValidateConfigFilePath(configPath)
+	if err != nil {
+		return nil, err
 	}
 	if relay == nil {
 		return nil, fmt.Errorf("relay must not be nil")

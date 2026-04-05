@@ -1,0 +1,16 @@
+{
+  "source": "cmd/metiqd/testdata/parity/control_transport_matrix.json",
+  "notes": "Accepted transport-level differences for HTTP /call versus Nostr control RPC. These are envelope and routing differences, not method-semantic differences.",
+  "accepted_deviations": [
+    {
+      "id": "http-call-envelope",
+      "scope": "transport envelope",
+      "reason": "HTTP /call uses HTTP status codes and wraps method payloads in { ok, result, error }."
+    },
+    {
+      "id": "nostr-signed-request-reply",
+      "scope": "transport metadata",
+      "reason": "Nostr control uses signed request/result events, requester pubkeys, req correlation IDs, and relay routing outside the JSON method payload."
+    }
+  ]
+}

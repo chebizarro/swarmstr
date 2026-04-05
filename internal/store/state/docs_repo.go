@@ -74,7 +74,11 @@ func (r *DocsRepository) ListSessions(ctx context.Context, limit int) ([]Session
 	if err != nil {
 		return nil, err
 	}
-	bySession := make(map[string]SessionDoc, len(rows))
+	type latestSessionDoc struct {
+		doc   SessionDoc
+		event Event
+	}
+	bySession := make(map[string]latestSessionDoc, len(rows))
 	for _, row := range rows {
 		if !hasTagValue(row.Tags, "t", "session") {
 			continue
@@ -87,13 +91,13 @@ func (r *DocsRepository) ListSessions(ctx context.Context, limit int) ([]Session
 		if doc.SessionID == "" {
 			continue
 		}
-		if prior, ok := bySession[doc.SessionID]; !ok || sessionActivityUnix(doc) > sessionActivityUnix(prior) {
-			bySession[doc.SessionID] = doc
+		if prior, ok := bySession[doc.SessionID]; !ok || row.CreatedAt > prior.event.CreatedAt || (row.CreatedAt == prior.event.CreatedAt && row.ID > prior.event.ID) {
+			bySession[doc.SessionID] = latestSessionDoc{doc: doc, event: row}
 		}
 	}
 	out := make([]SessionDoc, 0, len(bySession))
-	for _, doc := range bySession {
-		out = append(out, doc)
+	for _, entry := range bySession {
+		out = append(out, entry.doc)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		ai := sessionActivityUnix(out[i])

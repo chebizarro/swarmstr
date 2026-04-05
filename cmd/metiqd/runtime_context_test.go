@@ -1,14 +1,25 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	nostr "fiatjaf.com/nostr"
 	"metiq/internal/agent"
+	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/store/state"
 )
 
 func TestBuildTurnRuntimeContext_ContainsAllSections(t *testing.T) {
+	var sk [32]byte
+	sk[31] = 1
+	selfPubkey := nostr.GetPublicKey(sk).Hex()
+	selfNPub := toolbuiltin.NostrNPubFromHex(selfPubkey)
+	if selfNPub == "" {
+		t.Fatal("expected test pubkey to encode to npub")
+	}
 	tools := []agent.ToolDefinition{
 		{Name: "memory_search", Description: "Search agent memory for relevant entries."},
 		{Name: "nostr_fetch", Description: "Fetch Nostr events matching a filter."},
@@ -21,6 +32,8 @@ func TestBuildTurnRuntimeContext_ContainsAllSections(t *testing.T) {
 	}
 	result := buildTurnRuntimeContext(turnRuntimeParams{
 		AgentID:       "main",
+		SelfPubkey:    selfPubkey,
+		SelfNPub:      selfNPub,
 		Model:         "claude-3-5-sonnet-20241022",
 		Channel:       "nostr",
 		Tools:         tools,
@@ -35,6 +48,8 @@ func TestBuildTurnRuntimeContext_ContainsAllSections(t *testing.T) {
 	}{
 		{"runtime section", "## Runtime"},
 		{"agent id", "agent=main"},
+		{"self pubkey", "self_pubkey=" + selfPubkey},
+		{"self npub", "self_npub=" + selfNPub},
 		{"model", "model=claude-3-5-sonnet-20241022"},
 		{"channel", "channel=nostr"},
 		{"thinking", "thinking=medium"},
@@ -55,6 +70,37 @@ func TestBuildTurnRuntimeContext_ContainsAllSections(t *testing.T) {
 		if !strings.Contains(result, c.substr) {
 			t.Errorf("%s: expected %q in output", c.name, c.substr)
 		}
+	}
+}
+
+func TestBuildTurnRuntimeContext_SplitsStaticAndDynamicSections(t *testing.T) {
+	params := turnRuntimeParams{
+		AgentID:       "main",
+		Model:         "claude-3-5-sonnet-20241022",
+		Channel:       "nostr",
+		Tools:         []agent.ToolDefinition{{Name: "memory_search", Description: "Search agent memory for relevant entries."}},
+		Config:        state.ConfigDoc{},
+		WorkspaceDir:  "/tmp/test-ws",
+		ThinkingLevel: "medium",
+		SkillsPrompt:  "<available_skills>\n- test-skill: Does testing\n</available_skills>",
+	}
+	staticCtx := buildTurnRuntimeStaticContext(params)
+	dynamicCtx := buildTurnRuntimeDynamicContext()
+	combined := buildTurnRuntimeContext(params)
+
+	if strings.Contains(staticCtx, "## Current Date & Time") {
+		t.Fatal("static runtime context should not contain time section")
+	}
+	for _, want := range []string{"## Runtime", "## Available Tools", "## Skills (mandatory)"} {
+		if !strings.Contains(staticCtx, want) {
+			t.Fatalf("static runtime context missing %q", want)
+		}
+	}
+	if dynamicCtx == "" || !strings.Contains(dynamicCtx, "## Current Date & Time") {
+		t.Fatalf("dynamic runtime context should contain only time section, got %q", dynamicCtx)
+	}
+	if got := joinPromptSections(staticCtx, dynamicCtx); got != combined {
+		t.Fatalf("combined runtime context mismatch")
 	}
 }
 
@@ -129,5 +175,71 @@ func TestBuildToolSummarySection_Empty(t *testing.T) {
 	result := buildToolSummarySection(nil)
 	if result != "" {
 		t.Error("should return empty for no tools")
+	}
+}
+
+func TestBuildSkillsPromptCached_UsesMergedCatalogAndAlwaysWarnings(t *testing.T) {
+	bundledDir := t.TempDir()
+	workspaceDir := t.TempDir()
+	managedDir := t.TempDir()
+	t.Setenv("METIQ_BUNDLED_SKILLS_DIR", bundledDir)
+	t.Setenv("METIQ_MANAGED_SKILLS_DIR", managedDir)
+	t.Setenv("METIQ_WORKSPACE", workspaceDir)
+
+	writeSkill := func(root, name, content string) {
+		t.Helper()
+		skillDir := filepath.Join(root, name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeSkill(bundledDir, "dup", `---
+name: dup
+description: bundled version
+---
+# Bundled
+`)
+	writeSkill(managedDir, "managed", `---
+name: managed
+description: managed skill
+---
+# Managed
+`)
+	writeSkill(workspaceDir, "dup", `---
+name: dup
+description: workspace version
+when_to_use: Use when a workspace-specific override exists.
+---
+# Workspace
+`)
+	writeSkill(workspaceDir, "always-skill", `---
+name: always-skill
+description: always included
+metadata:
+  openclaw:
+    always: true
+    requires:
+      env: ["MISSING_PROMPT_TOKEN"]
+---
+# Always
+`)
+	cfg := state.ConfigDoc{}
+
+	prompt := buildSkillsPromptCached(cfg, "main")
+	if !strings.Contains(prompt, "workspace version") {
+		t.Fatalf("expected workspace skill in prompt: %s", prompt)
+	}
+	if strings.Contains(prompt, "bundled version") {
+		t.Fatalf("expected bundled duplicate to be shadowed: %s", prompt)
+	}
+	if !strings.Contains(prompt, "managed skill") {
+		t.Fatalf("expected managed skill in prompt: %s", prompt)
+	}
+	if !strings.Contains(prompt, "always; missing env: MISSING_PROMPT_TOKEN") {
+		t.Fatalf("expected always skill warning in prompt: %s", prompt)
 	}
 }
