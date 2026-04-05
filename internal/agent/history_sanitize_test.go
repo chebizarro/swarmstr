@@ -79,8 +79,8 @@ func TestSanitize_ValidToolChain(t *testing.T) {
 func TestSanitize_EmptyMessagesDropped(t *testing.T) {
 	in := []ConversationMessage{
 		{Role: "user", Content: "hello"},
-		{Role: "assistant", Content: ""},  // empty, should be dropped
-		{Role: "user", Content: ""},       // empty, should be dropped
+		{Role: "assistant", Content: ""}, // empty, should be dropped
+		{Role: "user", Content: ""},      // empty, should be dropped
 		{Role: "assistant", Content: "hi"},
 	}
 	out, stats := SanitizeConversationHistory(in)
@@ -243,5 +243,37 @@ func TestSanitize_ToolResultsNotMerged(t *testing.T) {
 	}
 	if len(out) != 3 {
 		t.Fatalf("expected 3, got %d", len(out))
+	}
+}
+
+func TestSanitize_InvalidToolCallsDropped(t *testing.T) {
+	in := []ConversationMessage{{
+		Role: "assistant",
+		ToolCalls: []ToolCallRef{
+			{ID: "c1", Name: "bad name"},
+			{ID: "c2", Name: "good_name", ArgsJSON: "{"},
+			{ID: "c3", Name: "good_name", ArgsJSON: "{}"},
+		},
+	}}
+	out, stats := SanitizeConversationHistory(in)
+	if stats.InvalidToolCallsDropped != 2 {
+		t.Fatalf("expected 2 invalid tool calls dropped, got %d", stats.InvalidToolCallsDropped)
+	}
+	if len(out) != 2 || len(out[0].ToolCalls) != 1 || out[0].ToolCalls[0].ID != "c3" {
+		t.Fatalf("unexpected sanitized tool calls: %+v", out)
+	}
+	if out[1].Role != "tool" || out[1].ToolCallID != "c3" {
+		t.Fatalf("expected synthetic tool repair for c3, got %+v", out)
+	}
+}
+
+func TestSanitizeWithOptions_PrependsSyntheticUserForAssistantFirstHistory(t *testing.T) {
+	in := []ConversationMessage{{Role: "assistant", Content: "hello first"}}
+	out, stats := SanitizeConversationHistoryWithOptions(in, HistorySanitizeOptions{EnsureLeadingUser: true})
+	if stats.SyntheticBootstrapAdded != 1 {
+		t.Fatalf("expected synthetic bootstrap, got %+v", stats)
+	}
+	if len(out) != 2 || out[0].Role != "user" || out[0].Content != syntheticHistoryBootstrapText {
+		t.Fatalf("unexpected output: %+v", out)
 	}
 }

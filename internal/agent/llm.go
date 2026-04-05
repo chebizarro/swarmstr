@@ -95,7 +95,7 @@ func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessa
 	}
 
 	// Sanitize conversation history before building LLM messages.
-	sanitized, _ := SanitizeConversationHistory(turn.History)
+	sanitized, _ := SanitizeConversationHistoryWithOptions(turn.History, HistorySanitizeOptions{EnsureLeadingUser: true})
 
 	// Append conversation history, converting ToolCallRef → ToolCall for
 	// assistant messages that requested tool use.
@@ -118,7 +118,7 @@ func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessa
 		Images:  turn.Images,
 	})
 
-	return msgs
+	return GuardToolResultMessages(msgs, turn.ContextWindowTokens)
 }
 
 func buildPromptAssembly(providerPrompt, turnStaticPrompt, turnContext string) PromptAssembly {

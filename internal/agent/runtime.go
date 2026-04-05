@@ -65,6 +65,9 @@ type Turn struct {
 	// ToolEventSink receives start/progress/result/error events emitted by the
 	// shared tool loop. Leave nil when runtime tool events are not needed.
 	ToolEventSink ToolLifecycleSink
+	// ContextWindowTokens is the approximate context window available to the
+	// provider. Shared history/tool-result guards use this to bound prompt size.
+	ContextWindowTokens int
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.
