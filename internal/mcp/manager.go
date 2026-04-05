@@ -253,6 +253,16 @@ func (m *Manager) SetStateObserver(observer StateObserver) {
 	m.observe = observer
 }
 
+// SetStateObserverAndSnapshot installs a lifecycle observer and returns the
+// current server-state snapshot from the same critical section so callers can
+// emit an initial inventory without racing a concurrent state transition.
+func (m *Manager) SetStateObserverAndSnapshot(observer StateObserver) []ServerStateSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.observe = observer
+	return m.snapshotServerStatesLocked()
+}
+
 // SetConnectFunc overrides the server connector used for future connects.
 // Passing nil restores the default connector.
 func (m *Manager) SetConnectFunc(fn func(context.Context, string, ServerConfig) (*ServerConnection, error)) {
@@ -654,6 +664,14 @@ func (r *serverRecord) snapshot(name string) ServerStateSnapshot {
 func (m *Manager) Snapshot() ManagerSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return ManagerSnapshot{
+		Enabled:    m.enabled,
+		Servers:    m.snapshotServerStatesLocked(),
+		Suppressed: append([]SuppressedServer(nil), m.suppressed...),
+	}
+}
+
+func (m *Manager) snapshotServerStatesLocked() []ServerStateSnapshot {
 	servers := make([]ServerStateSnapshot, 0, len(m.servers))
 	names := make([]string, 0, len(m.servers))
 	for name := range m.servers {
@@ -663,11 +681,7 @@ func (m *Manager) Snapshot() ManagerSnapshot {
 	for _, name := range names {
 		servers = append(servers, m.servers[name].snapshot(name))
 	}
-	return ManagerSnapshot{
-		Enabled:    m.enabled,
-		Servers:    servers,
-		Suppressed: append([]SuppressedServer(nil), m.suppressed...),
-	}
+	return servers
 }
 
 // ListServerStates returns the current runtime-visible state for every tracked

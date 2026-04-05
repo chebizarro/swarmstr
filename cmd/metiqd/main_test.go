@@ -610,6 +610,220 @@ func TestHandleControlRPCRequest_MCPMethods(t *testing.T) {
 	}
 }
 
+func TestHandleControlRPCRequest_StatusIncludesMCPTelemetry(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		DM:      state.DMPolicy{Policy: "open"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}},
+		Extra: map[string]any{
+			"mcp": map[string]any{
+				"enabled": true,
+				"servers": map[string]any{
+					"remote": map[string]any{
+						"enabled": true,
+						"type":    "http",
+						"url":     "https://mcp.example.com/http",
+					},
+				},
+			},
+		},
+	})
+	resolved := mcppkg.ResolveConfigDoc(cfgState.Get())
+	mgr := mcppkg.NewManager()
+	mgr.SetConnectFunc(func(_ context.Context, _ string, _ mcppkg.ServerConfig) (*mcppkg.ServerConnection, error) {
+		return nil, errors.New("401 unauthorized")
+	})
+	if err := mgr.ApplyConfig(context.Background(), resolved); err == nil {
+		t.Fatal("expected auth-required apply error for status telemetry test")
+	}
+
+	oldMCPOps := controlMCPOps
+	controlMCPOps = newMCPOpsController(&mgr, agent.NewToolRegistry(), nil, cfgState, state.NewDocsRepository(newTestStore(), "author"))
+	defer func() {
+		controlMCPOps = oldMCPOps
+		_ = mgr.Close()
+	}()
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodStatus,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("status.get error: %v", err)
+	}
+	status, ok := res.Result.(methods.StatusResponse)
+	if !ok {
+		t.Fatalf("unexpected status result type: %T", res.Result)
+	}
+	if status.MCP == nil {
+		t.Fatalf("expected mcp telemetry in status response, got %+v", status)
+	}
+	if status.MCP.Summary.NeedsAuthServers != 1 || status.MCP.Summary.TotalServers != 1 {
+		t.Fatalf("unexpected mcp summary: %#v", status.MCP.Summary)
+	}
+	if len(status.MCP.Servers) != 1 || status.MCP.Servers[0].State != string(mcppkg.ConnectionStateNeedsAuth) {
+		t.Fatalf("unexpected mcp server telemetry: %#v", status.MCP.Servers)
+	}
+}
+
+func TestFilteredMCPLifecycleTrackerEmitsSnapshotsAndRemovals(t *testing.T) {
+	capture := &capturingEmitter{}
+	tracker := newFilteredMCPLifecycleTracker()
+	resolved := mcppkg.Config{
+		Enabled: true,
+		FilteredServers: map[string]mcppkg.FilteredServer{
+			"pending-remote": {
+				ResolvedServerConfig: mcppkg.ResolvedServerConfig{
+					Name:         "pending-remote",
+					ServerConfig: mcppkg.ServerConfig{Enabled: true, Type: "http", URL: "https://pending.example.com/http"},
+					Source:       mcppkg.ConfigSourceExtraMCP,
+					Precedence:   100,
+					Signature:    "pending-sig",
+				},
+				PolicyStatus: mcppkg.PolicyStatusApprovalRequired,
+				PolicyReason: mcppkg.PolicyReasonRemoteApproval,
+			},
+		},
+	}
+
+	tracker.Emit(capture, resolved, "config.snapshot", 123)
+	events := capture.eventsByName(gatewayws.EventMCPLifecycle)
+	if len(events) != 1 {
+		t.Fatalf("expected one filtered lifecycle event, got %d", len(events))
+	}
+	payload, ok := events[0].(gatewayws.MCPLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected filtered lifecycle payload type: %T", events[0])
+	}
+	if payload.Name != "pending-remote" || payload.State != string(mcppkg.PolicyStatusApprovalRequired) {
+		t.Fatalf("unexpected filtered lifecycle payload: %+v", payload)
+	}
+	if payload.PolicyStatus != string(mcppkg.PolicyStatusApprovalRequired) || payload.PolicyReason != string(mcppkg.PolicyReasonRemoteApproval) {
+		t.Fatalf("expected policy metadata on lifecycle payload, got %+v", payload)
+	}
+	if payload.RuntimePresent || payload.Healthy {
+		t.Fatalf("expected filtered lifecycle payload to remain non-runtime/unhealthy, got %+v", payload)
+	}
+
+	tracker.Emit(capture, mcppkg.Config{Enabled: true}, "config.snapshot", 124)
+	events = capture.eventsByName(gatewayws.EventMCPLifecycle)
+	if len(events) != 2 {
+		t.Fatalf("expected tombstone lifecycle event after removal, got %d", len(events))
+	}
+	removed, ok := events[1].(gatewayws.MCPLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected tombstone lifecycle payload type: %T", events[1])
+	}
+	if !removed.Removed || removed.Name != "pending-remote" || removed.Reason != "config.snapshot.removed" {
+		t.Fatalf("unexpected filtered removal payload: %+v", removed)
+	}
+}
+
+func TestFilteredMCPLifecycleTrackerSuppressesTombstoneWhenServerBecomesActive(t *testing.T) {
+	capture := &capturingEmitter{}
+	tracker := newFilteredMCPLifecycleTracker()
+	filtered := mcppkg.Config{
+		Enabled: true,
+		FilteredServers: map[string]mcppkg.FilteredServer{
+			"demo": {
+				ResolvedServerConfig: mcppkg.ResolvedServerConfig{
+					Name:         "demo",
+					ServerConfig: mcppkg.ServerConfig{Enabled: true, Type: "http", URL: "https://pending.example.com/http"},
+					Source:       mcppkg.ConfigSourceExtraMCP,
+					Precedence:   100,
+					Signature:    "demo-sig",
+				},
+				PolicyStatus: mcppkg.PolicyStatusApprovalRequired,
+				PolicyReason: mcppkg.PolicyReasonRemoteApproval,
+			},
+		},
+	}
+
+	tracker.Emit(capture, filtered, "config.snapshot", 123)
+	tracker.Emit(capture, mcppkg.Config{
+		Enabled: true,
+		Servers: map[string]mcppkg.ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: mcppkg.ServerConfig{Enabled: true, Type: "http", URL: "https://allowed.example.com/http"},
+				Source:       mcppkg.ConfigSourceExtraMCP,
+				Precedence:   100,
+				Signature:    "demo-sig",
+			},
+		},
+	}, "config.snapshot", 124)
+
+	events := capture.eventsByName(gatewayws.EventMCPLifecycle)
+	if len(events) != 1 {
+		t.Fatalf("expected no filtered tombstone when server remains in resolved inventory, got %d events", len(events))
+	}
+}
+
+func TestFilteredMCPLifecycleTrackerEmitsDisabledReplacement(t *testing.T) {
+	capture := &capturingEmitter{}
+	tracker := newFilteredMCPLifecycleTracker()
+	tracker.Emit(capture, mcppkg.Config{
+		Enabled: true,
+		FilteredServers: map[string]mcppkg.FilteredServer{
+			"demo": {
+				ResolvedServerConfig: mcppkg.ResolvedServerConfig{
+					Name:         "demo",
+					ServerConfig: mcppkg.ServerConfig{Enabled: true, Type: "http", URL: "https://pending.example.com/http"},
+					Source:       mcppkg.ConfigSourceExtraMCP,
+					Precedence:   100,
+					Signature:    "demo-sig",
+				},
+				PolicyStatus: mcppkg.PolicyStatusApprovalRequired,
+				PolicyReason: mcppkg.PolicyReasonRemoteApproval,
+			},
+		},
+	}, "config.snapshot", 123)
+	tracker.Emit(capture, mcppkg.Config{
+		Enabled: true,
+		DisabledServers: map[string]mcppkg.ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: mcppkg.ServerConfig{Enabled: false, Type: "http", URL: "https://pending.example.com/http"},
+				Source:       mcppkg.ConfigSourceExtraMCP,
+				Precedence:   100,
+				Signature:    "demo-sig",
+			},
+		},
+	}, "config.snapshot", 124)
+
+	events := capture.eventsByName(gatewayws.EventMCPLifecycle)
+	if len(events) != 2 {
+		t.Fatalf("expected disabled replacement event, got %d", len(events))
+	}
+	payload, ok := events[1].(gatewayws.MCPLifecyclePayload)
+	if !ok {
+		t.Fatalf("unexpected disabled replacement payload type: %T", events[1])
+	}
+	if payload.State != string(mcppkg.ConnectionStateDisabled) || payload.PreviousState != string(mcppkg.PolicyStatusApprovalRequired) {
+		t.Fatalf("unexpected disabled replacement lifecycle payload: %+v", payload)
+	}
+}
+
+func TestBuildMCPLifecyclePayloadRemovalClearsRuntimePresence(t *testing.T) {
+	payload := buildMCPLifecyclePayload(mcppkg.StateChange{
+		Server: mcppkg.ServerStateSnapshot{
+			Name:    "demo",
+			State:   mcppkg.ConnectionStateConnected,
+			Enabled: true,
+		},
+		PreviousState: mcppkg.ConnectionStateConnected,
+		Reason:        "config.removed",
+		Removed:       true,
+	}, 123)
+	if !payload.Removed {
+		t.Fatalf("expected removed payload, got %+v", payload)
+	}
+	if payload.RuntimePresent || payload.Healthy {
+		t.Fatalf("expected removed payload to clear runtime/healthy flags, got %+v", payload)
+	}
+}
+
 func TestHandleControlRPCRequest_ConfigSetApplyPatchSchema(t *testing.T) {
 	store := newTestStore()
 	docs := state.NewDocsRepository(store, "author")

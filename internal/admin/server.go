@@ -23,6 +23,7 @@ import (
 	"metiq/internal/extensions/synology"
 	"metiq/internal/extensions/zalo"
 	"metiq/internal/gateway/methods"
+	mcppkg "metiq/internal/mcp"
 	"metiq/internal/memory"
 	"metiq/internal/policy"
 	"metiq/internal/store/state"
@@ -55,6 +56,7 @@ type ServerOptions struct {
 	Status                      StatusProvider
 	StatusDMPolicy              func() string
 	StatusRelays                func() []string
+	StatusMCP                   func() *mcppkg.TelemetrySnapshot
 	SearchMemory                func(query string, limit int) []memory.IndexedMemory
 	MemoryStats                 func() (count int, sessionCount int)
 	GetCheckpoint               func(context.Context, string) (state.CheckpointDoc, error)
@@ -282,6 +284,10 @@ func Start(ctx context.Context, opts ServerOptions) error {
 		if opts.StatusRelays != nil {
 			relays = opts.StatusRelays()
 		}
+		var mcp *mcppkg.TelemetrySnapshot
+		if opts.StatusMCP != nil {
+			mcp = opts.StatusMCP()
+		}
 		writeJSON(w, http.StatusOK, methods.StatusResponse{
 			PubKey:        opts.Status.PubKey,
 			Relays:        relays,
@@ -289,6 +295,7 @@ func Start(ctx context.Context, opts ServerOptions) error {
 			UptimeSeconds: int(time.Since(opts.Status.Started).Seconds()),
 			UptimeMS:      time.Since(opts.Status.Started).Milliseconds(),
 			Version:       "metiqd",
+			MCP:           mcp,
 		})
 	}))
 	mux.HandleFunc("/memory/search", withAuth(opts.Token, func(w http.ResponseWriter, r *http.Request) {
@@ -616,6 +623,10 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if opts.StatusRelays != nil {
 			relays = opts.StatusRelays()
 		}
+		var mcp *mcppkg.TelemetrySnapshot
+		if opts.StatusMCP != nil {
+			mcp = opts.StatusMCP()
+		}
 		return methods.StatusResponse{
 			PubKey:        opts.Status.PubKey,
 			Relays:        relays,
@@ -623,6 +634,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			UptimeSeconds: int(time.Since(opts.Status.Started).Seconds()),
 			UptimeMS:      time.Since(opts.Status.Started).Milliseconds(),
 			Version:       "metiqd",
+			MCP:           mcp,
 		}, http.StatusOK, nil
 	case methods.MethodUsageStatus:
 		if opts.UsageStatus == nil {

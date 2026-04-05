@@ -1005,7 +1005,7 @@ func main() {
 	// ── MCP (Model Context Protocol) client integration ─────────────────
 	// Load MCP config from extra.mcp and register discovered tools after the
 	// secrets/auth controller is available.
-	var mcpManager *mcppkg.Manager
+	mcpManager := mcppkg.NewManager()
 	toolbuiltin.RegisterMCPResourceTools(tools, toolbuiltin.MCPResourceToolOpts{
 		Manager: func() *mcppkg.Manager { return mcpManager },
 	})
@@ -1155,12 +1155,9 @@ func main() {
 	mcpAuthController := newMCPAuthController(&mcpManager, tools, secretsStore, func() state.ConfigDoc { return configState.Get() })
 	controlMCPAuth = mcpAuthController
 	controlMCPOps = newMCPOpsController(&mcpManager, tools, mcpAuthController, configState, docsRepo)
+	mcpAuthController.InstallOnManager(mcpManager)
 	{
 		mcpCfg := mcppkg.ResolveConfigDoc(configState.Get())
-		if len(mcpCfg.Servers) > 0 || len(mcpCfg.DisabledServers) > 0 {
-			mcpManager = mcppkg.NewManager()
-			mcpAuthController.InstallOnManager(mcpManager)
-		}
 		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, mcpCfg, "initialization")
 	}
 
@@ -1977,8 +1974,8 @@ func main() {
 			if err != nil {
 				return nil, err
 			}
-			if mcpManager != nil {
-				out["mcp"] = mcpManager.Snapshot()
+			if snapshot := currentMCPTelemetry(configState.Get(), mcpManager); !snapshot.Empty() {
+				out["mcp"] = snapshot
 			}
 			return out, nil
 		},
@@ -2107,18 +2104,20 @@ func main() {
 	// It starts as a no-op and is upgraded to the real runtime emitter once the
 	// WS gateway starts.  The dmOnMessage closure captures this variable.
 	var wsEmitter gatewayws.EventEmitter = newObservedEventEmitter(gatewayws.NoopEmitter{}, eventBuffer)
+	filteredMCPLifecycle := newFilteredMCPLifecycleTracker()
 	setControlWSEmitter(wsEmitter)
 	if mcpManager != nil {
-		mcpManager.SetStateObserver(func(change mcppkg.StateChange) {
-			wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
+		snapshots := mcpManager.SetStateObserverAndSnapshot(func(change mcppkg.StateChange) {
+			emitControlWSEvent(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
 		})
-		for _, snapshot := range mcpManager.ListServerStates() {
-			wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(mcppkg.StateChange{
+		for _, snapshot := range snapshots {
+			emitControlWSEvent(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(mcppkg.StateChange{
 				Server: snapshot,
 				Reason: "startup.snapshot",
 			}, time.Now().UnixMilli()))
 		}
 	}
+	filteredMCPLifecycle.Emit(runtimeEventEmitterFunc(emitControlWSEvent), mcppkg.ResolveConfigDoc(configState.Get()), "startup.snapshot", time.Now().UnixMilli())
 	heartbeatDone := startRuntimeHeartbeatLoop(ctx, startedAt, "metiqd", 30*time.Second, shutdownEmitter)
 
 	// ── Slash command router ──────────────────────────────────────────────────
@@ -4961,14 +4960,8 @@ func main() {
 	configState.SetOnChange(func(doc state.ConfigDoc) {
 		applyRuntimeConfigSideEffects(doc)
 		resolvedMCP := mcppkg.ResolveConfigDoc(doc)
-		if mcpManager == nil && (len(resolvedMCP.Servers) > 0 || len(resolvedMCP.DisabledServers) > 0) {
-			mcpManager = mcppkg.NewManager()
-			mcpAuthController.InstallOnManager(mcpManager)
-			mcpManager.SetStateObserver(func(change mcppkg.StateChange) {
-				wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
-			})
-		}
 		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live config apply")
+		filteredMCPLifecycle.Emit(runtimeEventEmitterFunc(emitControlWSEvent), resolvedMCP, "config.snapshot", time.Now().UnixMilli())
 		wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
 			TS: time.Now().UnixMilli(),
 		})
@@ -4989,14 +4982,8 @@ func main() {
 				configState.mu.Unlock()
 				applyRuntimeConfigSideEffects(doc)
 				resolvedMCP := mcppkg.ResolveConfigDoc(doc)
-				if mcpManager == nil && (len(resolvedMCP.Servers) > 0 || len(resolvedMCP.DisabledServers) > 0) {
-					mcpManager = mcppkg.NewManager()
-					mcpAuthController.InstallOnManager(mcpManager)
-					mcpManager.SetStateObserver(func(change mcppkg.StateChange) {
-						wsEmitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
-					})
-				}
 				applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live file-reload apply")
+				filteredMCPLifecycle.Emit(runtimeEventEmitterFunc(emitControlWSEvent), resolvedMCP, "file-reload.snapshot", time.Now().UnixMilli())
 				wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
 					TS: time.Now().UnixMilli(),
 				})
@@ -5068,6 +5055,12 @@ func main() {
 					current := configState.Get()
 					return append([]string{}, current.Relays.Read...)
 				},
+				StatusMCP: func() *mcppkg.TelemetrySnapshot {
+					if controlMCPOps == nil {
+						return nil
+					}
+					return controlMCPOps.telemetrySnapshotPtr()
+				},
 				Metrics: func(_ context.Context) string {
 					// Update live gauges before rendering.
 					metricspkg.UptimeSeconds.Set(time.Since(startedAt).Seconds())
@@ -5079,10 +5072,19 @@ func main() {
 					return metricspkg.Default.Exposition()
 				},
 				HealthExtra: func(_ context.Context) map[string]any {
-					return map[string]any{
+					body := map[string]any{
 						"uptime_seconds": int(time.Since(startedAt).Seconds()),
 						"version":        version,
 					}
+					if controlMCPOps != nil {
+						if snapshot := controlMCPOps.telemetrySnapshotPtr(); snapshot != nil {
+							body["mcp"] = map[string]any{
+								"enabled": snapshot.Enabled,
+								"summary": snapshot.Summary,
+							}
+						}
+					}
+					return body
 				},
 				SearchMemory: func(query string, limit int) []memory.IndexedMemory {
 					return memoryIndex.Search(query, limit)
@@ -7083,6 +7085,10 @@ func handleControlRPCRequest(
 				}
 			}
 		}
+		var mcpSnapshot *mcppkg.TelemetrySnapshot
+		if controlMCPOps != nil {
+			mcpSnapshot = controlMCPOps.telemetrySnapshotPtr()
+		}
 		return nostruntime.ControlRPCResult{Result: methods.StatusResponse{
 			PubKey:        pubkey,
 			Relays:        cfg.Relays.Read,
@@ -7092,6 +7098,7 @@ func handleControlRPCRequest(
 			Version:       "metiqd",
 			Subscriptions: subs,
 			RelaySets:     relaySets,
+			MCP:           mcpSnapshot,
 		}}, nil
 	case methods.MethodUsageStatus:
 		if usageState == nil {
@@ -10294,37 +10301,129 @@ func emitControlWSEvent(event string, payload any) {
 }
 
 func buildMCPLifecyclePayload(change mcppkg.StateChange, ts int64) gatewayws.MCPLifecyclePayload {
+	return buildMCPLifecyclePayloadForTelemetry(mcppkg.TelemetryServer{
+		Name:              change.Server.Name,
+		State:             string(change.Server.State),
+		Healthy:           !change.Removed && change.Server.State == mcppkg.ConnectionStateConnected,
+		Enabled:           change.Server.Enabled,
+		RuntimePresent:    !change.Removed,
+		Source:            change.Server.Source,
+		Precedence:        change.Server.Precedence,
+		Signature:         change.Server.Signature,
+		Transport:         change.Server.Transport,
+		Command:           change.Server.Command,
+		URL:               change.Server.URL,
+		Capabilities:      change.Server.Capabilities,
+		ToolCount:         change.Server.ToolCount,
+		LastError:         change.Server.LastError,
+		ReconnectAttempts: change.Server.ReconnectAttempts,
+		LastAttemptAtMS:   change.Server.LastAttemptAtMS,
+		LastConnectedAtMS: change.Server.LastConnectedAtMS,
+		LastFailedAtMS:    change.Server.LastFailedAtMS,
+		UpdatedAtMS:       change.Server.UpdatedAtMS,
+	}, string(change.PreviousState), change.Reason, change.Removed, ts)
+}
+
+func buildMCPLifecyclePayloadForTelemetry(server mcppkg.TelemetryServer, previousState, reason string, removed bool, ts int64) gatewayws.MCPLifecyclePayload {
 	caps := map[string]bool{}
-	if change.Server.Capabilities.Tools {
+	if server.Capabilities.Tools {
 		caps["tools"] = true
 	}
-	if change.Server.Capabilities.Resources {
+	if server.Capabilities.Resources {
 		caps["resources"] = true
 	}
-	if change.Server.Capabilities.Prompts {
+	if server.Capabilities.Prompts {
 		caps["prompts"] = true
 	}
-	if change.Server.Capabilities.Logging {
+	if server.Capabilities.Logging {
 		caps["logging"] = true
 	}
 	if len(caps) == 0 {
 		caps = nil
 	}
 	return gatewayws.MCPLifecyclePayload{
-		TS:            ts,
-		Name:          change.Server.Name,
-		State:         string(change.Server.State),
-		PreviousState: string(change.PreviousState),
-		Reason:        change.Reason,
-		Removed:       change.Removed,
-		Enabled:       change.Server.Enabled,
-		Source:        string(change.Server.Source),
-		Transport:     change.Server.Transport,
-		URL:           change.Server.URL,
-		ToolCount:     change.Server.ToolCount,
-		LastError:     change.Server.LastError,
-		Capabilities:  caps,
+		TS:                ts,
+		Name:              server.Name,
+		State:             server.State,
+		PreviousState:     previousState,
+		Reason:            reason,
+		Removed:           removed,
+		Healthy:           server.Healthy,
+		Enabled:           server.Enabled,
+		RuntimePresent:    server.RuntimePresent,
+		Source:            string(server.Source),
+		Precedence:        server.Precedence,
+		Signature:         server.Signature,
+		Transport:         server.Transport,
+		Command:           server.Command,
+		URL:               server.URL,
+		ToolCount:         server.ToolCount,
+		LastError:         server.LastError,
+		ReconnectAttempts: server.ReconnectAttempts,
+		LastAttemptAtMS:   server.LastAttemptAtMS,
+		LastConnectedAtMS: server.LastConnectedAtMS,
+		LastFailedAtMS:    server.LastFailedAtMS,
+		UpdatedAtMS:       server.UpdatedAtMS,
+		PolicyStatus:      string(server.PolicyStatus),
+		PolicyReason:      string(server.PolicyReason),
+		Capabilities:      caps,
 	}
+}
+
+type filteredMCPLifecycleTracker struct {
+	mu   sync.Mutex
+	last map[string]mcppkg.TelemetryServer
+}
+
+func newFilteredMCPLifecycleTracker() *filteredMCPLifecycleTracker {
+	return &filteredMCPLifecycleTracker{last: map[string]mcppkg.TelemetryServer{}}
+}
+
+func (t *filteredMCPLifecycleTracker) Emit(emitter gatewayws.EventEmitter, resolved mcppkg.Config, reason string, ts int64) {
+	if t == nil || emitter == nil {
+		return
+	}
+	current := map[string]mcppkg.TelemetryServer{}
+	for _, server := range mcppkg.BuildTelemetrySnapshot(resolved, mcppkg.ManagerSnapshot{}).Servers {
+		if server.PolicyStatus == "" {
+			continue
+		}
+		current[server.Name] = server
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for name, previous := range t.last {
+		if _, ok := current[name]; ok {
+			continue
+		}
+		if _, ok := resolved.Servers[name]; ok {
+			continue
+		}
+		if _, ok := resolved.DisabledServers[name]; ok {
+			disabled := previous
+			disabled.State = string(mcppkg.ConnectionStateDisabled)
+			disabled.Healthy = false
+			disabled.RuntimePresent = false
+			disabled.PolicyStatus = ""
+			disabled.PolicyReason = ""
+			emitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayloadForTelemetry(disabled, previous.State, reason+".disabled", false, ts))
+			continue
+		}
+		emitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayloadForTelemetry(previous, previous.State, reason+".removed", true, ts))
+	}
+	for _, server := range current {
+		emitter.Emit(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayloadForTelemetry(server, "", reason, false, ts))
+	}
+	t.last = current
+}
+
+func currentMCPTelemetry(cfg state.ConfigDoc, mgr *mcppkg.Manager) mcppkg.TelemetrySnapshot {
+	runtime := mcppkg.ManagerSnapshot{}
+	if mgr != nil {
+		runtime = mgr.Snapshot()
+	}
+	return mcppkg.BuildTelemetrySnapshot(mcppkg.ResolveConfigDoc(cfg), runtime)
 }
 
 func buildTurnTelemetry(turnID string, startedAt, endedAt time.Time, result agent.TurnResult, turnErr error, fallbackUsed bool, fallbackFrom, fallbackTo, fallbackReason string) agent.TurnTelemetry {

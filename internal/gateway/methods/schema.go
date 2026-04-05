@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	mcppkg "metiq/internal/mcp"
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
 )
@@ -219,6 +220,9 @@ type StatusResponse struct {
 	// RelaySets reports current NIP-51 kind:30002 relay sets.
 	// Omitted when no relay sets are loaded.
 	RelaySets map[string][]string `json:"relay_sets,omitempty"`
+
+	// MCP reports external MCP lifecycle/health telemetry when MCP is configured.
+	MCP *mcppkg.TelemetrySnapshot `json:"mcp,omitempty"`
 }
 
 // SubHealthInfo is the JSON-friendly representation of a subscription health

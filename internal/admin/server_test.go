@@ -16,6 +16,7 @@ import (
 
 	"metiq/internal/config"
 	"metiq/internal/gateway/methods"
+	mcppkg "metiq/internal/mcp"
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
 )
@@ -140,6 +141,40 @@ func TestDispatchMethodCallStatusGetUsesLiveRelaysProvider(t *testing.T) {
 	}
 	if res.UptimeMS <= 0 {
 		t.Fatalf("expected uptime_ms > 0, got %d", res.UptimeMS)
+	}
+}
+
+func TestDispatchMethodCallStatusGetIncludesMCPProvider(t *testing.T) {
+	opts := ServerOptions{
+		Status: StatusProvider{PubKey: "pub", Relays: []string{"wss://r"}, DMPolicy: "open", Started: time.Now().Add(-5 * time.Second)},
+		StatusMCP: func() *mcppkg.TelemetrySnapshot {
+			return &mcppkg.TelemetrySnapshot{
+				Enabled: true,
+				Summary: mcppkg.TelemetrySummary{Healthy: false, TotalServers: 1, NeedsAuthServers: 1},
+				Servers: []mcppkg.TelemetryServer{{
+					Name:           "remote",
+					State:          string(mcppkg.ConnectionStateNeedsAuth),
+					RuntimePresent: true,
+				}},
+			}
+		},
+	}
+	rr := httptest.NewRecorder()
+	req := newMethodRequest(t, methods.MethodStatus, nil)
+
+	result, status, err := dispatchMethodCall(context.Background(), rr, req, opts)
+	if err != nil {
+		t.Fatalf("dispatchMethodCall error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	res, ok := result.(methods.StatusResponse)
+	if !ok {
+		t.Fatalf("result type = %T", result)
+	}
+	if res.MCP == nil || res.MCP.Summary.NeedsAuthServers != 1 {
+		t.Fatalf("unexpected mcp status payload: %+v", res.MCP)
 	}
 }
 

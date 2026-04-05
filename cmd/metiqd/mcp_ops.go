@@ -46,12 +46,14 @@ func (c *mcpOpsController) applyList(_ context.Context, _ methods.MCPListRequest
 		return nil, err
 	}
 	servers := c.buildInventory(resolved, snapshot)
+	telemetry := mcppkg.BuildTelemetrySnapshot(resolved, snapshot)
 	return map[string]any{
 		"ok":         true,
 		"enabled":    resolved.Enabled,
 		"count":      len(servers),
 		"hash":       doc.Hash(),
 		"servers":    servers,
+		"summary":    telemetry.Summary,
 		"suppressed": append([]mcppkg.SuppressedServer(nil), resolved.Suppressed...),
 	}, nil
 }
@@ -233,6 +235,25 @@ func (c *mcpOpsController) managerSnapshot() mcppkg.ManagerSnapshot {
 		return mgr.Snapshot()
 	}
 	return mcppkg.ManagerSnapshot{}
+}
+
+func (c *mcpOpsController) telemetrySnapshot() (mcppkg.TelemetrySnapshot, bool) {
+	if c == nil || c.configState == nil {
+		return mcppkg.TelemetrySnapshot{}, false
+	}
+	cfg, err := c.currentConfig()
+	if err != nil {
+		return mcppkg.TelemetrySnapshot{}, false
+	}
+	return mcppkg.BuildTelemetrySnapshot(mcppkg.ResolveConfigDoc(cfg), c.managerSnapshot()), true
+}
+
+func (c *mcpOpsController) telemetrySnapshotPtr() *mcppkg.TelemetrySnapshot {
+	snapshot, ok := c.telemetrySnapshot()
+	if !ok || snapshot.Empty() {
+		return nil
+	}
+	return &snapshot
 }
 
 func (c *mcpOpsController) liveManager() *mcppkg.Manager {
