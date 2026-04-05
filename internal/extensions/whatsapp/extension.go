@@ -4,18 +4,18 @@
 // main.go to register this plugin at startup.
 //
 // This extension uses the Meta (Facebook) Graph API for WhatsApp Business.
-// Inbound messages are received via a webhook (set up separately); the extension
-// starts an HTTP listener on config.webhook_listen_addr and verifies incoming
-// webhook events using the hub.verify_token you set in the Meta developer console.
+// Inbound messages are received via the admin HTTP server at
+// <admin_addr>/webhooks/whatsapp/<channel_id>, where the extension is registered
+// by channel ID and verification/events are dispatched through a shared registry.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
 //	{
 //	  "access_token":       "EAABs...",       // required: Meta access token
+//	  "app_secret":         "abcd1234",       // required: Meta app secret for X-Hub-Signature-256 verification
 //	  "phone_number_id":    "1234567890",     // required: WhatsApp phone number ID
-//	  "webhook_listen_addr": ":8080",         // optional: address to listen for webhooks (default ":8080")
 //	  "verify_token":       "my-token",       // optional: webhook verification token
-//	  "default_recipient":  "+15551234567"    // optional: default To number for Send()
+//	  "default_recipient":  "+15551234567"    // optional: explicit fallback recipient for Send()
 //	}
 //
 // To add a WhatsApp channel to your metiq config:
@@ -35,12 +35,15 @@ package whatsapp
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,13 +69,13 @@ func (w *WhatsAppPlugin) ConfigSchema() map[string]any {
 				"type":        "string",
 				"description": "Meta (Facebook) permanent or user access token with WhatsApp permissions.",
 			},
+			"app_secret": map[string]any{
+				"type":        "string",
+				"description": "Meta app secret used to verify X-Hub-Signature-256 on inbound webhooks.",
+			},
 			"phone_number_id": map[string]any{
 				"type":        "string",
 				"description": "WhatsApp phone number ID from the Meta developer dashboard.",
-			},
-			"webhook_listen_addr": map[string]any{
-				"type":        "string",
-				"description": "Local address to listen for Meta webhook HTTP callbacks (e.g. ':8080'). Default ':8080'.",
 			},
 			"verify_token": map[string]any{
 				"type":        "string",
@@ -80,10 +83,10 @@ func (w *WhatsAppPlugin) ConfigSchema() map[string]any {
 			},
 			"default_recipient": map[string]any{
 				"type":        "string",
-				"description": "Optional default recipient phone number in E.164 format (e.g. '+15551234567').",
+				"description": "Optional explicit fallback recipient phone number in E.164 format (e.g. '+15551234567') when no channel reply target is set.",
 			},
 		},
-		"required": []string{"access_token", "phone_number_id"},
+		"required": []string{"access_token", "app_secret", "phone_number_id"},
 	}
 }
 
@@ -112,7 +115,7 @@ func (w *WhatsAppPlugin) GatewayMethods() []sdk.GatewayMethod {
 				if token == "" || phoneNumberID == "" || to == "" || text == "" {
 					return nil, fmt.Errorf("whatsapp.send: access_token, phone_number_id, to, and text are required")
 				}
-				msgID, err := sendWhatsAppMessage(ctx, token, phoneNumberID, to, text)
+				msgID, err := sendWhatsAppMessage(ctx, nil, token, phoneNumberID, to, text)
 				if err != nil {
 					return nil, err
 				}
@@ -129,36 +132,66 @@ func (w *WhatsAppPlugin) Connect(
 	onMessage func(sdk.InboundChannelMessage),
 ) (sdk.ChannelHandle, error) {
 	token, _ := cfg["access_token"].(string)
+	appSecret, _ := cfg["app_secret"].(string)
 	phoneNumberID, _ := cfg["phone_number_id"].(string)
-	listenAddr, _ := cfg["webhook_listen_addr"].(string)
 	verifyToken, _ := cfg["verify_token"].(string)
 	defaultRecipient, _ := cfg["default_recipient"].(string)
 
 	if token == "" {
 		return nil, fmt.Errorf("whatsapp channel %q: config.access_token is required", channelID)
 	}
+	if strings.TrimSpace(appSecret) == "" {
+		return nil, fmt.Errorf("whatsapp channel %q: config.app_secret is required", channelID)
+	}
 	if phoneNumberID == "" {
 		return nil, fmt.Errorf("whatsapp channel %q: config.phone_number_id is required", channelID)
-	}
-	if listenAddr == "" {
-		listenAddr = ":8080"
 	}
 
 	bot := &whatsappBot{
 		channelID:        channelID,
 		token:            token,
 		phoneNumberID:    phoneNumberID,
+		appSecret:        strings.TrimSpace(appSecret),
 		verifyToken:      verifyToken,
-		defaultRecipient: defaultRecipient,
+		defaultRecipient: strings.TrimSpace(defaultRecipient),
 		onMessage:        onMessage,
 		done:             make(chan struct{}),
+		httpClient:       &http.Client{Timeout: 15 * time.Second},
 	}
 
-	if err := bot.startWebhook(ctx, listenAddr); err != nil {
-		return nil, fmt.Errorf("whatsapp channel %q: start webhook: %w", channelID, err)
-	}
-	log.Printf("whatsapp: webhook listening on %s for channel %s", listenAddr, channelID)
+	registerWebhook(channelID, bot)
+	log.Printf("whatsapp: webhook handler registered for channel %s", channelID)
 	return bot, nil
+}
+
+var (
+	webhookMu       sync.RWMutex
+	webhookHandlers = map[string]*whatsappBot{}
+)
+
+func registerWebhook(channelID string, bot *whatsappBot) {
+	webhookMu.Lock()
+	webhookHandlers[channelID] = bot
+	webhookMu.Unlock()
+}
+
+// HandleWebhook dispatches an inbound WhatsApp verification or event request to the registered bot.
+func HandleWebhook(channelID string, w http.ResponseWriter, r *http.Request) {
+	webhookMu.RLock()
+	bot, ok := webhookHandlers[channelID]
+	webhookMu.RUnlock()
+	if !ok {
+		http.Error(w, "unknown channel", http.StatusNotFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		bot.handleVerify(w, r)
+	case http.MethodPost:
+		bot.handleEvent(w, r)
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 // ─── Bot implementation ───────────────────────────────────────────────────────
@@ -170,72 +203,54 @@ type whatsappBot struct {
 	channelID        string
 	token            string
 	phoneNumberID    string
+	appSecret        string
 	verifyToken      string
 	defaultRecipient string
 	onMessage        func(sdk.InboundChannelMessage)
-	server           *http.Server
+	httpClient       *http.Client
 	done             chan struct{}
 }
 
 func (b *whatsappBot) ID() string { return b.channelID }
 
 func (b *whatsappBot) Send(ctx context.Context, text string) error {
-	b.mu.Lock()
-	to := b.defaultRecipient
-	b.mu.Unlock()
+	to := strings.TrimSpace(sdk.ChannelReplyTarget(ctx))
 	if to == "" {
-		return fmt.Errorf("whatsapp %s: no default_recipient configured; use whatsapp.send gateway method with explicit 'to'", b.channelID)
+		b.mu.Lock()
+		to = b.defaultRecipient
+		b.mu.Unlock()
 	}
-	_, err := sendWhatsAppMessage(ctx, b.token, b.phoneNumberID, to, text)
+	if to == "" {
+		return fmt.Errorf("whatsapp %s: no reply target set; configure default_recipient or use sdk.WithChannelReplyTarget", b.channelID)
+	}
+	_, err := b.sendMessage(ctx, to, text)
 	return err
 }
 
 func (b *whatsappBot) Close() {
-	if b.server != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = b.server.Shutdown(ctx)
+	select {
+	case <-b.done:
+	default:
+		close(b.done)
 	}
-	close(b.done)
+	webhookMu.Lock()
+	delete(webhookHandlers, b.channelID)
+	webhookMu.Unlock()
 }
 
-func (b *whatsappBot) startWebhook(ctx context.Context, listenAddr string) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			b.handleVerify(w, r)
-		case http.MethodPost:
-			b.handleEvent(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-
-	ln, err := net.Listen("tcp", listenAddr)
+func (b *whatsappBot) verifySignature(body []byte, sig string) bool {
+	sig = strings.TrimSpace(sig)
+	if !strings.HasPrefix(sig, "sha256=") || b.appSecret == "" {
+		return false
+	}
+	providedHex := strings.TrimPrefix(sig, "sha256=")
+	provided, err := hex.DecodeString(providedHex)
 	if err != nil {
-		return err
+		return false
 	}
-
-	b.server = &http.Server{
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-	}
-
-	go func() {
-		if sErr := b.server.Serve(ln); sErr != nil && sErr != http.ErrServerClosed {
-			log.Printf("whatsapp webhook server error channel=%s: %v", b.channelID, sErr)
-		}
-	}()
-	// Shut down when the parent context is done.
-	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = b.server.Shutdown(shutCtx)
-	}()
-	return nil
+	mac := hmac.New(sha256.New, []byte(b.appSecret))
+	_, _ = mac.Write(body)
+	return hmac.Equal(provided, mac.Sum(nil))
 }
 
 // handleVerify responds to Meta's GET webhook verification challenge.
@@ -259,6 +274,10 @@ func (b *whatsappBot) handleEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read error", http.StatusInternalServerError)
 		return
 	}
+	if !b.verifySignature(body, r.Header.Get("X-Hub-Signature-256")) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	w.WriteHeader(http.StatusOK) // Always 200 to Meta.
 
 	var event struct {
@@ -266,6 +285,9 @@ func (b *whatsappBot) handleEvent(w http.ResponseWriter, r *http.Request) {
 		Entry  []struct {
 			Changes []struct {
 				Value struct {
+					Metadata *struct {
+						PhoneNumberID string `json:"phone_number_id"`
+					} `json:"metadata,omitempty"`
 					Messages []struct {
 						ID        string `json:"id"`
 						From      string `json:"from"`
@@ -289,16 +311,17 @@ func (b *whatsappBot) handleEvent(w http.ResponseWriter, r *http.Request) {
 
 	for _, entry := range event.Entry {
 		for _, change := range entry.Changes {
+			if change.Value.Metadata != nil {
+				incomingPhoneID := strings.TrimSpace(change.Value.Metadata.PhoneNumberID)
+				if incomingPhoneID != "" && incomingPhoneID != b.phoneNumberID {
+					log.Printf("whatsapp: dropping webhook for mismatched phone_number_id channel=%s got=%s want=%s", b.channelID, incomingPhoneID, b.phoneNumberID)
+					continue
+				}
+			}
 			for _, msg := range change.Value.Messages {
 				if msg.Type != "text" || msg.Text == nil || msg.Text.Body == "" {
 					continue
 				}
-				// Track last sender for Send() fallback.
-				b.mu.Lock()
-				if b.defaultRecipient == "" {
-					b.defaultRecipient = msg.From
-				}
-				b.mu.Unlock()
 
 				b.onMessage(sdk.InboundChannelMessage{
 					ChannelID: b.channelID,
@@ -311,8 +334,12 @@ func (b *whatsappBot) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (b *whatsappBot) sendMessage(ctx context.Context, to, text string) (string, error) {
+	return sendWhatsAppMessage(ctx, b.httpClient, b.token, b.phoneNumberID, to, text)
+}
+
 // sendWhatsAppMessage sends a text message via the Meta Cloud API.
-func sendWhatsAppMessage(ctx context.Context, token, phoneNumberID, to, text string) (string, error) {
+func sendWhatsAppMessage(ctx context.Context, httpClient *http.Client, token, phoneNumberID, to, text string) (string, error) {
 	apiURL := fmt.Sprintf("%s/%s/messages", whatsappAPIBase, phoneNumberID)
 	payload, _ := json.Marshal(map[string]any{
 		"messaging_product": "whatsapp",
@@ -329,8 +356,10 @@ func sendWhatsAppMessage(ctx context.Context, token, phoneNumberID, to, text str
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
-	cl := &http.Client{Timeout: 15 * time.Second}
-	resp, err := cl.Do(req)
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("whatsapp sendMessage: %w", err)
 	}
