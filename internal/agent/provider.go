@@ -765,19 +765,20 @@ type ProviderOverride struct {
 	SystemPrompt string // injected as system context for every turn
 }
 
-// BuildRuntimeWithOverride constructs a Runtime using explicit provider credentials
-// from the providers[] config section, falling back to env vars when fields are empty.
-// This enables OpenClaw-compatible provider configuration via config file.
-func BuildRuntimeWithOverride(model string, override ProviderOverride, tools ToolExecutor) (Runtime, error) {
+// BuildProviderWithOverride constructs a Provider using explicit provider
+// credentials from the providers[] config section, falling back to env vars
+// when fields are empty.
+func BuildProviderWithOverride(model string, override ProviderOverride) (Provider, error) {
 	// If no override is specified, delegate to the standard env-based builder.
 	if override.BaseURL == "" && override.APIKey == "" {
-		return BuildRuntimeForModel(model, tools)
+		return NewProviderForModel(model)
 	}
 	// GitHub Copilot OAuth: detect via base URL or model prefix.
-	normModel := strings.ToLower(strings.TrimSpace(override.Model))
-	if normModel == "" {
-		normModel = strings.ToLower(strings.TrimSpace(model))
+	effectiveModel := strings.TrimSpace(model)
+	if effectiveModel == "" {
+		effectiveModel = strings.TrimSpace(override.Model)
 	}
+	normModel := strings.ToLower(effectiveModel)
 	isGHCopilot := strings.Contains(strings.ToLower(override.BaseURL), "githubcopilot.com") ||
 		normModel == "github-copilot"
 	if isGHCopilot && strings.TrimSpace(override.APIKey) == "" {
@@ -788,10 +789,8 @@ func BuildRuntimeWithOverride(model string, override ProviderOverride, tools Too
 			override.BaseURL = "https://api.githubcopilot.com"
 		}
 	}
-	// Resolve effective model: prefer override.Model, then the passed model arg.
-	effectiveModel := strings.TrimSpace(override.Model)
 	if effectiveModel == "" {
-		effectiveModel = strings.TrimSpace(model)
+		effectiveModel = strings.TrimSpace(override.Model)
 	}
 	norm := strings.ToLower(effectiveModel)
 
@@ -801,7 +800,7 @@ func BuildRuntimeWithOverride(model string, override ProviderOverride, tools Too
 		if apiKey == "" {
 			apiKey = strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
 		}
-		return NewProviderRuntime(&AnthropicProvider{Model: effectiveModel, APIKey: apiKey, SystemPrompt: override.SystemPrompt}, tools)
+		return &AnthropicProvider{Model: effectiveModel, APIKey: apiKey, SystemPrompt: override.SystemPrompt}, nil
 	}
 
 	// Google Gemini.
@@ -815,7 +814,7 @@ func BuildRuntimeWithOverride(model string, override ProviderOverride, tools Too
 				}
 			}
 		}
-		return NewProviderRuntime(&GoogleGeminiProvider{Model: effectiveModel, APIKey: apiKey}, tools)
+		return &GoogleGeminiProvider{Model: effectiveModel, APIKey: apiKey}, nil
 	}
 
 	// OpenAI and OpenAI-compatible providers.
@@ -841,11 +840,11 @@ func BuildRuntimeWithOverride(model string, override ProviderOverride, tools Too
 			}
 			apiKey = strings.TrimSpace(os.Getenv(envKey))
 		}
-		return NewProviderRuntime(&OpenAIChatProvider{
+		return &OpenAIChatProvider{
 			BaseURL: baseURL,
 			APIKey:  apiKey,
 			Model:   effectiveModel,
-		}, tools)
+		}, nil
 	}
 
 	// Generic HTTP-compatible endpoint (Ollama, custom servers, etc.)
@@ -860,5 +859,16 @@ func BuildRuntimeWithOverride(model string, override ProviderOverride, tools Too
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_API_KEY"))
 	}
-	return NewProviderRuntime(&HTTPProvider{URL: baseURL, APIKey: apiKey}, tools)
+	return &HTTPProvider{URL: baseURL, APIKey: apiKey}, nil
+}
+
+// BuildRuntimeWithOverride constructs a Runtime using explicit provider credentials
+// from the providers[] config section, falling back to env vars when fields are empty.
+// This enables OpenClaw-compatible provider configuration via config file.
+func BuildRuntimeWithOverride(model string, override ProviderOverride, tools ToolExecutor) (Runtime, error) {
+	provider, err := BuildProviderWithOverride(model, override)
+	if err != nil {
+		return nil, err
+	}
+	return NewProviderRuntime(provider, tools)
 }

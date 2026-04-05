@@ -149,28 +149,20 @@ type RoutedProvider struct {
 }
 
 // NewRoutedProvider creates a Provider that routes between primary and light models.
-// If lightModel is empty or cannot be resolved, routing is disabled and the
-// primary provider is used for all requests.
-func NewRoutedProvider(primary Provider, primaryModel string, lightModel string, threshold float64, tools ToolExecutor) *RoutedProvider {
+// If lightModel is empty or light is nil, routing is disabled and the primary
+// provider is used for all requests.
+func NewRoutedProvider(primary Provider, primaryModel string, light Provider, lightModel string, threshold float64) *RoutedProvider {
 	rp := &RoutedProvider{
 		primary:      primary,
 		primaryModel: primaryModel,
+		light:        light,
 	}
 
-	if lightModel == "" {
+	if lightModel == "" || light == nil {
 		return rp
 	}
 
-	router := NewModelRouter(lightModel, threshold)
-	rp.router = router
-
-	// Build the light provider.
-	lightProv, err := NewProviderForModel(lightModel)
-	if err != nil {
-		log.Printf("routing: light model %q unavailable: %v — routing disabled", lightModel, err)
-		return rp
-	}
-	rp.light = lightProv
+	rp.router = NewModelRouter(lightModel, threshold)
 	return rp
 }
 
@@ -180,13 +172,7 @@ func (p *RoutedProvider) Generate(ctx context.Context, turn Turn) (ProviderResul
 		return p.primary.Generate(ctx, turn)
 	}
 
-	// Pass history for better routing accuracy.
-	hist := make([]LLMMessage, 0, len(turn.History))
-	for _, h := range turn.History {
-		hist = append(hist, LLMMessage{Role: h.Role, Content: h.Content, ToolCallID: h.ToolCallID})
-	}
-
-	model, usedLight, _ := p.router.SelectModel(turn.UserText, p.primaryModel, hist)
+	model, usedLight, _ := p.router.SelectTurn(turn, p.primaryModel)
 	_ = model // logged by router
 
 	if usedLight {

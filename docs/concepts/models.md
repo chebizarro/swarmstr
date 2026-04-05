@@ -94,6 +94,35 @@ Configure a fallback chain to survive API outages using `fallback_models` in an 
 
 The agent tries each model in order when it receives a 5xx error, rate limit, or overload response. See [Model Failover](model-failover.md) for trigger details.
 
+## Dynamic Light-Model Routing
+
+Agents can also define a cheaper `light_model` for low-complexity turns:
+
+```json
+{
+  "agents": [
+    {
+      "id": "main",
+      "model": "openai/o3",
+      "light_model": "openai/gpt-4o-mini",
+      "light_model_threshold": 0.35
+    }
+  ]
+}
+```
+
+metiq uses structural signals rather than keyword matching:
+
+- prompt length
+- fenced code blocks
+- recent tool-call history
+- conversation depth
+- attachments / images
+
+Short/simple turns can stay on `light_model`; coding, multimodal, or tool-heavy turns stay on the primary model.
+
+When `light_model` is configured, `sessions.compact` summary generation also prefers that cheaper model and falls back to the primary runtime if the light model is unavailable.
+
 ## API Key Rotation
 
 For Anthropic, provide multiple keys to distribute load using `providers.anthropic.api_keys`:
