@@ -929,6 +929,7 @@ type PlanStepStatus string
 const (
 	PlanStepStatusPending    PlanStepStatus = "pending"
 	PlanStepStatusReady      PlanStepStatus = "ready"
+	PlanStepStatusBlocked    PlanStepStatus = "blocked"
 	PlanStepStatusInProgress PlanStepStatus = "in_progress"
 	PlanStepStatusCompleted  PlanStepStatus = "completed"
 	PlanStepStatusFailed     PlanStepStatus = "failed"
@@ -941,6 +942,8 @@ func ParsePlanStepStatus(raw string) (PlanStepStatus, bool) {
 		return PlanStepStatusPending, true
 	case string(PlanStepStatusReady):
 		return PlanStepStatusReady, true
+	case string(PlanStepStatusBlocked):
+		return PlanStepStatusBlocked, true
 	case string(PlanStepStatusInProgress):
 		return PlanStepStatusInProgress, true
 	case string(PlanStepStatusCompleted):
@@ -962,6 +965,114 @@ func NormalizePlanStepStatus(raw string) PlanStepStatus {
 func (s PlanStepStatus) Valid() bool {
 	_, ok := ParsePlanStepStatus(string(s))
 	return ok
+}
+
+// PlanApprovalDecision describes the outcome of a plan approval review.
+type PlanApprovalDecision string
+
+const (
+	PlanApprovalPending  PlanApprovalDecision = "pending"
+	PlanApprovalApproved PlanApprovalDecision = "approved"
+	PlanApprovalRejected PlanApprovalDecision = "rejected"
+	PlanApprovalAmended  PlanApprovalDecision = "amended"
+)
+
+func ParsePlanApprovalDecision(raw string) (PlanApprovalDecision, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(PlanApprovalPending), "":
+		return PlanApprovalPending, true
+	case string(PlanApprovalApproved):
+		return PlanApprovalApproved, true
+	case string(PlanApprovalRejected):
+		return PlanApprovalRejected, true
+	case string(PlanApprovalAmended):
+		return PlanApprovalAmended, true
+	default:
+		return "", false
+	}
+}
+
+func (d PlanApprovalDecision) Valid() bool {
+	_, ok := ParsePlanApprovalDecision(string(d))
+	return ok
+}
+
+// PlanApproval records a durable approval or rejection decision for a plan.
+type PlanApproval struct {
+	PlanID    string               `json:"plan_id"`
+	Revision  int                  `json:"revision"`
+	Decision  PlanApprovalDecision `json:"decision"`
+	Actor     string               `json:"actor"`
+	Reason    string               `json:"reason,omitempty"`
+	CreatedAt int64                `json:"created_at"`
+	Meta      map[string]any       `json:"meta,omitempty"`
+}
+
+// AutonomyMode controls how much latitude an agent has before requiring
+// operator intervention. Plan approval requirements are keyed off this.
+type AutonomyMode string
+
+const (
+	// AutonomyFull allows the agent to plan, execute, and complete tasks
+	// without operator approval.
+	AutonomyFull AutonomyMode = "full"
+
+	// AutonomyPlanApproval requires operator approval of plans before
+	// task compilation and execution begin. Execution is autonomous.
+	AutonomyPlanApproval AutonomyMode = "plan_approval"
+
+	// AutonomyStepApproval requires approval before each plan step is
+	// compiled into a task.
+	AutonomyStepApproval AutonomyMode = "step_approval"
+
+	// AutonomySupervised requires approval of plans and individual tool
+	// calls within task execution. Most restrictive mode.
+	AutonomySupervised AutonomyMode = "supervised"
+)
+
+func ParseAutonomyMode(raw string) (AutonomyMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(AutonomyFull), "":
+		return AutonomyFull, true
+	case string(AutonomyPlanApproval):
+		return AutonomyPlanApproval, true
+	case string(AutonomyStepApproval):
+		return AutonomyStepApproval, true
+	case string(AutonomySupervised):
+		return AutonomySupervised, true
+	default:
+		return "", false
+	}
+}
+
+func NormalizeAutonomyMode(raw string) AutonomyMode {
+	mode, _ := ParseAutonomyMode(raw)
+	return mode
+}
+
+func (m AutonomyMode) Valid() bool {
+	_, ok := ParseAutonomyMode(string(m))
+	return ok
+}
+
+// RequiresPlanApproval reports whether this mode requires plan-level
+// approval before execution begins.
+func (m AutonomyMode) RequiresPlanApproval() bool {
+	switch m {
+	case AutonomyPlanApproval, AutonomyStepApproval, AutonomySupervised:
+		return true
+	}
+	return false
+}
+
+// RequiresStepApproval reports whether this mode requires per-step
+// approval before task compilation.
+func (m AutonomyMode) RequiresStepApproval() bool {
+	switch m {
+	case AutonomyStepApproval, AutonomySupervised:
+		return true
+	}
+	return false
 }
 
 // PlanStep describes one unit of work inside a plan.
