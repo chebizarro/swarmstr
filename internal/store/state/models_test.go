@@ -41,8 +41,8 @@ func TestConfigDocHash_changesOnMutation(t *testing.T) {
 func TestConfigDocHash_format(t *testing.T) {
 	doc := ConfigDoc{Version: 1}
 	h := doc.Hash()
-	if !strings.HasPrefix(h, "") {
-		t.Errorf("unexpected hash format: %q", h)
+	if len(h) != 64 {
+		t.Errorf("Hash() length = %d, want 64 (SHA-256 hex): %q", len(h), h)
 	}
 	for _, c := range h {
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
@@ -265,13 +265,13 @@ func TestTaskModelsJSONRoundTrip(t *testing.T) {
 			Constraints:     []string{"nostr-native", "backward-compatible"},
 			SuccessCriteria: []string{"schemas merged", "tests passing"},
 			Authority: TaskAuthority{
+				AutonomyMode:       AutonomyPlanApproval,
 				Role:               "director",
-				ApprovalMode:       "act_with_approval",
+				RiskClass:          RiskClassMedium,
 				CanAct:             true,
 				CanDelegate:        true,
 				CanEscalate:        true,
 				EscalationRequired: false,
-				RiskClass:          "medium",
 				AllowedAgents:      []string{"builder", "reviewer"},
 				MaxDelegationDepth: 2,
 			},
@@ -309,7 +309,7 @@ func TestTaskModelsJSONRoundTrip(t *testing.T) {
 				CanAct:       true,
 				CanDelegate:  false,
 				CanEscalate:  true,
-				ApprovalMode: "act_with_approval",
+				AutonomyMode: AutonomyPlanApproval,
 			},
 			MemoryScope:  AgentMemoryScopeProject,
 			ToolProfile:  "coding",
