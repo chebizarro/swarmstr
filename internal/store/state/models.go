@@ -136,9 +136,29 @@ type RelayPolicy struct {
 }
 
 type AgentPolicy struct {
-	DefaultModel string `json:"default_model,omitempty"`
-	Thinking     string `json:"thinking,omitempty"`
-	Verbose      string `json:"verbose,omitempty"`
+	DefaultModel    string        `json:"default_model,omitempty"`
+	Thinking        string        `json:"thinking,omitempty"`
+	Verbose         string        `json:"verbose,omitempty"`
+	DefaultAutonomy AutonomyMode  `json:"default_autonomy,omitempty"`
+	DefaultAuthority *TaskAuthority `json:"default_authority,omitempty"`
+}
+
+// EffectiveDefaultAutonomy returns the configured default autonomy mode,
+// falling back to AutonomyFull when not specified.
+func (a AgentPolicy) EffectiveDefaultAutonomy() AutonomyMode {
+	if a.DefaultAutonomy != "" && a.DefaultAutonomy.Valid() {
+		return a.DefaultAutonomy
+	}
+	return AutonomyFull
+}
+
+// EffectiveDefaultAuthority returns the configured default authority,
+// or builds one from the effective autonomy mode.
+func (a AgentPolicy) EffectiveDefaultAuthority() TaskAuthority {
+	if a.DefaultAuthority != nil {
+		return *a.DefaultAuthority
+	}
+	return DefaultAuthority(a.EffectiveDefaultAutonomy())
 }
 
 type ControlPolicy struct {
@@ -639,17 +659,211 @@ func (p TaskPriority) Valid() bool {
 	return ok
 }
 
+// RiskClass categorizes the risk level of an operation.
+type RiskClass string
+
+const (
+	RiskClassLow      RiskClass = "low"
+	RiskClassMedium   RiskClass = "medium"
+	RiskClassHigh     RiskClass = "high"
+	RiskClassCritical RiskClass = "critical"
+)
+
+func ParseRiskClass(raw string) (RiskClass, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(RiskClassLow), "":
+		return RiskClassLow, true
+	case string(RiskClassMedium):
+		return RiskClassMedium, true
+	case string(RiskClassHigh):
+		return RiskClassHigh, true
+	case string(RiskClassCritical):
+		return RiskClassCritical, true
+	default:
+		return "", false
+	}
+}
+
+func NormalizeRiskClass(raw string) RiskClass {
+	rc, ok := ParseRiskClass(raw)
+	if !ok {
+		return RiskClassLow
+	}
+	return rc
+}
+
+func (r RiskClass) Valid() bool {
+	_, ok := ParseRiskClass(string(r))
+	return ok
+}
+
 // TaskAuthority captures the authority contract attached to a goal or task.
+// It defines what an agent is allowed to do and how much oversight is required.
 type TaskAuthority struct {
-	Role               string   `json:"role,omitempty"`
-	ApprovalMode       string   `json:"approval_mode,omitempty"`
-	CanAct             bool     `json:"can_act,omitempty"`
-	CanDelegate        bool     `json:"can_delegate,omitempty"`
-	CanEscalate        bool     `json:"can_escalate,omitempty"`
-	EscalationRequired bool     `json:"escalation_required,omitempty"`
-	RiskClass          string   `json:"risk_class,omitempty"`
-	AllowedAgents      []string `json:"allowed_agents,omitempty"`
-	MaxDelegationDepth int      `json:"max_delegation_depth,omitempty"`
+	// AutonomyMode controls overall agent latitude (full, plan_approval, etc.).
+	AutonomyMode       AutonomyMode `json:"autonomy_mode,omitempty"`
+	// Role is a human-readable label for the authority scope (e.g. "engineer", "reviewer").
+	Role               string       `json:"role,omitempty"`
+	// RiskClass categorizes the risk level — higher risk triggers more oversight.
+	RiskClass          RiskClass    `json:"risk_class,omitempty"`
+	// CanAct permits the agent to take actions (tool calls, writes).
+	CanAct             bool         `json:"can_act,omitempty"`
+	// CanDelegate permits spawning sub-agents or delegating sub-tasks.
+	CanDelegate        bool         `json:"can_delegate,omitempty"`
+	// CanEscalate permits the agent to escalate to a higher authority.
+	CanEscalate        bool         `json:"can_escalate,omitempty"`
+	// EscalationRequired forces all tool actions to escalation review.
+	EscalationRequired bool         `json:"escalation_required,omitempty"`
+	// AllowedAgents restricts which agent IDs may be delegated to.
+	AllowedAgents      []string     `json:"allowed_agents,omitempty"`
+	// AllowedTools restricts which tools the agent may invoke.
+	AllowedTools       []string     `json:"allowed_tools,omitempty"`
+	// DeniedTools lists tools explicitly denied regardless of other permissions.
+	DeniedTools        []string     `json:"denied_tools,omitempty"`
+	// MaxDelegationDepth caps how many levels deep delegation chains can go.
+	MaxDelegationDepth int          `json:"max_delegation_depth,omitempty"`
+
+	// Deprecated: ApprovalMode is retained for backward-compatible JSON
+	// deserialization of persisted state docs. Normalize() migrates it to
+	// AutonomyMode. New code should use AutonomyMode directly.
+	ApprovalMode string `json:"approval_mode,omitempty"`
+}
+
+// Normalize sets canonical defaults for zero-value authority fields.
+// It also migrates the deprecated ApprovalMode field into AutonomyMode
+// for backward compatibility with persisted state docs.
+func (a TaskAuthority) Normalize() TaskAuthority {
+	// Migrate legacy ApprovalMode → AutonomyMode when the new field is empty.
+	if a.AutonomyMode == "" && a.ApprovalMode != "" {
+		a.AutonomyMode = migrateApprovalMode(a.ApprovalMode)
+		a.ApprovalMode = "" // clear deprecated field after migration
+	}
+	if a.AutonomyMode != "" {
+		a.AutonomyMode = NormalizeAutonomyMode(string(a.AutonomyMode))
+	}
+	if a.RiskClass != "" {
+		a.RiskClass = NormalizeRiskClass(string(a.RiskClass))
+	}
+	return a
+}
+
+// migrateApprovalMode maps legacy approval_mode strings to AutonomyMode values.
+func migrateApprovalMode(legacy string) AutonomyMode {
+	switch strings.ToLower(strings.TrimSpace(legacy)) {
+	case "act_with_approval", "approval", "plan_approval":
+		return AutonomyPlanApproval
+	case "step_approval":
+		return AutonomyStepApproval
+	case "supervised", "observe_only", "recommend_only":
+		return AutonomySupervised
+	case "autonomous", "full", "bounded_autonomous", "fully_autonomous":
+		return AutonomyFull
+	default:
+		// Unknown legacy value — default to plan_approval for safety
+		// (more restrictive than full, less restrictive than supervised).
+		return AutonomyPlanApproval
+	}
+}
+
+// Validate checks that authority fields contain valid values.
+func (a TaskAuthority) Validate() error {
+	if a.AutonomyMode != "" && !a.AutonomyMode.Valid() {
+		return fmt.Errorf("invalid autonomy_mode %q", a.AutonomyMode)
+	}
+	if a.RiskClass != "" && !a.RiskClass.Valid() {
+		return fmt.Errorf("invalid risk_class %q", a.RiskClass)
+	}
+	if a.MaxDelegationDepth < 0 {
+		return fmt.Errorf("max_delegation_depth must be >= 0")
+	}
+	return nil
+}
+
+// EffectiveAutonomyMode returns the authority's autonomy mode, or falls back
+// to the given default when the authority doesn't specify one.
+func (a TaskAuthority) EffectiveAutonomyMode(defaultMode AutonomyMode) AutonomyMode {
+	if a.AutonomyMode != "" {
+		return a.AutonomyMode
+	}
+	return defaultMode
+}
+
+// MayUseTool reports whether this authority permits the given tool name.
+func (a TaskAuthority) MayUseTool(tool string) bool {
+	for _, denied := range a.DeniedTools {
+		if denied == tool {
+			return false
+		}
+	}
+	if len(a.AllowedTools) == 0 {
+		return true // no allowlist means all tools permitted
+	}
+	for _, allowed := range a.AllowedTools {
+		if allowed == tool {
+			return true
+		}
+	}
+	return false
+}
+
+// MayDelegateTo reports whether this authority permits delegation to the given agent.
+func (a TaskAuthority) MayDelegateTo(agentID string) bool {
+	if !a.CanDelegate {
+		return false
+	}
+	if len(a.AllowedAgents) == 0 {
+		return true // no restriction
+	}
+	for _, allowed := range a.AllowedAgents {
+		if allowed == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+// DefaultAuthority returns a reasonable default authority for the given autonomy mode.
+func DefaultAuthority(mode AutonomyMode) TaskAuthority {
+	switch mode {
+	case AutonomySupervised:
+		return TaskAuthority{
+			AutonomyMode:       AutonomySupervised,
+			CanAct:             false,
+			CanDelegate:        false,
+			CanEscalate:        true,
+			EscalationRequired: true,
+			RiskClass:          RiskClassHigh,
+		}
+	case AutonomyStepApproval:
+		return TaskAuthority{
+			AutonomyMode:       AutonomyStepApproval,
+			CanAct:             true,
+			CanDelegate:        false,
+			CanEscalate:        true,
+			RiskClass:          RiskClassMedium,
+			MaxDelegationDepth: 1,
+		}
+	case AutonomyPlanApproval:
+		return TaskAuthority{
+			AutonomyMode:       AutonomyPlanApproval,
+			CanAct:             true,
+			CanDelegate:        true,
+			CanEscalate:        true,
+			RiskClass:          RiskClassMedium,
+			MaxDelegationDepth: 2,
+		}
+	case AutonomyFull:
+		return TaskAuthority{
+			AutonomyMode:       AutonomyFull,
+			CanAct:             true,
+			CanDelegate:        true,
+			CanEscalate:        true,
+			RiskClass:          RiskClassLow,
+			MaxDelegationDepth: 3,
+		}
+	default:
+		return DefaultAuthority(AutonomyFull)
+	}
 }
 
 // TaskBudget captures budget guardrails that downstream runtime layers enforce.
@@ -1268,7 +1482,10 @@ func ParseAutonomyMode(raw string) (AutonomyMode, bool) {
 }
 
 func NormalizeAutonomyMode(raw string) AutonomyMode {
-	mode, _ := ParseAutonomyMode(raw)
+	mode, ok := ParseAutonomyMode(raw)
+	if !ok {
+		return AutonomyFull
+	}
 	return mode
 }
 
