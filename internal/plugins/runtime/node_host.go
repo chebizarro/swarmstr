@@ -139,9 +139,27 @@ func LoadNodePlugin(ctx context.Context, installPath string) (*NodePlugin, error
 	// Parse the manifest from the init response.
 	if resultMap, ok := resp.(map[string]any); ok {
 		if mRaw, ok := resultMap["manifest"]; ok {
-			b, _ := json.Marshal(mRaw)
-			json.Unmarshal(b, &p.manifest)
+			b, err := json.Marshal(mRaw)
+			if err != nil {
+				p.Close()
+				return nil, fmt.Errorf("marshal node manifest: %w", err)
+			}
+			if err := json.Unmarshal(b, &p.manifest); err != nil {
+				p.Close()
+				return nil, fmt.Errorf("unmarshal node manifest: %w", err)
+			}
 		}
+	}
+	if strings.TrimSpace(p.manifest.ID) == "" {
+		base := filepath.Base(absPath)
+		if base == "." || base == string(filepath.Separator) {
+			base = "node-plugin"
+		}
+		p.manifest.ID = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	if err := sdk.ValidateManifest(p.manifest); err != nil {
+		p.Close()
+		return nil, err
 	}
 
 	return p, nil

@@ -46,6 +46,16 @@ web_fetch(url="https://github.com/nostr-protocol/nostr")
 
 `web_fetch` does a plain HTTP GET and extracts readable content (HTML tags stripped). It does **not** execute JavaScript.
 
+## Untrusted-content boundary
+
+Content returned by `web_search` and `web_fetch` is treated as **external untrusted content** by the runtime. Before model submission, metiq wraps these results with source metadata and a safety notice that tells the model to treat the material as data rather than instructions.
+
+Operationally this means:
+
+- suspicious prompt-injection markers in fetched/search content are labeled
+- the model is reminded not to follow instructions embedded inside retrieved pages/results
+- operators still need approvals/sandboxing for high-risk tool chains; fetched content is not trusted code or policy
+
 ## Search Provider Setup
 
 ### Provider Auto-Detection

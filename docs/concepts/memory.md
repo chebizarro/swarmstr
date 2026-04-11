@@ -126,9 +126,12 @@ This file is:
 Operationally:
 
 - successful turns accumulate pending session-memory progress in the background
+- successful future turns can receive a bounded **Session Memory Recall** block assembled from the maintained artifact
+- the daemon records bounded `recent_memory_recall` samples in session state so operators can inspect what indexed/file/session memory was injected most recently
 - `/summary` forces the maintained session-memory artifact to be brought current for the active session
 - `/compact`, automatic context compaction, and `sessions.compact`/`memory.compact` wait for or refresh the artifact before compacting
 - `/new` and `/reset` flush the artifact before transcript rollover, then keep the maintained file for the next phase of the session while resetting transcript checkpoints and pending counters
+- surfaced session-memory paths are validated against the expected per-session artifact path and only logical artifact paths are exposed back to the model/operators
 
 Current configuration lives under `extra.memory.session_memory`, for example:
 
@@ -311,10 +314,31 @@ and searched by vector similarity.
 
 When Qdrant is configured, metiq automatically runs in **hybrid mode**:
 writes go to both the JSON-FTS index and Qdrant. Reads prefer Qdrant
-(semantic), falling back to JSON-FTS if Qdrant returns no results.
+(semantic), falling back to JSON-FTS if Qdrant is degraded, unavailable,
+or returns no results.
 
 This means the JSON index file is always kept in sync as a fallback,
 even when Qdrant is the primary backend.
+
+Operationally, the runtime now tracks backend health as part of the memory
+surface:
+
+- Qdrant failures move the semantic backend into a degraded/backoff state
+- collection repair and retry are attempted before the backend is treated as unavailable
+- hybrid fallback is explicit rather than silent, so operators can tell when JSON-FTS is serving recall
+
+### Operator health surface
+
+`doctor.memory.status` exposes the current memory runtime surface for operators.
+The payload includes:
+
+- `index` — availability, counts, and whether counts came from the primary backend or fallback index
+- `store` — backend kind plus primary/fallback health, degraded state, last error, retry timing, and `fallback_active`
+- `file_memory` — surfaced file-memory counts and recent recall sample counts
+- `session_memory` — configured thresholds, tracked sessions, pending/in-flight work, and stale artifact counts
+- `maintenance` — compaction counts plus latest memory-flush timing
+
+Use this surface when diagnosing missing recall, Qdrant outages, stale session-memory artifacts, or compaction behavior.
 
 ---
 

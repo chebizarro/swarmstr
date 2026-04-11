@@ -121,18 +121,36 @@ Enable plugins in `~/.metiq/config.json`:
 {
   "plugins": {
     "enabled": true,
-    "load": {
-      "paths": ["~/.metiq/plugins/my-plugin"]
+    "load_paths": ["~/.metiq/plugins/my-plugin"],
+    "installs": {
+      "my-plugin": {
+        "source": "path",
+        "sourcePath": "~/.metiq/plugins/my-plugin",
+        "installPath": "~/.metiq/plugins/my-plugin"
+      }
     },
     "entries": {
       "my-plugin": {
         "enabled": true,
+        "install_path": "~/.metiq/plugins/my-plugin",
         "apiKey": "${MY_PLUGIN_API_KEY}"
       }
     }
   }
 }
 ```
+
+### Trust and validation rules
+
+The plugin loader now enforces a tighter trust model:
+
+- `entries.<id>.install_path` must resolve inside a managed install root or a configured `plugins.load_paths` root
+- when a matching `plugins.installs.<id>` record exists, the entry install path is cross-checked against that install record
+- plugin entry points must resolve inside the plugin root; `package.json main` cannot escape the plugin directory
+- plugin manifests are validated before registration, including duplicate tool names and basic JSON-schema shape for tool parameters
+- load failures are returned as aggregated per-plugin diagnostics instead of being reduced to a best-effort silent skip
+
+If a plugin path is outside the trusted roots, or the manifest/schema is invalid, the loader rejects it.
 
 ## Plugin Discovery Order
 

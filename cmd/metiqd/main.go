@@ -534,6 +534,8 @@ func main() {
 			MemoryScope:  memoryScope,
 			TimeoutMS:    timeoutMS,
 		})
+		bindACPTaskID(&taskPayload, taskID)
+		recordACPDelegatedChild(sessionStore, taskPayload, taskID)
 		req := buildACPTargetRequirements(cfg, turnToolConstraints{ToolProfile: taskPayload.ToolProfile, EnabledTools: taskPayload.EnabledTools})
 		peerPubKey, _, err := resolveACPFleetTargetForConfigAndRequirements(peerTarget, cfg, req)
 		if err != nil {
@@ -3252,7 +3254,10 @@ func main() {
 			releaseTurn()
 		}()
 
-		userMemoryDocs := memory.ExtractFromTurn(sessionID, "user", entryID, combinedText, createdAt)
+		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
+		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
+
+		userMemoryDocs := scopedMemoryDocs(memory.ExtractFromTurn(sessionID, "user", entryID, combinedText, createdAt), scopeCtx)
 		if len(userMemoryDocs) > 0 {
 			go func(docs []state.MemoryDoc) {
 				persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -3272,8 +3277,6 @@ func main() {
 			}
 		}
 
-		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
-		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		// turnHistory carries prior conversation turns for multi-turn LLM context.
@@ -3540,7 +3543,7 @@ func main() {
 		}
 		// Also extract assistant reply into memory so both sides of the
 		// conversation are searchable — not just user messages.
-		assistantMemoryDocs := memory.ExtractFromTurn(sessionID, "assistant", eventID, turnResult.Text, time.Now().Unix())
+		assistantMemoryDocs := scopedMemoryDocs(memory.ExtractFromTurn(sessionID, "assistant", eventID, turnResult.Text, time.Now().Unix()), scopeCtx)
 		if len(assistantMemoryDocs) > 0 {
 			go func(docs []state.MemoryDoc) {
 				persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -4339,6 +4342,7 @@ func main() {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
+		turnContext = joinPromptSections(buildExternalChannelMetadataContext(configState.Get(), chID, senderID, sessionID), turnContext)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		var chTurnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -6706,6 +6710,374 @@ func persistAssistant(
 	return err
 }
 
+func memoryBackendStatusPayload(status memory.BackendStatus) map[string]any {
+	payload := map[string]any{
+		"name":      status.Name,
+		"available": status.Available,
+	}
+	if status.Degraded {
+		payload["degraded"] = true
+	}
+	if status.LastError != "" {
+		payload["last_error"] = status.LastError
+	}
+	if status.LastFailureUnix > 0 {
+		payload["last_failure_unix"] = status.LastFailureUnix
+	}
+	if status.NextRetryUnix > 0 {
+		payload["next_retry_unix"] = status.NextRetryUnix
+	}
+	if status.ConsecutiveFailures > 0 {
+		payload["consecutive_failures"] = status.ConsecutiveFailures
+	}
+	return payload
+}
+
+func memoryStoreStatusPayload(status memory.StoreStatus) map[string]any {
+	payload := map[string]any{
+		"kind":    status.Kind,
+		"primary": memoryBackendStatusPayload(status.Primary),
+	}
+	if status.FallbackActive {
+		payload["fallback_active"] = true
+	}
+	if status.Fallback != nil {
+		payload["fallback"] = memoryBackendStatusPayload(*status.Fallback)
+	}
+	return payload
+}
+
+func sessionMemoryStatusPayload(cfg state.ConfigDoc, sessionStore *state.SessionStore, runtime *sessionMemoryRuntime) map[string]any {
+	memCfg := sessionMemoryConfigFromDoc(cfg)
+	payload := map[string]any{
+		"enabled":                    memCfg.Enabled,
+		"runtime_available":          runtime != nil,
+		"session_store_available":    sessionStore != nil,
+		"init_chars":                 memCfg.InitChars,
+		"update_chars":               memCfg.UpdateChars,
+		"tool_calls_between_updates": memCfg.ToolCallsBetweenUpdates,
+	}
+	if runtime != nil {
+		payload["in_flight_sessions"] = runtime.InFlightCount()
+	}
+	if sessionStore == nil {
+		return payload
+	}
+	entries := sessionStore.List()
+	tracked := 0
+	initialized := 0
+	artifactSessions := 0
+	staleArtifactSessions := 0
+	pending := 0
+	latestUpdatedAt := int64(0)
+	for _, entry := range entries {
+		hasState := strings.TrimSpace(entry.SessionMemoryFile) != "" || entry.SessionMemoryInitialized || entry.SessionMemoryObservedChars > 0 || entry.SessionMemoryPendingChars > 0 || entry.SessionMemoryPendingToolCalls > 0 || entry.SessionMemoryUpdatedAt > 0
+		if !hasState {
+			continue
+		}
+		tracked++
+		workspaceDir := strings.TrimSpace(entry.SpawnedWorkspace)
+		if workspaceDir == "" {
+			workspaceDir = workspaceDirForAgent(cfg, defaultAgentID(entry.AgentID))
+		}
+		if sessionMemoryArtifactCurrent(entry, workspaceDir, entry.SessionID) {
+			artifactSessions++
+		} else if strings.TrimSpace(entry.SessionMemoryFile) != "" || entry.SessionMemoryInitialized {
+			staleArtifactSessions++
+		}
+		if entry.SessionMemoryInitialized {
+			initialized++
+		}
+		if entry.SessionMemoryPendingChars > 0 || entry.SessionMemoryPendingToolCalls > 0 {
+			pending++
+		}
+		if entry.SessionMemoryUpdatedAt > latestUpdatedAt {
+			latestUpdatedAt = entry.SessionMemoryUpdatedAt
+		}
+	}
+	payload["tracked_sessions"] = tracked
+	payload["initialized_sessions"] = initialized
+	payload["artifact_sessions"] = artifactSessions
+	if staleArtifactSessions > 0 {
+		payload["stale_artifact_sessions"] = staleArtifactSessions
+	}
+	if pending > 0 {
+		payload["pending_sessions"] = pending
+	}
+	if latestUpdatedAt > 0 {
+		payload["latest_update_unix"] = latestUpdatedAt
+	}
+	return payload
+}
+
+func fileMemoryStatusPayload(sessionStore *state.SessionStore) map[string]any {
+	payload := map[string]any{
+		"session_store_available": sessionStore != nil,
+	}
+	if sessionStore == nil {
+		return payload
+	}
+	entries := sessionStore.List()
+	sessionsWithSurfaceState := 0
+	sessionsWithRecentRecall := 0
+	surfacedPaths := 0
+	recentRecallSamples := 0
+	latestRecallRecordedAtMS := int64(0)
+	for _, entry := range entries {
+		if len(entry.FileMemorySurfaced) > 0 {
+			sessionsWithSurfaceState++
+			surfacedPaths += len(entry.FileMemorySurfaced)
+		}
+		if len(entry.RecentMemoryRecall) > 0 {
+			sessionsWithRecentRecall++
+			recentRecallSamples += len(entry.RecentMemoryRecall)
+			for _, sample := range entry.RecentMemoryRecall {
+				if sample.RecordedAtMS > latestRecallRecordedAtMS {
+					latestRecallRecordedAtMS = sample.RecordedAtMS
+				}
+			}
+		}
+	}
+	payload["sessions_with_surface_state"] = sessionsWithSurfaceState
+	payload["surfaced_paths"] = surfacedPaths
+	payload["sessions_with_recent_recall"] = sessionsWithRecentRecall
+	payload["recent_recall_samples"] = recentRecallSamples
+	if latestRecallRecordedAtMS > 0 {
+		payload["latest_recall_recorded_at_ms"] = latestRecallRecordedAtMS
+	}
+	return payload
+}
+
+func memoryMaintenanceStatusPayload(sessionStore *state.SessionStore) map[string]any {
+	payload := map[string]any{
+		"session_store_available": sessionStore != nil,
+	}
+	if sessionStore == nil {
+		return payload
+	}
+	entries := sessionStore.List()
+	sessionsWithCompaction := 0
+	totalCompactions := int64(0)
+	sessionsWithMemoryFlush := 0
+	latestMemoryFlushUnix := int64(0)
+	for _, entry := range entries {
+		if entry.CompactionCount > 0 {
+			sessionsWithCompaction++
+			totalCompactions += entry.CompactionCount
+		}
+		if entry.MemoryFlushAt > 0 {
+			sessionsWithMemoryFlush++
+			if entry.MemoryFlushAt > latestMemoryFlushUnix {
+				latestMemoryFlushUnix = entry.MemoryFlushAt
+			}
+		}
+	}
+	payload["sessions_with_compaction"] = sessionsWithCompaction
+	payload["total_compactions"] = totalCompactions
+	payload["sessions_with_memory_flush"] = sessionsWithMemoryFlush
+	if latestMemoryFlushUnix > 0 {
+		payload["latest_memory_flush_unix"] = latestMemoryFlushUnix
+	}
+	return payload
+}
+
+func buildControlTaskResponse(ctx context.Context, docsRepo *state.DocsRepository, taskID string, runsLimit int) (methods.TasksGetResponse, error) {
+	if docsRepo == nil {
+		return methods.TasksGetResponse{}, fmt.Errorf("docs repository is nil")
+	}
+	task, err := docsRepo.GetTask(ctx, taskID)
+	if err != nil {
+		return methods.TasksGetResponse{}, err
+	}
+	runs, err := docsRepo.ListTaskRuns(ctx, task.TaskID, runsLimit)
+	if err != nil {
+		return methods.TasksGetResponse{}, err
+	}
+	return methods.TasksGetResponse{Task: task, Runs: runs}, nil
+}
+
+func createControlTask(ctx context.Context, docsRepo *state.DocsRepository, req methods.TasksCreateRequest, actor string, now time.Time) (methods.TasksGetResponse, error) {
+	if docsRepo == nil {
+		return methods.TasksGetResponse{}, fmt.Errorf("docs repository is nil")
+	}
+	task := req.Task.Normalize()
+	if strings.TrimSpace(task.TaskID) == "" {
+		task.TaskID = fmt.Sprintf("task-%d", now.UnixNano())
+	}
+	task.CurrentRunID = ""
+	task.LastRunID = ""
+	at := now.Unix()
+	if task.CreatedAt == 0 {
+		task.CreatedAt = at
+	}
+	task.UpdatedAt = at
+	requestedStatus := task.Status
+	if !requestedStatus.Valid() {
+		requestedStatus = state.TaskStatusPending
+	}
+	task.Status = state.TaskStatusPending
+	task.Transitions = []state.TaskTransition{{
+		To:     state.TaskStatusPending,
+		At:     at,
+		Actor:  strings.TrimSpace(actor),
+		Source: "control_rpc",
+		Reason: "task created",
+	}}
+	if requestedStatus != state.TaskStatusPending {
+		if err := task.ApplyTransition(requestedStatus, at, actor, "control_rpc", "task created", nil); err != nil {
+			return methods.TasksGetResponse{}, err
+		}
+	}
+	if _, err := docsRepo.PutTask(ctx, task); err != nil {
+		return methods.TasksGetResponse{}, err
+	}
+	return buildControlTaskResponse(ctx, docsRepo, task.TaskID, 20)
+}
+
+func listControlTasks(ctx context.Context, docsRepo *state.DocsRepository, req methods.TasksListRequest) (methods.TasksListResponse, error) {
+	if docsRepo == nil {
+		return methods.TasksListResponse{}, fmt.Errorf("docs repository is nil")
+	}
+	fetchLimit := req.Limit
+	if req.Status != "" || req.GoalID != "" || req.AssignedAgent != "" || req.SessionID != "" {
+		fetchLimit = req.Limit * 8
+		if fetchLimit < 500 {
+			fetchLimit = 500
+		}
+		if fetchLimit > 5000 {
+			fetchLimit = 5000
+		}
+	}
+	tasks, err := docsRepo.ListTasks(ctx, fetchLimit)
+	if err != nil {
+		return methods.TasksListResponse{}, err
+	}
+	filtered := make([]state.TaskSpec, 0, len(tasks))
+	for _, task := range tasks {
+		if req.Status != "" && task.Status != req.Status {
+			continue
+		}
+		if req.GoalID != "" && strings.TrimSpace(task.GoalID) != req.GoalID {
+			continue
+		}
+		if req.AssignedAgent != "" && strings.TrimSpace(task.AssignedAgent) != req.AssignedAgent {
+			continue
+		}
+		if req.SessionID != "" && strings.TrimSpace(task.SessionID) != req.SessionID {
+			continue
+		}
+		filtered = append(filtered, task)
+		if len(filtered) >= req.Limit {
+			break
+		}
+	}
+	return methods.TasksListResponse{Tasks: filtered, Count: len(filtered)}, nil
+}
+
+func cancelControlTask(ctx context.Context, docsRepo *state.DocsRepository, req methods.TasksCancelRequest, actor string, now time.Time) (methods.TasksGetResponse, error) {
+	if docsRepo == nil {
+		return methods.TasksGetResponse{}, fmt.Errorf("docs repository is nil")
+	}
+	task, err := docsRepo.GetTask(ctx, req.TaskID)
+	if err != nil {
+		return methods.TasksGetResponse{}, err
+	}
+	at := now.Unix()
+	currentRunID := strings.TrimSpace(task.CurrentRunID)
+	if task.Status != state.TaskStatusCancelled {
+		if err := task.ApplyTransition(state.TaskStatusCancelled, at, actor, "control_rpc", req.Reason, nil); err != nil {
+			return methods.TasksGetResponse{}, err
+		}
+	}
+	if currentRunID != "" {
+		run, err := docsRepo.GetTaskRun(ctx, currentRunID)
+		if err != nil {
+			if !errors.Is(err, state.ErrNotFound) {
+				return methods.TasksGetResponse{}, err
+			}
+		} else {
+			if run.Status != state.TaskRunStatusCancelled && state.AllowedTaskRunTransition(run.Status, state.TaskRunStatusCancelled) {
+				if err := run.ApplyTransition(state.TaskRunStatusCancelled, at, actor, "control_rpc", req.Reason, nil); err != nil {
+					return methods.TasksGetResponse{}, err
+				}
+				if _, err := docsRepo.PutTaskRun(ctx, run); err != nil {
+					return methods.TasksGetResponse{}, err
+				}
+			}
+		}
+		task.CurrentRunID = ""
+		task.LastRunID = currentRunID
+	}
+	task.UpdatedAt = at
+	if _, err := docsRepo.PutTask(ctx, task); err != nil {
+		return methods.TasksGetResponse{}, err
+	}
+	return buildControlTaskResponse(ctx, docsRepo, task.TaskID, 20)
+}
+
+func resumeControlTask(ctx context.Context, docsRepo *state.DocsRepository, req methods.TasksResumeRequest, actor string, now time.Time) (methods.TasksGetResponse, error) {
+	if docsRepo == nil {
+		return methods.TasksGetResponse{}, fmt.Errorf("docs repository is nil")
+	}
+	task, err := docsRepo.GetTask(ctx, req.TaskID)
+	if err != nil {
+		return methods.TasksGetResponse{}, err
+	}
+	at := now.Unix()
+	priorRuns, err := docsRepo.ListTaskRuns(ctx, task.TaskID, 200)
+	if err != nil {
+		return methods.TasksGetResponse{}, err
+	}
+	var resumedRun state.TaskRun
+	var haveRun bool
+	currentRunID := strings.TrimSpace(task.CurrentRunID)
+	if currentRunID != "" {
+		run, err := docsRepo.GetTaskRun(ctx, currentRunID)
+		if err != nil {
+			if !errors.Is(err, state.ErrNotFound) {
+				return methods.TasksGetResponse{}, err
+			}
+		} else {
+			if run.Status == state.TaskRunStatusQueued {
+				resumedRun = run
+				haveRun = true
+			} else if state.AllowedTaskRunTransition(run.Status, state.TaskRunStatusQueued) {
+				if err := run.ApplyTransition(state.TaskRunStatusQueued, at, actor, "control_rpc", req.Reason, nil); err != nil {
+					return methods.TasksGetResponse{}, err
+				}
+				if _, err := docsRepo.PutTaskRun(ctx, run); err != nil {
+					return methods.TasksGetResponse{}, err
+				}
+				resumedRun = run
+				haveRun = true
+			}
+		}
+	}
+	if !haveRun {
+		runID := fmt.Sprintf("taskrun-%d", now.UnixNano())
+		run, err := state.NewTaskRunAttempt(task, runID, priorRuns, at, "resume", actor, "control_rpc")
+		if err != nil {
+			return methods.TasksGetResponse{}, err
+		}
+		if _, err := docsRepo.PutTaskRun(ctx, run); err != nil {
+			return methods.TasksGetResponse{}, err
+		}
+		resumedRun = run
+	}
+	if task.Status != state.TaskStatusReady {
+		if err := task.ApplyTransition(state.TaskStatusReady, at, actor, "control_rpc", req.Reason, map[string]any{"run_id": resumedRun.RunID}); err != nil {
+			return methods.TasksGetResponse{}, err
+		}
+	}
+	task.CurrentRunID = resumedRun.RunID
+	task.LastRunID = resumedRun.RunID
+	task.UpdatedAt = at
+	if _, err := docsRepo.PutTask(ctx, task); err != nil {
+		return methods.TasksGetResponse{}, err
+	}
+	return buildControlTaskResponse(ctx, docsRepo, task.TaskID, 20)
+}
+
 func handleControlRPCRequest(
 	ctx context.Context,
 	in nostruntime.ControlRPCInbound,
@@ -6749,18 +7121,52 @@ func handleControlRPCRequest(
 		indexAvailable := memoryIndex != nil
 		entryCount := 0
 		sessionCount := 0
+		sessionCountSupported := true
+		countSource := "primary_index"
+		var storeStatus *memory.StoreStatus
 		if memoryIndex != nil {
-			entryCount = memoryIndex.Count()
-			sessionCount = memoryIndex.SessionCount()
+			if reporter, ok := memoryIndex.(interface{ MemoryStatus() memory.StoreStatus }); ok {
+				status := reporter.MemoryStatus()
+				storeStatus = &status
+				indexAvailable = status.Primary.Available || status.Kind == "hybrid"
+				switch status.Kind {
+				case "hybrid":
+					countSource = "fallback_index"
+				case "backend":
+					countSource = "primary_backend"
+					if status.Primary.Name == "qdrant" {
+						sessionCountSupported = false
+					}
+				}
+			}
+			if storeStatus == nil || storeStatus.Kind == "index" || storeStatus.Kind == "hybrid" || storeStatus.Primary.Available {
+				entryCount = memoryIndex.Count()
+				if sessionCountSupported {
+					sessionCount = memoryIndex.SessionCount()
+				}
+			}
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{
-			"ok": true,
-			"index": map[string]any{
-				"available":     indexAvailable,
-				"entry_count":   entryCount,
-				"session_count": sessionCount,
-			},
-		}}, nil
+		indexStatus := map[string]any{
+			"available":    indexAvailable,
+			"entry_count":  entryCount,
+			"count_source": countSource,
+		}
+		if sessionCountSupported {
+			indexStatus["session_count"] = sessionCount
+		} else {
+			indexStatus["session_count_supported"] = false
+		}
+		result := map[string]any{
+			"ok":             true,
+			"index":          indexStatus,
+			"file_memory":    fileMemoryStatusPayload(controlSessionStore),
+			"session_memory": sessionMemoryStatusPayload(cfg, controlSessionStore, controlSessionMemoryRuntime),
+			"maintenance":    memoryMaintenanceStatusPayload(controlSessionStore),
+		}
+		if storeStatus != nil {
+			result["store"] = memoryStoreStatusPayload(*storeStatus)
+		}
+		return nostruntime.ControlRPCResult{Result: result}, nil
 	case methods.MethodLogsTail:
 		req, err := methods.DecodeLogsTailParams(in.Params)
 		if err != nil {
@@ -7589,6 +7995,76 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, nil
+	case methods.MethodTasksCreate:
+		req, err := methods.DecodeTasksCreateParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		result, err := createControlTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, nil
+	case methods.MethodTasksGet:
+		req, err := methods.DecodeTasksGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		result, err := buildControlTaskResponse(ctx, docsRepo, req.TaskID, req.RunsLimit)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, nil
+	case methods.MethodTasksList:
+		req, err := methods.DecodeTasksListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		result, err := listControlTasks(ctx, docsRepo, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, nil
+	case methods.MethodTasksCancel:
+		req, err := methods.DecodeTasksCancelParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		result, err := cancelControlTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, nil
+	case methods.MethodTasksResume:
+		req, err := methods.DecodeTasksResumeParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		result, err := resumeControlTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, nil
 
 	case methods.MethodAgentsList:
 		req, err := methods.DecodeAgentsListParams(in.Params)
@@ -9672,6 +10148,9 @@ func handleControlRPCRequest(
 			_, _ = rand.Read(b)
 			return b
 		}())
+		if req.Task != nil && strings.TrimSpace(req.Task.TaskID) != "" {
+			taskID = strings.TrimSpace(req.Task.TaskID)
+		}
 		senderPubKey := dmBus.PublicKey()
 		req.ToolProfile = strings.TrimSpace(req.ToolProfile)
 		req.EnabledTools = normalizeACPEnabledTools(req.EnabledTools)
@@ -9682,8 +10161,9 @@ func handleControlRPCRequest(
 				AgentID:   strings.TrimSpace(req.ParentContext.AgentID),
 			}
 		}
-		acpMsg := acppkg.NewTask(taskID, senderPubKey, acppkg.TaskPayload{
+		taskPayload := acppkg.TaskPayload{
 			Instructions:    req.Instructions,
+			Task:            req.Task,
 			ContextMessages: cloneACPContextMessages(req.ContextMessages),
 			MemoryScope:     req.MemoryScope,
 			ToolProfile:     req.ToolProfile,
@@ -9691,7 +10171,10 @@ func handleControlRPCRequest(
 			ParentContext:   parentContext,
 			TimeoutMS:       req.TimeoutMS,
 			ReplyTo:         senderPubKey,
-		})
+		}
+		bindACPTaskID(&taskPayload, taskID)
+		recordACPDelegatedChild(controlSessionStore, taskPayload, taskID)
+		acpMsg := acppkg.NewTask(taskID, senderPubKey, taskPayload)
 		payload, err := json.Marshal(acpMsg)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: marshal: %w", err)
@@ -9763,6 +10246,11 @@ func handleControlRPCRequest(
 			}
 			senderPubKey := dmBus.PublicKey()
 			payload.ReplyTo = senderPubKey
+			if payload.Task != nil && strings.TrimSpace(payload.Task.TaskID) != "" {
+				taskID = strings.TrimSpace(payload.Task.TaskID)
+			}
+			bindACPTaskID(&payload, taskID)
+			recordACPDelegatedChild(controlSessionStore, payload, taskID)
 			acpMsg := acppkg.NewTask(taskID, senderPubKey, payload)
 			encoded, _ := json.Marshal(acpMsg)
 			return sendACPDMWithTransport(ctx, dmBus, dmScheme, peerPubKey, string(encoded))
@@ -9788,6 +10276,7 @@ func handleControlRPCRequest(
 			steps = append(steps, acppkg.Step{
 				PeerPubKey:      s.PeerPubKey,
 				Instructions:    s.Instructions,
+				Task:            s.Task,
 				ContextMessages: cloneACPContextMessages(s.ContextMessages),
 				MemoryScope:     s.MemoryScope,
 				ToolProfile:     s.ToolProfile,
@@ -9922,10 +10411,13 @@ func handleACPMessage(
 		defer cancel()
 		var result agent.TurnResult
 		var historyEntryIDs []string
+		var workerTask state.TaskSpec
+		var workerRun state.TaskRun
+		var cleanupWorkerTask func()
 		procErr := withExclusiveSessionTurn(processCtx, sessionID, taskTimeout, func() (err error) {
 			scopeCtx := resolveMemoryScopeContext(processCtx, cfg, docsRepo, controlSessionStore, sessionID, agentID, taskPayload.MemoryScope)
 			persistSessionMemoryScope(controlSessionStore, sessionID, agentID, scopeCtx.Scope)
-			cleanupWorkerTask, err := beginACPWorkerTask(processCtx, docsRepo, sessionID, fromPubKey, agentID, msg.TaskID, taskPayload, turnStartedAt)
+			workerTask, workerRun, cleanupWorkerTask, err = beginACPWorkerTask(processCtx, docsRepo, sessionID, fromPubKey, agentID, msg.TaskID, taskPayload, turnStartedAt)
 			if err != nil {
 				return fmt.Errorf("acp worker task start: %w", err)
 			}
@@ -9937,14 +10429,25 @@ func handleACPMessage(
 			}()
 			turnCtx := contextWithMemoryScope(processCtx, scopeCtx)
 			turnCtx = contextWithACPTaskPayload(turnCtx, taskPayload)
-			filteredRuntime := applyACPTaskRuntimeConstraints(turnCtx, rt, agentID, taskPayload, cfg, docsRepo)
+			filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(
+				turnCtx,
+				cfg,
+				docsRepo,
+				sessionID,
+				agentID,
+				rt,
+				tools,
+				turnToolConstraints{ToolProfile: taskPayload.ToolProfile, EnabledTools: taskPayload.EnabledTools},
+			)
 			seedHistory := decodeACPConversationMessages(taskPayload.ContextMessages)
 			historyEntryIDs = append(historyEntryIDs, persistACPContextHistory(processCtx, transcriptRepo, controlContextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, seedHistory)...)
 			prepared := buildAgentRunTurn(turnCtx, methods.AgentRequest{
 				SessionID: sessionID,
 				Message:   instructions,
 			}, controlMemoryStore, scopeCtx, workspaceDirForAgent(cfg, agentID), controlSessionStore)
-			prepared = applyPromptEnvelopeToPreparedTurn(prepared, turnPromptBuilderParams{Config: cfg, SessionID: sessionID, AgentID: agentID, Channel: "nostr", StaticSystemPrompt: prepared.Turn.StaticSystemPrompt, Context: prepared.Turn.Context, Tools: prepared.Turn.Tools})
+			prepared.Turn.Tools = turnTools
+			prepared.Turn.Executor = turnExecutor
+			prepared = applyPromptEnvelopeToPreparedTurn(prepared, turnPromptBuilderParams{Config: cfg, SessionID: sessionID, AgentID: agentID, Channel: "nostr", StaticSystemPrompt: prepared.Turn.StaticSystemPrompt, Context: prepared.Turn.Context, Tools: turnTools})
 			prepared.Turn.TurnID = msg.TaskID
 			if len(seedHistory) > 0 {
 				mergedHistory := make([]agent.ConversationMessage, 0, len(prepared.Turn.History)+len(seedHistory))
@@ -9971,8 +10474,6 @@ func handleACPMessage(
 			_ = controlSessionStore.AddTokens(sessionID, result.Usage.InputTokens, result.Usage.OutputTokens)
 		}
 		turnTelemetry := buildTurnTelemetry(msg.TaskID, turnStartedAt, time.Now(), result, procErr, false, "", "", "")
-		persistTurnTelemetry(controlSessionStore, sessionID, turnTelemetry)
-		emitControlWSEvent(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, sessionID, turnTelemetry))
 
 		var parentContext *acppkg.ParentContext
 		if taskPayload.ParentContext != nil {
@@ -9981,11 +10482,51 @@ func handleACPMessage(
 				AgentID:   strings.TrimSpace(taskPayload.ParentContext.AgentID),
 			}
 		}
+		resultRef := state.TaskResultRef{Kind: "acp_result", ID: msg.TaskID}
+		if len(historyEntryIDs) > 0 {
+			resultRef = state.TaskResultRef{Kind: "transcript_entry", ID: historyEntryIDs[len(historyEntryIDs)-1]}
+		}
+		if controlSessionStore != nil {
+			if err := controlSessionStore.RecordTurn(sessionID, state.TurnTelemetry{
+				TurnID:         turnTelemetry.TurnID,
+				TaskID:         firstNonEmptyTrimmed(workerTask.TaskID, msg.TaskID),
+				RunID:          strings.TrimSpace(workerRun.RunID),
+				ParentTaskID:   strings.TrimSpace(workerTask.ParentTaskID),
+				ParentRunID:    strings.TrimSpace(workerRun.ParentRunID),
+				StartedAtMS:    turnTelemetry.StartedAtMS,
+				EndedAtMS:      turnTelemetry.EndedAtMS,
+				DurationMS:     turnTelemetry.DurationMS,
+				Outcome:        string(turnTelemetry.Outcome),
+				StopReason:     string(turnTelemetry.StopReason),
+				LoopBlocked:    turnTelemetry.LoopBlocked,
+				Error:          turnTelemetry.Error,
+				FallbackUsed:   turnTelemetry.FallbackUsed,
+				FallbackFrom:   turnTelemetry.FallbackFrom,
+				FallbackTo:     turnTelemetry.FallbackTo,
+				FallbackReason: turnTelemetry.FallbackReason,
+				InputTokens:    turnTelemetry.Usage.InputTokens,
+				OutputTokens:   turnTelemetry.Usage.OutputTokens,
+				Result:         resultRef,
+			}); err != nil {
+				log.Printf("session store turn telemetry failed session=%s: %v", sessionID, err)
+			}
+		}
+		emitControlWSEvent(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, sessionID, turnTelemetry))
+		if strings.TrimSpace(workerTask.TaskID) != "" && strings.TrimSpace(workerRun.RunID) != "" {
+			if err := finishACPWorkerTaskDocs(processCtx, docsRepo, sessionID, workerTask, workerRun, resultRef, turnResultMetadataPtr(result, procErr), procErr, historyEntryIDs); err != nil {
+				log.Printf("acp worker task completion persist failed session=%s task_id=%s run_id=%s err=%v", sessionID, workerTask.TaskID, workerRun.RunID, err)
+			}
+		}
 		worker := &acppkg.WorkerMetadata{
+			TaskID:          firstNonEmptyTrimmed(workerTask.TaskID, msg.TaskID),
+			RunID:           workerRun.RunID,
 			SessionID:       sessionID,
 			AgentID:         agentID,
+			ParentTaskID:    workerTask.ParentTaskID,
+			ParentRunID:     workerRun.ParentRunID,
 			ParentContext:   parentContext,
 			HistoryEntryIDs: cloneACPStringSlice(historyEntryIDs),
+			Result:          resultRef,
 			TurnResult:      turnResultMetadataPtr(result, procErr),
 		}
 		senderPubKey := ""
@@ -10679,6 +11220,8 @@ func applySessionsSpawn(ctx context.Context, req methods.SessionsSpawnRequest, c
 	// Apply profile-based tool filtering.
 	rt = applyAgentProfileFilter(ctx, rt, sessionID, cfg, docsRepo)
 
+	resolvedAgentID := defaultAgentID(req.AgentID)
+
 	// Build the agent request for the child session.
 	agentReq := methods.AgentRequest{
 		SessionID:   sessionID,
@@ -10687,7 +11230,21 @@ func applySessionsSpawn(ctx context.Context, req methods.SessionsSpawnRequest, c
 		MemoryScope: req.MemoryScope,
 		TimeoutMS:   req.TimeoutMS,
 	}
-	persistSessionMemoryScope(controlSessionStore, sessionID, req.AgentID, req.MemoryScope)
+	persistSessionMemoryScope(controlSessionStore, sessionID, resolvedAgentID, req.MemoryScope)
+	if controlSessionStore != nil {
+		se := controlSessionStore.GetOrNew(sessionID)
+		se.AgentID = resolvedAgentID
+		se.SpawnedBy = "sessions.spawn"
+		if parentEntry, ok := controlSessionStore.Get(req.ParentSessionID); ok {
+			if strings.TrimSpace(parentEntry.ActiveTaskID) != "" {
+				se.ParentTaskID = strings.TrimSpace(parentEntry.ActiveTaskID)
+				se.ParentRunID = strings.TrimSpace(parentEntry.ActiveRunID)
+			}
+		}
+		if putErr := controlSessionStore.Put(sessionID, se); putErr != nil {
+			log.Printf("session store put failed session=%s: %v", sessionID, putErr)
+		}
+	}
 
 	// Start the agent job and track in SubagentRegistry.
 	snapshot := controlAgentJobs.Begin(runID, sessionID)

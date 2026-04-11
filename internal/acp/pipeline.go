@@ -16,6 +16,8 @@ type Step struct {
 	PeerPubKey string `json:"peer_pubkey"`
 	// Instructions is the natural-language task text sent to the worker.
 	Instructions string `json:"instructions"`
+	// Task carries the canonical machine-readable task contract for this step.
+	Task *state.TaskSpec `json:"task,omitempty"`
 	// ContextMessages seeds the worker with prior parent history/context.
 	ContextMessages []map[string]any `json:"context_messages,omitempty"`
 	// MemoryScope carries the explicit worker memory scope contract.
@@ -84,9 +86,13 @@ func (p *Pipeline) RunSequential(ctx context.Context, d *Dispatcher, send SendFu
 			instructions = "[Previous result]\n" + prevResult + "\n\n[New task]\n" + instructions
 		}
 
+		if step.Task != nil && strings.TrimSpace(step.Task.TaskID) != "" {
+			taskID = strings.TrimSpace(step.Task.TaskID)
+		}
 		ch := d.Register(taskID)
 		if err := send(ctx, step.PeerPubKey, taskID, TaskPayload{
 			Instructions:    instructions,
+			Task:            step.Task,
 			ContextMessages: cloneContextMessages(step.ContextMessages),
 			MemoryScope:     step.MemoryScope,
 			ToolProfile:     strings.TrimSpace(step.ToolProfile),
@@ -128,10 +134,14 @@ func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc
 	// Register and dispatch all tasks.
 	for i, step := range p.Steps {
 		taskID := GenerateTaskID()
+		if step.Task != nil && strings.TrimSpace(step.Task.TaskID) != "" {
+			taskID = strings.TrimSpace(step.Task.TaskID)
+		}
 		taskIDs[i] = taskID
 		d.Register(taskID)
 		if err := send(ctx, step.PeerPubKey, taskID, TaskPayload{
 			Instructions:    step.Instructions,
+			Task:            step.Task,
 			ContextMessages: cloneContextMessages(step.ContextMessages),
 			MemoryScope:     step.MemoryScope,
 			ToolProfile:     strings.TrimSpace(step.ToolProfile),
@@ -231,10 +241,15 @@ func cloneWorkerMetadata(worker *WorkerMetadata) *WorkerMetadata {
 		return nil
 	}
 	cp := &WorkerMetadata{
+		TaskID:          worker.TaskID,
+		RunID:           worker.RunID,
 		SessionID:       worker.SessionID,
 		AgentID:         worker.AgentID,
+		ParentTaskID:    worker.ParentTaskID,
+		ParentRunID:     worker.ParentRunID,
 		ParentContext:   cloneParentContext(worker.ParentContext),
 		HistoryEntryIDs: cloneStrings(worker.HistoryEntryIDs),
+		Result:          worker.Result,
 	}
 	if worker.TurnResult != nil {
 		turnResult := *worker.TurnResult

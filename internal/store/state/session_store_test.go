@@ -11,6 +11,9 @@ func TestSessionStore_RecordTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new session store: %v", err)
 	}
+	if err := ss.LinkTask("sess-1", "task-1", "run-1", "parent-task", "parent-run"); err != nil {
+		t.Fatalf("link task: %v", err)
+	}
 	if err := ss.RecordTurn("sess-1", TurnTelemetry{
 		TurnID:         "turn-1",
 		StartedAtMS:    100,
@@ -40,15 +43,24 @@ func TestSessionStore_RecordTurn(t *testing.T) {
 	if !got.LastTurn.FallbackUsed || got.LastTurn.FallbackTo != "b" {
 		t.Fatalf("expected fallback data on last turn: %+v", got.LastTurn)
 	}
+	if got.LastTurn.TaskID != "task-1" || got.LastTurn.RunID != "run-1" {
+		t.Fatalf("expected task linkage on last turn: %+v", got.LastTurn)
+	}
+	if got.LastTurn.ParentTaskID != "parent-task" || got.LastTurn.ParentRunID != "parent-run" {
+		t.Fatalf("expected parent linkage on last turn: %+v", got.LastTurn)
+	}
 }
 
 func TestTurnTelemetry_JSONShape(t *testing.T) {
 	raw, err := json.Marshal(TurnTelemetry{
 		TurnID:      "turn-1",
+		TaskID:      "task-1",
+		RunID:       "run-1",
 		StartedAtMS: 1,
 		EndedAtMS:   2,
 		Outcome:     "completed",
 		StopReason:  "model_text",
+		Result:      TaskResultRef{Kind: "transcript_entry", ID: "entry-1"},
 	})
 	if err != nil {
 		t.Fatalf("marshal telemetry: %v", err)
@@ -57,10 +69,46 @@ func TestTurnTelemetry_JSONShape(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("unmarshal telemetry: %v", err)
 	}
-	for _, field := range []string{"turn_id", "started_at_ms", "ended_at_ms", "outcome", "stop_reason"} {
+	for _, field := range []string{"turn_id", "task_id", "run_id", "started_at_ms", "ended_at_ms", "outcome", "stop_reason", "result"} {
 		if _, ok := decoded[field]; !ok {
 			t.Fatalf("missing field %q in telemetry JSON: %s", field, string(raw))
 		}
+	}
+}
+
+func TestSessionStore_LinkTaskAndRecordTaskResult(t *testing.T) {
+	ss, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	if err := ss.LinkTask("sess-1", "task-1", "run-1", "parent-task", "parent-run"); err != nil {
+		t.Fatalf("link task: %v", err)
+	}
+	if err := ss.AppendChildTask("sess-1", "child-1"); err != nil {
+		t.Fatalf("append child task: %v", err)
+	}
+	if err := ss.AppendChildTask("sess-1", "child-1"); err != nil {
+		t.Fatalf("append child task dedupe: %v", err)
+	}
+	result := TaskResultRef{Kind: "transcript_entry", ID: "entry-1"}
+	if err := ss.RecordTaskResult("sess-1", "task-1", "run-1", result); err != nil {
+		t.Fatalf("record task result: %v", err)
+	}
+	got, ok := ss.Get("sess-1")
+	if !ok {
+		t.Fatal("session not found")
+	}
+	if got.ActiveTaskID != "" || got.ActiveRunID != "" {
+		t.Fatalf("expected active task cleared after result: %+v", got)
+	}
+	if got.LastCompletedTaskID != "task-1" || got.LastCompletedRunID != "run-1" {
+		t.Fatalf("expected completed task linkage: %+v", got)
+	}
+	if got.LastTaskResult.Kind != "transcript_entry" || got.LastTaskResult.ID != "entry-1" {
+		t.Fatalf("expected result ref to persist: %+v", got.LastTaskResult)
+	}
+	if len(got.ChildTaskIDs) != 1 || got.ChildTaskIDs[0] != "child-1" {
+		t.Fatalf("expected child task dedupe: %+v", got.ChildTaskIDs)
 	}
 }
 

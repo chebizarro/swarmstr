@@ -337,6 +337,17 @@ func canonicalPairKey(a, b string) string {
 	return a + "|" + b
 }
 
+func isKnownPollToolCall(toolName string, params map[string]any) bool {
+	if toolName == "command_status" {
+		return true
+	}
+	if toolName != "process" || params == nil {
+		return false
+	}
+	action, _ := params["action"].(string)
+	return action == "poll" || action == "log"
+}
+
 // ─── Main detection function ──────────────────────────────────────────────────
 
 // Detect checks whether the given tool call appears to be part of a loop.
@@ -354,6 +365,7 @@ func Detect(state *State, toolName string, params map[string]any, cfg *Config) R
 
 	currentHash := HashToolCall(toolName, params)
 	noProgressCount, latestResultHash := getNoProgressStreak(history, toolName, currentHash)
+	knownPollTool := isKnownPollToolCall(toolName, params)
 
 	// 1. Global circuit breaker.
 	if noProgressCount >= rc.GlobalCircuitBreakerThreshold {
@@ -369,7 +381,7 @@ func Detect(state *State, toolName string, params map[string]any, cfg *Config) R
 	}
 
 	// 2. Known-poll no-progress (critical).
-	if rc.Detectors.KnownPollNoProgress && noProgressCount >= rc.CriticalThreshold {
+	if knownPollTool && rc.Detectors.KnownPollNoProgress && noProgressCount >= rc.CriticalThreshold {
 		log.Printf("toolloop: critical polling loop detected: %s repeated %d times", toolName, noProgressCount)
 		return Result{
 			Stuck:      true,
@@ -382,7 +394,7 @@ func Detect(state *State, toolName string, params map[string]any, cfg *Config) R
 	}
 
 	// 3. Known-poll no-progress (warning).
-	if rc.Detectors.KnownPollNoProgress && noProgressCount >= rc.WarningThreshold {
+	if knownPollTool && rc.Detectors.KnownPollNoProgress && noProgressCount >= rc.WarningThreshold {
 		log.Printf("toolloop: polling loop warning: %s repeated %d times", toolName, noProgressCount)
 		return Result{
 			Stuck:      true,
@@ -435,7 +447,7 @@ func Detect(state *State, toolName string, params map[string]any, cfg *Config) R
 			recentCount++
 		}
 	}
-	if rc.Detectors.GenericRepeat && recentCount >= rc.WarningThreshold {
+	if !knownPollTool && rc.Detectors.GenericRepeat && recentCount >= rc.WarningThreshold {
 		log.Printf("toolloop: loop warning: %s called %d times with identical arguments", toolName, recentCount)
 		return Result{
 			Stuck:      true,

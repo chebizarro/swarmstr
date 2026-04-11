@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"metiq/internal/store/state"
 )
@@ -51,6 +53,9 @@ func (b *contextAwareBackendStub) SearchSessionWithContext(ctx context.Context, 
 }
 func (b *contextAwareBackendStub) ListSession(sessionID string, limit int) []IndexedMemory {
 	return nil
+}
+func (b *contextAwareBackendStub) BackendStatus() BackendStatus {
+	return BackendStatus{Name: "stub", Available: true}
 }
 func (b *contextAwareBackendStub) Count() int                                          { return 0 }
 func (b *contextAwareBackendStub) SessionCount() int                                   { return 0 }
@@ -158,13 +163,19 @@ func TestQdrantDeleteNormalizesIDs(t *testing.T) {
 		Points []string `json:"points"`
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/collections/test/points/delete" {
+		switch r.URL.Path {
+		case "/collections/test":
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"points_count": 0}})
+		case "/collections/test/points/" + stringToUUID("plain-id"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"id": stringToUUID("plain-id")}})
+		case "/collections/test/points/delete":
+			if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+				t.Fatalf("decode delete body: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatalf("decode delete body: %v", err)
-		}
-		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
@@ -181,5 +192,158 @@ func TestQdrantDeleteNormalizesIDs(t *testing.T) {
 	}
 	if got.Points[0] != stringToUUID("plain-id") {
 		t.Fatalf("expected normalized UUID %q, got %q", stringToUUID("plain-id"), got.Points[0])
+	}
+}
+
+func TestQdrantSearchRepairsMissingCollectionAndClearsDegradedState(t *testing.T) {
+	collectionExists := false
+	collectionCreates := 0
+	searchCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/embeddings":
+			_ = json.NewEncoder(w).Encode(map[string]any{"embedding": []float32{0.1, 0.2, 0.3}})
+		case "/collections/test":
+			if r.Method == http.MethodGet {
+				if collectionExists {
+					_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"points_count": 1}})
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`missing collection`))
+				return
+			}
+			if r.Method == http.MethodPut {
+				collectionCreates++
+				collectionExists = true
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+				return
+			}
+			t.Fatalf("unexpected method: %s", r.Method)
+		case "/collections/test/points/search":
+			searchCalls++
+			if !collectionExists {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`missing collection`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"result": []map[string]any{{
+					"id":      "mem-1",
+					"score":   0.99,
+					"payload": map[string]any{"text": "remembered", "session_id": "sess"},
+				}},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	backend := &QdrantBackend{
+		qdrantURL:  server.URL,
+		ollamaURL:  server.URL,
+		collection: "test",
+		client:     server.Client(),
+	}
+	results := backend.SearchWithContext(context.Background(), "remember", 5)
+	if len(results) != 1 || results[0].Text != "remembered" {
+		t.Fatalf("expected repaired search result, got %#v", results)
+	}
+	if collectionCreates != 1 {
+		t.Fatalf("expected one collection repair, got %d", collectionCreates)
+	}
+	if searchCalls != 2 {
+		t.Fatalf("expected search retry after repair, got %d calls", searchCalls)
+	}
+	status := backend.BackendStatus()
+	if status.Degraded {
+		t.Fatalf("expected backend to recover, got %#v", status)
+	}
+}
+
+func TestQdrantSearchBackoffSuppressesImmediateRetryUntilCooldownExpires(t *testing.T) {
+	embedCalls := 0
+	searchCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/embeddings":
+			embedCalls++
+			if embedCalls == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`boom`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"embedding": []float32{0.1, 0.2, 0.3}})
+		case "/collections/test/points/search":
+			searchCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"result": []map[string]any{{
+					"id":      "mem-1",
+					"score":   0.99,
+					"payload": map[string]any{"text": "remembered"},
+				}},
+			})
+		case "/collections/test":
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"points_count": 1}})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	backend := &QdrantBackend{
+		qdrantURL:  server.URL,
+		ollamaURL:  server.URL,
+		collection: "test",
+		client:     server.Client(),
+	}
+	if got := backend.SearchWithContext(context.Background(), "remember", 5); got != nil {
+		t.Fatalf("expected first search failure, got %#v", got)
+	}
+	status := backend.BackendStatus()
+	if !status.Degraded || status.ConsecutiveFailures != 1 || status.NextRetryUnix == 0 {
+		t.Fatalf("expected degraded status after failure, got %#v", status)
+	}
+	if !strings.Contains(status.LastError, "embed search") {
+		t.Fatalf("expected embed failure in status, got %#v", status)
+	}
+	if got := backend.SearchWithContext(context.Background(), "remember", 5); got != nil {
+		t.Fatalf("expected cooldown to suppress immediate retry, got %#v", got)
+	}
+	if embedCalls != 1 {
+		t.Fatalf("expected cooldown to skip re-embedding, got %d calls", embedCalls)
+	}
+	backend.mu.Lock()
+	backend.nextRetryAt = time.Now().Add(-time.Second)
+	backend.mu.Unlock()
+	results := backend.SearchWithContext(context.Background(), "remember", 5)
+	if len(results) != 1 || results[0].Text != "remembered" {
+		t.Fatalf("expected successful retry after cooldown, got %#v", results)
+	}
+	if searchCalls != 1 {
+		t.Fatalf("expected one successful search after cooldown, got %d", searchCalls)
+	}
+	if status := backend.BackendStatus(); status.Degraded {
+		t.Fatalf("expected recovered backend after successful retry, got %#v", status)
+	}
+}
+
+func TestHybridIndexMemoryStatusReflectsBackendFallback(t *testing.T) {
+	idx, err := OpenIndex(filepath.Join(t.TempDir(), "memory.json"))
+	if err != nil {
+		t.Fatalf("OpenIndex failed: %v", err)
+	}
+	backend := &contextAwareBackendStub{}
+	hybrid := NewHybridIndex(idx, backend)
+	status := hybrid.MemoryStatus()
+	if status.Kind != "hybrid" {
+		t.Fatalf("expected hybrid store status, got %#v", status)
+	}
+	if status.FallbackActive {
+		t.Fatalf("did not expect fallback active for healthy backend, got %#v", status)
+	}
+	if status.Primary.Name != "stub" || status.Fallback == nil || status.Fallback.Name != "json-fts" {
+		t.Fatalf("unexpected hybrid status: %#v", status)
 	}
 }

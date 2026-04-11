@@ -18,7 +18,7 @@
       "method": "doctor.memory.status",
       "status": "implemented",
       "metiq_method": "doctor.memory.status",
-      "notes": ""
+      "notes": "Expanded in the 2026-04-10 parity hardening pass to report backend health, fallback/degraded state, file/session-memory surfaces, and maintenance counters."
     },
     {
       "method": "logs.tail",

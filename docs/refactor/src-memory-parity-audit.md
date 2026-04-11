@@ -60,17 +60,21 @@ A separate document already covers the reranking decision gate in detail:
 - deterministic retrieval exists
 - reranking is explicitly deferred behind a measurement gate
 
-What `swarmstr` does **not** yet have is the broader `src` memory runtime around that core:
-- the file-backed memory directory contract (`MEMORY.md`, topic files, memory typing, entrypoint truncation, search guidance)
-- the continuously-updated session-memory file pipeline
-- the shared/team memory sync system
-- snapshot/handoff flows for agent memory
-- freshness-aware file-memory retrieval and file-manifest selection
-- the operational safety/telemetry around those systems
+As of **2026-04-10**, several of the biggest runtime gaps called out in the original audit are now closed or materially reduced:
+- the file-backed memory contract is implemented and documented (`MEMORY.md` index handling, typed topic files, safe truncation, scoped file-memory surfaces)
+- maintained session memory exists as a continuously refreshed per-session artifact
+- maintained session memory now participates in active recall and compaction/rollover flows
+- scoped file-memory surfaces and snapshot seeding exist for agent memory
+- operators now have explicit backend/file/session-memory health via `doctor.memory.status`
+
+The remaining meaningful parity gaps are narrower:
+- shared/team memory sync is still foundation-only rather than a full watcher/push/pull subsystem
+- file-memory retrieval/freshness packaging still has room to grow toward `src`'s richer manifest-selection behavior
+- memory telemetry is now present, but the deepest shared-memory/sync telemetry remains future work
 
 In short:
-- `swarmstr` has the **store and scoped recall substrate**
-- `src` still leads on the **file-memory UX/runtime**, **session summarization pipeline**, and **shared-memory operations**
+- `swarmstr` now has the **store, scoped recall substrate, maintained session memory, and operator health surface**
+- `src` still leads mainly on **shared-memory operations** and the most advanced **file-memory retrieval/sync UX**
 
 ## What is already implemented in `swarmstr`
 
@@ -111,7 +115,7 @@ That means reranking is not an accidental omission; it is a deliberate deferred 
 
 ## What remains to be implemented
 
-## Gap 1: No canonical file-backed memory directory contract
+## Gap 1: Canonical file-backed memory contract is implemented; remaining work is retrieval UX depth
 
 ### What `src` has
 `src` treats memory as a file-backed authoring surface, not just an index:
@@ -128,27 +132,22 @@ The important behavior is not only “there is a MEMORY.md file”. It is that t
 - how to search memory files and old transcripts when needed
 
 ### What `swarmstr` has today
-`swarmstr` can inject bootstrap files such as `MEMORY.md` through `internal/hooks/handler_bootstrap_extra_files.go`, and the docs talk about workspace files in `docs/concepts/memory.md`.
-
-But there is no canonical runtime implementation equivalent to `src/memdir/*` that:
-- constructs a file-memory prompt contract
-- defines a typed frontmatter schema for memory files
-- scans topic files under a memory directory
-- truncates `MEMORY.md` safely for prompt injection
-- gives the model a consistent authoring/search workflow for file-backed memory
+`swarmstr` now has the core file-backed memory contract that was missing in the original audit:
+- `MEMORY.md` is treated as a bounded index rather than an unbounded dump
+- typed topic files under `memory/` are part of the documented/runtime contract
+- oversized or unreadable prompt-facing memory files produce warnings rather than silently empty context
+- typed memory discovery is constrained to the active workspace root
+- scoped file-memory surfaces exist for `user`, `project`, and `local`
 
 ### Why this matters
-Without this layer, `swarmstr`’s file memory is mostly documentation and bootstrap convention, not a strongly-enforced runtime contract.
+This means file-backed memory is now a first-class runtime surface rather than only a bootstrap convention.
 
 ### Remaining implementation
-Add a Go-native `memdir`-style subsystem for workspace/agent memory files that covers:
-- typed file-memory prompt assembly
-- `MEMORY.md` index handling and truncation
-- topic-file metadata scanning
-- file-memory search guidance
-- explicit guidance about what is durable vs derivable
+The remaining difference versus `src` is mostly in richer retrieval ergonomics:
+- deeper manifest/header scanning and selection UX
+- any further file-memory authoring/search affordances beyond the current contract
 
-## Gap 2: Session memory is only a `/new`/`/reset` transcript dump, not a maintained working summary
+## Gap 2: Session memory runtime parity is mostly closed
 
 ### What `src` has
 `src/services/SessionMemory/*` implements a real session-memory pipeline:
@@ -162,32 +161,25 @@ Add a Go-native `memdir`-style subsystem for workspace/agent memory files that c
 - shared state exists to wait for in-flight extraction and avoid races
 
 ### What `swarmstr` has today
-`swarmstr/internal/hooks/handler_session_memory.go` writes a markdown transcript snapshot when `/new` or `/reset` fires.
-
-That is useful, but it is much narrower than the `src` feature:
-- no per-turn extraction
-- no thresholds
-- no maintained session summary file
-- no restricted subagent/editor flow
-- no custom template/prompt support
-- no wait/coordination helpers
-- no manual summary extraction path
-- no session-memory compaction/truncation helpers
+`swarmstr` now has a maintained session-memory runtime rather than only a reset-time transcript dump:
+- background refresh is thresholded by observed chars/tool-call activity
+- a validated per-session artifact is maintained under `.metiq/session-memory/`
+- `/summary` exposes a manual refresh path
+- compaction, `/new`, and `/reset` coordinate with the session-memory runtime before transcript rollover
+- stale, missing, mismatched, or invalid artifacts are detected and refreshed
+- successful turns can consume a bounded session-memory recall block in later turns
+- operator status surfaces expose tracked/pending/in-flight/stale session-memory state
 
 ### Why this matters
-The current hook preserves raw context, but it does not preserve the **working state abstraction** that `src`’s session memory provides. `src`’s feature exists so the agent can keep an up-to-date “where we are / what matters / what failed / what files matter” record even as the conversation grows.
+This closes most of the day-to-day continuity gap. The model now has a maintained working-state artifact rather than only a raw transcript snapshot at reset time.
 
 ### Remaining implementation
-Build a real session-memory runtime, not just a save-on-reset hook:
-- a maintained session summary file per session/agent
-- thresholded background updates
-- extraction state coordination
-- manual extraction entrypoint
-- compaction-safe truncation rules
-- prompt/template customization
-- tests for update thresholds, safe editing restrictions, and lifecycle behavior
+The main remaining differences are optional rather than foundational:
+- prompt/template customization parity if operators need it
+- a restricted subagent/editor flow dedicated solely to session-memory authoring
+- any further UX polish around manual extraction and inspection
 
-## Gap 3: No team/shared memory system
+## Gap 3: Shared/team memory exists as a foundation, but not yet as a full sync subsystem
 
 ### What `src` has
 `src/services/teamMemorySync/*` provides a substantial shared-memory subsystem:
@@ -200,23 +192,27 @@ Build a real session-memory runtime, not just a save-on-reset hook:
 - telemetry for push/pull/conflict/error states
 
 ### What `swarmstr` has today
-There is no equivalent team-memory implementation in `swarmstr`.
+`swarmstr` now has a repo-scoped shared-memory foundation under `.metiq/team-memory/` plus sync-state bookkeeping under `.metiq/team-memory-sync/state.json`.
 
-There is also no evidence in the reviewed memory runtime that memory files are synced/shared across collaborators with conflict-handling or secret-guard behavior.
+That foundation already includes:
+- shared-scope storage rooted inside the workspace
+- path validation and traversal/symlink-escape protection
+- secret scanning before writes/export packaging
+- optimistic-concurrency semantics via checksums
+
+What it still does **not** have is the full `src` watcher/push/pull/conflict-resolution system.
 
 ### Why this matters
-This is one of the largest remaining parity gaps. `swarmstr` currently has personal/local memory and indexed recall, but not a repo-scoped shared memory layer comparable to `src`.
+This remains one of the largest parity gaps, but it is no longer accurate to describe `swarmstr` as having no shared-memory system at all. The missing layer is the distributed sync/telemetry behavior on top of the local foundation.
 
 ### Remaining implementation
-If team/shared memory is desired in `swarmstr`, it needs a first-class subsystem with:
-- shared-scope storage contract
-- path validation
-- secret scanning
-- sync state / conflict resolution
-- watcher-driven upload or explicit sync commands
-- operator-visible status and telemetry
+If team/shared memory parity is desired in `swarmstr`, the next steps are:
+- explicit push/pull transport
+- conflict resolution semantics and operator-visible status
+- watcher-driven sync or equivalent manual sync commands
+- richer telemetry for sync/repair/error states
 
-## Gap 4: Agent memory file scopes are only partially ported
+## Gap 4: Agent memory file scopes are implemented; remaining work is operator UX polish
 
 ### What `src` has
 `src/tools/AgentTool/agentMemory.ts` gives every agent a concrete file-memory directory based on scope:
@@ -229,21 +225,22 @@ Those scopes are not just metadata on indexed documents; they are different auth
 `src/tools/AgentTool/agentMemorySnapshot.ts` adds snapshot/handoff behavior so project snapshots can seed or refresh an agent’s local memory files.
 
 ### What `swarmstr` has today
-`swarmstr` has scoped **indexed memory** and scope-aware prompt recall.
+`swarmstr` now applies the same scope contract to writable file-backed memory surfaces:
+- `user` → `~/.metiq/agent-memory/<agent>/`
+- `project` → `<workspace>/.metiq/agent-memory/<agent>/`
+- `local` → `<session-workspace>/.metiq/agent-memory-local/<agent>/`
 
-What it does not have is the analogous **file-memory surface per scope** or snapshot hydration/update logic for agent memory directories.
+It also supports project snapshot seeding under `<workspace>/.metiq/agent-memory-snapshots/<agent>/` and warns instead of silently overwriting newer local/user surfaces.
 
 ### Why this matters
-Right now `swarmstr`’s scope parity is strongest at the indexed-memory layer. `src` also applies scope to the writable file-memory surface and to bootstrap/handoff behavior.
+This closes the major scope-parity gap beyond indexed memory. Scope now affects both retrieval/write metadata and the actual file-backed memory surface.
 
 ### Remaining implementation
-Extend scope parity beyond indexed memory by adding:
-- explicit scoped file-memory directories
-- per-agent file-memory loading rules
-- snapshot seed/update flows for agent memory
-- operator prompts or commands when a snapshot update should replace or refresh local memory
+The remaining work is mostly UX-oriented:
+- clearer operator commands/prompts when a snapshot refresh should replace local memory
+- any further ergonomics around inspecting or promoting scoped file-memory surfaces
 
-## Gap 5: No file-memory relevance selection or freshness-aware packaging
+## Gap 5: File-memory selection exists, but `src` still has the richer freshness/selection UX
 
 ### What `src` has
 `src/memdir/memoryScan.ts` and `src/memdir/findRelevantMemories.ts` support:
@@ -255,23 +252,22 @@ Extend scope parity beyond indexed memory by adding:
 This is distinct from the indexed memory search path.
 
 ### What `swarmstr` has today
-`swarmstr` has deterministic indexed-memory search and prompt packaging, but no equivalent file-memory manifest scan/selection path.
+`swarmstr` now has a real file-memory runtime and deterministic recall packaging, including surfaced-path tracking and bounded `recent_memory_recall` samples that capture selected file paths and freshness metadata.
 
-There is also no reviewed implementation that surfaces file-memory freshness metadata to the model.
+What still appears thinner than `src` is the richness of the file-manifest selection UX itself: `src`'s dedicated header-scan/query-selection flow is still the more mature design.
 
 ### Why this matters
-If `swarmstr` wants file-backed memory to be more than a manually-read bootstrap artifact, it needs a runtime path to discover the right memory files for the current turn.
+The remaining gap is no longer "file memory is manual only". It is that `src` still has a more explicit first-class retrieval pipeline for choosing the best file-backed memories per turn.
 
 ### Remaining implementation
-Add a file-memory retrieval layer that can:
-- scan typed memory headers
-- choose a bounded candidate set
-- package freshness metadata
-- avoid re-surfacing the same file every turn
+Continue iterating on the retrieval layer with:
+- richer typed-header scanning/selection heuristics
+- freshness metadata surfaced consistently in the model-facing contract
+- stronger suppression/reselection policy for already-surfaced files
 
 This can remain deterministic at first; LLM reranking should stay behind the existing readiness gate.
 
-## Gap 6: Missing operational glue between session memory, compaction, and memory files
+## Gap 6: Operational glue between session memory, compaction, and memory files is implemented
 
 ### What `src` has
 The `src` session-memory pipeline is operationally integrated:
@@ -281,21 +277,20 @@ The `src` session-memory pipeline is operationally integrated:
 - the session notes file is treated as a maintained artifact, not just a raw archive
 
 ### What `swarmstr` has today
-The reviewed `swarmstr` compaction flow in `cmd/metiqd/main.go` creates a transcript summary entry, but the current memory implementation does not include a comparable session-memory lifecycle around compaction.
-
-The current session-memory hook is also not wired as a maintained pre/post-compaction summary system.
+`swarmstr` now has the comparable lifecycle glue that was missing in the first audit pass:
+- session-memory refresh is awaited or forced before compaction when needed
+- `/summary` exposes a manual refresh path
+- `/new` and `/reset` flush maintained session memory before transcript rollover
+- active recall can consume the maintained artifact on subsequent turns
+- tests cover refresh-vs-checkpoint behavior and stale artifact detection
 
 ### Why this matters
-This is where the user continuity payoff shows up: the model needs a durable, compact “what matters now” artifact before transcript pruning/compaction or session rollover.
+This is the user-continuity payoff: transcript pruning and rollover now happen with a maintained "what matters now" artifact in place.
 
 ### Remaining implementation
-Add explicit lifecycle glue for:
-- flushing/updating session memory before compaction or session rollover
-- consuming maintained session memory after compaction
-- exposing a manual “extract session memory now” surface
-- testing race behavior when extraction and compaction overlap
+No foundational implementation gap remains here. Further work is limited to polish around templates, editing strategy, and operator UX.
 
-## Gap 7: Missing memory-specific telemetry and safety rails
+## Gap 7: Memory-specific telemetry and safety rails are partially closed
 
 ### What `src` has
 The reviewed `src` files include substantial operational safeguards:
@@ -306,77 +301,69 @@ The reviewed `src` files include substantial operational safeguards:
 - bounded selection budgets and failure-safe fallbacks
 
 ### What `swarmstr` has today
-`swarmstr` has good unit coverage around indexed memory and prompt packaging, but not the broader telemetry/safety system around advanced memory features.
+`swarmstr` now has a meaningful operator/telemetry surface around memory features:
+- backend health reporting with degraded/backoff/fallback state for Qdrant/hybrid memory
+- explicit `doctor.memory.status` reporting for indexed, file-memory, session-memory, and maintenance surfaces
+- stale session-memory artifact detection
+- bounded `recent_memory_recall` samples for successful turns
+- secret scanning and path validation for the shared-memory foundation
 
 ### Remaining implementation
-As advanced memory features are added, also add:
-- memory lifecycle telemetry
-- conflict/error telemetry for shared memory
-- secret-guard rails for shared memory files
-- budget/truncation metrics for file-memory/session-memory injection
+The main telemetry still missing is around future shared-memory sync behavior:
+- conflict/error telemetry for shared-memory push/pull workflows
+- richer budget/truncation metrics if the file-memory/session-memory prompt surface grows further
+- any additional sync/repair observability once team-memory transport exists
 
 ## Recommended implementation order
 
-### Workstream 1 — File-backed memory contract
-Build the missing `memdir` equivalent first.
+### Workstream 1 — Shared/team memory beyond the current foundation
+Build the watcher/push/pull/conflict-handling layer on top of the existing shared-memory foundation.
 
 Why first:
-- it defines the operator/model contract for file memory
-- session memory and shared memory both need a canonical file layout to target
-- it is lower-risk than sync or reranking
+- it is the largest remaining functional gap versus `src`
+- the local path-validation/secret-guard foundation already exists
 
-### Workstream 2 — Real session memory runtime
-Replace the current “save transcript on reset” hook with a maintained session summary pipeline.
+### Workstream 2 — File-memory retrieval and freshness packaging
+Keep improving deterministic file-memory selection and freshness surfacing.
 
 Why second:
-- this is the biggest day-to-day continuity gap vs `src`
-- it benefits immediately from Workstream 1’s file contract
+- the file-backed contract now exists, so retrieval quality is the next leverage point
+- this improves recall quality without introducing a reranker prematurely
 
-### Workstream 3 — Agent file-memory scopes and snapshots
-Extend parity from indexed scope metadata to actual scoped file-memory surfaces and handoff flows.
+### Workstream 3 — Session-memory authoring UX polish
+Only if needed, add template customization and/or a dedicated restricted editor flow for session-memory generation.
 
-### Workstream 4 — Shared/team memory
-Only after the local file-memory contract is stable should `swarmstr` add repo/shared sync behavior.
-
-### Workstream 5 — File-memory retrieval and freshness packaging
-Once file-backed memory exists as a real runtime primitive, add header scanning, bounded candidate selection, and freshness-aware packaging.
-
-### Workstream 6 — Reranking (still gated)
+### Workstream 4 — Reranking (still gated)
 Keep `src`-style side-query reranking behind the existing readiness gate.
 
 ## Recommended bead breakdown
 
-The remaining work should be tracked as a single epic with focused child tasks:
+The remaining work should be tracked as a smaller follow-up epic with focused child tasks:
 
-1. Build canonical file-backed memory contract for `swarmstr`
-2. Build maintained session-memory runtime
-3. Integrate session memory with compaction and manual extraction flows
-4. Add scoped file-memory directories and snapshot seeding for agents
-5. Add team/shared memory sync foundation
-6. Add deterministic file-memory retrieval + freshness packaging
-7. Evaluate reranking only after retrieval-quality measurement proves it is needed
+1. Add team/shared memory sync transport, conflict handling, and operator telemetry
+2. Improve deterministic file-memory selection/freshness packaging
+3. Decide whether session-memory template/editor customization is worth the added complexity
+4. Evaluate reranking only after retrieval-quality measurement proves it is needed
 
 ## Suggested acceptance bar for parity
 
 `swarmstr` should be considered meaningfully closer to `src` memory parity when all of the following are true:
-- file memory has an explicit runtime contract, not only docs
-- session memory is continuously maintained, not only saved on reset/new
-- memory scopes apply to both indexed memory and file-memory surfaces
-- shared/team memory has a safe, conflict-aware story or is explicitly rejected in docs
-- file-backed memory can be selected and surfaced per turn with bounded packaging
+- shared/team memory has a safe, conflict-aware sync story or is explicitly rejected in docs
+- file-backed memory selection is strong enough that retrieval quality is reviewed from metrics rather than anecdotes
+- session memory remains continuously maintained across compaction/rollover flows
+- memory scopes continue to apply consistently to indexed and file-backed surfaces
 - reranking remains a deliberate measured choice, not a default assumption
 
 ## Bottom line
 
-The missing work is no longer “add memory to swarmstr”.
+The remaining work is no longer the core memory runtime.
 
 That baseline is already present.
 
-The remaining parity work is to add the **higher-level memory runtime** that `src` built around its stores:
-- file-memory authoring and retrieval contract
-- maintained session summaries
-- scoped file-memory surfaces
-- shared/team memory operations
-- operational safety and telemetry
+The remaining parity tranche is narrower:
+- shared/team memory operations beyond the current foundation
+- richer file-memory retrieval/freshness UX
+- optional session-memory authoring customization
+- deeper sync/telemetry polish
 
 That is the work that should now be filed as the next memory parity tranche.

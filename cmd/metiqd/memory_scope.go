@@ -106,6 +106,17 @@ func contextWithMemoryScope(ctx context.Context, scope memory.ScopedContext) con
 	})
 }
 
+func scopedMemoryDocs(docs []state.MemoryDoc, scope memory.ScopedContext) []state.MemoryDoc {
+	if len(docs) == 0 || !scope.Enabled() {
+		return docs
+	}
+	out := make([]state.MemoryDoc, len(docs))
+	for i, doc := range docs {
+		out[i] = memory.ApplyScope(doc, scope)
+	}
+	return out
+}
+
 func persistSessionMemoryScope(sessionStore *state.SessionStore, sessionID, agentID string, scope state.AgentMemoryScope) {
 	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
 		return

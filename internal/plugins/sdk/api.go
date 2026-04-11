@@ -18,7 +18,11 @@
 //	};
 package sdk
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
 
 type contextKey string
 
@@ -141,6 +145,29 @@ type Manifest struct {
 	Tools       []ToolSchema `json:"tools,omitempty"`
 }
 
+// ValidateManifest checks the basic plugin manifest contract expected by the
+// runtime and tool registry.
+func ValidateManifest(m Manifest) error {
+	if strings.TrimSpace(m.ID) == "" {
+		return fmt.Errorf("manifest.id is required")
+	}
+	seenTools := make(map[string]struct{}, len(m.Tools))
+	for i, tool := range m.Tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			return fmt.Errorf("manifest.tools[%d].name is required", i)
+		}
+		if _, exists := seenTools[name]; exists {
+			return fmt.Errorf("manifest.tools[%d].name %q is duplicated", i, name)
+		}
+		seenTools[name] = struct{}{}
+		if err := ValidateToolSchema(tool); err != nil {
+			return fmt.Errorf("manifest.tools[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
 // ToolSchema describes a single tool that the plugin exposes to the agent.
 type ToolSchema struct {
 	// Name is the tool identifier used in tool-call dispatch.
@@ -151,6 +178,51 @@ type ToolSchema struct {
 
 	// Parameters is a JSON Schema object describing the tool's arguments.
 	Parameters map[string]any `json:"parameters,omitempty"`
+}
+
+// ValidateToolSchema checks a plugin tool declaration for structural problems
+// that would break prompt exposure or runtime schema validation.
+func ValidateToolSchema(tool ToolSchema) error {
+	if strings.TrimSpace(tool.Name) == "" {
+		return fmt.Errorf("tool name is required")
+	}
+	if len(tool.Parameters) == 0 {
+		return nil
+	}
+	if rawType, ok := tool.Parameters["type"]; ok {
+		typeName, ok := rawType.(string)
+		if !ok || strings.TrimSpace(typeName) == "" {
+			return fmt.Errorf("parameters.type must be a non-empty string")
+		}
+		if !strings.EqualFold(typeName, "object") {
+			return fmt.Errorf("parameters.type must be object")
+		}
+	}
+	if rawProps, ok := tool.Parameters["properties"]; ok {
+		if _, ok := rawProps.(map[string]any); !ok {
+			return fmt.Errorf("parameters.properties must be an object")
+		}
+	}
+	if rawRequired, ok := tool.Parameters["required"]; ok {
+		switch vals := rawRequired.(type) {
+		case []string:
+			for _, item := range vals {
+				if strings.TrimSpace(item) == "" {
+					return fmt.Errorf("parameters.required must not contain empty items")
+				}
+			}
+		case []any:
+			for _, item := range vals {
+				s, ok := item.(string)
+				if !ok || strings.TrimSpace(s) == "" {
+					return fmt.Errorf("parameters.required must be an array of strings")
+				}
+			}
+		default:
+			return fmt.Errorf("parameters.required must be an array of strings")
+		}
+	}
+	return nil
 }
 
 // InvokeRequest is the structured call passed to exports.invoke().

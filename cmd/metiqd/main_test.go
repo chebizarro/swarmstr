@@ -25,6 +25,7 @@ import (
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
 	mcppkg "metiq/internal/mcp"
+	"metiq/internal/memory"
 	"metiq/internal/nostr/events"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/nostr/secure"
@@ -382,6 +383,178 @@ func TestHandleControlRPCRequest_ChatAbortUsesRegistry(t *testing.T) {
 	}
 }
 
+func TestHandleControlRPCRequest_DoctorMemoryStatusIncludesStoreHealth(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+	idx, err := memory.OpenIndex(filepath.Join(t.TempDir(), "memory.json"))
+	if err != nil {
+		t.Fatalf("OpenIndex failed: %v", err)
+	}
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodDoctorMemoryStatus,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, idx, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("doctor.memory_status error: %v", err)
+	}
+	out, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected doctor.memory_status result: %#v", res.Result)
+	}
+	store, ok := out["store"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected store status payload, got %#v", out["store"])
+	}
+	primary, ok := store["primary"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected primary store status payload, got %#v", store)
+	}
+	if store["kind"] != "index" || primary["name"] != "json-fts" || primary["available"] != true {
+		t.Fatalf("unexpected store status: %#v", store)
+	}
+}
+
+func TestHandleControlRPCRequest_DoctorMemoryStatusIncludesSessionMemoryHealth(t *testing.T) {
+	prevSessionStore := controlSessionStore
+	prevRuntime := controlSessionMemoryRuntime
+	defer func() {
+		controlSessionStore = prevSessionStore
+		controlSessionMemoryRuntime = prevRuntime
+	}()
+
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{
+		Control: state.ControlPolicy{RequireAuth: false},
+		Extra: map[string]any{
+			"memory": map[string]any{
+				"session_memory": map[string]any{
+					"enabled":                    true,
+					"init_chars":                 9000,
+					"update_chars":               4500,
+					"tool_calls_between_updates": 4,
+				},
+			},
+		},
+	})
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	workspaceDir := t.TempDir()
+	path, err := memory.WriteSessionMemoryFile(workspaceDir, "sess-a", testSessionMemoryDocument("Session continuity is being promoted into active recall and diagnostics."))
+	if err != nil {
+		t.Fatalf("write session memory: %v", err)
+	}
+	if err := sessionStore.Put("sess-a", state.SessionEntry{
+		SessionID:                "sess-a",
+		SpawnedWorkspace:         workspaceDir,
+		SessionMemoryFile:        path,
+		SessionMemoryInitialized: true,
+		SessionMemoryUpdatedAt:   1712345678,
+		FileMemorySurfaced: map[string]string{
+			"docs/plan.md":   "topic:planning",
+			"src/runtime.go": "query:runtime",
+		},
+		RecentMemoryRecall: []state.MemoryRecallSample{{
+			RecordedAtMS: 1712345678123,
+			TurnID:       "turn-a",
+			Strategy:     "deterministic",
+			InjectedAny:  true,
+		}},
+		CompactionCount: 2,
+		MemoryFlushAt:   1712345600,
+	}); err != nil {
+		t.Fatalf("seed initialized session: %v", err)
+	}
+	if err := sessionStore.Put("sess-b", state.SessionEntry{
+		SessionID:                     "sess-b",
+		SessionMemoryObservedChars:    1200,
+		SessionMemoryPendingChars:     300,
+		SessionMemoryPendingToolCalls: 2,
+	}); err != nil {
+		t.Fatalf("seed pending session: %v", err)
+	}
+	staleWorkspace := t.TempDir()
+	if err := sessionStore.Put("sess-c", state.SessionEntry{
+		SessionID:                "sess-c",
+		SpawnedWorkspace:         staleWorkspace,
+		SessionMemoryFile:        filepath.Join(staleWorkspace, "session-memory", "wrong-session.md"),
+		SessionMemoryInitialized: true,
+		SessionMemoryUpdatedAt:   1712346789,
+		FileMemorySurfaced: map[string]string{
+			"notes/ops.md": "topic:ops",
+		},
+		RecentMemoryRecall: []state.MemoryRecallSample{{
+			RecordedAtMS: 1712346789123,
+			TurnID:       "turn-c",
+			Strategy:     "deterministic",
+			InjectedAny:  true,
+		}},
+		CompactionCount: 3,
+		MemoryFlushAt:   1712346800,
+	}); err != nil {
+		t.Fatalf("seed stale session: %v", err)
+	}
+	runtime := newSessionMemoryRuntime(sessionStore, nil)
+	runtime.inFlight["sess-b"] = time.Now()
+	controlSessionStore = sessionStore
+	controlSessionMemoryRuntime = runtime
+
+	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodDoctorMemoryStatus,
+		Params:     json.RawMessage(`{}`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, &memoryStoreStub{}, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("doctor.memory_status error: %v", err)
+	}
+	out, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected doctor.memory_status result: %#v", res.Result)
+	}
+	sessionMemory, ok := out["session_memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected session_memory payload, got %#v", out["session_memory"])
+	}
+	if sessionMemory["enabled"] != true || sessionMemory["runtime_available"] != true || sessionMemory["session_store_available"] != true {
+		t.Fatalf("unexpected session memory availability payload: %#v", sessionMemory)
+	}
+	if sessionMemory["tracked_sessions"] != 3 || sessionMemory["initialized_sessions"] != 2 || sessionMemory["artifact_sessions"] != 1 {
+		t.Fatalf("unexpected session memory counts: %#v", sessionMemory)
+	}
+	if sessionMemory["stale_artifact_sessions"] != 1 {
+		t.Fatalf("expected one stale artifact session, got %#v", sessionMemory)
+	}
+	if sessionMemory["pending_sessions"] != 1 || sessionMemory["in_flight_sessions"] != 1 {
+		t.Fatalf("unexpected pending/in-flight session memory state: %#v", sessionMemory)
+	}
+	if sessionMemory["latest_update_unix"] != int64(1712346789) {
+		t.Fatalf("expected latest session memory timestamp, got %#v", sessionMemory)
+	}
+	fileMemory, ok := out["file_memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected file_memory payload, got %#v", out["file_memory"])
+	}
+	if fileMemory["session_store_available"] != true || fileMemory["sessions_with_surface_state"] != 2 || fileMemory["surfaced_paths"] != 3 {
+		t.Fatalf("unexpected file memory surface payload: %#v", fileMemory)
+	}
+	if fileMemory["sessions_with_recent_recall"] != 2 || fileMemory["recent_recall_samples"] != 2 {
+		t.Fatalf("unexpected file memory recall payload: %#v", fileMemory)
+	}
+	if fileMemory["latest_recall_recorded_at_ms"] != int64(1712346789123) {
+		t.Fatalf("expected latest recall timestamp, got %#v", fileMemory)
+	}
+	maintenance, ok := out["maintenance"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected maintenance payload, got %#v", out["maintenance"])
+	}
+	if maintenance["session_store_available"] != true || maintenance["sessions_with_compaction"] != 2 || maintenance["total_compactions"] != int64(5) {
+		t.Fatalf("unexpected maintenance compaction payload: %#v", maintenance)
+	}
+	if maintenance["sessions_with_memory_flush"] != 2 || maintenance["latest_memory_flush_unix"] != int64(1712346800) {
+		t.Fatalf("unexpected maintenance flush payload: %#v", maintenance)
+	}
+}
+
 func TestHandleControlRPCRequest_OperationalSemantics(t *testing.T) {
 	cfgState := newRuntimeConfigStore(state.ConfigDoc{
 		Control: state.ControlPolicy{RequireAuth: false},
@@ -550,6 +723,116 @@ func TestHandleControlRPCRequest_RelayPolicyGet(t *testing.T) {
 	}
 	if len(view.ReadRelays) != 1 || view.ReadRelays[0] != "wss://read" {
 		t.Fatalf("unexpected read relays: %+v", view.ReadRelays)
+	}
+}
+
+func TestHandleControlRPCRequest_TaskLifecycleMethods(t *testing.T) {
+	store := newTestStore()
+	docs := state.NewDocsRepository(store, "author")
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}})
+
+	createRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodTasksCreate,
+		Params:     json.RawMessage(`{"task":{"goal_id":"goal-1","instructions":"  Review deployment output  ","status":"blocked","assigned_agent":" Worker "}}`),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("tasks.create error: %v", err)
+	}
+	created, ok := createRes.Result.(methods.TasksGetResponse)
+	if !ok {
+		t.Fatalf("unexpected tasks.create result: %#v", createRes.Result)
+	}
+	if created.Task.TaskID == "" {
+		t.Fatal("expected generated task id")
+	}
+	if created.Task.Title != "Review deployment output" {
+		t.Fatalf("unexpected title: %#v", created.Task)
+	}
+	if created.Task.Status != state.TaskStatusBlocked {
+		t.Fatalf("expected blocked task, got %q", created.Task.Status)
+	}
+	if created.Task.AssignedAgent != "worker" {
+		t.Fatalf("expected normalized assigned agent, got %q", created.Task.AssignedAgent)
+	}
+	if len(created.Runs) != 0 {
+		t.Fatalf("expected no runs on create, got %#v", created.Runs)
+	}
+
+	listRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodTasksList,
+		Params:     json.RawMessage(fmt.Sprintf(`{"status":"blocked","assignedAgent":"worker","goalId":"goal-1","limit":10}`)),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("tasks.list error: %v", err)
+	}
+	listed, ok := listRes.Result.(methods.TasksListResponse)
+	if !ok {
+		t.Fatalf("unexpected tasks.list result: %#v", listRes.Result)
+	}
+	if listed.Count != 1 || len(listed.Tasks) != 1 || listed.Tasks[0].TaskID != created.Task.TaskID {
+		t.Fatalf("unexpected tasks.list payload: %#v", listed)
+	}
+
+	resumeRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodTasksResume,
+		Params:     json.RawMessage(fmt.Sprintf(`{"taskId":%q,"reason":"retry after unblock"}`, created.Task.TaskID)),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("tasks.resume error: %v", err)
+	}
+	resumed, ok := resumeRes.Result.(methods.TasksGetResponse)
+	if !ok {
+		t.Fatalf("unexpected tasks.resume result: %#v", resumeRes.Result)
+	}
+	if resumed.Task.Status != state.TaskStatusReady {
+		t.Fatalf("expected ready task after resume, got %q", resumed.Task.Status)
+	}
+	if resumed.Task.CurrentRunID == "" || resumed.Task.LastRunID == "" {
+		t.Fatalf("expected run ids after resume, got %#v", resumed.Task)
+	}
+	if len(resumed.Runs) != 1 || resumed.Runs[0].Status != state.TaskRunStatusQueued {
+		t.Fatalf("expected queued run after resume, got %#v", resumed.Runs)
+	}
+
+	getRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodTasksGet,
+		Params:     json.RawMessage(fmt.Sprintf(`{"taskId":%q,"runsLimit":5}`, created.Task.TaskID)),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("tasks.get error: %v", err)
+	}
+	fetched, ok := getRes.Result.(methods.TasksGetResponse)
+	if !ok {
+		t.Fatalf("unexpected tasks.get result: %#v", getRes.Result)
+	}
+	if fetched.Task.CurrentRunID != resumed.Task.CurrentRunID || len(fetched.Runs) != 1 {
+		t.Fatalf("unexpected tasks.get payload: %#v", fetched)
+	}
+
+	cancelRes, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodTasksCancel,
+		Params:     json.RawMessage(fmt.Sprintf(`{"task_id":%q,"reason":"operator cancelled"}`, created.Task.TaskID)),
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("tasks.cancel error: %v", err)
+	}
+	cancelled, ok := cancelRes.Result.(methods.TasksGetResponse)
+	if !ok {
+		t.Fatalf("unexpected tasks.cancel result: %#v", cancelRes.Result)
+	}
+	if cancelled.Task.Status != state.TaskStatusCancelled {
+		t.Fatalf("expected cancelled task, got %q", cancelled.Task.Status)
+	}
+	if cancelled.Task.CurrentRunID != "" || cancelled.Task.LastRunID == "" {
+		t.Fatalf("expected current run cleared after cancel, got %#v", cancelled.Task)
+	}
+	if len(cancelled.Runs) != 1 || cancelled.Runs[0].Status != state.TaskRunStatusCancelled {
+		t.Fatalf("expected cancelled run, got %#v", cancelled.Runs)
 	}
 }
 
@@ -2831,6 +3114,68 @@ func TestExecuteAgentRun_EmitsAndPersistsTurnTelemetry(t *testing.T) {
 	}
 	if se.LastTurn.InputTokens != 7 || se.LastTurn.OutputTokens != 3 {
 		t.Fatalf("unexpected persisted turn usage: %+v", se.LastTurn)
+	}
+}
+
+func TestApplySessionsSpawn_InheritsParentTaskLinkage(t *testing.T) {
+	prevRuntime := controlAgentRuntime
+	prevJobs := controlAgentJobs
+	prevSubagents := controlSubagents
+	prevSessionStore := controlSessionStore
+	defer func() {
+		controlAgentRuntime = prevRuntime
+		controlAgentJobs = prevJobs
+		controlSubagents = prevSubagents
+		controlSessionStore = prevSessionStore
+	}()
+
+	controlAgentRuntime = runtimeFunc(func(context.Context, agent.Turn) (agent.TurnResult, error) {
+		return agent.TurnResult{Text: "ok"}, nil
+	})
+	controlAgentJobs = newAgentJobRegistry()
+	controlSubagents = newSubagentRegistry()
+
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	controlSessionStore = sessionStore
+	if err := sessionStore.Put("parent-session", state.SessionEntry{
+		SessionID:    "parent-session",
+		AgentID:      "planner",
+		ActiveTaskID: "task-parent",
+		ActiveRunID:  "run-parent",
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed parent session: %v", err)
+	}
+
+	resp, err := applySessionsSpawn(context.Background(), methods.SessionsSpawnRequest{
+		ParentSessionID: "parent-session",
+		AgentID:         "worker",
+		Message:         "do the child task",
+		TimeoutMS:       500,
+	}, state.ConfigDoc{}, nil, nil)
+	if err != nil {
+		t.Fatalf("applySessionsSpawn: %v", err)
+	}
+	sessionID, _ := resp["session_id"].(string)
+	if strings.TrimSpace(sessionID) == "" {
+		t.Fatalf("expected spawned session id, got %#v", resp)
+	}
+	entry, ok := sessionStore.Get(sessionID)
+	if !ok {
+		t.Fatalf("expected spawned session entry for %s", sessionID)
+	}
+	if entry.ParentTaskID != "task-parent" || entry.ParentRunID != "run-parent" {
+		t.Fatalf("spawned session linkage = %+v", entry)
+	}
+	if entry.AgentID != "worker" {
+		t.Fatalf("spawned session agent_id = %q, want worker", entry.AgentID)
+	}
+	if entry.SpawnedBy != "sessions.spawn" {
+		t.Fatalf("spawned session spawned_by = %q, want sessions.spawn", entry.SpawnedBy)
 	}
 }
 

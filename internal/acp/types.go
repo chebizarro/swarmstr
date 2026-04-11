@@ -57,6 +57,13 @@ type ParentContext struct {
 type TaskPayload struct {
 	// Instructions is the natural-language task description for the worker agent.
 	Instructions string `json:"instructions"`
+	// Task carries the canonical machine-readable task contract aligned with the
+	// shared GoalSpec/TaskSpec model. When omitted, callers may still provide the
+	// legacy top-level instruction/memory/tool fields and metiq derives a TaskSpec.
+	Task *state.TaskSpec `json:"task,omitempty"`
+	// TaskEvent carries a JSON-safe kind:38383 task event envelope for external
+	// agents that want a concrete Nostr-native task contract inside ACP transport.
+	TaskEvent *TaskEventEnvelope `json:"task_event,omitempty"`
 	// ContextMessages is an optional slice of prior messages to seed context.
 	ContextMessages []map[string]any `json:"context_messages,omitempty"`
 	// MemoryScope carries the explicit worker memory scope contract.
@@ -75,16 +82,26 @@ type TaskPayload struct {
 
 // ResultPayload is the Payload for messages with ACPType = "result".
 type WorkerMetadata struct {
+	// TaskID identifies the worker-side canonical task document, when persisted.
+	TaskID string `json:"task_id,omitempty"`
+	// RunID identifies the worker-side canonical run attempt, when persisted.
+	RunID string `json:"run_id,omitempty"`
 	// SessionID identifies the worker-side session that processed the task.
 	SessionID string `json:"session_id,omitempty"`
 	// AgentID identifies the worker-side agent/runtime that processed the task.
 	AgentID string `json:"agent_id,omitempty"`
+	// ParentTaskID links the worker-side task back to the parent task when delegated.
+	ParentTaskID string `json:"parent_task_id,omitempty"`
+	// ParentRunID links the worker-side run back to the parent run when delegated.
+	ParentRunID string `json:"parent_run_id,omitempty"`
 	// ParentContext preserves the originating parent context when the worker
 	// reflects completion metadata back to the caller.
 	ParentContext *ParentContext `json:"parent_context,omitempty"`
 	// HistoryEntryIDs identifies the worker transcript entries persisted for this
 	// task in order, including inherited seed history and turn-produced messages.
 	HistoryEntryIDs []string `json:"history_entry_ids,omitempty"`
+	// Result points at the worker-side durable artifact/result placeholder for the completed task.
+	Result state.TaskResultRef `json:"result,omitempty"`
 	// TurnResult carries canonical terminal completion metadata aligned with the
 	// shared runtime taxonomy.
 	TurnResult *agent.TurnResultMetadata `json:"turn_result,omitempty"`
@@ -106,22 +123,28 @@ type ResultPayload struct {
 
 // NewTask builds a task Message ready to send.
 func NewTask(taskID, senderPubKey string, p TaskPayload) Message {
+	env := BuildTaskEnvelope(taskID, senderPubKey, p)
+	payload := map[string]any{
+		"instructions":     p.Instructions,
+		"task":             env.Task,
+		"context_messages": p.ContextMessages,
+		"memory_scope":     p.MemoryScope,
+		"tool_profile":     p.ToolProfile,
+		"enabled_tools":    p.EnabledTools,
+		"parent_context":   p.ParentContext,
+		"timeout_ms":       p.TimeoutMS,
+		"reply_to":         p.ReplyTo,
+	}
+	if eventEnvelope, err := BuildUnsignedTaskEvent(senderPubKey, env); err == nil {
+		payload["task_event"] = eventEnvelope
+	}
 	return Message{
 		ACPType:      "task",
 		Version:      Version,
 		TaskID:       taskID,
 		SenderPubKey: senderPubKey,
-		Payload: map[string]any{
-			"instructions":     p.Instructions,
-			"context_messages": p.ContextMessages,
-			"memory_scope":     p.MemoryScope,
-			"tool_profile":     p.ToolProfile,
-			"enabled_tools":    p.EnabledTools,
-			"parent_context":   p.ParentContext,
-			"timeout_ms":       p.TimeoutMS,
-			"reply_to":         p.ReplyTo,
-		},
-		CreatedAt: time.Now().Unix(),
+		Payload:      payload,
+		CreatedAt:    time.Now().Unix(),
 	}
 }
 
@@ -137,6 +160,72 @@ func DecodeTaskPayload(payload map[string]any) (TaskPayload, error) {
 	var out TaskPayload
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return TaskPayload{}, err
+	}
+	if out.TaskEvent != nil {
+		ev, err := out.TaskEvent.ToNostrEvent()
+		if err != nil {
+			return TaskPayload{}, err
+		}
+		env, err := ParseTaskEvent(ev)
+		if err != nil {
+			return TaskPayload{}, err
+		}
+		if out.Task == nil {
+			task := env.Task.Normalize()
+			out.Task = &task
+		}
+		if out.Instructions == "" {
+			out.Instructions = env.Task.Instructions
+		}
+		if out.MemoryScope == "" {
+			out.MemoryScope = env.Task.MemoryScope
+		}
+		if out.ToolProfile == "" {
+			out.ToolProfile = env.Task.ToolProfile
+		}
+		if len(out.EnabledTools) == 0 {
+			out.EnabledTools = cloneStrings(env.Task.EnabledTools)
+		}
+		if out.ParentContext == nil {
+			out.ParentContext = cloneParentContext(env.ParentContext)
+		}
+		if out.TimeoutMS == 0 {
+			out.TimeoutMS = env.TimeoutMS
+		}
+		if out.ReplyTo == "" {
+			out.ReplyTo = env.ReplyTo
+		}
+	}
+	if out.Task != nil {
+		task := out.Task.Normalize()
+		if task.Title == "" {
+			task.Title = deriveTaskTitle(firstNonEmptyTrimmed(task.Instructions, out.Instructions))
+		}
+		if task.Instructions == "" {
+			task.Instructions = out.Instructions
+		}
+		if task.MemoryScope == "" {
+			task.MemoryScope = out.MemoryScope
+		}
+		if task.ToolProfile == "" {
+			task.ToolProfile = out.ToolProfile
+		}
+		if len(task.EnabledTools) == 0 {
+			task.EnabledTools = cloneStrings(out.EnabledTools)
+		}
+		out.Task = &task
+		if out.Instructions == "" {
+			out.Instructions = task.Instructions
+		}
+		if out.MemoryScope == "" {
+			out.MemoryScope = task.MemoryScope
+		}
+		if out.ToolProfile == "" {
+			out.ToolProfile = task.ToolProfile
+		}
+		if len(out.EnabledTools) == 0 {
+			out.EnabledTools = cloneStrings(task.EnabledTools)
+		}
 	}
 	return out, nil
 }

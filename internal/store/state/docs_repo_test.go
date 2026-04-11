@@ -262,6 +262,77 @@ func TestDocsRepositoryListSessionsPrefersLatestPersistedDoc(t *testing.T) {
 	}
 }
 
+func TestDocsRepositoryTaskAndRunRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	task := TaskSpec{TaskID: "task-1", GoalID: "goal-1", Title: "Persist task", Instructions: "Persist lifecycle state.", AssignedAgent: "builder", SessionID: "sess-1"}.Normalize()
+	if err := task.ApplyTransition(TaskStatusPlanned, 100, "planner", "planner", "planned", nil); err != nil {
+		t.Fatalf("task ApplyTransition: %v", err)
+	}
+	if err := task.ApplyTransition(TaskStatusReady, 110, "planner", "planner", "ready", nil); err != nil {
+		t.Fatalf("task ApplyTransition ready: %v", err)
+	}
+	if _, err := repo.PutTask(ctx, task); err != nil {
+		t.Fatalf("PutTask: %v", err)
+	}
+	gotTask, err := repo.GetTask(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if gotTask.Status != TaskStatusReady || len(gotTask.Transitions) != 2 {
+		t.Fatalf("unexpected task round-trip: %+v", gotTask)
+	}
+
+	firstRun, err := NewTaskRunAttempt(task, "run-1", nil, 120, "manual", "runner", "runtime")
+	if err != nil {
+		t.Fatalf("NewTaskRunAttempt first: %v", err)
+	}
+	if err := firstRun.ApplyTransition(TaskRunStatusRunning, 130, "runner", "runtime", "started", nil); err != nil {
+		t.Fatalf("firstRun running: %v", err)
+	}
+	if err := firstRun.ApplyTransition(TaskRunStatusFailed, 140, "runner", "runtime", "failed", nil); err != nil {
+		t.Fatalf("firstRun failed: %v", err)
+	}
+	if _, err := repo.PutTaskRun(ctx, firstRun); err != nil {
+		t.Fatalf("PutTaskRun first: %v", err)
+	}
+
+	secondRun, err := NewTaskRunAttempt(task, "run-2", []TaskRun{firstRun}, 150, "retry", "runner", "runtime")
+	if err != nil {
+		t.Fatalf("NewTaskRunAttempt second: %v", err)
+	}
+	if err := secondRun.ApplyTransition(TaskRunStatusRunning, 160, "runner", "runtime", "restarted", nil); err != nil {
+		t.Fatalf("secondRun running: %v", err)
+	}
+	if _, err := repo.PutTaskRun(ctx, secondRun); err != nil {
+		t.Fatalf("PutTaskRun second: %v", err)
+	}
+
+	gotRun, err := repo.GetTaskRun(ctx, "run-2")
+	if err != nil {
+		t.Fatalf("GetTaskRun: %v", err)
+	}
+	if gotRun.Attempt != 2 || gotRun.Status != TaskRunStatusRunning {
+		t.Fatalf("unexpected run round-trip: %+v", gotRun)
+	}
+	runs, err := repo.ListTaskRuns(ctx, "task-1", 10)
+	if err != nil {
+		t.Fatalf("ListTaskRuns: %v", err)
+	}
+	if len(runs) != 2 || runs[0].RunID != "run-2" || runs[1].RunID != "run-1" {
+		t.Fatalf("unexpected run list ordering: %+v", runs)
+	}
+	tasks, err := repo.ListTasks(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].TaskID != "task-1" {
+		t.Fatalf("unexpected task list: %+v", tasks)
+	}
+}
+
 func TestDocsRepositoryConfigMigratesPlaintextToEncryptedOnWrite(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStateStore()
@@ -305,6 +376,151 @@ func TestDocsRepositoryConfigMigratesPlaintextToEncryptedOnWrite(t *testing.T) {
 	}
 	if strings.Contains(encryptedContent, `"policy":"open"`) {
 		t.Fatalf("expected ciphertext payload after rewrite, got %s", encryptedContent)
+	}
+}
+
+func TestDocsRepositoryPlanPutGetRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	plan := PlanSpec{
+		PlanID:   "plan-1",
+		GoalID:   "goal-1",
+		Title:    "Test plan",
+		Revision: 1,
+		Status:   PlanStatusActive,
+		Steps: []PlanStep{
+			{StepID: "s1", Title: "Step A", Status: PlanStepStatusCompleted},
+			{StepID: "s2", Title: "Step B", Status: PlanStepStatusPending, DependsOn: []string{"s1"}},
+		},
+		Assumptions:      []string{"API works"},
+		Risks:            []string{"Timeout"},
+		RollbackStrategy: "Cancel all",
+		CreatedAt:        100,
+		UpdatedAt:        200,
+	}
+
+	_, err := repo.PutPlan(ctx, plan)
+	if err != nil {
+		t.Fatalf("PutPlan: %v", err)
+	}
+
+	got, err := repo.GetPlan(ctx, "plan-1")
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if got.PlanID != "plan-1" || got.GoalID != "goal-1" {
+		t.Fatalf("unexpected plan identity: %+v", got)
+	}
+	if got.Status != PlanStatusActive {
+		t.Fatalf("expected active status, got %q", got.Status)
+	}
+	if len(got.Steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(got.Steps))
+	}
+	if got.Steps[1].DependsOn[0] != "s1" {
+		t.Fatalf("dependency lost: %v", got.Steps[1].DependsOn)
+	}
+}
+
+func TestDocsRepositoryPlanPutRejectsCycle(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	plan := PlanSpec{
+		PlanID: "cycle-plan",
+		Title:  "Cycle plan",
+		Status: PlanStatusDraft,
+		Steps: []PlanStep{
+			{StepID: "s1", Title: "A", DependsOn: []string{"s2"}},
+			{StepID: "s2", Title: "B", DependsOn: []string{"s1"}},
+		},
+	}
+	_, err := repo.PutPlan(ctx, plan)
+	if err == nil {
+		t.Fatal("expected error for cyclic plan")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("expected cycle error, got: %v", err)
+	}
+}
+
+func TestDocsRepositoryListPlansFiltersByGoal(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	for _, g := range []string{"goal-A", "goal-B"} {
+		_, err := repo.PutPlan(ctx, PlanSpec{
+			PlanID: fmt.Sprintf("plan-%s", g),
+			GoalID: g,
+			Title:  "Plan for " + g,
+			Status: PlanStatusDraft,
+			Steps:  []PlanStep{{StepID: "s1", Title: "Do"}},
+		})
+		if err != nil {
+			t.Fatalf("PutPlan(%s): %v", g, err)
+		}
+	}
+
+	// List all.
+	all, err := repo.ListPlans(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("ListPlans all: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 plans, got %d", len(all))
+	}
+
+	// Filter by goal.
+	filtered, err := repo.ListPlans(ctx, "goal-A", 10)
+	if err != nil {
+		t.Fatalf("ListPlans filtered: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].GoalID != "goal-A" {
+		t.Fatalf("expected 1 plan for goal-A, got %d", len(filtered))
+	}
+}
+
+func TestDocsRepositoryPlanRevisionUpdate(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	plan := PlanSpec{
+		PlanID:   "rev-plan",
+		Title:    "Revisable",
+		Revision: 1,
+		Status:   PlanStatusActive,
+		Steps: []PlanStep{
+			{StepID: "s1", Title: "Original step"},
+		},
+		UpdatedAt: 100,
+	}
+	if _, err := repo.PutPlan(ctx, plan); err != nil {
+		t.Fatalf("PutPlan v1: %v", err)
+	}
+
+	// Update with new revision.
+	plan.Revision = 2
+	plan.Status = PlanStatusRevising
+	plan.Steps = append(plan.Steps, PlanStep{StepID: "s2", Title: "New step"})
+	plan.UpdatedAt = 200
+	if _, err := repo.PutPlan(ctx, plan); err != nil {
+		t.Fatalf("PutPlan v2: %v", err)
+	}
+
+	got, err := repo.GetPlan(ctx, "rev-plan")
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if got.Revision != 2 {
+		t.Fatalf("expected revision=2, got %d", got.Revision)
+	}
+	if len(got.Steps) != 2 {
+		t.Fatalf("expected 2 steps after revision, got %d", len(got.Steps))
 	}
 }
 

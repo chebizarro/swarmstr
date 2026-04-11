@@ -548,7 +548,7 @@ func TestRunAgenticLoop_LoopWarning_VisibleInHistory(t *testing.T) {
 
 func TestRunAgenticLoop_LoopCritical_BlocksExecution(t *testing.T) {
 	provider := &mockChatProvider{
-		responses: []*LLMResponse{{ToolCalls: []ToolCall{{ID: "tc1", Name: "poll", Args: map[string]any{"job": "123"}}}, NeedsToolResults: true}},
+		responses: []*LLMResponse{{ToolCalls: []ToolCall{{ID: "tc1", Name: "command_status", Args: map[string]any{"job": "123"}}}, NeedsToolResults: true}},
 	}
 	reg := NewToolRegistry()
 	loopReg := toolloop.NewRegistry()
@@ -558,7 +558,7 @@ func TestRunAgenticLoop_LoopCritical_BlocksExecution(t *testing.T) {
 	cfg.GlobalCircuitBreakerThreshold = 6
 	var executed atomic.Int32
 	reg.SetLoopDetection(loopReg, cfg)
-	reg.Register("poll", func(_ context.Context, _ map[string]any) (string, error) {
+	reg.Register("command_status", func(_ context.Context, _ map[string]any) (string, error) {
 		executed.Add(1)
 		return "tool output", nil
 	})
@@ -566,13 +566,13 @@ func TestRunAgenticLoop_LoopCritical_BlocksExecution(t *testing.T) {
 	capture := &capturedToolLifecycle{}
 	state := loopReg.Get("sess-critical")
 	for i := 0; i < 3; i++ {
-		toolloop.RecordCall(state, "poll", map[string]any{"job": "123"}, fmt.Sprintf("prior-%d", i), &cfg)
-		toolloop.RecordOutcome(state, "poll", map[string]any{"job": "123"}, fmt.Sprintf("prior-%d", i), "same", "", &cfg)
+		toolloop.RecordCall(state, "command_status", map[string]any{"job": "123"}, fmt.Sprintf("prior-%d", i), &cfg)
+		toolloop.RecordOutcome(state, "command_status", map[string]any{"job": "123"}, fmt.Sprintf("prior-%d", i), "same", "", &cfg)
 	}
 
 	resp, err := RunAgenticLoop(ctx, AgenticLoopConfig{
 		Provider:        provider,
-		InitialMessages: []LLMMessage{{Role: "user", Content: "poll"}},
+		InitialMessages: []LLMMessage{{Role: "user", Content: "command_status"}},
 		Executor:        reg,
 		MaxIterations:   10,
 		ForceText:       false,

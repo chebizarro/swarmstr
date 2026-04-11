@@ -96,17 +96,26 @@ func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessa
 
 	// Sanitize conversation history before building LLM messages.
 	sanitized, _ := SanitizeConversationHistoryWithOptions(turn.History, HistorySanitizeOptions{EnsureLeadingUser: true})
+	toolNamesByID := make(map[string]string)
 
 	// Append conversation history, converting ToolCallRef → ToolCall for
 	// assistant messages that requested tool use.
 	for _, h := range sanitized {
-		lm := LLMMessage{Role: h.Role, Content: h.Content, ToolCallID: h.ToolCallID}
+		content := h.Content
+		if h.Role == "user" && h.Content != syntheticHistoryBootstrapText {
+			content = WrapExternalSessionPromptData(turn.SessionID, content)
+		}
+		if h.Role == "tool" {
+			content = WrapExternalToolResultPromptData(toolNamesByID[h.ToolCallID], content)
+		}
+		lm := LLMMessage{Role: h.Role, Content: content, ToolCallID: h.ToolCallID}
 		for _, ref := range h.ToolCalls {
 			tc := ToolCall{ID: ref.ID, Name: ref.Name}
 			if ref.ArgsJSON != "" {
 				_ = json.Unmarshal([]byte(ref.ArgsJSON), &tc.Args)
 			}
 			lm.ToolCalls = append(lm.ToolCalls, tc)
+			toolNamesByID[ref.ID] = ref.Name
 		}
 		msgs = append(msgs, lm)
 	}
@@ -114,7 +123,7 @@ func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessa
 	// Append current user message.
 	msgs = append(msgs, LLMMessage{
 		Role:    "user",
-		Content: turn.UserText,
+		Content: WrapExternalSessionPromptData(turn.SessionID, turn.UserText),
 		Images:  turn.Images,
 	})
 

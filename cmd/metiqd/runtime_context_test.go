@@ -243,3 +243,33 @@ metadata:
 		t.Fatalf("expected always skill warning in prompt: %s", prompt)
 	}
 }
+
+func TestBuildExternalSessionPromptContext_HookSession(t *testing.T) {
+	got := buildExternalSessionPromptContext("hook:webhook:deploys")
+	if !strings.Contains(got, "## External Request Context") {
+		t.Fatalf("expected external request header, got %q", got)
+	}
+	if !strings.Contains(got, "Source: Webhook") {
+		t.Fatalf("expected webhook source metadata, got %q", got)
+	}
+}
+
+func TestBuildExternalChannelMetadataContext_EmailIncludesThreadMetadata(t *testing.T) {
+	cfg := state.ConfigDoc{
+		NostrChannels: map[string]state.NostrChannelConfig{
+			"inbox": {Kind: "email"},
+		},
+	}
+	got := buildExternalChannelMetadataContext(cfg, "inbox", "user@example.com", "ch:inbox:user@example.com:thread:msg-42")
+	for _, want := range []string{
+		"## External Channel Metadata",
+		"Source: Email",
+		"channel_id: inbox",
+		"sender_id: user@example.com",
+		"thread_id: msg-42",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in output: %q", want, got)
+		}
+	}
+}

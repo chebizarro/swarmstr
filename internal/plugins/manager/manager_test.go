@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"metiq/internal/agent"
@@ -45,17 +46,31 @@ func writePlugin(t *testing.T, dir, filename, content string) string {
 
 func configWithPlugin(t *testing.T, pluginID, scriptPath string) state.ConfigDoc {
 	t.Helper()
+	loadRoot := scriptPath
+	if info, err := os.Stat(scriptPath); err == nil && !info.IsDir() {
+		loadRoot = filepath.Dir(scriptPath)
+	}
 	return state.ConfigDoc{
 		Version: 1,
 		Extra: map[string]any{
 			"extensions": map[string]any{
 				"enabled": true,
 				"load":    true,
+				"load_paths": []string{
+					loadRoot,
+				},
 				"entries": map[string]any{
 					pluginID: map[string]any{
 						"install_path": scriptPath,
 						"plugin_type":  "goja",
 						"enabled":      true,
+					},
+				},
+				"installs": map[string]any{
+					pluginID: map[string]any{
+						"source":      "path",
+						"sourcePath":  loadRoot,
+						"installPath": scriptPath,
 					},
 				},
 			},
@@ -65,7 +80,7 @@ func configWithPlugin(t *testing.T, pluginID, scriptPath string) state.ConfigDoc
 
 const echoPluginSrc = `
 exports.manifest = {
-	id: "echo-plugin",
+	id: "my-echo",
 	version: "1.0.0",
 	description: "echoes args",
 	tools: [{ name: "echo", description: "echo the input" }],
@@ -78,7 +93,7 @@ exports.invoke = function(tool, args) {
 
 const typedPluginSrc = `
 exports.manifest = {
-	id: "typed-plugin",
+	id: "typed",
 	version: "1.0.0",
 	description: "typed args",
 	tools: [{
@@ -95,6 +110,19 @@ exports.invoke = function(tool, args) {
 	if (tool === "sum") return { count: args.count };
 	return {};
 };
+`
+
+const invalidSchemaPluginSrc = `
+exports.manifest = {
+	id: "invalid-plugin",
+	version: "1.0.0",
+	tools: [{
+		name: "bad",
+		description: "bad schema",
+		parameters: { type: "string" }
+	}],
+};
+exports.invoke = function() { return {}; };
 `
 
 // ─── tests ────────────────────────────────────────────────────────────────────
@@ -294,13 +322,79 @@ func TestManager_packageJsonMain(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := configWithPlugin(t, "pkg-main-plugin", dir)
+	cfg := configWithPlugin(t, "my-echo", dir)
 	mgr := New(testHost())
 	if err := mgr.Load(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	if len(mgr.PluginIDs()) != 1 {
 		t.Errorf("expected plugin loaded via package.json main, got %v", mgr.PluginIDs())
+	}
+}
+
+func TestManager_unmanagedPathRejected(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := writePlugin(t, dir, "index.js", echoPluginSrc)
+	cfg := state.ConfigDoc{
+		Version: 1,
+		Extra: map[string]any{
+			"extensions": map[string]any{
+				"entries": map[string]any{
+					"my-echo": map[string]any{
+						"install_path": scriptPath,
+						"plugin_type":  "goja",
+						"enabled":      true,
+					},
+				},
+			},
+		},
+	}
+
+	mgr := New(testHost())
+	err := mgr.Load(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "outside managed extensions") {
+		t.Fatalf("expected unmanaged path error, got %v", err)
+	}
+	if got := mgr.PluginIDs(); len(got) != 0 {
+		t.Fatalf("expected rejected plugin to stay unloaded, got %v", got)
+	}
+}
+
+func TestManager_packageJSONMainTraversalRejected(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "plugin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writePlugin(t, parent, "outside.js", echoPluginSrc)
+	pkgJSON := `{"name":"escape-plugin","main":"../outside.js"}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkgJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := configWithPlugin(t, "escape-plugin", dir)
+	mgr := New(testHost())
+	err := mgr.Load(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "escapes install root") {
+		t.Fatalf("expected package.json traversal rejection, got %v", err)
+	}
+	if got := mgr.PluginIDs(); len(got) != 0 {
+		t.Fatalf("expected rejected plugin to stay unloaded, got %v", got)
+	}
+}
+
+func TestManager_invalidManifestSchemaRejected(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := writePlugin(t, dir, "index.js", invalidSchemaPluginSrc)
+	cfg := configWithPlugin(t, "bad-schema", scriptPath)
+
+	mgr := New(testHost())
+	err := mgr.Load(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "parameters.type must be object") {
+		t.Fatalf("expected manifest schema rejection, got %v", err)
+	}
+	if got := mgr.PluginIDs(); len(got) != 0 {
+		t.Fatalf("expected invalid plugin to stay unloaded, got %v", got)
 	}
 }
 

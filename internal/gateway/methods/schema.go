@@ -69,6 +69,11 @@ const (
 	MethodSessionsSpawn               = "sessions.spawn"
 	MethodSessionsExport              = "sessions.export"
 	MethodSessionsPrune               = "sessions.prune"
+	MethodTasksCreate                 = "tasks.create"
+	MethodTasksGet                    = "tasks.get"
+	MethodTasksList                   = "tasks.list"
+	MethodTasksCancel                 = "tasks.cancel"
+	MethodTasksResume                 = "tasks.resume"
 	MethodListGet                     = "list.get"
 	MethodListPut                     = "list.put"
 	MethodRelayPolicyGet              = "relay.policy.get"
@@ -298,6 +303,9 @@ type ACPDispatchRequest struct {
 	TargetPubKey string `json:"target_pubkey"`
 	// Instructions is the task description.
 	Instructions string `json:"instructions"`
+	// Task carries the canonical machine-readable task contract aligned with the
+	// shared TaskSpec schema. When Task.TaskID is set, it becomes the outbound ACP task_id.
+	Task *state.TaskSpec `json:"task,omitempty"`
 	// ContextMessages seeds the worker with prior parent history/context.
 	ContextMessages []map[string]any `json:"context_messages,omitempty"`
 	// MemoryScope carries the explicit worker memory scope contract.
@@ -321,6 +329,9 @@ type ACPPipelineStepRequest struct {
 	PeerPubKey string `json:"peer_pubkey"`
 	// Instructions is the task text for this step.
 	Instructions string `json:"instructions"`
+	// Task carries the canonical machine-readable task contract aligned with the
+	// shared TaskSpec schema for this pipeline step.
+	Task *state.TaskSpec `json:"task,omitempty"`
 	// ContextMessages seeds the worker with prior parent history/context.
 	ContextMessages []map[string]any `json:"context_messages,omitempty"`
 	// MemoryScope carries the explicit worker memory scope contract.
@@ -382,6 +393,71 @@ func normalizeACPEnabledToolList(items []string) []string {
 	return out
 }
 
+func normalizeACPTaskSpec(task *state.TaskSpec, instructions string, memoryScope state.AgentMemoryScope, toolProfile string, enabledTools []string) (*state.TaskSpec, error) {
+	if task == nil {
+		return nil, nil
+	}
+	norm := task.Normalize()
+	if norm.Instructions == "" {
+		norm.Instructions = strings.TrimSpace(instructions)
+	}
+	if norm.Title == "" {
+		norm.Title = deriveACPTaskTitle(norm.Instructions)
+	}
+	if norm.MemoryScope == "" {
+		norm.MemoryScope = memoryScope
+	}
+	if norm.ToolProfile == "" {
+		norm.ToolProfile = strings.TrimSpace(toolProfile)
+	}
+	if len(norm.EnabledTools) == 0 {
+		norm.EnabledTools = append([]string(nil), enabledTools...)
+	}
+	if norm.MemoryScope != "" && !norm.MemoryScope.Valid() {
+		return nil, fmt.Errorf("task.memory_scope must be one of: user, project, local")
+	}
+	if strings.TrimSpace(norm.Instructions) == "" {
+		return nil, fmt.Errorf("task.instructions required")
+	}
+	if strings.TrimSpace(norm.Title) == "" {
+		return nil, fmt.Errorf("task.title required")
+	}
+	if raw := strings.TrimSpace(string(norm.Status)); raw != "" && !norm.Status.Valid() {
+		return nil, fmt.Errorf("task.status is invalid")
+	}
+	if raw := strings.TrimSpace(string(norm.Priority)); raw != "" && !norm.Priority.Valid() {
+		return nil, fmt.Errorf("task.priority is invalid")
+	}
+	for i, output := range norm.ExpectedOutputs {
+		if strings.TrimSpace(output.Name) == "" {
+			return nil, fmt.Errorf("task.expected_outputs[%d].name required", i)
+		}
+	}
+	for i, criterion := range norm.AcceptanceCriteria {
+		if strings.TrimSpace(criterion.Description) == "" {
+			return nil, fmt.Errorf("task.acceptance_criteria[%d].description required", i)
+		}
+	}
+	return &norm, nil
+}
+
+func deriveACPTaskTitle(instructions string) string {
+	instructions = strings.TrimSpace(instructions)
+	if instructions == "" {
+		return "task"
+	}
+	if idx := strings.IndexByte(instructions, '\n'); idx >= 0 {
+		instructions = strings.TrimSpace(instructions[:idx])
+	}
+	if len(instructions) > 96 {
+		instructions = strings.TrimSpace(instructions[:96])
+	}
+	if instructions == "" {
+		return "task"
+	}
+	return instructions
+}
+
 func (r ACPDispatchRequest) Normalize() (ACPDispatchRequest, error) {
 	r.TargetPubKey = strings.TrimSpace(r.TargetPubKey)
 	r.Instructions = strings.TrimSpace(r.Instructions)
@@ -395,6 +471,25 @@ func (r ACPDispatchRequest) Normalize() (ACPDispatchRequest, error) {
 			return r, fmt.Errorf("memory_scope must be one of: user, project, local")
 		}
 		r.MemoryScope = scope
+	}
+	var err error
+	r.Task, err = normalizeACPTaskSpec(r.Task, r.Instructions, r.MemoryScope, r.ToolProfile, r.EnabledTools)
+	if err != nil {
+		return r, err
+	}
+	if r.Task != nil {
+		if r.Instructions == "" {
+			r.Instructions = r.Task.Instructions
+		}
+		if r.MemoryScope == "" {
+			r.MemoryScope = r.Task.MemoryScope
+		}
+		if r.ToolProfile == "" {
+			r.ToolProfile = r.Task.ToolProfile
+		}
+		if len(r.EnabledTools) == 0 {
+			r.EnabledTools = append([]string(nil), r.Task.EnabledTools...)
+		}
 	}
 	if r.TargetPubKey == "" {
 		return r, fmt.Errorf("target_pubkey required")
@@ -426,6 +521,25 @@ func (r ACPPipelineRequest) Normalize() (ACPPipelineRequest, error) {
 			}
 			r.Steps[i].MemoryScope = scope
 		}
+		var err error
+		r.Steps[i].Task, err = normalizeACPTaskSpec(r.Steps[i].Task, r.Steps[i].Instructions, r.Steps[i].MemoryScope, r.Steps[i].ToolProfile, r.Steps[i].EnabledTools)
+		if err != nil {
+			return r, fmt.Errorf("steps[%d].%w", i, err)
+		}
+		if r.Steps[i].Task != nil {
+			if r.Steps[i].Instructions == "" {
+				r.Steps[i].Instructions = r.Steps[i].Task.Instructions
+			}
+			if r.Steps[i].MemoryScope == "" {
+				r.Steps[i].MemoryScope = r.Steps[i].Task.MemoryScope
+			}
+			if r.Steps[i].ToolProfile == "" {
+				r.Steps[i].ToolProfile = r.Steps[i].Task.ToolProfile
+			}
+			if len(r.Steps[i].EnabledTools) == 0 {
+				r.Steps[i].EnabledTools = append([]string(nil), r.Steps[i].Task.EnabledTools...)
+			}
+		}
 		if r.Steps[i].PeerPubKey == "" {
 			return r, fmt.Errorf("steps[%d].peer_pubkey required", i)
 		}
@@ -450,6 +564,7 @@ func DecodeACPDispatchParams(params json.RawMessage) (ACPDispatchRequest, error)
 	type acpDispatchCompat struct {
 		TargetPubKey    string                  `json:"target_pubkey"`
 		Instructions    string                  `json:"instructions"`
+		Task            *state.TaskSpec         `json:"task,omitempty"`
 		ContextMessages []map[string]any        `json:"context_messages,omitempty"`
 		MemoryScope     state.AgentMemoryScope  `json:"memory_scope,omitempty"`
 		ToolProfile     string                  `json:"tool_profile,omitempty"`
@@ -467,6 +582,7 @@ func DecodeACPDispatchParams(params json.RawMessage) (ACPDispatchRequest, error)
 	req := ACPDispatchRequest{
 		TargetPubKey:    compat.TargetPubKey,
 		Instructions:    compat.Instructions,
+		Task:            compat.Task,
 		ContextMessages: compat.ContextMessages,
 		MemoryScope:     compat.MemoryScope,
 		ToolProfile:     compat.ToolProfile,
@@ -495,6 +611,7 @@ func DecodeACPPipelineParams(params json.RawMessage) (ACPPipelineRequest, error)
 		PeerPubKey           string                  `json:"peer_pubkey"`
 		PeerPubKeyCamel      string                  `json:"peerPubKey,omitempty"`
 		Instructions         string                  `json:"instructions"`
+		Task                 *state.TaskSpec         `json:"task,omitempty"`
 		ContextMessages      []map[string]any        `json:"context_messages,omitempty"`
 		ContextMessagesCamel []map[string]any        `json:"contextMessages,omitempty"`
 		MemoryScope          state.AgentMemoryScope  `json:"memory_scope,omitempty"`
@@ -543,6 +660,7 @@ func DecodeACPPipelineParams(params json.RawMessage) (ACPPipelineRequest, error)
 		next := ACPPipelineStepRequest{
 			PeerPubKey:      firstNonEmpty(step.PeerPubKey, step.PeerPubKeyCamel),
 			Instructions:    step.Instructions,
+			Task:            step.Task,
 			ContextMessages: contextMessages,
 			MemoryScope:     memoryScope,
 			ToolProfile:     firstNonEmpty(step.ToolProfile, step.ToolProfileCamel),
@@ -709,6 +827,135 @@ func (r SessionsSpawnRequest) Normalize() (SessionsSpawnRequest, error) {
 
 func DecodeSessionsSpawnParams(params json.RawMessage) (SessionsSpawnRequest, error) {
 	return decodeMethodParams[SessionsSpawnRequest](params)
+}
+
+type TasksCreateRequest struct {
+	Task state.TaskSpec `json:"task"`
+}
+
+type TasksGetRequest struct {
+	TaskID    string `json:"task_id"`
+	RunsLimit int    `json:"runs_limit,omitempty"`
+}
+
+type TasksListRequest struct {
+	Status        state.TaskStatus `json:"status,omitempty"`
+	GoalID        string           `json:"goal_id,omitempty"`
+	AssignedAgent string           `json:"assigned_agent,omitempty"`
+	SessionID     string           `json:"session_id,omitempty"`
+	Limit         int              `json:"limit,omitempty"`
+}
+
+type TasksCancelRequest struct {
+	TaskID string `json:"task_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type TasksResumeRequest struct {
+	TaskID string `json:"task_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type TasksGetResponse struct {
+	Task state.TaskSpec  `json:"task"`
+	Runs []state.TaskRun `json:"runs,omitempty"`
+}
+
+type TasksListResponse struct {
+	Tasks []state.TaskSpec `json:"tasks"`
+	Count int              `json:"count"`
+}
+
+func (r TasksCreateRequest) Normalize() (TasksCreateRequest, error) {
+	r.Task.Title = strings.TrimSpace(r.Task.Title)
+	r.Task.Instructions = strings.TrimSpace(r.Task.Instructions)
+	r.Task.ToolProfile = strings.TrimSpace(r.Task.ToolProfile)
+	r.Task.EnabledTools = normalizeACPEnabledToolList(r.Task.EnabledTools)
+	norm, err := normalizeACPTaskSpec(&r.Task, r.Task.Instructions, r.Task.MemoryScope, r.Task.ToolProfile, r.Task.EnabledTools)
+	if err != nil {
+		return r, err
+	}
+	if norm == nil {
+		return r, fmt.Errorf("task is required")
+	}
+	r.Task = *norm
+	r.Task.TaskID = strings.TrimSpace(r.Task.TaskID)
+	r.Task.GoalID = strings.TrimSpace(r.Task.GoalID)
+	r.Task.ParentTaskID = strings.TrimSpace(r.Task.ParentTaskID)
+	r.Task.PlanID = strings.TrimSpace(r.Task.PlanID)
+	r.Task.SessionID = strings.TrimSpace(r.Task.SessionID)
+	r.Task.AssignedAgent = normalizeAgentID(r.Task.AssignedAgent)
+	r.Task.CurrentRunID = strings.TrimSpace(r.Task.CurrentRunID)
+	r.Task.LastRunID = strings.TrimSpace(r.Task.LastRunID)
+	return r, nil
+}
+
+func DecodeTasksCreateParams(params json.RawMessage) (TasksCreateRequest, error) {
+	return decodeMethodParams[TasksCreateRequest](params)
+}
+
+func (r TasksGetRequest) Normalize() (TasksGetRequest, error) {
+	r.TaskID = strings.TrimSpace(r.TaskID)
+	if r.TaskID == "" {
+		return r, fmt.Errorf("task_id is required")
+	}
+	r.RunsLimit = normalizeLimit(r.RunsLimit, 20, 200)
+	return r, nil
+}
+
+func DecodeTasksGetParams(params json.RawMessage) (TasksGetRequest, error) {
+	return decodeMethodParams[TasksGetRequest](params)
+}
+
+func (r TasksListRequest) Normalize() (TasksListRequest, error) {
+	r.GoalID = strings.TrimSpace(r.GoalID)
+	r.AssignedAgent = normalizeAgentID(r.AssignedAgent)
+	r.SessionID = strings.TrimSpace(r.SessionID)
+	if raw := strings.TrimSpace(string(r.Status)); raw != "" {
+		status, ok := state.ParseTaskStatus(raw)
+		if !ok {
+			return r, fmt.Errorf("status is invalid")
+		}
+		r.Status = status
+	}
+	r.Limit = normalizeLimit(r.Limit, 100, 500)
+	return r, nil
+}
+
+func DecodeTasksListParams(params json.RawMessage) (TasksListRequest, error) {
+	return decodeMethodParams[TasksListRequest](params)
+}
+
+func (r TasksCancelRequest) Normalize() (TasksCancelRequest, error) {
+	r.TaskID = strings.TrimSpace(r.TaskID)
+	r.Reason = strings.TrimSpace(r.Reason)
+	if r.TaskID == "" {
+		return r, fmt.Errorf("task_id is required")
+	}
+	if r.Reason == "" {
+		r.Reason = "cancelled via control rpc"
+	}
+	return r, nil
+}
+
+func DecodeTasksCancelParams(params json.RawMessage) (TasksCancelRequest, error) {
+	return decodeMethodParams[TasksCancelRequest](params)
+}
+
+func (r TasksResumeRequest) Normalize() (TasksResumeRequest, error) {
+	r.TaskID = strings.TrimSpace(r.TaskID)
+	r.Reason = strings.TrimSpace(r.Reason)
+	if r.TaskID == "" {
+		return r, fmt.Errorf("task_id is required")
+	}
+	if r.Reason == "" {
+		r.Reason = "resumed via control rpc"
+	}
+	return r, nil
+}
+
+func DecodeTasksResumeParams(params json.RawMessage) (TasksResumeRequest, error) {
+	return decodeMethodParams[TasksResumeRequest](params)
 }
 
 type SessionGetResponse struct {
@@ -2599,6 +2846,11 @@ func SupportedMethods() []string {
 		MethodSessionsSpawn,
 		MethodSessionsExport,
 		MethodSessionsPrune,
+		MethodTasksCreate,
+		MethodTasksGet,
+		MethodTasksList,
+		MethodTasksCancel,
+		MethodTasksResume,
 		MethodListGet,
 		MethodListPut,
 		MethodRelayPolicyGet,
@@ -4542,6 +4794,16 @@ var objectParamAliases = map[string]string{
 	"expectedVersion":  "expected_version",
 	"expectedEvent":    "expected_event",
 	"agentId":          "agent_id",
+	"taskId":           "task_id",
+	"goalId":           "goal_id",
+	"parentTaskId":     "parent_task_id",
+	"planId":           "plan_id",
+	"assignedAgent":    "assigned_agent",
+	"currentRunId":     "current_run_id",
+	"lastRunId":        "last_run_id",
+	"createdAt":        "created_at",
+	"updatedAt":        "updated_at",
+	"runsLimit":        "runs_limit",
 	"installId":        "install_id",
 	"skillKey":         "skill_key",
 	"apiKey":           "api_key",

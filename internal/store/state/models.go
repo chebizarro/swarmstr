@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -463,4 +464,684 @@ type AgentFileDoc struct {
 	Name    string         `json:"name"`
 	Content string         `json:"content"`
 	Meta    map[string]any `json:"meta,omitempty"`
+}
+
+// GoalStatus describes the canonical lifecycle state of a goal.
+type GoalStatus string
+
+const (
+	GoalStatusPending   GoalStatus = "pending"
+	GoalStatusActive    GoalStatus = "active"
+	GoalStatusBlocked   GoalStatus = "blocked"
+	GoalStatusCompleted GoalStatus = "completed"
+	GoalStatusFailed    GoalStatus = "failed"
+	GoalStatusCancelled GoalStatus = "cancelled"
+)
+
+func ParseGoalStatus(raw string) (GoalStatus, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(GoalStatusPending):
+		return GoalStatusPending, true
+	case string(GoalStatusActive):
+		return GoalStatusActive, true
+	case string(GoalStatusBlocked):
+		return GoalStatusBlocked, true
+	case string(GoalStatusCompleted):
+		return GoalStatusCompleted, true
+	case string(GoalStatusFailed):
+		return GoalStatusFailed, true
+	case string(GoalStatusCancelled):
+		return GoalStatusCancelled, true
+	default:
+		return "", false
+	}
+}
+
+func NormalizeGoalStatus(raw string) GoalStatus {
+	status, _ := ParseGoalStatus(raw)
+	return status
+}
+
+func (s GoalStatus) Valid() bool {
+	_, ok := ParseGoalStatus(string(s))
+	return ok
+}
+
+// TaskStatus describes the canonical lifecycle state of a task.
+type TaskStatus string
+
+const (
+	TaskStatusPending          TaskStatus = "pending"
+	TaskStatusPlanned          TaskStatus = "planned"
+	TaskStatusReady            TaskStatus = "ready"
+	TaskStatusInProgress       TaskStatus = "in_progress"
+	TaskStatusBlocked          TaskStatus = "blocked"
+	TaskStatusAwaitingApproval TaskStatus = "awaiting_approval"
+	TaskStatusVerifying        TaskStatus = "verifying"
+	TaskStatusCompleted        TaskStatus = "completed"
+	TaskStatusFailed           TaskStatus = "failed"
+	TaskStatusCancelled        TaskStatus = "cancelled"
+)
+
+func ParseTaskStatus(raw string) (TaskStatus, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(TaskStatusPending):
+		return TaskStatusPending, true
+	case string(TaskStatusPlanned):
+		return TaskStatusPlanned, true
+	case string(TaskStatusReady):
+		return TaskStatusReady, true
+	case string(TaskStatusInProgress):
+		return TaskStatusInProgress, true
+	case string(TaskStatusBlocked):
+		return TaskStatusBlocked, true
+	case string(TaskStatusAwaitingApproval):
+		return TaskStatusAwaitingApproval, true
+	case string(TaskStatusVerifying):
+		return TaskStatusVerifying, true
+	case string(TaskStatusCompleted):
+		return TaskStatusCompleted, true
+	case string(TaskStatusFailed):
+		return TaskStatusFailed, true
+	case string(TaskStatusCancelled):
+		return TaskStatusCancelled, true
+	default:
+		return "", false
+	}
+}
+
+func NormalizeTaskStatus(raw string) TaskStatus {
+	status, _ := ParseTaskStatus(raw)
+	return status
+}
+
+func (s TaskStatus) Valid() bool {
+	_, ok := ParseTaskStatus(string(s))
+	return ok
+}
+
+// TaskRunStatus describes the lifecycle state of an execution attempt for a task.
+type TaskRunStatus string
+
+const (
+	TaskRunStatusQueued           TaskRunStatus = "queued"
+	TaskRunStatusRunning          TaskRunStatus = "running"
+	TaskRunStatusBlocked          TaskRunStatus = "blocked"
+	TaskRunStatusAwaitingApproval TaskRunStatus = "awaiting_approval"
+	TaskRunStatusRetrying         TaskRunStatus = "retrying"
+	TaskRunStatusCompleted        TaskRunStatus = "completed"
+	TaskRunStatusFailed           TaskRunStatus = "failed"
+	TaskRunStatusCancelled        TaskRunStatus = "cancelled"
+)
+
+func ParseTaskRunStatus(raw string) (TaskRunStatus, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(TaskRunStatusQueued):
+		return TaskRunStatusQueued, true
+	case string(TaskRunStatusRunning):
+		return TaskRunStatusRunning, true
+	case string(TaskRunStatusBlocked):
+		return TaskRunStatusBlocked, true
+	case string(TaskRunStatusAwaitingApproval):
+		return TaskRunStatusAwaitingApproval, true
+	case string(TaskRunStatusRetrying):
+		return TaskRunStatusRetrying, true
+	case string(TaskRunStatusCompleted):
+		return TaskRunStatusCompleted, true
+	case string(TaskRunStatusFailed):
+		return TaskRunStatusFailed, true
+	case string(TaskRunStatusCancelled):
+		return TaskRunStatusCancelled, true
+	default:
+		return "", false
+	}
+}
+
+func NormalizeTaskRunStatus(raw string) TaskRunStatus {
+	status, _ := ParseTaskRunStatus(raw)
+	return status
+}
+
+func (s TaskRunStatus) Valid() bool {
+	_, ok := ParseTaskRunStatus(string(s))
+	return ok
+}
+
+// TaskPriority describes scheduling or triage priority.
+type TaskPriority string
+
+const (
+	TaskPriorityHigh   TaskPriority = "high"
+	TaskPriorityMedium TaskPriority = "medium"
+	TaskPriorityLow    TaskPriority = "low"
+)
+
+func ParseTaskPriority(raw string) (TaskPriority, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(TaskPriorityHigh):
+		return TaskPriorityHigh, true
+	case string(TaskPriorityMedium), "":
+		return TaskPriorityMedium, true
+	case string(TaskPriorityLow):
+		return TaskPriorityLow, true
+	default:
+		return "", false
+	}
+}
+
+func NormalizeTaskPriority(raw string) TaskPriority {
+	priority, _ := ParseTaskPriority(raw)
+	return priority
+}
+
+func (p TaskPriority) Valid() bool {
+	_, ok := ParseTaskPriority(string(p))
+	return ok
+}
+
+// TaskAuthority captures the authority contract attached to a goal or task.
+type TaskAuthority struct {
+	Role               string   `json:"role,omitempty"`
+	ApprovalMode       string   `json:"approval_mode,omitempty"`
+	CanAct             bool     `json:"can_act,omitempty"`
+	CanDelegate        bool     `json:"can_delegate,omitempty"`
+	CanEscalate        bool     `json:"can_escalate,omitempty"`
+	EscalationRequired bool     `json:"escalation_required,omitempty"`
+	RiskClass          string   `json:"risk_class,omitempty"`
+	AllowedAgents      []string `json:"allowed_agents,omitempty"`
+	MaxDelegationDepth int      `json:"max_delegation_depth,omitempty"`
+}
+
+// TaskBudget captures budget guardrails that downstream runtime layers enforce.
+type TaskBudget struct {
+	MaxPromptTokens     int   `json:"max_prompt_tokens,omitempty"`
+	MaxCompletionTokens int   `json:"max_completion_tokens,omitempty"`
+	MaxTotalTokens      int   `json:"max_total_tokens,omitempty"`
+	MaxRuntimeMS        int64 `json:"max_runtime_ms,omitempty"`
+	MaxToolCalls        int   `json:"max_tool_calls,omitempty"`
+	MaxDelegations      int   `json:"max_delegations,omitempty"`
+	MaxCostMicrosUSD    int64 `json:"max_cost_micros_usd,omitempty"`
+}
+
+// TaskUsage captures measured runtime consumption for a task run.
+type TaskUsage struct {
+	PromptTokens     int   `json:"prompt_tokens,omitempty"`
+	CompletionTokens int   `json:"completion_tokens,omitempty"`
+	TotalTokens      int   `json:"total_tokens,omitempty"`
+	WallClockMS      int64 `json:"wall_clock_ms,omitempty"`
+	ToolCalls        int   `json:"tool_calls,omitempty"`
+	Delegations      int   `json:"delegations,omitempty"`
+	CostMicrosUSD    int64 `json:"cost_micros_usd,omitempty"`
+}
+
+// TaskOutputSpec describes an expected output contract for a task.
+type TaskOutputSpec struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Format      string `json:"format,omitempty"`
+	SchemaRef   string `json:"schema_ref,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+// TaskAcceptanceCriterion describes how task completion should be judged.
+type TaskAcceptanceCriterion struct {
+	Type        string `json:"type,omitempty"`
+	Description string `json:"description"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+// TaskResultRef points at a durable result, artifact, or event produced by a task run.
+type TaskResultRef struct {
+	Kind string `json:"kind,omitempty"`
+	ID   string `json:"id,omitempty"`
+	URI  string `json:"uri,omitempty"`
+	Hash string `json:"hash,omitempty"`
+}
+
+// GoalSpec is the canonical persisted representation of a user or system goal.
+type GoalSpec struct {
+	Version         int                       `json:"version"`
+	GoalID          string                    `json:"goal_id"`
+	Title           string                    `json:"title"`
+	Instructions    string                    `json:"instructions,omitempty"`
+	RequestedBy     string                    `json:"requested_by,omitempty"`
+	SessionID       string                    `json:"session_id,omitempty"`
+	Status          GoalStatus                `json:"status"`
+	Priority        TaskPriority              `json:"priority,omitempty"`
+	Constraints     []string                  `json:"constraints,omitempty"`
+	SuccessCriteria []string                  `json:"success_criteria,omitempty"`
+	Authority       TaskAuthority             `json:"authority,omitempty"`
+	Budget          TaskBudget                `json:"budget,omitempty"`
+	CreatedAt       int64                     `json:"created_at,omitempty"`
+	UpdatedAt       int64                     `json:"updated_at,omitempty"`
+	Meta            map[string]any            `json:"meta,omitempty"`
+}
+
+func (g GoalSpec) Normalize() GoalSpec {
+	if g.Version == 0 {
+		g.Version = 1
+	}
+	if !g.Status.Valid() {
+		g.Status = GoalStatusPending
+	}
+	if strings.TrimSpace(string(g.Priority)) == "" {
+		g.Priority = TaskPriorityMedium
+	} else if !g.Priority.Valid() {
+		g.Priority = TaskPriorityMedium
+	}
+	return g
+}
+
+func (g GoalSpec) Validate() error {
+	if strings.TrimSpace(g.GoalID) == "" {
+		return fmt.Errorf("goal_id is required")
+	}
+	if strings.TrimSpace(g.Title) == "" {
+		return fmt.Errorf("title is required")
+	}
+	if raw := strings.TrimSpace(string(g.Status)); raw != "" && !g.Status.Valid() {
+		return fmt.Errorf("invalid goal status %q", g.Status)
+	}
+	if raw := strings.TrimSpace(string(g.Priority)); raw != "" && !g.Priority.Valid() {
+		return fmt.Errorf("invalid goal priority %q", g.Priority)
+	}
+	return nil
+}
+
+// TaskSpec is the canonical persisted representation of a unit of work.
+type TaskSpec struct {
+	Version            int                       `json:"version"`
+	TaskID             string                    `json:"task_id"`
+	GoalID             string                    `json:"goal_id,omitempty"`
+	ParentTaskID       string                    `json:"parent_task_id,omitempty"`
+	PlanID             string                    `json:"plan_id,omitempty"`
+	SessionID          string                    `json:"session_id,omitempty"`
+	Title              string                    `json:"title"`
+	Instructions       string                    `json:"instructions"`
+	Inputs             map[string]any            `json:"inputs,omitempty"`
+	ExpectedOutputs    []TaskOutputSpec          `json:"expected_outputs,omitempty"`
+	AcceptanceCriteria []TaskAcceptanceCriterion `json:"acceptance_criteria,omitempty"`
+	Dependencies       []string                  `json:"dependencies,omitempty"`
+	AssignedAgent      string                    `json:"assigned_agent,omitempty"`
+	CurrentRunID       string                    `json:"current_run_id,omitempty"`
+	LastRunID          string                    `json:"last_run_id,omitempty"`
+	Status             TaskStatus                `json:"status"`
+	Priority           TaskPriority              `json:"priority,omitempty"`
+	Authority          TaskAuthority             `json:"authority,omitempty"`
+	MemoryScope        AgentMemoryScope          `json:"memory_scope,omitempty"`
+	ToolProfile        string                    `json:"tool_profile,omitempty"`
+	EnabledTools       []string                  `json:"enabled_tools,omitempty"`
+	Budget             TaskBudget                `json:"budget,omitempty"`
+	CreatedAt          int64                     `json:"created_at,omitempty"`
+	UpdatedAt          int64                     `json:"updated_at,omitempty"`
+	Transitions        []TaskTransition          `json:"transitions,omitempty"`
+	Meta               map[string]any            `json:"meta,omitempty"`
+}
+
+func (t TaskSpec) Normalize() TaskSpec {
+	if t.Version == 0 {
+		t.Version = 1
+	}
+	if !t.Status.Valid() {
+		t.Status = TaskStatusPending
+	}
+	if strings.TrimSpace(string(t.Priority)) == "" {
+		t.Priority = TaskPriorityMedium
+	} else if !t.Priority.Valid() {
+		t.Priority = TaskPriorityMedium
+	}
+	if t.MemoryScope != "" {
+		t.MemoryScope = NormalizeAgentMemoryScope(string(t.MemoryScope))
+	}
+	return t
+}
+
+func (t TaskSpec) Validate() error {
+	if strings.TrimSpace(t.TaskID) == "" {
+		return fmt.Errorf("task_id is required")
+	}
+	if strings.TrimSpace(t.Title) == "" {
+		return fmt.Errorf("title is required")
+	}
+	if strings.TrimSpace(t.Instructions) == "" {
+		return fmt.Errorf("instructions are required")
+	}
+	if raw := strings.TrimSpace(string(t.Status)); raw != "" && !t.Status.Valid() {
+		return fmt.Errorf("invalid task status %q", t.Status)
+	}
+	if raw := strings.TrimSpace(string(t.Priority)); raw != "" && !t.Priority.Valid() {
+		return fmt.Errorf("invalid task priority %q", t.Priority)
+	}
+	norm := t.Normalize()
+	if norm.MemoryScope == "" && t.MemoryScope != "" {
+		return fmt.Errorf("invalid memory_scope %q", t.MemoryScope)
+	}
+	for i, output := range t.ExpectedOutputs {
+		if strings.TrimSpace(output.Name) == "" {
+			return fmt.Errorf("expected_outputs[%d].name is required", i)
+		}
+	}
+	for i, criterion := range t.AcceptanceCriteria {
+		if strings.TrimSpace(criterion.Description) == "" {
+			return fmt.Errorf("acceptance_criteria[%d].description is required", i)
+		}
+	}
+	return nil
+}
+
+// TaskRun is the canonical persisted representation of a task execution attempt.
+type TaskRun struct {
+	Version       int            `json:"version"`
+	RunID         string         `json:"run_id"`
+	TaskID        string         `json:"task_id"`
+	GoalID        string         `json:"goal_id,omitempty"`
+	ParentRunID   string         `json:"parent_run_id,omitempty"`
+	SessionID     string         `json:"session_id,omitempty"`
+	AgentID       string         `json:"agent_id,omitempty"`
+	Attempt       int            `json:"attempt"`
+	Status        TaskRunStatus  `json:"status"`
+	StartedAt     int64          `json:"started_at,omitempty"`
+	EndedAt       int64          `json:"ended_at,omitempty"`
+	Trigger       string         `json:"trigger,omitempty"`
+	CheckpointRef string              `json:"checkpoint_ref,omitempty"`
+	Result        TaskResultRef       `json:"result,omitempty"`
+	Error         string              `json:"error,omitempty"`
+	Usage         TaskUsage           `json:"usage,omitempty"`
+	Transitions   []TaskRunTransition `json:"transitions,omitempty"`
+	Meta          map[string]any      `json:"meta,omitempty"`
+}
+
+func (r TaskRun) Normalize() TaskRun {
+	if r.Version == 0 {
+		r.Version = 1
+	}
+	if r.Attempt <= 0 {
+		r.Attempt = 1
+	}
+	if !r.Status.Valid() {
+		r.Status = TaskRunStatusQueued
+	}
+	return r
+}
+
+func (r TaskRun) Validate() error {
+	if strings.TrimSpace(r.RunID) == "" {
+		return fmt.Errorf("run_id is required")
+	}
+	if strings.TrimSpace(r.TaskID) == "" {
+		return fmt.Errorf("task_id is required")
+	}
+	if raw := strings.TrimSpace(string(r.Status)); raw != "" && !r.Status.Valid() {
+		return fmt.Errorf("invalid run status %q", r.Status)
+	}
+	if r.Attempt < 0 {
+		return fmt.Errorf("attempt must be >= 0")
+	}
+	return nil
+}
+
+// ── Plan schemas ───────────────────────────────────────────────────────────────
+
+// PlanStatus describes the lifecycle state of a plan.
+type PlanStatus string
+
+const (
+	PlanStatusDraft     PlanStatus = "draft"
+	PlanStatusActive    PlanStatus = "active"
+	PlanStatusRevising  PlanStatus = "revising"
+	PlanStatusCompleted PlanStatus = "completed"
+	PlanStatusFailed    PlanStatus = "failed"
+	PlanStatusCancelled PlanStatus = "cancelled"
+)
+
+func ParsePlanStatus(raw string) (PlanStatus, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(PlanStatusDraft):
+		return PlanStatusDraft, true
+	case string(PlanStatusActive):
+		return PlanStatusActive, true
+	case string(PlanStatusRevising):
+		return PlanStatusRevising, true
+	case string(PlanStatusCompleted):
+		return PlanStatusCompleted, true
+	case string(PlanStatusFailed):
+		return PlanStatusFailed, true
+	case string(PlanStatusCancelled):
+		return PlanStatusCancelled, true
+	default:
+		return "", false
+	}
+}
+
+func NormalizePlanStatus(raw string) PlanStatus {
+	status, _ := ParsePlanStatus(raw)
+	return status
+}
+
+func (s PlanStatus) Valid() bool {
+	_, ok := ParsePlanStatus(string(s))
+	return ok
+}
+
+// PlanStepStatus describes the state of an individual plan step.
+type PlanStepStatus string
+
+const (
+	PlanStepStatusPending    PlanStepStatus = "pending"
+	PlanStepStatusReady      PlanStepStatus = "ready"
+	PlanStepStatusInProgress PlanStepStatus = "in_progress"
+	PlanStepStatusCompleted  PlanStepStatus = "completed"
+	PlanStepStatusFailed     PlanStepStatus = "failed"
+	PlanStepStatusSkipped    PlanStepStatus = "skipped"
+)
+
+func ParsePlanStepStatus(raw string) (PlanStepStatus, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(PlanStepStatusPending):
+		return PlanStepStatusPending, true
+	case string(PlanStepStatusReady):
+		return PlanStepStatusReady, true
+	case string(PlanStepStatusInProgress):
+		return PlanStepStatusInProgress, true
+	case string(PlanStepStatusCompleted):
+		return PlanStepStatusCompleted, true
+	case string(PlanStepStatusFailed):
+		return PlanStepStatusFailed, true
+	case string(PlanStepStatusSkipped):
+		return PlanStepStatusSkipped, true
+	default:
+		return "", false
+	}
+}
+
+func NormalizePlanStepStatus(raw string) PlanStepStatus {
+	status, _ := ParsePlanStepStatus(raw)
+	return status
+}
+
+func (s PlanStepStatus) Valid() bool {
+	_, ok := ParsePlanStepStatus(string(s))
+	return ok
+}
+
+// PlanStep describes one unit of work inside a plan.
+type PlanStep struct {
+	StepID       string           `json:"step_id"`
+	Title        string           `json:"title"`
+	Instructions string           `json:"instructions,omitempty"`
+	DependsOn    []string         `json:"depends_on,omitempty"`
+	Status       PlanStepStatus   `json:"status"`
+	TaskID       string           `json:"task_id,omitempty"`
+	Agent        string           `json:"agent,omitempty"`
+	Outputs      []TaskOutputSpec `json:"outputs,omitempty"`
+	Meta         map[string]any   `json:"meta,omitempty"`
+}
+
+func (s PlanStep) Normalize() PlanStep {
+	if !s.Status.Valid() {
+		s.Status = PlanStepStatusPending
+	}
+	return s
+}
+
+func (s PlanStep) Validate() error {
+	if strings.TrimSpace(s.StepID) == "" {
+		return fmt.Errorf("step_id is required")
+	}
+	if strings.TrimSpace(s.Title) == "" {
+		return fmt.Errorf("step title is required")
+	}
+	if raw := strings.TrimSpace(string(s.Status)); raw != "" && !s.Status.Valid() {
+		return fmt.Errorf("invalid step status %q", s.Status)
+	}
+	for i, out := range s.Outputs {
+		if strings.TrimSpace(out.Name) == "" {
+			return fmt.Errorf("step %q outputs[%d].name is required", s.StepID, i)
+		}
+	}
+	return nil
+}
+
+// PlanSpec is the canonical persisted representation of a task decomposition plan.
+type PlanSpec struct {
+	Version          int            `json:"version"`
+	PlanID           string         `json:"plan_id"`
+	GoalID           string         `json:"goal_id,omitempty"`
+	Title            string         `json:"title"`
+	Revision         int            `json:"revision"`
+	Status           PlanStatus     `json:"status"`
+	Steps            []PlanStep     `json:"steps"`
+	Assumptions      []string       `json:"assumptions,omitempty"`
+	Risks            []string       `json:"risks,omitempty"`
+	RollbackStrategy string         `json:"rollback_strategy,omitempty"`
+	CreatedAt        int64          `json:"created_at,omitempty"`
+	UpdatedAt        int64          `json:"updated_at,omitempty"`
+	Meta             map[string]any `json:"meta,omitempty"`
+}
+
+func (p PlanSpec) Normalize() PlanSpec {
+	if p.Version == 0 {
+		p.Version = 1
+	}
+	if p.Revision <= 0 {
+		p.Revision = 1
+	}
+	if !p.Status.Valid() {
+		p.Status = PlanStatusDraft
+	}
+	for i := range p.Steps {
+		p.Steps[i] = p.Steps[i].Normalize()
+	}
+	return p
+}
+
+func (p PlanSpec) Validate() error {
+	if strings.TrimSpace(p.PlanID) == "" {
+		return fmt.Errorf("plan_id is required")
+	}
+	if strings.TrimSpace(p.Title) == "" {
+		return fmt.Errorf("plan title is required")
+	}
+	if raw := strings.TrimSpace(string(p.Status)); raw != "" && !p.Status.Valid() {
+		return fmt.Errorf("invalid plan status %q", p.Status)
+	}
+	if len(p.Steps) == 0 {
+		return fmt.Errorf("plan must have at least one step")
+	}
+	stepIDs := make(map[string]bool, len(p.Steps))
+	for i, step := range p.Steps {
+		if err := step.Validate(); err != nil {
+			return fmt.Errorf("steps[%d]: %w", i, err)
+		}
+		if stepIDs[step.StepID] {
+			return fmt.Errorf("duplicate step_id %q at steps[%d]", step.StepID, i)
+		}
+		stepIDs[step.StepID] = true
+	}
+	// Validate dependency references.
+	for i, step := range p.Steps {
+		for _, dep := range step.DependsOn {
+			if !stepIDs[dep] {
+				return fmt.Errorf("steps[%d] depends_on unknown step_id %q", i, dep)
+			}
+			if dep == step.StepID {
+				return fmt.Errorf("steps[%d] depends on itself", i)
+			}
+		}
+	}
+	return nil
+}
+
+// HasCycle reports whether the step dependency graph contains a cycle.
+func (p PlanSpec) HasCycle() bool {
+	adj := make(map[string][]string, len(p.Steps))
+	for _, step := range p.Steps {
+		adj[step.StepID] = step.DependsOn
+	}
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := make(map[string]int, len(p.Steps))
+	var dfs func(string) bool
+	dfs = func(id string) bool {
+		color[id] = gray
+		for _, dep := range adj[id] {
+			switch color[dep] {
+			case gray:
+				return true
+			case white:
+				if dfs(dep) {
+					return true
+				}
+			}
+		}
+		color[id] = black
+		return false
+	}
+	for _, step := range p.Steps {
+		if color[step.StepID] == white {
+			if dfs(step.StepID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ReadySteps returns steps whose status is pending and whose dependencies
+// are all completed or skipped.
+func (p PlanSpec) ReadySteps() []PlanStep {
+	statusByID := make(map[string]PlanStepStatus, len(p.Steps))
+	for _, step := range p.Steps {
+		statusByID[step.StepID] = step.Status
+	}
+	var ready []PlanStep
+	for _, step := range p.Steps {
+		if step.Status != PlanStepStatusPending {
+			continue
+		}
+		allDone := true
+		for _, dep := range step.DependsOn {
+			ds := statusByID[dep]
+			if ds != PlanStepStatusCompleted && ds != PlanStepStatusSkipped {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			ready = append(ready, step)
+		}
+	}
+	return ready
+}
+
+// IsTerminal reports whether the plan is in a terminal state.
+func (p PlanSpec) IsTerminal() bool {
+	switch p.Status {
+	case PlanStatusCompleted, PlanStatusFailed, PlanStatusCancelled:
+		return true
+	}
+	return false
 }

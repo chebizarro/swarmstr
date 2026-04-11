@@ -188,6 +188,29 @@ For production deployments:
 - **Relay health**: `metiq status --json | jq .relays`
 - **Doctor checks**: `metiq doctor`
 
+### Memory health diagnostics
+
+For memory-specific operator checks, call `doctor.memory.status` over the admin API.
+This is the quickest way to see whether recall problems come from backend health,
+stale session-memory artifacts, or compaction state.
+
+Typical fields include:
+
+- `index.available`, `index.entry_count`, `index.count_source`
+- `store.kind`, `store.primary`, `store.fallback`, `store.fallback_active`
+- `file_memory.sessions_with_surface_state`, `file_memory.recent_recall_samples`
+- `session_memory.tracked_sessions`, `session_memory.pending_sessions`, `session_memory.stale_artifact_sessions`
+- `maintenance.sessions_with_compaction`, `maintenance.latest_memory_flush_unix`
+
+Example:
+
+```bash
+curl -s -X POST http://$METIQ_ADMIN_ADDR/call \
+  -H "Authorization: Bearer $METIQ_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"method":"doctor.memory.status","params":{}}' | jq .result
+```
+
 ## See Also
 
 - [Configuration](/gateway/configuration)
