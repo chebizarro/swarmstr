@@ -15,6 +15,7 @@ import (
 const (
 	sessionFileMemorySurfacedCap = 64
 	memoryRecallSampleCap        = 8
+	sessionChildTaskCap          = 64
 )
 
 // SessionEntry holds persisted settings and metrics for a single session.
@@ -40,6 +41,14 @@ type SessionEntry struct {
 	SessionMemoryUpdatedAt        int64                `json:"session_memory_updated_at,omitempty"`
 	FileMemorySurfaced            map[string]string    `json:"file_memory_surfaced,omitempty"`
 	RecentMemoryRecall            []MemoryRecallSample `json:"recent_memory_recall,omitempty"`
+	ParentTaskID                  string               `json:"parent_task_id,omitempty"`
+	ParentRunID                   string               `json:"parent_run_id,omitempty"`
+	ActiveTaskID                  string               `json:"active_task_id,omitempty"`
+	ActiveRunID                   string               `json:"active_run_id,omitempty"`
+	LastCompletedTaskID           string               `json:"last_completed_task_id,omitempty"`
+	LastCompletedRunID            string               `json:"last_completed_run_id,omitempty"`
+	ChildTaskIDs                  []string             `json:"child_task_ids,omitempty"`
+	LastTaskResult                TaskResultRef        `json:"last_task_result,omitempty"`
 
 	// Agent / model / provider routing state.
 	AgentID          string           `json:"agent_id,omitempty"`
@@ -100,44 +109,54 @@ type SessionEntry struct {
 // TurnTelemetry is the persisted latest-turn snapshot for a session.
 // It is intentionally lightweight and operationally focused.
 type TurnTelemetry struct {
-	TurnID         string `json:"turn_id,omitempty"`
-	StartedAtMS    int64  `json:"started_at_ms,omitempty"`
-	EndedAtMS      int64  `json:"ended_at_ms,omitempty"`
-	DurationMS     int64  `json:"duration_ms,omitempty"`
-	Outcome        string `json:"outcome,omitempty"`
-	StopReason     string `json:"stop_reason,omitempty"`
-	LoopBlocked    bool   `json:"loop_blocked,omitempty"`
-	Error          string `json:"error,omitempty"`
-	FallbackUsed   bool   `json:"fallback_used,omitempty"`
-	FallbackFrom   string `json:"fallback_from,omitempty"`
-	FallbackTo     string `json:"fallback_to,omitempty"`
-	FallbackReason string `json:"fallback_reason,omitempty"`
-	InputTokens    int64  `json:"input_tokens,omitempty"`
-	OutputTokens   int64  `json:"output_tokens,omitempty"`
+	TurnID         string        `json:"turn_id,omitempty"`
+	TaskID         string        `json:"task_id,omitempty"`
+	RunID          string        `json:"run_id,omitempty"`
+	ParentTaskID   string        `json:"parent_task_id,omitempty"`
+	ParentRunID    string        `json:"parent_run_id,omitempty"`
+	StartedAtMS    int64         `json:"started_at_ms,omitempty"`
+	EndedAtMS      int64         `json:"ended_at_ms,omitempty"`
+	DurationMS     int64         `json:"duration_ms,omitempty"`
+	Outcome        string        `json:"outcome,omitempty"`
+	StopReason     string        `json:"stop_reason,omitempty"`
+	LoopBlocked    bool          `json:"loop_blocked,omitempty"`
+	Error          string        `json:"error,omitempty"`
+	FallbackUsed   bool          `json:"fallback_used,omitempty"`
+	FallbackFrom   string        `json:"fallback_from,omitempty"`
+	FallbackTo     string        `json:"fallback_to,omitempty"`
+	FallbackReason string        `json:"fallback_reason,omitempty"`
+	InputTokens    int64         `json:"input_tokens,omitempty"`
+	OutputTokens   int64         `json:"output_tokens,omitempty"`
+	Result         TaskResultRef `json:"result,omitempty"`
 }
 
 // MemoryRecallSample captures a bounded, redacted snapshot of the
 // deterministic recall block assembled for a successful turn.
 type MemoryRecallSample struct {
-	RecordedAtMS      int64                    `json:"recorded_at_ms,omitempty"`
-	TurnID            string                   `json:"turn_id,omitempty"`
-	Strategy          string                   `json:"strategy,omitempty"`
-	QueryHash         string                   `json:"query_hash,omitempty"`
-	QueryRuneCount    int                      `json:"query_rune_count,omitempty"`
-	QueryTokenCount   int                      `json:"query_token_count,omitempty"`
-	Scope             string                   `json:"scope,omitempty"`
-	IndexedSession    []MemoryRecallIndexedHit `json:"indexed_session,omitempty"`
-	IndexedGlobal     []MemoryRecallIndexedHit `json:"indexed_global,omitempty"`
-	FileSelected      []MemoryRecallFileHit    `json:"file_selected,omitempty"`
-	IndexedLatencyMS  int64                    `json:"indexed_latency_ms,omitempty"`
-	FileLatencyMS     int64                    `json:"file_latency_ms,omitempty"`
-	TotalLatencyMS    int64                    `json:"total_latency_ms,omitempty"`
-	IndexedBlockRunes int                      `json:"indexed_block_runes,omitempty"`
-	FileBlockRunes    int                      `json:"file_block_runes,omitempty"`
-	TotalBlockRunes   int                      `json:"total_block_runes,omitempty"`
-	IndexedInjected   bool                     `json:"indexed_injected,omitempty"`
-	FileInjected      bool                     `json:"file_injected,omitempty"`
-	InjectedAny       bool                     `json:"injected_any,omitempty"`
+	RecordedAtMS         int64                    `json:"recorded_at_ms,omitempty"`
+	TurnID               string                   `json:"turn_id,omitempty"`
+	Strategy             string                   `json:"strategy,omitempty"`
+	QueryHash            string                   `json:"query_hash,omitempty"`
+	QueryRuneCount       int                      `json:"query_rune_count,omitempty"`
+	QueryTokenCount      int                      `json:"query_token_count,omitempty"`
+	Scope                string                   `json:"scope,omitempty"`
+	IndexedSession       []MemoryRecallIndexedHit `json:"indexed_session,omitempty"`
+	IndexedGlobal        []MemoryRecallIndexedHit `json:"indexed_global,omitempty"`
+	FileSelected         []MemoryRecallFileHit    `json:"file_selected,omitempty"`
+	SessionMemoryPath    string                   `json:"session_memory_path,omitempty"`
+	SessionMemoryUpdated int64                    `json:"session_memory_updated_at,omitempty"`
+	IndexedLatencyMS     int64                    `json:"indexed_latency_ms,omitempty"`
+	FileLatencyMS        int64                    `json:"file_latency_ms,omitempty"`
+	SessionLatencyMS     int64                    `json:"session_latency_ms,omitempty"`
+	TotalLatencyMS       int64                    `json:"total_latency_ms,omitempty"`
+	IndexedBlockRunes    int                      `json:"indexed_block_runes,omitempty"`
+	FileBlockRunes       int                      `json:"file_block_runes,omitempty"`
+	SessionBlockRunes    int                      `json:"session_block_runes,omitempty"`
+	TotalBlockRunes      int                      `json:"total_block_runes,omitempty"`
+	IndexedInjected      bool                     `json:"indexed_injected,omitempty"`
+	FileInjected         bool                     `json:"file_injected,omitempty"`
+	SessionInjected      bool                     `json:"session_injected,omitempty"`
+	InjectedAny          bool                     `json:"injected_any,omitempty"`
 }
 
 type MemoryRecallIndexedHit struct {
@@ -295,11 +314,137 @@ func (s *SessionStore) RecordTurn(key string, telemetry TurnTelemetry) error {
 	if e.SessionID == "" {
 		e.SessionID = key
 	}
+	now := time.Now().UTC()
 	if e.CreatedAt.IsZero() {
-		e.CreatedAt = time.Now().UTC()
+		e.CreatedAt = now
+	}
+	if strings.TrimSpace(telemetry.TaskID) == "" {
+		if strings.TrimSpace(e.ActiveTaskID) != "" {
+			telemetry.TaskID = e.ActiveTaskID
+		} else {
+			telemetry.TaskID = e.LastCompletedTaskID
+		}
+	}
+	if strings.TrimSpace(telemetry.RunID) == "" {
+		if strings.TrimSpace(e.ActiveRunID) != "" {
+			telemetry.RunID = e.ActiveRunID
+		} else {
+			telemetry.RunID = e.LastCompletedRunID
+		}
+	}
+	if strings.TrimSpace(telemetry.ParentTaskID) == "" {
+		telemetry.ParentTaskID = e.ParentTaskID
+	}
+	if strings.TrimSpace(telemetry.ParentRunID) == "" {
+		telemetry.ParentRunID = e.ParentRunID
+	}
+	if isZeroTaskResultRef(telemetry.Result) {
+		telemetry.Result = e.LastTaskResult
 	}
 	e.LastTurn = &telemetry
-	e.UpdatedAt = time.Now().UTC()
+	e.UpdatedAt = now
+	s.entries[key] = e
+	s.mu.Unlock()
+	return s.Save()
+}
+
+func (s *SessionStore) LinkTask(key, taskID, runID, parentTaskID, parentRunID string) error {
+	if s == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	e := s.entries[key]
+	now := time.Now().UTC()
+	if e.SessionID == "" {
+		e.SessionID = key
+	}
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = now
+	}
+	e.ActiveTaskID = strings.TrimSpace(taskID)
+	e.ActiveRunID = strings.TrimSpace(runID)
+	e.ParentTaskID = strings.TrimSpace(parentTaskID)
+	e.ParentRunID = strings.TrimSpace(parentRunID)
+	e.UpdatedAt = now
+	s.entries[key] = e
+	s.mu.Unlock()
+	return s.Save()
+}
+
+func (s *SessionStore) RecordTaskResult(key, taskID, runID string, result TaskResultRef) error {
+	if s == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	e := s.entries[key]
+	now := time.Now().UTC()
+	if e.SessionID == "" {
+		e.SessionID = key
+	}
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = now
+	}
+	taskID = strings.TrimSpace(taskID)
+	runID = strings.TrimSpace(runID)
+	if taskID == "" {
+		taskID = strings.TrimSpace(e.ActiveTaskID)
+	}
+	if runID == "" {
+		runID = strings.TrimSpace(e.ActiveRunID)
+	}
+	e.LastCompletedTaskID = taskID
+	e.LastCompletedRunID = runID
+	e.LastTaskResult = result
+	if e.ActiveTaskID == taskID {
+		e.ActiveTaskID = ""
+	}
+	if e.ActiveRunID == runID {
+		e.ActiveRunID = ""
+	}
+	e.UpdatedAt = now
+	s.entries[key] = e
+	s.mu.Unlock()
+	return s.Save()
+}
+
+func (s *SessionStore) AppendChildTask(key, taskID string) error {
+	if s == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	e := s.entries[key]
+	now := time.Now().UTC()
+	if e.SessionID == "" {
+		e.SessionID = key
+	}
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = now
+	}
+	seen := map[string]struct{}{}
+	merged := make([]string, 0, len(e.ChildTaskIDs)+1)
+	for _, existing := range e.ChildTaskIDs {
+		existing = strings.TrimSpace(existing)
+		if existing == "" {
+			continue
+		}
+		if _, ok := seen[existing]; ok {
+			continue
+		}
+		seen[existing] = struct{}{}
+		merged = append(merged, existing)
+	}
+	if _, ok := seen[taskID]; !ok {
+		merged = append(merged, taskID)
+	}
+	if len(merged) > sessionChildTaskCap {
+		merged = append([]string(nil), merged[len(merged)-sessionChildTaskCap:]...)
+	}
+	e.ChildTaskIDs = merged
+	e.UpdatedAt = now
 	s.entries[key] = e
 	s.mu.Unlock()
 	return s.Save()
@@ -343,14 +488,30 @@ func (s *SessionStore) RecordMemoryRecall(key, turnID string, sample *MemoryReca
 			merged[key] = signal
 		}
 		if len(merged) > sessionFileMemorySurfacedCap {
-			keys := make([]string, 0, len(merged))
-			for key := range merged {
-				keys = append(keys, key)
+			// Keep the most-recently-surfaced entries. Values encode a
+			// signal string; newer entries from `surfaced` win over older
+			// entries from `e.FileMemorySurfaced` because they were merged
+			// second.  To approximate recency without timestamps, prefer
+			// entries that appeared in the current `surfaced` batch, then
+			// fall back to stable key-order for the remainder.
+			type keyOrder struct {
+				key    string
+				recent bool
 			}
-			sort.Strings(keys)
+			ordered := make([]keyOrder, 0, len(merged))
+			for k := range merged {
+				_, isRecent := surfaced[k]
+				ordered = append(ordered, keyOrder{key: k, recent: isRecent})
+			}
+			sort.Slice(ordered, func(i, j int) bool {
+				if ordered[i].recent != ordered[j].recent {
+					return ordered[i].recent // recent entries first
+				}
+				return ordered[i].key < ordered[j].key
+			})
 			trimmed := make(map[string]string, sessionFileMemorySurfacedCap)
-			for _, key := range keys[:sessionFileMemorySurfacedCap] {
-				trimmed[key] = merged[key]
+			for _, entry := range ordered[:sessionFileMemorySurfacedCap] {
+				trimmed[entry.key] = merged[entry.key]
 			}
 			merged = trimmed
 		}
@@ -430,6 +591,10 @@ func (s *SessionStore) migrateLoadedEntries() {
 		}
 		s.entries[key] = entry
 	}
+}
+
+func isZeroTaskResultRef(ref TaskResultRef) bool {
+	return strings.TrimSpace(ref.Kind) == "" && strings.TrimSpace(ref.ID) == "" && strings.TrimSpace(ref.URI) == "" && strings.TrimSpace(ref.Hash) == ""
 }
 
 func cloneMemoryRecallSample(in MemoryRecallSample) MemoryRecallSample {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -100,6 +102,15 @@ func (r *sessionMemoryRuntime) WaitForExtraction(sessionID string, timeout time.
 	}
 }
 
+func (r *sessionMemoryRuntime) InFlightCount() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.inFlight)
+}
+
 func (r *sessionMemoryRuntime) EnsureCurrent(ctx context.Context, cfg state.ConfigDoc, generator sessionMemoryGenerator, sessionID, workspaceDir string) (string, bool, error) {
 	if r == nil || r.sessionStore == nil || r.transcriptRepo == nil || generator == nil {
 		return "", false, nil
@@ -125,7 +136,7 @@ func (r *sessionMemoryRuntime) EnsureCurrent(ctx context.Context, cfg state.Conf
 		}
 		progress, entry := r.loadProgress(sessionID)
 		currentPath := strings.TrimSpace(entry.SessionMemoryFile)
-		if !sessionMemoryNeedsRefresh(entry, progress) && !r.hasUnsummarizedTranscript(ctx, sessionID, entry.SessionMemoryLastEntryID) {
+		if !sessionMemoryNeedsRefresh(entry, progress, workspaceDir, sessionID) && !r.hasUnsummarizedTranscript(ctx, sessionID, entry.SessionMemoryLastEntryID) {
 			return currentPath, false, nil
 		}
 		if !r.tryStartExtraction(sessionID) {
@@ -226,6 +237,9 @@ func (r *sessionMemoryRuntime) extractOnce(ctx context.Context, sessionID, works
 		log.Printf("session memory transcript read failed session=%s err=%v", sessionID, err)
 		return out, err
 	}
+	if strings.TrimSpace(lastEntryID) == "" {
+		lastEntryID = strings.TrimSpace(entry.SessionMemoryLastEntryID)
+	}
 	turn := agent.Turn{
 		SessionID:          sessionID + ":session-memory",
 		UserText:           memory.BuildSessionMemoryUpdatePrompt(current, path, transcriptExcerpt),
@@ -285,7 +299,7 @@ func (r *sessionMemoryRuntime) buildTranscriptExcerpt(ctx context.Context, sessi
 	lines := make([]string, 0, len(entries))
 	totalChars := 0
 	lastEntryID := ""
-	hasMore := page.HasMore
+	budgetTruncated := false
 	for _, entry := range entries {
 		text := strings.TrimSpace(entry.Text)
 		if text == "" || entry.Role == "deleted" {
@@ -298,25 +312,22 @@ func (r *sessionMemoryRuntime) buildTranscriptExcerpt(ctx context.Context, sessi
 		}
 		remaining := maxChars - totalChars - separatorChars
 		if remaining <= 0 {
-			hasMore = true
+			budgetTruncated = true
 			break
 		}
 		if len(line) > remaining {
 			if len(lines) > 0 {
-				hasMore = true
+				budgetTruncated = true
 				break
 			}
 			line = truncateSessionMemoryExcerptLine(line, remaining)
-			hasMore = true
+			budgetTruncated = true
 		}
 		lines = append(lines, line)
 		totalChars += separatorChars + len(line)
 		lastEntryID = entry.EntryID
-		if hasMore {
-			break
-		}
 	}
-	return strings.Join(lines, "\n\n"), lastEntryID, hasMore, nil
+	return strings.Join(lines, "\n\n"), lastEntryID, page.HasMore || budgetTruncated, nil
 }
 
 func sessionMemoryObservationFromDelta(delta []agent.ConversationMessage) memory.SessionMemoryObservation {
@@ -378,14 +389,36 @@ func intConfigValue(raw map[string]any, key string) int {
 	}
 }
 
-func sessionMemoryNeedsRefresh(entry state.SessionEntry, progress memory.SessionMemoryProgress) bool {
+func sessionMemoryNeedsRefresh(entry state.SessionEntry, progress memory.SessionMemoryProgress, workspaceDir, sessionID string) bool {
 	if strings.TrimSpace(entry.SessionMemoryFile) == "" {
 		return true
 	}
 	if !entry.SessionMemoryInitialized {
 		return true
 	}
+	if !sessionMemoryArtifactCurrent(entry, workspaceDir, sessionID) {
+		return true
+	}
 	return progress.PendingChars > 0 || progress.PendingToolCalls > 0
+}
+
+func sessionMemoryArtifactCurrent(entry state.SessionEntry, workspaceDir, sessionID string) bool {
+	workspaceDir = strings.TrimSpace(workspaceDir)
+	sessionID = strings.TrimSpace(sessionID)
+	path := strings.TrimSpace(entry.SessionMemoryFile)
+	if workspaceDir == "" || sessionID == "" || path == "" {
+		return false
+	}
+	expectedPath, err := memory.SessionMemoryFilePath(workspaceDir, sessionID)
+	if err != nil || filepath.Clean(path) != filepath.Clean(expectedPath) {
+		return false
+	}
+	raw, err := os.ReadFile(expectedPath)
+	if err != nil {
+		return false
+	}
+	_, err = memory.ValidateSessionMemoryDocument(string(raw), memory.MaxSessionMemoryBytes)
+	return err == nil
 }
 
 func (r *sessionMemoryRuntime) hasUnsummarizedTranscript(ctx context.Context, sessionID, afterEntryID string) bool {

@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,11 +21,13 @@ import (
 )
 
 const (
-	qdrantDefaultURL  = "http://localhost:6333"
-	ollamaDefaultURL  = "http://localhost:11434"
-	defaultCollection = "metiq"
-	embedModel        = "nomic-embed-text"
-	vectorDim         = 768
+	qdrantDefaultURL    = "http://localhost:6333"
+	ollamaDefaultURL    = "http://localhost:11434"
+	defaultCollection   = "metiq"
+	embedModel          = "nomic-embed-text"
+	vectorDim           = 768
+	qdrantRetryBackoff  = 5 * time.Second
+	qdrantRetryMaxDelay = 1 * time.Minute
 )
 
 func init() {
@@ -60,11 +63,17 @@ func init() {
 
 // QdrantBackend implements memory.Backend using Qdrant + Ollama embeddings.
 type QdrantBackend struct {
-	mu         sync.Mutex
-	qdrantURL  string
-	ollamaURL  string
-	collection string
-	client     *http.Client
+	mu                  sync.Mutex
+	qdrantURL           string
+	ollamaURL           string
+	collection          string
+	client              *http.Client
+	degraded            bool
+	lastError           string
+	lastFailureDomain   string
+	lastFailureAt       time.Time
+	nextRetryAt         time.Time
+	consecutiveFailures int
 }
 
 // -- embedding --
@@ -77,8 +86,10 @@ func (b *QdrantBackend) embed(ctx context.Context, text string) ([]float32, erro
 		"model":  embedModel,
 		"prompt": text,
 	})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, b.ollamaURL+"/api/embeddings", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	req, err := newQdrantJSONRequest(ctx, http.MethodPost, b.ollamaURL+"/api/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
 	resp, err := b.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("ollama embed: %w", err)
@@ -98,17 +109,51 @@ func (b *QdrantBackend) embed(ctx context.Context, text string) ([]float32, erro
 
 // -- Qdrant helpers --
 
+func newQdrantRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+func newQdrantJSONRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
+	req, err := newQdrantRequest(ctx, method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
+
 func (b *QdrantBackend) ensureCollection() error {
-	// Check if collection exists
-	resp, err := b.client.Get(fmt.Sprintf("%s/collections/%s", b.qdrantURL, b.collection))
+	return b.ensureCollectionWithContext(context.Background())
+}
+
+func (b *QdrantBackend) ensureCollectionWithContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lookupReq, err := newQdrantRequest(ctx, http.MethodGet,
+		fmt.Sprintf("%s/collections/%s", b.qdrantURL, b.collection), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := b.client.Do(lookupReq)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == 200 {
-		return nil // exists
+	if resp.StatusCode == http.StatusOK {
+		return nil
 	}
-	// Create it
+	if resp.StatusCode != http.StatusNotFound {
+		raw, _ := io.ReadAll(resp.Body)
+		return &qdrantHTTPError{Operation: "ensure collection lookup", StatusCode: resp.StatusCode, Body: string(raw)}
+	}
 	body, _ := json.Marshal(map[string]any{
 		"vectors": map[string]any{
 			"size":     vectorDim,
@@ -116,18 +161,20 @@ func (b *QdrantBackend) ensureCollection() error {
 		},
 		"on_disk_payload": true,
 	})
-	req, _ := http.NewRequest(http.MethodPut,
+	createReq, err := newQdrantJSONRequest(ctx, http.MethodPut,
 		fmt.Sprintf("%s/collections/%s", b.qdrantURL, b.collection),
 		bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	cr, err := b.client.Do(req)
+	if err != nil {
+		return err
+	}
+	cr, err := b.client.Do(createReq)
 	if err != nil {
 		return err
 	}
 	defer cr.Body.Close()
 	if cr.StatusCode >= 300 {
 		raw, _ := io.ReadAll(cr.Body)
-		return fmt.Errorf("create collection status %d: %s", cr.StatusCode, raw)
+		return &qdrantHTTPError{Operation: "create collection", StatusCode: cr.StatusCode, Body: string(raw)}
 	}
 	return nil
 }
@@ -143,10 +190,12 @@ func (b *QdrantBackend) upsert(ctx context.Context, id string, vec []float32, pa
 			{"id": qdrantID, "vector": vec, "payload": payload},
 		},
 	})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPut,
+	req, err := newQdrantJSONRequest(ctx, http.MethodPut,
 		fmt.Sprintf("%s/collections/%s/points", b.qdrantURL, b.collection),
 		bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	if err != nil {
+		return err
+	}
 	resp, err := b.client.Do(req)
 	if err != nil {
 		return err
@@ -184,6 +233,143 @@ func qdrantIDToString(raw json.RawMessage) string {
 	return string(raw)
 }
 
+const (
+	qdrantFailureDomainEmbedding = "embedding"
+	qdrantFailureDomainStorage   = "storage"
+)
+
+type qdrantHTTPError struct {
+	Operation  string
+	StatusCode int
+	Body       string
+}
+
+func (e *qdrantHTTPError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if strings.TrimSpace(e.Body) == "" {
+		return fmt.Sprintf("%s status %d", e.Operation, e.StatusCode)
+	}
+	return fmt.Sprintf("%s status %d: %s", e.Operation, e.StatusCode, e.Body)
+}
+
+func isMissingCollectionError(err error) bool {
+	var httpErr *qdrantHTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "not found") || strings.Contains(msg, "does not exist") || strings.Contains(msg, "doesn't exist")
+}
+
+func (b *QdrantBackend) BackendStatus() BackendStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	status := BackendStatus{
+		Name:                "qdrant",
+		Available:           !b.degraded,
+		Degraded:            b.degraded,
+		LastError:           b.lastError,
+		ConsecutiveFailures: b.consecutiveFailures,
+	}
+	if !b.lastFailureAt.IsZero() {
+		status.LastFailureUnix = b.lastFailureAt.Unix()
+	}
+	if !b.nextRetryAt.IsZero() {
+		status.NextRetryUnix = b.nextRetryAt.Unix()
+	}
+	return status
+}
+
+func (b *QdrantBackend) MemoryStatus() StoreStatus {
+	primary := b.BackendStatus()
+	return StoreStatus{Kind: "backend", Primary: primary}
+}
+
+func (b *QdrantBackend) recordSuccess(domain string) {
+	b.mu.Lock()
+	if b.lastFailureDomain != "" && b.lastFailureDomain != domain {
+		b.mu.Unlock()
+		return
+	}
+	recovered := b.degraded
+	b.degraded = false
+	b.lastError = ""
+	b.lastFailureDomain = ""
+	b.nextRetryAt = time.Time{}
+	b.consecutiveFailures = 0
+	b.mu.Unlock()
+	if recovered {
+		log.Printf("qdrant: backend recovered collection=%s", b.collection)
+	}
+}
+
+func (b *QdrantBackend) recordFailure(domain, operation string, err error) {
+	if err == nil {
+		return
+	}
+	now := time.Now()
+	b.mu.Lock()
+	b.degraded = true
+	b.lastError = fmt.Sprintf("%s: %v", operation, err)
+	b.lastFailureDomain = domain
+	b.lastFailureAt = now
+	b.consecutiveFailures++
+	delay := qdrantRetryBackoff
+	for attempt := 1; attempt < b.consecutiveFailures && delay < qdrantRetryMaxDelay; attempt++ {
+		delay *= 2
+		if delay > qdrantRetryMaxDelay {
+			delay = qdrantRetryMaxDelay
+			break
+		}
+	}
+	b.nextRetryAt = now.Add(delay)
+	b.mu.Unlock()
+}
+
+func (b *QdrantBackend) ensureReady(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	b.mu.Lock()
+	degraded := b.degraded
+	nextRetryAt := b.nextRetryAt
+	b.mu.Unlock()
+	if !degraded {
+		return nil
+	}
+	if !nextRetryAt.IsZero() && time.Now().Before(nextRetryAt) {
+		return fmt.Errorf("qdrant backend degraded; retry after %s", nextRetryAt.UTC().Format(time.RFC3339))
+	}
+	if err := b.ensureCollectionWithContext(ctx); err != nil {
+		b.recordFailure(qdrantFailureDomainStorage, "probe", err)
+		return fmt.Errorf("qdrant backend probe failed: %w", err)
+	}
+	return nil
+}
+
+func (b *QdrantBackend) runOperation(ctx context.Context, operation string, fn func() error) error {
+	err := fn()
+	if err == nil {
+		b.recordSuccess(qdrantFailureDomainStorage)
+		return nil
+	}
+	if isMissingCollectionError(err) {
+		if repairErr := b.ensureCollectionWithContext(ctx); repairErr == nil {
+			err = fn()
+			if err == nil {
+				b.recordSuccess(qdrantFailureDomainStorage)
+				return nil
+			}
+		} else {
+			err = fmt.Errorf("%v; collection repair failed: %w", err, repairErr)
+		}
+	}
+	b.recordFailure(qdrantFailureDomainStorage, operation, err)
+	return err
+}
+
 func (b *QdrantBackend) vectorSearch(ctx context.Context, vec []float32, limit int, filter map[string]any) ([]IndexedMemory, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -197,15 +383,21 @@ func (b *QdrantBackend) vectorSearch(ctx context.Context, vec []float32, limit i
 		req["filter"] = filter
 	}
 	body, _ := json.Marshal(req)
-	reqHTTP, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+	reqHTTP, err := newQdrantJSONRequest(ctx, http.MethodPost,
 		fmt.Sprintf("%s/collections/%s/points/search", b.qdrantURL, b.collection),
 		bytes.NewReader(body))
-	reqHTTP.Header.Set("Content-Type", "application/json")
+	if err != nil {
+		return nil, err
+	}
 	resp, err := b.client.Do(reqHTTP)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, &qdrantHTTPError{Operation: "vector search", StatusCode: resp.StatusCode, Body: string(raw)}
+	}
 	var sr qdrantSearchResult
 	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
 		return nil, err
@@ -256,11 +448,17 @@ func (b *QdrantBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc)
 	if text == "" {
 		return
 	}
+	if err := b.ensureReady(ctx); err != nil {
+		log.Printf("qdrant: add skipped (fallback active): %v", err)
+		return
+	}
 	vec, err := b.embed(ctx, text)
 	if err != nil {
+		b.recordFailure(qdrantFailureDomainEmbedding, "embed add", err)
 		log.Printf("qdrant: embed failed: %v", err)
 		return
 	}
+	b.recordSuccess(qdrantFailureDomainEmbedding)
 	id := doc.MemoryID
 	if id == "" {
 		id = randomID()
@@ -281,18 +479,25 @@ func (b *QdrantBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc)
 	if len(doc.Keywords) > 0 {
 		payload["keywords"] = append([]string(nil), doc.Keywords...)
 	}
-	if err := b.upsert(ctx, id, vec, payload); err != nil {
+	if err := b.runOperation(ctx, "upsert", func() error { return b.upsert(ctx, id, vec, payload) }); err != nil {
 		log.Printf("qdrant: upsert failed: %v", err)
 	}
 }
 
 func (b *QdrantBackend) Store(sessionID, text string, tags []string) string {
 	id := randomID()
-	vec, err := b.embed(context.Background(), text)
-	if err != nil {
-		log.Printf("qdrant: embed failed: %v", err)
-		return id
+	ctx := context.Background()
+	if err := b.ensureReady(ctx); err != nil {
+		log.Printf("qdrant: store skipped (fallback active): %v", err)
+		return ""
 	}
+	vec, err := b.embed(ctx, text)
+	if err != nil {
+		b.recordFailure(qdrantFailureDomainEmbedding, "embed store", err)
+		log.Printf("qdrant: embed failed: %v", err)
+		return ""
+	}
+	b.recordSuccess(qdrantFailureDomainEmbedding)
 	payload := map[string]any{
 		"text":       text,
 		"session_id": sessionID,
@@ -301,8 +506,9 @@ func (b *QdrantBackend) Store(sessionID, text string, tags []string) string {
 	if len(tags) > 0 {
 		payload["keywords"] = append([]string(nil), tags...)
 	}
-	if err := b.upsert(context.Background(), id, vec, payload); err != nil {
+	if err := b.runOperation(ctx, "store upsert", func() error { return b.upsert(ctx, id, vec, payload) }); err != nil {
 		log.Printf("qdrant: upsert failed: %v", err)
+		return ""
 	}
 	return id
 }
@@ -312,13 +518,23 @@ func (b *QdrantBackend) Search(query string, limit int) []IndexedMemory {
 }
 
 func (b *QdrantBackend) SearchWithContext(ctx context.Context, query string, limit int) []IndexedMemory {
+	if err := b.ensureReady(ctx); err != nil {
+		log.Printf("qdrant: search fallback active: %v", err)
+		return nil
+	}
 	vec, err := b.embed(ctx, query)
 	if err != nil {
+		b.recordFailure(qdrantFailureDomainEmbedding, "embed search", err)
 		log.Printf("qdrant: embed for search failed: %v", err)
 		return nil
 	}
-	results, err := b.vectorSearch(ctx, vec, limit, nil)
-	if err != nil {
+	b.recordSuccess(qdrantFailureDomainEmbedding)
+	var results []IndexedMemory
+	if err := b.runOperation(ctx, "search", func() error {
+		var searchErr error
+		results, searchErr = b.vectorSearch(ctx, vec, limit, nil)
+		return searchErr
+	}); err != nil {
 		log.Printf("qdrant: search failed: %v", err)
 		return nil
 	}
@@ -330,17 +546,28 @@ func (b *QdrantBackend) SearchSession(sessionID, query string, limit int) []Inde
 }
 
 func (b *QdrantBackend) SearchSessionWithContext(ctx context.Context, sessionID, query string, limit int) []IndexedMemory {
-	vec, err := b.embed(ctx, query)
-	if err != nil {
+	if err := b.ensureReady(ctx); err != nil {
+		log.Printf("qdrant: session search fallback active: %v", err)
 		return nil
 	}
+	vec, err := b.embed(ctx, query)
+	if err != nil {
+		b.recordFailure(qdrantFailureDomainEmbedding, "embed session search", err)
+		log.Printf("qdrant: embed for session search failed: %v", err)
+		return nil
+	}
+	b.recordSuccess(qdrantFailureDomainEmbedding)
 	filter := map[string]any{
 		"must": []map[string]any{
 			{"key": "session_id", "match": map[string]any{"value": sessionID}},
 		},
 	}
-	results, err := b.vectorSearch(ctx, vec, limit, filter)
-	if err != nil {
+	var results []IndexedMemory
+	if err := b.runOperation(ctx, "session search", func() error {
+		var searchErr error
+		results, searchErr = b.vectorSearch(ctx, vec, limit, filter)
+		return searchErr
+	}); err != nil {
 		log.Printf("qdrant: session search failed: %v", err)
 		return nil
 	}
@@ -348,8 +575,11 @@ func (b *QdrantBackend) SearchSessionWithContext(ctx context.Context, sessionID,
 }
 
 func (b *QdrantBackend) ListSession(sessionID string, limit int) []IndexedMemory {
-	// Use a neutral embedding to get recent entries, filtered by session
-	// Fallback: scroll API
+	ctx := context.Background()
+	if err := b.ensureReady(ctx); err != nil {
+		log.Printf("qdrant: list session fallback active: %v", err)
+		return nil
+	}
 	body, _ := json.Marshal(map[string]any{
 		"filter": map[string]any{
 			"must": []map[string]any{
@@ -360,53 +590,125 @@ func (b *QdrantBackend) ListSession(sessionID string, limit int) []IndexedMemory
 		"with_payload": true,
 		"order_by":     map[string]any{"key": "unix", "direction": "desc"},
 	})
-	resp, err := b.client.Post(
-		fmt.Sprintf("%s/collections/%s/points/scroll", b.qdrantURL, b.collection),
-		"application/json", bytes.NewReader(body))
-	if err != nil {
+	var out []IndexedMemory
+	if err := b.runOperation(ctx, "list session", func() error {
+		req, err := newQdrantJSONRequest(ctx, http.MethodPost,
+			fmt.Sprintf("%s/collections/%s/points/scroll", b.qdrantURL, b.collection),
+			bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		resp, err := b.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			raw, _ := io.ReadAll(resp.Body)
+			return &qdrantHTTPError{Operation: "list session", StatusCode: resp.StatusCode, Body: string(raw)}
+		}
+		var sr struct {
+			Result struct {
+				Points []struct {
+					ID      json.RawMessage `json:"id"`
+					Payload map[string]any  `json:"payload"`
+				} `json:"points"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+			return err
+		}
+		out = make([]IndexedMemory, 0, len(sr.Result.Points))
+		for _, p := range sr.Result.Points {
+			out = append(out, payloadToIndexedMemory(qdrantIDToString(p.ID), p.Payload))
+		}
 		return nil
-	}
-	defer resp.Body.Close()
-	var sr struct {
-		Result struct {
-			Points []struct {
-				ID      json.RawMessage `json:"id"`
-				Payload map[string]any  `json:"payload"`
-			} `json:"points"`
-		} `json:"result"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+	}); err != nil {
+		log.Printf("qdrant: list session failed: %v", err)
 		return nil
-	}
-	out := make([]IndexedMemory, 0)
-	for _, p := range sr.Result.Points {
-		out = append(out, payloadToIndexedMemory(qdrantIDToString(p.ID), p.Payload))
 	}
 	return out
 }
 
 func (b *QdrantBackend) Count() int {
-	resp, err := b.client.Get(fmt.Sprintf("%s/collections/%s", b.qdrantURL, b.collection))
-	if err != nil {
+	ctx := context.Background()
+	if err := b.ensureReady(ctx); err != nil {
+		log.Printf("qdrant: count fallback active: %v", err)
 		return 0
 	}
-	defer resp.Body.Close()
-	var info struct {
-		Result struct {
-			PointsCount int `json:"points_count"`
-		} `json:"result"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	count := 0
+	if err := b.runOperation(ctx, "count", func() error {
+		req, err := newQdrantRequest(ctx, http.MethodGet,
+			fmt.Sprintf("%s/collections/%s", b.qdrantURL, b.collection), nil)
+		if err != nil {
+			return err
+		}
+		resp, err := b.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			raw, _ := io.ReadAll(resp.Body)
+			return &qdrantHTTPError{Operation: "count", StatusCode: resp.StatusCode, Body: string(raw)}
+		}
+		var info struct {
+			Result struct {
+				PointsCount int `json:"points_count"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+			return err
+		}
+		count = info.Result.PointsCount
+		return nil
+	}); err != nil {
+		log.Printf("qdrant: count failed: %v", err)
 		return 0
 	}
-	return info.Result.PointsCount
+	return count
 }
 
-func (b *QdrantBackend) SessionCount() int { return 0 } // not efficient in Qdrant without aggregation
+// SessionCount returns -1 for Qdrant because an efficient distinct-session
+// count is not supported without a full aggregation scan. Callers should
+// treat negative values as "unsupported".
+func (b *QdrantBackend) SessionCount() int { return -1 }
+
+func (b *QdrantBackend) pointExists(ctx context.Context, id string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := newQdrantRequest(ctx, http.MethodGet,
+		fmt.Sprintf("%s/collections/%s/points/%s", b.qdrantURL, b.collection, stringToUUID(id)), nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		if err := b.ensureCollectionWithContext(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return false, &qdrantHTTPError{Operation: "point exists", StatusCode: resp.StatusCode, Body: string(raw)}
+	}
+	return true, nil
+}
 
 func (b *QdrantBackend) ListByTopic(topic string, limit int) []IndexedMemory {
 	if limit <= 0 {
 		limit = 100
+	}
+	ctx := context.Background()
+	if err := b.ensureReady(ctx); err != nil {
+		log.Printf("qdrant: topic list fallback active: %v", err)
+		return nil
 	}
 	body, _ := json.Marshal(map[string]any{
 		"filter": map[string]any{
@@ -418,27 +720,42 @@ func (b *QdrantBackend) ListByTopic(topic string, limit int) []IndexedMemory {
 		"with_payload": true,
 		"order_by":     map[string]any{"key": "unix", "direction": "desc"},
 	})
-	resp, err := b.client.Post(
-		fmt.Sprintf("%s/collections/%s/points/scroll", b.qdrantURL, b.collection),
-		"application/json", bytes.NewReader(body))
-	if err != nil {
+	var out []IndexedMemory
+	if err := b.runOperation(ctx, "list topic", func() error {
+		req, err := newQdrantJSONRequest(ctx, http.MethodPost,
+			fmt.Sprintf("%s/collections/%s/points/scroll", b.qdrantURL, b.collection),
+			bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		resp, err := b.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			raw, _ := io.ReadAll(resp.Body)
+			return &qdrantHTTPError{Operation: "list topic", StatusCode: resp.StatusCode, Body: string(raw)}
+		}
+		var sr struct {
+			Result struct {
+				Points []struct {
+					ID      json.RawMessage `json:"id"`
+					Payload map[string]any  `json:"payload"`
+				} `json:"points"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+			return err
+		}
+		out = make([]IndexedMemory, 0, len(sr.Result.Points))
+		for _, p := range sr.Result.Points {
+			out = append(out, payloadToIndexedMemory(qdrantIDToString(p.ID), p.Payload))
+		}
 		return nil
-	}
-	defer resp.Body.Close()
-	var sr struct {
-		Result struct {
-			Points []struct {
-				ID      json.RawMessage `json:"id"`
-				Payload map[string]any  `json:"payload"`
-			} `json:"points"`
-		} `json:"result"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+	}); err != nil {
+		log.Printf("qdrant: topic list failed: %v", err)
 		return nil
-	}
-	out := make([]IndexedMemory, 0)
-	for _, p := range sr.Result.Points {
-		out = append(out, payloadToIndexedMemory(qdrantIDToString(p.ID), p.Payload))
 	}
 	return out
 }
@@ -448,26 +765,61 @@ func (b *QdrantBackend) Compact(maxEntries int) int { return 0 } // Qdrant manag
 func (b *QdrantBackend) Save() error { return nil } // Qdrant persists automatically
 
 func (b *QdrantBackend) Delete(id string) bool {
+	ctx := context.Background()
+	if err := b.ensureReady(ctx); err != nil {
+		log.Printf("qdrant: delete skipped (fallback active): %v", err)
+		return false
+	}
+	exists := false
+	if err := b.runOperation(ctx, "delete preflight", func() error {
+		var checkErr error
+		exists, checkErr = b.pointExists(ctx, id)
+		return checkErr
+	}); err != nil {
+		log.Printf("qdrant: delete preflight failed: %v", err)
+		return false
+	}
+	if !exists {
+		return false
+	}
 	body, _ := json.Marshal(map[string]any{
 		"points": []string{stringToUUID(id)},
 	})
-	req, _ := http.NewRequest(http.MethodPost,
-		fmt.Sprintf("%s/collections/%s/points/delete", b.qdrantURL, b.collection),
-		bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := b.client.Do(req)
-	if err != nil {
+	if err := b.runOperation(ctx, "delete", func() error {
+		req, err := newQdrantJSONRequest(ctx, http.MethodPost,
+			fmt.Sprintf("%s/collections/%s/points/delete", b.qdrantURL, b.collection),
+			bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		resp, err := b.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			raw, _ := io.ReadAll(resp.Body)
+			return &qdrantHTTPError{Operation: "delete", StatusCode: resp.StatusCode, Body: string(raw)}
+		}
+		return nil
+	}); err != nil {
+		log.Printf("qdrant: delete failed: %v", err)
 		return false
 	}
-	defer resp.Body.Close()
-	return resp.StatusCode < 300
+	return true
 }
 
 func (b *QdrantBackend) Close() error { return nil }
 
 func randomID() string {
 	buf := make([]byte, 16)
-	rand.Read(buf)
+	if _, err := rand.Read(buf); err != nil {
+		// Fallback: use current time + zero padding — extremely unlikely path.
+		now := time.Now().UnixNano()
+		for i := 0; i < 8; i++ {
+			buf[i] = byte(now >> (i * 8))
+		}
+	}
 	return toUUID(buf)
 }
 
@@ -493,7 +845,9 @@ func stringToUUID(s string) string {
 // Reads prefer the Backend (semantic), falling back to the JSON index.
 type HybridIndex struct {
 	*Index
-	backend Backend
+	backend  Backend
+	semOnce  sync.Once
+	semCh    chan struct{}
 }
 
 func (h *HybridIndex) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
@@ -542,8 +896,37 @@ func (h *HybridIndex) SearchSessionWithContext(ctx context.Context, sessionID, q
 }
 
 // NewHybridIndex creates a HybridIndex that writes to both stores.
+// maxPersistConcurrency limits the number of outstanding async backend writes.
+const maxPersistConcurrency = 8
+
 func NewHybridIndex(idx *Index, backend Backend) *HybridIndex {
 	return &HybridIndex{Index: idx, backend: backend}
+}
+
+// persistSem returns a lazily-initialised semaphore channel for bounding
+// concurrent async backend writes.
+func (h *HybridIndex) persistSem() chan struct{} {
+	h.semOnce.Do(func() {
+		h.semCh = make(chan struct{}, maxPersistConcurrency)
+	})
+	return h.semCh
+}
+
+func (h *HybridIndex) MemoryStatus() StoreStatus {
+	primary := BackendStatus{Name: fmt.Sprintf("%T", h.backend), Available: h.backend != nil}
+	if reporter, ok := h.backend.(interface{ BackendStatus() BackendStatus }); ok {
+		primary = reporter.BackendStatus()
+	}
+	fallback := &BackendStatus{Name: "json-fts", Available: h.Index != nil}
+	if h.Index != nil {
+		fallback.Available = true
+	}
+	return StoreStatus{
+		Kind:           "hybrid",
+		FallbackActive: primary.Degraded || !primary.Available,
+		Primary:        primary,
+		Fallback:       fallback,
+	}
 }
 
 func (h *HybridIndex) Search(query string, limit int) []IndexedMemory {
@@ -555,12 +938,27 @@ func (h *HybridIndex) SearchSession(sessionID, query string, limit int) []Indexe
 }
 
 // persistToBackend asynchronously mirrors an Add to the vector backend.
+// It enforces a timeout and limits concurrent outstanding writes to avoid
+// unbounded goroutine fan-out under high write throughput.
 func (h *HybridIndex) persistToBackend(doc state.MemoryDoc) {
+	select {
+	case h.persistSem() <- struct{}{}:
+	default:
+		// Concurrency limit reached; drop this write silently.
+		// The JSON-FTS index already has the doc.
+		return
+	}
 	go func() {
+		defer func() { <-h.persistSem() }()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_ = ctx
-		h.backend.Add(doc)
+		if ctxBackend, ok := h.backend.(interface {
+			AddWithContext(context.Context, state.MemoryDoc)
+		}); ok {
+			ctxBackend.AddWithContext(ctx, doc)
+		} else {
+			h.backend.Add(doc)
+		}
 	}()
 }
 func (h *HybridIndex) Add(doc state.MemoryDoc) {

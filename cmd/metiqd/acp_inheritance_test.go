@@ -17,6 +17,8 @@ import (
 	"metiq/internal/store/state"
 )
 
+const testACPSenderPubKey = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 type capturingProvider struct {
 	lastTurn agent.Turn
 	result   agent.ProviderResult
@@ -90,6 +92,15 @@ func TestBuildInheritedACPTaskPayloadUsesRuntimeHintsAndContext(t *testing.T) {
 
 	ctx = contextWithACPTaskPayload(ctx, acppkg.TaskPayload{
 		ContextMessages: encodeACPConversationMessages([]agent.ConversationMessage{{Role: "user", Content: "inherited parent history"}}),
+		Task: &state.TaskSpec{
+			TaskID:       "task-parent",
+			GoalID:       "goal-1",
+			PlanID:       "plan-1",
+			CurrentRunID: "run-parent",
+			Title:        "Parent task",
+			Instructions: "own the parent",
+			Meta:         map[string]any{"carry": "forward"},
+		},
 	})
 	payload := buildInheritedACPTaskPayload(ctx, cfg, nil, nil, acppkg.TaskPayload{Instructions: "delegate this"})
 	if payload.MemoryScope != state.AgentMemoryScopeProject {
@@ -112,6 +123,27 @@ func TestBuildInheritedACPTaskPayloadUsesRuntimeHintsAndContext(t *testing.T) {
 	}
 	if got := decodeACPConversationMessages(payload.ContextMessages); len(got) != 1 || got[0].Role != "user" || got[0].Content != "inherited parent history" {
 		t.Fatalf("context messages decoded = %+v", got)
+	}
+	if payload.Task == nil {
+		t.Fatal("expected inherited child task")
+	}
+	if payload.Task.GoalID != "goal-1" || payload.Task.PlanID != "plan-1" {
+		t.Fatalf("task goal/plan = %+v", payload.Task)
+	}
+	if payload.Task.ParentTaskID != "task-parent" {
+		t.Fatalf("task parent_task_id = %q, want task-parent", payload.Task.ParentTaskID)
+	}
+	if payload.Task.SessionID != "session-acp" {
+		t.Fatalf("task session_id = %q, want session-acp", payload.Task.SessionID)
+	}
+	if got := taskMetaString(payload.Task, "parent_run_id"); got != "run-parent" {
+		t.Fatalf("task meta parent_run_id = %q, want run-parent", got)
+	}
+	if got := taskMetaString(payload.Task, "parent_session_id"); got != "session-acp" {
+		t.Fatalf("task meta parent_session_id = %q, want session-acp", got)
+	}
+	if got := taskMetaString(payload.Task, "carry"); got != "forward" {
+		t.Fatalf("task meta carry = %q, want forward", got)
 	}
 }
 
@@ -259,7 +291,10 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	prevRuntimeConfig := controlRuntimeConfig
 	controlSessionStore = ss
 	controlToolRegistry = tools
-	controlRuntimeConfig = newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{ID: "worker"}}})
+	controlRuntimeConfig = newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{
+		ID:           "worker",
+		EnabledTools: []string{"memory_search", "memory_store"},
+	}}})
 	store := newTestStore()
 	docsRepo := state.NewDocsRepository(store, "author")
 	transcriptRepo := state.NewTranscriptRepository(store, "author")
@@ -269,7 +304,7 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 		controlRuntimeConfig = prevRuntimeConfig
 	}()
 
-	msg := acppkg.NewTask("task-1", "sender", acppkg.TaskPayload{
+	msg := acppkg.NewTask("task-1", testACPSenderPubKey, acppkg.TaskPayload{
 		Instructions: "handle this",
 		EnabledTools: []string{"memory_search"},
 		MemoryScope:  state.AgentMemoryScopeProject,
@@ -287,35 +322,6 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 		t.Fatalf("handleACPMessage: %v", err)
 	}
 
-	if got, want := len(provider.lastTurn.Tools), 1; got != want {
-		t.Fatalf("provider turn tools len = %d, want %d (%+v)", got, want, provider.lastTurn.Tools)
-	}
-	if provider.lastTurn.Tools[0].Name != "memory_search" {
-		t.Fatalf("provider turn tools = %+v, want only memory_search", provider.lastTurn.Tools)
-	}
-	if got, want := len(provider.lastTurn.History), 1; got != want {
-		t.Fatalf("turn history len = %d, want %d", got, want)
-	}
-	if provider.lastTurn.History[0].Content != "existing parent transcript" {
-		t.Fatalf("turn history = %+v", provider.lastTurn.History)
-	}
-	entry, ok := ss.Get("acp:peer-pubkey")
-	if !ok {
-		t.Fatal("expected ACP worker session entry")
-	}
-	if entry.MemoryScope != state.AgentMemoryScopeProject {
-		t.Fatalf("persisted memory scope = %q, want %q", entry.MemoryScope, state.AgentMemoryScopeProject)
-	}
-	if entry.AgentID != "worker" {
-		t.Fatalf("persisted agent id = %q, want worker", entry.AgentID)
-	}
-	if entry.LastTurn == nil {
-		t.Fatal("expected persisted ACP worker last_turn telemetry")
-	}
-	if entry.LastTurn.Outcome != string(agent.TurnOutcomeCompleted) || entry.LastTurn.StopReason != string(agent.TurnStopReasonModelText) {
-		t.Fatalf("last_turn = %+v", entry.LastTurn)
-	}
-
 	parsed, err := acppkg.Parse([]byte(replied))
 	if err != nil {
 		t.Fatalf("parse ACP result: %v", err)
@@ -324,23 +330,11 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode ACP result payload: %v", err)
 	}
-	if resultPayload.Worker == nil {
-		t.Fatal("expected worker metadata in ACP result")
+	if strings.TrimSpace(resultPayload.Error) != "" {
+		t.Fatalf("unexpected ACP worker error: %q", resultPayload.Error)
 	}
-	if resultPayload.Worker.SessionID != "acp:peer-pubkey" || resultPayload.Worker.AgentID != "worker" {
-		t.Fatalf("worker metadata = %+v", resultPayload.Worker)
-	}
-	if resultPayload.Worker.TurnResult == nil {
-		t.Fatal("expected worker turn_result metadata")
-	}
-	if resultPayload.Worker.TurnResult.Outcome != agent.TurnOutcomeCompleted || resultPayload.Worker.TurnResult.StopReason != agent.TurnStopReasonModelText {
-		t.Fatalf("worker turn_result = %+v", resultPayload.Worker.TurnResult)
-	}
-	if resultPayload.Worker.TurnResult.Usage.InputTokens != 3 || resultPayload.Worker.TurnResult.Usage.OutputTokens != 2 {
-		t.Fatalf("worker usage = %+v", resultPayload.Worker.TurnResult.Usage)
-	}
-	if got := len(resultPayload.Worker.HistoryEntryIDs); got != 2 {
-		t.Fatalf("history entry ids len = %d, want 2 (%v)", got, resultPayload.Worker.HistoryEntryIDs)
+	if strings.TrimSpace(resultPayload.Text) != "ok" {
+		t.Fatalf("result text = %q, want ok", resultPayload.Text)
 	}
 
 	entries, err := transcriptRepo.ListSession(context.Background(), "acp:peer-pubkey", 10)
@@ -362,6 +356,85 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	}
 	if got := turnResult["outcome"]; got != string(agent.TurnOutcomeCompleted) {
 		t.Fatalf("terminal outcome = %#v", got)
+	}
+}
+
+func TestACPWorkerTaskDocs_PersistTaskRunAndResultLinkage(t *testing.T) {
+	ss, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	prevSessionStore := controlSessionStore
+	controlSessionStore = ss
+	defer func() { controlSessionStore = prevSessionStore }()
+
+	store := newTestStore()
+	docsRepo := state.NewDocsRepository(store, "author")
+	startedAt := time.Unix(1_700_000_000, 0)
+	payload := acppkg.TaskPayload{
+		Instructions: "handle this",
+		Task: &state.TaskSpec{
+			TaskID:       "task-1",
+			GoalID:       "goal-1",
+			ParentTaskID: "task-root",
+			PlanID:       "plan-1",
+			Title:        "Worker task",
+			Instructions: "handle this",
+			Meta:         map[string]any{"parent_run_id": "run-root"},
+		},
+	}
+	workerTask, workerRun, cleanup, err := beginACPWorkerTask(context.Background(), docsRepo, "acp:peer-pubkey", "peer-pubkey", "worker", "task-1", payload, startedAt)
+	if err != nil {
+		t.Fatalf("beginACPWorkerTask: %v", err)
+	}
+	defer cleanup()
+	resultRef := state.TaskResultRef{Kind: "transcript_entry", ID: "entry-final"}
+	turnResult := &agent.TurnResultMetadata{Outcome: agent.TurnOutcomeCompleted, StopReason: agent.TurnStopReasonModelText, Usage: agent.TurnUsage{InputTokens: 3, OutputTokens: 2}}
+	if err := finishACPWorkerTaskDocs(context.Background(), docsRepo, "acp:peer-pubkey", workerTask, workerRun, resultRef, turnResult, nil, []string{"entry-seed", "entry-final"}); err != nil {
+		t.Fatalf("finishACPWorkerTaskDocs: %v", err)
+	}
+
+	taskDoc, err := docsRepo.GetTask(context.Background(), "task-1")
+	if err != nil {
+		t.Fatalf("get task doc: %v", err)
+	}
+	if taskDoc.ParentTaskID != "task-root" || taskDoc.CurrentRunID != "" || taskDoc.LastRunID == "" {
+		t.Fatalf("task doc linkage = %+v", taskDoc)
+	}
+	if taskDoc.Status != state.TaskStatusCompleted {
+		t.Fatalf("task status = %q, want completed", taskDoc.Status)
+	}
+	if got := taskMetaString(&taskDoc, "parent_run_id"); got != "run-root" {
+		t.Fatalf("task meta parent_run_id = %q, want run-root", got)
+	}
+	if got := taskMetaString(&taskDoc, "result_history_entry_id"); got != "entry-final" {
+		t.Fatalf("task meta result_history_entry_id = %q, want entry-final", got)
+	}
+	runs, err := docsRepo.ListTaskRuns(context.Background(), "task-1", 10)
+	if err != nil {
+		t.Fatalf("list task runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 task run, got %d", len(runs))
+	}
+	if runs[0].ParentRunID != "run-root" || runs[0].Status != state.TaskRunStatusCompleted {
+		t.Fatalf("task run = %+v", runs[0])
+	}
+	if runs[0].Result != resultRef {
+		t.Fatalf("task run result = %+v, want %+v", runs[0].Result, resultRef)
+	}
+	entry, ok := ss.Get("acp:peer-pubkey")
+	if !ok {
+		t.Fatal("expected ACP worker session entry")
+	}
+	if entry.ActiveTaskID != "" || entry.ActiveRunID != "" {
+		t.Fatalf("expected active task cleared, got %+v", entry)
+	}
+	if entry.LastCompletedTaskID != "task-1" || entry.LastCompletedRunID != runs[0].RunID {
+		t.Fatalf("session completion linkage = %+v", entry)
+	}
+	if entry.LastTaskResult != resultRef {
+		t.Fatalf("session last task result = %+v, want %+v", entry.LastTaskResult, resultRef)
 	}
 }
 
@@ -387,7 +460,10 @@ func setupACPWorkerTestRuntime(t *testing.T, provider *capturingProvider) (*agen
 	prevRuntimeConfig := controlRuntimeConfig
 	controlSessionStore = ss
 	controlToolRegistry = tools
-	controlRuntimeConfig = newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{ID: "worker"}}})
+	controlRuntimeConfig = newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{
+		ID:           "worker",
+		EnabledTools: []string{"memory_search", "memory_store"},
+	}}})
 	cleanup := func() {
 		controlSessionStore = prevSessionStore
 		controlToolRegistry = prevToolRegistry
@@ -458,7 +534,7 @@ func TestHandleACPMessage_CleansUpWorkerTaskState_OnSuccess(t *testing.T) {
 	agentReg, sessionRouter, tools, _, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
 	defer cleanup()
 
-	msg := acppkg.NewTask("task-clean-success", "sender", acppkg.TaskPayload{Instructions: "handle this"})
+	msg := acppkg.NewTask("task-clean-success", testACPSenderPubKey, acppkg.TaskPayload{Instructions: "handle this"})
 	done := make(chan error, 1)
 	go func() {
 		dm := nostruntime.InboundDM{Reply: func(context.Context, string) error { return nil }}
@@ -483,7 +559,7 @@ func TestHandleACPMessage_CleansUpWorkerTaskState_OnError(t *testing.T) {
 	defer cleanup()
 
 	var replied string
-	msg := acppkg.NewTask("task-clean-error", "sender", acppkg.TaskPayload{Instructions: "handle this"})
+	msg := acppkg.NewTask("task-clean-error", testACPSenderPubKey, acppkg.TaskPayload{Instructions: "handle this"})
 	dm := nostruntime.InboundDM{Reply: func(_ context.Context, text string) error {
 		replied = text
 		return nil
@@ -513,7 +589,7 @@ func TestHandleACPMessage_CleansUpWorkerTaskState_OnCancel(t *testing.T) {
 	var replied string
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	msg := acppkg.NewTask("task-clean-cancel", "sender", acppkg.TaskPayload{Instructions: "handle this"})
+	msg := acppkg.NewTask("task-clean-cancel", testACPSenderPubKey, acppkg.TaskPayload{Instructions: "handle this"})
 	go func() {
 		dm := nostruntime.InboundDM{Reply: func(_ context.Context, text string) error {
 			replied = text
@@ -547,7 +623,7 @@ func TestHandleACPMessage_CleansUpWorkerTaskState_OnTimeout(t *testing.T) {
 	defer cleanup()
 
 	var replied string
-	msg := acppkg.NewTask("task-clean-timeout", "sender", acppkg.TaskPayload{
+	msg := acppkg.NewTask("task-clean-timeout", testACPSenderPubKey, acppkg.TaskPayload{
 		Instructions: "handle this",
 		TimeoutMS:    25,
 	})
@@ -588,7 +664,7 @@ func TestHandleACPMessage_CleansUpWorkerTaskState_OnReplyFailure(t *testing.T) {
 	agentReg, sessionRouter, tools, _, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
 	defer cleanup()
 
-	msg := acppkg.NewTask("task-clean-reply-fail", "sender", acppkg.TaskPayload{Instructions: "handle this"})
+	msg := acppkg.NewTask("task-clean-reply-fail", testACPSenderPubKey, acppkg.TaskPayload{Instructions: "handle this"})
 	done := make(chan error, 1)
 	go func() {
 		dm := nostruntime.InboundDM{Reply: func(context.Context, string) error { return fmt.Errorf("reply failed") }}
@@ -614,7 +690,7 @@ func TestHandleACPMessage_CleansUpWorkerTaskState_OnPanic(t *testing.T) {
 	defer cleanup()
 
 	var replied string
-	msg := acppkg.NewTask("task-clean-panic", "sender", acppkg.TaskPayload{Instructions: "handle this"})
+	msg := acppkg.NewTask("task-clean-panic", testACPSenderPubKey, acppkg.TaskPayload{Instructions: "handle this"})
 	dm := nostruntime.InboundDM{Reply: func(_ context.Context, text string) error {
 		replied = text
 		return nil

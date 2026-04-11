@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,12 +19,13 @@ import (
 )
 
 const (
-	pinnedKnowledgeTopic          = "agent_knowledge"
-	defaultMemoryRecallLimit      = 6
-	crossSessionMemoryRecallLimit = 3
-	memoryRecallSnippetLimitRunes = 280
-	defaultFileMemoryRecallLimit  = 2
-	fileMemoryRecallContentRunes  = 900
+	pinnedKnowledgeTopic            = "agent_knowledge"
+	defaultMemoryRecallLimit        = 6
+	crossSessionMemoryRecallLimit   = 3
+	memoryRecallSnippetLimitRunes   = 280
+	defaultFileMemoryRecallLimit    = 2
+	fileMemoryRecallContentRunes    = 900
+	sessionMemoryRecallContentRunes = 1600
 )
 
 // assembleMemorySystemPrompt packages the stable, model-facing memory contract
@@ -174,7 +177,7 @@ type preparedAgentRunTurn struct {
 
 func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store, scope memory.ScopedContext, workspaceDir string, sessionStore *state.SessionStore) preparedAgentRunTurn {
 	memoryContext, surfaced, sample := buildDynamicMemoryRecallContext(ctx, index, scope, req.SessionID, req.Message, workspaceDir, sessionStore)
-	turnContext := joinPromptSections(memoryContext, req.Context)
+	turnContext := joinPromptSections(buildExternalSessionPromptContext(req.SessionID), memoryContext, req.Context)
 	return preparedAgentRunTurn{
 		Turn: agent.Turn{
 			SessionID:          req.SessionID,
@@ -191,32 +194,160 @@ func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memo
 func buildDynamicMemoryRecallContext(ctx context.Context, index memory.Store, scope memory.ScopedContext, sessionID, userText, workspaceDir string, sessionStore *state.SessionStore) (string, map[string]string, *state.MemoryRecallSample) {
 	startedAt := time.Now()
 	indexedRecall := buildIndexedMemoryRecallResult(ctx, index, scope, sessionID, userText, defaultMemoryRecallLimit)
+	sessionRecall := buildSessionMemoryRecallResult(scope, workspaceDir, sessionID, sessionStore)
 	fileRecall := buildFileMemoryRecallResult(scope, workspaceDir, sessionID, userText, sessionStore)
-	combined := joinPromptSections(indexedRecall.Prompt, fileRecall.Prompt)
+	combined := joinPromptSections(indexedRecall.Prompt, sessionRecall.Prompt, fileRecall.Prompt)
 	return combined, fileRecall.Surfaced, &state.MemoryRecallSample{
-		Strategy:          "deterministic",
-		QueryHash:         memoryRecallQueryHash(userText),
-		QueryRuneCount:    utf8.RuneCountInString(strings.TrimSpace(userText)),
-		QueryTokenCount:   len(strings.Fields(strings.ToLower(strings.TrimSpace(userText)))),
-		Scope:             string(scope.Scope),
-		IndexedSession:    indexedRecall.SessionHits,
-		IndexedGlobal:     indexedRecall.GlobalHits,
-		FileSelected:      fileRecall.Hits,
-		IndexedLatencyMS:  indexedRecall.LatencyMS,
-		FileLatencyMS:     fileRecall.LatencyMS,
-		TotalLatencyMS:    time.Since(startedAt).Milliseconds(),
-		IndexedBlockRunes: indexedRecall.BlockRunes,
-		FileBlockRunes:    fileRecall.BlockRunes,
-		TotalBlockRunes:   utf8.RuneCountInString(combined),
-		IndexedInjected:   indexedRecall.Injected,
-		FileInjected:      fileRecall.Injected,
-		InjectedAny:       indexedRecall.Injected || fileRecall.Injected,
+		Strategy:             "deterministic",
+		QueryHash:            memoryRecallQueryHash(userText),
+		QueryRuneCount:       utf8.RuneCountInString(strings.TrimSpace(userText)),
+		QueryTokenCount:      len(strings.Fields(strings.ToLower(strings.TrimSpace(userText)))),
+		Scope:                string(scope.Scope),
+		IndexedSession:       indexedRecall.SessionHits,
+		IndexedGlobal:        indexedRecall.GlobalHits,
+		FileSelected:         fileRecall.Hits,
+		SessionMemoryPath:    sessionRecall.Path,
+		SessionMemoryUpdated: sessionRecall.UpdatedAtUnix,
+		IndexedLatencyMS:     indexedRecall.LatencyMS,
+		FileLatencyMS:        fileRecall.LatencyMS,
+		SessionLatencyMS:     sessionRecall.LatencyMS,
+		TotalLatencyMS:       time.Since(startedAt).Milliseconds(),
+		IndexedBlockRunes:    indexedRecall.BlockRunes,
+		FileBlockRunes:       fileRecall.BlockRunes,
+		SessionBlockRunes:    sessionRecall.BlockRunes,
+		TotalBlockRunes:      utf8.RuneCountInString(combined),
+		IndexedInjected:      indexedRecall.Injected,
+		FileInjected:         fileRecall.Injected,
+		SessionInjected:      sessionRecall.Injected,
+		InjectedAny:          indexedRecall.Injected || sessionRecall.Injected || fileRecall.Injected,
 	}
 }
 
 func assembleFileMemoryRecallContext(scope memory.ScopedContext, workspaceDir, sessionID, userText string, sessionStore *state.SessionStore) (string, map[string]string) {
 	result := buildFileMemoryRecallResult(scope, workspaceDir, sessionID, userText, sessionStore)
 	return result.Prompt, result.Surfaced
+}
+
+func buildSessionMemoryRecallResult(scope memory.ScopedContext, workspaceDir, sessionID string, sessionStore *state.SessionStore) sessionMemoryRecallResult {
+	startedAt := time.Now()
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
+		return sessionMemoryRecallResult{LatencyMS: time.Since(startedAt).Milliseconds()}
+	}
+	entry, ok := sessionStore.Get(sessionID)
+	if !ok || !entry.SessionMemoryInitialized {
+		return sessionMemoryRecallResult{LatencyMS: time.Since(startedAt).Milliseconds()}
+	}
+	rootDir := sessionMemoryWorkspaceDir(scope, workspaceDir)
+	if rootDir == "" {
+		return sessionMemoryRecallResult{LatencyMS: time.Since(startedAt).Milliseconds()}
+	}
+	expectedPath, err := memory.SessionMemoryFilePath(rootDir, sessionID)
+	if err != nil {
+		log.Printf("session memory recall path resolution failed session=%s err=%v", sessionID, err)
+		return sessionMemoryRecallResult{LatencyMS: time.Since(startedAt).Milliseconds()}
+	}
+	recordedPath := strings.TrimSpace(entry.SessionMemoryFile)
+	logicalPath := filepath.ToSlash(filepath.Join(".metiq", "session-memory", filepath.Base(expectedPath)))
+	if recordedPath == "" || filepath.Clean(recordedPath) != filepath.Clean(expectedPath) {
+		log.Printf("session memory recall path mismatch session=%s recorded=%q expected=%q", sessionID, recordedPath, expectedPath)
+		return sessionMemoryRecallResult{Path: logicalPath, UpdatedAtUnix: entry.SessionMemoryUpdatedAt, LatencyMS: time.Since(startedAt).Milliseconds()}
+	}
+	raw, err := os.ReadFile(expectedPath)
+	if err != nil {
+		log.Printf("session memory recall read failed session=%s path=%s err=%v", sessionID, expectedPath, err)
+		return sessionMemoryRecallResult{Path: logicalPath, UpdatedAtUnix: entry.SessionMemoryUpdatedAt, LatencyMS: time.Since(startedAt).Milliseconds()}
+	}
+	validated, err := memory.ValidateSessionMemoryDocument(string(raw), memory.MaxSessionMemoryBytes)
+	if err != nil {
+		log.Printf("session memory recall validation failed session=%s path=%s err=%v", sessionID, expectedPath, err)
+		return sessionMemoryRecallResult{Path: logicalPath, UpdatedAtUnix: entry.SessionMemoryUpdatedAt, LatencyMS: time.Since(startedAt).Milliseconds()}
+	}
+	content := compactSessionMemoryForRecall(validated)
+	if content == "" {
+		return sessionMemoryRecallResult{Path: logicalPath, UpdatedAtUnix: entry.SessionMemoryUpdatedAt, LatencyMS: time.Since(startedAt).Milliseconds()}
+	}
+	if shouldSuppressSessionMemoryRecall(entry, logicalPath) {
+		return sessionMemoryRecallResult{Path: logicalPath, UpdatedAtUnix: entry.SessionMemoryUpdatedAt, LatencyMS: time.Since(startedAt).Milliseconds()}
+	}
+	lines := []string{
+		"## Session Memory Recall",
+		"This maintained session-memory summary is a continuity aid for the current session. Verify time-sensitive details against the latest repository state and transcript before relying on them.",
+		fmt.Sprintf("- path: %s", agent.SanitizePromptLiteral(logicalPath)),
+	}
+	if entry.SessionMemoryUpdatedAt > 0 {
+		lines = append(lines, fmt.Sprintf("- updated_at_unix: %d", entry.SessionMemoryUpdatedAt))
+	}
+	if block := agent.WrapUntrustedPromptDataBlock("Session memory summary", content, sessionMemoryRecallContentRunes); block != "" {
+		lines = append(lines, block)
+	}
+	prompt := strings.Join(lines, "\n")
+	return sessionMemoryRecallResult{
+		Prompt:        prompt,
+		Path:          logicalPath,
+		UpdatedAtUnix: entry.SessionMemoryUpdatedAt,
+		LatencyMS:     time.Since(startedAt).Milliseconds(),
+		BlockRunes:    utf8.RuneCountInString(prompt),
+		Injected:      true,
+	}
+}
+
+func shouldSuppressSessionMemoryRecall(entry state.SessionEntry, logicalPath string) bool {
+	if entry.SessionMemoryUpdatedAt <= 0 || len(entry.RecentMemoryRecall) == 0 {
+		return false
+	}
+	for i := len(entry.RecentMemoryRecall) - 1; i >= 0; i-- {
+		sample := entry.RecentMemoryRecall[i]
+		if strings.TrimSpace(sample.SessionMemoryPath) != strings.TrimSpace(logicalPath) || sample.SessionMemoryUpdated != entry.SessionMemoryUpdatedAt {
+			continue
+		}
+		if sample.SessionInjected {
+			return true
+		}
+	}
+	return false
+}
+
+func compactSessionMemoryForRecall(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	lines := strings.Split(raw, "\n")
+	sections := make([]string, 0, 8)
+	for i := 0; i < len(lines); {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "# ") {
+			i++
+			continue
+		}
+		header := line
+		i++
+		if i < len(lines) {
+			desc := strings.TrimSpace(lines[i])
+			if strings.HasPrefix(desc, "_") && strings.HasSuffix(desc, "_") {
+				i++
+			}
+		}
+		body := make([]string, 0, 4)
+		for i < len(lines) {
+			candidate := strings.TrimSpace(lines[i])
+			if strings.HasPrefix(candidate, "# ") {
+				break
+			}
+			if candidate != "" {
+				body = append(body, candidate)
+			}
+			i++
+		}
+		if len(body) == 0 {
+			continue
+		}
+		sections = append(sections, header+"\n"+strings.Join(body, "\n"))
+	}
+	if len(sections) == 0 {
+		return ""
+	}
+	return truncateRunes(strings.Join(sections, "\n\n"), sessionMemoryRecallContentRunes)
 }
 
 type indexedRecallResult struct {
@@ -235,6 +366,15 @@ type fileRecallResult struct {
 	LatencyMS  int64
 	BlockRunes int
 	Injected   bool
+}
+
+type sessionMemoryRecallResult struct {
+	Prompt        string
+	Path          string
+	UpdatedAtUnix int64
+	LatencyMS     int64
+	BlockRunes    int
+	Injected      bool
 }
 
 func buildFileMemoryRecallResult(scope memory.ScopedContext, workspaceDir, sessionID, userText string, sessionStore *state.SessionStore) fileRecallResult {

@@ -54,6 +54,32 @@ type Backend interface {
 	Close() error
 }
 
+// BackendStatus reports the health of a single memory backend.
+//
+// Semantics:
+//   - Available means the backend is currently usable for reads/writes.
+//     When Degraded is true, Available is false (backend is not in use).
+//   - Degraded means the backend has entered a failure/backoff state and
+//     the system has fallen back to an alternative (e.g., JSON-FTS index).
+//   - Both false: healthy and in use.
+//   - Degraded=true, Available=false: backend is down, fallback is active.
+type BackendStatus struct {
+	Name                string `json:"name"`
+	Available           bool   `json:"available"`
+	Degraded            bool   `json:"degraded,omitempty"`
+	LastError           string `json:"last_error,omitempty"`
+	LastFailureUnix     int64  `json:"last_failure_unix,omitempty"`
+	NextRetryUnix       int64  `json:"next_retry_unix,omitempty"`
+	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
+}
+
+type StoreStatus struct {
+	Kind           string         `json:"kind"`
+	FallbackActive bool           `json:"fallback_active,omitempty"`
+	Primary        BackendStatus  `json:"primary"`
+	Fallback       *BackendStatus `json:"fallback,omitempty"`
+}
+
 // BackendFactory is a function that opens a Backend at the given path.
 // path may be "" to indicate the default platform location.
 type BackendFactory func(path string) (Backend, error)
@@ -126,6 +152,13 @@ type IndexBackend struct {
 func (b *IndexBackend) Add(doc state.MemoryDoc) { b.idx.Add(doc) }
 func (b *IndexBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
 	b.idx.Add(doc)
+}
+func (b *IndexBackend) BackendStatus() BackendStatus {
+	return BackendStatus{Name: "json-fts", Available: true}
+}
+func (b *IndexBackend) MemoryStatus() StoreStatus {
+	primary := b.BackendStatus()
+	return StoreStatus{Kind: "index", Primary: primary}
 }
 func (b *IndexBackend) Search(query string, limit int) []IndexedMemory {
 	return b.idx.Search(query, limit)

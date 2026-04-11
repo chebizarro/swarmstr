@@ -229,6 +229,13 @@ func (i *Index) Count() int {
 	return len(i.docs)
 }
 
+func (i *Index) MemoryStatus() StoreStatus {
+	return StoreStatus{
+		Kind:    "index",
+		Primary: BackendStatus{Name: "json-fts", Available: true},
+	}
+}
+
 // SessionCount returns the number of distinct session IDs in the index.
 func (i *Index) SessionCount() int {
 	i.mu.RLock()

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
 
 	acppkg "metiq/internal/acp"
@@ -241,6 +242,50 @@ func applyACPTaskRuntimeConstraints(ctx context.Context, rt agent.Runtime, agent
 	return filterRuntimeByAllowedTools(rt, allowed)
 }
 
+func cloneTaskMeta(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(meta))
+	for key, value := range meta {
+		out[key] = value
+	}
+	return out
+}
+
+func taskMetaString(task *state.TaskSpec, key string) string {
+	if task == nil || task.Meta == nil {
+		return ""
+	}
+	raw, _ := task.Meta[key].(string)
+	return strings.TrimSpace(raw)
+}
+
+func deriveInheritedACPTask(sessionID string, inherited *state.TaskSpec, instructions string) *state.TaskSpec {
+	if inherited == nil {
+		return nil
+	}
+	task := state.TaskSpec{
+		GoalID:       strings.TrimSpace(inherited.GoalID),
+		ParentTaskID: strings.TrimSpace(inherited.TaskID),
+		PlanID:       strings.TrimSpace(inherited.PlanID),
+		SessionID:    strings.TrimSpace(sessionID),
+		Title:        deriveACPTaskTitle(instructions),
+		Instructions: strings.TrimSpace(instructions),
+		Meta:         cloneTaskMeta(inherited.Meta),
+	}
+	if task.Meta == nil {
+		task.Meta = map[string]any{}
+	}
+	if parentRunID := strings.TrimSpace(inherited.CurrentRunID); parentRunID != "" {
+		task.Meta["parent_run_id"] = parentRunID
+	}
+	if sessionID != "" {
+		task.Meta["parent_session_id"] = sessionID
+	}
+	return &task
+}
+
 func cloneACPContextMessages(messages []map[string]any) []map[string]any {
 	if len(messages) == 0 {
 		return nil
@@ -257,6 +302,61 @@ func cloneACPContextMessages(messages []map[string]any) []map[string]any {
 		out = append(out, copyMessage)
 	}
 	return out
+}
+
+func bindACPTaskID(payload *acppkg.TaskPayload, taskID string) {
+	if payload == nil {
+		return
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return
+	}
+	if payload.Task == nil {
+		return
+	}
+	task := payload.Task.Normalize()
+	task.TaskID = taskID
+	payload.Task = &task
+}
+
+func recordACPDelegatedChild(sessionStore *state.SessionStore, payload acppkg.TaskPayload, taskID string) {
+	if sessionStore == nil {
+		return
+	}
+	parent := payload.ParentContext
+	if parent == nil || strings.TrimSpace(parent.SessionID) == "" {
+		return
+	}
+	if err := sessionStore.AppendChildTask(parent.SessionID, taskID); err != nil {
+		log.Printf("acp delegated child link failed parent_session=%s task_id=%s err=%v", parent.SessionID, taskID, err)
+	}
+}
+
+func deriveACPTaskTitle(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "task"
+	}
+	if idx := strings.IndexByte(text, '\n'); idx >= 0 {
+		text = strings.TrimSpace(text[:idx])
+	}
+	if len(text) > 96 {
+		text = strings.TrimSpace(text[:96])
+	}
+	if text == "" {
+		return "task"
+	}
+	return text
+}
+
+func firstNonEmptyTrimmed(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func buildInheritedACPTaskPayload(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, sessionStore *state.SessionStore, payload acppkg.TaskPayload) acppkg.TaskPayload {
@@ -309,6 +409,44 @@ func buildInheritedACPTaskPayload(ctx context.Context, cfg state.ConfigDoc, docs
 		if parentSessionID != "" || parentAgentID != "" {
 			out.ParentContext = &acppkg.ParentContext{SessionID: parentSessionID, AgentID: parentAgentID}
 		}
+	}
+	if out.Task == nil {
+		out.Task = deriveInheritedACPTask(sessionID, inherited.Task, out.Instructions)
+	}
+	if out.Task != nil {
+		task := out.Task.Normalize()
+		if task.Title == "" {
+			task.Title = deriveACPTaskTitle(firstNonEmptyTrimmed(task.Instructions, out.Instructions))
+		}
+		if task.Instructions == "" {
+			task.Instructions = out.Instructions
+		}
+		if task.SessionID == "" {
+			task.SessionID = sessionID
+		}
+		if task.GoalID == "" && inherited.Task != nil {
+			task.GoalID = strings.TrimSpace(inherited.Task.GoalID)
+		}
+		if task.ParentTaskID == "" && inherited.Task != nil {
+			task.ParentTaskID = strings.TrimSpace(inherited.Task.TaskID)
+		}
+		if task.PlanID == "" && inherited.Task != nil {
+			task.PlanID = strings.TrimSpace(inherited.Task.PlanID)
+		}
+		if task.Meta == nil {
+			task.Meta = map[string]any{}
+		}
+		if inherited.Task != nil {
+			if _, ok := task.Meta["parent_run_id"]; !ok {
+				if parentRunID := strings.TrimSpace(inherited.Task.CurrentRunID); parentRunID != "" {
+					task.Meta["parent_run_id"] = parentRunID
+				}
+			}
+		}
+		if _, ok := task.Meta["parent_session_id"]; !ok && sessionID != "" {
+			task.Meta["parent_session_id"] = sessionID
+		}
+		out.Task = &task
 	}
 	return out
 }

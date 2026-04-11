@@ -56,7 +56,7 @@ are injected into the agent's context. Ensure:
 | nsec key theft | Environment variables, filesystem permissions |
 | API key leakage | Environment variables, not config files |
 | Relay metadata exposure | NIP-17 gift-wrap DMs |
-| Prompt injection via Nostr content | Input sanitization, external content safety wrapper |
+| Prompt injection via Nostr or external tool content | Input sanitization, external-content wrappers, suspicious-pattern labeling |
 | Relay censorship/blackholing | Multi-relay configuration |
 
 ### Out of scope (infrastructure-level)
@@ -89,6 +89,24 @@ For public-facing agents or shared deployments, enable the Docker sandbox:
 ```
 
 This runs agent exec calls inside an ephemeral Docker container. See [Sandboxing](/gateway/sandboxing).
+
+## External content handling
+
+metiq treats several content sources as explicitly untrusted prompt inputs:
+
+- inbound webhook/email-hook payloads
+- `web_search` and `web_fetch` tool results
+- browser-originated content
+- channel metadata forwarded into prompt context
+
+These surfaces are wrapped with source-aware external-content markers and
+security guidance before provider submission. Suspicious prompt-injection
+patterns are labeled so operators and prompts can distinguish "data from the
+outside world" from metiq's own instructions.
+
+This is a mitigation layer, not a proof of safety. Operators should still keep
+high-risk tools gated and avoid exposing sensitive agents to untrusted channels
+without approvals/sandboxing.
 
 ## Webhook security
 

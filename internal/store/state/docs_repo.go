@@ -204,6 +204,235 @@ func (r *DocsRepository) PutAgentFile(ctx context.Context, agentID string, name 
 	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:agent:%s:file:%s", agentID, name), "agent_file_doc", doc, tags)
 }
 
+func (r *DocsRepository) PutTask(ctx context.Context, doc TaskSpec) (Event, error) {
+	doc = doc.Normalize()
+	if err := doc.Validate(); err != nil {
+		return Event{}, err
+	}
+	tags := [][]string{{"t", "task"}, {"task", protectedTagValue(doc.TaskID)}, {"status", string(doc.Status)}, {"priority", string(doc.Priority)}}
+	if goal := protectedTagValue(doc.GoalID); goal != "" {
+		tags = append(tags, []string{"goal", goal})
+	}
+	if parent := protectedTagValue(doc.ParentTaskID); parent != "" {
+		tags = append(tags, []string{"parent", parent})
+	}
+	if agent := protectedTagValue(doc.AssignedAgent); agent != "" {
+		tags = append(tags, []string{"agent", agent})
+	}
+	if session := protectedTagValue(doc.SessionID); session != "" {
+		tags = append(tags, []string{"session", session})
+	}
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:task:%s", doc.TaskID), "task_doc", doc, tags)
+}
+
+func (r *DocsRepository) GetTask(ctx context.Context, taskID string) (TaskSpec, error) {
+	var out TaskSpec
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:task:%s", taskID), &out); err != nil {
+		return TaskSpec{}, err
+	}
+	return out.Normalize(), nil
+}
+
+func (r *DocsRepository) ListTasks(ctx context.Context, limit int) ([]TaskSpec, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "task", limit*4)
+	if err != nil {
+		return nil, err
+	}
+	type latestTaskDoc struct {
+		doc   TaskSpec
+		event Event
+	}
+	byID := make(map[string]latestTaskDoc, len(rows))
+	for _, row := range rows {
+		if !hasTagValue(row.Tags, "t", "task") {
+			continue
+		}
+		var doc TaskSpec
+		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+			continue
+		}
+		doc = doc.Normalize()
+		doc.TaskID = firstNonEmpty(strings.TrimSpace(doc.TaskID), strings.TrimSpace(tagValue(row.Tags, "task")))
+		if doc.TaskID == "" {
+			continue
+		}
+		if prior, ok := byID[doc.TaskID]; !ok || row.CreatedAt > prior.event.CreatedAt || (row.CreatedAt == prior.event.CreatedAt && row.ID > prior.event.ID) {
+			byID[doc.TaskID] = latestTaskDoc{doc: doc, event: row}
+		}
+	}
+	out := make([]TaskSpec, 0, len(byID))
+	for _, entry := range byID {
+		out = append(out, entry.doc)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt == out[j].UpdatedAt {
+			return out[i].TaskID < out[j].TaskID
+		}
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *DocsRepository) PutTaskRun(ctx context.Context, doc TaskRun) (Event, error) {
+	doc = doc.Normalize()
+	if err := doc.Validate(); err != nil {
+		return Event{}, err
+	}
+	tags := [][]string{{"t", "task_run"}, {"run", protectedTagValue(doc.RunID)}, {"task", protectedTagValue(doc.TaskID)}, {"status", string(doc.Status)}, {"attempt", fmt.Sprintf("%d", doc.Attempt)}}
+	if goal := protectedTagValue(doc.GoalID); goal != "" {
+		tags = append(tags, []string{"goal", goal})
+	}
+	if agent := protectedTagValue(doc.AgentID); agent != "" {
+		tags = append(tags, []string{"agent", agent})
+	}
+	if session := protectedTagValue(doc.SessionID); session != "" {
+		tags = append(tags, []string{"session", session})
+	}
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:task_run:%s", doc.RunID), "task_run_doc", doc, tags)
+}
+
+func (r *DocsRepository) GetTaskRun(ctx context.Context, runID string) (TaskRun, error) {
+	var out TaskRun
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:task_run:%s", runID), &out); err != nil {
+		return TaskRun{}, err
+	}
+	return out.Normalize(), nil
+}
+
+func (r *DocsRepository) ListTaskRuns(ctx context.Context, taskID string, limit int) ([]TaskRun, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "task_run", limit*6)
+	if err != nil {
+		return nil, err
+	}
+	taskTag := protectedTagValue(taskID)
+	type latestTaskRunDoc struct {
+		doc   TaskRun
+		event Event
+	}
+	byID := make(map[string]latestTaskRunDoc, len(rows))
+	for _, row := range rows {
+		if !hasTagValue(row.Tags, "t", "task_run") {
+			continue
+		}
+		if taskTag != "" && tagValue(row.Tags, "task") != taskTag {
+			continue
+		}
+		var doc TaskRun
+		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+			continue
+		}
+		doc = doc.Normalize()
+		doc.RunID = firstNonEmpty(strings.TrimSpace(doc.RunID), strings.TrimSpace(tagValue(row.Tags, "run")))
+		if doc.RunID == "" {
+			continue
+		}
+		if prior, ok := byID[doc.RunID]; !ok || row.CreatedAt > prior.event.CreatedAt || (row.CreatedAt == prior.event.CreatedAt && row.ID > prior.event.ID) {
+			byID[doc.RunID] = latestTaskRunDoc{doc: doc, event: row}
+		}
+	}
+	out := make([]TaskRun, 0, len(byID))
+	for _, entry := range byID {
+		out = append(out, entry.doc)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Attempt == out[j].Attempt {
+			return out[i].RunID < out[j].RunID
+		}
+		return out[i].Attempt > out[j].Attempt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *DocsRepository) PutPlan(ctx context.Context, doc PlanSpec) (Event, error) {
+	doc = doc.Normalize()
+	if err := doc.Validate(); err != nil {
+		return Event{}, err
+	}
+	if doc.HasCycle() {
+		return Event{}, fmt.Errorf("plan step dependency graph contains a cycle")
+	}
+	tags := [][]string{
+		{"t", "plan"},
+		{"plan", protectedTagValue(doc.PlanID)},
+		{"status", string(doc.Status)},
+		{"revision", fmt.Sprintf("%d", doc.Revision)},
+	}
+	if goal := protectedTagValue(doc.GoalID); goal != "" {
+		tags = append(tags, []string{"goal", goal})
+	}
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:plan:%s", doc.PlanID), "plan_doc", doc, tags)
+}
+
+func (r *DocsRepository) GetPlan(ctx context.Context, planID string) (PlanSpec, error) {
+	var out PlanSpec
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:plan:%s", planID), &out); err != nil {
+		return PlanSpec{}, err
+	}
+	return out.Normalize(), nil
+}
+
+func (r *DocsRepository) ListPlans(ctx context.Context, goalID string, limit int) ([]PlanSpec, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "plan", limit*4)
+	if err != nil {
+		return nil, err
+	}
+	goalTag := protectedTagValue(goalID)
+	type latestPlanDoc struct {
+		doc   PlanSpec
+		event Event
+	}
+	byID := make(map[string]latestPlanDoc, len(rows))
+	for _, row := range rows {
+		if !hasTagValue(row.Tags, "t", "plan") {
+			continue
+		}
+		if goalTag != "" && tagValue(row.Tags, "goal") != goalTag {
+			continue
+		}
+		var doc PlanSpec
+		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+			continue
+		}
+		doc = doc.Normalize()
+		doc.PlanID = firstNonEmpty(strings.TrimSpace(doc.PlanID), strings.TrimSpace(tagValue(row.Tags, "plan")))
+		if doc.PlanID == "" {
+			continue
+		}
+		if prior, ok := byID[doc.PlanID]; !ok || row.CreatedAt > prior.event.CreatedAt || (row.CreatedAt == prior.event.CreatedAt && row.ID > prior.event.ID) {
+			byID[doc.PlanID] = latestPlanDoc{doc: doc, event: row}
+		}
+	}
+	out := make([]PlanSpec, 0, len(byID))
+	for _, entry := range byID {
+		out = append(out, entry.doc)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt == out[j].UpdatedAt {
+			return out[i].PlanID < out[j].PlanID
+		}
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (r *DocsRepository) GetAgentFile(ctx context.Context, agentID string, name string) (AgentFileDoc, error) {
 	var out AgentFileDoc
 	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:agent:%s:file:%s", agentID, name), &out); err != nil {
@@ -360,4 +589,13 @@ func sessionActivityUnix(doc SessionDoc) int64 {
 		return doc.LastReplyAt
 	}
 	return doc.LastInboundAt
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

@@ -163,8 +163,8 @@ func LoadPlugin(ctx context.Context, src []byte, host *sdk.Host) (*GojaPlugin, e
 	if err := json.Unmarshal(manifestJSON, &manifest); err != nil {
 		return nil, fmt.Errorf("unmarshal manifest: %w", err)
 	}
-	if manifest.ID == "" {
-		return nil, fmt.Errorf("manifest.id is required")
+	if err := sdk.ValidateManifest(manifest); err != nil {
+		return nil, err
 	}
 
 	// ── Read invoke function ──────────────────────────────────────────────────

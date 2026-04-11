@@ -24,7 +24,7 @@ title: "Features"
 - Tool execution: exec, web fetch, web search, file I/O
 - Extended thinking mode (Claude 3.7+)
 - Automatic session compaction
-- Per-session memory with workspace files
+- Per-session memory with maintained session-memory recall and workspace files
 - Bootstrap files: AGENTS.md, SOUL.md, USER.md, IDENTITY.md, TOOLS.md
 
 ### Nostr-Specific Agent Tools
@@ -54,11 +54,14 @@ title: "Features"
 
 ### Memory & Context
 - Workspace Markdown files (persistent across sessions)
+- Scoped file-backed memory (`user` / `project` / `local`)
+- Maintained per-session memory artifacts with bounded active recall
 - Per-session JSONL transcripts
 - Auto-compaction with LLM-generated summaries
 - `/compact` manual compaction
 - Vector memory search (configurable)
 - Auto memory flush before compaction
+- Operator memory health via `doctor.memory.status`
 
 ### Web & Dashboard
 - Canvas tool for HTML/JSON/Markdown rendering
@@ -80,6 +83,7 @@ title: "Features"
 - Gateway token authentication for HTTP API
 - Docker sandbox for agent tool execution (optional)
 - Tool approval gates for exec/elevated operations
+- External-content prompt boundaries for webhook, browser, web-search, web-fetch, and channel metadata inputs
 
 ### Slash Commands
 `/new` `/reset` `/kill` `/set` `/unset` `/info` `/status` `/model` `/compact` `/export` `/agents` `/focus` `/unfocus` `/spawn` `/help`

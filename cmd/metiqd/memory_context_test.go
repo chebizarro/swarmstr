@@ -53,6 +53,19 @@ func (m *memoryStoreStub) SearchSession(sessionID, query string, limit int) []me
 	return m.session
 }
 
+func testSessionMemoryDocument(body string) string {
+	doc := strings.Replace(memory.DefaultSessionMemoryTemplate,
+		"_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._",
+		"_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._\n"+body,
+		1,
+	)
+	return strings.Replace(doc,
+		"_What did the user ask to build? Any design decisions or other explanatory context_",
+		"_What did the user ask to build? Any design decisions or other explanatory context_\nAudit OpenClaw parity and wire the strongest continuity surfaces into Swarmstr.",
+		1,
+	)
+}
+
 func TestAssembleMemoryRecallContext_IncludesSessionAndCrossSession(t *testing.T) {
 	idx := &memoryStoreStub{
 		session: []memory.IndexedMemory{
@@ -134,6 +147,49 @@ func TestAssembleMemorySystemPrompt_IncludesScopedGuidance(t *testing.T) {
 	}
 	if !strings.Contains(got, "Since this memory is project-scope, tailor memories to this agent and workspace.") {
 		t.Fatalf("expected project scope note, got: %s", got)
+	}
+}
+
+func TestScopedMemoryDocs_AppliesScopeKeywords(t *testing.T) {
+	docs := scopedMemoryDocs([]state.MemoryDoc{{
+		MemoryID:  "m1",
+		SessionID: "sess-a",
+		Text:      "deployment detail",
+		Keywords:  []string{"deployment"},
+	}}, memory.ScopedContext{
+		Scope:        state.AgentMemoryScopeProject,
+		AgentID:      "builder",
+		WorkspaceDir: "/tmp/worktree",
+		SessionID:    "sess-a",
+	})
+	if len(docs) != 1 {
+		t.Fatalf("expected one scoped doc, got %d", len(docs))
+	}
+	keywords := strings.Join(docs[0].Keywords, " ")
+	for _, want := range []string{
+		"deployment",
+		"memory_scope:project",
+		"memory_agent:builder",
+		"memory_workspace:/tmp/worktree",
+	} {
+		if !strings.Contains(keywords, want) {
+			t.Fatalf("expected keyword %q in %v", want, docs[0].Keywords)
+		}
+	}
+}
+
+func TestScopedMemoryDocs_NoScopeLeavesDocsUntouched(t *testing.T) {
+	orig := []state.MemoryDoc{{
+		MemoryID: "m1",
+		Text:     "deployment detail",
+		Keywords: []string{"deployment"},
+	}}
+	docs := scopedMemoryDocs(orig, memory.ScopedContext{})
+	if len(docs) != 1 {
+		t.Fatalf("expected one doc, got %d", len(docs))
+	}
+	if strings.Join(docs[0].Keywords, ",") != "deployment" {
+		t.Fatalf("expected keywords to remain unchanged, got %v", docs[0].Keywords)
 	}
 }
 
@@ -294,8 +350,69 @@ func TestBuildDynamicMemoryRecallContext_FileRetrievalWarningDoesNotCountAsInjec
 	if len(surfaced) != 0 {
 		t.Fatalf("expected no surfaced file-memory state, got: %+v", surfaced)
 	}
-	if sample == nil || sample.FileInjected || sample.InjectedAny {
+	if sample == nil || sample.FileInjected || sample.SessionInjected || sample.InjectedAny {
 		t.Fatalf("expected warning-only sample to stay non-injected, got: %+v", sample)
+	}
+}
+
+func TestBuildAgentRunTurn_IncludesMaintainedSessionMemoryRecall(t *testing.T) {
+	workspaceDir := t.TempDir()
+	sessionStore, err := state.NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	path, err := memory.WriteSessionMemoryFile(workspaceDir, "session-a", testSessionMemoryDocument("Deployment parity audit is actively wiring session memory into future-turn recall."))
+	if err != nil {
+		t.Fatalf("write session memory: %v", err)
+	}
+	updatedAt := time.Now().Unix()
+	if err := sessionStore.Put("session-a", state.SessionEntry{
+		SessionID:                "session-a",
+		SessionMemoryFile:        path,
+		SessionMemoryInitialized: true,
+		SessionMemoryUpdatedAt:   updatedAt,
+	}); err != nil {
+		t.Fatalf("seed session store: %v", err)
+	}
+
+	prepared := buildAgentRunTurn(context.Background(), methods.AgentRequest{
+		SessionID: "session-a",
+		Message:   "what should I know before continuing",
+	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir, sessionStore)
+	logicalPath := filepath.ToSlash(filepath.Join(".metiq", "session-memory", filepath.Base(path)))
+	if !strings.Contains(prepared.Turn.Context, "## Session Memory Recall") {
+		t.Fatalf("expected session memory recall block, got: %s", prepared.Turn.Context)
+	}
+	if !strings.Contains(prepared.Turn.Context, "Deployment parity audit is actively wiring session memory into future-turn recall.") {
+		t.Fatalf("expected maintained session memory content, got: %s", prepared.Turn.Context)
+	}
+	if prepared.MemoryRecallSample == nil || !prepared.MemoryRecallSample.SessionInjected {
+		t.Fatalf("expected session recall sample, got: %+v", prepared.MemoryRecallSample)
+	}
+	if prepared.MemoryRecallSample.SessionMemoryPath != logicalPath || prepared.MemoryRecallSample.SessionMemoryUpdated != updatedAt {
+		t.Fatalf("expected session memory metadata in sample, got: %+v", prepared.MemoryRecallSample)
+	}
+	commitMemoryRecallArtifacts(sessionStore, "session-a", "turn-1", prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
+	suppressed := buildAgentRunTurn(context.Background(), methods.AgentRequest{
+		SessionID: "session-a",
+		Message:   "what should I know before continuing",
+	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir, sessionStore)
+	if strings.Contains(suppressed.Turn.Context, "## Session Memory Recall") {
+		t.Fatalf("expected unchanged session memory recall to be suppressed, got: %s", suppressed.Turn.Context)
+	}
+	if suppressed.MemoryRecallSample == nil || suppressed.MemoryRecallSample.SessionInjected {
+		t.Fatalf("expected suppressed session recall sample, got: %+v", suppressed.MemoryRecallSample)
+	}
+	commitMemoryRecallArtifacts(sessionStore, "session-a", "turn-2", suppressed.MemoryRecallSample, suppressed.SurfacedFileMemory)
+	suppressedAgain := buildAgentRunTurn(context.Background(), methods.AgentRequest{
+		SessionID: "session-a",
+		Message:   "what should I know before continuing",
+	}, &memoryStoreStub{}, memory.ScopedContext{}, workspaceDir, sessionStore)
+	if strings.Contains(suppressedAgain.Turn.Context, "## Session Memory Recall") {
+		t.Fatalf("expected unchanged session memory recall to stay suppressed, got: %s", suppressedAgain.Turn.Context)
+	}
+	if suppressedAgain.MemoryRecallSample == nil || suppressedAgain.MemoryRecallSample.SessionInjected {
+		t.Fatalf("expected stable suppression for unchanged session recall sample, got: %+v", suppressedAgain.MemoryRecallSample)
 	}
 }
 

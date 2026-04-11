@@ -56,9 +56,14 @@ func cloneACPWorkerMetadata(worker *acppkg.WorkerMetadata) *acppkg.WorkerMetadat
 		return nil
 	}
 	out := &acppkg.WorkerMetadata{
+		TaskID:          worker.TaskID,
+		RunID:           worker.RunID,
 		SessionID:       worker.SessionID,
 		AgentID:         worker.AgentID,
+		ParentTaskID:    worker.ParentTaskID,
+		ParentRunID:     worker.ParentRunID,
 		HistoryEntryIDs: cloneACPStringSlice(worker.HistoryEntryIDs),
+		Result:          worker.Result,
 	}
 	if worker.ParentContext != nil {
 		out.ParentContext = &acppkg.ParentContext{

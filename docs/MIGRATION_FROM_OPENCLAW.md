@@ -308,13 +308,23 @@ curl -s -X POST http://localhost:7423/call \
 
 **DMs not routing to the right agent** — Use `dm_peers` in the agent config to bind specific Nostr pubkeys to an agent. Without `dm_peers`, all DMs go to the default agent.
 
-**Plugin not loading** — Metiq uses Goja (embedded JS) rather than Node.js. Pure-JS plugins compatible with ES2015+ will work. TypeScript plugins requiring Node.js built-ins (`fs`, `child_process`, etc.) need to be bundled first.
+**Plugin not loading** — Metiq uses Goja (embedded JS) rather than Node.js. Pure-JS plugins compatible with ES2015+ will work. TypeScript plugins requiring Node.js built-ins (`fs`, `child_process`, etc.) need to be bundled first. The loader also now rejects plugins whose `install_path` falls outside managed installs or configured `plugins.load_paths`, and it validates plugin manifests/tool schemas before registration.
 
 ---
 
-## Status: OpenClaw parity (updated 2026-03-08)
+## Status: OpenClaw parity (updated 2026-04-10)
 
 All metiq-22.x beads are **closed**. Metiq has reached full OpenClaw gateway method parity plus native extensions.
+
+The April 10, 2026 parity hardening pass also closed the follow-up behavioral/documentation gaps that remained after method parity was reached:
+
+- tool-loop detection now matches OpenClaw's known-poll gating behavior
+- transcript-derived memories are scope-tagged before persistence
+- Qdrant health/degraded fallback state is surfaced operationally
+- maintained session memory now participates in active recall and operator status
+- plugin loading now enforces trusted roots and manifest/schema validation
+- untrusted external content is explicitly wrapped before model submission
+- `doctor.memory.status` now reports backend, file-memory, session-memory, and maintenance health
 
 ### Completed features (22.x series — all implemented)
 

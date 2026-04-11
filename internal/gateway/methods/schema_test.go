@@ -225,6 +225,127 @@ func TestDecodeACPParams_CamelCaseCompatibility(t *testing.T) {
 	}
 }
 
+func TestACPTaskSchemaNormalization(t *testing.T) {
+	dispatchReq, err := DecodeACPDispatchParams(json.RawMessage(`{
+		"target_pubkey":"peer-1",
+		"task":{
+			"goal_id":"goal-1",
+			"title":"Implement envelope",
+			"instructions":"Implement kind 38383 transport",
+			"memory_scope":"project",
+			"tool_profile":"coding",
+			"enabled_tools":["read_file","apply_edits"],
+			"expected_outputs":[{"name":"task-event","format":"json","required":true}],
+			"acceptance_criteria":[{"description":"event schema round-trips","required":true}]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("DecodeACPDispatchParams: %v", err)
+	}
+	dispatchReq, err = dispatchReq.Normalize()
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if dispatchReq.Task == nil {
+		t.Fatal("expected normalized task")
+	}
+	if dispatchReq.Instructions != "Implement kind 38383 transport" {
+		t.Fatalf("expected instructions from task schema, got %q", dispatchReq.Instructions)
+	}
+	if dispatchReq.MemoryScope != state.AgentMemoryScopeProject {
+		t.Fatalf("expected project memory scope, got %q", dispatchReq.MemoryScope)
+	}
+	if len(dispatchReq.EnabledTools) != 2 {
+		t.Fatalf("unexpected enabled tools: %#v", dispatchReq.EnabledTools)
+	}
+
+	pipelineReq, err := DecodeACPPipelineParams(json.RawMessage(`{
+		"steps":[{
+			"peer_pubkey":"peer-2",
+			"task":{
+				"task_id":"task-2",
+				"title":"Review result",
+				"instructions":"Review the generated result",
+				"memory_scope":"local",
+				"tool_profile":"coding",
+				"enabled_tools":["read_file"]
+			}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("DecodeACPPipelineParams: %v", err)
+	}
+	pipelineReq, err = pipelineReq.Normalize()
+	if err != nil {
+		t.Fatalf("Normalize pipeline: %v", err)
+	}
+	if pipelineReq.Steps[0].Task == nil || pipelineReq.Steps[0].Task.TaskID != "task-2" {
+		t.Fatalf("expected pipeline task schema, got %#v", pipelineReq.Steps[0].Task)
+	}
+	if pipelineReq.Steps[0].Instructions != "Review the generated result" {
+		t.Fatalf("expected pipeline instructions from task, got %q", pipelineReq.Steps[0].Instructions)
+	}
+}
+
+func TestACPTaskSchemaRejectsInvalidTaskFields(t *testing.T) {
+	req := ACPDispatchRequest{
+		TargetPubKey: "peer-1",
+		Task: &state.TaskSpec{
+			Title:        "Broken",
+			Instructions: "",
+			MemoryScope:  state.AgentMemoryScope("bogus"),
+		},
+	}
+	_, err := req.Normalize()
+	if err == nil {
+		t.Fatal("expected normalize error for invalid task schema")
+	}
+}
+
+func TestTasksCreateRequestNormalize_DerivesTaskFields(t *testing.T) {
+	req, err := DecodeTasksCreateParams(json.RawMessage(`{
+		"task":{
+			"instructions":"  Review deployment output  ",
+			"assigned_agent":" Worker ",
+			"memory_scope":"project",
+			"enabled_tools":["read_file","read_file"," "]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("DecodeTasksCreateParams: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if req.Task.Title != "Review deployment output" {
+		t.Fatalf("expected derived title, got %q", req.Task.Title)
+	}
+	if req.Task.AssignedAgent != "worker" {
+		t.Fatalf("expected normalized assigned agent, got %q", req.Task.AssignedAgent)
+	}
+	if req.Task.MemoryScope != state.AgentMemoryScopeProject {
+		t.Fatalf("expected project memory scope, got %q", req.Task.MemoryScope)
+	}
+	if len(req.Task.EnabledTools) != 1 || req.Task.EnabledTools[0] != "read_file" {
+		t.Fatalf("unexpected enabled tools: %#v", req.Task.EnabledTools)
+	}
+}
+
+func TestDecodeTasksGetParams_CamelCaseCompatibility(t *testing.T) {
+	req, err := DecodeTasksGetParams(json.RawMessage(`{"taskId":"task-1","runsLimit":7}`))
+	if err != nil {
+		t.Fatalf("DecodeTasksGetParams: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if req.TaskID != "task-1" || req.RunsLimit != 7 {
+		t.Fatalf("unexpected request: %#v", req)
+	}
+}
+
 func TestDecodeConfigPutParams_ArrayMode(t *testing.T) {
 	raw := json.RawMessage(`[{"dm":{"policy":"open"}}]`)
 	req, err := DecodeConfigPutParams(raw)
@@ -368,6 +489,22 @@ func TestSupportedMethodsIncludesRelayPolicyGet(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("%s not found in supported methods", MethodRelayPolicyGet)
+	}
+}
+
+func TestSupportedMethodsIncludesTaskMethods(t *testing.T) {
+	required := []string{MethodTasksCreate, MethodTasksGet, MethodTasksList, MethodTasksCancel, MethodTasksResume}
+	for _, want := range required {
+		found := false
+		for _, method := range SupportedMethods() {
+			if method == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s not found in supported methods", want)
+		}
 	}
 }
 

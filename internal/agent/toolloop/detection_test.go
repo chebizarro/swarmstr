@@ -63,10 +63,10 @@ func TestDetect_NoProgressStreak_Critical(t *testing.T) {
 	cfg.CriticalThreshold = 5
 	params := map[string]any{"id": "abc"}
 	for i := 0; i < 5; i++ {
-		RecordCall(s, "poll", params, "", &cfg)
-		RecordOutcome(s, "poll", params, "", "same result", "", &cfg)
+		RecordCall(s, "command_status", params, "", &cfg)
+		RecordOutcome(s, "command_status", params, "", "same result", "", &cfg)
 	}
-	r := Detect(s, "poll", params, &cfg)
+	r := Detect(s, "command_status", params, &cfg)
 	if !r.Stuck {
 		t.Fatal("expected stuck")
 	}
@@ -83,17 +83,20 @@ func TestDetect_NoProgressStreak_Warning(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.WarningThreshold = 3
 	cfg.CriticalThreshold = 6
-	params := map[string]any{"id": "abc"}
+	params := map[string]any{"action": "poll", "id": "abc"}
 	for i := 0; i < 3; i++ {
-		RecordCall(s, "poll", params, "", &cfg)
-		RecordOutcome(s, "poll", params, "", "same result", "", &cfg)
+		RecordCall(s, "process", params, "", &cfg)
+		RecordOutcome(s, "process", params, "", "same result", "", &cfg)
 	}
-	r := Detect(s, "poll", params, &cfg)
+	r := Detect(s, "process", params, &cfg)
 	if !r.Stuck {
 		t.Fatal("expected stuck")
 	}
 	if r.Level != Warning {
 		t.Fatalf("expected warning, got %s", r.Level)
+	}
+	if r.Detector != KnownPollNoProgress {
+		t.Fatalf("expected known_poll_no_progress, got %s", r.Detector)
 	}
 }
 
@@ -103,17 +106,40 @@ func TestDetect_DifferentResults_NoLoop(t *testing.T) {
 	cfg.WarningThreshold = 3
 	params := map[string]any{"id": "abc"}
 	for i := 0; i < 5; i++ {
-		RecordCall(s, "poll", params, "", &cfg)
-		RecordOutcome(s, "poll", params, "", "result-"+string(rune('a'+i)), "", &cfg)
+		RecordCall(s, "search", params, "", &cfg)
+		RecordOutcome(s, "search", params, "", "result-"+string(rune('a'+i)), "", &cfg)
 	}
-	r := Detect(s, "poll", params, &cfg)
+	r := Detect(s, "search", params, &cfg)
 	// Different results each time → no no-progress streak.
-	// But 5 identical arg calls → generic repeat should trigger at threshold 3.
+	// But 5 identical arg calls for a non-poll tool → generic repeat should trigger.
 	if !r.Stuck {
 		t.Fatal("expected stuck from generic repeat")
 	}
 	if r.Detector != GenericRepeat {
 		t.Fatalf("expected generic_repeat, got %s", r.Detector)
+	}
+}
+
+func TestDetect_NonPollNoProgress_DoesNotUseKnownPollDetector(t *testing.T) {
+	s := NewState()
+	cfg := DefaultConfig()
+	cfg.WarningThreshold = 3
+	cfg.CriticalThreshold = 5
+	cfg.GlobalCircuitBreakerThreshold = 10
+	params := map[string]any{"q": "hello"}
+	for i := 0; i < 5; i++ {
+		RecordCall(s, "search", params, "", &cfg)
+		RecordOutcome(s, "search", params, "", "same result", "", &cfg)
+	}
+	r := Detect(s, "search", params, &cfg)
+	if !r.Stuck {
+		t.Fatal("expected stuck from generic repeat")
+	}
+	if r.Detector != GenericRepeat {
+		t.Fatalf("expected generic_repeat, got %s", r.Detector)
+	}
+	if r.Level != Warning {
+		t.Fatalf("expected warning, got %s", r.Level)
 	}
 }
 

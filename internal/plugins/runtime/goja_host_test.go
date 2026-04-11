@@ -128,6 +128,21 @@ exports.invoke = function(){};
 	}
 }
 
+func TestLoadPlugin_invalidToolSchema(t *testing.T) {
+	src := `
+exports.manifest = {
+	id: "bad-schema",
+	version: "1.0.0",
+	tools: [{ name: "echo", parameters: { type: "string" } }],
+};
+exports.invoke = function(){};
+`
+	_, err := LoadPlugin(context.Background(), []byte(src), makeHost(&stubLog{}))
+	if err == nil || !strings.Contains(err.Error(), "parameters.type must be object") {
+		t.Errorf("expected schema validation error, got: %v", err)
+	}
+}
+
 func TestLoadPlugin_configAccess(t *testing.T) {
 	src := `
 exports.manifest = { id: "cfg-plugin", version: "1.0.0" };

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"metiq/internal/memory"
 	"metiq/internal/store/state"
 )
 
@@ -112,6 +113,22 @@ func TestRotateSessionLifecycle_ArchivesAndCarriesFlags(t *testing.T) {
 	}
 	if got.SpawnedBy != "slash:/reset" {
 		t.Fatalf("expected spawned_by to capture reason, got %q", got.SpawnedBy)
+	}
+}
+
+func TestSessionMemoryNeedsRefresh_WhenArtifactPathMismatches(t *testing.T) {
+	workspaceDir := t.TempDir()
+	path, err := memory.WriteSessionMemoryFile(workspaceDir, "sess-a", testSessionMemoryDocument("Session memory should refresh when the recorded artifact path no longer matches the expected surface."))
+	if err != nil {
+		t.Fatalf("write session memory: %v", err)
+	}
+	entry := state.SessionEntry{
+		SessionID:                "sess-a",
+		SessionMemoryFile:        path + ".moved",
+		SessionMemoryInitialized: true,
+	}
+	if !sessionMemoryNeedsRefresh(entry, memory.SessionMemoryProgress{}, workspaceDir, "sess-a") {
+		t.Fatal("expected mismatched session memory path to force refresh")
 	}
 }
 
