@@ -15,8 +15,6 @@ import (
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
-
-	exportpkg "metiq/internal/export"
 )
 
 func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.ControlRPCInbound, method string, cfg state.ConfigDoc) (nostruntime.ControlRPCResult, bool, error) {
@@ -75,14 +73,11 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if _, err := docsRepo.GetSession(ctx, req.SessionID); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		transcript, err := transcriptRepo.ListSession(ctx, req.SessionID, req.Limit)
+		result, err := methods.GetChatHistory(ctx, docsRepo, transcriptRepo, req.SessionID, req.Limit)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"session_id": req.SessionID, "entries": transcript})}, true, nil
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodChatAbort:
 		req, err := methods.DecodeChatAbortParams(in.Params)
 		if err != nil {
@@ -113,15 +108,11 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		session, err := docsRepo.GetSession(ctx, req.SessionID)
+		result, err := methods.GetSessionWithTranscript(ctx, docsRepo, transcriptRepo, req.SessionID, req.Limit)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		transcript, err := transcriptRepo.ListSession(ctx, req.SessionID, req.Limit)
-		if err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		return nostruntime.ControlRPCResult{Result: methods.SessionGetResponse{Session: session, Transcript: transcript}}, true, nil
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodSessionsList:
 		req, err := methods.DecodeSessionsListParams(in.Params)
 		if err != nil {
@@ -150,15 +141,11 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		session, err := docsRepo.GetSession(ctx, req.SessionID)
+		result, err := methods.PreviewSession(ctx, docsRepo, transcriptRepo, req.SessionID, req.Limit)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		transcript, err := transcriptRepo.ListSession(ctx, req.SessionID, req.Limit)
-		if err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"session": session, "preview": transcript}}, true, nil
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodSessionsPatch:
 		req, err := methods.DecodeSessionsPatchParams(in.Params)
 		if err != nil {
@@ -354,26 +341,11 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		if exportFormat != "html" {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("sessions.export: unsupported format %q (only 'html' is supported)", exportFormat)
 		}
-		entries, err := transcriptRepo.ListSessionAll(ctx, exportReq.SessionID)
+		exportResult, err := methods.ExportSessionHTML(ctx, docsRepo, transcriptRepo, exportReq.SessionID, in.FromPubKey)
 		if err != nil {
-			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("sessions.export: load transcript: %w", err)
+			return nostruntime.ControlRPCResult{}, true, err
 		}
-		msgs := make([]exportpkg.Message, 0, len(entries))
-		for _, e := range entries {
-			if e.Role == "deleted" || e.Role == "" {
-				continue
-			}
-			msgs = append(msgs, exportpkg.Message{Role: e.Role, Content: e.Text, Timestamp: e.Unix, ID: e.EntryID})
-		}
-		agentName := ""
-		if agDoc, err2 := docsRepo.GetAgent(ctx, "main"); err2 == nil {
-			agentName = agDoc.Name
-		}
-		htmlOut, err := exportpkg.SessionToHTML(exportpkg.SessionHTMLOptions{SessionID: exportReq.SessionID, AgentID: "main", AgentName: agentName, PubKey: in.FromPubKey, Messages: msgs, ExportedAt: time.Now()})
-		if err != nil {
-			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("sessions.export: render: %w", err)
-		}
-		return nostruntime.ControlRPCResult{Result: methods.SessionsExportResponse{HTML: htmlOut, Format: "html"}}, true, nil
+		return nostruntime.ControlRPCResult{Result: exportResult}, true, nil
 	case methods.MethodSessionsPrune:
 		var pruneReq methods.SessionsPruneRequest
 		if len(in.Params) > 0 {

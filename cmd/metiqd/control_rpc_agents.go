@@ -162,11 +162,11 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		agents, err := docsRepo.ListAgents(ctx, req.Limit)
+		result, err := methods.ListAgents(ctx, docsRepo, req.Limit)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agents": agents}}, true, nil
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodAgentsCreate:
 		req, err := methods.DecodeAgentsCreateParams(in.Params)
 		if err != nil {
@@ -370,15 +370,11 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		files, err := docsRepo.ListAgentFiles(ctx, req.AgentID, req.Limit)
+		result, err := methods.ListAgentFiles(ctx, docsRepo, req.AgentID, req.Limit)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out := make([]map[string]any, 0, len(files))
-		for _, file := range files {
-			out = append(out, map[string]any{"name": file.Name, "size": len(file.Content)})
-		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": req.AgentID, "files": out}}, true, nil
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodAgentsFilesGet:
 		req, err := methods.DecodeAgentsFilesGetParams(in.Params)
 		if err != nil {
@@ -388,14 +384,11 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		file, err := docsRepo.GetAgentFile(ctx, req.AgentID, req.Name)
+		result, err := methods.GetAgentFile(ctx, docsRepo, req.AgentID, req.Name)
 		if err != nil {
-			if errors.Is(err, state.ErrNotFound) {
-				return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": req.AgentID, "file": map[string]any{"name": req.Name, "missing": true}}}, true, nil
-			}
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"agent_id": req.AgentID, "file": map[string]any{"name": file.Name, "missing": false, "content": file.Content}}}, true, nil
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodAgentsFilesSet:
 		req, err := methods.DecodeAgentsFilesSetParams(in.Params)
 		if err != nil {
@@ -405,11 +398,11 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		doc := state.AgentFileDoc{Version: 1, AgentID: req.AgentID, Name: req.Name, Content: req.Content}
-		if _, err := docsRepo.PutAgentFile(ctx, req.AgentID, req.Name, doc); err != nil {
+		result, err := methods.SetAgentFile(ctx, docsRepo, req.AgentID, req.Name, req.Content)
+		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "agent_id": req.AgentID, "file": map[string]any{"name": req.Name, "missing": false, "content": req.Content}}}, true, nil
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodToolsCatalog:
 		req, err := methods.DecodeToolsCatalogParams(in.Params)
 		if err != nil {
@@ -419,10 +412,10 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+		if err := methods.IsKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		agentID := defaultAgentID(req.AgentID)
+		agentID := methods.DefaultAgentID(req.AgentID)
 		groups := buildToolCatalogGroups(cfg, tools, req.IncludePlugins, pluginMgr)
 		if req.Profile != nil && *req.Profile != "" {
 			profileID := strings.TrimSpace(strings.ToLower(*req.Profile))
