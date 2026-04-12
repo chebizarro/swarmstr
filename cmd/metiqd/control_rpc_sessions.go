@@ -27,6 +27,10 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 	transcriptRepo := h.deps.transcriptRepo
 	memoryIndex := h.deps.memoryIndex
 	configState := h.deps.configState
+	sessionStore := h.deps.sessionStore
+	hooksMgr := h.deps.hooksMgr
+	mediaTranscriber := h.deps.mediaTranscriber
+	toolRegistry := h.deps.toolRegistry
 
 	switch method {
 	case methods.MethodChatSend:
@@ -41,7 +45,7 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		msgText := req.Text
 		if len(req.Attachments) > 0 {
 			var preprocessErr error
-			msgText, _, preprocessErr = preprocessAttachments(ctx, req.Text, req.Attachments, controlMediaTranscriber)
+			msgText, _, preprocessErr = preprocessAttachments(ctx, req.Text, req.Attachments, mediaTranscriber)
 			if preprocessErr != nil {
 				log.Printf("chat.send: attachment preprocess error: %v", preprocessErr)
 			}
@@ -129,7 +133,7 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		}
 		result, err := admin.BuildSessionsListResponse(ctx, req, admin.SessionsListResponseOptions{
 			Config:         cfg,
-			SessionStore:   controlSessionStore,
+			SessionStore:   sessionStore,
 			ListSessions:   docsRepo.ListSessions,
 			ListTranscript: transcriptRepo.ListSession,
 		})
@@ -198,8 +202,8 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlHooksMgr != nil {
-			go controlHooksMgr.Fire("command:reset", req.SessionID, map[string]any{})
+		if hooksMgr != nil {
+			go hooksMgr.Fire("command:reset", req.SessionID, map[string]any{})
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session": session}}, true, nil
 	case methods.MethodSessionsDelete:
@@ -242,7 +246,7 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 			if _, err := docsRepo.GetSession(ctx, req.SessionID); err != nil {
 				return err
 			}
-			flushOutcome, err := ensureSessionMemoryCurrent(ctx, configState.Get(), req.SessionID, controlSessionStore)
+			flushOutcome, err := ensureSessionMemoryCurrent(ctx, configState.Get(), req.SessionID, sessionStore)
 			if err != nil {
 				return fmt.Errorf("sessions.compact session memory flush: %w", err)
 			}
@@ -282,7 +286,7 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 					usedAuxiliaryRuntime := false
 					if agCfg, ok := resolveAgentConfigByID(cfg, activeAgentID); ok {
 						if auxiliaryModel := resolveAuxiliaryModelForAgent(agCfg, auxiliaryModelUseCaseCompaction); auxiliaryModel != "" {
-							lightRuntime, lightErr := buildRuntimeForAgentModel(cfg, agCfg, auxiliaryModel, controlToolRegistry)
+							lightRuntime, lightErr := buildRuntimeForAgentModel(cfg, agCfg, auxiliaryModel, toolRegistry)
 							if lightErr != nil {
 								log.Printf("sessions.compact: light summary runtime unavailable agent=%s model=%q err=%v", activeAgentID, auxiliaryModel, lightErr)
 							} else if lightRuntime != nil {
@@ -328,7 +332,7 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 				return err
 			}
 			compactResult = methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped - deleteErrors, "summary_generated": summaryGenerated})
-			recordSessionCompaction(controlSessionStore, req.SessionID, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
+			recordSessionCompaction(sessionStore, req.SessionID, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
 			return nil
 		})
 		if err != nil {

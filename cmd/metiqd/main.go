@@ -6911,6 +6911,17 @@ func handleControlRPCRequest(
 		tools:          tools,
 		pluginMgr:      pluginMgr,
 		startedAt:      startedAt,
+
+		sessionStore:     controlSessionStore,
+		mediaTranscriber: controlMediaTranscriber,
+		toolRegistry:     controlToolRegistry,
+		agentJobs:        controlAgentJobs,
+		sessionRouter:    controlSessionRouter,
+		agentRegistry:    controlAgentRegistry,
+		agentRuntime:     controlAgentRuntime,
+	}
+	if controlHooksMgr != nil {
+		deps.hooksMgr = controlHooksMgr
 	}
 	return newControlRPCHandler(deps).Handle(ctx, in)
 }
