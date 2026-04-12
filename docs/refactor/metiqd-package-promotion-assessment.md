@@ -157,14 +157,51 @@ Only the task CRUD helper set met those criteria today.
 3. Reassess promotion into `internal/daemon/controlrpc` only after the handlers are transport-thin and dependency-stable.
 4. Continue parallel bloat reduction in `cmd/metiq/cli_cmds.go` under the existing CLI epic.
 
+## Post-DI reassessment (swarmstr-h6r)
+
+Date: 2026-04-12
+
+After completing dependency inversion (`swarmstr-9f6`), the session and agent RPC handlers
+no longer read `control*` globals directly. This unlocked promotion of the storage-facing
+operations that were previously entangled with daemon state.
+
+### Newly promoted
+
+| File | Functions | Destination |
+|------|-----------|-------------|
+| `agent_control.go` | `DefaultAgentID`, `IsKnownAgentID`, `ListAgents`, `ListAgentFiles`, `GetAgentFile`, `SetAgentFile` | `internal/gateway/methods/` |
+| `session_control.go` | `GetSessionWithTranscript`, `GetChatHistory`, `PreviewSession`, `ExportSessionHTML` | `internal/gateway/methods/` |
+
+The cmd-local wrappers (`defaultAgentID`, `isKnownAgentID`) now delegate to the promoted
+versions, so all existing callers work unchanged.
+
+### Still not promotable
+
+The following remain cmd-local because they depend on runtime registries, exclusive locks,
+or daemon-process-lifecycle side effects:
+
+- **Agent run/wait** — `agentJobs`, runtime building, fallbacks
+- **Agent CRUD with activation** — `agentRegistry.Set/Remove`, `sessionRouter.Assign/Unassign`
+- **Session reset/delete/compact** — exclusive turn locks, hooks, compaction orchestration
+- **Chat send/abort** — DM transport, cancellation registry, media transcription
+- **All other domain handlers** (channels, config, ops, nodes, tooling) — still use globals directly
+
+### Remaining follow-ups
+
+1. Apply the same DI pattern to channel, config, ops, node, and tooling handlers
+2. Extract storage-facing agent CRUD (create/update/delete without runtime activation) as service layer
+3. Consider introducing an `internal/daemon/controlrpc` package once ≥3 domain handlers are dependency-inverted
+
 ## Conclusion
 
 Promotion is appropriate only where the seam is already a service boundary.
 
-Today that applies to the task CRUD helper set, and that move has been completed in this bead.
+The initial assessment promoted task CRUD helpers. After dependency inversion, agent
+validation/files and session read operations also met the criteria and have been promoted.
 
-The remaining extracted seams are still daemon composition code. Promoting them now would hide coupling instead of reducing it. The correct sequence is:
+The correct sequence remains:
 
-1. split by domain
-2. invert dependencies
-3. promote only the seams that stay coherent after that inversion
+1. split by domain ✅
+2. invert dependencies ✅ (session + agent handlers)
+3. promote storage-facing operations ✅ (task, agent, session reads)
+4. continue DI for remaining handlers, then reassess

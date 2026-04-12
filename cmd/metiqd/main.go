@@ -8575,29 +8575,11 @@ func relayHealthErrorString(err error) string {
 }
 
 func defaultAgentID(id string) string {
-	id = strings.TrimSpace(id)
-	if id == "" || strings.EqualFold(id, "main") {
-		return "main"
-	}
-	return id
+	return methods.DefaultAgentID(id)
 }
 
 func isKnownAgentID(ctx context.Context, docsRepo *state.DocsRepository, id string) error {
-	agentID := defaultAgentID(id)
-	if agentID == "main" || docsRepo == nil {
-		return nil
-	}
-	doc, err := docsRepo.GetAgent(ctx, agentID)
-	if err == nil {
-		if doc.Deleted {
-			return fmt.Errorf("unknown agent id %q", agentID)
-		}
-		return nil
-	}
-	if errors.Is(err, state.ErrNotFound) {
-		return fmt.Errorf("unknown agent id %q", agentID)
-	}
-	return fmt.Errorf("failed to get agent: %w", err)
+	return methods.IsKnownAgentID(ctx, docsRepo, id)
 }
 
 func defaultModelsCatalog(configProviders map[string]state.ProviderEntry) []map[string]any {
