@@ -13,4 +13,9 @@ const (
 	TagTopic     = "topic"
 	TagKeyword   = "keyword"
 	TagSource    = "source"
+	TagGoal       = "goal"
+	TagRunID      = "run"
+	TagMemType    = "mem_type"
+	TagMemTaskID  = "task_id"
+	TagMemSource  = "mem_source"
 )

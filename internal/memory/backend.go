@@ -50,6 +50,10 @@ type Backend interface {
 	// ListByTopic returns entries whose Topic exactly matches the given topic,
 	// newest-first, up to limit results.  Used to surface pinned agent knowledge.
 	ListByTopic(topic string, limit int) []IndexedMemory
+	// ListByType returns entries whose Type exactly matches, newest-first.
+	ListByType(memType string, limit int) []IndexedMemory
+	// ListByTaskID returns entries linked to the given task, newest-first.
+	ListByTaskID(taskID string, limit int) []IndexedMemory
 	// Close releases any resources held by the backend.
 	Close() error
 }
@@ -183,6 +187,12 @@ func (b *IndexBackend) Store(sid, text string, tags []string) string {
 func (b *IndexBackend) Delete(id string) bool { return b.idx.Delete(id) }
 func (b *IndexBackend) ListByTopic(topic string, limit int) []IndexedMemory {
 	return b.idx.ListByTopic(topic, limit)
+}
+func (b *IndexBackend) ListByType(memType string, limit int) []IndexedMemory {
+	return b.idx.ListByType(memType, limit)
+}
+func (b *IndexBackend) ListByTaskID(taskID string, limit int) []IndexedMemory {
+	return b.idx.ListByTaskID(taskID, limit)
 }
 func (b *IndexBackend) Save() error  { return b.idx.Save() }
 func (b *IndexBackend) Close() error { return b.idx.Save() }

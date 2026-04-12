@@ -434,6 +434,51 @@ func payloadToIndexedMemory(id string, p map[string]any) IndexedMemory {
 			}
 		}
 	}
+	if v, ok := p["mem_type"].(string); ok {
+		m.Type = v
+	}
+	if v, ok := p["goal_id"].(string); ok {
+		m.GoalID = v
+	}
+	if v, ok := p["task_id"].(string); ok {
+		m.TaskID = v
+	}
+	if v, ok := p["run_id"].(string); ok {
+		m.RunID = v
+	}
+	if v, ok := p["episode_kind"].(string); ok {
+		m.EpisodeKind = v
+	}
+	if v, ok := p["confidence"].(float64); ok {
+		m.Confidence = v
+	}
+	if v, ok := p["source"].(string); ok {
+		m.Source = v
+	}
+	if v, ok := p["reviewed_at"].(float64); ok {
+		m.ReviewedAt = int64(v)
+	}
+	if v, ok := p["reviewed_by"].(string); ok {
+		m.ReviewedBy = v
+	}
+	if v, ok := p["expires_at"].(float64); ok {
+		m.ExpiresAt = int64(v)
+	}
+	if v, ok := p["mem_status"].(string); ok {
+		m.MemStatus = v
+	}
+	if v, ok := p["superseded_by"].(string); ok {
+		m.SupersededBy = v
+	}
+	if v, ok := p["invalidated_at"].(float64); ok {
+		m.InvalidatedAt = int64(v)
+	}
+	if v, ok := p["invalidated_by"].(string); ok {
+		m.InvalidatedBy = v
+	}
+	if v, ok := p["invalidate_reason"].(string); ok {
+		m.InvalidateReason = v
+	}
 	return m
 }
 
@@ -478,6 +523,51 @@ func (b *QdrantBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc)
 	}
 	if len(doc.Keywords) > 0 {
 		payload["keywords"] = append([]string(nil), doc.Keywords...)
+	}
+	if doc.Type != "" {
+		payload["mem_type"] = doc.Type
+	}
+	if doc.GoalID != "" {
+		payload["goal_id"] = doc.GoalID
+	}
+	if doc.TaskID != "" {
+		payload["task_id"] = doc.TaskID
+	}
+	if doc.RunID != "" {
+		payload["run_id"] = doc.RunID
+	}
+	if doc.EpisodeKind != "" {
+		payload["episode_kind"] = doc.EpisodeKind
+	}
+	if doc.Confidence != 0 {
+		payload["confidence"] = doc.Confidence
+	}
+	if doc.Source != "" {
+		payload["source"] = doc.Source
+	}
+	if doc.ReviewedAt != 0 {
+		payload["reviewed_at"] = doc.ReviewedAt
+	}
+	if doc.ReviewedBy != "" {
+		payload["reviewed_by"] = doc.ReviewedBy
+	}
+	if doc.ExpiresAt != 0 {
+		payload["expires_at"] = doc.ExpiresAt
+	}
+	if doc.MemStatus != "" {
+		payload["mem_status"] = doc.MemStatus
+	}
+	if doc.SupersededBy != "" {
+		payload["superseded_by"] = doc.SupersededBy
+	}
+	if doc.InvalidatedAt != 0 {
+		payload["invalidated_at"] = doc.InvalidatedAt
+	}
+	if doc.InvalidatedBy != "" {
+		payload["invalidated_by"] = doc.InvalidatedBy
+	}
+	if doc.InvalidateReason != "" {
+		payload["invalidate_reason"] = doc.InvalidateReason
 	}
 	if err := b.runOperation(ctx, "upsert", func() error { return b.upsert(ctx, id, vec, payload) }); err != nil {
 		log.Printf("qdrant: upsert failed: %v", err)
@@ -760,6 +850,75 @@ func (b *QdrantBackend) ListByTopic(topic string, limit int) []IndexedMemory {
 	return out
 }
 
+func (b *QdrantBackend) ListByType(memType string, limit int) []IndexedMemory {
+	return b.scrollByField("mem_type", memType, limit, "list type")
+}
+
+func (b *QdrantBackend) ListByTaskID(taskID string, limit int) []IndexedMemory {
+	return b.scrollByField("task_id", taskID, limit, "list task_id")
+}
+
+// scrollByField is a generic scroll-by-exact-match helper used by ListByTopic,
+// ListByType, and ListByTaskID.
+func (b *QdrantBackend) scrollByField(field, value string, limit int, opName string) []IndexedMemory {
+	if limit <= 0 {
+		limit = 100
+	}
+	ctx := context.Background()
+	if err := b.ensureReady(ctx); err != nil {
+		log.Printf("qdrant: %s fallback active: %v", opName, err)
+		return nil
+	}
+	body, _ := json.Marshal(map[string]any{
+		"filter": map[string]any{
+			"must": []map[string]any{
+				{"key": field, "match": map[string]any{"value": value}},
+			},
+		},
+		"limit":        limit,
+		"with_payload": true,
+		"order_by":     map[string]any{"key": "unix", "direction": "desc"},
+	})
+	var out []IndexedMemory
+	if err := b.runOperation(ctx, opName, func() error {
+		req, err := newQdrantJSONRequest(ctx, http.MethodPost,
+			fmt.Sprintf("%s/collections/%s/points/scroll", b.qdrantURL, b.collection),
+			bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		resp, err := b.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			raw, _ := io.ReadAll(resp.Body)
+			return &qdrantHTTPError{Operation: opName, StatusCode: resp.StatusCode, Body: string(raw)}
+		}
+		var sr struct {
+			Result struct {
+				Points []struct {
+					ID      json.RawMessage `json:"id"`
+					Payload map[string]any  `json:"payload"`
+				} `json:"points"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+			return err
+		}
+		out = make([]IndexedMemory, 0, len(sr.Result.Points))
+		for _, p := range sr.Result.Points {
+			out = append(out, payloadToIndexedMemory(qdrantIDToString(p.ID), p.Payload))
+		}
+		return nil
+	}); err != nil {
+		log.Printf("qdrant: %s failed: %v", opName, err)
+		return nil
+	}
+	return out
+}
+
 func (b *QdrantBackend) Compact(maxEntries int) int { return 0 } // Qdrant manages its own storage
 
 func (b *QdrantBackend) Save() error { return nil } // Qdrant persists automatically
@@ -961,6 +1120,14 @@ func (h *HybridIndex) persistToBackend(doc state.MemoryDoc) {
 		}
 	}()
 }
+func (h *HybridIndex) ListByType(memType string, limit int) []IndexedMemory {
+	return h.Index.ListByType(memType, limit)
+}
+
+func (h *HybridIndex) ListByTaskID(taskID string, limit int) []IndexedMemory {
+	return h.Index.ListByTaskID(taskID, limit)
+}
+
 func (h *HybridIndex) Add(doc state.MemoryDoc) {
 	h.AddWithContext(context.Background(), doc)
 }
@@ -974,6 +1141,10 @@ type Store interface {
 	// ListByTopic returns all entries with the given topic, newest-first.
 	// Used to surface pinned agent knowledge into the system prompt.
 	ListByTopic(topic string, limit int) []IndexedMemory
+	// ListByType returns all entries with the given memory type, newest-first.
+	ListByType(memType string, limit int) []IndexedMemory
+	// ListByTaskID returns all entries linked to the given task, newest-first.
+	ListByTaskID(taskID string, limit int) []IndexedMemory
 	Count() int
 	SessionCount() int
 	// Compact removes the oldest entries to keep total count below maxEntries.
