@@ -537,3 +537,153 @@ func TestMetadataValidationFailure(t *testing.T) {
 		t.Fatalf("invalid signature reason = %q", reason)
 	}
 }
+
+// ─── Additional NIP-65 tests (Phase 6) ──────────────────────────────────────
+
+func TestDecodeNIP65Event_UnknownMarker(t *testing.T) {
+	ev := nostr.Event{
+		Kind: 10002,
+		Tags: nostr.Tags{{"r", "wss://relay1.example", "unknown"}},
+	}
+	list := DecodeNIP65Event(ev)
+	if !list.Entries[0].Read || !list.Entries[0].Write {
+		t.Error("unknown marker should default to both")
+	}
+}
+
+func TestDecodeNIP65Event_SkipsNonRTags(t *testing.T) {
+	ev := nostr.Event{
+		Kind: 10002,
+		Tags: nostr.Tags{{"d", "something"}, {"p", "pubkey"}, {"r", "wss://relay1.example"}},
+	}
+	list := DecodeNIP65Event(ev)
+	if len(list.Entries) != 1 {
+		t.Errorf("expected 1, got %d", len(list.Entries))
+	}
+}
+
+func TestDecodeNIP65Event_SkipsShortTags(t *testing.T) {
+	ev := nostr.Event{Kind: 10002, Tags: nostr.Tags{{"r"}}}
+	list := DecodeNIP65Event(ev)
+	if len(list.Entries) != 0 {
+		t.Errorf("expected 0, got %d", len(list.Entries))
+	}
+}
+
+func TestDecodeNIP65Event_Empty(t *testing.T) {
+	list := DecodeNIP65Event(nostr.Event{Kind: 10002})
+	if len(list.Entries) != 0 {
+		t.Errorf("expected 0, got %d", len(list.Entries))
+	}
+}
+
+func TestIsNewerReplaceableMetadataEvent_NilCurrent(t *testing.T) {
+	if !isNewerReplaceableMetadataEvent(nil, nostr.Event{CreatedAt: 100}) {
+		t.Error("nil current should always accept candidate")
+	}
+}
+
+func TestIsNewerReplaceableMetadataEvent_Newer(t *testing.T) {
+	current := nostr.Event{CreatedAt: 100}
+	if !isNewerReplaceableMetadataEvent(&current, nostr.Event{CreatedAt: 200}) {
+		t.Error("newer candidate should be accepted")
+	}
+}
+
+func TestIsNewerReplaceableMetadataEvent_Older(t *testing.T) {
+	current := nostr.Event{CreatedAt: 200}
+	if isNewerReplaceableMetadataEvent(&current, nostr.Event{CreatedAt: 100}) {
+		t.Error("older candidate should be rejected")
+	}
+}
+
+func TestIsVerifiedMetadataEvent_Valid(t *testing.T) {
+	sk, _ := ParseSecretKey("1111111111111111111111111111111111111111111111111111111111111111")
+	keyer := newNIP04KeyerAdapter(sk)
+	ev := nostr.Event{Kind: 10002, CreatedAt: nostr.Now()}
+	keyer.SignEvent(context.Background(), &ev)
+	if !isVerifiedMetadataEvent(ev, ev.PubKey, 10002) {
+		t.Error("should be valid")
+	}
+}
+
+func TestIsVerifiedMetadataEvent_WrongAuthor(t *testing.T) {
+	sk, _ := ParseSecretKey("1111111111111111111111111111111111111111111111111111111111111111")
+	keyer := newNIP04KeyerAdapter(sk)
+	ev := nostr.Event{Kind: 10002, CreatedAt: nostr.Now()}
+	keyer.SignEvent(context.Background(), &ev)
+	wrongPk := nostr.Generate().Public()
+	if isVerifiedMetadataEvent(ev, wrongPk, 10002) {
+		t.Error("wrong author should be invalid")
+	}
+}
+
+func TestShortPubKey(t *testing.T) {
+	sk := nostr.Generate()
+	pk := nostr.GetPublicKey(sk)
+	short := shortPubKey(pk)
+	if len(short) != 12 {
+		t.Errorf("expected 12 chars, got %d: %q", len(short), short)
+	}
+}
+
+func TestShortEventID(t *testing.T) {
+	sk := nostr.Generate()
+	ev := nostr.Event{Kind: 1, CreatedAt: nostr.Now()}
+	ev.Sign(sk)
+	short := shortEventID(ev.ID)
+	if len(short) != 12 {
+		t.Errorf("expected 12 chars, got %d: %q", len(short), short)
+	}
+}
+
+func TestMinInt(t *testing.T) {
+	if MinInt(5, 10) != 5 {
+		t.Error("5,10")
+	}
+	if MinInt(10, 5) != 5 {
+		t.Error("10,5")
+	}
+	if MinInt(7, 7) != 7 {
+		t.Error("7,7")
+	}
+}
+
+func TestMetadataRelayURL_NilRelay(t *testing.T) {
+	if got := metadataRelayURL(nostr.RelayEvent{}); got != "" {
+		t.Errorf("nil relay: %q", got)
+	}
+}
+
+func TestMetadataRelayURL_WithRelay(t *testing.T) {
+	re := nostr.RelayEvent{Relay: &nostr.Relay{URL: "  wss://relay.example  "}}
+	if got := metadataRelayURL(re); got != "wss://relay.example" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestNIP65RelayList_ReadRelays(t *testing.T) {
+	list := &NIP65RelayList{
+		Entries: []NIP65RelayEntry{
+			{URL: "wss://both.example", Read: true, Write: true},
+			{URL: "wss://read-only.example", Read: true},
+			{URL: "wss://write-only.example", Write: true},
+		},
+	}
+	if len(list.ReadRelays()) != 2 {
+		t.Errorf("expected 2 read relays, got %d", len(list.ReadRelays()))
+	}
+}
+
+func TestNIP65RelayList_WriteRelays(t *testing.T) {
+	list := &NIP65RelayList{
+		Entries: []NIP65RelayEntry{
+			{URL: "wss://both.example", Read: true, Write: true},
+			{URL: "wss://read-only.example", Read: true},
+			{URL: "wss://write-only.example", Write: true},
+		},
+	}
+	if len(list.WriteRelays()) != 2 {
+		t.Errorf("expected 2 write relays, got %d", len(list.WriteRelays()))
+	}
+}

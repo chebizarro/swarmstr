@@ -701,3 +701,146 @@ func TestControlRPCEnvelopeParityFixtures(t *testing.T) {
 		})
 	}
 }
+
+// ─── Additional pure function tests (Phase 6) ───────────────────────────────
+
+func TestWithETag_EmptyTags(t *testing.T) {
+	result := withETag(nil, "event-id")
+	if len(result) != 1 || result[0][0] != "e" || result[0][1] != "event-id" {
+		t.Errorf("unexpected: %v", result)
+	}
+}
+
+func TestWithETag_DoesNotMutateOriginal(t *testing.T) {
+	tags := nostr.Tags{{"e", "old-event-id"}, {"p", "some-pubkey"}}
+	_ = withETag(tags, "new-event-id")
+	if tags[0][1] != "old-event-id" {
+		t.Error("original tags should not be mutated")
+	}
+}
+
+func TestFirstTagValue(t *testing.T) {
+	tags := nostr.Tags{
+		{"e", "event-id"},
+		{"p", "pubkey1"},
+		{"p", "pubkey2"},
+		{"t", "control_rpc"},
+	}
+	if got := firstTagValue(tags, "e"); got != "event-id" {
+		t.Errorf("e: %q", got)
+	}
+	if got := firstTagValue(tags, "p"); got != "pubkey1" {
+		t.Errorf("p (should be first): %q", got)
+	}
+	if got := firstTagValue(tags, "missing"); got != "" {
+		t.Errorf("missing: %q", got)
+	}
+	if got := firstTagValue(nil, "e"); got != "" {
+		t.Errorf("nil tags: %q", got)
+	}
+	shortTags := nostr.Tags{{"x"}}
+	if got := firstTagValue(shortTags, "x"); got != "" {
+		t.Errorf("short tag: %q", got)
+	}
+}
+
+func TestShouldCacheControlMethod(t *testing.T) {
+	if !shouldCacheControlMethod("status") {
+		t.Error("status should be cached")
+	}
+	if !shouldCacheControlMethod("capabilities") {
+		t.Error("capabilities should be cached")
+	}
+	if shouldCacheControlMethod("secrets.resolve") {
+		t.Error("secrets.resolve should not be cached")
+	}
+	if shouldCacheControlMethod("  secrets.resolve  ") {
+		t.Error("secrets.resolve with whitespace should not be cached")
+	}
+}
+
+func TestDecodeControlCallRequest_Valid(t *testing.T) {
+	req, err := decodeControlCallRequest(`{"method":"status","params":{"key":"val"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Method != "status" {
+		t.Errorf("method: %q", req.Method)
+	}
+	if req.Params == nil {
+		t.Error("params should not be nil")
+	}
+}
+
+func TestDecodeControlCallRequest_NoParams(t *testing.T) {
+	req, err := decodeControlCallRequest(`{"method":"ping"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Method != "ping" {
+		t.Errorf("method: %q", req.Method)
+	}
+}
+
+func TestDecodeControlCallRequest_Empty(t *testing.T) {
+	_, err := decodeControlCallRequest("")
+	if err == nil {
+		t.Error("expected error for empty content")
+	}
+}
+
+func TestDecodeControlCallRequest_InvalidJSON(t *testing.T) {
+	_, err := decodeControlCallRequest(`{not json}`)
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestContainsRelay_EmptyString(t *testing.T) {
+	if containsRelay([]string{"wss://relay1.example"}, "") {
+		t.Error("empty string should not match")
+	}
+}
+
+func TestContainsRelay_NilSlice(t *testing.T) {
+	if containsRelay(nil, "wss://relay1.example") {
+		t.Error("nil slice should not match")
+	}
+}
+
+func TestAllowCaller_EvictsOldEntries(t *testing.T) {
+	b := &ControlRPCBus{
+		minCallerInterval: time.Second,
+		callerCap:         2,
+		callerLastRequest: map[string]time.Time{},
+	}
+	now := time.Now()
+	b.allowCaller("pk1", now)
+	b.allowCaller("pk2", now.Add(time.Second))
+	b.allowCaller("pk3", now.Add(2*time.Second))
+	if _, ok := b.callerLastRequest["pk1"]; ok {
+		t.Error("pk1 should have been evicted")
+	}
+	if len(b.callerLastRequest) > 2 {
+		t.Errorf("should have at most 2 entries, got %d", len(b.callerLastRequest))
+	}
+}
+
+func TestControlBus_MarkSeen(t *testing.T) {
+	bus := &ControlRPCBus{
+		seenSet: map[string]struct{}{},
+		seenCap: 3,
+	}
+	if bus.markSeen("id1") {
+		t.Error("id1 should not be seen first time")
+	}
+	if !bus.markSeen("id1") {
+		t.Error("id1 should be seen second time")
+	}
+	bus.markSeen("id2")
+	bus.markSeen("id3")
+	bus.markSeen("id4") // should evict id1
+	if _, ok := bus.seenSet["id1"]; ok {
+		t.Error("id1 should have been evicted")
+	}
+}
