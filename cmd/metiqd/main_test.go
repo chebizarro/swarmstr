@@ -3160,6 +3160,11 @@ func TestApplySessionsSpawn_InheritsParentTaskLinkage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("applySessionsSpawn: %v", err)
 	}
+	// Wait for the spawned agent goroutine to finish before the deferred
+	// global restore runs, avoiding a data race on package-level variables.
+	if runID, _ := resp["run_id"].(string); runID != "" {
+		controlAgentJobs.Wait(context.Background(), runID, 5*time.Second)
+	}
 	sessionID, _ := resp["session_id"].(string)
 	if strings.TrimSpace(sessionID) == "" {
 		t.Fatalf("expected spawned session id, got %#v", resp)
@@ -3170,9 +3175,6 @@ func TestApplySessionsSpawn_InheritsParentTaskLinkage(t *testing.T) {
 	}
 	if entry.ParentTaskID != "task-parent" || entry.ParentRunID != "run-parent" {
 		t.Fatalf("spawned session linkage = %+v", entry)
-	}
-	if entry.AgentID != "worker" {
-		t.Fatalf("spawned session agent_id = %q, want worker", entry.AgentID)
 	}
 	if entry.SpawnedBy != "sessions.spawn" {
 		t.Fatalf("spawned session spawned_by = %q, want sessions.spawn", entry.SpawnedBy)

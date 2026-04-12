@@ -11397,12 +11397,16 @@ func applySessionsSpawn(ctx context.Context, req methods.SessionsSpawnRequest, c
 	}
 
 	// Start the agent job and track in SubagentRegistry.
-	snapshot := controlAgentJobs.Begin(runID, sessionID)
+	// Capture registry references into locals so the goroutine does not
+	// race with test-scope global restores.
+	jobs := controlAgentJobs
+	subagents := controlSubagents
+	snapshot := jobs.Begin(runID, sessionID)
 	go func() {
-		executeAgentRun(runID, agentReq, rt, memoryIndex, controlAgentJobs)
+		executeAgentRun(runID, agentReq, rt, memoryIndex, jobs)
 		// Mirror final status into SubagentRegistry.
-		if final, found := controlAgentJobs.Get(runID); found {
-			controlSubagents.Finish(runID, final.Result, final.Err)
+		if final, found := jobs.Get(runID); found {
+			subagents.Finish(runID, final.Result, final.Err)
 		}
 	}()
 
