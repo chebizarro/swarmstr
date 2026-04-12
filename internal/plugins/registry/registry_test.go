@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	nostr "fiatjaf.com/nostr"
 )
 
 // ─── PluginManifest JSON roundtrip ────────────────────────────────────────────
@@ -168,7 +170,54 @@ func TestInstall_checksumMismatch(t *testing.T) {
 	}
 }
 
+// ─── NewRegistry ──────────────────────────────────────────────────────────────
+
+func TestNewRegistry(t *testing.T) {
+	r := NewRegistry([]string{"wss://relay.example.com"})
+	if r == nil {
+		t.Fatal("NewRegistry returned nil")
+	}
+	defer r.Close()
+	if len(r.relays) != 1 {
+		t.Errorf("expected 1 relay, got %d", len(r.relays))
+	}
+}
+
+func TestNewRegistry_Empty(t *testing.T) {
+	r := NewRegistry(nil)
+	if r == nil {
+		t.Fatal("NewRegistry returned nil")
+	}
+	defer r.Close()
+}
+
 // ─── parsePluginEvent ────────────────────────────────────────────────────────
+
+func TestParsePluginEvent_ValidEvent(t *testing.T) {
+	manifest := `{"id":"test-plugin","version":"1.0.0","runtime":"goja","main":"index.js"}`
+	evt := nostr.Event{
+		Content:   manifest,
+		CreatedAt: nostr.Timestamp(1700000000),
+	}
+	entry, err := parsePluginEvent(evt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entry.Manifest.ID != "test-plugin" {
+		t.Errorf("expected test-plugin, got %s", entry.Manifest.ID)
+	}
+	if entry.Manifest.Version != "1.0.0" {
+		t.Errorf("expected 1.0.0, got %s", entry.Manifest.Version)
+	}
+}
+
+func TestParsePluginEvent_InvalidJSON(t *testing.T) {
+	evt := nostr.Event{Content: "not json"}
+	_, err := parsePluginEvent(evt)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
 
 func TestParsePluginEvent_missingID(t *testing.T) {
 	// Can't easily create a signed nostr.Event in unit tests without a key,

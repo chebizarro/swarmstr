@@ -149,7 +149,9 @@ func (h *Heartbeat) Stop() {
 	if h.ticker != nil {
 		h.ticker.Stop()
 	}
-	h.pool.Close("nip38 heartbeat stopped")
+	if h.pool != nil {
+		h.pool.Close("nip38 heartbeat stopped")
+	}
 	h.wg.Wait()
 }
 
