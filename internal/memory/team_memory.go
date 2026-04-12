@@ -83,12 +83,13 @@ type TeamMemoryExportResult struct {
 }
 
 type TeamMemorySyncState struct {
-	Version      int    `json:"version,omitempty"`
-	Checksum     string `json:"checksum,omitempty"`
-	LastModified string `json:"last_modified,omitempty"`
-	LastPulledAt string `json:"last_pulled_at,omitempty"`
-	LastPushedAt string `json:"last_pushed_at,omitempty"`
-	LastError    string `json:"last_error,omitempty"`
+	Version        int               `json:"version,omitempty"`
+	Checksum       string            `json:"checksum,omitempty"`
+	EntryChecksums map[string]string `json:"entry_checksums,omitempty"` // per-key checksums at last sync point
+	LastModified   string            `json:"last_modified,omitempty"`
+	LastPulledAt   string            `json:"last_pulled_at,omitempty"`
+	LastPushedAt   string            `json:"last_pushed_at,omitempty"`
+	LastError      string            `json:"last_error,omitempty"`
 }
 
 func ResolveTeamMemorySurface(workspaceDir string) TeamMemorySurface {

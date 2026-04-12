@@ -83,6 +83,21 @@ func (r *MemoryRepository) Put(ctx context.Context, doc MemoryDoc) (Event, error
 			tags = append(tags, []string{events.TagKeyword, kw})
 		}
 	}
+	if doc.Type != "" {
+		tags = append(tags, []string{events.TagMemType, doc.Type})
+	}
+	if doc.GoalID != "" {
+		tags = append(tags, []string{events.TagGoal, doc.GoalID})
+	}
+	if doc.TaskID != "" {
+		tags = append(tags, []string{events.TagMemTaskID, doc.TaskID})
+	}
+	if doc.RunID != "" {
+		tags = append(tags, []string{events.TagRunID, doc.RunID})
+	}
+	if doc.Source != "" {
+		tags = append(tags, []string{events.TagMemSource, doc.Source})
+	}
 
 	dTag := fmt.Sprintf("metiq:mem:%s", doc.MemoryID)
 	return r.store.PutReplaceable(ctx, Address{Kind: events.KindMemoryDoc, PubKey: r.author, DTag: dTag}, raw, tags)
@@ -111,6 +126,48 @@ func (r *MemoryRepository) SearchKeyword(ctx context.Context, keyword string, li
 		limit = 100
 	}
 	rows, err := r.store.ListByTagForAuthor(ctx, events.KindMemoryDoc, r.author, events.TagKeyword, keyword, limit)
+	if err != nil {
+		return nil, err
+	}
+	return r.decodeAndSortMemories(rows, r.author, limit), nil
+}
+
+func (r *MemoryRepository) ListByType(ctx context.Context, memType string, limit int) ([]MemoryDoc, error) {
+	if memType == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindMemoryDoc, r.author, events.TagMemType, memType, limit)
+	if err != nil {
+		return nil, err
+	}
+	return r.decodeAndSortMemories(rows, r.author, limit), nil
+}
+
+func (r *MemoryRepository) ListByTaskID(ctx context.Context, taskID string, limit int) ([]MemoryDoc, error) {
+	if taskID == "" {
+		return nil, fmt.Errorf("task_id is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindMemoryDoc, r.author, events.TagMemTaskID, taskID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return r.decodeAndSortMemories(rows, r.author, limit), nil
+}
+
+func (r *MemoryRepository) ListBySource(ctx context.Context, source string, limit int) ([]MemoryDoc, error) {
+	if source == "" {
+		return nil, fmt.Errorf("source is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindMemoryDoc, r.author, events.TagMemSource, source, limit)
 	if err != nil {
 		return nil, err
 	}

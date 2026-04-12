@@ -63,8 +63,12 @@ func (b *contextAwareBackendStub) Compact(maxEntries int) int                   
 func (b *contextAwareBackendStub) Save() error                                         { return nil }
 func (b *contextAwareBackendStub) Store(sessionID, text string, tags []string) string  { return "" }
 func (b *contextAwareBackendStub) Delete(id string) bool                               { return false }
-func (b *contextAwareBackendStub) ListByTopic(topic string, limit int) []IndexedMemory { return nil }
-func (b *contextAwareBackendStub) Close() error                                        { return nil }
+func (b *contextAwareBackendStub) ListByTopic(topic string, limit int) []IndexedMemory  { return nil }
+func (b *contextAwareBackendStub) ListByType(memType string, limit int) []IndexedMemory { return nil }
+func (b *contextAwareBackendStub) ListByTaskID(taskID string, limit int) []IndexedMemory {
+	return nil
+}
+func (b *contextAwareBackendStub) Close() error { return nil }
 
 func TestContextAwareHelpersUseHybridIndexContextMethods(t *testing.T) {
 	idx, err := OpenIndex(filepath.Join(t.TempDir(), "memory.json"))

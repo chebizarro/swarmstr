@@ -23,6 +23,27 @@ type IndexedMemory struct {
 	Text      string   `json:"text"`
 	Keywords  []string `json:"keywords,omitempty"`
 	Unix      int64    `json:"unix"`
+
+	// Type + episodic correlation fields.
+	Type        string `json:"type,omitempty"`
+	GoalID      string `json:"goal_id,omitempty"`
+	TaskID      string `json:"task_id,omitempty"`
+	RunID       string `json:"run_id,omitempty"`
+	EpisodeKind string `json:"episode_kind,omitempty"`
+
+	// Trust & provenance metadata.
+	Confidence float64 `json:"confidence,omitempty"`
+	Source     string  `json:"source,omitempty"`
+	ReviewedAt int64   `json:"reviewed_at,omitempty"`
+	ReviewedBy string  `json:"reviewed_by,omitempty"`
+	ExpiresAt  int64   `json:"expires_at,omitempty"`
+
+	// Invalidation state.
+	MemStatus        string `json:"mem_status,omitempty"`
+	SupersededBy     string `json:"superseded_by,omitempty"`
+	InvalidatedAt    int64  `json:"invalidated_at,omitempty"`
+	InvalidatedBy    string `json:"invalidated_by,omitempty"`
+	InvalidateReason string `json:"invalidate_reason,omitempty"`
 }
 
 type Index struct {
@@ -115,13 +136,28 @@ func (i *Index) Add(doc state.MemoryDoc) {
 		return
 	}
 	im := IndexedMemory{
-		MemoryID:  doc.MemoryID,
-		SessionID: doc.SessionID,
-		Role:      doc.Role,
-		Topic:     doc.Topic,
-		Text:      doc.Text,
-		Keywords:  append([]string{}, doc.Keywords...),
-		Unix:      doc.Unix,
+		MemoryID:    doc.MemoryID,
+		SessionID:   doc.SessionID,
+		Role:        doc.Role,
+		Topic:       doc.Topic,
+		Text:        doc.Text,
+		Keywords:    append([]string{}, doc.Keywords...),
+		Unix:        doc.Unix,
+		Type:        doc.Type,
+		GoalID:      doc.GoalID,
+		TaskID:      doc.TaskID,
+		RunID:       doc.RunID,
+		EpisodeKind: doc.EpisodeKind,
+		Confidence:       doc.Confidence,
+		Source:           doc.Source,
+		ReviewedAt:       doc.ReviewedAt,
+		ReviewedBy:       doc.ReviewedBy,
+		ExpiresAt:        doc.ExpiresAt,
+		MemStatus:        doc.MemStatus,
+		SupersededBy:     doc.SupersededBy,
+		InvalidatedAt:    doc.InvalidatedAt,
+		InvalidatedBy:    doc.InvalidatedBy,
+		InvalidateReason: doc.InvalidateReason,
 	}
 	i.docs[im.MemoryID] = im
 	i.rebuildTokenMapLocked()
@@ -189,6 +225,46 @@ func (i *Index) ListByTopic(topic string, limit int) []IndexedMemory {
 	results := make([]IndexedMemory, 0, 8)
 	for _, doc := range i.docs {
 		if doc.Topic == topic {
+			results = append(results, doc)
+		}
+	}
+	sort.Slice(results, func(a, b int) bool { return results[a].Unix > results[b].Unix })
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results
+}
+
+// ListByType returns all entries whose Type matches, newest-first, up to limit.
+func (i *Index) ListByType(memType string, limit int) []IndexedMemory {
+	if limit <= 0 {
+		limit = 100
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	results := make([]IndexedMemory, 0, 8)
+	for _, doc := range i.docs {
+		if doc.Type == memType {
+			results = append(results, doc)
+		}
+	}
+	sort.Slice(results, func(a, b int) bool { return results[a].Unix > results[b].Unix })
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results
+}
+
+// ListByTaskID returns all entries whose TaskID matches, newest-first, up to limit.
+func (i *Index) ListByTaskID(taskID string, limit int) []IndexedMemory {
+	if limit <= 0 {
+		limit = 100
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	results := make([]IndexedMemory, 0, 8)
+	for _, doc := range i.docs {
+		if doc.TaskID == taskID {
 			results = append(results, doc)
 		}
 	}

@@ -40,6 +40,10 @@ func (m *memoryStoreStub) ListByTopic(topic string, limit int) []memory.IndexedM
 	}
 	return m.pinned
 }
+func (m *memoryStoreStub) ListByType(memType string, limit int) []memory.IndexedMemory { return nil }
+func (m *memoryStoreStub) ListByTaskID(taskID string, limit int) []memory.IndexedMemory {
+	return nil
+}
 func (m *memoryStoreStub) Search(query string, limit int) []memory.IndexedMemory {
 	if len(m.global) > limit {
 		return m.global[:limit]
