@@ -296,7 +296,8 @@ func TestParity_ToolsProfileSet(t *testing.T) {
 func TestParity_AgentRun(t *testing.T) {
 	cfgState := newRuntimeConfigStore(minimalOpenCfg())
 	controlAgentRuntime = stubAgentRuntime{}
-	controlAgentJobs = newAgentJobRegistry()
+	jobs := newAgentJobRegistry()
+	controlAgentJobs = jobs
 
 	res, err := handleControlRPCRequest(
 		context.Background(),
@@ -324,6 +325,14 @@ func TestParity_AgentRun(t *testing.T) {
 	}
 	if out["status"] != "accepted" {
 		t.Errorf("agent: status should be 'accepted', got %q", out["status"])
+	}
+
+	// Wait for the background goroutine spawned by handleControlRPCRequest to
+	// finish.  Without this, the goroutine may still be reading package-level
+	// vars (e.g. controlSessionStore) when subsequent tests mutate them,
+	// causing a data race.
+	if runID, _ := out["run_id"].(string); runID != "" {
+		jobs.Wait(context.Background(), runID, 5*time.Second)
 	}
 }
 
