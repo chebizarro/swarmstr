@@ -60,6 +60,11 @@
     "sessions.spawn",
     "status.get",
     "supportedmethods",
+    "tasks.cancel",
+    "tasks.create",
+    "tasks.get",
+    "tasks.list",
+    "tasks.resume",
     "tools.profile.get",
     "tools.profile.set"
   ],

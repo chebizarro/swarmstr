@@ -212,7 +212,6 @@ func ValidateCompletionGate(task state.TaskSpec) error {
 	default:
 		return fmt.Errorf("unknown verification policy %q", spec.Policy)
 	}
-	return nil
 }
 
 // summarize computes the aggregate verification result from check statuses.

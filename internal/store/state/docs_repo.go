@@ -433,6 +433,74 @@ func (r *DocsRepository) ListPlans(ctx context.Context, goalID string, limit int
 	return out, nil
 }
 
+func (r *DocsRepository) PutWorkflowJournal(ctx context.Context, doc WorkflowJournalDoc) (Event, error) {
+	if strings.TrimSpace(doc.RunID) == "" {
+		return Event{}, fmt.Errorf("run_id is required")
+	}
+	tags := [][]string{
+		{"t", "workflow_journal"},
+		{"run", protectedTagValue(doc.RunID)},
+		{"task", protectedTagValue(doc.TaskID)},
+	}
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:workflow_journal:%s", doc.RunID), "workflow_journal_doc", doc, tags)
+}
+
+func (r *DocsRepository) GetWorkflowJournal(ctx context.Context, runID string) (WorkflowJournalDoc, error) {
+	var out WorkflowJournalDoc
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:workflow_journal:%s", runID), &out); err != nil {
+		return WorkflowJournalDoc{}, err
+	}
+	return out, nil
+}
+
+func (r *DocsRepository) ListWorkflowJournals(ctx context.Context, taskID string, limit int) ([]WorkflowJournalDoc, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "workflow_journal", limit*4)
+	if err != nil {
+		return nil, err
+	}
+	taskTag := protectedTagValue(taskID)
+	type latestJournalDoc struct {
+		doc   WorkflowJournalDoc
+		event Event
+	}
+	byRun := make(map[string]latestJournalDoc, len(rows))
+	for _, row := range rows {
+		if !hasTagValue(row.Tags, "t", "workflow_journal") {
+			continue
+		}
+		if taskTag != "" && tagValue(row.Tags, "task") != taskTag {
+			continue
+		}
+		var doc WorkflowJournalDoc
+		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+			continue
+		}
+		doc.RunID = firstNonEmpty(strings.TrimSpace(doc.RunID), strings.TrimSpace(tagValue(row.Tags, "run")))
+		if doc.RunID == "" {
+			continue
+		}
+		if doc.UpdatedAt == 0 {
+			doc.UpdatedAt = row.CreatedAt
+		}
+		prev, exists := byRun[doc.RunID]
+		if !exists || row.CreatedAt > prev.event.CreatedAt || (row.CreatedAt == prev.event.CreatedAt && row.ID > prev.event.ID) {
+			byRun[doc.RunID] = latestJournalDoc{doc: doc, event: row}
+		}
+	}
+	out := make([]WorkflowJournalDoc, 0, len(byRun))
+	for _, entry := range byRun {
+		out = append(out, entry.doc)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (r *DocsRepository) GetAgentFile(ctx context.Context, agentID string, name string) (AgentFileDoc, error) {
 	var out AgentFileDoc
 	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:agent:%s:file:%s", agentID, name), &out); err != nil {
