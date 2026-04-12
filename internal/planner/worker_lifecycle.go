@@ -54,6 +54,8 @@ type WorkerEvent struct {
 	EventID     string         `json:"event_id"`
 	TaskID      string         `json:"task_id"`
 	RunID       string         `json:"run_id"`
+	GoalID      string         `json:"goal_id,omitempty"`
+	StepID      string         `json:"step_id,omitempty"`
 	WorkerID    string         `json:"worker_id"`
 	State       WorkerState    `json:"state"`
 	Message     string         `json:"message,omitempty"`

@@ -6,6 +6,7 @@ package planner
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"metiq/internal/store/state"
@@ -35,6 +36,8 @@ type VerificationEvent struct {
 	Type       VerificationEventType `json:"type"`
 	TaskID     string                `json:"task_id"`
 	RunID      string                `json:"run_id,omitempty"`
+	GoalID     string                `json:"goal_id,omitempty"`
+	StepID     string                `json:"step_id,omitempty"`
 	CheckID    string                `json:"check_id,omitempty"`
 	CheckType  string                `json:"check_type,omitempty"`
 	Status     string                `json:"status,omitempty"`
@@ -86,7 +89,9 @@ type CheckDetail struct {
 type VerificationEventSink func(event VerificationEvent)
 
 // VerificationTelemetry collects and emits verification lifecycle events.
+// All public methods are safe for concurrent use.
 type VerificationTelemetry struct {
+	mu     sync.Mutex
 	sink   VerificationEventSink
 	events []VerificationEvent
 }
@@ -99,16 +104,20 @@ func NewVerificationTelemetry(sink VerificationEventSink) *VerificationTelemetry
 
 // Emit records and optionally forwards a verification event.
 func (t *VerificationTelemetry) Emit(event VerificationEvent) {
+	t.mu.Lock()
 	t.events = append(t.events, event)
+	t.mu.Unlock()
 	if t.sink != nil {
 		t.sink(event)
 	}
 }
 
-// Events returns all collected events.
+// Events returns a snapshot of all collected events.
 func (t *VerificationTelemetry) Events() []VerificationEvent {
+	t.mu.Lock()
 	out := make([]VerificationEvent, len(t.events))
 	copy(out, t.events)
+	t.mu.Unlock()
 	return out
 }
 

@@ -68,6 +68,7 @@
       "tasks.resume",
       "tasks.summary",
       "tasks.audit_export",
+      "tasks.trace",
     "tools.profile.get",
     "tools.profile.set"
   ],
