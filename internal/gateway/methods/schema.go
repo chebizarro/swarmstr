@@ -74,6 +74,9 @@ const (
 	MethodTasksList                   = "tasks.list"
 	MethodTasksCancel                 = "tasks.cancel"
 	MethodTasksResume                 = "tasks.resume"
+	MethodTasksDoctor                 = "tasks.doctor"
+	MethodTasksSummary                = "tasks.summary"
+	MethodTasksAuditExport            = "tasks.audit_export"
 	MethodListGet                     = "list.get"
 	MethodListPut                     = "list.put"
 	MethodRelayPolicyGet              = "relay.policy.get"
@@ -843,6 +846,10 @@ type TasksListRequest struct {
 	GoalID        string           `json:"goal_id,omitempty"`
 	AssignedAgent string           `json:"assigned_agent,omitempty"`
 	SessionID     string           `json:"session_id,omitempty"`
+	ParentTaskID  string           `json:"parent_task_id,omitempty"`
+	PlanID        string           `json:"plan_id,omitempty"`
+	CreatedAfter  int64            `json:"created_after,omitempty"`
+	UpdatedAfter  int64            `json:"updated_after,omitempty"`
 	Limit         int              `json:"limit,omitempty"`
 }
 
@@ -911,6 +918,8 @@ func (r TasksListRequest) Normalize() (TasksListRequest, error) {
 	r.GoalID = strings.TrimSpace(r.GoalID)
 	r.AssignedAgent = normalizeAgentID(r.AssignedAgent)
 	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.ParentTaskID = strings.TrimSpace(r.ParentTaskID)
+	r.PlanID = strings.TrimSpace(r.PlanID)
 	if raw := strings.TrimSpace(string(r.Status)); raw != "" {
 		status, ok := state.ParseTaskStatus(raw)
 		if !ok {
@@ -2851,6 +2860,9 @@ func SupportedMethods() []string {
 		MethodTasksList,
 		MethodTasksCancel,
 		MethodTasksResume,
+		MethodTasksDoctor,
+		MethodTasksSummary,
+		MethodTasksAuditExport,
 		MethodListGet,
 		MethodListPut,
 		MethodRelayPolicyGet,

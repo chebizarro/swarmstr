@@ -6939,7 +6939,7 @@ func listControlTasks(ctx context.Context, docsRepo *state.DocsRepository, req m
 		return methods.TasksListResponse{}, fmt.Errorf("docs repository is nil")
 	}
 	fetchLimit := req.Limit
-	if req.Status != "" || req.GoalID != "" || req.AssignedAgent != "" || req.SessionID != "" {
+	if req.Status != "" || req.GoalID != "" || req.AssignedAgent != "" || req.SessionID != "" || req.ParentTaskID != "" || req.PlanID != "" || req.CreatedAfter > 0 || req.UpdatedAfter > 0 {
 		fetchLimit = req.Limit * 8
 		if fetchLimit < 500 {
 			fetchLimit = 500
@@ -6952,25 +6952,7 @@ func listControlTasks(ctx context.Context, docsRepo *state.DocsRepository, req m
 	if err != nil {
 		return methods.TasksListResponse{}, err
 	}
-	filtered := make([]state.TaskSpec, 0, len(tasks))
-	for _, task := range tasks {
-		if req.Status != "" && task.Status != req.Status {
-			continue
-		}
-		if req.GoalID != "" && strings.TrimSpace(task.GoalID) != req.GoalID {
-			continue
-		}
-		if req.AssignedAgent != "" && strings.TrimSpace(task.AssignedAgent) != req.AssignedAgent {
-			continue
-		}
-		if req.SessionID != "" && strings.TrimSpace(task.SessionID) != req.SessionID {
-			continue
-		}
-		filtered = append(filtered, task)
-		if len(filtered) >= req.Limit {
-			break
-		}
-	}
+	filtered := methods.FilterTasks(tasks, req)
 	return methods.TasksListResponse{Tasks: filtered, Count: len(filtered)}, nil
 }
 
@@ -8065,6 +8047,102 @@ func handleControlRPCRequest(
 			return nostruntime.ControlRPCResult{}, err
 		}
 		return nostruntime.ControlRPCResult{Result: result}, nil
+
+	case methods.MethodTasksDoctor:
+		req, err := methods.DecodeTasksDoctorParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if docsRepo == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("docs repository is nil")
+		}
+		task, err := docsRepo.GetTask(ctx, req.TaskID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		runs, err := docsRepo.ListTaskRuns(ctx, task.TaskID, req.RunsLimit)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		diag := methods.BuildTaskDiagnostic(task, runs, time.Now())
+		return nostruntime.ControlRPCResult{Result: methods.TasksDoctorResponse{Task: task, Runs: runs, Doctor: diag}}, nil
+	case methods.MethodTasksAuditExport:
+		req, err := methods.DecodeAuditExportParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if docsRepo == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("docs repository is nil")
+		}
+		var scopeTasks []state.TaskSpec
+		if req.TaskID != "" {
+			allTasks, err := docsRepo.ListTasks(ctx, 5000)
+			if err != nil {
+				return nostruntime.ControlRPCResult{}, err
+			}
+			scopeTasks = methods.CollectDescendants(req.TaskID, allTasks)
+			if len(scopeTasks) == 0 {
+				return nostruntime.ControlRPCResult{}, fmt.Errorf("task %q not found", req.TaskID)
+			}
+		} else {
+			allTasks, err := docsRepo.ListTasks(ctx, 5000)
+			if err != nil {
+				return nostruntime.ControlRPCResult{}, err
+			}
+			for _, t := range allTasks {
+				if strings.TrimSpace(t.GoalID) == req.GoalID {
+					scopeTasks = append(scopeTasks, t)
+				}
+			}
+		}
+		runsByTask := make(map[string][]state.TaskRun, len(scopeTasks))
+		for _, t := range scopeTasks {
+			runs, err := docsRepo.ListTaskRuns(ctx, t.TaskID, req.RunsLimit)
+			if err != nil {
+				return nostruntime.ControlRPCResult{}, err
+			}
+			if len(runs) > 0 {
+				runsByTask[t.TaskID] = runs
+			}
+		}
+		bundle := methods.BuildAuditBundle(scopeTasks, runsByTask, req, in.FromPubKey, time.Now())
+		return nostruntime.ControlRPCResult{Result: bundle}, nil
+	case methods.MethodTasksSummary:
+		req, err := methods.DecodeTasksSummaryParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if docsRepo == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("docs repository is nil")
+		}
+		fetchLimit := 5000
+		tasks, err := docsRepo.ListTasks(ctx, fetchLimit)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if req.GoalID != "" {
+			var filtered []state.TaskSpec
+			for _, t := range tasks {
+				if strings.TrimSpace(t.GoalID) == req.GoalID {
+					filtered = append(filtered, t)
+				}
+			}
+			tasks = filtered
+		}
+		summary := methods.BuildTasksSummary(tasks)
+		return nostruntime.ControlRPCResult{Result: summary}, nil
 
 	case methods.MethodAgentsList:
 		req, err := methods.DecodeAgentsListParams(in.Params)
@@ -10474,6 +10552,13 @@ func handleACPMessage(
 			_ = controlSessionStore.AddTokens(sessionID, result.Usage.InputTokens, result.Usage.OutputTokens)
 		}
 		turnTelemetry := buildTurnTelemetry(msg.TaskID, turnStartedAt, time.Now(), result, procErr, false, "", "", "")
+		turnTelemetry.Trace = agent.TraceContext{
+			GoalID:       strings.TrimSpace(workerTask.GoalID),
+			TaskID:       firstNonEmptyTrimmed(workerTask.TaskID, msg.TaskID),
+			RunID:        strings.TrimSpace(workerRun.RunID),
+			ParentTaskID: strings.TrimSpace(workerTask.ParentTaskID),
+			ParentRunID:  strings.TrimSpace(workerRun.ParentRunID),
+		}
 
 		var parentContext *acppkg.ParentContext
 		if taskPayload.ParentContext != nil {
@@ -11004,6 +11089,12 @@ func turnTelemetryPayload(agentID, sessionID string, telemetry agent.TurnTelemet
 		FallbackReason: telemetry.FallbackReason,
 		InputTokens:    telemetry.Usage.InputTokens,
 		OutputTokens:   telemetry.Usage.OutputTokens,
+		GoalID:         telemetry.Trace.GoalID,
+		TaskID:         telemetry.Trace.TaskID,
+		RunID:          telemetry.Trace.RunID,
+		StepID:         telemetry.Trace.StepID,
+		ParentTaskID:   telemetry.Trace.ParentTaskID,
+		ParentRunID:    telemetry.Trace.ParentRunID,
 	}
 }
 
@@ -11013,15 +11104,21 @@ func toolLifecycleEmitter(emitter gatewayws.EventEmitter, agentID string) agent.
 	}
 	return func(evt agent.ToolLifecycleEvent) {
 		payload := gatewayws.ToolLifecyclePayload{
-			TS:         evt.TS,
-			AgentID:    agentID,
-			SessionID:  evt.SessionID,
-			TurnID:     evt.TurnID,
-			ToolCallID: evt.ToolCallID,
-			ToolName:   evt.ToolName,
-			Result:     evt.Result,
-			Error:      evt.Error,
-			Data:       projectToolLifecycleData(evt.Data),
+			TS:           evt.TS,
+			AgentID:      agentID,
+			SessionID:    evt.SessionID,
+			TurnID:       evt.TurnID,
+			ToolCallID:   evt.ToolCallID,
+			ToolName:     evt.ToolName,
+			Result:       evt.Result,
+			Error:        evt.Error,
+			Data:         projectToolLifecycleData(evt.Data),
+			GoalID:       evt.Trace.GoalID,
+			TaskID:       evt.Trace.TaskID,
+			RunID:        evt.Trace.RunID,
+			StepID:       evt.Trace.StepID,
+			ParentTaskID: evt.Trace.ParentTaskID,
+			ParentRunID:  evt.Trace.ParentRunID,
 		}
 		switch evt.Type {
 		case agent.ToolLifecycleEventStart:

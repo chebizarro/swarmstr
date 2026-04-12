@@ -24,6 +24,9 @@ type ToolLifecycleEvent struct {
 	Result     string                 `json:"result,omitempty"`
 	Error      string                 `json:"error,omitempty"`
 	Data       any                    `json:"data,omitempty"`
+	// Trace carries task/run/step correlation IDs when the tool executes
+	// inside a task context. Zero-value when not in a task.
+	Trace TraceContext `json:"trace,omitempty"`
 }
 
 // ToolDecisionKind identifies the runtime decision source carried in Data.

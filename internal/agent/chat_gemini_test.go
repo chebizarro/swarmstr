@@ -101,8 +101,19 @@ func TestGeminiChatProvider_UsesFunctionNamesForHistoricalToolResults(t *testing
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	if got := captured.Contents[1].Parts[0].FunctionResponse.Name; got != "search" {
-		t.Fatalf("expected function response name to use tool name, got %q", got)
+	// With Gemini transcript policy (EnforceRoleAlternation + RequireLeadingUser),
+	// a synthetic user message is prepended, so contents are:
+	// [0]=user(synthetic), [1]=model(assistant+toolcall), [2]=function(tool result)
+	var functionResponseName string
+	for _, c := range captured.Contents {
+		for _, p := range c.Parts {
+			if p.FunctionResponse != nil {
+				functionResponseName = p.FunctionResponse.Name
+			}
+		}
+	}
+	if functionResponseName != "search" {
+		t.Fatalf("expected function response name to use tool name, got %q", functionResponseName)
 	}
 }
 

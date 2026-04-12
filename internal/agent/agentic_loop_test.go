@@ -222,7 +222,7 @@ func TestExecuteSingleToolCall_EmitsToolError(t *testing.T) {
 		return "", fmt.Errorf("boom")
 	})
 
-	result := executeSingleToolCall(context.Background(), failing, call, "sess-err", "turn-err", capture.sink)
+	result := executeSingleToolCall(context.Background(), failing, call, "sess-err", "turn-err", capture.sink, TraceContext{})
 	if result.Content != "error: boom" {
 		t.Fatalf("unexpected result content: %q", result.Content)
 	}
@@ -256,7 +256,7 @@ func TestExecuteToolBatches_EmitsSchedulerDecisions(t *testing.T) {
 		{ID: "1", Name: "safe_a"},
 		{ID: "2", Name: "safe_b"},
 		{ID: "3", Name: "unsafe_c"},
-	}, "sess-1", "turn-1", capture.sink)
+	}, "sess-1", "turn-1", capture.sink, TraceContext{})
 
 	var schedulerEvents []ToolLifecycleEvent
 	for _, evt := range capture.snapshot() {
@@ -390,7 +390,7 @@ func TestExecuteToolBatches_PreservesResultOrderAcrossBatches(t *testing.T) {
 		{ID: "2", Name: "safe_b"},
 		{ID: "3", Name: "unsafe_c"},
 		{ID: "4", Name: "safe_d"},
-	}, "", "", nil)
+	}, "", "", nil, TraceContext{})
 	if got, want := len(results), 4; got != want {
 		t.Fatalf("expected %d results, got %d", want, got)
 	}
@@ -436,7 +436,7 @@ func TestExecuteToolBatches_RespectsConcurrencyLimit(t *testing.T) {
 		{ID: "2", Name: "safe_b"},
 		{ID: "3", Name: "safe_c"},
 		{ID: "4", Name: "safe_d"},
-	}, "", "", nil)
+	}, "", "", nil, TraceContext{})
 	if got := executor.maxInFlight.Load(); got > 2 {
 		t.Fatalf("expected concurrency limit 2, got max in flight %d", got)
 	}
