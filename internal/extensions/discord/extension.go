@@ -8,7 +8,6 @@
 //	{
 //	  "bot_token":  "Bot <token>",      // required: Discord bot token (include "Bot " prefix)
 //	  "channel_id": "1234567890",       // required: Discord channel ID to listen/send on
-//	  "guild_id":   "0987654321"        // optional: guild ID for filtering
 //	}
 //
 // To add a Discord channel to your metiq config:
@@ -66,10 +65,6 @@ func (d *DiscordPlugin) ConfigSchema() map[string]any {
 			"channel_id": map[string]any{
 				"type":        "string",
 				"description": "Discord channel ID to listen on and send messages to.",
-			},
-			"guild_id": map[string]any{
-				"type":        "string",
-				"description": "Optional: Discord guild (server) ID for context.",
 			},
 		},
 		"required": []string{"bot_token", "channel_id"},
