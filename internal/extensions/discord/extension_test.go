@@ -47,6 +47,37 @@ func TestPlugin_ConfigSchema(t *testing.T) {
 	}
 }
 
+func TestPlugin_ConfigSchemaNoUnusedFields(t *testing.T) {
+	p := &DiscordPlugin{}
+	schema := p.ConfigSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("expected properties map in schema")
+	}
+	allowed := map[string]bool{"bot_token": true, "channel_id": true}
+	for key := range props {
+		if !allowed[key] {
+			t.Errorf("ConfigSchema exposes %q which is not used by Connect/poll/send — remove it or implement support", key)
+		}
+	}
+}
+
+func TestPlugin_ConnectIgnoresUnknownConfigKeys(t *testing.T) {
+	p := &DiscordPlugin{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg := map[string]any{
+		"bot_token":  "Bot test-token",
+		"channel_id": "123",
+		"guild_id":   "should-be-ignored",
+	}
+	handle, err := p.Connect(ctx, "test-ch", cfg, func(sdk.InboundChannelMessage) {})
+	if err != nil {
+		t.Fatalf("Connect with extra config keys should not fail: %v", err)
+	}
+	handle.Close()
+}
+
 func TestPlugin_Capabilities(t *testing.T) {
 	p := &DiscordPlugin{}
 	caps := p.Capabilities()
