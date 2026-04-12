@@ -120,6 +120,12 @@ Telegram Bot API), metiq agents have:
 - Health: `metiq health` or `GET /health`.
 - Supervision: systemd or launchd for auto-restart.
 
+## Autonomy layer
+
+metiq includes a full **autonomous task execution** layer built on top of the session model.
+For details on goals, tasks, runs, plans, verification, budgets, authority, and the learning
+loop, see [Autonomy Architecture](autonomy.md).
+
 ## Invariants
 
 - Exactly one metiqd controls a single Nostr identity (nsec) per host.
