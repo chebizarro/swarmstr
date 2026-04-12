@@ -18,4 +18,9 @@ const (
 	TagMemType    = "mem_type"
 	TagMemTaskID  = "task_id"
 	TagMemSource  = "mem_source"
+	TagFeedback         = "feedback"
+	TagFeedbackSource   = "fb_source"
+	TagFeedbackSeverity = "fb_severity"
+	TagFeedbackCategory = "fb_category"
+	TagStepID           = "step_id"
 )

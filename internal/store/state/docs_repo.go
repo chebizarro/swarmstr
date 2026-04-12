@@ -597,6 +597,100 @@ func (r *DocsRepository) GetWatches(ctx context.Context) (json.RawMessage, error
 	return env.Watches, nil
 }
 
+// ── Feedback ────────────────────────────────────────────────────────────────
+
+// PutFeedback persists a feedback record. Tags are added for source, severity,
+// category, task, and goal to enable efficient filtered queries.
+func (r *DocsRepository) PutFeedback(ctx context.Context, doc FeedbackRecord) (Event, error) {
+	doc = doc.Normalize()
+	if err := doc.Validate(); err != nil {
+		return Event{}, fmt.Errorf("put feedback: %w", err)
+	}
+	dTag := "metiq:feedback:" + doc.FeedbackID
+	tags := [][]string{
+		{events.TagFeedback, doc.FeedbackID},
+		{events.TagFeedbackSource, string(doc.Source)},
+		{events.TagFeedbackSeverity, string(doc.Severity)},
+		{events.TagFeedbackCategory, string(doc.Category)},
+	}
+	if doc.TaskID != "" {
+		tags = append(tags, []string{events.TagMemTaskID, doc.TaskID})
+	}
+	if doc.GoalID != "" {
+		tags = append(tags, []string{events.TagGoal, doc.GoalID})
+	}
+	if doc.RunID != "" {
+		tags = append(tags, []string{events.TagRunID, doc.RunID})
+	}
+	if doc.StepID != "" {
+		tags = append(tags, []string{events.TagStepID, doc.StepID})
+	}
+	return r.putStateDocWithTags(ctx, dTag, "feedback", doc, tags)
+}
+
+// GetFeedback retrieves a single feedback record by ID.
+func (r *DocsRepository) GetFeedback(ctx context.Context, feedbackID string) (FeedbackRecord, error) {
+	var doc FeedbackRecord
+	if err := r.getStateDoc(ctx, "metiq:feedback:"+feedbackID, &doc); err != nil {
+		return FeedbackRecord{}, err
+	}
+	return doc, nil
+}
+
+// ListFeedbackByTask returns feedback records linked to a task, newest first.
+func (r *DocsRepository) ListFeedbackByTask(ctx context.Context, taskID string, limit int) ([]FeedbackRecord, error) {
+	return r.listFeedbackByTag(ctx, events.TagMemTaskID, taskID, limit)
+}
+
+// ListFeedbackByGoal returns feedback records linked to a goal, newest first.
+func (r *DocsRepository) ListFeedbackByGoal(ctx context.Context, goalID string, limit int) ([]FeedbackRecord, error) {
+	return r.listFeedbackByTag(ctx, events.TagGoal, goalID, limit)
+}
+
+// ListFeedbackByRun returns feedback records linked to a run, newest first.
+func (r *DocsRepository) ListFeedbackByRun(ctx context.Context, runID string, limit int) ([]FeedbackRecord, error) {
+	return r.listFeedbackByTag(ctx, events.TagRunID, runID, limit)
+}
+
+// ListFeedbackBySource returns feedback records from a specific source.
+func (r *DocsRepository) ListFeedbackBySource(ctx context.Context, source FeedbackSource, limit int) ([]FeedbackRecord, error) {
+	return r.listFeedbackByTag(ctx, events.TagFeedbackSource, string(source), limit)
+}
+
+// ListFeedbackBySeverity returns feedback records at a given severity level.
+func (r *DocsRepository) ListFeedbackBySeverity(ctx context.Context, severity FeedbackSeverity, limit int) ([]FeedbackRecord, error) {
+	return r.listFeedbackByTag(ctx, events.TagFeedbackSeverity, string(severity), limit)
+}
+
+// ListFeedbackByStep returns feedback records linked to a specific workflow step.
+func (r *DocsRepository) ListFeedbackByStep(ctx context.Context, stepID string, limit int) ([]FeedbackRecord, error) {
+	return r.listFeedbackByTag(ctx, events.TagStepID, stepID, limit)
+}
+
+func (r *DocsRepository) listFeedbackByTag(ctx context.Context, tagKey, tagValue string, limit int) ([]FeedbackRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	// Use the paging API which guarantees newest-first ordering across all
+	// store implementations, avoiding the "limit-before-sort" bug that
+	// would occur with ListByTagForAuthor on stores without built-in
+	// newest-first ordering.
+	page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagValue, limit, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list feedback by %s=%s: %w", tagKey, tagValue, err)
+	}
+
+	var docs []FeedbackRecord
+	for _, evt := range page.Events {
+		var doc FeedbackRecord
+		if err := decodeEnvelopePayload(evt.Content, &doc, r.codec); err != nil {
+			continue // skip corrupt records
+		}
+		docs = append(docs, doc)
+	}
+	return docs, nil
+}
+
 func (r *DocsRepository) putStateDoc(ctx context.Context, dTag string, typ string, value any) (Event, error) {
 	return r.putStateDocWithTags(ctx, dTag, typ, value, nil)
 }

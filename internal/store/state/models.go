@@ -2006,3 +2006,156 @@ type PendingActionDoc struct {
 	Params      map[string]any `json:"params,omitempty"`
 	CreatedAt   int64          `json:"created_at"`
 }
+
+// ── Feedback records ───────────────────────────────────────────────────────────
+
+// FeedbackSource describes who or what produced the feedback.
+type FeedbackSource string
+
+const (
+	FeedbackSourceOperator     FeedbackSource = "operator"
+	FeedbackSourceVerification FeedbackSource = "verification"
+	FeedbackSourceReview       FeedbackSource = "review"
+	FeedbackSourceAgent        FeedbackSource = "agent"
+	FeedbackSourceSystem       FeedbackSource = "system"
+)
+
+// ValidFeedbackSource reports whether s is a recognized feedback source.
+func ValidFeedbackSource(s FeedbackSource) bool {
+	switch s {
+	case FeedbackSourceOperator, FeedbackSourceVerification,
+		FeedbackSourceReview, FeedbackSourceAgent, FeedbackSourceSystem:
+		return true
+	}
+	return false
+}
+
+// FeedbackSeverity indicates the urgency or importance of the feedback.
+type FeedbackSeverity string
+
+const (
+	FeedbackSeverityInfo     FeedbackSeverity = "info"
+	FeedbackSeverityWarning  FeedbackSeverity = "warning"
+	FeedbackSeverityError    FeedbackSeverity = "error"
+	FeedbackSeverityCritical FeedbackSeverity = "critical"
+)
+
+// ValidFeedbackSeverity reports whether s is a recognized feedback severity.
+func ValidFeedbackSeverity(s FeedbackSeverity) bool {
+	switch s {
+	case FeedbackSeverityInfo, FeedbackSeverityWarning,
+		FeedbackSeverityError, FeedbackSeverityCritical:
+		return true
+	}
+	return false
+}
+
+// FeedbackCategory classifies what kind of feedback this is.
+type FeedbackCategory string
+
+const (
+	FeedbackCategoryCorrectness FeedbackCategory = "correctness"
+	FeedbackCategoryPerformance FeedbackCategory = "performance"
+	FeedbackCategoryStyle       FeedbackCategory = "style"
+	FeedbackCategoryPolicy      FeedbackCategory = "policy"
+	FeedbackCategorySafety      FeedbackCategory = "safety"
+	FeedbackCategoryGeneral     FeedbackCategory = "general"
+)
+
+// ValidFeedbackCategory reports whether c is a recognized feedback category.
+func ValidFeedbackCategory(c FeedbackCategory) bool {
+	switch c {
+	case FeedbackCategoryCorrectness, FeedbackCategoryPerformance,
+		FeedbackCategoryStyle, FeedbackCategoryPolicy,
+		FeedbackCategorySafety, FeedbackCategoryGeneral:
+		return true
+	}
+	return false
+}
+
+// FeedbackRecord is the durable structured feedback object.
+// It is distinct from generic memory notes and links to the goal/task/run
+// that triggered it.
+type FeedbackRecord struct {
+	Version    int    `json:"version"`
+	FeedbackID string `json:"feedback_id"`
+
+	// Linkage — at least one should be set for traceability.
+	GoalID string `json:"goal_id,omitempty"`
+	TaskID string `json:"task_id,omitempty"`
+	RunID  string `json:"run_id,omitempty"`
+	StepID string `json:"step_id,omitempty"`
+
+	// Content.
+	Source   FeedbackSource   `json:"source"`
+	Severity FeedbackSeverity `json:"severity"`
+	Category FeedbackCategory `json:"category"`
+	Summary  string           `json:"summary"`
+	Detail   string           `json:"detail,omitempty"`
+
+	// Provenance.
+	Author    string `json:"author,omitempty"`    // pubkey or agent ID
+	SessionID string `json:"session_id,omitempty"`
+
+	// Timestamps.
+	CreatedAt int64 `json:"created_at"`
+
+	// Optional structured metadata.
+	Meta map[string]any `json:"meta,omitempty"`
+}
+
+// Normalize fills in defaults and trims whitespace.
+func (f FeedbackRecord) Normalize() FeedbackRecord {
+	if f.Version == 0 {
+		f.Version = 1
+	}
+	f.FeedbackID = strings.TrimSpace(f.FeedbackID)
+	f.Summary = strings.TrimSpace(f.Summary)
+	f.Detail = strings.TrimSpace(f.Detail)
+	// Trim linkage and provenance fields to avoid silent tag mismatches.
+	f.GoalID = strings.TrimSpace(f.GoalID)
+	f.TaskID = strings.TrimSpace(f.TaskID)
+	f.RunID = strings.TrimSpace(f.RunID)
+	f.StepID = strings.TrimSpace(f.StepID)
+	f.Author = strings.TrimSpace(f.Author)
+	f.SessionID = strings.TrimSpace(f.SessionID)
+	if !ValidFeedbackSource(f.Source) {
+		f.Source = FeedbackSourceSystem
+	}
+	if !ValidFeedbackSeverity(f.Severity) {
+		f.Severity = FeedbackSeverityInfo
+	}
+	if !ValidFeedbackCategory(f.Category) {
+		f.Category = FeedbackCategoryGeneral
+	}
+	return f
+}
+
+// Validate checks required fields.
+func (f FeedbackRecord) Validate() error {
+	if strings.TrimSpace(f.FeedbackID) == "" {
+		return fmt.Errorf("feedback_id is required")
+	}
+	if strings.TrimSpace(f.Summary) == "" {
+		return fmt.Errorf("summary is required")
+	}
+	if !ValidFeedbackSource(f.Source) {
+		return fmt.Errorf("invalid source %q", f.Source)
+	}
+	if !ValidFeedbackSeverity(f.Severity) {
+		return fmt.Errorf("invalid severity %q", f.Severity)
+	}
+	if !ValidFeedbackCategory(f.Category) {
+		return fmt.Errorf("invalid category %q", f.Category)
+	}
+	// At least one linkage field should be set.
+	if f.GoalID == "" && f.TaskID == "" && f.RunID == "" {
+		return fmt.Errorf("at least one of goal_id, task_id, or run_id is required")
+	}
+	return nil
+}
+
+// HasLinkage reports whether the feedback is linked to a specific context.
+func (f FeedbackRecord) HasLinkage() bool {
+	return f.GoalID != "" || f.TaskID != "" || f.RunID != ""
+}

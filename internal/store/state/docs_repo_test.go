@@ -552,3 +552,133 @@ func TestDocsRepositoryConfigReadsLegacyRawJSON(t *testing.T) {
 		t.Fatalf("unexpected legacy config decode: %+v", cfg)
 	}
 }
+
+// ── Feedback round-trip tests ──────────────────────────────────────────────────
+
+func TestDocsRepositoryFeedbackRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	rec := FeedbackRecord{
+		FeedbackID: "fb-1",
+		TaskID:     "task-1",
+		GoalID:     "goal-1",
+		RunID:      "run-1",
+		Source:     FeedbackSourceOperator,
+		Severity:   FeedbackSeverityWarning,
+		Category:   FeedbackCategoryPolicy,
+		Summary:    "policy concern",
+		Detail:     "unauthorized tool use",
+		Author:     "alice",
+		CreatedAt:  1000,
+	}
+	if _, err := repo.PutFeedback(ctx, rec); err != nil {
+		t.Fatalf("PutFeedback: %v", err)
+	}
+	got, err := repo.GetFeedback(ctx, "fb-1")
+	if err != nil {
+		t.Fatalf("GetFeedback: %v", err)
+	}
+	if got.FeedbackID != "fb-1" || got.Summary != "policy concern" {
+		t.Fatalf("unexpected feedback round-trip: %+v", got)
+	}
+	if got.Source != FeedbackSourceOperator || got.Severity != FeedbackSeverityWarning {
+		t.Fatalf("unexpected source/severity: %+v", got)
+	}
+}
+
+func TestDocsRepositoryFeedbackListByTask(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	for i, taskID := range []string{"task-1", "task-1", "task-2"} {
+		rec := FeedbackRecord{
+			FeedbackID: fmt.Sprintf("fb-%d", i),
+			TaskID:     taskID,
+			Source:     FeedbackSourceAgent,
+			Severity:   FeedbackSeverityInfo,
+			Category:   FeedbackCategoryGeneral,
+			Summary:    fmt.Sprintf("feedback %d", i),
+			CreatedAt:  int64(1000 + i),
+		}
+		if _, err := repo.PutFeedback(ctx, rec); err != nil {
+			t.Fatalf("PutFeedback %d: %v", i, err)
+		}
+	}
+
+	got, err := repo.ListFeedbackByTask(ctx, "task-1", 10)
+	if err != nil {
+		t.Fatalf("ListFeedbackByTask: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 feedback for task-1, got %d", len(got))
+	}
+	// Should be newest first.
+	if got[0].CreatedAt < got[1].CreatedAt {
+		t.Error("expected newest first ordering")
+	}
+}
+
+func TestDocsRepositoryFeedbackListByGoal(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	if _, err := repo.PutFeedback(ctx, FeedbackRecord{
+		FeedbackID: "fb-g1", GoalID: "goal-1", Source: FeedbackSourceReview,
+		Severity: FeedbackSeverityInfo, Category: FeedbackCategoryGeneral,
+		Summary: "goal feedback", CreatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("PutFeedback: %v", err)
+	}
+
+	got, err := repo.ListFeedbackByGoal(ctx, "goal-1", 10)
+	if err != nil {
+		t.Fatalf("ListFeedbackByGoal: %v", err)
+	}
+	if len(got) != 1 || got[0].FeedbackID != "fb-g1" {
+		t.Fatalf("unexpected: %+v", got)
+	}
+}
+
+func TestDocsRepositoryFeedbackListBySource(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	for i, src := range []FeedbackSource{FeedbackSourceOperator, FeedbackSourceVerification, FeedbackSourceOperator} {
+		if _, err := repo.PutFeedback(ctx, FeedbackRecord{
+			FeedbackID: fmt.Sprintf("fb-s%d", i), TaskID: "t1",
+			Source: src, Severity: FeedbackSeverityInfo, Category: FeedbackCategoryGeneral,
+			Summary: "x", CreatedAt: int64(1000 + i),
+		}); err != nil {
+			t.Fatalf("PutFeedback %d: %v", i, err)
+		}
+	}
+
+	got, err := repo.ListFeedbackBySource(ctx, FeedbackSourceOperator, 10)
+	if err != nil {
+		t.Fatalf("ListFeedbackBySource: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 operator feedback, got %d", len(got))
+	}
+}
+
+func TestDocsRepositoryFeedbackValidation(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	// Missing summary should fail.
+	_, err := repo.PutFeedback(ctx, FeedbackRecord{
+		FeedbackID: "fb-bad", TaskID: "t1",
+		Source: FeedbackSourceAgent, Severity: FeedbackSeverityInfo,
+		Category: FeedbackCategoryGeneral,
+	})
+	if err == nil {
+		t.Fatal("expected validation error for missing summary")
+	}
+}
