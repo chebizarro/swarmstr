@@ -23,4 +23,10 @@ const (
 	TagFeedbackSeverity = "fb_severity"
 	TagFeedbackCategory = "fb_category"
 	TagStepID           = "step_id"
+	TagProposal         = "proposal"
+	TagProposalKind     = "prop_kind"
+	TagProposalStatus   = "prop_status"
+	TagRetro            = "retro"
+	TagRetroTrigger     = "retro_trigger"
+	TagRetroOutcome     = "retro_outcome"
 )
