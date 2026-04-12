@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,179 +10,6 @@ import (
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
 )
-
-func buildControlTaskResponse(ctx context.Context, docsRepo *state.DocsRepository, taskID string, runsLimit int) (methods.TasksGetResponse, error) {
-	if docsRepo == nil {
-		return methods.TasksGetResponse{}, fmt.Errorf("docs repository is nil")
-	}
-	task, err := docsRepo.GetTask(ctx, taskID)
-	if err != nil {
-		return methods.TasksGetResponse{}, err
-	}
-	runs, err := docsRepo.ListTaskRuns(ctx, task.TaskID, runsLimit)
-	if err != nil {
-		return methods.TasksGetResponse{}, err
-	}
-	return methods.TasksGetResponse{Task: task, Runs: runs}, nil
-}
-
-func createControlTask(ctx context.Context, docsRepo *state.DocsRepository, req methods.TasksCreateRequest, actor string, now time.Time) (methods.TasksGetResponse, error) {
-	if docsRepo == nil {
-		return methods.TasksGetResponse{}, fmt.Errorf("docs repository is nil")
-	}
-	task := req.Task.Normalize()
-	if strings.TrimSpace(task.TaskID) == "" {
-		task.TaskID = fmt.Sprintf("task-%d", now.UnixNano())
-	}
-	task.CurrentRunID = ""
-	task.LastRunID = ""
-	at := now.Unix()
-	if task.CreatedAt == 0 {
-		task.CreatedAt = at
-	}
-	task.UpdatedAt = at
-	requestedStatus := task.Status
-	if !requestedStatus.Valid() {
-		requestedStatus = state.TaskStatusPending
-	}
-	task.Status = state.TaskStatusPending
-	task.Transitions = []state.TaskTransition{{To: state.TaskStatusPending, At: at, Actor: strings.TrimSpace(actor), Source: "control_rpc", Reason: "task created"}}
-	if requestedStatus != state.TaskStatusPending {
-		if err := task.ApplyTransition(requestedStatus, at, actor, "control_rpc", "task created", nil); err != nil {
-			return methods.TasksGetResponse{}, err
-		}
-	}
-	if _, err := docsRepo.PutTask(ctx, task); err != nil {
-		return methods.TasksGetResponse{}, err
-	}
-	return buildControlTaskResponse(ctx, docsRepo, task.TaskID, 20)
-}
-
-func listControlTasks(ctx context.Context, docsRepo *state.DocsRepository, req methods.TasksListRequest) (methods.TasksListResponse, error) {
-	if docsRepo == nil {
-		return methods.TasksListResponse{}, fmt.Errorf("docs repository is nil")
-	}
-	fetchLimit := req.Limit
-	if req.Status != "" || req.GoalID != "" || req.AssignedAgent != "" || req.SessionID != "" || req.ParentTaskID != "" || req.PlanID != "" || req.CreatedAfter > 0 || req.UpdatedAfter > 0 {
-		fetchLimit = req.Limit * 8
-		if fetchLimit < 500 {
-			fetchLimit = 500
-		}
-		if fetchLimit > 5000 {
-			fetchLimit = 5000
-		}
-	}
-	tasks, err := docsRepo.ListTasks(ctx, fetchLimit)
-	if err != nil {
-		return methods.TasksListResponse{}, err
-	}
-	filtered := methods.FilterTasks(tasks, req)
-	return methods.TasksListResponse{Tasks: filtered, Count: len(filtered)}, nil
-}
-
-func cancelControlTask(ctx context.Context, docsRepo *state.DocsRepository, req methods.TasksCancelRequest, actor string, now time.Time) (methods.TasksGetResponse, error) {
-	if docsRepo == nil {
-		return methods.TasksGetResponse{}, fmt.Errorf("docs repository is nil")
-	}
-	task, err := docsRepo.GetTask(ctx, req.TaskID)
-	if err != nil {
-		return methods.TasksGetResponse{}, err
-	}
-	at := now.Unix()
-	currentRunID := strings.TrimSpace(task.CurrentRunID)
-	if task.Status != state.TaskStatusCancelled {
-		if err := task.ApplyTransition(state.TaskStatusCancelled, at, actor, "control_rpc", req.Reason, nil); err != nil {
-			return methods.TasksGetResponse{}, err
-		}
-	}
-	if currentRunID != "" {
-		run, err := docsRepo.GetTaskRun(ctx, currentRunID)
-		if err != nil {
-			if !errors.Is(err, state.ErrNotFound) {
-				return methods.TasksGetResponse{}, err
-			}
-		} else {
-			if run.Status != state.TaskRunStatusCancelled && state.AllowedTaskRunTransition(run.Status, state.TaskRunStatusCancelled) {
-				if err := run.ApplyTransition(state.TaskRunStatusCancelled, at, actor, "control_rpc", req.Reason, nil); err != nil {
-					return methods.TasksGetResponse{}, err
-				}
-				if _, err := docsRepo.PutTaskRun(ctx, run); err != nil {
-					return methods.TasksGetResponse{}, err
-				}
-			}
-		}
-		task.CurrentRunID = ""
-		task.LastRunID = currentRunID
-	}
-	task.UpdatedAt = at
-	if _, err := docsRepo.PutTask(ctx, task); err != nil {
-		return methods.TasksGetResponse{}, err
-	}
-	return buildControlTaskResponse(ctx, docsRepo, task.TaskID, 20)
-}
-
-func resumeControlTask(ctx context.Context, docsRepo *state.DocsRepository, req methods.TasksResumeRequest, actor string, now time.Time) (methods.TasksGetResponse, error) {
-	if docsRepo == nil {
-		return methods.TasksGetResponse{}, fmt.Errorf("docs repository is nil")
-	}
-	task, err := docsRepo.GetTask(ctx, req.TaskID)
-	if err != nil {
-		return methods.TasksGetResponse{}, err
-	}
-	at := now.Unix()
-	priorRuns, err := docsRepo.ListTaskRuns(ctx, task.TaskID, 200)
-	if err != nil {
-		return methods.TasksGetResponse{}, err
-	}
-	var resumedRun state.TaskRun
-	var haveRun bool
-	currentRunID := strings.TrimSpace(task.CurrentRunID)
-	if currentRunID != "" {
-		run, err := docsRepo.GetTaskRun(ctx, currentRunID)
-		if err != nil {
-			if !errors.Is(err, state.ErrNotFound) {
-				return methods.TasksGetResponse{}, err
-			}
-		} else {
-			if run.Status == state.TaskRunStatusQueued {
-				resumedRun = run
-				haveRun = true
-			} else if state.AllowedTaskRunTransition(run.Status, state.TaskRunStatusQueued) {
-				if err := run.ApplyTransition(state.TaskRunStatusQueued, at, actor, "control_rpc", req.Reason, nil); err != nil {
-					return methods.TasksGetResponse{}, err
-				}
-				if _, err := docsRepo.PutTaskRun(ctx, run); err != nil {
-					return methods.TasksGetResponse{}, err
-				}
-				resumedRun = run
-				haveRun = true
-			}
-		}
-	}
-	if !haveRun {
-		runID := fmt.Sprintf("taskrun-%d", now.UnixNano())
-		run, err := state.NewTaskRunAttempt(task, runID, priorRuns, at, "resume", actor, "control_rpc")
-		if err != nil {
-			return methods.TasksGetResponse{}, err
-		}
-		if _, err := docsRepo.PutTaskRun(ctx, run); err != nil {
-			return methods.TasksGetResponse{}, err
-		}
-		resumedRun = run
-	}
-	if task.Status != state.TaskStatusReady {
-		if err := task.ApplyTransition(state.TaskStatusReady, at, actor, "control_rpc", req.Reason, map[string]any{"run_id": resumedRun.RunID}); err != nil {
-			return methods.TasksGetResponse{}, err
-		}
-	}
-	task.CurrentRunID = resumedRun.RunID
-	task.LastRunID = resumedRun.RunID
-	task.UpdatedAt = at
-	if _, err := docsRepo.PutTask(ctx, task); err != nil {
-		return methods.TasksGetResponse{}, err
-	}
-	return buildControlTaskResponse(ctx, docsRepo, task.TaskID, 20)
-}
 
 func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.ControlRPCInbound, method string) (nostruntime.ControlRPCResult, bool, error) {
 	docsRepo := h.deps.docsRepo
@@ -198,7 +24,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := createControlTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
+		result, err := methods.CreateTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -212,7 +38,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := buildControlTaskResponse(ctx, docsRepo, req.TaskID, req.RunsLimit)
+		result, err := methods.BuildTaskGetResponse(ctx, docsRepo, req.TaskID, req.RunsLimit)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -226,7 +52,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := listControlTasks(ctx, docsRepo, req)
+		result, err := methods.ListFilteredTasks(ctx, docsRepo, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -240,7 +66,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := cancelControlTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
+		result, err := methods.CancelTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -254,7 +80,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := resumeControlTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
+		result, err := methods.ResumeTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
