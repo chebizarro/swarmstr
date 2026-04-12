@@ -867,6 +867,7 @@ func DefaultAuthority(mode AutonomyMode) TaskAuthority {
 }
 
 // TaskBudget captures budget guardrails that downstream runtime layers enforce.
+// Zero values mean "unlimited" for that dimension.
 type TaskBudget struct {
 	MaxPromptTokens     int   `json:"max_prompt_tokens,omitempty"`
 	MaxCompletionTokens int   `json:"max_completion_tokens,omitempty"`
@@ -875,6 +876,93 @@ type TaskBudget struct {
 	MaxToolCalls        int   `json:"max_tool_calls,omitempty"`
 	MaxDelegations      int   `json:"max_delegations,omitempty"`
 	MaxCostMicrosUSD    int64 `json:"max_cost_micros_usd,omitempty"`
+}
+
+// IsZero reports whether no budget limits have been set.
+func (b TaskBudget) IsZero() bool {
+	return b.MaxPromptTokens == 0 &&
+		b.MaxCompletionTokens == 0 &&
+		b.MaxTotalTokens == 0 &&
+		b.MaxRuntimeMS == 0 &&
+		b.MaxToolCalls == 0 &&
+		b.MaxDelegations == 0 &&
+		b.MaxCostMicrosUSD == 0
+}
+
+// Validate checks that budget values are non-negative and internally consistent.
+func (b TaskBudget) Validate() error {
+	if b.MaxPromptTokens < 0 {
+		return fmt.Errorf("max_prompt_tokens must be >= 0")
+	}
+	if b.MaxCompletionTokens < 0 {
+		return fmt.Errorf("max_completion_tokens must be >= 0")
+	}
+	if b.MaxTotalTokens < 0 {
+		return fmt.Errorf("max_total_tokens must be >= 0")
+	}
+	if b.MaxRuntimeMS < 0 {
+		return fmt.Errorf("max_runtime_ms must be >= 0")
+	}
+	if b.MaxToolCalls < 0 {
+		return fmt.Errorf("max_tool_calls must be >= 0")
+	}
+	if b.MaxDelegations < 0 {
+		return fmt.Errorf("max_delegations must be >= 0")
+	}
+	if b.MaxCostMicrosUSD < 0 {
+		return fmt.Errorf("max_cost_micros_usd must be >= 0")
+	}
+	// If both component and total token limits are set, total must be >= sum.
+	if b.MaxTotalTokens > 0 && b.MaxPromptTokens > 0 && b.MaxCompletionTokens > 0 {
+		if b.MaxTotalTokens < b.MaxPromptTokens+b.MaxCompletionTokens {
+			return fmt.Errorf("max_total_tokens (%d) < max_prompt_tokens (%d) + max_completion_tokens (%d)",
+				b.MaxTotalTokens, b.MaxPromptTokens, b.MaxCompletionTokens)
+		}
+	}
+	return nil
+}
+
+// Narrow returns a new budget that is the tighter of b and child for each
+// dimension. This implements the inheritance rule: a child task's budget can
+// only be equal to or stricter than its parent's. Zero (unlimited) in either
+// input yields the other's limit.
+func (b TaskBudget) Narrow(child TaskBudget) TaskBudget {
+	return TaskBudget{
+		MaxPromptTokens:     narrowInt(b.MaxPromptTokens, child.MaxPromptTokens),
+		MaxCompletionTokens: narrowInt(b.MaxCompletionTokens, child.MaxCompletionTokens),
+		MaxTotalTokens:      narrowInt(b.MaxTotalTokens, child.MaxTotalTokens),
+		MaxRuntimeMS:        narrowInt64(b.MaxRuntimeMS, child.MaxRuntimeMS),
+		MaxToolCalls:        narrowInt(b.MaxToolCalls, child.MaxToolCalls),
+		MaxDelegations:      narrowInt(b.MaxDelegations, child.MaxDelegations),
+		MaxCostMicrosUSD:    narrowInt64(b.MaxCostMicrosUSD, child.MaxCostMicrosUSD),
+	}
+}
+
+// narrowInt returns the tighter of two limits. Zero means unlimited.
+func narrowInt(parent, child int) int {
+	if parent == 0 {
+		return child
+	}
+	if child == 0 {
+		return parent
+	}
+	if child < parent {
+		return child
+	}
+	return parent
+}
+
+func narrowInt64(parent, child int64) int64 {
+	if parent == 0 {
+		return child
+	}
+	if child == 0 {
+		return parent
+	}
+	if child < parent {
+		return child
+	}
+	return parent
 }
 
 // TaskUsage captures measured runtime consumption for a task run.
@@ -886,6 +974,109 @@ type TaskUsage struct {
 	ToolCalls        int   `json:"tool_calls,omitempty"`
 	Delegations      int   `json:"delegations,omitempty"`
 	CostMicrosUSD    int64 `json:"cost_micros_usd,omitempty"`
+}
+
+// Add accumulates usage from another measurement.
+func (u *TaskUsage) Add(other TaskUsage) {
+	u.PromptTokens += other.PromptTokens
+	u.CompletionTokens += other.CompletionTokens
+	u.TotalTokens += other.TotalTokens
+	u.WallClockMS += other.WallClockMS
+	u.ToolCalls += other.ToolCalls
+	u.Delegations += other.Delegations
+	u.CostMicrosUSD += other.CostMicrosUSD
+}
+
+// BudgetExceeded describes which budget dimensions have been exceeded.
+type BudgetExceeded struct {
+	PromptTokens     bool   `json:"prompt_tokens,omitempty"`
+	CompletionTokens bool   `json:"completion_tokens,omitempty"`
+	TotalTokens      bool   `json:"total_tokens,omitempty"`
+	RuntimeMS        bool   `json:"runtime_ms,omitempty"`
+	ToolCalls        bool   `json:"tool_calls,omitempty"`
+	Delegations      bool   `json:"delegations,omitempty"`
+	CostMicrosUSD    bool   `json:"cost_micros_usd,omitempty"`
+}
+
+// Any reports whether any budget dimension has been exceeded.
+func (e BudgetExceeded) Any() bool {
+	return e.PromptTokens || e.CompletionTokens || e.TotalTokens ||
+		e.RuntimeMS || e.ToolCalls || e.Delegations || e.CostMicrosUSD
+}
+
+// Reasons returns human-readable descriptions of exceeded dimensions.
+func (e BudgetExceeded) Reasons() []string {
+	var reasons []string
+	if e.PromptTokens {
+		reasons = append(reasons, "prompt tokens exceeded")
+	}
+	if e.CompletionTokens {
+		reasons = append(reasons, "completion tokens exceeded")
+	}
+	if e.TotalTokens {
+		reasons = append(reasons, "total tokens exceeded")
+	}
+	if e.RuntimeMS {
+		reasons = append(reasons, "runtime exceeded")
+	}
+	if e.ToolCalls {
+		reasons = append(reasons, "tool calls exceeded")
+	}
+	if e.Delegations {
+		reasons = append(reasons, "delegations exceeded")
+	}
+	if e.CostMicrosUSD {
+		reasons = append(reasons, "cost exceeded")
+	}
+	return reasons
+}
+
+// CheckUsage compares measured usage against a budget and returns which
+// dimensions are exceeded. Zero budget values mean unlimited.
+func (b TaskBudget) CheckUsage(usage TaskUsage) BudgetExceeded {
+	return BudgetExceeded{
+		PromptTokens:     b.MaxPromptTokens > 0 && usage.PromptTokens > b.MaxPromptTokens,
+		CompletionTokens: b.MaxCompletionTokens > 0 && usage.CompletionTokens > b.MaxCompletionTokens,
+		TotalTokens:      b.MaxTotalTokens > 0 && usage.TotalTokens > b.MaxTotalTokens,
+		RuntimeMS:        b.MaxRuntimeMS > 0 && usage.WallClockMS > b.MaxRuntimeMS,
+		ToolCalls:        b.MaxToolCalls > 0 && usage.ToolCalls > b.MaxToolCalls,
+		Delegations:      b.MaxDelegations > 0 && usage.Delegations > b.MaxDelegations,
+		CostMicrosUSD:    b.MaxCostMicrosUSD > 0 && usage.CostMicrosUSD > b.MaxCostMicrosUSD,
+	}
+}
+
+// Remaining returns a budget representing the unused capacity given current usage.
+// Dimensions with no limit (zero) remain zero (unlimited) in the result.
+func (b TaskBudget) Remaining(usage TaskUsage) TaskBudget {
+	remaining := func(limit, used int) int {
+		if limit == 0 {
+			return 0
+		}
+		r := limit - used
+		if r < 0 {
+			return 0
+		}
+		return r
+	}
+	remaining64 := func(limit, used int64) int64 {
+		if limit == 0 {
+			return 0
+		}
+		r := limit - used
+		if r < 0 {
+			return 0
+		}
+		return r
+	}
+	return TaskBudget{
+		MaxPromptTokens:     remaining(b.MaxPromptTokens, usage.PromptTokens),
+		MaxCompletionTokens: remaining(b.MaxCompletionTokens, usage.CompletionTokens),
+		MaxTotalTokens:      remaining(b.MaxTotalTokens, usage.TotalTokens),
+		MaxRuntimeMS:        remaining64(b.MaxRuntimeMS, usage.WallClockMS),
+		MaxToolCalls:        remaining(b.MaxToolCalls, usage.ToolCalls),
+		MaxDelegations:      remaining(b.MaxDelegations, usage.Delegations),
+		MaxCostMicrosUSD:    remaining64(b.MaxCostMicrosUSD, usage.CostMicrosUSD),
+	}
 }
 
 // TaskOutputSpec describes an expected output contract for a task.
