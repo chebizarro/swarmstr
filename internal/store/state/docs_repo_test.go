@@ -682,3 +682,254 @@ func TestDocsRepositoryFeedbackValidation(t *testing.T) {
 		t.Fatal("expected validation error for missing summary")
 	}
 }
+
+// ── Proposal round-trip tests ──────────────────────────────────────────────────
+
+func TestDocsRepositoryProposalRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	p := PolicyProposal{
+		ProposalID:    "prop-1",
+		Kind:          ProposalKindPrompt,
+		Status:        ProposalStatusDraft,
+		Title:         "Better safety prompt",
+		TargetField:   "system_prompt",
+		ProposedValue: "You are a safe agent.",
+		FeedbackIDs:   []string{"fb-1", "fb-2"},
+		GoalID:        "goal-1",
+		TaskID:        "task-1",
+		CreatedAt:     1000,
+	}
+	if _, err := repo.PutProposal(ctx, p); err != nil {
+		t.Fatalf("PutProposal: %v", err)
+	}
+	got, err := repo.GetProposal(ctx, "prop-1")
+	if err != nil {
+		t.Fatalf("GetProposal: %v", err)
+	}
+	if got.ProposalID != "prop-1" || got.Title != "Better safety prompt" {
+		t.Fatalf("unexpected round-trip: %+v", got)
+	}
+	if len(got.FeedbackIDs) != 2 {
+		t.Fatalf("feedback_ids = %v", got.FeedbackIDs)
+	}
+}
+
+func TestDocsRepositoryProposalListByKind(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	for i, kind := range []ProposalKind{ProposalKindPrompt, ProposalKindPolicy, ProposalKindPrompt} {
+		if _, err := repo.PutProposal(ctx, PolicyProposal{
+			ProposalID: fmt.Sprintf("prop-%d", i), Kind: kind,
+			Status: ProposalStatusDraft, Title: fmt.Sprintf("p%d", i),
+			TargetField: "f", ProposedValue: "v", CreatedAt: int64(1000 + i),
+		}); err != nil {
+			t.Fatalf("PutProposal %d: %v", i, err)
+		}
+	}
+
+	got, err := repo.ListProposalsByKind(ctx, ProposalKindPrompt, 10)
+	if err != nil {
+		t.Fatalf("ListProposalsByKind: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 prompt proposals, got %d", len(got))
+	}
+}
+
+func TestDocsRepositoryProposalListByStatus(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	for i, status := range []ProposalStatus{ProposalStatusDraft, ProposalStatusPending, ProposalStatusDraft} {
+		if _, err := repo.PutProposal(ctx, PolicyProposal{
+			ProposalID: fmt.Sprintf("prop-s%d", i), Kind: ProposalKindPolicy,
+			Status: status, Title: fmt.Sprintf("p%d", i),
+			TargetField: "f", ProposedValue: "v", CreatedAt: int64(1000 + i),
+		}); err != nil {
+			t.Fatalf("PutProposal %d: %v", i, err)
+		}
+	}
+
+	got, err := repo.ListProposalsByStatus(ctx, ProposalStatusDraft, 10)
+	if err != nil {
+		t.Fatalf("ListProposalsByStatus: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 draft proposals, got %d", len(got))
+	}
+}
+
+func TestDocsRepositoryProposalListByTask(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	if _, err := repo.PutProposal(ctx, PolicyProposal{
+		ProposalID: "prop-t1", Kind: ProposalKindPolicy,
+		Status: ProposalStatusDraft, Title: "linked",
+		TargetField: "f", ProposedValue: "v", TaskID: "task-1", CreatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("PutProposal: %v", err)
+	}
+
+	got, err := repo.ListProposalsByTask(ctx, "task-1", 10)
+	if err != nil {
+		t.Fatalf("ListProposalsByTask: %v", err)
+	}
+	if len(got) != 1 || got[0].ProposalID != "prop-t1" {
+		t.Fatalf("unexpected: %+v", got)
+	}
+}
+
+func TestDocsRepositoryProposalValidation(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	_, err := repo.PutProposal(ctx, PolicyProposal{
+		ProposalID: "prop-bad", Kind: ProposalKindPolicy,
+		Status: ProposalStatusDraft,
+		// Missing title and proposed_value.
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+// ── Retrospective DocsRepository tests ──────────────────────────────────────
+
+func TestDocsRepositoryRetroRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	r := Retrospective{
+		RetroID:      "retro-1",
+		GoalID:       "goal-1",
+		TaskID:       "task-1",
+		RunID:        "run-1",
+		AgentID:      "agent-1",
+		Trigger:      RetroTriggerRunFailed,
+		Outcome:      RetroOutcomeFailure,
+		Summary:      "Run failed due to timeout",
+		WhatWorked:   []string{"Token usage ok"},
+		WhatFailed:   []string{"API timeout"},
+		Improvements: []string{"Add retry"},
+		FeedbackIDs:  []string{"fb-1"},
+		ProposalIDs:  []string{"prop-1"},
+		DurationMS:   5000,
+		CreatedAt:    1000,
+		CreatedBy:    "system",
+	}
+	if _, err := repo.PutRetrospective(ctx, r); err != nil {
+		t.Fatalf("PutRetrospective: %v", err)
+	}
+	got, err := repo.GetRetrospective(ctx, "retro-1")
+	if err != nil {
+		t.Fatalf("GetRetrospective: %v", err)
+	}
+	if got.RetroID != "retro-1" || got.Summary != "Run failed due to timeout" {
+		t.Fatalf("unexpected round-trip: %+v", got)
+	}
+	if got.Trigger != RetroTriggerRunFailed {
+		t.Fatalf("trigger = %s", got.Trigger)
+	}
+	if len(got.WhatWorked) != 1 || len(got.WhatFailed) != 1 {
+		t.Fatal("what_worked/what_failed mismatch")
+	}
+	if len(got.FeedbackIDs) != 1 || len(got.ProposalIDs) != 1 {
+		t.Fatal("feedback/proposal IDs mismatch")
+	}
+}
+
+func TestDocsRepositoryRetroListByTask(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	for i, taskID := range []string{"task-1", "task-2", "task-1"} {
+		if _, err := repo.PutRetrospective(ctx, Retrospective{
+			RetroID:   fmt.Sprintf("retro-%d", i),
+			TaskID:    taskID,
+			Trigger:   RetroTriggerRunCompleted,
+			Outcome:   RetroOutcomeSuccess,
+			Summary:   "ok",
+			CreatedAt: int64(1000 + i),
+		}); err != nil {
+			t.Fatalf("PutRetrospective: %v", err)
+		}
+	}
+	docs, err := repo.ListRetrospectivesByTask(ctx, "task-1", 10)
+	if err != nil {
+		t.Fatalf("ListRetrospectivesByTask: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("expected 2, got %d", len(docs))
+	}
+}
+
+func TestDocsRepositoryRetroListByGoal(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	if _, err := repo.PutRetrospective(ctx, Retrospective{
+		RetroID: "retro-g1", GoalID: "goal-1",
+		Trigger: RetroTriggerRunCompleted, Outcome: RetroOutcomeSuccess,
+		Summary: "ok", CreatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("PutRetrospective: %v", err)
+	}
+	docs, err := repo.ListRetrospectivesByGoal(ctx, "goal-1", 10)
+	if err != nil {
+		t.Fatalf("ListRetrospectivesByGoal: %v", err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("expected 1, got %d", len(docs))
+	}
+}
+
+func TestDocsRepositoryRetroListByTrigger(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	for i, trigger := range []RetroTrigger{RetroTriggerRunFailed, RetroTriggerRunCompleted, RetroTriggerRunFailed} {
+		if _, err := repo.PutRetrospective(ctx, Retrospective{
+			RetroID:   fmt.Sprintf("retro-%d", i),
+			Trigger:   trigger,
+			Outcome:   RetroOutcomeFailure,
+			Summary:   "test",
+			CreatedAt: int64(1000 + i),
+		}); err != nil {
+			t.Fatalf("PutRetrospective: %v", err)
+		}
+	}
+	docs, err := repo.ListRetrospectivesByTrigger(ctx, RetroTriggerRunFailed, 10)
+	if err != nil {
+		t.Fatalf("ListRetrospectivesByTrigger: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("expected 2, got %d", len(docs))
+	}
+}
+
+func TestDocsRepositoryRetroValidation(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	_, err := repo.PutRetrospective(ctx, Retrospective{
+		RetroID: "retro-bad",
+		// Missing summary, trigger, outcome.
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+}

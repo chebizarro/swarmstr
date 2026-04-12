@@ -691,6 +691,158 @@ func (r *DocsRepository) listFeedbackByTag(ctx context.Context, tagKey, tagValue
 	return docs, nil
 }
 
+// ── Proposals ───────────────────────────────────────────────────────────────
+
+// PutProposal persists a policy/prompt proposal. Tags are added for kind,
+// status, task, and goal to enable filtered queries.
+func (r *DocsRepository) PutProposal(ctx context.Context, doc PolicyProposal) (Event, error) {
+	doc = doc.Normalize()
+	if err := doc.Validate(); err != nil {
+		return Event{}, fmt.Errorf("put proposal: %w", err)
+	}
+	dTag := "metiq:proposal:" + doc.ProposalID
+	tags := [][]string{
+		{events.TagProposal, doc.ProposalID},
+		{events.TagProposalKind, string(doc.Kind)},
+		{events.TagProposalStatus, string(doc.Status)},
+	}
+	if doc.TaskID != "" {
+		tags = append(tags, []string{events.TagMemTaskID, doc.TaskID})
+	}
+	if doc.GoalID != "" {
+		tags = append(tags, []string{events.TagGoal, doc.GoalID})
+	}
+	if doc.RunID != "" {
+		tags = append(tags, []string{events.TagRunID, doc.RunID})
+	}
+	return r.putStateDocWithTags(ctx, dTag, "proposal", doc, tags)
+}
+
+// GetProposal retrieves a single proposal by ID.
+func (r *DocsRepository) GetProposal(ctx context.Context, proposalID string) (PolicyProposal, error) {
+	var doc PolicyProposal
+	if err := r.getStateDoc(ctx, "metiq:proposal:"+proposalID, &doc); err != nil {
+		return PolicyProposal{}, err
+	}
+	return doc, nil
+}
+
+// ListProposalsByKind returns proposals of a given kind, newest first.
+func (r *DocsRepository) ListProposalsByKind(ctx context.Context, kind ProposalKind, limit int) ([]PolicyProposal, error) {
+	return r.listProposalsByTag(ctx, events.TagProposalKind, string(kind), limit)
+}
+
+// ListProposalsByStatus returns proposals with a given status, newest first.
+func (r *DocsRepository) ListProposalsByStatus(ctx context.Context, status ProposalStatus, limit int) ([]PolicyProposal, error) {
+	return r.listProposalsByTag(ctx, events.TagProposalStatus, string(status), limit)
+}
+
+// ListProposalsByTask returns proposals linked to a task, newest first.
+func (r *DocsRepository) ListProposalsByTask(ctx context.Context, taskID string, limit int) ([]PolicyProposal, error) {
+	return r.listProposalsByTag(ctx, events.TagMemTaskID, taskID, limit)
+}
+
+func (r *DocsRepository) listProposalsByTag(ctx context.Context, tagKey, tagValue string, limit int) ([]PolicyProposal, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagValue, limit, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list proposals by %s=%s: %w", tagKey, tagValue, err)
+	}
+
+	var docs []PolicyProposal
+	for _, evt := range page.Events {
+		var doc PolicyProposal
+		if err := decodeEnvelopePayload(evt.Content, &doc, r.codec); err != nil {
+			continue
+		}
+		docs = append(docs, doc)
+	}
+	return docs, nil
+}
+
+// ── Retrospectives ──────────────────────────────────────────────────────────
+
+// PutRetrospective persists a retrospective record. Tags are added for trigger,
+// outcome, task, goal, and run to enable efficient filtered queries.
+func (r *DocsRepository) PutRetrospective(ctx context.Context, doc Retrospective) (Event, error) {
+	doc = doc.Normalize()
+	if err := doc.Validate(); err != nil {
+		return Event{}, fmt.Errorf("put retrospective: %w", err)
+	}
+	dTag := "metiq:retro:" + doc.RetroID
+	tags := [][]string{
+		{events.TagRetro, doc.RetroID},
+		{events.TagRetroTrigger, string(doc.Trigger)},
+		{events.TagRetroOutcome, string(doc.Outcome)},
+	}
+	if doc.TaskID != "" {
+		tags = append(tags, []string{events.TagMemTaskID, doc.TaskID})
+	}
+	if doc.GoalID != "" {
+		tags = append(tags, []string{events.TagGoal, doc.GoalID})
+	}
+	if doc.RunID != "" {
+		tags = append(tags, []string{events.TagRunID, doc.RunID})
+	}
+	return r.putStateDocWithTags(ctx, dTag, "retrospective", doc, tags)
+}
+
+// GetRetrospective retrieves a single retrospective by ID.
+func (r *DocsRepository) GetRetrospective(ctx context.Context, retroID string) (Retrospective, error) {
+	var doc Retrospective
+	if err := r.getStateDoc(ctx, "metiq:retro:"+retroID, &doc); err != nil {
+		return Retrospective{}, err
+	}
+	return doc, nil
+}
+
+// ListRetrospectivesByTask returns retrospectives linked to a task, newest first.
+func (r *DocsRepository) ListRetrospectivesByTask(ctx context.Context, taskID string, limit int) ([]Retrospective, error) {
+	return r.listRetrosByTag(ctx, events.TagMemTaskID, taskID, limit)
+}
+
+// ListRetrospectivesByGoal returns retrospectives linked to a goal, newest first.
+func (r *DocsRepository) ListRetrospectivesByGoal(ctx context.Context, goalID string, limit int) ([]Retrospective, error) {
+	return r.listRetrosByTag(ctx, events.TagGoal, goalID, limit)
+}
+
+// ListRetrospectivesByRun returns retrospectives linked to a run, newest first.
+func (r *DocsRepository) ListRetrospectivesByRun(ctx context.Context, runID string, limit int) ([]Retrospective, error) {
+	return r.listRetrosByTag(ctx, events.TagRunID, runID, limit)
+}
+
+// ListRetrospectivesByTrigger returns retrospectives with a given trigger.
+func (r *DocsRepository) ListRetrospectivesByTrigger(ctx context.Context, trigger RetroTrigger, limit int) ([]Retrospective, error) {
+	return r.listRetrosByTag(ctx, events.TagRetroTrigger, string(trigger), limit)
+}
+
+// ListRetrospectivesByOutcome returns retrospectives with a given outcome.
+func (r *DocsRepository) ListRetrospectivesByOutcome(ctx context.Context, outcome RetroOutcome, limit int) ([]Retrospective, error) {
+	return r.listRetrosByTag(ctx, events.TagRetroOutcome, string(outcome), limit)
+}
+
+func (r *DocsRepository) listRetrosByTag(ctx context.Context, tagKey, tagValue string, limit int) ([]Retrospective, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagValue, limit, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list retros by %s=%s: %w", tagKey, tagValue, err)
+	}
+
+	var docs []Retrospective
+	for _, evt := range page.Events {
+		var doc Retrospective
+		if err := decodeEnvelopePayload(evt.Content, &doc, r.codec); err != nil {
+			continue // skip corrupt records
+		}
+		docs = append(docs, doc)
+	}
+	return docs, nil
+}
+
 func (r *DocsRepository) putStateDoc(ctx context.Context, dTag string, typ string, value any) (Event, error) {
 	return r.putStateDocWithTags(ctx, dTag, typ, value, nil)
 }
