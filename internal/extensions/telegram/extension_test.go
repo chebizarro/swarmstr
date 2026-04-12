@@ -166,6 +166,260 @@ func TestTelegramPlugin_Connect_WebhookModeConfiguresAndDispatches(t *testing.T)
 	}
 }
 
+// ── Plugin metadata ───────────────────────────────────────────────────────────
+
+func TestPlugin_ID(t *testing.T) {
+	p := &TelegramPlugin{}
+	if p.ID() != "telegram" {
+		t.Fatalf("expected telegram, got %s", p.ID())
+	}
+}
+
+func TestPlugin_Type(t *testing.T) {
+	p := &TelegramPlugin{}
+	if p.Type() == "" {
+		t.Fatal("Type should not be empty")
+	}
+}
+
+func TestPlugin_ConfigSchema(t *testing.T) {
+	p := &TelegramPlugin{}
+	schema := p.ConfigSchema()
+	props, _ := schema["properties"].(map[string]any)
+	if _, ok := props["token"]; !ok {
+		t.Error("missing token in schema")
+	}
+}
+
+func TestPlugin_Capabilities(t *testing.T) {
+	p := &TelegramPlugin{}
+	caps := p.Capabilities()
+	if !caps.Threads || !caps.Typing || !caps.Edit {
+		t.Fatalf("unexpected capabilities: %+v", caps)
+	}
+}
+
+func TestPlugin_ImplementsChannelPlugin(t *testing.T) {
+	var _ sdk.ChannelPlugin = (*TelegramPlugin)(nil)
+}
+
+// ── processUpdate ─────────────────────────────────────────────────────────────
+
+func TestProcessUpdate_SkipsNilMessage(t *testing.T) {
+	called := false
+	bot := &telegramBot{
+		channelID: "tg-1",
+		onMessage: func(sdk.InboundChannelMessage) { called = true },
+		done:      make(chan struct{}),
+	}
+	bot.processUpdate(telegramUpdate{UpdateID: 1, Message: nil})
+	if called {
+		t.Fatal("should skip nil message")
+	}
+}
+
+func TestProcessUpdate_SkipsEmptyText(t *testing.T) {
+	called := false
+	bot := &telegramBot{
+		channelID: "tg-1",
+		onMessage: func(sdk.InboundChannelMessage) { called = true },
+		done:      make(chan struct{}),
+	}
+	bot.processUpdate(telegramUpdate{
+		UpdateID: 1,
+		Message:  &telegramMessage{MessageID: 1, Text: "", Date: 1000},
+	})
+	if called {
+		t.Fatal("should skip empty text")
+	}
+}
+
+func TestProcessUpdate_AllowedUsersFilter(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	bot := &telegramBot{
+		channelID:    "tg-1",
+		allowedUsers: []int64{100},
+		onMessage:    func(m sdk.InboundChannelMessage) { delivered = append(delivered, m) },
+		done:         make(chan struct{}),
+	}
+	// Allowed user
+	bot.processUpdate(telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 1, Text: "hi", Date: 1000,
+			From: &struct {
+				ID       int64  `json:"id"`
+				Username string `json:"username"`
+			}{ID: 100},
+		},
+	})
+	// Blocked user
+	bot.processUpdate(telegramUpdate{
+		UpdateID: 2,
+		Message: &telegramMessage{
+			MessageID: 2, Text: "hi", Date: 1001,
+			From: &struct {
+				ID       int64  `json:"id"`
+				Username string `json:"username"`
+			}{ID: 999},
+		},
+	})
+	if len(delivered) != 1 {
+		t.Fatalf("expected 1 delivered, got %d", len(delivered))
+	}
+}
+
+func TestProcessUpdate_TracksLastChatID(t *testing.T) {
+	bot := &telegramBot{
+		channelID: "tg-1",
+		onMessage: func(sdk.InboundChannelMessage) {},
+		done:      make(chan struct{}),
+	}
+	bot.processUpdate(telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 1, Text: "hello", Date: 1000,
+			Chat: &struct {
+				ID int64 `json:"id"`
+			}{ID: 42},
+		},
+	})
+	bot.mu.Lock()
+	chatID := bot.lastChatID
+	bot.mu.Unlock()
+	if chatID != "42" {
+		t.Fatalf("expected lastChatID=42, got %s", chatID)
+	}
+}
+
+// ── Send / SendTyping / EditMessage / SendInThread ────────────────────────────
+
+func TestSend_NoChatID(t *testing.T) {
+	bot := &telegramBot{channelID: "tg-1", token: "tok", done: make(chan struct{})}
+	err := bot.Send(context.Background(), "hello")
+	if err == nil {
+		t.Fatal("expected error when no chatID known")
+	}
+}
+
+func TestSendTyping_NoChatID_NoError(t *testing.T) {
+	bot := &telegramBot{channelID: "tg-1", token: "tok", done: make(chan struct{})}
+	err := bot.SendTyping(context.Background(), 3)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestSendTyping_PostsChatAction(t *testing.T) {
+	var gotPath string
+	bot := &telegramBot{
+		channelID:  "tg-1",
+		token:      "tok",
+		lastChatID: "42",
+		done:       make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotPath = req.URL.Path
+			return jsonResponse(req, `{"ok":true}`), nil
+		})},
+	}
+	err := bot.SendTyping(context.Background(), 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotPath, "/sendChatAction") {
+		t.Fatalf("expected /sendChatAction path, got %s", gotPath)
+	}
+}
+
+func TestEditMessage_NoChatID(t *testing.T) {
+	bot := &telegramBot{channelID: "tg-1", token: "tok", done: make(chan struct{})}
+	err := bot.EditMessage(context.Background(), "tg-123", "new text")
+	if err == nil {
+		t.Fatal("expected error when no chatID known")
+	}
+}
+
+func TestEditMessage_InvalidEventID(t *testing.T) {
+	bot := &telegramBot{
+		channelID:  "tg-1",
+		token:      "tok",
+		lastChatID: "42",
+		done:       make(chan struct{}),
+	}
+	err := bot.EditMessage(context.Background(), "invalid", "new text")
+	if err == nil {
+		t.Fatal("expected error for invalid eventID")
+	}
+}
+
+func TestEditMessage_PostsEditAPI(t *testing.T) {
+	var gotPath string
+	bot := &telegramBot{
+		channelID:  "tg-1",
+		token:      "tok",
+		lastChatID: "42",
+		done:       make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotPath = req.URL.Path
+			return jsonResponse(req, `{"ok":true}`), nil
+		})},
+	}
+	err := bot.EditMessage(context.Background(), "tg-123", "new text")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotPath, "/editMessageText") {
+		t.Fatalf("expected /editMessageText path, got %s", gotPath)
+	}
+}
+
+func TestSendInThread_NoChatID(t *testing.T) {
+	bot := &telegramBot{channelID: "tg-1", token: "tok", done: make(chan struct{})}
+	err := bot.SendInThread(context.Background(), "42", "reply")
+	if err == nil {
+		t.Fatal("expected error when no chatID known")
+	}
+}
+
+func TestSendInThread_PostsSendMessage(t *testing.T) {
+	var gotBody map[string]any
+	bot := &telegramBot{
+		channelID:  "tg-1",
+		token:      "tok",
+		lastChatID: "42",
+		done:       make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			json.NewDecoder(req.Body).Decode(&gotBody)
+			return jsonResponse(req, `{"ok":true}`), nil
+		})},
+	}
+	err := bot.SendInThread(context.Background(), "100", "reply text")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotBody["reply_to_message_id"] != float64(100) {
+		t.Fatalf("expected reply_to_message_id=100, got %v", gotBody["reply_to_message_id"])
+	}
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	bot := &telegramBot{channelID: "tg-1", done: make(chan struct{})}
+	bot.Close()
+	bot.Close() // should not panic
+}
+
+func TestDeriveTelegramWebhookSecret_Deterministic(t *testing.T) {
+	s1 := deriveTelegramWebhookSecret("token", "ch1")
+	s2 := deriveTelegramWebhookSecret("token", "ch1")
+	if s1 != s2 {
+		t.Fatal("expected deterministic secret")
+	}
+	s3 := deriveTelegramWebhookSecret("token", "ch2")
+	if s1 == s3 {
+		t.Fatal("different channels should produce different secrets")
+	}
+}
+
 func TestTelegramHandleWebhook_RejectsSecretMismatch(t *testing.T) {
 	bot := &telegramBot{
 		channelID:     "telegram-secret",

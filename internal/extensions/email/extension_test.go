@@ -289,6 +289,87 @@ func TestBuildEmailMessageInThread_NoInReplyTo(t *testing.T) {
 
 // ─── emailBot metadata ────────────────────────────────────────────────────────
 
+// ─── Connect validation ──────────────────────────────────────────────────────
+
+func TestConnect_MissingIMAPHost(t *testing.T) {
+	p := &EmailPlugin{}
+	_, err := p.Connect(context.Background(), "e1", map[string]any{
+		"imap_user": "user",
+		"imap_pass": "pass",
+		"smtp_host": "smtp.example.com",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when imap_host is missing")
+	}
+}
+
+func TestConnect_MissingIMAPUser(t *testing.T) {
+	p := &EmailPlugin{}
+	_, err := p.Connect(context.Background(), "e1", map[string]any{
+		"imap_host": "imap.example.com",
+		"imap_pass": "pass",
+		"smtp_host": "smtp.example.com",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when imap_user is missing")
+	}
+}
+
+func TestConnect_MissingSMTPHost(t *testing.T) {
+	p := &EmailPlugin{}
+	_, err := p.Connect(context.Background(), "e1", map[string]any{
+		"imap_host": "imap.example.com",
+		"imap_user": "user",
+		"imap_pass": "pass",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when smtp_host is missing")
+	}
+}
+
+func TestConnect_ValidConfig(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately so poll loop exits
+	p := &EmailPlugin{}
+	h, err := p.Connect(ctx, "email-ch", map[string]any{
+		"imap_host": "imap.example.com",
+		"imap_user": "user",
+		"imap_pass": "pass",
+		"smtp_host": "smtp.example.com",
+	}, func(sdk.InboundChannelMessage) {})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.ID() != "email-ch" {
+		t.Fatalf("expected email-ch, got %s", h.ID())
+	}
+	h.Close()
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	b := &emailBot{channelID: "e1", seenUIDs: map[string]bool{}}
+	b.Close()
+	b.Close() // should not panic
+}
+
+func TestSend_NoRecipient(t *testing.T) {
+	b := &emailBot{channelID: "e1", seenUIDs: map[string]bool{}}
+	err := b.Send(context.Background(), "hello")
+	if err == nil {
+		t.Fatal("expected error when no recipient known")
+	}
+}
+
+func TestSendInThread_NoRecipient(t *testing.T) {
+	b := &emailBot{channelID: "e1", seenUIDs: map[string]bool{}}
+	err := b.SendInThread(context.Background(), "<msg-id>", "hello")
+	if err == nil {
+		t.Fatal("expected error when no recipient known")
+	}
+}
+
+// ─── emailBot metadata ────────────────────────────────────────────────────────
+
 func TestEmailBot_ID(t *testing.T) {
 	b := &emailBot{channelID: "email-1"}
 	if b.ID() != "email-1" {
