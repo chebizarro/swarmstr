@@ -135,6 +135,9 @@ type TurnTelemetry struct {
 type MemoryRecallSample struct {
 	RecordedAtMS         int64                    `json:"recorded_at_ms,omitempty"`
 	TurnID               string                   `json:"turn_id,omitempty"`
+	TaskID               string                   `json:"task_id,omitempty"`
+	RunID                string                   `json:"run_id,omitempty"`
+	GoalID               string                   `json:"goal_id,omitempty"`
 	Strategy             string                   `json:"strategy,omitempty"`
 	QueryHash            string                   `json:"query_hash,omitempty"`
 	QueryRuneCount       int                      `json:"query_rune_count,omitempty"`

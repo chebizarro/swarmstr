@@ -77,6 +77,7 @@ const (
 	MethodTasksDoctor                 = "tasks.doctor"
 	MethodTasksSummary                = "tasks.summary"
 	MethodTasksAuditExport            = "tasks.audit_export"
+	MethodTasksTrace                  = "tasks.trace"
 	MethodListGet                     = "list.get"
 	MethodListPut                     = "list.put"
 	MethodRelayPolicyGet              = "relay.policy.get"
@@ -2863,6 +2864,7 @@ func SupportedMethods() []string {
 		MethodTasksDoctor,
 		MethodTasksSummary,
 		MethodTasksAuditExport,
+		MethodTasksTrace,
 		MethodListGet,
 		MethodListPut,
 		MethodRelayPolicyGet,

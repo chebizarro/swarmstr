@@ -8070,6 +8070,54 @@ func handleControlRPCRequest(
 		}
 		diag := methods.BuildTaskDiagnostic(task, runs, time.Now())
 		return nostruntime.ControlRPCResult{Result: methods.TasksDoctorResponse{Task: task, Runs: runs, Doctor: diag}}, nil
+	case methods.MethodTasksTrace:
+		req, err := methods.DecodeTasksTraceParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		if docsRepo == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("docs repository is nil")
+		}
+		task, err := docsRepo.GetTask(ctx, req.TaskID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		runs, err := docsRepo.ListTaskRuns(ctx, task.TaskID, 100)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, err
+		}
+		// Collect memory recall and turn telemetry from session store,
+		// filtering each record by TaskID to avoid mixing data from
+		// sessions that served multiple tasks.
+		var turnTelemetry []state.TurnTelemetry
+		var memoryRecall []state.MemoryRecallSample
+		if controlSessionStore != nil {
+			for sessID, entry := range controlSessionStore.List() {
+				if strings.TrimSpace(entry.ActiveTaskID) != req.TaskID && strings.TrimSpace(entry.ParentTaskID) != req.TaskID && sessID != strings.TrimSpace(task.SessionID) {
+					continue
+				}
+				if entry.LastTurn != nil && strings.TrimSpace(entry.LastTurn.TaskID) == req.TaskID {
+					turnTelemetry = append(turnTelemetry, *entry.LastTurn)
+				}
+				for _, sample := range entry.RecentMemoryRecall {
+					if strings.TrimSpace(sample.TaskID) == req.TaskID {
+						memoryRecall = append(memoryRecall, sample)
+					}
+				}
+			}
+		}
+		traceInput := methods.TraceInput{
+			Task:          task,
+			Runs:          runs,
+			TurnTelemetry: turnTelemetry,
+			MemoryRecall:  memoryRecall,
+		}
+		traceResp := methods.AssembleTaskTrace(traceInput, req.RunID, req.Limit)
+		return nostruntime.ControlRPCResult{Result: traceResp}, nil
 	case methods.MethodTasksAuditExport:
 		req, err := methods.DecodeAuditExportParams(in.Params)
 		if err != nil {
@@ -10539,6 +10587,11 @@ func handleACPMessage(
 					historyEntryIDs = append(historyEntryIDs, persistACPTurnHistory(processCtx, transcriptRepo, controlContextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, partial.HistoryDelta, turnResultMetadataPtr(result, err))...)
 				}
 				return err
+			}
+			if prepared.MemoryRecallSample != nil {
+				prepared.MemoryRecallSample.TaskID = firstNonEmptyTrimmed(workerTask.TaskID, msg.TaskID)
+				prepared.MemoryRecallSample.RunID = strings.TrimSpace(workerRun.RunID)
+				prepared.MemoryRecallSample.GoalID = strings.TrimSpace(workerTask.GoalID)
 			}
 			commitMemoryRecallArtifacts(controlSessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
 			delta := result.HistoryDelta
