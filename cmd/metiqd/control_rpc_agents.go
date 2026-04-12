@@ -21,6 +21,11 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 	memoryIndex := h.deps.memoryIndex
 	tools := h.deps.tools
 	pluginMgr := h.deps.pluginMgr
+	agentJobs := h.deps.agentJobs
+	sessionRouter := h.deps.sessionRouter
+	agentRegistry := h.deps.agentRegistry
+	agentRuntime := h.deps.agentRuntime
+	toolRegistry := h.deps.toolRegistry
 
 	switch method {
 	case methods.MethodAgent:
@@ -35,23 +40,23 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if req.SessionID == "" {
 			req.SessionID = in.FromPubKey
 		}
-		if controlAgentJobs == nil {
+		if agentJobs == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("agent runtime not configured")
 		}
 		var rt agent.Runtime
-		if controlSessionRouter != nil && controlAgentRegistry != nil {
-			activeAgentID := controlSessionRouter.Get(req.SessionID)
-			rt = controlAgentRegistry.Get(activeAgentID)
+		if sessionRouter != nil && agentRegistry != nil {
+			activeAgentID := sessionRouter.Get(req.SessionID)
+			rt = agentRegistry.Get(activeAgentID)
 		}
 		if rt == nil {
-			rt = controlAgentRuntime
+			rt = agentRuntime
 		}
 		if rt == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("agent runtime not configured")
 		}
 		activeAgentID := ""
-		if controlSessionRouter != nil {
-			activeAgentID = controlSessionRouter.Get(req.SessionID)
+		if sessionRouter != nil {
+			activeAgentID = sessionRouter.Get(req.SessionID)
 		}
 		rt = applyAgentProfileFilter(ctx, rt, req.SessionID, cfg, docsRepo)
 		var fallbackRuntimes []agent.Runtime
@@ -70,7 +75,7 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 				if fbModel == "" {
 					continue
 				}
-				fbRt, fbErr := buildRuntimeForAgentModel(cfg, agCfg, fbModel, controlToolRegistry)
+				fbRt, fbErr := buildRuntimeForAgentModel(cfg, agCfg, fbModel, toolRegistry)
 				if fbErr == nil && fbRt != nil {
 					fbRt = applyAgentProfileFilterForAgent(ctx, fbRt, activeAgentID, cfg, docsRepo)
 					fallbackRuntimes = append(fallbackRuntimes, fbRt)
@@ -79,8 +84,8 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 			}
 		}
 		runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
-		snapshot := controlAgentJobs.Begin(runID, req.SessionID)
-		go executeAgentRunWithFallbacks(runID, req, rt, fallbackRuntimes, runtimeLabels, memoryIndex, controlAgentJobs)
+		snapshot := agentJobs.Begin(runID, req.SessionID)
+		go executeAgentRunWithFallbacks(runID, req, rt, fallbackRuntimes, runtimeLabels, memoryIndex, agentJobs)
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"run_id": runID, "status": "accepted", "accepted_at": snapshot.StartedAt})}, true, nil
 	case methods.MethodAgentWait:
 		req, err := methods.DecodeAgentWaitParams(in.Params)
@@ -91,10 +96,10 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlAgentJobs == nil {
+		if agentJobs == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("agent runtime not configured")
 		}
-		snap, ok := controlAgentJobs.Wait(ctx, req.RunID, time.Duration(req.TimeoutMS)*time.Millisecond)
+		snap, ok := agentJobs.Wait(ctx, req.RunID, time.Duration(req.TimeoutMS)*time.Millisecond)
 		if !ok {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("run not found")
 		}
@@ -131,8 +136,8 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if sessionID == "" {
 			sessionID = in.FromPubKey
 		}
-		if agentID == "" && controlSessionRouter != nil {
-			agentID = controlSessionRouter.Get(sessionID)
+		if agentID == "" && sessionRouter != nil {
+			agentID = sessionRouter.Get(sessionID)
 		}
 		if agentID == "" {
 			agentID = "main"
@@ -180,9 +185,9 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if _, err := docsRepo.PutAgent(ctx, req.AgentID, doc); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlAgentRegistry != nil {
+		if agentRegistry != nil {
 			if rt, rtErr := agent.BuildRuntimeForModel(req.Model, tools); rtErr == nil {
-				controlAgentRegistry.Set(req.AgentID, rt)
+				agentRegistry.Set(req.AgentID, rt)
 			} else {
 				log.Printf("agents.create: runtime build warning id=%s model=%q err=%v", req.AgentID, req.Model, rtErr)
 			}
@@ -217,9 +222,9 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if _, err := docsRepo.PutAgent(ctx, req.AgentID, doc); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlAgentRegistry != nil && req.Model != "" {
+		if agentRegistry != nil && req.Model != "" {
 			if rt, rtErr := agent.BuildRuntimeForModel(doc.Model, tools); rtErr == nil {
-				controlAgentRegistry.Set(req.AgentID, rt)
+				agentRegistry.Set(req.AgentID, rt)
 			} else {
 				log.Printf("agents.update: runtime rebuild warning id=%s model=%q err=%v", req.AgentID, doc.Model, rtErr)
 			}
@@ -243,13 +248,13 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if _, err := docsRepo.PutAgent(ctx, req.AgentID, doc); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlAgentRegistry != nil {
-			controlAgentRegistry.Remove(req.AgentID)
+		if agentRegistry != nil {
+			agentRegistry.Remove(req.AgentID)
 		}
-		if controlSessionRouter != nil {
-			for sessionID, aid := range controlSessionRouter.List() {
+		if sessionRouter != nil {
+			for sessionID, aid := range sessionRouter.List() {
 				if aid == req.AgentID {
-					controlSessionRouter.Unassign(sessionID)
+					sessionRouter.Unassign(sessionID)
 				}
 			}
 		}
@@ -277,8 +282,8 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 			}); err != nil {
 				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("agents.delete: cleanup session %q: %w", sessionID, err)
 			}
-			if controlSessionRouter != nil {
-				controlSessionRouter.Unassign(sessionID)
+			if sessionRouter != nil {
+				sessionRouter.Unassign(sessionID)
 			}
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "agent_id": req.AgentID, "deleted": true}}, true, nil
@@ -294,8 +299,8 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlSessionRouter != nil {
-			controlSessionRouter.Assign(req.SessionID, req.AgentID)
+		if sessionRouter != nil {
+			sessionRouter.Assign(req.SessionID, req.AgentID)
 		}
 		persisted := true
 		if err := updateSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
@@ -315,8 +320,8 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlSessionRouter != nil {
-			controlSessionRouter.Unassign(req.SessionID)
+		if sessionRouter != nil {
+			sessionRouter.Unassign(req.SessionID)
 		}
 		persisted := true
 		if _, err := updateExistingSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
@@ -341,13 +346,13 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		var registered []string
-		if controlAgentRegistry != nil {
-			registered = controlAgentRegistry.Registered()
+		if agentRegistry != nil {
+			registered = agentRegistry.Registered()
 			sort.Strings(registered)
 		}
 		var assignments []map[string]any
-		if controlSessionRouter != nil {
-			for sessionID, agentID := range controlSessionRouter.List() {
+		if sessionRouter != nil {
+			for sessionID, agentID := range sessionRouter.List() {
 				assignments = append(assignments, map[string]any{"session_id": sessionID, "agent_id": agentID})
 			}
 			sortRecordsByKeyDesc(assignments, "session_id")

@@ -11,6 +11,7 @@ import (
 
 	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
+	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
 	nostruntime "metiq/internal/nostr/runtime"
 	pluginmanager "metiq/internal/plugins/manager"
@@ -34,6 +35,19 @@ type controlRPCDeps struct {
 	tools          *agent.ToolRegistry
 	pluginMgr      *pluginmanager.GojaPluginManager
 	startedAt      time.Time
+
+	sessionStore     *state.SessionStore
+	hooksMgr         hooksEventFirer
+	mediaTranscriber mediapkg.Transcriber
+	toolRegistry     *agent.ToolRegistry
+	agentJobs        *agentJobRegistry
+	sessionRouter    *agent.AgentSessionRouter
+	agentRegistry    *agent.AgentRuntimeRegistry
+	agentRuntime     agent.Runtime
+}
+
+type hooksEventFirer interface {
+	Fire(eventName string, sessionKey string, ctx map[string]any) []error
 }
 
 type controlRPCHandler struct {
