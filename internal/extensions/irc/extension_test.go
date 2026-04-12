@@ -1,6 +1,7 @@
 package irc
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -245,6 +246,33 @@ func TestIRCPlugin_Connect_MissingHost(t *testing.T) {
 	_, err := p.Connect(nil, "c1", map[string]any{"nick": "bot", "channels": []interface{}{"#ch"}}, nil) //nolint
 	if err == nil {
 		t.Fatal("expected error when host is missing")
+	}
+}
+
+func TestIRCPlugin_Connect_MissingNick(t *testing.T) {
+	p := &IRCPlugin{}
+	_, err := p.Connect(context.Background(), "c1", map[string]any{
+		"host":     "irc.example.com",
+		"channels": []interface{}{"#ch"},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when nick is missing")
+	}
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	b := &ircBot{
+		channelID: "irc-1",
+		done:      make(chan struct{}),
+	}
+	b.Close()
+	b.Close() // should not panic
+}
+
+func TestBotID(t *testing.T) {
+	b := &ircBot{channelID: "irc-test"}
+	if b.ID() != "irc-test" {
+		t.Fatalf("expected irc-test, got %s", b.ID())
 	}
 }
 

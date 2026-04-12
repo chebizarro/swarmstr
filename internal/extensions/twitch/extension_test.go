@@ -1,6 +1,7 @@
 package twitch
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -165,6 +166,85 @@ func TestHandleLine_NotPRIVMSG(t *testing.T) {
 	b.handleLine(":tmi.twitch.tv 001 mybot :Welcome, GLHF!")
 	if called {
 		t.Error("should ignore non-PRIVMSG lines")
+	}
+}
+
+func TestConnect_MissingOAuthToken(t *testing.T) {
+	p := &TwitchPlugin{}
+	_, err := p.Connect(context.Background(), "tw-1", map[string]any{
+		"nick":     "bot",
+		"channels": []interface{}{"#ch"},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when oauth_token is missing")
+	}
+}
+
+func TestConnect_MissingNick(t *testing.T) {
+	p := &TwitchPlugin{}
+	_, err := p.Connect(context.Background(), "tw-1", map[string]any{
+		"oauth_token": "tok",
+		"channels":    []interface{}{"#ch"},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when nick is missing")
+	}
+}
+
+func TestConnect_EmptyChannels(t *testing.T) {
+	p := &TwitchPlugin{}
+	_, err := p.Connect(context.Background(), "tw-1", map[string]any{
+		"oauth_token": "tok",
+		"nick":        "bot",
+		"channels":    []interface{}{},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when channels is empty")
+	}
+}
+
+func TestConnect_ValidConfig(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately to prevent TCP connection
+	p := &TwitchPlugin{}
+	h, err := p.Connect(ctx, "tw-1", map[string]any{
+		"oauth_token": "oauth:tok",
+		"nick":        "bot",
+		"channels":    []interface{}{"#general"},
+	}, func(sdk.InboundChannelMessage) {})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.ID() != "tw-1" {
+		t.Fatalf("expected tw-1, got %s", h.ID())
+	}
+	h.Close()
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	b := &twitchBot{channelID: "tw-x"}
+	b.Close()
+	b.Close() // second call should not panic
+}
+
+func TestSend_PushesToSendCh(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b := &twitchBot{
+		channelID:    "tw-1",
+		joinChannels: []string{"#general"},
+		sendCh:       make(chan string, 64),
+	}
+	if err := b.Send(ctx, "hello"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	select {
+	case msg := <-b.sendCh:
+		if msg != "PRIVMSG #general :hello" {
+			t.Fatalf("unexpected message: %q", msg)
+		}
+	default:
+		t.Fatal("expected message in sendCh")
 	}
 }
 

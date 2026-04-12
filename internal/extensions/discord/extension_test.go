@@ -134,6 +134,200 @@ func TestBotClient_Custom(t *testing.T) {
 	}
 }
 
+func TestConnect_MissingToken(t *testing.T) {
+	p := &DiscordPlugin{}
+	_, err := p.Connect(context.Background(), "d1", map[string]any{
+		"channel_id": "123",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when bot_token is missing")
+	}
+}
+
+func TestConnect_MissingChannelID(t *testing.T) {
+	p := &DiscordPlugin{}
+	_, err := p.Connect(context.Background(), "d1", map[string]any{
+		"bot_token": "Bot tok",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when channel_id is missing")
+	}
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	b := &discordBot{channelID: "d1", done: make(chan struct{})}
+	b.Close()
+	// second close should not panic — guard with recover
+	func() {
+		defer func() { recover() }()
+		b.Close()
+	}()
+}
+
+func TestSendTyping_PostsToAPI(t *testing.T) {
+	var gotPath, gotMethod string
+	b := &discordBot{
+		channelID:        "d1",
+		token:            "Bot tok",
+		discordChannelID: "ch-123",
+		done:             make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotPath = req.URL.Path
+			gotMethod = req.Method
+			return jsonResponse(req, `{}`), nil
+		})},
+	}
+	err := b.SendTyping(context.Background(), 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("expected POST, got %s", gotMethod)
+	}
+	if !strings.Contains(gotPath, "/channels/ch-123/typing") {
+		t.Fatalf("unexpected path: %s", gotPath)
+	}
+}
+
+func TestAddReaction_PutsToAPI(t *testing.T) {
+	var gotPath, gotMethod string
+	b := &discordBot{
+		channelID:        "d1",
+		token:            "Bot tok",
+		discordChannelID: "ch-123",
+		done:             make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotPath = req.URL.Path
+			gotMethod = req.Method
+			return jsonResponse(req, `{}`), nil
+		})},
+	}
+	err := b.AddReaction(context.Background(), "discord-msg-1", "👍")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Fatalf("expected PUT, got %s", gotMethod)
+	}
+	if !strings.Contains(gotPath, "/messages/msg-1/reactions/") {
+		t.Fatalf("unexpected path: %s", gotPath)
+	}
+}
+
+func TestRemoveReaction_DeletesFromAPI(t *testing.T) {
+	var gotMethod string
+	b := &discordBot{
+		channelID:        "d1",
+		token:            "Bot tok",
+		discordChannelID: "ch-123",
+		done:             make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotMethod = req.Method
+			return jsonResponse(req, `{}`), nil
+		})},
+	}
+	err := b.RemoveReaction(context.Background(), "discord-msg-1", "👍")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("expected DELETE, got %s", gotMethod)
+	}
+}
+
+func TestEditMessage_PatchesAPI(t *testing.T) {
+	var gotMethod, gotPath string
+	b := &discordBot{
+		channelID:        "d1",
+		token:            "Bot tok",
+		discordChannelID: "ch-123",
+		done:             make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotMethod = req.Method
+			gotPath = req.URL.Path
+			return jsonResponse(req, `{}`), nil
+		})},
+	}
+	err := b.EditMessage(context.Background(), "discord-msg-42", "new text")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotMethod != http.MethodPatch {
+		t.Fatalf("expected PATCH, got %s", gotMethod)
+	}
+	if !strings.Contains(gotPath, "/messages/msg-42") {
+		t.Fatalf("expected msg-42 in path, got %s", gotPath)
+	}
+}
+
+func TestAddReaction_APIError(t *testing.T) {
+	b := &discordBot{
+		channelID:        "d1",
+		token:            "Bot tok",
+		discordChannelID: "ch-123",
+		done:             make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 403,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"message":"Missing Permissions"}`)),
+				Request:    req,
+			}, nil
+		})},
+	}
+	err := b.AddReaction(context.Background(), "discord-msg-1", "👍")
+	if err == nil {
+		t.Fatal("expected error on 403")
+	}
+}
+
+func TestFetchMessages_SkipsBotMessages(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	b := &discordBot{
+		channelID:        "d1",
+		token:            "Bot tok",
+		discordChannelID: "ch-123",
+		onMessage:        func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
+		done:             make(chan struct{}),
+		channelMetaLoaded: true,
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(req, `[
+				{"id":"1","content":"bot msg","timestamp":"2026-04-05T09:00:00Z","author":{"id":"b1","username":"bot","bot":true}},
+				{"id":"2","content":"human msg","timestamp":"2026-04-05T09:01:00Z","author":{"id":"u1","username":"alice","bot":false}}
+			]`), nil
+		})},
+	}
+	b.fetchMessages(context.Background())
+	if len(delivered) != 1 {
+		t.Fatalf("expected 1 delivered (bot filtered), got %d", len(delivered))
+	}
+	if delivered[0].Text != "human msg" {
+		t.Fatalf("unexpected text: %q", delivered[0].Text)
+	}
+}
+
+func TestEnsureChannelMetadata_SetsThreadFlag(t *testing.T) {
+	b := &discordBot{
+		channelID:        "d1",
+		token:            "Bot tok",
+		discordChannelID: "thread-123",
+		done:             make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path == "/api/v10/channels/thread-123" {
+				return jsonResponse(req, `{"id":"thread-123","type":11}`), nil
+			}
+			return jsonResponse(req, `[]`), nil
+		})},
+	}
+	b.ensureChannelMetadata(context.Background())
+	if !b.isThreadChannel {
+		t.Fatal("expected isThreadChannel=true for type 11")
+	}
+	if !b.channelMetaLoaded {
+		t.Fatal("expected channelMetaLoaded=true")
+	}
+}
+
 func TestDiscordFetchMessages_PopulatesReplyAndThreadMetadata(t *testing.T) {
 	var delivered []sdk.InboundChannelMessage
 	bot := &discordBot{

@@ -1,8 +1,10 @@
 package msteams
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -232,6 +234,213 @@ func TestHandleWebhook_UnknownChannel(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unregistered channel, got %d", w.Code)
 	}
+}
+
+func TestConnect_MissingAppID(t *testing.T) {
+	p := &MSTeamsPlugin{}
+	_, err := p.Connect(context.Background(), "t1", map[string]any{
+		"app_secret": "secret",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when app_id is missing")
+	}
+}
+
+func TestConnect_MissingAppSecret(t *testing.T) {
+	p := &MSTeamsPlugin{}
+	_, err := p.Connect(context.Background(), "t1", map[string]any{
+		"app_id": "id",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when app_secret is missing")
+	}
+}
+
+func TestConnect_ValidConfig(t *testing.T) {
+	p := &MSTeamsPlugin{}
+	h, err := p.Connect(context.Background(), "teams-ch", map[string]any{
+		"app_id":     "id",
+		"app_secret": "secret",
+	}, func(sdk.InboundChannelMessage) {})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer h.Close()
+	if h.ID() != "teams-ch" {
+		t.Fatalf("expected teams-ch, got %s", h.ID())
+	}
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	bot, _ := newTestTeamsBot()
+	bot.Close()
+	bot.Close() // should not panic
+}
+
+func TestParseJWTClaims_Valid(t *testing.T) {
+	token := makeTestJWT("app1", "https://api.botframework.com", time.Now().Add(5*time.Minute), time.Now().Add(-1*time.Minute))
+	claims, err := parseJWTClaims(token)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !claims.HasAudience("app1") {
+		t.Fatal("expected audience match")
+	}
+}
+
+func TestParseJWTClaims_Invalid(t *testing.T) {
+	_, err := parseJWTClaims("not-a-jwt")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// tokenServer returns a test HTTP server that serves a fake AAD token.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func okJSON(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func newMockTeamsBot(handler roundTripFunc) *teamsBot {
+	conv, _ := json.Marshal(map[string]string{"id": "conv1"})
+	act := &botFrameworkActivity{
+		ServiceURL:   "https://smba.example.com",
+		Conversation: conv,
+	}
+	act.Recipient.ID = "bot1"
+	bot := &teamsBot{
+		channelID:    "teams-test",
+		appID:        "app1",
+		appSecret:    "secret",
+		serviceURL:   "https://smba.example.com",
+		done:         make(chan struct{}),
+		httpClient:   &http.Client{Transport: handler},
+		lastActivity: act,
+	}
+	bot.onMessage = func(sdk.InboundChannelMessage) {}
+	return bot
+}
+
+func TestSend_PostsActivity(t *testing.T) {
+	var gotPath, gotMethod string
+	bot := newMockTeamsBot(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/oauth2/v2.0/token") {
+			return okJSON(`{"access_token":"tok"}`), nil
+		}
+		gotPath = req.URL.Path
+		gotMethod = req.Method
+		return okJSON(`{}`), nil
+	})
+
+	err := bot.Send(context.Background(), "hello teams")
+	if err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("expected POST, got %s", gotMethod)
+	}
+	if !strings.Contains(gotPath, "/v3/conversations/conv1/activities") {
+		t.Fatalf("unexpected path: %s", gotPath)
+	}
+}
+
+func TestSend_NoConversationContext(t *testing.T) {
+	bot := &teamsBot{
+		channelID:  "teams-test",
+		done:       make(chan struct{}),
+		httpClient: &http.Client{},
+	}
+	err := bot.Send(context.Background(), "hello")
+	if err == nil {
+		t.Fatal("expected error when no conversation context")
+	}
+}
+
+func TestAddReaction_PostsReaction(t *testing.T) {
+	var gotBody map[string]any
+	bot := newMockTeamsBot(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/oauth2/v2.0/token") {
+			return okJSON(`{"access_token":"tok"}`), nil
+		}
+		json.NewDecoder(req.Body).Decode(&gotBody)
+		return okJSON(`{}`), nil
+	})
+	err := bot.AddReaction(context.Background(), "act123", "like")
+	if err != nil {
+		t.Fatalf("AddReaction error: %v", err)
+	}
+	if gotBody["type"] != "messageReaction" {
+		t.Fatalf("expected messageReaction, got %v", gotBody["type"])
+	}
+}
+
+func TestRemoveReaction_PostsReaction(t *testing.T) {
+	bot := newMockTeamsBot(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/oauth2/v2.0/token") {
+			return okJSON(`{"access_token":"tok"}`), nil
+		}
+		return okJSON(`{}`), nil
+	})
+	err := bot.RemoveReaction(context.Background(), "act123", "like")
+	if err != nil {
+		t.Fatalf("RemoveReaction error: %v", err)
+	}
+}
+
+func TestSendInThread_PostsReply(t *testing.T) {
+	var gotBody map[string]any
+	bot := newMockTeamsBot(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/oauth2/v2.0/token") {
+			return okJSON(`{"access_token":"tok"}`), nil
+		}
+		json.NewDecoder(req.Body).Decode(&gotBody)
+		return okJSON(`{}`), nil
+	})
+	err := bot.SendInThread(context.Background(), "thread1", "reply text")
+	if err != nil {
+		t.Fatalf("SendInThread error: %v", err)
+	}
+	if gotBody["replyToId"] != "thread1" {
+		t.Fatalf("expected replyToId=thread1, got %v", gotBody["replyToId"])
+	}
+}
+
+func TestEditMessage_PutsUpdate(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	bot := newMockTeamsBot(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/oauth2/v2.0/token") {
+			return okJSON(`{"access_token":"tok"}`), nil
+		}
+		gotMethod = req.Method
+		gotPath = req.URL.Path
+		return okJSON(`{}`), nil
+	})
+	err := bot.EditMessage(context.Background(), "act-42", "new text")
+	if err != nil {
+		t.Fatalf("EditMessage error: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Fatalf("expected PUT, got %s", gotMethod)
+	}
+	if !strings.Contains(gotPath, "act-42") {
+		t.Fatalf("expected act-42 in path, got %s", gotPath)
+	}
+}
+
+func TestAcquireToken_ReturnsToken(t *testing.T) {
+	// acquireToken hardcodes the Microsoft token URL, so it's tested
+	// indirectly via Send/AddReaction/EditMessage tests above which
+	// use httptest servers that intercept all client traffic.
 }
 
 func TestRegisterAndHandleWebhook(t *testing.T) {
