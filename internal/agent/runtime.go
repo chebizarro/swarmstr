@@ -68,6 +68,9 @@ type Turn struct {
 	// ContextWindowTokens is the approximate context window available to the
 	// provider. Shared history/tool-result guards use this to bound prompt size.
 	ContextWindowTokens int
+	// Trace carries task/run/step correlation IDs for observability. When a
+	// turn runs inside a task context, all emitted events inherit these IDs.
+	Trace TraceContext
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.
@@ -116,6 +119,7 @@ type TurnTelemetry struct {
 	FallbackTo     string
 	FallbackReason string
 	Usage          TurnUsage
+	Trace          TraceContext
 }
 
 // TurnResultMetadata is the canonical persisted subset of a terminal turn

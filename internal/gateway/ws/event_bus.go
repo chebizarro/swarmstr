@@ -320,6 +320,9 @@ type ChatMessagePayload struct {
 	Direction string `json:"direction"` // "inbound" | "outbound"
 	Text      string `json:"text,omitempty"`
 	EventID   string `json:"event_id,omitempty"`
+	// Task correlation — populated when the message is part of a task.
+	TaskID string `json:"task_id,omitempty"`
+	RunID  string `json:"run_id,omitempty"`
 }
 
 // CronTickPayload is the payload for EventCronTick events.
@@ -504,6 +507,13 @@ type ToolLifecyclePayload struct {
 	Result     string `json:"result,omitempty"`
 	Error      string `json:"error,omitempty"`
 	Data       any    `json:"data,omitempty"`
+	// Task correlation — populated when the tool runs inside a task context.
+	GoalID       string `json:"goal_id,omitempty"`
+	TaskID       string `json:"task_id,omitempty"`
+	RunID        string `json:"run_id,omitempty"`
+	StepID       string `json:"step_id,omitempty"`
+	ParentTaskID string `json:"parent_task_id,omitempty"`
+	ParentRunID  string `json:"parent_run_id,omitempty"`
 }
 
 // ToolDecisionKind classifies projected tool decision payloads carried on
@@ -560,6 +570,13 @@ type TurnResultPayload struct {
 	FallbackReason string `json:"fallback_reason,omitempty"`
 	InputTokens    int64  `json:"input_tokens,omitempty"`
 	OutputTokens   int64  `json:"output_tokens,omitempty"`
+	// Task correlation — populated when the turn runs inside a task context.
+	GoalID       string `json:"goal_id,omitempty"`
+	TaskID       string `json:"task_id,omitempty"`
+	RunID        string `json:"run_id,omitempty"`
+	StepID       string `json:"step_id,omitempty"`
+	ParentTaskID string `json:"parent_task_id,omitempty"`
+	ParentRunID  string `json:"parent_run_id,omitempty"`
 }
 
 // TalkModePayload is the payload for EventTalkMode events.

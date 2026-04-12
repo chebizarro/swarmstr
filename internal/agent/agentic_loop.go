@@ -48,6 +48,8 @@ type AgenticLoopConfig struct {
 	ToolEventSink ToolLifecycleSink
 	// ContextWindowTokens bounds tool-result context guards between LLM calls.
 	ContextWindowTokens int
+	// Trace carries task/run/step correlation IDs for observability.
+	Trace TraceContext
 }
 
 // ToolExecResult holds the outcome of a single tool execution.
@@ -154,7 +156,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 
 		// Execute tool calls using src-shaped batch partitioning: consecutive
 		// concurrency-safe calls run together, others run serially.
-		results := executeToolBatches(ctx, cfg.Executor, calls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink)
+		results := executeToolBatches(ctx, cfg.Executor, calls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace)
 
 		// Append tool results and check for loop blocking.
 		for _, r := range results {
@@ -272,7 +274,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 // executeToolBatches partitions calls using canonical src-style scheduling:
 // consecutive concurrency-safe calls are grouped into parallel batches, while
 // all other calls run serially. Returned results preserve the original call order.
-func executeToolBatches(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink) []ToolExecResult {
+func executeToolBatches(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext) []ToolExecResult {
 	if sessionID == "" {
 		sessionID = SessionIDFromContext(ctx)
 	}
@@ -280,17 +282,17 @@ func executeToolBatches(ctx context.Context, executor ToolExecutor, calls []Tool
 	results := make([]ToolExecResult, 0, len(calls))
 	concurrencyLimit := getMaxToolUseConcurrency()
 	for batchIndex, batch := range batches {
-		emitSchedulerEvents(batch, batchIndex, len(batches), concurrencyLimit, sessionID, turnID, sink)
+		emitSchedulerEvents(batch, batchIndex, len(batches), concurrencyLimit, sessionID, turnID, sink, trace)
 		if batch.isConcurrencySafe {
-			results = append(results, executeToolBatchParallel(ctx, executor, batch.calls, concurrencyLimit, sessionID, turnID, sink)...)
+			results = append(results, executeToolBatchParallel(ctx, executor, batch.calls, concurrencyLimit, sessionID, turnID, sink, trace)...)
 			continue
 		}
-		results = append(results, executeToolBatchSerial(ctx, executor, batch.calls, sessionID, turnID, sink)...)
+		results = append(results, executeToolBatchSerial(ctx, executor, batch.calls, sessionID, turnID, sink, trace)...)
 	}
 	return results
 }
 
-func emitSchedulerEvents(batch toolCallBatch, batchIndex, batchCount, concurrencyLimit int, sessionID, turnID string, sink ToolLifecycleSink) {
+func emitSchedulerEvents(batch toolCallBatch, batchIndex, batchCount, concurrencyLimit int, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext) {
 	mode := "serial"
 	limit := 0
 	if batch.isConcurrencySafe {
@@ -305,6 +307,7 @@ func emitSchedulerEvents(batch toolCallBatch, batchIndex, batchCount, concurrenc
 			TurnID:     turnID,
 			ToolCallID: call.ID,
 			ToolName:   call.Name,
+			Trace:     trace,
 			Data: ToolSchedulerDecision{
 				Kind:             ToolDecisionKindScheduler,
 				Mode:             mode,
@@ -341,7 +344,7 @@ func partitionToolCalls(executor ToolExecutor, calls []ToolCall) []toolCallBatch
 	return batches
 }
 
-func executeToolBatchParallel(ctx context.Context, executor ToolExecutor, calls []ToolCall, concurrencyLimit int, sessionID, turnID string, sink ToolLifecycleSink) []ToolExecResult {
+func executeToolBatchParallel(ctx context.Context, executor ToolExecutor, calls []ToolCall, concurrencyLimit int, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext) []ToolExecResult {
 	results := make([]ToolExecResult, len(calls))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrencyLimit)
@@ -352,22 +355,22 @@ func executeToolBatchParallel(ctx context.Context, executor ToolExecutor, calls 
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[idx] = executeSingleToolCall(ctx, executor, c, sessionID, turnID, sink)
+			results[idx] = executeSingleToolCall(ctx, executor, c, sessionID, turnID, sink, trace)
 		}(i, call)
 	}
 	wg.Wait()
 	return results
 }
 
-func executeToolBatchSerial(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink) []ToolExecResult {
+func executeToolBatchSerial(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext) []ToolExecResult {
 	results := make([]ToolExecResult, len(calls))
 	for i, call := range calls {
-		results[i] = executeSingleToolCall(ctx, executor, call, sessionID, turnID, sink)
+		results[i] = executeSingleToolCall(ctx, executor, call, sessionID, turnID, sink, trace)
 	}
 	return results
 }
 
-func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call ToolCall, sessionID, turnID string, sink ToolLifecycleSink) ToolExecResult {
+func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call ToolCall, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext) ToolExecResult {
 	result := ToolExecResult{ToolCallID: call.ID}
 	if sessionID == "" {
 		sessionID = SessionIDFromContext(ctx)
@@ -395,6 +398,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 				TurnID:     turnID,
 				ToolCallID: call.ID,
 				ToolName:   call.Name,
+				Trace:     trace,
 				Data:       decision,
 			})
 			if loopResult.Level == toolloop.Critical {
@@ -408,6 +412,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 					TurnID:     turnID,
 					ToolCallID: call.ID,
 					ToolName:   call.Name,
+					Trace:     trace,
 					Error:      loopResult.Message,
 					Data:       decision,
 				})
@@ -423,6 +428,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		TurnID:     turnID,
 		ToolCallID: call.ID,
 		ToolName:   call.Name,
+		Trace:     trace,
 	})
 	value, execErr := executor.Execute(ctx, call)
 	if execErr != nil {
@@ -436,6 +442,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 			TurnID:     turnID,
 			ToolCallID: call.ID,
 			ToolName:   call.Name,
+			Trace:     trace,
 			Error:      errMsg,
 		})
 		if loopAware != nil {
@@ -460,6 +467,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		TurnID:     turnID,
 		ToolCallID: call.ID,
 		ToolName:   call.Name,
+		Trace:     trace,
 		Result:     value,
 	})
 	return result
@@ -486,7 +494,7 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 			ToolCalls: pendingCalls,
 		})
 
-		results := executeToolBatches(ctx, cfg.Executor, pendingCalls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink)
+		results := executeToolBatches(ctx, cfg.Executor, pendingCalls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace)
 		for _, r := range results {
 			messages = append(messages, LLMMessage{
 				Role:       "tool",
@@ -586,6 +594,7 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 		TurnID:              turn.TurnID,
 		ToolEventSink:       turn.ToolEventSink,
 		ContextWindowTokens: turn.ContextWindowTokens,
+		Trace:               turn.Trace,
 	})
 	if err != nil {
 		return ProviderResult{}, err
