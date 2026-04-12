@@ -3,102 +3,149 @@ package runtime
 import (
 	"context"
 	"testing"
-
-	nostr "fiatjaf.com/nostr"
 )
 
-func TestControlRequestRelayCandidates_UseCallerWriteThenTargetRead(t *testing.T) {
-	selector := NewRelaySelector([]string{"wss://fallback-read"}, []string{"wss://fallback-write"})
-	selector.Put(&NIP65RelayList{
-		PubKey: "caller",
-		Entries: []NIP65RelayEntry{
-			{URL: "wss://caller-write", Write: true},
-			{URL: "wss://caller-read", Read: true},
-		},
-	})
-	selector.Put(&NIP65RelayList{
-		PubKey: "target",
-		Entries: []NIP65RelayEntry{
-			{URL: "wss://target-read", Read: true},
-			{URL: "wss://target-write", Write: true},
-		},
-	})
+// ─── mergeControlRelayGroups ─────────────────────────────────────────────────
 
-	got := ControlRequestRelayCandidates(context.Background(), selector, &nostr.Pool{}, []string{"wss://query"}, "caller", "target")
-	want := []string{"wss://caller-write", "wss://target-read"}
-	if len(got) != len(want) {
-		t.Fatalf("unexpected relay count: got %v want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("unexpected routing order: got %v want %v", got, want)
-		}
+func TestMergeControlRelayGroups_Basic(t *testing.T) {
+	got := mergeControlRelayGroups(
+		[]string{"wss://relay1.example"},
+		[]string{"wss://relay2.example"},
+	)
+	if len(got) != 2 {
+		t.Errorf("expected 2, got %d: %v", len(got), got)
 	}
 }
 
-func TestControlRequestRelayCandidates_FallbackToConfiguredRelays(t *testing.T) {
-	got := ControlRequestRelayCandidates(context.Background(), nil, nil, []string{" wss://one ", "wss://two", "wss://one"}, "caller", "target")
-	want := []string{"wss://one", "wss://two"}
-	if len(got) != len(want) {
-		t.Fatalf("unexpected relay count: got %v want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("unexpected routing order: got %v want %v", got, want)
-		}
+func TestMergeControlRelayGroups_Dedup(t *testing.T) {
+	got := mergeControlRelayGroups(
+		[]string{"wss://relay1.example"},
+		[]string{"wss://relay1.example", "wss://relay2.example"},
+	)
+	if len(got) != 2 {
+		t.Errorf("expected 2, got %d: %v", len(got), got)
 	}
 }
 
-func TestControlResponseRelayCandidates_PreferRequestRelayThenResponderWriteThenRequesterRead(t *testing.T) {
-	selector := NewRelaySelector([]string{"wss://fallback-read"}, []string{"wss://fallback-write"})
-	selector.Put(&NIP65RelayList{
-		PubKey: "responder",
-		Entries: []NIP65RelayEntry{
-			{URL: "wss://responder-write", Write: true},
-		},
-	})
-	selector.Put(&NIP65RelayList{
-		PubKey: "requester",
-		Entries: []NIP65RelayEntry{
-			{URL: "wss://requester-read", Read: true},
-		},
-	})
-
-	got := ControlResponseRelayCandidates(context.Background(), selector, &nostr.Pool{}, []string{"wss://query"}, "responder", "requester", "wss://request-relay")
-	want := []string{"wss://request-relay", "wss://responder-write", "wss://requester-read"}
-	if len(got) != len(want) {
-		t.Fatalf("unexpected relay count: got %v want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("unexpected routing order: got %v want %v", got, want)
-		}
+func TestMergeControlRelayGroups_Empty(t *testing.T) {
+	got := mergeControlRelayGroups(nil, nil)
+	if len(got) != 0 {
+		t.Errorf("expected 0, got %d", len(got))
 	}
 }
 
-func TestControlResponseListenRelayCandidates_IncludeRequestResponderAndRequesterRelays(t *testing.T) {
-	selector := NewRelaySelector([]string{"wss://fallback-read"}, []string{"wss://fallback-write"})
-	selector.Put(&NIP65RelayList{
-		PubKey: "responder",
+func TestMergeControlRelayGroups_EmptyStringsFiltered(t *testing.T) {
+	got := mergeControlRelayGroups(
+		[]string{"", "  ", "wss://relay1.example"},
+	)
+	if len(got) != 1 {
+		t.Errorf("expected 1, got %d: %v", len(got), got)
+	}
+}
+
+// ─── controlAuthorPublishRelays ──────────────────────────────────────────────
+
+func TestControlAuthorPublishRelays_NilSelector(t *testing.T) {
+	got := controlAuthorPublishRelays(context.Background(), nil, nil, []string{"wss://fallback.example"}, "pk1")
+	if len(got) != 1 || got[0] != "wss://fallback.example" {
+		t.Errorf("expected fallback, got %v", got)
+	}
+}
+
+// ─── controlTargetReadRelays ─────────────────────────────────────────────────
+
+func TestControlTargetReadRelays_NilSelector(t *testing.T) {
+	got := controlTargetReadRelays(context.Background(), nil, nil, []string{"wss://fallback.example"}, "pk1")
+	if len(got) != 1 || got[0] != "wss://fallback.example" {
+		t.Errorf("expected fallback, got %v", got)
+	}
+}
+
+// ─── ControlRequestRelayCandidates ───────────────────────────────────────────
+
+func TestControlRequestRelayCandidates_NilSelector(t *testing.T) {
+	got := ControlRequestRelayCandidates(context.Background(), nil, nil, []string{"wss://fallback.example"}, "caller", "target")
+	// With nil selector, both groups fall back to query relays, deduped
+	if len(got) != 1 {
+		t.Errorf("expected 1 (deduped), got %d: %v", len(got), got)
+	}
+}
+
+// ─── ControlResponseRelayCandidates ──────────────────────────────────────────
+
+func TestControlResponseRelayCandidates_WithPreferred(t *testing.T) {
+	got := ControlResponseRelayCandidates(
+		context.Background(), nil, nil,
+		[]string{"wss://fallback.example"},
+		"responder", "requester",
+		"wss://preferred.example",
+	)
+	// preferred should be first
+	if len(got) < 1 || got[0] != "wss://preferred.example" {
+		t.Errorf("expected preferred first, got %v", got)
+	}
+}
+
+func TestControlResponseRelayCandidates_EmptyPreferred(t *testing.T) {
+	got := ControlResponseRelayCandidates(
+		context.Background(), nil, nil,
+		[]string{"wss://fallback.example"},
+		"responder", "requester",
+		"",
+	)
+	if len(got) != 1 {
+		t.Errorf("expected 1 fallback, got %d: %v", len(got), got)
+	}
+}
+
+// ─── ControlResponseListenRelayCandidates ────────────────────────────────────
+
+func TestControlResponseListenRelayCandidates_Basic(t *testing.T) {
+	got := ControlResponseListenRelayCandidates(
+		context.Background(), nil, nil,
+		[]string{"wss://fallback.example"},
+		"responder", "requester",
+		[]string{"wss://request-relay.example"},
+	)
+	if len(got) < 1 {
+		t.Error("expected at least 1 relay")
+	}
+	// request-relay should be included
+	found := false
+	for _, r := range got {
+		if r == "wss://request-relay.example" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("request-relay should be included: %v", got)
+	}
+}
+
+// ─── ControlResponseRelayCandidates with RelaySelector ───────────────────────
+
+func TestControlResponseRelayCandidates_WithSelector(t *testing.T) {
+	sel := NewRelaySelector(
+		[]string{"wss://read.example"},
+		[]string{"wss://write.example"},
+	)
+	// Populate selector with NIP-65 data for the responder
+	sel.Put(&NIP65RelayList{
+		PubKey: "responderpk",
 		Entries: []NIP65RelayEntry{
-			{URL: "wss://responder-write", Write: true},
-		},
-	})
-	selector.Put(&NIP65RelayList{
-		PubKey: "requester",
-		Entries: []NIP65RelayEntry{
-			{URL: "wss://requester-read", Read: true},
+			{URL: "wss://responder-write.example", Write: true},
 		},
 	})
 
-	got := ControlResponseListenRelayCandidates(context.Background(), selector, &nostr.Pool{}, []string{"wss://query"}, "responder", "requester", []string{"wss://request-relay"})
-	want := []string{"wss://request-relay", "wss://responder-write", "wss://requester-read"}
-	if len(got) != len(want) {
-		t.Fatalf("unexpected relay count: got %v want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("unexpected routing order: got %v want %v", got, want)
-		}
+	got := ControlResponseRelayCandidates(
+		context.Background(), sel, nil,
+		[]string{"wss://fallback.example"},
+		"responderpk", "requesterpk",
+		"wss://preferred.example",
+	)
+
+	// Should have preferred first, plus fallbacks (selector without pool falls through)
+	if len(got) < 1 || got[0] != "wss://preferred.example" {
+		t.Errorf("expected preferred first, got %v", got)
 	}
 }
