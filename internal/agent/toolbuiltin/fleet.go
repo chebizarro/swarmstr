@@ -47,6 +47,11 @@ func rpcCacheLookup(agentHex string) (result string, found bool) {
 	if !ok || time.Since(e.at) > rpcCacheTTL {
 		return "", false
 	}
+	// Only return cached results for failures (timeout, send_failed, disconnected).
+	// Successful replies must not be cached — each RPC should be a fresh call.
+	if !e.isTimeout {
+		return "", false
+	}
 	return e.result, true
 }
 

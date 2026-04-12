@@ -323,3 +323,192 @@ func TestFetchURL_MockServer(t *testing.T) {
 		t.Errorf("data = %q", string(data))
 	}
 }
+
+// ─── Registry ─────────────────────────────────────────────────────────────────
+
+func TestListTranscribers(t *testing.T) {
+	names := ListTranscribers()
+	if len(names) == 0 {
+		t.Fatal("expected at least some registered transcribers")
+	}
+	// Check known ones are present
+	found := map[string]bool{}
+	for _, n := range names {
+		found[n] = true
+	}
+	for _, expected := range []string{"openai", "groq", "deepgram", "mistral"} {
+		if !found[expected] {
+			t.Errorf("missing registered transcriber: %s", expected)
+		}
+	}
+}
+
+func TestResolveTranscriber_Known(t *testing.T) {
+	for _, name := range []string{"openai", "groq", "deepgram", "mistral", "google", "moonshot", "minimax"} {
+		tr, err := ResolveTranscriber(name)
+		if err != nil {
+			t.Errorf("ResolveTranscriber(%q): %v", name, err)
+			continue
+		}
+		if tr == nil {
+			t.Errorf("ResolveTranscriber(%q) returned nil", name)
+		}
+	}
+}
+
+func TestResolveTranscriber_Unknown(t *testing.T) {
+	_, err := ResolveTranscriber("nonexistent")
+	if err == nil {
+		t.Error("expected error for unknown transcriber")
+	}
+	if !strings.Contains(err.Error(), "unknown transcriber") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveTranscriber_CaseInsensitive(t *testing.T) {
+	tr, err := ResolveTranscriber("OpenAI")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr == nil {
+		t.Error("expected non-nil")
+	}
+}
+
+func TestDefaultTranscriber_NoEnvKeys(t *testing.T) {
+	// Without any API keys set, DefaultTranscriber should return nil
+	// We can't unset env vars that might already be set in CI,
+	// so just verify it doesn't panic
+	_ = DefaultTranscriber()
+}
+
+// ─── Transcriber constructors and Configured() ───────────────────────────────
+
+func TestNewDeepgramTranscriber(t *testing.T) {
+	tr := NewDeepgramTranscriber()
+	if tr == nil {
+		t.Fatal("expected non-nil")
+	}
+	// Without DEEPGRAM_API_KEY, should not be configured
+	// (may be configured if env var is set in CI)
+	_ = tr.Configured()
+}
+
+func TestNewGoogleSTTTranscriber(t *testing.T) {
+	tr := NewGoogleSTTTranscriber()
+	if tr == nil {
+		t.Fatal("expected non-nil")
+	}
+	_ = tr.Configured()
+}
+
+func TestNewGroqTranscriber(t *testing.T) {
+	tr := NewGroqTranscriber()
+	if tr == nil {
+		t.Fatal("expected non-nil")
+	}
+	_ = tr.Configured()
+}
+
+func TestNewMinimaxTranscriber(t *testing.T) {
+	tr := NewMinimaxTranscriber()
+	if tr == nil {
+		t.Fatal("expected non-nil")
+	}
+	_ = tr.Configured()
+}
+
+func TestNewMistralTranscriber(t *testing.T) {
+	tr := NewMistralTranscriber()
+	if tr == nil {
+		t.Fatal("expected non-nil")
+	}
+	_ = tr.Configured()
+}
+
+func TestNewMoonshotTranscriber(t *testing.T) {
+	tr := NewMoonshotTranscriber()
+	if tr == nil {
+		t.Fatal("expected non-nil")
+	}
+	_ = tr.Configured()
+}
+
+// ─── googleAudioEncoding ──────────────────────────────────────────────────────
+
+func TestGoogleAudioEncoding(t *testing.T) {
+	tests := []struct {
+		mime     string
+		wantEnc  string
+		wantRate int
+	}{
+		{"audio/flac", "FLAC", 16000},
+		{"audio/wav", "LINEAR16", 16000},
+		{"audio/ogg", "OGG_OPUS", 16000},
+		{"audio/webm", "WEBM_OPUS", 48000},
+		{"audio/mpeg", "MP3", 16000},
+		{"audio/mp3", "MP3", 16000},
+		{"AUDIO/FLAC", "FLAC", 16000},
+	}
+	for _, tt := range tests {
+		enc, rate := googleAudioEncoding(tt.mime)
+		if enc != tt.wantEnc {
+			t.Errorf("googleAudioEncoding(%q) enc = %q, want %q", tt.mime, enc, tt.wantEnc)
+		}
+		if rate != tt.wantRate {
+			t.Errorf("googleAudioEncoding(%q) rate = %d, want %d", tt.mime, rate, tt.wantRate)
+		}
+	}
+}
+
+// ─── FetchAudioBytes with URL ─────────────────────────────────────────────────
+
+func TestFetchAudioBytes_URL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Write([]byte("fake audio data"))
+	}))
+	defer srv.Close()
+
+	att := MediaAttachment{Type: "audio", URL: srv.URL + "/audio.mp3", MimeType: "audio/mpeg"}
+	data, mime, err := FetchAudioBytes(context.Background(), att)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "fake audio data" {
+		t.Errorf("data: %q", string(data))
+	}
+	if mime != "audio/mpeg" {
+		t.Errorf("mime: %q", mime)
+	}
+}
+
+// ─── JSON round-trip ──────────────────────────────────────────────────────────
+
+func TestMediaAttachment_JSONRoundTrip(t *testing.T) {
+	att := MediaAttachment{
+		Type:     "image",
+		URL:      "https://example.com/img.png",
+		MimeType: "image/png",
+		Filename: "img.png",
+	}
+	b, err := json.Marshal(att)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded MediaAttachment
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.URL != att.URL || decoded.Type != att.Type {
+		t.Errorf("mismatch: %+v", decoded)
+	}
+}
+
+func TestImageRef_Fields(t *testing.T) {
+	ref := ImageRef{URL: "https://example.com/img.png", MimeType: "image/png"}
+	if ref.URL == "" || ref.MimeType == "" {
+		t.Error("expected non-empty fields")
+	}
+}
