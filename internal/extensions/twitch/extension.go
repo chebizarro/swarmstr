@@ -50,6 +50,10 @@ const (
 	pingInterval   = 4 * time.Minute
 )
 
+var twitchDialTLS = func(addr string, cfg *tls.Config) (net.Conn, error) {
+	return tls.DialWithDialer(&net.Dialer{Timeout: 15 * time.Second}, "tcp", addr, cfg)
+}
+
 func init() {
 	channels.RegisterChannelPlugin(&TwitchPlugin{})
 }
@@ -205,7 +209,7 @@ func (b *twitchBot) run() {
 
 func (b *twitchBot) connect() error {
 	tlsCfg := &tls.Config{ServerName: "irc-ws.chat.twitch.tv"}
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 15 * time.Second}, "tcp", twitchIRCAddr, tlsCfg)
+	conn, err := twitchDialTLS(twitchIRCAddr, tlsCfg)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
