@@ -1,0 +1,261 @@
+package methods
+
+import (
+	"sort"
+	"strings"
+)
+
+type AdminDispatchGroup string
+
+const (
+	AdminDispatchAgents   AdminDispatchGroup = "agents"
+	AdminDispatchChannels AdminDispatchGroup = "channels"
+	AdminDispatchConfig   AdminDispatchGroup = "config"
+	AdminDispatchCron     AdminDispatchGroup = "cron"
+	AdminDispatchExec     AdminDispatchGroup = "exec"
+	AdminDispatchMCP      AdminDispatchGroup = "mcp"
+	AdminDispatchMedia    AdminDispatchGroup = "media"
+	AdminDispatchNodes    AdminDispatchGroup = "nodes"
+	AdminDispatchPlugins  AdminDispatchGroup = "plugins"
+	AdminDispatchRuntime  AdminDispatchGroup = "runtime"
+	AdminDispatchSessions AdminDispatchGroup = "sessions"
+	AdminDispatchTasks    AdminDispatchGroup = "tasks"
+	AdminDispatchSystem   AdminDispatchGroup = "system"
+	AdminDispatchACP      AdminDispatchGroup = "acp"
+)
+
+var adminDispatchRegistry = []struct {
+	group   AdminDispatchGroup
+	methods []string
+}{
+	{AdminDispatchAgents, []string{
+		MethodAgent,
+		MethodAgentWait,
+		MethodAgentIdentityGet,
+		MethodGatewayIdentityGet,
+		MethodAgentsList,
+		MethodAgentsCreate,
+		MethodAgentsUpdate,
+		MethodAgentsDelete,
+		MethodAgentsAssign,
+		MethodAgentsUnassign,
+		MethodAgentsActive,
+		MethodAgentsFilesList,
+		MethodAgentsFilesGet,
+		MethodAgentsFilesSet,
+		MethodModelsList,
+		MethodToolsCatalog,
+		MethodToolsProfileGet,
+		MethodToolsProfileSet,
+		MethodSkillsStatus,
+		MethodSkillsBins,
+		MethodSkillsInstall,
+		MethodSkillsUpdate,
+	}},
+	{AdminDispatchChannels, []string{
+		MethodChannelsJoin,
+		MethodChannelsLeave,
+		MethodChannelsList,
+		MethodChannelsSend,
+		MethodUsageCost,
+	}},
+	{AdminDispatchConfig, []string{
+		MethodTalkConfig,
+		MethodConfigGet,
+		MethodListGet,
+		MethodListPut,
+		MethodConfigPut,
+		MethodConfigSet,
+		MethodConfigApply,
+		MethodConfigPatch,
+		MethodConfigSchema,
+		MethodConfigSchemaLookup,
+		MethodSecurityAudit,
+	}},
+	{AdminDispatchCron, []string{
+		MethodCronList,
+		MethodCronStatus,
+		MethodCronAdd,
+		MethodCronUpdate,
+		MethodCronRemove,
+		MethodCronRun,
+		MethodCronRuns,
+	}},
+	{AdminDispatchExec, []string{
+		MethodExecApprovalsGet,
+		MethodExecApprovalsSet,
+		MethodExecApprovalRequest,
+		MethodExecApprovalWaitDecision,
+		MethodExecApprovalResolve,
+	}},
+	{AdminDispatchMCP, []string{
+		MethodMCPList,
+		MethodMCPGet,
+		MethodMCPPut,
+		MethodMCPRemove,
+		MethodMCPTest,
+		MethodMCPReconnect,
+		MethodMCPAuthStart,
+		MethodMCPAuthRefresh,
+		MethodMCPAuthClear,
+		MethodSecretsReload,
+		MethodSecretsResolve,
+	}},
+	{AdminDispatchMedia, []string{
+		MethodTalkMode,
+		MethodBrowserRequest,
+		MethodVoicewakeGet,
+		MethodVoicewakeSet,
+		MethodTTSStatus,
+		MethodTTSProviders,
+		MethodTTSSetProvider,
+		MethodTTSEnable,
+		MethodTTSDisable,
+		MethodTTSConvert,
+	}},
+	{AdminDispatchNodes, []string{
+		MethodNodePairRequest,
+		MethodNodePairList,
+		MethodNodePairApprove,
+		MethodNodePairReject,
+		MethodNodePairVerify,
+		MethodDevicePairList,
+		MethodDevicePairApprove,
+		MethodDevicePairReject,
+		MethodDevicePairRemove,
+		MethodDeviceTokenRotate,
+		MethodDeviceTokenRevoke,
+		MethodNodeList,
+		MethodNodeDescribe,
+		MethodNodeRename,
+		MethodNodeCanvasCapabilityRefresh,
+		MethodNodeInvoke,
+		MethodNodeEvent,
+		MethodNodeResult,
+		MethodNodeInvokeResult,
+		MethodNodePendingEnqueue,
+		MethodNodePendingPull,
+		MethodNodePendingAck,
+		MethodNodePendingDrain,
+		MethodExecApprovalsNodeGet,
+		MethodExecApprovalsNodeSet,
+		MethodCanvasGet,
+		MethodCanvasList,
+		MethodCanvasUpdate,
+		MethodCanvasDelete,
+	}},
+	{AdminDispatchPlugins, []string{
+		MethodPluginsInstall,
+		MethodPluginsUninstall,
+		MethodPluginsUpdate,
+		MethodPluginsRegistryList,
+		MethodPluginsRegistryGet,
+		MethodPluginsRegistrySearch,
+	}},
+	{AdminDispatchRuntime, []string{
+		MethodLogsTail,
+		MethodRuntimeObserve,
+		MethodChannelsLogout,
+		MethodRelayPolicyGet,
+	}},
+	{AdminDispatchSessions, []string{
+		MethodChatSend,
+		MethodChatHistory,
+		MethodSessionGet,
+		MethodSessionsList,
+		MethodSessionsPreview,
+		MethodSessionsPatch,
+		MethodSessionsReset,
+		MethodSessionsDelete,
+		MethodSessionsCompact,
+		MethodSessionsPrune,
+		MethodSessionsExport,
+		MethodSessionsSpawn,
+	}},
+	{AdminDispatchTasks, []string{
+		MethodTasksCreate,
+		MethodTasksGet,
+		MethodTasksList,
+		MethodTasksCancel,
+		MethodTasksResume,
+		MethodTasksDoctor,
+		MethodTasksSummary,
+		MethodTasksAuditExport,
+		MethodTasksTrace,
+	}},
+	{AdminDispatchSystem, []string{
+		MethodSupportedMethods,
+		MethodHealth,
+		MethodDoctorMemoryStatus,
+		MethodChannelsStatus,
+		MethodStatus,
+		MethodStatusAlias,
+		MethodUsageStatus,
+		MethodMemorySearch,
+		MethodMemoryCompact,
+		MethodChatAbort,
+		MethodSandboxRun,
+		MethodWizardStart,
+		MethodWizardNext,
+		MethodWizardCancel,
+		MethodWizardStatus,
+		MethodUpdateRun,
+		MethodLastHeartbeat,
+		MethodSetHeartbeats,
+		MethodWake,
+		MethodSystemPresence,
+		MethodSystemEvent,
+		MethodSend,
+		MethodHooksList,
+		MethodHooksEnable,
+		MethodHooksDisable,
+		MethodHooksInfo,
+		MethodHooksCheck,
+	}},
+	{AdminDispatchACP, []string{
+		MethodACPRegister,
+		MethodACPUnregister,
+		MethodACPPeers,
+		MethodACPDispatch,
+		MethodACPPipeline,
+	}},
+}
+
+func SupportedMethods() []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for _, entry := range adminDispatchRegistry {
+		for _, method := range entry.methods {
+			method = strings.TrimSpace(method)
+			if method == "" {
+				continue
+			}
+			if _, ok := seen[method]; ok {
+				continue
+			}
+			seen[method] = struct{}{}
+			out = append(out, method)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func InAdminDispatchGroup(group AdminDispatchGroup, method string) bool {
+	method = strings.TrimSpace(method)
+	if method == "" {
+		return false
+	}
+	for _, entry := range adminDispatchRegistry {
+		if entry.group != group {
+			continue
+		}
+		for _, candidate := range entry.methods {
+			if method == candidate {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
