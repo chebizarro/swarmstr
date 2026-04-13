@@ -34,23 +34,6 @@ func dispatchSystem(ctx context.Context, opts ServerOptions, method string, call
 			indexInfo["session_count"] = sessionCount
 		}
 		return map[string]any{"ok": true, "index": indexInfo}, http.StatusOK, nil
-	case methods.MethodChannelsStatus:
-		req, err := methods.DecodeChannelsStatusParams(call.Params)
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		req, err = req.Normalize()
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		if opts.ChannelsStatus == nil {
-			return map[string]any{"channels": []map[string]any{{"id": "nostr", "connected": true}}}, http.StatusOK, nil
-		}
-		out, err := opts.ChannelsStatus(ctx, req)
-		if err != nil {
-			return nil, http.StatusInternalServerError, err
-		}
-		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodStatus, methods.MethodStatusAlias:
 		dmPolicy := opts.Status.DMPolicy
 		if opts.StatusDMPolicy != nil {

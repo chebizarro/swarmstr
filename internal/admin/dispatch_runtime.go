@@ -45,23 +45,6 @@ func dispatchRuntime(ctx context.Context, opts ServerOptions, method string, cal
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
-	case methods.MethodChannelsLogout:
-		req, err := methods.DecodeChannelsLogoutParams(call.Params)
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		req, err = req.Normalize()
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		if opts.ChannelsLogout == nil {
-			return map[string]any{"ok": true, "channel": req.Channel}, http.StatusOK, nil
-		}
-		out, err := opts.ChannelsLogout(ctx, req.Channel)
-		if err != nil {
-			return nil, http.StatusInternalServerError, err
-		}
-		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodRelayPolicyGet:
 		if opts.GetRelayPolicy == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("relay policy provider not configured")
