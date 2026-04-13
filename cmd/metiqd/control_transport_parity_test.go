@@ -55,11 +55,22 @@ func (p parityDMTransport) SendDM(context.Context, string, string) error {
 }
 func (p parityDMTransport) PublicKey() string { return p.pubkey }
 func (p parityDMTransport) Relays() []string  { return append([]string{}, p.relays...) }
-func (p parityDMTransport) SetRelays(relays []string) error {
+func (p *parityDMTransport) SetRelays(relays []string) error {
 	p.relays = append([]string{}, relays...)
 	return nil
 }
 func (p parityDMTransport) Close() {}
+
+func TestParityDMTransportSetRelaysMutatesReceiver(t *testing.T) {
+	bus := &parityDMTransport{pubkey: "parity-pubkey", relays: []string{"wss://old"}}
+	if err := bus.SetRelays([]string{"wss://new-a", "wss://new-b"}); err != nil {
+		t.Fatalf("SetRelays: %v", err)
+	}
+	got := bus.Relays()
+	if len(got) != 2 || got[0] != "wss://new-a" || got[1] != "wss://new-b" {
+		t.Fatalf("relays = %#v", got)
+	}
+}
 
 func TestControlTransportParityMatrixFixtures(t *testing.T) {
 	var fx controlTransportParityFixture
@@ -112,7 +123,7 @@ func newControlTransportParityHarness(t *testing.T, scenario string) *controlTra
 		t.Fatalf("new session store: %v", err)
 	}
 	tools := agent.NewToolRegistry()
-	dmBus := parityDMTransport{pubkey: "parity-pubkey", relays: append([]string{}, cfg.Relays.Read...)}
+	dmBus := &parityDMTransport{pubkey: "parity-pubkey", relays: append([]string{}, cfg.Relays.Read...)}
 	startedAt := time.Now().Add(-5 * time.Second)
 
 	prevSessionStore := controlSessionStore
