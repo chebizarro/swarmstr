@@ -349,6 +349,8 @@ func dispatchConfig(ctx context.Context, opts ServerOptions, method string, call
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ConfigSchema(cfg), http.StatusOK, nil
+	case methods.MethodConfigSchemaLookup, methods.MethodSecurityAudit:
+		return delegateControlCall(ctx, opts, method, call.Params, "config provider not configured")
 	default:
 		return nil, 0, nil
 	}

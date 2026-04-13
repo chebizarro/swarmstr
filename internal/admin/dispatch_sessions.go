@@ -311,6 +311,8 @@ func dispatchSessions(ctx context.Context, opts ServerOptions, method string, ca
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodSessionsExport, methods.MethodSessionsSpawn:
+		return delegateControlCall(ctx, opts, method, call.Params, "session provider not configured")
 	default:
 		return nil, 0, nil
 	}

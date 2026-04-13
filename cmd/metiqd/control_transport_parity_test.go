@@ -159,6 +159,9 @@ func newControlTransportParityHarness(t *testing.T, scenario string) *controlTra
 		SupportedMethods: func(context.Context) ([]string, error) {
 			return supportedMethods(cfgState.Get()), nil
 		},
+		DelegateControlCall: func(ctx context.Context, method string, params json.RawMessage) (any, int, error) {
+			return dispatchAdminDelegatedControlCall(ctx, admin.CallerPubKeyFromContext(ctx), method, params, dmBus, nil, nil, nil, nil, nil, docsRepo, transcriptRepo, nil, cfgState, tools, nil, startedAt)
+		},
 		ListSessions: func(ctx context.Context, limit int) ([]state.SessionDoc, error) {
 			return docsRepo.ListSessions(ctx, limit)
 		},
