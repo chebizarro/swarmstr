@@ -24,9 +24,9 @@ func TestStatusToMap(t *testing.T) {
 			{ID: "sp1", Kind: "npm", Label: "npm install"},
 		},
 		Requires: &HookRequires{
-			Bins:   []string{"node"},
-			Env:    []string{"API_KEY"},
-			OS:     []string{"linux"},
+			Bins: []string{"node"},
+			Env:  []string{"API_KEY"},
+			OS:   []string{"linux"},
 		},
 	}
 
