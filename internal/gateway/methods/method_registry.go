@@ -62,7 +62,6 @@ var adminDispatchRegistry = []struct {
 		MethodUsageCost,
 	}},
 	{AdminDispatchConfig, []string{
-		MethodTalkConfig,
 		MethodConfigGet,
 		MethodListGet,
 		MethodListPut,
@@ -104,6 +103,7 @@ var adminDispatchRegistry = []struct {
 		MethodSecretsResolve,
 	}},
 	{AdminDispatchMedia, []string{
+		MethodTalkConfig,
 		MethodTalkMode,
 		MethodBrowserRequest,
 		MethodVoicewakeGet,
