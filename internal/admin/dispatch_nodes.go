@@ -459,6 +459,8 @@ func dispatchNodes(ctx context.Context, opts ServerOptions, method string, call 
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodCanvasGet, methods.MethodCanvasList, methods.MethodCanvasUpdate, methods.MethodCanvasDelete:
+		return delegateControlCall(ctx, opts, method, call.Params, "canvas provider not configured")
 	default:
 		return nil, 0, nil
 	}

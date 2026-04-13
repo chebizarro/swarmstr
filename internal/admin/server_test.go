@@ -1832,6 +1832,91 @@ func TestDispatchMethodCall_OpenClawHighRiskParityFixtures(t *testing.T) {
 	}
 }
 
+func TestDispatchMethodCallDelegatesPreviouslyMissingMethods(t *testing.T) {
+	cases := []struct {
+		method string
+		params map[string]any
+	}{
+		{methods.MethodChannelsJoin, map[string]any{"group_address": "naddr1example"}},
+		{methods.MethodChannelsLeave, map[string]any{"channel_id": "chan-1"}},
+		{methods.MethodChannelsList, map[string]any{}},
+		{methods.MethodChannelsSend, map[string]any{"channel_id": "chan-1", "text": "hello"}},
+		{methods.MethodMemoryCompact, map[string]any{"session_id": "sess-1"}},
+		{methods.MethodSessionsSpawn, map[string]any{"message": "hello"}},
+		{methods.MethodSessionsExport, map[string]any{"session_id": "sess-1", "format": "html"}},
+		{methods.MethodTasksCreate, map[string]any{"task": map[string]any{"title": "T", "instructions": "Do it"}}},
+		{methods.MethodTasksGet, map[string]any{"task_id": "task-1"}},
+		{methods.MethodTasksList, map[string]any{"limit": 5}},
+		{methods.MethodTasksCancel, map[string]any{"task_id": "task-1"}},
+		{methods.MethodTasksResume, map[string]any{"task_id": "task-1"}},
+		{methods.MethodTasksDoctor, map[string]any{"task_id": "task-1"}},
+		{methods.MethodTasksSummary, map[string]any{}},
+		{methods.MethodTasksAuditExport, map[string]any{"goal_id": "goal-1"}},
+		{methods.MethodTasksTrace, map[string]any{"task_id": "task-1"}},
+		{methods.MethodConfigSchemaLookup, map[string]any{"path": "dm.policy"}},
+		{methods.MethodSecurityAudit, map[string]any{}},
+		{methods.MethodACPRegister, map[string]any{"pubkey": strings.Repeat("a", 64)}},
+		{methods.MethodACPUnregister, map[string]any{"pubkey": strings.Repeat("a", 64)}},
+		{methods.MethodACPPeers, map[string]any{}},
+		{methods.MethodACPDispatch, map[string]any{"target_pubkey": strings.Repeat("b", 64), "instructions": "Do it"}},
+		{methods.MethodACPPipeline, map[string]any{"steps": []map[string]any{{"peer_pubkey": strings.Repeat("b", 64), "instructions": "Step 1"}}}},
+		{methods.MethodAgentsAssign, map[string]any{"session_id": "sess-1", "agent_id": "main"}},
+		{methods.MethodAgentsUnassign, map[string]any{"session_id": "sess-1"}},
+		{methods.MethodAgentsActive, map[string]any{"limit": 5}},
+		{methods.MethodCanvasGet, map[string]any{"id": "canvas-1"}},
+		{methods.MethodCanvasList, map[string]any{}},
+		{methods.MethodCanvasUpdate, map[string]any{"id": "canvas-1", "content_type": "text/plain", "data": "hello"}},
+		{methods.MethodCanvasDelete, map[string]any{"id": "canvas-1"}},
+		{methods.MethodHooksList, map[string]any{}},
+		{methods.MethodHooksEnable, map[string]any{"hookKey": "wake"}},
+		{methods.MethodHooksDisable, map[string]any{"hookKey": "wake"}},
+		{methods.MethodHooksInfo, map[string]any{"hookKey": "wake"}},
+		{methods.MethodHooksCheck, map[string]any{}},
+	}
+
+	delegated := map[string]int{}
+	opts := ServerOptions{
+		GetConfig: func(context.Context) (state.ConfigDoc, error) {
+			return state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: true, LegacyTokenFallback: true}}, nil
+		},
+		DelegateControlCall: func(ctx context.Context, method string, params json.RawMessage) (any, int, error) {
+			if got := CallerPubKeyFromContext(ctx); got != "token-local" {
+				t.Fatalf("caller pubkey = %q, want token-local", got)
+			}
+			delegated[method]++
+			var decoded map[string]any
+			if len(params) > 0 {
+				if err := json.Unmarshal(params, &decoded); err != nil {
+					t.Fatalf("unmarshal delegated params for %s: %v", method, err)
+				}
+			}
+			return map[string]any{"method": method, "params": decoded}, http.StatusOK, nil
+		},
+	}
+	ctx := context.WithValue(context.Background(), tokenAuthContextKey, true)
+
+	for _, tc := range cases {
+		rr := httptest.NewRecorder()
+		result, status, err := dispatchMethodCall(ctx, rr, newMethodRequest(t, tc.method, tc.params), opts)
+		if err != nil {
+			t.Fatalf("%s err=%v", tc.method, err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("%s status=%d want=%d", tc.method, status, http.StatusOK)
+		}
+		out, ok := result.(map[string]any)
+		if !ok || out["method"] != tc.method {
+			t.Fatalf("%s unexpected result: %#v", tc.method, result)
+		}
+	}
+
+	for _, tc := range cases {
+		if delegated[tc.method] != 1 {
+			t.Fatalf("delegate count for %s = %d, want 1", tc.method, delegated[tc.method])
+		}
+	}
+}
+
 func newMethodRequest(t *testing.T, method string, params any) *http.Request {
 	t.Helper()
 	payload := map[string]any{"method": method}

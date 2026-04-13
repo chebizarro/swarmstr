@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"metiq/internal/gateway/methods"
@@ -10,6 +11,11 @@ import (
 
 func dispatchChannels(ctx context.Context, opts ServerOptions, method string, call methods.CallRequest, cfg state.ConfigDoc) (any, int, error) {
 	switch method {
+	case methods.MethodChannelsJoin,
+		methods.MethodChannelsLeave,
+		methods.MethodChannelsList,
+		methods.MethodChannelsSend:
+		return delegateControlCall(ctx, opts, method, call.Params, "channel runtime not configured")
 	case methods.MethodUsageCost:
 		req, err := methods.DecodeUsageCostParams(call.Params)
 		if err != nil {
@@ -28,6 +34,6 @@ func dispatchChannels(ctx context.Context, opts ServerOptions, method string, ca
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	default:
-		return nil, 0, nil
+		return nil, 0, fmt.Errorf("unknown channel method %q", method)
 	}
 }

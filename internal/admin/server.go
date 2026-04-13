@@ -180,6 +180,7 @@ type ServerOptions struct {
 	GetConfigWithEvent          func(context.Context) (state.ConfigDoc, state.Event, error)
 	GetRelayPolicy              func(context.Context) (methods.RelayPolicyResponse, error)
 	SupportedMethods            func(context.Context) ([]string, error)
+	DelegateControlCall         func(context.Context, string, json.RawMessage) (any, int, error)
 
 	// Metrics is an optional callback that returns the Prometheus text
 	// exposition for /metrics.  If nil the endpoint returns a minimal stub.
@@ -524,6 +525,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			cfg.Control.RequireAuth = false
 		}
 	}
+	ctx = context.WithValue(ctx, callerPubKeyContextKey, auth.CallerPubKey)
 	decision := policy.EvaluateControlCall(auth.CallerPubKey, method, auth.Authenticated, cfg)
 	if !decision.Allowed {
 		if !decision.Authenticated {
@@ -551,6 +553,9 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		methods.MethodAgentsCreate,
 		methods.MethodAgentsUpdate,
 		methods.MethodAgentsDelete,
+		methods.MethodAgentsAssign,
+		methods.MethodAgentsUnassign,
+		methods.MethodAgentsActive,
 		methods.MethodAgentsFilesList,
 		methods.MethodAgentsFilesGet,
 		methods.MethodAgentsFilesSet,
@@ -563,7 +568,11 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		methods.MethodSkillsInstall,
 		methods.MethodSkillsUpdate:
 		return dispatchAgents(ctx, opts, method, call, cfg)
-	case methods.MethodUsageCost:
+	case methods.MethodChannelsJoin,
+		methods.MethodChannelsLeave,
+		methods.MethodChannelsList,
+		methods.MethodChannelsSend,
+		methods.MethodUsageCost:
 		return dispatchChannels(ctx, opts, method, call, cfg)
 	case methods.MethodTalkConfig,
 		methods.MethodConfigGet,
@@ -573,7 +582,9 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		methods.MethodConfigSet,
 		methods.MethodConfigApply,
 		methods.MethodConfigPatch,
-		methods.MethodConfigSchema:
+		methods.MethodConfigSchema,
+		methods.MethodConfigSchemaLookup,
+		methods.MethodSecurityAudit:
 		return dispatchConfig(ctx, opts, method, call, cfg)
 	case methods.MethodCronList,
 		methods.MethodCronStatus,
@@ -636,7 +647,11 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		methods.MethodNodePendingAck,
 		methods.MethodNodePendingDrain,
 		methods.MethodExecApprovalsNodeGet,
-		methods.MethodExecApprovalsNodeSet:
+		methods.MethodExecApprovalsNodeSet,
+		methods.MethodCanvasGet,
+		methods.MethodCanvasList,
+		methods.MethodCanvasUpdate,
+		methods.MethodCanvasDelete:
 		return dispatchNodes(ctx, opts, method, call, cfg)
 	case methods.MethodPluginsInstall,
 		methods.MethodPluginsUninstall,
@@ -659,8 +674,20 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		methods.MethodSessionsReset,
 		methods.MethodSessionsDelete,
 		methods.MethodSessionsCompact,
-		methods.MethodSessionsPrune:
+		methods.MethodSessionsPrune,
+		methods.MethodSessionsExport,
+		methods.MethodSessionsSpawn:
 		return dispatchSessions(ctx, opts, method, call, cfg)
+	case methods.MethodTasksCreate,
+		methods.MethodTasksGet,
+		methods.MethodTasksList,
+		methods.MethodTasksCancel,
+		methods.MethodTasksResume,
+		methods.MethodTasksDoctor,
+		methods.MethodTasksSummary,
+		methods.MethodTasksAuditExport,
+		methods.MethodTasksTrace:
+		return dispatchTasks(ctx, opts, method, call, cfg)
 	case methods.MethodSupportedMethods,
 		methods.MethodHealth,
 		methods.MethodDoctorMemoryStatus,
@@ -669,6 +696,7 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		methods.MethodStatusAlias,
 		methods.MethodUsageStatus,
 		methods.MethodMemorySearch,
+		methods.MethodMemoryCompact,
 		methods.MethodChatAbort,
 		methods.MethodSandboxRun,
 		methods.MethodWizardStart,
@@ -681,8 +709,19 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		methods.MethodWake,
 		methods.MethodSystemPresence,
 		methods.MethodSystemEvent,
-		methods.MethodSend:
+		methods.MethodSend,
+		methods.MethodHooksList,
+		methods.MethodHooksEnable,
+		methods.MethodHooksDisable,
+		methods.MethodHooksInfo,
+		methods.MethodHooksCheck:
 		return dispatchSystem(ctx, opts, method, call, cfg)
+	case methods.MethodACPRegister,
+		methods.MethodACPUnregister,
+		methods.MethodACPPeers,
+		methods.MethodACPDispatch,
+		methods.MethodACPPipeline:
+		return dispatchACP(ctx, opts, method, call, cfg)
 	default:
 		return nil, http.StatusNotFound, fmt.Errorf("unknown method %q", method)
 	}

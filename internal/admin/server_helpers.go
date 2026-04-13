@@ -14,6 +14,22 @@ import (
 	"metiq/internal/store/state"
 )
 
+type callerPubKeyKey string
+
+const callerPubKeyContextKey callerPubKeyKey = "admin-caller-pubkey"
+
+func CallerPubKeyFromContext(ctx context.Context) string {
+	caller, _ := ctx.Value(callerPubKeyContextKey).(string)
+	return strings.TrimSpace(caller)
+}
+
+func delegateControlCall(ctx context.Context, opts ServerOptions, method string, params json.RawMessage, notConfigured string) (any, int, error) {
+	if opts.DelegateControlCall == nil {
+		return nil, http.StatusNotImplemented, errors.New(notConfigured)
+	}
+	return opts.DelegateControlCall(ctx, method, params)
+}
+
 func canonicalMethodName(method string) string {
 	switch strings.TrimSpace(method) {
 	case methods.MethodStatusAlias:

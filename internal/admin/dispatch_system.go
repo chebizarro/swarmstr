@@ -95,6 +95,8 @@ func dispatchSystem(ctx context.Context, opts ServerOptions, method string, call
 			return nil, http.StatusBadRequest, err
 		}
 		return methods.MemorySearchResponse{Results: opts.SearchMemory(req.Query, req.Limit)}, http.StatusOK, nil
+	case methods.MethodMemoryCompact:
+		return delegateControlCall(ctx, opts, method, call.Params, "memory compaction not configured")
 	case methods.MethodChatAbort:
 		req, err := methods.DecodeChatAbortParams(call.Params)
 		if err != nil {
@@ -330,6 +332,12 @@ func dispatchSystem(ctx context.Context, opts ServerOptions, method string, call
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodHooksList,
+		methods.MethodHooksEnable,
+		methods.MethodHooksDisable,
+		methods.MethodHooksInfo,
+		methods.MethodHooksCheck:
+		return delegateControlCall(ctx, opts, method, call.Params, "hooks provider not configured")
 	default:
 		return nil, 0, nil
 	}

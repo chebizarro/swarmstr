@@ -206,6 +206,8 @@ func dispatchAgents(ctx context.Context, opts ServerOptions, method string, call
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodAgentsAssign, methods.MethodAgentsUnassign, methods.MethodAgentsActive:
+		return delegateControlCall(ctx, opts, method, call.Params, "agents provider not configured")
 	case methods.MethodModelsList:
 		req, err := methods.DecodeModelsListParams(call.Params)
 		if err != nil {

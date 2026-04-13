@@ -5510,6 +5510,9 @@ func main() {
 				SupportedMethods: func(_ context.Context) ([]string, error) {
 					return supportedMethods(configState.Get()), nil
 				},
+				DelegateControlCall: func(ctx context.Context, method string, params json.RawMessage) (any, int, error) {
+					return dispatchAdminDelegatedControlCall(ctx, admin.CallerPubKeyFromContext(ctx), method, params, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+				},
 				GetRelayPolicy: func(context.Context) (methods.RelayPolicyResponse, error) {
 					current := configState.Get()
 					return methods.RelayPolicyResponse{
@@ -5710,6 +5713,36 @@ func ensureIngestCheckpoint(ctx context.Context, repo *state.DocsRepository) (st
 	return fallback, nil
 }
 
+func dispatchAdminDelegatedControlCall(
+	ctx context.Context,
+	fromPubKey string,
+	method string,
+	params json.RawMessage,
+	dmBus nostruntime.DMTransport,
+	controlBus *nostruntime.ControlRPCBus,
+	chatCancels *chatAbortRegistry,
+	usageState *usageTracker,
+	logBuffer *runtimeLogBuffer,
+	channelState *channelRuntimeState,
+	docsRepo *state.DocsRepository,
+	transcriptRepo *state.TranscriptRepository,
+	memoryIndex memory.Store,
+	configState *runtimeConfigStore,
+	tools *agent.ToolRegistry,
+	pluginMgr *pluginmanager.GojaPluginManager,
+	startedAt time.Time,
+) (any, int, error) {
+	res, err := handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{
+		FromPubKey: fromPubKey,
+		Method:     method,
+		Params:     params,
+	}, dmBus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+	if err != nil {
+		return nil, controlAdminMethodStatus(err), err
+	}
+	return res.Result, http.StatusOK, nil
+}
+
 func dispatchAdminControlConfigMutation(
 	ctx context.Context,
 	fromPubKey string,
@@ -5754,6 +5787,23 @@ func dispatchAdminControlConfigMutation(
 		return nil, http.StatusInternalServerError, fmt.Errorf("decode %s admin parity result: %w", method, err)
 	}
 	return decoded, http.StatusOK, nil
+}
+
+func controlAdminMethodStatus(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	if errors.Is(err, state.ErrNotFound) {
+		return http.StatusNotFound
+	}
+	if errors.Is(err, methods.ErrConfigConflict) {
+		return http.StatusConflict
+	}
+	var precondition *methods.PreconditionConflictError
+	if errors.As(err, &precondition) {
+		return http.StatusConflict
+	}
+	return http.StatusBadRequest
 }
 
 func controlConfigMutationStatus(err error) int {
