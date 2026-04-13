@@ -53,6 +53,8 @@ var adminDispatchRegistry = []struct {
 		MethodSkillsUpdate,
 	}},
 	{AdminDispatchChannels, []string{
+		MethodChannelsStatus,
+		MethodChannelsLogout,
 		MethodChannelsJoin,
 		MethodChannelsLeave,
 		MethodChannelsList,
@@ -155,7 +157,6 @@ var adminDispatchRegistry = []struct {
 	{AdminDispatchRuntime, []string{
 		MethodLogsTail,
 		MethodRuntimeObserve,
-		MethodChannelsLogout,
 		MethodRelayPolicyGet,
 	}},
 	{AdminDispatchSessions, []string{
@@ -187,7 +188,6 @@ var adminDispatchRegistry = []struct {
 		MethodSupportedMethods,
 		MethodHealth,
 		MethodDoctorMemoryStatus,
-		MethodChannelsStatus,
 		MethodStatus,
 		MethodStatusAlias,
 		MethodUsageStatus,
