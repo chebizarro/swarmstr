@@ -55,6 +55,6 @@ func dispatchRuntime(ctx context.Context, opts ServerOptions, method string, cal
 		}
 		return policyView, http.StatusOK, nil
 	default:
-		return nil, 0, nil
+		return internalRoutingError("runtime", method)
 	}
 }

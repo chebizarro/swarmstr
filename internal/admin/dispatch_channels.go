@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	"metiq/internal/gateway/methods"
@@ -68,6 +67,6 @@ func dispatchChannels(ctx context.Context, opts ServerOptions, method string, ca
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	default:
-		return nil, 0, fmt.Errorf("unknown channel method %q", method)
+		return internalRoutingError("channels", method)
 	}
 }

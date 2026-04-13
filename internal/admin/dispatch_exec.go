@@ -104,6 +104,6 @@ func dispatchExec(ctx context.Context, opts ServerOptions, method string, call m
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	default:
-		return nil, 0, nil
+		return internalRoutingError("exec", method)
 	}
 }

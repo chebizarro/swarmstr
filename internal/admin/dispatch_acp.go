@@ -16,6 +16,6 @@ func dispatchACP(ctx context.Context, opts ServerOptions, method string, call me
 		methods.MethodACPPipeline:
 		return delegateControlCall(ctx, opts, method, call.Params, "acp provider not configured")
 	default:
-		return nil, 0, nil
+		return internalRoutingError("acp", method)
 	}
 }

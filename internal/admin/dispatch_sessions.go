@@ -314,6 +314,6 @@ func dispatchSessions(ctx context.Context, opts ServerOptions, method string, ca
 	case methods.MethodSessionsExport, methods.MethodSessionsSpawn:
 		return delegateControlCall(ctx, opts, method, call.Params, "session provider not configured")
 	default:
-		return nil, 0, nil
+		return internalRoutingError("sessions", method)
 	}
 }

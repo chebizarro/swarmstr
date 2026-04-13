@@ -462,6 +462,6 @@ func dispatchNodes(ctx context.Context, opts ServerOptions, method string, call 
 	case methods.MethodCanvasGet, methods.MethodCanvasList, methods.MethodCanvasUpdate, methods.MethodCanvasDelete:
 		return delegateControlCall(ctx, opts, method, call.Params, "canvas provider not configured")
 	default:
-		return nil, 0, nil
+		return internalRoutingError("nodes", method)
 	}
 }

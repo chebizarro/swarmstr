@@ -127,6 +127,10 @@ func truncateRunes(s string, maxRunes int) string {
 	return string(r[:maxRunes])
 }
 
+func internalRoutingError(domain, method string) (any, int, error) {
+	return nil, http.StatusInternalServerError, fmt.Errorf("internal routing bug: method %q reached %s dispatcher", method, domain)
+}
+
 func mergeSessionMeta(base map[string]any, patch map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range base {
