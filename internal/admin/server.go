@@ -544,183 +544,34 @@ func dispatchMethodCall(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		return nil, http.StatusForbidden, errors.New(decision.Reason)
 	}
 
-	switch method {
-	case methods.MethodAgent,
-		methods.MethodAgentWait,
-		methods.MethodAgentIdentityGet,
-		methods.MethodGatewayIdentityGet,
-		methods.MethodAgentsList,
-		methods.MethodAgentsCreate,
-		methods.MethodAgentsUpdate,
-		methods.MethodAgentsDelete,
-		methods.MethodAgentsAssign,
-		methods.MethodAgentsUnassign,
-		methods.MethodAgentsActive,
-		methods.MethodAgentsFilesList,
-		methods.MethodAgentsFilesGet,
-		methods.MethodAgentsFilesSet,
-		methods.MethodModelsList,
-		methods.MethodToolsCatalog,
-		methods.MethodToolsProfileGet,
-		methods.MethodToolsProfileSet,
-		methods.MethodSkillsStatus,
-		methods.MethodSkillsBins,
-		methods.MethodSkillsInstall,
-		methods.MethodSkillsUpdate:
+	switch {
+	case methods.InAdminDispatchGroup(methods.AdminDispatchAgents, method):
 		return dispatchAgents(ctx, opts, method, call, cfg)
-	case methods.MethodChannelsJoin,
-		methods.MethodChannelsLeave,
-		methods.MethodChannelsList,
-		methods.MethodChannelsSend,
-		methods.MethodUsageCost:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchChannels, method):
 		return dispatchChannels(ctx, opts, method, call, cfg)
-	case methods.MethodTalkConfig,
-		methods.MethodConfigGet,
-		methods.MethodListGet,
-		methods.MethodListPut,
-		methods.MethodConfigPut,
-		methods.MethodConfigSet,
-		methods.MethodConfigApply,
-		methods.MethodConfigPatch,
-		methods.MethodConfigSchema,
-		methods.MethodConfigSchemaLookup,
-		methods.MethodSecurityAudit:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchConfig, method):
 		return dispatchConfig(ctx, opts, method, call, cfg)
-	case methods.MethodCronList,
-		methods.MethodCronStatus,
-		methods.MethodCronAdd,
-		methods.MethodCronUpdate,
-		methods.MethodCronRemove,
-		methods.MethodCronRun,
-		methods.MethodCronRuns:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchCron, method):
 		return dispatchCron(ctx, opts, method, call, cfg)
-	case methods.MethodExecApprovalsGet,
-		methods.MethodExecApprovalsSet,
-		methods.MethodExecApprovalRequest,
-		methods.MethodExecApprovalWaitDecision,
-		methods.MethodExecApprovalResolve:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchExec, method):
 		return dispatchExec(ctx, opts, method, call, cfg)
-	case methods.MethodMCPList,
-		methods.MethodMCPGet,
-		methods.MethodMCPPut,
-		methods.MethodMCPRemove,
-		methods.MethodMCPTest,
-		methods.MethodMCPReconnect,
-		methods.MethodMCPAuthStart,
-		methods.MethodMCPAuthRefresh,
-		methods.MethodMCPAuthClear,
-		methods.MethodSecretsReload,
-		methods.MethodSecretsResolve:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchMCP, method):
 		return dispatchMcp(ctx, opts, method, call, cfg)
-	case methods.MethodTalkMode,
-		methods.MethodBrowserRequest,
-		methods.MethodVoicewakeGet,
-		methods.MethodVoicewakeSet,
-		methods.MethodTTSStatus,
-		methods.MethodTTSProviders,
-		methods.MethodTTSSetProvider,
-		methods.MethodTTSEnable,
-		methods.MethodTTSDisable,
-		methods.MethodTTSConvert:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchMedia, method):
 		return dispatchMedia(ctx, opts, method, call, cfg)
-	case methods.MethodNodePairRequest,
-		methods.MethodNodePairList,
-		methods.MethodNodePairApprove,
-		methods.MethodNodePairReject,
-		methods.MethodNodePairVerify,
-		methods.MethodDevicePairList,
-		methods.MethodDevicePairApprove,
-		methods.MethodDevicePairReject,
-		methods.MethodDevicePairRemove,
-		methods.MethodDeviceTokenRotate,
-		methods.MethodDeviceTokenRevoke,
-		methods.MethodNodeList,
-		methods.MethodNodeDescribe,
-		methods.MethodNodeRename,
-		methods.MethodNodeCanvasCapabilityRefresh,
-		methods.MethodNodeInvoke,
-		methods.MethodNodeEvent,
-		methods.MethodNodeResult,
-		methods.MethodNodeInvokeResult,
-		methods.MethodNodePendingEnqueue,
-		methods.MethodNodePendingPull,
-		methods.MethodNodePendingAck,
-		methods.MethodNodePendingDrain,
-		methods.MethodExecApprovalsNodeGet,
-		methods.MethodExecApprovalsNodeSet,
-		methods.MethodCanvasGet,
-		methods.MethodCanvasList,
-		methods.MethodCanvasUpdate,
-		methods.MethodCanvasDelete:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchNodes, method):
 		return dispatchNodes(ctx, opts, method, call, cfg)
-	case methods.MethodPluginsInstall,
-		methods.MethodPluginsUninstall,
-		methods.MethodPluginsUpdate,
-		methods.MethodPluginsRegistryList,
-		methods.MethodPluginsRegistryGet,
-		methods.MethodPluginsRegistrySearch:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchPlugins, method):
 		return dispatchPlugins(ctx, opts, method, call, cfg)
-	case methods.MethodLogsTail,
-		methods.MethodRuntimeObserve,
-		methods.MethodChannelsLogout,
-		methods.MethodRelayPolicyGet:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchRuntime, method):
 		return dispatchRuntime(ctx, opts, method, call, cfg)
-	case methods.MethodChatSend,
-		methods.MethodChatHistory,
-		methods.MethodSessionGet,
-		methods.MethodSessionsList,
-		methods.MethodSessionsPreview,
-		methods.MethodSessionsPatch,
-		methods.MethodSessionsReset,
-		methods.MethodSessionsDelete,
-		methods.MethodSessionsCompact,
-		methods.MethodSessionsPrune,
-		methods.MethodSessionsExport,
-		methods.MethodSessionsSpawn:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchSessions, method):
 		return dispatchSessions(ctx, opts, method, call, cfg)
-	case methods.MethodTasksCreate,
-		methods.MethodTasksGet,
-		methods.MethodTasksList,
-		methods.MethodTasksCancel,
-		methods.MethodTasksResume,
-		methods.MethodTasksDoctor,
-		methods.MethodTasksSummary,
-		methods.MethodTasksAuditExport,
-		methods.MethodTasksTrace:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchTasks, method):
 		return dispatchTasks(ctx, opts, method, call, cfg)
-	case methods.MethodSupportedMethods,
-		methods.MethodHealth,
-		methods.MethodDoctorMemoryStatus,
-		methods.MethodChannelsStatus,
-		methods.MethodStatus,
-		methods.MethodStatusAlias,
-		methods.MethodUsageStatus,
-		methods.MethodMemorySearch,
-		methods.MethodMemoryCompact,
-		methods.MethodChatAbort,
-		methods.MethodSandboxRun,
-		methods.MethodWizardStart,
-		methods.MethodWizardNext,
-		methods.MethodWizardCancel,
-		methods.MethodWizardStatus,
-		methods.MethodUpdateRun,
-		methods.MethodLastHeartbeat,
-		methods.MethodSetHeartbeats,
-		methods.MethodWake,
-		methods.MethodSystemPresence,
-		methods.MethodSystemEvent,
-		methods.MethodSend,
-		methods.MethodHooksList,
-		methods.MethodHooksEnable,
-		methods.MethodHooksDisable,
-		methods.MethodHooksInfo,
-		methods.MethodHooksCheck:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchSystem, method):
 		return dispatchSystem(ctx, opts, method, call, cfg)
-	case methods.MethodACPRegister,
-		methods.MethodACPUnregister,
-		methods.MethodACPPeers,
-		methods.MethodACPDispatch,
-		methods.MethodACPPipeline:
+	case methods.InAdminDispatchGroup(methods.AdminDispatchACP, method):
 		return dispatchACP(ctx, opts, method, call, cfg)
 	default:
 		return nil, http.StatusNotFound, fmt.Errorf("unknown method %q", method)
