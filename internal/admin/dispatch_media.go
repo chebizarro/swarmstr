@@ -11,6 +11,23 @@ import (
 
 func dispatchMedia(ctx context.Context, opts ServerOptions, method string, call methods.CallRequest, cfg state.ConfigDoc) (any, int, error) {
 	switch method {
+	case methods.MethodTalkConfig:
+		req, err := methods.DecodeTalkConfigParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.TalkConfig == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("talk provider not configured")
+		}
+		out, err := opts.TalkConfig(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodTalkMode:
 		req, err := methods.DecodeTalkModeParams(call.Params)
 		if err != nil {
