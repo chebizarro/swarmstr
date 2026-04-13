@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"metiq/internal/store/state"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestParseMCPConfig_empty(t *testing.T) {
