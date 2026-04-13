@@ -352,6 +352,6 @@ func dispatchConfig(ctx context.Context, opts ServerOptions, method string, call
 	case methods.MethodConfigSchemaLookup, methods.MethodSecurityAudit:
 		return delegateControlCall(ctx, opts, method, call.Params, "config provider not configured")
 	default:
-		return nil, 0, nil
+		return internalRoutingError("config", method)
 	}
 }

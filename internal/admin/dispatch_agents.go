@@ -363,6 +363,6 @@ func dispatchAgents(ctx context.Context, opts ServerOptions, method string, call
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	default:
-		return nil, 0, nil
+		return internalRoutingError("agents", method)
 	}
 }

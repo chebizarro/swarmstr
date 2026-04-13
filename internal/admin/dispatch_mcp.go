@@ -199,6 +199,6 @@ func dispatchMcp(ctx context.Context, opts ServerOptions, method string, call me
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	default:
-		return nil, 0, nil
+		return internalRoutingError("mcp", method)
 	}
 }

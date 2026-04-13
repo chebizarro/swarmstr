@@ -20,6 +20,6 @@ func dispatchTasks(ctx context.Context, opts ServerOptions, method string, call 
 		methods.MethodTasksTrace:
 		return delegateControlCall(ctx, opts, method, call.Params, "tasks provider not configured")
 	default:
-		return nil, 0, nil
+		return internalRoutingError("tasks", method)
 	}
 }

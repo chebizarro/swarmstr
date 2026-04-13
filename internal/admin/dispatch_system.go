@@ -322,6 +322,6 @@ func dispatchSystem(ctx context.Context, opts ServerOptions, method string, call
 		methods.MethodHooksCheck:
 		return delegateControlCall(ctx, opts, method, call.Params, "hooks provider not configured")
 	default:
-		return nil, 0, nil
+		return internalRoutingError("system", method)
 	}
 }
