@@ -128,14 +128,34 @@ func resolveACPAgentID(ctx context.Context, sessionStore *state.SessionStore, se
 }
 
 func maxContextTokensForAgent(cfg state.ConfigDoc, agentID string) int {
-	maxCtxTokens := 100_000
 	agentID = defaultAgentID(agentID)
+
+	// Check explicit per-agent config first.
 	for _, ac := range cfg.Agents {
 		if strings.TrimSpace(ac.ID) == agentID && ac.MaxContextTokens > 0 {
 			return ac.MaxContextTokens
 		}
 	}
-	return maxCtxTokens
+
+	// Try to resolve from the agent's model via the model registry.
+	for _, ac := range cfg.Agents {
+		if defaultAgentID(ac.ID) == agentID && strings.TrimSpace(ac.Model) != "" {
+			profile := agent.ResolveModelContext(strings.TrimSpace(ac.Model))
+			if profile.Tier != agent.TierStandard {
+				return profile.ContextWindowTokens
+			}
+		}
+	}
+
+	// Fallback: also check default model.
+	if defaultModel := strings.TrimSpace(cfg.Agent.DefaultModel); defaultModel != "" {
+		profile := agent.ResolveModelContext(defaultModel)
+		if profile.Tier != agent.TierStandard {
+			return profile.ContextWindowTokens
+		}
+	}
+
+	return 100_000
 }
 
 func assembleACPContextMessages(ctx context.Context, cfg state.ConfigDoc, sessionID, agentID string) []map[string]any {
