@@ -61,14 +61,9 @@ type turnRuntimeParams struct {
 }
 
 func buildSkillsPromptCached(cfg state.ConfigDoc, agentID string) string {
-	// Use a standard-tier budget (zero SkillsMaxCount/SkillsTotalMax triggers
-	// the non-budget path in buildSkillsPromptWithBudget).
-	standardBudget := agent.ComputeContextBudget(agent.ModelContextProfile{
-		ContextWindowTokens:  200_000,
-		ReserveOutputTokens:  4_096,
-		Tier:                 agent.TierStandard,
-		MaxAgenticIterations: 30,
-	})
+	// Use a standard 200K budget — ProfileFromContextWindowTokens derives all
+	// fields proportionally, no manual profile construction needed.
+	standardBudget := agent.ComputeContextBudget(agent.ProfileFromContextWindowTokens(200_000))
 	return buildSkillsPromptWithBudget(cfg, agentID, standardBudget)
 }
 
@@ -91,11 +86,12 @@ func buildSkillsPromptWithBudget(cfg state.ConfigDoc, agentID string, budget age
 	}
 
 	// Determine the tier string for skill text rendering.
-	tierStr := "standard"
-	if budget.Profile.Tier == agent.TierMicro {
-		tierStr = "micro"
-	} else if budget.Profile.Tier == agent.TierSmall {
-		tierStr = "small"
+	tierStr := budget.Profile.Tier.String()
+
+	// Compute per-skill budget for compact rendering decisions.
+	perSkillBudget := 0
+	if limits.MaxChars > 0 && limits.MaxCount > 0 {
+		perSkillBudget = limits.MaxChars / limits.MaxCount
 	}
 
 	visible := skillspkg.PromptVisibleSkills(catalog)
@@ -111,12 +107,10 @@ func buildSkillsPromptWithBudget(cfg state.ConfigDoc, agentID string, budget age
 			break
 		}
 
-		// For small/micro tiers, use the compressed skill rendering.
-		if tierStr != "standard" {
-			perSkillBudget := 0
-			if limits.MaxChars > 0 && limits.MaxCount > 0 {
-				perSkillBudget = limits.MaxChars / limits.MaxCount
-			}
+		// Use compressed skill rendering when the per-skill budget is tight.
+		// A threshold of 2000 chars means even large models with many skills
+		// get compact rendering when the per-skill budget is small.
+		if perSkillBudget > 0 && perSkillBudget < 2000 {
 			if compactText := skillspkg.SkillPromptText(resolved, perSkillBudget, tierStr); compactText != "" {
 				candidate := append(lines, compactText)
 				joined := strings.Join(candidate, "\n")

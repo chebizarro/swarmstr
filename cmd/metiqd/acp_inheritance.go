@@ -127,35 +127,60 @@ func resolveACPAgentID(ctx context.Context, sessionStore *state.SessionStore, se
 	return defaultAgentID("")
 }
 
+// contextWindowForAgent resolves the model's actual context window size for
+// budget allocation. This is distinct from maxContextTokensForAgent — it
+// represents the model's native capacity, not an operator-imposed ceiling.
+//
+// Resolution order:
+//  1. AgentConfig.ContextWindow (explicit operator override)
+//  2. Model registry lookup (prefix-matched model name)
+//  3. Default 200K (standard assumption)
+func contextWindowForAgent(cfg state.ConfigDoc, agentID string) int {
+	agentID = defaultAgentID(agentID)
+
+	// Check explicit ContextWindow config first.
+	for _, ac := range cfg.Agents {
+		if strings.TrimSpace(ac.ID) == agentID && ac.ContextWindow > 0 {
+			return ac.ContextWindow
+		}
+	}
+
+	// Resolve from the agent's model via the model registry.
+	if model := modelForAgent(cfg, agentID); model != "" {
+		profile := agent.ResolveModelContext(model)
+		return profile.ContextWindowTokens
+	}
+
+	return 200_000
+}
+
 func maxContextTokensForAgent(cfg state.ConfigDoc, agentID string) int {
 	agentID = defaultAgentID(agentID)
 
-	// Check explicit per-agent config first.
+	// Check explicit per-agent MaxContextTokens ceiling.
 	for _, ac := range cfg.Agents {
 		if strings.TrimSpace(ac.ID) == agentID && ac.MaxContextTokens > 0 {
 			return ac.MaxContextTokens
 		}
 	}
 
-	// Try to resolve from the agent's model via the model registry.
+	// Fall back to the context window (model capacity is the ceiling).
+	return contextWindowForAgent(cfg, agentID)
+}
+
+// modelForAgent returns the trimmed model ID for the given agent, checking
+// per-agent config then the default model. Returns "" if none is configured.
+func modelForAgent(cfg state.ConfigDoc, agentID string) string {
+	agentID = defaultAgentID(agentID)
 	for _, ac := range cfg.Agents {
 		if defaultAgentID(ac.ID) == agentID && strings.TrimSpace(ac.Model) != "" {
-			profile := agent.ResolveModelContext(strings.TrimSpace(ac.Model))
-			if profile.Tier != agent.TierStandard {
-				return profile.ContextWindowTokens
-			}
+			return strings.TrimSpace(ac.Model)
 		}
 	}
-
-	// Fallback: also check default model.
-	if defaultModel := strings.TrimSpace(cfg.Agent.DefaultModel); defaultModel != "" {
-		profile := agent.ResolveModelContext(defaultModel)
-		if profile.Tier != agent.TierStandard {
-			return profile.ContextWindowTokens
-		}
+	if dm := strings.TrimSpace(cfg.Agent.DefaultModel); dm != "" {
+		return dm
 	}
-
-	return 100_000
+	return ""
 }
 
 func assembleACPContextMessages(ctx context.Context, cfg state.ConfigDoc, sessionID, agentID string) []map[string]any {

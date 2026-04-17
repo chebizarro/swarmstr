@@ -164,25 +164,35 @@ func TierFromContextWindowTokens(tokens int) ContextTier {
 }
 
 // ProfileFromContextWindowTokens builds a ModelContextProfile from a raw token
-// count, using sensible tier-appropriate defaults.
+// count, using continuous proportional scaling for iterations and reserves.
 func ProfileFromContextWindowTokens(tokens int) ModelContextProfile {
+	if tokens <= 0 {
+		tokens = 200_000
+	}
 	tier := TierFromContextWindowTokens(tokens)
-	p := ModelContextProfile{
-		ContextWindowTokens: tokens,
-		Tier:                tier,
+
+	// MaxAgenticIterations: clamp(tokens/6000, 5, 30)
+	maxIter := tokens / 6_000
+	if maxIter < 5 {
+		maxIter = 5
 	}
-	switch tier {
-	case TierMicro:
-		p.ReserveOutputTokens = 512
-		p.MaxAgenticIterations = 5
-	case TierSmall:
-		p.ReserveOutputTokens = 512
-		p.MaxAgenticIterations = 10
-	default:
-		p.ReserveOutputTokens = 4_096
-		p.MaxAgenticIterations = 30
+	if maxIter > 30 {
+		maxIter = 30
 	}
-	return p
+
+	// ReserveOutputTokens: scale from 512 (tiny) to 4096 (200K+)
+	t := float64(tokens) / 200_000.0
+	if t > 1 {
+		t = 1
+	}
+	reserve := int(lerp(512, 4_096, t))
+
+	return ModelContextProfile{
+		ContextWindowTokens:  tokens,
+		Tier:                 tier,
+		ReserveOutputTokens:  reserve,
+		MaxAgenticIterations: maxIter,
+	}
 }
 
 // ─── Built-in model registrations ─────────────────────────────────────────────

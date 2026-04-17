@@ -55,6 +55,60 @@ func CompactOutputMaxTokens(tier ContextTier) int {
 	}
 }
 
+// ─── Budget-driven variants ──────────────────────────────────────────────────
+//
+// These functions derive compaction parameters from a ContextBudget, avoiding
+// hard tier switches. The budget's EffectiveChars and Profile.ContextWindowTokens
+// drive smooth transitions.
+
+// SelectCompactSystemPromptForBudget returns a compaction system prompt sized
+// for the budget's effective window. Uses the same prompt templates but selects
+// based on effective character budget rather than tier enum.
+//
+//   - < 6000 chars: micro prompt (~80 tokens)
+//   - < 25000 chars: small prompt (~200 tokens)
+//   - ≥ 25000 chars: full standard prompt
+func SelectCompactSystemPromptForBudget(budget ContextBudget) string {
+	switch {
+	case budget.EffectiveChars < 6_000:
+		return compactSystemPromptMicro
+	case budget.EffectiveChars < 25_000:
+		return compactSystemPromptSmall
+	default:
+		return compactSystemPromptStandard
+	}
+}
+
+// SelectCompactUserPromptForBudget formats the user message for a compaction
+// call, with transcript limits derived from the budget.
+func SelectCompactUserPromptForBudget(budget ContextBudget, transcript string) string {
+	// Allow transcript up to 60% of effective chars for the compaction input.
+	maxTranscript := budget.EffectiveChars * 60 / 100
+	if maxTranscript < 500 {
+		maxTranscript = 500
+	}
+	if len(transcript) > maxTranscript {
+		transcript = transcript[:maxTranscript] + "\n\n[...transcript truncated...]"
+	}
+
+	switch {
+	case budget.EffectiveChars < 6_000:
+		return fmt.Sprintf("Summarize this conversation:\n\n%s", transcript)
+	case budget.EffectiveChars < 25_000:
+		return fmt.Sprintf("Summarize this conversation concisely. Focus on what matters for continuing the work:\n\n%s", transcript)
+	default:
+		return fmt.Sprintf("Create a detailed summary of this conversation that preserves all context needed to continue seamlessly:\n\n%s", transcript)
+	}
+}
+
+// CompactOutputMaxTokensForBudget returns the recommended max_tokens for a
+// compaction call, scaled proportionally with the context window.
+// Ranges from 256 (tiny) to 2048 (large).
+func CompactOutputMaxTokensForBudget(budget ContextBudget) int {
+	t := clampF(float64(budget.Profile.ContextWindowTokens)/200_000.0, 0, 1)
+	return clampInt(int(lerp(256, 2048, t)), 256, 2048)
+}
+
 // ─── Prompt templates ─────────────────────────────────────────────────────────
 
 const compactSystemPromptMicro = `Summarize this conversation in exactly 3 sections. Be extremely concise.
