@@ -61,12 +61,43 @@ type turnRuntimeParams struct {
 }
 
 func buildSkillsPromptCached(cfg state.ConfigDoc, agentID string) string {
+	// Use a standard-tier budget (zero SkillsMaxCount/SkillsTotalMax triggers
+	// the non-budget path in buildSkillsPromptWithBudget).
+	standardBudget := agent.ComputeContextBudget(agent.ModelContextProfile{
+		ContextWindowTokens:  200_000,
+		ReserveOutputTokens:  4_096,
+		Tier:                 agent.TierStandard,
+		MaxAgenticIterations: 30,
+	})
+	return buildSkillsPromptWithBudget(cfg, agentID, standardBudget)
+}
+
+// buildSkillsPromptWithBudget builds the skills prompt section with optional
+// context budget awareness. When budget is zero-valued (standard tier), behavior
+// is unchanged from the original buildSkillsPromptCached.
+func buildSkillsPromptWithBudget(cfg state.ConfigDoc, agentID string, budget agent.ContextBudget) string {
 	catalog, err := skillspkg.BuildSkillCatalog(cfg, agentID)
 	if err != nil || catalog == nil {
 		return ""
 	}
 	mirrorPaths, _ := skillspkg.SyncPromptSkillsToWorkspace(catalog)
-	limits := skillspkg.ResolvePromptLimits(cfg)
+
+	// Use budget-aware prompt limits when a budget is provided.
+	var limits skillspkg.PromptLimits
+	if budget.SkillsMaxCount > 0 || budget.SkillsTotalMax > 0 {
+		limits = skillspkg.ResolvePromptLimitsWithBudget(cfg, budget.SkillsMaxCount, budget.SkillsTotalMax)
+	} else {
+		limits = skillspkg.ResolvePromptLimits(cfg)
+	}
+
+	// Determine the tier string for skill text rendering.
+	tierStr := "standard"
+	if budget.Profile.Tier == agent.TierMicro {
+		tierStr = "micro"
+	} else if budget.Profile.Tier == agent.TierSmall {
+		tierStr = "small"
+	}
+
 	visible := skillspkg.PromptVisibleSkills(catalog)
 	if len(visible) == 0 {
 		return ""
@@ -79,6 +110,26 @@ func buildSkillsPromptCached(cfg state.ConfigDoc, agentID string) string {
 			truncated = true
 			break
 		}
+
+		// For small/micro tiers, use the compressed skill rendering.
+		if tierStr != "standard" {
+			perSkillBudget := 0
+			if limits.MaxChars > 0 && limits.MaxCount > 0 {
+				perSkillBudget = limits.MaxChars / limits.MaxCount
+			}
+			if compactText := skillspkg.SkillPromptText(resolved, perSkillBudget, tierStr); compactText != "" {
+				candidate := append(lines, compactText)
+				joined := strings.Join(candidate, "\n")
+				if limits.MaxChars > 0 && len(joined) > limits.MaxChars {
+					truncated = true
+					break
+				}
+				lines = candidate
+				continue
+			}
+		}
+
+		// Standard rendering (unchanged).
 		name := agent.SanitizePromptLiteral(strings.TrimSpace(resolved.Skill.Manifest.Name))
 		if name == "" {
 			name = agent.SanitizePromptLiteral(resolved.Skill.SkillKey)

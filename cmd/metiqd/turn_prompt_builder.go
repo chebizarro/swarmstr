@@ -49,6 +49,21 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	if params.SelfNPub == "" && params.SelfPubkey != "" {
 		params.SelfNPub = toolbuiltin.NostrNPubFromHex(params.SelfPubkey)
 	}
+
+	// ── Context budget resolution ───────────────────────────────────────────
+	// Resolve the model's context profile and compute a tier-appropriate budget.
+	// For standard-tier models this produces the same defaults as before.
+	contextWindowTokens := maxContextTokensForAgent(params.Config, agentID)
+	modelProfile := agent.ResolveModelContext(agentModel)
+	if contextWindowTokens > 0 && contextWindowTokens < modelProfile.ContextWindowTokens {
+		// Config override is more restrictive — use it.
+		modelProfile = agent.ProfileFromContextWindowTokens(contextWindowTokens)
+	}
+	contextBudget := agent.ComputeContextBudget(modelProfile)
+
+	// Use budget-scaled bootstrap limits instead of fixed defaults.
+	bootstrapMaxChars, bootstrapTotalMaxChars := agent.ScaleBootstrapBudget(contextBudget)
+
 	bootstrapWarnings := make([]string, 0)
 	bootstrapFiles, warnings := agent.LoadWorkspaceBootstrapFiles(wsDir, agent.DefaultBootstrapFileNames())
 	bootstrapWarnings = append(bootstrapWarnings, warnings...)
@@ -59,11 +74,11 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	bootstrapFiles = dedupeBootstrapFiles(bootstrapFiles)
 	contextFiles := agent.BuildBootstrapContextFiles(bootstrapFiles, func(message string) {
 		bootstrapWarnings = append(bootstrapWarnings, message)
-	}, agent.DefaultBootstrapMaxChars, agent.DefaultBootstrapTotalMaxChars)
+	}, bootstrapMaxChars, bootstrapTotalMaxChars)
 	analysis := agent.AnalyzeBootstrapBudget(
 		agent.BuildBootstrapInjectionStats(bootstrapFiles, contextFiles),
-		agent.DefaultBootstrapMaxChars,
-		agent.DefaultBootstrapTotalMaxChars,
+		bootstrapMaxChars,
+		bootstrapTotalMaxChars,
 	)
 	bootstrapWarnings = append(bootstrapWarnings, agent.FormatBootstrapTruncationWarningLines(analysis, agent.DefaultBootstrapPromptWarningMaxFiles)...)
 
@@ -79,6 +94,16 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	if channel == "" {
 		channel = "nostr"
 	}
+	// Apply budget-aware tool definition fitting for small models.
+	turnTools := params.Tools
+	if contextBudget.Profile.Tier != agent.TierStandard && len(turnTools) > 0 {
+		turnTools = agent.FitToolDefinitions(turnTools, contextBudget, agent.DefaultCriticalToolNames())
+		if len(turnTools) < len(params.Tools) {
+			log.Printf("context-budget: fitted %d/%d tool definitions for %s tier (model=%s)",
+				len(turnTools), len(params.Tools), contextBudget.Profile.Tier, agentModel)
+		}
+	}
+
 	runtimeParams := turnRuntimeParams{
 		AgentID:           agentID,
 		SelfPubkey:        params.SelfPubkey,
@@ -86,11 +111,11 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 		Model:             agentModel,
 		Channel:           channel,
 		Capabilities:      resolveRuntimeCapabilities(params.Config),
-		Tools:             params.Tools,
+		Tools:             turnTools,
 		Config:            params.Config,
 		WorkspaceDir:      wsDir,
 		ThinkingLevel:     agentThinkingLevel,
-		SkillsPrompt:      buildSkillsPromptCached(params.Config, agentID),
+		SkillsPrompt:      buildSkillsPromptWithBudget(params.Config, agentID, contextBudget),
 		BootstrapWarnings: bootstrapWarnings,
 	}
 	staticSystemPrompt = joinPromptSections(staticSystemPrompt, buildTurnRuntimeStaticContext(runtimeParams))
@@ -99,7 +124,7 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	return builtTurnPrompt{
 		StaticSystemPrompt:  staticSystemPrompt,
 		Context:             contextText,
-		ContextWindowTokens: maxContextTokensForAgent(params.Config, agentID),
+		ContextWindowTokens: modelProfile.ContextWindowTokens,
 	}
 }
 
