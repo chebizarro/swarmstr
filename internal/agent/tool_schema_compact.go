@@ -43,18 +43,17 @@ func EstimateToolDefinitionChars(def ToolDefinition) int {
 	return chars
 }
 
-// CompressToolDefinition strips optional fields from a definition to reduce
-// its token footprint.
+// CompressToolDefinitionByPressure strips optional fields from a definition
+// based on a compression pressure gradient (0.0 = no compression, 1.0 = max).
 //
-// For TierMicro: removes all parameter descriptions, keeps only name, type,
-// and required fields. Also truncates the tool description to 80 chars.
-//
-// For TierSmall: truncates parameter descriptions to 40 chars and tool
-// description to 150 chars.
-//
-// For TierStandard: returns the definition unchanged.
-func CompressToolDefinition(def ToolDefinition, tier ContextTier) ToolDefinition {
-	if tier == TierStandard {
+// Pressure thresholds:
+//   - < 0.05: no compression (return as-is)
+//   - < 0.35: light — truncate description to 200ch, param descriptions to 60ch
+//   - < 0.65: moderate — truncate description to 150ch, param descriptions to 40ch
+//   - ≥ 0.65: aggressive — truncate description to 80ch, strip param descriptions,
+//     clear InputJSONSchema
+func CompressToolDefinitionByPressure(def ToolDefinition, pressure float64) ToolDefinition {
+	if pressure < 0.05 {
 		return def
 	}
 
@@ -68,11 +67,10 @@ func CompressToolDefinition(def ToolDefinition, tier ContextTier) ToolDefinition
 		},
 	}
 
-	switch tier {
-	case TierMicro:
-		// Truncate tool description aggressively.
+	switch {
+	case pressure >= 0.65:
+		// Aggressive: strip param descriptions, minimal tool description.
 		compressed.Description = truncateStr(def.Description, 80)
-		// Strip all parameter descriptions.
 		if len(def.Parameters.Properties) > 0 {
 			props := make(map[string]ToolParamProp, len(def.Parameters.Properties))
 			for name, prop := range def.Parameters.Properties {
@@ -83,10 +81,10 @@ func CompressToolDefinition(def ToolDefinition, tier ContextTier) ToolDefinition
 			}
 			compressed.Parameters.Properties = props
 		}
-		// Clear InputJSONSchema for micro — we rely on Parameters only.
 		compressed.InputJSONSchema = nil
 
-	case TierSmall:
+	case pressure >= 0.35:
+		// Moderate: truncate descriptions.
 		compressed.Description = truncateStr(def.Description, 150)
 		if len(def.Parameters.Properties) > 0 {
 			props := make(map[string]ToolParamProp, len(def.Parameters.Properties))
@@ -101,9 +99,41 @@ func CompressToolDefinition(def ToolDefinition, tier ContextTier) ToolDefinition
 			}
 			compressed.Parameters.Properties = props
 		}
+
+	default:
+		// Light: gentle truncation.
+		compressed.Description = truncateStr(def.Description, 200)
+		if len(def.Parameters.Properties) > 0 {
+			props := make(map[string]ToolParamProp, len(def.Parameters.Properties))
+			for name, prop := range def.Parameters.Properties {
+				props[name] = ToolParamProp{
+					Type:        prop.Type,
+					Description: truncateStr(prop.Description, 60),
+					Enum:        prop.Enum,
+					Items:       prop.Items,
+					Default:     prop.Default,
+				}
+			}
+			compressed.Parameters.Properties = props
+		}
 	}
 
 	return compressed
+}
+
+// CompressToolDefinition is a backward-compatible wrapper that maps a
+// ContextTier to a pressure value and delegates to CompressToolDefinitionByPressure.
+func CompressToolDefinition(def ToolDefinition, tier ContextTier) ToolDefinition {
+	var pressure float64
+	switch tier {
+	case TierMicro:
+		pressure = 0.85
+	case TierSmall:
+		pressure = 0.50
+	default:
+		pressure = 0
+	}
+	return CompressToolDefinitionByPressure(def, pressure)
 }
 
 // FitToolDefinitions selects and optionally compresses tool definitions to fit
@@ -141,10 +171,14 @@ func FitToolDefinitions(defs []ToolDefinition, budget ContextBudget, criticalToo
 	sortBySize(critical)
 	sortBySize(regular)
 
-	// Compress if not standard tier.
-	tier := budget.Profile.Tier
+	// Compute compression pressure from the ratio of total tool chars to budget.
+	totalEstChars := 0
+	for _, def := range defs {
+		totalEstChars += EstimateToolDefinitionChars(def)
+	}
+	pressure := CompressionPressure(budget.ToolDefsMax, totalEstChars)
 	compress := func(def ToolDefinition) ToolDefinition {
-		return CompressToolDefinition(def, tier)
+		return CompressToolDefinitionByPressure(def, pressure)
 	}
 
 	remaining := budget.ToolDefsMax

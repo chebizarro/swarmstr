@@ -51,14 +51,16 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	}
 
 	// ── Context budget resolution ───────────────────────────────────────────
-	// Resolve the model's context profile and compute a tier-appropriate budget.
-	// For standard-tier models this produces the same defaults as before.
-	contextWindowTokens := maxContextTokensForAgent(params.Config, agentID)
-	modelProfile := agent.ResolveModelContext(agentModel)
-	if contextWindowTokens > 0 && contextWindowTokens < modelProfile.ContextWindowTokens {
-		// Config override is more restrictive — use it.
-		modelProfile = agent.ProfileFromContextWindowTokens(contextWindowTokens)
+	// Resolve the model's context window and build a budget from it.
+	// contextWindowForAgent checks ContextWindow config, then model registry,
+	// then defaults to 200K. MaxContextTokens acts as an optional ceiling.
+	ctxWindow := contextWindowForAgent(params.Config, agentID)
+	maxCtx := maxContextTokensForAgent(params.Config, agentID)
+	effectiveWindow := ctxWindow
+	if maxCtx > 0 && maxCtx < effectiveWindow {
+		effectiveWindow = maxCtx
 	}
+	modelProfile := agent.ProfileFromContextWindowTokens(effectiveWindow)
 	contextBudget := agent.ComputeContextBudget(modelProfile)
 
 	// Use budget-scaled bootstrap limits instead of fixed defaults.
@@ -94,13 +96,15 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	if channel == "" {
 		channel = "nostr"
 	}
-	// Apply budget-aware tool definition fitting for small models.
+	// Apply budget-aware tool definition fitting for all models.
+	// FitToolDefinitions uses CompressionPressure to determine compression level —
+	// large models with ample budget get zero compression automatically.
 	turnTools := params.Tools
-	if contextBudget.Profile.Tier != agent.TierStandard && len(turnTools) > 0 {
+	if len(turnTools) > 0 {
 		turnTools = agent.FitToolDefinitions(turnTools, contextBudget, agent.DefaultCriticalToolNames())
 		if len(turnTools) < len(params.Tools) {
-			log.Printf("context-budget: fitted %d/%d tool definitions for %s tier (model=%s)",
-				len(turnTools), len(params.Tools), contextBudget.Profile.Tier, agentModel)
+			log.Printf("context-budget: fitted %d/%d tool definitions (model=%s window=%d)",
+				len(turnTools), len(params.Tools), agentModel, effectiveWindow)
 		}
 	}
 

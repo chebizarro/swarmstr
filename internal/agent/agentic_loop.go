@@ -190,13 +190,20 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		}
 
 		// Apply micro-compaction before the next LLM call to free context
-		// space consumed by old tool results.
-		if cfg.ContextWindowTokens > 0 {
-			budget := ComputeContextBudget(ProfileFromContextWindowTokens(cfg.ContextWindowTokens))
+		// space consumed by old tool results. Runs universally for all model
+		// sizes — the budget's CompactionThreshold scales with window size
+		// so large models compact later while small models compact earlier.
+		{
+			windowTokens := cfg.ContextWindowTokens
+			if windowTokens <= 0 {
+				windowTokens = 200_000 // safe default
+			}
+			budget := ComputeContextBudget(ProfileFromContextWindowTokens(windowTokens))
 			estChars := estimateMessageChars(messages)
-			if estChars*100/max(1, budget.EffectiveChars) > 75 {
+			thresholdPct := int(budget.CompactionThreshold * 100)
+			if estChars*100/max(1, budget.EffectiveChars) > thresholdPct {
 				mcResult := MicroCompactMessages(messages, MicroCompactOptions{
-					KeepRecent:  KeepRecentForTier(budget.Profile.Tier),
+					KeepRecent:  budget.MicroCompactKeepRecent,
 					TargetChars: budget.HistoryMax,
 				})
 				if mcResult.Cleared > 0 {

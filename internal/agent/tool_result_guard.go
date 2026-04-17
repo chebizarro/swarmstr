@@ -12,18 +12,15 @@ const (
 )
 
 // toolResultContextShare returns the fraction of the context window that may
-// be consumed by a single tool result, scaled by context tier. Smaller models
-// get a smaller share to leave room for system prompt, history, and tools.
+// be consumed by a single tool result, scaled proportionally with context size.
+// Smaller models get a smaller share to leave room for system prompt, history,
+// and tools. Ranges from 0.15 (tiny models) to 0.30 (200K+ models).
 func toolResultContextShare(contextWindowTokens int) float64 {
-	tier := TierFromContextWindowTokens(contextWindowTokens)
-	switch tier {
-	case TierMicro:
-		return 0.15
-	case TierSmall:
-		return 0.20
-	default:
-		return 0.30
+	if contextWindowTokens <= 0 {
+		return 0.25 // safe default for unknown window
 	}
+	t := clampF(float64(contextWindowTokens)/200_000.0, 0, 1)
+	return lerp(0.15, 0.30, t)
 }
 
 func CalculateMaxToolResultChars(contextWindowTokens int) int {

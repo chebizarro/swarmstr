@@ -364,10 +364,21 @@ type AgentConfig struct {
 	// Heartbeat holds per-agent heartbeat overrides for future LLM-backed
 	// heartbeat turns. Current heartbeat handling is presence-only.
 	Heartbeat AgentHeartbeatConfig `json:"heartbeat,omitempty"`
+	// ContextWindow is the model's total context window size in tokens.
+	// This represents the actual model capacity (e.g. 4096 for Phi-3-mini,
+	// 8192 for Gemma-2B) and drives budget allocation, compaction thresholds,
+	// tool compression, and iteration limits. When 0, the value is resolved
+	// from the model registry or defaults to 200K.
+	//
+	// ContextWindow is distinct from MaxContextTokens: ContextWindow is the
+	// model's native capacity, while MaxContextTokens is an optional ceiling
+	// that can further restrict how much context is assembled.
+	ContextWindow int `json:"context_window,omitempty"`
 	// MaxContextTokens is the approximate token budget for assembled context.
 	// When the context engine estimates the assembled messages exceed 80% of this
 	// value, auto-compaction is triggered before the model call.
-	// Defaults to 100,000 when 0.
+	// When set alongside ContextWindow, the effective window is
+	// min(ContextWindow, MaxContextTokens). Defaults to 100,000 when 0.
 	MaxContextTokens int `json:"max_context_tokens,omitempty"`
 	// SystemPrompt is injected as the system/context for every turn processed
 	// by this agent. It is prepended before any memory or context-engine additions.

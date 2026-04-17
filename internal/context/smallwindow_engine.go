@@ -37,6 +37,7 @@ type SmallWindowBudget struct {
 }
 
 // DefaultSmallWindowBudget returns tier-appropriate budget defaults.
+// Deprecated: prefer SmallWindowBudgetForTokens for proportional scaling.
 func DefaultSmallWindowBudget(tier ContextTierSW) SmallWindowBudget {
 	switch tier {
 	case TierMicroSW:
@@ -57,6 +58,53 @@ func DefaultSmallWindowBudget(tier ContextTierSW) SmallWindowBudget {
 			KeepRecent:      4,
 			MaxMessages:     50,
 		}
+	}
+}
+
+// SmallWindowBudgetForTokens derives a SmallWindowBudget using continuous
+// proportional scaling based on the context window size in tokens.
+//
+//   - HistoryMaxChars: ~43% of effective chars (tokens × 4 × 0.80 × 0.43),
+//     clamped to [2000, 200000]
+//   - KeepRecent: clamp(tokens/32000, 1, 8)
+//   - MaxMessages: clamp(tokens/800, 6, 80)
+func SmallWindowBudgetForTokens(contextWindowTokens int) SmallWindowBudget {
+	if contextWindowTokens <= 0 {
+		contextWindowTokens = 200_000
+	}
+	effectiveChars := int(float64(contextWindowTokens) * 4.0 * 0.80)
+	if effectiveChars < 1024 {
+		effectiveChars = 1024
+	}
+
+	historyMax := effectiveChars * 43 / 100
+	if historyMax < 2_000 {
+		historyMax = 2_000
+	}
+	if historyMax > 200_000 {
+		historyMax = 200_000
+	}
+
+	keepRecent := contextWindowTokens / 32_000
+	if keepRecent < 1 {
+		keepRecent = 1
+	}
+	if keepRecent > 8 {
+		keepRecent = 8
+	}
+
+	maxMessages := contextWindowTokens / 800
+	if maxMessages < 6 {
+		maxMessages = 6
+	}
+	if maxMessages > 80 {
+		maxMessages = 80
+	}
+
+	return SmallWindowBudget{
+		HistoryMaxChars: historyMax,
+		KeepRecent:      keepRecent,
+		MaxMessages:     maxMessages,
 	}
 }
 
@@ -288,32 +336,36 @@ func estimateSessionChars(msgs []Message) int {
 
 func init() {
 	RegisterContextEngine("small-window", func(sessionID string, opts map[string]any) (Engine, error) {
-		tierStr, _ := opts["tier"].(string)
+		// Prefer proportional budget from context_window_tokens.
 		var tier ContextTierSW
-		switch strings.ToLower(tierStr) {
-		case "micro":
-			tier = TierMicroSW
-		case "small":
-			tier = TierSmallSW
-		case "standard":
-			tier = TierStandardSW
-		default:
-			// Try to infer from context_window_tokens if provided.
-			if tokens, ok := opts["context_window_tokens"].(float64); ok {
-				switch {
-				case tokens > 0 && tokens < 8192:
-					tier = TierMicroSW
-				case tokens >= 8192 && tokens <= 16384:
-					tier = TierSmallSW
-				default:
-					tier = TierStandardSW
-				}
-			} else {
+		var budget SmallWindowBudget
+
+		if tokens, ok := opts["context_window_tokens"].(float64); ok && tokens > 0 {
+			// Proportional scaling from token count.
+			budget = SmallWindowBudgetForTokens(int(tokens))
+			switch {
+			case tokens < 8192:
+				tier = TierMicroSW
+			case tokens <= 16384:
+				tier = TierSmallSW
+			default:
+				tier = TierStandardSW
+			}
+		} else {
+			// Fall back to tier-based defaults.
+			tierStr, _ := opts["tier"].(string)
+			switch strings.ToLower(tierStr) {
+			case "micro":
+				tier = TierMicroSW
+			case "small":
+				tier = TierSmallSW
+			case "standard":
+				tier = TierStandardSW
+			default:
 				tier = TierSmallSW // safe default for "small-window" engine
 			}
+			budget = DefaultSmallWindowBudget(tier)
 		}
-
-		budget := DefaultSmallWindowBudget(tier)
 
 		// Allow overrides from opts.
 		if v, ok := opts["history_max_chars"].(float64); ok && v > 0 {
