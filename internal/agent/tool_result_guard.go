@@ -3,7 +3,6 @@ package agent
 import "strings"
 
 const (
-	maxToolResultContextShare                 = 0.3
 	hardMaxToolResultChars                    = 400_000
 	minToolResultKeepChars                    = 2_000
 	toolResultContextHeadroomRatio            = 0.75
@@ -12,11 +11,27 @@ const (
 	preemptiveToolResultCompactionPlaceholder = "[compacted: tool output removed to free context]"
 )
 
+// toolResultContextShare returns the fraction of the context window that may
+// be consumed by a single tool result, scaled by context tier. Smaller models
+// get a smaller share to leave room for system prompt, history, and tools.
+func toolResultContextShare(contextWindowTokens int) float64 {
+	tier := TierFromContextWindowTokens(contextWindowTokens)
+	switch tier {
+	case TierMicro:
+		return 0.15
+	case TierSmall:
+		return 0.20
+	default:
+		return 0.30
+	}
+}
+
 func CalculateMaxToolResultChars(contextWindowTokens int) int {
 	if contextWindowTokens <= 0 {
 		contextWindowTokens = 100_000
 	}
-	maxTokens := int(float64(contextWindowTokens) * maxToolResultContextShare)
+	share := toolResultContextShare(contextWindowTokens)
+	maxTokens := int(float64(contextWindowTokens) * share)
 	maxChars := maxTokens * 4
 	if maxChars > hardMaxToolResultChars {
 		return hardMaxToolResultChars

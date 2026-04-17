@@ -391,6 +391,23 @@ func clampBootstrapBudget(content string, budget int) string {
 	return content[:budget-3] + "..."
 }
 
+// ScaleBootstrapBudget returns (maxCharsPerFile, totalMaxChars) scaled to the
+// given context budget. For TierStandard the result matches the existing
+// DefaultBootstrapMaxChars / DefaultBootstrapTotalMaxChars constants. For
+// smaller tiers the values are proportionally reduced while maintaining a
+// floor of minBootstrapFileBudgetChars * 2 on the total.
+func ScaleBootstrapBudget(budget ContextBudget) (maxChars, totalMaxChars int) {
+	maxChars = budget.BootstrapFileMax
+	if maxChars < minBootstrapFileBudgetChars {
+		maxChars = minBootstrapFileBudgetChars
+	}
+	totalMaxChars = budget.BootstrapTotalMax
+	if totalMaxChars < minBootstrapFileBudgetChars*2 {
+		totalMaxChars = minBootstrapFileBudgetChars * 2
+	}
+	return maxChars, totalMaxChars
+}
+
 func pathWithinRoot(pathValue, root string) bool {
 	rel, err := filepath.Rel(root, pathValue)
 	if err != nil {

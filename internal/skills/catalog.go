@@ -131,6 +131,91 @@ func ResolvePromptLimits(cfg state.ConfigDoc) PromptLimits {
 	return limits
 }
 
+// ResolvePromptLimitsWithBudget is like ResolvePromptLimits but clamps the
+// result to context-budget limits. Budget values win when more restrictive.
+// Pass zero for budgetMaxCount or budgetMaxChars to skip clamping that field.
+func ResolvePromptLimitsWithBudget(cfg state.ConfigDoc, budgetMaxCount, budgetMaxChars int) PromptLimits {
+	base := ResolvePromptLimits(cfg)
+	if budgetMaxCount > 0 && budgetMaxCount < base.MaxCount {
+		base.MaxCount = budgetMaxCount
+	}
+	if budgetMaxChars > 0 && budgetMaxChars < base.MaxChars {
+		base.MaxChars = budgetMaxChars
+	}
+	return base
+}
+
+// SkillPromptText returns the text to inject for a skill given the available
+// character budget and a tier indicator. The tier controls how much detail is
+// included:
+//   - tier "micro": name + description + when_to_use only (no body)
+//   - tier "small": name + description + when_to_use + body truncated to charBudget
+//   - tier "standard" (or any other value): full existing rendering (unchanged)
+func SkillPromptText(skill *ResolvedSkill, charBudget int, tier string) string {
+	if skill == nil || skill.Skill == nil {
+		return ""
+	}
+	s := skill.Skill
+	name := strings.TrimSpace(s.Manifest.Name)
+	desc := strings.TrimSpace(s.Manifest.Description)
+	whenToUse := strings.TrimSpace(skill.WhenToUse)
+	if whenToUse == "" {
+		whenToUse = s.WhenToUse()
+	}
+
+	switch strings.ToLower(tier) {
+	case "micro":
+		// Minimal: name + description + when_to_use
+		parts := make([]string, 0, 3)
+		if name != "" {
+			parts = append(parts, "## "+name)
+		}
+		if desc != "" {
+			parts = append(parts, desc)
+		}
+		if whenToUse != "" {
+			parts = append(parts, "Use when: "+whenToUse)
+		}
+		text := strings.Join(parts, "\n")
+		if charBudget > 0 && len(text) > charBudget {
+			text = text[:charBudget]
+		}
+		return text
+
+	case "small":
+		// Condensed: name + description + when_to_use + truncated body
+		parts := make([]string, 0, 4)
+		if name != "" {
+			parts = append(parts, "## "+name)
+		}
+		if desc != "" {
+			parts = append(parts, desc)
+		}
+		if whenToUse != "" {
+			parts = append(parts, "Use when: "+whenToUse)
+		}
+		header := strings.Join(parts, "\n")
+		body := strings.TrimSpace(s.Manifest.Body)
+		if body != "" {
+			remaining := charBudget - len(header) - 1 // -1 for newline
+			if remaining > 0 {
+				if len(body) > remaining {
+					body = body[:remaining]
+				}
+				header += "\n" + body
+			}
+		}
+		if charBudget > 0 && len(header) > charBudget {
+			header = header[:charBudget]
+		}
+		return header
+
+	default:
+		// Standard: full skill content (unchanged from existing behavior)
+		return ""
+	}
+}
+
 func ResolveInstallPreferences(cfg state.ConfigDoc) InstallPreferences {
 	prefs := InstallPreferences{PreferBrew: true, NodeManager: defaultNodeManager}
 	rawSkills, _ := cfg.Extra["skills"].(map[string]any)

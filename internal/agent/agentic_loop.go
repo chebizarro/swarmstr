@@ -32,8 +32,13 @@ type AgenticLoopConfig struct {
 	Executor ToolExecutor
 	// Options configures each LLM call (max_tokens, thinking, caching).
 	Options ChatOptions
-	// MaxIterations caps the number of tool→LLM round-trips. Default: 30.
+	// MaxIterations caps the number of tool→LLM round-trips.
+	// Default: tier-appropriate (Micro=5, Small=10, Standard=30).
+	// Falls back to 30 when ModelID is empty or unrecognized.
 	MaxIterations int
+	// ModelID is used to resolve tier-appropriate defaults when MaxIterations
+	// is zero. Set from the provider's model string.
+	ModelID string
 	// ForceText if true, makes a final LLM call with Tools=nil when the loop
 	// exhausts MaxIterations without producing text. This forces the model to
 	// summarise its findings instead of returning an error.
@@ -81,7 +86,11 @@ type toolCallBatch struct {
 //  5. Optionally force a text response when the loop is exhausted
 func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, error) {
 	if cfg.MaxIterations <= 0 {
-		cfg.MaxIterations = 30
+		profile := ResolveModelContext(cfg.ModelID)
+		cfg.MaxIterations = profile.MaxAgenticIterations
+		if cfg.MaxIterations <= 0 {
+			cfg.MaxIterations = 30
+		}
 	}
 	if cfg.LogPrefix == "" {
 		cfg.LogPrefix = "agentic"
@@ -178,6 +187,24 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 
 		if loopBlocked {
 			break
+		}
+
+		// Apply micro-compaction before the next LLM call to free context
+		// space consumed by old tool results.
+		if cfg.ContextWindowTokens > 0 {
+			budget := ComputeContextBudget(ProfileFromContextWindowTokens(cfg.ContextWindowTokens))
+			estChars := estimateMessageChars(messages)
+			if estChars*100/max(1, budget.EffectiveChars) > 75 {
+				mcResult := MicroCompactMessages(messages, MicroCompactOptions{
+					KeepRecent:  KeepRecentForTier(budget.Profile.Tier),
+					TargetChars: budget.HistoryMax,
+				})
+				if mcResult.Cleared > 0 {
+					messages = mcResult.Messages
+					log.Printf("%s: micro-compact cleared %d tool results (%d chars freed)",
+						cfg.LogPrefix, mcResult.Cleared, mcResult.CharsBefore-mcResult.CharsAfter)
+				}
+			}
 		}
 
 		// Next LLM call.

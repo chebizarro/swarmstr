@@ -23,6 +23,15 @@ type BootstrapConfig struct {
 	GatewayWSAllowedOrigins         []string `json:"gateway_ws_allowed_origins,omitempty"`
 	GatewayWSTrustedProxies         []string `json:"gateway_ws_trusted_proxies,omitempty"`
 	GatewayWSAllowInsecureControlUI bool     `json:"gateway_ws_allow_insecure_control_ui,omitempty"`
+
+	// ContextWindowSize, when non-zero, overrides the model-registry value for
+	// all sessions. Units: tokens. 0 = auto-detect from model ID.
+	ContextWindowSize int `json:"context_window_size,omitempty"`
+
+	// ModelContextOverrides maps model name patterns (case-insensitive prefix)
+	// to context window sizes in tokens. Merged with the built-in registry at
+	// daemon startup. Example: {"phi-3": 4096, "my-finetuned-llama": 8192}
+	ModelContextOverrides map[string]int `json:"model_context_overrides,omitempty"`
 }
 
 func (c BootstrapConfig) EffectiveStateKind() events.Kind {
