@@ -182,6 +182,10 @@ type ServerOptions struct {
 	SupportedMethods            func(context.Context) ([]string, error)
 	DelegateControlCall         func(context.Context, string, json.RawMessage) (any, int, error)
 
+	// MCPManager is the MCP server manager used for the loopback MCP server.
+	// If nil, the /mcp endpoint is not mounted.
+	MCPManager *mcppkg.Manager
+
 	// Metrics is an optional callback that returns the Prometheus text
 	// exposition for /metrics.  If nil the endpoint returns a minimal stub.
 	Metrics func(context.Context) string
@@ -271,6 +275,9 @@ func Start(ctx context.Context, opts ServerOptions) error {
 
 	// OpenAI Responses API — POST /v1/responses
 	mountOpenAIResponses(mux, opts)
+
+	// MCP loopback server — POST /mcp (JSON-RPC 2.0)
+	mountMCPLoopback(mux, opts)
 
 	mux.HandleFunc("/health", withAuth(opts.Token, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})

@@ -830,7 +830,7 @@ func TestExtractContentText(t *testing.T) {
 }
 
 func TestToolInputSchemaToMap_nil(t *testing.T) {
-	m := toolInputSchemaToMap(nil)
+	m := ToolInputSchemaToMap(nil)
 	if m["type"] != "object" {
 		t.Errorf("expected type=object, got %v", m["type"])
 	}
