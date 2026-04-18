@@ -1,0 +1,65 @@
+# metiq — Docker build context exclusions
+# Keeps the build context lean for faster builds.
+
+.git
+.beads
+.dolt
+.DS_Store
+**/.DS_Store
+*.db
+
+# IDE / editor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Media assets (not needed in build)
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.mp4
+*.mov
+*.wav
+*.mp3
+
+# Test and coverage artifacts
+coverage
+**/coverage
+*.test
+*.out
+
+# Logs
+*.log
+**/tmp
+
+# Local build outputs
+/metiq
+/metiqd
+/dist/
+
+# Documentation (not needed in image)
+docs/
+prompt-exports/
+.github/
+
+# Node artifacts (from scripts)
+node_modules
+**/node_modules
+
+# Script artifacts not needed in build
+scripts/dev/
+scripts/docs-i18n/
+scripts/e2e/
+scripts/repro/
+scripts/pre-commit/
+scripts/shell-helpers/
+
+# Dotenv files (secrets — never bake into image)
+.env
+.env.*
+!.env.example
+scripts/docker/.env

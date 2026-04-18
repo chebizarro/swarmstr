@@ -1,0 +1,104 @@
+# metiq daemon — Docker Compose (root-level)
+#
+# Quick start (minimal):
+#   cp .env.example .env   # fill in METIQ_NOSTR_KEY + at least one API key
+#   docker compose up -d
+#
+# Full AI agent (Python + Node + browser baked in):
+#   docker compose --profile full up -d
+#
+# With browser sandbox:
+#   docker compose --profile browser up -d
+#
+# Build variants:
+#   METIQ_VARIANT=default          Debian bookworm (recommended)
+#   METIQ_VARIANT=slim             Debian bookworm-slim (smaller footprint)
+#
+# Optional build-time flags (set in .env or pass via CLI):
+#   METIQ_INSTALL_PYTHON=1         Python 3 + pip + uv for MCP servers
+#   METIQ_INSTALL_NODE=1           Node.js 24 for JS/TS MCP servers
+#   METIQ_INSTALL_BROWSER=1        Chromium + Xvfb for browser automation
+#   METIQ_INSTALL_DOCKER_CLI=1     Docker CLI for sandbox management
+#   METIQ_APT_PACKAGES="pkg1 pkg2" Additional apt packages
+
+services:
+
+  # ── metiq daemon ──────────────────────────────────────────────────────────
+  metiqd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${METIQ_VERSION:-dev}
+        METIQ_VARIANT: ${METIQ_VARIANT:-default}
+        METIQ_INSTALL_PYTHON: ${METIQ_INSTALL_PYTHON:-}
+        METIQ_INSTALL_NODE: ${METIQ_INSTALL_NODE:-}
+        METIQ_INSTALL_BROWSER: ${METIQ_INSTALL_BROWSER:-}
+        METIQ_INSTALL_DOCKER_CLI: ${METIQ_INSTALL_DOCKER_CLI:-}
+        METIQ_APT_PACKAGES: ${METIQ_APT_PACKAGES:-}
+    image: metiq/metiqd:${METIQ_VERSION:-latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HOME: /data
+      TERM: xterm-256color
+    volumes:
+      - metiq-data:/data
+    depends_on:
+      playwright:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7423/health"]
+      interval: 60s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+    ports:
+      - "127.0.0.1:7423:7423"
+    networks:
+      - metiq
+
+  # ── Full agent variant (Python + Node + browser pre-installed) ───────────
+  # Activate with: docker compose --profile full up -d
+  metiqd-full:
+    extends:
+      service: metiqd
+    build:
+      args:
+        METIQ_INSTALL_PYTHON: "1"
+        METIQ_INSTALL_NODE: "1"
+        METIQ_INSTALL_BROWSER: "1"
+    image: metiq/metiqd-full:${METIQ_VERSION:-latest}
+    profiles:
+      - full
+
+  # ── Playwright browser sandbox (optional, standalone) ────────────────────
+  # Set METIQ_BROWSER_URL=http://playwright:3500 in .env to use.
+  # Activate with: docker compose --profile browser up -d
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.52.0-noble
+    restart: unless-stopped
+    environment:
+      - SANDBOX_LISTEN=0.0.0.0:3500
+      - SANDBOX_AUTH_TOKEN=${METIQ_BROWSER_TOKEN:-}
+    ports:
+      - "127.0.0.1:3500:3500"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3500/ || exit 0"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - metiq
+    profiles:
+      - browser
+
+volumes:
+  metiq-data:
+
+networks:
+  metiq:
+    driver: bridge
