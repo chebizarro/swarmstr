@@ -15,7 +15,8 @@ type ChannelsStatusRequest struct {
 }
 
 type ChannelsLogoutRequest struct {
-	Channel string `json:"channel"`
+	Channel   string `json:"channel"`
+	AccountID string `json:"account_id,omitempty"`
 }
 
 // ChannelsJoinRequest joins a NIP-29 relay group or other channel.
@@ -53,7 +54,12 @@ type SendRequest struct {
 	Text           string   `json:"text,omitempty"`
 	MediaURL       string   `json:"mediaUrl,omitempty"`
 	MediaURLs      []string `json:"mediaUrls,omitempty"`
+	GifPlayback    *bool    `json:"gif_playback,omitempty"`
 	Channel        string   `json:"channel,omitempty"`
+	AccountID      string   `json:"account_id,omitempty"`
+	AgentID        string   `json:"agent_id,omitempty"`
+	ThreadID       string   `json:"thread_id,omitempty"`
+	SessionKey     string   `json:"sessionKey,omitempty"`
 	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
 }
 

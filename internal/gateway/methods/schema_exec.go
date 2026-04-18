@@ -22,11 +22,47 @@ type ExecApprovalsNodeSetRequest struct {
 	Approvals map[string]any `json:"approvals"`
 }
 
+// ExecApprovalMutableFileOperand tracks a file operand that may be mutated
+// by the approved command, enabling content-aware approval decisions.
+type ExecApprovalMutableFileOperand struct {
+	ArgvIndex int    `json:"argvIndex"`
+	Path      string `json:"path"`
+	SHA256    string `json:"sha256"`
+}
+
+// ExecApprovalSystemRunPlan describes the fully resolved execution plan for
+// a system.run command awaiting approval.
+type ExecApprovalSystemRunPlan struct {
+	Argv               []string                        `json:"argv"`
+	CWD                *string                         `json:"cwd"`
+	CommandText        string                          `json:"commandText"`
+	CommandPreview     *string                         `json:"commandPreview,omitempty"`
+	AgentID            *string                         `json:"agentId"`
+	SessionKey         *string                         `json:"sessionKey"`
+	MutableFileOperand *ExecApprovalMutableFileOperand `json:"mutableFileOperand,omitempty"`
+}
+
 type ExecApprovalRequestRequest struct {
-	NodeID    string         `json:"node_id,omitempty"`
-	Command   string         `json:"command"`
-	Args      map[string]any `json:"args,omitempty"`
-	TimeoutMS int            `json:"timeout_ms,omitempty"`
+	ID                   string                     `json:"id,omitempty"`
+	NodeID               string                     `json:"node_id,omitempty"`
+	Command              string                     `json:"command"`
+	CommandArgv          []string                   `json:"command_argv,omitempty"`
+	SystemRunPlan        *ExecApprovalSystemRunPlan  `json:"system_run_plan,omitempty"`
+	Args                 map[string]any             `json:"args,omitempty"`
+	Env                  map[string]string          `json:"env,omitempty"`
+	CWD                  *string                    `json:"cwd,omitempty"`
+	Host                 *string                    `json:"host,omitempty"`
+	Security             *string                    `json:"security,omitempty"`
+	Ask                  *string                    `json:"ask,omitempty"`
+	AgentID              *string                    `json:"agent_id,omitempty"`
+	ResolvedPath         *string                    `json:"resolved_path,omitempty"`
+	SessionKey           *string                    `json:"sessionKey,omitempty"`
+	TurnSourceChannel    *string                    `json:"turn_source_channel,omitempty"`
+	TurnSourceTo         *string                    `json:"turn_source_to,omitempty"`
+	TurnSourceAccountID  *string                    `json:"turn_source_account_id,omitempty"`
+	TurnSourceThreadID   *string                    `json:"turn_source_thread_id,omitempty"`
+	TimeoutMS            int                        `json:"timeout_ms,omitempty"`
+	TwoPhase             *bool                      `json:"two_phase,omitempty"`
 }
 
 type ExecApprovalWaitDecisionRequest struct {
@@ -69,10 +105,11 @@ func (r ExecApprovalsNodeSetRequest) Normalize() (ExecApprovalsNodeSetRequest, e
 }
 
 func (r ExecApprovalRequestRequest) Normalize() (ExecApprovalRequestRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
 	r.NodeID = strings.TrimSpace(r.NodeID)
 	r.Command = strings.TrimSpace(r.Command)
-	if r.Command == "" {
-		return r, fmt.Errorf("command is required")
+	if r.Command == "" && len(r.CommandArgv) == 0 {
+		return r, fmt.Errorf("command or command_argv is required")
 	}
 	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 60_000, 600_000)
 	if r.Args == nil {
