@@ -48,7 +48,7 @@ func MCPToolToToolDef(mgr *Manager, serverName string, tool *mcp.Tool) (name str
 	}
 
 	// Build parameters schema.
-	params = toolInputSchemaToMap(tool.InputSchema)
+	params = ToolInputSchemaToMap(tool.InputSchema)
 
 	// Build executor.
 	fn = func(ctx context.Context, args map[string]any) (string, error) {
@@ -101,11 +101,9 @@ func sanitize(s string) string {
 	return strings.Trim(b.String(), "_")
 }
 
-// toolInputSchemaToMap converts an MCP tool's InputSchema to a map[string]any
+// ToolInputSchemaToMap converts an MCP tool's InputSchema to a map[string]any
 // suitable for metiq's ToolParameters.
-// toolInputSchemaToMap converts an MCP tool's InputSchema to a map[string]any
-// suitable for metiq's ToolParameters.
-func toolInputSchemaToMap(schema any) map[string]any {
+func ToolInputSchemaToMap(schema any) map[string]any {
 	if schema == nil {
 		return map[string]any{
 			"type":       "object",
