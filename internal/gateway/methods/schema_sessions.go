@@ -10,12 +10,60 @@ import (
 	"unicode/utf8"
 )
 
+// AgentInternalEvent represents a task completion event from a subagent or
+// cron job, forwarded into the next agent turn as context.
+type AgentInternalEvent struct {
+	Type            string `json:"type"`                        // "task_completion"
+	Source          string `json:"source"`                      // "subagent" | "cron"
+	ChildSessionKey string `json:"child_session_key"`
+	ChildSessionID  string `json:"child_session_id,omitempty"`
+	AnnounceType    string `json:"announce_type"`
+	TaskLabel       string `json:"task_label"`
+	Status          string `json:"status"`        // "ok" | "timeout" | "error" | "unknown"
+	StatusLabel     string `json:"status_label"`
+	Result          string `json:"result"`
+	StatsLine       string `json:"stats_line,omitempty"`
+	ReplyInstruction string `json:"reply_instruction"`
+}
+
+// InputProvenance tracks the origin of a message so the agent can reason
+// about where its input came from.
+type InputProvenance struct {
+	Kind             string `json:"kind"`
+	OriginSessionID  string `json:"origin_session_id,omitempty"`
+	SourceSessionKey string `json:"source_session_key,omitempty"`
+	SourceChannel    string `json:"source_channel,omitempty"`
+	SourceTool       string `json:"source_tool,omitempty"`
+}
+
 type AgentRequest struct {
-	SessionID   string                 `json:"session_id,omitempty"`
-	Message     string                 `json:"message"`
-	Context     string                 `json:"context,omitempty"`
-	MemoryScope state.AgentMemoryScope `json:"memory_scope,omitempty"`
-	TimeoutMS   int                    `json:"timeout_ms,omitempty"`
+	SessionID         string                 `json:"session_id,omitempty"`
+	SessionKey        string                 `json:"sessionKey,omitempty"`
+	Message           string                 `json:"message"`
+	Context           string                 `json:"context,omitempty"`
+	MemoryScope       state.AgentMemoryScope `json:"memory_scope,omitempty"`
+	TimeoutMS         int                    `json:"timeout_ms,omitempty"`
+	AgentID           string                 `json:"agent_id,omitempty"`
+	To                string                 `json:"to,omitempty"`
+	ReplyTo           string                 `json:"reply_to,omitempty"`
+	Thinking          string                 `json:"thinking,omitempty"`
+	Deliver           *bool                  `json:"deliver,omitempty"`
+	Attachments       []AttachmentInput      `json:"attachments,omitempty"`
+	Channel           string                 `json:"channel,omitempty"`
+	ReplyChannel      string                 `json:"reply_channel,omitempty"`
+	AccountID         string                 `json:"account_id,omitempty"`
+	ReplyAccountID    string                 `json:"reply_account_id,omitempty"`
+	ThreadID          string                 `json:"thread_id,omitempty"`
+	GroupID           string                 `json:"group_id,omitempty"`
+	GroupChannel      string                 `json:"group_channel,omitempty"`
+	GroupSpace        string                 `json:"group_space,omitempty"`
+	BestEffortDeliver *bool                  `json:"best_effort_deliver,omitempty"`
+	Lane              string                 `json:"lane,omitempty"`
+	ExtraSystemPrompt string                 `json:"extra_system_prompt,omitempty"`
+	InternalEvents    []AgentInternalEvent   `json:"internal_events,omitempty"`
+	InputProvenance   *InputProvenance       `json:"input_provenance,omitempty"`
+	IdempotencyKey    string                 `json:"idempotency_key,omitempty"`
+	Label             string                 `json:"label,omitempty"`
 }
 
 type AgentWaitRequest struct {
@@ -24,8 +72,9 @@ type AgentWaitRequest struct {
 }
 
 type AgentIdentityRequest struct {
-	SessionID string `json:"session_id,omitempty"`
-	AgentID   string `json:"agent_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	SessionKey string `json:"sessionKey,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
 }
 
 // AttachmentInput represents a media file attached to a chat.send or agent.run request.
@@ -176,8 +225,25 @@ type SessionGetResponse struct {
 
 func (r AgentRequest) Normalize() (AgentRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.SessionKey = strings.TrimSpace(r.SessionKey)
 	r.Message = strings.TrimSpace(r.Message)
 	r.Context = strings.TrimSpace(r.Context)
+	r.AgentID = normalizeAgentID(r.AgentID)
+	r.To = strings.TrimSpace(r.To)
+	r.ReplyTo = strings.TrimSpace(r.ReplyTo)
+	r.Thinking = strings.TrimSpace(r.Thinking)
+	r.Channel = strings.TrimSpace(r.Channel)
+	r.ReplyChannel = strings.TrimSpace(r.ReplyChannel)
+	r.AccountID = strings.TrimSpace(r.AccountID)
+	r.ReplyAccountID = strings.TrimSpace(r.ReplyAccountID)
+	r.ThreadID = strings.TrimSpace(r.ThreadID)
+	r.GroupID = strings.TrimSpace(r.GroupID)
+	r.GroupChannel = strings.TrimSpace(r.GroupChannel)
+	r.GroupSpace = strings.TrimSpace(r.GroupSpace)
+	r.Lane = strings.TrimSpace(r.Lane)
+	r.ExtraSystemPrompt = strings.TrimSpace(r.ExtraSystemPrompt)
+	r.IdempotencyKey = strings.TrimSpace(r.IdempotencyKey)
+	r.Label = strings.TrimSpace(r.Label)
 	if raw := strings.TrimSpace(string(r.MemoryScope)); raw != "" {
 		scope, ok := state.ParseAgentMemoryScope(raw)
 		if !ok {
@@ -203,6 +269,7 @@ func (r AgentWaitRequest) Normalize() (AgentWaitRequest, error) {
 
 func (r AgentIdentityRequest) Normalize() (AgentIdentityRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.SessionKey = strings.TrimSpace(r.SessionKey)
 	r.AgentID = strings.TrimSpace(r.AgentID)
 	return r, nil
 }

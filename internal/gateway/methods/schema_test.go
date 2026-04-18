@@ -1440,3 +1440,379 @@ func TestSupportedMethodsIncludesRuntimeObserve(t *testing.T) {
 	}
 	t.Fatalf("%s not found in supported methods", MethodRuntimeObserve)
 }
+
+// ── Schema parity: new AgentRequest fields ──────────────────────────────────
+
+func TestDecodeAgentParams_NewFields(t *testing.T) {
+	raw := json.RawMessage(`{
+		"message": "hello",
+		"session_id": "sess-1",
+		"sessionKey": "key-1",
+		"agent_id": "agent-1",
+		"to": "npub1abc",
+		"reply_to": "npub1def",
+		"thinking": "chain",
+		"deliver": true,
+		"channel": "webchat",
+		"reply_channel": "nostr",
+		"account_id": "acc-1",
+		"reply_account_id": "acc-2",
+		"thread_id": "t-1",
+		"group_id": "g-1",
+		"group_channel": "gc-1",
+		"group_space": "gs-1",
+		"best_effort_deliver": false,
+		"lane": "fast",
+		"extra_system_prompt": "Be brief.",
+		"idempotency_key": "idem-1",
+		"label": "test-label"
+	}`)
+
+	req, err := DecodeAgentParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.SessionKey != "key-1" {
+		t.Errorf("session_key = %q", req.SessionKey)
+	}
+	if req.AgentID != "agent-1" {
+		t.Errorf("agent_id = %q", req.AgentID)
+	}
+	if req.To != "npub1abc" {
+		t.Errorf("to = %q", req.To)
+	}
+	if req.ReplyTo != "npub1def" {
+		t.Errorf("reply_to = %q", req.ReplyTo)
+	}
+	if req.Thinking != "chain" {
+		t.Errorf("thinking = %q", req.Thinking)
+	}
+	if req.Deliver == nil || !*req.Deliver {
+		t.Errorf("deliver = %v", req.Deliver)
+	}
+	if req.Channel != "webchat" {
+		t.Errorf("channel = %q", req.Channel)
+	}
+	if req.ThreadID != "t-1" {
+		t.Errorf("thread_id = %q", req.ThreadID)
+	}
+	if req.GroupID != "g-1" {
+		t.Errorf("group_id = %q", req.GroupID)
+	}
+	if req.GroupChannel != "gc-1" {
+		t.Errorf("group_channel = %q", req.GroupChannel)
+	}
+	if req.GroupSpace != "gs-1" {
+		t.Errorf("group_space = %q", req.GroupSpace)
+	}
+	if req.BestEffortDeliver == nil || *req.BestEffortDeliver {
+		t.Errorf("best_effort_deliver = %v", req.BestEffortDeliver)
+	}
+	if req.Lane != "fast" {
+		t.Errorf("lane = %q", req.Lane)
+	}
+	if req.ExtraSystemPrompt != "Be brief." {
+		t.Errorf("extra_system_prompt = %q", req.ExtraSystemPrompt)
+	}
+	if req.IdempotencyKey != "idem-1" {
+		t.Errorf("idempotency_key = %q", req.IdempotencyKey)
+	}
+	if req.Label != "test-label" {
+		t.Errorf("label = %q", req.Label)
+	}
+}
+
+func TestDecodeAgentParams_CamelCaseNewFields(t *testing.T) {
+	raw := json.RawMessage(`{
+		"message": "hello",
+		"replyTo": "npub1def",
+		"threadId": "t-2",
+		"groupId": "g-2",
+		"groupChannel": "gc-2",
+		"groupSpace": "gs-2",
+		"bestEffortDeliver": true,
+		"extraSystemPrompt": "Extra",
+		"inputProvenance": {"kind":"dm","source_channel":"nostr"}
+	}`)
+
+	req, err := DecodeAgentParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.ReplyTo != "npub1def" {
+		t.Errorf("reply_to = %q", req.ReplyTo)
+	}
+	if req.ThreadID != "t-2" {
+		t.Errorf("thread_id = %q", req.ThreadID)
+	}
+	if req.GroupID != "g-2" {
+		t.Errorf("group_id = %q", req.GroupID)
+	}
+	if req.GroupSpace != "gs-2" {
+		t.Errorf("group_space = %q", req.GroupSpace)
+	}
+	if req.BestEffortDeliver == nil || !*req.BestEffortDeliver {
+		t.Errorf("best_effort_deliver = %v", req.BestEffortDeliver)
+	}
+	if req.ExtraSystemPrompt != "Extra" {
+		t.Errorf("extra_system_prompt = %q", req.ExtraSystemPrompt)
+	}
+	if req.InputProvenance == nil || req.InputProvenance.Kind != "dm" {
+		t.Errorf("input_provenance = %+v", req.InputProvenance)
+	}
+}
+
+func TestDecodeAgentParams_InternalEvents(t *testing.T) {
+	raw := json.RawMessage(`{
+		"message": "process events",
+		"internal_events": [
+			{
+				"type": "task_completion",
+				"source": "subagent",
+				"child_session_key": "child-1",
+				"announce_type": "result",
+				"task_label": "research",
+				"status": "ok",
+				"status_label": "Completed",
+				"result": "42",
+				"reply_instruction": "summarize"
+			}
+		]
+	}`)
+
+	req, err := DecodeAgentParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if len(req.InternalEvents) != 1 {
+		t.Fatalf("expected 1 internal event, got %d", len(req.InternalEvents))
+	}
+	evt := req.InternalEvents[0]
+	if evt.Type != "task_completion" || evt.Source != "subagent" || evt.Status != "ok" {
+		t.Errorf("internal event = %+v", evt)
+	}
+	if evt.ChildSessionKey != "child-1" || evt.TaskLabel != "research" || evt.Result != "42" {
+		t.Errorf("internal event fields = %+v", evt)
+	}
+}
+
+// ── Schema parity: AgentIdentityRequest SessionKey ──────────────────────────
+
+func TestDecodeAgentIdentityParams_SessionKey(t *testing.T) {
+	raw := json.RawMessage(`{"agent_id":"main","sessionKey":"sk-1"}`)
+	req, err := DecodeAgentIdentityParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.SessionKey != "sk-1" {
+		t.Errorf("session_key = %q", req.SessionKey)
+	}
+}
+
+// ── Schema parity: AgentsCreate/Update/Delete new fields ────────────────────
+
+func TestDecodeAgentsCreateParams_EmojiAvatar(t *testing.T) {
+	raw := json.RawMessage(`{"agent_id":"bot-1","name":"Bot","workspace":"/tmp","emoji":"🤖","avatar":"https://img/bot.png"}`)
+	req, err := DecodeAgentsCreateParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.Emoji != "🤖" || req.Avatar != "https://img/bot.png" {
+		t.Errorf("emoji=%q avatar=%q", req.Emoji, req.Avatar)
+	}
+}
+
+func TestDecodeAgentsUpdateParams_Avatar(t *testing.T) {
+	raw := json.RawMessage(`{"agent_id":"bot-1","avatar":"https://img/new.png"}`)
+	req, err := DecodeAgentsUpdateParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.Avatar != "https://img/new.png" {
+		t.Errorf("avatar=%q", req.Avatar)
+	}
+}
+
+func TestDecodeAgentsDeleteParams_DeleteFiles(t *testing.T) {
+	raw := json.RawMessage(`{"agent_id":"bot-1","delete_files":true}`)
+	req, err := DecodeAgentsDeleteParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.DeleteFiles == nil || !*req.DeleteFiles {
+		t.Errorf("delete_files = %v", req.DeleteFiles)
+	}
+}
+
+// ── Schema parity: SendRequest new fields ───────────────────────────────────
+
+func TestDecodeSendParams_NewFields(t *testing.T) {
+	raw := json.RawMessage(`{
+		"to":"0000000000000000000000000000000000000000000000000000000000000001",
+		"message":"hello",
+		"gif_playback":true,
+		"account_id":"acc-1",
+		"agent_id":"main",
+		"thread_id":"t-1",
+		"sessionKey":"sk-1",
+		"idempotencyKey":"idem-1"
+	}`)
+	req, err := DecodeSendParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.GifPlayback == nil || !*req.GifPlayback {
+		t.Errorf("gif_playback = %v", req.GifPlayback)
+	}
+	if req.AccountID != "acc-1" {
+		t.Errorf("account_id = %q", req.AccountID)
+	}
+	if req.AgentID != "main" {
+		t.Errorf("agent_id = %q", req.AgentID)
+	}
+	if req.ThreadID != "t-1" {
+		t.Errorf("thread_id = %q", req.ThreadID)
+	}
+	if req.SessionKey != "sk-1" {
+		t.Errorf("session_key = %q", req.SessionKey)
+	}
+}
+
+// ── Schema parity: ChannelsLogoutRequest AccountID ──────────────────────────
+
+func TestDecodeChannelsLogoutParams_AccountID(t *testing.T) {
+	raw := json.RawMessage(`{"channel":"telegram","account_id":"acc-1"}`)
+	req, err := DecodeChannelsLogoutParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.AccountID != "acc-1" {
+		t.Errorf("account_id = %q", req.AccountID)
+	}
+}
+
+// ── Schema parity: ExecApprovalRequest new fields ───────────────────────────
+
+func TestDecodeExecApprovalRequestParams_NewFields(t *testing.T) {
+	raw := json.RawMessage(`{
+		"id":"approval-42",
+		"command":"npm install",
+		"command_argv":["npm","install"],
+		"env":{"NODE_ENV":"production"},
+		"cwd":"/app",
+		"host":"localhost",
+		"security":"sandboxed",
+		"ask":"auto",
+		"agent_id":"main",
+		"resolved_path":"/usr/bin/npm",
+		"sessionKey":"sk-1",
+		"turn_source_channel":"webchat",
+		"turn_source_to":"user-1",
+		"turn_source_account_id":"acc-1",
+		"turn_source_thread_id":"thread-1",
+		"two_phase":true,
+		"timeout_ms":30000,
+		"system_run_plan":{
+			"argv":["npm","install"],
+			"cwd":"/app",
+			"commandText":"npm install",
+			"agentId":"main",
+			"sessionKey":"sk-1"
+		}
+	}`)
+	req, err := DecodeExecApprovalRequestParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if req.ID != "approval-42" {
+		t.Errorf("id = %q", req.ID)
+	}
+	if len(req.CommandArgv) != 2 || req.CommandArgv[0] != "npm" {
+		t.Errorf("command_argv = %v", req.CommandArgv)
+	}
+	if req.Env["NODE_ENV"] != "production" {
+		t.Errorf("env = %v", req.Env)
+	}
+	if req.CWD == nil || *req.CWD != "/app" {
+		t.Errorf("cwd = %v", req.CWD)
+	}
+	if req.TwoPhase == nil || !*req.TwoPhase {
+		t.Errorf("two_phase = %v", req.TwoPhase)
+	}
+	if req.SystemRunPlan == nil || req.SystemRunPlan.CommandText != "npm install" {
+		t.Errorf("system_run_plan = %+v", req.SystemRunPlan)
+	}
+	if req.SystemRunPlan != nil && len(req.SystemRunPlan.Argv) != 2 {
+		t.Errorf("system_run_plan.argv = %v", req.SystemRunPlan.Argv)
+	}
+}
+
+func TestDecodeExecApprovalRequestParams_CamelCase(t *testing.T) {
+	raw := json.RawMessage(`{
+		"command":"ls",
+		"commandArgv":["ls","-la"],
+		"resolvedPath":"/bin/ls",
+		"turnSourceChannel":"webchat",
+		"twoPhase":false
+	}`)
+	req, err := DecodeExecApprovalRequestParams(raw)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("normalize error: %v", err)
+	}
+	if len(req.CommandArgv) != 2 {
+		t.Errorf("command_argv = %v", req.CommandArgv)
+	}
+	if req.ResolvedPath == nil || *req.ResolvedPath != "/bin/ls" {
+		t.Errorf("resolved_path = %v", req.ResolvedPath)
+	}
+	if req.TurnSourceChannel == nil || *req.TurnSourceChannel != "webchat" {
+		t.Errorf("turn_source_channel = %v", req.TurnSourceChannel)
+	}
+	if req.TwoPhase == nil || *req.TwoPhase {
+		t.Errorf("two_phase = %v", req.TwoPhase)
+	}
+}

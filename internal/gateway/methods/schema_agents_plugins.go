@@ -17,6 +17,8 @@ type AgentsCreateRequest struct {
 	Name      string         `json:"name,omitempty"`
 	Workspace string         `json:"workspace,omitempty"`
 	Model     string         `json:"model,omitempty"`
+	Emoji     string         `json:"emoji,omitempty"`
+	Avatar    string         `json:"avatar,omitempty"`
 	Meta      map[string]any `json:"meta,omitempty"`
 }
 
@@ -25,11 +27,13 @@ type AgentsUpdateRequest struct {
 	Name      string         `json:"name,omitempty"`
 	Workspace string         `json:"workspace,omitempty"`
 	Model     string         `json:"model,omitempty"`
+	Avatar    string         `json:"avatar,omitempty"`
 	Meta      map[string]any `json:"meta,omitempty"`
 }
 
 type AgentsDeleteRequest struct {
-	AgentID string `json:"agent_id"`
+	AgentID     string `json:"agent_id"`
+	DeleteFiles *bool  `json:"delete_files,omitempty"`
 }
 
 type AgentsFilesListRequest struct {
