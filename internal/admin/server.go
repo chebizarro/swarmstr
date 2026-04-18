@@ -266,6 +266,9 @@ func Start(ctx context.Context, opts ServerOptions) error {
 	// Active only when hooks.enabled=true in runtime ConfigDoc.
 	mountWebhookIngress(mux, opts)
 
+	// OpenAI-compatible chat completions — POST /v1/chat/completions
+	mountOpenAIChatCompletions(mux, opts)
+
 	mux.HandleFunc("/health", withAuth(opts.Token, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}))
