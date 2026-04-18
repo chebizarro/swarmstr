@@ -1,0 +1,26 @@
+# metiqd — Podman Quadlet (rootless)
+# Installed by setup-podman.sh into ~/.config/containers/systemd/
+# {{METIQ_HOME}} is replaced at install time.
+
+[Unit]
+Description=metiqd (rootless Podman)
+
+[Container]
+Image=metiqd:local
+ContainerName=metiqd
+UserNS=keep-id
+# Keep container UID/GID aligned with the invoking user so mounted config is readable.
+User=%U:%G
+Volume={{METIQ_HOME}}/.metiq:/home/metiq/.metiq
+EnvironmentFile={{METIQ_HOME}}/.metiq/.env
+Environment=HOME=/home/metiq
+Environment=TERM=xterm-256color
+Pull=never
+Exec=/usr/local/bin/metiqd
+
+[Service]
+TimeoutStartSec=300
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
