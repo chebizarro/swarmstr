@@ -7,14 +7,14 @@
 //   - Relay lookup: queries recipient's DM relay list (kind 10050) before falling back
 //     to the configured write relays
 //
-// # Pool reconnect workaround
+// # Per-relay subscription management
 //
 // The nostr pool library's subMany function sets filter.Since = Now() after
 // any relay disconnection (pool.go line ~548). NIP-59 gift wraps are
 // intentionally backdated by up to ~10 hours, so this silently drops all
-// inbound DMs after a relay reconnect. The receiveLoop works around this by
-// periodically cycling the subscription (every nip17SubscriptionRefreshInterval)
-// to restore the correct backfill window.
+// inbound DMs after a relay reconnect. To avoid this, the NIP-17 bus manages
+// per-relay subscriptions directly (see listenGiftWraps), bypassing
+// pool.SubscribeMany and controlling the Since value on each reconnect.
 //
 // The public surface intentionally matches DMBus so callers can swap them.
 package runtime
@@ -30,6 +30,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip17"
+	"fiatjaf.com/nostr/nip59"
 )
 
 const (
@@ -38,14 +39,11 @@ const (
 	// valid inbound gift-wrap events are still seen after unwrap.
 	nip17GiftWrapBackfill = 10*time.Hour + 5*time.Minute
 
-	// nip17SubscriptionRefreshInterval controls how often the NIP-17 receive
-	// loop force-restarts its subscription.  This is critical because the
-	// nostr pool library's internal reconnect logic sets filter.Since = Now()
-	// after any relay disconnection (pool.go subMany), which silently drops
-	// all new NIP-59 gift wraps whose created_at is backdated (up to ~10h).
-	// By periodically recycling the subscription we restore the correct
-	// backfill window (since = now − 10h5m) and recover from the pool bug.
-	nip17SubscriptionRefreshInterval = 5 * time.Minute
+	// nip17ReconnectBackoffMin is the initial backoff for per-relay reconnection.
+	nip17ReconnectBackoffMin = 3 * time.Second
+
+	// nip17ReconnectBackoffMax caps the exponential backoff for relay reconnection.
+	nip17ReconnectBackoffMax = 10 * time.Minute
 )
 
 // NIP17BusOptions mirrors DMBusOptions so the two buses are interchangeable.
@@ -278,38 +276,20 @@ func (b *NIP17Bus) receiveLoop(since nostr.Timestamp) {
 			}
 		}
 
-		// Force-refresh the subscription periodically.  The nostr pool
-		// library's subMany sets filter.Since = Now() after any relay
-		// reconnect, which silently drops backdated NIP-59 gift wraps.
-		// By cycling the subscription on a fixed interval we restore
-		// the correct backfill window (since = now − 10h5m).
-		refreshTimer := time.NewTimer(nip17SubscriptionRefreshInterval)
-
 		cycleCtx, cycleCancel := context.WithCancel(b.ctx)
-		rumCh := nip17.ListenForMessages(cycleCtx, b.pool, b.kr, b.currentRelays(), currentSince)
-		log.Printf("nip17: subscription started on %d relays (since=%d, backfill=%s)",
-			len(b.currentRelays()), currentSince, nip17GiftWrapBackfill)
+		rumCh := b.listenGiftWraps(cycleCtx, b.currentRelays(), currentSince)
 
 		closed := false
 		for !closed {
 			select {
 			case <-b.ctx.Done():
-				refreshTimer.Stop()
 				cycleCancel()
 				return
 			case <-b.rebindCh:
-				refreshTimer.Stop()
-				cycleCancel()
-				closed = true
-			case <-refreshTimer.C:
-				// Periodic refresh: cancel current subscription so the
-				// outer loop restarts it with a fresh since window.
-				log.Printf("nip17: refreshing subscription (interval=%s)", nip17SubscriptionRefreshInterval)
 				cycleCancel()
 				closed = true
 			case rumor, ok := <-rumCh:
 				if !ok {
-					refreshTimer.Stop()
 					cycleCancel()
 					b.emitErr(fmt.Errorf("nip17 subscription closed; restarting"))
 					closed = true
@@ -329,6 +309,156 @@ func (b *NIP17Bus) receiveLoop(since nostr.Timestamp) {
 		case <-time.After(500 * time.Millisecond):
 		default:
 		}
+	}
+}
+
+// listenGiftWraps subscribes to kind:1059 events on each relay independently,
+// unwraps each gift wrap, and sends the resulting rumors to the returned channel.
+//
+// Unlike nip17.ListenForMessages (which delegates to pool.SubscribeMany),
+// this manages per-relay subscriptions directly.  Each relay goroutine
+// handles its own reconnection and always resubscribes with the correct
+// NIP-59 backfill Since, avoiding the pool library's filter.Since = Now()
+// bug that silently drops backdated gift wraps after any relay disconnect.
+func (b *NIP17Bus) listenGiftWraps(ctx context.Context, relays []string, since nostr.Timestamp) <-chan nostr.Event {
+	ch := make(chan nostr.Event)
+	var wg sync.WaitGroup
+
+	// Deduplicate relay URLs.
+	seen := make(map[string]struct{}, len(relays))
+	var unique []string
+	for _, u := range relays {
+		nm := nostr.NormalizeURL(u)
+		if _, ok := seen[nm]; ok {
+			continue
+		}
+		seen[nm] = struct{}{}
+		unique = append(unique, nm)
+	}
+
+	log.Printf("nip17: subscribing to %d relays (since=%d, backfill=%s)",
+		len(unique), since, nip17GiftWrapBackfill)
+
+	for _, url := range unique {
+		wg.Add(1)
+		go b.perRelaySubscribe(ctx, url, since, ch, &wg)
+	}
+
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	return ch
+}
+
+// perRelaySubscribe manages a single relay's kind:1059 subscription lifecycle.
+// On disconnect or CLOSED, it reconnects with a fresh Since computed from
+// normalizeNIP17Since (≈ now − 10h5m) so backdated gift wraps are never missed.
+func (b *NIP17Bus) perRelaySubscribe(
+	ctx context.Context,
+	relayURL string,
+	initialSince nostr.Timestamp,
+	out chan<- nostr.Event,
+	wg *sync.WaitGroup,
+) {
+	defer wg.Done()
+	backoff := nip17ReconnectBackoffMin
+	since := initialSince
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		relay, err := b.pool.EnsureRelay(relayURL)
+		if err != nil {
+			log.Printf("nip17: connect %s failed: %v (retry in %s)", relayURL, err, backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff = min(nip17ReconnectBackoffMax, backoff*17/10)
+			continue
+		}
+
+		filter := nostr.Filter{
+			Kinds: []nostr.Kind{nostr.KindGiftWrap},
+			Tags:  nostr.TagMap{"p": []string{b.public.Hex()}},
+			Since: since,
+		}
+
+		hasAuthed := false
+
+	subscribe:
+		sub, subErr := relay.Subscribe(ctx, filter, nostr.SubscriptionOptions{Label: "nip17dm"})
+		if subErr != nil {
+			log.Printf("nip17: subscribe %s failed: %v (retry in %s)", relayURL, subErr, backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff = min(nip17ReconnectBackoffMax, backoff*17/10)
+			continue
+		}
+
+		// Successful subscription — reset backoff.
+		backoff = nip17ReconnectBackoffMin
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case evt, more := <-sub.Events:
+				if !more {
+					// Connection lost — reconnect with correct backfill.
+					log.Printf("nip17: subscription to %s closed, reconnecting", relayURL)
+					goto reconnect
+				}
+
+				// Unwrap the gift wrap inline.
+				rumor, unwrapErr := nip59.GiftUnwrap(evt, func(pk nostr.PubKey, ct string) (string, error) {
+					return b.kr.Decrypt(ctx, ct, pk)
+				})
+				if unwrapErr != nil {
+					log.Printf("nip17: unwrap from %s: %v", relayURL, unwrapErr)
+					continue
+				}
+
+				select {
+				case out <- rumor:
+				case <-ctx.Done():
+					return
+				}
+
+			case reason := <-sub.ClosedReason:
+				if strings.HasPrefix(reason, "auth-required:") && !hasAuthed {
+					authErr := relay.Auth(ctx, func(authCtx context.Context, authEvt *nostr.Event) error {
+						return b.kr.SignEvent(authCtx, authEvt)
+					})
+					if authErr == nil {
+						hasAuthed = true
+						goto subscribe
+					}
+					log.Printf("nip17: AUTH to %s failed: %v", relayURL, authErr)
+				}
+				log.Printf("nip17: CLOSED from %s: %s", relayURL, reason)
+				goto reconnect
+			}
+		}
+
+	reconnect:
+		// Always recompute since with the correct backfill window.
+		since = nostr.Timestamp(normalizeNIP17Since(time.Now().Unix()))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(nip17ReconnectBackoffMax, backoff*17/10)
 	}
 }
 
