@@ -421,6 +421,65 @@ func TestDisruption_NIP17NormalizeSinceWithOldCheckpoint(t *testing.T) {
 	}
 }
 
+func TestDisruption_NIP17SubscriptionRefreshIntervalSanity(t *testing.T) {
+	// The refresh interval must be short enough to quickly recover from the
+	// pool library's filter.Since = Now() bug, but long enough to avoid
+	// excessive relay chatter.
+	if nip17SubscriptionRefreshInterval < 1*time.Minute {
+		t.Fatalf("nip17SubscriptionRefreshInterval = %v, too short (min 1m)", nip17SubscriptionRefreshInterval)
+	}
+	if nip17SubscriptionRefreshInterval > 15*time.Minute {
+		t.Fatalf("nip17SubscriptionRefreshInterval = %v, too long (max 15m)", nip17SubscriptionRefreshInterval)
+	}
+	// Must be shorter than the backfill window — otherwise a full refresh
+	// cycle could still miss events backdated by more than the interval.
+	if nip17SubscriptionRefreshInterval >= nip17GiftWrapBackfill {
+		t.Fatalf("refresh interval %v must be < backfill window %v",
+			nip17SubscriptionRefreshInterval, nip17GiftWrapBackfill)
+	}
+}
+
+func TestDisruption_NIP17NormalizeSinceAfterPoolReconnect(t *testing.T) {
+	// Simulate what happens when the pool reconnects: it sets filter.Since
+	// to the current time. Verify that normalizeNIP17Since (called when
+	// the NIP-17 bus restarts the subscription) correctly resets the since
+	// back to now - backfill, recovering from the corrupted value.
+	corruptedSince := time.Now().Unix() // This is what pool sets
+	normalizedSince := normalizeNIP17Since(corruptedSince)
+
+	expectedFloor := time.Now().Unix() - int64(nip17GiftWrapBackfill.Seconds())
+	if normalizedSince > expectedFloor+5 {
+		t.Fatalf("after pool reconnect corruption, normalizeNIP17Since(%d) = %d; expected near floor %d",
+			corruptedSince, normalizedSince, expectedFloor)
+	}
+	if normalizedSince < expectedFloor-5 {
+		t.Fatalf("normalizeNIP17Since(%d) = %d; expected near floor %d",
+			corruptedSince, normalizedSince, expectedFloor)
+	}
+}
+
+func TestDisruption_NIP17BackdatedEventSurvivesRefreshCycle(t *testing.T) {
+	// After a refresh cycle, the new since should be old enough to
+	// capture the maximum NIP-59 backdated event.
+	//
+	// NIP-59 backdating: up to 60 * rand.Int63n(600) seconds = ~599 minutes ≈ ~10h.
+	// Backfill window: 10h5m = 605 minutes.
+	// After refresh: since = now - 605 minutes.
+	// A maximally backdated event: created_at = now - 599 minutes.
+	// We need: since <= created_at, i.e. 605 >= 599. ✓
+	maxBackdateSeconds := int64(599 * 60)
+	nowUnix := time.Now().Unix()
+	since := normalizeNIP17Since(nowUnix)
+
+	// Simulate a maximally backdated gift wrap.
+	backdatedCreatedAt := nowUnix - maxBackdateSeconds
+
+	if since > backdatedCreatedAt {
+		t.Fatalf("since %d > backdated created_at %d: maximally backdated gift wraps would be missed",
+			since, backdatedCreatedAt)
+	}
+}
+
 // ─── 8. Control RPC across degraded relays ──────────────────────────────────
 
 func TestDisruption_HealthTrackerGatesRetry(t *testing.T) {
