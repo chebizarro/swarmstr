@@ -7,12 +7,22 @@
 //   - Relay lookup: queries recipient's DM relay list (kind 10050) before falling back
 //     to the configured write relays
 //
+// # Pool reconnect workaround
+//
+// The nostr pool library's subMany function sets filter.Since = Now() after
+// any relay disconnection (pool.go line ~548). NIP-59 gift wraps are
+// intentionally backdated by up to ~10 hours, so this silently drops all
+// inbound DMs after a relay reconnect. The receiveLoop works around this by
+// periodically cycling the subscription (every nip17SubscriptionRefreshInterval)
+// to restore the correct backfill window.
+//
 // The public surface intentionally matches DMBus so callers can swap them.
 package runtime
 
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +37,15 @@ const (
 	// may skew CreatedAt by up to 599 minutes, so subscribe far enough back that
 	// valid inbound gift-wrap events are still seen after unwrap.
 	nip17GiftWrapBackfill = 10*time.Hour + 5*time.Minute
+
+	// nip17SubscriptionRefreshInterval controls how often the NIP-17 receive
+	// loop force-restarts its subscription.  This is critical because the
+	// nostr pool library's internal reconnect logic sets filter.Since = Now()
+	// after any relay disconnection (pool.go subMany), which silently drops
+	// all new NIP-59 gift wraps whose created_at is backdated (up to ~10h).
+	// By periodically recycling the subscription we restore the correct
+	// backfill window (since = now − 10h5m) and recover from the pool bug.
+	nip17SubscriptionRefreshInterval = 5 * time.Minute
 )
 
 // NIP17BusOptions mirrors DMBusOptions so the two buses are interchangeable.
@@ -258,19 +277,39 @@ func (b *NIP17Bus) receiveLoop(since nostr.Timestamp) {
 				continue
 			}
 		}
+
+		// Force-refresh the subscription periodically.  The nostr pool
+		// library's subMany sets filter.Since = Now() after any relay
+		// reconnect, which silently drops backdated NIP-59 gift wraps.
+		// By cycling the subscription on a fixed interval we restore
+		// the correct backfill window (since = now − 10h5m).
+		refreshTimer := time.NewTimer(nip17SubscriptionRefreshInterval)
+
 		cycleCtx, cycleCancel := context.WithCancel(b.ctx)
 		rumCh := nip17.ListenForMessages(cycleCtx, b.pool, b.kr, b.currentRelays(), currentSince)
+		log.Printf("nip17: subscription started on %d relays (since=%d, backfill=%s)",
+			len(b.currentRelays()), currentSince, nip17GiftWrapBackfill)
+
 		closed := false
 		for !closed {
 			select {
 			case <-b.ctx.Done():
+				refreshTimer.Stop()
 				cycleCancel()
 				return
 			case <-b.rebindCh:
+				refreshTimer.Stop()
+				cycleCancel()
+				closed = true
+			case <-refreshTimer.C:
+				// Periodic refresh: cancel current subscription so the
+				// outer loop restarts it with a fresh since window.
+				log.Printf("nip17: refreshing subscription (interval=%s)", nip17SubscriptionRefreshInterval)
 				cycleCancel()
 				closed = true
 			case rumor, ok := <-rumCh:
 				if !ok {
+					refreshTimer.Stop()
 					cycleCancel()
 					b.emitErr(fmt.Errorf("nip17 subscription closed; restarting"))
 					closed = true
