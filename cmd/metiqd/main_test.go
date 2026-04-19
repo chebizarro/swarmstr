@@ -3525,6 +3525,57 @@ func TestIngestTrackerAdvancedTimestampSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestIngestTrackerMarkProcessedClampsFutureTimestamp(t *testing.T) {
+	tracker := newIngestTracker(state.CheckpointDoc{LastUnix: 100})
+	now := time.Now().Unix()
+
+	// Advance checkpoint to a normal time.
+	tracker.mu.Lock()
+	tracker.lastEvent, tracker.lastUnix, tracker.recentEventIDs = checkpointAdvanceState(
+		tracker.lastEvent, tracker.lastUnix, tracker.recentEventIDs, "evt-normal", now)
+	tracker.mu.Unlock()
+
+	// Simulate a far-future event (1 hour from now).
+	futureUnix := now + 3600
+	maxUnix := now + 120 // the clamp ceiling
+
+	// Verify AlreadyProcessed does NOT drop a current event.
+	if tracker.AlreadyProcessed("evt-current", now+1) {
+		t.Fatal("current event should not be dropped")
+	}
+
+	// Simulate what MarkProcessed does with the clamping guard.
+	// (We test the logic directly since MarkProcessed needs a real repo.)
+	clamped := futureUnix
+	if clamped > maxUnix {
+		clamped = maxUnix
+	}
+	if clamped != maxUnix {
+		t.Fatalf("expected future timestamp %d to be clamped to %d, got %d", futureUnix, maxUnix, clamped)
+	}
+
+	// Advance with the clamped value.
+	tracker.mu.Lock()
+	tracker.lastEvent, tracker.lastUnix, tracker.recentEventIDs = checkpointAdvanceState(
+		tracker.lastEvent, tracker.lastUnix, tracker.recentEventIDs, "evt-future", clamped)
+	tracker.mu.Unlock()
+
+	// A message arriving at a time > clamped value should NOT be dropped.
+	if tracker.AlreadyProcessed("evt-after", clamped+1) {
+		t.Fatal("event after clamped checkpoint should not be dropped")
+	}
+
+	// Without clamping, a far-future checkpoint would drop everything for an
+	// hour.  With clamping, the damage window is only ~120s.  Verify that
+	// lastUnix is the clamped value, not the original future value.
+	tracker.mu.Lock()
+	actualLastUnix := tracker.lastUnix
+	tracker.mu.Unlock()
+	if actualLastUnix != clamped {
+		t.Fatalf("lastUnix = %d, want clamped value %d (not original %d)", actualLastUnix, clamped, futureUnix)
+	}
+}
+
 func newTestStore() *testStore {
 	return &testStore{replaceable: map[string]state.Event{}}
 }

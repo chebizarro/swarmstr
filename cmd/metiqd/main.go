@@ -1239,6 +1239,21 @@ func main() {
 		log.Fatalf("load ingest checkpoint: %v", err)
 	}
 	tracker := newIngestTracker(checkpoint)
+	// Log checkpoint state at startup so future-dated or stale checkpoints are
+	// immediately visible in logs.  A lastUnix significantly ahead of wall
+	// clock means all inbound DMs will be silently dropped until the clock
+	// catches up.
+	{
+		delta := checkpoint.LastUnix - time.Now().Unix()
+		label := "behind"
+		if delta > 0 {
+			label = "AHEAD — all new DMs will be dropped until clock catches up!"
+		} else {
+			delta = -delta
+		}
+		log.Printf("dm checkpoint: last_unix=%d last_event=%s recent_ids=%d (%ds %s wall clock)",
+			checkpoint.LastUnix, checkpoint.LastEvent, len(checkpoint.RecentEventIDs), delta, label)
+	}
 	memoryCheckpoint, err := ensureMemoryIndexCheckpoint(ctx, docsRepo)
 	if err != nil {
 		log.Fatalf("load memory index checkpoint: %v", err)
@@ -3691,6 +3706,8 @@ func main() {
 			}
 			return state.ConfigDoc{}
 		}, msg)
+		log.Printf("dm received scheme=%s from=%s event=%s created_at=%d",
+			msg.Scheme, msg.FromPubKey, msg.EventID, msg.CreatedAt)
 		if tracker.AlreadyProcessed(msg.EventID, msg.CreatedAt) {
 			return nil
 		}
@@ -6130,6 +6147,8 @@ func (t *ingestTracker) AlreadyProcessed(eventID string, createdAt int64) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if createdAt < t.lastUnix {
+		log.Printf("dm dedup: dropping event=%s created_at=%d checkpoint_last_unix=%d (delta=%ds behind checkpoint)",
+			eventID, createdAt, t.lastUnix, t.lastUnix-createdAt)
 		return true
 	}
 	if createdAt == t.lastUnix && checkpointEventSeen(t.recentEventIDs, eventID) {
@@ -6144,6 +6163,17 @@ func (t *ingestTracker) MarkProcessed(ctx context.Context, repo *state.DocsRepos
 	}
 	if eventUnix <= 0 {
 		eventUnix = time.Now().Unix()
+	}
+	// Guard against future-dated events corrupting the checkpoint.
+	// A malicious relay or clock-skewed client could send an event with a
+	// far-future created_at, permanently advancing lastUnix past all
+	// legitimate events and silently dropping every subsequent DM.
+	// Cap to now + 120s to tolerate minor clock drift.
+	maxUnix := time.Now().Unix() + 120
+	if eventUnix > maxUnix {
+		log.Printf("dm checkpoint: clamping future event=%s event_unix=%d to max=%d (delta=%ds ahead)",
+			eventID, eventUnix, maxUnix, eventUnix-maxUnix)
+		eventUnix = maxUnix
 	}
 
 	t.mu.Lock()
