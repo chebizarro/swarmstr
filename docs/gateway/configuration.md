@@ -107,6 +107,7 @@ metiq config validate
   "heartbeat": { ... },
   "tts": { ... },
   "cron": { ... },
+  "timeouts": { ... },
   "extra": { ... }
 }
 ```
@@ -171,6 +172,8 @@ Override settings for specific named agents:
       "fallback_models": ["claude-sonnet-4-5"],
       "light_model": "claude-haiku-4-5",
       "light_model_threshold": 0.35,
+      "turn_timeout_secs": 300,
+      "max_agentic_iterations": 30,
       "heartbeat": {
         "model": "claude-haiku-4-5"
       },
@@ -184,6 +187,8 @@ Notes:
 
 - `light_model` enables heuristic routing for simple inbound turns.
 - `light_model_threshold` must be between `0` and `1`; when omitted, metiq uses its default router threshold.
+- `turn_timeout_secs` — maximum wall-clock seconds for a single agent turn. Set to `-1` to disable the turn timeout entirely. When omitted, the system default applies.
+- `max_agentic_iterations` — cap on tool-call → LLM cycles within one turn. When omitted, metiq uses a model-tier default (typically 30).
 - `heartbeat.model` selects the model used by the LLM heartbeat runner for that agent.
 
 ### Provider Config (`providers`)
@@ -268,10 +273,56 @@ See [Heartbeat](/gateway/heartbeat) for the semantics split and control surface.
 ```json
 {
   "cron": {
-    "enabled": true
+    "enabled": true,
+    "job_timeout_secs": 300
   }
 }
 ```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable the cron scheduler |
+| `job_timeout_secs` | `300` | Maximum seconds a single cron job may run before being cancelled |
+
+### Timeouts (`timeouts`)
+
+Global timeout overrides. Every value is in **seconds**. When omitted (or `0`), metiq uses the built-in default shown below.
+
+```json
+{
+  "timeouts": {
+    "session_memory_extraction_secs": 45,
+    "session_compact_summary_secs": 30,
+    "grep_search_secs": 30,
+    "image_fetch_secs": 30,
+    "tool_chain_exec_secs": 120,
+    "git_ops_secs": 15,
+    "llm_provider_http_secs": 120,
+    "webhook_wake_secs": 30,
+    "webhook_agent_start_secs": 120,
+    "signer_connect_secs": 30,
+    "memory_persist_secs": 30,
+    "subagent_default_secs": 60
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `session_memory_extraction_secs` | `45` | Time allowed for extracting memories from a completed session |
+| `session_compact_summary_secs` | `30` | Time allowed for generating a session compaction summary |
+| `grep_search_secs` | `30` | Timeout for workspace grep / ripgrep searches |
+| `image_fetch_secs` | `30` | Timeout for fetching remote images (tool use) |
+| `tool_chain_exec_secs` | `120` | Timeout for executing a chained tool pipeline |
+| `git_ops_secs` | `15` | Timeout for git operations (status, diff, etc.) |
+| `llm_provider_http_secs` | `120` | HTTP client timeout for LLM provider API calls |
+| `webhook_wake_secs` | `30` | Timeout for the initial webhook wake / health-check call |
+| `webhook_agent_start_secs` | `120` | Timeout for a webhook-triggered agent turn to begin |
+| `signer_connect_secs` | `30` | Timeout for connecting to a remote NIP-46 signer |
+| `memory_persist_secs` | `30` | Timeout for persisting extracted memories to storage |
+| `subagent_default_secs` | `60` | Default timeout for sub-agent invocations |
+
+> **Tip**: Increase `llm_provider_http_secs` and `tool_chain_exec_secs` if you use slow or self-hosted models. For high-latency or satellite links, raise `signer_connect_secs` and `webhook_wake_secs`.
 
 ### Extra (`extra`)
 
