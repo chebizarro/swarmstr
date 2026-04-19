@@ -276,6 +276,9 @@ func Start(ctx context.Context, opts ServerOptions) error {
 	// OpenAI Responses API — POST /v1/responses
 	mountOpenAIResponses(mux, opts)
 
+	// OpenAI-compatible models — GET /v1/models, GET /v1/models/{id}
+	mountOpenAIModels(mux, opts)
+
 	// MCP loopback server — POST /mcp (JSON-RPC 2.0)
 	mountMCPLoopback(mux, opts)
 
