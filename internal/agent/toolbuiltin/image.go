@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"metiq/internal/agent"
 )
@@ -99,7 +98,7 @@ func ImageTool(rt agent.Runtime, opts ImageOpts) agent.ToolFunc {
 
 // fetchImageURL downloads an image from a URL, returning its bytes and MIME type.
 func fetchImageURL(ctx context.Context, rawURL string, maxBytes int64) ([]byte, string, error) {
-	ctx2, cancel := context.WithTimeout(ctx, imageTimeoutSec*time.Second)
+	ctx2, cancel := context.WithTimeout(ctx, imageTimeout(ctx))
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, rawURL, nil)

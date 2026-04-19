@@ -57,6 +57,7 @@ import (
 	"metiq/internal/social"
 	"metiq/internal/workspace"
 	"metiq/internal/store/state"
+	cfgTimeouts "metiq/internal/timeouts"
 	ttspkg "metiq/internal/tts"
 	"metiq/internal/update"
 
@@ -3262,13 +3263,16 @@ func main() {
 			releaseTurn()
 		}()
 
+		// Attach configurable timeouts to turn context so tools can read them.
+		turnCtx = toolbuiltin.WithTimeoutsConfig(turnCtx, configState.Get().Timeouts)
+
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 
 		userMemoryDocs := scopedMemoryDocs(memory.ExtractFromTurn(sessionID, "user", entryID, combinedText, createdAt), scopeCtx)
 		if len(userMemoryDocs) > 0 {
 			go func(docs []state.MemoryDoc) {
-				persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				persistCtx, cancel := context.WithTimeout(context.Background(), cfgTimeouts.MemoryPersist(configState.Get().Timeouts))
 				defer cancel()
 				persistMemories(persistCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
 			}(userMemoryDocs)
@@ -3419,25 +3423,30 @@ func main() {
 				}
 			}
 		}
+		var maxAgenticIterations int
 		for _, ac := range configState.Get().Agents {
-			if ac.ID == activeAgentID && ac.ThinkingLevel != "" {
-				thinkingBudget = thinkingLevelToBudget(ac.ThinkingLevel)
+			if ac.ID == activeAgentID {
+				if ac.ThinkingLevel != "" {
+					thinkingBudget = thinkingLevelToBudget(ac.ThinkingLevel)
+				}
+				maxAgenticIterations = ac.MaxAgenticIterations
 				break
 			}
 		}
 
 		baseTurn := agent.Turn{
-			SessionID:           sessionID,
-			TurnID:              eventID,
-			UserText:            combinedText,
-			StaticSystemPrompt:  staticSystemPrompt,
-			Context:             turnContext,
-			History:             turnHistory,
-			Tools:               baseTurnTools,
-			Executor:            turnExecutor, // canonical filtered turn tool pool
-			ThinkingBudget:      thinkingBudget,
-			ToolEventSink:       toolLifecycleEmitter(wsEmitter, activeAgentID),
-			ContextWindowTokens: promptEnvelope.ContextWindowTokens,
+			SessionID:            sessionID,
+			TurnID:               eventID,
+			UserText:             combinedText,
+			StaticSystemPrompt:   staticSystemPrompt,
+			Context:              turnContext,
+			History:              turnHistory,
+			Tools:                baseTurnTools,
+			Executor:             turnExecutor, // canonical filtered turn tool pool
+			ThinkingBudget:       thinkingBudget,
+			MaxAgenticIterations: maxAgenticIterations,
+			ToolEventSink:        toolLifecycleEmitter(wsEmitter, activeAgentID),
+			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
 		}
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, func(chunk string) {
@@ -4359,6 +4368,9 @@ func main() {
 		}
 		activeRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, activeRuntime, tools, turnToolConstraints{})
 
+		// Attach configurable timeouts to channel turn context.
+		turnCtx = toolbuiltin.WithTimeoutsConfig(turnCtx, configState.Get().Timeouts)
+
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
@@ -4409,17 +4421,25 @@ func main() {
 			Context:            turnContext,
 			Tools:              turnTools,
 		})
+		var chMaxAgenticIterations int
+		for _, ac := range configState.Get().Agents {
+			if ac.ID == activeAgentID {
+				chMaxAgenticIterations = ac.MaxAgenticIterations
+				break
+			}
+		}
 		chBaseTurn := agent.Turn{
-			SessionID:           sessionID,
-			TurnID:              eventID,
-			UserText:            text,
-			StaticSystemPrompt:  promptEnvelope.StaticSystemPrompt,
-			Context:             promptEnvelope.Context,
-			History:             chTurnHistory,
-			Tools:               turnTools,
-			Executor:            turnExecutor,
-			ToolEventSink:       toolLifecycleEmitter(wsEmitter, activeAgentID),
-			ContextWindowTokens: promptEnvelope.ContextWindowTokens,
+			SessionID:            sessionID,
+			TurnID:               eventID,
+			UserText:             text,
+			StaticSystemPrompt:   promptEnvelope.StaticSystemPrompt,
+			Context:              promptEnvelope.Context,
+			History:              chTurnHistory,
+			Tools:                turnTools,
+			Executor:             turnExecutor,
+			MaxAgenticIterations: chMaxAgenticIterations,
+			ToolEventSink:        toolLifecycleEmitter(wsEmitter, activeAgentID),
+			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
 		}
 		var turnResult agent.TurnResult
 		turnStartedAt := time.Now()
@@ -5630,7 +5650,7 @@ func main() {
 						JobID: jobCopy.ID,
 					})
 					started := time.Now()
-					jobCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+					jobCtx, cancel := context.WithTimeout(ctx, cfgTimeouts.CronJobExec(configState.Get().CronCfg))
 					defer cancel()
 					_, execErr := func() (any, error) {
 						controlCronExecutorMu.RLock()
@@ -6474,12 +6494,23 @@ func persistAndIngestTurnHistory(
 
 		// Persist to transcript store.
 		if transcriptRepo != nil {
+			// Tool-call messages carry data in ToolCalls, not Content.
+			// Synthesize a human-readable text so the guardrail doesn't
+			// reject the entry with "text is required".
+			entryText := m.Content
+			if entryText == "" && len(m.ToolCalls) > 0 {
+				names := make([]string, len(m.ToolCalls))
+				for j, tc := range m.ToolCalls {
+					names[j] = tc.Name
+				}
+				entryText = fmt.Sprintf("[tool_call: %s]", strings.Join(names, ", "))
+			}
 			if _, err := transcriptRepo.PutEntry(ctx, state.TranscriptEntryDoc{
 				Version:   1,
 				SessionID: sessionID,
 				EntryID:   entryID,
 				Role:      m.Role,
-				Text:      m.Content,
+				Text:      entryText,
 				Unix:      nowUnix,
 				Meta:      meta,
 			}); err != nil {

@@ -9,6 +9,7 @@ import (
 
 	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
+	cfgTimeouts "metiq/internal/timeouts"
 	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
@@ -193,7 +194,7 @@ func (c agentRunController) runAgentTurnWithFallbacks(baseCtx context.Context, r
 	}
 	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = cfgTimeouts.SubagentDefault(c.runtimeConfig.Get().Timeouts)
 	}
 	ctx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()

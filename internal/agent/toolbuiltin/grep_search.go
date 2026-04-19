@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"time"
 
 	"metiq/internal/agent"
 )
@@ -78,7 +77,8 @@ func GrepSearchTool(opts FilesystemOpts) agent.ToolFunc {
 			fixedStrings = v
 		}
 
-		execCtx, cancel := context.WithTimeout(ctx, grepTimeoutSec*time.Second)
+		timeout := grepTimeout(ctx)
+		execCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
 		// Try ripgrep first, fall back to grep.
@@ -121,7 +121,7 @@ func runRipgrep(ctx context.Context, rgPath, dir, pattern, includeGlob string, f
 			return string(raw), nil
 		}
 		if ctx.Err() != nil {
-			return "", fmt.Errorf("grep_search: timed out after %ds", grepTimeoutSec)
+			return "", fmt.Errorf("grep_search: timed out")
 		}
 		return "", fmt.Errorf("grep_search (rg): %v", err)
 	}
