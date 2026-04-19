@@ -97,6 +97,16 @@ func truncateToolResultText(text string, maxChars int) string {
 	if len(text) <= maxChars {
 		return text
 	}
+
+	// Try code-aware truncation: keeps complete functions/types instead of
+	// cutting mid-block.  Falls through to line-based truncation if the
+	// content isn't code or can't be meaningfully chunked.
+	if IsLikelyCode(text) {
+		if result := TruncateCodeAware(text, maxChars, hasImportantTail(text)); result != "" {
+			return result
+		}
+	}
+
 	budget := max(minToolResultKeepChars, maxChars-len(toolResultTruncationSuffix))
 	if budget > len(text) {
 		budget = len(text)
