@@ -1203,7 +1203,7 @@ func main() {
 	controlMCPOps = newMCPOpsController(&mcpManager, tools, mcpAuthController, configState, docsRepo)
 	mcpAuthController.InstallOnManager(mcpManager)
 	{
-		mcpCfg := mcppkg.ResolveConfigDoc(configState.Get())
+		mcpCfg := resolveMCPConfigWithDefaults(configState.Get(), fsOpts.WorkspaceDir())
 		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, mcpCfg, "initialization")
 	}
 
@@ -4913,7 +4913,7 @@ func main() {
 	// in mutation paths so callers do not observe success when write-back fails.
 	configState.SetOnChange(func(doc state.ConfigDoc) {
 		applyRuntimeConfigSideEffects(doc)
-		resolvedMCP := mcppkg.ResolveConfigDoc(doc)
+		resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
 		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live config apply")
 		filteredMCPLifecycle.Emit(runtimeEventEmitterFunc(emitControlWSEvent), resolvedMCP, "config.snapshot", time.Now().UnixMilli())
 		wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
@@ -4935,7 +4935,7 @@ func main() {
 				configState.cfg = doc
 				configState.mu.Unlock()
 				applyRuntimeConfigSideEffects(doc)
-				resolvedMCP := mcppkg.ResolveConfigDoc(doc)
+				resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
 				applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live file-reload apply")
 				filteredMCPLifecycle.Emit(runtimeEventEmitterFunc(emitControlWSEvent), resolvedMCP, "file-reload.snapshot", time.Now().UnixMilli())
 				wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
