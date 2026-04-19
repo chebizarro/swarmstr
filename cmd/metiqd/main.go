@@ -1926,10 +1926,32 @@ func main() {
 				agentRegistry.SetDefault(rt)
 				controlAgentRuntime = rt
 				log.Printf("agent config: default runtime updated id=main model=%q provider=%q", model, agCfg.Provider)
+				if agCfg.ContextWindow == 0 {
+					resolved := agent.ResolveModelContext(model)
+					if resolved.ContextWindowTokens >= 200_000 {
+						log.Printf("⚠️  agent \"main\": model %q is not in the context-window registry — defaulting to %dk tokens. "+
+							"If this model has a smaller context window, set context_window in the agent config "+
+							"(e.g. context_window = 8192) to enable proper budget allocation and compaction.",
+							model, resolved.ContextWindowTokens/1000)
+					}
+				}
 				continue
 			}
 			agentRegistry.Set(agentID, rt)
 			log.Printf("agent config auto-provisioned id=%s model=%q provider=%q", agentID, model, agCfg.Provider)
+			// Warn when the context window falls back to 200K for an
+			// unrecognized model. This usually means the operator is
+			// running a local GGUF/GGML model whose actual context
+			// capacity is much smaller.
+			if agCfg.ContextWindow == 0 {
+				resolved := agent.ResolveModelContext(model)
+				if resolved.ContextWindowTokens >= 200_000 {
+					log.Printf("⚠️  agent %q: model %q is not in the context-window registry — defaulting to %dk tokens. "+
+						"If this model has a smaller context window, set context_window in the agent config "+
+						"(e.g. context_window = 8192) to enable proper budget allocation and compaction.",
+						agentID, model, resolved.ContextWindowTokens/1000)
+				}
+			}
 			// Pre-seed DM peer routing: each dm_peers pubkey is routed to this agent.
 			for _, peerPubkey := range agCfg.DmPeers {
 				peerPubkey = strings.TrimSpace(peerPubkey)
