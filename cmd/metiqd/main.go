@@ -967,6 +967,10 @@ func main() {
 	tools.RegisterWithDef("file_tree", toolbuiltin.FileTreeTool(fsOpts), toolbuiltin.FileTreeDef)
 	tools.RegisterWithDef("grep_search", toolbuiltin.GrepSearchTool(fsOpts), toolbuiltin.GrepSearchDef)
 	tools.RegisterWithDef("diff_apply", toolbuiltin.DiffApplyTool(fsOpts), toolbuiltin.DiffApplyDef)
+	// LSP code intelligence: definition, references, hover, diagnostics, symbols.
+	lspReg := toolbuiltin.NewLSPRegistry()
+	defer lspReg.Shutdown()
+	tools.RegisterWithDef("lsp_query", toolbuiltin.LSPQueryTool(lspReg, fsOpts), toolbuiltin.LSPQueryDef)
 	// task queue: persistent structured work-item management.
 	{
 		home, _ := os.UserHomeDir()
