@@ -63,6 +63,40 @@ type SendRequest struct {
 	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
 }
 
+// PollRequest represents a request to send a poll to a channel.
+type PollRequest struct {
+	To              string   `json:"to"`
+	Question        string   `json:"question"`
+	Options         []string `json:"options"`
+	MaxSelections   int      `json:"max_selections,omitempty"`
+	DurationSeconds int      `json:"duration_seconds,omitempty"`
+	DurationHours   int      `json:"duration_hours,omitempty"`
+	Silent          *bool    `json:"silent,omitempty"`
+	IsAnonymous     *bool    `json:"is_anonymous,omitempty"`
+	ThreadID        string   `json:"thread_id,omitempty"`
+	Channel         string   `json:"channel,omitempty"`
+	AccountID       string   `json:"account_id,omitempty"`
+	IdempotencyKey  string   `json:"idempotencyKey,omitempty"`
+}
+
+// PollInput is the normalized poll data passed to channel adapters.
+type PollInput struct {
+	Question        string   `json:"question"`
+	Options         []string `json:"options"`
+	MaxSelections   int      `json:"max_selections"`
+	DurationSeconds int      `json:"duration_seconds,omitempty"`
+	DurationHours   int      `json:"duration_hours,omitempty"`
+}
+
+// PollResult is the result returned from a channel poll send.
+type PollResult struct {
+	MessageID      string `json:"messageId,omitempty"`
+	Channel        string `json:"channel,omitempty"`
+	PollID         string `json:"pollId,omitempty"`
+	ChannelID      string `json:"channelId,omitempty"`
+	ConversationID string `json:"conversationId,omitempty"`
+}
+
 func (r ChannelsStatusRequest) Normalize() (ChannelsStatusRequest, error) {
 	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 10_000, 60_000)
 	return r, nil
@@ -120,6 +154,50 @@ func (r UsageCostRequest) Normalize() (UsageCostRequest, error) {
 	r.UTCOffset = strings.TrimSpace(r.UTCOffset)
 	if r.Days < 0 {
 		return r, fmt.Errorf("days must be >= 0")
+	}
+	return r, nil
+}
+
+func (r PollRequest) Normalize() (PollRequest, error) {
+	r.To = strings.TrimSpace(r.To)
+	r.Question = strings.TrimSpace(r.Question)
+	r.Channel = strings.ToLower(strings.TrimSpace(r.Channel))
+	r.AccountID = strings.TrimSpace(r.AccountID)
+	r.ThreadID = strings.TrimSpace(r.ThreadID)
+	r.IdempotencyKey = strings.TrimSpace(r.IdempotencyKey)
+	if r.To == "" {
+		return r, fmt.Errorf("to is required")
+	}
+	if r.Question == "" {
+		return r, fmt.Errorf("question is required")
+	}
+	r.Options = compactStringSlice(r.Options)
+	if len(r.Options) < 2 {
+		return r, fmt.Errorf("at least 2 options are required")
+	}
+	if len(r.Options) > 12 {
+		return r, fmt.Errorf("at most 12 options are allowed")
+	}
+	if r.MaxSelections < 0 {
+		return r, fmt.Errorf("max_selections must be >= 0")
+	}
+	if r.MaxSelections > 12 {
+		return r, fmt.Errorf("max_selections must be <= 12")
+	}
+	if r.DurationSeconds < 0 {
+		return r, fmt.Errorf("duration_seconds must be >= 0")
+	}
+	if r.DurationSeconds > 604800 {
+		return r, fmt.Errorf("duration_seconds must be <= 604800")
+	}
+	if r.DurationHours < 0 {
+		return r, fmt.Errorf("duration_hours must be >= 0")
+	}
+	if r.DurationSeconds > 0 && r.DurationHours > 0 {
+		return r, fmt.Errorf("duration_seconds and duration_hours are mutually exclusive")
+	}
+	if r.IdempotencyKey == "" {
+		r.IdempotencyKey = fmt.Sprintf("poll-%d", time.Now().UnixNano())
 	}
 	return r, nil
 }
@@ -248,4 +326,57 @@ func DecodeUsageCostParams(params json.RawMessage) (UsageCostRequest, error) {
 
 func DecodeSendParams(params json.RawMessage) (SendRequest, error) {
 	return decodeMethodParams[SendRequest](params)
+}
+
+func DecodePollParams(params json.RawMessage) (PollRequest, error) {
+	return decodeMethodParams[PollRequest](params)
+}
+
+// NormalizePollInput normalizes a PollInput, applying defaults and
+// validating constraints. maxOptions can be 0 to skip the limit check.
+func NormalizePollInput(input PollInput, maxOptions int) (PollInput, error) {
+	question := strings.TrimSpace(input.Question)
+	if question == "" {
+		return PollInput{}, fmt.Errorf("poll question is required")
+	}
+	options := make([]string, 0, len(input.Options))
+	for _, opt := range input.Options {
+		opt = strings.TrimSpace(opt)
+		if opt != "" {
+			options = append(options, opt)
+		}
+	}
+	if len(options) < 2 {
+		return PollInput{}, fmt.Errorf("poll requires at least 2 options")
+	}
+	if maxOptions > 0 && len(options) > maxOptions {
+		return PollInput{}, fmt.Errorf("poll supports at most %d options", maxOptions)
+	}
+	maxSel := input.MaxSelections
+	if maxSel <= 0 {
+		maxSel = 1
+	}
+	if maxSel > len(options) {
+		return PollInput{}, fmt.Errorf("max_selections cannot exceed option count")
+	}
+
+	durSec := input.DurationSeconds
+	if durSec < 0 {
+		return PollInput{}, fmt.Errorf("duration_seconds must be >= 0")
+	}
+	durHours := input.DurationHours
+	if durHours < 0 {
+		return PollInput{}, fmt.Errorf("duration_hours must be >= 0")
+	}
+	if durSec > 0 && durHours > 0 {
+		return PollInput{}, fmt.Errorf("duration_seconds and duration_hours are mutually exclusive")
+	}
+
+	return PollInput{
+		Question:        question,
+		Options:         options,
+		MaxSelections:   maxSel,
+		DurationSeconds: durSec,
+		DurationHours:   durHours,
+	}, nil
 }

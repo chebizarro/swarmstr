@@ -1684,6 +1684,9 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		Send: func(_ context.Context, req methods.SendRequest) (map[string]any, error) {
 			return map[string]any{"runId": req.IdempotencyKey, "channel": "nostr"}, nil
 		},
+		SendPoll: func(_ context.Context, req methods.PollRequest) (map[string]any, error) {
+			return map[string]any{"runId": req.IdempotencyKey, "channel": "nostr", "messageId": "poll-msg-1"}, nil
+		},
 		BrowserRequest: func(_ context.Context, req methods.BrowserRequestRequest) (map[string]any, error) {
 			return map[string]any{"ok": false, "method": req.Method, "path": req.Path}, nil
 		},
@@ -1733,6 +1736,7 @@ func TestDispatchMethodCallOperationalBundles(t *testing.T) {
 		{method: methods.MethodSystemPresence, params: map[string]any{}},
 		{method: methods.MethodSystemEvent, params: map[string]any{"text": "Node: up"}},
 		{method: methods.MethodSend, params: map[string]any{"to": "0000000000000000000000000000000000000000000000000000000000000001", "message": "hello", "idempotencyKey": "idem-1"}},
+		{method: methods.MethodPoll, params: map[string]any{"to": "0000000000000000000000000000000000000000000000000000000000000001", "question": "Favorite?", "options": []string{"A", "B"}, "idempotencyKey": "poll-1"}},
 		{method: methods.MethodBrowserRequest, params: map[string]any{"method": "GET", "path": "/status"}},
 		{method: methods.MethodVoicewakeGet, params: map[string]any{}},
 		{method: methods.MethodVoicewakeSet, params: map[string]any{"triggers": []string{"openclaw"}}},

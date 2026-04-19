@@ -206,6 +206,7 @@ var adminDispatchRegistry = []struct {
 		MethodSystemPresence,
 		MethodSystemEvent,
 		MethodSend,
+		MethodPoll,
 		MethodHooksList,
 		MethodHooksEnable,
 		MethodHooksDisable,

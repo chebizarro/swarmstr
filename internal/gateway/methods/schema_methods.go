@@ -152,6 +152,7 @@ const (
 	MethodSystemPresence           = "system-presence"
 	MethodSystemEvent              = "system-event"
 	MethodSend                     = "send"
+	MethodPoll                     = "poll"
 	MethodBrowserRequest           = "browser.request"
 	MethodVoicewakeGet             = "voicewake.get"
 	MethodVoicewakeSet             = "voicewake.set"
