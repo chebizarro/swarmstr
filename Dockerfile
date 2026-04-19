@@ -29,10 +29,10 @@ ARG VERSION=dev
 
 # Base images pinned to SHA256 digests for reproducible builds.
 # To update: docker buildx imagetools inspect golang:1.25-bookworm
-ARG GOLANG_IMAGE="golang:1.25-bookworm@sha256:6a4b9d535e283c5e1f18c1f3513e6265849ed7cd1099e70b4bbd89a1b5367e90"
-ARG DEBIAN_BOOKWORM_IMAGE="debian:bookworm@sha256:18023f131f52fc3ea21e37cc9b4a0af1e3b4c0b36e3e75e21a72c49c9b3b1ed4"
-ARG DEBIAN_BOOKWORM_SLIM_IMAGE="debian:bookworm-slim@sha256:36e591f228bb9b99348f584681571e4651c0c5acc0e1b09e5ff651c2b7c5d81d"
-ARG NODE_IMAGE="node:24-bookworm-slim@sha256:e8e2e91b1378f83c5b2dd15f0247f34110e2fe895f6ca7719dbb780f929368eb"
+ARG GOLANG_IMAGE="golang:1.25-bookworm@sha256:29e59af995c51a5bf63d072eca973b918e0e7af4db0e4667aa73f1b8da1a6d8c"
+ARG DEBIAN_BOOKWORM_IMAGE="debian:bookworm@sha256:1d6cd964917a13b547d1ea392dff9a000c3f36070686ebc5c8755d53fb374435"
+ARG DEBIAN_BOOKWORM_SLIM_IMAGE="debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d"
+ARG NODE_IMAGE="node:24-bookworm-slim@sha256:879b21aec4a1ad820c27ccd565e7c7ed955f24b92e6694556154f251e4bdb240"
 
 # ── Stage 1: Build ──────────────────────────────────────────────────────────────
 FROM ${GOLANG_IMAGE} AS builder
