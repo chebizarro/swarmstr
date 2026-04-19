@@ -26,6 +26,7 @@ import (
 	"metiq/internal/nostr/nip51"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
+	"metiq/internal/workspace"
 )
 
 // ── Dynamic allowlist ──────────────────────────────────────────────────────────
@@ -224,12 +225,8 @@ func writeFleetMD(wsDir string) {
 	fleetMarkdownMu.Lock()
 	defer fleetMarkdownMu.Unlock()
 	if wsDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			log.Printf("nip51: writeFleetMD: cannot determine home dir: %v", err)
-			return
-		}
-		wsDir = filepath.Join(home, ".metiq", "workspace")
+		log.Printf("nip51: writeFleetMD: empty workspace dir, skipping")
+		return
 	}
 
 	entries := fleetDirectory()
@@ -305,12 +302,7 @@ func writeFleetMD(wsDir string) {
 //
 // The function returns quickly; goroutines run until ctx is cancelled.
 func fleetWorkspaceDirFromConfig(cfg state.ConfigDoc) string {
-	wsDir, _ := cfg.Extra["workspace_dir"].(string)
-	if wsDir != "" {
-		return wsDir
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".metiq", "workspace")
+	return workspace.ResolveWorkspaceDir(cfg, "")
 }
 
 func startNIP51AllowlistWatcher(ctx context.Context, pool *nostr.Pool, cfg state.ConfigDoc) {

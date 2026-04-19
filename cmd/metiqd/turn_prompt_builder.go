@@ -3,14 +3,13 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"metiq/internal/agent"
 	toolbuiltin "metiq/internal/agent/toolbuiltin"
 	hookspkg "metiq/internal/hooks"
 	"metiq/internal/store/state"
+	"metiq/internal/workspace"
 )
 
 type turnPromptBuilderParams struct {
@@ -138,26 +137,16 @@ func resolvePromptAgentConfig(cfg state.ConfigDoc, agentID string) (workspaceDir
 		if defaultAgentID(ac.ID) != agentID {
 			continue
 		}
-		workspaceDir = strings.TrimSpace(ac.WorkspaceDir)
 		systemPrompt = strings.TrimSpace(ac.SystemPrompt)
 		model = strings.TrimSpace(ac.Model)
 		thinking = strings.TrimSpace(ac.ThinkingLevel)
 		break
 	}
-	if workspaceDir == "" {
-		workspaceDir = defaultWorkspaceDir()
-	}
+	workspaceDir = workspace.ResolveWorkspaceDir(cfg, agentID)
 	if model == "" {
 		model = strings.TrimSpace(cfg.Agent.DefaultModel)
 	}
 	return workspaceDir, systemPrompt, model, thinking
-}
-
-func defaultWorkspaceDir() string {
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".metiq", "workspace")
-	}
-	return ""
 }
 
 func resolveRuntimeCapabilities(cfg state.ConfigDoc) []string {

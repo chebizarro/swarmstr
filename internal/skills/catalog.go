@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"metiq/internal/store/state"
+	"metiq/internal/workspace"
 )
 
 type SkillSourceKind string
@@ -109,13 +110,7 @@ func InvalidateSkillCatalogCache() {
 }
 
 func ResolveAgentWorkspaceDir(cfg state.ConfigDoc, agentID string) string {
-	agentID = normalizeSkillAgentID(agentID)
-	for _, ag := range cfg.Agents {
-		if normalizeSkillAgentID(ag.ID) == agentID && strings.TrimSpace(ag.WorkspaceDir) != "" {
-			return strings.TrimSpace(ag.WorkspaceDir)
-		}
-	}
-	return WorkspaceDir(cfg.Extra, agentID)
+	return workspace.ResolveWorkspaceDir(cfg, agentID)
 }
 
 func ResolvePromptLimits(cfg state.ConfigDoc) PromptLimits {

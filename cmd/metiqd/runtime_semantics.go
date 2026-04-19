@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -13,6 +11,7 @@ import (
 
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/workspace"
 	"metiq/internal/store/state"
 )
 
@@ -1173,8 +1172,7 @@ func computeWizardSteps(mode string, input map[string]any) []wizardStep {
 			steps = append(steps, wizardStep{ID: "api_key", Type: "text", Prompt: "Enter your API key", Required: true, Secret: true})
 		}
 		// Step 6: Workspace directory.
-		homeDir, _ := os.UserHomeDir()
-		defaultWorkspace := filepath.Join(homeDir, ".metiq", "workspace")
+		defaultWorkspace := workspace.ResolveWorkspaceDir(state.ConfigDoc{}, "")
 		steps = append(steps, wizardStep{ID: "workspace_dir", Type: "text", Prompt: "Workspace directory", Default: defaultWorkspace})
 		// Final: confirm.
 		steps = append(steps, wizardStep{ID: "confirm", Type: "confirm", Prompt: "Apply these settings and start metiq?"})
