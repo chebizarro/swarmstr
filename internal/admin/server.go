@@ -182,6 +182,10 @@ type ServerOptions struct {
 	SupportedMethods            func(context.Context) ([]string, error)
 	DelegateControlCall         func(context.Context, string, json.RawMessage) (any, int, error)
 
+	// EmbedTexts generates embeddings for a batch of input texts.
+	// If nil, the /v1/embeddings endpoint returns 501.
+	EmbedTexts EmbedFunc
+
 	// MCPManager is the MCP server manager used for the loopback MCP server.
 	// If nil, the /mcp endpoint is not mounted.
 	MCPManager *mcppkg.Manager
@@ -278,6 +282,9 @@ func Start(ctx context.Context, opts ServerOptions) error {
 
 	// OpenAI-compatible models — GET /v1/models, GET /v1/models/{id}
 	mountOpenAIModels(mux, opts)
+
+	// OpenAI-compatible embeddings — POST /v1/embeddings
+	mountOpenAIEmbeddings(mux, opts)
 
 	// MCP loopback server — POST /mcp (JSON-RPC 2.0)
 	mountMCPLoopback(mux, opts)
