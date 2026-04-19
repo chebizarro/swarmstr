@@ -315,6 +315,23 @@ func dispatchSystem(ctx context.Context, opts ServerOptions, method string, call
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodPoll:
+		req, err := methods.DecodePollParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.SendPoll == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("poll provider not configured")
+		}
+		out, err := opts.SendPoll(ctx, req)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodHooksList,
 		methods.MethodHooksEnable,
 		methods.MethodHooksDisable,

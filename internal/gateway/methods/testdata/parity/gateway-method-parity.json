@@ -2,8 +2,8 @@
   "source": "openclaw/src/gateway/server-methods-list.ts",
   "captured_at": "2026-03-04",
   "summary": {
-    "openclaw_method_count": 95,
-    "implemented": 95,
+    "openclaw_method_count": 96,
+    "implemented": 96,
     "partial": 0,
     "missing": 0
   },
@@ -534,6 +534,12 @@
       "method": "send",
       "status": "implemented",
       "metiq_method": "send",
+      "notes": ""
+    },
+    {
+      "method": "poll",
+      "status": "implemented",
+      "metiq_method": "poll",
       "notes": ""
     },
     {

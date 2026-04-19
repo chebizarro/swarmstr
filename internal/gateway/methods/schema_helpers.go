@@ -216,6 +216,10 @@ var objectParamAliases = map[string]string{
 	"sourceTool":           "source_tool",
 
 	"parentSessionId":      "parent_session_id",
+	"maxSelections":        "max_selections",
+	"durationSeconds":      "duration_seconds",
+	"durationHours":        "duration_hours",
+	"isAnonymous":          "is_anonymous",
 }
 
 func normalizeObjectParamAliases(raw json.RawMessage) json.RawMessage {

@@ -162,6 +162,7 @@ type ServerOptions struct {
 	SystemPresence              func(context.Context, methods.SystemPresenceRequest) ([]map[string]any, error)
 	SystemEvent                 func(context.Context, methods.SystemEventRequest) (map[string]any, error)
 	Send                        func(context.Context, methods.SendRequest) (map[string]any, error)
+	SendPoll                    func(context.Context, methods.PollRequest) (map[string]any, error)
 	BrowserRequest              func(context.Context, methods.BrowserRequestRequest) (map[string]any, error)
 	VoicewakeGet                func(context.Context, methods.VoicewakeGetRequest) (map[string]any, error)
 	VoicewakeSet                func(context.Context, methods.VoicewakeSetRequest) (map[string]any, error)
