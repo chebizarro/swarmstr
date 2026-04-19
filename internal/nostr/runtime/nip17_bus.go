@@ -40,11 +40,15 @@ type NIP17BusOptions struct {
 	QueueSize   int
 	// Keyer is the required signing/decryption interface.
 	Keyer nostr.Keyer
+	// Hub, when non-nil, shares the hub's pool instead of creating a new one.
+	// This avoids duplicate WebSocket connections and NIP-42 auth flows.
+	Hub *NostrHub
 }
 
 // NIP17Bus is the NIP-17 equivalent of DMBus.
 type NIP17Bus struct {
 	pool     *nostr.Pool
+	ownsPool bool
 	kr       nostr.Keyer
 	public   nostr.PubKey
 	relaysMu sync.RWMutex
@@ -92,8 +96,15 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 	}
 
 	ctx, cancel := context.WithCancel(parent)
+	pool := NewPoolNIP42(ks)
+	ownsPool := true
+	if opts.Hub != nil {
+		pool = opts.Hub.Pool()
+		ownsPool = false
+	}
 	b := &NIP17Bus{
-		pool:         NewPoolNIP42(ks),
+		pool:         pool,
+		ownsPool:     ownsPool,
 		kr:           ks,
 		public:       pub,
 		relays:       initialRelays,
@@ -135,7 +146,9 @@ func (b *NIP17Bus) PublicKey() string { return b.public.Hex() }
 // Close shuts down the bus and waits for goroutines to exit.
 func (b *NIP17Bus) Close() {
 	b.cancel()
-	b.pool.Close("nip17 bus closed")
+	if b.ownsPool {
+		b.pool.Close("nip17 bus closed")
+	}
 	b.wg.Wait()
 }
 
