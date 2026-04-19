@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -172,6 +173,26 @@ func TestBuildRuntimeForModel_unknown(t *testing.T) {
 	_, err := BuildRuntimeForModel("totally-unknown-xyz-model", nil)
 	if err == nil {
 		t.Error("expected error for unknown model")
+	}
+}
+
+func TestNewProviderForModel_ggufHint(t *testing.T) {
+	_, err := NewProviderForModel("google_gemma-4-26B-A4B-it-Q4_K_M.gguf")
+	if err == nil {
+		t.Fatal("expected error for .gguf model")
+	}
+	if !strings.Contains(err.Error(), "local model files require a provider config") {
+		t.Errorf("expected provider config hint for .gguf model, got: %v", err)
+	}
+}
+
+func TestNewProviderForModel_binHint(t *testing.T) {
+	_, err := NewProviderForModel("llama-3.bin")
+	if err == nil {
+		t.Fatal("expected error for .bin model")
+	}
+	if !strings.Contains(err.Error(), "local model files require a provider config") {
+		t.Errorf("expected provider config hint for .bin model, got: %v", err)
 	}
 }
 
