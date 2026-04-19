@@ -421,21 +421,23 @@ func TestDisruption_NIP17NormalizeSinceWithOldCheckpoint(t *testing.T) {
 	}
 }
 
-func TestDisruption_NIP17SubscriptionRefreshIntervalSanity(t *testing.T) {
-	// The refresh interval must be short enough to quickly recover from the
-	// pool library's filter.Since = Now() bug, but long enough to avoid
-	// excessive relay chatter.
-	if nip17SubscriptionRefreshInterval < 1*time.Minute {
-		t.Fatalf("nip17SubscriptionRefreshInterval = %v, too short (min 1m)", nip17SubscriptionRefreshInterval)
+func TestDisruption_NIP17ReconnectBackoffSanity(t *testing.T) {
+	// Per-relay reconnect backoff bounds: min must be > 0, max must be > min,
+	// and both must be reasonable.
+	if nip17ReconnectBackoffMin <= 0 {
+		t.Fatalf("nip17ReconnectBackoffMin = %v, must be positive", nip17ReconnectBackoffMin)
 	}
-	if nip17SubscriptionRefreshInterval > 15*time.Minute {
-		t.Fatalf("nip17SubscriptionRefreshInterval = %v, too long (max 15m)", nip17SubscriptionRefreshInterval)
+	if nip17ReconnectBackoffMax <= nip17ReconnectBackoffMin {
+		t.Fatalf("nip17ReconnectBackoffMax (%v) must exceed nip17ReconnectBackoffMin (%v)",
+			nip17ReconnectBackoffMax, nip17ReconnectBackoffMin)
 	}
-	// Must be shorter than the backfill window — otherwise a full refresh
-	// cycle could still miss events backdated by more than the interval.
-	if nip17SubscriptionRefreshInterval >= nip17GiftWrapBackfill {
-		t.Fatalf("refresh interval %v must be < backfill window %v",
-			nip17SubscriptionRefreshInterval, nip17GiftWrapBackfill)
+	// Min should be at least 1s to avoid relay hammering.
+	if nip17ReconnectBackoffMin < 1*time.Second {
+		t.Fatalf("nip17ReconnectBackoffMin = %v, too short (min 1s)", nip17ReconnectBackoffMin)
+	}
+	// Max should cap at a reasonable ceiling (30m).
+	if nip17ReconnectBackoffMax > 30*time.Minute {
+		t.Fatalf("nip17ReconnectBackoffMax = %v, too long (max 30m)", nip17ReconnectBackoffMax)
 	}
 }
 
