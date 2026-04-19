@@ -164,6 +164,7 @@ func (h *Handler) currentRelays() []string {
 func (h *Handler) subscriptionLoop() {
 	defer h.wg.Done()
 
+	backoff := runtime.SubReconnectBackoffMin
 	since := runtime.ResubscribeSince(runtime.DVMResubscribeWindow)
 	for {
 		if h.ctx.Err() != nil {
@@ -177,15 +178,17 @@ func (h *Handler) subscriptionLoop() {
 			h.subHealth.RecordReconnect()
 		}
 		since = runtime.ResubscribeSince(runtime.DVMResubscribeWindow)
-		if !restart {
-			// Only pause before retry when the subscription was closed by
-			// the relay (not a deliberate rebind).  This replaces the old
-			// unconditional 500ms sleep.
+		if restart {
+			// Deliberate rebind — restart immediately, reset backoff.
+			backoff = runtime.SubReconnectBackoffMin
+		} else {
+			// Unexpected closure — exponential backoff before retry.
 			select {
 			case <-h.ctx.Done():
 				return
-			case <-time.After(500 * time.Millisecond):
+			case <-time.After(backoff):
 			}
+			backoff = runtime.NextBackoff(backoff, runtime.SubReconnectBackoffMax)
 		}
 	}
 }
