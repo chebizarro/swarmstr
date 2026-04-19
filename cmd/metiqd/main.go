@@ -55,6 +55,7 @@ import (
 	secretspkg "metiq/internal/secrets"
 	skillspkg "metiq/internal/skills"
 	"metiq/internal/social"
+	"metiq/internal/workspace"
 	"metiq/internal/store/state"
 	ttspkg "metiq/internal/tts"
 	"metiq/internal/update"
@@ -927,19 +928,7 @@ func main() {
 	// Relative paths are resolved against the agent's workspace directory.
 	fsOpts := toolbuiltin.FilesystemOpts{
 		WorkspaceDir: func() string {
-			cfg := configState.Get()
-			if cfg.Extra != nil {
-				if ws, ok := cfg.Extra["workspace"].(map[string]any); ok {
-					if d, ok := ws["dir"].(string); ok && d != "" {
-						return d
-					}
-				}
-			}
-			if d := os.Getenv("METIQ_WORKSPACE"); d != "" {
-				return d
-			}
-			home, _ := os.UserHomeDir()
-			return filepath.Join(home, ".metiq", "workspace")
+			return workspace.ResolveWorkspaceDir(configState.Get(), "")
 		},
 	}
 	tools.RegisterWithDef("read_file", toolbuiltin.ReadFileTool(fsOpts), toolbuiltin.ReadFileDef)
@@ -1140,10 +1129,7 @@ func main() {
 		}
 	}
 	// Load workspace hooks from the agent's workspace hooks/ subdirectory.
-	if wkspHooksDir := func() string {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".metiq", "workspace", "hooks")
-	}(); wkspHooksDir != "" {
+	if wkspHooksDir := filepath.Join(workspace.ResolveWorkspaceDir(configState.Get(), ""), "hooks"); wkspHooksDir != "" {
 		if wkspHooks, err := hookspkg.ScanDir(wkspHooksDir, hookspkg.SourceWorkspace); err == nil {
 			for _, h := range wkspHooks {
 				hooksMgr.Register(h)
@@ -1153,19 +1139,7 @@ func main() {
 	// Wire bundled Go handlers.
 	hookspkg.RegisterBundledHandlers(hooksMgr, hookspkg.BundledHandlerOpts{
 		WorkspaceDir: func() string {
-			cfg := configState.Get()
-			if cfg.Extra != nil {
-				if ws, ok := cfg.Extra["workspace"].(map[string]any); ok {
-					if d, ok := ws["dir"].(string); ok && d != "" {
-						return d
-					}
-				}
-			}
-			if d := os.Getenv("METIQ_WORKSPACE"); d != "" {
-				return d
-			}
-			home, _ := os.UserHomeDir()
-			return filepath.Join(home, ".metiq", "workspace")
+			return workspace.ResolveWorkspaceDir(configState.Get(), "")
 		},
 	})
 	// Attach shell handlers for any managed/workspace hooks that have handler.sh
@@ -2870,11 +2844,7 @@ func main() {
 			if activeAgentID == "" {
 				activeAgentID = "main"
 			}
-			wsDir := skillspkg.WorkspaceDir(cfg.Extra, activeAgentID)
-			if wsDir == "" {
-				home, _ := os.UserHomeDir()
-				wsDir = filepath.Join(home, ".metiq", "workspace")
-			}
+			wsDir := workspace.ResolveWorkspaceDir(cfg, activeAgentID)
 			candidates := []string{
 				"AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md",
 				"TOOLS.md", "HEARTBEAT.md", "BOOT.md", "BOOTSTRAP.md", "MEMORY.md",
@@ -8792,21 +8762,7 @@ func configuredPDFAllowedRoots(cfg state.ConfigDoc) []string {
 			}
 		}
 	}
-	if cfg.Extra != nil {
-		if ws, ok := cfg.Extra["workspace"].(map[string]any); ok {
-			if d, ok := ws["dir"].(string); ok && strings.TrimSpace(d) != "" {
-				return []string{strings.TrimSpace(d)}
-			}
-		}
-	}
-	if d := strings.TrimSpace(os.Getenv("METIQ_WORKSPACE")); d != "" {
-		return []string{d}
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return []string{"."}
-	}
-	return []string{filepath.Join(home, ".metiq", "workspace")}
+	return []string{workspace.ResolveWorkspaceDir(cfg, "")}
 }
 
 func supportedMethods(cfg state.ConfigDoc) []string {

@@ -6,8 +6,8 @@ import (
 
 	"metiq/internal/agent"
 	"metiq/internal/memory"
-	skillspkg "metiq/internal/skills"
 	"metiq/internal/store/state"
+	"metiq/internal/workspace"
 )
 
 func configuredAgentMemoryScope(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, agentID string) state.AgentMemoryScope {
@@ -34,13 +34,7 @@ func configuredAgentMemoryScope(ctx context.Context, cfg state.ConfigDoc, docsRe
 }
 
 func workspaceDirForAgent(cfg state.ConfigDoc, agentID string) string {
-	agentID = defaultAgentID(agentID)
-	for _, agCfg := range cfg.Agents {
-		if strings.TrimSpace(agCfg.ID) == agentID && strings.TrimSpace(agCfg.WorkspaceDir) != "" {
-			return strings.TrimSpace(agCfg.WorkspaceDir)
-		}
-	}
-	return skillspkg.WorkspaceDir(cfg.Extra, agentID)
+	return workspace.ResolveWorkspaceDir(cfg, agentID)
 }
 
 func resolveMemoryScopeContext(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, sessionStore *state.SessionStore, sessionID, explicitAgentID string, explicitScope state.AgentMemoryScope) memory.ScopedContext {
