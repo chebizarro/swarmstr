@@ -924,9 +924,11 @@ func main() {
 	tools.RegisterWithDef("runtime_observe", toolbuiltin.RuntimeObserveTool, toolbuiltin.RuntimeObserveDef)
 	// bash_exec: shell command execution (gated by exec approval policy middleware).
 	tools.RegisterWithDef("bash_exec", toolbuiltin.BashExecTool, toolbuiltin.BashExecDef)
-	// Git tools: structured status and diff output.
+	// Git tools: structured status, diff, log, and blame output.
 	tools.RegisterWithDef("git_status", toolbuiltin.GitStatusTool, toolbuiltin.GitStatusDef)
 	tools.RegisterWithDef("git_diff", toolbuiltin.GitDiffTool, toolbuiltin.GitDiffDef)
+	tools.RegisterWithDef("git_log", toolbuiltin.GitLogTool, toolbuiltin.GitLogDef)
+	tools.RegisterWithDef("git_blame", toolbuiltin.GitBlameTool, toolbuiltin.GitBlameDef)
 	// Test runner: structured go test -json results.
 	tools.RegisterWithDef("test_run", toolbuiltin.TestRunTool, toolbuiltin.TestRunDef)
 	// Process handles: spawn/read/send/kill background processes.
@@ -959,8 +961,11 @@ func main() {
 	}
 	tools.RegisterWithDef("read_file", toolbuiltin.ReadFileTool(fsOpts), toolbuiltin.ReadFileDef)
 	tools.RegisterWithDef("write_file", toolbuiltin.WriteFileTool(fsOpts), toolbuiltin.WriteFileDef)
+	tools.RegisterWithDef("file_edit", toolbuiltin.FileEditTool(fsOpts), toolbuiltin.FileEditDef)
 	tools.RegisterWithDef("list_dir", toolbuiltin.ListDirTool(fsOpts), toolbuiltin.ListDirDef)
 	tools.RegisterWithDef("make_dir", toolbuiltin.MakeDirTool(fsOpts), toolbuiltin.MakeDirDef)
+	tools.RegisterWithDef("file_tree", toolbuiltin.FileTreeTool(fsOpts), toolbuiltin.FileTreeDef)
+	tools.RegisterWithDef("grep_search", toolbuiltin.GrepSearchTool(fsOpts), toolbuiltin.GrepSearchDef)
 	// task queue: persistent structured work-item management.
 	{
 		home, _ := os.UserHomeDir()
