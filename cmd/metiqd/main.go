@@ -966,6 +966,7 @@ func main() {
 	tools.RegisterWithDef("make_dir", toolbuiltin.MakeDirTool(fsOpts), toolbuiltin.MakeDirDef)
 	tools.RegisterWithDef("file_tree", toolbuiltin.FileTreeTool(fsOpts), toolbuiltin.FileTreeDef)
 	tools.RegisterWithDef("grep_search", toolbuiltin.GrepSearchTool(fsOpts), toolbuiltin.GrepSearchDef)
+	tools.RegisterWithDef("diff_apply", toolbuiltin.DiffApplyTool(fsOpts), toolbuiltin.DiffApplyDef)
 	// task queue: persistent structured work-item management.
 	{
 		home, _ := os.UserHomeDir()
