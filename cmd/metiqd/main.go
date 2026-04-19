@@ -785,6 +785,30 @@ func main() {
 		log.Printf("Cashu NUT tools active (default mint: %s)", nutsDefaultMint)
 	}
 
+	// ── NWC (NIP-47) Nostr Wallet Connect tools ────────────────────────────
+	// Enabled when extra.nwc.uri is set in config. Allows agents to interact
+	// with any NWC-compatible lightning wallet (Alby, LNbits NWC, etc.).
+	{
+		var nwcUri string
+		if configState != nil {
+			if nwcExtra, ok := configState.Get().Extra["nwc"].(map[string]any); ok {
+				nwcUri, _ = nwcExtra["uri"].(string)
+			}
+		}
+		toolbuiltin.RegisterNWCTools(tools, toolbuiltin.NWCToolOpts{
+			HubFunc: func() *nostruntime.NostrHub { return controlHub },
+			Keyer:   controlKeyer,
+			NWCUri:  nwcUri,
+			Relays:  cfg.Relays,
+			Timeout: 30 * time.Second,
+		})
+		if nwcUri != "" {
+			log.Printf("NWC tools active (wallet connected)")
+		} else {
+			log.Printf("NWC tools registered (no wallet configured — set extra.nwc.uri to enable)")
+		}
+	}
+
 	// ── Blossom blob storage tools (BUD-01 through BUD-05) ──────────────────
 	// Enabled by default; default server can be configured via extra.blossom.server.
 	{
