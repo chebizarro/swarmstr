@@ -166,3 +166,122 @@ func TestClassifyTurnResult(t *testing.T) {
 		t.Fatalf("plain text classification mismatch outcome=%q stop_reason=%q", outcome, stopReason)
 	}
 }
+
+// ─── Streaming tool-call fallback ────────────────────────────────────────────
+
+// streamingToolProvider returns tool calls from Stream() but produces text
+// from Generate() (simulating the agentic loop's synthesis behaviour).
+type streamingToolProvider struct{}
+
+func (streamingToolProvider) Generate(_ context.Context, turn Turn) (ProviderResult, error) {
+	return ProviderResult{Text: "synthesised answer from agentic loop"}, nil
+}
+
+func (streamingToolProvider) Stream(_ context.Context, _ Turn, _ func(string)) (ProviderResult, error) {
+	return ProviderResult{
+		ToolCalls: []ToolCall{{ID: "tc1", Name: "search", Args: map[string]any{"q": "test"}}},
+	}, nil
+}
+
+func TestProviderRuntime_ProcessTurnStreaming_ToolCallFallsBackToGenerate(t *testing.T) {
+	// When the streaming response returns tool calls, ProcessTurnStreaming
+	// should fall back to Generate (the agentic loop) and produce a real
+	// text response instead of the old "tool execution complete" placeholder.
+	tools := NewToolRegistry()
+	tools.RegisterWithDef("search", func(_ context.Context, _ map[string]any) (string, error) {
+		return "search result", nil
+	}, ToolDefinition{Name: "search", Description: "search tool"})
+
+	rt, _ := NewProviderRuntime(streamingToolProvider{}, tools)
+	var chunks []string
+	result, err := rt.ProcessTurnStreaming(context.Background(), Turn{UserText: "hello"}, func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text == "tool execution complete" {
+		t.Fatal("should not produce dead-end 'tool execution complete' placeholder")
+	}
+	if !strings.Contains(result.Text, "synthesised answer") {
+		t.Fatalf("expected synthesised answer from Generate fallback, got %q", result.Text)
+	}
+	// The Generate response text should have been streamed to onChunk.
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk from the Generate fallback")
+	}
+}
+
+func TestProviderRuntime_ProcessTurnStreaming_NoToolCalls_NoFallback(t *testing.T) {
+	// When streaming returns text without tool calls, no fallback should occur.
+	rt, _ := NewProviderRuntime(streamingEchoProvider{}, nil)
+	result, err := rt.ProcessTurnStreaming(context.Background(), Turn{UserText: "hello"}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result.Text, "hello") {
+		t.Fatalf("expected echoed text, got %q", result.Text)
+	}
+}
+
+// ─── buildResult safety-net summary ──────────────────────────────────────────
+
+// toolOnlyProvider returns only tool calls and no text — exercises the
+// buildResult safety net when the agentic loop isn't used.
+type toolOnlyProvider struct{}
+
+func (toolOnlyProvider) Generate(_ context.Context, _ Turn) (ProviderResult, error) {
+	return ProviderResult{
+		ToolCalls: []ToolCall{{ID: "tc1", Name: "lookup", Args: map[string]any{"key": "x"}}},
+	}, nil
+}
+
+func TestBuildResult_ToolOnlySummarisesResults(t *testing.T) {
+	// When a provider returns tool calls without text and no streaming
+	// fallback runs, buildResult should produce a useful summary instead
+	// of the old "tool execution complete" placeholder.
+	tools := NewToolRegistry()
+	tools.RegisterWithDef("lookup", func(_ context.Context, _ map[string]any) (string, error) {
+		return "value=42", nil
+	}, ToolDefinition{Name: "lookup", Description: "lookup tool"})
+
+	rt, _ := NewProviderRuntime(toolOnlyProvider{}, tools)
+	result, err := rt.ProcessTurn(context.Background(), Turn{UserText: "hello"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text == "tool execution complete" {
+		t.Fatal("should not produce dead-end 'tool execution complete' placeholder")
+	}
+	if !strings.Contains(result.Text, "lookup") || !strings.Contains(result.Text, "value=42") {
+		t.Fatalf("expected tool summary with name and result, got %q", result.Text)
+	}
+	if result.Outcome != TurnOutcomeCompletedWithTools {
+		t.Fatalf("expected CompletedWithTools outcome, got %q", result.Outcome)
+	}
+}
+
+func TestBuildResult_ToolErrorSummarised(t *testing.T) {
+	tools := NewToolRegistry()
+	tools.RegisterWithDef("broken", func(_ context.Context, _ map[string]any) (string, error) {
+		return "", errors.New("connection refused")
+	}, ToolDefinition{Name: "broken", Description: "broken tool"})
+
+	provider := &toolOnlyProviderNamed{name: "broken"}
+	rt, _ := NewProviderRuntime(provider, tools)
+	result, err := rt.ProcessTurn(context.Background(), Turn{UserText: "hello"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result.Text, "broken") || !strings.Contains(result.Text, "connection refused") {
+		t.Fatalf("expected error summary, got %q", result.Text)
+	}
+}
+
+type toolOnlyProviderNamed struct{ name string }
+
+func (p *toolOnlyProviderNamed) Generate(_ context.Context, _ Turn) (ProviderResult, error) {
+	return ProviderResult{
+		ToolCalls: []ToolCall{{ID: "tc1", Name: p.name, Args: map[string]any{}}},
+	}, nil
+}

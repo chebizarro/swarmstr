@@ -374,6 +374,26 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		return TurnResult{}, err
 	}
 
+	// When the streaming response produced tool calls, the single-shot stream
+	// bypassed the agentic tool→LLM→tool cycle. Fall back to the non-streaming
+	// Generate path which runs the full agentic loop (tool execution → model
+	// synthesis → repeat until text). This re-processes the prompt but
+	// correctly handles tool execution and produces a complete text response.
+	//
+	// The streaming response may have already emitted partial text tokens via
+	// onChunk (e.g. "Let me look that up…"). The Generate path produces the
+	// complete synthesised response in gen.Text and emits it to onChunk so
+	// the client can display the final answer.
+	if len(gen.ToolCalls) > 0 && frozenTools != nil {
+		gen, err = r.provider.Generate(ctx, turn)
+		if err != nil {
+			return TurnResult{}, err
+		}
+		if onChunk != nil && gen.Text != "" {
+			onChunk(gen.Text)
+		}
+	}
+
 	return r.buildResult(ctx, gen, frozenTools)
 }
 
@@ -407,7 +427,27 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult, t
 		return TurnResult{}, fmt.Errorf("provider returned empty response")
 	}
 	if result.Text == "" && len(result.ToolTraces) > 0 {
-		result.Text = "tool execution complete"
+		// Safety net: the agentic loop and streaming fallback should produce
+		// proper text responses, but if a provider returns raw tool calls
+		// without text, summarise the tool results so the user gets
+		// actionable information rather than a dead-end placeholder.
+		var sb strings.Builder
+		for _, trace := range result.ToolTraces {
+			if trace.Error != "" {
+				fmt.Fprintf(&sb, "[%s] error: %s\n", trace.Call.Name, trace.Error)
+			} else if trace.Result != "" {
+				snippet := trace.Result
+				if len(snippet) > 300 {
+					snippet = snippet[:300] + "…"
+				}
+				fmt.Fprintf(&sb, "[%s] %s\n", trace.Call.Name, snippet)
+			}
+		}
+		if sb.Len() > 0 {
+			result.Text = sb.String()
+		} else {
+			result.Text = "Tools executed but produced no output."
+		}
 	}
 	if result.Outcome == "" || result.StopReason == "" {
 		inferredOutcome, inferredStopReason := inferTurnClassification(result)
@@ -424,9 +464,6 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult, t
 func inferTurnClassification(result TurnResult) (TurnOutcome, TurnStopReason) {
 	switch {
 	case len(result.ToolTraces) > 0 && strings.TrimSpace(result.Text) != "":
-		if strings.TrimSpace(result.Text) == "tool execution complete" {
-			return TurnOutcomeToolOnlyCompleted, TurnStopReasonToolExecution
-		}
 		return TurnOutcomeCompletedWithTools, TurnStopReasonModelText
 	case len(result.ToolTraces) > 0:
 		return TurnOutcomeToolOnlyCompleted, TurnStopReasonToolExecution
