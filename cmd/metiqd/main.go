@@ -973,6 +973,11 @@ func main() {
 	tools.RegisterWithDef("lsp_query", toolbuiltin.LSPQueryTool(lspReg, fsOpts), toolbuiltin.LSPQueryDef)
 	// Sandbox execution: compile & run code with isolation and resource limits.
 	tools.RegisterWithDef("sandbox_exec", toolbuiltin.SandboxExecTool(), toolbuiltin.SandboxExecDef)
+	// Tool chains / macros: composable multi-tool workflows.
+	chainReg := toolbuiltin.NewChainRegistry()
+	tools.RegisterWithDef("chain_define", toolbuiltin.ChainDefineTool(chainReg), toolbuiltin.ChainDefineDef)
+	tools.RegisterWithDef("chain_run", toolbuiltin.ChainRunTool(chainReg, tools), toolbuiltin.ChainRunDef)
+	tools.RegisterWithDef("chain_list", toolbuiltin.ChainListTool(chainReg), toolbuiltin.ChainListDef)
 	// task queue: persistent structured work-item management.
 	{
 		home, _ := os.UserHomeDir()
