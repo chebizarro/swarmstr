@@ -180,6 +180,7 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 
 func (b *ControlRPCBus) subscriptionLoop(initialSince int64) {
 	defer b.wg.Done()
+	backoff := SubReconnectBackoffMin
 	since := initialSince
 	for {
 		if b.ctx.Err() != nil {
@@ -193,12 +194,17 @@ func (b *ControlRPCBus) subscriptionLoop(initialSince int64) {
 			b.subHealth.RecordReconnect()
 		}
 		since = ResubscribeSince(ControlRPCResubscribeWindow)
-		if !restart {
+		if restart {
+			// Deliberate rebind — restart immediately, reset backoff.
+			backoff = SubReconnectBackoffMin
+		} else {
+			// Unexpected closure — exponential backoff before retry.
 			select {
 			case <-b.ctx.Done():
 				return
-			case <-time.After(500 * time.Millisecond):
+			case <-time.After(backoff):
 			}
+			backoff = NextBackoff(backoff, SubReconnectBackoffMax)
 		}
 	}
 }

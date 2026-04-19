@@ -86,7 +86,31 @@ const (
 	// starting or restarting. 10 minutes covers typical reconnect gaps while
 	// keeping replay bounded.
 	DVMResubscribeWindow = 10 * time.Minute
+
+	// ── Subscription reconnect backoff ──────────────────────────────────
+	//
+	// When a long-lived subscription is closed unexpectedly (relay drop,
+	// CLOSED without auth-retry), the subscription loop pauses before
+	// reconnecting using exponential backoff.  These constants mirror the
+	// NIP-17 bus backoff policy for consistency across all bus types.
+
+	// SubReconnectBackoffMin is the initial backoff after an unexpected
+	// subscription closure for DVM and ControlRPC buses.
+	SubReconnectBackoffMin = 3 * time.Second
+
+	// SubReconnectBackoffMax caps the exponential backoff growth.
+	SubReconnectBackoffMax = 10 * time.Minute
 )
+
+// NextBackoff computes the next exponential backoff duration, clamped to max.
+// Uses the same ×1.7 growth factor as the NIP-17 bus and nostrlib pool.
+func NextBackoff(current, max time.Duration) time.Duration {
+	next := current * 17 / 10
+	if next > max {
+		return max
+	}
+	return next
+}
 
 // ResubscribeSince returns the Since unix timestamp for a resubscription
 // after a relay reconnect, given a replay window duration.

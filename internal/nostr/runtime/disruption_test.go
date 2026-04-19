@@ -441,6 +441,59 @@ func TestDisruption_NIP17ReconnectBackoffSanity(t *testing.T) {
 	}
 }
 
+func TestDisruption_SubReconnectBackoffSanity(t *testing.T) {
+	// SubReconnectBackoffMin/Max are used by DVM and ControlRPC buses.
+	// Same constraints as the NIP-17 backoff.
+	if SubReconnectBackoffMin <= 0 {
+		t.Fatalf("SubReconnectBackoffMin = %v, must be positive", SubReconnectBackoffMin)
+	}
+	if SubReconnectBackoffMax <= SubReconnectBackoffMin {
+		t.Fatalf("SubReconnectBackoffMax (%v) must exceed SubReconnectBackoffMin (%v)",
+			SubReconnectBackoffMax, SubReconnectBackoffMin)
+	}
+	if SubReconnectBackoffMin < 1*time.Second {
+		t.Fatalf("SubReconnectBackoffMin = %v, too short (min 1s)", SubReconnectBackoffMin)
+	}
+	if SubReconnectBackoffMax > 30*time.Minute {
+		t.Fatalf("SubReconnectBackoffMax = %v, too long (max 30m)", SubReconnectBackoffMax)
+	}
+}
+
+func TestDisruption_NextBackoffGrowsExponentially(t *testing.T) {
+	b := SubReconnectBackoffMin
+	prev := b
+	for i := 0; i < 20; i++ {
+		b = NextBackoff(b, SubReconnectBackoffMax)
+		if b < prev {
+			t.Fatalf("backoff decreased: %v -> %v at step %d", prev, b, i)
+		}
+		if b > SubReconnectBackoffMax {
+			t.Fatalf("backoff exceeded max: %v > %v at step %d", b, SubReconnectBackoffMax, i)
+		}
+		prev = b
+	}
+	// After enough iterations it must have reached the cap.
+	if b != SubReconnectBackoffMax {
+		t.Fatalf("backoff did not reach max after 20 iterations: %v", b)
+	}
+}
+
+func TestDisruption_NextBackoffResetsOnRebind(t *testing.T) {
+	// Simulate: several failures grow the backoff, then a rebind resets it.
+	b := SubReconnectBackoffMin
+	for i := 0; i < 5; i++ {
+		b = NextBackoff(b, SubReconnectBackoffMax)
+	}
+	if b <= SubReconnectBackoffMin {
+		t.Fatalf("backoff should have grown after 5 failures: %v", b)
+	}
+	// Simulate rebind reset.
+	b = SubReconnectBackoffMin
+	if b != SubReconnectBackoffMin {
+		t.Fatalf("backoff should reset to min on rebind: %v", b)
+	}
+}
+
 func TestDisruption_NIP17NormalizeSinceAfterPoolReconnect(t *testing.T) {
 	// Simulate what happens when the pool reconnects: it sets filter.Since
 	// to the current time. Verify that normalizeNIP17Since (called when

@@ -157,7 +157,11 @@ func TestPublish_ReplaceableOverwrites(t *testing.T) {
 		t.Fatalf("publish v1: %v", err)
 	}
 
-	// Ensure different second-resolution timestamp (nostr.Now() is seconds)
+	// Nostr timestamps have second resolution (nostr.Now() returns seconds).
+	// A replaceable event needs a strictly newer created_at to replace the
+	// prior version on the relay.  We must advance the wall-clock by at
+	// least one full second.  There is no protocol-level alternative to
+	// this wait.
 	time.Sleep(1100 * time.Millisecond)
 
 	// Publish second version (should replace)
@@ -242,11 +246,10 @@ func TestSubscribe_LiveUpdates(t *testing.T) {
 
 	store := NewListStore()
 
-	// Start subscription in background
+	// Start subscription in background.  There is no explicit "ready" signal
+	// from Subscribe, but the polling loop below tolerates subscription
+	// setup delay without needing a sleep guard.
 	go Subscribe(ctx, pool, store, []string{url}, []string{kp.PubKeyHex()}, []int{10000})
-
-	// Give subscription a moment to establish
-	time.Sleep(200 * time.Millisecond)
 
 	// Publish a mute list
 	list := &List{
@@ -258,8 +261,9 @@ func TestSubscribe_LiveUpdates(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	// Poll store for the update
-	deadline := time.After(5 * time.Second)
+	// Poll store until the subscription delivers the published list.
+	// The poll interval (50ms) is a scheduling yield, not a protocol
+	// wait — the test is bounded by the 10s context deadline.
 	for {
 		if got, ok := store.Get(kp.PubKeyHex(), 10000, ""); ok {
 			if len(got.Entries) == 1 && got.Entries[0].Value == "cccc01234567890abcdef01234567890abcdef01234567890abcdef01234567" {
@@ -267,7 +271,7 @@ func TestSubscribe_LiveUpdates(t *testing.T) {
 			}
 		}
 		select {
-		case <-deadline:
+		case <-ctx.Done():
 			t.Fatal("timeout waiting for store to receive list update")
 		case <-time.After(50 * time.Millisecond):
 			// keep polling
