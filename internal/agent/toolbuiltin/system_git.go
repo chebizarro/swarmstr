@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"time"
 
 	"metiq/internal/agent"
 )
@@ -385,7 +384,7 @@ var GitDiffDef = agent.ToolDefinition{
 
 // runGit executes a git command with a 15s timeout and returns trimmed output.
 func runGit(ctx context.Context, dir string, gitArgs ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, gitOpsTimeout(ctx))
 	defer cancel()
 
 	args := append([]string{}, gitArgs...)

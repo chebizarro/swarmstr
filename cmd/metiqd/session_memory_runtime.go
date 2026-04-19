@@ -14,10 +14,12 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
+	"metiq/internal/timeouts"
 )
 
 const sessionMemoryTranscriptScanLimit = 5000
-const sessionMemoryExtractionTimeout = 45 * time.Second
+// sessionMemoryExtractionTimeout is a legacy fallback; prefer
+// timeouts.SessionMemoryExtraction(cfg.Timeouts) when config is available.
 
 type sessionMemoryGenerator interface {
 	Generate(context.Context, agent.Turn) (agent.TurnResult, error)
@@ -83,7 +85,7 @@ func (r *sessionMemoryRuntime) ObserveTurn(cfg state.ConfigDoc, generator sessio
 	if !r.tryStartExtraction(sessionID) {
 		return
 	}
-	go r.extract(sessionID, workspaceDir, memCfg, generator)
+	go r.extract(sessionID, workspaceDir, memCfg, generator, timeouts.SessionMemoryExtraction(cfg.Timeouts))
 }
 
 func (r *sessionMemoryRuntime) WaitForExtraction(sessionID string, timeout time.Duration) bool {
@@ -145,7 +147,7 @@ func (r *sessionMemoryRuntime) EnsureCurrent(ctx context.Context, cfg state.Conf
 		beforeCheckpoint := strings.TrimSpace(entry.SessionMemoryLastEntryID)
 		beforePendingChars := progress.PendingChars
 		beforePendingToolCalls := progress.PendingToolCalls
-		result, err := r.extractOnce(ctx, sessionID, workspaceDir, memCfg, generator)
+		result, err := r.extractOnce(ctx, sessionID, workspaceDir, memCfg, generator, timeouts.SessionMemoryExtraction(cfg.Timeouts))
 		r.finishExtraction(sessionID)
 		if err != nil {
 			return currentPath, false, err
@@ -204,15 +206,15 @@ func (r *sessionMemoryRuntime) waitForIdleContext(ctx context.Context, sessionID
 	}
 }
 
-func (r *sessionMemoryRuntime) extract(sessionID, workspaceDir string, cfg memory.SessionMemoryConfig, generator sessionMemoryGenerator) {
+func (r *sessionMemoryRuntime) extract(sessionID, workspaceDir string, cfg memory.SessionMemoryConfig, generator sessionMemoryGenerator, extractionTimeout time.Duration) {
 	result := sessionMemoryUpdateResult{}
 	defer func() {
 		r.finishExtraction(sessionID)
 		if result.Rerun && r.tryStartExtraction(sessionID) {
-			go r.extract(sessionID, workspaceDir, cfg, generator)
+			go r.extract(sessionID, workspaceDir, cfg, generator, extractionTimeout)
 		}
 	}()
-	updateResult, err := r.extractOnce(context.Background(), sessionID, workspaceDir, cfg, generator)
+	updateResult, err := r.extractOnce(context.Background(), sessionID, workspaceDir, cfg, generator, extractionTimeout)
 	if err != nil {
 		log.Printf("session memory extraction failed session=%s err=%v", sessionID, err)
 		return
@@ -220,9 +222,9 @@ func (r *sessionMemoryRuntime) extract(sessionID, workspaceDir string, cfg memor
 	result = updateResult
 }
 
-func (r *sessionMemoryRuntime) extractOnce(ctx context.Context, sessionID, workspaceDir string, cfg memory.SessionMemoryConfig, generator sessionMemoryGenerator) (sessionMemoryUpdateResult, error) {
+func (r *sessionMemoryRuntime) extractOnce(ctx context.Context, sessionID, workspaceDir string, cfg memory.SessionMemoryConfig, generator sessionMemoryGenerator, extractionTimeout time.Duration) (sessionMemoryUpdateResult, error) {
 	out := sessionMemoryUpdateResult{}
-	ctx, cancel := context.WithTimeout(ctx, sessionMemoryExtractionTimeout)
+	ctx, cancel := context.WithTimeout(ctx, extractionTimeout)
 	defer cancel()
 
 	path, current, _, err := memory.EnsureSessionMemoryFileWithLimit(workspaceDir, sessionID, cfg.MaxOutputBytes)

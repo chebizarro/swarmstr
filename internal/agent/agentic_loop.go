@@ -615,13 +615,14 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 	}
 
 	// Run the agentic loop.
+	maxIter := turn.MaxAgenticIterations // 0 = use model-tier default in RunAgenticLoop
 	resp, err := RunAgenticLoop(ctx, AgenticLoopConfig{
 		Provider:            provider,
 		InitialMessages:     messages,
 		Tools:               turn.Tools,
 		Executor:            turn.Executor,
 		Options:             opts,
-		MaxIterations:       30,
+		MaxIterations:       maxIter,
 		ForceText:           true,
 		LogPrefix:           logPrefix,
 		SessionID:           turn.SessionID,

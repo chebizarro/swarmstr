@@ -71,6 +71,9 @@ type Turn struct {
 	// Trace carries task/run/step correlation IDs for observability. When a
 	// turn runs inside a task context, all emitted events inherit these IDs.
 	Trace TraceContext
+	// MaxAgenticIterations overrides the model-tier default for the maximum
+	// number of tool→LLM round-trips.  0 means use the model-tier default.
+	MaxAgenticIterations int
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.

@@ -44,7 +44,7 @@ func TestSessionMemoryExtractOnce_PreservesCheckpointWhenNoNewTranscriptEntries(
 		t.Fatalf("seed session store: %v", err)
 	}
 	runtime := newSessionMemoryRuntime(sessionStore, transcriptRepo)
-	_, err = runtime.extractOnce(context.Background(), "sess-a", t.TempDir(), sessionMemoryConfigFromDoc(state.ConfigDoc{}), stubSessionMemoryGenerator{text: testSessionMemoryDocument("No new transcript should preserve the prior checkpoint.")})
+	_, err = runtime.extractOnce(context.Background(), "sess-a", t.TempDir(), sessionMemoryConfigFromDoc(state.ConfigDoc{}), stubSessionMemoryGenerator{text: testSessionMemoryDocument("No new transcript should preserve the prior checkpoint.")}, 45*time.Second)
 	if err != nil {
 		t.Fatalf("extractOnce: %v", err)
 	}

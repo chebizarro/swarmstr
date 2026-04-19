@@ -175,7 +175,7 @@ func executeChain(ctx context.Context, toolReg *agent.ToolRegistry, chain *Chain
 	}
 	ctx = context.WithValue(ctx, chainDepthKey{}, depth+1)
 
-	ctx, cancel := context.WithTimeout(ctx, chainExecTimeout)
+	ctx, cancel := context.WithTimeout(ctx, chainTimeout(ctx))
 	defer cancel()
 
 	stepOutputs := make(map[string]string)

@@ -24,6 +24,7 @@ type ConfigDoc struct {
 	Secrets       SecretsConfig       `json:"secrets,omitempty"`
 	CronCfg       CronConfig          `json:"cron,omitempty"`
 	Hooks         HooksConfig         `json:"hooks,omitempty"`
+	Timeouts      TimeoutsConfig      `json:"timeouts,omitempty"`
 	AgentList     *AgentListConfig    `json:"agent_list,omitempty"`
 	Extra         map[string]any      `json:"extra,omitempty"`
 }
@@ -240,6 +241,52 @@ type SecretsConfig map[string]string
 // CronConfig holds top-level cron scheduler settings.
 type CronConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
+	// JobTimeoutSecs is the maximum wall-clock seconds a single cron job may
+	// run before it is cancelled.  Default: 300 (5 minutes).
+	JobTimeoutSecs int `json:"job_timeout_secs,omitempty"`
+}
+
+// TimeoutsConfig holds configurable timeout defaults for operations that are
+// not scoped to a single agent.  All values are in seconds; zero means
+// "use the built-in default".  These map to the configurable knobs that
+// OpenClaw exposes across its config schema.
+type TimeoutsConfig struct {
+	// SessionMemoryExtractionSecs is the timeout for LLM-based session memory
+	// extraction.  Default: 45.
+	SessionMemoryExtractionSecs int `json:"session_memory_extraction_secs,omitempty"`
+	// SessionCompactSummarySecs is the timeout for session context compaction.
+	// Default: 30.
+	SessionCompactSummarySecs int `json:"session_compact_summary_secs,omitempty"`
+	// GrepSearchSecs is the timeout for grep/rg search operations.
+	// Default: 30.
+	GrepSearchSecs int `json:"grep_search_secs,omitempty"`
+	// ImageFetchSecs is the timeout for image URL downloads.
+	// Default: 30.
+	ImageFetchSecs int `json:"image_fetch_secs,omitempty"`
+	// ToolChainExecSecs is the timeout for chained tool execution.
+	// Default: 120.
+	ToolChainExecSecs int `json:"tool_chain_exec_secs,omitempty"`
+	// GitOpsSecs is the timeout for git subprocess operations.
+	// Default: 15.
+	GitOpsSecs int `json:"git_ops_secs,omitempty"`
+	// LLMProviderHTTPSecs is the default HTTP client timeout for LLM provider
+	// API calls (Anthropic, OpenAI, Gemini, Cohere).  Default: 120.
+	LLMProviderHTTPSecs int `json:"llm_provider_http_secs,omitempty"`
+	// WebhookWakeSecs is the timeout for webhook wake operations.
+	// Default: 30.
+	WebhookWakeSecs int `json:"webhook_wake_secs,omitempty"`
+	// WebhookAgentStartSecs is the timeout for starting an agent from a
+	// webhook.  Default: 120.
+	WebhookAgentStartSecs int `json:"webhook_agent_start_secs,omitempty"`
+	// SignerConnectSecs is the timeout for NWC/NIP-46 signer connection.
+	// Default: 30.
+	SignerConnectSecs int `json:"signer_connect_secs,omitempty"`
+	// MemoryPersistSecs is the timeout for writing memory entries to the
+	// store.  Default: 30.
+	MemoryPersistSecs int `json:"memory_persist_secs,omitempty"`
+	// SubagentDefaultSecs is the default timeout for sub-agent orchestrator
+	// runs when no explicit timeout is provided.  Default: 60.
+	SubagentDefaultSecs int `json:"subagent_default_secs,omitempty"`
 }
 
 // HooksConfig configures the HTTP webhook ingress on the admin server.
@@ -401,6 +448,11 @@ type AgentConfig struct {
 	// Set to a negative value like -1 in config if you truly want no timeout
 	// (not recommended for production).
 	TurnTimeoutSecs int `json:"turn_timeout_secs,omitempty"`
+	// MaxAgenticIterations caps the number of tool→LLM round-trips in the
+	// agentic loop for this agent.  When 0 the model-tier default is used
+	// (Micro=5, Small=10, Standard=30).  Useful for limiting token spend on
+	// small-context models or increasing tool-call budget on capable ones.
+	MaxAgenticIterations int `json:"max_agentic_iterations,omitempty"`
 }
 
 // AgentsConfig is an ordered list of per-agent configurations.
