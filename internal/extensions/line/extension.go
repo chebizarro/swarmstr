@@ -34,13 +34,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&LINEPlugin{})
-}
 
 // LINEPlugin is the factory for LINE Messaging API channel instances.
 type LINEPlugin struct{}

@@ -37,13 +37,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&ZaloPlugin{})
-}
 
 // ZaloPlugin is the factory for Zalo OA channel instances.
 type ZaloPlugin struct{}

@@ -38,13 +38,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&FeishuPlugin{})
-}
 
 // FeishuPlugin is the factory for Feishu/Lark channel instances.
 type FeishuPlugin struct{}

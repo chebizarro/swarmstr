@@ -46,7 +46,6 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -88,10 +87,6 @@ func parseJWTClaims(token string) (botJWTClaims, error) {
 		return botJWTClaims{}, err
 	}
 	return claims, nil
-}
-
-func init() {
-	channels.RegisterChannelPlugin(&MSTeamsPlugin{})
 }
 
 // MSTeamsPlugin is the factory for Microsoft Teams Bot channel instances.

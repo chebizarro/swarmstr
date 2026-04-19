@@ -38,13 +38,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&NextcloudPlugin{})
-}
 
 // NextcloudPlugin is the factory for Nextcloud Talk channel instances.
 type NextcloudPlugin struct{}

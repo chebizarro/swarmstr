@@ -42,13 +42,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&SignalPlugin{})
-}
 
 // SignalPlugin is the factory for Signal channel instances.
 type SignalPlugin struct{}

@@ -46,13 +46,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&MattermostPlugin{})
-}
 
 // MattermostPlugin is the factory for Mattermost channel instances.
 type MattermostPlugin struct{}

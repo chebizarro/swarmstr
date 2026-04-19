@@ -50,13 +50,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&MatrixPlugin{})
-}
 
 // MatrixPlugin is the factory for Matrix channel instances.
 type MatrixPlugin struct{}

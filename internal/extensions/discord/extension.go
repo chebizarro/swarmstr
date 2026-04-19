@@ -40,13 +40,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&DiscordPlugin{})
-}
 
 // DiscordPlugin is the factory for Discord Bot channel instances.
 type DiscordPlugin struct{}

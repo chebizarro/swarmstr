@@ -47,13 +47,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&WhatsAppPlugin{})
-}
 
 // WhatsAppPlugin is the factory for WhatsApp Business channel instances.
 type WhatsAppPlugin struct{}
