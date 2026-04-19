@@ -4,7 +4,7 @@
 // Open API to receive webhooks and send Customer Service (CS) messages.
 //
 // Registration: import _ "metiq/internal/extensions/zalo" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -39,6 +39,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("zalo", func() sdk.ChannelPlugin { return &ZaloPlugin{} })
+}
 
 // ZaloPlugin is the factory for Zalo OA channel instances.
 type ZaloPlugin struct{}

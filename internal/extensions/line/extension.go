@@ -5,7 +5,7 @@
 // the push endpoint.
 //
 // Registration: import _ "metiq/internal/extensions/line" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -36,6 +36,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("line", func() sdk.ChannelPlugin { return &LINEPlugin{} })
+}
 
 // LINEPlugin is the factory for LINE Messaging API channel instances.
 type LINEPlugin struct{}

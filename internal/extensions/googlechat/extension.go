@@ -6,7 +6,7 @@
 // minted from a service-account key.
 //
 // Registration: import _ "metiq/internal/extensions/googlechat" in the
-// daemon main.go to register this plugin at startup.
+// daemon main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -56,6 +56,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("googlechat", func() sdk.ChannelPlugin { return &GoogleChatPlugin{} })
+}
 
 // GoogleChatPlugin is the factory for Google Chat channel instances.
 type GoogleChatPlugin struct{}

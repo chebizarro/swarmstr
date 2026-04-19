@@ -1,7 +1,7 @@
 // Package mattermost implements a Mattermost Bot channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/mattermost" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -48,6 +48,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("mattermost", func() sdk.ChannelPlugin { return &MattermostPlugin{} })
+}
 
 // MattermostPlugin is the factory for Mattermost channel instances.
 type MattermostPlugin struct{}

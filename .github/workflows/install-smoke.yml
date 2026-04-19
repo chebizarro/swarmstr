@@ -39,7 +39,7 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -trimpath \
-            -ldflags="-s -w -X main.version=smoke-test" \
+            -ldflags="-s -w -X main.version=smoke-test -X main.commit=${{ github.sha }}" \
             -o /tmp/metiqd-linux-amd64 \
             ./cmd/metiqd
 
@@ -89,7 +89,7 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -trimpath \
-            -ldflags="-s -w -X main.version=smoke-test" \
+            -ldflags="-s -w -X main.version=smoke-test -X main.commit=${{ github.sha }}" \
             -o /tmp/metiqd-linux-amd64 \
             ./cmd/metiqd
 

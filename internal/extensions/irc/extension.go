@@ -1,7 +1,7 @@
 // Package irc implements an IRC channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/irc" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -47,6 +47,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("irc", func() sdk.ChannelPlugin { return &IRCPlugin{} })
+}
 
 // IRCPlugin is the factory for IRC channel instances.
 type IRCPlugin struct{}

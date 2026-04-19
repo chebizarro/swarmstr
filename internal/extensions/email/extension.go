@@ -2,7 +2,7 @@
 // (poll for inbound) and SMTP (send outbound).
 //
 // Registration: import _ "metiq/internal/extensions/email" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -36,6 +36,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("email", func() sdk.ChannelPlugin { return &EmailPlugin{} })
+}
 
 // EmailPlugin is the factory for Email channel instances.
 type EmailPlugin struct{}

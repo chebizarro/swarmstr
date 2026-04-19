@@ -1,17 +1,19 @@
 // Package channels — extension registry for channel plugins.
 //
-// Channel plugins are registered on demand by extensions.RegisterConfigured(),
-// which reads the live config and only instantiates plugins whose kind matches
-// a configured nostr_channels entry.  ConnectExtensions() then connects each
-// registered plugin.
+// Channel plugins follow a two-phase registration model:
 //
-// Plugin registration flow:
+//	1. Each extension package registers a lightweight constructor via
+//	   sdk.RegisterChannelConstructor in its init().  No plugin instances
+//	   are created and no I/O occurs at this stage.
+//	2. extensions.RegisterConfigured(cfg) reads the live config, finds
+//	   matching constructors, and calls RegisterChannelPlugin(ctor()).
+//	3. ConnectExtensions() iterates registered plugins and calls
+//	   plugin.Connect().
+//	4. Messages from connected channels are forwarded to the DM bus via
+//	   the onMessage callback.
 //
-//	1. extensions.RegisterConfigured(cfg) scans nostr_channels for configured kinds.
-//	2. For each matching kind, it calls RegisterChannelPlugin(plugin).
-//	3. ConnectExtensions() iterates registered plugins and calls plugin.Connect().
-//	4. Messages from connected channels are forwarded to the DM bus via the
-//	   onMessage callback.
+// To exclude an extension from the binary, remove its blank import from
+// the daemon main.go.
 
 package channels
 

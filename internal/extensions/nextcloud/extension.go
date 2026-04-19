@@ -9,7 +9,7 @@
 // Outbound messages are sent via the OCS v2 chat REST API.
 //
 // Registration: import _ "metiq/internal/extensions/nextcloud" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -40,6 +40,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("nextcloud-talk", func() sdk.ChannelPlugin { return &NextcloudPlugin{} })
+}
 
 // NextcloudPlugin is the factory for Nextcloud Talk channel instances.
 type NextcloudPlugin struct{}

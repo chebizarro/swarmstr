@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 type contextKey string
@@ -349,11 +350,44 @@ type ThreadHandle interface {
 	SendInThread(ctx context.Context, threadID, text string) error
 }
 
+// ── Channel plugin constructor registry ──────────────────────────────────────
+//
+// Built-in channel extensions register a lightweight constructor (factory
+// function) via init().  No plugin instances are created until
+// extensions.RegisterConfigured() inspects the live config and calls the
+// matching constructors.
+
+var (
+	channelCtorMu sync.RWMutex
+	channelCtors  = map[string]func() ChannelPlugin{}
+)
+
+// RegisterChannelConstructor records a factory for the given kind.
+// Called by each built-in extension's init() — only adds a function pointer,
+// no plugin instances are created and no I/O occurs.
+func RegisterChannelConstructor(kind string, ctor func() ChannelPlugin) {
+	channelCtorMu.Lock()
+	defer channelCtorMu.Unlock()
+	channelCtors[kind] = ctor
+}
+
+// ChannelConstructors returns a snapshot of all registered constructors.
+func ChannelConstructors() map[string]func() ChannelPlugin {
+	channelCtorMu.RLock()
+	defer channelCtorMu.RUnlock()
+	out := make(map[string]func() ChannelPlugin, len(channelCtors))
+	for k, v := range channelCtors {
+		out[k] = v
+	}
+	return out
+}
+
 // ChannelPlugin is the factory interface for an external channel integration.
 //
-// Built-in implementations (e.g. telegram, discord) call RegisterChannelPlugin
-// in their package init() functions.  User-installed JS plugins can also declare
-// a channel plugin by exporting a channelPlugin object in their manifest.
+// Built-in implementations register a constructor via
+// sdk.RegisterChannelConstructor in their package init().  User-installed JS
+// plugins can also declare a channel plugin by exporting a channelPlugin
+// object in their manifest.
 //
 // Lifecycle for each configured channel instance:
 //
