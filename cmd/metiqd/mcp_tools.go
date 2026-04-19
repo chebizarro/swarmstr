@@ -11,6 +11,7 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"metiq/internal/agent"
 	mcppkg "metiq/internal/mcp"
+	"metiq/internal/store/state"
 )
 
 type mcpToolRegistryReconcileResult struct {
@@ -264,4 +265,14 @@ func applyMCPConfigAndReconcile(ctx context.Context, mgr **mcppkg.Manager, reg *
 		log.Printf("[mcp] %s tool reconcile: added=%d updated=%d removed=%d unchanged=%d desired=%d conflicts=%d", logContext, result.Added, result.Updated, result.Removed, result.Unchanged, result.Desired, result.Conflicts)
 	}
 	return result
+}
+
+// resolveMCPConfigWithDefaults resolves the MCP config from a config doc,
+// merging in auto-detected default coding servers (GitHub, PostgreSQL, SQLite,
+// filesystem) based on environment variables.
+func resolveMCPConfigWithDefaults(doc state.ConfigDoc, workspaceDir string) mcppkg.Config {
+	defaults := mcppkg.DefaultCodingServers(mcppkg.DefaultServerOpts{
+		WorkspaceDir: workspaceDir,
+	})
+	return mcppkg.ResolveConfigDocWithDefaults(doc, defaults)
 }

@@ -142,6 +142,18 @@ func ParseMCPConfig(extra map[string]any) Config {
 	return resolveSourceConfigsWithPolicy(parseMCPPolicy(extra), parseExtraMCPSource(extra))
 }
 
+// ResolveConfigDocWithDefaults returns the canonical resolved MCP inventory
+// for a runtime configuration document, merged with additional default source
+// configs. User config (from Extra["mcp"]) takes higher precedence than
+// defaults thanks to source precedence ordering.
+func ResolveConfigDocWithDefaults(doc state.ConfigDoc, defaults ...SourceConfig) Config {
+	policy := parseMCPPolicy(doc.Extra)
+	sources := make([]SourceConfig, 0, 1+len(defaults))
+	sources = append(sources, parseExtraMCPSource(doc.Extra))
+	sources = append(sources, defaults...)
+	return resolveSourceConfigsWithPolicy(policy, sources...)
+}
+
 // ResolveSourceConfigs merges source-local MCP definitions into one resolved
 // inventory. Higher-precedence sources win. Ties are broken deterministically
 // by source name then server name. Disabled servers are preserved separately so
