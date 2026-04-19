@@ -41,13 +41,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&SlackPlugin{})
-}
 
 // SlackPlugin is the factory for Slack Bot channel instances.
 type SlackPlugin struct{}

@@ -43,13 +43,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&SynologyPlugin{})
-}
 
 // SynologyPlugin is the factory for Synology Chat channel instances.
 type SynologyPlugin struct{}

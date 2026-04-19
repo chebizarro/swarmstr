@@ -45,13 +45,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&IRCPlugin{})
-}
 
 // IRCPlugin is the factory for IRC channel instances.
 type IRCPlugin struct{}

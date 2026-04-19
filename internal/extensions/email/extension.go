@@ -34,13 +34,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&EmailPlugin{})
-}
 
 // EmailPlugin is the factory for Email channel instances.
 type EmailPlugin struct{}

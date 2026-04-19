@@ -70,26 +70,9 @@ import (
 	"metiq/internal/sandbox"
 	"metiq/internal/webui"
 
-	// Built-in channel extensions. Importing these packages registers their
-	// ChannelPlugin implementations with the global channel plugin registry.
-	_ "metiq/internal/extensions/bluebubbles"
-	_ "metiq/internal/extensions/discord"
-	_ "metiq/internal/extensions/email"
-	_ "metiq/internal/extensions/feishu"
-	_ "metiq/internal/extensions/googlechat"
-	_ "metiq/internal/extensions/irc"
-	_ "metiq/internal/extensions/line"
-	_ "metiq/internal/extensions/matrix"
-	_ "metiq/internal/extensions/mattermost"
-	_ "metiq/internal/extensions/msteams"
-	_ "metiq/internal/extensions/nextcloud"
-	_ "metiq/internal/extensions/signal"
-	_ "metiq/internal/extensions/slack"
-	_ "metiq/internal/extensions/synology"
-	_ "metiq/internal/extensions/telegram"
-	_ "metiq/internal/extensions/twitch"
-	_ "metiq/internal/extensions/whatsapp"
-	_ "metiq/internal/extensions/zalo"
+	// Built-in channel extensions — registered on demand by
+	// extensions.RegisterConfigured() based on the live config.
+	"metiq/internal/extensions"
 )
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
@@ -4785,6 +4768,11 @@ func main() {
 		if chanCfg.Kind != "" {
 			channelPlatforms[chID] = chanCfg.Kind
 		}
+	}
+
+	// Register only the channel plugins that match configured nostr_channels entries.
+	if n := extensions.RegisterConfigured(configState.Get()); n > 0 {
+		log.Printf("%d channel plugin(s) registered from config", n)
 	}
 
 	extensionResults, err := channels.ConnectExtensions(ctx, configState.Get(), func(msg sdk.InboundChannelMessage) {

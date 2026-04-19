@@ -33,13 +33,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&BlueBubblesPlugin{})
-}
 
 // BlueBubblesPlugin is the factory for BlueBubbles channel instances.
 type BlueBubblesPlugin struct{}

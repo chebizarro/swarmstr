@@ -54,13 +54,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&GoogleChatPlugin{})
-}
 
 // GoogleChatPlugin is the factory for Google Chat channel instances.
 type GoogleChatPlugin struct{}

@@ -39,7 +39,6 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -52,10 +51,6 @@ const (
 
 var twitchDialTLS = func(addr string, cfg *tls.Config) (net.Conn, error) {
 	return tls.DialWithDialer(&net.Dialer{Timeout: 15 * time.Second}, "tcp", addr, cfg)
-}
-
-func init() {
-	channels.RegisterChannelPlugin(&TwitchPlugin{})
 }
 
 // TwitchPlugin is the factory for Twitch chat channel instances.

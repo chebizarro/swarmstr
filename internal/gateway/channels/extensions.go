@@ -1,16 +1,15 @@
 // Package channels — extension registry for channel plugins.
 //
-// Built-in channel extensions (telegram, discord, etc.) register themselves via
-// RegisterChannelPlugin() in their package init() functions. The daemon wires
-// the registry into the DM bus on startup.
+// Channel plugins are registered on demand by extensions.RegisterConfigured(),
+// which reads the live config and only instantiates plugins whose kind matches
+// a configured nostr_channels entry.  ConnectExtensions() then connects each
+// registered plugin.
 //
 // Plugin registration flow:
 //
-//	1. Extension package init() calls RegisterChannelPlugin(plugin).
-//	2. Daemon's main.go blank-imports the extension packages.
-//	3. startChannelExtensions() is called during startup; it reads the live
-//	   config, finds any nostr_channels entries whose "kind" matches a
-//	   registered plugin ID, and calls plugin.Connect() for each.
+//	1. extensions.RegisterConfigured(cfg) scans nostr_channels for configured kinds.
+//	2. For each matching kind, it calls RegisterChannelPlugin(plugin).
+//	3. ConnectExtensions() iterates registered plugins and calls plugin.Connect().
 //	4. Messages from connected channels are forwarded to the DM bus via the
 //	   onMessage callback.
 
@@ -35,7 +34,7 @@ var (
 )
 
 // RegisterChannelPlugin adds a ChannelPlugin to the global registry.
-// Call this from an extension's init() function.
+// Called by extensions.RegisterConfigured for each configured channel kind.
 // Panics if a plugin with the same ID has already been registered.
 func RegisterChannelPlugin(p sdk.ChannelPlugin) {
 	pluginMu.Lock()
@@ -45,7 +44,6 @@ func RegisterChannelPlugin(p sdk.ChannelPlugin) {
 	}
 	pluginsByID[p.ID()] = p
 	pluginOrder = append(pluginOrder, p.ID())
-	log.Printf("channel plugin registered: %s (%s)", p.ID(), p.Type())
 }
 
 // ListChannelPlugins returns all registered channel plugins in registration order.

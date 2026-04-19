@@ -40,13 +40,8 @@ import (
 	"sync"
 	"time"
 
-	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
-
-func init() {
-	channels.RegisterChannelPlugin(&TelegramPlugin{})
-}
 
 var newTelegramHTTPClient = func(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout}
