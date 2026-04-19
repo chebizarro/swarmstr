@@ -623,6 +623,11 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 				ac.Heartbeat.Model = strings.TrimSpace(v)
 			}
 		}
+		if v, ok := toInt(m["context_window"]); ok {
+			ac.ContextWindow = v
+		} else if v, ok := toInt(m["contextWindow"]); ok {
+			ac.ContextWindow = v
+		}
 		if v, ok := toInt(m["max_context_tokens"]); ok {
 			ac.MaxContextTokens = v
 		} else if v, ok := toInt(m["maxContextTokens"]); ok {

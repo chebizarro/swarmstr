@@ -45,6 +45,35 @@ func TestParseConfigBytesAgentHeartbeatModel(t *testing.T) {
 	}
 }
 
+func TestParseConfigBytesAgentContextWindow(t *testing.T) {
+	doc, err := ParseConfigBytes([]byte(`{"agents":[{"id":"local","model":"phi-3-mini.gguf","context_window":4096,"max_context_tokens":3000}]}`), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	if len(doc.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(doc.Agents))
+	}
+	if doc.Agents[0].ContextWindow != 4096 {
+		t.Fatalf("expected context_window=4096, got %d", doc.Agents[0].ContextWindow)
+	}
+	if doc.Agents[0].MaxContextTokens != 3000 {
+		t.Fatalf("expected max_context_tokens=3000, got %d", doc.Agents[0].MaxContextTokens)
+	}
+}
+
+func TestParseConfigBytesAgentContextWindowCamelCase(t *testing.T) {
+	doc, err := ParseConfigBytes([]byte(`{"agents":[{"id":"local","model":"gemma.gguf","contextWindow":8192}]}`), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	if len(doc.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(doc.Agents))
+	}
+	if doc.Agents[0].ContextWindow != 8192 {
+		t.Fatalf("expected contextWindow=8192, got %d", doc.Agents[0].ContextWindow)
+	}
+}
+
 func TestParseConfigBytesOpenClawDefaultHeartbeatEvery(t *testing.T) {
 	doc, err := ParseConfigBytes([]byte(`{"agents":{"defaults":{"heartbeat":{"every":"2h"}}}}`), ".json")
 	if err != nil {
