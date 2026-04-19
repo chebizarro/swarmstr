@@ -3443,6 +3443,88 @@ func TestIngestTrackerSameSecondEventDedupUsesExplicitIDs(t *testing.T) {
 	}
 }
 
+func TestCheckpointAdvanceStateAdvancesTimestamp(t *testing.T) {
+	// Starting state: lastUnix=100 with one event at that second.
+	lastEvent, lastUnix, recent := checkpointAdvanceState("evt-a", 100, []string{"evt-a"}, "evt-b", 200)
+	if lastUnix != 200 {
+		t.Fatalf("lastUnix not advanced: got %d, want 200", lastUnix)
+	}
+	if lastEvent != "evt-b" {
+		t.Fatalf("lastEvent = %q, want evt-b", lastEvent)
+	}
+	// New second should start fresh — old event IDs from second 100 are gone.
+	if len(recent) != 1 || recent[0] != "evt-b" {
+		t.Fatalf("recentEventIDs = %v, want [evt-b]", recent)
+	}
+}
+
+func TestCheckpointAdvanceStateSameSecondAccumulates(t *testing.T) {
+	lastEvent, lastUnix, recent := checkpointAdvanceState("evt-a", 100, []string{"evt-a"}, "evt-b", 100)
+	if lastUnix != 100 {
+		t.Fatalf("lastUnix changed: got %d, want 100", lastUnix)
+	}
+	if lastEvent != "evt-b" {
+		t.Fatalf("lastEvent = %q, want evt-b", lastEvent)
+	}
+	if len(recent) != 2 || recent[0] != "evt-a" || recent[1] != "evt-b" {
+		t.Fatalf("recentEventIDs = %v, want [evt-a, evt-b]", recent)
+	}
+}
+
+func TestCheckpointAdvanceStateIgnoresOlderEvents(t *testing.T) {
+	lastEvent, lastUnix, recent := checkpointAdvanceState("evt-a", 200, []string{"evt-a"}, "evt-old", 100)
+	if lastUnix != 200 {
+		t.Fatalf("lastUnix changed: got %d, want 200", lastUnix)
+	}
+	if lastEvent != "evt-a" {
+		t.Fatalf("lastEvent changed: got %q, want evt-a", lastEvent)
+	}
+	if len(recent) != 1 || recent[0] != "evt-a" {
+		t.Fatalf("recentEventIDs changed: %v", recent)
+	}
+}
+
+func TestCheckpointAdvanceStateDedupsSameSecondEvents(t *testing.T) {
+	lastEvent, lastUnix, recent := checkpointAdvanceState("evt-a", 100, []string{"evt-a"}, "evt-a", 100)
+	// Duplicate event at same second — state unchanged.
+	if lastUnix != 100 || lastEvent != "evt-a" || len(recent) != 1 {
+		t.Fatalf("state changed on duplicate: lastEvent=%q lastUnix=%d recent=%v", lastEvent, lastUnix, recent)
+	}
+}
+
+func TestIngestTrackerAdvancedTimestampSurvivesRestart(t *testing.T) {
+	// Simulate: process an event, then "restart" with the resulting checkpoint.
+	tracker := newIngestTracker(state.CheckpointDoc{LastUnix: 100, RecentEventIDs: []string{}})
+	// First event at second 200 — should NOT be seen as processed.
+	if tracker.AlreadyProcessed("evt-new", 200) {
+		t.Fatal("new event at future second should not be already processed")
+	}
+	// Mark it processed — this advances lastUnix to 200.
+	tracker.mu.Lock()
+	tracker.lastEvent, tracker.lastUnix, tracker.recentEventIDs = checkpointAdvanceState(
+		tracker.lastEvent, tracker.lastUnix, tracker.recentEventIDs, "evt-new", 200)
+	tracker.mu.Unlock()
+
+	// Simulate restart: create a new tracker from the current state (as if loaded from checkpoint).
+	restarted := newIngestTracker(state.CheckpointDoc{
+		LastUnix:       tracker.lastUnix,
+		LastEvent:      tracker.lastEvent,
+		RecentEventIDs: tracker.recentEventIDs,
+	})
+	// The same event should now be caught as already processed.
+	if !restarted.AlreadyProcessed("evt-new", 200) {
+		t.Fatal("event at lastUnix should be caught via recentEventIDs after restart")
+	}
+	// An older event should also be caught.
+	if !restarted.AlreadyProcessed("evt-older", 150) {
+		t.Fatal("event older than lastUnix should be caught after restart")
+	}
+	// A newer event should NOT be caught.
+	if restarted.AlreadyProcessed("evt-future", 300) {
+		t.Fatal("event newer than lastUnix should not be caught")
+	}
+}
+
 func newTestStore() *testStore {
 	return &testStore{replaceable: map[string]state.Event{}}
 }

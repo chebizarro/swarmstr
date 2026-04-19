@@ -45,7 +45,6 @@ import (
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
 	"metiq/internal/nostr/dvm"
-	"metiq/internal/nostr/events"
 	"metiq/internal/nostr/nip38"
 	"metiq/internal/nostr/nip51"
 	nostruntime "metiq/internal/nostr/runtime"
@@ -278,19 +277,13 @@ func defaultBootstrapWatchSpecs(sessionID, selfPubKey string, now time.Time) []t
 	const defaultTTLSeconds = 365 * 24 * 60 * 60
 	createdAt := now.Unix()
 	deadline := now.Add(time.Duration(defaultTTLSeconds) * time.Second).Unix()
+	// NOTE: gift-wrapped DMs (kind 1059) are intentionally NOT included here.
+	// NIP17Bus already subscribes to kind 1059, properly unwraps the gift wrap
+	// via NIP-59, and delivers the plaintext rumor through dmOnMessage with a
+	// working reply function.  A watch spec for kind 1059 would deliver RAW
+	// encrypted events the agent cannot decrypt, with no reply path, wasting
+	// tokens on encrypted noise.
 	return []toolbuiltin.WatchSpec{
-		{
-			Name:      "gift-wrapped-dms",
-			SessionID: sessionID,
-			FilterRaw: map[string]any{
-				"kinds": []any{float64(events.KindGiftWrap)},
-				"tag_p": []any{selfPubKey},
-			},
-			TTLSec:    defaultTTLSeconds,
-			MaxEvents: 0,
-			CreatedAt: createdAt,
-			Deadline:  deadline,
-		},
 		{
 			Name:      "social-mentions",
 			SessionID: sessionID,
@@ -3887,6 +3880,7 @@ func main() {
 
 	nip17bus, nip17err := nostruntime.StartNIP17Bus(ctx, nostruntime.NIP17BusOptions{
 		Keyer:     controlKeyer,
+		Hub:       controlHub,
 		Relays:    cfg.Relays,
 		SinceUnix: checkpointSinceUnix(checkpoint.LastUnix),
 		OnMessage: dmOnMessage,
@@ -6283,6 +6277,14 @@ func checkpointAdvanceState(lastEvent string, lastUnix int64, recentEventIDs []s
 	if eventUnix < lastUnix {
 		return lastEvent, lastUnix, recentEventIDs
 	}
+	if eventUnix > lastUnix {
+		// New second — advance timestamp and start a fresh event ID list.
+		// Events from prior seconds are already covered by the
+		// createdAt < lastUnix check in AlreadyProcessed, so we don't
+		// need to carry old IDs forward.
+		return eventID, eventUnix, []string{eventID}
+	}
+	// Same second (eventUnix == lastUnix) — accumulate event IDs.
 	if checkpointEventSeen(recentEventIDs, eventID) {
 		return lastEvent, lastUnix, recentEventIDs
 	}
@@ -6290,7 +6292,7 @@ func checkpointAdvanceState(lastEvent string, lastUnix int64, recentEventIDs []s
 	if len(updated) > checkpointRecentEventCap {
 		updated = updated[len(updated)-checkpointRecentEventCap:]
 	}
-	return eventID, lastUnix, updated
+	return eventID, eventUnix, updated
 }
 
 func isCacheableControlMethod(method string) bool {

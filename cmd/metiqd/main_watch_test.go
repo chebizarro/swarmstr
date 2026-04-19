@@ -47,23 +47,28 @@ func TestNostrWatchDeliveryMetaNamespacesByWatchName(t *testing.T) {
 func TestDefaultBootstrapWatchSpecs(t *testing.T) {
 	now := time.Date(2026, time.March, 29, 5, 45, 0, 0, time.UTC)
 	specs := defaultBootstrapWatchSpecs("session-self", "pubkey-self", now)
-	if len(specs) != 3 {
-		t.Fatalf("expected 3 default specs, got %d", len(specs))
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 default specs, got %d", len(specs))
 	}
-	if specs[0].Name != "gift-wrapped-dms" || specs[1].Name != "social-mentions" || specs[2].Name != "direct-mentions" {
+	// gift-wrapped-dms is intentionally absent — NIP17Bus handles kind 1059
+	// events directly with proper unwrapping; a watch would deliver raw
+	// encrypted noise.
+	if specs[0].Name != "social-mentions" || specs[1].Name != "direct-mentions" {
 		t.Fatalf("unexpected watch names: %#v", specs)
 	}
-	if got := specs[0].FilterRaw["tag_p"].([]any)[0]; got != "pubkey-self" {
-		t.Fatalf("expected gift-wrapped-dms tag_p self pubkey, got %#v", specs[0].FilterRaw)
+	if got := specs[0].FilterRaw["tag_e"].([]any)[0]; got != "pubkey-self" {
+		t.Fatalf("expected social-mentions tag_e self pubkey, got %#v", specs[0].FilterRaw)
 	}
-	if got := specs[1].FilterRaw["tag_e"].([]any)[0]; got != "pubkey-self" {
-		t.Fatalf("expected social-mentions tag_e self pubkey, got %#v", specs[1].FilterRaw)
+	if got := specs[1].FilterRaw["tag_p"].([]any)[0]; got != "pubkey-self" {
+		t.Fatalf("expected direct-mentions tag_p self pubkey, got %#v", specs[1].FilterRaw)
 	}
-	if got := specs[2].FilterRaw["tag_p"].([]any)[0]; got != "pubkey-self" {
-		t.Fatalf("expected direct-mentions tag_p self pubkey, got %#v", specs[2].FilterRaw)
-	}
-	if specs[0].MaxEvents != 0 || specs[1].MaxEvents != 0 || specs[2].MaxEvents != 0 {
+	if specs[0].MaxEvents != 0 || specs[1].MaxEvents != 0 {
 		t.Fatalf("expected bootstrap watches to be unlimited, got %#v", specs)
+	}
+	for _, s := range specs {
+		if s.Name == "gift-wrapped-dms" {
+			t.Fatal("gift-wrapped-dms should not be in default bootstrap specs")
+		}
 	}
 }
 
@@ -76,8 +81,8 @@ func TestLoadOrDefaultWatchSpecsUsesDefaultsWhenEmpty(t *testing.T) {
 	if !bootstrapped {
 		t.Fatal("expected empty state to bootstrap defaults")
 	}
-	if len(specs) != 3 {
-		t.Fatalf("expected 3 default specs, got %d", len(specs))
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 default specs, got %d", len(specs))
 	}
 }
 
