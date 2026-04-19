@@ -7425,6 +7425,12 @@ func resolveModelProviderOverride(cfg state.ConfigDoc, agCfg state.AgentConfig, 
 }
 
 func buildProviderForAgentModel(cfg state.ConfigDoc, agCfg state.AgentConfig, model string) (agent.Provider, error) {
+	// Early check: if the agent explicitly names a provider, it must exist in config.
+	if provName := strings.TrimSpace(agCfg.Provider); provName != "" {
+		if _, ok := cfg.Providers[provName]; !ok {
+			return nil, fmt.Errorf("provider %q not found in providers config — add a [providers.%s] entry with base_url pointing to your inference server", provName, provName)
+		}
+	}
 	override := resolveModelProviderOverride(cfg, agCfg, model)
 	return agent.BuildProviderWithOverride(strings.TrimSpace(model), override)
 }

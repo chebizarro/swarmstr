@@ -640,7 +640,11 @@ func NewProviderForModel(model string) (Provider, error) {
 			Model:   strings.TrimSpace(model),
 		}, nil
 	}
-	return nil, fmt.Errorf("unsupported model %q — try: echo, claude-*, gpt-*, gemini-*, grok-*, groq/*, mistral-*, together/*, openrouter/*, cohere/command-*, ollama/*, or http", model)
+	// Provide a targeted hint for local model files (.gguf, .bin, etc.).
+	if strings.HasSuffix(norm, ".gguf") || strings.HasSuffix(norm, ".bin") {
+		return nil, fmt.Errorf("unsupported model %q — local model files require a provider config entry with base_url (e.g. ollama/%s or add [providers.my-local] with base_url)", model, model)
+	}
+	return nil, fmt.Errorf("unsupported model %q — try: echo, claude-*, gpt-*, gemini-*, grok-*, groq/*, mistral-*, together/*, openrouter/*, cohere/command-*, ollama/*, lmstudio/*, or http; for custom servers add a provider with base_url", model)
 }
 
 // ─── Cohere provider ──────────────────────────────────────────────────────────
