@@ -468,10 +468,12 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 	}
 	// Only process kind 14 (NIP-17 DM rumor).
 	if rumor.Kind != nostr.KindDirectMessage {
+		log.Printf("nip17: skipping non-DM rumor kind=%d from=%s", rumor.Kind, rumor.PubKey.Hex())
 		return
 	}
 	// Skip self-sent (sent-to-self copy we stored).
 	if rumor.PubKey == b.public {
+		log.Printf("nip17: skipping self-sent rumor event=%s", rumor.ID.Hex())
 		return
 	}
 
@@ -503,6 +505,9 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 			return b.SendDM(ctx, senderPubkey.Hex(), reply)
 		},
 	}
+
+	log.Printf("nip17: rumor received event=%s from=%s kind=%d created_at=%d",
+		eventID, senderPubkey.Hex(), rumor.Kind, rumor.CreatedAt)
 
 	select {
 	case b.messageQueue <- msg:
