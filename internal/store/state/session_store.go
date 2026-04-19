@@ -30,6 +30,7 @@ type SessionEntry struct {
 	SpawnedWorkspace              string               `json:"spawned_workspace_dir,omitempty"`
 	ForkedFromParent              bool                 `json:"forked_from_parent,omitempty"`
 	CompactionCount               int64                `json:"compaction_count,omitempty"`
+	CompactionCheckpoints         []CompactionCheckpointRef `json:"compaction_checkpoints,omitempty"`
 	MemoryFlushAt                 int64                `json:"memory_flush_at,omitempty"`
 	MemoryFlushCount              int64                `json:"memory_flush_compaction_count,omitempty"`
 	SessionMemoryFile             string               `json:"session_memory_file,omitempty"`
@@ -173,6 +174,25 @@ type MemoryRecallFileHit struct {
 	UpdatedAtUnix int64    `json:"updated_at_unix,omitempty"`
 	Score         int      `json:"score,omitempty"`
 	Truncated     bool     `json:"truncated,omitempty"`
+}
+
+// CompactionCheckpointRef is a lightweight record of a compaction checkpoint
+// stored inline in the session entry.  It mirrors the wire format of
+// checkpoint.Checkpoint so the two can be converted without import cycles.
+type CompactionCheckpointRef struct {
+	CheckpointID   string         `json:"checkpoint_id"`
+	SessionKey     string         `json:"session_key"`
+	SessionID      string         `json:"session_id"`
+	CreatedAt      int64          `json:"created_at"`
+	Reason         string         `json:"reason"`
+	TokensBefore   int            `json:"tokens_before,omitempty"`
+	TokensAfter    int            `json:"tokens_after,omitempty"`
+	Summary        string         `json:"summary,omitempty"`
+	FirstKeptEntry string         `json:"first_kept_entry_id,omitempty"`
+	DroppedEntries int            `json:"dropped_entries,omitempty"`
+	KeptEntries    int            `json:"kept_entries,omitempty"`
+	PreCompaction  map[string]any `json:"pre_compaction,omitempty"`
+	PostCompaction map[string]any `json:"post_compaction,omitempty"`
 }
 
 // CarryOverFlags returns a new SessionEntry that inherits the flag-based
