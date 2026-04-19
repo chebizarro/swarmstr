@@ -2,7 +2,7 @@
 // Matrix Client-Server API.
 //
 // Registration: import _ "metiq/internal/extensions/matrix" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -52,6 +52,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("matrix", func() sdk.ChannelPlugin { return &MatrixPlugin{} })
+}
 
 // MatrixPlugin is the factory for Matrix channel instances.
 type MatrixPlugin struct{}

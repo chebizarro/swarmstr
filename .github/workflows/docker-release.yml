@@ -161,7 +161,7 @@ jobs:
         run: |
           go build \
             -trimpath \
-            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ github.sha }}" \
             -o "metiqd-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext || '' }}" \
             ./cmd/metiqd
 
@@ -173,7 +173,7 @@ jobs:
         run: |
           go build \
             -trimpath \
-            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ github.sha }}" \
             -o "metiq-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext || '' }}" \
             ./cmd/metiq
 

@@ -38,6 +38,7 @@ ARG NODE_IMAGE="node:24-bookworm-slim@sha256:879b21aec4a1ad820c27ccd565e7c7ed955
 FROM ${GOLANG_IMAGE} AS builder
 
 ARG VERSION
+ARG COMMIT
 # TARGETOS / TARGETARCH are set automatically by buildx.
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
@@ -56,12 +57,12 @@ COPY . .
 RUN --mount=type=cache,id=metiq-gobuild,target=/root/.cache/go-build,sharing=locked \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -trimpath \
-      -ldflags="-s -w -X main.version=${VERSION}" \
+      -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
       -o /out/metiqd \
       ./cmd/metiqd && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -trimpath \
-      -ldflags="-s -w -X main.version=${VERSION}" \
+      -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
       -o /out/metiq \
       ./cmd/metiq
 

@@ -1,7 +1,7 @@
 // Package slack implements a Slack Bot channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/slack" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -43,6 +43,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("slack", func() sdk.ChannelPlugin { return &SlackPlugin{} })
+}
 
 // SlackPlugin is the factory for Slack Bot channel instances.
 type SlackPlugin struct{}

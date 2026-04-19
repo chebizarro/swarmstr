@@ -4,7 +4,7 @@
 // works with both using the open.feishu.cn / open.larksuite.com API.
 //
 // Registration: import _ "metiq/internal/extensions/feishu" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -40,6 +40,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("feishu", func() sdk.ChannelPlugin { return &FeishuPlugin{} })
+}
 
 // FeishuPlugin is the factory for Feishu/Lark channel instances.
 type FeishuPlugin struct{}

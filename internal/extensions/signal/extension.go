@@ -6,7 +6,7 @@
 // bbernhard/signal-cli-rest-api (https://github.com/bbernhard/signal-cli-rest-api).
 //
 // Registration: import _ "metiq/internal/extensions/signal" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -44,6 +44,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("signal", func() sdk.ChannelPlugin { return &SignalPlugin{} })
+}
 
 // SignalPlugin is the factory for Signal channel instances.
 type SignalPlugin struct{}

@@ -1,7 +1,7 @@
 // Package telegram implements a Telegram Bot channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/telegram" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -42,6 +42,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("telegram", func() sdk.ChannelPlugin { return &TelegramPlugin{} })
+}
 
 var newTelegramHTTPClient = func(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout}

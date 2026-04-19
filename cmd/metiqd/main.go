@@ -72,14 +72,38 @@ import (
 	"metiq/internal/sandbox"
 	"metiq/internal/webui"
 
-	// Built-in channel extensions — registered on demand by
-	// extensions.RegisterConfigured() based on the live config.
+	// Built-in channel extensions — each init() registers a lightweight
+	// constructor; no plugin instances are created until
+	// extensions.RegisterConfigured() matches them against the live config.
+	// Remove an import to exclude that extension from the binary entirely.
 	"metiq/internal/extensions"
+	_ "metiq/internal/extensions/bluebubbles"
+	_ "metiq/internal/extensions/discord"
+	_ "metiq/internal/extensions/email"
+	_ "metiq/internal/extensions/feishu"
+	_ "metiq/internal/extensions/googlechat"
+	_ "metiq/internal/extensions/irc"
+	_ "metiq/internal/extensions/line"
+	_ "metiq/internal/extensions/matrix"
+	_ "metiq/internal/extensions/mattermost"
+	_ "metiq/internal/extensions/msteams"
+	_ "metiq/internal/extensions/nextcloud"
+	_ "metiq/internal/extensions/signal"
+	_ "metiq/internal/extensions/slack"
+	_ "metiq/internal/extensions/synology"
+	_ "metiq/internal/extensions/telegram"
+	_ "metiq/internal/extensions/twitch"
+	_ "metiq/internal/extensions/whatsapp"
+	_ "metiq/internal/extensions/zalo"
 )
 
-// version is set at build time via -ldflags "-X main.version=<tag>".
-// It defaults to "0.0.0-dev" for local builds.
-var version = "0.0.0-dev"
+// version and commit are set at build time via -ldflags:
+//   -X main.version=<tag> -X main.commit=<sha>
+// They default to dev values for local builds.
+var (
+	version = "0.0.0-dev"
+	commit  = "unknown"
+)
 
 // controlUpdateChecker is the shared version checker; initialised in main().
 var controlUpdateChecker *update.Checker
@@ -308,6 +332,8 @@ func loadOrDefaultWatchSpecs(raw json.RawMessage, sessionID, selfPubKey string, 
 }
 
 func main() {
+	log.Printf("metiqd starting version=%s commit=%s", version, commit)
+
 	var bootstrapPath string
 	var configFilePath string
 	var adminAddr string
@@ -4761,9 +4787,9 @@ func main() {
 	}
 
 	// Register only the channel plugins that match configured nostr_channels entries.
-	if n := extensions.RegisterConfigured(configState.Get()); n > 0 {
-		log.Printf("%d channel plugin(s) registered from config", n)
-	}
+	availableKinds := extensions.AvailableKinds()
+	n := extensions.RegisterConfigured(configState.Get())
+	log.Printf("channel extensions: %d available, %d registered from config", len(availableKinds), n)
 
 	extensionResults, err := channels.ConnectExtensions(ctx, configState.Get(), func(msg sdk.InboundChannelMessage) {
 		// Per-channel allow-from check for extension channels.

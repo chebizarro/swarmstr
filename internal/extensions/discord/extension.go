@@ -1,7 +1,7 @@
 // Package discord implements a Discord Bot channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/discord" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -42,6 +42,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("discord", func() sdk.ChannelPlugin { return &DiscordPlugin{} })
+}
 
 // DiscordPlugin is the factory for Discord Bot channel instances.
 type DiscordPlugin struct{}

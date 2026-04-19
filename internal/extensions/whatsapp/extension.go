@@ -1,7 +1,7 @@
 // Package whatsapp implements a WhatsApp Business channel extension for metiq.
 //
 // Registration: import _ "metiq/internal/extensions/whatsapp" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // This extension uses the Meta (Facebook) Graph API for WhatsApp Business.
 // Inbound messages are received via the admin HTTP server at
@@ -49,6 +49,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("whatsapp", func() sdk.ChannelPlugin { return &WhatsAppPlugin{} })
+}
 
 // WhatsAppPlugin is the factory for WhatsApp Business channel instances.
 type WhatsAppPlugin struct{}

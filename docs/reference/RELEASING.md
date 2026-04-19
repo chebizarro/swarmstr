@@ -84,10 +84,10 @@ To build binaries locally (matching CI flags):
 
 ```bash
 # Daemon
-go build -trimpath -ldflags="-s -w -X main.version=v2026.03.10" -o metiqd ./cmd/metiqd
+go build -trimpath -ldflags="-s -w -X main.version=v2026.03.10 -X main.commit=$(git rev-parse --short HEAD)" -o metiqd ./cmd/metiqd
 
 # CLI
-go build -trimpath -ldflags="-s -w -X main.version=v2026.03.10" -o metiq ./cmd/metiq
+go build -trimpath -ldflags="-s -w -X main.version=v2026.03.10 -X main.commit=$(git rev-parse --short HEAD)" -o metiq ./cmd/metiq
 
 # Cross-compile (e.g. Linux arm64 from macOS)
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o metiqd-linux-arm64 ./cmd/metiqd

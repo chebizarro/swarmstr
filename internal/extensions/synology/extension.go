@@ -5,7 +5,7 @@
 // Outbound messages are POSTed to the Synology Chat webhook_url.
 //
 // Registration: import _ "metiq/internal/extensions/synology" in the daemon
-// main.go to register this plugin at startup.
+// main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -45,6 +45,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("synology-chat", func() sdk.ChannelPlugin { return &SynologyPlugin{} })
+}
 
 // SynologyPlugin is the factory for Synology Chat channel instances.
 type SynologyPlugin struct{}

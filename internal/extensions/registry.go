@@ -1,58 +1,23 @@
-// Package extensions provides a central registry of all built-in channel
-// plugin constructors.  Instead of each extension self-registering via init(),
-// callers use RegisterConfigured to register only the plugins that match
-// entries in the live config — avoiding noisy startup logs and unnecessary
-// allocations when no channels are configured.
+// Package extensions provides config-gated registration of built-in channel
+// plugins.  Each extension package self-registers a lightweight constructor
+// via sdk.RegisterChannelConstructor in its init().  RegisterConfigured reads
+// the live config and only instantiates plugins whose kind matches a
+// configured nostr_channels entry.
+//
+// To include an extension in the binary, add a blank import in the daemon's
+// main.go (or in extensions/all.go):
+//
+//	import _ "metiq/internal/extensions/telegram"
+//
+// To exclude an extension, remove its import.  No code from excluded
+// extensions is compiled into the binary.
 package extensions
 
 import (
-	"metiq/internal/extensions/bluebubbles"
-	"metiq/internal/extensions/discord"
-	"metiq/internal/extensions/email"
-	"metiq/internal/extensions/feishu"
-	"metiq/internal/extensions/googlechat"
-	"metiq/internal/extensions/irc"
-	"metiq/internal/extensions/line"
-	"metiq/internal/extensions/matrix"
-	"metiq/internal/extensions/mattermost"
-	"metiq/internal/extensions/msteams"
-	"metiq/internal/extensions/nextcloud"
-	"metiq/internal/extensions/signal"
-	"metiq/internal/extensions/slack"
-	"metiq/internal/extensions/synology"
-	"metiq/internal/extensions/telegram"
-	"metiq/internal/extensions/twitch"
-	"metiq/internal/extensions/whatsapp"
-	"metiq/internal/extensions/zalo"
-
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 	"metiq/internal/store/state"
 )
-
-// constructors maps plugin kind IDs to factory functions that create a fresh
-// ChannelPlugin instance.  The factories are invoked lazily — only when the
-// kind appears in the live config.
-var constructors = map[string]func() sdk.ChannelPlugin{
-	"bluebubbles":   func() sdk.ChannelPlugin { return &bluebubbles.BlueBubblesPlugin{} },
-	"discord":       func() sdk.ChannelPlugin { return &discord.DiscordPlugin{} },
-	"email":         func() sdk.ChannelPlugin { return &email.EmailPlugin{} },
-	"feishu":        func() sdk.ChannelPlugin { return &feishu.FeishuPlugin{} },
-	"googlechat":    func() sdk.ChannelPlugin { return &googlechat.GoogleChatPlugin{} },
-	"irc":           func() sdk.ChannelPlugin { return &irc.IRCPlugin{} },
-	"line":          func() sdk.ChannelPlugin { return &line.LINEPlugin{} },
-	"matrix":        func() sdk.ChannelPlugin { return &matrix.MatrixPlugin{} },
-	"mattermost":    func() sdk.ChannelPlugin { return &mattermost.MattermostPlugin{} },
-	"msteams":       func() sdk.ChannelPlugin { return &msteams.MSTeamsPlugin{} },
-	"nextcloud-talk": func() sdk.ChannelPlugin { return &nextcloud.NextcloudPlugin{} },
-	"signal":        func() sdk.ChannelPlugin { return &signal.SignalPlugin{} },
-	"slack":         func() sdk.ChannelPlugin { return &slack.SlackPlugin{} },
-	"synology-chat": func() sdk.ChannelPlugin { return &synology.SynologyPlugin{} },
-	"telegram":      func() sdk.ChannelPlugin { return &telegram.TelegramPlugin{} },
-	"twitch":        func() sdk.ChannelPlugin { return &twitch.TwitchPlugin{} },
-	"whatsapp":      func() sdk.ChannelPlugin { return &whatsapp.WhatsAppPlugin{} },
-	"zalo":          func() sdk.ChannelPlugin { return &zalo.ZaloPlugin{} },
-}
 
 // RegisterConfigured inspects the config's NostrChannels and registers only
 // the channel plugins whose kind matches a configured entry.  Returns the
@@ -66,9 +31,10 @@ func RegisterConfigured(cfg state.ConfigDoc) int {
 		}
 	}
 
+	ctors := sdk.ChannelConstructors()
 	registered := 0
 	for kind := range needed {
-		ctor, ok := constructors[kind]
+		ctor, ok := ctors[kind]
 		if !ok {
 			continue // not a built-in extension (may be a JS plugin)
 		}
@@ -76,4 +42,15 @@ func RegisterConfigured(cfg state.ConfigDoc) int {
 		registered++
 	}
 	return registered
+}
+
+// AvailableKinds returns the set of built-in channel plugin kinds that have
+// been compiled into this binary (i.e. whose packages were imported).
+func AvailableKinds() []string {
+	ctors := sdk.ChannelConstructors()
+	kinds := make([]string, 0, len(ctors))
+	for k := range ctors {
+		kinds = append(kinds, k)
+	}
+	return kinds
 }

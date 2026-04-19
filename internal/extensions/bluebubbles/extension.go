@@ -5,7 +5,7 @@
 // real time and sends replies via the REST API.
 //
 // Registration: import _ "metiq/internal/extensions/bluebubbles" in the
-// daemon main.go to register this plugin at startup.
+// daemon main.go to include this plugin in the binary.
 //
 // Config schema (under nostr_channels.<name>.config):
 //
@@ -35,6 +35,10 @@ import (
 
 	"metiq/internal/plugins/sdk"
 )
+
+func init() {
+	sdk.RegisterChannelConstructor("bluebubbles", func() sdk.ChannelPlugin { return &BlueBubblesPlugin{} })
+}
 
 // BlueBubblesPlugin is the factory for BlueBubbles channel instances.
 type BlueBubblesPlugin struct{}
