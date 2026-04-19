@@ -971,6 +971,8 @@ func main() {
 	lspReg := toolbuiltin.NewLSPRegistry()
 	defer lspReg.Shutdown()
 	tools.RegisterWithDef("lsp_query", toolbuiltin.LSPQueryTool(lspReg, fsOpts), toolbuiltin.LSPQueryDef)
+	// Sandbox execution: compile & run code with isolation and resource limits.
+	tools.RegisterWithDef("sandbox_exec", toolbuiltin.SandboxExecTool(), toolbuiltin.SandboxExecDef)
 	// task queue: persistent structured work-item management.
 	{
 		home, _ := os.UserHomeDir()
