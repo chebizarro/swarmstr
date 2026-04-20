@@ -56,7 +56,7 @@ func ApplyConfigSet(cfg state.ConfigDoc, key string, value any) (state.ConfigDoc
 		}
 		mode, valid := state.ParseACPTransportMode(s)
 		if !valid {
-			return cfg, fmt.Errorf("acp.transport must be one of auto, nip17, nip04")
+			return cfg, fmt.Errorf("acp.transport must be one of auto, nip17, nip04, fips")
 		}
 		cfg.ACP.Transport = mode
 	case "agent.default_model":

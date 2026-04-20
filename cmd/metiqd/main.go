@@ -189,6 +189,10 @@ var (
 	controlACPPeers *acppkg.PeerRegistry
 	// controlACPDispatcher routes incoming ACP result DMs to waiting Dispatch() callers.
 	controlACPDispatcher *acppkg.Dispatcher
+	// controlTransportSelector is the FIPS-aware composite transport that routes
+	// messages through FIPS mesh or relay transports based on the configured
+	// preference. Nil when FIPS is not enabled.
+	controlTransportSelector *nostruntime.TransportSelector
 
 	// controlContextEngine is the shared pluggable context engine used to ingest
 	// and assemble conversation history for every agent session.

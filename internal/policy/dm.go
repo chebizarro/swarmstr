@@ -78,7 +78,7 @@ func ValidateConfig(cfg state.ConfigDoc) error {
 	}
 	if strings.TrimSpace(cfg.ACP.Transport) != "" {
 		if _, ok := state.ParseACPTransportMode(cfg.ACP.Transport); !ok {
-			return fmt.Errorf("acp.transport must be one of auto, nip17, nip04")
+			return fmt.Errorf("acp.transport must be one of auto, nip17, nip04, fips")
 		}
 	}
 	if len(cfg.Relays.Read) == 0 {

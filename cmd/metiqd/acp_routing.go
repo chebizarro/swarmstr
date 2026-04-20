@@ -34,6 +34,8 @@ func normalizeACPAdvertisedScheme(raw string) string {
 		return "nip04"
 	case "giftwrap", "nip17", "nip-17", "nip44", "nip-44", "nip59", "nip-59":
 		return "nip17"
+	case "fips":
+		return "fips"
 	default:
 		return ""
 	}
@@ -77,6 +79,10 @@ func currentACPTransportBus(mode string) nostruntime.DMTransport {
 		if _, ok := controlDMBus.(*nostruntime.DMBus); ok {
 			return controlDMBus
 		}
+	case "fips":
+		if controlTransportSelector != nil {
+			return controlTransportSelector
+		}
 	}
 	return nil
 }
@@ -92,12 +98,19 @@ func availableACPTransportModes(cfg state.ConfigDoc) map[string]struct{} {
 		if currentACPTransportBus("nip04") != nil {
 			out["nip04"] = struct{}{}
 		}
+	case "fips":
+		if currentACPTransportBus("fips") != nil {
+			out["fips"] = struct{}{}
+		}
 	default:
 		if currentACPTransportBus("nip17") != nil {
 			out["nip17"] = struct{}{}
 		}
 		if currentACPTransportBus("nip04") != nil {
 			out["nip04"] = struct{}{}
+		}
+		if currentACPTransportBus("fips") != nil {
+			out["fips"] = struct{}{}
 		}
 	}
 	if len(out) == 0 {
@@ -424,6 +437,17 @@ func resolveACPDMTransport(cfg state.ConfigDoc, targetPubKey string) (nostruntim
 			return nil, "", fmt.Errorf("ACP transport %s is configured but no local %s DM transport is available", configured, configured)
 		}
 		return bus, configured, nil
+	}
+	// Auto mode: try FIPS first if the TransportSelector is available and
+	// the peer advertises FIPS (or no capability info is available).
+	if controlTransportSelector != nil {
+		if len(remote) == 0 {
+			// No advertised schemes — TransportSelector handles fallback.
+			return controlTransportSelector, "auto", nil
+		}
+		if _, ok := remote["fips"]; ok {
+			return controlTransportSelector, "auto", nil
+		}
 	}
 	if len(remote) > 0 {
 		if _, ok := remote["nip17"]; ok {

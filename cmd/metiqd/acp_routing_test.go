@@ -21,6 +21,7 @@ func withACPRoutingTestState(t *testing.T, fn func()) {
 	prevNIP17 := controlNIP17Bus
 	prevNIP04 := controlNIP04Bus
 	prevToolRegistry := controlToolRegistry
+	prevSelector := controlTransportSelector
 	defer func() {
 		nip51FleetEntries = prevFleet
 		capabilityRegistry = prevRegistry
@@ -29,6 +30,7 @@ func withACPRoutingTestState(t *testing.T, fn func()) {
 		controlNIP17Bus = prevNIP17
 		controlNIP04Bus = prevNIP04
 		controlToolRegistry = prevToolRegistry
+		controlTransportSelector = prevSelector
 	}()
 	fn()
 }
@@ -289,6 +291,193 @@ func TestResolveACPDMTransportAutoPrefersNIP04ForUnknownPeers(t *testing.T) {
 		}
 		if _, ok := bus.(*nostruntime.DMBus); !ok {
 			t.Fatalf("bus type = %T, want *nostruntime.DMBus", bus)
+		}
+	})
+}
+
+// ── FIPS ACP routing tests ────────────────────────────────────────────────────
+
+func TestResolveACPDMTransportAutoUsesTransportSelectorForFIPSPeer(t *testing.T) {
+	withACPRoutingTestState(t, func() {
+		peerPubKey := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		capabilityRegistry = nostruntime.NewCapabilityRegistry()
+		capabilityRegistry.Set(nostruntime.CapabilityAnnouncement{
+			PubKey:      peerPubKey,
+			Runtime:     "metiq",
+			ACPVersion:  1,
+			DMSchemes:   []string{"nip17", "fips"},
+			FIPSEnabled: true,
+			CreatedAt:   10,
+			EventID:     "cap-fips",
+		})
+		controlNIP17Bus = &nostruntime.NIP17Bus{}
+		controlDMBus = controlNIP17Bus
+
+		// Create a TransportSelector with a mock FIPS + relay.
+		ts, err := nostruntime.NewTransportSelector(nostruntime.TransportSelectorOptions{
+			FIPS:  &nostruntime.FIPSTransport{},
+			Relay: controlNIP17Bus,
+		})
+		if err != nil {
+			t.Fatalf("NewTransportSelector: %v", err)
+		}
+		controlTransportSelector = ts
+
+		bus, scheme, resolveErr := resolveACPDMTransport(state.ConfigDoc{}, peerPubKey)
+		if resolveErr != nil {
+			t.Fatalf("resolveACPDMTransport: %v", resolveErr)
+		}
+		if scheme != "auto" {
+			t.Fatalf("scheme = %q, want auto (TransportSelector)", scheme)
+		}
+		if _, ok := bus.(*nostruntime.TransportSelector); !ok {
+			t.Fatalf("bus type = %T, want *nostruntime.TransportSelector", bus)
+		}
+	})
+}
+
+func TestResolveACPDMTransportAutoFallsBackToRelayWithoutFIPSSelector(t *testing.T) {
+	withACPRoutingTestState(t, func() {
+		peerPubKey := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		capabilityRegistry = nostruntime.NewCapabilityRegistry()
+		capabilityRegistry.Set(nostruntime.CapabilityAnnouncement{
+			PubKey:     peerPubKey,
+			Runtime:    "metiq",
+			ACPVersion: 1,
+			DMSchemes:  []string{"nip17", "fips"},
+			CreatedAt:  10,
+			EventID:    "cap-fips-only",
+		})
+		controlNIP17Bus = &nostruntime.NIP17Bus{}
+		controlDMBus = controlNIP17Bus
+		// No controlTransportSelector — should fall back to relay.
+
+		bus, scheme, err := resolveACPDMTransport(state.ConfigDoc{}, peerPubKey)
+		if err != nil {
+			t.Fatalf("resolveACPDMTransport: %v", err)
+		}
+		if scheme != "nip17" {
+			t.Fatalf("scheme = %q, want nip17 (fallback)", scheme)
+		}
+		if _, ok := bus.(*nostruntime.NIP17Bus); !ok {
+			t.Fatalf("bus type = %T, want *nostruntime.NIP17Bus", bus)
+		}
+	})
+}
+
+func TestResolveACPDMTransportFIPSModeExplicit(t *testing.T) {
+	withACPRoutingTestState(t, func() {
+		peerPubKey := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+		ts, err := nostruntime.NewTransportSelector(nostruntime.TransportSelectorOptions{
+			FIPS: &nostruntime.FIPSTransport{},
+			Pref: nostruntime.TransportPrefFIPSOnly,
+		})
+		if err != nil {
+			t.Fatalf("NewTransportSelector: %v", err)
+		}
+		controlTransportSelector = ts
+
+		bus, scheme, resolveErr := resolveACPDMTransport(
+			state.ConfigDoc{ACP: state.ACPConfig{Transport: "fips"}},
+			peerPubKey,
+		)
+		if resolveErr != nil {
+			t.Fatalf("resolveACPDMTransport: %v", resolveErr)
+		}
+		if scheme != "fips" {
+			t.Fatalf("scheme = %q, want fips", scheme)
+		}
+		if _, ok := bus.(*nostruntime.TransportSelector); !ok {
+			t.Fatalf("bus type = %T, want *nostruntime.TransportSelector", bus)
+		}
+	})
+}
+
+func TestResolveACPDMTransportFIPSModeFailsWithoutSelector(t *testing.T) {
+	withACPRoutingTestState(t, func() {
+		peerPubKey := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		// No controlTransportSelector set.
+		_, _, err := resolveACPDMTransport(
+			state.ConfigDoc{ACP: state.ACPConfig{Transport: "fips"}},
+			peerPubKey,
+		)
+		if err == nil {
+			t.Fatal("expected error when fips mode configured but no selector available")
+		}
+		if !strings.Contains(err.Error(), "no local fips DM transport is available") {
+			t.Fatalf("expected transport unavailable error, got: %v", err)
+		}
+	})
+}
+
+func TestAvailableACPTransportModesIncludesFIPS(t *testing.T) {
+	withACPRoutingTestState(t, func() {
+		controlNIP17Bus = &nostruntime.NIP17Bus{}
+		controlDMBus = controlNIP17Bus
+
+		ts, err := nostruntime.NewTransportSelector(nostruntime.TransportSelectorOptions{
+			FIPS:  &nostruntime.FIPSTransport{},
+			Relay: controlNIP17Bus,
+		})
+		if err != nil {
+			t.Fatalf("NewTransportSelector: %v", err)
+		}
+		controlTransportSelector = ts
+
+		modes := availableACPTransportModes(state.ConfigDoc{})
+		if _, ok := modes["fips"]; !ok {
+			t.Fatal("expected 'fips' in available transport modes")
+		}
+		if _, ok := modes["nip17"]; !ok {
+			t.Fatal("expected 'nip17' in available transport modes")
+		}
+	})
+}
+
+func TestNormalizeACPAdvertisedScheme_FIPS(t *testing.T) {
+	if got := normalizeACPAdvertisedScheme("fips"); got != "fips" {
+		t.Fatalf("normalizeACPAdvertisedScheme(fips) = %q, want fips", got)
+	}
+	if got := normalizeACPAdvertisedScheme("FIPS"); got != "fips" {
+		t.Fatalf("normalizeACPAdvertisedScheme(FIPS) = %q, want fips", got)
+	}
+}
+
+func TestParseACPTransportMode_FIPS(t *testing.T) {
+	mode, ok := state.ParseACPTransportMode("fips")
+	if !ok {
+		t.Fatal("expected fips to be valid")
+	}
+	if mode != "fips" {
+		t.Fatalf("mode = %q, want fips", mode)
+	}
+}
+
+func TestResolveACPDMTransportAutoUsesTransportSelectorForUnknownPeer(t *testing.T) {
+	// When TransportSelector is available and peer has no advertised schemes,
+	// the selector should be used (it handles fallback internally).
+	withACPRoutingTestState(t, func() {
+		peerPubKey := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+		// No capabilityRegistry — peer schemes unknown.
+
+		ts, err := nostruntime.NewTransportSelector(nostruntime.TransportSelectorOptions{
+			FIPS:  &nostruntime.FIPSTransport{},
+			Relay: &nostruntime.NIP17Bus{},
+		})
+		if err != nil {
+			t.Fatalf("NewTransportSelector: %v", err)
+		}
+		controlTransportSelector = ts
+
+		bus, scheme, resolveErr := resolveACPDMTransport(state.ConfigDoc{}, peerPubKey)
+		if resolveErr != nil {
+			t.Fatalf("resolveACPDMTransport: %v", resolveErr)
+		}
+		if scheme != "auto" {
+			t.Fatalf("scheme = %q, want auto", scheme)
+		}
+		if _, ok := bus.(*nostruntime.TransportSelector); !ok {
+			t.Fatalf("bus type = %T, want *nostruntime.TransportSelector", bus)
 		}
 	})
 }
