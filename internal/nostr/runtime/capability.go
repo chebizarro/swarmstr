@@ -33,6 +33,9 @@ type CapabilityAnnouncement struct {
 	Relays            []string
 	EventID           string
 	CreatedAt         int64
+	// FIPS mesh transport capability.
+	FIPSEnabled   bool
+	FIPSTransport string // e.g. "udp:2121"
 }
 
 func normalizeCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnouncement {
@@ -51,6 +54,7 @@ func normalizeCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnoun
 	in.ContextVMFeatures = normalizeCapabilityStrings(in.ContextVMFeatures)
 	in.Relays = normalizeRelayURLs(in.Relays)
 	in.EventID = strings.TrimSpace(strings.ToLower(in.EventID))
+	in.FIPSTransport = strings.TrimSpace(in.FIPSTransport)
 	return in
 }
 
@@ -118,6 +122,12 @@ func BuildCapabilityTags(cap CapabilityAnnouncement) nostr.Tags {
 	for _, relay := range cap.Relays {
 		tags = append(tags, []string{"relay", relay})
 	}
+	if cap.FIPSEnabled {
+		tags = append(tags, []string{"fips", "true"})
+	}
+	if cap.FIPSTransport != "" {
+		tags = append(tags, []string{"fips_transport", cap.FIPSTransport})
+	}
 	return tags
 }
 
@@ -158,6 +168,12 @@ func ParseCapabilityEvent(ev *nostr.Event) (CapabilityAnnouncement, error) {
 			out.ContextVMFeatures = append(out.ContextVMFeatures, tag[1:]...)
 		case "relay":
 			out.Relays = append(out.Relays, strings.TrimSpace(tag[1]))
+		case "fips":
+			if strings.EqualFold(strings.TrimSpace(tag[1]), "true") {
+				out.FIPSEnabled = true
+			}
+		case "fips_transport":
+			out.FIPSTransport = strings.TrimSpace(tag[1])
 		}
 	}
 	out = normalizeCapabilityAnnouncement(out)
@@ -295,6 +311,8 @@ func capabilitySemanticEqual(a, b CapabilityAnnouncement) bool {
 		a.Runtime == b.Runtime &&
 		a.RuntimeVersion == b.RuntimeVersion &&
 		a.ACPVersion == b.ACPVersion &&
+		a.FIPSEnabled == b.FIPSEnabled &&
+		a.FIPSTransport == b.FIPSTransport &&
 		relaySliceEqual(a.DMSchemes, b.DMSchemes) &&
 		relaySliceEqual(a.Tools, b.Tools) &&
 		relaySliceEqual(a.ContextVMFeatures, b.ContextVMFeatures) &&

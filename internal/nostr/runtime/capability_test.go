@@ -120,6 +120,87 @@ func TestCapabilityRegistryPrefersNewestEvent(t *testing.T) {
 	}
 }
 
+func TestBuildAndParseCapabilityFIPSTags(t *testing.T) {
+	cap := CapabilityAnnouncement{
+		PubKey:        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Runtime:       "metiq",
+		FIPSEnabled:   true,
+		FIPSTransport: "udp:2121",
+		CreatedAt:     100,
+	}
+	tags := BuildCapabilityTags(cap)
+
+	// Verify FIPS tags are present.
+	foundFIPS := false
+	foundFIPSTransport := false
+	for _, tag := range tags {
+		if len(tag) >= 2 && tag[0] == "fips" && tag[1] == "true" {
+			foundFIPS = true
+		}
+		if len(tag) >= 2 && tag[0] == "fips_transport" && tag[1] == "udp:2121" {
+			foundFIPSTransport = true
+		}
+	}
+	if !foundFIPS {
+		t.Fatal("expected fips=true tag")
+	}
+	if !foundFIPSTransport {
+		t.Fatal("expected fips_transport tag")
+	}
+
+	// Parse them back.
+	pk, err := ParsePubKey(cap.PubKey)
+	if err != nil {
+		t.Fatalf("ParsePubKey: %v", err)
+	}
+	evt := nostr.Event{
+		Kind:      nostr.Kind(events.KindCapability),
+		PubKey:    pk,
+		CreatedAt: nostr.Timestamp(100),
+		Tags:      tags,
+	}
+	parsed, err := ParseCapabilityEvent(&evt)
+	if err != nil {
+		t.Fatalf("ParseCapabilityEvent: %v", err)
+	}
+	if !parsed.FIPSEnabled {
+		t.Fatal("expected FIPSEnabled=true after parse")
+	}
+	if parsed.FIPSTransport != "udp:2121" {
+		t.Fatalf("expected FIPSTransport=udp:2121, got %q", parsed.FIPSTransport)
+	}
+}
+
+func TestCapabilityFIPSNotSetByDefault(t *testing.T) {
+	cap := CapabilityAnnouncement{
+		PubKey:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Runtime: "metiq",
+	}
+	tags := BuildCapabilityTags(cap)
+	for _, tag := range tags {
+		if len(tag) >= 1 && (tag[0] == "fips" || tag[0] == "fips_transport") {
+			t.Fatalf("FIPS tags should not be present when disabled: %v", tag)
+		}
+	}
+}
+
+func TestCapabilitySemanticEqual_FIPS(t *testing.T) {
+	a := CapabilityAnnouncement{PubKey: "aaa", Runtime: "metiq", FIPSEnabled: true, FIPSTransport: "udp:2121"}
+	b := CapabilityAnnouncement{PubKey: "aaa", Runtime: "metiq", FIPSEnabled: true, FIPSTransport: "udp:2121"}
+	if !capabilitySemanticEqual(a, b) {
+		t.Fatal("expected equal")
+	}
+	b.FIPSEnabled = false
+	if capabilitySemanticEqual(a, b) {
+		t.Fatal("expected not equal when FIPSEnabled differs")
+	}
+	b.FIPSEnabled = true
+	b.FIPSTransport = "tcp:4000"
+	if capabilitySemanticEqual(a, b) {
+		t.Fatal("expected not equal when FIPSTransport differs")
+	}
+}
+
 func TestCapabilityMonitorSnapshotUsesCanonicalDTags(t *testing.T) {
 	sk1, err := ParseSecretKey("1111111111111111111111111111111111111111111111111111111111111111")
 	if err != nil {

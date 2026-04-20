@@ -1,21 +1,10 @@
-//go:build !experimental_fips
-
+// fips_identity_stub.go is intentionally empty.
+//
+// The FIPS identity/address derivation functions (FIPSIPv6FromPubkey,
+// FIPSAddrString, FIPSDefaultAgentPort) are now always available in
+// fips_identity.go (no build tag) because fleet discovery needs address
+// derivation regardless of whether the full FIPS transport is compiled in.
+//
+// This file is kept for historical reference. The build-tag-gated stubs
+// for FIPSTransport and FIPSListener remain in their respective stub files.
 package runtime
-
-import (
-	"fmt"
-	"net"
-)
-
-// FIPSDefaultAgentPort is the default FSP port for agent-to-agent messages.
-const FIPSDefaultAgentPort = 1337
-
-// FIPSIPv6FromPubkey is a stub that returns an error when FIPS is not compiled in.
-func FIPSIPv6FromPubkey(_ string) (net.IP, error) {
-	return nil, fmt.Errorf("fips: not compiled (build with -tags experimental_fips)")
-}
-
-// FIPSAddrString is a stub that returns an error when FIPS is not compiled in.
-func FIPSAddrString(_ string, _ int) (string, error) {
-	return "", fmt.Errorf("fips: not compiled (build with -tags experimental_fips)")
-}

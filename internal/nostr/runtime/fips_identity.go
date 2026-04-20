@@ -1,5 +1,3 @@
-//go:build experimental_fips
-
 // Package runtime – FIPS identity helpers.
 //
 // FIPSIPv6FromPubkey derives a FIPS mesh IPv6 address (fd00::/8 ULA) from a
@@ -7,6 +5,9 @@
 // agent's Nostr identity IS the FIPS node identity — no bridging required.
 //
 // The derivation MUST match fips/src/identity/address.rs.
+//
+// These functions are always available (no build tag) because fleet discovery
+// needs address derivation even when the full FIPS transport is not compiled in.
 package runtime
 
 import (

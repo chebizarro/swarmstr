@@ -74,13 +74,39 @@ func setNIP51ListEntries(ownerHex, dtag string, entries []nip51.ListEntry) {
 	key := ownerHex + ":" + dtag
 	pubkeys := make(map[string]struct{}, len(entries))
 	fleetEntries := make(map[string]toolbuiltin.FleetEntry, len(entries))
+
+	// Collect list-level FIPS metadata from non-p tags.
+	// Tags like ["fips", "true"] and ["fips_transport", "udp:2121"] apply to
+	// the preceding "p" entry, or to all entries if they appear before any "p".
+	listFIPSEnabled := false
+	listFIPSTransport := ""
+	for _, e := range entries {
+		switch e.Tag {
+		case "fips":
+			if strings.EqualFold(strings.TrimSpace(e.Value), "true") {
+				listFIPSEnabled = true
+			}
+		case "fips_transport":
+			if v := strings.TrimSpace(e.Value); v != "" {
+				listFIPSTransport = v
+			}
+		}
+	}
+
 	nip51AllowlistMu.Lock()
 	for _, e := range entries {
 		if e.Tag != "p" || e.Value == "" {
 			continue
 		}
 		pubkeys[e.Value] = struct{}{}
-		fleetEntries[e.Value] = toolbuiltin.FleetEntry{Pubkey: e.Value, Relay: e.Relay, Name: e.Petname}
+		entry := toolbuiltin.FleetEntry{
+			Pubkey:        e.Value,
+			Relay:         e.Relay,
+			Name:          e.Petname,
+			FIPSEnabled:   listFIPSEnabled,
+			FIPSTransport: listFIPSTransport,
+		}
+		fleetEntries[e.Value] = entry
 	}
 	nip51PerListPubkeys[key] = pubkeys
 	nip51PerListEntries[key] = fleetEntries
@@ -130,6 +156,32 @@ func fleetDirectory() []toolbuiltin.FleetEntry {
 				if merged.Relay == "" && len(cap.Relays) > 0 {
 					merged.Relay = cap.Relays[0]
 				}
+				// Merge FIPS capability if advertised via kind:30317.
+				if cap.FIPSEnabled {
+					merged.FIPSEnabled = true
+					if merged.FIPSTransport == "" && cap.FIPSTransport != "" {
+						merged.FIPSTransport = cap.FIPSTransport
+					}
+				}
+			}
+		}
+		// Derive FIPS IPv6 address for FIPS-enabled agents.
+		if merged.FIPSEnabled && merged.FIPSIPv6Addr == "" {
+			if addr, err := nostruntime.FIPSIPv6FromPubkey(merged.Pubkey); err == nil {
+				merged.FIPSIPv6Addr = addr.String()
+			}
+		}
+		// Ensure "fips" appears in DM schemes for FIPS-enabled agents.
+		if merged.FIPSEnabled {
+			hasFIPS := false
+			for _, s := range merged.DMSchemes {
+				if s == "fips" {
+					hasFIPS = true
+					break
+				}
+			}
+			if !hasFIPS {
+				merged.DMSchemes = append(merged.DMSchemes, "fips")
 			}
 		}
 		out = append(out, merged)
@@ -157,6 +209,13 @@ func rebuildFleetEntriesLocked() {
 			}
 			if current.Relay == "" && entry.Relay != "" {
 				current.Relay = entry.Relay
+			}
+			// Merge FIPS: any list advertising FIPS for this peer wins.
+			if entry.FIPSEnabled {
+				current.FIPSEnabled = true
+			}
+			if current.FIPSTransport == "" && entry.FIPSTransport != "" {
+				current.FIPSTransport = entry.FIPSTransport
 			}
 			merged[pubkey] = current
 		}
@@ -277,6 +336,15 @@ func writeFleetMD(wsDir string) {
 		}
 		if len(e.ContextVMFeatures) > 0 {
 			sb.WriteString(fmt.Sprintf("- **contextvm_features:** %s\n", strings.Join(e.ContextVMFeatures, ", ")))
+		}
+		if e.FIPSEnabled {
+			sb.WriteString("- **fips:** ✅ enabled\n")
+			if e.FIPSIPv6Addr != "" {
+				sb.WriteString(fmt.Sprintf("- **fips_addr:** `%s`\n", e.FIPSIPv6Addr))
+			}
+			if e.FIPSTransport != "" {
+				sb.WriteString(fmt.Sprintf("- **fips_transport:** %s\n", e.FIPSTransport))
+			}
 		}
 		sb.WriteString("\n")
 	}
