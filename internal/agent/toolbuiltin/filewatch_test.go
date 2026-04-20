@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 )
@@ -223,5 +224,132 @@ func TestFileWatchAdd_InvalidSessionIDType(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for non-string session_id")
+	}
+}
+
+// ─── fileMatchesContent tests ────────────────────────────────────────────────
+
+func TestFileMatchesContent_PlainText(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "test.txt")
+	os.WriteFile(f, []byte("hello world"), 0644)
+
+	ok, err := fileMatchesContent(f, "hello", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("expected match for 'hello' in 'hello world'")
+	}
+}
+
+func TestFileMatchesContent_PlainNoMatch(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "test.txt")
+	os.WriteFile(f, []byte("hello world"), 0644)
+
+	ok, err := fileMatchesContent(f, "xyz", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("expected no match for 'xyz'")
+	}
+}
+
+func TestFileMatchesContent_Regex(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "test.go")
+	os.WriteFile(f, []byte("func main() {\n\tfmt.Println()\n}\n"), 0644)
+
+	re := regexp.MustCompile(`func \w+\(\)`)
+	ok, err := fileMatchesContent(f, "", re)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("expected regex match")
+	}
+}
+
+func TestFileMatchesContent_Directory(t *testing.T) {
+	dir := t.TempDir()
+	ok, err := fileMatchesContent(dir, "hello", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("directories should not match")
+	}
+}
+
+func TestFileMatchesContent_NonExistent(t *testing.T) {
+	_, err := fileMatchesContent("/nonexistent/file.txt", "hello", nil)
+	if err == nil {
+		t.Fatal("expected error for non-existent file")
+	}
+}
+
+func TestFileMatchesContent_EmptyContains(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "test.txt")
+	os.WriteFile(f, []byte("content"), 0644)
+
+	// Empty contains + nil regex should match anything.
+	ok, err := fileMatchesContent(f, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("empty filter should match")
+	}
+}
+
+func TestFileMatchesContent_BothFilters(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "test.txt")
+	os.WriteFile(f, []byte("hello world 42"), 0644)
+
+	re := regexp.MustCompile(`\d+`)
+	// Both contains and regex must match.
+	ok, err := fileMatchesContent(f, "hello", re)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("expected both filters to match")
+	}
+
+	// Fails when contains doesn't match.
+	ok2, _ := fileMatchesContent(f, "xyz", re)
+	if ok2 {
+		t.Error("expected no match when contains fails")
+	}
+}
+
+// ─── deliverBatch tests ──────────────────────────────────────────────────────
+
+func TestDeliverBatch_Empty(t *testing.T) {
+	called := false
+	deliverBatch("session", "watch", nil, func(_, _ string, _ map[string]any) {
+		called = true
+	})
+	if called {
+		t.Error("deliverBatch should not call delivery for empty events")
+	}
+}
+
+func TestDeliverBatch_NonEmpty(t *testing.T) {
+	var delivered map[string]any
+	events := []map[string]any{
+		{"type": "write", "path": "/a"},
+		{"type": "write", "path": "/b"},
+	}
+	deliverBatch("sess1", "watch1", events, func(sessionID, name string, event map[string]any) {
+		delivered = event
+	})
+	if delivered == nil {
+		t.Fatal("expected delivery")
+	}
+	if delivered["batch"] != true {
+		t.Error("expected batch=true")
+	}
+	if delivered["event_count"].(int) != 2 {
+		t.Errorf("event_count = %v", delivered["event_count"])
 	}
 }
