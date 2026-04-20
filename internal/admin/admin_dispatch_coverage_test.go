@@ -1291,7 +1291,14 @@ func TestDispatchSystem_Defaults(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("status=%d", status)
 	}
-	_ = result
+	// Nil UsageStatus provider returns a default response with zero totals.
+	usageMap, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any, got %T", result)
+	}
+	if usageMap["ok"] != true {
+		t.Errorf("expected ok=true, got %v", usageMap["ok"])
+	}
 
 	// chat.abort with run_id only → no-op
 	call = methods.CallRequest{Method: methods.MethodChatAbort, Params: mustJSON(t, map[string]any{"run_id": "r1"})}
