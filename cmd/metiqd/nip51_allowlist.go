@@ -369,12 +369,11 @@ func watchNIP51List(ctx context.Context, pool *nostr.Pool, ref state.AllowFromLi
 			}
 
 		case <-eoseChan:
-			if !eoseSignalled {
-				eoseSignalled = true
-				log.Printf("nip51: EOSE received for list %q (owner=%s) — fleet directory ready", ref.D, logPrefix)
-				nip51EOSEOnce.Do(func() { close(nip51EOSEReady) })
-				writeFleetMD(wsDir)
-			}
+			eoseChan = nil // prevent busy-loop: closed channel returns immediately
+			eoseSignalled = true
+			log.Printf("nip51: EOSE received for list %q (owner=%s) — fleet directory ready", ref.D, logPrefix)
+			nip51EOSEOnce.Do(func() { close(nip51EOSEReady) })
+			writeFleetMD(wsDir)
 		case <-ctx.Done():
 			return
 		}

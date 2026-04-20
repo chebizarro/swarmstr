@@ -456,7 +456,7 @@ func (m *CapabilityMonitor) runSubscriber(ctx context.Context) {
 			Authors: authors,
 			Tags:    nostr.TagMap{"d": dTags},
 		}, nostr.SubscriptionOptions{})
-		eoseDone := false
+		// eoseCh is nil'd after EOSE to prevent busy-loop (closed channels return immediately).
 	restartLoop:
 		for {
 			select {
@@ -467,10 +467,8 @@ func (m *CapabilityMonitor) runSubscriber(ctx context.Context) {
 				cancel()
 				break restartLoop
 			case <-eoseCh:
-				if !eoseDone {
-					eoseDone = true
-					log.Printf("capability-sync: EOSE — watching %d peer capability streams", len(authors))
-				}
+				eoseCh = nil // prevent busy-loop: closed channel returns immediately
+				log.Printf("capability-sync: EOSE — watching %d peer capability streams", len(authors))
 			case re, ok := <-eventsCh:
 				if !ok {
 					cancel()
