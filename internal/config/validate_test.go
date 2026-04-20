@@ -189,3 +189,103 @@ func TestValidateConfigDoc_multipleErrors(t *testing.T) {
 		t.Fatalf("expected at least 3 errors, got %d: %v", len(errs), errs)
 	}
 }
+
+// ── FIPS ──────────────────────────────────────────────────────────────────────
+
+func TestValidateFIPS_disabled_skips_validation(t *testing.T) {
+	// Disabled FIPS should not produce errors even with invalid config.
+	errs := ValidateConfigDoc(state.ConfigDoc{
+		FIPS: state.FIPSConfig{
+			Enabled:       false,
+			TransportPref: "invalid",
+			AgentPort:     -1,
+		},
+	})
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "fips.") {
+			t.Errorf("disabled FIPS should skip validation, got: %v", e)
+		}
+	}
+}
+
+func TestValidateFIPS_enabled_valid(t *testing.T) {
+	errs := ValidateConfigDoc(state.ConfigDoc{
+		FIPS: state.FIPSConfig{
+			Enabled:       true,
+			TransportPref: "fips-first",
+			AgentPort:     1337,
+			ControlPort:   1338,
+		},
+	})
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "fips.") {
+			t.Errorf("expected no FIPS errors, got: %v", e)
+		}
+	}
+}
+
+func TestValidateFIPS_invalid_transport_pref(t *testing.T) {
+	errs := ValidateConfigDoc(state.ConfigDoc{
+		FIPS: state.FIPSConfig{
+			Enabled:       true,
+			TransportPref: "mesh-only",
+		},
+	})
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "fips.transport_pref") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected error for invalid fips.transport_pref")
+	}
+}
+
+func TestValidateFIPS_invalid_port(t *testing.T) {
+	errs := ValidateConfigDoc(state.ConfigDoc{
+		FIPS: state.FIPSConfig{
+			Enabled:   true,
+			AgentPort: 99999,
+		},
+	})
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "fips.agent_port") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected error for invalid fips.agent_port")
+	}
+}
+
+func TestValidateFIPS_invalid_peer(t *testing.T) {
+	errs := ValidateConfigDoc(state.ConfigDoc{
+		FIPS: state.FIPSConfig{
+			Enabled: true,
+			Peers:   []string{"npub1valid", "badkey", ""},
+		},
+	})
+	peerErrors := 0
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "fips.peers") {
+			peerErrors++
+		}
+	}
+	if peerErrors < 2 {
+		t.Fatalf("expected at least 2 peer errors (for 'badkey' and empty), got %d: %v", peerErrors, errs)
+	}
+}
+
+func TestValidateFIPS_empty_defaults_valid(t *testing.T) {
+	// Enabled with all defaults should be valid.
+	errs := ValidateConfigDoc(state.ConfigDoc{
+		FIPS: state.FIPSConfig{Enabled: true},
+	})
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "fips.") {
+			t.Errorf("expected no FIPS errors with defaults, got: %v", e)
+		}
+	}
+}

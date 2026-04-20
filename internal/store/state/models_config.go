@@ -26,6 +26,7 @@ type ConfigDoc struct {
 	Hooks         HooksConfig         `json:"hooks,omitempty"`
 	Timeouts      TimeoutsConfig      `json:"timeouts,omitempty"`
 	AgentList     *AgentListConfig    `json:"agent_list,omitempty"`
+	FIPS          FIPSConfig          `json:"fips,omitempty"`
 	Extra         map[string]any      `json:"extra,omitempty"`
 }
 
@@ -68,8 +69,89 @@ func BoolPtr(v bool) *bool {
 // ACPConfig controls outbound ACP DM transport selection.
 type ACPConfig struct {
 	// Transport selects which DM family ACP uses when sending tasks/results.
-	// Supported values: auto, nip17, nip04.
+	// Supported values: auto, nip17, nip04, fips.
 	Transport string `json:"transport,omitempty"`
+}
+
+// FIPSConfig holds configuration for experimental FIPS mesh transport.
+// FIPS (Free Internetworking Peering System) is a self-organizing mesh network
+// that uses Nostr keypairs as native node identities, enabling direct
+// peer-to-peer agent communication without relay dependency.
+//
+// All FIPS functionality requires the experimental_fips build tag.
+type FIPSConfig struct {
+	// Enabled activates the FIPS transport. Requires experimental_fips build tag
+	// and a persistent identity (nsec must be set in bootstrap config).
+	Enabled bool `json:"enabled"`
+
+	// ControlSocket is the path to the FIPS daemon's control socket.
+	// Used to query mesh state (peer reachability, sessions, bloom filters).
+	// If empty, searches default paths: $XDG_RUNTIME_DIR/fips/control.sock,
+	// /run/fips/control.sock, /tmp/fips-control.sock.
+	ControlSocket string `json:"control_socket,omitempty"`
+
+	// AgentPort is the FSP port for agent-to-agent messages over the mesh.
+	// The agent listens on this port (bound to its fd00::/8 address) for
+	// incoming DMs, ACP tasks, and fleet messages. Default: 1337.
+	AgentPort int `json:"agent_port,omitempty"`
+
+	// ControlPort is the FSP port for control RPC over FIPS. Default: 1338.
+	ControlPort int `json:"control_port,omitempty"`
+
+	// TransportPref controls routing priority when both FIPS and relay
+	// transports are available.
+	//   fips-first  — try FIPS, fall back to relay (default)
+	//   relay-first — use relay by default, FIPS for tagged peers only
+	//   fips-only   — FIPS mesh only, no relay fallback
+	TransportPref string `json:"transport_pref,omitempty"`
+
+	// Peers is a list of static FIPS peer npubs for mesh bootstrapping.
+	// These are in addition to any peers discovered via the fleet directory.
+	Peers []string `json:"peers,omitempty"`
+
+	// ConnTimeout is the connection timeout for FIPS sends. Default: "5s".
+	ConnTimeout string `json:"conn_timeout,omitempty"`
+
+	// ReachCacheTTL is the TTL for FIPS reachability cache entries. Default: "30s".
+	ReachCacheTTL string `json:"reach_cache_ttl,omitempty"`
+}
+
+// EffectiveAgentPort returns the configured agent port or the default (1337).
+func (f FIPSConfig) EffectiveAgentPort() int {
+	if f.AgentPort > 0 {
+		return f.AgentPort
+	}
+	return 1337
+}
+
+// EffectiveControlPort returns the configured control port or the default (1338).
+func (f FIPSConfig) EffectiveControlPort() int {
+	if f.ControlPort > 0 {
+		return f.ControlPort
+	}
+	return 1338
+}
+
+// ParseFIPSTransportPref normalizes a configured FIPS transport preference.
+func ParseFIPSTransportPref(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "fips-first":
+		return "fips-first", true
+	case "relay-first":
+		return "relay-first", true
+	case "fips-only":
+		return "fips-only", true
+	default:
+		return "", false
+	}
+}
+
+// EffectiveTransportPref returns the normalized transport preference.
+func (f FIPSConfig) EffectiveTransportPref() string {
+	if pref, ok := ParseFIPSTransportPref(f.TransportPref); ok {
+		return pref
+	}
+	return "fips-first"
 }
 
 // ParseACPTransportMode normalizes a configured ACP transport mode.

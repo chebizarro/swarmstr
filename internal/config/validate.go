@@ -31,6 +31,7 @@ func ValidateConfigDoc(doc state.ConfigDoc) []error {
 	errs = append(errs, validateSession(doc.Session)...)
 	errs = append(errs, validateHeartbeat(doc.Heartbeat)...)
 	errs = append(errs, validateTTS(doc.TTS)...)
+	errs = append(errs, validateFIPS(doc.FIPS)...)
 
 	return errs
 }
@@ -187,4 +188,42 @@ func validateHeartbeat(h state.HeartbeatConfig) []error {
 func validateTTS(t state.TTSConfig) []error {
 	// No hard constraints beyond structure; provider names are open-ended.
 	return nil
+}
+
+// ── FIPS ──────────────────────────────────────────────────────────────────────
+
+func validateFIPS(f state.FIPSConfig) []error {
+	if !f.Enabled {
+		return nil // disabled — skip all validation
+	}
+	var errs []error
+
+	// Transport preference must be a known value.
+	if f.TransportPref != "" {
+		if _, ok := state.ParseFIPSTransportPref(f.TransportPref); !ok {
+			errs = append(errs, fmt.Errorf("fips.transport_pref: unknown value %q (valid: fips-first, relay-first, fips-only)", f.TransportPref))
+		}
+	}
+
+	// Port numbers must be in valid range.
+	if f.AgentPort < 0 || f.AgentPort > 65535 {
+		errs = append(errs, fmt.Errorf("fips.agent_port: must be 0–65535 (got %d)", f.AgentPort))
+	}
+	if f.ControlPort < 0 || f.ControlPort > 65535 {
+		errs = append(errs, fmt.Errorf("fips.control_port: must be 0–65535 (got %d)", f.ControlPort))
+	}
+
+	// Peer npubs should be parseable.
+	for i, peer := range f.Peers {
+		peer = strings.TrimSpace(peer)
+		if peer == "" {
+			errs = append(errs, fmt.Errorf("fips.peers[%d]: empty peer", i))
+			continue
+		}
+		if !strings.HasPrefix(peer, "npub1") && len(peer) != 64 {
+			errs = append(errs, fmt.Errorf("fips.peers[%d] %q: expected npub or 64-char hex pubkey", i, peer))
+		}
+	}
+
+	return errs
 }
