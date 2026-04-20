@@ -62,6 +62,10 @@ type StatusResponse struct {
 
 	// MCP reports external MCP lifecycle/health telemetry when MCP is configured.
 	MCP *mcppkg.TelemetrySnapshot `json:"mcp,omitempty"`
+
+	// FIPS reports FIPS mesh transport health when the experimental_fips
+	// build tag is enabled and the transport is active.
+	FIPS any `json:"fips,omitempty"`
 }
 
 // SubHealthInfo is the JSON-friendly representation of a subscription health

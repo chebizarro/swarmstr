@@ -107,6 +107,14 @@ func (cc *FIPSControlChannel) Start() error {
 	return nil
 }
 
+// ListenerAddr returns the control channel listener address, or empty if not listening.
+func (cc *FIPSControlChannel) ListenerAddr() string {
+	if cc.listener == nil {
+		return ""
+	}
+	return cc.listener.Addr().String()
+}
+
 // Close shuts down the control channel.
 func (cc *FIPSControlChannel) Close() {
 	cc.cancel()
