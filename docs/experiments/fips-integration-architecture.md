@@ -14,7 +14,9 @@ status: experimental
 
 # FIPS Integration Architecture
 
-> Status: Experimental — design document, not yet implemented.
+> Status: Experimental — partially implemented. See companion docs:
+> - [Sidecar Setup Guide](fips-sidecar-setup.md) — step-by-step deployment
+> - [Fleet Mesh Setup](fips-fleet-mesh.md) — multi-agent mesh configuration
 
 ## Overview
 
@@ -536,8 +538,8 @@ internal/nostr/runtime/
 ├── fips_transport_stub.go         # //go:build !experimental_fips
 ├── fips_listener.go               # //go:build experimental_fips
 ├── fips_listener_stub.go          # //go:build !experimental_fips
-├── fips_identity.go               # //go:build experimental_fips
-├── fips_identity_stub.go          # //go:build !experimental_fips
+├── fips_identity.go               # no build tag (always available for fleet discovery)
+├── fips_identity_stub.go          # (empty — identity funcs are always available)
 ├── fips_control_client.go         # //go:build experimental_fips
 ├── fips_control_client_stub.go    # //go:build !experimental_fips
 ├── transport_selector.go          # no build tag (uses interfaces)

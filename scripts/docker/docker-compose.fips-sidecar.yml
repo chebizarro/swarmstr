@@ -1,0 +1,92 @@
+# docker-compose.fips-sidecar.yml — FIPS mesh sidecar for metiqd
+#
+# Deploys a FIPS daemon alongside metiqd in a shared network namespace,
+# enabling direct peer-to-peer agent communication over an encrypted mesh.
+#
+# Usage:
+#   cp .env.example .env         # fill in METIQ_NOSTR_KEY + API keys
+#   # Create fips.yaml with the same nsec as the agent
+#   docker compose -f docker-compose.fips-sidecar.yml up -d
+#
+# The agent shares the FIPS container's network namespace, so it sees
+# the fips0 TUN interface and can route to fd00::/8 mesh addresses.
+#
+# Requirements:
+#   - FIPS daemon image (ghcr.io/jmcorgan/fips:latest)
+#   - metiqd built with -tags experimental_fips
+#   - Same nsec in both fips.yaml and agent config
+
+services:
+
+  # ── FIPS mesh daemon ──────────────────────────────────────────────────────
+  fips:
+    image: ghcr.io/jmcorgan/fips:latest
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN                   # required for TUN interface creation
+    devices:
+      - /dev/net/tun                # TUN device access
+    volumes:
+      - ./fips.yaml:/etc/fips/fips.yaml:ro
+    ports:
+      - "${FIPS_UDP_PORT:-2121}:2121/udp"   # FIPS UDP transport
+      - "127.0.0.1:${METIQ_API_PORT:-7423}:7423"  # metiqd API (via shared netns)
+    healthcheck:
+      test: ["CMD", "fipsctl", "status"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - fips-mesh
+
+  # ── metiq daemon (FIPS-enabled) ───────────────────────────────────────────
+  metiqd:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${METIQ_VERSION:-dev}
+        METIQ_VARIANT: ${METIQ_VARIANT:-default}
+        METIQ_BUILD_TAGS: "experimental_fips"
+        METIQ_INSTALL_PYTHON: ${METIQ_INSTALL_PYTHON:-}
+        METIQ_INSTALL_NODE: ${METIQ_INSTALL_NODE:-}
+    image: metiq/metiqd-fips:${METIQ_VERSION:-latest}
+    restart: unless-stopped
+    network_mode: "service:fips"    # ← share FIPS network namespace
+    depends_on:
+      fips:
+        condition: service_healthy
+    env_file:
+      - ../../.env
+    environment:
+      HOME: /data
+      TERM: xterm-256color
+    volumes:
+      - metiq-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7423/health"]
+      interval: 60s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # ── Full agent variant (Python + Node + FIPS) ────────────────────────────
+  # Activate with: docker compose --profile full up -d
+  metiqd-full:
+    extends:
+      service: metiqd
+    build:
+      args:
+        METIQ_INSTALL_PYTHON: "1"
+        METIQ_INSTALL_NODE: "1"
+    image: metiq/metiqd-fips-full:${METIQ_VERSION:-latest}
+    profiles:
+      - full
+
+volumes:
+  metiq-data:
+
+networks:
+  fips-mesh:
+    driver: bridge
