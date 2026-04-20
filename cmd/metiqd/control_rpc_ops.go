@@ -85,6 +85,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if controlMCPOps != nil {
 			mcpSnapshot = controlMCPOps.telemetrySnapshotPtr()
 		}
+		var fipsHealth any
+		if fipsHealthOpts != nil {
+			fipsHealth = toolbuiltin.BuildFIPSHealthInfo(*fipsHealthOpts)
+		}
 		return nostruntime.ControlRPCResult{Result: methods.StatusResponse{
 			PubKey:        pubkey,
 			Relays:        cfg.Relays.Read,
@@ -95,6 +99,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 			Subscriptions: subs,
 			RelaySets:     relaySets,
 			MCP:           mcpSnapshot,
+			FIPS:          fipsHealth,
 		}}, true, nil
 	case methods.MethodUsageStatus:
 		if usageState == nil {

@@ -401,4 +401,32 @@ func (ft *FIPSTransport) emitError(err error) {
 
 // ── Compile-time interface check ──────────────────────────────────────────────
 
+// ── Health accessors ──────────────────────────────────────────────────────────
+
+// ConnectionCount returns the number of active connections in the pool.
+func (ft *FIPSTransport) ConnectionCount() int {
+	ft.connMu.Lock()
+	defer ft.connMu.Unlock()
+	return len(ft.conns)
+}
+
+// IdentityCacheSize returns the number of entries in the identity cache.
+func (ft *FIPSTransport) IdentityCacheSize() int {
+	ft.idCacheMu.RLock()
+	defer ft.idCacheMu.RUnlock()
+	return len(ft.idCache)
+}
+
+// ListenerAddr returns the listener address string, or empty if not listening.
+func (ft *FIPSTransport) ListenerAddr() string {
+	if ft.listener == nil {
+		return ""
+	}
+	addr := ft.listener.Addr()
+	if addr == nil {
+		return ""
+	}
+	return addr.String()
+}
+
 var _ DMTransport = (*FIPSTransport)(nil)

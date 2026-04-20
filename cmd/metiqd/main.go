@@ -194,6 +194,10 @@ var (
 	// preference. Nil when FIPS is not enabled.
 	controlTransportSelector *nostruntime.TransportSelector
 
+	// fipsHealthOpts holds the dependency-injected providers for FIPS health
+	// reporting (fips_status tool and status.get). Nil when FIPS is not enabled.
+	fipsHealthOpts *toolbuiltin.FIPSStatusOpts
+
 	// controlContextEngine is the shared pluggable context engine used to ingest
 	// and assemble conversation history for every agent session.
 	controlContextEngine ctxengine.Engine

@@ -80,6 +80,9 @@ type FleetEntry struct {
 	FIPSEnabled   bool   `json:"fips_enabled,omitempty"`
 	FIPSIPv6Addr  string `json:"fips_ipv6_addr,omitempty"`
 	FIPSTransport string `json:"fips_transport,omitempty"`
+	// FIPSReachable is set at query time when a ReachabilityChecker is
+	// available: "yes", "no", or "unknown". Empty when FIPS is disabled.
+	FIPSReachable string `json:"fips_reachable,omitempty"`
 }
 
 // FleetDirectoryFunc returns the current set of known fleet agents.
@@ -104,15 +107,45 @@ var FleetAgentsDef = agent.ToolDefinition{
 	},
 }
 
+// FleetAgentsToolOpts configures FleetAgentsTool.
+type FleetAgentsToolOpts struct {
+	GetAgents FleetDirectoryFunc
+	// FIPSReachable is an optional checker that tests whether a pubkey is
+	// reachable over the FIPS mesh. When non-nil, each FIPS-enabled agent
+	// gets an fips_reachable annotation ("yes" / "no").
+	FIPSReachable func(pubkeyHex string) bool
+}
+
 // FleetAgentsTool returns a tool that lists all known fleet agents.
 func FleetAgentsTool(getAgents FleetDirectoryFunc) agent.ToolFunc {
+	return FleetAgentsToolWithOpts(FleetAgentsToolOpts{GetAgents: getAgents})
+}
+
+// FleetAgentsToolWithOpts returns a tool that lists fleet agents with optional
+// FIPS reachability enrichment.
+func FleetAgentsToolWithOpts(opts FleetAgentsToolOpts) agent.ToolFunc {
 	return func(_ context.Context, _ map[string]any) (string, error) {
-		agents := getAgents()
+		agents := opts.GetAgents()
 		if len(agents) == 0 {
 			// Directory not yet populated — NIP-51 list fetch is still in progress.
 			// Return an explicit error so the model doesn't loop trying other approaches.
 			return "", fmt.Errorf("fleet directory not ready yet — NIP-51 agent list is still loading from relay. Wait a few seconds and try again.")
 		}
+
+		// Annotate FIPS-enabled agents with reachability status.
+		if opts.FIPSReachable != nil {
+			for i := range agents {
+				if !agents[i].FIPSEnabled {
+					continue
+				}
+				if opts.FIPSReachable(agents[i].Pubkey) {
+					agents[i].FIPSReachable = "yes"
+				} else {
+					agents[i].FIPSReachable = "no"
+				}
+			}
+		}
+
 		out, _ := json.Marshal(map[string]any{
 			"agents": agents,
 			"count":  len(agents),

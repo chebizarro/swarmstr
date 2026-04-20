@@ -28,5 +28,8 @@ func (cc *FIPSControlChannel) Start() error {
 	return fmt.Errorf("fips control: not compiled")
 }
 
+// ListenerAddr is a no-op stub.
+func (cc *FIPSControlChannel) ListenerAddr() string { return "" }
+
 // Close is a no-op stub.
 func (cc *FIPSControlChannel) Close() {}

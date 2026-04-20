@@ -320,4 +320,16 @@ func truncatePubkey(pk string) string {
 
 // ── Compile-time interface check ──────────────────────────────────────────────
 
+// Preference returns the routing preference string.
+func (ts *TransportSelector) Preference() string {
+	return ts.pref
+}
+
+// ReachabilityCacheSize returns the number of entries in the reachability cache.
+func (ts *TransportSelector) ReachabilityCacheSize() int {
+	ts.cacheMu.RLock()
+	defer ts.cacheMu.RUnlock()
+	return len(ts.cache)
+}
+
 var _ DMTransport = (*TransportSelector)(nil)
