@@ -3,6 +3,7 @@ package toolbuiltin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,5 +141,115 @@ func TestGrepSearchTool_EmptyPattern(t *testing.T) {
 	_, err := tool(context.Background(), map[string]any{"pattern": ""})
 	if err == nil {
 		t.Fatal("expected error for empty pattern")
+	}
+}
+
+// ─── parseRipgrepJSON tests ──────────────────────────────────────────────────
+
+func TestParseRipgrepJSON_Empty(t *testing.T) {
+	out, err := parseRipgrepJSON("", 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var res grepResult
+	json.Unmarshal([]byte(out), &res)
+	if res.TotalMatches != 0 {
+		t.Errorf("expected 0 total matches, got %d", res.TotalMatches)
+	}
+}
+
+func TestParseRipgrepJSON_SingleMatch(t *testing.T) {
+	jsonLine := `{"type":"match","data":{"path":{"text":"./main.go"},"line_number":42,"lines":{"text":"func main() {\n"},"submatches":[{"match":{"text":"func"},"start":0,"end":4}]}}`
+	out, err := parseRipgrepJSON(jsonLine, 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var res grepResult
+	json.Unmarshal([]byte(out), &res)
+	if res.TotalMatches != 1 {
+		t.Errorf("total matches = %d, want 1", res.TotalMatches)
+	}
+	if len(res.Matches) != 1 {
+		t.Fatalf("matches = %d, want 1", len(res.Matches))
+	}
+	m := res.Matches[0]
+	if m.File != "main.go" {
+		t.Errorf("file = %q, want 'main.go'", m.File)
+	}
+	if m.Line != 42 {
+		t.Errorf("line = %d, want 42", m.Line)
+	}
+	if m.Column != 1 {
+		t.Errorf("column = %d, want 1 (start=0 + 1)", m.Column)
+	}
+}
+
+func TestParseRipgrepJSON_TruncatesResults(t *testing.T) {
+	var lines string
+	for i := 0; i < 10; i++ {
+		lines += `{"type":"match","data":{"path":{"text":"file.go"},"line_number":` + fmt.Sprintf("%d", i+1) + `,"lines":{"text":"line\n"},"submatches":[]}}` + "\n"
+	}
+	out, err := parseRipgrepJSON(lines, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var res grepResult
+	json.Unmarshal([]byte(out), &res)
+	if res.TotalMatches != 10 {
+		t.Errorf("total = %d, want 10", res.TotalMatches)
+	}
+	if len(res.Matches) != 3 {
+		t.Errorf("matches = %d, want 3 (max)", len(res.Matches))
+	}
+	if !res.Truncated {
+		t.Error("expected truncated=true")
+	}
+}
+
+func TestParseRipgrepJSON_SkipsNonMatch(t *testing.T) {
+	input := `{"type":"begin","data":{"path":{"text":"file.go"}}}
+{"type":"match","data":{"path":{"text":"file.go"},"line_number":1,"lines":{"text":"hello\n"},"submatches":[]}}
+{"type":"end","data":{"path":{"text":"file.go"},"stats":{}}}
+{"type":"summary","data":{}}`
+	out, err := parseRipgrepJSON(input, 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var res grepResult
+	json.Unmarshal([]byte(out), &res)
+	if res.TotalMatches != 1 {
+		t.Errorf("total = %d, want 1 (only match events)", res.TotalMatches)
+	}
+}
+
+func TestParseRipgrepJSON_InvalidJSON(t *testing.T) {
+	input := "not json\n{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"f.go\"},\"line_number\":1,\"lines\":{\"text\":\"x\\n\"},\"submatches\":[]}}"
+	out, err := parseRipgrepJSON(input, 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var res grepResult
+	json.Unmarshal([]byte(out), &res)
+	// Should skip the bad line and parse the good one.
+	if res.TotalMatches != 1 {
+		t.Errorf("total = %d, want 1", res.TotalMatches)
+	}
+}
+
+func TestParseRipgrepJSON_LongLine(t *testing.T) {
+	longText := strings.Repeat("x", 600) + "\n"
+	input := `{"type":"match","data":{"path":{"text":"big.go"},"line_number":1,"lines":{"text":"` + strings.Repeat("x", 600) + `\n"},"submatches":[]}}`
+	_ = longText
+	out, err := parseRipgrepJSON(input, 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var res grepResult
+	json.Unmarshal([]byte(out), &res)
+	if len(res.Matches) != 1 {
+		t.Fatalf("expected 1 match")
+	}
+	if len(res.Matches[0].Text) > 510 {
+		t.Errorf("text should be truncated, len = %d", len(res.Matches[0].Text))
 	}
 }
