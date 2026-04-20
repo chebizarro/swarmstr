@@ -75,6 +75,11 @@ type FleetEntry struct {
 	Tools             []string `json:"tools,omitempty"`
 	ContextVMFeatures []string `json:"contextvm_features,omitempty"`
 	Relays            []string `json:"relays,omitempty"`
+	// FIPS mesh transport fields (populated from NIP-51 "fips" tags or
+	// kind:30317 capability events).
+	FIPSEnabled   bool   `json:"fips_enabled,omitempty"`
+	FIPSIPv6Addr  string `json:"fips_ipv6_addr,omitempty"`
+	FIPSTransport string `json:"fips_transport,omitempty"`
 }
 
 // FleetDirectoryFunc returns the current set of known fleet agents.
