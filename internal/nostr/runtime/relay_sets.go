@@ -225,7 +225,7 @@ func RelaySetSelfSync(ctx context.Context, opts RelaySetSyncOptions) error {
 		events, eoseCh := opts.Pool.SubscribeManyNotifyEOSE(
 			ctx, opts.Relays, filter, nostr.SubscriptionOptions{},
 		)
-		eoseDone := false
+		// eoseCh is nil'd after EOSE to prevent busy-loop (closed channels return immediately).
 		for {
 			select {
 			case re, ok := <-events:
@@ -243,21 +243,19 @@ func RelaySetSelfSync(ctx context.Context, opts RelaySetSyncOptions) error {
 					}
 				}
 				opts.Registry.applyFromEvent(list)
-				if eoseDone {
+				if eoseCh == nil { // post-EOSE: log live updates
 					relays := nip51.RelaysFromList(list)
 					log.Printf("relay-set-sync: live update d=%q relays=%v", list.DTag, relays)
 				}
 			case <-eoseCh:
-				if !eoseDone {
-					eoseDone = true
-					sets := opts.Registry.All()
-					dtags := make([]string, 0, len(sets))
-					for d := range sets {
-						dtags = append(dtags, d)
-					}
-					log.Printf("relay-set-sync: EOSE — loaded %d relay sets: %s",
-						len(sets), strings.Join(dtags, ", "))
+				eoseCh = nil // prevent busy-loop: closed channel returns immediately
+				sets := opts.Registry.All()
+				dtags := make([]string, 0, len(sets))
+				for d := range sets {
+					dtags = append(dtags, d)
 				}
+				log.Printf("relay-set-sync: EOSE — loaded %d relay sets: %s",
+					len(sets), strings.Join(dtags, ", "))
 			case <-ctx.Done():
 				return
 			}
