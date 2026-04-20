@@ -385,10 +385,11 @@ func TestDisruption_WatchSinceJitterDoesNotGoNegative(t *testing.T) {
 // ─── 7. NIP-17 backdated event recovery ─────────────────────────────────────
 
 func TestDisruption_NIP17BackfillWindowCoversBackdating(t *testing.T) {
-	// NIP-59 backdates gift wraps by up to ~10 hours. The backfill window
-	// must be at least 10 hours to catch them.
-	if NIP17GiftWrapBackfill < 10*time.Hour {
-		t.Fatalf("NIP17GiftWrapBackfill = %v, should be >= 10h", NIP17GiftWrapBackfill)
+	// NIP-59 backdates gift wraps by up to ~10 hours in the reference impl,
+	// but real-world clients may backdate by 24-48h+. The backfill window
+	// must be large enough to cover aggressive clients.
+	if NIP17GiftWrapBackfill < 48*time.Hour {
+		t.Fatalf("NIP17GiftWrapBackfill = %v, should be >= 48h", NIP17GiftWrapBackfill)
 	}
 }
 
@@ -515,14 +516,14 @@ func TestDisruption_NIP17NormalizeSinceAfterPoolReconnect(t *testing.T) {
 
 func TestDisruption_NIP17BackdatedEventSurvivesRefreshCycle(t *testing.T) {
 	// After a refresh cycle, the new since should be old enough to
-	// capture the maximum NIP-59 backdated event.
+	// capture the maximum real-world backdated event.
 	//
-	// NIP-59 backdating: up to 60 * rand.Int63n(600) seconds = ~599 minutes ≈ ~10h.
-	// Backfill window: 10h5m = 605 minutes.
-	// After refresh: since = now - 605 minutes.
-	// A maximally backdated event: created_at = now - 599 minutes.
-	// We need: since <= created_at, i.e. 605 >= 599. ✓
-	maxBackdateSeconds := int64(599 * 60)
+	// Real-world clients may backdate by up to ~48h.
+	// Backfill window: 49h.
+	// After refresh: since = now - 49h.
+	// A maximally backdated event (48h): created_at = now - 48h.
+	// We need: since <= created_at, i.e. 49h >= 48h. ✓
+	maxBackdateSeconds := int64(48 * 3600)
 	nowUnix := time.Now().Unix()
 	since := normalizeNIP17Since(nowUnix)
 

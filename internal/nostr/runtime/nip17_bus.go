@@ -34,10 +34,12 @@ import (
 )
 
 const (
-	// NIP-59 gift wraps are intentionally backdated. Our current producer path
-	// may skew CreatedAt by up to 599 minutes, so subscribe far enough back that
-	// valid inbound gift-wrap events are still seen after unwrap.
-	nip17GiftWrapBackfill = 10*time.Hour + 5*time.Minute
+	// NIP-59 gift wraps are intentionally backdated. The reference implementation
+	// skews CreatedAt by up to 599 minutes (~10h), but real-world clients (e.g.
+	// Amethyst, Primal) may backdate by 24-48 hours or more. The NIP-59 spec
+	// imposes no upper bound on backdating. We use 49 hours to safely cover
+	// aggressive clients while keeping the subscription window practical.
+	nip17GiftWrapBackfill = 49 * time.Hour
 
 	// nip17ReconnectBackoffMin is the initial backoff for per-relay reconnection.
 	nip17ReconnectBackoffMin = 3 * time.Second
