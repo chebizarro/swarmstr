@@ -105,6 +105,8 @@ type WorkerMetadata struct {
 	// TurnResult carries canonical terminal completion metadata aligned with the
 	// shared runtime taxonomy.
 	TurnResult *agent.TurnResultMetadata `json:"turn_result,omitempty"`
+	// TransportUsed records which transport delivered this result (fips, nip17, nip04).
+	TransportUsed string `json:"transport_used,omitempty"`
 }
 
 type ResultPayload struct {

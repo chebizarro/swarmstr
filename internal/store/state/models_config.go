@@ -163,6 +163,8 @@ func ParseACPTransportMode(raw string) (string, bool) {
 		return "nip17", true
 	case "nip04", "nip-04":
 		return "nip04", true
+	case "fips":
+		return "fips", true
 	default:
 		return "", false
 	}
