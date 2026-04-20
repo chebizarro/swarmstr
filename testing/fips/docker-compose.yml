@@ -1,0 +1,162 @@
+# docker-compose.yml — 3-node FIPS mesh integration test topology
+#
+# Topology:
+#   Agent-A ↔ FIPS-relay ↔ Agent-B
+#
+# Each agent runs metiqd + FIPS sidecar in a shared network namespace.
+# The FIPS relay is a pure routing node (no metiqd) that bridges A ↔ B.
+#
+# Usage:
+#   cd testing/fips
+#   docker compose up -d
+#   ./scripts/run-tests.sh
+#   docker compose down -v
+#
+# Keypairs are loaded from fixtures/keys.json (well-known test vectors).
+# The FIPS config for each node uses the corresponding privkey for identity.
+#
+# Requirements:
+#   - FIPS daemon image: ghcr.io/jmcorgan/fips:latest
+#   - metiqd image built with: -tags experimental_fips
+#   - Docker with IPv6 support enabled
+
+services:
+
+  # ── FIPS relay node (pure mesh router, no agent) ─────────────────────────
+  fips-relay:
+    image: ghcr.io/jmcorgan/fips:latest
+    restart: "no"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ./configs/fips-relay.yaml:/etc/fips/fips.yaml:ro
+    ports:
+      - "2121:2121/udp"
+    healthcheck:
+      test: ["CMD", "fipsctl", "status"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    networks:
+      mesh:
+        ipv4_address: 172.28.0.10
+
+  # ── Agent A: FIPS sidecar ────────────────────────────────────────────────
+  fips-a:
+    image: ghcr.io/jmcorgan/fips:latest
+    restart: "no"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ./configs/fips-a.yaml:/etc/fips/fips.yaml:ro
+    ports:
+      - "2122:2121/udp"
+    depends_on:
+      fips-relay:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "fipsctl", "status"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    networks:
+      mesh:
+        ipv4_address: 172.28.0.11
+
+  # Agent A: metiqd (FIPS-enabled, shared network namespace with fips-a)
+  agent-a:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        METIQ_BUILD_TAGS: "experimental_fips"
+    image: metiq/metiqd-fips-test:latest
+    restart: "no"
+    network_mode: "service:fips-a"
+    depends_on:
+      fips-a:
+        condition: service_healthy
+    env_file:
+      - ./configs/agent-a.env
+    environment:
+      HOME: /data
+      METIQ_FIPS_ENABLED: "true"
+      METIQ_FIPS_PREFERENCE: "fips-first"
+    volumes:
+      - agent-a-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7423/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ── Agent B: FIPS sidecar ────────────────────────────────────────────────
+  fips-b:
+    image: ghcr.io/jmcorgan/fips:latest
+    restart: "no"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ./configs/fips-b.yaml:/etc/fips/fips.yaml:ro
+    ports:
+      - "2123:2121/udp"
+    depends_on:
+      fips-relay:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "fipsctl", "status"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    networks:
+      mesh:
+        ipv4_address: 172.28.0.12
+
+  # Agent B: metiqd (FIPS-enabled, shared network namespace with fips-b)
+  agent-b:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        METIQ_BUILD_TAGS: "experimental_fips"
+    image: metiq/metiqd-fips-test:latest
+    restart: "no"
+    network_mode: "service:fips-b"
+    depends_on:
+      fips-b:
+        condition: service_healthy
+    env_file:
+      - ./configs/agent-b.env
+    environment:
+      HOME: /data
+      METIQ_FIPS_ENABLED: "true"
+      METIQ_FIPS_PREFERENCE: "fips-first"
+    volumes:
+      - agent-b-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7423/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  agent-a-data:
+  agent-b-data:
+
+networks:
+  mesh:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
