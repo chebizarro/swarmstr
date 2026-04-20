@@ -32,6 +32,14 @@ type BootstrapConfig struct {
 	// to context window sizes in tokens. Merged with the built-in registry at
 	// daemon startup. Example: {"phi-3": 4096, "my-finetuned-llama": 8192}
 	ModelContextOverrides map[string]int `json:"model_context_overrides,omitempty"`
+
+	// FIPSEnabled activates the experimental FIPS mesh transport at the
+	// bootstrap level. The agent will attempt to connect to the local FIPS
+	// daemon on startup. Requires the experimental_fips build tag.
+	FIPSEnabled bool `json:"fips_enabled,omitempty"`
+
+	// FIPSControlSocket overrides the default FIPS daemon control socket path.
+	FIPSControlSocket string `json:"fips_control_socket,omitempty"`
 }
 
 func (c BootstrapConfig) EffectiveStateKind() events.Kind {

@@ -446,6 +446,42 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		doc.ACP = acp
 	}
 
+	// ── fips (typed) ──────────────────────────────────────────────────────────
+	if fipsRaw, ok := raw["fips"].(map[string]any); ok {
+		fips := state.FIPSConfig{}
+		if v, ok := fipsRaw["enabled"].(bool); ok {
+			fips.Enabled = v
+		}
+		if v, ok := fipsRaw["control_socket"].(string); ok {
+			fips.ControlSocket = strings.TrimSpace(v)
+		}
+		if v, ok := fipsRaw["agent_port"].(float64); ok {
+			fips.AgentPort = int(v)
+		}
+		if v, ok := fipsRaw["control_port"].(float64); ok {
+			fips.ControlPort = int(v)
+		}
+		if v, ok := fipsRaw["transport_pref"].(string); ok {
+			fips.TransportPref = strings.TrimSpace(v)
+		}
+		if v, ok := fipsRaw["peers"].([]any); ok {
+			for _, p := range v {
+				if s, ok := p.(string); ok {
+					if trimmed := strings.TrimSpace(s); trimmed != "" {
+						fips.Peers = append(fips.Peers, trimmed)
+					}
+				}
+			}
+		}
+		if v, ok := fipsRaw["conn_timeout"].(string); ok {
+			fips.ConnTimeout = strings.TrimSpace(v)
+		}
+		if v, ok := fipsRaw["reach_cache_ttl"].(string); ok {
+			fips.ReachCacheTTL = strings.TrimSpace(v)
+		}
+		doc.FIPS = fips
+	}
+
 	// ── session (typed) ───────────────────────────────────────────────────────
 	if sessionRaw, ok := raw["session"].(map[string]any); ok {
 		sess := state.SessionConfig{}
