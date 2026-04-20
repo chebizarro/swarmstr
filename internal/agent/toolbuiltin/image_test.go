@@ -113,22 +113,8 @@ func TestImageTool_URLFetch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	var capturedTurn agent.Turn
-	rt := &mockRuntime{fn: func(turn agent.Turn) (agent.TurnResult, error) {
-		capturedTurn = turn
-		return agent.TurnResult{Text: "a JPEG image"}, nil
-	}}
-
-	tool := ImageTool(rt, ImageOpts{AllowedRoots: nil})
-	// Use allow_local via SSRF-bypassing URL (test server is local).
-	// We must use the ValidateFetchURL bypass — patch AllowLocal in opts:
-	// The httptest server runs on 127.0.0.1; we need to allow local for the test.
-	tool2 := ImageTool(rt, ImageOpts{})
-	// Temporarily disable SSRF check by constructing with AllowedRoots nil.
-	// Instead, directly test the image fetch path by calling fetchImageURL.
-	_ = tool
-	_ = tool2
-
+	// Test the image fetch path directly (the tool-level call requires SSRF
+	// bypass for local httptest, which is not exposed via ImageOpts).
 	data, mime, err := fetchImageURL(context.Background(), srv.URL, defaultImageMaxBytes)
 	if err != nil {
 		t.Fatalf("fetchImageURL error: %v", err)
@@ -139,9 +125,6 @@ func TestImageTool_URLFetch(t *testing.T) {
 	if len(data) != len(imgBytes) {
 		t.Errorf("expected %d bytes, got %d", len(imgBytes), len(data))
 	}
-
-	// Now test full tool flow with a custom runtime-wrapping test.
-	_ = capturedTurn
 }
 
 func TestImageTool_DefaultPrompt(t *testing.T) {

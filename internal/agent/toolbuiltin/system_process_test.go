@@ -279,10 +279,8 @@ func TestProcessRegistry_CleanupSession(t *testing.T) {
 	reg := NewProcessRegistry()
 	defer reg.Shutdown()
 
-	id1, _ := reg.spawn(context.Background(), "session-a", "sleep 60", "")
-	id2, _ := reg.spawn(context.Background(), "session-b", "sleep 60", "")
-	_ = id1
-	_ = id2
+	_, _ = reg.spawn(context.Background(), "session-a", "sleep 60", "")
+	_, _ = reg.spawn(context.Background(), "session-b", "sleep 60", "")
 
 	reg.CleanupSession("session-a")
 

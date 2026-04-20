@@ -237,9 +237,7 @@ func TestParseRipgrepJSON_InvalidJSON(t *testing.T) {
 }
 
 func TestParseRipgrepJSON_LongLine(t *testing.T) {
-	longText := strings.Repeat("x", 600) + "\n"
 	input := `{"type":"match","data":{"path":{"text":"big.go"},"line_number":1,"lines":{"text":"` + strings.Repeat("x", 600) + `\n"},"submatches":[]}}`
-	_ = longText
 	out, err := parseRipgrepJSON(input, 50)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
