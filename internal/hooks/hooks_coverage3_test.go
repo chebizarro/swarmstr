@@ -3,14 +3,14 @@ package hooks
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-// ─── RegisterBundledHandlers ─────────────────────────────────────────────────
+// ─── RegisterBundledHandlers ─────────────���───────────────────────────────────
 
 func TestRegisterBundledHandlers_AttachesHandlers(t *testing.T) {
-	// Create a manager with four bundled hooks matching the four known keys.
 	mgr := NewManager()
 	for _, key := range []string{"session-memory", "bootstrap-extra-files", "command-logger", "boot-md"} {
 		mgr.Register(&Hook{
@@ -26,7 +26,6 @@ func TestRegisterBundledHandlers_AttachesHandlers(t *testing.T) {
 		})
 	}
 
-	// Before registration, all handlers should be nil.
 	for _, h := range mgr.hooks {
 		if h.Handler != nil {
 			t.Fatalf("hook %s should have nil handler before registration", h.HookKey)
@@ -39,10 +38,46 @@ func TestRegisterBundledHandlers_AttachesHandlers(t *testing.T) {
 	}
 	RegisterBundledHandlers(mgr, opts)
 
-	// After registration, all four should have handlers.
 	for _, h := range mgr.hooks {
 		if h.Handler == nil {
 			t.Errorf("hook %s should have a handler after registration", h.HookKey)
+		}
+	}
+}
+
+func TestRegisterBundledHandlers_HandlersAreCallable(t *testing.T) {
+	mgr := NewManager()
+	for _, key := range []string{"session-memory", "bootstrap-extra-files", "command-logger", "boot-md"} {
+		mgr.Register(&Hook{
+			HookKey: key,
+			Source:  SourceBundled,
+			Manifest: HookManifest{
+				Metadata: &HookMetaWrap{
+					OpenClaw: &OpenClawHookMeta{Events: []string{"command:new"}},
+				},
+			},
+		})
+	}
+
+	opts := BundledHandlerOpts{
+		WorkspaceDir: func() string { return t.TempDir() },
+		LogDir:       t.TempDir(),
+	}
+	RegisterBundledHandlers(mgr, opts)
+
+	// Verify each attached handler is callable without error on a benign event.
+	for _, h := range mgr.hooks {
+		ev := &Event{
+			EventType:  "command",
+			Action:     "new",
+			Name:       "command:new",
+			SessionKey: "test",
+			Context:    map[string]any{},
+			Timestamp:  time.Now(),
+			Messages:   []string{},
+		}
+		if err := h.Handler(ev); err != nil {
+			t.Errorf("hook %s handler returned error: %v", h.HookKey, err)
 		}
 	}
 }
@@ -51,7 +86,7 @@ func TestRegisterBundledHandlers_SkipsNonBundled(t *testing.T) {
 	mgr := NewManager()
 	mgr.Register(&Hook{
 		HookKey: "session-memory",
-		Source:  SourceManaged, // not bundled — should be skipped
+		Source:  SourceManaged,
 	})
 
 	RegisterBundledHandlers(mgr, BundledHandlerOpts{})
@@ -75,22 +110,38 @@ func TestRegisterBundledHandlers_UnknownKeyNoHandler(t *testing.T) {
 	}
 }
 
-// ─── makeBootMDHandler ───────────────────────────────────────────────────────
+// ─── makeBootMDHandler ────────────────────────────────────────────────���──────
 
-func TestBootMDHandler_WrongEvent(t *testing.T) {
+func TestBootMDHandler_WrongEventType(t *testing.T) {
 	called := false
 	opts := BundledHandlerOpts{
 		RunBootMD: func(string, string) error { called = true; return nil },
 	}
 	handler := makeBootMDHandler(opts)
 
-	// Wrong event type.
 	ev := &Event{EventType: "command", Action: "new"}
 	if err := handler(ev); err != nil {
 		t.Fatal(err)
 	}
 	if called {
-		t.Error("RunBootMD should not be called for non-gateway:startup event")
+		t.Error("RunBootMD should not be called for non-gateway event")
+	}
+}
+
+func TestBootMDHandler_WrongAction(t *testing.T) {
+	called := false
+	opts := BundledHandlerOpts{
+		RunBootMD: func(string, string) error { called = true; return nil },
+	}
+	handler := makeBootMDHandler(opts)
+
+	// Right event type, wrong action.
+	ev := &Event{EventType: "gateway", Action: "shutdown"}
+	if err := handler(ev); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Error("RunBootMD should not be called for gateway:shutdown")
 	}
 }
 
@@ -127,6 +178,27 @@ func TestBootMDHandler_NoBootFile(t *testing.T) {
 	}
 	if called {
 		t.Error("RunBootMD should not be called when BOOT.md doesn't exist")
+	}
+}
+
+func TestBootMDHandler_UnreadableBootFile(t *testing.T) {
+	dir := t.TempDir()
+	bootPath := filepath.Join(dir, "BOOT.md")
+	os.WriteFile(bootPath, []byte("content"), 0o644)
+	os.Chmod(bootPath, 0o000)
+	t.Cleanup(func() { os.Chmod(bootPath, 0o644) })
+
+	handler := makeBootMDHandler(BundledHandlerOpts{
+		WorkspaceDir: func() string { return dir },
+	})
+
+	ev := &Event{EventType: "gateway", Action: "startup"}
+	err := handler(ev)
+	if err == nil {
+		t.Fatal("expected error when BOOT.md is unreadable")
+	}
+	if !strings.Contains(err.Error(), "boot-md") {
+		t.Errorf("error should mention 'boot-md', got: %v", err)
 	}
 }
 
@@ -191,7 +263,7 @@ func TestBootMDHandler_NilRunBootMD(t *testing.T) {
 	}
 }
 
-// ─── makeBootstrapExtraFilesHandler ──────────────────────────────────────────
+// ─── makeBootstrapExtraFilesHandler ──────────────��───────────────────────────
 
 func TestBootstrapExtraFilesHandler_WrongEvent(t *testing.T) {
 	handler := makeBootstrapExtraFilesHandler(BundledHandlerOpts{})
@@ -238,28 +310,27 @@ func TestBootstrapExtraFilesHandler_NoPatterns(t *testing.T) {
 
 func TestBootstrapExtraFilesHandler_PatternsFromStringSlice(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "README.md"), []byte("hello"), 0o644)
 
 	var resolvedPaths []string
 	handler := makeBootstrapExtraFilesHandler(BundledHandlerOpts{
 		WorkspaceDir: func() string { return dir },
 		ResolvePaths: func(wd string, patterns []string) ([]string, error) {
 			resolvedPaths = patterns
-			return nil, nil // return empty to test the "no resolved" path
+			return nil, nil
 		},
 	})
 	ev := &Event{
 		EventType: "agent",
 		Action:    "bootstrap",
 		Context: map[string]any{
-			"paths": []string{"*.md"},
+			"paths": []string{"*.md", "*.txt"},
 		},
 	}
 	if err := handler(ev); err != nil {
 		t.Fatal(err)
 	}
-	if len(resolvedPaths) != 1 || resolvedPaths[0] != "*.md" {
-		t.Errorf("expected patterns [*.md], got %v", resolvedPaths)
+	if len(resolvedPaths) != 2 || resolvedPaths[0] != "*.md" || resolvedPaths[1] != "*.txt" {
+		t.Errorf("expected patterns [*.md *.txt], got %v", resolvedPaths)
 	}
 }
 
@@ -315,52 +386,115 @@ func TestBootstrapExtraFilesHandler_FilesKeyUsed(t *testing.T) {
 	}
 }
 
-func TestBootstrapExtraFilesHandler_FallbackGlob(t *testing.T) {
-	// Test the fallback path when ResolvePaths is nil — uses filepath.Glob.
+func TestBootstrapExtraFilesHandler_FallbackGlob_ResolvesFiles(t *testing.T) {
+	// When ResolvePaths is nil, the handler uses filepath.Glob directly.
+	// Use a recognized bootstrap filename so LoadResolvedBootstrapFiles
+	// accepts it end-to-end and sets bootstrapFiles on the context.
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "test.txt"), []byte("hi"), 0o644)
-
-	handler := makeBootstrapExtraFilesHandler(BundledHandlerOpts{
-		WorkspaceDir: func() string { return dir },
-		ResolvePaths: nil, // use built-in glob
-	})
-	ev := &Event{
-		EventType: "agent",
-		Action:    "bootstrap",
-		Context: map[string]any{
-			"paths": []string{filepath.Join(dir, "*.txt")},
-		},
-	}
-	// The glob will match test.txt, but LoadResolvedBootstrapFiles
-	// will likely reject it (unrecognized basename). That's fine — we're
-	// testing the glob path, not the file loading.
-	if err := handler(ev); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestBootstrapExtraFilesHandler_AbsoluteAndRelativeGlob(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("stuff"), 0o644)
+	os.WriteFile(filepath.Join(dir, "BOOTSTRAP.md"), []byte("# Bootstrap content"), 0o644)
 
 	handler := makeBootstrapExtraFilesHandler(BundledHandlerOpts{
 		WorkspaceDir: func() string { return dir },
 		ResolvePaths: nil,
 	})
-	// Relative path should be joined with workspaceDir.
 	ev := &Event{
 		EventType: "agent",
 		Action:    "bootstrap",
 		Context: map[string]any{
-			"paths": []string{"*.txt"},
+			"paths": []string{filepath.Join(dir, "BOOTSTRAP.md")},
 		},
 	}
 	if err := handler(ev); err != nil {
 		t.Fatal(err)
 	}
+	// LoadResolvedBootstrapFiles should accept BOOTSTRAP.md and set context.
+	bf, ok := ev.Context["bootstrapFiles"]
+	if !ok {
+		t.Fatal("expected bootstrapFiles to be set in event context")
+	}
+	// Verify at least one file was loaded.
+	if bf == nil {
+		t.Fatal("bootstrapFiles should not be nil")
+	}
 }
 
-// ─── MakeShellHandler ────────────────────────────────────────────────────────
+func TestBootstrapExtraFilesHandler_FallbackGlob_RelativePath(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("# Soul"), 0o644)
+
+	handler := makeBootstrapExtraFilesHandler(BundledHandlerOpts{
+		WorkspaceDir: func() string { return dir },
+		ResolvePaths: nil,
+	})
+	// Relative pattern — should be joined with workspaceDir.
+	ev := &Event{
+		EventType: "agent",
+		Action:    "bootstrap",
+		Context: map[string]any{
+			"paths": []string{"SOUL.md"},
+		},
+	}
+	if err := handler(ev); err != nil {
+		t.Fatal(err)
+	}
+	// Verify the glob resolved and loaded the file.
+	bf, ok := ev.Context["bootstrapFiles"]
+	if !ok {
+		t.Fatal("expected bootstrapFiles for relative glob with recognized filename")
+	}
+	if bf == nil {
+		t.Fatal("bootstrapFiles should not be nil")
+	}
+}
+
+func TestBootstrapExtraFilesHandler_FallbackGlob_UnrecognizedFile(t *testing.T) {
+	// Files with unrecognized basenames are silently skipped by
+	// LoadResolvedBootstrapFiles — verify the handler doesn't set context.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "random.txt"), []byte("data"), 0o644)
+
+	handler := makeBootstrapExtraFilesHandler(BundledHandlerOpts{
+		WorkspaceDir: func() string { return dir },
+		ResolvePaths: nil,
+	})
+	ev := &Event{
+		EventType: "agent",
+		Action:    "bootstrap",
+		Context: map[string]any{
+			"paths": []string{filepath.Join(dir, "random.txt")},
+		},
+	}
+	if err := handler(ev); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ev.Context["bootstrapFiles"]; ok {
+		t.Error("bootstrapFiles should not be set for unrecognized filenames")
+	}
+}
+
+func TestBootstrapExtraFilesHandler_ResolvePathsError(t *testing.T) {
+	// When ResolvePaths returns an error, the handler falls through to
+	// the len(resolved)==0 check and returns nil (no panic, no error).
+	dir := t.TempDir()
+	handler := makeBootstrapExtraFilesHandler(BundledHandlerOpts{
+		WorkspaceDir: func() string { return dir },
+		ResolvePaths: func(wd string, patterns []string) ([]string, error) {
+			return nil, os.ErrPermission
+		},
+	})
+	ev := &Event{
+		EventType: "agent",
+		Action:    "bootstrap",
+		Context: map[string]any{
+			"paths": []string{"*.md"},
+		},
+	}
+	if err := handler(ev); err != nil {
+		t.Fatalf("handler should not propagate ResolvePaths error, got: %v", err)
+	}
+}
+
+// ─── MakeShellHandler ──────────────────────────────────────────────��─────────
 
 func TestMakeShellHandler_Success(t *testing.T) {
 	dir := t.TempDir()
@@ -382,7 +516,6 @@ func TestMakeShellHandler_Success(t *testing.T) {
 		t.Fatalf("handler error: %v", err)
 	}
 
-	// Output should be captured as messages.
 	found := false
 	for _, msg := range ev.Messages {
 		if msg == "hook ran: command:new" {
@@ -390,14 +523,13 @@ func TestMakeShellHandler_Success(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected output message, got: %v", ev.Messages)
+		t.Errorf("expected output message 'hook ran: command:new', got: %v", ev.Messages)
 	}
 }
 
-func TestMakeShellHandler_EnvVars(t *testing.T) {
+func TestMakeShellHandler_AllEnvVars(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "handler.sh")
-	// Script prints all HOOK_ env vars
 	os.WriteFile(script, []byte(`#!/bin/sh
 echo "TYPE=$HOOK_TYPE"
 echo "ACTION=$HOOK_ACTION"
@@ -432,27 +564,28 @@ echo "CONTENT=$HOOK_CONTENT"
 		t.Fatalf("handler error: %v", err)
 	}
 
-	expected := map[string]bool{
-		"TYPE=message":                  false,
-		"ACTION=received":              false,
-		"SESSION=sess-42":              false,
-		"FROM=pubkey-sender":           false,
-		"TO=pubkey-receiver":           false,
-		"EID=eid-123":                  false,
-		"RELAY=wss://relay.example.com": false,
-		"CHAN=nostr":                    false,
-		"CONTENT=hello world":          false,
+	expected := []string{
+		"TYPE=message",
+		"ACTION=received",
+		"SESSION=sess-42",
+		"FROM=pubkey-sender",
+		"TO=pubkey-receiver",
+		"EID=eid-123",
+		"RELAY=wss://relay.example.com",
+		"CHAN=nostr",
+		"CONTENT=hello world",
 	}
 
-	for _, msg := range ev.Messages {
-		if _, ok := expected[msg]; ok {
-			expected[msg] = true
+	for _, want := range expected {
+		found := false
+		for _, msg := range ev.Messages {
+			if msg == want {
+				found = true
+				break
+			}
 		}
-	}
-
-	for k, found := range expected {
 		if !found {
-			t.Errorf("missing env var output: %s", k)
+			t.Errorf("missing env var output: %s (got messages: %v)", want, ev.Messages)
 		}
 	}
 }
@@ -473,6 +606,14 @@ func TestMakeShellHandler_NonZeroExit(t *testing.T) {
 	err := handler(ev)
 	if err == nil {
 		t.Fatal("expected error from non-zero exit")
+	}
+	// Error should contain the script name and the stdout output.
+	errStr := err.Error()
+	if !strings.Contains(errStr, "handler.sh") {
+		t.Errorf("error should contain script name, got: %s", errStr)
+	}
+	if !strings.Contains(errStr, "oops") {
+		t.Errorf("error should contain script output, got: %s", errStr)
 	}
 }
 
@@ -497,7 +638,102 @@ func TestMakeShellHandler_NoContextKeys(t *testing.T) {
 	}
 }
 
-// ─── AttachShellHandlers ─────────────────────────────────────────────────────
+func TestMakeShellHandler_MultiLineOutput(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "handler.sh")
+	os.WriteFile(script, []byte("#!/bin/sh\necho line1\necho line2\necho line3\n"), 0o755)
+
+	handler := MakeShellHandler(script)
+	ev := &Event{
+		Name:      "test:multi",
+		Timestamp: time.Now(),
+		Context:   map[string]any{},
+		Messages:  []string{},
+	}
+
+	if err := handler(ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d: %v", len(ev.Messages), ev.Messages)
+	}
+	if ev.Messages[0] != "line1" || ev.Messages[1] != "line2" || ev.Messages[2] != "line3" {
+		t.Errorf("messages = %v", ev.Messages)
+	}
+}
+
+func TestMakeShellHandler_EmptyOutput(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "handler.sh")
+	os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755)
+
+	handler := MakeShellHandler(script)
+	ev := &Event{
+		Name:      "test:empty",
+		Timestamp: time.Now(),
+		Context:   map[string]any{},
+		Messages:  []string{},
+	}
+
+	if err := handler(ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.Messages) != 0 {
+		t.Errorf("expected no messages for empty output, got: %v", ev.Messages)
+	}
+}
+
+func TestMakeShellHandler_TimestampEnvVar(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "handler.sh")
+	os.WriteFile(script, []byte("#!/bin/sh\necho \"TS=$HOOK_TIMESTAMP\"\n"), 0o755)
+
+	handler := MakeShellHandler(script)
+	ts := time.Date(2025, 6, 15, 10, 30, 0, 0, time.UTC)
+	ev := &Event{
+		Name:      "test:ts",
+		Timestamp: ts,
+		Context:   map[string]any{},
+		Messages:  []string{},
+	}
+
+	if err := handler(ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %v", ev.Messages)
+	}
+	if !strings.Contains(ev.Messages[0], "2025-06-15T10:30:00Z") {
+		t.Errorf("expected RFC3339 timestamp in output, got: %s", ev.Messages[0])
+	}
+}
+
+func TestMakeShellHandler_ContextJSON(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "handler.sh")
+	os.WriteFile(script, []byte("#!/bin/sh\necho \"CTX=$HOOK_CONTEXT\"\n"), 0o755)
+
+	handler := MakeShellHandler(script)
+	ev := &Event{
+		Name:      "test:ctx",
+		Timestamp: time.Now(),
+		Context:   map[string]any{"key": "value"},
+		Messages:  []string{},
+	}
+
+	if err := handler(ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %v", ev.Messages)
+	}
+	// HOOK_CONTEXT should be JSON-encoded.
+	if !strings.Contains(ev.Messages[0], `"key"`) || !strings.Contains(ev.Messages[0], `"value"`) {
+		t.Errorf("HOOK_CONTEXT should be JSON, got: %s", ev.Messages[0])
+	}
+}
+
+// ─── AttachShellHandlers ──────────────────────────────────────────���──────────
 
 func TestAttachShellHandlers_AttachesScript(t *testing.T) {
 	dir := t.TempDir()
@@ -524,7 +760,21 @@ func TestAttachShellHandlers_AttachesScript(t *testing.T) {
 	AttachShellHandlers(mgr)
 
 	if mgr.hooks[0].Handler == nil {
-		t.Error("handler should be attached after AttachShellHandlers")
+		t.Fatal("handler should be attached after AttachShellHandlers")
+	}
+
+	// Verify the attached handler actually works.
+	ev := &Event{
+		Name:      "test:event",
+		Timestamp: time.Now(),
+		Context:   map[string]any{},
+		Messages:  []string{},
+	}
+	if err := mgr.hooks[0].Handler(ev); err != nil {
+		t.Fatalf("attached handler returned error: %v", err)
+	}
+	if len(ev.Messages) != 1 || ev.Messages[0] != "hi" {
+		t.Errorf("expected [hi], got %v", ev.Messages)
 	}
 }
 
@@ -534,7 +784,8 @@ func TestAttachShellHandlers_SkipsExistingHandler(t *testing.T) {
 	os.MkdirAll(hookDir, 0o755)
 	os.WriteFile(filepath.Join(hookDir, "handler.sh"), []byte("#!/bin/sh\necho other\n"), 0o755)
 
-	original := HookHandler(func(ev *Event) error { return nil })
+	originalCalled := false
+	original := HookHandler(func(ev *Event) error { originalCalled = true; return nil })
 	mgr := NewManager()
 	mgr.Register(&Hook{
 		HookKey: "my-hook",
@@ -545,9 +796,11 @@ func TestAttachShellHandlers_SkipsExistingHandler(t *testing.T) {
 
 	AttachShellHandlers(mgr)
 
-	// Handler should still be the original, not replaced.
-	if mgr.hooks[0].Handler == nil {
-		t.Error("handler should not have been cleared")
+	// Verify the original handler is preserved.
+	ev := &Event{Name: "test", Timestamp: time.Now(), Context: map[string]any{}, Messages: []string{}}
+	mgr.hooks[0].Handler(ev)
+	if !originalCalled {
+		t.Error("original handler should still be the one called")
 	}
 }
 
@@ -570,7 +823,6 @@ func TestAttachShellHandlers_SkipsMissingScript(t *testing.T) {
 	dir := t.TempDir()
 	hookDir := filepath.Join(dir, "no-script-hook")
 	os.MkdirAll(hookDir, 0o755)
-	// No handler.sh here.
 
 	mgr := NewManager()
 	mgr.Register(&Hook{
@@ -586,33 +838,46 @@ func TestAttachShellHandlers_SkipsMissingScript(t *testing.T) {
 	}
 }
 
-// ─── BundledHooksDir additional paths ────────────────────────────────────────
+// ─── BundledHooksDir walk-up path ────────────────────────────────────────────
 
-func TestBundledHooksDir_BinarySibling(t *testing.T) {
-	// Clear the env override so the function falls through.
-	t.Setenv("METIQ_BUNDLED_HOOKS_DIR", "")
-
-	// The binary sibling and cwd walk-up are difficult to control in unit
-	// tests because they depend on the test binary location. We verify the
-	// function runs without panic and returns a string.
-	result := BundledHooksDir()
-	_ = result // may be "" in test environment — that's fine
-}
-
-func TestBundledHooksDir_WalkUpFindsHooksDir(t *testing.T) {
+func TestBundledHooksDir_CwdWalkUp(t *testing.T) {
+	// Create a directory tree: root/hooks/my-hook/HOOK.md
+	// Then chdir into root/sub/deep and verify walk-up finds hooks/.
 	root := t.TempDir()
 	hooksDir := filepath.Join(root, "hooks", "my-hook")
 	os.MkdirAll(hooksDir, 0o755)
 	os.WriteFile(filepath.Join(hooksDir, "HOOK.md"), []byte("---\nname: test\n---\n"), 0o644)
 
-	t.Setenv("METIQ_BUNDLED_HOOKS_DIR", filepath.Join(root, "hooks"))
+	deepDir := filepath.Join(root, "sub", "deep")
+	os.MkdirAll(deepDir, 0o755)
+
+	t.Setenv("METIQ_BUNDLED_HOOKS_DIR", "")
+	t.Chdir(deepDir)
+
 	got := BundledHooksDir()
-	if got != filepath.Join(root, "hooks") {
-		t.Errorf("expected %q, got %q", filepath.Join(root, "hooks"), got)
+	want := filepath.Join(root, "hooks")
+	if got != want {
+		t.Errorf("walk-up should find %q, got %q", want, got)
 	}
 }
 
-// ─── ManagedHooksDir default path ────────────────────────────────────────────
+func TestBundledHooksDir_NoHooksAnywhere(t *testing.T) {
+	// In a fresh temp dir with no hooks/ subdirectory anywhere in the
+	// ancestor chain, the walk-up loop should exhaust without finding
+	// anything. The binary sibling path also won't match in test context.
+	root := t.TempDir()
+	t.Setenv("METIQ_BUNDLED_HOOKS_DIR", "")
+	t.Chdir(root)
+
+	got := BundledHooksDir()
+	// The test binary lives in a temp build dir with no hooks/ sibling,
+	// and root has no hooks/ anywhere above it. Result should be "".
+	if got != "" {
+		t.Logf("BundledHooksDir returned %q (possibly found via binary sibling); this is environment-dependent", got)
+	}
+}
+
+// ─── ManagedHooksDir default path ──────��──────────────────────────────────���──
 
 func TestManagedHooksDir_Default(t *testing.T) {
 	t.Setenv("METIQ_MANAGED_HOOKS_DIR", "")
@@ -623,11 +888,18 @@ func TestManagedHooksDir_Default(t *testing.T) {
 	if !filepath.IsAbs(got) {
 		t.Errorf("expected absolute path, got %q", got)
 	}
+	if !strings.HasSuffix(got, filepath.Join(".metiq", "hooks")) {
+		t.Errorf("expected path ending with .metiq/hooks, got %q", got)
+	}
 }
 
 // ─── Command logger additional paths ─────────────────────────────────────────
 
 func TestCommandLoggerHandler_DefaultLogDir(t *testing.T) {
+	// When LogDir is empty, it defaults to ~/.metiq/logs.
+	// Rather than writing to the real homedir, verify the handler returns
+	// nil (success) — the MkdirAll + file write is a real side effect but
+	// the handler is designed to silently succeed even if it can't write.
 	opts := BundledHandlerOpts{LogDir: ""}
 	handler := makeCommandLoggerHandler(opts)
 
@@ -640,12 +912,16 @@ func TestCommandLoggerHandler_DefaultLogDir(t *testing.T) {
 		Timestamp:  time.Now(),
 	}
 
-	// This will try to write to ~/.metiq/logs/commands.log.
-	// We just verify it doesn't panic.
-	_ = handler(ev)
+	err := handler(ev)
+	// The handler silently swallows MkdirAll/file errors, so err should be nil
+	// only if it actually wrote or if it hit the early "return nil" path.
+	// Either way, no panic and no unexpected error.
+	if err != nil {
+		t.Errorf("expected nil error even with default log dir, got: %v", err)
+	}
 }
 
-func TestCommandLoggerHandler_ContextFields(t *testing.T) {
+func TestCommandLoggerHandler_ContextFieldFiltering(t *testing.T) {
 	logDir := t.TempDir()
 	opts := BundledHandlerOpts{LogDir: logDir}
 	handler := makeCommandLoggerHandler(opts)
@@ -660,6 +936,7 @@ func TestCommandLoggerHandler_ContextFields(t *testing.T) {
 			"source":    "nostr",
 			"channelId": "ch1",
 			"secret":    "should-not-be-logged",
+			"password":  "definitely-not-logged",
 		},
 		Timestamp: time.Now(),
 	}
@@ -673,17 +950,24 @@ func TestCommandLoggerHandler_ContextFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(data)
-	if !(containsStr(s, "senderId") && containsStr(s, "source") && containsStr(s, "channelId")) {
-		t.Errorf("expected safe context fields in log, got: %s", s)
+
+	// Allowed fields should be present.
+	for _, field := range []string{"senderId", "source", "channelId"} {
+		if !strings.Contains(s, field) {
+			t.Errorf("expected safe context field %q in log, got: %s", field, s)
+		}
 	}
-	if containsStr(s, "secret") {
-		t.Errorf("should not log unknown context fields, got: %s", s)
+	// Disallowed fields should NOT be present.
+	for _, field := range []string{"secret", "password"} {
+		if strings.Contains(s, field) {
+			t.Errorf("disallowed context field %q should not be logged, got: %s", field, s)
+		}
 	}
 }
 
-// ─── Session memory additional paths ─────────────────────────────────────────
+// ─── Session memory handler edge cases ───────────────────────────────────────
 
-func TestSessionMemoryHandler_NilWorkspaceDir2(t *testing.T) {
+func TestSessionMemoryHandler_NilWorkspaceReturnsEarly(t *testing.T) {
 	handler := makeSessionMemoryHandler(BundledHandlerOpts{
 		WorkspaceDir: nil,
 	})
@@ -692,13 +976,17 @@ func TestSessionMemoryHandler_NilWorkspaceDir2(t *testing.T) {
 		Action:    "new",
 		Name:      "command:new",
 		Context:   map[string]any{},
+		Messages:  []string{},
 	}
 	if err := handler(ev); err != nil {
 		t.Fatal(err)
 	}
+	if len(ev.Messages) != 0 {
+		t.Errorf("expected no messages when WorkspaceDir is nil, got: %v", ev.Messages)
+	}
 }
 
-func TestSessionMemoryHandler_EmptyWorkspaceDir2(t *testing.T) {
+func TestSessionMemoryHandler_EmptyWorkspaceDirReturnsEarly(t *testing.T) {
 	handler := makeSessionMemoryHandler(BundledHandlerOpts{
 		WorkspaceDir: func() string { return "" },
 	})
@@ -707,9 +995,13 @@ func TestSessionMemoryHandler_EmptyWorkspaceDir2(t *testing.T) {
 		Action:    "new",
 		Name:      "command:new",
 		Context:   map[string]any{},
+		Messages:  []string{},
 	}
 	if err := handler(ev); err != nil {
 		t.Fatal(err)
+	}
+	if len(ev.Messages) != 0 {
+		t.Errorf("expected no messages when WorkspaceDir is empty, got: %v", ev.Messages)
 	}
 }
 
@@ -728,7 +1020,7 @@ func TestSessionMemoryHandler_DefaultSessionKey(t *testing.T) {
 		EventType:  "command",
 		Action:     "new",
 		Name:       "command:new",
-		SessionKey: "", // empty → should default to "main"
+		SessionKey: "",
 		Context:    map[string]any{},
 		Timestamp:  time.Now(),
 	}
@@ -767,7 +1059,34 @@ func TestSessionMemoryHandler_CustomMessageLimit(t *testing.T) {
 	}
 }
 
-func TestSessionMemoryHandler_WithSlugGenerator(t *testing.T) {
+func TestSessionMemoryHandler_DefaultMessageLimit(t *testing.T) {
+	workDir := t.TempDir()
+	var gotLimit int
+	opts := BundledHandlerOpts{
+		WorkspaceDir: func() string { return workDir },
+		GetTranscript: func(sessionKey string, limit int) ([]TranscriptMessage, error) {
+			gotLimit = limit
+			return []TranscriptMessage{{Role: "user", Content: "hi"}}, nil
+		},
+	}
+	handler := makeSessionMemoryHandler(opts)
+	ev := &Event{
+		EventType:  "command",
+		Action:     "new",
+		Name:       "command:new",
+		SessionKey: "sess1",
+		Context:    map[string]any{},
+		Timestamp:  time.Now(),
+	}
+	if err := handler(ev); err != nil {
+		t.Fatal(err)
+	}
+	if gotLimit != 15 {
+		t.Errorf("expected default limit 15, got %d", gotLimit)
+	}
+}
+
+func TestSessionMemoryHandler_SlugGeneratorUsed(t *testing.T) {
 	workDir := t.TempDir()
 	opts := BundledHandlerOpts{
 		WorkspaceDir: func() string { return workDir },
@@ -778,7 +1097,7 @@ func TestSessionMemoryHandler_WithSlugGenerator(t *testing.T) {
 			}, nil
 		},
 		GenerateSlug: func(text string) (string, error) {
-			return "test-slug", nil
+			return "custom-slug", nil
 		},
 	}
 	handler := makeSessionMemoryHandler(opts)
@@ -801,12 +1120,12 @@ func TestSessionMemoryHandler_WithSlugGenerator(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(entries))
 	}
-	if !containsStr(entries[0].Name(), "test-slug") {
+	if !strings.Contains(entries[0].Name(), "custom-slug") {
 		t.Errorf("expected slug in filename, got %q", entries[0].Name())
 	}
 }
 
-func TestSessionMemoryHandler_MessageInEvent(t *testing.T) {
+func TestSessionMemoryHandler_AppendsSaveMessage(t *testing.T) {
 	workDir := t.TempDir()
 	opts := BundledHandlerOpts{
 		WorkspaceDir: func() string { return workDir },
@@ -828,11 +1147,66 @@ func TestSessionMemoryHandler_MessageInEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(ev.Messages) != 1 {
-		t.Errorf("expected 1 message, got %d", len(ev.Messages))
+		t.Fatalf("expected 1 message, got %d", len(ev.Messages))
+	}
+	if !strings.HasPrefix(ev.Messages[0], "💾") {
+		t.Errorf("expected save emoji message, got: %s", ev.Messages[0])
+	}
+	if !strings.Contains(ev.Messages[0], "memory/") {
+		t.Errorf("expected 'memory/' path in message, got: %s", ev.Messages[0])
 	}
 }
 
-// ─── parseFrontmatter edge cases ─────────────────────────────────────────────
+func TestSessionMemoryHandler_FileContentStructure(t *testing.T) {
+	workDir := t.TempDir()
+	opts := BundledHandlerOpts{
+		WorkspaceDir: func() string { return workDir },
+		GetTranscript: func(sessionKey string, limit int) ([]TranscriptMessage, error) {
+			return []TranscriptMessage{
+				{Role: "user", Content: "What is 2+2?"},
+				{Role: "assistant", Content: "4"},
+			}, nil
+		},
+	}
+	handler := makeSessionMemoryHandler(opts)
+	ev := &Event{
+		EventType:  "command",
+		Action:     "new",
+		Name:       "command:new",
+		SessionKey: "my-session",
+		Context:    map[string]any{},
+		Timestamp:  time.Now(),
+		Messages:   []string{},
+	}
+	if err := handler(ev); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, _ := os.ReadDir(filepath.Join(workDir, "memory"))
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "memory", entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	// Verify the file contains expected structural elements.
+	if !strings.Contains(content, "# Session:") {
+		t.Errorf("missing session header in memory file")
+	}
+	if !strings.Contains(content, "my-session") {
+		t.Errorf("missing session key in memory file")
+	}
+	if !strings.Contains(content, "**user**: What is 2+2?") {
+		t.Errorf("missing user message in memory file")
+	}
+	if !strings.Contains(content, "**assistant**: 4") {
+		t.Errorf("missing assistant message in memory file")
+	}
+}
+
+// ─── parseFrontmatter edge cases ─────────���───────────────────���───────────────
 
 func TestParseFrontmatter_ClosingDashOnly(t *testing.T) {
 	data := []byte("---\nname: test")
@@ -857,7 +1231,7 @@ func TestParseFrontmatter_EmptyFrontmatter(t *testing.T) {
 	if string(fm) != "" {
 		t.Errorf("expected empty frontmatter, got %q", string(fm))
 	}
-	if !containsStr(string(body), "Body content") {
+	if !strings.Contains(string(body), "Body content") {
 		t.Errorf("expected body, got %q", string(body))
 	}
 }
@@ -867,7 +1241,7 @@ func TestParseFrontmatter_EmptyFrontmatter(t *testing.T) {
 func TestPreprocessFrontmatter_JoinFlow(t *testing.T) {
 	input := []byte("events:\n  [\"command:new\", \"command:reset\"]")
 	result := preprocessFrontmatter(input)
-	if containsStr(string(result), "events:\n") {
+	if strings.Contains(string(result), "events:\n") {
 		t.Errorf("expected joined flow, got:\n%s", result)
 	}
 }
@@ -875,7 +1249,7 @@ func TestPreprocessFrontmatter_JoinFlow(t *testing.T) {
 func TestPreprocessFrontmatter_TrailingComma(t *testing.T) {
 	input := []byte("items:\n  - one,\n  ]")
 	result := preprocessFrontmatter(input)
-	if containsStr(string(result), "one,") {
+	if strings.Contains(string(result), "one,") {
 		t.Errorf("expected trailing comma removed, got:\n%s", result)
 	}
 }
@@ -900,12 +1274,12 @@ func TestTrailingCommaPass_NoTrailingComma(t *testing.T) {
 func TestTrailingCommaPass_CommaBeforeCloseBrace(t *testing.T) {
 	input := []byte("  \"key\": \"val\",\n}")
 	result := trailingCommaPass(input)
-	if containsStr(string(result), ",") {
+	if strings.Contains(string(result), ",") {
 		t.Errorf("comma should be removed, got %q", string(result))
 	}
 }
 
-// ─── Manager edge cases ─────────────────────────────────────────────────────
+// ─── Manager edge cases ────────���───────────────────────���────────────────────
 
 func TestManager_FireHandlerError(t *testing.T) {
 	mgr := NewManager()
@@ -924,7 +1298,10 @@ func TestManager_FireHandlerError(t *testing.T) {
 
 	errs := mgr.Fire("test:event", "sess", nil)
 	if len(errs) != 1 {
-		t.Errorf("expected 1 error, got %d", len(errs))
+		t.Fatalf("expected 1 error, got %d", len(errs))
+	}
+	if !strings.Contains(errs[0].Error(), "error-hook") {
+		t.Errorf("error should wrap hook key, got: %v", errs[0])
 	}
 }
 
@@ -998,7 +1375,7 @@ func TestManager_NonBundledDefaultDisabled(t *testing.T) {
 	mgr := NewManager()
 	mgr.Register(&Hook{
 		HookKey: "managed-hook",
-		Source:  SourceManaged, // non-bundled → default disabled
+		Source:  SourceManaged,
 		Manifest: HookManifest{
 			Metadata: &HookMetaWrap{
 				OpenClaw: &OpenClawHookMeta{Events: []string{"test:event"}},
@@ -1013,13 +1390,56 @@ func TestManager_NonBundledDefaultDisabled(t *testing.T) {
 	}
 }
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+func TestManager_NonBundledEnabledExplicitly(t *testing.T) {
+	fired := false
+	mgr := NewManager()
+	mgr.Register(&Hook{
+		HookKey: "managed-hook",
+		Source:  SourceManaged,
+		Manifest: HookManifest{
+			Metadata: &HookMetaWrap{
+				OpenClaw: &OpenClawHookMeta{Events: []string{"test:event"}},
+			},
+		},
+		Handler: func(ev *Event) error { fired = true; return nil },
+	})
+	mgr.SetEnabled("managed-hook", true)
 
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+	mgr.Fire("test:event", "sess", nil)
+	if !fired {
+		t.Error("explicitly enabled managed hook should fire")
 	}
-	return false
+}
+
+func TestManager_FireMultipleHooksContinuesAfterError(t *testing.T) {
+	secondFired := false
+	mgr := NewManager()
+	mgr.Register(&Hook{
+		HookKey: "failing-hook",
+		Source:  SourceBundled,
+		Manifest: HookManifest{
+			Metadata: &HookMetaWrap{
+				OpenClaw: &OpenClawHookMeta{Events: []string{"test:event"}},
+			},
+		},
+		Handler: func(ev *Event) error { return os.ErrInvalid },
+	})
+	mgr.Register(&Hook{
+		HookKey: "second-hook",
+		Source:  SourceBundled,
+		Manifest: HookManifest{
+			Metadata: &HookMetaWrap{
+				OpenClaw: &OpenClawHookMeta{Events: []string{"test:event"}},
+			},
+		},
+		Handler: func(ev *Event) error { secondFired = true; return nil },
+	})
+
+	errs := mgr.Fire("test:event", "sess", nil)
+	if len(errs) != 1 {
+		t.Errorf("expected 1 error, got %d", len(errs))
+	}
+	if !secondFired {
+		t.Error("second hook should fire even after first hook errors")
+	}
 }
