@@ -1,0 +1,35 @@
+{
+  "_comment": "Pre-generated secp256k1 keypairs for deterministic FIPS integration tests. These are well-known test vectors — NOT for production use.",
+  "agents": [
+    {
+      "name": "agent-a",
+      "role": "initiator",
+      "pubkey_hex": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "privkey_hex": "0000000000000000000000000000000000000000000000000000000000000001",
+      "fips_ipv6": "derived-at-runtime",
+      "agent_port": 1337,
+      "control_port": 1338,
+      "notes": "secp256k1 generator point G — pubkey = G*1"
+    },
+    {
+      "name": "agent-b",
+      "role": "responder",
+      "pubkey_hex": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+      "privkey_hex": "0000000000000000000000000000000000000000000000000000000000000002",
+      "fips_ipv6": "derived-at-runtime",
+      "agent_port": 1337,
+      "control_port": 1338,
+      "notes": "secp256k1 G*2"
+    },
+    {
+      "name": "agent-c",
+      "role": "relay-only",
+      "pubkey_hex": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "privkey_hex": "0000000000000000000000000000000000000000000000000000000000000003",
+      "fips_ipv6": "derived-at-runtime",
+      "agent_port": 1337,
+      "control_port": 1338,
+      "notes": "secp256k1 G*3 — FIPS relay node (no metiqd agent)"
+    }
+  ]
+}
