@@ -12,9 +12,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -76,11 +78,25 @@ func (c Config) maxOutput() int64 {
 	return 1 << 20 // 1 MiB
 }
 
+// DefaultNopTimeoutSeconds is the maximum execution time enforced on
+// NopSandbox when no explicit timeout is configured.  This prevents
+// runaway processes from consuming resources indefinitely.
+const DefaultNopTimeoutSeconds = 300 // 5 minutes
+
 func (c Config) timeout() time.Duration {
 	if c.TimeoutSeconds > 0 {
 		return time.Duration(c.TimeoutSeconds) * time.Second
 	}
 	return 0
+}
+
+// nopTimeout returns the effective timeout for NopSandbox, applying
+// DefaultNopTimeoutSeconds as a safety cap when no explicit timeout is set.
+func (c Config) nopTimeout() time.Duration {
+	if c.TimeoutSeconds > 0 {
+		return time.Duration(c.TimeoutSeconds) * time.Second
+	}
+	return time.Duration(DefaultNopTimeoutSeconds) * time.Second
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
@@ -124,8 +140,13 @@ func NewFromMap(m map[string]any) (SandboxRunner, error) {
 
 // NopSandbox runs commands via os/exec with an optional timeout.
 // It provides no isolation beyond what the host OS offers.
+//
+// WARNING: NopSandbox executes commands directly on the host with
+// the daemon's own privileges. For production deployments that run
+// untrusted code (agent tools, sandbox.run), use the "docker" driver.
 type NopSandbox struct {
-	cfg Config
+	cfg     Config
+	warnLog sync.Once
 }
 
 func (s *NopSandbox) Driver() string { return "nop" }
@@ -135,8 +156,13 @@ func (s *NopSandbox) Run(ctx context.Context, cmd []string, env []string, workdi
 		return Result{}, fmt.Errorf("sandbox: empty command")
 	}
 
-	// Apply timeout if configured.
-	if d := s.cfg.timeout(); d > 0 {
+	s.warnLog.Do(func() {
+		log.Printf("WARNING: sandbox running with \"nop\" driver (no isolation). " +
+			"Set sandbox.driver=\"docker\" in config for production deployments.")
+	})
+
+	// Apply timeout — NopSandbox always enforces a safety cap.
+	if d := s.cfg.nopTimeout(); d > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, d)
 		defer cancel()

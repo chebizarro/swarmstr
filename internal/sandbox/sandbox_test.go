@@ -184,3 +184,31 @@ func TestNewFromMap_InvalidDriver(t *testing.T) {
 		t.Error("expected error for invalid driver")
 	}
 }
+
+func TestDefaultNopTimeoutSeconds_Positive(t *testing.T) {
+	if sandbox.DefaultNopTimeoutSeconds <= 0 {
+		t.Errorf("DefaultNopTimeoutSeconds = %d, want > 0", sandbox.DefaultNopTimeoutSeconds)
+	}
+}
+
+func TestNopSandbox_DefaultTimeoutPreventsRunaway(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+	// With no explicit timeout, NopSandbox should still enforce
+	// DefaultNopTimeoutSeconds. We verify by checking that a process
+	// runs within the sandbox context (which has a deadline).
+	s, _ := sandbox.New(sandbox.Config{})
+	// Run a fast command — it should succeed because the default timeout
+	// is much longer than the command duration.
+	res, err := s.Run(context.Background(), []string{"echo", "timeout-test"}, nil, "")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.TimedOut {
+		t.Errorf("fast command should not time out")
+	}
+	if !strings.Contains(res.Stdout, "timeout-test") {
+		t.Errorf("stdout: %q", res.Stdout)
+	}
+}

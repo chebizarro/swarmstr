@@ -10,6 +10,7 @@ package webui
 import (
 	_ "embed"
 	"html/template"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -34,9 +35,10 @@ type templateData struct {
 //
 // wsPath is the WebSocket endpoint path (e.g. "/ws").
 // token is the gateway bearer token; pass "" for unauthenticated gateways.
-// The token is embedded in the page and should only be served to localhost
-// clients; the ws.Runtime already enforces loopback-only exposure without
-// a token, so this matches the existing security posture.
+// When a non-empty token is provided, the handler independently verifies
+// that the request originates from a loopback address before rendering
+// the page.  This prevents the token from leaking to non-local clients
+// even if the handler is mounted on a publicly reachable server.
 func Handler(wsPath, token string) http.Handler {
 	if strings.TrimSpace(wsPath) == "" {
 		wsPath = "/ws"
@@ -53,6 +55,17 @@ func Handler(wsPath, token string) http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+
+		// When a token is configured, only serve the page (which embeds
+		// the token) to loopback clients.  This is a defense-in-depth
+		// measure; the gateway WS runtime also enforces loopback-only
+		// exposure, but the webui handler should not rely on external
+		// enforcement to protect credentials.
+		if data.Token != "" && !isLoopback(r.RemoteAddr) {
+			http.Error(w, "forbidden: webui with token is only available from localhost", http.StatusForbidden)
+			return
+		}
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		// Render the template, injecting wsPath and token as JS variables.
@@ -60,4 +73,19 @@ func Handler(wsPath, token string) http.Handler {
 			http.Error(w, "render error", http.StatusInternalServerError)
 		}
 	})
+}
+
+// isLoopback returns true if addr is a loopback address (127.x.x.x or ::1).
+// addr is expected to be in host:port or host format.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// addr might not have a port; treat entire string as host.
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }

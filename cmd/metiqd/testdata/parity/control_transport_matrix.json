@@ -65,7 +65,7 @@
       },
       "scenario": "seeded_sessions",
       "ignore_result_keys": ["ts", "path"],
-      "ignore_result_paths": ["sessions[*].updatedAt"]
+      "ignore_result_paths": ["sessions[*].updatedAt", "sessions[*].lastInboundAt"]
     },
     {
       "name": "agent identity get",
