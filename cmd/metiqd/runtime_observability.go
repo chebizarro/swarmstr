@@ -384,11 +384,11 @@ func startRuntimeHeartbeatLoop(ctx context.Context, startedAt time.Time, version
 		defer close(done)
 		ticker := time.NewTicker(tickInterval)
 		defer ticker.Stop()
-		emitControlWSEvent(gatewayws.EventHealth, gatewayws.HealthPayload{
+		controlServices.emitWSEvent(gatewayws.EventHealth, gatewayws.HealthPayload{
 			TS: time.Now().UnixMilli(),
 			OK: true,
 		})
-		emitter := runtimeEventEmitterFunc(emitControlWSEvent)
+		emitter := runtimeEventEmitterFunc(controlServices.emitWSEvent)
 		for {
 			select {
 			case <-ctx.Done():

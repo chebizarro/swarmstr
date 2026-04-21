@@ -35,7 +35,7 @@ func currentAgentRunController() agentRunController {
 		defaultRuntime: controlAgentRuntime,
 		jobs:           controlAgentJobs,
 		subagents:      controlSubagents,
-		emitEvent:      emitControlWSEvent,
+		emitEvent:      controlServices.emitWSEvent,
 	}
 }
 
@@ -44,7 +44,7 @@ func (c agentRunController) emit(event string, payload any) {
 		c.emitEvent(event, payload)
 		return
 	}
-	emitControlWSEvent(event, payload)
+	controlServices.emitWSEvent(event, payload)
 }
 
 func resolveInboundChannelRuntime(configuredAgentID, sessionID string) (string, agent.Runtime) {

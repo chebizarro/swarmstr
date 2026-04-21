@@ -36,7 +36,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if id, ok := out["request_id"].(string); ok {
 			requestID = id
 		}
-		emitControlWSEvent(gatewayws.EventNodePairRequested, gatewayws.NodePairRequestedPayload{
+		controlServices.emitWSEvent(gatewayws.EventNodePairRequested, gatewayws.NodePairRequestedPayload{
 			TS:        time.Now().UnixMilli(),
 			RequestID: requestID,
 			Label:     req.DisplayName,
@@ -79,7 +79,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 				approvalToken = tok
 			}
 		}
-		emitControlWSEvent(gatewayws.EventNodePairResolved, gatewayws.NodePairResolvedPayload{
+		controlServices.emitWSEvent(gatewayws.EventNodePairResolved, gatewayws.NodePairResolvedPayload{
 			TS:        time.Now().UnixMilli(),
 			RequestID: req.RequestID,
 			NodeID:    nodeID,
@@ -107,7 +107,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if id, ok := out["node_id"].(string); ok {
 			nodeID = id
 		}
-		emitControlWSEvent(gatewayws.EventNodePairResolved, gatewayws.NodePairResolvedPayload{
+		controlServices.emitWSEvent(gatewayws.EventNodePairResolved, gatewayws.NodePairResolvedPayload{
 			TS:        time.Now().UnixMilli(),
 			RequestID: req.RequestID,
 			NodeID:    nodeID,
@@ -169,7 +169,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 				label = l
 			}
 		}
-		emitControlWSEvent(gatewayws.EventDevicePairResolved, gatewayws.DevicePairResolvedPayload{
+		controlServices.emitWSEvent(gatewayws.EventDevicePairResolved, gatewayws.DevicePairResolvedPayload{
 			TS:       time.Now().UnixMilli(),
 			DeviceID: deviceID,
 			Label:    label,
@@ -195,7 +195,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 				deviceID = id
 			}
 		}
-		emitControlWSEvent(gatewayws.EventDevicePairResolved, gatewayws.DevicePairResolvedPayload{
+		controlServices.emitWSEvent(gatewayws.EventDevicePairResolved, gatewayws.DevicePairResolvedPayload{
 			TS:       time.Now().UnixMilli(),
 			DeviceID: deviceID,
 			Decision: "rejected",
