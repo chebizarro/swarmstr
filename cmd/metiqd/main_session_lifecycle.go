@@ -151,16 +151,20 @@ type sessionMemoryLifecycleOutcome struct {
 }
 
 func ensureSessionMemoryCurrent(ctx context.Context, cfg state.ConfigDoc, sessionID string, sessionStore *state.SessionStore) (sessionMemoryLifecycleOutcome, error) {
+	return controlServices.ensureSessionMemoryCurrent(ctx, cfg, sessionID, sessionStore)
+}
+
+func (s *daemonServices) ensureSessionMemoryCurrent(ctx context.Context, cfg state.ConfigDoc, sessionID string, sessionStore *state.SessionStore) (sessionMemoryLifecycleOutcome, error) {
 	outcome := sessionMemoryLifecycleOutcome{}
 	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" || controlSessionMemoryRuntime == nil {
+	if sessionID == "" || s.session.sessionMemRuntime == nil {
 		return outcome, nil
 	}
-	generator, workspaceDir := resolveSessionMemoryRuntimeDependencies(cfg, sessionID, sessionStore)
+	generator, workspaceDir := s.resolveSessionMemoryRuntimeDependencies(cfg, sessionID, sessionStore)
 	if generator == nil || strings.TrimSpace(workspaceDir) == "" {
 		return outcome, nil
 	}
-	path, updated, err := controlSessionMemoryRuntime.EnsureCurrent(ctx, cfg, generator, sessionID, workspaceDir)
+	path, updated, err := s.session.sessionMemRuntime.EnsureCurrent(ctx, cfg, generator, sessionID, workspaceDir)
 	if err != nil {
 		return outcome, err
 	}
@@ -170,6 +174,10 @@ func ensureSessionMemoryCurrent(ctx context.Context, cfg state.ConfigDoc, sessio
 }
 
 func resolveSessionMemoryRuntimeDependencies(cfg state.ConfigDoc, sessionID string, sessionStore *state.SessionStore) (sessionMemoryGenerator, string) {
+	return controlServices.resolveSessionMemoryRuntimeDependencies(cfg, sessionID, sessionStore)
+}
+
+func (s *daemonServices) resolveSessionMemoryRuntimeDependencies(cfg state.ConfigDoc, sessionID string, sessionStore *state.SessionStore) (sessionMemoryGenerator, string) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, ""
@@ -187,9 +195,9 @@ func resolveSessionMemoryRuntimeDependencies(cfg state.ConfigDoc, sessionID stri
 	if workspaceDir == "" {
 		workspaceDir = workspaceDirForAgent(cfg, agentID)
 	}
-	rt := controlAgentRuntime
-	if controlAgentRegistry != nil {
-		if candidate := controlAgentRegistry.Get(agentID); candidate != nil {
+	rt := s.session.agentRuntime
+	if s.session.agentRegistry != nil {
+		if candidate := s.session.agentRegistry.Get(agentID); candidate != nil {
 			rt = candidate
 		}
 	}

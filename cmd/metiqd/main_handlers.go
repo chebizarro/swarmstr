@@ -85,17 +85,21 @@ func applyTalkConfig(cfg state.ConfigDoc, reg *operationsRegistry, req methods.T
 }
 
 func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[string]any, error) {
+	return controlServices.applyUpdateRun(reg, req)
+}
+
+func (s *daemonServices) applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("update runtime not configured")
 	}
 	checkedAt := reg.RecordUpdateCheck()
 
 	// Use the shared version checker (initialised in main).
-	if controlUpdateChecker == nil {
+	if s.handlers.updateChecker == nil {
 		return map[string]any{"ok": true, "status": "checker_unavailable", "checked_at_ms": checkedAt}, nil
 	}
 
-	result := controlUpdateChecker.Check(context.Background(), req.Force)
+	result := s.handlers.updateChecker.Check(context.Background(), req.Force)
 
 	out := map[string]any{
 		"ok":               true,
@@ -109,7 +113,7 @@ func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[
 		out["status"] = "error"
 	} else if result.Available {
 		out["status"] = "update_available"
-		emitControlWSEvent(gatewayws.EventUpdateAvailable, gatewayws.UpdateAvailablePayload{
+		s.emitWSEvent(gatewayws.EventUpdateAvailable, gatewayws.UpdateAvailablePayload{
 			TS:      result.CheckedAt,
 			Version: result.Latest,
 			Source:  "update.run",
@@ -130,6 +134,10 @@ var validTalkModes = map[string]bool{
 }
 
 func applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[string]any, error) {
+	return controlServices.applyTalkMode(reg, req)
+}
+
+func (s *daemonServices) applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("talk runtime not configured")
 	}
@@ -139,7 +147,7 @@ func applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[st
 	}
 	mode = reg.SetTalkMode(mode)
 	ts := time.Now().UnixMilli()
-	emitControlWSEvent(gatewayws.EventTalkMode, gatewayws.TalkModePayload{TS: ts, Mode: mode})
+	s.emitWSEvent(gatewayws.EventTalkMode, gatewayws.TalkModePayload{TS: ts, Mode: mode})
 	return map[string]any{"mode": mode, "ts": ts}, nil
 }
 
@@ -175,6 +183,10 @@ func applySetHeartbeats(reg *operationsRegistry, req methods.SetHeartbeatsReques
 }
 
 func applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any, error) {
+	return controlServices.applyWake(reg, req)
+}
+
+func (s *daemonServices) applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("wake runtime not configured")
 	}
@@ -190,7 +202,7 @@ func applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any
 	at := status.LastWakeMS
 	// Emit voice.wake when the source is voice-related.
 	if source == "voice" || source == "voicewake" || source == "hotword" {
-		emitControlWSEvent(gatewayws.EventVoicewake, gatewayws.VoicewakePayload{
+		s.emitWSEvent(gatewayws.EventVoicewake, gatewayws.VoicewakePayload{
 			TS:     at,
 			Source: source,
 		})
@@ -348,14 +360,18 @@ func applyTTSStatus(reg *operationsRegistry, _ methods.TTSStatusRequest) (map[st
 	return map[string]any{"enabled": enabled, "provider": provider}, nil
 }
 
-func applyTTSProviders(reg *operationsRegistry, _ methods.TTSProvidersRequest) (map[string]any, error) {
+func applyTTSProviders(reg *operationsRegistry, req methods.TTSProvidersRequest) (map[string]any, error) {
+	return controlServices.applyTTSProviders(reg, req)
+}
+
+func (s *daemonServices) applyTTSProviders(reg *operationsRegistry, _ methods.TTSProvidersRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("tts runtime not configured")
 	}
 	_, active := reg.TTSStatus()
 	var providers []map[string]any
-	if controlTTSMgr != nil {
-		providers = controlTTSMgr.Providers()
+	if s.handlers.ttsManager != nil {
+		providers = s.handlers.ttsManager.Providers()
 	} else {
 		providers = []map[string]any{
 			{"id": "openai", "name": "OpenAI TTS", "configured": false, "voices": []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"}},
@@ -401,6 +417,10 @@ func countEligible(statuses []map[string]any) int {
 }
 
 func applyTTSConvert(ctx context.Context, reg *operationsRegistry, req methods.TTSConvertRequest) (map[string]any, error) {
+	return controlServices.applyTTSConvert(ctx, reg, req)
+}
+
+func (s *daemonServices) applyTTSConvert(ctx context.Context, reg *operationsRegistry, req methods.TTSConvertRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("tts runtime not configured")
 	}
@@ -413,15 +433,15 @@ func applyTTSConvert(ctx context.Context, reg *operationsRegistry, req methods.T
 	// If TTS is disabled, the manager is unavailable, or the provider is not
 	// configured, return a metadata-only response (no audio) so callers can
 	// always query the method without an error.
-	doConvert := enabled && controlTTSMgr != nil
+	doConvert := enabled && s.handlers.ttsManager != nil
 	if doConvert {
-		if p := controlTTSMgr.Get(providerID); p == nil || !p.Configured() {
+		if p := s.handlers.ttsManager.Get(providerID); p == nil || !p.Configured() {
 			doConvert = false
 		}
 	}
 
 	if doConvert {
-		result, err := controlTTSMgr.Convert(ctx, providerID, req.Text, req.Voice)
+		result, err := s.handlers.ttsManager.Convert(ctx, providerID, req.Text, req.Voice)
 		if err != nil {
 			return nil, fmt.Errorf("tts.convert: %w", err)
 		}
@@ -442,9 +462,9 @@ func applyTTSConvert(ctx context.Context, reg *operationsRegistry, req methods.T
 	reason := "tts disabled"
 	if !enabled {
 		reason = "tts is disabled (call tts.enable first)"
-	} else if controlTTSMgr == nil {
+	} else if s.handlers.ttsManager == nil {
 		reason = "tts manager not initialised"
-	} else if p := controlTTSMgr.Get(providerID); p == nil {
+	} else if p := s.handlers.ttsManager.Get(providerID); p == nil {
 		reason = fmt.Sprintf("unknown tts provider %q", providerID)
 	} else if !p.Configured() {
 		reason = fmt.Sprintf("tts provider %q is not configured (check environment variables)", providerID)

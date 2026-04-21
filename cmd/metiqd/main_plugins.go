@@ -26,6 +26,10 @@ import (
 // ---------------------------------------------------------------------------
 
 func applyPluginInstallRuntime(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.PluginsInstallRequest) (map[string]any, error) {
+	return controlServices.applyPluginInstallRuntime(ctx, docsRepo, configState, req)
+}
+
+func (s *daemonServices) applyPluginInstallRuntime(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.PluginsInstallRequest) (map[string]any, error) {
 	cfg := configState.Get()
 	install := map[string]any{}
 	for key, value := range req.Install {
@@ -203,7 +207,7 @@ func applyPluginInstallRuntime(ctx context.Context, docsRepo *state.DocsReposito
 	if v, ok := record["version"].(string); ok {
 		version = v
 	}
-	emitControlWSEvent(gatewayws.EventPluginLoaded, gatewayws.PluginLoadedPayload{
+	s.emitWSEvent(gatewayws.EventPluginLoaded, gatewayws.PluginLoadedPayload{
 		TS:       time.Now().UnixMilli(),
 		PluginID: req.PluginID,
 		Version:  version,
