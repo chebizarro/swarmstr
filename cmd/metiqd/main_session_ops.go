@@ -182,12 +182,20 @@ func runSessionsPrune(
 // Exclusive session turn lock
 // ---------------------------------------------------------------------------
 
+// withExclusiveSessionTurn is a package-level shim that delegates to
+// controlServices. This allows incremental migration — callers that haven't
+// been converted to methods yet can still call this function.
 func withExclusiveSessionTurn(ctx context.Context, sessionID string, timeout time.Duration, fn func() error) error {
+	return controlServices.withExclusiveSessionTurn(ctx, sessionID, timeout, fn)
+}
+
+func (s *daemonServices) withExclusiveSessionTurn(ctx context.Context, sessionID string, timeout time.Duration, fn func() error) error {
 	if fn == nil {
 		return fmt.Errorf("exclusive session function is nil")
 	}
 	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" || controlSessionTurns == nil {
+	turns := s.session.sessionTurns
+	if sessionID == "" || turns == nil {
 		return fn()
 	}
 	lockCtx := ctx
@@ -196,7 +204,7 @@ func withExclusiveSessionTurn(ctx context.Context, sessionID string, timeout tim
 		lockCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	release, err := controlSessionTurns.Acquire(lockCtx, sessionID)
+	release, err := turns.Acquire(lockCtx, sessionID)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return fmt.Errorf("session %q lock canceled: %w", sessionID, err)
