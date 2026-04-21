@@ -339,9 +339,6 @@ func validateAgents(agents state.AgentsConfig) error {
 		if !validToolProfiles[a.ToolProfile] {
 			return fmt.Errorf("agents[%d] (%s): tool_profile %q is not valid (valid: minimal, coding, messaging, full)", i, id, a.ToolProfile)
 		}
-		if a.HistoryLimit < 0 {
-			return fmt.Errorf("agents[%d] (%s): history_limit must be >= 0", i, id)
-		}
 	}
 	return nil
 }
@@ -368,12 +365,6 @@ func validateProviders(p state.ProvidersConfig) error {
 func validateSession(s state.SessionConfig) error {
 	if s.TTLSeconds < 0 {
 		return fmt.Errorf("session.ttl_seconds must be >= 0 (got %d)", s.TTLSeconds)
-	}
-	if s.MaxSessions < 0 {
-		return fmt.Errorf("session.max_sessions must be >= 0 (got %d)", s.MaxSessions)
-	}
-	if s.HistoryLimit < 0 {
-		return fmt.Errorf("session.history_limit must be >= 0 (got %d)", s.HistoryLimit)
 	}
 	return nil
 }

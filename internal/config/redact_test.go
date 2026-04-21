@@ -164,7 +164,7 @@ func TestRedact_typedSections(t *testing.T) {
 				Extra:   map[string]any{"temperature": 0.1},
 			},
 		},
-		Session:   state.SessionConfig{TTLSeconds: 60, MaxSessions: 3, HistoryLimit: 10},
+		Session:   state.SessionConfig{TTLSeconds: 60},
 		Heartbeat: state.HeartbeatConfig{Enabled: true, IntervalMS: 15000},
 		TTS:       state.TTSConfig{Enabled: true, Provider: "elevenlabs", Voice: "alloy"},
 		Secrets:   state.SecretsConfig{"openai_api_key": "env:OPENAI_API_KEY"},

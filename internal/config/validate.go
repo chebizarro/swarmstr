@@ -165,12 +165,6 @@ func validateSession(s state.SessionConfig) []error {
 	if s.TTLSeconds < 0 {
 		errs = append(errs, fmt.Errorf("session.ttl_seconds must be >= 0 (got %d)", s.TTLSeconds))
 	}
-	if s.MaxSessions < 0 {
-		errs = append(errs, fmt.Errorf("session.max_sessions must be >= 0 (got %d)", s.MaxSessions))
-	}
-	if s.HistoryLimit < 0 {
-		errs = append(errs, fmt.Errorf("session.history_limit must be >= 0 (got %d)", s.HistoryLimit))
-	}
 	return errs
 }
 
