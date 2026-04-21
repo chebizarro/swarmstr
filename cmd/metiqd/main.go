@@ -118,8 +118,9 @@ var (
 	controlPresenceHeartbeat38  *nip38.Heartbeat // NIP-38 presence/status heartbeat; nil when disabled
 	// controlWsEmitter forwards typed events to connected WS clients.
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
-	controlWsEmitter   gatewayws.EventEmitter = gatewayws.NoopEmitter{}
-	controlWsEmitterMu sync.RWMutex
+	controlWsEmitter      gatewayws.EventEmitter = gatewayws.NoopEmitter{}
+	controlWsEmitterMu    sync.RWMutex
+	controlPairingConfigMu sync.Mutex
 
 
 	// controlToolRegistry is the base tool registry used by agent runtimes.
@@ -6132,18 +6133,31 @@ func handleControlRPCRequest(
 	svc := controlServices
 	if svc == nil {
 		svc = &daemonServices{
+			emitter:   controlWsEmitter,
+			emitterMu: &controlWsEmitterMu,
 			session: sessionServices{
-				sessionStore:  controlSessionStore,
-				toolRegistry:  controlToolRegistry,
-				agentJobs:     controlAgentJobs,
-				sessionRouter: controlSessionRouter,
-				agentRegistry: controlAgentRegistry,
-				agentRuntime:  controlAgentRuntime,
-				subagents:     controlSubagents,
+				sessionStore:    controlSessionStore,
+				toolRegistry:    controlToolRegistry,
+				agentJobs:       controlAgentJobs,
+				sessionRouter:   controlSessionRouter,
+				agentRegistry:   controlAgentRegistry,
+				agentRuntime:    controlAgentRuntime,
+				subagents:       controlSubagents,
+				sessionTurns:    controlSessionTurns,
+				ops:             controlOps,
+				cronJobs:        controlCronJobs,
+				execApprovals:   controlExecApprovals,
+				wizards:         controlWizards,
+				nodeInvocations: controlNodeInvocations,
+				sessionMemRuntime: controlSessionMemoryRuntime,
 			},
 			relay: relayPolicyServices{
 				acpPeers:      controlACPPeers,
 				acpDispatcher: controlACPDispatcher,
+			},
+			handlers: handlerServices{
+				mcpOps:          controlMCPOps,
+				pairingConfigMu: &controlPairingConfigMu,
 			},
 			runtimeConfig: controlRuntimeConfig,
 		}
@@ -6505,15 +6519,20 @@ func scheduleRestartIfNeeded(old, next state.ConfigDoc, delayMS int) (pending bo
 }
 
 func setControlWSEmitter(emitter gatewayws.EventEmitter) {
-	if controlServices == nil {
-		return
-	}
 	if emitter == nil {
 		emitter = gatewayws.NoopEmitter{}
 	}
-	controlServices.emitterMu.Lock()
-	defer controlServices.emitterMu.Unlock()
-	controlServices.emitter = emitter
+	if controlServices != nil {
+		controlServices.emitterMu.Lock()
+		controlServices.emitter = emitter
+		controlServices.emitterMu.Unlock()
+	}
+	// Always update the package-level globals so tests (and the fallback svc
+	// built in handleControlRPCRequest) see the emitter even when
+	// controlServices has not been initialised yet.
+	controlWsEmitterMu.Lock()
+	controlWsEmitter = emitter
+	controlWsEmitterMu.Unlock()
 }
 
 // autoResolveProviderOverride infers a ProviderOverride from the model name and
@@ -6686,16 +6705,22 @@ func resolveAuxiliaryModelForAgent(agCfg state.AgentConfig, useCase auxiliaryMod
 }
 
 func emitControlWSEvent(event string, payload any) {
-	if controlServices == nil || controlServices.emitterMu == nil {
-		return
+	if controlServices != nil && controlServices.emitterMu != nil {
+		controlServices.emitterMu.RLock()
+		emitter := controlServices.emitter
+		controlServices.emitterMu.RUnlock()
+		if emitter != nil {
+			emitter.Emit(event, payload)
+			return
+		}
 	}
-	controlServices.emitterMu.RLock()
-	emitter := controlServices.emitter
-	controlServices.emitterMu.RUnlock()
-	if emitter == nil {
-		return
+	// Fallback to package-level globals (used in tests).
+	controlWsEmitterMu.RLock()
+	emitter := controlWsEmitter
+	controlWsEmitterMu.RUnlock()
+	if emitter != nil {
+		emitter.Emit(event, payload)
 	}
-	emitter.Emit(event, payload)
 }
 
 

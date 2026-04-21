@@ -85,10 +85,11 @@ func applyTalkConfig(cfg state.ConfigDoc, reg *operationsRegistry, req methods.T
 }
 
 func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{emitter: controlWsEmitter, emitterMu: &controlWsEmitterMu}
 	}
-	return controlServices.applyUpdateRun(reg, req)
+	return svc.applyUpdateRun(reg, req)
 }
 
 func (s *daemonServices) applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[string]any, error) {
@@ -137,10 +138,11 @@ var validTalkModes = map[string]bool{
 }
 
 func applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{emitter: controlWsEmitter, emitterMu: &controlWsEmitterMu}
 	}
-	return controlServices.applyTalkMode(reg, req)
+	return svc.applyTalkMode(reg, req)
 }
 
 func (s *daemonServices) applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[string]any, error) {
@@ -189,10 +191,11 @@ func applySetHeartbeats(reg *operationsRegistry, req methods.SetHeartbeatsReques
 }
 
 func applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{emitter: controlWsEmitter, emitterMu: &controlWsEmitterMu}
 	}
-	return controlServices.applyWake(reg, req)
+	return svc.applyWake(reg, req)
 }
 
 func (s *daemonServices) applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any, error) {
@@ -370,10 +373,11 @@ func applyTTSStatus(reg *operationsRegistry, _ methods.TTSStatusRequest) (map[st
 }
 
 func applyTTSProviders(reg *operationsRegistry, req methods.TTSProvidersRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{emitter: controlWsEmitter, emitterMu: &controlWsEmitterMu}
 	}
-	return controlServices.applyTTSProviders(reg, req)
+	return svc.applyTTSProviders(reg, req)
 }
 
 func (s *daemonServices) applyTTSProviders(reg *operationsRegistry, _ methods.TTSProvidersRequest) (map[string]any, error) {
@@ -429,10 +433,11 @@ func countEligible(statuses []map[string]any) int {
 }
 
 func applyTTSConvert(ctx context.Context, reg *operationsRegistry, req methods.TTSConvertRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{emitter: controlWsEmitter, emitterMu: &controlWsEmitterMu}
 	}
-	return controlServices.applyTTSConvert(ctx, reg, req)
+	return svc.applyTTSConvert(ctx, reg, req)
 }
 
 func (s *daemonServices) applyTTSConvert(ctx context.Context, reg *operationsRegistry, req methods.TTSConvertRequest) (map[string]any, error) {

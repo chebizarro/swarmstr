@@ -186,13 +186,19 @@ func runSessionsPrune(
 // controlServices. This allows incremental migration — callers that haven't
 // been converted to methods yet can still call this function.
 func withExclusiveSessionTurn(ctx context.Context, sessionID string, timeout time.Duration, fn func() error) error {
-	if controlServices == nil {
-		if fn != nil {
-			return fn()
-		}
-		return nil
+	if controlServices != nil {
+		return controlServices.withExclusiveSessionTurn(ctx, sessionID, timeout, fn)
 	}
-	return controlServices.withExclusiveSessionTurn(ctx, sessionID, timeout, fn)
+	// Fallback: use the package-level global when controlServices is nil
+	// (common in tests that set controlSessionTurns directly).
+	if controlSessionTurns != nil {
+		svc := &daemonServices{session: sessionServices{sessionTurns: controlSessionTurns}}
+		return svc.withExclusiveSessionTurn(ctx, sessionID, timeout, fn)
+	}
+	if fn != nil {
+		return fn()
+	}
+	return nil
 }
 
 func (s *daemonServices) withExclusiveSessionTurn(ctx context.Context, sessionID string, timeout time.Duration, fn func() error) error {

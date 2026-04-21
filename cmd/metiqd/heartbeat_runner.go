@@ -276,10 +276,20 @@ func heartbeatRunnerTimeoutMS(agCfg state.AgentConfig) int {
 }
 
 func buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID string, wakes []heartbeatWakeRecord) (heartbeatAgentRun, error) {
-	if controlServices == nil {
-		return heartbeatAgentRun{}, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{
+			emitter:   controlWsEmitter,
+			emitterMu: &controlWsEmitterMu,
+			session: sessionServices{
+				agentRuntime:  controlAgentRuntime,
+				agentRegistry: controlAgentRegistry,
+				toolRegistry:  controlToolRegistry,
+				sessionRouter: controlSessionRouter,
+			},
+		}
 	}
-	return controlServices.buildHeartbeatAgentRun(cfg, agentID, wakes)
+	return svc.buildHeartbeatAgentRun(cfg, agentID, wakes)
 }
 
 func (s *daemonServices) buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID string, wakes []heartbeatWakeRecord) (heartbeatAgentRun, error) {
@@ -358,10 +368,18 @@ func (s *daemonServices) buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID str
 }
 
 func executeHeartbeatAgentRun(ctx context.Context, run heartbeatAgentRun) error {
-	if controlServices == nil {
-		return fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{
+			emitter:   controlWsEmitter,
+			emitterMu: &controlWsEmitterMu,
+			session: sessionServices{
+				sessionRouter: controlSessionRouter,
+				agentJobs:     controlAgentJobs,
+			},
+		}
 	}
-	return controlServices.executeHeartbeatAgentRun(ctx, run)
+	return svc.executeHeartbeatAgentRun(ctx, run)
 }
 
 func (s *daemonServices) executeHeartbeatAgentRun(ctx context.Context, run heartbeatAgentRun) error {

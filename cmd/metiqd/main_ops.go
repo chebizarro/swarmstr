@@ -132,10 +132,14 @@ func applyCronRemove(reg *cronRegistry, req methods.CronRemoveRequest) (map[stri
 }
 
 func applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{
+			emitter:   controlWsEmitter,
+			emitterMu: &controlWsEmitterMu,
+		}
 	}
-	return controlServices.applyCronRun(reg, req)
+	return svc.applyCronRun(reg, req)
 }
 
 func (s *daemonServices) applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any, error) {
@@ -201,10 +205,14 @@ func applyExecApprovalsNodeSet(reg *execApprovalsRegistry, req methods.ExecAppro
 }
 
 func applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprovalRequestRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{
+			emitter:   controlWsEmitter,
+			emitterMu: &controlWsEmitterMu,
+		}
 	}
-	return controlServices.applyExecApprovalRequest(reg, req)
+	return svc.applyExecApprovalRequest(reg, req)
 }
 
 func (s *daemonServices) applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprovalRequestRequest) (map[string]any, error) {
@@ -243,10 +251,14 @@ func applyExecApprovalWaitDecision(ctx context.Context, reg *execApprovalsRegist
 }
 
 func applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprovalResolveRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{
+			emitter:   controlWsEmitter,
+			emitterMu: &controlWsEmitterMu,
+		}
 	}
-	return controlServices.applyExecApprovalResolve(reg, req)
+	return svc.applyExecApprovalResolve(reg, req)
 }
 
 func (s *daemonServices) applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprovalResolveRequest) (map[string]any, error) {
@@ -316,10 +328,11 @@ func applySandboxRun(ctx context.Context, configState *runtimeConfigStore, req m
 }
 
 func applySecretsReload(req methods.SecretsReloadRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{emitter: controlWsEmitter, emitterMu: &controlWsEmitterMu}
 	}
-	return controlServices.applySecretsReload(req)
+	return svc.applySecretsReload(req)
 }
 
 func (s *daemonServices) applySecretsReload(_ methods.SecretsReloadRequest) (map[string]any, error) {
@@ -336,10 +349,11 @@ func (s *daemonServices) applySecretsReload(_ methods.SecretsReloadRequest) (map
 }
 
 func applySecretsResolve(req methods.SecretsResolveRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{emitter: controlWsEmitter, emitterMu: &controlWsEmitterMu}
 	}
-	return controlServices.applySecretsResolve(req)
+	return svc.applySecretsResolve(req)
 }
 
 func (s *daemonServices) applySecretsResolve(req methods.SecretsResolveRequest) (map[string]any, error) {
