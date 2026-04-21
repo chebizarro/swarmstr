@@ -3549,6 +3549,14 @@ func main() {
 				}
 				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
 				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
+				// Distill structured episodic memory from the partial turn.
+				if turnStateDocs := scopedMemoryDocs(distillTurnState(sessionID, eventID, partial.ToolTraces, partial.HistoryDelta, true), scopeCtx); len(turnStateDocs) > 0 {
+					go func(docs []state.MemoryDoc) {
+						pCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+						persistMemories(pCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
+					}(turnStateDocs)
+				}
 			}
 			switch {
 			case errors.Is(turnErr, context.DeadlineExceeded):
@@ -3586,6 +3594,14 @@ func main() {
 		// see prior tool usage — fixes the "announce and forget" behaviour.
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
 		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
+		// Distill structured episodic memory from the completed turn.
+		if turnStateDocs := scopedMemoryDocs(distillTurnState(sessionID, eventID, turnResult.ToolTraces, turnResult.HistoryDelta, false), scopeCtx); len(turnStateDocs) > 0 {
+			go func(docs []state.MemoryDoc) {
+				pCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				persistMemories(pCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
+			}(turnStateDocs)
+		}
 		commitMemoryRecallArtifacts(sessionStore, sessionID, eventID, memoryRecallSample, surfacedFileMemory)
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 			TS:      time.Now().UnixMilli(),
@@ -4638,6 +4654,14 @@ func main() {
 				}
 				persistAndIngestTurnHistory(ctx, transcriptRepo, controlServices.session.contextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
 				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
+				// Distill structured episodic memory from the partial channel turn.
+				if turnStateDocs := scopedMemoryDocs(distillTurnState(sessionID, eventID, partial.ToolTraces, partial.HistoryDelta, true), scopeCtx); len(turnStateDocs) > 0 {
+					go func(docs []state.MemoryDoc) {
+						pCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+						persistMemories(pCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
+					}(turnStateDocs)
+				}
 			}
 			if errors.Is(turnErr, context.Canceled) {
 				log.Printf("channel agent aborted session=%s", sessionID)
@@ -4662,6 +4686,14 @@ func main() {
 		}
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlServices.session.contextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
 		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
+		// Distill structured episodic memory from the completed channel turn.
+		if turnStateDocs := scopedMemoryDocs(distillTurnState(sessionID, eventID, turnResult.ToolTraces, turnResult.HistoryDelta, false), scopeCtx); len(turnStateDocs) > 0 {
+			go func(docs []state.MemoryDoc) {
+				pCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				persistMemories(pCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
+			}(turnStateDocs)
+		}
 		commitMemoryRecallArtifacts(sessionStore, sessionID, eventID, memoryRecallSample, surfacedFileMemory)
 
 		// ── Deliver reply ─────────────────────────────────────────────────
