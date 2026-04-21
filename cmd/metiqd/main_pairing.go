@@ -56,8 +56,12 @@ func toRecordSlice(raw any) []map[string]any {
 }
 
 func applyPairingConfigUpdate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, mutator func(map[string]any) (map[string]any, map[string]any, error)) (map[string]any, error) {
-	controlPairingConfigMu.Lock()
-	defer controlPairingConfigMu.Unlock()
+	return controlServices.applyPairingConfigUpdate(ctx, docsRepo, configState, mutator)
+}
+
+func (s *daemonServices) applyPairingConfigUpdate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, mutator func(map[string]any) (map[string]any, map[string]any, error)) (map[string]any, error) {
+	s.handlers.pairingConfigMu.Lock()
+	defer s.handlers.pairingConfigMu.Unlock()
 
 	cfg := configState.Get()
 	pairing := pairingData(cfg)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"metiq/internal/agent"
+	ctxengine "metiq/internal/context"
 	"metiq/internal/gateway/methods"
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
@@ -49,6 +50,20 @@ type controlRPCDeps struct {
 	sessionMemoryRuntime *sessionMemoryRuntime
 	acpPeers             *acppkg.PeerRegistry
 	acpDispatcher        *acppkg.Dispatcher
+
+	// services provides access to the consolidated daemonServices struct.
+	// Extracted handler files and RPC sub-handlers can use this instead of
+	// reading package-level globals.
+	services *daemonServices
+
+	// Operation registries — replace direct global reads in handleOpsRPC.
+	ops            *operationsRegistry
+	cronJobs       *cronRegistry
+	execApprovals  *execApprovalsRegistry
+	wizards        *wizardRegistry
+	contextEngine  ctxengine.Engine
+	mcpOps         *mcpOpsController
+	mcpAuth        *mcpAuthController
 }
 
 type hooksEventFirer interface {

@@ -20,6 +20,7 @@ import (
 	"metiq/internal/memory"
 	"metiq/internal/nostr/dvm"
 	nostruntime "metiq/internal/nostr/runtime"
+	secretspkg "metiq/internal/secrets"
 	ttspkg "metiq/internal/tts"
 	"metiq/internal/update"
 )
@@ -92,6 +93,8 @@ type sessionServices struct {
 
 // handlerServices groups dependencies for misc RPC handler functions.
 type handlerServices struct {
-	ttsManager    *ttspkg.Manager
-	updateChecker *update.Checker
+	ttsManager       *ttspkg.Manager
+	updateChecker    *update.Checker
+	secretsStore     *secretspkg.Store
+	pairingConfigMu  *sync.Mutex
 }
