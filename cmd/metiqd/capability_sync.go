@@ -185,6 +185,7 @@ func applyCapabilityRuntimeState(cfg state.ConfigDoc) {
 	}
 	capabilityMonitor.UpdatePublishRelays(currentCapabilityPublishRelays(cfg))
 	capabilityMonitor.UpdateSubscribeRelays(currentCapabilitySubscriptionRelays(cfg))
-	capabilityMonitor.UpdateLocal(buildLocalCapabilityAnnouncement(context.Background(), cfg, controlDocsRepo))
+	var dr *state.DocsRepository; if controlServices != nil { dr = controlServices.docsRepo }
+	capabilityMonitor.UpdateLocal(buildLocalCapabilityAnnouncement(context.Background(), cfg, dr))
 	capabilityMonitor.TriggerPublish()
 }

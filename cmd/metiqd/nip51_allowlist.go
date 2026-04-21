@@ -240,8 +240,8 @@ func refreshCapabilityPeerWatch() {
 	}
 	capabilityMonitor.UpdatePeers(fleetPeerPubkeys())
 	cfg := state.ConfigDoc{}
-	if controlRuntimeConfig != nil {
-		cfg = controlRuntimeConfig.Get()
+	if controlServices != nil && controlServices.runtimeConfig != nil {
+		cfg = controlServices.runtimeConfig.Get()
 	}
 	capabilityMonitor.UpdateSubscribeRelays(currentCapabilitySubscriptionRelays(cfg))
 }
@@ -476,7 +476,7 @@ func syncAgentList(ctx context.Context, pool *nostr.Pool, cfg state.ConfigDoc) {
 
 	// Get Strand's own pubkey.
 	pkCtx, pkCancel := context.WithTimeout(ctx, 10*time.Second)
-	strandPK, err := controlKeyer.GetPublicKey(pkCtx)
+	strandPK, err := controlServices.relay.keyer.GetPublicKey(pkCtx)
 	pkCancel()
 	if err != nil {
 		log.Printf("nip51: agent_list sync: get public key: %v", err)
@@ -582,7 +582,7 @@ func syncAgentList(ctx context.Context, pool *nostr.Pool, cfg state.ConfigDoc) {
 	}
 
 	publishCtx, publishCancel := context.WithTimeout(ctx, 20*time.Second)
-	eventID, publishErr := nip51.Publish(publishCtx, pool, controlKeyer, writeRelays, newList)
+	eventID, publishErr := nip51.Publish(publishCtx, pool, controlServices.relay.keyer, writeRelays, newList)
 	publishCancel()
 
 	if publishErr != nil {

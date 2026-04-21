@@ -68,7 +68,8 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	bootstrapWarnings := make([]string, 0)
 	bootstrapFiles, warnings := agent.LoadWorkspaceBootstrapFiles(wsDir, agent.DefaultBootstrapFileNames())
 	bootstrapWarnings = append(bootstrapWarnings, warnings...)
-	if extraFiles, extraWarnings := loadBootstrapHookFiles(controlHooksMgr, params.SessionID, params.Config, wsDir); len(extraFiles) > 0 || len(extraWarnings) > 0 {
+	var hm *hookspkg.Manager; if controlServices != nil { hm = controlServices.handlers.hooksMgr }
+	if extraFiles, extraWarnings := loadBootstrapHookFiles(hm, params.SessionID, params.Config, wsDir); len(extraFiles) > 0 || len(extraWarnings) > 0 {
 		bootstrapWarnings = append(bootstrapWarnings, extraWarnings...)
 		bootstrapFiles = append(bootstrapFiles, extraFiles...)
 	}

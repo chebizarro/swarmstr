@@ -289,19 +289,32 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	prevSessionStore := controlSessionStore
 	prevToolRegistry := controlToolRegistry
 	prevRuntimeConfig := controlRuntimeConfig
+	prevServices := controlServices
 	controlSessionStore = ss
 	controlToolRegistry = tools
-	controlRuntimeConfig = newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{
+	cfgStore := newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{
 		ID:           "worker",
 		EnabledTools: []string{"memory_search", "memory_store"},
 	}}})
+	controlRuntimeConfig = cfgStore
 	store := newTestStore()
 	docsRepo := state.NewDocsRepository(store, "author")
 	transcriptRepo := state.NewTranscriptRepository(store, "author")
+	controlServices = &daemonServices{
+		session: sessionServices{
+			agentRuntime:  runtime,
+			agentRegistry: agentReg,
+			sessionRouter: sessionRouter,
+			toolRegistry:  tools,
+			sessionStore:  ss,
+		},
+		runtimeConfig: cfgStore,
+	}
 	defer func() {
 		controlSessionStore = prevSessionStore
 		controlToolRegistry = prevToolRegistry
 		controlRuntimeConfig = prevRuntimeConfig
+		controlServices = prevServices
 	}()
 
 	msg := acppkg.NewTask("task-1", testACPSenderPubKey, acppkg.TaskPayload{

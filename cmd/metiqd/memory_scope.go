@@ -53,8 +53,8 @@ func resolveMemoryScopeContext(ctx context.Context, cfg state.ConfigDoc, docsRep
 			sessionWorkspaceDir = strings.TrimSpace(se.SpawnedWorkspace)
 		}
 	}
-	if agentID == "main" && strings.TrimSpace(explicitAgentID) == "" && controlSessionRouter != nil && sessionID != "" {
-		if routed := strings.TrimSpace(controlSessionRouter.Get(sessionID)); routed != "" {
+	if agentID == "main" && strings.TrimSpace(explicitAgentID) == "" && controlServices != nil && controlServices.session.sessionRouter != nil && sessionID != "" {
+		if routed := strings.TrimSpace(controlServices.session.sessionRouter.Get(sessionID)); routed != "" {
 			agentID = defaultAgentID(routed)
 		}
 	}
