@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 type ConfigDoc struct {
@@ -152,6 +153,22 @@ func (f FIPSConfig) EffectiveTransportPref() string {
 		return pref
 	}
 	return "fips-first"
+}
+
+// EffectiveConnTimeout parses ConnTimeout as a duration, falling back to 5s.
+func (f FIPSConfig) EffectiveConnTimeout() time.Duration {
+	if d, err := time.ParseDuration(strings.TrimSpace(f.ConnTimeout)); err == nil && d > 0 {
+		return d
+	}
+	return 5 * time.Second
+}
+
+// EffectiveReachCacheTTL parses ReachCacheTTL as a duration, falling back to 30s.
+func (f FIPSConfig) EffectiveReachCacheTTL() time.Duration {
+	if d, err := time.ParseDuration(strings.TrimSpace(f.ReachCacheTTL)); err == nil && d > 0 {
+		return d
+	}
+	return 30 * time.Second
 }
 
 // ParseACPTransportMode normalizes a configured ACP transport mode.
