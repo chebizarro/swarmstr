@@ -275,15 +275,10 @@ type ProvidersConfig map[string]ProviderEntry
 
 // SessionConfig controls per-session behaviour.
 type SessionConfig struct {
-	TTLSeconds   int `json:"ttl_seconds,omitempty"`
-	MaxSessions  int `json:"max_sessions,omitempty"`
-	HistoryLimit int `json:"history_limit,omitempty"`
+	TTLSeconds int `json:"ttl_seconds,omitempty"`
 	// PruneAfterDays deletes transcript entries for sessions whose last
 	// activity is older than this many days.  0 = disabled.
 	PruneAfterDays int `json:"prune_after_days,omitempty"`
-	// PruneIdleAfterDays deletes sessions that have received no inbound message
-	// for this many days (more aggressive than PruneAfterDays).  0 = disabled.
-	PruneIdleAfterDays int `json:"prune_idle_after_days,omitempty"`
 	// PruneOnBoot runs a pruning pass at daemon startup.
 	PruneOnBoot bool `json:"prune_on_boot,omitempty"`
 }
@@ -472,8 +467,7 @@ type AgentConfig struct {
 	Name         string `json:"name,omitempty"`
 	Model        string `json:"model,omitempty"`
 	WorkspaceDir string `json:"workspace_dir,omitempty"`
-	ToolProfile  string `json:"tool_profile,omitempty"` // minimal|coding|messaging|full
-	HistoryLimit int    `json:"history_limit,omitempty"`
+	ToolProfile string `json:"tool_profile,omitempty"` // minimal|coding|messaging|full
 	// Provider names the providers[] entry to use for this agent (e.g. "anthropic", "ollama").
 	// When set, credentials from ProvidersConfig[Provider] override the default env-based provider.
 	Provider string `json:"provider,omitempty"`

@@ -117,7 +117,7 @@ func TestValidateProviders_badBaseURL(t *testing.T) {
 
 func TestValidateSession_valid(t *testing.T) {
 	errs := ValidateConfigDoc(state.ConfigDoc{
-		Session: state.SessionConfig{TTLSeconds: 3600, MaxSessions: 10, HistoryLimit: 50},
+		Session: state.SessionConfig{TTLSeconds: 3600},
 	})
 	if len(errs) != 0 {
 		t.Fatalf("expected no errors, got: %v", errs)

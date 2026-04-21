@@ -488,12 +488,6 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		if v, ok := sessionRaw["ttl_seconds"].(float64); ok {
 			sess.TTLSeconds = int(v)
 		}
-		if v, ok := sessionRaw["max_sessions"].(float64); ok {
-			sess.MaxSessions = int(v)
-		}
-		if v, ok := sessionRaw["history_limit"].(float64); ok {
-			sess.HistoryLimit = int(v)
-		}
 		doc.Session = sess
 	}
 
@@ -601,9 +595,6 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 			ac.ToolProfile = strings.TrimSpace(v)
 		} else if v, ok := m["toolProfile"].(string); ok {
 			ac.ToolProfile = strings.TrimSpace(v)
-		}
-		if v, ok := toInt(m["history_limit"]); ok {
-			ac.HistoryLimit = v
 		}
 		if v, ok := m["provider"].(string); ok {
 			ac.Provider = strings.TrimSpace(v)

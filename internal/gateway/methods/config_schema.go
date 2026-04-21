@@ -82,7 +82,6 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"agents[].model",
 			"agents[].workspace_dir",
 			"agents[].tool_profile",
-			"agents[].history_limit",
 			// Nostr channel configuration
 			"nostr_channels.<name>.kind",
 			"nostr_channels.<name>.enabled",
@@ -104,7 +103,6 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"providers.<name>.model",
 			// Session tunables
 			"session.ttl_seconds",
-			"session.history_limit",
 			"session.max_tokens",
 			"session.temperature",
 			"storage.encrypt",
