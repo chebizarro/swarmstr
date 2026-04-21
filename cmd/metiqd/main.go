@@ -131,7 +131,7 @@ var (
 	controlAgentRegistry        *agent.AgentRuntimeRegistry
 	controlSessionRouter        *agent.AgentSessionRouter
 	controlChannels             *channels.Registry
-	controlPrivateKey           string
+	controlPubKeyHex            string
 	controlKeyer                nostr.Keyer      // always set at startup; plain mode wraps key in a keyer
 	controlPresenceHeartbeat38  *nip38.Heartbeat // NIP-38 presence/status heartbeat; nil when disabled
 	// controlWsEmitter forwards typed events to connected WS clients.
@@ -387,7 +387,7 @@ func main() {
 	if pkErr != nil {
 		log.Fatalf("signer: get public key: %v", pkErr)
 	}
-	controlPrivateKey = pk.Hex() // always store pubkey only
+	controlPubKeyHex = pk.Hex()
 	log.Printf("signer ready pubkey=%s", pk.Hex())
 	if adminAddr == "" {
 		adminAddr = cfg.AdminListenAddr
@@ -465,7 +465,7 @@ func main() {
 	}
 	defer store.Close()
 
-	pubkey := controlPrivateKey
+	pubkey := controlPubKeyHex
 
 	codec, err := initEnvelopeCodec(controlKeyer)
 	if err != nil {
@@ -3658,7 +3658,7 @@ func main() {
 	if raw, loadErr := docsRepo.GetWatches(ctx); loadErr != nil {
 		log.Printf("watches load warning: %v", loadErr)
 	} else {
-		specs, bootstrapped, specErr := loadOrDefaultWatchSpecs(raw, controlPrivateKey, controlPrivateKey, time.Now())
+		specs, bootstrapped, specErr := loadOrDefaultWatchSpecs(raw, controlPubKeyHex, controlPubKeyHex, time.Now())
 		if specErr != nil {
 			log.Printf("watches load unmarshal warning: %v", specErr)
 		} else if n := watchRegistry.Restore(watchDeliveryCtx, nostrToolOpts, specs, watchDeliver); n > 0 {
