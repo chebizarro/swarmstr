@@ -51,6 +51,15 @@ type ContextBudget struct {
 	// injected into the system prompt.
 	SessionMemoryMax int
 
+	// MemoryRecallMax is the character ceiling for dynamic memory recall
+	// context (indexed memory + file memory + session memory combined)
+	// injected as per-turn dynamic context.
+	MemoryRecallMax int
+
+	// DynamicContextMax is the character ceiling for the entire per-turn
+	// dynamic context string (memory recall + runtime dynamic additions).
+	DynamicContextMax int
+
 	// CompactionThreshold is the fraction of the effective window at which
 	// micro-compaction is triggered in the agentic loop. Smaller windows
 	// compact earlier (0.70) to preserve headroom; larger windows can wait
@@ -116,6 +125,8 @@ func ComputeContextBudget(profile ModelContextProfile) ContextBudget {
 	b.SkillsTotalMax = clampInt(effectiveChars*7/100, 800, 30_000)
 	b.ToolDefsMax = clampInt(effectiveChars*13/100, 1_500, 50_000)
 	b.SessionMemoryMax = clampInt(effectiveChars*5/100, 600, 24_000)
+	b.MemoryRecallMax = clampInt(effectiveChars*8/100, 800, 40_000)
+	b.DynamicContextMax = clampInt(effectiveChars*12/100, 1_200, 60_000)
 
 	// Skills count scales linearly: 3 at t=0, 150 at t=1.
 	b.SkillsMaxCount = clampInt(int(lerp(3, 150, t)), 3, 150)
@@ -130,7 +141,7 @@ func ComputeContextBudget(profile ModelContextProfile) ContextBudget {
 	b.MicroCompactKeepRecent = clampInt(int(math.Round(lerp(1, 8, t))), 1, 8)
 
 	// History gets whatever remains after fixed-zone allocations.
-	fixedUse := b.BootstrapTotalMax + b.SkillsTotalMax + b.ToolDefsMax + b.SessionMemoryMax
+	fixedUse := b.BootstrapTotalMax + b.SkillsTotalMax + b.ToolDefsMax + b.SessionMemoryMax + b.MemoryRecallMax
 	b.HistoryMax = effectiveChars - fixedUse
 	if b.HistoryMax < 1_000 {
 		b.HistoryMax = 1_000
@@ -158,6 +169,76 @@ func CompressionPressure(budgetChars, estimatedTotalChars int) float64 {
 		return 0
 	}
 	return clampF(1.0-float64(budgetChars)/float64(estimatedTotalChars), 0, 1)
+}
+
+// ─── Budget enforcement ──────────────────────────────────────────────────────
+
+// EnforceSystemPromptBudget truncates the system prompt to SystemPromptMax
+// characters if it exceeds the budget. Returns the (possibly truncated) prompt
+// and true if truncation occurred.
+func EnforceSystemPromptBudget(prompt string, budget ContextBudget) (string, bool) {
+	if budget.SystemPromptMax <= 0 || len(prompt) <= budget.SystemPromptMax {
+		return prompt, false
+	}
+	return truncateUTF8(prompt, budget.SystemPromptMax) + "\n\n⚠️ [System prompt truncated to fit context budget]", true
+}
+
+// EnforceDynamicContextBudget truncates the dynamic context to DynamicContextMax
+// characters if it exceeds the budget.
+func EnforceDynamicContextBudget(ctx string, budget ContextBudget) (string, bool) {
+	if budget.DynamicContextMax <= 0 || len(ctx) <= budget.DynamicContextMax {
+		return ctx, false
+	}
+	return truncateUTF8(ctx, budget.DynamicContextMax) + "\n\n⚠️ [Dynamic context truncated to fit budget]", true
+}
+
+// EnforceMemoryRecallBudget truncates memory recall content to MemoryRecallMax.
+func EnforceMemoryRecallBudget(recall string, budget ContextBudget) (string, bool) {
+	if budget.MemoryRecallMax <= 0 || len(recall) <= budget.MemoryRecallMax {
+		return recall, false
+	}
+	return truncateUTF8(recall, budget.MemoryRecallMax) + "\n\n⚠️ [Memory recall truncated to fit budget]", true
+}
+
+// BudgetUtilization returns the percentage (0-100) of a budget zone in use.
+func BudgetUtilization(used, max int) int {
+	if max <= 0 {
+		return 0
+	}
+	pct := used * 100 / max
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+// truncateUTF8 truncates s to at most maxBytes, respecting UTF-8 boundaries.
+func truncateUTF8(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	// Walk back from maxBytes to find a valid UTF-8 boundary.
+	cut := maxBytes
+	for cut > 0 && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	if cut == 0 {
+		return ""
+	}
+	return s[:cut]
+}
+
+// SessionMemoryBudgetRunes returns the SessionMemoryMax as a rune count
+// (approximate, assuming ~1 byte per rune for English text; safe for truncation).
+func (b ContextBudget) SessionMemoryBudgetRunes() int {
+	if b.SessionMemoryMax <= 0 {
+		return 1600 // fallback to legacy default
+	}
+	// Runes are roughly 1:1 with chars for Latin text; use 90% for safety.
+	return b.SessionMemoryMax * 9 / 10
 }
 
 // ─── Budget helpers ───────────────────────────────────────────────────────────

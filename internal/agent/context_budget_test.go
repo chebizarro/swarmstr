@@ -2,6 +2,7 @@ package agent
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -194,3 +195,187 @@ func TestClampF(t *testing.T) {
 		t.Errorf("clampF(1.5,0,1) = %f", got)
 	}
 }
+
+// ─── Enforcement function tests ──────────────────────────────────────────────
+
+func TestEnforceSystemPromptBudget_NoTruncation(t *testing.T) {
+	budget := ComputeContextBudgetForTokens(128_000)
+	prompt := "short prompt"
+	result, truncated := EnforceSystemPromptBudget(prompt, budget)
+	if truncated {
+		t.Error("expected no truncation for short prompt")
+	}
+	if result != prompt {
+		t.Errorf("expected unchanged prompt, got %q", result)
+	}
+}
+
+func TestEnforceSystemPromptBudget_Truncates(t *testing.T) {
+	budget := ContextBudget{SystemPromptMax: 20}
+	prompt := "this is a long prompt that exceeds the budget"
+	result, truncated := EnforceSystemPromptBudget(prompt, budget)
+	if !truncated {
+		t.Error("expected truncation")
+	}
+	if len(result) <= 20 {
+		// The truncation marker adds some overhead, but the base content should be ≤ 20
+	}
+	if !strings.Contains(result, "⚠️") {
+		t.Error("expected truncation marker in result")
+	}
+}
+
+func TestEnforceSystemPromptBudget_ZeroBudget(t *testing.T) {
+	budget := ContextBudget{SystemPromptMax: 0}
+	prompt := "anything"
+	result, truncated := EnforceSystemPromptBudget(prompt, budget)
+	if truncated {
+		t.Error("zero budget should not trigger truncation")
+	}
+	if result != prompt {
+		t.Errorf("expected unchanged prompt with zero budget, got %q", result)
+	}
+}
+
+func TestEnforceDynamicContextBudget_NoTruncation(t *testing.T) {
+	budget := ComputeContextBudgetForTokens(128_000)
+	ctx := "short context"
+	result, truncated := EnforceDynamicContextBudget(ctx, budget)
+	if truncated {
+		t.Error("expected no truncation for short context")
+	}
+	if result != ctx {
+		t.Errorf("expected unchanged context, got %q", result)
+	}
+}
+
+func TestEnforceDynamicContextBudget_Truncates(t *testing.T) {
+	budget := ContextBudget{DynamicContextMax: 10}
+	ctx := "this context exceeds the budget by a lot"
+	result, truncated := EnforceDynamicContextBudget(ctx, budget)
+	if !truncated {
+		t.Error("expected truncation")
+	}
+	if !strings.Contains(result, "⚠️") {
+		t.Error("expected truncation marker in result")
+	}
+}
+
+func TestEnforceMemoryRecallBudget_NoTruncation(t *testing.T) {
+	budget := ComputeContextBudgetForTokens(128_000)
+	recall := "short recall"
+	result, truncated := EnforceMemoryRecallBudget(recall, budget)
+	if truncated {
+		t.Error("expected no truncation for short recall")
+	}
+	if result != recall {
+		t.Errorf("expected unchanged recall, got %q", result)
+	}
+}
+
+func TestEnforceMemoryRecallBudget_Truncates(t *testing.T) {
+	budget := ContextBudget{MemoryRecallMax: 15}
+	recall := "this memory recall exceeds the budget limit"
+	result, truncated := EnforceMemoryRecallBudget(recall, budget)
+	if !truncated {
+		t.Error("expected truncation")
+	}
+	if !strings.Contains(result, "⚠️") {
+		t.Error("expected truncation marker in result")
+	}
+}
+
+func TestBudgetUtilization(t *testing.T) {
+	tests := []struct {
+		used, max, want int
+	}{
+		{0, 100, 0},
+		{50, 100, 50},
+		{100, 100, 100},
+		{150, 100, 100}, // capped at 100
+		{0, 0, 0},       // zero max
+		{10, 0, 0},      // zero max
+	}
+	for _, tt := range tests {
+		got := BudgetUtilization(tt.used, tt.max)
+		if got != tt.want {
+			t.Errorf("BudgetUtilization(%d, %d) = %d, want %d", tt.used, tt.max, got, tt.want)
+		}
+	}
+}
+
+func TestTruncateUTF8_Basic(t *testing.T) {
+	// ASCII string
+	if got := truncateUTF8("hello world", 5); got != "hello" {
+		t.Errorf("truncateUTF8('hello world', 5) = %q, want 'hello'", got)
+	}
+	// Under limit
+	if got := truncateUTF8("hi", 10); got != "hi" {
+		t.Errorf("truncateUTF8('hi', 10) = %q, want 'hi'", got)
+	}
+	// Zero limit
+	if got := truncateUTF8("hello", 0); got != "" {
+		t.Errorf("truncateUTF8('hello', 0) = %q, want empty", got)
+	}
+}
+
+func TestTruncateUTF8_MultibyteCharacter(t *testing.T) {
+	// "café" is 5 bytes: c(1) a(1) f(1) é(2)
+	s := "café"
+	// Truncating at 4 bytes should cut in the middle of é — walk back to 'f'
+	got := truncateUTF8(s, 4)
+	if got != "caf" {
+		t.Errorf("truncateUTF8(%q, 4) = %q, want 'caf'", s, got)
+	}
+	// Truncating at 5 bytes should keep the full string
+	got = truncateUTF8(s, 5)
+	if got != "café" {
+		t.Errorf("truncateUTF8(%q, 5) = %q, want 'café'", s, got)
+	}
+}
+
+func TestSessionMemoryBudgetRunes(t *testing.T) {
+	// Zero budget should fallback
+	b := ContextBudget{SessionMemoryMax: 0}
+	if got := b.SessionMemoryBudgetRunes(); got != 1600 {
+		t.Errorf("SessionMemoryBudgetRunes with zero SessionMemoryMax = %d, want 1600", got)
+	}
+
+	// Proportional budget
+	b = ContextBudget{SessionMemoryMax: 10_000}
+	got := b.SessionMemoryBudgetRunes()
+	want := 10_000 * 9 / 10 // 9000
+	if got != want {
+		t.Errorf("SessionMemoryBudgetRunes(10000) = %d, want %d", got, want)
+	}
+}
+
+func TestComputeContextBudget_MemoryRecallMaxScalesMonotonically(t *testing.T) {
+	sizes := []int{2048, 8192, 32000, 64000, 128000, 200000}
+	var prev ContextBudget
+	for _, tokens := range sizes {
+		b := ComputeContextBudgetForTokens(tokens)
+		if b.MemoryRecallMax < prev.MemoryRecallMax {
+			t.Errorf("MemoryRecallMax decreased at %d tokens: %d < %d", tokens, b.MemoryRecallMax, prev.MemoryRecallMax)
+		}
+		if b.DynamicContextMax < prev.DynamicContextMax {
+			t.Errorf("DynamicContextMax decreased at %d tokens: %d < %d", tokens, b.DynamicContextMax, prev.DynamicContextMax)
+		}
+		prev = b
+	}
+}
+
+func TestComputeContextBudget_FixedUseIncludesMemoryRecall(t *testing.T) {
+	b := ComputeContextBudgetForTokens(128_000)
+	// History should be effective minus fixed zones (including MemoryRecallMax)
+	fixedUse := b.BootstrapTotalMax + b.SkillsTotalMax + b.ToolDefsMax + b.SessionMemoryMax + b.MemoryRecallMax
+	expectedHistory := b.EffectiveChars - fixedUse
+	if expectedHistory < 1000 {
+		expectedHistory = 1000
+	}
+	if b.HistoryMax != expectedHistory {
+		t.Errorf("HistoryMax = %d, want %d (effective %d - fixedUse %d)", b.HistoryMax, expectedHistory, b.EffectiveChars, fixedUse)
+	}
+}
+
+

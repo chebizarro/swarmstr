@@ -63,7 +63,21 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 			staticPrompt = joinPromptSections(staticPrompt, toolSection)
 		}
 
+		// Enforce system prompt budget.
+		if enforced, truncated := agent.EnforceSystemPromptBudget(staticPrompt, contextBudget); truncated {
+			log.Printf("context-budget: system prompt truncated from %d to %d chars (budget=%d)",
+				len(staticPrompt), len(enforced), contextBudget.SystemPromptMax)
+			staticPrompt = enforced
+		}
+
 		contextText := joinPromptSections(params.Context, buildTurnRuntimeDynamicContext())
+		// Enforce dynamic context budget.
+		if enforced, truncated := agent.EnforceDynamicContextBudget(contextText, contextBudget); truncated {
+			log.Printf("context-budget: dynamic context truncated from %d to %d chars (budget=%d)",
+				len(contextText), len(enforced), contextBudget.DynamicContextMax)
+			contextText = enforced
+		}
+
 		return builtTurnPrompt{
 			StaticSystemPrompt:  staticPrompt,
 			Context:             contextText,
@@ -164,6 +178,18 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	}
 
 	contextText := joinPromptSections(params.Context, buildTurnRuntimeDynamicContext())
+
+	// Enforce budgets on assembled prompts.
+	if enforced, truncated := agent.EnforceSystemPromptBudget(staticSystemPrompt, contextBudget); truncated {
+		log.Printf("context-budget: system prompt truncated from %d to %d chars (budget=%d)",
+			len(staticSystemPrompt), len(enforced), contextBudget.SystemPromptMax)
+		staticSystemPrompt = enforced
+	}
+	if enforced, truncated := agent.EnforceDynamicContextBudget(contextText, contextBudget); truncated {
+		log.Printf("context-budget: dynamic context truncated from %d to %d chars (budget=%d)",
+			len(contextText), len(enforced), contextBudget.DynamicContextMax)
+		contextText = enforced
+	}
 
 	return builtTurnPrompt{
 		StaticSystemPrompt:  staticSystemPrompt,
