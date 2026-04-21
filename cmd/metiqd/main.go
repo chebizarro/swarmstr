@@ -6498,7 +6498,7 @@ func setControlWSEmitter(emitter gatewayws.EventEmitter) {
 // refreshKeyRings rebuilds the ProviderKeyRingRegistry from the current
 // provider config.  It should be called whenever the config changes.
 func refreshKeyRings(providers map[string]state.ProviderEntry) {
-	if controlServices.handlers.keyRings == nil {
+	if controlServices == nil || controlServices.handlers.keyRings == nil {
 		return
 	}
 	rings := make(map[string]*agent.KeyRing, len(providers))
