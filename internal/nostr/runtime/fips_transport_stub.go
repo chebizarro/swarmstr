@@ -5,14 +5,16 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // FIPSTransportOptions configures a FIPSTransport (stub).
 type FIPSTransportOptions struct {
-	PubkeyHex string
-	AgentPort int
-	OnMessage func(context.Context, InboundDM) error
-	OnError   func(error)
+	PubkeyHex   string
+	AgentPort   int
+	DialTimeout time.Duration
+	OnMessage   func(context.Context, InboundDM) error
+	OnError     func(error)
 }
 
 // FIPSTransport is a stub when FIPS is not compiled in.
