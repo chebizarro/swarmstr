@@ -44,6 +44,11 @@ type controlRPCDeps struct {
 	sessionRouter    *agent.AgentSessionRouter
 	agentRegistry    *agent.AgentRuntimeRegistry
 	agentRuntime     agent.Runtime
+
+	// Fields below replace direct global access inside Handle().
+	sessionMemoryRuntime *sessionMemoryRuntime
+	acpPeers             *acppkg.PeerRegistry
+	acpDispatcher        *acppkg.Dispatcher
 }
 
 type hooksEventFirer interface {
@@ -152,9 +157,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		result := map[string]any{
 			"ok":             true,
 			"index":          indexStatus,
-			"file_memory":    fileMemoryStatusPayload(controlSessionStore),
-			"session_memory": sessionMemoryStatusPayload(cfg, controlSessionStore, controlSessionMemoryRuntime),
-			"maintenance":    memoryMaintenanceStatusPayload(controlSessionStore),
+			"file_memory":    fileMemoryStatusPayload(h.deps.sessionStore),
+			"session_memory": sessionMemoryStatusPayload(cfg, h.deps.sessionStore, h.deps.sessionMemoryRuntime),
+			"maintenance":    memoryMaintenanceStatusPayload(h.deps.sessionStore),
 		}
 		if storeStatus != nil {
 			result["store"] = memoryStoreStatusPayload(*storeStatus)
@@ -169,7 +174,10 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		if pk == "" {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.register: pubkey required")
 		}
-		if err := controlACPPeers.Register(acppkg.PeerEntry{
+		if h.deps.acpPeers == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.register: ACP not configured")
+		}
+		if err := h.deps.acpPeers.Register(acppkg.PeerEntry{
 			PubKey: pk,
 			Alias:  req.Alias,
 			Tags:   req.Tags,
@@ -183,11 +191,16 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		if err := json.Unmarshal(in.Params, &req); err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.unregister: invalid params: %w", err)
 		}
-		controlACPPeers.Remove(req.PubKey)
+		if h.deps.acpPeers != nil {
+			h.deps.acpPeers.Remove(req.PubKey)
+		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
 
 	case methods.MethodACPPeers:
-		peers := controlACPPeers.List()
+		var peers []acppkg.PeerEntry
+		if h.deps.acpPeers != nil {
+			peers = h.deps.acpPeers.List()
+		}
 		out := make([]map[string]any, 0, len(peers))
 		for _, p := range peers {
 			out = append(out, map[string]any{
@@ -199,6 +212,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		return nostruntime.ControlRPCResult{Result: map[string]any{"peers": out}}, nil
 
 	case methods.MethodACPDispatch:
+		if h.deps.acpDispatcher == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: ACP not configured")
+		}
 		req, err := methods.DecodeACPDispatchParams(in.Params)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: invalid params: %w", err)
@@ -250,7 +266,7 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 			ReplyTo:         senderPubKey,
 		}
 		bindACPTaskID(&taskPayload, taskID)
-		recordACPDelegatedChild(controlSessionStore, taskPayload, taskID)
+		recordACPDelegatedChild(h.deps.sessionStore, taskPayload, taskID)
 		acpMsg := acppkg.NewTask(taskID, senderPubKey, taskPayload)
 		payload, err := json.Marshal(acpMsg)
 		if err != nil {
@@ -258,12 +274,12 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		}
 		waitRegistered := false
 		if req.Wait {
-			controlACPDispatcher.Register(taskID)
+			h.deps.acpDispatcher.Register(taskID)
 			waitRegistered = true
 		}
 		if err := sendACPDMWithTransport(ctx, dmBus, dmScheme, target, string(payload)); err != nil {
 			if waitRegistered {
-				controlACPDispatcher.Cancel(taskID)
+				h.deps.acpDispatcher.Cancel(taskID)
 			}
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: send DM: %w", err)
 		}
@@ -274,7 +290,7 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 			if timeout == 0 {
 				timeout = 60 * time.Second
 			}
-			result, waitErr := controlACPDispatcher.Wait(ctx, taskID, timeout)
+			result, waitErr := h.deps.acpDispatcher.Wait(ctx, taskID, timeout)
 			if waitErr != nil {
 				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: wait: %w", waitErr)
 			}
@@ -327,7 +343,7 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 				taskID = strings.TrimSpace(payload.Task.TaskID)
 			}
 			bindACPTaskID(&payload, taskID)
-			recordACPDelegatedChild(controlSessionStore, payload, taskID)
+			recordACPDelegatedChild(h.deps.sessionStore, payload, taskID)
 			acpMsg := acppkg.NewTask(taskID, senderPubKey, payload)
 			encoded, _ := json.Marshal(acpMsg)
 			return sendACPDMWithTransport(ctx, dmBus, dmScheme, peerPubKey, string(encoded))
@@ -367,9 +383,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		var pipelineResults []acppkg.PipelineResult
 		var pipelineErr error
 		if req.Parallel {
-			pipelineResults, pipelineErr = pipeline.RunParallel(ctx, controlACPDispatcher, sendFn)
+			pipelineResults, pipelineErr = pipeline.RunParallel(ctx, h.deps.acpDispatcher, sendFn)
 		} else {
-			pipelineResults, pipelineErr = pipeline.RunSequential(ctx, controlACPDispatcher, sendFn)
+			pipelineResults, pipelineErr = pipeline.RunSequential(ctx, h.deps.acpDispatcher, sendFn)
 		}
 
 		out := make([]map[string]any, 0, len(pipelineResults))

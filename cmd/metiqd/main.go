@@ -5978,6 +5978,10 @@ func handleControlRPCRequest(
 		sessionRouter:    controlSessionRouter,
 		agentRegistry:    controlAgentRegistry,
 		agentRuntime:     controlAgentRuntime,
+
+		sessionMemoryRuntime: controlSessionMemoryRuntime,
+		acpPeers:             controlACPPeers,
+		acpDispatcher:        controlACPDispatcher,
 	}
 	if controlHooksMgr != nil {
 		deps.hooksMgr = controlHooksMgr
