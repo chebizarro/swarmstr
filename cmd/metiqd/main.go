@@ -164,6 +164,11 @@ var (
 	// and assemble conversation history for every agent session.
 	controlContextEngine ctxengine.Engine
 
+	// controlAutoCompactState tracks per-session circuit breaker state for
+	// autocompact. After 3 consecutive failures, compaction is skipped to
+	// avoid wasting API calls on irrecoverable contexts.
+	controlAutoCompactState = ctxengine.NewAutoCompactState()
+
 
 
 	// controlDMBus is the preferred outbound DM transport (NIP-17 first, then NIP-04).
@@ -2923,6 +2928,7 @@ func main() {
 	})
 
 	// /compact — compact conversation history via the context engine.
+	// Tries LLM-free session memory compaction first; falls back to regular compact.
 	slashRouter.Register("compact", func(cmdCtx context.Context, cmd autoreply.Command) (string, error) {
 		if controlContextEngine == nil {
 			return "⚠️  No context engine active.", nil
@@ -2931,6 +2937,17 @@ func main() {
 		if err != nil {
 			return fmt.Sprintf("⚠️  Session memory flush failed: %v", err), nil
 		}
+		// Try LLM-free session memory compaction first.
+		if smCR, smOK := trySessionMemoryCompact(cmdCtx, controlContextEngine, cmd.SessionID, flushOutcome.Path); smOK {
+			recordSessionCompaction(sessionStore, cmd.SessionID, true, time.Now())
+			runPostCompactCleanup(cmd.SessionID)
+			saved := smCR.TokensBefore - smCR.TokensAfter
+			if saved > 0 {
+				return fmt.Sprintf("✓ Compacted (session memory). %d tokens freed.", saved), nil
+			}
+			return "✓ Compacted (session memory).", nil
+		}
+		// Fall back to regular compaction.
 		cr, cErr := controlContextEngine.Compact(cmdCtx, cmd.SessionID)
 		if cErr != nil {
 			return fmt.Sprintf("⚠️  Compact failed: %v", cErr), nil
@@ -2939,6 +2956,7 @@ func main() {
 		if !cr.Compacted {
 			return "Nothing to compact yet.", nil
 		}
+		runPostCompactCleanup(cmd.SessionID)
 		saved := cr.TokensBefore - cr.TokensAfter
 		if saved > 0 {
 			return fmt.Sprintf("✓ Compacted. %d tokens freed.", saved), nil
@@ -3316,13 +3334,38 @@ func main() {
 			if asmErr == nil {
 				threshold := int(float64(maxCtxTokens) * 0.80)
 				if assembled.EstimatedTokens > 0 && threshold > 0 && assembled.EstimatedTokens > threshold {
-					flushOutcome, flushErr := ensureSessionMemoryCurrent(turnCtx, configState.Get(), sessionID, sessionStore)
-					if flushErr != nil {
-						log.Printf("context engine auto-compact skipped session=%s session_memory_err=%v", sessionID, flushErr)
-					} else if cr, cErr := controlContextEngine.Compact(turnCtx, sessionID); cErr == nil && cr.Compacted {
-						recordSessionCompaction(sessionStore, sessionID, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
-						log.Printf("context engine auto-compact session=%s tokens_before=%d tokens_after=%d", sessionID, cr.TokensBefore, cr.TokensAfter)
-						assembled, _ = controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
+					// Circuit breaker: skip compaction after too many consecutive failures.
+					if controlAutoCompactState.ShouldSkipCompaction(sessionID) {
+						log.Printf("context engine auto-compact circuit-breaker open session=%s failures=%d", sessionID, controlAutoCompactState.ConsecutiveFailures(sessionID))
+					} else {
+						compacted := false
+						flushOutcome, flushErr := ensureSessionMemoryCurrent(turnCtx, configState.Get(), sessionID, sessionStore)
+						if flushErr != nil {
+							log.Printf("context engine auto-compact skipped session=%s session_memory_err=%v", sessionID, flushErr)
+							controlAutoCompactState.RecordFailure(sessionID)
+						} else {
+							// Try LLM-free session memory compaction first.
+							smCR, smOK := trySessionMemoryCompact(turnCtx, controlContextEngine, sessionID, flushOutcome.Path)
+							if smOK {
+								recordSessionCompaction(sessionStore, sessionID, true, time.Now())
+								log.Printf("context engine auto-compact (session-memory) session=%s tokens_before=%d tokens_after=%d", sessionID, smCR.TokensBefore, smCR.TokensAfter)
+								assembled, _ = controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
+								compacted = true
+								runPostCompactCleanup(sessionID)
+							} else if cr, cErr := controlContextEngine.Compact(turnCtx, sessionID); cErr == nil && cr.Compacted {
+								// Fall back to regular compaction.
+								recordSessionCompaction(sessionStore, sessionID, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
+								log.Printf("context engine auto-compact session=%s tokens_before=%d tokens_after=%d", sessionID, cr.TokensBefore, cr.TokensAfter)
+								assembled, _ = controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
+								compacted = true
+								runPostCompactCleanup(sessionID)
+							}
+						}
+						if compacted {
+							controlAutoCompactState.RecordSuccess(sessionID)
+						} else if flushErr == nil {
+							controlAutoCompactState.RecordFailure(sessionID)
+						}
 					}
 				}
 				if assembled.SystemPromptAddition != "" {
@@ -3443,6 +3486,26 @@ func main() {
 			}
 		}
 
+		// Derive the last assistant time from the session store's UpdatedAt.
+		// This approximates the last assistant message time for the time-based
+		// microcompact trigger — when the gap exceeds the cache TTL, the
+		// prompt cache has expired and clearing old tool results is free.
+		var lastAssistantTime time.Time
+		if sessionStore != nil {
+			if sessEntry, ok := sessionStore.Get(sessionID); ok {
+				lastAssistantTime = sessEntry.UpdatedAt
+			}
+		}
+
+		// Partition tools into inline and deferred sets. Deferred tools are
+		// not sent with every API request — the model discovers them via
+		// tool_search when needed, saving context budget.
+		inlineTools, deferredTools := partitionTurnTools(turnExecutor, promptEnvelope.ContextWindowTokens)
+		if deferredTools != nil && deferredTools.Count() > 0 {
+			log.Printf("turn tools: %d inline, %d deferred (session=%s)",
+				len(inlineTools), deferredTools.Count(), sessionID)
+		}
+
 		baseTurn := agent.Turn{
 			SessionID:            sessionID,
 			TurnID:               eventID,
@@ -3450,12 +3513,14 @@ func main() {
 			StaticSystemPrompt:   staticSystemPrompt,
 			Context:              turnContext,
 			History:              turnHistory,
-			Tools:                baseTurnTools,
+			Tools:                inlineTools,
 			Executor:             turnExecutor, // canonical filtered turn tool pool
 			ThinkingBudget:       thinkingBudget,
 			MaxAgenticIterations: maxAgenticIterations,
 			ToolEventSink:        toolLifecycleEmitter(wsEmitter, activeAgentID),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
+			LastAssistantTime:    lastAssistantTime,
+			DeferredTools:        deferredTools,
 		}
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, func(chunk string) {
@@ -4505,6 +4570,21 @@ func main() {
 				break
 			}
 		}
+		// Derive last assistant time for time-based microcompact trigger.
+		var chLastAssistantTime time.Time
+		if sessionStore != nil {
+			if sessEntry, ok := sessionStore.Get(sessionID); ok {
+				chLastAssistantTime = sessEntry.UpdatedAt
+			}
+		}
+
+		// Partition tools into inline and deferred sets.
+		chInlineTools, chDeferredTools := partitionTurnTools(turnExecutor, promptEnvelope.ContextWindowTokens)
+		if chDeferredTools != nil && chDeferredTools.Count() > 0 {
+			log.Printf("channel turn tools: %d inline, %d deferred (session=%s)",
+				len(chInlineTools), chDeferredTools.Count(), sessionID)
+		}
+
 		chBaseTurn := agent.Turn{
 			SessionID:            sessionID,
 			TurnID:               eventID,
@@ -4512,11 +4592,13 @@ func main() {
 			StaticSystemPrompt:   promptEnvelope.StaticSystemPrompt,
 			Context:              promptEnvelope.Context,
 			History:              chTurnHistory,
-			Tools:                turnTools,
+			Tools:                chInlineTools,
 			Executor:             turnExecutor,
 			MaxAgenticIterations: chMaxAgenticIterations,
 			ToolEventSink:        toolLifecycleEmitter(wsEmitter, activeAgentID),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
+			LastAssistantTime:    chLastAssistantTime,
+			DeferredTools:        chDeferredTools,
 		}
 		var turnResult agent.TurnResult
 		turnStartedAt := time.Now()

@@ -853,6 +853,154 @@ func TestRunAgenticLoop_ForceSummary(t *testing.T) {
 	}
 }
 
+// ── Deferred tool discovery test ────────────────────────────────────────────
+
+// toolCapturingProvider records the tool lists passed to each Chat call.
+type toolCapturingProvider struct {
+	responses  []*LLMResponse
+	callCount  int
+	toolLists  [][]string // tool names per call
+	mu         sync.Mutex
+}
+
+func (p *toolCapturingProvider) Chat(_ context.Context, _ []LLMMessage, tools []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
+	p.mu.Lock()
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	p.toolLists = append(p.toolLists, names)
+	idx := p.callCount
+	p.callCount++
+	p.mu.Unlock()
+
+	if idx < len(p.responses) {
+		return p.responses[idx], nil
+	}
+	return &LLMResponse{Content: "done"}, nil
+}
+
+func TestRunAgenticLoop_DeferredToolDiscovery(t *testing.T) {
+	// Setup: one inline tool (read_file) + two deferred MCP tools.
+	deferred := NewDeferredToolSet()
+	deferred.Add(DeferredToolEntry{
+		Name:    "mcp__server__web_search",
+		Summary: "Search the web",
+		Definition: ToolDefinition{
+			Name:        "mcp__server__web_search",
+			Description: "Search the web for information",
+		},
+	})
+	deferred.Add(DeferredToolEntry{
+		Name:    "mcp__server__web_fetch",
+		Summary: "Fetch a URL",
+		Definition: ToolDefinition{
+			Name:        "mcp__server__web_fetch",
+			Description: "Fetch content from a URL",
+		},
+	})
+
+	// LLM calls:
+	// 1. First call → model calls tool_search to find web tools
+	// 2. Second call (after tool_search result) → model calls mcp__server__web_search
+	// 3. Third call → model produces text (done)
+	provider := &toolCapturingProvider{
+		responses: []*LLMResponse{
+			{
+				ToolCalls: []ToolCall{{
+					ID:   "tc1",
+					Name: ToolSearchToolName,
+					Args: map[string]any{"query": "select:mcp__server__web_search"},
+				}},
+				NeedsToolResults: true,
+			},
+			{
+				ToolCalls: []ToolCall{{
+					ID:   "tc2",
+					Name: "mcp__server__web_search",
+					Args: map[string]any{"query": "golang testing"},
+				}},
+				NeedsToolResults: true,
+			},
+			{
+				Content: "Here are the search results.",
+			},
+		},
+	}
+
+	executor := &mockToolExecutor{
+		results: map[string]string{
+			"mcp__server__web_search": "search results for golang testing",
+		},
+	}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "search for golang testing"}},
+		Tools:           []ToolDefinition{{Name: "read_file", Description: "Read a file"}},
+		Executor:        executor,
+		MaxIterations:   10,
+		LogPrefix:       "test-deferred",
+		DeferredTools:   deferred,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "Here are the search results." {
+		t.Errorf("got content %q, want %q", resp.Content, "Here are the search results.")
+	}
+
+	// Verify tool lists:
+	// Call 1: should have tool_search + read_file (inline tools)
+	if len(provider.toolLists) < 3 {
+		t.Fatalf("expected at least 3 LLM calls, got %d", len(provider.toolLists))
+	}
+	call1Tools := provider.toolLists[0]
+	hasToolSearch := false
+	hasReadFile := false
+	for _, name := range call1Tools {
+		if name == ToolSearchToolName {
+			hasToolSearch = true
+		}
+		if name == "read_file" {
+			hasReadFile = true
+		}
+	}
+	if !hasToolSearch {
+		t.Errorf("call 1 should include tool_search, got %v", call1Tools)
+	}
+	if !hasReadFile {
+		t.Errorf("call 1 should include read_file, got %v", call1Tools)
+	}
+	// Call 1 should NOT have the deferred tool yet.
+	for _, name := range call1Tools {
+		if name == "mcp__server__web_search" {
+			t.Error("call 1 should NOT include mcp__server__web_search before discovery")
+		}
+	}
+
+	// Call 2: should now include mcp__server__web_search (discovered via tool_search).
+	call2Tools := provider.toolLists[1]
+	hasDiscovered := false
+	for _, name := range call2Tools {
+		if name == "mcp__server__web_search" {
+			hasDiscovered = true
+		}
+	}
+	if !hasDiscovered {
+		t.Errorf("call 2 should include discovered mcp__server__web_search, got %v", call2Tools)
+	}
+
+	// mcp__server__web_fetch should NOT appear (it was never searched for).
+	for _, tools := range provider.toolLists {
+		for _, name := range tools {
+			if name == "mcp__server__web_fetch" {
+				t.Error("mcp__server__web_fetch should never appear — it was not searched for")
+			}
+		}
+	}
+}
+
 type forceSummaryProvider struct {
 	callCount int
 }

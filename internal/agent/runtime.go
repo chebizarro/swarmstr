@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ToolCallRef identifies a tool invocation within an assistant message.
@@ -74,6 +75,15 @@ type Turn struct {
 	// MaxAgenticIterations overrides the model-tier default for the maximum
 	// number of tool→LLM round-trips.  0 means use the model-tier default.
 	MaxAgenticIterations int
+	// LastAssistantTime is the timestamp of the most recent assistant message
+	// in the conversation. Passed through to the agentic loop for the
+	// time-based microcompact trigger. Zero means unknown/disabled.
+	LastAssistantTime time.Time
+	// DeferredTools holds tool definitions that are deferred from inline
+	// sending. When non-nil and non-empty, the agentic loop registers a
+	// tool_search built-in tool that lets the model discover deferred tools
+	// on demand, reducing per-request context usage.
+	DeferredTools *DeferredToolSet
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.
