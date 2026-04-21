@@ -13,6 +13,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
+	acppkg "metiq/internal/acp"
 	"metiq/internal/agent"
 	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/autoreply"
@@ -49,19 +50,21 @@ func (s *daemonServices) emitWSEvent(event string, payload any) {
 
 // relayPolicyServices groups all relay-policy-related runtime dependencies.
 type relayPolicyServices struct {
-	nip17Bus      *nostruntime.NIP17Bus
-	nip04Bus      *nostruntime.DMBus
-	dmBusMu       *sync.RWMutex
-	dmBus         *nostruntime.DMTransport // pointer so relay policy can read the current value
-	controlBus    *nostruntime.ControlRPCBus
-	relaySelector *nostruntime.RelaySelector
-	keyer         nostr.Keyer
-	watchRegistry *toolbuiltin.WatchRegistry
-	dvmHandler    *dvm.Handler
-	healthMonitor **nostruntime.RelayHealthMonitor // pointer-to-pointer so startRelayHealthMonitor can assign
-	healthStateMu sync.Mutex
-	healthState   map[string]bool
-	publish       relayPublishDebounce
+	nip17Bus            *nostruntime.NIP17Bus
+	nip04Bus            *nostruntime.DMBus
+	dmBusMu             *sync.RWMutex
+	dmBus               *nostruntime.DMTransport // pointer so relay policy can read the current value
+	controlBus          *nostruntime.ControlRPCBus
+	relaySelector       *nostruntime.RelaySelector
+	keyer               nostr.Keyer
+	watchRegistry       *toolbuiltin.WatchRegistry
+	dvmHandler          *dvm.Handler
+	healthMonitor       **nostruntime.RelayHealthMonitor // pointer-to-pointer so startRelayHealthMonitor can assign
+	healthStateMu       sync.Mutex
+	healthState         map[string]bool
+	publish             relayPublishDebounce
+	transportSelector   *nostruntime.TransportSelector
+	acpPeers            *acppkg.PeerRegistry
 }
 
 // relayPublishDebounce holds the debounce state for relay list publishing.

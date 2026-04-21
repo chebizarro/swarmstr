@@ -30,9 +30,9 @@ func currentAgentRunController() agentRunController {
 	return agentRunController{
 		runtimeConfig:  controlRuntimeConfig,
 		sessionStore:   controlSessionStore,
-		sessionRouter:  controlSessionRouter,
-		agentRegistry:  controlAgentRegistry,
-		defaultRuntime: controlAgentRuntime,
+		sessionRouter:  controlServices.session.sessionRouter,
+		agentRegistry:  controlServices.session.agentRegistry,
+		defaultRuntime: controlServices.session.agentRuntime,
 		jobs:           controlAgentJobs,
 		subagents:      controlSubagents,
 		emitEvent:      controlServices.emitWSEvent,

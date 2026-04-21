@@ -58,30 +58,34 @@ func normalizeACPAdvertisedSchemes(values []string) map[string]struct{} {
 }
 
 func currentACPTransportBus(mode string) nostruntime.DMTransport {
+	return controlServices.currentACPTransportBus(mode)
+}
+
+func (s *daemonServices) currentACPTransportBus(mode string) nostruntime.DMTransport {
 	mode, ok := state.ParseACPTransportMode(mode)
 	if !ok || mode == "auto" {
 		return nil
 	}
-	controlDMBusMu.RLock()
-	defer controlDMBusMu.RUnlock()
+	s.relay.dmBusMu.RLock()
+	defer s.relay.dmBusMu.RUnlock()
 	switch mode {
 	case "nip17":
-		if controlNIP17Bus != nil {
-			return controlNIP17Bus
+		if s.relay.nip17Bus != nil {
+			return s.relay.nip17Bus
 		}
-		if _, ok := controlDMBus.(*nostruntime.NIP17Bus); ok {
-			return controlDMBus
+		if _, ok := (*s.relay.dmBus).(*nostruntime.NIP17Bus); ok {
+			return *s.relay.dmBus
 		}
 	case "nip04":
-		if controlNIP04Bus != nil {
-			return controlNIP04Bus
+		if s.relay.nip04Bus != nil {
+			return s.relay.nip04Bus
 		}
-		if _, ok := controlDMBus.(*nostruntime.DMBus); ok {
-			return controlDMBus
+		if _, ok := (*s.relay.dmBus).(*nostruntime.DMBus); ok {
+			return *s.relay.dmBus
 		}
 	case "fips":
-		if controlTransportSelector != nil {
-			return controlTransportSelector
+		if s.relay.transportSelector != nil {
+			return s.relay.transportSelector
 		}
 	}
 	return nil
@@ -206,14 +210,18 @@ func advertisedContextVMFeatureSet(entry toolbuiltin.FleetEntry) map[string]stru
 }
 
 func buildACPTargetRequirements(cfg state.ConfigDoc, constraints turnToolConstraints) acpTargetRequirements {
-	if controlToolRegistry == nil {
+	return controlServices.buildACPTargetRequirements(cfg, constraints)
+}
+
+func (s *daemonServices) buildACPTargetRequirements(cfg state.ConfigDoc, constraints turnToolConstraints) acpTargetRequirements {
+	if s.session.toolRegistry == nil {
 		return acpTargetRequirements{}
 	}
 	allowed := intersectTurnToolConstraints(nil, cfg, constraints)
 	if allowed == nil {
 		return acpTargetRequirements{}
 	}
-	exec := agent.FilteredToolExecutor(controlToolRegistry, allowed)
+	exec := agent.FilteredToolExecutor(s.session.toolRegistry, allowed)
 	surface := capabilityToolSurfaceFromDefinitions(agent.ToolDefinitions(exec))
 	return acpTargetRequirements{ToolNames: surface.ToolNames, ContextVMFeatures: surface.ContextVMFeatures}
 }
@@ -275,8 +283,9 @@ func betterACPTargetCandidateForConfig(a, b toolbuiltin.FleetEntry, cfg state.Co
 }
 
 func betterACPTargetCandidateForConfigAndRequirements(a, b toolbuiltin.FleetEntry, cfg state.ConfigDoc, req acpTargetRequirements) bool {
-	aRegistered := controlACPPeers != nil && controlACPPeers.IsPeer(a.Pubkey)
-	bRegistered := controlACPPeers != nil && controlACPPeers.IsPeer(b.Pubkey)
+	peers := controlServices.relay.acpPeers
+	aRegistered := peers != nil && peers.IsPeer(a.Pubkey)
+	bRegistered := peers != nil && peers.IsPeer(b.Pubkey)
 	if aRegistered != bRegistered {
 		return aRegistered
 	}
@@ -324,7 +333,7 @@ func resolveACPFleetTargetForConfigAndRequirements(raw string, cfg state.ConfigD
 			}
 		}
 		if len(candidates) == 0 {
-			if controlACPPeers != nil && controlACPPeers.IsPeer(hex) {
+			if controlServices.relay.acpPeers != nil && controlServices.relay.acpPeers.IsPeer(hex) {
 				if len(hex) >= 12 {
 					return hex, hex[:12] + "...", nil
 				}
@@ -363,7 +372,7 @@ func resolveACPFleetTargetForConfigAndRequirements(raw string, cfg state.ConfigD
 		}
 	}
 	for _, candidate := range ordered {
-		if controlACPPeers == nil || !controlACPPeers.IsPeer(candidate.Pubkey) {
+		if controlServices.relay.acpPeers == nil || !controlServices.relay.acpPeers.IsPeer(candidate.Pubkey) {
 			continue
 		}
 		registeredSeen = true
@@ -440,13 +449,13 @@ func resolveACPDMTransport(cfg state.ConfigDoc, targetPubKey string) (nostruntim
 	}
 	// Auto mode: try FIPS first if the TransportSelector is available and
 	// the peer advertises FIPS (or no capability info is available).
-	if controlTransportSelector != nil {
+	if controlServices.relay.transportSelector != nil {
 		if len(remote) == 0 {
 			// No advertised schemes — TransportSelector handles fallback.
-			return controlTransportSelector, "auto", nil
+			return controlServices.relay.transportSelector, "auto", nil
 		}
 		if _, ok := remote["fips"]; ok {
-			return controlTransportSelector, "auto", nil
+			return controlServices.relay.transportSelector, "auto", nil
 		}
 	}
 	if len(remote) > 0 {

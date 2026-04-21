@@ -3990,7 +3990,9 @@ func main() {
 			watchRegistry: watchRegistry,
 			dvmHandler:    dvmHandler,
 			healthMonitor: &relayHealthMonitor,
-			healthState:   map[string]bool{},
+			healthState:         map[string]bool{},
+			transportSelector:   controlTransportSelector,
+			acpPeers:            controlACPPeers,
 		},
 		emitter: controlWsEmitter,
 		session: sessionServices{
