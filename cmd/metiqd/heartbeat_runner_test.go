@@ -20,13 +20,22 @@ func withHeartbeatTestGlobals(t *testing.T, rt agent.Runtime) {
 	prevRuntime := controlAgentRuntime
 	prevRegistry := controlAgentRegistry
 	prevToolRegistry := controlToolRegistry
+	prevServices := controlServices
 	controlAgentRuntime = rt
-	controlAgentRegistry = agent.NewAgentRuntimeRegistry(rt)
+	reg := agent.NewAgentRuntimeRegistry(rt)
+	controlAgentRegistry = reg
 	controlToolRegistry = nil
+	controlServices = &daemonServices{
+		session: sessionServices{
+			agentRuntime:  rt,
+			agentRegistry: reg,
+		},
+	}
 	t.Cleanup(func() {
 		controlAgentRuntime = prevRuntime
 		controlAgentRegistry = prevRegistry
 		controlToolRegistry = prevToolRegistry
+		controlServices = prevServices
 	})
 }
 
@@ -130,6 +139,7 @@ func TestHeartbeatRunnerNextHeartbeatWakeWaitsForSchedule(t *testing.T) {
 }
 
 func TestBuildHeartbeatAgentRunUsesHeartbeatModel(t *testing.T) {
+	withHeartbeatTestGlobals(t, stubHeartbeatRuntime{})
 	cfg := state.ConfigDoc{
 		Agent: state.AgentPolicy{DefaultModel: "gpt-4o"},
 		Agents: state.AgentsConfig{{
