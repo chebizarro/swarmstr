@@ -430,18 +430,15 @@ func TestDMHealthObserverEmitsStartupAndChangeSnapshots(t *testing.T) {
 }
 
 func TestLogRelayHealthResultsEmitsStructuredEvents(t *testing.T) {
-	prevEmitter := controlWsEmitter
-	prevState := relayHealthState
-	defer func() {
-		setControlWSEmitter(prevEmitter)
-		relayHealthState = prevState
-	}()
-
 	capture := &capturingEmitter{}
-	setControlWSEmitter(capture)
-	relayHealthState = map[string]bool{}
+	svc := &daemonServices{
+		relay: relayPolicyServices{
+			healthState: map[string]bool{},
+		},
+		emitter: capture,
+	}
 
-	logRelayHealthResults(true, []nostruntime.RelayHealthResult{{
+	svc.logRelayHealthResults(true, []nostruntime.RelayHealthResult{{
 		URL:       "wss://relay.example",
 		Reachable: false,
 		Err:       errors.New("dial tcp: timeout"),

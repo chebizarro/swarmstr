@@ -244,6 +244,11 @@ var (
 	capabilityMonitor  *nostruntime.CapabilityMonitor
 	capabilityRegistry *nostruntime.CapabilityRegistry
 
+	// controlServices is the consolidated dependency struct for extracted handler
+	// files. Initialized in main() after all components are started. Replaces
+	// direct global access in main_relay_policy.go and other extracted files.
+	controlServices *daemonServices
+
 	// controlCronExecutor dispatches a gateway method from the cron scheduler.
 	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
 	controlCronExecutorMu sync.RWMutex
@@ -3967,6 +3972,36 @@ func main() {
 		}()
 	}
 
+	// ── Initialize daemonServices ──────────────────────────────────────────────
+	// Consolidates commonly-accessed globals into a dependency struct so that
+	// extracted handler files can receive it instead of reading globals directly.
+	controlServices = &daemonServices{
+		relay: relayPolicyServices{
+			nip17Bus:      controlNIP17Bus,
+			nip04Bus:      controlNIP04Bus,
+			dmBusMu:       &controlDMBusMu,
+			dmBus:         &controlDMBus,
+			controlBus:    controlRPCBus,
+			relaySelector: controlRelaySelector,
+			keyer:         controlKeyer,
+			watchRegistry: watchRegistry,
+			dvmHandler:    dvmHandler,
+			healthMonitor: &relayHealthMonitor,
+			healthState:   map[string]bool{},
+		},
+		emitter: controlWsEmitter,
+		session: sessionServices{
+			sessionTurns:      controlSessionTurns,
+			agentRuntime:      controlAgentRuntime,
+			agentRegistry:     controlAgentRegistry,
+			sessionMemRuntime: controlSessionMemoryRuntime,
+		},
+		handlers: handlerServices{
+			ttsManager:    controlTTSMgr,
+			updateChecker: controlUpdateChecker,
+		},
+	}
+
 	// ── NIP-51 allowlist watcher + agent list sync ─────────────────────────────
 	// Create a dedicated pool for NIP-51 list fetch/subscribe operations so the
 	// DM buses are not disturbed.
@@ -3981,7 +4016,7 @@ func main() {
 		if len(liveCfg.Relays.Write) == 0 {
 			liveCfg.Relays.Write = cfg.Relays
 		}
-		startRelayHealthMonitor(ctx, nostruntime.MergeRelayLists(liveCfg.Relays.Read, liveCfg.Relays.Write))
+		controlServices.startRelayHealthMonitor(ctx, nostruntime.MergeRelayLists(liveCfg.Relays.Read, liveCfg.Relays.Write))
 
 		// ── NIP-65 Relay Selector (outbox model) ────────────────────────────
 		// Initialize once; keep a single shared selector/hub instance so existing
@@ -4060,8 +4095,8 @@ func main() {
 				}
 
 				allRelays := nostruntime.MergeRelayLists(read, write)
-				applyDMRelayPolicy(allRelays)
-				applyControlRelayPolicy(allRelays)
+				controlServices.applyDMRelayPolicy(allRelays)
+				controlServices.applyControlRelayPolicy(allRelays)
 				watchRegistry.RebindRelays(allRelays)
 			},
 		}); err != nil {
@@ -6332,7 +6367,7 @@ func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
 		controlStateEnvelopeCodec.SetEncrypt(cfg.StorageEncryptEnabled())
 	}
 	refreshKeyRings(cfg.Providers)
-	applyRuntimeRelayPolicy(nil, nil, cfg)
+	controlServices.applyRuntimeRelayPolicy(nil, nil, cfg)
 	applyCapabilityRuntimeState(cfg)
 	if controlOps != nil {
 		controlOps.SyncHeartbeatConfig(cfg.Heartbeat)
