@@ -245,8 +245,12 @@ func finishACPWorkerTaskDocs(ctx context.Context, docsRepo *state.DocsRepository
 	if _, err := docsRepo.PutTask(ctx, task); err != nil {
 		return err
 	}
+	sessionStore := controlSessionStore
 	if controlServices != nil && controlServices.session.sessionStore != nil {
-		if err := controlServices.session.sessionStore.RecordTaskResult(sessionID, task.TaskID, run.RunID, result); err != nil {
+		sessionStore = controlServices.session.sessionStore
+	}
+	if sessionStore != nil {
+		if err := sessionStore.RecordTaskResult(sessionID, task.TaskID, run.RunID, result); err != nil {
 			log.Printf("acp worker task result persist failed session=%s task_id=%s run_id=%s err=%v", sessionID, task.TaskID, run.RunID, err)
 		}
 	}

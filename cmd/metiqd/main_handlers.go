@@ -85,6 +85,9 @@ func applyTalkConfig(cfg state.ConfigDoc, reg *operationsRegistry, req methods.T
 }
 
 func applyUpdateRun(reg *operationsRegistry, req methods.UpdateRunRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applyUpdateRun(reg, req)
 }
 
@@ -134,6 +137,9 @@ var validTalkModes = map[string]bool{
 }
 
 func applyTalkMode(reg *operationsRegistry, req methods.TalkModeRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applyTalkMode(reg, req)
 }
 
@@ -183,6 +189,9 @@ func applySetHeartbeats(reg *operationsRegistry, req methods.SetHeartbeatsReques
 }
 
 func applyWake(reg *operationsRegistry, req methods.WakeRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applyWake(reg, req)
 }
 
@@ -361,6 +370,9 @@ func applyTTSStatus(reg *operationsRegistry, _ methods.TTSStatusRequest) (map[st
 }
 
 func applyTTSProviders(reg *operationsRegistry, req methods.TTSProvidersRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applyTTSProviders(reg, req)
 }
 
@@ -417,6 +429,9 @@ func countEligible(statuses []map[string]any) int {
 }
 
 func applyTTSConvert(ctx context.Context, reg *operationsRegistry, req methods.TTSConvertRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applyTTSConvert(ctx, reg, req)
 }
 

@@ -276,6 +276,9 @@ func heartbeatRunnerTimeoutMS(agCfg state.AgentConfig) int {
 }
 
 func buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID string, wakes []heartbeatWakeRecord) (heartbeatAgentRun, error) {
+	if controlServices == nil {
+		return heartbeatAgentRun{}, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.buildHeartbeatAgentRun(cfg, agentID, wakes)
 }
 
@@ -355,6 +358,9 @@ func (s *daemonServices) buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID str
 }
 
 func executeHeartbeatAgentRun(ctx context.Context, run heartbeatAgentRun) error {
+	if controlServices == nil {
+		return fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.executeHeartbeatAgentRun(ctx, run)
 }
 

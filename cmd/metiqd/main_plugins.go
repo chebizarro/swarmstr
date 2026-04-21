@@ -26,6 +26,9 @@ import (
 // ---------------------------------------------------------------------------
 
 func applyPluginInstallRuntime(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.PluginsInstallRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applyPluginInstallRuntime(ctx, docsRepo, configState, req)
 }
 

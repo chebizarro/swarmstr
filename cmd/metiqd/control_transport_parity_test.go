@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -127,9 +128,27 @@ func newControlTransportParityHarness(t *testing.T, scenario string) *controlTra
 	startedAt := time.Now().Add(-5 * time.Second)
 
 	prevSessionStore := controlSessionStore
+	prevServices := controlServices
 	controlSessionStore = sessionStore
+	controlServices = &daemonServices{
+		emitterMu: &sync.RWMutex{},
+		relay: relayPolicyServices{
+			dmBusMu: &sync.RWMutex{},
+			dmBus:   new(nostruntime.DMTransport),
+		},
+		session: sessionServices{
+			toolRegistry:  tools,
+			sessionStore:  sessionStore,
+			sessionRouter: agent.NewAgentSessionRouter(),
+			agentJobs:     newAgentJobRegistry(),
+			subagents:     newSubagentRegistry(),
+			ops:           newOperationsRegistry(),
+		},
+		runtimeConfig: cfgState,
+	}
 	t.Cleanup(func() {
 		controlSessionStore = prevSessionStore
+		controlServices = prevServices
 	})
 
 	seedControlTransportParityScenario(t, scenario, docsRepo, transcriptRepo, sessionStore)

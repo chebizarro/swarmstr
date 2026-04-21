@@ -27,15 +27,27 @@ type agentRunController struct {
 }
 
 func currentAgentRunController() agentRunController {
+	if controlServices != nil {
+		return agentRunController{
+			runtimeConfig:  controlServices.runtimeConfig,
+			sessionStore:   controlServices.session.sessionStore,
+			sessionRouter:  controlServices.session.sessionRouter,
+			agentRegistry:  controlServices.session.agentRegistry,
+			defaultRuntime: controlServices.session.agentRuntime,
+			jobs:           controlServices.session.agentJobs,
+			subagents:      controlServices.session.subagents,
+			emitEvent:      controlServices.emitWSEvent,
+		}
+	}
+	// Fallback: use package-level globals (test compatibility).
 	return agentRunController{
-		runtimeConfig:  controlServices.runtimeConfig,
-		sessionStore:   controlServices.session.sessionStore,
-		sessionRouter:  controlServices.session.sessionRouter,
-		agentRegistry:  controlServices.session.agentRegistry,
-		defaultRuntime: controlServices.session.agentRuntime,
-		jobs:           controlServices.session.agentJobs,
-		subagents:      controlServices.session.subagents,
-		emitEvent:      controlServices.emitWSEvent,
+		runtimeConfig:  controlRuntimeConfig,
+		sessionStore:   controlSessionStore,
+		sessionRouter:  controlSessionRouter,
+		agentRegistry:  controlAgentRegistry,
+		defaultRuntime: controlAgentRuntime,
+		jobs:           controlAgentJobs,
+		subagents:      controlSubagents,
 	}
 }
 
@@ -44,7 +56,7 @@ func (c agentRunController) emit(event string, payload any) {
 		c.emitEvent(event, payload)
 		return
 	}
-	controlServices.emitWSEvent(event, payload)
+	emitControlWSEvent(event, payload)
 }
 
 func resolveInboundChannelRuntime(configuredAgentID, sessionID string) (string, agent.Runtime) {

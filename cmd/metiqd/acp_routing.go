@@ -58,7 +58,29 @@ func normalizeACPAdvertisedSchemes(values []string) map[string]struct{} {
 }
 
 func currentACPTransportBus(mode string) nostruntime.DMTransport {
-	return controlServices.currentACPTransportBus(mode)
+	if controlServices != nil {
+		return controlServices.currentACPTransportBus(mode)
+	}
+	// Fallback: use package-level globals (test compatibility).
+	mode, ok := state.ParseACPTransportMode(mode)
+	if !ok || mode == "auto" {
+		return nil
+	}
+	switch mode {
+	case "nip17":
+		if controlNIP17Bus != nil {
+			return controlNIP17Bus
+		}
+	case "nip04":
+		if controlNIP04Bus != nil {
+			return controlNIP04Bus
+		}
+	case "fips":
+		if controlTransportSelector != nil {
+			return controlTransportSelector
+		}
+	}
+	return nil
 }
 
 func (s *daemonServices) currentACPTransportBus(mode string) nostruntime.DMTransport {
@@ -210,7 +232,20 @@ func advertisedContextVMFeatureSet(entry toolbuiltin.FleetEntry) map[string]stru
 }
 
 func buildACPTargetRequirements(cfg state.ConfigDoc, constraints turnToolConstraints) acpTargetRequirements {
-	return controlServices.buildACPTargetRequirements(cfg, constraints)
+	if controlServices != nil {
+		return controlServices.buildACPTargetRequirements(cfg, constraints)
+	}
+	// Fallback: use package-level tool registry (test compatibility).
+	if controlToolRegistry == nil {
+		return acpTargetRequirements{}
+	}
+	allowed := intersectTurnToolConstraints(nil, cfg, constraints)
+	if allowed == nil {
+		return acpTargetRequirements{}
+	}
+	exec := agent.FilteredToolExecutor(controlToolRegistry, allowed)
+	surface := capabilityToolSurfaceFromDefinitions(agent.ToolDefinitions(exec))
+	return acpTargetRequirements{ToolNames: surface.ToolNames, ContextVMFeatures: surface.ContextVMFeatures}
 }
 
 func (s *daemonServices) buildACPTargetRequirements(cfg state.ConfigDoc, constraints turnToolConstraints) acpTargetRequirements {
@@ -283,7 +318,7 @@ func betterACPTargetCandidateForConfig(a, b toolbuiltin.FleetEntry, cfg state.Co
 }
 
 func betterACPTargetCandidateForConfigAndRequirements(a, b toolbuiltin.FleetEntry, cfg state.ConfigDoc, req acpTargetRequirements) bool {
-	peers := controlServices.relay.acpPeers
+	peers := controlACPPeers
 	aRegistered := peers != nil && peers.IsPeer(a.Pubkey)
 	bRegistered := peers != nil && peers.IsPeer(b.Pubkey)
 	if aRegistered != bRegistered {
@@ -333,7 +368,7 @@ func resolveACPFleetTargetForConfigAndRequirements(raw string, cfg state.ConfigD
 			}
 		}
 		if len(candidates) == 0 {
-			if controlServices.relay.acpPeers != nil && controlServices.relay.acpPeers.IsPeer(hex) {
+			if controlACPPeers != nil && controlACPPeers.IsPeer(hex) {
 				if len(hex) >= 12 {
 					return hex, hex[:12] + "...", nil
 				}
@@ -372,7 +407,7 @@ func resolveACPFleetTargetForConfigAndRequirements(raw string, cfg state.ConfigD
 		}
 	}
 	for _, candidate := range ordered {
-		if controlServices.relay.acpPeers == nil || !controlServices.relay.acpPeers.IsPeer(candidate.Pubkey) {
+		if controlACPPeers == nil || !controlACPPeers.IsPeer(candidate.Pubkey) {
 			continue
 		}
 		registeredSeen = true
@@ -449,13 +484,13 @@ func resolveACPDMTransport(cfg state.ConfigDoc, targetPubKey string) (nostruntim
 	}
 	// Auto mode: try FIPS first if the TransportSelector is available and
 	// the peer advertises FIPS (or no capability info is available).
-	if controlServices.relay.transportSelector != nil {
+	if controlTransportSelector != nil {
 		if len(remote) == 0 {
 			// No advertised schemes — TransportSelector handles fallback.
-			return controlServices.relay.transportSelector, "auto", nil
+			return controlTransportSelector, "auto", nil
 		}
 		if _, ok := remote["fips"]; ok {
-			return controlServices.relay.transportSelector, "auto", nil
+			return controlTransportSelector, "auto", nil
 		}
 	}
 	if len(remote) > 0 {

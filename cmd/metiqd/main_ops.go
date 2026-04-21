@@ -132,6 +132,9 @@ func applyCronRemove(reg *cronRegistry, req methods.CronRemoveRequest) (map[stri
 }
 
 func applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applyCronRun(reg, req)
 }
 
@@ -198,6 +201,9 @@ func applyExecApprovalsNodeSet(reg *execApprovalsRegistry, req methods.ExecAppro
 }
 
 func applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprovalRequestRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applyExecApprovalRequest(reg, req)
 }
 
@@ -237,6 +243,9 @@ func applyExecApprovalWaitDecision(ctx context.Context, reg *execApprovalsRegist
 }
 
 func applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprovalResolveRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applyExecApprovalResolve(reg, req)
 }
 
@@ -307,6 +316,9 @@ func applySandboxRun(ctx context.Context, configState *runtimeConfigStore, req m
 }
 
 func applySecretsReload(req methods.SecretsReloadRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applySecretsReload(req)
 }
 
@@ -324,6 +336,9 @@ func (s *daemonServices) applySecretsReload(_ methods.SecretsReloadRequest) (map
 }
 
 func applySecretsResolve(req methods.SecretsResolveRequest) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applySecretsResolve(req)
 }
 
