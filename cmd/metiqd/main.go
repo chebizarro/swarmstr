@@ -6028,13 +6028,19 @@ func handleControlRPCRequest(
 
 		services: controlServices,
 
-		ops:           controlOps,
-		cronJobs:      controlCronJobs,
-		execApprovals: controlExecApprovals,
-		wizards:       controlWizards,
-		contextEngine: controlContextEngine,
-		mcpOps:        controlMCPOps,
-		mcpAuth:       controlMCPAuth,
+		ops:             controlOps,
+		cronJobs:        controlCronJobs,
+		execApprovals:   controlExecApprovals,
+		wizards:         controlWizards,
+		contextEngine:   controlContextEngine,
+		mcpOps:          controlMCPOps,
+		mcpAuth:         controlMCPAuth,
+		nodeInvocations: controlNodeInvocations,
+		nodePending:     controlNodePending,
+		canvasHost:      controlCanvas,
+		channels:        controlChannels,
+		nostrHub:        controlHub,
+		keyer:           controlKeyer,
 	}
 	if controlHooksMgr != nil {
 		deps.hooksMgr = controlHooksMgr

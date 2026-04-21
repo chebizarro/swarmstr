@@ -64,13 +64,13 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlChannels == nil {
+		if h.deps.channels == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel runtime not configured")
 		}
 		ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
 			GroupAddress: req.GroupAddress,
-			Hub:          controlHub,
-			Keyer:        controlKeyer,
+			Hub:          h.deps.nostrHub,
+			Keyer:        h.deps.keyer,
 			OnMessage: func(msg channels.InboundMessage) {
 				controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 					TS:        time.Now().UnixMilli(),
@@ -119,7 +119,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 		if chErr != nil {
 			return nostruntime.ControlRPCResult{}, true, chErr
 		}
-		if err := controlChannels.Add(ch); err != nil {
+		if err := h.deps.channels.Add(ch); err != nil {
 			ch.Close()
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -137,18 +137,18 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlChannels == nil {
+		if h.deps.channels == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel runtime not configured")
 		}
-		if err := controlChannels.Remove(req.ChannelID); err != nil {
+		if err := h.deps.channels.Remove(req.ChannelID); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "channel_id": req.ChannelID}}, true, nil
 	case methods.MethodChannelsList:
-		if controlChannels == nil {
+		if h.deps.channels == nil {
 			return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []any{}}}, true, nil
 		}
-		list := controlChannels.List()
+		list := h.deps.channels.List()
 		return nostruntime.ControlRPCResult{Result: map[string]any{"channels": list, "count": len(list)}}, true, nil
 	case methods.MethodChannelsSend:
 		req, err := methods.DecodeChannelsSendParams(in.Params)
@@ -159,10 +159,10 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlChannels == nil {
+		if h.deps.channels == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel runtime not configured")
 		}
-		ch, ok := controlChannels.Get(req.ChannelID)
+		ch, ok := h.deps.channels.Get(req.ChannelID)
 		if !ok {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel %q not found; join it first with channels.join", req.ChannelID)
 		}

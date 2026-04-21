@@ -129,8 +129,8 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		}
 		var turnTelemetry []state.TurnTelemetry
 		var memoryRecall []state.MemoryRecallSample
-		if controlSessionStore != nil {
-			for sessID, entry := range controlSessionStore.List() {
+		if h.deps.sessionStore != nil {
+			for sessID, entry := range h.deps.sessionStore.List() {
 				if strings.TrimSpace(entry.ActiveTaskID) != req.TaskID && strings.TrimSpace(entry.ParentTaskID) != req.TaskID && sessID != strings.TrimSpace(task.SessionID) {
 					continue
 				}

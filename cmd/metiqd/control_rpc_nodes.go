@@ -308,7 +308,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyNodeInvoke(controlNodeInvocations, req)
+		out, err := applyNodeInvoke(h.deps.nodeInvocations, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -334,7 +334,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyNodeEvent(controlNodeInvocations, req)
+		out, err := applyNodeEvent(h.deps.nodeInvocations, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -348,7 +348,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyNodeResult(controlNodeInvocations, req)
+		out, err := applyNodeResult(h.deps.nodeInvocations, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -362,7 +362,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := controlNodePending.Enqueue(nodepending.EnqueueRequest{NodeID: req.NodeID, Command: req.Command, Args: req.Args, IdempotencyKey: req.IdempotencyKey, TTLMS: req.TTLMS})
+		out, err := h.deps.nodePending.Enqueue(nodepending.EnqueueRequest{NodeID: req.NodeID, Command: req.Command, Args: req.Args, IdempotencyKey: req.IdempotencyKey, TTLMS: req.TTLMS})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -376,7 +376,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := controlNodePending.Pull(req.NodeID)
+		out, err := h.deps.nodePending.Pull(req.NodeID)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -390,7 +390,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := controlNodePending.Ack(nodepending.AckRequest{NodeID: req.NodeID, IDs: req.IDs})
+		out, err := h.deps.nodePending.Ack(nodepending.AckRequest{NodeID: req.NodeID, IDs: req.IDs})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -404,7 +404,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := controlNodePending.Drain(nodepending.DrainRequest{NodeID: req.NodeID, MaxItems: req.MaxItems})
+		out, err := h.deps.nodePending.Drain(nodepending.DrainRequest{NodeID: req.NodeID, MaxItems: req.MaxItems})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -414,20 +414,20 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err := json.Unmarshal(in.Params, &req); err != nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("invalid params: %w", err)
 		}
-		c := controlCanvas.GetCanvas(req.ID)
+		c := h.deps.canvasHost.GetCanvas(req.ID)
 		if c == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("canvas %q not found", req.ID)
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"canvas": c}}, true, nil
 	case methods.MethodCanvasList:
-		canvases := controlCanvas.ListCanvases()
+		canvases := h.deps.canvasHost.ListCanvases()
 		return nostruntime.ControlRPCResult{Result: map[string]any{"canvases": canvases, "count": len(canvases)}}, true, nil
 	case methods.MethodCanvasUpdate:
 		var req methods.CanvasUpdateRequest
 		if err := json.Unmarshal(in.Params, &req); err != nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("invalid params: %w", err)
 		}
-		if err := controlCanvas.UpdateCanvas(req.ID, req.ContentType, req.Data); err != nil {
+		if err := h.deps.canvasHost.UpdateCanvas(req.ID, req.ContentType, req.Data); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "canvas_id": req.ID}}, true, nil
@@ -436,7 +436,7 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err := json.Unmarshal(in.Params, &req); err != nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("invalid params: %w", err)
 		}
-		removed := controlCanvas.DeleteCanvas(req.ID)
+		removed := h.deps.canvasHost.DeleteCanvas(req.ID)
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "removed": removed, "canvas_id": req.ID}}, true, nil
 	default:
 		return nostruntime.ControlRPCResult{}, false, nil

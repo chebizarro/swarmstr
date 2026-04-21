@@ -9,17 +9,21 @@ import (
 	"strings"
 	"time"
 
+	nostr "fiatjaf.com/nostr"
+
+	acppkg "metiq/internal/acp"
 	"metiq/internal/agent"
+	"metiq/internal/canvas"
+	"metiq/internal/gateway/channels"
 	ctxengine "metiq/internal/context"
 	"metiq/internal/gateway/methods"
+	"metiq/internal/gateway/nodepending"
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
 	nostruntime "metiq/internal/nostr/runtime"
 	pluginmanager "metiq/internal/plugins/manager"
 	"metiq/internal/policy"
 	"metiq/internal/store/state"
-
-	acppkg "metiq/internal/acp"
 )
 
 type controlRPCDeps struct {
@@ -56,14 +60,20 @@ type controlRPCDeps struct {
 	// reading package-level globals.
 	services *daemonServices
 
-	// Operation registries — replace direct global reads in handleOpsRPC.
-	ops            *operationsRegistry
-	cronJobs       *cronRegistry
-	execApprovals  *execApprovalsRegistry
-	wizards        *wizardRegistry
-	contextEngine  ctxengine.Engine
-	mcpOps         *mcpOpsController
-	mcpAuth        *mcpAuthController
+	// Operation registries — replace direct global reads in RPC sub-handlers.
+	ops              *operationsRegistry
+	cronJobs         *cronRegistry
+	execApprovals    *execApprovalsRegistry
+	wizards          *wizardRegistry
+	contextEngine    ctxengine.Engine
+	mcpOps           *mcpOpsController
+	mcpAuth          *mcpAuthController
+	nodeInvocations  *nodeInvocationRegistry
+	nodePending      *nodepending.Store
+	canvasHost       *canvas.Host
+	channels         *channels.Registry
+	nostrHub         *nostruntime.NostrHub
+	keyer            nostr.Keyer
 }
 
 type hooksEventFirer interface {
