@@ -3499,16 +3499,12 @@ func main() {
 			turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, turnErr, false, "", "", "")
 			persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
 			emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
-			// Mark as processed even on failure to prevent replay storms on
-			// restart.  Without this, a turn that fails (timeout, cancel,
-			// context overflow) is never checkpointed and will be
-			// re-processed for every event in the replay window.
-			if eventID != "" && createdAt > 0 && !strings.HasPrefix(eventID, "watch:") {
-				markCtx, markCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				if err := tracker.MarkProcessed(markCtx, docsRepo, eventID, createdAt); err != nil {
-					log.Printf("checkpoint update (failed turn) event=%s err=%v", eventID, err)
-				}
-				markCancel()
+			// Do NOT mark as processed on failure — the agent will retry
+			// this message on recovery (within the replay/since window).
+			// This ensures transient LLM errors don't permanently drop
+			// user messages.
+			if eventID != "" && !strings.HasPrefix(eventID, "watch:") {
+				log.Printf("dm turn failed, event NOT marked processed (will retry on recovery) event=%s session=%s", eventID, sessionID)
 			}
 			return
 		}
