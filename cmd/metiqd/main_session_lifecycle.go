@@ -129,6 +129,8 @@ func rotateSessionCoordinated(
 	if chatCancels != nil {
 		chatCancels.Abort(sessionID)
 	}
+	// Clear cached prompt sections so the next turn rebuilds fresh.
+	clearPromptSectionCache()
 	return withExclusiveSessionTurn(ctx, sessionID, 15*time.Second, func() error {
 		if seenChannelSessions != nil {
 			seenChannelSessions.Delete(sessionID)

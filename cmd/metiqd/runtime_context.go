@@ -210,15 +210,24 @@ func buildTurnRuntimeContext(p turnRuntimeParams) string {
 }
 
 func buildTurnRuntimeStaticContext(p turnRuntimeParams) string {
+	// Tool-independent sections (cacheable) + tool-dependent section (per-turn).
+	stable := buildTurnRuntimeStableContext(p)
+	toolSection := buildToolSummarySection(p.Tools)
+	if toolSection == "" {
+		return stable
+	}
+	return joinPromptSections(stable, toolSection)
+}
+
+// buildTurnRuntimeStableContext returns the runtime static context sections
+// that do NOT depend on the per-turn tool set. This is the portion eligible
+// for prompt section caching — it only changes when config, agent, or
+// workspace files change.
+func buildTurnRuntimeStableContext(p turnRuntimeParams) string {
 	var sections []string
 
 	// ── Runtime info ────────────────────────────────────────────────────────
 	sections = append(sections, buildRuntimeSection(p))
-
-	// ── Tool summaries ──────────────────────────────────────────────────────
-	if ts := buildToolSummarySection(p.Tools); ts != "" {
-		sections = append(sections, ts)
-	}
 
 	// ── Model aliases ───────────────────────────────────────────────────────
 	if ma := buildModelAliasSection(); ma != "" {

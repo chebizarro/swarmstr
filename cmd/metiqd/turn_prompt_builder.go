@@ -41,6 +41,37 @@ func applyPromptEnvelopeToPreparedTurn(prepared preparedAgentRunTurn, params tur
 
 func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	agentID := defaultAgentID(params.AgentID)
+	currentGen := promptConfigGeneration.Load()
+
+	// ── Fast path: check prompt section cache ───────────────────────────────
+	// The static system prompt (bootstrap + agent system prompt + stable
+	// runtime context) is identical between turns for the same agent unless
+	// config changes. Cache it to improve provider prompt cache hit rates.
+	if cached, ok := globalPromptSectionCache.get(agentID, currentGen); ok {
+		// Cache hit — only recompute per-turn portions (tools, time).
+		contextBudget := agent.ComputeContextBudget(
+			agent.ProfileFromContextWindowTokens(cached.contextWindowTokens))
+
+		turnTools := params.Tools
+		if len(turnTools) > 0 {
+			turnTools = agent.FitToolDefinitions(turnTools, contextBudget, agent.DefaultCriticalToolNames())
+		}
+
+		// Append the per-turn tool summary to the cached static prompt.
+		staticPrompt := cached.staticSystemPrompt
+		if toolSection := buildToolSummarySection(turnTools); toolSection != "" {
+			staticPrompt = joinPromptSections(staticPrompt, toolSection)
+		}
+
+		contextText := joinPromptSections(params.Context, buildTurnRuntimeDynamicContext())
+		return builtTurnPrompt{
+			StaticSystemPrompt:  staticPrompt,
+			Context:             contextText,
+			ContextWindowTokens: cached.contextWindowTokens,
+		}
+	}
+
+	// ── Slow path: full computation ─────────────────────────────────────────
 	wsDir, agentSystemPrompt, agentModel, agentThinkingLevel := resolvePromptAgentConfig(params.Config, agentID)
 	if agentThinkingLevel == "" {
 		agentThinkingLevel = strings.TrimSpace(params.SessionThinkingLevel)
@@ -50,9 +81,6 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	}
 
 	// ── Context budget resolution ───────────────────────────────────────────
-	// Resolve the model's context window and build a budget from it.
-	// contextWindowForAgent checks ContextWindow config, then model registry,
-	// then defaults to 200K. MaxContextTokens acts as an optional ceiling.
 	ctxWindow := contextWindowForAgent(params.Config, agentID)
 	maxCtx := maxContextTokensForAgent(params.Config, agentID)
 	effectiveWindow := ctxWindow
@@ -84,28 +112,18 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	)
 	bootstrapWarnings = append(bootstrapWarnings, agent.FormatBootstrapTruncationWarningLines(analysis, agent.DefaultBootstrapPromptWarningMaxFiles)...)
 
-	staticSystemPrompt := params.StaticSystemPrompt
+	// Build the stable (tool-independent) static system prompt.
+	stableStaticPrompt := params.StaticSystemPrompt
 	if bootstrapPrompt := agent.RenderBootstrapPromptContext(contextFiles); bootstrapPrompt != "" {
-		staticSystemPrompt = joinPromptSections(staticSystemPrompt, bootstrapPrompt)
+		stableStaticPrompt = joinPromptSections(stableStaticPrompt, bootstrapPrompt)
 	}
 	if agentSystemPrompt != "" {
-		staticSystemPrompt = joinPromptSections(staticSystemPrompt, agentSystemPrompt)
+		stableStaticPrompt = joinPromptSections(stableStaticPrompt, agentSystemPrompt)
 	}
 
 	channel := strings.TrimSpace(params.Channel)
 	if channel == "" {
 		channel = "nostr"
-	}
-	// Apply budget-aware tool definition fitting for all models.
-	// FitToolDefinitions uses CompressionPressure to determine compression level —
-	// large models with ample budget get zero compression automatically.
-	turnTools := params.Tools
-	if len(turnTools) > 0 {
-		turnTools = agent.FitToolDefinitions(turnTools, contextBudget, agent.DefaultCriticalToolNames())
-		if len(turnTools) < len(params.Tools) {
-			log.Printf("context-budget: fitted %d/%d tool definitions (model=%s window=%d)",
-				len(turnTools), len(params.Tools), agentModel, effectiveWindow)
-		}
 	}
 
 	runtimeParams := turnRuntimeParams{
@@ -115,14 +133,36 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 		Model:             agentModel,
 		Channel:           channel,
 		Capabilities:      resolveRuntimeCapabilities(params.Config),
-		Tools:             turnTools,
 		Config:            params.Config,
 		WorkspaceDir:      wsDir,
 		ThinkingLevel:     agentThinkingLevel,
 		SkillsPrompt:      buildSkillsPromptWithBudget(params.Config, agentID, contextBudget),
 		BootstrapWarnings: bootstrapWarnings,
 	}
-	staticSystemPrompt = joinPromptSections(staticSystemPrompt, buildTurnRuntimeStaticContext(runtimeParams))
+	stableStaticPrompt = joinPromptSections(stableStaticPrompt, buildTurnRuntimeStableContext(runtimeParams))
+
+	// Cache the stable portion for subsequent turns.
+	globalPromptSectionCache.set(agentID, promptSectionCacheEntry{
+		staticSystemPrompt:  stableStaticPrompt,
+		contextWindowTokens: modelProfile.ContextWindowTokens,
+		configGeneration:    currentGen,
+	})
+
+	// Now add the per-turn tool-dependent sections.
+	turnTools := params.Tools
+	if len(turnTools) > 0 {
+		turnTools = agent.FitToolDefinitions(turnTools, contextBudget, agent.DefaultCriticalToolNames())
+		if len(turnTools) < len(params.Tools) {
+			log.Printf("context-budget: fitted %d/%d tool definitions (model=%s window=%d)",
+				len(turnTools), len(params.Tools), agentModel, effectiveWindow)
+		}
+	}
+
+	staticSystemPrompt := stableStaticPrompt
+	if toolSection := buildToolSummarySection(turnTools); toolSection != "" {
+		staticSystemPrompt = joinPromptSections(staticSystemPrompt, toolSection)
+	}
+
 	contextText := joinPromptSections(params.Context, buildTurnRuntimeDynamicContext())
 
 	return builtTurnPrompt{

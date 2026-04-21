@@ -33,8 +33,9 @@ func runPostCompactCleanup(sessionID string) {
 		return
 	}
 
-	// 1. Clear the docs section cache — force rebuild on next assemble.
+	// 1. Clear prompt section caches — force rebuild on next assemble.
 	clearDocsSectionCache()
+	clearPromptSectionCache()
 
 	// 2. Reset autocompact circuit breaker on success.
 	if controlAutoCompactState != nil {
@@ -64,6 +65,7 @@ func runPostCompactCleanupWithState(sessionID string, autoCompactState *ctxengin
 	}
 
 	clearDocsSectionCache()
+	clearPromptSectionCache()
 
 	if autoCompactState != nil {
 		autoCompactState.RecordSuccess(sessionID)
