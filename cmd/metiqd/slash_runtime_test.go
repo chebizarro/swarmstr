@@ -46,7 +46,7 @@ func TestApplyUsageSlash_SetAndReport(t *testing.T) {
 	if !ok || se.ResponseUsage != "full" {
 		t.Fatalf("expected response usage persisted: %+v", se)
 	}
-	if err := ss.AddTokens(sessionID, 120, 45); err != nil {
+	if err := ss.AddTokens(sessionID, 120, 45, 0, 0); err != nil {
 		t.Fatalf("add tokens: %v", err)
 	}
 	report := applyUsageSlash(ss, sessionID, nil)

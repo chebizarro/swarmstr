@@ -3650,7 +3650,7 @@ func main() {
 			}(assistantMemoryDocs)
 		}
 		if sessionStore != nil && (turnResult.Usage.InputTokens > 0 || turnResult.Usage.OutputTokens > 0) {
-			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens)
+			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens, turnResult.Usage.CacheReadTokens, turnResult.Usage.CacheCreationTokens)
 		}
 		// Note: assistant text is already ingested via persistAndIngestTurnHistory
 		// above (as part of HistoryDelta), so we don't duplicate it here.
@@ -4725,7 +4725,7 @@ func main() {
 		}
 		// Accumulate token usage into session state.
 		if sessionStore != nil && (turnResult.Usage.InputTokens > 0 || turnResult.Usage.OutputTokens > 0) {
-			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens)
+			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens, turnResult.Usage.CacheReadTokens, turnResult.Usage.CacheCreationTokens)
 		}
 		turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, nil, false, "", "", "")
 		persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
@@ -6273,7 +6273,7 @@ func handleACPMessage(
 			return err
 		})
 		if controlServices.session.sessionStore != nil && (result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0) {
-			_ = controlServices.session.sessionStore.AddTokens(sessionID, result.Usage.InputTokens, result.Usage.OutputTokens)
+			_ = controlServices.session.sessionStore.AddTokens(sessionID, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CacheReadTokens, result.Usage.CacheCreationTokens)
 		}
 		turnTelemetry := buildTurnTelemetry(msg.TaskID, turnStartedAt, time.Now(), result, procErr, false, "", "", "")
 		turnTelemetry.Trace = agent.TraceContext{

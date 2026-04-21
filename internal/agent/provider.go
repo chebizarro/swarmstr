@@ -41,6 +41,16 @@ type ProviderResult struct {
 type ProviderUsage struct {
 	InputTokens  int64 `json:"input_tokens,omitempty"`
 	OutputTokens int64 `json:"output_tokens,omitempty"`
+	// CacheReadTokens is the number of input tokens served from the provider's
+	// prompt cache. Non-zero means a cache hit on some/all of the prompt prefix.
+	// Anthropic: usage.cache_read_input_tokens
+	// OpenAI:    usage.prompt_tokens_details.cached_tokens
+	// Gemini:    usageMetadata.cachedContentTokenCount
+	CacheReadTokens int64 `json:"cache_read_tokens,omitempty"`
+	// CacheCreationTokens is the number of input tokens written to cache.
+	// Only reported by Anthropic (usage.cache_creation_input_tokens).
+	// Zero for providers that don't report this separately.
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 }
 
 // StreamingProvider extends Provider with incremental text delivery.
@@ -207,14 +217,33 @@ type OpenAIChatProvider struct {
 	APIKey  string
 	Model   string
 	Client  *http.Client
+	// KeepAlive is an Ollama-specific parameter controlling how long the model
+	// stays loaded in memory after a request (e.g. "30m", "1h"). Empty means
+	// use the Ollama server default (typically 5m).
+	KeepAlive string
+	// Store enables OpenAI's stored completions feature (store:true in API).
+	// Opt-in via config; stored completions are retained by OpenAI for 30 days.
+	// Read from OPENAI_STORE_COMPLETIONS env var if not set explicitly.
+	Store bool
 }
 
 func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
+	keepAlive := p.KeepAlive
+	if keepAlive == "" {
+		keepAlive = strings.TrimSpace(os.Getenv("OLLAMA_KEEP_ALIVE"))
+	}
+	store := p.Store
+	if !store && strings.EqualFold(strings.TrimSpace(os.Getenv("OPENAI_STORE_COMPLETIONS")), "true") {
+		store = true
+	}
 	chatProvider := &OpenAIChatProviderChat{
-		BaseURL: p.BaseURL,
-		APIKey:  p.resolveAPIKey(),
-		Model:   p.resolveModel(),
-		Client:  p.Client,
+		BaseURL:             p.BaseURL,
+		APIKey:              p.resolveAPIKey(),
+		Model:               p.resolveModel(),
+		Client:              p.Client,
+		ContextWindowTokens: turn.ContextWindowTokens,
+		KeepAlive:           keepAlive,
+		Store:               store,
 	}
 	return generateWithAgenticLoop(ctx, chatProvider, turn, "", "openai")
 }
@@ -291,7 +320,18 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 		params.Tools = translateToolsToOpenAISDK(turn.Tools)
 	}
 
-	stream := client.Chat.Completions.NewStreaming(ctx, params)
+	// Ollama-specific: inject num_ctx and keep_alive via extra body params.
+	var streamOpts []option.RequestOption
+	if isOllamaEndpoint(baseURL) {
+		if turn.ContextWindowTokens > 0 {
+			streamOpts = append(streamOpts, option.WithJSONSet("options.num_ctx", turn.ContextWindowTokens))
+		}
+		if p.KeepAlive != "" {
+			streamOpts = append(streamOpts, option.WithJSONSet("keep_alive", p.KeepAlive))
+		}
+	}
+
+	stream := client.Chat.Completions.NewStreaming(ctx, params, streamOpts...)
 	defer stream.Close()
 
 	// Accumulate text and tool calls from the stream.
@@ -419,6 +459,11 @@ type geminiRequest struct {
 	Contents          []geminiContent    `json:"contents"`
 	GenerationConfig  map[string]any     `json:"generationConfig,omitempty"`
 	Tools             []geminiToolBundle `json:"tools,omitempty"`
+	// CachedContent references a pre-created CachedContent resource by name
+	// (e.g. "cachedContents/abc123"). When set, the system instruction and
+	// tools from the cached resource are used, and those fields should be
+	// omitted from this request to avoid conflicts.
+	CachedContent string `json:"cachedContent,omitempty"`
 }
 
 // geminiToolBundle wraps a list of function declarations for the Gemini tools field.
@@ -441,10 +486,19 @@ type geminiResponse struct {
 			} `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
-	Error *struct {
+	UsageMetadata *geminiUsageMetadata `json:"usageMetadata,omitempty"`
+	Error         *struct {
 		Message string `json:"message"`
 		Code    int    `json:"code"`
 	} `json:"error"`
+}
+
+// geminiUsageMetadata holds token counts from the Gemini API response.
+type geminiUsageMetadata struct {
+	PromptTokenCount     int64 `json:"promptTokenCount"`
+	CandidatesTokenCount int64 `json:"candidatesTokenCount"`
+	TotalTokenCount      int64 `json:"totalTokenCount"`
+	CachedContentTokenCount int64 `json:"cachedContentTokenCount"`
 }
 
 // toolDefsToGemini converts ToolDefinition slice to the Gemini functionDeclarations format.

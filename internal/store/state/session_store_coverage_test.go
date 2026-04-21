@@ -72,7 +72,7 @@ func TestSessionStore_AddTokens(t *testing.T) {
 	}
 
 	// AddTokens on non-existing key creates entry
-	if err := ss.AddTokens("sess-1", 100, 50); err != nil {
+	if err := ss.AddTokens("sess-1", 100, 50, 10, 5); err != nil {
 		t.Fatal(err)
 	}
 	e, ok := ss.Get("sess-1")
@@ -82,14 +82,20 @@ func TestSessionStore_AddTokens(t *testing.T) {
 	if e.InputTokens != 100 || e.OutputTokens != 50 || e.TotalTokens != 150 {
 		t.Errorf("tokens mismatch: in=%d out=%d total=%d", e.InputTokens, e.OutputTokens, e.TotalTokens)
 	}
+	if e.CacheRead != 10 || e.CacheWrite != 5 {
+		t.Errorf("cache mismatch: read=%d write=%d", e.CacheRead, e.CacheWrite)
+	}
 
 	// AddTokens accumulates
-	if err := ss.AddTokens("sess-1", 200, 100); err != nil {
+	if err := ss.AddTokens("sess-1", 200, 100, 20, 10); err != nil {
 		t.Fatal(err)
 	}
 	e, _ = ss.Get("sess-1")
 	if e.TotalTokens != 450 {
 		t.Errorf("expected 450 total, got %d", e.TotalTokens)
+	}
+	if e.CacheRead != 30 || e.CacheWrite != 15 {
+		t.Errorf("cache accumulate mismatch: read=%d write=%d", e.CacheRead, e.CacheWrite)
 	}
 }
 
