@@ -276,6 +276,10 @@ func heartbeatRunnerTimeoutMS(agCfg state.AgentConfig) int {
 }
 
 func buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID string, wakes []heartbeatWakeRecord) (heartbeatAgentRun, error) {
+	return controlServices.buildHeartbeatAgentRun(cfg, agentID, wakes)
+}
+
+func (s *daemonServices) buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID string, wakes []heartbeatWakeRecord) (heartbeatAgentRun, error) {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
 		agentID = "main"
@@ -286,17 +290,17 @@ func buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID string, wakes []heartbe
 		Prompt:    buildHeartbeatRunnerPrompt(agentID, wakes),
 		Wakes:     append([]heartbeatWakeRecord(nil), wakes...),
 	}
-	if controlAgentRegistry != nil {
-		run.Runtime = controlAgentRegistry.Get(agentID)
+	if s.session.agentRegistry != nil {
+		run.Runtime = s.session.agentRegistry.Get(agentID)
 	}
 	if run.Runtime == nil {
-		run.Runtime = controlAgentRuntime
+		run.Runtime = s.session.agentRuntime
 	}
 	run.PrimaryModel = strings.TrimSpace(cfg.Agent.DefaultModel)
 	if agCfg, ok := resolveAgentConfigByID(cfg, agentID); ok {
 		run.TimeoutMS = heartbeatRunnerTimeoutMS(agCfg)
 		if heartbeatModel := resolveAuxiliaryModelForAgent(agCfg, auxiliaryModelUseCaseHeartbeat); heartbeatModel != "" {
-			rt, err := buildRuntimeForAgentModel(cfg, agCfg, heartbeatModel, controlToolRegistry)
+			rt, err := buildRuntimeForAgentModel(cfg, agCfg, heartbeatModel, s.session.toolRegistry)
 			if err != nil {
 				return heartbeatAgentRun{}, err
 			}
@@ -305,7 +309,7 @@ func buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID string, wakes []heartbe
 		} else if strings.TrimSpace(agCfg.Model) != "" {
 			run.PrimaryModel = strings.TrimSpace(agCfg.Model)
 			if run.Runtime == nil {
-				rt, err := buildRuntimeForAgentModel(cfg, agCfg, agCfg.Model, controlToolRegistry)
+				rt, err := buildRuntimeForAgentModel(cfg, agCfg, agCfg.Model, s.session.toolRegistry)
 				if err != nil {
 					return heartbeatAgentRun{}, err
 				}
@@ -326,7 +330,7 @@ func buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID string, wakes []heartbe
 			if _, ok := seen[fbModel]; ok {
 				continue
 			}
-			fbRt, err := buildRuntimeForAgentModel(cfg, agCfg, fbModel, controlToolRegistry)
+			fbRt, err := buildRuntimeForAgentModel(cfg, agCfg, fbModel, s.session.toolRegistry)
 			if err != nil {
 				log.Printf("heartbeat runner: skip fallback agent=%s model=%q err=%v", agentID, fbModel, err)
 				continue
@@ -351,13 +355,17 @@ func buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID string, wakes []heartbe
 }
 
 func executeHeartbeatAgentRun(ctx context.Context, run heartbeatAgentRun) error {
-	if controlSessionRouter != nil {
-		controlSessionRouter.Assign(run.SessionID, run.AgentID)
+	return controlServices.executeHeartbeatAgentRun(ctx, run)
+}
+
+func (s *daemonServices) executeHeartbeatAgentRun(ctx context.Context, run heartbeatAgentRun) error {
+	if s.session.sessionRouter != nil {
+		s.session.sessionRouter.Assign(run.SessionID, run.AgentID)
 	}
 	result := runAgentTurnWithFallbacks(ctx, methods.AgentRequest{
 		SessionID: run.SessionID,
 		Message:   run.Prompt,
 		TimeoutMS: run.TimeoutMS,
-	}, run.Runtime, run.FallbackRuntimes, run.RuntimeLabels, controlMemoryStore)
+	}, run.Runtime, run.FallbackRuntimes, run.RuntimeLabels, s.session.memoryStore)
 	return result.Err
 }

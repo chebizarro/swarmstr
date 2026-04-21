@@ -14,11 +14,12 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
+	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/autoreply"
 	gatewayws "metiq/internal/gateway/ws"
+	"metiq/internal/memory"
 	"metiq/internal/nostr/dvm"
 	nostruntime "metiq/internal/nostr/runtime"
-	"metiq/internal/agent/toolbuiltin"
 	ttspkg "metiq/internal/tts"
 	"metiq/internal/update"
 )
@@ -80,6 +81,9 @@ type sessionServices struct {
 	agentRuntime      agent.Runtime
 	agentRegistry     *agent.AgentRuntimeRegistry
 	sessionMemRuntime *sessionMemoryRuntime
+	sessionRouter     *agent.AgentSessionRouter
+	toolRegistry      *agent.ToolRegistry
+	memoryStore       memory.Store
 }
 
 // ---------------------------------------------------------------------------

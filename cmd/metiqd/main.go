@@ -3998,6 +3998,9 @@ func main() {
 			agentRuntime:      controlAgentRuntime,
 			agentRegistry:     controlAgentRegistry,
 			sessionMemRuntime: controlSessionMemoryRuntime,
+			sessionRouter:     controlSessionRouter,
+			toolRegistry:      controlToolRegistry,
+			memoryStore:       controlMemoryStore,
 		},
 		handlers: handlerServices{
 			ttsManager:    controlTTSMgr,
