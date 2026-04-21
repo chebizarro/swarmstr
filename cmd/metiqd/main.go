@@ -4003,13 +4003,21 @@ func main() {
 			sessionRouter:     controlSessionRouter,
 			toolRegistry:      controlToolRegistry,
 			memoryStore:       controlMemoryStore,
+			contextEngine:     controlContextEngine,
+			sessionStore:      controlSessionStore,
+			agentJobs:         controlAgentJobs,
+			subagents:         controlSubagents,
 		},
 		handlers: handlerServices{
 			ttsManager:      controlTTSMgr,
 			updateChecker:   controlUpdateChecker,
 			secretsStore:    controlSecrets,
 			pairingConfigMu: &controlPairingConfigMu,
+			hooksMgr:        controlHooksMgr,
+			pluginMgr:       controlPluginMgr,
 		},
+		runtimeConfig: controlRuntimeConfig,
+		docsRepo:      controlDocsRepo,
 	}
 
 	// ── NIP-51 allowlist watcher + agent list sync ─────────────────────────────

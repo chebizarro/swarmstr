@@ -8,6 +8,7 @@ import (
 
 	acppkg "metiq/internal/acp"
 	"metiq/internal/agent"
+	pluginmanager "metiq/internal/plugins/manager"
 	"metiq/internal/store/state"
 )
 
@@ -119,8 +120,8 @@ func resolveACPAgentID(ctx context.Context, sessionStore *state.SessionStore, se
 			return defaultAgentID(entry.AgentID)
 		}
 	}
-	if controlSessionRouter != nil && strings.TrimSpace(sessionID) != "" {
-		if routed := strings.TrimSpace(controlSessionRouter.Get(sessionID)); routed != "" {
+	if controlServices != nil && controlServices.session.sessionRouter != nil && strings.TrimSpace(sessionID) != "" {
+		if routed := strings.TrimSpace(controlServices.session.sessionRouter.Get(sessionID)); routed != "" {
 			return defaultAgentID(routed)
 		}
 	}
@@ -184,10 +185,10 @@ func modelForAgent(cfg state.ConfigDoc, agentID string) string {
 }
 
 func assembleACPContextMessages(ctx context.Context, cfg state.ConfigDoc, sessionID, agentID string) []map[string]any {
-	if controlContextEngine == nil || strings.TrimSpace(sessionID) == "" {
+	if controlServices == nil || controlServices.session.contextEngine == nil || strings.TrimSpace(sessionID) == "" {
 		return nil
 	}
-	assembled, err := controlContextEngine.Assemble(ctx, sessionID, maxContextTokensForAgent(cfg, agentID))
+	assembled, err := controlServices.session.contextEngine.Assemble(ctx, sessionID, maxContextTokensForAgent(cfg, agentID))
 	if err != nil || len(assembled.Messages) == 0 {
 		return nil
 	}
@@ -206,10 +207,16 @@ func allowedToolIDsForProfile(cfg state.ConfigDoc, profileID string) map[string]
 	if agent.LookupProfile(profileID) == nil {
 		return map[string]bool{}
 	}
-	if controlToolRegistry == nil {
+	var toolReg *agent.ToolRegistry
+	var plugMgr *pluginmanager.GojaPluginManager
+	if controlServices != nil {
+		toolReg = controlServices.session.toolRegistry
+		plugMgr = controlServices.handlers.pluginMgr
+	}
+	if toolReg == nil {
 		return map[string]bool{}
 	}
-	groups := buildToolCatalogGroups(cfg, controlToolRegistry, nil, controlPluginMgr)
+	groups := buildToolCatalogGroups(cfg, toolReg, nil, plugMgr)
 	if len(groups) == 0 {
 		return map[string]bool{}
 	}

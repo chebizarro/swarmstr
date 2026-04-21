@@ -17,11 +17,15 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/autoreply"
+	ctxengine "metiq/internal/context"
 	gatewayws "metiq/internal/gateway/ws"
+	hookspkg "metiq/internal/hooks"
 	"metiq/internal/memory"
 	"metiq/internal/nostr/dvm"
 	nostruntime "metiq/internal/nostr/runtime"
+	pluginmanager "metiq/internal/plugins/manager"
 	secretspkg "metiq/internal/secrets"
+	"metiq/internal/store/state"
 	ttspkg "metiq/internal/tts"
 	"metiq/internal/update"
 )
@@ -29,10 +33,12 @@ import (
 // daemonServices owns the dependencies needed by extracted handler files.
 // Constructed once in main() after all components are started.
 type daemonServices struct {
-	relay    relayPolicyServices
-	emitter  gatewayws.EventEmitter
-	session  sessionServices
-	handlers handlerServices
+	relay         relayPolicyServices
+	emitter       gatewayws.EventEmitter
+	session       sessionServices
+	handlers      handlerServices
+	runtimeConfig *runtimeConfigStore
+	docsRepo      *state.DocsRepository
 }
 
 // emitWSEvent emits a typed event to connected WS clients.
@@ -88,6 +94,10 @@ type sessionServices struct {
 	sessionRouter     *agent.AgentSessionRouter
 	toolRegistry      *agent.ToolRegistry
 	memoryStore       memory.Store
+	contextEngine     ctxengine.Engine
+	sessionStore      *state.SessionStore
+	agentJobs         *agentJobRegistry
+	subagents         *SubagentRegistry
 }
 
 // ---------------------------------------------------------------------------
@@ -100,4 +110,6 @@ type handlerServices struct {
 	updateChecker    *update.Checker
 	secretsStore     *secretspkg.Store
 	pairingConfigMu  *sync.Mutex
+	hooksMgr         *hookspkg.Manager
+	pluginMgr        *pluginmanager.GojaPluginManager
 }

@@ -61,8 +61,8 @@ func beginACPWorkerTask(ctx context.Context, docsRepo *state.DocsRepository, ses
 	}
 	parentTaskID := strings.TrimSpace(task.ParentTaskID)
 	parentRunID := strings.TrimSpace(run.ParentRunID)
-	if controlSessionStore != nil {
-		if err := controlSessionStore.LinkTask(sessionID, task.TaskID, run.RunID, parentTaskID, parentRunID); err != nil {
+	if controlServices != nil && controlServices.session.sessionStore != nil {
+		if err := controlServices.session.sessionStore.LinkTask(sessionID, task.TaskID, run.RunID, parentTaskID, parentRunID); err != nil {
 			log.Printf("acp worker task session link failed session=%s task_id=%s run_id=%s err=%v", sessionID, task.TaskID, run.RunID, err)
 		}
 	}
@@ -245,8 +245,8 @@ func finishACPWorkerTaskDocs(ctx context.Context, docsRepo *state.DocsRepository
 	if _, err := docsRepo.PutTask(ctx, task); err != nil {
 		return err
 	}
-	if controlSessionStore != nil {
-		if err := controlSessionStore.RecordTaskResult(sessionID, task.TaskID, run.RunID, result); err != nil {
+	if controlServices != nil && controlServices.session.sessionStore != nil {
+		if err := controlServices.session.sessionStore.RecordTaskResult(sessionID, task.TaskID, run.RunID, result); err != nil {
 			log.Printf("acp worker task result persist failed session=%s task_id=%s run_id=%s err=%v", sessionID, task.TaskID, run.RunID, err)
 		}
 	}

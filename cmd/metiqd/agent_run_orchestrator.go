@@ -28,13 +28,13 @@ type agentRunController struct {
 
 func currentAgentRunController() agentRunController {
 	return agentRunController{
-		runtimeConfig:  controlRuntimeConfig,
-		sessionStore:   controlSessionStore,
+		runtimeConfig:  controlServices.runtimeConfig,
+		sessionStore:   controlServices.session.sessionStore,
 		sessionRouter:  controlServices.session.sessionRouter,
 		agentRegistry:  controlServices.session.agentRegistry,
 		defaultRuntime: controlServices.session.agentRuntime,
-		jobs:           controlAgentJobs,
-		subagents:      controlSubagents,
+		jobs:           controlServices.session.agentJobs,
+		subagents:      controlServices.session.subagents,
 		emitEvent:      controlServices.emitWSEvent,
 	}
 }
