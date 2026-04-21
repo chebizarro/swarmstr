@@ -3,8 +3,8 @@ package main
 // main_relay_policy.go — Relay policy application, health monitoring, and
 // Nostr channel status helpers.
 //
-// Extracted from main.go to reduce god-file size. All functions remain in
-// package main and reference the same globals/helpers as before.
+// All functions are methods on *daemonServices, accessing relay state via
+// s.relay.* instead of package-level globals.
 
 import (
 	"context"
@@ -24,21 +24,22 @@ import (
 // DM / control relay policy
 // ---------------------------------------------------------------------------
 
-func applyDMRelayPolicy(relays []string) {
-	if controlNIP17Bus != nil {
-		if err := controlNIP17Bus.SetRelays(relays); err != nil {
+func (s *daemonServices) applyDMRelayPolicy(relays []string) {
+	r := &s.relay
+	if r.nip17Bus != nil {
+		if err := r.nip17Bus.SetRelays(relays); err != nil {
 			log.Printf("nip17 relay policy update failed: %v", err)
 		}
 	}
-	if controlNIP04Bus != nil {
-		if err := controlNIP04Bus.SetRelays(relays); err != nil {
+	if r.nip04Bus != nil {
+		if err := r.nip04Bus.SetRelays(relays); err != nil {
 			log.Printf("nip04 relay policy update failed: %v", err)
 		}
 	}
-	if controlNIP17Bus == nil && controlNIP04Bus == nil {
-		controlDMBusMu.RLock()
-		dmBus := controlDMBus
-		controlDMBusMu.RUnlock()
+	if r.nip17Bus == nil && r.nip04Bus == nil && r.dmBusMu != nil {
+		r.dmBusMu.RLock()
+		dmBus := *r.dmBus
+		r.dmBusMu.RUnlock()
 		if dmBus != nil {
 			if err := dmBus.SetRelays(relays); err != nil {
 				log.Printf("dm relay policy update failed: %v", err)
@@ -47,39 +48,40 @@ func applyDMRelayPolicy(relays []string) {
 	}
 }
 
-func applyControlRelayPolicy(relays []string) {
-	if controlRPCBus != nil {
-		if err := controlRPCBus.SetRelays(relays); err != nil {
+func (s *daemonServices) applyControlRelayPolicy(relays []string) {
+	if s.relay.controlBus != nil {
+		if err := s.relay.controlBus.SetRelays(relays); err != nil {
 			log.Printf("control relay policy update failed: %v", err)
 		}
 	}
 }
 
-func applyRuntimeRelayPolicy(_ nostruntime.DMTransport, _ *nostruntime.ControlRPCBus, cfg state.ConfigDoc) {
+func (s *daemonServices) applyRuntimeRelayPolicy(_ nostruntime.DMTransport, _ *nostruntime.ControlRPCBus, cfg state.ConfigDoc) {
 	relays := nostruntime.MergeRelayLists(cfg.Relays.Read, cfg.Relays.Write)
-	applyDMRelayPolicy(relays)
-	applyControlRelayPolicy(relays)
-	if relayHealthMonitor != nil {
-		relayHealthMonitor.UpdateRelays(relays)
-		relayHealthMonitor.Trigger()
+	s.applyDMRelayPolicy(relays)
+	s.applyControlRelayPolicy(relays)
+	r := &s.relay
+	if r.healthMonitor != nil && *r.healthMonitor != nil {
+		(*r.healthMonitor).UpdateRelays(relays)
+		(*r.healthMonitor).Trigger()
 	}
-	if watchRegistry != nil {
-		watchRegistry.RebindRelays(relays)
+	if r.watchRegistry != nil {
+		r.watchRegistry.RebindRelays(relays)
 	}
-	if dvmHandler != nil {
-		dvmHandler.SetRelays(relays)
+	if r.dvmHandler != nil {
+		r.dvmHandler.SetRelays(relays)
 	}
 
 	// Update the NIP-65 relay selector fallbacks when relay config changes.
-	if controlRelaySelector != nil {
-		controlRelaySelector.SetFallbacks(cfg.Relays.Read, cfg.Relays.Write)
+	if r.relaySelector != nil {
+		r.relaySelector.SetFallbacks(cfg.Relays.Read, cfg.Relays.Write)
 	}
 
 	// Publish updated NIP-65 relay list and kind:10050 DM relay list to
 	// reflect local config changes.  Uses categoriseRelays to ensure proper
 	// read/write/both tagging per NIP-65.
-	if controlKeyer != nil && (len(cfg.Relays.Read) > 0 || len(cfg.Relays.Write) > 0) {
-		scheduleRelayPolicyPublish(cfg.Relays.Read, cfg.Relays.Write)
+	if r.keyer != nil && (len(cfg.Relays.Read) > 0 || len(cfg.Relays.Write) > 0) {
+		s.scheduleRelayPolicyPublish(cfg.Relays.Read, cfg.Relays.Write)
 	}
 }
 
@@ -87,37 +89,38 @@ func applyRuntimeRelayPolicy(_ nostruntime.DMTransport, _ *nostruntime.ControlRP
 // Relay list publishing (debounced)
 // ---------------------------------------------------------------------------
 
-func scheduleRelayPolicyPublish(readRelays, writeRelays []string) {
-	relayPolicyPublishMu.Lock()
-	defer relayPolicyPublishMu.Unlock()
+func (s *daemonServices) scheduleRelayPolicyPublish(readRelays, writeRelays []string) {
+	pub := &s.relay.publish
+	pub.mu.Lock()
+	defer pub.mu.Unlock()
 
-	relayPolicyPublishRead = append([]string{}, readRelays...)
-	relayPolicyPublishWrite = append([]string{}, writeRelays...)
+	pub.read = append([]string{}, readRelays...)
+	pub.write = append([]string{}, writeRelays...)
 
-	if relayPolicyPublishTimer != nil {
-		relayPolicyPublishTimer.Stop()
+	if pub.timer != nil {
+		pub.timer.Stop()
 	}
-	relayPolicyPublishTimer = time.AfterFunc(750*time.Millisecond, func() {
-		relayPolicyPublishMu.Lock()
-		read := append([]string{}, relayPolicyPublishRead...)
-		write := append([]string{}, relayPolicyPublishWrite...)
-		relayPolicyPublishMu.Unlock()
+	pub.timer = time.AfterFunc(750*time.Millisecond, func() {
+		pub.mu.Lock()
+		read := append([]string{}, pub.read...)
+		write := append([]string{}, pub.write...)
+		pub.mu.Unlock()
 
-		publishRelayPolicyLists(read, write)
+		s.publishRelayPolicyLists(read, write)
 	})
 }
 
-func publishRelayPolicyLists(readRelays, writeRelays []string) {
-	if controlKeyer == nil {
+func (s *daemonServices) publishRelayPolicyLists(readRelays, writeRelays []string) {
+	if s.relay.keyer == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	pool := nostr.NewPool(nostruntime.PoolOptsNIP42(controlKeyer))
+	pool := nostr.NewPool(nostruntime.PoolOptsNIP42(s.relay.keyer))
 	defer pool.Close("relay policy publish")
 	publishRelays := nostruntime.MergeRelayLists(readRelays, writeRelays)
 	if err := nostruntime.PublishStartupLists(ctx, nostruntime.StartupListPublishOptions{
-		Keyer:         controlKeyer,
+		Keyer:         s.relay.keyer,
 		Pool:          pool,
 		PublishRelays: publishRelays,
 		ReadRelays:    readRelays,
@@ -134,31 +137,35 @@ func publishRelayPolicyLists(readRelays, writeRelays []string) {
 // Relay health monitoring
 // ---------------------------------------------------------------------------
 
-func startRelayHealthMonitor(ctx context.Context, relays []string) {
-	if relayHealthMonitor != nil {
-		relayHealthMonitor.UpdateRelays(relays)
-		relayHealthMonitor.Trigger()
+func (s *daemonServices) startRelayHealthMonitor(ctx context.Context, relays []string) {
+	r := &s.relay
+	if r.healthMonitor != nil && *r.healthMonitor != nil {
+		(*r.healthMonitor).UpdateRelays(relays)
+		(*r.healthMonitor).Trigger()
 		return
 	}
-	relayHealthMonitor = nostruntime.NewRelayHealthMonitor(relays, nostruntime.RelayHealthMonitorOptions{
+	monitor := nostruntime.NewRelayHealthMonitor(relays, nostruntime.RelayHealthMonitorOptions{
 		Timeout:  8 * time.Second,
 		Interval: 15 * time.Minute,
 		OnResults: func(initial bool, results []nostruntime.RelayHealthResult) {
-			logRelayHealthResults(initial, results)
+			s.logRelayHealthResults(initial, results)
 		},
 	})
-	relayHealthMonitor.Start(ctx)
+	if r.healthMonitor != nil {
+		*r.healthMonitor = monitor
+	}
+	monitor.Start(ctx)
 }
 
-func logRelayHealthResults(initial bool, results []nostruntime.RelayHealthResult) {
-	relayHealthStateMu.Lock()
-	defer relayHealthStateMu.Unlock()
+func (s *daemonServices) logRelayHealthResults(initial bool, results []nostruntime.RelayHealthResult) {
+	s.relay.healthStateMu.Lock()
+	defer s.relay.healthStateMu.Unlock()
 
 	if initial {
 		failures := 0
 		for _, res := range results {
-			relayHealthState[res.URL] = res.Reachable
-			emitControlWSEvent(gatewayws.EventRelayHealth, gatewayws.RelayHealthPayload{
+			s.relay.healthState[res.URL] = res.Reachable
+			s.emitWSEvent(gatewayws.EventRelayHealth, gatewayws.RelayHealthPayload{
 				TS:        time.Now().UnixMilli(),
 				URL:       res.URL,
 				Reachable: res.Reachable,
@@ -180,9 +187,9 @@ func logRelayHealthResults(initial bool, results []nostruntime.RelayHealthResult
 	}
 
 	for _, res := range results {
-		prev, seen := relayHealthState[res.URL]
-		relayHealthState[res.URL] = res.Reachable
-		emitControlWSEvent(gatewayws.EventRelayHealth, gatewayws.RelayHealthPayload{
+		prev, seen := s.relay.healthState[res.URL]
+		s.relay.healthState[res.URL] = res.Reachable
+		s.emitWSEvent(gatewayws.EventRelayHealth, gatewayws.RelayHealthPayload{
 			TS:        time.Now().UnixMilli(),
 			URL:       res.URL,
 			Reachable: res.Reachable,
@@ -202,6 +209,7 @@ func logRelayHealthResults(initial bool, results []nostruntime.RelayHealthResult
 	}
 }
 
+// relayHealthErrorString is a stateless helper — no receiver needed.
 func relayHealthErrorString(err error) string {
 	if err == nil {
 		return ""
@@ -210,7 +218,7 @@ func relayHealthErrorString(err error) string {
 }
 
 // ---------------------------------------------------------------------------
-// Nostr channel status
+// Nostr channel status (stateless helpers — no receiver needed)
 // ---------------------------------------------------------------------------
 
 func resolveNostrChannelStatus(connected bool, loggedOut bool, fallback string) string {
@@ -264,7 +272,7 @@ func subHealthToInfo(s nostruntime.SubHealthSnapshot) methods.SubHealthInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Agent ID helpers
+// Agent ID helpers (stateless — no receiver needed)
 // ---------------------------------------------------------------------------
 
 func defaultAgentID(id string) string {
