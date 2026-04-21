@@ -473,7 +473,6 @@ type AgentConfig struct {
 	Model        string `json:"model,omitempty"`
 	WorkspaceDir string `json:"workspace_dir,omitempty"`
 	ToolProfile  string `json:"tool_profile,omitempty"` // minimal|coding|messaging|full
-	HeartbeatMS  int    `json:"heartbeat_ms,omitempty"`
 	HistoryLimit int    `json:"history_limit,omitempty"`
 	// Provider names the providers[] entry to use for this agent (e.g. "anthropic", "ollama").
 	// When set, credentials from ProvidersConfig[Provider] override the default env-based provider.

@@ -602,9 +602,6 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 		} else if v, ok := m["toolProfile"].(string); ok {
 			ac.ToolProfile = strings.TrimSpace(v)
 		}
-		if v, ok := toInt(m["heartbeat_ms"]); ok {
-			ac.HeartbeatMS = v
-		}
 		if v, ok := toInt(m["history_limit"]); ok {
 			ac.HistoryLimit = v
 		}
