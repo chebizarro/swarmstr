@@ -55,6 +55,20 @@ type AgenticLoopConfig struct {
 	ContextWindowTokens int
 	// Trace carries task/run/step correlation IDs for observability.
 	Trace TraceContext
+	// LastAssistantTime is the timestamp of the last assistant message in
+	// the conversation. Used by the time-based microcompact trigger: when
+	// the gap since this time exceeds the threshold, an aggressive
+	// micro-compaction pass runs before the first LLM call.
+	// Zero value means "unknown" — the time-based trigger is skipped.
+	LastAssistantTime time.Time
+	// TimeBasedMCConfig configures the time-gap microcompact trigger.
+	// Nil or zero-value config uses DefaultTimeBasedMCConfig.
+	TimeBasedMCConfig *TimeBasedMCConfig
+	// DeferredTools holds tool definitions that are NOT sent inline with every
+	// API request. When non-nil, the loop automatically registers a tool_search
+	// built-in tool and dynamically adds discovered tools to subsequent LLM
+	// calls. Callers should populate this via PartitionTools.
+	DeferredTools *DeferredToolSet
 }
 
 // ToolExecResult holds the outcome of a single tool execution.
@@ -98,12 +112,65 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 
 	messages := cfg.InitialMessages
 
+	// Time-based micro-compaction: when the gap since the last assistant
+	// message exceeds the threshold, the prompt cache has expired and the
+	// full prefix will be rewritten. Clear old tool results before the
+	// first call to shrink what gets rewritten — the clearing is free.
+	{
+		tbConfig := DefaultTimeBasedMCConfig
+		if cfg.TimeBasedMCConfig != nil {
+			tbConfig = *cfg.TimeBasedMCConfig
+		}
+		if !cfg.LastAssistantTime.IsZero() {
+			mcResult := TimeBasedMicrocompact(messages, tbConfig, cfg.LastAssistantTime)
+			if mcResult.Cleared > 0 {
+				messages = mcResult.Messages
+				log.Printf("%s: time-based micro-compact cleared %d tool results (%d chars freed, gap=%s)",
+					cfg.LogPrefix, mcResult.Cleared, mcResult.CharsBefore-mcResult.CharsAfter,
+					time.Since(cfg.LastAssistantTime).Truncate(time.Minute))
+			}
+		}
+	}
+
+	// ── Deferred tool loading integration ──────────────────────────────────
+	// When deferred tools are present, wrap the executor so the model can
+	// discover them via tool_search. Discovered tools are dynamically added
+	// to the tools list for subsequent LLM calls.
+	activeTools := cfg.Tools
+	if cfg.DeferredTools != nil && cfg.DeferredTools.Count() > 0 {
+		// Add tool_search definition to the inline tools.
+		toolSearchDef := ToolSearchDefinition(cfg.DeferredTools)
+		activeTools = append([]ToolDefinition{toolSearchDef}, activeTools...)
+
+		// Wrap the executor to handle tool_search calls locally.
+		searchFunc := ToolSearchFunc(cfg.DeferredTools, func(discovered []ToolDefinition) {
+			// Append newly-discovered tool definitions. Dedup by name.
+			seen := make(map[string]bool, len(activeTools))
+			for _, t := range activeTools {
+				seen[t.Name] = true
+			}
+			for _, d := range discovered {
+				if !seen[d.Name] {
+					activeTools = append(activeTools, d)
+					seen[d.Name] = true
+					log.Printf("%s: deferred tool discovered: %s", cfg.LogPrefix, d.Name)
+				}
+			}
+		})
+		cfg.Executor = &deferredToolExecutorWrapper{
+			base:       cfg.Executor,
+			searchFunc: searchFunc,
+		}
+		log.Printf("%s: deferred tool loading active (%d deferred, %d inline)",
+			cfg.LogPrefix, cfg.DeferredTools.Count(), len(activeTools))
+	}
+
 	// historyDelta accumulates the ordered assistant/tool messages produced
 	// during this turn so callers can persist them for future context.
 	var historyDelta []ConversationMessage
 
 	// Initial LLM call.
-	resp, err := cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), cfg.Tools, cfg.Options)
+	resp, err := cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), activeTools, cfg.Options)
 	if err != nil {
 		return nil, err
 	}
@@ -214,8 +281,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			}
 		}
 
-		// Next LLM call.
-		resp, err = cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), cfg.Tools, cfg.Options)
+		// Next LLM call — use activeTools which may have grown via tool_search.
+		resp, err = cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), activeTools, cfg.Options)
 		if err != nil {
 			log.Printf("%s: agentic loop LLM error iter=%d: %v", cfg.LogPrefix, iter+1, err)
 			// Return partial history so callers can persist completed tool work.
@@ -630,6 +697,8 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 		ToolEventSink:       turn.ToolEventSink,
 		ContextWindowTokens: turn.ContextWindowTokens,
 		Trace:               turn.Trace,
+		LastAssistantTime:   turn.LastAssistantTime,
+		DeferredTools:       turn.DeferredTools,
 	})
 	if err != nil {
 		return ProviderResult{}, err
