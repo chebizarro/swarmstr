@@ -21,21 +21,25 @@ func resolveDMReplyMode(cfg state.ConfigDoc, inboundScheme string) (string, erro
 }
 
 func currentDMReplyTransportBus(mode string) nostruntime.DMTransport {
-	controlDMBusMu.RLock()
-	defer controlDMBusMu.RUnlock()
+	return controlServices.currentDMReplyTransportBus(mode)
+}
+
+func (s *daemonServices) currentDMReplyTransportBus(mode string) nostruntime.DMTransport {
+	s.relay.dmBusMu.RLock()
+	defer s.relay.dmBusMu.RUnlock()
 	switch mode {
 	case "nip17":
-		if controlNIP17Bus != nil {
-			return controlNIP17Bus
+		if s.relay.nip17Bus != nil {
+			return s.relay.nip17Bus
 		}
-		if bus, ok := controlDMBus.(*nostruntime.NIP17Bus); ok {
+		if bus, ok := (*s.relay.dmBus).(*nostruntime.NIP17Bus); ok {
 			return bus
 		}
 	case "nip04":
-		if controlNIP04Bus != nil {
-			return controlNIP04Bus
+		if s.relay.nip04Bus != nil {
+			return s.relay.nip04Bus
 		}
-		if bus, ok := controlDMBus.(*nostruntime.DMBus); ok {
+		if bus, ok := (*s.relay.dmBus).(*nostruntime.DMBus); ok {
 			return bus
 		}
 	}
