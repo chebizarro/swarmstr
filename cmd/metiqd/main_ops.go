@@ -132,10 +132,14 @@ func applyCronRemove(reg *cronRegistry, req methods.CronRemoveRequest) (map[stri
 }
 
 func applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any, error) {
+	return controlServices.applyCronRun(reg, req)
+}
+
+func (s *daemonServices) applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("cron runtime not configured")
 	}
-	emitControlWSEvent(gatewayws.EventCronTick, gatewayws.CronTickPayload{
+	s.emitWSEvent(gatewayws.EventCronTick, gatewayws.CronTickPayload{
 		TS:    time.Now().UnixMilli(),
 		JobID: req.ID,
 	})
@@ -144,7 +148,7 @@ func applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any
 	if err != nil {
 		return nil, err
 	}
-	emitControlWSEvent(gatewayws.EventCronResult, gatewayws.CronResultPayload{
+	s.emitWSEvent(gatewayws.EventCronResult, gatewayws.CronResultPayload{
 		TS:         time.Now().UnixMilli(),
 		JobID:      req.ID,
 		Succeeded:  run.Status == "done",
@@ -194,11 +198,15 @@ func applyExecApprovalsNodeSet(reg *execApprovalsRegistry, req methods.ExecAppro
 }
 
 func applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprovalRequestRequest) (map[string]any, error) {
+	return controlServices.applyExecApprovalRequest(reg, req)
+}
+
+func (s *daemonServices) applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprovalRequestRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("exec approvals runtime not configured")
 	}
 	rec := reg.Request(req)
-	emitControlWSEvent(gatewayws.EventExecApprovalRequested, gatewayws.ExecApprovalRequestedPayload{
+	s.emitWSEvent(gatewayws.EventExecApprovalRequested, gatewayws.ExecApprovalRequestedPayload{
 		TS:        time.Now().UnixMilli(),
 		ID:        rec.ID,
 		NodeID:    rec.NodeID,
@@ -229,6 +237,10 @@ func applyExecApprovalWaitDecision(ctx context.Context, reg *execApprovalsRegist
 }
 
 func applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprovalResolveRequest) (map[string]any, error) {
+	return controlServices.applyExecApprovalResolve(reg, req)
+}
+
+func (s *daemonServices) applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprovalResolveRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("exec approvals runtime not configured")
 	}
@@ -236,7 +248,7 @@ func applyExecApprovalResolve(reg *execApprovalsRegistry, req methods.ExecApprov
 	if err != nil {
 		return nil, err
 	}
-	emitControlWSEvent(gatewayws.EventExecApprovalResolved, gatewayws.ExecApprovalResolvedPayload{
+	s.emitWSEvent(gatewayws.EventExecApprovalResolved, gatewayws.ExecApprovalResolvedPayload{
 		TS:       time.Now().UnixMilli(),
 		ID:       rec.ID,
 		Decision: rec.Decision,
