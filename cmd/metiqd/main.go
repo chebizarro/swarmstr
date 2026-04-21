@@ -3993,8 +3993,14 @@ func main() {
 			healthState:         map[string]bool{},
 			transportSelector:   controlTransportSelector,
 			acpPeers:            controlACPPeers,
+			acpDispatcher:       controlACPDispatcher,
+			hub:                 controlHub,
+			channels:            controlChannels,
+			presenceHeartbeat38: controlPresenceHeartbeat38,
+			rpcCorrelator:       controlRPCCorrelator,
 		},
-		emitter: controlWsEmitter,
+		emitter:   controlWsEmitter,
+		emitterMu: &controlWsEmitterMu,
 		session: sessionServices{
 			sessionTurns:      controlSessionTurns,
 			agentRuntime:      controlAgentRuntime,
@@ -4004,27 +4010,44 @@ func main() {
 			toolRegistry:      controlToolRegistry,
 			memoryStore:       controlMemoryStore,
 			contextEngine:     controlContextEngine,
+			contextEngineName: controlContextEngineName,
 			sessionStore:      controlSessionStore,
 			agentJobs:         controlAgentJobs,
 			subagents:         controlSubagents,
+			ops:               controlOps,
+			cronJobs:          controlCronJobs,
+			execApprovals:     controlExecApprovals,
+			wizards:           controlWizards,
+			nodeInvocations:   controlNodeInvocations,
+			nodePending:       controlNodePending,
 		},
 		handlers: handlerServices{
-			ttsManager:      controlTTSMgr,
-			updateChecker:   controlUpdateChecker,
-			secretsStore:    controlSecrets,
-			pairingConfigMu: &controlPairingConfigMu,
-			hooksMgr:        controlHooksMgr,
-			pluginMgr:       controlPluginMgr,
+			ttsManager:         controlTTSMgr,
+			updateChecker:      controlUpdateChecker,
+			secretsStore:       controlSecrets,
+			pairingConfigMu:    &controlPairingConfigMu,
+			hooksMgr:           controlHooksMgr,
+			pluginMgr:          controlPluginMgr,
+			mcpOps:             controlMCPOps,
+			mcpAuth:            controlMCPAuth,
+			canvasHost:         controlCanvas,
+			mediaTranscriber:   controlMediaTranscriber,
+			keyRings:           controlKeyRings,
+			stateEnvelopeCodec: controlStateEnvelopeCodec,
+			configFilePath:     controlConfigFilePath,
+			cronExecutorMu:     &controlCronExecutorMu,
 		},
 		runtimeConfig: controlRuntimeConfig,
 		docsRepo:      controlDocsRepo,
+		pubKeyHex:     controlPubKeyHex,
+		restartCh:     controlRestartCh,
 	}
 
 	// ── NIP-51 allowlist watcher + agent list sync ─────────────────────────────
 	// Create a dedicated pool for NIP-51 list fetch/subscribe operations so the
 	// DM buses are not disturbed.
 	{
-		nip51Pool := nostr.NewPool(nostruntime.PoolOptsNIP42(controlKeyer))
+		nip51Pool := nostr.NewPool(nostruntime.PoolOptsNIP42(controlServices.relay.keyer))
 		liveCfg := configState.Get()
 
 		// When the runtime config has no explicit relays, fall back to bootstrap relays.
@@ -4039,18 +4062,20 @@ func main() {
 		// ── NIP-65 Relay Selector (outbox model) ────────────────────────────
 		// Initialize once; keep a single shared selector/hub instance so existing
 		// channels and tools continue to share the same pooled connections.
-		if controlRelaySelector == nil {
+		if controlServices.relay.relaySelector == nil {
 			controlRelaySelector = nostruntime.NewRelaySelector(liveCfg.Relays.Read, liveCfg.Relays.Write)
-			toolbuiltin.SetRelaySelector(controlRelaySelector)
+			controlServices.relay.relaySelector = controlRelaySelector
+			toolbuiltin.SetRelaySelector(controlServices.relay.relaySelector)
 		}
 
 		// ── Shared NostrHub ──────────────────────────────────────────────────
-		if controlHub == nil && controlKeyer != nil {
-			hub, hubErr := nostruntime.NewHub(ctx, controlKeyer, controlRelaySelector)
+		if controlServices.relay.hub == nil && controlServices.relay.keyer != nil {
+			hub, hubErr := nostruntime.NewHub(ctx, controlServices.relay.keyer, controlServices.relay.relaySelector)
 			if hubErr != nil {
 				log.Printf("nostr hub: failed to create: %v (channels/tools will use dedicated pools)", hubErr)
 			} else {
 				controlHub = hub
+				controlServices.relay.hub = hub
 			}
 		}
 
@@ -4076,7 +4101,7 @@ func main() {
 			allRelays := nostruntime.MergeRelayLists(liveCfg.Relays.Read, liveCfg.Relays.Write)
 
 			if err := nostruntime.PublishStartupLists(ctx, nostruntime.StartupListPublishOptions{
-				Keyer:         controlKeyer,
+				Keyer:         controlServices.relay.keyer,
 				Pool:          nip51Pool,
 				PublishRelays: allRelays,
 				ReadRelays:    liveCfg.Relays.Read,
@@ -4091,14 +4116,14 @@ func main() {
 		// When an external client publishes a new kind:10002 for our pubkey,
 		// apply the relay changes to the live runtime.
 		if err := nostruntime.NIP65SelfSync(ctx, nostruntime.NIP65SyncOptions{
-			Keyer:  controlKeyer,
+			Keyer:  controlServices.relay.keyer,
 			Pool:   nip51Pool,
 			Relays: nostruntime.MergeRelayLists(liveCfg.Relays.Read, liveCfg.Relays.Write),
 			OnRelayUpdate: func(read, write []string) {
 				log.Printf("nip65: applying remote relay list update (read=%d, write=%d)", len(read), len(write))
 
 				// Update the relay selector fallbacks.
-				controlRelaySelector.SetFallbacks(read, write)
+				controlServices.relay.relaySelector.SetFallbacks(read, write)
 
 				// Update the runtime config.
 				if configState != nil {
@@ -4212,7 +4237,7 @@ func main() {
 			// Subscribe to our own kind:30002 relay set events.
 			allRelays := nostruntime.MergeRelayLists(liveCfg.Relays.Read, liveCfg.Relays.Write)
 			if syncErr := nostruntime.RelaySetSelfSync(ctx, nostruntime.RelaySetSyncOptions{
-				Keyer:    controlKeyer,
+				Keyer:    controlServices.relay.keyer,
 				Pool:     nip51Pool,
 				Relays:   allRelays,
 				Registry: relaySetRegistry,
@@ -4236,7 +4261,7 @@ func main() {
 					if len(entry.Relays) == 0 {
 						continue
 					}
-					if _, err := nostruntime.PublishRelaySet(ctx, nip51Pool, controlKeyer, allRelays, dtag, entry.Relays); err != nil {
+					if _, err := nostruntime.PublishRelaySet(ctx, nip51Pool, controlServices.relay.keyer, allRelays, dtag, entry.Relays); err != nil {
 						log.Printf("relay-set: publish %q failed: %v", dtag, err)
 					} else {
 						log.Printf("relay-set: published %q (%d relays)", dtag, len(entry.Relays))
@@ -4248,7 +4273,7 @@ func main() {
 		// Start watchers for each allow_from_lists entry.
 		log.Printf("nip51: starting watcher for %d allow_from_lists entries", len(liveCfg.DM.AllowFromLists))
 		startNIP51AllowlistWatcher(ctx, nip51Pool, liveCfg)
-		startRepoBookmarkWatcher(ctx, nip51Pool, controlKeyer, liveCfg)
+		startRepoBookmarkWatcher(ctx, nip51Pool, controlServices.relay.keyer, liveCfg)
 
 		// Publish local kind:30317 capabilities and subscribe to fleet peers'
 		// capability advertisements for dynamic discovery.
@@ -4259,7 +4284,7 @@ func main() {
 		})
 		capabilityMonitor = nostruntime.NewCapabilityMonitor(nostruntime.CapabilityMonitorOptions{
 			Pool:            nip51Pool,
-			Keyer:           controlKeyer,
+			Keyer:           controlServices.relay.keyer,
 			Registry:        capabilityRegistry,
 			PublishRelays:   currentCapabilityPublishRelays(liveCfg),
 			SubscribeRelays: currentCapabilitySubscriptionRelays(liveCfg),
@@ -4300,7 +4325,7 @@ func main() {
 				hbDefaultContent = v
 			}
 		}
-		hbKeyer := controlKeyer
+		hbKeyer := controlServices.relay.keyer
 		if hbKeyer != nil && hbEnabled {
 			hb, hbErr := nip38.NewHeartbeat(ctx, nip38.HeartbeatOptions{
 				Keyer:          hbKeyer,
@@ -4313,7 +4338,7 @@ func main() {
 				log.Printf("warn: NIP-38 presence/status init failed: %v", hbErr)
 			} else {
 				controlPresenceHeartbeat38 = hb
-				defer controlPresenceHeartbeat38.Stop()
+				defer controlServices.relay.presenceHeartbeat38.Stop()
 				log.Printf("NIP-38 presence/status active (interval=%s)", hbInterval)
 			}
 		} else if !hbEnabled {
@@ -4321,7 +4346,7 @@ func main() {
 		} else {
 			log.Printf("NIP-38 presence/status skipped: no signing key available")
 		}
-		_ = controlPresenceHeartbeat38 // referenced in dmRunAgentTurn closure
+		_ = controlServices.relay.presenceHeartbeat38 // referenced in dmRunAgentTurn closure
 	}
 
 	// ── NIP-90 DVM handler ─────────────────────────────────────────────────────
@@ -4339,7 +4364,7 @@ func main() {
 			}
 			var dvmErr error
 			dvmHandler, dvmErr = dvm.Start(ctx, dvm.HandlerOpts{
-				Keyer:         controlKeyer,
+				Keyer:         controlServices.relay.keyer,
 				Relays:        cfg.Relays,
 				AcceptedKinds: acceptedKinds,
 				OnJob: func(jobCtx context.Context, jobID string, kind int, input string) (string, error) {
@@ -4412,7 +4437,7 @@ func main() {
 	) (turnErr error) {
 		// ── Session start hook (fires once per session) ───────────────────
 		if _, seen := seenChannelSessions.LoadOrStore(sessionID, struct{}{}); !seen {
-			fireHookEvent(controlHooksMgr, "session:start", sessionID, map[string]any{
+			fireHookEvent(controlServices.handlers.hooksMgr, "session:start", sessionID, map[string]any{
 				"channel_id": chID,
 				"sender_id":  senderID,
 			})
@@ -4470,8 +4495,8 @@ func main() {
 		turnContext = joinPromptSections(buildExternalChannelMetadataContext(configState.Get(), chID, senderID, sessionID), turnContext)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		var chTurnHistory []agent.ConversationMessage
-		if controlContextEngine != nil {
-			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
+		if controlServices.session.contextEngine != nil {
+			if assembled, asmErr := controlServices.session.contextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
 				if assembled.SystemPromptAddition != "" {
 					turnContext = joinPromptSections(turnContext, assembled.SystemPromptAddition)
 				}
@@ -4570,7 +4595,7 @@ func main() {
 						log.Printf("persist partial tool traces (channel) session=%s err=%v", sessionID, err)
 					}
 				}
-				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
+				persistAndIngestTurnHistory(ctx, transcriptRepo, controlServices.session.contextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
 				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
 			}
 			if errors.Is(turnErr, context.Canceled) {
@@ -4594,7 +4619,7 @@ func main() {
 		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
 			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
 		}
-		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
+		persistAndIngestTurnHistory(ctx, transcriptRepo, controlServices.session.contextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
 		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
 		commitMemoryRecallArtifacts(sessionStore, sessionID, eventID, memoryRecallSample, surfacedFileMemory)
 
@@ -4906,8 +4931,8 @@ func main() {
 
 	var controlBus *nostruntime.ControlRPCBus
 	controlBus, err = nostruntime.StartControlRPCBus(ctx, nostruntime.ControlRPCBusOptions{
-		Keyer:             controlKeyer,
-		Hub:               controlHub,
+		Keyer:             controlServices.relay.keyer,
+		Hub:               controlServices.relay.hub,
 		Relays:            cfg.Relays,
 		SinceUnix:         checkpointSinceUnix(controlCheckpoint.LastUnix),
 		MaxRequestAge:     2 * time.Minute,
@@ -4932,6 +4957,7 @@ func main() {
 		log.Fatalf("start control rpc bus: %v", err)
 	}
 	controlRPCBus = controlBus
+	controlServices.relay.controlBus = controlBus
 	defer controlBus.Close()
 
 	if gatewayWSAddr != "" {
@@ -4978,6 +5004,7 @@ func main() {
 	}
 
 	controlConfigFilePath = configFilePath
+	controlServices.handlers.configFilePath = configFilePath
 
 	// configState.Set hook: apply live runtime side effects + WS event on every
 	// config mutation. Disk persistence is handled before successful Set() calls
@@ -5081,17 +5108,17 @@ func main() {
 					return append([]string{}, current.Relays.Read...)
 				},
 				StatusMCP: func() *mcppkg.TelemetrySnapshot {
-					if controlMCPOps == nil {
+					if controlServices.handlers.mcpOps == nil {
 						return nil
 					}
-					return controlMCPOps.telemetrySnapshotPtr()
+					return controlServices.handlers.mcpOps.telemetrySnapshotPtr()
 				},
 				Metrics: func(_ context.Context) string {
 					// Update live gauges before rendering.
 					metricspkg.UptimeSeconds.Set(time.Since(startedAt).Seconds())
 					metricspkg.RelayConnected.Set(float64(len(cfg.Relays)))
-					if controlExecApprovals != nil {
-						pending := controlExecApprovals.GetGlobal()
+					if controlServices.session.execApprovals != nil {
+						pending := controlServices.session.execApprovals.GetGlobal()
 						metricspkg.ApprovalQueueSize.Set(float64(len(pending)))
 					}
 					return metricspkg.Default.Exposition()
@@ -5101,8 +5128,8 @@ func main() {
 						"uptime_seconds": int(time.Since(startedAt).Seconds()),
 						"version":        version,
 					}
-					if controlMCPOps != nil {
-						if snapshot := controlMCPOps.telemetrySnapshotPtr(); snapshot != nil {
+					if controlServices.handlers.mcpOps != nil {
+						if snapshot := controlServices.handlers.mcpOps.telemetrySnapshotPtr(); snapshot != nil {
 							body["mcp"] = map[string]any{
 								"enabled": snapshot.Enabled,
 								"summary": snapshot.Summary,
@@ -5542,22 +5569,22 @@ func main() {
 					return applySandboxRun(ctx, configState, req)
 				},
 				MCPList: func(ctx context.Context, req methods.MCPListRequest) (map[string]any, error) {
-					return controlMCPOps.applyList(ctx, req)
+					return controlServices.handlers.mcpOps.applyList(ctx, req)
 				},
 				MCPGet: func(ctx context.Context, req methods.MCPGetRequest) (map[string]any, error) {
-					return controlMCPOps.applyGet(ctx, req)
+					return controlServices.handlers.mcpOps.applyGet(ctx, req)
 				},
 				MCPPut: func(ctx context.Context, req methods.MCPPutRequest) (map[string]any, error) {
-					return controlMCPOps.applyPut(ctx, req)
+					return controlServices.handlers.mcpOps.applyPut(ctx, req)
 				},
 				MCPRemove: func(ctx context.Context, req methods.MCPRemoveRequest) (map[string]any, error) {
-					return controlMCPOps.applyRemove(ctx, req)
+					return controlServices.handlers.mcpOps.applyRemove(ctx, req)
 				},
 				MCPTest: func(ctx context.Context, req methods.MCPTestRequest) (map[string]any, error) {
-					return controlMCPOps.applyTest(ctx, req)
+					return controlServices.handlers.mcpOps.applyTest(ctx, req)
 				},
 				MCPReconnect: func(ctx context.Context, req methods.MCPReconnectRequest) (map[string]any, error) {
-					return controlMCPOps.applyReconnect(ctx, req)
+					return controlServices.handlers.mcpOps.applyReconnect(ctx, req)
 				},
 				MCPAuthStart: func(ctx context.Context, req methods.MCPAuthStartRequest) (map[string]any, error) {
 					return mcpAuthController.applyStart(ctx, req)
@@ -5694,7 +5721,7 @@ func main() {
 	// ── Cron auto-scheduler ─────────────────────────────────────────────────────
 	// Register the daemon-internal RPC executor so the scheduler can fire jobs.
 	daemonPubKey := bus.PublicKey()
-	controlCronExecutorMu.Lock()
+	controlServices.handlers.cronExecutorMu.Lock()
 	controlCronExecutor = func(execCtx context.Context, method string, params json.RawMessage) (any, error) {
 		res, err := handleControlRPCRequest(execCtx,
 			nostruntime.ControlRPCInbound{
@@ -5710,7 +5737,7 @@ func main() {
 		}
 		return res.Result, nil
 	}
-	controlCronExecutorMu.Unlock()
+	controlServices.handlers.cronExecutorMu.Unlock()
 
 	// Scheduler goroutine: ticks every minute and fires enabled cron jobs.
 	go func() {
@@ -5723,7 +5750,7 @@ func main() {
 			case <-time.After(time.Until(next)):
 			}
 			tickTime := time.Now().Truncate(time.Minute)
-			jobs := controlCronJobs.List(1000)
+			jobs := controlServices.session.cronJobs.List(1000)
 			for _, job := range jobs {
 				if !job.Enabled {
 					continue
@@ -5746,9 +5773,9 @@ func main() {
 					jobCtx, cancel := context.WithTimeout(ctx, cfgTimeouts.CronJobExec(configState.Get().CronCfg))
 					defer cancel()
 					_, execErr := func() (any, error) {
-						controlCronExecutorMu.RLock()
+						controlServices.handlers.cronExecutorMu.RLock()
 						exec := controlCronExecutor
-						controlCronExecutorMu.RUnlock()
+						controlServices.handlers.cronExecutorMu.RUnlock()
 						if exec == nil {
 							return nil, fmt.Errorf("cron executor not ready")
 						}
@@ -5759,7 +5786,7 @@ func main() {
 						status = "error"
 						log.Printf("cron job %s (%s) failed: %v", jobCopy.ID, jobCopy.Method, execErr)
 					}
-					controlCronJobs.RecordRun(jobCopy.ID, status, time.Since(started).Milliseconds())
+					controlServices.session.cronJobs.RecordRun(jobCopy.ID, status, time.Since(started).Milliseconds())
 					emitControlWSEvent(gatewayws.EventCronResult, gatewayws.CronResultPayload{
 						TS:         time.Now().UnixMilli(),
 						JobID:      jobCopy.ID,
@@ -5775,8 +5802,8 @@ func main() {
 		bus.PublicKey(), len(cfg.Relays), configState.Get().DM.Policy, adminAddr)
 
 	// Fire gateway:startup hook now that all channels and goroutines are ready.
-	if controlHooksMgr != nil {
-		go controlHooksMgr.Fire("gateway:startup", "", map[string]any{})
+	if controlServices.handlers.hooksMgr != nil {
+		go controlServices.handlers.hooksMgr.Fire("gateway:startup", "", map[string]any{})
 	}
 
 	// Boot-time session pruning: delete sessions older than PruneAfterDays if
@@ -6024,37 +6051,37 @@ func handleControlRPCRequest(
 		pluginMgr:      pluginMgr,
 		startedAt:      startedAt,
 
-		sessionStore:     controlSessionStore,
-		mediaTranscriber: controlMediaTranscriber,
-		toolRegistry:     controlToolRegistry,
-		agentJobs:        controlAgentJobs,
-		sessionRouter:    controlSessionRouter,
-		agentRegistry:    controlAgentRegistry,
-		agentRuntime:     controlAgentRuntime,
+		sessionStore:     controlServices.session.sessionStore,
+		mediaTranscriber: controlServices.handlers.mediaTranscriber,
+		toolRegistry:     controlServices.session.toolRegistry,
+		agentJobs:        controlServices.session.agentJobs,
+		sessionRouter:    controlServices.session.sessionRouter,
+		agentRegistry:    controlServices.session.agentRegistry,
+		agentRuntime:     controlServices.session.agentRuntime,
 
-		sessionMemoryRuntime: controlSessionMemoryRuntime,
-		acpPeers:             controlACPPeers,
-		acpDispatcher:        controlACPDispatcher,
+		sessionMemoryRuntime: controlServices.session.sessionMemRuntime,
+		acpPeers:             controlServices.relay.acpPeers,
+		acpDispatcher:        controlServices.relay.acpDispatcher,
 
 		services: controlServices,
 
-		ops:             controlOps,
-		cronJobs:        controlCronJobs,
-		execApprovals:   controlExecApprovals,
-		wizards:         controlWizards,
-		contextEngine:   controlContextEngine,
-		mcpOps:          controlMCPOps,
-		mcpAuth:         controlMCPAuth,
-		nodeInvocations: controlNodeInvocations,
-		nodePending:     controlNodePending,
-		canvasHost:      controlCanvas,
-		channels:        controlChannels,
-		nostrHub:        controlHub,
-		keyer:           controlKeyer,
+		ops:             controlServices.session.ops,
+		cronJobs:        controlServices.session.cronJobs,
+		execApprovals:   controlServices.session.execApprovals,
+		wizards:         controlServices.session.wizards,
+		contextEngine:   controlServices.session.contextEngine,
+		mcpOps:          controlServices.handlers.mcpOps,
+		mcpAuth:         controlServices.handlers.mcpAuth,
+		nodeInvocations: controlServices.session.nodeInvocations,
+		nodePending:     controlServices.session.nodePending,
+		canvasHost:      controlServices.handlers.canvasHost,
+		channels:        controlServices.relay.channels,
+		nostrHub:        controlServices.relay.hub,
+		keyer:           controlServices.relay.keyer,
 	}
-	if controlHooksMgr != nil {
-		deps.hooksMgr = controlHooksMgr
-		deps.hooksMgrFull = controlHooksMgr
+	if controlServices.handlers.hooksMgr != nil {
+		deps.hooksMgr = controlServices.handlers.hooksMgr
+		deps.hooksMgrFull = controlServices.handlers.hooksMgr
 	}
 	return newControlRPCHandler(deps).Handle(ctx, in)
 }
@@ -6087,8 +6114,8 @@ func handleACPMessage(
 			}
 			if replyTo != "" && replyTo != fromPubKey {
 				cfg := state.ConfigDoc{}
-				if controlRuntimeConfig != nil {
-					cfg = controlRuntimeConfig.Get()
+				if controlServices.runtimeConfig != nil {
+					cfg = controlServices.runtimeConfig.Get()
 				}
 				bus, scheme, transportErr := resolveACPDMTransport(cfg, replyTo)
 				if transportErr != nil {
@@ -6126,8 +6153,8 @@ func handleACPMessage(
 		sessionID := "acp:" + fromPubKey
 		turnStartedAt := time.Now()
 		cfg := state.ConfigDoc{}
-		if controlRuntimeConfig != nil {
-			cfg = controlRuntimeConfig.Get()
+		if controlServices.runtimeConfig != nil {
+			cfg = controlServices.runtimeConfig.Get()
 		}
 		taskTimeout := 60 * time.Second
 		if taskPayload.TimeoutMS > 0 {
@@ -6141,8 +6168,8 @@ func handleACPMessage(
 		var workerRun state.TaskRun
 		var cleanupWorkerTask func()
 		procErr := withExclusiveSessionTurn(processCtx, sessionID, taskTimeout, func() (err error) {
-			scopeCtx := resolveMemoryScopeContext(processCtx, cfg, docsRepo, controlSessionStore, sessionID, agentID, taskPayload.MemoryScope)
-			persistSessionMemoryScope(controlSessionStore, sessionID, agentID, scopeCtx.Scope)
+			scopeCtx := resolveMemoryScopeContext(processCtx, cfg, docsRepo, controlServices.session.sessionStore, sessionID, agentID, taskPayload.MemoryScope)
+			persistSessionMemoryScope(controlServices.session.sessionStore, sessionID, agentID, scopeCtx.Scope)
 			workerTask, workerRun, cleanupWorkerTask, err = beginACPWorkerTask(processCtx, docsRepo, sessionID, fromPubKey, agentID, msg.TaskID, taskPayload, turnStartedAt)
 			if err != nil {
 				return fmt.Errorf("acp worker task start: %w", err)
@@ -6166,11 +6193,11 @@ func handleACPMessage(
 				turnToolConstraints{ToolProfile: taskPayload.ToolProfile, EnabledTools: taskPayload.EnabledTools},
 			)
 			seedHistory := decodeACPConversationMessages(taskPayload.ContextMessages)
-			historyEntryIDs = append(historyEntryIDs, persistACPContextHistory(processCtx, transcriptRepo, controlContextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, seedHistory)...)
+			historyEntryIDs = append(historyEntryIDs, persistACPContextHistory(processCtx, transcriptRepo, controlServices.session.contextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, seedHistory)...)
 			prepared := buildAgentRunTurn(turnCtx, methods.AgentRequest{
 				SessionID: sessionID,
 				Message:   instructions,
-			}, controlMemoryStore, scopeCtx, workspaceDirForAgent(cfg, agentID), controlSessionStore)
+			}, controlServices.session.memoryStore, scopeCtx, workspaceDirForAgent(cfg, agentID), controlServices.session.sessionStore)
 			prepared.Turn.Tools = turnTools
 			prepared.Turn.Executor = turnExecutor
 			prepared = applyPromptEnvelopeToPreparedTurn(prepared, turnPromptBuilderParams{Config: cfg, SessionID: sessionID, AgentID: agentID, Channel: "nostr", StaticSystemPrompt: prepared.Turn.StaticSystemPrompt, Context: prepared.Turn.Context, Tools: turnTools})
@@ -6184,7 +6211,7 @@ func handleACPMessage(
 			result, err = filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
 			if err != nil {
 				if partial, ok := agent.PartialTurnResult(err); ok {
-					historyEntryIDs = append(historyEntryIDs, persistACPTurnHistory(processCtx, transcriptRepo, controlContextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, partial.HistoryDelta, turnResultMetadataPtr(result, err))...)
+					historyEntryIDs = append(historyEntryIDs, persistACPTurnHistory(processCtx, transcriptRepo, controlServices.session.contextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, partial.HistoryDelta, turnResultMetadataPtr(result, err))...)
 				}
 				return err
 			}
@@ -6193,16 +6220,16 @@ func handleACPMessage(
 				prepared.MemoryRecallSample.RunID = strings.TrimSpace(workerRun.RunID)
 				prepared.MemoryRecallSample.GoalID = strings.TrimSpace(workerTask.GoalID)
 			}
-			commitMemoryRecallArtifacts(controlSessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
+			commitMemoryRecallArtifacts(controlServices.session.sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
 			delta := result.HistoryDelta
 			if len(delta) == 0 && strings.TrimSpace(result.Text) != "" {
 				delta = []agent.ConversationMessage{{Role: "assistant", Content: strings.TrimSpace(result.Text)}}
 			}
-			historyEntryIDs = append(historyEntryIDs, persistACPTurnHistory(processCtx, transcriptRepo, controlContextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, delta, turnResultMetadataPtr(result, nil))...)
+			historyEntryIDs = append(historyEntryIDs, persistACPTurnHistory(processCtx, transcriptRepo, controlServices.session.contextEngine, sessionID, msg.TaskID, fromPubKey, taskPayload.ParentContext, delta, turnResultMetadataPtr(result, nil))...)
 			return err
 		})
-		if controlSessionStore != nil && (result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0) {
-			_ = controlSessionStore.AddTokens(sessionID, result.Usage.InputTokens, result.Usage.OutputTokens)
+		if controlServices.session.sessionStore != nil && (result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0) {
+			_ = controlServices.session.sessionStore.AddTokens(sessionID, result.Usage.InputTokens, result.Usage.OutputTokens)
 		}
 		turnTelemetry := buildTurnTelemetry(msg.TaskID, turnStartedAt, time.Now(), result, procErr, false, "", "", "")
 		turnTelemetry.Trace = agent.TraceContext{
@@ -6224,8 +6251,8 @@ func handleACPMessage(
 		if len(historyEntryIDs) > 0 {
 			resultRef = state.TaskResultRef{Kind: "transcript_entry", ID: historyEntryIDs[len(historyEntryIDs)-1]}
 		}
-		if controlSessionStore != nil {
-			if err := controlSessionStore.RecordTurn(sessionID, state.TurnTelemetry{
+		if controlServices.session.sessionStore != nil {
+			if err := controlServices.session.sessionStore.RecordTurn(sessionID, state.TurnTelemetry{
 				TurnID:         turnTelemetry.TurnID,
 				TaskID:         firstNonEmptyTrimmed(workerTask.TaskID, msg.TaskID),
 				RunID:          strings.TrimSpace(workerRun.RunID),
@@ -6268,11 +6295,11 @@ func handleACPMessage(
 			TurnResult:      turnResultMetadataPtr(result, procErr),
 		}
 		senderPubKey := ""
-		controlDMBusMu.RLock()
-		if controlDMBus != nil {
-			senderPubKey = controlDMBus.PublicKey()
+		controlServices.relay.dmBusMu.RLock()
+		if *controlServices.relay.dmBus != nil {
+			senderPubKey = (*controlServices.relay.dmBus).PublicKey()
 		}
-		controlDMBusMu.RUnlock()
+		controlServices.relay.dmBusMu.RUnlock()
 
 		// Build and send result DM back to the sender.
 		var resultMsg acppkg.Message
@@ -6304,8 +6331,8 @@ func handleACPMessage(
 		errStr := resultPayload.Error
 		log.Printf("acp result from=%s task_id=%s ok=%v text=%q err=%q", fromPubKey, taskID, errStr == "", text, errStr)
 		// Deliver to any waiting Dispatch() caller.
-		if controlACPDispatcher != nil {
-			controlACPDispatcher.Deliver(acppkg.TaskResult{
+		if controlServices.relay.acpDispatcher != nil {
+			controlServices.relay.acpDispatcher.Deliver(acppkg.TaskResult{
 				TaskID:       taskID,
 				Text:         text,
 				Error:        errStr,
@@ -6338,8 +6365,8 @@ func handleACPMessage(
 // path.
 func applyAgentProfileFilter(ctx context.Context, rt agent.Runtime, sessionID string, cfg state.ConfigDoc, docsRepo *state.DocsRepository) agent.Runtime {
 	agentID := ""
-	if controlSessionRouter != nil {
-		agentID = controlSessionRouter.Get(sessionID)
+	if controlServices.session.sessionRouter != nil {
+		agentID = controlServices.session.sessionRouter.Get(sessionID)
 	}
 	return applyAgentProfileFilterForAgent(ctx, rt, agentID, cfg, docsRepo)
 }
@@ -6356,7 +6383,7 @@ func scheduleRestartIfNeeded(old, next state.ConfigDoc, delayMS int) (pending bo
 		delayMS = 500 // default grace period
 	}
 	select {
-	case controlRestartCh <- delayMS:
+	case controlServices.restartCh <- delayMS:
 	default:
 		// already queued; ignore duplicate
 	}
@@ -6367,14 +6394,9 @@ func setControlWSEmitter(emitter gatewayws.EventEmitter) {
 	if emitter == nil {
 		emitter = gatewayws.NoopEmitter{}
 	}
-	controlWsEmitterMu.Lock()
-	defer controlWsEmitterMu.Unlock()
-	controlWsEmitter = emitter
-	// Keep the daemonServices emitter in sync so extracted handler methods
-	// that use s.emitWSEvent pick up the upgraded emitter.
-	if controlServices != nil {
-		controlServices.emitter = emitter
-	}
+	controlServices.emitterMu.Lock()
+	defer controlServices.emitterMu.Unlock()
+	controlServices.emitter = emitter
 }
 
 // autoResolveProviderOverride infers a ProviderOverride from the model name and
@@ -6384,7 +6406,7 @@ func setControlWSEmitter(emitter gatewayws.EventEmitter) {
 // refreshKeyRings rebuilds the ProviderKeyRingRegistry from the current
 // provider config.  It should be called whenever the config changes.
 func refreshKeyRings(providers map[string]state.ProviderEntry) {
-	if controlKeyRings == nil {
+	if controlServices.handlers.keyRings == nil {
 		return
 	}
 	rings := make(map[string]*agent.KeyRing, len(providers))
@@ -6399,32 +6421,32 @@ func refreshKeyRings(providers map[string]state.ProviderEntry) {
 			rings[providerID] = agent.NewKeyRing(keys)
 		}
 	}
-	controlKeyRings.Replace(rings)
+	controlServices.handlers.keyRings.Replace(rings)
 }
 
 func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
-	if controlStateEnvelopeCodec != nil {
-		controlStateEnvelopeCodec.SetEncrypt(cfg.StorageEncryptEnabled())
+	if controlServices.handlers.stateEnvelopeCodec != nil {
+		controlServices.handlers.stateEnvelopeCodec.SetEncrypt(cfg.StorageEncryptEnabled())
 	}
 	refreshKeyRings(cfg.Providers)
 	controlServices.applyRuntimeRelayPolicy(nil, nil, cfg)
 	applyCapabilityRuntimeState(cfg)
-	if controlOps != nil {
-		controlOps.SyncHeartbeatConfig(cfg.Heartbeat)
+	if controlServices.session.ops != nil {
+		controlServices.session.ops.SyncHeartbeatConfig(cfg.Heartbeat)
 	}
 }
 
 func persistRuntimeConfigFile(doc state.ConfigDoc) error {
-	if strings.TrimSpace(controlConfigFilePath) == "" {
+	if strings.TrimSpace(controlServices.handlers.configFilePath) == "" {
 		return nil
 	}
-	return config.WriteConfigFile(controlConfigFilePath, doc)
+	return config.WriteConfigFile(controlServices.handlers.configFilePath, doc)
 }
 
 func providerOverrideForEntry(name string, pe state.ProviderEntry) agent.ProviderOverride {
 	apiKey := pe.APIKey
-	if controlKeyRings != nil {
-		if ring := controlKeyRings.Get(name); ring != nil && ring.Len() > 0 {
+	if controlServices.handlers.keyRings != nil {
+		if ring := controlServices.handlers.keyRings.Get(name); ring != nil && ring.Len() > 0 {
 			if picked, ok := ring.Pick(); ok && picked != "" {
 				apiKey = picked
 			}
@@ -6540,9 +6562,9 @@ func resolveAuxiliaryModelForAgent(agCfg state.AgentConfig, useCase auxiliaryMod
 }
 
 func emitControlWSEvent(event string, payload any) {
-	controlWsEmitterMu.RLock()
-	emitter := controlWsEmitter
-	controlWsEmitterMu.RUnlock()
+	controlServices.emitterMu.RLock()
+	emitter := controlServices.emitter
+	controlServices.emitterMu.RUnlock()
 	emitter.Emit(event, payload)
 }
 
@@ -6629,9 +6651,9 @@ func preprocessAttachments(ctx context.Context, text string, atts []methods.Atta
 // sendControlDM sends a DM via the active DM transport (NIP-17 or NIP-04).
 // It is best-effort: errors are logged, not returned.
 func sendControlDM(ctx context.Context, toPubKey, text string) {
-	controlDMBusMu.RLock()
-	bus := controlDMBus
-	controlDMBusMu.RUnlock()
+	controlServices.relay.dmBusMu.RLock()
+	bus := *controlServices.relay.dmBus
+	controlServices.relay.dmBusMu.RUnlock()
 	if bus == nil {
 		return
 	}
