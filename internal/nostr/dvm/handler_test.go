@@ -2,6 +2,8 @@ package dvm
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -244,5 +246,251 @@ func TestDVMHealthSnapshotInitialReconnect(t *testing.T) {
 func TestDVMResubscribeWindowIs10Minutes(t *testing.T) {
 	if runtime.DVMResubscribeWindow != 10*time.Minute {
 		t.Fatalf("DVMResubscribeWindow = %v, want 10m", runtime.DVMResubscribeWindow)
+	}
+}
+
+// ── handleJob / publishResult / publishStatus ─────────────────────────────
+
+func TestHandleJob_Success(t *testing.T) {
+	var calledJobID string
+	var calledKind int
+	var calledInput string
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h, err := Start(ctx, HandlerOpts{
+		Keyer:  testSigner(t),
+		Relays: []string{"wss://localhost:1"},
+		OnJob: func(_ context.Context, jobID string, kind int, input string) (string, error) {
+			calledJobID = jobID
+			calledKind = kind
+			calledInput = input
+			return "result!", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Stop()
+
+	ev := nostr.Event{
+		Kind:    5000,
+		Content: "direct-content",
+		Tags: nostr.Tags{
+			{"i", "input-text", "text"},
+			{"p", h.pubkey.Hex()},
+		},
+	}
+	// Sign the event so it has a valid ID.
+	if err := h.keyer.SignEvent(ctx, &ev); err != nil {
+		t.Fatal(err)
+	}
+
+	h.handleJob(ctx, ev)
+
+	if calledJobID != ev.ID.Hex() {
+		t.Errorf("jobID = %q, want %q", calledJobID, ev.ID.Hex())
+	}
+	if calledKind != 5000 {
+		t.Errorf("kind = %d, want 5000", calledKind)
+	}
+	if calledInput != "input-text" {
+		t.Errorf("input = %q, want %q", calledInput, "input-text")
+	}
+}
+
+func TestHandleJob_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h, err := Start(ctx, HandlerOpts{
+		Keyer:  testSigner(t),
+		Relays: []string{"wss://localhost:1"},
+		OnJob: func(_ context.Context, _ string, _ int, _ string) (string, error) {
+			return "", fmt.Errorf("job failed")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Stop()
+
+	ev := nostr.Event{
+		Kind:    5000,
+		Content: "test",
+		Tags: nostr.Tags{
+			{"p", h.pubkey.Hex()},
+		},
+	}
+	h.keyer.SignEvent(ctx, &ev)
+
+	// Should not panic even when the job handler returns an error.
+	h.handleJob(ctx, ev)
+}
+
+func TestHandleJob_ContentFallback(t *testing.T) {
+	var gotInput string
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h, err := Start(ctx, HandlerOpts{
+		Keyer:  testSigner(t),
+		Relays: []string{"wss://localhost:1"},
+		OnJob: func(_ context.Context, _ string, _ int, input string) (string, error) {
+			gotInput = input
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Stop()
+
+	ev := nostr.Event{
+		Kind:    5000,
+		Content: "fallback-content",
+		Tags:    nostr.Tags{{"p", h.pubkey.Hex()}},
+	}
+	h.keyer.SignEvent(ctx, &ev)
+	h.handleJob(ctx, ev)
+
+	if gotInput != "fallback-content" {
+		t.Errorf("input = %q, want %q", gotInput, "fallback-content")
+	}
+}
+
+func TestSignEvent_Success(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h, err := Start(ctx, HandlerOpts{
+		Keyer:  testSigner(t),
+		Relays: []string{"wss://localhost:1"},
+		OnJob:  func(_ context.Context, _ string, _ int, _ string) (string, error) { return "", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Stop()
+
+	evt := nostr.Event{
+		Kind:      7000,
+		Content:   "test",
+		CreatedAt: nostr.Timestamp(time.Now().Unix()),
+	}
+	evt.PubKey = h.pubkey
+	if err := h.signEvent(ctx, &evt); err != nil {
+		t.Fatalf("signEvent: %v", err)
+	}
+	if evt.Sig == [64]byte{} {
+		t.Error("expected signature to be set")
+	}
+}
+
+func TestFormatResult_JSONFields(t *testing.T) {
+	result := FormatResult("job1", "pub1", "text/plain", "output")
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("not valid JSON: %v", err)
+	}
+	if parsed["job_id"] != "job1" {
+		t.Errorf("job_id = %v", parsed["job_id"])
+	}
+	if parsed["requester"] != "pub1" {
+		t.Errorf("requester = %v", parsed["requester"])
+	}
+	if parsed["output_type"] != "text/plain" {
+		t.Errorf("output_type = %v", parsed["output_type"])
+	}
+	if parsed["result_content"] != "output" {
+		t.Errorf("result_content = %v", parsed["result_content"])
+	}
+}
+
+func TestExtractInput_EmptyEvent(t *testing.T) {
+	ev := nostr.Event{}
+	got := extractInput(ev)
+	if got != "" {
+		t.Errorf("expected empty, got %q", got)
+	}
+}
+
+func TestExtractInput_ShortITag(t *testing.T) {
+	ev := nostr.Event{
+		Tags: nostr.Tags{{"i"}}, // too short
+	}
+	got := extractInput(ev)
+	if got != "" {
+		t.Errorf("expected empty for short tag, got %q", got)
+	}
+}
+
+func TestHealthSnapshot_NilSubHealth(t *testing.T) {
+	h := &Handler{
+		relays: []string{"wss://a"},
+	}
+	snap := h.HealthSnapshot()
+	if snap.Label != "dvm" {
+		t.Errorf("label = %q", snap.Label)
+	}
+}
+
+func TestSetRelays_FiltersEmpty(t *testing.T) {
+	h := startTestHandler(t)
+	h.SetRelays([]string{"wss://a", "", "wss://b", ""})
+	relays := h.Relays()
+	if len(relays) != 2 {
+		t.Fatalf("expected 2 relays, got %v", relays)
+	}
+	if relays[0] != "wss://a" || relays[1] != "wss://b" {
+		t.Errorf("relays = %v", relays)
+	}
+}
+
+func TestCurrentRelays_Copies(t *testing.T) {
+	h := startTestHandler(t)
+	h.SetRelays([]string{"wss://original"})
+	relays := h.currentRelays()
+	relays[0] = "wss://mutated"
+	if h.Relays()[0] != "wss://original" {
+		t.Fatal("currentRelays should return a copy, not a reference")
+	}
+}
+
+func TestCustomAcceptedKinds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h, err := Start(ctx, HandlerOpts{
+		Keyer:         testSigner(t),
+		Relays:        []string{"wss://localhost:1"},
+		OnJob:         func(_ context.Context, _ string, _ int, _ string) (string, error) { return "", nil },
+		AcceptedKinds: []int{5001, 5002},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Stop()
+
+	if len(h.opts.AcceptedKinds) != 2 {
+		t.Fatalf("expected 2 kinds, got %d", len(h.opts.AcceptedKinds))
+	}
+}
+
+func TestCustomMaxConcurrentJobs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h, err := Start(ctx, HandlerOpts{
+		Keyer:             testSigner(t),
+		Relays:            []string{"wss://localhost:1"},
+		OnJob:             func(_ context.Context, _ string, _ int, _ string) (string, error) { return "", nil },
+		MaxConcurrentJobs: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Stop()
+
+	if h.opts.MaxConcurrentJobs != 4 {
+		t.Fatalf("MaxConcurrentJobs = %d, want 4", h.opts.MaxConcurrentJobs)
+	}
+	if cap(h.jobSem) != 4 {
+		t.Fatalf("jobSem capacity = %d, want 4", cap(h.jobSem))
 	}
 }
