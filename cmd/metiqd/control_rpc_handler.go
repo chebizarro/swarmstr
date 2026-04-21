@@ -16,6 +16,7 @@ import (
 	"metiq/internal/canvas"
 	"metiq/internal/gateway/channels"
 	ctxengine "metiq/internal/context"
+	hookspkg "metiq/internal/hooks"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
 	mediapkg "metiq/internal/media"
@@ -43,6 +44,7 @@ type controlRPCDeps struct {
 
 	sessionStore     *state.SessionStore
 	hooksMgr         hooksEventFirer
+	hooksMgrFull     *hookspkg.Manager
 	mediaTranscriber mediapkg.Transcriber
 	toolRegistry     *agent.ToolRegistry
 	agentJobs        *agentJobRegistry

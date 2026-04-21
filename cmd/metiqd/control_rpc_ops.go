@@ -878,8 +878,8 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 	// ── Hooks ────────────────────────────────────────────────────────────────
 	case methods.MethodHooksList:
 		var statuses []map[string]any
-		if controlHooksMgr != nil {
-			for _, s := range controlHooksMgr.List() {
+		if h.deps.hooksMgrFull != nil {
+			for _, s := range h.deps.hooksMgrFull.List() {
 				statuses = append(statuses, hookspkg.StatusToMap(s))
 			}
 		}
@@ -903,8 +903,8 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if key == "" {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("hookKey is required")
 		}
-		if controlHooksMgr != nil {
-			controlHooksMgr.SetEnabled(key, true)
+		if h.deps.hooksMgrFull != nil {
+			h.deps.hooksMgrFull.SetEnabled(key, true)
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hookKey": key, "enabled": true}}, true, nil
 
@@ -923,8 +923,8 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if key == "" {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("hookKey is required")
 		}
-		if controlHooksMgr != nil {
-			controlHooksMgr.SetEnabled(key, false)
+		if h.deps.hooksMgrFull != nil {
+			h.deps.hooksMgrFull.SetEnabled(key, false)
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hookKey": key, "enabled": false}}, true, nil
 
@@ -943,10 +943,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if key == "" {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("hookKey is required")
 		}
-		if controlHooksMgr == nil {
+		if h.deps.hooksMgrFull == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("hook %q not found", key)
 		}
-		info := controlHooksMgr.Info(key)
+		info := h.deps.hooksMgrFull.Info(key)
 		if info == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("hook %q not found", key)
 		}
@@ -954,8 +954,8 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 
 	case methods.MethodHooksCheck:
 		var statuses []map[string]any
-		if controlHooksMgr != nil {
-			for _, s := range controlHooksMgr.List() {
+		if h.deps.hooksMgrFull != nil {
+			for _, s := range h.deps.hooksMgrFull.List() {
 				statuses = append(statuses, hookspkg.StatusToMap(s))
 			}
 		}

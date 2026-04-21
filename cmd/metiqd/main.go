@@ -6044,6 +6044,7 @@ func handleControlRPCRequest(
 	}
 	if controlHooksMgr != nil {
 		deps.hooksMgr = controlHooksMgr
+		deps.hooksMgrFull = controlHooksMgr
 	}
 	return newControlRPCHandler(deps).Handle(ctx, in)
 }
