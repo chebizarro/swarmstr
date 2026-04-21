@@ -51,6 +51,9 @@ type SessionEntry struct {
 	ChildTaskIDs                  []string             `json:"child_task_ids,omitempty"`
 	LastTaskResult                TaskResultRef        `json:"last_task_result,omitempty"`
 
+	// Structured task state — continuously updated by the turn-end distiller.
+	TaskState *TaskState `json:"task_state,omitempty"`
+
 	// Agent / model / provider routing state.
 	AgentID          string           `json:"agent_id,omitempty"`
 	MemoryScope      AgentMemoryScope `json:"memory_scope,omitempty"`

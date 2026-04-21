@@ -1450,6 +1450,10 @@ func main() {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, sessionRouter.Get(sessionID), "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)), sessionStore, 0)
+		// Inject structured task state for context rehydration.
+		if taskCtx := buildTaskStateContextBlock(sessionStore, sessionID); taskCtx != "" {
+			turnContext = joinPromptSections(turnContext, taskCtx)
+		}
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)))
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -3317,6 +3321,10 @@ func main() {
 		}
 
 		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore, 0)
+		// Inject structured task state for context rehydration.
+		if taskCtx := buildTaskStateContextBlock(sessionStore, sessionID); taskCtx != "" {
+			turnContext = joinPromptSections(turnContext, taskCtx)
+		}
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		// turnHistory carries prior conversation turns for multi-turn LLM context.
 		var turnHistory []agent.ConversationMessage
@@ -3557,6 +3565,7 @@ func main() {
 						persistMemories(pCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
 					}(turnStateDocs)
 				}
+				updateSessionTaskState(sessionStore, sessionID, partial.ToolTraces, partial.HistoryDelta, true)
 			}
 			switch {
 			case errors.Is(turnErr, context.DeadlineExceeded):
@@ -3602,6 +3611,7 @@ func main() {
 				persistMemories(pCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
 			}(turnStateDocs)
 		}
+		updateSessionTaskState(sessionStore, sessionID, turnResult.ToolTraces, turnResult.HistoryDelta, false)
 		commitMemoryRecallArtifacts(sessionStore, sessionID, eventID, memoryRecallSample, surfacedFileMemory)
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 			TS:      time.Now().UnixMilli(),
@@ -4532,6 +4542,10 @@ func main() {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore, 0)
+		// Inject structured task state for context rehydration.
+		if taskCtx := buildTaskStateContextBlock(sessionStore, sessionID); taskCtx != "" {
+			turnContext = joinPromptSections(turnContext, taskCtx)
+		}
 		turnContext = joinPromptSections(buildExternalChannelMetadataContext(configState.Get(), chID, senderID, sessionID), turnContext)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		var chTurnHistory []agent.ConversationMessage
@@ -4662,6 +4676,7 @@ func main() {
 						persistMemories(pCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
 					}(turnStateDocs)
 				}
+				updateSessionTaskState(sessionStore, sessionID, partial.ToolTraces, partial.HistoryDelta, true)
 			}
 			if errors.Is(turnErr, context.Canceled) {
 				log.Printf("channel agent aborted session=%s", sessionID)
@@ -4694,6 +4709,7 @@ func main() {
 				persistMemories(pCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
 			}(turnStateDocs)
 		}
+		updateSessionTaskState(sessionStore, sessionID, turnResult.ToolTraces, turnResult.HistoryDelta, false)
 		commitMemoryRecallArtifacts(sessionStore, sessionID, eventID, memoryRecallSample, surfacedFileMemory)
 
 		// ── Deliver reply ─────────────────────────────────────────────────
