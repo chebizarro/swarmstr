@@ -17,13 +17,19 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/autoreply"
+	"metiq/internal/canvas"
 	ctxengine "metiq/internal/context"
+	"metiq/internal/gateway/channels"
 	gatewayws "metiq/internal/gateway/ws"
 	hookspkg "metiq/internal/hooks"
+	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
 	"metiq/internal/nostr/dvm"
+	"metiq/internal/nostr/nip38"
+	"metiq/internal/gateway/nodepending"
 	nostruntime "metiq/internal/nostr/runtime"
 	pluginmanager "metiq/internal/plugins/manager"
+	"metiq/internal/nostr/secure"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/store/state"
 	ttspkg "metiq/internal/tts"
@@ -35,10 +41,13 @@ import (
 type daemonServices struct {
 	relay         relayPolicyServices
 	emitter       gatewayws.EventEmitter
+	emitterMu     *sync.RWMutex
 	session       sessionServices
 	handlers      handlerServices
 	runtimeConfig *runtimeConfigStore
 	docsRepo      *state.DocsRepository
+	pubKeyHex     string
+	restartCh     chan int
 }
 
 // emitWSEvent emits a typed event to connected WS clients.
@@ -71,6 +80,11 @@ type relayPolicyServices struct {
 	publish             relayPublishDebounce
 	transportSelector   *nostruntime.TransportSelector
 	acpPeers            *acppkg.PeerRegistry
+	acpDispatcher       *acppkg.Dispatcher
+	hub                 *nostruntime.NostrHub
+	channels            *channels.Registry
+	presenceHeartbeat38 *nip38.Heartbeat
+	rpcCorrelator       *RPCCorrelator
 }
 
 // relayPublishDebounce holds the debounce state for relay list publishing.
@@ -95,9 +109,18 @@ type sessionServices struct {
 	toolRegistry      *agent.ToolRegistry
 	memoryStore       memory.Store
 	contextEngine     ctxengine.Engine
+	contextEngineName string
 	sessionStore      *state.SessionStore
 	agentJobs         *agentJobRegistry
 	subagents         *SubagentRegistry
+
+	// Operation registries
+	ops           *operationsRegistry
+	cronJobs      *cronRegistry
+	execApprovals *execApprovalsRegistry
+	wizards       *wizardRegistry
+	nodeInvocations *nodeInvocationRegistry
+	nodePending     *nodepending.Store
 }
 
 // ---------------------------------------------------------------------------
@@ -106,10 +129,18 @@ type sessionServices struct {
 
 // handlerServices groups dependencies for misc RPC handler functions.
 type handlerServices struct {
-	ttsManager       *ttspkg.Manager
-	updateChecker    *update.Checker
-	secretsStore     *secretspkg.Store
-	pairingConfigMu  *sync.Mutex
-	hooksMgr         *hookspkg.Manager
-	pluginMgr        *pluginmanager.GojaPluginManager
+	ttsManager         *ttspkg.Manager
+	updateChecker      *update.Checker
+	secretsStore       *secretspkg.Store
+	pairingConfigMu    *sync.Mutex
+	hooksMgr           *hookspkg.Manager
+	pluginMgr          *pluginmanager.GojaPluginManager
+	mcpOps             *mcpOpsController
+	mcpAuth            *mcpAuthController
+	canvasHost         *canvas.Host
+	mediaTranscriber   mediapkg.Transcriber
+	keyRings           *agent.ProviderKeyRingRegistry
+	stateEnvelopeCodec *secure.MutableSelfEnvelopeCodec
+	configFilePath     string
+	cronExecutorMu     *sync.RWMutex
 }
