@@ -82,8 +82,8 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 			}
 		}
 		var mcpSnapshot *mcppkg.TelemetrySnapshot
-		if controlMCPOps != nil {
-			mcpSnapshot = controlMCPOps.telemetrySnapshotPtr()
+		if h.deps.mcpOps != nil {
+			mcpSnapshot = h.deps.mcpOps.telemetrySnapshotPtr()
 		}
 		var fipsHealth any
 		if fipsHealthOpts != nil {
@@ -140,19 +140,19 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if len(in.Params) > 0 {
 			_ = json.Unmarshal(in.Params, &compactReq)
 		}
-		if controlContextEngine == nil {
+		if h.deps.contextEngine == nil {
 			return nostruntime.ControlRPCResult{Result: methods.MemoryCompactResponse{OK: false, Summary: "no context engine active"}}, true, nil
 		}
 		sessionToCompact := compactReq.SessionID
-		flushOutcome, err := ensureSessionMemoryCurrent(ctx, configState.Get(), sessionToCompact, controlSessionStore)
+		flushOutcome, err := ensureSessionMemoryCurrent(ctx, configState.Get(), sessionToCompact, h.deps.sessionStore)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("memory.compact session memory flush: %w", err)
 		}
-		cr, cErr := controlContextEngine.Compact(ctx, sessionToCompact)
+		cr, cErr := h.deps.contextEngine.Compact(ctx, sessionToCompact)
 		if cErr != nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("memory.compact: %w", cErr)
 		}
-		recordSessionCompaction(controlSessionStore, sessionToCompact, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
+		recordSessionCompaction(h.deps.sessionStore, sessionToCompact, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
 		return nostruntime.ControlRPCResult{Result: methods.MemoryCompactResponse{
 			OK:           cr.OK,
 			SessionsRun:  1,
@@ -179,7 +179,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyCronList(controlCronJobs, req)
+		out, err := applyCronList(h.deps.cronJobs, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -193,7 +193,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyCronStatus(controlCronJobs, req)
+		out, err := applyCronStatus(h.deps.cronJobs, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -207,11 +207,11 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyCronAdd(controlCronJobs, req)
+		out, err := applyCronAdd(h.deps.cronJobs, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
+		if saveErr := h.deps.cronJobs.Save(ctx, docsRepo); saveErr != nil {
 			log.Printf("cron jobs save warning (add): %v", saveErr)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
@@ -224,11 +224,11 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyCronUpdate(controlCronJobs, req)
+		out, err := applyCronUpdate(h.deps.cronJobs, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
+		if saveErr := h.deps.cronJobs.Save(ctx, docsRepo); saveErr != nil {
 			log.Printf("cron jobs save warning (update): %v", saveErr)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
@@ -241,11 +241,11 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyCronRemove(controlCronJobs, req)
+		out, err := applyCronRemove(h.deps.cronJobs, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
+		if saveErr := h.deps.cronJobs.Save(ctx, docsRepo); saveErr != nil {
 			log.Printf("cron jobs save warning (remove): %v", saveErr)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
@@ -258,7 +258,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyCronRun(controlCronJobs, req)
+		out, err := applyCronRun(h.deps.cronJobs, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -272,7 +272,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyCronRuns(controlCronJobs, req)
+		out, err := applyCronRuns(h.deps.cronJobs, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -286,7 +286,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyExecApprovalsGet(controlExecApprovals, req)
+		out, err := applyExecApprovalsGet(h.deps.execApprovals, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -300,7 +300,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyExecApprovalsSet(controlExecApprovals, req)
+		out, err := applyExecApprovalsSet(h.deps.execApprovals, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -314,7 +314,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyExecApprovalsNodeGet(controlExecApprovals, req)
+		out, err := applyExecApprovalsNodeGet(h.deps.execApprovals, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -328,7 +328,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyExecApprovalsNodeSet(controlExecApprovals, req)
+		out, err := applyExecApprovalsNodeSet(h.deps.execApprovals, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -342,7 +342,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyExecApprovalRequest(controlExecApprovals, req)
+		out, err := applyExecApprovalRequest(h.deps.execApprovals, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -356,7 +356,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyExecApprovalWaitDecision(ctx, controlExecApprovals, req)
+		out, err := applyExecApprovalWaitDecision(ctx, h.deps.execApprovals, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -370,7 +370,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyExecApprovalResolve(controlExecApprovals, req)
+		out, err := applyExecApprovalResolve(h.deps.execApprovals, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -394,10 +394,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlMCPOps == nil {
+		if h.deps.mcpOps == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("mcp operations not configured")
 		}
-		out, err := controlMCPOps.applyList(ctx, req)
+		out, err := h.deps.mcpOps.applyList(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -411,10 +411,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlMCPOps == nil {
+		if h.deps.mcpOps == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("mcp operations not configured")
 		}
-		out, err := controlMCPOps.applyGet(ctx, req)
+		out, err := h.deps.mcpOps.applyGet(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -428,10 +428,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlMCPOps == nil {
+		if h.deps.mcpOps == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("mcp operations not configured")
 		}
-		out, err := controlMCPOps.applyPut(ctx, req)
+		out, err := h.deps.mcpOps.applyPut(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -445,10 +445,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlMCPOps == nil {
+		if h.deps.mcpOps == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("mcp operations not configured")
 		}
-		out, err := controlMCPOps.applyRemove(ctx, req)
+		out, err := h.deps.mcpOps.applyRemove(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -462,10 +462,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlMCPOps == nil {
+		if h.deps.mcpOps == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("mcp operations not configured")
 		}
-		out, err := controlMCPOps.applyTest(ctx, req)
+		out, err := h.deps.mcpOps.applyTest(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -479,10 +479,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlMCPOps == nil {
+		if h.deps.mcpOps == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("mcp operations not configured")
 		}
-		out, err := controlMCPOps.applyReconnect(ctx, req)
+		out, err := h.deps.mcpOps.applyReconnect(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -496,10 +496,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlMCPAuth == nil {
+		if h.deps.mcpAuth == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("mcp auth not configured")
 		}
-		out, err := controlMCPAuth.applyStart(ctx, req)
+		out, err := h.deps.mcpAuth.applyStart(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -513,10 +513,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlMCPAuth == nil {
+		if h.deps.mcpAuth == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("mcp auth not configured")
 		}
-		out, err := controlMCPAuth.applyRefresh(ctx, req)
+		out, err := h.deps.mcpAuth.applyRefresh(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -530,10 +530,10 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if controlMCPAuth == nil {
+		if h.deps.mcpAuth == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("mcp auth not configured")
 		}
-		out, err := controlMCPAuth.applyClear(ctx, req)
+		out, err := h.deps.mcpAuth.applyClear(ctx, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -575,7 +575,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyWizardStart(controlWizards, req)
+		out, err := applyWizardStart(h.deps.wizards, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -589,7 +589,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyWizardNext(controlWizards, req)
+		out, err := applyWizardNext(h.deps.wizards, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -603,7 +603,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyWizardCancel(controlWizards, req)
+		out, err := applyWizardCancel(h.deps.wizards, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -617,7 +617,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyWizardStatus(controlWizards, req)
+		out, err := applyWizardStatus(h.deps.wizards, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -631,7 +631,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyUpdateRun(controlOps, req)
+		out, err := applyUpdateRun(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -645,7 +645,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyTalkConfig(cfg, controlOps, req)
+		out, err := applyTalkConfig(cfg, h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -659,7 +659,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyTalkMode(controlOps, req)
+		out, err := applyTalkMode(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -673,7 +673,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyLastHeartbeat(controlOps, req)
+		out, err := applyLastHeartbeat(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -687,7 +687,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applySetHeartbeats(controlOps, req)
+		out, err := applySetHeartbeats(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -701,7 +701,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyWake(controlOps, req)
+		out, err := applyWake(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -715,7 +715,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applySystemPresence(controlOps, req)
+		out, err := applySystemPresence(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -729,7 +729,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applySystemEvent(controlOps, req)
+		out, err := applySystemEvent(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -771,7 +771,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyVoicewakeGet(controlOps, req)
+		out, err := applyVoicewakeGet(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -785,7 +785,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyVoicewakeSet(controlOps, req)
+		out, err := applyVoicewakeSet(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -799,7 +799,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyTTSStatus(controlOps, req)
+		out, err := applyTTSStatus(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -813,7 +813,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyTTSProviders(controlOps, req)
+		out, err := applyTTSProviders(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -827,7 +827,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyTTSSetProvider(controlOps, req)
+		out, err := applyTTSSetProvider(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -841,7 +841,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyTTSEnable(controlOps, req)
+		out, err := applyTTSEnable(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -855,7 +855,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyTTSDisable(controlOps, req)
+		out, err := applyTTSDisable(h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -869,7 +869,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyTTSConvert(ctx, controlOps, req)
+		out, err := applyTTSConvert(ctx, h.deps.ops, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}

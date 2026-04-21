@@ -306,11 +306,15 @@ func applySandboxRun(ctx context.Context, configState *runtimeConfigStore, req m
 	}, nil
 }
 
-func applySecretsReload(_ methods.SecretsReloadRequest) (map[string]any, error) {
-	if controlSecrets == nil {
+func applySecretsReload(req methods.SecretsReloadRequest) (map[string]any, error) {
+	return controlServices.applySecretsReload(req)
+}
+
+func (s *daemonServices) applySecretsReload(_ methods.SecretsReloadRequest) (map[string]any, error) {
+	if s.handlers.secretsStore == nil {
 		return map[string]any{"ok": true, "count": 0, "warningCount": 0, "warnings": []string{}}, nil
 	}
-	count, warnings := controlSecrets.Reload()
+	count, warnings := s.handlers.secretsStore.Reload()
 	return map[string]any{
 		"ok":           true,
 		"count":        count,
@@ -320,6 +324,10 @@ func applySecretsReload(_ methods.SecretsReloadRequest) (map[string]any, error) 
 }
 
 func applySecretsResolve(req methods.SecretsResolveRequest) (map[string]any, error) {
+	return controlServices.applySecretsResolve(req)
+}
+
+func (s *daemonServices) applySecretsResolve(req methods.SecretsResolveRequest) (map[string]any, error) {
 	assignments := make([]map[string]any, 0, len(req.TargetIDs))
 	var diagnostics []string
 	var inactive []string
@@ -329,12 +337,12 @@ func applySecretsResolve(req methods.SecretsResolveRequest) (map[string]any, err
 			"path":         id,
 			"pathSegments": strings.Split(id, "."),
 		}
-		if controlSecrets == nil {
+		if s.handlers.secretsStore == nil {
 			entry["value"] = nil
 			entry["found"] = false
 			inactive = append(inactive, id)
 		} else {
-			v, found := controlSecrets.Resolve(id)
+			v, found := s.handlers.secretsStore.Resolve(id)
 			if found {
 				// Never log the actual secret value — only indicate presence.
 				entry["found"] = true

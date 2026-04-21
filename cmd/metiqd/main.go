@@ -4003,8 +4003,10 @@ func main() {
 			memoryStore:       controlMemoryStore,
 		},
 		handlers: handlerServices{
-			ttsManager:    controlTTSMgr,
-			updateChecker: controlUpdateChecker,
+			ttsManager:      controlTTSMgr,
+			updateChecker:   controlUpdateChecker,
+			secretsStore:    controlSecrets,
+			pairingConfigMu: &controlPairingConfigMu,
 		},
 	}
 
@@ -6023,6 +6025,16 @@ func handleControlRPCRequest(
 		sessionMemoryRuntime: controlSessionMemoryRuntime,
 		acpPeers:             controlACPPeers,
 		acpDispatcher:        controlACPDispatcher,
+
+		services: controlServices,
+
+		ops:           controlOps,
+		cronJobs:      controlCronJobs,
+		execApprovals: controlExecApprovals,
+		wizards:       controlWizards,
+		contextEngine: controlContextEngine,
+		mcpOps:        controlMCPOps,
+		mcpAuth:       controlMCPAuth,
 	}
 	if controlHooksMgr != nil {
 		deps.hooksMgr = controlHooksMgr
