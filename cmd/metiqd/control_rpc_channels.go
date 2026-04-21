@@ -72,7 +72,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 			Hub:          controlHub,
 			Keyer:        controlKeyer,
 			OnMessage: func(msg channels.InboundMessage) {
-				emitControlWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+				controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 					TS:        time.Now().UnixMilli(),
 					ChannelID: msg.ChannelID,
 					GroupID:   msg.GroupID,
@@ -102,7 +102,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 						log.Printf("channel reply error channel=%s err=%v", msg.ChannelID, err)
 						return
 					}
-					emitControlWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+					controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 						TS:        time.Now().UnixMilli(),
 						ChannelID: msg.ChannelID,
 						GroupID:   msg.GroupID,
@@ -169,7 +169,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 		if err := ch.Send(ctx, req.Text); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		emitControlWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+		controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 			TS:        time.Now().UnixMilli(),
 			ChannelID: req.ChannelID,
 			Direction: "outbound",
