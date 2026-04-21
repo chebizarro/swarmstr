@@ -5051,6 +5051,8 @@ func main() {
 	// config mutation. Disk persistence is handled before successful Set() calls
 	// in mutation paths so callers do not observe success when write-back fails.
 	configState.SetOnChange(func(doc state.ConfigDoc) {
+		// Bump prompt section cache generation so next prompt build recomputes.
+		bumpPromptConfigGeneration()
 		applyRuntimeConfigSideEffects(doc)
 		resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
 		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live config apply")
@@ -5068,6 +5070,7 @@ func main() {
 			config.WithOnChange(func(doc state.ConfigDoc) {
 				doc = policy.NormalizeConfig(doc)
 				log.Printf("config file changed: applying live reload path=%s", configFilePath)
+				bumpPromptConfigGeneration()
 				// Use the internal field directly to avoid triggering disk write-back
 				// (the file already has the new content).
 				configState.mu.Lock()
