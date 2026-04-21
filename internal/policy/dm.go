@@ -339,9 +339,6 @@ func validateAgents(agents state.AgentsConfig) error {
 		if !validToolProfiles[a.ToolProfile] {
 			return fmt.Errorf("agents[%d] (%s): tool_profile %q is not valid (valid: minimal, coding, messaging, full)", i, id, a.ToolProfile)
 		}
-		if a.HeartbeatMS < 0 {
-			return fmt.Errorf("agents[%d] (%s): heartbeat_ms must be >= 0", i, id)
-		}
 		if a.HistoryLimit < 0 {
 			return fmt.Errorf("agents[%d] (%s): history_limit must be >= 0", i, id)
 		}

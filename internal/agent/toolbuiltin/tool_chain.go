@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 
 	"metiq/internal/agent"
 )
@@ -22,10 +21,9 @@ import (
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const (
-	maxChainSteps    = 20              // max steps per chain definition
-	maxChainDepth    = 3               // max recursive chain-in-chain calls
-	chainExecTimeout = 120 * time.Second
-	chainOutputMax   = 2000            // per-step output chars in summary
+	maxChainSteps  = 20   // max steps per chain definition
+	maxChainDepth  = 3    // max recursive chain-in-chain calls
+	chainOutputMax = 2000 // per-step output chars in summary
 )
 
 // chainDepthKey is the context key for tracking recursive chain depth.

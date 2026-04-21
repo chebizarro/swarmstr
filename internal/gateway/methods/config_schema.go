@@ -82,7 +82,6 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"agents[].model",
 			"agents[].workspace_dir",
 			"agents[].tool_profile",
-			"agents[].heartbeat_ms",
 			"agents[].history_limit",
 			// Nostr channel configuration
 			"nostr_channels.<name>.kind",
