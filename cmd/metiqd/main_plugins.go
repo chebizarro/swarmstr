@@ -26,10 +26,16 @@ import (
 // ---------------------------------------------------------------------------
 
 func applyPluginInstallRuntime(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.PluginsInstallRequest) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	svc := controlServices
+	if svc == nil {
+		// Build a minimal daemonServices so the method can call emitWSEvent
+		// (which will be a no-op if no emitter is set).
+		svc = &daemonServices{
+			emitter:   controlWsEmitter,
+			emitterMu: &controlWsEmitterMu,
+		}
 	}
-	return controlServices.applyPluginInstallRuntime(ctx, docsRepo, configState, req)
+	return svc.applyPluginInstallRuntime(ctx, docsRepo, configState, req)
 }
 
 func (s *daemonServices) applyPluginInstallRuntime(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.PluginsInstallRequest) (map[string]any, error) {

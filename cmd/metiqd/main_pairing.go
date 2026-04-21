@@ -56,10 +56,32 @@ func toRecordSlice(raw any) []map[string]any {
 }
 
 func applyPairingConfigUpdate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, mutator func(map[string]any) (map[string]any, map[string]any, error)) (map[string]any, error) {
-	if controlServices == nil {
-		return nil, fmt.Errorf("daemon services not initialized")
+	if controlServices != nil {
+		return controlServices.applyPairingConfigUpdate(ctx, docsRepo, configState, mutator)
 	}
-	return controlServices.applyPairingConfigUpdate(ctx, docsRepo, configState, mutator)
+	// Fallback: use the package-level mutex when controlServices is nil
+	// (common in tests that call pairing helpers directly).
+	controlPairingConfigMu.Lock()
+	defer controlPairingConfigMu.Unlock()
+
+	cfg := configState.Get()
+	pairing := pairingData(cfg)
+	nextPairing, result, err := mutator(pairing)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Extra == nil {
+		cfg.Extra = map[string]any{}
+	}
+	cfg.Extra["pairing"] = nextPairing
+	if err := persistRuntimeConfigFile(cfg); err != nil {
+		return nil, err
+	}
+	if _, err := docsRepo.PutConfig(ctx, cfg); err != nil {
+		return nil, err
+	}
+	configState.Set(cfg)
+	return result, nil
 }
 
 func (s *daemonServices) applyPairingConfigUpdate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, mutator func(map[string]any) (map[string]any, map[string]any, error)) (map[string]any, error) {
