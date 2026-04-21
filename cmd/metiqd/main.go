@@ -1960,6 +1960,9 @@ func main() {
 				// Update the registry default so all "main"/"" lookups use this runtime.
 				agentRegistry.SetDefault(rt)
 				controlAgentRuntime = rt
+				if controlServices != nil {
+					controlServices.session.agentRuntime = rt
+				}
 				log.Printf("agent config: default runtime updated id=main model=%q provider=%q", model, agCfg.Provider)
 				if agCfg.ContextWindow == 0 {
 					resolved := agent.ResolveModelContext(model)
@@ -6335,6 +6338,11 @@ func setControlWSEmitter(emitter gatewayws.EventEmitter) {
 	controlWsEmitterMu.Lock()
 	defer controlWsEmitterMu.Unlock()
 	controlWsEmitter = emitter
+	// Keep the daemonServices emitter in sync so extracted handler methods
+	// that use s.emitWSEvent pick up the upgraded emitter.
+	if controlServices != nil {
+		controlServices.emitter = emitter
+	}
 }
 
 // autoResolveProviderOverride infers a ProviderOverride from the model name and
