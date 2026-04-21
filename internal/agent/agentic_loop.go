@@ -256,6 +256,21 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			break
 		}
 
+		// Compress historical tool results: replace older tool output with
+		// compact one-line summaries (preserving tool name + dimensions)
+		// before micro-compaction and the next LLM call. This frees context
+		// while keeping the tool execution timeline visible to the model.
+		{
+			budget := ComputeContextBudget(ProfileFromContextWindowTokens(
+				max(cfg.ContextWindowTokens, 1)))
+			compResult := CompressHistoricalToolResults(messages, budget.MicroCompactKeepRecent+2)
+			if compResult.Compressed > 0 {
+				messages = compResult.Messages
+				log.Printf("%s: compressed %d historical tool results (%d chars freed)",
+					cfg.LogPrefix, compResult.Compressed, compResult.CharsBefore-compResult.CharsAfter)
+			}
+		}
+
 		// Apply micro-compaction before the next LLM call to free context
 		// space consumed by old tool results. Runs universally for all model
 		// sizes — the budget's CompactionThreshold scales with window size
