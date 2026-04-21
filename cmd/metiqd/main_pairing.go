@@ -56,6 +56,9 @@ func toRecordSlice(raw any) []map[string]any {
 }
 
 func applyPairingConfigUpdate(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, mutator func(map[string]any) (map[string]any, map[string]any, error)) (map[string]any, error) {
+	if controlServices == nil {
+		return nil, fmt.Errorf("daemon services not initialized")
+	}
 	return controlServices.applyPairingConfigUpdate(ctx, docsRepo, configState, mutator)
 }
 

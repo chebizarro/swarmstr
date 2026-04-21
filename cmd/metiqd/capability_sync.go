@@ -70,11 +70,15 @@ func capabilityToolSurfaceFromDefinitions(defs []agent.ToolDefinition) capabilit
 }
 
 func currentCapabilityToolSurface(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository) capabilityToolSurface {
-	if controlServices.session.toolRegistry == nil {
+	toolReg := controlToolRegistry
+	if controlServices != nil && controlServices.session.toolRegistry != nil {
+		toolReg = controlServices.session.toolRegistry
+	}
+	if toolReg == nil {
 		return capabilityToolSurface{}
 	}
 	allowed := resolvedAgentRuntimeToolAllowlist(ctx, cfg, docsRepo, "")
-	exec := agent.FilteredToolExecutor(controlServices.session.toolRegistry, allowed)
+	exec := agent.FilteredToolExecutor(toolReg, allowed)
 	return capabilityToolSurfaceFromDefinitions(agent.ToolDefinitions(exec))
 }
 
@@ -88,19 +92,29 @@ func currentCapabilityDMSchemes() []string {
 			seen[value] = struct{}{}
 		}
 	}
-	controlServices.relay.dmBusMu.RLock()
-	defer controlServices.relay.dmBusMu.RUnlock()
-	if controlServices.relay.nip17Bus != nil {
-		add("giftwrap", "nip17", "nip44")
-	}
-	if controlServices.relay.nip04Bus != nil {
-		add("nip04")
-	}
-	if len(seen) == 0 {
-		switch (*controlServices.relay.dmBus).(type) {
-		case *nostruntime.NIP17Bus:
+	if controlServices != nil && controlServices.relay.dmBusMu != nil {
+		controlServices.relay.dmBusMu.RLock()
+		defer controlServices.relay.dmBusMu.RUnlock()
+		if controlServices.relay.nip17Bus != nil {
 			add("giftwrap", "nip17", "nip44")
-		case *nostruntime.DMBus:
+		}
+		if controlServices.relay.nip04Bus != nil {
+			add("nip04")
+		}
+		if len(seen) == 0 && controlServices.relay.dmBus != nil {
+			switch (*controlServices.relay.dmBus).(type) {
+			case *nostruntime.NIP17Bus:
+				add("giftwrap", "nip17", "nip44")
+			case *nostruntime.DMBus:
+				add("nip04")
+			}
+		}
+	} else {
+		// Fallback: use package-level globals (test compatibility).
+		if controlNIP17Bus != nil {
+			add("giftwrap", "nip17", "nip44")
+		}
+		if controlNIP04Bus != nil {
 			add("nip04")
 		}
 	}
@@ -151,11 +165,13 @@ func currentCapabilityPublishRelays(cfg state.ConfigDoc) []string {
 	if len(relays) > 0 {
 		return relays
 	}
-	controlServices.relay.dmBusMu.RLock()
-	if *controlServices.relay.dmBus != nil {
-		relays = append(relays, (*controlServices.relay.dmBus).Relays()...)
+	if controlServices.relay.dmBusMu != nil {
+		controlServices.relay.dmBusMu.RLock()
+		if controlServices.relay.dmBus != nil && *controlServices.relay.dmBus != nil {
+			relays = append(relays, (*controlServices.relay.dmBus).Relays()...)
+		}
+		controlServices.relay.dmBusMu.RUnlock()
 	}
-	controlServices.relay.dmBusMu.RUnlock()
 	if controlServices.relay.controlBus != nil {
 		relays = append(relays, controlServices.relay.controlBus.Relays()...)
 	}

@@ -153,6 +153,9 @@ type sessionMemoryLifecycleOutcome struct {
 }
 
 func ensureSessionMemoryCurrent(ctx context.Context, cfg state.ConfigDoc, sessionID string, sessionStore *state.SessionStore) (sessionMemoryLifecycleOutcome, error) {
+	if controlServices == nil {
+		return sessionMemoryLifecycleOutcome{}, nil
+	}
 	return controlServices.ensureSessionMemoryCurrent(ctx, cfg, sessionID, sessionStore)
 }
 
@@ -176,6 +179,9 @@ func (s *daemonServices) ensureSessionMemoryCurrent(ctx context.Context, cfg sta
 }
 
 func resolveSessionMemoryRuntimeDependencies(cfg state.ConfigDoc, sessionID string, sessionStore *state.SessionStore) (sessionMemoryGenerator, string) {
+	if controlServices == nil {
+		return nil, ""
+	}
 	return controlServices.resolveSessionMemoryRuntimeDependencies(cfg, sessionID, sessionStore)
 }
 

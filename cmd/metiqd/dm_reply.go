@@ -21,7 +21,21 @@ func resolveDMReplyMode(cfg state.ConfigDoc, inboundScheme string) (string, erro
 }
 
 func currentDMReplyTransportBus(mode string) nostruntime.DMTransport {
-	return controlServices.currentDMReplyTransportBus(mode)
+	if controlServices != nil {
+		return controlServices.currentDMReplyTransportBus(mode)
+	}
+	// Fallback: use package-level globals (test compatibility).
+	switch mode {
+	case "nip17":
+		if controlNIP17Bus != nil {
+			return controlNIP17Bus
+		}
+	case "nip04":
+		if controlNIP04Bus != nil {
+			return controlNIP04Bus
+		}
+	}
+	return nil
 }
 
 func (s *daemonServices) currentDMReplyTransportBus(mode string) nostruntime.DMTransport {

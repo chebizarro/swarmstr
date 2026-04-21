@@ -301,6 +301,11 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	docsRepo := state.NewDocsRepository(store, "author")
 	transcriptRepo := state.NewTranscriptRepository(store, "author")
 	controlServices = &daemonServices{
+		emitterMu: &sync.RWMutex{},
+		relay: relayPolicyServices{
+			dmBusMu: &sync.RWMutex{},
+			dmBus:   new(nostruntime.DMTransport),
+		},
 		session: sessionServices{
 			agentRuntime:  runtime,
 			agentRegistry: agentReg,
@@ -471,16 +476,34 @@ func setupACPWorkerTestRuntime(t *testing.T, provider *capturingProvider) (*agen
 	prevSessionStore := controlSessionStore
 	prevToolRegistry := controlToolRegistry
 	prevRuntimeConfig := controlRuntimeConfig
+	prevServices := controlServices
 	controlSessionStore = ss
 	controlToolRegistry = tools
-	controlRuntimeConfig = newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{
+	cfgStore := newRuntimeConfigStore(state.ConfigDoc{Agents: []state.AgentConfig{{
 		ID:           "worker",
 		EnabledTools: []string{"memory_search", "memory_store"},
 	}}})
+	controlRuntimeConfig = cfgStore
+	controlServices = &daemonServices{
+		emitterMu: &sync.RWMutex{},
+		relay: relayPolicyServices{
+			dmBusMu: &sync.RWMutex{},
+			dmBus:   new(nostruntime.DMTransport),
+		},
+		session: sessionServices{
+			agentRuntime:  runtime,
+			agentRegistry: agentReg,
+			sessionRouter: sessionRouter,
+			toolRegistry:  tools,
+			sessionStore:  ss,
+		},
+		runtimeConfig: cfgStore,
+	}
 	cleanup := func() {
 		controlSessionStore = prevSessionStore
 		controlToolRegistry = prevToolRegistry
 		controlRuntimeConfig = prevRuntimeConfig
+		controlServices = prevServices
 	}
 	return agentReg, sessionRouter, tools, ss, docsRepo, transcriptRepo, cleanup
 }

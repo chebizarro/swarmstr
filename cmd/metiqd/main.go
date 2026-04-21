@@ -6128,6 +6128,26 @@ func handleControlRPCRequest(
 	pluginMgr *pluginmanager.GojaPluginManager,
 	startedAt time.Time,
 ) (nostruntime.ControlRPCResult, error) {
+	// Ensure controlServices is safe for field access (may be nil in tests).
+	svc := controlServices
+	if svc == nil {
+		svc = &daemonServices{
+			session: sessionServices{
+				sessionStore:  controlSessionStore,
+				toolRegistry:  controlToolRegistry,
+				agentJobs:     controlAgentJobs,
+				sessionRouter: controlSessionRouter,
+				agentRegistry: controlAgentRegistry,
+				agentRuntime:  controlAgentRuntime,
+				subagents:     controlSubagents,
+			},
+			relay: relayPolicyServices{
+				acpPeers:      controlACPPeers,
+				acpDispatcher: controlACPDispatcher,
+			},
+			runtimeConfig: controlRuntimeConfig,
+		}
+	}
 	deps := controlRPCDeps{
 		dmBus:          dmBus,
 		controlBus:     controlBus,
@@ -6143,37 +6163,37 @@ func handleControlRPCRequest(
 		pluginMgr:      pluginMgr,
 		startedAt:      startedAt,
 
-		sessionStore:     controlServices.session.sessionStore,
-		mediaTranscriber: controlServices.handlers.mediaTranscriber,
-		toolRegistry:     controlServices.session.toolRegistry,
-		agentJobs:        controlServices.session.agentJobs,
-		sessionRouter:    controlServices.session.sessionRouter,
-		agentRegistry:    controlServices.session.agentRegistry,
-		agentRuntime:     controlServices.session.agentRuntime,
+		sessionStore:     svc.session.sessionStore,
+		mediaTranscriber: svc.handlers.mediaTranscriber,
+		toolRegistry:     svc.session.toolRegistry,
+		agentJobs:        svc.session.agentJobs,
+		sessionRouter:    svc.session.sessionRouter,
+		agentRegistry:    svc.session.agentRegistry,
+		agentRuntime:     svc.session.agentRuntime,
 
-		sessionMemoryRuntime: controlServices.session.sessionMemRuntime,
-		acpPeers:             controlServices.relay.acpPeers,
-		acpDispatcher:        controlServices.relay.acpDispatcher,
+		sessionMemoryRuntime: svc.session.sessionMemRuntime,
+		acpPeers:             svc.relay.acpPeers,
+		acpDispatcher:        svc.relay.acpDispatcher,
 
 		services: controlServices,
 
-		ops:             controlServices.session.ops,
-		cronJobs:        controlServices.session.cronJobs,
-		execApprovals:   controlServices.session.execApprovals,
-		wizards:         controlServices.session.wizards,
-		contextEngine:   controlServices.session.contextEngine,
-		mcpOps:          controlServices.handlers.mcpOps,
-		mcpAuth:         controlServices.handlers.mcpAuth,
-		nodeInvocations: controlServices.session.nodeInvocations,
-		nodePending:     controlServices.session.nodePending,
-		canvasHost:      controlServices.handlers.canvasHost,
-		channels:        controlServices.relay.channels,
-		nostrHub:        controlServices.relay.hub,
-		keyer:           controlServices.relay.keyer,
+		ops:             svc.session.ops,
+		cronJobs:        svc.session.cronJobs,
+		execApprovals:   svc.session.execApprovals,
+		wizards:         svc.session.wizards,
+		contextEngine:   svc.session.contextEngine,
+		mcpOps:          svc.handlers.mcpOps,
+		mcpAuth:         svc.handlers.mcpAuth,
+		nodeInvocations: svc.session.nodeInvocations,
+		nodePending:     svc.session.nodePending,
+		canvasHost:      svc.handlers.canvasHost,
+		channels:        svc.relay.channels,
+		nostrHub:        svc.relay.hub,
+		keyer:           svc.relay.keyer,
 	}
-	if controlServices.handlers.hooksMgr != nil {
-		deps.hooksMgr = controlServices.handlers.hooksMgr
-		deps.hooksMgrFull = controlServices.handlers.hooksMgr
+	if svc.handlers.hooksMgr != nil {
+		deps.hooksMgr = svc.handlers.hooksMgr
+		deps.hooksMgrFull = svc.handlers.hooksMgr
 	}
 	return newControlRPCHandler(deps).Handle(ctx, in)
 }
@@ -6387,11 +6407,13 @@ func handleACPMessage(
 			TurnResult:      turnResultMetadataPtr(result, procErr),
 		}
 		senderPubKey := ""
-		controlServices.relay.dmBusMu.RLock()
-		if *controlServices.relay.dmBus != nil {
-			senderPubKey = (*controlServices.relay.dmBus).PublicKey()
+		if controlServices != nil && controlServices.relay.dmBusMu != nil {
+			controlServices.relay.dmBusMu.RLock()
+			if controlServices.relay.dmBus != nil && *controlServices.relay.dmBus != nil {
+				senderPubKey = (*controlServices.relay.dmBus).PublicKey()
+			}
+			controlServices.relay.dmBusMu.RUnlock()
 		}
-		controlServices.relay.dmBusMu.RUnlock()
 
 		// Build and send result DM back to the sender.
 		var resultMsg acppkg.Message
@@ -6457,7 +6479,7 @@ func handleACPMessage(
 // path.
 func applyAgentProfileFilter(ctx context.Context, rt agent.Runtime, sessionID string, cfg state.ConfigDoc, docsRepo *state.DocsRepository) agent.Runtime {
 	agentID := ""
-	if controlServices.session.sessionRouter != nil {
+	if controlServices != nil && controlServices.session.sessionRouter != nil {
 		agentID = controlServices.session.sessionRouter.Get(sessionID)
 	}
 	return applyAgentProfileFilterForAgent(ctx, rt, agentID, cfg, docsRepo)
@@ -6468,7 +6490,7 @@ func applyAgentProfileFilter(ctx context.Context, rt agent.Runtime, sessionID st
 // signal to the restart scheduler goroutine and returns true.
 // delayMS is the caller-requested delay before restart; defaults to 500ms if zero.
 func scheduleRestartIfNeeded(old, next state.ConfigDoc, delayMS int) (pending bool) {
-	if !policy.ConfigChangedNeedsRestart(old, next) {
+	if controlServices == nil || !policy.ConfigChangedNeedsRestart(old, next) {
 		return false
 	}
 	if delayMS <= 0 {
@@ -6483,6 +6505,9 @@ func scheduleRestartIfNeeded(old, next state.ConfigDoc, delayMS int) (pending bo
 }
 
 func setControlWSEmitter(emitter gatewayws.EventEmitter) {
+	if controlServices == nil {
+		return
+	}
 	if emitter == nil {
 		emitter = gatewayws.NoopEmitter{}
 	}
@@ -6517,6 +6542,13 @@ func refreshKeyRings(providers map[string]state.ProviderEntry) {
 }
 
 func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
+	if controlServices == nil {
+		// Fallback: apply envelope codec side effect using the global.
+		if controlStateEnvelopeCodec != nil {
+			controlStateEnvelopeCodec.SetEncrypt(cfg.StorageEncryptEnabled())
+		}
+		return
+	}
 	if controlServices.handlers.stateEnvelopeCodec != nil {
 		controlServices.handlers.stateEnvelopeCodec.SetEncrypt(cfg.StorageEncryptEnabled())
 	}
@@ -6529,7 +6561,7 @@ func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
 }
 
 func persistRuntimeConfigFile(doc state.ConfigDoc) error {
-	if strings.TrimSpace(controlServices.handlers.configFilePath) == "" {
+	if controlServices == nil || strings.TrimSpace(controlServices.handlers.configFilePath) == "" {
 		return nil
 	}
 	return config.WriteConfigFile(controlServices.handlers.configFilePath, doc)
@@ -6537,7 +6569,7 @@ func persistRuntimeConfigFile(doc state.ConfigDoc) error {
 
 func providerOverrideForEntry(name string, pe state.ProviderEntry) agent.ProviderOverride {
 	apiKey := pe.APIKey
-	if controlServices.handlers.keyRings != nil {
+	if controlServices != nil && controlServices.handlers.keyRings != nil {
 		if ring := controlServices.handlers.keyRings.Get(name); ring != nil && ring.Len() > 0 {
 			if picked, ok := ring.Pick(); ok && picked != "" {
 				apiKey = picked
@@ -6654,9 +6686,15 @@ func resolveAuxiliaryModelForAgent(agCfg state.AgentConfig, useCase auxiliaryMod
 }
 
 func emitControlWSEvent(event string, payload any) {
+	if controlServices == nil || controlServices.emitterMu == nil {
+		return
+	}
 	controlServices.emitterMu.RLock()
 	emitter := controlServices.emitter
 	controlServices.emitterMu.RUnlock()
+	if emitter == nil {
+		return
+	}
 	emitter.Emit(event, payload)
 }
 
@@ -6743,6 +6781,9 @@ func preprocessAttachments(ctx context.Context, text string, atts []methods.Atta
 // sendControlDM sends a DM via the active DM transport (NIP-17 or NIP-04).
 // It is best-effort: errors are logged, not returned.
 func sendControlDM(ctx context.Context, toPubKey, text string) {
+	if controlServices == nil || controlServices.relay.dmBusMu == nil || controlServices.relay.dmBus == nil {
+		return
+	}
 	controlServices.relay.dmBusMu.RLock()
 	bus := *controlServices.relay.dmBus
 	controlServices.relay.dmBusMu.RUnlock()
