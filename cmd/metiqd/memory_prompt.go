@@ -176,7 +176,7 @@ type preparedAgentRunTurn struct {
 }
 
 func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store, scope memory.ScopedContext, workspaceDir string, sessionStore *state.SessionStore) preparedAgentRunTurn {
-	memoryContext, surfaced, sample := buildDynamicMemoryRecallContext(ctx, index, scope, req.SessionID, req.Message, workspaceDir, sessionStore)
+	memoryContext, surfaced, sample := buildDynamicMemoryRecallContext(ctx, index, scope, req.SessionID, req.Message, workspaceDir, sessionStore, 0)
 	turnContext := joinPromptSections(buildExternalSessionPromptContext(req.SessionID), memoryContext, req.Context)
 	return preparedAgentRunTurn{
 		Turn: agent.Turn{
@@ -191,12 +191,33 @@ func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memo
 	}
 }
 
-func buildDynamicMemoryRecallContext(ctx context.Context, index memory.Store, scope memory.ScopedContext, sessionID, userText, workspaceDir string, sessionStore *state.SessionStore) (string, map[string]string, *state.MemoryRecallSample) {
+func buildDynamicMemoryRecallContext(ctx context.Context, index memory.Store, scope memory.ScopedContext, sessionID, userText, workspaceDir string, sessionStore *state.SessionStore, contextWindowTokens int) (string, map[string]string, *state.MemoryRecallSample) {
 	startedAt := time.Now()
+
+	// Compute budget-proportional limits when context window is known.
+	var budget *agent.ContextBudget
+	sessionMemRunes := sessionMemoryRecallContentRunes
+	if contextWindowTokens > 0 {
+		b := agent.ComputeContextBudgetForTokens(contextWindowTokens)
+		budget = &b
+		if budgetRunes := b.SessionMemoryBudgetRunes(); budgetRunes > 0 {
+			sessionMemRunes = budgetRunes
+		}
+	}
+
 	indexedRecall := buildIndexedMemoryRecallResult(ctx, index, scope, sessionID, userText, defaultMemoryRecallLimit)
-	sessionRecall := buildSessionMemoryRecallResult(scope, workspaceDir, sessionID, sessionStore)
+	sessionRecall := buildSessionMemoryRecallResult(scope, workspaceDir, sessionID, sessionStore, sessionMemRunes)
 	fileRecall := buildFileMemoryRecallResult(scope, workspaceDir, sessionID, userText, sessionStore)
 	combined := joinPromptSections(indexedRecall.Prompt, sessionRecall.Prompt, fileRecall.Prompt)
+
+	// Enforce memory recall budget if known.
+	if budget != nil && combined != "" {
+		if enforced, truncated := agent.EnforceMemoryRecallBudget(combined, *budget); truncated {
+			log.Printf("context-budget: memory recall truncated from %d to %d chars (budget=%d)",
+				len(combined), len(enforced), budget.MemoryRecallMax)
+			combined = enforced
+		}
+	}
 	return combined, fileRecall.Surfaced, &state.MemoryRecallSample{
 		Strategy:             "deterministic",
 		QueryHash:            memoryRecallQueryHash(userText),
@@ -228,7 +249,10 @@ func assembleFileMemoryRecallContext(scope memory.ScopedContext, workspaceDir, s
 	return result.Prompt, result.Surfaced
 }
 
-func buildSessionMemoryRecallResult(scope memory.ScopedContext, workspaceDir, sessionID string, sessionStore *state.SessionStore) sessionMemoryRecallResult {
+func buildSessionMemoryRecallResult(scope memory.ScopedContext, workspaceDir, sessionID string, sessionStore *state.SessionStore, sessionMemRunes int) sessionMemoryRecallResult {
+	if sessionMemRunes <= 0 {
+		sessionMemRunes = sessionMemoryRecallContentRunes
+	}
 	startedAt := time.Now()
 	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
 		return sessionMemoryRecallResult{LatencyMS: time.Since(startedAt).Milliseconds()}
@@ -262,7 +286,7 @@ func buildSessionMemoryRecallResult(scope memory.ScopedContext, workspaceDir, se
 		log.Printf("session memory recall validation failed session=%s path=%s err=%v", sessionID, expectedPath, err)
 		return sessionMemoryRecallResult{Path: logicalPath, UpdatedAtUnix: entry.SessionMemoryUpdatedAt, LatencyMS: time.Since(startedAt).Milliseconds()}
 	}
-	content := compactSessionMemoryForRecall(validated)
+	content := compactSessionMemoryForRecall(validated, sessionMemRunes)
 	if content == "" {
 		return sessionMemoryRecallResult{Path: logicalPath, UpdatedAtUnix: entry.SessionMemoryUpdatedAt, LatencyMS: time.Since(startedAt).Milliseconds()}
 	}
@@ -277,7 +301,7 @@ func buildSessionMemoryRecallResult(scope memory.ScopedContext, workspaceDir, se
 	if entry.SessionMemoryUpdatedAt > 0 {
 		lines = append(lines, fmt.Sprintf("- updated_at_unix: %d", entry.SessionMemoryUpdatedAt))
 	}
-	if block := agent.WrapUntrustedPromptDataBlock("Session memory summary", content, sessionMemoryRecallContentRunes); block != "" {
+	if block := agent.WrapUntrustedPromptDataBlock("Session memory summary", content, sessionMemRunes); block != "" {
 		lines = append(lines, block)
 	}
 	prompt := strings.Join(lines, "\n")
@@ -307,7 +331,10 @@ func shouldSuppressSessionMemoryRecall(entry state.SessionEntry, logicalPath str
 	return false
 }
 
-func compactSessionMemoryForRecall(raw string) string {
+func compactSessionMemoryForRecall(raw string, maxRunes int) string {
+	if maxRunes <= 0 {
+		maxRunes = sessionMemoryRecallContentRunes
+	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
@@ -347,7 +374,7 @@ func compactSessionMemoryForRecall(raw string) string {
 	if len(sections) == 0 {
 		return ""
 	}
-	return truncateRunes(strings.Join(sections, "\n\n"), sessionMemoryRecallContentRunes)
+	return truncateRunes(strings.Join(sections, "\n\n"), maxRunes)
 }
 
 type indexedRecallResult struct {

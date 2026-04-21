@@ -1449,7 +1449,7 @@ func main() {
 	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string, turnTools []agent.ToolDefinition, turnExecutor agent.ToolExecutor) preparedAgentRunTurn {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, sessionRouter.Get(sessionID), "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
-		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)), sessionStore)
+		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)), sessionStore, 0)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)))
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
@@ -3316,7 +3316,7 @@ func main() {
 			}
 		}
 
-		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
+		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, combinedText, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore, 0)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		// turnHistory carries prior conversation turns for multi-turn LLM context.
 		var turnHistory []agent.ConversationMessage
@@ -4515,7 +4515,7 @@ func main() {
 
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
-		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore)
+		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), activeAgentID), sessionStore, 0)
 		turnContext = joinPromptSections(buildExternalChannelMetadataContext(configState.Get(), chID, senderID, sessionID), turnContext)
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		var chTurnHistory []agent.ConversationMessage

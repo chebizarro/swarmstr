@@ -311,7 +311,7 @@ Use canary releases for production deploys.
 		global:  []memory.IndexedMemory{{MemoryID: "g1", SessionID: "session-b", Topic: "project", Text: "deployment freeze begins Monday"}},
 	}
 
-	ctx, surfaced, sample := buildDynamicMemoryRecallContext(context.Background(), idx, memory.ScopedContext{}, "session-a", "deployment", workspaceDir, sessionStore)
+	ctx, surfaced, sample := buildDynamicMemoryRecallContext(context.Background(), idx, memory.ScopedContext{}, "session-a", "deployment", workspaceDir, sessionStore, 0)
 	if !strings.Contains(ctx, "## Relevant Memory Recall") || !strings.Contains(ctx, "## Relevant File-backed Memory") {
 		t.Fatalf("expected indexed and file recall in context, got: %s", ctx)
 	}
@@ -347,7 +347,7 @@ func TestBuildDynamicMemoryRecallContext_FileRetrievalWarningDoesNotCountAsInjec
 		t.Fatal(err)
 	}
 
-	ctx, surfaced, sample := buildDynamicMemoryRecallContext(context.Background(), &memoryStoreStub{}, memory.ScopedContext{}, "session-a", "deployment", rootDir, nil)
+	ctx, surfaced, sample := buildDynamicMemoryRecallContext(context.Background(), &memoryStoreStub{}, memory.ScopedContext{}, "session-a", "deployment", rootDir, nil, 0)
 	if !strings.Contains(ctx, "file-memory retrieval failed") {
 		t.Fatalf("expected file retrieval warning, got: %s", ctx)
 	}
