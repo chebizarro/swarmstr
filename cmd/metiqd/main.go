@@ -94,8 +94,6 @@ var (
 	commit  = "unknown"
 )
 
-// controlUpdateChecker is the shared version checker; initialised in main().
-var controlUpdateChecker *update.Checker
 
 var (
 	controlAgentRuntime agent.Runtime
@@ -108,19 +106,14 @@ var (
 	// live turns and destructive session lifecycle operations.
 	controlSessionTurns         *autoreply.SessionTurns
 	controlNodeInvocations      *nodeInvocationRegistry
-	controlNodePending          *nodepending.Store
 	controlCronJobs             *cronRegistry
 	controlSessionStore         *state.SessionStore
 	controlSessionMemoryRuntime *sessionMemoryRuntime
-	controlDocsRepo             *state.DocsRepository
-	controlMemoryStore          memory.Store
 	controlExecApprovals        *execApprovalsRegistry
 	controlWizards              *wizardRegistry
 	controlOps                  *operationsRegistry
 	controlAgentRegistry        *agent.AgentRuntimeRegistry
 	controlSessionRouter        *agent.AgentSessionRouter
-	controlChannels             *channels.Registry
-	controlPubKeyHex            string
 	controlKeyer                nostr.Keyer      // always set at startup; plain mode wraps key in a keyer
 	controlPresenceHeartbeat38  *nip38.Heartbeat // NIP-38 presence/status heartbeat; nil when disabled
 	// controlWsEmitter forwards typed events to connected WS clients.
@@ -128,10 +121,6 @@ var (
 	controlWsEmitter   gatewayws.EventEmitter = gatewayws.NoopEmitter{}
 	controlWsEmitterMu sync.RWMutex
 
-	// controlRestartCh receives a restart-delay-ms value when a config mutation
-	// requires a daemon restart.  The restart goroutine drains this channel,
-	// emits EventShutdown, waits for the specified delay, then cancels the main context.
-	controlRestartCh = make(chan int, 4)
 
 	// controlToolRegistry is the base tool registry used by agent runtimes.
 	// Stored globally so the MethodAgent handler can build profile-filtered runtimes.
@@ -145,31 +134,15 @@ var (
 	// controlConfigFilePath is the runtime config file path used for durable
 	// write-back on successful config mutations.
 	controlConfigFilePath string
-	// controlPairingConfigMu serializes pairing/device/node mutations that do
-	// read-modify-write updates against the live ConfigDoc.
-	controlPairingConfigMu sync.Mutex
 
-	// controlPluginMgr is the live Goja plugin manager; nil if no plugins are loaded.
-	controlPluginMgr *pluginmanager.GojaPluginManager
 
-	// controlHooksMgr manages bundled and managed hook event handlers.
-	controlHooksMgr *hookspkg.Manager
 
-	// controlSecrets is the runtime secrets store (dotenv + env passthrough).
-	controlSecrets *secretspkg.Store
-	// controlMCPAuth manages remote MCP OAuth lifecycle against the live runtime.
-	controlMCPAuth *mcpAuthController
+
 	// controlMCPOps manages operator-facing MCP list/get/put/remove/test/reconnect flows.
 	controlMCPOps *mcpOpsController
 
-	// controlTTSMgr is the TTS provider manager (OpenAI, Kokoro, …).
-	controlTTSMgr *ttspkg.Manager
 
-	// controlCanvas is the canvas host that stores agent-rendered UI content.
-	controlCanvas *canvas.Host
 
-	// controlMediaTranscriber is the audio transcription provider (Whisper by default).
-	controlMediaTranscriber mediapkg.Transcriber
 
 	// controlSubagents tracks spawned child agent sessions and their ancestry.
 	controlSubagents *SubagentRegistry
@@ -191,11 +164,7 @@ var (
 	// and assemble conversation history for every agent session.
 	controlContextEngine ctxengine.Engine
 
-	// controlContextEngineName tracks which engine is active (for gateway method responses).
-	controlContextEngineName string
 
-	// controlKeyRings manages multi-key rotation pools for each provider.
-	controlKeyRings *agent.ProviderKeyRingRegistry
 
 	// controlDMBus is the preferred outbound DM transport (NIP-17 first, then NIP-04).
 	// Separate concrete bus pointers are kept so relay policy changes can rebind
@@ -381,7 +350,7 @@ func main() {
 	if pkErr != nil {
 		log.Fatalf("signer: get public key: %v", pkErr)
 	}
-	controlPubKeyHex = pk.Hex()
+	pubKeyHex := pk.Hex()
 	log.Printf("signer ready pubkey=%s", pk.Hex())
 	if adminAddr == "" {
 		adminAddr = cfg.AdminListenAddr
@@ -432,14 +401,16 @@ func main() {
 
 	shutdownEmitter := newRuntimeShutdownEmitter(emitControlWSEvent)
 
-	// Restart scheduler: drains controlRestartCh, emits EventShutdown, then stops the daemon.
+	restartCh := make(chan int, 4)
+
+	// Restart scheduler: drains restartCh, emits EventShutdown, then stops the daemon.
 	// The supervisor (systemd / launchd / Docker restart policy) is expected to re-launch it.
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case delayMS := <-controlRestartCh:
+			case delayMS := <-restartCh:
 				if delayMS < 0 {
 					delayMS = 0
 				}
@@ -459,7 +430,7 @@ func main() {
 	}
 	defer store.Close()
 
-	pubkey := controlPubKeyHex
+	pubkey := pubKeyHex
 
 	codec, err := initEnvelopeCodec(controlKeyer)
 	if err != nil {
@@ -468,7 +439,6 @@ func main() {
 	controlStateEnvelopeCodec = codec
 
 	docsRepo := state.NewDocsRepositoryWithCodec(store, pubkey, codec)
-	controlDocsRepo = docsRepo
 	transcriptRepo := state.NewTranscriptRepositoryWithCodec(store, pubkey, codec)
 	memoryRepo := state.NewMemoryRepositoryWithCodec(store, pubkey, codec)
 
@@ -490,7 +460,6 @@ func main() {
 		}
 	}()
 	var memoryIndex memory.Store = baseMemoryIndex
-	controlMemoryStore = memoryIndex
 
 	// Social planner: manages social action plans, rate limits, and history.
 	socialPlanner := social.NewPlanner(social.DefaultRateLimitConfig())
@@ -1000,8 +969,8 @@ func main() {
 	// image: analyse an image via the configured vision-capable model.
 	tools.Register("image", toolbuiltin.ImageTool(agentRuntime, toolbuiltin.ImageOpts{}))
 
-	// tts: convert text to speech — registered after controlTTSMgr is set up.
-	// See the deferred registration below (after controlTTSMgr = ttspkg.NewManager()).
+	// tts: convert text to speech — registered after ttsMgr is set up.
+	// See the deferred registration below (after ttsMgr = ttspkg.NewManager()).
 	runtimeCfg, err := ensureRuntimeConfig(ctx, docsRepo, cfg.Relays, pubkey)
 	if err != nil {
 		log.Fatalf("load runtime config: %v", err)
@@ -1090,10 +1059,10 @@ func main() {
 		} else {
 			log.Printf("memory backend: %s path=%q", memoryBackendName, memoryBackendPath)
 			memoryIndex = memory.NewHybridIndex(baseMemoryIndex, be)
-			controlMemoryStore = memoryIndex
 		}
 	}
 
+	var contextEngineName string
 	// Initialise pluggable context engine from config (Extra["context_engine"]).
 	// The engine ingests and assembles conversation history for every agent session.
 	{
@@ -1112,7 +1081,7 @@ func main() {
 			engineName = "windowed"
 		}
 		controlContextEngine = eng
-		controlContextEngineName = engineName
+		contextEngineName = engineName
 		log.Printf("context engine: %s", engineName)
 	}
 
@@ -1133,7 +1102,6 @@ func main() {
 	// Load Goja (JS) plugins from config and register their tools.
 	pluginHost := pluginmanager.BuildHost(configState, agentRuntime)
 	pluginMgr := pluginmanager.New(pluginHost)
-	controlPluginMgr = pluginMgr
 	if loadErr := pluginMgr.Load(ctx, configState.Get()); loadErr != nil {
 		log.Printf("plugin manager load warning: %v", loadErr)
 	}
@@ -1174,7 +1142,6 @@ func main() {
 	// Attach shell handlers for any managed/workspace hooks that have handler.sh
 	// but no bundled Go implementation.
 	hookspkg.AttachShellHandlers(hooksMgr)
-	controlHooksMgr = hooksMgr
 
 	// ── Secrets store ─────────────────────────────────────────────────────────
 	secretsStore := secretspkg.NewStore(nil) // uses ~/.metiq/.env by default
@@ -1183,9 +1150,7 @@ func main() {
 			log.Printf("secrets: %s", w)
 		}
 	}
-	controlSecrets = secretsStore
 	mcpAuthController := newMCPAuthController(&mcpManager, tools, secretsStore, func() state.ConfigDoc { return configState.Get() })
-	controlMCPAuth = mcpAuthController
 	controlMCPOps = newMCPOpsController(&mcpManager, tools, mcpAuthController, configState, docsRepo)
 	mcpAuthController.InstallOnManager(mcpManager)
 	{
@@ -1194,13 +1159,13 @@ func main() {
 	}
 
 	// TTS manager — initialise before the server starts so method handlers have it.
-	controlTTSMgr = ttspkg.NewManager()
+	ttsMgr := ttspkg.NewManager()
 	// Register the tts agent tool now that the manager is initialised.
-	tools.Register("tts", toolbuiltin.TTSTool(controlTTSMgr))
+	tools.Register("tts", toolbuiltin.TTSTool(ttsMgr))
 
 	// Canvas host — shared store for agent-rendered UI content.
-	controlCanvas = canvas.NewHost()
-	controlCanvas.Subscribe(func(ev canvas.UpdateEvent) {
+	canvasHost := canvas.NewHost()
+	canvasHost.Subscribe(func(ev canvas.UpdateEvent) {
 		emitControlWSEvent(gatewayws.EventCanvasUpdate, gatewayws.CanvasUpdatePayload{
 			TS:          time.Now().UnixMilli(),
 			CanvasID:    ev.CanvasID,
@@ -1215,7 +1180,7 @@ func main() {
 		if id == "" || contentType == "" {
 			return "", fmt.Errorf("canvas_update: canvas_id and content_type are required")
 		}
-		if err := controlCanvas.UpdateCanvas(id, contentType, data); err != nil {
+		if err := canvasHost.UpdateCanvas(id, contentType, data); err != nil {
 			return "", fmt.Errorf("canvas_update: %w", err)
 		}
 		b, _ := json.Marshal(map[string]any{"ok": true, "canvas_id": id, "content_type": contentType})
@@ -1225,13 +1190,14 @@ func main() {
 	// Media transcriber — auto-selected from configured API keys, or a specific
 	// backend from the config's media_understanding.transcriber field.
 	// Priority: config override → OPENAI_API_KEY → GROQ_API_KEY → DEEPGRAM_API_KEY.
+	var mediaTranscriber mediapkg.Transcriber
 	if t := configuredTranscriber(configState.Get()); t != nil {
-		controlMediaTranscriber = t
+		mediaTranscriber = t
 	} else {
-		controlMediaTranscriber = mediapkg.DefaultTranscriber()
+		mediaTranscriber = mediapkg.DefaultTranscriber()
 	}
-	if controlMediaTranscriber != nil {
-		log.Printf("media transcriber: configured (type=%T)", controlMediaTranscriber)
+	if mediaTranscriber != nil {
+		log.Printf("media transcriber: configured (type=%T)", mediaTranscriber)
 	} else {
 		log.Printf("media transcriber: none configured (audio attachments will not be transcribed)")
 	}
@@ -1283,7 +1249,6 @@ func main() {
 	controlAgentRuntime = agentRuntime
 	controlAgentJobs = agentJobs
 	controlNodeInvocations = nodeInvocations
-	controlNodePending = nodePending
 	controlCronJobs = cronJobs
 	// Load persisted cron jobs from the state store so they survive restarts.
 	if loadErr := cronJobs.Load(ctx, docsRepo); loadErr != nil {
@@ -1297,7 +1262,6 @@ func main() {
 	controlExecApprovals = execApprovals
 	controlWizards = wizards
 	controlSubagents = subagents
-	controlKeyRings = keyRings
 	controlOps = ops
 	ops.SyncHeartbeatConfig(configState.Get().Heartbeat)
 
@@ -1428,7 +1392,7 @@ func main() {
 	if u, ok := configState.Get().Extra["update_check_url"].(string); ok {
 		updateCheckURL = strings.TrimSpace(u)
 	}
-	controlUpdateChecker = update.NewChecker(version, updateCheckURL)
+	updateChecker := update.NewChecker(version, updateCheckURL)
 
 	// Multi-agent runtime registry: maps agent IDs to their Runtime instances.
 	// "main" / "" always resolves to agentRuntime (the default).
@@ -1439,7 +1403,6 @@ func main() {
 
 	// Channel registry for NIP-29 group chat and future channel types.
 	channelReg := channels.NewRegistry()
-	controlChannels = channelReg
 	defer channelReg.CloseAll()
 	defer func() {
 		if controlHub != nil {
@@ -2571,7 +2534,7 @@ func main() {
 	// It returns the response string for the command.
 	rotateSession := func(cmdCtx context.Context, sessionID, reason string) string {
 		isACP := strings.HasPrefix(sessionID, "acp:")
-		if err := rotateSessionCoordinated(cmdCtx, sessionID, reason, isACP, chatCancels, sessionRouter, &seenChannelSessions, controlHooksMgr, transcriptRepo, sessionStore, configState.Get()); err != nil {
+		if err := rotateSessionCoordinated(cmdCtx, sessionID, reason, isACP, chatCancels, sessionRouter, &seenChannelSessions, hooksMgr, transcriptRepo, sessionStore, configState.Get()); err != nil {
 			log.Printf("session rotation warning session=%s reason=%s err=%v", sessionID, reason, err)
 		}
 
@@ -3655,7 +3618,7 @@ func main() {
 	if raw, loadErr := docsRepo.GetWatches(ctx); loadErr != nil {
 		log.Printf("watches load warning: %v", loadErr)
 	} else {
-		specs, bootstrapped, specErr := loadOrDefaultWatchSpecs(raw, controlPubKeyHex, controlPubKeyHex, time.Now())
+		specs, bootstrapped, specErr := loadOrDefaultWatchSpecs(raw, pubKeyHex, pubKeyHex, time.Now())
 		if specErr != nil {
 			log.Printf("watches load unmarshal warning: %v", specErr)
 		} else if n := watchRegistry.Restore(watchDeliveryCtx, nostrToolOpts, specs, watchDeliver); n > 0 {
@@ -3995,7 +3958,7 @@ func main() {
 			acpPeers:            controlACPPeers,
 			acpDispatcher:       controlACPDispatcher,
 			hub:                 controlHub,
-			channels:            controlChannels,
+			channels:            channelReg,
 			presenceHeartbeat38: controlPresenceHeartbeat38,
 			rpcCorrelator:       controlRPCCorrelator,
 		},
@@ -4008,9 +3971,9 @@ func main() {
 			sessionMemRuntime: controlSessionMemoryRuntime,
 			sessionRouter:     controlSessionRouter,
 			toolRegistry:      controlToolRegistry,
-			memoryStore:       controlMemoryStore,
+			memoryStore:       memoryIndex,
 			contextEngine:     controlContextEngine,
-			contextEngineName: controlContextEngineName,
+			contextEngineName: contextEngineName,
 			sessionStore:      controlSessionStore,
 			agentJobs:         controlAgentJobs,
 			subagents:         controlSubagents,
@@ -4019,28 +3982,28 @@ func main() {
 			execApprovals:     controlExecApprovals,
 			wizards:           controlWizards,
 			nodeInvocations:   controlNodeInvocations,
-			nodePending:       controlNodePending,
+			nodePending:       nodePending,
 		},
 		handlers: handlerServices{
-			ttsManager:         controlTTSMgr,
-			updateChecker:      controlUpdateChecker,
-			secretsStore:       controlSecrets,
-			pairingConfigMu:    &controlPairingConfigMu,
-			hooksMgr:           controlHooksMgr,
-			pluginMgr:          controlPluginMgr,
+			ttsManager:         ttsMgr,
+			updateChecker:      updateChecker,
+			secretsStore:       secretsStore,
+			pairingConfigMu:    &sync.Mutex{},
+			hooksMgr:           hooksMgr,
+			pluginMgr:          pluginMgr,
 			mcpOps:             controlMCPOps,
-			mcpAuth:            controlMCPAuth,
-			canvasHost:         controlCanvas,
-			mediaTranscriber:   controlMediaTranscriber,
-			keyRings:           controlKeyRings,
+			mcpAuth:            mcpAuthController,
+			canvasHost:         canvasHost,
+			mediaTranscriber:   mediaTranscriber,
+			keyRings:           keyRings,
 			stateEnvelopeCodec: controlStateEnvelopeCodec,
 			configFilePath:     controlConfigFilePath,
 			cronExecutorMu:     &controlCronExecutorMu,
 		},
 		runtimeConfig: controlRuntimeConfig,
-		docsRepo:      controlDocsRepo,
-		pubKeyHex:     controlPubKeyHex,
-		restartCh:     controlRestartCh,
+		docsRepo:      docsRepo,
+		pubKeyHex:     pubKeyHex,
+		restartCh:     restartCh,
 	}
 
 	// ── NIP-51 allowlist watcher + agent list sync ─────────────────────────────
