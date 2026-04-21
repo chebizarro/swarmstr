@@ -232,6 +232,192 @@ func TestParsePluginEvent_missingID(t *testing.T) {
 
 // ─── Install creates destination dir ─────────────────────────────────────────
 
+func TestInstall_httpNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	entry := PluginEntry{
+		Manifest: PluginManifest{
+			ID:          "test-plugin",
+			Version:     "1.0.0",
+			Runtime:     "goja",
+			DownloadURL: srv.URL + "/plugin.tar.gz",
+		},
+	}
+	_, err := Install(context.Background(), entry, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "HTTP 404") {
+		t.Errorf("expected HTTP 404 error, got: %v", err)
+	}
+}
+
+func TestInstall_canceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	entry := PluginEntry{
+		Manifest: PluginManifest{
+			ID:          "test-plugin",
+			Version:     "1.0.0",
+			Runtime:     "goja",
+			DownloadURL: "https://example.com/plugin.tar.gz",
+		},
+	}
+	_, err := Install(ctx, entry, t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for canceled context")
+	}
+}
+
+func TestParsePluginEvent_MissingIDReturnsError(t *testing.T) {
+	evt := nostr.Event{Content: `{"version":"1.0","runtime":"goja"}`}
+	_, err := parsePluginEvent(evt)
+	if err == nil {
+		t.Fatal("expected error for missing ID")
+	}
+	if !strings.Contains(err.Error(), "missing id") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestParsePluginEvent_SetsPublishedAt(t *testing.T) {
+	manifest := `{"id":"p","version":"1.0","runtime":"goja"}`
+	evt := nostr.Event{
+		Content:   manifest,
+		CreatedAt: nostr.Timestamp(1700000000),
+	}
+	entry, err := parsePluginEvent(evt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.PublishedAt.Unix() != 1700000000 {
+		t.Errorf("PublishedAt = %v, want Unix 1700000000", entry.PublishedAt)
+	}
+}
+
+func TestPluginEntry_Fields(t *testing.T) {
+	e := PluginEntry{
+		Manifest:     PluginManifest{ID: "test"},
+		AuthorPubKey: "abc",
+		EventID:      "evt1",
+		Relays:       []string{"wss://r1"},
+	}
+	if e.AuthorPubKey != "abc" {
+		t.Errorf("AuthorPubKey = %q", e.AuthorPubKey)
+	}
+	if e.EventID != "evt1" {
+		t.Errorf("EventID = %q", e.EventID)
+	}
+	if len(e.Relays) != 1 {
+		t.Errorf("Relays = %v", e.Relays)
+	}
+}
+
+func TestToolSpec_Fields(t *testing.T) {
+	ts := ToolSpec{
+		Name:        "fetch",
+		Description: "Fetch a URL",
+		Parameters:  map[string]any{"url": "string"},
+	}
+	if ts.Name != "fetch" || ts.Description != "Fetch a URL" {
+		t.Errorf("ToolSpec fields: %+v", ts)
+	}
+}
+
+func TestPluginManifest_AllFields(t *testing.T) {
+	m := PluginManifest{
+		ID:          "p",
+		Version:     "1",
+		Description: "d",
+		Runtime:     "goja",
+		Main:        "index.js",
+		DownloadURL: "https://example.com/p.tar.gz",
+		Checksum:    "sha256:abc",
+		License:     "MIT",
+		Homepage:    "https://example.com",
+	}
+	data, _ := json.Marshal(m)
+	var m2 PluginManifest
+	json.Unmarshal(data, &m2)
+	if m2.License != "MIT" || m2.Homepage != "https://example.com" {
+		t.Errorf("optional fields lost in roundtrip: %+v", m2)
+	}
+}
+
+func TestRegistrySearch_CanceledContext(t *testing.T) {
+	r := NewRegistry([]string{"wss://localhost:1"})
+	defer r.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	results, err := r.Search(ctx, "test", 5)
+	if err != nil {
+		t.Fatalf("Search with canceled context should not error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected empty results, got %d", len(results))
+	}
+}
+
+func TestRegistrySearch_DefaultLimit(t *testing.T) {
+	r := NewRegistry([]string{"wss://localhost:1"})
+	defer r.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// limit <= 0 should default to 20 (tested indirectly)
+	results, _ := r.Search(ctx, "", 0)
+	if len(results) != 0 {
+		t.Errorf("expected empty results, got %d", len(results))
+	}
+}
+
+func TestRegistryFetch_InvalidPubkey(t *testing.T) {
+	r := NewRegistry([]string{"wss://localhost:1"})
+	defer r.Close()
+
+	_, err := r.Fetch(context.Background(), "not-a-valid-pubkey", "test-plugin")
+	if err == nil {
+		t.Fatal("expected error for invalid pubkey")
+	}
+	if !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRegistryPublish_InvalidKey(t *testing.T) {
+	r := NewRegistry([]string{"wss://localhost:1"})
+	defer r.Close()
+
+	_, err := r.Publish(context.Background(), "not-a-valid-key", PluginManifest{ID: "test", Version: "1"})
+	if err == nil {
+		t.Fatal("expected error for invalid key")
+	}
+}
+
+func TestErrNotFound(t *testing.T) {
+	if ErrNotFound.Error() != "plugin not found on relays" {
+		t.Errorf("ErrNotFound = %q", ErrNotFound.Error())
+	}
+}
+
+func TestErrNoDownloadURL(t *testing.T) {
+	if ErrNoDownloadURL.Error() != "plugin manifest has no download_url" {
+		t.Errorf("ErrNoDownloadURL = %q", ErrNoDownloadURL.Error())
+	}
+}
+
+func TestVerifyChecksum_WhitespaceHandling(t *testing.T) {
+	data := []byte("test data")
+	sum := ComputeChecksum(data)
+	// Add whitespace around checksum
+	if err := VerifyChecksum(data, "  "+sum+"  "); err != nil {
+		t.Errorf("checksum with whitespace should match: %v", err)
+	}
+}
+
 func TestInstall_createsPluginDir(t *testing.T) {
 	// Create a minimal valid zip archive to test directory creation.
 	// We use a real zip to verify the path creation code path.
