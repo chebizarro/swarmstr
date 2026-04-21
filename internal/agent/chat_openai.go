@@ -25,6 +25,16 @@ type OpenAIChatProviderChat struct {
 	APIKey  string
 	Model   string
 	Client  *http.Client
+	// ContextWindowTokens is passed as num_ctx to Ollama-compatible endpoints
+	// to override the default 2048 context window. Zero means use provider default.
+	ContextWindowTokens int
+	// KeepAlive sets how long (in Go duration format, e.g. "30m") Ollama keeps
+	// the model loaded in memory after the request. Empty means use server default.
+	KeepAlive string
+	// Store enables OpenAI's stored completions feature. When true, identical
+	// requests may return cached responses. Opt-in because it has data retention
+	// implications (stored completions are retained by OpenAI for 30 days).
+	Store bool
 }
 
 // Chat implements ChatProvider.
@@ -109,14 +119,29 @@ func (p *OpenAIChatProviderChat) Chat(ctx context.Context, messages []LLMMessage
 		Model:    shared.ChatModel(model),
 		Messages: sdkMsgs,
 	}
+	// Enable stored completions for OpenAI response caching when configured.
+	if p.Store {
+		params.Store = openai.Bool(true)
+	}
 
 	// Convert tool definitions.
 	if len(tools) > 0 {
 		params.Tools = translateToolsToOpenAISDK(tools)
 	}
 
+	// Ollama-specific: inject num_ctx and keep_alive via extra body params.
+	var extraOpts []option.RequestOption
+	if isOllamaEndpoint(baseURL) {
+		if p.ContextWindowTokens > 0 {
+			extraOpts = append(extraOpts, option.WithJSONSet("options.num_ctx", p.ContextWindowTokens))
+		}
+		if p.KeepAlive != "" {
+			extraOpts = append(extraOpts, option.WithJSONSet("keep_alive", p.KeepAlive))
+		}
+	}
+
 	// Make the API call.
-	completion, err := client.Chat.Completions.New(ctx, params)
+	completion, err := client.Chat.Completions.New(ctx, params, extraOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("openai: %w", err)
 	}
@@ -183,6 +208,24 @@ func translateToolsToOpenAISDK(defs []ToolDefinition) []openai.ChatCompletionToo
 	return out
 }
 
+// isOllamaEndpoint returns true if the base URL points to an Ollama server.
+// Ollama typically runs on localhost:11434, but can be overridden via
+// OLLAMA_BASE_URL. We detect it by checking for common Ollama host patterns.
+func isOllamaEndpoint(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Host)
+	// Default Ollama port.
+	if strings.HasSuffix(host, ":11434") {
+		return true
+	}
+	// Also check the hostname-only form (e.g. "ollama" in Docker).
+	hostname := strings.ToLower(u.Hostname())
+	return hostname == "ollama" || strings.HasPrefix(hostname, "ollama.")
+}
+
 // parseOpenAISDKResponse converts an SDK ChatCompletion to LLMResponse.
 func parseOpenAISDKResponse(resp *openai.ChatCompletion) *LLMResponse {
 	if len(resp.Choices) == 0 {
@@ -210,8 +253,9 @@ func parseOpenAISDKResponse(resp *openai.ChatCompletion) *LLMResponse {
 		Content:   strings.TrimSpace(choice.Message.Content),
 		ToolCalls: toolCalls,
 		Usage: ProviderUsage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
+			InputTokens:     resp.Usage.PromptTokens,
+			OutputTokens:    resp.Usage.CompletionTokens,
+			CacheReadTokens: resp.Usage.PromptTokensDetails.CachedTokens,
 		},
 		NeedsToolResults: choice.FinishReason == "tool_calls",
 	}

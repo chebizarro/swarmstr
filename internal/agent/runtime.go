@@ -111,8 +111,10 @@ type TurnResult struct {
 
 // TurnUsage holds provider-reported token counts for a single turn.
 type TurnUsage struct {
-	InputTokens  int64 `json:"input_tokens,omitempty"`
-	OutputTokens int64 `json:"output_tokens,omitempty"`
+	InputTokens         int64 `json:"input_tokens,omitempty"`
+	OutputTokens        int64 `json:"output_tokens,omitempty"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 }
 
 // TurnTelemetry is the minimal structured runtime snapshot for a completed or
@@ -418,7 +420,12 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult, t
 		Outcome:      gen.Outcome,
 		StopReason:   gen.StopReason,
 		HistoryDelta: gen.HistoryDelta,
-		Usage:        TurnUsage{InputTokens: gen.Usage.InputTokens, OutputTokens: gen.Usage.OutputTokens},
+		Usage: TurnUsage{
+			InputTokens:         gen.Usage.InputTokens,
+			OutputTokens:        gen.Usage.OutputTokens,
+			CacheReadTokens:     gen.Usage.CacheReadTokens,
+			CacheCreationTokens: gen.Usage.CacheCreationTokens,
+		},
 	}
 	for _, call := range gen.ToolCalls {
 		trace := ToolTrace{Call: call}

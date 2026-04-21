@@ -106,12 +106,19 @@ func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, to
 		}
 	}
 
+	geminiTools := toolDefsToGemini(tools)
+
+	// Attempt Gemini CachedContent for the system instruction + tools.
+	// When a cached content resource is active, we omit systemInstruction and
+	// tools from the request body (the server uses the cached versions).
 	req := geminiRequest{
-		SystemInstruction: systemInstruction,
-		Contents:          contents,
+		Contents: contents,
 	}
-	if len(tools) > 0 {
-		req.Tools = toolDefsToGemini(tools)
+	if cachedName := resolveGeminiCache(ctx, apiKey, model, systemInstruction, geminiTools, p.Client); cachedName != "" {
+		req.CachedContent = cachedName
+	} else {
+		req.SystemInstruction = systemInstruction
+		req.Tools = geminiTools
 	}
 
 	body, err := json.Marshal(req)
@@ -176,9 +183,17 @@ func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, to
 	// If there are function calls, the model wants tool results.
 	needsToolResults := len(toolCalls) > 0
 
+	var usage ProviderUsage
+	if out.UsageMetadata != nil {
+		usage.InputTokens = out.UsageMetadata.PromptTokenCount
+		usage.OutputTokens = out.UsageMetadata.CandidatesTokenCount
+		usage.CacheReadTokens = out.UsageMetadata.CachedContentTokenCount
+	}
+
 	return &LLMResponse{
 		Content:          text,
 		ToolCalls:        toolCalls,
+		Usage:            usage,
 		NeedsToolResults: needsToolResults,
 	}, nil
 }

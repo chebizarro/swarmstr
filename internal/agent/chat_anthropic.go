@@ -339,6 +339,8 @@ func parseAnthropicSDKResponse(resp *anthropic.Message) *LLMResponse {
 	var usage ProviderUsage
 	usage.InputTokens = int64(resp.Usage.InputTokens)
 	usage.OutputTokens = int64(resp.Usage.OutputTokens)
+	usage.CacheReadTokens = int64(resp.Usage.CacheReadInputTokens)
+	usage.CacheCreationTokens = int64(resp.Usage.CacheCreationInputTokens)
 
 	return &LLMResponse{
 		Content:          content.String(),

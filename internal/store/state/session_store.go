@@ -318,12 +318,15 @@ func (s *SessionStore) Delete(key string) error {
 }
 
 // AddTokens atomically adds the given token counts to the entry for key.
-func (s *SessionStore) AddTokens(key string, input, output int64) error {
+// cacheRead and cacheWrite track provider prompt-cache hit/creation tokens.
+func (s *SessionStore) AddTokens(key string, input, output, cacheRead, cacheWrite int64) error {
 	s.mu.Lock()
 	e := s.entries[key]
 	e.InputTokens += input
 	e.OutputTokens += output
 	e.TotalTokens += input + output
+	e.CacheRead += cacheRead
+	e.CacheWrite += cacheWrite
 	e.UpdatedAt = time.Now().UTC()
 	s.entries[key] = e
 	s.mu.Unlock()

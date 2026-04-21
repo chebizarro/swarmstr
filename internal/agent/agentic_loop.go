@@ -298,13 +298,20 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 					HistoryDelta: historyDelta,
 					Outcome:      outcome,
 					StopReason:   stopReason,
-					Usage:        TurnUsage{InputTokens: totalUsage.InputTokens, OutputTokens: totalUsage.OutputTokens},
+					Usage: TurnUsage{
+						InputTokens:         totalUsage.InputTokens,
+						OutputTokens:        totalUsage.OutputTokens,
+						CacheReadTokens:     totalUsage.CacheReadTokens,
+						CacheCreationTokens: totalUsage.CacheCreationTokens,
+					},
 				},
 			}
 		}
 
 		totalUsage.InputTokens += resp.Usage.InputTokens
 		totalUsage.OutputTokens += resp.Usage.OutputTokens
+		totalUsage.CacheReadTokens += resp.Usage.CacheReadTokens
+		totalUsage.CacheCreationTokens += resp.Usage.CacheCreationTokens
 		calls = resp.ToolCalls
 
 		// If the model produced text (no more tool calls), we're done.
@@ -628,8 +635,10 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 	}
 
 	summaryResp.Usage = ProviderUsage{
-		InputTokens:  usage.InputTokens + summaryResp.Usage.InputTokens,
-		OutputTokens: usage.OutputTokens + summaryResp.Usage.OutputTokens,
+		InputTokens:         usage.InputTokens + summaryResp.Usage.InputTokens,
+		OutputTokens:        usage.OutputTokens + summaryResp.Usage.OutputTokens,
+		CacheReadTokens:     usage.CacheReadTokens + summaryResp.Usage.CacheReadTokens,
+		CacheCreationTokens: usage.CacheCreationTokens + summaryResp.Usage.CacheCreationTokens,
 	}
 	return summaryResp, summaryDelta
 }
@@ -708,5 +717,17 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 	if result.Text == "" && len(result.ToolCalls) == 0 {
 		return ProviderResult{}, fmt.Errorf("%s returned no content", logPrefix)
 	}
+
+	// Log cache hit ratio when cache tokens are reported by the provider.
+	if u := result.Usage; u.CacheReadTokens > 0 || u.CacheCreationTokens > 0 {
+		total := u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens
+		var pct float64
+		if total > 0 {
+			pct = float64(u.CacheReadTokens) / float64(total) * 100
+		}
+		log.Printf("%s: cache tokens read=%d created=%d (%.0f%% hit rate of %d total input)",
+			logPrefix, u.CacheReadTokens, u.CacheCreationTokens, pct, total)
+	}
+
 	return result, nil
 }
