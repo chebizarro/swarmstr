@@ -278,6 +278,23 @@ func TestBuildResult_ToolErrorSummarised(t *testing.T) {
 	}
 }
 
+func TestIsEchoRuntime(t *testing.T) {
+	echoRT, _ := NewProviderRuntime(EchoProvider{}, nil)
+	if !IsEchoRuntime(echoRT) {
+		t.Fatal("expected EchoProvider runtime to be detected")
+	}
+
+	realRT, _ := NewProviderRuntime(&OpenAIChatProvider{Model: "gpt-4o"}, nil)
+	if IsEchoRuntime(realRT) {
+		t.Fatal("expected non-echo runtime to return false")
+	}
+
+	// nil runtime
+	if IsEchoRuntime(nil) {
+		t.Fatal("nil runtime should return false")
+	}
+}
+
 type toolOnlyProviderNamed struct{ name string }
 
 func (p *toolOnlyProviderNamed) Generate(_ context.Context, _ Turn) (ProviderResult, error) {

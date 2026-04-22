@@ -71,6 +71,18 @@ func (EchoProvider) Generate(_ context.Context, turn Turn) (ProviderResult, erro
 	return ProviderResult{Text: "ack: " + turn.UserText}, nil
 }
 
+// IsEchoRuntime reports whether rt is a ProviderRuntime backed by EchoProvider.
+// Used after config loading to detect the startup stub and auto-promote a real
+// agent as the default runtime.
+func IsEchoRuntime(rt Runtime) bool {
+	pr, ok := rt.(*ProviderRuntime)
+	if !ok {
+		return false
+	}
+	_, echo := pr.provider.(EchoProvider)
+	return echo
+}
+
 type HTTPProvider struct {
 	URL    string
 	APIKey string
