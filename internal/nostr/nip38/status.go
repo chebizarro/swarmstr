@@ -141,7 +141,11 @@ func (h *Heartbeat) SetUpdating(ctx context.Context, note string) {
 }
 
 // Stop publishes an offline status and shuts down the heartbeat.
+// Safe to call on a nil receiver (no-op).
 func (h *Heartbeat) Stop() {
+	if h == nil {
+		return
+	}
 	if h.opts.Enabled {
 		h.publish(h.ctx, StatusOffline, "", 0)
 	}

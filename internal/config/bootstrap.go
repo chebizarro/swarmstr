@@ -48,10 +48,14 @@ func loadBootstrap(path string, allowControlSigner bool) (BootstrapConfig, error
 		return BootstrapConfig{}, fmt.Errorf("parse bootstrap config: %w", err)
 	}
 	if len(cfg.Relays) == 0 {
-		return BootstrapConfig{}, errors.New("bootstrap config requires at least one relay")
+		return BootstrapConfig{}, errors.New("bootstrap config requires at least one relay — " +
+			"relays are needed at startup to connect the state store and DM transport before the main config loads; " +
+			"add e.g. \"relays\": [\"wss://relay.damus.io\"] to your bootstrap.json")
 	}
 	if cfg.PrivateKey == "" && cfg.SignerURL == "" && !(allowControlSigner && strings.TrimSpace(cfg.ControlSignerURL) != "") {
-		return BootstrapConfig{}, errors.New("bootstrap config requires private_key or signer_url")
+		return BootstrapConfig{}, errors.New("bootstrap config requires private_key or signer_url — " +
+			"private_key accepts 64-char hex, nsec1... bech32, or $ENV_VAR; " +
+			"signer_url accepts bunker://, env://VAR_NAME, or file:///path")
 	}
 	if target := strings.TrimSpace(cfg.ControlTargetPubKey); target != "" {
 		if _, err := nostruntime.ParsePubKey(target); err != nil {

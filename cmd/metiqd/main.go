@@ -4404,7 +4404,10 @@ func main() {
 				log.Printf("warn: NIP-38 presence/status init failed: %v", hbErr)
 			} else {
 				controlPresenceHeartbeat38 = hb
-				defer controlServices.relay.presenceHeartbeat38.Stop()
+				if controlServices != nil {
+					controlServices.relay.presenceHeartbeat38 = hb
+				}
+				defer hb.Stop()
 				log.Printf("NIP-38 presence/status active (interval=%s)", hbInterval)
 			}
 		} else if !hbEnabled {
