@@ -115,7 +115,8 @@ var (
 	controlAgentRegistry        *agent.AgentRuntimeRegistry
 	controlSessionRouter        *agent.AgentSessionRouter
 	controlKeyer                nostr.Keyer      // always set at startup; plain mode wraps key in a keyer
-	controlPresenceHeartbeat38  *nip38.Heartbeat // NIP-38 presence/status heartbeat; nil when disabled
+	controlPresenceHeartbeat38  *nip38.Heartbeat               // NIP-38 presence/status heartbeat; nil when disabled
+	controlProfilePublisher     *nostruntime.ProfilePublisher  // routine kind:0 profile publisher; nil when no profile configured
 	// controlWsEmitter forwards typed events to connected WS clients.
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
 	controlWsEmitter      gatewayws.EventEmitter = gatewayws.NoopEmitter{}
@@ -4418,6 +4419,41 @@ func main() {
 		_ = controlServices.relay.presenceHeartbeat38 // referenced in dmRunAgentTurn closure
 	}
 
+	// ── Profile Publisher (kind:0) ──────────────────────────────────────────────
+	// Reads extra.profile from config and publishes kind:0 metadata at startup,
+	// on config change, and periodically (default 6h) to keep relays in sync.
+	{
+		currentCfg := configState.Get()
+		profileData := nostruntime.ExtractProfileFromExtra(currentCfg.Extra)
+		profileKeyer := controlServices.relay.keyer
+		allRelays := nostruntime.MergeRelayLists(currentCfg.Relays.Read, currentCfg.Relays.Write)
+		if len(allRelays) == 0 {
+			allRelays = cfg.Relays // fall back to bootstrap relays
+		}
+		if profileKeyer != nil && len(profileData) > 0 && len(allRelays) > 0 {
+			pp, ppErr := nostruntime.NewProfilePublisher(nostruntime.ProfilePublisherOptions{
+				Keyer:   profileKeyer,
+				Relays:  allRelays,
+				Profile: profileData,
+				OnPublished: func(eventID string, relayCount int) {
+					log.Printf("profile-publisher: kind:0 published event=%s relays=%d", eventID, relayCount)
+				},
+			})
+			if ppErr != nil {
+				log.Printf("warn: profile publisher init failed: %v", ppErr)
+			} else {
+				controlProfilePublisher = pp
+				pp.Start(ctx)
+				defer pp.Stop()
+				log.Printf("profile-publisher: active (fields=%d, relays=%d)", len(profileData), len(allRelays))
+			}
+		} else if len(profileData) == 0 {
+			log.Printf("profile-publisher: skipped (no extra.profile in config)")
+		} else {
+			log.Printf("profile-publisher: skipped (no signing key or relays)")
+		}
+	}
+
 	// ── NIP-90 DVM handler ─────────────────────────────────────────────────────
 	// Enabled when extra.dvm.enabled = true in config.
 	if dvmExtra, ok := configState.Get().Extra["dvm"].(map[string]any); ok {
@@ -6595,6 +6631,17 @@ func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
 	applyCapabilityRuntimeState(cfg)
 	if controlServices.session.ops != nil {
 		controlServices.session.ops.SyncHeartbeatConfig(cfg.Heartbeat)
+	}
+	// Update profile publisher with any changes to extra.profile.
+	if controlProfilePublisher != nil {
+		if newProfile := nostruntime.ExtractProfileFromExtra(cfg.Extra); newProfile != nil {
+			controlProfilePublisher.UpdateProfile(newProfile)
+		}
+		// Also update relay list in case relays changed.
+		allRelays := nostruntime.MergeRelayLists(cfg.Relays.Read, cfg.Relays.Write)
+		if len(allRelays) > 0 {
+			controlProfilePublisher.UpdateRelays(allRelays)
+		}
 	}
 }
 
