@@ -60,6 +60,12 @@ type ContextBudget struct {
 	// dynamic context string (memory recall + runtime dynamic additions).
 	DynamicContextMax int
 
+	// MaxToolCount is the maximum number of tool definitions that should be
+	// sent inline with an API request. Scales cubically with context window
+	// to aggressively limit tools for small models where JSON schema
+	// tokenization overhead dominates.
+	MaxToolCount int
+
 	// CompactionThreshold is the fraction of the effective window at which
 	// micro-compaction is triggered in the agentic loop. Smaller windows
 	// compact earlier (0.70) to preserve headroom; larger windows can wait
@@ -123,13 +129,22 @@ func ComputeContextBudget(profile ModelContextProfile) ContextBudget {
 	b.BootstrapTotalMax = clampInt(effectiveChars*32/100, 1_536, 150_000)
 	b.BootstrapFileMax = clampInt(b.BootstrapTotalMax/3, 512, 20_000)
 	b.SkillsTotalMax = clampInt(effectiveChars*7/100, 800, 30_000)
-	b.ToolDefsMax = clampInt(effectiveChars*13/100, 1_500, 50_000)
+	// Tool definitions are JSON schemas that tokenize at ~2.5 chars/token
+	// (not 4 like prose). Apply a 5/8 correction factor to prevent
+	// overallocation that causes context overflow on small models.
+	b.ToolDefsMax = clampInt(effectiveChars*13/100*5/8, 1_000, 50_000)
 	b.SessionMemoryMax = clampInt(effectiveChars*5/100, 600, 24_000)
 	b.MemoryRecallMax = clampInt(effectiveChars*8/100, 800, 40_000)
 	b.DynamicContextMax = clampInt(effectiveChars*12/100, 1_200, 60_000)
 
 	// Skills count scales linearly: 3 at t=0, 150 at t=1.
 	b.SkillsMaxCount = clampInt(int(lerp(3, 150, t)), 3, 150)
+
+	// MaxToolCount scales cubically: small models get tight limits because
+	// JSON schemas tokenize poorly (~2.5 chars/token). t³ curve gives:
+	// ~17 at 65K, ~59 at 128K, ~200 at 200K+.
+	t3 := t * t * t
+	b.MaxToolCount = clampInt(int(math.Round(lerp(10, 200, t3))), 10, 200)
 
 	// Tool result share: 15% for tiny models, 30% for 200K+.
 	b.ToolResultSharePct = clampF(lerp(0.15, 0.30, t), 0.15, 0.30)

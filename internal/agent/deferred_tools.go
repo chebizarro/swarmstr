@@ -217,15 +217,25 @@ type PartitionToolsResult struct {
 // tool definitions must exceed this percentage of the tool budget for deferral
 // to kick in. If they don't exceed the threshold, all tools are inlined.
 //
+// When maxInlineCount > 0 and the inline set exceeds that count, the largest
+// non-critical inline tools are force-deferred regardless of their origin.
+// This prevents small-context models from being overwhelmed by tool schemas.
+//
 // Critical tools (by name) are never deferred.
 func PartitionTools(
 	descriptors []ToolDescriptor,
 	toolBudgetChars int,
 	autoThresholdPct int,
 	criticalToolNames []string,
+	maxInlineCount ...int,
 ) PartitionToolsResult {
 	if autoThresholdPct <= 0 {
 		autoThresholdPct = DefaultAutoToolSearchPercentage
+	}
+
+	maxInline := 0
+	if len(maxInlineCount) > 0 && maxInlineCount[0] > 0 {
+		maxInline = maxInlineCount[0]
 	}
 
 	criticalSet := make(map[string]bool, len(criticalToolNames))
@@ -243,6 +253,60 @@ func PartitionTools(
 		}
 	}
 
+	// ── Force-deferral for small models ──────────────────────────────────
+	// When the total tool count exceeds maxInline, force-defer the largest
+	// non-critical inline tools. This handles the common case where most
+	// tools are built-in (not MCP/plugin) and would otherwise all stay
+	// inline, overwhelming small context windows.
+	forcedDeferral := false
+	totalCount := len(inlineDescs) + len(deferrableDescs)
+	if maxInline > 0 && totalCount > maxInline {
+		// Sort inline descs by size (largest first) to defer the biggest.
+		type sized struct {
+			desc  ToolDescriptor
+			chars int
+		}
+		var criticalInline, regularInline []sized
+		for _, desc := range inlineDescs {
+			s := sized{desc: desc, chars: EstimateToolDefinitionChars(desc.Definition())}
+			if criticalSet[desc.Name] {
+				criticalInline = append(criticalInline, s)
+			} else {
+				regularInline = append(regularInline, s)
+			}
+		}
+		// Sort regular inline by size ascending — keep smallest inline,
+		// defer the largest (they cost the most context).
+		sort.Slice(regularInline, func(i, j int) bool {
+			return regularInline[i].chars < regularInline[j].chars
+		})
+
+		// How many inline slots remain after critical tools?
+		slotsForRegular := maxInline - len(criticalInline)
+		if slotsForRegular < 0 {
+			slotsForRegular = 0
+		}
+
+		// Force-defer excess regular inline tools.
+		if len(regularInline) > slotsForRegular {
+			forcedDeferred := regularInline[slotsForRegular:]
+			regularInline = regularInline[:slotsForRegular]
+			for _, s := range forcedDeferred {
+				deferrableDescs = append(deferrableDescs, s.desc)
+			}
+			forcedDeferral = true
+		}
+
+		// Rebuild inlineDescs from critical + surviving regular.
+		inlineDescs = make([]ToolDescriptor, 0, len(criticalInline)+len(regularInline))
+		for _, s := range criticalInline {
+			inlineDescs = append(inlineDescs, s.desc)
+		}
+		for _, s := range regularInline {
+			inlineDescs = append(inlineDescs, s.desc)
+		}
+	}
+
 	// Estimate chars for deferrable tools.
 	deferrableChars := 0
 	for _, desc := range deferrableDescs {
@@ -250,12 +314,18 @@ func PartitionTools(
 	}
 
 	// Check if deferrable tools exceed the threshold.
+	// Skip threshold check when force-deferral moved tools — those must stay deferred.
 	threshold := toolBudgetChars * autoThresholdPct / 100
-	if deferrableChars < threshold || len(deferrableDescs) == 0 {
-		// Below threshold — inline everything.
-		allDefs := make([]ToolDefinition, 0, len(descriptors))
+	if !forcedDeferral && ((deferrableChars < threshold && len(deferrableDescs) > 0) || len(deferrableDescs) == 0) {
+		// Below threshold or no deferrable tools — inline everything.
+		allDefs := make([]ToolDefinition, 0, len(inlineDescs)+len(deferrableDescs))
 		totalChars := 0
-		for _, desc := range descriptors {
+		for _, desc := range inlineDescs {
+			def := desc.Definition()
+			allDefs = append(allDefs, def)
+			totalChars += EstimateToolDefinitionChars(def)
+		}
+		for _, desc := range deferrableDescs {
 			def := desc.Definition()
 			allDefs = append(allDefs, def)
 			totalChars += EstimateToolDefinitionChars(def)

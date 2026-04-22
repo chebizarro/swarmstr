@@ -36,7 +36,7 @@ func partitionTurnTools(exec agent.ToolExecutor, contextWindowTokens int) ([]age
 
 	profile := agent.ProfileFromContextWindowTokens(contextWindowTokens)
 	budget := agent.ComputeContextBudget(profile)
-	result := agent.PartitionTools(descs, budget.ToolDefsMax, agent.DefaultAutoToolSearchPercentage, agent.DefaultCriticalToolNames())
+	result := agent.PartitionTools(descs, budget.ToolDefsMax, agent.DefaultAutoToolSearchPercentage, agent.DefaultCriticalToolNames(), budget.MaxToolCount)
 
 	if result.Deferred.Count() == 0 {
 		// Below threshold — everything inlined.
