@@ -41,6 +41,11 @@ var WebFetchDef = agent.ToolDefinition{
 		},
 		Required: []string{"url"},
 	},
+	ParamAliases: map[string]string{
+		"timeout":  "timeout_seconds",
+		"limit":    "max_chars",
+		"max_size": "max_chars",
+	},
 }
 
 func WebFetchTool(opts WebFetchOpts) agent.ToolFunc {

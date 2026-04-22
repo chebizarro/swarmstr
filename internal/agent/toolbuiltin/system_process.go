@@ -643,4 +643,11 @@ var ProcessExecDef = agent.ToolDefinition{
 		},
 		Required: []string{"command"},
 	},
+	ParamAliases: map[string]string{
+		"timeout": "timeout_seconds",
+		"cmd":     "command",
+		"dir":     "directory",
+		"cwd":     "directory",
+		"path":    "directory",
+	},
 }

@@ -140,6 +140,23 @@ func TestFileTreeTool_DirsOnly(t *testing.T) {
 	}
 }
 
+func TestFileTreeDef_ParamAliases(t *testing.T) {
+	// Verify the definition includes expected aliases that models commonly hallucinate.
+	aliases := FileTreeDef.ParamAliases
+	if aliases == nil {
+		t.Fatal("FileTreeDef.ParamAliases is nil")
+	}
+	expected := map[string]string{
+		"depth": "max_depth",
+		"dir":   "path",
+	}
+	for alias, want := range expected {
+		if got, ok := aliases[alias]; !ok || got != want {
+			t.Errorf("alias %q: got %q (ok=%v), want %q", alias, got, ok, want)
+		}
+	}
+}
+
 func TestFileTreeTool_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 

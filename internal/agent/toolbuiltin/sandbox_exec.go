@@ -410,4 +410,11 @@ Supported languages: go, python, javascript, rust, c, cpp, bash.`,
 		},
 		Required: []string{"code", "language"},
 	},
+	ParamAliases: map[string]string{
+		"lang":        "language",
+		"source":      "code",
+		"source_code": "code",
+		"input":       "stdin",
+		"arguments":   "args",
+	},
 }

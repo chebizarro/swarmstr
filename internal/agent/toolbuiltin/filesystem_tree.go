@@ -208,4 +208,12 @@ var FileTreeDef = agent.ToolDefinition{
 			},
 		},
 	},
+	ParamAliases: map[string]string{
+		"depth":            "max_depth",
+		"directory":        "path",
+		"dir":              "path",
+		"root":             "path",
+		"directories_only": "dirs_only",
+		"folders_only":     "dirs_only",
+	},
 }

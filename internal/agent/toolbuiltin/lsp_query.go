@@ -1051,4 +1051,12 @@ Line and character numbers are 1-based.`,
 		},
 		Required: []string{"action", "file"},
 	},
+	ParamAliases: map[string]string{
+		"path":   "file",
+		"column": "character",
+		"col":    "character",
+		"char":   "character",
+		"row":    "line",
+		"lang":   "language",
+	},
 }

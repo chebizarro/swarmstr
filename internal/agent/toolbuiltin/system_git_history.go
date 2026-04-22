@@ -175,6 +175,15 @@ var GitLogDef = agent.ToolDefinition{
 			},
 		},
 	},
+	ParamAliases: map[string]string{
+		"count":  "max_count",
+		"limit":  "max_count",
+		"n":      "max_count",
+		"dir":    "directory",
+		"path":   "file",
+		"branch": "ref",
+		"commit": "ref",
+	},
 }
 
 // ─── git_blame ────────────────────────────────────────────────────────────────
@@ -341,5 +350,12 @@ var GitBlameDef = agent.ToolDefinition{
 			},
 		},
 		Required: []string{"file"},
+	},
+	ParamAliases: map[string]string{
+		"path": "file",
+		"dir":  "directory",
+		"line": "start_line",
+		"from": "start_line",
+		"to":   "end_line",
 	},
 }
