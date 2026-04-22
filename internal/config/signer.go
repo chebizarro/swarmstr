@@ -26,7 +26,12 @@ import (
 // returns a nostr.Keyer that delegates signing to the remote bunker.
 func ResolvePrivateKey(cfg BootstrapConfig) (string, error) {
 	if key := strings.TrimSpace(cfg.PrivateKey); key != "" {
-		return key, nil
+		// Normalize: accept nsec, env var, or raw hex.
+		sk, err := parsePrivateKey(key)
+		if err != nil {
+			return "", fmt.Errorf("private_key: %w", err)
+		}
+		return hex.EncodeToString(sk[:]), nil
 	}
 	raw := strings.TrimSpace(cfg.SignerURL)
 	if raw == "" {
@@ -106,13 +111,10 @@ func ResolveSigner(ctx context.Context, cfg BootstrapConfig, pool *nostr.Pool) (
 	// callers get both NIP-44 (keyer.Keyer) and NIP-04 decrypt support without
 	// needing to extract the raw key.
 	if key := strings.TrimSpace(cfg.PrivateKey); key != "" {
-		var skArr [32]byte
-		decoded, err := hex.DecodeString(key)
-		if err != nil || len(decoded) != 32 {
-			return nil, fmt.Errorf("private_key: expected 32-byte hex: %w", err)
+		sk, err := parsePrivateKey(key)
+		if err != nil {
+			return nil, fmt.Errorf("private_key: %w", err)
 		}
-		copy(skArr[:], decoded)
-		sk := nostr.SecretKey(skArr)
 		return NewExtendedSigner(sk), nil
 	}
 
@@ -164,6 +166,61 @@ func ResolveSigner(ctx context.Context, cfg BootstrapConfig, pool *nostr.Pool) (
 		}
 		return keyer.New(ctx, pool, hexKey, nil)
 	}
+}
+
+// parsePrivateKey accepts a private key in multiple formats:
+//   - 64-char hex string (raw 32-byte key)
+//   - bech32 nsec1... (NIP-19 encoded secret key)
+//   - $ENV_VAR or ${ENV_VAR} (environment variable interpolation, then re-parsed)
+//
+// Returns the decoded 32-byte secret key.
+func parsePrivateKey(raw string) (nostr.SecretKey, error) {
+	raw = strings.TrimSpace(raw)
+
+	// Environment variable interpolation: $VAR or ${VAR}
+	if strings.HasPrefix(raw, "$") {
+		varName := strings.TrimPrefix(raw, "$")
+		varName = strings.TrimPrefix(varName, "{")
+		varName = strings.TrimSuffix(varName, "}")
+		varName = strings.TrimSpace(varName)
+		if varName == "" {
+			return nostr.SecretKey{}, fmt.Errorf("empty environment variable name")
+		}
+		value := strings.TrimSpace(os.Getenv(varName))
+		if value == "" {
+			return nostr.SecretKey{}, fmt.Errorf("environment variable %q is empty or not set", varName)
+		}
+		// Recurse to parse the resolved value (could be hex or nsec).
+		return parsePrivateKey(value)
+	}
+
+	// NIP-19 nsec bech32 format
+	if strings.HasPrefix(raw, "nsec1") {
+		prefix, data, err := nip19.Decode(raw)
+		if err != nil {
+			return nostr.SecretKey{}, fmt.Errorf("invalid nsec: %w", err)
+		}
+		if prefix != "nsec" {
+			return nostr.SecretKey{}, fmt.Errorf("expected nsec, got %q", prefix)
+		}
+		sk, ok := data.(nostr.SecretKey)
+		if !ok {
+			return nostr.SecretKey{}, fmt.Errorf("nsec decoded to unexpected type %T", data)
+		}
+		return sk, nil
+	}
+
+	// Raw 32-byte hex
+	decoded, err := hex.DecodeString(raw)
+	if err != nil {
+		return nostr.SecretKey{}, fmt.Errorf("expected 32-byte hex or nsec1...: %w", err)
+	}
+	if len(decoded) != 32 {
+		return nostr.SecretKey{}, fmt.Errorf("expected 32-byte hex, got %d bytes", len(decoded))
+	}
+	var sk nostr.SecretKey
+	copy(sk[:], decoded)
+	return sk, nil
 }
 
 // generateEphemeralKey generates a fresh random NIP-46 client secret key.
