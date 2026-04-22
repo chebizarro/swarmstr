@@ -169,8 +169,15 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	// during this turn so callers can persist them for future context.
 	var historyDelta []ConversationMessage
 
-	// Initial LLM call.
-	resp, err := cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), activeTools, cfg.Options)
+	// Initial LLM call — apply pre-flight gate to catch total overflow.
+	{
+		pf := EnforceTotalContextBudget(
+			GuardToolResultMessages(messages, cfg.ContextWindowTokens),
+			activeTools, cfg.ContextWindowTokens, DefaultCriticalToolNames())
+		messages = pf.Messages
+		activeTools = pf.Tools
+	}
+	resp, err := cfg.Provider.Chat(ctx, messages, activeTools, cfg.Options)
 	if err != nil {
 		return nil, err
 	}
@@ -296,8 +303,17 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			}
 		}
 
-		// Next LLM call — use activeTools which may have grown via tool_search.
-		resp, err = cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), activeTools, cfg.Options)
+		// Next LLM call — apply pre-flight gate then send.
+		{
+			guardedMsgs := GuardToolResultMessages(messages, cfg.ContextWindowTokens)
+			pf := EnforceTotalContextBudget(guardedMsgs, activeTools, cfg.ContextWindowTokens, DefaultCriticalToolNames())
+			// Update messages from pre-flight (history may have been trimmed).
+			if pf.HistoryTrimmed > 0 || pf.ToolsDropped > 0 {
+				messages = pf.Messages
+				activeTools = pf.Tools
+			}
+			resp, err = cfg.Provider.Chat(ctx, pf.Messages, pf.Tools, cfg.Options)
+		}
 		if err != nil {
 			log.Printf("%s: agentic loop LLM error iter=%d: %v", cfg.LogPrefix, iter+1, err)
 			// Return partial history so callers can persist completed tool work.
@@ -695,10 +711,24 @@ func isCriticalToolError(err error) bool {
 func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Turn, providerSystemPrompt, logPrefix string) (ProviderResult, error) {
 	messages := buildLLMMessagesFromTurn(turn, providerSystemPrompt)
 	opts := chatOptionsFromTurn(turn)
+	tools := turn.Tools
+
+	// Pre-flight total budget gate: measure messages + tools together and
+	// trim to fit. Individual zone budgets (system prompt, tools, dynamic
+	// context) operate in isolation — this is the final coordination point
+	// that catches overflow from the sum of all zones.
+	preflight := EnforceTotalContextBudget(messages, tools, turn.ContextWindowTokens, DefaultCriticalToolNames())
+	messages = preflight.Messages
+	tools = preflight.Tools
+	if preflight.HistoryTrimmed > 0 || preflight.ToolsDropped > 0 || preflight.SystemTruncated {
+		log.Printf("%s: preflight gate trimmed to fit %d-token window: est=%d budget=%d history_trimmed=%d tools_dropped=%d sys_truncated=%v",
+			logPrefix, turn.ContextWindowTokens, preflight.EstimatedTokens, preflight.BudgetTokens,
+			preflight.HistoryTrimmed, preflight.ToolsDropped, preflight.SystemTruncated)
+	}
 
 	// If no executor or no tools, just do a single call.
-	if turn.Executor == nil || len(turn.Tools) == 0 {
-		resp, err := provider.Chat(ctx, messages, turn.Tools, opts)
+	if turn.Executor == nil || len(tools) == 0 {
+		resp, err := provider.Chat(ctx, messages, tools, opts)
 		if err != nil {
 			return ProviderResult{}, err
 		}
@@ -710,7 +740,7 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 	resp, err := RunAgenticLoop(ctx, AgenticLoopConfig{
 		Provider:            provider,
 		InitialMessages:     messages,
-		Tools:               turn.Tools,
+		Tools:               tools,
 		Executor:            turn.Executor,
 		Options:             opts,
 		MaxIterations:       maxIter,
