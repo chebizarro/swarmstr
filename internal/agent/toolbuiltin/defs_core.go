@@ -22,6 +22,13 @@ var MemorySearchDef = agent.ToolDefinition{
 		},
 		Required: []string{"query"},
 	},
+	ParamAliases: map[string]string{
+		"q":           "query",
+		"search":      "query",
+		"text":        "query",
+		"count":       "limit",
+		"max_results": "limit",
+	},
 }
 
 // ─── ACP / multi-agent ───────────────────────────────────────────────────────

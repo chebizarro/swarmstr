@@ -151,6 +151,11 @@ var GitStatusDef = agent.ToolDefinition{
 			},
 		},
 	},
+	ParamAliases: map[string]string{
+		"dir":  "directory",
+		"path": "directory",
+		"cwd":  "directory",
+	},
 }
 
 // ─── git_diff ─────────────────────────────────────────────────────────────────
@@ -377,6 +382,13 @@ var GitDiffDef = agent.ToolDefinition{
 				Description: "If true, show staged (--cached) changes instead of unstaged. Defaults to false.",
 			},
 		},
+	},
+	ParamAliases: map[string]string{
+		"dir":    "directory",
+		"path":   "directory",
+		"ref":    "target",
+		"commit": "target",
+		"cached": "staged",
 	},
 }
 

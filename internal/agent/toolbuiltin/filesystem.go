@@ -133,6 +133,12 @@ var ReadFileDef = agent.ToolDefinition{
 		},
 		Required: []string{"path"},
 	},
+	ParamAliases: map[string]string{
+		"file":      "path",
+		"filepath":  "path",
+		"file_path": "path",
+		"filename":  "path",
+	},
 }
 
 // WriteFileTool returns a ToolFunc that creates or overwrites a file with the given content.
@@ -178,6 +184,14 @@ var WriteFileDef = agent.ToolDefinition{
 			},
 		},
 		Required: []string{"path", "content"},
+	},
+	ParamAliases: map[string]string{
+		"file":      "path",
+		"filepath":  "path",
+		"file_path": "path",
+		"text":      "content",
+		"data":      "content",
+		"body":      "content",
 	},
 }
 
@@ -228,6 +242,11 @@ var ListDirDef = agent.ToolDefinition{
 				Description: "Directory path to list. Defaults to current working directory.",
 			},
 		},
+	},
+	ParamAliases: map[string]string{
+		"dir":       "path",
+		"directory": "path",
+		"folder":    "path",
 	},
 }
 

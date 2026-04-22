@@ -180,4 +180,8 @@ var BashExecDef = agent.ToolDefinition{
 		},
 		Required: []string{"command"},
 	},
+	ParamAliases: map[string]string{
+		"timeout": "timeout_seconds",
+		"cmd":     "command",
+	},
 }

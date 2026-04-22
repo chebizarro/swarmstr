@@ -107,6 +107,13 @@ var WebSearchDef = agent.ToolDefinition{
 		},
 		Required: []string{"query"},
 	},
+	ParamAliases: map[string]string{
+		"q":           "query",
+		"search":      "query",
+		"limit":       "count",
+		"num_results": "count",
+		"max_results": "count",
+	},
 }
 
 func WebSearchTool(cfg WebSearchConfig) agent.ToolFunc {

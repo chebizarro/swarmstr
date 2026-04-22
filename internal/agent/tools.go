@@ -30,6 +30,11 @@ type ToolDefinition struct {
 	// InputJSONSchema preserves richer raw JSON Schema when the canonical source
 	// defines it directly (matching src inputJSONSchema semantics for MCP/plugin tools).
 	InputJSONSchema map[string]any `json:"-"`
+	// ParamAliases maps commonly-hallucinated parameter names to their canonical
+	// equivalents. Applied before JSON Schema validation so the model can use
+	// shorthand names like "depth" instead of "max_depth" without triggering
+	// additionalProperties errors. Not sent to the model.
+	ParamAliases map[string]string `json:"-"`
 }
 
 // ToolParameters is a JSON Schema object for a tool's input.
@@ -89,12 +94,13 @@ type ToolTraits struct {
 // ToolDescriptor is the canonical metadata contract for registered tools.
 // Provider-facing ToolDefinition values are projected from descriptors.
 type ToolDescriptor struct {
-	Name            string         `json:"name"`
-	Description     string         `json:"description,omitempty"`
-	Parameters      ToolParameters `json:"input_schema,omitempty"`
-	InputJSONSchema map[string]any `json:"-"`
-	Origin          ToolOrigin     `json:"origin,omitempty"`
-	Traits          ToolTraits     `json:"traits,omitempty"`
+	Name            string            `json:"name"`
+	Description     string            `json:"description,omitempty"`
+	Parameters      ToolParameters    `json:"input_schema,omitempty"`
+	InputJSONSchema map[string]any    `json:"-"`
+	ParamAliases    map[string]string `json:"-"`
+	Origin          ToolOrigin        `json:"origin,omitempty"`
+	Traits          ToolTraits        `json:"traits,omitempty"`
 }
 
 // Definition projects a provider-facing ToolDefinition from the canonical
@@ -106,6 +112,7 @@ func (d ToolDescriptor) Definition() ToolDefinition {
 		Description:     d.Description,
 		Parameters:      d.Parameters,
 		InputJSONSchema: cloneJSONMap(d.InputJSONSchema),
+		ParamAliases:    d.ParamAliases,
 	}
 }
 
@@ -790,6 +797,11 @@ func (e *toolEntry) resetSchemaCache() {
 
 func (e *toolEntry) validatedArgs(args map[string]any) (map[string]any, error) {
 	prepared := normalizeToolArgs(args)
+	// Apply parameter aliases before schema validation so the model can use
+	// shorthand names (e.g. "depth" instead of "max_depth") without triggering
+	// additionalProperties errors from the JSON Schema validator.
+	def := e.descriptor.Definition()
+	prepared = applyParamAliases(prepared, def)
 	resolved, err := e.validationSchema()
 	if err != nil || resolved == nil {
 		return prepared, err
@@ -884,6 +896,7 @@ func descriptorFromDefinition(name string, def ToolDefinition) ToolDescriptor {
 		Description:     def.Description,
 		Parameters:      def.Parameters,
 		InputJSONSchema: cloneJSONMap(def.InputJSONSchema),
+		ParamAliases:    def.ParamAliases,
 		Origin:          ToolOrigin{Kind: ToolOriginKindBuiltin},
 	})
 }
@@ -958,6 +971,72 @@ func descriptorHasValidationSchema(desc ToolDescriptor) bool {
 
 func hasTraitResolvers(traits ToolTraitResolvers) bool {
 	return traits.IsConcurrencySafe != nil || traits.IsReadOnly != nil || traits.IsDestructive != nil || traits.InterruptBehavior != nil
+}
+
+// applyParamAliases normalizes tool call arguments by:
+//  1. Resolving explicit per-tool aliases (e.g. "depth" → "max_depth")
+//  2. Converting camelCase keys to snake_case when the snake_case form is
+//     a known parameter (e.g. "maxDepth" → "max_depth")
+//
+// Unknown keys that don't match any alias or camelCase→snake_case mapping
+// are left untouched so the schema validator can still report them.
+func applyParamAliases(args map[string]any, def ToolDefinition) map[string]any {
+	if len(args) == 0 {
+		return args
+	}
+	// Build the set of canonical parameter names from the schema.
+	canonical := make(map[string]bool, len(def.Parameters.Properties))
+	for k := range def.Parameters.Properties {
+		canonical[k] = true
+	}
+	if len(canonical) == 0 {
+		return args
+	}
+
+	normalized := make(map[string]any, len(args))
+	for k, v := range args {
+		// Already a canonical name — keep as-is.
+		if canonical[k] {
+			normalized[k] = v
+			continue
+		}
+		// Try explicit alias.
+		if target, ok := def.ParamAliases[k]; ok {
+			if _, exists := normalized[target]; !exists {
+				normalized[target] = v
+			}
+			continue
+		}
+		// Try camelCase → snake_case.
+		snake := camelToSnake(k)
+		if snake != k && canonical[snake] {
+			if _, exists := normalized[snake]; !exists {
+				normalized[snake] = v
+			}
+			continue
+		}
+		// Unknown key — pass through for schema validator to catch.
+		normalized[k] = v
+	}
+	return normalized
+}
+
+// camelToSnake converts camelCase or PascalCase to snake_case.
+// e.g. "maxDepth" → "max_depth", "contextLines" → "context_lines".
+func camelToSnake(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 4)
+	for i, r := range s {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				b.WriteByte('_')
+			}
+			b.WriteByte(byte(r - 'A' + 'a'))
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func normalizeToolCall(call ToolCall) ToolCall {
