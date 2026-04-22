@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -196,5 +198,95 @@ func TestPartitionTools_CriticalNeverDeferred(t *testing.T) {
 	}
 	if !criticalInline {
 		t.Error("critical tool should always be inline")
+	}
+}
+
+func TestPartitionTools_ForceDeferralWhenExceedsMaxInline(t *testing.T) {
+	// Create 30 builtin tools (normally not deferrable).
+	var descs []ToolDescriptor
+	for i := 0; i < 30; i++ {
+		descs = append(descs, ToolDescriptor{
+			Name:        fmt.Sprintf("builtin_%02d", i),
+			Description: "A builtin tool with description",
+			Origin:      ToolOrigin{Kind: ToolOriginKindBuiltin},
+		})
+	}
+
+	// With maxInlineCount=10, 20 tools should be force-deferred.
+	result := PartitionTools(descs, 100_000, 10, nil, 10)
+	if len(result.Inline) > 10 {
+		t.Errorf("expected at most 10 inline tools, got %d", len(result.Inline))
+	}
+	if result.Deferred.Count() < 20 {
+		t.Errorf("expected at least 20 deferred tools, got %d", result.Deferred.Count())
+	}
+}
+
+func TestPartitionTools_ForceDeferralPreservesCritical(t *testing.T) {
+	var descs []ToolDescriptor
+	// 3 critical tools
+	for _, name := range []string{"memory_search", "session_send", "session_spawn"} {
+		descs = append(descs, ToolDescriptor{
+			Name:        name,
+			Description: "Critical tool",
+			Origin:      ToolOrigin{Kind: ToolOriginKindBuiltin},
+		})
+	}
+	// 20 regular builtin tools
+	for i := 0; i < 20; i++ {
+		descs = append(descs, ToolDescriptor{
+			Name:        fmt.Sprintf("regular_%02d", i),
+			Description: "Regular builtin tool",
+			Origin:      ToolOrigin{Kind: ToolOriginKindBuiltin},
+		})
+	}
+
+	// maxInlineCount=5: 3 critical + 2 regular inline, rest deferred
+	result := PartitionTools(descs, 100_000, 10, DefaultCriticalToolNames(), 5)
+	if len(result.Inline) > 5 {
+		t.Errorf("expected at most 5 inline tools, got %d", len(result.Inline))
+	}
+
+	// All critical tools must be inline.
+	criticalNames := map[string]bool{}
+	for _, def := range result.Inline {
+		criticalNames[def.Name] = true
+	}
+	for _, name := range DefaultCriticalToolNames() {
+		if !criticalNames[name] {
+			t.Errorf("critical tool %q should be inline", name)
+		}
+	}
+}
+
+func TestPartitionTools_ForceDeferralDefersLargestFirst(t *testing.T) {
+	descs := []ToolDescriptor{
+		{Name: "small", Description: "A", Origin: ToolOrigin{Kind: ToolOriginKindBuiltin}},
+		{Name: "medium", Description: strings.Repeat("x", 200), Origin: ToolOrigin{Kind: ToolOriginKindBuiltin}},
+		{Name: "large", Description: strings.Repeat("x", 500), Origin: ToolOrigin{Kind: ToolOriginKindBuiltin}},
+	}
+
+	// maxInlineCount=1: only 1 should stay inline, and it should be the smallest.
+	result := PartitionTools(descs, 100_000, 10, nil, 1)
+	if len(result.Inline) != 1 {
+		t.Fatalf("expected 1 inline tool, got %d", len(result.Inline))
+	}
+	if result.Inline[0].Name != "small" {
+		t.Errorf("expected smallest tool to stay inline, got %q", result.Inline[0].Name)
+	}
+	if result.Deferred.Count() != 2 {
+		t.Errorf("expected 2 deferred, got %d", result.Deferred.Count())
+	}
+}
+
+func TestPartitionTools_NoMaxInlineBackwardCompatible(t *testing.T) {
+	// Without maxInlineCount arg, behavior should be unchanged.
+	descs := []ToolDescriptor{
+		{Name: "a", Description: "tool a", Origin: ToolOrigin{Kind: ToolOriginKindBuiltin}},
+		{Name: "b", Description: "tool b", Origin: ToolOrigin{Kind: ToolOriginKindBuiltin}},
+	}
+	result := PartitionTools(descs, 100_000, 10, nil)
+	if len(result.Inline) != 2 {
+		t.Errorf("expected 2 inline without maxInline, got %d", len(result.Inline))
 	}
 }

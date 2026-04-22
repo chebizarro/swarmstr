@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -232,5 +233,96 @@ func TestTruncateStr(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("truncateStr(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
 		}
+	}
+}
+
+func TestFitToolDefinitions_RespectsMaxToolCount(t *testing.T) {
+	// Create 30 small tools that all fit by chars but exceed MaxToolCount.
+	var defs []ToolDefinition
+	for i := 0; i < 30; i++ {
+		defs = append(defs, ToolDefinition{
+			Name:        fmt.Sprintf("tool_%02d", i),
+			Description: "A small tool",
+		})
+	}
+
+	budget := ContextBudget{
+		ToolDefsMax:  100_000, // huge char budget — won't be the limiter
+		MaxToolCount: 10,
+		Profile:      ModelContextProfile{ContextWindowTokens: 65536},
+	}
+
+	result := FitToolDefinitions(defs, budget, nil)
+	if len(result) > 10 {
+		t.Errorf("expected at most 10 tools (MaxToolCount), got %d", len(result))
+	}
+}
+
+func TestFitToolDefinitions_MaxToolCountPreservesCritical(t *testing.T) {
+	defs := []ToolDefinition{
+		{Name: "memory_search", Description: "Search memory"},
+		{Name: "session_send", Description: "Send message"},
+		{Name: "session_spawn", Description: "Spawn session"},
+	}
+	// Add 20 regular tools
+	for i := 0; i < 20; i++ {
+		defs = append(defs, ToolDefinition{
+			Name:        fmt.Sprintf("regular_%02d", i),
+			Description: "Regular tool",
+		})
+	}
+
+	budget := ContextBudget{
+		ToolDefsMax:  100_000,
+		MaxToolCount: 5,
+		Profile:      ModelContextProfile{ContextWindowTokens: 65536},
+	}
+
+	result := FitToolDefinitions(defs, budget, DefaultCriticalToolNames())
+	if len(result) > 5 {
+		t.Errorf("expected at most 5 tools, got %d", len(result))
+	}
+
+	// All 3 critical tools must be present.
+	found := make(map[string]bool)
+	for _, def := range result {
+		found[def.Name] = true
+	}
+	for _, critical := range DefaultCriticalToolNames() {
+		if !found[critical] {
+			t.Errorf("critical tool %q missing from result", critical)
+		}
+	}
+}
+
+func TestComputeContextBudget_MaxToolCountScaling(t *testing.T) {
+	tests := []struct {
+		tokens   int
+		maxCount int // approximate expected MaxToolCount
+	}{
+		{4096, 10},
+		{65536, 17},
+		{128000, 60},
+		{200000, 200},
+	}
+	for _, tt := range tests {
+		b := ComputeContextBudgetForTokens(tt.tokens)
+		// Allow ±5 tolerance for rounding
+		if b.MaxToolCount < tt.maxCount-5 || b.MaxToolCount > tt.maxCount+5 {
+			t.Errorf("at %d tokens: MaxToolCount=%d, want ~%d", tt.tokens, b.MaxToolCount, tt.maxCount)
+		}
+	}
+}
+
+func TestComputeContextBudget_ToolDefsMaxReduced(t *testing.T) {
+	// Verify the JSON tokenization correction reduces ToolDefsMax
+	b65 := ComputeContextBudgetForTokens(65536)
+	if b65.ToolDefsMax > 20_000 {
+		t.Errorf("65K model ToolDefsMax=%d, want <= 20000 (JSON correction)", b65.ToolDefsMax)
+	}
+	// 200K should still hit the cap
+	b200 := ComputeContextBudgetForTokens(200000)
+	if b200.ToolDefsMax < 40_000 {
+		t.Errorf("200K model ToolDefsMax=%d, want >= 40000", b200.ToolDefsMax)
 	}
 }

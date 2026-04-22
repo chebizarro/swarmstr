@@ -197,8 +197,15 @@ func FitToolDefinitions(defs []ToolDefinition, budget ContextBudget, criticalToo
 		remaining -= cost
 	}
 
-	// Fill remaining with regular tools.
+	// Fill remaining with regular tools (respecting both char budget and count cap).
+	maxCount := budget.MaxToolCount
+	if maxCount <= 0 {
+		maxCount = 200 // no cap
+	}
 	for _, def := range regular {
+		if len(result) >= maxCount {
+			break
+		}
 		c := compress(def)
 		cost := EstimateToolDefinitionChars(c)
 		if remaining-cost < 0 {
