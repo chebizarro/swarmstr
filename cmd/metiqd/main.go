@@ -1979,6 +1979,21 @@ func main() {
 		}
 	}
 
+	// Auto-promote: when no "main" agent was declared in config but at
+	// least one real agent was provisioned, promote the first (or sole)
+	// agent as the default runtime.  This prevents the EchoProvider stub
+	// from handling DMs meant for the configured model.
+	if registered := agentRegistry.Registered(); len(registered) > 0 {
+		if agent.IsEchoRuntime(agentRuntime) {
+			promotedID := registered[0]
+			promotedRT := agentRegistry.Get(promotedID)
+			agentRegistry.SetDefault(promotedRT)
+			agentRuntime = promotedRT
+			controlAgentRuntime = promotedRT
+			log.Printf("agent config: auto-promoted %q as default runtime (no \"main\" agent declared)", promotedID)
+		}
+	}
+
 	// Pre-seed session→agent assignments from persisted session meta.
 	// Any session with meta["agent_id"] set is re-routed to that agent.
 	if existingSessions, sessErr := docsRepo.ListSessions(ctx, 5000); sessErr == nil {
@@ -5245,12 +5260,13 @@ func main() {
 					if req.SessionID == "" {
 						req.SessionID = bus.PublicKey()
 					}
-					if agentRuntime == nil {
+					rt := controlAgentRuntime
+					if rt == nil {
 						return nil, fmt.Errorf("agent runtime not configured")
 					}
 					runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 					snapshot := agentJobs.Begin(runID, req.SessionID)
-					go executeAgentRun(runID, req, agentRuntime, memoryIndex, agentJobs)
+					go executeAgentRun(runID, req, rt, memoryIndex, agentJobs)
 					return map[string]any{"run_id": runID, "status": "accepted", "accepted_at": snapshot.StartedAt}, nil
 				},
 				WaitAgent: func(ctx context.Context, req methods.AgentWaitRequest) (map[string]any, error) {
