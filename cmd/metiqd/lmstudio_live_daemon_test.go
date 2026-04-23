@@ -26,9 +26,12 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 		t.Skip("LM Studio not reachable on localhost:1234")
 	}
 
-	relayURL := strings.TrimSpace(os.Getenv("METIQ_LIVE_RELAY_URL"))
-	if relayURL == "" {
-		relayURL = "wss://nos.lol"
+	relay := newLocalNostrRelay(t)
+	defer relay.Close()
+
+	relayURL := relay.URL()
+	if override := strings.TrimSpace(os.Getenv("METIQ_LIVE_RELAY_URL")); override != "" {
+		relayURL = override
 	}
 
 	h := newLiveDaemonHarness(t, relayURL, liveTestModel())
@@ -90,9 +93,6 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("nostr publish and fetch", func(t *testing.T) {
-		if os.Getenv("LMSTUDIO_LIVE_NOSTR_WRITE") == "" {
-			t.Skip("set LMSTUDIO_LIVE_NOSTR_WRITE=1 to enable live relay publish/fetch validation")
-		}
 		note := fmt.Sprintf("LMSTUDIO_NOTE_%d", time.Now().UnixNano())
 		publishResult := h.runAgent(t, "live-nostr", fmt.Sprintf("Use my_identity to learn your pubkey, then use nostr_publish to publish a kind 1 note whose content is EXACTLY %q. Reply with just PUBLISHED.", note))
 		if strings.TrimSpace(publishResult) != "PUBLISHED" {
@@ -113,6 +113,7 @@ type liveDaemonHarness struct {
 	token        string
 	logPath      string
 	workspaceDir string
+	configJSON   []byte
 }
 
 func newLiveDaemonHarness(t *testing.T, relayURL, model string) *liveDaemonHarness {
@@ -165,7 +166,7 @@ func newLiveDaemonHarness(t *testing.T, relayURL, model string) *liveDaemonHarne
     "context_window": 65536,
     "max_context_tokens": 65536
   }],
-	"control": {"legacy_token_fallback": true},
+	"control": {"require_auth": false},
   "acp": {"transport": "auto"},
   "session": {},
   "storage": {"encrypt": false},
@@ -212,8 +213,10 @@ func newLiveDaemonHarness(t *testing.T, relayURL, model string) *liveDaemonHarne
 		token:        token,
 		logPath:      logPath,
 		workspaceDir: workspaceDir,
+		configJSON:   []byte(config),
 	}
 	h.waitForHealth(t)
+	h.syncConfig(t)
 	h.waitForAuthorizedControl(t)
 	return h
 }
@@ -260,6 +263,8 @@ func (h *liveDaemonHarness) waitForAuthorizedControl(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	payload := []byte(`{"method":"status"}`)
+	lastStatus := 0
+	lastBody := ""
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequest(http.MethodPost, h.baseURL+"/call", bytes.NewReader(payload))
 		if err != nil {
@@ -269,8 +274,10 @@ func (h *liveDaemonHarness) waitForAuthorizedControl(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
-			io.Copy(io.Discard, resp.Body)
+			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			lastStatus = resp.StatusCode
+			lastBody = strings.TrimSpace(string(body))
 			if resp.StatusCode == http.StatusOK {
 				return
 			}
@@ -278,7 +285,26 @@ func (h *liveDaemonHarness) waitForAuthorizedControl(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 	}
 	raw, _ := os.ReadFile(h.logPath)
-	t.Fatalf("daemon control API did not become authorized; recent log:\n%s", tailString(string(raw), 4000))
+	t.Fatalf("daemon control API did not become authorized: status=%d body=%s\nrecent log:\n%s", lastStatus, lastBody, tailString(string(raw), 4000))
+}
+
+func (h *liveDaemonHarness) syncConfig(t *testing.T) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, h.baseURL+"/config", bytes.NewReader(h.configJSON))
+	if err != nil {
+		t.Fatalf("build config sync request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+h.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("sync config: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("sync config status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 }
 
 func (h *liveDaemonHarness) call(t *testing.T, method string, params map[string]any) map[string]any {
