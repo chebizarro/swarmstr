@@ -318,6 +318,49 @@ func TestToolRegistry_ExecutionPhaseOrdering(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_Execute_SanitizesEmptyKeyArgsForParameterlessTool(t *testing.T) {
+	r := NewToolRegistry()
+	r.RegisterTool("noop", ToolRegistration{
+		Func: func(_ context.Context, args map[string]any) (string, error) {
+			if len(args) != 0 {
+				t.Fatalf("args = %#v, want empty map", args)
+			}
+			return "ok", nil
+		},
+		Descriptor: ToolDescriptor{
+			Parameters: ToolParameters{Type: "object"},
+		},
+	})
+
+	result, err := r.Execute(context.Background(), ToolCall{Name: "noop", Args: map[string]any{"": ""}})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("Execute result = %q, want %q", result, "ok")
+	}
+}
+
+func TestToolRegistry_Execute_RejectsEmptyKeyArgsForParameterizedTool(t *testing.T) {
+	r := NewToolRegistry()
+	r.RegisterTool("needs_arg", ToolRegistration{
+		Func: func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil },
+		Descriptor: ToolDescriptor{
+			Parameters: ToolParameters{
+				Type: "object",
+				Properties: map[string]ToolParamProp{
+					"path": {Type: "string"},
+				},
+				Required: []string{"path"},
+			},
+		},
+	})
+
+	if _, err := r.Execute(context.Background(), ToolCall{Name: "needs_arg", Args: map[string]any{"": ""}}); err == nil {
+		t.Fatal("expected schema validation error")
+	}
+}
+
 func TestToolRegistry_ExecuteErrorHook_WrapsExecuteFailures(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register("boom", func(_ context.Context, _ map[string]any) (string, error) {
