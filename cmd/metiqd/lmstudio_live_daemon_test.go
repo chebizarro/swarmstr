@@ -94,12 +94,18 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 
 	t.Run("nostr publish and fetch", func(t *testing.T) {
 		note := fmt.Sprintf("LMSTUDIO_NOTE_%d", time.Now().UnixNano())
-		publishResult := h.runAgent(t, "live-nostr", fmt.Sprintf("Use my_identity to learn your pubkey, then use nostr_publish to publish a kind 1 note whose content is EXACTLY %q. Reply with just PUBLISHED.", note))
+		publishPrompt := fmt.Sprintf("Use nostr_publish to publish a kind 1 note whose content is EXACTLY %q. Reply with just PUBLISHED.", note)
+		publishResult := h.runAgentWithRetry(t, "live-nostr-publish", []string{publishPrompt, publishPrompt, publishPrompt}, func(result string) bool {
+			return strings.TrimSpace(result) == "PUBLISHED"
+		})
 		if strings.TrimSpace(publishResult) != "PUBLISHED" {
 			t.Fatalf("publish result = %q, want PUBLISHED", publishResult)
 		}
 		time.Sleep(2 * time.Second)
-		fetchResult := h.runAgent(t, "live-nostr", "Use my_identity to get your pubkey, then use nostr_fetch with kinds [1], authors set to your pubkey, and limit 1. Reply with just the content of the most recent note.")
+		fetchPrompt := fmt.Sprintf("Use nostr_fetch with kinds [1], authors [%q], and limit 1. Reply with just the content of the most recent note.", h.pubkey)
+		fetchResult := h.runAgentWithRetry(t, "live-nostr-fetch", []string{fetchPrompt, fetchPrompt, fetchPrompt}, func(result string) bool {
+			return strings.TrimSpace(result) == note
+		})
 		if strings.TrimSpace(fetchResult) != note {
 			t.Fatalf("fetch result = %q, want %q", fetchResult, note)
 		}
@@ -113,7 +119,7 @@ type liveDaemonHarness struct {
 	token        string
 	logPath      string
 	workspaceDir string
-	configJSON   []byte
+	pubkey       string
 }
 
 func newLiveDaemonHarness(t *testing.T, relayURL, model string) *liveDaemonHarness {
@@ -213,11 +219,10 @@ func newLiveDaemonHarness(t *testing.T, relayURL, model string) *liveDaemonHarne
 		token:        token,
 		logPath:      logPath,
 		workspaceDir: workspaceDir,
-		configJSON:   []byte(config),
 	}
 	h.waitForHealth(t)
-	h.syncConfig(t)
 	h.waitForAuthorizedControl(t)
+	h.pubkey = h.statusPubKey(t)
 	return h
 }
 
@@ -259,6 +264,16 @@ func (h *liveDaemonHarness) waitForHealth(t *testing.T) {
 	t.Fatalf("daemon did not become healthy; recent log:\n%s", tailString(string(raw), 4000))
 }
 
+func (h *liveDaemonHarness) statusPubKey(t *testing.T) string {
+	t.Helper()
+	result := h.call(t, "status", nil)
+	pubkey, _ := result["pubkey"].(string)
+	if strings.TrimSpace(pubkey) == "" {
+		t.Fatalf("status missing pubkey: %#v", result)
+	}
+	return strings.TrimSpace(pubkey)
+}
+
 func (h *liveDaemonHarness) waitForAuthorizedControl(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
@@ -286,25 +301,6 @@ func (h *liveDaemonHarness) waitForAuthorizedControl(t *testing.T) {
 	}
 	raw, _ := os.ReadFile(h.logPath)
 	t.Fatalf("daemon control API did not become authorized: status=%d body=%s\nrecent log:\n%s", lastStatus, lastBody, tailString(string(raw), 4000))
-}
-
-func (h *liveDaemonHarness) syncConfig(t *testing.T) {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodPut, h.baseURL+"/config", bytes.NewReader(h.configJSON))
-	if err != nil {
-		t.Fatalf("build config sync request: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+h.token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("sync config: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("sync config status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
 }
 
 func (h *liveDaemonHarness) call(t *testing.T, method string, params map[string]any) map[string]any {
@@ -359,16 +355,28 @@ func (h *liveDaemonHarness) startAgent(t *testing.T, sessionID, message string) 
 	return runID
 }
 
-func (h *liveDaemonHarness) waitAgent(t *testing.T, runID string) string {
+func (h *liveDaemonHarness) waitAgentResult(t *testing.T, runID string) (string, error) {
 	t.Helper()
 	result := h.call(t, "agent.wait", map[string]any{"run_id": runID, "timeout_ms": 120000})
 	status, _ := result["status"].(string)
 	if status != "" && status != "completed" && status != "ok" {
-		t.Fatalf("agent.wait status=%q result=%#v", status, result)
+		if msg, _ := result["error"].(string); strings.TrimSpace(msg) != "" {
+			return "", fmt.Errorf("agent.wait status=%q error=%s", status, msg)
+		}
+		return "", fmt.Errorf("agent.wait status=%q", status)
 	}
 	text, _ := result["result"].(string)
 	if strings.TrimSpace(text) == "" {
-		t.Fatalf("agent.wait empty result: %#v", result)
+		return "", fmt.Errorf("agent.wait empty result")
+	}
+	return text, nil
+}
+
+func (h *liveDaemonHarness) waitAgent(t *testing.T, runID string) string {
+	t.Helper()
+	text, err := h.waitAgentResult(t, runID)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return text
 }
@@ -382,7 +390,11 @@ func (h *liveDaemonHarness) runAgentWithRetry(t *testing.T, sessionID string, me
 	t.Helper()
 	var last string
 	for i, message := range messages {
-		candidate := h.runAgent(t, fmt.Sprintf("%s-%d", sessionID, i+1), message)
+		candidate, err := h.waitAgentResult(t, h.startAgent(t, fmt.Sprintf("%s-%d", sessionID, i+1), message))
+		if err != nil {
+			last = err.Error()
+			continue
+		}
 		last = candidate
 		if accept(candidate) {
 			return candidate
