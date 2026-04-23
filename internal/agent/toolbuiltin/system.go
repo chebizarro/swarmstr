@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
@@ -42,7 +43,10 @@ type IdentityInfo struct {
 	Model  string
 }
 
-var identityInfo IdentityInfo
+var (
+	identityInfoMu sync.RWMutex
+	identityInfo   IdentityInfo
+)
 
 // NostrNPubFromHex converts a hex pubkey to its bech32 npub form.
 func NostrNPubFromHex(hexPubkey string) string {
@@ -67,23 +71,28 @@ func SetIdentityInfo(info IdentityInfo) {
 	if info.NPub == "" && info.Pubkey != "" {
 		info.NPub = NostrNPubFromHex(info.Pubkey)
 	}
+	identityInfoMu.Lock()
 	identityInfo = info
+	identityInfoMu.Unlock()
 }
 
 // MyIdentityTool returns the agent's configured identity metadata.
 func MyIdentityTool(_ context.Context, _ map[string]any) (string, error) {
+	identityInfoMu.RLock()
+	info := identityInfo
+	identityInfoMu.RUnlock()
 	var parts []string
-	if identityInfo.Name != "" {
-		parts = append(parts, "name: "+identityInfo.Name)
+	if info.Name != "" {
+		parts = append(parts, "name: "+info.Name)
 	}
-	if identityInfo.Pubkey != "" {
-		parts = append(parts, "nostr_pubkey: "+identityInfo.Pubkey)
+	if info.Pubkey != "" {
+		parts = append(parts, "nostr_pubkey: "+info.Pubkey)
 	}
-	if identityInfo.NPub != "" {
-		parts = append(parts, "nostr_npub: "+identityInfo.NPub)
+	if info.NPub != "" {
+		parts = append(parts, "nostr_npub: "+info.NPub)
 	}
-	if identityInfo.Model != "" {
-		parts = append(parts, "model: "+identityInfo.Model)
+	if info.Model != "" {
+		parts = append(parts, "model: "+info.Model)
 	}
 	if len(parts) == 0 {
 		return "identity not configured", nil
