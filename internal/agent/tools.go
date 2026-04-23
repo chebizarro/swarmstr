@@ -807,6 +807,11 @@ func (e *toolEntry) validatedArgs(args map[string]any) (map[string]any, error) {
 		return prepared, err
 	}
 	if err := resolved.Validate(prepared); err != nil {
+		if sanitized, ok := sanitizeParameterlessToolArgs(prepared, def); ok {
+			if retryErr := resolved.Validate(sanitized); retryErr == nil {
+				return sanitized, nil
+			}
+		}
 		return nil, err
 	}
 	return prepared, nil
@@ -1054,6 +1059,36 @@ func normalizeToolArgs(args map[string]any) map[string]any {
 		cloned[k] = v
 	}
 	return cloned
+}
+
+func sanitizeParameterlessToolArgs(args map[string]any, def ToolDefinition) (map[string]any, bool) {
+	if len(args) == 0 || !isParameterlessToolDefinition(def) {
+		return args, false
+	}
+	for key := range args {
+		if strings.TrimSpace(key) != "" {
+			return args, false
+		}
+	}
+	return map[string]any{}, true
+}
+
+func isParameterlessToolDefinition(def ToolDefinition) bool {
+	schema := toolInputSchemaMap(def)
+	props, _ := schema["properties"].(map[string]any)
+	if len(props) > 0 {
+		return false
+	}
+	switch required := schema["required"].(type) {
+	case []string:
+		return len(required) == 0
+	case []any:
+		return len(required) == 0
+	case nil:
+		return true
+	default:
+		return false
+	}
 }
 
 func newToolExecutionError(name string, phase ToolExecutionPhase, err error) error {
