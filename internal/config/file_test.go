@@ -217,6 +217,7 @@ func TestParseConfigBytesLoadsPreviouslyDroppedFields(t *testing.T) {
 		"session": {
 			"ttl_seconds": 10,
 			"prune_after_days": 30,
+			"prune_idle_after_days": 14,
 			"prune_on_boot": true
 		},
 		"cron": {
@@ -263,7 +264,7 @@ func TestParseConfigBytesLoadsPreviouslyDroppedFields(t *testing.T) {
 	if len(doc.Providers["openai"].APIKeys) != 2 {
 		t.Fatalf("expected providers.openai.api_keys to load, got %#v", doc.Providers["openai"])
 	}
-	if doc.Session.PruneAfterDays != 30 || !doc.Session.PruneOnBoot {
+	if doc.Session.PruneAfterDays != 30 || doc.Session.PruneIdleAfterDays != 14 || !doc.Session.PruneOnBoot {
 		t.Fatalf("unexpected session config: %#v", doc.Session)
 	}
 	if !doc.CronCfg.Enabled || doc.CronCfg.JobTimeoutSecs != 123 {

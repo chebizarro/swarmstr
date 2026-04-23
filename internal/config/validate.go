@@ -161,6 +161,12 @@ func validateSession(s state.SessionConfig) []error {
 	if s.TTLSeconds < 0 {
 		errs = append(errs, fmt.Errorf("session.ttl_seconds must be >= 0 (got %d)", s.TTLSeconds))
 	}
+	if s.PruneAfterDays < 0 {
+		errs = append(errs, fmt.Errorf("session.prune_after_days must be >= 0 (got %d)", s.PruneAfterDays))
+	}
+	if s.PruneIdleAfterDays < 0 {
+		errs = append(errs, fmt.Errorf("session.prune_idle_after_days must be >= 0 (got %d)", s.PruneIdleAfterDays))
+	}
 	return errs
 }
 

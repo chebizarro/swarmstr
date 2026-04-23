@@ -44,8 +44,6 @@ Reset triggers:
 {
   "session": {
     "ttl_seconds": 0,
-    "max_sessions": 0,
-    "history_limit": 0,
     "prune_after_days": 30,
     "prune_idle_after_days": 7,
     "prune_on_boot": true
@@ -56,8 +54,6 @@ Reset triggers:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `ttl_seconds` | 0 (disabled) | Auto-expire session after this many seconds since last activity |
-| `max_sessions` | 0 (unlimited) | Maximum number of concurrent sessions |
-| `history_limit` | 0 (unlimited) | Maximum transcript entries to load per session |
 | `prune_after_days` | 0 (disabled) | Delete sessions whose last activity exceeds N days |
 | `prune_idle_after_days` | 0 (disabled) | Delete sessions with no inbound messages for N days |
 | `prune_on_boot` | false | Run a prune pass at daemon startup |

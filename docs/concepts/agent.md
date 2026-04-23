@@ -110,7 +110,6 @@ Per-agent model and behaviour settings live in the **runtime config** (`~/.metiq
     "thinking": "medium"
   },
   "session": {
-    "history_limit": 100,
     "prune_after_days": 30,
     "prune_on_boot": true
   },

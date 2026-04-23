@@ -549,6 +549,9 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		if v, ok := toInt(sessionRaw["prune_after_days"]); ok {
 			sess.PruneAfterDays = v
 		}
+		if v, ok := toInt(sessionRaw["prune_idle_after_days"]); ok {
+			sess.PruneIdleAfterDays = v
+		}
 		if v, ok := sessionRaw["prune_on_boot"].(bool); ok {
 			sess.PruneOnBoot = v
 		}
@@ -825,7 +828,7 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 		case "acp":
 			errs = append(errs, detectUnknownMapKeys("acp", value, []string{"transport"})...)
 		case "session":
-			errs = append(errs, detectUnknownMapKeys("session", value, []string{"ttl_seconds", "prune_after_days", "prune_on_boot"})...)
+			errs = append(errs, detectUnknownMapKeys("session", value, []string{"ttl_seconds", "prune_after_days", "prune_idle_after_days", "prune_on_boot"})...)
 		case "storage":
 			errs = append(errs, detectUnknownMapKeys("storage", value, []string{"encrypt"})...)
 		case "heartbeat":

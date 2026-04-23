@@ -5967,13 +5967,18 @@ func main() {
 		go controlServices.handlers.hooksMgr.Fire("gateway:startup", "", map[string]any{})
 	}
 
-	// Boot-time session pruning: delete sessions older than PruneAfterDays if
-	// PruneOnBoot is set in the session config.
+	// Boot-time session pruning honors the configured age- and idle-based
+	// policies when PruneOnBoot is set in the session config.
 	if configState != nil {
 		sessCfg := configState.Get().Session
 		if sessCfg.PruneOnBoot && sessCfg.PruneAfterDays > 0 {
 			go func() {
 				pruneSessions(ctx, docsRepo, transcriptRepo, sessCfg.PruneAfterDays)
+			}()
+		}
+		if sessCfg.PruneOnBoot && sessCfg.PruneIdleAfterDays > 0 {
+			go func() {
+				pruneIdleSessions(ctx, docsRepo, transcriptRepo, sessCfg.PruneIdleAfterDays)
 			}()
 		}
 	}
