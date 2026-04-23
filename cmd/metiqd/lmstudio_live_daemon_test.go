@@ -199,6 +199,86 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 			t.Fatalf("recovery file = %q, want 'recovered'", string(raw))
 		}
 	})
+
+	t.Run("tool chaining - write to file to memory", func(t *testing.T) {
+		sessionID := "live-chain-file-mem"
+		
+		// Step 1: write data to file
+		result1 := h.runAgent(t, sessionID, "Use write_file to create scratch/chain.txt with content EXACTLY 'chain-data-abc123'. Reply with just WRITTEN.")
+		if strings.TrimSpace(result1) != "WRITTEN" {
+			t.Fatalf("write result = %q, want WRITTEN", result1)
+		}
+		
+		// Step 2: read that file and store content in memory (2-tool chain)
+		result2 := h.runAgent(t, sessionID, "Use read_file to read scratch/chain.txt, then use memory_store to save what you read with topic 'chaintest'. Reply with just CHAINED.")
+		if strings.TrimSpace(result2) != "CHAINED" {
+			t.Fatalf("chain result = %q, want CHAINED", result2)
+		}
+		
+		// Step 3: verify memory contains the right data (memory search tool)
+		result3 := h.runAgent(t, sessionID, "Use memory_search with query 'chaintest'. Reply with just what you find.")
+		if !strings.Contains(result3, "chain-data-abc123") {
+			t.Fatalf("memory search result = %q, want chain-data-abc123 (tool chain incomplete)", result3)
+		}
+	})
+
+	t.Run("tool chaining - file tree navigation and selective read", func(t *testing.T) {
+		sessionID := "live-chain-tree"
+		
+		// Setup: create a few files
+		if err := os.MkdirAll(filepath.Join(h.workspaceDir, "scratch", "data"), 0o755); err != nil {
+			t.Fatalf("mkdir data: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(h.workspaceDir, "scratch", "data", "file1.txt"), []byte("content-one"), 0o644); err != nil {
+			t.Fatalf("write file1: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(h.workspaceDir, "scratch", "data", "file2.txt"), []byte("content-two"), 0o644); err != nil {
+			t.Fatalf("write file2: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(h.workspaceDir, "scratch", "data", "target.txt"), []byte("TARGET-DATA"), 0o644); err != nil {
+			t.Fatalf("write target: %v", err)
+		}
+		
+		// Chain: file_tree to discover -> read specific file -> write result elsewhere
+		result := h.runAgent(t, sessionID, "Use file_tree to list files in scratch/data, then use read_file to read the file named target.txt, then use write_file to save what you read to scratch/tree-result.txt. Reply with just TREE-DONE.")
+		if strings.TrimSpace(result) != "TREE-DONE" {
+			t.Fatalf("tree chain result = %q, want TREE-DONE", result)
+		}
+		
+		// Verify the result
+		raw, err := os.ReadFile(filepath.Join(h.workspaceDir, "scratch", "tree-result.txt"))
+		if err != nil {
+			t.Fatalf("read tree result: %v", err)
+		}
+		if !strings.Contains(string(raw), "TARGET-DATA") {
+			t.Fatalf("tree result = %q, want TARGET-DATA (file tree -> read -> write chain failed)", string(raw))
+		}
+	})
+
+	t.Run("tool chaining - memory search to file operation", func(t *testing.T) {
+		sessionID := "live-chain-mem-file"
+		
+		// Setup: store some data in memory
+		result1 := h.runAgent(t, sessionID, "Use memory_store to save this with topic 'location': 'scratch/memo-output.txt'. Reply with just STORED.")
+		if strings.TrimSpace(result1) != "STORED" {
+			t.Fatalf("memo store result = %q, want STORED", result1)
+		}
+		
+		// Chain: memory_search to find path -> write to that path
+		result2 := h.runAgent(t, sessionID, "Use memory_search with query 'location' to find the path, then use write_file to write 'memo-content' to that exact path. Reply with just MEM-CHAIN-DONE.")
+		if strings.TrimSpace(result2) != "MEM-CHAIN-DONE" {
+			t.Fatalf("mem chain result = %q, want MEM-CHAIN-DONE", result2)
+		}
+		
+		// Verify the file was written to the right location
+		raw, err := os.ReadFile(filepath.Join(h.workspaceDir, "scratch", "memo-output.txt"))
+		if err != nil {
+			t.Fatalf("read memo output: %v", err)
+		}
+		if string(raw) != "memo-content" {
+			t.Fatalf("memo output = %q, want memo-content (memory -> file chain failed)", string(raw))
+		}
+	})
 }
 
 func TestLMStudioLive_DaemonHarness_ExplicitConfigPath(t *testing.T) {
