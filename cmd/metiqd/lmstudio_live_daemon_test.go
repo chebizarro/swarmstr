@@ -98,6 +98,48 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 			t.Fatalf("fetch result = %q, want %q", fetchResult, note)
 		}
 	})
+
+	t.Run("multi-turn context retention", func(t *testing.T) {
+		sessionID := "live-multiturn"
+		
+		// Turn 1: Establish a fact
+		result1 := h.runAgent(t, sessionID, "Remember this: my favorite fruit is mango. Reply with just REMEMBERED.")
+		if strings.TrimSpace(result1) != "REMEMBERED" {
+			t.Fatalf("turn 1 result = %q, want REMEMBERED", result1)
+		}
+		
+		// Turn 2: Reference the fact from turn 1
+		result2 := h.runAgent(t, sessionID, "What is my favorite fruit? Reply with just the fruit name.")
+		if !strings.EqualFold(strings.TrimSpace(result2), "mango") {
+			t.Fatalf("turn 2 result = %q, want mango (context retention failed)", result2)
+		}
+		
+		// Turn 3: Use memory_store with a fact
+		result3 := h.runAgent(t, sessionID, "Use memory_store to save this fact with topic 'multiturn': 'lucky number is 42'. Reply with just STORED.")
+		if strings.TrimSpace(result3) != "STORED" {
+			t.Fatalf("turn 3 result = %q, want STORED", result3)
+		}
+		
+		// Turn 4: Search memory and reference conversation context
+		result4 := h.runAgent(t, sessionID, "Use memory_search to find my lucky number, then tell me both my favorite fruit and my lucky number in format: FRUIT-NUMBER")
+		expected := "mango-42"
+		if !strings.EqualFold(strings.TrimSpace(result4), expected) && !strings.Contains(strings.ToLower(result4), "mango") && !strings.Contains(result4, "42") {
+			t.Fatalf("turn 4 result = %q, want both mango and 42 (multi-turn context + memory failed)", result4)
+		}
+		
+		// Turn 5: File write referencing previous turns
+		result5 := h.runAgent(t, sessionID, "Use write_file to create scratch/context-test.txt with content 'fruit: mango, number: 42'. Reply with just WRITTEN.")
+		if strings.TrimSpace(result5) != "WRITTEN" {
+			t.Fatalf("turn 5 result = %q, want WRITTEN", result5)
+		}
+		raw, err := os.ReadFile(filepath.Join(h.workspaceDir, "scratch", "context-test.txt"))
+		if err != nil {
+			t.Fatalf("read context test file: %v", err)
+		}
+		if !strings.Contains(string(raw), "mango") || !strings.Contains(string(raw), "42") {
+			t.Fatalf("context test file = %q, want both mango and 42", string(raw))
+		}
+	})
 }
 
 func TestLMStudioLive_DaemonHarness_ExplicitConfigPath(t *testing.T) {
