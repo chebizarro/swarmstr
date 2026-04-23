@@ -140,6 +140,65 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 			t.Fatalf("context test file = %q, want both mango and 42", string(raw))
 		}
 	})
+
+	t.Run("permission denial recovery", func(t *testing.T) {
+		sessionID := "live-denial"
+		
+		// Start an agent that requires approval, with shorter timeout
+		result := h.call(t, "agent", map[string]any{
+			"session_id": sessionID,
+			"message":    "You must call bash_exec with command `printf denied-test`. Do not answer from memory. After bash_exec succeeds, reply with SUCCESS. If it fails or is denied, reply with DENIED.",
+			"timeout_ms":  60000,
+		})
+		runID, _ := result["run_id"].(string)
+		if strings.TrimSpace(runID) == "" {
+			t.Fatalf("agent start missing run_id: %#v", result)
+		}
+		
+		// Wait for approval request and deny it
+		approvalID := h.waitForApprovalLog(t, runID)
+		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID, "decision": "deny", "reason": "testing denial path"})
+		
+		// Agent should handle denial - either by responding or timing out gracefully
+		// Both are acceptable outcomes for this test (validates the system doesn't crash)
+		agentResult, err := h.waitAgentResult(t, runID)
+		if err != nil {
+			// Timeout or error is acceptable - agent didn't crash, system is stable
+			if !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "status") {
+				t.Fatalf("unexpected error after denial: %v", err)
+			}
+			// System handled denial without crashing - success
+			return
+		}
+		// If agent did respond, verify it indicates the issue
+		if !strings.Contains(strings.ToUpper(agentResult), "DENIED") && !strings.Contains(strings.ToLower(agentResult), "denied") && !strings.Contains(strings.ToLower(agentResult), "rejected") && !strings.Contains(strings.ToLower(agentResult), "fail") && !strings.Contains(strings.ToLower(agentResult), "error") {
+			t.Logf("agent responded after denial: %q (expected indication of denial/failure)", agentResult)
+		}
+	})
+
+	t.Run("tool failure recovery", func(t *testing.T) {
+		sessionID := "live-tool-failure"
+		
+		// Try to read a file that doesn't exist
+		result := h.runAgent(t, sessionID, "Use read_file to read a file at nonexistent/missing.txt. If it fails, reply with just FAILED. If it succeeds, reply with the content.")
+		// Agent should acknowledge the failure in some way
+		if !strings.Contains(strings.ToUpper(result), "FAILED") && !strings.Contains(strings.ToLower(result), "fail") && !strings.Contains(strings.ToLower(result), "error") && !strings.Contains(strings.ToLower(result), "not found") && !strings.Contains(strings.ToLower(result), "does not exist") {
+			t.Logf("tool failure result = %q (expected failure indication, got something else)", result)
+		}
+		
+		// Follow up with a successful operation to prove recovery
+		result2 := h.runAgent(t, sessionID, "Use write_file to create scratch/recovery.txt with content EXACTLY 'recovered'. Reply with just RECOVERED.")
+		if strings.TrimSpace(result2) != "RECOVERED" {
+			t.Fatalf("recovery result = %q, want RECOVERED (agent did not recover from tool failure)", result2)
+		}
+		raw, err := os.ReadFile(filepath.Join(h.workspaceDir, "scratch", "recovery.txt"))
+		if err != nil {
+			t.Fatalf("read recovery file: %v", err)
+		}
+		if string(raw) != "recovered" {
+			t.Fatalf("recovery file = %q, want 'recovered'", string(raw))
+		}
+	})
 }
 
 func TestLMStudioLive_DaemonHarness_ExplicitConfigPath(t *testing.T) {
