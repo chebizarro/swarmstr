@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -126,16 +127,64 @@ func TestLMStudioLive_DaemonHarness_ExplicitConfigPath(t *testing.T) {
 		}
 	})
 
+	t.Run("default config mutation is ignored", func(t *testing.T) {
+		ignoredWorkspace := filepath.Join(filepath.Dir(h.defaultConfigPath), "default-mutated-workspace")
+		if err := os.MkdirAll(ignoredWorkspace, 0o755); err != nil {
+			t.Fatalf("mkdir ignored workspace: %v", err)
+		}
+		h.writeConfigFile(t, h.defaultConfigPath, ignoredWorkspace, false)
+		time.Sleep(2 * time.Second)
+		result := h.runAgent(t, "live-explicit-default-mutation", "Use write_file to create a file at scratch/default-ignored.txt with content EXACTLY 'still explicit'. After writing it, reply with just WRITTEN.")
+		if strings.TrimSpace(result) != "WRITTEN" {
+			t.Fatalf("write result = %q, want WRITTEN", result)
+		}
+		if _, err := os.Stat(filepath.Join(ignoredWorkspace, "scratch", "default-ignored.txt")); !os.IsNotExist(err) {
+			t.Fatalf("expected default config path mutation to be ignored, stat err=%v", err)
+		}
+		raw, err := os.ReadFile(filepath.Join(h.workspaceDir, "scratch", "default-ignored.txt"))
+		if err != nil {
+			t.Fatalf("read explicit workspace file: %v", err)
+		}
+		if string(raw) != "still explicit" {
+			t.Fatalf("written file = %q, want %q", string(raw), "still explicit")
+		}
+	})
+
+	t.Run("explicit config reload follows explicit path", func(t *testing.T) {
+		reloadedWorkspace := filepath.Join(filepath.Dir(h.configPath), "reloaded-workspace")
+		if err := os.MkdirAll(reloadedWorkspace, 0o755); err != nil {
+			t.Fatalf("mkdir reloaded workspace: %v", err)
+		}
+		h.writeConfigFile(t, h.configPath, reloadedWorkspace, false)
+		h.reloadViaSIGHUP(t)
+		result := h.runAgent(t, "live-explicit-reload", "Use write_file to create a file at scratch/reloaded.txt with content EXACTLY 'reloaded explicit config'. After writing it, reply with just WRITTEN.")
+		if strings.TrimSpace(result) != "WRITTEN" {
+			t.Fatalf("write result = %q, want WRITTEN", result)
+		}
+		raw, err := os.ReadFile(filepath.Join(reloadedWorkspace, "scratch", "reloaded.txt"))
+		if err != nil {
+			t.Fatalf("read reloaded workspace file: %v", err)
+		}
+		if string(raw) != "reloaded explicit config" {
+			t.Fatalf("written file = %q, want %q", string(raw), "reloaded explicit config")
+		}
+		h.workspaceDir = reloadedWorkspace
+	})
+
 }
 
 type liveDaemonHarness struct {
-	t            *testing.T
-	cmd          *exec.Cmd
-	baseURL      string
-	token        string
-	logPath      string
-	workspaceDir string
-	pubkey       string
+	t                 *testing.T
+	cmd               *exec.Cmd
+	baseURL           string
+	token             string
+	logPath           string
+	workspaceDir      string
+	pubkey            string
+	relayURL          string
+	model             string
+	configPath        string
+	defaultConfigPath string
 }
 
 type liveDaemonHarnessOptions struct {
@@ -244,12 +293,16 @@ func newLiveDaemonHarness(t *testing.T, relayURL, model string, opts liveDaemonH
 	_ = logFile.Close()
 
 	h := &liveDaemonHarness{
-		t:            t,
-		cmd:          cmd,
-		baseURL:      "http://" + adminAddr,
-		token:        token,
-		logPath:      logPath,
-		workspaceDir: workspaceDir,
+		t:                 t,
+		cmd:               cmd,
+		baseURL:           "http://" + adminAddr,
+		token:             token,
+		logPath:           logPath,
+		workspaceDir:      workspaceDir,
+		relayURL:          relayURL,
+		model:             model,
+		configPath:        configPath,
+		defaultConfigPath: defaultConfigPath,
 	}
 	h.waitForHealth(t)
 	h.waitForAuthorizedControl(t)
@@ -270,6 +323,25 @@ func (h *liveDaemonHarness) Close() {
 		<-done
 	case <-done:
 	}
+}
+
+func (h *liveDaemonHarness) writeConfigFile(t *testing.T, path, workspaceDir string, requireAuth bool) {
+	t.Helper()
+	config := liveHarnessConfigJSON(h.relayURL, h.model, workspaceDir, requireAuth)
+	if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
+		t.Fatalf("write config %s: %v", path, err)
+	}
+}
+
+func (h *liveDaemonHarness) reloadViaSIGHUP(t *testing.T) {
+	t.Helper()
+	if h == nil || h.cmd == nil || h.cmd.Process == nil {
+		t.Fatal("daemon process not available for SIGHUP")
+	}
+	if err := h.cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatalf("send SIGHUP: %v", err)
+	}
+	time.Sleep(2 * time.Second)
 }
 
 func (h *liveDaemonHarness) waitForHealth(t *testing.T) {
