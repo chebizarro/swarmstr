@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +22,86 @@ import (
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
 )
+
+func TestAdminCallAgentWaitAllowsLongRunningTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Start(ctx, ServerOptions{
+			Addr:  addr,
+			Token: "test-token",
+			WaitAgent: func(context.Context, methods.AgentWaitRequest) (map[string]any, error) {
+				time.Sleep(16 * time.Second)
+				return map[string]any{"status": "completed", "result": "done"}, nil
+			},
+		})
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			cancel()
+			<-errCh
+			t.Fatal("admin server did not start")
+		}
+		params, err := json.Marshal(map[string]any{"run_id": "run-1", "timeout_ms": 30000})
+		if err != nil {
+			cancel()
+			<-errCh
+			t.Fatalf("marshal params: %v", err)
+		}
+		reqBody, err := json.Marshal(methods.CallRequest{Method: methods.MethodAgentWait, Params: params})
+		if err != nil {
+			cancel()
+			<-errCh
+			t.Fatalf("marshal request: %v", err)
+		}
+		req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/call", bytes.NewReader(reqBody))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("Content-Type", "application/json")
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			if strings.Contains(err.Error(), "connection refused") {
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
+			cancel()
+			<-errCh
+			t.Fatalf("call /call: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			cancel()
+			<-errCh
+			t.Fatalf("status=%d body=%s", resp.StatusCode, raw)
+		}
+		if !bytes.Contains(raw, []byte(`"done"`)) {
+			cancel()
+			<-errCh
+			t.Fatalf("unexpected body: %s", raw)
+		}
+		break
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("admin server exit: %v", err)
+	}
+}
 
 func TestDispatchMethodCallSupportedMethods(t *testing.T) {
 	rr := httptest.NewRecorder()
