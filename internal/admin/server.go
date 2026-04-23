@@ -493,9 +493,13 @@ func Start(ctx context.Context, opts ServerOptions) error {
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+		// Agent waits, tool approvals, and live local-model turns can legitimately
+		// exceed the default net/http server timeout budget. Keep the write window
+		// long enough that /call can return completed agent results instead of
+		// terminating the client connection with EOF mid-turn.
+		WriteTimeout:   10 * time.Minute,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 	go func() {
 		<-ctx.Done()
