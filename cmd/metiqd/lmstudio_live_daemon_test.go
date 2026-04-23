@@ -19,22 +19,9 @@ import (
 )
 
 func TestLMStudioLive_DaemonHarness(t *testing.T) {
-	if os.Getenv("LMSTUDIO_DAEMON_LIVE_TEST") == "" && os.Getenv("LMSTUDIO_LIVE_TEST") == "" {
-		t.Skip("set LMSTUDIO_DAEMON_LIVE_TEST=1 to run the live daemon harness")
-	}
-	if !lmStudioReachable(t) {
-		t.Skip("LM Studio not reachable on localhost:1234")
-	}
+	relayURL := requireLiveHarnessRelay(t)
 
-	relay := newLocalNostrRelay(t)
-	defer relay.Close()
-
-	relayURL := relay.URL()
-	if override := strings.TrimSpace(os.Getenv("METIQ_LIVE_RELAY_URL")); override != "" {
-		relayURL = override
-	}
-
-	h := newLiveDaemonHarness(t, relayURL, liveTestModel())
+	h := newLiveDaemonHarness(t, relayURL, liveTestModel(), liveDaemonHarnessOptions{})
 	defer h.Close()
 
 	t.Run("direct reasoning", func(t *testing.T) {
@@ -112,6 +99,35 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 }
 
+func TestLMStudioLive_DaemonHarness_ExplicitConfigPath(t *testing.T) {
+	relayURL := requireLiveHarnessRelay(t)
+
+	h := newLiveDaemonHarness(t, relayURL, liveTestModel(), liveDaemonHarnessOptions{ExplicitConfigPath: true})
+	defer h.Close()
+
+	t.Run("control readiness uses explicit config", func(t *testing.T) {
+		result := h.runAgent(t, "live-explicit-direct", "What is 3+4? Reply with just the number.")
+		if strings.TrimSpace(result) != "7" {
+			t.Fatalf("direct result = %q, want 7", result)
+		}
+	})
+
+	t.Run("workspace path comes from explicit config", func(t *testing.T) {
+		result := h.runAgent(t, "live-explicit-write", "Use write_file to create a file at scratch/explicit.txt with content EXACTLY 'explicit config path'. After writing it, reply with just WRITTEN.")
+		if strings.TrimSpace(result) != "WRITTEN" {
+			t.Fatalf("write result = %q, want WRITTEN", result)
+		}
+		raw, err := os.ReadFile(filepath.Join(h.workspaceDir, "scratch", "explicit.txt"))
+		if err != nil {
+			t.Fatalf("read written file: %v", err)
+		}
+		if string(raw) != "explicit config path" {
+			t.Fatalf("written file = %q, want %q", string(raw), "explicit config path")
+		}
+	})
+
+}
+
 type liveDaemonHarness struct {
 	t            *testing.T
 	cmd          *exec.Cmd
@@ -122,7 +138,28 @@ type liveDaemonHarness struct {
 	pubkey       string
 }
 
-func newLiveDaemonHarness(t *testing.T, relayURL, model string) *liveDaemonHarness {
+type liveDaemonHarnessOptions struct {
+	ExplicitConfigPath bool
+}
+
+func requireLiveHarnessRelay(t *testing.T) string {
+	t.Helper()
+	if os.Getenv("LMSTUDIO_DAEMON_LIVE_TEST") == "" && os.Getenv("LMSTUDIO_LIVE_TEST") == "" {
+		t.Skip("set LMSTUDIO_DAEMON_LIVE_TEST=1 to run the live daemon harness")
+	}
+	if !lmStudioReachable(t) {
+		t.Skip("LM Studio not reachable on localhost:1234")
+	}
+	relay := newLocalNostrRelay(t)
+	t.Cleanup(relay.Close)
+	relayURL := relay.URL()
+	if override := strings.TrimSpace(os.Getenv("METIQ_LIVE_RELAY_URL")); override != "" {
+		relayURL = override
+	}
+	return relayURL
+}
+
+func newLiveDaemonHarness(t *testing.T, relayURL, model string, opts liveDaemonHarnessOptions) *liveDaemonHarness {
 	t.Helper()
 
 	root := t.TempDir()
@@ -141,7 +178,11 @@ func newLiveDaemonHarness(t *testing.T, relayURL, model string) *liveDaemonHarne
 	adminPort := freePort(t)
 	adminAddr := fmt.Sprintf("127.0.0.1:%d", adminPort)
 	bootstrapPath := filepath.Join(homeDir, ".metiq", "bootstrap.json")
-	configPath := filepath.Join(homeDir, ".metiq", "config.json")
+	defaultConfigPath := filepath.Join(homeDir, ".metiq", "config.json")
+	configPath := defaultConfigPath
+	if opts.ExplicitConfigPath {
+		configPath = filepath.Join(root, "explicit-config.json")
+	}
 	binPath := filepath.Join(root, "metiqd")
 	logPath := filepath.Join(root, "daemon.log")
 	token := "live-test-token"
@@ -159,33 +200,19 @@ func newLiveDaemonHarness(t *testing.T, relayURL, model string) *liveDaemonHarne
 	if err := os.WriteFile(bootstrapPath, []byte(bootstrap), 0o644); err != nil {
 		t.Fatalf("write bootstrap: %v", err)
 	}
-	config := fmt.Sprintf(`{
-  "version": 1,
-  "relays": {"read": [%[1]q], "write": [%[1]q]},
-  "agent": {"default_model": %[2]q},
-  "agents": [{
-    "id": "main",
-    "model": %[2]q,
-    "workspace_dir": %[3]q,
-    "enabled_tools": ["my_identity", "write_file", "read_file", "file_tree", "memory_store", "memory_search", "bash_exec", "nostr_publish", "nostr_fetch"],
-    "heartbeat": {},
-    "context_window": 65536,
-    "max_context_tokens": 65536
-  }],
-	"control": {"require_auth": false},
-  "acp": {"transport": "auto"},
-  "session": {},
-  "storage": {"encrypt": false},
-  "heartbeat": {},
-  "tts": {},
-  "cron": {},
-  "hooks": {},
-  "timeouts": {},
-  "extra": {"approvals": {"tools": ["bash_exec"]}}
-}
-`, relayURL, model, workspaceDir)
+	config := liveHarnessConfigJSON(relayURL, model, workspaceDir, false)
 	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
+	}
+	if opts.ExplicitConfigPath {
+		conflictWorkspaceDir := filepath.Join(root, "wrong-workspace")
+		if err := os.MkdirAll(conflictWorkspaceDir, 0o755); err != nil {
+			t.Fatalf("mkdir conflicting workspace: %v", err)
+		}
+		conflicting := liveHarnessConfigJSON(relayURL, model, conflictWorkspaceDir, true)
+		if err := os.WriteFile(defaultConfigPath, []byte(conflicting), 0o644); err != nil {
+			t.Fatalf("write conflicting default config: %v", err)
+		}
 	}
 
 	wd, err := os.Getwd()
@@ -202,7 +229,11 @@ func newLiveDaemonHarness(t *testing.T, relayURL, model string) *liveDaemonHarne
 	if err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	cmd := exec.Command(binPath, "--bootstrap", bootstrapPath)
+	cmdArgs := []string{"--bootstrap", bootstrapPath}
+	if opts.ExplicitConfigPath {
+		cmdArgs = append(cmdArgs, "--config", configPath)
+	}
+	cmd := exec.Command(binPath, cmdArgs...)
 	cmd.Env = append(os.Environ(), "HOME="+homeDir)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -438,6 +469,34 @@ func liveTestModel() string {
 		return model
 	}
 	return "lmstudio/openai/gpt-oss-20b"
+}
+
+func liveHarnessConfigJSON(relayURL, model, workspaceDir string, requireAuth bool) string {
+	return fmt.Sprintf(`{
+  "version": 1,
+  "relays": {"read": [%[1]q], "write": [%[1]q]},
+  "agent": {"default_model": %[2]q},
+  "agents": [{
+    "id": "main",
+    "model": %[2]q,
+    "workspace_dir": %[3]q,
+    "enabled_tools": ["my_identity", "write_file", "read_file", "file_tree", "memory_store", "memory_search", "bash_exec", "nostr_publish", "nostr_fetch"],
+    "heartbeat": {},
+    "context_window": 65536,
+    "max_context_tokens": 65536
+  }],
+  "control": {"require_auth": %[4]t},
+  "acp": {"transport": "auto"},
+  "session": {},
+  "storage": {"encrypt": false},
+  "heartbeat": {},
+  "tts": {},
+  "cron": {},
+  "hooks": {},
+  "timeouts": {},
+  "extra": {"approvals": {"tools": ["bash_exec"]}}
+}
+`, relayURL, model, workspaceDir, requireAuth)
 }
 
 func randomSecretKeyHex(t *testing.T) string {
