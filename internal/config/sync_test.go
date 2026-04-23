@@ -78,11 +78,12 @@ func TestWithOnChange_calledOnFileWrite(t *testing.T) {
 	relay := &fakeRelaySync{doc: initial}
 	se, err := NewSyncEngine(configPath, relay,
 		WithDebounce(50*time.Millisecond),
-		WithOnChange(func(doc state.ConfigDoc) {
+		WithOnChange(func(doc state.ConfigDoc) error {
 			callCount.Add(1)
 			lastDocMu.Lock()
 			lastDoc = doc
 			lastDocMu.Unlock()
+			return nil
 		}),
 	)
 	if err != nil {

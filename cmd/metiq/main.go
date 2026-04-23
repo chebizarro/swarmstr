@@ -14,6 +14,7 @@ import (
 	"metiq/internal/memory"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/plugins/registry"
+	"metiq/internal/policy"
 )
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
@@ -346,6 +347,12 @@ func runConfigImport(args []string) error {
 	doc, err := config.ParseConfigBytes(raw, srcFile)
 	if err != nil {
 		return fmt.Errorf("parse config: %w", err)
+	}
+	if errs := config.ValidateConfigDoc(doc); len(errs) > 0 {
+		return fmt.Errorf("validate config: %v", errs[0])
+	}
+	if err := policy.ValidateConfig(policy.NormalizeConfig(doc)); err != nil {
+		return fmt.Errorf("validate config: %w", err)
 	}
 	if dryRun {
 		out, _ := json.MarshalIndent(doc, "", "  ")

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"metiq/internal/config"
+	"metiq/internal/policy"
 	"os"
 	"strings"
 )
@@ -99,6 +100,10 @@ func runConfigValidate(args []string) error {
 			fmt.Fprintf(os.Stderr, "  %v\n", e)
 		}
 		return fmt.Errorf("config has %d validation error(s)", len(errs))
+	}
+	if err := policy.ValidateConfig(policy.NormalizeConfig(doc)); err != nil {
+		fmt.Fprintf(os.Stderr, "  %v\n", err)
+		return fmt.Errorf("config has policy validation error")
 	}
 
 	fmt.Printf("config valid: %s\n", configPath)

@@ -45,11 +45,11 @@ import (
 	"metiq/internal/policy"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/social"
-	"metiq/internal/workspace"
 	"metiq/internal/store/state"
 	cfgTimeouts "metiq/internal/timeouts"
 	ttspkg "metiq/internal/tts"
 	"metiq/internal/update"
+	"metiq/internal/workspace"
 
 	acppkg "metiq/internal/acp"
 	"metiq/internal/agent/toolbuiltin"
@@ -87,13 +87,14 @@ import (
 )
 
 // version and commit are set at build time via -ldflags:
-//   -X main.version=<tag> -X main.commit=<sha>
+//
+//	-X main.version=<tag> -X main.commit=<sha>
+//
 // They default to dev values for local builds.
 var (
 	version = "0.0.0-dev"
 	commit  = "unknown"
 )
-
 
 var (
 	controlAgentRuntime agent.Runtime
@@ -114,15 +115,14 @@ var (
 	controlOps                  *operationsRegistry
 	controlAgentRegistry        *agent.AgentRuntimeRegistry
 	controlSessionRouter        *agent.AgentSessionRouter
-	controlKeyer                nostr.Keyer      // always set at startup; plain mode wraps key in a keyer
-	controlPresenceHeartbeat38  *nip38.Heartbeat               // NIP-38 presence/status heartbeat; nil when disabled
-	controlProfilePublisher     *nostruntime.ProfilePublisher  // routine kind:0 profile publisher; nil when no profile configured
+	controlKeyer                nostr.Keyer                   // always set at startup; plain mode wraps key in a keyer
+	controlPresenceHeartbeat38  *nip38.Heartbeat              // NIP-38 presence/status heartbeat; nil when disabled
+	controlProfilePublisher     *nostruntime.ProfilePublisher // routine kind:0 profile publisher; nil when no profile configured
 	// controlWsEmitter forwards typed events to connected WS clients.
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
-	controlWsEmitter      gatewayws.EventEmitter = gatewayws.NoopEmitter{}
-	controlWsEmitterMu    sync.RWMutex
+	controlWsEmitter       gatewayws.EventEmitter = gatewayws.NoopEmitter{}
+	controlWsEmitterMu     sync.RWMutex
 	controlPairingConfigMu sync.Mutex
-
 
 	// controlToolRegistry is the base tool registry used by agent runtimes.
 	// Stored globally so the MethodAgent handler can build profile-filtered runtimes.
@@ -137,14 +137,8 @@ var (
 	// write-back on successful config mutations.
 	controlConfigFilePath string
 
-
-
-
 	// controlMCPOps manages operator-facing MCP list/get/put/remove/test/reconnect flows.
 	controlMCPOps *mcpOpsController
-
-
-
 
 	// controlSubagents tracks spawned child agent sessions and their ancestry.
 	controlSubagents *SubagentRegistry
@@ -170,8 +164,6 @@ var (
 	// autocompact. After 3 consecutive failures, compaction is skipped to
 	// avoid wasting API calls on irrecoverable contexts.
 	controlAutoCompactState = ctxengine.NewAutoCompactState()
-
-
 
 	// controlDMBus is the preferred outbound DM transport (NIP-17 first, then NIP-04).
 	// Separate concrete bus pointers are kept so relay policy changes can rebind
@@ -1009,16 +1001,28 @@ func main() {
 		})
 	}
 
+	validateRuntimeConfigDoc := normalizeAndValidateRuntimeConfigDoc
+
 	// ── Early config file sync ──────────────────────────────────────────────
 	// Load config.json synchronously at startup so that configState reflects
 	// file-based settings (e.g. memory.backend) before the backend is initialized.
 	// The file watcher is started later and handles subsequent hot-reloads.
-	if cfgPath, cfgErr := config.DefaultConfigPath(); cfgErr == nil {
+	cfgPath := strings.TrimSpace(configFilePath)
+	if cfgPath == "" {
+		if def, cfgErr := config.DefaultConfigPath(); cfgErr == nil {
+			cfgPath = def
+		}
+	}
+	if cfgPath != "" {
 		if config.ConfigFileExists(cfgPath) {
 			if earlyDoc, earlyErr := config.LoadConfigFile(cfgPath); earlyErr == nil {
-				configState.Set(earlyDoc)
-				codec.SetEncrypt(earlyDoc.StorageEncryptEnabled())
-				log.Printf("config: early sync from %s", cfgPath)
+				if earlyDoc, validateErr := validateRuntimeConfigDoc(earlyDoc); validateErr != nil {
+					log.Printf("config: early sync rejected invalid config (%v); using Nostr state", validateErr)
+				} else {
+					configState.Set(earlyDoc)
+					codec.SetEncrypt(earlyDoc.StorageEncryptEnabled())
+					log.Printf("config: early sync from %s", cfgPath)
+				}
 			} else {
 				log.Printf("config: early sync failed (%v); using Nostr state", earlyErr)
 			}
@@ -4047,16 +4051,16 @@ func main() {
 	// extracted handler files can receive it instead of reading globals directly.
 	controlServices = &daemonServices{
 		relay: relayPolicyServices{
-			nip17Bus:      controlNIP17Bus,
-			nip04Bus:      controlNIP04Bus,
-			dmBusMu:       &controlDMBusMu,
-			dmBus:         &controlDMBus,
-			controlBus:    controlRPCBus,
-			relaySelector: controlRelaySelector,
-			keyer:         controlKeyer,
-			watchRegistry: watchRegistry,
-			dvmHandler:    dvmHandler,
-			healthMonitor: &relayHealthMonitor,
+			nip17Bus:            controlNIP17Bus,
+			nip04Bus:            controlNIP04Bus,
+			dmBusMu:             &controlDMBusMu,
+			dmBus:               &controlDMBus,
+			controlBus:          controlRPCBus,
+			relaySelector:       controlRelaySelector,
+			keyer:               controlKeyer,
+			watchRegistry:       watchRegistry,
+			dvmHandler:          dvmHandler,
+			healthMonitor:       &relayHealthMonitor,
 			healthState:         map[string]bool{},
 			transportSelector:   controlTransportSelector,
 			acpPeers:            controlACPPeers,
@@ -5170,8 +5174,11 @@ func main() {
 	// each successful read, allowing the runtime to apply changes live.
 	if configFilePath != "" && config.ConfigFileExists(configFilePath) {
 		syncEngine, syncErr := config.NewSyncEngine(configFilePath, docsRepo,
-			config.WithOnChange(func(doc state.ConfigDoc) {
-				doc = policy.NormalizeConfig(doc)
+			config.WithOnChange(func(doc state.ConfigDoc) error {
+				doc, err := validateRuntimeConfigDoc(doc)
+				if err != nil {
+					return fmt.Errorf("path=%s err=%w", configFilePath, err)
+				}
 				log.Printf("config file changed: applying live reload path=%s", configFilePath)
 				bumpPromptConfigGeneration()
 				// Use the internal field directly to avoid triggering disk write-back
@@ -5186,6 +5193,7 @@ func main() {
 				wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
 					TS: time.Now().UnixMilli(),
 				})
+				return nil
 			}),
 		)
 		if syncErr != nil {
@@ -5225,6 +5233,11 @@ func main() {
 					newDoc, parseErr := config.ParseConfigBytes(raw, configFilePath)
 					if parseErr != nil {
 						log.Printf("SIGHUP reload: parse config failed err=%v", parseErr)
+						continue
+					}
+					newDoc, validateErr := validateRuntimeConfigDoc(newDoc)
+					if validateErr != nil {
+						log.Printf("SIGHUP reload: invalid config err=%v", validateErr)
 						continue
 					}
 					configState.Set(newDoc)
@@ -5981,7 +5994,7 @@ func initEnvelopeCodec(signer nostr.Keyer) (*secure.MutableSelfEnvelopeCodec, er
 func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays []string, adminPubKey string) (state.ConfigDoc, error) {
 	doc, err := repo.GetConfig(ctx)
 	if err == nil {
-		return policy.NormalizeConfig(doc), nil
+		return normalizeAndValidateRuntimeConfigDoc(doc)
 	}
 	if !errors.Is(err, state.ErrNotFound) {
 		return state.ConfigDoc{}, err
@@ -6006,7 +6019,18 @@ func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays
 	if _, err := repo.PutConfig(ctx, fallback); err != nil {
 		return state.ConfigDoc{}, err
 	}
-	return policy.NormalizeConfig(fallback), nil
+	return normalizeAndValidateRuntimeConfigDoc(fallback)
+}
+
+func normalizeAndValidateRuntimeConfigDoc(doc state.ConfigDoc) (state.ConfigDoc, error) {
+	doc = policy.NormalizeConfig(doc)
+	if errs := config.ValidateConfigDoc(doc); len(errs) > 0 {
+		return state.ConfigDoc{}, errs[0]
+	}
+	if err := policy.ValidateConfig(doc); err != nil {
+		return state.ConfigDoc{}, err
+	}
+	return doc, nil
 }
 
 func ensureIngestCheckpoint(ctx context.Context, repo *state.DocsRepository) (state.CheckpointDoc, error) {
@@ -6155,18 +6179,6 @@ func checkpointSinceUnix(lastUnix int64) int64 {
 	return since
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
 func handleControlRPCRequest(
 	ctx context.Context,
 	in nostruntime.ControlRPCInbound,
@@ -6191,19 +6203,19 @@ func handleControlRPCRequest(
 			emitter:   controlWsEmitter,
 			emitterMu: &controlWsEmitterMu,
 			session: sessionServices{
-				sessionStore:    controlSessionStore,
-				toolRegistry:    controlToolRegistry,
-				agentJobs:       controlAgentJobs,
-				sessionRouter:   controlSessionRouter,
-				agentRegistry:   controlAgentRegistry,
-				agentRuntime:    controlAgentRuntime,
-				subagents:       controlSubagents,
-				sessionTurns:    controlSessionTurns,
-				ops:             controlOps,
-				cronJobs:        controlCronJobs,
-				execApprovals:   controlExecApprovals,
-				wizards:         controlWizards,
-				nodeInvocations: controlNodeInvocations,
+				sessionStore:      controlSessionStore,
+				toolRegistry:      controlToolRegistry,
+				agentJobs:         controlAgentJobs,
+				sessionRouter:     controlSessionRouter,
+				agentRegistry:     controlAgentRegistry,
+				agentRuntime:      controlAgentRuntime,
+				subagents:         controlSubagents,
+				sessionTurns:      controlSessionTurns,
+				ops:               controlOps,
+				cronJobs:          controlCronJobs,
+				execApprovals:     controlExecApprovals,
+				wizards:           controlWizards,
+				nodeInvocations:   controlNodeInvocations,
 				sessionMemRuntime: controlSessionMemoryRuntime,
 			},
 			relay: relayPolicyServices{
@@ -6815,8 +6827,6 @@ func emitControlWSEvent(event string, payload any) {
 	}
 }
 
-
-
 // preprocessAttachments processes media attachments from a chat.send request.
 //   - Audio attachments are transcribed via Whisper and their transcripts are
 //     appended to text as "[Transcription]: ...".
@@ -7002,9 +7012,3 @@ func persistToolTraces(
 	}
 	return firstErr
 }
-
-
-
-
-
-

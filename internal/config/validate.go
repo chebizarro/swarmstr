@@ -101,13 +101,9 @@ var knownModels = map[string]bool{
 }
 
 func validateAgentPolicy(a state.AgentPolicy) []error {
-	var errs []error
-	if a.DefaultModel != "" && !knownModels[a.DefaultModel] {
-		// Warn only – third-party model strings like "gpt-4o" are valid too.
-		// We record the error so callers can emit a warning without blocking.
-		errs = append(errs, fmt.Errorf("agent.default_model: unrecognised model %q (may still work at runtime)", a.DefaultModel))
-	}
-	return errs
+	// Model identifiers are intentionally open-ended for provider compatibility.
+	// Keep this non-blocking so third-party/custom/OpenClaw model strings remain valid.
+	return nil
 }
 
 func validateAgents(agents state.AgentsConfig) []error {

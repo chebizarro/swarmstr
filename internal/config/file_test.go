@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseConfigBytesStorageEncrypt(t *testing.T) {
 	doc, err := ParseConfigBytes([]byte(`{"storage":{"encrypt":false}}`), ".json")
@@ -193,5 +196,120 @@ func TestParseConfigBytesFIPSTransportPref(t *testing.T) {
 		if got := doc.FIPS.EffectiveTransportPref(); got != tc.expected {
 			t.Errorf("input %s: expected transport_pref=%q, got %q", tc.input, tc.expected, got)
 		}
+	}
+}
+
+func TestParseConfigBytesLoadsPreviouslyDroppedFields(t *testing.T) {
+	input := `{
+		"version": 7,
+		"control": {
+			"require_auth": true,
+			"allow_unauth_methods": ["status.get"],
+			"legacy_token_fallback": true,
+			"admins": [{"pubkey":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","methods":["config.get"]}]
+		},
+		"providers": {
+			"openai": {
+				"api_key": "${OPENAI_API_KEY}",
+				"api_keys": ["${OPENAI_API_KEY_A}", "${OPENAI_API_KEY_B}"]
+			}
+		},
+		"session": {
+			"ttl_seconds": 10,
+			"prune_after_days": 30,
+			"prune_on_boot": true
+		},
+		"cron": {
+			"enabled": true,
+			"job_timeout_secs": 123
+		},
+		"hooks": {
+			"enabled": true,
+			"token": "secret",
+			"allowed_agent_ids": ["main"],
+			"default_session_key": "hook:main",
+			"allow_request_session_key": true
+		},
+		"timeouts": {
+			"git_ops_secs": 22,
+			"memory_persist_secs": 33,
+			"subagent_default_secs": 44
+		},
+		"nostr_channels": {
+			"dev": {
+				"kind": "chat",
+				"allow_from": ["*"],
+				"config": {
+					"root_tag": "general"
+				}
+			}
+		},
+		"agents": [{
+			"id": "main",
+			"model": "gpt-4o",
+			"max_agentic_iterations": 12
+		}]
+	}`
+	doc, err := ParseConfigBytes([]byte(input), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	if doc.Version != 7 {
+		t.Fatalf("expected version=7, got %d", doc.Version)
+	}
+	if !doc.Control.RequireAuth || !doc.Control.LegacyTokenFallback || len(doc.Control.AllowUnauthMethods) != 1 || len(doc.Control.Admins) != 1 {
+		t.Fatalf("unexpected control config: %#v", doc.Control)
+	}
+	if len(doc.Providers["openai"].APIKeys) != 2 {
+		t.Fatalf("expected providers.openai.api_keys to load, got %#v", doc.Providers["openai"])
+	}
+	if doc.Session.PruneAfterDays != 30 || !doc.Session.PruneOnBoot {
+		t.Fatalf("unexpected session config: %#v", doc.Session)
+	}
+	if !doc.CronCfg.Enabled || doc.CronCfg.JobTimeoutSecs != 123 {
+		t.Fatalf("unexpected cron config: %#v", doc.CronCfg)
+	}
+	if !doc.Hooks.Enabled || doc.Hooks.Token != "secret" || doc.Hooks.DefaultSessionKey != "hook:main" {
+		t.Fatalf("unexpected hooks config: %#v", doc.Hooks)
+	}
+	if doc.Timeouts.GitOpsSecs != 22 || doc.Timeouts.MemoryPersistSecs != 33 || doc.Timeouts.SubagentDefaultSecs != 44 {
+		t.Fatalf("unexpected timeouts config: %#v", doc.Timeouts)
+	}
+	if doc.NostrChannels["dev"].Config["root_tag"] != "general" || len(doc.NostrChannels["dev"].AllowFrom) != 1 {
+		t.Fatalf("unexpected nostr channel config: %#v", doc.NostrChannels["dev"])
+	}
+	if len(doc.Agents) != 1 || doc.Agents[0].MaxAgenticIterations != 12 {
+		t.Fatalf("unexpected agent config: %#v", doc.Agents)
+	}
+}
+
+func TestParseConfigBytesRejectsUnsupportedFieldsInsteadOfDroppingThem(t *testing.T) {
+	_, err := ParseConfigBytes([]byte(`{
+		"hooks": {"enabled": true, "bogus": true},
+		"agents": [{"id":"main","model":"gpt-4o","bogus_agent_field":1}],
+		"session": {"ttl_seconds": 1, "history_limit": 50}
+	}`), ".json")
+	if err == nil {
+		t.Fatal("expected unsupported field error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"hooks.bogus", "agents[0].bogus_agent_field", "session.history_limit"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("expected error to mention %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestParseConfigBytesOpenClawAgentsListWithoutDefaults(t *testing.T) {
+	doc, err := ParseConfigBytes([]byte(`{
+		"agents": {
+			"list": [{"id":"main","model":"gpt-4o"}]
+		}
+	}`), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	if len(doc.Agents) != 1 || doc.Agents[0].ID != "main" {
+		t.Fatalf("unexpected parsed agents: %#v", doc.Agents)
 	}
 }
