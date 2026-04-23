@@ -60,14 +60,17 @@ For Pi 3B+ / Pi 4 with 2GB RAM, reduce resource usage in `~/.metiq/config.json`:
 
 ```json
 {
+  "agents": [
+    {
+      "id": "main",
+      "max_context_tokens": 50000
+    }
+  ],
   "extra": {
     "heartbeat": {
       "enabled": true,
       "interval_seconds": 3600
     }
-  },
-  "session": {
-    "history_limit": 50
   }
 }
 ```

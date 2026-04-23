@@ -78,6 +78,62 @@ func pruneSessions(ctx context.Context, docsRepo *state.DocsRepository, transcri
 	}
 }
 
+// pruneIdleSessions deletes sessions whose last inbound message is older than
+// olderThanDays days. Unlike pruneSessions, outbound replies do not keep the
+// session alive for this policy.
+func pruneIdleSessions(ctx context.Context, docsRepo *state.DocsRepository, transcriptRepo *state.TranscriptRepository, olderThanDays int) {
+	sessions, err := docsRepo.ListSessions(ctx, 10000)
+	if err != nil {
+		log.Printf("session idle prune: list sessions: %v", err)
+		return
+	}
+	cutoff := time.Now().Add(-time.Duration(olderThanDays) * 24 * time.Hour)
+	pruned := 0
+	for _, sess := range sessions {
+		if !shouldPruneIdleSession(sess, cutoff) {
+			continue
+		}
+		exclusiveCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+		didPrune := false
+		err := withExclusiveSessionTurn(exclusiveCtx, sess.SessionID, 0, func() error {
+			current, err := docsRepo.GetSession(ctx, sess.SessionID)
+			if err != nil {
+				return err
+			}
+			if !shouldPruneIdleSession(current, cutoff) {
+				return nil
+			}
+			entries, _ := transcriptRepo.ListSessionAll(ctx, sess.SessionID)
+			for _, e := range entries {
+				if delErr := transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID); delErr != nil {
+					log.Printf("transcript delete failed session=%s entry=%s: %v", sess.SessionID, e.EntryID, delErr)
+				}
+			}
+			_, err = updateExistingSessionDoc(ctx, docsRepo, sess.SessionID, current.PeerPubKey, func(session *state.SessionDoc) error {
+				session.Meta = mergeSessionMeta(session.Meta, map[string]any{
+					"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "idle",
+				})
+				return nil
+			})
+			if err == nil {
+				didPrune = true
+			}
+			return err
+		})
+		cancel()
+		if err != nil {
+			log.Printf("session idle prune: skip busy session=%s err=%v", sess.SessionID, err)
+			continue
+		}
+		if didPrune {
+			pruned++
+		}
+	}
+	if pruned > 0 {
+		log.Printf("session idle prune: deleted %d sessions idle for more than %d days", pruned, olderThanDays)
+	}
+}
+
 func sessionLastActivityUnix(doc state.SessionDoc) int64 {
 	lastActivity := doc.LastInboundAt
 	if doc.LastReplyAt > lastActivity {
@@ -92,6 +148,13 @@ func shouldPruneSession(doc state.SessionDoc, cutoff time.Time) bool {
 		return true
 	}
 	return !time.Unix(lastActivity, 0).After(cutoff)
+}
+
+func shouldPruneIdleSession(doc state.SessionDoc, cutoff time.Time) bool {
+	if doc.LastInboundAt == 0 {
+		return true
+	}
+	return !time.Unix(doc.LastInboundAt, 0).After(cutoff)
 }
 
 func runSessionsPrune(

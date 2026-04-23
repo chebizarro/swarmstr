@@ -296,6 +296,9 @@ type SessionConfig struct {
 	// PruneAfterDays deletes transcript entries for sessions whose last
 	// activity is older than this many days.  0 = disabled.
 	PruneAfterDays int `json:"prune_after_days,omitempty"`
+	// PruneIdleAfterDays deletes sessions whose last inbound message is older
+	// than this many days. 0 = disabled.
+	PruneIdleAfterDays int `json:"prune_idle_after_days,omitempty"`
 	// PruneOnBoot runs a pruning pass at daemon startup.
 	PruneOnBoot bool `json:"prune_on_boot,omitempty"`
 }
@@ -484,7 +487,7 @@ type AgentConfig struct {
 	Name         string `json:"name,omitempty"`
 	Model        string `json:"model,omitempty"`
 	WorkspaceDir string `json:"workspace_dir,omitempty"`
-	ToolProfile string `json:"tool_profile,omitempty"` // minimal|coding|messaging|full
+	ToolProfile  string `json:"tool_profile,omitempty"` // minimal|coding|messaging|full
 	// Provider names the providers[] entry to use for this agent (e.g. "anthropic", "ollama").
 	// When set, credentials from ProvidersConfig[Provider] override the default env-based provider.
 	Provider string `json:"provider,omitempty"`

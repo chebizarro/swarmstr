@@ -216,8 +216,6 @@ Notes:
 {
   "session": {
     "ttl_seconds": 0,
-    "max_sessions": 0,
-    "history_limit": 0,
     "prune_after_days": 30,
     "prune_idle_after_days": 7,
     "prune_on_boot": true
