@@ -6690,6 +6690,21 @@ func autoResolveProviderOverride(model string, providers map[string]state.Provid
 	case norm == "openrouter" || strings.HasPrefix(norm, "openrouter/"):
 		family = "openrouter"
 	default:
+		// Not a well-known provider family — try to extract a custom
+		// provider prefix from the model string (e.g. "lemmy-local/model.gguf"
+		// → prefix "lemmy-local") and look it up in the providers map.
+		if idx := strings.Index(norm, "/"); idx > 0 {
+			prefix := norm[:idx]
+			if pe, ok := providers[prefix]; ok {
+				return providerOverrideForEntry(prefix, pe)
+			}
+			// Case-insensitive scan for provider keys matching the prefix.
+			for key, pe := range providers {
+				if strings.EqualFold(key, prefix) {
+					return providerOverrideForEntry(key, pe)
+				}
+			}
+		}
 		return agent.ProviderOverride{}
 	}
 
@@ -6738,6 +6753,17 @@ func resolveModelProviderOverride(cfg state.ConfigDoc, agCfg state.AgentConfig, 
 	}
 	if override.BaseURL == "" && override.APIKey == "" && override.Model == "" {
 		override = autoResolveProviderOverride(model, cfg.Providers)
+	}
+	// Final fallback: if auto-resolution still returned nothing but the agent
+	// config explicitly names a provider, use that provider entry directly.
+	// This handles models with slashes (e.g. "lemmy-local/model.gguf") where
+	// the prefix doesn't match a well-known family but agCfg.Provider is set.
+	if override.BaseURL == "" && override.APIKey == "" && override.Model == "" {
+		if provName := strings.TrimSpace(agCfg.Provider); provName != "" {
+			if pe, ok := cfg.Providers[provName]; ok {
+				override = providerOverrideForEntry(provName, pe)
+			}
+		}
 	}
 	override.SystemPrompt = strings.TrimSpace(agCfg.SystemPrompt)
 	return override
