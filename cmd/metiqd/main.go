@@ -970,7 +970,30 @@ func main() {
 
 	// tts: convert text to speech — registered after ttsMgr is set up.
 	// See the deferred registration below (after ttsMgr = ttspkg.NewManager()).
-	runtimeCfg, err := ensureRuntimeConfig(ctx, docsRepo, cfg.Relays, pubkey)
+	validateRuntimeConfigDoc := normalizeAndValidateRuntimeConfigDoc
+	var startupFileConfig *state.ConfigDoc
+	startupFileDefinesControl := false
+	cfgPath := strings.TrimSpace(configFilePath)
+	if cfgPath == "" {
+		if def, cfgErr := config.DefaultConfigPath(); cfgErr == nil {
+			cfgPath = def
+		}
+	}
+	if cfgPath != "" && config.ConfigFileExists(cfgPath) {
+		startupFileDefinesControl = configFileDeclaresTopLevelKey(cfgPath, "control")
+		if fileDoc, fileErr := config.LoadConfigFile(cfgPath); fileErr == nil {
+			if fileDoc, validateErr := validateRuntimeConfigDoc(fileDoc); validateErr != nil {
+				log.Printf("config: startup file rejected invalid config (%v); using persisted state", validateErr)
+			} else {
+				startupFileConfig = &fileDoc
+				log.Printf("config: startup file candidate %s", cfgPath)
+			}
+		} else {
+			log.Printf("config: startup file load failed (%v); using persisted state", fileErr)
+		}
+	}
+
+	runtimeCfg, err := ensureRuntimeConfig(ctx, docsRepo, cfg.Relays, pubkey, startupFileConfig, startupFileDefinesControl)
 	if err != nil {
 		log.Fatalf("load runtime config: %v", err)
 	}
@@ -978,35 +1001,6 @@ func main() {
 	configState = newRuntimeConfigStore(runtimeCfg)
 	controlRuntimeConfig = configState
 	setRuntimeIdentityInfo(runtimeCfg, pubkey)
-
-	validateRuntimeConfigDoc := normalizeAndValidateRuntimeConfigDoc
-
-	// ── Early config file sync ──────────────────────────────────────────────
-	// Load config.json synchronously at startup so that configState reflects
-	// file-based settings (e.g. memory.backend) before the backend is initialized.
-	// The file watcher is started later and handles subsequent hot-reloads.
-	cfgPath := strings.TrimSpace(configFilePath)
-	if cfgPath == "" {
-		if def, cfgErr := config.DefaultConfigPath(); cfgErr == nil {
-			cfgPath = def
-		}
-	}
-	if cfgPath != "" {
-		if config.ConfigFileExists(cfgPath) {
-			if earlyDoc, earlyErr := config.LoadConfigFile(cfgPath); earlyErr == nil {
-				if earlyDoc, validateErr := validateRuntimeConfigDoc(earlyDoc); validateErr != nil {
-					log.Printf("config: early sync rejected invalid config (%v); using Nostr state", validateErr)
-				} else {
-					configState.Set(earlyDoc)
-					setRuntimeIdentityInfo(earlyDoc, pubkey)
-					codec.SetEncrypt(earlyDoc.StorageEncryptEnabled())
-					log.Printf("config: early sync from %s", cfgPath)
-				}
-			} else {
-				log.Printf("config: early sync failed (%v); using Nostr state", earlyErr)
-			}
-		}
-	}
 
 	// ── MCP (Model Context Protocol) client integration ─────────────────
 	// Load MCP config from extra.mcp and register discovered tools after the
@@ -5977,7 +5971,32 @@ func initEnvelopeCodec(signer nostr.Keyer) (*secure.MutableSelfEnvelopeCodec, er
 	return secure.NewMutableSelfEnvelopeCodec(signer, true)
 }
 
-func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays []string, adminPubKey string) (state.ConfigDoc, error) {
+func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays []string, adminPubKey string, preferred *state.ConfigDoc, preferredDefinesControl bool) (state.ConfigDoc, error) {
+	if preferred != nil {
+		next, err := normalizeAndValidateRuntimeConfigDoc(*preferred)
+		if err != nil {
+			return state.ConfigDoc{}, err
+		}
+		current, currentErr := repo.GetConfig(ctx)
+		if currentErr == nil {
+			if current, err := normalizeAndValidateRuntimeConfigDoc(current); err == nil && current.Hash() == next.Hash() {
+				return next, nil
+			}
+		} else if errors.Is(currentErr, state.ErrNotFound) {
+			if !preferredDefinesControl {
+				seed := defaultRuntimeConfigDoc(relays, adminPubKey)
+				next.Control = seed.Control
+				next = policy.NormalizeConfig(next)
+			}
+		} else {
+			return state.ConfigDoc{}, currentErr
+		}
+		if _, err := repo.PutConfig(ctx, next); err != nil {
+			return state.ConfigDoc{}, err
+		}
+		return next, nil
+	}
+
 	doc, err := repo.GetConfig(ctx)
 	if err == nil {
 		return normalizeAndValidateRuntimeConfigDoc(doc)
@@ -5986,7 +6005,15 @@ func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays
 		return state.ConfigDoc{}, err
 	}
 
-	fallback := state.ConfigDoc{
+	fallback := defaultRuntimeConfigDoc(relays, adminPubKey)
+	if _, err := repo.PutConfig(ctx, fallback); err != nil {
+		return state.ConfigDoc{}, err
+	}
+	return normalizeAndValidateRuntimeConfigDoc(fallback)
+}
+
+func defaultRuntimeConfigDoc(relays []string, adminPubKey string) state.ConfigDoc {
+	return state.ConfigDoc{
 		Version: 1,
 		DM: state.DMPolicy{
 			Policy: policy.DMPolicyPairing,
@@ -6002,10 +6029,19 @@ func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays
 			}},
 		},
 	}
-	if _, err := repo.PutConfig(ctx, fallback); err != nil {
-		return state.ConfigDoc{}, err
+}
+
+func configFileDeclaresTopLevelKey(path string, key string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
 	}
-	return normalizeAndValidateRuntimeConfigDoc(fallback)
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return false
+	}
+	_, ok := top[strings.TrimSpace(key)]
+	return ok
 }
 
 func normalizeAndValidateRuntimeConfigDoc(doc state.ConfigDoc) (state.ConfigDoc, error) {

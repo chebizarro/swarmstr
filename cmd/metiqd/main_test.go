@@ -69,12 +69,113 @@ func TestEnsureRuntimeConfigDefaultsStorageEncryption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPublicKey: %v", err)
 	}
-	cfg, err := ensureRuntimeConfig(context.Background(), docs, []string{"wss://relay.example"}, hex.EncodeToString(adminPubKey[:]))
+	cfg, err := ensureRuntimeConfig(context.Background(), docs, []string{"wss://relay.example"}, hex.EncodeToString(adminPubKey[:]), nil, false)
 	if err != nil {
 		t.Fatalf("ensureRuntimeConfig: %v", err)
 	}
 	if !cfg.StorageEncryptEnabled() {
 		t.Fatalf("expected storage encryption enabled by default, got %#v", cfg.Storage)
+	}
+}
+
+func TestEnsureRuntimeConfigPersistsPreferredConfig(t *testing.T) {
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	preferred := state.ConfigDoc{
+		Version: 1,
+		DM:      state.DMPolicy{Policy: "open"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}},
+		Control: state.ControlPolicy{RequireAuth: false},
+		Storage: state.StorageConfig{Encrypt: state.BoolPtr(false)},
+	}
+	expected, err := normalizeAndValidateRuntimeConfigDoc(preferred)
+	if err != nil {
+		t.Fatalf("normalize preferred: %v", err)
+	}
+	cfg, err := ensureRuntimeConfig(context.Background(), docs, []string{"wss://relay.example"}, "admin", &preferred, true)
+	if err != nil {
+		t.Fatalf("ensureRuntimeConfig: %v", err)
+	}
+	if cfg.Control.RequireAuth {
+		t.Fatal("expected preferred control policy to be used")
+	}
+	persisted, err := docs.GetConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if persisted.Hash() != expected.Hash() {
+		t.Fatalf("persisted hash = %s, want %s", persisted.Hash(), expected.Hash())
+	}
+	if persisted.Control.RequireAuth {
+		t.Fatal("expected persisted config to match preferred config")
+	}
+	if persisted.StorageEncryptEnabled() {
+		t.Fatal("expected persisted storage encrypt=false from preferred config")
+	}
+}
+
+func TestEnsureRuntimeConfigPreferredConfigOverridesExistingRepoConfig(t *testing.T) {
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	initial := state.ConfigDoc{
+		Version: 1,
+		DM:      state.DMPolicy{Policy: "pairing"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}},
+		Control: state.ControlPolicy{RequireAuth: true, AllowUnauthMethods: []string{"supportedmethods"}},
+		Storage: state.StorageConfig{Encrypt: state.BoolPtr(true)},
+	}
+	if _, err := docs.PutConfig(context.Background(), initial); err != nil {
+		t.Fatalf("PutConfig initial: %v", err)
+	}
+	preferred := state.ConfigDoc{
+		Version: 1,
+		DM:      state.DMPolicy{Policy: "open"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}},
+		Control: state.ControlPolicy{RequireAuth: false},
+		Storage: state.StorageConfig{Encrypt: state.BoolPtr(false)},
+	}
+	expected, err := normalizeAndValidateRuntimeConfigDoc(preferred)
+	if err != nil {
+		t.Fatalf("normalize preferred: %v", err)
+	}
+	cfg, err := ensureRuntimeConfig(context.Background(), docs, []string{"wss://relay.example"}, "admin", &preferred, true)
+	if err != nil {
+		t.Fatalf("ensureRuntimeConfig override: %v", err)
+	}
+	if cfg.Hash() != expected.Hash() {
+		t.Fatalf("runtime hash = %s, want %s", cfg.Hash(), expected.Hash())
+	}
+	persisted, err := docs.GetConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if persisted.Hash() != expected.Hash() {
+		t.Fatalf("persisted hash = %s, want %s", persisted.Hash(), expected.Hash())
+	}
+}
+
+func TestEnsureRuntimeConfigPreferredConfigWithoutControlKeepsSecureDefaultsOnFirstBoot(t *testing.T) {
+	docs := state.NewDocsRepository(newTestStore(), "author")
+	preferred := state.ConfigDoc{
+		Version: 1,
+		DM:      state.DMPolicy{Policy: "open"},
+		Relays:  state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}},
+		Storage: state.StorageConfig{Encrypt: state.BoolPtr(false)},
+	}
+	cfg, err := ensureRuntimeConfig(context.Background(), docs, []string{"wss://relay.example"}, "admin-pubkey", &preferred, false)
+	if err != nil {
+		t.Fatalf("ensureRuntimeConfig secure defaults: %v", err)
+	}
+	if !cfg.Control.RequireAuth {
+		t.Fatal("expected secure control defaults on first boot when file omits control")
+	}
+	if len(cfg.Control.Admins) != 1 || cfg.Control.Admins[0].PubKey != "admin-pubkey" {
+		t.Fatalf("unexpected admin defaults: %#v", cfg.Control.Admins)
+	}
+	persisted, err := docs.GetConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if !persisted.Control.RequireAuth {
+		t.Fatal("expected persisted config to keep secure control defaults")
 	}
 }
 
