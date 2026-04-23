@@ -977,29 +977,7 @@ func main() {
 	codec.SetEncrypt(runtimeCfg.StorageEncryptEnabled())
 	configState = newRuntimeConfigStore(runtimeCfg)
 	controlRuntimeConfig = configState
-	{
-		identityName := "main"
-		identityModel := strings.TrimSpace(os.Getenv("METIQ_AGENT_PROVIDER"))
-		for _, ag := range runtimeCfg.Agents {
-			id := strings.TrimSpace(ag.ID)
-			if id != "" && id != "main" {
-				continue
-			}
-			if name := strings.TrimSpace(ag.Name); name != "" {
-				identityName = name
-			}
-			if model := strings.TrimSpace(ag.Model); model != "" {
-				identityModel = model
-			}
-			break
-		}
-		toolbuiltin.SetIdentityInfo(toolbuiltin.IdentityInfo{
-			Name:   identityName,
-			Pubkey: pubkey,
-			NPub:   toolbuiltin.NostrNPubFromHex(pubkey),
-			Model:  identityModel,
-		})
-	}
+	setRuntimeIdentityInfo(runtimeCfg, pubkey)
 
 	validateRuntimeConfigDoc := normalizeAndValidateRuntimeConfigDoc
 
@@ -1020,6 +998,7 @@ func main() {
 					log.Printf("config: early sync rejected invalid config (%v); using Nostr state", validateErr)
 				} else {
 					configState.Set(earlyDoc)
+					setRuntimeIdentityInfo(earlyDoc, pubkey)
 					codec.SetEncrypt(earlyDoc.StorageEncryptEnabled())
 					log.Printf("config: early sync from %s", cfgPath)
 				}
@@ -5160,6 +5139,7 @@ func main() {
 	configState.SetOnChange(func(doc state.ConfigDoc) {
 		// Bump prompt section cache generation so next prompt build recomputes.
 		bumpPromptConfigGeneration()
+		setRuntimeIdentityInfo(doc, pubkey)
 		applyRuntimeConfigSideEffects(doc)
 		resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
 		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live config apply")
@@ -5186,6 +5166,7 @@ func main() {
 				configState.mu.Lock()
 				configState.cfg = doc
 				configState.mu.Unlock()
+				setRuntimeIdentityInfo(doc, pubkey)
 				applyRuntimeConfigSideEffects(doc)
 				resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
 				applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live file-reload apply")
