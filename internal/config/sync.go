@@ -48,7 +48,7 @@ type SyncEngine struct {
 	debounce time.Duration
 	log      *slog.Logger
 	cancel   context.CancelFunc
-	onChange func(state.ConfigDoc) // called after each successful reload from disk
+	onChange func(state.ConfigDoc) error // called after each successful reload from disk
 }
 
 // NewSyncEngine creates a SyncEngine. Call Start to activate file watching.
@@ -89,7 +89,7 @@ func WithLogger(l *slog.Logger) SyncOption {
 // WithOnChange registers a callback that is invoked with the freshly loaded
 // ConfigDoc each time the config file changes on disk and is successfully
 // read.  This allows the runtime to apply changes without a daemon restart.
-func WithOnChange(fn func(state.ConfigDoc)) SyncOption {
+func WithOnChange(fn func(state.ConfigDoc) error) SyncOption {
 	return func(se *SyncEngine) { se.onChange = fn }
 }
 
@@ -206,7 +206,10 @@ func (se *SyncEngine) loop(ctx context.Context, watcher *fsnotify.Watcher) {
 				onChange := se.onChange
 				se.mu.Unlock()
 				if onChange != nil {
-					onChange(doc)
+					if err := onChange(doc); err != nil {
+						se.log.Error("runtime rejected config change", "err", err)
+						return
+					}
 				}
 				// Then push to relay.
 				if _, err := se.relay.PutConfig(pushCtx, doc); err != nil {

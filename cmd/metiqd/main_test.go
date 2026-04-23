@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,7 +65,11 @@ func (k mainTestKeyer) Decrypt(_ context.Context, ciphertext string, sender nost
 
 func TestEnsureRuntimeConfigDefaultsStorageEncryption(t *testing.T) {
 	docs := state.NewDocsRepository(newTestStore(), "author")
-	cfg, err := ensureRuntimeConfig(context.Background(), docs, []string{"wss://relay.example"}, "admin")
+	adminPubKey, err := newMainTestKeyer(t).GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatalf("GetPublicKey: %v", err)
+	}
+	cfg, err := ensureRuntimeConfig(context.Background(), docs, []string{"wss://relay.example"}, hex.EncodeToString(adminPubKey[:]))
 	if err != nil {
 		t.Fatalf("ensureRuntimeConfig: %v", err)
 	}

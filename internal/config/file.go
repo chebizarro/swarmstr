@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -84,7 +85,7 @@ func LoadConfigFile(path string) (state.ConfigDoc, error) {
 	if obj == nil {
 		return state.ConfigDoc{}, fmt.Errorf("config file is empty or null")
 	}
-	return mapRawToConfigDoc(obj), nil
+	return parseRawConfigMap(obj)
 }
 
 // WriteConfigFile serialises a ConfigDoc to a JSON file at path.
@@ -159,7 +160,7 @@ func ParseConfigBytes(raw []byte, extHint string) (state.ConfigDoc, error) {
 	if obj == nil {
 		return state.ConfigDoc{}, fmt.Errorf("config is empty or null")
 	}
-	return mapRawToConfigDoc(obj), nil
+	return parseRawConfigMap(obj)
 }
 
 // DefaultConfigPath returns ~/.metiq/config.json.
@@ -230,6 +231,9 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 	if doc.Extra == nil {
 		doc.Extra = map[string]any{}
 	}
+	if v, ok := toInt(raw["version"]); ok && v > 0 {
+		doc.Version = v
+	}
 
 	// ── relays ────────────────────────────────────────────────────────────────
 	if relaysRaw, ok := raw["relays"]; ok {
@@ -298,6 +302,49 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 				doc.Agent.DefaultModel = strings.TrimSpace(model)
 			}
 		}
+		if v, ok := agentRaw["thinking"].(string); ok {
+			doc.Agent.Thinking = strings.TrimSpace(v)
+		}
+		if v, ok := agentRaw["verbose"].(string); ok {
+			doc.Agent.Verbose = strings.TrimSpace(v)
+		}
+		if v, ok := agentRaw["default_autonomy"].(string); ok {
+			doc.Agent.DefaultAutonomy = state.AutonomyMode(strings.TrimSpace(v))
+		}
+		if authRaw, ok := agentRaw["default_authority"].(map[string]any); ok {
+			var auth state.TaskAuthority
+			if decodeMapIntoStruct(authRaw, &auth) {
+				doc.Agent.DefaultAuthority = &auth
+			}
+		}
+	}
+
+	// ── control (typed) ───────────────────────────────────────────────────────
+	if controlRaw, ok := raw["control"].(map[string]any); ok {
+		control := state.ControlPolicy{}
+		if v, ok := controlRaw["require_auth"].(bool); ok {
+			control.RequireAuth = v
+		}
+		if v, ok := controlRaw["legacy_token_fallback"].(bool); ok {
+			control.LegacyTokenFallback = v
+		}
+		control.AllowUnauthMethods = toStringSlice(controlRaw["allow_unauth_methods"])
+		if adminsRaw, ok := controlRaw["admins"].([]any); ok {
+			control.Admins = make([]state.ControlAdmin, 0, len(adminsRaw))
+			for _, item := range adminsRaw {
+				adminMap, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				admin := state.ControlAdmin{}
+				if v, ok := adminMap["pubkey"].(string); ok {
+					admin.PubKey = strings.TrimSpace(v)
+				}
+				admin.Methods = toStringSlice(adminMap["methods"])
+				control.Admins = append(control.Admins, admin)
+			}
+		}
+		doc.Control = control
 	}
 
 	// ── native extra pass-through ─────────────────────────────────────────────
@@ -373,6 +420,11 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 				} else if v, ok := pm["apiKey"].(string); ok {
 					entry.APIKey = strings.TrimSpace(v)
 				}
+				if keys := toStringSlice(pm["api_keys"]); len(keys) > 0 {
+					entry.APIKeys = keys
+				} else if keys := toStringSlice(pm["apiKeys"]); len(keys) > 0 {
+					entry.APIKeys = keys
+				}
 				if v, ok := pm["base_url"].(string); ok {
 					entry.BaseURL = strings.TrimSpace(v)
 				} else if v, ok := pm["baseUrl"].(string); ok {
@@ -389,7 +441,7 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 				}
 				for key, value := range pm {
 					switch key {
-					case "enabled", "api_key", "apiKey", "base_url", "baseUrl", "model", "extra":
+					case "enabled", "api_key", "apiKey", "api_keys", "apiKeys", "base_url", "baseUrl", "model", "extra":
 						continue
 					}
 					if entry.Extra == nil {
@@ -431,6 +483,12 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 					for k, tv := range tags {
 						ch.Tags[k] = toStringSlice(tv)
 					}
+				}
+				if cfgMap, ok := cm["config"].(map[string]any); ok {
+					ch.Config = cloneAnyMap(cfgMap)
+				}
+				if v := toStringSlice(cm["allow_from"]); len(v) > 0 {
+					ch.AllowFrom = v
 				}
 				doc.NostrChannels[name] = ch
 			}
@@ -488,6 +546,12 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		if v, ok := sessionRaw["ttl_seconds"].(float64); ok {
 			sess.TTLSeconds = int(v)
 		}
+		if v, ok := toInt(sessionRaw["prune_after_days"]); ok {
+			sess.PruneAfterDays = v
+		}
+		if v, ok := sessionRaw["prune_on_boot"].(bool); ok {
+			sess.PruneOnBoot = v
+		}
 		doc.Session = sess
 	}
 
@@ -543,7 +607,26 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		if v, ok := cronRaw["enabled"].(bool); ok {
 			cron.Enabled = v
 		}
+		if v, ok := toInt(cronRaw["job_timeout_secs"]); ok {
+			cron.JobTimeoutSecs = v
+		}
 		doc.CronCfg = cron
+	}
+
+	// ── hooks (typed) ─────────────────────────────────────────────────────────
+	if hooksRaw, ok := raw["hooks"].(map[string]any); ok {
+		var hooks state.HooksConfig
+		if decodeMapIntoStruct(hooksRaw, &hooks) {
+			doc.Hooks = hooks
+		}
+	}
+
+	// ── timeouts (typed) ──────────────────────────────────────────────────────
+	if timeoutsRaw, ok := raw["timeouts"].(map[string]any); ok {
+		var cfg state.TimeoutsConfig
+		if decodeMapIntoStruct(timeoutsRaw, &cfg) {
+			doc.Timeouts = cfg
+		}
 	}
 
 	// ── pass-through sections (unknown / rarely accessed as typed) ────────────
@@ -667,6 +750,11 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 		} else if v, ok := toInt(m["turnTimeoutSecs"]); ok {
 			ac.TurnTimeoutSecs = v
 		}
+		if v, ok := toInt(m["max_agentic_iterations"]); ok {
+			ac.MaxAgenticIterations = v
+		} else if v, ok := toInt(m["maxAgenticIterations"]); ok {
+			ac.MaxAgenticIterations = v
+		}
 		// dm_peers: list of Nostr pubkeys routed to this agent for DMs.
 		if v, ok := m["dm_peers"].([]any); ok {
 			for _, peer := range v {
@@ -684,6 +772,175 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 		out = append(out, ac)
 	}
 	return out
+}
+
+func parseRawConfigMap(raw map[string]any) (state.ConfigDoc, error) {
+	if errs := detectUnknownConfigKeys(raw); len(errs) > 0 {
+		return state.ConfigDoc{}, fmt.Errorf("unsupported config fields:\n  - %s", strings.Join(errs, "\n  - "))
+	}
+	return mapRawToConfigDoc(raw), nil
+}
+
+func decodeMapIntoStruct(raw map[string]any, out any) bool {
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(encoded, out) == nil
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func detectUnknownConfigKeys(raw map[string]any) []string {
+	var errs []string
+	allowedTop := []string{
+		"version", "dm", "relays", "agent", "control", "acp", "agents", "nostr_channels",
+		"providers", "session", "storage", "heartbeat", "tts", "secrets", "cron",
+		"hooks", "timeouts", "agent_list", "fips", "extra", "channels", "plugins",
+		"skills", "memory", "update", "wizard", "pairing",
+	}
+	for key, value := range raw {
+		if !slices.Contains(allowedTop, key) {
+			errs = append(errs, key)
+			continue
+		}
+		switch key {
+		case "dm":
+			errs = append(errs, detectUnknownMapKeys("dm", value, []string{"policy", "reply_scheme", "allow_from", "allowFrom", "allow_from_lists"})...)
+		case "relays":
+			errs = append(errs, detectUnknownMapKeys("relays", value, []string{"read", "write"})...)
+		case "agent":
+			errs = append(errs, detectUnknownMapKeys("agent", value, []string{"default_model", "thinking", "verbose", "default_autonomy", "default_authority"})...)
+		case "control":
+			errs = append(errs, detectUnknownMapKeys("control", value, []string{"require_auth", "allow_unauth_methods", "admins", "legacy_token_fallback"})...)
+		case "acp":
+			errs = append(errs, detectUnknownMapKeys("acp", value, []string{"transport"})...)
+		case "session":
+			errs = append(errs, detectUnknownMapKeys("session", value, []string{"ttl_seconds", "prune_after_days", "prune_on_boot"})...)
+		case "storage":
+			errs = append(errs, detectUnknownMapKeys("storage", value, []string{"encrypt"})...)
+		case "heartbeat":
+			errs = append(errs, detectUnknownMapKeys("heartbeat", value, []string{"enabled", "interval_ms"})...)
+		case "tts":
+			errs = append(errs, detectUnknownMapKeys("tts", value, []string{"enabled", "provider", "voice"})...)
+		case "cron":
+			errs = append(errs, detectUnknownMapKeys("cron", value, []string{"enabled", "job_timeout_secs"})...)
+		case "agent_list":
+			errs = append(errs, detectUnknownMapKeys("agent_list", value, []string{"d", "relay", "auto_sync"})...)
+		case "fips":
+			errs = append(errs, detectUnknownMapKeys("fips", value, []string{"enabled", "control_socket", "agent_port", "control_port", "transport_pref", "peers", "conn_timeout", "reach_cache_ttl"})...)
+		case "hooks":
+			errs = append(errs, detectUnknownMapKeys("hooks", value, []string{"enabled", "token", "allowed_agent_ids", "default_session_key", "allow_request_session_key", "mappings"})...)
+		case "timeouts":
+			errs = append(errs, detectUnknownMapKeys("timeouts", value, []string{
+				"session_memory_extraction_secs", "session_compact_summary_secs", "grep_search_secs",
+				"image_fetch_secs", "tool_chain_exec_secs", "git_ops_secs", "llm_provider_http_secs",
+				"webhook_wake_secs", "webhook_agent_start_secs", "signer_connect_secs",
+				"memory_persist_secs", "subagent_default_secs",
+			})...)
+		case "agents":
+			errs = append(errs, detectUnknownAgentsKeys(value)...)
+		case "nostr_channels":
+			errs = append(errs, detectUnknownNostrChannelKeys(value)...)
+		}
+	}
+	slices.Sort(errs)
+	return errs
+}
+
+func detectUnknownMapKeys(path string, raw any, allowed []string) []string {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var errs []string
+	for key := range m {
+		if !slices.Contains(allowed, key) {
+			errs = append(errs, path+"."+key)
+		}
+	}
+	return errs
+}
+
+func detectUnknownAgentsKeys(raw any) []string {
+	var errs []string
+	switch typed := raw.(type) {
+	case []any:
+		allowed := []string{
+			"id", "name", "model", "workspace_dir", "workspaceDir", "tool_profile", "toolProfile",
+			"provider", "system_prompt", "systemPrompt", "memory_scope", "memoryScope",
+			"enabled_tools", "fallback_models", "fallbackModels", "light_model", "lightModel",
+			"light_model_threshold", "lightModelThreshold", "heartbeat", "context_window",
+			"contextWindow", "max_context_tokens", "maxContextTokens", "thinking_level",
+			"thinkingLevel", "turn_timeout_secs", "turnTimeoutSecs", "dm_peers", "dmPeers",
+			"max_agentic_iterations", "maxAgenticIterations",
+		}
+		for i, item := range typed {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			for key := range m {
+				if !slices.Contains(allowed, key) {
+					errs = append(errs, fmt.Sprintf("agents[%d].%s", i, key))
+				}
+			}
+		}
+	case map[string]any:
+		for key := range typed {
+			if !slices.Contains([]string{"defaults", "list"}, key) {
+				errs = append(errs, "agents."+key)
+			}
+		}
+		if defaults, ok := typed["defaults"].(map[string]any); ok {
+			for key := range defaults {
+				if !slices.Contains([]string{"model", "heartbeat"}, key) {
+					errs = append(errs, "agents.defaults."+key)
+				}
+			}
+			if hb, ok := defaults["heartbeat"].(map[string]any); ok {
+				for key := range hb {
+					if key != "every" {
+						errs = append(errs, "agents.defaults.heartbeat."+key)
+					}
+				}
+			}
+		}
+		if list, ok := typed["list"].([]any); ok {
+			errs = append(errs, detectUnknownAgentsKeys(list)...)
+		}
+	}
+	return errs
+}
+
+func detectUnknownNostrChannelKeys(raw any) []string {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	allowed := []string{"kind", "enabled", "group_address", "channel_id", "relays", "agent_id", "tags", "config", "allow_from"}
+	var errs []string
+	for name, item := range m {
+		cm, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for key := range cm {
+			if !slices.Contains(allowed, key) {
+				errs = append(errs, "nostr_channels."+name+"."+key)
+			}
+		}
+	}
+	return errs
 }
 
 func toInt(v any) (int, bool) {
