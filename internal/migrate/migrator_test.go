@@ -1,0 +1,411 @@
+package migrate
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestMigrator_DryRun(t *testing.T) {
+	// Create a mock OpenClaw directory
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create openclaw.json
+	cfg := map[string]any{
+		"$schema": "https://openclaw.ai/schema/config.json",
+		"auth": map[string]any{
+			"nostrPrivateKey": "nsec1test...",
+		},
+		"models": map[string]any{
+			"default": "claude-opus-4-5",
+			"providers": map[string]any{
+				"anthropic": map[string]any{
+					"enabled": true,
+					"apiKey":  "${ANTHROPIC_API_KEY}",
+				},
+			},
+		},
+		"agents": map[string]any{
+			"defaults": map[string]any{
+				"model":     "claude-opus-4-5",
+				"workspace": "~/.openclaw/workspace",
+			},
+			"list": []map[string]any{
+				{
+					"id":        "main",
+					"name":      "Test Agent",
+					"model":     "claude-opus-4-5",
+					"workspace": "~/.openclaw/workspace",
+				},
+			},
+		},
+		"cron": map[string]any{
+			"enabled": true,
+		},
+	}
+
+	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(filepath.Join(srcDir, "openclaw.json"), cfgData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create workspace with memory file
+	workspaceDir := filepath.Join(srcDir, "workspace")
+	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	memoryContent := `# Agent Memory
+
+## Important Notes
+- Path to config: ~/.openclaw/openclaw.json
+- Workspace: /Users/test/.openclaw/workspace
+`
+	if err := os.WriteFile(filepath.Join(workspaceDir, "MEMORY.md"), []byte(memoryContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run dry-run migration
+	opts := Options{
+		SourceDir: srcDir,
+		TargetDir: dstDir,
+		DryRun:    true,
+	}
+
+	m := New(opts)
+	report, err := m.Run()
+	if err != nil {
+		t.Fatalf("dry-run failed: %v", err)
+	}
+
+	if !report.Success {
+		t.Error("expected success=true for dry-run")
+	}
+
+	if report.Phase != PhaseDryRun {
+		t.Errorf("expected phase=dry-run, got %s", report.Phase)
+	}
+
+	// Verify artifacts were identified
+	if len(report.Artifacts) == 0 {
+		t.Error("expected artifacts to be identified")
+	}
+
+	// Check that config conversion artifact exists
+	hasConfigArtifact := false
+	for _, art := range report.Artifacts {
+		if art.Type == ArtifactConfig && art.Action == ActionConvert {
+			hasConfigArtifact = true
+			break
+		}
+	}
+	if !hasConfigArtifact {
+		t.Error("expected config artifact with convert action")
+	}
+
+	// In dry-run mode, target should not have config.json created
+	if _, err := os.Stat(filepath.Join(dstDir, "config.json")); err == nil {
+		t.Error("config.json should not exist in dry-run mode")
+	}
+}
+
+func TestMigrator_Apply(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create openclaw.json
+	cfg := map[string]any{
+		"auth": map[string]any{
+			"nostrPrivateKey": "nsec1abc123",
+		},
+		"models": map[string]any{
+			"default": "claude-sonnet-4-5",
+			"providers": map[string]any{
+				"anthropic": map[string]any{
+					"enabled": true,
+					"apiKey":  "${ANTHROPIC_API_KEY}",
+				},
+			},
+		},
+		"agents": map[string]any{
+			"list": []map[string]any{
+				{"id": "main", "name": "My Agent"},
+			},
+		},
+	}
+
+	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(filepath.Join(srcDir, "openclaw.json"), cfgData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create workspace
+	workspaceDir := filepath.Join(srcDir, "workspace")
+	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create memory file
+	memoryContent := "# Memory\n\nTest content referencing ~/.openclaw/config"
+	if err := os.WriteFile(filepath.Join(workspaceDir, "MEMORY.md"), []byte(memoryContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run apply migration
+	opts := Options{
+		SourceDir: srcDir,
+		TargetDir: dstDir,
+		DryRun:    false,
+	}
+
+	m := New(opts)
+	report, err := m.Run()
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if !report.Success {
+		t.Errorf("expected success=true, got issues: %+v", report.Issues)
+	}
+
+	// Verify config.json was created
+	configPath := filepath.Join(dstDir, "config.json")
+	if _, err := os.Stat(configPath); err != nil {
+		t.Error("config.json should exist after apply")
+	}
+
+	// Verify bootstrap.json was created
+	bootstrapPath := filepath.Join(dstDir, "bootstrap.json")
+	if _, err := os.Stat(bootstrapPath); err != nil {
+		t.Error("bootstrap.json should exist after apply")
+	}
+
+	// Verify bootstrap contains private key
+	bootstrapData, _ := os.ReadFile(bootstrapPath)
+	var bootstrap map[string]any
+	if err := json.Unmarshal(bootstrapData, &bootstrap); err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap["private_key"] != "nsec1abc123" {
+		t.Error("bootstrap should contain private_key")
+	}
+
+	// Verify memory file was transformed
+	memoryPath := filepath.Join(dstDir, "workspace", "MEMORY.md")
+	memoryData, err := os.ReadFile(memoryPath)
+	if err != nil {
+		t.Fatalf("failed to read transformed memory file: %v", err)
+	}
+
+	memoryStr := string(memoryData)
+	if !strings.Contains(memoryStr, "migrated_from: openclaw") {
+		t.Error("memory file should contain YAML front-matter with migrated_from")
+	}
+	if !strings.Contains(memoryStr, "~/.metiq/config") {
+		t.Error("memory file paths should be normalized from .openclaw to .metiq")
+	}
+}
+
+func TestMigrator_RuntimeGarbageOmitted(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create openclaw.json
+	cfg := map[string]any{
+		"models": map[string]any{"default": "gpt-4"},
+	}
+	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(filepath.Join(srcDir, "openclaw.json"), cfgData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create runtime garbage directories
+	for _, garbage := range []string{"delivery-queue", "quarantine", "sessions", "tasks"} {
+		garbageDir := filepath.Join(srcDir, garbage)
+		if err := os.MkdirAll(garbageDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		// Add a file to each
+		if err := os.WriteFile(filepath.Join(garbageDir, "test.json"), []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Run migration
+	opts := Options{
+		SourceDir: srcDir,
+		TargetDir: dstDir,
+		DryRun:    false,
+	}
+
+	m := New(opts)
+	report, _ := m.Run()
+
+	// Verify garbage paths are in OmittedPaths
+	if len(report.OmittedPaths) < 4 {
+		t.Errorf("expected at least 4 omitted paths, got %d", len(report.OmittedPaths))
+	}
+
+	// Verify garbage directories don't exist in target
+	for _, garbage := range []string{"delivery-queue", "quarantine", "sessions", "tasks"} {
+		garbagePath := filepath.Join(dstDir, garbage)
+		if _, err := os.Stat(garbagePath); err == nil {
+			t.Errorf("runtime garbage %s should not be copied to target", garbage)
+		}
+	}
+}
+
+func TestMigrator_CronConversion(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create openclaw.json
+	cfg := map[string]any{"cron": map[string]any{"enabled": true}}
+	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(filepath.Join(srcDir, "openclaw.json"), cfgData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create cron/jobs.json
+	cronDir := filepath.Join(srcDir, "cron")
+	if err := os.MkdirAll(cronDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	jobs := []map[string]any{
+		{
+			"id":       "daily-summary",
+			"name":     "Daily Summary",
+			"schedule": "0 9 * * *",
+			"prompt":   "Summarize today's events",
+			"enabled":  true,
+		},
+		{
+			"jobId":    "legacy-job",
+			"schedule": "*/30 * * * *",
+			"command":  "~/.openclaw/scripts/check.sh",
+			"enabled":  true,
+		},
+	}
+	jobsData, _ := json.MarshalIndent(jobs, "", "  ")
+	if err := os.WriteFile(filepath.Join(cronDir, "jobs.json"), jobsData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run migration
+	opts := Options{
+		SourceDir: srcDir,
+		TargetDir: dstDir,
+		DryRun:    false,
+	}
+
+	m := New(opts)
+	report, err := m.Run()
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	// Verify jobs.json was created
+	jobsPath := filepath.Join(dstDir, "cron", "jobs.json")
+	jobsData, err = os.ReadFile(jobsPath)
+	if err != nil {
+		t.Fatalf("failed to read converted jobs.json: %v", err)
+	}
+
+	var convertedJobs []map[string]any
+	if err := json.Unmarshal(jobsData, &convertedJobs); err != nil {
+		t.Fatalf("failed to parse converted jobs.json: %v", err)
+	}
+
+	if len(convertedJobs) != 2 {
+		t.Errorf("expected 2 jobs, got %d", len(convertedJobs))
+	}
+
+	// Check that legacy job with openclaw path generates a warning
+	hasPathWarning := false
+	for _, issue := range report.Issues {
+		if issue.ManualReview && strings.Contains(issue.Message, "openclaw paths") {
+			hasPathWarning = true
+			break
+		}
+	}
+	if !hasPathWarning {
+		t.Error("expected warning for job with openclaw path in command")
+	}
+}
+
+func TestTransformMemoryFile(t *testing.T) {
+	m := &Migrator{
+		opts: Options{
+			SourceDir: "/home/user/.openclaw",
+			TargetDir: "/home/user/.metiq",
+		},
+		report: Report{
+			SourceAgent: "TestBot",
+		},
+	}
+
+	input := `# Agent Memory
+
+## Configuration
+The config is at ~/.openclaw/openclaw.json
+Absolute path: /Users/alice/.openclaw/workspace/notes.md
+
+## Tasks
+- Check ${HOME}/.openclaw/.env for secrets
+`
+
+	result := m.transformMemoryFile(input, "/home/user/.openclaw/workspace/MEMORY.md")
+
+	// Should have front-matter
+	if !strings.HasPrefix(result, "---\n") {
+		t.Error("result should start with YAML front-matter")
+	}
+
+	if !strings.Contains(result, "migrated_from: openclaw") {
+		t.Error("should contain migrated_from field")
+	}
+
+	if !strings.Contains(result, "target_runtime: metiq") {
+		t.Error("should contain target_runtime field")
+	}
+
+	// Paths should be normalized
+	if strings.Contains(result, "~/.openclaw/") {
+		t.Error("should normalize ~/.openclaw/ to ~/.metiq/")
+	}
+
+	if strings.Contains(result, "openclaw.json") {
+		t.Error("should normalize openclaw.json to config.json")
+	}
+
+	if !strings.Contains(result, "~/.metiq/config.json") {
+		t.Error("should contain normalized path ~/.metiq/config.json")
+	}
+}
+
+func TestNormalizePathsInContent(t *testing.T) {
+	m := &Migrator{}
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"~/.openclaw/config", "~/.metiq/config"},
+		{"$HOME/.openclaw/workspace", "$HOME/.metiq/workspace"},
+		{"/Users/alice/.openclaw/memory", "/Users/alice/.metiq/memory"},
+		{"/home/bob/.openclaw/scripts", "/home/bob/.metiq/scripts"},
+		{"openclaw.json", "config.json"},
+		{"no paths here", "no paths here"},
+	}
+
+	for _, tc := range tests {
+		result := m.normalizePathsInContent(tc.input)
+		if result != tc.expected {
+			t.Errorf("normalizePathsInContent(%q) = %q, want %q", tc.input, result, tc.expected)
+		}
+	}
+}

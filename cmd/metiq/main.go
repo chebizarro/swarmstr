@@ -139,6 +139,10 @@ func main() {
 	case "gw":
 		run("gw", runGW, args[1:])
 
+	// ── migrate (OpenClaw → Metiq) ───────────────────────────────────────────
+	case "migrate":
+		run("migrate", runMigrate, args[1:])
+
 	// ── keygen ───────────────────────────────────────────────────────────────
 	case "keygen":
 		run("keygen", runKeygen, args[1:])
@@ -561,6 +565,9 @@ func usage() {
 	fmt.Println("Gateway passthrough:")
 	fmt.Println("  gw <method> [params]  call any gateway method and print JSON result (--transport auto|http|nostr)")
 	fmt.Println("                        params: JSON object or key=value pairs")
+	fmt.Println()
+	fmt.Println("Migration:")
+	fmt.Println("  migrate            migrate OpenClaw agent to Metiq (--source --target --apply)")
 	fmt.Println()
 	fmt.Println("Other:")
 	fmt.Println("  security audit     run local security posture checks")
