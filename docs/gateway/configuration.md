@@ -215,7 +215,7 @@ Notes:
 
 - `light_model` enables heuristic routing for simple inbound turns.
 - `light_model_threshold` must be between `0` and `1`; when omitted, metiq uses its default router threshold.
-- `turn_timeout_secs` — maximum wall-clock seconds for a single agent turn. Set to `-1` to disable the turn timeout entirely. When omitted, the system default applies.
+- `turn_timeout_secs` — maximum wall-clock seconds for a single agent turn. Set to `-1` to disable the turn timeout entirely. When omitted, defaults to 172800 seconds (48 hours) to accommodate large local models with extensive context windows.
 - `max_agentic_iterations` — cap on tool-call → LLM cycles within one turn. When omitted, metiq uses a model-tier default (typically 30).
 - `heartbeat.model` selects the model used by the LLM heartbeat runner for that agent.
 

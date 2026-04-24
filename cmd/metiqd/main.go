@@ -3272,7 +3272,10 @@ func main() {
 			activeAgentID = defaultAgentID(sessionRouter.Get(sessionID))
 		}
 		turnCtxBase, releaseTurn := chatCancels.Begin(sessionID, ctx)
-		const defaultTurnTimeoutSecs = 180
+		// Default turn timeout matches OpenClaw's generous 48-hour default.
+		// This is important for users running large local models with long context windows.
+		const defaultTurnTimeoutSecs = 172800 // 48 hours
+		const turnTimeoutGraceSecs = 1        // Grace period before timing out
 		turnTimeoutSecs := defaultTurnTimeoutSecs
 		for _, ac := range configState.Get().Agents {
 			if ac.ID == activeAgentID && ac.TurnTimeoutSecs != 0 {
@@ -3283,7 +3286,9 @@ func main() {
 		var turnCtx context.Context
 		var cancelTurnTimeout context.CancelFunc
 		if turnTimeoutSecs > 0 {
-			turnCtx, cancelTurnTimeout = context.WithTimeout(turnCtxBase, time.Duration(turnTimeoutSecs)*time.Second)
+			// Apply grace period to the timeout (matches OpenClaw behavior)
+			actualTimeoutSecs := turnTimeoutSecs + turnTimeoutGraceSecs
+			turnCtx, cancelTurnTimeout = context.WithTimeout(turnCtxBase, time.Duration(actualTimeoutSecs)*time.Second)
 		} else {
 			turnCtx = turnCtxBase
 			cancelTurnTimeout = func() {}

@@ -103,7 +103,7 @@ RUN --mount=type=cache,id=metiq-apt-cache,target=/var/cache/apt,sharing=locked \
       jq \
       poppler-utils \
       tzdata \
-      su-exec
+      gosu
 
 # ── Optional: Python 3 + uv (for MCP servers, skills, and extensions) ──────────
 # Build with: docker build --build-arg METIQ_INSTALL_PYTHON=1 .
