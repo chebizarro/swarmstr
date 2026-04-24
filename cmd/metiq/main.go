@@ -128,6 +128,8 @@ func main() {
 		run("cron", runCron, args[1:])
 	case "approvals", "approval":
 		run("approvals", runApprovals, args[1:])
+	case "tasks", "task":
+		run("tasks", runTasks, args[1:])
 	case "doctor":
 		run("doctor", runDoctor, args[1:])
 	case "qr":
@@ -555,6 +557,13 @@ func usage() {
 	fmt.Println("  plugins install    install plugin from Nostr (--pubkey --id)")
 	fmt.Println("  plugins search     search Nostr plugin registry (--q)")
 	fmt.Println("  plugins publish    publish plugin manifest (--manifest)")
+	fmt.Println()
+	fmt.Println("Tasks:")
+	fmt.Println("  tasks list         list tasks (--source --status --limit)")
+	fmt.Println("  tasks show <id>    show task details")
+	fmt.Println("  tasks runs         list task runs (--task --limit)")
+	fmt.Println("  tasks audit        show task ledger statistics")
+	fmt.Println("  tasks cancel <id>  cancel a running task (--reason)")
 	fmt.Println()
 	fmt.Println("Daemon lifecycle:")
 	fmt.Println("  daemon start       start metiqd in background (--bin --bootstrap)")
