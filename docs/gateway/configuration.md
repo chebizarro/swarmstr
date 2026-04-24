@@ -382,7 +382,7 @@ Arbitrary key-value configuration for features that don't have top-level section
 
 ## OpenClaw Config Compatibility
 
-Metiq (swarmstr) provides full interoperability with OpenClaw config files. You can use an existing OpenClaw `config.json` or `config.yaml` file directly with metiqd without modification.
+Metiq provides full interoperability with OpenClaw config files. You can use an existing OpenClaw `config.json` or `config.yaml` file directly with metiqd without modification.
 
 ### Supported OpenClaw Fields
 

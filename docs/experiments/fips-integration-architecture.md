@@ -21,12 +21,12 @@ status: experimental
 ## Overview
 
 This document describes how [FIPS](https://github.com/jmcorgan/fips) (Free
-Internetworking Peering System) integrates with swarmstr's agent networking
+Internetworking Peering System) integrates with metiq's agent networking
 stack to provide relay-independent, low-latency, peer-to-peer agent
 communication over an encrypted mesh network.
 
 FIPS is a self-organizing mesh that routes traffic using Nostr keypairs
-(secp256k1) as native node identities. Because swarmstr agents already use the
+(secp256k1) as native node identities. Because metiq agents already use the
 same keypair scheme for Nostr identity, FIPS node identity IS the agent's Nostr
 identity — no identity bridging, key translation, or additional registration is
 required.
@@ -58,7 +58,7 @@ required.
 
 ## 1. Identity Alignment
 
-Both FIPS and swarmstr derive all identity from a single secp256k1 keypair:
+Both FIPS and metiq derive all identity from a single secp256k1 keypair:
 
 ```
 Agent's nsec (private key)

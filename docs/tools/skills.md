@@ -13,7 +13,7 @@ Skills are Markdown-driven instruction sets that teach the agent how to use spec
 
 ## Discovery Locations (precedence order)
 
-Swarmstr now resolves a single merged skill catalog using this precedence order:
+Metiq now resolves a single merged skill catalog using this precedence order:
 
 1. **Extra skill dirs**: `extra.skills.extra_dirs[]`
 2. **Bundled skills**: shipped with metiq installation
@@ -27,7 +27,7 @@ When a skill key appears in multiple locations, the highest-precedence location 
 The current skills system is intentionally limited to explicit filesystem sources plus config overlays.
 
 - **Plugins are not automatic skill sources.** Installing or enabling a plugin does not cause metiqd to scan that plugin directory for `SKILL.md` files.
-- **Dynamic or conditional skill discovery is not implemented.** Swarmstr does not currently synthesize skills from plugin manifests, runtime feature probes, or other non-filesystem sources.
+- **Dynamic or conditional skill discovery is not implemented.** Metiq does not currently synthesize skills from plugin manifests, runtime feature probes, or other non-filesystem sources.
 - If you want plugin-adjacent skills today, expose them through one of the existing explicit sources:
   - a workspace `skills/` directory
   - `~/.metiq/skills/`
@@ -45,7 +45,7 @@ If built, that V2 should preserve the properties that the current catalog relies
 - explicit operator controls for enablement/allowlisting
 - bounded prompt injection so dynamic discovery cannot silently flood context
 
-That work is intentionally deferred for now because it would couple the plugin/runtime layer to prompt injection semantics in ways swarmstr does not yet model explicitly.
+That work is intentionally deferred for now because it would couple the plugin/runtime layer to prompt injection semantics in ways metiq does not yet model explicitly.
 
 ## Runtime injection
 
