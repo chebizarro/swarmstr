@@ -32,7 +32,19 @@ cp ~/.openclaw/config.json5 ~/metiq-migration.json5
 
 ## Step 2: Import the config into Metiq
 
-Metiq reads OpenClaw-format config files natively (JSON, JSON5, YAML):
+Metiq reads OpenClaw-format config files natively (JSON, JSON5, YAML) with **full interoperability**. You can use your OpenClaw config file directly without conversion:
+
+### Option A: Use the OpenClaw config directly (recommended)
+
+```sh
+# Simply copy your openclaw config - it works as-is!
+cp ~/.openclaw/config.json5 ~/.metiq/config.json
+
+# Start metiqd - it will recognize and use the openclaw format
+metiqd
+```
+
+### Option B: Import and convert to metiq format
 
 ```sh
 # Validate and preview what will be imported (no write):
@@ -45,7 +57,23 @@ metiq config import --file ~/metiq-migration.json5
 metiq config import --file ~/metiq-migration.json5 --path ~/.metiq/config.json
 ```
 
-The importer understands both OpenClaw and Metiq config key naming conventions (camelCase and snake_case aliases are both accepted).
+The config parser understands both OpenClaw and Metiq key naming conventions (camelCase and snake_case aliases are both accepted), and **all OpenClaw-specific fields are preserved** during read/write operations.
+
+### Full Config Compatibility (as of 2026-04-24)
+
+Metiq now supports **100% of OpenClaw config fields** with zero translation warnings:
+
+✅ **All top-level sections** — `logging`, `plugins`, `channels`, `skills`, `memory`, `wizard`, etc.
+✅ **All agent fields** — `workspace`, `agentDir`, `context_pruning`, `max_concurrent`, `embedded_harness`, `thinking_default`, `skills`, `subagents`, `sandbox`, etc.
+✅ **All agents.defaults fields** — 60+ openclaw-specific defaults including `contextPruning`, `maxConcurrent`, `embeddedPi`, `compaction`, etc.
+✅ **Round-trip safe** — Unknown fields preserved in `extra`, no data loss
+
+You will **not** see warnings like:
+```
+metiq rejected some translated fields as unsupported
+```
+
+All fields are recognized, parsed, and preserved correctly.
 
 ---
 

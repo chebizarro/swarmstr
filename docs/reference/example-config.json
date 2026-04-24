@@ -1,0 +1,431 @@
+{
+  "$schema": "https://metiq.ai/schema/config.json",
+  "version": 1,
+  
+  // === DM Policy ===
+  "dm": {
+    "policy": "pairing",
+    "reply_scheme": "auto",
+    "allow_from": ["npub1...", "npub2..."],
+    "allow_from_lists": [
+      {
+        "pubkey": "npub1...",
+        "d": "cascadia-agents",
+        "relay": "wss://relay.damus.io"
+      }
+    ]
+  },
+  
+  // === Relays ===
+  "relays": {
+    "read": [
+      "wss://relay.damus.io",
+      "wss://nos.lol",
+      "wss://relay.nostr.band"
+    ],
+    "write": [
+      "wss://relay.damus.io",
+      "wss://nos.lol"
+    ]
+  },
+  
+  // === Global Agent Defaults ===
+  "agent": {
+    "default_model": "claude-opus-4-5",
+    "thinking": "medium",
+    "verbose": "off",
+    "default_autonomy": "full",
+    "default_authority": {
+      "exec": "block",
+      "network": "allow",
+      "write": "allow"
+    }
+  },
+  
+  // === Control Policy ===
+  "control": {
+    "require_auth": true,
+    "allow_unauth_methods": ["health"],
+    "admins": [
+      {
+        "pubkey": "npub1...",
+        "methods": ["*"]
+      }
+    ],
+    "legacy_token_fallback": false
+  },
+  
+  // === ACP (Agent Control Protocol) ===
+  "acp": {
+    "transport": "auto"
+  },
+  
+  // === Agents ===
+  "agents": {
+    "defaults": {
+      "model": "claude-opus-4-5",
+      "workspace": "~/.metiq/workspace",
+      "thinking_default": "medium",
+      "verbose_default": "off",
+      "max_concurrent": 1,
+      
+      "heartbeat": {
+        "every": "30m",
+        "active_hours": {
+          "start": "08:00",
+          "end": "22:00",
+          "timezone": "user"
+        },
+        "model": "claude-haiku-4-5",
+        "session": "main",
+        "target": "last",
+        "direct_policy": "allow",
+        "prompt": "Read HEARTBEAT.md. Follow it strictly.",
+        "include_system_prompt_section": true,
+        "ack_max_chars": 30,
+        "suppress_tool_error_warnings": true,
+        "timeout_seconds": 120,
+        "light_context": false,
+        "isolated_session": false,
+        "include_reasoning": false
+      },
+      
+      "subagents": {
+        "allow_agents": ["*"],
+        "max_concurrent": 1,
+        "max_spawn_depth": 1,
+        "max_children_per_agent": 5,
+        "archive_after_minutes": 60,
+        "model": "claude-sonnet-4-5",
+        "thinking": "off",
+        "run_timeout_seconds": 300,
+        "announce_timeout_ms": 90000,
+        "require_agent_id": false
+      }
+    },
+    
+    "list": [
+      {
+        "id": "main",
+        "name": "Main Assistant",
+        "model": "claude-opus-4-5",
+        "workspace_dir": "~/.metiq/workspace",
+        "tool_profile": "full",
+        "provider": "anthropic",
+        
+        "fallback_models": [
+          "claude-sonnet-4-5",
+          "gpt-4o",
+          "claude-haiku-4-5"
+        ],
+        
+        "light_model": "claude-haiku-4-5",
+        "light_model_threshold": 0.35,
+        
+        "dm_peers": ["npub1...", "npub2..."],
+        
+        "system_prompt": "You are a helpful AI assistant with access to many tools.",
+        
+        "context_window": 200000,
+        "max_context_tokens": 100000,
+        
+        "thinking_level": "medium",
+        "turn_timeout_secs": 300,
+        "max_agentic_iterations": 30,
+        
+        "memory_scope": "user",
+        
+        "enabled_tools": [],
+        
+        "heartbeat": {
+          "model": "claude-haiku-4-5"
+        }
+      },
+      
+      {
+        "id": "coder",
+        "name": "Coding Assistant",
+        "model": "claude-opus-4-5",
+        "workspace_dir": "~/projects",
+        "tool_profile": "coding",
+        "thinking_level": "high",
+        "max_agentic_iterations": 50
+      },
+      
+      {
+        "id": "social",
+        "name": "Social Bot",
+        "model": "claude-sonnet-4-5",
+        "tool_profile": "messaging",
+        "dm_peers": ["npub3...", "npub4..."]
+      }
+    ]
+  },
+  
+  // === Providers ===
+  "providers": {
+    "anthropic": {
+      "enabled": true,
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "api_keys": [
+        "${ANTHROPIC_KEY_1}",
+        "${ANTHROPIC_KEY_2}",
+        "${ANTHROPIC_KEY_3}"
+      ]
+    },
+    
+    "openai": {
+      "enabled": true,
+      "api_key": "${OPENAI_API_KEY}",
+      "base_url": "https://api.openai.com/v1"
+    },
+    
+    "ollama": {
+      "enabled": true,
+      "base_url": "http://localhost:11434",
+      "model": "llama2"
+    },
+    
+    "openrouter": {
+      "enabled": false,
+      "api_key": "${OPENROUTER_API_KEY}",
+      "base_url": "https://openrouter.ai/api/v1"
+    }
+  },
+  
+  // === Nostr Channels ===
+  "nostr_channels": {
+    "my-group": {
+      "kind": "nip29",
+      "enabled": true,
+      "group_address": "wss://groups.example.com'mygroup",
+      "agent_id": "main",
+      "relays": ["wss://groups.example.com"],
+      "allow_from": ["*"]
+    },
+    
+    "public-chat": {
+      "kind": "nip28",
+      "enabled": true,
+      "channel_id": "channel-event-id",
+      "agent_id": "social",
+      "relays": ["wss://relay.damus.io"]
+    }
+  },
+  
+  // === Session ===
+  "session": {
+    "ttl_seconds": 0,
+    "prune_after_days": 30,
+    "prune_idle_after_days": 7,
+    "prune_on_boot": true
+  },
+  
+  // === Storage ===
+  "storage": {
+    "encrypt": true
+  },
+  
+  // === Heartbeat ===
+  "heartbeat": {
+    "enabled": true,
+    "interval_ms": 1800000
+  },
+  
+  // === TTS ===
+  "tts": {
+    "enabled": false,
+    "provider": "openai",
+    "voice": "nova"
+  },
+  
+  // === Secrets ===
+  "secrets": {
+    "github_token": "env://GITHUB_TOKEN",
+    "db_password": "file:///etc/secrets/db.txt"
+  },
+  
+  // === Cron ===
+  "cron": {
+    "enabled": true,
+    "job_timeout_secs": 300
+  },
+  
+  // === Hooks (Webhooks) ===
+  "hooks": {
+    "enabled": true,
+    "token": "${METIQ_WEBHOOK_TOKEN}",
+    "allowed_agent_ids": ["main"],
+    "default_session_key": "hook:ingress",
+    "allow_request_session_key": false,
+    
+    "mappings": [
+      {
+        "match": {
+          "path": "github"
+        },
+        "action": "agent",
+        "name": "GitHub Events",
+        "message_template": "GitHub: {{action}} on {{repository.full_name}}",
+        "deliver": true,
+        "channel": "nostr",
+        "to": "npub1...",
+        "session_key": "github-webhook"
+      }
+    ]
+  },
+  
+  // === Timeouts ===
+  "timeouts": {
+    "session_memory_extraction_secs": 45,
+    "session_compact_summary_secs": 30,
+    "grep_search_secs": 30,
+    "image_fetch_secs": 30,
+    "tool_chain_exec_secs": 120,
+    "git_ops_secs": 15,
+    "llm_provider_http_secs": 120,
+    "webhook_wake_secs": 30,
+    "webhook_agent_start_secs": 120,
+    "signer_connect_secs": 30,
+    "memory_persist_secs": 30,
+    "subagent_default_secs": 60
+  },
+  
+  // === Agent List (NIP-51 kind:30000 publishing) ===
+  "agent_list": {
+    "d": "my-agents",
+    "relay": "wss://relay.damus.io",
+    "auto_sync": true
+  },
+  
+  // === FIPS ===
+  "fips": {
+    "enabled": false,
+    "control_socket": "/run/fips/control.sock",
+    "agent_port": 1337,
+    "control_port": 1338,
+    "transport_pref": "fips-first",
+    "peers": ["npub1...", "npub2..."],
+    "conn_timeout": "5s",
+    "reach_cache_ttl": "30s"
+  },
+  
+  // === Extra (Extended Features) ===
+  "extra": {
+    // NWC (Nostr Wallet Connect)
+    "nwc": {
+      "connection_string": "nostr+walletconnect://pubkey?relay=wss://relay.getalby.com/v1&secret=..."
+    },
+    
+    // Cashu/Nuts (Ecash)
+    "nuts": {
+      "mint_url": "https://mint.example.com/cashu/api/v1/xxx",
+      "unit": "sat"
+    },
+    
+    // MCP (Model Context Protocol)
+    // Supports stdio, SSE, and HTTP transports
+    "mcp": {
+      "servers": {
+        // stdio transport: local subprocess
+        "filesystem": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"],
+          "env": {
+            "NODE_ENV": "production"
+          },
+          "enabled": true
+        },
+        
+        "github": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-github"],
+          "env": {
+            "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+          },
+          "enabled": true
+        },
+        
+        "postgres": {
+          "type": "stdio",
+          "command": "uvx",
+          "args": ["mcp-server-postgres"],
+          "env": {
+            "DATABASE_URL": "${DATABASE_URL}"
+          },
+          "enabled": false
+        },
+        
+        // SSE transport: remote server via Server-Sent Events (TCP/IP)
+        "remote-api": {
+          "type": "sse",
+          "url": "https://mcp.example.com/sse",
+          "headers": {
+            "Authorization": "Bearer ${MCP_API_TOKEN}",
+            "X-API-Key": "${MCP_API_KEY}"
+          },
+          "enabled": false
+        },
+        
+        // HTTP transport: remote server via HTTP request/response (TCP/IP)
+        "http-service": {
+          "type": "http",
+          "url": "https://api.example.com/mcp",
+          "headers": {
+            "Authorization": "Bearer ${HTTP_API_TOKEN}"
+          },
+          "enabled": false
+        },
+        
+        // OAuth-authenticated remote server
+        "oauth-service": {
+          "type": "sse",
+          "url": "https://oauth.example.com/mcp",
+          "oauth": {
+            "enabled": true,
+            "client_id": "your-client-id",
+            "client_secret_ref": "${OAUTH_CLIENT_SECRET}",
+            "authorize_url": "https://provider.com/oauth/authorize",
+            "token_url": "https://provider.com/oauth/token",
+            "scopes": ["mcp.read", "mcp.write"],
+            "use_pkce": true
+          },
+          "enabled": false
+        }
+      }
+    },
+    
+    // Memory Backend
+    "memory": {
+      "backend": "json-fts",
+      "path": "~/.metiq/memory-index.json",
+      "max_entries": 10000
+    },
+    
+    // Qdrant Vector Memory (alternative)
+    "memory_qdrant": {
+      "backend": "qdrant",
+      "url": "http://localhost:6333",
+      "collection": "metiq-memory",
+      "embedding_model": "text-embedding-3-small"
+    },
+    
+    // Status Publishing (NIP-38)
+    "status": {
+      "enabled": true,
+      "interval_seconds": 300,
+      "content": "Available 🟢"
+    },
+    
+    // Context Engine
+    "context_engine": "windowed",
+    
+    // DVM (Data Vending Machine)
+    "dvm": {
+      "enabled": false,
+      "kinds": [5000, 5001]
+    }
+  }
+}
