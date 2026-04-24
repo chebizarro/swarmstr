@@ -201,8 +201,12 @@ func TestMigrator_Apply(t *testing.T) {
 	}
 
 	memoryStr := string(memoryData)
+	// MEMORY.md is entrypoint - should have migration comment, not YAML frontmatter
+	if strings.HasPrefix(memoryStr, "---\n") {
+		t.Error("MEMORY.md entrypoint should not have YAML frontmatter")
+	}
 	if !strings.Contains(memoryStr, "migrated_from: openclaw") {
-		t.Error("memory file should contain YAML front-matter with migrated_from")
+		t.Error("memory file should contain migration metadata in HTML comment")
 	}
 	if !strings.Contains(memoryStr, "~/.metiq/config") {
 		t.Error("memory file paths should be normalized from .openclaw to .metiq")
@@ -337,7 +341,7 @@ func TestMigrator_CronConversion(t *testing.T) {
 	}
 }
 
-func TestTransformMemoryFile(t *testing.T) {
+func TestTransformMemoryFile_Entrypoint(t *testing.T) {
 	m := &Migrator{
 		opts: Options{
 			SourceDir: "/home/user/.openclaw",
@@ -360,17 +364,14 @@ Absolute path: /Users/alice/.openclaw/workspace/notes.md
 
 	result := m.transformMemoryFile(input, "/home/user/.openclaw/workspace/MEMORY.md")
 
-	// Should have front-matter
-	if !strings.HasPrefix(result, "---\n") {
-		t.Error("result should start with YAML front-matter")
+	// MEMORY.md entrypoint should NOT have YAML frontmatter (just HTML comment)
+	if strings.HasPrefix(result, "---\n") {
+		t.Error("MEMORY.md entrypoint should not have YAML frontmatter")
 	}
 
-	if !strings.Contains(result, "migrated_from: openclaw") {
-		t.Error("should contain migrated_from field")
-	}
-
-	if !strings.Contains(result, "target_runtime: metiq") {
-		t.Error("should contain target_runtime field")
+	// Should have migration metadata as HTML comment
+	if !strings.Contains(result, "<!--") || !strings.Contains(result, "migrated_from: openclaw") {
+		t.Error("should contain migration metadata as HTML comment")
 	}
 
 	// Paths should be normalized
@@ -378,12 +379,95 @@ Absolute path: /Users/alice/.openclaw/workspace/notes.md
 		t.Error("should normalize ~/.openclaw/ to ~/.metiq/")
 	}
 
-	if strings.Contains(result, "openclaw.json") {
-		t.Error("should normalize openclaw.json to config.json")
-	}
-
 	if !strings.Contains(result, "~/.metiq/config.json") {
 		t.Error("should contain normalized path ~/.metiq/config.json")
+	}
+}
+
+func TestTransformMemoryFile_TopicFile(t *testing.T) {
+	m := &Migrator{
+		opts: Options{
+			SourceDir: "/home/user/.openclaw",
+			TargetDir: "/home/user/.metiq",
+		},
+		report: Report{
+			SourceAgent: "TestBot",
+		},
+	}
+
+	// Topic file without existing frontmatter
+	input := `# Project Notes
+
+Some notes about the project.
+`
+
+	result := m.transformMemoryFile(input, "/home/user/.openclaw/workspace/memory/project-notes.md")
+
+	// Topic files SHOULD have YAML frontmatter for runtime compatibility
+	if !strings.HasPrefix(result, "---\n") {
+		t.Error("topic file should have YAML frontmatter")
+	}
+
+	// Should have required fields for runtime
+	if !strings.Contains(result, "name:") {
+		t.Error("topic frontmatter should have name field")
+	}
+	if !strings.Contains(result, "description:") {
+		t.Error("topic frontmatter should have description field")
+	}
+	if !strings.Contains(result, "type: user") {
+		t.Error("topic frontmatter should have type field")
+	}
+
+	// Should also have migration comment
+	if !strings.Contains(result, "<!--") || !strings.Contains(result, "migrated_from: openclaw") {
+		t.Error("should contain migration metadata as HTML comment")
+	}
+}
+
+func TestTransformMemoryFile_PreservesExistingFrontmatter(t *testing.T) {
+	m := &Migrator{
+		opts: Options{
+			SourceDir: "/home/user/.openclaw",
+			TargetDir: "/home/user/.metiq",
+		},
+		report: Report{
+			SourceAgent: "TestBot",
+		},
+	}
+
+	// Topic file WITH existing valid frontmatter
+	input := `---
+name: "My Preferences"
+description: "User preferences and settings"
+type: user
+---
+
+I prefer dark mode.
+Config at ~/.openclaw/openclaw.json
+`
+
+	result := m.transformMemoryFile(input, "/home/user/.openclaw/workspace/memory/preferences.md")
+
+	// Should preserve existing frontmatter
+	if !strings.Contains(result, `name: "My Preferences"`) {
+		t.Error("should preserve existing name field")
+	}
+	if !strings.Contains(result, `type: user`) {
+		t.Error("should preserve existing type field")
+	}
+
+	// Should have migration comment after frontmatter
+	if !strings.Contains(result, "migrated_from: openclaw") {
+		t.Error("should contain migration metadata")
+	}
+
+	// Paths should still be normalized in body
+	if strings.Contains(result, "~/.openclaw/") {
+		t.Error("should normalize paths in body")
+	}
+	if !strings.Contains(result, "~/.metiq/config.json") {
+		t.Error("should contain normalized path")
 	}
 }
 
