@@ -1,6 +1,6 @@
 # Comprehensive Configuration Guide
 
-This guide covers **all** configurable options in Metiq/Swarmstr, including features that aren't covered in other documentation.
+This guide covers **all** configurable options in Metiq, including features that aren't covered in other documentation.
 
 ---
 
