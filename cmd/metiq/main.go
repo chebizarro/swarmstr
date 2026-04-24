@@ -554,6 +554,8 @@ func usage() {
 	fmt.Println()
 	fmt.Println("Plugins:")
 	fmt.Println("  plugins list       list installed plugins")
+	fmt.Println("  plugins info <id>  show plugin manifest and capabilities")
+	fmt.Println("  plugins caps       show aggregate plugin capabilities summary")
 	fmt.Println("  plugins install    install plugin from Nostr (--pubkey --id)")
 	fmt.Println("  plugins search     search Nostr plugin registry (--q)")
 	fmt.Println("  plugins publish    publish plugin manifest (--manifest)")
