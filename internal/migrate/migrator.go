@@ -449,7 +449,11 @@ func (m *Migrator) transformArtifact(art *ArtifactEntry) error {
 }
 
 func (m *Migrator) transformMemoryFile(content, sourcePath string) string {
-	// Create front-matter
+	// Normalize paths first
+	normalized := m.normalizePathsInContent(content)
+
+	// Create migration metadata as an HTML comment (not frontmatter)
+	// This preserves provenance without breaking the runtime's frontmatter parser
 	fm := MemoryFrontmatter{
 		MigratedFrom:      "openclaw",
 		MigrationDate:     m.report.MigrationDate.Format(time.RFC3339),
@@ -457,20 +461,49 @@ func (m *Migrator) transformMemoryFile(content, sourcePath string) string {
 		TargetRuntime:     "metiq",
 		OriginalWorkspace: m.opts.SourceDir,
 	}
-
 	fmBytes, _ := yaml.Marshal(fm)
-	frontMatter := "---\n" + string(fmBytes) + "---\n\n"
+	migrationComment := "<!--\nMigration metadata (do not edit):\n" + string(fmBytes) + "-->\n\n"
 
-	// Normalize paths: replace openclaw paths with metiq paths
-	normalized := m.normalizePathsInContent(content)
+	// Determine if this is a topic file (in memory/ dir) vs entrypoint (MEMORY.md)
+	isTopicFile := strings.Contains(sourcePath, string(os.PathSeparator)+"memory"+string(os.PathSeparator))
 
-	// Check if file already has front-matter
-	if strings.HasPrefix(strings.TrimSpace(content), "---") {
-		// File has existing front-matter; append our metadata as a comment
-		return "<!-- Migration metadata:\n" + string(fmBytes) + "-->\n\n" + normalized
+	// Check if file already has valid frontmatter
+	if strings.HasPrefix(strings.TrimSpace(normalized), "---") {
+		// Preserve existing frontmatter, append migration comment after it
+		parts := strings.SplitN(strings.TrimSpace(normalized), "---", 3)
+		if len(parts) >= 3 {
+			// Has valid frontmatter block: ---\n<yaml>\n---\n<body>
+			existingFM := parts[1]
+			body := parts[2]
+			if strings.HasPrefix(body, "\n") {
+				body = body[1:]
+			}
+			return "---\n" + existingFM + "---\n\n" + migrationComment + body
+		}
 	}
 
-	return frontMatter + normalized
+	// No existing frontmatter
+	if isTopicFile {
+		// Topic files need frontmatter for the runtime to recognize them
+		// Generate a minimal valid frontmatter based on the filename
+		baseName := filepath.Base(sourcePath)
+		topicName := strings.TrimSuffix(baseName, filepath.Ext(baseName))
+		topicName = strings.ReplaceAll(topicName, "-", " ")
+		topicName = strings.ReplaceAll(topicName, "_", " ")
+		topicName = strings.Title(topicName)
+
+		generatedFM := fmt.Sprintf(`---
+name: "%s"
+description: "Migrated from OpenClaw - review and update this description"
+type: user
+---
+
+`, topicName)
+		return generatedFM + migrationComment + normalized
+	}
+
+	// MEMORY.md entrypoint - no frontmatter needed, just prepend migration comment
+	return migrationComment + normalized
 }
 
 func (m *Migrator) normalizePathsInContent(content string) string {
