@@ -550,6 +550,12 @@ type AgentConfig struct {
 	// (Micro=5, Small=10, Standard=30).  Useful for limiting token spend on
 	// small-context models or increasing tool-call budget on capable ones.
 	MaxAgenticIterations int `json:"max_agentic_iterations,omitempty"`
+	// ContextPruning holds openclaw-compatible context pruning settings.
+	// Preserved for config compatibility; not actively used by metiq runtime.
+	ContextPruning map[string]any `json:"context_pruning,omitempty"`
+	// MaxConcurrent is the openclaw max_concurrent setting.
+	// Preserved for config compatibility; not actively used by metiq runtime.
+	MaxConcurrent int `json:"max_concurrent,omitempty"`
 }
 
 // AgentsConfig is an ordered list of per-agent configurations.

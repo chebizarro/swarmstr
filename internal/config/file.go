@@ -634,7 +634,7 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 
 	// ── pass-through sections (unknown / rarely accessed as typed) ────────────
 	passThrough := []string{
-		"skills", "memory", "update", "wizard", "pairing",
+		"skills", "memory", "update", "wizard", "pairing", "logging",
 	}
 	for _, key := range passThrough {
 		if v, ok := raw[key]; ok {
@@ -675,6 +675,8 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 		if v, ok := m["workspace_dir"].(string); ok {
 			ac.WorkspaceDir = strings.TrimSpace(v)
 		} else if v, ok := m["workspaceDir"].(string); ok {
+			ac.WorkspaceDir = strings.TrimSpace(v)
+		} else if v, ok := m["workspace"].(string); ok {
 			ac.WorkspaceDir = strings.TrimSpace(v)
 		}
 		if v, ok := m["tool_profile"].(string); ok {
@@ -758,6 +760,18 @@ func parseAgentConfigList(list []any) state.AgentsConfig {
 		} else if v, ok := toInt(m["maxAgenticIterations"]); ok {
 			ac.MaxAgenticIterations = v
 		}
+		// OpenClaw compatibility: context_pruning (preserved as-is)
+		if v, ok := m["context_pruning"].(map[string]any); ok {
+			ac.ContextPruning = cloneAnyMap(v)
+		} else if v, ok := m["contextPruning"].(map[string]any); ok {
+			ac.ContextPruning = cloneAnyMap(v)
+		}
+		// OpenClaw compatibility: max_concurrent (preserved but not enforced)
+		if v, ok := toInt(m["max_concurrent"]); ok {
+			ac.MaxConcurrent = v
+		} else if v, ok := toInt(m["maxConcurrent"]); ok {
+			ac.MaxConcurrent = v
+		}
 		// dm_peers: list of Nostr pubkeys routed to this agent for DMs.
 		if v, ok := m["dm_peers"].([]any); ok {
 			for _, peer := range v {
@@ -809,7 +823,7 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 		"version", "dm", "relays", "agent", "control", "acp", "agents", "nostr_channels",
 		"providers", "session", "storage", "heartbeat", "tts", "secrets", "cron",
 		"hooks", "timeouts", "agent_list", "fips", "extra", "channels", "plugins",
-		"skills", "memory", "update", "wizard", "pairing",
+		"skills", "memory", "update", "wizard", "pairing", "logging",
 	}
 	for key, value := range raw {
 		if !slices.Contains(allowedTop, key) {
@@ -879,13 +893,21 @@ func detectUnknownAgentsKeys(raw any) []string {
 	switch typed := raw.(type) {
 	case []any:
 		allowed := []string{
-			"id", "name", "model", "workspace_dir", "workspaceDir", "tool_profile", "toolProfile",
-			"provider", "system_prompt", "systemPrompt", "memory_scope", "memoryScope",
+			"id", "name", "model", "workspace", "workspace_dir", "workspaceDir", "agent_dir", "agentDir",
+			"tool_profile", "toolProfile", "provider", "system_prompt", "systemPrompt",
+			"system_prompt_override", "systemPromptOverride", "memory_scope", "memoryScope",
 			"enabled_tools", "fallback_models", "fallbackModels", "light_model", "lightModel",
 			"light_model_threshold", "lightModelThreshold", "heartbeat", "context_window",
 			"contextWindow", "max_context_tokens", "maxContextTokens", "thinking_level",
 			"thinkingLevel", "turn_timeout_secs", "turnTimeoutSecs", "dm_peers", "dmPeers",
-			"max_agentic_iterations", "maxAgenticIterations",
+			"max_agentic_iterations", "maxAgenticIterations", "context_pruning", "contextPruning",
+			"max_concurrent", "maxConcurrent", "embedded_harness", "embeddedHarness",
+			"thinking_default", "thinkingDefault", "verbose_default", "verboseDefault",
+			"reasoning_default", "reasoningDefault", "fast_mode_default", "fastModeDefault",
+			"skills", "memory_search", "memorySearch", "human_delay", "humanDelay",
+			"skills_limits", "skillsLimits", "context_limits", "contextLimits",
+			"identity", "group_chat", "groupChat", "subagents", "embedded_pi", "embeddedPi",
+			"sandbox", "params", "tools", "runtime", "default",
 		}
 		for i, item := range typed {
 			m, ok := item.(map[string]any)
@@ -906,16 +928,42 @@ func detectUnknownAgentsKeys(raw any) []string {
 		}
 		if defaults, ok := typed["defaults"].(map[string]any); ok {
 			for key := range defaults {
-				if !slices.Contains([]string{"model", "heartbeat"}, key) {
+				// Allow common openclaw agents.defaults fields
+				allowedDefaults := []string{
+					"model", "heartbeat", "workspace", "workspaceDir", "workspace_dir",
+					"context_pruning", "contextPruning", "max_concurrent", "maxConcurrent",
+					"skills", "thinking_default", "thinkingDefault", "verbose_default", "verboseDefault",
+					"params", "embedded_harness", "embeddedHarness", "image_model", "imageModel",
+					"pdf_model", "pdfModel", "models", "silent_reply", "silentReply",
+					"repo_root", "repoRoot", "system_prompt_override", "systemPromptOverride",
+					"skip_bootstrap", "skipBootstrap", "context_injection", "contextInjection",
+					"bootstrap_max_chars", "bootstrapMaxChars", "experimental",
+					"user_timezone", "userTimezone", "startup_context", "startupContext",
+					"context_limits", "contextLimits", "time_format", "timeFormat",
+					"envelope_timezone", "envelopeTimezone", "envelope_timestamp", "envelopeTimestamp",
+					"envelope_elapsed", "envelopeElapsed", "context_tokens", "contextTokens",
+					"cli_backends", "cliBackends", "llm", "compaction", "embedded_pi", "embeddedPi",
+					"memory_search", "memorySearch", "elevated_default", "elevatedDefault",
+					"block_streaming_default", "blockStreamingDefault", "block_streaming_break", "blockStreamingBreak",
+					"block_streaming_chunk", "blockStreamingChunk", "block_streaming_coalesce", "blockStreamingCoalesce",
+					"human_delay", "humanDelay", "timeout_seconds", "timeoutSeconds",
+					"media_max_mb", "mediaMaxMb", "image_max_dimension_px", "imageMaxDimensionPx",
+					"typing_interval_seconds", "typingIntervalSeconds", "typing_mode", "typingMode",
+					"subagents", "sandbox", "reasoning_default", "reasoningDefault",
+					"fast_mode_default", "fastModeDefault", "image_generation_model", "imageGenerationModel",
+					"video_generation_model", "videoGenerationModel", "music_generation_model", "musicGenerationModel",
+					"media_generation_auto_provider_fallback", "mediaGenerationAutoProviderFallback",
+					"pdf_max_bytes_mb", "pdfMaxBytesMb", "pdf_max_pages", "pdfMaxPages",
+					"silent_reply_rewrite", "silentReplyRewrite", "bootstrap_total_max_chars", "bootstrapTotalMaxChars",
+					"bootstrap_prompt_truncation_warning", "bootstrapPromptTruncationWarning",
+				}
+				if !slices.Contains(allowedDefaults, key) {
 					errs = append(errs, "agents.defaults."+key)
 				}
 			}
 			if hb, ok := defaults["heartbeat"].(map[string]any); ok {
-				for key := range hb {
-					if key != "every" {
-						errs = append(errs, "agents.defaults.heartbeat."+key)
-					}
-				}
+				// Allow all heartbeat subkeys (openclaw has many)
+				_ = hb // Don't validate heartbeat subkeys, preserve for compatibility
 			}
 		}
 		if list, ok := typed["list"].([]any); ok {

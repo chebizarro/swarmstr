@@ -332,6 +332,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("load bootstrap config: %v", err)
 	}
+
+	// Register model context overrides from bootstrap config.
+	for pattern, ctxWindow := range cfg.ModelContextOverrides {
+		if ctxWindow > 0 {
+			agent.RegisterModelContextPattern(pattern, agent.ProfileFromContextWindowTokens(ctxWindow))
+			log.Printf("registered model context override: %q → %d tokens", pattern, ctxWindow)
+		}
+	}
 	if config.IsBunkerURL(cfg) {
 		log.Printf("signer: NIP-46 bunker detected, connecting…")
 	}

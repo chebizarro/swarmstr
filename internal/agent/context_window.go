@@ -224,9 +224,15 @@ func init() {
 		pattern string
 		tokens  int
 	}{
+		// Gemma family (2B/7B/9B variants)
 		{"gemma-2b", 8_192},
 		{"gemma-7b", 8_192},
+		{"gemma-9b", 8_192},
 		{"gemma-2-2b", 8_192},
+		{"gemma-2-9b", 8_192},
+		{"gemma-2-27b", 8_192},
+		{"google/gemma", 8_192},
+		{"google_gemma", 8_192},
 		{"llama-3.2-3b", 8_192},
 		{"mistral-7b", 8_192},
 		{"llama-2-7b", 4_096}, // Llama 2 only has 4K but putting as small for iterations

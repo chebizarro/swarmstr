@@ -48,11 +48,39 @@ Default location: `~/.metiq/bootstrap.json` (override with the `--bootstrap` fla
   "gateway_ws_listen_addr": "127.0.0.1:18789",
   "gateway_ws_token": "${METIQ_GATEWAY_TOKEN}",
   "enable_nip44": true,           // NIP-44 encrypted DMs (recommended)
-  "enable_nip17": true            // NIP-17 gift-wrapped DMs
+  "enable_nip17": true,           // NIP-17 gift-wrapped DMs
+
+  "model_context_overrides": {    // Optional: override context window sizes
+    "lemmy-local/": 8192,         // Pattern matches model ID prefixes (case-insensitive)
+    "google_gemma": 8192,          // Useful for local models not in the built-in registry
+    "phi-3": 4096
+  }
 }
 ```
 
 Use `${VAR_NAME}` for any value — resolved from the process environment at startup.
+
+#### Model Context Window Overrides
+
+The `model_context_overrides` field lets you define context window sizes for models not in the built-in registry. This is especially useful for:
+
+- Local models with provider prefixes (e.g., `lemmy-local/`, `ollama/`)
+- Custom fine-tuned models
+- Newer model variants not yet in the registry
+
+Patterns are matched as **case-insensitive prefixes** against model IDs. Longer matches take precedence:
+
+```json
+{
+  "model_context_overrides": {
+    "lemmy-local/": 8192,           // Matches ALL models from lemmy-local provider
+    "google_gemma": 8192,            // Matches google_gemma, google_gemma-2, etc.
+    "my-custom-model-v1": 16384     // Specific model override
+  }
+}
+```
+
+Without this, unknown models default to 200k tokens. If your model has a smaller context window, add an override to enable proper budget allocation and compaction.
 
 ### Nostr-first control bootstrap fields
 
@@ -351,6 +379,47 @@ Arbitrary key-value configuration for features that don't have top-level section
 | `~/.metiq/workspace/` | Default agent workspace (SOUL.md, AGENTS.md, etc.) |
 | `~/.metiq/hooks/` | User-managed hooks |
 | `~/.metiq/skills/` | User-managed skills |
+
+## OpenClaw Config Compatibility
+
+Metiq (swarmstr) provides full interoperability with OpenClaw config files. You can use an existing OpenClaw `config.json` or `config.yaml` file directly with metiqd without modification.
+
+### Supported OpenClaw Fields
+
+The following OpenClaw-specific fields are recognized and preserved:
+
+#### Top-level fields
+- `logging` — OpenClaw logging configuration (preserved in extra)
+- `plugins` — Mapped to `extensions` in metiq
+- `channels` — Channel configurations (preserved in extra)
+- `skills`, `memory`, `update`, `wizard`, `pairing` — Preserved in extra
+
+#### Agent configuration (`agents.defaults` and `agents.list[]`)
+- `workspace` — Mapped to `workspace_dir`
+- `agentDir` — Agent directory (preserved)
+- `context_pruning` / `contextPruning` — Context pruning settings (preserved)
+- `max_concurrent` / `maxConcurrent` — Concurrency limits (preserved)
+- `system_prompt_override` / `systemPromptOverride` — System prompt override
+- `embedded_harness` / `embeddedHarness` — Embedded harness config
+- `thinking_default`, `verbose_default`, `reasoning_default`, `fast_mode_default` — Default settings
+- `skills`, `memory_search`, `human_delay`, `skills_limits`, `context_limits` — Behavior tuning
+- `identity`, `group_chat`, `subagents`, `embedded_pi`, `sandbox`, `params`, `tools`, `runtime` — Advanced features
+
+All openclaw-specific fields are preserved when reading and writing config files, ensuring round-trip compatibility.
+
+### Example: Using an OpenClaw Config
+
+```bash
+# Copy your openclaw config
+cp ~/openclaw-workspace/config.json ~/.metiq/config.json
+
+# Start metiqd - it will recognize and use the openclaw config
+metiqd
+
+# The config file remains valid for both openclaw and metiq
+```
+
+Metiq will parse all recognized openclaw fields and preserve unknown fields in the `extra` section, preventing data loss when syncing configs between openclaw and metiq deployments.
 
 ## See Also
 

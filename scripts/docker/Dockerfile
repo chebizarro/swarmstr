@@ -59,7 +59,7 @@ RUN --mount=type=cache,id=metiq-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=metiq-apt-lists,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl wget git openssl procps hostname jq poppler-utils tzdata
+      ca-certificates curl wget git openssl procps hostname jq poppler-utils tzdata su-exec
 
 # Optional: Python 3 + uv.
 ARG METIQ_INSTALL_PYTHON=""
@@ -151,7 +151,8 @@ RUN groupadd -g 1000 metiq && \
 ENV HOME=/data
 VOLUME ["/data"]
 
-USER metiq
+# Run entrypoint as root to fix permissions, then drop to metiq user
+# USER metiq
 
 HEALTHCHECK --interval=60s --timeout=10s --start-period=15s --retries=3 \
   CMD curl -fsS http://127.0.0.1:7423/health || kill -0 1

@@ -1,6 +1,21 @@
 #!/bin/sh
 set -eu
 
+# Fix /data ownership if running as root (Docker volume mount scenario)
+if [ "$(id -u)" = "0" ]; then
+  # Create /data and /data/.metiq directories if they don't exist
+  mkdir -p /data/.metiq
+  
+  # Fix ownership recursively
+  chown -R metiq:metiq /data
+  
+  # Ensure directories are writable
+  chmod 755 /data /data/.metiq
+  
+  # Re-exec this script as the metiq user
+  exec su-exec metiq "$0" "$@"
+fi
+
 BOOTSTRAP_PATH="${METIQ_BOOTSTRAP_PATH:-/data/.metiq/bootstrap.json}"
 BOOTSTRAP_DIR="$(dirname "${BOOTSTRAP_PATH}")"
 
