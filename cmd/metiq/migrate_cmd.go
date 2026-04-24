@@ -13,13 +13,18 @@ func runMigrate(args []string) error {
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 
 	var (
-		sourceDir   string
-		targetDir   string
-		dryRun      bool
-		apply       bool
-		force       bool
-		skipSecrets bool
-		verbose     bool
+		sourceDir       string
+		targetDir       string
+		dryRun          bool
+		apply           bool
+		force           bool
+		skipSecrets     bool
+		verbose         bool
+		migrateMemoryDB bool
+		migrateAuth     bool
+		migratePlugins  bool
+		migrateSkills   bool
+		migrateAll      bool
 	)
 
 	fs.StringVar(&sourceDir, "source", "", "OpenClaw home directory (e.g., ~/.openclaw)")
@@ -29,6 +34,11 @@ func runMigrate(args []string) error {
 	fs.BoolVar(&force, "force", false, "Overwrite existing files in target directory")
 	fs.BoolVar(&skipSecrets, "skip-secrets", false, "Don't migrate .env and secret files")
 	fs.BoolVar(&verbose, "verbose", false, "Verbose output")
+	fs.BoolVar(&migrateMemoryDB, "migrate-memory-db", false, "Migrate SQLite memory database")
+	fs.BoolVar(&migrateAuth, "migrate-auth", false, "Migrate auth-profiles.json (API keys/OAuth)")
+	fs.BoolVar(&migratePlugins, "migrate-plugins", false, "Migrate plugins and hooks directories")
+	fs.BoolVar(&migrateSkills, "migrate-skills", false, "Migrate managed skills directory")
+	fs.BoolVar(&migrateAll, "all", false, "Enable all migration options (memory, auth, plugins, skills)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: metiq migrate [options] [source-dir]
@@ -41,14 +51,21 @@ This command:
   3. Transforms memory files (injects YAML front-matter, normalizes paths)
   4. Converts cron jobs.json
   5. Copies workspace files (excluding runtime state)
-  6. Generates migration_report.json and MIGRATION_REPORT.md
+	6. Optionally migrates: SQLite memory DB, auth profiles, plugins, skills
+	7. Generates migration_report.json and MIGRATION_REPORT.md
 
 Examples:
   # Dry-run (default): see what would be migrated
   metiq migrate ~/.openclaw
 
-  # Apply migration
+	# Apply basic migration
   metiq migrate --apply ~/.openclaw
+
+	# Full migration with all optional artifacts
+	metiq migrate --apply --all ~/.openclaw
+
+	# Migrate specific artifacts
+	metiq migrate --apply --migrate-memory-db --migrate-auth ~/.openclaw
 
   # Custom target directory
   metiq migrate --apply --target ~/agents/mybot ~/.openclaw
@@ -86,13 +103,25 @@ Options:
 		dryRun = false
 	}
 
+	// --all enables all migration options
+	if migrateAll {
+		migrateMemoryDB = true
+		migrateAuth = true
+		migratePlugins = true
+		migrateSkills = true
+	}
+
 	opts := migrate.Options{
-		SourceDir:   sourceDir,
-		TargetDir:   targetDir,
-		DryRun:      dryRun,
-		Force:       force,
-		SkipSecrets: skipSecrets,
-		Verbose:     verbose,
+		SourceDir:       sourceDir,
+		TargetDir:       targetDir,
+		DryRun:          dryRun,
+		Force:           force,
+		SkipSecrets:     skipSecrets,
+		Verbose:         verbose,
+		MigrateMemoryDB: migrateMemoryDB,
+		MigrateAuth:     migrateAuth,
+		MigratePlugins:  migratePlugins,
+		MigrateSkills:   migrateSkills,
 	}
 
 	fmt.Printf("🔄 OpenClaw → Metiq Migration\n\n")

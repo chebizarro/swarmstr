@@ -831,6 +831,164 @@ func (b *SQLiteBackend) MigrateFromJSONIndex(jsonPath string) error {
 	return nil
 }
 
+// MigrateFromOpenClaw imports memories from an OpenClaw SQLite database.
+// OpenClaw stores memories in ~/.openclaw/agents/<id>/memory/<id>.sqlite
+// with a different schema that we map to Metiq's format.
+func (b *SQLiteBackend) MigrateFromOpenClaw(srcPath string) (int, error) {
+	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+		return 0, nil // No source database, nothing to migrate
+	}
+
+	// Open source database (read-only)
+	srcDSN := fmt.Sprintf("file:%s?mode=ro&_busy_timeout=%d", srcPath, sqliteBusyTimeoutMs)
+	srcDB, err := sql.Open("sqlite", srcDSN)
+	if err != nil {
+		return 0, fmt.Errorf("open source db: %w", err)
+	}
+	defer srcDB.Close()
+
+	// Check if chunks table exists
+	var tableName string
+	err = srcDB.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='chunks'`).Scan(&tableName)
+	if err != nil {
+		return 0, fmt.Errorf("source db has no chunks table: %w", err)
+	}
+
+	// Query all chunks from OpenClaw database
+	// OpenClaw schema: id, path, source, start_line, end_line, hash, model, text, embedding, updated_at
+	rows, err := srcDB.Query(`
+		SELECT id, path, source, text, embedding, hash, model, updated_at
+		FROM chunks
+		ORDER BY updated_at ASC
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("query source chunks: %w", err)
+	}
+	defer rows.Close()
+
+	// Begin transaction for bulk insert
+	tx, err := b.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT OR IGNORE INTO chunks (
+			id, session_id, role, topic, text, keywords, unix,
+			type, goal_id, task_id, run_id, episode_kind,
+			confidence, source, reviewed_at, reviewed_by, expires_at,
+			mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason,
+			embedding, hash, model, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare stmt: %w", err)
+	}
+	defer stmt.Close()
+
+	imported := 0
+	now := time.Now().Unix()
+
+	for rows.Next() {
+		var (
+			id         string
+			path       sql.NullString
+			source     sql.NullString
+			text       string
+			embedding  sql.NullString
+			hash       sql.NullString
+			model      sql.NullString
+			updated_at sql.NullInt64
+		)
+
+		if err := rows.Scan(&id, &path, &source, &text, &embedding, &hash, &model, &updated_at); err != nil {
+			continue // Skip malformed rows
+		}
+
+		if strings.TrimSpace(id) == "" || strings.TrimSpace(text) == "" {
+			continue
+		}
+
+		// Map OpenClaw fields to Metiq fields
+		topic := ""
+		if path.Valid {
+			// Extract filename as topic (e.g., "memory/2024-01-15.md" → "2024-01-15")
+			topic = filepath.Base(path.String)
+			topic = strings.TrimSuffix(topic, filepath.Ext(topic))
+		}
+
+		srcValue := "openclaw-migration"
+		if source.Valid && source.String != "" {
+			srcValue = source.String
+		}
+
+		unix := now
+		if updated_at.Valid {
+			unix = updated_at.Int64
+		}
+
+		// Use existing hash or generate new one
+		hashValue := ""
+		if hash.Valid {
+			hashValue = hash.String
+		} else {
+			hashValue = contentHash(text)
+		}
+
+		_, err := stmt.Exec(
+			id,                   // id
+			"openclaw-migrated",  // session_id (marker for migrated content)
+			"",                   // role
+			topic,                // topic (from path)
+			text,                 // text
+			"",                   // keywords (empty, OpenClaw doesn't have this)
+			unix,                 // unix
+			"migrated",           // type
+			"",                   // goal_id
+			"",                   // task_id
+			"",                   // run_id
+			"",                   // episode_kind
+			0.5,                  // confidence (default)
+			srcValue,             // source
+			nil,                  // reviewed_at
+			nil,                  // reviewed_by
+			nil,                  // expires_at
+			"active",             // mem_status
+			nil,                  // superseded_by
+			nil,                  // invalidated_at
+			nil,                  // invalidated_by
+			nil,                  // invalidate_reason
+			embedding.String,     // embedding (may be empty)
+			hashValue,            // hash
+			model.String,         // model
+			now,                  // updated_at
+		)
+		if err != nil {
+			continue // Skip failed entries
+		}
+		imported++
+	}
+
+	if err := rows.Err(); err != nil {
+		return imported, fmt.Errorf("iterate rows: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit tx: %w", err)
+	}
+
+	// Rebuild FTS index after bulk import
+	if imported > 0 {
+		b.mu.Lock()
+		b.clearCacheLocked()
+		b.mu.Unlock()
+		_ = b.RebuildFTSIndex()
+	}
+
+	return imported, nil
+}
+
 // RebuildFTSIndex rebuilds the FTS index from the chunks table.
 // Use this after bulk imports or if the index becomes corrupted.
 func (b *SQLiteBackend) RebuildFTSIndex() error {

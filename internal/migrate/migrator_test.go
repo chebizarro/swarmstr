@@ -493,3 +493,229 @@ func TestNormalizePathsInContent(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrator_AuditMemoryDatabases(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create mock OpenClaw structure with SQLite memory DB
+	agentDir := filepath.Join(srcDir, "agents", "main", "memory")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a fake SQLite file
+	sqlitePath := filepath.Join(agentDir, "main.sqlite")
+	if err := os.WriteFile(sqlitePath, []byte("fake sqlite"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create minimal openclaw.json
+	cfg := map[string]any{"models": map[string]any{"default": "gpt-4"}}
+	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(filepath.Join(srcDir, "openclaw.json"), cfgData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test WITHOUT --migrate-memory-db flag
+	opts := Options{
+		SourceDir:       srcDir,
+		TargetDir:       dstDir,
+		DryRun:          true,
+		MigrateMemoryDB: false,
+	}
+
+	m := New(opts)
+	report, _ := m.Run()
+
+	// Should have a warning about SQLite DB
+	hasWarning := false
+	for _, issue := range report.Issues {
+		if strings.Contains(issue.Message, "SQLite memory database found") {
+			hasWarning = true
+			break
+		}
+	}
+	if !hasWarning {
+		t.Error("expected warning about SQLite memory database")
+	}
+
+	// Test WITH --migrate-memory-db flag
+	opts.MigrateMemoryDB = true
+	m = New(opts)
+	report, _ = m.Run()
+
+	// Should have a MemoryDB artifact
+	hasMemoryDBArtifact := false
+	for _, art := range report.Artifacts {
+		if art.Type == ArtifactMemoryDB {
+			hasMemoryDBArtifact = true
+			break
+		}
+	}
+	if !hasMemoryDBArtifact {
+		t.Error("expected MemoryDB artifact when --migrate-memory-db is set")
+	}
+}
+
+func TestMigrator_AuditAuthProfiles(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create mock auth-profiles.json
+	agentDir := filepath.Join(srcDir, "agents", "main", "agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	authProfiles := map[string]any{
+		"anthropic": map[string]any{
+			"type":   "api-key",
+			"apiKey": "sk-test-123",
+		},
+		"openai": map[string]any{
+			"type":    "api-key",
+			"apiKey":  "sk-openai-456",
+			"baseUrl": "https://api.openai.com/v1",
+		},
+	}
+	authData, _ := json.MarshalIndent(authProfiles, "", "  ")
+	if err := os.WriteFile(filepath.Join(agentDir, "auth-profiles.json"), authData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create minimal openclaw.json
+	cfg := map[string]any{"models": map[string]any{"default": "gpt-4"}}
+	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(filepath.Join(srcDir, "openclaw.json"), cfgData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test WITH --migrate-auth flag
+	opts := Options{
+		SourceDir:   srcDir,
+		TargetDir:   dstDir,
+		DryRun:      false,
+		MigrateAuth: true,
+	}
+
+	m := New(opts)
+	report, err := m.Run()
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	// Verify auth-profiles.json was created
+	authPath := filepath.Join(dstDir, "auth-profiles.json")
+	data, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("auth-profiles.json not created: %v", err)
+	}
+
+	var converted map[string]any
+	if err := json.Unmarshal(data, &converted); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	// Check field normalization (apiKey → api_key)
+	if anthropic, ok := converted["anthropic"].(map[string]any); ok {
+		if _, hasOldKey := anthropic["apiKey"]; hasOldKey {
+			t.Error("should have normalized apiKey to api_key")
+		}
+		if _, hasNewKey := anthropic["api_key"]; !hasNewKey {
+			t.Error("should have api_key field")
+		}
+	}
+
+	// Verify file permissions (should be 0600 for secrets)
+	info, _ := os.Stat(authPath)
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("auth-profiles.json should have 0600 permissions, got %o", info.Mode().Perm())
+	}
+
+	_ = report // silence unused
+}
+
+func TestMigrator_AuditPluginsAndSkills(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create plugins directory
+	pluginsDir := filepath.Join(srcDir, "plugins", "test-plugin")
+	if err := os.MkdirAll(pluginsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginsDir, "manifest.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create skills directory
+	skillsDir := filepath.Join(srcDir, "skills", "test-skill")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "SKILL.md"), []byte("# Test Skill"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create hooks directory
+	hooksDir := filepath.Join(srcDir, "hooks", "test-hook")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create minimal openclaw.json
+	cfg := map[string]any{"models": map[string]any{"default": "gpt-4"}}
+	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(filepath.Join(srcDir, "openclaw.json"), cfgData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test with all migration flags
+	opts := Options{
+		SourceDir:      srcDir,
+		TargetDir:      dstDir,
+		DryRun:         false,
+		MigratePlugins: true,
+		MigrateSkills:  true,
+	}
+
+	m := New(opts)
+	report, err := m.Run()
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	// Check for plugins artifact
+	hasPlugins := false
+	hasSkills := false
+	hasHooks := false
+	for _, art := range report.Artifacts {
+		switch art.Type {
+		case ArtifactPlugins:
+			hasPlugins = true
+		case ArtifactSkills:
+			hasSkills = true
+		case ArtifactHooks:
+			hasHooks = true
+		}
+	}
+
+	if !hasPlugins {
+		t.Error("expected plugins artifact")
+	}
+	if !hasSkills {
+		t.Error("expected skills artifact")
+	}
+	if !hasHooks {
+		t.Error("expected hooks artifact")
+	}
+
+	// Verify directories were copied
+	if _, err := os.Stat(filepath.Join(dstDir, "plugins")); err != nil {
+		t.Error("plugins directory should be copied")
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "skills")); err != nil {
+		t.Error("skills directory should be copied")
+	}
+}

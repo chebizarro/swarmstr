@@ -22,9 +22,15 @@ const (
 	ArtifactIdentity     ArtifactType = "identity"
 	ArtifactWorkspace    ArtifactType = "workspace"
 	ArtifactMemory       ArtifactType = "memory"
+	ArtifactMemoryDB     ArtifactType = "memory_db"
 	ArtifactCron         ArtifactType = "cron"
 	ArtifactConfig       ArtifactType = "config"
 	ArtifactSecrets      ArtifactType = "secrets"
+	ArtifactAuthProfiles ArtifactType = "auth_profiles"
+	ArtifactPlugins      ArtifactType = "plugins"
+	ArtifactHooks        ArtifactType = "hooks"
+	ArtifactSkills       ArtifactType = "skills"
+	ArtifactCredentials  ArtifactType = "credentials"
 	ArtifactRuntimeState ArtifactType = "runtime_state"
 )
 
@@ -50,12 +56,16 @@ const (
 
 // Options configures a migration run.
 type Options struct {
-	SourceDir   string // OpenClaw home directory (e.g., ~/.openclaw)
-	TargetDir   string // Metiq home directory (e.g., ~/.metiq)
-	DryRun      bool   // If true, simulate only
-	Verbose     bool   // Verbose output
-	Force       bool   // Overwrite existing target files
-	SkipSecrets bool   // Don't migrate .env and secrets
+	SourceDir       string // OpenClaw home directory (e.g., ~/.openclaw)
+	TargetDir       string // Metiq home directory (e.g., ~/.metiq)
+	DryRun          bool   // If true, simulate only
+	Verbose         bool   // Verbose output
+	Force           bool   // Overwrite existing target files
+	SkipSecrets     bool   // Don't migrate .env and secrets
+	MigrateMemoryDB bool   // Migrate SQLite memory database
+	MigrateAuth     bool   // Migrate auth-profiles.json
+	MigratePlugins  bool   // Migrate plugins and hooks
+	MigrateSkills   bool   // Migrate managed skills
 }
 
 // ArtifactEntry describes a single artifact in the migration.
