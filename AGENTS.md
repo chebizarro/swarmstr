@@ -125,3 +125,305 @@ bd automatically syncs via Dolt:
 For more details, see README.md and docs/QUICKSTART.md.
 
 <!-- END BEADS INTEGRATION -->
+
+⸻
+
+🧭 Nostr Protocol Guardrails for Agents
+
+## Purpose
+
+This repository is Nostr-native. All inter-service communication must follow event-driven pub/sub semantics, not polling or request/response patterns.
+
+Agents MUST follow these rules when implementing, modifying, or reviewing code.
+
+Violations are considered protocol bugs, not stylistic issues.
+
+⸻
+
+## Core Mental Model
+
+* Nostr is an event stream, not a request/response API.
+* You subscribe (REQ) and react to events.
+* You do not wait with timers for things to happen.
+* The relay tells you what’s happening via:
+    * EVENT
+    * OK
+    * EOSE
+    * CLOSED
+    * AUTH (if required)
+
+👉 If your code is “waiting and checking” instead of “subscribing and reacting”, it is wrong.
+
+Reference:  ￼
+
+⸻
+
+## 🚫 Forbidden Patterns (Code Smells)
+
+1. Polling for Events
+
+Do NOT:
+
+* use sleep, setTimeout, setInterval, retry loops to check for messages
+* repeatedly open short-lived subscriptions to “peek”
+* simulate inbox polling
+
+Bad:
+
+while not message_received:
+    await asyncio.sleep(1)
+
+Correct:
+
+* open a subscription
+* handle events via callback
+
+⸻
+
+2. Timeout-Based Completion
+
+Do NOT:
+
+* assume “no events after X ms = done”
+* close subscriptions after arbitrary delays
+* wait N seconds “for relay response”
+
+Correct:
+
+* use EOSE to detect end of stored events
+* use application-level completion signals
+* keep subscriptions open for realtime flows
+
+Reference:  ￼
+
+⸻
+
+3. Ignoring Relay Responses
+
+Do NOT ignore:
+
+* OK (especially OK false)
+* CLOSED (with reason)
+* AUTH challenges
+
+Bad:
+
+await relay.send(event)  # assumes success
+
+Correct:
+
+* verify OK
+* handle rejection reasons
+* respond to auth challenges (NIP-42)
+
+⸻
+
+4. Sleep-Based Backfill
+
+Do NOT:
+
+* “wait for history” using delays
+* assume first batch = complete
+
+Correct:
+
+* use since, until, limit
+* wait for EOSE to mark catch-up complete
+
+⸻
+
+5. Weak or Missing Filters
+
+Do NOT:
+
+* subscribe broadly and filter locally
+* omit domain tags
+
+Correct:
+
+* scope filters using:
+    * kinds
+    * #agent
+    * #t (task id)
+    * #stage
+
+Reference:  ￼
+
+⸻
+
+6. No Deduplication / Idempotency
+
+Do NOT:
+
+* process the same event multiple times
+* assume single delivery
+
+Correct:
+
+* dedupe by event.id
+* use correlation keys like #t
+* design handlers to be idempotent
+
+Reference:  ￼
+
+⸻
+
+7. Recreating Queues or RPC
+
+Do NOT:
+
+* build Redis-style queues or inbox systems
+* wrap Nostr in request/response abstractions
+* treat relays like HTTP endpoints
+
+Correct:
+
+* model workflows using:
+    * event kinds
+    * tags
+    * subscriptions
+
+⸻
+
+8. Blind Relay Assumptions
+
+Do NOT:
+
+* assume all relays behave the same
+* ignore relay capabilities
+
+Correct:
+
+* support:
+    * NIP-11 (relay info)
+    * NIP-42 (auth if required)
+* implement reconnect + backoff
+
+Reference:  ￼
+
+⸻
+
+9. Misusing Timers
+
+Timers are ONLY valid for:
+
+* reconnect backoff
+* health checks / heartbeats
+* autoscaling logic
+
+Timers are NOT valid for:
+
+* message delivery
+* event completion detection
+
+⸻
+
+10. Sleep-Based Tests
+
+Do NOT:
+
+* use sleeps to “wait for events” in tests
+
+Correct:
+
+* trigger deterministic callbacks
+* simulate EVENT, EOSE, OK, CLOSED
+
+⸻
+
+## ✅ Required Patterns
+
+Event-Driven Subscription
+
+close = await subscribe_filter(
+    sub_id="example",
+    filters=[{...}],
+    on_event=handle_event,
+    on_eose=handle_eose,
+    on_closed=handle_closed,
+)
+
+⸻
+
+EOSE-Aware Flow
+
+# Phase 1: backfill
+# wait for EOSE
+# Phase 2: realtime
+# continue processing events
+
+⸻
+
+Publish with Verification
+
+event_id = await publish_event(event)
+# verify OK response before assuming success
+
+⸻
+
+Reconnect Strategy
+
+* reconnect on disconnect
+* re-issue REQ
+* use backoff
+* dedupe events
+
+⸻
+
+## 🔍 PR / Code Review Checklist
+
+Agents MUST verify:
+
+* No polling loops for message delivery
+* No timeout-based completion logic
+* EOSE is used correctly for backfill
+* OK responses are handled
+* CLOSED reasons are handled
+* AUTH flow supported if needed
+* Filters are properly scoped
+* Deduplication is implemented
+* No queue/RPC abstractions replacing Nostr
+* Tests are event-driven (no sleeps)
+
+⸻
+
+## 🧠 Heuristic Rule
+
+If you wrote:
+
+* a sleep
+* a timeout
+* a retry loop waiting for data
+
+Ask yourself:
+
+“Could this be replaced with a subscription + event handler?”
+
+If yes → you are violating the architecture
+
+⸻
+
+## 🧩 Architecture Reminder
+
+* Communication = Nostr events over relays
+* Routing = kinds + tags
+* State = derived from event streams
+* Reliability = EOSE + idempotency + backoff
+
+There are:
+
+* ❌ no queues
+* ❌ no polling APIs
+* ❌ no request/response workflows
+
+⸻
+
+## ⚠️ Enforcement
+
+Agents must:
+
+* flag violations during implementation
+* correct violations during refactoring
+* block PRs that introduce protocol smells
+
+These rules are non-optional.
