@@ -176,6 +176,21 @@ func (m *Migrator) audit() error {
 	// Identify runtime garbage to omit
 	m.auditRuntimeGarbage()
 
+	// Check for SQLite memory databases
+	m.auditMemoryDatabases()
+
+	// Check for auth profiles
+	m.auditAuthProfiles()
+
+	// Check for plugins and hooks
+	m.auditPluginsAndHooks()
+
+	// Check for managed skills (outside workspace)
+	m.auditManagedSkills()
+
+	// Check for OAuth credentials
+	m.auditCredentials()
+
 	// Add config artifacts
 	m.addArtifact(ArtifactEntry{
 		Type:        ArtifactConfig,
@@ -240,6 +255,209 @@ func (m *Migrator) auditRuntimeGarbage() {
 				SourcePath:  garbagePath,
 				Description: fmt.Sprintf("Runtime state (discarded): %s", garbage),
 			})
+		}
+	}
+}
+
+func (m *Migrator) auditMemoryDatabases() {
+	// Look for SQLite memory databases in agents/<id>/memory/<id>.sqlite
+	agentsDir := filepath.Join(m.opts.SourceDir, "agents")
+	if info, err := os.Stat(agentsDir); err != nil || !info.IsDir() {
+		return
+	}
+
+	entries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		agentID := entry.Name()
+
+		// Check for memory directory with SQLite databases
+		memoryDir := filepath.Join(agentsDir, agentID, "memory")
+		if info, err := os.Stat(memoryDir); err != nil || !info.IsDir() {
+			continue
+		}
+
+		// Look for .sqlite files
+		sqliteFiles, _ := filepath.Glob(filepath.Join(memoryDir, "*.sqlite"))
+		for _, sqlitePath := range sqliteFiles {
+			if m.opts.MigrateMemoryDB {
+				m.addArtifact(ArtifactEntry{
+					Type:        ArtifactMemoryDB,
+					Action:      ActionConvert,
+					SourcePath:  sqlitePath,
+					TargetPath:  filepath.Join(m.opts.TargetDir, "memory.sqlite"),
+					Description: fmt.Sprintf("SQLite memory database (agent: %s)", agentID),
+				})
+			} else {
+				m.addIssue(Issue{
+					Severity:     SeverityWarning,
+					Phase:        PhaseAudit,
+					Path:         sqlitePath,
+					Message:      fmt.Sprintf("SQLite memory database found for agent '%s' but --migrate-memory-db not set", agentID),
+					Suggestion:   "Use --migrate-memory-db to migrate learned memories",
+					ManualReview: true,
+				})
+			}
+		}
+	}
+}
+
+func (m *Migrator) auditAuthProfiles() {
+	// Look for auth-profiles.json in agents/<id>/agent/auth-profiles.json
+	agentsDir := filepath.Join(m.opts.SourceDir, "agents")
+	if info, err := os.Stat(agentsDir); err != nil || !info.IsDir() {
+		return
+	}
+
+	entries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		agentID := entry.Name()
+
+		authPath := filepath.Join(agentsDir, agentID, "agent", "auth-profiles.json")
+		if _, err := os.Stat(authPath); err == nil {
+			if m.opts.MigrateAuth {
+				m.addArtifact(ArtifactEntry{
+					Type:        ArtifactAuthProfiles,
+					Action:      ActionConvert,
+					SourcePath:  authPath,
+					TargetPath:  filepath.Join(m.opts.TargetDir, "auth-profiles.json"),
+					Description: fmt.Sprintf("Model auth profiles (agent: %s)", agentID),
+				})
+			} else {
+				m.addIssue(Issue{
+					Severity:     SeverityWarning,
+					Phase:        PhaseAudit,
+					Path:         authPath,
+					Message:      fmt.Sprintf("Auth profiles found for agent '%s' but --migrate-auth not set", agentID),
+					Suggestion:   "Use --migrate-auth to migrate API keys and OAuth tokens",
+					ManualReview: true,
+				})
+			}
+		}
+	}
+}
+
+func (m *Migrator) auditPluginsAndHooks() {
+	// Check for plugins directory
+	pluginsDir := filepath.Join(m.opts.SourceDir, "plugins")
+	if info, err := os.Stat(pluginsDir); err == nil && info.IsDir() {
+		entries, _ := os.ReadDir(pluginsDir)
+		if len(entries) > 0 {
+			if m.opts.MigratePlugins {
+				m.addArtifact(ArtifactEntry{
+					Type:        ArtifactPlugins,
+					Action:      ActionMigrate,
+					SourcePath:  pluginsDir,
+					TargetPath:  filepath.Join(m.opts.TargetDir, "plugins"),
+					Description: fmt.Sprintf("Installed plugins (%d)", len(entries)),
+				})
+			} else {
+				m.addIssue(Issue{
+					Severity:     SeverityWarning,
+					Phase:        PhaseAudit,
+					Path:         pluginsDir,
+					Message:      fmt.Sprintf("%d plugins found but --migrate-plugins not set", len(entries)),
+					Suggestion:   "Use --migrate-plugins to migrate installed plugins",
+					ManualReview: true,
+				})
+			}
+		}
+	}
+
+	// Check for hooks directory
+	hooksDir := filepath.Join(m.opts.SourceDir, "hooks")
+	if info, err := os.Stat(hooksDir); err == nil && info.IsDir() {
+		entries, _ := os.ReadDir(hooksDir)
+		if len(entries) > 0 {
+			if m.opts.MigratePlugins { // Hooks are migrated with plugins flag
+				m.addArtifact(ArtifactEntry{
+					Type:        ArtifactHooks,
+					Action:      ActionMigrate,
+					SourcePath:  hooksDir,
+					TargetPath:  filepath.Join(m.opts.TargetDir, "hooks"),
+					Description: fmt.Sprintf("Custom hooks (%d)", len(entries)),
+				})
+			} else {
+				m.addIssue(Issue{
+					Severity:     SeverityWarning,
+					Phase:        PhaseAudit,
+					Path:         hooksDir,
+					Message:      fmt.Sprintf("%d hooks found but --migrate-plugins not set", len(entries)),
+					Suggestion:   "Use --migrate-plugins to migrate custom hooks",
+					ManualReview: true,
+				})
+			}
+		}
+	}
+}
+
+func (m *Migrator) auditManagedSkills() {
+	// Check for managed skills directory (outside workspace)
+	skillsDir := filepath.Join(m.opts.SourceDir, "skills")
+	if info, err := os.Stat(skillsDir); err == nil && info.IsDir() {
+		entries, _ := os.ReadDir(skillsDir)
+		if len(entries) > 0 {
+			if m.opts.MigrateSkills {
+				m.addArtifact(ArtifactEntry{
+					Type:        ArtifactSkills,
+					Action:      ActionMigrate,
+					SourcePath:  skillsDir,
+					TargetPath:  filepath.Join(m.opts.TargetDir, "skills"),
+					Description: fmt.Sprintf("Managed skills (%d)", len(entries)),
+				})
+			} else {
+				m.addIssue(Issue{
+					Severity:     SeverityInfo,
+					Phase:        PhaseAudit,
+					Path:         skillsDir,
+					Message:      fmt.Sprintf("%d managed skills found but --migrate-skills not set", len(entries)),
+					Suggestion:   "Use --migrate-skills to migrate managed skills",
+					ManualReview: false,
+				})
+			}
+		}
+	}
+}
+
+func (m *Migrator) auditCredentials() {
+	// Check for OAuth credentials directory
+	credsDir := filepath.Join(m.opts.SourceDir, "credentials")
+	if info, err := os.Stat(credsDir); err == nil && info.IsDir() {
+		entries, _ := os.ReadDir(credsDir)
+		if len(entries) > 0 {
+			// Always warn about credentials - they require manual review
+			m.addIssue(Issue{
+				Severity:     SeverityWarning,
+				Phase:        PhaseAudit,
+				Path:         credsDir,
+				Message:      fmt.Sprintf("OAuth credentials directory found with %d entries", len(entries)),
+				Suggestion:   "OAuth tokens may need re-authorization after migration. Review manually.",
+				ManualReview: true,
+			})
+
+			// Copy if not skipping secrets
+			if !m.opts.SkipSecrets {
+				m.addArtifact(ArtifactEntry{
+					Type:        ArtifactCredentials,
+					Action:      ActionMigrate,
+					SourcePath:  credsDir,
+					TargetPath:  filepath.Join(m.opts.TargetDir, "credentials"),
+					Description: fmt.Sprintf("OAuth credentials (%d entries)", len(entries)),
+				})
+			}
 		}
 	}
 }
@@ -536,6 +754,10 @@ func (m *Migrator) convertArtifact(art *ArtifactEntry) error {
 		return m.convertCron(art)
 	case ArtifactIdentity:
 		return m.convertBootstrap(art)
+	case ArtifactMemoryDB:
+		return m.convertMemoryDB(art)
+	case ArtifactAuthProfiles:
+		return m.convertAuthProfiles(art)
 	default:
 		return m.copyArtifact(art)
 	}
@@ -672,6 +894,134 @@ func (m *Migrator) convertCron(art *ArtifactEntry) error {
 	art.Checksum = hex.EncodeToString(hash.Sum(nil))
 
 	return os.WriteFile(art.TargetPath, result, 0644)
+}
+
+func (m *Migrator) convertMemoryDB(art *ArtifactEntry) error {
+	// Use the MemoryImporter to handle the migration
+	cfg := MemoryImportConfig{
+		SourcePaths:    []string{art.SourcePath},
+		TargetPath:     art.TargetPath,
+		Deduplicate:    true,
+		CopyEmbeddings: true,
+		DryRun:         m.opts.DryRun,
+		Verbose:        m.opts.Verbose,
+	}
+
+	importer := NewMemoryImporter(cfg)
+	stats, err := importer.Import()
+	if err != nil {
+		return fmt.Errorf("memory import failed: %w", err)
+	}
+
+	// Report statistics
+	m.addIssue(Issue{
+		Severity: SeverityInfo,
+		Phase:    PhaseApply,
+		Path:     art.TargetPath,
+		Message: fmt.Sprintf("Imported %d/%d memory chunks from SQLite database (deduplicated: %d, skipped: %d)",
+			stats.ChunksImported, stats.ChunksFound, stats.ChunksDeduplicated, stats.ChunksSkipped),
+	})
+
+	if stats.EmbeddingsCopied > 0 {
+		m.addIssue(Issue{
+			Severity: SeverityInfo,
+			Phase:    PhaseApply,
+			Path:     art.TargetPath,
+			Message:  fmt.Sprintf("Copied %d embeddings (skipped: %d)", stats.EmbeddingsCopied, stats.EmbeddingsSkipped),
+		})
+	}
+
+	// Report any errors from the import
+	for _, importErr := range stats.Errors {
+		m.addIssue(Issue{
+			Severity: SeverityWarning,
+			Phase:    PhaseApply,
+			Path:     art.SourcePath,
+			Message:  importErr,
+		})
+	}
+
+	// Generate checksum of imported data for verification
+	if !m.opts.DryRun {
+		if info, err := os.Stat(art.TargetPath); err == nil {
+			art.Checksum = fmt.Sprintf("size:%d", info.Size())
+		}
+	}
+
+	return nil
+}
+
+func (m *Migrator) convertAuthProfiles(art *ArtifactEntry) error {
+	// Read OpenClaw auth-profiles.json
+	data, err := os.ReadFile(art.SourcePath)
+	if err != nil {
+		return fmt.Errorf("read auth profiles: %w", err)
+	}
+
+	// Parse the auth profiles
+	var profiles map[string]any
+	if err := json.Unmarshal(data, &profiles); err != nil {
+		return fmt.Errorf("parse auth profiles: %w", err)
+	}
+
+	// Convert to Metiq format
+	// OpenClaw structure: { "profileName": { "type": "api-key", "key": "..." } }
+	// Metiq structure: Similar but may need field normalization
+	converted := make(map[string]any)
+
+	for name, profile := range profiles {
+		profileMap, ok := profile.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Normalize field names
+		convertedProfile := make(map[string]any)
+		for k, v := range profileMap {
+			// Map OpenClaw field names to Metiq equivalents
+			switch k {
+			case "apiKey":
+				convertedProfile["api_key"] = v
+			case "baseUrl":
+				convertedProfile["base_url"] = v
+			case "type", "mode":
+				convertedProfile["type"] = v
+			default:
+				convertedProfile[k] = v
+			}
+		}
+
+		converted[name] = convertedProfile
+	}
+
+	// Write converted profiles
+	result, err := json.MarshalIndent(converted, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(art.TargetPath), 0755); err != nil {
+		return err
+	}
+
+	hash := sha256.New()
+	hash.Write(result)
+	art.Checksum = hex.EncodeToString(hash.Sum(nil))
+
+	// Write with restricted permissions (contains secrets)
+	if err := os.WriteFile(art.TargetPath, result, 0600); err != nil {
+		return err
+	}
+
+	m.addIssue(Issue{
+		Severity:   SeverityInfo,
+		Phase:      PhaseApply,
+		Path:       art.TargetPath,
+		Message:    fmt.Sprintf("Migrated %d auth profiles", len(converted)),
+		Suggestion: "Verify API keys and OAuth tokens work correctly",
+	})
+
+	return nil
 }
 
 // ─── Verify Phase ────────────────────────────────────────────────────────────
