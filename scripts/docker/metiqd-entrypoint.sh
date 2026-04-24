@@ -13,7 +13,7 @@ if [ "$(id -u)" = "0" ]; then
   chmod 755 /data /data/.metiq
   
   # Re-exec this script as the metiq user
-  exec su-exec metiq "$0" "$@"
+  exec gosu metiq "$0" "$@"
 fi
 
 BOOTSTRAP_PATH="${METIQ_BOOTSTRAP_PATH:-/data/.metiq/bootstrap.json}"
