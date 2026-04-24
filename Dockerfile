@@ -27,12 +27,11 @@
 ARG METIQ_VARIANT=default
 ARG VERSION=dev
 
-# Base images pinned to SHA256 digests for reproducible builds.
-# To update: docker buildx imagetools inspect golang:1.25-bookworm
-ARG GOLANG_IMAGE="golang:1.25-bookworm@sha256:29e59af995c51a5bf63d072eca973b918e0e7af4db0e4667aa73f1b8da1a6d8c"
-ARG DEBIAN_BOOKWORM_IMAGE="debian:bookworm@sha256:1d6cd964917a13b547d1ea392dff9a000c3f36070686ebc5c8755d53fb374435"
-ARG DEBIAN_BOOKWORM_SLIM_IMAGE="debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d"
-ARG NODE_IMAGE="node:24-bookworm-slim@sha256:879b21aec4a1ad820c27ccd565e7c7ed955f24b92e6694556154f251e4bdb240"
+# Base images (unpinned for latest updates)
+ARG GOLANG_IMAGE="golang:1.25-bookworm"
+ARG DEBIAN_BOOKWORM_IMAGE="debian:bookworm"
+ARG DEBIAN_BOOKWORM_SLIM_IMAGE="debian:bookworm-slim"
+ARG NODE_IMAGE="node:24-bookworm-slim"
 
 # ── Stage 1: Build ──────────────────────────────────────────────────────────────
 FROM ${GOLANG_IMAGE} AS builder
@@ -103,7 +102,8 @@ RUN --mount=type=cache,id=metiq-apt-cache,target=/var/cache/apt,sharing=locked \
       hostname \
       jq \
       poppler-utils \
-      tzdata
+      tzdata \
+      su-exec
 
 # ── Optional: Python 3 + uv (for MCP servers, skills, and extensions) ──────────
 # Build with: docker build --build-arg METIQ_INSTALL_PYTHON=1 .
@@ -199,10 +199,12 @@ RUN --mount=type=cache,id=metiq-apt-cache,target=/var/cache/apt,sharing=locked \
 COPY --from=builder /out/metiqd /usr/local/bin/metiqd
 COPY --from=builder /out/metiq  /usr/local/bin/metiq
 COPY skills/ /app/skills/
+COPY scripts/docker/metiqd-entrypoint.sh /entrypoint.sh
 
 # Ensure skills directory permissions are sane.
 RUN find /app/skills -type d -exec chmod 755 {} + && \
-    find /app/skills -type f -exec chmod 644 {} +
+    find /app/skills -type f -exec chmod 644 {} + && \
+    chmod +x /entrypoint.sh
 
 # Expose CLI on PATH without requiring global installs.
 RUN ln -sf /usr/local/bin/metiq /usr/local/bin/mq
@@ -219,7 +221,8 @@ RUN groupadd -g 1000 metiq && \
 ENV HOME=/data
 VOLUME ["/data"]
 
-USER metiq
+# Run entrypoint as root to fix permissions, then drop to metiq user
+# USER metiq
 
 # ── Health check ────────────────────────────────────────────────────────────────
 # Admin API health endpoint (enabled via --admin-addr or admin_listen_addr).
@@ -230,4 +233,4 @@ HEALTHCHECK --interval=60s --timeout=10s --start-period=15s --retries=3 \
 # Admin API (optional; enabled via --admin-addr or admin_listen_addr in config).
 EXPOSE 7423
 
-ENTRYPOINT ["/usr/local/bin/metiqd"]
+ENTRYPOINT ["/entrypoint.sh"]
