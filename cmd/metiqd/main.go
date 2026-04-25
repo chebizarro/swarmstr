@@ -42,6 +42,7 @@ import (
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/nostr/secure"
 	pluginmanager "metiq/internal/plugins/manager"
+	"metiq/internal/permissions"
 	"metiq/internal/policy"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/social"
@@ -1257,14 +1258,35 @@ func main() {
 	controlOps = ops
 	ops.SyncHeartbeatConfig(configState.Get().Heartbeat)
 
-	// ── Exec approval middleware ──────────────────────────────────────────────
+	// ── Permission engine + exec approval middleware ─────────────────────────
+	// The permission engine layers on top of tool profiles:
+	// 1. tool_profile (minimal/coding/messaging/full) controls tool availability
+	// 2. permissions section controls execution behavior (allow/ask/deny)
+	// 3. approvals.tools is the legacy fallback when permissions isn't configured
+	var permEngine *permissions.Engine
+	{
+		liveCfg := configState.Get()
+		if liveCfg.Permissions.DefaultBehavior != "" || len(liveCfg.Permissions.Agents) > 0 || len(liveCfg.Permissions.Rules) > 0 {
+			// Use new permission engine - audit logs go to current directory
+			permBaseDir, _ := os.Getwd()
+			var err error
+			permEngine, err = permissions.NewEngineFromStateConfig(permBaseDir, liveCfg.Permissions)
+			if err != nil {
+				log.Printf("WARN: failed to initialize permission engine: %v; falling back to legacy approvals", err)
+			} else {
+				log.Printf("permission engine initialized with %d rules", permEngine.Stats().TotalRules)
+			}
+		}
+	}
+
 	// Hook the tool registry so that tools matching the configured approval list
 	// pause execution, create an approval request, and wait for a human decision
 	// before proceeding.  This implements OpenClaw parity for exec approval gating.
 	{
-		// Default tool names that require approval.
+		// Default tool names that require approval (legacy mode).
 		// If Extra["approvals"]["tools"] is present (even empty), it REPLACES the defaults.
 		// Set to [] for fully autonomous operation; omit the key to use defaults.
+		// NOTE: If permissions section is configured, it takes precedence over this.
 		defaultApprovalTools := []string{"bash", "shell", "exec", "run_command", "terminal", "sh", "bash_exec", "process_spawn", "process_send", "process_kill", "process_exec", "git_status", "git_diff", "test_run"}
 		approvalTools := make(map[string]bool)
 		configOverride := false
@@ -1310,7 +1332,43 @@ func main() {
 		tools.SetLoopDetection(loopRegistry, loopConfig)
 
 		tools.SetMiddleware(func(ctx context.Context, call agent.ToolCall, next func(context.Context, agent.ToolCall) (string, error)) (string, error) {
-			// ── Approval gate ───────────────────────────────────────────
+			// ── Permission engine check (new system) ────────────────────
+			// If the permission engine is configured, use it instead of the legacy approval list.
+			if permEngine != nil {
+				// Get agent ID from context if available
+				agentID := ""
+				if aid, ok := ctx.Value("agent_id").(string); ok {
+					agentID = aid
+				}
+
+				// Build permission request - serialize args to string for content matching
+				argsStr := ""
+				if call.Args != nil {
+					if argsBytes, err := json.Marshal(call.Args); err == nil {
+						argsStr = string(argsBytes)
+					}
+				}
+				req := permissions.NewToolRequest(call.Name, permissions.CategoryExec).
+					WithContent(argsStr).
+					WithContext("", "", agentID, "")
+
+				decision := permEngine.Evaluate(ctx, req)
+
+				switch decision.Behavior {
+				case permissions.BehaviorAllow:
+					// Allowed - proceed without approval gate
+					metricspkg.ToolCalls.Inc()
+					return next(ctx, call)
+				case permissions.BehaviorDeny:
+					// Denied - block immediately
+					metricspkg.ToolDenied.Inc()
+					return "", fmt.Errorf("tool %q denied by permission rule: %s", call.Name, decision.Reason)
+				case permissions.BehaviorAsk:
+					// Fall through to approval gate below
+				}
+			}
+
+			// ── Legacy approval gate ────────────────────────────────────
 			// Re-read approval tool list from live config on every call so that
 			// config hot-reload (SIGHUP or file change) takes effect immediately.
 			// If Extra["approvals"]["tools"] is present it REPLACES the startup defaults.
@@ -1335,7 +1393,11 @@ func main() {
 					liveApprovalTools = live
 				}
 			}
-			if !liveApprovalTools[call.Name] {
+
+			// If permission engine is active and returned "ask", always go to approval gate.
+			// Otherwise, only gate tools in the legacy approval list.
+			needsApproval := permEngine != nil || liveApprovalTools[call.Name]
+			if !needsApproval {
 				metricspkg.ToolCalls.Inc()
 				return next(ctx, call)
 			}
