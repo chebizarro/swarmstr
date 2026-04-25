@@ -33,9 +33,13 @@ type MemoryImportConfig struct {
 	// Default: ~/.openclaw/agents/*/memory/*.sqlite
 	SourcePaths []string `json:"source_paths,omitempty"`
 
-	// TargetPath is the swarmstr SQLite database path.
+	// TargetPath is the target database path.
 	// Default: ~/.metiq/memory.sqlite
 	TargetPath string `json:"target_path,omitempty"`
+
+	// Backend is the target memory backend (sqlite, json-fts, qdrant).
+	// Default: "sqlite"
+	Backend string `json:"backend,omitempty"`
 
 	// Deduplicate removes duplicate entries by content hash.
 	// Default: true
@@ -64,6 +68,7 @@ func DefaultMemoryImportConfig() MemoryImportConfig {
 			filepath.Join(home, ".openclaw", "agents", "*", "memory", "*.sqlite"),
 		},
 		TargetPath:     filepath.Join(home, ".metiq", "memory.sqlite"),
+		Backend:        "sqlite",
 		Deduplicate:    true,
 		CopyEmbeddings: true,
 	}
@@ -130,12 +135,18 @@ func (m *MemoryImporter) Import() (*MemoryImportStats, error) {
 		return &m.stats, nil
 	}
 
-	// Open target database (unless dry run)
-	var target *memory.SQLiteBackend
+	// Determine backend to use
+	backend := m.cfg.Backend
+	if backend == "" {
+		backend = "sqlite"
+	}
+
+	// Open target backend (unless dry run)
+	var target memory.Backend
 	if !m.cfg.DryRun {
-		target, err = memory.OpenSQLiteBackend(m.cfg.TargetPath)
+		target, err = memory.OpenBackend(backend, m.cfg.TargetPath)
 		if err != nil {
-			return &m.stats, fmt.Errorf("open target database: %w", err)
+			return &m.stats, fmt.Errorf("open target backend %q: %w", backend, err)
 		}
 		defer target.Close()
 	}
@@ -149,10 +160,17 @@ func (m *MemoryImporter) Import() (*MemoryImportStats, error) {
 		m.stats.DatabasesImported++
 	}
 
-	// Rebuild FTS index after import
-	if target != nil && m.stats.ChunksImported > 0 {
-		if err := target.RebuildFTSIndex(); err != nil {
+	// Rebuild FTS index after import (SQLite backend only)
+	if sqliteTarget, ok := target.(*memory.SQLiteBackend); ok && m.stats.ChunksImported > 0 {
+		if err := sqliteTarget.RebuildFTSIndex(); err != nil {
 			m.stats.Errors = append(m.stats.Errors, fmt.Sprintf("rebuild FTS: %v", err))
+		}
+	}
+
+	// Save backend state
+	if target != nil {
+		if err := target.Save(); err != nil {
+			m.stats.Errors = append(m.stats.Errors, fmt.Sprintf("save backend: %v", err))
 		}
 	}
 
@@ -221,7 +239,7 @@ func (m *MemoryImporter) isSQLiteDatabase(path string) bool {
 }
 
 // importDatabase imports a single OpenClaw database.
-func (m *MemoryImporter) importDatabase(dbPath string, target *memory.SQLiteBackend) error {
+func (m *MemoryImporter) importDatabase(dbPath string, target memory.Backend) error {
 	// Open source database
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
 	if err != nil {
@@ -285,7 +303,7 @@ func (m *MemoryImporter) importDatabase(dbPath string, target *memory.SQLiteBack
 }
 
 // processChunk converts and imports a single chunk.
-func (m *MemoryImporter) processChunk(chunk OpenClawChunk, target *memory.SQLiteBackend) error {
+func (m *MemoryImporter) processChunk(chunk OpenClawChunk, target memory.Backend) error {
 	// Skip empty text
 	if strings.TrimSpace(chunk.Text) == "" {
 		m.stats.ChunksSkipped++
