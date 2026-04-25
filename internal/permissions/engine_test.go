@@ -641,6 +641,107 @@ func TestPermissiveRules(t *testing.T) {
 	}
 }
 
+func TestPerAgentPermissions(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+
+	ctx := context.Background()
+
+	// Configure agent profiles
+	engine.ConfigureAgentProfile("research-agent", "autonomous")
+	engine.ConfigureAgentProfile("deploy-agent", "restrictive")
+
+	// Research agent should be allowed
+	reqResearch := NewToolRequest("bash", CategoryExec).
+		WithContent("curl https://api.example.com").
+		WithContext("", "", "research-agent", "")
+	decisionResearch := engine.Evaluate(ctx, reqResearch)
+
+	if decisionResearch.Behavior != BehaviorAllow {
+		t.Errorf("research-agent should be allowed, got %s", decisionResearch.Behavior)
+	}
+
+	// Deploy agent should ask
+	reqDeploy := NewToolRequest("bash", CategoryExec).
+		WithContent("curl https://api.example.com").
+		WithContext("", "", "deploy-agent", "")
+	decisionDeploy := engine.Evaluate(ctx, reqDeploy)
+
+	if decisionDeploy.Behavior != BehaviorAsk {
+		t.Errorf("deploy-agent should ask, got %s", decisionDeploy.Behavior)
+	}
+}
+
+func TestAgentSpecificRules(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+
+	ctx := context.Background()
+
+	// Add a rule that only applies to "trusted-agent"
+	rule := NewRule("trusted-allow-bash", ScopeAgent, BehaviorAllow, "bash").
+		ForAgent("trusted-agent")
+	engine.AddRule(rule)
+
+	// Trusted agent should match the rule
+	reqTrusted := NewToolRequest("bash", CategoryExec).
+		WithContent("ls -la").
+		WithContext("", "", "trusted-agent", "")
+	decisionTrusted := engine.Evaluate(ctx, reqTrusted)
+
+	if decisionTrusted.Behavior != BehaviorAllow {
+		t.Errorf("trusted-agent should be allowed, got %s", decisionTrusted.Behavior)
+	}
+	if len(decisionTrusted.MatchedRules) == 0 {
+		t.Error("expected rule to match for trusted-agent")
+	}
+
+	// Other agent should NOT match the rule (falls back to default)
+	reqOther := NewToolRequest("bash", CategoryExec).
+		WithContent("ls -la").
+		WithContext("", "", "other-agent", "")
+	decisionOther := engine.Evaluate(ctx, reqOther)
+
+	if len(decisionOther.MatchedRules) != 0 {
+		t.Error("other-agent should not match agent-specific rule")
+	}
+}
+
+func TestReadonlyAgentProfile(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+
+	ctx := context.Background()
+
+	// Configure readonly profile
+	engine.ConfigureAgentProfile("readonly-agent", "readonly")
+
+	// Should allow filesystem operations
+	reqRead := NewToolRequest("read_file", CategoryFilesystem).
+		WithContext("", "", "readonly-agent", "")
+	decisionRead := engine.Evaluate(ctx, reqRead)
+
+	if decisionRead.Behavior != BehaviorAllow {
+		t.Errorf("readonly-agent should allow filesystem, got %s", decisionRead.Behavior)
+	}
+
+	// Should deny exec operations
+	reqExec := NewToolRequest("bash", CategoryExec).
+		WithContent("rm -rf /tmp/test").
+		WithContext("", "", "readonly-agent", "")
+	decisionExec := engine.Evaluate(ctx, reqExec)
+
+	if decisionExec.Behavior != BehaviorDeny {
+		t.Errorf("readonly-agent should deny exec, got %s", decisionExec.Behavior)
+	}
+}
+
 func TestEngineConfigs(t *testing.T) {
 	// Test all config constructors return valid configs
 	configs := []struct {
