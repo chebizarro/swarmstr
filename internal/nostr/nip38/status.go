@@ -198,8 +198,15 @@ func (h *Heartbeat) publish(ctx context.Context, status, content string, expiry 
 		return
 	}
 
+	// Use a dedicated publish context with a longer deadline to properly wait for OK
+	// responses from slow relays. The nostr library defaults to 7s if no deadline is
+	// set, which causes "given up waiting for OK" errors on slow relays like nos.lol.
+	// Status events are best-effort but we should still wait reasonably for the OK.
+	pubCtx, pubCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer pubCancel()
+
 	published := false
-	for result := range h.pool.PublishMany(ctx, h.opts.Relays, evt) {
+	for result := range h.pool.PublishMany(pubCtx, h.opts.Relays, evt) {
 		if result.Error == nil {
 			published = true
 		} else {
