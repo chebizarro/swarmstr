@@ -49,6 +49,46 @@ func DefaultEngineConfig() EngineConfig {
 	}
 }
 
+// AutonomousEngineConfig returns a configuration for maximum agent autonomy.
+// All operations are allowed by default with only critical safety rules.
+// Audit logging remains enabled for accountability.
+func AutonomousEngineConfig() EngineConfig {
+	return EngineConfig{
+		DefaultBehavior: BehaviorAllow,
+		AuditEnabled:    true,
+		AuditPath:       "audit",
+		CacheEnabled:    true,
+		CacheTTL:        5 * time.Minute,
+		AutoClassify:    true,
+	}
+}
+
+// PermissiveEngineConfig returns a configuration that allows most operations
+// but still asks for confirmation on dangerous commands.
+func PermissiveEngineConfig() EngineConfig {
+	return EngineConfig{
+		DefaultBehavior: BehaviorAllow,
+		AuditEnabled:    true,
+		AuditPath:       "audit",
+		CacheEnabled:    true,
+		CacheTTL:        5 * time.Minute,
+		AutoClassify:    true,
+	}
+}
+
+// RestrictiveEngineConfig returns a configuration that denies by default,
+// requiring explicit allow rules for each operation type.
+func RestrictiveEngineConfig() EngineConfig {
+	return EngineConfig{
+		DefaultBehavior: BehaviorDeny,
+		AuditEnabled:    true,
+		AuditPath:       "audit",
+		CacheEnabled:    true,
+		CacheTTL:        5 * time.Minute,
+		AutoClassify:    true,
+	}
+}
+
 // ─── Permission Engine ───────────────────────────────────────────────────────
 
 // Engine evaluates permission rules and makes decisions.
@@ -272,8 +312,18 @@ func (e *Engine) EvaluateBatch(ctx context.Context, requests []*ToolRequest) []*
 // ─── Cache Management ────────────────────────────────────────────────────────
 
 func (e *Engine) cacheKey(req *ToolRequest) string {
-	return fmt.Sprintf("%s:%s:%s:%s:%s:%s",
-		req.ToolName, req.Category, req.UserID, req.ProjectID, req.AgentID, req.SessionID)
+	// Include content hash in cache key since content patterns affect matching
+	contentHash := ""
+	if req.Content != "" {
+		// Use a simple hash to avoid very long keys
+		h := 0
+		for _, c := range req.Content {
+			h = 31*h + int(c)
+		}
+		contentHash = fmt.Sprintf("%x", h)
+	}
+	return fmt.Sprintf("%s:%s:%s:%s:%s:%s:%s",
+		req.ToolName, req.Category, req.UserID, req.ProjectID, req.AgentID, req.SessionID, contentHash)
 }
 
 func (e *Engine) getCached(key string) *Decision {
@@ -494,4 +544,196 @@ func (e *Engine) LoadDefaultRules() error {
 		}
 	}
 	return nil
+}
+
+// ─── Pre-configured Engines ─────────────────────────────────────────────────
+
+// NewAutonomousEngine creates an engine configured for maximum agent autonomy.
+// All operations are allowed by default. Only critical safety rules are applied
+// to prevent catastrophic operations (rm -rf /, format commands, etc.).
+//
+// Use this when:
+//   - Running in a sandboxed environment
+//   - The agent is trusted and well-tested
+//   - You want minimal interruption for approvals
+//
+// Audit logging remains enabled for accountability.
+func NewAutonomousEngine(baseDir string) *Engine {
+	e := NewEngine(baseDir, AutonomousEngineConfig())
+	e.LoadCriticalSafetyRules()
+	return e
+}
+
+// NewPermissiveEngine creates an engine that allows most operations but
+// asks for confirmation on potentially dangerous commands.
+//
+// Use this when:
+//   - You trust the agent but want visibility into risky operations
+//   - Running in a development environment
+//   - You want a balance of autonomy and oversight
+func NewPermissiveEngine(baseDir string) *Engine {
+	e := NewEngine(baseDir, PermissiveEngineConfig())
+	e.LoadPermissiveRules()
+	return e
+}
+
+// NewRestrictiveEngine creates an engine that denies by default and requires
+// explicit allow rules. This is the most secure configuration.
+//
+// Use this when:
+//   - Running untrusted or new agents
+//   - Operating in production environments
+//   - Security is the top priority
+func NewRestrictiveEngine(baseDir string) *Engine {
+	e := NewEngine(baseDir, RestrictiveEngineConfig())
+	e.LoadDefaultRules()
+	return e
+}
+
+// NewStandardEngine creates an engine with balanced defaults - allows reads,
+// asks for writes/execution, denies dangerous operations.
+func NewStandardEngine(baseDir string) *Engine {
+	e := NewEngine(baseDir, DefaultEngineConfig())
+	e.LoadDefaultRules()
+	return e
+}
+
+// ─── Rule Sets ───────────────────────────────────────────────────────────────
+
+// CriticalSafetyRules returns rules that prevent catastrophic operations.
+// These should be loaded even in autonomous mode.
+func CriticalSafetyRules() []*Rule {
+	return []*Rule{
+		// Prevent recursive deletion from root
+		NewRule("safety-deny-rm-rf-root", ScopeGlobal, BehaviorDeny, "bash").
+			WithContentPattern(`rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|(-[a-zA-Z]*f[a-zA-Z]*r))\s+/[^.]`).
+			WithDescription("Block recursive deletion from root filesystem"),
+
+		// Prevent disk formatting
+		NewRule("safety-deny-mkfs", ScopeGlobal, BehaviorDeny, "bash").
+			WithContentPattern(`mkfs\s`).
+			WithDescription("Block filesystem creation commands"),
+
+		NewRule("safety-deny-fdisk", ScopeGlobal, BehaviorDeny, "bash").
+			WithContentPattern(`fdisk\s`).
+			WithDescription("Block partition table modifications"),
+
+		// Prevent direct disk writes
+		NewRule("safety-deny-dd-disk", ScopeGlobal, BehaviorDeny, "bash").
+			WithContentPattern(`dd\s+.*of=/dev/[sh]d`).
+			WithDescription("Block direct disk writes with dd"),
+
+		// Prevent wiping boot sectors
+		NewRule("safety-deny-dd-zero", ScopeGlobal, BehaviorDeny, "bash").
+			WithContentPattern(`dd\s+.*if=/dev/zero.*of=/dev/`).
+			WithDescription("Block zeroing disk devices"),
+
+		// Prevent chmod 777 on system directories
+		NewRule("safety-deny-chmod-777-system", ScopeGlobal, BehaviorDeny, "bash").
+			WithContentPattern(`chmod\s+(-[a-zA-Z]*R[a-zA-Z]*)?\s*777\s+/`).
+			WithDescription("Block recursive chmod 777 on root"),
+
+		// Prevent deleting critical system files
+		NewRule("safety-deny-rm-etc", ScopeGlobal, BehaviorDeny, "bash").
+			WithContentPattern(`rm\s+.*/(etc|boot|usr|lib|bin|sbin)/`).
+			WithDescription("Block deletion of system directories"),
+	}
+}
+
+// LoadCriticalSafetyRules adds only the critical safety rules.
+func (e *Engine) LoadCriticalSafetyRules() error {
+	for _, rule := range CriticalSafetyRules() {
+		if err := e.AddRule(rule); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PermissiveRules returns rules for permissive mode - allows most things
+// but asks for confirmation on dangerous patterns.
+func PermissiveRules() []*Rule {
+	rules := CriticalSafetyRules() // Start with safety rules as deny
+
+	// Add ask rules for potentially risky operations
+	askRules := []*Rule{
+		// Ask before sudo
+		NewRule("permissive-ask-sudo", ScopeGlobal, BehaviorAsk, "bash").
+			WithContentPattern(`^sudo\s+`).
+			WithDescription("Confirm sudo commands"),
+
+		// Ask before curl/wget to shell
+		NewRule("permissive-ask-curl-sh", ScopeGlobal, BehaviorAsk, "bash").
+			WithContentPattern(`(curl|wget).*\|\s*(ba)?sh`).
+			WithDescription("Confirm piping downloads to shell"),
+
+		// Ask before modifying SSH keys
+		NewRule("permissive-ask-ssh", ScopeGlobal, BehaviorAsk, "bash").
+			WithContentPattern(`(>|>>)\s*~?/?.*\.ssh/`).
+			WithDescription("Confirm SSH directory modifications"),
+
+		// Ask before modifying shell configs
+		NewRule("permissive-ask-shell-config", ScopeGlobal, BehaviorAsk, "bash").
+			WithContentPattern(`(>|>>)\s*~?/?\.(bashrc|zshrc|profile|bash_profile)`).
+			WithDescription("Confirm shell configuration changes"),
+
+		// Ask before git push --force
+		NewRule("permissive-ask-force-push", ScopeGlobal, BehaviorAsk, "bash").
+			WithContentPattern(`git\s+push\s+.*--force`).
+			WithDescription("Confirm force push"),
+
+		// Ask before git reset --hard
+		NewRule("permissive-ask-git-reset", ScopeGlobal, BehaviorAsk, "bash").
+			WithContentPattern(`git\s+reset\s+--hard`).
+			WithDescription("Confirm hard reset"),
+	}
+
+	return append(rules, askRules...)
+}
+
+// LoadPermissiveRules adds the permissive rule set.
+func (e *Engine) LoadPermissiveRules() error {
+	for _, rule := range PermissiveRules() {
+		if err := e.AddRule(rule); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ─── Session Override Helpers ────────────────────────────────────────────────
+
+// AllowAllForSession adds a session-scope rule that allows all operations.
+// This overrides any global/user/project rules for the current session.
+func (e *Engine) AllowAllForSession() error {
+	return e.AddRule(
+		NewRule("session-allow-all", ScopeSession, BehaviorAllow, "*").
+			WithDescription("Session override: allow all operations"),
+	)
+}
+
+// AllowCategoryForSession adds a session-scope allow rule for a specific category.
+func (e *Engine) AllowCategoryForSession(category ToolCategory) error {
+	return e.AddRule(
+		NewRule(fmt.Sprintf("session-allow-%s", category), ScopeSession, BehaviorAllow, "*").
+			WithCategory(category).
+			WithDescription(fmt.Sprintf("Session override: allow all %s operations", category)),
+	)
+}
+
+// AllowToolForSession adds a session-scope allow rule for a specific tool pattern.
+func (e *Engine) AllowToolForSession(toolPattern string) error {
+	return e.AddRule(
+		NewRule(fmt.Sprintf("session-allow-%s", toolPattern), ScopeSession, BehaviorAllow, toolPattern).
+			WithDescription(fmt.Sprintf("Session override: allow %s", toolPattern)),
+	)
+}
+
+// AllowCommandForSession adds a session-scope allow rule for a specific command pattern.
+func (e *Engine) AllowCommandForSession(commandPattern string) error {
+	return e.AddRule(
+		NewRule("session-allow-cmd", ScopeSession, BehaviorAllow, "bash").
+			WithContentPattern(commandPattern).
+			WithDescription(fmt.Sprintf("Session override: allow commands matching %s", commandPattern)),
+	)
 }
