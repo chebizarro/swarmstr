@@ -382,3 +382,65 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+func TestIsCompatible(t *testing.T) {
+	tests := []struct {
+		name           string
+		minVersion     string
+		currentVersion string
+		want           bool
+	}{
+		{"empty min version always compatible", "", "1.0.0", true},
+		{"equal versions compatible", "1.0.0", "1.0.0", true},
+		{"current newer major", "1.0.0", "2.0.0", true},
+		{"current newer minor", "1.0.0", "1.1.0", true},
+		{"current newer patch", "1.0.0", "1.0.1", true},
+		{"current older major", "2.0.0", "1.0.0", false},
+		{"current older minor", "1.2.0", "1.1.0", false},
+		{"current older patch", "1.0.2", "1.0.1", false},
+		{"v prefix handled", "v1.0.0", "v1.0.0", true},
+		{"mixed v prefix", "1.0.0", "v1.0.0", true},
+		{"pre-release ignored", "1.0.0-beta", "1.0.0", true},
+		{"build metadata ignored", "1.0.0+build", "1.0.0", true},
+		{"two-part version", "1.0", "1.0.0", true},
+		{"one-part version", "1", "1.0.0", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Manifest{MinMetiqVersion: tt.minVersion}
+			got := m.IsCompatible(tt.currentVersion)
+			if got != tt.want {
+				t.Errorf("IsCompatible(%q, %q) = %v, want %v",
+					tt.currentVersion, tt.minVersion, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSemverLessThan(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"1.0.0", "1.0.0", false},
+		{"1.0.0", "2.0.0", true},
+		{"2.0.0", "1.0.0", false},
+		{"1.0.0", "1.1.0", true},
+		{"1.1.0", "1.0.0", false},
+		{"1.0.0", "1.0.1", true},
+		{"1.0.1", "1.0.0", false},
+		{"1.9.0", "1.10.0", true},
+		{"1.10.0", "1.9.0", false},
+		{"0.0.1", "0.0.2", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.a+"_vs_"+tt.b, func(t *testing.T) {
+			got := semverLessThan(tt.a, tt.b)
+			if got != tt.want {
+				t.Errorf("semverLessThan(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}

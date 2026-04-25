@@ -19,6 +19,7 @@ package memory
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -850,7 +851,10 @@ func generateClaimID(text string) string {
 }
 
 func generateReviewID(reviewType ReviewType, topic string) string {
-	h := sha256.Sum256([]byte(string(reviewType) + topic + fmt.Sprintf("%d", time.Now().UnixNano())))
+	// Include random bytes to ensure uniqueness even when called in the same nanosecond
+	var randBytes [8]byte
+	rand.Read(randBytes[:])
+	h := sha256.Sum256([]byte(string(reviewType) + topic + fmt.Sprintf("%d", time.Now().UnixNano()) + hex.EncodeToString(randBytes[:])))
 	return "review_" + hex.EncodeToString(h[:8])
 }
 

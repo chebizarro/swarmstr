@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -51,7 +52,7 @@ func NewFileStore(dir string) (*FileStore, error) {
 	// Load existing data
 	if err := store.load(); err != nil {
 		// Log warning but continue with empty state
-		// TODO: add proper logging
+		log.Printf("tasks: failed to load existing store from %s: %v", dir, err)
 	}
 
 	return store, nil
