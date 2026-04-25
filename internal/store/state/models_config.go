@@ -28,6 +28,7 @@ type ConfigDoc struct {
 	Timeouts      TimeoutsConfig      `json:"timeouts,omitempty"`
 	AgentList     *AgentListConfig    `json:"agent_list,omitempty"`
 	FIPS          FIPSConfig          `json:"fips,omitempty"`
+	Permissions   PermissionsConfig   `json:"permissions,omitempty"`
 	Extra         map[string]any      `json:"extra,omitempty"`
 }
 
@@ -573,3 +574,59 @@ const (
 	// VerificationPolicyNone disables verification gating entirely.
 	VerificationPolicyNone VerificationPolicy = "none"
 )
+
+// ─── Permissions Configuration ───────────────────────────────────────────────
+
+// PermissionsConfig defines tool permission rules that layer on top of profiles.
+// Profiles (minimal/coding/messaging/full) control tool availability.
+// Permissions add content-pattern rules for finer-grained control.
+type PermissionsConfig struct {
+	// DefaultBehavior when no rules match: "allow", "ask", "deny".
+	// Default: "allow" (profiles already filtered unavailable tools).
+	DefaultBehavior string `json:"default_behavior,omitempty"`
+
+	// AuditEnabled enables permission decision logging.
+	AuditEnabled *bool `json:"audit_enabled,omitempty"`
+
+	// Agents maps agent IDs to permission behavior overrides.
+	Agents map[string]AgentPermissions `json:"agents,omitempty"`
+
+	// Rules defines custom permission rules applied to all agents.
+	Rules []PermissionRule `json:"rules,omitempty"`
+}
+
+// AgentPermissions defines permission overrides for a specific agent.
+type AgentPermissions struct {
+	// Behavior is the default for this agent: "autonomous", "permissive", "restrictive".
+	// - autonomous: allow all (rely on global safety rules)
+	// - permissive: allow all, ask for dangerous patterns
+	// - restrictive: ask for everything
+	Behavior string `json:"behavior,omitempty"`
+
+	// DenyPatterns are content patterns that are always denied for this agent.
+	DenyPatterns []string `json:"deny_patterns,omitempty"`
+
+	// AskPatterns are content patterns requiring confirmation for this agent.
+	AskPatterns []string `json:"ask_patterns,omitempty"`
+}
+
+// PermissionRule defines a content-based permission rule.
+type PermissionRule struct {
+	// ID is a unique identifier for this rule.
+	ID string `json:"id"`
+
+	// Behavior is "allow", "ask", or "deny".
+	Behavior string `json:"behavior"`
+
+	// Tool is a glob pattern matching tool names (e.g., "bash", "mcp:*").
+	Tool string `json:"tool"`
+
+	// Content is an optional regex pattern for tool arguments.
+	Content string `json:"content,omitempty"`
+
+	// Agent restricts the rule to a specific agent ID (empty = all agents).
+	Agent string `json:"agent,omitempty"`
+
+	// Description explains the rule's purpose.
+	Description string `json:"description,omitempty"`
+}
