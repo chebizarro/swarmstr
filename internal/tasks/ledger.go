@@ -13,6 +13,7 @@ package tasks
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -183,7 +184,7 @@ func (l *Ledger) CreateTask(ctx context.Context, task state.TaskSpec, source Tas
 	if l.store != nil {
 		if err := l.store.SaveTask(ctx, entry); err != nil {
 			// Log but don't fail - in-memory state is authoritative
-			// TODO: add proper logging
+			log.Printf("tasks: failed to persist task %s: %v", entry.Task.TaskID, err)
 		}
 	}
 

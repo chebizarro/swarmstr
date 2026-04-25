@@ -670,12 +670,55 @@ func (m *Manifest) ToJSON() ([]byte, error) {
 // ─── Compatibility ───────────────────────────────────────────────────────────
 
 // IsCompatible checks if this manifest is compatible with the current runtime.
+// Returns true if metiqVersion >= m.MinMetiqVersion using semver comparison.
 func (m *Manifest) IsCompatible(metiqVersion string) bool {
 	if m.MinMetiqVersion == "" {
 		return true
 	}
-	// TODO: Implement proper semver comparison
-	return true
+	return !semverLessThan(metiqVersion, m.MinMetiqVersion)
+}
+
+// semverLessThan returns true if version a < b using semver comparison.
+// Strips leading "v" prefix and compares [major, minor, patch] as integers.
+func semverLessThan(a, b string) bool {
+	av := parseSemver(a)
+	bv := parseSemver(b)
+	for i := 0; i < 3; i++ {
+		if av[i] < bv[i] {
+			return true
+		}
+		if av[i] > bv[i] {
+			return false
+		}
+	}
+	return false // equal versions
+}
+
+// parseSemver extracts [major, minor, patch] as integers from a version string.
+func parseSemver(v string) [3]int {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	// Strip pre-release suffix (e.g. "1.2.3-beta" → "1.2.3")
+	if idx := strings.IndexAny(v, "-+"); idx >= 0 {
+		v = v[:idx]
+	}
+	parts := strings.SplitN(v, ".", 3)
+	for len(parts) < 3 {
+		parts = append(parts, "0")
+	}
+	var out [3]int
+	for i := 0; i < 3; i++ {
+		p := strings.TrimSpace(parts[i])
+		n := 0
+		for _, c := range p {
+			if c >= '0' && c <= '9' {
+				n = n*10 + int(c-'0')
+			} else {
+				break
+			}
+		}
+		out[i] = n
+	}
+	return out
 }
 
 // ─── Capability Queries ──────────────────────────────────────────────────────
