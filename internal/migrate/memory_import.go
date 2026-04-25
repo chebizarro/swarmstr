@@ -13,6 +13,7 @@
 package migrate
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -58,6 +59,9 @@ type MemoryImportConfig struct {
 
 	// Verbose enables detailed logging.
 	Verbose bool `json:"verbose"`
+
+	// Classify configures optional LLM classification.
+	Classify ClassifyConfig `json:"classify,omitempty"`
 }
 
 // DefaultMemoryImportConfig returns sensible defaults.
@@ -76,16 +80,18 @@ func DefaultMemoryImportConfig() MemoryImportConfig {
 
 // MemoryImportStats reports import statistics.
 type MemoryImportStats struct {
-	DatabasesFound    int      `json:"databases_found"`
-	DatabasesImported int      `json:"databases_imported"`
-	ChunksFound       int      `json:"chunks_found"`
-	ChunksImported    int      `json:"chunks_imported"`
-	ChunksSkipped     int      `json:"chunks_skipped"`
-	ChunksDeduplicated int     `json:"chunks_deduplicated"`
-	EmbeddingsCopied  int      `json:"embeddings_copied"`
-	EmbeddingsSkipped int      `json:"embeddings_skipped"`
-	Errors            []string `json:"errors,omitempty"`
-	DurationMs        int64    `json:"duration_ms"`
+	DatabasesFound     int      `json:"databases_found"`
+	DatabasesImported  int      `json:"databases_imported"`
+	ChunksFound        int      `json:"chunks_found"`
+	ChunksImported     int      `json:"chunks_imported"`
+	ChunksSkipped      int      `json:"chunks_skipped"`
+	ChunksDeduplicated int      `json:"chunks_deduplicated"`
+	EmbeddingsCopied   int      `json:"embeddings_copied"`
+	EmbeddingsSkipped  int      `json:"embeddings_skipped"`
+	ChunksClassified   int      `json:"chunks_classified,omitempty"`
+	ClassifyErrors     int      `json:"classify_errors,omitempty"`
+	Errors             []string `json:"errors,omitempty"`
+	DurationMs         int64    `json:"duration_ms"`
 }
 
 // OpenClawChunk represents a chunk from OpenClaw's chunks table.
@@ -104,17 +110,22 @@ type OpenClawChunk struct {
 
 // MemoryImporter handles OpenClaw → swarmstr memory import.
 type MemoryImporter struct {
-	cfg   MemoryImportConfig
-	stats MemoryImportStats
-	seen  map[string]bool // content hash → already imported
+	cfg        MemoryImportConfig
+	stats      MemoryImportStats
+	seen       map[string]bool // content hash → already imported
+	classifier *MemoryClassifier
 }
 
 // NewMemoryImporter creates a new memory importer.
 func NewMemoryImporter(cfg MemoryImportConfig) *MemoryImporter {
-	return &MemoryImporter{
+	im := &MemoryImporter{
 		cfg:  cfg,
 		seen: make(map[string]bool),
 	}
+	if cfg.Classify.Enabled {
+		im.classifier = NewMemoryClassifier(cfg.Classify)
+	}
+	return im
 }
 
 // Import runs the memory import process.
@@ -265,6 +276,8 @@ func (m *MemoryImporter) importDatabase(dbPath string, target memory.Backend) er
 	}
 	defer rows.Close()
 
+	// Collect all chunks first (needed for classification batching)
+	var chunks []OpenClawChunk
 	for rows.Next() {
 		var chunk OpenClawChunk
 		var embedding sql.NullString
@@ -291,19 +304,85 @@ func (m *MemoryImporter) importDatabase(dbPath string, target memory.Backend) er
 		}
 
 		m.stats.ChunksFound++
+		chunks = append(chunks, chunk)
+	}
 
-		// Process the chunk
-		if err := m.processChunk(chunk, target); err != nil {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Classify chunks in batches if classifier is enabled
+	var classifications map[int]ClassifyResult
+	if m.classifier != nil && !m.cfg.DryRun {
+		classifications = m.classifyChunks(chunks)
+	}
+
+	// Process each chunk
+	for i, chunk := range chunks {
+		var classification *ClassifyResult
+		if c, ok := classifications[i]; ok {
+			classification = &c
+		}
+		if err := m.processChunk(chunk, target, classification); err != nil {
 			m.stats.Errors = append(m.stats.Errors, fmt.Sprintf("chunk %s: %v", chunk.ID, err))
 			continue
 		}
 	}
 
-	return rows.Err()
+	return nil
+}
+
+// classifyChunks classifies chunks in batches using the LLM classifier.
+func (m *MemoryImporter) classifyChunks(chunks []OpenClawChunk) map[int]ClassifyResult {
+	if m.classifier == nil || len(chunks) == 0 {
+		return nil
+	}
+
+	results := make(map[int]ClassifyResult)
+	batchSize := m.cfg.Classify.BatchSize
+	if batchSize <= 0 {
+		batchSize = 10
+	}
+
+	// Process in batches
+	for i := 0; i < len(chunks); i += batchSize {
+		end := i + batchSize
+		if end > len(chunks) {
+			end = len(chunks)
+		}
+
+		batch := chunks[i:end]
+		texts := make([]string, len(batch))
+		for j, chunk := range batch {
+			texts[j] = chunk.Text
+		}
+
+		if m.cfg.Verbose {
+			fmt.Printf("Classifying batch %d-%d of %d...\n", i+1, end, len(chunks))
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), m.classifier.cfg.Timeout)
+		batchResults, err := m.classifier.ClassifyBatch(ctx, texts)
+		cancel()
+
+		if err != nil {
+			m.stats.Errors = append(m.stats.Errors, fmt.Sprintf("classify batch %d-%d: %v", i+1, end, err))
+			m.stats.ClassifyErrors += len(batch)
+			continue
+		}
+
+		// Store results with original indices
+		for j, r := range batchResults {
+			results[i+j] = r
+			m.stats.ChunksClassified++
+		}
+	}
+
+	return results
 }
 
 // processChunk converts and imports a single chunk.
-func (m *MemoryImporter) processChunk(chunk OpenClawChunk, target memory.Backend) error {
+func (m *MemoryImporter) processChunk(chunk OpenClawChunk, target memory.Backend, classification *ClassifyResult) error {
 	// Skip empty text
 	if strings.TrimSpace(chunk.Text) == "" {
 		m.stats.ChunksSkipped++
@@ -319,8 +398,8 @@ func (m *MemoryImporter) processChunk(chunk OpenClawChunk, target memory.Backend
 		m.seen[chunk.Hash] = true
 	}
 
-	// Convert to swarmstr format
-	doc := m.convertChunk(chunk)
+	// Convert to swarmstr format (apply classification if available)
+	doc := m.convertChunk(chunk, classification)
 
 	// Dry run: just count
 	if m.cfg.DryRun {
@@ -338,11 +417,12 @@ func (m *MemoryImporter) processChunk(chunk OpenClawChunk, target memory.Backend
 }
 
 // convertChunk converts an OpenClaw chunk to swarmstr state.MemoryDoc format.
-func (m *MemoryImporter) convertChunk(chunk OpenClawChunk) state.MemoryDoc {
+// If classification is provided, it overrides the heuristic topic/keywords.
+func (m *MemoryImporter) convertChunk(chunk OpenClawChunk, classification *ClassifyResult) state.MemoryDoc {
 	// Generate memory ID with prefix to indicate origin
 	memoryID := "oc-" + chunk.ID
 
-	// Extract topic from path (basename without extension)
+	// Extract topic from path (basename without extension) as fallback
 	topic := ""
 	if chunk.Path != "" {
 		base := filepath.Base(chunk.Path)
@@ -358,7 +438,7 @@ func (m *MemoryImporter) convertChunk(chunk OpenClawChunk) state.MemoryDoc {
 		unix = time.Now().Unix()
 	}
 
-	// Build keywords from path components
+	// Build keywords from path components as fallback
 	var keywords []string
 	if chunk.Path != "" {
 		parts := strings.Split(chunk.Path, string(os.PathSeparator))
@@ -373,9 +453,27 @@ func (m *MemoryImporter) convertChunk(chunk OpenClawChunk) state.MemoryDoc {
 		keywords = append(keywords, strings.ToLower(chunk.Source))
 	}
 
+	// Memory type (from classification or default)
+	memType := ""
+
+	// Apply LLM classification if available
+	if classification != nil {
+		if classification.Topic != "" {
+			topic = classification.Topic
+		}
+		if len(classification.Keywords) > 0 {
+			// Merge: classification keywords first, then path-based
+			keywords = append(classification.Keywords, keywords...)
+		}
+		if classification.Type != "" {
+			memType = classification.Type
+		}
+	}
+
 	doc := state.MemoryDoc{
 		MemoryID: memoryID,
 		Topic:    topic,
+		Type:     memType,
 		Text:     chunk.Text,
 		Keywords: keywords,
 		Unix:     unix,
