@@ -440,8 +440,11 @@ func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey str
 		if preferredRelay != "" && attempt < preferOnlyAttempts {
 			attemptRelays = []string{preferredRelay}
 		}
+		// Use explicit timeout per attempt to properly wait for OK responses.
+		// The nostr library defaults to 7s if no deadline is set.
+		pubCtx, pubCancel := context.WithTimeout(b.ctx, 30*time.Second)
 		published := false
-		for res := range b.pool.PublishMany(b.ctx, attemptRelays, evt) {
+		for res := range b.pool.PublishMany(pubCtx, attemptRelays, evt) {
 			if res.Error == nil {
 				published = true
 				if b.health != nil {
@@ -454,6 +457,7 @@ func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey str
 			}
 			lastErr = fmt.Errorf("relay %s: %w", res.RelayURL, res.Error)
 		}
+		pubCancel()
 		// Success means at least one relay accepted the publish.
 		// We prefer the request relay but do not fail the overall operation if it rejects.
 		if published {

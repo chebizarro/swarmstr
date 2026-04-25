@@ -741,8 +741,11 @@ func publishEncryptedDMWithRetry(ctx context.Context, pool *nostr.Pool, signer n
 		if health != nil {
 			attemptRelays = health.Candidates(relays, time.Now())
 		}
+		// Use explicit timeout per attempt to properly wait for OK responses.
+		// The nostr library defaults to 7s if no deadline is set.
+		pubCtx, pubCancel := context.WithTimeout(ctx, 30*time.Second)
 		published := false
-		for result := range pool.PublishMany(ctx, attemptRelays, evt) {
+		for result := range pool.PublishMany(pubCtx, attemptRelays, evt) {
 			if result.Error == nil {
 				published = true
 				if health != nil {
@@ -755,6 +758,7 @@ func publishEncryptedDMWithRetry(ctx context.Context, pool *nostr.Pool, signer n
 			}
 			lastErr = fmt.Errorf("relay %s: %w", result.RelayURL, result.Error)
 		}
+		pubCancel()
 		if published {
 			return evt.ID.Hex(), nil
 		}
