@@ -458,3 +458,217 @@ func TestEngineStats(t *testing.T) {
 		t.Errorf("expected 1 allow rule, got %d", stats.RulesByBehavior["allow"])
 	}
 }
+
+func TestNewAutonomousEngine(t *testing.T) {
+	tmpDir := t.TempDir()
+	engine := NewAutonomousEngine(tmpDir)
+
+	// Should have safety rules loaded
+	stats := engine.Stats()
+	if stats.TotalRules == 0 {
+		t.Error("expected safety rules to be loaded")
+	}
+
+	// Default should be allow
+	ctx := context.Background()
+	req := NewToolRequest("some_tool", CategoryBuiltin)
+	decision := engine.Evaluate(ctx, req)
+
+	if decision.Behavior != BehaviorAllow {
+		t.Errorf("expected allow by default, got %s", decision.Behavior)
+	}
+
+	// But dangerous commands should be denied
+	req2 := NewToolRequest("bash", CategoryExec).WithContent("rm -rf /etc")
+	decision2 := engine.Evaluate(ctx, req2)
+
+	if decision2.Behavior != BehaviorDeny {
+		t.Errorf("expected deny for dangerous command, got %s", decision2.Behavior)
+	}
+}
+
+func TestNewPermissiveEngine(t *testing.T) {
+	tmpDir := t.TempDir()
+	engine := NewPermissiveEngine(tmpDir)
+	engine.ClearCache() // Clear any cached decisions
+
+	ctx := context.Background()
+
+	// Normal commands should be allowed (default behavior)
+	req := NewToolRequest("bash", CategoryExec).WithContent("ls -la")
+	decision := engine.Evaluate(ctx, req)
+
+	if decision.Behavior != BehaviorAllow {
+		t.Errorf("expected allow for safe command, got %s", decision.Behavior)
+	}
+
+	// Sudo should ask (matched by permissive-ask-sudo rule)
+	req2 := NewToolRequest("bash", CategoryExec).WithContent("sudo apt update")
+	decision2 := engine.Evaluate(ctx, req2)
+
+	// The rule should match and ask for confirmation
+	if decision2.Behavior != BehaviorAsk {
+		// Log the decision for debugging
+		t.Logf("Decision: behavior=%s reason=%s matched=%d",
+			decision2.Behavior, decision2.Reason, len(decision2.MatchedRules))
+		for _, r := range decision2.MatchedRules {
+			t.Logf("  Rule: %s pattern=%s content=%s", r.ID, r.ToolPattern, r.ContentPattern)
+		}
+		t.Errorf("expected ask for sudo, got %s", decision2.Behavior)
+	}
+
+	// Dangerous commands should be denied
+	req3 := NewToolRequest("bash", CategoryExec).WithContent("rm -rf /etc")
+	decision3 := engine.Evaluate(ctx, req3)
+
+	if decision3.Behavior != BehaviorDeny {
+		t.Errorf("expected deny for dangerous command, got %s", decision3.Behavior)
+	}
+}
+
+func TestNewRestrictiveEngine(t *testing.T) {
+	tmpDir := t.TempDir()
+	engine := NewRestrictiveEngine(tmpDir)
+
+	ctx := context.Background()
+
+	// Unknown tools should be denied
+	req := NewToolRequest("unknown_tool", CategoryBuiltin)
+	decision := engine.Evaluate(ctx, req)
+
+	// Either denied or matched by default rules
+	if decision.Behavior == BehaviorAllow && len(decision.MatchedRules) == 0 {
+		t.Error("restrictive engine should not allow unknown tools without rules")
+	}
+}
+
+func TestAllowAllForSession(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+
+	// Add a global deny rule
+	engine.AddRule(NewRule("global-deny", ScopeGlobal, BehaviorDeny, "test_tool"))
+
+	ctx := context.Background()
+	req := NewToolRequest("test_tool", CategoryBuiltin)
+
+	// Should be denied
+	decision1 := engine.Evaluate(ctx, req)
+	if decision1.Behavior != BehaviorDeny {
+		t.Errorf("expected deny before session override, got %s", decision1.Behavior)
+	}
+
+	// Add session override
+	engine.ClearCache() // Clear cache before adding new rule
+	engine.AllowAllForSession()
+
+	// Should now be allowed (session overrides global)
+	decision2 := engine.Evaluate(ctx, req)
+	if decision2.Behavior != BehaviorAllow {
+		t.Errorf("expected allow after session override, got %s", decision2.Behavior)
+	}
+}
+
+func TestAllowCategoryForSession(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+
+	// Add global ask rule for exec
+	engine.AddRule(NewRule("global-ask-exec", ScopeGlobal, BehaviorAsk, "*").
+		WithCategory(CategoryExec))
+
+	ctx := context.Background()
+	req := NewToolRequest("bash", CategoryExec)
+
+	// Should ask
+	decision1 := engine.Evaluate(ctx, req)
+	if decision1.Behavior != BehaviorAsk {
+		t.Errorf("expected ask before session override, got %s", decision1.Behavior)
+	}
+
+	// Allow exec for session
+	engine.ClearCache()
+	engine.AllowCategoryForSession(CategoryExec)
+
+	// Should now be allowed
+	decision2 := engine.Evaluate(ctx, req)
+	if decision2.Behavior != BehaviorAllow {
+		t.Errorf("expected allow after category override, got %s", decision2.Behavior)
+	}
+}
+
+func TestCriticalSafetyRules(t *testing.T) {
+	rules := CriticalSafetyRules()
+	if len(rules) == 0 {
+		t.Error("expected safety rules")
+	}
+
+	// All should be deny rules
+	for _, r := range rules {
+		if r.Behavior != BehaviorDeny {
+			t.Errorf("safety rule %s should be deny, got %s", r.ID, r.Behavior)
+		}
+	}
+}
+
+func TestPermissiveRules(t *testing.T) {
+	rules := PermissiveRules()
+	if len(rules) == 0 {
+		t.Error("expected permissive rules")
+	}
+
+	// Should have both deny and ask rules
+	hasDeny := false
+	hasAsk := false
+	for _, r := range rules {
+		if r.Behavior == BehaviorDeny {
+			hasDeny = true
+		}
+		if r.Behavior == BehaviorAsk {
+			hasAsk = true
+		}
+	}
+
+	if !hasDeny {
+		t.Error("expected deny rules in permissive set")
+	}
+	if !hasAsk {
+		t.Error("expected ask rules in permissive set")
+	}
+}
+
+func TestEngineConfigs(t *testing.T) {
+	// Test all config constructors return valid configs
+	configs := []struct {
+		name string
+		cfg  EngineConfig
+	}{
+		{"default", DefaultEngineConfig()},
+		{"autonomous", AutonomousEngineConfig()},
+		{"permissive", PermissiveEngineConfig()},
+		{"restrictive", RestrictiveEngineConfig()},
+	}
+
+	for _, tc := range configs {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.cfg.DefaultBehavior.IsValid() {
+				t.Errorf("%s config has invalid default behavior", tc.name)
+			}
+		})
+	}
+
+	// Verify specific defaults
+	if DefaultEngineConfig().DefaultBehavior != BehaviorAsk {
+		t.Error("default config should ask by default")
+	}
+	if AutonomousEngineConfig().DefaultBehavior != BehaviorAllow {
+		t.Error("autonomous config should allow by default")
+	}
+	if RestrictiveEngineConfig().DefaultBehavior != BehaviorDeny {
+		t.Error("restrictive config should deny by default")
+	}
+}
