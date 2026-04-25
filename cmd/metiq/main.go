@@ -145,6 +145,10 @@ func main() {
 	case "migrate":
 		run("migrate", runMigrate, args[1:])
 
+	// ── memory management ────────────────────────────────────────────────────
+	case "memory":
+		run("memory", runMemory, args[1:])
+
 	// ── keygen ───────────────────────────────────────────────────────────────
 	case "keygen":
 		run("keygen", runKeygen, args[1:])
@@ -579,6 +583,13 @@ func usage() {
 	fmt.Println()
 	fmt.Println("Migration:")
 	fmt.Println("  migrate            migrate OpenClaw agent to Metiq (--source --target --apply)")
+	fmt.Println()
+	fmt.Println("Memory:")
+	fmt.Println("  memory import      import memories from OpenClaw (--source --backend)")
+	fmt.Println("  memory search      search memories (--q [--limit])")
+	fmt.Println("  memory stats       show memory backend statistics")
+	fmt.Println("  memory list        list recent memories (--limit)")
+	fmt.Println("  memory backends    list available memory backends")
 	fmt.Println()
 	fmt.Println("Other:")
 	fmt.Println("  security audit     run local security posture checks")
