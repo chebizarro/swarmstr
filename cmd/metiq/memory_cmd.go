@@ -179,6 +179,7 @@ Examples:
 	cfg := migrate.MemoryImportConfig{
 		SourcePaths:    sourcePaths,
 		TargetPath:     targetPath,
+		Backend:        backend,
 		Deduplicate:    dedupe,
 		CopyEmbeddings: true,
 		DryRun:         dryRun,
