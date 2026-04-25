@@ -209,9 +209,15 @@ func PublishCapability(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer,
 	if err := keyer.SignEvent(ctx, &evt); err != nil {
 		return "", fmt.Errorf("publish capability: sign event: %w", err)
 	}
+
+	// Use explicit timeout to properly wait for OK responses.
+	// The nostr library defaults to 7s if no deadline is set.
+	pubCtx, pubCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer pubCancel()
+
 	published := false
 	var lastErr error
-	for result := range pool.PublishMany(ctx, relays, evt) {
+	for result := range pool.PublishMany(pubCtx, relays, evt) {
 		if result.Error == nil {
 			published = true
 			continue
