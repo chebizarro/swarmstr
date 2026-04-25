@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"metiq/internal/store/state"
 )
 
 // ─── Configuration File Schema ───────────────────────────────────────────────
@@ -344,55 +346,137 @@ func ruleFromConfig(cfg RuleConfig) (*Rule, error) {
 	return rule, nil
 }
 
-// ─── Example Configuration ───────────────────────────────────────────────────
+// ─── Integration with state.PermissionsConfig ────────────────────────────────
 
-// ExampleConfig is an example configuration structure.
-// Place at .metiq/permissions.json (project) or ~/.metiq/permissions.json (user)
-var ExampleConfig = &Config{
-	Version:        "1",
-	DefaultProfile: "standard",
-	GlobalSettings: GlobalConfig{
-		DefaultBehavior: "ask",
-		AuditEnabled:    boolPtr(true),
-		CacheEnabled:    boolPtr(true),
-		CacheTTL:        "5m",
-	},
-	Agents: map[string]AgentConfig{
-		"research-agent": {
-			Profile: "autonomous",
-		},
-		"deploy-agent": {
-			Profile:         "restrictive",
-			Allow:           []string{"kubectl", "helm"},
-			AllowCategories: []string{"filesystem"},
-		},
-		"reviewer-agent": {
-			Profile: "readonly",
-		},
-		"custom-agent": {
-			Allow:          []string{"mcp:*", "read_file", "write_file"},
-			Deny:           []string{"bash"},
-			Ask:            []string{"plugin:*"},
-			DenyCategories: []string{"exec", "network"},
-		},
-	},
-	Rules: []RuleConfig{
-		{
-			ID:          "deny-rm-rf-root",
-			Behavior:    "deny",
-			Tool:        "bash",
-			Content:     `rm\s+-rf\s+/`,
-			Description: "Block recursive deletion from root",
-		},
-		{
-			ID:          "ci-allow-kubectl",
-			Behavior:    "allow",
-			Tool:        "bash",
-			Content:     `^kubectl\s+`,
-			Scope:       "project",
-			Description: "Allow kubectl in this project",
-		},
-	},
+// NewEngineFromStateConfig creates a permission engine from state.PermissionsConfig.
+// This integrates with the main config file's "permissions" section.
+func NewEngineFromStateConfig(baseDir string, cfg state.PermissionsConfig) (*Engine, error) {
+	// Build engine config
+	engineCfg := DefaultEngineConfig()
+
+	// Default to allow since profiles already filter tool availability
+	engineCfg.DefaultBehavior = BehaviorAllow
+	if cfg.DefaultBehavior != "" {
+		engineCfg.DefaultBehavior = Behavior(cfg.DefaultBehavior)
+	}
+	if cfg.AuditEnabled != nil {
+		engineCfg.AuditEnabled = *cfg.AuditEnabled
+	}
+
+	engine := NewEngine(baseDir, engineCfg)
+
+	// Always load critical safety rules (rm -rf /, etc.)
+	if err := engine.LoadCriticalSafetyRules(); err != nil {
+		return nil, fmt.Errorf("loading safety rules: %w", err)
+	}
+
+	// Apply per-agent configurations
+	for agentID, agentCfg := range cfg.Agents {
+		if err := applyStateAgentConfig(engine, agentID, agentCfg); err != nil {
+			return nil, fmt.Errorf("configuring agent %s: %w", agentID, err)
+		}
+	}
+
+	// Load custom rules
+	for _, ruleCfg := range cfg.Rules {
+		rule, err := ruleFromStateConfig(ruleCfg)
+		if err != nil {
+			return nil, fmt.Errorf("invalid rule %s: %w", ruleCfg.ID, err)
+		}
+		if err := engine.AddRule(rule); err != nil {
+			return nil, fmt.Errorf("adding rule %s: %w", ruleCfg.ID, err)
+		}
+	}
+
+	return engine, nil
+}
+
+// applyStateAgentConfig applies state.AgentPermissions to the engine.
+func applyStateAgentConfig(engine *Engine, agentID string, cfg state.AgentPermissions) error {
+	// Apply behavior profile
+	switch cfg.Behavior {
+	case "autonomous":
+		if err := engine.AllowAllForAgent(agentID); err != nil {
+			return err
+		}
+	case "permissive":
+		// Allow all, but load permissive ask rules for this agent
+		if err := engine.AllowAllForAgent(agentID); err != nil {
+			return err
+		}
+		// Add ask rules for dangerous patterns
+		for _, rule := range PermissiveRules() {
+			if rule.Behavior == BehaviorAsk {
+				agentRule := NewRule(
+					fmt.Sprintf("agent-%s-%s", agentID, rule.ID),
+					ScopeAgent,
+					BehaviorAsk,
+					rule.ToolPattern,
+				).ForAgent(agentID)
+				if rule.ContentPattern != "" {
+					agentRule = agentRule.WithContentPattern(rule.ContentPattern)
+				}
+				if err := engine.AddRule(agentRule); err != nil {
+					return err
+				}
+			}
+		}
+	case "restrictive":
+		if err := engine.AskForAgent(agentID); err != nil {
+			return err
+		}
+	}
+
+	// Add explicit deny patterns
+	for i, pattern := range cfg.DenyPatterns {
+		rule := NewRule(
+			fmt.Sprintf("agent-%s-deny-%d", agentID, i),
+			ScopeAgent,
+			BehaviorDeny,
+			"*",
+		).ForAgent(agentID).WithContentPattern(pattern)
+		if err := engine.AddRule(rule); err != nil {
+			return err
+		}
+	}
+
+	// Add explicit ask patterns
+	for i, pattern := range cfg.AskPatterns {
+		rule := NewRule(
+			fmt.Sprintf("agent-%s-ask-%d", agentID, i),
+			ScopeAgent,
+			BehaviorAsk,
+			"*",
+		).ForAgent(agentID).WithContentPattern(pattern)
+		if err := engine.AddRule(rule); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ruleFromStateConfig creates a Rule from state.PermissionRule.
+func ruleFromStateConfig(cfg state.PermissionRule) (*Rule, error) {
+	behavior := Behavior(cfg.Behavior)
+	if !behavior.IsValid() {
+		return nil, fmt.Errorf("invalid behavior: %s", cfg.Behavior)
+	}
+
+	rule := NewRule(cfg.ID, ScopeGlobal, behavior, cfg.Tool)
+
+	if cfg.Content != "" {
+		rule = rule.WithContentPattern(cfg.Content)
+	}
+	if cfg.Agent != "" {
+		rule = rule.ForAgent(cfg.Agent)
+		rule.Scope = ScopeAgent
+	}
+	if cfg.Description != "" {
+		rule = rule.WithDescription(cfg.Description)
+	}
+
+	return rule, nil
 }
 
 func boolPtr(b bool) *bool {

@@ -632,6 +632,60 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		}
 	}
 
+	// ── permissions (typed) ───────────────────────────────────────────────────
+	if permRaw, ok := raw["permissions"].(map[string]any); ok {
+		perm := state.PermissionsConfig{}
+		if v, ok := permRaw["default_behavior"].(string); ok {
+			perm.DefaultBehavior = strings.TrimSpace(v)
+		}
+		if v, ok := permRaw["audit_enabled"].(bool); ok {
+			perm.AuditEnabled = &v
+		}
+		if agentsRaw, ok := permRaw["agents"].(map[string]any); ok {
+			perm.Agents = make(map[string]state.AgentPermissions)
+			for agentID, agentVal := range agentsRaw {
+				if am, ok := agentVal.(map[string]any); ok {
+					ap := state.AgentPermissions{}
+					if v, ok := am["behavior"].(string); ok {
+						ap.Behavior = strings.TrimSpace(v)
+					}
+					ap.DenyPatterns = toStringSlice(am["deny_patterns"])
+					ap.AskPatterns = toStringSlice(am["ask_patterns"])
+					perm.Agents[agentID] = ap
+				}
+			}
+		}
+		if rulesRaw, ok := permRaw["rules"].([]any); ok {
+			for _, ruleVal := range rulesRaw {
+				if rm, ok := ruleVal.(map[string]any); ok {
+					rule := state.PermissionRule{}
+					if v, ok := rm["id"].(string); ok {
+						rule.ID = strings.TrimSpace(v)
+					}
+					if v, ok := rm["behavior"].(string); ok {
+						rule.Behavior = strings.TrimSpace(v)
+					}
+					if v, ok := rm["tool"].(string); ok {
+						rule.Tool = strings.TrimSpace(v)
+					}
+					if v, ok := rm["content"].(string); ok {
+						rule.Content = strings.TrimSpace(v)
+					}
+					if v, ok := rm["agent"].(string); ok {
+						rule.Agent = strings.TrimSpace(v)
+					}
+					if v, ok := rm["description"].(string); ok {
+						rule.Description = strings.TrimSpace(v)
+					}
+					if rule.ID != "" && rule.Behavior != "" && rule.Tool != "" {
+						perm.Rules = append(perm.Rules, rule)
+					}
+				}
+			}
+		}
+		doc.Permissions = perm
+	}
+
 	// ── pass-through sections (unknown / rarely accessed as typed) ────────────
 	passThrough := []string{
 		"skills", "memory", "update", "wizard", "pairing", "logging",
@@ -823,7 +877,7 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 		"version", "dm", "relays", "agent", "control", "acp", "agents", "nostr_channels",
 		"providers", "session", "storage", "heartbeat", "tts", "secrets", "cron",
 		"hooks", "timeouts", "agent_list", "fips", "extra", "channels", "plugins",
-		"skills", "memory", "update", "wizard", "pairing", "logging",
+		"skills", "memory", "update", "wizard", "pairing", "logging", "permissions",
 	}
 	for key, value := range raw {
 		if !slices.Contains(allowedTop, key) {
@@ -868,6 +922,8 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 			errs = append(errs, detectUnknownAgentsKeys(value)...)
 		case "nostr_channels":
 			errs = append(errs, detectUnknownNostrChannelKeys(value)...)
+		case "permissions":
+			errs = append(errs, detectUnknownPermissionsKeys(value)...)
 		}
 	}
 	slices.Sort(errs)
@@ -988,6 +1044,51 @@ func detectUnknownNostrChannelKeys(raw any) []string {
 		for key := range cm {
 			if !slices.Contains(allowed, key) {
 				errs = append(errs, "nostr_channels."+name+"."+key)
+			}
+		}
+	}
+	return errs
+}
+
+func detectUnknownPermissionsKeys(raw any) []string {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	allowedTop := []string{"default_behavior", "audit_enabled", "agents", "rules"}
+	allowedAgentFields := []string{"behavior", "deny_patterns", "ask_patterns"}
+	allowedRuleFields := []string{"id", "behavior", "tool", "content", "agent", "description"}
+
+	var errs []string
+	for key, value := range m {
+		if !slices.Contains(allowedTop, key) {
+			errs = append(errs, "permissions."+key)
+			continue
+		}
+		switch key {
+		case "agents":
+			if agentsMap, ok := value.(map[string]any); ok {
+				for agentID, agentVal := range agentsMap {
+					if am, ok := agentVal.(map[string]any); ok {
+						for akey := range am {
+							if !slices.Contains(allowedAgentFields, akey) {
+								errs = append(errs, "permissions.agents."+agentID+"."+akey)
+							}
+						}
+					}
+				}
+			}
+		case "rules":
+			if rulesArr, ok := value.([]any); ok {
+				for i, ruleVal := range rulesArr {
+					if rm, ok := ruleVal.(map[string]any); ok {
+						for rkey := range rm {
+							if !slices.Contains(allowedRuleFields, rkey) {
+								errs = append(errs, fmt.Sprintf("permissions.rules[%d].%s", i, rkey))
+							}
+						}
+					}
+				}
 			}
 		}
 	}
