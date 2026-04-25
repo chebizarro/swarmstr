@@ -9,27 +9,20 @@ import (
 
 func TestLoadConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "permissions.yaml")
+	configPath := filepath.Join(tmpDir, "permissions.json")
 
-	configYAML := `
-version: "1"
-default_profile: permissive
-
-agents:
-  research-agent:
-    profile: autonomous
-  deploy-agent:
-    profile: restrictive
-    allow:
-      - kubectl
-
-rules:
-  - id: deny-sudo
-    behavior: deny
-    tool: bash
-    content: "^sudo"
-`
-	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+	configJSON := `{
+	"version": "1",
+	"default_profile": "permissive",
+	"agents": {
+	"research-agent": {"profile": "autonomous"},
+	"deploy-agent": {"profile": "restrictive", "allow": ["kubectl"]}
+	},
+	"rules": [
+	{"id": "deny-sudo", "behavior": "deny", "tool": "bash", "content": "^sudo"}
+	]
+}`
+	if err := os.WriteFile(configPath, []byte(configJSON), 0644); err != nil {
 		t.Fatalf("failed to write config: %v", err)
 	}
 
@@ -54,26 +47,25 @@ rules:
 
 func TestNewEngineFromConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "permissions.yaml")
+	configPath := filepath.Join(tmpDir, "permissions.json")
 
-	configYAML := "version: \"1\"\n" +
-		"default_profile: standard\n" +
-		"global:\n" +
-		"  default_behavior: ask\n" +
-		"  audit_enabled: false\n" +
-		"agents:\n" +
-		"  trusted-agent:\n" +
-		"    profile: autonomous\n" +
-		"  restricted-agent:\n" +
-		"    profile: restrictive\n" +
-		"rules:\n" +
-		"  - id: custom-deny\n" +
-		"    behavior: deny\n" +
-		"    tool: bash\n" +
-		"    content: \"^danger\"\n" +
-		"    scope: session\n"
+	configJSON := `{
+	"version": "1",
+	"default_profile": "standard",
+	"global": {
+	"default_behavior": "ask",
+	"audit_enabled": false
+	},
+	"agents": {
+	"trusted-agent": {"profile": "autonomous"},
+	"restricted-agent": {"profile": "restrictive"}
+	},
+	"rules": [
+	{"id": "custom-deny", "behavior": "deny", "tool": "bash", "content": "^danger", "scope": "session"}
+	]
+}`
 
-	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(configJSON), 0644); err != nil {
 		t.Fatalf("failed to write config: %v", err)
 	}
 
@@ -177,7 +169,7 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestSaveConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, ".metiq", "permissions.yaml")
+	configPath := filepath.Join(tmpDir, ".metiq", "permissions.json")
 
 	cfg := &Config{
 		Version:        "1",

@@ -2,114 +2,113 @@
 package permissions
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // ─── Configuration File Schema ───────────────────────────────────────────────
 
-// Config is the top-level permission configuration loaded from YAML.
-// Typically stored at ~/.metiq/permissions.yaml or .metiq/permissions.yaml
+// Config is the top-level permission configuration loaded from JSON.
+// Typically stored at ~/.metiq/permissions.json or .metiq/permissions.json
 type Config struct {
 	// Version is the config schema version (currently "1")
-	Version string `yaml:"version"`
+	Version string `json:"version"`
 
 	// DefaultProfile is the profile for agents without explicit configuration.
 	// Options: "autonomous", "permissive", "restrictive", "standard"
 	// Default: "standard"
-	DefaultProfile string `yaml:"default_profile,omitempty"`
+	DefaultProfile string `json:"default_profile,omitempty"`
 
 	// Agents maps agent IDs to their permission configuration.
-	Agents map[string]AgentConfig `yaml:"agents,omitempty"`
+	Agents map[string]AgentConfig `json:"agents,omitempty"`
 
 	// Rules defines custom permission rules.
-	Rules []RuleConfig `yaml:"rules,omitempty"`
+	Rules []RuleConfig `json:"rules,omitempty"`
 
 	// GlobalSettings affects all permission evaluation.
-	GlobalSettings GlobalConfig `yaml:"global,omitempty"`
+	GlobalSettings GlobalConfig `json:"global,omitempty"`
 }
 
 // AgentConfig defines permissions for a specific agent.
 type AgentConfig struct {
 	// Profile is a predefined permission profile.
 	// Options: "autonomous", "permissive", "restrictive", "readonly", "standard"
-	Profile string `yaml:"profile,omitempty"`
+	Profile string `json:"profile,omitempty"`
 
 	// Allow lists tool patterns this agent can use without confirmation.
-	Allow []string `yaml:"allow,omitempty"`
+	Allow []string `json:"allow,omitempty"`
 
 	// Deny lists tool patterns this agent cannot use.
-	Deny []string `yaml:"deny,omitempty"`
+	Deny []string `json:"deny,omitempty"`
 
 	// Ask lists tool patterns requiring confirmation.
-	Ask []string `yaml:"ask,omitempty"`
+	Ask []string `json:"ask,omitempty"`
 
 	// AllowCategories lists categories this agent can use freely.
-	AllowCategories []string `yaml:"allow_categories,omitempty"`
+	AllowCategories []string `json:"allow_categories,omitempty"`
 
 	// DenyCategories lists categories this agent cannot use.
-	DenyCategories []string `yaml:"deny_categories,omitempty"`
+	DenyCategories []string `json:"deny_categories,omitempty"`
 
 	// Enabled controls whether this agent configuration is active.
 	// Default: true
-	Enabled *bool `yaml:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
-// RuleConfig defines a custom permission rule in YAML.
+// RuleConfig defines a custom permission rule.
 type RuleConfig struct {
 	// ID is a unique identifier for this rule.
-	ID string `yaml:"id"`
+	ID string `json:"id"`
 
 	// Behavior is "allow", "ask", or "deny".
-	Behavior string `yaml:"behavior"`
+	Behavior string `json:"behavior"`
 
 	// Tool is a glob pattern matching tool names (e.g., "bash", "mcp:*").
-	Tool string `yaml:"tool"`
+	Tool string `json:"tool"`
 
 	// Content is an optional regex pattern for tool arguments.
-	Content string `yaml:"content,omitempty"`
+	Content string `json:"content,omitempty"`
 
 	// Category restricts the rule to a specific tool category.
-	Category string `yaml:"category,omitempty"`
+	Category string `json:"category,omitempty"`
 
 	// Agent restricts the rule to a specific agent ID.
-	Agent string `yaml:"agent,omitempty"`
+	Agent string `json:"agent,omitempty"`
 
 	// Scope is the rule scope: "global", "user", "project", "agent", "session".
 	// Default: "global"
-	Scope string `yaml:"scope,omitempty"`
+	Scope string `json:"scope,omitempty"`
 
 	// Description explains the rule's purpose.
-	Description string `yaml:"description,omitempty"`
+	Description string `json:"description,omitempty"`
 
 	// Enabled controls whether this rule is active. Default: true
-	Enabled *bool `yaml:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// ExpiresAt optionally sets when the rule expires (RFC3339 format).
-	ExpiresAt string `yaml:"expires_at,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // GlobalConfig defines global permission settings.
 type GlobalConfig struct {
 	// DefaultBehavior when no rules match: "allow", "ask", "deny".
 	// Default: "ask"
-	DefaultBehavior string `yaml:"default_behavior,omitempty"`
+	DefaultBehavior string `json:"default_behavior,omitempty"`
 
 	// AuditEnabled enables permission decision logging.
 	// Default: true
-	AuditEnabled *bool `yaml:"audit_enabled,omitempty"`
+	AuditEnabled *bool `json:"audit_enabled,omitempty"`
 
 	// CacheEnabled enables decision caching.
 	// Default: true
-	CacheEnabled *bool `yaml:"cache_enabled,omitempty"`
+	CacheEnabled *bool `json:"cache_enabled,omitempty"`
 
 	// CacheTTL is how long cached decisions are valid (e.g., "5m", "1h").
 	// Default: "5m"
-	CacheTTL string `yaml:"cache_ttl,omitempty"`
+	CacheTTL string `json:"cache_ttl,omitempty"`
 }
 
 // ─── Configuration Loading ───────────────────────────────────────────────────
@@ -126,7 +125,7 @@ func DefaultConfig() *Config {
 	}
 }
 
-// LoadConfig reads permission configuration from a YAML file.
+// LoadConfig reads permission configuration from a JSON file.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -134,7 +133,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
@@ -148,11 +147,11 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// LoadConfigFromDir searches for permissions.yaml in standard locations.
-// Search order: ./.metiq/permissions.yaml, ~/.metiq/permissions.yaml
+// LoadConfigFromDir searches for permissions.json in standard locations.
+// Search order: ./.metiq/permissions.json, ~/.metiq/permissions.json
 func LoadConfigFromDir(projectDir string) (*Config, error) {
 	// Try project-local config first
-	projectPath := filepath.Join(projectDir, ".metiq", "permissions.yaml")
+	projectPath := filepath.Join(projectDir, ".metiq", "permissions.json")
 	if _, err := os.Stat(projectPath); err == nil {
 		return LoadConfig(projectPath)
 	}
@@ -160,7 +159,7 @@ func LoadConfigFromDir(projectDir string) (*Config, error) {
 	// Try user config
 	home, err := os.UserHomeDir()
 	if err == nil {
-		userPath := filepath.Join(home, ".metiq", "permissions.yaml")
+		userPath := filepath.Join(home, ".metiq", "permissions.json")
 		if _, err := os.Stat(userPath); err == nil {
 			return LoadConfig(userPath)
 		}
@@ -170,7 +169,7 @@ func LoadConfigFromDir(projectDir string) (*Config, error) {
 	return DefaultConfig(), nil
 }
 
-// SaveConfig writes the configuration to a YAML file.
+// SaveConfig writes the configuration to a JSON file.
 func SaveConfig(cfg *Config, path string) error {
 	// Ensure directory exists
 	dir := filepath.Dir(path)
@@ -178,7 +177,7 @@ func SaveConfig(cfg *Config, path string) error {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
 
-	data, err := yaml.Marshal(cfg)
+	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
@@ -347,79 +346,55 @@ func ruleFromConfig(cfg RuleConfig) (*Rule, error) {
 
 // ─── Example Configuration ───────────────────────────────────────────────────
 
-// ExampleConfig returns an example configuration with comments.
-const ExampleConfig = `# Metiq Permission Configuration
-# Place this file at .metiq/permissions.yaml (project) or ~/.metiq/permissions.yaml (user)
+// ExampleConfig is an example configuration structure.
+// Place at .metiq/permissions.json (project) or ~/.metiq/permissions.json (user)
+var ExampleConfig = &Config{
+	Version:        "1",
+	DefaultProfile: "standard",
+	GlobalSettings: GlobalConfig{
+		DefaultBehavior: "ask",
+		AuditEnabled:    boolPtr(true),
+		CacheEnabled:    boolPtr(true),
+		CacheTTL:        "5m",
+	},
+	Agents: map[string]AgentConfig{
+		"research-agent": {
+			Profile: "autonomous",
+		},
+		"deploy-agent": {
+			Profile:         "restrictive",
+			Allow:           []string{"kubectl", "helm"},
+			AllowCategories: []string{"filesystem"},
+		},
+		"reviewer-agent": {
+			Profile: "readonly",
+		},
+		"custom-agent": {
+			Allow:          []string{"mcp:*", "read_file", "write_file"},
+			Deny:           []string{"bash"},
+			Ask:            []string{"plugin:*"},
+			DenyCategories: []string{"exec", "network"},
+		},
+	},
+	Rules: []RuleConfig{
+		{
+			ID:          "deny-rm-rf-root",
+			Behavior:    "deny",
+			Tool:        "bash",
+			Content:     `rm\s+-rf\s+/`,
+			Description: "Block recursive deletion from root",
+		},
+		{
+			ID:          "ci-allow-kubectl",
+			Behavior:    "allow",
+			Tool:        "bash",
+			Content:     `^kubectl\s+`,
+			Scope:       "project",
+			Description: "Allow kubectl in this project",
+		},
+	},
+}
 
-version: "1"
-
-# Default profile for agents without explicit configuration
-# Options: autonomous, permissive, restrictive, standard
-default_profile: standard
-
-# Global settings
-global:
-  default_behavior: ask  # allow, ask, or deny when no rules match
-  audit_enabled: true    # log all permission decisions
-  cache_enabled: true    # cache decisions for performance
-  cache_ttl: 5m          # how long to cache decisions
-
-# Per-agent configuration
-agents:
-  # Research agent: maximum autonomy
-  research-agent:
-    profile: autonomous
-
-  # Deploy agent: restricted, only allow specific tools
-  deploy-agent:
-    profile: restrictive
-    allow:
-      - kubectl
-      - helm
-    allow_categories:
-      - filesystem
-
-  # Code review agent: read-only access
-  reviewer-agent:
-    profile: readonly
-
-  # Custom agent with fine-grained control
-  custom-agent:
-    allow:
-      - "mcp:*"           # allow all MCP tools
-      - read_file
-      - write_file
-    deny:
-      - bash              # no shell access
-    ask:
-      - "plugin:*"        # confirm plugin usage
-    deny_categories:
-      - exec
-      - network
-
-# Custom rules (applied in addition to profiles)
-rules:
-  # Always deny rm -rf /
-  - id: deny-rm-rf-root
-    behavior: deny
-    tool: bash
-    content: "rm\\s+-rf\\s+/"
-    description: Block recursive deletion from root
-
-  # Allow kubectl for any agent in CI
-  - id: ci-allow-kubectl
-    behavior: allow
-    tool: bash
-    content: "^kubectl\\s+"
-    scope: project
-    description: Allow kubectl in this project
-
-  # Temporary rule that expires
-  - id: temp-allow-deploy
-    behavior: allow
-    tool: bash
-    content: "^deploy\\.sh"
-    agent: deploy-agent
-    expires_at: "2024-12-31T23:59:59Z"
-    description: Temporary deploy permission
-`
+func boolPtr(b bool) *bool {
+	return &b
+}
