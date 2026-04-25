@@ -61,13 +61,17 @@ func runMemoryImportOpenClaw(args []string) error {
 	fs := flag.NewFlagSet("memory import-openclaw", flag.ContinueOnError)
 
 	var (
-		sourcePath string
-		targetPath string
-		backend    string
-		dryRun     bool
-		dedupe     bool
-		verbose    bool
-		jsonOut    bool
+		sourcePath      string
+		targetPath      string
+		backend         string
+		dryRun          bool
+		dedupe          bool
+		verbose         bool
+		jsonOut         bool
+		classify        bool
+		classifyModel   string
+		classifyBatch   int
+		classifyPrompt  string
 	)
 
 	fs.StringVar(&sourcePath, "source", "", "OpenClaw home dir or SQLite database path")
@@ -77,6 +81,10 @@ func runMemoryImportOpenClaw(args []string) error {
 	fs.BoolVar(&dedupe, "dedupe", true, "Skip duplicate entries by content hash")
 	fs.BoolVar(&verbose, "verbose", false, "Verbose output")
 	fs.BoolVar(&jsonOut, "json", false, "Output results as JSON")
+	fs.BoolVar(&classify, "classify", false, "Use LLM to classify memories (topic, type, keywords)")
+	fs.StringVar(&classifyModel, "classify-model", "", "Model for classification (default: gpt-4o-mini or claude-3-haiku)")
+	fs.IntVar(&classifyBatch, "classify-batch", 10, "Batch size for classification")
+	fs.StringVar(&classifyPrompt, "classify-prompt", "", "Custom classification prompt template")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: metiq memory import-openclaw [options] [source-path]
@@ -175,6 +183,22 @@ Examples:
 		}
 	}
 
+	// Configure classification
+	classifyConfig := migrate.ClassifyConfig{
+		Enabled:      classify,
+		Model:        classifyModel,
+		BatchSize:    classifyBatch,
+		CustomPrompt: classifyPrompt,
+	}
+	// Auto-detect provider from model name
+	if classify && classifyModel != "" {
+		if strings.HasPrefix(classifyModel, "claude") {
+			classifyConfig.Provider = "anthropic"
+		} else {
+			classifyConfig.Provider = "openai"
+		}
+	}
+
 	// Configure and run import
 	cfg := migrate.MemoryImportConfig{
 		SourcePaths:    sourcePaths,
@@ -184,10 +208,18 @@ Examples:
 		CopyEmbeddings: true,
 		DryRun:         dryRun,
 		Verbose:        verbose,
+		Classify:       classifyConfig,
 	}
 
 	if verbose || dryRun {
 		fmt.Printf("Importing to: %s (backend: %s)\n", targetPath, backend)
+		if classify {
+			model := classifyConfig.Model
+			if model == "" {
+				model = "(default)"
+			}
+			fmt.Printf("Classification enabled (model: %s)\n", model)
+		}
 		if dryRun {
 			fmt.Println("DRY RUN - no changes will be made\n")
 		}
@@ -220,6 +252,12 @@ Examples:
 	}
 	if stats.EmbeddingsCopied > 0 {
 		fmt.Printf("Embeddings copied:  %d\n", stats.EmbeddingsCopied)
+	}
+	if stats.ChunksClassified > 0 {
+		fmt.Printf("Chunks classified:  %d\n", stats.ChunksClassified)
+	}
+	if stats.ClassifyErrors > 0 {
+		fmt.Printf("Classify errors:    %d\n", stats.ClassifyErrors)
 	}
 	fmt.Printf("Duration:           %dms\n", stats.DurationMs)
 

@@ -393,7 +393,7 @@ func TestConvertChunk(t *testing.T) {
 		UpdatedAt: 1234567890,
 	}
 
-	doc := importer.convertChunk(chunk)
+	doc := importer.convertChunk(chunk, nil)
 
 	if doc.MemoryID != "oc-test-chunk" {
 		t.Errorf("MemoryID: got %q, want 'oc-test-chunk'", doc.MemoryID)
