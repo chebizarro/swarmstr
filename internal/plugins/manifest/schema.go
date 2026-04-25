@@ -170,6 +170,17 @@ func (c Capabilities) IsEmpty() bool {
 		len(c.Providers) == 0
 }
 
+// HasSkillExportCapability returns true if the plugin declares skills
+// that can be exported for external use.
+func (c Capabilities) HasSkillExportCapability() bool {
+	for _, skill := range c.Skills {
+		if skill.Exportable {
+			return true
+		}
+	}
+	return false
+}
+
 // ToolCapability describes a tool the plugin provides.
 type ToolCapability struct {
 	// Name is the tool identifier used in tool calls (required).
@@ -304,6 +315,14 @@ type SkillCapability struct {
 
 	// MCPServers lists MCP server IDs this skill requires (optional).
 	MCPServers []string `json:"mcp_servers,omitempty"`
+
+	// Exportable indicates this skill can be exported for external use.
+	// When true, the skill may be installed in remote agents or shared.
+	// Requires explicit operator opt-in via lifecycle configuration.
+	Exportable bool `json:"exportable,omitempty"`
+
+	// ExportRequiresApproval indicates export requires operator approval.
+	ExportRequiresApproval bool `json:"export_requires_approval,omitempty"`
 }
 
 // GatewayMethodCapability describes a gateway RPC method the plugin provides.
