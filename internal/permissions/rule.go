@@ -166,9 +166,18 @@ type Rule struct {
 	// Enabled controls whether the rule is active.
 	Enabled bool `json:"enabled"`
 
+	// AgentID restricts the rule to a specific agent (empty = all agents).
+	AgentID string `json:"agent_id,omitempty"`
+
 	// Compiled patterns (not serialized)
 	toolRegex    *regexp.Regexp
 	contentRegex *regexp.Regexp
+}
+
+// ForAgent restricts the rule to a specific agent.
+func (r *Rule) ForAgent(agentID string) *Rule {
+	r.AgentID = agentID
+	return r
 }
 
 // NewRule creates a new permission rule.
@@ -259,6 +268,11 @@ func (r *Rule) Matches(req *ToolRequest) bool {
 		if err := r.Compile(); err != nil {
 			return false
 		}
+	}
+
+	// Check agent restriction - if rule is for a specific agent, request must match
+	if r.AgentID != "" && r.AgentID != req.AgentID {
+		return false
 	}
 
 	// Check category if specified

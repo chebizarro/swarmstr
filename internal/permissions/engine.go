@@ -737,3 +737,107 @@ func (e *Engine) AllowCommandForSession(commandPattern string) error {
 			WithDescription(fmt.Sprintf("Session override: allow commands matching %s", commandPattern)),
 	)
 }
+
+// ─── Per-Agent Configuration Helpers ─────────────────────────────────────────
+
+// AllowAllForAgent adds a rule that allows all operations for a specific agent.
+// This only affects requests with a matching AgentID.
+func (e *Engine) AllowAllForAgent(agentID string) error {
+	return e.AddRule(
+		NewRule(fmt.Sprintf("agent-%s-allow-all", agentID), ScopeAgent, BehaviorAllow, "*").
+			ForAgent(agentID).
+			WithDescription(fmt.Sprintf("Allow all operations for agent %s", agentID)),
+	)
+}
+
+// DenyAllForAgent adds a rule that denies all operations for a specific agent.
+// Useful for temporarily blocking a misbehaving agent.
+func (e *Engine) DenyAllForAgent(agentID string) error {
+	return e.AddRule(
+		NewRule(fmt.Sprintf("agent-%s-deny-all", agentID), ScopeAgent, BehaviorDeny, "*").
+			ForAgent(agentID).
+			WithDescription(fmt.Sprintf("Deny all operations for agent %s", agentID)),
+	)
+}
+
+// AllowCategoryForAgent allows a specific category for a specific agent.
+func (e *Engine) AllowCategoryForAgent(agentID string, category ToolCategory) error {
+	return e.AddRule(
+		NewRule(fmt.Sprintf("agent-%s-allow-%s", agentID, category), ScopeAgent, BehaviorAllow, "*").
+			ForAgent(agentID).
+			WithCategory(category).
+			WithDescription(fmt.Sprintf("Allow %s operations for agent %s", category, agentID)),
+	)
+}
+
+// DenyCategoryForAgent denies a specific category for a specific agent.
+func (e *Engine) DenyCategoryForAgent(agentID string, category ToolCategory) error {
+	return e.AddRule(
+		NewRule(fmt.Sprintf("agent-%s-deny-%s", agentID, category), ScopeAgent, BehaviorDeny, "*").
+			ForAgent(agentID).
+			WithCategory(category).
+			WithDescription(fmt.Sprintf("Deny %s operations for agent %s", category, agentID)),
+	)
+}
+
+// AllowToolForAgent allows a specific tool pattern for a specific agent.
+func (e *Engine) AllowToolForAgent(agentID, toolPattern string) error {
+	return e.AddRule(
+		NewRule(fmt.Sprintf("agent-%s-allow-%s", agentID, toolPattern), ScopeAgent, BehaviorAllow, toolPattern).
+			ForAgent(agentID).
+			WithDescription(fmt.Sprintf("Allow %s for agent %s", toolPattern, agentID)),
+	)
+}
+
+// AskForAgent requires confirmation for all operations from a specific agent.
+func (e *Engine) AskForAgent(agentID string) error {
+	return e.AddRule(
+		NewRule(fmt.Sprintf("agent-%s-ask-all", agentID), ScopeAgent, BehaviorAsk, "*").
+			ForAgent(agentID).
+			WithDescription(fmt.Sprintf("Require confirmation for all operations from agent %s", agentID)),
+	)
+}
+
+// ConfigureAgentProfile applies a predefined permission profile to an agent.
+// Profiles: "autonomous", "permissive", "restrictive", "readonly"
+func (e *Engine) ConfigureAgentProfile(agentID, profile string) error {
+	switch profile {
+	case "autonomous":
+		// Allow all, rely on global safety rules
+		return e.AllowAllForAgent(agentID)
+
+	case "permissive":
+		// Allow all, but ask for exec operations
+		if err := e.AllowAllForAgent(agentID); err != nil {
+			return err
+		}
+		return e.AddRule(
+			NewRule(fmt.Sprintf("agent-%s-ask-exec", agentID), ScopeAgent, BehaviorAsk, "*").
+				ForAgent(agentID).
+				WithCategory(CategoryExec).
+				WithDescription(fmt.Sprintf("Ask before exec for agent %s", agentID)),
+		)
+
+	case "restrictive":
+		// Ask for everything by default
+		return e.AskForAgent(agentID)
+
+	case "readonly":
+		// Allow reads, deny writes/exec
+		if err := e.AllowCategoryForAgent(agentID, CategoryFilesystem); err != nil {
+			return err
+		}
+		if err := e.DenyCategoryForAgent(agentID, CategoryExec); err != nil {
+			return err
+		}
+		return e.AddRule(
+			NewRule(fmt.Sprintf("agent-%s-deny-write", agentID), ScopeAgent, BehaviorDeny, "*").
+				ForAgent(agentID).
+				WithContentPattern(`^write|^create|^delete|^update`).
+				WithDescription(fmt.Sprintf("Deny writes for readonly agent %s", agentID)),
+		)
+
+	default:
+		return fmt.Errorf("unknown agent profile: %s", profile)
+	}
+}
