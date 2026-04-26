@@ -20,6 +20,7 @@ func withHeartbeatTestGlobals(t *testing.T, rt agent.Runtime) {
 	prevRuntime := controlAgentRuntime
 	prevRegistry := controlAgentRegistry
 	prevToolRegistry := controlToolRegistry
+	controlServicesMu.Lock()
 	prevServices := controlServices
 	controlAgentRuntime = rt
 	reg := agent.NewAgentRuntimeRegistry(rt)
@@ -31,11 +32,14 @@ func withHeartbeatTestGlobals(t *testing.T, rt agent.Runtime) {
 			agentRegistry: reg,
 		},
 	}
+	controlServicesMu.Unlock()
 	t.Cleanup(func() {
+		controlServicesMu.Lock()
 		controlAgentRuntime = prevRuntime
 		controlAgentRegistry = prevRegistry
 		controlToolRegistry = prevToolRegistry
 		controlServices = prevServices
+		controlServicesMu.Unlock()
 	})
 }
 

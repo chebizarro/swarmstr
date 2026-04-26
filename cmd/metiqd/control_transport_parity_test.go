@@ -128,6 +128,7 @@ func newControlTransportParityHarness(t *testing.T, scenario string) *controlTra
 	startedAt := time.Now().Add(-5 * time.Second)
 
 	prevSessionStore := controlSessionStore
+	controlServicesMu.Lock()
 	prevServices := controlServices
 	controlSessionStore = sessionStore
 	controlServices = &daemonServices{
@@ -146,9 +147,12 @@ func newControlTransportParityHarness(t *testing.T, scenario string) *controlTra
 		},
 		runtimeConfig: cfgState,
 	}
+	controlServicesMu.Unlock()
 	t.Cleanup(func() {
+		controlServicesMu.Lock()
 		controlSessionStore = prevSessionStore
 		controlServices = prevServices
+		controlServicesMu.Unlock()
 	})
 
 	seedControlTransportParityScenario(t, scenario, docsRepo, transcriptRepo, sessionStore)
