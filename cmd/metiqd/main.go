@@ -216,7 +216,8 @@ var (
 	// controlServices is the consolidated dependency struct for extracted handler
 	// files. Initialized in main() after all components are started. Replaces
 	// direct global access in main_relay_policy.go and other extracted files.
-	controlServices *daemonServices
+	controlServicesMu sync.RWMutex
+	controlServices   *daemonServices
 
 	// controlCronExecutor dispatches a gateway method from the cron scheduler.
 	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
@@ -6906,10 +6907,13 @@ func resolveAuxiliaryModelForAgent(agCfg state.AgentConfig, useCase auxiliaryMod
 }
 
 func emitControlWSEvent(event string, payload any) {
-	if controlServices != nil && controlServices.emitterMu != nil {
-		controlServices.emitterMu.RLock()
-		emitter := controlServices.emitter
-		controlServices.emitterMu.RUnlock()
+	controlServicesMu.RLock()
+	svc := controlServices
+	controlServicesMu.RUnlock()
+	if svc != nil && svc.emitterMu != nil {
+		svc.emitterMu.RLock()
+		emitter := svc.emitter
+		svc.emitterMu.RUnlock()
 		if emitter != nil {
 			emitter.Emit(event, payload)
 			return

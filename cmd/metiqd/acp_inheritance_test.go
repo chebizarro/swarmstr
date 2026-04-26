@@ -289,6 +289,7 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	prevSessionStore := controlSessionStore
 	prevToolRegistry := controlToolRegistry
 	prevRuntimeConfig := controlRuntimeConfig
+	controlServicesMu.Lock()
 	prevServices := controlServices
 	controlSessionStore = ss
 	controlToolRegistry = tools
@@ -315,11 +316,14 @@ func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 		},
 		runtimeConfig: cfgStore,
 	}
+	controlServicesMu.Unlock()
 	defer func() {
+		controlServicesMu.Lock()
 		controlSessionStore = prevSessionStore
 		controlToolRegistry = prevToolRegistry
 		controlRuntimeConfig = prevRuntimeConfig
 		controlServices = prevServices
+		controlServicesMu.Unlock()
 	}()
 
 	msg := acppkg.NewTask("task-1", testACPSenderPubKey, acppkg.TaskPayload{
@@ -476,6 +480,7 @@ func setupACPWorkerTestRuntime(t *testing.T, provider *capturingProvider) (*agen
 	prevSessionStore := controlSessionStore
 	prevToolRegistry := controlToolRegistry
 	prevRuntimeConfig := controlRuntimeConfig
+	controlServicesMu.Lock()
 	prevServices := controlServices
 	controlSessionStore = ss
 	controlToolRegistry = tools
@@ -499,11 +504,14 @@ func setupACPWorkerTestRuntime(t *testing.T, provider *capturingProvider) (*agen
 		},
 		runtimeConfig: cfgStore,
 	}
+	controlServicesMu.Unlock()
 	cleanup := func() {
+		controlServicesMu.Lock()
 		controlSessionStore = prevSessionStore
 		controlToolRegistry = prevToolRegistry
 		controlRuntimeConfig = prevRuntimeConfig
 		controlServices = prevServices
+		controlServicesMu.Unlock()
 	}
 	return agentReg, sessionRouter, tools, ss, docsRepo, transcriptRepo, cleanup
 }
