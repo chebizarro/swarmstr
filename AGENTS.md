@@ -786,3 +786,12 @@ Agents must:
 These rules are non-optional.
 
 Violating them breaks the event-driven contract and creates systems that will fail under load, reconnect scenarios, and multi-relay deployments.
+## Pre-push Hook
+
+CI checks run automatically before `git push`. To install after cloning:
+
+```bash
+cp scripts/hooks/pre-push .git/hooks/pre-push
+```
+
+The hook runs: `go vet`, `go build`, `go test` — same as CI.
