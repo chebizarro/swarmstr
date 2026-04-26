@@ -221,7 +221,7 @@ Examples:
 			fmt.Printf("Classification enabled (model: %s)\n", model)
 		}
 		if dryRun {
-			fmt.Println("DRY RUN - no changes will be made\n")
+			fmt.Println("DRY RUN - no changes will be made")
 		}
 	}
 
