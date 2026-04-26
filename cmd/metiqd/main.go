@@ -1333,15 +1333,33 @@ func main() {
 		tools.SetLoopDetection(loopRegistry, loopConfig)
 
 		tools.SetMiddleware(func(ctx context.Context, call agent.ToolCall, next func(context.Context, agent.ToolCall) (string, error)) (string, error) {
+			// Get agent ID from memory scope context (set during turn setup)
+			agentID := ""
+			if scope := agent.MemoryScopeFromContext(ctx); scope.AgentID != "" {
+				agentID = scope.AgentID
+			}
+
+			// ── Check tool_profile first ────────────────────────────────
+			// If the agent has tool_profile: "full", bypass the approval gate entirely.
+			// This connects the profile system to the approval gate.
+			if agentID != "" {
+				liveCfg := configState.Get()
+				for _, ac := range liveCfg.Agents {
+					if ac.ID == agentID {
+						if strings.EqualFold(ac.ToolProfile, "full") {
+							// Agent has full profile - allow without approval
+							log.Printf("tool %s allowed for agent %s (tool_profile=full)", call.Name, agentID)
+							metricspkg.ToolCalls.Inc()
+							return next(ctx, call)
+						}
+						break // Found agent, but profile is not "full"
+					}
+				}
+			}
+
 			// ── Permission engine check (new system) ────────────────────
 			// If the permission engine is configured, use it instead of the legacy approval list.
 			if permEngine != nil {
-				// Get agent ID from context if available
-				agentID := ""
-				if aid, ok := ctx.Value("agent_id").(string); ok {
-					agentID = aid
-				}
-
 				// Build permission request - serialize args to string for content matching
 				argsStr := ""
 				if call.Args != nil {
