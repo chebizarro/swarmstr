@@ -1344,17 +1344,34 @@ func main() {
 			// This connects the profile system to the approval gate.
 			if agentID != "" {
 				liveCfg := configState.Get()
+				foundAgent := false
 				for _, ac := range liveCfg.Agents {
 					if ac.ID == agentID {
+						foundAgent = true
 						if strings.EqualFold(ac.ToolProfile, "full") {
 							// Agent has full profile - allow without approval
 							log.Printf("tool %s allowed for agent %s (tool_profile=full)", call.Name, agentID)
 							metricspkg.ToolCalls.Inc()
 							return next(ctx, call)
 						}
-						break // Found agent, but profile is not "full"
+						// Log when tool_profile is set but not "full"
+						if ac.ToolProfile != "" {
+							log.Printf("tool %s: agent %s has tool_profile=%q (not full, will check approval gate)", call.Name, agentID, ac.ToolProfile)
+						}
+						break
 					}
 				}
+				// Log when agent is not found in config (potential config mismatch)
+				if !foundAgent && len(liveCfg.Agents) > 0 {
+					var configAgentIDs []string
+					for _, ac := range liveCfg.Agents {
+						configAgentIDs = append(configAgentIDs, ac.ID)
+					}
+					log.Printf("tool %s: agent %q not found in config.agents (available: %v)", call.Name, agentID, configAgentIDs)
+				}
+			} else {
+				// Log when agent ID is missing from context (context propagation issue)
+				log.Printf("tool %s: no agent ID in context (memory scope may not be set)", call.Name)
 			}
 
 			// ── Permission engine check (new system) ────────────────────
@@ -1564,6 +1581,7 @@ func main() {
 				Executor:            turnExecutor,
 				ContextWindowTokens: promptEnvelope.ContextWindowTokens,
 			},
+			TurnCtx:            turnCtx, // Pass the context with memory scope set
 			SurfacedFileMemory: surfacedFileMemory,
 			MemoryRecallSample: memoryRecallSample,
 		}
@@ -1606,7 +1624,7 @@ func main() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
-						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
+						result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
 						if turnErr != nil {
 							log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
@@ -1665,7 +1683,7 @@ func main() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
-						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
+						result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
 						if turnErr != nil {
 							log.Printf("auto-join nip28 agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
@@ -1730,7 +1748,7 @@ func main() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
-						result, turnErr := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
+						result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
 						if turnErr != nil {
 							log.Printf("auto-join chat agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
