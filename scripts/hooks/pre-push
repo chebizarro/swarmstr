@@ -1,0 +1,15 @@
+#!/bin/bash
+set -e
+
+echo "🔍 Running pre-push CI checks..."
+
+echo "→ go vet"
+go vet ./...
+
+echo "→ go build"
+go build ./cmd/...
+
+echo "→ go test"
+go test -timeout 180s ./...
+
+echo "✅ All checks passed"
