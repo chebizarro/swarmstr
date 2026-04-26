@@ -171,6 +171,7 @@ func formatMemoryRecallItem(item memory.IndexedMemory) string {
 
 type preparedAgentRunTurn struct {
 	Turn               agent.Turn
+	TurnCtx            context.Context // Context with memory scope set; use this for ProcessTurn
 	SurfacedFileMemory map[string]string
 	MemoryRecallSample *state.MemoryRecallSample
 }
@@ -186,6 +187,7 @@ func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memo
 			StaticSystemPrompt: assembleMemorySystemPrompt(index, scope, workspaceDir),
 			Context:            turnContext,
 		},
+		TurnCtx:            ctx, // Pass the context for use in ProcessTurn
 		SurfacedFileMemory: surfaced,
 		MemoryRecallSample: sample,
 	}
