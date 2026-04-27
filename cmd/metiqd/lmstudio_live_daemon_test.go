@@ -429,6 +429,121 @@ func TestLMStudioLive_DaemonHarness_ExplicitConfigPath(t *testing.T) {
 
 }
 
+func TestLMStudioLive_ApprovalGatingSpectrum(t *testing.T) {
+	relayURL := requireLiveHarnessRelay(t)
+	model := liveTestModel()
+
+	t.Run("no approvals required", func(t *testing.T) {
+		h := newLiveDaemonHarnessWithApprovals(t, relayURL, model, []string{})
+		defer h.Close()
+		
+		// bash_exec should execute immediately without approval
+		result := h.call(t, "agent", map[string]any{
+			"session_id": "no-approvals-bash",
+			"message":    "Call bash_exec with command `printf no-approval-needed`. Reply OK.",
+			"timeout_ms":  60000,
+		})
+		runID, _ := result["run_id"].(string)
+		if strings.TrimSpace(runID) == "" {
+			t.Fatalf("agent start missing run_id")
+		}
+		
+		// Should NOT trigger approval - wait for completion
+		agentResult, err := h.waitAgentResult(t, runID)
+		if err != nil {
+			// If it times out, it probably waited for approval that shouldn't have been required
+			t.Fatalf("bash_exec with no approvals config should not wait for approval: %v", err)
+		}
+		if !strings.Contains(strings.ToLower(agentResult), "no-approval-needed") && !strings.Contains(strings.ToUpper(agentResult), "OK") {
+			t.Logf("no-approval bash result = %q", agentResult)
+		}
+		
+		// write_file should also execute immediately
+		result2 := h.runAgent(t, "no-approvals-write", "Use write_file to create scratch/no-gate.txt with content 'no-gates'. Reply WROTE.")
+		if !strings.Contains(result2, "WROTE") {
+			t.Fatalf("write_file result = %q, want WROTE", result2)
+		}
+	})
+
+	t.Run("single tool requires approval", func(t *testing.T) {
+		h := newLiveDaemonHarnessWithApprovals(t, relayURL, model, []string{"bash_exec"})
+		defer h.Close()
+		
+		// write_file should NOT require approval
+		result1 := h.runAgent(t, "single-write", "Use write_file to create scratch/single-no-gate.txt with content 'single-test'. Reply WROTE.")
+		if !strings.Contains(result1, "WROTE") {
+			t.Fatalf("write_file should not require approval: %q", result1)
+		}
+		
+		// bash_exec SHOULD require approval
+		result := h.call(t, "agent", map[string]any{
+			"session_id": "single-bash",
+			"message":    "Call bash_exec with command `printf single-gated`.",
+			"timeout_ms":  60000,
+		})
+		runID, _ := result["run_id"].(string)
+		if strings.TrimSpace(runID) == "" {
+			t.Fatal("agent start missing run_id")
+		}
+		
+		approvalID := h.waitForApprovalLog(t, runID)
+		if strings.TrimSpace(approvalID) == "" {
+			t.Fatal("bash_exec should require approval in single-tool config")
+		}
+		
+		// Deny to keep test fast
+		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID, "decision": "deny", "reason": "single tool test"})
+		_, _ = h.waitAgentResult(t, runID)
+	})
+
+	t.Run("multiple tools require approval", func(t *testing.T) {
+		h := newLiveDaemonHarnessWithApprovals(t, relayURL, model, []string{"bash_exec", "write_file"})
+		defer h.Close()
+		
+		// write_file SHOULD now require approval
+		result := h.call(t, "agent", map[string]any{
+			"session_id": "multi-write",
+			"message":    "Use write_file to create scratch/multi-gated.txt with content 'gated'.",
+			"timeout_ms":  60000,
+		})
+		runID1, _ := result["run_id"].(string)
+		if strings.TrimSpace(runID1) == "" {
+			t.Fatal("agent start missing run_id")
+		}
+		
+		approvalID1 := h.waitForApprovalLog(t, runID1)
+		if strings.TrimSpace(approvalID1) == "" {
+			t.Fatal("write_file should require approval in multi-tool config")
+		}
+		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID1, "decision": "deny", "reason": "multi write test"})
+		_, _ = h.waitAgentResult(t, runID1)
+		
+		// bash_exec SHOULD also require approval
+		result2 := h.call(t, "agent", map[string]any{
+			"session_id": "multi-bash",
+			"message":    "Call bash_exec with command `printf multi-gated`.",
+			"timeout_ms":  60000,
+		})
+		runID2, _ := result2["run_id"].(string)
+		if strings.TrimSpace(runID2) == "" {
+			t.Fatal("agent start missing run_id")
+		}
+		
+		approvalID2 := h.waitForApprovalLog(t, runID2)
+		if strings.TrimSpace(approvalID2) == "" {
+			t.Fatal("bash_exec should require approval in multi-tool config")
+		}
+		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID2, "decision": "deny", "reason": "multi bash test"})
+		_, _ = h.waitAgentResult(t, runID2)
+		
+		// memory_store should NOT require approval (not in the list)
+		result3 := h.runAgent(t, "multi-memory", "Use memory_store to save 'test' with topic 'multi'. Reply STORED.")
+		if !strings.Contains(result3, "STORED") {
+			t.Fatalf("memory_store should not require approval: %q", result3)
+		}
+	})
+}
+
 type liveDaemonHarness struct {
 	t                 *testing.T
 	cmd               *exec.Cmd
@@ -464,7 +579,17 @@ func requireLiveHarnessRelay(t *testing.T) string {
 	return relayURL
 }
 
+func newLiveDaemonHarnessWithApprovals(t *testing.T, relayURL, model string, approvalTools []string) *liveDaemonHarness {
+	t.Helper()
+	return newLiveDaemonHarnessCustom(t, relayURL, model, liveDaemonHarnessOptions{}, approvalTools)
+}
+
 func newLiveDaemonHarness(t *testing.T, relayURL, model string, opts liveDaemonHarnessOptions) *liveDaemonHarness {
+	t.Helper()
+	return newLiveDaemonHarnessCustom(t, relayURL, model, opts, []string{"bash_exec"})
+}
+
+func newLiveDaemonHarnessCustom(t *testing.T, relayURL, model string, opts liveDaemonHarnessOptions, approvalTools []string) *liveDaemonHarness {
 	t.Helper()
 
 	root := t.TempDir()
@@ -505,7 +630,7 @@ func newLiveDaemonHarness(t *testing.T, relayURL, model string, opts liveDaemonH
 	if err := os.WriteFile(bootstrapPath, []byte(bootstrap), 0o644); err != nil {
 		t.Fatalf("write bootstrap: %v", err)
 	}
-	config := liveHarnessConfigJSON(relayURL, model, workspaceDir, false)
+	config := liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir, false, approvalTools)
 	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -764,7 +889,8 @@ func (h *liveDaemonHarness) runAgentWithRetry(t *testing.T, sessionID string, me
 
 func (h *liveDaemonHarness) waitForApprovalLog(t *testing.T, runID string) string {
 	t.Helper()
-	pattern := regexp.MustCompile(`exec approval requested id=(\S+) tool=bash_exec`)
+	// Match any tool, not just bash_exec
+	pattern := regexp.MustCompile(`exec approval requested id=(\S+) tool=\S+`)
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		raw, err := os.ReadFile(h.logPath)
@@ -800,6 +926,18 @@ func liveTestModel() string {
 }
 
 func liveHarnessConfigJSON(relayURL, model, workspaceDir string, requireAuth bool) string {
+	return liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir, requireAuth, []string{"bash_exec"})
+}
+
+func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, requireAuth bool, approvalTools []string) string {
+	approvalsJSON := "[]"
+	if len(approvalTools) > 0 {
+		var quoted []string
+		for _, tool := range approvalTools {
+			quoted = append(quoted, fmt.Sprintf("%q", tool))
+		}
+		approvalsJSON = strings.Join(quoted, ", ")
+	}
 	return fmt.Sprintf(`{
   "version": 1,
   "relays": {"read": [%[1]q], "write": [%[1]q]},
@@ -822,9 +960,9 @@ func liveHarnessConfigJSON(relayURL, model, workspaceDir string, requireAuth boo
   "cron": {},
   "hooks": {},
   "timeouts": {},
-  "extra": {"approvals": {"tools": ["bash_exec"]}}
+  "extra": {"approvals": {"tools": [%[5]s]}}
 }
-`, relayURL, model, workspaceDir, requireAuth)
+`, relayURL, model, workspaceDir, requireAuth, approvalsJSON)
 }
 
 func randomSecretKeyHex(t *testing.T) string {
