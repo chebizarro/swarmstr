@@ -726,3 +726,150 @@ func TestMigrator_AuditPluginsAndSkills(t *testing.T) {
 		t.Error("skills directory should be copied")
 	}
 }
+
+func TestMigrator_MemoryOnlyWithoutOpenClawJSON(t *testing.T) {
+	// Source directory has memory files but no openclaw.json
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create workspace with MEMORY.md and a topic file without frontmatter
+	workspaceDir := filepath.Join(srcDir, "workspace")
+	memoryDir := filepath.Join(workspaceDir, "memory")
+	if err := os.MkdirAll(memoryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	memoryMD := "# Memories\n\n- I prefer dark mode\n- My timezone is UTC-5\n"
+	if err := os.WriteFile(filepath.Join(workspaceDir, "MEMORY.md"), []byte(memoryMD), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topicContent := "# Project Setup\n\nWe use Go 1.22 and SQLite for storage.\n"
+	if err := os.WriteFile(filepath.Join(memoryDir, "project-setup.md"), []byte(topicContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run migration — should NOT fail despite missing openclaw.json
+	m := New(Options{
+		SourceDir: srcDir,
+		TargetDir: dstDir,
+	})
+	report, err := m.Run()
+	if err != nil {
+		t.Fatalf("migration should succeed without openclaw.json, got: %v", err)
+	}
+	if !report.Success {
+		t.Fatalf("migration report should be successful, issues: %+v", report.Issues)
+	}
+
+	// Should have a warning about missing config, not an error
+	hasConfigWarning := false
+	for _, issue := range report.Issues {
+		if strings.Contains(issue.Message, "memory-only mode") {
+			hasConfigWarning = true
+			if issue.Severity != SeverityWarning {
+				t.Errorf("missing config should be warning, got %s", issue.Severity)
+			}
+		}
+	}
+	if !hasConfigWarning {
+		t.Error("expected warning about missing openclaw.json")
+	}
+
+	// Should NOT have config or identity artifacts
+	for _, art := range report.Artifacts {
+		if art.Type == ArtifactConfig || art.Type == ArtifactIdentity {
+			t.Errorf("should not have %s artifact without openclaw.json", art.Type)
+		}
+	}
+
+	// Should have memory artifacts
+	hasMemoryArtifact := false
+	for _, art := range report.Artifacts {
+		if art.Type == ArtifactMemory {
+			hasMemoryArtifact = true
+		}
+	}
+	if !hasMemoryArtifact {
+		t.Error("expected memory artifacts to be discovered")
+	}
+
+	// MEMORY.md should be migrated (no YAML frontmatter, just HTML comment)
+	migratedMemory := filepath.Join(dstDir, "workspace", "MEMORY.md")
+	data, err := os.ReadFile(migratedMemory)
+	if err != nil {
+		t.Fatalf("MEMORY.md should be migrated: %v", err)
+	}
+	if strings.HasPrefix(string(data), "---") {
+		t.Error("MEMORY.md entrypoint should not have YAML frontmatter")
+	}
+	if !strings.Contains(string(data), "migrated_from: openclaw") {
+		t.Error("should contain migration metadata")
+	}
+
+	// Topic file should have generated frontmatter
+	migratedTopic := filepath.Join(dstDir, "workspace", "memory", "project-setup.md")
+	data, err = os.ReadFile(migratedTopic)
+	if err != nil {
+		t.Fatalf("topic file should be migrated: %v", err)
+	}
+	if !strings.HasPrefix(string(data), "---\n") {
+		t.Error("topic file without frontmatter should get generated frontmatter")
+	}
+	if !strings.Contains(string(data), "type: user") {
+		t.Error("generated frontmatter should have type field")
+	}
+}
+
+func TestMigrator_MemoryOnlyFlatDirectory(t *testing.T) {
+	// Source directory IS the workspace (no workspace/ subdir, no openclaw.json)
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Put MEMORY.md and memory/ directly in srcDir
+	memoryDir := filepath.Join(srcDir, "memory")
+	if err := os.MkdirAll(memoryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(srcDir, "MEMORY.md"), []byte("# My memories\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memoryDir, "prefs.md"), []byte("I like vim.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(Options{
+		SourceDir: srcDir,
+		TargetDir: dstDir,
+	})
+	report, err := m.Run()
+	if err != nil {
+		t.Fatalf("flat memory-only migration should succeed, got: %v", err)
+	}
+	if !report.Success {
+		t.Fatalf("report should be successful, issues: %+v", report.Issues)
+	}
+
+	// Should note that source is treated as workspace
+	hasFlatWarning := false
+	for _, issue := range report.Issues {
+		if strings.Contains(issue.Message, "treating source as workspace") {
+			hasFlatWarning = true
+		}
+	}
+	if !hasFlatWarning {
+		t.Error("expected info about treating source as workspace")
+	}
+
+	// Memory artifacts should still be found
+	memoryCount := 0
+	for _, art := range report.Artifacts {
+		if art.Type == ArtifactMemory {
+			memoryCount++
+		}
+	}
+	if memoryCount < 2 {
+		t.Errorf("expected at least 2 memory artifacts (MEMORY.md + topic), got %d", memoryCount)
+	}
+}
