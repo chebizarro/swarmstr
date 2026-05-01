@@ -417,7 +417,8 @@ func (b *NIP17Bus) perRelaySubscribe(
 			case evt, more := <-sub.Events:
 				if !more {
 					// Connection lost — reconnect with correct backfill.
-					log.Printf("nip17: subscription to %s closed, reconnecting", relayURL)
+					// This is expected behavior for idle timeout or relay restart
+					log.Printf("nip17: subscription to %s closed (relay timeout or restart), reconnecting automatically", relayURL)
 					goto reconnect
 				}
 

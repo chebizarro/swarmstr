@@ -544,6 +544,213 @@ func TestLMStudioLive_ApprovalGatingSpectrum(t *testing.T) {
 	})
 }
 
+func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
+	relayURL := requireLiveHarnessRelay(t)
+	model := liveTestModel()
+
+	t.Run("monitor relay reconnections", func(t *testing.T) {
+		h := newLiveDaemonHarnessWithApprovals(t, relayURL, model, []string{})
+		defer h.Close()
+		
+		// Let daemon run for a bit and perform some operations
+		// This gives us time to observe relay behavior
+		result1 := h.runAgent(t, "relay-test-1", "What is 5+3? Reply with just the number.")
+		t.Logf("First agent result: %q", result1)
+		
+		// Wait a bit
+		time.Sleep(10 * time.Second)
+		
+		// Do another operation
+		result2 := h.runAgent(t, "relay-test-2", "Use write_file to create scratch/relay-test.txt with content 'relay-stable'. Reply WROTE.")
+		t.Logf("Second agent result: %q", result2)
+		
+		// Wait a bit more
+		time.Sleep(10 * time.Second)
+		
+		// Analyze the log for relay events
+		raw, err := os.ReadFile(h.logPath)
+		if err != nil {
+			t.Fatalf("read log: %v", err)
+		}
+		logContent := string(raw)
+		
+		// Look for relay connection events
+		connectionPattern := regexp.MustCompile(`nip17: subscription to (\S+) (\S+)`)
+		reconnectPattern := regexp.MustCompile(`nip17: subscription to (\S+) closed, reconnecting`)
+		errorPattern := regexp.MustCompile(`relay.*error|connection.*failed|websocket.*error`)
+		
+		connections := connectionPattern.FindAllStringSubmatch(logContent, -1)
+		reconnects := reconnectPattern.FindAllStringSubmatch(logContent, -1)
+		errors := errorPattern.FindAllString(logContent, -1)
+		
+		t.Logf("\n=== Relay Connection Analysis ===")
+		t.Logf("Total connection events: %d", len(connections))
+		t.Logf("Total reconnection events: %d", len(reconnects))
+		t.Logf("Total error events: %d", len(errors))
+		
+		if len(reconnects) > 0 {
+			t.Logf("\nReconnection events found:")
+			for i, match := range reconnects {
+				t.Logf("  %d. Relay: %s", i+1, match[1])
+			}
+			
+			// Extract surrounding context for first reconnect
+			if len(reconnects) > 0 {
+				firstReconnect := reconnects[0][0]
+				idx := strings.Index(logContent, firstReconnect)
+				if idx >= 0 {
+					start := idx - 500
+					if start < 0 {
+						start = 0
+					}
+					end := idx + 500
+					if end > len(logContent) {
+						end = len(logContent)
+					}
+					context := logContent[start:end]
+					t.Logf("\nContext around first reconnection:\n%s", context)
+				}
+			}
+		}
+		
+		if len(errors) > 0 {
+			t.Logf("\nError events found:")
+			for i, errMsg := range errors {
+				if i < 5 { // Limit to first 5 to avoid spam
+					t.Logf("  %d. %s", i+1, errMsg)
+				}
+			}
+		}
+		
+		// Check if daemon is still functional after reconnects
+		result3 := h.runAgent(t, "relay-test-3", "Reply OK if you can read this.")
+		if !strings.Contains(strings.ToUpper(result3), "OK") {
+			t.Logf("WARNING: Agent might not be fully functional after reconnects: %q", result3)
+		}
+		
+		// Log final assessment
+		if len(reconnects) == 0 {
+			t.Log("✅ No relay reconnections observed during test")
+		} else if len(reconnects) < 3 {
+			t.Logf("⚠️  %d relay reconnection(s) observed - may be normal depending on network/relay", len(reconnects))
+		} else {
+			t.Logf("❌ %d relay reconnections observed - this may indicate a stability issue", len(reconnects))
+		}
+	})
+
+	t.Run("monitor remote relay behavior", func(t *testing.T) {
+		// This test uses a real remote relay to check for reconnection patterns
+		// Skip if METIQ_TEST_REMOTE_RELAY is not set
+		remoteRelay := strings.TrimSpace(os.Getenv("METIQ_TEST_REMOTE_RELAY"))
+		if remoteRelay == "" {
+			t.Skip("Set METIQ_TEST_REMOTE_RELAY=wss://relay.sharegap.net to test with remote relay")
+		}
+		
+		t.Logf("Testing with remote relay: %s", remoteRelay)
+		
+		// Create harness with remote relay
+		h := newLiveDaemonHarnessWithApprovals(t, remoteRelay, model, []string{})
+		defer h.Close()
+		
+		// Monitor for longer period to catch intermittent reconnects
+		monitorDuration := 60 * time.Second
+		if durStr := os.Getenv("METIQ_RELAY_MONITOR_DURATION"); durStr != "" {
+			if dur, err := time.ParseDuration(durStr); err == nil {
+				monitorDuration = dur
+			}
+		}
+		
+		t.Logf("Monitoring relay behavior for %s", monitorDuration)
+		
+		// Perform operations periodically while monitoring
+		startTime := time.Now()
+		opCount := 0
+		for time.Since(startTime) < monitorDuration {
+			opCount++
+			result := h.runAgent(t, fmt.Sprintf("relay-mon-%d", opCount), "Reply OK.")
+			if !strings.Contains(strings.ToUpper(result), "OK") {
+				t.Logf("Operation %d result: %q", opCount, result)
+			}
+			
+			// Wait between operations
+			time.Sleep(15 * time.Second)
+		}
+		
+		t.Logf("Completed %d operations over %s", opCount, monitorDuration)
+		
+		// Analyze the full log
+		raw, err := os.ReadFile(h.logPath)
+		if err != nil {
+			t.Fatalf("read log: %v", err)
+		}
+		logContent := string(raw)
+		
+		// More comprehensive patterns for remote relay
+		reconnectPattern := regexp.MustCompile(`(?i)(subscription.*closed.*reconnecting|reconnect|connection.*reset|websocket.*close)`)
+		nip17Pattern := regexp.MustCompile(`nip17:.*`)
+		errorPattern := regexp.MustCompile(`(?i)(error|failed|timeout).*relay|relay.*(error|failed|timeout)`)
+		
+		reconnects := reconnectPattern.FindAllString(logContent, -1)
+		nip17Events := nip17Pattern.FindAllString(logContent, -1)
+		errors := errorPattern.FindAllString(logContent, -1)
+		
+		t.Logf("\n=== Remote Relay Analysis ===")
+		t.Logf("Relay: %s", remoteRelay)
+		t.Logf("Monitor duration: %s", monitorDuration)
+		t.Logf("Operations completed: %d", opCount)
+		t.Logf("Reconnection-like events: %d", len(reconnects))
+		t.Logf("Total NIP-17 events: %d", len(nip17Events))
+		t.Logf("Error events: %d", len(errors))
+		
+		if len(reconnects) > 0 {
+			t.Logf("\nReconnection/close events:")
+			for i, event := range reconnects {
+				if i < 10 { // Show first 10
+					t.Logf("  %d. %s", i+1, event)
+				}
+			}
+			if len(reconnects) > 10 {
+				t.Logf("  ... and %d more", len(reconnects)-10)
+			}
+			
+			// Calculate reconnect frequency
+			freq := float64(len(reconnects)) / monitorDuration.Seconds()
+			t.Logf("\nReconnect frequency: %.2f events/second (%.2f events/minute)", freq, freq*60)
+		}
+		
+		if len(nip17Events) > 0 {
+			t.Logf("\nSample NIP-17 events (first 5):")
+			for i, event := range nip17Events {
+				if i < 5 {
+					t.Logf("  %d. %s", i+1, event)
+				}
+			}
+		}
+		
+		if len(errors) > 0 {
+			t.Logf("\nRelay error events (first 10):")
+			for i, errMsg := range errors {
+				if i < 10 {
+					t.Logf("  %d. %s", i+1, errMsg)
+				}
+			}
+		}
+		
+		// Final assessment
+		if len(reconnects) == 0 {
+			t.Log("\n✅ No relay reconnections observed - connection is stable")
+		} else {
+			freq := float64(len(reconnects)) / monitorDuration.Minutes()
+			t.Logf("\n⚠️  %d reconnections in %s (%.1f per minute)", len(reconnects), monitorDuration, freq)
+			t.Log("This may indicate:")
+			t.Log("  - Relay-side connection limits or restarts")
+			t.Log("  - Network instability between client and relay")
+			t.Log("  - Relay timeout/keepalive settings")
+			t.Log("  - Firewall or proxy interference")
+		}
+	})
+}
+
 type liveDaemonHarness struct {
 	t                 *testing.T
 	cmd               *exec.Cmd
