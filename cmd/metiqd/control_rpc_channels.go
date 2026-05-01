@@ -86,7 +86,10 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				turnCtx, release := chatCancels.Begin(msg.ChannelID, ctx)
 				go func() {
 					defer release()
+					sessionStore := h.deps.sessionStore
 					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, msg.ChannelID, activeAgentID, rt, tools, turnToolConstraints{})
+					scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, msg.ChannelID, activeAgentID, "")
+					turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 					result, turnErr := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
 						SessionID:           msg.ChannelID,
 						UserText:            msg.Text,
