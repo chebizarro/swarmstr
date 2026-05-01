@@ -92,33 +92,34 @@ func (m *Migrator) audit() error {
 		return fmt.Errorf("source is not a directory: %s", src)
 	}
 
-	// Check for openclaw.json
+	// Check for openclaw.json (optional — memory-only dirs may lack it)
 	configPath := filepath.Join(src, "openclaw.json")
+	hasConfig := false
 	if _, err := os.Stat(configPath); err != nil {
 		m.addIssue(Issue{
-			Severity:   SeverityError,
+			Severity:   SeverityWarning,
 			Phase:      PhaseAudit,
 			Path:       configPath,
-			Message:    "openclaw.json not found",
-			Suggestion: "Ensure this is a valid OpenClaw home directory",
-		})
-		return fmt.Errorf("openclaw.json not found in %s", src)
-	}
-
-	// Parse config to extract agent name
-	cfg, err := m.loadOpenClawConfig(configPath)
-	if err != nil {
-		m.addIssue(Issue{
-			Severity: SeverityWarning,
-			Phase:    PhaseAudit,
-			Path:     configPath,
-			Message:  fmt.Sprintf("failed to parse openclaw.json: %v", err),
+			Message:    "openclaw.json not found — running in memory-only mode",
+			Suggestion: "Config conversion and identity migration will be skipped",
 		})
 	} else {
-		m.report.SourceAgent = m.extractAgentName(cfg)
+		hasConfig = true
+		// Parse config to extract agent name
+		cfg, err := m.loadOpenClawConfig(configPath)
+		if err != nil {
+			m.addIssue(Issue{
+				Severity: SeverityWarning,
+				Phase:    PhaseAudit,
+				Path:     configPath,
+				Message:  fmt.Sprintf("failed to parse openclaw.json: %v", err),
+			})
+		} else {
+			m.report.SourceAgent = m.extractAgentName(cfg)
+		}
 	}
 
-	// Check for workspace
+	// Check for workspace (try both <src>/workspace and <src> directly)
 	workspacePath := filepath.Join(src, "workspace")
 	if info, err := os.Stat(workspacePath); err == nil && info.IsDir() {
 		m.addArtifact(ArtifactEntry{
@@ -131,6 +132,16 @@ func (m *Migrator) audit() error {
 
 		// Check for memory files
 		m.auditMemoryFiles(workspacePath)
+	} else if m.hasMemoryContent(src) {
+		// Source dir itself contains memory content (MEMORY.md or memory/ subdir)
+		// Treat src as the workspace directly
+		m.addIssue(Issue{
+			Severity: SeverityInfo,
+			Phase:    PhaseAudit,
+			Path:     src,
+			Message:  "no workspace/ subdirectory found, treating source as workspace",
+		})
+		m.auditMemoryFiles(src)
 	} else {
 		m.addIssue(Issue{
 			Severity: SeverityWarning,
@@ -191,22 +202,24 @@ func (m *Migrator) audit() error {
 	// Check for OAuth credentials
 	m.auditCredentials()
 
-	// Add config artifacts
-	m.addArtifact(ArtifactEntry{
-		Type:        ArtifactConfig,
-		Action:      ActionConvert,
-		SourcePath:  configPath,
-		TargetPath:  filepath.Join(m.opts.TargetDir, "config.json"),
-		Description: "Main configuration (converted)",
-	})
+	// Add config artifacts (only when openclaw.json exists)
+	if hasConfig {
+		m.addArtifact(ArtifactEntry{
+			Type:        ArtifactConfig,
+			Action:      ActionConvert,
+			SourcePath:  configPath,
+			TargetPath:  filepath.Join(m.opts.TargetDir, "config.json"),
+			Description: "Main configuration (converted)",
+		})
 
-	m.addArtifact(ArtifactEntry{
-		Type:        ArtifactIdentity,
-		Action:      ActionConvert,
-		SourcePath:  configPath,
-		TargetPath:  filepath.Join(m.opts.TargetDir, "bootstrap.json"),
-		Description: "Identity/bootstrap configuration",
-	})
+		m.addArtifact(ArtifactEntry{
+			Type:        ArtifactIdentity,
+			Action:      ActionConvert,
+			SourcePath:  configPath,
+			TargetPath:  filepath.Join(m.opts.TargetDir, "bootstrap.json"),
+			Description: "Identity/bootstrap configuration",
+		})
+	}
 
 	return nil
 }
@@ -242,6 +255,17 @@ func (m *Migrator) auditMemoryFiles(workspacePath string) {
 			return nil
 		})
 	}
+}
+
+// hasMemoryContent checks whether a directory contains MEMORY.md or a memory/ subdirectory.
+func (m *Migrator) hasMemoryContent(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "MEMORY.md")); err == nil {
+		return true
+	}
+	if info, err := os.Stat(filepath.Join(dir, "memory")); err == nil && info.IsDir() {
+		return true
+	}
+	return false
 }
 
 func (m *Migrator) auditRuntimeGarbage() {
@@ -482,15 +506,16 @@ func (m *Migrator) dryRun() error {
 		}
 	}
 
-	// Validate config conversion would succeed
+	// Validate config conversion would succeed (skip if no config)
 	configPath := filepath.Join(m.opts.SourceDir, "openclaw.json")
-	cfg, err := m.loadOpenClawConfig(configPath)
-	if err != nil {
-		return fmt.Errorf("cannot parse config for conversion: %w", err)
+	if _, err := os.Stat(configPath); err == nil {
+		cfg, err := m.loadOpenClawConfig(configPath)
+		if err != nil {
+			return fmt.Errorf("cannot parse config for conversion: %w", err)
+		}
+		// Check for manual review items
+		m.checkManualReviewItems(cfg)
 	}
-
-	// Check for manual review items
-	m.checkManualReviewItems(cfg)
 
 	return nil
 }
@@ -1027,36 +1052,34 @@ func (m *Migrator) convertAuthProfiles(art *ArtifactEntry) error {
 // ─── Verify Phase ────────────────────────────────────────────────────────────
 
 func (m *Migrator) verify() error {
-	// Verify config.json exists and is valid JSON
+	// Verify config.json exists and is valid JSON (only if we expected to create it)
 	configPath := filepath.Join(m.opts.TargetDir, "config.json")
-	if _, err := os.Stat(configPath); err != nil {
+	if _, err := os.Stat(configPath); err == nil {
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			return err
+		}
+		var cfg map[string]any
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("config.json is not valid JSON: %w", err)
+		}
+	} else if m.hasArtifactType(ArtifactConfig) {
 		return fmt.Errorf("config.json not created")
 	}
 
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return err
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("config.json is not valid JSON: %w", err)
-	}
-
-	// Verify bootstrap.json
+	// Verify bootstrap.json (only if we expected to create it)
 	bootstrapPath := filepath.Join(m.opts.TargetDir, "bootstrap.json")
-	if _, err := os.Stat(bootstrapPath); err != nil {
+	if _, err := os.Stat(bootstrapPath); err == nil {
+		data, err := os.ReadFile(bootstrapPath)
+		if err != nil {
+			return err
+		}
+		var bootstrap map[string]any
+		if err := json.Unmarshal(data, &bootstrap); err != nil {
+			return fmt.Errorf("bootstrap.json is not valid JSON: %w", err)
+		}
+	} else if m.hasArtifactType(ArtifactIdentity) {
 		return fmt.Errorf("bootstrap.json not created")
-	}
-
-	data, err = os.ReadFile(bootstrapPath)
-	if err != nil {
-		return err
-	}
-
-	var bootstrap map[string]any
-	if err := json.Unmarshal(data, &bootstrap); err != nil {
-		return fmt.Errorf("bootstrap.json is not valid JSON: %w", err)
 	}
 
 	// Verify checksums for transformed files
@@ -1091,6 +1114,16 @@ func (m *Migrator) verify() error {
 	}
 
 	return nil
+}
+
+// hasArtifactType returns true if any artifact with the given type was registered.
+func (m *Migrator) hasArtifactType(t ArtifactType) bool {
+	for _, art := range m.report.Artifacts {
+		if art.Type == t {
+			return true
+		}
+	}
+	return false
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
