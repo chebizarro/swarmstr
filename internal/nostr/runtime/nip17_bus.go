@@ -476,7 +476,6 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 	}
 	// Skip self-sent (sent-to-self copy we stored).
 	if rumor.PubKey == b.public {
-		log.Printf("nip17: skipping self-sent rumor event=%s", rumor.ID.Hex())
 		return
 	}
 
