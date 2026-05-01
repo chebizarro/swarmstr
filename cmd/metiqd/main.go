@@ -4563,6 +4563,8 @@ func main() {
 				AcceptedKinds: acceptedKinds,
 				OnJob: func(jobCtx context.Context, jobID string, kind int, input string) (string, error) {
 					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(jobCtx, configState.Get(), docsRepo, "dvm:"+jobID, "", agentRuntime, tools, turnToolConstraints{})
+					scopeCtx := resolveMemoryScopeContext(jobCtx, configState.Get(), docsRepo, sessionStore, "dvm:"+jobID, "", "")
+					jobCtx = contextWithMemoryScope(jobCtx, scopeCtx)
 					result, err := filteredRuntime.ProcessTurn(jobCtx, agent.Turn{
 						SessionID:           "dvm:" + jobID,
 						UserText:            input,
