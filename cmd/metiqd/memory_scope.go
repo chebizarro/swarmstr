@@ -67,7 +67,10 @@ func resolveMemoryScopeContext(ctx context.Context, cfg state.ConfigDoc, docsRep
 		SessionID: sessionID,
 	}
 	if !resolved.Enabled() {
-		return memory.ScopedContext{}
+		// Return a scope with just the agent ID preserved - it's needed for
+		// permission checks (e.g., tool_profile: "full") even when memory
+		// scoping is disabled.
+		return memory.ScopedContext{AgentID: agentID, SessionID: sessionID}
 	}
 	if resolved.Scope == state.AgentMemoryScopeProject || resolved.Scope == state.AgentMemoryScopeLocal {
 		resolved.WorkspaceDir = workspaceDirForAgent(cfg, agentID)
@@ -77,19 +80,24 @@ func resolveMemoryScopeContext(ctx context.Context, cfg state.ConfigDoc, docsRep
 	}
 	if resolved.Scope == state.AgentMemoryScopeProject {
 		if strings.TrimSpace(resolved.WorkspaceDir) == "" {
-			return memory.ScopedContext{}
+			// Preserve agent ID for permission checks even when workspace is missing
+			return memory.ScopedContext{AgentID: agentID, SessionID: sessionID}
 		}
 	}
 	if resolved.Scope == state.AgentMemoryScopeLocal {
 		if resolved.SessionID == "" || strings.TrimSpace(sessionWorkspaceDir) == "" {
-			return memory.ScopedContext{}
+			// Preserve agent ID for permission checks even when workspace is missing
+			return memory.ScopedContext{AgentID: agentID, SessionID: sessionID}
 		}
 	}
 	return resolved
 }
 
 func contextWithMemoryScope(ctx context.Context, scope memory.ScopedContext) context.Context {
-	if !scope.Enabled() {
+	// Always set the memory scope context if we have an agent ID, even if
+	// memory scoping is disabled. The agent ID is needed for permission
+	// checks (e.g., tool_profile: "full") in the tool middleware.
+	if !scope.Enabled() && scope.AgentID == "" {
 		return ctx
 	}
 	return agent.ContextWithMemoryScope(ctx, agent.MemoryScopeContext{
