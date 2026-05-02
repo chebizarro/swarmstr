@@ -10897,3 +10897,45 @@ time="2026-04-13T07:13:41-07:00" level=info msg=ConnectionClosed connectionID=41
 time="2026-04-13T07:13:41-07:00" level=info msg=ConnectionClosed connectionID=4196
 time="2026-04-13T07:13:41-07:00" level=info msg=NewConnection DisableClientMultiStatements=false connectionID=4197
 time="2026-04-13T07:13:41-07:00" level=info msg=ConnectionClosed connectionID=4197
+Starting server with Config HP="127.0.0.1:56448"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:56641"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:64227"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:64436"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:64763"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:64989"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:58410"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:58636"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:60747"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:61285"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:64081"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:64272"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:49269"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:49479"|T="28800000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="127.0.0.1:63062"|T="28800000"|R="false"|L="warning"
+time="2026-05-02T11:41:30-07:00" level=warning msg="secure_file_priv is set to \"\", which is insecure."
+time="2026-05-02T11:41:30-07:00" level=warning msg="Any user with GRANT FILE privileges will be able to read any file which the sql-server process can read."
+time="2026-05-02T11:41:30-07:00" level=warning msg="Please consider restarting the server with secure_file_priv set to a safe (or non-existent) directory."
+time="2026-05-02T11:41:30-07:00" level=warning msg="error running query" connectTime="2026-05-02 11:41:30.144158 -0700 PDT m=+0.234789460" connectionDb=beads_swarmstr connectionID=7 error="Duplicate key name 'idx_wisp_dep_type'" queryTime="2026-05-02 11:41:30.406499 -0700 PDT m=+0.497129960"
+time="2026-05-02T11:41:30-07:00" level=warning msg="error running query" connectTime="2026-05-02 11:41:30.144158 -0700 PDT m=+0.234789460" connectionDb=beads_swarmstr connectionID=7 error="Duplicate key name 'idx_wisp_dep_type_depends'" queryTime="2026-05-02 11:41:30.411136 -0700 PDT m=+0.501766543"
+time="2026-05-02T11:41:30-07:00" level=warning msg="error running query" connectTime="2026-05-02 11:41:30.104762 -0700 PDT m=+0.195392751" connectionDb=beads_swarmstr connectionID=4 error="Duplicate key name 'idx_wisp_dep_type'" queryTime="2026-05-02 11:41:30.411462 -0700 PDT m=+0.502093251"
+time="2026-05-02T11:41:30-07:00" level=warning msg="error running query" connectTime="2026-05-02 11:41:30.104762 -0700 PDT m=+0.195392751" connectionDb=beads_swarmstr connectionID=4 error="Duplicate key name 'idx_wisp_dep_type_depends'" queryTime="2026-05-02 11:41:30.411692 -0700 PDT m=+0.502322543"
+time="2026-05-02T11:41:30-07:00" level=warning msg="error running query" connectTime="2026-05-02 11:41:30.144158 -0700 PDT m=+0.234789460" connectionDb=beads_swarmstr connectionID=7 error="Column \"no_history\" already exists" queryTime="2026-05-02 11:41:30.442495 -0700 PDT m=+0.533126251"
+time="2026-05-02T11:41:30-07:00" level=warning msg="error running query" connectTime="2026-05-02 11:41:30.104762 -0700 PDT m=+0.195392751" connectionDb=beads_swarmstr connectionID=4 error="Column \"no_history\" already exists" queryTime="2026-05-02 11:41:30.446546 -0700 PDT m=+0.537177251"
+time="2026-05-02T11:41:30-07:00" level=warning msg="error running query" connectTime="2026-05-02 11:41:30.144158 -0700 PDT m=+0.234789460" connectionDb=beads_swarmstr connectionID=7 error="Column \"started_at\" already exists" queryTime="2026-05-02 11:41:30.529585 -0700 PDT m=+0.620215418"
+time="2026-05-02T11:41:30-07:00" level=warning msg="error running query" connectTime="2026-05-02 11:41:30.104762 -0700 PDT m=+0.195392751" connectionDb=beads_swarmstr connectionID=4 error="Column \"started_at\" already exists" queryTime="2026-05-02 11:41:30.534729 -0700 PDT m=+0.625359626"
+time="2026-05-02T11:41:31-07:00" level=warning msg="error running query" connectTime="2026-05-02 11:41:30.144158 -0700 PDT m=+0.234789460" connectionDb=beads_swarmstr connectionID=7 error="backup 'backup_export' not found" queryTime="2026-05-02 11:41:31.841418 -0700 PDT m=+1.932047835"
+

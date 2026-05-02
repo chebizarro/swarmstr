@@ -119,10 +119,47 @@ func RegisterModelContextPattern(pattern string, profile ModelContextProfile) {
 	registry = append(registry, modelPatternEntry{pattern: lowerPattern, profile: profile})
 }
 
+// normalizeModelID strips provider prefixes (e.g. "lemmy-local/") and file
+// extensions (.gguf, .ggml) from a model ID so that registry patterns can
+// match the bare model name regardless of how it was qualified.
+func normalizeModelID(id string) string {
+	// Strip provider prefix: take everything after the last '/'.
+	if idx := strings.LastIndex(id, "/"); idx >= 0 {
+		id = id[idx+1:]
+	}
+	// Strip common quantization file extensions.
+	for _, ext := range []string{".gguf", ".ggml", ".bin"} {
+		if strings.HasSuffix(id, ext) {
+			id = id[:len(id)-len(ext)]
+			break
+		}
+	}
+	return id
+}
+
+// resolveAgainstRegistry tries to find the longest matching pattern in the
+// registry for the given (already-lowercased) candidate string.
+func resolveAgainstRegistry(candidate string) (ModelContextProfile, bool) {
+	bestLen := 0
+	bestProfile := defaultStandardProfile
+	matched := false
+
+	for _, entry := range registry {
+		if strings.HasPrefix(candidate, entry.pattern) && len(entry.pattern) > bestLen {
+			bestLen = len(entry.pattern)
+			bestProfile = entry.profile
+			matched = true
+		}
+	}
+	return bestProfile, matched
+}
+
 // ResolveModelContext returns the ModelContextProfile for the given model ID.
 // It matches registered patterns as case-insensitive prefixes, preferring the
-// longest match. Returns a default TierStandard profile (200K window) when no
-// pattern matches.
+// longest match. Provider prefixes (e.g. "lemmy-local/") and file extensions
+// (.gguf, .ggml) are stripped before matching so that qualified model IDs
+// resolve correctly. Returns a default TierStandard profile (200K window)
+// when no pattern matches.
 func ResolveModelContext(modelID string) ModelContextProfile {
 	if modelID == "" {
 		return defaultStandardProfile
@@ -132,22 +169,20 @@ func ResolveModelContext(modelID string) ModelContextProfile {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 
-	bestLen := 0
-	bestProfile := defaultStandardProfile
-	matched := false
+	// Try the raw (lowercased) ID first.
+	if profile, ok := resolveAgainstRegistry(lowerID); ok {
+		return profile
+	}
 
-	for _, entry := range registry {
-		if strings.HasPrefix(lowerID, entry.pattern) && len(entry.pattern) > bestLen {
-			bestLen = len(entry.pattern)
-			bestProfile = entry.profile
-			matched = true
+	// Try the normalized form (provider prefix and extension stripped).
+	normalized := normalizeModelID(lowerID)
+	if normalized != lowerID {
+		if profile, ok := resolveAgainstRegistry(normalized); ok {
+			return profile
 		}
 	}
 
-	if !matched {
-		return defaultStandardProfile
-	}
-	return bestProfile
+	return defaultStandardProfile
 }
 
 // TierFromContextWindowTokens derives a ContextTier from a raw token count.
@@ -231,6 +266,8 @@ func init() {
 		{"gemma-2-2b", 8_192},
 		{"gemma-2-9b", 8_192},
 		{"gemma-2-27b", 8_192},
+		{"gemma-3", 8_192},
+		{"gemma-4", 8_192},
 		{"google/gemma", 8_192},
 		{"google_gemma", 8_192},
 		{"llama-3.2-3b", 8_192},

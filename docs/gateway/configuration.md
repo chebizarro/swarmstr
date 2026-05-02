@@ -317,36 +317,36 @@ Global timeout overrides. Every value is in **seconds**. When omitted (or `0`), 
 ```json
 {
   "timeouts": {
-    "session_memory_extraction_secs": 45,
-    "session_compact_summary_secs": 30,
-    "grep_search_secs": 30,
+    "session_memory_extraction_secs": 600,
+    "session_compact_summary_secs": 180,
+    "grep_search_secs": 60,
     "image_fetch_secs": 30,
     "tool_chain_exec_secs": 120,
     "git_ops_secs": 15,
-    "llm_provider_http_secs": 120,
+    "llm_provider_http_secs": 600,
     "webhook_wake_secs": 30,
     "webhook_agent_start_secs": 120,
     "signer_connect_secs": 30,
     "memory_persist_secs": 30,
-    "subagent_default_secs": 60
+    "subagent_default_secs": 600
   }
 }
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `session_memory_extraction_secs` | `45` | Time allowed for extracting memories from a completed session |
-| `session_compact_summary_secs` | `30` | Time allowed for generating a session compaction summary |
-| `grep_search_secs` | `30` | Timeout for workspace grep / ripgrep searches |
+| `session_memory_extraction_secs` | `600` | Time allowed for extracting memories from a completed session |
+| `session_compact_summary_secs` | `180` | Time allowed for generating a session compaction summary |
+| `grep_search_secs` | `60` | Timeout for workspace grep / ripgrep searches |
 | `image_fetch_secs` | `30` | Timeout for fetching remote images (tool use) |
 | `tool_chain_exec_secs` | `120` | Timeout for executing a chained tool pipeline |
 | `git_ops_secs` | `15` | Timeout for git operations (status, diff, etc.) |
-| `llm_provider_http_secs` | `120` | HTTP client timeout for LLM provider API calls |
+| `llm_provider_http_secs` | `600` | HTTP client timeout for LLM provider API calls |
 | `webhook_wake_secs` | `30` | Timeout for the initial webhook wake / health-check call |
 | `webhook_agent_start_secs` | `120` | Timeout for a webhook-triggered agent turn to begin |
 | `signer_connect_secs` | `30` | Timeout for connecting to a remote NIP-46 signer |
 | `memory_persist_secs` | `30` | Timeout for persisting extracted memories to storage |
-| `subagent_default_secs` | `60` | Default timeout for sub-agent invocations |
+| `subagent_default_secs` | `600` | Default timeout for sub-agent invocations |
 
 > **Tip**: Increase `llm_provider_http_secs` and `tool_chain_exec_secs` if you use slow or self-hosted models. For high-latency or satellite links, raise `signer_connect_secs` and `webhook_wake_secs`.
 
