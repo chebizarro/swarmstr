@@ -99,7 +99,10 @@ func (b *DMBus) nip04EncryptKeyer() nostr.Keyer {
 	return b.signKeyer
 }
 
-const maxDMPlaintextRunes = 4096
+// maxDMPlaintextRunes is the maximum runes per DM chunk. NIP-04 encryption
+// adds ~33% overhead (AES-CBC + base64), so 2800 chars encrypts to ~3700 bytes,
+// safely under the common relay limit of 4096 bytes for encrypted content.
+const maxDMPlaintextRunes = 2800
 
 func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 	initialRelays := sanitizeRelayList(opts.Relays)
@@ -246,12 +249,22 @@ func (b *DMBus) SendDM(ctx context.Context, toPubKey string, text string) error 
 	if err != nil {
 		return err
 	}
-	text, err = sanitizeDMText(text)
-	if err != nil {
-		return err
+	// Auto-chunk long messages to stay under relay limits
+	chunks := chunkDMText(text)
+	if len(chunks) == 0 {
+		return fmt.Errorf("dm text is empty")
 	}
-	_, err = publishEncryptedDMWithRetry(ctx, b.pool, b.signKeyer, b.nip04EncryptKeyer(), b.currentRelays(), pk, text, b.health)
-	return err
+	for _, chunk := range chunks {
+		chunk, err = sanitizeDMText(chunk)
+		if err != nil {
+			return err
+		}
+		_, err = publishEncryptedDMWithRetry(ctx, b.pool, b.signKeyer, b.nip04EncryptKeyer(), b.currentRelays(), pk, chunk, b.health)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SendDMWithScheme sends a DM using an explicit encryption scheme request.
@@ -404,12 +417,22 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		CreatedAt:  int64(re.Event.CreatedAt),
 		Scheme:     "nip04",
 		Reply: func(ctx context.Context, text string) error {
-			text, err = sanitizeDMText(text)
-			if err != nil {
-				return err
+			// Auto-chunk long replies to stay under relay limits
+			chunks := chunkDMText(text)
+			if len(chunks) == 0 {
+				return fmt.Errorf("dm text is empty")
 			}
-			_, err := publishEncryptedDMWithRetry(ctx, b.pool, b.signKeyer, b.nip04EncryptKeyer(), b.currentRelays(), re.Event.PubKey, text, b.health)
-			return err
+			for _, chunk := range chunks {
+				chunk, err = sanitizeDMText(chunk)
+				if err != nil {
+					return err
+				}
+				_, err := publishEncryptedDMWithRetry(ctx, b.pool, b.signKeyer, b.nip04EncryptKeyer(), b.currentRelays(), re.Event.PubKey, chunk, b.health)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 
@@ -872,4 +895,80 @@ func sanitizeDMText(text string) (string, error) {
 		return "", fmt.Errorf("dm text exceeds %d characters", maxDMPlaintextRunes)
 	}
 	return text, nil
+}
+
+// chunkDMText splits text into chunks that fit within maxDMPlaintextRunes.
+// It tries to break at paragraph boundaries (double newline), then sentence
+// endings, then word boundaries, falling back to hard rune splits.
+func chunkDMText(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	runeCount := utf8.RuneCountInString(text)
+	if runeCount <= maxDMPlaintextRunes {
+		return []string{text}
+	}
+
+	var chunks []string
+	remaining := text
+
+	for len(remaining) > 0 {
+		remaining = strings.TrimSpace(remaining)
+		if remaining == "" {
+			break
+		}
+		runeCount := utf8.RuneCountInString(remaining)
+		if runeCount <= maxDMPlaintextRunes {
+			chunks = append(chunks, remaining)
+			break
+		}
+
+		// Find a good break point within the limit
+		breakAt := findDMChunkBreak(remaining, maxDMPlaintextRunes)
+		chunk := strings.TrimSpace(remaining[:breakAt])
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
+		remaining = remaining[breakAt:]
+	}
+
+	return chunks
+}
+
+// findDMChunkBreak finds the best byte offset to split text, preferring
+// paragraph > sentence > word > hard rune boundaries.
+func findDMChunkBreak(text string, maxRunes int) int {
+	// Convert rune limit to approximate byte position
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return len(text)
+	}
+	maxBytes := len(string(runes[:maxRunes]))
+
+	// Try paragraph break (double newline)
+	if idx := strings.LastIndex(text[:maxBytes], "\n\n"); idx > maxBytes/2 {
+		return idx + 2
+	}
+
+	// Try sentence break (. ! ? followed by space or newline)
+	for i := maxBytes - 1; i > maxBytes/2; i-- {
+		if i >= len(text) {
+			continue
+		}
+		if (text[i] == '.' || text[i] == '!' || text[i] == '?') && i+1 < len(text) {
+			next := text[i+1]
+			if next == ' ' || next == '\n' || next == '\t' {
+				return i + 1
+			}
+		}
+	}
+
+	// Try word break (space or newline)
+	if idx := strings.LastIndexAny(text[:maxBytes], " \t\n"); idx > maxBytes/2 {
+		return idx + 1
+	}
+
+	// Hard break at rune boundary
+	return maxBytes
 }

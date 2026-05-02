@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"fiatjaf.com/nostr"
@@ -254,5 +255,67 @@ func TestDMBus_NIP04EncryptKeyer_FallsBackToSignKeyer(t *testing.T) {
 	got := bus.nip04EncryptKeyer()
 	if got != adapter {
 		t.Error("should fall back to signKeyer")
+	}
+}
+
+func TestChunkDMText_ShortText(t *testing.T) {
+	text := "Hello, world!"
+	chunks := chunkDMText(text)
+	if len(chunks) != 1 || chunks[0] != text {
+		t.Errorf("expected single chunk %q, got %v", text, chunks)
+	}
+}
+
+func TestChunkDMText_EmptyText(t *testing.T) {
+	chunks := chunkDMText("")
+	if len(chunks) != 0 {
+		t.Errorf("expected no chunks for empty text, got %v", chunks)
+	}
+	chunks = chunkDMText("   ")
+	if len(chunks) != 0 {
+		t.Errorf("expected no chunks for whitespace, got %v", chunks)
+	}
+}
+
+func TestChunkDMText_LongText(t *testing.T) {
+	// Create text longer than maxDMPlaintextRunes
+	long := strings.Repeat("word ", maxDMPlaintextRunes/4) // ~5 chars per word
+	chunks := chunkDMText(long)
+	if len(chunks) < 2 {
+		t.Errorf("expected multiple chunks for long text, got %d", len(chunks))
+	}
+	for i, chunk := range chunks {
+		runeCount := len([]rune(chunk))
+		if runeCount > maxDMPlaintextRunes {
+			t.Errorf("chunk %d exceeds limit: %d > %d", i, runeCount, maxDMPlaintextRunes)
+		}
+	}
+}
+
+func TestChunkDMText_PrefersParagraphBreak(t *testing.T) {
+	// Build text with paragraph break - total must exceed limit
+	part := strings.Repeat("x", maxDMPlaintextRunes*2/3)
+	text := part + "\n\n" + part
+	chunks := chunkDMText(text)
+	if len(chunks) < 2 {
+		t.Errorf("expected at least 2 chunks split at paragraph, got %d", len(chunks))
+	}
+	// First chunk should include content up to the paragraph break
+	if !strings.HasSuffix(chunks[0], "x") {
+		t.Errorf("expected first chunk to end with x content, got %q", chunks[0][len(chunks[0])-20:])
+	}
+}
+
+func TestChunkDMText_PrefersSentenceBreak(t *testing.T) {
+	// Build text with sentence break - total must exceed limit
+	sentence := strings.Repeat("x", maxDMPlaintextRunes*2/3) + ". "
+	text := sentence + strings.Repeat("y", maxDMPlaintextRunes*2/3)
+	chunks := chunkDMText(text)
+	if len(chunks) < 2 {
+		t.Errorf("expected at least 2 chunks split at sentence, got %d", len(chunks))
+	}
+	// First chunk should end with the sentence (period)
+	if !strings.HasSuffix(strings.TrimSpace(chunks[0]), ".") {
+		t.Errorf("expected first chunk to end with period, got %q", chunks[0])
 	}
 }
