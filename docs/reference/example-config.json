@@ -277,18 +277,18 @@
   
   // === Timeouts ===
   "timeouts": {
-    "session_memory_extraction_secs": 45,
-    "session_compact_summary_secs": 30,
-    "grep_search_secs": 30,
+    "session_memory_extraction_secs": 600,
+    "session_compact_summary_secs": 180,
+    "grep_search_secs": 60,
     "image_fetch_secs": 30,
     "tool_chain_exec_secs": 120,
     "git_ops_secs": 15,
-    "llm_provider_http_secs": 120,
+    "llm_provider_http_secs": 600,
     "webhook_wake_secs": 30,
     "webhook_agent_start_secs": 120,
     "signer_connect_secs": 30,
     "memory_persist_secs": 30,
-    "subagent_default_secs": 60
+    "subagent_default_secs": 600
   },
   
   // === Agent List (NIP-51 kind:30000 publishing) ===

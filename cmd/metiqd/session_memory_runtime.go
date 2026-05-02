@@ -214,12 +214,28 @@ func (r *sessionMemoryRuntime) extract(sessionID, workspaceDir string, cfg memor
 			go r.extract(sessionID, workspaceDir, cfg, generator, extractionTimeout)
 		}
 	}()
-	updateResult, err := r.extractOnce(context.Background(), sessionID, workspaceDir, cfg, generator, extractionTimeout)
-	if err != nil {
-		log.Printf("session memory extraction failed session=%s err=%v", sessionID, err)
-		return
+
+	const maxRetries = 2
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 2s, 4s
+			backoff := time.Duration(1<<attempt) * time.Second
+			log.Printf("session memory extraction retry session=%s attempt=%d backoff=%v", sessionID, attempt, backoff)
+			time.Sleep(backoff)
+		}
+		updateResult, err := r.extractOnce(context.Background(), sessionID, workspaceDir, cfg, generator, extractionTimeout)
+		if err == nil {
+			result = updateResult
+			return
+		}
+		lastErr = err
+		// Only retry on timeout/context errors
+		if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "deadline exceeded") && !strings.Contains(err.Error(), "timeout") {
+			break
+		}
 	}
-	result = updateResult
+	log.Printf("session memory extraction failed session=%s err=%v", sessionID, lastErr)
 }
 
 func (r *sessionMemoryRuntime) extractOnce(ctx context.Context, sessionID, workspaceDir string, cfg memory.SessionMemoryConfig, generator sessionMemoryGenerator, extractionTimeout time.Duration) (sessionMemoryUpdateResult, error) {

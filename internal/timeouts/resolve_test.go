@@ -59,18 +59,18 @@ func TestGlobalTimeoutDefaults(t *testing.T) {
 		fn   func(state.TimeoutsConfig) time.Duration
 		want time.Duration
 	}{
-		{"SessionMemoryExtraction", SessionMemoryExtraction, 45 * time.Second},
-		{"SessionCompactSummary", SessionCompactSummary, 30 * time.Second},
-		{"GrepSearch", GrepSearch, 30 * time.Second},
+		{"SessionMemoryExtraction", SessionMemoryExtraction, 600 * time.Second},
+		{"SessionCompactSummary", SessionCompactSummary, 180 * time.Second},
+		{"GrepSearch", GrepSearch, 60 * time.Second},
 		{"ImageFetch", ImageFetch, 30 * time.Second},
 		{"ToolChainExec", ToolChainExec, 120 * time.Second},
 		{"GitOps", GitOps, 15 * time.Second},
-		{"LLMProviderHTTP", LLMProviderHTTP, 120 * time.Second},
+		{"LLMProviderHTTP", LLMProviderHTTP, 600 * time.Second},
 		{"WebhookWake", WebhookWake, 30 * time.Second},
 		{"WebhookAgentStart", WebhookAgentStart, 120 * time.Second},
 		{"SignerConnect", SignerConnect, 30 * time.Second},
 		{"MemoryPersist", MemoryPersist, 30 * time.Second},
-		{"SubagentDefault", SubagentDefault, 60 * time.Second},
+		{"SubagentDefault", SubagentDefault, 600 * time.Second},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+"/default", func(t *testing.T) {

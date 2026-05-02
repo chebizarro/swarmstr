@@ -352,13 +352,13 @@ type CronConfig struct {
 // OpenClaw exposes across its config schema.
 type TimeoutsConfig struct {
 	// SessionMemoryExtractionSecs is the timeout for LLM-based session memory
-	// extraction.  Default: 45.
+	// extraction.  Default: 600.
 	SessionMemoryExtractionSecs int `json:"session_memory_extraction_secs,omitempty"`
 	// SessionCompactSummarySecs is the timeout for session context compaction.
-	// Default: 30.
+	// Default: 180.
 	SessionCompactSummarySecs int `json:"session_compact_summary_secs,omitempty"`
 	// GrepSearchSecs is the timeout for grep/rg search operations.
-	// Default: 30.
+	// Default: 60.
 	GrepSearchSecs int `json:"grep_search_secs,omitempty"`
 	// ImageFetchSecs is the timeout for image URL downloads.
 	// Default: 30.
@@ -370,7 +370,7 @@ type TimeoutsConfig struct {
 	// Default: 15.
 	GitOpsSecs int `json:"git_ops_secs,omitempty"`
 	// LLMProviderHTTPSecs is the default HTTP client timeout for LLM provider
-	// API calls (Anthropic, OpenAI, Gemini, Cohere).  Default: 120.
+	// API calls (Anthropic, OpenAI, Gemini, Cohere).  Default: 600.
 	LLMProviderHTTPSecs int `json:"llm_provider_http_secs,omitempty"`
 	// WebhookWakeSecs is the timeout for webhook wake operations.
 	// Default: 30.
@@ -385,7 +385,7 @@ type TimeoutsConfig struct {
 	// store.  Default: 30.
 	MemoryPersistSecs int `json:"memory_persist_secs,omitempty"`
 	// SubagentDefaultSecs is the default timeout for sub-agent orchestrator
-	// runs when no explicit timeout is provided.  Default: 60.
+	// runs when no explicit timeout is provided.  Default: 600.
 	SubagentDefaultSecs int `json:"subagent_default_secs,omitempty"`
 }
 

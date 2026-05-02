@@ -45,15 +45,15 @@ func MaxAgenticIterations(ac state.AgentConfig) int {
 // ── global timeout resolvers ────────────────────────────────────────────────
 
 func SessionMemoryExtraction(t state.TimeoutsConfig) time.Duration {
-	return secs(t.SessionMemoryExtractionSecs, 45)
+	return secs(t.SessionMemoryExtractionSecs, 600)
 }
 
 func SessionCompactSummary(t state.TimeoutsConfig) time.Duration {
-	return secs(t.SessionCompactSummarySecs, 30)
+	return secs(t.SessionCompactSummarySecs, 180)
 }
 
 func GrepSearch(t state.TimeoutsConfig) time.Duration {
-	return secs(t.GrepSearchSecs, 30)
+	return secs(t.GrepSearchSecs, 60)
 }
 
 func ImageFetch(t state.TimeoutsConfig) time.Duration {
@@ -69,7 +69,7 @@ func GitOps(t state.TimeoutsConfig) time.Duration {
 }
 
 func LLMProviderHTTP(t state.TimeoutsConfig) time.Duration {
-	return secs(t.LLMProviderHTTPSecs, 120)
+	return secs(t.LLMProviderHTTPSecs, 600)
 }
 
 func WebhookWake(t state.TimeoutsConfig) time.Duration {
@@ -89,7 +89,7 @@ func MemoryPersist(t state.TimeoutsConfig) time.Duration {
 }
 
 func SubagentDefault(t state.TimeoutsConfig) time.Duration {
-	return secs(t.SubagentDefaultSecs, 60)
+	return secs(t.SubagentDefaultSecs, 600)
 }
 
 func CronJobExec(cfg state.CronConfig) time.Duration {

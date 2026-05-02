@@ -123,6 +123,13 @@ func TestResolveModelContext_BuiltInModels(t *testing.T) {
 		{"gemma-2b-it", TierSmall, 8192},
 		{"mistral-7b-instruct", TierSmall, 8192},
 		{"tinyllama-1.1b", TierMicro, 2048},
+		// Provider-prefixed model IDs (e.g. LM Studio / llama.cpp)
+		{"lemmy-local/google_gemma-4-26B-A4B-it-Q4_K_M.gguf", TierSmall, 8192},
+		{"lmstudio/gemma-2-9b-it-Q5_K_M.gguf", TierSmall, 8192},
+		{"local/phi-3-mini-4k.gguf", TierMicro, 4096},
+		// Bare GGUF filenames without provider prefix
+		{"google_gemma-4-26B-A4B-it-Q4_K_M.gguf", TierSmall, 8192},
+		{"mistral-7b-instruct-v0.2.gguf", TierSmall, 8192},
 	}
 	for _, tt := range tests {
 		p := ResolveModelContext(tt.modelID)
@@ -157,6 +164,26 @@ func TestResolveModelContext_LongestPrefixWins(t *testing.T) {
 	p := ResolveModelContext("phi-3-mini-4k")
 	if p.ContextWindowTokens != 4096 {
 		t.Errorf("phi-3-mini should match phi-3-mini pattern, got tokens=%d", p.ContextWindowTokens)
+	}
+}
+
+func TestNormalizeModelID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"lemmy-local/google_gemma-4-26B-A4B-it-Q4_K_M.gguf", "google_gemma-4-26B-A4B-it-Q4_K_M"},
+		{"lmstudio/mistral-7b.ggml", "mistral-7b"},
+		{"phi-3-mini-4k", "phi-3-mini-4k"},           // no prefix or extension
+		{"local/model.bin", "model"},                   // .bin extension
+		{"a/b/c/model-name.gguf", "model-name"},        // nested slashes
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := normalizeModelID(tt.input)
+		if got != tt.want {
+			t.Errorf("normalizeModelID(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 
