@@ -215,6 +215,66 @@ func TestUnifiedRegistryConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+func TestUnifiedRegistryAccessorsAndByPluginViews(t *testing.T) {
+	r := NewUnifiedRegistry()
+	regs := []Registration{
+		{Type: "tool", Name: "tool", QualifiedName: "plug/tool", Raw: map[string]any{"name": "tool", "qualifiedName": "plug/tool"}},
+		{Type: "provider", ID: "provider", Raw: map[string]any{"id": "provider"}},
+		{Type: "channel", ID: "channel", Raw: map[string]any{"id": "channel"}},
+		{Type: "hook", HookID: "hook", Events: []string{"message_sent"}, Raw: map[string]any{"hookId": "hook", "events": []any{"message_sent"}}},
+		{Type: "service", ID: "service", Raw: map[string]any{"id": "service"}},
+		{Type: "command", Name: "command", Raw: map[string]any{"name": "command"}},
+		{Type: "gateway_method", Raw: map[string]any{"method": "plug.method"}},
+		{Type: "speech_provider", ID: "speech", Raw: map[string]any{"id": "speech"}},
+		{Type: "transcription_provider", ID: "stt", Raw: map[string]any{"id": "stt"}},
+		{Type: "image_gen_provider", ID: "image", Raw: map[string]any{"id": "image"}},
+		{Type: "video_gen_provider", ID: "video", Raw: map[string]any{"id": "video"}},
+		{Type: "music_gen_provider", ID: "music", Raw: map[string]any{"id": "music"}},
+		{Type: "web_search_provider", ID: "search", Raw: map[string]any{"id": "search"}},
+		{Type: "web_fetch_provider", ID: "fetch", Raw: map[string]any{"id": "fetch"}},
+		{Type: "memory_embedding_provider", ID: "embed", Raw: map[string]any{"id": "embed"}},
+	}
+	if err := r.RegisterFromOpenClawPlugin("plug", regs); err != nil {
+		t.Fatalf("RegisterFromOpenClawPlugin: %v", err)
+	}
+	if len(r.Plugins()) != 1 {
+		t.Fatalf("expected one plugin")
+	}
+	checks := []struct {
+		name string
+		ok   bool
+	}{
+		{"providers", len(r.Providers().List()) == 1 && len(r.Providers().ByPlugin("plug")) == 1},
+		{"channels", len(r.Channels().List()) == 1 && len(r.Channels().ByPlugin("plug")) == 1},
+		{"hooks", len(r.Hooks().List()) == 1 && len(r.Hooks().ByPlugin("plug")) == 1 && len(r.Hooks().Events()) == 1},
+		{"services", len(r.Services().List()) == 1 && len(r.Services().ByPlugin("plug")) == 1},
+		{"commands", len(r.Commands().List()) == 1 && len(r.Commands().ByPlugin("plug")) == 1},
+		{"gateway", len(r.GatewayMethods().List()) == 1 && len(r.GatewayMethods().ByPlugin("plug")) == 1},
+		{"speech", len(r.SpeechProviders().List()) == 1 && len(r.SpeechProviders().ByPlugin("plug")) == 1},
+		{"stt", len(r.TranscriptionProviders().List()) == 1 && len(r.TranscriptionProviders().ByPlugin("plug")) == 1},
+		{"image", len(r.ImageGenProviders().List()) == 1 && len(r.ImageGenProviders().ByPlugin("plug")) == 1},
+		{"video", len(r.VideoGenProviders().List()) == 1 && len(r.VideoGenProviders().ByPlugin("plug")) == 1},
+		{"music", len(r.MusicGenProviders().List()) == 1 && len(r.MusicGenProviders().ByPlugin("plug")) == 1},
+		{"search", len(r.WebSearchProviders().List()) == 1 && len(r.WebSearchProviders().ByPlugin("plug")) == 1},
+		{"fetch", len(r.WebFetchProviders().List()) == 1 && len(r.WebFetchProviders().ByPlugin("plug")) == 1},
+		{"memory", len(r.MemoryEmbedProviders().List()) == 1 && len(r.MemoryEmbedProviders().ByPlugin("plug")) == 1},
+	}
+	for _, check := range checks {
+		if !check.ok {
+			t.Fatalf("accessor check failed: %s", check.name)
+		}
+	}
+	if _, ok := r.Services().Get("service"); !ok {
+		t.Fatal("service get failed")
+	}
+	if _, ok := r.Commands().Get("plug/command"); !ok {
+		t.Fatal("command get failed")
+	}
+	if _, ok := r.Capability("missing", "id"); ok {
+		t.Fatal("unexpected missing capability")
+	}
+}
+
 type testChannelPlugin struct{ id string }
 
 func (p testChannelPlugin) ID() string                   { return p.id }
@@ -241,3 +301,42 @@ type testChannelHandle struct{ id string }
 func (h testChannelHandle) ID() string                         { return h.id }
 func (h testChannelHandle) Send(context.Context, string) error { return nil }
 func (h testChannelHandle) Close()                             {}
+
+func TestUnifiedRegistryCapabilityByTypeAllConcreteKinds(t *testing.T) {
+	r := NewUnifiedRegistry()
+	regs := []Registration{
+		{Type: "tool", Name: "tool", QualifiedName: "plug/tool", Raw: map[string]any{"name": "tool", "qualifiedName": "plug/tool"}},
+		{Type: "provider", ID: "provider", Raw: map[string]any{"id": "provider"}},
+		{Type: "channel", ID: "channel", Raw: map[string]any{"id": "channel"}},
+		{Type: "hook", HookID: "hook", Events: []string{"message_sent"}, Raw: map[string]any{"hookId": "hook", "events": []any{"message_sent"}}},
+		{Type: "service", ID: "service", Raw: map[string]any{"id": "service"}},
+		{Type: "command", Name: "command", Raw: map[string]any{"name": "command"}},
+		{Type: "gateway_method", Raw: map[string]any{"method": "plug.method"}},
+		{Type: "speech_provider", ID: "speech", Raw: map[string]any{"id": "speech"}},
+		{Type: "transcription_provider", ID: "stt", Raw: map[string]any{"id": "stt"}},
+		{Type: "image_gen_provider", ID: "image", Raw: map[string]any{"id": "image"}},
+		{Type: "video_gen_provider", ID: "video", Raw: map[string]any{"id": "video"}},
+		{Type: "music_gen_provider", ID: "music", Raw: map[string]any{"id": "music"}},
+		{Type: "web_search_provider", ID: "search", Raw: map[string]any{"id": "search"}},
+		{Type: "web_fetch_provider", ID: "fetch", Raw: map[string]any{"id": "fetch"}},
+		{Type: "memory_embedding_provider", ID: "embed", Raw: map[string]any{"id": "embed"}},
+		{Type: "http_route", ID: "route", Raw: map[string]any{"id": "route"}},
+	}
+	if err := r.RegisterFromOpenClawPlugin("plug", regs); err != nil {
+		t.Fatal(err)
+	}
+	for _, reg := range regs {
+		if got := r.CapabilitiesByType(reg.Type); len(got) == 0 {
+			t.Fatalf("no capabilities for %s", reg.Type)
+		}
+	}
+	if cap, ok := r.Capability("hook", "hook"); !ok || cap == nil {
+		t.Fatalf("hook capability lookup failed: %+v %v", cap, ok)
+	}
+	if cap, ok := r.GenericCapabilities().Get("http_route", "route"); !ok || cap.ID != "route" {
+		t.Fatalf("generic get failed: %+v %v", cap, ok)
+	}
+	if len(r.MemoryProviders().List()) != 1 {
+		t.Fatal("memory provider alias accessor failed")
+	}
+}

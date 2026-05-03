@@ -133,3 +133,55 @@ func TestHookInvokerNativePanicIsRecovered(t *testing.T) {
 		t.Fatal("expected panic error")
 	}
 }
+
+func TestHookIntegrationEmitWrappers(t *testing.T) {
+	inv := NewHookInvoker(nil, nil)
+	inv.RegisterNative(registry.HookAfterToolCall, "after", 1, func(context.Context, any) (any, error) {
+		return map[string]any{"seen": true}, nil
+	})
+	if res, err := inv.EmitAfterToolCall(context.Background(), AfterToolCallEvent{ToolName: "x"}); err != nil || len(res.Results) != 1 {
+		t.Fatalf("EmitAfterToolCall res=%+v err=%v", res, err)
+	}
+	inv.RegisterNative(registry.HookMessageReceived, "received", 1, func(context.Context, any) (any, error) { return nil, nil })
+	if res, err := inv.EmitMessageReceived(context.Background(), MessageReceivedEvent{ChannelID: "c", Text: "hi"}); err != nil || len(res.Results) != 1 {
+		t.Fatalf("EmitMessageReceived res=%+v err=%v", res, err)
+	}
+	inv.RegisterNative(registry.HookMessageSent, "sent", 1, func(context.Context, any) (any, error) { return nil, nil })
+	if res, err := inv.EmitMessageSent(context.Background(), MessageSentEvent{ChannelID: "c", Text: "hi"}); err != nil || len(res.Results) != 1 {
+		t.Fatalf("EmitMessageSent res=%+v err=%v", res, err)
+	}
+
+	sending := NewHookInvoker(nil, nil)
+	sending.RegisterNative(registry.HookMessageSending, "mutate", 1, func(context.Context, any) (any, error) {
+		return map[string]any{"reply_text": "mutated", "extra": true}, nil
+	})
+	out, err := sending.EmitMessageSending(context.Background(), MessageSendingEvent{ChannelID: "c", Text: "original"})
+	if err != nil || out.Text != "mutated" || out.Mutation["reply_text"] != "mutated" {
+		t.Fatalf("EmitMessageSending out=%+v err=%v", out, err)
+	}
+	rejecting := NewHookInvoker(nil, nil)
+	rejecting.RegisterNative(registry.HookMessageSending, "reject", 1, func(context.Context, any) (any, error) {
+		return map[string]any{"reject": true, "reason": "blocked"}, nil
+	})
+	out, err = rejecting.EmitMessageSending(context.Background(), MessageSendingEvent{ChannelID: "c", Text: "original"})
+	if err != nil || !out.Reject || out.Reason != "blocked" {
+		t.Fatalf("EmitMessageSending reject out=%+v err=%v", out, err)
+	}
+}
+
+func TestHookInvokerConversionsAndDuration(t *testing.T) {
+	if DurationMillis(time.Time{}) != 0 {
+		t.Fatal("zero duration should be zero")
+	}
+	if DurationMillis(time.Now().Add(-10*time.Millisecond)) <= 0 {
+		t.Fatal("duration should be positive")
+	}
+	if numberToInt64(int(1)) != 1 || numberToInt64(int64(2)) != 2 || numberToInt64(float64(3)) != 3 || numberToInt64("bad") != 0 {
+		t.Fatal("numberToInt64 conversion mismatch")
+	}
+	inv := NewHookInvoker(nil, nil)
+	inv.RegisterNative(registry.HookAfterToolCall, "default-timeout", 1, func(context.Context, any) (any, error) { return nil, nil })
+	if _, err := inv.Emit(context.Background(), registry.HookAfterToolCall, AfterToolCallEvent{ToolName: "x"}, EmitOptions{}); err != nil {
+		t.Fatalf("default timeout emit: %v", err)
+	}
+}
