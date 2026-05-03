@@ -104,10 +104,51 @@ Recommended insertion options:
 **Conclusion:** Proceeding with external OpenClaw fact-gathering, then context_builder, pair investigation, and oracle synthesis.
 
 ## Root Cause
-Pending.
+
+OpenClaw has two distinct mechanisms:
+
+1. **Hard interruption/cancellation**: `/stop`, programmatic aborts, task/flow cancellation, and `interrupt` queue mode cancel the active run or restart with newest input.
+2. **Same-run input injection/steering**: default queue `steer` buffers additional user input while the run is active and drains it at safe model boundaries, after current assistant/tool work and before the next model call.
+
+swarmstr already implements the first category but not the second:
+
+- Hard interruption exists through `chatAbortRegistry.Begin/Abort/AbortAll` (`cmd/metiqd/main_trackers.go:98-165`), `/stop` and `/kill` (`cmd/metiqd/main.go:2763-2772`), `chat.abort` (`cmd/metiqd/control_rpc_sessions.go:81-101`), and queue `interrupt` (`cmd/metiqd/main.go:3358-3360`, `5146-5148`).
+- Cancellation reaches active inference because active turns are run with the abortable turn context and provider calls receive `context.Context` (`internal/agent/llm.go:61-63`, `internal/agent/chat_openai.go`, `internal/agent/chat_anthropic.go`).
+- But swarmstr's current queue `steer` is not OpenClaw-style steering. Busy DM/channel paths log and drop (`cmd/metiqd/main.go:3353-3357`, `5140-5145`). Other queue modes are post-turn backlog/collect modes, not same-run injection.
+- `RunAgenticLoop` has natural model-boundary insertion points before `cfg.Provider.Chat(...)` (`internal/agent/agentic_loop.go:177-188`, `293-304`, `771-784`), but no active-run steering mailbox or drain hook exists today.
+
+Therefore, the root gap is architectural state/wiring, not lack of a model boundary: swarmstr needs a per-session active-run steering mailbox and a loop-level drain mechanism.
 
 ## Recommendations
-Pending.
+
+1. **Implement an active-run steering mailbox** keyed by session ID, separate from `SessionQueue` and `chatAbortRegistry`.
+   - It should accept additional inbound user input when a session is already active and queue mode is `steer`.
+   - It should be populated by existing event-driven inbound handlers; do not poll relays or sleep waiting for messages.
+
+2. **Drain steering input at model boundaries inside `RunAgenticLoop`.**
+   - Preferred approach: add a steering-drain hook to `AgenticLoopConfig` and wrap the loop-local provider in a small decorator that drains immediately before every `Chat(...)` call.
+   - This covers initial, iterative, and force-summary model calls without duplicating drain code.
+   - Append drained input as additional user messages with clear provenance, e.g. `[Additional user input received while you were working]`.
+
+3. **Preserve `interrupt` semantics separately.**
+   - `interrupt` should continue to abort the active context, clear/replace backlog, and run newest input as a fresh turn.
+   - Do not overload `interrupt` with same-run steering behavior.
+
+4. **Clarify queue-mode compatibility.**
+   - Decide whether `steer-backlog` / `steer+backlog` remain post-turn backlog aliases or become "steer first, backlog overflow" semantics.
+   - Update `docs/concepts/queue.md`, `docs/concepts/messages.md`, and RPC/config docs accordingly.
+
+5. **Add deterministic tests.**
+   - Simulate a busy session and enqueue steering input through the inbound handler/mailbox.
+   - Use a fake provider/tool sequence to assert that the second model call sees the injected user input after tool results.
+   - Avoid sleep-based tests; trigger callbacks/state transitions directly.
+
+6. **Follow-up work is tracked in bd.**
+   - Pair investigator filed `swarmstr-d5la`: `Implement active-run steering mailbox for mid-run input injection`.
 
 ## Preventive Measures
-Pending.
+
+- Treat queue-mode names as protocol/API contracts; tests should assert that `steer` actually means model-boundary steering if documented that way.
+- Add parity tests comparing OpenClaw queue semantics (`steer`, `collect`, `followup`, `interrupt`) against swarmstr behavior.
+- Keep Nostr event-driven guardrails explicit in implementation review: inbound events push into local state; active loops drain local state non-blockingly; no relay polling, request/response steering, or timeout-based completion.
+- Wire tool interrupt policy (`ToolInterruptBehaviorBlock` / `Cancel`) into future cancellation behavior if stronger tool-aware interrupt semantics are required.
