@@ -52,45 +52,58 @@ func HasSubagentRunEnded(entry SubagentRunRecord) bool {
 		entry.Status == "error"
 }
 
-// resolveStaleCutoff calculates the stale threshold considering explicit timeouts
+// resolveStaleCutoff calculates the stale threshold considering explicit timeouts.
 func resolveStaleCutoff(entry SubagentRunRecord) time.Duration {
+	return resolveStaleCutoffWithBase(entry, StaleUnendedSubagentRunDuration)
+}
+
+// resolveStaleCutoffWithBase calculates the stale threshold considering a
+// checker-specific base cutoff and any longer explicit run timeout.
+func resolveStaleCutoffWithBase(entry SubagentRunRecord, baseCutoff time.Duration) time.Duration {
+	if baseCutoff <= 0 {
+		baseCutoff = StaleUnendedSubagentRunDuration
+	}
 	if entry.RunTimeoutSeconds > 0 {
 		explicitTimeout := time.Duration(entry.RunTimeoutSeconds) * time.Second
 		explicitWithGrace := explicitTimeout + ExplicitTimeoutGrace
 
-		if explicitWithGrace > StaleUnendedSubagentRunDuration {
+		if explicitWithGrace > baseCutoff {
 			return explicitWithGrace
 		}
 	}
-	return StaleUnendedSubagentRunDuration
+	return baseCutoff
 }
 
-// getEffectiveStartedAt returns the most relevant start timestamp
+// getEffectiveStartedAt returns the timestamp used for activity-based liveness.
+// UpdatedAt represents recent activity and takes precedence when it is newer
+// than StartedAt. If StartedAt is missing, a valid UpdatedAt can still keep a
+// run live or make it stale based on its own age.
 func getEffectiveStartedAt(entry SubagentRunRecord) int64 {
-	// Prefer UpdatedAt as it shows recent activity
-	if entry.UpdatedAt > 0 && entry.UpdatedAt >= entry.StartedAt {
-		// But only if it's more recent than StartedAt
-		// For stale detection, we want the earliest timestamp
-		return entry.StartedAt
+	if entry.UpdatedAt > entry.StartedAt {
+		return entry.UpdatedAt
 	}
 	return entry.StartedAt
 }
 
-// IsStaleUnendedSubagentRun checks if an unended subagent run is stale
-func IsStaleUnendedSubagentRun(entry SubagentRunRecord, now time.Time) bool {
+func isStaleUnendedSubagentRun(entry SubagentRunRecord, now time.Time, staleCutoff time.Duration) bool {
 	if HasSubagentRunEnded(entry) {
 		return false
 	}
 
-	startedAt := getEffectiveStartedAt(entry)
-	if startedAt <= 0 || startedAt < MinRealisticRunTimestamp {
+	activityAt := getEffectiveStartedAt(entry)
+	if activityAt <= 0 || activityAt < MinRealisticRunTimestamp {
 		return false
 	}
 
-	startTime := time.UnixMilli(startedAt)
-	cutoff := resolveStaleCutoff(entry)
+	activityTime := time.UnixMilli(activityAt)
+	cutoff := resolveStaleCutoffWithBase(entry, staleCutoff)
 
-	return now.Sub(startTime) > cutoff
+	return now.Sub(activityTime) > cutoff
+}
+
+// IsStaleUnendedSubagentRun checks if an unended subagent run is stale
+func IsStaleUnendedSubagentRun(entry SubagentRunRecord, now time.Time) bool {
+	return isStaleUnendedSubagentRun(entry, now, StaleUnendedSubagentRunDuration)
 }
 
 // IsStaleUnendedSubagentRunNow is a convenience wrapper using current time
@@ -176,11 +189,40 @@ func NewSubagentLivenessCheckerWithCutoff(cutoff time.Duration) *SubagentLivenes
 	}
 }
 
+func (c *SubagentLivenessChecker) cutoff() time.Duration {
+	if c == nil || c.staleCutoff <= 0 {
+		return StaleUnendedSubagentRunDuration
+	}
+	return c.staleCutoff
+}
+
+// IsStaleUnendedRun checks staleness using the checker's configured cutoff.
+func (c *SubagentLivenessChecker) IsStaleUnendedRun(record SubagentRunRecord, now time.Time) bool {
+	return isStaleUnendedSubagentRun(record, now, c.cutoff())
+}
+
+// IsLiveUnendedRun checks liveness using the checker's configured cutoff.
+func (c *SubagentLivenessChecker) IsLiveUnendedRun(record SubagentRunRecord, now time.Time) bool {
+	return !HasSubagentRunEnded(record) && !c.IsStaleUnendedRun(record, now)
+}
+
+// ShouldKeepSubagentRunChildLink determines whether a child link should remain
+// reachable using the checker's configured stale cutoff.
+func (c *SubagentLivenessChecker) ShouldKeepSubagentRunChildLink(record SubagentRunRecord, activeDescendants int, now time.Time) bool {
+	if c.IsLiveUnendedRun(record, now) {
+		return true
+	}
+	if activeDescendants > 0 {
+		return true
+	}
+	return IsRecentlyEndedSubagentRun(record, now, RecentEndedSubagentDuration)
+}
+
 // FindStaleRuns returns records that are stale and should be cleaned up
 func (c *SubagentLivenessChecker) FindStaleRuns(records []SubagentRunRecord, now time.Time) []int {
 	var staleIndices []int
 	for i, record := range records {
-		if IsStaleUnendedSubagentRun(record, now) {
+		if c.IsStaleUnendedRun(record, now) {
 			staleIndices = append(staleIndices, i)
 		}
 	}
@@ -197,7 +239,7 @@ func (c *SubagentLivenessChecker) PartitionRuns(records []SubagentRunRecord, now
 			} else {
 				stale = append(stale, record)
 			}
-		} else if IsStaleUnendedSubagentRun(record, now) {
+		} else if c.IsStaleUnendedRun(record, now) {
 			stale = append(stale, record)
 		} else {
 			live = append(live, record)
@@ -227,7 +269,7 @@ func (c *SubagentLivenessChecker) GetLivenessStats(records []SubagentRunRecord, 
 			if IsRecentlyEndedSubagentRun(record, now, RecentEndedSubagentDuration) {
 				stats.RecentlyEnded++
 			}
-		} else if IsStaleUnendedSubagentRun(record, now) {
+		} else if c.IsStaleUnendedRun(record, now) {
 			stats.StaleRuns++
 			startTime := time.UnixMilli(getEffectiveStartedAt(record))
 			age := now.Sub(startTime)
