@@ -278,6 +278,23 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			}
 		}
 
+		// Apply soft trimming before micro-compaction: truncate large tool
+		// results to head+tail instead of clearing them entirely. This preserves
+		// useful context while reducing size.
+		{
+			windowTokens := cfg.ContextWindowTokens
+			if windowTokens <= 0 {
+				windowTokens = 200_000 // safe default
+			}
+			softTrimCfg := DefaultContextPruningConfig().SoftTrim
+			stResult := SoftTrimLLMMessagesCopy(messages, softTrimCfg, windowTokens)
+			if stResult.Trimmed > 0 {
+				messages = stResult.Messages
+				log.Printf("%s: soft-trim truncated %d tool results (%d chars freed)",
+					cfg.LogPrefix, stResult.Trimmed, stResult.CharsBefore-stResult.CharsAfter)
+			}
+		}
+
 		// Apply micro-compaction before the next LLM call to free context
 		// space consumed by old tool results. Runs universally for all model
 		// sizes — the budget's CompactionThreshold scales with window size

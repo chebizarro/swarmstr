@@ -179,6 +179,14 @@ type preparedAgentRunTurn struct {
 func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store, scope memory.ScopedContext, workspaceDir string, sessionStore *state.SessionStore) preparedAgentRunTurn {
 	memoryContext, surfaced, sample := buildDynamicMemoryRecallContext(ctx, index, scope, req.SessionID, req.Message, workspaceDir, sessionStore, 0)
 	turnContext := joinPromptSections(buildExternalSessionPromptContext(req.SessionID), memoryContext, req.Context)
+
+	// ACK Execution Fast Path: When the user sends a short approval like "ok",
+	// "do it", "go ahead", inject an instruction to skip recaps and act immediately.
+	// This prevents the agent from wasting a turn restating the plan.
+	if ackInstruction := agent.GetAckFastPathInstruction(req.Message); ackInstruction != "" {
+		turnContext = joinPromptSections(ackInstruction, turnContext)
+	}
+
 	return preparedAgentRunTurn{
 		Turn: agent.Turn{
 			SessionID:          req.SessionID,
