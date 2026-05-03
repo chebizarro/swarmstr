@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"metiq/internal/agent/toolloop"
+	pluginhooks "metiq/internal/plugins/hooks"
 )
 
 // ─── Shared agentic tool loop ─────────────────────────────────────────────────
@@ -64,6 +65,9 @@ type AgenticLoopConfig struct {
 	// TimeBasedMCConfig configures the time-gap microcompact trigger.
 	// Nil or zero-value config uses DefaultTimeBasedMCConfig.
 	TimeBasedMCConfig *TimeBasedMCConfig
+	// HookInvoker emits OpenClaw before_tool_call/after_tool_call hooks.
+	HookInvoker *pluginhooks.HookInvoker
+
 	// DeferredTools holds tool definitions that are NOT sent inline with every
 	// API request. When non-nil, the loop automatically registers a tool_search
 	// built-in tool and dynamically adds discovered tools to subsequent LLM
@@ -239,7 +243,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 
 		// Execute tool calls using src-shaped batch partitioning: consecutive
 		// concurrency-safe calls run together, others run serially.
-		results := executeToolBatches(ctx, cfg.Executor, calls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace)
+		results := executeToolBatches(ctx, cfg.Executor, calls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace, cfg.HookInvoker)
 
 		// Append tool results and check for loop blocking.
 		for _, r := range results {
@@ -430,7 +434,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 // executeToolBatches partitions calls using canonical src-style scheduling:
 // consecutive concurrency-safe calls are grouped into parallel batches, while
 // all other calls run serially. Returned results preserve the original call order.
-func executeToolBatches(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext) []ToolExecResult {
+func executeToolBatches(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext, hooksOpt ...*pluginhooks.HookInvoker) []ToolExecResult {
+	hooks := hookInvokerFromOptions(hooksOpt)
 	if sessionID == "" {
 		sessionID = SessionIDFromContext(ctx)
 	}
@@ -440,10 +445,10 @@ func executeToolBatches(ctx context.Context, executor ToolExecutor, calls []Tool
 	for batchIndex, batch := range batches {
 		emitSchedulerEvents(batch, batchIndex, len(batches), concurrencyLimit, sessionID, turnID, sink, trace)
 		if batch.isConcurrencySafe {
-			results = append(results, executeToolBatchParallel(ctx, executor, batch.calls, concurrencyLimit, sessionID, turnID, sink, trace)...)
+			results = append(results, executeToolBatchParallel(ctx, executor, batch.calls, concurrencyLimit, sessionID, turnID, sink, trace, hooks)...)
 			continue
 		}
-		results = append(results, executeToolBatchSerial(ctx, executor, batch.calls, sessionID, turnID, sink, trace)...)
+		results = append(results, executeToolBatchSerial(ctx, executor, batch.calls, sessionID, turnID, sink, trace, hooks)...)
 	}
 	return results
 }
@@ -463,7 +468,7 @@ func emitSchedulerEvents(batch toolCallBatch, batchIndex, batchCount, concurrenc
 			TurnID:     turnID,
 			ToolCallID: call.ID,
 			ToolName:   call.Name,
-			Trace:     trace,
+			Trace:      trace,
 			Data: ToolSchedulerDecision{
 				Kind:             ToolDecisionKindScheduler,
 				Mode:             mode,
@@ -476,6 +481,13 @@ func emitSchedulerEvents(batch toolCallBatch, batchIndex, batchCount, concurrenc
 			},
 		})
 	}
+}
+
+func hookInvokerFromOptions(hooks []*pluginhooks.HookInvoker) *pluginhooks.HookInvoker {
+	if len(hooks) == 0 {
+		return nil
+	}
+	return hooks[0]
 }
 
 func partitionToolCalls(executor ToolExecutor, calls []ToolCall) []toolCallBatch {
@@ -500,7 +512,8 @@ func partitionToolCalls(executor ToolExecutor, calls []ToolCall) []toolCallBatch
 	return batches
 }
 
-func executeToolBatchParallel(ctx context.Context, executor ToolExecutor, calls []ToolCall, concurrencyLimit int, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext) []ToolExecResult {
+func executeToolBatchParallel(ctx context.Context, executor ToolExecutor, calls []ToolCall, concurrencyLimit int, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext, hooksOpt ...*pluginhooks.HookInvoker) []ToolExecResult {
+	hooks := hookInvokerFromOptions(hooksOpt)
 	results := make([]ToolExecResult, len(calls))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrencyLimit)
@@ -511,27 +524,53 @@ func executeToolBatchParallel(ctx context.Context, executor ToolExecutor, calls 
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[idx] = executeSingleToolCall(ctx, executor, c, sessionID, turnID, sink, trace)
+			results[idx] = executeSingleToolCall(ctx, executor, c, sessionID, turnID, sink, trace, hooks)
 		}(i, call)
 	}
 	wg.Wait()
 	return results
 }
 
-func executeToolBatchSerial(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext) []ToolExecResult {
+func executeToolBatchSerial(ctx context.Context, executor ToolExecutor, calls []ToolCall, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext, hooksOpt ...*pluginhooks.HookInvoker) []ToolExecResult {
+	hooks := hookInvokerFromOptions(hooksOpt)
 	results := make([]ToolExecResult, len(calls))
 	for i, call := range calls {
-		results[i] = executeSingleToolCall(ctx, executor, call, sessionID, turnID, sink, trace)
+		results[i] = executeSingleToolCall(ctx, executor, call, sessionID, turnID, sink, trace, hooks)
 	}
 	return results
 }
 
-func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call ToolCall, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext) ToolExecResult {
+func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call ToolCall, sessionID, turnID string, sink ToolLifecycleSink, trace TraceContext, hooksOpt ...*pluginhooks.HookInvoker) ToolExecResult {
+	hooks := hookInvokerFromOptions(hooksOpt)
 	result := ToolExecResult{ToolCallID: call.ID}
 	if sessionID == "" {
 		sessionID = SessionIDFromContext(ctx)
 	}
 	loopAware, _ := executor.(toolLoopResolver)
+
+	if hooks != nil {
+		beforeResult, hookErr := hooks.EmitBeforeToolCall(ctx, pluginhooks.BeforeToolCallEvent{
+			BaseEvent:  pluginhooks.BaseEvent{SessionID: sessionID, TurnID: turnID},
+			ToolName:   call.Name,
+			ToolCallID: call.ID,
+			Args:       call.Args,
+		})
+		if hookErr != nil {
+			log.Printf("before_tool_call hook error tool=%s session=%s err=%v", call.Name, sessionID, hookErr)
+		}
+		if beforeResult != nil && !beforeResult.Approved {
+			reason := beforeResult.RejectionReason
+			if reason == "" {
+				reason = "rejected by hook"
+			}
+			result.Content = "error: Tool call rejected: " + reason
+			emitToolLifecycleEvent(sink, ToolLifecycleEvent{Type: ToolLifecycleEventError, TS: time.Now().UnixMilli(), SessionID: sessionID, TurnID: turnID, ToolCallID: call.ID, ToolName: call.Name, Trace: trace, Error: reason})
+			return result
+		}
+		if beforeResult != nil && beforeResult.MutatedArgs != nil {
+			call.Args = beforeResult.MutatedArgs
+		}
+	}
 	var loopResult toolloop.Result
 	var loopEnabled bool
 	if loopAware != nil {
@@ -554,7 +593,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 				TurnID:     turnID,
 				ToolCallID: call.ID,
 				ToolName:   call.Name,
-				Trace:     trace,
+				Trace:      trace,
 				Data:       decision,
 			})
 			if loopResult.Level == toolloop.Critical {
@@ -568,7 +607,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 					TurnID:     turnID,
 					ToolCallID: call.ID,
 					ToolName:   call.Name,
-					Trace:     trace,
+					Trace:      trace,
 					Error:      loopResult.Message,
 					Data:       decision,
 				})
@@ -577,6 +616,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 			log.Printf("toolloop: WARNING tool=%s session=%s detector=%s count=%d", call.Name, sessionID, loopResult.Detector, loopResult.Count)
 		}
 	}
+	startedAt := time.Now()
 	emitToolLifecycleEvent(sink, ToolLifecycleEvent{
 		Type:       ToolLifecycleEventStart,
 		TS:         time.Now().UnixMilli(),
@@ -584,11 +624,17 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		TurnID:     turnID,
 		ToolCallID: call.ID,
 		ToolName:   call.Name,
-		Trace:     trace,
+		Trace:      trace,
 	})
 	value, execErr := executor.Execute(ctx, call)
 	if execErr != nil {
 		errMsg := execErr.Error()
+
+		if hooks != nil {
+			if _, hookErr := hooks.EmitAfterToolCall(ctx, pluginhooks.AfterToolCallEvent{BaseEvent: pluginhooks.BaseEvent{SessionID: sessionID, TurnID: turnID}, ToolName: call.Name, ToolCallID: call.ID, Args: call.Args, Result: value, Error: errMsg, DurationMS: time.Since(startedAt).Milliseconds()}); hookErr != nil {
+				log.Printf("after_tool_call hook error tool=%s session=%s err=%v", call.Name, sessionID, hookErr)
+			}
+		}
 		result.Content = "error: " + errMsg
 		log.Printf("tool %s error: %v", call.Name, execErr)
 		emitToolLifecycleEvent(sink, ToolLifecycleEvent{
@@ -598,7 +644,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 			TurnID:     turnID,
 			ToolCallID: call.ID,
 			ToolName:   call.Name,
-			Trace:     trace,
+			Trace:      trace,
 			Error:      errMsg,
 		})
 		if loopAware != nil {
@@ -608,6 +654,11 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 			result.LoopBlocked = true
 		}
 		return result
+	}
+	if hooks != nil {
+		if _, hookErr := hooks.EmitAfterToolCall(ctx, pluginhooks.AfterToolCallEvent{BaseEvent: pluginhooks.BaseEvent{SessionID: sessionID, TurnID: turnID}, ToolName: call.Name, ToolCallID: call.ID, Args: call.Args, Result: value, DurationMS: time.Since(startedAt).Milliseconds()}); hookErr != nil {
+			log.Printf("after_tool_call hook error tool=%s session=%s err=%v", call.Name, sessionID, hookErr)
+		}
 	}
 	if loopAware != nil {
 		loopAware.RecordLoopOutcome(ctx, call, value, "")
@@ -623,7 +674,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		TurnID:     turnID,
 		ToolCallID: call.ID,
 		ToolName:   call.Name,
-		Trace:     trace,
+		Trace:      trace,
 		Result:     value,
 	})
 	return result
@@ -650,7 +701,7 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 			ToolCalls: pendingCalls,
 		})
 
-		results := executeToolBatches(ctx, cfg.Executor, pendingCalls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace)
+		results := executeToolBatches(ctx, cfg.Executor, pendingCalls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace, cfg.HookInvoker)
 		for _, r := range results {
 			messages = append(messages, LLMMessage{
 				Role:       "tool",
@@ -770,6 +821,7 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 		Trace:               turn.Trace,
 		LastAssistantTime:   turn.LastAssistantTime,
 		DeferredTools:       turn.DeferredTools,
+		HookInvoker:         turn.HookInvoker,
 	})
 	if err != nil {
 		return ProviderResult{}, err

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	pluginhooks "metiq/internal/plugins/hooks"
 )
 
 // ToolCallRef identifies a tool invocation within an assistant message.
@@ -79,6 +81,9 @@ type Turn struct {
 	// in the conversation. Passed through to the agentic loop for the
 	// time-based microcompact trigger. Zero means unknown/disabled.
 	LastAssistantTime time.Time
+	// HookInvoker emits OpenClaw before_tool_call/after_tool_call hooks.
+	HookInvoker *pluginhooks.HookInvoker
+
 	// DeferredTools holds tool definitions that are deferred from inline
 	// sending. When non-nil and non-empty, the agentic loop registers a
 	// tool_search built-in tool that lets the model discover deferred tools
