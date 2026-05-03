@@ -262,6 +262,14 @@ func (c agentRunController) runAgentTurnWithFallbacks(baseCtx context.Context, r
 				attempt.FallbackTo = runtimeLabelAt(runtimeLabels, i)
 			}
 			result = &r
+
+			// ── Commitment Guard: detect unbacked promises ──────────────────
+			// Build commitment state from tool traces and apply the guard to
+			// warn users when the agent makes promises without concrete actions.
+			commitState := agent.BuildCommitmentStateFromTraces(result.ToolTraces)
+			if guardedText, modified := agent.ApplyCommitmentGuard(result.Text, commitState); modified {
+				result.Text = guardedText
+			}
 			break
 		}
 		if i < len(runtimesToTry)-1 && isRetryableAgentError(lastErr) {
