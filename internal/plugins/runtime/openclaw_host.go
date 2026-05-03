@@ -203,11 +203,20 @@ func (h *OpenClawPluginHost) InvokeHookHandler(ctx context.Context, event, hookI
 	if err != nil {
 		return HookResult{}, err
 	}
-	var envelope struct {
-		Results []HookResult `json:"results"`
-	}
-	if err := decodeRPCResult(resp.Result, &envelope); err == nil && len(envelope.Results) > 0 {
-		return envelope.Results[0], nil
+	var raw map[string]any
+	if err := decodeRPCResult(resp.Result, &raw); err == nil {
+		if _, hasResults := raw["results"]; hasResults {
+			var envelope struct {
+				Results []HookResult `json:"results"`
+			}
+			if err := decodeRPCResult(resp.Result, &envelope); err != nil {
+				return HookResult{}, fmt.Errorf("decode hook result envelope: %w", err)
+			}
+			if len(envelope.Results) == 0 {
+				return HookResult{HookID: hookID, OK: true}, nil
+			}
+			return envelope.Results[0], nil
+		}
 	}
 	var direct HookResult
 	if err := decodeRPCResult(resp.Result, &direct); err != nil {

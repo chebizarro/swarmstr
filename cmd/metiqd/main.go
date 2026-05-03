@@ -41,11 +41,12 @@ import (
 	"metiq/internal/nostr/nip51"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/nostr/secure"
+	"metiq/internal/permissions"
+	pluginhooks "metiq/internal/plugins/hooks"
 	pluginmanager "metiq/internal/plugins/manager"
 	pluginregistry "metiq/internal/plugins/registry"
 	pluginruntime "metiq/internal/plugins/runtime"
 	pluginservice "metiq/internal/plugins/service"
-	"metiq/internal/permissions"
 	"metiq/internal/policy"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/social"
@@ -126,6 +127,7 @@ var (
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
 	controlWsEmitter       gatewayws.EventEmitter = gatewayws.NoopEmitter{}
 	controlWsEmitterMu     sync.RWMutex
+	controlHookInvoker     *pluginhooks.HookInvoker
 	controlPairingConfigMu sync.Mutex
 
 	// controlToolRegistry is the base tool registry used by agent runtimes.
@@ -1099,6 +1101,7 @@ func main() {
 	// Load Goja (JS) plugins from config and register their tools.
 	pluginHost := pluginmanager.BuildHost(configState, agentRuntime)
 	pluginMgr := pluginmanager.New(pluginHost)
+	controlHookInvoker = pluginhooks.NewHookInvoker(nil, nil)
 	if loadErr := pluginMgr.Load(ctx, configState.Get()); loadErr != nil {
 		log.Printf("plugin manager load warning: %v", loadErr)
 	}
@@ -1114,6 +1117,7 @@ func main() {
 		} else {
 			openClawHost = host
 			unified := pluginregistry.NewUnifiedRegistry()
+			controlHookInvoker = pluginhooks.NewHookInvoker(unified.Hooks(), openClawHost)
 			for _, installPath := range configuredOpenClawPluginPaths(configState.Get()) {
 				result, err := openClawHost.LoadPluginResult(ctx, installPath, nil)
 				if err != nil {
@@ -1610,6 +1614,7 @@ func main() {
 				Tools:               turnTools,
 				Executor:            turnExecutor,
 				ContextWindowTokens: promptEnvelope.ContextWindowTokens,
+				HookInvoker:         controlHookInvoker,
 			},
 			TurnCtx:            turnCtx, // Pass the context with memory scope set
 			SurfacedFileMemory: surfacedFileMemory,
@@ -1649,6 +1654,7 @@ func main() {
 					// Per-sender session: each group member gets their own conversation.
 					sessionID := "ch:" + msg.ChannelID + ":" + msg.FromPubKey
 					activeAgentID, rt := resolveInboundChannelRuntime(localChanCfg.AgentID, msg.ChannelID)
+					emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID, AgentID: activeAgentID, CreatedAt: msg.CreatedAt})
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
@@ -1660,9 +1666,16 @@ func main() {
 							return
 						}
 						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
-						if err := msg.Reply(turnCtx, result.Text); err != nil {
-							log.Printf("auto-join channel reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
+						replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
+						if !sendOK {
+							return
 						}
+						if err := msg.Reply(turnCtx, replyText); err != nil {
+							emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
+							log.Printf("auto-join channel reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
+							return
+						}
+						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
 					}()
 				},
 				OnError: func(err error) {
@@ -1708,6 +1721,7 @@ func main() {
 					// Per-sender session: each channel member gets their own conversation.
 					sessionID := "ch:" + msg.ChannelID + ":" + msg.FromPubKey
 					activeAgentID, rt := resolveInboundChannelRuntime(localChanCfg.AgentID, msg.ChannelID)
+					emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID, AgentID: activeAgentID, CreatedAt: msg.CreatedAt})
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
@@ -1719,9 +1733,16 @@ func main() {
 							return
 						}
 						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
-						if err := msg.Reply(turnCtx, result.Text); err != nil {
-							log.Printf("auto-join nip28 reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
+						replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
+						if !sendOK {
+							return
 						}
+						if err := msg.Reply(turnCtx, replyText); err != nil {
+							emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
+							log.Printf("auto-join nip28 reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
+							return
+						}
+						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
 					}()
 				},
 				OnError: func(err error) {
@@ -1773,6 +1794,7 @@ func main() {
 					// Per-sender session: each chat participant gets their own conversation.
 					sessionID := "ch:" + msg.ChannelID + ":" + msg.FromPubKey
 					activeAgentID, rt := resolveInboundChannelRuntime(localChanCfg.AgentID, msg.ChannelID)
+					emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID, AgentID: activeAgentID, CreatedAt: msg.CreatedAt})
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
 						defer release()
@@ -1784,9 +1806,16 @@ func main() {
 							return
 						}
 						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
-						if err := msg.Reply(turnCtx, result.Text); err != nil {
-							log.Printf("auto-join chat reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
+						replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
+						if !sendOK {
+							return
 						}
+						if err := msg.Reply(turnCtx, replyText); err != nil {
+							emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
+							log.Printf("auto-join chat reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
+							return
+						}
+						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
 					}()
 				},
 				OnError: func(err error) {
@@ -3386,6 +3415,7 @@ func main() {
 			// fields so the ID remains deterministic and content-derived.
 			entryID = synthesizeInboundEventID(senderID, combinedText, createdAt)
 		}
+		emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: "nostr", SenderID: senderID, Text: combinedText, EventID: entryID, SessionID: sessionID, AgentID: defaultAgentID(overrideAgentID), CreatedAt: createdAt})
 		if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, nostruntime.InboundDM{
 			EventID:    entryID,
 			FromPubKey: senderID,
@@ -3663,6 +3693,7 @@ func main() {
 			MaxAgenticIterations: maxAgenticIterations,
 			ToolEventSink:        toolLifecycleEmitter(wsEmitter, activeAgentID),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
+			HookInvoker:          controlHookInvoker,
 			LastAssistantTime:    lastAssistantTime,
 			DeferredTools:        deferredTools,
 		}
@@ -3777,11 +3808,19 @@ func main() {
 			}
 			outboundText := renderResponseWithUsage(turnResult.Text, turnResult.Usage, seForUsage)
 			if !sendSuppressed {
+				var sendOK bool
+				outboundText, sendOK = applyPluginMessageSending(ctx, pluginhooks.MessageSendingEvent{ChannelID: "nostr", SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID})
+				if !sendOK {
+					log.Printf("dm reply rejected by hook event=%s reason=%s", eventID, outboundText)
+					return
+				}
 				if err := replyFn(ctx, outboundText); err != nil {
+					emitPluginMessageSent(ctx, pluginhooks.MessageSentEvent{ChannelID: "nostr", SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID, EventID: eventID, Success: false, Error: err.Error()})
 					log.Printf("reply failed event=%s err=%v", eventID, err)
 					logBuffer.Append("error", fmt.Sprintf("dm reply failed event=%s err=%v", eventID, err))
 					return
 				}
+				emitPluginMessageSent(ctx, pluginhooks.MessageSentEvent{ChannelID: "nostr", SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID, EventID: eventID, Success: true})
 			} else {
 				log.Printf("reply suppressed (send off) session=%s event=%s", sessionID, eventID)
 			}
@@ -4602,6 +4641,7 @@ func main() {
 						Tools:               turnTools,
 						Executor:            turnExecutor,
 						ContextWindowTokens: maxContextTokensForAgent(configState.Get(), ""),
+						HookInvoker:         controlHookInvoker,
 					})
 					if err != nil {
 						return "", err
@@ -4804,6 +4844,7 @@ func main() {
 			MaxAgenticIterations: chMaxAgenticIterations,
 			ToolEventSink:        toolLifecycleEmitter(wsEmitter, activeAgentID),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
+			HookInvoker:          controlHookInvoker,
 			LastAssistantTime:    chLastAssistantTime,
 			DeferredTools:        chDeferredTools,
 		}
@@ -4934,9 +4975,17 @@ func main() {
 			outboundText = renderResponseWithUsage(outboundText, turnResult.Usage, seForUsage)
 		}
 		if !audioSent && handle != nil && outboundText != "" {
+			var sendOK bool
+			outboundText, sendOK = applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: chID, SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID})
+			if !sendOK {
+				log.Printf("channel reply rejected by hook channel=%s session=%s reason=%s", chID, sessionID, outboundText)
+				return nil
+			}
 			if sendErr := handle.Send(turnCtx, outboundText); sendErr != nil {
+				emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: chID, SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: sendErr.Error()})
 				log.Printf("channel reply error channel=%s session=%s err=%v", chID, sessionID, sendErr)
 			} else {
+				emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: chID, SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
 				metricspkg.MessagesOutbound.Inc()
 				wsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 					TS:        time.Now().UnixMilli(),
@@ -5007,6 +5056,8 @@ func main() {
 				}
 			}
 		}
+
+		emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: chID, SenderID: senderID, Text: combined, EventID: eventID, ThreadID: threadID, SessionID: sessionID, AgentID: sessionRouter.Get(sessionID)})
 
 		// Slash command fast-path: route /commands before hitting the agent.
 		if slashCmd := autoreply.Parse(combined); slashCmd != nil {

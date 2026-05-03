@@ -11,6 +11,7 @@ import (
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
 	nostruntime "metiq/internal/nostr/runtime"
+	pluginhooks "metiq/internal/plugins/hooks"
 	"metiq/internal/store/state"
 )
 
@@ -72,6 +73,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 			Hub:          h.deps.nostrHub,
 			Keyer:        h.deps.keyer,
 			OnMessage: func(msg channels.InboundMessage) {
+				emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: msg.ChannelID})
 				controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 					TS:        time.Now().UnixMilli(),
 					ChannelID: msg.ChannelID,
@@ -96,22 +98,29 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 						Tools:               turnTools,
 						Executor:            turnExecutor,
 						ContextWindowTokens: maxContextTokensForAgent(configState.Get(), activeAgentID),
+						HookInvoker:         controlHookInvoker,
 					})
 					if turnErr != nil {
 						log.Printf("channel agent turn error channel=%s err=%v", msg.ChannelID, turnErr)
 						return
 					}
-					if err := msg.Reply(turnCtx, result.Text); err != nil {
+					replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: msg.ChannelID, AgentID: activeAgentID})
+					if !sendOK {
+						return
+					}
+					if err := msg.Reply(turnCtx, replyText); err != nil {
+						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: msg.ChannelID, AgentID: activeAgentID, Success: false, Error: err.Error()})
 						log.Printf("channel reply error channel=%s err=%v", msg.ChannelID, err)
 						return
 					}
+					emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: msg.ChannelID, AgentID: activeAgentID, Success: true})
 					controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 						TS:        time.Now().UnixMilli(),
 						ChannelID: msg.ChannelID,
 						GroupID:   msg.GroupID,
 						Relay:     msg.Relay,
 						Direction: "outbound",
-						Text:      result.Text,
+						Text:      replyText,
 					})
 				}()
 			},

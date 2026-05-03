@@ -242,8 +242,10 @@ async function invokeTool(pluginId, tool, args, meta = {}) {
   return await fn(ctx.toolCallId, args || {}, undefined, undefined, ctx);
 }
 
-async function invokeHook(event, payload) {
-  const handlers = [...(registries.hooks.get(event) || [])].sort((a, b) => (a.opts.priority ?? 100) - (b.opts.priority ?? 100));
+async function invokeHook(event, payload, hookId) {
+  let handlers = [...(registries.hooks.get(event) || [])];
+  if (hookId) handlers = handlers.filter((h) => h.hookId === hookId);
+  handlers = handlers.sort((a, b) => (a.opts.priority ?? 100) - (b.opts.priority ?? 100));
   const results = [];
   for (const { pluginId, hookId, handler, opts } of handlers) {
     try {
@@ -279,7 +281,6 @@ async function invokeProvider(providerId, method, params) {
   if (typeof target?.run === 'function') return await target.run(params);
   throw new Error(`unknown provider method: ${method}`);
 }
-
 
 function buildProviderCatalogContext(providerId, provider, params = {}) {
   const env = asRecord(params.env) || process.env;
