@@ -42,6 +42,9 @@ import (
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/nostr/secure"
 	pluginmanager "metiq/internal/plugins/manager"
+	pluginregistry "metiq/internal/plugins/registry"
+	pluginruntime "metiq/internal/plugins/runtime"
+	pluginservice "metiq/internal/plugins/service"
 	"metiq/internal/permissions"
 	"metiq/internal/policy"
 	secretspkg "metiq/internal/secrets"
@@ -1100,6 +1103,33 @@ func main() {
 		log.Printf("plugin manager load warning: %v", loadErr)
 	}
 	pluginMgr.RegisterTools(tools)
+
+	// OpenClaw plugin host + service registry (Phase 6: background services).
+	var pluginServiceMgr *pluginservice.ServiceManager
+	var openClawHost *pluginruntime.OpenClawPluginHost
+	{
+		host, hostErr := pluginruntime.NewOpenClawPluginHost(ctx)
+		if hostErr != nil {
+			log.Printf("openclaw host disabled: %v", hostErr)
+		} else {
+			openClawHost = host
+			unified := pluginregistry.NewUnifiedRegistry()
+			for _, installPath := range configuredOpenClawPluginPaths(configState.Get()) {
+				result, err := openClawHost.LoadPluginResult(ctx, installPath, nil)
+				if err != nil {
+					log.Printf("openclaw plugin load failed (%s): %v", installPath, err)
+					continue
+				}
+				if err := unified.RegisterOpenClawLoadResult(result); err != nil {
+					log.Printf("openclaw registration failed (%s): %v", result.PluginID, err)
+				}
+			}
+			pluginServiceMgr = pluginservice.NewManager(unified.Services(), openClawHost)
+			if err := pluginServiceMgr.StartAll(ctx); err != nil {
+				log.Printf("plugin service auto-start warning: %v", err)
+			}
+		}
+	}
 
 	// ── Hooks system ─────────────────────────────────────────────────────────
 	hooksMgr := hookspkg.NewManager()
@@ -4184,6 +4214,7 @@ func main() {
 			pairingConfigMu:    &sync.Mutex{},
 			hooksMgr:           hooksMgr,
 			pluginMgr:          pluginMgr,
+			pluginServiceMgr:   pluginServiceMgr,
 			mcpOps:             controlMCPOps,
 			mcpAuth:            mcpAuthController,
 			canvasHost:         canvasHost,
@@ -6073,12 +6104,50 @@ func main() {
 	}
 
 	<-ctx.Done()
+	if pluginServiceMgr != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = pluginServiceMgr.StopAll(stopCtx)
+		cancel()
+	}
+	if openClawHost != nil {
+		if err := openClawHost.Close(); err != nil {
+			log.Printf("openclaw host close warning: %v", err)
+		}
+	}
 	shutdownEmitter.Emit("daemon stopping")
 	select {
 	case <-heartbeatDone:
 	case <-time.After(250 * time.Millisecond):
 	}
 	log.Println("metiqd shutting down")
+}
+
+func configuredOpenClawPluginPaths(cfg state.ConfigDoc) []string {
+	rawExt, _ := cfg.Extra["extensions"].(map[string]any)
+	rawEntries, _ := rawExt["entries"].(map[string]any)
+	if len(rawEntries) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(rawEntries))
+	for _, raw := range rawEntries {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if enabled, ok := entry["enabled"].(bool); ok && !enabled {
+			continue
+		}
+		pluginType, _ := entry["plugin_type"].(string)
+		if !strings.EqualFold(strings.TrimSpace(pluginType), "openclaw") {
+			continue
+		}
+		installPath, _ := entry["install_path"].(string)
+		if trimmed := strings.TrimSpace(installPath); trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func initEnvelopeCodec(signer nostr.Keyer) (*secure.MutableSelfEnvelopeCodec, error) {
