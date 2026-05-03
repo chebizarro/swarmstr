@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,4 +62,25 @@ func TestClawHubUpdate_MissingPackageAndDistURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
+}
+
+func TestClawHubInstallUpdateMissingDistribution(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(ClawHubPlugin{ID: "plug", Name: "Plug", Version: "1.0.0"})
+	}))
+	defer srv.Close()
+	client := NewClawHubClient(srv.URL, srv.Client())
+	if err := client.Install(context.Background(), "plug", "1.0.0", t.TempDir()); err == nil || !strings.Contains(err.Error(), "missing install package") {
+		t.Fatalf("expected missing install package error, got %v", err)
+	}
+	if err := client.Update(context.Background(), "plug", "", t.TempDir()); err == nil || !strings.Contains(err.Error(), "missing install package") {
+		t.Fatalf("expected missing install package update error, got %v", err)
+	}
+	if err := client.Install(context.Background(), "", "", t.TempDir()); err == nil {
+		t.Fatal("expected plugin id required")
+	}
+}
+
+func TestRemoveFileNoopsForMissingPath(t *testing.T) {
+	removeFile(filepath.Join(t.TempDir(), "missing"))
 }

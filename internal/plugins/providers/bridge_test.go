@@ -162,3 +162,90 @@ func TestPluginProviderBridgeFallback(t *testing.T) {
 		t.Fatalf("expected fallback, got %+v", resp)
 	}
 }
+
+func TestPluginProviderBridgeMetadataCatalogAndStreamFallback(t *testing.T) {
+	h := &fakeHost{results: map[string]any{
+		"catalog": map[string]any{"models": []any{map[string]any{"id": "m1", "name": "M1", "metadata": map[string]any{"tier": "test"}}}},
+		"chat":    map[string]any{"content": "chat fallback"},
+	}, errs: map[string]error{"stream": errors.New("unknown provider method: stream")}}
+	b := NewPluginProviderBridge("acme", "plugin", h, nil, WithConfig(map[string]any{"region": "local"}), WithEnv(map[string]string{"ACME_API_KEY": "env-key"}), WithStreamMethods("stream"))
+	if b.ProviderID() != "acme" || b.PluginID() != "plugin" {
+		t.Fatalf("bad ids")
+	}
+	if env := b.effectiveEnv(); env["ACME_API_KEY"] != "env-key" {
+		t.Fatalf("effective env mismatch: %+v", env)
+	}
+	entries, err := b.RefreshCatalog(context.Background())
+	if err != nil || len(entries) != 1 || entries[0].ID != "m1" {
+		t.Fatalf("catalog entries=%+v err=%v", entries, err)
+	}
+	catalog, err := b.Catalog(context.Background())
+	if err != nil || len(catalog) != 1 {
+		t.Fatalf("catalog cache empty: %+v err=%v", catalog, err)
+	}
+	catalog[0].ID = "mutated"
+	again, err := b.Catalog(context.Background())
+	if err != nil || again[0].ID != "m1" {
+		t.Fatalf("catalog cache was mutable: %+v err=%v", again, err)
+	}
+	var chunks []string
+	resp, err := b.StreamChat(context.Background(), []agent.LLMMessage{{Role: "user", Content: "hi"}}, nil, agent.ChatOptions{}, func(s string) { chunks = append(chunks, s) })
+	if err != nil || resp.Content != "chat fallback" || !reflect.DeepEqual(chunks, []string{"chat fallback"}) {
+		t.Fatalf("stream fallback resp=%+v chunks=%+v err=%v", resp, chunks, err)
+	}
+}
+
+func TestProviderTranslationVariants(t *testing.T) {
+	messages := TranslateMessagesToOpenClaw([]agent.LLMMessage{
+		{Role: "assistant", Content: "hi", ToolCalls: []agent.ToolCall{{ID: "tc", Name: "lookup", Args: map[string]any{"q": "x"}}}},
+		{Role: "tool", Content: "result", ToolCallID: "tc"},
+	})
+	if len(messages) != 2 || messages[0]["role"] != "assistant" || messages[1]["tool_call_id"] != "tc" {
+		t.Fatalf("messages not translated: %+v", messages)
+	}
+	tools := TranslateToolsToOpenClaw([]agent.ToolDefinition{{Name: "lookup", Parameters: agent.ToolParameters{Properties: map[string]agent.ToolParamProp{"q": {Type: "string"}}}}})
+	if tools[0]["parameters"].(map[string]any)["type"] != "object" {
+		t.Fatalf("tool parameters default missing: %+v", tools)
+	}
+	resp, err := TranslateResponseFromOpenClaw(map[string]any{
+		"text":       "hello",
+		"tool_calls": []any{map[string]any{"id": "1", "function": map[string]any{"name": "lookup", "arguments": `{"q":"x"}`}}},
+		"usage":      map[string]any{"input_tokens": 1, "output_tokens": 2},
+	})
+	if err != nil || resp.Content != "hello" || len(resp.ToolCalls) != 1 || resp.Usage.InputTokens != 1 {
+		t.Fatalf("response=%+v err=%v", resp, err)
+	}
+	streamResp, chunks, err := translateStreamResult([]any{"a", map[string]any{"delta": "b"}})
+	if err != nil || streamResp.Content != "ab" || !reflect.DeepEqual(chunks, []string{"a", "b"}) {
+		t.Fatalf("streamResp=%+v chunks=%+v err=%v", streamResp, chunks, err)
+	}
+}
+
+func TestProviderNativeSelectionAndGenerateErrorPath(t *testing.T) {
+	entries := []ModelEntry{{ProviderID: "acme", ID: "m1"}, {ProviderID: "other", ID: "m2"}}
+	if entry, ok := selectModelEntry("acme", "acme/m1", entries); !ok || entry.ID != "m1" {
+		t.Fatalf("select namespaced model failed: %+v %v", entry, ok)
+	}
+	if _, ok := selectModelEntry("acme", "missing", entries); ok {
+		t.Fatal("unexpected missing model match")
+	}
+	for _, entry := range []ModelEntry{
+		{ProviderID: "openai", ID: "gpt", API: "openai-compatible", Raw: map[string]any{"apiKey": "sk"}},
+		{ProviderID: "anthropic", ID: "claude", API: "anthropic-messages"},
+		{ProviderID: "google", ID: "gemini", API: "google"},
+	} {
+		if native, err := nativeProviderForEntry(entry, map[string]string{entry.ProviderID: "env"}); err != nil || native == nil {
+			t.Fatalf("native provider for %+v = %T %v", entry, native, err)
+		}
+	}
+	if _, err := nativeProviderForEntry(ModelEntry{ProviderID: "x", ID: "m", API: "unsupported"}, nil); err == nil {
+		t.Fatal("expected unsupported native provider error")
+	}
+	b := NewPluginProviderBridge("acme", "plugin", nil, nil, WithModel("m"))
+	if _, err := b.Generate(context.Background(), agent.Turn{UserText: "hi"}); err == nil {
+		t.Fatal("expected generate error with nil host")
+	}
+	if nonEmpty("", "a", " ")[0] != "a" || int64Value("bad") != 0 || len(stringSliceFromAny([]any{"a", 1, "b"})) != 2 {
+		t.Fatal("helper branch mismatch")
+	}
+}

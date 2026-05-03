@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	nostr "fiatjaf.com/nostr"
 )
@@ -189,6 +190,23 @@ func TestNewRegistry_Empty(t *testing.T) {
 		t.Fatal("NewRegistry returned nil")
 	}
 	defer r.Close()
+}
+
+func TestRegistrySearchFetchPublishEdgeCases(t *testing.T) {
+	r := NewRegistry(nil)
+	defer r.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	results, err := r.Search(ctx, "weather plugins", 0)
+	if err != nil || len(results) != 0 {
+		t.Fatalf("empty search results=%+v err=%v", results, err)
+	}
+	if _, err := r.Fetch(ctx, "bad-pubkey", "plugin"); err == nil {
+		t.Fatal("expected invalid pubkey error")
+	}
+	if _, err := r.Publish(ctx, "bad-secret", PluginManifest{ID: "p", Version: "1", Runtime: "goja"}); err == nil {
+		t.Fatal("expected invalid secret key error")
+	}
 }
 
 // ─── parsePluginEvent ────────────────────────────────────────────────────────

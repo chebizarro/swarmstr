@@ -65,31 +65,23 @@ my-plugin/
 
 ## Creating Custom Agent Tools
 
-### Go Plugin (Compiled)
+### Go Plugin (Compiled, internal extensions only)
 
-For performance-critical tools, implement in Go:
-
-```go
-package myplugin
-
-import (
-    "context"
-    "github.com/yourorg/metiq/internal/agent/toolbuiltin"
-)
-
-func RegisterMyTool(tools *toolbuiltin.Registry) {
-    tools.Register("my_custom_tool", func(ctx context.Context, params map[string]any) (string, error) {
-        // Tool implementation
-        return "result", nil
-    })
-}
-```
-
-Register in `cmd/metiqd/main.go` after the other tool registrations:
+External plugins should use the OpenClaw JavaScript entry point documented in `docs/plugins/writing-plugins.md`. Compiled Go tools are in-repository extensions and are registered by adding a tool definition to the daemon's tool registry:
 
 ```go
-myplugin.RegisterMyTool(tools)
+registry.RegisterWithDef(agent.ToolDefinition{
+    Name:        "my_custom_tool",
+    Description: "Run my custom tool",
+    Parameters: agent.ToolParameters{
+        Type: "object",
+    },
+}, func(ctx context.Context, params map[string]any) (string, error) {
+    return "result", nil
+})
 ```
+
+Keep compiled tools in the main module so they can import internal packages and be built with `go build ./...`.
 
 ### Script Plugin (Shell/Python)
 
