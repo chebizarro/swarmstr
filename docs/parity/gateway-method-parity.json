@@ -570,7 +570,7 @@
       "method": "chat.abort",
       "status": "implemented",
       "metiq_method": "chat.abort",
-      "notes": ""
+      "notes": "Operator abort remains unconditional. Busy queue-mode interrupt is tool-aware: it aborts only when active tools are interruptible and otherwise defers newest input as urgent active-run steering."
     },
     {
       "method": "chat.send",

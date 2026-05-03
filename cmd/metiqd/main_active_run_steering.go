@@ -8,6 +8,7 @@ import (
 
 	"metiq/internal/agent"
 	"metiq/internal/autoreply"
+	metricspkg "metiq/internal/metrics"
 )
 
 type activeRunSteeringInput struct {
@@ -52,13 +53,18 @@ func enqueueActiveRunSteering(mailboxes *autoreply.SteeringMailboxRegistry, sett
 	if msg.Priority == "" {
 		msg.Priority = autoreply.SteeringPriorityNormal
 	}
-	accepted := mailbox.Enqueue(msg)
-	if accepted {
+	outcome := mailbox.EnqueueWithOutcome(msg)
+	recordSteeringEnqueueMetrics(outcome)
+	if outcome.Accepted {
 		log.Printf("active-run steering enqueued: session=%s source=%s priority=%s mailbox_len=%d", sessionID, msg.Source, msg.Priority, mailbox.Len())
 	} else {
-		log.Printf("active-run steering not enqueued: session=%s source=%s priority=%s", sessionID, msg.Source, msg.Priority)
+		outcomeName := "dropped"
+		if outcome.Deduped {
+			outcomeName = "deduped"
+		}
+		log.Printf("active-run steering not enqueued: session=%s source=%s priority=%s outcome=%s", sessionID, msg.Source, msg.Priority, outcomeName)
 	}
-	return accepted
+	return outcome.Accepted
 }
 
 func handleBusySteer(mailboxes *autoreply.SteeringMailboxRegistry, _ *autoreply.SessionQueue, settings queueRuntimeSettings, input activeRunSteeringInput) bool {
@@ -85,6 +91,7 @@ func handleBusyInterrupt(
 		if q != nil {
 			_ = q.Dequeue()
 		}
+		metricspkg.SteeringUrgentAborted.Inc()
 		log.Printf("busy interrupt aborted active turn: session=%s", sessionID)
 		return false
 	}
@@ -94,6 +101,9 @@ func handleBusyInterrupt(
 	}
 	input.Priority = autoreply.SteeringPriorityUrgent
 	accepted := enqueueActiveRunSteering(mailboxes, settings, input)
+	if accepted {
+		metricspkg.SteeringUrgentDeferred.Inc()
+	}
 	log.Printf("busy interrupt deferred by blocking tool: session=%s accepted=%t", sessionID, accepted)
 	return true
 }
@@ -124,6 +134,7 @@ func makeActiveRunSteeringDrain(mailboxes *autoreply.SteeringMailboxRegistry, se
 		if len(items) == 0 {
 			return nil
 		}
+		metricspkg.SteeringDrained.Add(uint64(len(items)))
 		if onDrain != nil {
 			onDrain(append([]autoreply.SteeringMessage(nil), items...))
 		}
@@ -148,6 +159,7 @@ func drainSteeringAsPending(mailboxes *autoreply.SteeringMailboxRegistry, sessio
 	if len(items) == 0 {
 		return nil
 	}
+	metricspkg.SteeringDrained.Add(uint64(len(items)))
 	pending := make([]autoreply.PendingTurn, 0, len(items))
 	for _, item := range items {
 		pending = append(pending, pendingTurnFromSteering(item))
@@ -187,6 +199,21 @@ func steeringMailboxLen(mailboxes *autoreply.SteeringMailboxRegistry, sessionID 
 		return 0
 	}
 	return mailbox.Len()
+}
+
+func recordSteeringEnqueueMetrics(outcome autoreply.SteeringMailboxEnqueueOutcome) {
+	if outcome.Accepted {
+		metricspkg.SteeringEnqueued.Inc()
+	}
+	if outcome.Deduped {
+		metricspkg.SteeringDeduped.Inc()
+	}
+	if outcome.Dropped > 0 {
+		metricspkg.SteeringDropped.Add(uint64(outcome.Dropped))
+	}
+	if outcome.Overflowed {
+		metricspkg.SteeringOverflowed.Inc()
+	}
 }
 
 func clearTransientSessionSteering(mailboxes *autoreply.SteeringMailboxRegistry, sessionID string) {

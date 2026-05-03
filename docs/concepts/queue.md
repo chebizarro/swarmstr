@@ -10,7 +10,7 @@ title: "Message Queue & Concurrency"
 
 ## Per-Session Queuing
 
-metiq processes one agent turn at a time per session. Queue behavior depends on the configured mode. Traditional modes queue messages for future turns; the planned `steer` mode injects additional user input into the active run at the next safe model boundary:
+metiq processes one agent turn at a time per session. Queue behavior depends on the configured mode. Traditional modes queue messages for future turns; exact `steer` injects additional user input into the active run at the next safe model boundary:
 
 ```
 Session: agent:main:main
@@ -67,17 +67,17 @@ Default is 0 (no debounce — each DM is processed immediately).
 
 ## Queue Modes
 
-- `collect`: collect busy-time messages and combine them into a follow-up turn after the active turn completes.
-- `followup` / `queue`: enqueue busy-time messages as future turns.
-- `steer`: planned Claude Code/OpenClaw-style active-run steering. Busy-time input is accepted into a per-session steering mailbox and injected after current tool results, before the next model call.
-- `interrupt`: abort the active turn, clear/replace backlog as appropriate, and run the newest input as a fresh turn.
-- `steer-backlog` / `steer+backlog`: compatibility semantics are still being defined; current behavior is post-turn backlog rather than same-run steering.
+- `collect`: collect busy-time messages and combine them into one follow-up turn after the active turn completes.
+- `followup` / `queue`: enqueue busy-time messages as future turns and run them sequentially after the active turn.
+- `steer`: accept busy-time input into a per-session active-run steering mailbox. The running loop drains that mailbox non-blockingly after current tool results and before the next model call. If the active turn ends before another model boundary, residual steering is drained first as immediate follow-up turns before the normal post-turn queue.
+- `interrupt`: newest-input-wins urgent handling. If no active tool is running, or all active tools are marked interruptible (`cancel`), metiq aborts the active turn, clears older backlog/steering, and runs the newest input as a fresh turn. If any active tool is blocking, metiq does not cancel; it clears older backlog/steering and stores the newest input as urgent steering for the next safe model boundary or residual fallback.
+- `steer-backlog` / `steer+backlog`: compatibility aliases for post-turn backlog behavior. They do not use same-run mailbox injection in the shipped active-run steering implementation.
 
-See [Active-Run Steering Architecture](/plan/active-run-steering-architecture) for the detailed design.
+See [Active-Run Steering Architecture](/plan/active-run-steering-architecture) for the design that led to the shipped behavior.
 
 ## Queue Limits
 
-The in-memory queue per session is bounded to prevent memory exhaustion. The active-run steering mailbox must also be bounded, event-ID deduped, and non-blocking. Messages that overflow a queue/mailbox should be dropped or moved to backlog according to the mode's explicit policy.
+The in-memory queue per session is bounded to prevent memory exhaustion. The active-run steering mailbox uses the same resolved queue capacity and drop policy, is event-ID deduped, and is non-blocking. Capacity pressure is observable through steering dropped/overflowed counters; duplicate event deliveries are observable through the deduped counter.
 
 ## Turn Timeout
 
@@ -112,7 +112,7 @@ metiq gw agent.abort --params '{"sessionKey":"agent:main:main"}'
 
 This sends a context cancellation to the running turn. The agent stops gracefully and acknowledges the abort.
 
-`interrupt` uses this cancellation path. `steer` should not cancel by default; it should enqueue local steering state and let the active loop drain it at the next model boundary. Urgent input may cancel only when currently running tools are explicitly marked interruptible.
+`interrupt` uses this cancellation path only when it is safe to do so: no active tool is running, or every active tool is explicitly marked interruptible. Otherwise the interrupt input becomes urgent steering and is injected at the next safe boundary. Exact `steer` never cancels by default; it enqueues local steering state and lets the active loop drain it.
 
 ## See Also
 

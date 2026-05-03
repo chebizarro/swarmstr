@@ -1,7 +1,9 @@
 # Investigation: OpenClaw Inference Interrupt / Additional User Input
 
+> Status update (2026-05-03): the active-run steering mailbox described as the recommendation below has shipped. Exact queue mode `steer` now enqueues busy input into a per-session mailbox and drains it at model boundaries; `interrupt` is tool-aware and defers as urgent steering when a blocking tool is active. The historical findings below explain the gap that motivated the implementation.
+
 ## Summary
-Investigation in progress: determine whether OpenClaw has a mechanism for interrupting or injecting additional user input into an active inference loop, and whether/how swarmstr can implement comparable behavior.
+Investigation result: OpenClaw has mechanisms for interrupting or injecting additional user input into an active inference loop, and swarmstr/Metiq now implements comparable active-run steering behavior.
 
 ## Symptoms
 - Need to know whether OpenClaw supports interrupting active inference.
@@ -49,9 +51,9 @@ Porting guidance:
 
 #### Executive verdicts
 
-1. **swarmstr already supports hard interruption, with caveats.** User-facing `/stop` and `/kill`, control RPC `chat.abort`, session reset/delete/compact, and queue `interrupt` mode all converge on `chatAbortRegistry.Abort(...)`, which cancels the active turn context for a session. This cancellation propagates into provider calls and tool calls through `context.Context`. The caveat is that in-flight tool execution is only as hard as each tool's context handling; the agentic loop does not explicitly skip remaining serial/parallel tool work after `ctx.Done()`.
-2. **swarmstr lacks OpenClaw queue-steer style mid-run injection.** It has queue modes named `steer`, `steer-backlog`, and `steer+backlog`, but current `steer` busy behavior logs and drops the incoming message. `steer-backlog` / `steer+backlog` are sequential post-turn backlog modes, not same-run model-boundary steering.
-3. **Recommended implementation: add an active-run steering mailbox drained at model boundaries.** Incoming user messages should be accepted by the existing event-driven inbound handlers and appended to an in-memory per-session mailbox. `RunAgenticLoop` (or a provider decorator used by it) should drain that mailbox immediately before each `Provider.Chat(...)` call and append drained text as additional user input in the active message list. This preserves Nostr pub/sub semantics: inbound events push into state; the active loop never polls relays or sleeps waiting for user input.
+1. **swarmstr supports hard interruption.** User-facing `/stop` and `/kill`, control RPC `chat.abort`, session reset/delete/compact, and safe queue `interrupt` aborts converge on `chatAbortRegistry`, which cancels the active turn context for a session. This cancellation propagates into provider calls and tool calls through `context.Context`.
+2. **swarmstr now supports OpenClaw queue-steer style mid-run injection for exact `steer`.** Busy `steer` input enters an active-run steering mailbox. `steer-backlog` / `steer+backlog` remain sequential post-turn backlog modes, not same-run model-boundary steering.
+3. **Implemented approach: active-run steering mailbox drained at model boundaries.** Incoming user messages are accepted by the existing event-driven inbound handlers and appended to an in-memory per-session mailbox. `RunAgenticLoop` drains that mailbox immediately before provider calls and appends drained text as additional user input in the active message list. This preserves Nostr pub/sub semantics: inbound events push into state; the active loop never polls relays or sleeps waiting for user input.
 
 #### Evidence: hard interruption is present
 
@@ -101,9 +103,9 @@ Recommended insertion options:
 - Add a daemon-level registry keyed by session ID, e.g. `activeRunSteeringMailboxes`, separate from `chatAbortRegistry` and `SessionQueue`.
 - On inbound busy handling with queue mode `steer`, do **not** drop. Instead, persist/ack the inbound event as appropriate and call `mailbox.Enqueue(sessionID, PendingTurn-like steering message)`. This happens from existing subscription callbacks / channel event handlers, so it remains event-driven.
 - At model boundaries, non-blockingly drain all pending steering messages for the active session. Append them as one or more `LLMMessage{Role:"user", Content:"[Additional user input received while you were working]\n..."}` entries, preserving sender/event metadata where practical for transcript/history. Do not sleep or wait for steering input.
-- Preserve existing `interrupt` semantics separately: `interrupt` should still abort the active context and enqueue/restart with latest input.
-- Decide whether `steer-backlog` / `steer+backlog` should remain sequential backlog modes for OpenClaw compatibility or become `steer plus also preserve overflow backlog`. Current code treats them as sequential backlog aliases, not active-run injection.
-- Tests should be deterministic and event-driven: inject inbound busy events into mailbox, invoke a fake `ChatProvider`, and assert the second provider call sees the steering message after tool results. Do not use sleeps to wait for events.
+- Preserve operator abort semantics separately: `/stop`, `/kill`, and `chat.abort` remain unconditional, while busy queue-mode `interrupt` aborts only when active tools are interruptible and otherwise defers newest input as urgent steering.
+- `steer-backlog` / `steer+backlog` remain sequential backlog modes for OpenClaw compatibility; they are not mailbox-overflow modes in the shipped implementation.
+- Tests should be deterministic and event-driven: inject inbound busy events into mailbox, invoke a fake `ChatProvider`, and assert provider calls see appended steering input after any tool results.
 
 #### Eliminated hypotheses
 
@@ -148,9 +150,9 @@ Therefore, the root gap is architectural state/wiring, not lack of a model bound
    - This covers initial, iterative, and force-summary model calls without duplicating drain code.
    - Append drained input as additional user messages with clear provenance, e.g. `[Additional user input received while you were working]`.
 
-3. **Preserve `interrupt` semantics separately.**
-   - `interrupt` should continue to abort the active context, clear/replace backlog, and run newest input as a fresh turn.
-   - Do not overload `interrupt` with same-run steering behavior.
+3. **Preserve operator abort semantics separately.**
+   - `/stop`, `/kill`, `chat.abort`, rotate, delete, and reset remain unconditional abort paths.
+   - Busy queue-mode `interrupt` is tool-aware: it aborts when no active tool is blocking and defers newest input as urgent steering when a blocking tool is active.
 
 4. **Clarify queue-mode compatibility.**
    - Decide whether `steer-backlog` / `steer+backlog` remain post-turn backlog aliases or become "steer first, backlog overflow" semantics.

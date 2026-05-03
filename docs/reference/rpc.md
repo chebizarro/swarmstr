@@ -60,6 +60,20 @@ Returns daemon health status.
 }
 ```
 
+### `GET /metrics`
+
+Returns Prometheus text exposition (requires auth if an admin token is configured). Active-run steering exports counters for accepted, drained, duplicate, dropped, overflow, urgent-aborted, and urgent-deferred outcomes:
+
+```text
+metiq_steering_enqueued_total 12
+metiq_steering_drained_total 10
+metiq_steering_deduped_total 1
+metiq_steering_dropped_total 1
+metiq_steering_overflowed_total 1
+metiq_steering_urgent_aborted_total 2
+metiq_steering_urgent_deferred_total 3
+```
+
 ### `POST /call`
 
 Compatibility HTTP RPC endpoint for method calls. `metiq gw` can be forced onto this path with `--transport http`.
@@ -203,7 +217,7 @@ The method namespace is shared across Nostr control RPC and HTTP `POST /call`. W
 | Method | Description |
 |--------|-------------|
 | `agent.turn` | Trigger an agent turn |
-| `agent.abort` | Abort the current turn |
+| `agent.abort` | Abort the current turn unconditionally. This is separate from queue mode `interrupt`, which aborts only when active tools are interruptible and otherwise defers as urgent steering. |
 
 ### Cron
 
@@ -343,6 +357,8 @@ Cursor/live-tail workflow:
 - if `reset=true`, the cursor fell behind the bounded buffer and should be replaced with the returned cursor
 
 Operators can use the first-class CLI wrapper instead of constructing raw envelopes manually. `metiq observe` follows the same transport rules as `metiq gw`: `auto` prefers Nostr control RPC when `control_target_pubkey` is configured, otherwise it falls back to HTTP admin RPC.
+
+Active-run steering also writes daemon logs for enqueue, drain, duplicate/drop, residual fallback, urgent abort, and urgent defer decisions. Use `runtime.observe` with logs enabled for recent operational context and `/metrics` for aggregate counters.
 
 ```bash
 metiq observe --event tool.start --agent main --wait 15s

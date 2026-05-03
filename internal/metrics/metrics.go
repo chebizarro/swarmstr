@@ -171,6 +171,14 @@ var (
 	TokensIn         = Default.Counter("metiq_tokens_in_total", "Total input tokens processed")
 	TokensOut        = Default.Counter("metiq_tokens_out_total", "Total output tokens generated")
 
+	SteeringEnqueued       = Default.Counter("metiq_steering_enqueued_total", "Total active-run steering inputs accepted into a mailbox")
+	SteeringDrained        = Default.Counter("metiq_steering_drained_total", "Total active-run steering inputs drained for model injection or residual fallback")
+	SteeringDeduped        = Default.Counter("metiq_steering_deduped_total", "Total duplicate active-run steering inputs rejected by event ID")
+	SteeringDropped        = Default.Counter("metiq_steering_dropped_total", "Total active-run steering inputs dropped by mailbox capacity policy")
+	SteeringOverflowed     = Default.Counter("metiq_steering_overflowed_total", "Total active-run steering mailbox capacity overflows")
+	SteeringUrgentAborted  = Default.Counter("metiq_steering_urgent_aborted_total", "Total busy interrupt inputs that aborted the active turn immediately")
+	SteeringUrgentDeferred = Default.Counter("metiq_steering_urgent_deferred_total", "Total busy interrupt inputs deferred as urgent steering because a blocking tool was active")
+
 	ActiveSessions    = Default.Gauge("metiq_active_sessions", "Currently active chat sessions")
 	ApprovalQueueSize = Default.Gauge("metiq_approval_queue_size", "Number of pending exec approval requests")
 	RelayConnected    = Default.Gauge("metiq_relays_connected", "Number of currently connected relays")
