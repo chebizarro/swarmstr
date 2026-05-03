@@ -44,8 +44,8 @@ into actions and a final encrypted reply.
 - Prevents tool/session races and keeps session history consistent.
 - Inbound DMs during an active run are handled according to queue mode:
   - post-turn modes (`collect`, `followup`, `queue`) process them after the current turn completes;
-  - `interrupt` aborts the active turn and restarts with the newest input;
-  - planned `steer` enqueues input into an active-run mailbox and drains it inside the same loop at a model boundary.
+  - `steer` enqueues input into an active-run mailbox and drains it inside the same loop at a model boundary;
+  - `interrupt` aborts and restarts with the newest input only when no active tool is blocking; otherwise it becomes urgent steering.
 
 ## Session + workspace preparation
 
@@ -66,7 +66,8 @@ into actions and a final encrypted reply.
   `nostr_profile`, `relay_list`, `relay_ping`, `nostr_follows`, `nostr_zap_send`, etc.
 - Standard tools: `read`, `write`, `exec`, `edit`, `apply_patch`, `browser`, `canvas_update`.
 - Tool results are returned to the model for continued reasoning.
-- Planned active-run steering drains additional user input only after required tool results are appended and before the next provider call, matching Claude Code/OpenClaw ordering rules.
+- Active-run steering drains additional user input only after required tool results are appended and before the next provider call, matching Claude Code/OpenClaw ordering rules.
+- Steering also drains before the force-summary provider call, but before the synthetic summary instruction so that instruction remains the final user message.
 
 ## Reply shaping
 
@@ -97,12 +98,18 @@ into actions and a final encrypted reply.
 
 - Agent timeout (abort via context cancellation)
 - User sends `/kill` or `/stop` command
-- Queue mode `interrupt` aborts the active session turn
+- Queue mode `interrupt` aborts the active session turn when no blocking tool is active; otherwise it defers as urgent steering
 - Relay disconnect (reconnects automatically; in-progress turn continues)
 - API error or rate limit (retried with backoff)
 
-## Active-run steering design
+## Active-run steering
 
-The target `steer` behavior is not a second concurrent turn. It is a local, per-session mailbox drained by `RunAgenticLoop` before model calls. Inbound Nostr events remain push-driven through normal subscriptions and handlers; the active loop must never poll relays or sleep waiting for more input.
+The shipped `steer` behavior is not a second concurrent turn. It is a local, per-session mailbox drained by `RunAgenticLoop` before model calls. Inbound Nostr events remain push-driven through normal subscriptions and handlers; the active loop never polls relays or sleeps waiting for more input.
 
-See [Active-Run Steering Architecture](/plan/active-run-steering-architecture).
+Drain points are:
+
+1. before the initial provider call, after context pruning;
+2. before each post-tool provider call, after assistant tool calls and tool results are appended;
+3. before force-summary provider calls, before the synthetic summary prompt is appended.
+
+If a toolless/single-call turn has no later boundary, residual steering becomes immediate follow-up turns before the normal post-turn queue. See [Active-Run Steering Architecture](/plan/active-run-steering-architecture).

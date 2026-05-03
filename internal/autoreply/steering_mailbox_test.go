@@ -43,6 +43,22 @@ func TestSteeringMailbox_DedupesByEventID(t *testing.T) {
 	}
 }
 
+func TestSteeringMailbox_EnqueueWithOutcome(t *testing.T) {
+	m := NewSteeringMailbox(1, QueueDropOldest)
+	first := m.EnqueueWithOutcome(SteeringMessage{Text: "first", EventID: "evt-1"})
+	if !first.Accepted || first.Deduped || first.Dropped != 0 || first.Overflowed {
+		t.Fatalf("unexpected first outcome: %#v", first)
+	}
+	dup := m.EnqueueWithOutcome(SteeringMessage{Text: "dup", EventID: "evt-1"})
+	if dup.Accepted || !dup.Deduped || dup.Dropped != 0 || dup.Overflowed {
+		t.Fatalf("unexpected duplicate outcome: %#v", dup)
+	}
+	overflow := m.EnqueueWithOutcome(SteeringMessage{Text: "second", EventID: "evt-2"})
+	if !overflow.Accepted || overflow.Deduped || overflow.Dropped != 1 || !overflow.Overflowed {
+		t.Fatalf("unexpected overflow outcome: %#v", overflow)
+	}
+}
+
 func TestSteeringMailbox_DropPolicies(t *testing.T) {
 	mOldest := NewSteeringMailbox(1, QueueDropOldest)
 	mustEnqueueSteering(t, mOldest, SteeringMessage{Text: "a", EventID: "1"})

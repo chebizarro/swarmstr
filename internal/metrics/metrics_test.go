@@ -77,4 +77,17 @@ func TestDefaultRegistry(t *testing.T) {
 	if !strings.Contains(out, "metiq_messages_inbound_total") {
 		t.Errorf("default registry missing metiq_messages_inbound_total")
 	}
+	for _, name := range []string{
+		"metiq_steering_enqueued_total",
+		"metiq_steering_drained_total",
+		"metiq_steering_deduped_total",
+		"metiq_steering_dropped_total",
+		"metiq_steering_overflowed_total",
+		"metiq_steering_urgent_aborted_total",
+		"metiq_steering_urgent_deferred_total",
+	} {
+		if !strings.Contains(out, name) {
+			t.Errorf("default registry missing %s", name)
+		}
+	}
 }

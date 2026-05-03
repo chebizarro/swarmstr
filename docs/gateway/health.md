@@ -65,6 +65,16 @@ GET http://<admin-addr>/status     → {"pubkey":"...","relays":[...],"dm_policy
 GET http://<admin-addr>/metrics    → Prometheus text format (requires auth if token set)
 ```
 
+Active-run steering counters include:
+
+- `metiq_steering_enqueued_total`
+- `metiq_steering_drained_total`
+- `metiq_steering_deduped_total`
+- `metiq_steering_dropped_total`
+- `metiq_steering_overflowed_total`
+- `metiq_steering_urgent_aborted_total`
+- `metiq_steering_urgent_deferred_total`
+
 ## Logging
 
 ### Tail Daemon Logs

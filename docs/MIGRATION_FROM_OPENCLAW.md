@@ -222,6 +222,14 @@ The Metiq HTTP admin server (`/call` endpoint) and WebSocket gateway are wire-co
 | Identity | Single keypair | Nostr-native: any agent addressable by npub, no pairing needed |
 | Web UI | React SPA | Embedded dark-theme vanilla JS chat UI served from metiqd |
 
+## Queue steering parity
+
+Metiq implements OpenClaw/Claude Code-style active-run steering for busy sessions with queue mode `steer`: valid busy-time input enters an in-memory per-session steering mailbox, then the running agent loop drains it after current tool results and before the next model call. If the run ends before another model boundary, remaining steering is processed first as immediate follow-up turns before the normal backlog.
+
+Queue mode `interrupt` is tool-aware. It aborts immediately when no tool is active or every active tool is marked interruptible; if any active tool is blocking, Metiq clears stale backlog/steering and stores the newest input as urgent steering. Operator aborts (`chat.abort`, `/stop`, `/kill`) remain unconditional.
+
+`steer-backlog` and `steer+backlog` remain post-turn backlog aliases rather than same-run injection modes.
+
 ## Metiq-native extensions (not in OpenClaw)
 
 The following methods are Metiq additions that have no OpenClaw equivalent:

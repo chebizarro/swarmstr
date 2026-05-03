@@ -11,13 +11,13 @@ title: "Active-Run Steering Architecture"
 
 ## Goal
 
-Implement Claude Code/OpenClaw-style user steering for active agent runs:
+Metiq implements Claude Code/OpenClaw-style user steering for active agent runs:
 
 - **`steer`**: accept additional user input while a session is already running and inject it into the same active agent loop at the next safe model boundary.
-- **`interrupt`**: abort the active run and process the newest input as a fresh turn.
-- **urgent interrupt**: cancel the active turn only when current running tools are explicitly interruptible.
+- **`interrupt`**: process newest input urgently; abort the active run only when no active tool is blocking.
+- **urgent interrupt**: cancel the active turn only when current running tools are explicitly interruptible; otherwise defer as urgent steering.
 
-This must preserve metiq's Nostr-native event-driven architecture: inbound relay/channel events push into local state; active loops drain local state non-blockingly; no relay polling, sleep-based completion, or request/response steering.
+This preserves metiq's Nostr-native event-driven architecture: inbound relay/channel events push into local state; active loops drain local state non-blockingly; no relay polling, sleep-based completion, or request/response steering.
 
 ## Reference Models
 
@@ -39,26 +39,21 @@ The `src` repo has a more concrete implementation worth porting conceptually:
 - `src/Tool.ts` defines `interruptBehavior(): 'cancel' | 'block'`.
 - `src/services/tools/StreamingToolExecutor.ts` cancels only tools whose interrupt behavior permits cancellation.
 
-metiq should not port the global queue directly. metiq needs per-session, Nostr-event-deduped steering mailboxes.
+metiq does not port the global queue directly. It uses per-session, Nostr-event-deduped steering mailboxes.
 
 ## Current metiq State
 
-metiq already has hard cancellation:
+metiq has hard cancellation and same-run steering:
 
-- `chatAbortRegistry.Begin/Abort/AbortAll` tracks cancel functions per session.
-- `/stop` and `/kill` call the abort registry.
-- `chat.abort` cancels active session turns.
-- `interrupt` queue mode aborts the active turn, clears backlog, and enqueues the newest message.
+- `chatAbortRegistry.Begin/Abort/AbortAll` tracks cancel functions per session and preserves cancel causes for busy interrupts.
+- `/stop`, `/kill`, and `chat.abort` cancel active session turns unconditionally.
+- `interrupt` queue mode aborts only when no active tool is blocking; otherwise it clears older backlog/steering and enqueues the newest message as urgent steering.
 - Provider calls receive the turn `context.Context`.
+- Exact busy `steer` enqueues into `SteeringMailbox` instead of dropping.
+- `steer-backlog` / `steer+backlog` are post-turn backlog aliases.
+- `RunAgenticLoop` has a `SteeringDrain` hook at model boundaries.
 
-metiq does **not** yet have same-run steering:
-
-- Current busy `steer` behavior drops the inbound message.
-- `steer-backlog` / `steer+backlog` are post-turn backlog modes.
-- No active-run mailbox exists.
-- `RunAgenticLoop` has safe model boundaries but no drain hook.
-
-## Target Semantics
+## Shipped Semantics
 
 ### `collect`
 
@@ -70,7 +65,7 @@ Existing behavior remains: enqueue busy-time messages as future turns.
 
 ### `steer`
 
-New behavior:
+Behavior:
 
 1. Inbound event arrives for an already-active session.
 2. Handler verifies/dedupes/authorizes the event through existing message pipeline.
@@ -82,27 +77,21 @@ New behavior:
 
 ### `interrupt`
 
-Existing behavior remains:
+Newest input wins:
 
-1. Abort active session context.
-2. Clear backlog as appropriate.
-3. Enqueue newest message as a fresh turn.
-4. Current turn exits with cancelled/aborted outcome.
+1. If no tool is active, or every active tool is marked `cancel`, abort the active session context, clear older backlog/steering, and enqueue the newest message as a fresh turn.
+2. If any active tool is marked `block`, do not abort. Clear older backlog/steering and enqueue the newest message as urgent steering for the next safe model boundary or residual fallback.
+3. `/stop`, `/kill`, `chat.abort`, rotate, delete, and reset remain unconditional operator aborts.
 
 ### `steer-backlog` / `steer+backlog`
 
-Implementation must choose and document one of these semantics:
-
-- **Compatibility option**: leave as current post-turn backlog aliases.
-- **Extended steering option**: steer while the active mailbox has capacity; overflow becomes follow-up backlog.
-
-The first implementation should prefer compatibility unless product requirements explicitly call for overflow steering.
+These remain compatibility aliases for post-turn backlog behavior. They do not use same-run mailbox injection or mailbox-overflow fallback.
 
 ## Active-Run Steering Mailbox
 
-Add a daemon/runtime registry keyed by session ID. It should be separate from `SessionQueue` and `chatAbortRegistry`.
+The daemon/runtime registry is keyed by session ID and separate from `SessionQueue` and `chatAbortRegistry`.
 
-Suggested item shape:
+Item shape:
 
 ```go
 type SteeringMessage struct {
@@ -112,10 +101,11 @@ type SteeringMessage struct {
     AgentID string
     ToolProfile string
     EnabledTools []string
-    CreatedAt time.Time
-    Source string // dm, channel, cron, task-notification, etc.
+    CreatedAt int64
+    EnqueuedAt time.Time
+    Source string // dm, channel
     Priority SteeringPriority // normal, urgent
-    Meta bool
+    SummaryLine string
 }
 ```
 
@@ -125,7 +115,8 @@ Required behavior:
 - Bounded capacity with explicit drop/overflow policy.
 - Event ID dedupe for Nostr duplicate delivery.
 - Non-blocking drain; the active loop must never wait for steering input.
-- Cleanup when a session turn ends, aborts, rotates, or is deleted.
+- Cleanup when a session resets, rotates, or is deleted.
+- Residual drain after a turn ends before normal backlog drain.
 
 ## Loop Drain Point
 
@@ -137,13 +128,11 @@ In `RunAgenticLoop`, the natural boundaries are before each `Provider.Chat(...)`
 - iterative call after tool batch completion, pruning, and budget enforcement
 - forced-summary call
 
-Preferred implementation:
+Shipped implementation:
 
-1. Add a steering drain hook to `AgenticLoopConfig`.
-2. Wrap the loop-local `ChatProvider` with a decorator inside `RunAgenticLoop`.
-3. The decorator drains pending steering messages before each `Chat(...)`, appends them to the message slice, then delegates.
-
-This avoids duplicating drain code at every provider call site and prevents future model-call paths from skipping steering by accident.
+1. `AgenticLoopConfig` has a `SteeringDrain` hook.
+2. `RunAgenticLoop` explicitly drains at each provider call site so force-summary ordering remains correct.
+3. Drained messages are appended to the message slice as user input before the provider call.
 
 ## Message Formatting
 
@@ -192,18 +181,20 @@ Add deterministic tests for:
 1. Busy `steer` enqueues into the active-run mailbox instead of dropping.
 2. `RunAgenticLoop` drains queued steering after tool results and before the second model call.
 3. Drained steering is not interleaved before required tool-result messages.
-4. `interrupt` still aborts and restarts rather than same-run steering.
+4. `interrupt` aborts when no active tool is blocking and defers as urgent steering when a blocking tool is active.
 5. Event IDs dedupe repeated Nostr deliveries.
 6. Mailbox capacity/drop policy is enforced.
 7. Tool interrupt policy cancels only when all running tools permit `cancel`.
 8. No tests use sleeps to wait for async delivery; inject events/state directly.
 
-## Migration Plan
+## Observability
 
-1. Add mailbox primitives and unit tests.
-2. Thread a steering drain hook from daemon/session turn construction into `AgenticLoopConfig`.
-3. Implement loop-local provider decorator/drain behavior.
-4. Change DM/channel busy `steer` handling from drop to mailbox enqueue.
-5. Wire tool interrupt policy into active tool execution and urgent interrupt handling.
-6. Update docs and parity tests for queue modes.
-7. Add observability: logs/counters for enqueued, drained, deduped, dropped, and overflowed steering messages.
+Logs and Prometheus counters cover the steering outcomes operators need to reconstruct behavior:
+
+- `metiq_steering_enqueued_total`
+- `metiq_steering_drained_total`
+- `metiq_steering_deduped_total`
+- `metiq_steering_dropped_total`
+- `metiq_steering_overflowed_total`
+- `metiq_steering_urgent_aborted_total`
+- `metiq_steering_urgent_deferred_total`

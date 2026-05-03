@@ -51,12 +51,22 @@ type SteeringMessage struct {
 }
 
 // SteeringMailboxStats exposes deterministic in-memory accounting for mailbox
-// outcomes. It is intentionally local; daemon metrics are wired by later beads.
+// outcomes.
 type SteeringMailboxStats struct {
 	Enqueued int
 	Drained  int
 	Deduped  int
 	Dropped  int
+}
+
+// SteeringMailboxEnqueueOutcome describes the result of a single enqueue while
+// the mailbox lock was held. Daemon metrics use this instead of comparing Stats
+// snapshots, which can race with concurrent enqueues on the same session.
+type SteeringMailboxEnqueueOutcome struct {
+	Accepted   bool
+	Deduped    bool
+	Dropped    int
+	Overflowed bool
 }
 
 // SteeringMailbox is a per-session active-run mailbox for messages that arrive
@@ -90,33 +100,45 @@ func NewSteeringMailbox(cap int, policy QueueDropPolicy) *SteeringMailbox {
 // Enqueue adds a steering message to the mailbox. Returns true if accepted,
 // false when the message was deduped or dropped by capacity policy.
 func (m *SteeringMailbox) Enqueue(msg SteeringMessage) bool {
+	return m.EnqueueWithOutcome(msg).Accepted
+}
+
+// EnqueueWithOutcome adds a steering message and returns the exact outcome for
+// this operation.
+func (m *SteeringMailbox) EnqueueWithOutcome(msg SteeringMessage) SteeringMailboxEnqueueOutcome {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	outcome := SteeringMailboxEnqueueOutcome{}
 	now := time.Now()
 	m.pruneRecentIDs(now)
 	if msg.EventID != "" {
 		for _, item := range m.items {
 			if item.EventID != "" && item.EventID == msg.EventID {
 				m.stats.Deduped++
-				return false
+				outcome.Deduped = true
+				return outcome
 			}
 		}
 		if seenAt, ok := m.recentIDs[msg.EventID]; ok && now.Sub(seenAt) <= m.seenTTL {
 			m.stats.Deduped++
-			return false
+			outcome.Deduped = true
+			return outcome
 		}
 	}
 
 	if m.cap > 0 && len(m.items) >= m.cap {
+		outcome.Overflowed = true
 		switch m.dropPolicy {
 		case QueueDropNewest:
 			m.stats.Dropped++
-			return false
+			outcome.Dropped++
+			return outcome
 		case QueueDropOldest:
 			if len(m.items) > 0 {
 				m.items = m.items[1:]
 				m.stats.Dropped++
+				outcome.Dropped++
 			}
 		default: // QueueDropSummarize
 			if len(m.items) > 0 {
@@ -131,6 +153,7 @@ func (m *SteeringMailbox) Enqueue(msg SteeringMessage) bool {
 					m.droppedLines = m.droppedLines[len(m.droppedLines)-maxDroppedLines:]
 				}
 				m.stats.Dropped++
+				outcome.Dropped++
 			}
 		}
 	}
@@ -147,7 +170,8 @@ func (m *SteeringMailbox) Enqueue(msg SteeringMessage) bool {
 		m.recentIDs[msg.EventID] = now
 	}
 	m.stats.Enqueued++
-	return true
+	outcome.Accepted = true
+	return outcome
 }
 
 // Drain returns and removes all staged steering messages. Items are ordered by
