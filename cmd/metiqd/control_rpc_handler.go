@@ -13,12 +13,13 @@ import (
 
 	acppkg "metiq/internal/acp"
 	"metiq/internal/agent"
+	"metiq/internal/autoreply"
 	"metiq/internal/canvas"
-	"metiq/internal/gateway/channels"
 	ctxengine "metiq/internal/context"
-	hookspkg "metiq/internal/hooks"
+	"metiq/internal/gateway/channels"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
+	hookspkg "metiq/internal/hooks"
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
 	nostruntime "metiq/internal/nostr/runtime"
@@ -28,19 +29,20 @@ import (
 )
 
 type controlRPCDeps struct {
-	dmBus          nostruntime.DMTransport
-	controlBus     *nostruntime.ControlRPCBus
-	chatCancels    *chatAbortRegistry
-	usageState     *usageTracker
-	logBuffer      *runtimeLogBuffer
-	channelState   *channelRuntimeState
-	docsRepo       *state.DocsRepository
-	transcriptRepo *state.TranscriptRepository
-	memoryIndex    memory.Store
-	configState    *runtimeConfigStore
-	tools          *agent.ToolRegistry
-	pluginMgr      *pluginmanager.GojaPluginManager
-	startedAt      time.Time
+	dmBus             nostruntime.DMTransport
+	controlBus        *nostruntime.ControlRPCBus
+	chatCancels       *chatAbortRegistry
+	steeringMailboxes *autoreply.SteeringMailboxRegistry
+	usageState        *usageTracker
+	logBuffer         *runtimeLogBuffer
+	channelState      *channelRuntimeState
+	docsRepo          *state.DocsRepository
+	transcriptRepo    *state.TranscriptRepository
+	memoryIndex       memory.Store
+	configState       *runtimeConfigStore
+	tools             *agent.ToolRegistry
+	pluginMgr         *pluginmanager.GojaPluginManager
+	startedAt         time.Time
 
 	sessionStore     *state.SessionStore
 	hooksMgr         hooksEventFirer
@@ -63,19 +65,19 @@ type controlRPCDeps struct {
 	services *daemonServices
 
 	// Operation registries — replace direct global reads in RPC sub-handlers.
-	ops              *operationsRegistry
-	cronJobs         *cronRegistry
-	execApprovals    *execApprovalsRegistry
-	wizards          *wizardRegistry
-	contextEngine    ctxengine.Engine
-	mcpOps           *mcpOpsController
-	mcpAuth          *mcpAuthController
-	nodeInvocations  *nodeInvocationRegistry
-	nodePending      *nodepending.Store
-	canvasHost       *canvas.Host
-	channels         *channels.Registry
-	nostrHub         *nostruntime.NostrHub
-	keyer            nostr.Keyer
+	ops             *operationsRegistry
+	cronJobs        *cronRegistry
+	execApprovals   *execApprovalsRegistry
+	wizards         *wizardRegistry
+	contextEngine   ctxengine.Engine
+	mcpOps          *mcpOpsController
+	mcpAuth         *mcpAuthController
+	nodeInvocations *nodeInvocationRegistry
+	nodePending     *nodepending.Store
+	canvasHost      *canvas.Host
+	channels        *channels.Registry
+	nostrHub        *nostruntime.NostrHub
+	keyer           nostr.Keyer
 }
 
 type hooksEventFirer interface {

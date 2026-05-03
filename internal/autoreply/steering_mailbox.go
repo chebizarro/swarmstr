@@ -251,6 +251,13 @@ func (r *SteeringMailboxRegistry) Get(sessionID string) *SteeringMailbox {
 	return mailbox
 }
 
+// GetIfExists returns the existing mailbox for sessionID without allocating one.
+func (r *SteeringMailboxRegistry) GetIfExists(sessionID string) *SteeringMailbox {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mailboxes[sessionID]
+}
+
 // Delete removes the mailbox for sessionID.
 func (r *SteeringMailboxRegistry) Delete(sessionID string) {
 	r.mu.Lock()

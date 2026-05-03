@@ -20,17 +20,17 @@ import (
 	"metiq/internal/canvas"
 	ctxengine "metiq/internal/context"
 	"metiq/internal/gateway/channels"
+	"metiq/internal/gateway/nodepending"
 	gatewayws "metiq/internal/gateway/ws"
 	hookspkg "metiq/internal/hooks"
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
 	"metiq/internal/nostr/dvm"
 	"metiq/internal/nostr/nip38"
-	"metiq/internal/gateway/nodepending"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/nostr/secure"
 	pluginmanager "metiq/internal/plugins/manager"
 	pluginservice "metiq/internal/plugins/service"
-	"metiq/internal/nostr/secure"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/store/state"
 	ttspkg "metiq/internal/tts"
@@ -103,6 +103,7 @@ type relayPublishDebounce struct {
 // sessionServices groups session-related runtime dependencies.
 type sessionServices struct {
 	sessionTurns      *autoreply.SessionTurns
+	steeringMailboxes *autoreply.SteeringMailboxRegistry
 	agentRuntime      agent.Runtime
 	agentRegistry     *agent.AgentRuntimeRegistry
 	sessionMemRuntime *sessionMemoryRuntime
@@ -116,10 +117,10 @@ type sessionServices struct {
 	subagents         *SubagentRegistry
 
 	// Operation registries
-	ops           *operationsRegistry
-	cronJobs      *cronRegistry
-	execApprovals *execApprovalsRegistry
-	wizards       *wizardRegistry
+	ops             *operationsRegistry
+	cronJobs        *cronRegistry
+	execApprovals   *execApprovalsRegistry
+	wizards         *wizardRegistry
 	nodeInvocations *nodeInvocationRegistry
 	nodePending     *nodepending.Store
 }
