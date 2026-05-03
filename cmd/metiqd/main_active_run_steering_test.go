@@ -166,6 +166,147 @@ func TestHandleBusySteerEnqueuesMailboxWithoutPostTurnQueue(t *testing.T) {
 	}
 }
 
+func TestRestoreDrainedSteeringAfterProviderFailureBypassesRecentDedupe(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "steer", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	drained, err := runAgentLoopThatFailsAfterSteeringDrain(t, mailboxes, settings, false)
+	if err == nil {
+		t.Fatal("expected provider failure after steering drain")
+	}
+	if len(drained) != 1 || drained[0].EventID != "evt-drained" {
+		t.Fatalf("expected one tracked drained steering item, got %+v", drained)
+	}
+	if enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-fail", Text: "duplicate", EventID: "evt-drained", Source: "dm"}) {
+		t.Fatal("expected normal enqueue to dedupe the drained event id")
+	}
+	if restored := restoreDrainedSteering(mailboxes, settings, "sess-fail", drained); restored != 1 {
+		t.Fatalf("expected restore to bypass recent dedupe for accepted drained input, got %d", restored)
+	}
+	pending := drainSteeringAsPending(mailboxes, "sess-fail")
+	if len(pending) != 1 || pending[0].EventID != "evt-drained" || pending[0].Text != "please preserve me" {
+		t.Fatalf("restored steering was not available for retry: %+v", pending)
+	}
+}
+
+func TestRestoreDrainedSteeringAfterToolErrorThenProviderFailure(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "steer", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	drained, err := runAgentLoopThatFailsAfterSteeringDrain(t, mailboxes, settings, true)
+	if err == nil {
+		t.Fatal("expected provider failure after tool error and steering drain")
+	}
+	if restored := restoreDrainedSteering(mailboxes, settings, "sess-fail", drained); restored != 1 {
+		t.Fatalf("expected drained steering restored after tool/provider failure, got %d", restored)
+	}
+	pending := drainSteeringAsPending(mailboxes, "sess-fail")
+	if len(pending) != 1 || pending[0].EventID != "evt-drained" {
+		t.Fatalf("expected restored pending steering after tool/provider failure, got %+v", pending)
+	}
+}
+
+func TestDrainedSteeringNotRestoredAfterImmediateInterruptInvalidatesStaleInput(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "interrupt", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	chatCancels := newChatAbortRegistry()
+	activeTools := newActiveToolRegistry()
+	q := autoreply.NewSessionQueue(10, autoreply.QueueDropSummarize)
+
+	drained := []autoreply.SteeringMessage{{Text: "stale inline steering", EventID: "evt-stale-inline", SenderID: "alice", Source: "dm", CreatedAt: 1}}
+	ctx, release := chatCancels.Begin("sess-interrupt-drain", context.Background())
+	defer release()
+	if handleBusyInterrupt(chatCancels, activeTools, mailboxes, q, settings, activeRunSteeringInput{SessionID: "sess-interrupt-drain", Text: "newest interrupt", EventID: "evt-newest", SenderID: "alice", Source: "dm", CreatedAt: 2}) {
+		t.Fatal("no active tools should abort immediately")
+	}
+	if ctx.Err() == nil || !errors.Is(context.Cause(ctx), agent.ErrTurnInterrupted) {
+		t.Fatalf("expected interrupt cause, err=%v cause=%v", ctx.Err(), context.Cause(ctx))
+	}
+	if shouldRestoreDrainedSteering(agent.ErrTurnInterrupted) {
+		restoreDrainedSteering(mailboxes, settings, "sess-interrupt-drain", drained)
+	}
+	q.Enqueue(autoreply.PendingTurn{Text: "newest interrupt", EventID: "evt-newest", SenderID: "alice", CreatedAt: 2})
+	if pending := drainSteeringAsPending(mailboxes, "sess-interrupt-drain"); len(pending) != 0 {
+		t.Fatalf("immediate interrupt should not resurrect stale drained steering: %+v", pending)
+	}
+	pending := q.Dequeue()
+	if len(pending) != 1 || pending[0].EventID != "evt-newest" {
+		t.Fatalf("expected only newest interrupt restart turn to survive, got %+v", pending)
+	}
+}
+
+func runAgentLoopThatFailsAfterSteeringDrain(t *testing.T, mailboxes *autoreply.SteeringMailboxRegistry, settings queueRuntimeSettings, failTool bool) ([]autoreply.SteeringMessage, error) {
+	t.Helper()
+	tracker := &activeRunSteeringDrainTracker{}
+	provider := &providerFailureAfterSteeringDrain{
+		t:         t,
+		mailboxes: mailboxes,
+		settings:  settings,
+		failTool:  failTool,
+	}
+	_, err := agent.RunAgenticLoop(context.Background(), agent.AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []agent.LLMMessage{{Role: "user", Content: "start"}},
+		Tools:           []agent.ToolDefinition{{Name: "probe"}},
+		Executor:        toolExecutorForSteeringFailure{fail: failTool},
+		MaxIterations:   2,
+		LogPrefix:       "test",
+		SessionID:       "sess-fail",
+		SteeringDrain:   makeActiveRunSteeringDrain(mailboxes, "sess-fail", tracker.Record),
+	})
+	return tracker.Snapshot(), err
+}
+
+type providerFailureAfterSteeringDrain struct {
+	t         *testing.T
+	mailboxes *autoreply.SteeringMailboxRegistry
+	settings  queueRuntimeSettings
+	failTool  bool
+	calls     int
+}
+
+func (p *providerFailureAfterSteeringDrain) Chat(_ context.Context, messages []agent.LLMMessage, _ []agent.ToolDefinition, _ agent.ChatOptions) (*agent.LLMResponse, error) {
+	p.calls++
+	switch p.calls {
+	case 1:
+		if !enqueueActiveRunSteering(p.mailboxes, p.settings, activeRunSteeringInput{SessionID: "sess-fail", Text: "please preserve me", EventID: "evt-drained", SenderID: "alice", Source: "dm", CreatedAt: 42}) {
+			p.t.Fatal("expected mid-run steering enqueue to be accepted")
+		}
+		return &agent.LLMResponse{NeedsToolResults: true, ToolCalls: []agent.ToolCall{{ID: "tc1", Name: "probe"}}}, nil
+	case 2:
+		if !llmMessagesContain(messages, "please preserve me") {
+			p.t.Fatalf("expected second provider call to include drained steering, got %+v", messages)
+		}
+		if p.failTool && !llmMessagesContain(messages, "error: tool failed") {
+			p.t.Fatalf("expected failed tool result before provider failure, got %+v", messages)
+		}
+		return nil, errors.New("provider failed after steering drain")
+	default:
+		p.t.Fatalf("unexpected provider call %d", p.calls)
+		return nil, errors.New("unexpected provider call")
+	}
+}
+
+type toolExecutorForSteeringFailure struct {
+	fail bool
+}
+
+func (e toolExecutorForSteeringFailure) Execute(context.Context, agent.ToolCall) (string, error) {
+	if e.fail {
+		return "", errors.New("tool failed")
+	}
+	return "tool ok", nil
+}
+
+func (e toolExecutorForSteeringFailure) Definitions() []agent.ToolDefinition { return nil }
+
+func llmMessagesContain(messages []agent.LLMMessage, needle string) bool {
+	for _, msg := range messages {
+		if strings.Contains(msg.Content, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestEnqueueActiveRunSteeringDedupesDuplicateEventIDs(t *testing.T) {
 	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
 	settings := queueRuntimeSettings{Mode: "steer", Cap: 10, Drop: autoreply.QueueDropSummarize}

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"metiq/internal/agent"
 	"metiq/internal/autoreply"
@@ -24,6 +26,38 @@ type activeRunSteeringInput struct {
 	EnabledTools []string
 	CreatedAt    int64
 	Priority     autoreply.SteeringPriority
+}
+
+type activeRunSteeringDrainTracker struct {
+	mu    sync.Mutex
+	items []autoreply.SteeringMessage
+}
+
+func (t *activeRunSteeringDrainTracker) Record(items []autoreply.SteeringMessage) {
+	if t == nil || len(items) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.items = append(t.items, cloneSteeringMessages(items)...)
+}
+
+func (t *activeRunSteeringDrainTracker) Snapshot() []autoreply.SteeringMessage {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return cloneSteeringMessages(t.items)
+}
+
+func (t *activeRunSteeringDrainTracker) Clear() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.items = nil
 }
 
 func enqueueActiveRunSteering(mailboxes *autoreply.SteeringMailboxRegistry, settings queueRuntimeSettings, input activeRunSteeringInput) bool {
@@ -136,7 +170,7 @@ func makeActiveRunSteeringDrain(mailboxes *autoreply.SteeringMailboxRegistry, se
 		}
 		metricspkg.SteeringDrained.Add(uint64(len(items)))
 		if onDrain != nil {
-			onDrain(append([]autoreply.SteeringMessage(nil), items...))
+			onDrain(cloneSteeringMessages(items))
 		}
 		out := make([]agent.InjectedUserInput, 0, len(items))
 		for _, item := range items {
@@ -145,6 +179,24 @@ func makeActiveRunSteeringDrain(mailboxes *autoreply.SteeringMailboxRegistry, se
 		log.Printf("active-run steering drained: session=%s items=%d", sessionID, len(out))
 		return out
 	}
+}
+
+func shouldRestoreDrainedSteering(turnErr error) bool {
+	return !errors.Is(turnErr, agent.ErrTurnInterrupted)
+}
+
+func restoreDrainedSteering(mailboxes *autoreply.SteeringMailboxRegistry, settings queueRuntimeSettings, sessionID string, items []autoreply.SteeringMessage) int {
+	if mailboxes == nil || strings.TrimSpace(sessionID) == "" || len(items) == 0 {
+		return 0
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	mailbox := mailboxes.Get(sessionID)
+	mailbox.Configure(settings.Cap, settings.Drop)
+	restored := mailbox.RestoreDrained(cloneSteeringMessages(items))
+	if restored > 0 {
+		log.Printf("active-run steering restored after turn error: session=%s items=%d", sessionID, restored)
+	}
+	return restored
 }
 
 func drainSteeringAsPending(mailboxes *autoreply.SteeringMailboxRegistry, sessionID string) []autoreply.PendingTurn {
@@ -166,6 +218,18 @@ func drainSteeringAsPending(mailboxes *autoreply.SteeringMailboxRegistry, sessio
 	}
 	log.Printf("active-run steering residual fallback: session=%s items=%d", strings.TrimSpace(sessionID), len(pending))
 	return pending
+}
+
+func cloneSteeringMessages(items []autoreply.SteeringMessage) []autoreply.SteeringMessage {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]autoreply.SteeringMessage, len(items))
+	copy(out, items)
+	for i := range out {
+		out[i].EnabledTools = append([]string(nil), out[i].EnabledTools...)
+	}
+	return out
 }
 
 func pendingTurnFromSteering(item autoreply.SteeringMessage) autoreply.PendingTurn {
