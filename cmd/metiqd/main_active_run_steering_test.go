@@ -123,6 +123,163 @@ func TestClearTransientSessionSteeringDeletesMailbox(t *testing.T) {
 	}
 }
 
+func TestHandleBusySteerEnqueuesMailboxWithoutPostTurnQueue(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "steer", Cap: 10, Drop: autoreply.QueueDropSummarize}
+
+	dmQ := autoreply.NewSessionQueue(10, autoreply.QueueDropSummarize)
+	if !handleBusySteer(mailboxes, dmQ, settings, activeRunSteeringInput{
+		SessionID: "sess-dm-busy",
+		Text:      "dm busy steer",
+		EventID:   "evt-dm-busy",
+		SenderID:  "alice",
+		Source:    "dm",
+	}) {
+		t.Fatal("expected DM busy steer to enqueue into active-run mailbox")
+	}
+	if dmQ.Len() != 0 {
+		t.Fatalf("DM busy steer should not enqueue post-turn backlog, got len=%d", dmQ.Len())
+	}
+	dmPending := drainSteeringAsPending(mailboxes, "sess-dm-busy")
+	if len(dmPending) != 1 || dmPending[0].Text != "dm busy steer" || dmPending[0].SenderID != "alice" {
+		t.Fatalf("DM busy steer did not route to mailbox with provenance: %+v", dmPending)
+	}
+
+	channelQ := autoreply.NewSessionQueue(10, autoreply.QueueDropSummarize)
+	if !handleBusySteer(mailboxes, channelQ, settings, activeRunSteeringInput{
+		SessionID: "sess-channel-busy",
+		Text:      "channel busy steer",
+		EventID:   "evt-channel-busy",
+		SenderID:  "bob",
+		ChannelID: "chan-1",
+		ThreadID:  "thread-1",
+		Source:    "channel",
+	}) {
+		t.Fatal("expected channel busy steer to enqueue into active-run mailbox")
+	}
+	if channelQ.Len() != 0 {
+		t.Fatalf("channel busy steer should not enqueue post-turn backlog, got len=%d", channelQ.Len())
+	}
+	channelInputs := makeActiveRunSteeringDrain(mailboxes, "sess-channel-busy", nil)(context.Background())
+	if len(channelInputs) != 1 || !strings.Contains(channelInputs[0].Content, "from bob") || !strings.Contains(channelInputs[0].Content, "channel busy steer") {
+		t.Fatalf("channel busy steer did not route to model-facing mailbox input: %+v", channelInputs)
+	}
+}
+
+func TestEnqueueActiveRunSteeringDedupesDuplicateEventIDs(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "steer", Cap: 10, Drop: autoreply.QueueDropSummarize}
+
+	if !enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-dupe", Text: "first delivery", EventID: "evt-dupe", Source: "dm"}) {
+		t.Fatal("expected first event delivery to be accepted")
+	}
+	if enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-dupe", Text: "duplicate delivery", EventID: "evt-dupe", Source: "dm"}) {
+		t.Fatal("expected duplicate event id to be rejected")
+	}
+
+	drain := makeActiveRunSteeringDrain(mailboxes, "sess-dupe", nil)
+	got := drain(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("expected one injected input after duplicate delivery, got %d", len(got))
+	}
+	if !strings.Contains(got[0].Content, "first delivery") || strings.Contains(got[0].Content, "duplicate delivery") {
+		t.Fatalf("duplicate event leaked into model input: %q", got[0].Content)
+	}
+	mailbox := mailboxes.GetIfExists("sess-dupe")
+	if mailbox == nil {
+		t.Fatal("expected mailbox to exist for stats")
+	}
+	if stats := mailbox.Stats(); stats.Enqueued != 1 || stats.Deduped != 1 || stats.Drained != 1 {
+		t.Fatalf("unexpected mailbox stats after duplicate delivery: %#v", stats)
+	}
+	if enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-dupe", Text: "duplicate after drain", EventID: "evt-dupe", Source: "dm"}) {
+		t.Fatal("expected recent event id to remain deduped after drain")
+	}
+}
+
+func TestEnqueueActiveRunSteeringRespectsRuntimeCapacityDropPolicy(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+
+	oldestSettings := queueRuntimeSettings{Mode: "steer", Cap: 1, Drop: autoreply.QueueDropOldest}
+	if !enqueueActiveRunSteering(mailboxes, oldestSettings, activeRunSteeringInput{SessionID: "sess-oldest", Text: "older", EventID: "evt-old", Source: "channel", SenderID: "alice", CreatedAt: 1}) {
+		t.Fatal("expected first oldest-policy enqueue to succeed")
+	}
+	if !enqueueActiveRunSteering(mailboxes, oldestSettings, activeRunSteeringInput{SessionID: "sess-oldest", Text: "newer", EventID: "evt-new", Source: "channel", SenderID: "bob", CreatedAt: 2}) {
+		t.Fatal("expected second oldest-policy enqueue to replace oldest item")
+	}
+	oldestPending := drainSteeringAsPending(mailboxes, "sess-oldest")
+	if len(oldestPending) != 1 || oldestPending[0].Text != "newer" || oldestPending[0].EventID != "evt-new" {
+		t.Fatalf("oldest drop policy should keep only newest item, got %+v", oldestPending)
+	}
+
+	newestSettings := queueRuntimeSettings{Mode: "steer", Cap: 1, Drop: autoreply.QueueDropNewest}
+	if !enqueueActiveRunSteering(mailboxes, newestSettings, activeRunSteeringInput{SessionID: "sess-newest", Text: "kept", EventID: "evt-kept", Source: "dm"}) {
+		t.Fatal("expected first newest-policy enqueue to succeed")
+	}
+	if enqueueActiveRunSteering(mailboxes, newestSettings, activeRunSteeringInput{SessionID: "sess-newest", Text: "dropped", EventID: "evt-dropped", Source: "dm"}) {
+		t.Fatal("expected newest-policy mailbox to reject incoming item when full")
+	}
+	newestInputs := makeActiveRunSteeringDrain(mailboxes, "sess-newest", nil)(context.Background())
+	if len(newestInputs) != 1 || !strings.Contains(newestInputs[0].Content, "kept") || strings.Contains(newestInputs[0].Content, "dropped") {
+		t.Fatalf("newest drop policy should keep original item only, got %+v", newestInputs)
+	}
+}
+
+func TestBusyInterruptAbortPathQueuesNewestRestartTurn(t *testing.T) {
+	chatCancels := newChatAbortRegistry()
+	activeTools := newActiveToolRegistry()
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	q := autoreply.NewSessionQueue(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "interrupt", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	ctx, release := chatCancels.Begin("sess-restart", context.Background())
+	defer release()
+	q.Enqueue(autoreply.PendingTurn{Text: "stale backlog", EventID: "evt-stale-backlog"})
+	enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-restart", Text: "stale steering", EventID: "evt-stale-steering", Source: "dm"})
+
+	input := activeRunSteeringInput{
+		SessionID:    "sess-restart",
+		Text:         "newest interrupt",
+		EventID:      "evt-newest",
+		SenderID:     "alice",
+		Source:       "dm",
+		ToolProfile:  "safe",
+		EnabledTools: []string{"read_file"},
+		CreatedAt:    42,
+	}
+	if handleBusyInterrupt(chatCancels, activeTools, mailboxes, q, settings, input) {
+		t.Fatal("no active tools should abort immediately rather than defer")
+	}
+	if ctx.Err() == nil || !errors.Is(context.Cause(ctx), agent.ErrTurnInterrupted) {
+		t.Fatalf("expected active turn to be cancelled with interrupt cause, err=%v cause=%v", ctx.Err(), context.Cause(ctx))
+	}
+
+	// This mirrors the busy interrupt branch in main.go: after handleBusyInterrupt
+	// clears stale state and aborts the current turn, the caller enqueues exactly
+	// the newest inbound input as the restart turn.
+	q.Enqueue(autoreply.PendingTurn{
+		Text:         input.Text,
+		EventID:      input.EventID,
+		SenderID:     input.SenderID,
+		ToolProfile:  input.ToolProfile,
+		EnabledTools: append([]string(nil), input.EnabledTools...),
+		CreatedAt:    input.CreatedAt,
+	})
+	pending := q.Dequeue()
+	if len(pending) != 1 {
+		t.Fatalf("expected exactly one restart turn after interrupt, got %+v", pending)
+	}
+	got := pending[0]
+	if got.Text != "newest interrupt" || got.EventID != "evt-newest" || got.SenderID != "alice" || got.ToolProfile != "safe" || got.CreatedAt != 42 {
+		t.Fatalf("restart turn did not preserve newest interrupt input: %+v", got)
+	}
+	if len(got.EnabledTools) != 1 || got.EnabledTools[0] != "read_file" {
+		t.Fatalf("restart turn did not preserve enabled tools: %+v", got.EnabledTools)
+	}
+	if steeringMailboxLen(mailboxes, "sess-restart") != 0 {
+		t.Fatal("expected stale steering to be cleared on immediate interrupt")
+	}
+}
+
 func TestHandleBusyInterruptAbortsWhenNoToolsActive(t *testing.T) {
 	chatCancels := newChatAbortRegistry()
 	activeTools := newActiveToolRegistry()

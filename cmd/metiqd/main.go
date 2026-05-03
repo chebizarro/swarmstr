@@ -3357,7 +3357,7 @@ func main() {
 		if !acquired {
 			switch queueSettings.Mode {
 			case "steer":
-				enqueueActiveRunSteering(steeringMailboxes, queueSettings, activeRunSteeringInput{
+				handleBusySteer(steeringMailboxes, sessionDMQ, queueSettings, activeRunSteeringInput{
 					SessionID:    sessionID,
 					Text:         combinedText,
 					EventID:      eventID,
@@ -5234,7 +5234,7 @@ func main() {
 		if !acquired {
 			switch queueSettings.Mode {
 			case "steer":
-				accepted := enqueueActiveRunSteering(steeringMailboxes, queueSettings, activeRunSteeringInput{
+				accepted := handleBusySteer(steeringMailboxes, sessionQ, queueSettings, activeRunSteeringInput{
 					SessionID: sessionID,
 					Text:      combined,
 					EventID:   eventID,
