@@ -68,11 +68,21 @@ type AgenticLoopConfig struct {
 	// HookInvoker emits OpenClaw before_tool_call/after_tool_call hooks.
 	HookInvoker *pluginhooks.HookInvoker
 
+	// SteeringDrain non-blockingly returns additional user input to inject at
+	// safe model boundaries. The drain must not wait for future input.
+	SteeringDrain func(context.Context) []InjectedUserInput
+
 	// DeferredTools holds tool definitions that are NOT sent inline with every
 	// API request. When non-nil, the loop automatically registers a tool_search
 	// built-in tool and dynamically adds discovered tools to subsequent LLM
 	// calls. Callers should populate this via PartitionTools.
 	DeferredTools *DeferredToolSet
+}
+
+// InjectedUserInput is additional user-visible input drained into an active
+// agentic loop at a safe model boundary.
+type InjectedUserInput struct {
+	Content string
 }
 
 // ToolExecResult holds the outcome of a single tool execution.
@@ -174,10 +184,11 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	// during this turn so callers can persist them for future context.
 	var historyDelta []ConversationMessage
 
-	// Initial LLM call — prune old tool context, then apply pre-flight gate
-	// to catch total overflow.
+	// Initial LLM call — prune old tool context, drain steering, then apply
+	// pre-flight gate to catch total overflow in the actual sent request.
 	{
 		messages = pruneContextBeforeLLM(messages, cfg.LogPrefix, cfg.ContextWindowTokens)
+		messages, _ = appendDrainedSteeringInput(ctx, messages, cfg.SessionID, cfg.SteeringDrain)
 		pf := EnforceTotalContextBudget(
 			GuardToolResultMessages(messages, cfg.ContextWindowTokens),
 			activeTools, cfg.ContextWindowTokens, DefaultCriticalToolNames())
@@ -291,12 +302,16 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			}
 		}
 
-		// Next LLM call — apply pre-flight gate then send.
+		// Next LLM call — drain steering, apply pre-flight gate to the augmented
+		// request, then send.
 		{
-			guardedMsgs := GuardToolResultMessages(messages, cfg.ContextWindowTokens)
+			augmentedMessages, steered := appendDrainedSteeringInput(ctx, messages, cfg.SessionID, cfg.SteeringDrain)
+			guardedMsgs := GuardToolResultMessages(augmentedMessages, cfg.ContextWindowTokens)
 			pf := EnforceTotalContextBudget(guardedMsgs, activeTools, cfg.ContextWindowTokens, DefaultCriticalToolNames())
-			// Update messages from pre-flight (history may have been trimmed).
-			if pf.HistoryTrimmed > 0 || pf.ToolsDropped > 0 {
+			// Preserve existing state semantics for pre-flight-only guard changes:
+			// the provider sees pf.Messages, but loop state is only replaced when
+			// history/tools were trimmed or when steering was actually injected.
+			if pf.HistoryTrimmed > 0 || pf.ToolsDropped > 0 || steered {
 				messages = pf.Messages
 				activeTools = pf.Tools
 			}
@@ -396,6 +411,30 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	resp.Outcome = TurnOutcomeCompletedWithTools
 	resp.StopReason = TurnStopReasonModelText
 	return resp, nil
+}
+
+func appendDrainedSteeringInput(ctx context.Context, messages []LLMMessage, sessionID string, drain func(context.Context) []InjectedUserInput) ([]LLMMessage, bool) {
+	if drain == nil {
+		return messages, false
+	}
+	inputs := drain(ctx)
+	if len(inputs) == 0 {
+		return messages, false
+	}
+	out := append([]LLMMessage(nil), messages...)
+	added := false
+	for _, input := range inputs {
+		content := strings.TrimSpace(input.Content)
+		if content == "" {
+			continue
+		}
+		out = append(out, LLMMessage{Role: "user", Content: WrapExternalSessionPromptData(sessionID, content)})
+		added = true
+	}
+	if !added {
+		return messages, false
+	}
+	return out, true
 }
 
 func pruneContextBeforeLLM(messages []LLMMessage, logPrefix string, contextWindowTokens int) []LLMMessage {
@@ -772,6 +811,10 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 		}
 	}
 
+	// Drain steering before the synthetic summary prompt so the summary
+	// instruction remains the final user message.
+	messages, _ = appendDrainedSteeringInput(ctx, messages, cfg.SessionID, cfg.SteeringDrain)
+
 	// Add summary prompt.
 	messages = append(messages, LLMMessage{
 		Role:    "user",
@@ -879,6 +922,7 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 		LastAssistantTime:   turn.LastAssistantTime,
 		DeferredTools:       turn.DeferredTools,
 		HookInvoker:         turn.HookInvoker,
+		SteeringDrain:       turn.SteeringDrain,
 	})
 	if err != nil {
 		return ProviderResult{}, err

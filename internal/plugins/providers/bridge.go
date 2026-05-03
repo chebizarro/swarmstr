@@ -177,7 +177,7 @@ func (p *PluginProviderBridge) Generate(ctx context.Context, turn agent.Turn) (a
 			maxTokens = 16000
 		}
 	}
-	resp, err := agent.RunAgenticLoop(ctx, agent.AgenticLoopConfig{Provider: p, InitialMessages: messages, Tools: turn.Tools, Executor: turn.Executor, Options: agent.ChatOptions{MaxTokens: maxTokens, ThinkingBudget: turn.ThinkingBudget, CacheSystem: true, CacheTools: true}, MaxIterations: turn.MaxAgenticIterations, ModelID: p.effectiveModelID(), LogPrefix: "plugin-provider:" + p.providerID, SessionID: turn.SessionID, TurnID: turn.TurnID, ToolEventSink: turn.ToolEventSink, ContextWindowTokens: turn.ContextWindowTokens, Trace: turn.Trace, LastAssistantTime: turn.LastAssistantTime, DeferredTools: turn.DeferredTools})
+	resp, err := agent.RunAgenticLoop(ctx, agent.AgenticLoopConfig{Provider: p, InitialMessages: messages, Tools: turn.Tools, Executor: turn.Executor, Options: agent.ChatOptions{MaxTokens: maxTokens, ThinkingBudget: turn.ThinkingBudget, CacheSystem: true, CacheTools: true}, MaxIterations: turn.MaxAgenticIterations, ModelID: p.effectiveModelID(), LogPrefix: "plugin-provider:" + p.providerID, SessionID: turn.SessionID, TurnID: turn.TurnID, ToolEventSink: turn.ToolEventSink, ContextWindowTokens: turn.ContextWindowTokens, Trace: turn.Trace, LastAssistantTime: turn.LastAssistantTime, DeferredTools: turn.DeferredTools, SteeringDrain: turn.SteeringDrain})
 	if err != nil {
 		return agent.ProviderResult{}, err
 	}

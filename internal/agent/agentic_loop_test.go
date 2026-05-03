@@ -1056,6 +1056,158 @@ func TestRunAgenticLoop_ForceSummary(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_SteeringDrainInitialCall(t *testing.T) {
+	provider := &capturingChatProvider{
+		responses: []*LLMResponse{{Content: "direct answer", NeedsToolResults: false}},
+	}
+	drainCalls := 0
+	drain := func(context.Context) []InjectedUserInput {
+		drainCalls++
+		if drainCalls == 1 {
+			return []InjectedUserInput{{Content: "[Additional user input received while you were working]\ninitial steering"}}
+		}
+		return nil
+	}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "start"}},
+		Executor:        &mockToolExecutor{},
+		SteeringDrain:   drain,
+		LogPrefix:       "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "direct answer" {
+		t.Fatalf("got %q, want direct answer", resp.Content)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("expected one provider call, got %d", len(provider.calls))
+	}
+	last := provider.calls[0][len(provider.calls[0])-1]
+	if last.Role != "user" || !strings.Contains(last.Content, "initial steering") {
+		t.Fatalf("expected drained steering as final initial-call user message, got %+v", last)
+	}
+}
+
+func TestRunAgenticLoop_SteeringDrainAfterToolResultsBeforeNextCall(t *testing.T) {
+	provider := &capturingChatProvider{
+		responses: []*LLMResponse{
+			{NeedsToolResults: true, ToolCalls: []ToolCall{{ID: "tc1", Name: "read_file"}}},
+			{Content: "done", NeedsToolResults: false},
+		},
+	}
+	executor := &mockToolExecutor{results: map[string]string{"read_file": "tool output"}}
+	drainCalls := 0
+	largeSteering := "[Additional user input received while you were working]\n" + strings.Repeat("please account for this ", 35)
+	drain := func(context.Context) []InjectedUserInput {
+		drainCalls++
+		if drainCalls == 2 {
+			return []InjectedUserInput{{Content: largeSteering}}
+		}
+		return nil
+	}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider: provider,
+		InitialMessages: []LLMMessage{
+			{Role: "user", Content: strings.Repeat("old-history ", 60)},
+			{Role: "assistant", Content: "prior answer"},
+			{Role: "user", Content: "use a tool"},
+		},
+		Executor:            executor,
+		SteeringDrain:       drain,
+		LogPrefix:           "test",
+		ContextWindowTokens: 1_000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("got %q, want done", resp.Content)
+	}
+	if len(provider.calls) != 2 {
+		t.Fatalf("expected two provider calls, got %d", len(provider.calls))
+	}
+	if containsMessageContent(provider.calls[0], "please account for this") {
+		t.Fatal("steering injected into the first provider call; want only the next model boundary")
+	}
+	second := provider.calls[1]
+	if len(second) < 2 {
+		t.Fatalf("second call too short: %+v", second)
+	}
+	toolResult := second[len(second)-2]
+	steering := second[len(second)-1]
+	if toolResult.Role != "tool" || toolResult.ToolCallID != "tc1" || toolResult.Content != "tool output" {
+		t.Fatalf("expected required tool result immediately before steering, got %+v", toolResult)
+	}
+	if steering.Role != "user" || !strings.Contains(steering.Content, "please account for this") {
+		t.Fatalf("expected drained steering as final user message, got %+v", steering)
+	}
+	if containsMessageContent(second, "old-history") {
+		t.Fatal("expected post-steering preflight to trim older history from the sent request")
+	}
+}
+
+func TestRunAgenticLoop_SteeringDrainForceSummaryKeepsSummaryPromptLast(t *testing.T) {
+	provider := &capturingForceSummaryProvider{}
+	executor := &mockToolExecutor{results: map[string]string{"tool": "tool output"}}
+	drainCalls := 0
+	drain := func(context.Context) []InjectedUserInput {
+		drainCalls++
+		if drainCalls == 3 {
+			return []InjectedUserInput{{Content: "[Additional user input received while you were working]\ninclude this in the summary"}}
+		}
+		return nil
+	}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "summarize"}},
+		Tools:           []ToolDefinition{{Name: "tool"}},
+		Executor:        executor,
+		MaxIterations:   1,
+		ForceText:       true,
+		SteeringDrain:   drain,
+		LogPrefix:       "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "forced summary response" {
+		t.Fatalf("got %q, want forced summary response", resp.Content)
+	}
+	if len(provider.summaryMessages) == 0 {
+		t.Fatal("expected to capture force-summary provider messages")
+	}
+	msgs := provider.summaryMessages
+	if len(msgs) < 4 {
+		t.Fatalf("summary call too short: %+v", msgs)
+	}
+	last := msgs[len(msgs)-1]
+	steering := msgs[len(msgs)-2]
+	pendingTool := msgs[len(msgs)-3]
+	if !strings.Contains(last.Content, "Please summarise your findings") {
+		t.Fatalf("expected synthetic summary prompt last, got %+v", last)
+	}
+	if steering.Role != "user" || !strings.Contains(steering.Content, "include this in the summary") {
+		t.Fatalf("expected steering immediately before summary prompt, got %+v", steering)
+	}
+	if pendingTool.Role != "tool" || pendingTool.Content != "tool output" {
+		t.Fatalf("expected pending tool result before steering, got %+v", pendingTool)
+	}
+}
+
+func containsMessageContent(messages []LLMMessage, needle string) bool {
+	for _, msg := range messages {
+		if strings.Contains(msg.Content, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // ── Deferred tool discovery test ────────────────────────────────────────────
 
 // toolCapturingProvider records the tool lists passed to each Chat call.
@@ -1211,6 +1363,23 @@ type forceSummaryProvider struct {
 func (p *forceSummaryProvider) Chat(_ context.Context, _ []LLMMessage, tools []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
 	p.callCount++
 	if tools == nil {
+		return &LLMResponse{Content: "forced summary response"}, nil
+	}
+	return &LLMResponse{
+		ToolCalls:        []ToolCall{{ID: fmt.Sprintf("tc%d", p.callCount), Name: "tool"}},
+		NeedsToolResults: true,
+	}, nil
+}
+
+type capturingForceSummaryProvider struct {
+	callCount       int
+	summaryMessages []LLMMessage
+}
+
+func (p *capturingForceSummaryProvider) Chat(_ context.Context, messages []LLMMessage, tools []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
+	p.callCount++
+	if tools == nil {
+		p.summaryMessages = append([]LLMMessage(nil), messages...)
 		return &LLMResponse{Content: "forced summary response"}, nil
 	}
 	return &LLMResponse{

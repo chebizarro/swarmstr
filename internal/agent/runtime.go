@@ -84,6 +84,10 @@ type Turn struct {
 	// HookInvoker emits OpenClaw before_tool_call/after_tool_call hooks.
 	HookInvoker *pluginhooks.HookInvoker
 
+	// SteeringDrain non-blockingly returns additional user input that arrived
+	// while this turn was active. Agentic loops drain it at model boundaries.
+	SteeringDrain func(context.Context) []InjectedUserInput
+
 	// DeferredTools holds tool definitions that are deferred from inline
 	// sending. When non-nil and non-empty, the agentic loop registers a
 	// tool_search built-in tool that lets the model discover deferred tools
