@@ -294,7 +294,9 @@ func parseISO8601Duration(s string) (time.Duration, error) {
 				return 0, fmt.Errorf("missing number before unit %c", c)
 			}
 			var n int
-			fmt.Sscanf(num, "%d", &n)
+			if _, err := fmt.Sscanf(num, "%d", &n); err != nil {
+				return 0, fmt.Errorf("invalid duration number %q", num)
+			}
 			num = ""
 
 			switch c {
@@ -308,6 +310,9 @@ func parseISO8601Duration(s string) (time.Duration, error) {
 				return 0, fmt.Errorf("unknown duration unit: %c", c)
 			}
 		}
+	}
+	if num != "" {
+		return 0, fmt.Errorf("missing duration unit after number %q", num)
 	}
 
 	return d, nil

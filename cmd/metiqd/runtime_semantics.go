@@ -11,8 +11,8 @@ import (
 
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
-	"metiq/internal/workspace"
 	"metiq/internal/store/state"
+	"metiq/internal/workspace"
 )
 
 type usageTracker struct {
@@ -1494,12 +1494,19 @@ func (r *operationsRegistry) SetHeartbeats(enabled *bool, intervalMS int) heartb
 }
 
 func (r *operationsRegistry) QueueHeartbeatWake(agentID, source, text, mode string) heartbeatRunnerStatus {
+	return r.QueueHeartbeatWakeAt(agentID, source, text, mode, time.Now().UnixMilli())
+}
+
+func (r *operationsRegistry) QueueHeartbeatWakeAt(agentID, source, text, mode string, atMS int64) heartbeatRunnerStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now().UnixMilli()
+	if atMS <= 0 {
+		atMS = now
+	}
 	r.lastHeartbeatWakeMS = now
 	r.pendingHeartbeatWakes = append(r.pendingHeartbeatWakes, heartbeatWakeRecord{
-		AtMS:    now,
+		AtMS:    atMS,
 		AgentID: strings.TrimSpace(agentID),
 		Source:  strings.TrimSpace(source),
 		Text:    strings.TrimSpace(text),
@@ -1525,6 +1532,28 @@ func (r *operationsRegistry) ConsumeHeartbeatWakes() []heartbeatWakeRecord {
 	wakes := append([]heartbeatWakeRecord(nil), r.pendingHeartbeatWakes...)
 	r.pendingHeartbeatWakes = nil
 	return wakes
+}
+
+func (r *operationsRegistry) ConsumeDueHeartbeatWakes(nowMS int64) []heartbeatWakeRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.pendingHeartbeatWakes) == 0 {
+		return nil
+	}
+	if nowMS <= 0 {
+		nowMS = time.Now().UnixMilli()
+	}
+	due := make([]heartbeatWakeRecord, 0, len(r.pendingHeartbeatWakes))
+	pending := make([]heartbeatWakeRecord, 0, len(r.pendingHeartbeatWakes))
+	for _, wake := range r.pendingHeartbeatWakes {
+		if wake.AtMS <= 0 || wake.AtMS <= nowMS {
+			due = append(due, wake)
+			continue
+		}
+		pending = append(pending, wake)
+	}
+	r.pendingHeartbeatWakes = pending
+	return due
 }
 
 func (r *operationsRegistry) MarkHeartbeatRun(tsMS int64) heartbeatRunnerStatus {
