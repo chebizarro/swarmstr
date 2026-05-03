@@ -4115,7 +4115,7 @@ func TestRotateSessionCoordinatedWaitsBeforeMutatingRouterState(t *testing.T) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		done <- rotateSessionCoordinated(ctx, "s1", "test", false, newChatAbortRegistry(), sessionRouter, &seen, nil, transcript, sessionStore, state.ConfigDoc{})
+		done <- rotateSessionCoordinated(ctx, "s1", "test", false, newChatAbortRegistry(), nil, sessionRouter, &seen, nil, transcript, sessionStore, state.ConfigDoc{})
 	}()
 
 	time.Sleep(75 * time.Millisecond)
@@ -4284,7 +4284,7 @@ func TestDeleteSessionCoordinatedWaitsAndDoesNotCreatePhantomSessionDoc(t *testi
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		done <- deleteSessionCoordinated(ctx, "missing", newChatAbortRegistry(), sessionRouter, &seen, docs, transcript, sessionStore)
+		done <- deleteSessionCoordinated(ctx, "missing", newChatAbortRegistry(), nil, sessionRouter, &seen, docs, transcript, sessionStore)
 	}()
 
 	time.Sleep(75 * time.Millisecond)

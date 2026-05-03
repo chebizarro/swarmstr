@@ -20,6 +20,7 @@ import (
 func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.ControlRPCInbound, method string, cfg state.ConfigDoc) (nostruntime.ControlRPCResult, bool, error) {
 	dmBus := h.deps.dmBus
 	chatCancels := h.deps.chatCancels
+	steeringMailboxes := h.deps.steeringMailboxes
 	usageState := h.deps.usageState
 	docsRepo := h.deps.docsRepo
 	transcriptRepo := h.deps.transcriptRepo
@@ -176,7 +177,9 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		if chatCancels != nil {
 			chatCancels.Abort(req.SessionID)
 		}
+		clearTransientSessionSteering(steeringMailboxes, req.SessionID)
 		err = withExclusiveSessionTurn(ctx, req.SessionID, 15*time.Second, func() error {
+			clearTransientSessionSteering(steeringMailboxes, req.SessionID)
 			var innerErr error
 			session, innerErr = updateExistingSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
 				session.LastInboundAt = 0
@@ -205,7 +208,9 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		if chatCancels != nil {
 			chatCancels.Abort(req.SessionID)
 		}
+		clearTransientSessionSteering(steeringMailboxes, req.SessionID)
 		err = withExclusiveSessionTurn(ctx, req.SessionID, 15*time.Second, func() error {
+			clearTransientSessionSteering(steeringMailboxes, req.SessionID)
 			_, innerErr := updateExistingSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
 				session.Meta = mergeSessionMeta(session.Meta, map[string]any{"deleted": true, "deleted_at": time.Now().Unix()})
 				return nil

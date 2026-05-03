@@ -110,6 +110,7 @@ func rotateSessionCoordinated(
 	reason string,
 	isACP bool,
 	chatCancels *chatAbortRegistry,
+	steeringMailboxes *autoreply.SteeringMailboxRegistry,
 	sessionRouter *agent.AgentSessionRouter,
 	seenChannelSessions *sync.Map,
 	hooksMgr *hookspkg.Manager,
@@ -129,9 +130,11 @@ func rotateSessionCoordinated(
 	if chatCancels != nil {
 		chatCancels.Abort(sessionID)
 	}
+	clearTransientSessionSteering(steeringMailboxes, sessionID)
 	// Clear cached prompt sections so the next turn rebuilds fresh.
 	clearPromptSectionCache()
 	return withExclusiveSessionTurn(ctx, sessionID, 15*time.Second, func() error {
+		clearTransientSessionSteering(steeringMailboxes, sessionID)
 		if seenChannelSessions != nil {
 			seenChannelSessions.Delete(sessionID)
 		}
@@ -250,6 +253,7 @@ func deleteSessionCoordinated(
 	ctx context.Context,
 	sessionID string,
 	chatCancels *chatAbortRegistry,
+	steeringMailboxes *autoreply.SteeringMailboxRegistry,
 	sessionRouter *agent.AgentSessionRouter,
 	seenChannelSessions *sync.Map,
 	docsRepo *state.DocsRepository,
@@ -259,7 +263,9 @@ func deleteSessionCoordinated(
 	if chatCancels != nil {
 		chatCancels.Abort(sessionID)
 	}
+	clearTransientSessionSteering(steeringMailboxes, sessionID)
 	return withExclusiveSessionTurn(ctx, sessionID, 15*time.Second, func() error {
+		clearTransientSessionSteering(steeringMailboxes, sessionID)
 		if sessionRouter != nil {
 			sessionRouter.Assign(sessionID, "")
 		}

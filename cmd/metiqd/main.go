@@ -2389,6 +2389,9 @@ func main() {
 	// dmQueues holds per-session pending-turn queues for DMs that arrive while
 	// the session turn slot is busy.  Mirrors channelQueues for the DM path.
 	dmQueues := autoreply.NewSessionQueueRegistry(10, autoreply.QueueDropSummarize)
+	// steeringMailboxes holds exact queue-mode "steer" input for active turns.
+	// Items are drained at agentic model boundaries, with post-turn fallback.
+	steeringMailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
 
 	// ── Session and node agent tools ─────────────────────────────────
 	// Registered here so they can close over sessionTurns and configState.
@@ -2742,7 +2745,7 @@ func main() {
 	// It returns the response string for the command.
 	rotateSession := func(cmdCtx context.Context, sessionID, reason string) string {
 		isACP := strings.HasPrefix(sessionID, "acp:")
-		if err := rotateSessionCoordinated(cmdCtx, sessionID, reason, isACP, chatCancels, sessionRouter, &seenChannelSessions, hooksMgr, transcriptRepo, sessionStore, configState.Get()); err != nil {
+		if err := rotateSessionCoordinated(cmdCtx, sessionID, reason, isACP, chatCancels, steeringMailboxes, sessionRouter, &seenChannelSessions, hooksMgr, transcriptRepo, sessionStore, configState.Get()); err != nil {
 			log.Printf("session rotation warning session=%s reason=%s err=%v", sessionID, reason, err)
 		}
 
@@ -3012,7 +3015,7 @@ func main() {
 				return "Usage: /session delete <session-id>", nil
 			}
 			target := strings.TrimSpace(cmd.Args[1])
-			if err := deleteSessionCoordinated(cmdCtx, target, chatCancels, sessionRouter, &seenChannelSessions, docsRepo, transcriptRepo, sessionStore); err != nil {
+			if err := deleteSessionCoordinated(cmdCtx, target, chatCancels, steeringMailboxes, sessionRouter, &seenChannelSessions, docsRepo, transcriptRepo, sessionStore); err != nil {
 				return fmt.Sprintf("⚠️  Failed to delete session: %v", err), nil
 			}
 			return fmt.Sprintf("🗑️ Session %s deleted.", target), nil
@@ -3353,10 +3356,22 @@ func main() {
 		if !acquired {
 			switch queueSettings.Mode {
 			case "steer":
-				log.Printf("dm session busy, dropped by steer mode: session=%s", sessionID)
+				enqueueActiveRunSteering(steeringMailboxes, queueSettings, activeRunSteeringInput{
+					SessionID:    sessionID,
+					Text:         combinedText,
+					EventID:      eventID,
+					SenderID:     senderID,
+					Source:       "dm",
+					AgentID:      strings.TrimSpace(overrideAgentID),
+					ToolProfile:  constraints.ToolProfile,
+					EnabledTools: append([]string(nil), constraints.EnabledTools...),
+					CreatedAt:    createdAt,
+					Priority:     autoreply.SteeringPriorityNormal,
+				})
 				return
 			case "interrupt":
 				chatCancels.Abort(sessionID)
+				clearTransientSessionSteering(steeringMailboxes, sessionID)
 				_ = sessionDMQ.Dequeue() // clear backlog before enqueueing latest
 			}
 			sessionDMQ.Enqueue(autoreply.PendingTurn{
@@ -3377,7 +3392,16 @@ func main() {
 		// arrived while this turn was processing are dispatched here.
 		var nextHandoffToken uint64
 		defer func() {
+			steeringPending := drainSteeringAsPending(steeringMailboxes, sessionID)
 			pending := sessionDMQ.Dequeue()
+			if len(steeringPending) > 0 {
+				combinedPending := append(append([]autoreply.PendingTurn(nil), steeringPending...), pending...)
+				first := combinedPending[0]
+				enqueuePendingTurns(sessionDMQ, combinedPending[1:])
+				log.Printf("dm active-run steering fallback dispatch: session=%s remaining=%d", sessionID, len(combinedPending)-1)
+				go runInboundTurn(ctx, sessionID, first.SenderID, first.Text, first.EventID, pendingTurnCreatedAt(first), replyFn, first.AgentID, turnToolConstraints{ToolProfile: first.ToolProfile, EnabledTools: append([]string(nil), first.EnabledTools...)}, nextHandoffToken)
+				return
+			}
 			if len(pending) == 0 {
 				return
 			}
@@ -3436,7 +3460,7 @@ func main() {
 
 		defer releaseTurnSlot()
 		defer func() {
-			if sessionDMQ.Len() > 0 {
+			if sessionDMQ.Len() > 0 || steeringMailboxLen(steeringMailboxes, sessionID) > 0 {
 				nextHandoffToken = turnHandoffs.Reserve(sessionID)
 			}
 		}()
@@ -3719,6 +3743,14 @@ func main() {
 				len(inlineTools), deferredTools.Count(), sessionID)
 		}
 
+		drainedSteeringMu := sync.Mutex{}
+		var drainedSteering []autoreply.SteeringMessage
+		recordDrainedSteering := func(items []autoreply.SteeringMessage) {
+			drainedSteeringMu.Lock()
+			drainedSteering = append(drainedSteering, items...)
+			drainedSteeringMu.Unlock()
+		}
+
 		baseTurn := agent.Turn{
 			SessionID:            sessionID,
 			TurnID:               eventID,
@@ -3733,6 +3765,7 @@ func main() {
 			ToolEventSink:        toolLifecycleEmitter(wsEmitter, activeAgentID),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
 			HookInvoker:          controlHookInvoker,
+			SteeringDrain:        makeActiveRunSteeringDrain(steeringMailboxes, sessionID, recordDrainedSteering),
 			LastAssistantTime:    lastAssistantTime,
 			DeferredTools:        deferredTools,
 		}
@@ -3800,6 +3833,40 @@ func main() {
 		// NIP-38: return to idle once the agent turn is complete.
 		if controlPresenceHeartbeat38 != nil {
 			controlPresenceHeartbeat38.SetIdle(ctx)
+		}
+
+		drainedSteeringMu.Lock()
+		inlineSteering := append([]autoreply.SteeringMessage(nil), drainedSteering...)
+		drainedSteeringMu.Unlock()
+		for _, steered := range inlineSteering {
+			if strings.ToLower(strings.TrimSpace(steered.Source)) != "dm" {
+				continue
+			}
+			steeredSender := strings.TrimSpace(steered.SenderID)
+			if steeredSender == "" {
+				steeredSender = senderID
+			}
+			steeredCreatedAt := steered.CreatedAt
+			if steeredCreatedAt <= 0 {
+				steeredCreatedAt = time.Now().Unix()
+			}
+			steeredEntryID := strings.TrimSpace(steered.EventID)
+			if steeredEntryID == "" {
+				steeredEntryID = synthesizeInboundEventID(steeredSender, steered.Text, steeredCreatedAt)
+			}
+			if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, nostruntime.InboundDM{
+				EventID:    steeredEntryID,
+				FromPubKey: steeredSender,
+				Text:       steered.Text,
+				CreatedAt:  steeredCreatedAt,
+			}); err != nil {
+				log.Printf("persist inline steering failed event=%s err=%v", steeredEntryID, err)
+			}
+			if controlContextEngine != nil {
+				if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{Role: "user", Content: steered.Text, ID: steeredEntryID, Unix: steeredCreatedAt}); ingErr != nil {
+					log.Printf("context engine ingest inline steering session=%s err=%v", sessionID, ingErr)
+				}
+			}
 		}
 
 		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
@@ -3897,6 +3964,18 @@ func main() {
 		if eventID != "" && createdAt > 0 && !strings.HasPrefix(eventID, "watch:") {
 			if err := tracker.MarkProcessed(ctx, docsRepo, eventID, createdAt); err != nil {
 				log.Printf("checkpoint update failed event=%s err=%v", eventID, err)
+			}
+		}
+		for _, steered := range inlineSteering {
+			if strings.ToLower(strings.TrimSpace(steered.Source)) != "dm" || strings.TrimSpace(steered.EventID) == "" {
+				continue
+			}
+			steeredCreatedAt := steered.CreatedAt
+			if steeredCreatedAt <= 0 {
+				steeredCreatedAt = time.Now().Unix()
+			}
+			if err := tracker.MarkProcessed(ctx, docsRepo, steered.EventID, steeredCreatedAt); err != nil {
+				log.Printf("checkpoint update failed inline steering event=%s err=%v", steered.EventID, err)
 			}
 		}
 	}
@@ -4267,6 +4346,7 @@ func main() {
 		emitterMu: &controlWsEmitterMu,
 		session: sessionServices{
 			sessionTurns:      controlSessionTurns,
+			steeringMailboxes: steeringMailboxes,
 			agentRuntime:      controlAgentRuntime,
 			agentRegistry:     controlAgentRegistry,
 			sessionMemRuntime: controlSessionMemoryRuntime,
@@ -4884,6 +4964,7 @@ func main() {
 			ToolEventSink:        toolLifecycleEmitter(wsEmitter, activeAgentID),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
 			HookInvoker:          controlHookInvoker,
+			SteeringDrain:        makeActiveRunSteeringDrain(steeringMailboxes, sessionID, nil),
 			LastAssistantTime:    chLastAssistantTime,
 			DeferredTools:        chDeferredTools,
 		}
@@ -5141,10 +5222,28 @@ func main() {
 		if !acquired {
 			switch queueSettings.Mode {
 			case "steer":
-				log.Printf("channel session busy, dropped by steer mode: session=%s", sessionID)
+				accepted := enqueueActiveRunSteering(steeringMailboxes, queueSettings, activeRunSteeringInput{
+					SessionID: sessionID,
+					Text:      combined,
+					EventID:   eventID,
+					SenderID:  senderID,
+					ChannelID: chID,
+					ThreadID:  threadID,
+					Source:    "channel",
+					CreatedAt: time.Now().Unix(),
+					Priority:  autoreply.SteeringPriorityNormal,
+				})
+				if accepted {
+					if rh, ok := rawHandle.(sdk.ReactionHandle); ok && eventID != "" {
+						if rErr := rh.AddReaction(ctx, eventID, "👀"); rErr != nil {
+							log.Printf("channel steer ack reaction error channel=%s err=%v", chID, rErr)
+						}
+					}
+				}
 				return
 			case "interrupt":
 				chatCancels.Abort(sessionID)
+				clearTransientSessionSteering(steeringMailboxes, sessionID)
 				_ = sessionQ.Dequeue()
 			}
 			// Enqueue for processing after the current turn finishes.
@@ -5180,6 +5279,26 @@ func main() {
 
 		// Run the initial turn.
 		_ = doChannelTurn(replyCtx, chID, senderID, sessionID, combined, eventID, handle, rawHandle)
+
+		// First, run residual active-run steering that did not reach a model boundary.
+		for {
+			steeringPending := drainSteeringAsPending(steeringMailboxes, sessionID)
+			if len(steeringPending) == 0 {
+				break
+			}
+			interrupted := false
+			for i, pt := range steeringPending {
+				queuedCtx := sdk.WithChannelReplyTarget(turnCtx, pt.SenderID)
+				if err := doChannelTurn(queuedCtx, chID, pt.SenderID, sessionID, pt.Text, pt.EventID, handle, rawHandle); err != nil {
+					enqueuePendingTurns(sessionQ, steeringPending[i+1:])
+					interrupted = true
+					break
+				}
+			}
+			if interrupted {
+				return
+			}
+		}
 
 		// Drain any messages that arrived while we were running.
 		for {
@@ -6525,19 +6644,20 @@ func handleControlRPCRequest(
 		}
 	}
 	deps := controlRPCDeps{
-		dmBus:          dmBus,
-		controlBus:     controlBus,
-		chatCancels:    chatCancels,
-		usageState:     usageState,
-		logBuffer:      logBuffer,
-		channelState:   channelState,
-		docsRepo:       docsRepo,
-		transcriptRepo: transcriptRepo,
-		memoryIndex:    memoryIndex,
-		configState:    configState,
-		tools:          tools,
-		pluginMgr:      pluginMgr,
-		startedAt:      startedAt,
+		dmBus:             dmBus,
+		controlBus:        controlBus,
+		chatCancels:       chatCancels,
+		steeringMailboxes: svc.session.steeringMailboxes,
+		usageState:        usageState,
+		logBuffer:         logBuffer,
+		channelState:      channelState,
+		docsRepo:          docsRepo,
+		transcriptRepo:    transcriptRepo,
+		memoryIndex:       memoryIndex,
+		configState:       configState,
+		tools:             tools,
+		pluginMgr:         pluginMgr,
+		startedAt:         startedAt,
 
 		sessionStore:     svc.session.sessionStore,
 		mediaTranscriber: svc.handlers.mediaTranscriber,
