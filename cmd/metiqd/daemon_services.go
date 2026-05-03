@@ -29,6 +29,7 @@ import (
 	"metiq/internal/gateway/nodepending"
 	nostruntime "metiq/internal/nostr/runtime"
 	pluginmanager "metiq/internal/plugins/manager"
+	pluginservice "metiq/internal/plugins/service"
 	"metiq/internal/nostr/secure"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/store/state"
@@ -135,6 +136,7 @@ type handlerServices struct {
 	pairingConfigMu    *sync.Mutex
 	hooksMgr           *hookspkg.Manager
 	pluginMgr          *pluginmanager.GojaPluginManager
+	pluginServiceMgr   *pluginservice.ServiceManager
 	mcpOps             *mcpOpsController
 	mcpAuth            *mcpAuthController
 	canvasHost         *canvas.Host
