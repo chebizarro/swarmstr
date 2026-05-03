@@ -11,6 +11,10 @@ import (
 	pluginhooks "metiq/internal/plugins/hooks"
 )
 
+// ErrTurnInterrupted marks an intentional user interrupt of an active turn.
+// It should classify as an aborted/cancelled turn rather than provider failure.
+var ErrTurnInterrupted = errors.New("turn interrupted by user input")
+
 // ToolCallRef identifies a tool invocation within an assistant message.
 // It mirrors the structure of ToolCall but stores args as a JSON string
 // for lossless serialisation in conversation history.
@@ -221,7 +225,7 @@ func ClassifyTurnError(err error) (TurnOutcome, TurnStopReason, bool) {
 			return te.Partial.Outcome, te.Partial.StopReason, true
 		}
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTurnInterrupted) {
 		return TurnOutcomeAborted, TurnStopReasonCancelled, true
 	}
 	return TurnOutcomeFailed, TurnStopReasonProviderError, true
@@ -356,7 +360,7 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 	}
 	gen, err := r.provider.Generate(ctx, turn)
 	if err != nil {
-		return TurnResult{}, err
+		return TurnResult{}, turnCancellationCause(ctx, err)
 	}
 	return r.buildResult(ctx, gen, trackedTools)
 }
@@ -399,7 +403,7 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		}
 	}
 	if err != nil {
-		return TurnResult{}, err
+		return TurnResult{}, turnCancellationCause(ctx, err)
 	}
 
 	// When the streaming response produced tool calls, the single-shot stream
@@ -415,7 +419,7 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	if len(gen.ToolCalls) > 0 && trackedTools != nil {
 		gen, err = r.provider.Generate(ctx, turn)
 		if err != nil {
-			return TurnResult{}, err
+			return TurnResult{}, turnCancellationCause(ctx, err)
 		}
 		if onChunk != nil && gen.Text != "" {
 			onChunk(gen.Text)

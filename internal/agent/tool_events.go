@@ -36,7 +36,15 @@ const (
 	ToolDecisionKindScheduler         ToolDecisionKind = "scheduler"
 	ToolDecisionKindLoopDetection     ToolDecisionKind = "loop_detection"
 	ToolDecisionKindMutationDuplicate ToolDecisionKind = "mutation_duplicate"
+	ToolDecisionKindInterruptPolicy   ToolDecisionKind = "interrupt_policy"
 )
+
+// ToolInterruptPolicyDecision records the effective interrupt policy for a
+// tool call at the moment execution starts.
+type ToolInterruptPolicyDecision struct {
+	Kind              ToolDecisionKind      `json:"kind"`
+	InterruptBehavior ToolInterruptBehavior `json:"interrupt_behavior"`
+}
 
 // ToolSchedulerDecision records how the shared src-shaped scheduler chose to
 // run a tool call within the current batch.

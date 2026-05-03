@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"metiq/internal/agent"
 	"metiq/internal/autoreply"
 )
 
@@ -118,5 +120,197 @@ func TestClearTransientSessionSteeringDeletesMailbox(t *testing.T) {
 	clearTransientSessionSteering(mailboxes, "sess-clear")
 	if got := steeringMailboxLen(mailboxes, "sess-clear"); got != 0 {
 		t.Fatalf("expected mailbox len 0 after cleanup, got %d", got)
+	}
+}
+
+func TestHandleBusyInterruptAbortsWhenNoToolsActive(t *testing.T) {
+	chatCancels := newChatAbortRegistry()
+	activeTools := newActiveToolRegistry()
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	q := autoreply.NewSessionQueue(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "interrupt", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	ctx, release := chatCancels.Begin("sess-interrupt", context.Background())
+	defer release()
+	q.Enqueue(autoreply.PendingTurn{Text: "older backlog", EventID: "old-backlog"})
+	enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-interrupt", Text: "older steering", EventID: "old-steer", Source: "dm"})
+
+	deferred := handleBusyInterrupt(chatCancels, activeTools, mailboxes, q, settings, activeRunSteeringInput{
+		SessionID: "sess-interrupt",
+		Text:      "new interrupt",
+		EventID:   "new-interrupt",
+		Source:    "dm",
+	})
+	if deferred {
+		t.Fatal("expected no active tools to abort immediately")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("expected active turn context to be cancelled")
+	}
+	if !errors.Is(context.Cause(ctx), agent.ErrTurnInterrupted) {
+		t.Fatalf("expected interrupt cause, got %v", context.Cause(ctx))
+	}
+	if q.Len() != 0 {
+		t.Fatalf("expected backlog cleared, got len=%d", q.Len())
+	}
+	if got := steeringMailboxLen(mailboxes, "sess-interrupt"); got != 0 {
+		t.Fatalf("expected steering mailbox cleared, got len=%d", got)
+	}
+}
+
+func TestHandleBusyInterruptAbortsWhenAllActiveToolsCancelable(t *testing.T) {
+	chatCancels := newChatAbortRegistry()
+	activeTools := newActiveToolRegistry()
+	settings := queueRuntimeSettings{Mode: "interrupt", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	ctx, release := chatCancels.Begin("sess-cancel", context.Background())
+	defer release()
+	activeTools.Record(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventStart,
+		SessionID:  "sess-cancel",
+		ToolCallID: "tool-1",
+		ToolName:   "cancelable",
+		Data: agent.ToolInterruptPolicyDecision{
+			Kind:              agent.ToolDecisionKindInterruptPolicy,
+			InterruptBehavior: agent.ToolInterruptBehaviorCancel,
+		},
+	})
+
+	deferred := handleBusyInterrupt(chatCancels, activeTools, nil, nil, settings, activeRunSteeringInput{SessionID: "sess-cancel", Text: "interrupt"})
+	if deferred {
+		t.Fatal("expected all-cancelable tools to abort immediately")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("expected active turn context to be cancelled")
+	}
+}
+
+func TestHandleBusyInterruptDefersWhenAnyActiveToolBlocks(t *testing.T) {
+	chatCancels := newChatAbortRegistry()
+	activeTools := newActiveToolRegistry()
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	q := autoreply.NewSessionQueue(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "interrupt", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	ctx, release := chatCancels.Begin("sess-block", context.Background())
+	defer release()
+	q.Enqueue(autoreply.PendingTurn{Text: "older backlog", EventID: "old-backlog"})
+	enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-block", Text: "older steering", EventID: "old-steer", Source: "dm"})
+	activeTools.Record(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventStart,
+		SessionID:  "sess-block",
+		ToolCallID: "tool-block",
+		ToolName:   "blocking",
+		Data: agent.ToolInterruptPolicyDecision{
+			Kind:              agent.ToolDecisionKindInterruptPolicy,
+			InterruptBehavior: agent.ToolInterruptBehaviorBlock,
+		},
+	})
+	activeTools.Record(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventStart,
+		SessionID:  "sess-block",
+		ToolCallID: "tool-cancel",
+		ToolName:   "cancelable",
+		Data: agent.ToolInterruptPolicyDecision{
+			Kind:              agent.ToolDecisionKindInterruptPolicy,
+			InterruptBehavior: agent.ToolInterruptBehaviorCancel,
+		},
+	})
+
+	deferred := handleBusyInterrupt(chatCancels, activeTools, mailboxes, q, settings, activeRunSteeringInput{
+		SessionID: "sess-block",
+		Text:      "newest interrupt",
+		EventID:   "new-interrupt",
+		Source:    "dm",
+	})
+	if !deferred {
+		t.Fatal("expected blocking tool to defer interrupt into urgent steering")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("expected active turn to continue, got ctx err %v", ctx.Err())
+	}
+	if q.Len() != 0 {
+		t.Fatalf("expected backlog cleared before urgent steering, got len=%d", q.Len())
+	}
+	pending := drainSteeringAsPending(mailboxes, "sess-block")
+	if len(pending) != 1 {
+		t.Fatalf("expected only newest urgent interrupt in mailbox, got %d", len(pending))
+	}
+	if pending[0].Text != "newest interrupt" || pending[0].EventID != "new-interrupt" {
+		t.Fatalf("unexpected pending interrupt: %+v", pending[0])
+	}
+}
+
+func TestActiveToolRegistryResultClearsBlockingTool(t *testing.T) {
+	activeTools := newActiveToolRegistry()
+	start := agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventStart,
+		SessionID:  "sess-tools",
+		ToolCallID: "tool-block",
+		ToolName:   "blocking",
+		Data: agent.ToolInterruptPolicyDecision{
+			Kind:              agent.ToolDecisionKindInterruptPolicy,
+			InterruptBehavior: agent.ToolInterruptBehaviorBlock,
+		},
+	}
+	activeTools.Record(start)
+	if activeTools.AllInterruptible("sess-tools") {
+		t.Fatal("expected blocking tool to make session non-interruptible")
+	}
+	start.Type = agent.ToolLifecycleEventResult
+	activeTools.Record(start)
+	if !activeTools.AllInterruptible("sess-tools") {
+		t.Fatal("expected session interruptible after tool result")
+	}
+}
+
+func TestActiveToolRegistryCountsProviderEmptyFallbackKeys(t *testing.T) {
+	activeTools := newActiveToolRegistry()
+	start := agent.ToolLifecycleEvent{
+		Type:      agent.ToolLifecycleEventStart,
+		SessionID: "sess-empty-id",
+		TurnID:    "turn-1",
+		ToolName:  "blocking",
+		Data: agent.ToolInterruptPolicyDecision{
+			Kind:              agent.ToolDecisionKindInterruptPolicy,
+			InterruptBehavior: agent.ToolInterruptBehaviorBlock,
+		},
+	}
+	activeTools.Record(start)
+	activeTools.Record(start)
+	if activeTools.AllInterruptible("sess-empty-id") {
+		t.Fatal("expected duplicate empty-id blocking calls to be tracked")
+	}
+	start.Type = agent.ToolLifecycleEventResult
+	activeTools.Record(start)
+	if activeTools.AllInterruptible("sess-empty-id") {
+		t.Fatal("expected one remaining empty-id blocking call after first result")
+	}
+	activeTools.Record(start)
+	if !activeTools.AllInterruptible("sess-empty-id") {
+		t.Fatal("expected session interruptible after both empty-id calls complete")
+	}
+}
+
+func TestOperatorAbortUnconditionalWithBlockingToolActive(t *testing.T) {
+	chatCancels := newChatAbortRegistry()
+	activeTools := newActiveToolRegistry()
+	ctx, release := chatCancels.Begin("sess-operator", context.Background())
+	defer release()
+	activeTools.Record(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventStart,
+		SessionID:  "sess-operator",
+		ToolCallID: "tool-block",
+		ToolName:   "blocking",
+		Data: agent.ToolInterruptPolicyDecision{
+			Kind:              agent.ToolDecisionKindInterruptPolicy,
+			InterruptBehavior: agent.ToolInterruptBehaviorBlock,
+		},
+	})
+	if activeTools.AllInterruptible("sess-operator") {
+		t.Fatal("expected blocking tool to be active for regression setup")
+	}
+	if !chatCancels.Abort("sess-operator") {
+		t.Fatal("expected operator abort to cancel in-flight session")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("expected operator abort to cancel even with blocking tool active")
 	}
 }

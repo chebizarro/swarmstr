@@ -61,6 +61,51 @@ func enqueueActiveRunSteering(mailboxes *autoreply.SteeringMailboxRegistry, sett
 	return accepted
 }
 
+func handleBusyInterrupt(
+	chatCancels *chatAbortRegistry,
+	activeTools *activeToolRegistry,
+	mailboxes *autoreply.SteeringMailboxRegistry,
+	q *autoreply.SessionQueue,
+	settings queueRuntimeSettings,
+	input activeRunSteeringInput,
+) (deferred bool) {
+	sessionID := strings.TrimSpace(input.SessionID)
+	if sessionID == "" {
+		return false
+	}
+	if activeTools == nil || activeTools.AllInterruptible(sessionID) {
+		if chatCancels != nil {
+			chatCancels.AbortWithCause(sessionID, agent.ErrTurnInterrupted)
+		}
+		clearTransientSessionSteering(mailboxes, sessionID)
+		if q != nil {
+			_ = q.Dequeue()
+		}
+		log.Printf("busy interrupt aborted active turn: session=%s", sessionID)
+		return false
+	}
+	clearTransientSessionSteering(mailboxes, sessionID)
+	if q != nil {
+		_ = q.Dequeue()
+	}
+	input.Priority = autoreply.SteeringPriorityUrgent
+	accepted := enqueueActiveRunSteering(mailboxes, settings, input)
+	log.Printf("busy interrupt deferred by blocking tool: session=%s accepted=%t", sessionID, accepted)
+	return true
+}
+
+func toolLifecycleSinkWithActiveTools(activeTools *activeToolRegistry, next agent.ToolLifecycleSink) agent.ToolLifecycleSink {
+	if activeTools == nil {
+		return next
+	}
+	return func(evt agent.ToolLifecycleEvent) {
+		activeTools.Record(evt)
+		if next != nil {
+			next(evt)
+		}
+	}
+}
+
 func makeActiveRunSteeringDrain(mailboxes *autoreply.SteeringMailboxRegistry, sessionID string, onDrain func([]autoreply.SteeringMessage)) func(context.Context) []agent.InjectedUserInput {
 	sessionID = strings.TrimSpace(sessionID)
 	if mailboxes == nil || sessionID == "" {

@@ -317,8 +317,61 @@ func TestRunAgenticLoop_EmitsToolLifecycleEvents(t *testing.T) {
 	if events[1].SessionID != "sess-1" || events[1].TurnID != "turn-1" {
 		t.Fatalf("missing correlation fields on start event: %+v", events[1])
 	}
+	interruptPolicy, ok := events[1].Data.(ToolInterruptPolicyDecision)
+	if !ok {
+		t.Fatalf("expected interrupt policy decision on start event, got %T", events[1].Data)
+	}
+	if interruptPolicy.Kind != ToolDecisionKindInterruptPolicy || interruptPolicy.InterruptBehavior != ToolInterruptBehaviorBlock {
+		t.Fatalf("unexpected interrupt policy decision: %+v", interruptPolicy)
+	}
 	if events[2].ToolCallID != "tc1" || events[2].ToolName != "test_tool" || events[2].Result != "tool output" {
 		t.Fatalf("unexpected result event: %+v", events[2])
+	}
+}
+
+func TestRunAgenticLoop_EmitsCancelableToolInterruptPolicy(t *testing.T) {
+	provider := &mockChatProvider{
+		responses: []*LLMResponse{
+			{
+				ToolCalls:        []ToolCall{{ID: "tc-cancel", Name: "cancelable_tool"}},
+				NeedsToolResults: true,
+			},
+			{Content: "done", NeedsToolResults: false},
+		},
+	}
+	executor := &mockToolExecutor{
+		results: map[string]string{"cancelable_tool": "ok"},
+		traits: map[string]ToolTraits{
+			"cancelable_tool": {InterruptBehavior: ToolInterruptBehaviorCancel},
+		},
+	}
+	capture := &capturedToolLifecycle{}
+
+	if _, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "use tool"}},
+		Executor:        executor,
+		MaxIterations:   10,
+		LogPrefix:       "test",
+		SessionID:       "sess-cancel",
+		ToolEventSink:   capture.sink,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	events := capture.snapshot()
+	var start ToolLifecycleEvent
+	for _, evt := range events {
+		if evt.Type == ToolLifecycleEventStart {
+			start = evt
+			break
+		}
+	}
+	decision, ok := start.Data.(ToolInterruptPolicyDecision)
+	if !ok {
+		t.Fatalf("expected interrupt policy decision, got %T", start.Data)
+	}
+	if decision.InterruptBehavior != ToolInterruptBehaviorCancel {
+		t.Fatalf("expected cancel interrupt behavior, got %+v", decision)
 	}
 }
 

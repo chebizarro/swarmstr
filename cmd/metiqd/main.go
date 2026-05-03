@@ -2392,6 +2392,7 @@ func main() {
 	// steeringMailboxes holds exact queue-mode "steer" input for active turns.
 	// Items are drained at agentic model boundaries, with post-turn fallback.
 	steeringMailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	activeTools := newActiveToolRegistry()
 
 	// ── Session and node agent tools ─────────────────────────────────
 	// Registered here so they can close over sessionTurns and configState.
@@ -3370,9 +3371,19 @@ func main() {
 				})
 				return
 			case "interrupt":
-				chatCancels.Abort(sessionID)
-				clearTransientSessionSteering(steeringMailboxes, sessionID)
-				_ = sessionDMQ.Dequeue() // clear backlog before enqueueing latest
+				if handleBusyInterrupt(chatCancels, activeTools, steeringMailboxes, sessionDMQ, queueSettings, activeRunSteeringInput{
+					SessionID:    sessionID,
+					Text:         combinedText,
+					EventID:      eventID,
+					SenderID:     senderID,
+					Source:       "dm",
+					AgentID:      strings.TrimSpace(overrideAgentID),
+					ToolProfile:  constraints.ToolProfile,
+					EnabledTools: append([]string(nil), constraints.EnabledTools...),
+					CreatedAt:    createdAt,
+				}) {
+					return
+				}
 			}
 			sessionDMQ.Enqueue(autoreply.PendingTurn{
 				Text:         combinedText,
@@ -3520,6 +3531,7 @@ func main() {
 				log.Printf("panic in agent process session=%s panic=%v", sessionID, r)
 			}
 			cancelTurnTimeout()
+			activeTools.ClearSession(sessionID)
 			releaseTurn()
 		}()
 
@@ -3762,7 +3774,7 @@ func main() {
 			Executor:             turnExecutor, // canonical filtered turn tool pool
 			ThinkingBudget:       thinkingBudget,
 			MaxAgenticIterations: maxAgenticIterations,
-			ToolEventSink:        toolLifecycleEmitter(wsEmitter, activeAgentID),
+			ToolEventSink:        toolLifecycleSinkWithActiveTools(activeTools, toolLifecycleEmitter(wsEmitter, activeAgentID)),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
 			HookInvoker:          controlHookInvoker,
 			SteeringDrain:        makeActiveRunSteeringDrain(steeringMailboxes, sessionID, recordDrainedSteering),
@@ -4961,7 +4973,7 @@ func main() {
 			Tools:                chInlineTools,
 			Executor:             turnExecutor,
 			MaxAgenticIterations: chMaxAgenticIterations,
-			ToolEventSink:        toolLifecycleEmitter(wsEmitter, activeAgentID),
+			ToolEventSink:        toolLifecycleSinkWithActiveTools(activeTools, toolLifecycleEmitter(wsEmitter, activeAgentID)),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
 			HookInvoker:          controlHookInvoker,
 			SteeringDrain:        makeActiveRunSteeringDrain(steeringMailboxes, sessionID, nil),
@@ -5242,9 +5254,24 @@ func main() {
 				}
 				return
 			case "interrupt":
-				chatCancels.Abort(sessionID)
-				clearTransientSessionSteering(steeringMailboxes, sessionID)
-				_ = sessionQ.Dequeue()
+				deferred := handleBusyInterrupt(chatCancels, activeTools, steeringMailboxes, sessionQ, queueSettings, activeRunSteeringInput{
+					SessionID: sessionID,
+					Text:      combined,
+					EventID:   eventID,
+					SenderID:  senderID,
+					ChannelID: chID,
+					ThreadID:  threadID,
+					Source:    "channel",
+					CreatedAt: time.Now().Unix(),
+				})
+				if deferred {
+					if rh, ok := rawHandle.(sdk.ReactionHandle); ok && eventID != "" {
+						if rErr := rh.AddReaction(ctx, eventID, "👀"); rErr != nil {
+							log.Printf("channel interrupt defer ack reaction error channel=%s err=%v", chID, rErr)
+						}
+					}
+					return
+				}
 			}
 			// Enqueue for processing after the current turn finishes.
 			sessionQ.Enqueue(autoreply.PendingTurn{
@@ -5268,6 +5295,7 @@ func main() {
 			if r := recover(); r != nil {
 				log.Printf("panic in channel agent session=%s panic=%v", sessionID, r)
 			}
+			activeTools.ClearSession(sessionID)
 			releaseTurn()
 			releaseTurnSlot()
 			if sessionQ.Len() == 0 {

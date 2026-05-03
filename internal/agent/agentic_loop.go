@@ -197,7 +197,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	}
 	resp, err := cfg.Provider.Chat(ctx, messages, activeTools, cfg.Options)
 	if err != nil {
-		return nil, err
+		return nil, turnCancellationCause(ctx, err)
 	}
 
 	totalUsage := resp.Usage
@@ -318,16 +318,17 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			resp, err = cfg.Provider.Chat(ctx, pf.Messages, pf.Tools, cfg.Options)
 		}
 		if err != nil {
-			log.Printf("%s: agentic loop LLM error iter=%d: %v", cfg.LogPrefix, iter+1, err)
+			classifiedErr := turnCancellationCause(ctx, err)
+			log.Printf("%s: agentic loop LLM error iter=%d: %v", cfg.LogPrefix, iter+1, classifiedErr)
 			// Return partial history so callers can persist completed tool work.
 			outcome := TurnOutcomeFailed
 			stopReason := TurnStopReasonProviderError
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(classifiedErr, context.Canceled) || errors.Is(classifiedErr, context.DeadlineExceeded) || errors.Is(classifiedErr, ErrTurnInterrupted) {
 				outcome = TurnOutcomeAborted
 				stopReason = TurnStopReasonCancelled
 			}
 			return nil, &TurnExecutionError{
-				Cause: err,
+				Cause: classifiedErr,
 				Partial: TurnResult{
 					HistoryDelta: historyDelta,
 					Outcome:      outcome,
@@ -435,6 +436,18 @@ func appendDrainedSteeringInput(ctx context.Context, messages []LLMMessage, sess
 		return messages, false
 	}
 	return out, true
+}
+
+func turnCancellationCause(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+			return cause
+		}
+	}
+	return err
 }
 
 func pruneContextBeforeLLM(messages []LLMMessage, logPrefix string, contextWindowTokens int) []LLMMessage {
@@ -681,6 +694,12 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		}
 	}
 	startedAt := time.Now()
+	interruptBehavior := ToolInterruptBehaviorBlock
+	if resolver, ok := executor.(toolTraitResolver); ok {
+		if traits, traitsOK := resolver.EffectiveTraits(call); traitsOK && traits.InterruptBehavior != "" {
+			interruptBehavior = traits.InterruptBehavior
+		}
+	}
 	emitToolLifecycleEvent(sink, ToolLifecycleEvent{
 		Type:       ToolLifecycleEventStart,
 		TS:         time.Now().UnixMilli(),
@@ -689,6 +708,10 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		ToolCallID: call.ID,
 		ToolName:   call.Name,
 		Trace:      trace,
+		Data: ToolInterruptPolicyDecision{
+			Kind:              ToolDecisionKindInterruptPolicy,
+			InterruptBehavior: interruptBehavior,
+		},
 	})
 	value, execErr := executor.Execute(contextWithMutationTrackingSuppressed(ctx), call)
 	if execErr != nil {
@@ -898,7 +921,7 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 	if turn.Executor == nil || len(tools) == 0 {
 		resp, err := provider.Chat(ctx, messages, tools, opts)
 		if err != nil {
-			return ProviderResult{}, err
+			return ProviderResult{}, turnCancellationCause(ctx, err)
 		}
 		return llmResponseToProviderResult(resp), nil
 	}

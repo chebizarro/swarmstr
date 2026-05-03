@@ -148,6 +148,9 @@ func TestClassifyTurnError(t *testing.T) {
 	if outcome, stopReason, ok := ClassifyTurnError(context.DeadlineExceeded); !ok || outcome != TurnOutcomeAborted || stopReason != TurnStopReasonCancelled {
 		t.Fatalf("deadline classification mismatch outcome=%q stop_reason=%q ok=%v", outcome, stopReason, ok)
 	}
+	if outcome, stopReason, ok := ClassifyTurnError(ErrTurnInterrupted); !ok || outcome != TurnOutcomeAborted || stopReason != TurnStopReasonCancelled {
+		t.Fatalf("interrupt classification mismatch outcome=%q stop_reason=%q ok=%v", outcome, stopReason, ok)
+	}
 	err := &TurnExecutionError{
 		Cause: errors.New("provider failed"),
 		Partial: TurnResult{
@@ -157,6 +160,15 @@ func TestClassifyTurnError(t *testing.T) {
 	}
 	if outcome, stopReason, ok := ClassifyTurnError(err); !ok || outcome != TurnOutcomeBlocked || stopReason != TurnStopReasonLoopBlocked {
 		t.Fatalf("partial classification mismatch outcome=%q stop_reason=%q ok=%v", outcome, stopReason, ok)
+	}
+}
+
+func TestTurnCancellationCauseUsesInterruptCause(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrTurnInterrupted)
+	got := turnCancellationCause(ctx, context.Canceled)
+	if !errors.Is(got, ErrTurnInterrupted) {
+		t.Fatalf("expected interrupt cause, got %v", got)
 	}
 }
 
