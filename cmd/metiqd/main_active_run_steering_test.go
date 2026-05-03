@@ -9,6 +9,7 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/autoreply"
 	ctxengine "metiq/internal/context"
+	metricspkg "metiq/internal/metrics"
 	"metiq/internal/store/state"
 )
 
@@ -109,6 +110,38 @@ func TestActiveRunSteeringChannelHeaderAndResidualMetadata(t *testing.T) {
 	}
 	if pt.ToolProfile != "safe" || len(pt.EnabledTools) != 1 || pt.EnabledTools[0] != "read_file" {
 		t.Fatalf("residual pending turn did not preserve tool constraints: %+v", pt)
+	}
+}
+
+func TestActiveRunSteeringChannelHeaderWithoutSender(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "steer", Cap: 10, Drop: autoreply.QueueDropSummarize}
+
+	if !enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{
+		SessionID: "sess-channel-empty-sender",
+		Text:      "channel update without sender",
+		EventID:   "evt-empty-sender",
+		ChannelID: "chan-1",
+		ThreadID:  "thread-1",
+		Source:    "channel",
+		CreatedAt: 50,
+	}) {
+		t.Fatal("expected channel steering without sender to enqueue")
+	}
+
+	inputs := makeActiveRunSteeringDrain(mailboxes, "sess-channel-empty-sender", nil)(context.Background())
+	if len(inputs) != 1 {
+		t.Fatalf("expected one model input, got %d", len(inputs))
+	}
+	got := inputs[0].Content
+	if !strings.Contains(got, "[Additional channel input received while you were working]") {
+		t.Fatalf("expected empty-sender channel provenance branch, got %q", got)
+	}
+	if strings.Contains(got, "from ") {
+		t.Fatalf("empty-sender channel steering should not render a sender placeholder, got %q", got)
+	}
+	if !strings.Contains(got, "channel update without sender") {
+		t.Fatalf("expected original steering text, got %q", got)
 	}
 }
 
@@ -287,6 +320,56 @@ func TestHandleBusySteerEnqueuesMailboxWithoutPostTurnQueue(t *testing.T) {
 	}
 }
 
+func TestBusySteerBacklogRoutesToPostTurnQueueNotMailbox(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	sessionQ := autoreply.NewSessionQueue(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "steer-backlog", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	input := activeRunSteeringInput{
+		SessionID:    "sess-steer-backlog",
+		Text:         "keep this for after the active turn",
+		EventID:      "evt-steer-backlog",
+		SenderID:     "alice",
+		AgentID:      "agent-1",
+		ToolProfile:  "safe",
+		EnabledTools: []string{"read_file"},
+		CreatedAt:    70,
+		Source:       "dm",
+	}
+
+	// Mirror the busy-session switch: exact "steer" is the only mode that
+	// enters the active-run mailbox; steer-backlog remains a sequential backlog
+	// alias and must fall through to the post-turn queue.
+	switch settings.Mode {
+	case "steer":
+		handleBusySteer(mailboxes, sessionQ, settings, input)
+	default:
+		sessionQ.Enqueue(autoreply.PendingTurn{
+			Text:         input.Text,
+			EventID:      input.EventID,
+			SenderID:     input.SenderID,
+			AgentID:      input.AgentID,
+			ToolProfile:  input.ToolProfile,
+			EnabledTools: append([]string(nil), input.EnabledTools...),
+			CreatedAt:    input.CreatedAt,
+		})
+	}
+
+	if got := steeringMailboxLen(mailboxes, "sess-steer-backlog"); got != 0 {
+		t.Fatalf("steer-backlog busy input should not enter active-run mailbox, got len=%d", got)
+	}
+	pending := sessionQ.Dequeue()
+	if len(pending) != 1 {
+		t.Fatalf("expected one post-turn queued item, got %+v", pending)
+	}
+	got := pending[0]
+	if got.Text != input.Text || got.EventID != input.EventID || got.SenderID != input.SenderID || got.AgentID != input.AgentID || got.ToolProfile != input.ToolProfile || got.CreatedAt != input.CreatedAt {
+		t.Fatalf("steer-backlog pending turn lost metadata: %+v", got)
+	}
+	if len(got.EnabledTools) != 1 || got.EnabledTools[0] != "read_file" {
+		t.Fatalf("steer-backlog pending turn lost enabled tools: %+v", got.EnabledTools)
+	}
+}
+
 func TestRestoreDrainedSteeringAfterProviderFailureBypassesRecentDedupe(t *testing.T) {
 	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
 	settings := queueRuntimeSettings{Mode: "steer", Cap: 10, Drop: autoreply.QueueDropSummarize}
@@ -323,6 +406,71 @@ func TestRestoreDrainedSteeringAfterToolErrorThenProviderFailure(t *testing.T) {
 	if len(pending) != 1 || pending[0].EventID != "evt-drained" {
 		t.Fatalf("expected restored pending steering after tool/provider failure, got %+v", pending)
 	}
+}
+
+func TestResidualSteeringFallbackAfterCompletedTurnPrecedesBacklog(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "steer", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	sessionQ := autoreply.NewSessionQueue(10, autoreply.QueueDropSummarize)
+	sessionQ.Enqueue(autoreply.PendingTurn{Text: "older backlog", EventID: "evt-backlog", SenderID: "bob", CreatedAt: 80})
+
+	provider := &providerEnqueuesSteeringOnFinalCall{
+		t:         t,
+		mailboxes: mailboxes,
+		settings:  settings,
+	}
+	resp, err := agent.RunAgenticLoop(context.Background(), agent.AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []agent.LLMMessage{{Role: "user", Content: "start"}},
+		MaxIterations:   1,
+		LogPrefix:       "test",
+		SessionID:       "sess-complete-residual",
+		SteeringDrain:   makeActiveRunSteeringDrain(mailboxes, "sess-complete-residual", nil),
+	})
+	if err != nil {
+		t.Fatalf("agent loop should complete: %v", err)
+	}
+	if resp == nil || resp.Content != "done" {
+		t.Fatalf("unexpected completed response: %+v", resp)
+	}
+
+	steeringPending := drainSteeringAsPending(mailboxes, "sess-complete-residual")
+	backlogPending := sessionQ.Dequeue()
+	combined := append(append([]autoreply.PendingTurn(nil), steeringPending...), backlogPending...)
+	if len(combined) != 2 {
+		t.Fatalf("expected residual steering plus backlog after completed turn, got %+v", combined)
+	}
+	if combined[0].EventID != "evt-final-steer" || combined[0].Text != "residual after final boundary" {
+		t.Fatalf("residual steering should be first follow-up after completed turn, got %+v", combined)
+	}
+	if combined[1].EventID != "evt-backlog" || combined[1].Text != "older backlog" {
+		t.Fatalf("backlog should remain behind residual steering, got %+v", combined)
+	}
+}
+
+type providerEnqueuesSteeringOnFinalCall struct {
+	t         *testing.T
+	mailboxes *autoreply.SteeringMailboxRegistry
+	settings  queueRuntimeSettings
+	calls     int
+}
+
+func (p *providerEnqueuesSteeringOnFinalCall) Chat(_ context.Context, _ []agent.LLMMessage, _ []agent.ToolDefinition, _ agent.ChatOptions) (*agent.LLMResponse, error) {
+	p.calls++
+	if p.calls != 1 {
+		p.t.Fatalf("unexpected provider call %d", p.calls)
+	}
+	if !enqueueActiveRunSteering(p.mailboxes, p.settings, activeRunSteeringInput{
+		SessionID: "sess-complete-residual",
+		Text:      "residual after final boundary",
+		EventID:   "evt-final-steer",
+		SenderID:  "alice",
+		Source:    "dm",
+		CreatedAt: 90,
+	}) {
+		p.t.Fatal("expected final-boundary steering enqueue to be accepted")
+	}
+	return &agent.LLMResponse{Content: "done"}, nil
 }
 
 func TestDrainedSteeringNotRestoredAfterImmediateInterruptInvalidatesStaleInput(t *testing.T) {
@@ -456,6 +604,45 @@ func TestEnqueueActiveRunSteeringDedupesDuplicateEventIDs(t *testing.T) {
 	}
 	if enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-dupe", Text: "duplicate after drain", EventID: "evt-dupe", Source: "dm"}) {
 		t.Fatal("expected recent event id to remain deduped after drain")
+	}
+}
+
+func TestActiveRunSteeringMetricsIncrementForOutcomes(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "steer", Cap: 1, Drop: autoreply.QueueDropOldest}
+	beforeEnqueued := metricspkg.SteeringEnqueued.Value()
+	beforeDeduped := metricspkg.SteeringDeduped.Value()
+	beforeDropped := metricspkg.SteeringDropped.Value()
+	beforeOverflowed := metricspkg.SteeringOverflowed.Value()
+	beforeDrained := metricspkg.SteeringDrained.Value()
+
+	if !enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-metrics", Text: "first", EventID: "evt-first", Source: "dm"}) {
+		t.Fatal("expected first steering input to enqueue")
+	}
+	if enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-metrics", Text: "dupe", EventID: "evt-first", Source: "dm"}) {
+		t.Fatal("expected duplicate steering input to be rejected")
+	}
+	if !enqueueActiveRunSteering(mailboxes, settings, activeRunSteeringInput{SessionID: "sess-metrics", Text: "second", EventID: "evt-second", Source: "dm"}) {
+		t.Fatal("expected second steering input to enqueue by dropping oldest")
+	}
+	if pending := drainSteeringAsPending(mailboxes, "sess-metrics"); len(pending) != 1 || pending[0].EventID != "evt-second" {
+		t.Fatalf("expected only replacement steering to drain, got %+v", pending)
+	}
+
+	if delta := metricspkg.SteeringEnqueued.Value() - beforeEnqueued; delta != 2 {
+		t.Fatalf("SteeringEnqueued delta = %d, want 2", delta)
+	}
+	if delta := metricspkg.SteeringDeduped.Value() - beforeDeduped; delta != 1 {
+		t.Fatalf("SteeringDeduped delta = %d, want 1", delta)
+	}
+	if delta := metricspkg.SteeringDropped.Value() - beforeDropped; delta != 1 {
+		t.Fatalf("SteeringDropped delta = %d, want 1", delta)
+	}
+	if delta := metricspkg.SteeringOverflowed.Value() - beforeOverflowed; delta != 1 {
+		t.Fatalf("SteeringOverflowed delta = %d, want 1", delta)
+	}
+	if delta := metricspkg.SteeringDrained.Value() - beforeDrained; delta != 1 {
+		t.Fatalf("SteeringDrained delta = %d, want 1", delta)
 	}
 }
 
@@ -654,6 +841,50 @@ func TestHandleBusyInterruptDefersWhenAnyActiveToolBlocks(t *testing.T) {
 	}
 	if pending[0].Text != "newest interrupt" || pending[0].EventID != "new-interrupt" {
 		t.Fatalf("unexpected pending interrupt: %+v", pending[0])
+	}
+}
+
+func TestBusyInterruptMetricsIncrementForAbortAndDeferredPaths(t *testing.T) {
+	settings := queueRuntimeSettings{Mode: "interrupt", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	beforeAborted := metricspkg.SteeringUrgentAborted.Value()
+	beforeDeferred := metricspkg.SteeringUrgentDeferred.Value()
+
+	abortCancels := newChatAbortRegistry()
+	abortCtx, abortRelease := abortCancels.Begin("sess-metric-abort", context.Background())
+	defer abortRelease()
+	if handleBusyInterrupt(abortCancels, newActiveToolRegistry(), autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize), autoreply.NewSessionQueue(10, autoreply.QueueDropSummarize), settings, activeRunSteeringInput{SessionID: "sess-metric-abort", Text: "abort now", EventID: "evt-abort", Source: "dm"}) {
+		t.Fatal("expected interrupt without active tools to abort immediately")
+	}
+	if abortCtx.Err() == nil {
+		t.Fatal("expected abort metrics path to cancel active context")
+	}
+
+	deferCancels := newChatAbortRegistry()
+	deferCtx, deferRelease := deferCancels.Begin("sess-metric-defer", context.Background())
+	defer deferRelease()
+	activeTools := newActiveToolRegistry()
+	activeTools.Record(agent.ToolLifecycleEvent{
+		Type:       agent.ToolLifecycleEventStart,
+		SessionID:  "sess-metric-defer",
+		ToolCallID: "tool-block",
+		ToolName:   "blocking",
+		Data: agent.ToolInterruptPolicyDecision{
+			Kind:              agent.ToolDecisionKindInterruptPolicy,
+			InterruptBehavior: agent.ToolInterruptBehaviorBlock,
+		},
+	})
+	if !handleBusyInterrupt(deferCancels, activeTools, autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize), autoreply.NewSessionQueue(10, autoreply.QueueDropSummarize), settings, activeRunSteeringInput{SessionID: "sess-metric-defer", Text: "defer", EventID: "evt-defer", Source: "dm"}) {
+		t.Fatal("expected blocking tool interrupt to defer")
+	}
+	if deferCtx.Err() != nil {
+		t.Fatalf("deferred interrupt should not cancel active context: %v", deferCtx.Err())
+	}
+
+	if delta := metricspkg.SteeringUrgentAborted.Value() - beforeAborted; delta != 1 {
+		t.Fatalf("SteeringUrgentAborted delta = %d, want 1", delta)
+	}
+	if delta := metricspkg.SteeringUrgentDeferred.Value() - beforeDeferred; delta != 1 {
+		t.Fatalf("SteeringUrgentDeferred delta = %d, want 1", delta)
 	}
 }
 
