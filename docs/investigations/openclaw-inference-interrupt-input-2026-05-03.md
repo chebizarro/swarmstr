@@ -25,6 +25,24 @@ Key distinction for swarmstr parity:
 - OpenClaw supports both **interrupt/abort** and **model-boundary steering/injection**.
 - For swarmstr, the important implementation target is likely OpenClaw's `queue steer` semantics: buffer additional user input for an active session and append/drain it at safe model boundaries rather than cancelling the whole turn.
 
+### Claude Code `src` interruption and steering reference (follow-up, 2026-05-03)
+
+The separate Claude Code-style `src` workspace has a concrete architecture worth porting conceptually:
+
+- `src/utils/messageQueueManager.ts` uses a unified command queue with priorities `now`, `next`, and `later`.
+- `src/cli/print.ts` and `src/screens/REPL.tsx` abort the active controller when `now` priority input arrives.
+- `src/query.ts` drains queued commands after tool calls finish and before the next model/API iteration, preserving provider ordering constraints around tool results.
+- `src/utils/attachments.ts` represents drained user input as explicit `queued_command` attachments.
+- `src/Tool.ts` defines `interruptBehavior(): 'cancel' | 'block'`.
+- `src/services/tools/StreamingToolExecutor.ts` cancels only tools whose interrupt behavior permits cancellation.
+- `src/tasks/LocalAgentTask/LocalAgentTask.tsx` and `src/utils/attachments.ts` provide a subagent pending-message mailbox analogue.
+
+Porting guidance:
+- Reuse the semantics, not the process-global queue. swarmstr needs per-session, Nostr-event-deduped active-run steering mailboxes.
+- Drain after tool results and before the next provider call.
+- Wire swarmstr's existing `ToolInterruptBehaviorBlock` / `ToolInterruptBehaviorCancel` metadata into actual cancellation decisions.
+- Keep inbound steering event-fed and non-blocking; do not poll relays or sleep waiting for user input.
+
 ## Investigator Findings
 
 ### Phase 2 - swarmstr active-turn, abort, queue, and agentic-loop findings (2026-05-03)

@@ -32,6 +32,8 @@ Although Nostr delivery is non-streaming, the model API is called in streaming m
 
 This gives faster tool execution while maintaining clean Nostr delivery.
 
+Planned active-run steering happens inside this internal loop: additional user input is drained only after current tool results and before the next model call. Nostr output remains non-streaming for DMs, and inbound steering still arrives through normal event subscriptions rather than polling.
+
 ## Canvas Streaming
 
 For the webchat and canvas, streaming is fully supported:
@@ -39,6 +41,14 @@ For the webchat and canvas, streaming is fully supported:
 - Tokens stream to the browser via WebSocket as they arrive
 - The canvas panel updates in real-time
 - No chunking needed (WebSocket is stateful)
+
+## Interruption and Steering Boundaries
+
+- `/stop`, `/kill`, `chat.abort`, and queue mode `interrupt` cancel the active turn context.
+- Queue mode `steer` should not publish partial output or start a concurrent turn. It should enqueue local steering input and let the active model loop consume it at the next safe boundary.
+- Urgent cancellation should respect tool interrupt policy: cancel only tools/runs that are explicitly interruptible; otherwise block until the boundary and then steer.
+
+See [Active-Run Steering Architecture](/plan/active-run-steering-architecture).
 
 ## Loop Detection
 
