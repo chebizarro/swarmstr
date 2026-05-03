@@ -32,7 +32,11 @@ DM policy check (allowlist/pairing/open)
           ↓
       Debounce (300ms window, aggregate rapid messages)
           ↓
-      dmRunAgentTurn(ctx, fromPubKey, text, eventID, createdAt, replyFn)
+      Session lane / queue-mode decision
+          ├── idle → dmRunAgentTurn(ctx, fromPubKey, text, eventID, createdAt, replyFn)
+          ├── post-turn queue modes → enqueue future turn
+          ├── steer → enqueue active-run steering mailbox
+          └── interrupt → abort active turn, enqueue newest turn
           ↓
       agentRuntime.ProcessTurn(...)
           ↓
@@ -65,7 +69,7 @@ DM sessions are always per-peer. The session key is the sender's hex pubkey:
 
 ## Deduplication
 
-The `eventID` is used to detect and drop duplicate messages. This handles the case where the same event arrives from multiple relays:
+The `eventID` is used to detect and drop duplicate messages. This handles the case where the same event arrives from multiple relays. Active-run steering must use the same event-ID discipline so a duplicate relay delivery cannot inject the same steering message twice:
 
 ```go
 // Deduplication check (conceptual)
@@ -74,6 +78,12 @@ if seenEvents.Contains(eventID) {
 }
 seenEvents.Add(eventID)
 ```
+
+## Active-Run Steering Messages
+
+The planned `steer` path accepts a valid inbound message while the session is busy and stores it in a local per-session steering mailbox. The active agent loop drains that mailbox non-blockingly after current tool results and before the next model call. This is local state fed by normal Nostr event subscriptions; the loop must not poll relays or issue request/response checks for more input.
+
+Steering messages should retain provenance for logs/transcript metadata: event ID, sender, channel/session key, created time, and whether the input is user-authored or meta/system-generated.
 
 ## Message Events (Hooks)
 
