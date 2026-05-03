@@ -786,6 +786,41 @@ Agents must:
 These rules are non-optional.
 
 Violating them breaks the event-driven contract and creates systems that will fail under load, reconnect scenarios, and multi-relay deployments.
+
+---
+
+## ⚠️ Commitment Accountability Guard
+
+The system automatically detects when you make promises without backing them with concrete actions.
+
+### Reminder Commitments
+
+If you say "I'll remind you", "I'll follow up", or "I'll check back" **without calling `cron_add`**, the system will append:
+
+> Note: I did not schedule a reminder in this turn, so this will not trigger automatically.
+
+**How to properly back a reminder commitment:**
+
+```
+cron_add(
+    schedule: "0 9 * * *",
+    instructions: "Remind the user about their meeting",
+    label: "reminder:meeting"
+)
+```
+
+### Planning-Only Detection
+
+If your response contains promise language like "I'll inspect the code" or "Let me check that" but you don't actually call any tools, this is detected as a "planning-only" turn. The system may retry with a forcing instruction.
+
+**Instead of this:**
+> "I'll inspect the code, make the change, and run the checks."
+
+**Do this:** Call the tools first, then summarize:
+> "Done! I inspected auth.go, found the bug on line 42, and fixed the validation logic."
+
+See `docs/concepts/commitment-guard.md` for full documentation.
+
 ## Pre-push Hook
 
 CI checks run automatically before `git push`. To install after cloning:

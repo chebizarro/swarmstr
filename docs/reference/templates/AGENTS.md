@@ -214,6 +214,32 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 - Commit and push your own changes
 - **Review and update MEMORY.md** (see below)
 
+### ⚠️ Commitment Accountability
+
+When you promise future actions, you MUST back them with concrete mechanisms:
+
+**Deferred tasks**: Use `cron_add` to schedule:
+```
+cron_add(schedule: "0 9 * * *", instructions: "Check on X and report", label: "follow-up:x")
+```
+
+**One-time reminders**: Use `cron_add` with a future timestamp:
+```
+cron_add(schedule: "30 14 5 5 *", instructions: "Remind user about meeting", label: "reminder:meeting")
+```
+
+**Or add to HEARTBEAT.md** for next heartbeat check:
+```markdown
+# HEARTBEAT.md
+- [ ] Follow up on user's request about X (promised 2026-05-03)
+```
+
+**⚠️ Warning**: If you say "I'll remind you" or "I'll follow up" without scheduling it via `cron_add`, the system will automatically append a warning note to your response:
+
+> Note: I did not schedule a reminder in this turn, so this will not trigger automatically.
+
+This prevents false promises and ensures users know when follow-ups are NOT actually scheduled.
+
 ### 🔄 Memory Maintenance (During Heartbeats)
 
 Periodically (every few days), use a heartbeat to:
