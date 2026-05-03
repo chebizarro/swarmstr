@@ -502,6 +502,22 @@ func TestDrainedSteeringNotRestoredAfterImmediateInterruptInvalidatesStaleInput(
 	}
 }
 
+func TestDrainedSteeringNotRestoredAfterSuccessfulTurnPostSendFailure(t *testing.T) {
+	mailboxes := autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize)
+	settings := queueRuntimeSettings{Mode: "steer", Cap: 10, Drop: autoreply.QueueDropSummarize}
+	drained := []autoreply.SteeringMessage{{Text: "already persisted inline steering", EventID: "evt-inline", SenderID: "alice", Source: "dm", CreatedAt: 10}}
+
+	// A nil turn error means the model turn succeeded. Later outbound hook/send
+	// failures must not restore already-persisted inline steering for residual
+	// rerun, or the same user input can be processed twice.
+	if shouldRestoreDrainedSteering(nil) {
+		restoreDrainedSteering(mailboxes, settings, "sess-send-failure", drained)
+	}
+	if pending := drainSteeringAsPending(mailboxes, "sess-send-failure"); len(pending) != 0 {
+		t.Fatalf("successful turn post-send failure should not restore already-persisted steering: %+v", pending)
+	}
+}
+
 func runAgentLoopThatFailsAfterSteeringDrain(t *testing.T, mailboxes *autoreply.SteeringMailboxRegistry, settings queueRuntimeSettings, failTool bool) ([]autoreply.SteeringMessage, error) {
 	t.Helper()
 	tracker := &activeRunSteeringDrainTracker{}

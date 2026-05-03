@@ -182,7 +182,7 @@ func makeActiveRunSteeringDrain(mailboxes *autoreply.SteeringMailboxRegistry, se
 }
 
 func shouldRestoreDrainedSteering(turnErr error) bool {
-	return !errors.Is(turnErr, agent.ErrTurnInterrupted)
+	return turnErr != nil && !errors.Is(turnErr, agent.ErrTurnInterrupted)
 }
 
 func restoreDrainedSteering(mailboxes *autoreply.SteeringMailboxRegistry, settings queueRuntimeSettings, sessionID string, items []autoreply.SteeringMessage) int {
