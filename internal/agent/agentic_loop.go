@@ -173,8 +173,10 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	// during this turn so callers can persist them for future context.
 	var historyDelta []ConversationMessage
 
-	// Initial LLM call — apply pre-flight gate to catch total overflow.
+	// Initial LLM call — prune old tool context, then apply pre-flight gate
+	// to catch total overflow.
 	{
+		messages = pruneContextBeforeLLM(messages, cfg.LogPrefix, cfg.ContextWindowTokens)
 		pf := EnforceTotalContextBudget(
 			GuardToolResultMessages(messages, cfg.ContextWindowTokens),
 			activeTools, cfg.ContextWindowTokens, DefaultCriticalToolNames())
@@ -267,10 +269,16 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			break
 		}
 
-		// Compress historical tool results: replace older tool output with
-		// compact one-line summaries (preserving tool name + dimensions)
-		// before micro-compaction and the next LLM call. This frees context
-		// while keeping the tool execution timeline visible to the model.
+		// Apply the unified context pruning pipeline before historical compression
+		// so hard-clear eligibility sees the original size of large prunable tool
+		// results. This single pass owns soft trim thresholds, hard-clear behavior,
+		// prunable tool policy, and recent-message protection.
+		messages = pruneContextBeforeLLM(messages, cfg.LogPrefix, cfg.ContextWindowTokens)
+
+		// Compress historical non-cleared tool results: replace older tool output
+		// with compact one-line summaries (preserving tool name + dimensions)
+		// before the next LLM call. This frees context while keeping the tool
+		// execution timeline visible to the model.
 		{
 			budget := ComputeContextBudget(ProfileFromContextWindowTokens(
 				max(cfg.ContextWindowTokens, 1)))
@@ -279,48 +287,6 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 				messages = compResult.Messages
 				log.Printf("%s: compressed %d historical tool results (%d chars freed)",
 					cfg.LogPrefix, compResult.Compressed, compResult.CharsBefore-compResult.CharsAfter)
-			}
-		}
-
-		// Apply soft trimming before micro-compaction: truncate large tool
-		// results to head+tail instead of clearing them entirely. This preserves
-		// useful context while reducing size.
-		{
-			windowTokens := cfg.ContextWindowTokens
-			if windowTokens <= 0 {
-				windowTokens = 200_000 // safe default
-			}
-			softTrimCfg := DefaultContextPruningConfig().SoftTrim
-			stResult := SoftTrimLLMMessagesCopy(messages, softTrimCfg, windowTokens)
-			if stResult.Trimmed > 0 {
-				messages = stResult.Messages
-				log.Printf("%s: soft-trim truncated %d tool results (%d chars freed)",
-					cfg.LogPrefix, stResult.Trimmed, stResult.CharsBefore-stResult.CharsAfter)
-			}
-		}
-
-		// Apply micro-compaction before the next LLM call to free context
-		// space consumed by old tool results. Runs universally for all model
-		// sizes — the budget's CompactionThreshold scales with window size
-		// so large models compact later while small models compact earlier.
-		{
-			windowTokens := cfg.ContextWindowTokens
-			if windowTokens <= 0 {
-				windowTokens = 200_000 // safe default
-			}
-			budget := ComputeContextBudget(ProfileFromContextWindowTokens(windowTokens))
-			estChars := estimateMessageChars(messages)
-			thresholdPct := int(budget.CompactionThreshold * 100)
-			if estChars*100/max(1, budget.EffectiveChars) > thresholdPct {
-				mcResult := MicroCompactMessages(messages, MicroCompactOptions{
-					KeepRecent:  budget.MicroCompactKeepRecent,
-					TargetChars: budget.HistoryMax,
-				})
-				if mcResult.Cleared > 0 {
-					messages = mcResult.Messages
-					log.Printf("%s: micro-compact cleared %d tool results (%d chars freed)",
-						cfg.LogPrefix, mcResult.Cleared, mcResult.CharsBefore-mcResult.CharsAfter)
-				}
 			}
 		}
 
@@ -429,6 +395,36 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	resp.Outcome = TurnOutcomeCompletedWithTools
 	resp.StopReason = TurnStopReasonModelText
 	return resp, nil
+}
+
+func pruneContextBeforeLLM(messages []LLMMessage, logPrefix string, contextWindowTokens int) []LLMMessage {
+	windowTokens := contextWindowTokens
+	if windowTokens <= 0 {
+		windowTokens = 200_000 // safe default when provider/model did not report a window
+	}
+
+	pruneCfg := DefaultContextPruningConfig()
+	assistantCount := 0
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			assistantCount++
+		}
+	}
+	// The pruning core intentionally no-ops when asked to protect more assistant
+	// messages than exist. For runtime use, cap the protected recent region so
+	// short-but-large histories can still prune older tool results while keeping
+	// at least the latest assistant turn protected.
+	if assistantCount > 1 && pruneCfg.KeepLastAssistants >= assistantCount {
+		pruneCfg.KeepLastAssistants = assistantCount - 1
+	}
+
+	result := PruneLLMContextMessages(messages, windowTokens, pruneCfg)
+	if result.SoftTrimCount > 0 || result.HardClearCount > 0 {
+		log.Printf("%s: context pruning soft-trimmed %d and hard-cleared %d tool results (%d chars freed)",
+			logPrefix, result.SoftTrimCount, result.HardClearCount, result.OriginalChars-result.PrunedChars)
+		return result.Messages
+	}
+	return messages
 }
 
 // executeToolBatches partitions calls using canonical src-style scheduling:
@@ -723,6 +719,7 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 	})
 
 	// Call without tools so the model MUST produce text.
+	messages = pruneContextBeforeLLM(messages, cfg.LogPrefix, cfg.ContextWindowTokens)
 	opts := cfg.Options
 	summaryResp, err := cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), nil, opts)
 	if err != nil {

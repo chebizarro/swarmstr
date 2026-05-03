@@ -27,6 +27,24 @@ func (m *mockChatProvider) Chat(_ context.Context, messages []LLMMessage, tools 
 	return resp, nil
 }
 
+type capturingChatProvider struct {
+	responses []*LLMResponse
+	calls     [][]LLMMessage
+	callCount int
+}
+
+func (p *capturingChatProvider) Chat(_ context.Context, messages []LLMMessage, _ []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
+	captured := make([]LLMMessage, len(messages))
+	copy(captured, messages)
+	p.calls = append(p.calls, captured)
+	if p.callCount >= len(p.responses) {
+		return &LLMResponse{Content: "final response"}, nil
+	}
+	resp := p.responses[p.callCount]
+	p.callCount++
+	return resp, nil
+}
+
 // mockToolExecutor counts executions and returns a fixed result.
 type mockToolExecutor struct {
 	execCount    atomic.Int32
@@ -94,6 +112,95 @@ type toolExecutorFunc func(context.Context, ToolCall) (string, error)
 
 func (f toolExecutorFunc) Execute(ctx context.Context, call ToolCall) (string, error) {
 	return f(ctx, call)
+}
+
+func TestRunAgenticLoop_PrunesContextBeforeInitialCall(t *testing.T) {
+	provider := &capturingChatProvider{
+		responses: []*LLMResponse{{Content: "direct answer", NeedsToolResults: false}},
+	}
+	large := strings.Repeat("x", 30_000)
+	messages := []LLMMessage{
+		{Role: "user", Content: "read several files"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "tc1", Name: "read_file"}}},
+		{Role: "tool", ToolCallID: "tc1", Content: large},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "tc2", Name: "grep"}}},
+		{Role: "tool", ToolCallID: "tc2", Content: large},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "tc3", Name: "file_search"}}},
+		{Role: "tool", ToolCallID: "tc3", Content: large},
+		{Role: "assistant", Content: "recent response 1"},
+		{Role: "assistant", Content: "recent response 2"},
+		{Role: "assistant", Content: "recent response 3"},
+	}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:            provider,
+		InitialMessages:     messages,
+		Executor:            &mockToolExecutor{},
+		MaxIterations:       1,
+		LogPrefix:           "test",
+		ContextWindowTokens: 1_000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "direct answer" {
+		t.Fatalf("got %q, want direct answer", resp.Content)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("expected one provider call, got %d", len(provider.calls))
+	}
+	if provider.calls[0][2].Content != DefaultContextPruningConfig().HardClear.Placeholder {
+		t.Fatalf("expected provider to receive hard-cleared tool result, got %.80q", provider.calls[0][2].Content)
+	}
+	if messages[2].Content != large {
+		t.Fatal("initial messages should not be mutated by pruning")
+	}
+}
+
+func TestRunAgenticLoop_PrunesIterativeContextBeforeCompressionWithDefaults(t *testing.T) {
+	provider := &capturingChatProvider{
+		responses: []*LLMResponse{
+			{NeedsToolResults: true, ToolCalls: []ToolCall{{ID: "tc1", Name: "read_file"}}},
+			{NeedsToolResults: true, ToolCalls: []ToolCall{{ID: "tc2", Name: "read_file"}}},
+			{Content: "done", NeedsToolResults: false},
+		},
+	}
+	executor := &mockToolExecutor{results: map[string]string{"read_file": strings.Repeat("x", 60_000)}}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:            provider,
+		InitialMessages:     []LLMMessage{{Role: "user", Content: "read files"}},
+		Executor:            executor,
+		MaxIterations:       3,
+		LogPrefix:           "test",
+		ContextWindowTokens: 1_000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("got %q, want done", resp.Content)
+	}
+	if len(provider.calls) != 3 {
+		t.Fatalf("expected three provider calls, got %d", len(provider.calls))
+	}
+
+	finalMessages := provider.calls[2]
+	var tc1Content, tc2Content string
+	for _, msg := range finalMessages {
+		if msg.ToolCallID == "tc1" {
+			tc1Content = msg.Content
+		}
+		if msg.ToolCallID == "tc2" {
+			tc2Content = msg.Content
+		}
+	}
+	if tc1Content != DefaultContextPruningConfig().HardClear.Placeholder {
+		t.Fatalf("expected older iterative tool result hard-cleared, got %.80q", tc1Content)
+	}
+	if tc2Content == DefaultContextPruningConfig().HardClear.Placeholder {
+		t.Fatal("latest iterative tool result should remain protected from hard clear")
+	}
 }
 
 func TestRunAgenticLoop_NoToolCalls(t *testing.T) {
@@ -857,10 +964,10 @@ func TestRunAgenticLoop_ForceSummary(t *testing.T) {
 
 // toolCapturingProvider records the tool lists passed to each Chat call.
 type toolCapturingProvider struct {
-	responses  []*LLMResponse
-	callCount  int
-	toolLists  [][]string // tool names per call
-	mu         sync.Mutex
+	responses []*LLMResponse
+	callCount int
+	toolLists [][]string // tool names per call
+	mu        sync.Mutex
 }
 
 func (p *toolCapturingProvider) Chat(_ context.Context, _ []LLMMessage, tools []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {

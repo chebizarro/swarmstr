@@ -3,8 +3,9 @@ package agent
 // ─── Micro-compaction ─────────────────────────────────────────────────────────
 //
 // Micro-compaction replaces old tool result content with a short placeholder
-// to free context space. It operates without an LLM call and is safe to run
-// before every Provider.Chat() invocation in the agentic loop.
+// to free context space. The normal per-call agentic loop uses the canonical
+// PruneLLMContextMessages pipeline; this lower-level hard-clear helper remains
+// for cache-expired time-based compaction and focused tests.
 //
 // Ported from the concept in src/services/compact/microCompact.ts.
 
