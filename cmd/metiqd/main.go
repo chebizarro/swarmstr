@@ -3755,13 +3755,13 @@ func main() {
 				len(inlineTools), deferredTools.Count(), sessionID)
 		}
 
-		drainedSteeringMu := sync.Mutex{}
-		var drainedSteering []autoreply.SteeringMessage
-		recordDrainedSteering := func(items []autoreply.SteeringMessage) {
-			drainedSteeringMu.Lock()
-			drainedSteering = append(drainedSteering, items...)
-			drainedSteeringMu.Unlock()
-		}
+		drainedSteering := &activeRunSteeringDrainTracker{}
+		steeringDrainCommitted := false
+		defer func() {
+			if !steeringDrainCommitted && shouldRestoreDrainedSteering(turnErr) {
+				restoreDrainedSteering(steeringMailboxes, queueSettings, sessionID, drainedSteering.Snapshot())
+			}
+		}()
 
 		baseTurn := agent.Turn{
 			SessionID:            sessionID,
@@ -3777,7 +3777,7 @@ func main() {
 			ToolEventSink:        toolLifecycleSinkWithActiveTools(activeTools, toolLifecycleEmitter(wsEmitter, activeAgentID)),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
 			HookInvoker:          controlHookInvoker,
-			SteeringDrain:        makeActiveRunSteeringDrain(steeringMailboxes, sessionID, recordDrainedSteering),
+			SteeringDrain:        makeActiveRunSteeringDrain(steeringMailboxes, sessionID, drainedSteering.Record),
 			LastAssistantTime:    lastAssistantTime,
 			DeferredTools:        deferredTools,
 		}
@@ -3847,9 +3847,7 @@ func main() {
 			controlPresenceHeartbeat38.SetIdle(ctx)
 		}
 
-		drainedSteeringMu.Lock()
-		inlineSteering := append([]autoreply.SteeringMessage(nil), drainedSteering...)
-		drainedSteeringMu.Unlock()
+		inlineSteering := drainedSteering.Snapshot()
 		for _, steered := range inlineSteering {
 			if strings.ToLower(strings.TrimSpace(steered.Source)) != "dm" {
 				continue
@@ -3990,6 +3988,8 @@ func main() {
 				log.Printf("checkpoint update failed inline steering event=%s err=%v", steered.EventID, err)
 			}
 		}
+		steeringDrainCommitted = true
+		drainedSteering.Clear()
 	}
 
 	dmRunAgentTurn := func(
@@ -4832,6 +4832,7 @@ func main() {
 		chID, senderID, sessionID, text, eventID string,
 		handle channels.Channel,
 		rawHandle sdk.ChannelHandle,
+		queueSettings queueRuntimeSettings,
 	) (turnErr error) {
 		// ── Session start hook (fires once per session) ───────────────────
 		if _, seen := seenChannelSessions.LoadOrStore(sessionID, struct{}{}); !seen {
@@ -4963,6 +4964,14 @@ func main() {
 				len(chInlineTools), chDeferredTools.Count(), sessionID)
 		}
 
+		drainedSteering := &activeRunSteeringDrainTracker{}
+		steeringDrainCommitted := false
+		defer func() {
+			if !steeringDrainCommitted && shouldRestoreDrainedSteering(turnErr) {
+				restoreDrainedSteering(steeringMailboxes, queueSettings, sessionID, drainedSteering.Snapshot())
+			}
+		}()
+
 		chBaseTurn := agent.Turn{
 			SessionID:            sessionID,
 			TurnID:               eventID,
@@ -4976,7 +4985,7 @@ func main() {
 			ToolEventSink:        toolLifecycleSinkWithActiveTools(activeTools, toolLifecycleEmitter(wsEmitter, activeAgentID)),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
 			HookInvoker:          controlHookInvoker,
-			SteeringDrain:        makeActiveRunSteeringDrain(steeringMailboxes, sessionID, nil),
+			SteeringDrain:        makeActiveRunSteeringDrain(steeringMailboxes, sessionID, drainedSteering.Record),
 			LastAssistantTime:    chLastAssistantTime,
 			DeferredTools:        chDeferredTools,
 		}
@@ -5136,6 +5145,8 @@ func main() {
 		turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, nil, false, "", "", "")
 		persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
 		emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
+		steeringDrainCommitted = true
+		drainedSteering.Clear()
 		return nil
 	}
 
@@ -5306,7 +5317,7 @@ func main() {
 		replyCtx := sdk.WithChannelReplyTarget(turnCtx, senderID)
 
 		// Run the initial turn.
-		_ = doChannelTurn(replyCtx, chID, senderID, sessionID, combined, eventID, handle, rawHandle)
+		_ = doChannelTurn(replyCtx, chID, senderID, sessionID, combined, eventID, handle, rawHandle, queueSettings)
 
 		// First, run residual active-run steering that did not reach a model boundary.
 		for {
@@ -5317,7 +5328,7 @@ func main() {
 			interrupted := false
 			for i, pt := range steeringPending {
 				queuedCtx := sdk.WithChannelReplyTarget(turnCtx, pt.SenderID)
-				if err := doChannelTurn(queuedCtx, chID, pt.SenderID, sessionID, pt.Text, pt.EventID, handle, rawHandle); err != nil {
+				if err := doChannelTurn(queuedCtx, chID, pt.SenderID, sessionID, pt.Text, pt.EventID, handle, rawHandle, queueSettings); err != nil {
 					enqueuePendingTurns(sessionQ, steeringPending[i+1:])
 					interrupted = true
 					break
@@ -5355,19 +5366,19 @@ func main() {
 					queuedText = fmt.Sprintf("[%d queued messages while agent was busy]\n\n%s", len(pending), queuedText)
 				}
 				queuedCtx := sdk.WithChannelReplyTarget(turnCtx, senderID)
-				_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, queuedText, latestEventID, handle, rawHandle)
+				_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, queuedText, latestEventID, handle, rawHandle, queueSettings)
 				continue
 			}
 			if queueModeSequential(mode) {
 				for _, pt := range pending {
 					queuedCtx := sdk.WithChannelReplyTarget(turnCtx, senderID)
-					_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, pt.Text, pt.EventID, handle, rawHandle)
+					_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, pt.Text, pt.EventID, handle, rawHandle, queueSettings)
 				}
 				continue
 			}
 			latest := pending[len(pending)-1]
 			queuedCtx := sdk.WithChannelReplyTarget(turnCtx, senderID)
-			_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, latest.Text, latest.EventID, handle, rawHandle)
+			_ = doChannelTurn(queuedCtx, chID, senderID, sessionID, latest.Text, latest.EventID, handle, rawHandle, queueSettings)
 		}
 
 	})

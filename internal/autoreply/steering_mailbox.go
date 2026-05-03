@@ -210,6 +210,53 @@ func (m *SteeringMailbox) Drain() []SteeringMessage {
 	return items
 }
 
+// RestoreDrained returns previously drained, already-accepted steering items
+// to the mailbox. It intentionally bypasses recent event-id dedupe because
+// Drain records IDs in the recent set; using Enqueue would reject the same
+// accepted input on a turn failure. Capacity/drop policy is also bypassed so an
+// accepted item is not lost while being restored for retry.
+func (m *SteeringMailbox) RestoreDrained(items []SteeringMessage) int {
+	if len(items) == 0 {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	m.pruneRecentIDs(now)
+	existingIDs := make(map[string]struct{}, len(m.items))
+	for _, item := range m.items {
+		if item.EventID != "" {
+			existingIDs[item.EventID] = struct{}{}
+		}
+	}
+
+	restored := 0
+	for _, item := range items {
+		if item.EventID != "" {
+			if _, exists := existingIDs[item.EventID]; exists {
+				continue
+			}
+		}
+		if item.Priority == "" {
+			item.Priority = SteeringPriorityNormal
+		}
+		if item.SummaryLine == "" {
+			item.SummaryLine = truncate(item.Text, 80)
+		}
+		if item.EnqueuedAt.IsZero() {
+			item.EnqueuedAt = now
+		}
+		m.items = append(m.items, item)
+		if item.EventID != "" {
+			m.recentIDs[item.EventID] = now
+			existingIDs[item.EventID] = struct{}{}
+		}
+		restored++
+	}
+	return restored
+}
+
 // Clear removes currently staged steering messages and dropped summaries while
 // preserving recent event IDs for dedupe during the TTL window.
 func (m *SteeringMailbox) Clear() {
@@ -298,6 +345,15 @@ func (r *SteeringMailboxRegistry) Clear(sessionID string) {
 	if mailbox != nil {
 		mailbox.Clear()
 	}
+}
+
+// RestoreDrained returns previously drained, already-accepted steering items to
+// the session mailbox without applying enqueue dedupe/capacity again.
+func (r *SteeringMailboxRegistry) RestoreDrained(sessionID string, items []SteeringMessage) int {
+	if len(items) == 0 {
+		return 0
+	}
+	return r.Get(sessionID).RestoreDrained(items)
 }
 
 func (m *SteeringMailbox) pruneRecentIDs(now time.Time) {
