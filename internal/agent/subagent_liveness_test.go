@@ -110,6 +110,24 @@ func TestIsStaleUnendedSubagentRun(t *testing.T) {
 	}
 }
 
+func TestIsStaleUnendedSubagentRun_UpdatedAtTakesPrecedence(t *testing.T) {
+	now := time.Now()
+	entry := SubagentRunRecord{
+		Status:    "running",
+		StartedAt: now.Add(-4 * time.Hour).UnixMilli(),
+		UpdatedAt: now.Add(-30 * time.Minute).UnixMilli(),
+	}
+
+	if IsStaleUnendedSubagentRun(entry, now) {
+		t.Fatal("recent UpdatedAt should keep an old started run live")
+	}
+
+	entry.UpdatedAt = now.Add(-3 * time.Hour).UnixMilli()
+	if !IsStaleUnendedSubagentRun(entry, now) {
+		t.Fatal("old UpdatedAt should make an unended run stale")
+	}
+}
+
 func TestIsStaleUnendedSubagentRun_WithExplicitTimeout(t *testing.T) {
 	now := time.Now()
 
@@ -293,10 +311,10 @@ func TestSubagentLivenessChecker_FindStaleRuns(t *testing.T) {
 	checker := NewSubagentLivenessChecker()
 
 	records := []SubagentRunRecord{
-		{Status: "running", StartedAt: now.Add(-1 * time.Hour).UnixMilli()},  // live
-		{Status: "running", StartedAt: now.Add(-3 * time.Hour).UnixMilli()},  // stale
-		{Status: "done", StartedAt: now.Add(-3 * time.Hour).UnixMilli()},     // ended
-		{Status: "running", StartedAt: now.Add(-5 * time.Hour).UnixMilli()},  // stale
+		{Status: "running", StartedAt: now.Add(-1 * time.Hour).UnixMilli()}, // live
+		{Status: "running", StartedAt: now.Add(-3 * time.Hour).UnixMilli()}, // stale
+		{Status: "done", StartedAt: now.Add(-3 * time.Hour).UnixMilli()},    // ended
+		{Status: "running", StartedAt: now.Add(-5 * time.Hour).UnixMilli()}, // stale
 	}
 
 	staleIndices := checker.FindStaleRuns(records, now)
@@ -313,15 +331,41 @@ func TestSubagentLivenessChecker_FindStaleRuns(t *testing.T) {
 	}
 }
 
+func TestSubagentLivenessChecker_HonorsCustomCutoff(t *testing.T) {
+	now := time.Now()
+	checker := NewSubagentLivenessCheckerWithCutoff(30 * time.Minute)
+
+	records := []SubagentRunRecord{
+		{Status: "running", StartedAt: now.Add(-20 * time.Minute).UnixMilli()},
+		{Status: "running", StartedAt: now.Add(-45 * time.Minute).UnixMilli()},
+		{Status: "running", StartedAt: now.Add(-45 * time.Minute).UnixMilli(), UpdatedAt: now.Add(-10 * time.Minute).UnixMilli()},
+	}
+
+	staleIndices := checker.FindStaleRuns(records, now)
+	if len(staleIndices) != 1 || staleIndices[0] != 1 {
+		t.Fatalf("stale indices = %v, want [1]", staleIndices)
+	}
+
+	live, stale := checker.PartitionRuns(records, now)
+	if len(live) != 2 || len(stale) != 1 {
+		t.Fatalf("partition live=%d stale=%d, want live=2 stale=1", len(live), len(stale))
+	}
+
+	stats := checker.GetLivenessStats(records, now)
+	if stats.LiveRuns != 2 || stats.StaleRuns != 1 {
+		t.Fatalf("stats live=%d stale=%d, want live=2 stale=1", stats.LiveRuns, stats.StaleRuns)
+	}
+}
+
 func TestSubagentLivenessChecker_PartitionRuns(t *testing.T) {
 	now := time.Now()
 	checker := NewSubagentLivenessChecker()
 
 	records := []SubagentRunRecord{
-		{Status: "running", StartedAt: now.Add(-1 * time.Hour).UnixMilli()},   // live
-		{Status: "running", StartedAt: now.Add(-3 * time.Hour).UnixMilli()},   // stale
-		{Status: "done", EndedAt: now.Add(-10 * time.Minute).UnixMilli()},     // recently ended - live
-		{Status: "done", EndedAt: now.Add(-2 * time.Hour).UnixMilli()},        // old ended - stale
+		{Status: "running", StartedAt: now.Add(-1 * time.Hour).UnixMilli()}, // live
+		{Status: "running", StartedAt: now.Add(-3 * time.Hour).UnixMilli()}, // stale
+		{Status: "done", EndedAt: now.Add(-10 * time.Minute).UnixMilli()},   // recently ended - live
+		{Status: "done", EndedAt: now.Add(-2 * time.Hour).UnixMilli()},      // old ended - stale
 	}
 
 	live, stale := checker.PartitionRuns(records, now)

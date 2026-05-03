@@ -135,6 +135,62 @@ func TestAgentRunControllerApplySessionsSpawn_InheritsParentTaskLinkage(t *testi
 	}
 }
 
+func TestAgentRunControllerApplySessionsSpawn_CleansStaleSubagentLinks(t *testing.T) {
+	ctrl, _, jobs, subagents := newTestAgentRunController(t)
+	now := time.Now()
+	subagents.records["stale-parent-run"] = &SubagentRecord{
+		RunID:     "stale-parent-run",
+		SessionID: "stale-parent-session",
+		Depth:     maxSubagentDepth,
+		Status:    "running",
+		StartedAt: now.Add(-3 * time.Hour).UnixMilli(),
+		UpdatedAt: now.Add(-3 * time.Hour).UnixMilli(),
+	}
+
+	resp, err := ctrl.applySessionsSpawn(context.Background(), methods.SessionsSpawnRequest{
+		ParentSessionID: "stale-parent-session",
+		AgentID:         "worker",
+		Message:         "spawn after stale parent",
+		TimeoutMS:       500,
+	}, state.ConfigDoc{}, nil, nil)
+	if err != nil {
+		t.Fatalf("applySessionsSpawn should ignore cleaned stale parent depth: %v", err)
+	}
+	if gotDepth, _ := resp["depth"].(int); gotDepth != 1 {
+		t.Fatalf("spawn depth = %d, want 1 after stale parent cleanup; resp=%#v", gotDepth, resp)
+	}
+	if rec := subagents.Get("stale-parent-run"); rec != nil {
+		t.Fatalf("stale parent run should be cleaned before spawn: %+v", rec)
+	}
+	if runID, _ := resp["run_id"].(string); runID != "" {
+		jobs.Wait(context.Background(), runID, 5*time.Second)
+	}
+}
+
+func TestSubagentRegistryCleanupStale_PreservesLiveDescendantAncestry(t *testing.T) {
+	subagents := newSubagentRegistry()
+	now := time.Now()
+	old := now.Add(-3 * time.Hour).UnixMilli()
+	recent := now.Add(-10 * time.Minute).UnixMilli()
+	subagents.records["stale-parent"] = &SubagentRecord{RunID: "stale-parent", SessionID: "parent-session", Status: "running", StartedAt: old, UpdatedAt: old}
+	subagents.records["stale-child"] = &SubagentRecord{RunID: "stale-child", SessionID: "child-session", ParentSessionID: "parent-session", Status: "running", StartedAt: old, UpdatedAt: old}
+	subagents.records["live-grandchild"] = &SubagentRecord{RunID: "live-grandchild", SessionID: "grandchild-session", ParentSessionID: "child-session", Status: "running", StartedAt: old, UpdatedAt: recent}
+	subagents.records["stale-sibling"] = &SubagentRecord{RunID: "stale-sibling", SessionID: "sibling-session", Status: "running", StartedAt: old, UpdatedAt: old}
+
+	removed := subagents.CleanupStale(now)
+	if removed != 1 {
+		t.Fatalf("CleanupStale removed %d records, want 1", removed)
+	}
+	for _, runID := range []string{"stale-parent", "stale-child", "live-grandchild"} {
+		if rec := subagents.Get(runID); rec == nil {
+			t.Fatalf("%s should be retained to preserve live descendant ancestry", runID)
+		}
+	}
+	if rec := subagents.Get("stale-sibling"); rec != nil {
+		t.Fatalf("stale sibling without live descendants should be removed: %+v", rec)
+	}
+}
+
 func TestAgentRunControllerApplySessionsSpawn_UsesCapturedDependencies(t *testing.T) {
 	ctrl, sessionStore, jobs, subagents := newTestAgentRunController(t)
 	blocked := make(chan struct{})

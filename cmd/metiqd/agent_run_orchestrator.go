@@ -9,10 +9,10 @@ import (
 
 	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
-	cfgTimeouts "metiq/internal/timeouts"
 	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
+	cfgTimeouts "metiq/internal/timeouts"
 )
 
 type agentRunController struct {
@@ -89,6 +89,9 @@ func (c agentRunController) applySessionsSpawn(ctx context.Context, req methods.
 	}
 	if c.subagents == nil {
 		return nil, fmt.Errorf("subagent registry not initialised")
+	}
+	if removed := c.subagents.CleanupStale(time.Now()); removed > 0 {
+		log.Printf("subagent registry stale cleanup removed=%d", removed)
 	}
 
 	parentDepth := 0

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
@@ -288,12 +289,93 @@ type SubagentRecord struct {
 
 // SubagentRegistry tracks spawned child sessions and their ancestry/depth.
 type SubagentRegistry struct {
-	mu      sync.Mutex
-	records map[string]*SubagentRecord // key: RunID
+	mu              sync.Mutex
+	records         map[string]*SubagentRecord // key: RunID
+	livenessChecker *agent.SubagentLivenessChecker
 }
 
 func newSubagentRegistry() *SubagentRegistry {
-	return &SubagentRegistry{records: map[string]*SubagentRecord{}}
+	return &SubagentRegistry{
+		records:         map[string]*SubagentRecord{},
+		livenessChecker: agent.NewSubagentLivenessChecker(),
+	}
+}
+
+func (r *SubagentRegistry) checker() *agent.SubagentLivenessChecker {
+	if r == nil || r.livenessChecker == nil {
+		return agent.NewSubagentLivenessChecker()
+	}
+	return r.livenessChecker
+}
+
+func subagentLivenessRecord(rec *SubagentRecord) agent.SubagentRunRecord {
+	if rec == nil {
+		return agent.SubagentRunRecord{}
+	}
+	return agent.SubagentRunRecord{
+		StartedAt: rec.StartedAt,
+		UpdatedAt: rec.UpdatedAt,
+		Status:    rec.Status,
+	}
+}
+
+// CleanupStale removes stale child links from the registry. It is called from
+// normal orchestration paths so stale liveness handling does not rely on a
+// polling cleanup loop.
+func (r *SubagentRegistry) CleanupStale(now time.Time) int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	checker := r.checker()
+	removed := 0
+	for runID, rec := range r.records {
+		if rec == nil {
+			delete(r.records, runID)
+			removed++
+		}
+	}
+
+	keepMemo := make(map[string]bool, len(r.records))
+	visiting := make(map[string]bool, len(r.records))
+	var shouldKeep func(string) bool
+	shouldKeep = func(runID string) bool {
+		if keep, ok := keepMemo[runID]; ok {
+			return keep
+		}
+		if visiting[runID] {
+			return false
+		}
+		rec := r.records[runID]
+		if rec == nil {
+			return false
+		}
+		visiting[runID] = true
+		keep := checker.ShouldKeepSubagentRunChildLink(subagentLivenessRecord(rec), 0, now)
+		if !keep && rec.SessionID != "" {
+			for childRunID, child := range r.records {
+				if child == nil || child.ParentSessionID != rec.SessionID {
+					continue
+				}
+				if shouldKeep(childRunID) {
+					keep = true
+					break
+				}
+			}
+		}
+		visiting[runID] = false
+		keepMemo[runID] = keep
+		return keep
+	}
+
+	for runID := range r.records {
+		if !shouldKeep(runID) {
+			delete(r.records, runID)
+			removed++
+		}
+	}
+	return removed
 }
 
 // Spawn creates a new SubagentRecord if depth limits allow.
@@ -346,6 +428,9 @@ func (r *SubagentRegistry) Get(runID string) *SubagentRecord {
 // DepthOf returns the depth of the session identified by parentSessionID,
 // searching by sessionID field in records (for recursive depth calculation).
 func (r *SubagentRegistry) DepthOf(parentSessionID string) int {
+	if r == nil {
+		return 0
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, rec := range r.records {
