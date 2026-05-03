@@ -33,9 +33,11 @@ import (
 	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/grasp"
 	hookspkg "metiq/internal/hooks"
+	"metiq/internal/imagegen"
 	mcppkg "metiq/internal/mcp"
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
+	"metiq/internal/musicgen"
 	"metiq/internal/nostr/dvm"
 	"metiq/internal/nostr/nip38"
 	"metiq/internal/nostr/nip51"
@@ -54,6 +56,7 @@ import (
 	cfgTimeouts "metiq/internal/timeouts"
 	ttspkg "metiq/internal/tts"
 	"metiq/internal/update"
+	"metiq/internal/videogen"
 	"metiq/internal/workspace"
 
 	acppkg "metiq/internal/acp"
@@ -1110,6 +1113,7 @@ func main() {
 	// OpenClaw plugin host + service registry (Phase 6: background services).
 	var pluginServiceMgr *pluginservice.ServiceManager
 	var openClawHost *pluginruntime.OpenClawPluginHost
+	var unifiedPlugins *pluginregistry.UnifiedRegistry
 	{
 		host, hostErr := pluginruntime.NewOpenClawPluginHost(ctx)
 		if hostErr != nil {
@@ -1117,6 +1121,7 @@ func main() {
 		} else {
 			openClawHost = host
 			unified := pluginregistry.NewUnifiedRegistry()
+			unifiedPlugins = unified
 			controlHookInvoker = pluginhooks.NewHookInvoker(unified.Hooks(), openClawHost)
 			for _, installPath := range configuredOpenClawPluginPaths(configState.Get()) {
 				result, err := openClawHost.LoadPluginResult(ctx, installPath, nil)
@@ -1134,6 +1139,40 @@ func main() {
 			}
 		}
 	}
+
+	// Media generation runtimes (Phase 8): built-in image providers plus OpenClaw plugin-backed providers.
+	imageGenRegistry := imagegen.NewRegistry()
+	_ = imageGenRegistry.Register(imagegen.NewOpenAIProvider())
+	_ = imageGenRegistry.Register(imagegen.NewMidjourneyProvider())
+	_ = imageGenRegistry.Register(imagegen.NewStableDiffusionProvider())
+	videoGenRegistry := videogen.NewRegistry()
+	_ = videoGenRegistry.Register(videogen.NewRunwayProvider())
+	_ = videoGenRegistry.Register(videogen.NewPikaProvider())
+	musicGenRegistry := musicgen.NewRegistry()
+	_ = musicGenRegistry.Register(musicgen.NewSunoProvider())
+	_ = musicGenRegistry.Register(musicgen.NewUdioProvider())
+	if openClawHost != nil && unifiedPlugins != nil {
+		for _, meta := range unifiedPlugins.ImageGenProviders().List() {
+			_ = imageGenRegistry.Register(imagegen.NewPluginProvider(meta.ID, meta.Raw, openClawHost))
+		}
+		for _, meta := range unifiedPlugins.VideoGenProviders().List() {
+			_ = videoGenRegistry.Register(videogen.NewPluginProvider(meta.ID, meta.Raw, openClawHost))
+		}
+		for _, meta := range unifiedPlugins.MusicGenProviders().List() {
+			_ = musicGenRegistry.Register(musicgen.NewPluginProvider(meta.ID, meta.Raw, openClawHost))
+		}
+	}
+	imageGenRuntime := imagegen.NewRuntime(imageGenRegistry, func() string { return mediaGenerationOutputDir(configState.Get(), "images") })
+	videoGenRuntime := videogen.NewRuntime(
+		videoGenRegistry,
+		func() string { return mediaGenerationOutputDir(configState.Get(), "videos") },
+		mediaGenerationDuration(configState.Get(), "video_poll_interval_ms", 2*time.Second),
+		mediaGenerationDuration(configState.Get(), "video_max_wait_ms", 5*time.Minute),
+	)
+	musicGenRuntime := musicgen.NewRuntime(musicGenRegistry, func() string { return mediaGenerationOutputDir(configState.Get(), "music") })
+	tools.RegisterWithDef("image_generate", imagegen.Tool(imageGenRuntime), toolbuiltin.ImageGenerateDef)
+	tools.RegisterWithDef("video_generate", videogen.Tool(videoGenRuntime), toolbuiltin.VideoGenerateDef)
+	tools.RegisterWithDef("music_generate", musicgen.Tool(musicgen.ToolOptions{Runtime: musicGenRuntime, MediaPrefix: toolbuiltin.MediaPrefix}), toolbuiltin.MusicGenerateDef)
 
 	// ── Hooks system ─────────────────────────────────────────────────────────
 	hooksMgr := hookspkg.NewManager()
@@ -7270,4 +7309,49 @@ func persistToolTraces(
 		}
 	}
 	return firstErr
+}
+
+func mediaGenerationOutputDir(cfg state.ConfigDoc, kind string) string {
+	workspaceDir := workspace.ResolveWorkspaceDir(cfg, "")
+	root := ""
+	if extra, ok := cfg.Extra["media_generation"].(map[string]any); ok {
+		if v, ok := extra["output_dir"].(string); ok {
+			root = strings.TrimSpace(v)
+		}
+	}
+	if root == "" {
+		root = filepath.Join(workspaceDir, "generated-media")
+	} else if !filepath.IsAbs(root) {
+		root = filepath.Join(workspaceDir, root)
+	}
+	return filepath.Join(root, kind)
+}
+
+func mediaGenerationDuration(cfg state.ConfigDoc, key string, fallback time.Duration) time.Duration {
+	if extra, ok := cfg.Extra["media_generation"].(map[string]any); ok {
+		if v, ok := extra[key]; ok {
+			switch t := v.(type) {
+			case int:
+				if t > 0 {
+					return time.Duration(t) * time.Millisecond
+				}
+			case int64:
+				if t > 0 {
+					return time.Duration(t) * time.Millisecond
+				}
+			case float64:
+				if t > 0 {
+					return time.Duration(t) * time.Millisecond
+				}
+			case string:
+				if d, err := time.ParseDuration(t); err == nil && d > 0 {
+					return d
+				}
+				if ms, err := strconv.Atoi(t); err == nil && ms > 0 {
+					return time.Duration(ms) * time.Millisecond
+				}
+			}
+		}
+	}
+	return fallback
 }

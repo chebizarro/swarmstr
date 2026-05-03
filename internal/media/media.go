@@ -4,11 +4,14 @@
 //   - image  → base64 or URL; forwarded to vision providers as multi-modal content
 //   - audio  → transcribed to text via OpenAI Whisper before the DM is sent
 //   - pdf    → text extracted via pdftotext before the DM is sent
+//   - video  → described/transcribed by media-understanding providers
 package media
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,6 +36,29 @@ func (a MediaAttachment) IsAudio() bool { return strings.EqualFold(a.Type, "audi
 
 // IsPDF reports whether the attachment is a PDF document.
 func (a MediaAttachment) IsPDF() bool { return strings.EqualFold(a.Type, "pdf") }
+
+// IsVideo reports whether the attachment is a video.
+func (a MediaAttachment) IsVideo() bool {
+	return strings.EqualFold(a.Type, "video") || strings.HasPrefix(strings.ToLower(a.MimeType), "video/")
+}
+
+// IdentityKey returns a stable, privacy-preserving identity for cache keys.
+func (a MediaAttachment) IdentityKey() string {
+	h := sha256.New()
+	_, _ = io.WriteString(h, strings.ToLower(strings.TrimSpace(a.Type)))
+	_, _ = io.WriteString(h, "\x00")
+	_, _ = io.WriteString(h, strings.TrimSpace(a.URL))
+	_, _ = io.WriteString(h, "\x00")
+	_, _ = io.WriteString(h, strings.ToLower(strings.TrimSpace(a.MimeType)))
+	_, _ = io.WriteString(h, "\x00")
+	_, _ = io.WriteString(h, strings.TrimSpace(a.Filename))
+	_, _ = io.WriteString(h, "\x00")
+	if a.Base64 != "" {
+		sum := sha256.Sum256([]byte(a.Base64))
+		_, _ = io.WriteString(h, hex.EncodeToString(sum[:]))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 // ImageRef is a resolved image reference for passing to vision providers.
 // Exactly one of URL or Base64 is set.
@@ -88,7 +114,7 @@ func FetchAudioBytes(ctx context.Context, att MediaAttachment) ([]byte, string, 
 		return data, mimeType, nil
 	}
 	if att.URL != "" {
-		data, err := fetchURL(ctx, att.URL)
+		data, err := FetchURLBytes(ctx, att.URL)
 		return data, mimeType, err
 	}
 	return nil, "", fmt.Errorf("audio attachment has neither url nor base64 content")
@@ -104,7 +130,7 @@ func FetchPDFBytes(ctx context.Context, att MediaAttachment) ([]byte, error) {
 		return data, nil
 	}
 	if att.URL != "" {
-		return fetchURL(ctx, att.URL)
+		return FetchURLBytes(ctx, att.URL)
 	}
 	return nil, fmt.Errorf("pdf attachment has neither url nor base64 content")
 }
@@ -115,8 +141,8 @@ type Transcriber interface {
 	Configured() bool
 }
 
-// fetchURL downloads content from a URL and returns the raw bytes.
-func fetchURL(ctx context.Context, url string) ([]byte, error) {
+// FetchURLBytes downloads content from a URL and returns the raw bytes.
+func FetchURLBytes(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("fetch build %s: %w", url, err)
@@ -136,3 +162,7 @@ func fetchURL(ctx context.Context, url string) ([]byte, error) {
 	}
 	return data, nil
 }
+
+// fetchURL is kept for package-internal tests and old call sites; new callers
+// should use FetchURLBytes.
+func fetchURL(ctx context.Context, url string) ([]byte, error) { return FetchURLBytes(ctx, url) }
