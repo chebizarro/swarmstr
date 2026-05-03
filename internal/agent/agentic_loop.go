@@ -103,6 +103,7 @@ type toolCallBatch struct {
 //  4. Repeat until the model produces text or MaxIterations is reached
 //  5. Optionally force a text response when the loop is exhausted
 func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, error) {
+	ctx = ensureMutationTrackingContext(ctx)
 	if cfg.MaxIterations <= 0 {
 		profile := ResolveModelContext(cfg.ModelID)
 		cfg.MaxIterations = profile.MaxAgenticIterations
@@ -544,6 +545,34 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 	}
 	loopAware, _ := executor.(toolLoopResolver)
 
+	if _, duplicateErr := TrackToolMutationCall(ctx, call); duplicateErr != nil {
+		decision := toolMutationDecisionFromError(duplicateErr)
+		errMsg := duplicateErr.Error()
+		result.Content = "error: " + errMsg
+		emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+			Type:       ToolLifecycleEventProgress,
+			TS:         time.Now().UnixMilli(),
+			SessionID:  sessionID,
+			TurnID:     turnID,
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Trace:      trace,
+			Data:       decision,
+		})
+		emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+			Type:       ToolLifecycleEventError,
+			TS:         time.Now().UnixMilli(),
+			SessionID:  sessionID,
+			TurnID:     turnID,
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Trace:      trace,
+			Error:      errMsg,
+			Data:       decision,
+		})
+		return result
+	}
+
 	if hooks != nil {
 		beforeResult, hookErr := hooks.EmitBeforeToolCall(ctx, pluginhooks.BeforeToolCallEvent{
 			BaseEvent:  pluginhooks.BaseEvent{SessionID: sessionID, TurnID: turnID},
@@ -622,9 +651,23 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		ToolName:   call.Name,
 		Trace:      trace,
 	})
-	value, execErr := executor.Execute(ctx, call)
+	value, execErr := executor.Execute(contextWithMutationTrackingSuppressed(ctx), call)
 	if execErr != nil {
 		errMsg := execErr.Error()
+		var duplicateErr *DuplicateToolMutationError
+		if errors.As(execErr, &duplicateErr) {
+			decision := toolMutationDecisionFromError(duplicateErr)
+			emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+				Type:       ToolLifecycleEventProgress,
+				TS:         time.Now().UnixMilli(),
+				SessionID:  sessionID,
+				TurnID:     turnID,
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Trace:      trace,
+				Data:       decision,
+			})
+		}
 
 		if hooks != nil {
 			if _, hookErr := hooks.EmitAfterToolCall(ctx, pluginhooks.AfterToolCallEvent{BaseEvent: pluginhooks.BaseEvent{SessionID: sessionID, TurnID: turnID}, ToolName: call.Name, ToolCallID: call.ID, Args: call.Args, Result: value, Error: errMsg, DurationMS: time.Since(startedAt).Milliseconds()}); hookErr != nil {
@@ -633,7 +676,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		}
 		result.Content = "error: " + errMsg
 		log.Printf("tool %s error: %v", call.Name, execErr)
-		emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+		errorEvent := ToolLifecycleEvent{
 			Type:       ToolLifecycleEventError,
 			TS:         time.Now().UnixMilli(),
 			SessionID:  sessionID,
@@ -642,7 +685,11 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 			ToolName:   call.Name,
 			Trace:      trace,
 			Error:      errMsg,
-		})
+		}
+		if duplicateErr != nil {
+			errorEvent.Data = toolMutationDecisionFromError(duplicateErr)
+		}
+		emitToolLifecycleEvent(sink, errorEvent)
 		if loopAware != nil {
 			loopAware.RecordLoopOutcome(ctx, call, value, errMsg)
 		}
@@ -674,6 +721,19 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		Result:     value,
 	})
 	return result
+}
+
+func toolMutationDecisionFromError(err *DuplicateToolMutationError) ToolMutationDecision {
+	if err == nil {
+		return ToolMutationDecision{}
+	}
+	return ToolMutationDecision{
+		Kind:        ToolDecisionKindMutationDuplicate,
+		Blocked:     true,
+		Fingerprint: err.Fingerprint,
+		Count:       err.Count,
+		Message:     err.Error(),
+	}
 }
 
 // forceSummary makes a final LLM call with Tools=nil, forcing the model to

@@ -327,6 +327,7 @@ func (r *ProviderRuntime) Filtered(allowed map[string]bool) Runtime {
 }
 
 func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResult, error) {
+	ctx = ensureMutationTrackingContext(ctx)
 	turn.UserText = strings.TrimSpace(turn.UserText)
 	if turn.UserText == "" {
 		return TurnResult{}, fmt.Errorf("empty user turn")
@@ -337,22 +338,23 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 		ctx = ContextWithSessionID(ctx, turn.SessionID)
 	}
 	frozenTools := SnapshotToolExecutor(r.tools)
+	trackedTools := NewMutationTrackingToolExecutor(frozenTools)
 	// Auto-inject tool definitions when the executor provides them and the
 	// caller hasn't already populated turn.Tools.
-	if len(turn.Tools) == 0 && frozenTools != nil {
-		if dp, ok := frozenTools.(interface{ Definitions() []ToolDefinition }); ok {
+	if len(turn.Tools) == 0 && trackedTools != nil {
+		if dp, ok := trackedTools.(interface{ Definitions() []ToolDefinition }); ok {
 			turn.Tools = dp.Definitions()
 		}
 	}
 	// Inject the executor so providers can run the agentic tool loop internally.
 	if turn.Executor == nil {
-		turn.Executor = frozenTools
+		turn.Executor = trackedTools
 	}
 	gen, err := r.provider.Generate(ctx, turn)
 	if err != nil {
 		return TurnResult{}, err
 	}
-	return r.buildResult(ctx, gen, frozenTools)
+	return r.buildResult(ctx, gen, trackedTools)
 }
 
 // ProcessTurnStreaming processes a turn with incremental text delivery.
@@ -361,6 +363,7 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 // the full text is delivered in one onChunk call.  Tool calls are executed
 // after streaming completes using the configured ToolExecutor.
 func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, onChunk func(text string)) (TurnResult, error) {
+	ctx = ensureMutationTrackingContext(ctx)
 	turn.UserText = strings.TrimSpace(turn.UserText)
 	if turn.UserText == "" {
 		return TurnResult{}, fmt.Errorf("empty user turn")
@@ -369,14 +372,15 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		ctx = ContextWithSessionID(ctx, turn.SessionID)
 	}
 	frozenTools := SnapshotToolExecutor(r.tools)
+	trackedTools := NewMutationTrackingToolExecutor(frozenTools)
 	// Auto-inject tool definitions (same as ProcessTurn).
-	if len(turn.Tools) == 0 && frozenTools != nil {
-		if dp, ok := frozenTools.(interface{ Definitions() []ToolDefinition }); ok {
+	if len(turn.Tools) == 0 && trackedTools != nil {
+		if dp, ok := trackedTools.(interface{ Definitions() []ToolDefinition }); ok {
 			turn.Tools = dp.Definitions()
 		}
 	}
 	if turn.Executor == nil {
-		turn.Executor = frozenTools
+		turn.Executor = trackedTools
 	}
 
 	var gen ProviderResult
@@ -404,7 +408,7 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	// onChunk (e.g. "Let me look that up…"). The Generate path produces the
 	// complete synthesised response in gen.Text and emits it to onChunk so
 	// the client can display the final answer.
-	if len(gen.ToolCalls) > 0 && frozenTools != nil {
+	if len(gen.ToolCalls) > 0 && trackedTools != nil {
 		gen, err = r.provider.Generate(ctx, turn)
 		if err != nil {
 			return TurnResult{}, err
@@ -414,7 +418,7 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		}
 	}
 
-	return r.buildResult(ctx, gen, frozenTools)
+	return r.buildResult(ctx, gen, trackedTools)
 }
 
 // buildResult executes any tool calls from gen and assembles the TurnResult.

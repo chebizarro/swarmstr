@@ -1,9 +1,17 @@
 package agent
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
+
+	"metiq/internal/agent/toolloop"
 )
 
 // ─── Tool Mutation Detection ──────────────────────────────────────────────────
@@ -116,14 +124,36 @@ func normalizeFingerprintValue(value interface{}) string {
 		}
 		return strings.ToLower(s)
 	case float64:
-		return strings.ToLower(strings.TrimSpace(string(rune(int(v)))))
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(v), 'f', -1, 32)
+	case json.Number:
+		return strings.ToLower(strings.TrimSpace(v.String()))
 	case bool:
 		if v {
 			return "true"
 		}
 		return "false"
-	case int, int64, int32:
-		return strings.ToLower(strings.TrimSpace(string(rune(v.(int)))))
+	case int:
+		return strconv.FormatInt(int64(v), 10)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case int32:
+		return strconv.FormatInt(int64(v), 10)
+	case int16:
+		return strconv.FormatInt(int64(v), 10)
+	case int8:
+		return strconv.FormatInt(int64(v), 10)
+	case uint:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint64:
+		return strconv.FormatUint(v, 10)
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(v), 10)
 	default:
 		return ""
 	}
@@ -321,12 +351,19 @@ func BuildToolActionFingerprint(toolName string, args interface{}, meta string) 
 	parts, found = appendFingerprintAlias(parts, record, "pubkey", []string{"pubkey", "npub", "recipient"})
 	hasStableTarget = hasStableTarget || found
 
-	// Only include meta if we don't have stable target keys
-	if !hasStableTarget && meta != "" {
+	// Include meta for calls that do not expose stable target fields. When a
+	// stable target exists, include a compact hash of meta so same-target but
+	// different-payload mutations (for example two writes to the same file with
+	// different content) do not collapse into one duplicate fingerprint.
+	if meta != "" {
 		normalizedMeta := strings.ToLower(strings.TrimSpace(meta))
 		normalizedMeta = whitespaceRE.ReplaceAllString(normalizedMeta, " ")
 		if normalizedMeta != "" {
-			parts = append(parts, "meta="+normalizedMeta)
+			if hasStableTarget {
+				parts = append(parts, "meta_hash="+fingerprintHash(normalizedMeta))
+			} else {
+				parts = append(parts, "meta="+normalizedMeta)
+			}
 		}
 	}
 
@@ -361,6 +398,7 @@ func IsSameToolMutationAction(existing, next ToolActionRef) bool {
 
 // MutationTracker tracks tool mutation fingerprints within a session
 type MutationTracker struct {
+	mu   sync.Mutex
 	seen map[string]int // fingerprint -> count
 }
 
@@ -371,15 +409,25 @@ func NewMutationTracker() *MutationTracker {
 	}
 }
 
-// Track records a mutation and returns true if it's a duplicate
+// Track records a mutation and returns true if it's a duplicate.
 func (t *MutationTracker) Track(fingerprint string) bool {
-	if fingerprint == "" {
-		return false
+	duplicate, _ := t.TrackWithCount(fingerprint)
+	return duplicate
+}
+
+// TrackWithCount records a mutation and returns whether it was a duplicate plus
+// the number of times it had already been seen. The count is captured under the
+// same lock as the mutation update so parallel duplicate reporting is stable.
+func (t *MutationTracker) TrackWithCount(fingerprint string) (bool, int) {
+	if t == nil || fingerprint == "" {
+		return false, 0
 	}
 
-	count := t.seen[fingerprint]
-	t.seen[fingerprint] = count + 1
-	return count > 0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	seenBefore := t.seen[fingerprint]
+	t.seen[fingerprint] = seenBefore + 1
+	return seenBefore > 0, seenBefore
 }
 
 // TrackToolCall tracks a tool call and returns true if it's a duplicate mutation
@@ -390,19 +438,198 @@ func (t *MutationTracker) TrackToolCall(toolName string, args interface{}, meta 
 
 // Count returns how many times a fingerprint has been seen
 func (t *MutationTracker) Count(fingerprint string) int {
+	if t == nil || fingerprint == "" {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.seen[fingerprint]
 }
 
 // Reset clears all tracked fingerprints
 func (t *MutationTracker) Reset() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.seen = make(map[string]int)
 }
 
 // All returns all tracked fingerprints
 func (t *MutationTracker) All() map[string]int {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	result := make(map[string]int, len(t.seen))
 	for k, v := range t.seen {
 		result[k] = v
 	}
 	return result
+}
+
+// DuplicateToolMutationError is returned when retry/resume/fallback execution
+// attempts to repeat an already-seen mutating tool fingerprint in the current
+// mutation-tracking scope. The call is blocked before invoking the underlying
+// executor so side effects are not repeated.
+type DuplicateToolMutationError struct {
+	ToolName    string
+	Fingerprint string
+	Count       int
+}
+
+func (e *DuplicateToolMutationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("duplicate mutating tool call blocked for %s: fingerprint was already seen %d time(s); retry/resume protection prevented repeating the side effect", e.ToolName, e.Count)
+}
+
+type mutationTrackerKey struct{}
+type mutationTrackingSuppressedKey struct{}
+
+// ContextWithMutationTracker attaches a mutation tracker to ctx. Supplying nil
+// leaves ctx unchanged.
+func ContextWithMutationTracker(ctx context.Context, tracker *MutationTracker) context.Context {
+	if tracker == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, mutationTrackerKey{}, tracker)
+}
+
+// MutationTrackerFromContext extracts the tracker attached to ctx.
+func MutationTrackerFromContext(ctx context.Context) (*MutationTracker, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	tracker, ok := ctx.Value(mutationTrackerKey{}).(*MutationTracker)
+	return tracker, ok && tracker != nil
+}
+
+func ensureMutationTrackingContext(ctx context.Context) context.Context {
+	if _, ok := MutationTrackerFromContext(ctx); ok {
+		return ctx
+	}
+	return ContextWithMutationTracker(ctx, NewMutationTracker())
+}
+
+func contextWithMutationTrackingSuppressed(ctx context.Context) context.Context {
+	return context.WithValue(ctx, mutationTrackingSuppressedKey{}, true)
+}
+
+func mutationTrackingSuppressed(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	suppressed, _ := ctx.Value(mutationTrackingSuppressedKey{}).(bool)
+	return suppressed
+}
+
+func TrackToolMutationCall(ctx context.Context, call ToolCall) (ToolMutationState, *DuplicateToolMutationError) {
+	tracker, ok := MutationTrackerFromContext(ctx)
+	if !ok || mutationTrackingSuppressed(ctx) {
+		return ToolMutationState{}, nil
+	}
+	meta := mutationFingerprintMeta(call)
+	state := BuildToolMutationState(call.Name, call.Args, meta)
+	if !state.IsMutating {
+		return state, nil
+	}
+	duplicate, seenBefore := tracker.TrackWithCount(state.ActionFingerprint)
+	if !duplicate {
+		return state, nil
+	}
+	return state, &DuplicateToolMutationError{
+		ToolName:    call.Name,
+		Fingerprint: state.ActionFingerprint,
+		Count:       seenBefore,
+	}
+}
+
+type mutationTrackingExecutor interface {
+	MutationTrackingEnabled() bool
+}
+
+type mutationTrackingToolExecutor struct {
+	base ToolExecutor
+}
+
+// NewMutationTrackingToolExecutor wraps an executor with per-context mutation
+// tracking. It preserves descriptor, trait, and loop-detection interfaces used
+// by the real execution lifecycle.
+func NewMutationTrackingToolExecutor(base ToolExecutor) ToolExecutor {
+	if base == nil {
+		return nil
+	}
+	if tracked, ok := base.(mutationTrackingExecutor); ok && tracked.MutationTrackingEnabled() {
+		return base
+	}
+	return &mutationTrackingToolExecutor{base: base}
+}
+
+func (e *mutationTrackingToolExecutor) MutationTrackingEnabled() bool { return true }
+
+func (e *mutationTrackingToolExecutor) Execute(ctx context.Context, call ToolCall) (string, error) {
+	if e == nil || e.base == nil {
+		return "", fmt.Errorf("no tool executor configured")
+	}
+	_, duplicateErr := TrackToolMutationCall(ctx, call)
+	if duplicateErr != nil {
+		return "", duplicateErr
+	}
+	return e.base.Execute(ctx, call)
+}
+
+func (e *mutationTrackingToolExecutor) Definitions() []ToolDefinition {
+	if provider, ok := e.base.(interface{ Definitions() []ToolDefinition }); ok {
+		return provider.Definitions()
+	}
+	return nil
+}
+
+func (e *mutationTrackingToolExecutor) EffectiveTraits(call ToolCall) (ToolTraits, bool) {
+	resolver, ok := e.base.(interface {
+		EffectiveTraits(ToolCall) (ToolTraits, bool)
+	})
+	if !ok {
+		return ToolTraits{}, false
+	}
+	return resolver.EffectiveTraits(call)
+}
+
+func (e *mutationTrackingToolExecutor) PrepareLoopExecution(ctx context.Context, call ToolCall) (toolloop.Result, bool) {
+	resolver, ok := e.base.(interface {
+		PrepareLoopExecution(context.Context, ToolCall) (toolloop.Result, bool)
+	})
+	if !ok {
+		return toolloop.Result{}, false
+	}
+	return resolver.PrepareLoopExecution(ctx, call)
+}
+
+func (e *mutationTrackingToolExecutor) RecordLoopOutcome(ctx context.Context, call ToolCall, result, errStr string) {
+	resolver, ok := e.base.(interface {
+		RecordLoopOutcome(context.Context, ToolCall, string, string)
+	})
+	if ok {
+		resolver.RecordLoopOutcome(ctx, call, result, errStr)
+	}
+}
+
+func mutationFingerprintMeta(call ToolCall) string {
+	if len(call.Args) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(call.Args)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func fingerprintHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
