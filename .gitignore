@@ -13,3 +13,6 @@ scripts/docker/.env
 /metiq
 /metiqd
 /dist/
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
