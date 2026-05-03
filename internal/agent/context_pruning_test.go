@@ -40,8 +40,8 @@ func TestIsToolPrunable(t *testing.T) {
 		{"list tool", "list_directory", true},
 		{"get tool", "get_status", true},
 		{"show tool", "show_diff", true},
-		{"write tool", "write_file", false},   // mutating
-		{"execute tool", "execute", false},    // mutating
+		{"write tool", "write_file", false},      // mutating
+		{"execute tool", "execute", false},       // mutating
 		{"publish tool", "nostr_publish", false}, // mutating
 	}
 
@@ -177,10 +177,10 @@ func TestFindAssistantCutoffIndex(t *testing.T) {
 		keepLast   int
 		wantCutoff int
 	}{
-		{"keep 0", 0, 8},   // all prunable
-		{"keep 1", 1, 7},   // last assistant protected
-		{"keep 2", 2, 5},   // last 2 assistants protected
-		{"keep 3", 3, 3},   // last 3 assistants protected
+		{"keep 0", 0, 8},                 // all prunable
+		{"keep 1", 1, 7},                 // last assistant protected
+		{"keep 2", 2, 5},                 // last 2 assistants protected
+		{"keep 3", 3, 3},                 // last 3 assistants protected
 		{"keep more than exist", 10, -1}, // not enough assistants
 	}
 
@@ -248,8 +248,8 @@ func TestPruneContextMessages_NoPruningNeeded(t *testing.T) {
 
 func TestPruneContextMessages_SoftTrim(t *testing.T) {
 	cfg := DefaultContextPruningConfig()
-	cfg.SoftTrimRatio = 0.1          // Trigger soft trim easily
-	cfg.SoftTrim.MaxChars = 100      // Small max chars
+	cfg.SoftTrimRatio = 0.1     // Trigger soft trim easily
+	cfg.SoftTrim.MaxChars = 100 // Small max chars
 	cfg.SoftTrim.HeadChars = 20
 	cfg.SoftTrim.TailChars = 20
 
@@ -381,6 +381,120 @@ func TestGetPruningStats(t *testing.T) {
 	}
 	if stats.SoftTrimCount != 3 {
 		t.Errorf("Expected 3 soft trims, got %d", stats.SoftTrimCount)
+	}
+}
+
+func TestPruneLLMContextMessages_HardClearActivates(t *testing.T) {
+	cfg := DefaultContextPruningConfig()
+	cfg.KeepLastAssistants = 3
+	cfg.SoftTrimRatio = 0.01
+	cfg.HardClearRatio = 0.5
+	cfg.MinPrunableChars = 0
+	cfg.SoftTrim.MaxChars = 100
+	cfg.SoftTrim.HeadChars = 1_000
+	cfg.SoftTrim.TailChars = 1_000
+
+	large := strings.Repeat("x", 30_000)
+	messages := []LLMMessage{
+		{Role: "user", Content: "read several files"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "tc1", Name: "read_file"}}},
+		{Role: "tool", ToolCallID: "tc1", Content: large},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "tc2", Name: "grep"}}},
+		{Role: "tool", ToolCallID: "tc2", Content: large},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "tc3", Name: "file_search"}}},
+		{Role: "tool", ToolCallID: "tc3", Content: large},
+		{Role: "assistant", Content: "recent response 1"},
+		{Role: "assistant", Content: "recent response 2"},
+		{Role: "assistant", Content: "recent response 3"},
+	}
+
+	result := PruneLLMContextMessages(messages, 1_000, cfg)
+
+	if result.HardClearCount == 0 {
+		t.Fatal("expected hard clear to activate")
+	}
+	if result.Messages[2].Content != cfg.HardClear.Placeholder {
+		t.Fatalf("expected oldest tool result hard-cleared, got %.80q", result.Messages[2].Content)
+	}
+	if result.Messages[0].Content != messages[0].Content {
+		t.Fatal("user message should not be pruned")
+	}
+	if messages[2].Content != large {
+		t.Fatal("input messages should not be mutated")
+	}
+}
+
+func TestPruneLLMContextMessages_ProtectsRecentAssistantRegion(t *testing.T) {
+	cfg := DefaultContextPruningConfig()
+	cfg.KeepLastAssistants = 3
+	cfg.SoftTrimRatio = 0.01
+	cfg.HardClearRatio = 0.5
+	cfg.MinPrunableChars = 0
+	cfg.SoftTrim.MaxChars = 100
+	cfg.SoftTrim.HeadChars = 1_000
+	cfg.SoftTrim.TailChars = 1_000
+
+	oldContent := strings.Repeat("old", 10_000)
+	recentContent := strings.Repeat("recent", 5_000)
+	messages := []LLMMessage{
+		{Role: "system", Content: "system identity"},
+		{Role: "user", Content: "read files"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "old", Name: "read_file"}}},
+		{Role: "tool", ToolCallID: "old", Content: oldContent},
+		{Role: "assistant", Content: "old response"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "recent", Name: "read_file"}}},
+		{Role: "tool", ToolCallID: "recent", Content: recentContent},
+		{Role: "assistant", Content: "recent response 2"},
+		{Role: "assistant", Content: "recent response 3"},
+	}
+
+	result := PruneLLMContextMessages(messages, 1_000, cfg)
+
+	if result.HardClearCount == 0 {
+		t.Fatal("expected an old tool result to be hard-cleared")
+	}
+	if result.Messages[3].Content != cfg.HardClear.Placeholder {
+		t.Fatalf("old tool result should be hard-cleared, got %.80q", result.Messages[3].Content)
+	}
+	if result.Messages[6].Content != recentContent {
+		t.Fatal("tool result in protected recent assistant region should remain intact")
+	}
+	if !result.ProtectedIndices[5] || !result.ProtectedIndices[6] || !result.ProtectedIndices[8] {
+		t.Fatalf("expected recent assistant region to be protected, got %#v", result.ProtectedIndices)
+	}
+}
+
+func TestPruneLLMContextMessages_UsesToolPolicy(t *testing.T) {
+	cfg := DefaultContextPruningConfig()
+	cfg.KeepLastAssistants = 1
+	cfg.SoftTrimRatio = 0.01
+	cfg.HardClearRatio = 0.5
+	cfg.MinPrunableChars = 0
+	cfg.SoftTrim.MaxChars = 100
+	cfg.SoftTrim.HeadChars = 1_000
+	cfg.SoftTrim.TailChars = 1_000
+
+	readContent := strings.Repeat("read", 10_000)
+	writeContent := strings.Repeat("write", 10_000)
+	messages := []LLMMessage{
+		{Role: "user", Content: "inspect then write"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "read", Name: "read_file"}}},
+		{Role: "tool", ToolCallID: "read", Content: readContent},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "write", Name: "write_file"}}},
+		{Role: "tool", ToolCallID: "write", Content: writeContent},
+		{Role: "assistant", Content: "recent response"},
+	}
+
+	result := PruneLLMContextMessages(messages, 1_000, cfg)
+
+	if result.HardClearCount == 0 {
+		t.Fatal("expected prunable read tool to be hard-cleared")
+	}
+	if result.Messages[2].Content != cfg.HardClear.Placeholder {
+		t.Fatalf("read_file result should be hard-cleared, got %.80q", result.Messages[2].Content)
+	}
+	if result.Messages[4].Content != writeContent {
+		t.Fatal("write_file result should not be pruned by read-only tool policy")
 	}
 }
 

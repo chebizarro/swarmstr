@@ -13,8 +13,9 @@ import (
 // tool results — keeping tool execution context visible to the model while
 // freeing substantial context space.
 //
-// Call this pass before MicroCompactMessages in the agentic loop so that
-// micro-compaction can still target disposable tools with full clearing.
+// Call this pass before the canonical context-pruning pipeline in the
+// agentic loop so the hard-clear phase can still target disposable tools
+// after summaries have reduced generic tool output.
 
 const (
 	// Minimum content length to bother compressing. Results smaller than

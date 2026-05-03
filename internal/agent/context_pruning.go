@@ -214,7 +214,11 @@ func softTrimContent(content string, cfg SoftTrimConfig) (string, bool) {
 	return trimmed, true
 }
 
-// PruneContextMessages prunes messages to fit within context window
+// PruneContextMessages prunes messages to fit within context window.
+//
+// This is the canonical pruning pipeline: it determines protected regions,
+// applies soft head/tail trimming to old prunable tool results, then performs
+// hard clearing oldest-first if the context is still above the hard threshold.
 func PruneContextMessages(messages []PrunableMessage, contextWindowTokens int, cfg ContextPruningConfig) PruningResult {
 	result := PruningResult{
 		Messages:         make([]PrunableMessage, len(messages)),
@@ -264,17 +268,22 @@ func PruneContextMessages(messages []PrunableMessage, contextWindowTokens int, c
 		return result
 	}
 
-	// Collect prunable tool result indices
+	// Collect prunable tool result indices.
 	var prunableIndices []int
+	originalPrunableChars := 0
 	for i := pruneStartIndex; i < cutoffIndex; i++ {
 		msg := messages[i]
 		if msg.Role != "tool_result" {
+			continue
+		}
+		if msg.Content == cfg.HardClear.Placeholder || msg.Content == microCompactClearedMarker || msg.Content == preemptiveToolResultCompactionPlaceholder {
 			continue
 		}
 		if !IsToolPrunable(msg.ToolName, cfg) {
 			continue
 		}
 		prunableIndices = append(prunableIndices, i)
+		originalPrunableChars += EstimateMessageChars(msg)
 	}
 
 	// Phase 1: Soft trim
@@ -297,12 +306,10 @@ func PruneContextMessages(messages []PrunableMessage, contextWindowTokens int, c
 		return result
 	}
 
-	// Check if we have enough prunable content
-	prunableChars := 0
-	for _, i := range prunableIndices {
-		prunableChars += EstimateMessageChars(result.Messages[i])
-	}
-	if prunableChars < cfg.MinPrunableChars {
+	// Check if there was enough prunable content before soft trimming to
+	// justify hard clearing. Using the original size prevents the soft phase
+	// from accidentally disabling the hard phase for a formerly huge result.
+	if originalPrunableChars < cfg.MinPrunableChars {
 		result.PrunedChars = totalChars
 		return result
 	}
@@ -371,8 +378,64 @@ func GetPruningStats(result PruningResult) PruningStats {
 
 // ─── LLMMessage Integration ───────────────────────────────────────────────────
 //
-// These functions integrate context pruning with the LLMMessage type used by
-// the agentic loop and provider implementations.
+// These functions integrate the canonical context pruning pipeline with the
+// LLMMessage type used by the agentic loop and provider implementations.
+
+// LLMContextPruningResult holds the result of pruning provider-agnostic LLM messages.
+type LLMContextPruningResult struct {
+	Messages []LLMMessage
+	PruningResult
+}
+
+// prunableMessagesFromLLM converts LLM messages into the canonical pruning view.
+func prunableMessagesFromLLM(messages []LLMMessage) []PrunableMessage {
+	toolIndex := buildToolNameIndex(messages)
+	out := make([]PrunableMessage, len(messages))
+	for i, msg := range messages {
+		role := msg.Role
+		toolName := ""
+		if msg.Role == "tool" {
+			role = "tool_result"
+			toolName = toolIndex[msg.ToolCallID]
+		}
+		out[i] = PrunableMessage{
+			Role:     role,
+			Content:  msg.Content,
+			ToolName: toolName,
+			Index:    i,
+		}
+	}
+	return out
+}
+
+// PruneLLMContextMessages applies the canonical pruning pipeline to LLM messages.
+// The input slice is not mutated; Messages is the original slice when no message
+// content changed, otherwise it is a copy with pruned tool-result content.
+func PruneLLMContextMessages(messages []LLMMessage, contextWindowTokens int, cfg ContextPruningConfig) LLMContextPruningResult {
+	prunable := prunableMessagesFromLLM(messages)
+	pruned := PruneContextMessages(prunable, contextWindowTokens, cfg)
+	out := messages
+	mutated := false
+	if len(pruned.Messages) == len(messages) {
+		for i, msg := range pruned.Messages {
+			if msg.Content == messages[i].Content {
+				continue
+			}
+			if !mutated {
+				out = make([]LLMMessage, len(messages))
+				copy(out, messages)
+				mutated = true
+			}
+			clone := out[i]
+			clone.Content = msg.Content
+			out[i] = clone
+		}
+	}
+	return LLMContextPruningResult{
+		Messages:      out,
+		PruningResult: pruned,
+	}
+}
 
 // SoftTrimLLMMessages applies soft trimming to tool result messages in place.
 // It modifies the input slice and returns the number of messages trimmed.
@@ -413,35 +476,22 @@ type SoftTrimLLMMessagesResult struct {
 	CharsAfter  int
 }
 
-// SoftTrimLLMMessagesCopy applies soft trimming to a copy of the messages
+// SoftTrimLLMMessagesCopy applies soft trimming to a copy of the messages.
+// It is retained for callers/tests that only want the soft phase, but delegates
+// to the canonical pruning pipeline with hard clearing disabled.
 func SoftTrimLLMMessagesCopy(messages []LLMMessage, cfg SoftTrimConfig, contextWindowTokens int) SoftTrimLLMMessagesResult {
 	charsBefore := estimateMessageChars(messages)
-	charWindow := contextWindowTokens * CharsPerToken
+	pruneCfg := DefaultContextPruningConfig()
+	pruneCfg.KeepLastAssistants = 0 // legacy soft trim considered all old tool results
+	pruneCfg.SoftTrim = cfg
+	pruneCfg.HardClear.Enabled = false
 
-	// Check if we need to trim
-	ratio := float64(charsBefore) / float64(charWindow)
-	if ratio < 0.3 { // soft trim ratio
-		return SoftTrimLLMMessagesResult{
-			Messages:    messages,
-			CharsBefore: charsBefore,
-			CharsAfter:  charsBefore,
-		}
-	}
-
-	// Build tool name index
-	toolIndex := buildToolNameIndex(messages)
-
-	// Copy messages
-	result := make([]LLMMessage, len(messages))
-	copy(result, messages)
-
-	trimmed := SoftTrimLLMMessages(result, cfg, toolIndex)
-
-	charsAfter := estimateMessageChars(result)
+	result := PruneLLMContextMessages(messages, contextWindowTokens, pruneCfg)
+	charsAfter := estimateMessageChars(result.Messages)
 
 	return SoftTrimLLMMessagesResult{
-		Messages:    result,
-		Trimmed:     trimmed,
+		Messages:    result.Messages,
+		Trimmed:     result.SoftTrimCount,
 		CharsBefore: charsBefore,
 		CharsAfter:  charsAfter,
 	}
