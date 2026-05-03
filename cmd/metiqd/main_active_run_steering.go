@@ -61,6 +61,10 @@ func enqueueActiveRunSteering(mailboxes *autoreply.SteeringMailboxRegistry, sett
 	return accepted
 }
 
+func handleBusySteer(mailboxes *autoreply.SteeringMailboxRegistry, _ *autoreply.SessionQueue, settings queueRuntimeSettings, input activeRunSteeringInput) bool {
+	return enqueueActiveRunSteering(mailboxes, settings, input)
+}
+
 func handleBusyInterrupt(
 	chatCancels *chatAbortRegistry,
 	activeTools *activeToolRegistry,

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -1023,6 +1024,51 @@ func TestRunAgenticLoop_HistoryDelta_MultipleIterations(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_InterruptedAfterToolResultsReturnsAbortedPartialHistory(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	provider := &interruptOnCanceledProvider{}
+	executor := toolExecutorFunc(func(_ context.Context, _ ToolCall) (string, error) {
+		cancel(ErrTurnInterrupted)
+		return "tool completed before interrupt", nil
+	})
+
+	_, err := RunAgenticLoop(ctx, AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "use tool then interrupt"}},
+		Executor:        executor,
+		LogPrefix:       "test-interrupt",
+	})
+	if err == nil {
+		t.Fatal("expected interrupt error")
+	}
+	if !errors.Is(err, ErrTurnInterrupted) {
+		t.Fatalf("expected ErrTurnInterrupted, got %v", err)
+	}
+	partial, ok := PartialTurnResult(err)
+	if !ok {
+		t.Fatal("expected partial turn result from interrupted loop")
+	}
+	if partial.Outcome != TurnOutcomeAborted || partial.StopReason != TurnStopReasonCancelled {
+		t.Fatalf("expected interrupted loop to classify as aborted/cancelled, got outcome=%q stop_reason=%q", partial.Outcome, partial.StopReason)
+	}
+	if len(partial.HistoryDelta) != 2 {
+		t.Fatalf("expected assistant tool call and completed tool result in partial history, got %+v", partial.HistoryDelta)
+	}
+	if partial.HistoryDelta[0].Role != "assistant" || len(partial.HistoryDelta[0].ToolCalls) != 1 {
+		t.Fatalf("partial history should start with assistant tool call, got %+v", partial.HistoryDelta[0])
+	}
+	if partial.HistoryDelta[1].Role != "tool" || partial.HistoryDelta[1].ToolCallID != "tc-interrupt" || partial.HistoryDelta[1].Content != "tool completed before interrupt" {
+		t.Fatalf("partial history should preserve completed tool result, got %+v", partial.HistoryDelta[1])
+	}
+	if len(provider.calls) != 2 {
+		t.Fatalf("expected provider to be called for initial and post-tool boundaries, got %d", len(provider.calls))
+	}
+	second := provider.calls[1]
+	if len(second) < 2 || second[len(second)-1].Role != "tool" || second[len(second)-1].Content != "tool completed before interrupt" {
+		t.Fatalf("post-tool provider boundary should include completed tool result before cancellation is returned, got %+v", second)
+	}
+}
+
 func TestRunAgenticLoop_HistoryDelta_LLMError_PartialResult(t *testing.T) {
 	callCount := 0
 	provider := &mockChatProvider{}
@@ -1066,6 +1112,28 @@ func TestRunAgenticLoop_HistoryDelta_LLMError_PartialResult(t *testing.T) {
 	if partial.Usage.InputTokens != 11 || partial.Usage.OutputTokens != 7 {
 		t.Fatalf("expected partial usage to be preserved, got %+v", partial.Usage)
 	}
+}
+
+type interruptOnCanceledProvider struct {
+	calls     [][]LLMMessage
+	callCount int
+}
+
+func (p *interruptOnCanceledProvider) Chat(ctx context.Context, messages []LLMMessage, _ []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
+	captured := make([]LLMMessage, len(messages))
+	copy(captured, messages)
+	p.calls = append(p.calls, captured)
+	p.callCount++
+	if p.callCount == 1 {
+		return &LLMResponse{
+			ToolCalls:        []ToolCall{{ID: "tc-interrupt", Name: "interruptible_tool"}},
+			NeedsToolResults: true,
+		}, nil
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return &LLMResponse{Content: "unexpected completion", NeedsToolResults: false}, nil
 }
 
 // failOnSecondCallProvider returns the first response, then errors.
