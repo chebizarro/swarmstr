@@ -10,6 +10,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
+	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/policy"
@@ -100,7 +101,7 @@ func (s *runtimeConfigStore) SetOnChange(fn func(state.ConfigDoc)) {
 
 type chatAbortHandle struct {
 	id     uint64
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 }
 
 type chatAbortRegistry struct {
@@ -118,8 +119,8 @@ func (r *chatAbortRegistry) Begin(sessionID string, parent context.Context) (con
 	if sessionID == "" {
 		return parent, func() {}
 	}
-	ctx, cancel := context.WithCancel(parent)
-	var previous context.CancelFunc
+	ctx, cancel := context.WithCancelCause(parent)
+	var previous context.CancelCauseFunc
 	r.mu.Lock()
 	r.nextID++
 	h := chatAbortHandle{id: r.nextID, cancel: cancel}
@@ -129,7 +130,7 @@ func (r *chatAbortRegistry) Begin(sessionID string, parent context.Context) (con
 	r.inFlight[sessionID] = h
 	r.mu.Unlock()
 	if previous != nil {
-		previous()
+		previous(context.Canceled)
 	}
 	return ctx, func() {
 		r.mu.Lock()
@@ -142,9 +143,16 @@ func (r *chatAbortRegistry) Begin(sessionID string, parent context.Context) (con
 }
 
 func (r *chatAbortRegistry) Abort(sessionID string) bool {
+	return r.AbortWithCause(sessionID, context.Canceled)
+}
+
+func (r *chatAbortRegistry) AbortWithCause(sessionID string, cause error) bool {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return false
+	}
+	if cause == nil {
+		cause = context.Canceled
 	}
 	r.mu.Lock()
 	h, ok := r.inFlight[sessionID]
@@ -153,7 +161,7 @@ func (r *chatAbortRegistry) Abort(sessionID string) bool {
 	}
 	r.mu.Unlock()
 	if ok {
-		h.cancel()
+		h.cancel(cause)
 	}
 	return ok
 }
@@ -167,9 +175,131 @@ func (r *chatAbortRegistry) AbortAll() int {
 	}
 	r.mu.Unlock()
 	for _, h := range handles {
-		h.cancel()
+		h.cancel(context.Canceled)
 	}
 	return len(handles)
+}
+
+// ---------------------------------------------------------------------------
+// activeToolRegistry — tracks in-flight tool calls for interrupt gating
+// ---------------------------------------------------------------------------
+
+type activeToolState struct {
+	toolName          string
+	interruptBehavior agent.ToolInterruptBehavior
+	count             int
+}
+
+type activeToolRegistry struct {
+	mu       sync.Mutex
+	sessions map[string]map[string]activeToolState
+}
+
+func newActiveToolRegistry() *activeToolRegistry {
+	return &activeToolRegistry{sessions: map[string]map[string]activeToolState{}}
+}
+
+func (r *activeToolRegistry) Record(evt agent.ToolLifecycleEvent) {
+	if r == nil {
+		return
+	}
+	sessionID := strings.TrimSpace(evt.SessionID)
+	if sessionID == "" {
+		return
+	}
+	key := activeToolKey(evt)
+	if key == "" {
+		return
+	}
+	switch evt.Type {
+	case agent.ToolLifecycleEventStart:
+		behavior := agent.ToolInterruptBehaviorBlock
+		if decision, ok := evt.Data.(agent.ToolInterruptPolicyDecision); ok && decision.InterruptBehavior != "" {
+			behavior = decision.InterruptBehavior
+		}
+		r.mu.Lock()
+		tools := r.sessions[sessionID]
+		if tools == nil {
+			tools = map[string]activeToolState{}
+			r.sessions[sessionID] = tools
+		}
+		state := tools[key]
+		state.toolName = strings.TrimSpace(evt.ToolName)
+		if state.count <= 0 {
+			state.interruptBehavior = behavior
+		} else if behavior != agent.ToolInterruptBehaviorCancel {
+			// Multiple provider-empty calls can share the fallback key. Fail
+			// closed if any active call under that key blocks interrupts.
+			state.interruptBehavior = behavior
+		}
+		state.count++
+		tools[key] = state
+		r.mu.Unlock()
+	case agent.ToolLifecycleEventResult, agent.ToolLifecycleEventError:
+		r.mu.Lock()
+		if tools := r.sessions[sessionID]; tools != nil {
+			state := tools[key]
+			if state.count > 1 {
+				state.count--
+				tools[key] = state
+			} else {
+				delete(tools, key)
+			}
+			if len(tools) == 0 {
+				delete(r.sessions, sessionID)
+			}
+		}
+		r.mu.Unlock()
+	}
+}
+
+func (r *activeToolRegistry) AllInterruptible(sessionID string) bool {
+	if r == nil {
+		return true
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tools := r.sessions[sessionID]
+	if len(tools) == 0 {
+		return true
+	}
+	for _, tool := range tools {
+		if tool.interruptBehavior != agent.ToolInterruptBehaviorCancel {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *activeToolRegistry) ClearSession(sessionID string) {
+	if r == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.sessions, sessionID)
+	r.mu.Unlock()
+}
+
+func activeToolKey(evt agent.ToolLifecycleEvent) string {
+	if id := strings.TrimSpace(evt.ToolCallID); id != "" {
+		return id
+	}
+	name := strings.TrimSpace(evt.ToolName)
+	if name == "" {
+		return ""
+	}
+	if turnID := strings.TrimSpace(evt.TurnID); turnID != "" {
+		return turnID + "\x00" + name
+	}
+	return name
 }
 
 // ---------------------------------------------------------------------------
