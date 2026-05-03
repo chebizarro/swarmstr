@@ -6,6 +6,7 @@ import (
 
 	"metiq/internal/agent"
 	"metiq/internal/browser"
+	searchproviders "metiq/internal/search"
 )
 
 const (
@@ -38,6 +39,10 @@ var WebFetchDef = agent.ToolDefinition{
 				Type:        "string",
 				Description: "The URL to fetch, e.g. \"https://example.com/page\"",
 			},
+			"provider": {
+				Type:        "string",
+				Description: "Optional registered web fetch provider ID",
+			},
 		},
 		Required: []string{"url"},
 	},
@@ -62,6 +67,23 @@ func WebFetchTool(opts WebFetchOpts) agent.ToolFunc {
 		timeoutSec := agent.ArgInt(args, "timeout_seconds", defaultWebFetchTimeoutSec)
 		if timeoutSec <= 0 {
 			timeoutSec = defaultWebFetchTimeoutSec
+		}
+
+		providerID := agent.ArgString(args, "provider")
+		if providerID != "" {
+			provider, ok := searchproviders.DefaultRegistry().WebFetchProvider(providerID)
+			if !ok {
+				return "", fmt.Errorf("web_fetch: unknown provider %q", providerID)
+			}
+			res, err := provider.Fetch(ctx, rawURL, searchproviders.FetchOptions{MaxChars: maxChars, TimeoutSeconds: timeoutSec})
+			if err != nil {
+				return "", fmt.Errorf("web_fetch: %w", err)
+			}
+			content := res.Content
+			if content == "" {
+				content = res.Markdown
+			}
+			return Truncate(content, maxChars), nil
 		}
 
 		allowLocal := opts.AllowLocal

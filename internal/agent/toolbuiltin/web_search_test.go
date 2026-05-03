@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	searchproviders "metiq/internal/search"
 )
 
 func TestWebSearchTool_MissingQuery(t *testing.T) {
@@ -119,6 +121,31 @@ func TestWebSearchTool_SerperMock(t *testing.T) {
 	}
 	if results[0].URL != "https://rust-lang.org" {
 		t.Errorf("unexpected URL: %q", results[0].URL)
+	}
+}
+
+type stubWebSearchProvider struct{}
+
+func (stubWebSearchProvider) ID() string { return "plugin-search-test" }
+func (stubWebSearchProvider) Search(ctx context.Context, query string, opts searchproviders.SearchOptions) ([]searchproviders.SearchResult, error) {
+	return []searchproviders.SearchResult{{Title: "plugin", URL: "https://plugin", Snippet: query}}, nil
+}
+
+func TestWebSearchTool_PluginProvider(t *testing.T) {
+	if err := searchproviders.RegisterWebSearchProvider(stubWebSearchProvider{}); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	tool := WebSearchTool(WebSearchConfig{})
+	result, err := tool(context.Background(), map[string]any{"query": "nostr", "provider": "plugin-search-test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var results []SearchResult
+	if err := json.Unmarshal([]byte(result), &results); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if len(results) != 1 || results[0].URL != "https://plugin" {
+		t.Fatalf("unexpected results: %+v", results)
 	}
 }
 
