@@ -22,6 +22,12 @@ var openClawShimJS []byte
 //go:embed openclaw_api.js
 var openClawAPIJS []byte
 
+type callbackEntry struct {
+	cb   func(any)
+	ch   chan any
+	done chan struct{}
+}
+
 // OpenClawPluginHost manages a Node.js subprocess running OpenClaw-format
 // plugins. Communication is line-delimited JSON over stdin/stdout.
 type OpenClawPluginHost struct {
@@ -35,6 +41,7 @@ type OpenClawPluginHost struct {
 	writeMu   sync.Mutex
 	closeOnce sync.Once
 	pending   map[int64]chan *RPCResponse
+	callbacks map[string]*callbackEntry
 	nextID    atomic.Int64
 	closed    bool
 	closing   bool
@@ -101,6 +108,7 @@ func NewOpenClawPluginHost(ctx context.Context) (*OpenClawPluginHost, error) {
 		stdout:       stdout,
 		tempDir:      tempDir,
 		pending:      map[int64]chan *RPCResponse{},
+		callbacks:    map[string]*callbackEntry{},
 		done:         make(chan struct{}),
 		tools:        map[string]*RegisteredTool{},
 		providers:    map[string]*RegisteredProvider{},
@@ -187,6 +195,27 @@ func (h *OpenClawPluginHost) InvokeHook(ctx context.Context, event string, paylo
 	return envelope.Results, nil
 }
 
+// InvokeHookHandler calls one registered hook handler by hook ID. This lets the
+// Go hook invoker interleave Node.js handlers with native Go handlers according
+// to the Go-side registry priority order.
+func (h *OpenClawPluginHost) InvokeHookHandler(ctx context.Context, event, hookID string, payload any) (HookResult, error) {
+	resp, err := h.call(ctx, "invoke_hook", map[string]any{"event": event, "hook_id": hookID, "payload": payload})
+	if err != nil {
+		return HookResult{}, err
+	}
+	var envelope struct {
+		Results []HookResult `json:"results"`
+	}
+	if err := decodeRPCResult(resp.Result, &envelope); err == nil && len(envelope.Results) > 0 {
+		return envelope.Results[0], nil
+	}
+	var direct HookResult
+	if err := decodeRPCResult(resp.Result, &direct); err != nil {
+		return HookResult{}, fmt.Errorf("decode hook result: %w", err)
+	}
+	return direct, nil
+}
+
 // InvokeProvider calls a provider method such as catalog or auth.
 func (h *OpenClawPluginHost) InvokeProvider(ctx context.Context, providerID, method string, params any) (any, error) {
 	resp, err := h.call(ctx, "invoke_provider", map[string]any{
@@ -198,6 +227,62 @@ func (h *OpenClawPluginHost) InvokeProvider(ctx context.Context, providerID, met
 		return nil, err
 	}
 	return resp.Result, nil
+}
+
+// InvokeChannel calls a registered OpenClaw channel plugin method. channelID is
+// the channel registration ID for metadata/connect calls and the active handle
+// ID for handle-scoped operations such as send, reactions, and close.
+func (h *OpenClawPluginHost) InvokeChannel(ctx context.Context, channelID, method string, params any) (any, error) {
+	resp, err := h.call(ctx, "invoke_channel", map[string]any{
+		"channel_id": channelID,
+		"method":     method,
+		"params":     params,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
+// RegisterCallback records a callback used by the Node.js host to push
+// asynchronous channel messages back into Go. Callback IDs are supplied to
+// channel connect calls and removed by UnregisterCallback/handle Close.
+func (h *OpenClawPluginHost) RegisterCallback(callbackID string, cb func(any)) {
+	if callbackID == "" || cb == nil {
+		return
+	}
+	entry := &callbackEntry{cb: cb, ch: make(chan any, 64), done: make(chan struct{})}
+	h.mu.Lock()
+	if old := h.callbacks[callbackID]; old != nil {
+		close(old.done)
+	}
+	h.callbacks[callbackID] = entry
+	h.mu.Unlock()
+	go func() {
+		for {
+			select {
+			case payload := <-entry.ch:
+				entry.cb(payload)
+			case <-entry.done:
+				return
+			}
+		}
+	}()
+}
+
+// UnregisterCallback removes a callback previously registered with
+// RegisterCallback. It is safe to call for unknown IDs.
+func (h *OpenClawPluginHost) UnregisterCallback(callbackID string) {
+	if callbackID == "" {
+		return
+	}
+	h.mu.Lock()
+	entry := h.callbacks[callbackID]
+	delete(h.callbacks, callbackID)
+	h.mu.Unlock()
+	if entry != nil {
+		close(entry.done)
+	}
 }
 
 // StartService invokes a registered service start hook when present.
@@ -333,6 +418,31 @@ func (h *OpenClawPluginHost) removePending(id int64) {
 	h.mu.Unlock()
 }
 
+func (h *OpenClawPluginHost) dispatchCallback(params any) {
+	m, ok := params.(map[string]any)
+	if !ok {
+		return
+	}
+	callbackID, _ := m["callback_id"].(string)
+	if callbackID == "" {
+		callbackID, _ = m["callbackId"].(string)
+	}
+	payload := m["payload"]
+	if payload == nil {
+		payload = m["message"]
+	}
+	h.mu.Lock()
+	entry := h.callbacks[callbackID]
+	h.mu.Unlock()
+	if entry == nil {
+		return
+	}
+	select {
+	case entry.ch <- payload:
+	case <-entry.done:
+	}
+}
+
 func (h *OpenClawPluginHost) readLoop(r io.Reader) {
 	defer close(h.done)
 	scanner := bufio.NewScanner(r)
@@ -356,6 +466,10 @@ func (h *OpenClawPluginHost) readLoop(r io.Reader) {
 		h.mu.Unlock()
 		if ok {
 			ch <- &resp
+			continue
+		}
+		if resp.Method == "callback" {
+			h.dispatchCallback(resp.Params)
 		}
 	}
 
