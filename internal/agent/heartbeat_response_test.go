@@ -228,44 +228,44 @@ func TestHeartbeatResponse_GetNotificationText(t *testing.T) {
 
 func TestHeartbeatResponse_Predicates(t *testing.T) {
 	tests := []struct {
-		name           string
-		response       HeartbeatResponse
-		wantComplete   bool
-		wantBlocked    bool
-		wantAttention  bool
-		wantSilent     bool
+		name          string
+		response      HeartbeatResponse
+		wantComplete  bool
+		wantBlocked   bool
+		wantAttention bool
+		wantSilent    bool
 	}{
 		{
-			name:           "done outcome",
-			response:       HeartbeatResponse{Outcome: OutcomeDone, Notify: true},
-			wantComplete:   true,
-			wantBlocked:    false,
-			wantAttention:  false,
-			wantSilent:     false,
+			name:          "done outcome",
+			response:      HeartbeatResponse{Outcome: OutcomeDone, Notify: true},
+			wantComplete:  true,
+			wantBlocked:   false,
+			wantAttention: false,
+			wantSilent:    false,
 		},
 		{
-			name:           "blocked outcome",
-			response:       HeartbeatResponse{Outcome: OutcomeBlocked, Notify: true},
-			wantComplete:   false,
-			wantBlocked:    true,
-			wantAttention:  true,
-			wantSilent:     false,
+			name:          "blocked outcome",
+			response:      HeartbeatResponse{Outcome: OutcomeBlocked, Notify: true},
+			wantComplete:  false,
+			wantBlocked:   true,
+			wantAttention: true,
+			wantSilent:    false,
 		},
 		{
-			name:           "needs attention outcome",
-			response:       HeartbeatResponse{Outcome: OutcomeNeedsAttention, Notify: true},
-			wantComplete:   false,
-			wantBlocked:    false,
-			wantAttention:  true,
-			wantSilent:     false,
+			name:          "needs attention outcome",
+			response:      HeartbeatResponse{Outcome: OutcomeNeedsAttention, Notify: true},
+			wantComplete:  false,
+			wantBlocked:   false,
+			wantAttention: true,
+			wantSilent:    false,
 		},
 		{
-			name:           "silent response",
-			response:       HeartbeatResponse{Outcome: OutcomeNoChange, Notify: false},
-			wantComplete:   false,
-			wantBlocked:    false,
-			wantAttention:  false,
-			wantSilent:     true,
+			name:          "silent response",
+			response:      HeartbeatResponse{Outcome: OutcomeNoChange, Notify: false},
+			wantComplete:  false,
+			wantBlocked:   false,
+			wantAttention: false,
+			wantSilent:    true,
 		},
 	}
 
@@ -299,6 +299,7 @@ func TestHeartbeatResponse_GetNextCheckDuration(t *testing.T) {
 		{"ISO 8601 minutes", "PT30M", 30 * time.Minute, false},
 		{"ISO 8601 hours", "PT2H", 2 * time.Hour, false},
 		{"ISO 8601 combined", "PT1H30M", 90 * time.Minute, false},
+		{"ISO 8601 trailing unitless digits", "PT1H30", 0, true},
 		{"empty", "", 0, true},
 		{"invalid", "invalid", 0, true},
 	}
@@ -409,6 +410,7 @@ func TestParseISO8601Duration(t *testing.T) {
 		{"PT2H30M", 2*time.Hour + 30*time.Minute, false},
 		{"PT1H30M15S", 1*time.Hour + 30*time.Minute + 15*time.Second, false},
 		{"pt30m", 30 * time.Minute, false}, // lowercase
+		{"PT1H30", 0, true},                // trailing unitless digits
 		{"P1D", 0, true},                   // days not supported
 		{"30M", 0, true},                   // missing PT prefix
 		{"PT", 0, true},                    // empty

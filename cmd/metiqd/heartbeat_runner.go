@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
+	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/store/state"
 )
 
@@ -57,11 +59,12 @@ func (r *heartbeatRunner) Start(ctx context.Context) <-chan struct{} {
 			if ctx.Err() != nil {
 				return
 			}
-			if hasImmediateHeartbeatWake(wakes) {
+			now := r.now()
+			if hasImmediateHeartbeatWake(wakes, now) {
 				r.runHeartbeatCycle(ctx)
 				continue
 			}
-			waitFor, ok := heartbeatRunnerWaitDuration(status, r.now())
+			waitFor, ok := heartbeatRunnerWaitDuration(status, wakes, now)
 			if !ok {
 				select {
 				case <-ctx.Done():
@@ -95,9 +98,10 @@ func (r *heartbeatRunner) runHeartbeatCycle(ctx context.Context) {
 	if r.getConfig != nil {
 		cfg = r.getConfig()
 	}
-	wakes := r.ops.ConsumeHeartbeatWakes()
+	now := r.now()
+	wakes := r.ops.ConsumeDueHeartbeatWakes(now.UnixMilli())
 	trigger := heartbeatCycleTriggerSchedule
-	if hasImmediateHeartbeatWake(wakes) {
+	if hasImmediateHeartbeatWake(wakes, now) {
 		trigger = heartbeatCycleTriggerWake
 	}
 	if err := r.executeCycle(ctx, cfg, wakes, trigger); err != nil {
@@ -204,23 +208,42 @@ func heartbeatSessionKey(agentID string) string {
 	return "heartbeat:" + agentID
 }
 
-func heartbeatRunnerWaitDuration(status heartbeatRunnerStatus, now time.Time) (time.Duration, bool) {
-	if !status.Enabled || status.IntervalMS <= 0 {
-		return 0, false
+func heartbeatRunnerWaitDuration(status heartbeatRunnerStatus, wakes []heartbeatWakeRecord, now time.Time) (time.Duration, bool) {
+	var waitFor time.Duration
+	ok := false
+	if status.Enabled && status.IntervalMS > 0 {
+		waitFor = time.Duration(status.IntervalMS) * time.Millisecond
+		if status.LastRunMS > 0 {
+			elapsed := now.Sub(time.UnixMilli(status.LastRunMS))
+			waitFor -= elapsed
+			if waitFor < 0 {
+				waitFor = 0
+			}
+		}
+		ok = true
 	}
-	waitFor := time.Duration(status.IntervalMS) * time.Millisecond
-	if status.LastRunMS > 0 {
-		elapsed := now.Sub(time.UnixMilli(status.LastRunMS))
-		waitFor -= elapsed
-		if waitFor < 0 {
-			waitFor = 0
+	for _, wake := range wakes {
+		if !heartbeatWakeCanScheduleIndependently(wake) {
+			continue
+		}
+		dueAt := time.UnixMilli(wake.AtMS)
+		wakeWait := dueAt.Sub(now)
+		if wakeWait < 0 {
+			wakeWait = 0
+		}
+		if !ok || wakeWait < waitFor {
+			waitFor = wakeWait
+			ok = true
 		}
 	}
-	return waitFor, true
+	return waitFor, ok
 }
 
-func hasImmediateHeartbeatWake(wakes []heartbeatWakeRecord) bool {
+func hasImmediateHeartbeatWake(wakes []heartbeatWakeRecord, now time.Time) bool {
 	for _, wake := range wakes {
+		if !heartbeatWakeDue(wake, now) {
+			continue
+		}
 		if strings.ToLower(strings.TrimSpace(wake.Mode)) != "next-heartbeat" {
 			return true
 		}
@@ -228,12 +251,20 @@ func hasImmediateHeartbeatWake(wakes []heartbeatWakeRecord) bool {
 	return false
 }
 
+func heartbeatWakeCanScheduleIndependently(wake heartbeatWakeRecord) bool {
+	return strings.ToLower(strings.TrimSpace(wake.Mode)) != "next-heartbeat" && wake.AtMS > 0
+}
+
+func heartbeatWakeDue(wake heartbeatWakeRecord, now time.Time) bool {
+	return wake.AtMS <= 0 || !time.UnixMilli(wake.AtMS).After(now)
+}
+
 func buildHeartbeatRunnerPrompt(agentID string, wakes []heartbeatWakeRecord) string {
 	var b strings.Builder
 	b.WriteString("Heartbeat runner check for agent \"")
 	b.WriteString(strings.TrimSpace(agentID))
 	b.WriteString("\".\n\n")
-	b.WriteString("If queued wake events are listed below, treat them as the reason for this run. Inspect workspace/context as needed and take appropriate action. If nothing requires action, reply HEARTBEAT_OK.")
+	b.WriteString("If queued wake events are listed below, treat them as the reason for this run. Inspect workspace/context as needed and take appropriate action. You MUST finish every heartbeat run by calling the heartbeat_respond tool exactly once. Use notify=false with outcome=no_change when nothing requires a visible alert; use notify=true and notification_text only when the user should be notified. Set next_check only when you need a follow-up heartbeat at a specific time or after a duration.")
 	if len(wakes) == 0 {
 		return b.String()
 	}
@@ -364,6 +395,10 @@ func (s *daemonServices) buildHeartbeatAgentRun(cfg state.ConfigDoc, agentID str
 	if run.Runtime == nil {
 		return heartbeatAgentRun{}, fmt.Errorf("heartbeat runtime not configured for agent %s", agentID)
 	}
+	run.Runtime = wrapHeartbeatRuntime(run.Runtime, s.session.toolRegistry)
+	for i, rt := range run.FallbackRuntimes {
+		run.FallbackRuntimes[i] = wrapHeartbeatRuntime(rt, s.session.toolRegistry)
+	}
 	return run, nil
 }
 
@@ -386,10 +421,248 @@ func (s *daemonServices) executeHeartbeatAgentRun(ctx context.Context, run heart
 	if s.session.sessionRouter != nil {
 		s.session.sessionRouter.Assign(run.SessionID, run.AgentID)
 	}
-	result := runAgentTurnWithFallbacks(ctx, methods.AgentRequest{
+	runtime := wrapHeartbeatRuntime(run.Runtime, s.session.toolRegistry)
+	fallbacks := append([]agent.Runtime(nil), run.FallbackRuntimes...)
+	for i, rt := range fallbacks {
+		fallbacks[i] = wrapHeartbeatRuntime(rt, s.session.toolRegistry)
+	}
+	controller := agentRunController{
+		runtimeConfig:  s.runtimeConfig,
+		sessionStore:   s.session.sessionStore,
+		sessionRouter:  s.session.sessionRouter,
+		agentRegistry:  s.session.agentRegistry,
+		defaultRuntime: s.session.agentRuntime,
+		jobs:           s.session.agentJobs,
+		subagents:      s.session.subagents,
+		emitEvent:      s.emitWSEvent,
+	}
+	result := controller.runAgentTurnWithFallbacks(ctx, methods.AgentRequest{
 		SessionID: run.SessionID,
 		Message:   run.Prompt,
 		TimeoutMS: run.TimeoutMS,
-	}, run.Runtime, run.FallbackRuntimes, run.RuntimeLabels, s.session.memoryStore)
-	return result.Err
+	}, runtime, fallbacks, run.RuntimeLabels, s.session.memoryStore)
+	if result.Err != nil {
+		return result.Err
+	}
+	if result.Result == nil {
+		return fmt.Errorf("heartbeat run returned no result")
+	}
+	return s.consumeHeartbeatRunResult(run, *result.Result)
+}
+
+type heartbeatRuntimeWrapper struct {
+	base  agent.Runtime
+	tools agent.ToolExecutor
+}
+
+func wrapHeartbeatRuntime(base agent.Runtime, tools *agent.ToolRegistry) agent.Runtime {
+	if base == nil {
+		return nil
+	}
+	if _, ok := base.(*heartbeatRuntimeWrapper); ok {
+		return base
+	}
+	var baseTools agent.ToolExecutor
+	if tools != nil {
+		baseTools = tools
+	}
+	return &heartbeatRuntimeWrapper{base: base, tools: heartbeatToolExecutor{base: baseTools}}
+}
+
+func (r *heartbeatRuntimeWrapper) ProcessTurn(ctx context.Context, turn agent.Turn) (agent.TurnResult, error) {
+	turn.Tools = mergeHeartbeatToolDefinition(turn.Tools, agent.ToolDefinitions(r.tools))
+	if turn.Executor != nil {
+		turn.Executor = heartbeatToolExecutor{base: turn.Executor}
+	} else {
+		turn.Executor = r.tools
+	}
+	return r.base.ProcessTurn(ctx, turn)
+}
+
+type heartbeatToolExecutor struct {
+	base agent.ToolExecutor
+}
+
+func (e heartbeatToolExecutor) Execute(ctx context.Context, call agent.ToolCall) (string, error) {
+	if call.Name == agent.HeartbeatResponseToolName {
+		response, err := agent.ParseHeartbeatResponse(call.Args)
+		if err != nil {
+			return "", err
+		}
+		payload, err := response.ToJSON()
+		if err != nil {
+			return "", err
+		}
+		return string(payload), nil
+	}
+	if e.base == nil {
+		return "", fmt.Errorf("unknown tool %q", call.Name)
+	}
+	return e.base.Execute(ctx, call)
+}
+
+func (e heartbeatToolExecutor) Definitions() []agent.ToolDefinition {
+	return mergeHeartbeatToolDefinition(nil, agent.ToolDefinitions(e.base))
+}
+
+func (e heartbeatToolExecutor) SnapshotToolExecutor() agent.ToolExecutor {
+	return heartbeatToolExecutor{base: agent.SnapshotToolExecutor(e.base)}
+}
+
+func (e heartbeatToolExecutor) EffectiveTraits(call agent.ToolCall) (agent.ToolTraits, bool) {
+	if call.Name == agent.HeartbeatResponseToolName {
+		return agent.ToolTraits{ConcurrencySafe: true, ReadOnly: true}, true
+	}
+	provider, ok := e.base.(interface {
+		EffectiveTraits(agent.ToolCall) (agent.ToolTraits, bool)
+	})
+	if !ok {
+		return agent.ToolTraits{}, false
+	}
+	return provider.EffectiveTraits(call)
+}
+
+func mergeHeartbeatToolDefinition(existing []agent.ToolDefinition, base []agent.ToolDefinition) []agent.ToolDefinition {
+	defs := append([]agent.ToolDefinition(nil), existing...)
+	seen := map[string]struct{}{}
+	for _, def := range defs {
+		seen[def.Name] = struct{}{}
+	}
+	for _, def := range base {
+		if _, ok := seen[def.Name]; ok {
+			continue
+		}
+		seen[def.Name] = struct{}{}
+		defs = append(defs, def)
+	}
+	if _, ok := seen[agent.HeartbeatResponseToolName]; !ok {
+		defs = append(defs, agent.HeartbeatResponseToolDefinition())
+	}
+	return defs
+}
+
+func (s *daemonServices) consumeHeartbeatRunResult(run heartbeatAgentRun, result agent.TurnResult) error {
+	response, err := extractHeartbeatResponseFromTurnResult(result)
+	if err != nil {
+		return err
+	}
+	payload := agent.CreateHeartbeatResponsePayload(response)
+	if s.session.ops != nil && strings.TrimSpace(response.NextCheck) != "" {
+		now := time.Now()
+		next, err := heartbeatNextCheckTime(response, now)
+		if err != nil {
+			return fmt.Errorf("invalid heartbeat next_check: %w", err)
+		}
+		s.session.ops.QueueHeartbeatWakeAt(run.AgentID, "heartbeat_respond", response.Summary, "scheduled", next.UnixMilli())
+	}
+	if s != nil {
+		s.emitWSEvent(gatewayws.EventCompatHeartbeat, map[string]any{
+			"ts_ms":        time.Now().UnixMilli(),
+			"agent_id":     run.AgentID,
+			"session_id":   run.SessionID,
+			"outcome":      string(response.Outcome),
+			"notify":       response.Notify,
+			"priority":     string(response.Priority),
+			"summary":      response.Summary,
+			"reason":       response.Reason,
+			"next_check":   response.NextCheck,
+			"text":         payload.Text,
+			"channel_data": payload.ChannelData,
+		})
+	}
+	return nil
+}
+
+func extractHeartbeatResponseFromTurnResult(result agent.TurnResult) (*agent.HeartbeatResponse, error) {
+	heartbeatTraces := make([]agent.ToolTrace, 0, 1)
+	for _, trace := range result.ToolTraces {
+		if trace.Call.Name == agent.HeartbeatResponseToolName {
+			heartbeatTraces = append(heartbeatTraces, trace)
+		}
+	}
+	if len(heartbeatTraces) > 0 {
+		if len(heartbeatTraces) != 1 {
+			return nil, fmt.Errorf("heartbeat run must call %s exactly once, got %d", agent.HeartbeatResponseToolName, len(heartbeatTraces))
+		}
+		trace := heartbeatTraces[0]
+		if trace.Error != "" {
+			return nil, fmt.Errorf("heartbeat_respond failed: %s", trace.Error)
+		}
+		return agent.ParseHeartbeatResponse(trace.Call.Args)
+	}
+
+	heartbeatCalls := make([]agent.ToolCallRef, 0, 1)
+	for _, msg := range result.HistoryDelta {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			if call.Name == agent.HeartbeatResponseToolName {
+				heartbeatCalls = append(heartbeatCalls, call)
+			}
+		}
+	}
+	if len(heartbeatCalls) == 0 {
+		return nil, fmt.Errorf("heartbeat run did not call %s", agent.HeartbeatResponseToolName)
+	}
+	if len(heartbeatCalls) != 1 {
+		return nil, fmt.Errorf("heartbeat run must call %s exactly once, got %d", agent.HeartbeatResponseToolName, len(heartbeatCalls))
+	}
+	call := heartbeatCalls[0]
+	if strings.TrimSpace(call.ID) == "" {
+		return nil, fmt.Errorf("heartbeat_respond tool call missing id")
+	}
+	matchingResults := make([]agent.ConversationMessage, 0, 1)
+	for _, msg := range result.HistoryDelta {
+		if msg.Role == "tool" && msg.ToolCallID == call.ID {
+			matchingResults = append(matchingResults, msg)
+		}
+	}
+	if len(matchingResults) != 1 {
+		return nil, fmt.Errorf("heartbeat_respond must have exactly one tool result, got %d", len(matchingResults))
+	}
+	content := strings.TrimSpace(matchingResults[0].Content)
+	if strings.HasPrefix(strings.ToLower(content), "error:") {
+		return nil, fmt.Errorf("heartbeat_respond failed: %s", strings.TrimSpace(content[len("error:"):]))
+	}
+	if content != "" {
+		if response, err := agent.ParseHeartbeatResponse(content); err == nil {
+			return response, nil
+		}
+	}
+	args, err := heartbeatToolCallArgs(call)
+	if err != nil {
+		return nil, err
+	}
+	return agent.ParseHeartbeatResponse(args)
+}
+
+func heartbeatToolCallArgs(call agent.ToolCallRef) (map[string]any, error) {
+	if strings.TrimSpace(call.ArgsJSON) == "" {
+		return map[string]any{}, nil
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(call.ArgsJSON), &args); err != nil {
+		return nil, fmt.Errorf("parse heartbeat_respond args: %w", err)
+	}
+	return args, nil
+}
+
+func heartbeatNextCheckTime(response *agent.HeartbeatResponse, now time.Time) (time.Time, error) {
+	if response == nil || strings.TrimSpace(response.NextCheck) == "" {
+		return time.Time{}, fmt.Errorf("no next_check specified")
+	}
+	if d, err := response.GetNextCheckDuration(); err == nil {
+		if d <= 0 {
+			return time.Time{}, fmt.Errorf("next_check duration must be positive")
+		}
+		return now.Add(d), nil
+	}
+	if t, err := response.GetNextCheckTime(); err == nil {
+		if !t.After(now) {
+			return time.Time{}, fmt.Errorf("next_check time must be in the future")
+		}
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unsupported next_check format: %s", response.NextCheck)
 }

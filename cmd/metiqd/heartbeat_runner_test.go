@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"metiq/internal/agent"
+	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/store/state"
 )
 
@@ -219,5 +222,201 @@ func TestHeartbeatRunnerWakeTargetsOnlyRequestedAgent(t *testing.T) {
 	case run := <-runs:
 		t.Fatalf("unexpected extra run for agent=%q", run.AgentID)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+type capturingHeartbeatRuntime struct {
+	turns chan agent.Turn
+	args  map[string]any
+}
+
+func (r *capturingHeartbeatRuntime) ProcessTurn(ctx context.Context, turn agent.Turn) (agent.TurnResult, error) {
+	if r.turns != nil {
+		r.turns <- turn
+	}
+	toolResult := `{"outcome":"no_change","notify":false,"summary":"No changes"}`
+	if turn.Executor != nil && len(r.args) > 0 {
+		value, err := turn.Executor.Execute(ctx, agent.ToolCall{ID: "hb1", Name: agent.HeartbeatResponseToolName, Args: r.args})
+		if err != nil {
+			return agent.TurnResult{}, err
+		}
+		toolResult = value
+	}
+	argsJSON, _ := json.Marshal(r.args)
+	return agent.TurnResult{
+		Text: "heartbeat structured response recorded",
+		HistoryDelta: []agent.ConversationMessage{
+			{Role: "assistant", ToolCalls: []agent.ToolCallRef{{ID: "hb1", Name: agent.HeartbeatResponseToolName, ArgsJSON: string(argsJSON)}}},
+			{Role: "tool", ToolCallID: "hb1", Content: toolResult},
+			{Role: "assistant", Content: "heartbeat structured response recorded"},
+		},
+	}, nil
+}
+
+func TestBuildHeartbeatRunnerPromptRequiresStructuredResponse(t *testing.T) {
+	prompt := buildHeartbeatRunnerPrompt("main", nil)
+	if !strings.Contains(prompt, agent.HeartbeatResponseToolName) {
+		t.Fatalf("prompt does not mention %s: %s", agent.HeartbeatResponseToolName, prompt)
+	}
+	if !strings.Contains(prompt, "MUST") || !strings.Contains(prompt, "notify=false") {
+		t.Fatalf("prompt does not require heartbeat_respond contract: %s", prompt)
+	}
+	if strings.Contains(prompt, "HEARTBEAT_OK") {
+		t.Fatalf("prompt still contains freeform HEARTBEAT_OK contract: %s", prompt)
+	}
+}
+
+func TestExecuteHeartbeatAgentRunExposesConsumesAndSchedulesStructuredResponse(t *testing.T) {
+	nextCheck := "2026-05-03T18:00:00Z"
+	rt := &capturingHeartbeatRuntime{
+		turns: make(chan agent.Turn, 1),
+		args: map[string]any{
+			"outcome":           "progress",
+			"notify":            true,
+			"summary":           "Made progress",
+			"notification_text": "Heartbeat: made progress",
+			"priority":          "high",
+			"next_check":        nextCheck,
+		},
+	}
+	emitter := &capturingEmitter{}
+	ops := newOperationsRegistry()
+	svc := &daemonServices{
+		emitter:       emitter,
+		runtimeConfig: newRuntimeConfigStore(state.ConfigDoc{}),
+		session: sessionServices{
+			ops: ops,
+		},
+	}
+	run := heartbeatAgentRun{
+		AgentID:   "main",
+		SessionID: "heartbeat:main",
+		Prompt:    buildHeartbeatRunnerPrompt("main", nil),
+		Runtime:   rt,
+		TimeoutMS: 1000,
+	}
+	if err := svc.executeHeartbeatAgentRun(context.Background(), run); err != nil {
+		t.Fatalf("executeHeartbeatAgentRun: %v", err)
+	}
+
+	select {
+	case turn := <-rt.turns:
+		foundDef := false
+		for _, def := range turn.Tools {
+			if def.Name == agent.HeartbeatResponseToolName {
+				foundDef = true
+				break
+			}
+		}
+		if !foundDef {
+			t.Fatalf("heartbeat_respond definition not exposed in turn tools: %#v", turn.Tools)
+		}
+		if turn.Executor == nil {
+			t.Fatal("expected heartbeat executor to be available")
+		}
+	default:
+		t.Fatal("runtime did not receive heartbeat turn")
+	}
+
+	events := emitter.eventsByName(gatewayws.EventCompatHeartbeat)
+	if len(events) != 1 {
+		t.Fatalf("expected one heartbeat event, got %d", len(events))
+	}
+	payload, ok := events[0].(map[string]any)
+	if !ok {
+		t.Fatalf("heartbeat payload type = %T", events[0])
+	}
+	if payload["notify"] != true || payload["text"] != "Heartbeat: made progress" || payload["outcome"] != "progress" || payload["priority"] != "high" {
+		t.Fatalf("unexpected heartbeat payload: %#v", payload)
+	}
+	if payload["channel_data"] == nil {
+		t.Fatalf("expected heartbeat channel data in payload: %#v", payload)
+	}
+
+	_, wakes, _ := ops.HeartbeatSnapshot()
+	if len(wakes) != 1 {
+		t.Fatalf("expected scheduled next_check wake, got %#v", wakes)
+	}
+	wantNext, err := time.Parse(time.RFC3339, nextCheck)
+	if err != nil {
+		t.Fatalf("parse nextCheck fixture: %v", err)
+	}
+	if wakes[0].AgentID != "main" || wakes[0].Mode != "scheduled" || wakes[0].AtMS != wantNext.UnixMilli() {
+		t.Fatalf("unexpected scheduled wake: %#v", wakes[0])
+	}
+}
+
+func TestExecuteHeartbeatAgentRunRequiresHeartbeatRespond(t *testing.T) {
+	rt := agent.Runtime(runtimeFunc(func(context.Context, agent.Turn) (agent.TurnResult, error) {
+		return agent.TurnResult{Text: "freeform ok"}, nil
+	}))
+	svc := &daemonServices{runtimeConfig: newRuntimeConfigStore(state.ConfigDoc{})}
+	err := svc.executeHeartbeatAgentRun(context.Background(), heartbeatAgentRun{
+		AgentID:   "main",
+		SessionID: "heartbeat:main",
+		Prompt:    buildHeartbeatRunnerPrompt("main", nil),
+		Runtime:   rt,
+		TimeoutMS: 1000,
+	})
+	if err == nil || !strings.Contains(err.Error(), agent.HeartbeatResponseToolName) {
+		t.Fatalf("expected missing heartbeat_respond error, got %v", err)
+	}
+}
+
+func TestExecuteHeartbeatAgentRunRejectsMalformedNextCheck(t *testing.T) {
+	rt := &capturingHeartbeatRuntime{
+		turns: make(chan agent.Turn, 1),
+		args: map[string]any{
+			"outcome":    "progress",
+			"notify":     false,
+			"summary":    "Need another check",
+			"next_check": "PT1H30",
+		},
+	}
+	ops := newOperationsRegistry()
+	svc := &daemonServices{
+		runtimeConfig: newRuntimeConfigStore(state.ConfigDoc{}),
+		session:       sessionServices{ops: ops},
+	}
+	err := svc.executeHeartbeatAgentRun(context.Background(), heartbeatAgentRun{
+		AgentID:   "main",
+		SessionID: "heartbeat:main",
+		Prompt:    buildHeartbeatRunnerPrompt("main", nil),
+		Runtime:   rt,
+		TimeoutMS: 1000,
+	})
+	if err == nil || !strings.Contains(err.Error(), "next_check") {
+		t.Fatalf("expected malformed next_check error, got %v", err)
+	}
+	_, wakes, _ := ops.HeartbeatSnapshot()
+	if len(wakes) != 0 {
+		t.Fatalf("malformed next_check should not enqueue wakes, got %#v", wakes)
+	}
+}
+
+func TestExtractHeartbeatResponseRequiresExactlyOneCall(t *testing.T) {
+	args := `{"outcome":"no_change","notify":false,"summary":"No changes"}`
+	_, err := extractHeartbeatResponseFromTurnResult(agent.TurnResult{HistoryDelta: []agent.ConversationMessage{
+		{Role: "assistant", ToolCalls: []agent.ToolCallRef{
+			{ID: "hb1", Name: agent.HeartbeatResponseToolName, ArgsJSON: args},
+			{ID: "hb2", Name: agent.HeartbeatResponseToolName, ArgsJSON: args},
+		}},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "exactly once") {
+		t.Fatalf("expected exactly-once error, got %v", err)
+	}
+}
+
+func TestHeartbeatRunnerWaitsForScheduledWake(t *testing.T) {
+	now := time.UnixMilli(1_000)
+	future := heartbeatWakeRecord{AtMS: now.Add(250 * time.Millisecond).UnixMilli(), Mode: "scheduled"}
+	if wait, ok := heartbeatRunnerWaitDuration(heartbeatRunnerStatus{}, []heartbeatWakeRecord{future}, now); !ok || wait != 250*time.Millisecond {
+		t.Fatalf("wait = %v ok=%v, want 250ms true", wait, ok)
+	}
+	if hasImmediateHeartbeatWake([]heartbeatWakeRecord{future}, now) {
+		t.Fatal("future scheduled wake should not run immediately")
+	}
+	if !hasImmediateHeartbeatWake([]heartbeatWakeRecord{future}, now.Add(250*time.Millisecond)) {
+		t.Fatal("due scheduled wake should run immediately")
 	}
 }
