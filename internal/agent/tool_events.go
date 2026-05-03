@@ -33,8 +33,9 @@ type ToolLifecycleEvent struct {
 type ToolDecisionKind string
 
 const (
-	ToolDecisionKindScheduler     ToolDecisionKind = "scheduler"
-	ToolDecisionKindLoopDetection ToolDecisionKind = "loop_detection"
+	ToolDecisionKindScheduler         ToolDecisionKind = "scheduler"
+	ToolDecisionKindLoopDetection     ToolDecisionKind = "loop_detection"
+	ToolDecisionKindMutationDuplicate ToolDecisionKind = "mutation_duplicate"
 )
 
 // ToolSchedulerDecision records how the shared src-shaped scheduler chose to
@@ -61,6 +62,17 @@ type ToolLoopDecision struct {
 	WarningKey     string           `json:"warning_key,omitempty"`
 	PairedToolName string           `json:"paired_tool_name,omitempty"`
 	Message        string           `json:"message,omitempty"`
+}
+
+// ToolMutationDecision records duplicate mutating tool-call protection. A
+// blocked duplicate is surfaced as lifecycle progress plus an error event and
+// is not executed again.
+type ToolMutationDecision struct {
+	Kind        ToolDecisionKind `json:"kind"`
+	Blocked     bool             `json:"blocked"`
+	Fingerprint string           `json:"fingerprint,omitempty"`
+	Count       int              `json:"count,omitempty"`
+	Message     string           `json:"message,omitempty"`
 }
 
 // ToolLifecycleSink receives structured tool lifecycle events from the shared

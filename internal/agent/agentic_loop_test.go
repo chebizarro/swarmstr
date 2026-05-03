@@ -322,6 +322,102 @@ func TestRunAgenticLoop_EmitsToolLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_BlocksDuplicateMutatingToolCall(t *testing.T) {
+	provider := &mockChatProvider{
+		responses: []*LLMResponse{
+			{
+				ToolCalls: []ToolCall{
+					{ID: "tc1", Name: "write", Args: map[string]any{"path": "/tmp/out.txt", "content": "hello"}},
+					{ID: "tc2", Name: "write", Args: map[string]any{"path": "/tmp/out.txt", "content": "hello"}},
+				},
+				NeedsToolResults: true,
+			},
+			{Content: "done", NeedsToolResults: false},
+		},
+	}
+	executor := &mockToolExecutor{results: map[string]string{"write": "wrote file"}}
+	capture := &capturedToolLifecycle{}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "write twice"}},
+		Executor:        executor,
+		MaxIterations:   10,
+		LogPrefix:       "test",
+		SessionID:       "sess-mutate",
+		TurnID:          "turn-mutate",
+		ToolEventSink:   capture.sink,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("unexpected response content: %q", resp.Content)
+	}
+	if got := executor.execCount.Load(); got != 1 {
+		t.Fatalf("expected duplicate write to be blocked before execution, got %d executions", got)
+	}
+	if len(resp.HistoryDelta) < 3 || !strings.Contains(resp.HistoryDelta[2].Content, "duplicate mutating tool call blocked") {
+		t.Fatalf("expected duplicate error in second tool result history, got %+v", resp.HistoryDelta)
+	}
+
+	var mutationDecision ToolMutationDecision
+	var errorEvent *ToolLifecycleEvent
+	for _, evt := range capture.snapshot() {
+		if evt.Type == ToolLifecycleEventProgress {
+			if decision, ok := evt.Data.(ToolMutationDecision); ok {
+				mutationDecision = decision
+			}
+		}
+		if evt.Type == ToolLifecycleEventError && evt.ToolCallID == "tc2" {
+			copy := evt
+			errorEvent = &copy
+		}
+	}
+	if mutationDecision.Kind != ToolDecisionKindMutationDuplicate || !mutationDecision.Blocked || mutationDecision.Count != 1 || mutationDecision.Fingerprint == "" {
+		t.Fatalf("unexpected mutation decision: %+v", mutationDecision)
+	}
+	if errorEvent == nil || !strings.Contains(errorEvent.Error, "duplicate mutating tool call blocked") {
+		t.Fatalf("expected duplicate error lifecycle event, got %+v", errorEvent)
+	}
+	if decision, ok := errorEvent.Data.(ToolMutationDecision); !ok || decision.Kind != ToolDecisionKindMutationDuplicate || !decision.Blocked {
+		t.Fatalf("expected mutation decision on duplicate error event, got %+v", errorEvent.Data)
+	}
+}
+
+func TestRunAgenticLoop_AllowsSameTargetDifferentMutatingPayload(t *testing.T) {
+	provider := &mockChatProvider{
+		responses: []*LLMResponse{
+			{
+				ToolCalls: []ToolCall{
+					{ID: "tc1", Name: "write", Args: map[string]any{"path": "/tmp/out.txt", "content": "hello"}},
+					{ID: "tc2", Name: "write", Args: map[string]any{"path": "/tmp/out.txt", "content": "goodbye"}},
+				},
+				NeedsToolResults: true,
+			},
+			{Content: "done", NeedsToolResults: false},
+		},
+	}
+	executor := &mockToolExecutor{results: map[string]string{"write": "wrote file"}}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "write two versions"}},
+		Executor:        executor,
+		MaxIterations:   10,
+		LogPrefix:       "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("unexpected response content: %q", resp.Content)
+	}
+	if got := executor.execCount.Load(); got != 2 {
+		t.Fatalf("expected distinct payloads for the same target to execute, got %d executions", got)
+	}
+}
+
 func TestExecuteSingleToolCall_EmitsToolError(t *testing.T) {
 	capture := &capturedToolLifecycle{}
 	call := ToolCall{ID: "tc-err", Name: "bad_tool"}

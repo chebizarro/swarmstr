@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -184,6 +185,33 @@ func findSubstr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestBuildToolActionFingerprintNormalizesNumericValues(t *testing.T) {
+	t.Run("json decoded number", func(t *testing.T) {
+		var args map[string]interface{}
+		if err := json.Unmarshal([]byte(`{"action":"add","id":12345}`), &args); err != nil {
+			t.Fatalf("unmarshal args: %v", err)
+		}
+		fingerprint := BuildToolActionFingerprint("cron_add", args, "")
+		if !containsSubstring(fingerprint, "id=12345") {
+			t.Fatalf("expected JSON number to normalize as decimal digits, got %q", fingerprint)
+		}
+	})
+
+	t.Run("typed int64", func(t *testing.T) {
+		fingerprint := BuildToolActionFingerprint("cron_add", map[string]interface{}{"action": "add", "id": int64(9876543210)}, "")
+		if !containsSubstring(fingerprint, "id=9876543210") {
+			t.Fatalf("expected int64 to normalize as decimal digits, got %q", fingerprint)
+		}
+	})
+
+	t.Run("typed int32", func(t *testing.T) {
+		fingerprint := BuildToolActionFingerprint("cron_add", map[string]interface{}{"action": "add", "id": int32(42)}, "")
+		if !containsSubstring(fingerprint, "id=42") {
+			t.Fatalf("expected int32 to normalize as decimal digits, got %q", fingerprint)
+		}
+	})
 }
 
 func TestBuildToolMutationState(t *testing.T) {
