@@ -15,6 +15,7 @@ const registries = {
   providers: new Map(),
   hooks: new Map(),
   channels: new Map(),
+  channelHandles: new Map(),
   services: new Map(),
   commands: new Map(),
   gatewayMethods: new Map(),
@@ -91,8 +92,14 @@ function createPluginApi(pluginId, pluginConfig = {}, runtimeConfig = {}) {
         id: provider.id,
         label: provider.label,
         docsPath: provider.docsPath,
+        aliases: provider.aliases,
+        hookAliases: provider.hookAliases,
+        envVars: provider.envVars,
+        providerAuthEnvVars: (provider.auth || []).map((auth) => auth?.envVar).filter(Boolean),
+        auth: provider.auth,
         hasAuth: Array.isArray(provider.auth) && provider.auth.length > 0,
         hasCatalog: typeof provider.catalog?.run === 'function' || typeof provider.catalog === 'function',
+        hasStaticCatalog: typeof provider.staticCatalog?.run === 'function' || typeof provider.staticCatalog === 'function',
         capabilities: provider.capabilities,
       });
     },
@@ -103,7 +110,14 @@ function createPluginApi(pluginId, pluginConfig = {}, runtimeConfig = {}) {
       const channelType = callOrRead(plugin, 'Type') || plugin?.type || registration?.type;
       if (!id) throw new Error('registerChannel: channel id is required');
       registries.channels.set(id, { pluginId, plugin, registration });
-      addRegistration({ type: 'channel', id, channelType, configSchema: callOrRead(plugin, 'ConfigSchema') || plugin?.configSchema });
+      addRegistration({
+        type: 'channel',
+        id,
+        channelType,
+        configSchema: callOrRead(plugin, 'ConfigSchema') || plugin?.configSchema,
+        capabilities: callOrRead(plugin, 'Capabilities') || plugin?.capabilities,
+        webhook: Boolean(plugin?.webhook || plugin?.handleWebhook || plugin?.HandleWebhook || plugin?.onWebhook),
+      });
     },
 
     registerGatewayMethod(method, handler, opts = {}) {
@@ -247,20 +261,200 @@ async function invokeProvider(providerId, method, params) {
   const registration = registries.providers.get(providerId);
   if (!registration) throw new Error(`provider not found: ${providerId}`);
   const provider = registration.provider;
-  if (method === 'catalog') {
-    if (typeof provider.catalog?.run === 'function') return await provider.catalog.run(params);
-    if (typeof provider.catalog === 'function') return await provider.catalog(params);
+  if (method === 'catalog' || method === 'staticCatalog') {
+    const catalog = method === 'staticCatalog' ? provider.staticCatalog : provider.catalog;
+    const ctx = buildProviderCatalogContext(providerId, provider, params || {});
+    if (typeof catalog?.run === 'function') return await catalog.run(ctx);
+    if (typeof catalog === 'function') return await catalog(ctx);
   }
   if (method === 'auth') {
     const authId = params?.auth_id || params?.authId || params?.id;
     const authMethod = (provider.auth || []).find((a) => a.id === authId) || provider.auth?.[0];
     if (!authMethod) throw new Error(`auth method not found: ${authId}`);
-    return await (typeof authMethod.run === 'function' ? authMethod.run(params?.ctx || params) : authMethod(params));
+    const ctx = buildProviderAuthContext(providerId, provider, params || {});
+    return await (typeof authMethod.run === 'function' ? authMethod.run(ctx) : authMethod(ctx));
   }
   const target = provider[method];
   if (typeof target === 'function') return await target(params);
   if (typeof target?.run === 'function') return await target.run(params);
   throw new Error(`unknown provider method: ${method}`);
+}
+
+
+function buildProviderCatalogContext(providerId, provider, params = {}) {
+  const env = asRecord(params.env) || process.env;
+  const config = asRecord(params.config) || {};
+  return {
+    ...params,
+    config,
+    env,
+    provider: providerId,
+    providerId,
+    modelId: params.model || params.modelId,
+    resolveProviderApiKey: (requestedProviderId) => {
+      const id = requestedProviderId || providerId;
+      const resolved = resolveProviderAuthValue(id, provider, params, env);
+      return { apiKey: resolved.apiKey, discoveryApiKey: resolved.discoveryApiKey };
+    },
+    resolveProviderAuth: (requestedProviderId, _options = {}) => {
+      const id = requestedProviderId || providerId;
+      return resolveProviderAuthValue(id, provider, params, env);
+    },
+  };
+}
+
+function buildProviderAuthContext(providerId, provider, params = {}) {
+  const env = asRecord(params.env) || process.env;
+  const config = asRecord(params.config) || {};
+  return {
+    ...params,
+    config,
+    env,
+    provider: providerId,
+    providerId,
+    modelId: params.model || params.modelId,
+    resolveProviderApiKey: (requestedProviderId) => {
+      const resolved = resolveProviderAuthValue(requestedProviderId || providerId, provider, params, env);
+      return { apiKey: resolved.apiKey, discoveryApiKey: resolved.discoveryApiKey };
+    },
+    resolveProviderAuth: (requestedProviderId) => resolveProviderAuthValue(requestedProviderId || providerId, provider, params, env),
+  };
+}
+
+function resolveProviderAuthValue(providerId, provider, params = {}, env = process.env) {
+  const apiKeys = asRecord(params.api_keys) || asRecord(params.apiKeys) || {};
+  const auth = asRecord(params.auth) || asRecord(params.provider_auth) || asRecord(params.providerAuth) || {};
+  const configured = asRecord(auth[providerId]) || {};
+  const direct = firstString(
+    apiKeys[providerId],
+    configured.apiKey,
+    configured.api_key,
+    configured.token,
+    params.apiKey,
+    params.api_key,
+    params.token,
+  );
+  if (direct) {
+    return { apiKey: direct, discoveryApiKey: configured.discoveryApiKey, mode: configured.mode || 'api_key', source: configured.source || 'profile', profileId: configured.profileId };
+  }
+  for (const envVar of providerEnvVars(provider)) {
+    if (env && typeof env[envVar] === 'string' && env[envVar].trim()) {
+      return { apiKey: env[envVar], discoveryApiKey: env[envVar], mode: 'api_key', source: 'env' };
+    }
+  }
+  return { apiKey: undefined, discoveryApiKey: undefined, mode: 'none', source: 'none' };
+}
+
+function providerEnvVars(provider) {
+  const vars = [];
+  const add = (value) => {
+    if (typeof value === 'string' && value.trim() && !vars.includes(value.trim())) vars.push(value.trim());
+  };
+  for (const value of provider?.envVars || []) add(value);
+  for (const auth of provider?.auth || []) add(auth?.envVar);
+  return vars;
+}
+
+function asRecord(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
+}
+
+async function invokeChannel(channelId, method, params = {}, sendCallback = () => {}) {
+  if (!channelId) throw new Error('invoke_channel: channel_id is required');
+  if (!method) throw new Error('invoke_channel: method is required');
+
+  if (method === 'config_schema') {
+    const registration = registries.channels.get(channelId);
+    if (!registration) throw new Error(`channel not found: ${channelId}`);
+    return callOrRead(registration.plugin, 'ConfigSchema') || registration.plugin?.configSchema || {};
+  }
+  if (method === 'capabilities') {
+    const registration = registries.channels.get(channelId);
+    if (!registration) throw new Error(`channel not found: ${channelId}`);
+    return callOrRead(registration.plugin, 'Capabilities') || registration.plugin?.capabilities || {};
+  }
+  if (method === 'connect') {
+    const registration = registries.channels.get(channelId);
+    if (!registration) throw new Error(`channel not found: ${channelId}`);
+    const plugin = registration.plugin;
+    const connect = plugin?.Connect || plugin?.connect;
+    if (typeof connect !== 'function') throw new Error(`channel is not connectable: ${channelId}`);
+    const callbackId = params?.callback_id || params?.callbackId;
+    const instanceId = params?.channel_id || params?.channelId || channelId;
+    const config = params?.config || {};
+    const onMessage = (msg) => sendCallback(callbackId, msg);
+    const ctx = { channelId: instanceId, config, callbackId, onMessage };
+    const handle = await connect.call(plugin, instanceId, config, onMessage, ctx);
+    if (!handle) handle = plugin;
+    const handleId = `${channelId}:${instanceId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    registries.channelHandles.set(handleId, { channelId, instanceId, handle, plugin, callbackId });
+    return { handle_id: handleId };
+  }
+
+  const active = registries.channelHandles.get(channelId);
+  if (!active) throw new Error(`channel handle not found: ${channelId}`);
+  const target = active.handle || active.plugin;
+  switch (method) {
+    case 'send':
+      await callChannelMethod(target, ['Send', 'send'], [params?.text ?? '', params || {}]);
+      return { ok: true };
+    case 'close':
+      await callOptionalChannelMethod(target, ['Close', 'close', 'disconnect', 'dispose'], []);
+      registries.channelHandles.delete(channelId);
+      return { ok: true };
+    case 'send_typing':
+      await callChannelMethod(target, ['SendTyping', 'sendTyping', 'startTyping', 'typing'], [params?.duration_ms ?? params?.durationMS ?? 0]);
+      return { ok: true };
+    case 'add_reaction':
+      await callChannelMethod(target, ['AddReaction', 'addReaction', 'react'], [params?.event_id ?? params?.eventID ?? '', params?.emoji ?? '']);
+      return { ok: true };
+    case 'remove_reaction':
+      await callChannelMethod(target, ['RemoveReaction', 'removeReaction', 'unreact'], [params?.event_id ?? params?.eventID ?? '', params?.emoji ?? '']);
+      return { ok: true };
+    case 'send_thread':
+    case 'send_in_thread':
+      await callChannelMethod(target, ['SendInThread', 'sendInThread', 'sendThreadReply', 'replyInThread'], [params?.thread_id ?? params?.threadID ?? '', params?.text ?? '']);
+      return { ok: true };
+    case 'send_audio': {
+      const audio = params?.audio_base64 ? Buffer.from(params.audio_base64, 'base64') : (params?.audio ?? '');
+      await callChannelMethod(target, ['SendAudio', 'sendAudio'], [audio, params?.format ?? '']);
+      return { ok: true };
+    }
+    case 'edit_message':
+      await callChannelMethod(target, ['EditMessage', 'editMessage'], [params?.event_id ?? params?.eventID ?? '', params?.text ?? params?.new_text ?? params?.newText ?? '']);
+      return { ok: true };
+    case 'webhook': {
+      const webhookParams = { ...(params || {}) };
+      if (webhookParams.body_base64) webhookParams.bodyBuffer = Buffer.from(webhookParams.body_base64, 'base64');
+      const result = await callChannelMethod(target, ['HandleWebhook', 'handleWebhook', 'webhook', 'onWebhook'], [webhookParams]);
+      return result === undefined ? { ok: true } : result;
+    }
+    default:
+      throw new Error(`unknown channel method: ${method}`);
+  }
+}
+
+async function callChannelMethod(target, names, args) {
+  for (const name of names) {
+    const fn = target?.[name];
+    if (typeof fn === 'function') return await fn.apply(target, args);
+  }
+  throw new Error(`channel method not implemented: ${names.join('/')}`);
+}
+
+async function callOptionalChannelMethod(target, names, args) {
+  for (const name of names) {
+    const fn = target?.[name];
+    if (typeof fn === 'function') return await fn.apply(target, args);
+  }
+  return undefined;
 }
 
 async function startService(serviceId, params) {
@@ -387,6 +581,7 @@ module.exports = {
   invokeTool,
   invokeHook,
   invokeProvider,
+  invokeChannel,
   startService,
   stopService,
   shutdownPlugins,
