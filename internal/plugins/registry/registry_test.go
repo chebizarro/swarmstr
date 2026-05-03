@@ -105,7 +105,7 @@ func TestSanitizePath(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"weather-tool", "weather-tool"},
 		{"my plugin", "my_plugin"},
-		{"../dangerous", "___dangerous"},  // '.', '.', '/' all become '_'
+		{"../dangerous", "___dangerous"}, // '.', '.', '/' all become '_'
 		{"ok_name-123", "ok_name-123"},
 	}
 	for _, tc := range tests {
