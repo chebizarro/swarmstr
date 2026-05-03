@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	pluginchannels "metiq/internal/plugins/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -49,6 +50,7 @@ func ChannelDataFromRegistration(source PluginSource, reg Registration) ChannelR
 		ID:           firstNonEmpty(reg.ID, stringFromRaw(reg.Raw, "id")),
 		ChannelType:  stringFromRaw(reg.Raw, "channelType"),
 		ConfigSchema: mapFromRaw(reg.Raw, "configSchema"),
+		Capabilities: pluginchannels.ParseCapabilities(reg.Raw["capabilities"]),
 		Source:       source,
 		Raw:          cloneRaw(reg.Raw),
 	}

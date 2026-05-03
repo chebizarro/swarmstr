@@ -13,6 +13,8 @@ type RPCRequest struct {
 // RPCResponse is one line-delimited response from the Node.js shim.
 type RPCResponse struct {
 	ID     int64  `json:"id"`
+	Method string `json:"method,omitempty"`
+	Params any    `json:"params,omitempty"`
 	Result any    `json:"result,omitempty"`
 	Error  string `json:"error,omitempty"`
 }

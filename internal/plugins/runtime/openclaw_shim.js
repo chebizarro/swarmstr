@@ -16,6 +16,7 @@ const {
   invokeTool,
   invokeHook,
   invokeProvider,
+  invokeChannel,
   startService,
   stopService,
   shutdownPlugins,
@@ -73,6 +74,11 @@ function sendResponse(id, result, error) {
   process.stdout.write(JSON.stringify(response) + '\n');
 }
 
+function sendCallback(callbackId, payload) {
+  if (!callbackId) return;
+  process.stdout.write(JSON.stringify({ method: 'callback', params: { callback_id: callbackId, payload: payload === undefined ? null : payload } }) + '\n');
+}
+
 async function handleRequest(req) {
   const { method, params } = req;
   if (shuttingDown && method !== 'shutdown') {
@@ -86,9 +92,11 @@ async function handleRequest(req) {
     case 'invoke_tool':
       return await invokeTool(params.plugin_id, params.tool, params.args || {}, params.meta || {});
     case 'invoke_hook':
-      return await invokeHook(params.event, params.payload);
+      return await invokeHook(params.event, params.payload, params.hook_id || params.hookId);
     case 'invoke_provider':
       return await invokeProvider(params.provider_id, params.method, params.params);
+    case 'invoke_channel':
+      return await invokeChannel(params.channel_id, params.method, params.params, sendCallback);
     case 'start_service':
       return await startService(params.service_id, params.params);
     case 'stop_service':
