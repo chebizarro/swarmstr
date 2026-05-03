@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	searchproviders "metiq/internal/search"
 )
 
 func TestWebFetchTool_HTML(t *testing.T) {
@@ -99,6 +101,27 @@ func TestWebFetchTool_MissingURL(t *testing.T) {
 	_, err := tool(context.Background(), map[string]any{})
 	if err == nil {
 		t.Error("expected error for missing URL")
+	}
+}
+
+type stubWebFetchProvider struct{}
+
+func (stubWebFetchProvider) ID() string { return "plugin-fetch-test" }
+func (stubWebFetchProvider) Fetch(ctx context.Context, rawURL string, opts searchproviders.FetchOptions) (searchproviders.FetchResult, error) {
+	return searchproviders.FetchResult{Content: "plugin content"}, nil
+}
+
+func TestWebFetchTool_PluginProvider(t *testing.T) {
+	if err := searchproviders.RegisterWebFetchProvider(stubWebFetchProvider{}); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	tool := WebFetchTool(WebFetchOpts{})
+	result, err := tool(context.Background(), map[string]any{"url": "https://example.com", "provider": "plugin-fetch-test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "plugin content" {
+		t.Fatalf("unexpected result: %q", result)
 	}
 }
 

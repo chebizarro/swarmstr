@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"metiq/internal/agent"
+	searchproviders "metiq/internal/search"
 )
 
 const (
@@ -23,11 +24,7 @@ const (
 )
 
 // SearchResult is a single web search result.
-type SearchResult struct {
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Snippet string `json:"snippet"`
-}
+type SearchResult = searchproviders.SearchResult
 
 // WebSearchConfig configures the web_search tool.
 type WebSearchConfig struct {
@@ -138,18 +135,28 @@ func WebSearchTool(cfg WebSearchConfig) agent.ToolFunc {
 			provider = cfg.detectProvider()
 		}
 		if provider == "" {
-			return "", fmt.Errorf("web_search: no provider configured; set BRAVE_SEARCH_API_KEY or SERPER_API_KEY")
+			if p, ok := searchproviders.DefaultRegistry().FirstWebSearchProvider(); ok {
+				provider = p.ID()
+			}
 		}
 
 		var results []SearchResult
 		var err error
-		switch strings.ToLower(strings.TrimSpace(provider)) {
-		case "brave":
-			results, err = braveSearch(ctx, cfg.resolveBraveKey(), query, count, cfg.braveURL())
-		case "serper":
-			results, err = serperSearch(ctx, cfg.resolveSerperKey(), query, count, cfg.serperURL())
-		default:
-			return "", fmt.Errorf("web_search: unknown provider %q (supported: brave, serper)", provider)
+		if provider != "" {
+			if p, ok := searchproviders.DefaultRegistry().WebSearchProvider(provider); ok {
+				results, err = p.Search(ctx, query, searchproviders.SearchOptions{MaxResults: count})
+			} else {
+				switch strings.ToLower(strings.TrimSpace(provider)) {
+				case "brave":
+					results, err = braveSearch(ctx, cfg.resolveBraveKey(), query, count, cfg.braveURL())
+				case "serper":
+					results, err = serperSearch(ctx, cfg.resolveSerperKey(), query, count, cfg.serperURL())
+				default:
+					return "", fmt.Errorf("web_search: unknown provider %q", provider)
+				}
+			}
+		} else {
+			return "", fmt.Errorf("web_search: no provider configured; set BRAVE_SEARCH_API_KEY or SERPER_API_KEY or register a web search provider plugin")
 		}
 		if err != nil {
 			return "", fmt.Errorf("web_search: %w", err)
