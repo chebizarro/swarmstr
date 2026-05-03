@@ -148,7 +148,7 @@ module.exports = {
   name: 'Invoke Plugin',
   register(api) {
     api.registerTool({ name: 'echo', execute: async (_id, args) => ({ echoed: args.msg }) });
-    api.registerProvider({ id: 'prov', catalog: { run: async (params) => ({ models: [params.prefix + '-model'] }) } });
+    api.registerProvider({ id: 'prov', envVars: ['PROV_API_KEY'], catalog: { run: async (params) => ({ models: [params.prefix + '-model'], apiKey: params.resolveProviderApiKey('prov').apiKey }) } });
     api.registerHook('event', async (payload) => ({ order: 2, payload }), { priority: 20 });
     api.registerHook('event', async (payload) => ({ order: 1, payload }), { priority: 1 });
     api.registerService({ id: 'svc', start: async () => ({ started: true }), stop: async () => ({ stopped: true }) });
@@ -178,12 +178,13 @@ module.exports = {
 		t.Fatalf("unexpected tool result: %#v", toolResult)
 	}
 
-	providerResult, err := h.InvokeProvider(ctx, "prov", "catalog", map[string]any{"prefix": "test"})
+	providerResult, err := h.InvokeProvider(ctx, "prov", "catalog", map[string]any{"prefix": "test", "api_keys": map[string]any{"prov": "secret"}})
 	if err != nil {
 		t.Fatalf("InvokeProvider: %v", err)
 	}
-	models, _ := providerResult.(map[string]any)["models"].([]any)
-	if len(models) != 1 || models[0] != "test-model" {
+	providerMap := providerResult.(map[string]any)
+	models, _ := providerMap["models"].([]any)
+	if len(models) != 1 || models[0] != "test-model" || providerMap["apiKey"] != "secret" {
 		t.Fatalf("unexpected provider result: %#v", providerResult)
 	}
 
