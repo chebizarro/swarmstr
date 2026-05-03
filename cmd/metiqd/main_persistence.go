@@ -86,6 +86,133 @@ func persistAssistant(
 	return err
 }
 
+func persistAndIngestInlineChannelSteering(
+	ctx context.Context,
+	docsRepo *state.DocsRepository,
+	transcriptRepo *state.TranscriptRepository,
+	contextEngine ctxengine.Engine,
+	sessionID string,
+	fallbackChannelID string,
+	fallbackThreadID string,
+	fallbackSenderID string,
+	items []autoreply.SteeringMessage,
+) {
+	if len(items) == 0 {
+		return
+	}
+	fallbackChannelID = strings.TrimSpace(fallbackChannelID)
+	fallbackThreadID = strings.TrimSpace(fallbackThreadID)
+	fallbackSenderID = strings.TrimSpace(fallbackSenderID)
+	for i, steered := range items {
+		if strings.ToLower(strings.TrimSpace(steered.Source)) != "channel" {
+			continue
+		}
+		createdAt := steered.CreatedAt
+		if createdAt <= 0 {
+			createdAt = time.Now().Unix()
+		}
+		senderID := strings.TrimSpace(steered.SenderID)
+		if senderID == "" {
+			senderID = fallbackSenderID
+		}
+		channelID := strings.TrimSpace(steered.ChannelID)
+		if channelID == "" {
+			channelID = fallbackChannelID
+		}
+		threadID := strings.TrimSpace(steered.ThreadID)
+		if threadID == "" {
+			threadID = fallbackThreadID
+		}
+		entryID := strings.TrimSpace(steered.EventID)
+		if entryID == "" {
+			entryID = synthesizeInlineChannelSteeringEventID(channelID, threadID, senderID, steered.Text, createdAt, steered.EnqueuedAt, i)
+		}
+
+		if docsRepo != nil {
+			peer := senderID
+			if peer == "" {
+				peer = sessionID
+			}
+			if err := updateSessionDoc(ctx, docsRepo, sessionID, peer, func(session *state.SessionDoc) error {
+				if createdAt > session.LastInboundAt {
+					session.LastInboundAt = createdAt
+				}
+				return nil
+			}); err != nil {
+				log.Printf("persist inline channel steering session update failed session=%s event=%s err=%v", sessionID, entryID, err)
+			}
+		}
+
+		meta := map[string]any{
+			"source":          "channel",
+			"inline_steering": true,
+		}
+		if channelID != "" {
+			meta["channel_id"] = channelID
+		}
+		if threadID != "" {
+			meta["thread_id"] = threadID
+		}
+		if senderID != "" {
+			meta["sender_id"] = senderID
+		}
+		if steered.EventID != "" {
+			meta["event_id"] = steered.EventID
+		}
+		if transcriptRepo != nil {
+			if _, err := transcriptRepo.PutEntry(ctx, state.TranscriptEntryDoc{
+				Version:   1,
+				SessionID: sessionID,
+				EntryID:   entryID,
+				Role:      "user",
+				Text:      steered.Text,
+				Unix:      createdAt,
+				Meta:      meta,
+			}); err != nil {
+				log.Printf("persist inline channel steering failed session=%s event=%s err=%v", sessionID, entryID, err)
+			}
+		}
+		if contextEngine != nil {
+			content := formatInlineChannelSteeringForContext(steered.Text, channelID, threadID, senderID)
+			if _, ingErr := contextEngine.Ingest(ctx, sessionID, ctxengine.Message{Role: "user", Content: content, ID: entryID, Unix: createdAt}); ingErr != nil {
+				log.Printf("context engine ingest inline channel steering session=%s event=%s err=%v", sessionID, entryID, ingErr)
+			}
+		}
+	}
+}
+
+func synthesizeInlineChannelSteeringEventID(channelID, threadID, senderID, text string, createdAt int64, enqueuedAt time.Time, drainIndex int) string {
+	seed := fmt.Sprintf("channel-steering\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%s",
+		strings.TrimSpace(channelID),
+		strings.TrimSpace(threadID),
+		strings.TrimSpace(senderID),
+		createdAt,
+		enqueuedAt.UnixNano(),
+		drainIndex,
+		strings.TrimSpace(text),
+	)
+	sum := sha256.Sum256([]byte(seed))
+	return "auto:channel-steering:" + hex.EncodeToString(sum[:])
+}
+
+func formatInlineChannelSteeringForContext(text, channelID, threadID, senderID string) string {
+	var parts []string
+	if senderID = strings.TrimSpace(senderID); senderID != "" {
+		parts = append(parts, "from "+senderID)
+	}
+	if channelID = strings.TrimSpace(channelID); channelID != "" {
+		parts = append(parts, "channel "+channelID)
+	}
+	if threadID = strings.TrimSpace(threadID); threadID != "" {
+		parts = append(parts, "thread "+threadID)
+	}
+	header := "[Additional channel input received while you were working]"
+	if len(parts) > 0 {
+		header = "[Additional channel input " + strings.Join(parts, ", ") + " while you were working]"
+	}
+	return header + "\n" + strings.TrimSpace(text)
+}
+
 // ---------------------------------------------------------------------------
 // Event ID synthesis
 // ---------------------------------------------------------------------------

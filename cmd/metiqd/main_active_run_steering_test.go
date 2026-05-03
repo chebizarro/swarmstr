@@ -8,6 +8,8 @@ import (
 
 	"metiq/internal/agent"
 	"metiq/internal/autoreply"
+	ctxengine "metiq/internal/context"
+	"metiq/internal/store/state"
 )
 
 func TestEnqueueActiveRunSteeringDrainsForModel(t *testing.T) {
@@ -120,6 +122,125 @@ func TestClearTransientSessionSteeringDeletesMailbox(t *testing.T) {
 	clearTransientSessionSteering(mailboxes, "sess-clear")
 	if got := steeringMailboxLen(mailboxes, "sess-clear"); got != 0 {
 		t.Fatalf("expected mailbox len 0 after cleanup, got %d", got)
+	}
+}
+
+func TestPersistAndIngestInlineChannelSteeringRecordsDurableProvenance(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	docsRepo := state.NewDocsRepository(store, "author")
+	transcriptRepo := state.NewTranscriptRepository(store, "author")
+	engine := &capturingSteeringContextEngine{}
+	items := []autoreply.SteeringMessage{
+		{Text: "dm steering ignored here", EventID: "evt-dm", SenderID: "alice", Source: "dm", CreatedAt: 10},
+		{Text: "channel inline update", EventID: "evt-channel", SenderID: "bob", ChannelID: "chan-1", ThreadID: "thread-1", Source: "channel", CreatedAt: 42},
+	}
+
+	persistAndIngestInlineChannelSteering(ctx, docsRepo, transcriptRepo, engine, "ch:chan-1:bob:thread:thread-1", "fallback-chan", "fallback-thread", "fallback-sender", items)
+
+	entries, err := transcriptRepo.ListSessionAll(ctx, "ch:chan-1:bob:thread:thread-1")
+	if err != nil {
+		t.Fatalf("list transcript: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected only channel steering transcript entry, got %+v", entries)
+	}
+	entry := entries[0]
+	if entry.EntryID != "evt-channel" || entry.Role != "user" || entry.Text != "channel inline update" || entry.Unix != 42 {
+		t.Fatalf("unexpected transcript entry: %+v", entry)
+	}
+	if entry.Meta["source"] != "channel" || entry.Meta["inline_steering"] != true || entry.Meta["channel_id"] != "chan-1" || entry.Meta["thread_id"] != "thread-1" || entry.Meta["sender_id"] != "bob" {
+		t.Fatalf("channel steering transcript metadata lost provenance: %+v", entry.Meta)
+	}
+	session, err := docsRepo.GetSession(ctx, "ch:chan-1:bob:thread:thread-1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.LastInboundAt != 42 || session.PeerPubKey != "bob" {
+		t.Fatalf("session doc not updated from inline channel steering: %+v", session)
+	}
+	if len(engine.messages) != 1 {
+		t.Fatalf("expected one context ingest, got %+v", engine.messages)
+	}
+	msg := engine.messages[0]
+	if msg.sessionID != "ch:chan-1:bob:thread:thread-1" || msg.msg.ID != "evt-channel" || msg.msg.Unix != 42 || msg.msg.Role != "user" {
+		t.Fatalf("unexpected context ingest envelope: %+v", msg)
+	}
+	for _, want := range []string{"channel inline update", "chan-1", "thread-1", "bob"} {
+		if !strings.Contains(msg.msg.Content, want) {
+			t.Fatalf("context ingest content missing %q provenance: %q", want, msg.msg.Content)
+		}
+	}
+}
+
+type capturingSteeringContextEngine struct {
+	messages []struct {
+		sessionID string
+		msg       ctxengine.Message
+	}
+}
+
+func (e *capturingSteeringContextEngine) Ingest(_ context.Context, sessionID string, msg ctxengine.Message) (ctxengine.IngestResult, error) {
+	e.messages = append(e.messages, struct {
+		sessionID string
+		msg       ctxengine.Message
+	}{sessionID: sessionID, msg: msg})
+	return ctxengine.IngestResult{Ingested: true}, nil
+}
+
+func (e *capturingSteeringContextEngine) Assemble(context.Context, string, int) (ctxengine.AssembleResult, error) {
+	return ctxengine.AssembleResult{}, nil
+}
+
+func (e *capturingSteeringContextEngine) Compact(context.Context, string) (ctxengine.CompactResult, error) {
+	return ctxengine.CompactResult{}, nil
+}
+
+func (e *capturingSteeringContextEngine) Bootstrap(context.Context, string, []ctxengine.Message) (ctxengine.BootstrapResult, error) {
+	return ctxengine.BootstrapResult{}, nil
+}
+
+func (e *capturingSteeringContextEngine) Close() error { return nil }
+
+func TestPersistAndIngestInlineChannelSteeringSynthesizesUniqueIDsAndKeepsLatestActivity(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	docsRepo := state.NewDocsRepository(store, "author")
+	transcriptRepo := state.NewTranscriptRepository(store, "author")
+	sessionID := "ch:chan-1:bob:thread:thread-1"
+	if _, err := docsRepo.PutSession(ctx, sessionID, state.SessionDoc{Version: 1, SessionID: sessionID, PeerPubKey: "bob", LastInboundAt: 100}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	persistAndIngestInlineChannelSteering(ctx, docsRepo, transcriptRepo, nil, sessionID, "chan-1", "thread-1", "bob", []autoreply.SteeringMessage{
+		{Text: "same text", SenderID: "bob", Source: "channel", CreatedAt: 200},
+		{Text: "newer urgent same text", SenderID: "bob", Source: "channel", CreatedAt: 300},
+		{Text: "same text", SenderID: "bob", Source: "channel", CreatedAt: 200},
+	})
+
+	entries, err := transcriptRepo.ListSessionAll(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("list transcript: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected all no-event steering entries persisted, got %+v", entries)
+	}
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		if entry.EntryID == "" {
+			t.Fatalf("synthesized entry id was empty: %+v", entry)
+		}
+		if seen[entry.EntryID] {
+			t.Fatalf("synthesized entry id collided: %+v", entries)
+		}
+		seen[entry.EntryID] = true
+	}
+	session, err := docsRepo.GetSession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.LastInboundAt != 300 {
+		t.Fatalf("LastInboundAt should keep newest drained steering timestamp, got %d", session.LastInboundAt)
 	}
 }
 

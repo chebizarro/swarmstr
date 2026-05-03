@@ -5055,6 +5055,9 @@ func main() {
 			Done:      true,
 		})
 
+		inlineSteering := drainedSteering.Snapshot()
+		persistAndIngestInlineChannelSteering(ctx, docsRepo, transcriptRepo, controlServices.session.contextEngine, sessionID, chID, threadIDFromSessionID(sessionID), senderID, inlineSteering)
+
 		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
 			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
 		}
