@@ -267,7 +267,7 @@ func TestBuildHeartbeatRunnerPromptRequiresStructuredResponse(t *testing.T) {
 }
 
 func TestExecuteHeartbeatAgentRunExposesConsumesAndSchedulesStructuredResponse(t *testing.T) {
-	nextCheck := "2026-05-03T18:00:00Z"
+	nextCheck := time.Now().UTC().Add(time.Hour).Truncate(time.Second).Format(time.RFC3339)
 	rt := &capturingHeartbeatRuntime{
 		turns: make(chan agent.Turn, 1),
 		args: map[string]any{
