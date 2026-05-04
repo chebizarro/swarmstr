@@ -17,15 +17,17 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"fiatjaf.com/nostr"
 )
 
 func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	relayURL := requireLiveHarnessRelay(t)
-
-	h := newLiveDaemonHarness(t, relayURL, liveTestModel(), liveDaemonHarnessOptions{})
-	defer h.Close()
+	model := liveTestModel()
 
 	t.Run("direct reasoning", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"my_identity"}})
+		defer h.Close()
 		result := h.runAgent(t, "live-direct", "What is 2+2? Reply with just the number.")
 		if strings.TrimSpace(result) != "4" {
 			t.Fatalf("direct result = %q, want 4", result)
@@ -33,6 +35,8 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("identity tool", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"my_identity"}})
+		defer h.Close()
 		result := h.runAgentWithRetry(t, "live-identity", []string{
 			"You must use the my_identity tool before answering. Reply with just your exact name.",
 			"Call my_identity. Then output ONLY the exact agent name and nothing else.",
@@ -46,6 +50,8 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("workspace file write", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"write_file"}})
+		defer h.Close()
 		result := h.runAgent(t, "live-write", "Use write_file to create a file at scratch/hello.txt with content EXACTLY 'hello from relay'. After writing it, reply with just WRITTEN.")
 		if strings.TrimSpace(result) != "WRITTEN" {
 			t.Fatalf("write result = %q, want WRITTEN", result)
@@ -60,6 +66,8 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("memory store and search", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"memory_store", "memory_search"}})
+		defer h.Close()
 		storeResult := h.runAgent(t, "live-memory", "Use memory_store to save this fact with topic 'test': 'favorite color is blue'. Reply with just STORED.")
 		if strings.TrimSpace(storeResult) != "STORED" {
 			t.Fatalf("memory store result = %q, want STORED", storeResult)
@@ -71,6 +79,8 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("bash exec with approval", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"bash_exec"}})
+		defer h.Close()
 		runID := h.startAgent(t, "live-shell", "You must call bash_exec as your first action with command `printf shell-ok`. Do not answer from memory. After the command succeeds, reply with exactly shell-ok.")
 		approvalID := h.waitForApprovalLog(t, runID)
 		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID, "decision": "approve", "reason": "live test"})
@@ -81,6 +91,8 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("nostr publish and fetch", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"nostr_publish", "nostr_fetch"}})
+		defer h.Close()
 		note := fmt.Sprintf("LMSTUDIO_NOTE_%d", time.Now().UnixNano())
 		publishPrompt := fmt.Sprintf("Use nostr_publish to publish a kind 1 note whose content is EXACTLY %q. Reply with just PUBLISHED.", note)
 		publishResult := h.runAgentWithRetry(t, "live-nostr-publish", []string{publishPrompt, publishPrompt, publishPrompt}, func(result string) bool {
@@ -99,34 +111,133 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 		}
 	})
 
+	t.Run("relay inspection tools", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"relay_list", "relay_ping"}})
+		defer h.Close()
+		listPrompt := fmt.Sprintf("Use relay_list, inspect the configured relays, and reply with just the exact configured relay URL. The expected relay is %q.", h.relayURL)
+		listResult := h.runAgentWithRetry(t, "live-relay-list", []string{listPrompt, listPrompt}, func(result string) bool {
+			return strings.TrimSpace(result) == h.relayURL
+		})
+		if strings.TrimSpace(listResult) != h.relayURL {
+			t.Fatalf("relay_list result = %q, want %q", listResult, h.relayURL)
+		}
+
+		pingPrompt := fmt.Sprintf("Use relay_ping on %q. If the relay is reachable, reply with just PING-OK. Otherwise reply with just PING-FAIL.", h.relayURL)
+		pingResult := h.runAgentWithRetry(t, "live-relay-ping", []string{pingPrompt, pingPrompt}, func(result string) bool {
+			trimmed := strings.TrimSpace(result)
+			return trimmed == "PING-OK" || trimmed == "PING-FAIL"
+		})
+		if strings.TrimSpace(pingResult) != "PING-OK" {
+			t.Fatalf("relay_ping result = %q, want PING-OK", pingResult)
+		}
+	})
+
+	t.Run("nostr sign to file", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"nostr_sign", "write_file"}})
+		defer h.Close()
+		note := fmt.Sprintf("LMSTUDIO_SIGNED_%d", time.Now().UnixNano())
+		prompt := fmt.Sprintf("Use nostr_sign to create a kind 1 event with content EXACTLY %q. Then use write_file to save the raw signed JSON to scratch/signed-event.json. Reply with just SIGNED.", note)
+		result := h.runAgentWithRetry(t, "live-nostr-sign", []string{prompt, prompt, prompt}, func(result string) bool {
+			return strings.TrimSpace(result) == "SIGNED"
+		})
+		if strings.TrimSpace(result) != "SIGNED" {
+			t.Fatalf("nostr_sign result = %q, want SIGNED", result)
+		}
+
+		raw, err := os.ReadFile(filepath.Join(h.workspaceDir, "scratch", "signed-event.json"))
+		if err != nil {
+			t.Fatalf("read signed event file: %v", err)
+		}
+		var evt nostr.Event
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			t.Fatalf("decode signed event json: %v\n%s", err, raw)
+		}
+		if evt.Kind != 1 {
+			t.Fatalf("signed event kind = %d, want 1", evt.Kind)
+		}
+		if evt.Content != note {
+			t.Fatalf("signed event content = %q, want %q", evt.Content, note)
+		}
+		if evt.PubKey.Hex() != h.pubkey {
+			t.Fatalf("signed event pubkey = %q, want %q", evt.PubKey.Hex(), h.pubkey)
+		}
+		if !evt.CheckID() {
+			t.Fatal("signed event has invalid computed id")
+		}
+		if !evt.VerifySignature() {
+			t.Fatal("signed event signature did not verify")
+		}
+	})
+
+	t.Run("nostr watch lifecycle", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"nostr_watch", "nostr_unwatch", "nostr_watch_list"}})
+		defer h.Close()
+		sessionID := "live-watch-lifecycle"
+		watchPrompt := fmt.Sprintf("Use nostr_watch to start a watch named watch-lifecycle with filter {\"kinds\":[1],\"authors\":[%q]} and max_events 1. Reply with just WATCHING.", h.pubkey)
+		watchResult := h.runAgentWithRetry(t, sessionID+"-watch", []string{watchPrompt, watchPrompt}, func(result string) bool {
+			return strings.TrimSpace(result) == "WATCHING"
+		})
+		if strings.TrimSpace(watchResult) != "WATCHING" {
+			t.Fatalf("nostr_watch result = %q, want WATCHING", watchResult)
+		}
+
+		listPrompt := "Use nostr_watch_list. If a watch named watch-lifecycle is active, reply with just WATCH-ACTIVE. Otherwise reply with just WATCH-MISSING."
+		listResult := h.runAgentWithRetry(t, sessionID+"-list", []string{listPrompt, listPrompt}, func(result string) bool {
+			trimmed := strings.TrimSpace(result)
+			return trimmed == "WATCH-ACTIVE" || trimmed == "WATCH-MISSING"
+		})
+		if strings.TrimSpace(listResult) != "WATCH-ACTIVE" {
+			t.Fatalf("nostr_watch_list result = %q, want WATCH-ACTIVE", listResult)
+		}
+
+		unwatchPrompt := "Use nostr_unwatch to stop the watch named watch-lifecycle. Reply with just UNWATCHED."
+		unwatchResult := h.runAgentWithRetry(t, sessionID+"-unwatch", []string{unwatchPrompt, unwatchPrompt}, func(result string) bool {
+			return strings.TrimSpace(result) == "UNWATCHED"
+		})
+		if strings.TrimSpace(unwatchResult) != "UNWATCHED" {
+			t.Fatalf("nostr_unwatch result = %q, want UNWATCHED", unwatchResult)
+		}
+
+		listAfterPrompt := "Use nostr_watch_list. If there are no active watches named watch-lifecycle, reply with just WATCH-CLEARED. Otherwise reply with just WATCH-STILL-ACTIVE."
+		listAfterResult := h.runAgentWithRetry(t, sessionID+"-list-after", []string{listAfterPrompt, listAfterPrompt}, func(result string) bool {
+			trimmed := strings.TrimSpace(result)
+			return trimmed == "WATCH-CLEARED" || trimmed == "WATCH-STILL-ACTIVE"
+		})
+		if strings.TrimSpace(listAfterResult) != "WATCH-CLEARED" {
+			t.Fatalf("post-unwatch watch_list result = %q, want WATCH-CLEARED", listAfterResult)
+		}
+	})
+
 	t.Run("multi-turn context retention", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"memory_store", "memory_search", "write_file"}})
+		defer h.Close()
 		sessionID := "live-multiturn"
-		
+
 		// Turn 1: Establish a fact
 		result1 := h.runAgent(t, sessionID, "Remember this: my favorite fruit is mango. Reply with just REMEMBERED.")
 		if strings.TrimSpace(result1) != "REMEMBERED" {
 			t.Fatalf("turn 1 result = %q, want REMEMBERED", result1)
 		}
-		
+
 		// Turn 2: Reference the fact from turn 1
 		result2 := h.runAgent(t, sessionID, "What is my favorite fruit? Reply with just the fruit name.")
 		if !strings.EqualFold(strings.TrimSpace(result2), "mango") {
 			t.Fatalf("turn 2 result = %q, want mango (context retention failed)", result2)
 		}
-		
+
 		// Turn 3: Use memory_store with a fact
 		result3 := h.runAgent(t, sessionID, "Use memory_store to save this fact with topic 'multiturn': 'lucky number is 42'. Reply with just STORED.")
 		if strings.TrimSpace(result3) != "STORED" {
 			t.Fatalf("turn 3 result = %q, want STORED", result3)
 		}
-		
+
 		// Turn 4: Search memory and reference conversation context
 		result4 := h.runAgent(t, sessionID, "Use memory_search to find my lucky number, then tell me both my favorite fruit and my lucky number in format: FRUIT-NUMBER")
 		expected := "mango-42"
 		if !strings.EqualFold(strings.TrimSpace(result4), expected) && !strings.Contains(strings.ToLower(result4), "mango") && !strings.Contains(result4, "42") {
 			t.Fatalf("turn 4 result = %q, want both mango and 42 (multi-turn context + memory failed)", result4)
 		}
-		
+
 		// Turn 5: File write referencing previous turns
 		result5 := h.runAgent(t, sessionID, "Use write_file to create scratch/context-test.txt with content 'fruit: mango, number: 42'. Reply with just WRITTEN.")
 		if strings.TrimSpace(result5) != "WRITTEN" {
@@ -142,23 +253,25 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("permission denial recovery", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"bash_exec"}})
+		defer h.Close()
 		sessionID := "live-denial"
-		
+
 		// Start an agent that requires approval, with shorter timeout
 		result := h.call(t, "agent", map[string]any{
 			"session_id": sessionID,
 			"message":    "You must call bash_exec with command `printf denied-test`. Do not answer from memory. After bash_exec succeeds, reply with SUCCESS. If it fails or is denied, reply with DENIED.",
-			"timeout_ms":  60000,
+			"timeout_ms": 60000,
 		})
 		runID, _ := result["run_id"].(string)
 		if strings.TrimSpace(runID) == "" {
 			t.Fatalf("agent start missing run_id: %#v", result)
 		}
-		
+
 		// Wait for approval request and deny it
 		approvalID := h.waitForApprovalLog(t, runID)
 		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID, "decision": "deny", "reason": "testing denial path"})
-		
+
 		// Agent should handle denial - either by responding or timing out gracefully
 		// Both are acceptable outcomes for this test (validates the system doesn't crash)
 		agentResult, err := h.waitAgentResult(t, runID)
@@ -177,15 +290,17 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("tool failure recovery", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"read_file", "write_file"}})
+		defer h.Close()
 		sessionID := "live-tool-failure"
-		
+
 		// Try to read a file that doesn't exist
 		result := h.runAgent(t, sessionID, "Use read_file to read a file at nonexistent/missing.txt. If it fails, reply with just FAILED. If it succeeds, reply with the content.")
 		// Agent should acknowledge the failure in some way
 		if !strings.Contains(strings.ToUpper(result), "FAILED") && !strings.Contains(strings.ToLower(result), "fail") && !strings.Contains(strings.ToLower(result), "error") && !strings.Contains(strings.ToLower(result), "not found") && !strings.Contains(strings.ToLower(result), "does not exist") {
 			t.Logf("tool failure result = %q (expected failure indication, got something else)", result)
 		}
-		
+
 		// Follow up with a successful operation to prove recovery
 		result2 := h.runAgent(t, sessionID, "Use write_file to create scratch/recovery.txt with content EXACTLY 'recovered'. Reply with just RECOVERED.")
 		if strings.TrimSpace(result2) != "RECOVERED" {
@@ -201,20 +316,22 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("tool chaining - write to file to memory", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"write_file", "read_file", "memory_store", "memory_search"}})
+		defer h.Close()
 		sessionID := "live-chain-file-mem"
-		
+
 		// Step 1: write data to file
 		result1 := h.runAgent(t, sessionID, "Use write_file to create scratch/chain.txt with content EXACTLY 'chain-data-abc123'. Reply with just WRITTEN.")
 		if strings.TrimSpace(result1) != "WRITTEN" {
 			t.Fatalf("write result = %q, want WRITTEN", result1)
 		}
-		
+
 		// Step 2: read that file and store content in memory (2-tool chain)
 		result2 := h.runAgent(t, sessionID, "Use read_file to read scratch/chain.txt, then use memory_store to save what you read with topic 'chaintest'. Reply with just CHAINED.")
 		if strings.TrimSpace(result2) != "CHAINED" {
 			t.Fatalf("chain result = %q, want CHAINED", result2)
 		}
-		
+
 		// Step 3: verify memory contains the right data (memory search tool)
 		result3 := h.runAgent(t, sessionID, "Use memory_search with query 'chaintest'. Reply with just what you find.")
 		if !strings.Contains(result3, "chain-data-abc123") {
@@ -223,8 +340,10 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("tool chaining - file tree navigation and selective read", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"file_tree", "read_file", "write_file"}})
+		defer h.Close()
 		sessionID := "live-chain-tree"
-		
+
 		// Setup: create a few files
 		if err := os.MkdirAll(filepath.Join(h.workspaceDir, "scratch", "data"), 0o755); err != nil {
 			t.Fatalf("mkdir data: %v", err)
@@ -238,13 +357,13 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(h.workspaceDir, "scratch", "data", "target.txt"), []byte("TARGET-DATA"), 0o644); err != nil {
 			t.Fatalf("write target: %v", err)
 		}
-		
+
 		// Chain: file_tree to discover -> read specific file -> write result elsewhere
 		result := h.runAgent(t, sessionID, "Use file_tree to list files in scratch/data, then use read_file to read the file named target.txt, then use write_file to save what you read to scratch/tree-result.txt. Reply with just TREE-DONE.")
 		if strings.TrimSpace(result) != "TREE-DONE" {
 			t.Fatalf("tree chain result = %q, want TREE-DONE", result)
 		}
-		
+
 		// Verify the result
 		raw, err := os.ReadFile(filepath.Join(h.workspaceDir, "scratch", "tree-result.txt"))
 		if err != nil {
@@ -256,20 +375,22 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("tool chaining - memory search to file operation", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"memory_store", "memory_search", "write_file"}})
+		defer h.Close()
 		sessionID := "live-chain-mem-file"
-		
+
 		// Setup: store some data in memory
 		result1 := h.runAgent(t, sessionID, "Use memory_store to save this with topic 'location': 'scratch/memo-output.txt'. Reply with just STORED.")
 		if strings.TrimSpace(result1) != "STORED" {
 			t.Fatalf("memo store result = %q, want STORED", result1)
 		}
-		
+
 		// Chain: memory_search to find path -> write to that path
 		result2 := h.runAgent(t, sessionID, "Use memory_search with query 'location' to find the path, then use write_file to write 'memo-content' to that exact path. Reply with just MEM-CHAIN-DONE.")
 		if strings.TrimSpace(result2) != "MEM-CHAIN-DONE" {
 			t.Fatalf("mem chain result = %q, want MEM-CHAIN-DONE", result2)
 		}
-		
+
 		// Verify the file was written to the right location
 		raw, err := os.ReadFile(filepath.Join(h.workspaceDir, "scratch", "memo-output.txt"))
 		if err != nil {
@@ -281,22 +402,24 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("permissions validation - sequential approvals", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"bash_exec"}})
+		defer h.Close()
 		sessionID := "live-perms-seq"
-		
+
 		// First approval: should trigger and be granted
 		result := h.call(t, "agent", map[string]any{
 			"session_id": sessionID,
 			"message":    "Call bash_exec with command `printf approval-1`. Reply OK.",
-			"timeout_ms":  90000,
+			"timeout_ms": 90000,
 		})
 		runID1, _ := result["run_id"].(string)
 		if strings.TrimSpace(runID1) == "" {
 			t.Fatalf("agent start missing run_id: %#v", result)
 		}
-		
+
 		approvalID1 := h.waitForApprovalLog(t, runID1)
 		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID1, "decision": "approve", "reason": "first approval test"})
-		
+
 		// Wait with lenient validation - timeout, deadline exceeded, or success all acceptable
 		result1, err := h.waitAgentResult(t, runID1)
 		if err != nil {
@@ -313,14 +436,16 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 	})
 
 	t.Run("permissions validation - approval gating", func(t *testing.T) {
+		h := newLiveDaemonHarness(t, relayURL, model, liveDaemonHarnessOptions{EnabledTools: []string{"write_file", "bash_exec"}})
+		defer h.Close()
 		sessionID := "live-perms-gate"
-		
+
 		// Tools NOT requiring approval should execute immediately
 		result1 := h.runAgent(t, sessionID, "Use write_file to create scratch/no-approval.txt with content EXACTLY 'no-gate'. Reply with just WROTE.")
 		if !strings.Contains(result1, "WROTE") {
 			t.Fatalf("non-gated tool result = %q, want WROTE", result1)
 		}
-		
+
 		// Verify the non-gated file exists (proves write_file didn't require approval)
 		raw, err := os.ReadFile(filepath.Join(h.workspaceDir, "scratch", "no-approval.txt"))
 		if err != nil {
@@ -329,28 +454,28 @@ func TestLMStudioLive_DaemonHarness(t *testing.T) {
 		if string(raw) != "no-gate" {
 			t.Fatalf("non-gated file = %q, want no-gate", string(raw))
 		}
-		
+
 		// bash_exec SHOULD require approval - just verify approval is requested
 		// (we already test approval flow in other tests, this just validates gating)
 		result := h.call(t, "agent", map[string]any{
 			"session_id": sessionID,
 			"message":    "Call bash_exec with command `printf gate-check`.",
-			"timeout_ms":  60000,
+			"timeout_ms": 60000,
 		})
 		runID, _ := result["run_id"].(string)
 		if strings.TrimSpace(runID) == "" {
 			t.Fatal("agent start missing run_id")
 		}
-		
+
 		// The key validation: approval IS requested for bash_exec
 		approvalID := h.waitForApprovalLog(t, runID)
 		if strings.TrimSpace(approvalID) == "" {
 			t.Fatal("bash_exec should have triggered approval request but didn't")
 		}
-		
+
 		// Deny to keep test fast and prove gating works
 		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID, "decision": "deny", "reason": "gate test - validating approval was required"})
-		
+
 		// Don't care about the final result - we validated the gating
 		_, _ = h.waitAgentResult(t, runID)
 	})
@@ -436,18 +561,18 @@ func TestLMStudioLive_ApprovalGatingSpectrum(t *testing.T) {
 	t.Run("no approvals required", func(t *testing.T) {
 		h := newLiveDaemonHarnessWithApprovals(t, relayURL, model, []string{})
 		defer h.Close()
-		
+
 		// bash_exec should execute immediately without approval
 		result := h.call(t, "agent", map[string]any{
 			"session_id": "no-approvals-bash",
 			"message":    "Call bash_exec with command `printf no-approval-needed`. Reply OK.",
-			"timeout_ms":  60000,
+			"timeout_ms": 60000,
 		})
 		runID, _ := result["run_id"].(string)
 		if strings.TrimSpace(runID) == "" {
 			t.Fatalf("agent start missing run_id")
 		}
-		
+
 		// Should NOT trigger approval - wait for completion
 		agentResult, err := h.waitAgentResult(t, runID)
 		if err != nil {
@@ -457,7 +582,7 @@ func TestLMStudioLive_ApprovalGatingSpectrum(t *testing.T) {
 		if !strings.Contains(strings.ToLower(agentResult), "no-approval-needed") && !strings.Contains(strings.ToUpper(agentResult), "OK") {
 			t.Logf("no-approval bash result = %q", agentResult)
 		}
-		
+
 		// write_file should also execute immediately
 		result2 := h.runAgent(t, "no-approvals-write", "Use write_file to create scratch/no-gate.txt with content 'no-gates'. Reply WROTE.")
 		if !strings.Contains(result2, "WROTE") {
@@ -468,29 +593,29 @@ func TestLMStudioLive_ApprovalGatingSpectrum(t *testing.T) {
 	t.Run("single tool requires approval", func(t *testing.T) {
 		h := newLiveDaemonHarnessWithApprovals(t, relayURL, model, []string{"bash_exec"})
 		defer h.Close()
-		
+
 		// write_file should NOT require approval
 		result1 := h.runAgent(t, "single-write", "Use write_file to create scratch/single-no-gate.txt with content 'single-test'. Reply WROTE.")
 		if !strings.Contains(result1, "WROTE") {
 			t.Fatalf("write_file should not require approval: %q", result1)
 		}
-		
+
 		// bash_exec SHOULD require approval
 		result := h.call(t, "agent", map[string]any{
 			"session_id": "single-bash",
 			"message":    "Call bash_exec with command `printf single-gated`.",
-			"timeout_ms":  60000,
+			"timeout_ms": 60000,
 		})
 		runID, _ := result["run_id"].(string)
 		if strings.TrimSpace(runID) == "" {
 			t.Fatal("agent start missing run_id")
 		}
-		
+
 		approvalID := h.waitForApprovalLog(t, runID)
 		if strings.TrimSpace(approvalID) == "" {
 			t.Fatal("bash_exec should require approval in single-tool config")
 		}
-		
+
 		// Deny to keep test fast
 		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID, "decision": "deny", "reason": "single tool test"})
 		_, _ = h.waitAgentResult(t, runID)
@@ -499,43 +624,43 @@ func TestLMStudioLive_ApprovalGatingSpectrum(t *testing.T) {
 	t.Run("multiple tools require approval", func(t *testing.T) {
 		h := newLiveDaemonHarnessWithApprovals(t, relayURL, model, []string{"bash_exec", "write_file"})
 		defer h.Close()
-		
+
 		// write_file SHOULD now require approval
 		result := h.call(t, "agent", map[string]any{
 			"session_id": "multi-write",
 			"message":    "Use write_file to create scratch/multi-gated.txt with content 'gated'.",
-			"timeout_ms":  60000,
+			"timeout_ms": 60000,
 		})
 		runID1, _ := result["run_id"].(string)
 		if strings.TrimSpace(runID1) == "" {
 			t.Fatal("agent start missing run_id")
 		}
-		
+
 		approvalID1 := h.waitForApprovalLog(t, runID1)
 		if strings.TrimSpace(approvalID1) == "" {
 			t.Fatal("write_file should require approval in multi-tool config")
 		}
 		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID1, "decision": "deny", "reason": "multi write test"})
 		_, _ = h.waitAgentResult(t, runID1)
-		
+
 		// bash_exec SHOULD also require approval
 		result2 := h.call(t, "agent", map[string]any{
 			"session_id": "multi-bash",
 			"message":    "Call bash_exec with command `printf multi-gated`.",
-			"timeout_ms":  60000,
+			"timeout_ms": 60000,
 		})
 		runID2, _ := result2["run_id"].(string)
 		if strings.TrimSpace(runID2) == "" {
 			t.Fatal("agent start missing run_id")
 		}
-		
+
 		approvalID2 := h.waitForApprovalLog(t, runID2)
 		if strings.TrimSpace(approvalID2) == "" {
 			t.Fatal("bash_exec should require approval in multi-tool config")
 		}
 		h.call(t, "exec.approval.resolve", map[string]any{"id": approvalID2, "decision": "deny", "reason": "multi bash test"})
 		_, _ = h.waitAgentResult(t, runID2)
-		
+
 		// memory_store should NOT require approval (not in the list)
 		result3 := h.runAgent(t, "multi-memory", "Use memory_store to save 'test' with topic 'multi'. Reply STORED.")
 		if !strings.Contains(result3, "STORED") {
@@ -551,49 +676,49 @@ func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
 	t.Run("monitor relay reconnections", func(t *testing.T) {
 		h := newLiveDaemonHarnessWithApprovals(t, relayURL, model, []string{})
 		defer h.Close()
-		
+
 		// Let daemon run for a bit and perform some operations
 		// This gives us time to observe relay behavior
 		result1 := h.runAgent(t, "relay-test-1", "What is 5+3? Reply with just the number.")
 		t.Logf("First agent result: %q", result1)
-		
+
 		// Wait a bit
 		time.Sleep(10 * time.Second)
-		
+
 		// Do another operation
 		result2 := h.runAgent(t, "relay-test-2", "Use write_file to create scratch/relay-test.txt with content 'relay-stable'. Reply WROTE.")
 		t.Logf("Second agent result: %q", result2)
-		
+
 		// Wait a bit more
 		time.Sleep(10 * time.Second)
-		
+
 		// Analyze the log for relay events
 		raw, err := os.ReadFile(h.logPath)
 		if err != nil {
 			t.Fatalf("read log: %v", err)
 		}
 		logContent := string(raw)
-		
+
 		// Look for relay connection events
 		connectionPattern := regexp.MustCompile(`nip17: subscription to (\S+) (\S+)`)
 		reconnectPattern := regexp.MustCompile(`nip17: subscription to (\S+) closed, reconnecting`)
 		errorPattern := regexp.MustCompile(`relay.*error|connection.*failed|websocket.*error`)
-		
+
 		connections := connectionPattern.FindAllStringSubmatch(logContent, -1)
 		reconnects := reconnectPattern.FindAllStringSubmatch(logContent, -1)
 		errors := errorPattern.FindAllString(logContent, -1)
-		
+
 		t.Logf("\n=== Relay Connection Analysis ===")
 		t.Logf("Total connection events: %d", len(connections))
 		t.Logf("Total reconnection events: %d", len(reconnects))
 		t.Logf("Total error events: %d", len(errors))
-		
+
 		if len(reconnects) > 0 {
 			t.Logf("\nReconnection events found:")
 			for i, match := range reconnects {
 				t.Logf("  %d. Relay: %s", i+1, match[1])
 			}
-			
+
 			// Extract surrounding context for first reconnect
 			if len(reconnects) > 0 {
 				firstReconnect := reconnects[0][0]
@@ -612,7 +737,7 @@ func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
 				}
 			}
 		}
-		
+
 		if len(errors) > 0 {
 			t.Logf("\nError events found:")
 			for i, errMsg := range errors {
@@ -621,13 +746,13 @@ func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
 				}
 			}
 		}
-		
+
 		// Check if daemon is still functional after reconnects
 		result3 := h.runAgent(t, "relay-test-3", "Reply OK if you can read this.")
 		if !strings.Contains(strings.ToUpper(result3), "OK") {
 			t.Logf("WARNING: Agent might not be fully functional after reconnects: %q", result3)
 		}
-		
+
 		// Log final assessment
 		if len(reconnects) == 0 {
 			t.Log("✅ No relay reconnections observed during test")
@@ -645,13 +770,13 @@ func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
 		if remoteRelay == "" {
 			t.Skip("Set METIQ_TEST_REMOTE_RELAY=wss://relay.sharegap.net to test with remote relay")
 		}
-		
+
 		t.Logf("Testing with remote relay: %s", remoteRelay)
-		
+
 		// Create harness with remote relay
 		h := newLiveDaemonHarnessWithApprovals(t, remoteRelay, model, []string{})
 		defer h.Close()
-		
+
 		// Monitor for longer period to catch intermittent reconnects
 		monitorDuration := 60 * time.Second
 		if durStr := os.Getenv("METIQ_RELAY_MONITOR_DURATION"); durStr != "" {
@@ -659,9 +784,9 @@ func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
 				monitorDuration = dur
 			}
 		}
-		
+
 		t.Logf("Monitoring relay behavior for %s", monitorDuration)
-		
+
 		// Perform operations periodically while monitoring
 		startTime := time.Now()
 		opCount := 0
@@ -671,29 +796,29 @@ func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
 			if !strings.Contains(strings.ToUpper(result), "OK") {
 				t.Logf("Operation %d result: %q", opCount, result)
 			}
-			
+
 			// Wait between operations
 			time.Sleep(15 * time.Second)
 		}
-		
+
 		t.Logf("Completed %d operations over %s", opCount, monitorDuration)
-		
+
 		// Analyze the full log
 		raw, err := os.ReadFile(h.logPath)
 		if err != nil {
 			t.Fatalf("read log: %v", err)
 		}
 		logContent := string(raw)
-		
+
 		// More comprehensive patterns for remote relay
 		reconnectPattern := regexp.MustCompile(`(?i)(subscription.*closed.*reconnecting|reconnect|connection.*reset|websocket.*close)`)
 		nip17Pattern := regexp.MustCompile(`nip17:.*`)
 		errorPattern := regexp.MustCompile(`(?i)(error|failed|timeout).*relay|relay.*(error|failed|timeout)`)
-		
+
 		reconnects := reconnectPattern.FindAllString(logContent, -1)
 		nip17Events := nip17Pattern.FindAllString(logContent, -1)
 		errors := errorPattern.FindAllString(logContent, -1)
-		
+
 		t.Logf("\n=== Remote Relay Analysis ===")
 		t.Logf("Relay: %s", remoteRelay)
 		t.Logf("Monitor duration: %s", monitorDuration)
@@ -701,7 +826,7 @@ func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
 		t.Logf("Reconnection-like events: %d", len(reconnects))
 		t.Logf("Total NIP-17 events: %d", len(nip17Events))
 		t.Logf("Error events: %d", len(errors))
-		
+
 		if len(reconnects) > 0 {
 			t.Logf("\nReconnection/close events:")
 			for i, event := range reconnects {
@@ -712,12 +837,12 @@ func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
 			if len(reconnects) > 10 {
 				t.Logf("  ... and %d more", len(reconnects)-10)
 			}
-			
+
 			// Calculate reconnect frequency
 			freq := float64(len(reconnects)) / monitorDuration.Seconds()
 			t.Logf("\nReconnect frequency: %.2f events/second (%.2f events/minute)", freq, freq*60)
 		}
-		
+
 		if len(nip17Events) > 0 {
 			t.Logf("\nSample NIP-17 events (first 5):")
 			for i, event := range nip17Events {
@@ -726,7 +851,7 @@ func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
 				}
 			}
 		}
-		
+
 		if len(errors) > 0 {
 			t.Logf("\nRelay error events (first 10):")
 			for i, errMsg := range errors {
@@ -735,7 +860,7 @@ func TestLMStudioLive_RelayConnectionStability(t *testing.T) {
 				}
 			}
 		}
-		
+
 		// Final assessment
 		if len(reconnects) == 0 {
 			t.Log("\n✅ No relay reconnections observed - connection is stable")
@@ -767,6 +892,7 @@ type liveDaemonHarness struct {
 
 type liveDaemonHarnessOptions struct {
 	ExplicitConfigPath bool
+	EnabledTools       []string
 }
 
 func requireLiveHarnessRelay(t *testing.T) string {
@@ -837,7 +963,7 @@ func newLiveDaemonHarnessCustom(t *testing.T, relayURL, model string, opts liveD
 	if err := os.WriteFile(bootstrapPath, []byte(bootstrap), 0o644); err != nil {
 		t.Fatalf("write bootstrap: %v", err)
 	}
-	config := liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir, false, approvalTools)
+	config := liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir, false, approvalTools, opts.EnabledTools)
 	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -846,7 +972,7 @@ func newLiveDaemonHarnessCustom(t *testing.T, relayURL, model string, opts liveD
 		if err := os.MkdirAll(conflictWorkspaceDir, 0o755); err != nil {
 			t.Fatalf("mkdir conflicting workspace: %v", err)
 		}
-		conflicting := liveHarnessConfigJSON(relayURL, model, conflictWorkspaceDir, true)
+		conflicting := liveHarnessConfigJSON(relayURL, model, conflictWorkspaceDir, true, opts.EnabledTools)
 		if err := os.WriteFile(defaultConfigPath, []byte(conflicting), 0o644); err != nil {
 			t.Fatalf("write conflicting default config: %v", err)
 		}
@@ -871,7 +997,12 @@ func newLiveDaemonHarnessCustom(t *testing.T, relayURL, model string, opts liveD
 		cmdArgs = append(cmdArgs, "--config", configPath)
 	}
 	cmd := exec.Command(binPath, cmdArgs...)
-	cmd.Env = append(os.Environ(), "HOME="+homeDir)
+	cmd.Env = append(os.Environ(),
+		"HOME="+homeDir,
+		"METIQ_AGENT_PROVIDER=http",
+		"METIQ_AGENT_HTTP_URL=http://localhost:1234/v1",
+		"METIQ_AGENT_MODEL="+model,
+	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
@@ -915,7 +1046,7 @@ func (h *liveDaemonHarness) Close() {
 
 func (h *liveDaemonHarness) writeConfigFile(t *testing.T, path, workspaceDir string, requireAuth bool) {
 	t.Helper()
-	config := liveHarnessConfigJSON(h.relayURL, h.model, workspaceDir, requireAuth)
+	config := liveHarnessConfigJSON(h.relayURL, h.model, workspaceDir, requireAuth, nil)
 	if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
 		t.Fatalf("write config %s: %v", path, err)
 	}
@@ -1132,11 +1263,11 @@ func liveTestModel() string {
 	return "lmstudio/openai/gpt-oss-20b"
 }
 
-func liveHarnessConfigJSON(relayURL, model, workspaceDir string, requireAuth bool) string {
-	return liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir, requireAuth, []string{"bash_exec"})
+func liveHarnessConfigJSON(relayURL, model, workspaceDir string, requireAuth bool, enabledTools []string) string {
+	return liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir, requireAuth, []string{"bash_exec"}, enabledTools)
 }
 
-func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, requireAuth bool, approvalTools []string) string {
+func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, requireAuth bool, approvalTools []string, enabledTools []string) string {
 	approvalsJSON := "[]"
 	if len(approvalTools) > 0 {
 		var quoted []string
@@ -1144,6 +1275,14 @@ func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, re
 			quoted = append(quoted, fmt.Sprintf("%q", tool))
 		}
 		approvalsJSON = strings.Join(quoted, ", ")
+	}
+	enabledToolsJSON := `["my_identity", "write_file", "read_file", "file_tree", "memory_store", "memory_search", "bash_exec", "nostr_publish", "nostr_fetch"]`
+	if len(enabledTools) > 0 {
+		quoted := make([]string, 0, len(enabledTools))
+		for _, tool := range enabledTools {
+			quoted = append(quoted, fmt.Sprintf("%q", tool))
+		}
+		enabledToolsJSON = "[" + strings.Join(quoted, ", ") + "]"
 	}
 	return fmt.Sprintf(`{
   "version": 1,
@@ -1153,10 +1292,10 @@ func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, re
     "id": "main",
     "model": %[2]q,
     "workspace_dir": %[3]q,
-    "enabled_tools": ["my_identity", "write_file", "read_file", "file_tree", "memory_store", "memory_search", "bash_exec", "nostr_publish", "nostr_fetch"],
+    "enabled_tools": %[6]s,
     "heartbeat": {},
-    "context_window": 65536,
-    "max_context_tokens": 65536
+	"context_window": 4096,
+	"max_context_tokens": 4096
   }],
   "control": {"require_auth": %[4]t},
   "acp": {"transport": "auto"},
@@ -1169,7 +1308,7 @@ func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, re
   "timeouts": {},
   "extra": {"approvals": {"tools": [%[5]s]}}
 }
-`, relayURL, model, workspaceDir, requireAuth, approvalsJSON)
+`, relayURL, model, workspaceDir, requireAuth, approvalsJSON, enabledToolsJSON)
 }
 
 func randomSecretKeyHex(t *testing.T) string {
