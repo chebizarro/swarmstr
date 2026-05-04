@@ -47,8 +47,7 @@ const (
 	// nip17ReconnectBackoffMax caps the exponential backoff for relay reconnection.
 	nip17ReconnectBackoffMax = 10 * time.Minute
 
-	nip17MaxFutureSkew = 10 * time.Minute
-	nip17MaxPastAge    = 365 * 24 * time.Hour
+	nip17MaxPastAge = nip17GiftWrapBackfill + time.Hour
 )
 
 // NIP17BusOptions mirrors DMBusOptions so the two buses are interchangeable.
@@ -570,8 +569,11 @@ func (b *NIP17Bus) validateGiftWrapEvent(evt nostr.Event, now time.Time) error {
 	if !evt.VerifySignature() {
 		return fmt.Errorf("invalid gift wrap signature")
 	}
-	if !timestampReasonable(evt.CreatedAt, now) {
-		return fmt.Errorf("gift wrap timestamp out of bounds")
+	if timestampTooFarFuture(int64(evt.CreatedAt), now, inboundEventMaxFutureSkew) {
+		return fmt.Errorf("gift wrap timestamp from the future")
+	}
+	if timestampTooOld(int64(evt.CreatedAt), now, nip17MaxPastAge) {
+		return fmt.Errorf("gift wrap timestamp too old")
 	}
 	return nil
 }
@@ -589,21 +591,13 @@ func (b *NIP17Bus) validateRumorEvent(rumor nostr.Event, now time.Time) error {
 	if !rumor.VerifySignature() {
 		return fmt.Errorf("invalid rumor signature")
 	}
-	if !timestampReasonable(rumor.CreatedAt, now) {
-		return fmt.Errorf("rumor timestamp out of bounds")
+	if timestampTooFarFuture(int64(rumor.CreatedAt), now, inboundEventMaxFutureSkew) {
+		return fmt.Errorf("rumor timestamp from the future")
+	}
+	if timestampTooOld(int64(rumor.CreatedAt), now, nip17MaxPastAge) {
+		return fmt.Errorf("rumor timestamp too old")
 	}
 	return nil
-}
-
-func timestampReasonable(createdAt nostr.Timestamp, now time.Time) bool {
-	ts := time.Unix(int64(createdAt), 0)
-	if ts.After(now.Add(nip17MaxFutureSkew)) {
-		return false
-	}
-	if ts.Before(now.Add(-nip17MaxPastAge)) {
-		return false
-	}
-	return true
 }
 
 func (b *NIP17Bus) markSeen17(id string) bool {

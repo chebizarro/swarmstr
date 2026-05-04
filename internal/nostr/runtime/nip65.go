@@ -284,8 +284,7 @@ func metadataValidationFailure(ev nostr.Event, expectedAuthor nostr.PubKey, expe
 	if !ev.VerifySignature() {
 		return "invalid_signature"
 	}
-	const maxFutureSkewSeconds = 30
-	if int64(ev.CreatedAt) > time.Now().Unix()+maxFutureSkewSeconds {
+	if timestampTooFarFuture(int64(ev.CreatedAt), time.Now(), inboundEventMaxFutureSkew) {
 		return "created_at_future"
 	}
 	return ""

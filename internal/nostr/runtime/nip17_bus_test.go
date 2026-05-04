@@ -80,7 +80,7 @@ func TestNIP17ValidateRumorEvent(t *testing.T) {
 	}
 
 	future := rumor
-	future.CreatedAt = nostr.Timestamp(time.Now().Add(nip17MaxFutureSkew + time.Second).Unix())
+	future.CreatedAt = nostr.Timestamp(time.Now().Add(inboundEventMaxFutureSkew + time.Second).Unix())
 	if err := bus.validateRumorEvent(future, time.Now()); err == nil {
 		t.Fatal("expected future-skew validation error")
 	}
@@ -92,16 +92,16 @@ func TestNIP17ValidateRumorEvent(t *testing.T) {
 	}
 }
 
-func TestTimestampReasonableBounds(t *testing.T) {
+func TestNIP17TimestampBounds(t *testing.T) {
 	now := time.Now()
-	if !timestampReasonable(nostr.Timestamp(now.Unix()), now) {
-		t.Fatal("expected current timestamp to be reasonable")
+	if timestampTooFarFuture(now.Unix(), now, inboundEventMaxFutureSkew) {
+		t.Fatal("expected current timestamp not to be future")
 	}
-	if timestampReasonable(nostr.Timestamp(now.Add(nip17MaxFutureSkew+time.Second).Unix()), now) {
-		t.Fatal("expected future timestamp to be unreasonable")
+	if !timestampTooFarFuture(now.Add(inboundEventMaxFutureSkew+time.Second).Unix(), now, inboundEventMaxFutureSkew) {
+		t.Fatal("expected future timestamp to be rejected")
 	}
-	if timestampReasonable(nostr.Timestamp(now.Add(-nip17MaxPastAge-time.Second).Unix()), now) {
-		t.Fatal("expected old timestamp to be unreasonable")
+	if !timestampTooOld(now.Add(-nip17MaxPastAge-time.Second).Unix(), now, nip17MaxPastAge) {
+		t.Fatal("expected old timestamp to be rejected")
 	}
 }
 

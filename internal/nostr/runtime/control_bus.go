@@ -3,6 +3,8 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+	"metiq/internal/gateway/controlreplay"
 	"metiq/internal/nostr/events"
 )
 
@@ -115,7 +118,10 @@ type ControlRPCBus struct {
 	minCallerInterval time.Duration
 }
 
-const maxControlRequestContentBytes = 64 * 1024
+const (
+	maxControlRequestContentBytes = 64 * 1024
+	defaultControlRequestMaxAge   = 2 * time.Minute
+)
 
 func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*ControlRPCBus, error) {
 	initialRelays := sanitizeRelayList(opts.Relays)
@@ -148,6 +154,11 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 		pool = opts.Hub.Pool()
 		ownsPool = false
 	}
+	maxReqAge := opts.MaxRequestAge
+	if maxReqAge == 0 {
+		maxReqAge = defaultControlRequestMaxAge
+	}
+
 	bus := &ControlRPCBus{
 		pool:              pool,
 		hub:               opts.Hub,
@@ -159,7 +170,7 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 		onReq:             opts.OnRequest,
 		onHandled:         opts.OnHandled,
 		onError:           opts.OnError,
-		maxReqAge:         opts.MaxRequestAge,
+		maxReqAge:         maxReqAge,
 		responseCap:       max(opts.ResponseCap, 2_000),
 		health:            health,
 		seenSet:           map[string]struct{}{},
@@ -294,12 +305,7 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	}
 
 	eventID := evt.ID.Hex()
-	if b.markSeen(eventID) {
-		return
-	}
 	callerPubKey := evt.PubKey.Hex()
-	cacheKey := fmt.Sprintf("%s:%s", callerPubKey, requestID)
-
 	call, err := decodeControlCallRequest(evt.Content)
 	if err != nil {
 		b.respondError(re, "invalid control request body", requestID)
@@ -310,11 +316,30 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		b.respondError(re, "missing method", requestID)
 		return
 	}
-	if shouldCacheControlMethod(call.Method) {
-		if cached, ok := b.lookupCachedResponse(cacheKey, callerPubKey, requestID); ok {
+	replayPolicy := controlreplay.MethodPolicy(call.Method)
+	paramsHash := controlRequestParamsHash(call.Params)
+
+	if replayPolicy != controlreplay.None {
+		eventCacheKey := controlResponseCacheKey(callerPubKey, eventID)
+		if cached, ok := b.lookupCachedResponse(eventCacheKey, callerPubKey, eventID); ok {
 			b.publishResponse(re, callerPubKey, requestID, cached.Payload, withETag(cached.Tags, eventID))
 			return
 		}
+	}
+	if replayPolicy == controlreplay.EventAndRequest {
+		requestCacheKey := controlResponseCacheKey(callerPubKey, requestID)
+		if cached, ok := b.lookupCachedResponse(requestCacheKey, callerPubKey, requestID); ok {
+			if !controlReplayFingerprintMatches(cached, call.Method, paramsHash) {
+				b.respondErrorCode(re, "control request id replay fingerprint mismatch", requestID, -32009, map[string]any{"request_id": requestID})
+				return
+			}
+			b.publishResponse(re, callerPubKey, requestID, cached.Payload, withETag(cached.Tags, eventID))
+			return
+		}
+	}
+
+	if b.markSeen(eventID) {
+		return
 	}
 
 	now := time.Now()
@@ -322,7 +347,6 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		b.respondErrorCode(re, "control request rate limited", requestID, -32029, nil)
 		return
 	}
-	nowUnix := now.Unix()
 	if b.maxReqAge > 0 {
 		threshold := now.Add(-b.maxReqAge).Unix()
 		if int64(evt.CreatedAt) < threshold {
@@ -330,8 +354,7 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 			return
 		}
 	}
-	const maxFutureSkewSeconds = 30
-	if int64(evt.CreatedAt) > nowUnix+maxFutureSkewSeconds {
+	if timestampTooFarFuture(int64(evt.CreatedAt), now, inboundEventMaxFutureSkew) {
 		b.respondError(re, "control request from the future", requestID)
 		return
 	}
@@ -368,29 +391,16 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	payloadRaw, err := json.Marshal(payloadMap)
 	if err != nil {
 		payloadRaw = []byte(`{"error":"internal error: invalid result payload"}`)
-		tags := nostr.Tags{{"e", eventID}, {"p", evt.PubKey.Hex()}, {"req", requestID}, {"status", "error"}, {"t", "control_rpc"}}
-		payload := string(payloadRaw)
-		cached := ControlRPCCachedResponse{Payload: payload, Tags: tags}
-		if shouldCacheControlMethod(call.Method) {
-			b.setCachedResponse(cacheKey, cached)
-		}
-		b.publishResponse(re, evt.PubKey.Hex(), requestID, payload, tags)
-		if b.onHandled != nil {
-			b.onHandled(b.ctx, ControlRPCHandled{EventID: eventID, EventUnix: int64(evt.CreatedAt), CallerPubKey: callerPubKey, RequestID: requestID, Method: call.Method, Response: cached})
-		}
-		return
+		status = "error"
 	}
-	tags := nostr.Tags{
-		{"e", eventID},
-		{"p", evt.PubKey.Hex()},
-		{"req", requestID},
-		{"status", status},
-		{"t", "control_rpc"},
-	}
+	tags := controlResponseBaseTags(eventID, evt.PubKey.Hex(), requestID, status, call.Method, paramsHash)
 	payload := string(payloadRaw)
 	cached := ControlRPCCachedResponse{Payload: payload, Tags: tags}
-	if shouldCacheControlMethod(call.Method) {
-		b.setCachedResponse(cacheKey, cached)
+	if replayPolicy != controlreplay.None {
+		b.setCachedResponse(controlResponseCacheKey(callerPubKey, eventID), cached)
+	}
+	if replayPolicy == controlreplay.EventAndRequest {
+		b.setCachedResponse(controlResponseCacheKey(callerPubKey, requestID), cached)
 	}
 	b.publishResponse(re, evt.PubKey.Hex(), requestID, payload, tags)
 	if b.onHandled != nil {
@@ -958,8 +968,33 @@ func firstTagValue(tags nostr.Tags, key string) string {
 	return ""
 }
 
+func controlResponseCacheKey(callerPubKey, replayID string) string {
+	return strings.TrimSpace(callerPubKey) + ":" + strings.TrimSpace(replayID)
+}
+
+func controlRequestParamsHash(params json.RawMessage) string {
+	sum := sha256.Sum256([]byte(params))
+	return hex.EncodeToString(sum[:])
+}
+
+func controlReplayFingerprintMatches(cached ControlRPCCachedResponse, method string, paramsHash string) bool {
+	return firstTagValue(cached.Tags, "method") == strings.TrimSpace(method) && firstTagValue(cached.Tags, "params_sha256") == paramsHash
+}
+
+func controlResponseBaseTags(eventID, requesterPubKey, requestID, status, method, paramsHash string) nostr.Tags {
+	return nostr.Tags{
+		{"e", eventID},
+		{"p", requesterPubKey},
+		{"req", requestID},
+		{"status", status},
+		{"t", "control_rpc"},
+		{"method", strings.TrimSpace(method)},
+		{"params_sha256", paramsHash},
+	}
+}
+
 func shouldCacheControlMethod(method string) bool {
-	return strings.TrimSpace(method) != "secrets.resolve"
+	return controlreplay.MethodPolicy(method) != controlreplay.None
 }
 
 func buildControlRPCError(message string, code int, data map[string]any) controlRPCError {

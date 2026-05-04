@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"metiq/internal/config"
 	"metiq/internal/gateway/methods"
@@ -14,6 +15,180 @@ import (
 	securitypkg "metiq/internal/security"
 	"metiq/internal/store/state"
 )
+
+var runtimeConfigCommitMu sync.Mutex
+
+type configMutationDurabilityError struct {
+	Stage       string
+	Err         error
+	RollbackErr error
+	Partial     bool
+}
+
+func (e *configMutationDurabilityError) Error() string {
+	if e == nil {
+		return ""
+	}
+	stage := strings.TrimSpace(e.Stage)
+	if stage == "" {
+		stage = "unknown"
+	}
+	if e.RollbackErr != nil {
+		return fmt.Sprintf("config mutation durable commit failed at %s: %v; rollback failed: %v; disk may differ from relay/live state", stage, e.Err, e.RollbackErr)
+	}
+	return fmt.Sprintf("config mutation durable commit failed at %s: %v; file rollback succeeded", stage, e.Err)
+}
+
+func (e *configMutationDurabilityError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type configMutationCommitRequest struct {
+	BaseHash           string
+	RestartDelayMS     int
+	ExpectedVersion    int
+	ExpectedVersionSet bool
+	ExpectedEvent      string
+	SkipIfUnchanged    bool
+	BuildNext          func(current state.ConfigDoc) (state.ConfigDoc, error)
+	PrepareNext        func(current, next state.ConfigDoc) (state.ConfigDoc, error)
+}
+
+type configMutationCommitResult struct {
+	Current        state.ConfigDoc
+	Next           state.ConfigDoc
+	RuntimeApplied bool
+	RestartPending bool
+}
+
+func commitRuntimeConfigMutation(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req configMutationCommitRequest) (configMutationCommitResult, error) {
+	if docsRepo == nil {
+		return configMutationCommitResult{}, fmt.Errorf("config repository is not configured")
+	}
+	if configState == nil {
+		return configMutationCommitResult{}, fmt.Errorf("runtime config state is not configured")
+	}
+	if req.BuildNext == nil {
+		return configMutationCommitResult{}, fmt.Errorf("config mutation builder is not configured")
+	}
+
+	result, err := commitRuntimeConfigMutationLocked(ctx, docsRepo, configState, req)
+	if err != nil {
+		return configMutationCommitResult{}, err
+	}
+	result.RestartPending = scheduleRestartIfNeeded(result.Current, result.Next, req.RestartDelayMS)
+	return result, nil
+}
+
+func commitRuntimeConfigMutationLocked(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req configMutationCommitRequest) (configMutationCommitResult, error) {
+	runtimeConfigCommitMu.Lock()
+	defer runtimeConfigCommitMu.Unlock()
+
+	current := policy.NormalizeConfig(configState.Get())
+	if req.ExpectedVersionSet || strings.TrimSpace(req.ExpectedEvent) != "" {
+		if err := checkConfigMutationPreconditions(ctx, docsRepo, req); err != nil {
+			return configMutationCommitResult{}, err
+		}
+	}
+
+	next, err := req.BuildNext(current)
+	if err != nil {
+		return configMutationCommitResult{}, err
+	}
+	if err := methods.CheckBaseHash(current, req.BaseHash); err != nil {
+		return configMutationCommitResult{}, err
+	}
+	next = policy.NormalizeConfig(next)
+	if req.PrepareNext != nil {
+		next, err = req.PrepareNext(current, next)
+		if err != nil {
+			return configMutationCommitResult{}, err
+		}
+		next = policy.NormalizeConfig(next)
+	}
+	if err := policy.ValidateConfig(next); err != nil {
+		return configMutationCommitResult{}, err
+	}
+	if req.SkipIfUnchanged && current.Hash() == next.Hash() {
+		return configMutationCommitResult{Current: current, Next: next}, nil
+	}
+	if err := persistRuntimeConfigFile(next); err != nil {
+		return configMutationCommitResult{}, err
+	}
+	if _, err := docsRepo.PutConfig(ctx, next); err != nil {
+		rollbackErr := persistRuntimeConfigFile(current)
+		return configMutationCommitResult{}, &configMutationDurabilityError{
+			Stage:       "repo_persist",
+			Err:         err,
+			RollbackErr: rollbackErr,
+			Partial:     rollbackErr != nil,
+		}
+	}
+
+	result := configMutationCommitResult{Current: current, Next: next}
+	if configState.Get().Hash() != next.Hash() {
+		configState.Set(next)
+		result.RuntimeApplied = true
+	}
+	return result, nil
+}
+
+func checkConfigMutationPreconditions(ctx context.Context, docsRepo *state.DocsRepository, req configMutationCommitRequest) error {
+	expectedEvent := strings.TrimSpace(req.ExpectedEvent)
+	current, evt, err := docsRepo.GetConfigWithEvent(ctx)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			if req.ExpectedVersionSet && req.ExpectedVersion == 0 && expectedEvent == "" {
+				return nil
+			}
+			return &methods.PreconditionConflictError{
+				Resource:        "config",
+				ExpectedVersion: req.ExpectedVersion,
+				CurrentVersion:  0,
+				ExpectedEvent:   expectedEvent,
+			}
+		}
+		return err
+	}
+	if req.ExpectedVersionSet {
+		if req.ExpectedVersion == 0 || current.Version != req.ExpectedVersion {
+			return &methods.PreconditionConflictError{
+				Resource:        "config",
+				ExpectedVersion: req.ExpectedVersion,
+				CurrentVersion:  current.Version,
+				ExpectedEvent:   expectedEvent,
+				CurrentEvent:    evt.ID,
+			}
+		}
+	}
+	if expectedEvent != "" && evt.ID != expectedEvent {
+		return &methods.PreconditionConflictError{
+			Resource:        "config",
+			ExpectedVersion: req.ExpectedVersion,
+			CurrentVersion:  current.Version,
+			ExpectedEvent:   expectedEvent,
+			CurrentEvent:    evt.ID,
+		}
+	}
+	return nil
+}
+
+func applyRuntimeConfigReloadIfChanged(configState *runtimeConfigStore, doc state.ConfigDoc, apply func(state.ConfigDoc)) bool {
+	if configState == nil || apply == nil {
+		return false
+	}
+	doc = policy.NormalizeConfig(doc)
+	runtimeConfigCommitMu.Lock()
+	defer runtimeConfigCommitMu.Unlock()
+	if configState.Get().Hash() == doc.Hash() {
+		return false
+	}
+	apply(doc)
+	return true
+}
 
 func (h controlRPCHandler) handleConfigRPC(ctx context.Context, in nostruntime.ControlRPCInbound, method string, cfg state.ConfigDoc) (nostruntime.ControlRPCResult, bool, error) {
 	dmBus := h.deps.dmBus
@@ -133,73 +308,27 @@ func (h controlRPCHandler) handleConfigRPC(ctx context.Context, in nostruntime.C
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if req.ExpectedVersionSet || req.ExpectedEvent != "" {
-			current, evt, err := docsRepo.GetConfigWithEvent(ctx)
-			if err != nil {
-				if errors.Is(err, state.ErrNotFound) {
-					if req.ExpectedVersionSet && req.ExpectedVersion == 0 && req.ExpectedEvent == "" {
-						goto controlConfigPreconditionsSatisfied
-					}
-					return nostruntime.ControlRPCResult{}, true, &methods.PreconditionConflictError{
-						Resource:        "config",
-						ExpectedVersion: req.ExpectedVersion,
-						CurrentVersion:  0,
-						ExpectedEvent:   req.ExpectedEvent,
-					}
+		commit, err := commitRuntimeConfigMutation(ctx, docsRepo, configState, configMutationCommitRequest{
+			BaseHash:           req.BaseHash,
+			ExpectedVersion:    req.ExpectedVersion,
+			ExpectedVersionSet: req.ExpectedVersionSet,
+			ExpectedEvent:      req.ExpectedEvent,
+			BuildNext: func(current state.ConfigDoc) (state.ConfigDoc, error) {
+				return req.Config, nil
+			},
+			PrepareNext: func(current, next state.ConfigDoc) (state.ConfigDoc, error) {
+				newVersion := 1
+				if req.ExpectedVersionSet && req.ExpectedVersion > 0 {
+					newVersion = req.ExpectedVersion + 1
 				}
-				return nostruntime.ControlRPCResult{}, true, err
-			}
-			if req.ExpectedVersionSet {
-				if req.ExpectedVersion == 0 {
-					return nostruntime.ControlRPCResult{}, true, &methods.PreconditionConflictError{
-						Resource:        "config",
-						ExpectedVersion: req.ExpectedVersion,
-						CurrentVersion:  current.Version,
-						ExpectedEvent:   req.ExpectedEvent,
-						CurrentEvent:    evt.ID,
-					}
-				} else if current.Version != req.ExpectedVersion {
-					return nostruntime.ControlRPCResult{}, true, &methods.PreconditionConflictError{
-						Resource:        "config",
-						ExpectedVersion: req.ExpectedVersion,
-						CurrentVersion:  current.Version,
-						ExpectedEvent:   req.ExpectedEvent,
-						CurrentEvent:    evt.ID,
-					}
-				}
-			}
-			if req.ExpectedEvent != "" && evt.ID != req.ExpectedEvent {
-				return nostruntime.ControlRPCResult{}, true, &methods.PreconditionConflictError{
-					Resource:        "config",
-					ExpectedVersion: req.ExpectedVersion,
-					CurrentVersion:  current.Version,
-					ExpectedEvent:   req.ExpectedEvent,
-					CurrentEvent:    evt.ID,
-				}
-			}
-		}
-	controlConfigPreconditionsSatisfied:
-		req.Config = policy.NormalizeConfig(req.Config)
-		if err := methods.CheckBaseHash(cfg, req.BaseHash); err != nil {
+				next.Version = newVersion
+				return next, nil
+			},
+		})
+		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if err := policy.ValidateConfig(req.Config); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		newVersion := 1
-		if req.ExpectedVersionSet && req.ExpectedVersion > 0 {
-			newVersion = req.ExpectedVersion + 1
-		}
-		req.Config.Version = newVersion
-		if err := persistRuntimeConfigFile(req.Config); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		if _, err := docsRepo.PutConfig(ctx, req.Config); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		configState.Set(req.Config)
-		restartPending := scheduleRestartIfNeeded(cfg, req.Config, 0)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": req.Config.Hash(), "restart_pending": restartPending}}, true, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": commit.Next.Hash(), "restart_pending": commit.RestartPending}}, true, nil
 	case methods.MethodConfigSet:
 		req, err := methods.DecodeConfigSetParams(in.Params)
 		if err != nil {
@@ -209,26 +338,16 @@ func (h controlRPCHandler) handleConfigRPC(ctx context.Context, in nostruntime.C
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		next, err := methods.ApplyConfigSet(cfg, req.Key, req.Value)
+		commit, err := commitRuntimeConfigMutation(ctx, docsRepo, configState, configMutationCommitRequest{
+			BaseHash: req.BaseHash,
+			BuildNext: func(current state.ConfigDoc) (state.ConfigDoc, error) {
+				return methods.ApplyConfigSet(current, req.Key, req.Value)
+			},
+		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if err := methods.CheckBaseHash(cfg, req.BaseHash); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		next = policy.NormalizeConfig(next)
-		if err := policy.ValidateConfig(next); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		if err := persistRuntimeConfigFile(next); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		if _, err := docsRepo.PutConfig(ctx, next); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		configState.Set(next)
-		restartPending := scheduleRestartIfNeeded(cfg, next, 0)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash(), "restart_pending": restartPending}}, true, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": commit.Next.Hash(), "restart_pending": commit.RestartPending}}, true, nil
 	case methods.MethodConfigApply:
 		req, err := methods.DecodeConfigApplyParams(in.Params)
 		if err != nil {
@@ -238,22 +357,17 @@ func (h controlRPCHandler) handleConfigRPC(ctx context.Context, in nostruntime.C
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if err := methods.CheckBaseHash(cfg, req.BaseHash); err != nil {
+		commit, err := commitRuntimeConfigMutation(ctx, docsRepo, configState, configMutationCommitRequest{
+			BaseHash:       req.BaseHash,
+			RestartDelayMS: req.RestartDelayMS,
+			BuildNext: func(current state.ConfigDoc) (state.ConfigDoc, error) {
+				return req.Config, nil
+			},
+		})
+		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		next := policy.NormalizeConfig(req.Config)
-		if err := policy.ValidateConfig(next); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		if err := persistRuntimeConfigFile(next); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		if _, err := docsRepo.PutConfig(ctx, next); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		configState.Set(next)
-		restartPending := scheduleRestartIfNeeded(cfg, next, req.RestartDelayMS)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash(), "restart_pending": restartPending}}, true, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": commit.Next.Hash(), "restart_pending": commit.RestartPending}}, true, nil
 	case methods.MethodConfigPatch:
 		req, err := methods.DecodeConfigPatchParams(in.Params)
 		if err != nil {
@@ -263,26 +377,17 @@ func (h controlRPCHandler) handleConfigRPC(ctx context.Context, in nostruntime.C
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		next, err := methods.ApplyConfigPatch(cfg, req.Patch)
+		commit, err := commitRuntimeConfigMutation(ctx, docsRepo, configState, configMutationCommitRequest{
+			BaseHash:       req.BaseHash,
+			RestartDelayMS: req.RestartDelayMS,
+			BuildNext: func(current state.ConfigDoc) (state.ConfigDoc, error) {
+				return methods.ApplyConfigPatch(current, req.Patch)
+			},
+		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		if err := methods.CheckBaseHash(cfg, req.BaseHash); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		next = policy.NormalizeConfig(next)
-		if err := policy.ValidateConfig(next); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		if err := persistRuntimeConfigFile(next); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		if _, err := docsRepo.PutConfig(ctx, next); err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
-		configState.Set(next)
-		restartPending := scheduleRestartIfNeeded(cfg, next, req.RestartDelayMS)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": next.Hash(), "restart_pending": restartPending}}, true, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "hash": commit.Next.Hash(), "restart_pending": commit.RestartPending}}, true, nil
 	case methods.MethodConfigSchema:
 		return nostruntime.ControlRPCResult{Result: methods.ConfigSchema(cfg)}, true, nil
 	case methods.MethodConfigSchemaLookup:
