@@ -365,14 +365,13 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		b.emitErr(fmt.Errorf("rejected invalid event from relay=%s", re.Relay.URL))
 		return
 	}
-	now := time.Now().Unix()
-	const maxFutureSkewSeconds = 30
-	if int64(re.Event.CreatedAt) > now+maxFutureSkewSeconds {
+	now := time.Now()
+	if timestampTooFarFuture(int64(re.Event.CreatedAt), now, inboundEventMaxFutureSkew) {
 		b.emitErr(fmt.Errorf("rejected future dm event relay=%s", re.Relay.URL))
 		return
 	}
 	if b.replayWindow > 0 {
-		if int64(re.Event.CreatedAt) < now-int64(b.replayWindow.Seconds()) {
+		if timestampTooOld(int64(re.Event.CreatedAt), now, b.replayWindow) {
 			// Too old/replayed; drop after signature validation.
 			return
 		}

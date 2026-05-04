@@ -150,6 +150,7 @@ func TestHandleInboundCacheableDuplicateReplaysBeforeThrottleAndExpiry(t *testin
 	responderPub := mustControlPubKey(t, responder)
 	callerPub := mustControlPubKey(t, caller).Hex()
 	requestID := "req-replay"
+	paramsHash := controlRequestParamsHash(json.RawMessage(`{"probe":true}`))
 	cacheKey := callerPub + ":" + requestID
 	seededLast := time.Now()
 	lookupCalls := 0
@@ -173,12 +174,15 @@ func TestHandleInboundCacheableDuplicateReplaysBeforeThrottleAndExpiry(t *testin
 		callerLastRequest: map[string]time.Time{callerPub: seededLast},
 		cachedLookup: func(gotCaller string, gotRequestID string) (ControlRPCCachedResponse, bool) {
 			lookupCalls++
-			if gotCaller != callerPub || gotRequestID != requestID {
-				t.Fatalf("unexpected lookup args caller=%s req=%s", gotCaller, gotRequestID)
+			if gotCaller != callerPub {
+				t.Fatalf("unexpected lookup caller=%s", gotCaller)
+			}
+			if gotRequestID != requestID {
+				return ControlRPCCachedResponse{}, false
 			}
 			return ControlRPCCachedResponse{
 				Payload: `{"result":{"ok":true}}`,
-				Tags:    nostr.Tags{{"req", gotRequestID}, {"p", gotCaller}, {"status", "ok"}},
+				Tags:    nostr.Tags{{"req", gotRequestID}, {"p", gotCaller}, {"status", "ok"}, {"method", "status.get"}, {"params_sha256", paramsHash}},
 			}, true
 		},
 	}
@@ -187,8 +191,8 @@ func TestHandleInboundCacheableDuplicateReplaysBeforeThrottleAndExpiry(t *testin
 	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now().Add(-1*time.Hour), requestID, "status.get")
 	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{}})
 
-	if lookupCalls != 1 {
-		t.Fatalf("expected cached lookup before throttle/expiry, got %d calls", lookupCalls)
+	if lookupCalls != 2 {
+		t.Fatalf("expected exact-event then request-id cached lookups before throttle/expiry, got %d calls", lookupCalls)
 	}
 	if got := b.callerLastRequest[callerPub]; !got.Equal(seededLast) {
 		t.Fatalf("expected throttle state unchanged on cached replay, got %v want %v", got, seededLast)
@@ -227,8 +231,8 @@ func TestHandleInboundCacheableRequestChecksCacheBeforeExpiry(t *testing.T) {
 		callerLastRequest: map[string]time.Time{},
 		cachedLookup: func(gotCaller string, gotRequestID string) (ControlRPCCachedResponse, bool) {
 			lookupCalls++
-			if gotCaller != callerPub || gotRequestID != requestID {
-				t.Fatalf("unexpected lookup args caller=%s req=%s", gotCaller, gotRequestID)
+			if gotCaller != callerPub {
+				t.Fatalf("unexpected lookup caller=%s", gotCaller)
 			}
 			return ControlRPCCachedResponse{}, false
 		},
@@ -238,8 +242,8 @@ func TestHandleInboundCacheableRequestChecksCacheBeforeExpiry(t *testing.T) {
 	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now().Add(-1*time.Hour), requestID, "status.get")
 	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{}})
 
-	if lookupCalls != 1 {
-		t.Fatalf("expected cached lookup before expiry rejection, got %d calls", lookupCalls)
+	if lookupCalls != 2 {
+		t.Fatalf("expected exact-event and request-id cache lookups before expiry rejection, got %d calls", lookupCalls)
 	}
 	if onReqCalls != 0 {
 		t.Fatalf("expected expired request to skip request handler, got %d calls", onReqCalls)
@@ -908,4 +912,176 @@ func TestControlBus_MarkSeen(t *testing.T) {
 	if _, ok := bus.seenSet["id1"]; ok {
 		t.Error("id1 should have been evicted")
 	}
+}
+
+func TestHandleInboundEventReplayOnlyUsesExactEventCacheBeforeThrottleAndExpiry(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	callerPub := mustControlPubKey(t, caller).Hex()
+	requestID := "req-mutating"
+	seededLast := time.Now()
+	onReqCalls := 0
+	lookupCalls := 0
+	b := &ControlRPCBus{
+		pool:   NewPoolNIP42(responder),
+		keyer:  responder,
+		public: responderPub,
+		ctx:    context.Background(),
+		onReq: func(context.Context, ControlRPCInbound) (ControlRPCResult, error) {
+			onReqCalls++
+			return ControlRPCResult{}, nil
+		},
+		onError:           func(error) {},
+		maxReqAge:         time.Second,
+		minCallerInterval: time.Hour,
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{callerPub: seededLast},
+		cachedLookup: func(gotCaller string, gotReplayID string) (ControlRPCCachedResponse, bool) {
+			lookupCalls++
+			if gotCaller != callerPub {
+				t.Fatalf("unexpected lookup caller=%s", gotCaller)
+			}
+			return ControlRPCCachedResponse{Payload: `{"result":{"ok":true}}`, Tags: nostr.Tags{{"req", requestID}, {"status", "ok"}}}, true
+		},
+	}
+	defer b.pool.Close("test done")
+
+	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now().Add(-time.Hour), requestID, "config.set")
+	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{}})
+
+	if lookupCalls != 1 {
+		t.Fatalf("expected exact-event lookup only for mutating replay, got %d", lookupCalls)
+	}
+	if onReqCalls != 0 {
+		t.Fatalf("expected exact-event replay to skip handler, got %d calls", onReqCalls)
+	}
+	if got := b.callerLastRequest[callerPub]; !got.Equal(seededLast) {
+		t.Fatalf("expected throttle state unchanged on event replay, got %v want %v", got, seededLast)
+	}
+}
+
+func TestHandleInboundEventReplayOnlySkipsRequestIDReplay(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	callerPub := mustControlPubKey(t, caller).Hex()
+	requestID := "req-mutating-no-replay"
+	lookupCalls := 0
+	onReqCalls := 0
+	b := &ControlRPCBus{
+		pool:   NewPoolNIP42(responder),
+		keyer:  responder,
+		public: responderPub,
+		ctx:    context.Background(),
+		onReq: func(context.Context, ControlRPCInbound) (ControlRPCResult, error) {
+			onReqCalls++
+			return ControlRPCResult{}, nil
+		},
+		onError:           func(error) {},
+		maxReqAge:         time.Second,
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{},
+		cachedLookup: func(gotCaller string, gotReplayID string) (ControlRPCCachedResponse, bool) {
+			lookupCalls++
+			if gotCaller != callerPub {
+				t.Fatalf("unexpected lookup caller=%s", gotCaller)
+			}
+			if gotReplayID == requestID {
+				t.Fatalf("mutating method must not use request-id replay lookup")
+			}
+			return ControlRPCCachedResponse{}, false
+		},
+	}
+	defer b.pool.Close("test done")
+
+	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now().Add(-time.Hour), requestID, "config.set")
+	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{}})
+
+	if lookupCalls != 1 {
+		t.Fatalf("expected exact-event lookup only, got %d", lookupCalls)
+	}
+	if onReqCalls != 0 {
+		t.Fatalf("expected expired mutating request to skip handler, got %d", onReqCalls)
+	}
+}
+
+func TestHandleInboundRequestIDReplayFingerprintMismatchFailsClosed(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	callerPub := mustControlPubKey(t, caller).Hex()
+	requestID := "req-collision"
+	lookupCalls := 0
+	onReqCalls := 0
+	b := &ControlRPCBus{
+		pool:   NewPoolNIP42(responder),
+		keyer:  responder,
+		public: responderPub,
+		ctx:    context.Background(),
+		onReq: func(context.Context, ControlRPCInbound) (ControlRPCResult, error) {
+			onReqCalls++
+			return ControlRPCResult{}, nil
+		},
+		onError:           func(error) {},
+		maxReqAge:         time.Minute,
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{},
+		cachedLookup: func(gotCaller string, gotReplayID string) (ControlRPCCachedResponse, bool) {
+			lookupCalls++
+			if gotCaller != callerPub {
+				t.Fatalf("unexpected lookup caller=%s", gotCaller)
+			}
+			if gotReplayID != requestID {
+				return ControlRPCCachedResponse{}, false
+			}
+			return ControlRPCCachedResponse{Payload: `{"result":{"ok":true}}`, Tags: nostr.Tags{{"req", requestID}, {"method", "config.get"}, {"params_sha256", "wrong"}}}, true
+		},
+	}
+	defer b.pool.Close("test done")
+
+	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now(), requestID, "status.get")
+	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{}})
+
+	if lookupCalls != 2 {
+		t.Fatalf("expected exact-event and request-id lookups, got %d", lookupCalls)
+	}
+	if onReqCalls != 0 {
+		t.Fatalf("fingerprint mismatch must fail closed before handler, got %d calls", onReqCalls)
+	}
+	if _, ok := b.callerLastRequest[callerPub]; ok {
+		t.Fatal("fingerprint mismatch should not update throttle state")
+	}
+}
+
+func TestStartControlRPCBusDefaultAndDisabledMaxRequestAge(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b, err := StartControlRPCBus(ctx, ControlRPCBusOptions{Keyer: responder, Relays: []string{"wss://relay.example"}})
+	if err != nil {
+		t.Fatalf("StartControlRPCBus: %v", err)
+	}
+	if b.maxReqAge != defaultControlRequestMaxAge {
+		t.Fatalf("default maxReqAge=%s want %s", b.maxReqAge, defaultControlRequestMaxAge)
+	}
+	b.Close()
+
+	b, err = StartControlRPCBus(ctx, ControlRPCBusOptions{Keyer: responder, Relays: []string{"wss://relay.example"}, MaxRequestAge: -1})
+	if err != nil {
+		t.Fatalf("StartControlRPCBus disabled age: %v", err)
+	}
+	if b.maxReqAge != -1 {
+		t.Fatalf("disabled maxReqAge=%s want -1", b.maxReqAge)
+	}
+	b.Close()
 }

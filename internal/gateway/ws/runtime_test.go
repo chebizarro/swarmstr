@@ -83,7 +83,7 @@ func TestHandshakeRejectsInvalidToken(t *testing.T) {
 	}
 }
 
-func TestTrustedProxyAuthAllowsTokenBypass(t *testing.T) {
+func TestTrustedProxyAuthAllowsMissingToken(t *testing.T) {
 	r := &Runtime{
 		opts: RuntimeOptions{
 			Token:                "secret",
@@ -111,11 +111,69 @@ func TestTrustedProxyAuthAllowsTokenBypass(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 
 	nonce := readChallengeNonce(t, ctx, conn)
-	writeConnect(t, ctx, conn, "wrong", nonce)
+	writeConnect(t, ctx, conn, "", nonce)
 
 	res := readUntilResponse(t, ctx, conn)
 	if ok, _ := res["ok"].(bool); !ok {
-		t.Fatalf("expected trusted-proxy bypass auth success, got %#v", res)
+		t.Fatalf("expected trusted-proxy auth success, got %#v", res)
+	}
+}
+
+func TestEvaluateAuthTrustedProxyOverridesTokenOutcomes(t *testing.T) {
+	r := &Runtime{opts: RuntimeOptions{Token: "secret", TrustedProxies: []string{"10.0.0.0/8"}}}
+	connect := protocol.ConnectParams{Auth: &protocol.ConnectAuth{Token: "wrong"}}
+	req := httptest.NewRequest(http.MethodGet, "http://example/ws", nil)
+	req.RemoteAddr = "10.1.2.3:1234"
+	req.Header.Set("X-Metiq-Trusted-Auth", "true")
+	req.Header.Set("X-Metiq-Proxy-User", "proxy-user")
+
+	decision := r.evaluateAuth(req, connect)
+	if !decision.OK || decision.Method != "trusted-proxy" {
+		t.Fatalf("unexpected auth decision: %+v", decision)
+	}
+
+	connect.Auth.Token = ""
+	decision = r.evaluateAuth(req, connect)
+	if !decision.OK || decision.Method != "trusted-proxy" {
+		t.Fatalf("unexpected auth decision for missing token: %+v", decision)
+	}
+}
+
+func TestEvaluateAuthRejectsSpoofedProxyHeadersFromUntrustedRemote(t *testing.T) {
+	r := &Runtime{opts: RuntimeOptions{Token: "secret", TrustedProxies: []string{"10.0.0.0/8"}}}
+	connect := protocol.ConnectParams{Auth: &protocol.ConnectAuth{Token: ""}}
+	req := httptest.NewRequest(http.MethodGet, "http://example/ws", nil)
+	req.RemoteAddr = "192.168.1.15:9999"
+	req.Header.Set("X-Metiq-Trusted-Auth", "true")
+	req.Header.Set("X-Metiq-Proxy-User", "proxy-user")
+
+	decision := r.evaluateAuth(req, connect)
+	if decision.OK || decision.Code != "AUTH_TOKEN_MISSING" {
+		t.Fatalf("unexpected auth decision: %+v", decision)
+	}
+}
+
+func TestEvaluateAuthRejectsTrustedProxyWithoutProxyUser(t *testing.T) {
+	r := &Runtime{opts: RuntimeOptions{Token: "secret", TrustedProxies: []string{"10.0.0.0/8"}}}
+	connect := protocol.ConnectParams{Auth: &protocol.ConnectAuth{Token: "wrong"}}
+	req := httptest.NewRequest(http.MethodGet, "http://example/ws", nil)
+	req.RemoteAddr = "10.1.2.3:1234"
+	req.Header.Set("X-Metiq-Trusted-Auth", "true")
+
+	decision := r.evaluateAuth(req, connect)
+	if decision.OK || decision.Code != "AUTH_TOKEN_MISMATCH" {
+		t.Fatalf("unexpected auth decision: %+v", decision)
+	}
+}
+
+func TestControlPrincipalPrefersTrustedProxyOverNIP98Header(t *testing.T) {
+	r := &Runtime{opts: RuntimeOptions{HandshakeTTL: 2 * time.Second}}
+	req := httptest.NewRequest(http.MethodGet, "http://example/ws", nil)
+	req.Header.Set("Authorization", "Nostr something")
+	req.Header.Set("X-Metiq-Proxy-User", "Proxy-User")
+	principal := r.controlPrincipal(req, protocol.ConnectParams{}, authDecision{OK: true, Method: "trusted-proxy"})
+	if !principal.Authenticated || principal.Method != "trusted-proxy" || principal.PubKey != "proxy-user" {
+		t.Fatalf("unexpected principal: %+v", principal)
 	}
 }
 

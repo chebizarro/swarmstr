@@ -535,14 +535,14 @@ func (r *Runtime) evaluateAuth(req *http.Request, connect protocol.ConnectParams
 	}
 	configuredToken := strings.TrimSpace(r.opts.Token)
 	if configuredToken != "" {
+		if r.isTrustedProxyAuth(req) {
+			return authDecision{OK: true, Method: "trusted-proxy"}
+		}
 		if subtle.ConstantTimeCompare([]byte(token), []byte(configuredToken)) == 1 {
 			return authDecision{OK: true, Method: "token"}
 		}
 		if token == "" {
 			return authDecision{Reason: "token_missing", Code: "AUTH_TOKEN_MISSING"}
-		}
-		if r.isTrustedProxyAuth(req) {
-			return authDecision{OK: true, Method: "trusted-proxy"}
 		}
 		return authDecision{Reason: "token_mismatch", Code: "AUTH_TOKEN_MISMATCH"}
 	}
@@ -554,6 +554,12 @@ func (r *Runtime) evaluateAuth(req *http.Request, connect protocol.ConnectParams
 
 func (r *Runtime) controlPrincipal(req *http.Request, connect protocol.ConnectParams, auth authDecision) ControlPrincipal {
 	principal := ControlPrincipal{Authenticated: auth.OK, Method: auth.Method}
+	if auth.Method == "trusted-proxy" {
+		user := strings.TrimSpace(req.Header.Get("X-Metiq-Proxy-User"))
+		principal.PubKey = strings.ToLower(user)
+		principal.Subject = user
+		return principal
+	}
 	if hasNostrAuthorizationHeader(req) {
 		if nip98 := policy.AuthenticateControlCall(req, nil, r.opts.HandshakeTTL); nip98.Authenticated {
 			principal.PubKey = strings.ToLower(strings.TrimSpace(nip98.CallerPubKey))
@@ -561,12 +567,6 @@ func (r *Runtime) controlPrincipal(req *http.Request, connect protocol.ConnectPa
 			principal.Method = "nip98"
 			return principal
 		}
-	}
-	if auth.Method == "trusted-proxy" {
-		user := strings.TrimSpace(req.Header.Get("X-Metiq-Proxy-User"))
-		principal.PubKey = strings.ToLower(user)
-		principal.Subject = user
-		return principal
 	}
 	if hasDeviceIdentity(connect.Device) {
 		principal.Subject = strings.TrimSpace(connect.Device.ID)

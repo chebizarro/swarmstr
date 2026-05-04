@@ -17,6 +17,7 @@ package security
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -73,11 +74,15 @@ func Audit(opts AuditOptions) AuditReport {
 	findings = append(findings, checkBootstrapFilePerms(opts.BootstrapPath)...)
 	findings = append(findings, checkGatewayWSToken(bs)...)
 	findings = append(findings, checkPrivateKeyStrength(bs)...)
+	findings = append(findings, checkGatewayWSTrustedProxyAuth(bs)...)
+	findings = append(findings, checkGatewayWSInsecureControlUI(bs)...)
 
 	findings = append(findings, checkStateDocEncryption(bs, opts.ConfigDoc)...)
 	findings = append(findings, checkPublishGuardPolicy(bs, opts.ConfigDoc)...)
 
 	if opts.ConfigDoc != nil {
+		findings = append(findings, checkControlAuthDisabled(bs, *opts.ConfigDoc)...)
+		findings = append(findings, checkControlLegacyTokenFallback(bs, *opts.ConfigDoc)...)
 		findings = append(findings, checkOpenDMPolicy(*opts.ConfigDoc)...)
 		findings = append(findings, checkChannelSecrets(*opts.ConfigDoc)...)
 	}
@@ -208,6 +213,68 @@ func checkPrivateKeyStrength(bs map[string]any) []Finding {
 	return nil
 }
 
+func checkControlAuthDisabled(bs map[string]any, cfg state.ConfigDoc) []Finding {
+	if cfg.Control.RequireAuth {
+		return nil
+	}
+	severity := SeverityWarn
+	if hasNonLoopbackControlIngress(bs) {
+		severity = SeverityCritical
+	}
+	return []Finding{{
+		CheckID:     "control-auth-disabled",
+		Severity:    severity,
+		Message:     "Control policy authentication is disabled (control.require_auth=false)",
+		Remediation: "Set control.require_auth=true and explicitly grant admin access via control.admins",
+	}}
+}
+
+func checkControlLegacyTokenFallback(bs map[string]any, cfg state.ConfigDoc) []Finding {
+	if !cfg.Control.LegacyTokenFallback {
+		return nil
+	}
+	severity := SeverityWarn
+	if hasNonLoopbackControlIngress(bs) {
+		severity = SeverityCritical
+	}
+	return []Finding{{
+		CheckID:     "control-legacy-token-fallback",
+		Severity:    severity,
+		Message:     "Control policy legacy token fallback is enabled (control.legacy_token_fallback=true)",
+		Remediation: "Disable legacy token fallback and require pubkey-scoped control admins",
+	}}
+}
+
+func checkGatewayWSTrustedProxyAuth(bs map[string]any) []Finding {
+	if !hasTrustedProxies(bs["gateway_ws_trusted_proxies"]) {
+		return nil
+	}
+	return []Finding{{
+		CheckID:  "gateway-ws-trusted-proxy-auth",
+		Severity: SeverityWarn,
+		Message:  "Gateway WS trusted proxy authentication is enabled",
+		Remediation: "Restrict gateway_ws_trusted_proxies to exact proxy CIDRs/IPs, ensure the proxy strips and re-adds X-Metiq-Trusted-Auth/X-Metiq-Proxy-User, " +
+			"and avoid exposing WS directly on the same network path.",
+	}}
+}
+
+func checkGatewayWSInsecureControlUI(bs map[string]any) []Finding {
+	allowInsecure, _ := bs["gateway_ws_allow_insecure_control_ui"].(bool)
+	if !allowInsecure {
+		return nil
+	}
+	severity := SeverityWarn
+	if isNonLoopbackBind(stringValue(bs["gateway_ws_listen_addr"])) {
+		severity = SeverityCritical
+	}
+	return []Finding{{
+		CheckID:     "gateway-ws-insecure-control-ui",
+		Severity:    severity,
+		Message:     "Gateway WS insecure control-ui bypass is enabled (gateway_ws_allow_insecure_control_ui=true)",
+		Remediation: "Disable gateway_ws_allow_insecure_control_ui, or constrain gateway_ws_listen_addr to loopback-only",
+	}}
+}
+
 func checkOpenDMPolicy(cfg state.ConfigDoc) []Finding {
 	if strings.EqualFold(cfg.DM.Policy, "open") {
 		return []Finding{{
@@ -304,6 +371,59 @@ func checkPublishGuardPolicy(bs map[string]any, cfg *state.ConfigDoc) []Finding 
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+func hasNonLoopbackControlIngress(bs map[string]any) bool {
+	if isNonLoopbackBind(stringValue(bs["admin_listen_addr"])) {
+		return true
+	}
+	return isNonLoopbackBind(stringValue(bs["gateway_ws_listen_addr"]))
+}
+
+func isNonLoopbackBind(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	} else if idx := strings.LastIndex(addr, ":"); idx >= 0 {
+		host = addr[:idx]
+	}
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	if host == "" || host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback()
+	}
+	return true
+}
+
+func stringValue(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+func hasTrustedProxies(v any) bool {
+	switch value := v.(type) {
+	case string:
+		return strings.TrimSpace(value) != ""
+	case []string:
+		for _, item := range value {
+			if strings.TrimSpace(item) != "" {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range value {
+			if strings.TrimSpace(stringValue(item)) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func loadBootstrapRaw(path string) map[string]any {
 	if path == "" {

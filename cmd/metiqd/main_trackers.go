@@ -11,6 +11,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
+	"metiq/internal/gateway/controlreplay"
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/policy"
@@ -451,6 +452,15 @@ func newControlTracker(doc state.CheckpointDoc) *controlTracker {
 			t.responseOrder = append(t.responseOrder, key)
 		}
 		t.responses[key] = entry
+		if eventID := controlResponseDocFirstTagValue(entry.Tags, "e"); eventID != "" && eventID != requestID {
+			alias := entry
+			alias.RequestID = eventID
+			aliasKey := controlResponseCacheKey(callerPubKey, eventID)
+			if _, exists := t.responses[aliasKey]; !exists {
+				t.responseOrder = append(t.responseOrder, aliasKey)
+			}
+			t.responses[aliasKey] = alias
+		}
 	}
 	t.pruneResponsesLocked(nowUnix)
 	return t
@@ -511,17 +521,28 @@ func (t *controlTracker) MarkHandled(ctx context.Context, repo *state.DocsReposi
 	t.lastEvent, t.lastUnix, t.recentEventIDs = checkpointAdvanceState(t.lastEvent, t.lastUnix, t.recentEventIDs, handled.EventID, eventUnix)
 	callerPubKey := strings.TrimSpace(handled.CallerPubKey)
 	requestID := strings.TrimSpace(handled.RequestID)
-	if callerPubKey != "" && requestID != "" && isCacheableControlMethod(handled.Method) {
-		key := controlResponseCacheKey(callerPubKey, requestID)
-		if _, exists := t.responses[key]; !exists {
-			t.responseOrder = append(t.responseOrder, key)
-		}
-		t.responses[key] = state.ControlResponseCacheDoc{
-			CallerPubKey: callerPubKey,
-			RequestID:    requestID,
-			Payload:      handled.Response.Payload,
-			Tags:         controlResponseDocTags(handled.Response.Tags),
-			EventUnix:    eventUnix,
+	replayPolicy := controlreplay.MethodPolicy(handled.Method)
+	legacyRequestOnly := false
+	if strings.TrimSpace(handled.Method) == "" {
+		// Older in-process callers/tests did not carry method metadata. Preserve the
+		// legacy request-id cache behavior for those compatibility cases; production
+		// ControlRPCBus now supplies Method for all handled events.
+		replayPolicy = controlreplay.EventAndRequest
+		legacyRequestOnly = true
+	}
+	if callerPubKey != "" && replayPolicy != controlreplay.None {
+		switch replayPolicy {
+		case controlreplay.EventAndRequest:
+			if legacyRequestOnly {
+				t.upsertControlResponseLocked(callerPubKey, requestID, handled.Response, eventUnix)
+			} else {
+				// Safe query methods persist the request-id alias; exact-event replay remains
+				// covered by the same alias when request id defaults to event id, and by
+				// fingerprint-checked request replay otherwise.
+				t.upsertControlResponseLocked(callerPubKey, requestID, handled.Response, eventUnix)
+			}
+		case controlreplay.EventOnly:
+			t.upsertControlResponseLocked(callerPubKey, handled.EventID, handled.Response, eventUnix)
 		}
 	}
 	t.pruneResponsesLocked(nowUnix)
@@ -536,6 +557,25 @@ func (t *controlTracker) MarkHandled(ctx context.Context, repo *state.DocsReposi
 	t.mu.Unlock()
 	_, err := repo.PutCheckpoint(ctx, "control_ingest", checkpoint)
 	return err
+}
+
+func (t *controlTracker) upsertControlResponseLocked(callerPubKey string, replayID string, response nostruntime.ControlRPCCachedResponse, eventUnix int64) {
+	callerPubKey = strings.TrimSpace(callerPubKey)
+	replayID = strings.TrimSpace(replayID)
+	if callerPubKey == "" || replayID == "" {
+		return
+	}
+	key := controlResponseCacheKey(callerPubKey, replayID)
+	if _, exists := t.responses[key]; !exists {
+		t.responseOrder = append(t.responseOrder, key)
+	}
+	t.responses[key] = state.ControlResponseCacheDoc{
+		CallerPubKey: callerPubKey,
+		RequestID:    replayID,
+		Payload:      response.Payload,
+		Tags:         controlResponseDocTags(response.Tags),
+		EventUnix:    eventUnix,
+	}
 }
 
 func (t *controlTracker) pruneResponsesLocked(nowUnix int64) {
@@ -661,12 +701,16 @@ func checkpointAdvanceState(lastEvent string, lastUnix int64, recentEventIDs []s
 }
 
 func isCacheableControlMethod(method string) bool {
-	switch strings.TrimSpace(method) {
-	case methods.MethodSecretsResolve:
-		return false
-	default:
-		return true
+	return methods.ControlMethodReplayPolicy(method) != controlreplay.None
+}
+
+func controlResponseDocFirstTagValue(tags [][]string, key string) string {
+	for _, tag := range tags {
+		if len(tag) >= 2 && tag[0] == key {
+			return strings.TrimSpace(tag[1])
+		}
 	}
+	return ""
 }
 
 func controlResponseDocTags(tags nostr.Tags) [][]string {

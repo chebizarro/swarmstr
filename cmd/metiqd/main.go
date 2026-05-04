@@ -4486,21 +4486,26 @@ func main() {
 			OnRelayUpdate: func(read, write []string) {
 				log.Printf("nip65: applying remote relay list update (read=%d, write=%d)", len(read), len(write))
 
-				// Update the relay selector fallbacks.
-				controlServices.relay.relaySelector.SetFallbacks(read, write)
-
-				// Update the runtime config.
+				// Durably update the runtime config before applying relay side effects.
 				if configState != nil {
-					current := configState.Get()
-					current.Relays.Read = read
-					current.Relays.Write = write
-					if err := persistRuntimeConfigFile(current); err != nil {
-						log.Printf("nip65: config write-back failed: %v", err)
-					} else {
-						configState.Set(current)
+					commit, err := commitRuntimeConfigMutation(ctx, docsRepo, configState, configMutationCommitRequest{
+						SkipIfUnchanged: true,
+						BuildNext: func(current state.ConfigDoc) (state.ConfigDoc, error) {
+							current.Relays.Read = read
+							current.Relays.Write = write
+							return current, nil
+						},
+					})
+					if err != nil {
+						log.Printf("nip65: durable config update failed: %v", err)
+						return
 					}
+					read = append([]string{}, commit.Next.Relays.Read...)
+					write = append([]string{}, commit.Next.Relays.Write...)
 				}
 
+				// Update relay runtime side effects only after durable config convergence.
+				controlServices.relay.relaySelector.SetFallbacks(read, write)
 				allRelays := nostruntime.MergeRelayLists(read, write)
 				controlServices.applyDMRelayPolicy(allRelays)
 				controlServices.applyControlRelayPolicy(allRelays)
@@ -5560,21 +5565,25 @@ func main() {
 				if err != nil {
 					return fmt.Errorf("path=%s err=%w", configFilePath, err)
 				}
-				log.Printf("config file changed: applying live reload path=%s", configFilePath)
-				bumpPromptConfigGeneration()
-				// Use the internal field directly to avoid triggering disk write-back
-				// (the file already has the new content).
-				configState.mu.Lock()
-				configState.cfg = doc
-				configState.mu.Unlock()
-				setRuntimeIdentityInfo(doc, pubkey)
-				applyRuntimeConfigSideEffects(doc)
-				resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
-				applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live file-reload apply")
-				filteredMCPLifecycle.Emit(runtimeEventEmitterFunc(emitControlWSEvent), resolvedMCP, "file-reload.snapshot", time.Now().UnixMilli())
-				wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
-					TS: time.Now().UnixMilli(),
-				})
+				if !applyRuntimeConfigReloadIfChanged(configState, doc, func(doc state.ConfigDoc) {
+					log.Printf("config file changed: applying live reload path=%s", configFilePath)
+					bumpPromptConfigGeneration()
+					// Use the internal field directly to avoid triggering disk write-back
+					// (the file already has the new content).
+					configState.mu.Lock()
+					configState.cfg = doc
+					configState.mu.Unlock()
+					setRuntimeIdentityInfo(doc, pubkey)
+					applyRuntimeConfigSideEffects(doc)
+					resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
+					applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live file-reload apply")
+					filteredMCPLifecycle.Emit(runtimeEventEmitterFunc(emitControlWSEvent), resolvedMCP, "file-reload.snapshot", time.Now().UnixMilli())
+					wsEmitter.Emit(gatewayws.EventConfigUpdated, gatewayws.ConfigUpdatedPayload{
+						TS: time.Now().UnixMilli(),
+					})
+				}) {
+					log.Printf("config file changed: no live reload needed path=%s", configFilePath)
+				}
 				return nil
 			}),
 		)
@@ -5622,9 +5631,21 @@ func main() {
 						log.Printf("SIGHUP reload: invalid config err=%v", validateErr)
 						continue
 					}
-					configState.Set(newDoc)
-					log.Printf("SIGHUP reload: config applied successfully agents=%d relays=%d",
-						len(newDoc.Agents), len(newDoc.Relays.Read))
+					commit, commitErr := commitRuntimeConfigMutation(ctx, docsRepo, configState, configMutationCommitRequest{
+						BuildNext: func(current state.ConfigDoc) (state.ConfigDoc, error) {
+							return newDoc, nil
+						},
+					})
+					if commitErr != nil {
+						log.Printf("SIGHUP reload: durable config apply failed err=%v", commitErr)
+						continue
+					}
+					if commit.RuntimeApplied {
+						log.Printf("SIGHUP reload: config applied successfully agents=%d relays=%d",
+							len(commit.Next.Agents), len(commit.Next.Relays.Read))
+					} else {
+						log.Printf("SIGHUP reload: durable config refreshed; live apply unchanged")
+					}
 				}
 			}
 		}()
@@ -6232,18 +6253,12 @@ func main() {
 					}, nil
 				},
 				PutConfig: func(ctx context.Context, newCfg state.ConfigDoc) error {
-					newCfg = policy.NormalizeConfig(newCfg)
-					if err := policy.ValidateConfig(newCfg); err != nil {
-						return err
-					}
-					if err := persistRuntimeConfigFile(newCfg); err != nil {
-						return err
-					}
-					if _, err := docsRepo.PutConfig(ctx, newCfg); err != nil {
-						return err
-					}
-					configState.Set(newCfg)
-					return nil
+					_, err := commitRuntimeConfigMutation(ctx, docsRepo, configState, configMutationCommitRequest{
+						BuildNext: func(current state.ConfigDoc) (state.ConfigDoc, error) {
+							return newCfg, nil
+						},
+					})
+					return err
 				},
 				ConfigSet: func(ctx context.Context, req methods.ConfigSetRequest) (map[string]any, int, error) {
 					return dispatchAdminControlConfigMutation(ctx, bus.PublicKey(), methods.MethodConfigSet, req, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
@@ -7142,11 +7157,13 @@ func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
 	}
 }
 
+var writeRuntimeConfigFile = config.WriteConfigFile
+
 func persistRuntimeConfigFile(doc state.ConfigDoc) error {
 	if controlServices == nil || strings.TrimSpace(controlServices.handlers.configFilePath) == "" {
 		return nil
 	}
-	return config.WriteConfigFile(controlServices.handlers.configFilePath, doc)
+	return writeRuntimeConfigFile(controlServices.handlers.configFilePath, doc)
 }
 
 func providerOverrideForEntry(name string, pe state.ProviderEntry) agent.ProviderOverride {

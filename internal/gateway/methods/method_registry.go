@@ -3,6 +3,8 @@ package methods
 import (
 	"sort"
 	"strings"
+
+	"metiq/internal/gateway/controlreplay"
 )
 
 type AdminDispatchGroup string
@@ -220,6 +222,18 @@ var adminDispatchRegistry = []struct {
 		MethodACPDispatch,
 		MethodACPPipeline,
 	}},
+}
+
+type ControlReplayPolicy = controlreplay.Policy
+
+const (
+	ControlReplayNone            = controlreplay.None
+	ControlReplayEventOnly       = controlreplay.EventOnly
+	ControlReplayEventAndRequest = controlreplay.EventAndRequest
+)
+
+func ControlMethodReplayPolicy(method string) ControlReplayPolicy {
+	return controlreplay.MethodPolicy(method)
 }
 
 func SupportedMethods() []string {
