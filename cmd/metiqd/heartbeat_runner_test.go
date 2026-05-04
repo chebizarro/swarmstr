@@ -146,6 +146,7 @@ func TestHeartbeatRunnerNextHeartbeatWakeWaitsForSchedule(t *testing.T) {
 }
 
 func TestBuildHeartbeatAgentRunUsesHeartbeatModel(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	withHeartbeatTestGlobals(t, stubHeartbeatRuntime{})
 	cfg := state.ConfigDoc{
 		Agent: state.AgentPolicy{DefaultModel: "gpt-4o"},

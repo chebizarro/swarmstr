@@ -99,7 +99,17 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 
 	method := strings.TrimSpace(in.Method)
 	cfg := configState.Get()
-	decision := policy.EvaluateControlCall(in.FromPubKey, method, true, cfg)
+	internal := in.Internal
+	if !internal && !in.Authenticated && strings.TrimSpace(in.FromPubKey) != "" && !cfg.Control.RequireAuth && in.EventID == "" && in.RequestID == "" && in.RelayURL == "" {
+		// Backward-compatible path for in-process daemon/test dispatchers that
+		// predate explicit auth metadata. Real ingress paths now set either
+		// Authenticated (Nostr/admin/WS principal) or Internal explicitly.
+		internal = true
+	}
+	decision := policy.ControlDecision{Allowed: true, Authenticated: true}
+	if !internal {
+		decision = policy.EvaluateControlCall(in.FromPubKey, method, in.Authenticated, cfg)
+	}
 	if usageState != nil {
 		usageState.RecordControl()
 	}

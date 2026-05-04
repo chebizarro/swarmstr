@@ -21,6 +21,7 @@ import (
 	"github.com/coder/websocket"
 
 	"metiq/internal/gateway/protocol"
+	"metiq/internal/policy"
 )
 
 const (
@@ -334,6 +335,7 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 		_ = conn.Close(websocket.StatusPolicyViolation, "device policy")
 		return
 	}
+	principal := r.controlPrincipal(req, connect, decision)
 
 	c := &client{
 		id:            connID,
@@ -421,7 +423,8 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 			})
 			continue
 		}
-		payload, shape := r.opts.HandleRequest(req.Context(), reqFrame)
+		reqCtx := contextWithControlPrincipal(req.Context(), principal)
+		payload, shape := r.opts.HandleRequest(reqCtx, reqFrame)
 		if shape != nil {
 			c.bumpUnauthorized(shape)
 			_ = writeFrame(req.Context(), conn, map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": false, "error": shape})
@@ -504,6 +507,27 @@ type authDecision struct {
 	Code   string
 }
 
+type ControlPrincipal struct {
+	Authenticated bool
+	PubKey        string
+	Subject       string
+	Method        string
+}
+
+type controlPrincipalContextKey struct{}
+
+func PrincipalFromContext(ctx context.Context) (ControlPrincipal, bool) {
+	if ctx == nil {
+		return ControlPrincipal{}, false
+	}
+	principal, ok := ctx.Value(controlPrincipalContextKey{}).(ControlPrincipal)
+	return principal, ok
+}
+
+func contextWithControlPrincipal(ctx context.Context, principal ControlPrincipal) context.Context {
+	return context.WithValue(ctx, controlPrincipalContextKey{}, principal)
+}
+
 func (r *Runtime) evaluateAuth(req *http.Request, connect protocol.ConnectParams) authDecision {
 	token := ""
 	if connect.Auth != nil {
@@ -526,6 +550,43 @@ func (r *Runtime) evaluateAuth(req *http.Request, connect protocol.ConnectParams
 		return authDecision{OK: true, Method: "trusted-proxy"}
 	}
 	return authDecision{OK: true, Method: "none"}
+}
+
+func (r *Runtime) controlPrincipal(req *http.Request, connect protocol.ConnectParams, auth authDecision) ControlPrincipal {
+	principal := ControlPrincipal{Authenticated: auth.OK, Method: auth.Method}
+	if hasNostrAuthorizationHeader(req) {
+		if nip98 := policy.AuthenticateControlCall(req, nil, r.opts.HandshakeTTL); nip98.Authenticated {
+			principal.PubKey = strings.ToLower(strings.TrimSpace(nip98.CallerPubKey))
+			principal.Subject = principal.PubKey
+			principal.Method = "nip98"
+			return principal
+		}
+	}
+	if auth.Method == "trusted-proxy" {
+		user := strings.TrimSpace(req.Header.Get("X-Metiq-Proxy-User"))
+		principal.PubKey = strings.ToLower(user)
+		principal.Subject = user
+		return principal
+	}
+	if hasDeviceIdentity(connect.Device) {
+		principal.Subject = strings.TrimSpace(connect.Device.ID)
+	}
+	return principal
+}
+
+func hasNostrAuthorizationHeader(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	for _, name := range []string{"X-Nostr-Authorization", "Authorization"} {
+		value := strings.TrimSpace(req.Header.Get(name))
+		if value == "" {
+			continue
+		}
+		parts := strings.SplitN(value, " ", 2)
+		return len(parts) == 2 && strings.EqualFold(parts[0], "nostr")
+	}
+	return false
 }
 
 func (r *Runtime) validateDevicePolicy(req *http.Request, connect protocol.ConnectParams, nonce string, auth authDecision) *protocol.ErrorShape {

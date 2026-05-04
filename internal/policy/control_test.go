@@ -105,6 +105,49 @@ func TestEvaluateControlCallAdminDeniedMethod(t *testing.T) {
 	}
 }
 
+func TestEvaluateControlCallSensitiveMethodsRequireAuthenticatedAdmin(t *testing.T) {
+	cfg := state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false, AllowUnauthMethods: []string{"*", "config.*", "list.put"}}}
+	for _, method := range []string{"config.put", "config.set", "config.apply", "config.patch", "list.put", "secrets.resolve", "node.pending.pull"} {
+		dec := EvaluateControlCall("", method, false, cfg)
+		if dec.Allowed {
+			t.Fatalf("expected unauthenticated %s to be rejected despite permissive config", method)
+		}
+		dec = EvaluateControlCall("deadbeef", method, true, cfg)
+		if dec.Allowed {
+			t.Fatalf("expected authenticated %s to be rejected without configured admin", method)
+		}
+	}
+}
+
+func TestEvaluateControlCallAppliesActualCallerMethodRestrictions(t *testing.T) {
+	cfg := state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: true, Admins: []state.ControlAdmin{
+		{PubKey: "operator-a", Methods: []string{"status.get"}},
+		{PubKey: "operator-b", Methods: []string{"config.set"}},
+	}}}
+	if dec := EvaluateControlCall("operator-a", "status.get", true, cfg); !dec.Allowed {
+		t.Fatalf("operator-a should be allowed status.get: %+v", dec)
+	}
+	if dec := EvaluateControlCall("operator-a", "config.set", true, cfg); dec.Allowed {
+		t.Fatal("operator-a should not inherit config.set")
+	}
+	if dec := EvaluateControlCall("operator-b", "config.set", true, cfg); !dec.Allowed {
+		t.Fatalf("operator-b should be allowed config.set: %+v", dec)
+	}
+}
+
+func TestValidateConfigRejectsUnsafeAllowUnauthMethods(t *testing.T) {
+	for _, method := range []string{"*", "config.*", "config.set", "list.put"} {
+		cfg := state.ConfigDoc{Control: state.ControlPolicy{AllowUnauthMethods: []string{method}}}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Fatalf("expected unsafe allow_unauth_methods entry %q to be rejected", method)
+		}
+	}
+	cfg := state.ConfigDoc{Relays: state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}}, Control: state.ControlPolicy{AllowUnauthMethods: []string{"supportedmethods", "health"}}}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatalf("expected safe allow_unauth_methods to validate: %v", err)
+	}
+}
+
 func buildNIP98AuthHeader(t *testing.T, method, url string, payload []byte, overrides map[string]string) (*http.Request, string, string) {
 	t.Helper()
 	req := httptest.NewRequest(method, url, bytes.NewReader(payload))

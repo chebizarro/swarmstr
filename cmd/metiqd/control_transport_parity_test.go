@@ -305,9 +305,8 @@ func (h *controlTransportParityHarness) callControl(t *testing.T, method string,
 		t.Fatalf("marshal control params: %v", err)
 	}
 	res, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
-		FromPubKey: "parity-caller",
-		Method:     method,
-		Params:     raw,
+		Method: method,
+		Params: raw,
 	}, h.dmBus, nil, nil, nil, nil, nil, h.docsRepo, h.transcriptRepo, nil, h.cfgState, h.tools, nil, h.startedAt)
 	if err != nil {
 		return nil, err.Error()

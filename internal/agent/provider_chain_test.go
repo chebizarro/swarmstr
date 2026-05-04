@@ -3,11 +3,24 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 )
 
 func TestBuildChatProviderForModel_Anthropic(t *testing.T) {
 	cp, err := BuildChatProviderForModel("claude-sonnet-4-5", "test-key", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cp.(*AnthropicChatProvider); !ok {
+		t.Errorf("expected *AnthropicChatProvider, got %T", cp)
+	}
+}
+
+func TestBuildChatProviderForModel_AnthropicOAuthEnv(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	t.Setenv("ANTHROPIC_OAUTH_TOKEN", "sk-ant-oat01-test")
+	cp, err := BuildChatProviderForModel("claude-sonnet-4-5", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +46,42 @@ func TestBuildChatProviderForModel_OpenAI(t *testing.T) {
 	}
 	if _, ok := cp.(*OpenAIChatProviderChat); !ok {
 		t.Errorf("expected *OpenAIChatProviderChat, got %T", cp)
+	}
+}
+
+func TestBuildChatProviderForModel_HostedCredentialsRequired(t *testing.T) {
+	cases := []struct {
+		name    string
+		model   string
+		wantKey string
+	}{
+		{name: "anthropic", model: "claude-sonnet-4-5", wantKey: "ANTHROPIC_API_KEY"},
+		{name: "gemini", model: "gemini-2.0-flash", wantKey: "GEMINI_API_KEY"},
+		{name: "openai", model: "gpt-4o", wantKey: "OPENAI_API_KEY"},
+		{name: "groq", model: "groq", wantKey: "GROQ_API_KEY"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearProviderCredentialEnv(t)
+			_, err := BuildChatProviderForModel(tc.model, "", "")
+			if err == nil {
+				t.Fatalf("expected missing credential error for %s", tc.model)
+			}
+			if !strings.Contains(err.Error(), tc.wantKey) {
+				t.Fatalf("expected error to mention %s, got: %v", tc.wantKey, err)
+			}
+		})
+	}
+}
+
+func TestBuildChatProviderForModel_LocalCompatAllowsMissingCredential(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	cp, err := BuildChatProviderForModel("ollama/llama3", "", "")
+	if err != nil {
+		t.Fatalf("expected local Ollama without API key to work: %v", err)
+	}
+	if _, ok := cp.(*OpenAIChatProviderChat); !ok {
+		t.Fatalf("expected *OpenAIChatProviderChat, got %T", cp)
 	}
 }
 
