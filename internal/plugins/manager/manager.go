@@ -117,7 +117,13 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 			m.log.Error("read plugin script", "plugin", pluginID, "err", err)
 			continue
 		}
-		p, err := runtime.LoadPlugin(ctx, src, m.host)
+		host, err := cloneHostForPlugin(m.host, pluginID)
+		if err != nil {
+			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
+			m.log.Error("build plugin host failed", "plugin", pluginID, "err", err)
+			continue
+		}
+		p, err := runtime.LoadPlugin(ctx, src, host)
 		if err != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
 			m.log.Error("load plugin failed", "plugin", pluginID, "err", err)

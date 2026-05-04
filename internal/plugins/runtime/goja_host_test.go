@@ -198,15 +198,21 @@ func TestLoadPlugin_syntaxError(t *testing.T) {
 	}
 }
 
-func TestLoadPlugin_httpFallback(t *testing.T) {
-	// With no HTTPHost set, the stdlib fallback is used.
-	// We don't do a real HTTP request here; just verify the VM loads fine.
+func TestLoadPlugin_httpMissingHostFailsDeterministically(t *testing.T) {
 	src := `
 exports.manifest = { id: "http-plugin", version: "1.0.0" };
-exports.invoke = function() { return { ok: true }; };
+exports.invoke = function() { return http.get("https://example.com"); };
 `
-	_, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{Log: &stubLog{}, Config: &stubConfig{}})
+	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{Log: &stubLog{}, Config: &stubConfig{}})
 	if err != nil {
-		t.Fatalf("LoadPlugin with nil HTTPHost: %v", err)
+		t.Fatalf("LoadPlugin with nil HTTPHost should still load: %v", err)
+	}
+
+	_, err = p.Invoke(context.Background(), sdk.InvokeRequest{Tool: "x"})
+	if err == nil {
+		t.Fatal("expected invoke to fail when HTTP host is missing")
+	}
+	if !strings.Contains(err.Error(), "http host not available") {
+		t.Fatalf("expected explicit missing HTTP host error, got: %v", err)
 	}
 }

@@ -99,9 +99,11 @@ func TestPublishAndFetchNIP02Contacts_Integration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
+	alicePK := nostr.GetPublicKey(nostr.Generate()).Hex()
+	bobPK := nostr.GetPublicKey(nostr.Generate()).Hex()
 	contacts := []NIP02Contact{
-		{PubKey: "aaaa01234567890abcdef01234567890abcdef01234567890abcdef01234567", Relay: "wss://relay1.example", Petname: "alice"},
-		{PubKey: "bbbb01234567890abcdef01234567890abcdef01234567890abcdef01234567", Relay: "", Petname: "bob"},
+		{PubKey: alicePK, Relay: "wss://relay1.example", Petname: "alice"},
+		{PubKey: bobPK, Relay: "", Petname: "bob"},
 	}
 
 	eventID, err := PublishNIP02ContactList(ctx, pool, kp.Keyer, []string{url}, contacts)
@@ -124,7 +126,7 @@ func TestPublishAndFetchNIP02Contacts_Integration(t *testing.T) {
 	for _, c := range got {
 		contactMap[c.PubKey] = c
 	}
-	if c, ok := contactMap["aaaa01234567890abcdef01234567890abcdef01234567890abcdef01234567"]; !ok {
+	if c, ok := contactMap[alicePK]; !ok {
 		t.Error("missing alice")
 	} else {
 		if c.Petname != "alice" {
@@ -147,6 +149,48 @@ func TestFetchNIP02Contacts_NotFound(t *testing.T) {
 	_, _, err := FetchNIP02Contacts(ctx, pool, []string{url}, kp.PubKeyHex())
 	if err == nil {
 		t.Error("expected error for non-existent contacts")
+	}
+}
+
+func TestFetchNIP02Contacts_IgnoresInvalidContactPubkeys(t *testing.T) {
+	url := testutil.NewTestRelay(t)
+	pool := nostr.NewPool(nostr.PoolOptions{})
+	kp := testutil.NewTestKeyPair(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	evt := nostr.Event{
+		Kind:      3,
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"p", "not-a-pubkey"},
+			{"p", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "wss://relay1.example", "alice"},
+		},
+		Content: "",
+	}
+	if err := kp.Keyer.SignEvent(ctx, &evt); err != nil {
+		t.Fatalf("SignEvent: %v", err)
+	}
+	published := false
+	for res := range pool.PublishMany(ctx, []string{url}, evt) {
+		if res.Error == nil {
+			published = true
+		}
+	}
+	if !published {
+		t.Fatal("expected publish to succeed")
+	}
+
+	contacts, _, err := FetchNIP02Contacts(ctx, pool, []string{url}, kp.PubKeyHex())
+	if err != nil {
+		t.Fatalf("FetchNIP02Contacts: %v", err)
+	}
+	if len(contacts) != 1 {
+		t.Fatalf("expected 1 valid contact, got %d", len(contacts))
+	}
+	if contacts[0].PubKey != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("unexpected pubkey: %s", contacts[0].PubKey)
 	}
 }
 

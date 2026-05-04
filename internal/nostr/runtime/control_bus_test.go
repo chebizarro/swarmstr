@@ -633,6 +633,71 @@ func TestControlBusHealthSeedOnSetRelays(t *testing.T) {
 	}
 }
 
+func TestControlBusHandledAuthClosedIsNotFailure(t *testing.T) {
+	relay := "wss://auth.example"
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	subHealth := NewSubHealthTracker("control-rpc")
+	errCount := 0
+	b := &ControlRPCBus{
+		health:    health,
+		subHealth: subHealth,
+		onError:   func(error) { errCount++ },
+	}
+
+	if b.handleControlRelayClose(relay, "auth-required: sign in", true) {
+		t.Fatal("handled auth CLOSED should not schedule a failure retry")
+	}
+	if errCount != 0 {
+		t.Fatalf("handled auth CLOSED should not emit user-visible errors, got %d", errCount)
+	}
+	snap := subHealth.Snapshot([]string{relay}, ControlRPCResubscribeWindow)
+	if snap.LastClosedReason != "" || snap.LastClosedRelay != "" {
+		t.Fatalf("handled auth CLOSED should not latch sub-health close state: %+v", snap)
+	}
+	if !health.Allowed(relay, time.Now()) {
+		t.Fatal("handled auth CLOSED should not degrade relay health")
+	}
+}
+
+func TestControlBusNonAuthClosedRecordsFailure(t *testing.T) {
+	relay := "wss://closed.example"
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	subHealth := NewSubHealthTracker("control-rpc")
+	var gotErr error
+	b := &ControlRPCBus{
+		health:    health,
+		subHealth: subHealth,
+		onError:   func(err error) { gotErr = err },
+	}
+
+	if !b.handleControlRelayClose(relay, "rate-limited: slow down", false) {
+		t.Fatal("non-auth CLOSED should schedule a retry")
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "rate-limited") {
+		t.Fatalf("expected surfaced close error, got %v", gotErr)
+	}
+	snap := subHealth.Snapshot([]string{relay}, ControlRPCResubscribeWindow)
+	if snap.LastClosedReason != "rate-limited: slow down" || snap.LastClosedRelay != relay {
+		t.Fatalf("sub-health close not recorded: %+v", snap)
+	}
+}
+
+func TestControlBusEOSERecordsRelaySuccess(t *testing.T) {
+	relay := "wss://eose.example"
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	health.RecordFailure(relay)
+	b := &ControlRPCBus{health: health}
+
+	b.handleControlRelayEOSE(relay)
+
+	if !health.Allowed(relay, time.Now()) {
+		t.Fatal("EOSE should be consumed as relay progress, not a subscription failure")
+	}
+}
+
 func TestControlRPCEnvelopeParityFixtures(t *testing.T) {
 	type fixtureCase struct {
 		Name                  string         `json:"name"`

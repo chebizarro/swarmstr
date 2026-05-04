@@ -46,20 +46,6 @@ func withHeartbeatTestGlobals(t *testing.T, rt agent.Runtime) {
 	})
 }
 
-func waitForHeartbeatRun(t *testing.T, ops *operationsRegistry) heartbeatRunnerStatus {
-	t.Helper()
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		status := ops.HeartbeatStatus()
-		if status.LastRunMS > 0 {
-			return status
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for heartbeat run")
-	return heartbeatRunnerStatus{}
-}
-
 func TestHeartbeatRunnerRunsManualWakeWhenPeriodicDisabled(t *testing.T) {
 	withHeartbeatTestGlobals(t, stubHeartbeatRuntime{})
 	ops := newOperationsRegistry()
@@ -76,10 +62,6 @@ func TestHeartbeatRunnerRunsManualWakeWhenPeriodicDisabled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runner.Start(ctx)
-	defer func() {
-		cancel()
-		<-done
-	}()
 
 	select {
 	case run := <-runs:
@@ -92,8 +74,10 @@ func TestHeartbeatRunnerRunsManualWakeWhenPeriodicDisabled(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("expected manual wake to trigger heartbeat run")
 	}
+	cancel()
+	<-done
 
-	status := waitForHeartbeatRun(t, ops)
+	status := ops.HeartbeatStatus()
 	if status.Enabled {
 		t.Fatalf("expected periodic heartbeat to remain disabled, got %#v", status)
 	}
@@ -139,7 +123,9 @@ func TestHeartbeatRunnerNextHeartbeatWakeWaitsForSchedule(t *testing.T) {
 		t.Fatal("expected next-heartbeat wake to run on scheduled interval")
 	}
 
-	status := waitForHeartbeatRun(t, ops)
+	cancel()
+	<-done
+	status := ops.HeartbeatStatus()
 	if !status.Enabled || status.IntervalMS != 80 {
 		t.Fatalf("unexpected heartbeat status after scheduled run: %#v", status)
 	}
@@ -344,6 +330,46 @@ func TestExecuteHeartbeatAgentRunExposesConsumesAndSchedulesStructuredResponse(t
 	}
 	if wakes[0].AgentID != "main" || wakes[0].Mode != "scheduled" || wakes[0].AtMS != wantNext.UnixMilli() {
 		t.Fatalf("unexpected scheduled wake: %#v", wakes[0])
+	}
+}
+
+func TestExecuteHeartbeatAgentRunSkipsConsumeWhenContextCanceledAfterRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rt := agent.Runtime(runtimeFunc(func(context.Context, agent.Turn) (agent.TurnResult, error) {
+		cancel()
+		args := `{"outcome":"progress","notify":true,"summary":"Late result","next_check":"1h"}`
+		return agent.TurnResult{
+			Text: "heartbeat structured response recorded",
+			HistoryDelta: []agent.ConversationMessage{
+				{Role: "assistant", ToolCalls: []agent.ToolCallRef{{ID: "hb1", Name: agent.HeartbeatResponseToolName, ArgsJSON: args}}},
+				{Role: "tool", ToolCallID: "hb1", Content: args},
+				{Role: "assistant", Content: "heartbeat structured response recorded"},
+			},
+		}, nil
+	}))
+	emitter := &capturingEmitter{}
+	ops := newOperationsRegistry()
+	svc := &daemonServices{
+		emitter:       emitter,
+		runtimeConfig: newRuntimeConfigStore(state.ConfigDoc{}),
+		session:       sessionServices{ops: ops},
+	}
+	err := svc.executeHeartbeatAgentRun(ctx, heartbeatAgentRun{
+		AgentID:   "main",
+		SessionID: "heartbeat:main",
+		Prompt:    buildHeartbeatRunnerPrompt("main", nil),
+		Runtime:   rt,
+		TimeoutMS: 1000,
+	})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "canceled") {
+		t.Fatalf("expected cancellation error, got %v", err)
+	}
+	if events := emitter.eventsByName(gatewayws.EventCompatHeartbeat); len(events) != 0 {
+		t.Fatalf("canceled heartbeat should not emit compat heartbeat event, got %d", len(events))
+	}
+	_, wakes, _ := ops.HeartbeatSnapshot()
+	if len(wakes) != 0 {
+		t.Fatalf("canceled heartbeat should not schedule follow-up wakes, got %#v", wakes)
 	}
 }
 

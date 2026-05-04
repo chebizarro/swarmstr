@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,6 +43,48 @@ func (s *stubStorage) Del(_ context.Context, key string) error {
 type stubNostr struct {
 	published []map[string]any
 	events    []map[string]any
+}
+
+type liveHTTPHost struct{}
+
+func (h *liveHTTPHost) Get(ctx context.Context, url string, headers map[string]string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, body, nil
+}
+
+func (h *liveHTTPHost) Post(ctx context.Context, url string, body []byte, headers map[string]string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, respBody, nil
 }
 
 func (s *stubNostr) Publish(_ context.Context, evt map[string]any) error {
@@ -225,75 +269,6 @@ func TestSetStubNamespace_AllMethodsStubbed(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// stdlibHTTPHost tests (Get & Post via httptest)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-func TestStdlibHTTPHost_Get(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-		if r.Header.Get("X-Custom") != "test-val" {
-			t.Errorf("missing custom header")
-		}
-		w.WriteHeader(200)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer srv.Close()
-
-	h := &stdlibHTTPHost{}
-	status, body, err := h.Get(context.Background(), srv.URL, map[string]string{"X-Custom": "test-val"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status != 200 {
-		t.Errorf("status: %d", status)
-	}
-	if string(body) != `{"ok":true}` {
-		t.Errorf("body: %q", body)
-	}
-}
-
-func TestStdlibHTTPHost_Post(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		w.WriteHeader(201)
-		_, _ = w.Write([]byte("created"))
-	}))
-	defer srv.Close()
-
-	h := &stdlibHTTPHost{}
-	status, body, err := h.Post(context.Background(), srv.URL, []byte(`{"data":"x"}`), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status != 201 {
-		t.Errorf("status: %d", status)
-	}
-	if string(body) != "created" {
-		t.Errorf("body: %q", body)
-	}
-}
-
-func TestStdlibHTTPHost_GetInvalidURL(t *testing.T) {
-	h := &stdlibHTTPHost{}
-	_, _, err := h.Get(context.Background(), "://invalid", nil)
-	if err == nil {
-		t.Error("expected error for invalid URL")
-	}
-}
-
-func TestStdlibHTTPHost_PostInvalidURL(t *testing.T) {
-	h := &stdlibHTTPHost{}
-	_, _, err := h.Post(context.Background(), "://invalid", nil, nil)
-	if err == nil {
-		t.Error("expected error for invalid URL")
-	}
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // defaultLogHost tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -327,6 +302,7 @@ exports.invoke = function(tool, args) {
 	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{
 		Log:    &stubLog{},
 		Config: &stubConfig{},
+		HTTP:   &liveHTTPHost{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -366,6 +342,7 @@ exports.invoke = function(tool, args) {
 	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{
 		Log:    &stubLog{},
 		Config: &stubConfig{},
+		HTTP:   &liveHTTPHost{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -431,6 +408,7 @@ exports.invoke = function() {
 	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{
 		Log:    &stubLog{},
 		Config: &stubConfig{},
+		HTTP:   &liveHTTPHost{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -608,6 +586,7 @@ exports.invoke = function() {
 	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{
 		Log:    &stubLog{},
 		Config: &stubConfig{},
+		HTTP:   &liveHTTPHost{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -663,6 +642,7 @@ exports.invoke = function() {
 	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{
 		Log:    &stubLog{},
 		Config: &stubConfig{},
+		HTTP:   &liveHTTPHost{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -829,6 +809,7 @@ exports.invoke = function() {
 	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{
 		Log:    &stubLog{},
 		Config: &stubConfig{},
+		HTTP:   &liveHTTPHost{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -858,6 +839,7 @@ exports.invoke = function() {
 	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{
 		Log:    &stubLog{},
 		Config: &stubConfig{},
+		HTTP:   &liveHTTPHost{},
 	})
 	if err != nil {
 		t.Fatal(err)

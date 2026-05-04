@@ -435,6 +435,10 @@ func (s *daemonServices) executeHeartbeatAgentRun(ctx context.Context, run heart
 		jobs:           s.session.agentJobs,
 		subagents:      s.session.subagents,
 		emitEvent:      s.emitWSEvent,
+		daemonCtx:      s.lifecycleCtx,
+		runWG:          s.agentRunWG,
+		runMu:          s.agentRunMu,
+		runClosed:      s.agentRunClosed,
 	}
 	result := controller.runAgentTurnWithFallbacks(ctx, methods.AgentRequest{
 		SessionID: run.SessionID,
@@ -446,6 +450,9 @@ func (s *daemonServices) executeHeartbeatAgentRun(ctx context.Context, run heart
 	}
 	if result.Result == nil {
 		return fmt.Errorf("heartbeat run returned no result")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return s.consumeHeartbeatRunResult(run, *result.Result)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	acppkg "metiq/internal/acp"
@@ -22,6 +23,7 @@ func withACPRoutingTestState(t *testing.T, fn func()) {
 	prevNIP04 := controlNIP04Bus
 	prevToolRegistry := controlToolRegistry
 	prevSelector := controlTransportSelector
+	prevServices := controlServices
 	defer func() {
 		nip51FleetEntries = prevFleet
 		capabilityRegistry = prevRegistry
@@ -31,6 +33,7 @@ func withACPRoutingTestState(t *testing.T, fn func()) {
 		controlNIP04Bus = prevNIP04
 		controlToolRegistry = prevToolRegistry
 		controlTransportSelector = prevSelector
+		controlServices = prevServices
 	}()
 	fn()
 }
@@ -275,7 +278,7 @@ func TestResolveACPDMTransportHonorsConfiguredNIP04Mode(t *testing.T) {
 	})
 }
 
-func TestResolveACPDMTransportAutoPrefersNIP04ForUnknownPeers(t *testing.T) {
+func TestResolveACPDMTransportAutoPrefersNIP17ForUnknownPeers(t *testing.T) {
 	withACPRoutingTestState(t, func() {
 		peerPubKey := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 		controlNIP17Bus = &nostruntime.NIP17Bus{}
@@ -286,11 +289,27 @@ func TestResolveACPDMTransportAutoPrefersNIP04ForUnknownPeers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveACPDMTransport: %v", err)
 		}
-		if scheme != "nip04" {
-			t.Fatalf("scheme = %q, want nip04", scheme)
+		if scheme != "nip17" {
+			t.Fatalf("scheme = %q, want nip17", scheme)
 		}
-		if _, ok := bus.(*nostruntime.DMBus); !ok {
-			t.Fatalf("bus type = %T, want *nostruntime.DMBus", bus)
+		if _, ok := bus.(*nostruntime.NIP17Bus); !ok {
+			t.Fatalf("bus type = %T, want *nostruntime.NIP17Bus", bus)
+		}
+	})
+}
+
+func TestResolveACPDMTransportAutoUnknownPeerDoesNotDowngradeToNIP04(t *testing.T) {
+	withACPRoutingTestState(t, func() {
+		peerPubKey := "abababababababababababababababababababababababababababababababab"
+		controlNIP04Bus = &nostruntime.DMBus{}
+		controlDMBus = controlNIP04Bus
+
+		_, _, err := resolveACPDMTransport(state.ConfigDoc{}, peerPubKey)
+		if err == nil {
+			t.Fatal("expected error when unknown peer and only local nip04 is available")
+		}
+		if !strings.Contains(err.Error(), "compatible DM scheme") {
+			t.Fatalf("err = %v, want compatible DM scheme error", err)
 		}
 	})
 }
@@ -467,7 +486,13 @@ func TestResolveACPDMTransportAutoUsesTransportSelectorForUnknownPeer(t *testing
 		if err != nil {
 			t.Fatalf("NewTransportSelector: %v", err)
 		}
-		controlTransportSelector = ts
+		controlServices = &daemonServices{
+			relay: relayPolicyServices{
+				dmBusMu:           new(sync.RWMutex),
+				dmBus:             new(nostruntime.DMTransport),
+				transportSelector: ts,
+			},
+		}
 
 		bus, scheme, resolveErr := resolveACPDMTransport(state.ConfigDoc{}, peerPubKey)
 		if resolveErr != nil {

@@ -12,13 +12,10 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -266,8 +263,7 @@ func wireConfig(vm *goja.Runtime, h sdk.ConfigHost) error {
 
 func wireHTTP(vm *goja.Runtime, h sdk.HTTPHost, log *slog.Logger) error {
 	if h == nil {
-		// Use stdlib fallback.
-		h = &stdlibHTTPHost{}
+		return setStubNamespace(vm, "http", "http host not available")
 	}
 	obj := vm.NewObject()
 	_ = obj.Set("get", func(call goja.FunctionCall) goja.Value {
@@ -435,50 +431,6 @@ func joinArgs(args []goja.Value) string {
 
 func wrapModule(src string) string {
 	return "(function(exports, require, module){\n" + src + "\n})(exports, require, {exports: exports});"
-}
-
-// ─── stdlib fallback implementations ─────────────────────────────────────────
-
-type stdlibHTTPHost struct{}
-
-func (h *stdlibHTTPHost) Get(ctx context.Context, url string, headers map[string]string) (int, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return 0, nil, err
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, nil, err
-	}
-	return resp.StatusCode, respBody, nil
-}
-
-func (h *stdlibHTTPHost) Post(ctx context.Context, url string, body []byte, headers map[string]string) (int, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return 0, nil, err
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, nil, err
-	}
-	return resp.StatusCode, respBody, nil
 }
 
 type defaultLogHost struct{}
