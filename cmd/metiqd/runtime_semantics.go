@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -755,6 +756,8 @@ type cronRunRecord struct {
 	Finished int64  `json:"finished_at"`
 }
 
+var errCronPersistenceUnavailable = errors.New("cron persistence backend unavailable")
+
 type cronRegistry struct {
 	mu       sync.Mutex
 	jobs     map[string]cronJobRecord
@@ -923,7 +926,7 @@ func (r *cronRegistry) Runs(id string, limit int) []cronRunRecord {
 // daemon restarts.  Runs are intentionally not persisted (they are ephemeral).
 func (r *cronRegistry) Save(ctx context.Context, repo *state.DocsRepository) error {
 	if repo == nil {
-		return nil // no-op when store is unavailable (e.g. tests)
+		return fmt.Errorf("%w: docs repository is nil", errCronPersistenceUnavailable)
 	}
 	r.mu.Lock()
 	jobs := make([]cronJobRecord, 0, len(r.jobs))
@@ -944,6 +947,9 @@ func (r *cronRegistry) Save(ctx context.Context, repo *state.DocsRepository) err
 // Must be called before the scheduler starts.  Non-fatal: if no jobs are stored
 // it returns nil.
 func (r *cronRegistry) Load(ctx context.Context, repo *state.DocsRepository) error {
+	if repo == nil {
+		return nil // no-op when store is unavailable (e.g. tests)
+	}
 	raw, err := repo.GetCronJobs(ctx)
 	if err != nil {
 		return fmt.Errorf("get cron jobs: %w", err)
@@ -982,12 +988,13 @@ type execApprovalPendingRecord struct {
 }
 
 type execApprovalsRegistry struct {
-	mu        sync.Mutex
-	global    map[string]any
-	perNode   map[string]map[string]any
-	pending   map[string]execApprovalPendingRecord
-	pendingID int64
-	watchers  map[string][]chan execApprovalPendingRecord
+	mu               sync.Mutex
+	global           map[string]any
+	perNode          map[string]map[string]any
+	pending          map[string]execApprovalPendingRecord
+	pendingID        int64
+	watchers         map[string][]chan execApprovalPendingRecord
+	onWaitRegistered func(id string)
 }
 
 func newExecApprovalsRegistry() *execApprovalsRegistry {
@@ -1109,7 +1116,12 @@ func (r *execApprovalsRegistry) WaitForDecision(ctx context.Context, id string, 
 	}
 	ch := make(chan execApprovalPendingRecord, 1)
 	r.watchers[id] = append(r.watchers[id], ch)
+	onWaitRegistered := r.onWaitRegistered
 	r.mu.Unlock()
+
+	if onWaitRegistered != nil {
+		onWaitRegistered(id)
+	}
 
 	defer func() {
 		r.mu.Lock()

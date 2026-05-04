@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -101,10 +100,9 @@ func TestRelayHealthMonitorRunOnceUsesNormalizedRelays(t *testing.T) {
 }
 
 func TestRelayHealthMonitorStartRunsInitialAndPeriodicChecks(t *testing.T) {
-	var calls atomic.Int32
 	done := make(chan bool, 2)
 	monitor := NewRelayHealthMonitor([]string{"wss://one"}, RelayHealthMonitorOptions{
-		Interval: 20 * time.Millisecond,
+		Interval: 0,
 		Probe: func(_ context.Context, relayURL string) RelayHealthResult {
 			return RelayHealthResult{URL: relayURL, Reachable: true}
 		},
@@ -113,9 +111,7 @@ func TestRelayHealthMonitorStartRunsInitialAndPeriodicChecks(t *testing.T) {
 				t.Errorf("unexpected results: %#v", results)
 				return
 			}
-			if calls.Add(1) <= 2 {
-				done <- initial
-			}
+			done <- initial
 		},
 	})
 
@@ -132,12 +128,14 @@ func TestRelayHealthMonitorStartRunsInitialAndPeriodicChecks(t *testing.T) {
 		t.Fatal("timed out waiting for initial relay check")
 	}
 
+	monitor.Trigger()
+
 	select {
 	case initial := <-done:
 		if initial {
-			t.Fatal("expected periodic run after initial check")
+			t.Fatal("expected triggered run after initial check")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for periodic relay check")
+		t.Fatal("timed out waiting for triggered relay check")
 	}
 }

@@ -2,9 +2,11 @@ package registry
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
+	pluginruntime "metiq/internal/plugins/runtime"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -81,6 +83,100 @@ func TestUnifiedRegistryRegistersAllDedicatedCapabilityTypes(t *testing.T) {
 	}
 	if summary := r.Summary(); summary.PluginCount != 0 || summary.ToolCount != 0 || summary.MemoryProviderCount != 0 || summary.GenericCapabilityCount != 0 {
 		t.Fatalf("unregister did not clean up everything: %+v", summary)
+	}
+}
+
+func TestUnifiedRegistryOpenClawLoadResultAndGojaManifest(t *testing.T) {
+	r := NewUnifiedRegistry()
+	if err := r.RegisterOpenClawLoadResult(pluginruntime.OpenClawLoadResult{PluginID: "loaded", Name: "Loaded", Version: "1.2.3", Registrations: []pluginruntime.CapabilityRegistration{{Type: "provider", ID: "prov", Raw: map[string]any{"id": "prov", "label": "Provider"}}}}); err != nil {
+		t.Fatalf("RegisterOpenClawLoadResult: %v", err)
+	}
+	loaded, ok := r.Plugin("loaded")
+	if !ok || loaded.Name != "Loaded" || loaded.Version != "1.2.3" {
+		t.Fatalf("loaded plugin record=%+v ok=%v", loaded, ok)
+	}
+	if prov, ok := r.Providers().Get("prov"); !ok || prov.PluginID != "loaded" || prov.Label != "Provider" {
+		t.Fatalf("provider=%+v ok=%v", prov, ok)
+	}
+
+	if err := r.RegisterFromGojaManifest(sdk.Manifest{ID: "goja", Version: "0.1.0", Tools: []sdk.ToolSchema{{Name: "hello", Description: "Hello", Parameters: map[string]any{"type": "object"}}}}); err != nil {
+		t.Fatalf("RegisterFromGojaManifest: %v", err)
+	}
+	if tool, ok := r.Tools().Get("goja/hello"); !ok || tool.PluginID != "goja" || tool.Source != PluginSourceGoja {
+		t.Fatalf("goja tool=%+v ok=%v", tool, ok)
+	}
+	if err := r.RegisterFromGojaManifest(sdk.Manifest{}); err == nil || !strings.Contains(err.Error(), "plugin id is required") {
+		t.Fatalf("expected empty goja manifest error, got %v", err)
+	}
+}
+
+func TestRegistryInternalCoverageHelpers(t *testing.T) {
+	md := metadataFromRegistration("plug", PluginSourceOpenClaw, Registration{PluginID: "override", Name: "Name", Label: "Label", Description: "Desc", Raw: map[string]any{"nested": map[string]any{"k": "v"}}}, "cap")
+	if md.PluginID != "override" || md.ID != "cap" || md.Name != "Name" || md.Label != "Label" || md.Description != "Desc" || md.Source != PluginSourceOpenClaw {
+		t.Fatalf("metadata mismatch: %+v", md)
+	}
+	md.Raw["nested"].(map[string]any)["k"] = "mutated"
+	again := metadataFromRegistration("plug", PluginSourceOpenClaw, Registration{Raw: map[string]any{"nested": map[string]any{"k": "v"}}}, "cap")
+	if again.Raw["nested"].(map[string]any)["k"] != "v" {
+		t.Fatal("metadata raw clone leaked")
+	}
+	aliases := map[string]CapabilityType{"image_generation_provider": CapabilityTypeImageGenProvider, "video_generation_provider": CapabilityTypeVideoGenProvider, "music_generation_provider": CapabilityTypeMusicGenProvider, "memory_provider": CapabilityTypeMemoryProvider}
+	for in, want := range aliases {
+		if got := normalizeCapabilityType(in); got != want {
+			t.Fatalf("normalizeCapabilityType(%q)=%q want %q", in, got, want)
+		}
+	}
+	if intFromRaw(map[string]any{"i": int32(7), "j": int64(8), "k": float32(9)}, "i", 0) != 7 || intFromRaw(map[string]any{"j": int64(8)}, "j", 0) != 8 || intFromRaw(map[string]any{"k": float32(9)}, "k", 0) != 9 || intFromRaw(nil, "x", 5) != 5 {
+		t.Fatal("intFromRaw branches failed")
+	}
+	if got := stringSlice([]string{"a", ""}, nil, "x"); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("stringSlice explicit=%v", got)
+	}
+	if got := stringSlice(nil, map[string]any{"x": []string{"a", "b"}}, "x"); len(got) != 2 {
+		t.Fatalf("stringSlice []string=%v", got)
+	}
+	if got := stringSlice(nil, map[string]any{"x": []any{"a", 1, "b"}}, "x"); len(got) != 2 {
+		t.Fatalf("stringSlice []any=%v", got)
+	}
+	for _, v := range []any{[]string{"a"}, []int{1}, []float64{1}, []bool{true}} {
+		if cloneAny(v) == nil {
+			t.Fatalf("cloneAny returned nil for %T", v)
+		}
+	}
+	idx := map[string]map[string]struct{}{}
+	addPluginIndex(idx, "plug", "id")
+	removePluginIndex(idx, "plug", "missing")
+	removePluginIndex(idx, "", "id")
+	removePluginIndex(idx, "plug", "id")
+	if len(idx) != 0 {
+		t.Fatalf("plugin index not cleaned: %+v", idx)
+	}
+}
+
+func TestToolRegistryByPluginAndGoNativeChannels(t *testing.T) {
+	tools := NewToolRegistry()
+	if _, err := tools.Register("plug", ToolRegistrationData{Name: "local", Raw: map[string]any{"parameters": map[string]any{"type": "object"}}}); err != nil {
+		t.Fatalf("Register tool: %v", err)
+	}
+	if _, err := tools.Register("other", ToolRegistrationData{QualifiedName: "other/tool"}); err != nil {
+		t.Fatalf("Register other tool: %v", err)
+	}
+	byPlugin := tools.ByPlugin("plug")
+	if len(byPlugin) != 1 || byPlugin[0].QualifiedName != "local" {
+		t.Fatalf("ByPlugin=%+v", byPlugin)
+	}
+	byPlugin[0].Raw["parameters"].(map[string]any)["type"] = "array"
+	again := tools.ByPlugin("plug")
+	if again[0].Raw["parameters"].(map[string]any)["type"] != "object" {
+		t.Fatal("ByPlugin returned mutable raw data")
+	}
+	if got := tools.ByPlugin("missing"); len(got) != 0 {
+		t.Fatalf("expected no missing tools, got %+v", got)
+	}
+
+	r := NewUnifiedRegistry()
+	if err := r.RegisterGoNativeChannels(); err != nil {
+		t.Fatalf("RegisterGoNativeChannels: %v", err)
 	}
 }
 

@@ -2,50 +2,71 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"metiq/internal/gateway/methods"
+	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
 )
 
 func TestExecApprovalsEventDrivenWait(t *testing.T) {
 	reg := newExecApprovalsRegistry()
+	waitRegistered := make(chan struct{}, 1)
+	reg.onWaitRegistered = func(string) {
+		waitRegistered <- struct{}{}
+	}
 
 	rec := reg.Request(methods.ExecApprovalRequestRequest{
 		Command:   "test-event",
 		TimeoutMS: 5000,
 	})
 
-	done := make(chan bool)
+	done := make(chan struct{}, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		_, err := reg.Resolve(methods.ExecApprovalResolveRequest{
-			ID:       rec.ID,
-			Decision: "approve",
-		})
+		result, resolved, err := reg.WaitForDecision(context.Background(), rec.ID, 2000)
 		if err != nil {
-			t.Errorf("resolve error: %v", err)
+			t.Errorf("wait error: %v", err)
 		}
-		done <- true
+		if !resolved {
+			t.Errorf("expected resolved=true, got false")
+		}
+		if result.Decision != "approve" {
+			t.Errorf("expected decision=approve, got %s", result.Decision)
+		}
+		done <- struct{}{}
 	}()
 
-	result, resolved, err := reg.WaitForDecision(context.Background(), rec.ID, 2000)
-	if err != nil {
-		t.Fatalf("wait error: %v", err)
-	}
-	if !resolved {
-		t.Fatalf("expected resolved=true, got false")
-	}
-	if result.Decision != "approve" {
-		t.Fatalf("expected decision=approve, got %s", result.Decision)
+	select {
+	case <-waitRegistered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter did not register")
 	}
 
-	<-done
+	_, err := reg.Resolve(methods.ExecApprovalResolveRequest{
+		ID:       rec.ID,
+		Decision: "approve",
+	})
+	if err != nil {
+		t.Fatalf("resolve error: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter did not complete")
+	}
 }
 
 func TestExecApprovalsMultipleWaiters(t *testing.T) {
 	reg := newExecApprovalsRegistry()
+	waitRegistered := make(chan struct{}, 3)
+	reg.onWaitRegistered = func(string) {
+		waitRegistered <- struct{}{}
+	}
 
 	rec := reg.Request(methods.ExecApprovalRequestRequest{
 		Command:   "test-multi",
@@ -65,7 +86,14 @@ func TestExecApprovalsMultipleWaiters(t *testing.T) {
 		}()
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	for i := 0; i < 3; i++ {
+		select {
+		case <-waitRegistered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("waiter %d did not register", i)
+		}
+	}
+
 	_, err := reg.Resolve(methods.ExecApprovalResolveRequest{
 		ID:       rec.ID,
 		Decision: "approve",
@@ -75,14 +103,23 @@ func TestExecApprovalsMultipleWaiters(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if !<-results {
-			t.Fatalf("waiter %d did not receive resolution", i)
+		select {
+		case ok := <-results:
+			if !ok {
+				t.Fatalf("waiter %d did not receive resolution", i)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("waiter %d did not complete", i)
 		}
 	}
 }
 
 func TestExecApprovalsContextCancellation(t *testing.T) {
 	reg := newExecApprovalsRegistry()
+	waitRegistered := make(chan struct{}, 1)
+	reg.onWaitRegistered = func(string) {
+		waitRegistered <- struct{}{}
+	}
 
 	rec := reg.Request(methods.ExecApprovalRequestRequest{
 		Command:   "test-cancel",
@@ -90,7 +127,7 @@ func TestExecApprovalsContextCancellation(t *testing.T) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan bool)
+	done := make(chan struct{}, 1)
 
 	go func() {
 		_, resolved, err := reg.WaitForDecision(ctx, rec.ID, 5000)
@@ -100,12 +137,21 @@ func TestExecApprovalsContextCancellation(t *testing.T) {
 		if resolved {
 			t.Errorf("expected resolved=false due to cancellation")
 		}
-		done <- true
+		done <- struct{}{}
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-waitRegistered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter did not register")
+	}
+
 	cancel()
-	<-done
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter did not complete after cancellation")
+	}
 }
 
 func TestExecApprovalsTimeout(t *testing.T) {
@@ -122,6 +168,64 @@ func TestExecApprovalsTimeout(t *testing.T) {
 	}
 	if resolved {
 		t.Fatalf("expected resolved=false due to timeout")
+	}
+}
+
+func TestCronRegistrySaveNilRepoReturnsError(t *testing.T) {
+	reg := newCronRegistry()
+	reg.Add(methods.CronAddRequest{ID: "job-1", Schedule: "* * * * *", Method: "noop"})
+	err := reg.Save(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected nil repo save to return error")
+	}
+	if !errors.Is(err, errCronPersistenceUnavailable) {
+		t.Fatalf("expected errCronPersistenceUnavailable, got: %v", err)
+	}
+}
+
+func TestCronRegistryLoadNilRepoNoOp(t *testing.T) {
+	reg := newCronRegistry()
+	job := reg.Add(methods.CronAddRequest{ID: "job-1", Schedule: "* * * * *", Method: "noop"})
+
+	if err := reg.Load(context.Background(), nil); err != nil {
+		t.Fatalf("expected nil repo load to no-op, got error: %v", err)
+	}
+
+	loaded, ok := reg.Status(job.ID)
+	if !ok {
+		t.Fatalf("expected existing job %q to remain after nil load", job.ID)
+	}
+	if loaded.Method != "noop" {
+		t.Fatalf("expected job method to remain unchanged, got %q", loaded.Method)
+	}
+}
+
+func TestHandleOpsRPCCronAddSurfacesPersistenceFailure(t *testing.T) {
+	h := newControlRPCHandler(controlRPCDeps{
+		cronJobs:    newCronRegistry(),
+		configState: newRuntimeConfigStore(state.ConfigDoc{}),
+	})
+
+	_, handled, err := h.handleOpsRPC(
+		context.Background(),
+		nostruntime.ControlRPCInbound{
+			Method: methods.MethodCronAdd,
+			Params: json.RawMessage(`{"id":"c1","schedule":"* * * * *","method":"status.get"}`),
+		},
+		methods.MethodCronAdd,
+		state.ConfigDoc{},
+	)
+	if !handled {
+		t.Fatal("expected cron.add to be handled")
+	}
+	if err == nil {
+		t.Fatal("expected persistence error")
+	}
+	if !errors.Is(err, errCronPersistenceUnavailable) {
+		t.Fatalf("expected errCronPersistenceUnavailable, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cron.add persist") {
+		t.Fatalf("expected wrapped cron.add persist context, got: %v", err)
 	}
 }
 

@@ -2682,7 +2682,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodCronAdd,
 		Params:     json.RawMessage(`{"id":"c1","schedule":"* * * * *","method":"status.get"}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("cron.add error: %v", err)
 	}
@@ -2722,7 +2722,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodCronUpdate,
 		Params:     json.RawMessage(`{"id":"c1","enabled":false}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("cron.update error: %v", err)
 	}
@@ -2761,7 +2761,7 @@ func TestHandleControlRPCRequest_NodeInvokeAndCronMethods(t *testing.T) {
 		FromPubKey: "caller",
 		Method:     methods.MethodCronRemove,
 		Params:     json.RawMessage(`{"id":"c1"}`),
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	}, nil, nil, nil, nil, nil, nil, docs, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("cron.remove error: %v", err)
 	}

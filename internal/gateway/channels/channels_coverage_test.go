@@ -130,8 +130,13 @@ func TestCloneNostrFilter_Empty(t *testing.T) {
 
 func TestTypingKeepalive_StartStop(t *testing.T) {
 	var calls atomic.Int32
+	sent := make(chan struct{}, 4)
 	send := func(ctx context.Context, durationMS int) error {
 		calls.Add(1)
+		select {
+		case sent <- struct{}{}:
+		default:
+		}
 		return nil
 	}
 
@@ -140,7 +145,19 @@ func TestTypingKeepalive_StartStop(t *testing.T) {
 	defer cancel()
 
 	ka.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
+	defer ka.Stop()
+
+	waitForSend := func(label string) {
+		t.Helper()
+		select {
+		case <-sent:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("timed out waiting for %s send", label)
+		}
+	}
+
+	waitForSend("initial")
+	waitForSend("periodic")
 	ka.Stop()
 
 	if c := calls.Load(); c < 2 {
