@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -147,6 +149,46 @@ func TestInstall_noDownloadURL(t *testing.T) {
 	_, err := Install(context.Background(), entry, t.TempDir())
 	if err == nil || err != ErrNoDownloadURL {
 		t.Errorf("expected ErrNoDownloadURL, got: %v", err)
+	}
+}
+
+func testRegistryZipArchive(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestInstallSuccessExtractsArchive(t *testing.T) {
+	archiveData := testRegistryZipArchive(t, map[string]string{"package/index.js": "module.exports = {};"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(archiveData)
+	}))
+	defer srv.Close()
+
+	dest := t.TempDir()
+	entry := PluginEntry{Manifest: PluginManifest{ID: "nice plugin", Version: "1.0.0", Runtime: "goja", DownloadURL: srv.URL + "/plugin.zip", Checksum: ComputeChecksum(archiveData)}}
+	pluginDir, err := Install(context.Background(), entry, dest)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if pluginDir != filepath.Join(dest, "nice_plugin") {
+		t.Fatalf("unexpected plugin dir %q", pluginDir)
+	}
+	if got, err := os.ReadFile(filepath.Join(pluginDir, "index.js")); err != nil || !strings.Contains(string(got), "module.exports") {
+		t.Fatalf("extracted file=%q err=%v", got, err)
 	}
 }
 

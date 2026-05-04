@@ -213,6 +213,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		}
 		if saveErr := h.deps.cronJobs.Save(ctx, docsRepo); saveErr != nil {
 			log.Printf("cron jobs save warning (add): %v", saveErr)
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("cron.add persist: %w", saveErr)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
 	case methods.MethodCronUpdate:
@@ -230,6 +231,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		}
 		if saveErr := h.deps.cronJobs.Save(ctx, docsRepo); saveErr != nil {
 			log.Printf("cron jobs save warning (update): %v", saveErr)
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("cron.update persist: %w", saveErr)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
 	case methods.MethodCronRemove:
@@ -247,6 +249,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		}
 		if saveErr := h.deps.cronJobs.Save(ctx, docsRepo); saveErr != nil {
 			log.Printf("cron jobs save warning (remove): %v", saveErr)
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("cron.remove persist: %w", saveErr)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
 	case methods.MethodCronRun:

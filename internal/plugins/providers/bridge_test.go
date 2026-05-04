@@ -2,11 +2,13 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
 
 	"metiq/internal/agent"
+	"metiq/internal/plugins/registry"
 )
 
 type fakeHost struct {
@@ -218,6 +220,58 @@ func TestProviderTranslationVariants(t *testing.T) {
 	streamResp, chunks, err := translateStreamResult([]any{"a", map[string]any{"delta": "b"}})
 	if err != nil || streamResp.Content != "ab" || !reflect.DeepEqual(chunks, []string{"a", "b"}) {
 		t.Fatalf("streamResp=%+v chunks=%+v err=%v", streamResp, chunks, err)
+	}
+}
+
+func TestPluginProviderBridgeEnvMetadataAndAuthScalar(t *testing.T) {
+	t.Setenv("ACME_TOKEN", "token-one")
+	t.Setenv("ACME_TOKEN_TWO", "token-two")
+	meta := &registry.RegisteredProvider{ID: "acme", PluginID: "plugin-meta", Raw: map[string]any{
+		"envVar":              "ACME_TOKEN",
+		"envVars":             []any{"ACME_TOKEN_TWO", ""},
+		"providerAuthEnvVars": "ACME_TOKEN_THREE",
+		"auth":                []any{map[string]any{"envVar": "ACME_TOKEN_FOUR"}},
+	}}
+	h := &fakeHost{results: map[string]any{"auth": "ok"}}
+	b := NewPluginProviderBridge("", "", h, meta)
+	if b.ProviderID() != "acme" || b.PluginID() != "plugin-meta" {
+		t.Fatalf("metadata ids not applied")
+	}
+	if env := b.effectiveEnv(); env["ACME_TOKEN"] != "token-one" {
+		t.Fatalf("process env not included: %+v", env)
+	}
+	if keys := b.effectiveAPIKeys(); keys["acme"] != "token-one" {
+		t.Fatalf("metadata API key not resolved: %+v", keys)
+	}
+	res, err := b.Auth(context.Background(), "scalar", map[string]any{"existing": true})
+	if err != nil || !res.OK || res.Raw["value"] != "ok" {
+		t.Fatalf("scalar auth result=%+v err=%v", res, err)
+	}
+	params := h.calls[0].Params.(map[string]any)
+	params["env"].(map[string]string)["ACME_TOKEN"] = "mutated"
+	if b.effectiveEnv()["ACME_TOKEN"] != "token-one" {
+		t.Fatal("effective env returned mutable state")
+	}
+}
+
+func TestProviderBridgeAdditionalTranslationBranches(t *testing.T) {
+	resp, err := TranslateResponseFromOpenClaw(`{"choices":[{"message":{"content":[{"type":"message","content":"hi"},{"kind":"function_call","name":"tool","arguments":{"x":1}}]},"finish_reason":"stop"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4}}`)
+	if err != nil || resp.Content != "hi" || !resp.NeedsToolResults || len(resp.ToolCalls) != 1 || resp.Usage.InputTokens != 3 || resp.Usage.OutputTokens != 4 {
+		t.Fatalf("translated response=%+v err=%v", resp, err)
+	}
+	if _, err := TranslateResponseFromOpenClaw(123); err == nil {
+		t.Fatal("expected unexpected response type error")
+	}
+	streamResp, chunks, err := translateStreamResult(map[string]any{"content": []any{map[string]any{"type": "text", "text": "whole"}}})
+	if err != nil || streamResp.Content != "whole" || !reflect.DeepEqual(chunks, []string{"whole"}) {
+		t.Fatalf("stream map response=%+v chunks=%+v err=%v", streamResp, chunks, err)
+	}
+	entries, err := ParseCatalogResult("json-provider", `{"models":[{"id":"json-model","max_tokens":2048,"reasoning":"true","cost":{"in":1}}]}`)
+	if err != nil || len(entries) != 1 || entries[0].MaxTokens != 2048 || !entries[0].Reasoning || entries[0].Cost["in"] == nil {
+		t.Fatalf("json catalog entries=%+v err=%v", entries, err)
+	}
+	if int64Value(json.Number("42")) != 42 || !boolValue("1") || len(stringSliceFromAny("single")) != 1 || asMap(map[string]string{"a": "b"})["a"] != "b" {
+		t.Fatal("conversion branches failed")
 	}
 }
 

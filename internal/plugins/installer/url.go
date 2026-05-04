@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,6 +44,20 @@ type RegistryIndex struct {
 	Plugins []RegistryPlugin `json:"plugins"`
 }
 
+var (
+	installerHTTPClientMu  sync.RWMutex
+	newInstallerHTTPClient = func(timeout time.Duration) *http.Client {
+		return &http.Client{Timeout: timeout}
+	}
+)
+
+func installerHTTPClient(timeout time.Duration) *http.Client {
+	installerHTTPClientMu.RLock()
+	factory := newInstallerHTTPClient
+	installerHTTPClientMu.RUnlock()
+	return factory(timeout)
+}
+
 // DownloadURL downloads a URL to a local temp file and returns the file path.
 // The caller is responsible for removing the temp file when done.
 // Only https:// URLs are accepted (http:// is rejected for security).
@@ -57,7 +72,7 @@ func DownloadURL(ctx context.Context, rawURL string) (string, error) {
 	}
 	req.Header.Set("User-Agent", "metiq-plugin-installer/1.0")
 
-	client := &http.Client{Timeout: 5 * time.Minute}
+	client := installerHTTPClient(5 * time.Minute)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("download %s: %w", rawURL, err)
@@ -120,7 +135,7 @@ func FetchRegistry(ctx context.Context, registryURL string) (*RegistryIndex, err
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "metiq-plugin-installer/1.0")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := installerHTTPClient(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch registry %s: %w", registryURL, err)
