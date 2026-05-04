@@ -216,32 +216,7 @@ func (b *ControlRPCBus) runSubscription(since int64) bool {
 	if b.hub != nil {
 		return b.runHubSubscription(filter)
 	}
-	relays := b.currentRelays()
-	if len(relays) == 0 {
-		select {
-		case <-b.ctx.Done():
-			return true
-		case <-b.rebindCh:
-			return true
-		case <-time.After(500 * time.Millisecond):
-			return false
-		}
-	}
-	stream := b.pool.SubscribeMany(b.ctx, relays, filter, nostr.SubscriptionOptions{})
-	for {
-		select {
-		case <-b.ctx.Done():
-			return true
-		case <-b.rebindCh:
-			return true
-		case re, ok := <-stream:
-			if !ok {
-				b.emitErr(fmt.Errorf("control subscription closed; restarting"))
-				return false
-			}
-			b.handleInbound(re)
-		}
-	}
+	return b.runPoolSubscription(filter)
 }
 
 func (b *ControlRPCBus) Close() {
@@ -487,8 +462,14 @@ func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey str
 }
 
 type controlRelayClose struct {
+	relayURL    string
+	reason      string
+	generation  int
+	handledAuth bool
+}
+
+type controlRelayEOSE struct {
 	relayURL   string
-	reason     string
 	generation int
 }
 
@@ -507,6 +488,228 @@ func (b *ControlRPCBus) controlFilter(since int64) nostr.Filter {
 
 func (b *ControlRPCBus) controlSubID(relay string, generation int) string {
 	return fmt.Sprintf("control-rpc-bus:%s:%d", strings.TrimSpace(relay), generation)
+}
+
+func (b *ControlRPCBus) runPoolSubscription(filter nostr.Filter) bool {
+	subCtx, cancel := context.WithCancel(b.ctx)
+	defer cancel()
+
+	relays := b.currentRelays()
+	if len(relays) == 0 {
+		select {
+		case <-b.ctx.Done():
+			return true
+		case <-b.rebindCh:
+			return true
+		case <-time.After(500 * time.Millisecond):
+			return false
+		}
+	}
+
+	queueCap := max(len(relays)*2, 8)
+	eventsCh := make(chan nostr.RelayEvent, queueCap)
+	closedCh := make(chan controlRelayClose, queueCap)
+	eoseCh := make(chan controlRelayEOSE, queueCap)
+	resubscribeCh := make(chan controlRelayRetry, queueCap)
+	pending := map[string]int{}
+	generation := map[string]int{}
+
+	nextGeneration := func(relay string) int {
+		relay = strings.TrimSpace(relay)
+		generation[relay]++
+		return generation[relay]
+	}
+
+	sendClosed := func(close controlRelayClose) {
+		select {
+		case closedCh <- close:
+		case <-subCtx.Done():
+		}
+	}
+	sendEOSE := func(eose controlRelayEOSE) {
+		select {
+		case eoseCh <- eose:
+		case <-subCtx.Done():
+		}
+	}
+	sendEvent := func(re nostr.RelayEvent) bool {
+		select {
+		case eventsCh <- re:
+			return true
+		case <-subCtx.Done():
+			return false
+		}
+	}
+
+	subscribeRelay := func(relay string, filter nostr.Filter, gen int) {
+		relayKey := strings.TrimSpace(relay)
+		if relayKey == "" {
+			return
+		}
+		go b.runControlRelaySubscription(subCtx, relayKey, filter, gen, sendEvent, sendEOSE, sendClosed)
+	}
+
+	scheduleResubscribe := func(relay string, gen int) {
+		relay = strings.TrimSpace(relay)
+		if relay == "" {
+			return
+		}
+		if pendingGen, ok := pending[relay]; ok && pendingGen >= gen {
+			return
+		}
+		pending[relay] = gen
+		go func(relay string, gen int) {
+			for {
+				if subCtx.Err() != nil {
+					return
+				}
+				if b.health == nil || b.health.Allowed(relay, time.Now()) {
+					break
+				}
+				wait := b.health.NextAllowedIn(relay, time.Now())
+				if wait <= 0 {
+					break
+				}
+				select {
+				case <-subCtx.Done():
+					return
+				case <-time.After(wait):
+				}
+			}
+			select {
+			case <-subCtx.Done():
+			case resubscribeCh <- controlRelayRetry{relayURL: relay, generation: gen}:
+			}
+		}(relay, gen)
+	}
+
+	for _, relay := range relays {
+		gen := nextGeneration(relay)
+		subscribeRelay(relay, filter, gen)
+	}
+
+	for {
+		select {
+		case <-b.ctx.Done():
+			return true
+		case <-b.rebindCh:
+			return true
+		case re := <-eventsCh:
+			b.handleInbound(re)
+		case eose := <-eoseCh:
+			relay := strings.TrimSpace(eose.relayURL)
+			if relay == "" || generation[relay] != eose.generation {
+				continue
+			}
+			b.handleControlRelayEOSE(relay)
+		case closed := <-closedCh:
+			relay := strings.TrimSpace(closed.relayURL)
+			if relay == "" {
+				return false
+			}
+			if generation[relay] != closed.generation {
+				continue
+			}
+			if b.handleControlRelayClose(relay, closed.reason, closed.handledAuth) {
+				scheduleResubscribe(relay, closed.generation)
+			}
+		case retry := <-resubscribeCh:
+			relay := strings.TrimSpace(retry.relayURL)
+			if relay == "" {
+				continue
+			}
+			if pending[relay] != retry.generation {
+				continue
+			}
+			delete(pending, relay)
+			if !containsRelay(b.currentRelays(), relay) {
+				continue
+			}
+			gen := nextGeneration(relay)
+			resubscribeFilter := b.controlFilter(ResubscribeSince(ControlRPCResubscribeWindow))
+			if b.subHealth != nil {
+				b.subHealth.RecordReconnect()
+			}
+			subscribeRelay(relay, resubscribeFilter, gen)
+		}
+	}
+}
+
+func (b *ControlRPCBus) runControlRelaySubscription(ctx context.Context, relayURL string, filter nostr.Filter, generation int, emitEvent func(nostr.RelayEvent) bool, emitEOSE func(controlRelayEOSE), emitClosed func(controlRelayClose)) {
+	relay, err := b.pool.EnsureRelay(relayURL)
+	if err != nil {
+		emitClosed(controlRelayClose{relayURL: relayURL, reason: fmt.Sprintf("connect: %v", err), generation: generation})
+		return
+	}
+
+	hasAuthed := false
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		sub, err := relay.Subscribe(ctx, filter, nostr.SubscriptionOptions{})
+		if err != nil {
+			emitClosed(controlRelayClose{relayURL: relayURL, reason: fmt.Sprintf("subscribe: %v", err), generation: generation})
+			return
+		}
+
+		eose := sub.EndOfStoredEvents
+		for {
+			select {
+			case <-ctx.Done():
+				sub.Unsub()
+				return
+			case evt, ok := <-sub.Events:
+				if !ok {
+					emitClosed(controlRelayClose{relayURL: relayURL, reason: "event stream ended", generation: generation})
+					return
+				}
+				if !emitEvent(nostr.RelayEvent{Event: evt, Relay: relay}) {
+					sub.Unsub()
+					return
+				}
+			case <-eose:
+				emitEOSE(controlRelayEOSE{relayURL: relayURL, generation: generation})
+				eose = nil
+			case reason := <-sub.ClosedReason:
+				if strings.HasPrefix(reason, "auth-required:") && b.keyer != nil && !hasAuthed {
+					if err := relay.Auth(ctx, func(authCtx context.Context, evt *nostr.Event) error {
+						return b.keyer.SignEvent(authCtx, evt)
+					}); err == nil {
+						hasAuthed = true
+						emitClosed(controlRelayClose{relayURL: relayURL, reason: reason, generation: generation, handledAuth: true})
+						if b.subHealth != nil {
+							b.subHealth.RecordReconnect()
+						}
+						goto resubscribe
+					}
+				}
+				emitClosed(controlRelayClose{relayURL: relayURL, reason: reason, generation: generation})
+				return
+			}
+		}
+	resubscribe:
+	}
+}
+
+func (b *ControlRPCBus) handleControlRelayEOSE(relayURL string) {
+	if b.health != nil {
+		b.health.RecordSuccess(relayURL)
+	}
+}
+
+func (b *ControlRPCBus) handleControlRelayClose(relayURL string, reason string, handledAuth bool) bool {
+	if handledAuth {
+		return false
+	}
+	if b.health != nil {
+		b.health.RecordFailure(relayURL)
+	}
+	if b.subHealth != nil {
+		b.subHealth.RecordClosed(relayURL, reason)
+	}
+	b.emitErr(fmt.Errorf("control subscription closed relay=%s reason=%s", relayURL, reason))
+	return true
 }
 
 func (b *ControlRPCBus) runHubSubscription(filter nostr.Filter) bool {
@@ -536,20 +739,13 @@ func (b *ControlRPCBus) runHubSubscription(filter nostr.Filter) bool {
 			Relays:  []string{relay},
 			OnEvent: b.handleInbound,
 			OnClosed: func(closedRelay *nostr.Relay, reason string, handledAuth bool) {
-				if handledAuth {
-					return
-				}
 				relayURL := relay
 				if closedRelay != nil && strings.TrimSpace(closedRelay.URL) != "" {
 					relayURL = strings.TrimSpace(closedRelay.URL)
 				}
-				if b.health != nil {
-					b.health.RecordFailure(relayURL)
+				if !b.handleControlRelayClose(relayURL, reason, handledAuth) {
+					return
 				}
-				if b.subHealth != nil {
-					b.subHealth.RecordClosed(relayURL, reason)
-				}
-				b.emitErr(fmt.Errorf("control subscription closed relay=%s reason=%s", relayURL, reason))
 				select {
 				case closedCh <- controlRelayClose{relayURL: relayURL, reason: reason, generation: gen}:
 				default:

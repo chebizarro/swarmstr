@@ -8,6 +8,7 @@ package main
 // receive a *daemonServices and use its fields instead of reading globals.
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -40,15 +41,19 @@ import (
 // daemonServices owns the dependencies needed by extracted handler files.
 // Constructed once in main() after all components are started.
 type daemonServices struct {
-	relay         relayPolicyServices
-	emitter       gatewayws.EventEmitter
-	emitterMu     *sync.RWMutex
-	session       sessionServices
-	handlers      handlerServices
-	runtimeConfig *runtimeConfigStore
-	docsRepo      *state.DocsRepository
-	pubKeyHex     string
-	restartCh     chan int
+	relay          relayPolicyServices
+	emitter        gatewayws.EventEmitter
+	emitterMu      *sync.RWMutex
+	session        sessionServices
+	handlers       handlerServices
+	runtimeConfig  *runtimeConfigStore
+	docsRepo       *state.DocsRepository
+	pubKeyHex      string
+	restartCh      chan int
+	lifecycleCtx   context.Context
+	agentRunWG     *sync.WaitGroup
+	agentRunMu     *sync.Mutex
+	agentRunClosed *bool
 }
 
 // emitWSEvent emits a typed event to connected WS clients.

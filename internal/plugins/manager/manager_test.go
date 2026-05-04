@@ -125,6 +125,29 @@ exports.manifest = {
 exports.invoke = function() { return {}; };
 `
 
+func storagePluginSrc(id string) string {
+	return `
+exports.manifest = {
+	id: "` + id + `",
+	version: "1.0.0",
+	description: "storage probe",
+	tools: [{ name: "state", description: "set/get state" }],
+};
+exports.invoke = function(tool, args) {
+	if (tool !== "state") return {};
+	if (args && args.action === "set") {
+		storage.set(args.key, args.value);
+		return { ok: true };
+	}
+	if (args && args.action === "del") {
+		storage.del(args.key);
+		return { ok: true };
+	}
+	return { value: storage.get(args.key) };
+};
+`
+}
+
 // ─── tests ────────────────────────────────────────────────────────────────────
 
 func TestManager_loadAndRegister(t *testing.T) {
@@ -395,6 +418,94 @@ func TestManager_invalidManifestSchemaRejected(t *testing.T) {
 	}
 	if got := mgr.PluginIDs(); len(got) != 0 {
 		t.Fatalf("expected invalid plugin to stay unloaded, got %v", got)
+	}
+}
+
+func withTestPluginStorageRoot(t *testing.T, root string) {
+	t.Helper()
+	prev := pluginStorageRootPath
+	pluginStorageRootPath = func() (string, error) { return root, nil }
+	t.Cleanup(func() { pluginStorageRootPath = prev })
+}
+
+func TestManager_pluginStoragePersistsAcrossReload(t *testing.T) {
+	withTestPluginStorageRoot(t, filepath.Join(t.TempDir(), "storage"))
+	dir := t.TempDir()
+	scriptPath := writePlugin(t, dir, "index.js", storagePluginSrc("storage-plugin"))
+	cfg := configWithPlugin(t, "storage-plugin", scriptPath)
+
+	mgr := New(testHost())
+	if err := mgr.Load(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	reg := agent.NewToolRegistry()
+	mgr.RegisterTools(reg)
+	if _, err := reg.Execute(context.Background(), agent.ToolCall{
+		Name: "storage-plugin/state",
+		Args: map[string]any{"action": "set", "key": "k1", "value": "v1"},
+	}); err != nil {
+		t.Fatalf("initial set: %v", err)
+	}
+
+	mgr2 := New(testHost())
+	if err := mgr2.Load(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	reg2 := agent.NewToolRegistry()
+	mgr2.RegisterTools(reg2)
+	result, err := reg2.Execute(context.Background(), agent.ToolCall{
+		Name: "storage-plugin/state",
+		Args: map[string]any{"key": "k1"},
+	})
+	if err != nil {
+		t.Fatalf("reload get: %v", err)
+	}
+	if !strings.Contains(result, `"value":"v1"`) {
+		t.Fatalf("expected persisted value, got %s", result)
+	}
+}
+
+func TestManager_pluginStorageIsIsolatedByPluginID(t *testing.T) {
+	withTestPluginStorageRoot(t, filepath.Join(t.TempDir(), "storage"))
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	scriptA := writePlugin(t, dirA, "index.js", storagePluginSrc("plugin-a"))
+	scriptB := writePlugin(t, dirB, "index.js", storagePluginSrc("plugin-b"))
+
+	cfgA := configWithPlugin(t, "plugin-a", scriptA)
+	cfgA.Extra["extensions"].(map[string]any)["entries"].(map[string]any)["plugin-b"] = map[string]any{
+		"install_path": scriptB,
+		"plugin_type":  "goja",
+		"enabled":      true,
+	}
+	cfgA.Extra["extensions"].(map[string]any)["installs"].(map[string]any)["plugin-b"] = map[string]any{
+		"source":      "path",
+		"sourcePath":  filepath.Dir(scriptB),
+		"installPath": scriptB,
+	}
+
+	mgr := New(testHost())
+	if err := mgr.Load(context.Background(), cfgA); err != nil {
+		t.Fatal(err)
+	}
+	reg := agent.NewToolRegistry()
+	mgr.RegisterTools(reg)
+
+	if _, err := reg.Execute(context.Background(), agent.ToolCall{
+		Name: "plugin-a/state",
+		Args: map[string]any{"action": "set", "key": "shared", "value": "alpha"},
+	}); err != nil {
+		t.Fatalf("plugin-a set: %v", err)
+	}
+	result, err := reg.Execute(context.Background(), agent.ToolCall{
+		Name: "plugin-b/state",
+		Args: map[string]any{"key": "shared"},
+	})
+	if err != nil {
+		t.Fatalf("plugin-b get: %v", err)
+	}
+	if !strings.Contains(result, `"value":null`) {
+		t.Fatalf("expected isolated storage, got %s", result)
 	}
 }
 

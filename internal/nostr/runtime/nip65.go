@@ -284,6 +284,10 @@ func metadataValidationFailure(ev nostr.Event, expectedAuthor nostr.PubKey, expe
 	if !ev.VerifySignature() {
 		return "invalid_signature"
 	}
+	const maxFutureSkewSeconds = 30
+	if int64(ev.CreatedAt) > time.Now().Unix()+maxFutureSkewSeconds {
+		return "created_at_future"
+	}
 	return ""
 }
 
@@ -591,24 +595,30 @@ func FetchNIP02Contacts(ctx context.Context, pool *nostr.Pool, relays []string, 
 		Limit:   1,
 	}
 
-	var best *nostr.Event
-	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
-		ev := re.Event
-		if best == nil || ev.CreatedAt > best.CreatedAt {
-			cp := ev
-			best = &cp
-		}
-	}
+	best := selectLatestVerifiedMetadataEvent(
+		pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}),
+		pk,
+		3,
+	)
 	if best == nil {
 		return nil, "", fmt.Errorf("nip02: no contact list found for %s", pubkey)
 	}
 
-	var contacts []NIP02Contact
-	for _, tag := range best.Tags {
+	contacts := decodeNIP02Contacts(*best)
+	return contacts, best.ID.Hex(), nil
+}
+
+func decodeNIP02Contacts(ev nostr.Event) []NIP02Contact {
+	contacts := make([]NIP02Contact, 0, len(ev.Tags))
+	for _, tag := range ev.Tags {
 		if len(tag) < 2 || tag[0] != "p" {
 			continue
 		}
-		c := NIP02Contact{PubKey: tag[1]}
+		pk, err := ParsePubKey(tag[1])
+		if err != nil {
+			continue
+		}
+		c := NIP02Contact{PubKey: pk.Hex()}
 		if len(tag) >= 3 {
 			c.Relay = tag[2]
 		}
@@ -617,7 +627,7 @@ func FetchNIP02Contacts(ctx context.Context, pool *nostr.Pool, relays []string, 
 		}
 		contacts = append(contacts, c)
 	}
-	return contacts, best.ID.Hex(), nil
+	return contacts
 }
 
 // ─── NIP-65 Self-Sync ────────────────────────────────────────────────────────

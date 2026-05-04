@@ -1,8 +1,11 @@
 package runtime
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	nostr "fiatjaf.com/nostr"
 )
 
 func TestNormalizeNIP17SinceDefaultsToGiftWrapBackfillWindow(t *testing.T) {
@@ -31,4 +34,95 @@ func TestNormalizeNIP17SinceClampsToZero(t *testing.T) {
 	if got := normalizeNIP17Since(60); got != floor {
 		t.Fatalf("expected floor clamp %d, got %d", floor, got)
 	}
+}
+
+func TestNIP17ValidateGiftWrapEvent(t *testing.T) {
+	bus, keyer, recipient := newTestNIP17BusIdentity(t)
+	evt := signedEvent(t, keyer, nostr.Event{
+		Kind:      nostr.KindGiftWrap,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"p", recipient.Hex()}},
+		Content:   "sealed-content",
+	})
+	if err := bus.validateGiftWrapEvent(evt, time.Now()); err != nil {
+		t.Fatalf("expected valid gift wrap, got error: %v", err)
+	}
+
+	badTarget := evt
+	badTarget.Tags = nostr.Tags{{"p", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}}
+	if err := bus.validateGiftWrapEvent(badTarget, time.Now()); err == nil {
+		t.Fatal("expected missing recipient-tag validation error")
+	}
+
+	badID := evt
+	badID.Content = "mutated"
+	if err := bus.validateGiftWrapEvent(badID, time.Now()); err == nil {
+		t.Fatal("expected invalid id/signature validation error")
+	}
+}
+
+func TestNIP17ValidateRumorEvent(t *testing.T) {
+	bus, keyer, recipient := newTestNIP17BusIdentity(t)
+	rumor := signedEvent(t, keyer, nostr.Event{
+		Kind:      nostr.KindDirectMessage,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"p", recipient.Hex()}},
+		Content:   "hello",
+	})
+	if err := bus.validateRumorEvent(rumor, time.Now()); err != nil {
+		t.Fatalf("expected valid rumor, got error: %v", err)
+	}
+
+	wrongKind := rumor
+	wrongKind.Kind = nostr.KindTextNote
+	if err := bus.validateRumorEvent(wrongKind, time.Now()); err == nil {
+		t.Fatal("expected kind validation error")
+	}
+
+	future := rumor
+	future.CreatedAt = nostr.Timestamp(time.Now().Add(nip17MaxFutureSkew + time.Second).Unix())
+	if err := bus.validateRumorEvent(future, time.Now()); err == nil {
+		t.Fatal("expected future-skew validation error")
+	}
+
+	past := rumor
+	past.CreatedAt = nostr.Timestamp(time.Now().Add(-nip17MaxPastAge - time.Second).Unix())
+	if err := bus.validateRumorEvent(past, time.Now()); err == nil {
+		t.Fatal("expected past-age validation error")
+	}
+}
+
+func TestTimestampReasonableBounds(t *testing.T) {
+	now := time.Now()
+	if !timestampReasonable(nostr.Timestamp(now.Unix()), now) {
+		t.Fatal("expected current timestamp to be reasonable")
+	}
+	if timestampReasonable(nostr.Timestamp(now.Add(nip17MaxFutureSkew+time.Second).Unix()), now) {
+		t.Fatal("expected future timestamp to be unreasonable")
+	}
+	if timestampReasonable(nostr.Timestamp(now.Add(-nip17MaxPastAge-time.Second).Unix()), now) {
+		t.Fatal("expected old timestamp to be unreasonable")
+	}
+}
+
+func newTestNIP17BusIdentity(t *testing.T) (*NIP17Bus, nostr.Keyer, nostr.PubKey) {
+	t.Helper()
+	sk, err := ParseSecretKey("1111111111111111111111111111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("ParseSecretKey: %v", err)
+	}
+	keyer := newNIP04KeyerAdapter(sk)
+	pub, err := keyer.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatalf("GetPublicKey: %v", err)
+	}
+	return &NIP17Bus{public: pub}, keyer, pub
+}
+
+func signedEvent(t *testing.T, keyer nostr.Keyer, evt nostr.Event) nostr.Event {
+	t.Helper()
+	if err := keyer.SignEvent(context.Background(), &evt); err != nil {
+		t.Fatalf("SignEvent: %v", err)
+	}
+	return evt
 }

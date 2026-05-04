@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,7 +45,7 @@ func TestAgentRunControllerExecuteAgentRunWithFallbacks_PersistsFallbackState(t 
 		return agent.TurnResult{Text: "ok"}, nil
 	})
 
-	ctrl.executeAgentRunWithFallbacks(runID, req, primary, []agent.Runtime{fallback}, []string{"claude-sonnet", "claude-haiku"}, nil, jobs)
+	ctrl.executeAgentRunWithFallbacks(context.Background(), runID, req, primary, []agent.Runtime{fallback}, []string{"claude-sonnet", "claude-haiku"}, nil, jobs)
 
 	se, ok := ss.Get(req.SessionID)
 	if !ok {
@@ -83,7 +84,7 @@ func TestAgentRunControllerExecuteAgentRunWithFallbacks_ClearsFallbackStateOnPri
 		return agent.TurnResult{Text: "ok"}, nil
 	})
 
-	ctrl.executeAgentRunWithFallbacks(runID, req, primary, nil, []string{"claude-sonnet"}, nil, jobs)
+	ctrl.executeAgentRunWithFallbacks(context.Background(), runID, req, primary, nil, []string{"claude-sonnet"}, nil, jobs)
 
 	se, ok := ss.Get(req.SessionID)
 	if !ok {
@@ -91,6 +92,124 @@ func TestAgentRunControllerExecuteAgentRunWithFallbacks_ClearsFallbackStateOnPri
 	}
 	if se.FallbackFrom != "" || se.FallbackTo != "" || se.FallbackReason != "" || se.FallbackAt != 0 {
 		t.Fatalf("fallback fields should be cleared: %+v", se)
+	}
+}
+
+func TestAgentRunControllerLaunchManagedRun_CancelsWithDaemonContext(t *testing.T) {
+	ctrl, _, jobs, _ := newTestAgentRunController(t)
+	daemonCtx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ctrl.daemonCtx = daemonCtx
+	ctrl.runWG = &wg
+	ctrl.runMu = &mu
+
+	entered := make(chan struct{})
+	primary := runtimeFunc(func(ctx context.Context, turn agent.Turn) (agent.TurnResult, error) {
+		close(entered)
+		<-ctx.Done()
+		return agent.TurnResult{}, ctx.Err()
+	})
+	req := methods.AgentRequest{SessionID: "session-cancel", Message: "hello", TimeoutMS: 60_000}
+	runID := "run-cancel"
+	_ = jobs.Begin(runID, req.SessionID)
+
+	if err := ctrl.launchManagedRun(runID, req, primary, nil, nil, nil, jobs, nil); err != nil {
+		t.Fatalf("launchManagedRun: %v", err)
+	}
+	<-entered
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("managed run did not stop after daemon context cancellation")
+	}
+	snap, ok := jobs.Get(runID)
+	if !ok {
+		t.Fatal("job snapshot missing")
+	}
+	if snap.Status != "error" || !strings.Contains(strings.ToLower(snap.Err), "canceled") {
+		t.Fatalf("expected cancellation error snapshot, got %+v", snap)
+	}
+}
+
+func TestAgentRunControllerLaunchManagedRun_FinishesCanceledBeforeLaunch(t *testing.T) {
+	ctrl, _, jobs, _ := newTestAgentRunController(t)
+	daemonCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ctrl.daemonCtx = daemonCtx
+	ctrl.runWG = &wg
+	ctrl.runMu = &mu
+
+	called := false
+	primary := runtimeFunc(func(context.Context, agent.Turn) (agent.TurnResult, error) {
+		called = true
+		return agent.TurnResult{Text: "unexpected"}, nil
+	})
+	req := methods.AgentRequest{SessionID: "session-canceled-before-launch", Message: "hello", TimeoutMS: 60_000}
+	runID := "run-canceled-before-launch"
+	_ = jobs.Begin(runID, req.SessionID)
+
+	if err := ctrl.launchManagedRun(runID, req, primary, nil, nil, nil, jobs, nil); err == nil || !strings.Contains(strings.ToLower(err.Error()), "canceled") {
+		t.Fatalf("expected launch cancellation error, got %v", err)
+	}
+	wg.Wait()
+	if called {
+		t.Fatal("runtime should not be called when daemon context is canceled before launch")
+	}
+	snap, ok := jobs.Get(runID)
+	if !ok {
+		t.Fatal("job snapshot missing")
+	}
+	if snap.Status != "error" || !strings.Contains(strings.ToLower(snap.Err), "canceled") {
+		t.Fatalf("expected pre-launch cancellation error snapshot, got %+v", snap)
+	}
+}
+
+func TestAgentRunControllerLaunchManagedRun_RejectsAfterRunGroupClosed(t *testing.T) {
+	ctrl, _, jobs, subagents := newTestAgentRunController(t)
+	daemonCtx := context.Background()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	closed := true
+	ctrl.daemonCtx = daemonCtx
+	ctrl.runWG = &wg
+	ctrl.runMu = &mu
+	ctrl.runClosed = &closed
+
+	called := false
+	primary := runtimeFunc(func(context.Context, agent.Turn) (agent.TurnResult, error) {
+		called = true
+		return agent.TurnResult{Text: "unexpected"}, nil
+	})
+	req := methods.AgentRequest{SessionID: "session-closed", Message: "hello", TimeoutMS: 60_000}
+	runID := "run-closed"
+	subagents.records[runID] = &SubagentRecord{RunID: runID, SessionID: req.SessionID, Status: "running"}
+	_ = jobs.Begin(runID, req.SessionID)
+
+	err := ctrl.launchManagedRun(runID, req, primary, nil, nil, nil, jobs, func(final agentJobSnapshot, found bool) {
+		if found {
+			subagents.Finish(runID, final.Result, final.Err)
+		}
+	})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "canceled") {
+		t.Fatalf("expected closed launch cancellation error, got %v", err)
+	}
+	wg.Wait()
+	if called {
+		t.Fatal("runtime should not be called after run group is closed")
+	}
+	rec := subagents.Get(runID)
+	if rec == nil || rec.Status != "error" || !strings.Contains(strings.ToLower(rec.Error), "canceled") {
+		t.Fatalf("expected subagent cancellation record, got %+v", rec)
 	}
 }
 

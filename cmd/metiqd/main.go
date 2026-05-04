@@ -415,6 +415,9 @@ func main() {
 	startedAt := time.Now()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var agentRunWG sync.WaitGroup
+	var agentRunMu sync.Mutex
+	agentRunClosed := false
 
 	shutdownEmitter := newRuntimeShutdownEmitter(emitControlWSEvent)
 
@@ -4394,10 +4397,14 @@ func main() {
 			configFilePath:     controlConfigFilePath,
 			cronExecutorMu:     &controlCronExecutorMu,
 		},
-		runtimeConfig: controlRuntimeConfig,
-		docsRepo:      docsRepo,
-		pubKeyHex:     pubKeyHex,
-		restartCh:     restartCh,
+		runtimeConfig:  controlRuntimeConfig,
+		docsRepo:       docsRepo,
+		pubKeyHex:      pubKeyHex,
+		restartCh:      restartCh,
+		lifecycleCtx:   ctx,
+		agentRunWG:     &agentRunWG,
+		agentRunMu:     &agentRunMu,
+		agentRunClosed: &agentRunClosed,
 	}
 
 	// ── NIP-51 allowlist watcher + agent list sync ─────────────────────────────
@@ -6360,6 +6367,20 @@ func main() {
 	}
 
 	<-ctx.Done()
+	agentRunMu.Lock()
+	agentRunClosed = true
+	agentRunMu.Unlock()
+	agentRunsDone := make(chan struct{})
+	go func() {
+		agentRunWG.Wait()
+		close(agentRunsDone)
+	}()
+	select {
+	case <-agentRunsDone:
+	case <-time.After(30 * time.Second):
+		log.Printf("daemon shutdown: still waiting for agent runs to stop after context cancellation")
+		<-agentRunsDone
+	}
 	if pluginServiceMgr != nil {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = pluginServiceMgr.StopAll(stopCtx)

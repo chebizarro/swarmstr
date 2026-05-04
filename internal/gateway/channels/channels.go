@@ -161,6 +161,10 @@ type NIP29GroupChannel struct {
 	onMsg    func(InboundMessage)
 	onErr    func(error)
 	pubkey   string
+
+	seen       *SeenCache
+	lastSeenMu sync.Mutex
+	lastSeen   nostr.Timestamp
 }
 
 // NewNIP29GroupChannel creates and starts a NIP-29 group subscription.
@@ -215,6 +219,7 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 		onMsg:    opts.OnMessage,
 		onErr:    opts.OnError,
 		pubkey:   pk.Hex(),
+		seen:     NewSeenCache(),
 	}
 
 	go ch.subscribeLoop(ctx)
@@ -265,67 +270,122 @@ func (c *NIP29GroupChannel) Close() {
 }
 
 // subscribeLoop listens for kind-9 messages on the group relay using
-// SubscribeManyNotifyClosed for proper CLOSED signal handling.
+// SubscribeManyNotifyClosed for proper CLOSED signal handling.  When the
+// underlying stream terminates, it reissues the subscription with an overlapping
+// backfill window derived from the last processed event timestamp.
 func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
-	seen := NewSeenCache()
-
-	since := applyJitter(nostr.Timestamp(time.Now().Unix()), DefaultSinceJitter)
-	filter := nostr.Filter{
-		Kinds: []nostr.Kind{nostr.KindSimpleGroupChatMessage},
-		Tags:  nostr.TagMap{"h": []string{c.gad.ID}},
-		Since: since,
+	if c.seen == nil {
+		c.seen = NewSeenCache()
 	}
 
-	events, closedCh := c.pool.SubscribeManyNotifyClosed(
-		ctx, []string{c.gad.Relay}, filter, nostr.SubscriptionOptions{},
-	)
+	backoff := channelReconnectInitialBackoff
+	for ctx.Err() == nil {
+		filter := nostr.Filter{
+			Kinds: []nostr.Kind{nostr.KindSimpleGroupChatMessage},
+			Tags:  nostr.TagMap{"h": []string{c.gad.ID}},
+			Since: c.subscribeSince(),
+		}
 
+		subCtx, cancelSub := context.WithCancel(ctx)
+		events, closedCh := channelSubscribeManyNotifyClosed(
+			subCtx, c.pool, []string{c.gad.Relay}, filter, nostr.SubscriptionOptions{},
+		)
+
+		processed := c.consumeSubscription(subCtx, events, closedCh)
+		cancelSub()
+		if ctx.Err() != nil {
+			return
+		}
+		if processed {
+			backoff = channelReconnectInitialBackoff
+		}
+		if !channelReconnectDelay(ctx, backoff) {
+			return
+		}
+		backoff = nextChannelReconnectBackoff(backoff)
+	}
+}
+
+func (c *NIP29GroupChannel) consumeSubscription(ctx context.Context, events <-chan nostr.RelayEvent, closedCh <-chan nostr.RelayClosed) (processed bool) {
 	for {
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				return
+				return processed
 			}
-			evIDHex := ev.ID.Hex()
-			if seen.Add(evIDHex) {
-				continue // duplicate
+			if c.handleEvent(ev) {
+				processed = true
 			}
-			if ev.PubKey.Hex() == c.pubkey {
-				continue
-			}
-			if c.onMsg == nil {
-				continue
-			}
-			gad := c.gad
-			senderHex := ev.PubKey.Hex()
-			c.onMsg(InboundMessage{
-				ChannelID:  c.id,
-				GroupID:    gad.ID,
-				Relay:      gad.Relay,
-				FromPubKey: senderHex,
-				Text:       ev.Content,
-				EventID:    evIDHex,
-				CreatedAt:  int64(ev.CreatedAt),
-				Reply: func(ctx context.Context, text string) error {
-					return c.Send(ctx, text)
-				},
-			})
 
 		case rc, ok := <-closedCh:
 			if !ok {
-				// Avoid tight-looping on a closed channel; the events channel will
-				// also close, at which point we will exit.
 				closedCh = nil
 				continue
 			}
-			if !rc.HandledAuth && c.onErr != nil {
-				c.onErr(fmt.Errorf("nip29 sub closed by %s: %s", rc.Relay.URL, rc.Reason))
+			if rc.HandledAuth {
+				continue
 			}
+			c.reportClosed(rc)
+			return processed
 
 		case <-ctx.Done():
-			return
+			return processed
 		}
 	}
+}
+
+func (c *NIP29GroupChannel) handleEvent(ev nostr.RelayEvent) bool {
+	evIDHex := ev.ID.Hex()
+	if c.seen.Add(evIDHex) {
+		return false // duplicate
+	}
+	c.recordLastSeen(ev.CreatedAt)
+	if ev.PubKey.Hex() == c.pubkey {
+		return true
+	}
+	if c.onMsg == nil {
+		return true
+	}
+	gad := c.gad
+	senderHex := ev.PubKey.Hex()
+	c.onMsg(InboundMessage{
+		ChannelID:  c.id,
+		GroupID:    gad.ID,
+		Relay:      gad.Relay,
+		FromPubKey: senderHex,
+		Text:       ev.Content,
+		EventID:    evIDHex,
+		CreatedAt:  int64(ev.CreatedAt),
+		Reply: func(ctx context.Context, text string) error {
+			return c.Send(ctx, text)
+		},
+	})
+	return true
+}
+
+func (c *NIP29GroupChannel) subscribeSince() nostr.Timestamp {
+	c.lastSeenMu.Lock()
+	lastSeen := c.lastSeen
+	c.lastSeenMu.Unlock()
+	if lastSeen == 0 {
+		lastSeen = nostr.Now()
+	}
+	return applyJitter(lastSeen, DefaultSinceJitter)
+}
+
+func (c *NIP29GroupChannel) recordLastSeen(ts nostr.Timestamp) {
+	c.lastSeenMu.Lock()
+	defer c.lastSeenMu.Unlock()
+	if ts > c.lastSeen {
+		c.lastSeen = ts
+	}
+}
+
+func (c *NIP29GroupChannel) reportClosed(rc nostr.RelayClosed) {
+	if c.onErr == nil || rc.HandledAuth {
+		return
+	}
+	c.onErr(formatChannelClosed("nip29", rc))
 }
 
 // ─── NIP-28 Public Channel ────────────────────────────────────────────────────
@@ -359,6 +419,10 @@ type NIP28PublicChannel struct {
 	onMsg     func(InboundMessage)
 	onErr     func(error)
 	pubkey    string
+
+	seen       *SeenCache
+	lastSeenMu sync.Mutex
+	lastSeen   nostr.Timestamp
 }
 
 // NewNIP28PublicChannel creates and starts a NIP-28 public channel subscription.
@@ -404,6 +468,7 @@ func NewNIP28PublicChannel(parent context.Context, opts NIP28PublicChannelOption
 		onMsg:     opts.OnMessage,
 		onErr:     opts.OnError,
 		pubkey:    pk.Hex(),
+		seen:      NewSeenCache(),
 	}
 
 	go ch.subscribeLoop(ctx)
@@ -463,68 +528,166 @@ func (c *NIP28PublicChannel) Close() {
 
 // subscribeLoop listens for kind-42 messages on the configured relays.
 func (c *NIP28PublicChannel) subscribeLoop(ctx context.Context) {
-	seen := NewSeenCache()
-
-	since := applyJitter(nostr.Timestamp(time.Now().Unix()), DefaultSinceJitter)
-	filter := nostr.Filter{
-		Kinds: []nostr.Kind{nostr.KindChannelMessage},
-		Tags:  nostr.TagMap{"e": []string{c.channelID}},
-		Since: since,
+	if c.seen == nil {
+		c.seen = NewSeenCache()
 	}
 
-	events, closedCh := c.pool.SubscribeManyNotifyClosed(
-		ctx, c.relays, filter, nostr.SubscriptionOptions{},
-	)
+	backoff := channelReconnectInitialBackoff
+	for ctx.Err() == nil {
+		filter := nostr.Filter{
+			Kinds: []nostr.Kind{nostr.KindChannelMessage},
+			Tags:  nostr.TagMap{"e": []string{c.channelID}},
+			Since: c.subscribeSince(),
+		}
 
+		subCtx, cancelSub := context.WithCancel(ctx)
+		events, closedCh := channelSubscribeManyNotifyClosed(
+			subCtx, c.pool, c.relays, filter, nostr.SubscriptionOptions{},
+		)
+
+		processed := c.consumeSubscription(subCtx, events, closedCh)
+		cancelSub()
+		if ctx.Err() != nil {
+			return
+		}
+		if processed {
+			backoff = channelReconnectInitialBackoff
+		}
+		if !channelReconnectDelay(ctx, backoff) {
+			return
+		}
+		backoff = nextChannelReconnectBackoff(backoff)
+	}
+}
+
+func (c *NIP28PublicChannel) consumeSubscription(ctx context.Context, events <-chan nostr.RelayEvent, closedCh <-chan nostr.RelayClosed) (processed bool) {
 	for {
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				return
+				return processed
 			}
-			evIDHex := ev.ID.Hex()
-			if seen.Add(evIDHex) {
-				continue // duplicate
+			if c.handleEvent(ev) {
+				processed = true
 			}
-			if ev.PubKey.Hex() == c.pubkey {
-				continue
-			}
-			if c.onMsg == nil {
-				continue
-			}
-			senderHex := ev.PubKey.Hex()
-			relayURL := ""
-			if ev.Relay != nil {
-				relayURL = ev.Relay.URL
-			}
-			c.onMsg(InboundMessage{
-				ChannelID:  c.ID(),
-				GroupID:    c.channelID,
-				Relay:      relayURL,
-				FromPubKey: senderHex,
-				Text:       ev.Content,
-				EventID:    evIDHex,
-				CreatedAt:  int64(ev.CreatedAt),
-				Reply: func(replyCtx context.Context, text string) error {
-					return c.Send(replyCtx, text)
-				},
-			})
 
 		case rc, ok := <-closedCh:
 			if !ok {
-				// Avoid tight-looping on a closed channel; the events channel will
-				// also close, at which point we will exit.
 				closedCh = nil
 				continue
 			}
-			if !rc.HandledAuth && c.onErr != nil {
-				c.onErr(fmt.Errorf("nip28 sub closed by %s: %s", rc.Relay.URL, rc.Reason))
+			if rc.HandledAuth {
+				continue
 			}
+			c.reportClosed(rc)
+			return processed
 
 		case <-ctx.Done():
-			return
+			return processed
 		}
 	}
 }
 
+func (c *NIP28PublicChannel) handleEvent(ev nostr.RelayEvent) bool {
+	evIDHex := ev.ID.Hex()
+	if c.seen.Add(evIDHex) {
+		return false // duplicate
+	}
+	c.recordLastSeen(ev.CreatedAt)
+	if ev.PubKey.Hex() == c.pubkey {
+		return true
+	}
+	if c.onMsg == nil {
+		return true
+	}
+	senderHex := ev.PubKey.Hex()
+	relayURL := ""
+	if ev.Relay != nil {
+		relayURL = ev.Relay.URL
+	}
+	c.onMsg(InboundMessage{
+		ChannelID:  c.ID(),
+		GroupID:    c.channelID,
+		Relay:      relayURL,
+		FromPubKey: senderHex,
+		Text:       ev.Content,
+		EventID:    evIDHex,
+		CreatedAt:  int64(ev.CreatedAt),
+		Reply: func(replyCtx context.Context, text string) error {
+			return c.Send(replyCtx, text)
+		},
+	})
+	return true
+}
+
+func (c *NIP28PublicChannel) subscribeSince() nostr.Timestamp {
+	c.lastSeenMu.Lock()
+	lastSeen := c.lastSeen
+	c.lastSeenMu.Unlock()
+	if lastSeen == 0 {
+		lastSeen = nostr.Now()
+	}
+	return applyJitter(lastSeen, DefaultSinceJitter)
+}
+
+func (c *NIP28PublicChannel) recordLastSeen(ts nostr.Timestamp) {
+	c.lastSeenMu.Lock()
+	defer c.lastSeenMu.Unlock()
+	if ts > c.lastSeen {
+		c.lastSeen = ts
+	}
+}
+
+func (c *NIP28PublicChannel) reportClosed(rc nostr.RelayClosed) {
+	if c.onErr == nil || rc.HandledAuth {
+		return
+	}
+	c.onErr(formatChannelClosed("nip28", rc))
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
+
+type channelSubscribeFunc func(context.Context, *nostr.Pool, []string, nostr.Filter, nostr.SubscriptionOptions) (<-chan nostr.RelayEvent, <-chan nostr.RelayClosed)
+
+var channelSubscribeManyNotifyClosed channelSubscribeFunc = func(ctx context.Context, pool *nostr.Pool, relays []string, filter nostr.Filter, opts nostr.SubscriptionOptions) (<-chan nostr.RelayEvent, <-chan nostr.RelayClosed) {
+	return pool.SubscribeManyNotifyClosed(ctx, relays, filter, opts)
+}
+
+var (
+	channelReconnectInitialBackoff = 250 * time.Millisecond
+	channelReconnectMaxBackoff     = 30 * time.Second
+	channelReconnectDelay          = waitChannelReconnectDelay
+)
+
+func waitChannelReconnectDelay(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func nextChannelReconnectBackoff(current time.Duration) time.Duration {
+	if current <= 0 {
+		return channelReconnectInitialBackoff
+	}
+	next := current * 2
+	if next > channelReconnectMaxBackoff {
+		return channelReconnectMaxBackoff
+	}
+	return next
+}
+
+func formatChannelClosed(kind string, rc nostr.RelayClosed) error {
+	relayURL := "<unknown>"
+	if rc.Relay != nil && rc.Relay.URL != "" {
+		relayURL = rc.Relay.URL
+	}
+	return fmt.Errorf("%s sub closed by %s: %s", kind, relayURL, rc.Reason)
+}

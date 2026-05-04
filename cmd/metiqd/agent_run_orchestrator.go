@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"metiq/internal/agent"
@@ -24,6 +25,10 @@ type agentRunController struct {
 	jobs           *agentJobRegistry
 	subagents      *SubagentRegistry
 	emitEvent      func(string, any)
+	daemonCtx      context.Context
+	runWG          *sync.WaitGroup
+	runMu          *sync.Mutex
+	runClosed      *bool
 }
 
 func currentAgentRunController() agentRunController {
@@ -37,6 +42,10 @@ func currentAgentRunController() agentRunController {
 			jobs:           controlServices.session.agentJobs,
 			subagents:      controlServices.session.subagents,
 			emitEvent:      controlServices.emitWSEvent,
+			daemonCtx:      controlServices.lifecycleCtx,
+			runWG:          controlServices.agentRunWG,
+			runMu:          controlServices.agentRunMu,
+			runClosed:      controlServices.agentRunClosed,
 		}
 	}
 	// Fallback: use package-level globals (test compatibility).
@@ -49,6 +58,13 @@ func currentAgentRunController() agentRunController {
 		jobs:           controlAgentJobs,
 		subagents:      controlSubagents,
 	}
+}
+
+func (c agentRunController) runContext() context.Context {
+	if c.daemonCtx != nil {
+		return c.daemonCtx
+	}
+	return context.Background()
 }
 
 func (c agentRunController) emit(event string, payload any) {
@@ -151,12 +167,13 @@ func (c agentRunController) applySessionsSpawn(ctx context.Context, req methods.
 	jobs := c.jobs
 	subagents := c.subagents
 	snapshot := jobs.Begin(runID, sessionID)
-	go func(ctrl agentRunController, runID string, req methods.AgentRequest, rt agent.Runtime, memoryIndex memory.Store, jobs *agentJobRegistry, subagents *SubagentRegistry) {
-		ctrl.executeAgentRun(runID, req, rt, memoryIndex, jobs)
-		if final, found := jobs.Get(runID); found {
+	if err := c.launchManagedRun(runID, agentReq, rt, nil, nil, memoryIndex, jobs, func(final agentJobSnapshot, found bool) {
+		if found && subagents != nil {
 			subagents.Finish(runID, final.Result, final.Err)
 		}
-	}(c, runID, agentReq, rt, memoryIndex, jobs, subagents)
+	}); err != nil {
+		return nil, err
+	}
 
 	return methods.ApplyCompatResponseAliases(map[string]any{
 		"run_id":            runID,
@@ -166,6 +183,65 @@ func (c agentRunController) applySessionsSpawn(ctx context.Context, req methods.
 		"status":            "accepted",
 		"accepted_at":       snapshot.StartedAt,
 	}), nil
+}
+
+type agentRunFinalizer func(final agentJobSnapshot, found bool)
+
+func (c agentRunController) launchManagedRun(runID string, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, runtimeLabels []string, memoryIndex memory.Store, jobs *agentJobRegistry, finalizer agentRunFinalizer) error {
+	if strings.TrimSpace(runID) == "" {
+		return fmt.Errorf("agent run id required")
+	}
+	if primary == nil {
+		return fmt.Errorf("agent runtime not configured")
+	}
+	if jobs == nil {
+		jobs = c.jobs
+	}
+	if jobs == nil {
+		return fmt.Errorf("agent job registry not configured")
+	}
+	baseCtx := c.runContext()
+	if c.runMu != nil {
+		c.runMu.Lock()
+	}
+	var launchErr error
+	if c.runClosed != nil && *c.runClosed {
+		launchErr = context.Canceled
+	}
+	if launchErr == nil {
+		launchErr = baseCtx.Err()
+	}
+	if launchErr != nil {
+		if c.runMu != nil {
+			c.runMu.Unlock()
+		}
+		jobs.Finish(runID, "", launchErr)
+		if final, found := jobs.Get(runID); finalizer != nil {
+			finalizer(final, found)
+		}
+		return launchErr
+	}
+	tracked := c.runWG != nil
+	if c.runWG != nil {
+		c.runWG.Add(1)
+	}
+	if c.runMu != nil {
+		c.runMu.Unlock()
+	}
+	go func(ctrl agentRunController) {
+		if tracked {
+			defer ctrl.runWG.Done()
+		}
+		ctrl.executeAgentRunWithFallbacks(baseCtx, runID, req, primary, fallbacks, runtimeLabels, memoryIndex, jobs)
+		if final, found := jobs.Get(runID); found {
+			if finalizer != nil {
+				finalizer(final, found)
+			}
+		} else if finalizer != nil {
+			finalizer(agentJobSnapshot{}, false)
+		}
+	}(c)
+	return nil
 }
 
 func isRetryableAgentError(err error) bool {
@@ -187,7 +263,7 @@ func executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runti
 }
 
 func (c agentRunController) executeAgentRun(runID string, req methods.AgentRequest, runtime agent.Runtime, memoryIndex memory.Store, jobs *agentJobRegistry) {
-	c.executeAgentRunWithFallbacks(runID, req, runtime, nil, nil, memoryIndex, jobs)
+	c.executeAgentRunWithFallbacks(c.runContext(), runID, req, runtime, nil, nil, memoryIndex, jobs)
 }
 
 type agentRunAttemptResult struct {
@@ -325,11 +401,11 @@ func (c agentRunController) runAgentTurnWithFallbacks(baseCtx context.Context, r
 	return attempt
 }
 
-func executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, runtimeLabels []string, memoryIndex memory.Store, jobs *agentJobRegistry) {
-	currentAgentRunController().executeAgentRunWithFallbacks(runID, req, primary, fallbacks, runtimeLabels, memoryIndex, jobs)
+func executeAgentRunWithFallbacks(baseCtx context.Context, runID string, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, runtimeLabels []string, memoryIndex memory.Store, jobs *agentJobRegistry) {
+	currentAgentRunController().executeAgentRunWithFallbacks(baseCtx, runID, req, primary, fallbacks, runtimeLabels, memoryIndex, jobs)
 }
 
-func (c agentRunController) executeAgentRunWithFallbacks(runID string, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, runtimeLabels []string, memoryIndex memory.Store, jobs *agentJobRegistry) {
+func (c agentRunController) executeAgentRunWithFallbacks(baseCtx context.Context, runID string, req methods.AgentRequest, primary agent.Runtime, fallbacks []agent.Runtime, runtimeLabels []string, memoryIndex memory.Store, jobs *agentJobRegistry) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("panic in executeAgentRun runID=%s panic=%v", runID, r)
@@ -345,7 +421,10 @@ func (c agentRunController) executeAgentRunWithFallbacks(runID string, req metho
 	if jobs == nil {
 		return
 	}
-	attempt := c.runAgentTurnWithFallbacks(context.Background(), req, primary, fallbacks, runtimeLabels, memoryIndex)
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	attempt := c.runAgentTurnWithFallbacks(baseCtx, req, primary, fallbacks, runtimeLabels, memoryIndex)
 	if attempt.FallbackUsed {
 		jobs.SetFallback(runID, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason)
 	}

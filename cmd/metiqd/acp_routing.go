@@ -484,13 +484,13 @@ func resolveACPDMTransport(cfg state.ConfigDoc, targetPubKey string) (nostruntim
 	}
 	// Auto mode: try FIPS first if the TransportSelector is available and
 	// the peer advertises FIPS (or no capability info is available).
-	if controlTransportSelector != nil {
+	if bus := currentACPTransportBus("fips"); bus != nil {
 		if len(remote) == 0 {
 			// No advertised schemes — TransportSelector handles fallback.
-			return controlTransportSelector, "auto", nil
+			return bus, "auto", nil
 		}
 		if _, ok := remote["fips"]; ok {
-			return controlTransportSelector, "auto", nil
+			return bus, "auto", nil
 		}
 	}
 	if len(remote) > 0 {
@@ -506,13 +506,10 @@ func resolveACPDMTransport(cfg state.ConfigDoc, targetPubKey string) (nostruntim
 		}
 		return nil, "", fmt.Errorf("ACP peer %q does not advertise a compatible DM scheme", acpTargetDisplayName(targetPubKey))
 	}
-	if bus := currentACPTransportBus("nip04"); bus != nil {
-		return bus, "nip04", nil
-	}
 	if bus := currentACPTransportBus("nip17"); bus != nil {
 		return bus, "nip17", nil
 	}
-	return nil, "", fmt.Errorf("ACP DM transport not available")
+	return nil, "", fmt.Errorf("ACP peer %q does not advertise a compatible DM scheme", acpTargetDisplayName(targetPubKey))
 }
 
 func sendACPDMWithTransport(ctx context.Context, bus nostruntime.DMTransport, scheme string, toPubKey string, text string) error {

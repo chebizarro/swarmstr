@@ -239,9 +239,10 @@ func (e SessionEntry) CarryOverFlags(newSessionID string) SessionEntry {
 // SessionStore is a file-backed key→SessionEntry map.
 // It is safe for concurrent use across goroutines.
 type SessionStore struct {
-	mu      sync.Mutex
-	path    string
-	entries map[string]SessionEntry // keyed by session key (not necessarily SessionID)
+	mu        sync.Mutex
+	path      string
+	entries   map[string]SessionEntry // keyed by session key (not necessarily SessionID)
+	persistFn func(path string, data []byte) error
 }
 
 // Path returns the backing file path for this session store.
@@ -258,7 +259,7 @@ func NewSessionStore(path string) (*SessionStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("session store: mkdir: %w", err)
 	}
-	ss := &SessionStore{path: path, entries: make(map[string]SessionEntry)}
+	ss := &SessionStore{path: path, entries: make(map[string]SessionEntry), persistFn: defaultSessionStorePersist}
 	if err := ss.load(); err != nil {
 		return nil, err
 	}
@@ -305,135 +306,135 @@ func (s *SessionStore) GetOrNew(key string) SessionEntry {
 
 // Put writes entry under key and persists the file.
 func (s *SessionStore) Put(key string, entry SessionEntry) error {
-	s.mu.Lock()
-	entry.UpdatedAt = time.Now().UTC()
-	s.entries[key] = entry
-	s.mu.Unlock()
-	return s.Save()
+	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
+		entry.UpdatedAt = time.Now().UTC()
+		entries[key] = entry
+		return nil
+	})
 }
 
 // Delete removes the entry for key and persists.
 func (s *SessionStore) Delete(key string) error {
-	s.mu.Lock()
-	delete(s.entries, key)
-	s.mu.Unlock()
-	return s.Save()
+	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
+		delete(entries, key)
+		return nil
+	})
 }
 
 // AddTokens atomically adds the given token counts to the entry for key.
 // cacheRead and cacheWrite track provider prompt-cache hit/creation tokens.
 func (s *SessionStore) AddTokens(key string, input, output, cacheRead, cacheWrite int64) error {
-	s.mu.Lock()
-	e := s.entries[key]
-	e.InputTokens += input
-	e.OutputTokens += output
-	e.TotalTokens += input + output
-	e.CacheRead += cacheRead
-	e.CacheWrite += cacheWrite
-	e.UpdatedAt = time.Now().UTC()
-	s.entries[key] = e
-	s.mu.Unlock()
-	return s.Save()
+	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
+		e := entries[key]
+		e.InputTokens += input
+		e.OutputTokens += output
+		e.TotalTokens += input + output
+		e.CacheRead += cacheRead
+		e.CacheWrite += cacheWrite
+		e.UpdatedAt = time.Now().UTC()
+		entries[key] = e
+		return nil
+	})
 }
 
 // RecordTurn atomically stores the latest turn telemetry snapshot for key.
 func (s *SessionStore) RecordTurn(key string, telemetry TurnTelemetry) error {
-	s.mu.Lock()
-	e := s.entries[key]
-	if e.SessionID == "" {
-		e.SessionID = key
-	}
-	now := time.Now().UTC()
-	if e.CreatedAt.IsZero() {
-		e.CreatedAt = now
-	}
-	if strings.TrimSpace(telemetry.TaskID) == "" {
-		if strings.TrimSpace(e.ActiveTaskID) != "" {
-			telemetry.TaskID = e.ActiveTaskID
-		} else {
-			telemetry.TaskID = e.LastCompletedTaskID
+	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
+		e := entries[key]
+		if e.SessionID == "" {
+			e.SessionID = key
 		}
-	}
-	if strings.TrimSpace(telemetry.RunID) == "" {
-		if strings.TrimSpace(e.ActiveRunID) != "" {
-			telemetry.RunID = e.ActiveRunID
-		} else {
-			telemetry.RunID = e.LastCompletedRunID
+		now := time.Now().UTC()
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
 		}
-	}
-	if strings.TrimSpace(telemetry.ParentTaskID) == "" {
-		telemetry.ParentTaskID = e.ParentTaskID
-	}
-	if strings.TrimSpace(telemetry.ParentRunID) == "" {
-		telemetry.ParentRunID = e.ParentRunID
-	}
-	if isZeroTaskResultRef(telemetry.Result) {
-		telemetry.Result = e.LastTaskResult
-	}
-	e.LastTurn = &telemetry
-	e.UpdatedAt = now
-	s.entries[key] = e
-	s.mu.Unlock()
-	return s.Save()
+		if strings.TrimSpace(telemetry.TaskID) == "" {
+			if strings.TrimSpace(e.ActiveTaskID) != "" {
+				telemetry.TaskID = e.ActiveTaskID
+			} else {
+				telemetry.TaskID = e.LastCompletedTaskID
+			}
+		}
+		if strings.TrimSpace(telemetry.RunID) == "" {
+			if strings.TrimSpace(e.ActiveRunID) != "" {
+				telemetry.RunID = e.ActiveRunID
+			} else {
+				telemetry.RunID = e.LastCompletedRunID
+			}
+		}
+		if strings.TrimSpace(telemetry.ParentTaskID) == "" {
+			telemetry.ParentTaskID = e.ParentTaskID
+		}
+		if strings.TrimSpace(telemetry.ParentRunID) == "" {
+			telemetry.ParentRunID = e.ParentRunID
+		}
+		if isZeroTaskResultRef(telemetry.Result) {
+			telemetry.Result = e.LastTaskResult
+		}
+		e.LastTurn = &telemetry
+		e.UpdatedAt = now
+		entries[key] = e
+		return nil
+	})
 }
 
 func (s *SessionStore) LinkTask(key, taskID, runID, parentTaskID, parentRunID string) error {
 	if s == nil || strings.TrimSpace(key) == "" {
 		return nil
 	}
-	s.mu.Lock()
-	e := s.entries[key]
-	now := time.Now().UTC()
-	if e.SessionID == "" {
-		e.SessionID = key
-	}
-	if e.CreatedAt.IsZero() {
-		e.CreatedAt = now
-	}
-	e.ActiveTaskID = strings.TrimSpace(taskID)
-	e.ActiveRunID = strings.TrimSpace(runID)
-	e.ParentTaskID = strings.TrimSpace(parentTaskID)
-	e.ParentRunID = strings.TrimSpace(parentRunID)
-	e.UpdatedAt = now
-	s.entries[key] = e
-	s.mu.Unlock()
-	return s.Save()
+	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
+		e := entries[key]
+		now := time.Now().UTC()
+		if e.SessionID == "" {
+			e.SessionID = key
+		}
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
+		}
+		e.ActiveTaskID = strings.TrimSpace(taskID)
+		e.ActiveRunID = strings.TrimSpace(runID)
+		e.ParentTaskID = strings.TrimSpace(parentTaskID)
+		e.ParentRunID = strings.TrimSpace(parentRunID)
+		e.UpdatedAt = now
+		entries[key] = e
+		return nil
+	})
 }
 
 func (s *SessionStore) RecordTaskResult(key, taskID, runID string, result TaskResultRef) error {
 	if s == nil || strings.TrimSpace(key) == "" {
 		return nil
 	}
-	s.mu.Lock()
-	e := s.entries[key]
-	now := time.Now().UTC()
-	if e.SessionID == "" {
-		e.SessionID = key
-	}
-	if e.CreatedAt.IsZero() {
-		e.CreatedAt = now
-	}
-	taskID = strings.TrimSpace(taskID)
-	runID = strings.TrimSpace(runID)
-	if taskID == "" {
-		taskID = strings.TrimSpace(e.ActiveTaskID)
-	}
-	if runID == "" {
-		runID = strings.TrimSpace(e.ActiveRunID)
-	}
-	e.LastCompletedTaskID = taskID
-	e.LastCompletedRunID = runID
-	e.LastTaskResult = result
-	if e.ActiveTaskID == taskID {
-		e.ActiveTaskID = ""
-	}
-	if e.ActiveRunID == runID {
-		e.ActiveRunID = ""
-	}
-	e.UpdatedAt = now
-	s.entries[key] = e
-	s.mu.Unlock()
-	return s.Save()
+	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
+		e := entries[key]
+		now := time.Now().UTC()
+		if e.SessionID == "" {
+			e.SessionID = key
+		}
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
+		}
+		taskID = strings.TrimSpace(taskID)
+		runID = strings.TrimSpace(runID)
+		if taskID == "" {
+			taskID = strings.TrimSpace(e.ActiveTaskID)
+		}
+		if runID == "" {
+			runID = strings.TrimSpace(e.ActiveRunID)
+		}
+		e.LastCompletedTaskID = taskID
+		e.LastCompletedRunID = runID
+		e.LastTaskResult = result
+		if e.ActiveTaskID == taskID {
+			e.ActiveTaskID = ""
+		}
+		if e.ActiveRunID == runID {
+			e.ActiveRunID = ""
+		}
+		e.UpdatedAt = now
+		entries[key] = e
+		return nil
+	})
 }
 
 func (s *SessionStore) AppendChildTask(key, taskID string) error {
@@ -444,39 +445,39 @@ func (s *SessionStore) AppendChildTask(key, taskID string) error {
 	if taskID == "" {
 		return nil
 	}
-	s.mu.Lock()
-	e := s.entries[key]
-	now := time.Now().UTC()
-	if e.SessionID == "" {
-		e.SessionID = key
-	}
-	if e.CreatedAt.IsZero() {
-		e.CreatedAt = now
-	}
-	seen := map[string]struct{}{}
-	merged := make([]string, 0, len(e.ChildTaskIDs)+1)
-	for _, existing := range e.ChildTaskIDs {
-		existing = strings.TrimSpace(existing)
-		if existing == "" {
-			continue
+	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
+		e := entries[key]
+		now := time.Now().UTC()
+		if e.SessionID == "" {
+			e.SessionID = key
 		}
-		if _, ok := seen[existing]; ok {
-			continue
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
 		}
-		seen[existing] = struct{}{}
-		merged = append(merged, existing)
-	}
-	if _, ok := seen[taskID]; !ok {
-		merged = append(merged, taskID)
-	}
-	if len(merged) > sessionChildTaskCap {
-		merged = append([]string(nil), merged[len(merged)-sessionChildTaskCap:]...)
-	}
-	e.ChildTaskIDs = merged
-	e.UpdatedAt = now
-	s.entries[key] = e
-	s.mu.Unlock()
-	return s.Save()
+		seen := map[string]struct{}{}
+		merged := make([]string, 0, len(e.ChildTaskIDs)+1)
+		for _, existing := range e.ChildTaskIDs {
+			existing = strings.TrimSpace(existing)
+			if existing == "" {
+				continue
+			}
+			if _, ok := seen[existing]; ok {
+				continue
+			}
+			seen[existing] = struct{}{}
+			merged = append(merged, existing)
+		}
+		if _, ok := seen[taskID]; !ok {
+			merged = append(merged, taskID)
+		}
+		if len(merged) > sessionChildTaskCap {
+			merged = append([]string(nil), merged[len(merged)-sessionChildTaskCap:]...)
+		}
+		e.ChildTaskIDs = merged
+		e.UpdatedAt = now
+		entries[key] = e
+		return nil
+	})
 }
 
 // RecordMemoryRecall atomically merges surfaced file-memory suppression state
@@ -489,99 +490,135 @@ func (s *SessionStore) RecordMemoryRecall(key, turnID string, sample *MemoryReca
 		return nil
 	}
 
-	s.mu.Lock()
-	e := s.entries[key]
-	now := time.Now().UTC()
-	if e.SessionID == "" {
-		e.SessionID = key
-	}
-	if e.CreatedAt.IsZero() {
-		e.CreatedAt = now
-	}
-	if len(surfaced) > 0 {
-		merged := make(map[string]string, len(e.FileMemorySurfaced)+len(surfaced))
-		for key, signal := range e.FileMemorySurfaced {
-			key = strings.TrimSpace(key)
-			signal = strings.TrimSpace(signal)
-			if key == "" || signal == "" {
-				continue
-			}
-			merged[key] = signal
+	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
+		e := entries[key]
+		now := time.Now().UTC()
+		if e.SessionID == "" {
+			e.SessionID = key
 		}
-		for key, signal := range surfaced {
-			key = strings.TrimSpace(key)
-			signal = strings.TrimSpace(signal)
-			if key == "" || signal == "" {
-				continue
-			}
-			merged[key] = signal
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
 		}
-		if len(merged) > sessionFileMemorySurfacedCap {
-			// Keep the most-recently-surfaced entries. Values encode a
-			// signal string; newer entries from `surfaced` win over older
-			// entries from `e.FileMemorySurfaced` because they were merged
-			// second.  To approximate recency without timestamps, prefer
-			// entries that appeared in the current `surfaced` batch, then
-			// fall back to stable key-order for the remainder.
-			type keyOrder struct {
-				key    string
-				recent bool
-			}
-			ordered := make([]keyOrder, 0, len(merged))
-			for k := range merged {
-				_, isRecent := surfaced[k]
-				ordered = append(ordered, keyOrder{key: k, recent: isRecent})
-			}
-			sort.Slice(ordered, func(i, j int) bool {
-				if ordered[i].recent != ordered[j].recent {
-					return ordered[i].recent // recent entries first
+		if len(surfaced) > 0 {
+			merged := make(map[string]string, len(e.FileMemorySurfaced)+len(surfaced))
+			for key, signal := range e.FileMemorySurfaced {
+				key = strings.TrimSpace(key)
+				signal = strings.TrimSpace(signal)
+				if key == "" || signal == "" {
+					continue
 				}
-				return ordered[i].key < ordered[j].key
-			})
-			trimmed := make(map[string]string, sessionFileMemorySurfacedCap)
-			for _, entry := range ordered[:sessionFileMemorySurfacedCap] {
-				trimmed[entry.key] = merged[entry.key]
+				merged[key] = signal
 			}
-			merged = trimmed
+			for key, signal := range surfaced {
+				key = strings.TrimSpace(key)
+				signal = strings.TrimSpace(signal)
+				if key == "" || signal == "" {
+					continue
+				}
+				merged[key] = signal
+			}
+			if len(merged) > sessionFileMemorySurfacedCap {
+				// Keep the most-recently-surfaced entries. Values encode a
+				// signal string; newer entries from `surfaced` win over older
+				// entries from `e.FileMemorySurfaced` because they were merged
+				// second.  To approximate recency without timestamps, prefer
+				// entries that appeared in the current `surfaced` batch, then
+				// fall back to stable key-order for the remainder.
+				type keyOrder struct {
+					key    string
+					recent bool
+				}
+				ordered := make([]keyOrder, 0, len(merged))
+				for k := range merged {
+					_, isRecent := surfaced[k]
+					ordered = append(ordered, keyOrder{key: k, recent: isRecent})
+				}
+				sort.Slice(ordered, func(i, j int) bool {
+					if ordered[i].recent != ordered[j].recent {
+						return ordered[i].recent // recent entries first
+					}
+					return ordered[i].key < ordered[j].key
+				})
+				trimmed := make(map[string]string, sessionFileMemorySurfacedCap)
+				for _, entry := range ordered[:sessionFileMemorySurfacedCap] {
+					trimmed[entry.key] = merged[entry.key]
+				}
+				merged = trimmed
+			}
+			e.FileMemorySurfaced = merged
 		}
-		e.FileMemorySurfaced = merged
-	}
-	if sample != nil {
-		copied := cloneMemoryRecallSample(*sample)
-		if copied.RecordedAtMS == 0 {
-			copied.RecordedAtMS = now.UnixMilli()
+		if sample != nil {
+			copied := cloneMemoryRecallSample(*sample)
+			if copied.RecordedAtMS == 0 {
+				copied.RecordedAtMS = now.UnixMilli()
+			}
+			if strings.TrimSpace(copied.TurnID) == "" {
+				copied.TurnID = strings.TrimSpace(turnID)
+			}
+			if strings.TrimSpace(copied.Strategy) == "" {
+				copied.Strategy = "deterministic"
+			}
+			e.RecentMemoryRecall = append(e.RecentMemoryRecall, copied)
+			if len(e.RecentMemoryRecall) > memoryRecallSampleCap {
+				e.RecentMemoryRecall = append([]MemoryRecallSample(nil), e.RecentMemoryRecall[len(e.RecentMemoryRecall)-memoryRecallSampleCap:]...)
+			}
 		}
-		if strings.TrimSpace(copied.TurnID) == "" {
-			copied.TurnID = strings.TrimSpace(turnID)
-		}
-		if strings.TrimSpace(copied.Strategy) == "" {
-			copied.Strategy = "deterministic"
-		}
-		e.RecentMemoryRecall = append(e.RecentMemoryRecall, copied)
-		if len(e.RecentMemoryRecall) > memoryRecallSampleCap {
-			e.RecentMemoryRecall = append([]MemoryRecallSample(nil), e.RecentMemoryRecall[len(e.RecentMemoryRecall)-memoryRecallSampleCap:]...)
-		}
-	}
-	e.UpdatedAt = now
-	s.entries[key] = e
-	s.mu.Unlock()
-	return s.Save()
+		e.UpdatedAt = now
+		entries[key] = e
+		return nil
+	})
 }
 
 // Save persists all entries to disk atomically.
 func (s *SessionStore) Save() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.persistLocked()
+}
+
+func (s *SessionStore) mutateAndPersist(mutate func(entries map[string]SessionEntry) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	before := cloneSessionEntries(s.entries)
+	if err := mutate(s.entries); err != nil {
+		return err
+	}
+	if err := s.persistLocked(); err != nil {
+		s.entries = before
+		return err
+	}
+	return nil
+}
+
+func (s *SessionStore) persistLocked() error {
 	data, err := json.MarshalIndent(s.entries, "", "  ")
-	path := s.path
-	s.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("session store: marshal: %w", err)
 	}
+	persist := s.persistFn
+	if persist == nil {
+		persist = defaultSessionStorePersist
+	}
+	return persist(s.path, data)
+}
+
+func defaultSessionStorePersist(path string, data []byte) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("session store: write: %w", err)
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("session store: rename: %w", err)
+	}
+	return nil
+}
+
+func cloneSessionEntries(in map[string]SessionEntry) map[string]SessionEntry {
+	out := make(map[string]SessionEntry, len(in))
+	for key, entry := range in {
+		out[key] = entry
+	}
+	return out
 }
 
 // load reads the file. Missing file is not an error.

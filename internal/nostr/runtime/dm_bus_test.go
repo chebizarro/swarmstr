@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"fiatjaf.com/nostr"
 )
@@ -235,6 +236,113 @@ func TestDMBus_EmitErr_WithHandler(t *testing.T) {
 	bus.emitErr(context.Canceled)
 	if got != context.Canceled {
 		t.Errorf("got %v", got)
+	}
+}
+
+func TestDMBusHandledAuthClosedIsNotFailure(t *testing.T) {
+	relay := "wss://auth.example"
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	subHealth := NewSubHealthTracker("dm")
+	errCount := 0
+	b := &DMBus{
+		health:    health,
+		subHealth: subHealth,
+		onError:   func(error) { errCount++ },
+	}
+
+	if b.handleDMRelayClose(relay, "auth-required: sign in", true) {
+		t.Fatal("handled auth CLOSED should not schedule a failure retry")
+	}
+	if errCount != 0 {
+		t.Fatalf("handled auth CLOSED should not emit user-visible errors, got %d", errCount)
+	}
+	snap := subHealth.Snapshot([]string{relay}, DMReplayWindowDefault)
+	if snap.LastClosedReason != "" || snap.LastClosedRelay != "" {
+		t.Fatalf("handled auth CLOSED should not latch sub-health close state: %+v", snap)
+	}
+	if !health.Allowed(relay, time.Now()) {
+		t.Fatal("handled auth CLOSED should not degrade relay health")
+	}
+}
+
+func TestDMBusNonAuthClosedRecordsFailure(t *testing.T) {
+	relay := "wss://closed.example"
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	subHealth := NewSubHealthTracker("dm")
+	var gotErr error
+	b := &DMBus{
+		health:    health,
+		subHealth: subHealth,
+		onError:   func(err error) { gotErr = err },
+	}
+
+	if !b.handleDMRelayClose(relay, "restricted: policy", false) {
+		t.Fatal("non-auth CLOSED should schedule a retry")
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "restricted") {
+		t.Fatalf("expected surfaced close error, got %v", gotErr)
+	}
+	snap := subHealth.Snapshot([]string{relay}, DMReplayWindowDefault)
+	if snap.LastClosedReason != "restricted: policy" || snap.LastClosedRelay != relay {
+		t.Fatalf("sub-health close not recorded: %+v", snap)
+	}
+}
+
+func TestDMBusEOSERecordsRelaySuccess(t *testing.T) {
+	relay := "wss://eose.example"
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	health.RecordFailure(relay)
+	b := &DMBus{health: health}
+
+	b.handleDMRelayEOSE(relay)
+
+	if !health.Allowed(relay, time.Now()) {
+		t.Fatal("EOSE should be consumed as relay progress, not a subscription failure")
+	}
+}
+
+func TestDMBusRejectsFutureDM(t *testing.T) {
+	recipient := nostr.Generate()
+	sender := nostr.Generate()
+	ciphertext, err := encryptNIP04(sender, nostr.GetPublicKey(recipient), "hello from the future")
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	evt := nostr.Event{
+		Kind:      nostr.KindEncryptedDirectMessage,
+		CreatedAt: nostr.Timestamp(time.Now().Add(time.Hour).Unix()),
+		Tags:      nostr.Tags{{"p", nostr.GetPublicKey(recipient).Hex()}},
+		Content:   ciphertext,
+	}
+	if err := newNIP04KeyerAdapter(sender).SignEvent(context.Background(), &evt); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	var gotErr error
+	b := &DMBus{
+		public:       nostr.GetPublicKey(recipient),
+		nip04Keyer:   newNIP04KeyerAdapter(recipient),
+		hasNIP04Key:  true,
+		replayWindow: 0,
+		seenSet:      map[string]struct{}{},
+		seenCap:      16,
+		messageQueue: make(chan InboundDM, 1),
+		ctx:          context.Background(),
+		onError:      func(err error) { gotErr = err },
+	}
+
+	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{URL: "wss://relay.example"}})
+
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "future dm") {
+		t.Fatalf("expected future-skew rejection, got %v", gotErr)
+	}
+	select {
+	case msg := <-b.messageQueue:
+		t.Fatalf("future DM should not be delivered: %+v", msg)
+	default:
 	}
 }
 

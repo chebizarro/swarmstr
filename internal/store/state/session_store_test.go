@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -169,5 +170,78 @@ func TestMemoryRecallSample_JSONShape(t *testing.T) {
 		if _, ok := decoded[field]; !ok {
 			t.Fatalf("missing field %q in recall sample JSON: %s", field, string(raw))
 		}
+	}
+}
+
+func TestSessionStore_PutRollbackOnPersistFailure(t *testing.T) {
+	ss, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	orig := SessionEntry{SessionID: "sess-1", Label: "before"}
+	if err := ss.Put("sess-1", orig); err != nil {
+		t.Fatalf("seed put: %v", err)
+	}
+	before, _ := ss.Get("sess-1")
+
+	sentinel := errors.New("forced persist failure")
+	ss.persistFn = func(path string, data []byte) error { return sentinel }
+	if err := ss.Put("sess-1", SessionEntry{SessionID: "sess-1", Label: "after"}); !errors.Is(err, sentinel) {
+		t.Fatalf("expected forced failure, got %v", err)
+	}
+	after, _ := ss.Get("sess-1")
+	if after.Label != before.Label || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("expected in-memory rollback, before=%+v after=%+v", before, after)
+	}
+
+	disk, err := NewSessionStore(ss.Path())
+	if err != nil {
+		t.Fatalf("reload store: %v", err)
+	}
+	diskEntry, _ := disk.Get("sess-1")
+	if diskEntry.Label != before.Label {
+		t.Fatalf("expected disk rollback, before=%+v disk=%+v", before, diskEntry)
+	}
+}
+
+func TestSessionStore_AddTokensRollbackOnPersistFailure(t *testing.T) {
+	ss, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	if err := ss.Put("sess-1", SessionEntry{SessionID: "sess-1", InputTokens: 10, OutputTokens: 20, TotalTokens: 30}); err != nil {
+		t.Fatalf("seed put: %v", err)
+	}
+	before, _ := ss.Get("sess-1")
+
+	sentinel := errors.New("forced persist failure")
+	ss.persistFn = func(path string, data []byte) error { return sentinel }
+	if err := ss.AddTokens("sess-1", 5, 7, 2, 3); !errors.Is(err, sentinel) {
+		t.Fatalf("expected forced failure, got %v", err)
+	}
+	after, _ := ss.Get("sess-1")
+	if after.InputTokens != before.InputTokens || after.OutputTokens != before.OutputTokens || after.TotalTokens != before.TotalTokens || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("expected in-memory rollback, before=%+v after=%+v", before, after)
+	}
+}
+
+func TestSessionStore_RecordTurnRollbackOnPersistFailure(t *testing.T) {
+	ss, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	if err := ss.LinkTask("sess-1", "task-1", "run-1", "parent-task", "parent-run"); err != nil {
+		t.Fatalf("link task: %v", err)
+	}
+	before, _ := ss.Get("sess-1")
+
+	sentinel := errors.New("forced persist failure")
+	ss.persistFn = func(path string, data []byte) error { return sentinel }
+	if err := ss.RecordTurn("sess-1", TurnTelemetry{TurnID: "turn-1", Outcome: "completed"}); !errors.Is(err, sentinel) {
+		t.Fatalf("expected forced failure, got %v", err)
+	}
+	after, _ := ss.Get("sess-1")
+	if after.LastTurn != nil || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("expected rollback of last turn and updated_at, before=%+v after=%+v", before, after)
 	}
 }

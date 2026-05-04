@@ -190,9 +190,14 @@ func TestMergeRelayListsNormalizesCaseAndSorts(t *testing.T) {
 
 func TestRelaySelectorEvictsExpiredEntries(t *testing.T) {
 	sel := NewRelaySelector(nil, nil)
-	sel.cacheTTL = 1 * time.Millisecond
+	sel.cacheTTL = time.Millisecond
 	sel.Put(&NIP65RelayList{PubKey: "abc123"})
-	time.Sleep(5 * time.Millisecond)
+
+	sel.mu.Lock()
+	entry := sel.cache["abc123"]
+	entry.fetchedAt = time.Now().Add(-2 * time.Millisecond)
+	sel.mu.Unlock()
+
 	if sel.Get("abc123") != nil {
 		t.Fatal("expected nil after TTL expiry")
 	}
@@ -536,6 +541,16 @@ func TestMetadataValidationFailure(t *testing.T) {
 	if reason := metadataValidationFailure(invalidSig, valid.PubKey, 10002); reason != "invalid_signature" {
 		t.Fatalf("invalid signature reason = %q", reason)
 	}
+
+	future := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		10002,
+		nostr.Timestamp(time.Now().Unix()+31),
+		nostr.Tags{{"r", "wss://future.example"}},
+	)
+	if reason := metadataValidationFailure(future, valid.PubKey, 10002); reason != "created_at_future" {
+		t.Fatalf("future created_at reason = %q", reason)
+	}
 }
 
 // ─── Additional NIP-65 tests (Phase 6) ──────────────────────────────────────
@@ -615,6 +630,50 @@ func TestIsVerifiedMetadataEvent_WrongAuthor(t *testing.T) {
 	wrongPk := nostr.Generate().Public()
 	if isVerifiedMetadataEvent(ev, wrongPk, 10002) {
 		t.Error("wrong author should be invalid")
+	}
+}
+
+func TestSelectLatestVerifiedMetadataEventKind3RejectsInvalidSignature(t *testing.T) {
+	valid := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		3,
+		nostr.Timestamp(10),
+		nostr.Tags{{"p", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+	)
+	invalidSig := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		3,
+		nostr.Timestamp(20),
+		nostr.Tags{{"p", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+	)
+	invalidSig.Sig[0] ^= 0x01
+
+	got := selectLatestVerifiedMetadataEvent(
+		relayEventStream(invalidSig, valid),
+		valid.PubKey,
+		3,
+	)
+	if got == nil {
+		t.Fatal("expected verified kind:3 event to be selected")
+	}
+	if got.ID != valid.ID {
+		t.Fatalf("selected event = %s, want %s", got.ID.Hex(), valid.ID.Hex())
+	}
+}
+
+func TestDecodeNIP02ContactsSkipsInvalidPubkeys(t *testing.T) {
+	ev := nostr.Event{
+		Tags: nostr.Tags{
+			{"p", "not-a-pubkey"},
+			{"p", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "wss://relay.example", "alice"},
+		},
+	}
+	contacts := decodeNIP02Contacts(ev)
+	if len(contacts) != 1 {
+		t.Fatalf("expected 1 valid contact, got %d", len(contacts))
+	}
+	if contacts[0].PubKey != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("unexpected pubkey: %s", contacts[0].PubKey)
 	}
 }
 

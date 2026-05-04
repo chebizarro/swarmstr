@@ -46,6 +46,9 @@ const (
 
 	// nip17ReconnectBackoffMax caps the exponential backoff for relay reconnection.
 	nip17ReconnectBackoffMax = 10 * time.Minute
+
+	nip17MaxFutureSkew = 10 * time.Minute
+	nip17MaxPastAge    = 365 * 24 * time.Hour
 )
 
 // NIP17BusOptions mirrors DMBusOptions so the two buses are interchangeable.
@@ -422,6 +425,11 @@ func (b *NIP17Bus) perRelaySubscribe(
 					goto reconnect
 				}
 
+				if err := b.validateGiftWrapEvent(evt, time.Now()); err != nil {
+					log.Printf("nip17: rejecting gift wrap from %s: %v", relayURL, err)
+					continue
+				}
+
 				// Unwrap the gift wrap inline.
 				rumor, unwrapErr := nip59.GiftUnwrap(evt, func(pk nostr.PubKey, ct string) (string, error) {
 					return b.kr.Decrypt(ctx, ct, pk)
@@ -431,11 +439,20 @@ func (b *NIP17Bus) perRelaySubscribe(
 					continue
 				}
 
+				if err := b.validateRumorEvent(rumor, time.Now()); err != nil {
+					log.Printf("nip17: rejecting rumor from %s: %v", relayURL, err)
+					continue
+				}
+
 				select {
 				case out <- rumor:
 				case <-ctx.Done():
 					return
 				}
+
+			case <-sub.EndOfStoredEvents:
+				log.Printf("nip17: EOSE from %s; switching to realtime", relayURL)
+				continue
 
 			case reason := <-sub.ClosedReason:
 				if strings.HasPrefix(reason, "auth-required:") && !hasAuthed {
@@ -468,11 +485,6 @@ func (b *NIP17Bus) perRelaySubscribe(
 func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 	if b.subHealth != nil {
 		b.subHealth.RecordEvent()
-	}
-	// Only process kind 14 (NIP-17 DM rumor).
-	if rumor.Kind != nostr.KindDirectMessage {
-		log.Printf("nip17: skipping non-DM rumor kind=%d from=%s", rumor.Kind, rumor.PubKey.Hex())
-		return
 	}
 	// Skip self-sent (sent-to-self copy we stored).
 	if rumor.PubKey == b.public {
@@ -543,6 +555,55 @@ func (b *NIP17Bus) emitErr(err error) {
 	if b.onError != nil && err != nil {
 		b.onError(err)
 	}
+}
+
+func (b *NIP17Bus) validateGiftWrapEvent(evt nostr.Event, now time.Time) error {
+	if evt.Kind != nostr.KindGiftWrap {
+		return fmt.Errorf("unexpected kind=%d", evt.Kind)
+	}
+	if !evt.Tags.ContainsAny("p", []string{b.public.Hex()}) {
+		return fmt.Errorf("gift wrap missing recipient tag")
+	}
+	if !evt.CheckID() {
+		return fmt.Errorf("invalid gift wrap id")
+	}
+	if !evt.VerifySignature() {
+		return fmt.Errorf("invalid gift wrap signature")
+	}
+	if !timestampReasonable(evt.CreatedAt, now) {
+		return fmt.Errorf("gift wrap timestamp out of bounds")
+	}
+	return nil
+}
+
+func (b *NIP17Bus) validateRumorEvent(rumor nostr.Event, now time.Time) error {
+	if rumor.Kind != nostr.KindDirectMessage {
+		return fmt.Errorf("unexpected rumor kind=%d", rumor.Kind)
+	}
+	if !rumor.Tags.ContainsAny("p", []string{b.public.Hex()}) {
+		return fmt.Errorf("rumor missing recipient tag")
+	}
+	if !rumor.CheckID() {
+		return fmt.Errorf("invalid rumor id")
+	}
+	if !rumor.VerifySignature() {
+		return fmt.Errorf("invalid rumor signature")
+	}
+	if !timestampReasonable(rumor.CreatedAt, now) {
+		return fmt.Errorf("rumor timestamp out of bounds")
+	}
+	return nil
+}
+
+func timestampReasonable(createdAt nostr.Timestamp, now time.Time) bool {
+	ts := time.Unix(int64(createdAt), 0)
+	if ts.After(now.Add(nip17MaxFutureSkew)) {
+		return false
+	}
+	if ts.Before(now.Add(-nip17MaxPastAge)) {
+		return false
+	}
+	return true
 }
 
 func (b *NIP17Bus) markSeen17(id string) bool {

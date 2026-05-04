@@ -85,7 +85,14 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		}
 		runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 		snapshot := agentJobs.Begin(runID, req.SessionID)
-		go executeAgentRunWithFallbacks(runID, req, rt, fallbackRuntimes, runtimeLabels, memoryIndex, agentJobs)
+		ctrl := currentAgentRunController()
+		if ctrl.jobs == nil {
+			ctrl.jobs = agentJobs
+		}
+		if err := ctrl.launchManagedRun(runID, req, rt, fallbackRuntimes, runtimeLabels, memoryIndex, agentJobs, nil); err != nil {
+			agentJobs.Finish(runID, "", err)
+			return nostruntime.ControlRPCResult{}, true, err
+		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"run_id": runID, "status": "accepted", "accepted_at": snapshot.StartedAt})}, true, nil
 	case methods.MethodAgentWait:
 		req, err := methods.DecodeAgentWaitParams(in.Params)
