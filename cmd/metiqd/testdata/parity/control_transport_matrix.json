@@ -28,7 +28,8 @@
         "key": "dm.policy",
         "value": "open"
       },
-      "scenario": "pairing_config"
+      "scenario": "pairing_config",
+      "expect_error_contains": "authenticated control admin required"
     },
     {
       "name": "config apply",
@@ -43,7 +44,8 @@
           }
         }
       },
-      "scenario": "default"
+      "scenario": "default",
+      "expect_error_contains": "authenticated control admin required"
     },
     {
       "name": "config patch",
@@ -53,7 +55,8 @@
           "dm": {"policy": "pairing"}
         }
       },
-      "scenario": "default"
+      "scenario": "default",
+      "expect_error_contains": "authenticated control admin required"
     },
     {
       "name": "sessions list seeded",
@@ -90,7 +93,7 @@
         "idempotencyKey": "idem-transport"
       },
       "scenario": "default",
-      "expect_error_contains": "send runtime not configured"
+      "expect_error_contains": "authenticated control admin required"
     }
   ]
 }

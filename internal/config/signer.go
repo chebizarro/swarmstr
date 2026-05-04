@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -131,7 +132,10 @@ func ResolveSigner(ctx context.Context, cfg BootstrapConfig, pool *nostr.Pool) (
 	case "bunker":
 		// Connect to the remote bunker.  Generate an ephemeral client key for
 		// the NIP-46 handshake; the bunker holds the actual signing key.
-		clientSK := generateEphemeralKey()
+		clientSK, err := generateEphemeralKey()
+		if err != nil {
+			return nil, fmt.Errorf("generate bunker ephemeral key: %w", err)
+		}
 		authHandler := func(authURL string) {
 			// Log the auth URL so the operator can approve the connection.
 			// In a future iteration this could open a browser or send a DM.
@@ -151,7 +155,10 @@ func ResolveSigner(ctx context.Context, cfg BootstrapConfig, pool *nostr.Pool) (
 			return nil, fmt.Errorf("nostrconnect:// URL must include at least one relay= parameter")
 		}
 		secret := u.Query().Get("secret")
-		clientSK := generateEphemeralKey()
+		clientSK, err := generateEphemeralKey()
+		if err != nil {
+			return nil, fmt.Errorf("generate nostrconnect ephemeral key: %w", err)
+		}
 		bc, err := nip46.NewBunkerFromNostrConnect(ctx, clientSK, relays, secret, pool)
 		if err != nil {
 			return nil, fmt.Errorf("nostrconnect handshake: %w", err)
@@ -223,14 +230,15 @@ func parsePrivateKey(raw string) (nostr.SecretKey, error) {
 	return sk, nil
 }
 
+var entropyReader io.Reader = rand.Reader
+
 // generateEphemeralKey generates a fresh random NIP-46 client secret key.
-func generateEphemeralKey() nostr.SecretKey {
+func generateEphemeralKey() (nostr.SecretKey, error) {
 	var sk [32]byte
-	if _, err := rand.Read(sk[:]); err != nil {
-		// Extremely unlikely; panic is acceptable here.
-		panic("NIP-46: failed to generate ephemeral client key: " + err.Error())
+	if _, err := io.ReadFull(entropyReader, sk[:]); err != nil {
+		return nostr.SecretKey{}, fmt.Errorf("NIP-46: failed to generate ephemeral client key: %w", err)
 	}
-	return sk
+	return sk, nil
 }
 
 // KeypairFromHex derives bech32-encoded nsec and npub strings from a hex

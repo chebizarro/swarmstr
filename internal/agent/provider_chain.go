@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 )
 
@@ -21,24 +20,24 @@ func BuildChatProviderForModel(model string, apiKey string, baseURL string) (Cha
 
 	switch {
 	case norm == "anthropic" || strings.HasPrefix(norm, "claude-"):
-		if apiKey == "" {
-			apiKey = strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+		credential, err := requireProviderCredential("Anthropic", model, apiKey, "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN")
+		if err != nil {
+			return nil, err
 		}
-		if apiKey == "" {
-			return nil, fmt.Errorf("ANTHROPIC_API_KEY required for model %q", model)
+		if access, refresh, isOAuth := ParseAnthropicOAuthCredential(credential); isOAuth {
+			p := &AnthropicProvider{}
+			return NewAnthropicChatProviderOAuth(access, func() (string, error) {
+				return p.resolveOAuthToken(access, refresh)
+			}), nil
 		}
-		return NewAnthropicChatProvider(apiKey), nil
+		return NewAnthropicChatProvider(credential), nil
 
 	case norm == "gemini" || strings.HasPrefix(norm, "gemini-"):
-		if apiKey == "" {
-			for _, k := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"} {
-				if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-					apiKey = v
-					break
-				}
-			}
+		credential, err := requireProviderCredential("Gemini", model, apiKey, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY")
+		if err != nil {
+			return nil, err
 		}
-		return &GeminiChatProvider{APIKey: apiKey, Model: model}, nil
+		return &GeminiChatProvider{APIKey: credential, Model: model}, nil
 
 	case norm == "copilot-cli" || strings.HasPrefix(norm, "copilot-cli/"):
 		cliModel := "gpt-4.1"
@@ -49,26 +48,28 @@ func BuildChatProviderForModel(model string, apiKey string, baseURL string) (Cha
 
 	case norm == "openai" || strings.HasPrefix(norm, "gpt-") ||
 		strings.HasPrefix(norm, "o1-") || strings.HasPrefix(norm, "o3-") || strings.HasPrefix(norm, "o4-"):
-		if apiKey == "" {
-			apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
-		}
 		effectiveBase := baseURL
 		if effectiveBase == "" {
 			effectiveBase = "https://api.openai.com/v1"
 		}
-		return &OpenAIChatProviderChat{BaseURL: effectiveBase, APIKey: apiKey, Model: model}, nil
+		credential, err := requireOpenAICompatibleCredential("OpenAI", model, apiKey, "OPENAI_API_KEY", effectiveBase)
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIChatProviderChat{BaseURL: effectiveBase, APIKey: credential, Model: model}, nil
 	}
 
 	// Try OpenAI-compatible providers by prefix/alias.
 	if compatBase, compatEnvKey := resolveOpenAICompat(norm); compatBase != "" {
-		if apiKey == "" && compatEnvKey != "" {
-			apiKey = strings.TrimSpace(os.Getenv(compatEnvKey))
-		}
 		effectiveBase := baseURL
 		if effectiveBase == "" {
 			effectiveBase = compatBase
 		}
-		return &OpenAIChatProviderChat{BaseURL: effectiveBase, APIKey: apiKey, Model: model}, nil
+		credential, err := requireOpenAICompatibleCredential("OpenAI-compatible provider", model, apiKey, compatEnvKey, effectiveBase)
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIChatProviderChat{BaseURL: effectiveBase, APIKey: credential, Model: model}, nil
 	}
 
 	return nil, fmt.Errorf("cannot create ChatProvider for model %q", model)

@@ -93,13 +93,17 @@ func AuthenticateControlCall(r *http.Request, payload []byte, maxAge time.Durati
 }
 
 func EvaluateControlCall(callerPubKey, method string, authenticated bool, cfg state.ConfigDoc) ControlDecision {
-	method = strings.ToLower(strings.TrimSpace(method))
+	method = normalizeControlMethod(method)
 	if method == "" {
 		return ControlDecision{Allowed: false, Authenticated: authenticated, Reason: "method is required"}
 	}
 	policy := cfg.Control
+	sensitive := IsSensitiveControlMethod(method)
 	if !authenticated {
-		if methodAllowed(method, policy.AllowUnauthMethods) || !policy.RequireAuth {
+		if sensitive {
+			return ControlDecision{Allowed: false, Authenticated: false, Reason: "authenticated control admin required"}
+		}
+		if methodAllowedForUnauth(method, policy.AllowUnauthMethods) || !policy.RequireAuth {
 			return ControlDecision{Allowed: true, Authenticated: false}
 		}
 		return ControlDecision{Allowed: false, Authenticated: false, Reason: "authentication required"}
@@ -107,7 +111,7 @@ func EvaluateControlCall(callerPubKey, method string, authenticated bool, cfg st
 
 	normCaller := normalizePubKey(callerPubKey)
 	if len(policy.Admins) == 0 {
-		if policy.RequireAuth {
+		if policy.RequireAuth || sensitive {
 			return ControlDecision{Allowed: false, Authenticated: true, Reason: "no control admins configured"}
 		}
 		return ControlDecision{Allowed: true, Authenticated: true}
@@ -123,6 +127,50 @@ func EvaluateControlCall(callerPubKey, method string, authenticated bool, cfg st
 		return ControlDecision{Allowed: false, Authenticated: true, Reason: fmt.Sprintf("method %q not allowed for caller", method)}
 	}
 	return ControlDecision{Allowed: false, Authenticated: true, Reason: "caller is not an admin"}
+}
+
+func IsSensitiveControlMethod(method string) bool {
+	switch normalizeControlMethod(method) {
+	case "config.put", "config.set", "config.apply", "config.patch", "list.put":
+		return true
+	case "agents.create", "agents.update", "agents.delete", "agents.assign", "agents.unassign", "agents.files.set":
+		return true
+	case "tools.profile.set", "skills.install", "skills.update":
+		return true
+	case "cron.add", "cron.update", "cron.remove", "cron.run":
+		return true
+	case "exec.approvals.set", "exec.approval.resolve":
+		return true
+	case "mcp.put", "mcp.remove", "mcp.reconnect", "mcp.auth.start", "mcp.auth.refresh", "mcp.auth.clear", "secrets.reload", "secrets.resolve":
+		return true
+	case "talk.mode", "voicewake.set", "tts.setprovider", "tts.enable", "tts.disable", "tts.convert", "browser.request":
+		return true
+	case "node.pair.approve", "node.pair.reject", "device.pair.approve", "device.pair.reject", "device.pair.remove", "device.token.rotate", "device.token.revoke", "node.rename", "node.canvas.capability.refresh", "node.invoke", "node.event", "node.result", "node.invoke.result", "node.pending.enqueue", "node.pending.pull", "node.pending.ack", "node.pending.drain", "exec.approvals.node.set", "canvas.update", "canvas.delete":
+		return true
+	case "plugins.install", "plugins.uninstall", "plugins.update":
+		return true
+	case "channels.logout", "channels.join", "channels.leave", "channels.send":
+		return true
+	case "chat.send", "sessions.patch", "sessions.reset", "sessions.delete", "sessions.compact", "sessions.prune", "sessions.spawn", "chat.abort", "memory.compact":
+		return true
+	case "tasks.create", "tasks.cancel", "tasks.resume", "tasks.audit_export":
+		return true
+	case "acp.register", "acp.unregister", "acp.dispatch", "acp.pipeline":
+		return true
+	case "sandbox.run", "wizard.start", "wizard.next", "wizard.cancel", "update.run", "set-heartbeats", "send", "hooks.enable", "hooks.disable":
+		return true
+	default:
+		return false
+	}
+}
+
+func IsUnauthAllowedControlMethod(method string) bool {
+	switch normalizeControlMethod(method) {
+	case "supportedmethods", "health", "status.get", "status":
+		return true
+	default:
+		return false
+	}
 }
 
 func requestURL(r *http.Request) string {
@@ -147,11 +195,12 @@ func requestURL(r *http.Request) string {
 }
 
 func methodAllowed(method string, allowed []string) bool {
+	method = normalizeControlMethod(method)
 	if method == "" {
 		return false
 	}
 	for _, entry := range allowed {
-		rule := strings.ToLower(strings.TrimSpace(entry))
+		rule := normalizeControlMethod(entry)
 		if rule == "" {
 			continue
 		}
@@ -166,4 +215,25 @@ func methodAllowed(method string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+func methodAllowedForUnauth(method string, allowed []string) bool {
+	method = normalizeControlMethod(method)
+	if method == "" || IsSensitiveControlMethod(method) {
+		return false
+	}
+	for _, entry := range allowed {
+		rule := normalizeControlMethod(entry)
+		if !IsUnauthAllowedControlMethod(rule) {
+			continue
+		}
+		if rule == method {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeControlMethod(method string) string {
+	return strings.ToLower(strings.TrimSpace(method))
 }

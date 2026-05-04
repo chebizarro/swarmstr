@@ -301,12 +301,55 @@ func TestHandleControlRPCRequest_AuthzDenied(t *testing.T) {
 		Admins:      []state.ControlAdmin{{PubKey: "admin-a", Methods: []string{"status.get"}}},
 	}})
 	_, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
-		FromPubKey: "caller-b",
-		Method:     methods.MethodConfigPut,
-		Params:     json.RawMessage(`[{"dm":{"policy":"open"}}]`),
+		FromPubKey:    "caller-b",
+		Method:        methods.MethodConfigPut,
+		Params:        json.RawMessage(`[{"dm":{"policy":"open"}}]`),
+		Authenticated: true,
 	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err == nil {
 		t.Fatal("expected authorization error")
+	}
+}
+
+func TestHandleControlRPCRequest_AppliesActualRemotePrincipal(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{
+		RequireAuth: true,
+		Admins:      []state.ControlAdmin{{PubKey: "operator-a", Methods: []string{methods.MethodStatus}}},
+	}})
+	if _, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey:    "operator-a",
+		Method:        methods.MethodStatus,
+		Params:        json.RawMessage(`{}`),
+		Authenticated: true,
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("operator-a status.get should be allowed: %v", err)
+	}
+	if _, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey:    "operator-a",
+		Method:        methods.MethodConfigSet,
+		Params:        json.RawMessage(`{"key":"dm.policy","value":"open"}`),
+		Authenticated: true,
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute)); err == nil {
+		t.Fatal("operator-a config.set should be denied by method restriction")
+	}
+}
+
+func TestHandleControlRPCRequest_InternalBypassIsExplicit(t *testing.T) {
+	cfgState := newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: true}})
+	if _, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "daemon",
+		Method:     methods.MethodSupportedMethods,
+		Params:     json.RawMessage(`[]`),
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute)); err == nil {
+		t.Fatal("unmarked daemon-like call should still pass through policy and fail")
+	}
+	if _, err := handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "daemon",
+		Method:     methods.MethodSupportedMethods,
+		Params:     json.RawMessage(`[]`),
+		Internal:   true,
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("explicit internal call should bypass remote auth policy: %v", err)
 	}
 }
 

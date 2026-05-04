@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -158,36 +160,125 @@ func truncateUTF8ByBytes(s string, maxBytes int) string {
 	return s[:cut]
 }
 
+func boolEnv(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func echoProviderAllowed() bool {
+	return boolEnv("METIQ_AGENT_ALLOW_ECHO")
+}
+
+func requireEchoProviderOptIn() error {
+	if echoProviderAllowed() {
+		return nil
+	}
+	return fmt.Errorf("METIQ_AGENT_PROVIDER=echo requires METIQ_AGENT_ALLOW_ECHO=true for explicit dev/test echo opt-in")
+}
+
+func firstEnv(keys ...string) (value, key string) {
+	for _, k := range keys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v, k
+		}
+	}
+	return "", ""
+}
+
+func requireProviderCredential(providerName, model string, apiKey string, envKeys ...string) (string, error) {
+	if key := strings.TrimSpace(apiKey); key != "" {
+		return key, nil
+	}
+	if key, _ := firstEnv(envKeys...); key != "" {
+		return key, nil
+	}
+	return "", fmt.Errorf("%s credential is required for hosted model %q (set %s or configure provider api_key)", providerName, model, strings.Join(envKeys, " or "))
+}
+
+func isLocalBaseURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		u, err = url.Parse("http://" + raw)
+		if err != nil {
+			return false
+		}
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func requireOpenAICompatibleCredential(providerName, model string, apiKey string, envKey string, baseURL string) (string, error) {
+	if key := strings.TrimSpace(apiKey); key != "" {
+		return key, nil
+	}
+	if envKey != "" {
+		apiKey = strings.TrimSpace(os.Getenv(envKey))
+	}
+	if apiKey != "" || isLocalBaseURL(baseURL) {
+		return apiKey, nil
+	}
+	if envKey != "" {
+		return "", fmt.Errorf("%s API key is required for hosted model %q (set %s or configure provider api_key)", providerName, model, envKey)
+	}
+	return "", fmt.Errorf("%s API key is required for non-local base_url %q (configure provider api_key or use a local endpoint)", providerName, baseURL)
+}
+
 func NewProviderFromEnv() (Provider, error) {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("METIQ_AGENT_PROVIDER")))
 	switch mode {
-	case "", "echo":
-		// Fall through to key-based auto-detect: if ANTHROPIC_API_KEY is set,
-		// use Anthropic as the default provider instead of the echo stub.
-		if apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); apiKey != "" {
+	case "":
+		// Key-based auto-detect keeps the historical default Anthropic path, but
+		// no longer falls back to the EchoProvider stub when real credentials are
+		// absent.
+		if apiKey, keyName := firstEnv("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"); apiKey != "" {
 			model := strings.TrimSpace(os.Getenv("METIQ_AGENT_MODEL"))
 			if model == "" {
 				model = "claude-sonnet-4-5"
 			}
+			log.Printf("agent provider: using Anthropic provider from %s model=%q", keyName, model)
 			return &AnthropicProvider{Model: model, APIKey: apiKey}, nil
 		}
+		return nil, fmt.Errorf("METIQ_AGENT_PROVIDER or Anthropic credentials (ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN) are required for runtime startup; refusing to start EchoProvider implicitly (for dev/test set METIQ_AGENT_PROVIDER=echo and METIQ_AGENT_ALLOW_ECHO=true)")
+	case "echo":
+		if err := requireEchoProviderOptIn(); err != nil {
+			return nil, err
+		}
+		log.Printf("agent provider: dev/test EchoProvider enabled via METIQ_AGENT_ALLOW_ECHO")
 		return EchoProvider{}, nil
 	case "anthropic":
-		apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
-		if apiKey == "" {
-			return nil, fmt.Errorf("ANTHROPIC_API_KEY is required when METIQ_AGENT_PROVIDER=anthropic")
+		apiKey, err := requireProviderCredential("Anthropic", strings.TrimSpace(os.Getenv("METIQ_AGENT_MODEL")), "", "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN")
+		if err != nil {
+			return nil, fmt.Errorf("%w when METIQ_AGENT_PROVIDER=anthropic", err)
 		}
 		model := strings.TrimSpace(os.Getenv("METIQ_AGENT_MODEL"))
 		if model == "" {
 			model = "claude-sonnet-4-5"
 		}
+		log.Printf("agent provider: using Anthropic provider model=%q", model)
 		return &AnthropicProvider{Model: model, APIKey: apiKey}, nil
 	case "http":
-		url := strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_URL"))
-		if url == "" {
+		providerURL := strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_URL"))
+		if providerURL == "" {
 			return nil, fmt.Errorf("METIQ_AGENT_HTTP_URL is required when METIQ_AGENT_PROVIDER=http")
 		}
-		return &HTTPProvider{URL: url, APIKey: strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_API_KEY"))}, nil
+		apiKey := strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_API_KEY"))
+		if apiKey == "" && !isLocalBaseURL(providerURL) {
+			return nil, fmt.Errorf("METIQ_AGENT_HTTP_API_KEY is required for non-local METIQ_AGENT_HTTP_URL %q", providerURL)
+		}
+		log.Printf("agent provider: using HTTP provider url=%q", providerURL)
+		return &HTTPProvider{URL: providerURL, APIKey: apiKey}, nil
 	default:
 		return nil, fmt.Errorf("unknown METIQ_AGENT_PROVIDER %q", mode)
 	}
@@ -507,9 +598,9 @@ type geminiResponse struct {
 
 // geminiUsageMetadata holds token counts from the Gemini API response.
 type geminiUsageMetadata struct {
-	PromptTokenCount     int64 `json:"promptTokenCount"`
-	CandidatesTokenCount int64 `json:"candidatesTokenCount"`
-	TotalTokenCount      int64 `json:"totalTokenCount"`
+	PromptTokenCount        int64 `json:"promptTokenCount"`
+	CandidatesTokenCount    int64 `json:"candidatesTokenCount"`
+	TotalTokenCount         int64 `json:"totalTokenCount"`
 	CachedContentTokenCount int64 `json:"cachedContentTokenCount"`
 }
 
@@ -643,9 +734,9 @@ func resolveOpenAICompat(norm string) (baseURL, envKey string) {
 
 // NewProviderForModel constructs a Provider for the given model identifier.
 //
-//   - "" / "echo"                         → EchoProvider
+//   - "echo"                              → EchoProvider (explicit dev/test construction)
 //   - "http" / "http-default"             → HTTPProvider (METIQ_AGENT_HTTP_URL)
-//   - "anthropic" / "claude-*"            → AnthropicProvider (ANTHROPIC_API_KEY)
+//   - "anthropic" / "claude-*"            → AnthropicProvider (ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN)
 //   - "openai" / "gpt-*" / "o1-*" …      → OpenAIChatProvider (OPENAI_API_KEY)
 //   - "gemini" / "gemini-*"              → GoogleGeminiProvider (GEMINI_API_KEY)
 //   - "grok-*" / "xai"                   → OpenAIChatProvider → api.x.ai (XAI_API_KEY)
@@ -656,17 +747,32 @@ func resolveOpenAICompat(norm string) (baseURL, envKey string) {
 func NewProviderForModel(model string) (Provider, error) {
 	norm := strings.ToLower(strings.TrimSpace(model))
 	switch {
-	case norm == "" || norm == "echo":
+	case norm == "":
+		return nil, fmt.Errorf("model is required; refusing to default to EchoProvider implicitly (use explicit model %q only for dev/test)", "echo")
+	case norm == "echo":
 		return EchoProvider{}, nil
 	case norm == "http" || norm == "http-default":
-		url := strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_URL"))
-		if url == "" {
+		providerURL := strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_URL"))
+		if providerURL == "" {
 			return nil, fmt.Errorf("METIQ_AGENT_HTTP_URL is required for http model")
 		}
-		return &HTTPProvider{URL: url, APIKey: strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_API_KEY"))}, nil
+		apiKey := strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_API_KEY"))
+		if apiKey == "" && !isLocalBaseURL(providerURL) {
+			return nil, fmt.Errorf("METIQ_AGENT_HTTP_API_KEY is required for non-local http model URL %q", providerURL)
+		}
+		return &HTTPProvider{URL: providerURL, APIKey: apiKey}, nil
 	case norm == "github-copilot":
 		// GitHub Copilot: OpenAI-compatible API with OAuth device-flow auth.
-		tok, _, _ := FetchOAuthToken(context.Background(), "github-copilot")
+		tok, found, tokErr := FetchOAuthToken(context.Background(), "github-copilot")
+		if tokErr != nil {
+			return nil, fmt.Errorf("github-copilot OAuth token: %w", tokErr)
+		}
+		if strings.TrimSpace(tok) == "" {
+			if found {
+				return nil, fmt.Errorf("github-copilot OAuth token fetcher returned an empty token")
+			}
+			return nil, fmt.Errorf("github-copilot OAuth token is required")
+		}
 		return &OpenAIChatProvider{
 			BaseURL: "https://api.githubcopilot.com",
 			APIKey:  tok,
@@ -686,19 +792,35 @@ func NewProviderForModel(model string) (Provider, error) {
 			},
 		}, nil
 	case norm == "anthropic" || strings.HasPrefix(norm, "claude-"):
-		return &AnthropicProvider{Model: strings.TrimSpace(model)}, nil
+		apiKey, err := requireProviderCredential("Anthropic", strings.TrimSpace(model), "", "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN")
+		if err != nil {
+			return nil, err
+		}
+		return &AnthropicProvider{Model: strings.TrimSpace(model), APIKey: apiKey}, nil
 	case norm == "openai" || strings.HasPrefix(norm, "gpt-") || strings.HasPrefix(norm, "o1-") || strings.HasPrefix(norm, "o3-") || strings.HasPrefix(norm, "o4-"):
-		return &OpenAIChatProvider{Model: strings.TrimSpace(model)}, nil
+		apiKey, err := requireOpenAICompatibleCredential("OpenAI", strings.TrimSpace(model), "", "OPENAI_API_KEY", "https://api.openai.com/v1")
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIChatProvider{Model: strings.TrimSpace(model), APIKey: apiKey}, nil
 	case norm == "gemini" || strings.HasPrefix(norm, "gemini-"):
-		return &GoogleGeminiProvider{Model: strings.TrimSpace(model)}, nil
+		apiKey, err := requireProviderCredential("Gemini", strings.TrimSpace(model), "", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		return &GoogleGeminiProvider{Model: strings.TrimSpace(model), APIKey: apiKey}, nil
 	case norm == "cohere" || strings.HasPrefix(norm, "command-"):
-		return &CohereProvider{Model: strings.TrimSpace(model)}, nil
+		apiKey, err := requireProviderCredential("Cohere", strings.TrimSpace(model), "", "COHERE_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		return &CohereProvider{Model: strings.TrimSpace(model), APIKey: apiKey}, nil
 	}
 	// OpenAI-compatible providers by prefix/alias.
 	if baseURL, envKey := resolveOpenAICompat(norm); baseURL != "" {
-		apiKey := ""
-		if envKey != "" {
-			apiKey = strings.TrimSpace(os.Getenv(envKey))
+		apiKey, err := requireOpenAICompatibleCredential("OpenAI-compatible provider", strings.TrimSpace(model), "", envKey, baseURL)
+		if err != nil {
+			return nil, err
 		}
 		return &OpenAIChatProvider{
 			BaseURL: baseURL,
@@ -839,82 +961,115 @@ type ProviderOverride struct {
 // credentials from the providers[] config section, falling back to env vars
 // when fields are empty.
 func BuildProviderWithOverride(model string, override ProviderOverride) (Provider, error) {
+	overrideBaseURL := strings.TrimSpace(override.BaseURL)
+	overrideAPIKey := strings.TrimSpace(override.APIKey)
+
 	// If no override is specified, delegate to the standard env-based builder.
-	if override.BaseURL == "" && override.APIKey == "" {
+	if overrideBaseURL == "" && overrideAPIKey == "" && strings.TrimSpace(override.Model) == "" && strings.TrimSpace(override.SystemPrompt) == "" {
 		return NewProviderForModel(model)
 	}
-	// GitHub Copilot OAuth: detect via base URL or model prefix.
+
 	effectiveModel := strings.TrimSpace(model)
-	if effectiveModel == "" {
-		effectiveModel = strings.TrimSpace(override.Model)
-	}
-	normModel := strings.ToLower(effectiveModel)
-	isGHCopilot := strings.Contains(strings.ToLower(override.BaseURL), "githubcopilot.com") ||
-		normModel == "github-copilot"
-	if isGHCopilot && strings.TrimSpace(override.APIKey) == "" {
-		if tok, found, tokErr := FetchOAuthToken(context.Background(), "github-copilot"); found && tokErr == nil {
-			override.APIKey = tok
-		}
-		if override.BaseURL == "" {
-			override.BaseURL = "https://api.githubcopilot.com"
-		}
-	}
 	if effectiveModel == "" {
 		effectiveModel = strings.TrimSpace(override.Model)
 	}
 	norm := strings.ToLower(effectiveModel)
 
+	if norm == "echo" {
+		return EchoProvider{}, nil
+	}
+
+	// GitHub Copilot OAuth: detect via base URL or model prefix.
+	isGHCopilot := strings.Contains(strings.ToLower(overrideBaseURL), "githubcopilot.com") || norm == "github-copilot"
+	if isGHCopilot {
+		apiKey := overrideAPIKey
+		if apiKey == "" {
+			tok, found, tokErr := FetchOAuthToken(context.Background(), "github-copilot")
+			if tokErr != nil {
+				return nil, fmt.Errorf("github-copilot OAuth token: %w", tokErr)
+			}
+			if found {
+				apiKey = strings.TrimSpace(tok)
+			}
+		}
+		if apiKey == "" {
+			return nil, fmt.Errorf("github-copilot OAuth token is required for hosted model %q", effectiveModel)
+		}
+		baseURL := overrideBaseURL
+		if baseURL == "" {
+			baseURL = "https://api.githubcopilot.com"
+		}
+		return &OpenAIChatProvider{BaseURL: baseURL, APIKey: apiKey, Model: effectiveModel}, nil
+	}
+
 	// Anthropic (claude-* models).
 	if norm == "anthropic" || strings.HasPrefix(norm, "claude-") {
-		apiKey := strings.TrimSpace(override.APIKey)
-		if apiKey == "" {
-			apiKey = strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+		apiKey, err := requireProviderCredential("Anthropic", effectiveModel, overrideAPIKey, "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN")
+		if err != nil {
+			return nil, err
 		}
 		return &AnthropicProvider{Model: effectiveModel, APIKey: apiKey, SystemPrompt: override.SystemPrompt}, nil
 	}
 
 	// Google Gemini.
 	if norm == "gemini" || strings.HasPrefix(norm, "gemini-") {
-		apiKey := strings.TrimSpace(override.APIKey)
-		if apiKey == "" {
-			for _, k := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"} {
-				if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-					apiKey = v
-					break
-				}
-			}
+		apiKey, err := requireProviderCredential("Gemini", effectiveModel, overrideAPIKey, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY")
+		if err != nil {
+			return nil, err
 		}
 		return &GoogleGeminiProvider{Model: effectiveModel, APIKey: apiKey}, nil
+	}
+
+	// Cohere.
+	if norm == "cohere" || strings.HasPrefix(norm, "command-") {
+		apiKey, err := requireProviderCredential("Cohere", effectiveModel, overrideAPIKey, "COHERE_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		return &CohereProvider{Model: effectiveModel, APIKey: apiKey}, nil
 	}
 
 	// OpenAI and OpenAI-compatible providers.
 	// If an explicit base URL is provided in the override, use it; otherwise
 	// look up the default base URL from the model prefix table.
-	overrideBaseURL := strings.TrimSpace(override.BaseURL)
-	overrideAPIKey := strings.TrimSpace(override.APIKey)
-
 	isOpenAIClass := norm == "openai" || strings.HasPrefix(norm, "gpt-") ||
 		strings.HasPrefix(norm, "o1-") || strings.HasPrefix(norm, "o3-") || strings.HasPrefix(norm, "o4-")
 
 	compatBase, compatEnvKey := resolveOpenAICompat(norm)
-	if isOpenAIClass || overrideBaseURL != "" || compatBase != "" {
+	if isOpenAIClass || compatBase != "" {
 		baseURL := overrideBaseURL
-		apiKey := overrideAPIKey
 		if baseURL == "" {
-			baseURL = compatBase
-		}
-		if apiKey == "" {
-			envKey := "OPENAI_API_KEY"
-			if compatEnvKey != "" {
-				envKey = compatEnvKey
+			if compatBase != "" {
+				baseURL = compatBase
+			} else {
+				baseURL = "https://api.openai.com/v1"
 			}
-			apiKey = strings.TrimSpace(os.Getenv(envKey))
+		}
+		envKey := "OPENAI_API_KEY"
+		providerName := "OpenAI"
+		if compatBase != "" {
+			envKey = compatEnvKey
+			providerName = "OpenAI-compatible provider"
+		}
+		apiKey, err := requireOpenAICompatibleCredential(providerName, effectiveModel, overrideAPIKey, envKey, baseURL)
+		if err != nil {
+			return nil, err
 		}
 		return &OpenAIChatProvider{
 			BaseURL: baseURL,
 			APIKey:  apiKey,
 			Model:   effectiveModel,
 		}, nil
+	}
+
+	// An explicit OpenAI-compatible base URL with no recognized hosted model is a
+	// custom endpoint.  Permit credentialless use only for local endpoints.
+	if overrideBaseURL != "" {
+		apiKey, err := requireOpenAICompatibleCredential("custom OpenAI-compatible provider", effectiveModel, overrideAPIKey, "", overrideBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIChatProvider{BaseURL: overrideBaseURL, APIKey: apiKey, Model: effectiveModel}, nil
 	}
 
 	// Generic HTTP-compatible endpoint (Ollama, custom servers, etc.)
@@ -928,6 +1083,9 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 	apiKey := overrideAPIKey
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_API_KEY"))
+	}
+	if apiKey == "" && !isLocalBaseURL(baseURL) {
+		return nil, fmt.Errorf("provider api_key is required for non-local provider base_url %q", baseURL)
 	}
 	return &HTTPProvider{URL: baseURL, APIKey: apiKey}, nil
 }

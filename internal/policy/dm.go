@@ -393,6 +393,15 @@ func NormalizeConfig(cfg state.ConfigDoc) state.ConfigDoc {
 }
 
 func validateControlPolicy(control state.ControlPolicy) error {
+	for i, method := range control.AllowUnauthMethods {
+		m := normalizeControlMethod(method)
+		if m == "" {
+			continue
+		}
+		if !IsUnauthAllowedControlMethod(m) {
+			return fmt.Errorf("control allow_unauth_methods[%d] %q is not an explicitly safe unauthenticated method", i, method)
+		}
+	}
 	for i, admin := range control.Admins {
 		if strings.TrimSpace(admin.PubKey) == "" {
 			return fmt.Errorf("control admins[%d].pubkey is required", i)

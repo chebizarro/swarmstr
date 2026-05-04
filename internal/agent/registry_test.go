@@ -13,6 +13,39 @@ import (
 
 type stubRuntime struct{ id string }
 
+var providerCredentialEnvKeys = []string{
+	"METIQ_AGENT_PROVIDER",
+	"METIQ_AGENT_MODEL",
+	"METIQ_AGENT_ALLOW_ECHO",
+	"ANTHROPIC_API_KEY",
+	"ANTHROPIC_OAUTH_TOKEN",
+	"OPENAI_API_KEY",
+	"GEMINI_API_KEY",
+	"GOOGLE_API_KEY",
+	"GOOGLE_GENERATIVE_AI_API_KEY",
+	"COHERE_API_KEY",
+	"XAI_API_KEY",
+	"GROQ_API_KEY",
+	"MISTRAL_API_KEY",
+	"TOGETHER_API_KEY",
+	"OPENROUTER_API_KEY",
+	"FIREWORKS_API_KEY",
+	"DEEPINFRA_API_KEY",
+	"PERPLEXITY_API_KEY",
+	"METIQ_AGENT_HTTP_URL",
+	"METIQ_AGENT_HTTP_API_KEY",
+	"OLLAMA_API_KEY",
+	"OLLAMA_BASE_URL",
+	"LMSTUDIO_BASE_URL",
+}
+
+func clearProviderCredentialEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range providerCredentialEnvKeys {
+		t.Setenv(key, "")
+	}
+}
+
 func (s *stubRuntime) ProcessTurn(_ context.Context, turn Turn) (TurnResult, error) {
 	return TurnResult{Text: s.id + ":" + turn.UserText}, nil
 }
@@ -159,13 +192,83 @@ func TestBuildRuntimeForModel_echo(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeForModel_empty_usesEcho(t *testing.T) {
-	rt, err := BuildRuntimeForModel("", nil)
-	if err != nil {
-		t.Fatalf("unexpected error for empty model: %v", err)
+func TestBuildRuntimeForModel_empty_errors(t *testing.T) {
+	_, err := BuildRuntimeForModel("", nil)
+	if err == nil {
+		t.Fatal("expected error for empty model")
 	}
-	if rt == nil {
-		t.Fatal("expected non-nil runtime")
+	if !strings.Contains(err.Error(), "refusing to default to EchoProvider") {
+		t.Fatalf("expected implicit echo refusal, got: %v", err)
+	}
+}
+
+func TestNewProviderFromEnv_missingConfigFailsFast(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	_, err := NewProviderFromEnv()
+	if err == nil {
+		t.Fatal("expected missing provider config to fail")
+	}
+	if !strings.Contains(err.Error(), "refusing to start EchoProvider implicitly") {
+		t.Fatalf("expected implicit echo startup refusal, got: %v", err)
+	}
+}
+
+func TestNewProviderFromEnv_explicitEchoRequiresDevOptIn(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	t.Setenv("METIQ_AGENT_PROVIDER", "echo")
+	_, err := NewProviderFromEnv()
+	if err == nil {
+		t.Fatal("expected echo without opt-in to fail")
+	}
+	if !strings.Contains(err.Error(), "METIQ_AGENT_ALLOW_ECHO") {
+		t.Fatalf("expected echo opt-in error, got: %v", err)
+	}
+
+	t.Setenv("METIQ_AGENT_ALLOW_ECHO", "true")
+	p, err := NewProviderFromEnv()
+	if err != nil {
+		t.Fatalf("expected explicit echo opt-in to work: %v", err)
+	}
+	if _, ok := p.(EchoProvider); !ok {
+		t.Fatalf("expected EchoProvider, got %T", p)
+	}
+}
+
+func TestNewProviderFromEnv_explicitAnthropicRequiresCredential(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	t.Setenv("METIQ_AGENT_PROVIDER", "anthropic")
+	_, err := NewProviderFromEnv()
+	if err == nil {
+		t.Fatal("expected anthropic without credentials to fail")
+	}
+	if !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Fatalf("expected Anthropic credential error, got: %v", err)
+	}
+}
+
+func TestNewProviderFromEnv_httpLocalAllowsMissingAPIKey(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	t.Setenv("METIQ_AGENT_PROVIDER", "http")
+	t.Setenv("METIQ_AGENT_HTTP_URL", "http://127.0.0.1:8080/v1")
+	p, err := NewProviderFromEnv()
+	if err != nil {
+		t.Fatalf("expected local HTTP provider without API key to work: %v", err)
+	}
+	if _, ok := p.(*HTTPProvider); !ok {
+		t.Fatalf("expected *HTTPProvider, got %T", p)
+	}
+}
+
+func TestNewProviderFromEnv_httpRemoteRequiresAPIKey(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	t.Setenv("METIQ_AGENT_PROVIDER", "http")
+	t.Setenv("METIQ_AGENT_HTTP_URL", "https://provider.example/v1")
+	_, err := NewProviderFromEnv()
+	if err == nil {
+		t.Fatal("expected remote HTTP provider without API key to fail")
+	}
+	if !strings.Contains(err.Error(), "METIQ_AGENT_HTTP_API_KEY") {
+		t.Fatalf("expected HTTP API key error, got: %v", err)
 	}
 }
 
@@ -173,6 +276,47 @@ func TestBuildRuntimeForModel_unknown(t *testing.T) {
 	_, err := BuildRuntimeForModel("totally-unknown-xyz-model", nil)
 	if err == nil {
 		t.Error("expected error for unknown model")
+	}
+}
+
+func TestNewProviderForModel_hostedCredentialsRequired(t *testing.T) {
+	cases := []struct {
+		name    string
+		model   string
+		wantKey string
+	}{
+		{name: "anthropic", model: "claude-3-5-sonnet-20241022", wantKey: "ANTHROPIC_API_KEY"},
+		{name: "openai", model: "gpt-4o", wantKey: "OPENAI_API_KEY"},
+		{name: "gemini", model: "gemini-2.0-flash", wantKey: "GEMINI_API_KEY"},
+		{name: "cohere", model: "command-r-plus", wantKey: "COHERE_API_KEY"},
+		{name: "groq", model: "groq", wantKey: "GROQ_API_KEY"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearProviderCredentialEnv(t)
+			_, err := NewProviderForModel(tc.model)
+			if err == nil {
+				t.Fatalf("expected missing credential error for %s", tc.model)
+			}
+			if !strings.Contains(err.Error(), tc.wantKey) {
+				t.Fatalf("expected error to mention %s, got: %v", tc.wantKey, err)
+			}
+		})
+	}
+}
+
+func TestNewProviderForModel_localCompatAllowsMissingCredential(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	p, err := NewProviderForModel("ollama/llama3")
+	if err != nil {
+		t.Fatalf("expected local Ollama without API key to work: %v", err)
+	}
+	oai, ok := p.(*OpenAIChatProvider)
+	if !ok {
+		t.Fatalf("expected OpenAIChatProvider, got %T", p)
+	}
+	if !isLocalBaseURL(oai.BaseURL) {
+		t.Fatalf("expected local base URL, got %q", oai.BaseURL)
 	}
 }
 
@@ -232,7 +376,7 @@ func TestBuildRuntimeWithOverride_missingBaseURLErrors(t *testing.T) {
 }
 
 func TestBuildProviderWithOverride_ModelArgumentWins(t *testing.T) {
-	provider, err := BuildProviderWithOverride("gpt-4o-mini", ProviderOverride{BaseURL: "https://api.openai.com/v1", Model: "gpt-4o"})
+	provider, err := BuildProviderWithOverride("gpt-4o-mini", ProviderOverride{BaseURL: "https://api.openai.com/v1", APIKey: "test-key", Model: "gpt-4o"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -242,6 +386,39 @@ func TestBuildProviderWithOverride_ModelArgumentWins(t *testing.T) {
 	}
 	if op.Model != "gpt-4o-mini" {
 		t.Fatalf("expected explicit model argument to win, got %q", op.Model)
+	}
+}
+
+func TestBuildProviderWithOverride_HostedOverrideRequiresCredential(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	_, err := BuildProviderWithOverride("gpt-4o", ProviderOverride{BaseURL: "https://api.openai.com/v1"})
+	if err == nil {
+		t.Fatal("expected hosted OpenAI override without credential to fail")
+	}
+	if !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+		t.Fatalf("expected OPENAI_API_KEY error, got: %v", err)
+	}
+}
+
+func TestBuildProviderWithOverride_LocalOverrideAllowsMissingCredential(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	provider, err := BuildProviderWithOverride("gpt-4o", ProviderOverride{BaseURL: "http://localhost:11434/v1"})
+	if err != nil {
+		t.Fatalf("expected local override without credential to work: %v", err)
+	}
+	if _, ok := provider.(*OpenAIChatProvider); !ok {
+		t.Fatalf("expected *OpenAIChatProvider, got %T", provider)
+	}
+}
+
+func TestBuildProviderWithOverride_RemoteCustomBaseURLRequiresCredential(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	_, err := BuildProviderWithOverride("custom-model", ProviderOverride{BaseURL: "https://llm.example/v1"})
+	if err == nil {
+		t.Fatal("expected remote custom override without credential to fail")
+	}
+	if !strings.Contains(err.Error(), "api_key") {
+		t.Fatalf("expected api_key error, got: %v", err)
 	}
 }
 
@@ -375,6 +552,7 @@ func TestOpenAIChatProvider_serverErrorPropagated(t *testing.T) {
 // ─── NewProviderForModel with real model names ─────────────────────────────────
 
 func TestNewProviderForModel_anthropicPrefix(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	p, err := NewProviderForModel("claude-3-5-sonnet-20241022")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -385,6 +563,7 @@ func TestNewProviderForModel_anthropicPrefix(t *testing.T) {
 }
 
 func TestNewProviderForModel_openaiPrefix(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	p, err := NewProviderForModel("gpt-4o")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -395,6 +574,7 @@ func TestNewProviderForModel_openaiPrefix(t *testing.T) {
 }
 
 func TestNewProviderForModel_o1Prefix(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	p, err := NewProviderForModel("o1-preview")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -405,6 +585,7 @@ func TestNewProviderForModel_o1Prefix(t *testing.T) {
 }
 
 func TestNewProviderForModel_anthropicAlias(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	p, err := NewProviderForModel("anthropic")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -415,6 +596,7 @@ func TestNewProviderForModel_anthropicAlias(t *testing.T) {
 }
 
 func TestNewProviderForModel_openaiAlias(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	p, err := NewProviderForModel("openai")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -479,6 +661,7 @@ func TestGoogleGeminiProvider_serverError(t *testing.T) {
 // ─── NewProviderForModel: new provider prefixes ───────────────────────────────
 
 func TestNewProviderForModel_geminiPrefix(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "test-key")
 	p, err := NewProviderForModel("gemini-2.0-flash")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -489,6 +672,7 @@ func TestNewProviderForModel_geminiPrefix(t *testing.T) {
 }
 
 func TestNewProviderForModel_geminiAlias(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "test-key")
 	p, err := NewProviderForModel("gemini")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -499,6 +683,7 @@ func TestNewProviderForModel_geminiAlias(t *testing.T) {
 }
 
 func TestNewProviderForModel_grokPrefix(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "test-key")
 	p, err := NewProviderForModel("grok-3")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -513,6 +698,7 @@ func TestNewProviderForModel_grokPrefix(t *testing.T) {
 }
 
 func TestNewProviderForModel_groqAlias(t *testing.T) {
+	t.Setenv("GROQ_API_KEY", "test-key")
 	p, err := NewProviderForModel("groq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -527,6 +713,7 @@ func TestNewProviderForModel_groqAlias(t *testing.T) {
 }
 
 func TestNewProviderForModel_mistralPrefix(t *testing.T) {
+	t.Setenv("MISTRAL_API_KEY", "test-key")
 	p, err := NewProviderForModel("mistral-large-latest")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -541,6 +728,7 @@ func TestNewProviderForModel_mistralPrefix(t *testing.T) {
 }
 
 func TestNewProviderForModel_openrouterPath(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	p, err := NewProviderForModel("openrouter/meta-llama/llama-3.1-8b-instruct")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -555,6 +743,7 @@ func TestNewProviderForModel_openrouterPath(t *testing.T) {
 }
 
 func TestNewProviderForModel_togetherPath(t *testing.T) {
+	t.Setenv("TOGETHER_API_KEY", "test-key")
 	p, err := NewProviderForModel("together/Qwen/Qwen3-235B-A22B")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -119,6 +119,63 @@ func TestTrustedProxyAuthAllowsTokenBypass(t *testing.T) {
 	}
 }
 
+func TestTrustedProxyPrincipalPropagatesToRequestContext(t *testing.T) {
+	principalCh := make(chan ControlPrincipal, 1)
+	r := &Runtime{
+		opts: RuntimeOptions{
+			Token:                "secret",
+			Methods:              []string{"status.get"},
+			Events:               []string{"presence.updated"},
+			Version:              "test",
+			HandshakeTTL:         2 * time.Second,
+			MaxPayloadSize:       1 << 20,
+			AuthRateLimitPerMin:  20,
+			UnauthorizedBurstMax: 3,
+			TrustedProxies:       []string{"127.0.0.1"},
+			HandleRequest: func(ctx context.Context, _ protocol.RequestFrame) (any, *protocol.ErrorShape) {
+				principal, ok := PrincipalFromContext(ctx)
+				if !ok {
+					return nil, protocol.NewError(protocol.ErrorCodeInvalidRequest, "missing principal", nil)
+				}
+				principalCh <- principal
+				return map[string]any{"ok": true}, nil
+			},
+		},
+		clients:        map[string]*client{},
+		rateState:      map[string]rateWindow{},
+		allowedMethods: buildAllowedMethods([]string{"status.get"}),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(r.handleWS))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	headers := http.Header{}
+	headers.Set("X-Metiq-Trusted-Auth", "true")
+	headers.Set("X-Metiq-Proxy-User", "operator-pubkey")
+	conn := dialWSWithHeaders(t, ctx, srv.URL, headers)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+
+	nonce := readChallengeNonce(t, ctx, conn)
+	writeConnect(t, ctx, conn, "wrong", nonce)
+	if res := readUntilResponse(t, ctx, conn); res["ok"] != true {
+		t.Fatalf("handshake failed: %#v", res)
+	}
+	writeJSON(t, ctx, conn, map[string]any{"type": protocol.FrameTypeRequest, "id": "status", "method": "status.get"})
+	if res := readUntilResponse(t, ctx, conn); res["ok"] != true {
+		t.Fatalf("request failed: %#v", res)
+	}
+
+	select {
+	case principal := <-principalCh:
+		if !principal.Authenticated || principal.PubKey != "operator-pubkey" || principal.Method != "trusted-proxy" {
+			t.Fatalf("unexpected principal: %+v", principal)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for principal")
+	}
+}
+
 func TestNodeRoleRequiresDeviceIdentity(t *testing.T) {
 	r := &Runtime{
 		opts: RuntimeOptions{

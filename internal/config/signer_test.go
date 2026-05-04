@@ -1,7 +1,9 @@
 package config
 
 import (
+	"context"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,5 +188,53 @@ func TestResolveSigner_PrivateKeyEnvVar(t *testing.T) {
 	expectedPK := nostr.SecretKey(skArr).Public()
 	if pk != expectedPK {
 		t.Fatalf("public key mismatch: got %s, want %s", pk, expectedPK)
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) {
+	return 0, errors.New("entropy unavailable")
+}
+
+func TestGenerateEphemeralKey_EntropyFailureReturnsError(t *testing.T) {
+	orig := entropyReader
+	entropyReader = errReader{}
+	t.Cleanup(func() { entropyReader = orig })
+
+	_, err := generateEphemeralKey()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "failed to generate ephemeral client key") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveSigner_Bunker_EntropyFailurePropagatesError(t *testing.T) {
+	orig := entropyReader
+	entropyReader = errReader{}
+	t.Cleanup(func() { entropyReader = orig })
+
+	_, err := ResolveSigner(context.Background(), BootstrapConfig{SignerURL: "bunker://example"}, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "generate bunker ephemeral key") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveSigner_NostrConnect_EntropyFailurePropagatesError(t *testing.T) {
+	orig := entropyReader
+	entropyReader = errReader{}
+	t.Cleanup(func() { entropyReader = orig })
+
+	_, err := ResolveSigner(context.Background(), BootstrapConfig{SignerURL: "nostrconnect://example?relay=wss://relay.example"}, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "generate nostrconnect ephemeral key") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

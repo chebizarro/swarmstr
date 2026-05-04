@@ -14,13 +14,15 @@ import (
 )
 
 type ControlRPCInbound struct {
-	EventID    string
-	RequestID  string
-	FromPubKey string
-	RelayURL   string
-	Method     string
-	Params     json.RawMessage
-	CreatedAt  int64
+	EventID       string
+	RequestID     string
+	FromPubKey    string
+	RelayURL      string
+	Method        string
+	Params        json.RawMessage
+	CreatedAt     int64
+	Authenticated bool
+	Internal      bool
 }
 
 type ControlRPCResult struct {
@@ -362,13 +364,14 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	result := ControlRPCResult{}
 	if b.onReq != nil {
 		out, err := b.onReq(b.ctx, ControlRPCInbound{
-			EventID:    eventID,
-			RequestID:  requestID,
-			FromPubKey: callerPubKey,
-			RelayURL:   relayURL,
-			Method:     call.Method,
-			Params:     call.Params,
-			CreatedAt:  int64(evt.CreatedAt),
+			EventID:       eventID,
+			RequestID:     requestID,
+			FromPubKey:    callerPubKey,
+			RelayURL:      relayURL,
+			Method:        call.Method,
+			Params:        call.Params,
+			CreatedAt:     int64(evt.CreatedAt),
+			Authenticated: true,
 		})
 		if err != nil {
 			result.Error = err.Error()

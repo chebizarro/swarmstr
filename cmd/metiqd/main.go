@@ -5499,10 +5499,14 @@ func main() {
 			AllowInsecureControlUI: gatewayWSAllowInsecureControlUI,
 			StaticHandler:          webui.Handler(wsPath, gatewayWSToken),
 			HandleRequest: func(ctx context.Context, req gatewayprotocol.RequestFrame) (any, *gatewayprotocol.ErrorShape) {
+				principal, _ := gatewayws.PrincipalFromContext(ctx)
+				callerPubKey := strings.TrimSpace(principal.PubKey)
+				authenticated := principal.Authenticated && callerPubKey != ""
 				res, err := handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{
-					FromPubKey: bus.PublicKey(),
-					Method:     strings.TrimSpace(req.Method),
-					Params:     req.Params,
+					FromPubKey:    callerPubKey,
+					Method:        strings.TrimSpace(req.Method),
+					Params:        req.Params,
+					Authenticated: authenticated,
 				}, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
 				if err != nil {
 					return nil, mapGatewayWSError(err)
@@ -6260,6 +6264,7 @@ func main() {
 				FromPubKey: daemonPubKey,
 				Method:     method,
 				Params:     params,
+				Internal:   true,
 			},
 			bus, controlBus, chatCancels, usageState, logBuffer, channelState,
 			docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt,
@@ -6527,9 +6532,10 @@ func dispatchAdminDelegatedControlCall(
 	startedAt time.Time,
 ) (any, int, error) {
 	res, err := handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{
-		FromPubKey: fromPubKey,
-		Method:     method,
-		Params:     params,
+		FromPubKey:    fromPubKey,
+		Method:        method,
+		Params:        params,
+		Authenticated: true,
 	}, dmBus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
 	if err != nil {
 		return nil, controlAdminMethodStatus(err), err
@@ -6561,9 +6567,10 @@ func dispatchAdminControlConfigMutation(
 		return nil, http.StatusBadRequest, err
 	}
 	res, err := handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{
-		FromPubKey: fromPubKey,
-		Method:     method,
-		Params:     raw,
+		FromPubKey:    fromPubKey,
+		Method:        method,
+		Params:        raw,
+		Authenticated: true,
 	}, dmBus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
 	if err != nil {
 		return nil, controlConfigMutationStatus(err), err
