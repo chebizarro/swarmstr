@@ -199,7 +199,15 @@ func (m *Manager) GetAllTools() map[string][]*mcp.Tool {
 			continue
 		}
 		if len(record.connection.Tools) > 0 {
-			result[name] = record.connection.Tools
+			tools := make([]*mcp.Tool, 0, len(record.connection.Tools))
+			for _, tool := range record.connection.Tools {
+				if cloned := cloneMCPTool(tool); cloned != nil {
+					tools = append(tools, cloned)
+				}
+			}
+			if len(tools) > 0 {
+				result[name] = tools
+			}
 		}
 	}
 	return result

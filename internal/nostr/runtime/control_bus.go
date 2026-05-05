@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -105,7 +106,8 @@ type ControlRPCBus struct {
 	respCache map[string]ControlRPCCachedResponse
 	respList  []string
 
-	rebindCh chan struct{}
+	rebindCh  chan struct{}
+	inboundCh chan nostr.RelayEvent
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -121,6 +123,7 @@ type ControlRPCBus struct {
 const (
 	maxControlRequestContentBytes = 64 * 1024
 	defaultControlRequestMaxAge   = 2 * time.Minute
+	defaultControlDispatchCap     = 1024
 )
 
 func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*ControlRPCBus, error) {
@@ -151,6 +154,9 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 	pool := NewPoolNIP42(ks)
 	ownsPool := true
 	if opts.Hub != nil {
+		if opts.Hub.PubKey() != public {
+			return nil, fmt.Errorf("control bus: hub pubkey does not match keyer pubkey")
+		}
 		pool = opts.Hub.Pool()
 		ownsPool = false
 	}
@@ -180,13 +186,15 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 		callerCap:         10_000,
 		minCallerInterval: opts.MinCallerInterval,
 		rebindCh:          make(chan struct{}, 1),
+		inboundCh:         make(chan nostr.RelayEvent, defaultControlDispatchCap),
 		ctx:               ctx,
 		cancel:            cancel,
 	}
 
 	bus.subHealth = NewSubHealthTracker("control-rpc")
 	bus.subHealth.RecordReconnect()
-	bus.wg.Add(1)
+	bus.wg.Add(2)
+	go bus.dispatchLoop()
 	go bus.subscriptionLoop(since)
 	return bus, nil
 }
@@ -231,8 +239,13 @@ func (b *ControlRPCBus) runSubscription(since int64) bool {
 }
 
 func (b *ControlRPCBus) Close() {
-	b.cancel()
-	if b.ownsPool {
+	if b == nil {
+		return
+	}
+	if b.cancel != nil {
+		b.cancel()
+	}
+	if b.ownsPool && b.pool != nil {
 		b.pool.Close("control rpc bus closed")
 	}
 	b.wg.Wait()
@@ -271,6 +284,36 @@ func (b *ControlRPCBus) emitErr(err error) {
 	}
 }
 
+func (b *ControlRPCBus) dispatchLoop() {
+	defer b.wg.Done()
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case re := <-b.inboundCh:
+			b.handleInbound(re)
+		}
+	}
+}
+
+func (b *ControlRPCBus) dispatchInbound(re nostr.RelayEvent) {
+	if b == nil {
+		return
+	}
+	ctx := b.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if b.inboundCh == nil {
+		b.handleInbound(re)
+		return
+	}
+	select {
+	case b.inboundCh <- re:
+	case <-ctx.Done():
+	}
+}
+
 func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	relayURL := ""
 	if re.Relay != nil {
@@ -279,9 +322,6 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	evt := re.Event
 	if evt.Kind != nostr.Kind(events.KindControl) {
 		return
-	}
-	if relayURL != "" && b.health != nil {
-		b.health.RecordSuccess(relayURL)
 	}
 	if b.subHealth != nil {
 		b.subHealth.RecordEvent()
@@ -296,6 +336,9 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	if !evt.Tags.ContainsAny("p", []string{b.public.Hex()}) {
 		return
 	}
+	if relayURL != "" && b.health != nil {
+		b.health.RecordSuccess(relayURL)
+	}
 	requestID := firstTagValue(evt.Tags, "req")
 	if requestID == "" {
 		requestID = evt.ID.Hex()
@@ -308,11 +351,17 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	callerPubKey := evt.PubKey.Hex()
 	call, err := decodeControlCallRequest(evt.Content)
 	if err != nil {
+		if b.markSeen(eventID) {
+			return
+		}
 		b.respondError(re, "invalid control request body", requestID)
 		return
 	}
 	call.Method = trimMethod(call.Method)
 	if call.Method == "" {
+		if b.markSeen(eventID) {
+			return
+		}
 		b.respondError(re, "missing method", requestID)
 		return
 	}
@@ -326,10 +375,13 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 			return
 		}
 	}
-	if replayPolicy == controlreplay.EventAndRequest {
+	if replayPolicy == controlreplay.EventAndRequest && requestID != eventID {
 		requestCacheKey := controlResponseCacheKey(callerPubKey, requestID)
 		if cached, ok := b.lookupCachedResponse(requestCacheKey, callerPubKey, requestID); ok {
 			if !controlReplayFingerprintMatches(cached, call.Method, paramsHash) {
+				if b.markSeen(eventID) {
+					return
+				}
 				b.respondErrorCode(re, "control request id replay fingerprint mismatch", requestID, -32009, map[string]any{"request_id": requestID})
 				return
 			}
@@ -605,7 +657,7 @@ func (b *ControlRPCBus) runPoolSubscription(filter nostr.Filter) bool {
 		case <-b.rebindCh:
 			return true
 		case re := <-eventsCh:
-			b.handleInbound(re)
+			b.dispatchInbound(re)
 		case eose := <-eoseCh:
 			relay := strings.TrimSpace(eose.relayURL)
 			if relay == "" || generation[relay] != eose.generation {
@@ -747,7 +799,7 @@ func (b *ControlRPCBus) runHubSubscription(filter nostr.Filter) bool {
 			ID:      b.controlSubID(relay, gen),
 			Filter:  filter,
 			Relays:  []string{relay},
-			OnEvent: b.handleInbound,
+			OnEvent: b.dispatchInbound,
 			OnClosed: func(closedRelay *nostr.Relay, reason string, handledAuth bool) {
 				relayURL := relay
 				if closedRelay != nil && strings.TrimSpace(closedRelay.URL) != "" {
@@ -1041,6 +1093,12 @@ func decodeControlCallRequest(content string) (controlCallRequest, error) {
 	dec := json.NewDecoder(bytes.NewReader([]byte(content)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&call); err != nil {
+		return controlCallRequest{}, err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return controlCallRequest{}, fmt.Errorf("invalid control request body: multiple JSON values")
+		}
 		return controlCallRequest{}, err
 	}
 	return call, nil

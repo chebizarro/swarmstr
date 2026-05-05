@@ -38,12 +38,12 @@ const (
 
 // LedgerEntry wraps a TaskSpec with ledger-specific metadata.
 type LedgerEntry struct {
-	Task      state.TaskSpec `json:"task"`
-	Source    TaskSource     `json:"source"`
-	SourceRef string         `json:"source_ref,omitempty"` // e.g., cron job ID, webhook ID
+	Task      state.TaskSpec  `json:"task"`
+	Source    TaskSource      `json:"source"`
+	SourceRef string          `json:"source_ref,omitempty"` // e.g., cron job ID, webhook ID
 	Runs      []state.TaskRun `json:"runs,omitempty"`
-	CreatedAt int64          `json:"created_at"`
-	UpdatedAt int64          `json:"updated_at"`
+	CreatedAt int64           `json:"created_at"`
+	UpdatedAt int64           `json:"updated_at"`
 }
 
 // RunEntry wraps a TaskRun with ledger-specific metadata.
@@ -328,7 +328,9 @@ func (l *Ledger) UpdateRunStatus(ctx context.Context, runID string, to state.Tas
 	entry.UpdatedAt = now
 
 	// Update the task's run record as well
+	var taskEntryToPersist *LedgerEntry
 	if taskEntry, ok := l.tasks[entry.Run.TaskID]; ok {
+		taskEntryToPersist = taskEntry
 		for i, run := range taskEntry.Runs {
 			if run.RunID == runID {
 				taskEntry.Runs[i] = entry.Run
@@ -339,13 +341,22 @@ func (l *Ledger) UpdateRunStatus(ctx context.Context, runID string, to state.Tas
 		taskEntry.UpdatedAt = now
 	}
 
+	runSnapshot := cloneRunEntry(entry)
+	var taskSnapshot *LedgerEntry
+	if taskEntryToPersist != nil {
+		taskSnapshot = cloneLedgerEntry(taskEntryToPersist)
+	}
 	observers := append([]Observer(nil), l.observers...)
 	transition := entry.Run.Transitions[len(entry.Run.Transitions)-1]
 	l.mu.Unlock()
 
-	// Persist
+	// Persist both the run and the task entry because the task embeds run
+	// snapshots and last-run bookkeeping that were updated above.
 	if l.store != nil {
-		_ = l.store.SaveRun(ctx, entry)
+		_ = l.store.SaveRun(ctx, runSnapshot)
+		if taskSnapshot != nil {
+			_ = l.store.SaveTask(ctx, taskSnapshot)
+		}
 	}
 
 	// Notify observers
@@ -489,12 +500,17 @@ func (l *Ledger) CancelTask(ctx context.Context, taskID, actor, reason string) e
 
 	now := time.Now().Unix()
 
-	// Cancel any active runs first
-	for _, run := range entry.Runs {
-		if runEntry, ok := l.runs[run.RunID]; ok {
+	// Cancel any active runs first, keeping both the canonical run map and the
+	// task's embedded run snapshots in sync for persistence/restart.
+	var runsToPersist []*RunEntry
+	for i := range entry.Runs {
+		runID := entry.Runs[i].RunID
+		if runEntry, ok := l.runs[runID]; ok {
 			if !isTerminalRunStatus(runEntry.Run.Status) {
 				_ = runEntry.Run.ApplyTransition(state.TaskRunStatusCancelled, now, actor, "ledger", reason, nil)
 				runEntry.UpdatedAt = now
+				entry.Runs[i] = runEntry.Run
+				runsToPersist = append(runsToPersist, runEntry)
 			}
 		}
 	}
@@ -505,11 +521,19 @@ func (l *Ledger) CancelTask(ctx context.Context, taskID, actor, reason string) e
 		entry.UpdatedAt = now
 	}
 
+	runSnapshots := make([]*RunEntry, len(runsToPersist))
+	for i, runEntry := range runsToPersist {
+		runSnapshots[i] = cloneRunEntry(runEntry)
+	}
+	taskSnapshot := cloneLedgerEntry(entry)
 	l.mu.Unlock()
 
 	// Persist
 	if l.store != nil {
-		_ = l.store.SaveTask(ctx, entry)
+		for _, runEntry := range runSnapshots {
+			_ = l.store.SaveRun(ctx, runEntry)
+		}
+		_ = l.store.SaveTask(ctx, taskSnapshot)
 	}
 
 	return nil
@@ -546,6 +570,57 @@ func (l *Ledger) GetTaskLineage(ctx context.Context, taskID string) ([]*LedgerEn
 
 	collect(taskID)
 	return lineage, nil
+}
+
+func cloneLedgerEntry(entry *LedgerEntry) *LedgerEntry {
+	if entry == nil {
+		return nil
+	}
+	out := *entry
+	out.Runs = append([]state.TaskRun(nil), entry.Runs...)
+	out.Task.Inputs = cloneAnyMap(entry.Task.Inputs)
+	out.Task.ExpectedOutputs = append([]state.TaskOutputSpec(nil), entry.Task.ExpectedOutputs...)
+	out.Task.AcceptanceCriteria = append([]state.TaskAcceptanceCriterion(nil), entry.Task.AcceptanceCriteria...)
+	out.Task.Dependencies = append([]string(nil), entry.Task.Dependencies...)
+	out.Task.EnabledTools = append([]string(nil), entry.Task.EnabledTools...)
+	out.Task.Transitions = append([]state.TaskTransition(nil), entry.Task.Transitions...)
+	out.Task.Verification = cloneVerificationSpec(entry.Task.Verification)
+	out.Task.Meta = cloneAnyMap(entry.Task.Meta)
+	return &out
+}
+
+func cloneRunEntry(entry *RunEntry) *RunEntry {
+	if entry == nil {
+		return nil
+	}
+	out := *entry
+	out.Run.Transitions = append([]state.TaskRunTransition(nil), entry.Run.Transitions...)
+	out.Run.Verification = cloneVerificationSpec(entry.Run.Verification)
+	out.Run.Meta = cloneAnyMap(entry.Run.Meta)
+	return &out
+}
+
+func cloneVerificationSpec(spec state.VerificationSpec) state.VerificationSpec {
+	spec.Meta = cloneAnyMap(spec.Meta)
+	if len(spec.Checks) > 0 {
+		spec.Checks = make([]state.VerificationCheck, len(spec.Checks))
+		for i, check := range spec.Checks {
+			check.Meta = cloneAnyMap(check.Meta)
+			spec.Checks[i] = check
+		}
+	}
+	return spec
+}
+
+func cloneAnyMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 // Helper functions

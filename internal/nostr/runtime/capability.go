@@ -132,6 +132,25 @@ func BuildCapabilityTags(cap CapabilityAnnouncement) nostr.Tags {
 }
 
 // ParseCapabilityEvent decodes a kind:30317 capability event.
+func capabilityValidationFailure(ev nostr.Event, allowedAuthors map[string]struct{}) string {
+	if ev.Kind != nostr.Kind(events.KindCapability) {
+		return fmt.Sprintf("unexpected_kind:%d", ev.Kind)
+	}
+	if _, ok := allowedAuthors[ev.PubKey.Hex()]; !ok {
+		return "unexpected_author"
+	}
+	if !ev.CheckID() {
+		return "invalid_id"
+	}
+	if !ev.VerifySignature() {
+		return "invalid_signature"
+	}
+	if timestampTooFarFuture(int64(ev.CreatedAt), time.Now(), inboundEventMaxFutureSkew) {
+		return "created_at_future"
+	}
+	return ""
+}
+
 func ParseCapabilityEvent(ev *nostr.Event) (CapabilityAnnouncement, error) {
 	if ev == nil {
 		return CapabilityAnnouncement{}, fmt.Errorf("capability event is nil")
@@ -348,6 +367,7 @@ type CapabilityMonitor struct {
 	onPublished     func(eventID string)
 	triggerCh       chan struct{}
 	rebindCh        chan struct{}
+	started         bool
 }
 
 type CapabilityMonitorOptions struct {
@@ -383,6 +403,13 @@ func NewCapabilityMonitor(opts CapabilityMonitorOptions) *CapabilityMonitor {
 }
 
 func (m *CapabilityMonitor) Start(ctx context.Context) {
+	m.mu.Lock()
+	if m.started {
+		m.mu.Unlock()
+		return
+	}
+	m.started = true
+	m.mu.Unlock()
 	go m.runPublisher(ctx)
 	go m.runSubscriber(ctx)
 }
@@ -474,6 +501,10 @@ func (m *CapabilityMonitor) runSubscriber(ctx context.Context) {
 				continue
 			}
 		}
+		allowedAuthors := make(map[string]struct{}, len(authors))
+		for _, author := range authors {
+			allowedAuthors[author.Hex()] = struct{}{}
+		}
 		subCtx, cancel := context.WithCancel(ctx)
 		eventsCh, eoseCh := m.pool.SubscribeManyNotifyEOSE(subCtx, relays, nostr.Filter{
 			Kinds:   []nostr.Kind{nostr.Kind(events.KindCapability)},
@@ -497,6 +528,9 @@ func (m *CapabilityMonitor) runSubscriber(ctx context.Context) {
 				if !ok {
 					cancel()
 					break restartLoop
+				}
+				if reason := capabilityValidationFailure(re.Event, allowedAuthors); reason != "" {
+					continue
 				}
 				cap, err := ParseCapabilityEvent(&re.Event)
 				if err != nil {

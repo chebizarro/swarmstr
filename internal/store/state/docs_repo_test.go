@@ -63,6 +63,27 @@ func (s *fakeStateStore) PutAppend(_ context.Context, addr Address, content stri
 	return evt, nil
 }
 
+func insertFakeStateDoc(t *testing.T, store *fakeStateStore, author, dTag, typ string, value any, createdAt int64, id string, extraTags [][]string) {
+	t.Helper()
+	content, err := encodeEnvelopePayload(typ, value, nil)
+	if err != nil {
+		t.Fatalf("encode fake state doc: %v", err)
+	}
+	tags := make([][]string, 0, len(extraTags)+1)
+	tags = append(tags, []string{"d", dTag})
+	tags = append(tags, extraTags...)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.repl[Address{Kind: events.KindStateDoc, PubKey: author, DTag: dTag}] = Event{
+		ID:        id,
+		PubKey:    author,
+		Kind:      events.KindStateDoc,
+		CreatedAt: createdAt,
+		Tags:      tags,
+		Content:   content,
+	}
+}
+
 func (s *fakeStateStore) ListByTag(_ context.Context, kind events.Kind, tagName, tagValue string, limit int) ([]Event, error) {
 	page, err := s.ListByTagPage(context.Background(), kind, tagName, tagValue, limit, nil)
 	if err != nil {
@@ -259,6 +280,92 @@ func TestDocsRepositoryListSessionsPrefersLatestPersistedDoc(t *testing.T) {
 	}
 	if deleted, _ := sessions[0].Meta["deleted"].(bool); !deleted {
 		t.Fatalf("expected latest metadata to win, got %+v", sessions[0].Meta)
+	}
+}
+
+func TestDocsRepositoryListAgentsPrefersNewestDuplicateLogicalAgent(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	insertFakeStateDoc(t, store, "author-pub", "metiq:agent:agent-1-old", "agent_doc", AgentDoc{Version: 1, AgentID: "agent-1", Name: "old"}, 100, "evt-old", [][]string{{"t", "agent"}, {"agent", "agent-1"}})
+	insertFakeStateDoc(t, store, "author-pub", "metiq:agent:agent-1-new", "agent_doc", AgentDoc{Version: 1, AgentID: "agent-1", Name: "new"}, 200, "evt-new", [][]string{{"t", "agent"}, {"agent", "agent-1"}})
+
+	agents, err := repo.ListAgents(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected one logical agent, got %d: %+v", len(agents), agents)
+	}
+	if agents[0].Name != "new" {
+		t.Fatalf("expected newest agent doc to win, got %+v", agents[0])
+	}
+}
+
+func TestDocsRepositoryListAgentFilesPrefersNewestDuplicateLogicalFile(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	agentTag := protectedTagValue("agent-1")
+	insertFakeStateDoc(t, store, "author-pub", "metiq:agent:agent-1:file:readme-old", "agent_file_doc", AgentFileDoc{Version: 1, AgentID: "agent-1", Name: "readme.md", Content: "old"}, 100, "evt-old", [][]string{{"t", "agent_file"}, {"agent", agentTag}, {"name", "readme.md"}})
+	insertFakeStateDoc(t, store, "author-pub", "metiq:agent:agent-1:file:readme-new", "agent_file_doc", AgentFileDoc{Version: 1, AgentID: "agent-1", Name: "readme.md", Content: "new"}, 200, "evt-new", [][]string{{"t", "agent_file"}, {"agent", agentTag}, {"name", "readme.md"}})
+
+	files, err := repo.ListAgentFiles(ctx, "agent-1", 10)
+	if err != nil {
+		t.Fatalf("ListAgentFiles: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one logical file, got %d: %+v", len(files), files)
+	}
+	if files[0].Content != "new" {
+		t.Fatalf("expected newest agent file doc to win, got %+v", files[0])
+	}
+}
+
+func TestDocsRepositoryListAgentsPagesPastDuplicateCrowding(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	for i := 0; i < 9; i++ {
+		insertFakeStateDoc(t, store, "author-pub", fmt.Sprintf("metiq:agent:agent-1-dup-%02d", i), "agent_doc", AgentDoc{Version: 1, AgentID: "agent-1", Name: fmt.Sprintf("dup-%02d", i)}, int64(300-i), fmt.Sprintf("evt-dup-%02d", i), [][]string{{"t", "agent"}, {"agent", "agent-1"}})
+	}
+	insertFakeStateDoc(t, store, "author-pub", "metiq:agent:agent-2", "agent_doc", AgentDoc{Version: 1, AgentID: "agent-2", Name: "second"}, 100, "evt-second", [][]string{{"t", "agent"}, {"agent", "agent-2"}})
+
+	agents, err := repo.ListAgents(ctx, 2)
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("expected paging to find 2 logical agents, got %d: %+v", len(agents), agents)
+	}
+	if agents[0].AgentID != "agent-1" || agents[1].AgentID != "agent-2" {
+		t.Fatalf("unexpected agents after duplicate crowding: %+v", agents)
+	}
+}
+
+func TestDocsRepositoryListAgentFilesPagesPastDuplicateCrowding(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+	agentTag := protectedTagValue("agent-1")
+
+	for i := 0; i < 9; i++ {
+		insertFakeStateDoc(t, store, "author-pub", fmt.Sprintf("metiq:agent:agent-1:file:readme-dup-%02d", i), "agent_file_doc", AgentFileDoc{Version: 1, AgentID: "agent-1", Name: "readme.md", Content: fmt.Sprintf("dup-%02d", i)}, int64(300-i), fmt.Sprintf("evt-file-dup-%02d", i), [][]string{{"t", "agent_file"}, {"agent", agentTag}, {"name", "readme.md"}})
+	}
+	insertFakeStateDoc(t, store, "author-pub", "metiq:agent:agent-1:file:notes", "agent_file_doc", AgentFileDoc{Version: 1, AgentID: "agent-1", Name: "notes.md", Content: "notes"}, 100, "evt-notes", [][]string{{"t", "agent_file"}, {"agent", agentTag}, {"name", "notes.md"}})
+
+	files, err := repo.ListAgentFiles(ctx, "agent-1", 2)
+	if err != nil {
+		t.Fatalf("ListAgentFiles: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected paging to find 2 logical files, got %d: %+v", len(files), files)
+	}
+	if files[0].Name != "notes.md" || files[1].Name != "readme.md" {
+		t.Fatalf("unexpected files after duplicate crowding: %+v", files)
 	}
 }
 

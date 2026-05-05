@@ -69,7 +69,7 @@ func TestNIP17ValidateGiftWrapEvent(t *testing.T) {
 
 func TestNIP17ValidateRumorEvent(t *testing.T) {
 	bus, keyer, recipient := newTestNIP17BusIdentity(t)
-	rumor := signedEvent(t, keyer, nostr.Event{
+	rumor := unsignedRumorEvent(t, keyer, nostr.Event{
 		Kind:      nostr.KindDirectMessage,
 		CreatedAt: nostr.Now(),
 		Tags:      nostr.Tags{{"p", recipient.Hex()}},
@@ -111,6 +111,49 @@ func TestNIP17TimestampBounds(t *testing.T) {
 	}
 }
 
+func TestNIP17BusCloseNilAndPartial(t *testing.T) {
+	var nilBus *NIP17Bus
+	nilBus.Close()
+	(&NIP17Bus{}).Close()
+}
+
+func TestStartNIP17BusRejectsMismatchedHubPubKey(t *testing.T) {
+	hubKey := newNIP04KeyerAdapter(mustSecretKey(t, "1111111111111111111111111111111111111111111111111111111111111111"))
+	hub, err := NewHub(context.Background(), hubKey, nil)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	defer hub.Close()
+
+	busKey := newNIP04KeyerAdapter(mustSecretKey(t, "2222222222222222222222222222222222222222222222222222222222222222"))
+	_, err = StartNIP17Bus(context.Background(), NIP17BusOptions{
+		Keyer:  busKey,
+		Relays: []string{"wss://relay.example"},
+		Hub:    hub,
+	})
+	if err == nil || err.Error() != "nip17 bus: hub pubkey does not match keyer pubkey" {
+		t.Fatalf("expected hub mismatch error, got %v", err)
+	}
+}
+
+func TestNIP17EOSEChannelCanBeDisabledAfterFirstSignal(t *testing.T) {
+	eoseCh := make(chan struct{})
+	close(eoseCh)
+
+	select {
+	case <-eoseCh:
+		eoseCh = nil
+	default:
+		t.Fatal("expected closed EOSE channel to be readable")
+	}
+
+	select {
+	case <-eoseCh:
+		t.Fatal("disabled EOSE channel should not fire again")
+	default:
+	}
+}
+
 func newTestNIP17BusIdentity(t *testing.T) (*NIP17Bus, nostr.Keyer, nostr.PubKey) {
 	t.Helper()
 	sk, err := ParseSecretKey("1111111111111111111111111111111111111111111111111111111111111111")
@@ -130,5 +173,16 @@ func signedEvent(t *testing.T, keyer nostr.Keyer, evt nostr.Event) nostr.Event {
 	if err := keyer.SignEvent(context.Background(), &evt); err != nil {
 		t.Fatalf("SignEvent: %v", err)
 	}
+	return evt
+}
+
+func unsignedRumorEvent(t *testing.T, keyer nostr.Keyer, evt nostr.Event) nostr.Event {
+	t.Helper()
+	pub, err := keyer.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatalf("GetPublicKey: %v", err)
+	}
+	evt.PubKey = pub
+	evt.ID = evt.GetID()
 	return evt
 }

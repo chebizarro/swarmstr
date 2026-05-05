@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"metiq/internal/store/state"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -109,6 +111,63 @@ func TestNewEngineFromConfig(t *testing.T) {
 
 	if decisionDanger.Behavior != BehaviorDeny {
 		t.Errorf("danger command should be denied, got %s", decisionDanger.Behavior)
+	}
+}
+
+func TestNewEngineFromConfigSupportsOriginRules(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &Config{
+		Version:        "1",
+		DefaultProfile: "autonomous",
+		GlobalSettings: GlobalConfig{AuditEnabled: boolPtr(false)},
+		Rules: []RuleConfig{
+			{ID: "ask-github-mcp", Behavior: "ask", Tool: "*", Origin: "mcp", OriginName: "github"},
+			{ID: "deny-network", Behavior: "deny", Tool: "*", Category: "network"},
+		},
+	}
+
+	engine, err := NewEngineFromConfig(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	ctx := context.Background()
+	mcpNetwork := NewToolRequest("github_search", CategoryNetwork).WithOrigin(ToolOriginMCP, "github")
+	if decision := engine.Evaluate(ctx, mcpNetwork); decision.Behavior != BehaviorDeny {
+		t.Fatalf("capability deny should match even with MCP origin rule, got %s", decision.Behavior)
+	}
+
+	mcpBuiltinCategory := NewToolRequest("github_status", CategoryBuiltin).WithOrigin(ToolOriginMCP, "github")
+	if decision := engine.Evaluate(ctx, mcpBuiltinCategory); decision.Behavior != BehaviorAsk {
+		t.Fatalf("origin rule should match without category=mcp, got %s", decision.Behavior)
+	}
+}
+
+func TestNewEngineFromStateConfigSupportsOriginRules(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := state.PermissionsConfig{
+		DefaultBehavior: "allow",
+		AuditEnabled:    boolPtr(false),
+		Rules: []state.PermissionRule{
+			{ID: "ask-plugin", Behavior: "ask", Tool: "*", Origin: "plugin", OriginName: "codegen"},
+			{ID: "deny-exec", Behavior: "deny", Tool: "*", Category: "exec"},
+		},
+	}
+
+	engine, err := NewEngineFromStateConfig(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	ctx := context.Background()
+	pluginExec := NewToolRequest("codegen_apply", CategoryExec).WithOrigin(ToolOriginPlugin, "codegen")
+	if decision := engine.Evaluate(ctx, pluginExec); decision.Behavior != BehaviorDeny {
+		t.Fatalf("exec capability deny should match plugin tool, got %s", decision.Behavior)
+	}
+
+	pluginNonExec := NewToolRequest("codegen_status", CategoryBuiltin).WithOrigin(ToolOriginPlugin, "codegen")
+	if decision := engine.Evaluate(ctx, pluginNonExec); decision.Behavior != BehaviorAsk {
+		t.Fatalf("plugin provenance rule should match without category=plugin, got %s", decision.Behavior)
 	}
 }
 

@@ -434,7 +434,8 @@ func (h controlRPCHandler) handleConfigRPC(ctx context.Context, in nostruntime.C
 	case methods.MethodSecurityAudit:
 		// Run security posture checks and return findings.
 		report := securitypkg.Audit(securitypkg.AuditOptions{
-			ConfigDoc: &cfg,
+			BootstrapPath: h.deps.bootstrapPath,
+			ConfigDoc:     &cfg,
 		})
 		return nostruntime.ControlRPCResult{Result: map[string]any{
 			"findings": report.Findings,

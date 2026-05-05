@@ -13,6 +13,7 @@ package config
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 
 	"metiq/internal/store/state"
 )
@@ -31,7 +32,7 @@ var alwaysRedactSections = map[string]bool{
 // redaction during recursive traversal.
 var sensitiveSuffixes = []string{
 	"api_key", "apikey", "api_secret", "secret", "password", "passwd",
-	"token", "access_token", "refresh_token", "private_key", "privatekey",
+	"token", "authtoken", "bearertoken", "access_token", "refresh_token", "private_key", "privatekey",
 	"credential", "auth_key", "authkey",
 }
 
@@ -115,7 +116,7 @@ func redactMap(m map[string]any) map[string]any {
 			continue
 		}
 		// Key-name sensitive pattern check.
-		if isSensitiveKey(lower) {
+		if isSensitiveKey(k) {
 			out[k] = RedactedValue
 			continue
 		}
@@ -147,15 +148,47 @@ func redactSlice(s []any) []any {
 	return out
 }
 
-func isSensitiveKey(lower string) bool {
+func isSensitiveKey(key string) bool {
+	canonical := canonicalSensitiveKeyName(key)
 	for _, suffix := range sensitiveSuffixes {
-		if lower == suffix || strings.HasSuffix(lower, "_"+suffix) || strings.HasSuffix(lower, "."+suffix) {
-			return true
-		}
-		// Also catch exact matches without separator, e.g. "apikey".
-		if strings.Contains(lower, suffix) {
+		if canonical == suffix || strings.HasSuffix(canonical, "_"+suffix) {
 			return true
 		}
 	}
 	return false
+}
+
+func canonicalSensitiveKeyName(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	runes := []rune(key)
+	var b strings.Builder
+	lastSep := true
+	for i, r := range runes {
+		if r == '_' || r == '.' || r == '-' || unicode.IsSpace(r) {
+			if !lastSep {
+				b.WriteByte('_')
+				lastSep = true
+			}
+			continue
+		}
+		if unicode.IsUpper(r) {
+			if !lastSep && i > 0 {
+				prev := runes[i-1]
+				var next rune
+				if i+1 < len(runes) {
+					next = runes[i+1]
+				}
+				if unicode.IsLower(prev) || unicode.IsDigit(prev) || (unicode.IsUpper(prev) && next != 0 && unicode.IsLower(next)) {
+					b.WriteByte('_')
+				}
+			}
+			r = unicode.ToLower(r)
+		}
+		b.WriteRune(unicode.ToLower(r))
+		lastSep = false
+	}
+	return strings.Trim(b.String(), "_")
 }

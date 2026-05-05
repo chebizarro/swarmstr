@@ -88,8 +88,8 @@ func TestParseMCPConfig_full(t *testing.T) {
 	if remote.Headers["Authorization"] != "Bearer tok" {
 		t.Errorf("remote: auth header = %q", remote.Headers["Authorization"])
 	}
-	if !strings.Contains(remote.Signature, "https://mcp.example.com/sse") {
-		t.Errorf("remote: signature = %q", remote.Signature)
+	if !strings.HasPrefix(remote.Signature, "sse:") || strings.Contains(remote.Signature, "https://mcp.example.com/sse") || strings.Contains(remote.Signature, "Bearer tok") {
+		t.Errorf("remote: expected redacted hashed signature, got %q", remote.Signature)
 	}
 }
 
@@ -202,8 +202,8 @@ func TestResolveConfigDoc(t *testing.T) {
 	if remote.URL != "https://mcp.example.com/http" {
 		t.Fatalf("expected trimmed URL, got %#v", remote)
 	}
-	if !strings.Contains(remote.Signature, "https://mcp.example.com/http") {
-		t.Fatalf("unexpected signature: %#v", remote)
+	if !strings.HasPrefix(remote.Signature, "http:") || strings.Contains(remote.Signature, "https://mcp.example.com/http") {
+		t.Fatalf("expected redacted hashed signature, got %#v", remote)
 	}
 }
 
@@ -249,8 +249,42 @@ func TestResolveConfigDoc_parsesOAuthConfigAndCredentialKey(t *testing.T) {
 	if !strings.Contains(credentialKey, "tenant-a") || !strings.Contains(credentialKey, "client-1") {
 		t.Fatalf("credential key missing stable identity fields: %q", credentialKey)
 	}
-	if !strings.Contains(remote.Signature, "oauth") || !strings.Contains(remote.Signature, "client_secret_ref") {
-		t.Fatalf("expected signature to include oauth config, got %q", remote.Signature)
+	if !strings.HasPrefix(remote.Signature, "http:") || strings.Contains(remote.Signature, "oauth") || strings.Contains(remote.Signature, "client_secret_ref") || strings.Contains(remote.Signature, "MCP_SECRET") {
+		t.Fatalf("expected signature to be a redacted hash, got %q", remote.Signature)
+	}
+}
+
+func TestResolveConfigDoc_signaturesDoNotExposeSecretBearingConfig(t *testing.T) {
+	cfg := ResolveSourceConfigs(SourceConfig{
+		Source:     "test",
+		Enabled:    true,
+		Precedence: 1,
+		Servers: map[string]ServerConfig{
+			"github": {
+				Enabled: true,
+				Command: "npx",
+				Args:    []string{"-y", "@modelcontextprotocol/server-github"},
+				Env:     map[string]string{"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_secret"},
+			},
+			"postgres": {
+				Enabled: true,
+				Command: "npx",
+				Args:    []string{"-y", "@modelcontextprotocol/server-postgres", "postgres://user:pass@example/db"},
+			},
+			"remote": {
+				Enabled: true,
+				Type:    "http",
+				URL:     "https://mcp.example.com/http",
+				Headers: map[string]string{"Authorization": "Bearer remote-secret"},
+			},
+		},
+	})
+	for name, server := range cfg.Servers {
+		for _, leaked := range []string{"ghp_secret", "postgres://user:pass", "Bearer remote-secret", "GITHUB_PERSONAL_ACCESS_TOKEN", "Authorization"} {
+			if strings.Contains(server.Signature, leaked) {
+				t.Fatalf("server %s signature leaked %q: %s", name, leaked, server.Signature)
+			}
+		}
 	}
 }
 
@@ -562,6 +596,75 @@ func TestManagerApplyConfigClassifiesNeedsAuthAndDisabled(t *testing.T) {
 	}
 }
 
+func TestManagerBuildTransportStdioUsesAllowlistAndExplicitEnv(t *testing.T) {
+	t.Setenv("MCP_SHOULD_NOT_LEAK", "secret")
+	t.Setenv("PATH", "/bin:/usr/bin")
+
+	mgr := NewManager()
+	transport, err := mgr.buildTransport(context.Background(), "stdio", ServerConfig{
+		Enabled: true,
+		Type:    "stdio",
+		Command: "echo",
+		Env: map[string]string{
+			"EXPLICIT_TOKEN": "ok",
+			"PATH":           "/custom/bin",
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildTransport error: %v", err)
+	}
+	stdio, ok := transport.(*mcp.CommandTransport)
+	if !ok {
+		t.Fatalf("expected CommandTransport, got %T", transport)
+	}
+	env := map[string]string{}
+	for _, item := range stdio.Command.Env {
+		parts := strings.SplitN(item, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		env[parts[0]] = parts[1]
+	}
+	if _, ok := env["MCP_SHOULD_NOT_LEAK"]; ok {
+		t.Fatalf("unexpected inherited environment variable leak")
+	}
+	if got := env["EXPLICIT_TOKEN"]; got != "ok" {
+		t.Fatalf("explicit env not present: %q", got)
+	}
+	if got := env["PATH"]; got != "/custom/bin" {
+		t.Fatalf("explicit PATH should override allowlist value, got %q", got)
+	}
+}
+
+func TestBuildStdioCommandEnvFiltersBlankKeys(t *testing.T) {
+	t.Setenv("PATH", "/bin")
+	t.Setenv("HOME", "/tmp/home")
+
+	env := buildStdioCommandEnv(map[string]string{
+		"  ":      "ignored",
+		"CUSTOM":  "value",
+		"HOME":    "/override",
+		"TMPDIR":  "",
+	})
+	parsed := map[string]string{}
+	for _, item := range env {
+		parts := strings.SplitN(item, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		parsed[parts[0]] = parts[1]
+	}
+	if _, ok := parsed[""]; ok {
+		t.Fatalf("blank key should not be included")
+	}
+	if got := parsed["CUSTOM"]; got != "value" {
+		t.Fatalf("custom env missing: %q", got)
+	}
+	if got := parsed["HOME"]; got != "/override" {
+		t.Fatalf("explicit HOME override missing: %q", got)
+	}
+}
+
 func TestManagerBuildTransportMergesDynamicAuthHeaders(t *testing.T) {
 	mgr := NewManager()
 	mgr.SetRemoteAuthHeaderProvider(func(_ context.Context, serverName string, cfg ServerConfig) (map[string]string, error) {
@@ -801,6 +904,72 @@ func TestManagerGetPromptPassesArguments(t *testing.T) {
 	}
 	if result == nil || len(result.Messages) != 1 || result.Description != "review prompt" {
 		t.Fatalf("unexpected get result: %#v", result)
+	}
+}
+
+func TestManagerGetAllToolsReturnsDefensiveSchemaCopies(t *testing.T) {
+	mgr := NewManager()
+	mgr.SetConnectFunc(func(_ context.Context, name string, _ ServerConfig) (*ServerConnection, error) {
+		return &ServerConnection{
+			Name:         name,
+			Capabilities: CapabilitySnapshot{Tools: true},
+			Tools: []*mcp.Tool{{
+				Name: "echo",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"message": map[string]any{"type": "string"},
+					},
+				},
+			}},
+		}, nil
+	})
+	if err := mgr.ApplyConfig(context.Background(), Config{
+		Enabled: true,
+		Servers: map[string]ResolvedServerConfig{
+			"demo": {
+				Name:         "demo",
+				ServerConfig: ServerConfig{Enabled: true, Command: "npx"},
+				Signature:    "sig-demo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyConfig error: %v", err)
+	}
+
+	first := mgr.GetAllTools()["demo"][0]
+	first.Name = "mutated"
+	firstSchema := first.InputSchema.(map[string]any)
+	firstProps := firstSchema["properties"].(map[string]any)
+	firstProps["message"].(map[string]any)["type"] = "number"
+
+	second := mgr.GetAllTools()["demo"][0]
+	if second.Name != "echo" {
+		t.Fatalf("tool name was mutated through snapshot: %q", second.Name)
+	}
+	secondSchema := second.InputSchema.(map[string]any)
+	secondProps := secondSchema["properties"].(map[string]any)
+	if got := secondProps["message"].(map[string]any)["type"]; got != "string" {
+		t.Fatalf("tool schema was mutated through snapshot: %#v", second.InputSchema)
+	}
+}
+
+func TestToolInputSchemaToMapReturnsDefensiveCopy(t *testing.T) {
+	input := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"message": map[string]any{"type": "string"},
+		},
+	}
+	first := ToolInputSchemaToMap(input)
+	first["type"] = "array"
+	first["properties"].(map[string]any)["message"].(map[string]any)["type"] = "number"
+	second := ToolInputSchemaToMap(input)
+	if second["type"] != "object" {
+		t.Fatalf("schema top-level was mutated through first result: %#v", second)
+	}
+	if got := second["properties"].(map[string]any)["message"].(map[string]any)["type"]; got != "string" {
+		t.Fatalf("schema nested property was mutated through first result: %#v", second)
 	}
 }
 

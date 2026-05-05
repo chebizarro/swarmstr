@@ -52,6 +52,50 @@ func TestResolvePrivateKeyFromFile(t *testing.T) {
 	}
 }
 
+func TestResolvePrivateKeySignerURLNormalizesNsecSources(t *testing.T) {
+	decoded, _ := hex.DecodeString(testHexKey)
+	var skArr [32]byte
+	copy(skArr[:], decoded)
+	nsec := nip19.EncodeNsec(skArr)
+
+	t.Setenv("METIQ_TEST_SIGNER_NSEC", nsec)
+	got, err := ResolvePrivateKey(BootstrapConfig{SignerURL: "env://METIQ_TEST_SIGNER_NSEC"})
+	if err != nil {
+		t.Fatalf("resolve env nsec error: %v", err)
+	}
+	if got != testHexKey {
+		t.Fatalf("env nsec not normalized: got %q want %q", got, testHexKey)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "signer-nsec.key")
+	if err := os.WriteFile(path, []byte(nsec+"\n"), 0o600); err != nil {
+		t.Fatalf("write nsec file: %v", err)
+	}
+	got, err = ResolvePrivateKey(BootstrapConfig{SignerURL: "file://" + path})
+	if err != nil {
+		t.Fatalf("resolve file nsec error: %v", err)
+	}
+	if got != testHexKey {
+		t.Fatalf("file nsec not normalized: got %q want %q", got, testHexKey)
+	}
+}
+
+func TestResolvePrivateKeyDirectSignerURLNormalizesNsec(t *testing.T) {
+	decoded, _ := hex.DecodeString(testHexKey)
+	var skArr [32]byte
+	copy(skArr[:], decoded)
+	nsec := nip19.EncodeNsec(skArr)
+
+	got, err := ResolvePrivateKey(BootstrapConfig{SignerURL: nsec})
+	if err != nil {
+		t.Fatalf("resolve direct nsec error: %v", err)
+	}
+	if got != testHexKey {
+		t.Fatalf("direct nsec not normalized: got %q want %q", got, testHexKey)
+	}
+}
+
 func TestResolvePrivateKeyRejectsUnsupportedScheme(t *testing.T) {
 	_, err := ResolvePrivateKey(BootstrapConfig{SignerURL: "nostrconnect://foo"})
 	if err == nil {

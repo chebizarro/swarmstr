@@ -200,6 +200,7 @@ type RelayHealthMonitor struct {
 	probe     RelayHealthProbe
 	onResults func(initial bool, results []RelayHealthResult)
 	triggerCh chan struct{}
+	started   bool
 }
 
 // NewRelayHealthMonitor constructs a new monitor for the provided relay URLs.
@@ -245,6 +246,13 @@ func (m *RelayHealthMonitor) Trigger() {
 // Start launches the monitor in the background. It performs an immediate probe
 // pass, then repeats at the configured interval if interval > 0.
 func (m *RelayHealthMonitor) Start(ctx context.Context) {
+	m.mu.Lock()
+	if m.started {
+		m.mu.Unlock()
+		return
+	}
+	m.started = true
+	m.mu.Unlock()
 	go func() {
 		m.run(ctx, true)
 		var ticker *time.Ticker
@@ -347,7 +355,10 @@ func ProbeRelayREQ(ctx context.Context, relayURL string) RelayHealthResult {
 
 	for {
 		select {
-		case <-sub.Events:
+		case _, ok := <-sub.Events:
+			if !ok {
+				return fail(fmt.Errorf("relay health-check event stream ended before response"))
+			}
 			return RelayHealthResult{URL: relayURL, Reachable: true, Latency: time.Since(start)}
 		case <-sub.EndOfStoredEvents:
 			return RelayHealthResult{URL: relayURL, Reachable: true, Latency: time.Since(start)}

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	ctxengine "metiq/internal/context"
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
 )
@@ -113,6 +114,49 @@ func TestRotateSessionLifecycle_ArchivesAndCarriesFlags(t *testing.T) {
 	}
 	if got.SpawnedBy != "slash:/reset" {
 		t.Fatalf("expected spawned_by to capture reason, got %q", got.SpawnedBy)
+	}
+}
+
+func TestRotateSessionCoordinatedClearsContextEngineState(t *testing.T) {
+	t.Setenv("METIQ_SESSION_ARCHIVE_DIR", t.TempDir())
+	ctx := context.Background()
+	repo := state.NewTranscriptRepository(newTestStore(), "author")
+	sessionID := "npub-context-reset"
+	putTranscriptEntry(t, repo, state.TranscriptEntryDoc{
+		SessionID: sessionID,
+		EntryID:   "old-entry",
+		Role:      "user",
+		Text:      "old transcript text",
+		Unix:      time.Now().Unix(),
+	})
+
+	engine := ctxengine.NewSmallWindowEngine(ctxengine.TierSmallSW, ctxengine.DefaultSmallWindowBudget(ctxengine.TierSmallSW))
+	if _, err := engine.Ingest(ctx, sessionID, ctxengine.Message{Role: "user", Content: "stale context engine text", ID: "stale"}); err != nil {
+		t.Fatalf("ingest stale context: %v", err)
+	}
+
+	controlServicesMu.Lock()
+	prevServices := controlServices
+	prevEngine := controlContextEngine
+	controlServices = &daemonServices{session: sessionServices{contextEngine: engine}}
+	controlContextEngine = engine
+	controlServicesMu.Unlock()
+	t.Cleanup(func() {
+		controlServicesMu.Lock()
+		controlServices = prevServices
+		controlContextEngine = prevEngine
+		controlServicesMu.Unlock()
+	})
+
+	if err := rotateSessionCoordinated(ctx, sessionID, "slash:/reset", false, nil, nil, nil, nil, nil, repo, nil, state.ConfigDoc{}); err != nil {
+		t.Fatalf("rotate coordinated: %v", err)
+	}
+	assembled, err := engine.Assemble(ctx, sessionID, 8192)
+	if err != nil {
+		t.Fatalf("assemble after rotate: %v", err)
+	}
+	if len(assembled.Messages) != 0 || assembled.SystemPromptAddition != "" {
+		t.Fatalf("expected cleared context engine state after rotation, got messages=%#v summary=%q", assembled.Messages, assembled.SystemPromptAddition)
 	}
 }
 

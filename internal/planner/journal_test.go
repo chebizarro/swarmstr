@@ -379,6 +379,31 @@ func TestSnapshot_RoundTrip(t *testing.T) {
 		Attempt: 2,
 		Status:  "running",
 		Usage:   state.TaskUsage{TotalTokens: 500},
+		Verification: state.VerificationSpec{
+			Policy:     state.VerificationPolicyRequired,
+			VerifiedAt: 1710000001,
+			VerifiedBy: "verifier-agent",
+			Checks: []state.VerificationCheck{
+				{
+					CheckID:     "chk-schema",
+					Type:        state.VerificationCheckSchema,
+					Description: "schema passes",
+					Required:    true,
+					Status:      state.VerificationStatusPassed,
+					Result:      "ok",
+					Evidence:    "artifact://schema-report",
+					EvaluatedAt: 1710000000,
+					EvaluatedBy: "verifier-agent",
+				},
+				{
+					CheckID:     "chk-review",
+					Type:        state.VerificationCheckReview,
+					Description: "review is still running",
+					Required:    false,
+					Status:      state.VerificationStatusRunning,
+				},
+			},
+		},
 		PendingActions: []PendingAction{
 			{ActionID: "pa-1", Type: "tool_call", Description: "fetch"},
 		},
@@ -400,6 +425,12 @@ func TestSnapshot_RoundTrip(t *testing.T) {
 	if doc.Checkpoint == nil {
 		t.Fatal("expected checkpoint in doc")
 	}
+	if len(doc.Checkpoint.Verification.Checks) != 2 {
+		t.Fatalf("expected verification checks in checkpoint doc, got %d", len(doc.Checkpoint.Verification.Checks))
+	}
+	if doc.Checkpoint.Verification.Checks[0].Status != state.VerificationStatusPassed {
+		t.Fatalf("expected passed check in checkpoint doc, got %s", doc.Checkpoint.Verification.Checks[0].Status)
+	}
 
 	// Restore and verify
 	restored := RestoreFromDoc(doc, nil)
@@ -419,6 +450,21 @@ func TestSnapshot_RoundTrip(t *testing.T) {
 	}
 	if cp.Usage.TotalTokens != 500 {
 		t.Fatalf("expected 500 tokens, got %d", cp.Usage.TotalTokens)
+	}
+	if cp.Verification.Policy != state.VerificationPolicyRequired {
+		t.Fatalf("expected required verification policy, got %s", cp.Verification.Policy)
+	}
+	if len(cp.Verification.Checks) != 2 {
+		t.Fatalf("expected 2 verification checks, got %d", len(cp.Verification.Checks))
+	}
+	if cp.Verification.Checks[0].Status != state.VerificationStatusPassed {
+		t.Fatalf("expected passed check after restore, got %s", cp.Verification.Checks[0].Status)
+	}
+	if cp.Verification.Checks[1].Status != state.VerificationStatusRunning {
+		t.Fatalf("expected running check after restore, got %s", cp.Verification.Checks[1].Status)
+	}
+	if cp.Verification.VerifiedAt != 1710000001 || cp.Verification.VerifiedBy != "verifier-agent" {
+		t.Fatalf("verification summary lost after restore: %+v", cp.Verification)
 	}
 	if len(cp.PendingActions) != 1 || cp.PendingActions[0].ActionID != "pa-1" {
 		t.Fatal("pending actions mismatch")
@@ -501,12 +547,27 @@ func TestAppend_DataIsolation(t *testing.T) {
 
 func TestCheckpoint_DataIsolation(t *testing.T) {
 	j := NewWorkflowJournal("task-1", "run-1")
-	cp := WorkflowCheckpoint{StepID: "s1", Status: "ok", Meta: map[string]any{"k": "v"}}
+	cp := WorkflowCheckpoint{
+		StepID: "s1",
+		Status: "ok",
+		Verification: state.VerificationSpec{
+			Policy: state.VerificationPolicyRequired,
+			Checks: []state.VerificationCheck{
+				{CheckID: "chk-1", Type: state.VerificationCheckTest, Description: "tests pass", Required: true, Status: state.VerificationStatusPassed, Meta: map[string]any{"suite": "unit"}},
+			},
+			Meta: map[string]any{"source": "runtime"},
+		},
+		Meta: map[string]any{"k": "v"},
+	}
 	j.Checkpoint(context.Background(), cp)
 
 	// Mutate original
 	cp.StepID = "s2"
 	cp.Meta["k"] = "mutated"
+	cp.Verification.Policy = state.VerificationPolicyAdvisory
+	cp.Verification.Meta["source"] = "mutated"
+	cp.Verification.Checks[0].Status = state.VerificationStatusFailed
+	cp.Verification.Checks[0].Meta["suite"] = "integration"
 
 	latest := j.LatestCheckpoint()
 	if latest.StepID != "s1" {
@@ -514,6 +575,18 @@ func TestCheckpoint_DataIsolation(t *testing.T) {
 	}
 	if latest.Meta["k"] != "v" {
 		t.Fatal("checkpoint Meta was mutated")
+	}
+	if latest.Verification.Policy != state.VerificationPolicyRequired {
+		t.Fatalf("checkpoint verification policy was mutated: %s", latest.Verification.Policy)
+	}
+	if latest.Verification.Meta["source"] != "runtime" {
+		t.Fatal("checkpoint verification meta was mutated")
+	}
+	if latest.Verification.Checks[0].Status != state.VerificationStatusPassed {
+		t.Fatalf("checkpoint verification status was mutated: %s", latest.Verification.Checks[0].Status)
+	}
+	if latest.Verification.Checks[0].Meta["suite"] != "unit" {
+		t.Fatal("checkpoint verification check meta was mutated")
 	}
 }
 
@@ -549,6 +622,14 @@ func TestWorkflowCheckpoint_JSONRoundTrip(t *testing.T) {
 		Attempt: 2,
 		Status:  "running",
 		Usage:   state.TaskUsage{TotalTokens: 250, ToolCalls: 5},
+		Verification: state.VerificationSpec{
+			Policy:     state.VerificationPolicyAdvisory,
+			VerifiedAt: 1710000002,
+			VerifiedBy: "agent-reviewer",
+			Checks: []state.VerificationCheck{
+				{CheckID: "chk-output", Type: state.VerificationCheckCustom, Description: "output is acceptable", Required: true, Status: state.VerificationStatusFailed, Result: "mismatch"},
+			},
+		},
 		PendingActions: []PendingAction{
 			{ActionID: "pa-1", Type: "delegation", Description: "spawn sub-agent"},
 		},
@@ -569,6 +650,15 @@ func TestWorkflowCheckpoint_JSONRoundTrip(t *testing.T) {
 	if len(decoded.PendingActions) != 1 || decoded.PendingActions[0].ActionID != "pa-1" {
 		t.Fatal("pending actions round-trip mismatch")
 	}
+	if decoded.Verification.Policy != state.VerificationPolicyAdvisory {
+		t.Fatalf("verification policy round-trip mismatch: %s", decoded.Verification.Policy)
+	}
+	if len(decoded.Verification.Checks) != 1 || decoded.Verification.Checks[0].Status != state.VerificationStatusFailed {
+		t.Fatalf("verification checks round-trip mismatch: %+v", decoded.Verification.Checks)
+	}
+	if decoded.Verification.VerifiedAt != 1710000002 || decoded.Verification.VerifiedBy != "agent-reviewer" {
+		t.Fatalf("verification summary round-trip mismatch: %+v", decoded.Verification)
+	}
 }
 
 func TestWorkflowJournalDoc_JSONRoundTrip(t *testing.T) {
@@ -581,6 +671,12 @@ func TestWorkflowJournalDoc_JSONRoundTrip(t *testing.T) {
 		},
 		Checkpoint: &state.WorkflowCheckpointDoc{
 			StepID: "s1", Attempt: 1, Status: "running", CreatedAt: 100,
+			Verification: state.VerificationSpec{
+				Policy: state.VerificationPolicyRequired,
+				Checks: []state.VerificationCheck{
+					{CheckID: "chk-1", Type: state.VerificationCheckTest, Description: "tests pass", Required: true, Status: state.VerificationStatusPassed},
+				},
+			},
 		},
 		NextSeq:   2,
 		UpdatedAt: 100,
@@ -598,6 +694,9 @@ func TestWorkflowJournalDoc_JSONRoundTrip(t *testing.T) {
 	}
 	if decoded.Checkpoint == nil || decoded.Checkpoint.StepID != "s1" {
 		t.Fatal("checkpoint round-trip mismatch")
+	}
+	if len(decoded.Checkpoint.Verification.Checks) != 1 || decoded.Checkpoint.Verification.Checks[0].Status != state.VerificationStatusPassed {
+		t.Fatalf("checkpoint verification round-trip mismatch: %+v", decoded.Checkpoint.Verification)
 	}
 }
 

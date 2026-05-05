@@ -1416,23 +1416,21 @@ func main() {
 			}
 
 			// ── Check tool_profile first ────────────────────────────────
-			// If the agent has tool_profile: "full", bypass the approval gate entirely.
-			// This connects the profile system to the approval gate.
+			// A "full" profile bypasses only the legacy approval list. Configured
+			// permission rules still evaluate first because permissions layer on top
+			// of profile-based tool availability and include critical safety denies.
+			fullProfileBypassesLegacy := false
 			if agentID != "" {
 				liveCfg := configState.Get()
 				foundAgent := false
 				for _, ac := range liveCfg.Agents {
 					if ac.ID == agentID {
 						foundAgent = true
-						if strings.EqualFold(ac.ToolProfile, "full") {
-							// Agent has full profile - allow without approval
-							log.Printf("tool %s allowed for agent %s (tool_profile=full)", call.Name, agentID)
-							metricspkg.ToolCalls.Inc()
-							return next(ctx, call)
+						if toolProfileBypassesApproval(ac.ToolProfile, permEngine != nil) {
+							fullProfileBypassesLegacy = true
 						}
-						// Log when tool_profile is set but not "full"
 						if ac.ToolProfile != "" {
-							log.Printf("tool %s: agent %s has tool_profile=%q (not full, will check approval gate)", call.Name, agentID, ac.ToolProfile)
+							log.Printf("tool %s: agent %s has tool_profile=%q", call.Name, agentID, ac.ToolProfile)
 						}
 						break
 					}
@@ -1460,9 +1458,12 @@ func main() {
 						argsStr = string(argsBytes)
 					}
 				}
-				req := permissions.NewToolRequest(call.Name, permissions.CategoryExec).
+				req := permissions.NewToolRequest(call.Name, permissionCategoryForTool(tools, call.Name)).
 					WithContent(argsStr).
-					WithContext("", "", agentID, "")
+					WithContext("", "", agentID, agent.SessionIDFromContext(ctx))
+				if origin, originName := permissionOriginForTool(tools, call.Name); origin != "" || originName != "" {
+					req = req.WithOrigin(origin, originName)
+				}
 
 				decision := permEngine.Evaluate(ctx, req)
 
@@ -1504,6 +1505,12 @@ func main() {
 					}
 					liveApprovalTools = live
 				}
+			}
+
+			if fullProfileBypassesLegacy {
+				log.Printf("tool %s allowed for agent %s (tool_profile=full)", call.Name, agentID)
+				metricspkg.ToolCalls.Inc()
+				return next(ctx, call)
 			}
 
 			// If permission engine is active and returned "ask", always go to approval gate.
@@ -4394,6 +4401,7 @@ func main() {
 			mediaTranscriber:   mediaTranscriber,
 			keyRings:           keyRings,
 			stateEnvelopeCodec: controlStateEnvelopeCodec,
+			bootstrapPath:      bootstrapPath,
 			configFilePath:     controlConfigFilePath,
 			cronExecutorMu:     &controlCronExecutorMu,
 		},
@@ -5512,14 +5520,7 @@ func main() {
 			StaticHandler:          webui.Handler(wsPath, gatewayWSToken),
 			HandleRequest: func(ctx context.Context, req gatewayprotocol.RequestFrame) (any, *gatewayprotocol.ErrorShape) {
 				principal, _ := gatewayws.PrincipalFromContext(ctx)
-				callerPubKey := strings.TrimSpace(principal.PubKey)
-				authenticated := principal.Authenticated && callerPubKey != ""
-				res, err := handleControlRPCRequest(ctx, nostruntime.ControlRPCInbound{
-					FromPubKey:    callerPubKey,
-					Method:        strings.TrimSpace(req.Method),
-					Params:        req.Params,
-					Authenticated: authenticated,
-				}, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+				res, err := handleControlRPCRequest(ctx, gatewayControlRPCInbound(principal, req), bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
 				if err != nil {
 					return nil, mapGatewayWSError(err)
 				}
@@ -6743,6 +6744,7 @@ func handleControlRPCRequest(
 		tools:             tools,
 		pluginMgr:         pluginMgr,
 		startedAt:         startedAt,
+		bootstrapPath:     svc.handlers.bootstrapPath,
 
 		sessionStore:     svc.session.sessionStore,
 		mediaTranscriber: svc.handlers.mediaTranscriber,

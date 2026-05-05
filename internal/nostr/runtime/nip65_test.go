@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,6 +102,78 @@ func TestDecodeNIP65Event(t *testing.T) {
 	}
 }
 
+func TestFetchNIP65RequiresPool(t *testing.T) {
+	_, err := FetchNIP65(context.Background(), nil, []string{"wss://relay.example"}, strings.Repeat("1", 64))
+	if err == nil || err.Error() != "nip65: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
+	}
+}
+
+func TestPublishNIP65RequiresPool(t *testing.T) {
+	keyer := newNIP04KeyerAdapter(nostr.Generate())
+	_, err := PublishNIP65(context.Background(), nil, keyer, []string{"wss://relay.example"}, nil, nil, []string{"wss://relay.example"})
+	if err == nil || err.Error() != "nip65: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
+	}
+}
+
+func TestPublishNIP65RequiresKeyer(t *testing.T) {
+	pool := NewPoolNIP42(newNIP04KeyerAdapter(nostr.Generate()))
+	defer pool.Close("test")
+	_, err := PublishNIP65(context.Background(), pool, nil, []string{"wss://relay.example"}, nil, nil, []string{"wss://relay.example"})
+	if err == nil || err.Error() != "nip65: keyer is required" {
+		t.Fatalf("expected keyer validation error, got %v", err)
+	}
+}
+
+func TestFetchNIP02ContactsRequiresPool(t *testing.T) {
+	_, _, err := FetchNIP02Contacts(context.Background(), nil, []string{"wss://relay.example"}, strings.Repeat("1", 64))
+	if err == nil || err.Error() != "nip02: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
+	}
+}
+
+func TestPublishNIP02ContactListRequiresPool(t *testing.T) {
+	keyer := newNIP04KeyerAdapter(nostr.Generate())
+	_, err := PublishNIP02ContactList(context.Background(), nil, keyer, []string{"wss://relay.example"}, nil)
+	if err == nil || err.Error() != "nip02: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
+	}
+}
+
+func TestFetchKind10050RequiresPool(t *testing.T) {
+	_, err := fetchKind10050(context.Background(), nil, []string{"wss://relay.example"}, nostr.Generate().Public())
+	if err == nil || err.Error() != "nip17: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
+	}
+}
+
+func TestPublishKind10050RequiresPool(t *testing.T) {
+	keyer := newNIP04KeyerAdapter(nostr.Generate())
+	_, err := publishKind10050(context.Background(), nil, keyer, []string{"wss://relay.example"}, []string{"wss://relay.example"})
+	if err == nil || err.Error() != "nip17: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
+	}
+}
+
+func TestPublishKind10050RequiresKeyer(t *testing.T) {
+	pool := NewPoolNIP42(newNIP04KeyerAdapter(nostr.Generate()))
+	defer pool.Close("test")
+	_, err := publishKind10050(context.Background(), pool, nil, []string{"wss://relay.example"}, []string{"wss://relay.example"})
+	if err == nil || err.Error() != "nip17: keyer is required" {
+		t.Fatalf("expected keyer validation error, got %v", err)
+	}
+}
+
+func TestPublishNIP02ContactListRequiresKeyer(t *testing.T) {
+	pool := NewPoolNIP42(newNIP04KeyerAdapter(nostr.Generate()))
+	defer pool.Close("test")
+	_, err := PublishNIP02ContactList(context.Background(), pool, nil, []string{"wss://relay.example"}, nil)
+	if err == nil || err.Error() != "nip02: keyer is required" {
+		t.Fatalf("expected keyer validation error, got %v", err)
+	}
+}
+
 func TestRelaySelectorFallback(t *testing.T) {
 	sel := NewRelaySelector(
 		[]string{"wss://read-fallback.example.com"},
@@ -145,6 +218,47 @@ func TestRelaySelectorPutGet(t *testing.T) {
 	}
 	if len(got.WriteRelays()) != 2 {
 		t.Errorf("expected 2 write relays, got %d", len(got.WriteRelays()))
+	}
+}
+
+func TestRelaySelectorPutClonesInput(t *testing.T) {
+	sel := NewRelaySelector(nil, nil)
+	list := &NIP65RelayList{
+		PubKey:  "abc123",
+		Entries: []NIP65RelayEntry{{URL: "wss://r1.example.com", Read: true}},
+	}
+	sselBefore := list.Entries[0].URL
+	sel.Put(list)
+
+	list.Entries[0].URL = "wss://mutated.example.com"
+	got := sel.Get("abc123")
+	if got == nil {
+		t.Fatal("expected cached list")
+	}
+	if got.Entries[0].URL != sselBefore {
+		t.Fatalf("cached relay URL = %q, want %q", got.Entries[0].URL, sselBefore)
+	}
+}
+
+func TestRelaySelectorGetReturnsCopy(t *testing.T) {
+	sel := NewRelaySelector(nil, nil)
+	sel.Put(&NIP65RelayList{
+		PubKey:  "abc123",
+		Entries: []NIP65RelayEntry{{URL: "wss://r1.example.com", Read: true}},
+	})
+
+	first := sel.Get("abc123")
+	if first == nil {
+		t.Fatal("expected cached list")
+	}
+	first.Entries[0].URL = "wss://mutated.example.com"
+
+	second := sel.Get("abc123")
+	if second == nil {
+		t.Fatal("expected cached list on second get")
+	}
+	if second.Entries[0].URL != "wss://r1.example.com" {
+		t.Fatalf("cached relay URL = %q, want original", second.Entries[0].URL)
 	}
 }
 
@@ -206,6 +320,25 @@ func TestRelaySelectorEvictsExpiredEntries(t *testing.T) {
 	sel.mu.RUnlock()
 	if ok {
 		t.Fatal("expected expired entry to be evicted")
+	}
+}
+
+func TestNIP65SelfSyncRequiresPool(t *testing.T) {
+	keyer := newNIP04KeyerAdapter(nostr.Generate())
+	err := NIP65SelfSync(context.Background(), NIP65SyncOptions{Keyer: keyer})
+	if err == nil || err.Error() != "nip65: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
+	}
+}
+
+func TestPublishStartupListsRequiresPool(t *testing.T) {
+	keyer := newNIP04KeyerAdapter(nostr.Generate())
+	err := PublishStartupLists(context.Background(), StartupListPublishOptions{
+		Keyer:         keyer,
+		PublishRelays: []string{"wss://relay.example"},
+	})
+	if err == nil || err.Error() != "startup lists: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
 	}
 }
 

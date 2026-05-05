@@ -32,10 +32,11 @@ const (
 
 // GateResult is the output of a verification gate check.
 type GateResult struct {
-	Decision    GateDecision `json:"decision"`
-	Reason      string       `json:"reason"`
-	FailedChecks []string    `json:"failed_checks,omitempty"`
-	Suggestion  string       `json:"suggestion,omitempty"`
+	Decision     GateDecision           `json:"decision"`
+	Reason       string                 `json:"reason"`
+	FailedChecks []string               `json:"failed_checks,omitempty"`
+	Suggestion   string                 `json:"suggestion,omitempty"`
+	UpdatedSpec  state.VerificationSpec `json:"updated_spec,omitempty"`
 }
 
 // Allowed reports whether the gate permits proceeding.
@@ -62,22 +63,22 @@ type ToolRiskClassifier func(toolName string, params map[string]any) ActionRisk
 // entries override the substring heuristic fallback.
 var knownToolRisks = map[string]ActionRisk{
 	// High risk: external side effects.
-	"nostr_publish":   ActionRiskHigh,
-	"nostr_send_dm":   ActionRiskHigh,
-	"nostr_zap_send":  ActionRiskHigh,
+	"nostr_publish":  ActionRiskHigh,
+	"nostr_send_dm":  ActionRiskHigh,
+	"nostr_zap_send": ActionRiskHigh,
 	// Medium risk: local state changes.
-	"config_set":      ActionRiskMedium,
-	"config_unset":    ActionRiskMedium,
-	"memory_compact":  ActionRiskMedium,
+	"config_set":     ActionRiskMedium,
+	"config_unset":   ActionRiskMedium,
+	"memory_compact": ActionRiskMedium,
 	// Low risk: read-only.
-	"nostr_fetch":     ActionRiskLow,
-	"nostr_profile":   ActionRiskLow,
-	"nostr_followers": ActionRiskLow,
-	"nostr_follows":   ActionRiskLow,
-	"relay_info":      ActionRiskLow,
-	"relay_list":      ActionRiskLow,
-	"relay_ping":      ActionRiskLow,
-	"memory_search":   ActionRiskLow,
+	"nostr_fetch":         ActionRiskLow,
+	"nostr_profile":       ActionRiskLow,
+	"nostr_followers":     ActionRiskLow,
+	"nostr_follows":       ActionRiskLow,
+	"relay_info":          ActionRiskLow,
+	"relay_list":          ActionRiskLow,
+	"relay_ping":          ActionRiskLow,
+	"memory_search":       ActionRiskLow,
 	"nostr_resolve_nip05": ActionRiskLow,
 	"nostr_relay_hints":   ActionRiskLow,
 	"nostr_wot_distance":  ActionRiskLow,
@@ -175,9 +176,9 @@ func (g *VerificationGate) MayExecuteTool(
 		return GateResult{Decision: GateAllow, Reason: fmt.Sprintf("full autonomy permits %s risk tool %s", risk, toolName)}
 	}
 
-	// Plan approval: high-risk blocked, medium requires verification has passed.
+	// Plan approval: medium+ risk actions require verification to have passed.
 	if mode == state.AutonomyPlanApproval {
-		if risk == ActionRiskHigh || risk == ActionRiskCritical {
+		if risk == ActionRiskMedium || risk == ActionRiskHigh || risk == ActionRiskCritical {
 			if !spec.AllRequiredPassed() {
 				return GateResult{
 					Decision:   GateBlock,
@@ -236,7 +237,7 @@ func (g *VerificationGate) MayComplete(
 	result := g.runtime.EvaluateAll(ctx, task, outputs, actor, now)
 
 	if result.Passed {
-		return GateResult{Decision: GateAllow, Reason: "all verification checks passed"}
+		return GateResult{Decision: GateAllow, Reason: "all verification checks passed", UpdatedSpec: result.UpdatedSpec}
 	}
 
 	// Verification failed — determine the appropriate response.
@@ -262,11 +263,14 @@ func (g *VerificationGate) MayComplete(
 			Decision:     GateAllow,
 			Reason:       fmt.Sprintf("advisory: %d checks failed but completion allowed", len(failedChecks)),
 			FailedChecks: failedChecks,
+			UpdatedSpec:  result.UpdatedSpec,
 		}
 	}
 
 	// Required policy with failures → decide based on autonomy mode.
-	return g.decideFailureResponse(mode, allBlocking, result.Summary)
+	gateResult := g.decideFailureResponse(mode, allBlocking, result.Summary)
+	gateResult.UpdatedSpec = result.UpdatedSpec
+	return gateResult
 }
 
 // decideFailureResponse maps a verification failure to the right gate action

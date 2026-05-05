@@ -13,16 +13,16 @@ import (
 // AgentInternalEvent represents a task completion event from a subagent or
 // cron job, forwarded into the next agent turn as context.
 type AgentInternalEvent struct {
-	Type            string `json:"type"`                        // "task_completion"
-	Source          string `json:"source"`                      // "subagent" | "cron"
-	ChildSessionKey string `json:"child_session_key"`
-	ChildSessionID  string `json:"child_session_id,omitempty"`
-	AnnounceType    string `json:"announce_type"`
-	TaskLabel       string `json:"task_label"`
-	Status          string `json:"status"`        // "ok" | "timeout" | "error" | "unknown"
-	StatusLabel     string `json:"status_label"`
-	Result          string `json:"result"`
-	StatsLine       string `json:"stats_line,omitempty"`
+	Type             string `json:"type"`   // "task_completion"
+	Source           string `json:"source"` // "subagent" | "cron"
+	ChildSessionKey  string `json:"child_session_key"`
+	ChildSessionID   string `json:"child_session_id,omitempty"`
+	AnnounceType     string `json:"announce_type"`
+	TaskLabel        string `json:"task_label"`
+	Status           string `json:"status"` // "ok" | "timeout" | "error" | "unknown"
+	StatusLabel      string `json:"status_label"`
+	Result           string `json:"result"`
+	StatsLine        string `json:"stats_line,omitempty"`
 	ReplyInstruction string `json:"reply_instruction"`
 }
 
@@ -154,6 +154,7 @@ type SessionsDeleteRequest struct {
 type SessionsExportRequest struct {
 	// SessionID is the session to export.
 	SessionID string `json:"session_id"`
+	Key       string `json:"key,omitempty"`
 	// Format is the export format. Currently only "html" is supported.
 	Format string `json:"format,omitempty"`
 }
@@ -216,6 +217,56 @@ func (r SessionsSpawnRequest) Normalize() (SessionsSpawnRequest, error) {
 
 func DecodeSessionsSpawnParams(params json.RawMessage) (SessionsSpawnRequest, error) {
 	return decodeMethodParams[SessionsSpawnRequest](params)
+}
+
+func DecodeSessionsExportParams(params json.RawMessage) (SessionsExportRequest, error) {
+	if isJSONArray(params) {
+		var arr []any
+		if err := json.Unmarshal(params, &arr); err != nil {
+			return SessionsExportRequest{}, fmt.Errorf("invalid params")
+		}
+		if len(arr) == 0 || len(arr) > 2 {
+			return SessionsExportRequest{}, fmt.Errorf("invalid params")
+		}
+		sessionID, ok := arr[0].(string)
+		if !ok {
+			return SessionsExportRequest{}, fmt.Errorf("invalid params")
+		}
+		req := SessionsExportRequest{SessionID: sessionID}
+		if len(arr) > 1 {
+			format, ok := arr[1].(string)
+			if !ok {
+				return SessionsExportRequest{}, fmt.Errorf("invalid params")
+			}
+			req.Format = format
+		}
+		return req, nil
+	}
+	params = normalizeObjectParamAliases(params)
+	type sessionsExportCompatRequest struct {
+		SessionID      string `json:"session_id,omitempty"`
+		SessionIDCamel string `json:"sessionId,omitempty"`
+		SessionKey     string `json:"sessionKey,omitempty"`
+		Key            string `json:"key,omitempty"`
+		Format         string `json:"format,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var compat sessionsExportCompatRequest
+	if err := dec.Decode(&compat); err != nil {
+		return SessionsExportRequest{}, fmt.Errorf("invalid params")
+	}
+	sessionID := strings.TrimSpace(compat.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionIDCamel)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.Key)
+	}
+	return SessionsExportRequest{SessionID: sessionID, Key: strings.TrimSpace(compat.Key), Format: compat.Format}, nil
 }
 
 type SessionGetResponse struct {
@@ -396,6 +447,25 @@ func (r SessionsDeleteRequest) Normalize() (SessionsDeleteRequest, error) {
 	return r, nil
 }
 
+func (r SessionsExportRequest) Normalize() (SessionsExportRequest, error) {
+	r.SessionID = strings.TrimSpace(r.SessionID)
+	r.Key = strings.TrimSpace(r.Key)
+	if r.SessionID == "" {
+		r.SessionID = r.Key
+	}
+	r.Format = strings.ToLower(strings.TrimSpace(r.Format))
+	if r.Format == "" {
+		r.Format = "html"
+	}
+	if r.SessionID == "" {
+		return r, fmt.Errorf("session_id is required")
+	}
+	if r.Format != "html" {
+		return r, fmt.Errorf("unsupported format %q (only 'html' is supported)", r.Format)
+	}
+	return r, nil
+}
+
 func (r SessionsCompactRequest) Normalize() (SessionsCompactRequest, error) {
 	r.SessionID = strings.TrimSpace(r.SessionID)
 	r.Key = strings.TrimSpace(r.Key)
@@ -538,6 +608,7 @@ func DecodeChatSendParams(params json.RawMessage) (ChatSendRequest, error) {
 		}
 		return ChatSendRequest{To: to, Text: text}, nil
 	}
+	params = normalizeObjectParamAliases(params)
 	type chatSendCompatRequest struct {
 		To             string            `json:"to,omitempty"`
 		Text           string            `json:"text,omitempty"`
@@ -548,6 +619,7 @@ func DecodeChatSendParams(params json.RawMessage) (ChatSendRequest, error) {
 		Thinking       string            `json:"thinking,omitempty"`
 		Deliver        *bool             `json:"deliver,omitempty"`
 		TimeoutMS      int               `json:"timeoutMs,omitempty"`
+		TimeoutMSSnake int               `json:"timeout_ms,omitempty"`
 		IdempotencyKey string            `json:"idempotencyKey,omitempty"`
 		IdempotencyAlt string            `json:"idempotency_key,omitempty"`
 		RunID          string            `json:"runId,omitempty"`
@@ -612,6 +684,7 @@ func DecodeSessionGetParams(params json.RawMessage) (SessionGetRequest, error) {
 		}
 		return req, nil
 	}
+	params = normalizeObjectParamAliases(params)
 	type sessionGetCompatRequest struct {
 		SessionID      string `json:"session_id,omitempty"`
 		SessionIDCamel string `json:"sessionId,omitempty"`
@@ -665,10 +738,12 @@ func DecodeChatHistoryParams(params json.RawMessage) (ChatHistoryRequest, error)
 		}
 		return req, nil
 	}
+	params = normalizeObjectParamAliases(params)
 	type chatHistoryCompatRequest struct {
 		SessionID      string `json:"session_id,omitempty"`
 		SessionIDCamel string `json:"sessionId,omitempty"`
 		SessionKey     string `json:"sessionKey,omitempty"`
+		Key            string `json:"key,omitempty"`
 		Limit          int    `json:"limit,omitempty"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(params))
@@ -683,6 +758,9 @@ func DecodeChatHistoryParams(params json.RawMessage) (ChatHistoryRequest, error)
 	}
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.Key)
 	}
 	return ChatHistoryRequest{SessionID: sessionID, Limit: compat.Limit}, nil
 }
@@ -705,6 +783,7 @@ func DecodeChatAbortParams(params json.RawMessage) (ChatAbortRequest, error) {
 		}
 		return ChatAbortRequest{SessionID: sessionID}, nil
 	}
+	params = normalizeObjectParamAliases(params)
 	type chatAbortCompatRequest struct {
 		SessionID      string `json:"session_id,omitempty"`
 		SessionIDCamel string `json:"sessionId,omitempty"`
@@ -789,6 +868,7 @@ func DecodeSessionsPreviewParams(params json.RawMessage) (SessionsPreviewRequest
 		}
 		return req, nil
 	}
+	params = normalizeObjectParamAliases(params)
 	type sessionsPreviewCompatRequest struct {
 		SessionID      string   `json:"session_id,omitempty"`
 		SessionIDCamel string   `json:"sessionId,omitempty"`
@@ -843,6 +923,7 @@ func DecodeSessionsPatchParams(params json.RawMessage) (SessionsPatchRequest, er
 		}
 		return req, nil
 	}
+	params = normalizeObjectParamAliases(params)
 	type sessionsPatchCompatRequest struct {
 		SessionID      string         `json:"session_id,omitempty"`
 		SessionIDCamel string         `json:"sessionId,omitempty"`
@@ -884,6 +965,7 @@ func DecodeSessionsResetParams(params json.RawMessage) (SessionsResetRequest, er
 		}
 		return SessionsResetRequest{SessionID: sessionID}, nil
 	}
+	params = normalizeObjectParamAliases(params)
 	type sessionsResetCompatRequest struct {
 		SessionID      string `json:"session_id,omitempty"`
 		SessionIDCamel string `json:"sessionId,omitempty"`
@@ -924,6 +1006,7 @@ func DecodeSessionsDeleteParams(params json.RawMessage) (SessionsDeleteRequest, 
 		}
 		return SessionsDeleteRequest{SessionID: sessionID}, nil
 	}
+	params = normalizeObjectParamAliases(params)
 	type sessionsDeleteCompatRequest struct {
 		SessionID      string `json:"session_id,omitempty"`
 		SessionIDCamel string `json:"sessionId,omitempty"`
@@ -978,6 +1061,7 @@ func DecodeSessionsCompactParams(params json.RawMessage) (SessionsCompactRequest
 		}
 		return req, nil
 	}
+	params = normalizeObjectParamAliases(params)
 	type sessionsCompactCompatRequest struct {
 		SessionID      string `json:"session_id,omitempty"`
 		SessionIDCamel string `json:"sessionId,omitempty"`

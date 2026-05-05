@@ -174,6 +174,24 @@ func makeTestEvent(kind int, tags [][]string, content string) nostr.Event {
 	return ev
 }
 
+func mustSignedListEvent(t *testing.T, skHex string, kind int, createdAt nostr.Timestamp, tags nostr.Tags) nostr.Event {
+	t.Helper()
+	sk, err := nostr.SecretKeyFromHex(skHex)
+	if err != nil {
+		t.Fatalf("SecretKeyFromHex: %v", err)
+	}
+	evt := nostr.Event{
+		Kind:      nostr.Kind(kind),
+		CreatedAt: createdAt,
+		Tags:      tags,
+		Content:   "",
+	}
+	if err := evt.Sign(sk); err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	return evt
+}
+
 func TestDecodeEvent_MuteList(t *testing.T) {
 	ev := makeTestEvent(KindMuteList, [][]string{
 		{"p", "pk1", "wss://relay1"},
@@ -263,6 +281,43 @@ func TestDecodeEvent_UnknownTagIgnored(t *testing.T) {
 }
 
 // ─── MarshalList ──────────────────────────────────────────────────────────────
+
+func TestValidationFailureRejectsWrongAuthor(t *testing.T) {
+	valid := mustSignedListEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		KindRelaySet,
+		nostr.Timestamp(10),
+		nostr.Tags{{"d", "foo"}, {"r", "wss://valid.example"}},
+	)
+	wrongAuthor := mustSignedListEvent(t,
+		"2222222222222222222222222222222222222222222222222222222222222222",
+		KindRelaySet,
+		nostr.Timestamp(20),
+		nostr.Tags{{"d", "foo"}, {"r", "wss://wrong.example"}},
+	)
+	if reason := validationFailure(wrongAuthor, valid.PubKey, KindRelaySet); reason != "unexpected_author" {
+		t.Fatalf("reason = %q, want unexpected_author", reason)
+	}
+}
+
+func TestValidationFailureRejectsInvalidSignature(t *testing.T) {
+	valid := mustSignedListEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		KindRelaySet,
+		nostr.Timestamp(10),
+		nostr.Tags{{"d", "foo"}, {"r", "wss://valid.example"}},
+	)
+	invalidSig := mustSignedListEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		KindRelaySet,
+		nostr.Timestamp(20),
+		nostr.Tags{{"d", "foo"}, {"r", "wss://tampered.example"}},
+	)
+	invalidSig.Sig[0] ^= 0x01
+	if reason := validationFailure(invalidSig, valid.PubKey, KindRelaySet); reason != "invalid_signature" {
+		t.Fatalf("reason = %q, want invalid_signature", reason)
+	}
+}
 
 func TestMarshalList_RoundTrip(t *testing.T) {
 	l := &List{

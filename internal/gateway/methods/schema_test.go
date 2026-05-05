@@ -131,6 +131,56 @@ func TestDecodeChatParams_OpenClawShapeCompatibility(t *testing.T) {
 	}
 }
 
+func TestSessionIdentityAliasCompatibility(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  json.RawMessage
+		want string
+	}{
+		{"chat.history key", json.RawMessage(`{"key":"s-key","limit":5}`), "s-key"},
+		{"chat.history session_key", json.RawMessage(`{"session_key":"s-snake","limit":5}`), "s-snake"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := DecodeChatHistoryParams(tc.raw)
+			if err != nil {
+				t.Fatalf("decode error: %v", err)
+			}
+			req, err = req.Normalize()
+			if err != nil {
+				t.Fatalf("normalize error: %v", err)
+			}
+			if req.SessionID != tc.want {
+				t.Fatalf("SessionID=%q want %q", req.SessionID, tc.want)
+			}
+		})
+	}
+
+	exportReq, err := DecodeSessionsExportParams(json.RawMessage(`{"sessionKey":"export-s1","format":"html"}`))
+	if err != nil {
+		t.Fatalf("sessions.export decode error: %v", err)
+	}
+	exportReq, err = exportReq.Normalize()
+	if err != nil {
+		t.Fatalf("sessions.export normalize error: %v", err)
+	}
+	if exportReq.SessionID != "export-s1" || exportReq.Format != "html" {
+		t.Fatalf("unexpected export request: %#v", exportReq)
+	}
+
+	getReq, err := DecodeSessionGetParams(json.RawMessage(`{"session_key":"snake-s1","limit":3}`))
+	if err != nil {
+		t.Fatalf("session.get decode error: %v", err)
+	}
+	getReq, err = getReq.Normalize()
+	if err != nil {
+		t.Fatalf("session.get normalize error: %v", err)
+	}
+	if getReq.SessionID != "snake-s1" {
+		t.Fatalf("session.get session_key alias failed: %#v", getReq)
+	}
+}
+
 func TestDecodeSessionsParams_OpenClawShapeCompatibility(t *testing.T) {
 	sessionGetReq, err := DecodeSessionGetParams(json.RawMessage(`{"key":"s1","limit":10}`))
 	if err != nil {

@@ -142,7 +142,7 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := methods.PreviewSession(ctx, docsRepo, transcriptRepo, req.SessionID, req.Limit)
+		result, err := methods.PreviewSessions(ctx, docsRepo, transcriptRepo, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -332,19 +332,13 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		}
 		return nostruntime.ControlRPCResult{Result: compactResult}, true, nil
 	case methods.MethodSessionsExport:
-		var exportReq methods.SessionsExportRequest
-		if len(in.Params) > 0 {
-			_ = json.Unmarshal(in.Params, &exportReq)
+		exportReq, err := methods.DecodeSessionsExportParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("sessions.export: invalid params: %w", err)
 		}
-		if exportReq.SessionID == "" {
-			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("sessions.export: session_id is required")
-		}
-		exportFormat := strings.ToLower(strings.TrimSpace(exportReq.Format))
-		if exportFormat == "" {
-			exportFormat = "html"
-		}
-		if exportFormat != "html" {
-			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("sessions.export: unsupported format %q (only 'html' is supported)", exportFormat)
+		exportReq, err = exportReq.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("sessions.export: %w", err)
 		}
 		exportResult, err := methods.ExportSessionHTML(ctx, docsRepo, transcriptRepo, exportReq.SessionID, in.FromPubKey)
 		if err != nil {

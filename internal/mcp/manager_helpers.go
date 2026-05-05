@@ -110,11 +110,6 @@ func ToolInputSchemaToMap(schema any) map[string]any {
 			"properties": map[string]any{},
 		}
 	}
-	// Try direct map.
-	if m, ok := schema.(map[string]any); ok {
-		return m
-	}
-	// Try JSON round-trip.
 	data, err := json.Marshal(schema)
 	if err != nil {
 		return map[string]any{"type": "object", "properties": map[string]any{}}
@@ -124,4 +119,28 @@ func ToolInputSchemaToMap(schema any) map[string]any {
 		return map[string]any{"type": "object", "properties": map[string]any{}}
 	}
 	return result
+}
+
+func cloneMCPTool(tool *mcp.Tool) *mcp.Tool {
+	if tool == nil {
+		return nil
+	}
+	cp := *tool
+	cp.InputSchema = cloneMCPJSONValue(tool.InputSchema)
+	return &cp
+}
+
+func cloneMCPJSONValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var out any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return value
+	}
+	return out
 }

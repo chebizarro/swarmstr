@@ -128,6 +128,11 @@ func mustSignedControlRequestEvent(t *testing.T, caller nostr.Keyer, targetPubKe
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
+	return mustSignedControlRawEvent(t, caller, targetPubKey, createdAt, requestID, string(contentRaw))
+}
+
+func mustSignedControlRawEvent(t *testing.T, caller nostr.Keyer, targetPubKey string, createdAt time.Time, requestID string, content string) nostr.Event {
+	t.Helper()
 	evt := nostr.Event{
 		Kind:      nostr.Kind(events.KindControl),
 		CreatedAt: nostr.Timestamp(createdAt.Unix()),
@@ -136,7 +141,7 @@ func mustSignedControlRequestEvent(t *testing.T, caller nostr.Keyer, targetPubKe
 			{"req", requestID},
 			{"t", "control_rpc"},
 		},
-		Content: string(contentRaw),
+		Content: content,
 	}
 	if err := caller.SignEvent(context.Background(), &evt); err != nil {
 		t.Fatalf("SignEvent: %v", err)
@@ -361,6 +366,13 @@ func TestDecodeControlCallRequest_TooLarge(t *testing.T) {
 	_, err := decodeControlCallRequest(tooLarge)
 	if err == nil {
 		t.Fatal("expected size limit error")
+	}
+}
+
+func TestDecodeControlCallRequest_RejectsTrailingJSON(t *testing.T) {
+	_, err := decodeControlCallRequest(`{"method":"status.get"}{"method":"config.set"}`)
+	if err == nil {
+		t.Fatal("expected trailing JSON value to be rejected")
 	}
 }
 
@@ -914,6 +926,75 @@ func TestControlBus_MarkSeen(t *testing.T) {
 	}
 }
 
+func TestHandleInboundMarksMalformedEventsSeenBeforeResponding(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	b := &ControlRPCBus{
+		pool:              NewPoolNIP42(responder),
+		keyer:             responder,
+		public:            responderPub,
+		ctx:               context.Background(),
+		onError:           func(error) {},
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{},
+	}
+	defer b.pool.Close("test done")
+
+	invalidJSON := mustSignedControlRawEvent(t, caller, responderPub.Hex(), time.Now(), "req-bad-json", `{"method":`)
+	b.handleInbound(nostr.RelayEvent{Event: invalidJSON, Relay: &nostr.Relay{}})
+	if !b.markSeen(invalidJSON.ID.Hex()) {
+		t.Fatal("invalid control body event should be marked seen on first delivery")
+	}
+
+	missingMethod := mustSignedControlRawEvent(t, caller, responderPub.Hex(), time.Now(), "req-missing-method", `{"method":"   ","params":{"probe":true}}`)
+	b.handleInbound(nostr.RelayEvent{Event: missingMethod, Relay: &nostr.Relay{}})
+	if !b.markSeen(missingMethod.ID.Hex()) {
+		t.Fatal("missing-method event should be marked seen on first delivery")
+	}
+}
+
+func TestHandleInboundInvalidEventDoesNotClearRelayCooldown(t *testing.T) {
+	relay := "wss://relay.example"
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	for i := 0; i < relayFailureCooldownThreshold; i++ {
+		health.RecordFailure(relay)
+	}
+	if health.Allowed(relay, time.Now()) {
+		t.Fatal("expected relay to be cooled down before invalid inbound event")
+	}
+
+	b := &ControlRPCBus{
+		pool:              NewPoolNIP42(responder),
+		keyer:             responder,
+		public:            responderPub,
+		ctx:               context.Background(),
+		health:            health,
+		onError:           func(error) {},
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{},
+	}
+	defer b.pool.Close("test done")
+
+	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now(), "req-invalid", "status.get")
+	evt.Sig[0] ^= 0x01
+	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{URL: relay}})
+
+	if health.Allowed(relay, time.Now()) {
+		t.Fatal("invalid inbound control event must not clear relay cooldown")
+	}
+}
+
 func TestHandleInboundEventReplayOnlyUsesExactEventCacheBeforeThrottleAndExpiry(t *testing.T) {
 	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
 	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
@@ -1012,6 +1093,123 @@ func TestHandleInboundEventReplayOnlySkipsRequestIDReplay(t *testing.T) {
 	}
 }
 
+func TestHandleInboundRequestIDDefaultingToEventIDDoesNotRepeatPersistentLookup(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	callerPub := mustControlPubKey(t, caller).Hex()
+	lookupCalls := 0
+	onReqCalls := 0
+	b := &ControlRPCBus{
+		pool:   NewPoolNIP42(responder),
+		keyer:  responder,
+		public: responderPub,
+		ctx:    context.Background(),
+		onReq: func(context.Context, ControlRPCInbound) (ControlRPCResult, error) {
+			onReqCalls++
+			return ControlRPCResult{}, nil
+		},
+		onError:           func(error) {},
+		maxReqAge:         time.Second,
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{},
+		cachedLookup: func(gotCaller string, gotReplayID string) (ControlRPCCachedResponse, bool) {
+			lookupCalls++
+			if gotCaller != callerPub {
+				t.Fatalf("unexpected lookup caller=%s", gotCaller)
+			}
+			return ControlRPCCachedResponse{}, false
+		},
+	}
+	defer b.pool.Close("test done")
+
+	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now().Add(-time.Hour), "", "status.get")
+	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{}})
+
+	if lookupCalls != 1 {
+		t.Fatalf("expected one exact-event lookup when req defaults to event id, got %d", lookupCalls)
+	}
+	if onReqCalls != 0 {
+		t.Fatalf("expected expired request to skip handler, got %d", onReqCalls)
+	}
+}
+
+func TestDispatchInboundQueuesWithoutConcurrentHandlerExecution(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	b := &ControlRPCBus{
+		pool:   NewPoolNIP42(responder),
+		keyer:  responder,
+		public: responderPub,
+		ctx:    ctx,
+		cancel: cancel,
+		onReq: func(_ context.Context, in ControlRPCInbound) (ControlRPCResult, error) {
+			switch in.RequestID {
+			case "req-first":
+				close(firstStarted)
+				<-releaseFirst
+			case "req-second":
+				close(secondStarted)
+			}
+			return ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+		},
+		onError:           func(error) {},
+		maxReqAge:         time.Minute,
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{},
+		inboundCh:         make(chan nostr.RelayEvent, 1),
+	}
+	defer b.pool.Close("test done")
+	b.wg.Add(1)
+	go b.dispatchLoop()
+
+	first := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now(), "req-first", "status.get")
+	second := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now(), "req-second", "status.get")
+	b.dispatchInbound(nostr.RelayEvent{Event: first, Relay: &nostr.Relay{}})
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first handler did not start")
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		b.dispatchInbound(nostr.RelayEvent{Event: second, Relay: &nostr.Relay{}})
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("dispatchInbound blocked behind the active handler despite queue capacity")
+	}
+	select {
+	case <-secondStarted:
+		t.Fatal("second handler started concurrently; control requests must remain serialized")
+	default:
+	}
+
+	close(releaseFirst)
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		t.Fatal("queued second handler did not run after first completed")
+	}
+	cancel()
+	b.wg.Wait()
+}
+
 func TestHandleInboundRequestIDReplayFingerprintMismatchFailsClosed(t *testing.T) {
 	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
 	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
@@ -1060,6 +1258,34 @@ func TestHandleInboundRequestIDReplayFingerprintMismatchFailsClosed(t *testing.T
 	}
 	if _, ok := b.callerLastRequest[callerPub]; ok {
 		t.Fatal("fingerprint mismatch should not update throttle state")
+	}
+	if !b.markSeen(evt.ID.Hex()) {
+		t.Fatal("fingerprint mismatch event must be marked seen to suppress duplicate error responses")
+	}
+}
+
+func TestControlRPCBusCloseNilAndPartial(t *testing.T) {
+	var nilBus *ControlRPCBus
+	nilBus.Close()
+	(&ControlRPCBus{}).Close()
+}
+
+func TestStartControlRPCBusRejectsMismatchedHubPubKey(t *testing.T) {
+	hubKey := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	hub, err := NewHub(context.Background(), hubKey, nil)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	defer hub.Close()
+
+	responder := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	_, err = StartControlRPCBus(context.Background(), ControlRPCBusOptions{
+		Keyer:  responder,
+		Relays: []string{"wss://relay.example"},
+		Hub:    hub,
+	})
+	if err == nil || err.Error() != "control bus: hub pubkey does not match keyer pubkey" {
+		t.Fatalf("expected hub mismatch error, got %v", err)
 	}
 }
 

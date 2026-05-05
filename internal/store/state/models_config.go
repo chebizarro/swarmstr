@@ -624,6 +624,16 @@ type PermissionRule struct {
 	// Content is an optional regex pattern for tool arguments.
 	Content string `json:"content,omitempty"`
 
+	// Category restricts the rule to a capability category such as exec/filesystem/network.
+	Category string `json:"category,omitempty"`
+
+	// Origin restricts the rule to a provenance kind: "builtin", "plugin", or "mcp".
+	Origin string `json:"origin,omitempty"`
+
+	// OriginName restricts the rule to a provenance source name pattern. For MCP
+	// this is the server name; for plugins this is the plugin ID.
+	OriginName string `json:"origin_name,omitempty"`
+
 	// Agent restricts the rule to a specific agent ID (empty = all agents).
 	Agent string `json:"agent,omitempty"`
 

@@ -1535,6 +1535,35 @@ func TestHandleControlRPCRequest_ChatHistoryAndSessionViews(t *testing.T) {
 	if len(payload["preview"].([]state.TranscriptEntryDoc)) != 2 {
 		t.Fatalf("unexpected sessions.preview payload: %#v", res.Result)
 	}
+	if previews, ok := payload["previews"].([]map[string]any); !ok || len(previews) != 1 || previews[0]["status"] != "ok" {
+		t.Fatalf("unexpected sessions.preview compatibility payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSessionsPreview,
+		Params:     json.RawMessage(`{"keys":["s1","missing"],"limit":5}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("sessions.preview bulk error: %v", err)
+	}
+	payload, _ = res.Result.(map[string]any)
+	previews, ok := payload["previews"].([]map[string]any)
+	if !ok || len(previews) != 2 || previews[0]["status"] != "ok" || previews[1]["status"] != "missing" {
+		t.Fatalf("unexpected sessions.preview bulk payload: %#v", res.Result)
+	}
+
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
+		FromPubKey: "caller",
+		Method:     methods.MethodSessionsExport,
+		Params:     json.RawMessage(`{"sessionKey":"s1","format":"html"}`),
+	}, nil, nil, nil, nil, nil, nil, docs, transcript, nil, cfgState, nil, nil, time.Now())
+	if err != nil {
+		t.Fatalf("sessions.export alias error: %v", err)
+	}
+	if exportPayload, ok := res.Result.(methods.SessionsExportResponse); !ok || exportPayload.Format != "html" || exportPayload.HTML == "" {
+		t.Fatalf("unexpected sessions.export alias payload: %#v", res.Result)
+	}
 
 	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{
 		FromPubKey: "caller",

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	"metiq/internal/policy"
 )
 
 func TestLMStudioLive_DaemonHarness(t *testing.T) {
@@ -888,6 +891,16 @@ type liveDaemonHarness struct {
 	model             string
 	configPath        string
 	defaultConfigPath string
+	adminSecret       nostr.SecretKey
+	adminPubKey       string
+	enabledTools      []string
+	warmupCount       int
+}
+
+type liveRunObservation struct {
+	ToolStarts []string
+	TurnEvents []string
+	LogLines   []string
 }
 
 type liveDaemonHarnessOptions struct {
@@ -950,6 +963,8 @@ func newLiveDaemonHarnessCustom(t *testing.T, relayURL, model string, opts liveD
 	logPath := filepath.Join(root, "daemon.log")
 	token := "live-test-token"
 	privateKey := randomSecretKeyHex(t)
+	adminSecret := nostr.Generate()
+	adminPubKey := nostr.GetPublicKey(adminSecret).Hex()
 
 	bootstrap := fmt.Sprintf(`{
   "private_key": %q,
@@ -963,7 +978,7 @@ func newLiveDaemonHarnessCustom(t *testing.T, relayURL, model string, opts liveD
 	if err := os.WriteFile(bootstrapPath, []byte(bootstrap), 0o644); err != nil {
 		t.Fatalf("write bootstrap: %v", err)
 	}
-	config := liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir, false, approvalTools, opts.EnabledTools)
+	config := liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir, false, adminPubKey, approvalTools, opts.EnabledTools)
 	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -972,7 +987,7 @@ func newLiveDaemonHarnessCustom(t *testing.T, relayURL, model string, opts liveD
 		if err := os.MkdirAll(conflictWorkspaceDir, 0o755); err != nil {
 			t.Fatalf("mkdir conflicting workspace: %v", err)
 		}
-		conflicting := liveHarnessConfigJSON(relayURL, model, conflictWorkspaceDir, true, opts.EnabledTools)
+		conflicting := liveHarnessConfigJSON(relayURL, model, conflictWorkspaceDir, true, adminPubKey, opts.EnabledTools)
 		if err := os.WriteFile(defaultConfigPath, []byte(conflicting), 0o644); err != nil {
 			t.Fatalf("write conflicting default config: %v", err)
 		}
@@ -1022,6 +1037,9 @@ func newLiveDaemonHarnessCustom(t *testing.T, relayURL, model string, opts liveD
 		model:             model,
 		configPath:        configPath,
 		defaultConfigPath: defaultConfigPath,
+		adminSecret:       adminSecret,
+		adminPubKey:       adminPubKey,
+		enabledTools:      append([]string{}, opts.EnabledTools...),
 	}
 	h.waitForHealth(t)
 	h.waitForAuthorizedControl(t)
@@ -1046,7 +1064,7 @@ func (h *liveDaemonHarness) Close() {
 
 func (h *liveDaemonHarness) writeConfigFile(t *testing.T, path, workspaceDir string, requireAuth bool) {
 	t.Helper()
-	config := liveHarnessConfigJSON(h.relayURL, h.model, workspaceDir, requireAuth, nil)
+	config := liveHarnessConfigJSON(h.relayURL, h.model, workspaceDir, requireAuth, h.adminPubKey, nil)
 	if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
 		t.Fatalf("write config %s: %v", path, err)
 	}
@@ -1137,6 +1155,13 @@ func (h *liveDaemonHarness) call(t *testing.T, method string, params map[string]
 	}
 	req.Header.Set("Authorization", "Bearer "+h.token)
 	req.Header.Set("Content-Type", "application/json")
+	if policy.IsSensitiveControlMethod(method) {
+		header, err := buildControlAdminAuthHeader(http.MethodPost, req.URL.String(), payload, h.adminSecret)
+		if err != nil {
+			t.Fatalf("sign %s request: %v", method, err)
+		}
+		req.Header.Set("X-Nostr-Authorization", header)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("call %s: %v", method, err)
@@ -1212,17 +1237,148 @@ func (h *liveDaemonHarness) runAgentWithRetry(t *testing.T, sessionID string, me
 	t.Helper()
 	var last string
 	for i, message := range messages {
-		candidate, err := h.waitAgentResult(t, h.startAgent(t, fmt.Sprintf("%s-%d", sessionID, i+1), message))
+		attemptSessionID := fmt.Sprintf("%s-%d", sessionID, i+1)
+		runID := h.startAgent(t, attemptSessionID, message)
+		candidate, err := h.waitAgentResult(t, runID)
+		obs := h.observeRun(t, attemptSessionID)
 		if err != nil {
 			last = err.Error()
+			t.Logf("live harness attempt %d/%d session=%s failed: %v\nobservation: %s", i+1, len(messages), attemptSessionID, err, summarizeLiveObservation(obs))
+			if isTransientModelUnload(last) {
+				h.warmModel(t, "transient model unload")
+			}
 			continue
 		}
 		last = candidate
 		if accept(candidate) {
 			return candidate
 		}
+		if shouldRetryForMissingToolUse(candidate, obs, h.enabledTools) {
+			t.Logf("live harness attempt %d/%d session=%s answered without observed tool use; result=%q\nobservation: %s", i+1, len(messages), attemptSessionID, candidate, summarizeLiveObservation(obs))
+			if i+1 < len(messages) {
+				messages[i+1] = strengthenToolPrompt(messages[i+1], h.enabledTools)
+			}
+			continue
+		}
+		t.Logf("live harness attempt %d/%d session=%s returned unexpected result=%q\nobservation: %s", i+1, len(messages), attemptSessionID, candidate, summarizeLiveObservation(obs))
 	}
 	return last
+}
+
+func (h *liveDaemonHarness) warmModel(t *testing.T, reason string) {
+	t.Helper()
+	h.warmupCount++
+	sessionID := fmt.Sprintf("live-warmup-%d", h.warmupCount)
+	runID := h.startAgent(t, sessionID, "Reply with exactly READY.")
+	result, err := h.waitAgentResult(t, runID)
+	if err != nil {
+		obs := h.observeRun(t, sessionID)
+		t.Logf("live harness warmup (%s) failed: %v\nobservation: %s", reason, err, summarizeLiveObservation(obs))
+		return
+	}
+	t.Logf("live harness warmup (%s) result=%q", reason, result)
+}
+
+func (h *liveDaemonHarness) observeRun(t *testing.T, sessionID string) liveRunObservation {
+	t.Helper()
+	result := h.call(t, "runtime.observe", map[string]any{
+		"include_events": true,
+		"include_logs":   true,
+		"event_limit":    12,
+		"log_limit":      12,
+		"max_bytes":      16384,
+		"session_id":     sessionID,
+		"events":         []string{"tool.start", "tool.error", "turn.finish", "turn.result", "turn.error"},
+	})
+	obs := liveRunObservation{}
+	if eventsSection, _ := result["events"].(map[string]any); eventsSection != nil {
+		switch events := eventsSection["events"].(type) {
+		case []any:
+			for _, item := range events {
+				entry, _ := item.(map[string]any)
+				if entry == nil {
+					continue
+				}
+				eventName, _ := entry["event"].(string)
+				payload, _ := entry["payload"].(map[string]any)
+				switch eventName {
+				case "tool.start":
+					toolName, _ := payload["tool_name"].(string)
+					if strings.TrimSpace(toolName) != "" {
+						obs.ToolStarts = append(obs.ToolStarts, toolName)
+					} else {
+						obs.ToolStarts = append(obs.ToolStarts, "<unknown>")
+					}
+				case "turn.finish", "turn.result", "turn.error":
+					obs.TurnEvents = append(obs.TurnEvents, strings.TrimSpace(eventName))
+				}
+			}
+		}
+	}
+	if logsSection, _ := result["logs"].(map[string]any); logsSection != nil {
+		switch lines := logsSection["lines"].(type) {
+		case []string:
+			obs.LogLines = append(obs.LogLines, lines...)
+		case []any:
+			for _, item := range lines {
+				if line, ok := item.(string); ok {
+					obs.LogLines = append(obs.LogLines, line)
+				}
+			}
+		}
+	}
+	return obs
+}
+
+func shouldRetryForMissingToolUse(result string, obs liveRunObservation, enabledTools []string) bool {
+	if len(enabledTools) == 0 {
+		return false
+	}
+	if len(obs.ToolStarts) > 0 {
+		return false
+	}
+	if isTransientModelUnload(result) {
+		return false
+	}
+	trimmed := strings.TrimSpace(result)
+	if trimmed == "" {
+		return true
+	}
+	return true
+}
+
+func isTransientModelUnload(msg string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(msg))
+	return strings.Contains(trimmed, "model unloaded") || strings.Contains(trimmed, "model is loading")
+}
+
+func strengthenToolPrompt(message string, enabledTools []string) string {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return trimmed
+	}
+	tools := append([]string{}, enabledTools...)
+	if len(tools) > 3 {
+		tools = tools[:3]
+	}
+	return trimmed + "\nMANDATORY: before any final answer, call at least one of these tools: " + strings.Join(tools, ", ") + ". If you answer without a tool call, the attempt is incorrect."
+}
+
+func summarizeLiveObservation(obs liveRunObservation) string {
+	parts := make([]string, 0, 3)
+	if len(obs.ToolStarts) > 0 {
+		parts = append(parts, "tools="+strings.Join(obs.ToolStarts, ","))
+	}
+	if len(obs.TurnEvents) > 0 {
+		parts = append(parts, "turns="+strings.Join(obs.TurnEvents, ","))
+	}
+	if len(obs.LogLines) > 0 {
+		parts = append(parts, "logs="+tailString(strings.Join(obs.LogLines, " | "), 300))
+	}
+	if len(parts) == 0 {
+		return "no runtime.observe data"
+	}
+	return strings.Join(parts, " ; ")
 }
 
 func (h *liveDaemonHarness) waitForApprovalLog(t *testing.T, runID string) string {
@@ -1263,11 +1419,11 @@ func liveTestModel() string {
 	return "lmstudio/openai/gpt-oss-20b"
 }
 
-func liveHarnessConfigJSON(relayURL, model, workspaceDir string, requireAuth bool, enabledTools []string) string {
-	return liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir, requireAuth, []string{"bash_exec"}, enabledTools)
+func liveHarnessConfigJSON(relayURL, model, workspaceDir string, requireAuth bool, adminPubKey string, enabledTools []string) string {
+	return liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir, requireAuth, adminPubKey, []string{"bash_exec"}, enabledTools)
 }
 
-func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, requireAuth bool, approvalTools []string, enabledTools []string) string {
+func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, requireAuth bool, adminPubKey string, approvalTools []string, enabledTools []string) string {
 	approvalsJSON := "[]"
 	if len(approvalTools) > 0 {
 		var quoted []string
@@ -1277,6 +1433,10 @@ func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, re
 		approvalsJSON = strings.Join(quoted, ", ")
 	}
 	enabledToolsJSON := `["my_identity", "write_file", "read_file", "file_tree", "memory_store", "memory_search", "bash_exec", "nostr_publish", "nostr_fetch"]`
+	controlJSON := fmt.Sprintf(`{"require_auth": %t}`, requireAuth)
+	if strings.TrimSpace(adminPubKey) != "" {
+		controlJSON = fmt.Sprintf(`{"require_auth": %t, "admins": [{"pubkey": %q}]}`, requireAuth, adminPubKey)
+	}
 	if len(enabledTools) > 0 {
 		quoted := make([]string, 0, len(enabledTools))
 		for _, tool := range enabledTools {
@@ -1297,7 +1457,7 @@ func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, re
 	"context_window": 4096,
 	"max_context_tokens": 4096
   }],
-  "control": {"require_auth": %[4]t},
+  "control": %[7]s,
   "acp": {"transport": "auto"},
   "session": {},
   "storage": {"encrypt": false},
@@ -1308,7 +1468,28 @@ func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, re
   "timeouts": {},
   "extra": {"approvals": {"tools": [%[5]s]}}
 }
-`, relayURL, model, workspaceDir, requireAuth, approvalsJSON, enabledToolsJSON)
+`, relayURL, model, workspaceDir, requireAuth, approvalsJSON, enabledToolsJSON, controlJSON)
+}
+
+func buildControlAdminAuthHeader(method, url string, payload []byte, secret nostr.SecretKey) (string, error) {
+	hash := sha256.Sum256(payload)
+	evt := nostr.Event{
+		Kind:      nostr.Kind(27235),
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"method", method},
+			{"u", url},
+			{"payload", nostr.HexEncodeToString(hash[:])},
+		},
+	}
+	if err := evt.Sign(secret); err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(evt)
+	if err != nil {
+		return "", err
+	}
+	return "Nostr " + base64.StdEncoding.EncodeToString(raw), nil
 }
 
 func randomSecretKeyHex(t *testing.T) string {

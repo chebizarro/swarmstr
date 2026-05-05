@@ -137,6 +137,13 @@ func TestHub_Unsubscribe(t *testing.T) {
 	}
 }
 
+func TestHubCloseNilAndPartial(t *testing.T) {
+	var nilHub *NostrHub
+	nilHub.Close()
+	(&NostrHub{}).Close()
+	(&NostrHub{subs: map[string]*ManagedSub{"x": nil, "y": {}}}).Close()
+}
+
 func TestHub_Subscriptions(t *testing.T) {
 	keyer := &mockKeyer{}
 	hub, _ := NewHub(context.Background(), keyer, nil)

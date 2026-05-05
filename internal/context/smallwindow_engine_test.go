@@ -164,6 +164,41 @@ func TestSmallWindowEngine_Bootstrap(t *testing.T) {
 	}
 }
 
+func TestSmallWindowEngine_BootstrapClearsPriorSummary(t *testing.T) {
+	budget := SmallWindowBudgetForTokens(8192)
+	engine := NewSmallWindowEngine(TierSmallSW, budget)
+	ctx := stdctx.Background()
+
+	for i := 0; i < 8; i++ {
+		_, _ = engine.Ingest(ctx, "s1", Message{Role: "user", Content: strings.Repeat("x", 1000)})
+	}
+	_, err := engine.CompactWithSessionMemory(ctx, "s1", "old session summary", DefaultSessionMemoryCompactConfig)
+	if err != nil {
+		t.Fatalf("compact with session memory: %v", err)
+	}
+	assembled, err := engine.Assemble(ctx, "s1", 8192)
+	if err != nil {
+		t.Fatalf("assemble before bootstrap: %v", err)
+	}
+	if assembled.SystemPromptAddition != "old session summary" {
+		t.Fatalf("test setup did not install summary: %q", assembled.SystemPromptAddition)
+	}
+
+	if _, err := engine.Bootstrap(ctx, "s1", nil); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	assembled, err = engine.Assemble(ctx, "s1", 8192)
+	if err != nil {
+		t.Fatalf("assemble after bootstrap: %v", err)
+	}
+	if assembled.SystemPromptAddition != "" {
+		t.Fatalf("bootstrap leaked prior summary: %q", assembled.SystemPromptAddition)
+	}
+	if len(assembled.Messages) != 0 {
+		t.Fatalf("expected empty bootstrapped session, got %d messages", len(assembled.Messages))
+	}
+}
+
 func TestSmallWindowEngine_EmptySession(t *testing.T) {
 	budget := SmallWindowBudgetForTokens(8192)
 	engine := NewSmallWindowEngine(TierSmallSW, budget)

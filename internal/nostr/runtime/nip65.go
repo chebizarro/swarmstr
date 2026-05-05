@@ -79,6 +79,21 @@ type relaySelectorEntry struct {
 	fetchedAt time.Time
 }
 
+func cloneNIP65RelayList(list *NIP65RelayList) *NIP65RelayList {
+	if list == nil {
+		return nil
+	}
+	clone := &NIP65RelayList{
+		PubKey:    list.PubKey,
+		CreatedAt: list.CreatedAt,
+		EventID:   list.EventID,
+	}
+	if len(list.Entries) > 0 {
+		clone.Entries = append([]NIP65RelayEntry(nil), list.Entries...)
+	}
+	return clone
+}
+
 // RelaySelector fetches, caches, and applies NIP-65 relay lists for outbox model
 // relay selection. It is the central component for Nostr-native relay routing.
 type RelaySelector struct {
@@ -145,7 +160,7 @@ func (s *RelaySelector) Get(pubkey string) *NIP65RelayList {
 		s.mu.Unlock()
 		return nil
 	}
-	return e.list
+	return cloneNIP65RelayList(e.list)
 }
 
 // Put stores a NIP-65 list in the cache.
@@ -153,9 +168,10 @@ func (s *RelaySelector) Put(list *NIP65RelayList) {
 	if list == nil {
 		return
 	}
+	cloned := cloneNIP65RelayList(list)
 	s.mu.Lock()
-	s.cache[strings.ToLower(list.PubKey)] = &relaySelectorEntry{
-		list:      list,
+	s.cache[strings.ToLower(cloned.PubKey)] = &relaySelectorEntry{
+		list:      cloned,
 		fetchedAt: time.Now(),
 	}
 	s.mu.Unlock()
@@ -175,7 +191,7 @@ func (s *RelaySelector) FetchAndCache(ctx context.Context, pool *nostr.Pool, que
 		return nil, err
 	}
 	s.Put(list)
-	return list, nil
+	return cloneNIP65RelayList(list), nil
 }
 
 // ── NIP-65 relay selection semantics ─────────────────────────────────────────
@@ -245,6 +261,9 @@ func (s *RelaySelector) RelaysForDownloadingAbout(ctx context.Context, pool *nos
 
 // FetchNIP65 fetches the latest kind:10002 relay list for a pubkey.
 func FetchNIP65(ctx context.Context, pool *nostr.Pool, relays []string, pubkey string) (*NIP65RelayList, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("nip65: pool is required")
+	}
 	pk, err := ParsePubKey(pubkey)
 	if err != nil {
 		return nil, fmt.Errorf("nip65: invalid pubkey: %w", err)
@@ -488,6 +507,12 @@ func DecodeNIP65Event(ev nostr.Event) *NIP65RelayList {
 
 // PublishNIP65 publishes a kind:10002 relay list metadata event.
 func PublishNIP65(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, publishRelays []string, readRelays, writeRelays, bothRelays []string) (string, error) {
+	if pool == nil {
+		return "", fmt.Errorf("nip65: pool is required")
+	}
+	if keyer == nil {
+		return "", fmt.Errorf("nip65: keyer is required")
+	}
 	tags := nostr.Tags{}
 	for _, r := range bothRelays {
 		tags = append(tags, nostr.Tag{"r", r})
@@ -529,6 +554,12 @@ func PublishNIP65(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, publ
 
 // PublishNIP02ContactList publishes a kind:3 contacts/follows event.
 func PublishNIP02ContactList(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, publishRelays []string, contacts []NIP02Contact) (string, error) {
+	if pool == nil {
+		return "", fmt.Errorf("nip02: pool is required")
+	}
+	if keyer == nil {
+		return "", fmt.Errorf("nip02: keyer is required")
+	}
 	tags := nostr.Tags{}
 	for _, c := range contacts {
 		tag := nostr.Tag{"p", c.PubKey}
@@ -580,6 +611,9 @@ type NIP02Contact struct {
 
 // FetchNIP02Contacts fetches the latest kind:3 contact list for a pubkey.
 func FetchNIP02Contacts(ctx context.Context, pool *nostr.Pool, relays []string, pubkey string) ([]NIP02Contact, string, error) {
+	if pool == nil {
+		return nil, "", fmt.Errorf("nip02: pool is required")
+	}
 	pk, err := ParsePubKey(pubkey)
 	if err != nil {
 		return nil, "", fmt.Errorf("nip02: invalid pubkey: %w", err)
@@ -647,6 +681,9 @@ func NIP65SelfSync(ctx context.Context, opts NIP65SyncOptions) error {
 	if opts.Keyer == nil {
 		return fmt.Errorf("nip65: keyer is required")
 	}
+	if opts.Pool == nil {
+		return fmt.Errorf("nip65: pool is required")
+	}
 
 	pkCtx, pkCancel := context.WithTimeout(ctx, 10*time.Second)
 	pk, err := opts.Keyer.GetPublicKey(pkCtx)
@@ -689,6 +726,9 @@ type StartupListPublishOptions struct {
 func PublishStartupLists(ctx context.Context, opts StartupListPublishOptions) error {
 	if opts.Keyer == nil {
 		return fmt.Errorf("startup lists: keyer is required")
+	}
+	if opts.Pool == nil {
+		return fmt.Errorf("startup lists: pool is required")
 	}
 	if len(opts.PublishRelays) == 0 {
 		return fmt.Errorf("startup lists: no publish relays")
@@ -902,6 +942,9 @@ func categoriseRelays(readRelays, writeRelays, bothRelays []string) (both, readO
 
 // fetchKind10050 checks if a kind:10050 DM relay list exists for a pubkey.
 func fetchKind10050(ctx context.Context, pool *nostr.Pool, relays []string, pk nostr.PubKey) ([]string, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("nip17: pool is required")
+	}
 	f := nostr.Filter{
 		Kinds:   []nostr.Kind{10050},
 		Authors: []nostr.PubKey{pk},
@@ -927,6 +970,12 @@ func fetchKind10050(ctx context.Context, pool *nostr.Pool, relays []string, pk n
 // publishKind10050 publishes a NIP-17 DM relay list (kind:10050).
 // Each relay is tagged as ["relay", url].
 func publishKind10050(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, publishRelays, dmRelays []string) (string, error) {
+	if pool == nil {
+		return "", fmt.Errorf("nip17: pool is required")
+	}
+	if keyer == nil {
+		return "", fmt.Errorf("nip17: keyer is required")
+	}
 	tags := nostr.Tags{}
 	for _, r := range dmRelays {
 		tags = append(tags, nostr.Tag{"relay", r})

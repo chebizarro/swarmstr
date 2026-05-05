@@ -18,6 +18,7 @@ import (
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/policy"
+	securitypkg "metiq/internal/security"
 	"metiq/internal/store/state"
 )
 
@@ -101,6 +102,51 @@ func readConfigFileDoc(t *testing.T, path string) state.ConfigDoc {
 		t.Fatalf("parse config file: %v", err)
 	}
 	return policy.NormalizeConfig(doc)
+}
+
+func TestHandleConfigRPCSecurityAuditUsesConfiguredBootstrapPath(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".metiq"), 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	t.Setenv("HOME", home)
+	defaultBootstrap := filepath.Join(home, ".metiq", "bootstrap.json")
+	if err := os.WriteFile(defaultBootstrap, []byte("{\"admin_listen_addr\":\"127.0.0.1:9999\",\"admin_token\":\"present\"}"), 0o600); err != nil {
+		t.Fatalf("write default bootstrap: %v", err)
+	}
+
+	customBootstrap := filepath.Join(dir, "custom-bootstrap.json")
+	if err := os.WriteFile(customBootstrap, []byte("{\"admin_listen_addr\":\"127.0.0.1:8787\"}"), 0o600); err != nil {
+		t.Fatalf("write custom bootstrap: %v", err)
+	}
+
+	h := newControlRPCHandler(controlRPCDeps{
+		bootstrapPath: customBootstrap,
+		configState:   newRuntimeConfigStore(state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: false}}),
+		startedAt:     time.Now(),
+	})
+	res, handled, err := h.handleConfigRPC(context.Background(), nostruntime.ControlRPCInbound{Method: methods.MethodSecurityAudit}, methods.MethodSecurityAudit, state.ConfigDoc{})
+	if err != nil {
+		t.Fatalf("security audit rpc: %v", err)
+	}
+	if !handled {
+		t.Fatal("security audit was not handled")
+	}
+	out, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected result type: %#v", res.Result)
+	}
+	findings, ok := out["findings"].([]securitypkg.Finding)
+	if !ok {
+		t.Fatalf("unexpected findings type: %#v", out["findings"])
+	}
+	for _, finding := range findings {
+		if finding.CheckID == "admin-no-token" {
+			return
+		}
+	}
+	t.Fatalf("expected admin-no-token from custom bootstrap, got %#v", findings)
 }
 
 func configMutationParams(t *testing.T, method string, current, next state.ConfigDoc) json.RawMessage {

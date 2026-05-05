@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -95,6 +96,10 @@ func (b *QdrantBackend) embed(ctx context.Context, text string) ([]float32, erro
 		return nil, fmt.Errorf("ollama embed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, &qdrantHTTPError{Operation: "ollama embed", StatusCode: resp.StatusCode, Body: string(raw)}
+	}
 	var out struct {
 		Embedding []float32 `json:"embedding"`
 	}
@@ -608,6 +613,9 @@ func (b *QdrantBackend) Search(query string, limit int) []IndexedMemory {
 }
 
 func (b *QdrantBackend) SearchWithContext(ctx context.Context, query string, limit int) []IndexedMemory {
+	if limit <= 0 {
+		limit = 20
+	}
 	if err := b.ensureReady(ctx); err != nil {
 		log.Printf("qdrant: search fallback active: %v", err)
 		return nil
@@ -636,6 +644,9 @@ func (b *QdrantBackend) SearchSession(sessionID, query string, limit int) []Inde
 }
 
 func (b *QdrantBackend) SearchSessionWithContext(ctx context.Context, sessionID, query string, limit int) []IndexedMemory {
+	if limit <= 0 {
+		limit = 8
+	}
 	if err := b.ensureReady(ctx); err != nil {
 		log.Printf("qdrant: session search fallback active: %v", err)
 		return nil
@@ -665,6 +676,12 @@ func (b *QdrantBackend) SearchSessionWithContext(ctx context.Context, sessionID,
 }
 
 func (b *QdrantBackend) ListSession(sessionID string, limit int) []IndexedMemory {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
 	ctx := context.Background()
 	if err := b.ensureReady(ctx); err != nil {
 		log.Printf("qdrant: list session fallback active: %v", err)
@@ -1004,9 +1021,9 @@ func stringToUUID(s string) string {
 // Reads prefer the Backend (semantic), falling back to the JSON index.
 type HybridIndex struct {
 	*Index
-	backend  Backend
-	semOnce  sync.Once
-	semCh    chan struct{}
+	backend Backend
+	semOnce sync.Once
+	semCh   chan struct{}
 }
 
 func (h *HybridIndex) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
@@ -1096,6 +1113,133 @@ func (h *HybridIndex) SearchSession(sessionID, query string, limit int) []Indexe
 	return h.SearchSessionWithContext(context.Background(), sessionID, query, limit)
 }
 
+func (h *HybridIndex) Store(sessionID, text string, tags []string) string {
+	id := GenerateMemoryID()
+	h.AddWithContext(context.Background(), state.MemoryDoc{
+		MemoryID:  id,
+		SessionID: sessionID,
+		Text:      text,
+		Keywords:  append([]string(nil), tags...),
+		Unix:      time.Now().Unix(),
+	})
+	return id
+}
+
+func (h *HybridIndex) Delete(id string) bool {
+	indexDeleted := h.Index.Delete(id)
+	backendDeleted := false
+	if h.backend != nil {
+		backendDeleted = h.backend.Delete(id)
+		if indexDeleted && !backendDeleted {
+			log.Printf("memory hybrid: backend delete missed for %q after JSON index delete", id)
+		}
+	}
+	return indexDeleted || backendDeleted
+}
+
+func (h *HybridIndex) ListSession(sessionID string, limit int) []IndexedMemory {
+	effectiveLimit := hybridListLimit(limit, 20)
+	local := h.Index.ListSession(sessionID, effectiveLimit)
+	if h.backend == nil {
+		return local
+	}
+	backend := h.backend.ListSession(sessionID, effectiveLimit)
+	return mergeHybridExactList(backend, local, effectiveLimit)
+}
+
+func (h *HybridIndex) ListByTopic(topic string, limit int) []IndexedMemory {
+	effectiveLimit := hybridListLimit(limit, 100)
+	local := h.Index.ListByTopic(topic, effectiveLimit)
+	if h.backend == nil {
+		return local
+	}
+	backend := h.backend.ListByTopic(topic, effectiveLimit)
+	return mergeHybridExactList(backend, local, effectiveLimit)
+}
+
+func (h *HybridIndex) Compact(maxEntries int) int {
+	if maxEntries < 0 {
+		maxEntries = 0
+	}
+	h.Index.mu.Lock()
+	if len(h.Index.docs) <= maxEntries {
+		h.Index.mu.Unlock()
+		return 0
+	}
+	entries := make([]IndexedMemory, 0, len(h.Index.docs))
+	for _, d := range h.Index.docs {
+		entries = append(entries, d)
+	}
+	sort.Slice(entries, func(a, b int) bool { return entries[a].Unix < entries[b].Unix })
+	toRemove := len(entries) - maxEntries
+	removedIDs := make([]string, 0, toRemove)
+	for idx := 0; idx < toRemove; idx++ {
+		removedIDs = append(removedIDs, entries[idx].MemoryID)
+		delete(h.Index.docs, entries[idx].MemoryID)
+	}
+	h.Index.rebuildTokenMapLocked()
+	h.Index.clearCacheLocked()
+	h.Index.mu.Unlock()
+	if h.backend != nil {
+		for _, id := range removedIDs {
+			if !h.backend.Delete(id) {
+				log.Printf("memory hybrid: backend delete missed for compacted memory %q", id)
+			}
+		}
+	}
+	return toRemove
+}
+
+func hybridListLimit(limit, defaultLimit int) int {
+	if limit <= 0 {
+		return defaultLimit
+	}
+	return limit
+}
+
+func mergeHybridExactList(backend, local []IndexedMemory, limit int) []IndexedMemory {
+	if len(backend) == 0 {
+		return cloneMemories(local)
+	}
+	if len(local) == 0 {
+		return cloneMemories(backend)
+	}
+	byID := make(map[string]IndexedMemory, len(backend)+len(local))
+	anonymous := make([]IndexedMemory, 0)
+	for _, mem := range backend {
+		if mem.MemoryID == "" {
+			anonymous = append(anonymous, mem)
+			continue
+		}
+		byID[mem.MemoryID] = mem
+	}
+	// The JSON index is the local source of truth for exact enumerations. Let it
+	// overwrite matching backend payloads so metadata and deletes repaired in the
+	// fallback index are reflected whenever the backend returns overlapping hits.
+	for _, mem := range local {
+		if mem.MemoryID == "" {
+			anonymous = append(anonymous, mem)
+			continue
+		}
+		byID[mem.MemoryID] = mem
+	}
+	merged := make([]IndexedMemory, 0, len(byID)+len(anonymous))
+	for _, mem := range byID {
+		merged = append(merged, mem)
+	}
+	merged = append(merged, anonymous...)
+	sort.Slice(merged, func(a, b int) bool {
+		if merged[a].Unix == merged[b].Unix {
+			return merged[a].MemoryID > merged[b].MemoryID
+		}
+		return merged[a].Unix > merged[b].Unix
+	})
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return cloneMemories(merged)
+}
+
 // persistToBackend asynchronously mirrors an Add to the vector backend.
 // It enforces a timeout and limits concurrent outstanding writes to avoid
 // unbounded goroutine fan-out under high write throughput.
@@ -1103,8 +1247,9 @@ func (h *HybridIndex) persistToBackend(doc state.MemoryDoc) {
 	select {
 	case h.persistSem() <- struct{}{}:
 	default:
-		// Concurrency limit reached; drop this write silently.
-		// The JSON-FTS index already has the doc.
+		// Concurrency limit reached; keep the JSON-FTS fallback and surface the
+		// mirror miss in logs instead of silently losing backend/index parity.
+		log.Printf("memory hybrid: backend mirror skipped for %q: concurrency limit reached", doc.MemoryID)
 		return
 	}
 	go func() {
@@ -1121,11 +1266,23 @@ func (h *HybridIndex) persistToBackend(doc state.MemoryDoc) {
 	}()
 }
 func (h *HybridIndex) ListByType(memType string, limit int) []IndexedMemory {
-	return h.Index.ListByType(memType, limit)
+	effectiveLimit := hybridListLimit(limit, 100)
+	local := h.Index.ListByType(memType, effectiveLimit)
+	if h.backend == nil {
+		return local
+	}
+	backend := h.backend.ListByType(memType, effectiveLimit)
+	return mergeHybridExactList(backend, local, effectiveLimit)
 }
 
 func (h *HybridIndex) ListByTaskID(taskID string, limit int) []IndexedMemory {
-	return h.Index.ListByTaskID(taskID, limit)
+	effectiveLimit := hybridListLimit(limit, 100)
+	local := h.Index.ListByTaskID(taskID, effectiveLimit)
+	if h.backend == nil {
+		return local
+	}
+	backend := h.backend.ListByTaskID(taskID, effectiveLimit)
+	return mergeHybridExactList(backend, local, effectiveLimit)
 }
 
 func (h *HybridIndex) Add(doc state.MemoryDoc) {

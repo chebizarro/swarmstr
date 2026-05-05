@@ -96,8 +96,14 @@ func NewProfilePublisher(opts ProfilePublisherOptions) (*ProfilePublisher, error
 
 // Start begins the background publisher loop.
 func (pp *ProfilePublisher) Start(parent context.Context) {
+	pp.mu.Lock()
+	if pp.cancel != nil {
+		pp.mu.Unlock()
+		return
+	}
 	pp.ctx, pp.cancel = context.WithCancel(parent)
 	pp.wg.Add(1)
+	pp.mu.Unlock()
 	go pp.loop()
 }
 
@@ -106,7 +112,9 @@ func (pp *ProfilePublisher) Stop() {
 	if pp == nil {
 		return
 	}
-	pp.cancel()
+	if pp.cancel != nil {
+		pp.cancel()
+	}
 	pp.wg.Wait()
 	if pp.ownsPool && pp.pool != nil {
 		pp.pool.Close("profile publisher stopped")
@@ -163,6 +171,25 @@ func (pp *ProfilePublisher) loop() {
 	}
 }
 
+func profileMetadataValidationFailure(ev nostr.Event, expectedAuthor nostr.PubKey) string {
+	if ev.Kind != 0 {
+		return fmt.Sprintf("unexpected_kind:%d", ev.Kind)
+	}
+	if ev.PubKey != expectedAuthor {
+		return "unexpected_author"
+	}
+	if !ev.CheckID() {
+		return "invalid_id"
+	}
+	if !ev.VerifySignature() {
+		return "invalid_signature"
+	}
+	if timestampTooFarFuture(int64(ev.CreatedAt), time.Now(), inboundEventMaxFutureSkew) {
+		return "created_at_future"
+	}
+	return ""
+}
+
 func (pp *ProfilePublisher) publishIfNeeded() {
 	pp.mu.Lock()
 	desired := cloneProfileMap(pp.profile)
@@ -189,6 +216,9 @@ func (pp *ProfilePublisher) publishIfNeeded() {
 	var best *nostr.Event
 	for re := range pp.pool.FetchMany(fetchCtx, relays, f, nostr.SubscriptionOptions{}) {
 		ev := re.Event
+		if reason := profileMetadataValidationFailure(ev, pp.pubkey); reason != "" {
+			continue
+		}
 		if best == nil || ev.CreatedAt > best.CreatedAt {
 			cp := ev
 			best = &cp
@@ -310,8 +340,6 @@ func cloneProfileMap(m map[string]any) map[string]any {
 	}
 	return out
 }
-
-
 
 // ExtractProfileFromExtra reads profile fields from the config Extra section.
 // It looks for Extra["profile"] as a map, returning its fields.

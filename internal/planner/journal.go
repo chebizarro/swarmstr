@@ -78,13 +78,14 @@ type JournalEntry struct {
 // It records accumulated progress and pending work so a crashed run
 // can resume from the last checkpoint.
 type WorkflowCheckpoint struct {
-	StepID         string          `json:"step_id,omitempty"`
-	Attempt        int             `json:"attempt"`
-	Status         string          `json:"status"`
-	Usage          state.TaskUsage `json:"usage,omitempty"`
-	PendingActions []PendingAction `json:"pending_actions,omitempty"`
-	CreatedAt      int64           `json:"created_at"`
-	Meta           map[string]any  `json:"meta,omitempty"`
+	StepID         string                 `json:"step_id,omitempty"`
+	Attempt        int                    `json:"attempt"`
+	Status         string                 `json:"status"`
+	Usage          state.TaskUsage        `json:"usage,omitempty"`
+	Verification   state.VerificationSpec `json:"verification,omitempty"`
+	PendingActions []PendingAction        `json:"pending_actions,omitempty"`
+	CreatedAt      int64                  `json:"created_at"`
+	Meta           map[string]any         `json:"meta,omitempty"`
 }
 
 // PendingAction describes a deferred action that was scheduled but not
@@ -213,6 +214,7 @@ func (j *WorkflowJournal) Checkpoint(ctx context.Context, cp WorkflowCheckpoint)
 	}
 
 	cpCopy := cp // snapshot
+	cpCopy.Verification = cloneVerificationSpec(cp.Verification)
 	cpCopy.Meta = cloneData(cp.Meta)
 	if len(cp.PendingActions) > 0 {
 		cpCopy.PendingActions = make([]PendingAction, len(cp.PendingActions))
@@ -241,6 +243,7 @@ func (j *WorkflowJournal) LatestCheckpoint() *WorkflowCheckpoint {
 		return nil
 	}
 	cp := *j.checkpoint
+	cp.Verification = cloneVerificationSpec(j.checkpoint.Verification)
 	cp.Meta = cloneData(j.checkpoint.Meta)
 	if len(j.checkpoint.PendingActions) > 0 {
 		cp.PendingActions = make([]PendingAction, len(j.checkpoint.PendingActions))
@@ -447,11 +450,15 @@ func cloneData(data map[string]any) map[string]any {
 }
 
 func checkpointToData(cp WorkflowCheckpoint) map[string]any {
-	return map[string]any{
+	data := map[string]any{
 		"step_id": cp.StepID,
 		"attempt": cp.Attempt,
 		"status":  cp.Status,
 	}
+	if len(cp.Verification.Checks) > 0 || cp.Verification.Policy != "" || cp.Verification.VerifiedAt != 0 || cp.Verification.VerifiedBy != "" || len(cp.Verification.Meta) > 0 {
+		data["verification"] = cloneVerificationSpec(cp.Verification)
+	}
+	return data
 }
 
 func checkpointToDoc(cp *WorkflowCheckpoint) *state.WorkflowCheckpointDoc {
@@ -459,12 +466,13 @@ func checkpointToDoc(cp *WorkflowCheckpoint) *state.WorkflowCheckpointDoc {
 		return nil
 	}
 	doc := &state.WorkflowCheckpointDoc{
-		StepID:    cp.StepID,
-		Attempt:   cp.Attempt,
-		Status:    cp.Status,
-		Usage:     cp.Usage,
-		CreatedAt: cp.CreatedAt,
-		Meta:      cloneData(cp.Meta),
+		StepID:       cp.StepID,
+		Attempt:      cp.Attempt,
+		Status:       cp.Status,
+		Usage:        cp.Usage,
+		Verification: cloneVerificationSpec(cp.Verification),
+		CreatedAt:    cp.CreatedAt,
+		Meta:         cloneData(cp.Meta),
 	}
 	if len(cp.PendingActions) > 0 {
 		doc.PendingActions = make([]state.PendingActionDoc, len(cp.PendingActions))
@@ -486,12 +494,13 @@ func checkpointFromDoc(doc *state.WorkflowCheckpointDoc) *WorkflowCheckpoint {
 		return nil
 	}
 	cp := &WorkflowCheckpoint{
-		StepID:    doc.StepID,
-		Attempt:   doc.Attempt,
-		Status:    doc.Status,
-		Usage:     doc.Usage,
-		CreatedAt: doc.CreatedAt,
-		Meta:      cloneData(doc.Meta),
+		StepID:       doc.StepID,
+		Attempt:      doc.Attempt,
+		Status:       doc.Status,
+		Usage:        doc.Usage,
+		Verification: cloneVerificationSpec(doc.Verification),
+		CreatedAt:    doc.CreatedAt,
+		Meta:         cloneData(doc.Meta),
 	}
 	if len(doc.PendingActions) > 0 {
 		cp.PendingActions = make([]PendingAction, len(doc.PendingActions))

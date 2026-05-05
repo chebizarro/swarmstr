@@ -125,6 +125,37 @@ func TestRedact_preservesNonSensitive(t *testing.T) {
 	}
 }
 
+func TestRedact_preservesKeysContainingSensitiveWords(t *testing.T) {
+	m := RedactMap(map[string]any{
+		"tokenizer_config":        "cl100k_base",
+		"total_token_budget":      128000,
+		"next_token_strategy":     "truncate-oldest",
+		"credential_helper":       "osxkeychain",
+		"secrets_manager_backend": "file",
+		"authToken":               "secret-auth-token",
+		"openaiApiKey":            "sk-openai",
+		"slackBotToken":           "xoxb-secret",
+		"accessToken":             "access-secret",
+		"refreshToken":            "refresh-secret",
+	})
+	for key, want := range map[string]any{
+		"tokenizer_config":        "cl100k_base",
+		"total_token_budget":      128000,
+		"next_token_strategy":     "truncate-oldest",
+		"credential_helper":       "osxkeychain",
+		"secrets_manager_backend": "file",
+	} {
+		if got := m[key]; got != want {
+			t.Errorf("%s redaction mismatch: got %#v want %#v", key, got, want)
+		}
+	}
+	for _, key := range []string{"authToken", "openaiApiKey", "slackBotToken", "accessToken", "refreshToken"} {
+		if m[key] != RedactedValue {
+			t.Errorf("%s should still redact as a compound secret key: %v", key, m[key])
+		}
+	}
+}
+
 func TestRedact_noExtraIsNil(t *testing.T) {
 	doc := state.ConfigDoc{Version: 1, DM: state.DMPolicy{Policy: "pairing"}}
 	out := Redact(doc)

@@ -77,6 +77,35 @@ func TestProbeRelayREQHandshakeFailure(t *testing.T) {
 	}
 }
 
+func TestProbeRelayREQClosedEventStreamIsFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+
+		var msg []any
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Errorf("read req: %v", err)
+			return
+		}
+		// Close immediately without EVENT or EOSE.
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res := ProbeRelayREQ(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"))
+	if res.Reachable {
+		t.Fatal("closed event stream without EVENT/EOSE should be unreachable")
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "subscription ended before response") {
+		t.Fatalf("expected closed-stream error, got %v", res.Err)
+	}
+}
+
 func TestRelayHealthMonitorRunOnceUsesNormalizedRelays(t *testing.T) {
 	monitor := NewRelayHealthMonitor([]string{" wss://one ", "wss://one", "", "wss://two"}, RelayHealthMonitorOptions{
 		Probe: func(_ context.Context, relayURL string) RelayHealthResult {
@@ -137,5 +166,38 @@ func TestRelayHealthMonitorStartRunsInitialAndPeriodicChecks(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for triggered relay check")
+	}
+}
+
+func TestRelayHealthMonitorStartIsIdempotent(t *testing.T) {
+	done := make(chan bool, 2)
+	monitor := NewRelayHealthMonitor([]string{"wss://one"}, RelayHealthMonitorOptions{
+		Interval: 0,
+		Probe: func(_ context.Context, relayURL string) RelayHealthResult {
+			return RelayHealthResult{URL: relayURL, Reachable: true}
+		},
+		OnResults: func(initial bool, results []RelayHealthResult) {
+			done <- initial
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	monitor.Start(ctx)
+	monitor.Start(ctx)
+
+	select {
+	case initial := <-done:
+		if !initial {
+			t.Fatal("expected first callback to be initial")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial relay check")
+	}
+
+	select {
+	case initial := <-done:
+		t.Fatalf("unexpected extra callback after double start: initial=%v", initial)
+	case <-time.After(100 * time.Millisecond):
 	}
 }

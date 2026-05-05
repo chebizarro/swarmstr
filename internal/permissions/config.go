@@ -74,8 +74,15 @@ type RuleConfig struct {
 	// Content is an optional regex pattern for tool arguments.
 	Content string `json:"content,omitempty"`
 
-	// Category restricts the rule to a specific tool category.
+	// Category restricts the rule to a specific tool capability category.
 	Category string `json:"category,omitempty"`
+
+	// Origin restricts the rule to a tool provenance kind: "builtin", "plugin", or "mcp".
+	Origin string `json:"origin,omitempty"`
+
+	// OriginName restricts the rule to a provenance source name pattern. For MCP
+	// this is the server name; for plugins this is the plugin ID.
+	OriginName string `json:"origin_name,omitempty"`
 
 	// Agent restricts the rule to a specific agent ID.
 	Agent string `json:"agent,omitempty"`
@@ -329,6 +336,12 @@ func ruleFromConfig(cfg RuleConfig) (*Rule, error) {
 	if cfg.Category != "" {
 		rule = rule.WithCategory(ToolCategory(cfg.Category))
 	}
+	if cfg.Origin != "" {
+		rule = rule.WithOrigin(ToolOrigin(cfg.Origin))
+	}
+	if cfg.OriginName != "" {
+		rule = rule.WithOriginName(cfg.OriginName)
+	}
 	if cfg.Agent != "" {
 		rule = rule.ForAgent(cfg.Agent)
 	}
@@ -467,6 +480,15 @@ func ruleFromStateConfig(cfg state.PermissionRule) (*Rule, error) {
 
 	if cfg.Content != "" {
 		rule = rule.WithContentPattern(cfg.Content)
+	}
+	if cfg.Category != "" {
+		rule = rule.WithCategory(ToolCategory(cfg.Category))
+	}
+	if cfg.Origin != "" {
+		rule = rule.WithOrigin(ToolOrigin(cfg.Origin))
+	}
+	if cfg.OriginName != "" {
+		rule = rule.WithOriginName(cfg.OriginName)
 	}
 	if cfg.Agent != "" {
 		rule = rule.ForAgent(cfg.Agent)

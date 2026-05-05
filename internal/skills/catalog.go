@@ -277,8 +277,12 @@ func BuildSkillCatalog(cfg state.ConfigDoc, agentID string) (*SkillCatalog, erro
 	if cached, ok := skillCatalogCache[fingerprint]; ok {
 		if cached.ConfigDependencyHash == hashConfigDependencyPaths(configMap, cached.ConfigDependencyPaths) &&
 			cached.RuntimeDependencyHash == hashRuntimeDependencies(cached.RuntimeDependencyEnv, cached.RuntimeDependencyBins) {
+			out, cloneErr := cloneSkillCatalog(cached)
 			skillCatalogCacheMu.Unlock()
-			return cached, nil
+			if cloneErr != nil {
+				return nil, cloneErr
+			}
+			return out, nil
 		}
 	}
 	skillCatalogCacheMu.Unlock()
@@ -409,10 +413,18 @@ func BuildSkillCatalog(cfg state.ConfigDoc, agentID string) (*SkillCatalog, erro
 		return normalizedSkillKey(catalog.Skills[i].Skill.SkillKey) < normalizedSkillKey(catalog.Skills[j].Skill.SkillKey)
 	})
 
+	cacheCopy, err := cloneSkillCatalog(catalog)
+	if err != nil {
+		return nil, err
+	}
+	returnCopy, err := cloneSkillCatalog(catalog)
+	if err != nil {
+		return nil, err
+	}
 	skillCatalogCacheMu.Lock()
-	skillCatalogCache[fingerprint] = catalog
+	skillCatalogCache[fingerprint] = cacheCopy
 	skillCatalogCacheMu.Unlock()
-	return catalog, nil
+	return returnCopy, nil
 }
 
 func EvaluateRequirements(req Requirements, ctx RequirementEvalContext) (Requirements, []ConfigCheck, bool) {
@@ -874,6 +886,21 @@ func dedupeStringSlice(in []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func cloneSkillCatalog(in *SkillCatalog) (*SkillCatalog, error) {
+	if in == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		return nil, fmt.Errorf("clone skill catalog: %w", err)
+	}
+	var out SkillCatalog
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("clone skill catalog: %w", err)
+	}
+	return &out, nil
 }
 
 func cloneMap(in map[string]any) map[string]any {

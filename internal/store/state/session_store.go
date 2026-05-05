@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -25,31 +26,31 @@ type SessionEntry struct {
 	SessionID string `json:"session_id"`
 
 	// Session lifecycle / fork metadata.
-	SessionFile                   string               `json:"session_file,omitempty"`
-	SpawnedBy                     string               `json:"spawned_by,omitempty"`
-	SpawnedWorkspace              string               `json:"spawned_workspace_dir,omitempty"`
-	ForkedFromParent              bool                 `json:"forked_from_parent,omitempty"`
-	CompactionCount               int64                `json:"compaction_count,omitempty"`
+	SessionFile                   string                    `json:"session_file,omitempty"`
+	SpawnedBy                     string                    `json:"spawned_by,omitempty"`
+	SpawnedWorkspace              string                    `json:"spawned_workspace_dir,omitempty"`
+	ForkedFromParent              bool                      `json:"forked_from_parent,omitempty"`
+	CompactionCount               int64                     `json:"compaction_count,omitempty"`
 	CompactionCheckpoints         []CompactionCheckpointRef `json:"compaction_checkpoints,omitempty"`
-	MemoryFlushAt                 int64                `json:"memory_flush_at,omitempty"`
-	MemoryFlushCount              int64                `json:"memory_flush_compaction_count,omitempty"`
-	SessionMemoryFile             string               `json:"session_memory_file,omitempty"`
-	SessionMemoryInitialized      bool                 `json:"session_memory_initialized,omitempty"`
-	SessionMemoryObservedChars    int                  `json:"session_memory_observed_chars,omitempty"`
-	SessionMemoryPendingChars     int                  `json:"session_memory_pending_chars,omitempty"`
-	SessionMemoryPendingToolCalls int                  `json:"session_memory_pending_tool_calls,omitempty"`
-	SessionMemoryLastEntryID      string               `json:"session_memory_last_entry_id,omitempty"`
-	SessionMemoryUpdatedAt        int64                `json:"session_memory_updated_at,omitempty"`
-	FileMemorySurfaced            map[string]string    `json:"file_memory_surfaced,omitempty"`
-	RecentMemoryRecall            []MemoryRecallSample `json:"recent_memory_recall,omitempty"`
-	ParentTaskID                  string               `json:"parent_task_id,omitempty"`
-	ParentRunID                   string               `json:"parent_run_id,omitempty"`
-	ActiveTaskID                  string               `json:"active_task_id,omitempty"`
-	ActiveRunID                   string               `json:"active_run_id,omitempty"`
-	LastCompletedTaskID           string               `json:"last_completed_task_id,omitempty"`
-	LastCompletedRunID            string               `json:"last_completed_run_id,omitempty"`
-	ChildTaskIDs                  []string             `json:"child_task_ids,omitempty"`
-	LastTaskResult                TaskResultRef        `json:"last_task_result,omitempty"`
+	MemoryFlushAt                 int64                     `json:"memory_flush_at,omitempty"`
+	MemoryFlushCount              int64                     `json:"memory_flush_compaction_count,omitempty"`
+	SessionMemoryFile             string                    `json:"session_memory_file,omitempty"`
+	SessionMemoryInitialized      bool                      `json:"session_memory_initialized,omitempty"`
+	SessionMemoryObservedChars    int                       `json:"session_memory_observed_chars,omitempty"`
+	SessionMemoryPendingChars     int                       `json:"session_memory_pending_chars,omitempty"`
+	SessionMemoryPendingToolCalls int                       `json:"session_memory_pending_tool_calls,omitempty"`
+	SessionMemoryLastEntryID      string                    `json:"session_memory_last_entry_id,omitempty"`
+	SessionMemoryUpdatedAt        int64                     `json:"session_memory_updated_at,omitempty"`
+	FileMemorySurfaced            map[string]string         `json:"file_memory_surfaced,omitempty"`
+	RecentMemoryRecall            []MemoryRecallSample      `json:"recent_memory_recall,omitempty"`
+	ParentTaskID                  string                    `json:"parent_task_id,omitempty"`
+	ParentRunID                   string                    `json:"parent_run_id,omitempty"`
+	ActiveTaskID                  string                    `json:"active_task_id,omitempty"`
+	ActiveRunID                   string                    `json:"active_run_id,omitempty"`
+	LastCompletedTaskID           string                    `json:"last_completed_task_id,omitempty"`
+	LastCompletedRunID            string                    `json:"last_completed_run_id,omitempty"`
+	ChildTaskIDs                  []string                  `json:"child_task_ids,omitempty"`
+	LastTaskResult                TaskResultRef             `json:"last_task_result,omitempty"`
 
 	// Structured task state — continuously updated by the turn-end distiller.
 	TaskState *TaskState `json:"task_state,omitempty"`
@@ -277,16 +278,19 @@ func (s *SessionStore) Get(key string) (SessionEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.entries[key]
-	return e, ok
+	if !ok {
+		return SessionEntry{}, false
+	}
+	return cloneSessionEntry(e), true
 }
 
-// List returns a shallow copy of all session entries keyed by session key.
+// List returns a deep copy of all session entries keyed by session key.
 func (s *SessionStore) List() map[string]SessionEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make(map[string]SessionEntry, len(s.entries))
 	for key, entry := range s.entries {
-		out[key] = entry
+		out[key] = cloneSessionEntry(entry)
 	}
 	return out
 }
@@ -296,19 +300,19 @@ func (s *SessionStore) GetOrNew(key string) SessionEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e, ok := s.entries[key]; ok {
-		return e
+		return cloneSessionEntry(e)
 	}
 	now := time.Now().UTC()
 	e := SessionEntry{SessionID: key, CreatedAt: now, UpdatedAt: now}
 	s.entries[key] = e
-	return e
+	return cloneSessionEntry(e)
 }
 
 // Put writes entry under key and persists the file.
 func (s *SessionStore) Put(key string, entry SessionEntry) error {
 	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
 		entry.UpdatedAt = time.Now().UTC()
-		entries[key] = entry
+		entries[key] = cloneSessionEntry(entry)
 		return nil
 	})
 }
@@ -616,9 +620,144 @@ func defaultSessionStorePersist(path string, data []byte) error {
 func cloneSessionEntries(in map[string]SessionEntry) map[string]SessionEntry {
 	out := make(map[string]SessionEntry, len(in))
 	for key, entry := range in {
-		out[key] = entry
+		out[key] = cloneSessionEntry(entry)
 	}
 	return out
+}
+
+func cloneSessionEntry(in SessionEntry) SessionEntry {
+	out := in
+	if in.CompactionCheckpoints != nil {
+		out.CompactionCheckpoints = make([]CompactionCheckpointRef, len(in.CompactionCheckpoints))
+		for i, checkpoint := range in.CompactionCheckpoints {
+			out.CompactionCheckpoints[i] = cloneCompactionCheckpointRef(checkpoint)
+		}
+	}
+	if in.FileMemorySurfaced != nil {
+		out.FileMemorySurfaced = make(map[string]string, len(in.FileMemorySurfaced))
+		for key, value := range in.FileMemorySurfaced {
+			out.FileMemorySurfaced[key] = value
+		}
+	}
+	if in.RecentMemoryRecall != nil {
+		out.RecentMemoryRecall = make([]MemoryRecallSample, len(in.RecentMemoryRecall))
+		for i, sample := range in.RecentMemoryRecall {
+			out.RecentMemoryRecall[i] = cloneMemoryRecallSample(sample)
+		}
+	}
+	if in.ChildTaskIDs != nil {
+		out.ChildTaskIDs = append([]string(nil), in.ChildTaskIDs...)
+	}
+	if in.TaskState != nil {
+		out.TaskState = cloneTaskState(in.TaskState)
+	}
+	if in.TotalTokensFresh != nil {
+		fresh := *in.TotalTokensFresh
+		out.TotalTokensFresh = &fresh
+	}
+	if in.LastTurn != nil {
+		turn := *in.LastTurn
+		out.LastTurn = &turn
+	}
+	return out
+}
+
+func cloneCompactionCheckpointRef(in CompactionCheckpointRef) CompactionCheckpointRef {
+	out := in
+	out.PreCompaction = cloneStringAnyMap(in.PreCompaction)
+	out.PostCompaction = cloneStringAnyMap(in.PostCompaction)
+	return out
+}
+
+func cloneTaskState(in *TaskState) *TaskState {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Decisions != nil {
+		out.Decisions = append([]string(nil), in.Decisions...)
+	}
+	if in.Constraints != nil {
+		out.Constraints = append([]string(nil), in.Constraints...)
+	}
+	if in.OpenQuestions != nil {
+		out.OpenQuestions = append([]string(nil), in.OpenQuestions...)
+	}
+	if in.ArtifactRefs != nil {
+		out.ArtifactRefs = append([]string(nil), in.ArtifactRefs...)
+	}
+	return &out
+}
+
+func cloneStringAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneAny(value)
+	}
+	return out
+}
+
+func cloneAny(in any) any {
+	if in == nil {
+		return nil
+	}
+	return cloneReflectValue(reflect.ValueOf(in)).Interface()
+}
+
+func cloneReflectValue(in reflect.Value) reflect.Value {
+	if !in.IsValid() {
+		return in
+	}
+	switch in.Kind() {
+	case reflect.Interface:
+		if in.IsNil() {
+			return reflect.Zero(in.Type())
+		}
+		cloned := cloneReflectValue(in.Elem())
+		if cloned.Type().AssignableTo(in.Type()) {
+			return cloned
+		}
+		out := reflect.New(in.Type()).Elem()
+		out.Set(cloned)
+		return out
+	case reflect.Pointer:
+		if in.IsNil() {
+			return reflect.Zero(in.Type())
+		}
+		out := reflect.New(in.Type().Elem())
+		out.Elem().Set(cloneReflectValue(in.Elem()))
+		return out
+	case reflect.Map:
+		if in.IsNil() {
+			return reflect.Zero(in.Type())
+		}
+		out := reflect.MakeMapWithSize(in.Type(), in.Len())
+		iter := in.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(cloneReflectValue(iter.Key()), cloneReflectValue(iter.Value()))
+		}
+		return out
+	case reflect.Slice:
+		if in.IsNil() {
+			return reflect.Zero(in.Type())
+		}
+		out := reflect.MakeSlice(in.Type(), in.Len(), in.Len())
+		for i := 0; i < in.Len(); i++ {
+			out.Index(i).Set(cloneReflectValue(in.Index(i)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(in.Type()).Elem()
+		for i := 0; i < in.Len(); i++ {
+			out.Index(i).Set(cloneReflectValue(in.Index(i)))
+		}
+		return out
+	default:
+		return in
+	}
 }
 
 // load reads the file. Missing file is not an error.
@@ -665,17 +804,17 @@ func isZeroTaskResultRef(ref TaskResultRef) bool {
 
 func cloneMemoryRecallSample(in MemoryRecallSample) MemoryRecallSample {
 	out := in
-	if len(in.IndexedSession) > 0 {
+	if in.IndexedSession != nil {
 		out.IndexedSession = append([]MemoryRecallIndexedHit(nil), in.IndexedSession...)
 	}
-	if len(in.IndexedGlobal) > 0 {
+	if in.IndexedGlobal != nil {
 		out.IndexedGlobal = append([]MemoryRecallIndexedHit(nil), in.IndexedGlobal...)
 	}
-	if len(in.FileSelected) > 0 {
+	if in.FileSelected != nil {
 		out.FileSelected = make([]MemoryRecallFileHit, len(in.FileSelected))
 		for i, hit := range in.FileSelected {
 			out.FileSelected[i] = hit
-			if len(hit.Reasons) > 0 {
+			if hit.Reasons != nil {
 				out.FileSelected[i].Reasons = append([]string(nil), hit.Reasons...)
 			}
 		}

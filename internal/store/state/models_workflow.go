@@ -28,6 +28,7 @@ type WorkflowCheckpointDoc struct {
 	Attempt        int                `json:"attempt"`
 	Status         string             `json:"status"`
 	Usage          TaskUsage          `json:"usage,omitempty"`
+	Verification   VerificationSpec   `json:"verification,omitempty"`
 	PendingActions []PendingActionDoc `json:"pending_actions,omitempty"`
 	CreatedAt      int64              `json:"created_at"`
 	Meta           map[string]any     `json:"meta,omitempty"`

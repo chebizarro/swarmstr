@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -450,7 +453,91 @@ func TestCustomExecutor_UnknownEvaluator(t *testing.T) {
 	}
 }
 
+func TestSchemaExecutor_AcceptsStringSliceMeta(t *testing.T) {
+	rt := DefaultVerifierRuntime()
+	checks := []state.VerificationCheck{
+		{
+			CheckID: "s1", Type: state.VerificationCheckSchema,
+			Description: "has required fields", Required: true,
+			Meta: map[string]any{"required_fields": []string{"name", "email"}},
+		},
+	}
+	task := makeTask(checks, state.VerificationPolicyRequired)
+	outputs := TaskOutputs{StructuredOutput: map[string]any{"name": "Alice", "email": "a@b.c"}}
+	result := rt.EvaluateAll(context.Background(), task, outputs, "test", 100)
+	if !result.Passed {
+		t.Fatalf("expected []string metadata to pass, got: %s", result.Summary)
+	}
+}
+
+func TestToolOutputExecutor_RequiredToolMustSucceed(t *testing.T) {
+	rt := DefaultVerifierRuntime()
+	checks := []state.VerificationCheck{
+		{
+			CheckID: "t1", Type: state.VerificationCheckTest,
+			Description: "required tools called", Required: true,
+			Meta: map[string]any{"required_tools": []string{"fetch", "verify"}},
+		},
+	}
+	task := makeTask(checks, state.VerificationPolicyRequired)
+	outputs := TaskOutputs{
+		ToolResults: map[string]ToolCallResult{
+			"c1": {ToolName: "fetch", Output: "ok"},
+			"c2": {ToolName: "verify", Error: "assertion failed"},
+		},
+	}
+	result := rt.EvaluateAll(context.Background(), task, outputs, "test", 100)
+	if result.Passed {
+		t.Fatal("expected required tool check to fail when the required tool call errored")
+	}
+	if got := result.UpdatedSpec.Checks[0].Status; got != state.VerificationStatusFailed {
+		t.Fatalf("expected failed status, got %s", got)
+	}
+}
+
+func TestReviewExecutor_RequiresExplicitApproval(t *testing.T) {
+	rt := NewVerifierRuntime()
+	rt.Register(&MetadataReviewCheckExecutor{})
+	checks := []state.VerificationCheck{
+		{
+			CheckID: "r1", Type: state.VerificationCheckReview,
+			Description: "review output", Required: true,
+		},
+	}
+	task := makeTask(checks, state.VerificationPolicyRequired)
+	result := rt.EvaluateAll(context.Background(), task, TaskOutputs{}, "reviewer", 100)
+	if result.Passed {
+		t.Fatal("expected review without explicit approval to fail")
+	}
+	if got := result.UpdatedSpec.Checks[0].Status; got != state.VerificationStatusFailed {
+		t.Fatalf("expected failed review status, got %s", got)
+	}
+
+	checks[0].Meta = map[string]any{"approved": true, "reviewer": "alice", "comment": "looks good"}
+	result = rt.EvaluateAll(context.Background(), makeTask(checks, state.VerificationPolicyRequired), TaskOutputs{}, "reviewer", 200)
+	if !result.Passed {
+		t.Fatalf("expected explicitly approved review to pass, got: %s", result.Summary)
+	}
+	if result.UpdatedSpec.Checks[0].Evidence != "looks good" {
+		t.Fatalf("expected review comment as evidence, got %q", result.UpdatedSpec.Checks[0].Evidence)
+	}
+}
+
 // ── No executor for check type ──────────────────────────────────────────────
+
+func TestRuntime_NoExecutor_RevertsRunningToPending(t *testing.T) {
+	rt := NewVerifierRuntime()
+	checks := []state.VerificationCheck{
+		{CheckID: "x1", Type: state.VerificationCheckType("external"), Description: "external verifier", Required: true, Status: state.VerificationStatusRunning},
+	}
+	result := rt.EvaluateAll(context.Background(), makeTask(checks, state.VerificationPolicyRequired), TaskOutputs{}, "test", 100)
+	if result.Passed {
+		t.Fatal("expected required no-executor check to block")
+	}
+	if got := result.UpdatedSpec.Checks[0].Status; got != state.VerificationStatusPending {
+		t.Fatalf("expected stale running status to revert to pending, got %s", got)
+	}
+}
 
 func TestRuntime_NoExecutor_LeavePending(t *testing.T) {
 	rt := NewVerifierRuntime() // empty, no executors
@@ -494,9 +581,93 @@ func TestRuntime_Advisory_FailsDoNotBlock(t *testing.T) {
 	if !result.Passed {
 		t.Fatal("advisory policy should pass even with failing checks")
 	}
+	if result.UpdatedSpec.VerifiedAt != 0 || result.UpdatedSpec.VerifiedBy != "" {
+		t.Fatalf("advisory failure should not stamp verified state: %+v", result.UpdatedSpec)
+	}
+}
+
+func TestRuntime_ClearsStaleVerifiedStateOnFailure(t *testing.T) {
+	rt := DefaultVerifierRuntime()
+	checks := []state.VerificationCheck{
+		{CheckID: "s1", Type: state.VerificationCheckSchema, Description: "has output", Required: true},
+	}
+	task := makeTask(checks, state.VerificationPolicyRequired)
+	task.Verification.VerifiedAt = 50
+	task.Verification.VerifiedBy = "previous-verifier"
+	result := rt.EvaluateAll(context.Background(), task, TaskOutputs{}, "test", 100)
+	if result.Passed {
+		t.Fatal("expected verification failure")
+	}
+	if result.UpdatedSpec.VerifiedAt != 0 || result.UpdatedSpec.VerifiedBy != "" {
+		t.Fatalf("expected stale verified state to be cleared: %+v", result.UpdatedSpec)
+	}
+}
+
+type blockingExecutor struct {
+	typ     state.VerificationCheckType
+	started int32
+	release chan struct{}
+	once    sync.Once
+}
+
+func (e *blockingExecutor) Type() state.VerificationCheckType { return e.typ }
+
+func (e *blockingExecutor) Execute(ctx context.Context, _ state.VerificationCheck, _ state.TaskSpec, _ TaskOutputs) (CheckOutcome, error) {
+	if atomic.AddInt32(&e.started, 1) == 2 {
+		e.once.Do(func() { close(e.release) })
+	}
+	select {
+	case <-e.release:
+		return CheckOutcome{Passed: true, Result: "ok"}, nil
+	case <-ctx.Done():
+		return CheckOutcome{}, ctx.Err()
+	}
+}
+
+func TestRuntime_EvaluatesPendingExecutorChecksConcurrently(t *testing.T) {
+	exec := &blockingExecutor{typ: state.VerificationCheckType("barrier"), release: make(chan struct{})}
+	rt := NewVerifierRuntime()
+	rt.Register(exec)
+	checks := []state.VerificationCheck{
+		{CheckID: "c1", Type: exec.typ, Description: "first", Required: true},
+		{CheckID: "c2", Type: exec.typ, Description: "second", Required: true},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	result := rt.EvaluateAll(ctx, makeTask(checks, state.VerificationPolicyRequired), TaskOutputs{}, "test", 100)
+	if !result.Passed {
+		t.Fatalf("expected concurrent checks to pass, got: %s", result.Summary)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("verification appears sequential or blocked; elapsed=%s", elapsed)
+	}
+	if got := atomic.LoadInt32(&exec.started); got != 2 {
+		t.Fatalf("expected both checks to start, got %d", got)
+	}
 }
 
 // ── Already-evaluated checks ────────────────────────────────────────────────
+
+func TestRuntime_TerminalErrorPreservesErrorMarker(t *testing.T) {
+	rt := DefaultVerifierRuntime()
+	checks := []state.VerificationCheck{
+		{
+			CheckID: "err1", Type: state.VerificationCheckSchema,
+			Description: "already errored", Required: true,
+			Status: state.VerificationStatusError, Result: "executor crashed",
+		},
+	}
+	result := rt.EvaluateAll(context.Background(), makeTask(checks, state.VerificationPolicyRequired), TaskOutputs{StructuredOutput: map[string]any{"ok": true}}, "test", 100)
+	if result.CheckResults[0].Error != "executor crashed" {
+		t.Fatalf("expected terminal error result to preserve error, got %+v", result.CheckResults[0])
+	}
+	formatted := FormatRuntimeResult(result)
+	if !strings.Contains(formatted, "⚠") {
+		t.Fatalf("expected formatted result to show warning marker, got %q", formatted)
+	}
+}
 
 func TestRuntime_SkipsTerminalChecks(t *testing.T) {
 	rt := DefaultVerifierRuntime()
@@ -593,8 +764,8 @@ func TestRuntime_MixedChecks(t *testing.T) {
 
 func TestFormatRuntimeResult(t *testing.T) {
 	result := RuntimeResult{
-		Passed: true,
-		Summary: "2/2 passed, 0 failed, 0 pending",
+		Passed:   true,
+		Summary:  "2/2 passed, 0 failed, 0 pending",
 		Duration: 50 * time.Millisecond,
 		CheckResults: []CheckResult{
 			{CheckID: "s1", Type: state.VerificationCheckSchema, Outcome: CheckOutcome{Passed: true, Result: "ok"}, Duration: 10 * time.Millisecond},
@@ -629,8 +800,8 @@ func TestCheckOutcome_JSON(t *testing.T) {
 
 func TestRuntimeResult_JSON(t *testing.T) {
 	r := RuntimeResult{
-		Passed: false,
-		Summary: "1/2 passed",
+		Passed:   false,
+		Summary:  "1/2 passed",
 		Duration: 100 * time.Millisecond,
 		CheckResults: []CheckResult{
 			{CheckID: "s1", Outcome: CheckOutcome{Passed: true}},
@@ -652,9 +823,9 @@ func TestRuntimeResult_JSON(t *testing.T) {
 
 func TestTaskOutputs_JSON(t *testing.T) {
 	o := TaskOutputs{
-		RawOutput: "hello",
+		RawOutput:        "hello",
 		StructuredOutput: map[string]any{"key": "val"},
-		Artifacts: []TaskArtifact{{Name: "report.md", Content: "# Report"}},
+		Artifacts:        []TaskArtifact{{Name: "report.md", Content: "# Report"}},
 		ToolResults: map[string]ToolCallResult{
 			"c1": {ToolName: "fetch", Output: "ok"},
 		},

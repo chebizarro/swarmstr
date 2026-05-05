@@ -24,8 +24,8 @@ type ContextTierSW int
 
 const (
 	TierMicroSW    ContextTierSW = iota // < 8K tokens
-	TierSmallSW                          // 8K–16K tokens
-	TierStandardSW                       // > 16K tokens
+	TierSmallSW                         // 8K–16K tokens
+	TierStandardSW                      // > 16K tokens
 )
 
 // SmallWindowBudget holds budget parameters for the SmallWindowEngine.
@@ -215,6 +215,7 @@ func (e *SmallWindowEngine) Bootstrap(_ stdctx.Context, sessionID string, messag
 	}
 
 	sess.messages = msgs
+	sess.summary = ""
 	return BootstrapResult{Bootstrapped: true, ImportedMessages: len(msgs)}, nil
 }
 
@@ -381,5 +382,3 @@ func init() {
 		return NewSmallWindowEngine(tier, budget), nil
 	})
 }
-
-
