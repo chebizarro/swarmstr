@@ -208,6 +208,17 @@ func TestControlPrincipalRestoresNIP98AuthenticationWhenTokenless(t *testing.T) 
 	}
 }
 
+func TestControlPrincipalUsesDeviceIDAsPolicyIdentity(t *testing.T) {
+	r := &Runtime{opts: RuntimeOptions{HandshakeTTL: 2 * time.Second}}
+	req := httptest.NewRequest(http.MethodGet, "http://example/ws", nil)
+	deviceID := "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"
+	principal := r.controlPrincipal(req, protocol.ConnectParams{Device: &protocol.ConnectDevice{ID: deviceID, PublicKey: "pub", Signature: "sig"}}, authDecision{OK: true, Method: "token"})
+	want := strings.ToLower(deviceID)
+	if !principal.Authenticated || principal.Method != "device" || principal.PubKey != want || principal.Subject != want {
+		t.Fatalf("expected signed device identity to drive policy principal, got %+v", principal)
+	}
+}
+
 func TestBumpUnauthorizedCountsNotPaired(t *testing.T) {
 	c := &client{}
 	c.bumpUnauthorized(protocol.NewError(protocol.ErrorCodeNotPaired, "not paired", nil))
@@ -565,6 +576,69 @@ func TestEventSubscriptionControlsBroadcast(t *testing.T) {
 	frame := readUntilEvent(t, ctx, conn, "presence.updated")
 	if frame == nil {
 		t.Fatal("expected subscribed event")
+	}
+}
+
+func TestBroadcastDropsFullClientQueueWithoutBlockingFanout(t *testing.T) {
+	r := &Runtime{
+		opts:    RuntimeOptions{EventBufferSize: 1, WriteTimeout: 10 * time.Millisecond},
+		clients: map[string]*client{},
+	}
+	slow := &client{
+		id:            "slow",
+		subscriptions: map[string]struct{}{"presence.updated": {}},
+		eventQueue:    make(chan any, 1),
+		eventDone:     make(chan struct{}),
+	}
+	slow.eventQueue <- map[string]any{"queued": true}
+	fast := &client{
+		id:            "fast",
+		subscriptions: map[string]struct{}{"presence.updated": {}},
+		eventQueue:    make(chan any, 1),
+		eventDone:     make(chan struct{}),
+	}
+	r.clients[slow.id] = slow
+	r.clients[fast.id] = fast
+
+	done := make(chan struct{})
+	go func() {
+		r.Broadcast("presence.updated", map[string]any{"k": "v"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("broadcast blocked behind a full client event queue")
+	}
+
+	select {
+	case raw := <-fast.eventQueue:
+		frame, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected fast frame type: %T", raw)
+		}
+		if frame["type"] != protocol.FrameTypeEvent || frame["event"] != "presence.updated" {
+			t.Fatalf("unexpected fast frame: %#v", frame)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("fast client did not receive broadcast after slow client queue filled")
+	}
+
+	r.mu.RLock()
+	_, slowPresent := r.clients[slow.id]
+	_, fastPresent := r.clients[fast.id]
+	r.mu.RUnlock()
+	if slowPresent {
+		t.Fatal("slow client should be dropped when its bounded event queue fills")
+	}
+	if !fastPresent {
+		t.Fatal("fast client should remain connected")
+	}
+	select {
+	case <-slow.eventDone:
+	default:
+		t.Fatal("slow client event writer should be closed after drop")
 	}
 }
 

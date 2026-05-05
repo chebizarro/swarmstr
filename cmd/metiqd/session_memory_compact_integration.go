@@ -8,6 +8,7 @@ import (
 
 	ctxengine "metiq/internal/context"
 	"metiq/internal/memory"
+	"metiq/internal/store/state"
 )
 
 // trySessionMemoryCompact attempts LLM-free compaction using pre-extracted
@@ -32,6 +33,7 @@ func trySessionMemoryCompact(
 	engine ctxengine.Engine,
 	sessionID string,
 	sessionMemoryPath string,
+	lastSummarizedMessageID string,
 ) (ctxengine.CompactResult, bool) {
 	if engine == nil || strings.TrimSpace(sessionMemoryPath) == "" {
 		return ctxengine.CompactResult{}, false
@@ -58,10 +60,20 @@ func trySessionMemoryCompact(
 		return ctxengine.CompactResult{}, false
 	}
 
-	// Perform LLM-free compaction.
-	cr, err := smCompacter.CompactWithSessionMemory(ctx, sessionID, content, ctxengine.DefaultSessionMemoryCompactConfig)
-	if err != nil {
-		log.Printf("session memory compact: failed session=%s err=%v", sessionID, err)
+	// Perform LLM-free compaction. When the session-memory runtime exposes the
+	// last transcript entry included in the maintained summary, pass that as the
+	// context-engine boundary so unsummarized in-memory messages are preserved.
+	var cr ctxengine.CompactResult
+	var compactErr error
+	if stateCompacter, ok := engine.(ctxengine.SessionMemoryStateCompacter); ok && strings.TrimSpace(lastSummarizedMessageID) != "" {
+		compactState := ctxengine.NewSessionMemoryCompactState()
+		compactState.SetLastSummarized(sessionID, lastSummarizedMessageID)
+		cr, compactErr = stateCompacter.CompactWithSessionMemoryState(ctx, sessionID, content, ctxengine.DefaultSessionMemoryCompactConfig, compactState)
+	} else {
+		cr, compactErr = smCompacter.CompactWithSessionMemory(ctx, sessionID, content, ctxengine.DefaultSessionMemoryCompactConfig)
+	}
+	if compactErr != nil {
+		log.Printf("session memory compact: failed session=%s err=%v", sessionID, compactErr)
 		return ctxengine.CompactResult{}, false
 	}
 
@@ -93,4 +105,15 @@ func isSessionMemoryEmpty(content string) bool {
 	}
 	template := strings.TrimSpace(memory.DefaultSessionMemoryTemplate)
 	return content == template
+}
+
+func sessionMemoryLastEntryID(sessionStore *state.SessionStore, sessionID string) string {
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	entry, ok := sessionStore.Get(sessionID)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(entry.SessionMemoryLastEntryID)
 }

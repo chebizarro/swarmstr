@@ -334,8 +334,12 @@ func buildToolSummarySection(tools []agent.ToolDefinition) string {
 	copy(sorted, tools)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
+	hasTaskTool := false
 	for _, t := range sorted {
 		name := agent.SanitizePromptLiteral(strings.TrimSpace(t.Name))
+		if name == "task" {
+			hasTaskTool = true
+		}
 		desc := agent.SanitizePromptLiteral(strings.TrimSpace(t.Description))
 		if desc != "" {
 			// Use just the first sentence for the summary line.
@@ -349,6 +353,9 @@ func buildToolSummarySection(tools []agent.ToolDefinition) string {
 		} else {
 			lines = append(lines, fmt.Sprintf("- %s", name))
 		}
+	}
+	if hasTaskTool {
+		lines = append(lines, "", "Planning hint: for repeatable multi-step local work, prefer creating/updating a Taskfile and running it with task instead of a long ad-hoc shell sequence.")
 	}
 	return strings.Join(lines, "\n")
 }

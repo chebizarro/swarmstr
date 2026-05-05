@@ -15,15 +15,20 @@ import (
 // ─── fakeRelaySync ────────────────────────────────────────────────────────────
 
 type fakeRelaySync struct {
+	mu  sync.Mutex
 	doc state.ConfigDoc
 }
 
 func (f *fakeRelaySync) PutConfig(_ context.Context, doc state.ConfigDoc) (state.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.doc = doc
 	return state.Event{}, nil
 }
 
 func (f *fakeRelaySync) GetConfig(_ context.Context) (state.ConfigDoc, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.doc, nil
 }
 
@@ -172,4 +177,65 @@ func (n *notFoundRelaySync) PutConfig(_ context.Context, doc state.ConfigDoc) (s
 
 func (n *notFoundRelaySync) GetConfig(_ context.Context) (state.ConfigDoc, error) {
 	return state.ConfigDoc{}, state.ErrNotFound
+}
+
+func TestSyncEngine_concurrentPushPathsDoNotClobberDisk(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	initial := state.ConfigDoc{Version: 1, DM: state.DMPolicy{Policy: "open"}}
+	if err := WriteConfigFile(configPath, initial); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+
+	relay := &fakeRelaySync{doc: initial}
+	se, err := NewSyncEngine(configPath, relay)
+	if err != nil {
+		t.Fatalf("NewSyncEngine: %v", err)
+	}
+
+	const iterations = 100
+	errs := make(chan error, iterations*3)
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			relay.PutConfig(context.Background(), state.ConfigDoc{Version: i + 2, DM: state.DMPolicy{Policy: "pairing"}})
+			if err := se.BootstrapFromRelay(context.Background()); err != nil {
+				errs <- err
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			relay.PutConfig(context.Background(), state.ConfigDoc{Version: i + 1000, DM: state.DMPolicy{Policy: "disabled"}})
+			if err := se.PushToDisk(context.Background()); err != nil {
+				errs <- err
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			if err := se.PushToRelay(context.Background()); err != nil {
+				errs <- err
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent sync path error: %v", err)
+		}
+	}
+
+	if _, err := LoadConfigFile(configPath); err != nil {
+		t.Fatalf("config file became unreadable after concurrent sync paths: %v", err)
+	}
 }

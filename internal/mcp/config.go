@@ -51,12 +51,17 @@ const (
 	PolicyReasonRemoteApproval PolicyReason = "policy.remote-approval"
 )
 
-// PolicyMatcher matches MCP servers by name, full stdio command vector, and/or
-// remote URL pattern.
+// PolicyMatcher matches MCP servers by name, exact resolved signature, full
+// stdio command vector, and/or remote URL pattern. Command-only matchers are
+// intentionally launch-vector scoped and therefore match all stdio servers with
+// the same command/args regardless of env; use Signature for identity-sensitive
+// policy decisions because resolved stdio signatures include explicit env in a
+// redacted hash.
 type PolicyMatcher struct {
-	Name    string   `json:"name,omitempty"`
-	Command []string `json:"command,omitempty"`
-	URL     string   `json:"url,omitempty"`
+	Name      string   `json:"name,omitempty"`
+	Signature string   `json:"signature,omitempty"`
+	Command   []string `json:"command,omitempty"`
+	URL       string   `json:"url,omitempty"`
 }
 
 // Policy captures MCP trust and approval rules applied during inventory
@@ -379,6 +384,9 @@ func parsePolicyMatcher(raw any) (PolicyMatcher, bool) {
 		if name, ok := value["name"].(string); ok {
 			matcher.Name = name
 		}
+		if signature, ok := value["signature"].(string); ok {
+			matcher.Signature = signature
+		}
 		if command, exists := value["command"]; exists {
 			matcher.Command = parseStringArray(command)
 		}
@@ -422,13 +430,14 @@ func normalizePolicyMatchers(matchers []PolicyMatcher) []PolicyMatcher {
 
 func normalizePolicyMatcher(matcher PolicyMatcher) PolicyMatcher {
 	matcher.Name = strings.TrimSpace(matcher.Name)
+	matcher.Signature = strings.TrimSpace(matcher.Signature)
 	matcher.Command = trimStringArray(matcher.Command)
 	matcher.URL = strings.TrimSpace(matcher.URL)
 	return matcher
 }
 
 func matcherDefined(matcher PolicyMatcher) bool {
-	return matcher.Name != "" || len(matcher.Command) > 0 || matcher.URL != ""
+	return matcher.Name != "" || matcher.Signature != "" || len(matcher.Command) > 0 || matcher.URL != ""
 }
 
 func applyPolicyFilters(cfg Config) Config {
@@ -491,6 +500,12 @@ func policyMatcherMatches(matcher PolicyMatcher, server ResolvedServerConfig) bo
 	if matcher.Name != "" {
 		matchedField = true
 		if !strings.EqualFold(matcher.Name, server.Name) {
+			return false
+		}
+	}
+	if matcher.Signature != "" {
+		matchedField = true
+		if !strings.EqualFold(matcher.Signature, server.Signature) {
 			return false
 		}
 	}

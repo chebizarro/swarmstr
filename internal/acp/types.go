@@ -123,6 +123,18 @@ type ResultPayload struct {
 	Worker *WorkerMetadata `json:"worker,omitempty"`
 }
 
+// PingPayload is the Payload for messages with ACPType = "ping".
+type PingPayload struct {
+	// Nonce is an optional caller-provided correlation token echoed by pong.
+	Nonce string `json:"nonce,omitempty"`
+}
+
+// PongPayload is the Payload for messages with ACPType = "pong".
+type PongPayload struct {
+	// Nonce echoes the ping nonce when available.
+	Nonce string `json:"nonce,omitempty"`
+}
+
 // NewTask builds a task Message ready to send.
 func NewTask(taskID, senderPubKey string, p TaskPayload) Message {
 	env := BuildTaskEnvelope(taskID, senderPubKey, p)
@@ -262,6 +274,66 @@ func DecodeResultPayload(payload map[string]any) (ResultPayload, error) {
 	var out ResultPayload
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return ResultPayload{}, err
+	}
+	return out, nil
+}
+
+// NewPing builds a ping Message ready to send.
+func NewPing(taskID, senderPubKey string, p PingPayload) Message {
+	return Message{
+		ACPType:      "ping",
+		Version:      Version,
+		TaskID:       taskID,
+		SenderPubKey: senderPubKey,
+		Payload: map[string]any{
+			"nonce": p.Nonce,
+		},
+		CreatedAt: time.Now().Unix(),
+	}
+}
+
+// DecodePingPayload normalizes a generic ACP payload map into the typed ping payload.
+func DecodePingPayload(payload map[string]any) (PingPayload, error) {
+	if payload == nil {
+		return PingPayload{}, nil
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return PingPayload{}, err
+	}
+	var out PingPayload
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return PingPayload{}, err
+	}
+	return out, nil
+}
+
+// NewPong builds a pong Message ready to send.
+func NewPong(taskID, senderPubKey string, p PongPayload) Message {
+	return Message{
+		ACPType:      "pong",
+		Version:      Version,
+		TaskID:       taskID,
+		SenderPubKey: senderPubKey,
+		Payload: map[string]any{
+			"nonce": p.Nonce,
+		},
+		CreatedAt: time.Now().Unix(),
+	}
+}
+
+// DecodePongPayload normalizes a generic ACP payload map into the typed pong payload.
+func DecodePongPayload(payload map[string]any) (PongPayload, error) {
+	if payload == nil {
+		return PongPayload{}, nil
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return PongPayload{}, err
+	}
+	var out PongPayload
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return PongPayload{}, err
 	}
 	return out, nil
 }

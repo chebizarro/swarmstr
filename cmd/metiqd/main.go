@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -309,6 +310,23 @@ func loadOrDefaultWatchSpecs(raw json.RawMessage, sessionID, selfPubKey string, 
 		return nil, false, err
 	}
 	return specs, false, nil
+}
+
+func prepopulateACPPeersFromConfig(reg *acppkg.PeerRegistry, cfg state.ConfigDoc) int {
+	if reg == nil {
+		return 0
+	}
+	added := 0
+	for _, peer := range cfg.ACP.Peers {
+		if strings.TrimSpace(peer.PubKey) == "" {
+			continue
+		}
+		if err := reg.Register(acppkg.PeerEntry{PubKey: peer.PubKey, Alias: peer.Alias, Tags: peer.Tags}); err != nil {
+			continue
+		}
+		added++
+	}
+	return added
 }
 
 func main() {
@@ -963,6 +981,28 @@ func main() {
 	tools.RegisterWithDef("lsp_query", toolbuiltin.LSPQueryTool(lspReg, fsOpts), toolbuiltin.LSPQueryDef)
 	// Sandbox execution: compile & run code with isolation and resource limits.
 	tools.RegisterWithDef("sandbox_exec", toolbuiltin.SandboxExecTool(), toolbuiltin.SandboxExecDef)
+	// Taskfile execution: preferred backend for repeatable multi-step local workflows.
+	if _, err := exec.LookPath("task"); err == nil {
+		tools.RegisterTool("task", agent.ToolRegistration{
+			Func: toolbuiltin.TaskTool(fsOpts),
+			Descriptor: agent.ToolDescriptor{
+				Name:            toolbuiltin.TaskDef.Name,
+				Description:     toolbuiltin.TaskDef.Description,
+				Parameters:      toolbuiltin.TaskDef.Parameters,
+				InputJSONSchema: toolbuiltin.TaskDef.InputJSONSchema,
+				ParamAliases:    toolbuiltin.TaskDef.ParamAliases,
+				Origin:          agent.ToolOrigin{Kind: agent.ToolOriginKindBuiltin},
+				Traits:          agent.ToolTraits{Destructive: true},
+			},
+			ProviderVisible: true,
+			Traits: agent.ToolTraitResolvers{
+				IsReadOnly:    toolbuiltin.TaskActionReadOnly,
+				IsDestructive: toolbuiltin.TaskActionDestructive,
+			},
+		})
+	} else {
+		log.Printf("task tool disabled: go-task binary not found in PATH")
+	}
 	// Tool chains / macros: composable multi-tool workflows.
 	chainReg := toolbuiltin.NewChainRegistry()
 	tools.RegisterWithDef("chain_define", toolbuiltin.ChainDefineTool(chainReg), toolbuiltin.ChainDefineDef)
@@ -1316,6 +1356,9 @@ func main() {
 	acpDispatcher := acppkg.NewDispatcher()
 	controlACPPeers = acpPeers
 	controlACPDispatcher = acpDispatcher
+	if n := prepopulateACPPeersFromConfig(acpPeers, configState.Get()); n > 0 {
+		log.Printf("acp peer registry pre-populated from config: %d peer(s)", n)
+	}
 	controlAgentRuntime = agentRuntime
 	controlAgentJobs = agentJobs
 	controlNodeInvocations = nodeInvocations
@@ -1364,7 +1407,7 @@ func main() {
 		// If Extra["approvals"]["tools"] is present (even empty), it REPLACES the defaults.
 		// Set to [] for fully autonomous operation; omit the key to use defaults.
 		// NOTE: If permissions section is configured, it takes precedence over this.
-		defaultApprovalTools := []string{"bash", "shell", "exec", "run_command", "terminal", "sh", "bash_exec", "process_spawn", "process_send", "process_kill", "process_exec", "git_status", "git_diff", "test_run"}
+		defaultApprovalTools := []string{"bash", "shell", "exec", "run_command", "terminal", "sh", "bash_exec", "process_spawn", "process_send", "process_kill", "process_exec", "task", "git_status", "git_diff", "test_run"}
 		approvalTools := make(map[string]bool)
 		configOverride := false
 		if aExtra, ok := configState.Get().Extra["approvals"].(map[string]any); ok {
@@ -2445,6 +2488,7 @@ func main() {
 			filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, spawnAgentID, agentRuntime, tools, turnToolConstraints{})
 			prepared.Turn.Tools = turnTools
 			prepared.Turn.Executor = turnExecutor
+			prepared.Turn.ToolEventSink = toolLifecyclePersistenceSink(controlServices.session.sessionStore, sessionID, toolLifecycleEmitter(runtimeEventEmitterFunc(emitControlWSEvent), spawnAgentID))
 			prepared = applyPromptEnvelopeToPreparedTurn(prepared, turnPromptBuilderParams{Config: configState.Get(), SessionID: sessionID, AgentID: spawnAgentID, Channel: "nostr", SelfPubkey: pubkey, SelfNPub: toolbuiltin.NostrNPubFromHex(pubkey), StaticSystemPrompt: prepared.Turn.StaticSystemPrompt, Context: prepared.Turn.Context, Tools: turnTools})
 			result, err := filteredRuntime.ProcessTurn(turnCtx, prepared.Turn)
 			if err != nil {
@@ -2547,6 +2591,50 @@ func main() {
 			return "", fmt.Errorf("node_invoke: remote error: %s", result.Error)
 		}
 		return result.Text, nil
+	})
+
+	// node_ping: send ACP ping and wait for ACP pong from a node.
+	tools.Register("node_ping", func(ctx context.Context, args map[string]any) (string, error) {
+		targetPubKey := agent.ArgString(args, "node_pubkey")
+		timeoutMS := int64(agent.ArgInt(args, "timeout_seconds", 10)) * 1000
+		if targetPubKey == "" {
+			return "", fmt.Errorf("node_ping: node_pubkey is required")
+		}
+		cfg := state.ConfigDoc{}
+		if configState != nil {
+			cfg = configState.Get()
+		}
+		dmBus, dmScheme, err := resolveACPDMTransport(cfg, targetPubKey)
+		if err != nil {
+			return "", fmt.Errorf("node_ping: %w", err)
+		}
+		taskID := acppkg.GenerateTaskID()
+		senderPubKey := dmBus.PublicKey()
+		pingMsg := acppkg.NewPing(taskID, senderPubKey, acppkg.PingPayload{Nonce: taskID})
+		controlACPDispatcher.Register(taskID)
+		started := time.Now()
+		payload, _ := json.Marshal(pingMsg)
+		if err := sendACPDMWithTransport(ctx, dmBus, dmScheme, targetPubKey, string(payload)); err != nil {
+			controlACPDispatcher.Cancel(taskID)
+			return "", fmt.Errorf("node_ping: send: %w", err)
+		}
+		result, err := controlACPDispatcher.Wait(ctx, taskID, time.Duration(timeoutMS)*time.Millisecond)
+		if err != nil {
+			return "", fmt.Errorf("node_ping: %w", err)
+		}
+		if result.Error != "" {
+			return "", fmt.Errorf("node_ping: remote error: %s", result.Error)
+		}
+		if strings.TrimSpace(result.Text) != "pong" {
+			return "", fmt.Errorf("node_ping: unexpected response %q", result.Text)
+		}
+		out, _ := json.Marshal(map[string]any{
+			"node_pubkey": targetPubKey,
+			"task_id":     taskID,
+			"ok":          true,
+			"latency_ms":  time.Since(started).Milliseconds(),
+		})
+		return string(out), nil
 	})
 
 	// node_list: return paired/known metiq nodes.
@@ -3155,7 +3243,7 @@ func main() {
 			return fmt.Sprintf("⚠️  Session memory flush failed: %v", err), nil
 		}
 		// Try LLM-free session memory compaction first.
-		if smCR, smOK := trySessionMemoryCompact(cmdCtx, controlContextEngine, cmd.SessionID, flushOutcome.Path); smOK {
+		if smCR, smOK := trySessionMemoryCompact(cmdCtx, controlContextEngine, cmd.SessionID, flushOutcome.Path, sessionMemoryLastEntryID(sessionStore, cmd.SessionID)); smOK {
 			recordSessionCompaction(sessionStore, cmd.SessionID, true, time.Now())
 			runPostCompactCleanup(cmd.SessionID)
 			saved := smCR.TokensBefore - smCR.TokensAfter
@@ -3604,7 +3692,7 @@ func main() {
 							controlAutoCompactState.RecordFailure(sessionID)
 						} else {
 							// Try LLM-free session memory compaction first.
-							smCR, smOK := trySessionMemoryCompact(turnCtx, controlContextEngine, sessionID, flushOutcome.Path)
+							smCR, smOK := trySessionMemoryCompact(turnCtx, controlContextEngine, sessionID, flushOutcome.Path, sessionMemoryLastEntryID(sessionStore, sessionID))
 							if smOK {
 								recordSessionCompaction(sessionStore, sessionID, true, time.Now())
 								log.Printf("context engine auto-compact (session-memory) session=%s tokens_before=%d tokens_after=%d", sessionID, smCR.TokensBefore, smCR.TokensAfter)
@@ -3784,7 +3872,7 @@ func main() {
 			Executor:             turnExecutor, // canonical filtered turn tool pool
 			ThinkingBudget:       thinkingBudget,
 			MaxAgenticIterations: maxAgenticIterations,
-			ToolEventSink:        toolLifecycleSinkWithActiveTools(activeTools, toolLifecycleEmitter(wsEmitter, activeAgentID)),
+			ToolEventSink:        toolLifecycleSinkWithActiveTools(activeTools, toolLifecyclePersistenceSink(sessionStore, sessionID, toolLifecycleEmitter(wsEmitter, activeAgentID))),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
 			HookInvoker:          controlHookInvoker,
 			SteeringDrain:        makeActiveRunSteeringDrain(steeringMailboxes, sessionID, drainedSteering.Record),
@@ -4127,19 +4215,31 @@ func main() {
 		}
 
 		// ── ACP fast-path ────────────────────────────────────────────────
-		// If the sender is a registered ACP peer and the message is a
-		// valid ACP JSON payload, dispatch through the ACP handler instead
-		// of the user-facing agent pipeline.
-		if controlACPPeers != nil && controlACPPeers.IsPeer(msg.FromPubKey) && acppkg.IsACPMessage([]byte(msg.Text)) {
+		// Route ACP messages through the ACP handler when either:
+		//   1) the sender is a registered ACP peer, or
+		//   2) the message is a reply for a currently pending ACP dispatch.
+		// This lets pong/result replies complete even when the sender was not
+		// manually pre-registered as a peer.
+		if acppkg.IsACPMessage([]byte(msg.Text)) {
 			if acpMsg, acpErr := acppkg.Parse([]byte(msg.Text)); acpErr == nil {
-				if err := handleACPMessage(ctx, acpMsg, msg.FromPubKey, msg, agentRegistry, sessionRouter, tools, docsRepo, transcriptRepo); err != nil {
-					log.Printf("acp message handler error from=%s task_id=%s err=%v", msg.FromPubKey, acpMsg.TaskID, err)
-					return err
+				registeredPeer := controlACPPeers != nil && controlACPPeers.IsPeer(msg.FromPubKey)
+				pendingReply := false
+				if controlServices.relay.acpDispatcher != nil {
+					switch acpMsg.ACPType {
+					case "result", "pong":
+						pendingReply = controlServices.relay.acpDispatcher.HasPending(acpMsg.TaskID)
+					}
 				}
-				if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
-					log.Printf("checkpoint update (acp) failed event=%s err=%v", msg.EventID, err)
+				if registeredPeer || pendingReply {
+					if err := handleACPMessage(ctx, acpMsg, msg.FromPubKey, msg, agentRegistry, sessionRouter, tools, docsRepo, transcriptRepo); err != nil {
+						log.Printf("acp message handler error from=%s task_id=%s err=%v", msg.FromPubKey, acpMsg.TaskID, err)
+						return err
+					}
+					if err := tracker.MarkProcessed(ctx, docsRepo, msg.EventID, msg.CreatedAt); err != nil {
+						log.Printf("checkpoint update (acp) failed event=%s err=%v", msg.EventID, err)
+					}
+					return nil
 				}
-				return nil
 			}
 		}
 		// ─────────────────────────────────────────────────────────────────
@@ -5002,7 +5102,7 @@ func main() {
 			Tools:                chInlineTools,
 			Executor:             turnExecutor,
 			MaxAgenticIterations: chMaxAgenticIterations,
-			ToolEventSink:        toolLifecycleSinkWithActiveTools(activeTools, toolLifecycleEmitter(wsEmitter, activeAgentID)),
+			ToolEventSink:        toolLifecycleSinkWithActiveTools(activeTools, toolLifecyclePersistenceSink(sessionStore, sessionID, toolLifecycleEmitter(wsEmitter, activeAgentID))),
 			ContextWindowTokens:  promptEnvelope.ContextWindowTokens,
 			HookInvoker:          controlHookInvoker,
 			SteeringDrain:        makeActiveRunSteeringDrain(steeringMailboxes, sessionID, drainedSteering.Record),
@@ -6262,13 +6362,13 @@ func main() {
 					return err
 				},
 				ConfigSet: func(ctx context.Context, req methods.ConfigSetRequest) (map[string]any, int, error) {
-					return dispatchAdminControlConfigMutation(ctx, bus.PublicKey(), methods.MethodConfigSet, req, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+					return dispatchAdminControlConfigMutation(ctx, adminControlMutationCaller(ctx, bus.PublicKey()), methods.MethodConfigSet, req, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
 				},
 				ConfigApply: func(ctx context.Context, req methods.ConfigApplyRequest) (map[string]any, int, error) {
-					return dispatchAdminControlConfigMutation(ctx, bus.PublicKey(), methods.MethodConfigApply, req, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+					return dispatchAdminControlConfigMutation(ctx, adminControlMutationCaller(ctx, bus.PublicKey()), methods.MethodConfigApply, req, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
 				},
 				ConfigPatch: func(ctx context.Context, req methods.ConfigPatchRequest) (map[string]any, int, error) {
-					return dispatchAdminControlConfigMutation(ctx, bus.PublicKey(), methods.MethodConfigPatch, req, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+					return dispatchAdminControlConfigMutation(ctx, adminControlMutationCaller(ctx, bus.PublicKey()), methods.MethodConfigPatch, req, bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
 				},
 			})
 			if err != nil {
@@ -6547,6 +6647,13 @@ func ensureIngestCheckpoint(ctx context.Context, repo *state.DocsRepository) (st
 		return state.CheckpointDoc{}, err
 	}
 	return fallback, nil
+}
+
+func adminControlMutationCaller(ctx context.Context, fallback string) string {
+	if caller := admin.CallerPubKeyFromContext(ctx); caller != "" {
+		return caller
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func dispatchAdminDelegatedControlCall(
@@ -6895,6 +7002,7 @@ func handleACPMessage(
 			}, controlServices.session.memoryStore, scopeCtx, workspaceDirForAgent(cfg, agentID), controlServices.session.sessionStore)
 			prepared.Turn.Tools = turnTools
 			prepared.Turn.Executor = turnExecutor
+			prepared.Turn.ToolEventSink = toolLifecyclePersistenceSink(controlServices.session.sessionStore, sessionID, toolLifecycleEmitter(runtimeEventEmitterFunc(emitControlWSEvent), agentID))
 			prepared = applyPromptEnvelopeToPreparedTurn(prepared, turnPromptBuilderParams{Config: cfg, SessionID: sessionID, AgentID: agentID, Channel: "nostr", StaticSystemPrompt: prepared.Turn.StaticSystemPrompt, Context: prepared.Turn.Context, Tools: turnTools})
 			prepared.Turn.TurnID = msg.TaskID
 			if len(seedHistory) > 0 {
@@ -6973,9 +7081,11 @@ func handleACPMessage(
 		}
 		emitControlWSEvent(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, sessionID, turnTelemetry))
 		if strings.TrimSpace(workerTask.TaskID) != "" && strings.TrimSpace(workerRun.RunID) != "" {
-			if err := finishACPWorkerTaskDocs(processCtx, docsRepo, sessionID, workerTask, workerRun, resultRef, turnResultMetadataPtr(result, procErr), procErr, historyEntryIDs); err != nil {
+			persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := finishACPWorkerTaskDocs(persistCtx, docsRepo, sessionID, workerTask, workerRun, resultRef, turnResultMetadataPtr(result, procErr), procErr, historyEntryIDs); err != nil {
 				log.Printf("acp worker task completion persist failed session=%s task_id=%s run_id=%s err=%v", sessionID, workerTask.TaskID, workerRun.RunID, err)
 			}
+			persistCancel()
 		}
 		worker := &acppkg.WorkerMetadata{
 			TaskID:          firstNonEmptyTrimmed(workerTask.TaskID, msg.TaskID),
@@ -7043,10 +7153,30 @@ func handleACPMessage(
 
 	case "ping":
 		// Liveness probe: respond with a pong.
-		pong := acppkg.Message{ACPType: "pong", Version: acppkg.Version, TaskID: msg.TaskID}
+		pingPayload, err := acppkg.DecodePingPayload(msg.Payload)
+		if err != nil {
+			return fmt.Errorf("acp ping decode task_id=%s: %w", msg.TaskID, err)
+		}
+		pong := acppkg.NewPong(msg.TaskID, "", acppkg.PongPayload{Nonce: pingPayload.Nonce})
 		payload, _ := json.Marshal(pong)
 		if sendErr := dm.Reply(ctx, string(payload)); sendErr != nil {
 			log.Printf("acp pong send failed to=%s err=%v", fromPubKey, sendErr)
+		}
+		return nil
+
+	case "pong":
+		pongPayload, err := acppkg.DecodePongPayload(msg.Payload)
+		if err != nil {
+			return fmt.Errorf("acp pong decode task_id=%s: %w", msg.TaskID, err)
+		}
+		log.Printf("acp pong from=%s task_id=%s nonce=%q", fromPubKey, msg.TaskID, pongPayload.Nonce)
+		if controlServices.relay.acpDispatcher != nil {
+			controlServices.relay.acpDispatcher.Deliver(acppkg.TaskResult{
+				TaskID:       msg.TaskID,
+				Text:         "pong",
+				SenderPubKey: strings.TrimSpace(msg.SenderPubKey),
+				CompletedAt:  time.Now().Unix(),
+			})
 		}
 		return nil
 

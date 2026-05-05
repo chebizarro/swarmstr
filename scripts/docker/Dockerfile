@@ -6,9 +6,12 @@
 # docker-compose use (context set to repo root via compose.yml).
 #
 # Build args are forwarded from docker-compose.yml — see .env.example.
+# Task is installed by default via the official installer; override with
+# METIQ_TASK_VERSION if you need to pin a different release.
 
 ARG METIQ_VARIANT=default
 ARG VERSION=dev
+ARG METIQ_TASK_VERSION=v3.50.0
 
 ARG GOLANG_IMAGE="golang:1.25-bookworm"
 ARG DEBIAN_BOOKWORM_IMAGE="debian:bookworm"
@@ -48,6 +51,7 @@ FROM ${DEBIAN_BOOKWORM_SLIM_IMAGE} AS base-slim
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────────────────
 FROM base-${METIQ_VARIANT}
+ARG METIQ_TASK_VERSION
 
 LABEL org.opencontainers.image.title="metiq" \
   org.opencontainers.image.description="metiq AI agent runtime (compose build)"
@@ -59,7 +63,9 @@ RUN --mount=type=cache,id=metiq-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=metiq-apt-lists,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl wget git openssl procps hostname jq poppler-utils tzdata su-exec
+      ca-certificates curl wget git openssl procps hostname jq poppler-utils tzdata gosu && \
+    sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin ${METIQ_TASK_VERSION} && \
+    task --version
 
 # Optional: Python 3 + uv.
 ARG METIQ_INSTALL_PYTHON=""

@@ -87,6 +87,7 @@ type TraceTurnDetail struct {
 
 // TraceToolDetail carries tool lifecycle info.
 type TraceToolDetail struct {
+	EventType  string `json:"event_type,omitempty"`
 	ToolName   string `json:"tool_name"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	Result     string `json:"result,omitempty"`
@@ -130,10 +131,11 @@ type TraceDelegationDetail struct {
 type TraceInput struct {
 	Task              state.TaskSpec
 	Runs              []state.TaskRun
-	TurnTelemetry     []state.TurnTelemetry
-	MemoryRecall      []state.MemoryRecallSample
+	TurnTelemetry      []state.TurnTelemetry
+	ToolLifecycle      []state.ToolLifecycleTelemetry
+	MemoryRecall       []state.MemoryRecallSample
 	VerificationEvents []planner.VerificationEvent
-	WorkerEvents      []planner.WorkerEvent
+	WorkerEvents       []planner.WorkerEvent
 }
 
 // AssembleTaskTrace joins subsystem telemetry into a unified, time-ordered trace.
@@ -172,6 +174,40 @@ func AssembleTaskTrace(input TraceInput, runID string, limit int) TasksTraceResp
 				OutputTokens: tt.OutputTokens,
 				LoopBlocked:  tt.LoopBlocked,
 				Error:        tt.Error,
+			},
+		})
+	}
+
+	// Tool lifecycle → trace events.
+	for _, tl := range input.ToolLifecycle {
+		if runID != "" && strings.TrimSpace(tl.RunID) != runID {
+			continue
+		}
+		summary := "tool"
+		if name := strings.TrimSpace(tl.ToolName); name != "" {
+			summary = "tool:" + name
+		}
+		if eventType := strings.TrimSpace(tl.Type); eventType != "" {
+			summary += ":" + eventType
+		}
+		if strings.TrimSpace(tl.Error) != "" {
+			summary = "tool:error"
+		}
+		events = append(events, TraceEvent{
+			Kind:      TraceKindTool,
+			Timestamp: tl.TS,
+			TaskID:    firstNonEmptyStr(tl.TaskID, taskID),
+			RunID:     tl.RunID,
+			GoalID:    goalID,
+			StepID:    tl.StepID,
+			SessionID: tl.SessionID,
+			Summary:   summary,
+			Tool: &TraceToolDetail{
+				EventType:  tl.Type,
+				ToolName:   tl.ToolName,
+				ToolCallID: tl.ToolCallID,
+				Result:     tl.Result,
+				Error:      tl.Error,
 			},
 		})
 	}

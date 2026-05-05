@@ -1,5 +1,7 @@
 FROM ubuntu:24.04
 
+ARG METIQ_TASK_VERSION=v3.50.0
+
 RUN set -eux; \
   for attempt in 1 2 3; do \
     if apt-get update -o Acquire::Retries=3; then break; fi; \
@@ -12,6 +14,8 @@ RUN set -eux; \
     ca-certificates \
     curl \
     sudo \
+  && sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin ${METIQ_TASK_VERSION} \
+  && task --version \
   && rm -rf /var/lib/apt/lists/*
 
 # Create an unprivileged user to test non-root install.

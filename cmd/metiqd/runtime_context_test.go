@@ -178,6 +178,13 @@ func TestBuildToolSummarySection_Empty(t *testing.T) {
 	}
 }
 
+func TestBuildToolSummarySection_TaskPlanningHint(t *testing.T) {
+	result := buildToolSummarySection([]agent.ToolDefinition{{Name: "task", Description: "Taskfile runner."}})
+	if !strings.Contains(result, "prefer creating/updating a Taskfile") {
+		t.Fatalf("expected task planning hint, got %q", result)
+	}
+}
+
 func TestBuildSkillsPromptCached_UsesMergedCatalogAndAlwaysWarnings(t *testing.T) {
 	bundledDir := t.TempDir()
 	workspaceDir := t.TempDir()

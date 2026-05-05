@@ -262,6 +262,15 @@ func TestDMBusCloseNilAndPartial(t *testing.T) {
 	(&DMBus{}).Close()
 }
 
+type dmRelayAttempt struct {
+	relay      string
+	filter     nostr.Filter
+	generation int
+	emitEvent  func(nostr.RelayEvent) bool
+	emitEOSE   func(dmRelayEOSE)
+	emitClosed func(dmRelayClose)
+}
+
 func TestStartDMBusRejectsMismatchedHubPubKey(t *testing.T) {
 	hubKey := newNIP04KeyerAdapter(mustSecretKey(t, "1111111111111111111111111111111111111111111111111111111111111111"))
 	hub, err := NewHub(context.Background(), hubKey, nil)
@@ -277,6 +286,205 @@ func TestStartDMBusRejectsMismatchedHubPubKey(t *testing.T) {
 	})
 	if err == nil || err.Error() != "dm bus: hub pubkey does not match bus pubkey" {
 		t.Fatalf("expected hub mismatch error, got %v", err)
+	}
+}
+
+func TestDMBusCloseSignalIgnoresStaleGenerationBeforeRecordingFailure(t *testing.T) {
+	relay := "wss://dm-stale.example"
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	subHealth := NewSubHealthTracker("dm")
+	errCount := 0
+	b := &DMBus{
+		health:    health,
+		subHealth: subHealth,
+		onError:   func(error) { errCount++ },
+	}
+
+	gotRelay, schedule, terminal := b.processDMRelayClose(map[string]int{relay: 2}, dmRelayClose{relayURL: relay, reason: "stale closed", generation: 1})
+	if terminal || schedule || gotRelay != relay {
+		t.Fatalf("stale close should be ignored without scheduling: relay=%q schedule=%v terminal=%v", gotRelay, schedule, terminal)
+	}
+	if errCount != 0 {
+		t.Fatalf("stale close should not emit errors, got %d", errCount)
+	}
+	snap := subHealth.Snapshot([]string{relay}, DMReplayWindowDefault)
+	if snap.LastClosedReason != "" || snap.LastClosedRelay != "" {
+		t.Fatalf("stale close should not latch sub-health close state: %+v", snap)
+	}
+}
+
+func TestDMBusCloseSignalUsesConfiguredRelayForGenerationAndReportedRelayForFailure(t *testing.T) {
+	configuredRelay := "wss://dm-configured.example"
+	reportedRelay := "wss://dm-reported.example"
+	subHealth := NewSubHealthTracker("dm")
+	var gotErr error
+	b := &DMBus{
+		subHealth: subHealth,
+		onError:   func(err error) { gotErr = err },
+	}
+
+	gotRelay, schedule, terminal := b.processDMRelayClose(map[string]int{configuredRelay: 3}, dmRelayClose{relayURL: configuredRelay, reportedRelayURL: reportedRelay, reason: "closed: policy", generation: 3})
+	if terminal || !schedule || gotRelay != configuredRelay {
+		t.Fatalf("current close should schedule configured relay retry: relay=%q schedule=%v terminal=%v", gotRelay, schedule, terminal)
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), reportedRelay) {
+		t.Fatalf("expected reported relay in surfaced error, got %v", gotErr)
+	}
+	snap := subHealth.Snapshot([]string{configuredRelay}, DMReplayWindowDefault)
+	if snap.LastClosedRelay != reportedRelay || snap.LastClosedReason != "closed: policy" {
+		t.Fatalf("expected reported relay in sub-health close state, got %+v", snap)
+	}
+}
+
+func TestDMBusPoolSubscriptionRestartsFromRelayClosedSignal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	relay := "wss://dm-restart.example"
+	attempts := make(chan dmRelayAttempt, 4)
+	errCh := make(chan error, 2)
+	b := &DMBus{
+		relays:       []string{relay},
+		rebindCh:     make(chan struct{}, 1),
+		ctx:          ctx,
+		cancel:       cancel,
+		public:       nostr.Generate().Public(),
+		health:       NewRelayHealthTracker(),
+		subHealth:    NewSubHealthTracker("dm"),
+		replayWindow: DMReplayWindowDefault,
+		onError:      func(err error) { errCh <- err },
+		testDMRelaySubscribe: func(ctx context.Context, relayURL string, filter nostr.Filter, generation int, emitEvent func(nostr.RelayEvent) bool, emitEOSE func(dmRelayEOSE), emitClosed func(dmRelayClose)) {
+			attempts <- dmRelayAttempt{relay: relayURL, filter: filter, generation: generation, emitEvent: emitEvent, emitEOSE: emitEOSE, emitClosed: emitClosed}
+			<-ctx.Done()
+		},
+	}
+	b.health.Seed([]string{relay})
+	initialSince := time.Now().Add(-time.Hour).Unix()
+	done := make(chan bool, 1)
+	go func() { done <- b.runPoolSubscription(b.dmFilter(initialSince)) }()
+
+	first := receiveBeforeTestDeadline(t, attempts, "first dm subscription attempt")
+	if first.relay != relay || first.generation != 1 {
+		t.Fatalf("unexpected first subscription attempt: %+v", first)
+	}
+	if int64(first.filter.Since) != initialSince {
+		t.Fatalf("first filter since = %d, want %d", first.filter.Since, initialSince)
+	}
+
+	beforeReplay := b.resubscribeSinceUnix()
+	first.emitClosed(dmRelayClose{relayURL: relay, reason: "closed: relay restart", generation: first.generation})
+	gotErr := receiveBeforeTestDeadline(t, errCh, "dm CLOSED error")
+	if !strings.Contains(gotErr.Error(), "relay restart") {
+		t.Fatalf("expected CLOSED reason to surface, got %v", gotErr)
+	}
+	second := receiveBeforeTestDeadline(t, attempts, "second dm subscription attempt")
+	afterReplay := b.resubscribeSinceUnix()
+	if second.generation != 2 {
+		t.Fatalf("expected second generation after CLOSED retry, got %d", second.generation)
+	}
+	if int64(second.filter.Since) < beforeReplay || int64(second.filter.Since) > afterReplay {
+		t.Fatalf("resubscribe since = %d, want replay window within [%d,%d]", second.filter.Since, beforeReplay, afterReplay)
+	}
+
+	cancel()
+	if !receiveBeforeTestDeadline(t, done, "dm subscription shutdown") {
+		t.Fatal("runPoolSubscription should report deliberate shutdown as restart=true")
+	}
+}
+
+func TestDMBusPoolSubscriptionHandlesEOSEAndAuthClosedSignals(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	relay := "wss://dm-auth-eose.example"
+	attempts := make(chan dmRelayAttempt, 2)
+	errCh := make(chan error, 1)
+	eoseHandled := make(chan string, 1)
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	health.RecordFailure(relay)
+	b := &DMBus{
+		relays:          []string{relay},
+		rebindCh:        make(chan struct{}, 1),
+		ctx:             ctx,
+		cancel:          cancel,
+		public:          nostr.Generate().Public(),
+		health:          health,
+		subHealth:       NewSubHealthTracker("dm"),
+		onError:         func(err error) { errCh <- err },
+		testAfterDMEOSE: func(relayURL string) { eoseHandled <- relayURL },
+		testDMRelaySubscribe: func(ctx context.Context, relayURL string, filter nostr.Filter, generation int, emitEvent func(nostr.RelayEvent) bool, emitEOSE func(dmRelayEOSE), emitClosed func(dmRelayClose)) {
+			attempts <- dmRelayAttempt{relay: relayURL, filter: filter, generation: generation, emitEvent: emitEvent, emitEOSE: emitEOSE, emitClosed: emitClosed}
+			<-ctx.Done()
+		},
+	}
+	done := make(chan bool, 1)
+	go func() { done <- b.runPoolSubscription(b.dmFilter(time.Now().Unix())) }()
+
+	attempt := receiveBeforeTestDeadline(t, attempts, "dm auth/eose subscription attempt")
+	attempt.emitEOSE(dmRelayEOSE{relayURL: relay, generation: attempt.generation})
+	if got := receiveBeforeTestDeadline(t, eoseHandled, "dm EOSE handling"); got != relay {
+		t.Fatalf("EOSE handled for relay %q, want %q", got, relay)
+	}
+	attempt.emitClosed(dmRelayClose{relayURL: relay, reason: "auth-required: sign in", generation: attempt.generation, handledAuth: true})
+	b.rebindCh <- struct{}{}
+	if !receiveBeforeTestDeadline(t, done, "dm subscription shutdown") {
+		t.Fatal("runPoolSubscription should exit as a deliberate rebind")
+	}
+	if !health.Allowed(relay, time.Now()) {
+		t.Fatal("EOSE should record relay progress before handled AUTH CLOSED")
+	}
+	select {
+	case err := <-errCh:
+		t.Fatalf("handled AUTH CLOSED should not surface as error: %v", err)
+	default:
+	}
+	select {
+	case extra := <-attempts:
+		t.Fatalf("handled AUTH CLOSED should not schedule retry attempt: %+v", extra)
+	default:
+	}
+}
+
+func TestDMBusPoolSubscriptionIgnoresStaleCloseAfterRebindGeneration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	relay := "wss://dm-stale-close.example"
+	attempts := make(chan dmRelayAttempt, 4)
+	b := &DMBus{
+		relays:       []string{relay},
+		rebindCh:     make(chan struct{}, 1),
+		ctx:          ctx,
+		cancel:       cancel,
+		public:       nostr.Generate().Public(),
+		health:       NewRelayHealthTracker(),
+		subHealth:    NewSubHealthTracker("dm"),
+		replayWindow: DMReplayWindowDefault,
+		onError:      func(error) {},
+		testDMRelaySubscribe: func(ctx context.Context, relayURL string, filter nostr.Filter, generation int, emitEvent func(nostr.RelayEvent) bool, emitEOSE func(dmRelayEOSE), emitClosed func(dmRelayClose)) {
+			attempts <- dmRelayAttempt{relay: relayURL, filter: filter, generation: generation, emitEvent: emitEvent, emitEOSE: emitEOSE, emitClosed: emitClosed}
+			<-ctx.Done()
+		},
+	}
+	b.health.Seed([]string{relay})
+	done := make(chan bool, 1)
+	go func() { done <- b.runPoolSubscription(b.dmFilter(time.Now().Unix())) }()
+
+	first := receiveBeforeTestDeadline(t, attempts, "first dm stale-close attempt")
+	first.emitClosed(dmRelayClose{relayURL: relay, reason: "closed", generation: first.generation})
+	second := receiveBeforeTestDeadline(t, attempts, "second dm stale-close attempt")
+	if second.generation != first.generation+1 {
+		t.Fatalf("expected generation to advance, got first=%d second=%d", first.generation, second.generation)
+	}
+
+	first.emitClosed(dmRelayClose{relayURL: relay, reason: "stale close", generation: first.generation})
+	assertNoReceiveWithin(t, attempts, 120*time.Millisecond, "dm stale close retry")
+
+	cancel()
+	if !receiveBeforeTestDeadline(t, done, "dm stale-close shutdown") {
+		t.Fatal("runPoolSubscription should report deliberate shutdown as restart=true")
 	}
 }
 

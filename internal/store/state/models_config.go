@@ -68,11 +68,20 @@ func BoolPtr(v bool) *bool {
 	return &v
 }
 
-// ACPConfig controls outbound ACP DM transport selection.
+// ACPPeerConfig describes a pre-registered ACP peer.
+type ACPPeerConfig struct {
+	PubKey string            `json:"pubkey"`
+	Alias  string            `json:"alias,omitempty"`
+	Tags   map[string]string `json:"tags,omitempty"`
+}
+
+// ACPConfig controls ACP transport and peer bootstrap behavior.
 type ACPConfig struct {
 	// Transport selects which DM family ACP uses when sending tasks/results.
 	// Supported values: auto, nip17, nip04, fips.
 	Transport string `json:"transport,omitempty"`
+	// Peers are pre-registered ACP peers loaded at startup.
+	Peers []ACPPeerConfig `json:"peers,omitempty"`
 }
 
 // FIPSConfig holds configuration for experimental FIPS mesh transport.

@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -174,7 +175,7 @@ func TestExportStringMap_MixedValues(t *testing.T) {
 	vm := goja.New()
 	obj := vm.NewObject()
 	_ = obj.Set("str", "value")
-	_ = obj.Set("num", 42)   // non-string → should be skipped
+	_ = obj.Set("num", 42)    // non-string → should be skipped
 	_ = obj.Set("bool", true) // non-string → should be skipped
 	got := exportStringMap(obj)
 	if got == nil {
@@ -237,34 +238,36 @@ func TestWrapModule(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// setStubNamespace tests
+// missing host namespace tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
-func TestSetStubNamespace_CallPanics(t *testing.T) {
+func TestWireHTTP_NilHostInstallsUnavailableSentinel(t *testing.T) {
 	vm := goja.New()
-	if err := setStubNamespace(vm, "test_ns", "not available"); err != nil {
+	if err := wireHTTP(vm, nil, &pluginHostContext{ctx: context.Background()}, nil); err != nil {
 		t.Fatal(err)
 	}
-	// Calling any method on the stub should throw a TypeError.
-	_, err := vm.RunString("test_ns.get('key')")
-	if err == nil {
-		t.Fatal("expected panic from stub namespace")
+	val, err := vm.RunString("http && http.available === false && typeof http.get === 'function' && http.reason === 'http host not available'")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "not available") {
-		t.Errorf("error should contain reason, got: %v", err)
+	if val.Export() != true {
+		t.Fatalf("expected nil HTTP host to install unavailable sentinel, got %v", val.Export())
 	}
 }
 
-func TestSetStubNamespace_AllMethodsStubbed(t *testing.T) {
+func TestWrapPluginExecutionError_HostUnavailable(t *testing.T) {
 	vm := goja.New()
-	_ = setStubNamespace(vm, "myns", "disabled")
-	methods := []string{"publish", "fetch", "encrypt", "decrypt",
-		"get", "set", "del", "post", "complete", "info", "warn", "error"}
-	for _, m := range methods {
-		_, err := vm.RunString(fmt.Sprintf("myns.%s()", m))
-		if err == nil {
-			t.Errorf("method %q should have panicked", m)
-		}
+	if err := setUnavailableNamespace(vm, "http", "http host not available"); err != nil {
+		t.Fatal(err)
+	}
+	_, rawErr := vm.RunString("http.get('https://example.com')")
+	if rawErr == nil {
+		t.Fatal("expected TypeError")
+	}
+	wrapped := wrapPluginExecutionError("plugin invoke", rawErr)
+	var unavailable *HostUnavailableError
+	if !errors.As(wrapped, &unavailable) || unavailable.Namespace != "http" {
+		t.Fatalf("expected HTTP host unavailable error, got: %T %v", wrapped, wrapped)
 	}
 }
 

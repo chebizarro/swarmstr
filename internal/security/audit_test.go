@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	nostr "fiatjaf.com/nostr"
 	"metiq/internal/store/state"
 )
 
@@ -71,6 +72,33 @@ func TestAuditControlFindingsByExposure(t *testing.T) {
 	assertFindingSeverity(t, localReport, "control-legacy-token-fallback", SeverityWarn)
 }
 
+func TestAuditControlUnsafeAllowUnauthMethods(t *testing.T) {
+	cfg := state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: true, Admins: []state.ControlAdmin{{PubKey: "admin"}}, AllowUnauthMethods: []string{"supportedmethods", "config.set", "*"}}}
+	remoteBootstrap := writeBootstrap(t, `{"gateway_ws_listen_addr":"0.0.0.0:9100"}`)
+	report := Audit(AuditOptions{BootstrapPath: remoteBootstrap, ConfigDoc: &cfg})
+	assertFindingSeverity(t, report, "control-unsafe-allow-unauth-method", SeverityCritical)
+}
+
+func TestAuditControlNoAdmins(t *testing.T) {
+	cfg := state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: true}}
+	localBootstrap := writeBootstrap(t, `{"admin_listen_addr":"127.0.0.1:7777"}`)
+	localReport := Audit(AuditOptions{BootstrapPath: localBootstrap, ConfigDoc: &cfg})
+	assertFindingSeverity(t, localReport, "control-no-admins", SeverityWarn)
+
+	remoteBootstrap := writeBootstrap(t, `{"admin_listen_addr":"0.0.0.0:7777"}`)
+	remoteReport := Audit(AuditOptions{BootstrapPath: remoteBootstrap, ConfigDoc: &cfg})
+	assertFindingSeverity(t, remoteReport, "control-no-admins", SeverityCritical)
+
+	invalidAdminCfg := state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: true, Admins: []state.ControlAdmin{{PubKey: "not-a-pubkey"}}}}
+	invalidAdminReport := Audit(AuditOptions{BootstrapPath: localBootstrap, ConfigDoc: &invalidAdminCfg})
+	assertFindingSeverity(t, invalidAdminReport, "control-no-admins", SeverityWarn)
+
+	secureCfg := state.ConfigDoc{Control: state.ControlPolicy{RequireAuth: true, Admins: []state.ControlAdmin{{PubKey: testAuditPubKey(t)}}}}
+	secureReport := Audit(AuditOptions{BootstrapPath: localBootstrap, ConfigDoc: &secureCfg})
+	assertNoFinding(t, secureReport, "control-no-admins")
+	assertNoFinding(t, secureReport, "control-unsafe-allow-unauth-method")
+}
+
 func TestAuditGatewayWSTrustedProxyAndInsecureControlUIFindings(t *testing.T) {
 	localBootstrap := writeBootstrap(t, `{"gateway_ws_listen_addr":"127.0.0.1:9100","gateway_ws_allow_insecure_control_ui":true,"gateway_ws_trusted_proxies":["10.0.0.0/8"]}`)
 	localReport := Audit(AuditOptions{BootstrapPath: localBootstrap, ConfigDoc: &state.ConfigDoc{}})
@@ -83,6 +111,15 @@ func TestAuditGatewayWSTrustedProxyAndInsecureControlUIFindings(t *testing.T) {
 	assertFindingSeverity(t, remoteReport, "gateway-ws-insecure-control-ui", SeverityCritical)
 }
 
+func testAuditPubKey(t *testing.T) string {
+	t.Helper()
+	sk, err := nostr.SecretKeyFromHex("1111111111111111111111111111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("SecretKeyFromHex: %v", err)
+	}
+	return nostr.GetPublicKey(sk).Hex()
+}
+
 func writeBootstrap(t *testing.T, raw string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "bootstrap.json")
@@ -90,6 +127,15 @@ func writeBootstrap(t *testing.T, raw string) string {
 		t.Fatalf("WriteFile bootstrap: %v", err)
 	}
 	return path
+}
+
+func assertNoFinding(t *testing.T, report AuditReport, checkID string) {
+	t.Helper()
+	for _, finding := range report.Findings {
+		if finding.CheckID == checkID {
+			t.Fatalf("unexpected finding %s: %+v", checkID, finding)
+		}
+	}
 }
 
 func assertFindingSeverity(t *testing.T, report AuditReport, checkID string, severity string) {

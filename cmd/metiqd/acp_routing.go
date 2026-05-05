@@ -88,26 +88,38 @@ func (s *daemonServices) currentACPTransportBus(mode string) nostruntime.DMTrans
 	if !ok || mode == "auto" {
 		return nil
 	}
+	if s == nil {
+		return nil
+	}
+	if mode == "fips" {
+		if s.relay.transportSelector != nil {
+			return s.relay.transportSelector
+		}
+		return nil
+	}
+	if s.relay.dmBusMu == nil {
+		return nil
+	}
 	s.relay.dmBusMu.RLock()
 	defer s.relay.dmBusMu.RUnlock()
+	var current nostruntime.DMTransport
+	if s.relay.dmBus != nil {
+		current = *s.relay.dmBus
+	}
 	switch mode {
 	case "nip17":
 		if s.relay.nip17Bus != nil {
 			return s.relay.nip17Bus
 		}
-		if _, ok := (*s.relay.dmBus).(*nostruntime.NIP17Bus); ok {
-			return *s.relay.dmBus
+		if _, ok := current.(*nostruntime.NIP17Bus); ok {
+			return current
 		}
 	case "nip04":
 		if s.relay.nip04Bus != nil {
 			return s.relay.nip04Bus
 		}
-		if _, ok := (*s.relay.dmBus).(*nostruntime.DMBus); ok {
-			return *s.relay.dmBus
-		}
-	case "fips":
-		if s.relay.transportSelector != nil {
-			return s.relay.transportSelector
+		if _, ok := current.(*nostruntime.DMBus); ok {
+			return current
 		}
 	}
 	return nil
@@ -174,6 +186,18 @@ func fleetDisplayNameForACP(entry toolbuiltin.FleetEntry) string {
 		return entry.Pubkey[:12] + "..."
 	}
 	return entry.Pubkey
+}
+
+func normalizeACPPubKey(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("pubkey is required")
+	}
+	pk, err := nostruntime.ParsePubKey(raw)
+	if err != nil {
+		return "", err
+	}
+	return pk.Hex(), nil
 }
 
 func acpTargetDisplayName(pubkey string) string {
@@ -468,6 +492,11 @@ func resolveACPDMTransport(cfg state.ConfigDoc, targetPubKey string) (nostruntim
 	if targetPubKey == "" {
 		return nil, "", fmt.Errorf("ACP peer target is required")
 	}
+	normalizedTarget, err := normalizeACPPubKey(targetPubKey)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid ACP peer pubkey %q: %w", targetPubKey, err)
+	}
+	targetPubKey = normalizedTarget
 	configured := cfg.ACPTransportMode()
 	remote := peerAdvertisedACPTransportModes(targetPubKey)
 	if configured != "auto" {
@@ -516,6 +545,11 @@ func sendACPDMWithTransport(ctx context.Context, bus nostruntime.DMTransport, sc
 	if bus == nil {
 		return fmt.Errorf("ACP DM transport not available")
 	}
+	normalizedTarget, err := normalizeACPPubKey(toPubKey)
+	if err != nil {
+		return fmt.Errorf("invalid ACP peer pubkey %q: %w", toPubKey, err)
+	}
+	toPubKey = normalizedTarget
 	if schemeBus, ok := bus.(nostruntime.DMSchemeTransport); ok && strings.TrimSpace(scheme) != "" {
 		return schemeBus.SendDMWithScheme(ctx, toPubKey, text, scheme)
 	}

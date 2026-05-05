@@ -153,6 +153,21 @@ func TestLedgerCreateRun(t *testing.T) {
 	}
 }
 
+func TestLedgerCreateTaskReturnsPersistenceError(t *testing.T) {
+	store := newRecordingStore()
+	store.saveTaskErr = fmt.Errorf("save task failed")
+	ledger := NewLedger(store)
+	ctx := context.Background()
+
+	task := state.TaskSpec{TaskID: "task-create-fail", Title: "Create Fail", Instructions: "Test"}
+	if _, err := ledger.CreateTask(ctx, task, TaskSourceManual, ""); err == nil {
+		t.Fatal("expected CreateTask persistence error")
+	}
+	if _, err := ledger.GetTask(ctx, "task-create-fail"); err == nil {
+		t.Fatal("expected task not to be kept in memory after failed persistence")
+	}
+}
+
 func TestLedgerUpdateRunStatusPersistsTaskSnapshot(t *testing.T) {
 	store := newRecordingStore()
 	ledger := NewLedger(store)
@@ -356,6 +371,58 @@ func TestLedgerObserver(t *testing.T) {
 	}
 }
 
+func TestLedgerCreateRunReturnsPersistenceErrorAndRollsBack(t *testing.T) {
+	store := newRecordingStore()
+	ledger := NewLedger(store)
+	ctx := context.Background()
+
+	task := state.TaskSpec{TaskID: "task-run-fail", Title: "Run Fail", Instructions: "Test"}
+	if _, err := ledger.CreateTask(ctx, task, TaskSourceManual, ""); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	store.saveRunErr = fmt.Errorf("save run failed")
+
+	if _, err := ledger.CreateRun(ctx, "task-run-fail", "run-run-fail", "manual", "agent", "test"); err == nil {
+		t.Fatal("expected CreateRun persistence error")
+	}
+	if _, err := ledger.GetRun(ctx, "run-run-fail"); err == nil {
+		t.Fatal("expected run not to be kept in memory after failed persistence")
+	}
+	entry, err := ledger.GetTask(ctx, "task-run-fail")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if entry.Task.CurrentRunID != "" || len(entry.Runs) != 0 {
+		t.Fatalf("expected task run bookkeeping rolled back, got current=%q runs=%d", entry.Task.CurrentRunID, len(entry.Runs))
+	}
+}
+
+func TestLedgerUpdateRunStatusReturnsPersistenceErrorAndRollsBack(t *testing.T) {
+	store := newRecordingStore()
+	ledger := NewLedger(store)
+	ctx := context.Background()
+
+	task := state.TaskSpec{TaskID: "task-update-run-fail", Title: "Update Run Fail", Instructions: "Test"}
+	if _, err := ledger.CreateTask(ctx, task, TaskSourceManual, ""); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := ledger.CreateRun(ctx, "task-update-run-fail", "run-update-run-fail", "manual", "agent", "test"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	store.saveRunErr = fmt.Errorf("save run failed")
+
+	if _, err := ledger.UpdateRunStatus(ctx, "run-update-run-fail", state.TaskRunStatusRunning, "agent", "test", "start"); err == nil {
+		t.Fatal("expected UpdateRunStatus persistence error")
+	}
+	runEntry, err := ledger.GetRun(ctx, "run-update-run-fail")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if runEntry.Run.Status != state.TaskRunStatusQueued {
+		t.Fatalf("expected run status rolled back to queued, got %q", runEntry.Run.Status)
+	}
+}
+
 func TestLedgerCancelTaskPersistsRunCancellations(t *testing.T) {
 	store := newRecordingStore()
 	ledger := NewLedger(store)
@@ -386,6 +453,42 @@ func TestLedgerCancelTaskPersistsRunCancellations(t *testing.T) {
 	storedTask := store.tasks["task-cancel-persist"]
 	if storedTask == nil || len(storedTask.Runs) != 1 || storedTask.Runs[0].Status != state.TaskRunStatusCancelled {
 		t.Fatalf("expected stored task embedded run cancelled, got %+v", storedTask)
+	}
+}
+
+func TestLedgerCancelTaskReturnsPersistenceErrorAndRollsBack(t *testing.T) {
+	store := newRecordingStore()
+	ledger := NewLedger(store)
+	ctx := context.Background()
+
+	task := state.TaskSpec{TaskID: "task-cancel-fail", Title: "Cancel Fail", Instructions: "Test"}
+	if _, err := ledger.CreateTask(ctx, task, TaskSourceManual, ""); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := ledger.CreateRun(ctx, "task-cancel-fail", "run-cancel-fail", "manual", "agent", "test"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := ledger.UpdateRunStatus(ctx, "run-cancel-fail", state.TaskRunStatusRunning, "agent", "test", "start"); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+	store.saveRunErr = fmt.Errorf("save run failed")
+
+	if err := ledger.CancelTask(ctx, "task-cancel-fail", "agent", "stop"); err == nil {
+		t.Fatal("expected CancelTask persistence error")
+	}
+	entry, err := ledger.GetTask(ctx, "task-cancel-fail")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if entry.Task.Status == state.TaskStatusCancelled {
+		t.Fatalf("expected task status rollback, got %q", entry.Task.Status)
+	}
+	runEntry, err := ledger.GetRun(ctx, "run-cancel-fail")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if runEntry.Run.Status != state.TaskRunStatusRunning {
+		t.Fatalf("expected run status rollback to running, got %q", runEntry.Run.Status)
 	}
 }
 
@@ -476,6 +579,8 @@ type recordingStore struct {
 
 	saveTaskCalls int
 	saveRunCalls  int
+	saveTaskErr   error
+	saveRunErr    error
 }
 
 func newRecordingStore() *recordingStore {
@@ -489,6 +594,9 @@ func (s *recordingStore) resetCounts() {
 
 func (s *recordingStore) SaveTask(ctx context.Context, entry *LedgerEntry) error {
 	s.saveTaskCalls++
+	if s.saveTaskErr != nil {
+		return s.saveTaskErr
+	}
 	if entry == nil {
 		return nil
 	}
@@ -517,6 +625,9 @@ func (s *recordingStore) DeleteTask(ctx context.Context, taskID string) error {
 
 func (s *recordingStore) SaveRun(ctx context.Context, entry *RunEntry) error {
 	s.saveRunCalls++
+	if s.saveRunErr != nil {
+		return s.saveRunErr
+	}
 	if entry == nil {
 		return nil
 	}

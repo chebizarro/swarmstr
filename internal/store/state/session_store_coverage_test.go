@@ -62,6 +62,13 @@ func TestSessionStore_CRUD(t *testing.T) {
 	if ok {
 		t.Error("expected sess-1 to be deleted")
 	}
+	reloaded, err := NewSessionStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.Get("sess-1"); ok {
+		t.Error("expected journaled delete to survive reload")
+	}
 }
 
 func TestSessionStore_AddTokens(t *testing.T) {

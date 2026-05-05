@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	nostr "fiatjaf.com/nostr"
+
 	acppkg "metiq/internal/acp"
 	"metiq/internal/agent"
 	"metiq/internal/agent/toolbuiltin"
@@ -36,6 +38,12 @@ func withACPRoutingTestState(t *testing.T, fn func()) {
 		controlServices = prevServices
 	}()
 	fn()
+}
+
+func validACPTestPubKey(seed byte) string {
+	var sk nostr.SecretKey
+	sk[31] = seed
+	return sk.Public().Hex()
 }
 
 func agentRegistryForACPRoutingTest() *agent.ToolRegistry {
@@ -215,7 +223,7 @@ func TestResolveACPFleetTargetForConfigAndRequirementsRejectsExplicitlyIncompati
 
 func TestResolveACPDMTransportAutoFallsBackToPeerCompatibleScheme(t *testing.T) {
 	withACPRoutingTestState(t, func() {
-		peerPubKey := "7777777777777777777777777777777777777777777777777777777777777777"
+		peerPubKey := validACPTestPubKey(7)
 		capabilityRegistry = nostruntime.NewCapabilityRegistry()
 		capabilityRegistry.Set(nostruntime.CapabilityAnnouncement{PubKey: peerPubKey, Runtime: "openclaw", ACPVersion: 1, DMSchemes: []string{"nip04"}, CreatedAt: 10, EventID: "cap-nip04"})
 		controlNIP17Bus = &nostruntime.NIP17Bus{}
@@ -237,7 +245,7 @@ func TestResolveACPDMTransportAutoFallsBackToPeerCompatibleScheme(t *testing.T) 
 
 func TestResolveACPDMTransportAutoPrefersNIP17WhenPeerSupportsBoth(t *testing.T) {
 	withACPRoutingTestState(t, func() {
-		peerPubKey := "8888888888888888888888888888888888888888888888888888888888888888"
+		peerPubKey := validACPTestPubKey(8)
 		capabilityRegistry = nostruntime.NewCapabilityRegistry()
 		capabilityRegistry.Set(nostruntime.CapabilityAnnouncement{PubKey: peerPubKey, Runtime: "metiq", ACPVersion: 1, DMSchemes: []string{"giftwrap", "nip04"}, CreatedAt: 10, EventID: "cap-both"})
 		controlNIP17Bus = &nostruntime.NIP17Bus{}
@@ -259,7 +267,7 @@ func TestResolveACPDMTransportAutoPrefersNIP17WhenPeerSupportsBoth(t *testing.T)
 
 func TestResolveACPDMTransportHonorsConfiguredNIP04Mode(t *testing.T) {
 	withACPRoutingTestState(t, func() {
-		peerPubKey := "9999999999999999999999999999999999999999999999999999999999999999"
+		peerPubKey := validACPTestPubKey(9)
 		capabilityRegistry = nostruntime.NewCapabilityRegistry()
 		capabilityRegistry.Set(nostruntime.CapabilityAnnouncement{PubKey: peerPubKey, Runtime: "openclaw", ACPVersion: 1, DMSchemes: []string{"nip04"}, CreatedAt: 10, EventID: "cap-nip04"})
 		controlNIP04Bus = &nostruntime.DMBus{}
@@ -280,7 +288,7 @@ func TestResolveACPDMTransportHonorsConfiguredNIP04Mode(t *testing.T) {
 
 func TestResolveACPDMTransportAutoPrefersNIP17ForUnknownPeers(t *testing.T) {
 	withACPRoutingTestState(t, func() {
-		peerPubKey := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		peerPubKey := validACPTestPubKey(10)
 		controlNIP17Bus = &nostruntime.NIP17Bus{}
 		controlNIP04Bus = &nostruntime.DMBus{}
 		controlDMBus = controlNIP17Bus
@@ -300,7 +308,7 @@ func TestResolveACPDMTransportAutoPrefersNIP17ForUnknownPeers(t *testing.T) {
 
 func TestResolveACPDMTransportAutoUnknownPeerDoesNotDowngradeToNIP04(t *testing.T) {
 	withACPRoutingTestState(t, func() {
-		peerPubKey := "abababababababababababababababababababababababababababababababab"
+		peerPubKey := validACPTestPubKey(11)
 		controlNIP04Bus = &nostruntime.DMBus{}
 		controlDMBus = controlNIP04Bus
 
@@ -318,7 +326,7 @@ func TestResolveACPDMTransportAutoUnknownPeerDoesNotDowngradeToNIP04(t *testing.
 
 func TestResolveACPDMTransportAutoUsesTransportSelectorForFIPSPeer(t *testing.T) {
 	withACPRoutingTestState(t, func() {
-		peerPubKey := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		peerPubKey := validACPTestPubKey(12)
 		capabilityRegistry = nostruntime.NewCapabilityRegistry()
 		capabilityRegistry.Set(nostruntime.CapabilityAnnouncement{
 			PubKey:      peerPubKey,
@@ -357,7 +365,7 @@ func TestResolveACPDMTransportAutoUsesTransportSelectorForFIPSPeer(t *testing.T)
 
 func TestResolveACPDMTransportAutoFallsBackToRelayWithoutFIPSSelector(t *testing.T) {
 	withACPRoutingTestState(t, func() {
-		peerPubKey := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		peerPubKey := validACPTestPubKey(13)
 		capabilityRegistry = nostruntime.NewCapabilityRegistry()
 		capabilityRegistry.Set(nostruntime.CapabilityAnnouncement{
 			PubKey:     peerPubKey,
@@ -386,7 +394,7 @@ func TestResolveACPDMTransportAutoFallsBackToRelayWithoutFIPSSelector(t *testing
 
 func TestResolveACPDMTransportFIPSModeExplicit(t *testing.T) {
 	withACPRoutingTestState(t, func() {
-		peerPubKey := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+		peerPubKey := validACPTestPubKey(14)
 		ts, err := nostruntime.NewTransportSelector(nostruntime.TransportSelectorOptions{
 			FIPS: &nostruntime.FIPSTransport{},
 			Pref: nostruntime.TransportPrefFIPSOnly,
@@ -414,7 +422,7 @@ func TestResolveACPDMTransportFIPSModeExplicit(t *testing.T) {
 
 func TestResolveACPDMTransportFIPSModeFailsWithoutSelector(t *testing.T) {
 	withACPRoutingTestState(t, func() {
-		peerPubKey := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		peerPubKey := validACPTestPubKey(15)
 		// No controlTransportSelector set.
 		_, _, err := resolveACPDMTransport(
 			state.ConfigDoc{ACP: state.ACPConfig{Transport: "fips"}},
@@ -472,11 +480,53 @@ func TestParseACPTransportMode_FIPS(t *testing.T) {
 	}
 }
 
+func TestResolveACPDMTransportRejectsInvalidTargetPubkey(t *testing.T) {
+	withACPRoutingTestState(t, func() {
+		controlNIP17Bus = &nostruntime.NIP17Bus{}
+		controlDMBus = controlNIP17Bus
+		for _, target := range []string{"not-a-pubkey", strings.Repeat("f", 64)} {
+			_, _, err := resolveACPDMTransport(state.ConfigDoc{}, target)
+			if err == nil || !strings.Contains(err.Error(), "invalid ACP peer pubkey") {
+				t.Fatalf("target=%q err = %v, want invalid pubkey error", target, err)
+			}
+		}
+	})
+}
+
+func TestSendACPDMWithTransportRejectsInvalidTargetPubkey(t *testing.T) {
+	err := sendACPDMWithTransport(context.Background(), stubDMTransport{pubkey: strings.Repeat("1", 64)}, "nip17", "bad-pubkey", "payload")
+	if err == nil || !strings.Contains(err.Error(), "invalid ACP peer pubkey") {
+		t.Fatalf("err = %v, want invalid pubkey error", err)
+	}
+}
+
+func TestCurrentACPTransportBusMissingServicePointersIsSafe(t *testing.T) {
+	withACPRoutingTestState(t, func() {
+		controlServices = &daemonServices{}
+		if bus := currentACPTransportBus("nip17"); bus != nil {
+			t.Fatalf("bus = %T, want nil", bus)
+		}
+		ts, err := nostruntime.NewTransportSelector(nostruntime.TransportSelectorOptions{FIPS: &nostruntime.FIPSTransport{}})
+		if err != nil {
+			t.Fatalf("NewTransportSelector: %v", err)
+		}
+		controlServices = &daemonServices{relay: relayPolicyServices{transportSelector: ts}}
+		if bus := currentACPTransportBus("fips"); bus == nil {
+			t.Fatal("expected fips transport selector without dmBusMu")
+		}
+		var current nostruntime.DMTransport
+		controlServices = &daemonServices{relay: relayPolicyServices{dmBusMu: new(sync.RWMutex), dmBus: &current}}
+		if bus := currentACPTransportBus("nip04"); bus != nil {
+			t.Fatalf("bus = %T, want nil", bus)
+		}
+	})
+}
+
 func TestResolveACPDMTransportAutoUsesTransportSelectorForUnknownPeer(t *testing.T) {
 	// When TransportSelector is available and peer has no advertised schemes,
 	// the selector should be used (it handles fallback internally).
 	withACPRoutingTestState(t, func() {
-		peerPubKey := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+		peerPubKey := validACPTestPubKey(16)
 		// No capabilityRegistry — peer schemes unknown.
 
 		ts, err := nostruntime.NewTransportSelector(nostruntime.TransportSelectorOptions{

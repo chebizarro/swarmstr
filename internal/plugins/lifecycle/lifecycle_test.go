@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -109,6 +110,45 @@ func TestInstallWithAutoEnable(t *testing.T) {
 	}
 }
 
+func TestInstallCanOptOutOfConfiguredAutoEnable(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.AutoEnable = true
+	mgr := NewManager(cfg, t.TempDir())
+	ctx := context.Background()
+
+	autoEnable := false
+	plugin, err := mgr.Install(ctx, testManifest("manual-plugin"), "/path/to/plugin", InstallOptions{
+		Scope:      ScopeProject,
+		AutoEnable: &autoEnable,
+	})
+	if err != nil {
+		t.Fatalf("install with auto-enable opt-out failed: %v", err)
+	}
+	if plugin.State != StateInstalled {
+		t.Fatalf("expected opt-out install to remain installed, got %s", plugin.State)
+	}
+	if plugin.EnabledAt != nil {
+		t.Fatal("expected EnabledAt to remain nil when auto-enable is opted out")
+	}
+	if _, ok := mgr.Registry().Plugin("manual-plugin"); ok {
+		t.Fatal("opted-out plugin should not be registered as enabled")
+	}
+
+	// Legacy explicit Enable remains a true opt-in even when the tri-state
+	// override is false, preserving existing callers that set Enable directly.
+	plugin, err = mgr.Install(ctx, testManifest("explicit-plugin"), "/path/to/explicit", InstallOptions{
+		Scope:      ScopeProject,
+		Enable:     true,
+		AutoEnable: &autoEnable,
+	})
+	if err != nil {
+		t.Fatalf("install with explicit enable failed: %v", err)
+	}
+	if plugin.State != StateEnabled {
+		t.Fatalf("expected explicit Enable to win over AutoEnable=false, got %s", plugin.State)
+	}
+}
+
 func TestInstallDuplicate(t *testing.T) {
 	cfg := DefaultLifecycleConfig()
 	mgr := NewManager(cfg, t.TempDir())
@@ -201,6 +241,56 @@ func TestUninstallNotFound(t *testing.T) {
 	}
 }
 
+func TestUninstallCleanupRunsOutsideManagerLockAndRollsBackOnError(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.AutoEnable = false
+	mgr := NewManager(cfg, t.TempDir())
+	ctx := context.Background()
+
+	pluginPath := filepath.Join(t.TempDir(), "plugin")
+	if err := os.MkdirAll(pluginPath, 0755); err != nil {
+		t.Fatalf("mkdir plugin path: %v", err)
+	}
+	cleanupErr := errors.New("cleanup failed")
+	cleanupCalled := false
+	cleanupHeldManagerLock := false
+	mgr.removeAll = func(path string) error {
+		cleanupCalled = true
+		if path != pluginPath {
+			t.Errorf("cleanup path = %q, want %q", path, pluginPath)
+		}
+		if mgr.mu.TryRLock() {
+			mgr.mu.RUnlock()
+		} else {
+			cleanupHeldManagerLock = true
+		}
+		return cleanupErr
+	}
+
+	if _, err := mgr.Install(ctx, testManifest("cleanup-plugin"), pluginPath, InstallOptions{Scope: ScopeProject, Enable: true}); err != nil {
+		t.Fatalf("install plugin: %v", err)
+	}
+	if err := mgr.UninstallByScope(ctx, "cleanup-plugin", ScopeProject); !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error, got %v", err)
+	}
+	if !cleanupCalled {
+		t.Fatal("expected cleanup callback to run")
+	}
+	if cleanupHeldManagerLock {
+		t.Fatal("filesystem cleanup ran while holding manager lock")
+	}
+	plugin, ok := mgr.ResolveByScope("cleanup-plugin", ScopeProject)
+	if !ok {
+		t.Fatal("expected failed cleanup to restore plugin state")
+	}
+	if plugin.State != StateEnabled || plugin.InstallPath != pluginPath {
+		t.Fatalf("expected enabled plugin restored at original path, got state=%s path=%s", plugin.State, plugin.InstallPath)
+	}
+	if regManifest, ok := mgr.Registry().Plugin("cleanup-plugin"); !ok || regManifest.Version != "1.0.0" {
+		t.Fatalf("expected registry restored after failed uninstall cleanup, ok=%v manifest=%+v", ok, regManifest)
+	}
+}
+
 func TestUpdate(t *testing.T) {
 	cfg := DefaultLifecycleConfig()
 	mgr := NewManager(cfg, t.TempDir())
@@ -244,6 +334,63 @@ func TestUpdateSameVersion(t *testing.T) {
 	err := mgr.Update(ctx, "same-version-plugin", mf, "/path/v1")
 	if err == nil {
 		t.Error("expected error when updating to same version")
+	}
+}
+
+func TestUpdateCleanupRunsOutsideManagerLockAndRollsBackOnError(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.AutoEnable = false
+	mgr := NewManager(cfg, t.TempDir())
+	ctx := context.Background()
+
+	oldPath := filepath.Join(t.TempDir(), "plugin-v1")
+	newPath := filepath.Join(t.TempDir(), "plugin-v2")
+	if err := os.MkdirAll(oldPath, 0755); err != nil {
+		t.Fatalf("mkdir old path: %v", err)
+	}
+	if err := os.MkdirAll(newPath, 0755); err != nil {
+		t.Fatalf("mkdir new path: %v", err)
+	}
+	cleanupErr := errors.New("old cleanup failed")
+	cleanupCalled := false
+	cleanupHeldManagerLock := false
+	mgr.removeAll = func(path string) error {
+		cleanupCalled = true
+		if path != oldPath {
+			t.Errorf("cleanup path = %q, want %q", path, oldPath)
+		}
+		if mgr.mu.TryRLock() {
+			mgr.mu.RUnlock()
+		} else {
+			cleanupHeldManagerLock = true
+		}
+		return cleanupErr
+	}
+
+	mf := testManifest("update-cleanup-plugin")
+	if _, err := mgr.Install(ctx, mf, oldPath, InstallOptions{Scope: ScopeProject, Enable: true}); err != nil {
+		t.Fatalf("install plugin: %v", err)
+	}
+	newMf := testManifest("update-cleanup-plugin")
+	newMf.Version = "2.0.0"
+	if err := mgr.UpdateByScope(ctx, "update-cleanup-plugin", ScopeProject, newMf, newPath); !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error, got %v", err)
+	}
+	if !cleanupCalled {
+		t.Fatal("expected cleanup callback to run")
+	}
+	if cleanupHeldManagerLock {
+		t.Fatal("filesystem cleanup ran while holding manager lock")
+	}
+	plugin, ok := mgr.ResolveByScope("update-cleanup-plugin", ScopeProject)
+	if !ok {
+		t.Fatal("expected plugin to remain installed after failed update cleanup")
+	}
+	if plugin.State != StateEnabled || plugin.Manifest.Version != "1.0.0" || plugin.InstallPath != oldPath {
+		t.Fatalf("expected rollback to enabled v1 at old path, got state=%s version=%s path=%s", plugin.State, plugin.Manifest.Version, plugin.InstallPath)
+	}
+	if regManifest, ok := mgr.Registry().Plugin("update-cleanup-plugin"); !ok || regManifest.Version != "1.0.0" {
+		t.Fatalf("expected registry rollback to v1 after failed update cleanup, ok=%v manifest=%+v", ok, regManifest)
 	}
 }
 

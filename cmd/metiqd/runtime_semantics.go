@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -423,7 +424,12 @@ func (r *SubagentRegistry) Finish(runID, result, errStr string) {
 func (r *SubagentRegistry) Get(runID string) *SubagentRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.records[runID]
+	rec := r.records[runID]
+	if rec == nil {
+		return nil
+	}
+	copy := *rec
+	return &copy
 }
 
 // DepthOf returns the depth of the session identified by parentSessionID,
@@ -1738,9 +1744,69 @@ func cloneMapAny(in map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(in))
 	for k, v := range in {
-		out[k] = v
+		out[k] = cloneRuntimeAny(v)
 	}
 	return out
+}
+
+func cloneRuntimeAny(in any) any {
+	if in == nil {
+		return nil
+	}
+	return cloneRuntimeReflectValue(reflect.ValueOf(in)).Interface()
+}
+
+func cloneRuntimeReflectValue(in reflect.Value) reflect.Value {
+	if !in.IsValid() {
+		return in
+	}
+	switch in.Kind() {
+	case reflect.Interface:
+		if in.IsNil() {
+			return reflect.Zero(in.Type())
+		}
+		cloned := cloneRuntimeReflectValue(in.Elem())
+		if cloned.Type().AssignableTo(in.Type()) {
+			return cloned
+		}
+		out := reflect.New(in.Type()).Elem()
+		out.Set(cloned)
+		return out
+	case reflect.Pointer:
+		if in.IsNil() {
+			return reflect.Zero(in.Type())
+		}
+		out := reflect.New(in.Type().Elem())
+		out.Elem().Set(cloneRuntimeReflectValue(in.Elem()))
+		return out
+	case reflect.Map:
+		if in.IsNil() {
+			return reflect.Zero(in.Type())
+		}
+		out := reflect.MakeMapWithSize(in.Type(), in.Len())
+		iter := in.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(cloneRuntimeReflectValue(iter.Key()), cloneRuntimeReflectValue(iter.Value()))
+		}
+		return out
+	case reflect.Slice:
+		if in.IsNil() {
+			return reflect.Zero(in.Type())
+		}
+		out := reflect.MakeSlice(in.Type(), in.Len(), in.Len())
+		for i := 0; i < in.Len(); i++ {
+			out.Index(i).Set(cloneRuntimeReflectValue(in.Index(i)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(in.Type()).Elem()
+		for i := 0; i < in.Len(); i++ {
+			out.Index(i).Set(cloneRuntimeReflectValue(in.Index(i)))
+		}
+		return out
+	default:
+		return in
+	}
 }
 
 func min(a, b int) int {

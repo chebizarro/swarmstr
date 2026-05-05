@@ -63,6 +63,9 @@ func New(host *sdk.Host) *GojaPluginManager {
 func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error {
 	entries := pluginEntries(cfg)
 	if len(entries) == 0 {
+		m.mu.Lock()
+		m.plugins = map[string]pluginInstance{}
+		m.mu.Unlock()
 		return nil
 	}
 

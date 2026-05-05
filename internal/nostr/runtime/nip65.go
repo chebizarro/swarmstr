@@ -163,18 +163,66 @@ func (s *RelaySelector) Get(pubkey string) *NIP65RelayList {
 	return cloneNIP65RelayList(e.list)
 }
 
-// Put stores a NIP-65 list in the cache.
+// Put stores a NIP-65 list in the cache. Replaceable metadata ordering is
+// preserved for decoded lists that carry CreatedAt/EventID: older lists, or
+// equal-timestamp lists with a lower event-id tie-break, must not overwrite a
+// newer cached list.
 func (s *RelaySelector) Put(list *NIP65RelayList) {
 	if list == nil {
 		return
 	}
 	cloned := cloneNIP65RelayList(list)
+	key := strings.ToLower(cloned.PubKey)
+	now := time.Now()
 	s.mu.Lock()
-	s.cache[strings.ToLower(cloned.PubKey)] = &relaySelectorEntry{
+	if current, ok := s.cache[key]; ok && !isNewerRelaySelectorList(current.list, cloned) {
+		// Refresh the fetch timestamp for the same replaceable event without
+		// letting stale metadata replace the cached routing contents.
+		if current.list != nil && relaySelectorListSameReplaceable(current.list, cloned) {
+			current.fetchedAt = now
+		}
+		s.mu.Unlock()
+		return
+	}
+	s.cache[key] = &relaySelectorEntry{
 		list:      cloned,
-		fetchedAt: time.Now(),
+		fetchedAt: now,
 	}
 	s.mu.Unlock()
+}
+
+func isNewerRelaySelectorList(current, candidate *NIP65RelayList) bool {
+	if current == nil {
+		return true
+	}
+	if candidate == nil {
+		return false
+	}
+	if candidate.CreatedAt > current.CreatedAt {
+		return true
+	}
+	if candidate.CreatedAt < current.CreatedAt {
+		return false
+	}
+	if candidate.EventID == current.EventID {
+		// Lists without replaceable-event metadata are caller-supplied cache
+		// entries; keep Put usable as a normal cache update for that case.
+		return candidate.EventID == "" && candidate.CreatedAt == 0 && current.CreatedAt == 0
+	}
+	if candidate.EventID == "" {
+		return false
+	}
+	if current.EventID == "" {
+		return true
+	}
+	return strings.Compare(candidate.EventID, current.EventID) > 0
+}
+
+func relaySelectorListSameReplaceable(a, b *NIP65RelayList) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.CreatedAt == b.CreatedAt && a.EventID == b.EventID
 }
 
 // Invalidate removes a pubkey from the cache.
@@ -393,79 +441,100 @@ func isNewerReplaceableMetadataEvent(current *nostr.Event, candidate nostr.Event
 	return strings.Compare(candidate.ID.Hex(), current.ID.Hex()) > 0
 }
 
-func runNIP65SelfSyncLoop(ctx context.Context, pk nostr.PubKey, events <-chan nostr.RelayEvent, eoseCh <-chan struct{}, onRelayUpdate func(read, write []string)) {
-	var best *nostr.Event
-	var lastAppliedRead []string
-	var lastAppliedWrite []string
-	eoseDone := false
-	consider := func(re nostr.RelayEvent) bool {
-		ev := re.Event
-		if reason := metadataValidationFailure(ev, pk, 10002); reason != "" {
-			logInvalidMetadataEvent("runNIP65SelfSyncLoop", re, pk, 10002, reason)
-			return false
-		}
-		if !isNewerReplaceableMetadataEvent(best, ev) {
-			logStaleMetadataEvent("runNIP65SelfSyncLoop", re, best)
-			return false
-		}
-		cp := ev
-		best = &cp
-		return true
-	}
-	apply := func(ev nostr.Event, startup bool) {
-		list := DecodeNIP65Event(ev)
-		readRelays := list.ReadRelays()
-		writeRelays := list.WriteRelays()
-		if relaySliceEqual(lastAppliedRead, readRelays) && relaySliceEqual(lastAppliedWrite, writeRelays) {
-			return
-		}
-		lastAppliedRead = append([]string{}, readRelays...)
-		lastAppliedWrite = append([]string{}, writeRelays...)
-		if startup {
-			log.Printf("nip65: applying initial remote relay list after EOSE (event=%s, read=%d, write=%d)",
-				ev.ID.Hex()[:MinInt(12, len(ev.ID.Hex()))], len(readRelays), len(writeRelays))
-		} else {
-			log.Printf("nip65: detected remote relay list update (event=%s, read=%d, write=%d)",
-				ev.ID.Hex()[:MinInt(12, len(ev.ID.Hex()))], len(readRelays), len(writeRelays))
-		}
-		if onRelayUpdate != nil {
-			onRelayUpdate(readRelays, writeRelays)
-		}
-	}
-	drainBufferedEvents := func() {
-		for {
-			select {
-			case re, ok := <-events:
-				if !ok {
-					events = nil
-					return
-				}
-				consider(re)
-			default:
-				return
-			}
-		}
-	}
+type nip65SelfSyncState struct {
+	pk               nostr.PubKey
+	best             *nostr.Event
+	lastAppliedRead  []string
+	lastAppliedWrite []string
+	eoseDone         bool
+	onRelayUpdate    func(read, write []string)
+}
 
+func newNIP65SelfSyncState(pk nostr.PubKey, onRelayUpdate func(read, write []string)) *nip65SelfSyncState {
+	return &nip65SelfSyncState{pk: pk, onRelayUpdate: onRelayUpdate}
+}
+
+func (s *nip65SelfSyncState) consider(re nostr.RelayEvent) bool {
+	ev := re.Event
+	if reason := metadataValidationFailure(ev, s.pk, 10002); reason != "" {
+		logInvalidMetadataEvent("runNIP65SelfSyncLoop", re, s.pk, 10002, reason)
+		return false
+	}
+	if !isNewerReplaceableMetadataEvent(s.best, ev) {
+		logStaleMetadataEvent("runNIP65SelfSyncLoop", re, s.best)
+		return false
+	}
+	cp := ev
+	s.best = &cp
+	return true
+}
+
+func (s *nip65SelfSyncState) apply(ev nostr.Event, startup bool) {
+	list := DecodeNIP65Event(ev)
+	readRelays := list.ReadRelays()
+	writeRelays := list.WriteRelays()
+	if relaySliceEqual(s.lastAppliedRead, readRelays) && relaySliceEqual(s.lastAppliedWrite, writeRelays) {
+		return
+	}
+	s.lastAppliedRead = append([]string{}, readRelays...)
+	s.lastAppliedWrite = append([]string{}, writeRelays...)
+	if startup {
+		log.Printf("nip65: applying initial remote relay list after EOSE (event=%s, read=%d, write=%d)",
+			ev.ID.Hex()[:MinInt(12, len(ev.ID.Hex()))], len(readRelays), len(writeRelays))
+	} else {
+		log.Printf("nip65: detected remote relay list update (event=%s, read=%d, write=%d)",
+			ev.ID.Hex()[:MinInt(12, len(ev.ID.Hex()))], len(readRelays), len(writeRelays))
+	}
+	if s.onRelayUpdate != nil {
+		s.onRelayUpdate(readRelays, writeRelays)
+	}
+}
+
+func (s *nip65SelfSyncState) handleEvent(re nostr.RelayEvent) {
+	if s.consider(re) && s.eoseDone && s.best != nil {
+		s.apply(*s.best, false)
+	}
+}
+
+func (s *nip65SelfSyncState) handleEOSE(events <-chan nostr.RelayEvent) <-chan nostr.RelayEvent {
+	if s.eoseDone {
+		return events
+	}
+	for {
+		select {
+		case re, ok := <-events:
+			if !ok {
+				events = nil
+				s.eoseDone = true
+				if s.best != nil {
+					s.apply(*s.best, true)
+				}
+				return events
+			}
+			s.consider(re)
+		default:
+			s.eoseDone = true
+			if s.best != nil {
+				s.apply(*s.best, true)
+			}
+			log.Printf("nip65: self-sync EOSE received, watching for remote relay list changes")
+			return events
+		}
+	}
+}
+
+func runNIP65SelfSyncLoop(ctx context.Context, pk nostr.PubKey, events <-chan nostr.RelayEvent, eoseCh <-chan struct{}, onRelayUpdate func(read, write []string)) {
+	state := newNIP65SelfSyncState(pk, onRelayUpdate)
 	for {
 		select {
 		case re, ok := <-events:
 			if !ok {
 				return
 			}
-			if consider(re) && eoseDone && best != nil {
-				apply(*best, false)
-			}
+			state.handleEvent(re)
 		case <-eoseCh:
-			if !eoseDone {
-				drainBufferedEvents()
-				eoseDone = true
-				if best != nil {
-					apply(*best, true)
-				}
-				log.Printf("nip65: self-sync EOSE received, watching for remote relay list changes")
-				eoseCh = nil
-			}
+			events = state.handleEOSE(events)
+			eoseCh = nil
 		case <-ctx.Done():
 			return
 		}

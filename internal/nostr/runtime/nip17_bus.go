@@ -90,6 +90,10 @@ type NIP17Bus struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// testListenGiftWraps is an unexported seam used by runtime tests to drive
+	// deterministic gift-wrap stream closure/rebind behavior.
+	testListenGiftWraps func(ctx context.Context, relays []string, since nostr.Timestamp) <-chan nostr.Event
 }
 
 // StartNIP17Bus creates and starts a NIP17Bus.  It mirrors StartDMBus.
@@ -116,7 +120,6 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 		return nil, fmt.Errorf("resolve public key: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(parent)
 	pool := NewPoolNIP42(ks)
 	ownsPool := true
 	if opts.Hub != nil {
@@ -126,6 +129,7 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 		pool = opts.Hub.Pool()
 		ownsPool = false
 	}
+	ctx, cancel := context.WithCancel(parent)
 	b := &NIP17Bus{
 		pool:         pool,
 		ownsPool:     ownsPool,
@@ -289,7 +293,11 @@ func (b *NIP17Bus) receiveLoop(since nostr.Timestamp) {
 		}
 
 		cycleCtx, cycleCancel := context.WithCancel(b.ctx)
-		rumCh := b.listenGiftWraps(cycleCtx, b.currentRelays(), currentSince)
+		listenGiftWraps := b.listenGiftWraps
+		if b.testListenGiftWraps != nil {
+			listenGiftWraps = b.testListenGiftWraps
+		}
+		rumCh := listenGiftWraps(cycleCtx, b.currentRelays(), currentSince)
 
 		closed := false
 		for !closed {

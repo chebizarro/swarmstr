@@ -315,6 +315,9 @@ func policyMatcherMaps(matchers []mcppkg.PolicyMatcher) []map[string]any {
 		if matcher.Name != "" {
 			entry["name"] = matcher.Name
 		}
+		if matcher.Signature != "" {
+			entry["signature"] = matcher.Signature
+		}
 		if len(matcher.Command) > 0 {
 			entry["command"] = append([]string(nil), matcher.Command...)
 		}

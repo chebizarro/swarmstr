@@ -29,3 +29,11 @@ func TestGatewayControlRPCInboundCarriesNIP98Caller(t *testing.T) {
 		t.Fatalf("unexpected nip98 inbound: %+v", in)
 	}
 }
+
+func TestGatewayControlRPCInboundCarriesDeviceCaller(t *testing.T) {
+	deviceID := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	in := gatewayControlRPCInbound(gatewayws.ControlPrincipal{Authenticated: true, Method: "device", PubKey: " " + deviceID + " "}, gatewayprotocol.RequestFrame{Method: "config.set"})
+	if !in.Authenticated || in.FromPubKey != deviceID || in.Method != "config.set" {
+		t.Fatalf("unexpected device inbound: %+v", in)
+	}
+}

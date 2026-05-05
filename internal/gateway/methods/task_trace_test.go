@@ -257,14 +257,18 @@ func TestAssembleTaskTrace_RunFilter(t *testing.T) {
 			{TurnID: "turn-1", RunID: "r1", EndedAtMS: 1000, Outcome: "success"},
 			{TurnID: "turn-2", RunID: "r2", EndedAtMS: 2000, Outcome: "success"},
 		},
+		ToolLifecycle: []state.ToolLifecycleTelemetry{
+			{TS: 1200, RunID: "r1", ToolName: "grep", Type: "start"},
+			{TS: 1800, RunID: "r2", ToolName: "grep", Type: "result"},
+		},
 		MemoryRecall: []state.MemoryRecallSample{
 			{RecordedAtMS: 500, RunID: "r1"},
 			{RecordedAtMS: 1500, RunID: "r2"},
 		},
 	}
 	resp := AssembleTaskTrace(input, "r1", 200)
-	if len(resp.Events) != 2 {
-		t.Fatalf("expected 2 events for r1, got %d", len(resp.Events))
+	if len(resp.Events) != 3 {
+		t.Fatalf("expected 3 events for r1, got %d", len(resp.Events))
 	}
 	if resp.RunID != "r1" {
 		t.Fatalf("expected run_id r1, got %q", resp.RunID)
@@ -327,6 +331,29 @@ func TestAssembleTaskTrace_GoalIDPropagation(t *testing.T) {
 		if evt.GoalID != "goal-42" {
 			t.Errorf("event[%d] goal_id = %q, want goal-42", i, evt.GoalID)
 		}
+	}
+}
+
+func TestAssembleTaskTrace_ToolEvents(t *testing.T) {
+	input := TraceInput{
+		Task: baseTask(),
+		ToolLifecycle: []state.ToolLifecycleTelemetry{
+			{TS: 1000, TaskID: "t1", RunID: "r1", SessionID: "sess-1", StepID: "step-1", Type: "start", ToolName: "grep", ToolCallID: "call-1"},
+			{TS: 2000, TaskID: "t1", RunID: "r1", SessionID: "sess-1", StepID: "step-1", Type: "result", ToolName: "grep", ToolCallID: "call-1", Result: "ok"},
+		},
+	}
+	resp := AssembleTaskTrace(input, "", 200)
+	if len(resp.Events) != 2 {
+		t.Fatalf("expected 2 tool events, got %d", len(resp.Events))
+	}
+	if resp.Events[0].Kind != TraceKindTool || resp.Events[0].Tool == nil {
+		t.Fatalf("expected tool kind/detail, got kind=%s", resp.Events[0].Kind)
+	}
+	if resp.Events[0].Summary != "tool:grep:start" {
+		t.Fatalf("unexpected tool summary: %q", resp.Events[0].Summary)
+	}
+	if resp.Events[1].Tool.EventType != "result" || resp.Events[1].Tool.Result != "ok" {
+		t.Fatalf("unexpected tool detail: %+v", resp.Events[1].Tool)
 	}
 }
 

@@ -17,6 +17,7 @@
 #   METIQ_INSTALL_DOCKER_CLI     — set to "1" to install Docker CLI for sandbox management
 #   METIQ_INSTALL_PYTHON         — set to "1" to install Python 3, pip, and uv (for MCP servers)
 #   METIQ_INSTALL_NODE           — set to "1" to install Node.js + npm (for JS MCP servers)
+#   METIQ_TASK_VERSION           — go-task version to install by default (default: v3.50.0)
 #
 # Examples:
 #   docker build .
@@ -26,6 +27,7 @@
 
 ARG METIQ_VARIANT=default
 ARG VERSION=dev
+ARG METIQ_TASK_VERSION=v3.50.0
 
 # Base images (unpinned for latest updates)
 ARG GOLANG_IMAGE="golang:1.25-bookworm"
@@ -75,6 +77,7 @@ LABEL org.opencontainers.image.base.name="docker.io/library/debian:bookworm-slim
 # ── Stage 2: Runtime ────────────────────────────────────────────────────────────
 FROM base-${METIQ_VARIANT}
 ARG METIQ_VARIANT
+ARG METIQ_TASK_VERSION
 
 # OCI metadata labels.
 LABEL org.opencontainers.image.source="https://github.com/metiq/metiq" \
@@ -103,7 +106,9 @@ RUN --mount=type=cache,id=metiq-apt-cache,target=/var/cache/apt,sharing=locked \
       jq \
       poppler-utils \
       tzdata \
-      gosu
+      gosu && \
+    sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin ${METIQ_TASK_VERSION} && \
+    task --version
 
 # ── Optional: Python 3 + uv (for MCP servers, skills, and extensions) ──────────
 # Build with: docker build --build-arg METIQ_INSTALL_PYTHON=1 .

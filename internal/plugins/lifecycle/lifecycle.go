@@ -179,6 +179,7 @@ type Manager struct {
 	plugins    map[string]map[Scope]*InstalledPlugin // pluginID → scope → plugin
 	registry   *manifest.CapabilityRegistry
 	projectDir string
+	removeAll  func(string) error
 }
 
 // NewManager creates a new lifecycle manager.
@@ -188,6 +189,7 @@ func NewManager(cfg LifecycleConfig, projectDir string) *Manager {
 		plugins:    make(map[string]map[Scope]*InstalledPlugin),
 		registry:   manifest.NewCapabilityRegistry(),
 		projectDir: projectDir,
+		removeAll:  os.RemoveAll,
 	}
 }
 
@@ -381,7 +383,12 @@ type InstallOptions struct {
 	Source InstallSource `json:"source"`
 
 	// Enable immediately enables the plugin after installation.
+	// This legacy explicit true value always wins over AutoEnable.
 	Enable bool `json:"enable"`
+
+	// AutoEnable overrides LifecycleConfig.AutoEnable for this install when Enable is false.
+	// Set to &false to explicitly opt out of configured auto-enable.
+	AutoEnable *bool `json:"auto_enable,omitempty"`
 
 	// ExportSkills enables skill export (requires manifest opt-in).
 	ExportSkills bool `json:"export_skills"`
@@ -438,8 +445,18 @@ func (m *Manager) Install(ctx context.Context, mf manifest.Manifest, installPath
 		Config:       cloneMap(opts.Config),
 	}
 
-	// Enable if requested
-	if opts.Enable || m.cfg.AutoEnable {
+	// Enable if explicitly requested or if auto-enable applies. opts.AutoEnable
+	// provides a tri-state override so callers can opt out when config auto-enable
+	// is on without changing the existing default behavior for omitted values.
+	enable := opts.Enable
+	if !enable {
+		if opts.AutoEnable != nil {
+			enable = *opts.AutoEnable
+		} else {
+			enable = m.cfg.AutoEnable
+		}
+	}
+	if enable {
 		plugin.State = StateEnabled
 		plugin.EnabledAt = &now
 	}
@@ -466,28 +483,45 @@ func (m *Manager) UninstallByScope(ctx context.Context, pluginID string, scope S
 
 func (m *Manager) uninstall(ctx context.Context, pluginID string, scope *Scope) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	plugin, err := m.resolveTargetLocked(pluginID, scope)
 	if err != nil {
+		m.mu.Unlock()
 		return err
 	}
 
-	// Remove from tracking
-	m.deletePluginLocked(plugin.PluginID, plugin.Scope)
+	cleanupPath := plugin.InstallPath
+	cleanupScope := plugin.Scope
+	removeAll := m.removeAll
+	if removeAll == nil {
+		removeAll = os.RemoveAll
+	}
 
-	// Remove from filesystem (unless local scope)
-	if plugin.Scope != ScopeLocal && plugin.InstallPath != "" {
-		if err := os.RemoveAll(plugin.InstallPath); err != nil {
-			m.putPluginLocked(plugin)
+	// Remove from tracking and registry while holding the lock, then perform
+	// filesystem cleanup without blocking unrelated lifecycle reads/writes.
+	m.deletePluginLocked(plugin.PluginID, plugin.Scope)
+	if err := m.rebuildRegistryLocked(ctx); err != nil {
+		m.putPluginLocked(plugin)
+		_ = m.rebuildRegistryLocked(ctx)
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Unlock()
+
+	// Remove from filesystem (unless local scope). On cleanup failure, restore
+	// lifecycle state and registry if the same scoped slot is still empty.
+	if cleanupScope != ScopeLocal && cleanupPath != "" {
+		if err := removeAll(cleanupPath); err != nil {
+			m.mu.Lock()
+			if _, exists := m.pluginByScopeLocked(plugin.PluginID, plugin.Scope); !exists {
+				m.putPluginLocked(plugin)
+			}
 			_ = m.rebuildRegistryLocked(ctx)
+			m.mu.Unlock()
 			return fmt.Errorf("remove plugin files: %w", err)
 		}
 	}
 
-	if err := m.rebuildRegistryLocked(ctx); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -576,23 +610,26 @@ func (m *Manager) UpdateByScope(ctx context.Context, pluginID string, scope Scop
 
 func (m *Manager) update(ctx context.Context, pluginID string, scope *Scope, newManifest manifest.Manifest, newInstallPath string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	plugin, err := m.resolveTargetLocked(pluginID, scope)
 	if err != nil {
+		m.mu.Unlock()
 		return err
 	}
 
 	// Validate new manifest
 	if err := manifest.Validate(&newManifest); err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("invalid manifest: %v", err)
 	}
 	if newManifest.ID != plugin.PluginID {
+		m.mu.Unlock()
 		return fmt.Errorf("manifest ID %q does not match installed plugin %q", newManifest.ID, plugin.PluginID)
 	}
 
 	// Check version is actually newer
 	if newManifest.Version == plugin.Manifest.Version {
+		m.mu.Unlock()
 		return fmt.Errorf("version %s is already installed", newManifest.Version)
 	}
 
@@ -603,6 +640,11 @@ func (m *Manager) update(ctx context.Context, pluginID string, scope *Scope, new
 	oldUpdatedAt := plugin.UpdatedAt
 	oldSourceVersion := plugin.Source.Version
 	oldError := plugin.Error
+	cleanupScope := plugin.Scope
+	removeAll := m.removeAll
+	if removeAll == nil {
+		removeAll = os.RemoveAll
+	}
 
 	// Set updating state
 	plugin.State = StateUpdating
@@ -619,25 +661,34 @@ func (m *Manager) update(ctx context.Context, pluginID string, scope *Scope, new
 			plugin.State = StateError
 			plugin.Error = err.Error()
 			_ = m.rebuildRegistryLocked(ctx)
+			m.mu.Unlock()
 			return err
 		}
 	} else {
 		plugin.State = StateDisabled
 		if err := m.rebuildRegistryLocked(ctx); err != nil {
+			m.mu.Unlock()
 			return err
 		}
 	}
+	m.mu.Unlock()
 
-	// Clean up old installation path
-	if oldPath != "" && oldPath != newInstallPath && plugin.Scope != ScopeLocal {
-		if err := os.RemoveAll(oldPath); err != nil {
-			plugin.State = oldState
-			plugin.Manifest = oldManifest
-			plugin.InstallPath = oldPath
-			plugin.UpdatedAt = oldUpdatedAt
-			plugin.Source.Version = oldSourceVersion
-			plugin.Error = oldError
+	// Clean up old installation path without holding the manager lock. On
+	// cleanup failure, rollback state and registry when this scoped installation
+	// is still the one we updated.
+	if oldPath != "" && oldPath != newInstallPath && cleanupScope != ScopeLocal {
+		if err := removeAll(oldPath); err != nil {
+			m.mu.Lock()
+			if current, ok := m.pluginByScopeLocked(plugin.PluginID, cleanupScope); ok && current == plugin {
+				plugin.State = oldState
+				plugin.Manifest = oldManifest
+				plugin.InstallPath = oldPath
+				plugin.UpdatedAt = oldUpdatedAt
+				plugin.Source.Version = oldSourceVersion
+				plugin.Error = oldError
+			}
 			_ = m.rebuildRegistryLocked(ctx)
+			m.mu.Unlock()
 			return fmt.Errorf("remove old plugin files: %w", err)
 		}
 	}

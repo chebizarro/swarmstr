@@ -111,6 +111,52 @@ func TestNIP17TimestampBounds(t *testing.T) {
 	}
 }
 
+func TestNIP17TimestampBoundsAtExactThresholds(t *testing.T) {
+	now := time.Unix(time.Now().Unix(), 0)
+	if timestampTooFarFuture(now.Add(inboundEventMaxFutureSkew).Unix(), now, inboundEventMaxFutureSkew) {
+		t.Fatal("timestamp at exact future skew threshold should be accepted")
+	}
+	if timestampTooOld(now.Add(-nip17MaxPastAge).Unix(), now, nip17MaxPastAge) {
+		t.Fatal("timestamp at exact max-past-age threshold should be accepted")
+	}
+}
+
+func TestNIP17HandleRumorDeduplicatesByRumorID(t *testing.T) {
+	bus, _, recipient := newTestNIP17BusIdentity(t)
+	sender := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	rumor := unsignedRumorEvent(t, sender, nostr.Event{
+		Kind:      nostr.KindDirectMessage,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"p", recipient.Hex()}},
+		Content:   "hello from two relays",
+	})
+	bus.ctx = context.Background()
+	bus.seenSet = map[string]struct{}{}
+	bus.seenCap = 16
+	bus.messageQueue = make(chan InboundDM, 2)
+	bus.onMessage = func(context.Context, InboundDM) error { return nil }
+
+	bus.handleRumor(rumor)
+	bus.handleRumor(rumor)
+
+	select {
+	case msg := <-bus.messageQueue:
+		if msg.EventID != rumor.ID.Hex() || msg.Text != "hello from two relays" {
+			t.Fatalf("unexpected message: %+v", msg)
+		}
+	default:
+		t.Fatal("expected first rumor delivery to enqueue message")
+	}
+	select {
+	case msg := <-bus.messageQueue:
+		t.Fatalf("duplicate rumor should not enqueue: %+v", msg)
+	default:
+	}
+	if !bus.markSeen17(rumor.ID.Hex()) {
+		t.Fatal("rumor should remain enrolled in seen-set after first delivery")
+	}
+}
+
 func TestNIP17BusCloseNilAndPartial(t *testing.T) {
 	var nilBus *NIP17Bus
 	nilBus.Close()
@@ -134,6 +180,55 @@ func TestStartNIP17BusRejectsMismatchedHubPubKey(t *testing.T) {
 	if err == nil || err.Error() != "nip17 bus: hub pubkey does not match keyer pubkey" {
 		t.Fatalf("expected hub mismatch error, got %v", err)
 	}
+}
+
+func TestNIP17ReceiveLoopRestartsFromClosedGiftWrapStreamWithReplayWindow(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type listenCall struct {
+		relays []string
+		since  nostr.Timestamp
+		ch     chan nostr.Event
+	}
+	calls := make(chan listenCall, 2)
+	bus := &NIP17Bus{
+		ctx:          ctx,
+		cancel:       cancel,
+		relays:       []string{"wss://gift.example"},
+		rebindCh:     make(chan struct{}, 1),
+		messageQueue: make(chan InboundDM, 1),
+		subHealth:    NewSubHealthTracker("nip17"),
+		testListenGiftWraps: func(ctx context.Context, relays []string, since nostr.Timestamp) <-chan nostr.Event {
+			ch := make(chan nostr.Event)
+			calls <- listenCall{relays: append([]string{}, relays...), since: since, ch: ch}
+			return ch
+		},
+		onError: func(error) {},
+	}
+	initialSince := nostr.Timestamp(time.Now().Add(-time.Hour).Unix())
+	bus.wg.Add(1)
+	go bus.receiveLoop(initialSince)
+
+	first := receiveBeforeTestDeadline(t, calls, "first nip17 gift-wrap listener")
+	if len(first.relays) != 1 || first.relays[0] != "wss://gift.example" {
+		t.Fatalf("unexpected relays: %v", first.relays)
+	}
+	if first.since != initialSince {
+		t.Fatalf("first since = %d, want %d", first.since, initialSince)
+	}
+
+	beforeReplay := normalizeNIP17Since(time.Now().Unix())
+	close(first.ch)
+	second := receiveBeforeTestDeadline(t, calls, "second nip17 gift-wrap listener")
+	afterReplay := normalizeNIP17Since(time.Now().Unix())
+	if int64(second.since) < beforeReplay || int64(second.since) > afterReplay {
+		t.Fatalf("restart since = %d, want NIP-59 replay window within [%d,%d]", second.since, beforeReplay, afterReplay)
+	}
+
+	cancel()
+	close(second.ch)
+	bus.wg.Wait()
 }
 
 func TestNIP17EOSEChannelCanBeDisabledAfterFirstSignal(t *testing.T) {

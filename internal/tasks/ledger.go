@@ -13,7 +13,6 @@ package tasks
 import (
 	"context"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -183,8 +182,10 @@ func (l *Ledger) CreateTask(ctx context.Context, task state.TaskSpec, source Tas
 	// Persist
 	if l.store != nil {
 		if err := l.store.SaveTask(ctx, entry); err != nil {
-			// Log but don't fail - in-memory state is authoritative
-			log.Printf("tasks: failed to persist task %s: %v", entry.Task.TaskID, err)
+			l.mu.Lock()
+			delete(l.tasks, task.TaskID)
+			l.mu.Unlock()
+			return nil, fmt.Errorf("persist task %q: %w", task.TaskID, err)
 		}
 	}
 
@@ -233,6 +234,8 @@ func (l *Ledger) UpdateTaskStatus(ctx context.Context, taskID string, to state.T
 	}
 
 	now := time.Now().Unix()
+	prevTaskUpdatedAt := entry.Task.UpdatedAt
+	prevEntryUpdatedAt := entry.UpdatedAt
 	if err := entry.Task.ApplyTransition(to, now, actor, source, reason, nil); err != nil {
 		l.mu.Unlock()
 		return nil, err
@@ -246,7 +249,15 @@ func (l *Ledger) UpdateTaskStatus(ctx context.Context, taskID string, to state.T
 	// Persist
 	if l.store != nil {
 		if err := l.store.SaveTask(ctx, entry); err != nil {
-			// Log but don't fail
+			l.mu.Lock()
+			if len(entry.Task.Transitions) > 0 {
+				entry.Task.Transitions = entry.Task.Transitions[:len(entry.Task.Transitions)-1]
+			}
+			entry.Task.Status = transition.From
+			entry.Task.UpdatedAt = prevTaskUpdatedAt
+			entry.UpdatedAt = prevEntryUpdatedAt
+			l.mu.Unlock()
+			return nil, fmt.Errorf("persist task status update %q: %w", taskID, err)
 		}
 	}
 
@@ -268,6 +279,8 @@ func (l *Ledger) CreateRun(ctx context.Context, taskID, runID, trigger, actor, s
 	}
 
 	now := time.Now().Unix()
+	prevCurrentRunID := taskEntry.Task.CurrentRunID
+	prevTaskUpdatedAt := taskEntry.UpdatedAt
 
 	// Collect prior runs for attempt numbering
 	var priorRuns []state.TaskRun
@@ -299,8 +312,28 @@ func (l *Ledger) CreateRun(ctx context.Context, taskID, runID, trigger, actor, s
 
 	// Persist
 	if l.store != nil {
-		_ = l.store.SaveRun(ctx, runEntry)
-		_ = l.store.SaveTask(ctx, taskEntry)
+		if err := l.store.SaveRun(ctx, runEntry); err != nil {
+			l.mu.Lock()
+			delete(l.runs, runID)
+			if n := len(taskEntry.Runs); n > 0 {
+				taskEntry.Runs = taskEntry.Runs[:n-1]
+			}
+			taskEntry.Task.CurrentRunID = prevCurrentRunID
+			taskEntry.UpdatedAt = prevTaskUpdatedAt
+			l.mu.Unlock()
+			return nil, fmt.Errorf("persist run %q: %w", runID, err)
+		}
+		if err := l.store.SaveTask(ctx, taskEntry); err != nil {
+			l.mu.Lock()
+			delete(l.runs, runID)
+			if n := len(taskEntry.Runs); n > 0 {
+				taskEntry.Runs = taskEntry.Runs[:n-1]
+			}
+			taskEntry.Task.CurrentRunID = prevCurrentRunID
+			taskEntry.UpdatedAt = prevTaskUpdatedAt
+			l.mu.Unlock()
+			return nil, fmt.Errorf("persist task %q with new run %q: %w", taskID, runID, err)
+		}
 	}
 
 	// Notify observers
@@ -321,6 +354,7 @@ func (l *Ledger) UpdateRunStatus(ctx context.Context, runID string, to state.Tas
 	}
 
 	now := time.Now().Unix()
+	originalRun := cloneRunEntry(entry)
 	if err := entry.Run.ApplyTransition(to, now, actor, source, reason, nil); err != nil {
 		l.mu.Unlock()
 		return nil, err
@@ -329,8 +363,10 @@ func (l *Ledger) UpdateRunStatus(ctx context.Context, runID string, to state.Tas
 
 	// Update the task's run record as well
 	var taskEntryToPersist *LedgerEntry
+	var originalTask *LedgerEntry
 	if taskEntry, ok := l.tasks[entry.Run.TaskID]; ok {
 		taskEntryToPersist = taskEntry
+		originalTask = cloneLedgerEntry(taskEntry)
 		for i, run := range taskEntry.Runs {
 			if run.RunID == runID {
 				taskEntry.Runs[i] = entry.Run
@@ -353,9 +389,31 @@ func (l *Ledger) UpdateRunStatus(ctx context.Context, runID string, to state.Tas
 	// Persist both the run and the task entry because the task embeds run
 	// snapshots and last-run bookkeeping that were updated above.
 	if l.store != nil {
-		_ = l.store.SaveRun(ctx, runSnapshot)
+		if err := l.store.SaveRun(ctx, runSnapshot); err != nil {
+			l.mu.Lock()
+			entry.Run = originalRun.Run
+			entry.UpdatedAt = originalRun.UpdatedAt
+			if originalTask != nil {
+				if taskEntry, ok := l.tasks[entry.Run.TaskID]; ok {
+					*taskEntry = *originalTask
+				}
+			}
+			l.mu.Unlock()
+			return nil, fmt.Errorf("persist run status update %q: %w", runID, err)
+		}
 		if taskSnapshot != nil {
-			_ = l.store.SaveTask(ctx, taskSnapshot)
+			if err := l.store.SaveTask(ctx, taskSnapshot); err != nil {
+				l.mu.Lock()
+				entry.Run = originalRun.Run
+				entry.UpdatedAt = originalRun.UpdatedAt
+				if originalTask != nil {
+					if taskEntry, ok := l.tasks[entry.Run.TaskID]; ok {
+						*taskEntry = *originalTask
+					}
+				}
+				l.mu.Unlock()
+				return nil, fmt.Errorf("persist task snapshot for run %q: %w", runID, err)
+			}
 		}
 	}
 
@@ -459,34 +517,7 @@ func (l *Ledger) Stats(ctx context.Context) TaskStats {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	stats := TaskStats{
-		ByStatus: make(map[string]int),
-		BySource: make(map[string]int),
-	}
-
-	todayStart := time.Now().Truncate(24 * time.Hour).Unix()
-
-	for _, entry := range l.tasks {
-		stats.TotalTasks++
-		stats.ByStatus[string(entry.Task.Status)]++
-		stats.BySource[string(entry.Source)]++
-	}
-
-	for _, entry := range l.runs {
-		stats.TotalRuns++
-		if entry.Run.Status == state.TaskRunStatusRunning {
-			stats.ActiveRuns++
-		}
-		if entry.Run.EndedAt >= todayStart {
-			if entry.Run.Status == state.TaskRunStatusCompleted {
-				stats.CompletedToday++
-			} else if entry.Run.Status == state.TaskRunStatusFailed {
-				stats.FailedToday++
-			}
-		}
-	}
-
-	return stats
+	return computeTaskStats(l.tasks, l.runs, time.Now())
 }
 
 // CancelTask cancels a task and any active runs.
@@ -499,6 +530,13 @@ func (l *Ledger) CancelTask(ctx context.Context, taskID, actor, reason string) e
 	}
 
 	now := time.Now().Unix()
+	originalTask := cloneLedgerEntry(entry)
+	originalRuns := make(map[string]*RunEntry)
+	for _, run := range l.runs {
+		if run.Run.TaskID == taskID {
+			originalRuns[run.Run.RunID] = cloneRunEntry(run)
+		}
+	}
 
 	// Cancel any active runs first, keeping both the canonical run map and the
 	// task's embedded run snapshots in sync for persistence/restart.
@@ -531,9 +569,33 @@ func (l *Ledger) CancelTask(ctx context.Context, taskID, actor, reason string) e
 	// Persist
 	if l.store != nil {
 		for _, runEntry := range runSnapshots {
-			_ = l.store.SaveRun(ctx, runEntry)
+			if err := l.store.SaveRun(ctx, runEntry); err != nil {
+				l.mu.Lock()
+				if originalTask != nil {
+					*entry = *originalTask
+				}
+				for runID, originalRun := range originalRuns {
+					if currentRun, ok := l.runs[runID]; ok {
+						*currentRun = *originalRun
+					}
+				}
+				l.mu.Unlock()
+				return fmt.Errorf("persist cancelled run %q: %w", runEntry.Run.RunID, err)
+			}
 		}
-		_ = l.store.SaveTask(ctx, taskSnapshot)
+		if err := l.store.SaveTask(ctx, taskSnapshot); err != nil {
+			l.mu.Lock()
+			if originalTask != nil {
+				*entry = *originalTask
+			}
+			for runID, originalRun := range originalRuns {
+				if currentRun, ok := l.runs[runID]; ok {
+					*currentRun = *originalRun
+				}
+			}
+			l.mu.Unlock()
+			return fmt.Errorf("persist cancelled task %q: %w", taskID, err)
+		}
 	}
 
 	return nil

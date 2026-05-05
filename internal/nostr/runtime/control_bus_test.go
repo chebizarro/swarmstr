@@ -440,6 +440,23 @@ func TestControlRPCBusResponseRelayCandidatesDedupesPreferred(t *testing.T) {
 	}
 }
 
+func TestControlRPCBusResponseRelayCandidatesPreservesBlockedLastResort(t *testing.T) {
+	b := &ControlRPCBus{
+		relays: []string{"wss://blocked", "wss://healthy"},
+		health: NewRelayHealthTracker(),
+	}
+	b.health.Seed(b.relays)
+	for i := 0; i < relayFailureCooldownThreshold; i++ {
+		b.health.RecordFailure("wss://blocked")
+	}
+
+	got := b.responseRelayCandidates("", "requester", time.Now())
+	want := []string{"wss://healthy", "wss://blocked"}
+	if !relaySliceEqual(got, want) {
+		t.Fatalf("candidates = %v, want health-ordered full set %v", got, want)
+	}
+}
+
 func TestControlSubIDDistinguishesGeneration(t *testing.T) {
 	b := &ControlRPCBus{}
 	if got := b.controlSubID(" wss://relay.example ", 2); got != "control-rpc-bus:wss://relay.example:2" {
@@ -457,6 +474,15 @@ func TestContainsRelayTrimsWhitespace(t *testing.T) {
 }
 
 // ─── Lifecycle / relay-scoped retry tests ────────────────────────────────────
+
+type controlRelayAttempt struct {
+	relay      string
+	filter     nostr.Filter
+	generation int
+	emitEvent  func(nostr.RelayEvent) bool
+	emitEOSE   func(controlRelayEOSE)
+	emitClosed func(controlRelayClose)
+}
 
 func TestControlBusSetRelaysTriggersRebind(t *testing.T) {
 	b := &ControlRPCBus{
@@ -581,42 +607,201 @@ func TestControlBusRetrySkipsRemovedRelay(t *testing.T) {
 	}
 }
 
-func TestControlBusSubscriptionLoopNonHubRestarts(t *testing.T) {
-	// Test that the non-hub subscription loop restarts when the stream channel
-	// closes (simulating a relay disconnect).
+func TestControlBusCloseSignalIgnoresStaleGenerationBeforeRecordingFailure(t *testing.T) {
+	relay := "wss://control-stale.example"
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	subHealth := NewSubHealthTracker("control-rpc")
+	errCount := 0
+	b := &ControlRPCBus{
+		health:    health,
+		subHealth: subHealth,
+		onError:   func(error) { errCount++ },
+	}
+
+	gotRelay, schedule, terminal := b.processControlRelayClose(map[string]int{relay: 2}, controlRelayClose{relayURL: relay, reason: "stale closed", generation: 1})
+	if terminal || schedule || gotRelay != relay {
+		t.Fatalf("stale close should be ignored without scheduling: relay=%q schedule=%v terminal=%v", gotRelay, schedule, terminal)
+	}
+	if errCount != 0 {
+		t.Fatalf("stale close should not emit errors, got %d", errCount)
+	}
+	snap := subHealth.Snapshot([]string{relay}, ControlRPCResubscribeWindow)
+	if snap.LastClosedReason != "" || snap.LastClosedRelay != "" {
+		t.Fatalf("stale close should not latch sub-health close state: %+v", snap)
+	}
+}
+
+func TestControlBusCloseSignalUsesConfiguredRelayForGenerationAndReportedRelayForFailure(t *testing.T) {
+	configuredRelay := "wss://control-configured.example"
+	reportedRelay := "wss://control-reported.example"
+	subHealth := NewSubHealthTracker("control-rpc")
+	var gotErr error
+	b := &ControlRPCBus{
+		subHealth: subHealth,
+		onError:   func(err error) { gotErr = err },
+	}
+
+	gotRelay, schedule, terminal := b.processControlRelayClose(map[string]int{configuredRelay: 3}, controlRelayClose{relayURL: configuredRelay, reportedRelayURL: reportedRelay, reason: "closed: policy", generation: 3})
+	if terminal || !schedule || gotRelay != configuredRelay {
+		t.Fatalf("current close should schedule configured relay retry: relay=%q schedule=%v terminal=%v", gotRelay, schedule, terminal)
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), reportedRelay) {
+		t.Fatalf("expected reported relay in surfaced error, got %v", gotErr)
+	}
+	snap := subHealth.Snapshot([]string{configuredRelay}, ControlRPCResubscribeWindow)
+	if snap.LastClosedRelay != reportedRelay || snap.LastClosedReason != "closed: policy" {
+		t.Fatalf("expected reported relay in sub-health close state, got %+v", snap)
+	}
+}
+
+func TestControlBusPoolSubscriptionRestartsFromRelayClosedSignal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	restartCount := 0
+	relay := "wss://test"
+	attempts := make(chan controlRelayAttempt, 4)
+	errCh := make(chan error, 2)
 	b := &ControlRPCBus{
-		relays:   []string{"wss://test"},
-		rebindCh: make(chan struct{}, 1),
-		ctx:      ctx,
-		cancel:   cancel,
-		public:   nostr.Generate().Public(),
-		onError:  func(error) {},
+		relays:    []string{relay},
+		rebindCh:  make(chan struct{}, 1),
+		ctx:       ctx,
+		cancel:    cancel,
+		public:    nostr.Generate().Public(),
+		health:    NewRelayHealthTracker(),
+		subHealth: NewSubHealthTracker("control-rpc"),
+		onError:   func(err error) { errCh <- err },
+		testControlRelaySubscribe: func(ctx context.Context, relayURL string, filter nostr.Filter, generation int, emitEvent func(nostr.RelayEvent) bool, emitEOSE func(controlRelayEOSE), emitClosed func(controlRelayClose)) {
+			attempts <- controlRelayAttempt{relay: relayURL, filter: filter, generation: generation, emitEvent: emitEvent, emitEOSE: emitEOSE, emitClosed: emitClosed}
+			<-ctx.Done()
+		},
+	}
+	b.health.Seed([]string{relay})
+	initialSince := time.Now().Add(-10 * time.Minute).Unix()
+	done := make(chan bool, 1)
+	go func() { done <- b.runPoolSubscription(b.controlFilter(initialSince)) }()
+
+	first := receiveBeforeTestDeadline(t, attempts, "first control subscription attempt")
+	if first.relay != relay || first.generation != 1 {
+		t.Fatalf("unexpected first subscription attempt: %+v", first)
+	}
+	if int64(first.filter.Since) != initialSince {
+		t.Fatalf("first filter since = %d, want %d", first.filter.Since, initialSince)
 	}
 
-	// Simulate runSubscription returning false (stream closed) then true (rebind).
-	// We test the loop logic by calling it indirectly.
-	// The subscriptionLoop will call runSubscription in a loop.
-	// Since we can't inject a fake pool, we test the loop control logic directly:
-	since := time.Now().Add(-10 * time.Minute).Unix()
-	for i := 0; i < 3; i++ {
-		restart := false // simulate stream closed
-		if b.ctx.Err() != nil {
-			break
-		}
-		restartCount++
-		if !restart {
-			// Non-restart path: brief backoff before retry.
-			since = time.Now().Add(-10 * time.Minute).Unix()
-		}
+	beforeReplay := ResubscribeSince(ControlRPCResubscribeWindow)
+	first.emitClosed(controlRelayClose{relayURL: relay, reason: "closed: relay restart", generation: first.generation})
+	gotErr := receiveBeforeTestDeadline(t, errCh, "control CLOSED error")
+	if !strings.Contains(gotErr.Error(), "relay restart") {
+		t.Fatalf("expected CLOSED reason to surface, got %v", gotErr)
 	}
-	if restartCount != 3 {
-		t.Fatalf("expected 3 loop iterations, got %d", restartCount)
+	second := receiveBeforeTestDeadline(t, attempts, "second control subscription attempt")
+	afterReplay := ResubscribeSince(ControlRPCResubscribeWindow)
+	if second.generation != 2 {
+		t.Fatalf("expected second generation after CLOSED retry, got %d", second.generation)
 	}
-	_ = since
+	if int64(second.filter.Since) < beforeReplay || int64(second.filter.Since) > afterReplay {
+		t.Fatalf("resubscribe since = %d, want replay window within [%d,%d]", second.filter.Since, beforeReplay, afterReplay)
+	}
+
+	cancel()
+	if !receiveBeforeTestDeadline(t, done, "control subscription shutdown") {
+		t.Fatal("runPoolSubscription should report deliberate shutdown as restart=true")
+	}
+}
+
+func TestControlBusPoolSubscriptionHandlesEOSEAndAuthClosedSignals(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	relay := "wss://auth-eose.example"
+	attempts := make(chan controlRelayAttempt, 2)
+	errCh := make(chan error, 1)
+	eoseHandled := make(chan string, 1)
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	health.RecordFailure(relay)
+	b := &ControlRPCBus{
+		relays:               []string{relay},
+		rebindCh:             make(chan struct{}, 1),
+		ctx:                  ctx,
+		cancel:               cancel,
+		public:               nostr.Generate().Public(),
+		health:               health,
+		subHealth:            NewSubHealthTracker("control-rpc"),
+		onError:              func(err error) { errCh <- err },
+		testAfterControlEOSE: func(relayURL string) { eoseHandled <- relayURL },
+		testControlRelaySubscribe: func(ctx context.Context, relayURL string, filter nostr.Filter, generation int, emitEvent func(nostr.RelayEvent) bool, emitEOSE func(controlRelayEOSE), emitClosed func(controlRelayClose)) {
+			attempts <- controlRelayAttempt{relay: relayURL, filter: filter, generation: generation, emitEvent: emitEvent, emitEOSE: emitEOSE, emitClosed: emitClosed}
+			<-ctx.Done()
+		},
+	}
+	done := make(chan bool, 1)
+	go func() { done <- b.runPoolSubscription(b.controlFilter(time.Now().Unix())) }()
+
+	attempt := receiveBeforeTestDeadline(t, attempts, "control auth/eose subscription attempt")
+	attempt.emitEOSE(controlRelayEOSE{relayURL: relay, generation: attempt.generation})
+	if got := receiveBeforeTestDeadline(t, eoseHandled, "control EOSE handling"); got != relay {
+		t.Fatalf("EOSE handled for relay %q, want %q", got, relay)
+	}
+	attempt.emitClosed(controlRelayClose{relayURL: relay, reason: "auth-required: sign in", generation: attempt.generation, handledAuth: true})
+	b.rebindCh <- struct{}{}
+	if !receiveBeforeTestDeadline(t, done, "control subscription shutdown") {
+		t.Fatal("runPoolSubscription should exit as a deliberate rebind")
+	}
+	if !health.Allowed(relay, time.Now()) {
+		t.Fatal("EOSE should record relay progress before handled AUTH CLOSED")
+	}
+	select {
+	case err := <-errCh:
+		t.Fatalf("handled AUTH CLOSED should not surface as error: %v", err)
+	default:
+	}
+	select {
+	case extra := <-attempts:
+		t.Fatalf("handled AUTH CLOSED should not schedule retry attempt: %+v", extra)
+	default:
+	}
+}
+
+func TestControlBusPoolSubscriptionIgnoresStaleCloseAfterRebindGeneration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	relay := "wss://stale-close.example"
+	attempts := make(chan controlRelayAttempt, 4)
+	b := &ControlRPCBus{
+		relays:    []string{relay},
+		rebindCh:  make(chan struct{}, 1),
+		ctx:       ctx,
+		cancel:    cancel,
+		public:    nostr.Generate().Public(),
+		health:    NewRelayHealthTracker(),
+		subHealth: NewSubHealthTracker("control-rpc"),
+		onError:   func(error) {},
+		testControlRelaySubscribe: func(ctx context.Context, relayURL string, filter nostr.Filter, generation int, emitEvent func(nostr.RelayEvent) bool, emitEOSE func(controlRelayEOSE), emitClosed func(controlRelayClose)) {
+			attempts <- controlRelayAttempt{relay: relayURL, filter: filter, generation: generation, emitEvent: emitEvent, emitEOSE: emitEOSE, emitClosed: emitClosed}
+			<-ctx.Done()
+		},
+	}
+	b.health.Seed([]string{relay})
+	done := make(chan bool, 1)
+	go func() { done <- b.runPoolSubscription(b.controlFilter(time.Now().Unix())) }()
+
+	first := receiveBeforeTestDeadline(t, attempts, "first control stale-close attempt")
+	first.emitClosed(controlRelayClose{relayURL: relay, reason: "closed", generation: first.generation})
+	second := receiveBeforeTestDeadline(t, attempts, "second control stale-close attempt")
+	if second.generation != first.generation+1 {
+		t.Fatalf("expected generation to advance, got first=%d second=%d", first.generation, second.generation)
+	}
+
+	first.emitClosed(controlRelayClose{relayURL: relay, reason: "stale close", generation: first.generation})
+	assertNoReceiveWithin(t, attempts, 120*time.Millisecond, "control stale close retry")
+
+	cancel()
+	if !receiveBeforeTestDeadline(t, done, "control stale-close shutdown") {
+		t.Fatal("runPoolSubscription should report deliberate shutdown as restart=true")
+	}
 }
 
 func TestControlBusHealthSeedOnSetRelays(t *testing.T) {
@@ -995,6 +1180,93 @@ func TestHandleInboundInvalidEventDoesNotClearRelayCooldown(t *testing.T) {
 	}
 }
 
+func TestHandleInboundTimestampInvalidRequestsDoNotUpdateThrottle(t *testing.T) {
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	callerPub := mustControlPubKey(t, caller).Hex()
+
+	tests := []struct {
+		name      string
+		createdAt time.Time
+		maxAge    time.Duration
+	}{
+		{name: "expired", createdAt: time.Now().Add(-time.Hour), maxAge: time.Second},
+		{name: "future", createdAt: time.Now().Add(inboundEventMaxFutureSkew + time.Hour), maxAge: time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			b := &ControlRPCBus{
+				pool:              NewPoolNIP42(responder),
+				keyer:             responder,
+				public:            responderPub,
+				ctx:               ctx,
+				onError:           func(error) {},
+				maxReqAge:         tt.maxAge,
+				minCallerInterval: time.Hour,
+				respCache:         map[string]ControlRPCCachedResponse{},
+				responseCap:       4,
+				seenSet:           map[string]struct{}{},
+				seenCap:           16,
+				callerLastRequest: map[string]time.Time{},
+			}
+			defer b.pool.Close("test done")
+
+			evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), tt.createdAt, "req-"+tt.name, "config.set")
+			b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{}})
+
+			if _, ok := b.callerLastRequest[callerPub]; ok {
+				t.Fatalf("%s control request should not update throttle state", tt.name)
+			}
+			if !b.markSeen(evt.ID.Hex()) {
+				t.Fatalf("%s control request should be marked seen before rejection", tt.name)
+			}
+		})
+	}
+}
+
+func TestHandleInboundTimestampInvalidRequestDoesNotClearRelayCooldown(t *testing.T) {
+	relay := "wss://relay.example"
+	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	responderPub := mustControlPubKey(t, responder)
+	health := NewRelayHealthTracker()
+	health.Seed([]string{relay})
+	for i := 0; i < relayFailureCooldownThreshold; i++ {
+		health.RecordFailure(relay)
+	}
+	if health.Allowed(relay, time.Now()) {
+		t.Fatal("expected relay to be cooled down before timestamp-invalid inbound event")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	b := &ControlRPCBus{
+		pool:              NewPoolNIP42(responder),
+		keyer:             responder,
+		public:            responderPub,
+		ctx:               ctx,
+		health:            health,
+		onError:           func(error) {},
+		maxReqAge:         time.Second,
+		respCache:         map[string]ControlRPCCachedResponse{},
+		responseCap:       4,
+		seenSet:           map[string]struct{}{},
+		seenCap:           16,
+		callerLastRequest: map[string]time.Time{},
+	}
+	defer b.pool.Close("test done")
+
+	evt := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now().Add(-time.Hour), "req-expired", "config.set")
+	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{URL: relay}})
+
+	if health.Allowed(relay, time.Now()) {
+		t.Fatal("timestamp-invalid inbound control event must not clear relay cooldown")
+	}
+}
+
 func TestHandleInboundEventReplayOnlyUsesExactEventCacheBeforeThrottleAndExpiry(t *testing.T) {
 	responder := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
 	caller := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
@@ -1178,22 +1450,14 @@ func TestDispatchInboundQueuesWithoutConcurrentHandlerExecution(t *testing.T) {
 	first := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now(), "req-first", "status.get")
 	second := mustSignedControlRequestEvent(t, caller, responderPub.Hex(), time.Now(), "req-second", "status.get")
 	b.dispatchInbound(nostr.RelayEvent{Event: first, Relay: &nostr.Relay{}})
-	select {
-	case <-firstStarted:
-	case <-time.After(time.Second):
-		t.Fatal("first handler did not start")
-	}
+	receiveBeforeTestDeadline(t, firstStarted, "first control handler start")
 
 	returned := make(chan struct{})
 	go func() {
 		b.dispatchInbound(nostr.RelayEvent{Event: second, Relay: &nostr.Relay{}})
 		close(returned)
 	}()
-	select {
-	case <-returned:
-	case <-time.After(time.Second):
-		t.Fatal("dispatchInbound blocked behind the active handler despite queue capacity")
-	}
+	receiveBeforeTestDeadline(t, returned, "queued dispatch return")
 	select {
 	case <-secondStarted:
 		t.Fatal("second handler started concurrently; control requests must remain serialized")
@@ -1201,11 +1465,7 @@ func TestDispatchInboundQueuesWithoutConcurrentHandlerExecution(t *testing.T) {
 	}
 
 	close(releaseFirst)
-	select {
-	case <-secondStarted:
-	case <-time.After(time.Second):
-		t.Fatal("queued second handler did not run after first completed")
-	}
+	receiveBeforeTestDeadline(t, secondStarted, "second control handler start")
 	cancel()
 	b.wg.Wait()
 }

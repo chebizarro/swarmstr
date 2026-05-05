@@ -283,6 +283,42 @@ func toolLifecycleEmitter(emitter gatewayws.EventEmitter, agentID string) agent.
 	}
 }
 
+func persistToolLifecycleTelemetry(sessionStore *state.SessionStore, sessionID string, evt agent.ToolLifecycleEvent) {
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	if strings.TrimSpace(evt.Trace.TaskID) == "" {
+		return
+	}
+	if err := sessionStore.RecordToolLifecycle(sessionID, state.ToolLifecycleTelemetry{
+		TS:         evt.TS,
+		Type:       string(evt.Type),
+		SessionID:  evt.SessionID,
+		TurnID:     evt.TurnID,
+		TaskID:     evt.Trace.TaskID,
+		RunID:      evt.Trace.RunID,
+		StepID:     evt.Trace.StepID,
+		ToolCallID: evt.ToolCallID,
+		ToolName:   evt.ToolName,
+		Result:     evt.Result,
+		Error:      evt.Error,
+	}); err != nil {
+		log.Printf("session store tool lifecycle telemetry failed session=%s: %v", sessionID, err)
+	}
+}
+
+func toolLifecyclePersistenceSink(sessionStore *state.SessionStore, sessionID string, next agent.ToolLifecycleSink) agent.ToolLifecycleSink {
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
+		return next
+	}
+	return func(evt agent.ToolLifecycleEvent) {
+		persistToolLifecycleTelemetry(sessionStore, sessionID, evt)
+		if next != nil {
+			next(evt)
+		}
+	}
+}
+
 func projectToolLifecycleData(data any) any {
 	switch decision := data.(type) {
 	case agent.ToolSchedulerDecision:

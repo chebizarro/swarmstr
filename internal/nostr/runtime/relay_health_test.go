@@ -49,13 +49,9 @@ func TestProbeRelayREQSuccess(t *testing.T) {
 	if !res.Reachable {
 		t.Fatalf("expected reachable relay, got err=%v", res.Err)
 	}
-	select {
-	case subID := <-sawREQ:
-		if strings.TrimSpace(subID) == "" {
-			t.Fatal("expected non-empty subscription id")
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("expected REQ frame to reach test relay")
+	subID := receiveBeforeTestDeadline(t, sawREQ, "relay probe REQ")
+	if strings.TrimSpace(subID) == "" {
+		t.Fatal("expected non-empty subscription id")
 	}
 }
 
@@ -148,24 +144,33 @@ func TestRelayHealthMonitorStartRunsInitialAndPeriodicChecks(t *testing.T) {
 	defer cancel()
 	monitor.Start(ctx)
 
-	select {
-	case initial := <-done:
-		if !initial {
-			t.Fatal("expected first run to be initial")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for initial relay check")
+	initial := receiveBeforeTestDeadline(t, done, "initial relay health callback")
+	if !initial {
+		t.Fatal("expected first run to be initial")
 	}
 
 	monitor.Trigger()
 
-	select {
-	case initial := <-done:
-		if initial {
-			t.Fatal("expected triggered run after initial check")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for triggered relay check")
+	initial = receiveBeforeTestDeadline(t, done, "triggered relay health callback")
+	if initial {
+		t.Fatal("expected triggered run after initial check")
+	}
+}
+
+func TestRelayHealthMonitorCandidatesFallbackWhenAllBlocked(t *testing.T) {
+	tracker := NewRelayHealthTracker()
+	relays := []string{"wss://a", "wss://b"}
+	tracker.Seed(relays)
+	for i := 0; i < relayFailureCooldownThreshold; i++ {
+		tracker.RecordFailure("wss://a")
+		tracker.RecordFailure("wss://b")
+	}
+	candidates := tracker.Candidates(relays, time.Now())
+	if len(candidates) != len(relays) {
+		t.Fatalf("expected fallback to full relay list when all blocked, got %v", candidates)
+	}
+	if candidates[0] != "wss://a" || candidates[1] != "wss://b" {
+		t.Fatalf("expected stable sorted fallback order, got %v", candidates)
 	}
 }
 
@@ -186,18 +191,14 @@ func TestRelayHealthMonitorStartIsIdempotent(t *testing.T) {
 	monitor.Start(ctx)
 	monitor.Start(ctx)
 
-	select {
-	case initial := <-done:
-		if !initial {
-			t.Fatal("expected first callback to be initial")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for initial relay check")
+	initial := receiveBeforeTestDeadline(t, done, "initial relay health callback")
+	if !initial {
+		t.Fatal("expected first callback to be initial")
 	}
 
 	select {
 	case initial := <-done:
 		t.Fatalf("unexpected extra callback after double start: initial=%v", initial)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 }

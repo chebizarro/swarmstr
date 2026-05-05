@@ -3,6 +3,7 @@ package context
 import (
 	stdctx "context"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -51,6 +52,12 @@ var DefaultSessionMemoryCompactConfig = SessionMemoryCompactConfig{
 // Engine.Compact() method (which may be a no-op).
 type SessionMemoryCompacter interface {
 	CompactWithSessionMemory(ctx stdctx.Context, sessionID string, sessionMemory string, config SessionMemoryCompactConfig) (CompactResult, error)
+}
+
+// SessionMemoryStateCompacter is implemented by engines that can apply the
+// per-session extraction boundary tracked by SessionMemoryCompactState.
+type SessionMemoryStateCompacter interface {
+	CompactWithSessionMemoryState(ctx stdctx.Context, sessionID string, sessionMemory string, config SessionMemoryCompactConfig, state *SessionMemoryCompactState) (CompactResult, error)
 }
 
 // ─── Token estimation ──────────────────────────────────────────────���──────────
@@ -215,6 +222,22 @@ func adjustIndexToPreserveToolPairs(messages []Message, startIndex int) int {
 	return adjusted
 }
 
+func resolveLastSummarizedIndex(messages []Message, state *SessionMemoryCompactState, sessionID string) int {
+	if state == nil {
+		return -1
+	}
+	messageID := strings.TrimSpace(state.GetLastSummarized(sessionID))
+	if messageID == "" {
+		return -1
+	}
+	for i, msg := range messages {
+		if msg.ID == messageID {
+			return i
+		}
+	}
+	return -1
+}
+
 // ─── SmallWindowEngine: session memory compaction ──────────��──────────────────
 
 // CompactWithSessionMemory implements SessionMemoryCompacter for
@@ -222,6 +245,13 @@ func adjustIndexToPreserveToolPairs(messages []Message, startIndex int) int {
 // instead of making an LLM call, then prunes old messages while keeping
 // enough recent context.
 func (e *SmallWindowEngine) CompactWithSessionMemory(ctx stdctx.Context, sessionID string, sessionMemory string, config SessionMemoryCompactConfig) (CompactResult, error) {
+	return e.CompactWithSessionMemoryState(ctx, sessionID, sessionMemory, config, nil)
+}
+
+// CompactWithSessionMemoryState compacts using the last-summarized boundary
+// from state when available, preserving messages after that boundary even if
+// the minimum token/message thresholds would otherwise keep less context.
+func (e *SmallWindowEngine) CompactWithSessionMemoryState(ctx stdctx.Context, sessionID string, sessionMemory string, config SessionMemoryCompactConfig, state *SessionMemoryCompactState) (CompactResult, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -239,10 +269,8 @@ func (e *SmallWindowEngine) CompactWithSessionMemory(ctx stdctx.Context, session
 		tokensBefore += (len(sess.summary) + 3) / 4
 	}
 
-	// Use -1 as lastSummarizedIndex — expand backwards from the end.
-	// This is the safest approach: we keep "enough" recent messages and
-	// use the session memory as full context for everything before.
-	startIndex := calculateMessagesToKeepIndex(sess.messages, -1, config)
+	lastSummarizedIndex := resolveLastSummarizedIndex(sess.messages, state, sessionID)
+	startIndex := calculateMessagesToKeepIndex(sess.messages, lastSummarizedIndex, config)
 
 	// Nothing to compact if we're keeping everything.
 	if startIndex == 0 && sess.summary == sessionMemory {
@@ -275,14 +303,15 @@ func (e *SmallWindowEngine) CompactWithSessionMemory(ctx stdctx.Context, session
 // ─── WindowedEngine: session memory compaction ────────────────────────────────
 
 // CompactWithSessionMemory implements SessionMemoryCompacter for
-// WindowedEngine. The windowed engine doesn't track a summary, so this
-// only prunes old messages and stores the summary for future assemble calls.
-//
-// Note: WindowedEngine's AssembleResult doesn't currently use
-// SystemPromptAddition, so the summary won't appear unless the caller reads
-// CompactResult.Summary. This is a minimal implementation for interface
-// compatibility; SmallWindowEngine is the primary target.
+// WindowedEngine. It uses pre-extracted session memory as the summary,
+// prunes old messages, and injects the summary via Assemble.
 func (e *WindowedEngine) CompactWithSessionMemory(ctx stdctx.Context, sessionID string, sessionMemory string, config SessionMemoryCompactConfig) (CompactResult, error) {
+	return e.CompactWithSessionMemoryState(ctx, sessionID, sessionMemory, config, nil)
+}
+
+// CompactWithSessionMemoryState compacts using the last-summarized boundary
+// from state when available and stores the session memory summary for Assemble.
+func (e *WindowedEngine) CompactWithSessionMemoryState(ctx stdctx.Context, sessionID string, sessionMemory string, config SessionMemoryCompactConfig, state *SessionMemoryCompactState) (CompactResult, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -290,14 +319,21 @@ func (e *WindowedEngine) CompactWithSessionMemory(ctx stdctx.Context, sessionID 
 	if len(msgs) == 0 {
 		return CompactResult{OK: true, Compacted: false}, nil
 	}
+	if e.summaries == nil {
+		e.summaries = map[string]string{}
+	}
 
 	tokensBefore := 0
 	for _, msg := range msgs {
 		tokensBefore += estimateMessageTokens(msg)
 	}
+	if summary := e.summaries[sessionID]; summary != "" {
+		tokensBefore += (len(summary) + 3) / 4
+	}
 
-	startIndex := calculateMessagesToKeepIndex(msgs, -1, config)
-	if startIndex == 0 {
+	lastSummarizedIndex := resolveLastSummarizedIndex(msgs, state, sessionID)
+	startIndex := calculateMessagesToKeepIndex(msgs, lastSummarizedIndex, config)
+	if startIndex == 0 && e.summaries[sessionID] == sessionMemory {
 		return CompactResult{OK: true, Compacted: false}, nil
 	}
 
@@ -305,8 +341,9 @@ func (e *WindowedEngine) CompactWithSessionMemory(ctx stdctx.Context, sessionID 
 	copy(kept, msgs[startIndex:])
 	pruned := len(msgs) - len(kept)
 	e.sessions[sessionID] = kept
+	e.summaries[sessionID] = sessionMemory
 
-	tokensAfter := 0
+	tokensAfter := (len(sessionMemory) + 3) / 4
 	for _, msg := range kept {
 		tokensAfter += estimateMessageTokens(msg)
 	}
@@ -314,7 +351,7 @@ func (e *WindowedEngine) CompactWithSessionMemory(ctx stdctx.Context, sessionID 
 	return CompactResult{
 		OK:           true,
 		Compacted:    true,
-		Summary:      fmt.Sprintf("session memory compact: pruned %d messages, kept %d", pruned, len(kept)),
+		Summary:      fmt.Sprintf("session memory compact: pruned %d messages, kept %d, summary %d chars", pruned, len(kept), len(sessionMemory)),
 		TokensBefore: tokensBefore,
 		TokensAfter:  tokensAfter,
 	}, nil
@@ -323,8 +360,10 @@ func (e *WindowedEngine) CompactWithSessionMemory(ctx stdctx.Context, sessionID 
 // ─── Compile-time interface assertions ─────────────────────��──────────────────
 
 var (
-	_ SessionMemoryCompacter = (*SmallWindowEngine)(nil)
-	_ SessionMemoryCompacter = (*WindowedEngine)(nil)
+	_ SessionMemoryCompacter      = (*SmallWindowEngine)(nil)
+	_ SessionMemoryStateCompacter = (*SmallWindowEngine)(nil)
+	_ SessionMemoryCompacter      = (*WindowedEngine)(nil)
+	_ SessionMemoryStateCompacter = (*WindowedEngine)(nil)
 )
 
 // ─── SessionMemoryCompactState tracks last-summarized message for a session ───

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +30,7 @@ type contextAwareBackendStub struct {
 	addedDocs           []state.MemoryDoc
 	deleteIDs           []string
 	deleteResult        bool
+	status              BackendStatus
 }
 
 func (b *contextAwareBackendStub) Add(doc state.MemoryDoc) {}
@@ -63,6 +65,9 @@ func (b *contextAwareBackendStub) ListSession(sessionID string, limit int) []Ind
 	return b.listSessionResult
 }
 func (b *contextAwareBackendStub) BackendStatus() BackendStatus {
+	if b.status.Name != "" {
+		return b.status
+	}
 	return BackendStatus{Name: "stub", Available: true}
 }
 func (b *contextAwareBackendStub) Count() int                                         { return 0 }
@@ -207,6 +212,121 @@ func TestHybridIndexStoreDeleteListAndCompactMirrorBackend(t *testing.T) {
 	}
 	if got := idx.Count(); got != 1 {
 		t.Fatalf("expected one indexed doc after compact, got %d", got)
+	}
+}
+
+func TestHybridIndexDurablyRepairsMissedBackendAdds(t *testing.T) {
+	idxPath := filepath.Join(t.TempDir(), "memory.json")
+	idx, err := OpenIndex(idxPath)
+	if err != nil {
+		t.Fatalf("OpenIndex failed: %v", err)
+	}
+	backend := &contextAwareBackendStub{
+		status: BackendStatus{Name: "stub", Available: false, Degraded: true, LastError: "down"},
+	}
+	hybrid := NewHybridIndex(idx, backend)
+	hybrid.AddWithContext(context.Background(), state.MemoryDoc{
+		MemoryID:  "repair-add",
+		SessionID: "sess",
+		Text:      "queued while backend degraded",
+		Keywords:  []string{"repair"},
+		Unix:      100,
+	})
+	if hybrid.repairQueue == nil || hybrid.repairQueue.len() != 1 {
+		t.Fatalf("expected one queued add repair, got queue=%#v", hybrid.repairQueue)
+	}
+	if _, err := os.Stat(idxPath + ".backend-repair.json"); err != nil {
+		t.Fatalf("expected durable repair queue file: %v", err)
+	}
+
+	backend.addedDocs = nil
+	backend.status = BackendStatus{Name: "stub", Available: true}
+	reloaded := NewHybridIndex(idx, backend)
+	result := reloaded.RepairBackendParity(context.Background())
+	if result.Attempted != 1 || result.Repaired != 1 || result.Remaining != 0 {
+		t.Fatalf("unexpected repair result: %#v", result)
+	}
+	if len(backend.addedDocs) != 1 {
+		t.Fatalf("expected repaired add to replay once, got %#v", backend.addedDocs)
+	}
+	if got := backend.addedDocs[0]; got.MemoryID != "repair-add" || got.Text != "queued while backend degraded" || len(got.Keywords) != 1 || got.Keywords[0] != "repair" {
+		t.Fatalf("unexpected repaired doc: %#v", got)
+	}
+	if _, err := os.Stat(idxPath + ".backend-repair.json"); !os.IsNotExist(err) {
+		t.Fatalf("expected empty repair queue file to be removed, stat err=%v", err)
+	}
+}
+
+func TestHybridIndexDurablyRepairsMissedBackendDeletes(t *testing.T) {
+	idxPath := filepath.Join(t.TempDir(), "memory.json")
+	idx, err := OpenIndex(idxPath)
+	if err != nil {
+		t.Fatalf("OpenIndex failed: %v", err)
+	}
+	backend := &contextAwareBackendStub{status: BackendStatus{Name: "stub", Available: true}}
+	hybrid := NewHybridIndex(idx, backend)
+	hybrid.AddWithContext(context.Background(), state.MemoryDoc{MemoryID: "repair-delete", Text: "remove me", Unix: 100})
+
+	backend.status = BackendStatus{Name: "stub", Available: false, Degraded: true, LastError: "down"}
+	backend.deleteResult = false
+	if ok := hybrid.Delete("repair-delete"); !ok {
+		t.Fatal("expected JSON index delete to report success")
+	}
+	if hybrid.repairQueue == nil || hybrid.repairQueue.len() != 1 {
+		t.Fatalf("expected one queued delete repair, got queue=%#v", hybrid.repairQueue)
+	}
+
+	backend.deleteIDs = nil
+	backend.status = BackendStatus{Name: "stub", Available: true}
+	reloaded := NewHybridIndex(idx, backend)
+	result := reloaded.RepairBackendParity(context.Background())
+	if result.Attempted != 1 || result.Repaired != 1 || result.Remaining != 0 {
+		t.Fatalf("unexpected delete repair result: %#v", result)
+	}
+	if len(backend.deleteIDs) != 1 || backend.deleteIDs[0] != "repair-delete" {
+		t.Fatalf("expected delete tombstone to replay once, got %#v", backend.deleteIDs)
+	}
+	if _, err := os.Stat(idxPath + ".backend-repair.json"); !os.IsNotExist(err) {
+		t.Fatalf("expected empty repair queue file to be removed, stat err=%v", err)
+	}
+}
+
+func TestHybridIndexDeleteRepairUsesPersistedJSONAsSourceOfTruth(t *testing.T) {
+	idxPath := filepath.Join(t.TempDir(), "memory.json")
+	idx, err := OpenIndex(idxPath)
+	if err != nil {
+		t.Fatalf("OpenIndex failed: %v", err)
+	}
+	backend := &contextAwareBackendStub{status: BackendStatus{Name: "stub", Available: true}}
+	hybrid := NewHybridIndex(idx, backend)
+	hybrid.AddWithContext(context.Background(), state.MemoryDoc{MemoryID: "still-present", Text: "persisted truth", Unix: 100})
+	if err := idx.Save(); err != nil {
+		t.Fatalf("save JSON index before failed delete: %v", err)
+	}
+
+	backend.status = BackendStatus{Name: "stub", Available: false, Degraded: true, LastError: "down"}
+	backend.deleteResult = false
+	if ok := hybrid.Delete("still-present"); !ok {
+		t.Fatal("expected JSON index delete to report success")
+	}
+
+	reopened, err := OpenIndex(idxPath)
+	if err != nil {
+		t.Fatalf("reopen JSON index: %v", err)
+	}
+	backend.addedDocs = nil
+	backend.deleteIDs = nil
+	backend.status = BackendStatus{Name: "stub", Available: true}
+	reloaded := NewHybridIndex(reopened, backend)
+	result := reloaded.RepairBackendParity(context.Background())
+	if result.Attempted != 1 || result.Repaired != 1 || result.Remaining != 0 {
+		t.Fatalf("unexpected repair result: %#v", result)
+	}
+	if len(backend.addedDocs) != 1 || backend.addedDocs[0].MemoryID != "still-present" {
+		t.Fatalf("expected repair to re-add doc from persisted JSON index, got %#v", backend.addedDocs)
+	}
+	if len(backend.deleteIDs) != 0 {
+		t.Fatalf("did not expect stale tombstone to delete persisted JSON doc, got %#v", backend.deleteIDs)
 	}
 }
 
