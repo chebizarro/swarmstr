@@ -44,13 +44,7 @@ type relayUpdate struct {
 
 func waitRelayUpdate(t *testing.T, ch <-chan relayUpdate) relayUpdate {
 	t.Helper()
-	select {
-	case upd := <-ch:
-		return upd
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for relay update")
-		return relayUpdate{}
-	}
+	return receiveBeforeTestDeadline(t, ch, "relay update")
 }
 
 func assertNoRelayUpdate(t *testing.T, ch <-chan relayUpdate) {
@@ -58,8 +52,14 @@ func assertNoRelayUpdate(t *testing.T, ch <-chan relayUpdate) {
 	select {
 	case upd := <-ch:
 		t.Fatalf("unexpected relay update: %#v", upd)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
+}
+
+func newTestNIP65SelfSyncState(pk nostr.PubKey, updates chan<- relayUpdate) *nip65SelfSyncState {
+	return newNIP65SelfSyncState(pk, func(read, write []string) {
+		updates <- relayUpdate{read: append([]string{}, read...), write: append([]string{}, write...)}
+	})
 }
 
 func TestDecodeNIP65Event(t *testing.T) {
@@ -218,6 +218,59 @@ func TestRelaySelectorPutGet(t *testing.T) {
 	}
 	if len(got.WriteRelays()) != 2 {
 		t.Errorf("expected 2 write relays, got %d", len(got.WriteRelays()))
+	}
+}
+
+func TestRelaySelectorPutDoesNotReplaceNewerMetadataWithStaleList(t *testing.T) {
+	sel := NewRelaySelector(nil, nil)
+	sel.Put(&NIP65RelayList{
+		PubKey:    "abc123",
+		CreatedAt: 20,
+		EventID:   "bbbb",
+		Entries:   []NIP65RelayEntry{{URL: "wss://new.example", Write: true}},
+	})
+	sel.Put(&NIP65RelayList{
+		PubKey:    "abc123",
+		CreatedAt: 10,
+		EventID:   "ffff",
+		Entries:   []NIP65RelayEntry{{URL: "wss://stale.example", Write: true}},
+	})
+
+	got := sel.Get("abc123")
+	if got == nil {
+		t.Fatal("expected cached list")
+	}
+	if relays := got.WriteRelays(); len(relays) != 1 || relays[0] != "wss://new.example" {
+		t.Fatalf("stale metadata replaced newer list: %v", relays)
+	}
+}
+
+func TestRelaySelectorPutUsesEventIDTieBreakerAtSameTimestamp(t *testing.T) {
+	sel := NewRelaySelector(nil, nil)
+	sel.Put(&NIP65RelayList{
+		PubKey:    "abc123",
+		CreatedAt: 20,
+		EventID:   "1000",
+		Entries:   []NIP65RelayEntry{{URL: "wss://low.example", Write: true}},
+	})
+	sel.Put(&NIP65RelayList{
+		PubKey:    "abc123",
+		CreatedAt: 20,
+		EventID:   "0fff",
+		Entries:   []NIP65RelayEntry{{URL: "wss://stale-tie.example", Write: true}},
+	})
+	if got := sel.Get("abc123"); got == nil || got.WriteRelays()[0] != "wss://low.example" {
+		t.Fatalf("lower event-id tie-break should not replace current list: %#v", got)
+	}
+
+	sel.Put(&NIP65RelayList{
+		PubKey:    "abc123",
+		CreatedAt: 20,
+		EventID:   "1001",
+		Entries:   []NIP65RelayEntry{{URL: "wss://high.example", Write: true}},
+	})
+	if got := sel.Get("abc123"); got == nil || got.WriteRelays()[0] != "wss://high.example" {
+		t.Fatalf("higher event-id tie-break should replace current list: %#v", got)
 	}
 }
 
@@ -425,6 +478,36 @@ func TestSelectLatestVerifiedMetadataEventRejectsInvalidID(t *testing.T) {
 	}
 }
 
+func TestSelectLatestVerifiedMetadataEventRejectsInvalidSameTimestampTieBreak(t *testing.T) {
+	valid := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		10002,
+		nostr.Timestamp(20),
+		nostr.Tags{{"r", "wss://valid.example", "write"}},
+	)
+	invalidID := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		10002,
+		nostr.Timestamp(20),
+		nostr.Tags{{"r", "wss://invalid.example", "write"}},
+	)
+	for i := range invalidID.ID {
+		invalidID.ID[i] = 0xff
+	}
+
+	got := selectLatestVerifiedMetadataEvent(
+		relayEventStream(valid, invalidID),
+		valid.PubKey,
+		10002,
+	)
+	if got == nil {
+		t.Fatal("expected verified event to be selected")
+	}
+	if got.ID != valid.ID {
+		t.Fatalf("invalid same-timestamp tie-break won: selected %s, want %s", got.ID.Hex(), valid.ID.Hex())
+	}
+}
+
 func TestSelectLatestVerifiedMetadataEventRejectsWrongKind(t *testing.T) {
 	valid := mustSignedMetadataEvent(t,
 		"1111111111111111111111111111111111111111111111111111111111111111",
@@ -467,17 +550,12 @@ func TestRunNIP65SelfSyncLoopAppliesBestPreEOSEEvent(t *testing.T) {
 	)
 	updates := make(chan relayUpdate, 4)
 	events := make(chan nostr.RelayEvent, 4)
-	eoseCh := make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runNIP65SelfSyncLoop(ctx, newer.PubKey, events, eoseCh, func(read, write []string) {
-		updates <- relayUpdate{read: append([]string{}, read...), write: append([]string{}, write...)}
-	})
+	state := newTestNIP65SelfSyncState(newer.PubKey, updates)
 
 	events <- nostr.RelayEvent{Event: older}
 	events <- nostr.RelayEvent{Event: newer}
 	assertNoRelayUpdate(t, updates)
-	close(eoseCh)
+	state.handleEOSE(events)
 
 	upd := waitRelayUpdate(t, updates)
 	if !relaySliceEqual(upd.read, []string{"wss://new-read.example"}) {
@@ -508,25 +586,19 @@ func TestRunNIP65SelfSyncLoopIgnoresStaleLiveUpdatesAfterEOSE(t *testing.T) {
 		nostr.Tags{{"r", "wss://live-read.example", "read"}, {"r", "wss://live-write.example", "write"}},
 	)
 	updates := make(chan relayUpdate, 4)
-	events := make(chan nostr.RelayEvent, 4)
-	eoseCh := make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runNIP65SelfSyncLoop(ctx, startup.PubKey, events, eoseCh, func(read, write []string) {
-		updates <- relayUpdate{read: append([]string{}, read...), write: append([]string{}, write...)}
-	})
+	state := newTestNIP65SelfSyncState(startup.PubKey, updates)
 
-	events <- nostr.RelayEvent{Event: startup}
-	close(eoseCh)
+	state.handleEvent(nostr.RelayEvent{Event: startup})
+	state.handleEOSE(nil)
 	first := waitRelayUpdate(t, updates)
 	if !relaySliceEqual(first.read, []string{"wss://startup-read.example"}) || !relaySliceEqual(first.write, []string{"wss://startup-write.example"}) {
 		t.Fatalf("unexpected startup update: %#v", first)
 	}
 
-	events <- nostr.RelayEvent{Event: stale}
+	state.handleEvent(nostr.RelayEvent{Event: stale})
 	assertNoRelayUpdate(t, updates)
 
-	events <- nostr.RelayEvent{Event: newer}
+	state.handleEvent(nostr.RelayEvent{Event: newer})
 	second := waitRelayUpdate(t, updates)
 	if !relaySliceEqual(second.read, []string{"wss://live-read.example"}) || !relaySliceEqual(second.write, []string{"wss://live-write.example"}) {
 		t.Fatalf("unexpected live update: %#v", second)
@@ -558,17 +630,12 @@ func TestRunNIP65SelfSyncLoopUsesEventIDTieBreakerAtSameTimestamp(t *testing.T) 
 	}
 	updates := make(chan relayUpdate, 2)
 	events := make(chan nostr.RelayEvent, 2)
-	eoseCh := make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runNIP65SelfSyncLoop(ctx, expected.PubKey, events, eoseCh, func(read, write []string) {
-		updates <- relayUpdate{read: append([]string{}, read...), write: append([]string{}, write...)}
-	})
+	state := newTestNIP65SelfSyncState(expected.PubKey, updates)
 
 	events <- nostr.RelayEvent{Event: other}
 	events <- nostr.RelayEvent{Event: expected}
 	assertNoRelayUpdate(t, updates)
-	close(eoseCh)
+	state.handleEOSE(events)
 	upd := waitRelayUpdate(t, updates)
 	if !relaySliceEqual(upd.read, expectedRead) || !relaySliceEqual(upd.write, expectedWrite) {
 		t.Fatalf("unexpected tie-break update: %#v expected event=%s", upd, expected.ID.Hex())
@@ -590,16 +657,11 @@ func TestRunNIP65SelfSyncLoopDrainsBufferedPreEOSEEventsBeforeStartupApply(t *te
 	)
 	updates := make(chan relayUpdate, 4)
 	events := make(chan nostr.RelayEvent, 4)
-	eoseCh := make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runNIP65SelfSyncLoop(ctx, newer.PubKey, events, eoseCh, func(read, write []string) {
-		updates <- relayUpdate{read: append([]string{}, read...), write: append([]string{}, write...)}
-	})
+	state := newTestNIP65SelfSyncState(newer.PubKey, updates)
 
 	events <- nostr.RelayEvent{Event: older}
 	events <- nostr.RelayEvent{Event: newer}
-	close(eoseCh)
+	state.handleEOSE(events)
 	upd := waitRelayUpdate(t, updates)
 	if !relaySliceEqual(upd.read, []string{"wss://buffered-read.example"}) || !relaySliceEqual(upd.write, []string{"wss://buffered-write.example"}) {
 		t.Fatalf("unexpected buffered startup update: %#v", upd)
@@ -621,23 +683,41 @@ func TestRunNIP65SelfSyncLoopSuppressesSemanticallyIdenticalRepublish(t *testing
 		nostr.Tags{{"r", "wss://same-read.example", "read"}, {"r", "wss://same-write.example", "write"}},
 	)
 	updates := make(chan relayUpdate, 4)
-	events := make(chan nostr.RelayEvent, 4)
-	eoseCh := make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runNIP65SelfSyncLoop(ctx, startup.PubKey, events, eoseCh, func(read, write []string) {
-		updates <- relayUpdate{read: append([]string{}, read...), write: append([]string{}, write...)}
-	})
+	state := newTestNIP65SelfSyncState(startup.PubKey, updates)
 
-	events <- nostr.RelayEvent{Event: startup}
-	close(eoseCh)
+	state.handleEvent(nostr.RelayEvent{Event: startup})
+	state.handleEOSE(nil)
 	first := waitRelayUpdate(t, updates)
 	if !relaySliceEqual(first.read, []string{"wss://same-read.example"}) || !relaySliceEqual(first.write, []string{"wss://same-write.example"}) {
 		t.Fatalf("unexpected startup update: %#v", first)
 	}
 
-	events <- nostr.RelayEvent{Event: republish}
+	state.handleEvent(nostr.RelayEvent{Event: republish})
 	assertNoRelayUpdate(t, updates)
+}
+
+func TestMetadataValidationFailureFutureThresholdBoundary(t *testing.T) {
+	skHex := "1111111111111111111111111111111111111111111111111111111111111111"
+	base := time.Now()
+	atThreshold := mustSignedMetadataEvent(t,
+		skHex,
+		10002,
+		nostr.Timestamp(base.Add(inboundEventMaxFutureSkew).Unix()),
+		nostr.Tags{{"r", "wss://ok.example", "read"}},
+	)
+	if reason := metadataValidationFailure(atThreshold, atThreshold.PubKey, 10002); reason != "" {
+		t.Fatalf("expected exact future threshold to be accepted, got %q", reason)
+	}
+
+	overThreshold := mustSignedMetadataEvent(t,
+		skHex,
+		10002,
+		nostr.Timestamp(base.Add(inboundEventMaxFutureSkew+time.Second).Unix()),
+		nostr.Tags{{"r", "wss://future.example", "read"}},
+	)
+	if reason := metadataValidationFailure(overThreshold, overThreshold.PubKey, 10002); reason != "created_at_future" {
+		t.Fatalf("expected created_at_future, got %q", reason)
+	}
 }
 
 func TestMetadataValidationFailure(t *testing.T) {

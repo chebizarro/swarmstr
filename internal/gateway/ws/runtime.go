@@ -28,6 +28,8 @@ const (
 	MethodEventsSubscribe   = "events.subscribe"
 	MethodEventsUnsubscribe = "events.unsubscribe"
 	MethodEventsList        = "events.list"
+
+	defaultClientEventBufferSize = 32
 )
 
 type RequestHandler func(context.Context, protocol.RequestFrame) (any, *protocol.ErrorShape)
@@ -48,7 +50,11 @@ type RuntimeOptions struct {
 	AllowInsecureControlUI  bool
 	DeviceAuthSignatureSkew time.Duration
 	WriteTimeout            time.Duration
-	HandleRequest           RequestHandler
+	// EventBufferSize bounds each client's async broadcast queue. When a
+	// subscribed client cannot keep up and its queue fills, the runtime drops
+	// that client instead of blocking fanout to other subscribers.
+	EventBufferSize int
+	HandleRequest   RequestHandler
 	// StaticHandler, when non-nil, is mounted at "/" in the same HTTP server
 	// as the WebSocket endpoint.  It is called only when the request path
 	// does not match Path (the WS path).
@@ -77,6 +83,10 @@ type client struct {
 	subscriptions map[string]struct{}
 
 	writeMu sync.Mutex
+
+	eventQueue chan any
+	eventDone  chan struct{}
+	closeOnce  sync.Once
 
 	authMu       sync.Mutex
 	unauthorized int
@@ -118,6 +128,9 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	}
 	if opts.WriteTimeout <= 0 {
 		opts.WriteTimeout = 5 * time.Second
+	}
+	if opts.EventBufferSize <= 0 {
+		opts.EventBufferSize = defaultClientEventBufferSize
 	}
 
 	if err := validateExposure(opts.Addr, opts.Token); err != nil {
@@ -186,13 +199,14 @@ func (r *Runtime) Broadcast(event string, payload any) {
 				continue
 			}
 			seq := atomic.AddInt64(&r.seq, 1)
-			if err := c.writeFrame(context.Background(), r.writeTimeout(), map[string]any{
+			frame := map[string]any{
 				"type":    protocol.FrameTypeEvent,
 				"event":   name,
 				"seq":     seq,
 				"payload": emitPayload,
-			}); err != nil {
-				r.dropClient(c, "event write failed")
+			}
+			if err := c.enqueueEvent(frame); err != nil {
+				r.dropClient(c, err.Error())
 			}
 		}
 	}
@@ -337,11 +351,15 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 		conn:          conn,
 		connected:     connect,
 		subscriptions: map[string]struct{}{},
+		eventQueue:    make(chan any, r.eventBufferSize()),
+		eventDone:     make(chan struct{}),
 	}
+	go c.runEventWriter(r)
 	r.mu.Lock()
 	r.clients[c.id] = c
 	r.mu.Unlock()
 	defer func() {
+		c.closeEventQueue()
 		r.mu.Lock()
 		delete(r.clients, c.id)
 		r.mu.Unlock()
@@ -361,7 +379,7 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 		Snapshot: r.snapshot(),
 		Policy: protocol.HelloPolicy{
 			MaxPayload:       int(r.opts.MaxPayloadSize),
-			MaxBufferedBytes: int(r.opts.MaxPayloadSize),
+			MaxBufferedBytes: r.maxBufferedBytes(),
 			TickIntervalMS:   1000,
 		},
 	}
@@ -565,9 +583,11 @@ func (r *Runtime) controlPrincipal(req *http.Request, connect protocol.ConnectPa
 		}
 	}
 	if hasDeviceIdentity(connect.Device) {
-		principal.Subject = strings.TrimSpace(connect.Device.ID)
-		if !principal.Authenticated {
-			principal.Authenticated = true
+		deviceID := strings.ToLower(strings.TrimSpace(connect.Device.ID))
+		principal.PubKey = deviceID
+		principal.Subject = deviceID
+		principal.Authenticated = true
+		if strings.EqualFold(strings.TrimSpace(principal.Method), "") || strings.EqualFold(strings.TrimSpace(principal.Method), "none") || strings.EqualFold(strings.TrimSpace(principal.Method), "token") {
 			principal.Method = "device"
 		}
 	}
@@ -724,6 +744,24 @@ func (r *Runtime) writeTimeout() time.Duration {
 	return r.opts.WriteTimeout
 }
 
+func (r *Runtime) eventBufferSize() int {
+	if r == nil || r.opts.EventBufferSize <= 0 {
+		return defaultClientEventBufferSize
+	}
+	return r.opts.EventBufferSize
+}
+
+func (r *Runtime) maxBufferedBytes() int {
+	if r == nil || r.opts.MaxPayloadSize <= 0 {
+		return defaultClientEventBufferSize * (1 << 20)
+	}
+	buffered := r.opts.MaxPayloadSize * int64(r.eventBufferSize())
+	if buffered > int64(^uint(0)>>1) {
+		return int(^uint(0) >> 1)
+	}
+	return int(buffered)
+}
+
 func (c *client) writeFrame(ctx context.Context, timeout time.Duration, frame any) error {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -735,11 +773,57 @@ func (c *client) writeFrame(ctx context.Context, timeout time.Duration, frame an
 	return writeFrame(writeCtx, c.conn, frame)
 }
 
+func (c *client) enqueueEvent(frame any) error {
+	if c == nil {
+		return fmt.Errorf("event client unavailable")
+	}
+	if c.eventQueue == nil || c.eventDone == nil {
+		return fmt.Errorf("event writer unavailable")
+	}
+	select {
+	case <-c.eventDone:
+		return fmt.Errorf("event client closed")
+	case c.eventQueue <- frame:
+		return nil
+	default:
+		return fmt.Errorf("event backlog exceeded")
+	}
+}
+
+func (c *client) runEventWriter(r *Runtime) {
+	if c == nil || c.eventQueue == nil {
+		return
+	}
+	for {
+		select {
+		case <-c.eventDone:
+			return
+		case frame := <-c.eventQueue:
+			if err := c.writeFrame(context.Background(), r.writeTimeout(), frame); err != nil {
+				r.dropClient(c, "event write failed")
+				return
+			}
+		}
+	}
+}
+
+func (c *client) closeEventQueue() {
+	if c == nil || c.eventDone == nil {
+		return
+	}
+	c.closeOnce.Do(func() {
+		close(c.eventDone)
+	})
+}
+
 func (r *Runtime) dropClient(c *client, reason string) {
 	if c == nil {
 		return
 	}
-	_ = c.conn.Close(websocket.StatusPolicyViolation, reason)
+	c.closeEventQueue()
+	if c.conn != nil {
+		_ = c.conn.Close(websocket.StatusPolicyViolation, reason)
+	}
 	r.mu.Lock()
 	delete(r.clients, c.id)
 	r.mu.Unlock()

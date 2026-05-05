@@ -173,6 +173,55 @@ func TestHandleACPMessageReturnsACPErrorForMalformedTask(t *testing.T) {
 	}
 }
 
+func TestHandleACPMessageRepliesWithPongForPing(t *testing.T) {
+	var replied string
+	dm := nostruntime.InboundDM{Reply: func(_ context.Context, text string) error {
+		replied = text
+		return nil
+	}}
+	msg := acppkg.NewPing("task-ping", testACPSenderPubKey, acppkg.PingPayload{Nonce: "nonce-a"})
+	if err := handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agent.NewAgentRuntimeRegistry(nil), agent.NewAgentSessionRouter(), nil, nil, nil); err != nil {
+		t.Fatalf("handleACPMessage ping: %v", err)
+	}
+	parsed, err := acppkg.Parse([]byte(replied))
+	if err != nil {
+		t.Fatalf("parse ACP pong: %v", err)
+	}
+	if parsed.ACPType != "pong" || parsed.TaskID != "task-ping" {
+		t.Fatalf("unexpected pong envelope: %+v", parsed)
+	}
+	payload, err := acppkg.DecodePongPayload(parsed.Payload)
+	if err != nil {
+		t.Fatalf("DecodePongPayload: %v", err)
+	}
+	if payload.Nonce != "nonce-a" {
+		t.Fatalf("pong nonce = %q, want nonce-a", payload.Nonce)
+	}
+}
+
+func TestHandleACPMessageDeliversPongToDispatcher(t *testing.T) {
+	d := acppkg.NewDispatcher()
+	pending := d.Register("task-pong")
+	prev := controlServices
+	controlServices = &daemonServices{}
+	controlServices.relay.acpDispatcher = d
+	defer func() { controlServices = prev }()
+
+	dm := nostruntime.InboundDM{Reply: func(_ context.Context, _ string) error { return nil }}
+	msg := acppkg.NewPong("task-pong", testACPSenderPubKey, acppkg.PongPayload{Nonce: "nonce-b"})
+	if err := handleACPMessage(context.Background(), msg, "peer-pubkey", dm, agent.NewAgentRuntimeRegistry(nil), agent.NewAgentSessionRouter(), nil, nil, nil); err != nil {
+		t.Fatalf("handleACPMessage pong: %v", err)
+	}
+	select {
+	case res := <-pending:
+		if res.TaskID != "task-pong" || strings.TrimSpace(res.Text) != "pong" {
+			t.Fatalf("unexpected dispatcher result: %+v", res)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for dispatcher pong delivery")
+	}
+}
+
 func TestApplyACPTaskRuntimeConstraintsUsesRuntimeFilteredCapability(t *testing.T) {
 	prevToolRegistry := controlToolRegistry
 	controlToolRegistry = agent.NewToolRegistry()
@@ -560,6 +609,50 @@ func requireACPWorkerTaskCleared(t *testing.T, docsRepo *state.DocsRepository, s
 	}
 }
 
+func requireACPWorkerTaskTerminalPersisted(t *testing.T, docsRepo *state.DocsRepository, sessionStore *state.SessionStore, taskID string, wantTaskStatus state.TaskStatus, wantRunStatus state.TaskRunStatus) {
+	t.Helper()
+	taskDoc, err := docsRepo.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("get task doc: %v", err)
+	}
+	if taskDoc.Status != wantTaskStatus {
+		t.Fatalf("task status = %q, want %q", taskDoc.Status, wantTaskStatus)
+	}
+	if taskDoc.CurrentRunID != "" {
+		t.Fatalf("expected task current_run_id cleared, got %q", taskDoc.CurrentRunID)
+	}
+	runs, err := docsRepo.ListTaskRuns(context.Background(), taskID, 10)
+	if err != nil {
+		t.Fatalf("list task runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 task run, got %d", len(runs))
+	}
+	run := runs[0]
+	if run.Status != wantRunStatus {
+		t.Fatalf("run status = %q, want %q", run.Status, wantRunStatus)
+	}
+	if strings.TrimSpace(run.RunID) == "" {
+		t.Fatalf("expected non-empty run id")
+	}
+	if run.Result.Kind == "" || run.Result.ID == "" {
+		t.Fatalf("expected persisted result ref, got %+v", run.Result)
+	}
+	entry, ok := sessionStore.Get("acp:peer-pubkey")
+	if !ok {
+		t.Fatal("expected ACP worker session entry")
+	}
+	if entry.LastCompletedTaskID != taskID {
+		t.Fatalf("last completed task = %q, want %q", entry.LastCompletedTaskID, taskID)
+	}
+	if entry.LastCompletedRunID != run.RunID {
+		t.Fatalf("last completed run = %q, want %q", entry.LastCompletedRunID, run.RunID)
+	}
+	if entry.LastTaskResult.Kind == "" || entry.LastTaskResult.ID == "" {
+		t.Fatalf("expected session last task result linkage, got %+v", entry.LastTaskResult)
+	}
+}
+
 func TestHandleACPMessage_CleansUpWorkerTaskState_OnSuccess(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -627,7 +720,7 @@ func TestHandleACPMessage_CleansUpWorkerTaskState_OnCancel(t *testing.T) {
 			return agent.ProviderResult{}, ctx.Err()
 		},
 	}
-	agentReg, sessionRouter, tools, _, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
+	agentReg, sessionRouter, tools, ss, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
 	defer cleanup()
 
 	var replied string
@@ -648,6 +741,7 @@ func TestHandleACPMessage_CleansUpWorkerTaskState_OnCancel(t *testing.T) {
 		t.Fatalf("handleACPMessage: %v", err)
 	}
 	requireACPWorkerTaskCleared(t, docsRepo, "acp:peer-pubkey")
+	requireACPWorkerTaskTerminalPersisted(t, docsRepo, ss, "task-clean-cancel", state.TaskStatusFailed, state.TaskRunStatusFailed)
 	if !strings.Contains(replied, "context canceled") {
 		t.Fatalf("expected cancellation in reply, got %q", replied)
 	}
@@ -663,7 +757,7 @@ func TestHandleACPMessage_CleansUpWorkerTaskState_OnTimeout(t *testing.T) {
 			return agent.ProviderResult{}, ctx.Err()
 		},
 	}
-	agentReg, sessionRouter, tools, _, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
+	agentReg, sessionRouter, tools, ss, docsRepo, transcriptRepo, cleanup := setupACPWorkerTestRuntime(t, provider)
 	defer cleanup()
 
 	var replied string
@@ -685,6 +779,7 @@ func TestHandleACPMessage_CleansUpWorkerTaskState_OnTimeout(t *testing.T) {
 		t.Fatalf("handleACPMessage: %v", err)
 	}
 	requireACPWorkerTaskCleared(t, docsRepo, "acp:peer-pubkey")
+	requireACPWorkerTaskTerminalPersisted(t, docsRepo, ss, "task-clean-timeout", state.TaskStatusFailed, state.TaskRunStatusFailed)
 	if !strings.Contains(replied, "deadline exceeded") {
 		t.Fatalf("expected timeout in reply, got %q", replied)
 	}

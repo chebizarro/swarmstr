@@ -21,6 +21,8 @@ import (
 	"os"
 	"strings"
 
+	"metiq/internal/nostr/runtime"
+	"metiq/internal/policy"
 	"metiq/internal/store/state"
 )
 
@@ -83,6 +85,8 @@ func Audit(opts AuditOptions) AuditReport {
 	if opts.ConfigDoc != nil {
 		findings = append(findings, checkControlAuthDisabled(bs, *opts.ConfigDoc)...)
 		findings = append(findings, checkControlLegacyTokenFallback(bs, *opts.ConfigDoc)...)
+		findings = append(findings, checkControlAllowUnauthMethods(bs, *opts.ConfigDoc)...)
+		findings = append(findings, checkControlMissingAdmins(bs, *opts.ConfigDoc)...)
 		findings = append(findings, checkOpenDMPolicy(*opts.ConfigDoc)...)
 		findings = append(findings, checkChannelSecrets(*opts.ConfigDoc)...)
 	}
@@ -245,6 +249,43 @@ func checkControlLegacyTokenFallback(bs map[string]any, cfg state.ConfigDoc) []F
 	}}
 }
 
+func checkControlAllowUnauthMethods(bs map[string]any, cfg state.ConfigDoc) []Finding {
+	var findings []Finding
+	for i, method := range cfg.Control.AllowUnauthMethods {
+		m := strings.ToLower(strings.TrimSpace(method))
+		if m == "" || policy.IsUnauthAllowedControlMethod(m) {
+			continue
+		}
+		severity := SeverityWarn
+		if m == "*" || strings.HasSuffix(m, ".*") || policy.IsSensitiveControlMethod(m) || hasNonLoopbackControlIngress(bs) {
+			severity = SeverityCritical
+		}
+		findings = append(findings, Finding{
+			CheckID:     "control-unsafe-allow-unauth-method",
+			Severity:    severity,
+			Message:     fmt.Sprintf("Control allow_unauth_methods[%d]=%q is not an explicitly safe unauthenticated method", i, method),
+			Remediation: "Restrict control.allow_unauth_methods to supportedmethods, health, status, or status.get; sensitive methods always require configured admins.",
+		})
+	}
+	return findings
+}
+
+func checkControlMissingAdmins(bs map[string]any, cfg state.ConfigDoc) []Finding {
+	if !cfg.Control.RequireAuth || len(usableControlAdminPubKeys(cfg.Control.Admins)) > 0 || cfg.Control.LegacyTokenFallback {
+		return nil
+	}
+	severity := SeverityWarn
+	if hasNonLoopbackControlIngress(bs) {
+		severity = SeverityCritical
+	}
+	return []Finding{{
+		CheckID:     "control-no-admins",
+		Severity:    severity,
+		Message:     "Control policy requires authentication but no control admins are configured",
+		Remediation: "Add at least one pubkey to control.admins, or intentionally enable a documented local-only fallback during bootstrap.",
+	}}
+}
+
 func checkGatewayWSTrustedProxyAuth(bs map[string]any) []Finding {
 	if !hasTrustedProxies(bs["gateway_ws_trusted_proxies"]) {
 		return nil
@@ -371,6 +412,21 @@ func checkPublishGuardPolicy(bs map[string]any, cfg *state.ConfigDoc) []Finding 
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+func usableControlAdminPubKeys(admins []state.ControlAdmin) []string {
+	out := make([]string, 0, len(admins))
+	for _, admin := range admins {
+		pubkey := strings.TrimSpace(admin.PubKey)
+		if pubkey == "" {
+			continue
+		}
+		if _, err := runtime.ParsePubKey(pubkey); err != nil {
+			continue
+		}
+		out = append(out, pubkey)
+	}
+	return out
+}
 
 func hasNonLoopbackControlIngress(bs map[string]any) bool {
 	if isNonLoopbackBind(stringValue(bs["admin_listen_addr"])) {

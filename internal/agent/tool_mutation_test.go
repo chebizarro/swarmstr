@@ -72,6 +72,9 @@ func TestIsMutatingToolCall(t *testing.T) {
 		{"unknown read", "unknown_tool", nil, false},
 		{"file_actions get", "file_actions", map[string]interface{}{"action": "get"}, false},
 		{"file_actions delete", "file_actions", map[string]interface{}{"action": "delete"}, true},
+		{"task inspect", "task", map[string]interface{}{"action": "inspect"}, false},
+		{"task run", "task", map[string]interface{}{"action": "run"}, true},
+		{"task write", "task", map[string]interface{}{"action": "write"}, true},
 	}
 
 	for _, tt := range tests {

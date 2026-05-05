@@ -177,9 +177,10 @@ func (NoOpCompact) Compact(_ context.Context, _ string) (CompactResult, error) {
 // N messages without any compaction.
 type WindowedEngine struct {
 	NoOpCompact
-	mu       sync.Mutex
-	sessions map[string][]Message
-	maxMsgs  int
+	mu        sync.Mutex
+	sessions  map[string][]Message
+	summaries map[string]string
+	maxMsgs   int
 }
 
 // NewWindowedEngine creates a WindowedEngine keeping up to maxMsgs messages per session.
@@ -187,7 +188,7 @@ func NewWindowedEngine(maxMsgs int) *WindowedEngine {
 	if maxMsgs <= 0 {
 		maxMsgs = 50
 	}
-	return &WindowedEngine{sessions: map[string][]Message{}, maxMsgs: maxMsgs}
+	return &WindowedEngine{sessions: map[string][]Message{}, summaries: map[string]string{}, maxMsgs: maxMsgs}
 }
 
 func (e *WindowedEngine) Ingest(_ context.Context, sessionID string, msg Message) (IngestResult, error) {
@@ -215,7 +216,16 @@ func (e *WindowedEngine) Assemble(_ context.Context, sessionID string, _ int) (A
 	defer e.mu.Unlock()
 	msgs := make([]Message, len(e.sessions[sessionID]))
 	copy(msgs, e.sessions[sessionID])
-	return AssembleResult{Messages: msgs}, nil
+	estTokens := 0
+	for _, msg := range msgs {
+		estTokens += estimateMessageTokens(msg)
+	}
+	result := AssembleResult{Messages: msgs, EstimatedTokens: estTokens}
+	if summary := e.summaries[sessionID]; summary != "" {
+		result.SystemPromptAddition = summary
+		result.EstimatedTokens += (len(summary) + 3) / 4
+	}
+	return result, nil
 }
 
 func (e *WindowedEngine) Bootstrap(_ context.Context, sessionID string, messages []Message) (BootstrapResult, error) {
@@ -227,6 +237,7 @@ func (e *WindowedEngine) Bootstrap(_ context.Context, sessionID string, messages
 		msgs = msgs[len(msgs)-e.maxMsgs:]
 	}
 	e.sessions[sessionID] = msgs
+	delete(e.summaries, sessionID)
 	return BootstrapResult{Bootstrapped: true, ImportedMessages: len(msgs)}, nil
 }
 

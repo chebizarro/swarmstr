@@ -3,33 +3,67 @@ set -euo pipefail
 
 cd /repo
 
-export METIQ_STATE_DIR="/tmp/metiq-test"
-export METIQ_CONFIG_PATH="${METIQ_STATE_DIR}/config.json"
+export HOME="/tmp/metiq-smoke-home"
+export METIQ_AGENT_PROVIDER="echo"
+export METIQ_AGENT_ALLOW_ECHO="true"
+STATE_DIR="${HOME}/.metiq"
+BOOTSTRAP_PATH="${STATE_DIR}/bootstrap.json"
+PID_FILE="${STATE_DIR}/metiqd.pid"
+LOG_FILE="${STATE_DIR}/metiqd.log"
+ADMIN_ADDR="127.0.0.1:18788"
+PRIVATE_KEY="1111111111111111111111111111111111111111111111111111111111111111"
 
-echo "==> Build"
-pnpm build
+cleanup() {
+  if [[ -f "${PID_FILE}" ]]; then
+    metiq daemon --pid-file "${PID_FILE}" stop >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
 
-echo "==> Seed state"
-mkdir -p "${METIQ_STATE_DIR}/credentials"
-mkdir -p "${METIQ_STATE_DIR}/agents/main/sessions"
-echo '{}' >"${METIQ_CONFIG_PATH}"
-echo 'creds' >"${METIQ_STATE_DIR}/credentials/marker.txt"
-echo 'session' >"${METIQ_STATE_DIR}/agents/main/sessions/sessions.json"
+mkdir -p "${STATE_DIR}"
+cat >"${BOOTSTRAP_PATH}" <<EOF
+{
+  "private_key": "${PRIVATE_KEY}",
+  "relays": ["wss://relay.snort.social"],
+  "admin_listen_addr": "${ADMIN_ADDR}"
+}
+EOF
 
-echo "==> Reset (config+creds+sessions)"
-metiq reset --scope config+creds+sessions --yes --non-interactive
+echo "==> Bootstrap check"
+metiq --bootstrap "${BOOTSTRAP_PATH}" bootstrap-check
 
-test ! -f "${METIQ_CONFIG_PATH}"
-test ! -d "${METIQ_STATE_DIR}/credentials"
-test ! -d "${METIQ_STATE_DIR}/agents/main/sessions"
+echo "==> Initial daemon status"
+initial_status="$(metiq daemon --pid-file "${PID_FILE}" --bootstrap "${BOOTSTRAP_PATH}" status 2>&1)"
+printf '%s\n' "${initial_status}"
+grep -q "status=stopped" <<<"${initial_status}"
 
-echo "==> Recreate minimal config"
-mkdir -p "${METIQ_STATE_DIR}/credentials"
-echo '{}' >"${METIQ_CONFIG_PATH}"
+echo "==> Start daemon"
+metiq daemon \
+  --pid-file "${PID_FILE}" \
+  --log-file "${LOG_FILE}" \
+  --bootstrap "${BOOTSTRAP_PATH}" \
+  start -- --admin-addr "${ADMIN_ADDR}"
 
-echo "==> Uninstall (state only)"
-metiq uninstall --state --yes --non-interactive
+echo "==> Wait for running status"
+running_status=""
+for _ in {1..20}; do
+  running_status="$(metiq daemon --pid-file "${PID_FILE}" --bootstrap "${BOOTSTRAP_PATH}" status 2>&1 || true)"
+  if grep -q "status=running" <<<"${running_status}"; then
+    break
+  fi
+  sleep 1
+done
+printf '%s\n' "${running_status}"
+grep -q "status=running" <<<"${running_status}"
+test -f "${PID_FILE}"
+test -f "${LOG_FILE}"
 
-test ! -d "${METIQ_STATE_DIR}"
+echo "==> Stop daemon"
+metiq daemon --pid-file "${PID_FILE}" stop
+
+echo "==> Final daemon status"
+final_status="$(metiq daemon --pid-file "${PID_FILE}" --bootstrap "${BOOTSTRAP_PATH}" status 2>&1 || true)"
+printf '%s\n' "${final_status}"
+grep -q "status=stopped" <<<"${final_status}"
 
 echo "OK"

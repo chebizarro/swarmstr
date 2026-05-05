@@ -501,6 +501,32 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		if v, ok := acpRaw["transport"].(string); ok {
 			acp.Transport = strings.TrimSpace(v)
 		}
+		if peersRaw, ok := acpRaw["peers"].([]any); ok {
+			for _, item := range peersRaw {
+				peerMap, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				peer := state.ACPPeerConfig{}
+				if v, ok := peerMap["pubkey"].(string); ok {
+					peer.PubKey = strings.TrimSpace(v)
+				}
+				if v, ok := peerMap["alias"].(string); ok {
+					peer.Alias = strings.TrimSpace(v)
+				}
+				if tagsRaw, ok := peerMap["tags"].(map[string]any); ok {
+					peer.Tags = make(map[string]string, len(tagsRaw))
+					for key, value := range tagsRaw {
+						if s, ok := value.(string); ok {
+							peer.Tags[key] = strings.TrimSpace(s)
+						}
+					}
+				}
+				if peer.PubKey != "" {
+					acp.Peers = append(acp.Peers, peer)
+				}
+			}
+		}
 		doc.ACP = acp
 	}
 
@@ -906,7 +932,7 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 		case "control":
 			errs = append(errs, detectUnknownMapKeys("control", value, []string{"require_auth", "allow_unauth_methods", "admins", "legacy_token_fallback"})...)
 		case "acp":
-			errs = append(errs, detectUnknownMapKeys("acp", value, []string{"transport"})...)
+			errs = append(errs, detectUnknownMapKeys("acp", value, []string{"transport", "peers"})...)
 		case "session":
 			errs = append(errs, detectUnknownMapKeys("session", value, []string{"ttl_seconds", "prune_after_days", "prune_idle_after_days", "prune_on_boot"})...)
 		case "storage":

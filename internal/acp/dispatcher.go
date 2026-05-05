@@ -86,6 +86,14 @@ func (d *Dispatcher) PendingCount() int {
 	return n
 }
 
+// HasPending reports whether taskID currently has a waiting dispatcher slot.
+func (d *Dispatcher) HasPending(taskID string) bool {
+	d.mu.Lock()
+	_, ok := d.pending[taskID]
+	d.mu.Unlock()
+	return ok
+}
+
 // Wait blocks until the result for taskID arrives or the context expires.
 func (d *Dispatcher) Wait(ctx context.Context, taskID string, timeout time.Duration) (TaskResult, error) {
 	d.mu.Lock()

@@ -244,6 +244,12 @@ func normalizeMCPPolicyMatchers(field string, value any) ([]map[string]any, erro
 				entry["name"] = name
 			}
 		}
+		if signature, ok := matcher["signature"].(string); ok {
+			signature = strings.TrimSpace(signature)
+			if signature != "" {
+				entry["signature"] = signature
+			}
+		}
 		if command, exists := matcher["command"]; exists {
 			items, err := anyToTrimmedStringList(command)
 			if err != nil {

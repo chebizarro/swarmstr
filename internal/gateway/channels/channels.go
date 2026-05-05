@@ -63,25 +63,32 @@ func NewRegistry() *Registry {
 
 // Add registers a channel.  Returns an error if the channel ID is already registered.
 func (r *Registry) Add(ch Channel) error {
+	if ch == nil {
+		return fmt.Errorf("channel is nil")
+	}
+	id := strings.TrimSpace(ch.ID())
+	if id == "" {
+		return fmt.Errorf("channel ID is required")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.channels[ch.ID()]; ok {
-		return fmt.Errorf("channel %q already joined", ch.ID())
+	if _, ok := r.channels[id]; ok {
+		return fmt.Errorf("channel %q already joined", id)
 	}
-	r.channels[ch.ID()] = ch
-	r.order = append(r.order, ch.ID())
+	r.channels[id] = ch
+	r.order = append(r.order, id)
 	return nil
 }
 
 // Remove closes and removes a channel by ID.
 func (r *Registry) Remove(id string) error {
+	id = strings.TrimSpace(id)
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	ch, ok := r.channels[id]
 	if !ok {
+		r.mu.Unlock()
 		return fmt.Errorf("channel %q not found", id)
 	}
-	ch.Close()
 	delete(r.channels, id)
 	for i, oid := range r.order {
 		if oid == id {
@@ -89,6 +96,8 @@ func (r *Registry) Remove(id string) error {
 			break
 		}
 	}
+	r.mu.Unlock()
+	ch.Close()
 	return nil
 }
 
@@ -107,6 +116,9 @@ func (r *Registry) List() []ChannelInfo {
 	out := make([]ChannelInfo, 0, len(r.order))
 	for _, id := range r.order {
 		ch := r.channels[id]
+		if ch == nil {
+			continue
+		}
 		out = append(out, ChannelInfo{ID: ch.ID(), Type: ch.Type()})
 	}
 	return out
@@ -115,12 +127,18 @@ func (r *Registry) List() []ChannelInfo {
 // CloseAll closes every registered channel.
 func (r *Registry) CloseAll() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, ch := range r.channels {
-		ch.Close()
+	channels := make([]Channel, 0, len(r.order))
+	for _, id := range r.order {
+		if ch := r.channels[id]; ch != nil {
+			channels = append(channels, ch)
+		}
 	}
 	r.channels = make(map[string]Channel)
 	r.order = nil
+	r.mu.Unlock()
+	for _, ch := range channels {
+		ch.Close()
+	}
 }
 
 // ChannelInfo is a summary record returned by List.
@@ -335,6 +353,9 @@ func (c *NIP29GroupChannel) consumeSubscription(ctx context.Context, events <-ch
 }
 
 func (c *NIP29GroupChannel) handleEvent(ev nostr.RelayEvent) bool {
+	if !validChannelEvent(ev.Event, nostr.KindSimpleGroupChatMessage, "h", c.gad.ID) {
+		return false
+	}
 	evIDHex := ev.ID.Hex()
 	if c.seen.Add(evIDHex) {
 		return false // duplicate
@@ -589,6 +610,9 @@ func (c *NIP28PublicChannel) consumeSubscription(ctx context.Context, events <-c
 }
 
 func (c *NIP28PublicChannel) handleEvent(ev nostr.RelayEvent) bool {
+	if !validChannelEvent(ev.Event, nostr.KindChannelMessage, "e", c.channelID) {
+		return false
+	}
 	evIDHex := ev.ID.Hex()
 	if c.seen.Add(evIDHex) {
 		return false // duplicate
@@ -682,6 +706,22 @@ func nextChannelReconnectBackoff(current time.Duration) time.Duration {
 		return channelReconnectMaxBackoff
 	}
 	return next
+}
+
+func validChannelEvent(ev nostr.Event, kind nostr.Kind, tagName, tagValue string) bool {
+	if ev.Kind != kind {
+		return false
+	}
+	if tagName != "" && tagValue != "" && ev.Tags.FindWithValue(tagName, tagValue) == nil {
+		return false
+	}
+	if !ev.CheckID() || !ev.VerifySignature() {
+		return false
+	}
+	if ev.CreatedAt > nostr.Timestamp(time.Now().Add(10*time.Minute).Unix()) {
+		return false
+	}
+	return true
 }
 
 func formatChannelClosed(kind string, rc nostr.RelayClosed) error {

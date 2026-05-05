@@ -70,30 +70,38 @@ func (r *DocsRepository) ListSessions(ctx context.Context, limit int) ([]Session
 	if limit == 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "session", limit*3)
-	if err != nil {
-		return nil, err
-	}
 	type latestSessionDoc struct {
 		doc   SessionDoc
 		event Event
 	}
-	bySession := make(map[string]latestSessionDoc, len(rows))
-	for _, row := range rows {
-		if !hasTagValue(row.Tags, "t", "session") {
-			continue
+	bySession := make(map[string]latestSessionDoc, limit)
+	pageLimit := limit * 4
+	var cursor *EventPageCursor
+	for {
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, "t", "session", pageLimit, cursor)
+		if err != nil {
+			return nil, err
 		}
-		var doc SessionDoc
-		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
-			continue
+		for _, row := range page.Events {
+			if !hasTagValue(row.Tags, "t", "session") {
+				continue
+			}
+			var doc SessionDoc
+			if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+				continue
+			}
+			doc.SessionID = strings.TrimSpace(doc.SessionID)
+			if doc.SessionID == "" {
+				continue
+			}
+			if prior, ok := bySession[doc.SessionID]; !ok || eventIsNewer(row, prior.event) {
+				bySession[doc.SessionID] = latestSessionDoc{doc: doc, event: row}
+			}
 		}
-		doc.SessionID = strings.TrimSpace(doc.SessionID)
-		if doc.SessionID == "" {
-			continue
+		if page.NextCursor == nil {
+			break
 		}
-		if prior, ok := bySession[doc.SessionID]; !ok || row.CreatedAt > prior.event.CreatedAt || (row.CreatedAt == prior.event.CreatedAt && row.ID > prior.event.ID) {
-			bySession[doc.SessionID] = latestSessionDoc{doc: doc, event: row}
-		}
+		cursor = page.NextCursor
 	}
 	out := make([]SessionDoc, 0, len(bySession))
 	for _, entry := range bySession {
@@ -197,7 +205,7 @@ func (r *DocsRepository) ListAgents(ctx context.Context, limit int) ([]AgentDoc,
 				byID[doc.AgentID] = latestAgentDoc{doc: doc, event: row}
 			}
 		}
-		if len(byID) >= limit || page.NextCursor == nil {
+		if page.NextCursor == nil {
 			break
 		}
 		cursor = page.NextCursor
@@ -251,31 +259,39 @@ func (r *DocsRepository) ListTasks(ctx context.Context, limit int) ([]TaskSpec, 
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "task", limit*4)
-	if err != nil {
-		return nil, err
-	}
 	type latestTaskDoc struct {
 		doc   TaskSpec
 		event Event
 	}
-	byID := make(map[string]latestTaskDoc, len(rows))
-	for _, row := range rows {
-		if !hasTagValue(row.Tags, "t", "task") {
-			continue
+	byID := make(map[string]latestTaskDoc, limit)
+	pageLimit := limit * 4
+	var cursor *EventPageCursor
+	for {
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, "t", "task", pageLimit, cursor)
+		if err != nil {
+			return nil, err
 		}
-		var doc TaskSpec
-		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
-			continue
+		for _, row := range page.Events {
+			if !hasTagValue(row.Tags, "t", "task") {
+				continue
+			}
+			var doc TaskSpec
+			if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+				continue
+			}
+			doc = doc.Normalize()
+			doc.TaskID = firstNonEmpty(strings.TrimSpace(doc.TaskID), strings.TrimSpace(tagValue(row.Tags, "task")))
+			if doc.TaskID == "" {
+				continue
+			}
+			if prior, ok := byID[doc.TaskID]; !ok || eventIsNewer(row, prior.event) {
+				byID[doc.TaskID] = latestTaskDoc{doc: doc, event: row}
+			}
 		}
-		doc = doc.Normalize()
-		doc.TaskID = firstNonEmpty(strings.TrimSpace(doc.TaskID), strings.TrimSpace(tagValue(row.Tags, "task")))
-		if doc.TaskID == "" {
-			continue
+		if page.NextCursor == nil {
+			break
 		}
-		if prior, ok := byID[doc.TaskID]; !ok || row.CreatedAt > prior.event.CreatedAt || (row.CreatedAt == prior.event.CreatedAt && row.ID > prior.event.ID) {
-			byID[doc.TaskID] = latestTaskDoc{doc: doc, event: row}
-		}
+		cursor = page.NextCursor
 	}
 	out := make([]TaskSpec, 0, len(byID))
 	for _, entry := range byID {
@@ -323,35 +339,47 @@ func (r *DocsRepository) ListTaskRuns(ctx context.Context, taskID string, limit 
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "task_run", limit*6)
-	if err != nil {
-		return nil, err
-	}
 	taskTag := protectedTagValue(taskID)
+	tagKey, tagFilterValue := "t", "task_run"
+	if taskTag != "" {
+		tagKey, tagFilterValue = "task", taskTag
+	}
 	type latestTaskRunDoc struct {
 		doc   TaskRun
 		event Event
 	}
-	byID := make(map[string]latestTaskRunDoc, len(rows))
-	for _, row := range rows {
-		if !hasTagValue(row.Tags, "t", "task_run") {
-			continue
+	byID := make(map[string]latestTaskRunDoc, limit)
+	pageLimit := limit * 4
+	var cursor *EventPageCursor
+	for {
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagFilterValue, pageLimit, cursor)
+		if err != nil {
+			return nil, err
 		}
-		if taskTag != "" && tagValue(row.Tags, "task") != taskTag {
-			continue
+		for _, row := range page.Events {
+			if !hasTagValue(row.Tags, "t", "task_run") {
+				continue
+			}
+			if taskTag != "" && tagValue(row.Tags, "task") != taskTag {
+				continue
+			}
+			var doc TaskRun
+			if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+				continue
+			}
+			doc = doc.Normalize()
+			doc.RunID = firstNonEmpty(strings.TrimSpace(doc.RunID), strings.TrimSpace(tagValue(row.Tags, "run")))
+			if doc.RunID == "" {
+				continue
+			}
+			if prior, ok := byID[doc.RunID]; !ok || eventIsNewer(row, prior.event) {
+				byID[doc.RunID] = latestTaskRunDoc{doc: doc, event: row}
+			}
 		}
-		var doc TaskRun
-		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
-			continue
+		if page.NextCursor == nil {
+			break
 		}
-		doc = doc.Normalize()
-		doc.RunID = firstNonEmpty(strings.TrimSpace(doc.RunID), strings.TrimSpace(tagValue(row.Tags, "run")))
-		if doc.RunID == "" {
-			continue
-		}
-		if prior, ok := byID[doc.RunID]; !ok || row.CreatedAt > prior.event.CreatedAt || (row.CreatedAt == prior.event.CreatedAt && row.ID > prior.event.ID) {
-			byID[doc.RunID] = latestTaskRunDoc{doc: doc, event: row}
-		}
+		cursor = page.NextCursor
 	}
 	out := make([]TaskRun, 0, len(byID))
 	for _, entry := range byID {
@@ -401,35 +429,47 @@ func (r *DocsRepository) ListPlans(ctx context.Context, goalID string, limit int
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "plan", limit*4)
-	if err != nil {
-		return nil, err
-	}
 	goalTag := protectedTagValue(goalID)
+	tagKey, tagFilterValue := "t", "plan"
+	if goalTag != "" {
+		tagKey, tagFilterValue = "goal", goalTag
+	}
 	type latestPlanDoc struct {
 		doc   PlanSpec
 		event Event
 	}
-	byID := make(map[string]latestPlanDoc, len(rows))
-	for _, row := range rows {
-		if !hasTagValue(row.Tags, "t", "plan") {
-			continue
+	byID := make(map[string]latestPlanDoc, limit)
+	pageLimit := limit * 4
+	var cursor *EventPageCursor
+	for {
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagFilterValue, pageLimit, cursor)
+		if err != nil {
+			return nil, err
 		}
-		if goalTag != "" && tagValue(row.Tags, "goal") != goalTag {
-			continue
+		for _, row := range page.Events {
+			if !hasTagValue(row.Tags, "t", "plan") {
+				continue
+			}
+			if goalTag != "" && tagValue(row.Tags, "goal") != goalTag {
+				continue
+			}
+			var doc PlanSpec
+			if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+				continue
+			}
+			doc = doc.Normalize()
+			doc.PlanID = firstNonEmpty(strings.TrimSpace(doc.PlanID), strings.TrimSpace(tagValue(row.Tags, "plan")))
+			if doc.PlanID == "" {
+				continue
+			}
+			if prior, ok := byID[doc.PlanID]; !ok || eventIsNewer(row, prior.event) {
+				byID[doc.PlanID] = latestPlanDoc{doc: doc, event: row}
+			}
 		}
-		var doc PlanSpec
-		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
-			continue
+		if page.NextCursor == nil {
+			break
 		}
-		doc = doc.Normalize()
-		doc.PlanID = firstNonEmpty(strings.TrimSpace(doc.PlanID), strings.TrimSpace(tagValue(row.Tags, "plan")))
-		if doc.PlanID == "" {
-			continue
-		}
-		if prior, ok := byID[doc.PlanID]; !ok || row.CreatedAt > prior.event.CreatedAt || (row.CreatedAt == prior.event.CreatedAt && row.ID > prior.event.ID) {
-			byID[doc.PlanID] = latestPlanDoc{doc: doc, event: row}
-		}
+		cursor = page.NextCursor
 	}
 	out := make([]PlanSpec, 0, len(byID))
 	for _, entry := range byID {
@@ -471,38 +511,50 @@ func (r *DocsRepository) ListWorkflowJournals(ctx context.Context, taskID string
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "workflow_journal", limit*4)
-	if err != nil {
-		return nil, err
-	}
 	taskTag := protectedTagValue(taskID)
+	tagKey, tagFilterValue := "t", "workflow_journal"
+	if taskTag != "" {
+		tagKey, tagFilterValue = "task", taskTag
+	}
 	type latestJournalDoc struct {
 		doc   WorkflowJournalDoc
 		event Event
 	}
-	byRun := make(map[string]latestJournalDoc, len(rows))
-	for _, row := range rows {
-		if !hasTagValue(row.Tags, "t", "workflow_journal") {
-			continue
+	byRun := make(map[string]latestJournalDoc, limit)
+	pageLimit := limit * 4
+	var cursor *EventPageCursor
+	for {
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagFilterValue, pageLimit, cursor)
+		if err != nil {
+			return nil, err
 		}
-		if taskTag != "" && tagValue(row.Tags, "task") != taskTag {
-			continue
+		for _, row := range page.Events {
+			if !hasTagValue(row.Tags, "t", "workflow_journal") {
+				continue
+			}
+			if taskTag != "" && tagValue(row.Tags, "task") != taskTag {
+				continue
+			}
+			var doc WorkflowJournalDoc
+			if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+				continue
+			}
+			doc.RunID = firstNonEmpty(strings.TrimSpace(doc.RunID), strings.TrimSpace(tagValue(row.Tags, "run")))
+			if doc.RunID == "" {
+				continue
+			}
+			if doc.UpdatedAt == 0 {
+				doc.UpdatedAt = row.CreatedAt
+			}
+			prev, exists := byRun[doc.RunID]
+			if !exists || eventIsNewer(row, prev.event) {
+				byRun[doc.RunID] = latestJournalDoc{doc: doc, event: row}
+			}
 		}
-		var doc WorkflowJournalDoc
-		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
-			continue
+		if page.NextCursor == nil {
+			break
 		}
-		doc.RunID = firstNonEmpty(strings.TrimSpace(doc.RunID), strings.TrimSpace(tagValue(row.Tags, "run")))
-		if doc.RunID == "" {
-			continue
-		}
-		if doc.UpdatedAt == 0 {
-			doc.UpdatedAt = row.CreatedAt
-		}
-		prev, exists := byRun[doc.RunID]
-		if !exists || row.CreatedAt > prev.event.CreatedAt || (row.CreatedAt == prev.event.CreatedAt && row.ID > prev.event.ID) {
-			byRun[doc.RunID] = latestJournalDoc{doc: doc, event: row}
-		}
+		cursor = page.NextCursor
 	}
 	out := make([]WorkflowJournalDoc, 0, len(byRun))
 	for _, entry := range byRun {
@@ -559,7 +611,7 @@ func (r *DocsRepository) ListAgentFiles(ctx context.Context, agentID string, lim
 				byName[doc.Name] = latestAgentFileDoc{doc: doc, event: row}
 			}
 		}
-		if len(byName) >= limit || page.NextCursor == nil {
+		if page.NextCursor == nil {
 			break
 		}
 		cursor = page.NextCursor

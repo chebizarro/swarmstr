@@ -19,6 +19,7 @@ import (
 	"fiatjaf.com/nostr/keyer"
 	"fiatjaf.com/nostr/nip44"
 
+	acppkg "metiq/internal/acp"
 	"metiq/internal/agent"
 	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/autoreply"
@@ -61,6 +62,29 @@ func (k mainTestKeyer) Decrypt(_ context.Context, ciphertext string, sender nost
 		return "", err
 	}
 	return nip44.Decrypt(ciphertext, ck)
+}
+
+func TestPrepopulateACPPeersFromConfig(t *testing.T) {
+	reg := acppkg.NewPeerRegistry()
+	cfg := state.ConfigDoc{ACP: state.ACPConfig{Peers: []state.ACPPeerConfig{
+		{PubKey: "peer-1", Alias: "Worker 1", Tags: map[string]string{"tier": "gold"}},
+		{PubKey: "   "},
+	}}}
+
+	added := prepopulateACPPeersFromConfig(reg, cfg)
+	if added != 1 {
+		t.Fatalf("prepopulate count = %d, want 1", added)
+	}
+	if !reg.IsPeer("peer-1") {
+		t.Fatal("expected peer-1 to be registered")
+	}
+	entry, ok := reg.Get("peer-1")
+	if !ok {
+		t.Fatal("expected peer-1 entry")
+	}
+	if entry.Alias != "Worker 1" || entry.Tags["tier"] != "gold" {
+		t.Fatalf("unexpected peer entry: %#v", entry)
+	}
 }
 
 func TestEnsureRuntimeConfigDefaultsStorageEncryption(t *testing.T) {

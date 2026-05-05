@@ -88,6 +88,49 @@ func TestRegistry_list(t *testing.T) {
 	}
 }
 
+type callbackCloseChannel struct {
+	id      string
+	onClose func()
+}
+
+func (c callbackCloseChannel) ID() string                         { return c.id }
+func (c callbackCloseChannel) Type() string                       { return "callback" }
+func (c callbackCloseChannel) Send(context.Context, string) error { return nil }
+func (c callbackCloseChannel) Close() {
+	if c.onClose != nil {
+		c.onClose()
+	}
+}
+
+func TestRegistry_removeClosesOutsideLock(t *testing.T) {
+	r := NewRegistry()
+	closed := make(chan struct{}, 1)
+	if err := r.Add(callbackCloseChannel{id: "ch1", onClose: func() {
+		_ = r.List()
+		closed <- struct{}{}
+	}}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := r.Remove("ch1"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	select {
+	case <-closed:
+	default:
+		t.Fatal("close callback did not run")
+	}
+}
+
+func TestRegistry_rejectsNilAndEmptyChannels(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Add(nil); err == nil {
+		t.Fatal("expected nil channel error")
+	}
+	if err := r.Add(&stubChannel{}); err == nil {
+		t.Fatal("expected empty channel ID error")
+	}
+}
+
 func TestRegistry_closeAll(t *testing.T) {
 	r := NewRegistry()
 	ch1 := &stubChannel{id: "a"}
@@ -303,15 +346,63 @@ func waitChannelError(t *testing.T, errs <-chan error) error {
 }
 
 func testRelayEvent(eventID string, kind nostr.Kind, createdAt int64, content string) nostr.RelayEvent {
+	tags := nostr.Tags{}
+	switch kind {
+	case nostr.KindSimpleGroupChatMessage:
+		tags = append(tags, nostr.Tag{"h", "group"})
+	case nostr.KindChannelMessage:
+		tags = append(tags, nostr.Tag{"e", "channel-root", "", "root"})
+	}
+	sk, err := nostr.SecretKeyFromHex(strings.Repeat("3", 64))
+	if err != nil {
+		panic(err)
+	}
+	evt := nostr.Event{
+		Kind:      kind,
+		CreatedAt: nostr.Timestamp(createdAt),
+		Content:   content,
+		Tags:      tags,
+	}
+	if err := evt.Sign([32]byte(sk)); err != nil {
+		panic(err)
+	}
+	if eventID == "bad-id" {
+		evt.ID = nostr.MustIDFromHex(strings.Repeat("f", 64))
+	}
 	return nostr.RelayEvent{
-		Event: nostr.Event{
-			ID:        nostr.MustIDFromHex(eventID),
-			PubKey:    nostr.MustPubKeyFromHex(strings.Repeat("2", 64)),
-			Kind:      kind,
-			CreatedAt: nostr.Timestamp(createdAt),
-			Content:   content,
-		},
+		Event: evt,
 		Relay: &nostr.Relay{URL: "wss://relay.test"},
+	}
+}
+
+func TestNIP29GroupChannel_rejectsInvalidOrWrongGroupEvents(t *testing.T) {
+	var delivered atomic.Int32
+	ch := &NIP29GroupChannel{
+		id:     "relay.test'group",
+		gad:    nip29.GroupAddress{Relay: "wss://relay.test", ID: "group"},
+		pubkey: strings.Repeat("1", 64),
+		seen:   NewSeenCache(),
+		onMsg:  func(InboundMessage) { delivered.Add(1) },
+	}
+
+	badID := testRelayEvent("bad-id", nostr.KindSimpleGroupChatMessage, 1000, "bad id")
+	if ch.handleEvent(badID) {
+		t.Fatal("bad event ID should not be processed")
+	}
+	wrongGroup := testRelayEvent("", nostr.KindSimpleGroupChatMessage, 1001, "wrong group")
+	wrongGroup.Tags = nostr.Tags{{"h", "other-group"}}
+	sk, err := nostr.SecretKeyFromHex(strings.Repeat("3", 64))
+	if err != nil {
+		t.Fatalf("parse test secret: %v", err)
+	}
+	if err := wrongGroup.Sign([32]byte(sk)); err != nil {
+		t.Fatalf("sign wrong-group event: %v", err)
+	}
+	if ch.handleEvent(wrongGroup) {
+		t.Fatal("wrong group tag should not be processed")
+	}
+	if delivered.Load() != 0 {
+		t.Fatalf("delivered invalid events = %d, want 0", delivered.Load())
 	}
 }
 

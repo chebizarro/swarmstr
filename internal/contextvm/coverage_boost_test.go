@@ -18,12 +18,12 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type mockKeyer struct {
-	pubKey    nostr.PubKey
-	encReply  string
-	encErr    error
-	decReply  string
-	decErr    error
-	signErr   error
+	pubKey   nostr.PubKey
+	encReply string
+	encErr   error
+	decReply string
+	decErr   error
+	signErr  error
 }
 
 func (m *mockKeyer) GetPublicKey(_ context.Context) (nostr.PubKey, error) {
@@ -84,19 +84,19 @@ var _ nostruntime.NIP04Decrypter = (*mockNIP04Keyer)(nil)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ListTools / SendRaw go through sendRequest() directly (not the mockable
-// sendContextVMRequestWithTimeout), so they require real nostr infra.
+// sendContextVMRequest), so they require real nostr infra.
 // We skip full integration and instead test the parse paths via executeJSONRPC.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func TestExecuteJSONRPC_ToolsListParsing(t *testing.T) {
-	prev := sendContextVMRequestWithTimeout
-	defer func() { sendContextVMRequestWithTimeout = prev }()
+	prev := sendContextVMRequest
+	defer func() { sendContextVMRequest = prev }()
 
-	sendContextVMRequestWithTimeout = mockRequestFn(`{"jsonrpc":"2.0","result":{"tools":[{"name":"echo","description":"Echo input"}]}}`)
+	sendContextVMRequest = mockRequestFn(`{"jsonrpc":"2.0","result":{"tools":[{"name":"echo","description":"Echo input"}]}}`)
 
 	raw, err := executeJSONRPC(context.Background(), nil, nil, nil, "pk", map[string]any{
 		"method": "tools/list",
-	}, 30*time.Second, "none")
+	}, "none")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,24 +112,24 @@ func TestExecuteJSONRPC_ToolsListParsing(t *testing.T) {
 }
 
 func TestExecuteJSONRPC_ServerErrorReturned(t *testing.T) {
-	prev := sendContextVMRequestWithTimeout
-	defer func() { sendContextVMRequestWithTimeout = prev }()
+	prev := sendContextVMRequest
+	defer func() { sendContextVMRequest = prev }()
 
-	sendContextVMRequestWithTimeout = mockRequestFn(`{"jsonrpc":"2.0","error":{"message":"method not found"}}`)
+	sendContextVMRequest = mockRequestFn(`{"jsonrpc":"2.0","error":{"message":"method not found"}}`)
 
-	_, err := executeJSONRPC(context.Background(), nil, nil, nil, "pk", map[string]any{}, 30*time.Second, "none")
+	_, err := executeJSONRPC(context.Background(), nil, nil, nil, "pk", map[string]any{}, "none")
 	if err == nil || !strings.Contains(err.Error(), "method not found") {
 		t.Errorf("err: %v", err)
 	}
 }
 
 func TestExecuteJSONRPC_TransportFailure(t *testing.T) {
-	prev := sendContextVMRequestWithTimeout
-	defer func() { sendContextVMRequestWithTimeout = prev }()
+	prev := sendContextVMRequest
+	defer func() { sendContextVMRequest = prev }()
 
-	sendContextVMRequestWithTimeout = mockRequestErr("connection refused")
+	sendContextVMRequest = mockRequestErr("connection refused")
 
-	_, err := executeJSONRPC(context.Background(), nil, nil, nil, "pk", map[string]any{}, 30*time.Second, "none")
+	_, err := executeJSONRPC(context.Background(), nil, nil, nil, "pk", map[string]any{}, "none")
 	if err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Errorf("err: %v", err)
 	}
@@ -368,10 +368,10 @@ func TestDecodeServerEvent_PictureAndWebsite(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func TestCallToolWithTimeout_IsError(t *testing.T) {
-	prev := sendContextVMRequestWithTimeout
-	defer func() { sendContextVMRequestWithTimeout = prev }()
+	prev := sendContextVMRequest
+	defer func() { sendContextVMRequest = prev }()
 
-	sendContextVMRequestWithTimeout = mockRequestFn(`{
+	sendContextVMRequest = mockRequestFn(`{
 		"jsonrpc":"2.0",
 		"result":{"content":[{"type":"text","text":"fail"}],"isError":true}
 	}`)
@@ -389,10 +389,10 @@ func TestCallToolWithTimeout_IsError(t *testing.T) {
 }
 
 func TestCallToolWithTimeout_EmptyContent(t *testing.T) {
-	prev := sendContextVMRequestWithTimeout
-	defer func() { sendContextVMRequestWithTimeout = prev }()
+	prev := sendContextVMRequest
+	defer func() { sendContextVMRequest = prev }()
 
-	sendContextVMRequestWithTimeout = mockRequestFn(`{"jsonrpc":"2.0","result":{"content":[]}}`)
+	sendContextVMRequest = mockRequestFn(`{"jsonrpc":"2.0","result":{"content":[]}}`)
 
 	res, err := CallToolWithTimeout(context.Background(), nil, nil, nil, "pk", "tool", nil, 5*time.Second, "none")
 	if err != nil {
@@ -408,12 +408,12 @@ func TestCallToolWithTimeout_EmptyContent(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func TestExecuteJSONRPC_EmptyResult(t *testing.T) {
-	prev := sendContextVMRequestWithTimeout
-	defer func() { sendContextVMRequestWithTimeout = prev }()
+	prev := sendContextVMRequest
+	defer func() { sendContextVMRequest = prev }()
 
-	sendContextVMRequestWithTimeout = mockRequestFn(`{"jsonrpc":"2.0","result":null}`)
+	sendContextVMRequest = mockRequestFn(`{"jsonrpc":"2.0","result":null}`)
 
-	_, err := executeJSONRPC(context.Background(), nil, nil, nil, "pk", map[string]any{}, 30*time.Second, "none")
+	_, err := executeJSONRPC(context.Background(), nil, nil, nil, "pk", map[string]any{}, "none")
 	if err == nil || !strings.Contains(err.Error(), "missing result") {
 		t.Errorf("err: %v", err)
 	}
@@ -424,10 +424,10 @@ func TestExecuteJSONRPC_EmptyResult(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func TestListResources_MultipleResources(t *testing.T) {
-	prev := sendContextVMRequestWithTimeout
-	defer func() { sendContextVMRequestWithTimeout = prev }()
+	prev := sendContextVMRequest
+	defer func() { sendContextVMRequest = prev }()
 
-	sendContextVMRequestWithTimeout = mockRequestFn(`{
+	sendContextVMRequest = mockRequestFn(`{
 		"jsonrpc":"2.0",
 		"result":{"resources":[
 			{"uri":"file:///a.txt","name":"a"},
@@ -449,10 +449,10 @@ func TestListResources_MultipleResources(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func TestGetPrompt_ServerError(t *testing.T) {
-	prev := sendContextVMRequestWithTimeout
-	defer func() { sendContextVMRequestWithTimeout = prev }()
+	prev := sendContextVMRequest
+	defer func() { sendContextVMRequest = prev }()
 
-	sendContextVMRequestWithTimeout = mockRequestFn(`{"jsonrpc":"2.0","error":{"message":"prompt not found"}}`)
+	sendContextVMRequest = mockRequestFn(`{"jsonrpc":"2.0","error":{"message":"prompt not found"}}`)
 
 	_, err := GetPrompt(context.Background(), nil, nil, nil, "pk", "missing", nil, "none")
 	if err == nil || !strings.Contains(err.Error(), "prompt not found") {
@@ -461,10 +461,10 @@ func TestGetPrompt_ServerError(t *testing.T) {
 }
 
 func TestGetPrompt_NetworkError(t *testing.T) {
-	prev := sendContextVMRequestWithTimeout
-	defer func() { sendContextVMRequestWithTimeout = prev }()
+	prev := sendContextVMRequest
+	defer func() { sendContextVMRequest = prev }()
 
-	sendContextVMRequestWithTimeout = mockRequestErr("connection reset")
+	sendContextVMRequest = mockRequestErr("connection reset")
 
 	_, err := GetPrompt(context.Background(), nil, nil, nil, "pk", "test", nil, "none")
 	if err == nil || !strings.Contains(err.Error(), "connection reset") {
@@ -477,10 +477,10 @@ func TestGetPrompt_NetworkError(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func TestReadResource_WithMimeType(t *testing.T) {
-	prev := sendContextVMRequestWithTimeout
-	defer func() { sendContextVMRequestWithTimeout = prev }()
+	prev := sendContextVMRequest
+	defer func() { sendContextVMRequest = prev }()
 
-	sendContextVMRequestWithTimeout = mockRequestFn(`{
+	sendContextVMRequest = mockRequestFn(`{
 		"jsonrpc":"2.0",
 		"result":{"contents":[{"uri":"file:///x","text":"hello","mimeType":"text/plain"}]}
 	}`)

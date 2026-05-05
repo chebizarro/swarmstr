@@ -48,14 +48,30 @@ func ControlResponseListenRelayCandidates(ctx context.Context, selector *RelaySe
 }
 
 func controlAuthorPublishRelays(ctx context.Context, selector *RelaySelector, pool *nostr.Pool, queryRelays []string, authorPubKey string) []string {
-	if selector == nil || pool == nil {
+	if selector == nil {
+		return sanitizeRelayList(queryRelays)
+	}
+	if pool == nil {
+		if list := selector.Get(authorPubKey); list != nil {
+			if relays := sanitizeRelayList(list.WriteRelays()); len(relays) > 0 {
+				return relays
+			}
+		}
 		return sanitizeRelayList(queryRelays)
 	}
 	return sanitizeRelayList(selector.RelaysForPublishingAsAuthor(ctx, pool, queryRelays, authorPubKey))
 }
 
 func controlTargetReadRelays(ctx context.Context, selector *RelaySelector, pool *nostr.Pool, queryRelays []string, targetPubKey string) []string {
-	if selector == nil || pool == nil {
+	if selector == nil {
+		return sanitizeRelayList(queryRelays)
+	}
+	if pool == nil {
+		if list := selector.Get(targetPubKey); list != nil {
+			if relays := sanitizeRelayList(list.ReadRelays()); len(relays) > 0 {
+				return relays
+			}
+		}
 		return sanitizeRelayList(queryRelays)
 	}
 	return sanitizeRelayList(selector.RelaysForDownloadingAbout(ctx, pool, queryRelays, targetPubKey))

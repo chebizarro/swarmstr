@@ -2,6 +2,7 @@ package context
 
 import (
 	stdctx "context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -236,13 +237,33 @@ func TestCalcKeepIndex_ExpandsFromSummarizedIndex(t *testing.T) {
 	}
 }
 
+func TestResolveLastSummarizedIndex(t *testing.T) {
+	state := NewSessionMemoryCompactState()
+	state.SetLastSummarized("sess1", "msg-2")
+	msgs := []Message{
+		{ID: "msg-1", Role: "user", Content: "one"},
+		{ID: "msg-2", Role: "user", Content: "two"},
+		{ID: "msg-3", Role: "user", Content: "three"},
+	}
+	if got := resolveLastSummarizedIndex(msgs, state, "sess1"); got != 1 {
+		t.Fatalf("expected index 1, got %d", got)
+	}
+	state.SetLastSummarized("sess1", "missing")
+	if got := resolveLastSummarizedIndex(msgs, state, "sess1"); got != -1 {
+		t.Fatalf("expected missing boundary to fall back to -1, got %d", got)
+	}
+	if got := resolveLastSummarizedIndex(msgs, nil, "sess1"); got != -1 {
+		t.Fatalf("expected nil state to fall back to -1, got %d", got)
+	}
+}
+
 func TestCalcKeepIndex_PreservesToolPairs(t *testing.T) {
 	msgs := []Message{
-		{Role: "user", Content: strings.Repeat("x", 40000)},           // 0: big msg
+		{Role: "user", Content: strings.Repeat("x", 40000)},                        // 0: big msg
 		{Role: "assistant", ToolCalls: []ToolCallRef{{ID: "tc1", Name: "search"}}}, // 1
 		{Role: "tool", Content: "result data", ToolCallID: "tc1"},                  // 2
-		{Role: "user", Content: strings.Repeat("x", 40000)},           // 3: big msg
-		{Role: "assistant", Content: strings.Repeat("x", 40000)},      // 4: big msg
+		{Role: "user", Content: strings.Repeat("x", 40000)},                        // 3: big msg
+		{Role: "assistant", Content: strings.Repeat("x", 40000)},                   // 4: big msg
 	}
 
 	cfg := SessionMemoryCompactConfig{
@@ -344,6 +365,28 @@ func TestSWE_CompactWithSM_SummaryAppearsInAssemble(t *testing.T) {
 	}
 }
 
+func TestSWE_CompactWithSM_StateBoundaryPreservesUnsummarizedTail(t *testing.T) {
+	e := NewSmallWindowEngine(TierStandardSW, DefaultSmallWindowBudget(TierStandardSW))
+	ctx := stdctx.Background()
+	for i := 0; i < 20; i++ {
+		if _, err := e.Ingest(ctx, "sess1", Message{ID: fmt.Sprintf("msg-%02d", i), Role: "user", Content: strings.Repeat("x", 400)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := NewSessionMemoryCompactState()
+	state.SetLastSummarized("sess1", "msg-09")
+	cfg := SessionMemoryCompactConfig{MinTokens: 1, MinTextBlockMessages: 1, MaxTokens: 40_000}
+	if _, err := e.CompactWithSessionMemoryState(ctx, "sess1", "# Summary", cfg, state); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	msgs := e.sessions["sess1"].messages
+	if len(msgs) != 10 || msgs[0].ID != "msg-10" {
+		t.Fatalf("expected state boundary to keep msg-10..msg-19, got len=%d first=%q", len(msgs), msgs[0].ID)
+	}
+}
+
 func TestSWE_CompactWithSM_PreservesToolPairs(t *testing.T) {
 	e := NewSmallWindowEngine(TierStandardSW, DefaultSmallWindowBudget(TierStandardSW))
 	ctx := stdctx.Background()
@@ -423,6 +466,76 @@ func TestWE_CompactWithSM_PrunesMessages(t *testing.T) {
 	}
 	if cr.TokensAfter >= cr.TokensBefore {
 		t.Errorf("expected fewer tokens: before=%d after=%d", cr.TokensBefore, cr.TokensAfter)
+	}
+}
+
+func TestWE_CompactWithSM_SummaryAppearsInAssemble(t *testing.T) {
+	e := NewWindowedEngine(100)
+	ctx := stdctx.Background()
+	for i := 0; i < 20; i++ {
+		if _, err := e.Ingest(ctx, "sess1", Message{Role: "user", Content: strings.Repeat("x", 4000)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summary := "# Session Title\nWindowed summary"
+	if _, err := e.CompactWithSessionMemory(ctx, "sess1", summary, DefaultSessionMemoryCompactConfig); err != nil {
+		t.Fatal(err)
+	}
+	assembled, err := e.Assemble(ctx, "sess1", 100_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assembled.SystemPromptAddition != summary {
+		t.Fatalf("expected windowed summary in assemble, got %q", assembled.SystemPromptAddition)
+	}
+	if assembled.EstimatedTokens <= 0 {
+		t.Fatalf("expected windowed assemble to estimate messages and summary tokens")
+	}
+}
+
+func TestWE_CompactWithSM_StateBoundaryPreservesUnsummarizedTail(t *testing.T) {
+	e := NewWindowedEngine(100)
+	ctx := stdctx.Background()
+	for i := 0; i < 20; i++ {
+		if _, err := e.Ingest(ctx, "sess1", Message{ID: fmt.Sprintf("msg-%02d", i), Role: "user", Content: strings.Repeat("x", 400)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := NewSessionMemoryCompactState()
+	state.SetLastSummarized("sess1", "msg-09")
+	cfg := SessionMemoryCompactConfig{MinTokens: 1, MinTextBlockMessages: 1, MaxTokens: 40_000}
+	if _, err := e.CompactWithSessionMemoryState(ctx, "sess1", "# Summary", cfg, state); err != nil {
+		t.Fatal(err)
+	}
+	assembled, err := e.Assemble(ctx, "sess1", 100_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assembled.Messages) != 10 || assembled.Messages[0].ID != "msg-10" {
+		t.Fatalf("expected state boundary to keep msg-10..msg-19, got len=%d first=%q", len(assembled.Messages), assembled.Messages[0].ID)
+	}
+}
+
+func TestWE_CompactWithSM_BootstrapClearsPriorSummary(t *testing.T) {
+	e := NewWindowedEngine(100)
+	ctx := stdctx.Background()
+	for i := 0; i < 20; i++ {
+		if _, err := e.Ingest(ctx, "sess1", Message{Role: "user", Content: strings.Repeat("x", 4000)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.CompactWithSessionMemory(ctx, "sess1", "# Summary", DefaultSessionMemoryCompactConfig); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Bootstrap(ctx, "sess1", nil); err != nil {
+		t.Fatal(err)
+	}
+	assembled, err := e.Assemble(ctx, "sess1", 100_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assembled.SystemPromptAddition != "" {
+		t.Fatalf("bootstrap leaked prior summary: %q", assembled.SystemPromptAddition)
 	}
 }
 

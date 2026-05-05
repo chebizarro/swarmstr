@@ -369,6 +369,121 @@ func TestDocsRepositoryListAgentFilesPagesPastDuplicateCrowding(t *testing.T) {
 	}
 }
 
+func TestDocsRepositoryRemainingDedupeListsPagePastDuplicateCrowding(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T, repo *DocsRepository, store *fakeStateStore)
+	}{
+		{
+			name: "sessions",
+			run: func(t *testing.T, repo *DocsRepository, store *fakeStateStore) {
+				for i := 0; i < 9; i++ {
+					insertFakeStateDoc(t, store, "author-pub", fmt.Sprintf("metiq:session:s1-dup-%02d", i), "session_doc", SessionDoc{Version: 1, SessionID: "s1", LastInboundAt: int64(300 - i)}, int64(300-i), fmt.Sprintf("evt-session-dup-%02d", i), [][]string{{"t", "session"}, {"session", "s1"}})
+				}
+				insertFakeStateDoc(t, store, "author-pub", "metiq:session:s2", "session_doc", SessionDoc{Version: 1, SessionID: "s2", LastInboundAt: 100}, 100, "evt-session-second", [][]string{{"t", "session"}, {"session", "s2"}})
+				got, err := repo.ListSessions(context.Background(), 2)
+				if err != nil {
+					t.Fatalf("ListSessions: %v", err)
+				}
+				if len(got) != 2 || got[0].SessionID != "s1" || got[1].SessionID != "s2" {
+					t.Fatalf("expected two logical sessions after duplicate crowding, got %+v", got)
+				}
+			},
+		},
+		{
+			name: "tasks",
+			run: func(t *testing.T, repo *DocsRepository, store *fakeStateStore) {
+				for i := 0; i < 9; i++ {
+					insertFakeStateDoc(t, store, "author-pub", fmt.Sprintf("metiq:task:t1-dup-%02d", i), "task_doc", TaskSpec{Version: 1, TaskID: "task-1", Title: "Task 1", Instructions: "Do task 1", UpdatedAt: int64(300 - i)}, int64(300-i), fmt.Sprintf("evt-task-dup-%02d", i), [][]string{{"t", "task"}, {"task", "task-1"}})
+				}
+				insertFakeStateDoc(t, store, "author-pub", "metiq:task:t2", "task_doc", TaskSpec{Version: 1, TaskID: "task-2", Title: "Task 2", Instructions: "Do task 2", UpdatedAt: 100}, 100, "evt-task-second", [][]string{{"t", "task"}, {"task", "task-2"}})
+				got, err := repo.ListTasks(context.Background(), 2)
+				if err != nil {
+					t.Fatalf("ListTasks: %v", err)
+				}
+				if len(got) != 2 || got[0].TaskID != "task-1" || got[1].TaskID != "task-2" {
+					t.Fatalf("expected two logical tasks after duplicate crowding, got %+v", got)
+				}
+			},
+		},
+		{
+			name: "task runs",
+			run: func(t *testing.T, repo *DocsRepository, store *fakeStateStore) {
+				for i := 0; i < 9; i++ {
+					insertFakeStateDoc(t, store, "author-pub", fmt.Sprintf("metiq:task_run:r1-dup-%02d", i), "task_run_doc", TaskRun{Version: 1, RunID: "run-1", TaskID: "task-1", Attempt: 1}, int64(300-i), fmt.Sprintf("evt-run-dup-%02d", i), [][]string{{"t", "task_run"}, {"task", protectedTagValue("task-1")}, {"run", protectedTagValue("run-1")}})
+				}
+				insertFakeStateDoc(t, store, "author-pub", "metiq:task_run:r2", "task_run_doc", TaskRun{Version: 1, RunID: "run-2", TaskID: "task-1", Attempt: 2}, 100, "evt-run-second", [][]string{{"t", "task_run"}, {"task", protectedTagValue("task-1")}, {"run", protectedTagValue("run-2")}})
+				got, err := repo.ListTaskRuns(context.Background(), "task-1", 2)
+				if err != nil {
+					t.Fatalf("ListTaskRuns: %v", err)
+				}
+				if len(got) != 2 || got[0].RunID != "run-2" || got[1].RunID != "run-1" {
+					t.Fatalf("expected two logical task runs after duplicate crowding, got %+v", got)
+				}
+			},
+		},
+		{
+			name: "plans",
+			run: func(t *testing.T, repo *DocsRepository, store *fakeStateStore) {
+				for i := 0; i < 9; i++ {
+					insertFakeStateDoc(t, store, "author-pub", fmt.Sprintf("metiq:plan:p1-dup-%02d", i), "plan_doc", PlanSpec{Version: 1, PlanID: "plan-1", GoalID: "goal-1", Title: "Plan 1", Status: PlanStatusDraft, Steps: []PlanStep{{StepID: "s1", Title: "Do"}}, UpdatedAt: int64(300 - i)}, int64(300-i), fmt.Sprintf("evt-plan-dup-%02d", i), [][]string{{"t", "plan"}, {"goal", protectedTagValue("goal-1")}, {"plan", protectedTagValue("plan-1")}})
+				}
+				insertFakeStateDoc(t, store, "author-pub", "metiq:plan:p2", "plan_doc", PlanSpec{Version: 1, PlanID: "plan-2", GoalID: "goal-1", Title: "Plan 2", Status: PlanStatusDraft, Steps: []PlanStep{{StepID: "s1", Title: "Do"}}, UpdatedAt: 100}, 100, "evt-plan-second", [][]string{{"t", "plan"}, {"goal", protectedTagValue("goal-1")}, {"plan", protectedTagValue("plan-2")}})
+				got, err := repo.ListPlans(context.Background(), "goal-1", 2)
+				if err != nil {
+					t.Fatalf("ListPlans: %v", err)
+				}
+				if len(got) != 2 || got[0].PlanID != "plan-1" || got[1].PlanID != "plan-2" {
+					t.Fatalf("expected two logical plans after duplicate crowding, got %+v", got)
+				}
+			},
+		},
+		{
+			name: "workflow journals",
+			run: func(t *testing.T, repo *DocsRepository, store *fakeStateStore) {
+				for i := 0; i < 9; i++ {
+					insertFakeStateDoc(t, store, "author-pub", fmt.Sprintf("metiq:workflow_journal:r1-dup-%02d", i), "workflow_journal_doc", WorkflowJournalDoc{Version: 1, TaskID: "task-1", RunID: "run-1", UpdatedAt: int64(300 - i)}, int64(300-i), fmt.Sprintf("evt-journal-dup-%02d", i), [][]string{{"t", "workflow_journal"}, {"task", protectedTagValue("task-1")}, {"run", protectedTagValue("run-1")}})
+				}
+				insertFakeStateDoc(t, store, "author-pub", "metiq:workflow_journal:r2", "workflow_journal_doc", WorkflowJournalDoc{Version: 1, TaskID: "task-1", RunID: "run-2", UpdatedAt: 100}, 100, "evt-journal-second", [][]string{{"t", "workflow_journal"}, {"task", protectedTagValue("task-1")}, {"run", protectedTagValue("run-2")}})
+				got, err := repo.ListWorkflowJournals(context.Background(), "task-1", 2)
+				if err != nil {
+					t.Fatalf("ListWorkflowJournals: %v", err)
+				}
+				if len(got) != 2 || got[0].RunID != "run-1" || got[1].RunID != "run-2" {
+					t.Fatalf("expected two logical journals after duplicate crowding, got %+v", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeStateStore()
+			repo := NewDocsRepository(store, "author-pub")
+			tt.run(t, repo, store)
+		})
+	}
+}
+
+func TestDocsRepositoryListTaskRunsScansPastLimitForFinalSort(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStateStore()
+	repo := NewDocsRepository(store, "author-pub")
+
+	for i := 0; i < 4; i++ {
+		insertFakeStateDoc(t, store, "author-pub", fmt.Sprintf("metiq:task_run:r1-newer-%02d", i), "task_run_doc", TaskRun{Version: 1, RunID: "run-1", TaskID: "task-1", Attempt: 1}, int64(400-i), fmt.Sprintf("evt-run-r1-%02d", i), [][]string{{"t", "task_run"}, {"task", protectedTagValue("task-1")}, {"run", protectedTagValue("run-1")}})
+	}
+	insertFakeStateDoc(t, store, "author-pub", "metiq:task_run:r2-older-higher-attempt", "task_run_doc", TaskRun{Version: 1, RunID: "run-2", TaskID: "task-1", Attempt: 99}, 100, "evt-run-r2", [][]string{{"t", "task_run"}, {"task", protectedTagValue("task-1")}, {"run", protectedTagValue("run-2")}})
+
+	got, err := repo.ListTaskRuns(ctx, "task-1", 1)
+	if err != nil {
+		t.Fatalf("ListTaskRuns: %v", err)
+	}
+	if len(got) != 1 || got[0].RunID != "run-2" {
+		t.Fatalf("expected final Attempt sort to consider later pages, got %+v", got)
+	}
+}
+
 func TestDocsRepositoryTaskAndRunRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStateStore()

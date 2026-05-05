@@ -352,6 +352,86 @@ func TestParseMCPConfig_appliesAllowDenyPolicy(t *testing.T) {
 	}
 }
 
+func TestMCPPolicySignatureDisambiguatesEnvSpecificStdioServers(t *testing.T) {
+	alpha := ServerConfig{
+		Enabled: true,
+		Command: "identity-mcp",
+		Args:    []string{"serve"},
+		Env:     map[string]string{"MCP_IDENTITY_TOKEN": "alpha-secret"},
+	}
+	beta := ServerConfig{
+		Enabled: true,
+		Command: "identity-mcp",
+		Args:    []string{"serve"},
+		Env:     map[string]string{"MCP_IDENTITY_TOKEN": "beta-secret"},
+	}
+	alphaSignature := getServerSignature(alpha)
+	if alphaSignature == "" || strings.Contains(alphaSignature, "alpha-secret") || strings.Contains(alphaSignature, "MCP_IDENTITY_TOKEN") {
+		t.Fatalf("expected redacted identity signature, got %q", alphaSignature)
+	}
+
+	cfg := resolveSourceConfigsWithPolicy(Policy{
+		AllowedDefined: true,
+		Allowed:        []PolicyMatcher{{Signature: alphaSignature}},
+	}, SourceConfig{
+		Source:     "test",
+		Enabled:    true,
+		Precedence: 1,
+		Servers: map[string]ServerConfig{
+			"alpha": alpha,
+			"beta":  beta,
+		},
+	})
+
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("expected only signature-matched server active, got %#v", cfg.Servers)
+	}
+	if _, ok := cfg.Servers["alpha"]; !ok {
+		t.Fatalf("expected alpha server to remain active, got %#v", cfg.Servers)
+	}
+	blocked, ok := cfg.FilteredServers["beta"]
+	if !ok {
+		t.Fatalf("expected beta server to be blocked by env-specific allowlist, got %#v", cfg.FilteredServers)
+	}
+	if blocked.PolicyStatus != PolicyStatusBlocked || blocked.PolicyReason != PolicyReasonAllowlist {
+		t.Fatalf("unexpected beta policy outcome: %#v", blocked)
+	}
+}
+
+func TestMCPCommandPolicyIntentionallyMatchesAllEnvIdentities(t *testing.T) {
+	cfg := resolveSourceConfigsWithPolicy(Policy{
+		AllowedDefined: true,
+		Allowed: []PolicyMatcher{{
+			Command: []string{"identity-mcp", "serve"},
+		}},
+	}, SourceConfig{
+		Source:     "test",
+		Enabled:    true,
+		Precedence: 1,
+		Servers: map[string]ServerConfig{
+			"alpha": {
+				Enabled: true,
+				Command: "identity-mcp",
+				Args:    []string{"serve"},
+				Env:     map[string]string{"MCP_IDENTITY_TOKEN": "alpha-secret"},
+			},
+			"beta": {
+				Enabled: true,
+				Command: "identity-mcp",
+				Args:    []string{"serve"},
+				Env:     map[string]string{"MCP_IDENTITY_TOKEN": "beta-secret"},
+			},
+		},
+	})
+
+	if len(cfg.Servers) != 2 {
+		t.Fatalf("command-only policy should match all identical launch vectors; got active=%#v filtered=%#v", cfg.Servers, cfg.FilteredServers)
+	}
+	if len(cfg.FilteredServers) != 0 {
+		t.Fatalf("expected no filtered servers for broad command matcher, got %#v", cfg.FilteredServers)
+	}
+}
+
 func TestResolveConfigDoc_requiresRemoteApproval(t *testing.T) {
 	cfg := ResolveConfigDoc(state.ConfigDoc{Extra: map[string]any{
 		"mcp": map[string]any{
@@ -641,10 +721,10 @@ func TestBuildStdioCommandEnvFiltersBlankKeys(t *testing.T) {
 	t.Setenv("HOME", "/tmp/home")
 
 	env := buildStdioCommandEnv(map[string]string{
-		"  ":      "ignored",
-		"CUSTOM":  "value",
-		"HOME":    "/override",
-		"TMPDIR":  "",
+		"  ":     "ignored",
+		"CUSTOM": "value",
+		"HOME":   "/override",
+		"TMPDIR": "",
 	})
 	parsed := map[string]string{}
 	for _, item := range env {

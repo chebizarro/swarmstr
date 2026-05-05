@@ -1021,9 +1021,11 @@ func stringToUUID(s string) string {
 // Reads prefer the Backend (semantic), falling back to the JSON index.
 type HybridIndex struct {
 	*Index
-	backend Backend
-	semOnce sync.Once
-	semCh   chan struct{}
+	backend     Backend
+	semOnce     sync.Once
+	semCh       chan struct{}
+	repairQueue *backendRepairQueue
+	repairMu    sync.Mutex
 }
 
 func (h *HybridIndex) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
@@ -1032,12 +1034,16 @@ func (h *HybridIndex) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
 		AddWithContext(context.Context, state.MemoryDoc)
 	}); ok {
 		ctxBackend.AddWithContext(ctx, doc)
+		if backendIsDegraded(h.backend) {
+			h.enqueueBackendAddRepair(doc)
+		}
 		return
 	}
 	h.persistToBackend(doc)
 }
 
 func (h *HybridIndex) SearchWithContext(ctx context.Context, query string, limit int) []IndexedMemory {
+	h.repairBackendParity(ctx, maxRepairOpsPerPass)
 	if ctxBackend, ok := h.backend.(interface {
 		SearchWithContext(context.Context, string, int) []IndexedMemory
 	}); ok {
@@ -1055,6 +1061,7 @@ func (h *HybridIndex) SearchWithContext(ctx context.Context, query string, limit
 }
 
 func (h *HybridIndex) SearchSessionWithContext(ctx context.Context, sessionID, query string, limit int) []IndexedMemory {
+	h.repairBackendParity(ctx, maxRepairOpsPerPass)
 	if ctxBackend, ok := h.backend.(interface {
 		SearchSessionWithContext(context.Context, string, string, int) []IndexedMemory
 	}); ok {
@@ -1076,7 +1083,11 @@ func (h *HybridIndex) SearchSessionWithContext(ctx context.Context, sessionID, q
 const maxPersistConcurrency = 8
 
 func NewHybridIndex(idx *Index, backend Backend) *HybridIndex {
-	return &HybridIndex{Index: idx, backend: backend}
+	h := &HybridIndex{Index: idx, backend: backend}
+	if idx != nil && backend != nil {
+		h.repairQueue = newBackendRepairQueue(idx.path)
+	}
+	return h
 }
 
 // persistSem returns a lazily-initialised semaphore channel for bounding
@@ -1131,13 +1142,19 @@ func (h *HybridIndex) Delete(id string) bool {
 	if h.backend != nil {
 		backendDeleted = h.backend.Delete(id)
 		if indexDeleted && !backendDeleted {
-			log.Printf("memory hybrid: backend delete missed for %q after JSON index delete", id)
+			if backendIsDegraded(h.backend) {
+				h.enqueueBackendDeleteRepair(id)
+				log.Printf("memory hybrid: queued backend delete repair for %q after JSON index delete", id)
+			} else {
+				log.Printf("memory hybrid: backend delete for %q returned not found after JSON index delete", id)
+			}
 		}
 	}
 	return indexDeleted || backendDeleted
 }
 
 func (h *HybridIndex) ListSession(sessionID string, limit int) []IndexedMemory {
+	h.repairBackendParity(context.Background(), maxRepairOpsPerPass)
 	effectiveLimit := hybridListLimit(limit, 20)
 	local := h.Index.ListSession(sessionID, effectiveLimit)
 	if h.backend == nil {
@@ -1148,6 +1165,7 @@ func (h *HybridIndex) ListSession(sessionID string, limit int) []IndexedMemory {
 }
 
 func (h *HybridIndex) ListByTopic(topic string, limit int) []IndexedMemory {
+	h.repairBackendParity(context.Background(), maxRepairOpsPerPass)
 	effectiveLimit := hybridListLimit(limit, 100)
 	local := h.Index.ListByTopic(topic, effectiveLimit)
 	if h.backend == nil {
@@ -1183,7 +1201,12 @@ func (h *HybridIndex) Compact(maxEntries int) int {
 	if h.backend != nil {
 		for _, id := range removedIDs {
 			if !h.backend.Delete(id) {
-				log.Printf("memory hybrid: backend delete missed for compacted memory %q", id)
+				if backendIsDegraded(h.backend) {
+					h.enqueueBackendDeleteRepair(id)
+					log.Printf("memory hybrid: queued backend delete repair for compacted memory %q", id)
+				} else {
+					log.Printf("memory hybrid: backend compact delete for %q returned not found", id)
+				}
 			}
 		}
 	}
@@ -1249,7 +1272,8 @@ func (h *HybridIndex) persistToBackend(doc state.MemoryDoc) {
 	default:
 		// Concurrency limit reached; keep the JSON-FTS fallback and surface the
 		// mirror miss in logs instead of silently losing backend/index parity.
-		log.Printf("memory hybrid: backend mirror skipped for %q: concurrency limit reached", doc.MemoryID)
+		h.enqueueBackendAddRepair(doc)
+		log.Printf("memory hybrid: queued backend add repair for %q: concurrency limit reached", doc.MemoryID)
 		return
 	}
 	go func() {
@@ -1263,9 +1287,13 @@ func (h *HybridIndex) persistToBackend(doc state.MemoryDoc) {
 		} else {
 			h.backend.Add(doc)
 		}
+		if backendIsDegraded(h.backend) {
+			h.enqueueBackendAddRepair(doc)
+		}
 	}()
 }
 func (h *HybridIndex) ListByType(memType string, limit int) []IndexedMemory {
+	h.repairBackendParity(context.Background(), maxRepairOpsPerPass)
 	effectiveLimit := hybridListLimit(limit, 100)
 	local := h.Index.ListByType(memType, effectiveLimit)
 	if h.backend == nil {
@@ -1276,6 +1304,7 @@ func (h *HybridIndex) ListByType(memType string, limit int) []IndexedMemory {
 }
 
 func (h *HybridIndex) ListByTaskID(taskID string, limit int) []IndexedMemory {
+	h.repairBackendParity(context.Background(), maxRepairOpsPerPass)
 	effectiveLimit := hybridListLimit(limit, 100)
 	local := h.Index.ListByTaskID(taskID, effectiveLimit)
 	if h.backend == nil {

@@ -284,14 +284,9 @@ func NewProviderFromEnv() (Provider, error) {
 	}
 }
 
-// NewProviderForModel constructs a Provider for the given model identifier.
-//   - "" / "echo"                → EchoProvider (no external dependency)
-//   - "http" / "http-default"    → HTTPProvider configured from env vars
-//
-// This is used by BuildRuntimeForModel and the agents.create RPC to spin up
-// per-agent runtimes with model-specific providers.
 // AnthropicProvider calls the Anthropic Messages API (POST /v1/messages).
-// Set ANTHROPIC_API_KEY in the environment or use ProviderOverride.APIKey.
+// Set ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN in the environment, or use
+// ProviderOverride.APIKey.
 type AnthropicProvider struct {
 	APIKey       string
 	Model        string

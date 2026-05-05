@@ -279,6 +279,27 @@ func TestManager_catalogGroups(t *testing.T) {
 	}
 }
 
+func TestManager_loadWithNoEntriesClearsPreviouslyLoadedPlugins(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := writePlugin(t, dir, "index.js", echoPluginSrc)
+	cfg := configWithPlugin(t, "my-echo", scriptPath)
+
+	mgr := New(testHost())
+	if err := mgr.Load(context.Background(), cfg); err != nil {
+		t.Fatalf("initial Load: %v", err)
+	}
+	if got := mgr.PluginIDs(); len(got) != 1 {
+		t.Fatalf("expected plugin loaded before clear, got %v", got)
+	}
+
+	if err := mgr.Load(context.Background(), state.ConfigDoc{Version: 1}); err != nil {
+		t.Fatalf("clear Load: %v", err)
+	}
+	if got := mgr.PluginIDs(); len(got) != 0 {
+		t.Fatalf("expected no-entry load to clear plugins, got %v", got)
+	}
+}
+
 func TestManager_disabledEntrySkipped(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := writePlugin(t, dir, "index.js", echoPluginSrc)

@@ -2,6 +2,7 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,7 +17,9 @@ import (
 const (
 	sessionFileMemorySurfacedCap = 64
 	memoryRecallSampleCap        = 8
+	toolLifecycleSampleCap       = 64
 	sessionChildTaskCap          = 64
+	sessionStoreJournalSuffix    = ".journal"
 )
 
 // SessionEntry holds persisted settings and metrics for a single session.
@@ -43,6 +46,7 @@ type SessionEntry struct {
 	SessionMemoryUpdatedAt        int64                     `json:"session_memory_updated_at,omitempty"`
 	FileMemorySurfaced            map[string]string         `json:"file_memory_surfaced,omitempty"`
 	RecentMemoryRecall            []MemoryRecallSample      `json:"recent_memory_recall,omitempty"`
+	RecentToolLifecycle           []ToolLifecycleTelemetry  `json:"recent_tool_lifecycle,omitempty"`
 	ParentTaskID                  string                    `json:"parent_task_id,omitempty"`
 	ParentRunID                   string                    `json:"parent_run_id,omitempty"`
 	ActiveTaskID                  string                    `json:"active_task_id,omitempty"`
@@ -180,6 +184,22 @@ type MemoryRecallFileHit struct {
 	Truncated     bool     `json:"truncated,omitempty"`
 }
 
+// ToolLifecycleTelemetry captures a bounded stream of tool lifecycle events for
+// task/run trace reconstruction.
+type ToolLifecycleTelemetry struct {
+	TS         int64  `json:"ts_ms,omitempty"`
+	Type       string `json:"type,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	TurnID     string `json:"turn_id,omitempty"`
+	TaskID     string `json:"task_id,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
+	StepID     string `json:"step_id,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	ToolName   string `json:"tool_name,omitempty"`
+	Result     string `json:"result,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
 // CompactionCheckpointRef is a lightweight record of a compaction checkpoint
 // stored inline in the session entry.  It mirrors the wire format of
 // checkpoint.Checkpoint so the two can be converted without import cycles.
@@ -244,6 +264,13 @@ type SessionStore struct {
 	path      string
 	entries   map[string]SessionEntry // keyed by session key (not necessarily SessionID)
 	persistFn func(path string, data []byte) error
+	journalFn func(path string, data []byte) error
+}
+
+type sessionStoreJournalRecord struct {
+	Op    string        `json:"op"`
+	Key   string        `json:"key"`
+	Entry *SessionEntry `json:"entry,omitempty"`
 }
 
 // Path returns the backing file path for this session store.
@@ -260,7 +287,7 @@ func NewSessionStore(path string) (*SessionStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("session store: mkdir: %w", err)
 	}
-	ss := &SessionStore{path: path, entries: make(map[string]SessionEntry), persistFn: defaultSessionStorePersist}
+	ss := &SessionStore{path: path, entries: make(map[string]SessionEntry), persistFn: defaultSessionStorePersist, journalFn: defaultSessionStoreAppendJournal}
 	if err := ss.load(); err != nil {
 		return nil, err
 	}
@@ -295,7 +322,12 @@ func (s *SessionStore) List() map[string]SessionEntry {
 	return out
 }
 
-// GetOrNew returns the entry for key, creating a default one if absent.
+// GetOrNew returns the entry for key, or a default entry if absent.
+//
+// Missing entries are not inserted until a write method such as Put or a
+// journaled mutation succeeds.  This keeps read-style callers from creating
+// unpersisted in-memory state that cannot be rolled back consistently on later
+// write failures.
 func (s *SessionStore) GetOrNew(key string) SessionEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -303,48 +335,47 @@ func (s *SessionStore) GetOrNew(key string) SessionEntry {
 		return cloneSessionEntry(e)
 	}
 	now := time.Now().UTC()
-	e := SessionEntry{SessionID: key, CreatedAt: now, UpdatedAt: now}
-	s.entries[key] = e
-	return cloneSessionEntry(e)
+	return SessionEntry{SessionID: key, CreatedAt: now, UpdatedAt: now}
 }
 
-// Put writes entry under key and persists the file.
+// Put writes entry under key and persists the updated entry to the journal.
 func (s *SessionStore) Put(key string, entry SessionEntry) error {
-	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
-		entry.UpdatedAt = time.Now().UTC()
-		entries[key] = cloneSessionEntry(entry)
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
+		now := time.Now().UTC()
+		if entry.SessionID == "" {
+			entry.SessionID = key
+		}
+		if entry.CreatedAt.IsZero() {
+			entry.CreatedAt = now
+		}
+		entry.UpdatedAt = now
+		*e = cloneSessionEntry(entry)
 		return nil
 	})
 }
 
-// Delete removes the entry for key and persists.
+// Delete removes the entry for key and persists a delete marker to the journal.
 func (s *SessionStore) Delete(key string) error {
-	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
-		delete(entries, key)
-		return nil
-	})
+	return s.deleteEntryAndJournal(key)
 }
 
 // AddTokens atomically adds the given token counts to the entry for key.
 // cacheRead and cacheWrite track provider prompt-cache hit/creation tokens.
 func (s *SessionStore) AddTokens(key string, input, output, cacheRead, cacheWrite int64) error {
-	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
-		e := entries[key]
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
 		e.InputTokens += input
 		e.OutputTokens += output
 		e.TotalTokens += input + output
 		e.CacheRead += cacheRead
 		e.CacheWrite += cacheWrite
 		e.UpdatedAt = time.Now().UTC()
-		entries[key] = e
 		return nil
 	})
 }
 
 // RecordTurn atomically stores the latest turn telemetry snapshot for key.
 func (s *SessionStore) RecordTurn(key string, telemetry TurnTelemetry) error {
-	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
-		e := entries[key]
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
 		if e.SessionID == "" {
 			e.SessionID = key
 		}
@@ -377,7 +408,6 @@ func (s *SessionStore) RecordTurn(key string, telemetry TurnTelemetry) error {
 		}
 		e.LastTurn = &telemetry
 		e.UpdatedAt = now
-		entries[key] = e
 		return nil
 	})
 }
@@ -386,8 +416,7 @@ func (s *SessionStore) LinkTask(key, taskID, runID, parentTaskID, parentRunID st
 	if s == nil || strings.TrimSpace(key) == "" {
 		return nil
 	}
-	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
-		e := entries[key]
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
 		now := time.Now().UTC()
 		if e.SessionID == "" {
 			e.SessionID = key
@@ -400,7 +429,6 @@ func (s *SessionStore) LinkTask(key, taskID, runID, parentTaskID, parentRunID st
 		e.ParentTaskID = strings.TrimSpace(parentTaskID)
 		e.ParentRunID = strings.TrimSpace(parentRunID)
 		e.UpdatedAt = now
-		entries[key] = e
 		return nil
 	})
 }
@@ -409,8 +437,7 @@ func (s *SessionStore) RecordTaskResult(key, taskID, runID string, result TaskRe
 	if s == nil || strings.TrimSpace(key) == "" {
 		return nil
 	}
-	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
-		e := entries[key]
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
 		now := time.Now().UTC()
 		if e.SessionID == "" {
 			e.SessionID = key
@@ -436,7 +463,6 @@ func (s *SessionStore) RecordTaskResult(key, taskID, runID string, result TaskRe
 			e.ActiveRunID = ""
 		}
 		e.UpdatedAt = now
-		entries[key] = e
 		return nil
 	})
 }
@@ -449,8 +475,7 @@ func (s *SessionStore) AppendChildTask(key, taskID string) error {
 	if taskID == "" {
 		return nil
 	}
-	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
-		e := entries[key]
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
 		now := time.Now().UTC()
 		if e.SessionID == "" {
 			e.SessionID = key
@@ -479,7 +504,6 @@ func (s *SessionStore) AppendChildTask(key, taskID string) error {
 		}
 		e.ChildTaskIDs = merged
 		e.UpdatedAt = now
-		entries[key] = e
 		return nil
 	})
 }
@@ -494,8 +518,7 @@ func (s *SessionStore) RecordMemoryRecall(key, turnID string, sample *MemoryReca
 		return nil
 	}
 
-	return s.mutateAndPersist(func(entries map[string]SessionEntry) error {
-		e := entries[key]
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
 		now := time.Now().UTC()
 		if e.SessionID == "" {
 			e.SessionID = key
@@ -568,7 +591,52 @@ func (s *SessionStore) RecordMemoryRecall(key, turnID string, sample *MemoryReca
 			}
 		}
 		e.UpdatedAt = now
-		entries[key] = e
+		return nil
+	})
+}
+
+// RecordToolLifecycle appends a bounded lifecycle sample stream for the
+// session, filling task/run linkage from the active session state when needed.
+func (s *SessionStore) RecordToolLifecycle(key string, sample ToolLifecycleTelemetry) error {
+	if s == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	if strings.TrimSpace(sample.ToolName) == "" && strings.TrimSpace(sample.ToolCallID) == "" {
+		return nil
+	}
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
+		now := time.Now().UTC()
+		if e.SessionID == "" {
+			e.SessionID = key
+		}
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
+		}
+		if sample.TS == 0 {
+			sample.TS = now.UnixMilli()
+		}
+		if strings.TrimSpace(sample.SessionID) == "" {
+			sample.SessionID = e.SessionID
+		}
+		if strings.TrimSpace(sample.TaskID) == "" {
+			if strings.TrimSpace(e.ActiveTaskID) != "" {
+				sample.TaskID = e.ActiveTaskID
+			} else {
+				sample.TaskID = e.LastCompletedTaskID
+			}
+		}
+		if strings.TrimSpace(sample.RunID) == "" {
+			if strings.TrimSpace(e.ActiveRunID) != "" {
+				sample.RunID = e.ActiveRunID
+			} else {
+				sample.RunID = e.LastCompletedRunID
+			}
+		}
+		e.RecentToolLifecycle = append(e.RecentToolLifecycle, sample)
+		if len(e.RecentToolLifecycle) > toolLifecycleSampleCap {
+			e.RecentToolLifecycle = append([]ToolLifecycleTelemetry(nil), e.RecentToolLifecycle[len(e.RecentToolLifecycle)-toolLifecycleSampleCap:]...)
+		}
+		e.UpdatedAt = now
 		return nil
 	})
 }
@@ -594,6 +662,73 @@ func (s *SessionStore) mutateAndPersist(mutate func(entries map[string]SessionEn
 	return nil
 }
 
+func (s *SessionStore) mutateEntryAndJournal(key string, mutate func(entry *SessionEntry) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	before := cloneSessionEntries(s.entries)
+	entry := cloneSessionEntry(s.entries[key])
+	if err := mutate(&entry); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if entry.SessionID == "" {
+		entry.SessionID = key
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = now
+	}
+	if entry.UpdatedAt.IsZero() {
+		entry.UpdatedAt = now
+	}
+	s.entries[key] = cloneSessionEntry(entry)
+	journalEntry := cloneSessionEntry(entry)
+	if err := s.appendJournalLocked(sessionStoreJournalRecord{Op: "put", Key: key, Entry: &journalEntry}); err != nil {
+		s.entries = before
+		return err
+	}
+	return nil
+}
+
+func (s *SessionStore) deleteEntryAndJournal(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	before := cloneSessionEntries(s.entries)
+	delete(s.entries, key)
+	if err := s.appendJournalLocked(sessionStoreJournalRecord{Op: "delete", Key: key}); err != nil {
+		s.entries = before
+		return err
+	}
+	return nil
+}
+
+func (s *SessionStore) appendJournalLocked(record sessionStoreJournalRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("session store: marshal journal: %w", err)
+	}
+	data = append(data, '\n')
+	persist := s.journalFn
+	if persist == nil {
+		persist = defaultSessionStoreAppendJournal
+	}
+	journalPath := s.journalPath()
+	existed, size, statErr := sessionStoreJournalSize(journalPath)
+	if statErr != nil {
+		return statErr
+	}
+	if err := persist(journalPath, data); err != nil {
+		if restoreErr := restoreSessionStoreJournal(journalPath, existed, size); restoreErr != nil {
+			return fmt.Errorf("%w; additionally failed to restore journal: %v", err, restoreErr)
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SessionStore) journalPath() string {
+	return s.path + sessionStoreJournalSuffix
+}
+
 func (s *SessionStore) persistLocked() error {
 	data, err := json.MarshalIndent(s.entries, "", "  ")
 	if err != nil {
@@ -603,7 +738,13 @@ func (s *SessionStore) persistLocked() error {
 	if persist == nil {
 		persist = defaultSessionStorePersist
 	}
-	return persist(s.path, data)
+	if err := persist(s.path, data); err != nil {
+		return err
+	}
+	if err := os.Remove(s.journalPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("session store: remove journal: %w", err)
+	}
+	return nil
 }
 
 func defaultSessionStorePersist(path string, data []byte) error {
@@ -613,6 +754,45 @@ func defaultSessionStorePersist(path string, data []byte) error {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("session store: rename: %w", err)
+	}
+	return nil
+}
+
+func sessionStoreJournalSize(path string) (bool, int64, error) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false, 0, nil
+	}
+	if err != nil {
+		return false, 0, fmt.Errorf("session store: stat journal: %w", err)
+	}
+	return true, info.Size(), nil
+}
+
+func restoreSessionStoreJournal(path string, existed bool, size int64) error {
+	if !existed {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("session store: remove failed journal append: %w", err)
+		}
+		return nil
+	}
+	if err := os.Truncate(path, size); err != nil {
+		return fmt.Errorf("session store: truncate failed journal append: %w", err)
+	}
+	return nil
+}
+
+func defaultSessionStoreAppendJournal(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("session store: open journal: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("session store: write journal: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("session store: sync journal: %w", err)
 	}
 	return nil
 }
@@ -644,6 +824,9 @@ func cloneSessionEntry(in SessionEntry) SessionEntry {
 		for i, sample := range in.RecentMemoryRecall {
 			out.RecentMemoryRecall[i] = cloneMemoryRecallSample(sample)
 		}
+	}
+	if in.RecentToolLifecycle != nil {
+		out.RecentToolLifecycle = append([]ToolLifecycleTelemetry(nil), in.RecentToolLifecycle...)
 	}
 	if in.ChildTaskIDs != nil {
 		out.ChildTaskIDs = append([]string(nil), in.ChildTaskIDs...)
@@ -760,19 +943,65 @@ func cloneReflectValue(in reflect.Value) reflect.Value {
 	}
 }
 
-// load reads the file. Missing file is not an error.
+// load reads the file and replays any hot-mutation journal. Missing files are not errors.
 func (s *SessionStore) load() error {
 	data, err := os.ReadFile(s.path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("session store: read: %w", err)
+	}
+	if err == nil {
+		if err := json.Unmarshal(data, &s.entries); err != nil {
+			return err
+		}
+	}
+	if err := s.loadJournal(); err != nil {
+		return err
+	}
+	s.migrateLoadedEntries()
+	return nil
+}
+
+func (s *SessionStore) loadJournal() error {
+	data, err := os.ReadFile(s.journalPath())
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("session store: read: %w", err)
+		return fmt.Errorf("session store: read journal: %w", err)
 	}
-	if err := json.Unmarshal(data, &s.entries); err != nil {
-		return err
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil
 	}
-	s.migrateLoadedEntries()
+	lines := bytes.SplitAfter(data, []byte("\n"))
+	for i, line := range lines {
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+		var record sessionStoreJournalRecord
+		if err := json.Unmarshal(trimmed, &record); err != nil {
+			isTrailingPartial := i == len(lines)-1 && !bytes.HasSuffix(line, []byte("\n"))
+			if isTrailingPartial {
+				break
+			}
+			return fmt.Errorf("session store: decode journal: %w", err)
+		}
+		key := strings.TrimSpace(record.Key)
+		if key == "" {
+			continue
+		}
+		switch record.Op {
+		case "put":
+			if record.Entry == nil {
+				continue
+			}
+			s.entries[key] = cloneSessionEntry(*record.Entry)
+		case "delete":
+			delete(s.entries, key)
+		default:
+			return fmt.Errorf("session store: unknown journal op %q", record.Op)
+		}
+	}
 	return nil
 }
 

@@ -105,6 +105,8 @@ func (se *SyncEngine) BootstrapFromRelay(ctx context.Context) error {
 		}
 		return fmt.Errorf("fetch relay config: %w", err)
 	}
+	se.mu.Lock()
+	defer se.mu.Unlock()
 	if err := se.writeFileLocked(doc); err != nil {
 		return fmt.Errorf("write bootstrapped config to disk: %w", err)
 	}
@@ -119,12 +121,16 @@ func (se *SyncEngine) PushToDisk(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("fetch relay config: %w", err)
 	}
+	se.mu.Lock()
+	defer se.mu.Unlock()
 	return se.writeFileLocked(doc)
 }
 
 // PushToRelay reads the disk config file and publishes it to the relay.
 func (se *SyncEngine) PushToRelay(ctx context.Context) error {
+	se.mu.Lock()
 	doc, err := se.readFileLocked()
+	se.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -197,14 +203,14 @@ func (se *SyncEngine) loop(ctx context.Context, watcher *fsnotify.Watcher) {
 			se.mu.Unlock()
 			pushCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
+			se.mu.Lock()
 			doc, readErr := se.readFileLocked()
+			onChange := se.onChange
+			se.mu.Unlock()
 			if readErr != nil {
 				se.log.Error("reload config from disk failed", "err", readErr)
 			} else {
 				// Notify the runtime about the config change first.
-				se.mu.Lock()
-				onChange := se.onChange
-				se.mu.Unlock()
 				if onChange != nil {
 					if err := onChange(doc); err != nil {
 						se.log.Error("runtime rejected config change", "err", err)

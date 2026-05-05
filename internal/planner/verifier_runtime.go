@@ -794,9 +794,34 @@ func cloneAnyMap(src map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(src))
 	for k, v := range src {
-		out[k] = v
+		out[k] = cloneAnyValue(v)
 	}
 	return out
+}
+
+func cloneAnyValue(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		return cloneAnyMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneAnyValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	case []int:
+		return append([]int(nil), typed...)
+	case []int64:
+		return append([]int64(nil), typed...)
+	case []float64:
+		return append([]float64(nil), typed...)
+	case []bool:
+		return append([]bool(nil), typed...)
+	default:
+		return v
+	}
 }
 
 func boolMeta(meta map[string]any, key string) (bool, bool) {

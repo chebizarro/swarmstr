@@ -248,34 +248,7 @@ func (s *FileStore) Stats(ctx context.Context) (TaskStats, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	stats := TaskStats{
-		ByStatus: make(map[string]int),
-		BySource: make(map[string]int),
-	}
-
-	todayStart := time.Now().Truncate(24 * time.Hour).Unix()
-
-	for _, entry := range s.tasks {
-		stats.TotalTasks++
-		stats.ByStatus[string(entry.Task.Status)]++
-		stats.BySource[string(entry.Source)]++
-	}
-
-	for _, entry := range s.runs {
-		stats.TotalRuns++
-		if entry.Run.Status == state.TaskRunStatusRunning {
-			stats.ActiveRuns++
-		}
-		if entry.Run.EndedAt >= todayStart {
-			if entry.Run.Status == state.TaskRunStatusCompleted {
-				stats.CompletedToday++
-			} else if entry.Run.Status == state.TaskRunStatusFailed {
-				stats.FailedToday++
-			}
-		}
-	}
-
-	return stats, nil
+	return computeTaskStats(s.tasks, s.runs, time.Now()), nil
 }
 
 // Prune removes old completed/failed entries based on retention policy.

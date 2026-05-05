@@ -90,6 +90,11 @@ type DMBus struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// testDMRelaySubscribe is an unexported seam used by runtime tests to drive
+	// relay EVENT/EOSE/CLOSED signals without opening websocket relays.
+	testDMRelaySubscribe func(ctx context.Context, relayURL string, filter nostr.Filter, generation int, emitEvent func(nostr.RelayEvent) bool, emitEOSE func(dmRelayEOSE), emitClosed func(dmRelayClose))
+	testAfterDMEOSE      func(relayURL string)
 }
 
 func (b *DMBus) nip04EncryptKeyer() nostr.Keyer {
@@ -179,7 +184,6 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 		replayWindow = DMReplayWindowDefault
 	}
 
-	ctx, cancel := context.WithCancel(parent)
 	health := NewRelayHealthTracker()
 	health.Seed(initialRelays)
 	pool := NewPoolNIP42(authKeyer)
@@ -191,6 +195,7 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 		pool = opts.Hub.Pool()
 		ownsPool = false
 	}
+	ctx, cancel := context.WithCancel(parent)
 	bus := &DMBus{
 		authKeyer:    authKeyer,
 		signKeyer:    signKeyer,
@@ -512,10 +517,14 @@ func (b *DMBus) runSubscription(since int64) bool {
 }
 
 type dmRelayClose struct {
-	relayURL    string
-	reason      string
-	generation  int
-	handledAuth bool
+	// relayURL is the configured relay key used for generation tracking and retries.
+	relayURL string
+	// reportedRelayURL is the relay URL surfaced by the transport, when available.
+	// It may differ in formatting from relayURL; generation checks must use relayURL.
+	reportedRelayURL string
+	reason           string
+	generation       int
+	handledAuth      bool
 }
 
 type dmRelayEOSE struct {
@@ -596,6 +605,10 @@ func (b *DMBus) runPoolSubscription(filter nostr.Filter) bool {
 		if relayKey == "" {
 			return
 		}
+		if b.testDMRelaySubscribe != nil {
+			go b.testDMRelaySubscribe(subCtx, relayKey, filter, gen, sendEvent, sendEOSE, sendClosed)
+			return
+		}
 		go b.runDMRelaySubscription(subCtx, relayKey, filter, gen, sendEvent, sendEOSE, sendClosed)
 	}
 
@@ -653,14 +666,11 @@ func (b *DMBus) runPoolSubscription(filter nostr.Filter) bool {
 			}
 			b.handleDMRelayEOSE(relay)
 		case closed := <-closedCh:
-			relay := strings.TrimSpace(closed.relayURL)
-			if relay == "" {
+			relay, schedule, terminal := b.processDMRelayClose(generation, closed)
+			if terminal {
 				return false
 			}
-			if generation[relay] != closed.generation {
-				continue
-			}
-			if b.handleDMRelayClose(relay, closed.reason, closed.handledAuth) {
+			if schedule {
 				scheduleResubscribe(relay, closed.generation)
 			}
 		case retry := <-resubscribeCh:
@@ -746,6 +756,9 @@ func (b *DMBus) handleDMRelayEOSE(relayURL string) {
 	if b.health != nil {
 		b.health.RecordSuccess(relayURL)
 	}
+	if b.testAfterDMEOSE != nil {
+		b.testAfterDMEOSE(relayURL)
+	}
 }
 
 func (b *DMBus) handleDMRelayClose(relayURL string, reason string, handledAuth bool) bool {
@@ -760,6 +773,21 @@ func (b *DMBus) handleDMRelayClose(relayURL string, reason string, handledAuth b
 	}
 	b.emitErr(fmt.Errorf("dm subscription closed relay=%s reason=%s", relayURL, reason))
 	return true
+}
+
+func (b *DMBus) processDMRelayClose(generation map[string]int, closed dmRelayClose) (relay string, schedule bool, terminal bool) {
+	relay = strings.TrimSpace(closed.relayURL)
+	if relay == "" {
+		return "", false, true
+	}
+	if generation[relay] != closed.generation {
+		return relay, false, false
+	}
+	reportedRelay := strings.TrimSpace(closed.reportedRelayURL)
+	if reportedRelay == "" {
+		reportedRelay = relay
+	}
+	return relay, b.handleDMRelayClose(reportedRelay, closed.reason, closed.handledAuth), false
 }
 
 func (b *DMBus) runHubSubscription(filter nostr.Filter) bool {
@@ -807,10 +835,7 @@ func (b *DMBus) runHubSubscription(filter nostr.Filter) bool {
 				if closedRelay != nil && strings.TrimSpace(closedRelay.URL) != "" {
 					reportedRelay = strings.TrimSpace(closedRelay.URL)
 				}
-				if !b.handleDMRelayClose(reportedRelay, reason, handledAuth) {
-					return
-				}
-				emitRelayClose(dmRelayClose{relayURL: relayKey, reason: reason, generation: gen})
+				emitRelayClose(dmRelayClose{relayURL: relayKey, reportedRelayURL: reportedRelay, reason: reason, generation: gen, handledAuth: handledAuth})
 			},
 		}); err != nil {
 			if b.health != nil {
@@ -883,11 +908,11 @@ func (b *DMBus) runHubSubscription(filter nostr.Filter) bool {
 			}
 			return true
 		case closed := <-closedCh:
-			relay := strings.TrimSpace(closed.relayURL)
-			if relay == "" {
+			relay, schedule, terminal := b.processDMRelayClose(generation, closed)
+			if terminal {
 				return false
 			}
-			if generation[relay] != closed.generation {
+			if !schedule {
 				continue
 			}
 			b.hub.Unsubscribe(b.dmSubID(relay, closed.generation))

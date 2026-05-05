@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -198,21 +199,100 @@ func TestLoadPlugin_syntaxError(t *testing.T) {
 	}
 }
 
-func TestLoadPlugin_httpMissingHostFailsDeterministically(t *testing.T) {
+func TestLoadPlugin_missingHostNamespacesFailDeterministically(t *testing.T) {
+	cases := []struct {
+		name      string
+		namespace string
+		invoke    string
+	}{
+		{name: "nostr", namespace: "nostr", invoke: `return nostr.fetch({});`},
+		{name: "config", namespace: "config", invoke: `return config.get("agent.default_model");`},
+		{name: "http", namespace: "http", invoke: `return http.get("https://example.com");`},
+		{name: "storage", namespace: "storage", invoke: `return storage.get("key");`},
+		{name: "agent", namespace: "agent", invoke: `return agent.complete("hello");`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `
+exports.manifest = { id: "` + tc.name + `-plugin", version: "1.0.0" };
+exports.invoke = function() { ` + tc.invoke + ` };
+`
+			p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{Log: &stubLog{}})
+			if err != nil {
+				t.Fatalf("LoadPlugin with nil %s host should still load until namespace use: %v", tc.namespace, err)
+			}
+
+			_, err = p.Invoke(context.Background(), sdk.InvokeRequest{Tool: "x"})
+			if err == nil {
+				t.Fatalf("expected invoke to fail when %s host is missing", tc.namespace)
+			}
+			var unavailable *HostUnavailableError
+			if !errors.As(err, &unavailable) || unavailable.Namespace != tc.namespace {
+				t.Fatalf("expected typed missing %s host error, got: %T %v", tc.namespace, err, err)
+			}
+		})
+	}
+}
+
+func TestLoadPlugin_unavailableHostSentinelSupportsFallbackGuards(t *testing.T) {
 	src := `
-exports.manifest = { id: "http-plugin", version: "1.0.0" };
+exports.manifest = { id: "guard-plugin", version: "1.0.0" };
+exports.invoke = function() {
+	if (http && http.available !== false && http.get) {
+		return http.get("https://example.com");
+	}
+	return { fallback: true, reason: http.reason };
+};
+`
+	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{Log: &stubLog{}})
+	if err != nil {
+		t.Fatalf("LoadPlugin: %v", err)
+	}
+	res, err := p.Invoke(context.Background(), sdk.InvokeRequest{Tool: "x"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	m, ok := res.Value.(map[string]any)
+	if !ok || m["fallback"] != true {
+		t.Fatalf("expected guarded fallback result, got %#v", res.Value)
+	}
+}
+
+type blockingHTTPHost struct {
+	entered chan struct{}
+}
+
+func (h *blockingHTTPHost) Get(ctx context.Context, _ string, _ map[string]string) (int, []byte, error) {
+	close(h.entered)
+	<-ctx.Done()
+	return 0, nil, ctx.Err()
+}
+
+func (h *blockingHTTPHost) Post(ctx context.Context, _ string, _ []byte, _ map[string]string) (int, []byte, error) {
+	close(h.entered)
+	<-ctx.Done()
+	return 0, nil, ctx.Err()
+}
+
+func TestInvoke_HTTPHostReceivesInvokeContextCancellation(t *testing.T) {
+	src := `
+exports.manifest = { id: "http-cancel-plugin", version: "1.0.0" };
 exports.invoke = function() { return http.get("https://example.com"); };
 `
-	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{Log: &stubLog{}, Config: &stubConfig{}})
+	httpHost := &blockingHTTPHost{entered: make(chan struct{})}
+	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{Log: &stubLog{}, Config: &stubConfig{}, HTTP: httpHost})
 	if err != nil {
-		t.Fatalf("LoadPlugin with nil HTTPHost should still load: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
-
-	_, err = p.Invoke(context.Background(), sdk.InvokeRequest{Tool: "x"})
-	if err == nil {
-		t.Fatal("expected invoke to fail when HTTP host is missing")
-	}
-	if !strings.Contains(err.Error(), "http host not available") {
-		t.Fatalf("expected explicit missing HTTP host error, got: %v", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, invokeErr := p.Invoke(ctx, sdk.InvokeRequest{Tool: "x"})
+		done <- invokeErr
+	}()
+	<-httpHost.entered
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation from HTTP host, got: %T %v", err, err)
 	}
 }

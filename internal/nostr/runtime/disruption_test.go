@@ -606,6 +606,34 @@ func TestDisruption_HealthTrackerCandidatesExcludeBlocked(t *testing.T) {
 	}
 }
 
+func TestDisruption_TimestampThresholdInvariantsAcrossBuses(t *testing.T) {
+	now := time.Unix(time.Now().Unix(), 0)
+	if timestampTooFarFuture(now.Add(inboundEventMaxFutureSkew).Unix(), now, inboundEventMaxFutureSkew) {
+		t.Fatal("exact future skew threshold must be accepted")
+	}
+	if !timestampTooFarFuture(now.Add(inboundEventMaxFutureSkew+time.Second).Unix(), now, inboundEventMaxFutureSkew) {
+		t.Fatal("timestamp just beyond future skew threshold must be rejected")
+	}
+	if timestampTooOld(now.Add(-defaultControlRequestMaxAge).Unix(), now, defaultControlRequestMaxAge) {
+		t.Fatal("exact control max-age threshold must be accepted")
+	}
+	if !timestampTooOld(now.Add(-defaultControlRequestMaxAge-time.Second).Unix(), now, defaultControlRequestMaxAge) {
+		t.Fatal("timestamp just beyond control max-age threshold must be rejected")
+	}
+	if timestampTooOld(now.Add(-DMReplayWindowDefault).Unix(), now, DMReplayWindowDefault) {
+		t.Fatal("exact DM replay threshold must be accepted")
+	}
+	if !timestampTooOld(now.Add(-DMReplayWindowDefault-time.Second).Unix(), now, DMReplayWindowDefault) {
+		t.Fatal("timestamp just beyond DM replay threshold must be rejected")
+	}
+	if timestampTooOld(now.Add(-nip17MaxPastAge).Unix(), now, nip17MaxPastAge) {
+		t.Fatal("exact NIP-17 max-past-age threshold must be accepted")
+	}
+	if !timestampTooOld(now.Add(-nip17MaxPastAge-time.Second).Unix(), now, nip17MaxPastAge) {
+		t.Fatal("timestamp just beyond NIP-17 max-past-age threshold must be rejected")
+	}
+}
+
 func TestDisruption_ControlBusResponseRelayCandidatesPreferHealthy(t *testing.T) {
 	h := NewRelayHealthTracker()
 	relays := []string{"wss://a", "wss://b"}
@@ -799,6 +827,20 @@ func TestDisruption_SanitizeRelayListRemovesBlanksAndDuplicates(t *testing.T) {
 		if strings.TrimSpace(r) == "" {
 			t.Fatalf("blank relay in sanitized list: %v", got)
 		}
+	}
+}
+
+func TestDisruption_SanitizeRelayListNormalizesEquivalentRelayURLs(t *testing.T) {
+	got := sanitizeRelayList([]string{
+		" WSS://Relay.Example/ ",
+		"https://relay.example",
+		"wss://relay.example",
+	})
+	if len(got) != 1 {
+		t.Fatalf("expected equivalent relay URLs to dedupe to one entry, got %v", got)
+	}
+	if got[0] != "wss://relay.example" {
+		t.Fatalf("normalized relay = %q, want wss://relay.example", got[0])
 	}
 }
 

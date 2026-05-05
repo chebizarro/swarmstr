@@ -128,6 +128,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		var turnTelemetry []state.TurnTelemetry
+		var toolLifecycle []state.ToolLifecycleTelemetry
 		var memoryRecall []state.MemoryRecallSample
 		if h.deps.sessionStore != nil {
 			for sessID, entry := range h.deps.sessionStore.List() {
@@ -142,9 +143,14 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 						memoryRecall = append(memoryRecall, sample)
 					}
 				}
+				for _, sample := range entry.RecentToolLifecycle {
+					if strings.TrimSpace(sample.TaskID) == req.TaskID {
+						toolLifecycle = append(toolLifecycle, sample)
+					}
+				}
 			}
 		}
-		traceInput := methods.TraceInput{Task: task, Runs: runs, TurnTelemetry: turnTelemetry, MemoryRecall: memoryRecall}
+		traceInput := methods.TraceInput{Task: task, Runs: runs, TurnTelemetry: turnTelemetry, ToolLifecycle: toolLifecycle, MemoryRecall: memoryRecall}
 		traceResp := methods.AssembleTaskTrace(traceInput, req.RunID, req.Limit)
 		return nostruntime.ControlRPCResult{Result: traceResp}, true, nil
 	case methods.MethodTasksAuditExport:

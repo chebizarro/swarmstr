@@ -14,6 +14,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -31,6 +32,7 @@ type GojaPlugin struct {
 	vm       *goja.Runtime
 	invokeFn goja.Callable
 	log      *slog.Logger
+	hostCtx  *pluginHostContext
 	mu       sync.Mutex
 }
 
@@ -41,6 +43,9 @@ func (p *GojaPlugin) Manifest() sdk.Manifest { return p.manifest }
 // The call is run synchronously; async/Promise results are awaited via the
 // Goja event-loop helper.
 func (p *GojaPlugin) Invoke(ctx context.Context, req sdk.InvokeRequest) (sdk.InvokeResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -50,6 +55,12 @@ func (p *GojaPlugin) Invoke(ctx context.Context, req sdk.InvokeRequest) (sdk.Inv
 
 	argsVal := p.vm.ToValue(req.Args)
 	metaVal := p.vm.ToValue(req.Meta)
+
+	if p.hostCtx != nil {
+		prev := p.hostCtx.ctx
+		p.hostCtx.ctx = ctx
+		defer func() { p.hostCtx.ctx = prev }()
+	}
 
 	interruptStop := make(chan struct{})
 	defer close(interruptStop)
@@ -66,7 +77,7 @@ func (p *GojaPlugin) Invoke(ctx context.Context, req sdk.InvokeRequest) (sdk.Inv
 		if cerr := ctx.Err(); cerr != nil {
 			return sdk.InvokeResult{}, cerr
 		}
-		wrapped := fmt.Errorf("plugin invoke: %w", err)
+		wrapped := wrapPluginExecutionError("plugin invoke", err)
 		return sdk.InvokeResult{Error: wrapped.Error()}, wrapped
 	}
 
@@ -97,28 +108,38 @@ func (p *GojaPlugin) Invoke(ctx context.Context, req sdk.InvokeRequest) (sdk.Inv
 // LoadPlugin compiles src as a CommonJS-style module, wires the host APIs into
 // the VM global scope, reads exports.manifest, and returns a ready GojaPlugin.
 func LoadPlugin(ctx context.Context, src []byte, host *sdk.Host) (*GojaPlugin, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if host == nil {
+		host = &sdk.Host{}
+	}
+	hostCtx := &pluginHostContext{ctx: context.Background()}
 	vm := goja.New()
 	vm.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 
 	log := slog.Default().With("component", "goja-plugin")
 
 	// ── Wire host namespaces ──────────────────────────────────────────────────
-	if err := wireNostr(vm, host.Nostr, log); err != nil {
+	if err := wireNostr(vm, host.Nostr, hostCtx, log); err != nil {
 		return nil, fmt.Errorf("wire nostr: %w", err)
 	}
 	if err := wireConfig(vm, host.Config); err != nil {
 		return nil, fmt.Errorf("wire config: %w", err)
 	}
-	if err := wireHTTP(vm, host.HTTP, log); err != nil {
+	if err := wireHTTP(vm, host.HTTP, hostCtx, log); err != nil {
 		return nil, fmt.Errorf("wire http: %w", err)
 	}
-	if err := wireStorage(vm, host.Storage, log); err != nil {
+	if err := wireStorage(vm, host.Storage, hostCtx, log); err != nil {
 		return nil, fmt.Errorf("wire storage: %w", err)
 	}
 	if err := wireLog(vm, host.Log); err != nil {
 		return nil, fmt.Errorf("wire log: %w", err)
 	}
-	if err := wireAgent(vm, host.Agent, log); err != nil {
+	if err := wireAgent(vm, host.Agent, hostCtx, log); err != nil {
 		return nil, fmt.Errorf("wire agent: %w", err)
 	}
 
@@ -144,7 +165,7 @@ func LoadPlugin(ctx context.Context, src []byte, host *sdk.Host) (*GojaPlugin, e
 	}
 
 	if _, err := vm.RunProgram(prog); err != nil {
-		return nil, fmt.Errorf("run plugin: %w", err)
+		return nil, wrapPluginExecutionError("run plugin", err)
 	}
 
 	// ── Read manifest ─────────────────────────────────────────────────────────
@@ -179,14 +200,15 @@ func LoadPlugin(ctx context.Context, src []byte, host *sdk.Host) (*GojaPlugin, e
 		vm:       vm,
 		invokeFn: invokeFn,
 		log:      log.With("plugin", manifest.ID),
+		hostCtx:  hostCtx,
 	}, nil
 }
 
 // ─── Host wiring helpers ──────────────────────────────────────────────────────
 
-func wireNostr(vm *goja.Runtime, h sdk.NostrHost, log *slog.Logger) error {
+func wireNostr(vm *goja.Runtime, h sdk.NostrHost, hostCtx *pluginHostContext, log *slog.Logger) error {
 	if h == nil {
-		return setStubNamespace(vm, "nostr", "nostr host not available")
+		return setUnavailableNamespace(vm, "nostr", "nostr host not available")
 	}
 	obj := vm.NewObject()
 	_ = obj.Set("publish", func(call goja.FunctionCall) goja.Value {
@@ -194,7 +216,7 @@ func wireNostr(vm *goja.Runtime, h sdk.NostrHost, log *slog.Logger) error {
 		if !ok {
 			panic(vm.NewTypeError("nostr.publish: argument must be an object"))
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := hostCtx.withTimeout(10 * time.Second)
 		defer cancel()
 		if err := h.Publish(ctx, evt); err != nil {
 			log.Warn("nostr.publish failed", "err", err)
@@ -211,7 +233,7 @@ func wireNostr(vm *goja.Runtime, h sdk.NostrHost, log *slog.Logger) error {
 		if l, ok := call.Argument(1).Export().(int64); ok {
 			limit = int(l)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := hostCtx.withTimeout(15 * time.Second)
 		defer cancel()
 		events, err := h.Fetch(ctx, filter, limit)
 		if err != nil {
@@ -223,7 +245,7 @@ func wireNostr(vm *goja.Runtime, h sdk.NostrHost, log *slog.Logger) error {
 	_ = obj.Set("encrypt", func(call goja.FunctionCall) goja.Value {
 		pubkey := call.Argument(0).String()
 		content := call.Argument(1).String()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := hostCtx.withTimeout(5 * time.Second)
 		defer cancel()
 		cipher, err := h.Encrypt(ctx, pubkey, content)
 		if err != nil {
@@ -234,7 +256,7 @@ func wireNostr(vm *goja.Runtime, h sdk.NostrHost, log *slog.Logger) error {
 	_ = obj.Set("decrypt", func(call goja.FunctionCall) goja.Value {
 		pubkey := call.Argument(0).String()
 		cipher := call.Argument(1).String()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := hostCtx.withTimeout(5 * time.Second)
 		defer cancel()
 		plain, err := h.Decrypt(ctx, pubkey, cipher)
 		if err != nil {
@@ -247,7 +269,7 @@ func wireNostr(vm *goja.Runtime, h sdk.NostrHost, log *slog.Logger) error {
 
 func wireConfig(vm *goja.Runtime, h sdk.ConfigHost) error {
 	if h == nil {
-		return setStubNamespace(vm, "config", "config host not available")
+		return setUnavailableNamespace(vm, "config", "config host not available")
 	}
 	obj := vm.NewObject()
 	_ = obj.Set("get", func(call goja.FunctionCall) goja.Value {
@@ -261,15 +283,15 @@ func wireConfig(vm *goja.Runtime, h sdk.ConfigHost) error {
 	return vm.Set("config", obj)
 }
 
-func wireHTTP(vm *goja.Runtime, h sdk.HTTPHost, log *slog.Logger) error {
+func wireHTTP(vm *goja.Runtime, h sdk.HTTPHost, hostCtx *pluginHostContext, log *slog.Logger) error {
 	if h == nil {
-		return setStubNamespace(vm, "http", "http host not available")
+		return setUnavailableNamespace(vm, "http", "http host not available")
 	}
 	obj := vm.NewObject()
 	_ = obj.Set("get", func(call goja.FunctionCall) goja.Value {
 		url := call.Argument(0).String()
 		headers := exportStringMap(call.Argument(1))
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := hostCtx.withTimeout(30 * time.Second)
 		defer cancel()
 		status, body, err := h.Get(ctx, url, headers)
 		if err != nil {
@@ -282,7 +304,7 @@ func wireHTTP(vm *goja.Runtime, h sdk.HTTPHost, log *slog.Logger) error {
 		url := call.Argument(0).String()
 		bodyStr := call.Argument(1).String()
 		headers := exportStringMap(call.Argument(2))
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := hostCtx.withTimeout(30 * time.Second)
 		defer cancel()
 		status, body, err := h.Post(ctx, url, []byte(bodyStr), headers)
 		if err != nil {
@@ -294,14 +316,14 @@ func wireHTTP(vm *goja.Runtime, h sdk.HTTPHost, log *slog.Logger) error {
 	return vm.Set("http", obj)
 }
 
-func wireStorage(vm *goja.Runtime, h sdk.StorageHost, log *slog.Logger) error {
+func wireStorage(vm *goja.Runtime, h sdk.StorageHost, hostCtx *pluginHostContext, log *slog.Logger) error {
 	if h == nil {
-		return setStubNamespace(vm, "storage", "storage host not available")
+		return setUnavailableNamespace(vm, "storage", "storage host not available")
 	}
 	obj := vm.NewObject()
 	_ = obj.Set("get", func(call goja.FunctionCall) goja.Value {
 		key := call.Argument(0).String()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := hostCtx.withTimeout(5 * time.Second)
 		defer cancel()
 		val, err := h.Get(ctx, key)
 		if err != nil {
@@ -316,7 +338,7 @@ func wireStorage(vm *goja.Runtime, h sdk.StorageHost, log *slog.Logger) error {
 	_ = obj.Set("set", func(call goja.FunctionCall) goja.Value {
 		key := call.Argument(0).String()
 		val := call.Argument(1).String()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := hostCtx.withTimeout(5 * time.Second)
 		defer cancel()
 		if err := h.Set(ctx, key, []byte(val)); err != nil {
 			log.Warn("storage.set failed", "key", key, "err", err)
@@ -326,7 +348,7 @@ func wireStorage(vm *goja.Runtime, h sdk.StorageHost, log *slog.Logger) error {
 	})
 	_ = obj.Set("del", func(call goja.FunctionCall) goja.Value {
 		key := call.Argument(0).String()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := hostCtx.withTimeout(5 * time.Second)
 		defer cancel()
 		if err := h.Del(ctx, key); err != nil {
 			log.Warn("storage.del failed", "key", key, "err", err)
@@ -357,9 +379,9 @@ func wireLog(vm *goja.Runtime, h sdk.LogHost) error {
 	return vm.Set("log", obj)
 }
 
-func wireAgent(vm *goja.Runtime, h sdk.AgentHost, log *slog.Logger) error {
+func wireAgent(vm *goja.Runtime, h sdk.AgentHost, hostCtx *pluginHostContext, log *slog.Logger) error {
 	if h == nil {
-		return setStubNamespace(vm, "agent", "agent host not available")
+		return setUnavailableNamespace(vm, "agent", "agent host not available")
 	}
 	obj := vm.NewObject()
 	_ = obj.Set("complete", func(call goja.FunctionCall) goja.Value {
@@ -376,7 +398,7 @@ func wireAgent(vm *goja.Runtime, h sdk.AgentHost, log *slog.Logger) error {
 				opts.MaxTokens = int(mt)
 			}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := hostCtx.withTimeout(60 * time.Second)
 		defer cancel()
 		reply, err := h.Complete(ctx, prompt, opts)
 		if err != nil {
@@ -390,18 +412,73 @@ func wireAgent(vm *goja.Runtime, h sdk.AgentHost, log *slog.Logger) error {
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
 
-func setStubNamespace(vm *goja.Runtime, name, reason string) error {
-	obj := vm.NewObject()
-	stub := func(call goja.FunctionCall) goja.Value {
-		panic(vm.NewTypeError("%s: %s", name, reason))
+type pluginHostContext struct {
+	ctx context.Context
+}
+
+func (h *pluginHostContext) withTimeout(timeout time.Duration) (context.Context, context.CancelFunc) {
+	base := context.Background()
+	if h != nil && h.ctx != nil {
+		base = h.ctx
 	}
-	// Attach a catch-all __noSuchMethod__ isn't standard; instead set common names.
-	for _, fn := range []string{"publish", "fetch", "encrypt", "decrypt",
-		"get", "set", "del", "post", "complete",
-		"info", "warn", "error"} {
-		_ = obj.Set(fn, stub)
+	return context.WithTimeout(base, timeout)
+}
+
+// HostUnavailableError reports that plugin code attempted to use a host
+// namespace the daemon did not wire for this plugin/runtime.
+type HostUnavailableError struct {
+	Namespace string
+}
+
+func (e *HostUnavailableError) Error() string {
+	return fmt.Sprintf("plugin host namespace %q is not available", e.Namespace)
+}
+
+func setUnavailableNamespace(vm *goja.Runtime, name, reason string) error {
+	obj := vm.NewObject()
+	_ = obj.Set("available", false)
+	_ = obj.Set("reason", reason)
+	unavailable := func(call goja.FunctionCall) goja.Value {
+		panic(vm.NewGoError(&HostUnavailableError{Namespace: name}))
+	}
+	for _, fn := range []string{"publish", "fetch", "encrypt", "decrypt", "get", "set", "del", "post", "complete"} {
+		_ = obj.Set(fn, unavailable)
 	}
 	return vm.Set(name, obj)
+}
+
+func wrapPluginExecutionError(prefix string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var unavailable *HostUnavailableError
+	if errors.As(err, &unavailable) && unavailable != nil {
+		return fmt.Errorf("%s: %w", prefix, unavailable)
+	}
+	if namespace := missingHostNamespaceFromError(err); namespace != "" {
+		return fmt.Errorf("%s: %w: %v", prefix, &HostUnavailableError{Namespace: namespace}, err)
+	}
+	return fmt.Errorf("%s: %w", prefix, err)
+}
+
+func missingHostNamespaceFromError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	for _, namespace := range []string{"nostr", "config", "http", "storage", "agent"} {
+		if strings.Contains(msg, "ReferenceError: "+namespace+" is not defined") || strings.Contains(msg, namespace+" is not defined") {
+			return namespace
+		}
+		if strings.Contains(msg, "plugin host namespace \""+namespace+"\" is not available") {
+			return namespace
+		}
+		if strings.Contains(lower, "typeerror") && (strings.Contains(msg, namespace+".") || strings.Contains(msg, namespace+"[") || strings.Contains(msg, "'"+namespace+"'") || strings.Contains(msg, "\""+namespace+"\"")) {
+			return namespace
+		}
+	}
+	return ""
 }
 
 func exportStringMap(v goja.Value) map[string]string {

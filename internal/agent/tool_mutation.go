@@ -250,6 +250,9 @@ func IsMutatingToolCall(toolName string, args interface{}) bool {
 		"create_file", "delete_file", "move_file":
 		return true
 
+	case "task":
+		return action == "run" || action == "write" || action == "execute"
+
 	case "process":
 		return action != "" && processMutatingActions[action]
 

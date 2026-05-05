@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	nostr "fiatjaf.com/nostr"
 
@@ -68,7 +67,7 @@ var contextVMCallDef = agent.ToolDefinition{
 			"arguments":       {Type: "string", Description: "JSON object string of tool arguments (e.g. '{\"prompt\":\"a cat\"}')."},
 			"relays":          {Type: "array", Items: &agent.ToolParamProp{Type: "string"}, Description: "Relay URLs. Defaults to configured relays."},
 			"encryption":      {Type: "string", Description: "Optional encryption mode for request content: none|nip44|nip04|auto."},
-			"timeout_seconds": {Type: "number", Description: "Optional response timeout in seconds (default 60)."},
+			"timeout_seconds": {Type: "number", Description: "Deprecated compatibility field; ignored because completion is driven by the Nostr response event."},
 		},
 		Required: []string{"server_pubkey", "tool_name"},
 	},
@@ -261,14 +260,7 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 		}
 
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		timeoutSec := 60
-		if v, ok := args["timeout_seconds"].(float64); ok && v > 0 {
-			timeoutSec = int(v)
-		}
-		if timeoutSec > 600 {
-			timeoutSec = 600
-		}
-		result, err := contextvm.CallToolWithTimeout(ctx, getPool(), ks, relays, serverPubKey, toolName, toolArgs, time.Duration(timeoutSec)*time.Second, encryption)
+		result, err := contextvm.CallTool(ctx, getPool(), ks, relays, serverPubKey, toolName, toolArgs, encryption)
 		if err != nil {
 			return "", err
 		}

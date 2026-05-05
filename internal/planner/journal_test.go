@@ -553,9 +553,23 @@ func TestCheckpoint_DataIsolation(t *testing.T) {
 		Verification: state.VerificationSpec{
 			Policy: state.VerificationPolicyRequired,
 			Checks: []state.VerificationCheck{
-				{CheckID: "chk-1", Type: state.VerificationCheckTest, Description: "tests pass", Required: true, Status: state.VerificationStatusPassed, Meta: map[string]any{"suite": "unit"}},
+				{
+					CheckID:     "chk-1",
+					Type:        state.VerificationCheckTest,
+					Description: "tests pass",
+					Required:    true,
+					Status:      state.VerificationStatusPassed,
+					Meta: map[string]any{
+						"suite":  "unit",
+						"labels": []string{"fast", "deterministic"},
+					},
+				},
 			},
-			Meta: map[string]any{"source": "runtime"},
+			Meta: map[string]any{
+				"source": "runtime",
+				"nested": map[string]any{"phase": "checkpoint"},
+				"labels": []any{"verified", map[string]any{"level": "required"}},
+			},
 		},
 		Meta: map[string]any{"k": "v"},
 	}
@@ -566,8 +580,11 @@ func TestCheckpoint_DataIsolation(t *testing.T) {
 	cp.Meta["k"] = "mutated"
 	cp.Verification.Policy = state.VerificationPolicyAdvisory
 	cp.Verification.Meta["source"] = "mutated"
+	cp.Verification.Meta["nested"].(map[string]any)["phase"] = "mutated"
+	cp.Verification.Meta["labels"].([]any)[1].(map[string]any)["level"] = "mutated"
 	cp.Verification.Checks[0].Status = state.VerificationStatusFailed
 	cp.Verification.Checks[0].Meta["suite"] = "integration"
+	cp.Verification.Checks[0].Meta["labels"].([]string)[0] = "slow"
 
 	latest := j.LatestCheckpoint()
 	if latest.StepID != "s1" {
@@ -582,11 +599,20 @@ func TestCheckpoint_DataIsolation(t *testing.T) {
 	if latest.Verification.Meta["source"] != "runtime" {
 		t.Fatal("checkpoint verification meta was mutated")
 	}
+	if latest.Verification.Meta["nested"].(map[string]any)["phase"] != "checkpoint" {
+		t.Fatal("checkpoint nested verification meta was mutated")
+	}
+	if latest.Verification.Meta["labels"].([]any)[1].(map[string]any)["level"] != "required" {
+		t.Fatal("checkpoint verification meta slice was mutated")
+	}
 	if latest.Verification.Checks[0].Status != state.VerificationStatusPassed {
 		t.Fatalf("checkpoint verification status was mutated: %s", latest.Verification.Checks[0].Status)
 	}
 	if latest.Verification.Checks[0].Meta["suite"] != "unit" {
 		t.Fatal("checkpoint verification check meta was mutated")
+	}
+	if latest.Verification.Checks[0].Meta["labels"].([]string)[0] != "fast" {
+		t.Fatal("checkpoint verification check meta slice was mutated")
 	}
 }
 

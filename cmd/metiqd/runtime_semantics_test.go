@@ -229,6 +229,48 @@ func TestHandleOpsRPCCronAddSurfacesPersistenceFailure(t *testing.T) {
 	}
 }
 
+func TestSubagentRegistryGetReturnsSnapshot(t *testing.T) {
+	reg := newSubagentRegistry()
+	if _, ok := reg.Spawn("run-1", "sess-1", "", 0, "message"); !ok {
+		t.Fatal("spawn rejected")
+	}
+	snap := reg.Get("run-1")
+	if snap == nil {
+		t.Fatal("missing subagent snapshot")
+	}
+	snap.Status = "corrupted"
+	snap.Error = "caller mutation"
+	again := reg.Get("run-1")
+	if again == nil || again.Status != "running" || again.Error != "" {
+		t.Fatalf("registry state was mutated through Get result: %+v", again)
+	}
+}
+
+func TestCloneMapAnyDeepCopiesNestedRuntimeState(t *testing.T) {
+	reg := newExecApprovalsRegistry()
+	nested := map[string]any{
+		"slice": []any{"original"},
+		"map":   map[string]any{"k": "v"},
+		"typed": []string{"a"},
+	}
+	reg.SetGlobal(nested)
+	nested["slice"].([]any)[0] = "caller-mutated"
+	nested["map"].(map[string]any)["k"] = "caller-mutated"
+	nested["typed"].([]string)[0] = "caller-mutated"
+
+	got := reg.GetGlobal()
+	if got["slice"].([]any)[0] != "original" || got["map"].(map[string]any)["k"] != "v" || got["typed"].([]string)[0] != "a" {
+		t.Fatalf("expected stored map to be isolated from caller mutation, got %+v", got)
+	}
+	got["slice"].([]any)[0] = "get-mutated"
+	got["map"].(map[string]any)["k"] = "get-mutated"
+	got["typed"].([]string)[0] = "get-mutated"
+	again := reg.GetGlobal()
+	if again["slice"].([]any)[0] != "original" || again["map"].(map[string]any)["k"] != "v" || again["typed"].([]string)[0] != "a" {
+		t.Fatalf("expected GetGlobal result to be isolated, got %+v", again)
+	}
+}
+
 func TestOperationsRegistryHeartbeatState(t *testing.T) {
 	reg := newOperationsRegistry()
 	enabled := true

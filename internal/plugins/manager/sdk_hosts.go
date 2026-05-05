@@ -333,7 +333,9 @@ func cloneHostForPlugin(base *sdk.Host, pluginID string) (*sdk.Host, error) {
 // ─── BuildHost ───────────────────────────────────────────────────────────────
 
 // BuildHost assembles a sdk.Host from runtime components.
-// Pass nil for optional components (agent runtime, nostr host) if not yet ready.
+// Pass nil for optional components if not yet ready; unavailable namespaces are
+// installed as unavailable sentinels so guarded plugin code can fall back and
+// unchecked namespace calls fail with an explicit host-unavailable error.
 func BuildHost(cfg configStateReader, rt agentRuntimeReader) *sdk.Host {
 	h := &sdk.Host{
 		Config: &configHostImpl{cfg: cfg},
@@ -345,7 +347,7 @@ func BuildHost(cfg configStateReader, rt agentRuntimeReader) *sdk.Host {
 	if rt != nil {
 		h.Agent = &agentHostImpl{rt: rt}
 	}
-	// NostrHost is left nil unless the caller explicitly sets it after the DM
-	// transport is started; the stub in goja_host.go will return a safe error.
+	// NostrHost and HTTPHost are left unavailable unless the caller explicitly
+	// wires policy-aware implementations after the relevant services are started.
 	return h
 }

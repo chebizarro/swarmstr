@@ -25,6 +25,23 @@ func TestParseConfigBytesACPTransport(t *testing.T) {
 	}
 }
 
+func TestParseConfigBytesACPPeers(t *testing.T) {
+	doc, err := ParseConfigBytes([]byte(`{"acp":{"peers":[{"pubkey":"abc123","alias":"worker-a","tags":{"region":"us"}}]}}`), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	if len(doc.ACP.Peers) != 1 {
+		t.Fatalf("expected 1 acp peer, got %d", len(doc.ACP.Peers))
+	}
+	peer := doc.ACP.Peers[0]
+	if peer.PubKey != "abc123" || peer.Alias != "worker-a" {
+		t.Fatalf("unexpected acp peer: %#v", peer)
+	}
+	if peer.Tags["region"] != "us" {
+		t.Fatalf("expected acp peer tag region=us, got %#v", peer.Tags)
+	}
+}
+
 func TestParseConfigBytesDMReplyScheme(t *testing.T) {
 	doc, err := ParseConfigBytes([]byte(`{"dm":{"reply_scheme":"nip17"}}`), ".json")
 	if err != nil {

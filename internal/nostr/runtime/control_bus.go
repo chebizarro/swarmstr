@@ -118,6 +118,11 @@ type ControlRPCBus struct {
 	callerList        []string
 	callerCap         int
 	minCallerInterval time.Duration
+
+	// testControlRelaySubscribe is an unexported seam used by runtime tests to
+	// drive relay EVENT/EOSE/CLOSED signals without opening websocket relays.
+	testControlRelaySubscribe func(ctx context.Context, relayURL string, filter nostr.Filter, generation int, emitEvent func(nostr.RelayEvent) bool, emitEOSE func(controlRelayEOSE), emitClosed func(controlRelayClose))
+	testAfterControlEOSE      func(relayURL string)
 }
 
 const (
@@ -147,8 +152,6 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 	if since <= 0 {
 		since = ResubscribeSince(ControlRPCResubscribeWindow)
 	}
-	ctx, cancel := context.WithCancel(parent)
-
 	health := NewRelayHealthTracker()
 	health.Seed(initialRelays)
 	pool := NewPoolNIP42(ks)
@@ -165,6 +168,7 @@ func StartControlRPCBus(parent context.Context, opts ControlRPCBusOptions) (*Con
 		maxReqAge = defaultControlRequestMaxAge
 	}
 
+	ctx, cancel := context.WithCancel(parent)
 	bus := &ControlRPCBus{
 		pool:              pool,
 		hub:               opts.Hub,
@@ -336,9 +340,6 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	if !evt.Tags.ContainsAny("p", []string{b.public.Hex()}) {
 		return
 	}
-	if relayURL != "" && b.health != nil {
-		b.health.RecordSuccess(relayURL)
-	}
 	requestID := firstTagValue(evt.Tags, "req")
 	if requestID == "" {
 		requestID = evt.ID.Hex()
@@ -395,19 +396,19 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	}
 
 	now := time.Now()
-	if !b.allowCaller(callerPubKey, now) {
-		b.respondErrorCode(re, "control request rate limited", requestID, -32029, nil)
-		return
-	}
-	if b.maxReqAge > 0 {
-		threshold := now.Add(-b.maxReqAge).Unix()
-		if int64(evt.CreatedAt) < threshold {
-			b.respondError(re, "control request expired", requestID)
-			return
-		}
-	}
 	if timestampTooFarFuture(int64(evt.CreatedAt), now, inboundEventMaxFutureSkew) {
 		b.respondError(re, "control request from the future", requestID)
+		return
+	}
+	if timestampTooOld(int64(evt.CreatedAt), now, b.maxReqAge) {
+		b.respondError(re, "control request expired", requestID)
+		return
+	}
+	if relayURL != "" && b.health != nil {
+		b.health.RecordSuccess(relayURL)
+	}
+	if !b.allowCaller(callerPubKey, now) {
+		b.respondErrorCode(re, "control request rate limited", requestID, -32029, nil)
 		return
 	}
 
@@ -524,10 +525,14 @@ func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey str
 }
 
 type controlRelayClose struct {
-	relayURL    string
-	reason      string
-	generation  int
-	handledAuth bool
+	// relayURL is the configured relay key used for generation tracking and retries.
+	relayURL string
+	// reportedRelayURL is the relay URL surfaced by the transport, when available.
+	// It may differ in formatting from relayURL; generation checks must use relayURL.
+	reportedRelayURL string
+	reason           string
+	generation       int
+	handledAuth      bool
 }
 
 type controlRelayEOSE struct {
@@ -608,6 +613,10 @@ func (b *ControlRPCBus) runPoolSubscription(filter nostr.Filter) bool {
 		if relayKey == "" {
 			return
 		}
+		if b.testControlRelaySubscribe != nil {
+			go b.testControlRelaySubscribe(subCtx, relayKey, filter, gen, sendEvent, sendEOSE, sendClosed)
+			return
+		}
 		go b.runControlRelaySubscription(subCtx, relayKey, filter, gen, sendEvent, sendEOSE, sendClosed)
 	}
 
@@ -665,14 +674,11 @@ func (b *ControlRPCBus) runPoolSubscription(filter nostr.Filter) bool {
 			}
 			b.handleControlRelayEOSE(relay)
 		case closed := <-closedCh:
-			relay := strings.TrimSpace(closed.relayURL)
-			if relay == "" {
+			relay, schedule, terminal := b.processControlRelayClose(generation, closed)
+			if terminal {
 				return false
 			}
-			if generation[relay] != closed.generation {
-				continue
-			}
-			if b.handleControlRelayClose(relay, closed.reason, closed.handledAuth) {
+			if schedule {
 				scheduleResubscribe(relay, closed.generation)
 			}
 		case retry := <-resubscribeCh:
@@ -758,6 +764,9 @@ func (b *ControlRPCBus) handleControlRelayEOSE(relayURL string) {
 	if b.health != nil {
 		b.health.RecordSuccess(relayURL)
 	}
+	if b.testAfterControlEOSE != nil {
+		b.testAfterControlEOSE(relayURL)
+	}
 }
 
 func (b *ControlRPCBus) handleControlRelayClose(relayURL string, reason string, handledAuth bool) bool {
@@ -772,6 +781,21 @@ func (b *ControlRPCBus) handleControlRelayClose(relayURL string, reason string, 
 	}
 	b.emitErr(fmt.Errorf("control subscription closed relay=%s reason=%s", relayURL, reason))
 	return true
+}
+
+func (b *ControlRPCBus) processControlRelayClose(generation map[string]int, closed controlRelayClose) (relay string, schedule bool, terminal bool) {
+	relay = strings.TrimSpace(closed.relayURL)
+	if relay == "" {
+		return "", false, true
+	}
+	if generation[relay] != closed.generation {
+		return relay, false, false
+	}
+	reportedRelay := strings.TrimSpace(closed.reportedRelayURL)
+	if reportedRelay == "" {
+		reportedRelay = relay
+	}
+	return relay, b.handleControlRelayClose(reportedRelay, closed.reason, closed.handledAuth), false
 }
 
 func (b *ControlRPCBus) runHubSubscription(filter nostr.Filter) bool {
@@ -790,6 +814,19 @@ func (b *ControlRPCBus) runHubSubscription(filter nostr.Filter) bool {
 		return generation[relay]
 	}
 
+	emitRelayClose := func(close controlRelayClose) {
+		select {
+		case closedCh <- close:
+		default:
+			go func() {
+				select {
+				case <-subCtx.Done():
+				case closedCh <- close:
+				}
+			}()
+		}
+	}
+
 	subscribeRelay := func(relay string, filter nostr.Filter, gen int) bool {
 		relay = strings.TrimSpace(relay)
 		if relay == "" {
@@ -801,17 +838,11 @@ func (b *ControlRPCBus) runHubSubscription(filter nostr.Filter) bool {
 			Relays:  []string{relay},
 			OnEvent: b.dispatchInbound,
 			OnClosed: func(closedRelay *nostr.Relay, reason string, handledAuth bool) {
-				relayURL := relay
+				reportedRelay := relay
 				if closedRelay != nil && strings.TrimSpace(closedRelay.URL) != "" {
-					relayURL = strings.TrimSpace(closedRelay.URL)
+					reportedRelay = strings.TrimSpace(closedRelay.URL)
 				}
-				if !b.handleControlRelayClose(relayURL, reason, handledAuth) {
-					return
-				}
-				select {
-				case closedCh <- controlRelayClose{relayURL: relayURL, reason: reason, generation: gen}:
-				default:
-				}
+				emitRelayClose(controlRelayClose{relayURL: relay, reportedRelayURL: reportedRelay, reason: reason, generation: gen, handledAuth: handledAuth})
 			},
 		}); err != nil {
 			if b.health != nil {
@@ -884,11 +915,11 @@ func (b *ControlRPCBus) runHubSubscription(filter nostr.Filter) bool {
 			}
 			return true
 		case closed := <-closedCh:
-			relay := strings.TrimSpace(closed.relayURL)
-			if relay == "" {
+			relay, schedule, terminal := b.processControlRelayClose(generation, closed)
+			if terminal {
 				return false
 			}
-			if generation[relay] != closed.generation {
+			if !schedule {
 				continue
 			}
 			b.hub.Unsubscribe(b.controlSubID(relay, closed.generation))
@@ -1117,16 +1148,7 @@ func (b *ControlRPCBus) responseRelayCandidates(preferred string, requesterPubKe
 	if b.health == nil {
 		return base
 	}
-	allowed := make([]string, 0, len(base))
-	for _, relay := range base {
-		if b.health.Allowed(relay, now) {
-			allowed = append(allowed, relay)
-		}
-	}
-	if len(allowed) == 0 {
-		return base
-	}
-	return allowed
+	return b.health.SortRelays(base)
 }
 
 func (b *ControlRPCBus) currentRelays() []string {

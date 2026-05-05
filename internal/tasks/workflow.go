@@ -5,9 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,44 +46,44 @@ const (
 type StepType string
 
 const (
-	StepTypeAgentTurn    StepType = "agent_turn"
-	StepTypeACPDispatch  StepType = "acp_dispatch"
-	StepTypeGatewayCall  StepType = "gateway_call"
-	StepTypeWait         StepType = "wait"
-	StepTypeApproval     StepType = "approval"
-	StepTypeParallel     StepType = "parallel"
-	StepTypeConditional  StepType = "conditional"
+	StepTypeAgentTurn   StepType = "agent_turn"
+	StepTypeACPDispatch StepType = "acp_dispatch"
+	StepTypeGatewayCall StepType = "gateway_call"
+	StepTypeWait        StepType = "wait"
+	StepTypeApproval    StepType = "approval"
+	StepTypeParallel    StepType = "parallel"
+	StepTypeConditional StepType = "conditional"
 )
 
 // WorkflowDefinition is the schema for a workflow.
 type WorkflowDefinition struct {
-	Version     int                    `json:"version"`
-	ID          string                 `json:"id"`
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	Steps       []StepDefinition       `json:"steps"`
-	Inputs      map[string]InputSpec   `json:"inputs,omitempty"`
-	Outputs     map[string]OutputSpec  `json:"outputs,omitempty"`
-	Authority   state.TaskAuthority    `json:"authority,omitempty"`
-	Budget      state.TaskBudget       `json:"budget,omitempty"`
-	Timeout     int64                  `json:"timeout_ms,omitempty"`
-	Meta        map[string]any         `json:"meta,omitempty"`
-	CreatedAt   int64                  `json:"created_at,omitempty"`
-	UpdatedAt   int64                  `json:"updated_at,omitempty"`
+	Version     int                   `json:"version"`
+	ID          string                `json:"id"`
+	Name        string                `json:"name"`
+	Description string                `json:"description,omitempty"`
+	Steps       []StepDefinition      `json:"steps"`
+	Inputs      map[string]InputSpec  `json:"inputs,omitempty"`
+	Outputs     map[string]OutputSpec `json:"outputs,omitempty"`
+	Authority   state.TaskAuthority   `json:"authority,omitempty"`
+	Budget      state.TaskBudget      `json:"budget,omitempty"`
+	Timeout     int64                 `json:"timeout_ms,omitempty"`
+	Meta        map[string]any        `json:"meta,omitempty"`
+	CreatedAt   int64                 `json:"created_at,omitempty"`
+	UpdatedAt   int64                 `json:"updated_at,omitempty"`
 }
 
 // StepDefinition defines a single step in a workflow.
 type StepDefinition struct {
-	ID           string              `json:"id"`
-	Name         string              `json:"name"`
-	Type         StepType            `json:"type"`
-	Dependencies []string            `json:"dependencies,omitempty"`
-	Config       StepConfig          `json:"config"`
-	Timeout      int64               `json:"timeout_ms,omitempty"`
-	RetryPolicy  *RetryPolicy        `json:"retry_policy,omitempty"`
-	OnFailure    string              `json:"on_failure,omitempty"` // "fail" | "continue" | "skip"
-	Condition    string              `json:"condition,omitempty"`  // expression to evaluate
-	Meta         map[string]any      `json:"meta,omitempty"`
+	ID           string         `json:"id"`
+	Name         string         `json:"name"`
+	Type         StepType       `json:"type"`
+	Dependencies []string       `json:"dependencies,omitempty"`
+	Config       StepConfig     `json:"config"`
+	Timeout      int64          `json:"timeout_ms,omitempty"`
+	RetryPolicy  *RetryPolicy   `json:"retry_policy,omitempty"`
+	OnFailure    string         `json:"on_failure,omitempty"` // "fail" | "continue" | "skip"
+	Condition    string         `json:"condition,omitempty"`  // expression to evaluate
+	Meta         map[string]any `json:"meta,omitempty"`
 }
 
 // StepConfig contains type-specific configuration for a step.
@@ -116,8 +119,8 @@ type StepConfig struct {
 
 // RetryPolicy controls step retry behavior.
 type RetryPolicy struct {
-	MaxAttempts int   `json:"max_attempts"`
-	DelayMS     int64 `json:"delay_ms"`
+	MaxAttempts int     `json:"max_attempts"`
+	DelayMS     int64   `json:"delay_ms"`
 	Backoff     float64 `json:"backoff,omitempty"` // multiplier for exponential backoff
 }
 
@@ -138,39 +141,39 @@ type OutputSpec struct {
 
 // WorkflowRun is an execution instance of a workflow.
 type WorkflowRun struct {
-	Version      int                    `json:"version"`
-	RunID        string                 `json:"run_id"`
-	WorkflowID   string                 `json:"workflow_id"`
-	WorkflowName string                 `json:"workflow_name"`
-	Status       WorkflowStatus         `json:"status"`
-	Inputs       map[string]any         `json:"inputs,omitempty"`
-	Outputs      map[string]any         `json:"outputs,omitempty"`
-	Steps        []StepRun              `json:"steps"`
-	CurrentStep  string                 `json:"current_step,omitempty"`
-	Usage        state.TaskUsage        `json:"usage,omitempty"`
-	Error        string                 `json:"error,omitempty"`
-	StartedAt    int64                  `json:"started_at,omitempty"`
-	EndedAt      int64                  `json:"ended_at,omitempty"`
-	CreatedAt    int64                  `json:"created_at"`
-	UpdatedAt    int64                  `json:"updated_at"`
-	Meta         map[string]any         `json:"meta,omitempty"`
+	Version      int             `json:"version"`
+	RunID        string          `json:"run_id"`
+	WorkflowID   string          `json:"workflow_id"`
+	WorkflowName string          `json:"workflow_name"`
+	Status       WorkflowStatus  `json:"status"`
+	Inputs       map[string]any  `json:"inputs,omitempty"`
+	Outputs      map[string]any  `json:"outputs,omitempty"`
+	Steps        []StepRun       `json:"steps"`
+	CurrentStep  string          `json:"current_step,omitempty"`
+	Usage        state.TaskUsage `json:"usage,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	StartedAt    int64           `json:"started_at,omitempty"`
+	EndedAt      int64           `json:"ended_at,omitempty"`
+	CreatedAt    int64           `json:"created_at"`
+	UpdatedAt    int64           `json:"updated_at"`
+	Meta         map[string]any  `json:"meta,omitempty"`
 }
 
 // StepRun is an execution instance of a workflow step.
 type StepRun struct {
-	StepID      string          `json:"step_id"`
-	StepName    string          `json:"step_name"`
-	Type        StepType        `json:"type"`
-	Status      StepStatus      `json:"status"`
-	Attempt     int             `json:"attempt"`
-	TaskID      string          `json:"task_id,omitempty"`
-	RunID       string          `json:"run_id,omitempty"`
-	Input       map[string]any  `json:"input,omitempty"`
-	Output      map[string]any  `json:"output,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	StartedAt   int64           `json:"started_at,omitempty"`
-	EndedAt     int64           `json:"ended_at,omitempty"`
-	Meta        map[string]any  `json:"meta,omitempty"`
+	StepID    string         `json:"step_id"`
+	StepName  string         `json:"step_name"`
+	Type      StepType       `json:"type"`
+	Status    StepStatus     `json:"status"`
+	Attempt   int            `json:"attempt"`
+	TaskID    string         `json:"task_id,omitempty"`
+	RunID     string         `json:"run_id,omitempty"`
+	Input     map[string]any `json:"input,omitempty"`
+	Output    map[string]any `json:"output,omitempty"`
+	Error     string         `json:"error,omitempty"`
+	StartedAt int64          `json:"started_at,omitempty"`
+	EndedAt   int64          `json:"ended_at,omitempty"`
+	Meta      map[string]any `json:"meta,omitempty"`
 }
 
 // WorkflowOrchestrator manages workflow execution.
@@ -590,7 +593,7 @@ func (o *WorkflowOrchestrator) scheduleReadySteps(ctx context.Context, run *Work
 	var readySteps []*StepRun
 	for i := range run.Steps {
 		step := &run.Steps[i]
-		if step.Status != StepStatusPending {
+		if step.Status != StepStatusPending && step.Status != StepStatusBlocked {
 			continue
 		}
 
@@ -599,11 +602,14 @@ func (o *WorkflowOrchestrator) scheduleReadySteps(ctx context.Context, run *Work
 			continue
 		}
 
-		// Check dependencies
+		// Check dependencies. A dependency can be satisfied by a successful
+		// completion, by a skipped upstream step, or by a failed upstream step whose
+		// own failure policy explicitly allows the workflow to continue.
 		ready := true
 		for _, depID := range stepDef.Dependencies {
 			dep := stepIndex[depID]
-			if dep == nil || dep.Status != StepStatusCompleted {
+			depDef := defIndex[depID]
+			if !dependencySatisfied(dep, depDef) {
 				ready = false
 				break
 			}
@@ -612,6 +618,8 @@ func (o *WorkflowOrchestrator) scheduleReadySteps(ctx context.Context, run *Work
 		if ready {
 			step.Status = StepStatusReady
 			readySteps = append(readySteps, step)
+		} else if len(stepDef.Dependencies) > 0 {
+			step.Status = StepStatusBlocked
 		}
 	}
 	o.mu.Unlock()
@@ -626,6 +634,22 @@ func (o *WorkflowOrchestrator) scheduleReadySteps(ctx context.Context, run *Work
 		o.executeStep(ctx, run, step, stepDef)
 	}
 }
+
+func dependencySatisfied(step *StepRun, def *StepDefinition) bool {
+	if step == nil {
+		return false
+	}
+	switch step.Status {
+	case StepStatusCompleted, StepStatusSkipped:
+		return true
+	case StepStatusFailed:
+		return def != nil && def.OnFailure == "continue"
+	default:
+		return false
+	}
+}
+
+var errStepBlocked = errors.New("step blocked")
 
 func (o *WorkflowOrchestrator) executeStep(ctx context.Context, run *WorkflowRun, step *StepRun, def *StepDefinition) {
 	o.mu.Lock()
@@ -651,9 +675,10 @@ func (o *WorkflowOrchestrator) executeStep(ctx context.Context, run *WorkflowRun
 		})
 	}
 
-	// Execute via executor if available
 	var err error
-	if o.executor != nil {
+	if handled, builtinErr := o.executeBuiltInStep(ctx, run, step, def); handled {
+		err = builtinErr
+	} else if o.executor != nil {
 		err = o.executor.ExecuteStep(ctx, run, step, def)
 	} else {
 		err = fmt.Errorf("no step executor configured")
@@ -665,32 +690,39 @@ func (o *WorkflowOrchestrator) executeStep(ctx context.Context, run *WorkflowRun
 	run.UpdatedAt = now
 
 	if err != nil {
-		step.Error = err.Error()
-
-		// Check retry policy
-		if def.RetryPolicy != nil && step.Attempt < def.RetryPolicy.MaxAttempts {
-			step.Status = StepStatusPending // Will be retried
-		} else if def.OnFailure == "continue" {
-			step.Status = StepStatusFailed
-			// Continue to next steps
-		} else if def.OnFailure == "skip" {
-			step.Status = StepStatusSkipped
+		if errors.Is(err, errStepBlocked) {
+			step.Status = StepStatusBlocked
 		} else {
-			step.Status = StepStatusFailed
-			run.Status = WorkflowStatusFailed
-			run.EndedAt = now
-			run.Error = fmt.Sprintf("step %s failed: %s", step.StepID, err.Error())
+			step.Error = err.Error()
+
+			// Check retry policy
+			if def.RetryPolicy != nil && step.Attempt < def.RetryPolicy.MaxAttempts {
+				step.Status = StepStatusPending // Will be retried
+			} else if def.OnFailure == "continue" {
+				step.Status = StepStatusFailed
+				// Continue to next steps
+			} else if def.OnFailure == "skip" {
+				step.Status = StepStatusSkipped
+			} else {
+				step.Status = StepStatusFailed
+				run.Status = WorkflowStatusFailed
+				run.EndedAt = now
+				run.Error = fmt.Sprintf("step %s failed: %s", step.StepID, err.Error())
+			}
 		}
 	} else {
 		step.Status = StepStatusCompleted
+		step.Error = ""
 	}
+
+	accumulateWorkflowUsage(run, step)
 
 	// Check if workflow is complete
 	if run.Status == WorkflowStatusRunning {
 		allDone := true
 		allSuccess := true
 		for _, s := range run.Steps {
-			if s.Status == StepStatusPending || s.Status == StepStatusReady || s.Status == StepStatusRunning {
+			if s.Status == StepStatusPending || s.Status == StepStatusReady || s.Status == StepStatusRunning || s.Status == StepStatusBlocked {
 				allDone = false
 				break
 			}
@@ -741,6 +773,217 @@ func (o *WorkflowOrchestrator) executeStep(ctx context.Context, run *WorkflowRun
 			go o.scheduleReadySteps(ctx, run, def)
 		}
 	}
+}
+
+func (o *WorkflowOrchestrator) executeBuiltInStep(ctx context.Context, run *WorkflowRun, step *StepRun, def *StepDefinition) (bool, error) {
+	switch def.Type {
+	case StepTypeWait:
+		return true, executeWaitStep(ctx, def)
+	case StepTypeApproval:
+		return true, errStepBlocked
+	case StepTypeConditional:
+		return true, o.executeConditionalStep(ctx, run, step, def)
+	case StepTypeParallel:
+		return true, o.executeParallelStep(ctx, run, step, def)
+	default:
+		return false, nil
+	}
+}
+
+func executeWaitStep(ctx context.Context, def *StepDefinition) error {
+	delay, err := waitDuration(def)
+	if err != nil {
+		return err
+	}
+	if delay <= 0 {
+		return nil
+	}
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+func waitDuration(def *StepDefinition) (time.Duration, error) {
+	var delay time.Duration
+	if def.Config.Duration > 0 {
+		delay = time.Duration(def.Config.Duration) * time.Millisecond
+	}
+	if strings.TrimSpace(def.Config.Until) == "" {
+		return delay, nil
+	}
+
+	until, err := parseUntilTime(def.Config.Until)
+	if err != nil {
+		return 0, err
+	}
+	untilDelay := time.Until(until)
+	if untilDelay < 0 {
+		untilDelay = 0
+	}
+	if untilDelay > delay {
+		delay = untilDelay
+	}
+	return delay, nil
+}
+
+func parseUntilTime(v string) (time.Time, error) {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" {
+		return time.Time{}, fmt.Errorf("wait.until is empty")
+	}
+	if unixSec, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
+		return time.Unix(unixSec, 0), nil
+	}
+	t, err := time.Parse(time.RFC3339, trimmed)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid wait.until %q", v)
+	}
+	return t, nil
+}
+
+func (o *WorkflowOrchestrator) executeConditionalStep(ctx context.Context, run *WorkflowRun, step *StepRun, def *StepDefinition) error {
+	branch := def.Config.TrueStep
+	if !evaluateCondition(run, def.Condition) {
+		branch = def.Config.FalseStep
+	}
+	if branch == nil {
+		return nil
+	}
+
+	branchStep := &StepRun{
+		StepID:   step.StepID + ":branch",
+		StepName: branch.Name,
+		Type:     branch.Type,
+		Status:   StepStatusRunning,
+		Attempt:  1,
+	}
+	if handled, err := o.executeBuiltInStep(ctx, run, branchStep, branch); handled {
+		if err != nil {
+			return err
+		}
+		if branchStep.Status == StepStatusBlocked {
+			return errStepBlocked
+		}
+		return nil
+	}
+	if o.executor == nil {
+		return fmt.Errorf("no step executor configured")
+	}
+	return o.executor.ExecuteStep(ctx, run, branchStep, branch)
+}
+
+func (o *WorkflowOrchestrator) executeParallelStep(ctx context.Context, run *WorkflowRun, step *StepRun, def *StepDefinition) error {
+	if len(def.Config.Substeps) == 0 {
+		return nil
+	}
+
+	errCh := make(chan error, len(def.Config.Substeps))
+	var wg sync.WaitGroup
+	for i := range def.Config.Substeps {
+		sub := def.Config.Substeps[i]
+		wg.Add(1)
+		go func(subDef StepDefinition) {
+			defer wg.Done()
+			subStep := &StepRun{
+				StepID:   step.StepID + ":" + subDef.ID,
+				StepName: subDef.Name,
+				Type:     subDef.Type,
+				Status:   StepStatusRunning,
+				Attempt:  1,
+			}
+			if handled, err := o.executeBuiltInStep(ctx, run, subStep, &subDef); handled {
+				errCh <- err
+				return
+			}
+			if o.executor == nil {
+				errCh <- fmt.Errorf("no step executor configured")
+				return
+			}
+			errCh <- o.executor.ExecuteStep(ctx, run, subStep, &subDef)
+		}(sub)
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func evaluateCondition(run *WorkflowRun, condition string) bool {
+	cond := strings.TrimSpace(strings.ToLower(condition))
+	switch cond {
+	case "", "true", "1", "yes":
+		return true
+	case "false", "0", "no":
+		return false
+	}
+	if run == nil || run.Inputs == nil {
+		return false
+	}
+	v, ok := run.Inputs[condition]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
+}
+
+func accumulateWorkflowUsage(run *WorkflowRun, step *StepRun) {
+	if run == nil || step == nil || len(step.Output) == 0 {
+		return
+	}
+	usage, ok := stepUsageFromOutput(step.Output)
+	if !ok {
+		return
+	}
+	run.Usage.Add(usage)
+}
+
+func stepUsageFromOutput(output map[string]any) (state.TaskUsage, bool) {
+	if usage, ok := decodeTaskUsage(output["usage"]); ok {
+		return usage, true
+	}
+	// Fallback: some executors may place usage fields at the top level.
+	return decodeTaskUsage(output)
+}
+
+func decodeTaskUsage(v any) (state.TaskUsage, bool) {
+	switch typed := v.(type) {
+	case nil:
+		return state.TaskUsage{}, false
+	case state.TaskUsage:
+		if typed == (state.TaskUsage{}) {
+			return state.TaskUsage{}, false
+		}
+		return typed, true
+	case *state.TaskUsage:
+		if typed == nil || *typed == (state.TaskUsage{}) {
+			return state.TaskUsage{}, false
+		}
+		return *typed, true
+	}
+
+	data, err := json.Marshal(v)
+	if err != nil {
+		return state.TaskUsage{}, false
+	}
+	var usage state.TaskUsage
+	if err := json.Unmarshal(data, &usage); err != nil {
+		return state.TaskUsage{}, false
+	}
+	if usage == (state.TaskUsage{}) {
+		return state.TaskUsage{}, false
+	}
+	return usage, true
 }
 
 func generateID(prefix string) string {

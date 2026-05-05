@@ -185,6 +185,7 @@ func TestApplyConfigSetAndPatch(t *testing.T) {
 	}
 	next, err = ApplyConfigSet(next, "mcp.policy.allowed", []any{
 		map[string]any{"name": " remote "},
+		map[string]any{"signature": " stdio:abcdef123456 "},
 		map[string]any{"url": " https://mcp.example.com/* "},
 	})
 	if err != nil {
@@ -220,7 +221,7 @@ func TestApplyConfigSetAndPatch(t *testing.T) {
 		t.Fatalf("unexpected mcp.policy.approved_servers: %#v", rawPolicy)
 	}
 	allowedMatchers, _ := rawPolicy["allowed"].([]map[string]any)
-	if len(allowedMatchers) != 2 || allowedMatchers[0]["name"] != "remote" || allowedMatchers[1]["url"] != "https://mcp.example.com/*" {
+	if len(allowedMatchers) != 3 || allowedMatchers[0]["name"] != "remote" || allowedMatchers[1]["signature"] != "stdio:abcdef123456" || allowedMatchers[2]["url"] != "https://mcp.example.com/*" {
 		t.Fatalf("unexpected mcp.policy.allowed normalization: %#v", rawPolicy["allowed"])
 	}
 	deniedMatchers, _ := rawPolicy["denied"].([]map[string]any)

@@ -65,10 +65,10 @@ type CallResult struct {
 	IsError bool             `json:"isError,omitempty"`
 }
 
-var sendContextVMRequestWithTimeout = sendRequestWithTimeout
+var sendContextVMRequest = sendRequest
 
-func executeJSONRPC(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any, timeout time.Duration, encryption string) (json.RawMessage, error) {
-	respRaw, err := sendContextVMRequestWithTimeout(ctx, pool, keyer, relays, serverPubKey, msg, timeout, encryption)
+func executeJSONRPC(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any, encryption string) (json.RawMessage, error) {
+	respRaw, err := sendContextVMRequest(ctx, pool, keyer, relays, serverPubKey, msg, encryption)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +159,7 @@ func ListResources(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, rel
 		"id":      3,
 		"method":  "resources/list",
 		"params":  map[string]any{},
-	}, 30*time.Second, encryption)
+	}, encryption)
 	if err != nil {
 		return nil, fmt.Errorf("contextvm list resources: %w", err)
 	}
@@ -185,7 +185,7 @@ func ReadResource(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, rela
 		"id":      4,
 		"method":  "resources/read",
 		"params":  map[string]any{"uri": uri},
-	}, 30*time.Second, encryption)
+	}, encryption)
 	if err != nil {
 		return nil, fmt.Errorf("contextvm read resource: %w", err)
 	}
@@ -206,7 +206,7 @@ func ListPrompts(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relay
 		"id":      5,
 		"method":  "prompts/list",
 		"params":  map[string]any{},
-	}, 30*time.Second, encryption)
+	}, encryption)
 	if err != nil {
 		return nil, fmt.Errorf("contextvm list prompts: %w", err)
 	}
@@ -236,7 +236,7 @@ func GetPrompt(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays 
 		"id":      6,
 		"method":  "prompts/get",
 		"params":  params,
-	}, 30*time.Second, encryption)
+	}, encryption)
 	if err != nil {
 		return nil, fmt.Errorf("contextvm get prompt: %w", err)
 	}
@@ -252,12 +252,14 @@ func GetPrompt(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays 
 
 // CallTool calls an MCP tool on a ContextVM server via kind 25910.
 func CallTool(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey, toolName string, toolArgs map[string]any, encryption string) (*CallResult, error) {
-	return CallToolWithTimeout(ctx, pool, keyer, relays, serverPubKey, toolName, toolArgs, 30*time.Second, encryption)
+	return CallToolWithTimeout(ctx, pool, keyer, relays, serverPubKey, toolName, toolArgs, 0, encryption)
 }
 
-// CallToolWithTimeout calls an MCP tool on a ContextVM server via kind 25910
-// with a configurable response timeout.
-func CallToolWithTimeout(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey, toolName string, toolArgs map[string]any, timeout time.Duration, encryption string) (*CallResult, error) {
+// CallToolWithTimeout calls an MCP tool on a ContextVM server via kind 25910.
+//
+// Deprecated: timeout is ignored. ContextVM completion is driven by a response
+// event referencing the request event; use ctx cancellation/deadlines to abort.
+func CallToolWithTimeout(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey, toolName string, toolArgs map[string]any, _ time.Duration, encryption string) (*CallResult, error) {
 	msg := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -267,7 +269,7 @@ func CallToolWithTimeout(ctx context.Context, pool *nostr.Pool, keyer nostr.Keye
 			"arguments": toolArgs,
 		},
 	}
-	resultRaw, err := executeJSONRPC(ctx, pool, keyer, relays, serverPubKey, msg, timeout, encryption)
+	resultRaw, err := executeJSONRPC(ctx, pool, keyer, relays, serverPubKey, msg, encryption)
 	if err != nil {
 		return nil, fmt.Errorf("contextvm call %s: %w", toolName, err)
 	}
@@ -286,13 +288,19 @@ func SendRaw(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []
 
 // ── internal ──────────────────────────────────────────────────────────────────
 
-// sendRequest publishes a kind 25910 MCP message to the server and waits for the response.
+// sendRequest publishes a kind 25910 MCP message to the server and completes
+// only when a valid response event references the signed request event ID.
 // Per the spec: request has p-tag = server pubkey; response has e-tag = request event ID.
 func sendRequest(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any, encryption string) (json.RawMessage, error) {
-	return sendRequestWithTimeout(ctx, pool, keyer, relays, serverPubKey, msg, 30*time.Second, encryption)
-}
-
-func sendRequestWithTimeout(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, serverPubKey string, msg map[string]any, timeout time.Duration, encryption string) (json.RawMessage, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("contextvm request: nostr pool is required")
+	}
+	if keyer == nil {
+		return nil, fmt.Errorf("contextvm request: signing keyer is required")
+	}
+	if len(relays) == 0 {
+		return nil, fmt.Errorf("contextvm request: at least one relay is required")
+	}
 	msgJSON, err := json.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("marshal message: %w", err)
@@ -325,46 +333,160 @@ func sendRequestWithTimeout(ctx context.Context, pool *nostr.Pool, keyer nostr.K
 	requestID := evt.ID.Hex()
 
 	// Subscribe to responses referencing our request event ID before publishing.
+	// This is a live subscription: EOSE is not treated as request completion;
+	// completion is the application-level response event carrying the e-tag.
 	respFilter := nostr.Filter{
-		Kinds: []nostr.Kind{nostr.Kind(KindMessage)},
-		Tags:  nostr.TagMap{"e": []string{requestID}},
-		Limit: 1,
+		Kinds:   []nostr.Kind{nostr.Kind(KindMessage)},
+		Authors: []nostr.PubKey{serverPK},
+		Tags:    nostr.TagMap{"e": []string{requestID}},
 	}
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+	respCtx, cancelResp := context.WithCancel(ctx)
+	defer cancelResp()
+	respCh, closedCh := pool.SubscribeManyNotifyClosed(respCtx, relays, respFilter, nostr.SubscriptionOptions{})
+
+	if err := publishContextVMRequest(ctx, pool, relays, evt); err != nil {
+		return nil, err
 	}
-	ctx2, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
-	// SubscribeMany is correct here: the server response arrives after our
-	// request is published, so we need live event delivery past EOSE.
-	respCh := pool.SubscribeMany(ctx2, relays, respFilter, nostr.SubscriptionOptions{})
+	return awaitContextVMCompletion(ctx, keyer, serverPK, requestID, respCh, closedCh)
+}
 
-	// Publish the request.
+func publishContextVMRequest(ctx context.Context, pool *nostr.Pool, relays []string, evt nostr.Event) error {
+	if pool == nil {
+		return fmt.Errorf("contextvm publish request: nostr pool is required")
+	}
+	if len(relays) == 0 {
+		return fmt.Errorf("contextvm publish request: at least one relay is required")
+	}
+	var accepted int
+	var failures []string
 	for result := range pool.PublishMany(ctx, relays, evt) {
-		_ = result // best-effort delivery
-	}
-
-	// Wait for the server response.
-	var lastDecryptErr error
-	for re := range respCh {
-		if strings.TrimSpace(re.Event.Content) == "" {
+		if result.Error != nil {
+			relay := strings.TrimSpace(result.RelayURL)
+			if relay == "" && result.Relay != nil {
+				relay = result.Relay.URL
+			}
+			if relay == "" {
+				relay = "unknown relay"
+			}
+			failures = append(failures, fmt.Sprintf("%s: %v", relay, result.Error))
 			continue
 		}
-		content := strings.TrimSpace(re.Event.Content)
-		if json.Valid([]byte(content)) {
-			return json.RawMessage(content), nil
-		}
-		dec, decErr := decryptFromServer(ctx, keyer, re.Event.PubKey, content)
-		if decErr == nil && json.Valid([]byte(dec)) {
-			return json.RawMessage(dec), nil
-		}
-		lastDecryptErr = decErr
+		accepted++
 	}
-	if lastDecryptErr != nil {
-		return nil, fmt.Errorf("received response but failed to decrypt or parse (request %s): %w", requestID, lastDecryptErr)
+	if accepted == 0 {
+		if len(failures) == 0 {
+			return fmt.Errorf("contextvm publish request: no relay accepted request")
+		}
+		return fmt.Errorf("contextvm publish request rejected by all relays: %s", strings.Join(failures, "; "))
 	}
-	return nil, fmt.Errorf("timed out waiting for ContextVM server response (request %s)", requestID)
+	return nil
+}
+
+func awaitContextVMCompletion(ctx context.Context, keyer nostr.Keyer, serverPK nostr.PubKey, requestID string, respCh <-chan nostr.RelayEvent, closedCh <-chan nostr.RelayClosed) (json.RawMessage, error) {
+	var lastContentErr error
+	var closedReasons []string
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("contextvm response wait canceled (request %s): %w", requestID, ctx.Err())
+		case closed, ok := <-closedCh:
+			if !ok {
+				closedCh = nil
+				continue
+			}
+			closedReasons = append(closedReasons, formatRelayClosed(closed))
+		case re, ok := <-respCh:
+			if !ok {
+				if lastContentErr != nil {
+					return nil, fmt.Errorf("received response but failed to decrypt or parse (request %s): %w", requestID, lastContentErr)
+				}
+				if len(closedReasons) > 0 {
+					return nil, fmt.Errorf("contextvm response subscription closed before completion (request %s): %s", requestID, strings.Join(closedReasons, "; "))
+				}
+				return nil, fmt.Errorf("contextvm response subscription closed before completion (request %s)", requestID)
+			}
+			content, err := decodeContextVMResponseContent(ctx, keyer, serverPK, requestID, re.Event)
+			if err != nil {
+				lastContentErr = err
+				continue
+			}
+			return content, nil
+		}
+	}
+}
+
+func decodeContextVMResponseContent(ctx context.Context, keyer nostr.Keyer, serverPK nostr.PubKey, requestID string, ev nostr.Event) (json.RawMessage, error) {
+	if err := validateContextVMResponseEvent(ev, serverPK, requestID, time.Now()); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(ev.Content) == "" {
+		return nil, fmt.Errorf("empty response content")
+	}
+	content := strings.TrimSpace(ev.Content)
+	if json.Valid([]byte(content)) {
+		return json.RawMessage(content), nil
+	}
+	dec, decErr := decryptFromServer(ctx, keyer, ev.PubKey, content)
+	if decErr != nil {
+		return nil, decErr
+	}
+	dec = strings.TrimSpace(dec)
+	if !json.Valid([]byte(dec)) {
+		return nil, fmt.Errorf("decrypted response is not valid JSON")
+	}
+	return json.RawMessage(dec), nil
+}
+
+func validateContextVMResponseEvent(ev nostr.Event, serverPK nostr.PubKey, requestID string, now time.Time) error {
+	if ev.Kind != nostr.Kind(KindMessage) {
+		return fmt.Errorf("response kind %d does not match contextvm message kind %d", ev.Kind, KindMessage)
+	}
+	if ev.PubKey != serverPK {
+		return fmt.Errorf("response pubkey %s does not match server pubkey %s", ev.PubKey.Hex(), serverPK.Hex())
+	}
+	if !eventReferencesRequest(ev, requestID) {
+		return fmt.Errorf("response missing request e-tag %s", requestID)
+	}
+	if !ev.CheckID() {
+		return fmt.Errorf("response event id mismatch")
+	}
+	if !ev.VerifySignature() {
+		return fmt.Errorf("response event signature invalid")
+	}
+	createdAt := int64(ev.CreatedAt)
+	nowUnix := now.Unix()
+	if createdAt > nowUnix+600 {
+		return fmt.Errorf("response timestamp too far in future")
+	}
+	if createdAt < nowUnix-365*24*60*60 {
+		return fmt.Errorf("response timestamp too far in past")
+	}
+	return nil
+}
+
+func eventReferencesRequest(ev nostr.Event, requestID string) bool {
+	for _, tag := range ev.Tags {
+		if len(tag) >= 2 && tag[0] == "e" && tag[1] == requestID {
+			return true
+		}
+	}
+	return false
+}
+
+func formatRelayClosed(closed nostr.RelayClosed) string {
+	relay := "unknown relay"
+	if closed.Relay != nil && strings.TrimSpace(closed.Relay.URL) != "" {
+		relay = closed.Relay.URL
+	}
+	reason := strings.TrimSpace(closed.Reason)
+	if reason == "" {
+		reason = "closed"
+	}
+	if closed.HandledAuth {
+		reason += " (auth handled)"
+	}
+	return relay + ": " + reason
 }
 
 func normalizeEncryptionMode(mode string) string {
