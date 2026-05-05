@@ -719,6 +719,7 @@ func (t TaskSpec) Normalize() TaskSpec {
 	if t.MemoryScope != "" {
 		t.MemoryScope = NormalizeAgentMemoryScope(string(t.MemoryScope))
 	}
+	t.Verification = t.Verification.Normalize()
 	return t
 }
 
@@ -751,6 +752,9 @@ func (t TaskSpec) Validate() error {
 		if strings.TrimSpace(criterion.Description) == "" {
 			return fmt.Errorf("acceptance_criteria[%d].description is required", i)
 		}
+	}
+	if err := t.Verification.Validate(); err != nil {
+		return fmt.Errorf("verification: %w", err)
 	}
 	return nil
 }
@@ -788,6 +792,7 @@ func (r TaskRun) Normalize() TaskRun {
 	if !r.Status.Valid() {
 		r.Status = TaskRunStatusQueued
 	}
+	r.Verification = r.Verification.Normalize()
 	return r
 }
 
@@ -803,6 +808,9 @@ func (r TaskRun) Validate() error {
 	}
 	if r.Attempt < 0 {
 		return fmt.Errorf("attempt must be >= 0")
+	}
+	if err := r.Verification.Validate(); err != nil {
+		return fmt.Errorf("verification: %w", err)
 	}
 	return nil
 }

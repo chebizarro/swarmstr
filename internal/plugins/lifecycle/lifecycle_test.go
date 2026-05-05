@@ -3,6 +3,8 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"metiq/internal/plugins/manifest"
@@ -242,6 +244,31 @@ func TestUpdateSameVersion(t *testing.T) {
 	err := mgr.Update(ctx, "same-version-plugin", mf, "/path/v1")
 	if err == nil {
 		t.Error("expected error when updating to same version")
+	}
+}
+
+func TestUpdateRejectsManifestIDMismatch(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	mgr := NewManager(cfg, t.TempDir())
+	ctx := context.Background()
+
+	mf := testManifest("update-id-plugin")
+	if _, err := mgr.Install(ctx, mf, "/path/v1", InstallOptions{Scope: ScopeProject}); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	newMf := testManifest("different-plugin")
+	newMf.Version = "2.0.0"
+	if err := mgr.Update(ctx, "update-id-plugin", newMf, "/path/v2"); err == nil {
+		t.Fatal("expected update to reject manifest ID mismatch")
+	}
+
+	plugin, ok := mgr.Resolve("update-id-plugin")
+	if !ok {
+		t.Fatal("expected original plugin to remain installed")
+	}
+	if plugin.Manifest.ID != "update-id-plugin" || plugin.Manifest.Version != "1.0.0" {
+		t.Fatalf("expected original manifest to remain unchanged, got id=%s version=%s", plugin.Manifest.ID, plugin.Manifest.Version)
 	}
 }
 
@@ -579,4 +606,290 @@ func TestAllScopes(t *testing.T) {
 	}
 }
 
+func TestSamePluginIDAcrossScopesResolvesByPrecedenceAndRegistry(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.AutoEnable = false
+	mgr := NewManager(cfg, t.TempDir())
+	ctx := context.Background()
 
+	userMF := testManifest("shared-plugin")
+	userMF.Version = "1.0.0"
+	projectMF := testManifest("shared-plugin")
+	projectMF.Version = "2.0.0"
+
+	if _, err := mgr.Install(ctx, userMF, "/path/user", InstallOptions{Scope: ScopeUser, Enable: true}); err != nil {
+		t.Fatalf("install user plugin: %v", err)
+	}
+	if _, err := mgr.Install(ctx, projectMF, "/path/project", InstallOptions{Scope: ScopeProject, Enable: true}); err != nil {
+		t.Fatalf("install project plugin with same ID: %v", err)
+	}
+
+	if stats := mgr.Stats(); stats.TotalInstalled != 2 {
+		t.Fatalf("expected both scoped installations to be tracked, got %d", stats.TotalInstalled)
+	}
+
+	resolved, ok := mgr.Resolve("shared-plugin")
+	if !ok {
+		t.Fatal("expected shared plugin to resolve")
+	}
+	if resolved.Scope != ScopeProject || resolved.Manifest.Version != "2.0.0" {
+		t.Fatalf("expected project scoped v2 to win, got scope=%s version=%s", resolved.Scope, resolved.Manifest.Version)
+	}
+
+	userScoped, ok := mgr.ResolveByScope("shared-plugin", ScopeUser)
+	if !ok {
+		t.Fatal("expected user scoped installation to remain addressable")
+	}
+	if userScoped.Manifest.Version != "1.0.0" {
+		t.Fatalf("expected user scoped v1 to remain installed, got %s", userScoped.Manifest.Version)
+	}
+
+	regManifest, ok := mgr.Registry().Plugin("shared-plugin")
+	if !ok {
+		t.Fatal("expected resolved plugin to be registered")
+	}
+	if regManifest.Version != "2.0.0" {
+		t.Fatalf("expected registry to expose resolved project version, got %s", regManifest.Version)
+	}
+
+	if err := mgr.Uninstall(ctx, "shared-plugin"); err != nil {
+		t.Fatalf("uninstall resolved project plugin: %v", err)
+	}
+
+	resolved, ok = mgr.Resolve("shared-plugin")
+	if !ok {
+		t.Fatal("expected lower-precedence user plugin to become active after project uninstall")
+	}
+	if resolved.Scope != ScopeUser || resolved.Manifest.Version != "1.0.0" {
+		t.Fatalf("expected user scoped v1 after project uninstall, got scope=%s version=%s", resolved.Scope, resolved.Manifest.Version)
+	}
+	regManifest, ok = mgr.Registry().Plugin("shared-plugin")
+	if !ok || regManifest.Version != "1.0.0" {
+		t.Fatalf("expected registry to fall back to user version, ok=%v manifest=%+v", ok, regManifest)
+	}
+}
+
+func TestScopeSpecificMutatorsReachShadowedInstallations(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.AutoEnable = false
+	mgr := NewManager(cfg, t.TempDir())
+	ctx := context.Background()
+
+	userMF := testManifest("shadowed-plugin")
+	projectMF := testManifest("shadowed-plugin")
+	projectMF.Version = "2.0.0"
+
+	if _, err := mgr.Install(ctx, userMF, "/path/user", InstallOptions{Scope: ScopeUser, Enable: true}); err != nil {
+		t.Fatalf("install user plugin: %v", err)
+	}
+	if _, err := mgr.Install(ctx, projectMF, "/path/project", InstallOptions{Scope: ScopeProject, Enable: true}); err != nil {
+		t.Fatalf("install project plugin: %v", err)
+	}
+
+	if err := mgr.SetPluginConfigByScope("shadowed-plugin", ScopeUser, map[string]any{"scope": "user"}); err != nil {
+		t.Fatalf("SetPluginConfigByScope user: %v", err)
+	}
+	userConfig, err := mgr.GetPluginConfigByScope("shadowed-plugin", ScopeUser)
+	if err != nil {
+		t.Fatalf("GetPluginConfigByScope user: %v", err)
+	}
+	if got := userConfig["scope"]; got != "user" {
+		t.Fatalf("expected user scoped config mutation, got %v", got)
+	}
+	projectConfig, err := mgr.GetPluginConfigByScope("shadowed-plugin", ScopeProject)
+	if err != nil {
+		t.Fatalf("GetPluginConfigByScope project: %v", err)
+	}
+	if _, exists := projectConfig["scope"]; exists {
+		t.Fatalf("project config should not be mutated by user scoped update: %v", projectConfig)
+	}
+
+	if err := mgr.DisableByScope(ctx, "shadowed-plugin", ScopeProject); err != nil {
+		t.Fatalf("DisableByScope project: %v", err)
+	}
+	if _, ok := mgr.Registry().Plugin("shadowed-plugin"); ok {
+		t.Fatal("disabled project-scoped plugin should shadow enabled user plugin in registry")
+	}
+
+	if err := mgr.UninstallByScope(ctx, "shadowed-plugin", ScopeProject); err != nil {
+		t.Fatalf("UninstallByScope project: %v", err)
+	}
+	resolved, ok := mgr.ResolveEnabled("shadowed-plugin")
+	if !ok || resolved.Scope != ScopeUser {
+		t.Fatalf("expected user-scoped plugin to become active after project uninstall, ok=%v plugin=%+v", ok, resolved)
+	}
+	regManifest, ok := mgr.Registry().Plugin("shadowed-plugin")
+	if !ok || regManifest.Version != "1.0.0" {
+		t.Fatalf("expected user plugin registered after project uninstall, ok=%v manifest=%+v", ok, regManifest)
+	}
+}
+
+func TestAccessorsReturnDefensiveCopies(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.AutoEnable = false
+	mgr := NewManager(cfg, t.TempDir())
+	ctx := context.Background()
+
+	initialConfig := map[string]any{
+		"setting": "value",
+		"nested":  map[string]any{"flag": true},
+		"count":   int64(7),
+		"list":    []any{int(3)},
+	}
+	if _, err := mgr.Install(ctx, testManifest("copy-plugin"), "/path", InstallOptions{
+		Scope:  ScopeProject,
+		Config: initialConfig,
+	}); err != nil {
+		t.Fatalf("install plugin: %v", err)
+	}
+
+	initialConfig["setting"] = "caller-mutated"
+	initialConfig["nested"].(map[string]any)["flag"] = false
+
+	resolved, ok := mgr.Resolve("copy-plugin")
+	if !ok {
+		t.Fatal("expected plugin to resolve")
+	}
+	resolved.Manifest.Capabilities.Tools[0].Name = "mutated_tool"
+	resolved.Config["setting"] = "mutated"
+	resolved.Config["nested"].(map[string]any)["flag"] = "mutated"
+
+	again, _ := mgr.Resolve("copy-plugin")
+	if got := again.Manifest.Capabilities.Tools[0].Name; got != "test_tool" {
+		t.Fatalf("Resolve returned mutable manifest state; got tool %q", got)
+	}
+	if got := again.Config["setting"]; got != "value" {
+		t.Fatalf("Install retained caller/returned config alias; got setting=%v", got)
+	}
+	if got := again.Config["nested"].(map[string]any)["flag"]; got != true {
+		t.Fatalf("Install retained nested config alias; got flag=%v", got)
+	}
+	if got, ok := again.Config["count"].(int64); !ok || got != 7 {
+		t.Fatalf("Install config clone changed integer type/value; got %T(%v)", again.Config["count"], again.Config["count"])
+	}
+	if got, ok := again.Config["list"].([]any)[0].(int); !ok || got != 3 {
+		t.Fatalf("Install config clone changed nested integer type/value; got %T(%v)", again.Config["list"].([]any)[0], again.Config["list"].([]any)[0])
+	}
+
+	cfgCopy, err := mgr.GetPluginConfig("copy-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginConfig: %v", err)
+	}
+	cfgCopy["setting"] = "get-mutated"
+	cfgCopy["nested"].(map[string]any)["flag"] = "get-mutated"
+	cfgAgain, _ := mgr.GetPluginConfig("copy-plugin")
+	if got := cfgAgain["setting"]; got != "value" {
+		t.Fatalf("GetPluginConfig returned mutable state; got setting=%v", got)
+	}
+	if got := cfgAgain["nested"].(map[string]any)["flag"]; got != true {
+		t.Fatalf("GetPluginConfig returned mutable nested state; got flag=%v", got)
+	}
+	if got, ok := cfgAgain["count"].(int64); !ok || got != 7 {
+		t.Fatalf("GetPluginConfig changed integer type/value; got %T(%v)", cfgAgain["count"], cfgAgain["count"])
+	}
+
+	nextConfig := map[string]any{"setting": "new", "nested": map[string]any{"flag": "new"}}
+	if err := mgr.SetPluginConfig("copy-plugin", nextConfig); err != nil {
+		t.Fatalf("SetPluginConfig: %v", err)
+	}
+	nextConfig["setting"] = "caller-mutated-after-set"
+	nextConfig["nested"].(map[string]any)["flag"] = "caller-mutated-after-set"
+	cfgAfterSet, _ := mgr.GetPluginConfig("copy-plugin")
+	if got := cfgAfterSet["setting"]; got != "new" {
+		t.Fatalf("SetPluginConfig retained caller alias; got setting=%v", got)
+	}
+	if got := cfgAfterSet["nested"].(map[string]any)["flag"]; got != "new" {
+		t.Fatalf("SetPluginConfig retained nested caller alias; got flag=%v", got)
+	}
+
+	if err := mgr.Enable(ctx, "copy-plugin"); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	regManifest, ok := mgr.Registry().Plugin("copy-plugin")
+	if !ok {
+		t.Fatal("expected registry manifest")
+	}
+	regManifest.Version = "registry-mutated"
+	regAgain, _ := mgr.Registry().Plugin("copy-plugin")
+	if got := regAgain.Version; got != "1.0.0" {
+		t.Fatalf("Registry.Plugin returned mutable manifest state; got version=%s", got)
+	}
+}
+
+func TestSaveRemovesStaleScopeState(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultLifecycleConfig()
+	cfg.AutoEnable = false
+	cfg.UserPluginDir = filepath.Join(root, "user")
+	cfg.ProjectPluginDir = ".metiq/plugins"
+	projectRoot := filepath.Join(root, "project")
+	mgr := NewManager(cfg, projectRoot)
+	ctx := context.Background()
+
+	if _, err := mgr.Install(ctx, testManifest("persisted-plugin"), "", InstallOptions{Scope: ScopeProject}); err != nil {
+		t.Fatalf("install project plugin: %v", err)
+	}
+	if err := mgr.Save(); err != nil {
+		t.Fatalf("initial save: %v", err)
+	}
+	projectState := filepath.Join(projectRoot, cfg.ProjectPluginDir, "plugins.json")
+	if _, err := os.Stat(projectState); err != nil {
+		t.Fatalf("expected project state file to exist after save: %v", err)
+	}
+
+	if err := mgr.Uninstall(ctx, "persisted-plugin"); err != nil {
+		t.Fatalf("uninstall project plugin: %v", err)
+	}
+	if err := mgr.Save(); err != nil {
+		t.Fatalf("save after uninstall: %v", err)
+	}
+	if _, err := os.Stat(projectState); !os.IsNotExist(err) {
+		t.Fatalf("expected stale project state file to be removed, stat err=%v", err)
+	}
+}
+
+func TestLoadKeepsSamePluginIDAcrossPersistentScopes(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultLifecycleConfig()
+	cfg.AutoEnable = false
+	cfg.UserPluginDir = filepath.Join(root, "user")
+	cfg.ProjectPluginDir = ".metiq/plugins"
+	projectRoot := filepath.Join(root, "project")
+	ctx := context.Background()
+
+	mgr := NewManager(cfg, projectRoot)
+	userMF := testManifest("persistent-shared")
+	userMF.Version = "1.0.0"
+	projectMF := testManifest("persistent-shared")
+	projectMF.Version = "2.0.0"
+	if _, err := mgr.Install(ctx, userMF, "/path/user", InstallOptions{Scope: ScopeUser, Enable: true}); err != nil {
+		t.Fatalf("install user plugin: %v", err)
+	}
+	if _, err := mgr.Install(ctx, projectMF, "/path/project", InstallOptions{Scope: ScopeProject, Enable: true}); err != nil {
+		t.Fatalf("install project plugin: %v", err)
+	}
+	if err := mgr.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded := NewManager(cfg, projectRoot)
+	if err := loaded.Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if stats := loaded.Stats(); stats.TotalInstalled != 2 {
+		t.Fatalf("expected both scoped installations after load, got %d", stats.TotalInstalled)
+	}
+	resolved, ok := loaded.Resolve("persistent-shared")
+	if !ok || resolved.Scope != ScopeProject || resolved.Manifest.Version != "2.0.0" {
+		t.Fatalf("expected project scoped v2 after load, ok=%v plugin=%+v", ok, resolved)
+	}
+	userScoped, ok := loaded.ResolveByScope("persistent-shared", ScopeUser)
+	if !ok || userScoped.Manifest.Version != "1.0.0" {
+		t.Fatalf("expected user scoped v1 after load, ok=%v plugin=%+v", ok, userScoped)
+	}
+	regManifest, ok := loaded.Registry().Plugin("persistent-shared")
+	if !ok || regManifest.Version != "2.0.0" {
+		t.Fatalf("expected registry to expose project v2 after load, ok=%v manifest=%+v", ok, regManifest)
+	}
+}

@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -14,13 +15,13 @@ import (
 // for tools, channels, MCP servers, skills, and other declared capabilities.
 type CapabilityRegistry struct {
 	mu       sync.RWMutex
-	plugins  map[string]*Manifest           // pluginID → manifest
-	tools    map[string]*RegisteredTool     // qualified tool name → tool
-	channels map[string]*RegisteredChannel  // channel ID → channel
-	mcp      map[string]*RegisteredMCP      // MCP server ID → server
-	skills   map[string]*RegisteredSkill    // skill ID → skill
-	methods  map[string]*RegisteredMethod   // gateway method → method
-	hooks    map[string][]*RegisteredHook   // event → hooks (sorted by priority)
+	plugins  map[string]*Manifest          // pluginID → manifest
+	tools    map[string]*RegisteredTool    // qualified tool name → tool
+	channels map[string]*RegisteredChannel // channel ID → channel
+	mcp      map[string]*RegisteredMCP     // MCP server ID → server
+	skills   map[string]*RegisteredSkill   // skill ID → skill
+	methods  map[string]*RegisteredMethod  // gateway method → method
+	hooks    map[string][]*RegisteredHook  // event → hooks (sorted by priority)
 }
 
 // RegisteredTool is a tool with its source plugin context.
@@ -77,6 +78,117 @@ func NewCapabilityRegistry() *CapabilityRegistry {
 	}
 }
 
+func cloneManifestValue(m Manifest) Manifest {
+	data, err := json.Marshal(m)
+	if err != nil {
+		return m
+	}
+	var cp Manifest
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return m
+	}
+	return cp
+}
+
+func cloneJSONMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	cp := make(map[string]any, len(src))
+	for k, v := range src {
+		cp[k] = cloneAny(v)
+	}
+	return cp
+}
+
+func cloneAny(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		return cloneJSONMap(typed)
+	case []any:
+		cp := make([]any, len(typed))
+		for i, item := range typed {
+			cp[i] = cloneAny(item)
+		}
+		return cp
+	case []string:
+		return cloneStringSlice(typed)
+	case map[string]string:
+		cp := make(map[string]string, len(typed))
+		for k, v := range typed {
+			cp[k] = v
+		}
+		return cp
+	default:
+		return v
+	}
+}
+
+func cloneStringSlice(src []string) []string {
+	if len(src) == 0 {
+		return nil
+	}
+	cp := make([]string, len(src))
+	copy(cp, src)
+	return cp
+}
+
+func cloneRegisteredTool(t *RegisteredTool) *RegisteredTool {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	cp.Tool.Parameters = cloneJSONMap(t.Tool.Parameters)
+	return &cp
+}
+
+func cloneRegisteredChannel(ch *RegisteredChannel) *RegisteredChannel {
+	if ch == nil {
+		return nil
+	}
+	cp := *ch
+	cp.Channel.ConfigSchema = cloneJSONMap(ch.Channel.ConfigSchema)
+	return &cp
+}
+
+func cloneRegisteredMCP(s *RegisteredMCP) *RegisteredMCP {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	cp.Server.Args = cloneStringSlice(s.Server.Args)
+	cp.Server.ProvidedTools = cloneStringSlice(s.Server.ProvidedTools)
+	cp.Server.ProvidedResources = cloneStringSlice(s.Server.ProvidedResources)
+	return &cp
+}
+
+func cloneRegisteredSkill(s *RegisteredSkill) *RegisteredSkill {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	cp.Skill.Tools = cloneStringSlice(s.Skill.Tools)
+	cp.Skill.MCPServers = cloneStringSlice(s.Skill.MCPServers)
+	return &cp
+}
+
+func cloneRegisteredMethod(m *RegisteredMethod) *RegisteredMethod {
+	if m == nil {
+		return nil
+	}
+	cp := *m
+	cp.Method.Parameters = cloneJSONMap(m.Method.Parameters)
+	return &cp
+}
+
+func cloneRegisteredHook(h *RegisteredHook) *RegisteredHook {
+	if h == nil {
+		return nil
+	}
+	cp := *h
+	return &cp
+}
+
 // ─── Registration ────────────────────────────────────────────────────────────
 
 // Register adds a plugin's capabilities to the registry.
@@ -85,87 +197,88 @@ func (r *CapabilityRegistry) Register(ctx context.Context, m *Manifest) error {
 	if err := Validate(m); err != nil {
 		return fmt.Errorf("invalid manifest: %w", err)
 	}
+	mf := cloneManifestValue(*m)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	// Check for duplicate plugin
-	if _, exists := r.plugins[m.ID]; exists {
-		return fmt.Errorf("plugin %q already registered", m.ID)
+	if _, exists := r.plugins[mf.ID]; exists {
+		return fmt.Errorf("plugin %q already registered", mf.ID)
 	}
 
 	// Check for tool conflicts
-	for _, tool := range m.Capabilities.Tools {
-		qualName := m.ID + "/" + tool.Name
+	for _, tool := range mf.Capabilities.Tools {
+		qualName := mf.ID + "/" + tool.Name
 		if _, exists := r.tools[qualName]; exists {
 			return fmt.Errorf("tool %q already registered", qualName)
 		}
 	}
 
 	// Check for channel conflicts
-	for _, ch := range m.Capabilities.Channels {
+	for _, ch := range mf.Capabilities.Channels {
 		if existing, exists := r.channels[ch.ID]; exists {
 			return fmt.Errorf("channel %q already registered by plugin %q", ch.ID, existing.PluginID)
 		}
 	}
 
 	// Check for MCP conflicts
-	for _, mcp := range m.Capabilities.MCPServers {
+	for _, mcp := range mf.Capabilities.MCPServers {
 		if existing, exists := r.mcp[mcp.ID]; exists {
 			return fmt.Errorf("MCP server %q already registered by plugin %q", mcp.ID, existing.PluginID)
 		}
 	}
 
 	// Check for skill conflicts
-	for _, skill := range m.Capabilities.Skills {
+	for _, skill := range mf.Capabilities.Skills {
 		if existing, exists := r.skills[skill.ID]; exists {
 			return fmt.Errorf("skill %q already registered by plugin %q", skill.ID, existing.PluginID)
 		}
 	}
 
 	// Check for method conflicts
-	for _, method := range m.Capabilities.GatewayMethods {
+	for _, method := range mf.Capabilities.GatewayMethods {
 		if existing, exists := r.methods[method.Method]; exists {
 			return fmt.Errorf("gateway method %q already registered by plugin %q", method.Method, existing.PluginID)
 		}
 	}
 
 	// Register plugin
-	r.plugins[m.ID] = m
+	r.plugins[mf.ID] = &mf
 
 	// Register tools
-	for _, tool := range m.Capabilities.Tools {
-		qualName := m.ID + "/" + tool.Name
-		r.tools[qualName] = &RegisteredTool{PluginID: m.ID, Tool: tool}
+	for _, tool := range mf.Capabilities.Tools {
+		qualName := mf.ID + "/" + tool.Name
+		r.tools[qualName] = &RegisteredTool{PluginID: mf.ID, Tool: tool}
 	}
 
 	// Register channels
-	for _, ch := range m.Capabilities.Channels {
-		r.channels[ch.ID] = &RegisteredChannel{PluginID: m.ID, Channel: ch}
+	for _, ch := range mf.Capabilities.Channels {
+		r.channels[ch.ID] = &RegisteredChannel{PluginID: mf.ID, Channel: ch}
 	}
 
 	// Register MCP servers
-	for _, mcp := range m.Capabilities.MCPServers {
-		r.mcp[mcp.ID] = &RegisteredMCP{PluginID: m.ID, Server: mcp}
+	for _, mcp := range mf.Capabilities.MCPServers {
+		r.mcp[mcp.ID] = &RegisteredMCP{PluginID: mf.ID, Server: mcp}
 	}
 
 	// Register skills
-	for _, skill := range m.Capabilities.Skills {
-		r.skills[skill.ID] = &RegisteredSkill{PluginID: m.ID, Skill: skill}
+	for _, skill := range mf.Capabilities.Skills {
+		r.skills[skill.ID] = &RegisteredSkill{PluginID: mf.ID, Skill: skill}
 	}
 
 	// Register gateway methods
-	for _, method := range m.Capabilities.GatewayMethods {
-		r.methods[method.Method] = &RegisteredMethod{PluginID: m.ID, Method: method}
+	for _, method := range mf.Capabilities.GatewayMethods {
+		r.methods[method.Method] = &RegisteredMethod{PluginID: mf.ID, Method: method}
 	}
 
 	// Register hooks (sorted by priority)
-	for _, hook := range m.Capabilities.Hooks {
+	for _, hook := range mf.Capabilities.Hooks {
 		priority := hook.Priority
 		if priority == 0 {
 			priority = 100 // default priority
 		}
-		regHook := &RegisteredHook{PluginID: m.ID, Hook: HookCapability{
+		regHook := &RegisteredHook{PluginID: mf.ID, Hook: HookCapability{
 			Event:       hook.Event,
 			Priority:    priority,
 			Description: hook.Description,
@@ -242,7 +355,11 @@ func (r *CapabilityRegistry) Plugin(pluginID string) (*Manifest, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	m, ok := r.plugins[pluginID]
-	return m, ok
+	if !ok {
+		return nil, false
+	}
+	cp := cloneManifestValue(*m)
+	return &cp, true
 }
 
 // Plugins returns all registered plugin IDs.
@@ -262,7 +379,10 @@ func (r *CapabilityRegistry) Tool(qualifiedName string) (*RegisteredTool, bool) 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	t, ok := r.tools[qualifiedName]
-	return t, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneRegisteredTool(t), true
 }
 
 // Tools returns all registered tools.
@@ -271,7 +391,7 @@ func (r *CapabilityRegistry) Tools() []*RegisteredTool {
 	defer r.mu.RUnlock()
 	tools := make([]*RegisteredTool, 0, len(r.tools))
 	for _, t := range r.tools {
-		tools = append(tools, t)
+		tools = append(tools, cloneRegisteredTool(t))
 	}
 	sort.Slice(tools, func(i, j int) bool {
 		return tools[i].QualifiedName() < tools[j].QualifiedName()
@@ -286,7 +406,7 @@ func (r *CapabilityRegistry) ToolsByPlugin(pluginID string) []*RegisteredTool {
 	var tools []*RegisteredTool
 	for _, t := range r.tools {
 		if t.PluginID == pluginID {
-			tools = append(tools, t)
+			tools = append(tools, cloneRegisteredTool(t))
 		}
 	}
 	sort.Slice(tools, func(i, j int) bool {
@@ -302,7 +422,7 @@ func (r *CapabilityRegistry) ToolsByCategory(category ToolCategory) []*Registere
 	var tools []*RegisteredTool
 	for _, t := range r.tools {
 		if t.Tool.Category == category {
-			tools = append(tools, t)
+			tools = append(tools, cloneRegisteredTool(t))
 		}
 	}
 	return tools
@@ -313,7 +433,10 @@ func (r *CapabilityRegistry) Channel(channelID string) (*RegisteredChannel, bool
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	ch, ok := r.channels[channelID]
-	return ch, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneRegisteredChannel(ch), true
 }
 
 // Channels returns all registered channels.
@@ -322,7 +445,7 @@ func (r *CapabilityRegistry) Channels() []*RegisteredChannel {
 	defer r.mu.RUnlock()
 	channels := make([]*RegisteredChannel, 0, len(r.channels))
 	for _, ch := range r.channels {
-		channels = append(channels, ch)
+		channels = append(channels, cloneRegisteredChannel(ch))
 	}
 	sort.Slice(channels, func(i, j int) bool {
 		return channels[i].Channel.ID < channels[j].Channel.ID
@@ -335,7 +458,10 @@ func (r *CapabilityRegistry) MCPServer(serverID string) (*RegisteredMCP, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	s, ok := r.mcp[serverID]
-	return s, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneRegisteredMCP(s), true
 }
 
 // MCPServers returns all registered MCP servers.
@@ -344,7 +470,7 @@ func (r *CapabilityRegistry) MCPServers() []*RegisteredMCP {
 	defer r.mu.RUnlock()
 	servers := make([]*RegisteredMCP, 0, len(r.mcp))
 	for _, s := range r.mcp {
-		servers = append(servers, s)
+		servers = append(servers, cloneRegisteredMCP(s))
 	}
 	sort.Slice(servers, func(i, j int) bool {
 		return servers[i].Server.ID < servers[j].Server.ID
@@ -357,7 +483,10 @@ func (r *CapabilityRegistry) Skill(skillID string) (*RegisteredSkill, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	s, ok := r.skills[skillID]
-	return s, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneRegisteredSkill(s), true
 }
 
 // Skills returns all registered skills.
@@ -366,7 +495,7 @@ func (r *CapabilityRegistry) Skills() []*RegisteredSkill {
 	defer r.mu.RUnlock()
 	skills := make([]*RegisteredSkill, 0, len(r.skills))
 	for _, s := range r.skills {
-		skills = append(skills, s)
+		skills = append(skills, cloneRegisteredSkill(s))
 	}
 	sort.Slice(skills, func(i, j int) bool {
 		return skills[i].Skill.ID < skills[j].Skill.ID
@@ -379,7 +508,10 @@ func (r *CapabilityRegistry) GatewayMethod(method string) (*RegisteredMethod, bo
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	m, ok := r.methods[method]
-	return m, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneRegisteredMethod(m), true
 }
 
 // GatewayMethods returns all registered gateway methods.
@@ -388,7 +520,7 @@ func (r *CapabilityRegistry) GatewayMethods() []*RegisteredMethod {
 	defer r.mu.RUnlock()
 	methods := make([]*RegisteredMethod, 0, len(r.methods))
 	for _, m := range r.methods {
-		methods = append(methods, m)
+		methods = append(methods, cloneRegisteredMethod(m))
 	}
 	sort.Slice(methods, func(i, j int) bool {
 		return methods[i].Method.Method < methods[j].Method.Method
@@ -403,7 +535,9 @@ func (r *CapabilityRegistry) HooksForEvent(event string) []*RegisteredHook {
 	hooks := r.hooks[event]
 	// Return a copy
 	result := make([]*RegisteredHook, len(hooks))
-	copy(result, hooks)
+	for i, hook := range hooks {
+		result[i] = cloneRegisteredHook(hook)
+	}
 	return result
 }
 
@@ -423,20 +557,20 @@ func (r *CapabilityRegistry) AllHookEvents() []string {
 
 // Summary returns a summary of all registered capabilities.
 type Summary struct {
-	PluginCount   int      `json:"plugin_count"`
-	ToolCount     int      `json:"tool_count"`
-	ChannelCount  int      `json:"channel_count"`
-	MCPCount      int      `json:"mcp_count"`
-	SkillCount    int      `json:"skill_count"`
-	MethodCount   int      `json:"method_count"`
-	HookCount     int      `json:"hook_count"`
-	Plugins       []string `json:"plugins"`
-	Tools         []string `json:"tools"`
-	Channels      []string `json:"channels"`
-	MCPServers    []string `json:"mcp_servers"`
-	Skills        []string `json:"skills"`
-	Methods       []string `json:"methods"`
-	HookEvents    []string `json:"hook_events"`
+	PluginCount  int      `json:"plugin_count"`
+	ToolCount    int      `json:"tool_count"`
+	ChannelCount int      `json:"channel_count"`
+	MCPCount     int      `json:"mcp_count"`
+	SkillCount   int      `json:"skill_count"`
+	MethodCount  int      `json:"method_count"`
+	HookCount    int      `json:"hook_count"`
+	Plugins      []string `json:"plugins"`
+	Tools        []string `json:"tools"`
+	Channels     []string `json:"channels"`
+	MCPServers   []string `json:"mcp_servers"`
+	Skills       []string `json:"skills"`
+	Methods      []string `json:"methods"`
+	HookEvents   []string `json:"hook_events"`
 }
 
 // Summary returns a summary of all registered capabilities.

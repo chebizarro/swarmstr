@@ -131,6 +131,10 @@ func (t *TaskSpec) ApplyTransition(to TaskStatus, at int64, actor, source, reaso
 	if !AllowedTaskTransition(from, to) {
 		return fmt.Errorf("illegal task transition %q -> %q", from, to)
 	}
+	norm.Verification = norm.Verification.Normalize()
+	if to == TaskStatusCompleted && norm.Verification.Policy == VerificationPolicyRequired && !norm.Verification.AllRequiredPassed() {
+		return fmt.Errorf("cannot complete task: required verification checks have not passed")
+	}
 	if at <= 0 {
 		return fmt.Errorf("transition timestamp is required")
 	}
@@ -166,6 +170,10 @@ func (r *TaskRun) ApplyTransition(to TaskRunStatus, at int64, actor, source, rea
 	}
 	if !AllowedTaskRunTransition(from, to) {
 		return fmt.Errorf("illegal run transition %q -> %q", from, to)
+	}
+	norm.Verification = norm.Verification.Normalize()
+	if to == TaskRunStatusCompleted && norm.Verification.Policy == VerificationPolicyRequired && !norm.Verification.AllRequiredPassed() {
+		return fmt.Errorf("cannot complete task run: required verification checks have not passed")
 	}
 	if at <= 0 {
 		return fmt.Errorf("transition timestamp is required")
@@ -215,16 +223,17 @@ func NewTaskRunAttempt(task TaskSpec, runID string, priorRuns []TaskRun, at int6
 		return TaskRun{}, fmt.Errorf("attempt timestamp is required")
 	}
 	run := TaskRun{
-		Version:     1,
-		RunID:       runID,
-		TaskID:      task.TaskID,
-		GoalID:      task.GoalID,
-		SessionID:   task.SessionID,
-		AgentID:     task.AssignedAgent,
-		Attempt:     attempt,
-		Status:      TaskRunStatusQueued,
-		Trigger:     strings.TrimSpace(trigger),
-		Transitions: []TaskRunTransition{{To: TaskRunStatusQueued, At: at, Actor: strings.TrimSpace(actor), Source: strings.TrimSpace(source), Reason: "attempt created"}},
+		Version:      1,
+		RunID:        runID,
+		TaskID:       task.TaskID,
+		GoalID:       task.GoalID,
+		SessionID:    task.SessionID,
+		AgentID:      task.AssignedAgent,
+		Attempt:      attempt,
+		Status:       TaskRunStatusQueued,
+		Trigger:      strings.TrimSpace(trigger),
+		Verification: task.Verification.Normalize(),
+		Transitions:  []TaskRunTransition{{To: TaskRunStatusQueued, At: at, Actor: strings.TrimSpace(actor), Source: strings.TrimSpace(source), Reason: "attempt created"}},
 	}
 	return run, nil
 }

@@ -320,14 +320,23 @@ func (h *NostrHub) SignEvent(ctx context.Context, evt *nostr.Event) error {
 
 // Close cancels all subscriptions and closes the shared pool.
 func (h *NostrHub) Close() {
+	if h == nil {
+		return
+	}
 	// Cancel all managed subscriptions.
 	h.mu.Lock()
 	for id, ms := range h.subs {
-		ms.cancel()
+		if ms != nil && ms.cancel != nil {
+			ms.cancel()
+		}
 		delete(h.subs, id)
 	}
 	h.mu.Unlock()
 
-	h.cancel()
-	h.pool.Close("nostr hub closed")
+	if h.cancel != nil {
+		h.cancel()
+	}
+	if h.pool != nil {
+		h.pool.Close("nostr hub closed")
+	}
 }

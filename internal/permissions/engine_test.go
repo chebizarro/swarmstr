@@ -2,6 +2,7 @@ package permissions
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -178,8 +179,8 @@ func TestBehaviorPriority(t *testing.T) {
 func TestContentPattern(t *testing.T) {
 	cfg := DefaultEngineConfig()
 	cfg.AuditEnabled = false
-	cfg.AutoClassify = false  // Disable auto-classify to avoid side effects
-	cfg.CacheEnabled = false  // Disable caching for this test
+	cfg.AutoClassify = false // Disable auto-classify to avoid side effects
+	cfg.CacheEnabled = false // Disable caching for this test
 	tmpDir := t.TempDir()
 	engine := NewEngine(tmpDir, cfg)
 
@@ -233,6 +234,110 @@ func TestCategoryFilter(t *testing.T) {
 	decision2 := engine.Evaluate(ctx, req2)
 	if len(decision2.MatchedRules) != 0 {
 		t.Error("expected no match for exec tool")
+	}
+}
+
+func TestOriginFilterSeparatesProvenanceFromCapability(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	cfg.AutoClassify = false
+	cfg.CacheEnabled = false
+	cfg.DefaultBehavior = BehaviorAllow
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+
+	if err := engine.AddRule(NewRule("ask-mcp", ScopeGlobal, BehaviorAsk, "*").WithOrigin(ToolOriginMCP)); err != nil {
+		t.Fatalf("add origin rule: %v", err)
+	}
+
+	ctx := context.Background()
+	mcpReq := NewToolRequest("github_search", CategoryNetwork).WithOrigin(ToolOriginMCP, "github")
+	decision := engine.Evaluate(ctx, mcpReq)
+	if decision.Behavior != BehaviorAsk {
+		t.Fatalf("MCP provenance rule should ask without category=mcp, got %s", decision.Behavior)
+	}
+
+	if err := engine.AddRule(NewRule("deny-network", ScopeGlobal, BehaviorDeny, "*").WithCategory(CategoryNetwork)); err != nil {
+		t.Fatalf("add category rule: %v", err)
+	}
+	decision = engine.Evaluate(ctx, mcpReq)
+	if decision.Behavior != BehaviorDeny {
+		t.Fatalf("capability deny should still match external tool, got %s", decision.Behavior)
+	}
+	if len(decision.MatchedRules) != 2 {
+		t.Fatalf("expected both origin and capability rules to match, got %d", len(decision.MatchedRules))
+	}
+}
+
+func TestOriginNamePattern(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	cfg.AutoClassify = false
+	cfg.CacheEnabled = false
+	cfg.DefaultBehavior = BehaviorAllow
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+
+	rule := NewRule("deny-github-mcp", ScopeGlobal, BehaviorDeny, "*").
+		WithOrigin(ToolOriginMCP).
+		WithOriginName("github*")
+	if err := engine.AddRule(rule); err != nil {
+		t.Fatalf("add rule: %v", err)
+	}
+
+	ctx := context.Background()
+	blocked := NewToolRequest("mcp_github_search", CategoryNetwork).WithOrigin(ToolOriginMCP, "github-enterprise")
+	if decision := engine.Evaluate(ctx, blocked); decision.Behavior != BehaviorDeny {
+		t.Fatalf("github MCP source should be denied, got %s", decision.Behavior)
+	}
+
+	allowed := NewToolRequest("mcp_docs_search", CategoryNetwork).WithOrigin(ToolOriginMCP, "docs")
+	if decision := engine.Evaluate(ctx, allowed); decision.Behavior != BehaviorAllow {
+		t.Fatalf("non-matching MCP source should use default allow, got %s", decision.Behavior)
+	}
+}
+
+func TestCacheKeyIncludesOrigin(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	cfg.AutoClassify = false
+	cfg.CacheEnabled = true
+	cfg.CacheTTL = time.Minute
+	cfg.DefaultBehavior = BehaviorAllow
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+
+	if err := engine.AddRule(NewRule("ask-mcp", ScopeGlobal, BehaviorAsk, "*").WithOrigin(ToolOriginMCP)); err != nil {
+		t.Fatalf("add rule: %v", err)
+	}
+	ctx := context.Background()
+	plain := NewToolRequest("shared_search", CategoryNetwork)
+	if decision := engine.Evaluate(ctx, plain); decision.Behavior != BehaviorAllow {
+		t.Fatalf("plain request should use default allow, got %s", decision.Behavior)
+	}
+
+	mcp := NewToolRequest("shared_search", CategoryNetwork).WithOrigin(ToolOriginMCP, "github")
+	if decision := engine.Evaluate(ctx, mcp); decision.Behavior != BehaviorAsk {
+		t.Fatalf("origin-specific request should not reuse plain cache entry, got %s", decision.Behavior)
+	}
+}
+
+func TestDefaultRulesPreserveLegacyMCPCategoryMatch(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	cfg.AutoClassify = false
+	cfg.CacheEnabled = false
+	cfg.DefaultBehavior = BehaviorAllow
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+	if err := engine.LoadDefaultRules(); err != nil {
+		t.Fatalf("load default rules: %v", err)
+	}
+
+	legacyReq := NewToolRequest("mcp:github_search", CategoryMCP)
+	decision := engine.Evaluate(context.Background(), legacyReq)
+	if decision.Behavior != BehaviorAsk {
+		t.Fatalf("legacy CategoryMCP request should still ask, got %s", decision.Behavior)
 	}
 }
 
@@ -299,6 +404,118 @@ func TestCaching(t *testing.T) {
 	if stats.CacheSize != 0 {
 		t.Errorf("expected cache size 0 after clear, got %d", stats.CacheSize)
 	}
+}
+
+func TestEvaluateDoesNotMutateRequestWhenAutoClassifying(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	cfg.AutoClassify = true
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+
+	req := NewToolRequest("bash", "").WithContent("echo ok")
+	decision := engine.Evaluate(context.Background(), req)
+	if decision.Behavior == "" {
+		t.Fatal("expected a decision")
+	}
+	if req.Category != "" {
+		t.Fatalf("Evaluate mutated caller request category to %q", req.Category)
+	}
+}
+
+func TestEvaluateReturnsImmutableCachedDecision(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	cfg.CacheEnabled = true
+	cfg.CacheTTL = time.Minute
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+	if err := engine.AddRule(NewRule("allow-test", ScopeGlobal, BehaviorAllow, "test")); err != nil {
+		t.Fatalf("add rule: %v", err)
+	}
+
+	req := NewToolRequest("test", CategoryBuiltin)
+	decision1 := engine.Evaluate(context.Background(), req)
+	if decision1.Behavior != BehaviorAllow || len(decision1.MatchedRules) != 1 {
+		t.Fatalf("unexpected first decision: %+v", decision1)
+	}
+
+	decision1.Behavior = BehaviorDeny
+	decision1.MatchedRules[0].Behavior = BehaviorDeny
+	decision1.MatchedRules[0].ID = "mutated"
+
+	decision2 := engine.Evaluate(context.Background(), req)
+	if decision2.Behavior != BehaviorAllow {
+		t.Fatalf("cached decision was externally mutated, got behavior %s", decision2.Behavior)
+	}
+	if len(decision2.MatchedRules) != 1 || decision2.MatchedRules[0].ID != "allow-test" || decision2.MatchedRules[0].Behavior != BehaviorAllow {
+		t.Fatalf("cached matched rules were externally mutated: %+v", decision2.MatchedRules)
+	}
+}
+
+func TestRuleInputsAndAccessorsAreImmutable(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	cfg.CacheEnabled = false
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+
+	rule := NewRule("allow-test", ScopeGlobal, BehaviorAllow, "test")
+	if err := engine.AddRule(rule); err != nil {
+		t.Fatalf("add rule: %v", err)
+	}
+	rule.Behavior = BehaviorDeny
+
+	req := NewToolRequest("test", CategoryBuiltin)
+	if got := engine.Evaluate(context.Background(), req); got.Behavior != BehaviorAllow {
+		t.Fatalf("mutating original rule affected engine decision: %s", got.Behavior)
+	}
+
+	gotRule, ok := engine.GetRule("allow-test")
+	if !ok {
+		t.Fatal("expected rule")
+	}
+	gotRule.Behavior = BehaviorDeny
+	if got := engine.Evaluate(context.Background(), req); got.Behavior != BehaviorAllow {
+		t.Fatalf("mutating GetRule result affected engine decision: %s", got.Behavior)
+	}
+
+	listed := engine.ListRules(ScopeGlobal)
+	if len(listed) != 1 {
+		t.Fatalf("expected one listed rule, got %d", len(listed))
+	}
+	listed[0].Behavior = BehaviorDeny
+	if got := engine.Evaluate(context.Background(), req); got.Behavior != BehaviorAllow {
+		t.Fatalf("mutating ListRules result affected engine decision: %s", got.Behavior)
+	}
+}
+
+func TestEvaluateConcurrentCacheAccess(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = false
+	cfg.CacheEnabled = true
+	cfg.CacheTTL = time.Minute
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir, cfg)
+	if err := engine.AddRule(NewRule("allow-test", ScopeGlobal, BehaviorAllow, "test")); err != nil {
+		t.Fatalf("add rule: %v", err)
+	}
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				decision := engine.Evaluate(ctx, NewToolRequest("test", CategoryBuiltin))
+				if decision.Behavior != BehaviorAllow {
+					t.Errorf("expected allow, got %s", decision.Behavior)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestListRules(t *testing.T) {

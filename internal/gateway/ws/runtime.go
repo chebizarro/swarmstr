@@ -47,6 +47,7 @@ type RuntimeOptions struct {
 	TrustedProxies          []string
 	AllowInsecureControlUI  bool
 	DeviceAuthSignatureSkew time.Duration
+	WriteTimeout            time.Duration
 	HandleRequest           RequestHandler
 	// StaticHandler, when non-nil, is mounted at "/" in the same HTTP server
 	// as the WebSocket endpoint.  It is called only when the request path
@@ -74,6 +75,8 @@ type client struct {
 
 	subMu         sync.RWMutex
 	subscriptions map[string]struct{}
+
+	writeMu sync.Mutex
 
 	authMu       sync.Mutex
 	unauthorized int
@@ -112,6 +115,9 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	}
 	if opts.DeviceAuthSignatureSkew <= 0 {
 		opts.DeviceAuthSignatureSkew = 2 * time.Minute
+	}
+	if opts.WriteTimeout <= 0 {
+		opts.WriteTimeout = 5 * time.Second
 	}
 
 	if err := validateExposure(opts.Addr, opts.Token); err != nil {
@@ -174,37 +180,26 @@ func (r *Runtime) Broadcast(event string, payload any) {
 	}
 	r.mu.RUnlock()
 
-	emit := func(name string) {
+	emit := func(name string, emitPayload any) {
 		for _, c := range clients {
 			if !c.isSubscribed(name) {
 				continue
 			}
 			seq := atomic.AddInt64(&r.seq, 1)
-			_ = writeFrame(context.Background(), c.conn, map[string]any{
+			if err := c.writeFrame(context.Background(), r.writeTimeout(), map[string]any{
 				"type":    protocol.FrameTypeEvent,
 				"event":   name,
 				"seq":     seq,
-				"payload": payload,
-			})
+				"payload": emitPayload,
+			}); err != nil {
+				r.dropClient(c, "event write failed")
+			}
 		}
 	}
 
-	emit(event)
+	emit(event, payload)
 	for _, proj := range compatibilityEventProjections(event, payload) {
-		emitWithPayload := proj.Payload
-		emitEvent := proj.Event
-		for _, c := range clients {
-			if !c.isSubscribed(emitEvent) {
-				continue
-			}
-			seq := atomic.AddInt64(&r.seq, 1)
-			_ = writeFrame(context.Background(), c.conn, map[string]any{
-				"type":    protocol.FrameTypeEvent,
-				"event":   emitEvent,
-				"seq":     seq,
-				"payload": emitWithPayload,
-			})
-		}
+		emit(proj.Event, proj.Payload)
 	}
 }
 
@@ -371,7 +366,7 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 		},
 	}
 
-	_ = writeFrame(req.Context(), conn, map[string]any{
+	_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{
 		"type":    protocol.FrameTypeResponse,
 		"id":      reqFrame.ID,
 		"ok":      true,
@@ -385,7 +380,7 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 		}
 		frameAny, err := protocol.ParseGatewayFrame(data)
 		if err != nil {
-			_ = writeFrame(req.Context(), conn, map[string]any{
+			_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{
 				"type":  protocol.FrameTypeResponse,
 				"id":    "invalid",
 				"ok":    false,
@@ -398,7 +393,7 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 			continue
 		}
 		if !r.isMethodAllowed(reqFrame.Method) {
-			_ = writeFrame(req.Context(), conn, map[string]any{
+			_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{
 				"type":  protocol.FrameTypeResponse,
 				"id":    reqFrame.ID,
 				"ok":    false,
@@ -408,14 +403,14 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 		}
 		if handled, payload, shape := r.handleInternalRequest(c, reqFrame); handled {
 			if shape != nil {
-				_ = writeFrame(req.Context(), conn, map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": false, "error": shape})
+				_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": false, "error": shape})
 			} else {
-				_ = writeFrame(req.Context(), conn, map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": true, "payload": payload})
+				_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": true, "payload": payload})
 			}
 			continue
 		}
 		if r.opts.HandleRequest == nil {
-			_ = writeFrame(req.Context(), conn, map[string]any{
+			_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{
 				"type":  protocol.FrameTypeResponse,
 				"id":    reqFrame.ID,
 				"ok":    false,
@@ -427,7 +422,7 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 		payload, shape := r.opts.HandleRequest(reqCtx, reqFrame)
 		if shape != nil {
 			c.bumpUnauthorized(shape)
-			_ = writeFrame(req.Context(), conn, map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": false, "error": shape})
+			_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": false, "error": shape})
 			if c.shouldClose(r.opts.UnauthorizedBurstMax) {
 				_ = conn.Close(websocket.StatusPolicyViolation, "repeated unauthorized requests")
 				return
@@ -435,7 +430,7 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 			continue
 		}
 		c.resetUnauthorized()
-		_ = writeFrame(req.Context(), conn, map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": true, "payload": payload})
+		_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": true, "payload": payload})
 	}
 }
 
@@ -529,10 +524,7 @@ func contextWithControlPrincipal(ctx context.Context, principal ControlPrincipal
 }
 
 func (r *Runtime) evaluateAuth(req *http.Request, connect protocol.ConnectParams) authDecision {
-	token := ""
-	if connect.Auth != nil {
-		token = strings.TrimSpace(connect.Auth.Token)
-	}
+	token := connectAuthCredential(connect.Auth)
 	configuredToken := strings.TrimSpace(r.opts.Token)
 	if configuredToken != "" {
 		if r.isTrustedProxyAuth(req) {
@@ -554,6 +546,9 @@ func (r *Runtime) evaluateAuth(req *http.Request, connect protocol.ConnectParams
 
 func (r *Runtime) controlPrincipal(req *http.Request, connect protocol.ConnectParams, auth authDecision) ControlPrincipal {
 	principal := ControlPrincipal{Authenticated: auth.OK, Method: auth.Method}
+	if strings.EqualFold(strings.TrimSpace(auth.Method), "none") {
+		principal.Authenticated = false
+	}
 	if auth.Method == "trusted-proxy" {
 		user := strings.TrimSpace(req.Header.Get("X-Metiq-Proxy-User"))
 		principal.PubKey = strings.ToLower(user)
@@ -562,6 +557,7 @@ func (r *Runtime) controlPrincipal(req *http.Request, connect protocol.ConnectPa
 	}
 	if hasNostrAuthorizationHeader(req) {
 		if nip98 := policy.AuthenticateControlCall(req, nil, r.opts.HandshakeTTL); nip98.Authenticated {
+			principal.Authenticated = true
 			principal.PubKey = strings.ToLower(strings.TrimSpace(nip98.CallerPubKey))
 			principal.Subject = principal.PubKey
 			principal.Method = "nip98"
@@ -570,8 +566,24 @@ func (r *Runtime) controlPrincipal(req *http.Request, connect protocol.ConnectPa
 	}
 	if hasDeviceIdentity(connect.Device) {
 		principal.Subject = strings.TrimSpace(connect.Device.ID)
+		if !principal.Authenticated {
+			principal.Authenticated = true
+			principal.Method = "device"
+		}
 	}
 	return principal
+}
+
+func connectAuthCredential(auth *protocol.ConnectAuth) string {
+	if auth == nil {
+		return ""
+	}
+	for _, value := range []string{auth.Token, auth.DeviceToken, auth.Password} {
+		if token := strings.TrimSpace(value); token != "" {
+			return token
+		}
+	}
+	return ""
 }
 
 func hasNostrAuthorizationHeader(req *http.Request) bool {
@@ -637,13 +649,7 @@ func (r *Runtime) validateDevicePolicy(req *http.Request, connect protocol.Conne
 	if skew := time.Since(time.UnixMilli(device.SignedAt)); skew > skewWindow || skew < -skewWindow {
 		return protocol.NewError(protocol.ErrorCodeInvalidRequest, "device signature expired", map[string]any{"code": "DEVICE_AUTH_SIGNATURE_EXPIRED", "reason": "device-signature-stale"})
 	}
-	token := ""
-	if connect.Auth != nil {
-		token = strings.TrimSpace(connect.Auth.Token)
-		if token == "" {
-			token = strings.TrimSpace(connect.Auth.DeviceToken)
-		}
-	}
+	token := connectAuthCredential(connect.Auth)
 	if !verifyDeviceSignatureForConnect(device, connect, role, token) {
 		return protocol.NewError(protocol.ErrorCodeInvalidRequest, "device signature invalid", map[string]any{"code": "DEVICE_AUTH_SIGNATURE_INVALID", "reason": "device-signature"})
 	}
@@ -709,6 +715,34 @@ func randomID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+func (r *Runtime) writeTimeout() time.Duration {
+	if r == nil || r.opts.WriteTimeout <= 0 {
+		return 5 * time.Second
+	}
+	return r.opts.WriteTimeout
+}
+
+func (c *client) writeFrame(ctx context.Context, timeout time.Duration, frame any) error {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return writeFrame(writeCtx, c.conn, frame)
+}
+
+func (r *Runtime) dropClient(c *client, reason string) {
+	if c == nil {
+		return
+	}
+	_ = c.conn.Close(websocket.StatusPolicyViolation, reason)
+	r.mu.Lock()
+	delete(r.clients, c.id)
+	r.mu.Unlock()
 }
 
 func writeFrame(ctx context.Context, conn *websocket.Conn, frame any) error {
@@ -932,7 +966,8 @@ func (c *client) bumpUnauthorized(shape *protocol.ErrorShape) {
 	if shape == nil {
 		return
 	}
-	if strings.EqualFold(strings.TrimSpace(shape.Code), protocol.ErrorCodeNotLinked) || strings.Contains(strings.ToLower(shape.Message), "forbidden") || strings.Contains(strings.ToLower(shape.Message), "unauthorized") {
+	code := strings.TrimSpace(shape.Code)
+	if strings.EqualFold(code, protocol.ErrorCodeNotLinked) || strings.EqualFold(code, protocol.ErrorCodeNotPaired) || strings.Contains(strings.ToLower(shape.Message), "forbidden") || strings.Contains(strings.ToLower(shape.Message), "unauthorized") {
 		c.authMu.Lock()
 		c.unauthorized++
 		c.authMu.Unlock()

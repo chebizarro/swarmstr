@@ -2,12 +2,12 @@
 //
 // NIP-51 defines several list kinds for grouping Nostr entities:
 //
-//   Kind 10000 – Mute list          (replaces follows who are muted)
-//   Kind 10001 – Pin list           (pinned notes)
-//   Kind 10002 – Relay list metadata (see also NIP-65)
-//   Kind 30000 – Categorized people list (replaceable, d-tag = list name)
-//   Kind 30001 – Categorized bookmark set
-//   Kind 30003 – Bookmark set (private bookmarks via NIP-04 encrypted content)
+//	Kind 10000 – Mute list          (replaces follows who are muted)
+//	Kind 10001 – Pin list           (pinned notes)
+//	Kind 10002 – Relay list metadata (see also NIP-65)
+//	Kind 30000 – Categorized people list (replaceable, d-tag = list name)
+//	Kind 30001 – Categorized bookmark set
+//	Kind 30003 – Bookmark set (private bookmarks via NIP-04 encrypted content)
 //
 // This package focuses on the kinds most relevant to agent allow/block flows.
 package nip51
@@ -26,33 +26,33 @@ import (
 
 // Kind constants for NIP-51 list events.
 const (
-	KindMuteList       = 10000 // Muted pubkeys
-	KindPinList        = 10001 // Pinned note IDs
-	KindPeopleList     = 30000 // Categorized people list (replaceable, d-tag)
-	KindBookmarkSet    = 30001 // Categorized bookmark set
-	KindRelaySet       = 30002 // Categorized relay set (replaceable, d-tag)
-	KindBlockList      = 30000 // Alias: use d-tag "blocklist" for blocking
-	KindAllowList      = 30000 // Alias: use d-tag "allowlist" for allowing
+	KindMuteList    = 10000 // Muted pubkeys
+	KindPinList     = 10001 // Pinned note IDs
+	KindPeopleList  = 30000 // Categorized people list (replaceable, d-tag)
+	KindBookmarkSet = 30001 // Categorized bookmark set
+	KindRelaySet    = 30002 // Categorized relay set (replaceable, d-tag)
+	KindBlockList   = 30000 // Alias: use d-tag "blocklist" for blocking
+	KindAllowList   = 30000 // Alias: use d-tag "allowlist" for allowing
 )
 
 // Well-known d-tag identifiers for relay sets (kind 30002).
 // Each identifies a purpose-specific relay list published by the agent.
 const (
-	RelaySetDMInbox   = "dm-inbox"       // NIP-17 DM inbox relays (mirrors kind:10050)
-	RelaySetNIP29     = "nip29-relays"   // NIP-29 relay-managed group relays
-	RelaySetChat      = "chat-relays"    // NIP-C7 kind:9 chat relays
-	RelaySetNIP28     = "nip28-relays"   // NIP-28 public channel relays
-	RelaySetSearch    = "search-relays"  // NIP-50 search relays
-	RelaySetDVM       = "dvm-relays"     // NIP-90 DVM relays
-	RelaySetGrasp     = "grasp-servers"  // Grasp protocol server endpoints
+	RelaySetDMInbox = "dm-inbox"      // NIP-17 DM inbox relays (mirrors kind:10050)
+	RelaySetNIP29   = "nip29-relays"  // NIP-29 relay-managed group relays
+	RelaySetChat    = "chat-relays"   // NIP-C7 kind:9 chat relays
+	RelaySetNIP28   = "nip28-relays"  // NIP-28 public channel relays
+	RelaySetSearch  = "search-relays" // NIP-50 search relays
+	RelaySetDVM     = "dvm-relays"    // NIP-90 DVM relays
+	RelaySetGrasp   = "grasp-servers" // Grasp protocol server endpoints
 )
 
 // ListEntry is a single entry in a NIP-51 list.
 type ListEntry struct {
-	Tag      string // tag type: "p" (pubkey), "e" (event id), "t" (hashtag), "a" (naddr), "r" (relay)
-	Value    string // the main value
-	Relay    string // optional relay hint (for "p" and "e" tags)
-	Petname  string // optional petname (for "p" tags)
+	Tag     string // tag type: "p" (pubkey), "e" (event id), "t" (hashtag), "a" (naddr), "r" (relay)
+	Value   string // the main value
+	Relay   string // optional relay hint (for "p" and "e" tags)
+	Petname string // optional petname (for "p" tags)
 }
 
 // List represents a decoded NIP-51 list event.
@@ -165,6 +165,25 @@ func (s *ListStore) IsAllowed(ownerPubkey, targetPubkey string) bool {
 	return false
 }
 
+func validationFailure(ev nostr.Event, expectedAuthor nostr.PubKey, expectedKind int) string {
+	if ev.Kind != nostr.Kind(expectedKind) {
+		return fmt.Sprintf("unexpected_kind:%d", ev.Kind)
+	}
+	if ev.PubKey != expectedAuthor {
+		return "unexpected_author"
+	}
+	if !ev.CheckID() {
+		return "invalid_id"
+	}
+	if !ev.VerifySignature() {
+		return "invalid_signature"
+	}
+	if ev.CreatedAt > nostr.Now()+nostr.Timestamp(600) {
+		return "created_at_future"
+	}
+	return ""
+}
+
 // Fetch retrieves a NIP-51 list from relays and stores it.
 // For kind 10000 (mute list) set dtag = "".
 func Fetch(ctx context.Context, pool *nostr.Pool, relays []string, pubkey string, kind int, dtag string) (*List, error) {
@@ -187,6 +206,10 @@ func Fetch(ctx context.Context, pool *nostr.Pool, relays []string, pubkey string
 
 	var best *nostr.Event
 	for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		if reason := validationFailure(re.Event, pk, kind); reason != "" {
+			log.Printf("nip51.Fetch: dropped invalid event reason=%s", reason)
+			continue
+		}
 		if best == nil || re.Event.CreatedAt > best.CreatedAt {
 			ev := re.Event
 			best = &ev
@@ -325,7 +348,24 @@ func Subscribe(ctx context.Context, pool *nostr.Pool, store *ListStore, relays [
 	}
 
 	go func() {
+		allowedAuthors := make(map[nostr.PubKey]struct{}, len(authors))
+		for _, author := range authors {
+			allowedAuthors[author] = struct{}{}
+		}
+		allowedKinds := make(map[nostr.Kind]struct{}, len(nostrKinds))
+		for _, kind := range nostrKinds {
+			allowedKinds[kind] = struct{}{}
+		}
 		for re := range pool.SubscribeMany(ctx, relays, filter, nostr.SubscriptionOptions{}) {
+			if _, ok := allowedAuthors[re.Event.PubKey]; !ok {
+				continue
+			}
+			if _, ok := allowedKinds[re.Event.Kind]; !ok {
+				continue
+			}
+			if reason := validationFailure(re.Event, re.Event.PubKey, int(re.Event.Kind)); reason != "" {
+				continue
+			}
 			l := DecodeEvent(re.Event)
 			store.Set(l)
 		}

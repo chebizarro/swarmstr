@@ -153,6 +153,45 @@ metadata:
 	}
 }
 
+func TestBuildSkillCatalogReturnsDefensiveCacheCopy(t *testing.T) {
+	InvalidateSkillCatalogCache()
+	bundledDir := t.TempDir()
+	t.Setenv("METIQ_BUNDLED_SKILLS_DIR", bundledDir)
+	t.Setenv("METIQ_MANAGED_SKILLS_DIR", t.TempDir())
+	t.Setenv("METIQ_WORKSPACE", t.TempDir())
+	writeSkillMD(t, bundledDir, "cache-skill", `---
+name: cache-skill
+description: original description
+---
+# Cache Skill
+`)
+	cfg := state.ConfigDoc{}
+	first, err := BuildSkillCatalog(cfg, "main")
+	if err != nil {
+		t.Fatalf("BuildSkillCatalog first: %v", err)
+	}
+	if len(first.Skills) != 1 {
+		t.Fatalf("expected one skill, got %#v", first.Skills)
+	}
+	first.Skills[0].Skill.Manifest.Description = "mutated description"
+	first.Skills[0].Status = "mutated"
+	first.Skills = nil
+
+	second, err := BuildSkillCatalog(cfg, "main")
+	if err != nil {
+		t.Fatalf("BuildSkillCatalog second: %v", err)
+	}
+	if len(second.Skills) != 1 {
+		t.Fatalf("cached catalog was mutated through first result: %#v", second.Skills)
+	}
+	if got := second.Skills[0].Skill.Manifest.Description; got != "original description" {
+		t.Fatalf("cached nested skill was mutated through first result: %q", got)
+	}
+	if second.Skills[0].Status == "mutated" {
+		t.Fatalf("cached resolved skill status was mutated through first result")
+	}
+}
+
 func TestBuildSkillCatalogAllowlistAndAlwaysPromptEligibility(t *testing.T) {
 	InvalidateSkillCatalogCache()
 	bundledDir := t.TempDir()

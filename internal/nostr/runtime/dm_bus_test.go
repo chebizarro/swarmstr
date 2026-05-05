@@ -205,6 +205,23 @@ func TestNIP04KeyerAdapter_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestPublishEncryptedDMWithRetryRequiresPool(t *testing.T) {
+	keyer := newNIP04KeyerAdapter(nostr.Generate())
+	_, err := publishEncryptedDMWithRetry(context.Background(), nil, keyer, keyer, []string{"wss://relay.example"}, nostr.GetPublicKey(nostr.Generate()), "hello", nil)
+	if err == nil || err.Error() != "publish dm: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
+	}
+}
+
+func TestPublishEncryptedDMWithRetryRequiresSigner(t *testing.T) {
+	pool := nostr.NewPool(nostr.PoolOptions{})
+	keyer := newNIP04KeyerAdapter(nostr.Generate())
+	_, err := publishEncryptedDMWithRetry(context.Background(), pool, nil, keyer, []string{"wss://relay.example"}, nostr.GetPublicKey(nostr.Generate()), "hello", nil)
+	if err == nil || err.Error() != "publish dm: signer is required" {
+		t.Fatalf("expected signer validation error, got %v", err)
+	}
+}
+
 func TestDMBus_MarkSeen(t *testing.T) {
 	bus := &DMBus{
 		seenSet: map[string]struct{}{},
@@ -236,6 +253,30 @@ func TestDMBus_EmitErr_WithHandler(t *testing.T) {
 	bus.emitErr(context.Canceled)
 	if got != context.Canceled {
 		t.Errorf("got %v", got)
+	}
+}
+
+func TestDMBusCloseNilAndPartial(t *testing.T) {
+	var nilBus *DMBus
+	nilBus.Close()
+	(&DMBus{}).Close()
+}
+
+func TestStartDMBusRejectsMismatchedHubPubKey(t *testing.T) {
+	hubKey := newNIP04KeyerAdapter(mustSecretKey(t, "1111111111111111111111111111111111111111111111111111111111111111"))
+	hub, err := NewHub(context.Background(), hubKey, nil)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	defer hub.Close()
+
+	_, err = StartDMBus(context.Background(), DMBusOptions{
+		PrivateKey: "2222222222222222222222222222222222222222222222222222222222222222",
+		Relays:     []string{"wss://relay.example"},
+		Hub:        hub,
+	})
+	if err == nil || err.Error() != "dm bus: hub pubkey does not match bus pubkey" {
+		t.Fatalf("expected hub mismatch error, got %v", err)
 	}
 }
 
@@ -321,6 +362,7 @@ func TestDMBusRejectsFutureDM(t *testing.T) {
 		t.Fatalf("sign: %v", err)
 	}
 
+	errCount := 0
 	var gotErr error
 	b := &DMBus{
 		public:       nostr.GetPublicKey(recipient),
@@ -331,13 +373,24 @@ func TestDMBusRejectsFutureDM(t *testing.T) {
 		seenCap:      16,
 		messageQueue: make(chan InboundDM, 1),
 		ctx:          context.Background(),
-		onError:      func(err error) { gotErr = err },
+		onError: func(err error) {
+			errCount++
+			gotErr = err
+		},
 	}
 
-	b.handleInbound(nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{URL: "wss://relay.example"}})
+	relayEvent := nostr.RelayEvent{Event: evt, Relay: &nostr.Relay{URL: "wss://relay.example"}}
+	b.handleInbound(relayEvent)
+	b.handleInbound(relayEvent)
 
 	if gotErr == nil || !strings.Contains(gotErr.Error(), "future dm") {
 		t.Fatalf("expected future-skew rejection, got %v", gotErr)
+	}
+	if errCount != 1 {
+		t.Fatalf("expected duplicate future DM to be rejected once, got %d errors", errCount)
+	}
+	if !b.markSeen(evt.ID.Hex()) {
+		t.Fatal("expected future DM event to be enrolled in seen-set")
 	}
 	select {
 	case msg := <-b.messageQueue:

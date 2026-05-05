@@ -195,6 +195,85 @@ func TestTaskRunNormalizeAndValidate(t *testing.T) {
 	}
 }
 
+func TestTaskSpecNormalizeAndValidateVerification(t *testing.T) {
+	task := TaskSpec{
+		TaskID:       "task-normalize-verify",
+		Title:        "Verify Normalize",
+		Instructions: "Normalize verification.",
+		Verification: VerificationSpec{
+			Policy: VerificationPolicy("REQUIRED"),
+			Checks: []VerificationCheck{{CheckID: "c1", Description: "check", Required: true}},
+		},
+	}.Normalize()
+	if task.Verification.Policy != VerificationPolicyRequired {
+		t.Fatalf("expected normalized verification policy, got %q", task.Verification.Policy)
+	}
+	if task.Verification.Checks[0].Status != VerificationStatusPending {
+		t.Fatalf("expected normalized check status, got %q", task.Verification.Checks[0].Status)
+	}
+
+	invalid := TaskSpec{TaskID: "task-invalid-verify", Title: "Invalid", Instructions: "Invalid", Verification: VerificationSpec{Policy: VerificationPolicyRequired}}
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("expected required verification with no checks to be rejected")
+	}
+}
+
+func TestTaskRunValidateRejectsInvalidVerification(t *testing.T) {
+	run := TaskRun{RunID: "run-invalid-verify", TaskID: "task-1", Verification: VerificationSpec{Policy: VerificationPolicyRequired}}
+	if err := run.Validate(); err == nil {
+		t.Fatal("expected required run verification with no checks to be rejected")
+	}
+}
+
+func TestTaskCompletionRequiresPassedRequiredVerification(t *testing.T) {
+	task := TaskSpec{
+		TaskID:       "task-verify",
+		Title:        "Verify",
+		Instructions: "Do verified work.",
+		Status:       TaskStatusInProgress,
+		Verification: VerificationSpec{
+			Policy: VerificationPolicyRequired,
+			Checks: []VerificationCheck{{CheckID: "c1", Description: "must pass", Required: true, Status: VerificationStatusPending}},
+		},
+	}.Normalize()
+	if err := task.ApplyTransition(TaskStatusCompleted, 100, "verifier", "runtime", "done", nil); err == nil {
+		t.Fatal("expected completion to be blocked while required verification is pending")
+	}
+	task.Verification.Checks[0].Status = VerificationStatusPassed
+	if err := task.ApplyTransition(TaskStatusCompleted, 110, "verifier", "runtime", "verified", nil); err != nil {
+		t.Fatalf("expected completion after required verification passed: %v", err)
+	}
+}
+
+func TestTaskRunAttemptInheritsVerificationAndCompletionGate(t *testing.T) {
+	task := TaskSpec{
+		TaskID:       "task-run-verify",
+		Title:        "Run Verify",
+		Instructions: "Do verified run.",
+		Verification: VerificationSpec{
+			Policy: VerificationPolicyRequired,
+			Checks: []VerificationCheck{{CheckID: "c1", Description: "must pass", Required: true, Status: VerificationStatusPending}},
+		},
+	}.Normalize()
+	run, err := NewTaskRunAttempt(task, "run-1", nil, 100, "manual", "agent", "test")
+	if err != nil {
+		t.Fatalf("NewTaskRunAttempt: %v", err)
+	}
+	if run.Verification.Policy != VerificationPolicyRequired || len(run.Verification.Checks) != 1 {
+		t.Fatalf("expected run to inherit task verification, got %+v", run.Verification)
+	}
+	if err := run.ApplyTransition(TaskRunStatusRunning, 110, "agent", "test", "started", nil); err != nil {
+		t.Fatalf("running transition: %v", err)
+	}
+	if err := run.ApplyTransition(TaskRunStatusCompleted, 120, "agent", "test", "done", nil); err == nil {
+		t.Fatal("expected run completion to be blocked while required verification is pending")
+	}
+	run.Verification.Checks[0].Status = VerificationStatusPassed
+	if err := run.ApplyTransition(TaskRunStatusCompleted, 130, "agent", "test", "verified", nil); err != nil {
+		t.Fatalf("expected run completion after required verification passed: %v", err)
+	}
+}
+
 func TestTaskLifecycleTransitionsAndRetrySemantics(t *testing.T) {
 	task := TaskSpec{TaskID: "task-1", Title: "Lifecycle", Instructions: "Drive transitions."}.Normalize()
 	if err := task.ApplyTransition(TaskStatusPlanned, 100, "planner", "planner", "initial plan", nil); err != nil {
@@ -333,8 +412,8 @@ func TestTaskModelsJSONRoundTrip(t *testing.T) {
 				Description: "go test ./internal/store/state passes",
 				Required:    true,
 			}},
-			CreatedAt: 333,
-			UpdatedAt: 444,
+			CreatedAt:   333,
+			UpdatedAt:   444,
 			Transitions: []TaskTransition{{From: TaskStatusPending, To: TaskStatusReady, At: 444, Actor: "planner", Source: "planner", Reason: "ready"}},
 			Meta:        map[string]any{"epic": "swarmstr-qrx.1"},
 		},

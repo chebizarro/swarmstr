@@ -213,6 +213,43 @@ func TestExtractProfileFromExtra_ReturnsClone(t *testing.T) {
 	}
 }
 
+func TestProfileMetadataValidationFailureRejectsWrongAuthor(t *testing.T) {
+	valid := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		nostr.Kind(0),
+		nostr.Timestamp(10),
+		nil,
+	)
+	wrongAuthor := mustSignedMetadataEvent(t,
+		"2222222222222222222222222222222222222222222222222222222222222222",
+		nostr.Kind(0),
+		nostr.Timestamp(20),
+		nil,
+	)
+	if reason := profileMetadataValidationFailure(wrongAuthor, valid.PubKey); reason != "unexpected_author" {
+		t.Fatalf("reason = %q, want unexpected_author", reason)
+	}
+}
+
+func TestProfileMetadataValidationFailureRejectsInvalidSignature(t *testing.T) {
+	valid := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		nostr.Kind(0),
+		nostr.Timestamp(10),
+		nil,
+	)
+	invalidSig := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		nostr.Kind(0),
+		nostr.Timestamp(20),
+		nil,
+	)
+	invalidSig.Sig[0] ^= 0x01
+	if reason := profileMetadataValidationFailure(invalidSig, valid.PubKey); reason != "invalid_signature" {
+		t.Fatalf("reason = %q, want invalid_signature", reason)
+	}
+}
+
 func TestUpdateProfile_TriggersOnChange(t *testing.T) {
 	pp, err := NewProfilePublisher(ProfilePublisherOptions{
 		Keyer:   testProfileKeyer(),
@@ -274,6 +311,18 @@ func TestStop_NilReceiver(t *testing.T) {
 	pp.Stop() // should not panic
 }
 
+func TestStop_BeforeStart(t *testing.T) {
+	pp, err := NewProfilePublisher(ProfilePublisherOptions{
+		Keyer:   testProfileKeyer(),
+		Relays:  []string{"wss://relay.example"},
+		Profile: map[string]any{"name": "test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pp.Stop() // should not panic before Start
+}
+
 func TestStop_CleanShutdown(t *testing.T) {
 	pp, err := NewProfilePublisher(ProfilePublisherOptions{
 		Keyer:   testProfileKeyer(),
@@ -300,6 +349,37 @@ func TestStop_CleanShutdown(t *testing.T) {
 		// good
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop() did not return within 5s")
+	}
+}
+
+func TestStart_Idempotent(t *testing.T) {
+	pp, err := NewProfilePublisher(ProfilePublisherOptions{
+		Keyer:   testProfileKeyer(),
+		Relays:  []string{"wss://relay.example"},
+		Profile: map[string]any{"name": "test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	pp.Start(ctx1)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	pp.Start(ctx2)
+	cancel1()
+
+	done := make(chan struct{})
+	go func() {
+		pp.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() hung after double Start")
 	}
 }
 

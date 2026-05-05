@@ -166,31 +166,45 @@ func (r *DocsRepository) ListAgents(ctx context.Context, limit int) ([]AgentDoc,
 	if limit == 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "agent", limit*4)
-	if err != nil {
-		return nil, err
+	type latestAgentDoc struct {
+		doc   AgentDoc
+		event Event
 	}
-	byID := map[string]AgentDoc{}
-	for _, row := range rows {
-		if !hasTagValue(row.Tags, "t", "agent") {
-			continue
+	byID := make(map[string]latestAgentDoc, limit)
+	pageLimit := limit * 4
+	var cursor *EventPageCursor
+	for {
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, "t", "agent", pageLimit, cursor)
+		if err != nil {
+			return nil, err
 		}
-		var doc AgentDoc
-		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
-			continue
+		for _, row := range page.Events {
+			if !hasTagValue(row.Tags, "t", "agent") {
+				continue
+			}
+			var doc AgentDoc
+			if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+				continue
+			}
+			doc.AgentID = strings.TrimSpace(doc.AgentID)
+			if doc.AgentID == "" {
+				doc.AgentID = strings.TrimSpace(tagValue(row.Tags, "agent"))
+			}
+			if doc.AgentID == "" {
+				continue
+			}
+			if prior, ok := byID[doc.AgentID]; !ok || eventIsNewer(row, prior.event) {
+				byID[doc.AgentID] = latestAgentDoc{doc: doc, event: row}
+			}
 		}
-		doc.AgentID = strings.TrimSpace(doc.AgentID)
-		if doc.AgentID == "" {
-			doc.AgentID = strings.TrimSpace(tagValue(row.Tags, "agent"))
+		if len(byID) >= limit || page.NextCursor == nil {
+			break
 		}
-		if doc.AgentID == "" {
-			continue
-		}
-		byID[doc.AgentID] = doc
+		cursor = page.NextCursor
 	}
 	out := make([]AgentDoc, 0, len(byID))
-	for _, doc := range byID {
-		out = append(out, doc)
+	for _, entry := range byID {
+		out = append(out, entry.doc)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].AgentID < out[j].AgentID })
 	if len(out) > limit {
@@ -513,32 +527,46 @@ func (r *DocsRepository) ListAgentFiles(ctx context.Context, agentID string, lim
 	if limit <= 0 {
 		limit = 200
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindStateDoc, r.author, "t", "agent_file", limit*4)
-	if err != nil {
-		return nil, err
-	}
 	agentTag := protectedTagValue(agentID)
-	byName := map[string]AgentFileDoc{}
-	for _, row := range rows {
-		if !hasTagValue(row.Tags, "t", "agent_file") {
-			continue
+	type latestAgentFileDoc struct {
+		doc   AgentFileDoc
+		event Event
+	}
+	byName := make(map[string]latestAgentFileDoc, limit)
+	pageLimit := limit * 4
+	var cursor *EventPageCursor
+	for {
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, "t", "agent_file", pageLimit, cursor)
+		if err != nil {
+			return nil, err
 		}
-		if tagValue(row.Tags, "agent") != agentTag {
-			continue
+		for _, row := range page.Events {
+			if !hasTagValue(row.Tags, "t", "agent_file") {
+				continue
+			}
+			if tagValue(row.Tags, "agent") != agentTag {
+				continue
+			}
+			var doc AgentFileDoc
+			if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+				continue
+			}
+			doc.Name = strings.TrimSpace(doc.Name)
+			if doc.Name == "" {
+				continue
+			}
+			if prior, ok := byName[doc.Name]; !ok || eventIsNewer(row, prior.event) {
+				byName[doc.Name] = latestAgentFileDoc{doc: doc, event: row}
+			}
 		}
-		var doc AgentFileDoc
-		if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
-			continue
+		if len(byName) >= limit || page.NextCursor == nil {
+			break
 		}
-		doc.Name = strings.TrimSpace(doc.Name)
-		if doc.Name == "" {
-			continue
-		}
-		byName[doc.Name] = doc
+		cursor = page.NextCursor
 	}
 	out := make([]AgentFileDoc, 0, len(byName))
-	for _, doc := range byName {
-		out = append(out, doc)
+	for _, entry := range byName {
+		out = append(out, entry.doc)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	if len(out) > limit {
@@ -903,6 +931,10 @@ func sessionActivityUnix(doc SessionDoc) int64 {
 		return doc.LastReplyAt
 	}
 	return doc.LastInboundAt
+}
+
+func eventIsNewer(candidate, prior Event) bool {
+	return candidate.CreatedAt > prior.CreatedAt || (candidate.CreatedAt == prior.CreatedAt && candidate.ID > prior.ID)
 }
 
 func firstNonEmpty(values ...string) string {

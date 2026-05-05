@@ -120,6 +120,9 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 	pool := NewPoolNIP42(ks)
 	ownsPool := true
 	if opts.Hub != nil {
+		if opts.Hub.PubKey() != pub {
+			return nil, fmt.Errorf("nip17 bus: hub pubkey does not match keyer pubkey")
+		}
 		pool = opts.Hub.Pool()
 		ownsPool = false
 	}
@@ -166,8 +169,13 @@ func (b *NIP17Bus) PublicKey() string { return b.public.Hex() }
 
 // Close shuts down the bus and waits for goroutines to exit.
 func (b *NIP17Bus) Close() {
-	b.cancel()
-	if b.ownsPool {
+	if b == nil {
+		return
+	}
+	if b.cancel != nil {
+		b.cancel()
+	}
+	if b.ownsPool && b.pool != nil {
 		b.pool.Close("nip17 bus closed")
 	}
 	b.wg.Wait()
@@ -410,6 +418,7 @@ func (b *NIP17Bus) perRelaySubscribe(
 
 		// Successful subscription — reset backoff.
 		backoff = nip17ReconnectBackoffMin
+		eoseCh := sub.EndOfStoredEvents
 
 		for {
 			select {
@@ -449,9 +458,9 @@ func (b *NIP17Bus) perRelaySubscribe(
 					return
 				}
 
-			case <-sub.EndOfStoredEvents:
+			case <-eoseCh:
 				log.Printf("nip17: EOSE from %s; switching to realtime", relayURL)
-				continue
+				eoseCh = nil
 
 			case reason := <-sub.ClosedReason:
 				if strings.HasPrefix(reason, "auth-required:") && !hasAuthed {
@@ -588,9 +597,9 @@ func (b *NIP17Bus) validateRumorEvent(rumor nostr.Event, now time.Time) error {
 	if !rumor.CheckID() {
 		return fmt.Errorf("invalid rumor id")
 	}
-	if !rumor.VerifySignature() {
-		return fmt.Errorf("invalid rumor signature")
-	}
+	// NIP-59 rumors are intentionally unsigned. Authenticity is established by
+	// successful gift-wrap and seal verification before unwrap; requiring a rumor
+	// signature here would reject every spec-compliant inbound NIP-17 DM.
 	if timestampTooFarFuture(int64(rumor.CreatedAt), now, inboundEventMaxFutureSkew) {
 		return fmt.Errorf("rumor timestamp from the future")
 	}

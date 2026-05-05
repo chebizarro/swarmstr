@@ -167,6 +167,25 @@ func relaySliceEqual(a, b []string) bool {
 	return true
 }
 
+func relaySetValidationFailure(ev nostr.Event, expectedAuthor nostr.PubKey) string {
+	if ev.Kind != nostr.Kind(nip51.KindRelaySet) {
+		return fmt.Sprintf("unexpected_kind:%d", ev.Kind)
+	}
+	if ev.PubKey != expectedAuthor {
+		return "unexpected_author"
+	}
+	if !ev.CheckID() {
+		return "invalid_id"
+	}
+	if !ev.VerifySignature() {
+		return "invalid_signature"
+	}
+	if timestampTooFarFuture(int64(ev.CreatedAt), time.Now(), inboundEventMaxFutureSkew) {
+		return "created_at_future"
+	}
+	return ""
+}
+
 // ── Subscription ─────────────────────────────────────────────────────────────
 
 // RelaySetSyncOptions configures the kind:30002 relay set self-sync subscriber.
@@ -191,6 +210,9 @@ type RelaySetSyncOptions struct {
 func RelaySetSelfSync(ctx context.Context, opts RelaySetSyncOptions) error {
 	if opts.Keyer == nil {
 		return fmt.Errorf("relay-set-sync: keyer is required")
+	}
+	if opts.Pool == nil {
+		return fmt.Errorf("relay-set-sync: pool is required")
 	}
 	if opts.Registry == nil {
 		return fmt.Errorf("relay-set-sync: registry is required")
@@ -232,6 +254,10 @@ func RelaySetSelfSync(ctx context.Context, opts RelaySetSyncOptions) error {
 				if !ok {
 					return
 				}
+				if reason := relaySetValidationFailure(re.Event, pk); reason != "" {
+					log.Printf("relay-set-sync: dropped invalid relay-set event reason=%s relay=%s event=%s", reason, metadataRelayURL(re), shortEventID(re.Event.ID))
+					continue
+				}
 				list := nip51.DecodeEvent(re.Event)
 				if list.DTag == "" {
 					continue
@@ -269,6 +295,12 @@ func RelaySetSelfSync(ctx context.Context, opts RelaySetSyncOptions) error {
 
 // PublishRelaySet publishes a kind:30002 relay set event.
 func PublishRelaySet(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, publishRelays []string, dtag string, relays []string) (string, error) {
+	if pool == nil {
+		return "", fmt.Errorf("publish relay set: pool is required")
+	}
+	if keyer == nil {
+		return "", fmt.Errorf("publish relay set: keyer is required")
+	}
 	pkCtx, pkCancel := context.WithTimeout(ctx, 10*time.Second)
 	pk, err := keyer.GetPublicKey(pkCtx)
 	pkCancel()

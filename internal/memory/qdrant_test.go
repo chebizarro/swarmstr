@@ -22,11 +22,19 @@ type contextAwareBackendStub struct {
 	ctxValue            string
 	searchResult        []IndexedMemory
 	sessionSearchResult []IndexedMemory
+	listSessionResult   []IndexedMemory
+	listTopicResult     []IndexedMemory
+	listTypeResult      []IndexedMemory
+	listTaskResult      []IndexedMemory
+	addedDocs           []state.MemoryDoc
+	deleteIDs           []string
+	deleteResult        bool
 }
 
 func (b *contextAwareBackendStub) Add(doc state.MemoryDoc) {}
 func (b *contextAwareBackendStub) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
 	b.addCalled = true
+	b.addedDocs = append(b.addedDocs, doc)
 	if v, _ := ctx.Value(ctxKey("marker")).(string); v != "" {
 		b.ctxValue = v
 	}
@@ -52,21 +60,28 @@ func (b *contextAwareBackendStub) SearchSessionWithContext(ctx context.Context, 
 	return b.sessionSearchResult
 }
 func (b *contextAwareBackendStub) ListSession(sessionID string, limit int) []IndexedMemory {
-	return nil
+	return b.listSessionResult
 }
 func (b *contextAwareBackendStub) BackendStatus() BackendStatus {
 	return BackendStatus{Name: "stub", Available: true}
 }
-func (b *contextAwareBackendStub) Count() int                                          { return 0 }
-func (b *contextAwareBackendStub) SessionCount() int                                   { return 0 }
-func (b *contextAwareBackendStub) Compact(maxEntries int) int                          { return 0 }
-func (b *contextAwareBackendStub) Save() error                                         { return nil }
-func (b *contextAwareBackendStub) Store(sessionID, text string, tags []string) string  { return "" }
-func (b *contextAwareBackendStub) Delete(id string) bool                               { return false }
-func (b *contextAwareBackendStub) ListByTopic(topic string, limit int) []IndexedMemory  { return nil }
-func (b *contextAwareBackendStub) ListByType(memType string, limit int) []IndexedMemory { return nil }
+func (b *contextAwareBackendStub) Count() int                                         { return 0 }
+func (b *contextAwareBackendStub) SessionCount() int                                  { return 0 }
+func (b *contextAwareBackendStub) Compact(maxEntries int) int                         { return 0 }
+func (b *contextAwareBackendStub) Save() error                                        { return nil }
+func (b *contextAwareBackendStub) Store(sessionID, text string, tags []string) string { return "" }
+func (b *contextAwareBackendStub) Delete(id string) bool {
+	b.deleteIDs = append(b.deleteIDs, id)
+	return b.deleteResult
+}
+func (b *contextAwareBackendStub) ListByTopic(topic string, limit int) []IndexedMemory {
+	return b.listTopicResult
+}
+func (b *contextAwareBackendStub) ListByType(memType string, limit int) []IndexedMemory {
+	return b.listTypeResult
+}
 func (b *contextAwareBackendStub) ListByTaskID(taskID string, limit int) []IndexedMemory {
-	return nil
+	return b.listTaskResult
 }
 func (b *contextAwareBackendStub) Close() error { return nil }
 
@@ -107,6 +122,91 @@ func TestContextAwareHelpersUseHybridIndexContextMethods(t *testing.T) {
 	}
 	if backend.ctxValue != "present" {
 		t.Fatalf("expected context value to propagate, got %q", backend.ctxValue)
+	}
+}
+
+func TestHybridIndexStoreDeleteListAndCompactMirrorBackend(t *testing.T) {
+	idx, err := OpenIndex(filepath.Join(t.TempDir(), "memory.json"))
+	if err != nil {
+		t.Fatalf("OpenIndex failed: %v", err)
+	}
+	backend := &contextAwareBackendStub{deleteResult: true}
+	hybrid := NewHybridIndex(idx, backend)
+
+	storedID := hybrid.Store("sess-a", "remember backend parity", []string{"parity"})
+	if storedID == "" {
+		t.Fatal("expected Store to return generated id")
+	}
+	if !backend.addCalled || len(backend.addedDocs) != 1 {
+		t.Fatalf("expected Store to mirror through AddWithContext, got %#v", backend.addedDocs)
+	}
+	if got := backend.addedDocs[0]; got.MemoryID != storedID || got.SessionID != "sess-a" || got.Text != "remember backend parity" {
+		t.Fatalf("unexpected mirrored doc: %#v", got)
+	}
+	if got := idx.Count(); got != 1 {
+		t.Fatalf("expected JSON index to contain stored doc, got count=%d", got)
+	}
+
+	backend.listSessionResult = []IndexedMemory{{MemoryID: "backend-session", SessionID: "sess-a", Unix: 1}}
+	if got := hybrid.ListSession("sess-a", 10); len(got) != 2 || got[0].MemoryID != storedID || got[1].MemoryID != "backend-session" {
+		t.Fatalf("expected ListSession to merge backend and JSON hits newest-first, got %#v", got)
+	}
+	backend.listSessionResult = nil
+	if got := hybrid.ListSession("sess-a", 10); len(got) != 1 || got[0].MemoryID != storedID {
+		t.Fatalf("expected ListSession to fall back to JSON index, got %#v", got)
+	}
+
+	hybrid.Add(state.MemoryDoc{MemoryID: "topic-local", SessionID: "sess-a", Text: "topic text", Topic: "agent", Type: state.MemoryTypeFact, TaskID: "task-1", Unix: 20})
+	backend.listTopicResult = []IndexedMemory{{MemoryID: "backend-topic", Topic: "agent", Unix: 1}}
+	if got := hybrid.ListByTopic("agent", 10); len(got) != 2 || got[0].MemoryID != "topic-local" || got[1].MemoryID != "backend-topic" {
+		t.Fatalf("expected ListByTopic to merge backend and JSON hits newest-first, got %#v", got)
+	}
+	backend.listTopicResult = nil
+	if got := hybrid.ListByTopic("agent", 10); len(got) != 1 || got[0].MemoryID != "topic-local" {
+		t.Fatalf("expected ListByTopic fallback to JSON index, got %#v", got)
+	}
+	backend.listTypeResult = []IndexedMemory{{MemoryID: "backend-type", Type: state.MemoryTypeFact, Unix: 1}}
+	if got := hybrid.ListByType(state.MemoryTypeFact, 10); len(got) != 2 || got[0].MemoryID != "topic-local" || got[1].MemoryID != "backend-type" {
+		t.Fatalf("expected ListByType to merge backend and JSON hits newest-first, got %#v", got)
+	}
+	if got := hybrid.ListByType(state.MemoryTypeFact, 1); len(got) != 1 || got[0].MemoryID != "topic-local" {
+		t.Fatalf("expected ListByType limit to keep newer JSON-only hit over stale backend subset, got %#v", got)
+	}
+	backend.listTaskResult = []IndexedMemory{{MemoryID: "backend-task", TaskID: "task-1", Unix: 1}}
+	if got := hybrid.ListByTaskID("task-1", 10); len(got) != 2 || got[0].MemoryID != "topic-local" || got[1].MemoryID != "backend-task" {
+		t.Fatalf("expected ListByTaskID to merge backend and JSON hits newest-first, got %#v", got)
+	}
+
+	backend.deleteIDs = nil
+	if ok := hybrid.Delete(storedID); !ok {
+		t.Fatal("expected Delete to report success")
+	}
+	if len(backend.deleteIDs) != 1 || backend.deleteIDs[0] != storedID {
+		t.Fatalf("expected Delete to mirror backend deletion, got %#v", backend.deleteIDs)
+	}
+	if got := idx.Search("parity", 10); len(got) != 0 {
+		t.Fatalf("expected deleted doc removed from JSON index, got %#v", got)
+	}
+
+	backend.deleteIDs = nil
+	hybrid.Add(state.MemoryDoc{MemoryID: "old-1", Text: "old one", Unix: 1})
+	hybrid.Add(state.MemoryDoc{MemoryID: "old-2", Text: "old two", Unix: 2})
+	hybrid.Add(state.MemoryDoc{MemoryID: "new-3", Text: "new three", Unix: 3})
+	removed := hybrid.Compact(1)
+	if removed != 3 {
+		t.Fatalf("expected compact to remove 3 oldest entries, got %d", removed)
+	}
+	wantDeleted := map[string]bool{"old-1": true, "old-2": true, "new-3": true}
+	if len(backend.deleteIDs) != len(wantDeleted) {
+		t.Fatalf("expected compact backend deletes for %v, got %#v", wantDeleted, backend.deleteIDs)
+	}
+	for _, id := range backend.deleteIDs {
+		if !wantDeleted[id] {
+			t.Fatalf("unexpected compact delete id %q; all deletes %#v", id, backend.deleteIDs)
+		}
+	}
+	if got := idx.Count(); got != 1 {
+		t.Fatalf("expected one indexed doc after compact, got %d", got)
 	}
 }
 
@@ -309,8 +409,8 @@ func TestQdrantSearchBackoffSuppressesImmediateRetryUntilCooldownExpires(t *test
 	if !status.Degraded || status.ConsecutiveFailures != 1 || status.NextRetryUnix == 0 {
 		t.Fatalf("expected degraded status after failure, got %#v", status)
 	}
-	if !strings.Contains(status.LastError, "embed search") {
-		t.Fatalf("expected embed failure in status, got %#v", status)
+	if !strings.Contains(status.LastError, "embed search") || !strings.Contains(status.LastError, "status 500") {
+		t.Fatalf("expected embed HTTP status failure in status, got %#v", status)
 	}
 	if got := backend.SearchWithContext(context.Background(), "remember", 5); got != nil {
 		t.Fatalf("expected cooldown to suppress immediate retry, got %#v", got)

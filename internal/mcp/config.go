@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"regexp"
 	"sort"
@@ -781,7 +783,7 @@ func getServerSignature(cfg ServerConfig) string {
 		if err != nil {
 			return ""
 		}
-		return transportType + ":" + string(data)
+		return hashedServerSignature(transportType, data)
 	case "sse", "http":
 		if cfg.URL == "" {
 			return ""
@@ -800,13 +802,18 @@ func getServerSignature(cfg ServerConfig) string {
 		if err != nil {
 			return ""
 		}
-		return transportType + ":" + string(data)
+		return hashedServerSignature(transportType, data)
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return ""
 	}
-	return "unknown:" + string(data)
+	return hashedServerSignature("unknown", data)
+}
+
+func hashedServerSignature(transport string, canonical []byte) string {
+	sum := sha256.Sum256(canonical)
+	return transport + ":" + hex.EncodeToString(sum[:])
 }
 
 // CredentialKey returns the stable persistence key for stored remote OAuth

@@ -41,7 +41,11 @@ func ResolvePrivateKey(cfg BootstrapConfig) (string, error) {
 
 	// Direct key material in signer_url (backward-compatible shim).
 	if !strings.Contains(raw, "://") {
-		return raw, nil
+		sk, err := parsePrivateKey(raw)
+		if err != nil {
+			return "", fmt.Errorf("signer_url direct key: %w", err)
+		}
+		return hex.EncodeToString(sk[:]), nil
 	}
 
 	u, err := url.Parse(raw)
@@ -62,7 +66,11 @@ func ResolvePrivateKey(cfg BootstrapConfig) (string, error) {
 		if value == "" {
 			return "", fmt.Errorf("signer_url env variable %q is empty", name)
 		}
-		return value, nil
+		sk, err := parsePrivateKey(value)
+		if err != nil {
+			return "", fmt.Errorf("signer_url env variable %q: %w", name, err)
+		}
+		return hex.EncodeToString(sk[:]), nil
 	case "file":
 		if strings.TrimSpace(u.Path) == "" {
 			return "", fmt.Errorf("signer_url file mode requires path")
@@ -75,7 +83,11 @@ func ResolvePrivateKey(cfg BootstrapConfig) (string, error) {
 		if value == "" {
 			return "", fmt.Errorf("signer_url file %q is empty", u.Path)
 		}
-		return value, nil
+		sk, err := parsePrivateKey(value)
+		if err != nil {
+			return "", fmt.Errorf("signer_url file %q: %w", u.Path, err)
+		}
+		return hex.EncodeToString(sk[:]), nil
 	case "bunker", "nostrconnect":
 		return "", fmt.Errorf("signer_url scheme %q requires NIP-46 connection — use ResolveSigner instead", u.Scheme)
 	default:

@@ -185,6 +185,9 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 	pool := NewPoolNIP42(authKeyer)
 	ownsPool := true
 	if opts.Hub != nil {
+		if opts.Hub.PubKey() != public {
+			return nil, fmt.Errorf("dm bus: hub pubkey does not match bus pubkey")
+		}
 		pool = opts.Hub.Pool()
 		ownsPool = false
 	}
@@ -237,8 +240,13 @@ func (b *DMBus) PublicKey() string {
 }
 
 func (b *DMBus) Close() {
-	b.cancel()
-	if b.ownsPool {
+	if b == nil {
+		return
+	}
+	if b.cancel != nil {
+		b.cancel()
+	}
+	if b.ownsPool && b.pool != nil {
 		b.pool.Close("dm bus closed")
 	}
 	b.wg.Wait()
@@ -361,18 +369,26 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 	if re.Event.PubKey == b.public {
 		return
 	}
+	eventID := re.Event.ID.Hex()
 	if !re.Event.CheckID() || !re.Event.VerifySignature() {
+		if b.markSeen(eventID) {
+			return
+		}
 		b.emitErr(fmt.Errorf("rejected invalid event from relay=%s", re.Relay.URL))
 		return
 	}
 	now := time.Now()
 	if timestampTooFarFuture(int64(re.Event.CreatedAt), now, inboundEventMaxFutureSkew) {
+		if b.markSeen(eventID) {
+			return
+		}
 		b.emitErr(fmt.Errorf("rejected future dm event relay=%s", re.Relay.URL))
 		return
 	}
 	if b.replayWindow > 0 {
 		if timestampTooOld(int64(re.Event.CreatedAt), now, b.replayWindow) {
 			// Too old/replayed; drop after signature validation.
+			b.markSeen(eventID)
 			return
 		}
 	}
@@ -383,7 +399,6 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		b.subHealth.RecordEvent()
 	}
 
-	eventID := re.Event.ID.Hex()
 	if b.markSeen(eventID) {
 		return
 	}
@@ -933,6 +948,12 @@ func publishEncryptedDM(ctx context.Context, pool *nostr.Pool, ks nostr.Keyer, r
 }
 
 func publishEncryptedDMWithRetry(ctx context.Context, pool *nostr.Pool, signer nostr.Keyer, crypto nostr.Keyer, relays []string, to nostr.PubKey, text string, health *RelayHealthTracker) (string, error) {
+	if pool == nil {
+		return "", fmt.Errorf("publish dm: pool is required")
+	}
+	if signer == nil {
+		return "", fmt.Errorf("publish dm: signer is required")
+	}
 	var err error
 	text, err = sanitizeDMText(text)
 	if err != nil {

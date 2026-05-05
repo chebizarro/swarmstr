@@ -17,6 +17,7 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/autoreply"
+	ctxengine "metiq/internal/context"
 	hookspkg "metiq/internal/hooks"
 	"metiq/internal/store/state"
 )
@@ -141,9 +142,51 @@ func rotateSessionCoordinated(
 		if !isACP && sessionRouter != nil {
 			sessionRouter.Assign(sessionID, "")
 		}
-		_, err := rotateSessionLifecycle(ctx, sessionID, reason, cfg, transcriptRepo, sessionStore, time.Now())
-		return err
+		if _, err := rotateSessionLifecycle(ctx, sessionID, reason, cfg, transcriptRepo, sessionStore, time.Now()); err != nil {
+			return err
+		}
+		if err := resetContextEngineForRotatedSession(ctx, currentContextEngineForSessionReset(), sessionID, transcriptRepo); err != nil {
+			return fmt.Errorf("reset context engine after session rotation: %w", err)
+		}
+		return nil
 	})
+}
+
+func currentContextEngineForSessionReset() ctxengine.Engine {
+	if controlServices != nil && controlServices.session.contextEngine != nil {
+		return controlServices.session.contextEngine
+	}
+	return controlContextEngine
+}
+
+func resetContextEngineForRotatedSession(ctx context.Context, engine ctxengine.Engine, sessionID string, transcriptRepo *state.TranscriptRepository) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if engine == nil || sessionID == "" {
+		return nil
+	}
+
+	messages := []ctxengine.Message(nil)
+	if transcriptRepo != nil {
+		entries, err := transcriptRepo.ListSessionAll(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		messages = make([]ctxengine.Message, 0, len(entries))
+		for _, entry := range entries {
+			role := strings.TrimSpace(entry.Role)
+			if role == "" || role == "deleted" || entry.Deleted {
+				continue
+			}
+			messages = append(messages, ctxengine.Message{
+				Role:    role,
+				Content: entry.Text,
+				ID:      entry.EntryID,
+				Unix:    entry.Unix,
+			})
+		}
+	}
+	_, err := engine.Bootstrap(ctx, sessionID, messages)
+	return err
 }
 
 // ---------------------------------------------------------------------------

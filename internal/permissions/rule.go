@@ -107,15 +107,16 @@ func (s Scope) IsValid() bool {
 
 // ─── Tool Categories ─────────────────────────────────────────────────────────
 
-// ToolCategory classifies tools by their general function.
+// ToolCategory classifies tools by their general function/capability. It should
+// not be used to encode where a tool came from; use ToolOrigin for provenance.
 type ToolCategory string
 
 const (
 	// CategoryBuiltin covers built-in agent tools.
 	CategoryBuiltin ToolCategory = "builtin"
-	// CategoryPlugin covers plugin-provided tools.
+	// CategoryPlugin is retained for backwards compatibility. Prefer ToolOriginPlugin for provenance.
 	CategoryPlugin ToolCategory = "plugin"
-	// CategoryMCP covers MCP server tools.
+	// CategoryMCP is retained for backwards compatibility. Prefer ToolOriginMCP for provenance.
 	CategoryMCP ToolCategory = "mcp"
 	// CategoryExec covers shell/command execution.
 	CategoryExec ToolCategory = "exec"
@@ -126,6 +127,29 @@ const (
 	// CategoryRemoteAgent covers remote agent interactions.
 	CategoryRemoteAgent ToolCategory = "remote_agent"
 )
+
+// ToolOrigin identifies where a tool descriptor originated, independently from
+// its capability category. Empty means unspecified/any when used on a rule.
+type ToolOrigin string
+
+const (
+	// ToolOriginBuiltin covers built-in agent tools.
+	ToolOriginBuiltin ToolOrigin = "builtin"
+	// ToolOriginPlugin covers plugin-provided tools.
+	ToolOriginPlugin ToolOrigin = "plugin"
+	// ToolOriginMCP covers tools surfaced by MCP servers.
+	ToolOriginMCP ToolOrigin = "mcp"
+)
+
+// IsValid reports whether the origin is recognized. Empty means unspecified.
+func (o ToolOrigin) IsValid() bool {
+	switch o {
+	case "", ToolOriginBuiltin, ToolOriginPlugin, ToolOriginMCP:
+		return true
+	default:
+		return false
+	}
+}
 
 // ─── Permission Rules ────────────────────────────────────────────────────────
 
@@ -148,8 +172,16 @@ type Rule struct {
 	// If empty, matches any content.
 	ContentPattern string `json:"content_pattern,omitempty"`
 
-	// Category optionally restricts to a specific tool category.
+	// Category optionally restricts to a specific tool capability category.
 	Category ToolCategory `json:"category,omitempty"`
+
+	// Origin optionally restricts to a tool provenance kind (builtin/plugin/mcp).
+	Origin ToolOrigin `json:"origin,omitempty"`
+
+	// OriginName optionally restricts to a provenance-specific source name. For
+	// MCP tools this is the server name; for plugin tools this is the plugin ID.
+	// Glob-style * and ? wildcards are supported.
+	OriginName string `json:"origin_name,omitempty"`
 
 	// Description explains the purpose of this rule.
 	Description string `json:"description,omitempty"`
@@ -170,8 +202,9 @@ type Rule struct {
 	AgentID string `json:"agent_id,omitempty"`
 
 	// Compiled patterns (not serialized)
-	toolRegex    *regexp.Regexp
-	contentRegex *regexp.Regexp
+	toolRegex       *regexp.Regexp
+	contentRegex    *regexp.Regexp
+	originNameRegex *regexp.Regexp
 }
 
 // ForAgent restricts the rule to a specific agent.
@@ -198,9 +231,21 @@ func (r *Rule) WithContentPattern(pattern string) *Rule {
 	return r
 }
 
-// WithCategory restricts the rule to a specific tool category.
+// WithCategory restricts the rule to a specific tool capability category.
 func (r *Rule) WithCategory(cat ToolCategory) *Rule {
 	r.Category = cat
+	return r
+}
+
+// WithOrigin restricts the rule to a specific tool provenance kind.
+func (r *Rule) WithOrigin(origin ToolOrigin) *Rule {
+	r.Origin = origin
+	return r
+}
+
+// WithOriginName restricts the rule to a provenance source name pattern.
+func (r *Rule) WithOriginName(pattern string) *Rule {
+	r.OriginName = pattern
 	return r
 }
 
@@ -224,6 +269,10 @@ func (r *Rule) WithCreatedBy(creator string) *Rule {
 
 // Compile prepares the rule for matching by compiling patterns.
 func (r *Rule) Compile() error {
+	if !r.Origin.IsValid() {
+		return fmt.Errorf("invalid origin %q", r.Origin)
+	}
+
 	// Convert glob pattern to regex
 	toolRegexStr := globToRegex(r.ToolPattern)
 	re, err := regexp.Compile("^" + toolRegexStr + "$")
@@ -239,6 +288,16 @@ func (r *Rule) Compile() error {
 			return fmt.Errorf("invalid content pattern %q: %w", r.ContentPattern, err)
 		}
 		r.contentRegex = cre
+	}
+
+	// Compile origin-name pattern if present.
+	if r.OriginName != "" {
+		originRegexStr := globToRegex(r.OriginName)
+		re, err := regexp.Compile("^" + originRegexStr + "$")
+		if err != nil {
+			return fmt.Errorf("invalid origin_name pattern %q: %w", r.OriginName, err)
+		}
+		r.originNameRegex = re
 	}
 
 	return nil
@@ -275,9 +334,29 @@ func (r *Rule) Matches(req *ToolRequest) bool {
 		return false
 	}
 
-	// Check category if specified
+	// Check capability category if specified.
 	if r.Category != "" && r.Category != req.Category {
 		return false
+	}
+
+	// Check provenance kind if specified.
+	if r.Origin != "" && r.Origin != req.Origin {
+		return false
+	}
+
+	// Check provenance source name if specified.
+	if r.OriginName != "" {
+		if r.originNameRegex == nil {
+			originRegexStr := globToRegex(r.OriginName)
+			re, err := regexp.Compile("^" + originRegexStr + "$")
+			if err != nil {
+				return false
+			}
+			r.originNameRegex = re
+		}
+		if !r.originNameRegex.MatchString(req.OriginName) {
+			return false
+		}
 	}
 
 	// Check tool pattern
@@ -311,8 +390,15 @@ type ToolRequest struct {
 	// ToolName is the full name of the tool.
 	ToolName string `json:"tool_name"`
 
-	// Category is the tool's category.
+	// Category is the tool's capability category.
 	Category ToolCategory `json:"category"`
+
+	// Origin identifies where the tool came from, independently from Category.
+	Origin ToolOrigin `json:"origin,omitempty"`
+
+	// OriginName identifies the provenance-specific source name. For MCP tools
+	// this is the server name; for plugin tools this is the plugin ID.
+	OriginName string `json:"origin_name,omitempty"`
 
 	// Content is the tool input/arguments as a string.
 	Content string `json:"content,omitempty"`
@@ -355,6 +441,13 @@ func (r *ToolRequest) WithContent(content string) *ToolRequest {
 // WithMetadata adds metadata to the request.
 func (r *ToolRequest) WithMetadata(key string, value any) *ToolRequest {
 	r.Metadata[key] = value
+	return r
+}
+
+// WithOrigin sets the request provenance independently from capability category.
+func (r *ToolRequest) WithOrigin(origin ToolOrigin, originName string) *ToolRequest {
+	r.Origin = origin
+	r.OriginName = originName
 	return r
 }
 

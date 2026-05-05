@@ -43,6 +43,7 @@ type controlRPCDeps struct {
 	tools             *agent.ToolRegistry
 	pluginMgr         *pluginmanager.GojaPluginManager
 	startedAt         time.Time
+	bootstrapPath     string
 
 	sessionStore     *state.SessionStore
 	hooksMgr         hooksEventFirer

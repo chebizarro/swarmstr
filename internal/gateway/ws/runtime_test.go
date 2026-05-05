@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+
+	nostr "fiatjaf.com/nostr"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,6 +152,67 @@ func TestEvaluateAuthRejectsSpoofedProxyHeadersFromUntrustedRemote(t *testing.T)
 	decision := r.evaluateAuth(req, connect)
 	if decision.OK || decision.Code != "AUTH_TOKEN_MISSING" {
 		t.Fatalf("unexpected auth decision: %+v", decision)
+	}
+}
+
+func TestEvaluateAuthAcceptsDeviceTokenAndPasswordAliases(t *testing.T) {
+	r := &Runtime{opts: RuntimeOptions{Token: "secret"}}
+	req := httptest.NewRequest(http.MethodGet, "http://example/ws", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	for name, auth := range map[string]*protocol.ConnectAuth{
+		"deviceToken": {DeviceToken: "secret"},
+		"password":    {Password: "secret"},
+	} {
+		decision := r.evaluateAuth(req, protocol.ConnectParams{Auth: auth})
+		if !decision.OK || decision.Method != "token" {
+			t.Fatalf("%s alias did not authenticate: %+v", name, decision)
+		}
+	}
+}
+
+func TestControlPrincipalDoesNotAuthenticateNoneMethod(t *testing.T) {
+	r := &Runtime{opts: RuntimeOptions{HandshakeTTL: 2 * time.Second}}
+	req := httptest.NewRequest(http.MethodGet, "http://example/ws", nil)
+	principal := r.controlPrincipal(req, protocol.ConnectParams{}, authDecision{OK: true, Method: "none"})
+	if principal.Authenticated || principal.Method != "none" {
+		t.Fatalf("none auth should not create authenticated principal: %+v", principal)
+	}
+}
+
+func TestControlPrincipalRestoresNIP98AuthenticationWhenTokenless(t *testing.T) {
+	r := &Runtime{opts: RuntimeOptions{HandshakeTTL: 2 * time.Second}}
+	req := httptest.NewRequest(http.MethodGet, "http://example/ws", nil)
+	hash := sha256.Sum256(nil)
+	var secret nostr.SecretKey
+	secret[31] = 1
+	evt := nostr.Event{
+		Kind:      nostr.Kind(27235),
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"method", http.MethodGet},
+			{"u", "http://example/ws"},
+			{"payload", nostr.HexEncodeToString(hash[:])},
+		},
+	}
+	if err := evt.Sign(secret); err != nil {
+		t.Fatalf("sign nip98 event: %v", err)
+	}
+	raw, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("marshal nip98 event: %v", err)
+	}
+	req.Header.Set("Authorization", "Nostr "+base64.StdEncoding.EncodeToString(raw))
+	principal := r.controlPrincipal(req, protocol.ConnectParams{}, authDecision{OK: true, Method: "none"})
+	if !principal.Authenticated || principal.Method != "nip98" || principal.PubKey == "" {
+		t.Fatalf("expected authenticated nip98 principal, got %+v", principal)
+	}
+}
+
+func TestBumpUnauthorizedCountsNotPaired(t *testing.T) {
+	c := &client{}
+	c.bumpUnauthorized(protocol.NewError(protocol.ErrorCodeNotPaired, "not paired", nil))
+	if !c.shouldClose(1) {
+		t.Fatal("expected NOT_PAIRED to count toward unauthorized burst")
 	}
 }
 

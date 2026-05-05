@@ -1,12 +1,14 @@
 // verifier_runtime.go implements a generic verifier runtime that dispatches
-// verification checks to type-specific executors (schema, evidence, dry-run,
-// tool-output, custom). Executors are registered by VerificationCheckType and
-// invoked in parallel or sequentially depending on policy.
+// verification checks to type-specific executors (schema, evidence, review,
+// dry-run, tool-output, custom). Executors are registered by
+// VerificationCheckType and pending checks with registered executors are invoked
+// concurrently while preserving deterministic result ordering.
 package planner
 
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -98,22 +100,22 @@ func (r *VerifierRuntime) HasExecutor(t state.VerificationCheckType) bool {
 
 // RuntimeResult is the output of a full verification pass.
 type RuntimeResult struct {
-	Passed      bool                  `json:"passed"`
-	CheckResults []CheckResult        `json:"check_results"`
-	UpdatedSpec state.VerificationSpec `json:"updated_spec"`
-	Summary     string                `json:"summary"`
-	Duration    time.Duration         `json:"duration"`
+	Passed       bool                   `json:"passed"`
+	CheckResults []CheckResult          `json:"check_results"`
+	UpdatedSpec  state.VerificationSpec `json:"updated_spec"`
+	Summary      string                 `json:"summary"`
+	Duration     time.Duration          `json:"duration"`
 }
 
 // CheckResult pairs a check with its execution outcome.
 type CheckResult struct {
-	CheckID  string                    `json:"check_id"`
+	CheckID  string                      `json:"check_id"`
 	Type     state.VerificationCheckType `json:"type"`
-	Required bool                      `json:"required"`
-	Outcome  CheckOutcome              `json:"outcome"`
-	Error    string                    `json:"error,omitempty"`
-	Pending  bool                      `json:"pending,omitempty"` // true when no executor was available
-	Duration time.Duration             `json:"duration,omitempty"`
+	Required bool                        `json:"required"`
+	Outcome  CheckOutcome                `json:"outcome"`
+	Error    string                      `json:"error,omitempty"`
+	Pending  bool                        `json:"pending,omitempty"` // true when no executor was available
+	Duration time.Duration               `json:"duration,omitempty"`
 }
 
 // EvaluateAll runs all pending checks in the spec using registered executors.
@@ -122,12 +124,17 @@ type CheckResult struct {
 func (r *VerifierRuntime) EvaluateAll(ctx context.Context, task state.TaskSpec, outputs TaskOutputs, actor string, now int64) RuntimeResult {
 	start := time.Now()
 	spec := task.Verification.Normalize()
+	if len(spec.Checks) > 0 {
+		spec.Checks = append([]state.VerificationCheck(nil), spec.Checks...)
+	}
 
 	if now <= 0 {
 		now = time.Now().Unix()
 	}
 
 	if spec.Policy == state.VerificationPolicyNone || len(spec.Checks) == 0 {
+		spec.VerifiedAt = 0
+		spec.VerifiedBy = ""
 		return RuntimeResult{
 			Passed:      true,
 			UpdatedSpec: spec,
@@ -143,63 +150,97 @@ func (r *VerifierRuntime) EvaluateAll(ctx context.Context, task state.TaskSpec, 
 	}
 	r.mu.RUnlock()
 
-	var results []CheckResult
+	results := make([]CheckResult, len(spec.Checks))
+	type evalResult struct {
+		index  int
+		check  state.VerificationCheck
+		result CheckResult
+	}
+	evalCh := make(chan evalResult, len(spec.Checks))
+	var wg sync.WaitGroup
 
 	for i, check := range spec.Checks {
 		if check.Status.IsTerminal() {
-			results = append(results, CheckResult{
+			cr := CheckResult{
 				CheckID:  check.CheckID,
 				Type:     check.Type,
 				Required: check.Required,
 				Outcome: CheckOutcome{
-					Passed: check.Status == state.VerificationStatusPassed || check.Status == state.VerificationStatusSkipped,
-					Result: check.Result,
+					Passed:   check.Status == state.VerificationStatusPassed || check.Status == state.VerificationStatusSkipped,
+					Result:   check.Result,
+					Evidence: check.Evidence,
 				},
-			})
+			}
+			if check.Status == state.VerificationStatusError {
+				cr.Error = check.Result
+				if cr.Error == "" {
+					cr.Error = "verification error"
+				}
+			}
+			results[i] = cr
 			continue
 		}
 
 		executor, ok := executors[check.Type]
 		if !ok {
 			// No executor for this type — leave pending for manual evaluation.
-			results = append(results, CheckResult{
+			if spec.Checks[i].Status == state.VerificationStatusRunning {
+				spec.Checks[i].Status = state.VerificationStatusPending
+			}
+			results[i] = CheckResult{
 				CheckID:  check.CheckID,
 				Type:     check.Type,
 				Required: check.Required,
 				Pending:  true,
-			})
+			}
 			continue
 		}
 
-		checkStart := time.Now()
-		outcome, err := executor.Execute(ctx, check, task, outputs)
-		checkDuration := time.Since(checkStart)
+		wg.Add(1)
+		go func(index int, check state.VerificationCheck, executor CheckExecutor) {
+			defer wg.Done()
+			execCheck := cloneVerificationCheck(check)
+			execTask := cloneTaskSpecForVerification(task)
+			execOutputs := cloneTaskOutputs(outputs)
+			checkStart := time.Now()
+			outcome, err := executor.Execute(ctx, execCheck, execTask, execOutputs)
+			checkDuration := time.Since(checkStart)
 
-		cr := CheckResult{
-			CheckID:  check.CheckID,
-			Type:     check.Type,
-			Required: check.Required,
-			Duration: checkDuration,
-		}
-
-		if err != nil {
-			cr.Error = err.Error()
-			cr.Outcome = CheckOutcome{Passed: false, Result: fmt.Sprintf("executor error: %s", err)}
-			spec.Checks[i].Status = state.VerificationStatusError
-			spec.Checks[i].Result = cr.Outcome.Result
-		} else {
-			cr.Outcome = outcome
-			if outcome.Passed {
-				spec.Checks[i].Status = state.VerificationStatusPassed
-			} else {
-				spec.Checks[i].Status = state.VerificationStatusFailed
+			updated := check
+			cr := CheckResult{
+				CheckID:  check.CheckID,
+				Type:     check.Type,
+				Required: check.Required,
+				Duration: checkDuration,
 			}
-			spec.Checks[i].Result = outcome.Result
-			spec.Checks[i].Evidence = outcome.Evidence
-		}
-		spec.Checks[i].EvaluatedAt = now
-		spec.Checks[i].EvaluatedBy = actor
-		results = append(results, cr)
+
+			if err != nil {
+				cr.Error = err.Error()
+				cr.Outcome = CheckOutcome{Passed: false, Result: fmt.Sprintf("executor error: %s", err)}
+				updated.Status = state.VerificationStatusError
+				updated.Result = cr.Outcome.Result
+				updated.Evidence = ""
+			} else {
+				cr.Outcome = outcome
+				if outcome.Passed {
+					updated.Status = state.VerificationStatusPassed
+				} else {
+					updated.Status = state.VerificationStatusFailed
+				}
+				updated.Result = outcome.Result
+				updated.Evidence = outcome.Evidence
+			}
+			updated.EvaluatedAt = now
+			updated.EvaluatedBy = actor
+			evalCh <- evalResult{index: index, check: updated, result: cr}
+		}(i, check, executor)
+	}
+
+	wg.Wait()
+	close(evalCh)
+	for er := range evalCh {
+		spec.Checks[er.index] = er.check
+		results[er.index] = er.result
 	}
 
 	// Compute aggregate pass/fail.
@@ -245,9 +286,12 @@ func (r *VerifierRuntime) EvaluateAll(ctx context.Context, task state.TaskSpec, 
 		summary += fmt.Sprintf("; blocked by: %s", strings.Join(blocking, ", "))
 	}
 
-	if passed && spec.VerifiedAt == 0 {
+	if spec.AllRequiredPassed() {
 		spec.VerifiedAt = now
 		spec.VerifiedBy = actor
+	} else {
+		spec.VerifiedAt = 0
+		spec.VerifiedBy = ""
 	}
 
 	return RuntimeResult{
@@ -279,7 +323,7 @@ func (e *SchemaCheckExecutor) Execute(_ context.Context, check state.Verificatio
 	}
 
 	// Extract required fields from check Meta.
-	requiredFields, _ := check.Meta["required_fields"].([]any)
+	requiredFields := stringList(check.Meta["required_fields"])
 	if len(requiredFields) == 0 {
 		// If no specific fields required, check that output is non-empty.
 		if len(outputs.StructuredOutput) == 0 {
@@ -296,11 +340,7 @@ func (e *SchemaCheckExecutor) Execute(_ context.Context, check state.Verificatio
 	}
 
 	var missing []string
-	for _, f := range requiredFields {
-		fieldName, ok := f.(string)
-		if !ok {
-			continue
-		}
+	for _, fieldName := range requiredFields {
 		if _, exists := outputs.StructuredOutput[fieldName]; !exists {
 			missing = append(missing, fieldName)
 		}
@@ -334,7 +374,7 @@ func (e *EvidenceCheckExecutor) Type() state.VerificationCheckType {
 
 func (e *EvidenceCheckExecutor) Execute(_ context.Context, check state.VerificationCheck, _ state.TaskSpec, outputs TaskOutputs) (CheckOutcome, error) {
 	// Evidence check: verify that required artifacts exist.
-	requiredArtifacts, _ := check.Meta["required_artifacts"].([]any)
+	requiredArtifacts := stringList(check.Meta["required_artifacts"])
 
 	if len(requiredArtifacts) == 0 {
 		// No specific artifacts required — just check that some evidence exists.
@@ -358,11 +398,7 @@ func (e *EvidenceCheckExecutor) Execute(_ context.Context, check state.Verificat
 	}
 
 	var missing []string
-	for _, ra := range requiredArtifacts {
-		name, ok := ra.(string)
-		if !ok {
-			continue
-		}
+	for _, name := range requiredArtifacts {
 		if !artifactNames[name] {
 			missing = append(missing, name)
 		}
@@ -402,7 +438,7 @@ func (e *ToolOutputCheckExecutor) Execute(_ context.Context, check state.Verific
 	}
 
 	// Check for required tool calls.
-	requiredTools, _ := check.Meta["required_tools"].([]any)
+	requiredTools := stringList(check.Meta["required_tools"])
 	if len(requiredTools) == 0 {
 		// No specific tools required — check that all tools succeeded.
 		var failures []string
@@ -411,6 +447,7 @@ func (e *ToolOutputCheckExecutor) Execute(_ context.Context, check state.Verific
 				failures = append(failures, fmt.Sprintf("%s(%s): %s", result.ToolName, callID, result.Error))
 			}
 		}
+		sort.Strings(failures)
 		if len(failures) > 0 {
 			return CheckOutcome{
 				Passed:  false,
@@ -424,33 +461,97 @@ func (e *ToolOutputCheckExecutor) Execute(_ context.Context, check state.Verific
 		}, nil
 	}
 
-	// Verify required tools were called.
+	// Verify required tools were called and that at least one call per required
+	// tool succeeded. A failed call to a required tool cannot satisfy the check.
 	calledTools := make(map[string]bool)
+	succeededTools := make(map[string]bool)
 	for _, r := range outputs.ToolResults {
 		calledTools[r.ToolName] = true
+		if r.Error == "" {
+			succeededTools[r.ToolName] = true
+		}
 	}
 
-	var missing []string
-	for _, rt := range requiredTools {
-		name, ok := rt.(string)
-		if !ok {
-			continue
-		}
+	var missing, failed []string
+	for _, name := range requiredTools {
 		if !calledTools[name] {
 			missing = append(missing, name)
+			continue
+		}
+		if !succeededTools[name] {
+			failed = append(failed, name)
 		}
 	}
 
-	if len(missing) > 0 {
+	if len(missing) > 0 || len(failed) > 0 {
+		details := make(map[string]any)
+		var parts []string
+		if len(missing) > 0 {
+			details["missing_tools"] = missing
+			parts = append(parts, fmt.Sprintf("not called: %s", strings.Join(missing, ", ")))
+		}
+		if len(failed) > 0 {
+			details["failed_tools"] = failed
+			parts = append(parts, fmt.Sprintf("called but failed: %s", strings.Join(failed, ", ")))
+		}
 		return CheckOutcome{
-			Passed: false,
-			Result: fmt.Sprintf("required tools not called: %s", strings.Join(missing, ", ")),
+			Passed:  false,
+			Result:  fmt.Sprintf("required tools did not succeed (%s)", strings.Join(parts, "; ")),
+			Details: details,
 		}, nil
 	}
 
 	return CheckOutcome{
 		Passed: true,
-		Result: fmt.Sprintf("all %d required tools were called", len(requiredTools)),
+		Result: fmt.Sprintf("all %d required tools succeeded", len(requiredTools)),
+	}, nil
+}
+
+// MetadataReviewCheckExecutor evaluates explicit human/agent review decisions
+// recorded in check metadata. It never infers approval from ordinary task
+// output: a review check passes only when Meta["approved"] or Meta["accepted"]
+// is true. Use NewReviewCheckExecutor in reviewer.go when live review pipeline
+// execution is required instead.
+type MetadataReviewCheckExecutor struct{}
+
+func (e *MetadataReviewCheckExecutor) Type() state.VerificationCheckType {
+	return state.VerificationCheckReview
+}
+
+func (e *MetadataReviewCheckExecutor) Execute(_ context.Context, check state.VerificationCheck, _ state.TaskSpec, _ TaskOutputs) (CheckOutcome, error) {
+	approved, ok := boolMeta(check.Meta, "approved")
+	if !ok {
+		approved, ok = boolMeta(check.Meta, "accepted")
+	}
+	reviewer, _ := check.Meta["reviewer"].(string)
+	if reviewer == "" {
+		reviewer, _ = check.Meta["reviewed_by"].(string)
+	}
+	comment, _ := check.Meta["comment"].(string)
+	if comment == "" {
+		comment, _ = check.Meta["reason"].(string)
+	}
+
+	if !ok {
+		return CheckOutcome{
+			Passed: false,
+			Result: "review check requires explicit approved=true metadata",
+		}, nil
+	}
+	if !approved {
+		return CheckOutcome{
+			Passed:   false,
+			Result:   "review was not approved",
+			Evidence: comment,
+			Details:  map[string]any{"reviewer": reviewer},
+		}, nil
+	}
+
+	return CheckOutcome{
+		Passed:   true,
+		Result:   "review approved",
+		Evidence: comment,
+		Details:  map[string]any{"reviewer": reviewer},
 	}, nil
 }
 
@@ -585,6 +686,7 @@ func mapKeys(m map[string]any) string {
 	for k := range m {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	return strings.Join(keys, ", ")
 }
 
@@ -593,5 +695,128 @@ func artifactMapKeys(artifacts []TaskArtifact) string {
 	for i, a := range artifacts {
 		names[i] = a.Name
 	}
+	sort.Strings(names)
 	return strings.Join(names, ", ")
+}
+
+func stringList(raw any) []string {
+	switch v := raw.(type) {
+	case nil:
+		return nil
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil
+		}
+		return []string{v}
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func cloneTaskSpecForVerification(task state.TaskSpec) state.TaskSpec {
+	task.Inputs = cloneAnyMap(task.Inputs)
+	task.ExpectedOutputs = append([]state.TaskOutputSpec(nil), task.ExpectedOutputs...)
+	task.AcceptanceCriteria = append([]state.TaskAcceptanceCriterion(nil), task.AcceptanceCriteria...)
+	task.Dependencies = append([]string(nil), task.Dependencies...)
+	task.EnabledTools = append([]string(nil), task.EnabledTools...)
+	task.Transitions = append([]state.TaskTransition(nil), task.Transitions...)
+	task.Meta = cloneAnyMap(task.Meta)
+	task.Authority.AllowedAgents = append([]string(nil), task.Authority.AllowedAgents...)
+	task.Authority.AllowedTools = append([]string(nil), task.Authority.AllowedTools...)
+	task.Authority.DeniedTools = append([]string(nil), task.Authority.DeniedTools...)
+	task.Verification = cloneVerificationSpec(task.Verification)
+	return task
+}
+
+func cloneTaskOutputs(outputs TaskOutputs) TaskOutputs {
+	out := TaskOutputs{
+		RawOutput:        outputs.RawOutput,
+		StructuredOutput: cloneAnyMap(outputs.StructuredOutput),
+	}
+	if len(outputs.Artifacts) > 0 {
+		out.Artifacts = make([]TaskArtifact, len(outputs.Artifacts))
+		for i, artifact := range outputs.Artifacts {
+			artifact.Meta = cloneAnyMap(artifact.Meta)
+			out.Artifacts[i] = artifact
+		}
+	}
+	if len(outputs.ToolResults) > 0 {
+		out.ToolResults = make(map[string]ToolCallResult, len(outputs.ToolResults))
+		for id, result := range outputs.ToolResults {
+			result.Input = cloneAnyMap(result.Input)
+			out.ToolResults[id] = result
+		}
+	}
+	return out
+}
+
+func cloneVerificationSpec(spec state.VerificationSpec) state.VerificationSpec {
+	spec.Meta = cloneAnyMap(spec.Meta)
+	if len(spec.Checks) > 0 {
+		checks := spec.Checks
+		spec.Checks = make([]state.VerificationCheck, len(checks))
+		for i, check := range checks {
+			spec.Checks[i] = cloneVerificationCheck(check)
+		}
+	}
+	return spec
+}
+
+func cloneVerificationCheck(check state.VerificationCheck) state.VerificationCheck {
+	check.Meta = cloneAnyMap(check.Meta)
+	return check
+}
+
+func cloneAnyMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func boolMeta(meta map[string]any, key string) (bool, bool) {
+	if len(meta) == 0 {
+		return false, false
+	}
+	raw, ok := meta[key]
+	if !ok {
+		return false, false
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "yes", "approved", "accepted", "pass", "passed":
+			return true, true
+		case "false", "no", "rejected", "denied", "fail", "failed":
+			return false, true
+		}
+	}
+	return false, false
 }

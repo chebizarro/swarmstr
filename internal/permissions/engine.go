@@ -135,7 +135,12 @@ func (e *Engine) AddRule(rule *Rule) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if err := e.ruleSet.AddRule(rule); err != nil {
+	ruleCopy := cloneRule(rule)
+	if ruleCopy == nil {
+		return fmt.Errorf("rule cannot be nil")
+	}
+
+	if err := e.ruleSet.AddRule(ruleCopy); err != nil {
 		return err
 	}
 
@@ -146,12 +151,12 @@ func (e *Engine) AddRule(rule *Rule) error {
 	if e.auditor != nil {
 		e.auditor.LogEvent(AuditEvent{
 			Type:      AuditEventRuleAdded,
-			RuleID:    rule.ID,
+			RuleID:    ruleCopy.ID,
 			Timestamp: time.Now(),
 			Details: map[string]any{
-				"scope":        rule.Scope,
-				"behavior":     rule.Behavior,
-				"tool_pattern": rule.ToolPattern,
+				"scope":        ruleCopy.Scope,
+				"behavior":     ruleCopy.Behavior,
+				"tool_pattern": ruleCopy.ToolPattern,
 			},
 		})
 	}
@@ -184,7 +189,11 @@ func (e *Engine) RemoveRule(ruleID string) bool {
 func (e *Engine) GetRule(ruleID string) (*Rule, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.ruleSet.GetRule(ruleID)
+	rule, ok := e.ruleSet.GetRule(ruleID)
+	if !ok {
+		return nil, false
+	}
+	return cloneRule(rule), true
 }
 
 // ListRules returns all rules, optionally filtered by scope.
@@ -193,48 +202,57 @@ func (e *Engine) ListRules(scope Scope) []*Rule {
 	defer e.mu.RUnlock()
 
 	if scope == "" {
-		return e.ruleSet.AllRules()
+		return cloneRules(e.ruleSet.AllRules())
 	}
-	return e.ruleSet.RulesForScope(scope)
+	return cloneRules(e.ruleSet.RulesForScope(scope))
 }
 
 // ─── Permission Evaluation ───────────────────────────────────────────────────
 
 // Evaluate checks permissions for a tool request.
 func (e *Engine) Evaluate(ctx context.Context, req *ToolRequest) *Decision {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-	// Check cache
-	cacheKey := e.cacheKey(req)
+	// Work from an internal copy so classification and auditing never mutate
+	// caller-owned request objects while another goroutine may still be using them.
+	evalReq := cloneToolRequest(req)
+
+	// Auto-classify before cache lookup so an explicit category and the same
+	// auto-classified category share one cache key and rule path.
+	if e.classify != nil && evalReq.Category == "" {
+		evalReq.Category = e.classify.Classify(evalReq.ToolName)
+	}
+
+	// Check cache. Evaluate holds the write lock because cache lookup may purge
+	// expired entries, and cache population must stay atomic with the rule snapshot
+	// it was computed from.
+	cacheKey := e.cacheKey(evalReq)
 	if e.cfg.CacheEnabled {
 		if cached := e.getCached(cacheKey); cached != nil {
-			return cached
+			return cloneDecision(cached)
 		}
 	}
 
-	// Auto-classify if needed
-	if e.classify != nil && req.Category == "" {
-		req.Category = e.classify.Classify(req.ToolName)
-	}
-
 	// Find matching rules
-	matches := e.ruleSet.MatchingRules(req)
+	matches := e.ruleSet.MatchingRules(evalReq)
 
 	// Make decision
-	decision := e.makeDecision(req, matches)
+	decision := e.makeDecision(evalReq, matches)
 
-	// Cache result
-	if e.cfg.CacheEnabled {
-		e.setCached(cacheKey, decision)
-	}
-
-	// Audit
+	// Audit before caching so cached decisions preserve the audit ID assigned to
+	// the decision that populated the cache.
 	if e.auditor != nil {
-		decision.AuditID = e.auditor.LogDecision(req, decision)
+		decision.AuditID = e.auditor.LogDecision(evalReq, decision)
 	}
 
-	return decision
+	// Cache an immutable copy and return a fresh copy to prevent callers from
+	// mutating cached/internal decision state.
+	if e.cfg.CacheEnabled {
+		e.setCached(cacheKey, cloneDecision(decision))
+	}
+
+	return cloneDecision(decision)
 }
 
 // makeDecision determines the final behavior based on matching rules.
@@ -322,8 +340,8 @@ func (e *Engine) cacheKey(req *ToolRequest) string {
 		}
 		contentHash = fmt.Sprintf("%x", h)
 	}
-	return fmt.Sprintf("%s:%s:%s:%s:%s:%s:%s",
-		req.ToolName, req.Category, req.UserID, req.ProjectID, req.AgentID, req.SessionID, contentHash)
+	return fmt.Sprintf("%s:%s:%s:%s:%s:%s:%s:%s:%s",
+		req.ToolName, req.Category, req.Origin, req.OriginName, req.UserID, req.ProjectID, req.AgentID, req.SessionID, contentHash)
 }
 
 func (e *Engine) getCached(key string) *Decision {
@@ -484,6 +502,56 @@ func ruleIDs(rules []*Rule) []string {
 	return ids
 }
 
+func cloneToolRequest(req *ToolRequest) *ToolRequest {
+	if req == nil {
+		return &ToolRequest{Metadata: make(map[string]any), Timestamp: time.Now()}
+	}
+	clone := *req
+	if req.Metadata != nil {
+		clone.Metadata = make(map[string]any, len(req.Metadata))
+		for k, v := range req.Metadata {
+			clone.Metadata[k] = v
+		}
+	} else {
+		clone.Metadata = make(map[string]any)
+	}
+	return &clone
+}
+
+func cloneDecision(decision *Decision) *Decision {
+	if decision == nil {
+		return nil
+	}
+	clone := *decision
+	clone.MatchedRules = cloneRules(decision.MatchedRules)
+	return &clone
+}
+
+func cloneRules(rules []*Rule) []*Rule {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]*Rule, 0, len(rules))
+	for _, rule := range rules {
+		if cloned := cloneRule(rule); cloned != nil {
+			out = append(out, cloned)
+		}
+	}
+	return out
+}
+
+func cloneRule(rule *Rule) *Rule {
+	if rule == nil {
+		return nil
+	}
+	clone := *rule
+	if rule.ExpiresAt != nil {
+		expiresAt := *rule.ExpiresAt
+		clone.ExpiresAt = &expiresAt
+	}
+	return &clone
+}
+
 // ─── Default Rules ───────────────────────────────────────────────────────────
 
 // DefaultGlobalRules returns sensible default global rules.
@@ -524,10 +592,16 @@ func DefaultGlobalRules() []*Rule {
 			WithCategory(CategoryNetwork).
 			WithDescription("Require confirmation for network operations"),
 
-		// Ask for MCP tools
-		NewRule("global-ask-mcp", ScopeGlobal, BehaviorAsk, "mcp:*").
-			WithCategory(CategoryMCP).
+		// Ask for MCP-provenance tools without overloading capability category.
+		NewRule("global-ask-mcp", ScopeGlobal, BehaviorAsk, "*").
+			WithOrigin(ToolOriginMCP).
 			WithDescription("Require confirmation for MCP tools"),
+
+		// Backwards compatibility for legacy callers that still encode MCP
+		// provenance in Category/ToolPattern instead of ToolRequest.Origin.
+		NewRule("global-ask-mcp-category", ScopeGlobal, BehaviorAsk, "mcp:*").
+			WithCategory(CategoryMCP).
+			WithDescription("Require confirmation for legacy MCP-category tools"),
 
 		// Ask for remote agent operations
 		NewRule("global-ask-remote", ScopeGlobal, BehaviorAsk, "*").

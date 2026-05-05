@@ -110,9 +110,9 @@ func (d ToolDescriptor) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:            d.Name,
 		Description:     d.Description,
-		Parameters:      d.Parameters,
+		Parameters:      cloneToolParameters(d.Parameters),
 		InputJSONSchema: cloneJSONMap(d.InputJSONSchema),
-		ParamAliases:    d.ParamAliases,
+		ParamAliases:    cloneStringMap(d.ParamAliases),
 	}
 }
 
@@ -392,7 +392,7 @@ func (r *ToolRegistry) RegisterTool(name string, reg ToolRegistration) {
 	if reg.Func != nil {
 		entry.fn = reg.Func
 	}
-	entry.descriptor = normalizeToolDescriptor(name, reg.Descriptor)
+	entry.descriptor = cloneToolDescriptor(normalizeToolDescriptor(name, reg.Descriptor))
 	entry.providerVisible = entry.providerVisible || reg.ProviderVisible
 	if reg.Validate != nil {
 		entry.validate = reg.Validate
@@ -419,7 +419,7 @@ func (r *ToolRegistry) SetDescriptor(name string, desc ToolDescriptor) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	entry := r.entryForUpdateLocked(name)
-	entry.descriptor = normalizeToolDescriptor(name, desc)
+	entry.descriptor = cloneToolDescriptor(normalizeToolDescriptor(name, desc))
 	entry.providerVisible = true
 	entry.resetSchemaCache()
 }
@@ -450,7 +450,7 @@ func (r *ToolRegistry) ProviderDescriptors() []ToolDescriptor {
 		if entry == nil || !entry.providerVisible {
 			continue
 		}
-		out = append(out, entry.descriptor)
+		out = append(out, cloneToolDescriptor(entry.descriptor))
 	}
 	return AssembleToolDescriptors(out, nil)
 }
@@ -469,7 +469,7 @@ func (r *ToolRegistry) Descriptor(name string) (ToolDescriptor, bool) {
 	if !ok || entry == nil {
 		return ToolDescriptor{}, false
 	}
-	return entry.descriptor, true
+	return cloneToolDescriptor(entry.descriptor), true
 }
 
 // Descriptors returns all canonical tool descriptors sorted by name.
@@ -481,7 +481,7 @@ func (r *ToolRegistry) Descriptors() []ToolDescriptor {
 		if entry == nil {
 			continue
 		}
-		out = append(out, entry.descriptor)
+		out = append(out, cloneToolDescriptor(entry.descriptor))
 	}
 	return AssembleToolDescriptors(out, nil)
 }
@@ -776,7 +776,7 @@ func (r *ToolRegistry) entryForUpdateLocked(name string) *toolEntry {
 	if entry, ok := r.entries[name]; ok && entry != nil {
 		cloned := &toolEntry{
 			fn:              entry.fn,
-			descriptor:      entry.descriptor,
+			descriptor:      cloneToolDescriptor(entry.descriptor),
 			providerVisible: entry.providerVisible,
 			validate:        entry.validate,
 			traits:          entry.traits,
@@ -784,7 +784,7 @@ func (r *ToolRegistry) entryForUpdateLocked(name string) *toolEntry {
 		r.entries[name] = cloned
 		return cloned
 	}
-	entry := &toolEntry{descriptor: normalizeToolDescriptor(name, ToolDescriptor{Name: name, Origin: ToolOrigin{Kind: ToolOriginKindUnknown}})}
+	entry := &toolEntry{descriptor: cloneToolDescriptor(normalizeToolDescriptor(name, ToolDescriptor{Name: name, Origin: ToolOrigin{Kind: ToolOriginKindUnknown}}))}
 	r.entries[name] = entry
 	return entry
 }
@@ -899,9 +899,9 @@ func descriptorFromDefinition(name string, def ToolDefinition) ToolDescriptor {
 	return normalizeToolDescriptor(name, ToolDescriptor{
 		Name:            def.Name,
 		Description:     def.Description,
-		Parameters:      def.Parameters,
+		Parameters:      cloneToolParameters(def.Parameters),
 		InputJSONSchema: cloneJSONMap(def.InputJSONSchema),
-		ParamAliases:    def.ParamAliases,
+		ParamAliases:    cloneStringMap(def.ParamAliases),
 		Origin:          ToolOrigin{Kind: ToolOriginKindBuiltin},
 	})
 }
@@ -953,6 +953,80 @@ func toolParamPropSchemaMap(v ToolParamProp) map[string]any {
 		prop["default"] = v.Default
 	}
 	return prop
+}
+
+func cloneToolDescriptor(desc ToolDescriptor) ToolDescriptor {
+	desc.Parameters = cloneToolParameters(desc.Parameters)
+	desc.InputJSONSchema = cloneJSONMap(desc.InputJSONSchema)
+	desc.ParamAliases = cloneStringMap(desc.ParamAliases)
+	return desc
+}
+
+func cloneToolParameters(params ToolParameters) ToolParameters {
+	clone := ToolParameters{
+		Type: params.Type,
+	}
+	if len(params.Properties) > 0 {
+		clone.Properties = make(map[string]ToolParamProp, len(params.Properties))
+		for k, v := range params.Properties {
+			clone.Properties[k] = cloneToolParamProp(v)
+		}
+	}
+	if len(params.Required) > 0 {
+		clone.Required = append([]string(nil), params.Required...)
+	}
+	return clone
+}
+
+func cloneToolParamProp(prop ToolParamProp) ToolParamProp {
+	clone := prop
+	if len(prop.Enum) > 0 {
+		clone.Enum = append([]string(nil), prop.Enum...)
+	}
+	if prop.Items != nil {
+		items := cloneToolParamProp(*prop.Items)
+		clone.Items = &items
+	}
+	clone.Default = cloneAny(prop.Default)
+	return clone
+}
+
+func cloneAny(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, v := range t {
+			out[k] = cloneAny(v)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, v := range t {
+			out[i] = cloneAny(v)
+		}
+		return out
+	case []string:
+		return append([]string(nil), t...)
+	case []int:
+		return append([]int(nil), t...)
+	case []float64:
+		return append([]float64(nil), t...)
+	case []bool:
+		return append([]bool(nil), t...)
+	default:
+		return v
+	}
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 func cloneJSONMap(src map[string]any) map[string]any {

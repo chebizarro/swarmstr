@@ -3,9 +3,11 @@ package runtime
 import (
 	"context"
 	"testing"
+	"time"
 
 	nostr "fiatjaf.com/nostr"
 	"metiq/internal/nostr/events"
+	"metiq/internal/testutil"
 )
 
 func TestBuildAndParseCapabilityEventRoundTrip(t *testing.T) {
@@ -198,6 +200,84 @@ func TestCapabilitySemanticEqual_FIPS(t *testing.T) {
 	b.FIPSTransport = "tcp:4000"
 	if capabilitySemanticEqual(a, b) {
 		t.Fatal("expected not equal when FIPSTransport differs")
+	}
+}
+
+func TestCapabilityValidationFailureRejectsWrongAuthor(t *testing.T) {
+	valid := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		nostr.Kind(events.KindCapability),
+		nostr.Timestamp(10),
+		nostr.Tags{{"d", canonicalCapabilityDTag(mustControlPubKey(t, testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")).Hex())}},
+	)
+	allowed := map[string]struct{}{valid.PubKey.Hex(): {}}
+	wrongAuthor := mustSignedMetadataEvent(t,
+		"2222222222222222222222222222222222222222222222222222222222222222",
+		nostr.Kind(events.KindCapability),
+		nostr.Timestamp(20),
+		nostr.Tags{{"d", canonicalCapabilityDTag("2222222222222222222222222222222222222222222222222222222222222222")}},
+	)
+	if reason := capabilityValidationFailure(wrongAuthor, allowed); reason != "unexpected_author" {
+		t.Fatalf("reason = %q, want unexpected_author", reason)
+	}
+}
+
+func TestCapabilityValidationFailureRejectsInvalidSignature(t *testing.T) {
+	valid := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		nostr.Kind(events.KindCapability),
+		nostr.Timestamp(10),
+		nostr.Tags{{"d", "cap"}},
+	)
+	allowed := map[string]struct{}{valid.PubKey.Hex(): {}}
+	invalidSig := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		nostr.Kind(events.KindCapability),
+		nostr.Timestamp(20),
+		nostr.Tags{{"d", "cap"}},
+	)
+	invalidSig.Sig[0] ^= 0x01
+	if reason := capabilityValidationFailure(invalidSig, allowed); reason != "invalid_signature" {
+		t.Fatalf("reason = %q, want invalid_signature", reason)
+	}
+}
+
+func TestCapabilityMonitorStartIsIdempotent(t *testing.T) {
+	url := testutil.NewTestRelay(t)
+	pool := nostr.NewPool(nostr.PoolOptions{})
+	kp := testutil.NewTestKeyPair(t)
+	published := make(chan string, 2)
+
+	mon := NewCapabilityMonitor(CapabilityMonitorOptions{
+		Pool:          pool,
+		Keyer:         kp.Keyer,
+		PublishRelays: []string{url},
+		Local: CapabilityAnnouncement{
+			Runtime: "metiq",
+		},
+		OnPublished: func(eventID string) {
+			published <- eventID
+		},
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	mon.Start(ctx)
+	mon.Start(ctx)
+
+	select {
+	case eventID := <-published:
+		if eventID == "" {
+			t.Fatal("expected non-empty published event id")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for initial capability publish")
+	}
+
+	select {
+	case eventID := <-published:
+		t.Fatalf("unexpected extra publish after double start: %s", eventID)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

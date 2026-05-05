@@ -149,6 +149,7 @@ type handlerServices struct {
 	mediaTranscriber   mediapkg.Transcriber
 	keyRings           *agent.ProviderKeyRingRegistry
 	stateEnvelopeCodec *secure.MutableSelfEnvelopeCodec
+	bootstrapPath      string
 	configFilePath     string
 	cronExecutorMu     *sync.RWMutex
 }

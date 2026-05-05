@@ -112,6 +112,56 @@ func TestToolRegistry_Remove(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_DescriptorCopiesDoNotAlias(t *testing.T) {
+	r := NewToolRegistry()
+	desc := ToolDescriptor{
+		Description: "original",
+		Parameters: ToolParameters{
+			Type: "object",
+			Properties: map[string]ToolParamProp{
+				"mode": {Type: "string", Enum: []string{"safe"}, Items: &ToolParamProp{Type: "string", Enum: []string{"nested"}}, Default: map[string]any{"levels": []any{"safe"}}},
+			},
+			Required: []string{"mode"},
+		},
+		InputJSONSchema: map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"type": "string"}}},
+		ParamAliases:    map[string]string{"m": "mode"},
+	}
+	r.RegisterWithDescriptor("copy_test", func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil }, desc)
+
+	descDefault := desc.Parameters.Properties["mode"].Default.(map[string]any)
+	descDefault["levels"] = []any{"mutated"}
+	desc.Parameters.Properties["mode"] = ToolParamProp{Type: "integer"}
+	desc.Parameters.Required[0] = "mutated"
+	desc.InputJSONSchema["type"] = "array"
+	desc.ParamAliases["m"] = "mutated"
+
+	got, ok := r.Descriptor("copy_test")
+	if !ok {
+		t.Fatal("expected descriptor")
+	}
+	gotDefault := got.Parameters.Properties["mode"].Default.(map[string]any)
+	gotLevels := gotDefault["levels"].([]any)
+	if got.Parameters.Properties["mode"].Type != "string" || got.Parameters.Required[0] != "mode" || got.InputJSONSchema["type"] != "object" || got.ParamAliases["m"] != "mode" || gotLevels[0] != "safe" {
+		t.Fatalf("registered descriptor aliased caller-owned maps/slices: %+v", got)
+	}
+
+	gotDefault["levels"] = []any{"other"}
+	got.Parameters.Properties["mode"] = ToolParamProp{Type: "boolean"}
+	got.Parameters.Required[0] = "other"
+	got.InputJSONSchema["type"] = "boolean"
+	got.ParamAliases["m"] = "other"
+
+	again, ok := r.Descriptor("copy_test")
+	if !ok {
+		t.Fatal("expected descriptor")
+	}
+	againDefault := again.Parameters.Properties["mode"].Default.(map[string]any)
+	againLevels := againDefault["levels"].([]any)
+	if again.Parameters.Properties["mode"].Type != "string" || again.Parameters.Required[0] != "mode" || again.InputJSONSchema["type"] != "object" || again.ParamAliases["m"] != "mode" || againLevels[0] != "safe" {
+		t.Fatalf("Descriptor returned mutable internal state: %+v", again)
+	}
+}
+
 func TestAssembleToolDescriptors_BuiltinPrefixWinsNameConflicts(t *testing.T) {
 	descs := []ToolDescriptor{
 		{Name: "plugin/zeta", Origin: ToolOrigin{Kind: ToolOriginKindPlugin}},

@@ -207,20 +207,7 @@ func (m *Manager) buildTransport(ctx context.Context, serverName string, cfg Ser
 			return nil, fmt.Errorf("command is required for stdio transport")
 		}
 		cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
-		envMap := make(map[string]string)
-		for _, e := range os.Environ() {
-			if idx := strings.Index(e, "="); idx > 0 {
-				envMap[e[:idx]] = e[idx+1:]
-			}
-		}
-		for k, v := range cfg.Env {
-			envMap[k] = v
-		}
-		env := make([]string, 0, len(envMap))
-		for k, v := range envMap {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		cmd.Env = env
+		cmd.Env = buildStdioCommandEnv(cfg.Env)
 		return &mcp.CommandTransport{Command: cmd}, nil
 	default:
 		return nil, fmt.Errorf("unsupported transport type: %s (supported: stdio, sse, http)", transportType)
@@ -308,6 +295,39 @@ func runtimeMillis(ts time.Time) int64 {
 		return 0
 	}
 	return ts.UnixMilli()
+}
+
+var stdioEnvAllowlist = []string{
+	"PATH",
+	"HOME",
+	"TMPDIR",
+	"TMP",
+	"TEMP",
+	"SYSTEMROOT",
+	"COMSPEC",
+}
+
+func buildStdioCommandEnv(explicit map[string]string) []string {
+	envMap := map[string]string{}
+	for _, key := range stdioEnvAllowlist {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value == "" {
+			continue
+		}
+		envMap[key] = value
+	}
+	for key, value := range explicit {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		envMap[key] = value
+	}
+	env := make([]string, 0, len(envMap))
+	for key, value := range envMap {
+		env = append(env, fmt.Sprintf("%s=%s", key, value))
+	}
+	return env
 }
 
 // headerTransport is an http.RoundTripper that adds custom headers to requests.

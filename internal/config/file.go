@@ -671,6 +671,18 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 					if v, ok := rm["content"].(string); ok {
 						rule.Content = strings.TrimSpace(v)
 					}
+					if v, ok := rm["category"].(string); ok {
+						rule.Category = strings.TrimSpace(v)
+					}
+					if v, ok := rm["origin"].(string); ok {
+						rule.Origin = strings.TrimSpace(v)
+					}
+					if v, ok := rm["origin_name"].(string); ok {
+						rule.OriginName = strings.TrimSpace(v)
+					}
+					if v, ok := rm["originName"].(string); ok && rule.OriginName == "" {
+						rule.OriginName = strings.TrimSpace(v)
+					}
 					if v, ok := rm["agent"].(string); ok {
 						rule.Agent = strings.TrimSpace(v)
 					}
@@ -1057,7 +1069,7 @@ func detectUnknownPermissionsKeys(raw any) []string {
 	}
 	allowedTop := []string{"default_behavior", "audit_enabled", "agents", "rules"}
 	allowedAgentFields := []string{"behavior", "deny_patterns", "ask_patterns"}
-	allowedRuleFields := []string{"id", "behavior", "tool", "content", "agent", "description"}
+	allowedRuleFields := []string{"id", "behavior", "tool", "content", "category", "origin", "origin_name", "originName", "agent", "description"}
 
 	var errs []string
 	for key, value := range m {

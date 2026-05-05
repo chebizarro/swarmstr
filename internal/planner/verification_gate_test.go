@@ -91,6 +91,21 @@ func TestGate_PlanApproval_HighRisk_VerificationPassed(t *testing.T) {
 	}
 }
 
+func TestGate_PlanApproval_MediumRisk_VerificationPending(t *testing.T) {
+	gate := NewVerificationGate(nil, nil)
+	auth := state.TaskAuthority{CanAct: true, AutonomyMode: state.AutonomyPlanApproval}
+	spec := state.VerificationSpec{
+		Policy: state.VerificationPolicyRequired,
+		Checks: []state.VerificationCheck{
+			{CheckID: "c1", Required: true, Status: state.VerificationStatusPending},
+		},
+	}
+	r := gate.MayExecuteTool(auth, spec, "config_set", nil)
+	if r.Decision != GateBlock {
+		t.Fatalf("expected block for medium risk with pending verification, got %s", r.Decision)
+	}
+}
+
 func TestGate_PlanApproval_HighRisk_VerificationPending(t *testing.T) {
 	gate := NewVerificationGate(nil, nil)
 	auth := state.TaskAuthority{CanAct: true, AutonomyMode: state.AutonomyPlanApproval}
@@ -158,6 +173,9 @@ func TestGate_MayComplete_AllChecksPassed(t *testing.T) {
 	r := gate.MayComplete(context.Background(), task, outputs, "test", 100)
 	if !r.Allowed() {
 		t.Fatalf("expected allow, got %s: %s", r.Decision, r.Reason)
+	}
+	if r.UpdatedSpec.VerifiedAt != 100 || r.UpdatedSpec.Checks[0].Status != state.VerificationStatusPassed {
+		t.Fatalf("expected completion gate to return updated verification spec, got %+v", r.UpdatedSpec)
 	}
 }
 
@@ -318,12 +336,12 @@ func TestEndToEnd_ToolGate_AcrossAutonomyModes(t *testing.T) {
 		tool     string
 		decision GateDecision
 	}{
-		{state.AutonomyFull, "nostr_publish", GateAllow},                 // full: high risk allowed
-		{state.AutonomyPlanApproval, "nostr_publish", GateBlock},         // plan_approval: high risk + pending → block
-		{state.AutonomyStepApproval, "config_set", GateEscalate},         // step_approval: medium → escalate
-		{state.AutonomySupervised, "config_set", GateEscalate},           // supervised: all → escalate
-		{state.AutonomyFull, "nostr_fetch", GateAllow},                   // full: low risk → allow
-		{state.AutonomySupervised, "nostr_fetch", GateAllow},             // supervised: low risk → still allowed
+		{state.AutonomyFull, "nostr_publish", GateAllow},         // full: high risk allowed
+		{state.AutonomyPlanApproval, "nostr_publish", GateBlock}, // plan_approval: high risk + pending → block
+		{state.AutonomyStepApproval, "config_set", GateEscalate}, // step_approval: medium → escalate
+		{state.AutonomySupervised, "config_set", GateEscalate},   // supervised: all → escalate
+		{state.AutonomyFull, "nostr_fetch", GateAllow},           // full: low risk → allow
+		{state.AutonomySupervised, "nostr_fetch", GateAllow},     // supervised: low risk → still allowed
 	}
 
 	for _, tc := range modes {

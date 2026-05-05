@@ -46,8 +46,14 @@ type AuditEvent struct {
 	// ToolName is the tool involved (for decision events).
 	ToolName string `json:"tool_name,omitempty"`
 
-	// Category is the tool category (for decision events).
+	// Category is the tool capability category (for decision events).
 	Category ToolCategory `json:"category,omitempty"`
+
+	// Origin is the tool provenance kind (for decision events).
+	Origin ToolOrigin `json:"origin,omitempty"`
+
+	// OriginName is the provenance-specific source name (for decision events).
+	OriginName string `json:"origin_name,omitempty"`
 
 	// Behavior is the decision made (for decision events).
 	Behavior Behavior `json:"behavior,omitempty"`
@@ -118,16 +124,18 @@ func (a *Auditor) LogEvent(event AuditEvent) string {
 // LogDecision records a permission decision.
 func (a *Auditor) LogDecision(req *ToolRequest, decision *Decision) string {
 	return a.LogEvent(AuditEvent{
-		Type:      AuditEventDecision,
-		Timestamp: time.Now(),
-		ToolName:  req.ToolName,
-		Category:  req.Category,
-		Behavior:  decision.Behavior,
-		Reason:    decision.Reason,
-		UserID:    req.UserID,
-		ProjectID: req.ProjectID,
-		AgentID:   req.AgentID,
-		SessionID: req.SessionID,
+		Type:       AuditEventDecision,
+		Timestamp:  time.Now(),
+		ToolName:   req.ToolName,
+		Category:   req.Category,
+		Origin:     req.Origin,
+		OriginName: req.OriginName,
+		Behavior:   decision.Behavior,
+		Reason:     decision.Reason,
+		UserID:     req.UserID,
+		ProjectID:  req.ProjectID,
+		AgentID:    req.AgentID,
+		SessionID:  req.SessionID,
 		Details: map[string]any{
 			"content":       truncate(req.Content, 200),
 			"matched_rules": len(decision.MatchedRules),
@@ -139,16 +147,18 @@ func (a *Auditor) LogDecision(req *ToolRequest, decision *Decision) string {
 // LogOverride records a manual permission override.
 func (a *Auditor) LogOverride(req *ToolRequest, originalBehavior, newBehavior Behavior, overrideBy, reason string) string {
 	return a.LogEvent(AuditEvent{
-		Type:      AuditEventOverride,
-		Timestamp: time.Now(),
-		ToolName:  req.ToolName,
-		Category:  req.Category,
-		Behavior:  newBehavior,
-		Reason:    reason,
-		UserID:    req.UserID,
-		ProjectID: req.ProjectID,
-		AgentID:   req.AgentID,
-		SessionID: req.SessionID,
+		Type:       AuditEventOverride,
+		Timestamp:  time.Now(),
+		ToolName:   req.ToolName,
+		Category:   req.Category,
+		Origin:     req.Origin,
+		OriginName: req.OriginName,
+		Behavior:   newBehavior,
+		Reason:     reason,
+		UserID:     req.UserID,
+		ProjectID:  req.ProjectID,
+		AgentID:    req.AgentID,
+		SessionID:  req.SessionID,
 		Details: map[string]any{
 			"original_behavior": originalBehavior,
 			"override_by":       overrideBy,
@@ -159,15 +169,17 @@ func (a *Auditor) LogOverride(req *ToolRequest, originalBehavior, newBehavior Be
 // LogEscalation records a permission escalation.
 func (a *Auditor) LogEscalation(req *ToolRequest, fromScope, toScope Scope, reason string) string {
 	return a.LogEvent(AuditEvent{
-		Type:      AuditEventEscalation,
-		Timestamp: time.Now(),
-		ToolName:  req.ToolName,
-		Category:  req.Category,
-		Reason:    reason,
-		UserID:    req.UserID,
-		ProjectID: req.ProjectID,
-		AgentID:   req.AgentID,
-		SessionID: req.SessionID,
+		Type:       AuditEventEscalation,
+		Timestamp:  time.Now(),
+		ToolName:   req.ToolName,
+		Category:   req.Category,
+		Origin:     req.Origin,
+		OriginName: req.OriginName,
+		Reason:     reason,
+		UserID:     req.UserID,
+		ProjectID:  req.ProjectID,
+		AgentID:    req.AgentID,
+		SessionID:  req.SessionID,
 		Details: map[string]any{
 			"from_scope": fromScope,
 			"to_scope":   toScope,
@@ -353,12 +365,12 @@ type AuditQueryOptions struct {
 
 // AuditStats provides statistics about audit events.
 type AuditStats struct {
-	TotalEvents     int64          `json:"total_events"`
-	EventsByType    map[string]int `json:"events_by_type"`
-	EventsByTool    map[string]int `json:"events_by_tool"`
+	TotalEvents         int64          `json:"total_events"`
+	EventsByType        map[string]int `json:"events_by_type"`
+	EventsByTool        map[string]int `json:"events_by_tool"`
 	DecisionsByBehavior map[string]int `json:"decisions_by_behavior"`
-	UniqueUsers     int            `json:"unique_users"`
-	UniqueAgents    int            `json:"unique_agents"`
+	UniqueUsers         int            `json:"unique_users"`
+	UniqueAgents        int            `json:"unique_agents"`
 }
 
 // Stats computes statistics from recent audit events.
@@ -369,9 +381,9 @@ func (a *Auditor) Stats(since time.Time) (*AuditStats, error) {
 	}
 
 	stats := &AuditStats{
-		TotalEvents:        int64(len(events)),
-		EventsByType:       make(map[string]int),
-		EventsByTool:       make(map[string]int),
+		TotalEvents:         int64(len(events)),
+		EventsByType:        make(map[string]int),
+		EventsByTool:        make(map[string]int),
 		DecisionsByBehavior: make(map[string]int),
 	}
 

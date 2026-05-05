@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"context"
 	"testing"
 
+	nostr "fiatjaf.com/nostr"
 	"metiq/internal/nostr/nip51"
 )
 
@@ -157,6 +159,71 @@ func TestRelaySetRegistry_ApplyFromEvent(t *testing.T) {
 	})
 	if len(changed) != 2 {
 		t.Fatalf("expected 2 changes, got %v", changed)
+	}
+}
+
+func TestRelaySetSelfSyncRequiresPool(t *testing.T) {
+	keyer := newNIP04KeyerAdapter(nostr.Generate())
+	err := RelaySetSelfSync(context.Background(), RelaySetSyncOptions{
+		Keyer:    keyer,
+		Registry: NewRelaySetRegistry(),
+		Relays:   []string{"wss://relay.example"},
+	})
+	if err == nil || err.Error() != "relay-set-sync: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
+	}
+}
+
+func TestPublishRelaySetRequiresPool(t *testing.T) {
+	keyer := newNIP04KeyerAdapter(nostr.Generate())
+	_, err := PublishRelaySet(context.Background(), nil, keyer, []string{"wss://relay.example"}, "foo", []string{"wss://a.example"})
+	if err == nil || err.Error() != "publish relay set: pool is required" {
+		t.Fatalf("expected pool validation error, got %v", err)
+	}
+}
+
+func TestPublishRelaySetRequiresKeyer(t *testing.T) {
+	pool := nostr.NewPool(nostr.PoolOptions{})
+	_, err := PublishRelaySet(context.Background(), pool, nil, []string{"wss://relay.example"}, "foo", []string{"wss://a.example"})
+	if err == nil || err.Error() != "publish relay set: keyer is required" {
+		t.Fatalf("expected keyer validation error, got %v", err)
+	}
+}
+
+func TestRelaySetValidationFailureRejectsWrongAuthor(t *testing.T) {
+	valid := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		nostr.Kind(nip51.KindRelaySet),
+		nostr.Timestamp(10),
+		nostr.Tags{{"d", "foo"}, {"r", "wss://valid.example"}},
+	)
+	wrongAuthor := mustSignedMetadataEvent(t,
+		"2222222222222222222222222222222222222222222222222222222222222222",
+		nostr.Kind(nip51.KindRelaySet),
+		nostr.Timestamp(20),
+		nostr.Tags{{"d", "foo"}, {"r", "wss://wrong.example"}},
+	)
+	if reason := relaySetValidationFailure(wrongAuthor, valid.PubKey); reason != "unexpected_author" {
+		t.Fatalf("reason = %q, want unexpected_author", reason)
+	}
+}
+
+func TestRelaySetValidationFailureRejectsInvalidSignature(t *testing.T) {
+	valid := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		nostr.Kind(nip51.KindRelaySet),
+		nostr.Timestamp(10),
+		nostr.Tags{{"d", "foo"}, {"r", "wss://valid.example"}},
+	)
+	invalidSig := mustSignedMetadataEvent(t,
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		nostr.Kind(nip51.KindRelaySet),
+		nostr.Timestamp(20),
+		nostr.Tags{{"d", "foo"}, {"r", "wss://tampered.example"}},
+	)
+	invalidSig.Sig[0] ^= 0x01
+	if reason := relaySetValidationFailure(invalidSig, valid.PubKey); reason != "invalid_signature" {
+		t.Fatalf("reason = %q, want invalid_signature", reason)
 	}
 }
 

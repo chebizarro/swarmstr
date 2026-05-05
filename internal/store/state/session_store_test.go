@@ -245,3 +245,158 @@ func TestSessionStore_RecordTurnRollbackOnPersistFailure(t *testing.T) {
 		t.Fatalf("expected rollback of last turn and updated_at, before=%+v after=%+v", before, after)
 	}
 }
+
+func TestSessionStore_NestedStateDoesNotAliasCallers(t *testing.T) {
+	ss, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	fresh := true
+	entry := SessionEntry{
+		SessionID:          "sess-1",
+		TaskState:          &TaskState{Decisions: []string{"original"}},
+		TotalTokensFresh:   &fresh,
+		FileMemorySurfaced: map[string]string{"prefs.md": "original"},
+		ChildTaskIDs:       []string{"child-1"},
+		RecentMemoryRecall: []MemoryRecallSample{{FileSelected: []MemoryRecallFileHit{{RelativePath: "prefs.md", Reasons: []string{"original"}}}}},
+		CompactionCheckpoints: []CompactionCheckpointRef{{
+			CheckpointID: "cp-1",
+			PreCompaction: map[string]any{
+				"phase":             "original",
+				"nested":            map[string]any{"k": "v"},
+				"typed_ints":        []int{1, 2},
+				"typed_map_slice":   []map[string]any{{"phase": "original"}},
+				"typed_map_strings": map[string][]string{"k": {"v"}},
+			},
+			PostCompaction: map[string]any{"items": []any{"a"}},
+		}},
+	}
+	if err := ss.Put("sess-1", entry); err != nil {
+		t.Fatalf("put entry: %v", err)
+	}
+
+	entry.TaskState.Decisions[0] = "caller-mutated"
+	entry.FileMemorySurfaced["prefs.md"] = "caller-mutated"
+	entry.ChildTaskIDs[0] = "caller-mutated"
+	entry.RecentMemoryRecall[0].FileSelected[0].Reasons[0] = "caller-mutated"
+	entry.CompactionCheckpoints[0].PreCompaction["phase"] = "caller-mutated"
+	*entry.TotalTokensFresh = false
+
+	got, ok := ss.Get("sess-1")
+	if !ok {
+		t.Fatal("expected stored entry")
+	}
+	assertSessionEntryNestedOriginal(t, got)
+
+	got.TaskState.Decisions[0] = "get-mutated"
+	got.FileMemorySurfaced["prefs.md"] = "get-mutated"
+	got.ChildTaskIDs[0] = "get-mutated"
+	got.RecentMemoryRecall[0].FileSelected[0].Reasons[0] = "get-mutated"
+	got.CompactionCheckpoints[0].PreCompaction["phase"] = "get-mutated"
+	got.CompactionCheckpoints[0].PreCompaction["nested"].(map[string]any)["k"] = "get-mutated"
+	got.CompactionCheckpoints[0].PreCompaction["typed_ints"].([]int)[0] = 99
+	got.CompactionCheckpoints[0].PreCompaction["typed_map_slice"].([]map[string]any)[0]["phase"] = "get-mutated"
+	got.CompactionCheckpoints[0].PreCompaction["typed_map_strings"].(map[string][]string)["k"][0] = "get-mutated"
+	got.CompactionCheckpoints[0].PostCompaction["items"].([]any)[0] = "get-mutated"
+	*got.TotalTokensFresh = false
+
+	again, _ := ss.Get("sess-1")
+	assertSessionEntryNestedOriginal(t, again)
+
+	listed := ss.List()
+	listedEntry := listed["sess-1"]
+	listedEntry.FileMemorySurfaced["prefs.md"] = "list-mutated"
+	listedEntry.TaskState.Decisions[0] = "list-mutated"
+	listedEntry.CompactionCheckpoints[0].PreCompaction["phase"] = "list-mutated"
+
+	again, _ = ss.Get("sess-1")
+	assertSessionEntryNestedOriginal(t, again)
+}
+
+func TestSessionStore_NestedRollbackOnPersistFailure(t *testing.T) {
+	ss, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	fresh := true
+	if err := ss.Put("sess-1", SessionEntry{
+		SessionID:          "sess-1",
+		TaskState:          &TaskState{Decisions: []string{"original"}},
+		TotalTokensFresh:   &fresh,
+		FileMemorySurfaced: map[string]string{"prefs.md": "original"},
+		RecentMemoryRecall: []MemoryRecallSample{{FileSelected: []MemoryRecallFileHit{{RelativePath: "prefs.md", Reasons: []string{"original"}}}}},
+		CompactionCheckpoints: []CompactionCheckpointRef{{
+			CheckpointID: "cp-1",
+			PreCompaction: map[string]any{
+				"phase":             "original",
+				"nested":            map[string]any{"k": "v"},
+				"typed_ints":        []int{1, 2},
+				"typed_map_slice":   []map[string]any{{"phase": "original"}},
+				"typed_map_strings": map[string][]string{"k": {"v"}},
+			},
+			PostCompaction: map[string]any{"items": []any{"a"}},
+		}},
+	}); err != nil {
+		t.Fatalf("seed put: %v", err)
+	}
+
+	sentinel := errors.New("forced persist failure")
+	ss.persistFn = func(path string, data []byte) error { return sentinel }
+	if err := ss.mutateAndPersist(func(entries map[string]SessionEntry) error {
+		e := entries["sess-1"]
+		e.TaskState.Decisions[0] = "mutated"
+		e.FileMemorySurfaced["prefs.md"] = "mutated"
+		e.RecentMemoryRecall[0].FileSelected[0].Reasons[0] = "mutated"
+		e.CompactionCheckpoints[0].PreCompaction["phase"] = "mutated"
+		e.CompactionCheckpoints[0].PreCompaction["nested"].(map[string]any)["k"] = "mutated"
+		e.CompactionCheckpoints[0].PreCompaction["typed_ints"].([]int)[0] = 99
+		e.CompactionCheckpoints[0].PreCompaction["typed_map_slice"].([]map[string]any)[0]["phase"] = "mutated"
+		e.CompactionCheckpoints[0].PreCompaction["typed_map_strings"].(map[string][]string)["k"][0] = "mutated"
+		e.CompactionCheckpoints[0].PostCompaction["items"].([]any)[0] = "mutated"
+		*e.TotalTokensFresh = false
+		entries["sess-1"] = e
+		return nil
+	}); !errors.Is(err, sentinel) {
+		t.Fatalf("expected forced failure, got %v", err)
+	}
+
+	after, _ := ss.Get("sess-1")
+	assertSessionEntryNestedOriginal(t, after)
+}
+
+func assertSessionEntryNestedOriginal(t *testing.T, got SessionEntry) {
+	t.Helper()
+	if got.TaskState == nil || got.TaskState.Decisions[0] != "original" {
+		t.Fatalf("expected original task state, got %+v", got.TaskState)
+	}
+	if got.FileMemorySurfaced["prefs.md"] != "original" {
+		t.Fatalf("expected original surfaced memory, got %+v", got.FileMemorySurfaced)
+	}
+	if len(got.ChildTaskIDs) > 0 && got.ChildTaskIDs[0] != "child-1" {
+		t.Fatalf("expected original child task IDs, got %+v", got.ChildTaskIDs)
+	}
+	if got.RecentMemoryRecall[0].FileSelected[0].Reasons[0] != "original" {
+		t.Fatalf("expected original recall reasons, got %+v", got.RecentMemoryRecall)
+	}
+	if got.CompactionCheckpoints[0].PreCompaction["phase"] != "original" {
+		t.Fatalf("expected original pre-compaction map, got %+v", got.CompactionCheckpoints[0].PreCompaction)
+	}
+	if got.CompactionCheckpoints[0].PreCompaction["nested"].(map[string]any)["k"] != "v" {
+		t.Fatalf("expected original nested pre-compaction map, got %+v", got.CompactionCheckpoints[0].PreCompaction)
+	}
+	if got.CompactionCheckpoints[0].PreCompaction["typed_ints"].([]int)[0] != 1 {
+		t.Fatalf("expected original typed int slice, got %+v", got.CompactionCheckpoints[0].PreCompaction)
+	}
+	if got.CompactionCheckpoints[0].PreCompaction["typed_map_slice"].([]map[string]any)[0]["phase"] != "original" {
+		t.Fatalf("expected original typed map slice, got %+v", got.CompactionCheckpoints[0].PreCompaction)
+	}
+	if got.CompactionCheckpoints[0].PreCompaction["typed_map_strings"].(map[string][]string)["k"][0] != "v" {
+		t.Fatalf("expected original typed map strings, got %+v", got.CompactionCheckpoints[0].PreCompaction)
+	}
+	if got.CompactionCheckpoints[0].PostCompaction["items"].([]any)[0] != "a" {
+		t.Fatalf("expected original post-compaction slice, got %+v", got.CompactionCheckpoints[0].PostCompaction)
+	}
+	if got.TotalTokensFresh == nil || !*got.TotalTokensFresh {
+		t.Fatalf("expected original total_tokens_fresh pointer, got %+v", got.TotalTokensFresh)
+	}
+}
