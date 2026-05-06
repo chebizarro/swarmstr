@@ -259,10 +259,13 @@ func TestFitToolDefinitions_RespectsMaxToolCount(t *testing.T) {
 }
 
 func TestFitToolDefinitions_MaxToolCountPreservesCritical(t *testing.T) {
-	defs := []ToolDefinition{
-		{Name: "memory_search", Description: "Search memory"},
-		{Name: "session_send", Description: "Send message"},
-		{Name: "session_spawn", Description: "Spawn session"},
+	// Add all critical tools
+	var defs []ToolDefinition
+	for _, name := range DefaultCriticalToolNames() {
+		defs = append(defs, ToolDefinition{
+			Name:        name,
+			Description: "Critical tool",
+		})
 	}
 	// Add 20 regular tools
 	for i := 0; i < 20; i++ {
@@ -272,18 +275,20 @@ func TestFitToolDefinitions_MaxToolCountPreservesCritical(t *testing.T) {
 		})
 	}
 
+	criticalCount := len(DefaultCriticalToolNames())
+	maxCount := criticalCount + 2
 	budget := ContextBudget{
 		ToolDefsMax:  100_000,
-		MaxToolCount: 5,
+		MaxToolCount: maxCount,
 		Profile:      ModelContextProfile{ContextWindowTokens: 65536},
 	}
 
 	result := FitToolDefinitions(defs, budget, DefaultCriticalToolNames())
-	if len(result) > 5 {
-		t.Errorf("expected at most 5 tools, got %d", len(result))
+	if len(result) > maxCount {
+		t.Errorf("expected at most %d tools, got %d", maxCount, len(result))
 	}
 
-	// All 3 critical tools must be present.
+	// All critical tools must be present.
 	found := make(map[string]bool)
 	for _, def := range result {
 		found[def.Name] = true
