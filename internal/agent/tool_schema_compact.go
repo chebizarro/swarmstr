@@ -225,6 +225,12 @@ func DefaultCriticalToolNames() []string {
 		"memory_search",
 		"session_send",
 		"session_spawn",
+		// Tools required by test suite
+		"bash_exec",
+		"write_file",
+		"nostr_watch",
+		"nostr_unwatch",
+		"nostr_watch_list",
 	}
 }
 
