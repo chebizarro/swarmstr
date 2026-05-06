@@ -224,8 +224,8 @@ func TestPartitionTools_ForceDeferralWhenExceedsMaxInline(t *testing.T) {
 
 func TestPartitionTools_ForceDeferralPreservesCritical(t *testing.T) {
 	var descs []ToolDescriptor
-	// 3 critical tools
-	for _, name := range []string{"memory_search", "session_send", "session_spawn"} {
+	// All critical tools
+	for _, name := range DefaultCriticalToolNames() {
 		descs = append(descs, ToolDescriptor{
 			Name:        name,
 			Description: "Critical tool",
@@ -241,10 +241,12 @@ func TestPartitionTools_ForceDeferralPreservesCritical(t *testing.T) {
 		})
 	}
 
-	// maxInlineCount=5: 3 critical + 2 regular inline, rest deferred
-	result := PartitionTools(descs, 100_000, 10, DefaultCriticalToolNames(), 5)
-	if len(result.Inline) > 5 {
-		t.Errorf("expected at most 5 inline tools, got %d", len(result.Inline))
+	// maxInlineCount=10: all critical tools + 1-2 regular inline, rest deferred
+	criticalCount := len(DefaultCriticalToolNames())
+	maxInline := criticalCount + 2
+	result := PartitionTools(descs, 100_000, 10, DefaultCriticalToolNames(), maxInline)
+	if len(result.Inline) > maxInline {
+		t.Errorf("expected at most %d inline tools, got %d", maxInline, len(result.Inline))
 	}
 
 	// All critical tools must be inline.
