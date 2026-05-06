@@ -1454,8 +1454,8 @@ func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, re
     "workspace_dir": %[3]q,
     "enabled_tools": %[6]s,
     "heartbeat": {},
-	"context_window": 16384,
-	"max_context_tokens": 16384
+	"context_window": 8192,
+	"max_context_tokens": 8192
   }],
   "control": %[7]s,
   "acp": {"transport": "auto"},
