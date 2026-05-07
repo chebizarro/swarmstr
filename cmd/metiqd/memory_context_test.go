@@ -128,12 +128,13 @@ func TestAssembleMemorySystemPrompt_IncludesGuidanceAndPinnedKnowledge(t *testin
 		"## Types of memory",
 		"## What NOT to save in memory",
 		"## How to save memories",
-		"## When to access memories",
-		"## Before recommending from memory",
+		"## Active memory protocol",
+		"## Verifying recalled memories",
 		"## Pinned Knowledge",
 		"user prefers terse responses",
 		"memory_search",
-		"Do not apply remembered facts, cite, compare against, or mention memory content.",
+		"call `memory_search` BEFORE answering",
+		"call `memory_store` BEFORE finishing",
 		"If the memory names a file path: check that the file exists.",
 	} {
 		if !strings.Contains(got, want) {
@@ -728,5 +729,144 @@ func TestConversationMessageFromContextCarriesToolCallsAndTimestamp(t *testing.T
 	}
 	if !strings.Contains(got.Content, "[message_time=2025-01-02T03:04:05Z") {
 		t.Fatalf("expected annotated content, got %q", got.Content)
+	}
+}
+
+func TestClassifyMemoryActionHint_DetectsRecallIntent(t *testing.T) {
+	recallQueries := []string{
+		"What do you remember about my deployment preferences?",
+		"Do you remember the staging policy?",
+		"We discussed this last time, what was the decision?",
+		"You said we should use canaries",
+		"What's my preference for tabs vs spaces?",
+		"Did we decide on the deadline?",
+		"Previously you mentioned the build config",
+	}
+	for _, query := range recallQueries {
+		hint := classifyMemoryActionHint(query, 0, 0)
+		if !hint.ShouldSearch {
+			t.Errorf("Expected ShouldSearch=true for %q, got false", query)
+		}
+		if hint.ShouldStore {
+			t.Errorf("Expected ShouldStore=false for %q, got true", query)
+		}
+	}
+}
+
+func TestClassifyMemoryActionHint_DetectsStorageIntent(t *testing.T) {
+	storageQueries := []string{
+		"Remember this: production deploys must use canaries",
+		"Please remember that I prefer tabs over spaces",
+		"Save this decision for later",
+		"Make a note that staging can skip tests",
+		"Don't forget: deploy window is 2am-4am UTC",
+		"Keep in mind that we use GitHub Actions",
+		"For future reference, the API key is in vault",
+	}
+	for _, query := range storageQueries {
+		hint := classifyMemoryActionHint(query, 0, 0)
+		if hint.ShouldSearch {
+			t.Errorf("Expected ShouldSearch=false for %q, got true", query)
+		}
+		if !hint.ShouldStore {
+			t.Errorf("Expected ShouldStore=true for %q, got false", query)
+		}
+	}
+}
+
+func TestClassifyMemoryActionHint_NoHintForNeutralQueries(t *testing.T) {
+	neutralQueries := []string{
+		"Fix the authentication bug",
+		"Update the README",
+		"What's the status of the build?",
+		"Can you explain how this works?",
+	}
+	for _, query := range neutralQueries {
+		hint := classifyMemoryActionHint(query, 0, 0)
+		if hint.ShouldSearch || hint.ShouldStore {
+			t.Errorf("Expected no hint for %q, got ShouldSearch=%v ShouldStore=%v",
+				query, hint.ShouldSearch, hint.ShouldStore)
+		}
+	}
+}
+
+func TestBuildMemoryActionHintPrompt_GeneratesSearchHint(t *testing.T) {
+	hint := memoryActionHint{
+		ShouldSearch: true,
+		Reason:       "User is asking about prior context.",
+	}
+	prompt := buildMemoryActionHintPrompt(hint)
+	if !strings.Contains(prompt, "## Memory Action Hint") {
+		t.Errorf("Expected hint header, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "User is asking about prior context.") {
+		t.Errorf("Expected reason, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "memory_search") {
+		t.Errorf("Expected memory_search mention, got: %s", prompt)
+	}
+}
+
+func TestBuildMemoryActionHintPrompt_GeneratesStoreHint(t *testing.T) {
+	hint := memoryActionHint{
+		ShouldStore: true,
+		Reason:      "User is explicitly asking you to retain a durable fact.",
+	}
+	prompt := buildMemoryActionHintPrompt(hint)
+	if !strings.Contains(prompt, "## Memory Action Hint") {
+		t.Errorf("Expected hint header, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "memory_store") {
+		t.Errorf("Expected memory_store mention, got: %s", prompt)
+	}
+}
+
+func TestBuildMemoryActionHintPrompt_EmptyWhenNoHint(t *testing.T) {
+	hint := memoryActionHint{}
+	prompt := buildMemoryActionHintPrompt(hint)
+	if prompt != "" {
+		t.Errorf("Expected empty prompt for no hint, got: %s", prompt)
+	}
+}
+
+func TestBuildMemoryMechanicsPrompt_IncludesImperativeGuidance(t *testing.T) {
+	prompt := buildMemoryMechanicsPrompt()
+	requiredPhrases := []string{
+		"Automatic recall is a PARTIAL SHORTLIST",
+		"REQUIRED actions based on user intent",
+		"call `memory_search` BEFORE answering",
+		"call `memory_store` BEFORE finishing",
+		"Active memory protocol",
+		"When the user asks about prior context:",
+		"When the user asks you to remember something:",
+	}
+	for _, phrase := range requiredPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("Expected prompt to contain %q, but it's missing", phrase)
+		}
+	}
+}
+
+func TestBuildIndexedMemoryRecallResult_IncludesShortlistCaveat(t *testing.T) {
+	idx := &memoryStoreStub{
+		session: []memory.IndexedMemory{
+			{MemoryID: "s1", SessionID: "session-a", Topic: "task", Text: "user asked about deployment"},
+		},
+		global: []memory.IndexedMemory{
+			{MemoryID: "g1", SessionID: "session-b", Topic: "preference", Text: "user prefers canary deploys"},
+		},
+	}
+	result := buildIndexedMemoryRecallResult(context.Background(), idx, memory.ScopedContext{}, "session-a", "deployment", 6)
+	if !strings.Contains(result.Prompt, "automatically selected shortlist") {
+		t.Errorf("Expected shortlist caveat, got: %s", result.Prompt)
+	}
+	if !strings.Contains(result.Prompt, "1 session result(s), 1 cross-session result(s)") {
+		t.Errorf("Expected result counts, got: %s", result.Prompt)
+	}
+	if !strings.Contains(result.Prompt, "may omit older, cross-session, or differently-worded memories") {
+		t.Errorf("Expected omission warning, got: %s", result.Prompt)
+	}
+	if !strings.Contains(result.Prompt, "Use `memory_search` for exhaustive recall") {
+		t.Errorf("Expected exhaustive search guidance, got: %s", result.Prompt)
 	}
 }

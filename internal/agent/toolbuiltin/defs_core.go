@@ -7,17 +7,17 @@ import "metiq/internal/agent"
 // MemorySearchDef is the ToolDefinition for memory.search (global search).
 var MemorySearchDef = agent.ToolDefinition{
 	Name:        "memory_search",
-	Description: "Search the persistent memory store for records matching a narrow, concrete query. Returns ranked results across all sessions. Use to recall stored facts, past decisions, user preferences, project context, or external references you've previously saved.",
+	Description: "Search the persistent memory store for records matching a narrow, concrete query. Returns ranked results across all sessions. USE THIS PROACTIVELY when the user asks about prior conversations, remembered preferences, past decisions, or says 'what do you remember'. Automatic recall is a PARTIAL SHORTLIST—this tool provides exhaustive search. Use to recall stored facts, project context, or external references you've previously saved.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
 			"query": {
 				Type:        "string",
-				Description: "Full-text search query, e.g. \"project deadline\" or \"user's favourite editor\".",
+				Description: "Narrow, concrete search query using keywords from the user's question. Examples: \"deployment preferences\", \"staging canary policy\", \"user editor choice\". Use specific terms, not generic words.",
 			},
 			"limit": {
 				Type:        "integer",
-				Description: "Maximum results to return (1–50, default 5).",
+				Description: "Maximum results to return (1–50). Default 5 for focused queries; increase to 10-20 when exploring broadly.",
 			},
 		},
 		Required: []string{"query"},

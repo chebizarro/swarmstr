@@ -222,7 +222,12 @@ func FitToolDefinitions(defs []ToolDefinition, budget ContextBudget, criticalToo
 // included when fitting tool definitions for small models.
 func DefaultCriticalToolNames() []string {
 	return []string{
+		// Memory tools - always inline for active recall/storage
 		"memory_search",
+		"memory_store",
+		"memory_delete",
+		"memory_pin",
+		// Session management
 		"session_send",
 		"session_spawn",
 		// Tools required by test suite
