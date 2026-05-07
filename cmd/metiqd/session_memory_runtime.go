@@ -55,16 +55,17 @@ func newSessionMemoryRuntime(sessionStore *state.SessionStore, transcriptRepo *s
 	}
 }
 
-func (r *sessionMemoryRuntime) ObserveTurn(cfg state.ConfigDoc, generator sessionMemoryGenerator, sessionID, workspaceDir string, delta []agent.ConversationMessage) {
+func (r *sessionMemoryRuntime) ObserveTurn(cfg state.ConfigDoc, generator sessionMemoryGenerator, sessionID, agentID, workspaceDir string, contextWindowTokens int, delta []agent.ConversationMessage) {
 	if r == nil || r.sessionStore == nil || r.transcriptRepo == nil || generator == nil {
 		return
 	}
 	sessionID = strings.TrimSpace(sessionID)
+	agentID = strings.TrimSpace(agentID)
 	workspaceDir = strings.TrimSpace(workspaceDir)
 	if sessionID == "" || workspaceDir == "" || len(delta) == 0 {
 		return
 	}
-	memCfg := sessionMemoryConfigFromDoc(cfg)
+	memCfg := sessionMemoryConfigFromDocForAgent(cfg, agentID, contextWindowTokens)
 	if !memCfg.Enabled {
 		return
 	}
@@ -364,34 +365,77 @@ func sessionMemoryObservationFromDelta(delta []agent.ConversationMessage) memory
 }
 
 func sessionMemoryConfigFromDoc(cfg state.ConfigDoc) memory.SessionMemoryConfig {
+	return sessionMemoryConfigFromDocForAgent(cfg, "", 0)
+}
+
+// sessionMemoryConfigFromDocForAgent resolves session memory config for a specific agent,
+// merging global config, per-agent overrides, and context-window-based scaling.
+func sessionMemoryConfigFromDocForAgent(cfg state.ConfigDoc, agentID string, contextWindowTokens int) memory.SessionMemoryConfig {
 	out := memory.DefaultSessionMemoryConfig
-	memCfg, ok := cfg.Extra["memory"].(map[string]any)
-	if !ok {
-		return out
+	
+	// Apply global extra.memory.session_memory config
+	if memCfg, ok := cfg.Extra["memory"].(map[string]any); ok {
+		if raw, ok := memCfg["session_memory"].(map[string]any); ok {
+			if enabled, ok := raw["enabled"].(bool); ok {
+				out.Enabled = enabled
+			}
+			if v := intConfigValue(raw, "init_chars"); v > 0 {
+				out.InitChars = v
+			}
+			if v := intConfigValue(raw, "update_chars"); v > 0 {
+				out.UpdateChars = v
+			}
+			if v := intConfigValue(raw, "tool_calls_between_updates"); v > 0 {
+				out.ToolCallsBetweenUpdates = v
+			}
+			if v := intConfigValue(raw, "max_excerpt_chars"); v > 0 {
+				out.MaxExcerptChars = v
+			}
+			if v := intConfigValue(raw, "max_output_bytes"); v > 0 {
+				out.MaxOutputBytes = v
+			}
+		}
 	}
-	raw, ok := memCfg["session_memory"].(map[string]any)
-	if !ok {
-		return out
+	
+	// Apply per-agent overrides if agent specified
+	if agentID != "" {
+		for _, agCfg := range cfg.Agents {
+			if agCfg.ID == agentID && agCfg.SessionMemory != nil {
+				if agCfg.SessionMemory.Enabled != nil {
+					out.Enabled = *agCfg.SessionMemory.Enabled
+				}
+				if agCfg.SessionMemory.InitChars > 0 {
+					out.InitChars = agCfg.SessionMemory.InitChars
+				}
+				if agCfg.SessionMemory.UpdateChars > 0 {
+					out.UpdateChars = agCfg.SessionMemory.UpdateChars
+				}
+				if agCfg.SessionMemory.ToolCallsBetweenUpdates > 0 {
+					out.ToolCallsBetweenUpdates = agCfg.SessionMemory.ToolCallsBetweenUpdates
+				}
+				if agCfg.SessionMemory.MaxExcerptChars > 0 {
+					out.MaxExcerptChars = agCfg.SessionMemory.MaxExcerptChars
+				}
+				break
+			}
+		}
 	}
-	if enabled, ok := raw["enabled"].(bool); ok {
-		out.Enabled = enabled
+	
+	// Apply context-window-based scaling
+	if contextWindowTokens > 0 {
+		out = memory.ComputeScaledSessionMemoryConfig(out, contextWindowTokens)
 	}
-	if v := intConfigValue(raw, "init_chars"); v > 0 {
-		out.InitChars = v
-	}
-	if v := intConfigValue(raw, "update_chars"); v > 0 {
-		out.UpdateChars = v
-	}
-	if v := intConfigValue(raw, "tool_calls_between_updates"); v > 0 {
-		out.ToolCallsBetweenUpdates = v
-	}
-	if v := intConfigValue(raw, "max_excerpt_chars"); v > 0 {
-		out.MaxExcerptChars = v
-	}
-	if v := intConfigValue(raw, "max_output_bytes"); v > 0 {
-		out.MaxOutputBytes = v
-	}
+	
 	return out
+}
+
+func resolveAgentContextWindow(cfg state.ConfigDoc, agentID string) int {
+	for _, agCfg := range cfg.Agents {
+		if agCfg.ID == agentID && agCfg.ContextWindow > 0 {
+			return agCfg.ContextWindow
+		}
+	}
+	return 0  // Will use default scaling baseline
 }
 
 func intConfigValue(raw map[string]any, key string) int {
