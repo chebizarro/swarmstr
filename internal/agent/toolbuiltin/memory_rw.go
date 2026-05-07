@@ -23,17 +23,17 @@ import (
 // MemoryStoreDef is the ToolDefinition for memory_store.
 var MemoryStoreDef = agent.ToolDefinition{
 	Name:        "memory_store",
-	Description: "Persist durable searchable memory for later recall. Use for user facts, validated feedback, project context, or external references that are not derivable from the current repo state.",
+	Description: "Persist durable searchable memory for later recall. USE THIS when the user explicitly asks you to remember something ('remember this', 'save this', 'don't forget', etc.). This is distinct from automatic transcript persistence—use it for curated, durable, non-derivable facts: user preferences, validated feedback, project constraints, or external references that cannot be derived from the current repo state.",
 	InputJSONSchema: map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"text": map[string]any{
 				"type":        "string",
-				"description": "The information to store (plain text).",
+				"description": "The durable fact or preference to store (plain text). Be specific and include context so it's useful when recalled later.",
 			},
 			"tags": map[string]any{
-				"description": "Optional keywords for retrieval. Accepts either an array of strings or a single string.",
+				"description": "Optional keywords for retrieval. Accepts either an array of strings or a single string. Use concrete terms from the stored fact.",
 				"oneOf": []any{
 					map[string]any{
 						"type":  "array",
@@ -46,11 +46,11 @@ var MemoryStoreDef = agent.ToolDefinition{
 			},
 			"session_id": map[string]any{
 				"type":        "string",
-				"description": "Optional session scope for the stored entry.",
+				"description": "Optional session scope. Omit in normal conversational use unless intentionally storing outside current session.",
 			},
 			"topic": map[string]any{
 				"type":        "string",
-				"description": "Optional memory category/topic. Prefer durable labels such as user, feedback, project, or reference when they apply.",
+				"description": "Memory category. Strongly recommend one of: 'user' (user facts/preferences), 'feedback' (validated guidance), 'project' (deadlines/decisions/constraints), 'reference' (external links/systems). Use these exact labels when they apply.",
 			},
 		},
 		"required": []any{"text"},
