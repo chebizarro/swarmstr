@@ -54,6 +54,7 @@ import (
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/social"
 	"metiq/internal/store/state"
+	taskspkg "metiq/internal/tasks"
 	cfgTimeouts "metiq/internal/timeouts"
 	ttspkg "metiq/internal/tts"
 	"metiq/internal/update"
@@ -477,6 +478,12 @@ func main() {
 	controlStateEnvelopeCodec = codec
 
 	docsRepo := state.NewDocsRepositoryWithCodec(store, pubkey, codec)
+	taskStore := taskspkg.NewDocsStore(docsRepo)
+	taskEvents := taskspkg.NewEventEmitter()
+	taskService := taskspkg.NewService(taskStore, taskspkg.WithServiceEvents(taskEvents))
+	taskLedger := taskService.Ledger()
+	taskLedger.AddRetrospectiveObserver(docsRepo, taskspkg.RetroObserverConfig{})
+	workflowStore := taskspkg.NewDocsWorkflowStore(docsRepo)
 	transcriptRepo := state.NewTranscriptRepositoryWithCodec(store, pubkey, codec)
 	memoryRepo := state.NewMemoryRepositoryWithCodec(store, pubkey, codec)
 
@@ -3905,7 +3912,7 @@ func main() {
 					}
 				}
 				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
-				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
+				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, activeAgentID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), resolveAgentContextWindow(configState.Get(), activeAgentID), partial.HistoryDelta)
 				// Distill structured episodic memory from the partial turn.
 				if turnStateDocs := scopedMemoryDocs(distillTurnState(sessionID, eventID, partial.ToolTraces, partial.HistoryDelta, true), scopeCtx); len(turnStateDocs) > 0 {
 					go func(docs []state.MemoryDoc) {
@@ -3983,7 +3990,7 @@ func main() {
 		// Persist the full tool-call/tool-result history so future turns can
 		// see prior tool usage — fixes the "announce and forget" behaviour.
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
-		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
+		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, activeAgentID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), resolveAgentContextWindow(configState.Get(), activeAgentID), turnResult.HistoryDelta)
 		// Distill structured episodic memory from the completed turn.
 		if turnStateDocs := scopedMemoryDocs(distillTurnState(sessionID, eventID, turnResult.ToolTraces, turnResult.HistoryDelta, false), scopeCtx); len(turnStateDocs) > 0 {
 			go func(docs []state.MemoryDoc) {
@@ -4468,6 +4475,7 @@ func main() {
 		emitterMu: &controlWsEmitterMu,
 		session: sessionServices{
 			sessionTurns:      controlSessionTurns,
+			chatCancels:       chatCancels,
 			steeringMailboxes: steeringMailboxes,
 			agentRuntime:      controlAgentRuntime,
 			agentRegistry:     controlAgentRegistry,
@@ -4507,12 +4515,69 @@ func main() {
 		},
 		runtimeConfig:  controlRuntimeConfig,
 		docsRepo:       docsRepo,
+		transcriptRepo: transcriptRepo,
+		tasks: taskRuntimeServices{
+			store:         taskStore,
+			ledger:        taskLedger,
+			service:       taskService,
+			events:        taskEvents,
+			workflowStore: workflowStore,
+		},
 		pubKeyHex:      pubKeyHex,
 		restartCh:      restartCh,
 		lifecycleCtx:   ctx,
 		agentRunWG:     &agentRunWG,
 		agentRunMu:     &agentRunMu,
 		agentRunClosed: &agentRunClosed,
+	}
+	if runner := newTaskRunner(controlServices); runner != nil {
+		controlServices.tasks.runner = runner
+		taskLedger.AddObserver(runner)
+	}
+	if workflowExec := newWorkflowExecutor(controlServices); workflowExec != nil {
+		workflowExec.gatewayCall = func(callCtx context.Context, method string, params json.RawMessage) (map[string]any, error) {
+			var workflowDMBus nostruntime.DMTransport
+			if controlServices.relay.dmBus != nil {
+				workflowDMBus = *controlServices.relay.dmBus
+			}
+			result, err := handleControlRPCRequest(callCtx, nostruntime.ControlRPCInbound{
+				Method:        method,
+				Params:        params,
+				FromPubKey:    pubKeyHex,
+				Internal:      true,
+				Authenticated: true,
+			}, workflowDMBus, controlServices.relay.controlBus, controlServices.session.chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
+			if err != nil {
+				return nil, err
+			}
+			if out, ok := result.Result.(map[string]any); ok {
+				return out, nil
+			}
+			raw, err := json.Marshal(result.Result)
+			if err != nil {
+				return nil, err
+			}
+			var out map[string]any
+			if err := json.Unmarshal(raw, &out); err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		controlServices.tasks.workflowExecutor = workflowExec
+		taskLedger.AddObserver(workflowExec)
+		if orchestrator, err := taskspkg.NewWorkflowOrchestrator(taskspkg.OrchestratorConfig{
+			Store:    workflowStore,
+			Ledger:   taskLedger,
+			Emitter:  taskEvents,
+			Executor: workflowExec,
+		}); err != nil {
+			log.Printf("workflow orchestrator init failed: %v", err)
+		} else {
+			controlServices.tasks.workflowOrchestrator = orchestrator
+			if err := orchestrator.RecoverNonTerminalRuns(context.Background()); err != nil {
+				log.Printf("workflow recovery failed: %v", err)
+			}
+		}
 	}
 
 	// ── NIP-51 allowlist watcher + agent list sync ─────────────────────────────
@@ -4548,6 +4613,28 @@ func main() {
 			} else {
 				controlHub = hub
 				controlServices.relay.hub = hub
+			}
+		}
+
+		if controlServices.tasks.events != nil && controlServices.relay.keyer != nil {
+			lifecyclePublisher, lifecycleErr := taskspkg.NewLifecyclePublisher(ctx, taskspkg.LifecyclePublisherOptions{
+				Keyer: controlServices.relay.keyer,
+				Pool:  nip51Pool,
+				RelayProvider: func() []string {
+					relays := currentCapabilityPublishRelays(configState.Get())
+					if len(relays) == 0 {
+						relays = append([]string{}, cfg.Relays...)
+					}
+					return relays
+				},
+			})
+			if lifecycleErr != nil {
+				log.Printf("task lifecycle publisher init failed: %v", lifecycleErr)
+			} else {
+				controlServices.tasks.lifecyclePublisher = lifecyclePublisher
+				lifecyclePublisher.Subscribe(controlServices.tasks.events)
+				defer lifecyclePublisher.Stop()
+				log.Printf("task lifecycle publisher active (kind=30316)")
 			}
 		}
 
@@ -5146,7 +5233,7 @@ func main() {
 					}
 				}
 				persistAndIngestTurnHistory(ctx, transcriptRepo, controlServices.session.contextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
-				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), partial.HistoryDelta)
+				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, activeAgentID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), resolveAgentContextWindow(configState.Get(), activeAgentID), partial.HistoryDelta)
 				// Distill structured episodic memory from the partial channel turn.
 				if turnStateDocs := scopedMemoryDocs(distillTurnState(sessionID, eventID, partial.ToolTraces, partial.HistoryDelta, true), scopeCtx); len(turnStateDocs) > 0 {
 					go func(docs []state.MemoryDoc) {
@@ -5182,7 +5269,7 @@ func main() {
 			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
 		}
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlServices.session.contextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
-		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), turnResult.HistoryDelta)
+		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, activeAgentID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), resolveAgentContextWindow(configState.Get(), activeAgentID), turnResult.HistoryDelta)
 		// Distill structured episodic memory from the completed channel turn.
 		if turnStateDocs := scopedMemoryDocs(distillTurnState(sessionID, eventID, turnResult.ToolTraces, turnResult.HistoryDelta, false), scopeCtx); len(turnStateDocs) > 0 {
 			go func(docs []state.MemoryDoc) {
@@ -6483,6 +6570,11 @@ func main() {
 	}
 
 	<-ctx.Done()
+	if controlServices != nil && controlServices.tasks.runner != nil {
+		shutdownCtx, cancelTaskRuns := context.WithTimeout(context.Background(), 30*time.Second)
+		controlServices.tasks.runner.Shutdown(shutdownCtx)
+		cancelTaskRuns()
+	}
 	agentRunMu.Lock()
 	agentRunClosed = true
 	agentRunMu.Unlock()
@@ -6845,6 +6937,7 @@ func handleControlRPCRequest(
 		logBuffer:         logBuffer,
 		channelState:      channelState,
 		docsRepo:          docsRepo,
+		taskService:       svc.tasks.service,
 		transcriptRepo:    transcriptRepo,
 		memoryIndex:       memoryIndex,
 		configState:       configState,

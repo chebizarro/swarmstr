@@ -566,6 +566,29 @@ type AgentConfig struct {
 	// MaxConcurrent is the openclaw max_concurrent setting.
 	// Preserved for config compatibility; not actively used by metiq runtime.
 	MaxConcurrent int `json:"max_concurrent,omitempty"`
+	// SessionMemory holds per-agent session memory extraction configuration.
+	// When nil/empty, inherits from extra.memory.session_memory global config.
+	SessionMemory *AgentSessionMemoryConfig `json:"session_memory,omitempty"`
+}
+
+// AgentSessionMemoryConfig holds per-agent session memory extraction settings.
+// All fields are optional and override global defaults when non-zero.
+type AgentSessionMemoryConfig struct {
+	// Enabled controls whether session memory extraction runs for this agent.
+	// nil inherits global setting, explicit true/false overrides.
+	Enabled *bool `json:"enabled,omitempty"`
+	// InitChars is the minimum conversation characters before first extraction.
+	// Zero inherits global/computed default.
+	InitChars int `json:"init_chars,omitempty"`
+	// UpdateChars is the minimum new characters needed to trigger an update.
+	// Zero inherits global/computed default.
+	UpdateChars int `json:"update_chars,omitempty"`
+	// ToolCallsBetweenUpdates triggers update after this many tool calls.
+	// Zero inherits global default (3).
+	ToolCallsBetweenUpdates int `json:"tool_calls_between_updates,omitempty"`
+	// MaxExcerptChars limits the size of conversation excerpts sent to the LLM.
+	// Zero inherits global default (16000).
+	MaxExcerptChars int `json:"max_excerpt_chars,omitempty"`
 }
 
 // AgentsConfig is an ordered list of per-agent configurations.

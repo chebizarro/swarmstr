@@ -26,11 +26,52 @@ type SessionMemoryConfig struct {
 
 var DefaultSessionMemoryConfig = SessionMemoryConfig{
 	Enabled:                 true,
-	InitChars:               8_000,
-	UpdateChars:             4_000,
+	InitChars:               3_000,   // Lowered from 8K to be more responsive
+	UpdateChars:             1_500,   // Lowered from 4K
 	ToolCallsBetweenUpdates: 3,
 	MaxExcerptChars:         16_000,
 	MaxOutputBytes:          MaxSessionMemoryBytes,
+}
+
+// ComputeScaledSessionMemoryConfig returns thresholds scaled to context window size.
+// Larger context windows get proportionally higher thresholds to maintain quality.
+// Baseline: 8K context → 3K init / 1.5K update
+// Scaling: linear from 8K to 200K context, capped at 5x multiplier
+func ComputeScaledSessionMemoryConfig(base SessionMemoryConfig, contextWindowTokens int) SessionMemoryConfig {
+	if contextWindowTokens <= 0 {
+		return base
+	}
+	const (
+		baselineContext = 8_192    // 8K context baseline
+		maxContext      = 200_000  // Cap scaling at 200K
+		minMultiplier   = 1.0
+		maxMultiplier   = 5.0
+	)
+	
+	// Clamp context window to scaling range
+	ctx := contextWindowTokens
+	if ctx < baselineContext {
+		ctx = baselineContext
+	}
+	if ctx > maxContext {
+		ctx = maxContext
+	}
+	
+	// Linear interpolation between 1x and 5x multiplier
+	ratio := float64(ctx-baselineContext) / float64(maxContext-baselineContext)
+	multiplier := minMultiplier + (ratio * (maxMultiplier - minMultiplier))
+	
+	scaled := base
+	if base.InitChars > 0 {
+		scaled.InitChars = int(float64(base.InitChars) * multiplier)
+	}
+	if base.UpdateChars > 0 {
+		scaled.UpdateChars = int(float64(base.UpdateChars) * multiplier)
+	}
+	if base.MaxExcerptChars > 0 {
+		scaled.MaxExcerptChars = int(float64(base.MaxExcerptChars) * multiplier)
+	}
+	return scaled
 }
 
 type SessionMemoryProgress struct {
