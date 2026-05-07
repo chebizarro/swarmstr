@@ -263,6 +263,19 @@ func TestNewProviderFromEnv_httpRemoteRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestNewProviderFromEnv_httpPrivateNetworkAllowsMissingAPIKey(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	t.Setenv("METIQ_AGENT_PROVIDER", "http")
+	t.Setenv("METIQ_AGENT_HTTP_URL", "http://192.168.1.100:8080/v1")
+	p, err := NewProviderFromEnv()
+	if err != nil {
+		t.Fatalf("expected private network HTTP provider without API key to work: %v", err)
+	}
+	if _, ok := p.(*HTTPProvider); !ok {
+		t.Fatalf("expected *HTTPProvider, got %T", p)
+	}
+}
+
 func TestBuildRuntimeForModel_unknown(t *testing.T) {
 	_, err := BuildRuntimeForModel("totally-unknown-xyz-model", nil)
 	if err == nil {

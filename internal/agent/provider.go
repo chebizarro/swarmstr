@@ -216,7 +216,7 @@ func isLocalBaseURL(raw string) bool {
 		return true
 	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
 }
 
 func requireOpenAICompatibleCredential(providerName, model string, apiKey string, envKey string, baseURL string) (string, error) {
