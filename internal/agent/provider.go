@@ -238,24 +238,16 @@ func requireOpenAICompatibleCredential(providerName, model string, apiKey string
 func NewProviderFromEnv() (Provider, error) {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("METIQ_AGENT_PROVIDER")))
 	switch mode {
-	case "":
-		// Key-based auto-detect keeps the historical default Anthropic path, but
-		// no longer falls back to the EchoProvider stub when real credentials are
-		// absent.
-		if apiKey, keyName := firstEnv("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"); apiKey != "" {
+	case "", "echo":
+		// Fall through to key-based auto-detect: if ANTHROPIC_API_KEY is set,
+		// use Anthropic as the default provider instead of the echo stub.
+		if apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); apiKey != "" {
 			model := strings.TrimSpace(os.Getenv("METIQ_AGENT_MODEL"))
 			if model == "" {
 				model = "claude-sonnet-4-5"
 			}
-			log.Printf("agent provider: using Anthropic provider from %s model=%q", keyName, model)
 			return &AnthropicProvider{Model: model, APIKey: apiKey}, nil
 		}
-		return nil, fmt.Errorf("METIQ_AGENT_PROVIDER or Anthropic credentials (ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN) are required for runtime startup; refusing to start EchoProvider implicitly (for dev/test set METIQ_AGENT_PROVIDER=echo and METIQ_AGENT_ALLOW_ECHO=true)")
-	case "echo":
-		if err := requireEchoProviderOptIn(); err != nil {
-			return nil, err
-		}
-		log.Printf("agent provider: dev/test EchoProvider enabled via METIQ_AGENT_ALLOW_ECHO")
 		return EchoProvider{}, nil
 	case "anthropic":
 		apiKey, err := requireProviderCredential("Anthropic", strings.TrimSpace(os.Getenv("METIQ_AGENT_MODEL")), "", "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN")

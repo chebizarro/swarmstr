@@ -202,32 +202,23 @@ func TestBuildRuntimeForModel_empty_errors(t *testing.T) {
 	}
 }
 
-func TestNewProviderFromEnv_missingConfigFailsFast(t *testing.T) {
+func TestNewProviderFromEnv_missingConfigFallsBackToEcho(t *testing.T) {
 	clearProviderCredentialEnv(t)
-	_, err := NewProviderFromEnv()
-	if err == nil {
-		t.Fatal("expected missing provider config to fail")
+	p, err := NewProviderFromEnv()
+	if err != nil {
+		t.Fatalf("expected fallback to EchoProvider, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "refusing to start EchoProvider implicitly") {
-		t.Fatalf("expected implicit echo startup refusal, got: %v", err)
+	if _, ok := p.(EchoProvider); !ok {
+		t.Fatalf("expected EchoProvider when no credentials present, got %T", p)
 	}
 }
 
-func TestNewProviderFromEnv_explicitEchoRequiresDevOptIn(t *testing.T) {
+func TestNewProviderFromEnv_explicitEchoWorks(t *testing.T) {
 	clearProviderCredentialEnv(t)
 	t.Setenv("METIQ_AGENT_PROVIDER", "echo")
-	_, err := NewProviderFromEnv()
-	if err == nil {
-		t.Fatal("expected echo without opt-in to fail")
-	}
-	if !strings.Contains(err.Error(), "METIQ_AGENT_ALLOW_ECHO") {
-		t.Fatalf("expected echo opt-in error, got: %v", err)
-	}
-
-	t.Setenv("METIQ_AGENT_ALLOW_ECHO", "true")
 	p, err := NewProviderFromEnv()
 	if err != nil {
-		t.Fatalf("expected explicit echo opt-in to work: %v", err)
+		t.Fatalf("expected echo to work without opt-in: %v", err)
 	}
 	if _, ok := p.(EchoProvider); !ok {
 		t.Fatalf("expected EchoProvider, got %T", p)
