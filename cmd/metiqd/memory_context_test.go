@@ -80,7 +80,9 @@ func TestAssembleMemoryRecallContext_IncludesSessionAndCrossSession(t *testing.T
 			{MemoryID: "g1", SessionID: "session-b", Topic: "infra", Text: "kubernetes migration"},
 			{MemoryID: "g2", SessionID: "session-c", Topic: "pricing", Text: "cost threshold raised"},
 			{MemoryID: "g3", SessionID: "session-d", Topic: "alerts", Text: "pager route changed"},
-			{MemoryID: "g4", SessionID: "session-e", Topic: "extra", Text: "should be capped out"},
+			{MemoryID: "g4", SessionID: "session-e", Topic: "docs", Text: "documentation updated"},
+			{MemoryID: "g5", SessionID: "session-f", Topic: "testing", Text: "test coverage improved"},
+			{MemoryID: "g6", SessionID: "session-g", Topic: "extra", Text: "should be capped out"},
 		},
 	}
 
@@ -98,7 +100,7 @@ func TestAssembleMemoryRecallContext_IncludesSessionAndCrossSession(t *testing.T
 		t.Fatal("expected duplicate memory id to be excluded from cross-session section")
 	}
 	if strings.Contains(ctx, "should be capped out") {
-		t.Fatal("expected cross-session results to be capped at 3")
+		t.Fatal("expected cross-session results to be capped at 5")
 	}
 	if strings.Contains(ctx, `{"topic":`) {
 		t.Fatalf("expected model-facing formatting, not raw backend dump: %s", ctx)
