@@ -2,8 +2,10 @@ package toolgrpc
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 	reflectionv1pb "google.golang.org/grpc/reflection/grpc_reflection_v1"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -159,6 +162,40 @@ func TestDiscoverReflectionFallsBackToStaticDescriptorSet(t *testing.T) {
 	if len(methods) != 3 {
 		t.Fatalf("expected 3 fallback methods, got %d", len(methods))
 	}
+}
+
+func TestLoadDescriptorSetFromReflectionWrapsBothErrors(t *testing.T) {
+	errV1 := status.Error(13, "v1 boom")
+	errV1Alpha := status.Error(14, "v1alpha boom")
+	conn := &failingReflectionConn{errs: []error{errV1, errV1Alpha}}
+
+	_, err := LoadDescriptorSetFromReflection(context.Background(), conn)
+	if err == nil {
+		t.Fatal("expected reflection load error")
+	}
+	if !errors.Is(err, errV1) {
+		t.Fatalf("expected error chain to include v1 error, got: %v", err)
+	}
+	if !errors.Is(err, errV1Alpha) {
+		t.Fatalf("expected error chain to include v1alpha error, got: %v", err)
+	}
+}
+
+type failingReflectionConn struct {
+	errs []error
+	n    int32
+}
+
+func (c *failingReflectionConn) Invoke(context.Context, string, any, any, ...grpc.CallOption) error {
+	return errors.New("not implemented")
+}
+
+func (c *failingReflectionConn) NewStream(context.Context, *grpc.StreamDesc, string, ...grpc.CallOption) (grpc.ClientStream, error) {
+	idx := int(atomic.AddInt32(&c.n, 1) - 1)
+	if idx >= 0 && idx < len(c.errs) {
+		return nil, c.errs[idx]
+	}
+	return nil, errors.New("unexpected NewStream call")
 }
 
 func writeDescriptorSet(t *testing.T, fds *descriptorpb.FileDescriptorSet) string {

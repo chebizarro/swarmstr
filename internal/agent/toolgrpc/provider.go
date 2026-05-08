@@ -7,12 +7,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"metiq/internal/agent"
 	"metiq/internal/config"
 
 	"google.golang.org/grpc"
 )
+
+const defaultStreamManagerIdleTTL = 5 * time.Minute
 
 // Provider discovers configured gRPC endpoint profiles and exposes their methods
 // as standard agent.ToolRegistration values for the shared tool registry.
@@ -27,8 +30,11 @@ type Provider struct {
 	closing        bool
 	inFlight       int
 	closeCh        chan struct{}
+	closeChOnce    sync.Once
 	closeOnce      sync.Once
 	closeErr       error
+
+	streamManagerIdleTTL time.Duration
 }
 
 // NewProvider discovers all configured endpoint profiles and prepares tool
@@ -36,7 +42,7 @@ type Provider struct {
 // RegisterInto is called.
 func NewProvider(ctx context.Context, cfg config.GRPCConfig) (*Provider, error) {
 	if len(cfg.Endpoints) == 0 {
-		return &Provider{redactor: NewRedactor(), streamManagers: map[string]*StreamManager{}, closeCh: make(chan struct{})}, nil
+		return newProvider(nil), nil
 	}
 	if errs := cfg.Validate(); len(errs) > 0 {
 		return nil, fmt.Errorf("invalid grpc config: %w", errors.Join(errs...))
@@ -45,7 +51,7 @@ func NewProvider(ctx context.Context, cfg config.GRPCConfig) (*Provider, error) 
 	if err != nil {
 		return nil, err
 	}
-	p := &Provider{manager: manager, redactor: NewRedactor(), streamManagers: map[string]*StreamManager{}, closeCh: make(chan struct{})}
+	p := newProvider(manager)
 	for _, profile := range cfg.Endpoints {
 		methods, err := p.discoverProfile(ctx, profile)
 		if err != nil {
@@ -57,6 +63,16 @@ func NewProvider(ctx context.Context, cfg config.GRPCConfig) (*Provider, error) 
 	p.assignGlobalToolNames()
 	p.regs = p.buildRegistrations(cfg.Endpoints)
 	return p, nil
+}
+
+func newProvider(manager *ConnectionManager) *Provider {
+	return &Provider{
+		manager:              manager,
+		redactor:             NewRedactor(),
+		streamManagers:       map[string]*StreamManager{},
+		closeCh:              make(chan struct{}),
+		streamManagerIdleTTL: defaultStreamManagerIdleTTL,
+	}
 }
 
 // RegisterInto adds all discovered gRPC tools to the shared registry. Using the
@@ -84,13 +100,24 @@ func (p *Provider) Close() error {
 	if !p.closing {
 		p.closing = true
 		if p.inFlight == 0 {
-			close(p.closeCh)
+			p.signalClosed()
 		}
 	}
 	closeCh := p.closeCh
 	p.mu.Unlock()
 	<-closeCh
 	p.closeOnce.Do(func() {
+		p.mu.Lock()
+		managers := make([]*StreamManager, 0, len(p.streamManagers))
+		for _, mgr := range p.streamManagers {
+			managers = append(managers, mgr)
+		}
+		p.streamManagers = make(map[string]*StreamManager)
+		p.mu.Unlock()
+
+		for _, mgr := range managers {
+			_ = mgr.Close()
+		}
 		if p.manager != nil {
 			p.closeErr = p.manager.Close()
 		}
@@ -288,9 +315,46 @@ func (p *Provider) streamManagerForContext(ctx context.Context) *StreamManager {
 		WithStreamToolEventSink(lifecycle.Sink),
 		WithStreamEventContext(lifecycle.SessionID, lifecycle.TurnID, lifecycle.Trace),
 		WithStreamErrorRedactor(p.redactor.RedactString),
+		WithStreamIdleCallback(func(mgr *StreamManager) { p.scheduleStreamManagerCleanup(key, mgr) }),
 	)
 	p.streamManagers[key] = manager
 	return manager
+}
+
+func (p *Provider) scheduleStreamManagerCleanup(key string, manager *StreamManager) {
+	if p == nil || manager == nil {
+		return
+	}
+	ttl := p.streamManagerIdleTTL
+	if ttl <= 0 {
+		p.cleanupStreamManager(key, manager)
+		return
+	}
+	time.AfterFunc(ttl, func() { p.cleanupStreamManager(key, manager) })
+}
+
+func (p *Provider) cleanupStreamManager(key string, manager *StreamManager) {
+	if p == nil || manager == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.streamManagers[key] != manager {
+		p.mu.Unlock()
+		return
+	}
+	if !manager.closeIfIdle() {
+		p.mu.Unlock()
+		return
+	}
+	delete(p.streamManagers, key)
+	p.mu.Unlock()
+}
+
+func (p *Provider) signalClosed() {
+	if p == nil {
+		return
+	}
+	p.closeChOnce.Do(func() { close(p.closeCh) })
 }
 
 func (p *Provider) beginCall() bool {
@@ -315,11 +379,7 @@ func (p *Provider) endCall() {
 		p.inFlight--
 	}
 	if p.closing && p.inFlight == 0 {
-		select {
-		case <-p.closeCh:
-		default:
-			close(p.closeCh)
-		}
+		p.signalClosed()
 	}
 	p.mu.Unlock()
 }

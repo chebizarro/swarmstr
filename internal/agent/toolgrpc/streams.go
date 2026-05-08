@@ -42,10 +42,12 @@ type StreamManager struct {
 	turnID      string
 	trace       agent.TraceContext
 	redactError func(string) string
+	onIdle      func(*StreamManager)
 
-	mu       sync.Mutex
-	sessions map[string]*StreamSession
-	closed   map[string]streamClosedSummary
+	mu        sync.Mutex
+	sessions  map[string]*StreamSession
+	closed    map[string]streamClosedSummary
+	closedAll bool
 }
 
 // StreamManagerOption customizes a StreamManager for the enclosing turn.
@@ -65,6 +67,10 @@ func WithStreamEventContext(sessionID, turnID string, trace agent.TraceContext) 
 
 func WithStreamErrorRedactor(redact func(string) string) StreamManagerOption {
 	return func(m *StreamManager) { m.redactError = redact }
+}
+
+func WithStreamIdleCallback(onIdle func(*StreamManager)) StreamManagerOption {
+	return func(m *StreamManager) { m.onIdle = onIdle }
 }
 
 func NewStreamManager(connManager *ConnectionManager, opts ...StreamManagerOption) *StreamManager {
@@ -237,6 +243,9 @@ func (m *StreamManager) Start(ctx context.Context, method MethodSpec, args map[s
 	if m == nil || m.connManager == nil {
 		return "", errors.New("grpc stream manager is not configured")
 	}
+	if m.isClosed() {
+		return "", errors.New("grpc stream manager is closed")
+	}
 	if !method.ClientStreaming && !method.ServerStreaming {
 		return "", fmt.Errorf("gRPC method %s is unary; streaming tools are not available", method.FullMethod)
 	}
@@ -294,13 +303,19 @@ func (m *StreamManager) Start(ctx context.Context, method MethodSpec, args map[s
 		}
 	}
 
-	m.addSession(session)
+	if !m.addSession(session) {
+		cancel()
+		return "", errors.New("grpc stream manager is closed")
+	}
 	go m.cleanupOnContextDone(callCtx, session.ID)
 	m.emit(toolName, streamToolStart, toolCallID, session, 0, false, "")
 	return encodeJSON(streamStartResult{OK: true, StreamID: session.ID, Profile: method.ProfileID, Method: method.FullMethod, Type: streamType(method), State: session.State})
 }
 
 func (m *StreamManager) Send(ctx context.Context, args map[string]any, toolName string) (string, error) {
+	if m.isClosed() {
+		return "", errors.New("grpc stream manager is closed")
+	}
 	session, err := m.activeSession(argString(args, "stream_id"))
 	if err != nil {
 		return "", err
@@ -333,6 +348,9 @@ func (m *StreamManager) Send(ctx context.Context, args map[string]any, toolName 
 }
 
 func (m *StreamManager) Receive(ctx context.Context, args map[string]any, toolName string) (string, error) {
+	if m.isClosed() {
+		return "", errors.New("grpc stream manager is closed")
+	}
 	session, err := m.activeSession(argString(args, "stream_id"))
 	if err != nil {
 		return "", err
@@ -393,6 +411,9 @@ done:
 }
 
 func (m *StreamManager) Finish(ctx context.Context, args map[string]any, toolName string) (string, error) {
+	if m.isClosed() {
+		return "", errors.New("grpc stream manager is closed")
+	}
 	streamID := argString(args, "stream_id")
 	if streamID == "" {
 		return "", errors.New("stream_id is required")
@@ -479,14 +500,21 @@ func (m *StreamManager) drainMessagesLocked(session *StreamSession, maxMessages 
 	return messages, nil
 }
 
-func (m *StreamManager) addSession(session *StreamSession) {
+func (m *StreamManager) addSession(session *StreamSession) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closedAll {
+		return false
+	}
 	m.sessions[session.ID] = session
 	delete(m.closed, session.ID)
+	return true
 }
 
 func (m *StreamManager) activeSession(id string) (*StreamSession, error) {
+	if m == nil {
+		return nil, errors.New("grpc stream manager is not configured")
+	}
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, errors.New("stream_id is required")
@@ -504,6 +532,9 @@ func (m *StreamManager) activeSession(id string) (*StreamSession, error) {
 }
 
 func (m *StreamManager) closedSummary(id string) (streamClosedSummary, bool) {
+	if m == nil {
+		return streamClosedSummary{}, false
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	summary, ok := m.closed[strings.TrimSpace(id)]
@@ -519,12 +550,73 @@ func (m *StreamManager) closeSessionLocked(toolCallID string, session *StreamSes
 	if session.cancel != nil {
 		session.cancel()
 	}
+	becameIdle := false
 	m.mu.Lock()
 	delete(m.sessions, session.ID)
 	m.closed[session.ID] = streamClosedSummary{ID: session.ID, Profile: session.Method.ProfileID, Method: session.Method.FullMethod, State: session.State, SendCount: session.SendCount, ReceiveCount: session.ReceiveCount}
+	becameIdle = len(m.sessions) == 0
 	m.mu.Unlock()
 	if errMessage != "" {
 		m.emit("", "closed", coalesceToolCallID(toolCallID, session.ToolCallID), session, 0, true, errMessage)
+	}
+	if becameIdle {
+		m.notifyIdle()
+	}
+}
+
+func (m *StreamManager) Close() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	if m.closedAll {
+		m.mu.Unlock()
+		return nil
+	}
+	m.closedAll = true
+	sessions := make([]*StreamSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	m.mu.Unlock()
+
+	for _, session := range sessions {
+		session.mu.Lock()
+		m.closeSessionLocked(session.ToolCallID, session, "grpc stream manager closed")
+		session.mu.Unlock()
+	}
+	m.notifyIdle()
+	return nil
+}
+
+func (m *StreamManager) isClosed() bool {
+	if m == nil {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closedAll
+}
+
+func (m *StreamManager) closeIfIdle() bool {
+	if m == nil {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closedAll {
+		return true
+	}
+	if len(m.sessions) != 0 {
+		return false
+	}
+	m.closedAll = true
+	return true
+}
+
+func (m *StreamManager) notifyIdle() {
+	if m != nil && m.onIdle != nil {
+		m.onIdle(m)
 	}
 }
 

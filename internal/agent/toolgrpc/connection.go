@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -38,12 +39,16 @@ type CallOptions struct {
 // endpoint profiles. Connections are opened lazily and reused until Close or
 // CloseProfile is called.
 type ConnectionManager struct {
-	mu       sync.Mutex
-	profiles map[string]config.GRPCEndpointConfig
-	conns    map[string]*grpc.ClientConn
+	mu        sync.Mutex
+	profiles  map[string]config.GRPCEndpointConfig
+	conns     map[string]*grpc.ClientConn
+	dialLocks map[string]*sync.Mutex
 }
 
-var grpcMetadataSecretResolver = newGRPCMetadataSecretResolver()
+var (
+	grpcMetadataSecretResolver = newGRPCMetadataSecretResolver()
+	grpcDialContext            = grpc.DialContext
+)
 
 // NewConnectionManager builds a connection pool for the supplied endpoint
 // profiles. Endpoint IDs are matched case-sensitively after trimming spaces.
@@ -63,9 +68,14 @@ func NewConnectionManager(endpoints []config.GRPCEndpointConfig) (*ConnectionMan
 		endpoint.ID = id
 		profiles[id] = endpoint
 	}
+	dialLocks := make(map[string]*sync.Mutex, len(profiles))
+	for id := range profiles {
+		dialLocks[id] = &sync.Mutex{}
+	}
 	return &ConnectionManager{
-		profiles: profiles,
-		conns:    make(map[string]*grpc.ClientConn, len(profiles)),
+		profiles:  profiles,
+		conns:     make(map[string]*grpc.ClientConn, len(profiles)),
+		dialLocks: dialLocks,
 	}, nil
 }
 
@@ -98,10 +108,27 @@ func (m *ConnectionManager) Conn(ctx context.Context, profileID string) (*grpc.C
 		return conn, nil
 	}
 	profile, ok := m.profiles[id]
-	m.mu.Unlock()
 	if !ok {
+		m.mu.Unlock()
 		return nil, fmt.Errorf("grpc profile %q is not configured", profileID)
 	}
+	dialLock := m.dialLocks[id]
+	if dialLock == nil {
+		dialLock = &sync.Mutex{}
+		m.dialLocks[id] = dialLock
+	}
+	m.mu.Unlock()
+
+	dialLock.Lock()
+	defer dialLock.Unlock()
+
+	m.mu.Lock()
+	if conn := m.conns[id]; conn != nil {
+		m.mu.Unlock()
+		return conn, nil
+	}
+	profile = m.profiles[id]
+	m.mu.Unlock()
 
 	conn, err := dialProfile(ctx, profile)
 	if err != nil {
@@ -205,7 +232,7 @@ func dialProfile(ctx context.Context, profile config.GRPCEndpointConfig) (*grpc.
 	if err != nil {
 		return nil, err
 	}
-	conn, err := grpc.DialContext(ctx, strings.TrimSpace(profile.Target), dialOpts...)
+	conn, err := grpcDialContext(ctx, strings.TrimSpace(profile.Target), dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial grpc profile %q (%s): %w", profile.ID, profile.Target, err)
 	}
@@ -299,12 +326,54 @@ func unaryPolicyInterceptor(profile config.GRPCEndpointConfig) grpc.UnaryClientI
 
 func streamPolicyInterceptor(profile config.GRPCEndpointConfig) grpc.StreamClientInterceptor {
 	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-		ctx, _, err := ensureCallPolicy(ctx, profile)
+		ctx, cancel, err := ensureCallPolicy(ctx, profile)
 		if err != nil {
 			return nil, err
 		}
-		return streamer(ctx, desc, cc, method, opts...)
+		stream, err := streamer(ctx, desc, cc, method, opts...)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		return &cancelableStream{ClientStream: stream, cancel: cancel}, nil
 	}
+}
+
+type cancelableStream struct {
+	grpc.ClientStream
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (s *cancelableStream) CloseSend() error {
+	err := s.ClientStream.CloseSend()
+	if err != nil {
+		s.cancelOnce()
+	}
+	return err
+}
+
+func (s *cancelableStream) SendMsg(m any) error {
+	err := s.ClientStream.SendMsg(m)
+	if err != nil {
+		s.cancelOnce()
+	}
+	return err
+}
+
+func (s *cancelableStream) RecvMsg(m any) error {
+	err := s.ClientStream.RecvMsg(m)
+	if err != nil {
+		s.cancelOnce()
+	}
+	return err
+}
+
+func (s *cancelableStream) cancelOnce() {
+	if s.cancel == nil {
+		return
+	}
+	s.once.Do(s.cancel)
 }
 
 func ensureCallPolicy(ctx context.Context, profile config.GRPCEndpointConfig) (context.Context, context.CancelFunc, error) {
@@ -327,7 +396,11 @@ func applyCallPolicy(ctx context.Context, profile config.GRPCEndpointConfig, opt
 		return nil, nil, err
 	}
 	ctx = metadata.NewOutgoingContext(ctx, merged)
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(deadlineMS)*time.Millisecond)
+	deadlineDuration, err := deadlineDurationFromMS(deadlineMS)
+	if err != nil {
+		return nil, nil, fmt.Errorf("grpc profile %q deadline_ms %d is invalid: %w", profile.ID, deadlineMS, err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, deadlineDuration)
 	ctx = context.WithValue(ctx, policyAppliedContextKey, true)
 	return ctx, cancel, nil
 }
@@ -408,6 +481,17 @@ func normalizeMetadataKey(key string) (string, error) {
 	return trimmed, nil
 }
 
+func deadlineDurationFromMS(deadlineMS int) (time.Duration, error) {
+	if deadlineMS < 0 {
+		return 0, errors.New("deadline_ms must be >= 0")
+	}
+	maxDeadlineMS := int64(math.MaxInt64 / int64(time.Millisecond))
+	if int64(deadlineMS) > maxDeadlineMS {
+		return 0, fmt.Errorf("deadline_ms exceeds maximum supported value %d", maxDeadlineMS)
+	}
+	return time.Duration(deadlineMS) * time.Millisecond, nil
+}
+
 func effectiveDeadlineMS(profile config.GRPCEndpointConfig, requestedMS int) (int, error) {
 	if requestedMS < 0 {
 		return 0, fmt.Errorf("grpc profile %q deadline_ms must be >= 0", profile.ID)
@@ -430,7 +514,7 @@ func effectiveDeadlineMS(profile config.GRPCEndpointConfig, requestedMS int) (in
 }
 
 type metadataSecretResolver struct {
-	once  sync.Once
+	mu    sync.Mutex
 	store *secrets.Store
 }
 
@@ -442,15 +526,15 @@ func (r *metadataSecretResolver) resolve(ref string) (string, bool) {
 	if r == nil {
 		return "", false
 	}
-	r.once.Do(func() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.store == nil {
 		r.store = secrets.NewStore(nil)
-		if r.store != nil {
-			_, _ = r.store.Reload()
-		}
-	})
+	}
 	if r.store == nil {
 		return "", false
 	}
+	_, _ = r.store.Reload()
 	return r.store.Resolve(ref)
 }
 

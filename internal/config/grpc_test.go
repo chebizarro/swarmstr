@@ -143,6 +143,30 @@ grpc:
 	}
 }
 
+func TestValidateGRPCConfigEmptyEndpointsAllowed(t *testing.T) {
+	cfg := GRPCConfig{}
+	if errs := cfg.Validate(); len(errs) != 0 {
+		t.Fatalf("expected empty grpc endpoints config to be valid, got: %v", errs)
+	}
+}
+
+func TestValidateGRPCConfigRejectsExcessiveDeadlines(t *testing.T) {
+	cfg := GRPCConfig{Endpoints: []GRPCEndpointConfig{{
+		ID:     "bad-deadlines",
+		Target: "svc:443",
+		Defaults: GRPCDefaultsConfig{
+			DeadlineMS:    MaxAllowedGRPCDeadlineMS + 1,
+			MaxDeadlineMS: MaxAllowedGRPCDeadlineMS + 1,
+		},
+	}}}
+	errs := cfg.Validate()
+	for _, want := range []string{"deadline_ms must be <=", "max_deadline_ms must be <="} {
+		if !containsError(errs, want) {
+			t.Fatalf("expected validation error containing %q, got: %v", want, errs)
+		}
+	}
+}
+
 func TestValidateConfigDocGRPCFromExtraInvalid(t *testing.T) {
 	doc := state.ConfigDoc{Extra: map[string]any{
 		"grpc": map[string]any{
