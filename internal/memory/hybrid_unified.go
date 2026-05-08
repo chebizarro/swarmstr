@@ -105,3 +105,48 @@ func (h *HybridIndex) CompactMemoryRecords(ctx context.Context, cfg CompactionCo
 	removed := h.Compact(0)
 	return CompactionResult{Expired: removed}, nil
 }
+
+func (h *HybridIndex) ExplainMemoryQuery(ctx context.Context, q MemoryQuery) (MemoryQueryExplanation, error) {
+	if backend, ok := h.backend.(interface {
+		ExplainMemoryQuery(context.Context, MemoryQuery) (MemoryQueryExplanation, error)
+	}); ok {
+		explain, err := backend.ExplainMemoryQuery(ctx, q)
+		if err == nil && len(explain.Results) > 0 {
+			return explain, nil
+		}
+		if err != nil && h.Index == nil {
+			return MemoryQueryExplanation{}, err
+		}
+	}
+	return ExplainMemoryQuery(ctx, h.Index, q)
+}
+
+func (h *HybridIndex) MemoryStats(ctx context.Context) (MemoryStatsReport, error) {
+	if backend, ok := h.backend.(interface {
+		MemoryStats(context.Context) (MemoryStatsReport, error)
+	}); ok {
+		return backend.MemoryStats(ctx)
+	}
+	return MemoryStats(ctx, h.Index)
+}
+
+func (h *HybridIndex) MemoryHealth(ctx context.Context) (MemoryHealthReport, error) {
+	if backend, ok := h.backend.(interface {
+		MemoryHealth(context.Context) (MemoryHealthReport, error)
+	}); ok {
+		return backend.MemoryHealth(ctx)
+	}
+	return MemoryHealth(ctx, h.Index)
+}
+
+func (h *HybridIndex) MemoryCompactionState(ctx context.Context) (MemoryCompactionState, error) {
+	if backend, ok := h.backend.(interface {
+		MemoryCompactionState(context.Context) (MemoryCompactionState, error)
+	}); ok {
+		return backend.MemoryCompactionState(ctx)
+	}
+	if h == nil || h.Index == nil {
+		return MemoryCompactionState{}, fmt.Errorf("memory hybrid index is nil")
+	}
+	return MemoryCompactionState{RecordCount: h.Index.Count()}, nil
+}

@@ -505,6 +505,7 @@ func main() {
 		}
 	}()
 	var memoryIndex memory.Store = baseMemoryIndex
+	var sqliteMemoryBackend *memory.SQLiteBackend
 
 	// Social planner: manages social action plans, rate limits, and history.
 	socialPlanner := social.NewPlanner(social.DefaultRateLimitConfig())
@@ -515,6 +516,18 @@ func main() {
 	tools.RegisterWithDef("memory_query", func(ctx context.Context, args map[string]any) (string, error) {
 		return toolbuiltin.MemoryQueryTool(memoryIndex)(ctx, args)
 	}, toolbuiltin.MemoryQueryDef)
+	tools.RegisterWithDef("memory_stats", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryStatsTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryStatsDef)
+	tools.RegisterWithDef("memory_health", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryHealthTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryHealthDef)
+	tools.RegisterWithDef("memory_explain_query", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryExplainQueryTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryExplainQueryDef)
+	tools.RegisterWithDef("memory_reflect", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryReflectTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryReflectDef)
 	// memory_search is kept as a compatibility alias over memory_query.
 	tools.RegisterWithDef("memory_search", func(ctx context.Context, args map[string]any) (string, error) {
 		return toolbuiltin.MemorySearchCompatTool(memoryIndex)(ctx, args)
@@ -598,6 +611,9 @@ func main() {
 	tools.RegisterWithDef("memory_forget", func(ctx context.Context, args map[string]any) (string, error) {
 		return toolbuiltin.MemoryForgetTool(memoryIndex)(ctx, args)
 	}, toolbuiltin.MemoryForgetDef)
+	tools.RegisterWithDef("memory_apply_reflection", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryApplyReflectionTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryApplyReflectionDef)
 	tools.RegisterWithDef("memory_delete", func(ctx context.Context, args map[string]any) (string, error) {
 		return toolbuiltin.MemoryForgetTool(memoryIndex)(ctx, args)
 	}, toolbuiltin.MemoryDeleteDef)
@@ -1100,19 +1116,62 @@ func main() {
 			}
 		}
 		memoryBackendPath := ""
-		if mExtra2, ok2 := configState.Get().Extra["memory"].(map[string]any); ok2 {
-			if p, _ := mExtra2["path"].(string); strings.TrimSpace(p) != "" {
+		memoryExtra, _ := configState.Get().Extra["memory"].(map[string]any)
+		if memoryExtra != nil {
+			if p, _ := memoryExtra["path"].(string); strings.TrimSpace(p) != "" {
 				memoryBackendPath = strings.TrimSpace(p)
 			}
-			qdrantURL, _ := mExtra2["url"].(string)
-			ollamaURL, _ := mExtra2["ollama_url"].(string)
-			collection, _ := mExtra2["collection"].(string)
+			qdrantURL, _ := memoryExtra["url"].(string)
+			ollamaURL, _ := memoryExtra["ollama_url"].(string)
+			collection, _ := memoryExtra["collection"].(string)
 			// qdrant path format: "qdrantURL|ollamaURL|collection"
 			if qdrantURL != "" && strings.EqualFold(memoryBackendName, "qdrant") {
 				memoryBackendPath = qdrantURL + "|" + ollamaURL + "|" + collection
 			}
 		}
-		if be, beErr := memory.OpenBackend(memoryBackendName, memoryBackendPath); beErr != nil {
+		var be memory.Backend
+		var beErr error
+		if strings.EqualFold(memoryBackendName, "sqlite") {
+			backupEnabled := true
+			if v, ok := memoryExtra["backup_enabled"].(bool); ok {
+				backupEnabled = v
+			}
+			backupRetentionWeeks := 4
+			switch v := memoryExtra["backup_retention_weeks"].(type) {
+			case float64:
+				if v > 0 {
+					backupRetentionWeeks = int(v)
+				}
+			case int:
+				if v > 0 {
+					backupRetentionWeeks = v
+				}
+			}
+			workspaceDir := workspace.ResolveWorkspaceDir(configState.Get(), "")
+			rebuildRoots := []string{}
+			if workspaceDir != "" {
+				rebuildRoots = append(rebuildRoots,
+					filepath.Join(workspaceDir, ".metiq", "agent-memory"),
+					filepath.Join(workspaceDir, ".metiq", "agent-memory-local"),
+				)
+			}
+			if home, homeErr := os.UserHomeDir(); homeErr == nil {
+				rebuildRoots = append(rebuildRoots, filepath.Join(home, ".metiq", "agent-memory"))
+			}
+			sqliteOpts := memory.SQLiteRecoveryOptions{
+				BackupEnabled:        backupEnabled,
+				BackupEnabledSet:     true,
+				BackupRetentionWeeks: backupRetentionWeeks,
+				RebuildDurableRoots:  rebuildRoots,
+				RebuildWorkspaceDir:  workspaceDir,
+				Logf:                 log.Printf,
+			}
+			sqliteMemoryBackend, beErr = memory.OpenSQLiteBackendWithRecoveryOptions(memoryBackendPath, sqliteOpts)
+			be = sqliteMemoryBackend
+		} else {
+			be, beErr = memory.OpenBackend(memoryBackendName, memoryBackendPath)
+		}
+		if beErr != nil {
 			log.Printf("memory backend %q not available (%v); using json-fts", memoryBackendName, beErr)
 		} else {
 			log.Printf("memory backend: %s path=%q", memoryBackendName, memoryBackendPath)
@@ -1124,8 +1183,20 @@ func main() {
 				}
 			}
 			memoryIndex = memory.NewHybridIndex(baseMemoryIndex, be)
+			if sqliteMemoryBackend != nil {
+				backupCtx, stopWeeklyBackups := context.WithCancel(ctx)
+				weeklyBackupDone := memory.StartWeeklySQLiteBackups(backupCtx, sqliteMemoryBackend)
+				defer func() {
+					stopWeeklyBackups()
+					<-weeklyBackupDone
+					if err := sqliteMemoryBackend.Close(); err != nil {
+						log.Printf("memory sqlite clean shutdown warning: %v", err)
+					}
+				}()
+			}
 		}
 	}
+	startMemoryMaintenance(ctx, memoryIndex, configState.Get)
 
 	var contextEngineName string
 	// Initialise pluggable context engine from config (Extra["context_engine"]).

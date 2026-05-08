@@ -206,8 +206,115 @@ func TestMemoryEvalHarness(t *testing.T) {
 	if run.CaseCount != 1 || run.RecallAt10 != 1 || run.P50LatencyMS < 0 {
 		t.Fatalf("unexpected eval run: %#v", run)
 	}
-	if len(DefaultSyntheticMemoryEvalCases()) < 10 {
-		t.Fatal("expected at least 10 synthetic eval cases")
+	if len(DefaultSyntheticMemoryEvalCases()) < 50 {
+		t.Fatal("expected at least 50 synthetic eval cases")
+	}
+	if run.TokenCost <= 0 {
+		t.Fatalf("expected token cost metric, got %#v", run)
+	}
+}
+
+func TestCompactionV2PreservesPinnedAndDurableDuplicates(t *testing.T) {
+	ctx := context.Background()
+	b := newUnifiedTestSQLiteBackend(t)
+	text := "Keep canary rollout for prod deploys"
+	mustWriteRecord(t, b, MemoryRecord{ID: "dup-pinned", Type: MemoryRecordTypeDecision, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: text, Pinned: true})
+	mustWriteRecord(t, b, MemoryRecord{ID: "dup-durable", Type: MemoryRecordTypeDecision, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: text, Metadata: map[string]any{"durable": true}})
+	mustWriteRecord(t, b, MemoryRecord{ID: "dup-plain", Type: MemoryRecordTypeDecision, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: text})
+
+	res, err := b.CompactMemoryRecords(ctx, CompactionConfig{EpisodeTTLDays: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Deduped == 0 {
+		t.Fatalf("expected dedupe activity, got %#v", res)
+	}
+	pinned, _, _ := b.GetMemoryRecord(ctx, "dup-pinned")
+	durable, _, _ := b.GetMemoryRecord(ctx, "dup-durable")
+	plain, _, _ := b.GetMemoryRecord(ctx, "dup-plain")
+	if pinned.SupersededBy != "" || durable.SupersededBy != "" {
+		t.Fatalf("pinned/durable should remain active: pinned=%q durable=%q", pinned.SupersededBy, durable.SupersededBy)
+	}
+	if plain.SupersededBy == "" {
+		t.Fatalf("plain duplicate should be superseded")
+	}
+}
+
+func TestCompactionV2DoesNotSupersedePinnedDurableTargets(t *testing.T) {
+	ctx := context.Background()
+	b := newUnifiedTestSQLiteBackend(t)
+	text := "Pinned decision preserves referenced prior record"
+	mustWriteRecord(t, b, MemoryRecord{ID: "prior-record", Type: MemoryRecordTypeDecision, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: text})
+	mustWriteRecord(t, b, MemoryRecord{ID: "pinned-new", Type: MemoryRecordTypeDecision, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: text, Pinned: true, Supersedes: []string{"prior-record"}})
+
+	res, err := b.CompactMemoryRecords(ctx, CompactionConfig{EpisodeTTLDays: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, _, _ := b.GetMemoryRecord(ctx, "prior-record")
+	if prior.SupersededBy != "" {
+		t.Fatalf("record referenced by pinned supersedes should not be dedupe-superseded, result=%#v prior=%#v", res, prior)
+	}
+}
+
+func TestCompactionV2RepairsSupersessionAndFlagsStale(t *testing.T) {
+	ctx := context.Background()
+	b := newUnifiedTestSQLiteBackend(t)
+	old := time.Now().Add(-60 * 24 * time.Hour)
+	mustWriteRecord(t, b, MemoryRecord{ID: "missing-target", Type: MemoryRecordTypeFact, Scope: MemoryRecordScopeProject, Subject: "x", Text: "stuck supersession", SupersededBy: "does-not-exist"})
+	mustWriteRecord(t, b, MemoryRecord{ID: "cycle-a", Type: MemoryRecordTypeFact, Scope: MemoryRecordScopeProject, Subject: "x", Text: "cycle a", SupersededBy: "cycle-b"})
+	mustWriteRecord(t, b, MemoryRecord{ID: "cycle-b", Type: MemoryRecordTypeFact, Scope: MemoryRecordScopeProject, Subject: "x", Text: "cycle b", SupersededBy: "cycle-c"})
+	mustWriteRecord(t, b, MemoryRecord{ID: "cycle-c", Type: MemoryRecordTypeFact, Scope: MemoryRecordScopeProject, Subject: "x", Text: "cycle c", SupersededBy: "cycle-a"})
+	mustWriteRecord(t, b, MemoryRecord{ID: "stale-episode", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeSession, Subject: "old", Text: "old episode", CreatedAt: old, UpdatedAt: old})
+
+	res, err := b.CompactMemoryRecords(ctx, CompactionConfig{EpisodeTTLDays: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SupersessionFix == 0 || res.StaleFlagged == 0 {
+		t.Fatalf("expected supersession fixes and stale flags, got %#v", res)
+	}
+	fixed, _, _ := b.GetMemoryRecord(ctx, "missing-target")
+	if fixed.SupersededBy != "" {
+		t.Fatalf("missing supersession target should be repaired, got %q", fixed.SupersededBy)
+	}
+	cycleA, _, _ := b.GetMemoryRecord(ctx, "cycle-a")
+	cycleB, _, _ := b.GetMemoryRecord(ctx, "cycle-b")
+	cycleC, _, _ := b.GetMemoryRecord(ctx, "cycle-c")
+	cycleNext := map[string]string{"cycle-a": cycleA.SupersededBy, "cycle-b": cycleB.SupersededBy, "cycle-c": cycleC.SupersededBy}
+	for id := range cycleNext {
+		seen := map[string]bool{}
+		for cur := id; cur != ""; cur = cycleNext[cur] {
+			if seen[cur] {
+				t.Fatalf("supersession cycle still present starting at %s: %#v", id, cycleNext)
+			}
+			seen[cur] = true
+		}
+	}
+	stale, _, _ := b.GetMemoryRecord(ctx, "stale-episode")
+	if stale.Metadata["stale"] != true {
+		t.Fatalf("stale flag expected in metadata, got %#v", stale.Metadata)
+	}
+}
+
+func TestMemoryHealthIncludesV2Signals(t *testing.T) {
+	ctx := context.Background()
+	b := newUnifiedTestSQLiteBackend(t)
+	mustWriteRecord(t, b, MemoryRecord{ID: "h-a", Type: MemoryRecordTypeFact, Scope: MemoryRecordScopeProject, Subject: "dup", Text: "same text"})
+	mustWriteRecord(t, b, MemoryRecord{ID: "h-b", Type: MemoryRecordTypeFact, Scope: MemoryRecordScopeProject, Subject: "dup", Text: "same text"})
+	mustWriteRecord(t, b, MemoryRecord{ID: "h-cycle-1", Type: MemoryRecordTypeFact, Scope: MemoryRecordScopeProject, Subject: "x", Text: "cycle1", SupersededBy: "h-cycle-2"})
+	mustWriteRecord(t, b, MemoryRecord{ID: "h-cycle-2", Type: MemoryRecordTypeFact, Scope: MemoryRecordScopeProject, Subject: "x", Text: "cycle2", SupersededBy: "h-cycle-1"})
+	mustWriteRecord(t, b, MemoryRecord{ID: "h-stale", Type: MemoryRecordTypeFact, Scope: MemoryRecordScopeProject, Subject: "x", Text: "stale", Metadata: map[string]any{"stale": true, "stale_reason": "expired"}})
+
+	health, err := b.MemoryHealth(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.IssueCounts["duplicate_hash"] == 0 || health.IssueCounts["supersession_cycle"] == 0 || health.IssueCounts["stale_flagged"] == 0 {
+		t.Fatalf("expected v2 health signals, got %#v", health)
+	}
+	if _, ok := health.Index["duplicate_clusters"]; !ok {
+		t.Fatalf("expected duplicate_clusters index summary, got %#v", health.Index)
 	}
 }
 

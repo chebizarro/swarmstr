@@ -12,11 +12,11 @@ import (
 type TeamMemoryMergeOutcome string
 
 const (
-	MergeOutcomeApplied   TeamMemoryMergeOutcome = "applied"   // remote written to local
+	MergeOutcomeApplied   TeamMemoryMergeOutcome = "applied"    // remote written to local
 	MergeOutcomeKeptLocal TeamMemoryMergeOutcome = "kept_local" // local was newer, kept
-	MergeOutcomeConflict  TeamMemoryMergeOutcome = "conflict"  // both sides changed
-	MergeOutcomeUnchanged TeamMemoryMergeOutcome = "unchanged" // identical, no action
-	MergeOutcomeDeleted   TeamMemoryMergeOutcome = "deleted"   // remote removed, local removed
+	MergeOutcomeConflict  TeamMemoryMergeOutcome = "conflict"   // both sides changed
+	MergeOutcomeUnchanged TeamMemoryMergeOutcome = "unchanged"  // identical, no action
+	MergeOutcomeDeleted   TeamMemoryMergeOutcome = "deleted"    // remote removed, local removed
 )
 
 // TeamMemoryMergeEntry records the per-key result of a sync operation.
@@ -183,8 +183,10 @@ func ApplyTeamMemorySnapshot(workspaceDir string, incoming TeamMemorySnapshot, s
 // Call this only when ApplyResult.OK is true (no conflicts).
 // It snapshots the current local state as the new base for future merges.
 func UpdateSyncStateAfterPull(workspaceDir string, remoteChecksum string) error {
+	start := time.Now()
 	syncState, err := ReadTeamMemorySyncState(workspaceDir)
 	if err != nil {
+		recordMemoryTelemetry("sync", start, map[string]any{"ok": false, "direction": "pull", "error": err.Error()})
 		return fmt.Errorf("read sync state: %w", err)
 	}
 	// Snapshot current local entry checksums as the new merge base.
@@ -200,14 +202,18 @@ func UpdateSyncStateAfterPull(workspaceDir string, remoteChecksum string) error 
 	if syncState.Version == 0 {
 		syncState.Version = 1
 	}
-	return WriteTeamMemorySyncState(workspaceDir, syncState)
+	err = WriteTeamMemorySyncState(workspaceDir, syncState)
+	recordMemoryTelemetry("sync", start, map[string]any{"ok": err == nil, "direction": "pull"})
+	return err
 }
 
 // UpdateSyncStateAfterPush updates the sync state after a successful push.
 // It snapshots the current local state as the new base.
 func UpdateSyncStateAfterPush(workspaceDir string, pushedChecksum string) error {
+	start := time.Now()
 	syncState, err := ReadTeamMemorySyncState(workspaceDir)
 	if err != nil {
+		recordMemoryTelemetry("sync", start, map[string]any{"ok": false, "direction": "push", "error": err.Error()})
 		return fmt.Errorf("read sync state: %w", err)
 	}
 	localExport := BuildTeamMemorySyncPayload(workspaceDir)
@@ -222,7 +228,9 @@ func UpdateSyncStateAfterPush(workspaceDir string, pushedChecksum string) error 
 	if syncState.Version == 0 {
 		syncState.Version = 1
 	}
-	return WriteTeamMemorySyncState(workspaceDir, syncState)
+	err = WriteTeamMemorySyncState(workspaceDir, syncState)
+	recordMemoryTelemetry("sync", start, map[string]any{"ok": err == nil, "direction": "push"})
+	return err
 }
 
 // RecordSyncError writes a sync error to the sync state without changing checksums.
@@ -264,15 +272,24 @@ func deleteTeamMemoryKey(rootDir, workspaceRoot, key string) error {
 	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	// Clean up empty parent directories up to rootDir.
-	dir := filepath.Dir(targetPath)
-	for dir != rootDir && isContainedWithin(rootDir, dir) {
+	// Clean up empty parent directories up to rootDir. Clean both paths before
+	// comparing so equivalent spellings (trailing slash, dot segments) cannot
+	// escape the intended stop boundary.
+	cleanRoot := filepath.Clean(rootDir)
+	dir := filepath.Clean(filepath.Dir(targetPath))
+	for dir != cleanRoot && isContainedWithin(cleanRoot, dir) {
 		entries, err := os.ReadDir(dir)
 		if err != nil || len(entries) > 0 {
 			break
 		}
-		os.Remove(dir)
-		dir = filepath.Dir(dir)
+		if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
+			break
+		}
+		parent := filepath.Clean(filepath.Dir(dir))
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
 	return nil
 }

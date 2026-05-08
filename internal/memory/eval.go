@@ -2,12 +2,14 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
 func DefaultSyntheticMemoryEvalCases() []MemoryEvalCase {
-	return []MemoryEvalCase{
+	base := []MemoryEvalCase{
 		{ID: "pref-editor", Query: "preferred editor", ExpectedSubject: "editor", ExpectedType: MemoryRecordTypePreference, Scope: MemoryRecordScopeUser},
 		{ID: "decision-deploy", Query: "deployment canary decision", ExpectedSubject: "deployment", ExpectedType: MemoryRecordTypeDecision, Scope: MemoryRecordScopeProject},
 		{ID: "constraint-security", Query: "security requirement", ExpectedType: MemoryRecordTypeConstraint, Scope: MemoryRecordScopeProject},
@@ -19,6 +21,32 @@ func DefaultSyntheticMemoryEvalCases() []MemoryEvalCase {
 		{ID: "artifact-spec", Query: "architecture spec artifact", ExpectedType: MemoryRecordTypeArtifactRef, Scope: MemoryRecordScopeProject},
 		{ID: "team-runbook", Query: "team runbook", ExpectedType: MemoryRecordTypeReference, Scope: MemoryRecordScopeTeam},
 	}
+	cases := make([]MemoryEvalCase, 0, 60)
+	groups := []struct {
+		prefix string
+		note   string
+		query  string
+	}{
+		{prefix: "prefs", note: "preferences and feedback", query: "preferred"},
+		{prefix: "decisions", note: "decision recall and supersession", query: "decision"},
+		{prefix: "episodic", note: "episode and summary recall", query: "session"},
+		{prefix: "stale", note: "stale/superseded avoidance", query: "latest"},
+		{prefix: "scope", note: "scope filters", query: "project"},
+		{prefix: "intent", note: "intent routing", query: "why"},
+	}
+	for gi, g := range groups {
+		for bi, b := range base {
+			c := b
+			c.ID = fmt.Sprintf("%s-%02d", g.prefix, bi+1)
+			c.Query = strings.TrimSpace(g.query + " " + b.Query)
+			c.Notes = g.note
+			if gi >= 3 {
+				c.ExpectedIDs = nil
+			}
+			cases = append(cases, c)
+		}
+	}
+	return cases
 }
 
 func RunMemoryEvals(ctx context.Context, store Store, cases []MemoryEvalCase) MemoryEvalRun {
@@ -29,8 +57,10 @@ func RunMemoryEvals(ctx context.Context, store Store, cases []MemoryEvalCase) Me
 	run.CaseCount = len(cases)
 	latencies := make([]float64, 0, len(cases))
 	var hit5, hit10, noResult int
+	var staleHits, supersededHits, duplicateHits int
+	var tokenCost int
 	for _, c := range cases {
-		q := MemoryQuery{Query: c.Query, Limit: 10, IncludeSources: false}
+		q := MemoryQuery{Query: c.Query, Limit: 10, IncludeSources: false, IncludeDebug: true}
 		if c.Scope != "" {
 			q.Scopes = []string{c.Scope}
 		}
@@ -50,12 +80,33 @@ func RunMemoryEvals(ctx context.Context, store Store, cases []MemoryEvalCase) Me
 		} else {
 			run.FailedCaseIDs = append(run.FailedCaseIDs, c.ID)
 		}
+		tokenCost += roughTokenCost(cards)
+		for _, card := range cards {
+			if isStaleCard(card) {
+				staleHits++
+			}
+			if card.Why != nil && hasWhyReason(card.Why.Reasons, "superseded") {
+				supersededHits++
+			}
+		}
+		duplicateHits += duplicateCardCount(cards)
 	}
 	if len(cases) > 0 {
 		run.RecallAt5 = float64(hit5) / float64(len(cases))
 		run.RecallAt10 = float64(hit10) / float64(len(cases))
 		run.NoResultRate = float64(noResult) / float64(len(cases))
 	}
+	totalHits := maxEvalInt(1, hit10)
+	run.StaleHitRate = float64(staleHits) / float64(totalHits)
+	run.SupersededHitRate = float64(supersededHits) / float64(totalHits)
+	run.DuplicateRate = float64(duplicateHits) / float64(totalHits)
+	run.TokenCost = tokenCost
+
+	if stats, ok := MemoryObservabilityStats(store); ok {
+		run.ReflectionPrecision = stats.ReflectionPrecision
+		run.PromotionAcceptance = stats.PromotionAcceptance
+	}
+
 	sort.Float64s(latencies)
 	run.P50LatencyMS = percentile(latencies, 0.50)
 	run.P95LatencyMS = percentile(latencies, 0.95)
@@ -101,4 +152,54 @@ func percentile(values []float64, p float64) float64 {
 		idx = len(values) - 1
 	}
 	return values[idx]
+}
+
+func roughTokenCost(cards []MemoryCard) int {
+	return EstimateMemoryCardsTokenCost(cards)
+}
+
+func isStaleCard(card MemoryCard) bool {
+	if card.Why == nil {
+		return false
+	}
+	if hasWhyReason(card.Why.Reasons, "stale") {
+		return true
+	}
+	if v, ok := card.Why.Components["stale_penalty"]; ok {
+		return v < 0
+	}
+	return false
+}
+
+func hasWhyReason(reasons []string, key string) bool {
+	for _, r := range reasons {
+		if strings.Contains(strings.ToLower(r), key) {
+			return true
+		}
+	}
+	return false
+}
+
+func duplicateCardCount(cards []MemoryCard) int {
+	seen := map[string]struct{}{}
+	dups := 0
+	for _, c := range cards {
+		text := strings.TrimSpace(strings.ToLower(firstNonEmpty(c.Text, c.Summary)))
+		if text == "" {
+			continue
+		}
+		if _, ok := seen[text]; ok {
+			dups++
+			continue
+		}
+		seen[text] = struct{}{}
+	}
+	return dups
+}
+
+func maxEvalInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

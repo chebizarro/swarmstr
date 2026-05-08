@@ -5,22 +5,27 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"math"
-	"sort"
 	"strings"
 	"time"
 )
 
 type CompactionConfig struct {
-	EpisodeTTLDays int
-	AfterWrites    int
-	Now            time.Time
+	EpisodeTTLDays  int
+	AfterWrites     int
+	Now             time.Time
+	Reason          string
+	SkipDedupe      bool
+	SkipExpireStale bool
 }
 
 type CompactionResult struct {
-	Expired    int `json:"expired"`
-	Deduped    int `json:"deduped"`
-	Superseded int `json:"superseded"`
+	Expired         int      `json:"expired"`
+	Deduped         int      `json:"deduped"`
+	Superseded      int      `json:"superseded"`
+	StaleFlagged    int      `json:"stale_flagged,omitempty"`
+	SupersessionFix int      `json:"supersession_fix,omitempty"`
+	OutboxCompacted int      `json:"outbox_compacted,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
 }
 
 type MemoryEvalCase struct {
@@ -34,16 +39,20 @@ type MemoryEvalCase struct {
 }
 
 type MemoryEvalRun struct {
-	CaseCount     int      `json:"case_count"`
-	RecallAt5     float64  `json:"recall_at_5"`
-	RecallAt10    float64  `json:"recall_at_10"`
-	NoResultRate  float64  `json:"no_result_rate"`
-	StaleHitRate  float64  `json:"stale_hit_rate"`
-	DuplicateRate float64  `json:"duplicate_hit_rate"`
-	P50LatencyMS  float64  `json:"p50_latency_ms"`
-	P95LatencyMS  float64  `json:"p95_latency_ms"`
-	P99LatencyMS  float64  `json:"p99_latency_ms"`
-	FailedCaseIDs []string `json:"failed_case_ids,omitempty"`
+	CaseCount           int      `json:"case_count"`
+	RecallAt5           float64  `json:"recall_at_5"`
+	RecallAt10          float64  `json:"recall_at_10"`
+	NoResultRate        float64  `json:"no_result_rate"`
+	StaleHitRate        float64  `json:"stale_hit_rate"`
+	SupersededHitRate   float64  `json:"superseded_hit_rate"`
+	DuplicateRate       float64  `json:"duplicate_hit_rate"`
+	TokenCost           int      `json:"token_cost"`
+	P50LatencyMS        float64  `json:"p50_latency_ms"`
+	P95LatencyMS        float64  `json:"p95_latency_ms"`
+	P99LatencyMS        float64  `json:"p99_latency_ms"`
+	ReflectionPrecision float64  `json:"reflection_precision"`
+	PromotionAcceptance float64  `json:"promotion_acceptance"`
+	FailedCaseIDs       []string `json:"failed_case_ids,omitempty"`
 }
 
 func (b *SQLiteBackend) ensureUnifiedSchema() error {
@@ -155,8 +164,14 @@ func (b *SQLiteBackend) ensureUnifiedSchema() error {
 		payload TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
 		attempts INTEGER NOT NULL DEFAULT 0,
+		last_attempt_at INTEGER,
+		next_attempt_at INTEGER,
+		publish_failed INTEGER NOT NULL DEFAULT 0,
+		failed_at INTEGER,
 		last_error TEXT
 	);
+	CREATE INDEX IF NOT EXISTS idx_memory_outbox_retry ON memory_events_outbox(publish_failed, next_attempt_at, created_at);
+	CREATE INDEX IF NOT EXISTS idx_memory_outbox_failed ON memory_events_outbox(publish_failed, failed_at);
 	CREATE TABLE IF NOT EXISTS memory_embeddings (
 		record_id TEXT NOT NULL,
 		embedding_model TEXT NOT NULL,
@@ -165,9 +180,41 @@ func (b *SQLiteBackend) ensureUnifiedSchema() error {
 		updated_at INTEGER NOT NULL,
 		PRIMARY KEY(record_id, embedding_model, embedding_version)
 	);
+	CREATE TABLE IF NOT EXISTS memory_nostr_provenance (
+		namespace TEXT NOT NULL,
+		event_id TEXT NOT NULL,
+		relay_url TEXT NOT NULL,
+		pubkey TEXT NOT NULL,
+		record_id TEXT,
+		created_at INTEGER NOT NULL,
+		ingested_at INTEGER NOT NULL,
+		PRIMARY KEY(namespace, event_id, relay_url)
+	);
+	CREATE INDEX IF NOT EXISTS idx_memory_nostr_provenance_record ON memory_nostr_provenance(record_id);
+	CREATE TABLE IF NOT EXISTS reindex_status (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		record_id TEXT,
+		started_at INTEGER NOT NULL,
+		completed_at INTEGER,
+		status TEXT NOT NULL DEFAULT 'started'
+	);
+	CREATE INDEX IF NOT EXISTS idx_reindex_status_started_at ON reindex_status(started_at);
+	CREATE TABLE IF NOT EXISTS memory_maintenance_state (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS memory_health_scores (
+		checked_at INTEGER PRIMARY KEY,
+		health_score REAL NOT NULL,
+		status TEXT NOT NULL,
+		issue_count INTEGER NOT NULL DEFAULT 0
+	);
 	`
-	_, err := b.db.Exec(schema)
-	return err
+	if _, err := b.db.Exec(schema); err != nil {
+		return err
+	}
+	return ensureMemoryOutboxColumns(b.db)
 }
 
 func (b *SQLiteBackend) BackfillUnifiedFromChunks(ctx context.Context) (int, error) {
@@ -202,16 +249,21 @@ func (b *SQLiteBackend) BackfillUnifiedFromChunks(ctx context.Context) (int, err
 
 func (b *SQLiteBackend) WriteMemoryRecord(ctx context.Context, rec MemoryRecord) error {
 	_ = ctx
+	start := time.Now()
 	if err := b.ensureUnifiedSchema(); err != nil {
+		recordMemoryTelemetry("write", start, map[string]any{"ok": false, "error": err.Error()})
 		return err
 	}
 	rec, err := NormalizeMemoryRecord(rec)
 	if err != nil {
+		recordMemoryTelemetry("write", start, map[string]any{"ok": false, "error": err.Error()})
 		return err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.writeMemoryRecordLocked(rec)
+	err = b.writeMemoryRecordLocked(rec)
+	recordMemoryTelemetry("write", start, map[string]any{"ok": err == nil, "type": rec.Type, "scope": rec.Scope})
+	return err
 }
 
 func (b *SQLiteBackend) writeMemoryRecordLocked(rec MemoryRecord) error {
@@ -233,89 +285,43 @@ func (b *SQLiteBackend) writeMemoryRecordLocked(rec MemoryRecord) error {
 	}
 	_, _ = b.db.Exec(`INSERT OR REPLACE INTO memory_sources (record_id, source_kind, source_ref, session_id, event_id, file_path, nostr_event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ID, rec.Source.Kind, rec.Source.Ref, rec.Source.SessionID, rec.Source.EventID, rec.Source.FilePath, rec.Source.NostrEventID, rec.CreatedAt.Unix())
+	b.bumpMemoryWriteCountersLocked(rec.UpdatedAt)
 	b.clearCacheLocked()
 	return nil
 }
 
 func (b *SQLiteBackend) QueryMemoryRecords(ctx context.Context, q MemoryQuery) ([]MemoryCard, error) {
-	_ = ctx
-	if err := b.ensureUnifiedSchema(); err != nil {
-		return nil, err
-	}
-	q = normalizeMemoryQuery(q)
-	ftsQuery := buildFTSQuery(q.Query)
-	var rows *sql.Rows
-	var err error
-	args := []any{}
-	where := unifiedMetadataWhere(q, &args)
-	limit := q.Limit
-	if ftsQuery != "" && q.Mode != "recent" {
-		args = append([]any{ftsQuery}, args...)
-		args = append(args, limit)
-		rows, err = b.db.Query(`
-			SELECT r.id, r.type, r.scope, r.subject, r.text, r.summary, r.keywords, r.tags,
-			       r.confidence, r.salience, r.source_kind, r.source_ref, r.source_session_id,
-			       r.source_event_id, r.source_file_path, r.source_nostr_event_id,
-			       r.created_at, r.updated_at, r.valid_from, r.valid_until, r.pinned,
-			       r.supersedes, r.superseded_by, r.deleted_at, r.embedding_model,
-			       r.embedding_version, r.metadata, bm25(memory_fts) AS rank
-			FROM memory_fts fts JOIN memory_records r ON r.id = fts.id
-			WHERE memory_fts MATCH ? `+where+`
-			ORDER BY rank, r.pinned DESC, r.updated_at DESC
-			LIMIT ?
-		`, args...)
-	} else {
-		args = append(args, limit)
-		rows, err = b.db.Query(`
-			SELECT r.id, r.type, r.scope, r.subject, r.text, r.summary, r.keywords, r.tags,
-			       r.confidence, r.salience, r.source_kind, r.source_ref, r.source_session_id,
-			       r.source_event_id, r.source_file_path, r.source_nostr_event_id,
-			       r.created_at, r.updated_at, r.valid_from, r.valid_until, r.pinned,
-			       r.supersedes, r.superseded_by, r.deleted_at, r.embedding_model,
-			       r.embedding_version, r.metadata, 0.0 AS rank
-			FROM memory_records r
-			WHERE 1=1 `+where+`
-			ORDER BY r.pinned DESC, r.updated_at DESC
-			LIMIT ?
-		`, args...)
-	}
+	start := time.Now()
+	explain, err := b.ExplainMemoryQuery(ctx, q)
 	if err != nil {
+		recordMemoryTelemetry("query", start, map[string]any{"ok": false, "error": err.Error()})
 		return nil, err
 	}
-	defer rows.Close()
-	records, ranks := b.scanMemoryRecordRows(rows)
-	if len(records) == 0 && ftsQuery != "" {
-		return b.queryMemoryRecordsLike(q)
-	}
-	cards := make([]MemoryCard, 0, len(records))
-	now := time.Now().UTC()
-	for i, rec := range records {
-		score := BM25RankToScore(ranks[i])
-		if ftsQuery == "" || q.Mode == "recent" {
-			score = 0.5
-		}
-		if rec.Pinned {
-			score += 0.15
-		}
-		if rec.Salience > 0 {
-			score += math.Min(rec.Salience, 1) * 0.10
-		}
-		ageDays := now.Sub(rec.UpdatedAt).Hours() / 24
-		if ageDays >= 0 && ageDays < 30 {
-			score += (30 - ageDays) / 30 * 0.05
-		}
-		if score > 1 {
-			score = 1
-		}
-		cards = append(cards, MemoryCardFromRecord(rec, score, q.IncludeSources))
-	}
-	sort.SliceStable(cards, func(i, j int) bool {
-		if cards[i].Score != cards[j].Score {
-			return cards[i].Score > cards[j].Score
-		}
-		return cards[i].UpdatedAt > cards[j].UpdatedAt
+	tokenAlert := explain.TokenCost > memoryTokenAlertThreshold
+	tokenTelemetry := recordMemoryTokenCost(q.SessionID, explain.TokenCost, q.TokenBudget)
+	recordMemoryTelemetry("query", start, map[string]any{
+		"ok":                                  true,
+		"mode":                                explain.Mode,
+		"intent":                              explain.Intent.Name,
+		"count":                               len(explain.Results),
+		"token_cost":                          explain.TokenCost,
+		"token_budget":                        q.TokenBudget,
+		"token_alert":                         tokenAlert,
+		"token_cost_p50":                      tokenTelemetry.TokenCostP50,
+		"token_cost_p95":                      tokenTelemetry.TokenCostP95,
+		"token_cost_p99":                      tokenTelemetry.TokenCostP99,
+		"session_token_budget_exceeded_count": tokenTelemetry.SessionTokenBudgetExceededCount,
 	})
-	return cards, nil
+	rejected := make([]string, 0, len(explain.Excluded))
+	for _, ex := range explain.Excluded {
+		rejected = append(rejected, ex.ID)
+	}
+	selected := make([]string, 0, len(explain.Results))
+	for _, c := range explain.Results {
+		selected = append(selected, c.ID)
+	}
+	recordRetrievalTrace(MemoryRetrievalTrace{AtMS: time.Now().UTC().UnixMilli(), Query: explain.Query, Mode: explain.Mode, Intent: explain.Intent, LatencyMS: float64(time.Since(start).Microseconds()) / 1000, SelectedIDs: selected, RejectedIDs: rejected, CandidateSet: explain.CandidateSet})
+	return explain.Results, nil
 }
 
 func (b *SQLiteBackend) queryMemoryRecordsLike(q MemoryQuery) ([]MemoryCard, error) {
@@ -441,7 +447,9 @@ func (b *SQLiteBackend) ForgetMemoryRecord(ctx context.Context, id string, mode 
 
 func (b *SQLiteBackend) CompactMemoryRecords(ctx context.Context, cfg CompactionConfig) (CompactionResult, error) {
 	_ = ctx
+	start := time.Now()
 	if err := b.ensureUnifiedSchema(); err != nil {
+		recordMemoryTelemetry("compaction", start, map[string]any{"ok": false, "error": err.Error()})
 		return CompactionResult{}, err
 	}
 	if cfg.Now.IsZero() {
@@ -450,37 +458,161 @@ func (b *SQLiteBackend) CompactMemoryRecords(ctx context.Context, cfg Compaction
 	if cfg.EpisodeTTLDays <= 0 {
 		cfg.EpisodeTTLDays = 30
 	}
-	cutoff := cfg.Now.Add(-time.Duration(cfg.EpisodeTTLDays) * 24 * time.Hour).Unix()
+	episodeCutoff := cfg.Now.Add(-time.Duration(cfg.EpisodeTTLDays) * 24 * time.Hour)
+	cutoff := episodeCutoff.Unix()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var result CompactionResult
-	res, err := b.db.Exec(`UPDATE memory_records SET valid_until = COALESCE(valid_until, ?), updated_at = ? WHERE pinned = 0 AND deleted_at IS NULL AND COALESCE(superseded_by, '') = '' AND type = ? AND updated_at < ?`, cutoff, cfg.Now.Unix(), MemoryRecordTypeEpisode, cutoff)
-	if err == nil {
-		if n, nerr := res.RowsAffected(); nerr == nil {
-			result.Expired = int(n)
-		}
-	}
-	rows, err := b.db.Query(`SELECT hash, MIN(id), COUNT(*) FROM memory_records WHERE pinned = 0 AND deleted_at IS NULL AND COALESCE(superseded_by, '') = '' GROUP BY hash HAVING COUNT(*) > 1`)
-	if err != nil {
-		return result, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var hash, keep string
-		var count int
-		if err := rows.Scan(&hash, &keep, &count); err != nil || hash == "" || keep == "" || count <= 1 {
-			continue
-		}
-		res, err := b.db.Exec(`UPDATE memory_records SET superseded_by = ?, updated_at = ? WHERE hash = ? AND id != ? AND pinned = 0 AND deleted_at IS NULL AND COALESCE(superseded_by, '') = ''`, keep, cfg.Now.Unix(), hash, keep)
+	if !cfg.SkipExpireStale {
+		res, err := b.db.Exec(`UPDATE memory_records SET valid_until = COALESCE(valid_until, ?), updated_at = ? WHERE pinned = 0 AND deleted_at IS NULL AND COALESCE(superseded_by, '') = '' AND type = ? AND updated_at < ?`, cutoff, cfg.Now.Unix(), MemoryRecordTypeEpisode, cutoff)
 		if err == nil {
 			if n, nerr := res.RowsAffected(); nerr == nil {
-				result.Deduped += int(n)
-				result.Superseded += int(n)
+				result.Expired = int(n)
 			}
 		}
 	}
+
+	records, err := loadAllMemoryRecords(b.db)
+	if err != nil {
+		return result, err
+	}
+
+	if !cfg.SkipDedupe {
+		clusters := detectDuplicateClusters(records)
+		protectedTargets := pinnedDurableSupersessionTargets(records)
+		for _, cluster := range clusters {
+			for _, rec := range cluster.Members {
+				if rec.ID == cluster.KeepID || rec.Pinned || isDurableRecord(rec) || protectedTargets[rec.ID] {
+					continue
+				}
+				upd, err := b.db.Exec(`UPDATE memory_records SET superseded_by = ?, updated_at = ? WHERE id = ? AND COALESCE(superseded_by, '') = '' AND deleted_at IS NULL`, cluster.KeepID, cfg.Now.Unix(), rec.ID)
+				if err != nil {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("dedupe supersede %s: %v", rec.ID, err))
+					continue
+				}
+				if n, nerr := upd.RowsAffected(); nerr == nil && n > 0 {
+					result.Deduped += int(n)
+					result.Superseded += int(n)
+				}
+			}
+		}
+	}
+
+	all, err := loadAllMemoryRecords(b.db)
+	if err == nil {
+		byID := make(map[string]MemoryRecord, len(all))
+		for _, rec := range all {
+			byID[rec.ID] = rec
+		}
+		for _, rec := range all {
+			if rec.SupersededBy == "" {
+				continue
+			}
+			target, ok := byID[rec.SupersededBy]
+			if !ok || target.DeletedAt != nil {
+				upd, err := b.db.Exec(`UPDATE memory_records SET superseded_by = '', updated_at = ? WHERE id = ?`, cfg.Now.Unix(), rec.ID)
+				if err != nil {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("repair dangling supersession %s: %v", rec.ID, err))
+					continue
+				}
+				if n, nerr := upd.RowsAffected(); nerr == nil && n > 0 {
+					result.SupersessionFix += int(n)
+				}
+			}
+		}
+
+		fixed, warnings := repairSupersessionCycles(b.db, all, cfg.Now)
+		result.SupersessionFix += fixed
+		result.Warnings = append(result.Warnings, warnings...)
+	}
+
+	if !cfg.SkipExpireStale {
+		latest, err := loadAllMemoryRecords(b.db)
+		if err == nil {
+			for _, rec := range latest {
+				reason := staleReason(rec, cfg.Now, episodeCutoff)
+				if applyStaleFlag(b.db, rec, cfg.Now, reason) {
+					result.StaleFlagged++
+				}
+			}
+		}
+	}
+	if n, err := compactMemoryOutboxLocked(b.db, cfg.Now); err == nil {
+		result.OutboxCompacted = n
+	}
+
+	b.recordMemoryCompactedLocked(cfg.Now, cfg.Reason)
 	b.clearCacheLocked()
+	recordMemoryTelemetry("compaction", start, map[string]any{"ok": true, "expired": result.Expired, "deduped": result.Deduped, "superseded": result.Superseded, "stale": result.StaleFlagged, "repair": result.SupersessionFix, "outbox_compacted": result.OutboxCompacted, "reason": cfg.Reason})
 	return result, nil
+}
+
+func (b *SQLiteBackend) MemoryCompactionState(ctx context.Context) (MemoryCompactionState, error) {
+	_ = ctx
+	if err := b.ensureUnifiedSchema(); err != nil {
+		return MemoryCompactionState{}, err
+	}
+	state := MemoryCompactionState{Now: time.Now().UTC()}
+	_ = b.db.QueryRow(`SELECT COUNT(*) FROM memory_records`).Scan(&state.RecordCount)
+	state.WritesSinceCompact = maintenanceInt(b.db, "writes_since_compact")
+	state.LastCompactedAt = unixTimeFromMaintenance(b.db, "last_compacted_at")
+	state.LastWriteAt = unixTimeFromMaintenance(b.db, "last_write_at")
+	state.LastDailyCompactDate = maintenanceString(b.db, "last_daily_compact_date")
+	return state, nil
+}
+
+func (b *SQLiteBackend) bumpMemoryWriteCountersLocked(now time.Time) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	writes := maintenanceInt(b.db, "writes_since_compact") + 1
+	maintenanceSet(b.db, "writes_since_compact", fmt.Sprintf("%d", writes), now)
+	maintenanceSet(b.db, "last_write_at", fmt.Sprintf("%d", now.Unix()), now)
+}
+
+func (b *SQLiteBackend) recordMemoryCompactedLocked(now time.Time, reason string) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	maintenanceSet(b.db, "writes_since_compact", "0", now)
+	maintenanceSet(b.db, "last_compacted_at", fmt.Sprintf("%d", now.Unix()), now)
+	maintenanceSet(b.db, "last_compact_reason", strings.TrimSpace(reason), now)
+	if now.Local().Hour() >= DefaultMemoryCompactionDailyHour {
+		maintenanceSet(b.db, "last_daily_compact_date", now.Local().Format("2006-01-02"), now)
+	}
+}
+
+func maintenanceSet(db *sql.DB, key, value string, now time.Time) {
+	if db == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	_, _ = db.Exec(`INSERT INTO memory_maintenance_state(key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, now.Unix())
+}
+
+func maintenanceString(db *sql.DB, key string) string {
+	if db == nil || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	var value string
+	if err := db.QueryRow(`SELECT value FROM memory_maintenance_state WHERE key = ?`, key).Scan(&value); err != nil {
+		return ""
+	}
+	return value
+}
+
+func maintenanceInt(db *sql.DB, key string) int {
+	var out int
+	_, _ = fmt.Sscanf(maintenanceString(db, key), "%d", &out)
+	return out
+}
+
+func unixTimeFromMaintenance(db *sql.DB, key string) time.Time {
+	var unix int64
+	_, _ = fmt.Sscanf(maintenanceString(db, key), "%d", &unix)
+	if unix <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(unix, 0).UTC()
 }
 
 func normalizeMemoryQuery(q MemoryQuery) MemoryQuery {
