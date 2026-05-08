@@ -317,3 +317,53 @@ func unsignedRumorEvent(t *testing.T, keyer nostr.Keyer, evt nostr.Event) nostr.
 	evt.ID = evt.GetID()
 	return evt
 }
+
+// TestNIP17SendDMAcceptsLongMessages verifies that NIP-17 outbound messages
+// are not artificially limited by the NIP-04 size constraint.
+func TestNIP17SendDMAcceptsLongMessages(t *testing.T) {
+	bus, keyer, recipientPubKey := newTestNIP17BusIdentity(t)
+	bus.kr = keyer
+	// Note: We don't set up a pool, so the actual publish will fail.
+	// We're only testing that validation doesn't reject long messages.
+
+	// Create a message longer than the old NIP-04 limit (2800 chars)
+	longText := ""
+	for i := 0; i < 3000; i++ {
+		longText += "x"
+	}
+
+	// This should NOT fail with "dm text exceeds 2800 characters"
+	// It may fail later in the publish path, but not at validation
+	err := bus.SendDM(context.Background(), recipientPubKey.Hex(), longText)
+	// We expect failure because we haven't set up relays, but the error
+	// should NOT be about message length
+	if err != nil && err.Error() == "dm text exceeds 2800 characters" {
+		t.Fatalf("NIP-17 SendDM should not enforce NIP-04 size limit, got: %v", err)
+	}
+}
+
+// TestNIP17SendDMRejectsEmptyMessages verifies that empty/whitespace-only
+// messages are still rejected.
+func TestNIP17SendDMRejectsEmptyMessages(t *testing.T) {
+	bus, keyer, recipientPubKey := newTestNIP17BusIdentity(t)
+	bus.kr = keyer
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"empty string", ""},
+		{"whitespace only", "   "},
+		{"tabs only", "\t\t"},
+		{"newlines only", "\n\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := bus.SendDM(context.Background(), recipientPubKey.Hex(), tt.input)
+			if err == nil || err.Error() != "dm text is empty" {
+				t.Fatalf("expected 'dm text is empty' error, got: %v", err)
+			}
+		})
+	}
+}

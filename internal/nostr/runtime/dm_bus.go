@@ -104,10 +104,9 @@ func (b *DMBus) nip04EncryptKeyer() nostr.Keyer {
 	return b.signKeyer
 }
 
-// maxDMPlaintextRunes is the maximum runes per DM chunk. NIP-04 encryption
-// adds ~33% overhead (AES-CBC + base64), so 2800 chars encrypts to ~3700 bytes,
-// safely under the common relay limit of 4096 bytes for encrypted content.
-const maxDMPlaintextRunes = 2800
+// Deprecated: use maxNIP04OutboundPlaintextRunes from dm_text.go.
+// Kept for backward compatibility with chunkNIP04DMText.
+const maxDMPlaintextRunes = maxNIP04OutboundPlaintextRunes
 
 func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 	initialRelays := sanitizeRelayList(opts.Relays)
@@ -263,7 +262,7 @@ func (b *DMBus) SendDM(ctx context.Context, toPubKey string, text string) error 
 		return err
 	}
 	// Auto-chunk long messages to stay under relay limits
-	chunks := chunkDMText(text)
+	chunks := chunkNIP04DMText(text)
 	if len(chunks) == 0 {
 		return fmt.Errorf("dm text is empty")
 	}
@@ -442,7 +441,7 @@ func (b *DMBus) handleInbound(re nostr.RelayEvent) {
 		Scheme:     "nip04",
 		Reply: func(ctx context.Context, text string) error {
 			// Auto-chunk long replies to stay under relay limits
-			chunks := chunkDMText(text)
+			chunks := chunkNIP04DMText(text)
 			if len(chunks) == 0 {
 				return fmt.Errorf("dm text is empty")
 			}
@@ -1132,21 +1131,20 @@ func (b *DMBus) currentRelays() []string {
 	return out
 }
 
+// Deprecated: NIP-04 code should use validateNIP04OutboundDMText from dm_text.go.
+// This function is kept temporarily for any internal DMBus paths that haven't
+// been migrated yet, but new code should not call it.
 func sanitizeDMText(text string) (string, error) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return "", fmt.Errorf("dm text is empty")
-	}
-	if utf8.RuneCountInString(text) > maxDMPlaintextRunes {
-		return "", fmt.Errorf("dm text exceeds %d characters", maxDMPlaintextRunes)
-	}
-	return text, nil
+	return validateNIP04OutboundDMText(text)
 }
 
-// chunkDMText splits text into chunks that fit within maxDMPlaintextRunes.
-// It tries to break at paragraph boundaries (double newline), then sentence
-// endings, then word boundaries, falling back to hard rune splits.
-func chunkDMText(text string) []string {
+// chunkNIP04DMText splits NIP-04 DM text into chunks that fit within the
+// NIP-04 size limit (maxNIP04OutboundPlaintextRunes). It tries to break at
+// paragraph boundaries (double newline), then sentence endings, then word
+// boundaries, falling back to hard rune splits.
+//
+// Use this ONLY for NIP-04 messages. Do NOT use for NIP-17.
+func chunkNIP04DMText(text string) []string {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
