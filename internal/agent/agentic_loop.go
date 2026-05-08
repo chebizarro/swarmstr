@@ -310,8 +310,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			pf := EnforceTotalContextBudget(guardedMsgs, activeTools, cfg.ContextWindowTokens, DefaultCriticalToolNames())
 			// Preserve existing state semantics for pre-flight-only guard changes:
 			// the provider sees pf.Messages, but loop state is only replaced when
-			// history/tools were trimmed or when steering was actually injected.
-			if pf.HistoryTrimmed > 0 || pf.ToolsDropped > 0 || steered {
+			// history/context/tools were trimmed or when steering was actually injected.
+			if pf.HistoryTrimmed > 0 || pf.ContextTruncated || pf.ToolsDropped > 0 || steered {
 				messages = pf.Messages
 				activeTools = pf.Tools
 			}
@@ -902,8 +902,12 @@ func isCriticalToolError(err error) bool {
 // agentic loop if needed. This eliminates the duplicated loop code from
 // each provider.
 func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Turn, providerSystemPrompt, logPrefix string) (ProviderResult, error) {
-	messages := buildLLMMessagesFromTurn(turn, providerSystemPrompt)
-	opts := chatOptionsFromTurn(turn)
+	profile := disabledPromptCacheProfile()
+	if profileProvider, ok := provider.(promptCacheProfileProvider); ok {
+		profile = profileProvider.PromptCacheProfile()
+	}
+	messages := buildLLMMessagesFromTurnWithProfile(turn, providerSystemPrompt, profile)
+	opts := chatOptionsFromTurn(turn, profile)
 	tools := turn.Tools
 
 	// Pre-flight total budget gate: measure messages + tools together and
@@ -913,10 +917,10 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 	preflight := EnforceTotalContextBudget(messages, tools, turn.ContextWindowTokens, DefaultCriticalToolNames())
 	messages = preflight.Messages
 	tools = preflight.Tools
-	if preflight.HistoryTrimmed > 0 || preflight.ToolsDropped > 0 || preflight.SystemTruncated {
-		log.Printf("%s: preflight gate trimmed to fit %d-token window: est=%d budget=%d history_trimmed=%d tools_dropped=%d sys_truncated=%v",
+	if preflight.HistoryTrimmed > 0 || preflight.ContextTruncated || preflight.ToolsDropped > 0 || preflight.SystemTruncated {
+		log.Printf("%s: preflight gate trimmed to fit %d-token window: est=%d budget=%d history_trimmed=%d context_truncated=%v tools_dropped=%d sys_truncated=%v",
 			logPrefix, turn.ContextWindowTokens, preflight.EstimatedTokens, preflight.BudgetTokens,
-			preflight.HistoryTrimmed, preflight.ToolsDropped, preflight.SystemTruncated)
+			preflight.HistoryTrimmed, preflight.ContextTruncated, preflight.ToolsDropped, preflight.SystemTruncated)
 	}
 
 	// If no executor or no tools, just do a single call.

@@ -438,6 +438,19 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 				if v, ok := pm["model"].(string); ok {
 					entry.Model = strings.TrimSpace(v)
 				}
+				if promptCacheRaw, ok := pm["prompt_cache"].(map[string]any); ok {
+					var promptCache state.ProviderPromptCacheConfig
+					if v, ok := promptCacheRaw["enabled"].(bool); ok {
+						promptCache.Enabled = state.BoolPtr(v)
+					}
+					if v, ok := promptCacheRaw["backend"].(string); ok {
+						promptCache.Backend = strings.TrimSpace(v)
+					}
+					if v, ok := promptCacheRaw["dynamic_context_placement"].(string); ok {
+						promptCache.DynamicContextPlacement = strings.TrimSpace(v)
+					}
+					entry.PromptCache = &promptCache
+				}
 				if extraRaw, ok := pm["extra"].(map[string]any); ok {
 					entry.Extra = make(map[string]any, len(extraRaw))
 					for key, value := range extraRaw {
@@ -446,7 +459,7 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 				}
 				for key, value := range pm {
 					switch key {
-					case "enabled", "api_key", "apiKey", "api_keys", "apiKeys", "base_url", "baseUrl", "model", "extra":
+					case "enabled", "api_key", "apiKey", "api_keys", "apiKeys", "base_url", "baseUrl", "model", "prompt_cache", "extra":
 						continue
 					}
 					if entry.Extra == nil {
@@ -969,6 +982,8 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 			errs = append(errs, detectUnknownNostrChannelKeys(value)...)
 		case "permissions":
 			errs = append(errs, detectUnknownPermissionsKeys(value)...)
+		case "providers":
+			errs = append(errs, detectUnknownProviderPromptCacheKeys(value)...)
 		}
 	}
 	slices.Sort(errs)
@@ -1069,6 +1084,36 @@ func detectUnknownAgentsKeys(raw any) []string {
 		}
 		if list, ok := typed["list"].([]any); ok {
 			errs = append(errs, detectUnknownAgentsKeys(list)...)
+		}
+	}
+	return errs
+}
+
+func detectUnknownProviderPromptCacheKeys(raw any) []string {
+	providers, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	allowedPromptCache := []string{"enabled", "backend", "dynamic_context_placement"}
+	var errs []string
+	for name, item := range providers {
+		pm, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		promptCacheRaw, exists := pm["prompt_cache"]
+		if !exists {
+			continue
+		}
+		promptCache, ok := promptCacheRaw.(map[string]any)
+		if !ok {
+			errs = append(errs, "providers."+name+".prompt_cache")
+			continue
+		}
+		for key := range promptCache {
+			if !slices.Contains(allowedPromptCache, key) {
+				errs = append(errs, "providers."+name+".prompt_cache."+key)
+			}
 		}
 	}
 	return errs

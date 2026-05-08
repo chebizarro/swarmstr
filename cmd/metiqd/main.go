@@ -2237,6 +2237,7 @@ func main() {
 					model,
 					override.APIKey,
 					override.BaseURL,
+					override.PromptCache,
 					agCfg.FallbackModels,
 					fbOverrides,
 					override.SystemPrompt,
@@ -7514,7 +7515,7 @@ func providerOverrideForEntry(name string, pe state.ProviderEntry) agent.Provide
 			}
 		}
 	}
-	return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: apiKey, Model: pe.Model}
+	return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: apiKey, Model: pe.Model, PromptCache: pe.PromptCache}
 }
 
 func autoResolveProviderOverride(model string, providers map[string]state.ProviderEntry) agent.ProviderOverride {

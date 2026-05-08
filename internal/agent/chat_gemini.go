@@ -18,9 +18,14 @@ import (
 
 // GeminiChatProvider makes a single Google Gemini API call.
 type GeminiChatProvider struct {
-	APIKey string
-	Model  string
-	Client *http.Client
+	APIKey      string
+	Model       string
+	Client      *http.Client
+	PromptCache *PromptCacheProfile
+}
+
+func (p *GeminiChatProvider) PromptCacheProfile() PromptCacheProfile {
+	return promptCacheProfileOrDefault(p.PromptCache, PromptCacheProviderGemini)
 }
 
 // Chat implements ChatProvider.
@@ -108,17 +113,22 @@ func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, to
 
 	geminiTools := toolDefsToGemini(tools)
 
-	// Attempt Gemini CachedContent for the system instruction + tools.
+	// Attempt Gemini CachedContent for the system instruction + tools only
+	// when the resolved prompt-cache profile enables Gemini's native cache.
 	// When a cached content resource is active, we omit systemInstruction and
 	// tools from the request body (the server uses the cached versions).
 	req := geminiRequest{
-		Contents: contents,
+		Contents:          contents,
+		SystemInstruction: systemInstruction,
+		Tools:             geminiTools,
 	}
-	if cachedName := resolveGeminiCache(ctx, apiKey, model, systemInstruction, geminiTools, p.Client); cachedName != "" {
-		req.CachedContent = cachedName
-	} else {
-		req.SystemInstruction = systemInstruction
-		req.Tools = geminiTools
+	profile := p.PromptCacheProfile()
+	if profile.Enabled && profile.UseGeminiCachedContent {
+		if cachedName := resolveGeminiCache(ctx, apiKey, model, systemInstruction, geminiTools, p.Client); cachedName != "" {
+			req.CachedContent = cachedName
+			req.SystemInstruction = nil
+			req.Tools = nil
+		}
 	}
 
 	body, err := json.Marshal(req)

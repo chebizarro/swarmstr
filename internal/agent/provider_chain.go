@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+
+	"metiq/internal/store/state"
 )
 
 // ─── Provider-level FallbackChain and ModelRouter wrappers ────────────────────
@@ -15,7 +17,7 @@ import (
 // BuildChatProviderForModel creates a ChatProvider for the given model string
 // and optional credentials. This is the bridge between model names and the
 // ChatProvider interface used by the agentic loop and FallbackChain.
-func BuildChatProviderForModel(model string, apiKey string, baseURL string) (ChatProvider, error) {
+func BuildChatProviderForModel(model string, apiKey string, baseURL string, promptCache *state.ProviderPromptCacheConfig) (ChatProvider, error) {
 	norm := strings.ToLower(strings.TrimSpace(model))
 
 	switch {
@@ -24,22 +26,37 @@ func BuildChatProviderForModel(model string, apiKey string, baseURL string) (Cha
 		if err != nil {
 			return nil, err
 		}
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderAnthropic, promptCache)
+		if err != nil {
+			return nil, err
+		}
+		anthropicOpts := []AnthropicChatOption{
+			WithModel(model),
+			WithAnthropicPromptCacheProfile(profile),
+		}
 		if access, refresh, isOAuth := ParseAnthropicOAuthCredential(credential); isOAuth {
 			p := &AnthropicProvider{}
 			return NewAnthropicChatProviderOAuth(access, func() (string, error) {
 				return p.resolveOAuthToken(access, refresh)
-			}), nil
+			}, anthropicOpts...), nil
 		}
-		return NewAnthropicChatProvider(credential), nil
+		return NewAnthropicChatProvider(credential, anthropicOpts...), nil
 
 	case norm == "gemini" || strings.HasPrefix(norm, "gemini-"):
 		credential, err := requireProviderCredential("Gemini", model, apiKey, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY")
 		if err != nil {
 			return nil, err
 		}
-		return &GeminiChatProvider{APIKey: credential, Model: model}, nil
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderGemini, promptCache)
+		if err != nil {
+			return nil, err
+		}
+		return &GeminiChatProvider{APIKey: credential, Model: model, PromptCache: promptCacheProfilePtr(profile)}, nil
 
 	case norm == "copilot-cli" || strings.HasPrefix(norm, "copilot-cli/"):
+		if _, err := ResolvePromptCacheProfile(PromptCacheProviderUnsupported, promptCache); err != nil {
+			return nil, err
+		}
 		cliModel := "gpt-4.1"
 		if strings.HasPrefix(norm, "copilot-cli/") {
 			cliModel = strings.TrimPrefix(norm, "copilot-cli/")
@@ -56,7 +73,11 @@ func BuildChatProviderForModel(model string, apiKey string, baseURL string) (Cha
 		if err != nil {
 			return nil, err
 		}
-		return &OpenAIChatProviderChat{BaseURL: effectiveBase, APIKey: credential, Model: model}, nil
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderOpenAICompatible, promptCache)
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIChatProviderChat{BaseURL: effectiveBase, APIKey: credential, Model: model, PromptCache: promptCacheProfilePtr(profile)}, nil
 	}
 
 	// Try OpenAI-compatible providers by prefix/alias.
@@ -69,7 +90,11 @@ func BuildChatProviderForModel(model string, apiKey string, baseURL string) (Cha
 		if err != nil {
 			return nil, err
 		}
-		return &OpenAIChatProviderChat{BaseURL: effectiveBase, APIKey: credential, Model: model}, nil
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderOpenAICompatible, promptCache)
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIChatProviderChat{BaseURL: effectiveBase, APIKey: credential, Model: model, PromptCache: promptCacheProfilePtr(profile)}, nil
 	}
 
 	return nil, fmt.Errorf("cannot create ChatProvider for model %q", model)
@@ -91,12 +116,13 @@ func NewFallbackChainProvider(
 	primaryModel string,
 	primaryAPIKey string,
 	primaryBaseURL string,
+	primaryPromptCache *state.ProviderPromptCacheConfig,
 	fallbackModels []string,
 	overrides map[string]ProviderOverride,
 	systemPrompt string,
 ) (*FallbackChainProvider, error) {
 	// Build primary candidate.
-	primaryCP, err := BuildChatProviderForModel(primaryModel, primaryAPIKey, primaryBaseURL)
+	primaryCP, err := BuildChatProviderForModel(primaryModel, primaryAPIKey, primaryBaseURL, primaryPromptCache)
 	if err != nil {
 		return nil, fmt.Errorf("primary model %q: %w", primaryModel, err)
 	}
@@ -112,11 +138,13 @@ func NewFallbackChainProvider(
 			continue
 		}
 		var fbKey, fbBase string
+		var fbPromptCache *state.ProviderPromptCacheConfig
 		if ov, ok := overrides[fbModel]; ok {
 			fbKey = ov.APIKey
 			fbBase = ov.BaseURL
+			fbPromptCache = ov.PromptCache
 		}
-		fbCP, fbErr := BuildChatProviderForModel(fbModel, fbKey, fbBase)
+		fbCP, fbErr := BuildChatProviderForModel(fbModel, fbKey, fbBase, fbPromptCache)
 		if fbErr != nil {
 			log.Printf("fallback-chain: skipping model %q: %v", fbModel, fbErr)
 			continue
@@ -133,6 +161,13 @@ func NewFallbackChainProvider(
 		systemPrompt: systemPrompt,
 		logPrefix:    "fallback-chain",
 	}, nil
+}
+
+func (p *FallbackChainProvider) PromptCacheProfile() PromptCacheProfile {
+	if p == nil || p.chain == nil {
+		return disabledPromptCacheProfile()
+	}
+	return p.chain.PromptCacheProfile()
 }
 
 // Generate implements Provider.

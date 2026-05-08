@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"metiq/internal/store/state"
 )
 
 func TestBuildChatProviderForModel_Anthropic(t *testing.T) {
-	cp, err := BuildChatProviderForModel("claude-sonnet-4-5", "test-key", "")
+	cp, err := BuildChatProviderForModel("claude-sonnet-4-5", "test-key", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +22,7 @@ func TestBuildChatProviderForModel_Anthropic(t *testing.T) {
 func TestBuildChatProviderForModel_AnthropicOAuthEnv(t *testing.T) {
 	clearProviderCredentialEnv(t)
 	t.Setenv("ANTHROPIC_OAUTH_TOKEN", "sk-ant-oat01-test")
-	cp, err := BuildChatProviderForModel("claude-sonnet-4-5", "", "")
+	cp, err := BuildChatProviderForModel("claude-sonnet-4-5", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +32,7 @@ func TestBuildChatProviderForModel_AnthropicOAuthEnv(t *testing.T) {
 }
 
 func TestBuildChatProviderForModel_Gemini(t *testing.T) {
-	cp, err := BuildChatProviderForModel("gemini-2.0-flash", "test-key", "")
+	cp, err := BuildChatProviderForModel("gemini-2.0-flash", "test-key", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,12 +42,44 @@ func TestBuildChatProviderForModel_Gemini(t *testing.T) {
 }
 
 func TestBuildChatProviderForModel_OpenAI(t *testing.T) {
-	cp, err := BuildChatProviderForModel("gpt-4o", "test-key", "")
+	cp, err := BuildChatProviderForModel("gpt-4o", "test-key", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := cp.(*OpenAIChatProviderChat); !ok {
 		t.Errorf("expected *OpenAIChatProviderChat, got %T", cp)
+	}
+}
+
+func TestBuildChatProviderForModel_PassesPromptCacheConfig(t *testing.T) {
+	cp, err := BuildChatProviderForModel("ollama/llama3", "", "", &state.ProviderPromptCacheConfig{Backend: "vllm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileProvider, ok := cp.(promptCacheProfileProvider)
+	if !ok {
+		t.Fatalf("expected prompt-cache-aware provider, got %T", cp)
+	}
+	profile := profileProvider.PromptCacheProfile()
+	if !profile.Enabled || profile.Backend != PromptCacheBackendVLLM || profile.DynamicContextPlacement != DynamicContextPlacementLateUser {
+		t.Fatalf("unexpected prompt-cache profile: %#v", profile)
+	}
+}
+
+func TestBuildChatProviderForModel_AnthropicKeepsRequestedModelWithPromptCache(t *testing.T) {
+	cp, err := BuildChatProviderForModel("claude-sonnet-4-5", "test-key", "", &state.ProviderPromptCacheConfig{Enabled: state.BoolPtr(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anthropicProvider, ok := cp.(*AnthropicChatProvider)
+	if !ok {
+		t.Fatalf("expected *AnthropicChatProvider, got %T", cp)
+	}
+	if got := anthropicProvider.modelOrDefault(); got != "claude-sonnet-4-5" {
+		t.Fatalf("expected provider-chain Anthropic model to be preserved, got %q", got)
+	}
+	if anthropicProvider.PromptCacheProfile().UseAnthropicCacheControl {
+		t.Fatalf("expected disabled prompt-cache profile to turn off Anthropic cache controls")
 	}
 }
 
@@ -63,7 +97,7 @@ func TestBuildChatProviderForModel_HostedCredentialsRequired(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clearProviderCredentialEnv(t)
-			_, err := BuildChatProviderForModel(tc.model, "", "")
+			_, err := BuildChatProviderForModel(tc.model, "", "", nil)
 			if err == nil {
 				t.Fatalf("expected missing credential error for %s", tc.model)
 			}
@@ -76,7 +110,7 @@ func TestBuildChatProviderForModel_HostedCredentialsRequired(t *testing.T) {
 
 func TestBuildChatProviderForModel_LocalCompatAllowsMissingCredential(t *testing.T) {
 	clearProviderCredentialEnv(t)
-	cp, err := BuildChatProviderForModel("ollama/llama3", "", "")
+	cp, err := BuildChatProviderForModel("ollama/llama3", "", "", nil)
 	if err != nil {
 		t.Fatalf("expected local Ollama without API key to work: %v", err)
 	}
@@ -86,7 +120,7 @@ func TestBuildChatProviderForModel_LocalCompatAllowsMissingCredential(t *testing
 }
 
 func TestBuildChatProviderForModel_CopilotCLI(t *testing.T) {
-	p, err := BuildChatProviderForModel("copilot-cli", "", "")
+	p, err := BuildChatProviderForModel("copilot-cli", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,7 +130,7 @@ func TestBuildChatProviderForModel_CopilotCLI(t *testing.T) {
 }
 
 func TestBuildChatProviderForModel_CopilotCLIWithModel(t *testing.T) {
-	p, err := BuildChatProviderForModel("copilot-cli/claude-sonnet-4", "", "")
+	p, err := BuildChatProviderForModel("copilot-cli/claude-sonnet-4", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,9 +144,44 @@ func TestBuildChatProviderForModel_CopilotCLIWithModel(t *testing.T) {
 }
 
 func TestBuildChatProviderForModel_Unknown(t *testing.T) {
-	_, err := BuildChatProviderForModel("unknown-model-xyz", "", "")
+	_, err := BuildChatProviderForModel("unknown-model-xyz", "", "", nil)
 	if err == nil {
 		t.Fatal("expected error for unknown model")
+	}
+}
+
+func TestFallbackChainProvider_PrimaryPromptCachePolicy(t *testing.T) {
+	primaryCache := &state.ProviderPromptCacheConfig{Backend: "vllm"}
+	fallbackCache := &state.ProviderPromptCacheConfig{Backend: "llama_server"}
+	provider, err := NewFallbackChainProvider(
+		"gpt-4o",
+		"",
+		"http://localhost:8080/v1",
+		primaryCache,
+		[]string{"ollama/llama3"},
+		map[string]ProviderOverride{
+			"ollama/llama3": {PromptCache: fallbackCache},
+		},
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	primaryProfile := provider.PromptCacheProfile()
+	if !primaryProfile.Enabled || primaryProfile.Backend != PromptCacheBackendVLLM || primaryProfile.SendLlamaCachePrompt {
+		t.Fatalf("fallback chain should expose primary vLLM layout policy, got %#v", primaryProfile)
+	}
+	if len(provider.chain.candidates) != 2 {
+		t.Fatalf("expected primary and fallback candidates, got %d", len(provider.chain.candidates))
+	}
+	fallbackProfileProvider, ok := provider.chain.candidates[1].Provider.(promptCacheProfileProvider)
+	if !ok {
+		t.Fatalf("expected fallback candidate to carry its own prompt-cache policy, got %T", provider.chain.candidates[1].Provider)
+	}
+	fallbackProfile := fallbackProfileProvider.PromptCacheProfile()
+	if fallbackProfile.Backend != PromptCacheBackendLlamaServer || !fallbackProfile.SendLlamaCachePrompt {
+		t.Fatalf("fallback candidate prompt-cache override was not preserved: %#v", fallbackProfile)
 	}
 }
 

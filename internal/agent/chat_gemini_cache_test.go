@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -123,6 +124,126 @@ func TestResolveGeminiCache_SkipsNilInstruction(t *testing.T) {
 		nil, nil, nil)
 	if result != "" {
 		t.Errorf("expected empty for nil instruction, got %q", result)
+	}
+}
+
+type geminiRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f geminiRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestGeminiChatProvider_PromptCacheDisabledSendsInlineSystemAndTools(t *testing.T) {
+	longPrompt := strings.Repeat("static system ", 200)
+	tools := []ToolDefinition{{
+		Name:        "lookup",
+		Description: "lookup data",
+		Parameters:  ToolParameters{Type: "object"},
+	}}
+
+	var captured geminiRequest
+	var paths []string
+	client := &http.Client{Transport: geminiRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		if strings.Contains(req.URL.Path, "cachedContents") {
+			t.Fatalf("disabled Gemini prompt cache should not call CachedContent API: %s", req.URL.Path)
+		}
+		if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode generate request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"candidates":[{"content":{"parts":[{"text":"ok"}]}}],
+				"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12}
+			}`)),
+		}, nil
+	})}
+
+	provider := &GeminiChatProvider{
+		APIKey: "test-key",
+		Model:  "gemini-2.0-flash",
+		Client: client,
+		PromptCache: &PromptCacheProfile{
+			Enabled:                 false,
+			DynamicContextPlacement: DynamicContextPlacementSystem,
+		},
+	}
+	_, err := provider.Chat(context.Background(), []LLMMessage{
+		{Role: "system", Content: longPrompt},
+		{Role: "user", Content: "hello"},
+	}, tools, ChatOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || !strings.Contains(paths[0], ":generateContent") {
+		t.Fatalf("expected one generateContent request, got paths %#v", paths)
+	}
+	if captured.CachedContent != "" {
+		t.Fatalf("disabled Gemini prompt cache should not send cachedContent, got %q", captured.CachedContent)
+	}
+	if captured.SystemInstruction == nil {
+		t.Fatal("disabled Gemini prompt cache should send inline systemInstruction")
+	}
+	if len(captured.Tools) == 0 {
+		t.Fatal("disabled Gemini prompt cache should send inline tools")
+	}
+}
+
+func TestGeminiChatProvider_PromptCacheEnabledUsesCachedContentHit(t *testing.T) {
+	globalGeminiContextCache.clear()
+	defer globalGeminiContextCache.clear()
+
+	longPrompt := strings.Repeat("static system ", 200)
+	tools := []ToolDefinition{{
+		Name:        "lookup",
+		Description: "lookup data",
+		Parameters:  ToolParameters{Type: "object"},
+	}}
+	cacheKey := geminiCacheKey("gemini-2.0-flash", longPrompt, nil)
+	globalGeminiContextCache.store(cacheKey, "cachedContents/preloaded", time.Now().Add(time.Hour))
+
+	var captured geminiRequest
+	var paths []string
+	client := &http.Client{Transport: geminiRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		if strings.Contains(req.URL.Path, "cachedContents") {
+			t.Fatalf("local Gemini cache hit should not create CachedContent: %s", req.URL.Path)
+		}
+		if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode generate request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"candidates":[{"content":{"parts":[{"text":"ok"}]}}],
+				"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12,"cachedContentTokenCount":8}
+			}`)),
+		}, nil
+	})}
+
+	provider := &GeminiChatProvider{
+		APIKey: "test-key",
+		Model:  "gemini-2.0-flash",
+		Client: client,
+	}
+	_, err := provider.Chat(context.Background(), []LLMMessage{
+		{Role: "system", Content: longPrompt},
+		{Role: "user", Content: "hello"},
+	}, tools, ChatOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || !strings.Contains(paths[0], ":generateContent") {
+		t.Fatalf("expected one generateContent request, got paths %#v", paths)
+	}
+	if captured.CachedContent != "cachedContents/preloaded" {
+		t.Fatalf("expected cachedContent hit in request, got %#v", captured)
+	}
+	if captured.SystemInstruction != nil || len(captured.Tools) != 0 {
+		t.Fatalf("cachedContent request should omit inline system/tools, got system=%#v tools=%#v", captured.SystemInstruction, captured.Tools)
 	}
 }
 

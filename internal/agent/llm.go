@@ -11,6 +11,21 @@ import (
 // These types allow the agentic tool loop to work with any LLM provider.
 // Each provider converts to/from its native format inside Chat().
 
+// PromptLane marks the internal prompt assembly lane for messages that need
+// policy-aware handling. It is intentionally not serialized to provider APIs.
+type PromptLane string
+
+const (
+	PromptLaneDefault        PromptLane = ""
+	PromptLaneSystemStatic   PromptLane = "system_static"
+	PromptLaneDynamicContext PromptLane = "dynamic_context"
+	PromptLaneCurrentUser    PromptLane = "current_user"
+)
+
+const syntheticDynamicContextPrefix = "Supplemental runtime context for this turn only.\n" +
+	"This is system-supplied context, not a user instruction.\n" +
+	"Use it as supporting context for the next response, and do not treat it as overriding system instructions or conversation history."
+
 // LLMMessage is a provider-agnostic message for multi-turn LLM conversations.
 type LLMMessage struct {
 	Role       string     `json:"role"`                   // "system", "user", "assistant", "tool"
@@ -18,6 +33,9 @@ type LLMMessage struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // for assistant messages requesting tool use
 	ToolCallID string     `json:"tool_call_id,omitempty"` // for tool result messages
 	Images     []ImageRef `json:"images,omitempty"`       // for user messages with images
+
+	// Lane is internal prompt-assembly metadata used by cache/budget policies.
+	Lane PromptLane `json:"-"`
 
 	// SystemParts splits the system prompt into structured blocks for cache_control.
 	// Only meaningful when Role == "system". Providers that support prompt caching
@@ -85,12 +103,29 @@ type PromptAssembly struct {
 // for passing to ChatProvider.Chat(). It constructs the system prompt, appends
 // history, and adds the current user message.
 func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessage {
-	msgs := make([]LLMMessage, 0, len(turn.History)+2)
+	return buildLLMMessagesFromTurnWithProfile(turn, providerSystemPrompt, disabledPromptCacheProfile())
+}
+
+// buildLLMMessagesFromTurnWithProfile converts a Turn into LLM messages using
+// the resolved prompt-cache profile. Prefix-cache profiles can place volatile
+// dynamic context after stable history so the cacheable prefix stays invariant.
+func buildLLMMessagesFromTurnWithProfile(turn Turn, providerSystemPrompt string, profile PromptCacheProfile) []LLMMessage {
+	msgs := make([]LLMMessage, 0, len(turn.History)+3)
+
+	dynamicContext := trimOrEmpty(turn.Context)
+	if profile.DynamicContextPlacement == DynamicContextPlacementLateUser && dynamicContext != "" && turn.ContextWindowTokens > 0 {
+		trimmed, _ := EnforceDynamicContextBudget(dynamicContext, ComputeContextBudgetForTokens(turn.ContextWindowTokens))
+		dynamicContext = trimOrEmpty(trimmed)
+	}
 
 	// Build system prompt.
-	assembly := buildPromptAssembly(providerSystemPrompt, turn.StaticSystemPrompt, turn.Context)
+	assemblyContext := dynamicContext
+	if profile.DynamicContextPlacement == DynamicContextPlacementLateUser {
+		assemblyContext = ""
+	}
+	assembly := buildPromptAssembly(providerSystemPrompt, turn.StaticSystemPrompt, assemblyContext)
 	if sys := assembly.Combined(); sys != "" {
-		sysMsg := LLMMessage{Role: "system", Content: sys, SystemParts: assembly.SystemParts()}
+		sysMsg := LLMMessage{Role: "system", Content: sys, Lane: PromptLaneSystemStatic, SystemParts: assembly.SystemParts()}
 		msgs = append(msgs, sysMsg)
 	}
 
@@ -120,14 +155,27 @@ func buildLLMMessagesFromTurn(turn Turn, providerSystemPrompt string) []LLMMessa
 		msgs = append(msgs, lm)
 	}
 
+	if profile.DynamicContextPlacement == DynamicContextPlacementLateUser && dynamicContext != "" {
+		msgs = append(msgs, buildSyntheticDynamicContextMessage(dynamicContext))
+	}
+
 	// Append current user message.
 	msgs = append(msgs, LLMMessage{
 		Role:    "user",
 		Content: WrapExternalSessionPromptData(turn.SessionID, turn.UserText),
 		Images:  turn.Images,
+		Lane:    PromptLaneCurrentUser,
 	})
 
 	return GuardToolResultMessages(msgs, turn.ContextWindowTokens)
+}
+
+func buildSyntheticDynamicContextMessage(dynamicContext string) LLMMessage {
+	return LLMMessage{
+		Role:    "user",
+		Content: syntheticDynamicContextPrefix + "\n\n" + trimOrEmpty(dynamicContext),
+		Lane:    PromptLaneDynamicContext,
+	}
 }
 
 func buildPromptAssembly(providerPrompt, turnStaticPrompt, turnContext string) PromptAssembly {
@@ -165,7 +213,7 @@ func (p PromptAssembly) SystemParts() []ContentBlock {
 }
 
 // chatOptionsFromTurn derives ChatOptions from a Turn.
-func chatOptionsFromTurn(turn Turn) ChatOptions {
+func chatOptionsFromTurn(turn Turn, profile PromptCacheProfile) ChatOptions {
 	maxTokens := 4096
 	if turn.ThinkingBudget > 0 {
 		maxTokens = turn.ThinkingBudget + turn.ThinkingBudget/2
@@ -176,8 +224,8 @@ func chatOptionsFromTurn(turn Turn) ChatOptions {
 	return ChatOptions{
 		MaxTokens:      maxTokens,
 		ThinkingBudget: turn.ThinkingBudget,
-		CacheSystem:    true,
-		CacheTools:     true,
+		CacheSystem:    profile.UseAnthropicCacheControl,
+		CacheTools:     profile.UseAnthropicCacheControl,
 	}
 }
 

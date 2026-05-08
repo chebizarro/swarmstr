@@ -28,6 +28,11 @@ type AnthropicChatProvider struct {
 	tokenSource func() (string, error) // for OAuth; nil for API key auth
 	httpClient  *http.Client           // optional custom HTTP client (for testing)
 	baseURL     string                 // optional custom base URL (for testing)
+	promptCache *PromptCacheProfile
+}
+
+func (p *AnthropicChatProvider) PromptCacheProfile() PromptCacheProfile {
+	return promptCacheProfileOrDefault(p.promptCache, PromptCacheProviderAnthropic)
 }
 
 // NewAnthropicChatProvider creates a ChatProvider for Anthropic using an API key.
@@ -73,6 +78,11 @@ func WithBaseURL(url string) AnthropicChatOption {
 // WithModel sets the model for this provider.
 func WithModel(model string) AnthropicChatOption {
 	return func(p *AnthropicChatProvider) { p.model = model }
+}
+
+// WithAnthropicPromptCacheProfile sets the resolved prompt-cache policy.
+func WithAnthropicPromptCacheProfile(profile PromptCacheProfile) AnthropicChatOption {
+	return func(p *AnthropicChatProvider) { p.promptCache = promptCacheProfilePtr(profile) }
 }
 
 // NewAnthropicChatProviderOAuth creates a ChatProvider for Anthropic using OAuth.
@@ -376,6 +386,7 @@ func (p *AnthropicProvider) chatProvider() ChatProvider {
 	if m := strings.TrimSpace(p.Model); m != "" {
 		opts = append(opts, WithModel(m))
 	}
+	opts = append(opts, WithAnthropicPromptCacheProfile(p.PromptCacheProfile()))
 
 	// Check for OAuth credentials.
 	if access, refresh, isOAuth := ParseAnthropicOAuthCredential(apiKey); isOAuth {

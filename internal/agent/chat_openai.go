@@ -21,10 +21,11 @@ import (
 
 // OpenAIChatProviderChat makes a single OpenAI Chat Completions API call.
 type OpenAIChatProviderChat struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-	Client  *http.Client
+	BaseURL     string
+	APIKey      string
+	Model       string
+	Client      *http.Client
+	PromptCache *PromptCacheProfile
 	// ContextWindowTokens is passed as num_ctx to Ollama-compatible endpoints
 	// to override the default 2048 context window. Zero means use provider default.
 	ContextWindowTokens int
@@ -35,6 +36,10 @@ type OpenAIChatProviderChat struct {
 	// requests may return cached responses. Opt-in because it has data retention
 	// implications (stored completions are retained by OpenAI for 30 days).
 	Store bool
+}
+
+func (p *OpenAIChatProviderChat) PromptCacheProfile() PromptCacheProfile {
+	return promptCacheProfileOrDefault(p.PromptCache, PromptCacheProviderOpenAICompatible)
 }
 
 // Chat implements ChatProvider.
@@ -129,8 +134,15 @@ func (p *OpenAIChatProviderChat) Chat(ctx context.Context, messages []LLMMessage
 		params.Tools = translateToolsToOpenAISDK(tools)
 	}
 
-	// Ollama-specific: inject num_ctx and keep_alive via extra body params.
+	// Provider-specific extra body params. llama-server accepts cache_prompt
+	// on OpenAI-compatible chat completions; vLLM prefix caching is layout-only
+	// and intentionally sends no unsupported request field.
 	var extraOpts []option.RequestOption
+	if profile := p.PromptCacheProfile(); profile.Enabled && profile.SendLlamaCachePrompt {
+		extraOpts = append(extraOpts, option.WithJSONSet("cache_prompt", true))
+	}
+
+	// Ollama-specific: inject num_ctx and keep_alive via extra body params.
 	if isOllamaEndpoint(baseURL) {
 		if p.ContextWindowTokens > 0 {
 			extraOpts = append(extraOpts, option.WithJSONSet("options.num_ctx", p.ContextWindowTokens))

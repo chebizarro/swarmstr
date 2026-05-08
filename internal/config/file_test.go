@@ -216,6 +216,80 @@ func TestParseConfigBytesFIPSTransportPref(t *testing.T) {
 	}
 }
 
+func TestParseConfigBytesProviderPromptCache(t *testing.T) {
+	input := `{
+		"providers": {
+			"local-llama": {
+				"base_url": "http://localhost:8080/v1",
+				"model": "local-model",
+				"prompt_cache": {
+					"enabled": true,
+					"backend": "llama_server",
+					"dynamic_context_placement": "late_user"
+				},
+				"unknown_future_key": "kept"
+			}
+		}
+	}`
+	doc, err := ParseConfigBytes([]byte(input), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	provider := doc.Providers["local-llama"]
+	if provider.PromptCache == nil {
+		t.Fatalf("expected prompt_cache to parse: %#v", provider)
+	}
+	if provider.PromptCache.Enabled == nil || !*provider.PromptCache.Enabled {
+		t.Fatalf("expected prompt_cache.enabled=true, got %#v", provider.PromptCache)
+	}
+	if provider.PromptCache.Backend != "llama_server" {
+		t.Fatalf("expected backend=llama_server, got %#v", provider.PromptCache)
+	}
+	if provider.PromptCache.DynamicContextPlacement != "late_user" {
+		t.Fatalf("expected dynamic_context_placement=late_user, got %#v", provider.PromptCache)
+	}
+	if _, ok := provider.Extra["prompt_cache"]; ok {
+		t.Fatalf("prompt_cache should not be preserved as extra: %#v", provider.Extra)
+	}
+	if provider.Extra["unknown_future_key"] != "kept" {
+		t.Fatalf("expected unknown provider key to remain in Extra, got %#v", provider.Extra)
+	}
+}
+
+func TestParseConfigBytesRejectsUnknownProviderPromptCacheFields(t *testing.T) {
+	_, err := ParseConfigBytes([]byte(`{
+		"providers": {
+			"local": {
+				"base_url": "http://localhost:8080/v1",
+				"prompt_cache": {"dynamic_context_placemnt": "late_user"}
+			}
+		}
+	}`), ".json")
+	if err == nil {
+		t.Fatal("expected unsupported prompt_cache field error")
+	}
+	if !strings.Contains(err.Error(), "providers.local.prompt_cache.dynamic_context_placemnt") {
+		t.Fatalf("expected error to mention bad prompt_cache key, got: %v", err)
+	}
+}
+
+func TestParseConfigBytesRejectsNonObjectProviderPromptCache(t *testing.T) {
+	_, err := ParseConfigBytes([]byte(`{
+		"providers": {
+			"local": {
+				"base_url": "http://localhost:8080/v1",
+				"prompt_cache": true
+			}
+		}
+	}`), ".json")
+	if err == nil {
+		t.Fatal("expected unsupported prompt_cache shape error")
+	}
+	if !strings.Contains(err.Error(), "providers.local.prompt_cache") {
+		t.Fatalf("expected error to mention prompt_cache shape, got: %v", err)
+	}
+}
+
 func TestParseConfigBytesLoadsPreviouslyDroppedFields(t *testing.T) {
 	input := `{
 		"version": 7,

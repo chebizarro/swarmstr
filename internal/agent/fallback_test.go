@@ -53,6 +53,54 @@ func TestFallbackChain_FallsBackOnError(t *testing.T) {
 	}
 }
 
+type cacheProfileCapturingProvider struct {
+	profile PromptCacheProfile
+	content string
+	err     error
+	opts    []ChatOptions
+}
+
+func (p *cacheProfileCapturingProvider) PromptCacheProfile() PromptCacheProfile {
+	return p.profile
+}
+
+func (p *cacheProfileCapturingProvider) Chat(_ context.Context, _ []LLMMessage, _ []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
+	p.opts = append(p.opts, opts)
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &LLMResponse{Content: p.content}, nil
+}
+
+func TestFallbackChain_RecomputesNativeCacheOptionsPerCandidate(t *testing.T) {
+	primary := &cacheProfileCapturingProvider{
+		profile: PromptCacheProfile{Enabled: true, Backend: PromptCacheBackendVLLM, DynamicContextPlacement: DynamicContextPlacementLateUser},
+		err:     fmt.Errorf("429 rate limit"),
+	}
+	backup := &cacheProfileCapturingProvider{
+		profile: PromptCacheProfile{Enabled: true, UseAnthropicCacheControl: true, DynamicContextPlacement: DynamicContextPlacementSystem},
+		content: "backup response",
+	}
+	fc := NewFallbackChain([]FallbackCandidate{
+		{Name: "primary", Provider: primary},
+		{Name: "backup", Provider: backup},
+	}, nil)
+
+	resp, err := fc.Chat(context.Background(), nil, nil, ChatOptions{CacheSystem: false, CacheTools: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "backup response" {
+		t.Fatalf("got %q, want backup response", resp.Content)
+	}
+	if len(primary.opts) != 1 || primary.opts[0].CacheSystem || primary.opts[0].CacheTools {
+		t.Fatalf("expected primary vLLM candidate to keep Anthropic cache flags disabled, got %#v", primary.opts)
+	}
+	if len(backup.opts) != 1 || !backup.opts[0].CacheSystem || !backup.opts[0].CacheTools {
+		t.Fatalf("expected backup Anthropic candidate to re-enable native cache flags, got %#v", backup.opts)
+	}
+}
+
 func TestFallbackChain_AllFail(t *testing.T) {
 	fc := NewFallbackChain([]FallbackCandidate{
 		{Name: "a", Provider: &failingProvider{err: fmt.Errorf("429 rate limit")}},
