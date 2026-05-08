@@ -599,9 +599,31 @@ func (b *NIP17Bus) validateRumorEvent(rumor nostr.Event, now time.Time) error {
 	if rumor.Kind != nostr.KindDirectMessage {
 		return fmt.Errorf("unexpected rumor kind=%d", rumor.Kind)
 	}
-	if !rumor.Tags.ContainsAny("p", []string{b.public.Hex()}) {
+	
+	// NIP-17 requires at least one p tag identifying a recipient.
+	hasRecipientTag := false
+	for _, tag := range rumor.Tags {
+		if len(tag) >= 2 && tag[0] == "p" {
+			hasRecipientTag = true
+			break
+		}
+	}
+	if !hasRecipientTag {
 		return fmt.Errorf("rumor missing recipient tag")
 	}
+	
+	// Accept rumors where we are the recipient (incoming message) OR where we are
+	// the sender (backup copy of our own sent message). When sending a DM to Bob,
+	// the library creates a rumor with Bob's pubkey in the p tag, then gift-wraps
+	// it to both Bob and ourselves. On reconnect, we fetch our backup copy which
+	// has Bob's pubkey in the p tag, not ours. handleRumor will skip processing
+	// self-sent messages after validation.
+	isRecipient := rumor.Tags.ContainsAny("p", []string{b.public.Hex()})
+	isSender := rumor.PubKey == b.public
+	if !isRecipient && !isSender {
+		return fmt.Errorf("rumor not addressed to us (recipient check) and not sent by us (sender check)")
+	}
+	
 	if !rumor.CheckID() {
 		return fmt.Errorf("invalid rumor id")
 	}
