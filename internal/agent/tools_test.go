@@ -182,6 +182,22 @@ func TestAssembleToolDescriptors_BuiltinPrefixWinsNameConflicts(t *testing.T) {
 	}
 }
 
+func TestAssembleToolDescriptors_GRPCTreatedAsExternal(t *testing.T) {
+	descs := []ToolDescriptor{
+		{Name: "grpc_billing_invoice_get", Origin: ToolOrigin{Kind: ToolOriginKindGRPC}},
+		{Name: "alpha", Origin: ToolOrigin{Kind: ToolOriginKindBuiltin}},
+		{Name: "grpc_billing_invoice_list", Origin: ToolOrigin{Kind: ToolOriginKindGRPC}},
+	}
+
+	got := AssembleToolDescriptors(descs, nil)
+	if len(got) != 3 {
+		t.Fatalf("assembled len = %d, want 3 (%+v)", len(got), got)
+	}
+	if got[0].Name != "alpha" || got[1].Origin.Kind != ToolOriginKindGRPC || got[2].Origin.Kind != ToolOriginKindGRPC {
+		t.Fatalf("expected builtin prefix followed by sorted gRPC descriptors, got %+v", got)
+	}
+}
+
 func TestToolInputSchemaMap_PreservesRawJSONSchema(t *testing.T) {
 	schema := toolInputSchemaMap(ToolDefinition{
 		Name: "plugin/raw",

@@ -32,6 +32,7 @@ func ValidateConfigDoc(doc state.ConfigDoc) []error {
 	errs = append(errs, validateHeartbeat(doc.Heartbeat)...)
 	errs = append(errs, validateTTS(doc.TTS)...)
 	errs = append(errs, validateFIPS(doc.FIPS)...)
+	errs = append(errs, validateGRPCConfigDocExtra(doc.Extra)...)
 
 	return errs
 }

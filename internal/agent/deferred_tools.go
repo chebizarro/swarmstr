@@ -190,10 +190,17 @@ func (s *DeferredToolSet) Definitions() []ToolDefinition {
 // ─── Partitioning logic ───────────────────────────────────────────────────────
 
 // IsDeferrableTool returns true if a tool descriptor should be deferred based
-// on its origin. MCP and plugin tools are deferrable by default.
+// on its origin. MCP, plugin, and gRPC tools are deferrable by default.
 func IsDeferrableTool(desc ToolDescriptor) bool {
+	desc = normalizeToolDescriptor(desc.Name, desc)
+	switch desc.Exposure {
+	case ToolExposureModeInline:
+		return false
+	case ToolExposureModeDeferred:
+		return true
+	}
 	switch desc.Origin.Kind {
-	case ToolOriginKindMCP, ToolOriginKindPlugin:
+	case ToolOriginKindMCP, ToolOriginKindPlugin, ToolOriginKindGRPC:
 		return true
 	default:
 		return false
@@ -243,9 +250,15 @@ func PartitionTools(
 		criticalSet[name] = true
 	}
 
-	// Classify each descriptor.
-	var inlineDescs, deferrableDescs []ToolDescriptor
+	// Classify each descriptor. Forced-deferred descriptors bypass the
+	// threshold heuristic without forcing unrelated auto-deferrable tools to defer.
+	var inlineDescs, deferrableDescs, forcedDeferredDescs []ToolDescriptor
 	for _, desc := range descriptors {
+		desc = normalizeToolDescriptor(desc.Name, desc)
+		if desc.Exposure == ToolExposureModeDeferred && !criticalSet[desc.Name] {
+			forcedDeferredDescs = append(forcedDeferredDescs, desc)
+			continue
+		}
 		if criticalSet[desc.Name] || !IsDeferrableTool(desc) {
 			inlineDescs = append(inlineDescs, desc)
 		} else {
@@ -259,7 +272,7 @@ func PartitionTools(
 	// tools are built-in (not MCP/plugin) and would otherwise all stay
 	// inline, overwhelming small context windows.
 	forcedDeferral := false
-	totalCount := len(inlineDescs) + len(deferrableDescs)
+	totalCount := len(inlineDescs) + len(deferrableDescs) + len(forcedDeferredDescs)
 	if maxInline > 0 && totalCount > maxInline {
 		// Sort inline descs by size (largest first) to defer the biggest.
 		type sized struct {
@@ -308,16 +321,21 @@ func PartitionTools(
 	}
 
 	// Estimate chars for deferrable tools.
-	deferrableChars := 0
+	autoDeferrableChars := 0
 	for _, desc := range deferrableDescs {
-		deferrableChars += EstimateToolDefinitionChars(desc.Definition())
+		autoDeferrableChars += EstimateToolDefinitionChars(desc.Definition())
+	}
+	forcedDeferredChars := 0
+	for _, desc := range forcedDeferredDescs {
+		forcedDeferredChars += EstimateToolDefinitionChars(desc.Definition())
 	}
 
-	// Check if deferrable tools exceed the threshold.
-	// Skip threshold check when force-deferral moved tools — those must stay deferred.
+	// Check if auto-deferrable tools exceed the threshold. Forced-deferred tools
+	// always stay deferred, but do not by themselves defer unrelated tools.
 	threshold := toolBudgetChars * autoThresholdPct / 100
-	if !forcedDeferral && ((deferrableChars < threshold && len(deferrableDescs) > 0) || len(deferrableDescs) == 0) {
-		// Below threshold or no deferrable tools — inline everything.
+	autoBelowThreshold := (autoDeferrableChars < threshold && len(deferrableDescs) > 0) || len(deferrableDescs) == 0
+	if !forcedDeferral && autoBelowThreshold {
+		// Below threshold or no auto-deferrable tools — inline auto candidates.
 		allDefs := make([]ToolDefinition, 0, len(inlineDescs)+len(deferrableDescs))
 		totalChars := 0
 		for _, desc := range inlineDescs {
@@ -330,16 +348,22 @@ func PartitionTools(
 			allDefs = append(allDefs, def)
 			totalChars += EstimateToolDefinitionChars(def)
 		}
+		deferred := NewDeferredToolSet()
+		for _, desc := range forcedDeferredDescs {
+			def := desc.Definition()
+			deferred.Add(DeferredToolEntry{Name: desc.Name, Summary: truncateStr(desc.Description, 80), Definition: def, Origin: desc.Origin})
+		}
 		return PartitionToolsResult{
-			Inline:      allDefs,
-			Deferred:    NewDeferredToolSet(),
-			InlineChars: totalChars,
+			Inline:        allDefs,
+			Deferred:      deferred,
+			InlineChars:   totalChars,
+			DeferredChars: forcedDeferredChars,
 		}
 	}
 
 	// Deferral is active — build the deferred set.
 	deferred := NewDeferredToolSet()
-	for _, desc := range deferrableDescs {
+	for _, desc := range append(forcedDeferredDescs, deferrableDescs...) {
 		def := desc.Definition()
 		deferred.Add(DeferredToolEntry{
 			Name:       desc.Name,
@@ -362,7 +386,7 @@ func PartitionTools(
 		Inline:        inlineDefs,
 		Deferred:      deferred,
 		InlineChars:   inlineChars,
-		DeferredChars: deferrableChars,
+		DeferredChars: forcedDeferredChars + autoDeferrableChars,
 	}
 }
 

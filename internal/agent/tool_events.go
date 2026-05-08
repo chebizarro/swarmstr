@@ -1,5 +1,7 @@
 package agent
 
+import "context"
+
 // ToolLifecycleEventType classifies runtime tool execution signals. It mirrors
 // the canonical src tool execution lifecycle surface: start, progress, result,
 // and error updates emitted around a tool call.
@@ -86,6 +88,37 @@ type ToolMutationDecision struct {
 // ToolLifecycleSink receives structured tool lifecycle events from the shared
 // loop. Callers may leave this nil when no runtime event projection is needed.
 type ToolLifecycleSink func(ToolLifecycleEvent)
+
+// ToolLifecycleContext carries turn-local lifecycle routing for providers that
+// emit additional progress events from inside a tool implementation.
+type ToolLifecycleContext struct {
+	Sink       ToolLifecycleSink
+	SessionID  string
+	TurnID     string
+	ToolCallID string
+	ToolName   string
+	Trace      TraceContext
+}
+
+type toolLifecycleContextKey struct{}
+
+// ContextWithToolLifecycle annotates a tool execution context with the active
+// turn lifecycle sink and correlation IDs.
+func ContextWithToolLifecycle(ctx context.Context, lifecycle ToolLifecycleContext) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, toolLifecycleContextKey{}, lifecycle)
+}
+
+// ToolLifecycleFromContext returns the active turn lifecycle context, if any.
+func ToolLifecycleFromContext(ctx context.Context) (ToolLifecycleContext, bool) {
+	if ctx == nil {
+		return ToolLifecycleContext{}, false
+	}
+	lifecycle, ok := ctx.Value(toolLifecycleContextKey{}).(ToolLifecycleContext)
+	return lifecycle, ok
+}
 
 func emitToolLifecycleEvent(sink ToolLifecycleSink, evt ToolLifecycleEvent) {
 	if sink != nil {
