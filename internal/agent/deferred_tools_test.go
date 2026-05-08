@@ -123,6 +123,13 @@ func TestIsDeferrableTool_Plugin(t *testing.T) {
 	}
 }
 
+func TestIsDeferrableTool_GRPC(t *testing.T) {
+	desc := ToolDescriptor{Name: "grpc_billing_invoice_get", Origin: ToolOrigin{Kind: ToolOriginKindGRPC}}
+	if !IsDeferrableTool(desc) {
+		t.Error("gRPC tools should be deferrable")
+	}
+}
+
 func TestIsDeferrableTool_Builtin(t *testing.T) {
 	desc := ToolDescriptor{Name: "memory_search", Origin: ToolOrigin{Kind: ToolOriginKindBuiltin}}
 	if IsDeferrableTool(desc) {
@@ -145,6 +152,24 @@ func TestPartitionTools_AllInlineWhenBelowThreshold(t *testing.T) {
 	}
 	if result.Deferred.Count() != 0 {
 		t.Error("expected no deferred tools below threshold")
+	}
+}
+
+func TestPartitionTools_ForcedDeferredDoesNotDeferUnrelatedSmallTools(t *testing.T) {
+	descs := []ToolDescriptor{
+		{Name: "grpc_forced", Description: "Forced gRPC", Origin: ToolOrigin{Kind: ToolOriginKindGRPC}, Exposure: ToolExposureModeDeferred},
+		{Name: "mcp__small", Description: "Small MCP tool", Origin: ToolOrigin{Kind: ToolOriginKindMCP}},
+	}
+
+	result := PartitionTools(descs, 100_000, 10, nil)
+	if result.Deferred.Count() != 1 {
+		t.Fatalf("expected only forced descriptor deferred, got %d", result.Deferred.Count())
+	}
+	if _, ok := result.Deferred.Get("grpc_forced"); !ok {
+		t.Fatal("forced gRPC descriptor was not deferred")
+	}
+	if len(result.Inline) != 1 || result.Inline[0].Name != "mcp__small" {
+		t.Fatalf("unrelated small tool should remain inline, got %#v", result.Inline)
 	}
 }
 

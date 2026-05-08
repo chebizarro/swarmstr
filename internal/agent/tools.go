@@ -62,6 +62,17 @@ const (
 	ToolOriginKindBuiltin ToolOriginKind = "builtin"
 	ToolOriginKindPlugin  ToolOriginKind = "plugin"
 	ToolOriginKindMCP     ToolOriginKind = "mcp"
+	ToolOriginKindGRPC    ToolOriginKind = "grpc"
+)
+
+// ToolExposureMode lets external providers request a specific inline/deferred
+// surface for a descriptor. Auto keeps the shared PartitionTools heuristics.
+type ToolExposureMode string
+
+const (
+	ToolExposureModeAuto     ToolExposureMode = "auto"
+	ToolExposureModeInline   ToolExposureMode = "inline"
+	ToolExposureModeDeferred ToolExposureMode = "deferred"
 )
 
 // ToolInterruptBehavior describes what should happen when a new user message
@@ -101,6 +112,7 @@ type ToolDescriptor struct {
 	ParamAliases    map[string]string `json:"-"`
 	Origin          ToolOrigin        `json:"origin,omitempty"`
 	Traits          ToolTraits        `json:"traits,omitempty"`
+	Exposure        ToolExposureMode  `json:"exposure,omitempty"`
 }
 
 // Definition projects a provider-facing ToolDefinition from the canonical
@@ -506,7 +518,7 @@ func AssembleToolDescriptors(descs []ToolDescriptor, allowed map[string]bool) []
 			continue
 		}
 		switch desc.Origin.Kind {
-		case ToolOriginKindPlugin, ToolOriginKindMCP:
+		case ToolOriginKindPlugin, ToolOriginKindMCP, ToolOriginKindGRPC:
 			external = append(external, desc)
 		default:
 			builtin = append(builtin, desc)
@@ -886,6 +898,16 @@ func normalizeToolDescriptor(name string, desc ToolDescriptor) ToolDescriptor {
 	if desc.Origin.Kind == "" {
 		desc.Origin.Kind = ToolOriginKindUnknown
 	}
+	switch ToolExposureMode(strings.ToLower(strings.TrimSpace(string(desc.Exposure)))) {
+	case ToolExposureModeInline:
+		desc.Exposure = ToolExposureModeInline
+	case ToolExposureModeDeferred:
+		desc.Exposure = ToolExposureModeDeferred
+	case ToolExposureModeAuto:
+		desc.Exposure = ToolExposureModeAuto
+	default:
+		desc.Exposure = ""
+	}
 	if desc.Traits.InterruptBehavior == "" {
 		desc.Traits.InterruptBehavior = ToolInterruptBehaviorBlock
 	}
@@ -1063,10 +1085,17 @@ func applyParamAliases(args map[string]any, def ToolDefinition) map[string]any {
 	if len(args) == 0 {
 		return args
 	}
-	// Build the set of canonical parameter names from the schema.
+	// Build the set of canonical parameter names from the schema. Some tools
+	// (notably generated gRPC tools) preserve their top-level schema only in
+	// InputJSONSchema, so include both schema representations.
 	canonical := make(map[string]bool, len(def.Parameters.Properties))
 	for k := range def.Parameters.Properties {
 		canonical[k] = true
+	}
+	if props, ok := def.InputJSONSchema["properties"].(map[string]any); ok {
+		for k := range props {
+			canonical[k] = true
+		}
 	}
 	if len(canonical) == 0 {
 		return args

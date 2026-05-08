@@ -406,6 +406,11 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		doc.Extra["extensions"] = pluginsRaw
 	}
 
+	// ── grpc (typed by internal/config/grpc.go, preserved in Extra for now) ──
+	if grpcRaw, ok := raw["grpc"]; ok {
+		doc.Extra["grpc"] = grpcRaw
+	}
+
 	// ── providers (typed) ────────────────────────────────────────────────────
 	if providersRaw, ok := raw["providers"].(map[string]any); ok {
 		doc.Providers = make(state.ProvidersConfig, len(providersRaw))
@@ -914,7 +919,7 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 	allowedTop := []string{
 		"version", "dm", "relays", "agent", "control", "acp", "agents", "nostr_channels",
 		"providers", "session", "storage", "heartbeat", "tts", "secrets", "cron",
-		"hooks", "timeouts", "agent_list", "fips", "extra", "channels", "plugins",
+		"hooks", "timeouts", "agent_list", "fips", "extra", "channels", "plugins", "grpc",
 		"skills", "memory", "update", "wizard", "pairing", "logging", "permissions",
 	}
 	for key, value := range raw {
@@ -947,6 +952,8 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 			errs = append(errs, detectUnknownMapKeys("agent_list", value, []string{"d", "relay", "auto_sync"})...)
 		case "fips":
 			errs = append(errs, detectUnknownMapKeys("fips", value, []string{"enabled", "control_socket", "agent_port", "control_port", "transport_pref", "peers", "conn_timeout", "reach_cache_ttl"})...)
+		case "grpc":
+			errs = append(errs, detectUnknownGRPCKeys(value)...)
 		case "hooks":
 			errs = append(errs, detectUnknownMapKeys("hooks", value, []string{"enabled", "token", "allowed_agent_ids", "default_session_key", "allow_request_session_key", "mappings"})...)
 		case "timeouts":

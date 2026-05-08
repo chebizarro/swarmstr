@@ -1108,6 +1108,11 @@ func main() {
 	controlRuntimeConfig = configState
 	setRuntimeIdentityInfo(runtimeCfg, pubkey)
 
+	// ── gRPC tool provider integration ───────────────────────────────────
+	grpcProviderCtl := &grpcProviderController{}
+	defer grpcProviderCtl.close()
+	grpcProviderCtl.reconcile(ctx, tools, runtimeCfg, "initialization")
+
 	// ── MCP (Model Context Protocol) client integration ─────────────────
 	// Load MCP config from extra.mcp and register discovered tools after the
 	// secrets/auth controller is available.
@@ -5428,11 +5433,11 @@ func main() {
 					seForUsage = &copy
 				}
 			}
-		outboundText = renderResponseWithUsage(outboundText, turnResult.Usage, seForUsage)
-		// Strip timestamp annotations that LLM may have copied from conversation history
-		outboundText = stripTimestampAnnotations(outboundText)
-	}
-	if !audioSent && handle != nil && outboundText != "" {
+			outboundText = renderResponseWithUsage(outboundText, turnResult.Usage, seForUsage)
+			// Strip timestamp annotations that LLM may have copied from conversation history
+			outboundText = stripTimestampAnnotations(outboundText)
+		}
+		if !audioSent && handle != nil && outboundText != "" {
 			var sendOK bool
 			outboundText, sendOK = applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: chID, SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID})
 			if !sendOK {
@@ -5842,6 +5847,7 @@ func main() {
 		bumpPromptConfigGeneration()
 		setRuntimeIdentityInfo(doc, pubkey)
 		applyRuntimeConfigSideEffects(doc)
+		grpcProviderCtl.reconcile(ctx, tools, doc, "live config apply")
 		resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
 		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live config apply")
 		filteredMCPLifecycle.Emit(runtimeEventEmitterFunc(emitControlWSEvent), resolvedMCP, "config.snapshot", time.Now().UnixMilli())
@@ -5870,6 +5876,7 @@ func main() {
 					configState.mu.Unlock()
 					setRuntimeIdentityInfo(doc, pubkey)
 					applyRuntimeConfigSideEffects(doc)
+					grpcProviderCtl.reconcile(ctx, tools, doc, "live file-reload apply")
 					resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
 					applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live file-reload apply")
 					filteredMCPLifecycle.Emit(runtimeEventEmitterFunc(emitControlWSEvent), resolvedMCP, "file-reload.snapshot", time.Now().UnixMilli())

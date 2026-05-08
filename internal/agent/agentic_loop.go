@@ -713,7 +713,9 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 			InterruptBehavior: interruptBehavior,
 		},
 	})
-	value, execErr := executor.Execute(contextWithMutationTrackingSuppressed(ctx), call)
+	execCtx := contextWithMutationTrackingSuppressed(ctx)
+	execCtx = ContextWithToolLifecycle(execCtx, ToolLifecycleContext{Sink: sink, SessionID: sessionID, TurnID: turnID, ToolCallID: call.ID, ToolName: call.Name, Trace: trace})
+	value, execErr := executor.Execute(execCtx, call)
 	if execErr != nil {
 		errMsg := execErr.Error()
 		var duplicateErr *DuplicateToolMutationError
