@@ -20,7 +20,10 @@ func TestBoolPtr(t *testing.T) {
 // ─── ParseACPTransportMode ────────────────────────────────────────────────────
 
 func TestParseACPTransportMode(t *testing.T) {
-	cases := []struct{ input, want string; ok bool }{
+	cases := []struct {
+		input, want string
+		ok          bool
+	}{
 		{"", "auto", true},
 		{"auto", "auto", true},
 		{"nip17", "nip17", true},
@@ -59,7 +62,10 @@ func TestConfigDoc_ACPTransportMode(t *testing.T) {
 // ─── ParseDMReplyScheme ──────────────────────────────────────────────────────
 
 func TestParseDMReplyScheme(t *testing.T) {
-	cases := []struct{ input, want string; ok bool }{
+	cases := []struct {
+		input, want string
+		ok          bool
+	}{
 		{"", "auto", true},
 		{"auto", "auto", true},
 		{"nip17", "nip17", true},
@@ -171,7 +177,11 @@ func TestNormalizeTaskPriority(t *testing.T) {
 // ─── Verification ────────────────────────────────────────────────────────────
 
 func TestParseVerificationStatus(t *testing.T) {
-	cases := []struct{ input string; want VerificationStatus; ok bool }{
+	cases := []struct {
+		input string
+		want  VerificationStatus
+		ok    bool
+	}{
 		{"", VerificationStatusPending, true},
 		{"pending", VerificationStatusPending, true},
 		{"running", VerificationStatusRunning, true},
@@ -249,7 +259,11 @@ func TestVerificationCheck_Normalize(t *testing.T) {
 }
 
 func TestParseVerificationPolicy(t *testing.T) {
-	cases := []struct{ input string; want VerificationPolicy; ok bool }{
+	cases := []struct {
+		input string
+		want  VerificationPolicy
+		ok    bool
+	}{
 		{"required", VerificationPolicyRequired, true},
 		{"advisory", VerificationPolicyAdvisory, true},
 		{"none", VerificationPolicyNone, true},
@@ -386,8 +400,39 @@ func TestNormalizePlanStepStatus(t *testing.T) {
 	}
 }
 
+func TestParseTaskApprovalDecision(t *testing.T) {
+	cases := []struct {
+		input string
+		want  TaskApprovalDecision
+		ok    bool
+	}{
+		{"", TaskApprovalDecisionResume, true},
+		{" resume ", TaskApprovalDecisionResume, true},
+		{"approved", TaskApprovalDecisionApproved, true},
+		{"rejected", TaskApprovalDecisionRejected, true},
+		{"amended", TaskApprovalDecisionAmended, true},
+		{"nope", "", false},
+	}
+	for _, c := range cases {
+		got, ok := ParseTaskApprovalDecision(c.input)
+		if got != c.want || ok != c.ok {
+			t.Errorf("ParseTaskApprovalDecision(%q) = %q,%v want %q,%v", c.input, got, ok, c.want, c.ok)
+		}
+	}
+	if got := NormalizeTaskApprovalDecision("approved"); got != TaskApprovalDecisionApproved {
+		t.Fatalf("NormalizeTaskApprovalDecision approved = %q", got)
+	}
+	if !TaskApprovalDecisionAmended.Valid() || TaskApprovalDecision("bogus").Valid() {
+		t.Fatalf("TaskApprovalDecision.Valid returned unexpected result")
+	}
+}
+
 func TestParsePlanApprovalDecision(t *testing.T) {
-	cases := []struct{ input string; want PlanApprovalDecision; ok bool }{
+	cases := []struct {
+		input string
+		want  PlanApprovalDecision
+		ok    bool
+	}{
 		{"", PlanApprovalPending, true},
 		{"pending", PlanApprovalPending, true},
 		{"approved", PlanApprovalApproved, true},

@@ -191,6 +191,10 @@ func persistTurnTelemetry(sessionStore *state.SessionStore, sessionID string, te
 	}
 	if err := sessionStore.RecordTurn(sessionID, state.TurnTelemetry{
 		TurnID:         telemetry.TurnID,
+		TaskID:         telemetry.Trace.TaskID,
+		RunID:          telemetry.Trace.RunID,
+		ParentTaskID:   telemetry.Trace.ParentTaskID,
+		ParentRunID:    telemetry.Trace.ParentRunID,
 		StartedAtMS:    telemetry.StartedAtMS,
 		EndedAtMS:      telemetry.EndedAtMS,
 		DurationMS:     telemetry.DurationMS,

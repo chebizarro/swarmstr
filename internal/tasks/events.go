@@ -88,9 +88,11 @@ func (o *EmitterObserver) OnTaskCreated(ctx context.Context, entry LedgerEntry) 
 		Source:    entry.Source,
 		Timestamp: entry.CreatedAt,
 		Meta: map[string]any{
-			"title":      entry.Task.Title,
-			"agent_id":   entry.Task.AssignedAgent,
-			"session_id": entry.Task.SessionID,
+			"title":          entry.Task.Title,
+			"agent_id":       entry.Task.AssignedAgent,
+			"session_id":     entry.Task.SessionID,
+			"goal_id":        entry.Task.GoalID,
+			"parent_task_id": entry.Task.ParentTaskID,
 		},
 	})
 }
@@ -115,10 +117,14 @@ func (o *EmitterObserver) OnTaskUpdated(ctx context.Context, entry LedgerEntry, 
 		Reason:    transition.Reason,
 		Timestamp: transition.At,
 		Meta: map[string]any{
-			"from":    string(transition.From),
-			"to":      string(transition.To),
-			"title":   entry.Task.Title,
-			"runs":    len(entry.Runs),
+			"from":           string(transition.From),
+			"to":             string(transition.To),
+			"title":          entry.Task.Title,
+			"runs":           len(entry.Runs),
+			"agent_id":       entry.Task.AssignedAgent,
+			"session_id":     entry.Task.SessionID,
+			"goal_id":        entry.Task.GoalID,
+			"parent_task_id": entry.Task.ParentTaskID,
 		},
 	})
 }
@@ -132,9 +138,12 @@ func (o *EmitterObserver) OnRunCreated(ctx context.Context, entry RunEntry) {
 		Source:    entry.Source,
 		Timestamp: entry.CreatedAt,
 		Meta: map[string]any{
-			"attempt":  entry.Run.Attempt,
-			"agent_id": entry.Run.AgentID,
-			"trigger":  entry.Run.Trigger,
+			"attempt":       entry.Run.Attempt,
+			"agent_id":      entry.Run.AgentID,
+			"trigger":       entry.Run.Trigger,
+			"session_id":    entry.Run.SessionID,
+			"goal_id":       entry.Run.GoalID,
+			"parent_run_id": entry.Run.ParentRunID,
 		},
 	})
 }
@@ -164,9 +173,13 @@ func (o *EmitterObserver) OnRunUpdated(ctx context.Context, entry RunEntry, tran
 		Reason:    transition.Reason,
 		Timestamp: transition.At,
 		Meta: map[string]any{
-			"from":    string(transition.From),
-			"to":      string(transition.To),
-			"attempt": entry.Run.Attempt,
+			"from":          string(transition.From),
+			"to":            string(transition.To),
+			"attempt":       entry.Run.Attempt,
+			"agent_id":      entry.Run.AgentID,
+			"session_id":    entry.Run.SessionID,
+			"goal_id":       entry.Run.GoalID,
+			"parent_run_id": entry.Run.ParentRunID,
 		},
 	})
 }

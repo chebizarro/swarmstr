@@ -11,6 +11,7 @@ import (
 
 	"metiq/internal/nostr/events"
 	"metiq/internal/store/state"
+	taskspkg "metiq/internal/tasks"
 )
 
 type taskControlTestStore struct {
@@ -214,6 +215,10 @@ func newTaskControlRepo() *state.DocsRepository {
 	return state.NewDocsRepository(newTaskControlTestStore(), "author")
 }
 
+func newTaskControlService(repo *state.DocsRepository) *taskspkg.Service {
+	return taskspkg.NewService(taskspkg.NewDocsStore(repo))
+}
+
 func TestCreateTask_NormalizesAndBuildsResponse(t *testing.T) {
 	repo := newTaskControlRepo()
 	now := time.Unix(1000, 0)
@@ -228,7 +233,8 @@ func TestCreateTask_NormalizesAndBuildsResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := CreateTask(context.Background(), repo, req, "caller", now)
+	_ = now
+	res, err := CreateTask(context.Background(), newTaskControlService(repo), req, "caller")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +269,7 @@ func TestListFilteredTasks_AppliesExpandedFilters(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	res, err := ListFilteredTasks(ctx, repo, TasksListRequest{Status: "blocked", GoalID: "g1", AssignedAgent: "worker", Limit: 10})
+	res, err := ListFilteredTasks(ctx, newTaskControlService(repo), TasksListRequest{Status: "blocked", GoalID: "g1", AssignedAgent: "worker", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +285,7 @@ func TestResumeTask_CreatesQueuedRunAndMarksReady(t *testing.T) {
 	if _, err := repo.PutTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	res, err := ResumeTask(ctx, repo, TasksResumeRequest{TaskID: task.TaskID, Reason: "retry after unblock"}, "caller", time.Unix(200, 0))
+	res, err := ResumeTask(ctx, newTaskControlService(repo), TasksResumeRequest{TaskID: task.TaskID, Reason: "retry after unblock"}, "caller")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,6 +300,50 @@ func TestResumeTask_CreatesQueuedRunAndMarksReady(t *testing.T) {
 	}
 }
 
+func TestResumeTask_DecisionRejectedDoesNotCreateRun(t *testing.T) {
+	repo := newTaskControlRepo()
+	ctx := context.Background()
+	task := state.TaskSpec{Version: 1, TaskID: "task-reject", GoalID: "goal-1", Instructions: "do work", Title: "do work", Status: state.TaskStatusAwaitingApproval, CreatedAt: 100, UpdatedAt: 100}
+	if _, err := repo.PutTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ResumeTask(ctx, newTaskControlService(repo), TasksResumeRequest{TaskID: task.TaskID, Decision: state.TaskApprovalDecisionRejected, Reason: "operator rejected"}, "caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Task.Status != state.TaskStatusBlocked {
+		t.Fatalf("expected blocked task, got %q", res.Task.Status)
+	}
+	if res.Task.CurrentRunID != "" || len(res.Runs) != 0 {
+		t.Fatalf("rejected decision should not create run: task=%#v runs=%#v", res.Task, res.Runs)
+	}
+	if got := res.Task.Meta["approval_decision"]; got != string(state.TaskApprovalDecisionRejected) {
+		t.Fatalf("approval_decision meta = %#v", got)
+	}
+}
+
+func TestResumeTask_DecisionAmendedCreatesQueuedRun(t *testing.T) {
+	repo := newTaskControlRepo()
+	ctx := context.Background()
+	task := state.TaskSpec{Version: 1, TaskID: "task-amend", GoalID: "goal-1", Instructions: "do work", Title: "do work", Status: state.TaskStatusAwaitingApproval, CreatedAt: 100, UpdatedAt: 100}
+	if _, err := repo.PutTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ResumeTask(ctx, newTaskControlService(repo), TasksResumeRequest{TaskID: task.TaskID, Decision: state.TaskApprovalDecisionAmended, Reason: "use safer plan"}, "caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Task.Status != state.TaskStatusReady {
+		t.Fatalf("expected ready task, got %q", res.Task.Status)
+	}
+	if len(res.Runs) != 1 || res.Runs[0].Status != state.TaskRunStatusQueued || res.Runs[0].Trigger != string(state.TaskApprovalDecisionAmended) {
+		t.Fatalf("expected amended queued run, got %#v", res.Runs)
+	}
+	if got := res.Task.Meta["amendment_note"]; got != "use safer plan" {
+		t.Fatalf("amendment_note meta = %#v", got)
+	}
+}
+
 func TestCancelTask_CancelsActiveRunAndClearsCurrentRun(t *testing.T) {
 	repo := newTaskControlRepo()
 	ctx := context.Background()
@@ -305,7 +355,7 @@ func TestCancelTask_CancelsActiveRunAndClearsCurrentRun(t *testing.T) {
 	if _, err := repo.PutTaskRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	res, err := CancelTask(ctx, repo, TasksCancelRequest{TaskID: task.TaskID, Reason: "operator cancelled"}, "caller", time.Unix(200, 0))
+	res, err := CancelTask(ctx, newTaskControlService(repo), TasksCancelRequest{TaskID: task.TaskID, Reason: "operator cancelled"}, "caller")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +381,7 @@ func TestBuildTaskGetResponse_ReturnsTaskAndRuns(t *testing.T) {
 	if _, err := repo.PutTaskRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	res, err := BuildTaskGetResponse(ctx, repo, task.TaskID, 10)
+	res, err := BuildTaskGetResponse(ctx, newTaskControlService(repo), task.TaskID, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +405,7 @@ func TestListFilteredTasks_ExpandsFetchLimitWhenFiltersPresent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	res, err := ListFilteredTasks(ctx, repo, TasksListRequest{Status: state.TaskStatus(strings.TrimSpace(" blocked ")), GoalID: "g1", Limit: 1})
+	res, err := ListFilteredTasks(ctx, newTaskControlService(repo), TasksListRequest{Status: state.TaskStatus(strings.TrimSpace(" blocked ")), GoalID: "g1", Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

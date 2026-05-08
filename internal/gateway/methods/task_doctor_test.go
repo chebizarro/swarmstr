@@ -203,6 +203,85 @@ func TestBuildTaskDiagnostic_NoWarningsWhenHealthy(t *testing.T) {
 	}
 }
 
+func TestBuildTaskDiagnostic_GovernanceWarningsAndReporting(t *testing.T) {
+	now := time.Unix(2000, 0)
+	task := state.TaskSpec{
+		TaskID:       "t1",
+		Status:       state.TaskStatusAwaitingApproval,
+		CurrentRunID: "run-1",
+		Authority: state.TaskAuthority{
+			AutonomyMode: state.AutonomyFull,
+			CanAct:       true,
+		},
+		Budget: state.TaskBudget{MaxTotalTokens: 100},
+		Verification: state.VerificationSpec{
+			Policy: state.VerificationPolicyRequired,
+			Checks: []state.VerificationCheck{
+				{CheckID: "required-review", Required: true, Status: state.VerificationStatusFailed},
+			},
+		},
+		Meta: map[string]any{
+			"approval_decision": "rejected",
+			"approval_actor":    "operator",
+			"approval_reason":   "unsafe",
+		},
+	}
+	runs := []state.TaskRun{{
+		RunID:  "run-1",
+		TaskID: "t1",
+		Status: state.TaskRunStatusRunning,
+		Usage:  state.TaskUsage{TotalTokens: 150},
+	}}
+
+	diag := BuildTaskDiagnostic(task, runs, now)
+	if !diag.ApprovalRequired || diag.ApprovalDecision != "rejected" || diag.ApprovalActor != "operator" {
+		t.Fatalf("expected approval summary, got %+v", diag)
+	}
+	if diag.BudgetExceeded == nil || len(diag.BudgetExceededReasons) == 0 {
+		t.Fatalf("expected budget exceeded summary, got %+v", diag)
+	}
+	if diag.VerificationFailedChecks != 1 || diag.VerificationPassed {
+		t.Fatalf("expected failed verification summary, got %+v", diag)
+	}
+	for _, want := range []string{
+		"task is awaiting approval but current run is running",
+		"verification required checks failing: required-review",
+		"budget exceeded: total tokens exceeded",
+		"approval decision is rejected but task status is awaiting_approval",
+		"task is awaiting approval but effective autonomy mode does not require approval",
+	} {
+		if !hasDoctorWarning(diag.Warnings, want) {
+			t.Fatalf("expected warning %q, got %v", want, diag.Warnings)
+		}
+	}
+}
+
+func TestBuildTaskDiagnostic_WorkflowChildInconsistency(t *testing.T) {
+	task := state.TaskSpec{
+		TaskID:       "child",
+		Status:       state.TaskStatusReady,
+		Title:        "Workflow child",
+		Instructions: "run step",
+		Meta: map[string]any{
+			"workflow_run_id":    "wf-run",
+			"workflow_step_type": "gateway_call",
+		},
+	}
+	diag := BuildTaskDiagnostic(task, nil, time.Unix(2000, 0))
+	if diag.WorkflowRunID != "wf-run" || diag.WorkflowStepType != "gateway_call" {
+		t.Fatalf("expected workflow summary, got %+v", diag)
+	}
+	for _, want := range []string{
+		"workflow child task has workflow metadata but no parent_task_id",
+		"workflow child task is missing workflow_step_id",
+		"workflow child task has no linked task run",
+	} {
+		if !hasDoctorWarning(diag.Warnings, want) {
+			t.Fatalf("expected workflow warning %q, got %v", want, diag.Warnings)
+		}
+	}
+}
+
 // ─── BuildTasksSummary tests ─────────────────────────────────────────────────
 
 func TestBuildTasksSummary_BasicCounts(t *testing.T) {
@@ -445,4 +524,13 @@ func TestFormatDurationApprox(t *testing.T) {
 			t.Errorf("formatDurationApprox(%d) = %q, want %q", tc.seconds, got, tc.want)
 		}
 	}
+}
+
+func hasDoctorWarning(warnings []string, want string) bool {
+	for _, warning := range warnings {
+		if warning == want {
+			return true
+		}
+	}
+	return false
 }

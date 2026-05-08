@@ -174,6 +174,47 @@ func TestSessionStore_RecordToolLifecycle(t *testing.T) {
 	}
 }
 
+func TestSessionStore_RecordWorkerEvent(t *testing.T) {
+	ss, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	if err := ss.LinkTask("sess-1", "parent-task", "parent-run", "", ""); err != nil {
+		t.Fatalf("link task: %v", err)
+	}
+	for i := 0; i < workerEventSampleCap+2; i++ {
+		if err := ss.RecordWorkerEvent("sess-1", WorkerEventTelemetry{
+			EventID:  "worker-event",
+			TaskID:   "child-task",
+			RunID:    "child-run",
+			WorkerID: "worker-1",
+			State:    "progress",
+			Progress: &WorkerProgressTelemetry{PercentComplete: 0.5},
+		}); err != nil {
+			t.Fatalf("record worker event %d: %v", i, err)
+		}
+	}
+	got, ok := ss.Get("sess-1")
+	if !ok {
+		t.Fatal("session not found")
+	}
+	if len(got.RecentWorkerEvents) != workerEventSampleCap {
+		t.Fatalf("expected capped worker events, got %d", len(got.RecentWorkerEvents))
+	}
+	first := got.RecentWorkerEvents[0]
+	if first.TaskID != "child-task" || first.RunID != "child-run" || first.ParentTaskID != "parent-task" || first.ParentRunID != "parent-run" {
+		t.Fatalf("expected child and parent linkage, got %+v", first)
+	}
+	if first.Progress == nil || first.Progress.PercentComplete != 0.5 {
+		t.Fatalf("expected cloned progress info, got %+v", first.Progress)
+	}
+	first.Progress.PercentComplete = 1
+	again, _ := ss.Get("sess-1")
+	if again.RecentWorkerEvents[0].Progress.PercentComplete != 0.5 {
+		t.Fatalf("expected worker progress clone isolation, got %+v", again.RecentWorkerEvents[0].Progress)
+	}
+}
+
 func TestToolLifecycleTelemetry_JSONShape(t *testing.T) {
 	raw, err := json.Marshal(ToolLifecycleTelemetry{
 		TS:         100,

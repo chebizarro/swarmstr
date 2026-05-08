@@ -570,6 +570,7 @@ func usage() {
 	fmt.Println("  tasks runs         list task runs (--task --limit)")
 	fmt.Println("  tasks audit        show task ledger statistics")
 	fmt.Println("  tasks cancel <id>  cancel a running task (--reason)")
+	fmt.Println("  tasks resume <id>  resume/approve/reject task (--decision --reason)")
 	fmt.Println()
 	fmt.Println("Daemon lifecycle:")
 	fmt.Println("  daemon start       start metiqd in background (--bin --bootstrap)")

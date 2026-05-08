@@ -1,5 +1,27 @@
 package state
 
+import "encoding/json"
+
+type WorkflowDefinitionDoc struct {
+	Version      int             `json:"version"`
+	WorkflowID   string          `json:"workflow_id"`
+	Name         string          `json:"name,omitempty"`
+	Definition   json.RawMessage `json:"definition"`
+	DefinitionAt int64           `json:"definition_at,omitempty"`
+	UpdatedAt    int64           `json:"updated_at,omitempty"`
+}
+
+type WorkflowRunDoc struct {
+	Version    int             `json:"version"`
+	RunID      string          `json:"run_id"`
+	WorkflowID string          `json:"workflow_id"`
+	Status     string          `json:"status,omitempty"`
+	Run        json.RawMessage `json:"run"`
+	StartedAt  int64           `json:"started_at,omitempty"`
+	EndedAt    int64           `json:"ended_at,omitempty"`
+	UpdatedAt  int64           `json:"updated_at,omitempty"`
+}
+
 type WorkflowJournalDoc struct {
 	Version    int                       `json:"version"`
 	TaskID     string                    `json:"task_id"`

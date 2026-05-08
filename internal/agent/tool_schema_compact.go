@@ -223,6 +223,11 @@ func FitToolDefinitions(defs []ToolDefinition, budget ContextBudget, criticalToo
 func DefaultCriticalToolNames() []string {
 	return []string{
 		// Memory tools - always inline for active recall/storage
+		"memory_query",
+		"memory_write",
+		"memory_get",
+		"memory_update",
+		"memory_forget",
 		"memory_search",
 		"memory_store",
 		"memory_delete",

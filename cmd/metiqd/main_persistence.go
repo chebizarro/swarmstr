@@ -264,9 +264,9 @@ func persistAndIngestTurnHistory(
 	requestEventID string,
 	delta []agent.ConversationMessage,
 	turnResultMeta *agent.TurnResultMetadata,
-) {
+) []string {
 	if len(delta) == 0 {
-		return
+		return nil
 	}
 	// Guard against empty requestEventID — generate a fallback to prevent
 	// colliding entry IDs across turns.
@@ -275,6 +275,7 @@ func persistAndIngestTurnHistory(
 	}
 	nowUnix := time.Now().Unix()
 	persistedTurnResultMeta := transcriptTurnResultMeta(turnResultMeta)
+	entryIDs := make([]string, 0, len(delta))
 	for i, m := range delta {
 		// Build a deterministic entry ID.
 		var entryID string
@@ -288,6 +289,8 @@ func persistAndIngestTurnHistory(
 		default:
 			entryID = fmt.Sprintf("turn:%s:msg:%d", requestEventID, i)
 		}
+
+		entryIDs = append(entryIDs, entryID)
 
 		// Build transcript metadata.
 		meta := map[string]any{"request_event_id": requestEventID}
@@ -358,6 +361,7 @@ func persistAndIngestTurnHistory(
 			}
 		}
 	}
+	return entryIDs
 }
 
 func transcriptTurnResultMeta(meta *agent.TurnResultMetadata) map[string]any {

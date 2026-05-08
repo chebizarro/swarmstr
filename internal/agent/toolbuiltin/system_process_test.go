@@ -304,8 +304,18 @@ func TestProcessRegistry_ExitCode(t *testing.T) {
 		t.Fatalf("spawn: %v", err)
 	}
 
-	// Wait for exit.
-	time.Sleep(200 * time.Millisecond)
+	reg.mu.Lock()
+	entry, ok := reg.entries[id]
+	reg.mu.Unlock()
+	if !ok {
+		t.Fatalf("spawned process %q not found in registry", id)
+	}
+
+	select {
+	case <-entry.done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for process %q to exit", id)
+	}
 
 	result, err := reg.read(id)
 	if err != nil {
@@ -314,8 +324,12 @@ func TestProcessRegistry_ExitCode(t *testing.T) {
 	if result["running"] != false {
 		t.Error("expected running=false")
 	}
-	if result["exit_code"].(int) != 42 {
-		t.Errorf("exit_code = %v, want 42", result["exit_code"])
+	exitCode, ok := result["exit_code"].(int)
+	if !ok {
+		t.Fatalf("exit_code missing or wrong type: %T (%v)", result["exit_code"], result["exit_code"])
+	}
+	if exitCode != 42 {
+		t.Errorf("exit_code = %v, want 42", exitCode)
 	}
 }
 

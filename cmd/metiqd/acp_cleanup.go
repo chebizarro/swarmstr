@@ -10,9 +10,20 @@ import (
 	acppkg "metiq/internal/acp"
 	"metiq/internal/agent"
 	"metiq/internal/store/state"
+	taskspkg "metiq/internal/tasks"
 )
 
 const acpWorkerTaskMetaKey = "acp_worker_task"
+
+func resolveACPTaskService(docsRepo *state.DocsRepository) *taskspkg.Service {
+	if controlServices != nil && controlServices.tasks.service != nil {
+		return controlServices.tasks.service
+	}
+	if docsRepo == nil {
+		return nil
+	}
+	return taskspkg.NewService(taskspkg.NewDocsStore(docsRepo))
+}
 
 func acpWorkerTaskMeta(agentID, peerPubKey, taskID, runID, parentTaskID, parentRunID string, payload acppkg.TaskPayload, startedAt time.Time) map[string]any {
 	meta := map[string]any{
@@ -97,6 +108,10 @@ func beginACPWorkerTask(ctx context.Context, docsRepo *state.DocsRepository, ses
 }
 
 func startACPWorkerTaskDocs(ctx context.Context, docsRepo *state.DocsRepository, sessionID, agentID, taskID string, payload acppkg.TaskPayload, startedAt time.Time) (state.TaskSpec, state.TaskRun, error) {
+	taskService := resolveACPTaskService(docsRepo)
+	if taskService == nil {
+		return state.TaskSpec{}, state.TaskRun{}, fmt.Errorf("task service is nil")
+	}
 	taskID = strings.TrimSpace(taskID)
 	nowUnix := startedAt.Unix()
 	task := state.TaskSpec{}
@@ -128,7 +143,7 @@ func startACPWorkerTaskDocs(ctx context.Context, docsRepo *state.DocsRepository,
 	if _, ok := task.Meta["parent_session_id"]; !ok && sessionID != "" {
 		task.Meta["parent_session_id"] = sessionID
 	}
-	if existing, err := docsRepo.GetTask(ctx, task.TaskID); err == nil {
+	if existing, _, err := taskService.GetTask(ctx, task.TaskID, 200); err == nil {
 		existing = existing.Normalize()
 		if task.GoalID == "" {
 			task.GoalID = existing.GoalID
@@ -152,99 +167,31 @@ func startACPWorkerTaskDocs(ctx context.Context, docsRepo *state.DocsRepository,
 	if task.CreatedAt == 0 {
 		task.CreatedAt = nowUnix
 	}
-	if len(task.Transitions) == 0 {
-		task.Status = state.TaskStatusPending
-		task.Transitions = []state.TaskTransition{{To: state.TaskStatusPending, At: nowUnix, Actor: strings.TrimSpace(agentID), Source: "acp_worker", Reason: "worker task created"}}
-	}
-	if task.Status != state.TaskStatusInProgress {
-		if state.AllowedTaskTransition(task.Status, state.TaskStatusInProgress) {
-			if err := task.ApplyTransition(state.TaskStatusInProgress, nowUnix, agentID, "acp_worker", "worker task started", nil); err != nil {
-				return state.TaskSpec{}, state.TaskRun{}, err
-			}
-		}
-	}
-	priorRuns, err := docsRepo.ListTaskRuns(ctx, task.TaskID, 200)
-	if err != nil {
-		return state.TaskSpec{}, state.TaskRun{}, err
-	}
 	runID := fmt.Sprintf("%s-run-%d", task.TaskID, startedAt.UnixMilli())
-	run, err := state.NewTaskRunAttempt(task, runID, priorRuns, nowUnix, "acp_task", agentID, "acp_worker")
-	if err != nil {
-		return state.TaskSpec{}, state.TaskRun{}, err
-	}
-	run.ParentRunID = parentRunID
-	if err := run.ApplyTransition(state.TaskRunStatusRunning, nowUnix, agentID, "acp_worker", "worker run started", nil); err != nil {
-		return state.TaskSpec{}, state.TaskRun{}, err
-	}
-	if _, err := docsRepo.PutTaskRun(ctx, run); err != nil {
-		return state.TaskSpec{}, state.TaskRun{}, err
-	}
-	task.CurrentRunID = run.RunID
-	task.LastRunID = run.RunID
-	task.UpdatedAt = nowUnix
-	if _, err := docsRepo.PutTask(ctx, task); err != nil {
-		return state.TaskSpec{}, state.TaskRun{}, err
-	}
-	return task, run, nil
+	return taskService.StartWorkerRun(ctx, task, taskspkg.TaskSourceACP, sessionID, runID, "acp_task", agentID, "worker task started", parentRunID)
 }
 
 func finishACPWorkerTaskDocs(ctx context.Context, docsRepo *state.DocsRepository, sessionID string, task state.TaskSpec, run state.TaskRun, result state.TaskResultRef, turnResult *agent.TurnResultMetadata, turnErr error, historyEntryIDs []string) error {
-	if docsRepo == nil {
-		return fmt.Errorf("docs repository is nil")
+	taskService := resolveACPTaskService(docsRepo)
+	if taskService == nil {
+		return fmt.Errorf("task service is nil")
 	}
-	nowUnix := time.Now().Unix()
 	run = run.Normalize()
 	task = task.Normalize()
-	run.Result = result
+	usage := state.TaskUsage{}
 	if turnResult != nil {
-		run.Usage = state.TaskUsage{
+		usage = state.TaskUsage{
 			PromptTokens:     int(turnResult.Usage.InputTokens),
 			CompletionTokens: int(turnResult.Usage.OutputTokens),
 			TotalTokens:      int(turnResult.Usage.InputTokens + turnResult.Usage.OutputTokens),
 		}
 	}
-	if turnErr != nil {
-		run.Error = strings.TrimSpace(turnErr.Error())
-		if run.Status != state.TaskRunStatusFailed && state.AllowedTaskRunTransition(run.Status, state.TaskRunStatusFailed) {
-			if err := run.ApplyTransition(state.TaskRunStatusFailed, nowUnix, task.AssignedAgent, "acp_worker", run.Error, nil); err != nil {
-				return err
-			}
-		}
-		if task.Status != state.TaskStatusFailed && state.AllowedTaskTransition(task.Status, state.TaskStatusFailed) {
-			if err := task.ApplyTransition(state.TaskStatusFailed, nowUnix, task.AssignedAgent, "acp_worker", run.Error, map[string]any{"run_id": run.RunID}); err != nil {
-				return err
-			}
-		}
-	} else {
-		if run.Status != state.TaskRunStatusCompleted && state.AllowedTaskRunTransition(run.Status, state.TaskRunStatusCompleted) {
-			if err := run.ApplyTransition(state.TaskRunStatusCompleted, nowUnix, task.AssignedAgent, "acp_worker", "worker run completed", nil); err != nil {
-				return err
-			}
-		}
-		if task.Meta == nil {
-			task.Meta = map[string]any{}
-		}
-		if _, ok := task.Meta["verification_status"]; !ok {
-			task.Meta["verification_status"] = "pending"
-		}
-		if len(historyEntryIDs) > 0 {
-			task.Meta["result_history_entry_id"] = historyEntryIDs[len(historyEntryIDs)-1]
-		}
-		if task.Status != state.TaskStatusCompleted && state.AllowedTaskTransition(task.Status, state.TaskStatusCompleted) {
-			if err := task.ApplyTransition(state.TaskStatusCompleted, nowUnix, task.AssignedAgent, "acp_worker", "worker task completed", map[string]any{"run_id": run.RunID}); err != nil {
-				return err
-			}
-		}
-	}
-	task.CurrentRunID = ""
-	task.LastRunID = run.RunID
-	task.UpdatedAt = nowUnix
-	if _, err := docsRepo.PutTaskRun(ctx, run); err != nil {
+	updatedTask, updatedRun, err := taskService.FinishWorkerRun(ctx, task.TaskID, run.RunID, result, usage, task.AssignedAgent, turnErr, historyEntryIDs)
+	if err != nil {
 		return err
 	}
-	if _, err := docsRepo.PutTask(ctx, task); err != nil {
-		return err
-	}
+	task = updatedTask
+	run = updatedRun
 	sessionStore := controlSessionStore
 	if controlServices != nil && controlServices.session.sessionStore != nil {
 		sessionStore = controlServices.session.sessionStore

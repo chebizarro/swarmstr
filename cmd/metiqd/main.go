@@ -512,26 +512,13 @@ func main() {
 	tools := agent.NewToolRegistry()
 	controlToolRegistry = tools
 	var configState *runtimeConfigStore
-	tools.Register("memory_search", func(ctx context.Context, args map[string]any) (string, error) {
-		query := agent.ArgString(args, "query")
-		if query == "" {
-			return "", fmt.Errorf("memory.search requires query")
-		}
-		limit := agent.ArgInt(args, "limit", 5)
-		if limit <= 0 {
-			limit = 5
-		}
-		if limit > 50 {
-			limit = 50
-		}
-		scope := memory.ScopedContextFromAgent(agent.MemoryScopeFromContext(ctx))
-		results := memory.FilterByScope(memory.SearchDocs(ctx, memoryIndex, query, limit), scope)
-		b, err := json.Marshal(results)
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
-	})
+	tools.RegisterWithDef("memory_query", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryQueryTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryQueryDef)
+	// memory_search is kept as a compatibility alias over memory_query.
+	tools.RegisterWithDef("memory_search", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemorySearchCompatTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemorySearchDef)
 
 	// acp.delegate — allows the agent to dispatch a sub-task to a peer agent
 	// and wait for the result.  Uses the global DM transport + dispatcher.
@@ -595,9 +582,25 @@ func main() {
 	// Serper (SERPER_API_KEY).  Provider is auto-detected from env vars.
 	tools.RegisterWithDef("web_search", toolbuiltin.WebSearchTool(toolbuiltin.WebSearchConfig{}), toolbuiltin.WebSearchDef)
 
-	// memory_store / memory_delete: write and remove memory entries.
-	tools.RegisterWithDef("memory_store", toolbuiltin.MemoryStoreTool(memoryIndex), toolbuiltin.MemoryStoreDef)
-	tools.RegisterWithDef("memory_delete", toolbuiltin.MemoryDeleteTool(memoryIndex), toolbuiltin.MemoryDeleteDef)
+	// Unified typed memory tools. Legacy memory_store/search/delete names remain as aliases.
+	tools.RegisterWithDef("memory_write", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryWriteTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryWriteDef)
+	tools.RegisterWithDef("memory_store", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryStoreCompatTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryStoreDef)
+	tools.RegisterWithDef("memory_get", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryGetTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryGetDef)
+	tools.RegisterWithDef("memory_update", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryUpdateTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryUpdateDef)
+	tools.RegisterWithDef("memory_forget", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryForgetTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryForgetDef)
+	tools.RegisterWithDef("memory_delete", func(ctx context.Context, args map[string]any) (string, error) {
+		return toolbuiltin.MemoryForgetTool(memoryIndex)(ctx, args)
+	}, toolbuiltin.MemoryDeleteDef)
 
 	// memory_pin / memory_pinned: long-term agent knowledge surfaced in every system prompt.
 	tools.RegisterWithDef("memory_pin", toolbuiltin.MemoryPinTool(memoryIndex), toolbuiltin.MemoryPinDef)
@@ -1087,10 +1090,10 @@ func main() {
 	}()
 
 	// Resolve memory backend from live config (Extra["memory"]["backend"]).
-	// The backend abstraction is used to future-proof swappable storage; the
-	// default "memory" backend wraps the in-process JSON inverted index.
+	// SQLite is the preferred local retrieval/index layer; the JSON inverted
+	// index remains as a compatibility fallback inside HybridIndex.
 	{
-		memoryBackendName := "memory"
+		memoryBackendName := "sqlite"
 		if mExtra, ok := configState.Get().Extra["memory"].(map[string]any); ok {
 			if beName, ok2 := mExtra["backend"].(string); ok2 && strings.TrimSpace(beName) != "" {
 				memoryBackendName = strings.TrimSpace(beName)
@@ -1098,11 +1101,14 @@ func main() {
 		}
 		memoryBackendPath := ""
 		if mExtra2, ok2 := configState.Get().Extra["memory"].(map[string]any); ok2 {
+			if p, _ := mExtra2["path"].(string); strings.TrimSpace(p) != "" {
+				memoryBackendPath = strings.TrimSpace(p)
+			}
 			qdrantURL, _ := mExtra2["url"].(string)
 			ollamaURL, _ := mExtra2["ollama_url"].(string)
 			collection, _ := mExtra2["collection"].(string)
-			// path format: "qdrantURL|ollamaURL|collection"
-			if qdrantURL != "" {
+			// qdrant path format: "qdrantURL|ollamaURL|collection"
+			if qdrantURL != "" && strings.EqualFold(memoryBackendName, "qdrant") {
 				memoryBackendPath = qdrantURL + "|" + ollamaURL + "|" + collection
 			}
 		}
@@ -1110,6 +1116,13 @@ func main() {
 			log.Printf("memory backend %q not available (%v); using json-fts", memoryBackendName, beErr)
 		} else {
 			log.Printf("memory backend: %s path=%q", memoryBackendName, memoryBackendPath)
+			if migrator, ok := be.(interface{ MigrateFromJSONIndex(string) error }); ok {
+				if jsonPath, pathErr := memory.DefaultIndexPath(); pathErr == nil {
+					if migErr := migrator.MigrateFromJSONIndex(jsonPath); migErr != nil {
+						log.Printf("memory sqlite migration warning: %v", migErr)
+					}
+				}
+			}
 			memoryIndex = memory.NewHybridIndex(baseMemoryIndex, be)
 		}
 	}

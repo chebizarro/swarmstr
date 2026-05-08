@@ -487,6 +487,189 @@ func (r *DocsRepository) ListPlans(ctx context.Context, goalID string, limit int
 	return out, nil
 }
 
+func (r *DocsRepository) PutWorkflowDefinition(ctx context.Context, doc WorkflowDefinitionDoc) (Event, error) {
+	doc.WorkflowID = strings.TrimSpace(doc.WorkflowID)
+	if doc.WorkflowID == "" {
+		return Event{}, fmt.Errorf("workflow_id is required")
+	}
+	if len(doc.Definition) == 0 {
+		return Event{}, fmt.Errorf("definition is required")
+	}
+	if doc.Version == 0 {
+		doc.Version = 1
+	}
+	tags := [][]string{
+		{"t", "workflow_definition"},
+		{"workflow", protectedTagValue(doc.WorkflowID)},
+	}
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:workflow_definition:%s", doc.WorkflowID), "workflow_definition_doc", doc, tags)
+}
+
+func (r *DocsRepository) GetWorkflowDefinition(ctx context.Context, workflowID string) (WorkflowDefinitionDoc, error) {
+	var out WorkflowDefinitionDoc
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:workflow_definition:%s", workflowID), &out); err != nil {
+		return WorkflowDefinitionDoc{}, err
+	}
+	out.WorkflowID = firstNonEmpty(out.WorkflowID, workflowID)
+	return out, nil
+}
+
+func (r *DocsRepository) ListWorkflowDefinitions(ctx context.Context, limit int) ([]WorkflowDefinitionDoc, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	type latestDefinitionDoc struct {
+		doc   WorkflowDefinitionDoc
+		event Event
+	}
+	byID := make(map[string]latestDefinitionDoc, limit)
+	pageLimit := limit * 4
+	var cursor *EventPageCursor
+	for {
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, "t", "workflow_definition", pageLimit, cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range page.Events {
+			if !hasTagValue(row.Tags, "t", "workflow_definition") {
+				continue
+			}
+			var doc WorkflowDefinitionDoc
+			if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+				continue
+			}
+			doc.WorkflowID = firstNonEmpty(strings.TrimSpace(doc.WorkflowID), strings.TrimSpace(tagValue(row.Tags, "workflow")))
+			if doc.WorkflowID == "" {
+				continue
+			}
+			if doc.UpdatedAt == 0 {
+				doc.UpdatedAt = row.CreatedAt
+			}
+			if prior, ok := byID[doc.WorkflowID]; !ok || eventIsNewer(row, prior.event) {
+				byID[doc.WorkflowID] = latestDefinitionDoc{doc: doc, event: row}
+			}
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	out := make([]WorkflowDefinitionDoc, 0, len(byID))
+	for _, entry := range byID {
+		out = append(out, entry.doc)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt == out[j].UpdatedAt {
+			return out[i].WorkflowID < out[j].WorkflowID
+		}
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *DocsRepository) PutWorkflowRun(ctx context.Context, doc WorkflowRunDoc) (Event, error) {
+	doc.RunID = strings.TrimSpace(doc.RunID)
+	if doc.RunID == "" {
+		return Event{}, fmt.Errorf("run_id is required")
+	}
+	doc.WorkflowID = strings.TrimSpace(doc.WorkflowID)
+	if doc.WorkflowID == "" {
+		return Event{}, fmt.Errorf("workflow_id is required")
+	}
+	if len(doc.Run) == 0 {
+		return Event{}, fmt.Errorf("run is required")
+	}
+	if doc.Version == 0 {
+		doc.Version = 1
+	}
+	tags := [][]string{
+		{"t", "workflow_run"},
+		{"run", protectedTagValue(doc.RunID)},
+		{"workflow", protectedTagValue(doc.WorkflowID)},
+	}
+	if status := protectedTagValue(doc.Status); status != "" {
+		tags = append(tags, []string{"status", status})
+	}
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:workflow_run:%s", doc.RunID), "workflow_run_doc", doc, tags)
+}
+
+func (r *DocsRepository) GetWorkflowRun(ctx context.Context, runID string) (WorkflowRunDoc, error) {
+	var out WorkflowRunDoc
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:workflow_run:%s", runID), &out); err != nil {
+		return WorkflowRunDoc{}, err
+	}
+	out.RunID = firstNonEmpty(out.RunID, runID)
+	return out, nil
+}
+
+func (r *DocsRepository) ListWorkflowRuns(ctx context.Context, workflowID string, limit int) ([]WorkflowRunDoc, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	workflowTag := protectedTagValue(workflowID)
+	tagKey, tagFilterValue := "t", "workflow_run"
+	if workflowTag != "" {
+		tagKey, tagFilterValue = "workflow", workflowTag
+	}
+	type latestRunDoc struct {
+		doc   WorkflowRunDoc
+		event Event
+	}
+	byID := make(map[string]latestRunDoc, limit)
+	pageLimit := limit * 4
+	var cursor *EventPageCursor
+	for {
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagFilterValue, pageLimit, cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range page.Events {
+			if !hasTagValue(row.Tags, "t", "workflow_run") {
+				continue
+			}
+			if workflowTag != "" && tagValue(row.Tags, "workflow") != workflowTag {
+				continue
+			}
+			var doc WorkflowRunDoc
+			if err := decodeEnvelopePayload(row.Content, &doc, r.codec); err != nil {
+				continue
+			}
+			doc.RunID = firstNonEmpty(strings.TrimSpace(doc.RunID), strings.TrimSpace(tagValue(row.Tags, "run")))
+			doc.WorkflowID = firstNonEmpty(strings.TrimSpace(doc.WorkflowID), strings.TrimSpace(tagValue(row.Tags, "workflow")))
+			if doc.RunID == "" {
+				continue
+			}
+			if doc.UpdatedAt == 0 {
+				doc.UpdatedAt = row.CreatedAt
+			}
+			if prior, ok := byID[doc.RunID]; !ok || eventIsNewer(row, prior.event) {
+				byID[doc.RunID] = latestRunDoc{doc: doc, event: row}
+			}
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	out := make([]WorkflowRunDoc, 0, len(byID))
+	for _, entry := range byID {
+		out = append(out, entry.doc)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt == out[j].UpdatedAt {
+			return out[i].RunID < out[j].RunID
+		}
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (r *DocsRepository) PutWorkflowJournal(ctx context.Context, doc WorkflowJournalDoc) (Event, error) {
 	if strings.TrimSpace(doc.RunID) == "" {
 		return Event{}, fmt.Errorf("run_id is required")

@@ -492,6 +492,45 @@ func TestLedgerCancelTaskReturnsPersistenceErrorAndRollsBack(t *testing.T) {
 	}
 }
 
+func TestLedgerCancelTaskCancelsEmbeddedRunMissingFromRunMap(t *testing.T) {
+	ledger := NewLedger(nil)
+	ctx := context.Background()
+	task := state.TaskSpec{TaskID: "task-embedded-run", Title: "Embedded", Instructions: "Test"}
+	if _, err := ledger.CreateTask(ctx, task, TaskSourceManual, ""); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := ledger.UpdateTaskStatus(ctx, task.TaskID, state.TaskStatusInProgress, "test", "test", ""); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	if _, err := ledger.CreateRun(ctx, task.TaskID, "run-embedded", "manual", "test", "test"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := ledger.UpdateRunStatus(ctx, "run-embedded", state.TaskRunStatusRunning, "test", "test", ""); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+	ledger.mu.Lock()
+	delete(ledger.runs, "run-embedded")
+	ledger.mu.Unlock()
+
+	if err := ledger.CancelTask(ctx, task.TaskID, "test", "cancel"); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	entry, err := ledger.GetTask(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if len(entry.Runs) != 1 || entry.Runs[0].Status != state.TaskRunStatusCancelled {
+		t.Fatalf("expected embedded run cancelled, got %+v", entry.Runs)
+	}
+	runEntry, err := ledger.GetRun(ctx, "run-embedded")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if runEntry.Run.Status != state.TaskRunStatusCancelled {
+		t.Fatalf("expected recreated run map entry cancelled, got %q", runEntry.Run.Status)
+	}
+}
+
 func TestLedgerCancelTask(t *testing.T) {
 	ledger := NewLedger(nil)
 	ctx := context.Background()
@@ -520,6 +559,149 @@ func TestLedgerCancelTask(t *testing.T) {
 	runEntry, _ := ledger.GetRun(ctx, "run-cancel")
 	if runEntry.Run.Status != state.TaskRunStatusCancelled {
 		t.Errorf("expected run status 'cancelled', got %q", runEntry.Run.Status)
+	}
+}
+
+func TestLedgerUpdateTaskStatusLoadsFromStoreOnCacheMiss(t *testing.T) {
+	store := newRecordingStore()
+	seed := NewLedger(store)
+	ctx := context.Background()
+
+	task := state.TaskSpec{TaskID: "task-restart-status", Title: "Restart Status", Instructions: "Test"}
+	if _, err := seed.CreateTask(ctx, task, TaskSourceManual, ""); err != nil {
+		t.Fatalf("seed CreateTask: %v", err)
+	}
+
+	fresh := NewLedger(store)
+	entry, err := fresh.UpdateTaskStatus(ctx, "task-restart-status", state.TaskStatusInProgress, "agent", "test", "resume")
+	if err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	if entry.Task.Status != state.TaskStatusInProgress {
+		t.Fatalf("expected in_progress, got %q", entry.Task.Status)
+	}
+	stored := store.tasks["task-restart-status"]
+	if stored == nil || stored.Task.Status != state.TaskStatusInProgress {
+		t.Fatalf("expected persisted status in_progress, got %+v", stored)
+	}
+}
+
+func TestLedgerCreateRunLoadsTaskFromStoreOnCacheMiss(t *testing.T) {
+	store := newRecordingStore()
+	seed := NewLedger(store)
+	ctx := context.Background()
+
+	task := state.TaskSpec{TaskID: "task-restart-run", Title: "Restart Run", Instructions: "Test"}
+	if _, err := seed.CreateTask(ctx, task, TaskSourceManual, ""); err != nil {
+		t.Fatalf("seed CreateTask: %v", err)
+	}
+
+	fresh := NewLedger(store)
+	run, err := fresh.CreateRun(ctx, "task-restart-run", "run-restart-run", "manual", "agent", "test")
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if run.Run.RunID != "run-restart-run" {
+		t.Fatalf("expected new run id, got %q", run.Run.RunID)
+	}
+	if store.runs["run-restart-run"] == nil {
+		t.Fatal("expected run persisted to store")
+	}
+}
+
+func TestLedgerUpdateRunStatusLoadsRunFromStoreOnCacheMiss(t *testing.T) {
+	store := newRecordingStore()
+	seed := NewLedger(store)
+	ctx := context.Background()
+
+	task := state.TaskSpec{TaskID: "task-restart-run-status", Title: "Restart Run Status", Instructions: "Test"}
+	if _, err := seed.CreateTask(ctx, task, TaskSourceManual, ""); err != nil {
+		t.Fatalf("seed CreateTask: %v", err)
+	}
+	if _, err := seed.CreateRun(ctx, "task-restart-run-status", "run-restart-status", "manual", "agent", "test"); err != nil {
+		t.Fatalf("seed CreateRun: %v", err)
+	}
+
+	fresh := NewLedger(store)
+	run, err := fresh.UpdateRunStatus(ctx, "run-restart-status", state.TaskRunStatusRunning, "agent", "test", "start")
+	if err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+	if run.Run.Status != state.TaskRunStatusRunning {
+		t.Fatalf("expected running, got %q", run.Run.Status)
+	}
+	if stored := store.runs["run-restart-status"]; stored == nil || stored.Run.Status != state.TaskRunStatusRunning {
+		t.Fatalf("expected persisted running run, got %+v", stored)
+	}
+}
+
+func TestLedgerCancelTaskLoadsFromStoreOnCacheMiss(t *testing.T) {
+	store := newRecordingStore()
+	seed := NewLedger(store)
+	ctx := context.Background()
+
+	task := state.TaskSpec{TaskID: "task-restart-cancel", Title: "Restart Cancel", Instructions: "Test"}
+	if _, err := seed.CreateTask(ctx, task, TaskSourceManual, ""); err != nil {
+		t.Fatalf("seed CreateTask: %v", err)
+	}
+	if _, err := seed.CreateRun(ctx, "task-restart-cancel", "run-restart-cancel", "manual", "agent", "test"); err != nil {
+		t.Fatalf("seed CreateRun: %v", err)
+	}
+	if _, err := seed.UpdateRunStatus(ctx, "run-restart-cancel", state.TaskRunStatusRunning, "agent", "test", "start"); err != nil {
+		t.Fatalf("seed UpdateRunStatus: %v", err)
+	}
+
+	fresh := NewLedger(store)
+	if err := fresh.CancelTask(ctx, "task-restart-cancel", "agent", "stop"); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	if storedTask := store.tasks["task-restart-cancel"]; storedTask == nil || storedTask.Task.Status != state.TaskStatusCancelled {
+		t.Fatalf("expected persisted cancelled task, got %+v", storedTask)
+	}
+	if storedRun := store.runs["run-restart-cancel"]; storedRun == nil || storedRun.Run.Status != state.TaskRunStatusCancelled {
+		t.Fatalf("expected persisted cancelled run, got %+v", storedRun)
+	}
+}
+
+func TestLedgerListTasksUsesStoreWhenPresent(t *testing.T) {
+	store := newRecordingStore()
+	ctx := context.Background()
+	store.tasks["store-task"] = &LedgerEntry{
+		Task: state.TaskSpec{TaskID: "store-task", Title: "Store Task", Instructions: "Test", Status: state.TaskStatusPending},
+	}
+	ledger := NewLedger(store)
+	ledger.tasks["cache-only"] = &LedgerEntry{Task: state.TaskSpec{TaskID: "cache-only", Title: "Cache", Instructions: "Test", Status: state.TaskStatusPending}}
+
+	entries, err := ledger.ListTasks(ctx, ListTasksOptions{})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if store.listTaskCalls != 1 {
+		t.Fatalf("expected store ListTasks call, got %d", store.listTaskCalls)
+	}
+	if len(entries) != 1 || entries[0].Task.TaskID != "store-task" {
+		t.Fatalf("expected store-backed list result, got %+v", entries)
+	}
+}
+
+func TestLedgerListRunsUsesStoreWhenPresent(t *testing.T) {
+	store := newRecordingStore()
+	ctx := context.Background()
+	store.runs["store-run"] = &RunEntry{
+		Run: state.TaskRun{RunID: "store-run", TaskID: "task-1", Status: state.TaskRunStatusQueued},
+	}
+	ledger := NewLedger(store)
+	ledger.runs["cache-only-run"] = &RunEntry{Run: state.TaskRun{RunID: "cache-only-run", TaskID: "task-1", Status: state.TaskRunStatusQueued}}
+
+	entries, err := ledger.ListRuns(ctx, ListRunsOptions{})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if store.listRunCalls != 1 {
+		t.Fatalf("expected store ListRuns call, got %d", store.listRunCalls)
+	}
+	if len(entries) != 1 || entries[0].Run.RunID != "store-run" {
+		t.Fatalf("expected store-backed run list result, got %+v", entries)
 	}
 }
 
@@ -579,6 +761,8 @@ type recordingStore struct {
 
 	saveTaskCalls int
 	saveRunCalls  int
+	listTaskCalls int
+	listRunCalls  int
 	saveTaskErr   error
 	saveRunErr    error
 }
@@ -611,6 +795,7 @@ func (s *recordingStore) LoadTask(ctx context.Context, taskID string) (*LedgerEn
 }
 
 func (s *recordingStore) ListTasks(ctx context.Context, opts ListTasksOptions) ([]*LedgerEntry, error) {
+	s.listTaskCalls++
 	out := make([]*LedgerEntry, 0, len(s.tasks))
 	for _, entry := range s.tasks {
 		out = append(out, entry)
@@ -641,6 +826,7 @@ func (s *recordingStore) LoadRun(ctx context.Context, runID string) (*RunEntry, 
 }
 
 func (s *recordingStore) ListRuns(ctx context.Context, opts ListRunsOptions) ([]*RunEntry, error) {
+	s.listRunCalls++
 	out := make([]*RunEntry, 0, len(s.runs))
 	for _, entry := range s.runs {
 		out = append(out, entry)

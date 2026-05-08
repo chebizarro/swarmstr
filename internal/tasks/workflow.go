@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -183,8 +181,16 @@ type WorkflowOrchestrator struct {
 	runs        map[string]*WorkflowRun
 	ledger      *Ledger
 	emitter     *EventEmitter
-	dir         string
+	store       WorkflowStore
 	executor    StepExecutor
+}
+
+// WorkflowStore persists workflow definitions and runs.
+type WorkflowStore interface {
+	LoadDefinitions(ctx context.Context) ([]*WorkflowDefinition, error)
+	LoadRuns(ctx context.Context) ([]*WorkflowRun, error)
+	SaveDefinition(ctx context.Context, def *WorkflowDefinition) error
+	SaveRun(ctx context.Context, run *WorkflowRun) error
 }
 
 // StepExecutor executes workflow steps.
@@ -195,22 +201,35 @@ type StepExecutor interface {
 // OrchestratorConfig configures the workflow orchestrator.
 type OrchestratorConfig struct {
 	Dir      string
+	Store    WorkflowStore
 	Ledger   *Ledger
 	Emitter  *EventEmitter
 	Executor StepExecutor
 }
 
+type workflowRunRecovery struct {
+	run *WorkflowRun
+	def *WorkflowDefinition
+}
+
+type workflowStepReconciliation struct {
+	stepID string
+	task   *state.TaskSpec
+	run    *state.TaskRun
+}
+
 // NewWorkflowOrchestrator creates a new workflow orchestrator.
 func NewWorkflowOrchestrator(cfg OrchestratorConfig) (*WorkflowOrchestrator, error) {
-	if cfg.Dir == "" {
-		return nil, fmt.Errorf("workflow directory is required")
-	}
-
-	if err := os.MkdirAll(filepath.Join(cfg.Dir, "definitions"), 0755); err != nil {
-		return nil, fmt.Errorf("create definitions directory: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Join(cfg.Dir, "runs"), 0755); err != nil {
-		return nil, fmt.Errorf("create runs directory: %w", err)
+	store := cfg.Store
+	if store == nil {
+		if cfg.Dir == "" {
+			return nil, fmt.Errorf("workflow store or directory is required")
+		}
+		fsStore, err := NewFSWorkflowStore(cfg.Dir)
+		if err != nil {
+			return nil, err
+		}
+		store = fsStore
 	}
 
 	o := &WorkflowOrchestrator{
@@ -218,80 +237,46 @@ func NewWorkflowOrchestrator(cfg OrchestratorConfig) (*WorkflowOrchestrator, err
 		runs:        make(map[string]*WorkflowRun),
 		ledger:      cfg.Ledger,
 		emitter:     cfg.Emitter,
-		dir:         cfg.Dir,
+		store:       store,
 		executor:    cfg.Executor,
 	}
 
 	// Load existing definitions and runs
-	if err := o.loadDefinitions(); err != nil {
+	if err := o.loadDefinitions(context.Background()); err != nil {
 		// Log warning but continue
 	}
-	if err := o.loadRuns(); err != nil {
+	if err := o.loadRuns(context.Background()); err != nil {
 		// Log warning but continue
 	}
 
 	return o, nil
 }
 
-func (o *WorkflowOrchestrator) loadDefinitions() error {
-	dir := filepath.Join(o.dir, "definitions")
-	entries, err := os.ReadDir(dir)
+func (o *WorkflowOrchestrator) loadDefinitions(ctx context.Context) error {
+	defs, err := o.store.LoadDefinitions(ctx)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+	for _, def := range defs {
+		if def == nil || strings.TrimSpace(def.ID) == "" {
 			continue
 		}
-
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			continue
-		}
-
-		var def WorkflowDefinition
-		if err := json.Unmarshal(data, &def); err != nil {
-			continue
-		}
-
-		o.definitions[def.ID] = &def
+		o.definitions[def.ID] = def
 	}
-
 	return nil
 }
 
-func (o *WorkflowOrchestrator) loadRuns() error {
-	dir := filepath.Join(o.dir, "runs")
-	entries, err := os.ReadDir(dir)
+func (o *WorkflowOrchestrator) loadRuns(ctx context.Context) error {
+	runs, err := o.store.LoadRuns(ctx)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+	for _, run := range runs {
+		if run == nil || strings.TrimSpace(run.RunID) == "" {
 			continue
 		}
-
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			continue
-		}
-
-		var run WorkflowRun
-		if err := json.Unmarshal(data, &run); err != nil {
-			continue
-		}
-
-		o.runs[run.RunID] = &run
+		o.runs[run.RunID] = run
 	}
-
 	return nil
 }
 
@@ -342,17 +327,11 @@ func (o *WorkflowOrchestrator) RegisterDefinition(ctx context.Context, def Workf
 	o.mu.Unlock()
 
 	// Persist
-	return o.saveDefinition(&def)
+	return o.saveDefinition(ctx, &def)
 }
 
-func (o *WorkflowOrchestrator) saveDefinition(def *WorkflowDefinition) error {
-	data, err := json.MarshalIndent(def, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	path := filepath.Join(o.dir, "definitions", def.ID+".json")
-	return os.WriteFile(path, data, 0644)
+func (o *WorkflowOrchestrator) saveDefinition(ctx context.Context, def *WorkflowDefinition) error {
+	return o.store.SaveDefinition(ctx, def)
 }
 
 // GetDefinition retrieves a workflow definition by ID.
@@ -431,7 +410,7 @@ func (o *WorkflowOrchestrator) StartRun(ctx context.Context, workflowID string, 
 	o.mu.Unlock()
 
 	// Persist
-	if err := o.saveRun(run); err != nil {
+	if err := o.saveRun(ctx, run); err != nil {
 		// Log but don't fail
 	}
 
@@ -454,14 +433,156 @@ func (o *WorkflowOrchestrator) StartRun(ctx context.Context, workflowID string, 
 	return run, nil
 }
 
-func (o *WorkflowOrchestrator) saveRun(run *WorkflowRun) error {
-	data, err := json.MarshalIndent(run, "", "  ")
-	if err != nil {
-		return err
+func (o *WorkflowOrchestrator) saveRun(ctx context.Context, run *WorkflowRun) error {
+	return o.store.SaveRun(ctx, run)
+}
+
+// RecoverNonTerminalRuns reconciles durable workflow runs after daemon startup
+// and schedules only unfinished work. Completed child task/run state is applied
+// before scheduling so recovered workflows never rerun already-finished child
+// steps.
+func (o *WorkflowOrchestrator) RecoverNonTerminalRuns(ctx context.Context) error {
+	if o == nil {
+		return fmt.Errorf("workflow orchestrator is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	recoveries := o.recoverableRuns()
+	var firstErr error
+	for _, rec := range recoveries {
+		if rec.run == nil || rec.def == nil {
+			continue
+		}
+		changed, err := o.reconcileChildStepState(ctx, rec.run, rec.def)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if changed {
+			if saveErr := o.saveRun(ctx, rec.run); saveErr != nil && firstErr == nil {
+				firstErr = saveErr
+			}
+		}
+		if rec.run.Status == WorkflowStatusRunning {
+			recoveryCtx := context.WithoutCancel(ctx)
+			go o.scheduleReadySteps(recoveryCtx, rec.run, rec.def)
+		}
+	}
+	return firstErr
+}
+
+func (o *WorkflowOrchestrator) recoverableRuns() []workflowRunRecovery {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	recoveries := make([]workflowRunRecovery, 0)
+	for _, run := range o.runs {
+		if run == nil || workflowRunTerminal(run.Status) {
+			continue
+		}
+		def := o.definitions[run.WorkflowID]
+		if def == nil {
+			continue
+		}
+		recoveries = append(recoveries, workflowRunRecovery{run: run, def: def})
+	}
+	return recoveries
+}
+
+func (o *WorkflowOrchestrator) reconcileChildStepState(ctx context.Context, run *WorkflowRun, _ *WorkflowDefinition) (bool, error) {
+	if o == nil || o.ledger == nil || run == nil {
+		return false, nil
+	}
+	outcomes := make([]workflowStepReconciliation, 0, len(run.Steps))
+	var firstErr error
+	for i := range run.Steps {
+		step := &run.Steps[i]
+		if workflowStepTerminal(step.Status) {
+			continue
+		}
+		outcome, err := o.reconcileStepFromLedger(ctx, step)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if outcome.task != nil || outcome.run != nil || step.Status == StepStatusRunning || step.Status == StepStatusReady {
+			outcomes = append(outcomes, outcome)
+		}
+	}
+	if len(outcomes) == 0 {
+		return false, firstErr
 	}
 
-	path := filepath.Join(o.dir, "runs", run.RunID+".json")
-	return os.WriteFile(path, data, 0644)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	stepIndex := make(map[string]*StepRun, len(run.Steps))
+	for i := range run.Steps {
+		stepIndex[run.Steps[i].StepID] = &run.Steps[i]
+	}
+	now := time.Now().Unix()
+	changed := false
+	for _, outcome := range outcomes {
+		step := stepIndex[outcome.stepID]
+		if step == nil || workflowStepTerminal(step.Status) {
+			continue
+		}
+		if workflowApplyRunReconciliation(step, outcome.run) {
+			changed = true
+			continue
+		}
+		if workflowApplyTaskReconciliation(step, outcome.task) {
+			changed = true
+			continue
+		}
+		if step.Status == StepStatusRunning || step.Status == StepStatusReady {
+			step.Status = StepStatusPending
+			step.EndedAt = 0
+			step.Error = ""
+			changed = true
+		}
+	}
+	if changed {
+		run.UpdatedAt = now
+		finalizeWorkflowRunIfDone(run, now)
+	}
+	return changed, firstErr
+}
+
+func (o *WorkflowOrchestrator) reconcileStepFromLedger(ctx context.Context, step *StepRun) (workflowStepReconciliation, error) {
+	if step == nil {
+		return workflowStepReconciliation{}, nil
+	}
+	outcome := workflowStepReconciliation{stepID: step.StepID}
+	taskID := strings.TrimSpace(step.TaskID)
+	runID := strings.TrimSpace(step.RunID)
+	if taskID != "" {
+		entry, err := o.ledger.GetTask(ctx, taskID)
+		if err != nil {
+			return outcome, err
+		}
+		if entry != nil {
+			task := entry.Task.Normalize()
+			outcome.task = &task
+			if runID == "" {
+				runID = strings.TrimSpace(task.CurrentRunID)
+				if runID == "" {
+					runID = strings.TrimSpace(task.LastRunID)
+				}
+			}
+		}
+	}
+	if runID != "" {
+		entry, err := o.ledger.GetRun(ctx, runID)
+		if err != nil {
+			return outcome, err
+		}
+		if entry != nil {
+			run := entry.Run.Normalize()
+			outcome.run = &run
+		}
+	}
+	return outcome, nil
 }
 
 // GetRun retrieves a workflow run by ID.
@@ -516,7 +637,7 @@ func (o *WorkflowOrchestrator) CancelRun(ctx context.Context, runID, reason stri
 	o.mu.Unlock()
 
 	// Persist
-	_ = o.saveRun(run)
+	_ = o.saveRun(ctx, run)
 
 	return nil
 }
@@ -539,7 +660,7 @@ func (o *WorkflowOrchestrator) PauseRun(ctx context.Context, runID string) error
 	run.UpdatedAt = time.Now().Unix()
 	o.mu.Unlock()
 
-	return o.saveRun(run)
+	return o.saveRun(ctx, run)
 }
 
 // ResumeRun resumes a paused workflow.
@@ -567,7 +688,7 @@ func (o *WorkflowOrchestrator) ResumeRun(ctx context.Context, runID string) erro
 	}
 
 	go o.scheduleReadySteps(context.Background(), run, def)
-	return nil
+	return o.saveRun(ctx, run)
 }
 
 // scheduleReadySteps finds and executes steps that are ready to run.
@@ -647,6 +768,145 @@ func dependencySatisfied(step *StepRun, def *StepDefinition) bool {
 	default:
 		return false
 	}
+}
+
+func workflowRunTerminal(status WorkflowStatus) bool {
+	switch status {
+	case WorkflowStatusCompleted, WorkflowStatusFailed, WorkflowStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowStepTerminal(status StepStatus) bool {
+	switch status {
+	case StepStatusCompleted, StepStatusFailed, StepStatusSkipped:
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowApplyRunReconciliation(step *StepRun, run *state.TaskRun) bool {
+	if step == nil || run == nil {
+		return false
+	}
+	switch run.Status {
+	case state.TaskRunStatusCompleted:
+		step.Status = StepStatusCompleted
+		step.Output = workflowStepOutputFromTaskRun(*run)
+		step.Error = ""
+		if step.StartedAt == 0 {
+			step.StartedAt = run.StartedAt
+		}
+		if run.EndedAt > 0 {
+			step.EndedAt = run.EndedAt
+		}
+		if step.Attempt == 0 {
+			step.Attempt = run.Attempt
+		}
+		return true
+	case state.TaskRunStatusFailed, state.TaskRunStatusCancelled:
+		step.Status = StepStatusFailed
+		step.Output = workflowStepOutputFromTaskRun(*run)
+		step.Error = strings.TrimSpace(run.Error)
+		if step.Error == "" {
+			step.Error = fmt.Sprintf("child task run %s ended with status %s", run.RunID, run.Status)
+		}
+		if step.StartedAt == 0 {
+			step.StartedAt = run.StartedAt
+		}
+		if run.EndedAt > 0 {
+			step.EndedAt = run.EndedAt
+		}
+		if step.Attempt == 0 {
+			step.Attempt = run.Attempt
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowApplyTaskReconciliation(step *StepRun, task *state.TaskSpec) bool {
+	if step == nil || task == nil {
+		return false
+	}
+	switch task.Status {
+	case state.TaskStatusCompleted:
+		step.Status = StepStatusCompleted
+		step.Error = ""
+		if step.Output == nil {
+			step.Output = map[string]any{}
+		}
+		step.Output["task_id"] = task.TaskID
+		step.Output["status"] = string(task.Status)
+		if step.EndedAt == 0 {
+			step.EndedAt = task.UpdatedAt
+		}
+		return true
+	case state.TaskStatusFailed, state.TaskStatusCancelled:
+		step.Status = StepStatusFailed
+		if step.Output == nil {
+			step.Output = map[string]any{}
+		}
+		step.Output["task_id"] = task.TaskID
+		step.Output["status"] = string(task.Status)
+		if step.Error == "" {
+			step.Error = fmt.Sprintf("child task %s ended with status %s", task.TaskID, task.Status)
+		}
+		if step.EndedAt == 0 {
+			step.EndedAt = task.UpdatedAt
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowStepOutputFromTaskRun(run state.TaskRun) map[string]any {
+	out := map[string]any{
+		"task_id": run.TaskID,
+		"run_id":  run.RunID,
+		"status":  string(run.Status),
+	}
+	if strings.TrimSpace(run.Error) != "" {
+		out["error"] = run.Error
+	}
+	if run.Usage != (state.TaskUsage{}) {
+		out["usage"] = run.Usage
+	}
+	if run.Result.Kind != "" || run.Result.ID != "" {
+		out["result"] = run.Result
+	}
+	return out
+}
+
+func finalizeWorkflowRunIfDone(run *WorkflowRun, now int64) {
+	if run == nil || run.Status != WorkflowStatusRunning {
+		return
+	}
+	allDone := true
+	allSuccess := true
+	for _, step := range run.Steps {
+		if !workflowStepTerminal(step.Status) {
+			allDone = false
+			break
+		}
+		if step.Status == StepStatusFailed {
+			allSuccess = false
+		}
+	}
+	if !allDone {
+		return
+	}
+	if allSuccess {
+		run.Status = WorkflowStatusCompleted
+	} else {
+		run.Status = WorkflowStatusFailed
+	}
+	run.EndedAt = now
 }
 
 var errStepBlocked = errors.New("step blocked")
@@ -743,7 +1003,7 @@ func (o *WorkflowOrchestrator) executeStep(ctx context.Context, run *WorkflowRun
 	o.mu.Unlock()
 
 	// Persist
-	_ = o.saveRun(run)
+	_ = o.saveRun(ctx, run)
 
 	// Emit completion event
 	if o.emitter != nil {

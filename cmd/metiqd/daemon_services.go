@@ -34,6 +34,7 @@ import (
 	pluginservice "metiq/internal/plugins/service"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/store/state"
+	taskspkg "metiq/internal/tasks"
 	ttspkg "metiq/internal/tts"
 	"metiq/internal/update"
 )
@@ -48,12 +49,29 @@ type daemonServices struct {
 	handlers       handlerServices
 	runtimeConfig  *runtimeConfigStore
 	docsRepo       *state.DocsRepository
+	transcriptRepo *state.TranscriptRepository
+	tasks          taskRuntimeServices
 	pubKeyHex      string
 	restartCh      chan int
 	lifecycleCtx   context.Context
 	agentRunWG     *sync.WaitGroup
 	agentRunMu     *sync.Mutex
 	agentRunClosed *bool
+}
+
+// taskRuntimeServices groups the daemon-owned task ledger/service stack. The
+// service is wired before call-site migration so follow-on work can consume one
+// canonical instance instead of constructing ad-hoc ledgers.
+type taskRuntimeServices struct {
+	store                taskspkg.Store
+	ledger               *taskspkg.Ledger
+	service              *taskspkg.Service
+	events               *taskspkg.EventEmitter
+	runner               *taskRunner
+	lifecyclePublisher   *taskspkg.LifecyclePublisher
+	workflowStore        taskspkg.WorkflowStore
+	workflowExecutor     *workflowExecutor
+	workflowOrchestrator *taskspkg.WorkflowOrchestrator
 }
 
 // emitWSEvent emits a typed event to connected WS clients.
@@ -108,6 +126,7 @@ type relayPublishDebounce struct {
 // sessionServices groups session-related runtime dependencies.
 type sessionServices struct {
 	sessionTurns      *autoreply.SessionTurns
+	chatCancels       *chatAbortRegistry
 	steeringMailboxes *autoreply.SteeringMailboxRegistry
 	agentRuntime      agent.Runtime
 	agentRegistry     *agent.AgentRuntimeRegistry

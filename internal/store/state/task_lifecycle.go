@@ -67,7 +67,7 @@ func AllowedTaskTransition(from, to TaskStatus) bool {
 		}
 	case TaskStatusVerifying:
 		switch to {
-		case TaskStatusCompleted, TaskStatusFailed, TaskStatusBlocked, TaskStatusAwaitingApproval:
+		case TaskStatusCompleted, TaskStatusFailed, TaskStatusBlocked, TaskStatusAwaitingApproval, TaskStatusCancelled:
 			return true
 		}
 	case TaskStatusFailed:
@@ -94,7 +94,7 @@ func AllowedTaskRunTransition(from, to TaskRunStatus) bool {
 		}
 	case TaskRunStatusRunning:
 		switch to {
-		case TaskRunStatusBlocked, TaskRunStatusAwaitingApproval, TaskRunStatusRetrying, TaskRunStatusCompleted, TaskRunStatusFailed, TaskRunStatusCancelled:
+		case TaskRunStatusBlocked, TaskRunStatusAwaitingApproval, TaskRunStatusRetrying, TaskRunStatusVerifying, TaskRunStatusCompleted, TaskRunStatusFailed, TaskRunStatusCancelled:
 			return true
 		}
 	case TaskRunStatusBlocked:
@@ -110,6 +110,11 @@ func AllowedTaskRunTransition(from, to TaskRunStatus) bool {
 	case TaskRunStatusRetrying:
 		switch to {
 		case TaskRunStatusQueued, TaskRunStatusRunning, TaskRunStatusBlocked, TaskRunStatusCancelled, TaskRunStatusFailed:
+			return true
+		}
+	case TaskRunStatusVerifying:
+		switch to {
+		case TaskRunStatusCompleted, TaskRunStatusFailed, TaskRunStatusBlocked, TaskRunStatusAwaitingApproval, TaskRunStatusCancelled:
 			return true
 		}
 	}

@@ -8,11 +8,17 @@ import (
 
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/planner"
 	"metiq/internal/store/state"
+	taskspkg "metiq/internal/tasks"
 )
 
 func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.ControlRPCInbound, method string) (nostruntime.ControlRPCResult, bool, error) {
 	docsRepo := h.deps.docsRepo
+	taskService := h.deps.taskService
+	if taskService == nil && docsRepo != nil {
+		taskService = taskspkg.NewService(taskspkg.NewDocsStore(docsRepo))
+	}
 
 	switch method {
 	case methods.MethodTasksCreate:
@@ -24,7 +30,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := methods.CreateTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
+		result, err := methods.CreateTask(ctx, taskService, req, in.FromPubKey)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -38,7 +44,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := methods.BuildTaskGetResponse(ctx, docsRepo, req.TaskID, req.RunsLimit)
+		result, err := methods.BuildTaskGetResponse(ctx, taskService, req.TaskID, req.RunsLimit)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -52,7 +58,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := methods.ListFilteredTasks(ctx, docsRepo, req)
+		result, err := methods.ListFilteredTasks(ctx, taskService, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -66,7 +72,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := methods.CancelTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
+		result, err := methods.CancelTask(ctx, taskService, req, in.FromPubKey)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -80,7 +86,7 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		result, err := methods.ResumeTask(ctx, docsRepo, req, in.FromPubKey, time.Now())
+		result, err := methods.ResumeTask(ctx, taskService, req, in.FromPubKey)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -130,9 +136,11 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 		var turnTelemetry []state.TurnTelemetry
 		var toolLifecycle []state.ToolLifecycleTelemetry
 		var memoryRecall []state.MemoryRecallSample
+		var verificationEvents []planner.VerificationEvent
+		var workerEvents []planner.WorkerEvent
 		if h.deps.sessionStore != nil {
 			for sessID, entry := range h.deps.sessionStore.List() {
-				if strings.TrimSpace(entry.ActiveTaskID) != req.TaskID && strings.TrimSpace(entry.ParentTaskID) != req.TaskID && sessID != strings.TrimSpace(task.SessionID) {
+				if !sessionEntryMayContainTaskTrace(sessID, entry, task, req.TaskID) {
 					continue
 				}
 				if entry.LastTurn != nil && strings.TrimSpace(entry.LastTurn.TaskID) == req.TaskID {
@@ -148,9 +156,19 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 						toolLifecycle = append(toolLifecycle, sample)
 					}
 				}
+				for _, sample := range entry.RecentVerificationEvents {
+					if strings.TrimSpace(sample.TaskID) == req.TaskID {
+						verificationEvents = append(verificationEvents, verificationTelemetryToPlannerEvent(sample))
+					}
+				}
+				for _, sample := range entry.RecentWorkerEvents {
+					if strings.TrimSpace(sample.TaskID) == req.TaskID || strings.TrimSpace(sample.ParentTaskID) == req.TaskID {
+						workerEvents = append(workerEvents, workerTelemetryToPlannerEvent(sample))
+					}
+				}
 			}
 		}
-		traceInput := methods.TraceInput{Task: task, Runs: runs, TurnTelemetry: turnTelemetry, ToolLifecycle: toolLifecycle, MemoryRecall: memoryRecall}
+		traceInput := methods.TraceInput{Task: task, Runs: runs, TurnTelemetry: turnTelemetry, ToolLifecycle: toolLifecycle, MemoryRecall: memoryRecall, VerificationEvents: verificationEvents, WorkerEvents: workerEvents}
 		traceResp := methods.AssembleTaskTrace(traceInput, req.RunID, req.Limit)
 		return nostruntime.ControlRPCResult{Result: traceResp}, true, nil
 	case methods.MethodTasksAuditExport:
@@ -228,4 +246,94 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 	default:
 		return nostruntime.ControlRPCResult{}, false, nil
 	}
+}
+
+func sessionEntryMayContainTaskTrace(sessID string, entry state.SessionEntry, task state.TaskSpec, taskID string) bool {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return false
+	}
+	if strings.TrimSpace(entry.ActiveTaskID) == taskID || strings.TrimSpace(entry.LastCompletedTaskID) == taskID || strings.TrimSpace(entry.ParentTaskID) == taskID {
+		return true
+	}
+	if strings.TrimSpace(sessID) != "" && strings.TrimSpace(sessID) == strings.TrimSpace(task.SessionID) {
+		return true
+	}
+	for _, sample := range entry.RecentMemoryRecall {
+		if strings.TrimSpace(sample.TaskID) == taskID {
+			return true
+		}
+	}
+	for _, sample := range entry.RecentToolLifecycle {
+		if strings.TrimSpace(sample.TaskID) == taskID {
+			return true
+		}
+	}
+	for _, sample := range entry.RecentVerificationEvents {
+		if strings.TrimSpace(sample.TaskID) == taskID {
+			return true
+		}
+	}
+	for _, sample := range entry.RecentWorkerEvents {
+		if strings.TrimSpace(sample.TaskID) == taskID || strings.TrimSpace(sample.ParentTaskID) == taskID {
+			return true
+		}
+	}
+	return false
+}
+
+func verificationTelemetryToPlannerEvent(sample state.VerificationEventTelemetry) planner.VerificationEvent {
+	return planner.VerificationEvent{
+		Type:       planner.VerificationEventType(sample.Type),
+		TaskID:     sample.TaskID,
+		RunID:      sample.RunID,
+		GoalID:     sample.GoalID,
+		StepID:     sample.StepID,
+		CheckID:    sample.CheckID,
+		CheckType:  sample.CheckType,
+		Status:     sample.Status,
+		Result:     sample.Result,
+		Evidence:   sample.Evidence,
+		ReviewerID: sample.ReviewerID,
+		Confidence: sample.Confidence,
+		Duration:   sample.Duration,
+		GateAction: sample.GateAction,
+		CreatedAt:  sample.CreatedAt,
+		Meta:       sample.Meta,
+	}
+}
+
+func workerTelemetryToPlannerEvent(sample state.WorkerEventTelemetry) planner.WorkerEvent {
+	event := planner.WorkerEvent{
+		EventID:   sample.EventID,
+		TaskID:    sample.TaskID,
+		RunID:     sample.RunID,
+		GoalID:    sample.GoalID,
+		StepID:    sample.StepID,
+		WorkerID:  sample.WorkerID,
+		State:     planner.WorkerState(sample.State),
+		Message:   sample.Message,
+		ResultRef: sample.ResultRef,
+		Error:     sample.Error,
+		Usage:     sample.Usage,
+		CreatedAt: sample.CreatedAt,
+		Meta:      sample.Meta,
+	}
+	if sample.Progress != nil {
+		event.Progress = &planner.ProgressInfo{
+			PercentComplete: sample.Progress.PercentComplete,
+			StepID:          sample.Progress.StepID,
+			StepTotal:       sample.Progress.StepTotal,
+			StepCurrent:     sample.Progress.StepCurrent,
+			Message:         sample.Progress.Message,
+		}
+	}
+	if sample.RejectInfo != nil {
+		event.RejectInfo = &planner.RejectInfo{
+			Reason:      sample.RejectInfo.Reason,
+			Recoverable: sample.RejectInfo.Recoverable,
+			Suggestion:  sample.RejectInfo.Suggestion,
+		}
+	}
+	return event
 }
