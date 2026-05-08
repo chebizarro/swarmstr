@@ -83,29 +83,36 @@ type MemorySource struct {
 }
 
 type MemoryQuery struct {
-	Query          string   `json:"query"`
-	Scopes         []string `json:"scope,omitempty"`
-	Types          []string `json:"types,omitempty"`
-	Tags           []string `json:"tags,omitempty"`
-	Mode           string   `json:"mode,omitempty"`
-	Limit          int      `json:"limit,omitempty"`
-	IncludeSources bool     `json:"include_sources"`
-	SessionID      string   `json:"-"`
+	Query          string                `json:"query"`
+	Scopes         []string              `json:"scope,omitempty"`
+	Types          []string              `json:"types,omitempty"`
+	Tags           []string              `json:"tags,omitempty"`
+	Mode           string                `json:"mode,omitempty"`
+	Limit          int                   `json:"limit,omitempty"`
+	IncludeSources bool                  `json:"include_sources"`
+	IncludeDebug   bool                  `json:"include_debug,omitempty"`
+	RankingWeights *MemoryRankingWeights `json:"ranking_weights,omitempty"`
+	TokenBudget    int                   `json:"token_budget,omitempty"`
+	SessionID      string                `json:"-"`
+	ExplicitScopes bool                  `json:"-"`
+	ExplicitTypes  bool                  `json:"-"`
+	ExplicitMode   bool                  `json:"-"`
 }
 
 type MemoryCard struct {
-	ID         string       `json:"id"`
-	Type       string       `json:"type"`
-	Scope      string       `json:"scope"`
-	Subject    string       `json:"subject,omitempty"`
-	Summary    string       `json:"summary"`
-	Text       string       `json:"text,omitempty"`
-	Score      float64      `json:"score"`
-	Confidence float64      `json:"confidence"`
-	Salience   float64      `json:"salience,omitempty"`
-	Source     MemorySource `json:"source,omitempty"`
-	UpdatedAt  string       `json:"updated_at"`
-	Tags       []string     `json:"tags,omitempty"`
+	ID         string              `json:"id"`
+	Type       string              `json:"type"`
+	Scope      string              `json:"scope"`
+	Subject    string              `json:"subject,omitempty"`
+	Summary    string              `json:"summary"`
+	Text       string              `json:"text,omitempty"`
+	Score      float64             `json:"score"`
+	Confidence float64             `json:"confidence"`
+	Salience   float64             `json:"salience,omitempty"`
+	Source     MemorySource        `json:"source,omitempty"`
+	UpdatedAt  string              `json:"updated_at"`
+	Tags       []string            `json:"tags,omitempty"`
+	Why        *MemoryRetrievalWhy `json:"why,omitempty"`
 }
 
 type MemoryWriteRequest struct {

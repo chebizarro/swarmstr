@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"metiq/internal/memory"
 	"metiq/internal/migrate"
@@ -26,14 +30,24 @@ func runMemory(args []string) error {
 		return runMemoryImportOpenClaw(args[1:])
 	case "stats":
 		return runMemoryStats(args[1:])
+	case "compact":
+		return runMemoryCompact(args[1:])
+	case "health":
+		return runMemoryHealth(args[1:])
+	case "repair":
+		return runMemoryRepair(args[1:])
+	case "eval":
+		return runMemoryEval(args[1:])
 	case "list":
 		return runMemoryList(args[1:])
 	case "backends":
 		return runMemoryBackends(args[1:])
+	case "sync":
+		return runMemorySync(args[1:])
 	case "help", "--help", "-h":
 		return runMemoryHelp()
 	default:
-		return fmt.Errorf("unknown memory sub-command %q (search|import-openclaw|stats|list|backends)", args[0])
+		return fmt.Errorf("unknown memory sub-command %q (search|import-openclaw|stats|compact|health|repair|eval|list|backends|sync)", args[0])
 	}
 }
 
@@ -44,14 +58,25 @@ Commands:
   search           Search memories (--q <query> [--limit N])
   import-openclaw  Import memories from OpenClaw SQLite database
   stats            Show memory backend statistics
+  compact          Compact typed memory records (dedupe, expire stale, repair supersession)
+  health           Report or repair memory health issues
+  repair           Run targeted memory repairs (e.g. --supersession)
+  eval             Run synthetic memory eval suite
   list             List recent memories
   backends         List available memory backends
+  sync             Inspect/reset durable memory sync outbox
 
 Examples:
   metiq memory search --q "project configuration"
   metiq memory import-openclaw ~/.openclaw
   metiq memory import-openclaw --source ~/.openclaw/agents/main/memory/main.sqlite
-  metiq memory stats`)
+  metiq memory stats
+  metiq memory compact --json
+  metiq memory health --report
+  metiq memory health --fix-safe --json
+  metiq memory repair --supersession
+  metiq memory eval --json
+  metiq memory sync --force-republish`)
 	return nil
 }
 
@@ -61,17 +86,17 @@ func runMemoryImportOpenClaw(args []string) error {
 	fs := flag.NewFlagSet("memory import-openclaw", flag.ContinueOnError)
 
 	var (
-		sourcePath      string
-		targetPath      string
-		backend         string
-		dryRun          bool
-		dedupe          bool
-		verbose         bool
-		jsonOut         bool
-		classify        bool
-		classifyModel   string
-		classifyBatch   int
-		classifyPrompt  string
+		sourcePath     string
+		targetPath     string
+		backend        string
+		dryRun         bool
+		dedupe         bool
+		verbose        bool
+		jsonOut        bool
+		classify       bool
+		classifyModel  string
+		classifyBatch  int
+		classifyPrompt string
 	)
 
 	fs.StringVar(&sourcePath, "source", "", "OpenClaw home dir or SQLite database path")
@@ -396,6 +421,287 @@ func runMemoryStats(args []string) error {
 	return nil
 }
 
+func runMemoryCompact(args []string) error {
+	fs := flag.NewFlagSet("memory compact", flag.ContinueOnError)
+	var backendPath string
+	var jsonOut bool
+	var ttlDays int
+	var dedupe bool
+	var expireStale bool
+	fs.StringVar(&backendPath, "path", "", "sqlite memory db path (default: ~/.metiq/memory.sqlite)")
+	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.IntVar(&ttlDays, "episode-ttl-days", 30, "expire non-durable episode memories older than this many days")
+	fs.BoolVar(&dedupe, "dedupe", true, "deduplicate exact duplicate memories")
+	fs.BoolVar(&expireStale, "expire-stale", true, "expire/flag stale records")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if backendPath == "" {
+		backendPath = defaultMemorySQLitePath()
+	}
+	backendPath = expandPath(backendPath)
+	store, err := memory.OpenSQLiteBackend(backendPath)
+	if err != nil {
+		return fmt.Errorf("open sqlite backend: %w", err)
+	}
+	defer store.Close()
+	result, err := store.CompactMemoryRecords(context.Background(), memory.CompactionConfig{EpisodeTTLDays: ttlDays, Reason: "manual_cli", SkipDedupe: !dedupe, SkipExpireStale: !expireStale})
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{"ok": true, "path": backendPath, "result": result, "dedupe": dedupe, "expire_stale": expireStale}
+	if jsonOut {
+		data, _ := json.MarshalIndent(payload, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+	fmt.Println("Memory compaction complete")
+	fmt.Println("──────────────────────────")
+	fmt.Printf("Path:             %s\n", backendPath)
+	fmt.Printf("Expired:          %d\n", result.Expired)
+	fmt.Printf("Deduped:          %d\n", result.Deduped)
+	fmt.Printf("Superseded:       %d\n", result.Superseded)
+	fmt.Printf("Stale flagged:    %d\n", result.StaleFlagged)
+	fmt.Printf("Supersession fix: %d\n", result.SupersessionFix)
+	return nil
+}
+
+func runMemoryRepair(args []string) error {
+	fs := flag.NewFlagSet("memory repair", flag.ContinueOnError)
+	var backendPath string
+	var jsonOut bool
+	var supersession bool
+	fs.StringVar(&backendPath, "path", "", "sqlite memory db path (default: ~/.metiq/memory.sqlite)")
+	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&supersession, "supersession", false, "repair dangling or cyclic supersession links")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !supersession {
+		return fmt.Errorf("memory repair requires a repair selector, e.g. --supersession")
+	}
+	if backendPath == "" {
+		backendPath = defaultMemorySQLitePath()
+	}
+	backendPath = expandPath(backendPath)
+	store, err := memory.OpenSQLiteBackend(backendPath)
+	if err != nil {
+		return fmt.Errorf("open sqlite backend: %w", err)
+	}
+	defer store.Close()
+	result, err := store.CompactMemoryRecords(context.Background(), memory.CompactionConfig{Reason: "repair_supersession", SkipDedupe: true, SkipExpireStale: true})
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{"ok": true, "path": backendPath, "supersession_fix": result.SupersessionFix}
+	if jsonOut {
+		data, _ := json.MarshalIndent(payload, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+	fmt.Printf("Supersession repair complete: fixed %d record(s).\n", result.SupersessionFix)
+	return nil
+}
+
+func runMemoryHealth(args []string) error {
+	fs := flag.NewFlagSet("memory health", flag.ContinueOnError)
+	var backendPath string
+	var jsonOut bool
+	var report bool
+	var fixSafe bool
+	var fixAll bool
+	var yes bool
+	fs.StringVar(&backendPath, "path", "", "sqlite memory db path (default: ~/.metiq/memory.sqlite)")
+	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&report, "report", false, "print a read-only health report")
+	fs.BoolVar(&fixSafe, "fix-safe", false, "apply only unambiguous safe repairs")
+	fs.BoolVar(&fixAll, "fix-all", false, "apply broader repairs; requires --yes confirmation")
+	fs.BoolVar(&yes, "yes", false, "confirm --fix-all")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if backendPath == "" {
+		backendPath = defaultMemorySQLitePath()
+	}
+	backendPath = expandPath(backendPath)
+	store, err := memory.OpenSQLiteBackend(backendPath)
+	if err != nil {
+		return fmt.Errorf("open sqlite backend: %w", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if fixAll && !yes {
+		return fmt.Errorf("memory health --fix-all requires confirmation; rerun with --yes")
+	}
+	if fixSafe || fixAll {
+		repair, err := memory.RepairMemoryHealth(ctx, store, memory.MemoryHealthRepairOptions{SafeOnly: fixSafe && !fixAll, FixAll: fixAll})
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			data, _ := json.MarshalIndent(repair, "", "  ")
+			fmt.Println(string(data))
+			return nil
+		}
+		printMemoryHealthRepair(repair)
+		return nil
+	}
+	if !report {
+		report = true
+	}
+	health, err := memory.MemoryHealth(ctx, store)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		data, _ := json.MarshalIndent(health, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+	printMemoryHealthReport(health)
+	return nil
+}
+
+func printMemoryHealthReport(report memory.MemoryHealthReport) {
+	fmt.Println("Memory Health Report")
+	fmt.Println("────────────────────")
+	fmt.Printf("Status:       %s\n", report.Status)
+	fmt.Printf("Health score: %.3f\n", report.HealthScore)
+	fmt.Printf("Records:      %d\n", report.RecordCount)
+	if len(report.Warnings) == 0 {
+		fmt.Println("Issues:       none")
+		return
+	}
+	fmt.Println("Issues:")
+	for _, warning := range report.Warnings {
+		fmt.Printf("  - %s: %d\n", warning.Issue, warning.Count)
+		if len(warning.Samples) > 0 {
+			fmt.Printf("    samples: %s\n", strings.Join(warning.Samples, ", "))
+		}
+		for _, suggestion := range warning.Suggestions {
+			fmt.Printf("    repair: %s", suggestion.Command)
+			if suggestion.Description != "" {
+				fmt.Printf(" (%s)", suggestion.Description)
+			}
+			fmt.Println()
+		}
+	}
+}
+
+func printMemoryHealthRepair(report memory.MemoryHealthRepairReport) {
+	fmt.Println("Memory Health Repair")
+	fmt.Println("────────────────────")
+	fmt.Printf("Before: %s score=%.3f\n", report.Before.Status, report.Before.HealthScore)
+	for _, action := range report.Actions {
+		status := "skipped"
+		if action.Applied {
+			status = "applied"
+		}
+		fmt.Printf("  - %s: %s via %s", action.Issue, status, action.Command)
+		if action.Detail != "" {
+			fmt.Printf(" (%s)", action.Detail)
+		}
+		fmt.Println()
+	}
+	fmt.Printf("After:  %s score=%.3f\n", report.After.Status, report.After.HealthScore)
+}
+
+func defaultMemorySQLitePath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".metiq", "memory.sqlite")
+}
+
+func runMemoryEval(args []string) error {
+	fs := flag.NewFlagSet("memory eval", flag.ContinueOnError)
+	var backendPath string
+	var jsonOut bool
+	var enableTrace bool
+	var traceCap int
+	var updateBaseline bool
+	var approveBaselineUpdate bool
+	fs.StringVar(&backendPath, "path", "", "sqlite memory db path (default: ~/.metiq/memory.sqlite)")
+	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&enableTrace, "trace", false, "capture retrieval traces for this run")
+	fs.IntVar(&traceCap, "trace-cap", 128, "max traces retained in memory")
+	fs.BoolVar(&updateBaseline, "update-baseline", false, "write/update dated eval baseline file")
+	fs.BoolVar(&approveBaselineUpdate, "approve-baseline-update", false, "required manual approval gate for --update-baseline")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if backendPath == "" {
+		home, _ := os.UserHomeDir()
+		backendPath = filepath.Join(home, ".metiq", "memory.sqlite")
+	}
+	backendPath = expandPath(backendPath)
+	store, err := memory.OpenSQLiteBackend(backendPath)
+	if err != nil {
+		return fmt.Errorf("open sqlite backend: %w", err)
+	}
+	defer store.Close()
+	memory.ConfigureMemoryTraceCapture(enableTrace, traceCap)
+	run := memory.RunMemoryEvals(context.Background(), store, nil)
+	home, _ := os.UserHomeDir()
+	baselineDir := memory.BaselineDir(home)
+	baselinePath, baseline, baselineLoaded, err := latestMemoryBaseline(baselineDir)
+	if err != nil {
+		return fmt.Errorf("memory eval: load baseline: %w", err)
+	}
+	var regression memory.MemoryEvalRegression
+	if baselineLoaded {
+		regression = memory.CompareMemoryEvalRuns(baseline.Run, run)
+	}
+	if updateBaseline {
+		if !approveBaselineUpdate {
+			return fmt.Errorf("memory eval: --update-baseline requires --approve-baseline-update")
+		}
+		savedPath, err := memory.SaveMemoryEvalBaseline(baselineDir, memory.NewMemoryEvalBaseline(run), time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("memory eval: save baseline: %w", err)
+		}
+		baselinePath = savedPath
+		baselineLoaded = true
+		baseline = memory.NewMemoryEvalBaseline(run)
+	}
+	if len(regression.Failures) > 0 {
+		return fmt.Errorf("memory eval regression failure: %s", strings.Join(regression.Failures, "; "))
+	}
+	if jsonOut {
+		payload := map[string]any{"run": run, "regression": regression}
+		if baselineLoaded {
+			payload["baseline_path"] = baselinePath
+			payload["baseline"] = baseline
+		}
+		if enableTrace {
+			_, traces := memory.MemoryTelemetrySnapshot()
+			payload["traces"] = traces
+		}
+		data, _ := json.MarshalIndent(payload, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+	fmt.Println("Memory Eval Report")
+	fmt.Println("──────────────────")
+	fmt.Printf("cases: %d\n", run.CaseCount)
+	fmt.Printf("recall@5: %.3f\n", run.RecallAt5)
+	fmt.Printf("recall@10: %.3f\n", run.RecallAt10)
+	fmt.Printf("stale-hit: %.3f | superseded-hit: %.3f | duplicate-hit: %.3f\n", run.StaleHitRate, run.SupersededHitRate, run.DuplicateRate)
+	fmt.Printf("latency ms p50/p95/p99: %.2f / %.2f / %.2f\n", run.P50LatencyMS, run.P95LatencyMS, run.P99LatencyMS)
+	fmt.Printf("token cost: %d\n", run.TokenCost)
+	fmt.Printf("reflection precision: %.3f | promotion acceptance: %.3f\n", run.ReflectionPrecision, run.PromotionAcceptance)
+	fmt.Printf("failed cases: %d\n", len(run.FailedCaseIDs))
+	if baselineLoaded {
+		fmt.Printf("baseline: %s\n", baselinePath)
+	}
+	for _, w := range regression.Warnings {
+		fmt.Printf("warning: %s\n", w)
+	}
+	if enableTrace {
+		_, traces := memory.MemoryTelemetrySnapshot()
+		fmt.Printf("retrieval traces captured: %d\n", len(traces))
+	}
+	return nil
+}
+
 // ─── memory list ──────────────────────────────────────────────────────────────
 
 func runMemoryList(args []string) error {
@@ -478,7 +784,77 @@ func runMemoryBackends(args []string) error {
 	return nil
 }
 
+// ─── memory sync ──────────────────────────────────────────────────────────────
+
+func runMemorySync(args []string) error {
+	fs := flag.NewFlagSet("memory sync", flag.ContinueOnError)
+	var backendPath string
+	var forceRepublish bool
+	var jsonOut bool
+	var files bool
+	fs.StringVar(&backendPath, "path", "", "sqlite memory db path (default: ~/.metiq/memory.sqlite)")
+	fs.BoolVar(&forceRepublish, "force-republish", false, "reset failed/deferred outbox events so the next sync publisher can retry them")
+	fs.BoolVar(&files, "files", false, "check file-backed memory sync/index status")
+	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if backendPath == "" {
+		home, _ := os.UserHomeDir()
+		backendPath = filepath.Join(home, ".metiq", "memory.sqlite")
+	}
+	backendPath = expandPath(backendPath)
+	store, err := memory.OpenSQLiteBackend(backendPath)
+	if err != nil {
+		return fmt.Errorf("open sqlite backend: %w", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	reset := 0
+	if forceRepublish {
+		reset, err = store.ForceRepublishMemoryOutbox(ctx, timeNowUTC())
+		if err != nil {
+			return err
+		}
+	}
+	stats, err := store.MemoryOutboxStats(ctx)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		payload := map[string]any{"outbox": stats}
+		if forceRepublish {
+			payload["force_republish_reset"] = reset
+		}
+		if files {
+			payload["files"] = map[string]any{"checked": true, "message": "file-backed memory sync is refreshed during memory health/tool ingestion"}
+		}
+		data, _ := json.MarshalIndent(payload, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+	if forceRepublish {
+		fmt.Printf("Reset %d outbox event(s) for republish.\n", reset)
+	}
+	if files {
+		fmt.Println("File-backed memory sync check complete (ingestion refreshes file-backed memory indexes).")
+	}
+	fmt.Println("Memory Sync Outbox")
+	fmt.Println("──────────────────")
+	fmt.Printf("Pending depth:    %d\n", stats.OutboxDepth)
+	fmt.Printf("Publish failures: %d\n", stats.PublishFailures)
+	if stats.OldestPending != "" {
+		fmt.Printf("Oldest pending:   %s\n", stats.OldestPending)
+	}
+	if len(stats.RetryCounts) > 0 {
+		fmt.Printf("Retry counts:     %v\n", stats.RetryCounts)
+	}
+	return nil
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
+
+var timeNowUTC = func() time.Time { return time.Now().UTC() }
 
 func truncate(s string, maxLen int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
@@ -487,6 +863,33 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func latestMemoryBaseline(dir string) (string, memory.MemoryEvalBaseline, bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", memory.MemoryEvalBaseline{}, false, nil
+		}
+		return "", memory.MemoryEvalBaseline{}, false, err
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		files = append(files, entry.Name())
+	}
+	if len(files) == 0 {
+		return "", memory.MemoryEvalBaseline{}, false, nil
+	}
+	sort.Strings(files)
+	path := filepath.Join(dir, files[len(files)-1])
+	baseline, err := memory.LoadMemoryEvalBaseline(path)
+	if err != nil {
+		return "", memory.MemoryEvalBaseline{}, false, err
+	}
+	return path, baseline, true, nil
 }
 
 func formatBytes(bytes int64) string {

@@ -260,6 +260,28 @@ func TestEmbeddingCache_Stats(t *testing.T) {
 	}
 }
 
+func TestEmbeddingCache_VersionIsPartOfProviderKey(t *testing.T) {
+	cache, _ := newTestEmbeddingCache(t)
+
+	v1 := EmbeddingProvider{ID: "stub", Model: "toy", Version: "v1"}
+	v2 := EmbeddingProvider{ID: "stub", Model: "toy", Version: "v2"}
+	if err := cache.Store(v1, []EmbeddingCacheEntry{{Hash: "same", Embedding: []float32{1, 0}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Store(v2, []EmbeddingCacheEntry{{Hash: "same", Embedding: []float32{0, 1}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	gotV1 := cache.Load(v1, []string{"same"})["same"]
+	gotV2 := cache.Load(v2, []string{"same"})["same"]
+	if len(gotV1) != 2 || gotV1[0] != 1 || len(gotV2) != 2 || gotV2[1] != 1 {
+		t.Fatalf("versioned cache entries mixed: v1=%v v2=%v", gotV1, gotV2)
+	}
+	if cache.CountByProvider(v1) != 1 || cache.CountByProvider(v2) != 1 {
+		t.Fatalf("versioned provider counts not isolated: v1=%d v2=%d", cache.CountByProvider(v1), cache.CountByProvider(v2))
+	}
+}
+
 func TestEmbeddingCache_Disabled(t *testing.T) {
 	cache, _ := newTestEmbeddingCache(t)
 	cache.cfg.Enabled = false

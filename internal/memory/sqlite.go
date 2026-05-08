@@ -51,6 +51,19 @@ type SQLiteBackend struct {
 	cache    map[string][]IndexedMemory
 	order    []string
 	cacheCap int
+
+	// Optional vector retrieval is disabled by default. It is intentionally
+	// local-only and best-effort; BM25/FTS must continue to work if this is nil
+	// or an embedding provider fails.
+	vectorCfg      MemoryVectorRetrievalConfig
+	vectorProvider MemoryEmbeddingProvider
+	vectorCounters MemoryVectorCounters
+
+	vectorSessionReindexed int
+	vectorLastQueryAt      time.Time
+	vectorIdleReindexTimer *time.Timer
+
+	recovery SQLiteRecoveryOptions
 }
 
 func init() {
@@ -62,12 +75,51 @@ func init() {
 // OpenSQLiteBackend opens or creates a SQLite memory database at the given path.
 // If path is empty, uses the default path (~/.metiq/memory.sqlite).
 func OpenSQLiteBackend(path string) (*SQLiteBackend, error) {
+	return OpenSQLiteBackendWithRecoveryOptions(path, defaultSQLiteRecoveryOptions())
+}
+
+// OpenSQLiteBackendWithRecoveryOptions opens SQLite with startup integrity
+// checking, corruption quarantine/restore/rebuild, and weekly backup defaults.
+func OpenSQLiteBackendWithRecoveryOptions(path string, opts SQLiteRecoveryOptions) (*SQLiteBackend, error) {
+	path, err := resolveSQLiteBackendPath(path)
+	if err != nil {
+		return nil, err
+	}
+	opts = normalizeSQLiteRecoveryOptions(path, opts)
+	if err := checkSQLiteIntegrity(path); err != nil {
+		if !isSQLiteCorruptionError(err) {
+			return nil, fmt.Errorf("sqlite startup integrity_check: %w", err)
+		}
+		if recoverErr := recoverSQLiteDatabase(context.Background(), path, opts, err); recoverErr != nil {
+			return nil, recoverErr
+		}
+	}
+	backend, err := openSQLiteBackendWithoutRecovery(path)
+	if err != nil {
+		return nil, err
+	}
+	backend.recovery = opts
+	if err := backend.backupIfDue(); err != nil {
+		opts.Logf("memory sqlite weekly backup warning path=%q err=%v", path, err)
+	}
+	return backend, nil
+}
+
+func resolveSQLiteBackendPath(path string) (string, error) {
 	if path == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, fmt.Errorf("get home dir: %w", err)
+			return "", fmt.Errorf("get home dir: %w", err)
 		}
 		path = filepath.Join(home, sqliteDefaultPath)
+	}
+	return path, nil
+}
+
+func openSQLiteBackendWithoutRecovery(path string) (*SQLiteBackend, error) {
+	path, err := resolveSQLiteBackendPath(path)
+	if err != nil {
+		return nil, err
 	}
 
 	// Ensure directory exists
@@ -99,6 +151,7 @@ func OpenSQLiteBackend(path string) (*SQLiteBackend, error) {
 		path:     path,
 		cache:    make(map[string][]IndexedMemory),
 		cacheCap: 256,
+		recovery: defaultSQLiteRecoveryOptions(),
 	}
 
 	// Initialize schema
@@ -569,15 +622,23 @@ func (b *SQLiteBackend) Save() error {
 	return nil
 }
 
-// Close closes the database connection.
+// Close closes the database connection. On clean shutdown it checkpoints WAL
+// content and switches back to DELETE journaling where SQLite can do so safely;
+// normal operation re-enables WAL on the next OpenSQLiteBackend call.
 func (b *SQLiteBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.db != nil {
-		return b.db.Close()
+	if b.db == nil {
+		return nil
 	}
-	return nil
+	_, pragmaErr := b.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE`)
+	closeErr := b.db.Close()
+	b.db = nil
+	if pragmaErr != nil {
+		return fmt.Errorf("sqlite clean shutdown pragmas: %w", pragmaErr)
+	}
+	return closeErr
 }
 
 // MemoryStatus returns the backend status.

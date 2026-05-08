@@ -48,6 +48,36 @@ type EmbeddingProvider struct {
 
 	// Model is the specific model (e.g., "text-embedding-3-small").
 	Model string `json:"model"`
+
+	// Version identifies the embedding space for the model. Empty means
+	// "default" for legacy cache callers, but vector retrieval stores and
+	// compares an explicit normalized version so incompatible embeddings are
+	// never mixed.
+	Version string `json:"version,omitempty"`
+}
+
+func (p EmbeddingProvider) Normalized() EmbeddingProvider {
+	p.ID = strings.TrimSpace(strings.ToLower(p.ID))
+	p.Model = strings.TrimSpace(p.Model)
+	p.Version = strings.TrimSpace(p.Version)
+	if p.Version == "" {
+		p.Version = "default"
+	}
+	return p
+}
+
+func (p EmbeddingProvider) Compatible(other EmbeddingProvider) bool {
+	p = p.Normalized()
+	other = other.Normalized()
+	return p.ID != "" && p.ID == other.ID && p.Model != "" && p.Model == other.Model && p.Version == other.Version
+}
+
+func embeddingCacheProvider(provider EmbeddingProvider) (id, model string) {
+	provider = provider.Normalized()
+	// The legacy cache schema keys on provider+model. Include the normalized
+	// embedding-space version in the stored model key so cache reads cannot reuse
+	// vectors produced by an incompatible model rollout.
+	return provider.ID, provider.Model + "@" + provider.Version
 }
 
 // EmbeddingCache provides caching for embeddings in a SQLite database.
@@ -92,7 +122,8 @@ func HashContent(text string) string {
 // Load retrieves cached embeddings for the given content hashes.
 // Returns a map from hash to embedding for found entries.
 func (c *EmbeddingCache) Load(provider EmbeddingProvider, hashes []string) map[string][]float32 {
-	if !c.cfg.Enabled || c.db == nil || len(hashes) == 0 {
+	providerID, modelKey := embeddingCacheProvider(provider)
+	if providerID == "" || modelKey == "@default" || !c.cfg.Enabled || c.db == nil || len(hashes) == 0 {
 		return nil
 	}
 
@@ -128,7 +159,7 @@ func (c *EmbeddingCache) Load(provider EmbeddingProvider, hashes []string) map[s
 		// Build query with placeholders
 		placeholders := make([]string, len(batch))
 		args := make([]any, 0, 3+len(batch))
-		args = append(args, provider.ID, provider.Model, providerKey)
+		args = append(args, providerID, modelKey, providerKey)
 
 		for i, h := range batch {
 			placeholders[i] = "?"
@@ -166,7 +197,8 @@ func (c *EmbeddingCache) Load(provider EmbeddingProvider, hashes []string) map[s
 
 // Store saves embeddings to the cache.
 func (c *EmbeddingCache) Store(provider EmbeddingProvider, entries []EmbeddingCacheEntry) error {
-	if !c.cfg.Enabled || c.db == nil || len(entries) == 0 {
+	providerID, modelKey := embeddingCacheProvider(provider)
+	if providerID == "" || modelKey == "@default" || !c.cfg.Enabled || c.db == nil || len(entries) == 0 {
 		return nil
 	}
 
@@ -208,8 +240,8 @@ func (c *EmbeddingCache) Store(provider EmbeddingProvider, entries []EmbeddingCa
 		}
 
 		_, err = stmt.Exec(
-			provider.ID,
-			provider.Model,
+			providerID,
+			modelKey,
 			providerKey,
 			entry.Hash,
 			string(embeddingJSON),
@@ -270,7 +302,8 @@ func (c *EmbeddingCache) Count() int {
 
 // CountByProvider returns the number of cached embeddings for a provider.
 func (c *EmbeddingCache) CountByProvider(provider EmbeddingProvider) int {
-	if c.db == nil {
+	providerID, modelKey := embeddingCacheProvider(provider)
+	if providerID == "" || modelKey == "@default" || c.db == nil {
 		return 0
 	}
 
@@ -282,7 +315,7 @@ func (c *EmbeddingCache) CountByProvider(provider EmbeddingProvider) int {
 	var count int
 	err := c.db.QueryRow(
 		`SELECT COUNT(*) FROM embedding_cache WHERE provider = ? AND model = ? AND provider_key = ?`,
-		provider.ID, provider.Model, providerKey,
+		providerID, modelKey, providerKey,
 	).Scan(&count)
 	if err != nil {
 		return 0
@@ -329,7 +362,8 @@ func (c *EmbeddingCache) Clear() error {
 
 // ClearByProvider removes cached embeddings for a specific provider.
 func (c *EmbeddingCache) ClearByProvider(provider EmbeddingProvider) error {
-	if c.db == nil {
+	providerID, modelKey := embeddingCacheProvider(provider)
+	if providerID == "" || modelKey == "@default" || c.db == nil {
 		return nil
 	}
 
@@ -340,7 +374,7 @@ func (c *EmbeddingCache) ClearByProvider(provider EmbeddingProvider) error {
 
 	_, err := c.db.Exec(
 		`DELETE FROM embedding_cache WHERE provider = ? AND model = ? AND provider_key = ?`,
-		provider.ID, provider.Model, providerKey,
+		providerID, modelKey, providerKey,
 	)
 	return err
 }
