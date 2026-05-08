@@ -30,6 +30,7 @@ const (
 	DefaultGRPCReflectionTimeoutMS     = 5_000
 	DefaultGRPCDeadlineMS              = 15_000
 	DefaultGRPCMaxDeadlineMS           = 120_000
+	MaxAllowedGRPCDeadlineMS           = int((1 * time.Hour) / time.Millisecond)
 	DefaultGRPCMaxRecvMessageBytes     = 4 * 1024 * 1024
 	DefaultGRPCExposureMode            = GRPCExposureModeAuto
 	DefaultGRPCExposureDeferredTrigger = 25
@@ -37,6 +38,7 @@ const (
 
 // GRPCConfig contains named, user-approved gRPC endpoint profiles.
 // Agents may only discover and call gRPC services through these profiles.
+// An empty endpoints list is valid and intentionally disables gRPC tool exposure.
 type GRPCConfig struct {
 	Endpoints []GRPCEndpointConfig `json:"endpoints,omitempty" yaml:"endpoints,omitempty"`
 }
@@ -71,6 +73,7 @@ type GRPCTransportConfig struct {
 }
 
 // GRPCAuthConfig contains profile-level metadata and safe per-call overrides.
+// When allow_override_keys is empty, all per-call metadata overrides are rejected.
 type GRPCAuthConfig struct {
 	Metadata          map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 	AllowOverrideKeys []string          `json:"allow_override_keys,omitempty" yaml:"allow_override_keys,omitempty"`
@@ -328,6 +331,12 @@ func validateGRPCDefaults(path string, c GRPCDefaultsConfig) []error {
 	}
 	if c.EffectiveDeadlineMS() > c.EffectiveMaxDeadlineMS() {
 		errs = append(errs, fmt.Errorf("%s.deadline_ms must be <= max_deadline_ms (got %d > %d)", path, c.EffectiveDeadlineMS(), c.EffectiveMaxDeadlineMS()))
+	}
+	if c.EffectiveDeadlineMS() > MaxAllowedGRPCDeadlineMS {
+		errs = append(errs, fmt.Errorf("%s.deadline_ms must be <= %d (1h)", path, MaxAllowedGRPCDeadlineMS))
+	}
+	if c.EffectiveMaxDeadlineMS() > MaxAllowedGRPCDeadlineMS {
+		errs = append(errs, fmt.Errorf("%s.max_deadline_ms must be <= %d (1h)", path, MaxAllowedGRPCDeadlineMS))
 	}
 	return errs
 }

@@ -8,11 +8,16 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"io"
+	"math"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,6 +96,22 @@ func startTestServer(t *testing.T, srv *testServer, opts ...grpc.ServerOption) s
 	return listener.Addr().String()
 }
 
+type fakeClientStream struct {
+	ctx        context.Context
+	recvErr    error
+	closeCount atomic.Int32
+}
+
+func (s *fakeClientStream) Header() (metadata.MD, error) { return nil, nil }
+func (s *fakeClientStream) Trailer() metadata.MD         { return nil }
+func (s *fakeClientStream) CloseSend() error {
+	s.closeCount.Add(1)
+	return nil
+}
+func (s *fakeClientStream) Context() context.Context { return s.ctx }
+func (s *fakeClientStream) SendMsg(any) error        { return nil }
+func (s *fakeClientStream) RecvMsg(any) error        { return s.recvErr }
+
 func TestConnectionManagerPoolsOneConnPerProfile(t *testing.T) {
 	target := startTestServer(t, &testServer{})
 	manager, err := NewConnectionManager([]config.GRPCEndpointConfig{{
@@ -116,6 +137,89 @@ func TestConnectionManagerPoolsOneConnPerProfile(t *testing.T) {
 	}
 	if first != second {
 		t.Fatalf("Conn returned different pointers for same profile")
+	}
+}
+
+func TestConnectionManagerSerializesConcurrentDials(t *testing.T) {
+	target := startTestServer(t, &testServer{})
+	manager, err := NewConnectionManager([]config.GRPCEndpointConfig{{
+		ID:     "local",
+		Target: target,
+		Transport: config.GRPCTransportConfig{
+			TLSMode: config.GRPCTransportTLSModeInsecure,
+		},
+	}})
+	if err != nil {
+		t.Fatalf("NewConnectionManager: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	originalDial := grpcDialContext
+	var dialCount atomic.Int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enterOnce sync.Once
+	grpcDialContext = func(ctx context.Context, target string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
+		dialCount.Add(1)
+		enterOnce.Do(func() { close(entered) })
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return originalDial(ctx, target, opts...)
+	}
+	t.Cleanup(func() { grpcDialContext = originalDial })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const callers = 12
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	conns := make(chan *grpc.ClientConn, callers)
+	start := make(chan struct{})
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			conn, err := manager.Conn(ctx, "local")
+			if err != nil {
+				errs <- err
+				return
+			}
+			conns <- conn
+		}()
+	}
+	close(start)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatalf("first dial did not start: %v", ctx.Err())
+	}
+	// Give contending goroutines a chance to reach Conn while the first dial is
+	// blocked. Without per-profile locking they would all enter grpcDialContext.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	close(errs)
+	close(conns)
+	for err := range errs {
+		t.Fatalf("Conn failed: %v", err)
+	}
+	if got := dialCount.Load(); got != 1 {
+		t.Fatalf("dial count = %d, want 1", got)
+	}
+	var first *grpc.ClientConn
+	for conn := range conns {
+		if first == nil {
+			first = conn
+			continue
+		}
+		if conn != first {
+			t.Fatalf("Conn returned different pointers under concurrent dial")
+		}
 	}
 }
 
@@ -191,6 +295,65 @@ func TestConnectionManagerMetadataOverrides(t *testing.T) {
 	}
 }
 
+func TestStreamPolicyInterceptorPreservesHalfCloseAndCancelsOnRecvEnd(t *testing.T) {
+	interceptor := streamPolicyInterceptor(config.GRPCEndpointConfig{ID: "stream"})
+	var callCtx context.Context
+	fake := &fakeClientStream{}
+	stream, err := interceptor(context.Background(), &grpc.StreamDesc{ClientStreams: true, ServerStreams: true}, nil, "/toolgrpc.test.TestService/Stream", func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		callCtx = ctx
+		fake.ctx = ctx
+		return fake, nil
+	})
+	if err != nil {
+		t.Fatalf("streamPolicyInterceptor: %v", err)
+	}
+	if callCtx == nil {
+		t.Fatalf("streamer was not called")
+	}
+	select {
+	case <-callCtx.Done():
+		t.Fatalf("policy context canceled before CloseSend: %v", callCtx.Err())
+	default:
+	}
+	if err := stream.CloseSend(); err != nil {
+		t.Fatalf("CloseSend: %v", err)
+	}
+	select {
+	case <-callCtx.Done():
+		t.Fatalf("policy context canceled on successful half-close: %v", callCtx.Err())
+	default:
+	}
+	fake.recvErr = io.EOF
+	if err := stream.RecvMsg(&emptypb.Empty{}); !errors.Is(err, io.EOF) {
+		t.Fatalf("RecvMsg error = %v, want EOF", err)
+	}
+	select {
+	case <-callCtx.Done():
+	default:
+		t.Fatalf("policy context was not canceled after terminal RecvMsg")
+	}
+}
+
+func TestStreamPolicyInterceptorCancelsPolicyContextOnStreamerError(t *testing.T) {
+	interceptor := streamPolicyInterceptor(config.GRPCEndpointConfig{ID: "stream"})
+	var callCtx context.Context
+	_, err := interceptor(context.Background(), &grpc.StreamDesc{ServerStreams: true}, nil, "/toolgrpc.test.TestService/Stream", func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		callCtx = ctx
+		return nil, context.Canceled
+	})
+	if err == nil {
+		t.Fatalf("streamPolicyInterceptor accepted streamer error")
+	}
+	if callCtx == nil {
+		t.Fatalf("streamer was not called")
+	}
+	select {
+	case <-callCtx.Done():
+	default:
+		t.Fatalf("policy context was not canceled after streamer error")
+	}
+}
+
 func TestConnectionManagerResolvesSecretAuthMetadata(t *testing.T) {
 	t.Setenv("GRPC_TEST_BEARER", "Bearer secret-token")
 	target := startTestServer(t, &testServer{onUnary: func(ctx context.Context) error {
@@ -222,6 +385,69 @@ func TestConnectionManagerResolvesSecretAuthMetadata(t *testing.T) {
 	if err := manager.InvokeUnary(context.Background(), "secret-auth", testFullMethod, &emptypb.Empty{}, &out, CallOptions{}); err != nil {
 		t.Fatalf("InvokeUnary: %v", err)
 	}
+}
+
+func TestConnectionManagerReloadsSecretAuthMetadata(t *testing.T) {
+	const secretName = "GRPC_RELOAD_TOKEN_FOR_TEST"
+	oldValue, hadOldValue := os.LookupEnv(secretName)
+	if err := os.Unsetenv(secretName); err != nil {
+		t.Fatalf("unset %s: %v", secretName, err)
+	}
+	t.Cleanup(func() {
+		if hadOldValue {
+			_ = os.Setenv(secretName, oldValue)
+		} else {
+			_ = os.Unsetenv(secretName)
+		}
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envDir := filepath.Join(home, ".metiq")
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		t.Fatalf("mkdir .metiq: %v", err)
+	}
+	envPath := filepath.Join(envDir, ".env")
+	if err := os.WriteFile(envPath, []byte(secretName+"=Bearer first-token\n"), 0o600); err != nil {
+		t.Fatalf("write initial .env: %v", err)
+	}
+
+	oldResolver := grpcMetadataSecretResolver
+	grpcMetadataSecretResolver = newGRPCMetadataSecretResolver()
+	t.Cleanup(func() { grpcMetadataSecretResolver = oldResolver })
+
+	manager, err := NewConnectionManager([]config.GRPCEndpointConfig{{
+		ID:     "secret-reload",
+		Target: "127.0.0.1:1",
+		Auth: config.GRPCAuthConfig{Metadata: map[string]string{
+			"authorization": "secret:" + secretName,
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("NewConnectionManager: %v", err)
+	}
+
+	assertAuthorization := func(want string) {
+		t.Helper()
+		ctx, cancel, err := manager.CallContext(context.Background(), "secret-reload", CallOptions{})
+		if err != nil {
+			t.Fatalf("CallContext: %v", err)
+		}
+		defer cancel()
+		md, ok := metadata.FromOutgoingContext(ctx)
+		if !ok {
+			t.Fatalf("missing outgoing metadata")
+		}
+		if got := md.Get("authorization"); len(got) != 1 || got[0] != want {
+			t.Fatalf("authorization metadata = %v, want %q", got, want)
+		}
+	}
+
+	assertAuthorization("Bearer first-token")
+	if err := os.WriteFile(envPath, []byte(secretName+"=Bearer second-token\n"), 0o600); err != nil {
+		t.Fatalf("write updated .env: %v", err)
+	}
+	assertAuthorization("Bearer second-token")
 }
 
 func TestConnectionManagerRejectsMissingSecretAuthMetadata(t *testing.T) {
@@ -256,6 +482,12 @@ func TestConnectionManagerRejectsDeadlineAboveMax(t *testing.T) {
 	if _, cancel, err := manager.CallContext(context.Background(), "deadline", CallOptions{DeadlineMS: 51}); err == nil {
 		cancel()
 		t.Fatalf("CallContext accepted deadline above max")
+	}
+}
+
+func TestDeadlineDurationFromMSRejectsOverflow(t *testing.T) {
+	if _, err := deadlineDurationFromMS(math.MaxInt); err == nil {
+		t.Fatal("expected overflow error for very large deadline")
 	}
 }
 

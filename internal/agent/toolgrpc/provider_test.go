@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"metiq/internal/agent"
 	"metiq/internal/config"
@@ -102,6 +104,123 @@ func TestProviderBuildsRegistrationsWithExposureTraitsAliases(t *testing.T) {
 	}
 }
 
+func TestProviderCloseDoubleCloseRaceDoesNotPanic(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		provider := newProvider(nil)
+		if !provider.beginCall() {
+			t.Fatal("beginCall returned false before close")
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = provider.Close()
+		}()
+		go func() {
+			defer wg.Done()
+			provider.endCall()
+		}()
+		wg.Wait()
+
+		if err := provider.Close(); err != nil {
+			t.Fatalf("second Close: %v", err)
+		}
+	}
+}
+
+func TestProviderCloseClosesStreamManagersBeforeConnections(t *testing.T) {
+	baseManager, methods, cleanup := startStreamManagerTest(t, nil)
+	defer cleanup()
+	provider := newProvider(baseManager.connManager)
+	method := methodByName(t, methods, "Bidi")
+	ctx := agent.ContextWithToolLifecycle(context.Background(), agent.ToolLifecycleContext{SessionID: "sess-close", TurnID: "turn-close"})
+
+	manager := provider.streamManagerForContext(ctx)
+	startRaw, err := manager.Start(ctx, method, nil, "bidi_start")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	streamID := decodeField[string](t, startRaw, "stream_id")
+	if streamID == "" {
+		t.Fatalf("missing stream id in %s", startRaw)
+	}
+
+	if err := provider.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !manager.isClosed() {
+		t.Fatal("stream manager was not closed by provider Close")
+	}
+	provider.mu.Lock()
+	remaining := len(provider.streamManagers)
+	provider.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("provider retained %d stream managers after Close", remaining)
+	}
+	if _, err := manager.Send(ctx, map[string]any{"stream_id": streamID, "message": map[string]any{"text": "late"}}, "bidi_send"); err == nil || !strings.Contains(err.Error(), "stream manager is closed") {
+		t.Fatalf("expected closed stream manager error after provider Close, got %v", err)
+	}
+}
+
+func TestProviderStreamManagersCleanedUpAfterIdle(t *testing.T) {
+	baseManager, methods, cleanup := startStreamManagerTest(t, nil)
+	defer cleanup()
+	provider := newProvider(baseManager.connManager)
+	provider.streamManagerIdleTTL = 0
+	method := methodByName(t, methods, "Bidi")
+	ctx := agent.ContextWithToolLifecycle(context.Background(), agent.ToolLifecycleContext{SessionID: "sess-idle", TurnID: "turn-idle"})
+
+	manager := provider.streamManagerForContext(ctx)
+	startRaw, err := manager.Start(ctx, method, nil, "bidi_start")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	streamID := decodeField[string](t, startRaw, "stream_id")
+	if _, err := manager.Finish(ctx, map[string]any{"stream_id": streamID}, "bidi_finish"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	provider.mu.Lock()
+	remaining := len(provider.streamManagers)
+	provider.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("provider retained %d idle stream managers", remaining)
+	}
+	if !manager.isClosed() {
+		t.Fatal("idle cleanup removed manager without closing it")
+	}
+}
+
+func TestProviderStreamManagerIdleCleanupKeepsActiveManager(t *testing.T) {
+	baseManager, methods, cleanup := startStreamManagerTest(t, nil)
+	defer cleanup()
+	provider := newProvider(baseManager.connManager)
+	method := methodByName(t, methods, "Bidi")
+	ctx := agent.ContextWithToolLifecycle(context.Background(), agent.ToolLifecycleContext{SessionID: "sess-active", TurnID: "turn-active"})
+
+	manager := provider.streamManagerForContext(ctx)
+	startRaw, err := manager.Start(ctx, method, nil, "bidi_start")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	streamID := decodeField[string](t, startRaw, "stream_id")
+	provider.cleanupStreamManager("sess-active\x00turn-active", manager)
+
+	provider.mu.Lock()
+	remaining := len(provider.streamManagers)
+	provider.mu.Unlock()
+	if remaining != 1 {
+		t.Fatalf("active manager was cleaned up; remaining=%d", remaining)
+	}
+	if manager.isClosed() {
+		t.Fatal("active manager was closed by idle cleanup")
+	}
+	if _, err := manager.Finish(ctx, map[string]any{"stream_id": streamID}, "bidi_finish"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+}
+
 func TestProviderCloseWaitsForInFlightCall(t *testing.T) {
 	method := invoiceUnaryMethodSpec(t)
 	started := make(chan struct{})
@@ -145,11 +264,21 @@ func TestProviderCloseWaitsForInFlightCall(t *testing.T) {
 	default:
 	}
 	close(release)
-	if err := <-callDone; err != nil {
-		t.Fatalf("Execute: %v", err)
+	select {
+	case err := <-callDone:
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Execute")
 	}
-	if err := <-closeDone; err != nil {
-		t.Fatalf("Close: %v", err)
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Close")
 	}
 }
 

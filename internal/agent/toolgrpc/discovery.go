@@ -64,7 +64,7 @@ func Discover(ctx context.Context, profile config.GRPCEndpointConfig, conn grpc.
 		}
 		fallback, fallbackErr := DiscoverFromDescriptorSet(profile)
 		if fallbackErr != nil {
-			return nil, fmt.Errorf("reflection discovery failed: %w; static descriptor fallback failed: %v", err, fallbackErr)
+			return nil, fmt.Errorf("reflection discovery failed: %w; static descriptor fallback failed: %w", err, fallbackErr)
 		}
 		return fallback, nil
 	case config.GRPCDiscoveryModeDescriptorSet:
@@ -100,7 +100,7 @@ func LoadDescriptorSetFromReflection(ctx context.Context, conn grpc.ClientConnIn
 	if alphaErr == nil {
 		return alphaFDS, nil
 	}
-	return nil, fmt.Errorf("gRPC reflection v1 failed: %w; v1alpha failed: %v", err, alphaErr)
+	return nil, fmt.Errorf("gRPC reflection v1 failed: %w; v1alpha failed: %w", err, alphaErr)
 }
 
 func loadDescriptorSetFromReflectionV1(ctx context.Context, conn grpc.ClientConnInterface) (*descriptorpb.FileDescriptorSet, error) {

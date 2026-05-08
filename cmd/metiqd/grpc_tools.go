@@ -50,12 +50,14 @@ func (r grpcToolRegistryReconcileResult) Changed() bool {
 	return r.Added+r.Updated+r.Removed > 0
 }
 
-func reconcileGRPCToolRegistry(reg *agent.ToolRegistry, provider *toolgrpc.Provider) grpcToolRegistryReconcileResult {
-	result := grpcToolRegistryReconcileResult{}
-	if reg == nil {
-		return result
-	}
+func descriptorsEqual(a, b agent.ToolDescriptor) bool {
+	return a.Name == b.Name &&
+		a.Description == b.Description &&
+		a.Origin == b.Origin &&
+		reflect.DeepEqual(a.InputJSONSchema, b.InputJSONSchema)
+}
 
+func reconcileGRPCToolRegistry(reg *agent.ToolRegistry, provider *toolgrpc.Provider) grpcToolRegistryReconcileResult {
 	desired := map[string]agent.ToolRegistration{}
 	if provider != nil {
 		for _, registration := range provider.Registrations() {
@@ -66,6 +68,15 @@ func reconcileGRPCToolRegistry(reg *agent.ToolRegistry, provider *toolgrpc.Provi
 			desired[name] = registration
 		}
 	}
+	return reconcileGRPCToolRegistryDesired(reg, desired)
+}
+
+func reconcileGRPCToolRegistryDesired(reg *agent.ToolRegistry, desired map[string]agent.ToolRegistration) grpcToolRegistryReconcileResult {
+	result := grpcToolRegistryReconcileResult{}
+	if reg == nil {
+		return result
+	}
+
 	result.Desired = len(desired)
 
 	existingGRPC := map[string]agent.ToolDescriptor{}
@@ -108,7 +119,7 @@ func reconcileGRPCToolRegistry(reg *agent.ToolRegistry, provider *toolgrpc.Provi
 			reg.RegisterTool(name, registration)
 			result.Added++
 			log.Printf("[grpc] registered tool: %s", name)
-		case reflect.DeepEqual(existing, registration.Descriptor):
+		case descriptorsEqual(existing, registration.Descriptor):
 			result.Unchanged++
 		default:
 			reg.RegisterTool(name, registration)
@@ -152,6 +163,9 @@ func (c *grpcProviderController) reconcile(ctx context.Context, reg *agent.ToolR
 	result := reconcileGRPCToolRegistry(reg, next)
 	if result.Changed() || result.Conflicts > 0 {
 		log.Printf("[grpc] %s tool reconcile: added=%d updated=%d removed=%d unchanged=%d desired=%d conflicts=%d", logContext, result.Added, result.Updated, result.Removed, result.Unchanged, result.Desired, result.Conflicts)
+	}
+	if result.Conflicts > 0 {
+		log.Printf("[grpc] %s warning: %d desired gRPC tools were not registered due to ownership conflicts", logContext, result.Conflicts)
 	}
 	if prev != nil {
 		if err := prev.Close(); err != nil {

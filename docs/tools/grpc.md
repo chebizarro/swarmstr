@@ -15,7 +15,8 @@ invokes RPCs in-process without MCP/plugin bridges. Runtime reflection and invoc
 do not require `protoc`; descriptor-set mode consumes a prebuilt descriptor file.
 
 Agents **cannot choose arbitrary gRPC hosts**. Every callable service must be listed
-in the runtime config under `grpc.endpoints[]`.
+in the runtime config under `grpc.endpoints[]`. An empty `endpoints` list is valid
+and means gRPC tool exposure is disabled.
 
 ## What gets generated
 
@@ -326,8 +327,10 @@ auth:
     - x-correlation-id
 ```
 
-Per-call `metadata` can only set keys listed in `allow_override_keys`. Metadata
-keys must be lowercase and cannot be pseudo-headers or `grpc-*` reserved keys.
+Per-call `metadata` can only set keys listed in `allow_override_keys`. If
+`allow_override_keys` is omitted or empty, all per-call metadata overrides are
+rejected. Metadata keys must be lowercase and cannot be pseudo-headers or
+`grpc-*` reserved keys.
 
 Secrets are redacted from returned tool results, returned errors, stream lifecycle
 error strings, and post-execute hook results when they match sensitive keys or
