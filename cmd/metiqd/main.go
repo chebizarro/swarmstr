@@ -264,6 +264,25 @@ func annotateConversationContentTimestamp(m ctxengine.Message) string {
 	return fmt.Sprintf("[message_time=%s unix=%d]\n%s", ts, m.Unix, m.Content)
 }
 
+// stripTimestampAnnotations removes [message_time=...] annotations from text.
+// These annotations are added to conversation history for LLM temporal context,
+// but should not appear in user-facing responses.
+func stripTimestampAnnotations(text string) string {
+	// Pattern: [message_time=2026-05-08T04:55:15Z unix=1778215935]
+	// Match one or more timestamp lines at the start of the text.
+	lines := strings.Split(text, "\n")
+	var cleaned []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip lines that match the timestamp annotation pattern
+		if strings.HasPrefix(trimmed, "[message_time=") && strings.Contains(trimmed, "unix=") && strings.HasSuffix(trimmed, "]") {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+	return strings.Join(cleaned, "\n")
+}
+
 func defaultBootstrapWatchSpecs(sessionID, selfPubKey string, now time.Time) []toolbuiltin.WatchSpec {
 	const defaultTTLSeconds = 365 * 24 * 60 * 60
 	createdAt := now.Unix()
@@ -4112,6 +4131,8 @@ func main() {
 				}
 			}
 			outboundText := renderResponseWithUsage(turnResult.Text, turnResult.Usage, seForUsage)
+			// Strip timestamp annotations that LLM may have copied from conversation history
+			outboundText = stripTimestampAnnotations(outboundText)
 			if !sendSuppressed {
 				var sendOK bool
 				outboundText, sendOK = applyPluginMessageSending(ctx, pluginhooks.MessageSendingEvent{ChannelID: "nostr", SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID})
@@ -5407,9 +5428,11 @@ func main() {
 					seForUsage = &copy
 				}
 			}
-			outboundText = renderResponseWithUsage(outboundText, turnResult.Usage, seForUsage)
-		}
-		if !audioSent && handle != nil && outboundText != "" {
+		outboundText = renderResponseWithUsage(outboundText, turnResult.Usage, seForUsage)
+		// Strip timestamp annotations that LLM may have copied from conversation history
+		outboundText = stripTimestampAnnotations(outboundText)
+	}
+	if !audioSent && handle != nil && outboundText != "" {
 			var sendOK bool
 			outboundText, sendOK = applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: chID, SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID})
 			if !sendOK {
