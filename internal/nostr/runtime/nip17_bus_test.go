@@ -69,6 +69,8 @@ func TestNIP17ValidateGiftWrapEvent(t *testing.T) {
 
 func TestNIP17ValidateRumorEvent(t *testing.T) {
 	bus, keyer, recipient := newTestNIP17BusIdentity(t)
+	
+	// Test 1: Incoming message (we are the recipient)
 	rumor := unsignedRumorEvent(t, keyer, nostr.Event{
 		Kind:      nostr.KindDirectMessage,
 		CreatedAt: nostr.Now(),
@@ -76,7 +78,41 @@ func TestNIP17ValidateRumorEvent(t *testing.T) {
 		Content:   "hello",
 	})
 	if err := bus.validateRumorEvent(rumor, time.Now()); err != nil {
-		t.Fatalf("expected valid rumor, got error: %v", err)
+		t.Fatalf("expected valid rumor where we are recipient, got error: %v", err)
+	}
+
+	// Test 2: Backup copy of our own sent message (we are the sender, not recipient)
+	// This happens when we send a DM - the library gift-wraps it back to us for backup
+	otherRecipient := testControlKeyer(t, "3333333333333333333333333333333333333333333333333333333333333333")
+	otherPub, _ := otherRecipient.GetPublicKey(context.Background())
+	selfSentRumor := unsignedRumorEvent(t, keyer, nostr.Event{
+		Kind:      nostr.KindDirectMessage,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"p", otherPub.Hex()}},  // Sent to someone else
+		Content:   "hello from me",
+	})
+	if err := bus.validateRumorEvent(selfSentRumor, time.Now()); err != nil {
+		t.Fatalf("expected valid rumor where we are sender (backup copy), got error: %v", err)
+	}
+
+	// Test 3: Message not involving us at all should fail
+	thirdPartyKeyer := testControlKeyer(t, "4444444444444444444444444444444444444444444444444444444444444444")
+	unrelatedRumor := unsignedRumorEvent(t, thirdPartyKeyer, nostr.Event{
+		Kind:      nostr.KindDirectMessage,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"p", otherPub.Hex()}},  // Between other parties
+		Content:   "not for us",
+	})
+	if err := bus.validateRumorEvent(unrelatedRumor, time.Now()); err == nil {
+		t.Fatal("expected validation error for rumor not involving us")
+	}
+
+	// Test 4: Missing p tag
+	noPTag := rumor
+	noPTag.Tags = nostr.Tags{}
+	noPTag.ID = noPTag.GetID()
+	if err := bus.validateRumorEvent(noPTag, time.Now()); err == nil {
+		t.Fatal("expected missing p tag validation error")
 	}
 
 	wrongKind := rumor
