@@ -708,6 +708,59 @@ func TestAnnotateConversationContentTimestamp(t *testing.T) {
 	}
 }
 
+func TestStripTimestampAnnotations(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "single timestamp at start",
+			input: "[message_time=2026-05-08T04:55:15Z unix=1778215935]\nHello world",
+			want:  "Hello world",
+		},
+		{
+			name:  "multiple timestamps at start",
+			input: "[message_time=2026-05-08T04:55:15Z unix=1778215935]\n[message_time=2026-05-08T04:55:15Z unix=1778215935]\nHello world",
+			want:  "Hello world",
+		},
+		{
+			name:  "no timestamps",
+			input: "Hello world",
+			want:  "Hello world",
+		},
+		{
+			name:  "timestamp in middle (should be removed)",
+			input: "Hello\n[message_time=2026-05-08T04:55:15Z unix=1778215935]\nworld",
+			want:  "Hello\nworld",
+		},
+		{
+			name:  "empty input",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "timestamp only",
+			input: "[message_time=2026-05-08T04:55:15Z unix=1778215935]",
+			want:  "",
+		},
+		{
+			name:  "preserves non-timestamp content with brackets",
+			input: "Check this [important note]\nHello world",
+			want:  "Check this [important note]\nHello world",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripTimestampAnnotations(tt.input)
+			if got != tt.want {
+				t.Errorf("stripTimestampAnnotations() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConversationMessageFromContextCarriesToolCallsAndTimestamp(t *testing.T) {
 	msg := ctxengine.Message{
 		Role:       "tool",
