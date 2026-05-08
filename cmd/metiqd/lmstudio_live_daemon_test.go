@@ -1014,9 +1014,6 @@ func newLiveDaemonHarnessCustom(t *testing.T, relayURL, model string, opts liveD
 	cmd := exec.Command(binPath, cmdArgs...)
 	cmd.Env = append(os.Environ(),
 		"HOME="+homeDir,
-		"METIQ_AGENT_PROVIDER=http",
-		"METIQ_AGENT_HTTP_URL=http://localhost:1234/v1",
-		"METIQ_AGENT_MODEL="+model,
 	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -1457,6 +1454,14 @@ func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, re
 	"context_window": 8192,
 	"max_context_tokens": 8192
   }],
+	"providers": {
+	"lmstudio": {
+		"base_url": "http://localhost:1234/v1",
+		"extra": {
+		"api": "openai-chat"
+		}
+	}
+	},
   "control": %[7]s,
   "acp": {"transport": "auto"},
   "session": {},
