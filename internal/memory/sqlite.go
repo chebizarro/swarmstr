@@ -14,6 +14,7 @@
 package memory
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -32,12 +33,12 @@ import (
 )
 
 const (
-	sqliteDefaultPath    = ".metiq/memory.sqlite"
-	sqliteBusyTimeoutMs  = 5000
-	sqliteSchemaVersion  = 1
-	sqliteFTSTable       = "chunks_fts"
-	sqliteChunksTable    = "chunks"
-	sqliteMaxBatchSize   = 500
+	sqliteDefaultPath   = ".metiq/memory.sqlite"
+	sqliteBusyTimeoutMs = 5000
+	sqliteSchemaVersion = 1
+	sqliteFTSTable      = "chunks_fts"
+	sqliteChunksTable   = "chunks"
+	sqliteMaxBatchSize  = 500
 )
 
 // SQLiteBackend implements the Backend interface using SQLite with FTS5.
@@ -83,10 +84,14 @@ func OpenSQLiteBackend(path string) (*SQLiteBackend, error) {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
 	}
 
-	// Test connection
+	// Test connection and force WAL for crash-resilient concurrent local reads.
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
+	}
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("configure sqlite pragmas: %w", err)
 	}
 
 	backend := &SQLiteBackend{
@@ -100,6 +105,14 @@ func OpenSQLiteBackend(path string) (*SQLiteBackend, error) {
 	if err := backend.initSchema(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
+	}
+	if err := backend.ensureUnifiedSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("init unified schema: %w", err)
+	}
+	if _, err := backend.BackfillUnifiedFromChunks(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfill unified schema: %w", err)
 	}
 
 	return backend, nil
@@ -219,6 +232,7 @@ func (b *SQLiteBackend) initSchema() error {
 
 // Add indexes a new memory document.
 func (b *SQLiteBackend) Add(doc state.MemoryDoc) {
+	_ = b.ensureUnifiedSchema()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -261,8 +275,14 @@ func (b *SQLiteBackend) Add(doc state.MemoryDoc) {
 		// Log error but don't fail - best effort
 		return
 	}
+	_ = b.writeMemoryRecordLocked(MemoryRecordFromDoc(doc))
 
 	b.clearCacheLocked()
+}
+
+func (b *SQLiteBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
+	_ = ctx
+	b.Add(doc)
 }
 
 // Search performs a full-text search using FTS5.
@@ -727,7 +747,7 @@ func isAlphanumeric(r rune) bool {
 		// Include CJK characters
 		(r >= 0x3040 && r <= 0x30ff) || // Hiragana + Katakana
 		(r >= 0x3400 && r <= 0x9fff) || // CJK
-		(r >= 0xac00 && r <= 0xd7af)    // Hangul
+		(r >= 0xac00 && r <= 0xd7af) // Hangul
 }
 
 func isStopword(token string) bool {
@@ -827,6 +847,7 @@ func (b *SQLiteBackend) MigrateFromJSONIndex(jsonPath string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit tx: %w", err)
 	}
+	_, _ = b.BackfillUnifiedFromChunks(context.Background())
 
 	return nil
 }
@@ -937,32 +958,32 @@ func (b *SQLiteBackend) MigrateFromOpenClaw(srcPath string) (int, error) {
 		}
 
 		_, err := stmt.Exec(
-			id,                   // id
-			"openclaw-migrated",  // session_id (marker for migrated content)
-			"",                   // role
-			topic,                // topic (from path)
-			text,                 // text
-			"",                   // keywords (empty, OpenClaw doesn't have this)
-			unix,                 // unix
-			"migrated",           // type
-			"",                   // goal_id
-			"",                   // task_id
-			"",                   // run_id
-			"",                   // episode_kind
-			0.5,                  // confidence (default)
-			srcValue,             // source
-			nil,                  // reviewed_at
-			nil,                  // reviewed_by
-			nil,                  // expires_at
-			"active",             // mem_status
-			nil,                  // superseded_by
-			nil,                  // invalidated_at
-			nil,                  // invalidated_by
-			nil,                  // invalidate_reason
-			embedding.String,     // embedding (may be empty)
-			hashValue,            // hash
-			model.String,         // model
-			now,                  // updated_at
+			id,                  // id
+			"openclaw-migrated", // session_id (marker for migrated content)
+			"",                  // role
+			topic,               // topic (from path)
+			text,                // text
+			"",                  // keywords (empty, OpenClaw doesn't have this)
+			unix,                // unix
+			"migrated",          // type
+			"",                  // goal_id
+			"",                  // task_id
+			"",                  // run_id
+			"",                  // episode_kind
+			0.5,                 // confidence (default)
+			srcValue,            // source
+			nil,                 // reviewed_at
+			nil,                 // reviewed_by
+			nil,                 // expires_at
+			"active",            // mem_status
+			nil,                 // superseded_by
+			nil,                 // invalidated_at
+			nil,                 // invalidated_by
+			nil,                 // invalidate_reason
+			embedding.String,    // embedding (may be empty)
+			hashValue,           // hash
+			model.String,        // model
+			now,                 // updated_at
 		)
 		if err != nil {
 			continue // Skip failed entries
@@ -980,6 +1001,7 @@ func (b *SQLiteBackend) MigrateFromOpenClaw(srcPath string) (int, error) {
 
 	// Rebuild FTS index after bulk import
 	if imported > 0 {
+		_, _ = b.BackfillUnifiedFromChunks(context.Background())
 		b.mu.Lock()
 		b.clearCacheLocked()
 		b.mu.Unlock()

@@ -18,6 +18,8 @@ const (
 	sessionFileMemorySurfacedCap = 64
 	memoryRecallSampleCap        = 8
 	toolLifecycleSampleCap       = 64
+	verificationEventSampleCap   = 64
+	workerEventSampleCap         = 64
 	sessionChildTaskCap          = 64
 	sessionStoreJournalSuffix    = ".journal"
 )
@@ -29,32 +31,34 @@ type SessionEntry struct {
 	SessionID string `json:"session_id"`
 
 	// Session lifecycle / fork metadata.
-	SessionFile                   string                    `json:"session_file,omitempty"`
-	SpawnedBy                     string                    `json:"spawned_by,omitempty"`
-	SpawnedWorkspace              string                    `json:"spawned_workspace_dir,omitempty"`
-	ForkedFromParent              bool                      `json:"forked_from_parent,omitempty"`
-	CompactionCount               int64                     `json:"compaction_count,omitempty"`
-	CompactionCheckpoints         []CompactionCheckpointRef `json:"compaction_checkpoints,omitempty"`
-	MemoryFlushAt                 int64                     `json:"memory_flush_at,omitempty"`
-	MemoryFlushCount              int64                     `json:"memory_flush_compaction_count,omitempty"`
-	SessionMemoryFile             string                    `json:"session_memory_file,omitempty"`
-	SessionMemoryInitialized      bool                      `json:"session_memory_initialized,omitempty"`
-	SessionMemoryObservedChars    int                       `json:"session_memory_observed_chars,omitempty"`
-	SessionMemoryPendingChars     int                       `json:"session_memory_pending_chars,omitempty"`
-	SessionMemoryPendingToolCalls int                       `json:"session_memory_pending_tool_calls,omitempty"`
-	SessionMemoryLastEntryID      string                    `json:"session_memory_last_entry_id,omitempty"`
-	SessionMemoryUpdatedAt        int64                     `json:"session_memory_updated_at,omitempty"`
-	FileMemorySurfaced            map[string]string         `json:"file_memory_surfaced,omitempty"`
-	RecentMemoryRecall            []MemoryRecallSample      `json:"recent_memory_recall,omitempty"`
-	RecentToolLifecycle           []ToolLifecycleTelemetry  `json:"recent_tool_lifecycle,omitempty"`
-	ParentTaskID                  string                    `json:"parent_task_id,omitempty"`
-	ParentRunID                   string                    `json:"parent_run_id,omitempty"`
-	ActiveTaskID                  string                    `json:"active_task_id,omitempty"`
-	ActiveRunID                   string                    `json:"active_run_id,omitempty"`
-	LastCompletedTaskID           string                    `json:"last_completed_task_id,omitempty"`
-	LastCompletedRunID            string                    `json:"last_completed_run_id,omitempty"`
-	ChildTaskIDs                  []string                  `json:"child_task_ids,omitempty"`
-	LastTaskResult                TaskResultRef             `json:"last_task_result,omitempty"`
+	SessionFile                   string                       `json:"session_file,omitempty"`
+	SpawnedBy                     string                       `json:"spawned_by,omitempty"`
+	SpawnedWorkspace              string                       `json:"spawned_workspace_dir,omitempty"`
+	ForkedFromParent              bool                         `json:"forked_from_parent,omitempty"`
+	CompactionCount               int64                        `json:"compaction_count,omitempty"`
+	CompactionCheckpoints         []CompactionCheckpointRef    `json:"compaction_checkpoints,omitempty"`
+	MemoryFlushAt                 int64                        `json:"memory_flush_at,omitempty"`
+	MemoryFlushCount              int64                        `json:"memory_flush_compaction_count,omitempty"`
+	SessionMemoryFile             string                       `json:"session_memory_file,omitempty"`
+	SessionMemoryInitialized      bool                         `json:"session_memory_initialized,omitempty"`
+	SessionMemoryObservedChars    int                          `json:"session_memory_observed_chars,omitempty"`
+	SessionMemoryPendingChars     int                          `json:"session_memory_pending_chars,omitempty"`
+	SessionMemoryPendingToolCalls int                          `json:"session_memory_pending_tool_calls,omitempty"`
+	SessionMemoryLastEntryID      string                       `json:"session_memory_last_entry_id,omitempty"`
+	SessionMemoryUpdatedAt        int64                        `json:"session_memory_updated_at,omitempty"`
+	FileMemorySurfaced            map[string]string            `json:"file_memory_surfaced,omitempty"`
+	RecentMemoryRecall            []MemoryRecallSample         `json:"recent_memory_recall,omitempty"`
+	RecentToolLifecycle           []ToolLifecycleTelemetry     `json:"recent_tool_lifecycle,omitempty"`
+	RecentVerificationEvents      []VerificationEventTelemetry `json:"recent_verification_events,omitempty"`
+	RecentWorkerEvents            []WorkerEventTelemetry       `json:"recent_worker_events,omitempty"`
+	ParentTaskID                  string                       `json:"parent_task_id,omitempty"`
+	ParentRunID                   string                       `json:"parent_run_id,omitempty"`
+	ActiveTaskID                  string                       `json:"active_task_id,omitempty"`
+	ActiveRunID                   string                       `json:"active_run_id,omitempty"`
+	LastCompletedTaskID           string                       `json:"last_completed_task_id,omitempty"`
+	LastCompletedRunID            string                       `json:"last_completed_run_id,omitempty"`
+	ChildTaskIDs                  []string                     `json:"child_task_ids,omitempty"`
+	LastTaskResult                TaskResultRef                `json:"last_task_result,omitempty"`
 
 	// Structured task state — continuously updated by the turn-end distiller.
 	TaskState *TaskState `json:"task_state,omitempty"`
@@ -198,6 +202,65 @@ type ToolLifecycleTelemetry struct {
 	ToolName   string `json:"tool_name,omitempty"`
 	Result     string `json:"result,omitempty"`
 	Error      string `json:"error,omitempty"`
+}
+
+// VerificationEventTelemetry captures a bounded verification lifecycle stream
+// for task/run trace reconstruction without importing planner into state.
+type VerificationEventTelemetry struct {
+	Type       string         `json:"type"`
+	TaskID     string         `json:"task_id"`
+	RunID      string         `json:"run_id,omitempty"`
+	GoalID     string         `json:"goal_id,omitempty"`
+	StepID     string         `json:"step_id,omitempty"`
+	CheckID    string         `json:"check_id,omitempty"`
+	CheckType  string         `json:"check_type,omitempty"`
+	Status     string         `json:"status,omitempty"`
+	Result     string         `json:"result,omitempty"`
+	Evidence   string         `json:"evidence,omitempty"`
+	ReviewerID string         `json:"reviewer_id,omitempty"`
+	Confidence float64        `json:"confidence,omitempty"`
+	Duration   time.Duration  `json:"duration,omitempty"`
+	GateAction string         `json:"gate_action,omitempty"`
+	CreatedAt  int64          `json:"created_at"`
+	Meta       map[string]any `json:"meta,omitempty"`
+}
+
+// WorkerEventTelemetry captures a bounded delegated-worker lifecycle stream
+// for task/run trace reconstruction without importing planner into state.
+type WorkerEventTelemetry struct {
+	EventID      string                   `json:"event_id,omitempty"`
+	TaskID       string                   `json:"task_id"`
+	RunID        string                   `json:"run_id"`
+	ParentTaskID string                   `json:"parent_task_id,omitempty"`
+	ParentRunID  string                   `json:"parent_run_id,omitempty"`
+	GoalID       string                   `json:"goal_id,omitempty"`
+	StepID       string                   `json:"step_id,omitempty"`
+	WorkerID     string                   `json:"worker_id"`
+	State        string                   `json:"state"`
+	Message      string                   `json:"message,omitempty"`
+	Progress     *WorkerProgressTelemetry `json:"progress,omitempty"`
+	RejectInfo   *WorkerRejectTelemetry   `json:"reject_info,omitempty"`
+	ResultRef    string                   `json:"result_ref,omitempty"`
+	Error        string                   `json:"error,omitempty"`
+	Usage        TaskUsage                `json:"usage,omitempty"`
+	CreatedAt    int64                    `json:"created_at"`
+	Meta         map[string]any           `json:"meta,omitempty"`
+}
+
+// WorkerProgressTelemetry captures lightweight delegated-worker progress.
+type WorkerProgressTelemetry struct {
+	PercentComplete float64 `json:"percent_complete,omitempty"`
+	StepID          string  `json:"step_id,omitempty"`
+	StepTotal       int     `json:"step_total,omitempty"`
+	StepCurrent     int     `json:"step_current,omitempty"`
+	Message         string  `json:"message,omitempty"`
+}
+
+// WorkerRejectTelemetry captures why a delegated worker declined a task.
+type WorkerRejectTelemetry struct {
+	Reason      string `json:"reason"`
+	Recoverable bool   `json:"recoverable"`
+	Suggestion  string `json:"suggestion,omitempty"`
 }
 
 // CompactionCheckpointRef is a lightweight record of a compaction checkpoint
@@ -641,6 +704,100 @@ func (s *SessionStore) RecordToolLifecycle(key string, sample ToolLifecycleTelem
 	})
 }
 
+// RecordVerificationEvent appends a bounded verification lifecycle sample for
+// the session, filling task/run linkage from active or last-completed state.
+func (s *SessionStore) RecordVerificationEvent(key string, sample VerificationEventTelemetry) error {
+	if s == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	if strings.TrimSpace(sample.Type) == "" {
+		return nil
+	}
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
+		now := time.Now().UTC()
+		if e.SessionID == "" {
+			e.SessionID = key
+		}
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
+		}
+		if sample.CreatedAt == 0 {
+			sample.CreatedAt = now.Unix()
+		}
+		if strings.TrimSpace(sample.TaskID) == "" {
+			if strings.TrimSpace(e.ActiveTaskID) != "" {
+				sample.TaskID = e.ActiveTaskID
+			} else {
+				sample.TaskID = e.LastCompletedTaskID
+			}
+		}
+		if strings.TrimSpace(sample.RunID) == "" {
+			if strings.TrimSpace(e.ActiveRunID) != "" {
+				sample.RunID = e.ActiveRunID
+			} else {
+				sample.RunID = e.LastCompletedRunID
+			}
+		}
+		sample.Meta = cloneStringAnyMap(sample.Meta)
+		e.RecentVerificationEvents = append(e.RecentVerificationEvents, sample)
+		if len(e.RecentVerificationEvents) > verificationEventSampleCap {
+			e.RecentVerificationEvents = append([]VerificationEventTelemetry(nil), e.RecentVerificationEvents[len(e.RecentVerificationEvents)-verificationEventSampleCap:]...)
+		}
+		e.UpdatedAt = now
+		return nil
+	})
+}
+
+// RecordWorkerEvent appends a bounded delegated-worker lifecycle sample for
+// the session, filling parent task/run linkage from active session state.
+func (s *SessionStore) RecordWorkerEvent(key string, sample WorkerEventTelemetry) error {
+	if s == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	if strings.TrimSpace(sample.State) == "" || strings.TrimSpace(sample.WorkerID) == "" {
+		return nil
+	}
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
+		now := time.Now().UTC()
+		if e.SessionID == "" {
+			e.SessionID = key
+		}
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
+		}
+		if sample.CreatedAt == 0 {
+			sample.CreatedAt = now.Unix()
+		}
+		if strings.TrimSpace(sample.ParentTaskID) == "" {
+			if strings.TrimSpace(e.ActiveTaskID) != "" {
+				sample.ParentTaskID = e.ActiveTaskID
+			} else {
+				sample.ParentTaskID = e.LastCompletedTaskID
+			}
+		}
+		if strings.TrimSpace(sample.ParentRunID) == "" {
+			if strings.TrimSpace(e.ActiveRunID) != "" {
+				sample.ParentRunID = e.ActiveRunID
+			} else {
+				sample.ParentRunID = e.LastCompletedRunID
+			}
+		}
+		if strings.TrimSpace(sample.TaskID) == "" {
+			sample.TaskID = sample.ParentTaskID
+		}
+		if strings.TrimSpace(sample.RunID) == "" {
+			sample.RunID = sample.ParentRunID
+		}
+		sample.Meta = cloneStringAnyMap(sample.Meta)
+		e.RecentWorkerEvents = append(e.RecentWorkerEvents, sample)
+		if len(e.RecentWorkerEvents) > workerEventSampleCap {
+			e.RecentWorkerEvents = append([]WorkerEventTelemetry(nil), e.RecentWorkerEvents[len(e.RecentWorkerEvents)-workerEventSampleCap:]...)
+		}
+		e.UpdatedAt = now
+		return nil
+	})
+}
+
 // Save persists all entries to disk atomically.
 func (s *SessionStore) Save() error {
 	s.mu.Lock()
@@ -827,6 +984,28 @@ func cloneSessionEntry(in SessionEntry) SessionEntry {
 	}
 	if in.RecentToolLifecycle != nil {
 		out.RecentToolLifecycle = append([]ToolLifecycleTelemetry(nil), in.RecentToolLifecycle...)
+	}
+	if in.RecentVerificationEvents != nil {
+		out.RecentVerificationEvents = make([]VerificationEventTelemetry, len(in.RecentVerificationEvents))
+		for i, event := range in.RecentVerificationEvents {
+			out.RecentVerificationEvents[i] = event
+			out.RecentVerificationEvents[i].Meta = cloneStringAnyMap(event.Meta)
+		}
+	}
+	if in.RecentWorkerEvents != nil {
+		out.RecentWorkerEvents = make([]WorkerEventTelemetry, len(in.RecentWorkerEvents))
+		for i, event := range in.RecentWorkerEvents {
+			out.RecentWorkerEvents[i] = event
+			out.RecentWorkerEvents[i].Meta = cloneStringAnyMap(event.Meta)
+			if event.Progress != nil {
+				progress := *event.Progress
+				out.RecentWorkerEvents[i].Progress = &progress
+			}
+			if event.RejectInfo != nil {
+				rejectInfo := *event.RejectInfo
+				out.RecentWorkerEvents[i].RejectInfo = &rejectInfo
+			}
+		}
 	}
 	if in.ChildTaskIDs != nil {
 		out.ChildTaskIDs = append([]string(nil), in.ChildTaskIDs...)

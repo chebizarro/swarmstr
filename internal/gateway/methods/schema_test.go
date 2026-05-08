@@ -382,6 +382,37 @@ func TestTasksCreateRequestNormalize_DerivesTaskFields(t *testing.T) {
 	}
 }
 
+func TestTasksResumeRequestNormalize_DefaultsDecisionAndReason(t *testing.T) {
+	req, err := DecodeTasksResumeParams(json.RawMessage(`{"task_id":" task-1 "}`))
+	if err != nil {
+		t.Fatalf("DecodeTasksResumeParams: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("Normalize default: %v", err)
+	}
+	if req.TaskID != "task-1" || req.Decision != state.TaskApprovalDecisionResume || req.Reason != "resumed via control rpc" {
+		t.Fatalf("unexpected defaulted resume request: %#v", req)
+	}
+
+	req, err = DecodeTasksResumeParams(json.RawMessage(`{"taskId":"task-2","decision":" amended "}`))
+	if err != nil {
+		t.Fatalf("DecodeTasksResumeParams camelCase: %v", err)
+	}
+	req, err = req.Normalize()
+	if err != nil {
+		t.Fatalf("Normalize amended: %v", err)
+	}
+	if req.Decision != state.TaskApprovalDecisionAmended || req.Reason != "amended via control rpc" {
+		t.Fatalf("unexpected amended defaults: %#v", req)
+	}
+
+	_, err = (TasksResumeRequest{TaskID: "task-3", Decision: state.TaskApprovalDecision("bogus")}).Normalize()
+	if err == nil || !strings.Contains(err.Error(), "decision") {
+		t.Fatalf("expected invalid decision error, got %v", err)
+	}
+}
+
 func TestDecodeTasksGetParams_CamelCaseCompatibility(t *testing.T) {
 	req, err := DecodeTasksGetParams(json.RawMessage(`{"taskId":"task-1","runsLimit":7}`))
 	if err != nil {

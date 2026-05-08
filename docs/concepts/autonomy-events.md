@@ -256,6 +256,7 @@ observers to track execution progress without polling state documents.
   "tags": [
     ["d", "<task-id>:<run-id>"],
     ["t", "<task-id>"],
+    ["task_id", "<task-id>"],
     ["run", "<run-id>"],
     ["goal", "<goal-id>"],
     ["stage", "<status>"]
@@ -264,10 +265,15 @@ observers to track execution progress without polling state documents.
 }
 ```
 
+The `d` tag is `<task-id>:<run-id>` for run-scoped events, retaining the
+latest lifecycle state for that run. Task-scoped events that do not have a run
+use `d=<task-id>`, retaining the latest task lifecycle state.
+
 ### Content payload
 
 ```json
 {
+  "event_type": "run.started",
   "task_id": "task-abc",
   "run_id": "run-456",
   "from_status": "queued",

@@ -107,6 +107,7 @@ const (
 	TaskRunStatusBlocked          TaskRunStatus = "blocked"
 	TaskRunStatusAwaitingApproval TaskRunStatus = "awaiting_approval"
 	TaskRunStatusRetrying         TaskRunStatus = "retrying"
+	TaskRunStatusVerifying        TaskRunStatus = "verifying"
 	TaskRunStatusCompleted        TaskRunStatus = "completed"
 	TaskRunStatusFailed           TaskRunStatus = "failed"
 	TaskRunStatusCancelled        TaskRunStatus = "cancelled"
@@ -124,6 +125,8 @@ func ParseTaskRunStatus(raw string) (TaskRunStatus, bool) {
 		return TaskRunStatusAwaitingApproval, true
 	case string(TaskRunStatusRetrying):
 		return TaskRunStatusRetrying, true
+	case string(TaskRunStatusVerifying):
+		return TaskRunStatusVerifying, true
 	case string(TaskRunStatusCompleted):
 		return TaskRunStatusCompleted, true
 	case string(TaskRunStatusFailed):
@@ -142,6 +145,44 @@ func NormalizeTaskRunStatus(raw string) TaskRunStatus {
 
 func (s TaskRunStatus) Valid() bool {
 	_, ok := ParseTaskRunStatus(string(s))
+	return ok
+}
+
+// TaskApprovalDecision describes the operator decision carried by tasks.resume.
+type TaskApprovalDecision string
+
+const (
+	TaskApprovalDecisionResume   TaskApprovalDecision = "resume"
+	TaskApprovalDecisionApproved TaskApprovalDecision = "approved"
+	TaskApprovalDecisionRejected TaskApprovalDecision = "rejected"
+	TaskApprovalDecisionAmended  TaskApprovalDecision = "amended"
+)
+
+func ParseTaskApprovalDecision(raw string) (TaskApprovalDecision, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(TaskApprovalDecisionResume), "":
+		return TaskApprovalDecisionResume, true
+	case string(TaskApprovalDecisionApproved):
+		return TaskApprovalDecisionApproved, true
+	case string(TaskApprovalDecisionRejected):
+		return TaskApprovalDecisionRejected, true
+	case string(TaskApprovalDecisionAmended):
+		return TaskApprovalDecisionAmended, true
+	default:
+		return "", false
+	}
+}
+
+func NormalizeTaskApprovalDecision(raw string) TaskApprovalDecision {
+	decision, ok := ParseTaskApprovalDecision(raw)
+	if !ok {
+		return ""
+	}
+	return decision
+}
+
+func (d TaskApprovalDecision) Valid() bool {
+	_, ok := ParseTaskApprovalDecision(string(d))
 	return ok
 }
 

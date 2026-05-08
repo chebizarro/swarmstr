@@ -224,11 +224,155 @@ func (l *Ledger) GetTask(ctx context.Context, taskID string) (*LedgerEntry, erro
 	return nil, fmt.Errorf("task %q not found", taskID)
 }
 
+// SaveTaskState persists a non-transition task snapshot through the ledger store
+// and refreshes the in-memory cache. Lifecycle status changes should still use
+// UpdateTaskStatus so observers see transition events.
+func (l *Ledger) SaveTaskState(ctx context.Context, task state.TaskSpec, source TaskSource, sourceRef string) (*LedgerEntry, error) {
+	task = task.Normalize()
+	if err := task.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid task: %w", err)
+	}
+
+	l.mu.Lock()
+	entry, ok := l.tasks[task.TaskID]
+	var original *LedgerEntry
+	if ok {
+		original = cloneLedgerEntry(entry)
+	} else {
+		entry = &LedgerEntry{CreatedAt: task.CreatedAt}
+		l.tasks[task.TaskID] = entry
+	}
+	if source == "" {
+		source = entry.Source
+	}
+	if source == "" {
+		source = TaskSourceManual
+	}
+	if strings.TrimSpace(sourceRef) == "" {
+		sourceRef = entry.SourceRef
+	}
+	entry.Task = task
+	entry.Source = source
+	entry.SourceRef = sourceRef
+	if entry.CreatedAt == 0 {
+		entry.CreatedAt = task.CreatedAt
+	}
+	entry.UpdatedAt = task.UpdatedAt
+	if entry.UpdatedAt == 0 {
+		entry.UpdatedAt = time.Now().Unix()
+		entry.Task.UpdatedAt = entry.UpdatedAt
+	}
+	snapshot := cloneLedgerEntry(entry)
+	l.mu.Unlock()
+
+	if l.store != nil {
+		if err := l.store.SaveTask(ctx, snapshot); err != nil {
+			l.mu.Lock()
+			if original != nil {
+				l.tasks[task.TaskID] = original
+			} else {
+				delete(l.tasks, task.TaskID)
+			}
+			l.mu.Unlock()
+			return nil, fmt.Errorf("persist task snapshot %q: %w", task.TaskID, err)
+		}
+	}
+	return snapshot, nil
+}
+
+// SaveRunState persists a non-transition run snapshot through the ledger store
+// and refreshes the in-memory cache. Lifecycle status changes should still use
+// UpdateRunStatus so observers see transition events.
+func (l *Ledger) SaveRunState(ctx context.Context, run state.TaskRun, source TaskSource, sourceRef string) (*RunEntry, error) {
+	run = run.Normalize()
+	if err := run.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run: %w", err)
+	}
+
+	l.mu.Lock()
+	entry, ok := l.runs[run.RunID]
+	var original *RunEntry
+	var originalTask *LedgerEntry
+	if ok {
+		original = cloneRunEntry(entry)
+	} else {
+		entry = &RunEntry{CreatedAt: run.StartedAt}
+		l.runs[run.RunID] = entry
+	}
+	if taskEntry, ok := l.tasks[run.TaskID]; ok {
+		originalTask = cloneLedgerEntry(taskEntry)
+	}
+	if source == "" {
+		source = entry.Source
+	}
+	if strings.TrimSpace(sourceRef) == "" {
+		sourceRef = entry.SourceRef
+	}
+	entry.Run = run
+	entry.Source = source
+	entry.SourceRef = sourceRef
+	if entry.CreatedAt == 0 {
+		entry.CreatedAt = run.StartedAt
+	}
+	if entry.UpdatedAt == 0 {
+		entry.UpdatedAt = time.Now().Unix()
+	}
+	if taskEntry, ok := l.tasks[run.TaskID]; ok {
+		found := false
+		for i := range taskEntry.Runs {
+			if taskEntry.Runs[i].RunID == run.RunID {
+				taskEntry.Runs[i] = run
+				found = true
+				break
+			}
+		}
+		if !found {
+			taskEntry.Runs = append(taskEntry.Runs, run)
+		}
+	}
+	snapshot := cloneRunEntry(entry)
+	l.mu.Unlock()
+
+	if l.store != nil {
+		if err := l.store.SaveRun(ctx, snapshot); err != nil {
+			l.mu.Lock()
+			if original != nil {
+				l.runs[run.RunID] = original
+			} else {
+				delete(l.runs, run.RunID)
+			}
+			if originalTask != nil {
+				l.tasks[run.TaskID] = originalTask
+			}
+			l.mu.Unlock()
+			return nil, fmt.Errorf("persist run snapshot %q: %w", run.RunID, err)
+		}
+	}
+	return snapshot, nil
+}
+
 // UpdateTaskStatus transitions a task to a new status.
 func (l *Ledger) UpdateTaskStatus(ctx context.Context, taskID string, to state.TaskStatus, actor, source, reason string) (*LedgerEntry, error) {
+	return l.updateTaskStatus(ctx, taskID, to, actor, source, reason, nil)
+}
+
+// UpdateTaskStatusWithMeta transitions a task and records transition metadata.
+func (l *Ledger) UpdateTaskStatusWithMeta(ctx context.Context, taskID string, to state.TaskStatus, actor, source, reason string, meta map[string]any) (*LedgerEntry, error) {
+	return l.updateTaskStatus(ctx, taskID, to, actor, source, reason, meta)
+}
+
+func (l *Ledger) updateTaskStatus(ctx context.Context, taskID string, to state.TaskStatus, actor, source, reason string, meta map[string]any) (*LedgerEntry, error) {
+	loadedEntry, err := l.ensureTaskLoaded(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+
 	l.mu.Lock()
-	entry, ok := l.tasks[taskID]
-	if !ok {
+	entry := loadedEntry
+	if cached, ok := l.tasks[taskID]; ok {
+		entry = cached
+	}
+	if entry == nil {
 		l.mu.Unlock()
 		return nil, fmt.Errorf("task %q not found", taskID)
 	}
@@ -236,7 +380,7 @@ func (l *Ledger) UpdateTaskStatus(ctx context.Context, taskID string, to state.T
 	now := time.Now().Unix()
 	prevTaskUpdatedAt := entry.Task.UpdatedAt
 	prevEntryUpdatedAt := entry.UpdatedAt
-	if err := entry.Task.ApplyTransition(to, now, actor, source, reason, nil); err != nil {
+	if err := entry.Task.ApplyTransition(to, now, actor, source, reason, meta); err != nil {
 		l.mu.Unlock()
 		return nil, err
 	}
@@ -271,6 +415,10 @@ func (l *Ledger) UpdateTaskStatus(ctx context.Context, taskID string, to state.T
 
 // CreateRun starts a new execution attempt for a task.
 func (l *Ledger) CreateRun(ctx context.Context, taskID, runID, trigger, actor, source string) (*RunEntry, error) {
+	if _, err := l.ensureTaskLoaded(ctx, taskID); err != nil {
+		return nil, err
+	}
+
 	l.mu.Lock()
 	taskEntry, ok := l.tasks[taskID]
 	if !ok {
@@ -280,6 +428,7 @@ func (l *Ledger) CreateRun(ctx context.Context, taskID, runID, trigger, actor, s
 
 	now := time.Now().Unix()
 	prevCurrentRunID := taskEntry.Task.CurrentRunID
+	prevLastRunID := taskEntry.Task.LastRunID
 	prevTaskUpdatedAt := taskEntry.UpdatedAt
 
 	// Collect prior runs for attempt numbering
@@ -305,6 +454,7 @@ func (l *Ledger) CreateRun(ctx context.Context, taskID, runID, trigger, actor, s
 	l.runs[runID] = runEntry
 	taskEntry.Runs = append(taskEntry.Runs, run)
 	taskEntry.Task.CurrentRunID = runID
+	taskEntry.Task.LastRunID = runID
 	taskEntry.UpdatedAt = now
 
 	observers := append([]Observer(nil), l.observers...)
@@ -319,6 +469,7 @@ func (l *Ledger) CreateRun(ctx context.Context, taskID, runID, trigger, actor, s
 				taskEntry.Runs = taskEntry.Runs[:n-1]
 			}
 			taskEntry.Task.CurrentRunID = prevCurrentRunID
+			taskEntry.Task.LastRunID = prevLastRunID
 			taskEntry.UpdatedAt = prevTaskUpdatedAt
 			l.mu.Unlock()
 			return nil, fmt.Errorf("persist run %q: %w", runID, err)
@@ -330,6 +481,7 @@ func (l *Ledger) CreateRun(ctx context.Context, taskID, runID, trigger, actor, s
 				taskEntry.Runs = taskEntry.Runs[:n-1]
 			}
 			taskEntry.Task.CurrentRunID = prevCurrentRunID
+			taskEntry.Task.LastRunID = prevLastRunID
 			taskEntry.UpdatedAt = prevTaskUpdatedAt
 			l.mu.Unlock()
 			return nil, fmt.Errorf("persist task %q with new run %q: %w", taskID, runID, err)
@@ -346,6 +498,14 @@ func (l *Ledger) CreateRun(ctx context.Context, taskID, runID, trigger, actor, s
 
 // UpdateRunStatus transitions a run to a new status.
 func (l *Ledger) UpdateRunStatus(ctx context.Context, runID string, to state.TaskRunStatus, actor, source, reason string) (*RunEntry, error) {
+	entry, err := l.ensureRunLoaded(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := l.ensureTaskLoaded(ctx, entry.Run.TaskID); err != nil {
+		return nil, err
+	}
+
 	l.mu.Lock()
 	entry, ok := l.runs[runID]
 	if !ok {
@@ -458,6 +618,32 @@ func (l *Ledger) ListTasks(ctx context.Context, opts ListTasksOptions) ([]*Ledge
 		opts.Limit = 100
 	}
 
+	if l.store != nil {
+		results, err := l.store.ListTasks(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		l.mu.Lock()
+		for _, entry := range results {
+			if entry == nil {
+				continue
+			}
+			l.tasks[entry.Task.TaskID] = entry
+			for i := range entry.Runs {
+				run := entry.Runs[i]
+				l.runs[run.RunID] = &RunEntry{
+					Run:       run,
+					Source:    entry.Source,
+					SourceRef: entry.SourceRef,
+					CreatedAt: entry.CreatedAt,
+					UpdatedAt: entry.UpdatedAt,
+				}
+			}
+		}
+		l.mu.Unlock()
+		return results, nil
+	}
+
 	l.mu.RLock()
 	var results []*LedgerEntry
 	for _, entry := range l.tasks {
@@ -486,6 +672,22 @@ func (l *Ledger) ListTasks(ctx context.Context, opts ListTasksOptions) ([]*Ledge
 func (l *Ledger) ListRuns(ctx context.Context, opts ListRunsOptions) ([]*RunEntry, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 100
+	}
+
+	if l.store != nil {
+		results, err := l.store.ListRuns(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		l.mu.Lock()
+		for _, entry := range results {
+			if entry == nil {
+				continue
+			}
+			l.runs[entry.Run.RunID] = entry
+		}
+		l.mu.Unlock()
+		return results, nil
 	}
 
 	l.mu.RLock()
@@ -522,6 +724,10 @@ func (l *Ledger) Stats(ctx context.Context) TaskStats {
 
 // CancelTask cancels a task and any active runs.
 func (l *Ledger) CancelTask(ctx context.Context, taskID, actor, reason string) error {
+	if _, err := l.ensureTaskLoaded(ctx, taskID); err != nil {
+		return err
+	}
+
 	l.mu.Lock()
 	entry, ok := l.tasks[taskID]
 	if !ok {
@@ -537,33 +743,79 @@ func (l *Ledger) CancelTask(ctx context.Context, taskID, actor, reason string) e
 			originalRuns[run.Run.RunID] = cloneRunEntry(run)
 		}
 	}
-
-	// Cancel any active runs first, keeping both the canonical run map and the
-	// task's embedded run snapshots in sync for persistence/restart.
-	var runsToPersist []*RunEntry
-	for i := range entry.Runs {
-		runID := entry.Runs[i].RunID
-		if runEntry, ok := l.runs[runID]; ok {
-			if !isTerminalRunStatus(runEntry.Run.Status) {
-				_ = runEntry.Run.ApplyTransition(state.TaskRunStatusCancelled, now, actor, "ledger", reason, nil)
-				runEntry.UpdatedAt = now
-				entry.Runs[i] = runEntry.Run
-				runsToPersist = append(runsToPersist, runEntry)
-			}
+	for _, run := range entry.Runs {
+		if strings.TrimSpace(run.RunID) == "" {
+			continue
+		}
+		if _, ok := originalRuns[run.RunID]; !ok {
+			originalRuns[run.RunID] = cloneRunEntry(&RunEntry{
+				Run:       run,
+				Source:    entry.Source,
+				SourceRef: entry.SourceRef,
+				CreatedAt: entry.CreatedAt,
+				UpdatedAt: entry.UpdatedAt,
+			})
 		}
 	}
 
+	// Cancel any active runs first, keeping both the canonical run map and the
+	// task's embedded run snapshots in sync for persistence/restart. If an
+	// embedded run snapshot is not present in l.runs, recreate the canonical run
+	// entry so cancellation and persistence remain complete.
+	var runsToPersist []*RunEntry
+	for i := range entry.Runs {
+		runID := entry.Runs[i].RunID
+		if strings.TrimSpace(runID) == "" {
+			continue
+		}
+		runEntry, ok := l.runs[runID]
+		if !ok {
+			runEntry = &RunEntry{
+				Run:       entry.Runs[i],
+				Source:    entry.Source,
+				SourceRef: entry.SourceRef,
+				CreatedAt: entry.CreatedAt,
+				UpdatedAt: entry.UpdatedAt,
+			}
+			l.runs[runID] = runEntry
+		}
+		if !isTerminalRunStatus(runEntry.Run.Status) {
+			_ = runEntry.Run.ApplyTransition(state.TaskRunStatusCancelled, now, actor, "ledger", reason, nil)
+			runEntry.UpdatedAt = now
+			entry.Runs[i] = runEntry.Run
+			runsToPersist = append(runsToPersist, runEntry)
+		}
+	}
+
+	currentRunID := strings.TrimSpace(entry.Task.CurrentRunID)
+
 	// Cancel the task
+	var taskTransition *state.TaskTransition
 	if state.AllowedTaskTransition(entry.Task.Status, state.TaskStatusCancelled) {
 		_ = entry.Task.ApplyTransition(state.TaskStatusCancelled, now, actor, "ledger", reason, nil)
 		entry.UpdatedAt = now
+		if len(entry.Task.Transitions) > 0 {
+			tr := entry.Task.Transitions[len(entry.Task.Transitions)-1]
+			taskTransition = &tr
+		}
+	}
+	if currentRunID != "" {
+		entry.Task.CurrentRunID = ""
+		entry.Task.LastRunID = currentRunID
+		entry.Task.UpdatedAt = now
+		entry.UpdatedAt = now
 	}
 
+	runTransitions := make([]state.TaskRunTransition, 0, len(runsToPersist))
 	runSnapshots := make([]*RunEntry, len(runsToPersist))
 	for i, runEntry := range runsToPersist {
 		runSnapshots[i] = cloneRunEntry(runEntry)
+		if len(runEntry.Run.Transitions) > 0 {
+			runTransitions = append(runTransitions, runEntry.Run.Transitions[len(runEntry.Run.Transitions)-1])
+		}
 	}
 	taskSnapshot := cloneLedgerEntry(entry)
+	observers := append([]Observer(nil), l.observers...)
 	l.mu.Unlock()
 
 	// Persist
@@ -595,6 +847,19 @@ func (l *Ledger) CancelTask(ctx context.Context, taskID, actor, reason string) e
 			}
 			l.mu.Unlock()
 			return fmt.Errorf("persist cancelled task %q: %w", taskID, err)
+		}
+	}
+
+	for i, runSnapshot := range runSnapshots {
+		if i < len(runTransitions) {
+			for _, obs := range observers {
+				obs.OnRunUpdated(ctx, *runSnapshot, runTransitions[i])
+			}
+		}
+	}
+	if taskTransition != nil {
+		for _, obs := range observers {
+			obs.OnTaskUpdated(ctx, *taskSnapshot, *taskTransition)
 		}
 	}
 
@@ -665,8 +930,9 @@ func cloneRunEntry(entry *RunEntry) *RunEntry {
 func cloneVerificationSpec(spec state.VerificationSpec) state.VerificationSpec {
 	spec.Meta = cloneAnyMap(spec.Meta)
 	if len(spec.Checks) > 0 {
-		spec.Checks = make([]state.VerificationCheck, len(spec.Checks))
-		for i, check := range spec.Checks {
+		checks := spec.Checks
+		spec.Checks = make([]state.VerificationCheck, len(checks))
+		for i, check := range checks {
 			check.Meta = cloneAnyMap(check.Meta)
 			spec.Checks[i] = check
 		}
@@ -686,6 +952,72 @@ func cloneAnyMap(src map[string]any) map[string]any {
 }
 
 // Helper functions
+
+func (l *Ledger) ensureTaskLoaded(ctx context.Context, taskID string) (*LedgerEntry, error) {
+	l.mu.RLock()
+	entry, ok := l.tasks[taskID]
+	l.mu.RUnlock()
+	if ok {
+		return entry, nil
+	}
+	if l.store == nil {
+		return nil, fmt.Errorf("task %q not found", taskID)
+	}
+	entry, err := l.store.LoadTask(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("task %q not found", taskID)
+	}
+	l.mu.Lock()
+	if existing, ok := l.tasks[taskID]; ok {
+		entry = existing
+	} else {
+		l.tasks[taskID] = entry
+	}
+	for i := range entry.Runs {
+		run := entry.Runs[i]
+		if _, ok := l.runs[run.RunID]; !ok {
+			l.runs[run.RunID] = &RunEntry{
+				Run:       run,
+				Source:    entry.Source,
+				SourceRef: entry.SourceRef,
+				CreatedAt: entry.CreatedAt,
+				UpdatedAt: entry.UpdatedAt,
+			}
+		}
+	}
+	l.mu.Unlock()
+	return entry, nil
+}
+
+func (l *Ledger) ensureRunLoaded(ctx context.Context, runID string) (*RunEntry, error) {
+	l.mu.RLock()
+	entry, ok := l.runs[runID]
+	l.mu.RUnlock()
+	if ok {
+		return entry, nil
+	}
+	if l.store == nil {
+		return nil, fmt.Errorf("run %q not found", runID)
+	}
+	entry, err := l.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("run %q not found", runID)
+	}
+	l.mu.Lock()
+	if existing, ok := l.runs[runID]; ok {
+		entry = existing
+	} else {
+		l.runs[runID] = entry
+	}
+	l.mu.Unlock()
+	return entry, nil
+}
 
 func matchesTaskFilter(entry *LedgerEntry, opts ListTasksOptions) bool {
 	if len(opts.Status) > 0 {

@@ -1,6 +1,7 @@
 package methods
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -30,34 +31,48 @@ func DecodeTasksDoctorParams(params []byte) (TasksDoctorRequest, error) {
 
 // TasksDoctorResponse is the enriched diagnostic output for a single task.
 type TasksDoctorResponse struct {
-	Task       state.TaskSpec  `json:"task"`
-	Runs       []state.TaskRun `json:"runs,omitempty"`
-	Doctor     TaskDiagnostic  `json:"doctor"`
+	Task   state.TaskSpec  `json:"task"`
+	Runs   []state.TaskRun `json:"runs,omitempty"`
+	Doctor TaskDiagnostic  `json:"doctor"`
 }
 
 // TaskDiagnostic provides an operator-friendly summary of a task's health.
 type TaskDiagnostic struct {
 	// Status summary.
-	Status        string `json:"status"`
-	StatusSince   int64  `json:"status_since,omitempty"`
-	StatusAge     string `json:"status_age,omitempty"`
-	TransitionCount int  `json:"transition_count"`
+	Status          string `json:"status"`
+	StatusSince     int64  `json:"status_since,omitempty"`
+	StatusAge       string `json:"status_age,omitempty"`
+	TransitionCount int    `json:"transition_count"`
 
 	// Run summary.
-	TotalRuns     int    `json:"total_runs"`
-	ActiveRun     string `json:"active_run,omitempty"`
+	TotalRuns       int    `json:"total_runs"`
+	ActiveRun       string `json:"active_run,omitempty"`
 	ActiveRunStatus string `json:"active_run_status,omitempty"`
-	LastRunStatus string `json:"last_run_status,omitempty"`
-	LastRunEndedAt int64 `json:"last_run_ended_at,omitempty"`
+	LastRunStatus   string `json:"last_run_status,omitempty"`
+	LastRunEndedAt  int64  `json:"last_run_ended_at,omitempty"`
 
 	// Budget summary — shows whether the task is approaching or exceeded limits.
-	BudgetDefined  bool               `json:"budget_defined"`
-	BudgetExceeded *state.BudgetExceeded `json:"budget_exceeded,omitempty"`
+	BudgetDefined         bool                  `json:"budget_defined"`
+	BudgetExceeded        *state.BudgetExceeded `json:"budget_exceeded,omitempty"`
+	BudgetExceededReasons []string              `json:"budget_exceeded_reasons,omitempty"`
 
 	// Verification summary.
-	VerificationPolicy string `json:"verification_policy,omitempty"`
-	VerificationChecks int    `json:"verification_checks"`
-	VerificationPassed bool   `json:"verification_passed"`
+	VerificationPolicy        string `json:"verification_policy,omitempty"`
+	VerificationChecks        int    `json:"verification_checks"`
+	VerificationPassed        bool   `json:"verification_passed"`
+	VerificationPendingChecks int    `json:"verification_pending_checks,omitempty"`
+	VerificationFailedChecks  int    `json:"verification_failed_checks,omitempty"`
+
+	// Approval summary.
+	ApprovalRequired bool   `json:"approval_required"`
+	ApprovalDecision string `json:"approval_decision,omitempty"`
+	ApprovalActor    string `json:"approval_actor,omitempty"`
+	ApprovalReason   string `json:"approval_reason,omitempty"`
+
+	// Workflow child summary.
+	WorkflowRunID    string `json:"workflow_run_id,omitempty"`
+	WorkflowStepID   string `json:"workflow_step_id,omitempty"`
+	WorkflowStepType string `json:"workflow_step_type,omitempty"`
 
 	// Authority / governance.
 	AutonomyMode string `json:"autonomy_mode,omitempty"`
@@ -116,20 +131,43 @@ func BuildTaskDiagnostic(task state.TaskSpec, runs []state.TaskRun, now time.Tim
 				exceeded := task.Budget.CheckUsage(run.Usage)
 				if exceeded.Any() {
 					diag.BudgetExceeded = &exceeded
+					diag.BudgetExceededReasons = exceeded.Reasons()
 				}
 				break
 			}
 		}
 	}
 
+	auth := task.Authority
+
 	// Verification.
 	diag.VerificationPolicy = string(task.Verification.Policy)
 	diag.VerificationChecks = len(task.Verification.Checks)
 	diag.VerificationPassed = task.Verification.AllRequiredPassed()
+	for _, check := range task.Verification.Checks {
+		switch check.Status {
+		case state.VerificationStatusPassed:
+		case state.VerificationStatusFailed:
+			diag.VerificationFailedChecks++
+		default:
+			diag.VerificationPendingChecks++
+		}
+	}
+
+	// Approval metadata.
+	mode := auth.EffectiveAutonomyMode(state.AutonomySupervised)
+	diag.ApprovalRequired = task.Status == state.TaskStatusAwaitingApproval || mode.RequiresPlanApproval() || mode.RequiresStepApproval()
+	diag.ApprovalDecision = metaString(task.Meta, "approval_decision")
+	diag.ApprovalActor = metaString(task.Meta, "approval_actor")
+	diag.ApprovalReason = metaString(task.Meta, "approval_reason")
+
+	// Workflow child metadata.
+	diag.WorkflowRunID = metaString(task.Meta, "workflow_run_id")
+	diag.WorkflowStepID = metaString(task.Meta, "workflow_step_id")
+	diag.WorkflowStepType = metaString(task.Meta, "workflow_step_type")
 
 	// Authority.
-	auth := task.Authority
-	diag.AutonomyMode = string(auth.EffectiveAutonomyMode(state.AutonomySupervised))
+	diag.AutonomyMode = string(mode)
 	diag.RiskClass = string(auth.RiskClass)
 	diag.CanAct = auth.CanAct
 	diag.CanDelegate = auth.CanDelegate
@@ -161,6 +199,10 @@ func buildTaskWarnings(task state.TaskSpec, runs []state.TaskRun, now time.Time)
 			if age > 1800 {
 				warnings = append(warnings, "task has been awaiting_approval for over 30 minutes")
 			}
+		case state.TaskStatusVerifying:
+			if age > 1800 {
+				warnings = append(warnings, "task has been verifying for over 30 minutes")
+			}
 		}
 	}
 
@@ -176,17 +218,107 @@ func buildTaskWarnings(task state.TaskSpec, runs []state.TaskRun, now time.Time)
 		}
 	}
 
+	if task.CurrentRunID != "" && task.Status == state.TaskStatusAwaitingApproval {
+		if runStatus := runStatusForID(runs, task.CurrentRunID); runStatus != "" && runStatus != state.TaskRunStatusAwaitingApproval && runStatus != state.TaskRunStatusBlocked {
+			warnings = append(warnings, "task is awaiting approval but current run is "+string(runStatus))
+		}
+	}
+
 	// Verification required but no checks defined.
 	if task.Verification.Policy == state.VerificationPolicyRequired && len(task.Verification.Checks) == 0 {
 		warnings = append(warnings, "verification policy is 'required' but no checks are defined")
 	}
+	if task.Verification.Policy == state.VerificationPolicyRequired {
+		var failedRequired []string
+		var pendingRequired []string
+		for _, check := range task.Verification.Checks {
+			if !check.Required {
+				continue
+			}
+			checkID := strings.TrimSpace(check.CheckID)
+			if checkID == "" {
+				checkID = strings.TrimSpace(string(check.Type))
+			}
+			switch check.Status {
+			case state.VerificationStatusFailed:
+				failedRequired = append(failedRequired, checkID)
+			case state.VerificationStatusPassed:
+			default:
+				pendingRequired = append(pendingRequired, checkID)
+			}
+		}
+		if len(failedRequired) > 0 {
+			warnings = append(warnings, "verification required checks failing: "+strings.Join(failedRequired, ", "))
+		}
+		if task.Status == state.TaskStatusCompleted && len(pendingRequired) > 0 {
+			warnings = append(warnings, "task completed with pending required verification checks: "+strings.Join(pendingRequired, ", "))
+		}
+	}
+	if task.Status == state.TaskStatusVerifying && len(task.Verification.PendingChecks()) == 0 {
+		warnings = append(warnings, "task is verifying but has no pending checks")
+	}
 
-	// Budget exceeded.
+	// Budget.
+	if !task.Budget.IsZero() {
+		for _, run := range runs {
+			if run.RunID != task.CurrentRunID && run.RunID != task.LastRunID {
+				continue
+			}
+			if exceeded := task.Budget.CheckUsage(run.Usage); exceeded.Any() {
+				warnings = append(warnings, "budget exceeded: "+strings.Join(exceeded.Reasons(), ", "))
+			}
+			break
+		}
+	}
 	if task.Budget.IsZero() && task.Authority.EffectiveAutonomyMode(state.AutonomySupervised) == state.AutonomyFull {
 		warnings = append(warnings, "full autonomy with no budget limits — consider adding a budget")
 	}
 
+	if decision := metaString(task.Meta, "approval_decision"); decision == string(state.TaskApprovalDecisionRejected) && task.Status != state.TaskStatusBlocked {
+		warnings = append(warnings, "approval decision is rejected but task status is "+string(task.Status))
+	}
+	if task.Status == state.TaskStatusAwaitingApproval && !task.Authority.EffectiveAutonomyMode(state.AutonomySupervised).RequiresPlanApproval() && !task.Authority.EffectiveAutonomyMode(state.AutonomySupervised).RequiresStepApproval() {
+		warnings = append(warnings, "task is awaiting approval but effective autonomy mode does not require approval")
+	}
+	if task.Status == state.TaskStatusAwaitingApproval && !task.Authority.CanEscalate {
+		warnings = append(warnings, "task is awaiting approval but authority cannot escalate")
+	}
+	if task.Authority.EscalationRequired && !task.Authority.CanEscalate {
+		warnings = append(warnings, "escalation is required but authority cannot escalate")
+	}
+	if task.Authority.CanDelegate && task.Authority.MaxDelegationDepth == 0 {
+		warnings = append(warnings, "authority can delegate but max_delegation_depth is 0")
+	}
+
+	workflowRunID := metaString(task.Meta, "workflow_run_id")
+	workflowStepID := metaString(task.Meta, "workflow_step_id")
+	workflowStepType := metaString(task.Meta, "workflow_step_type")
+	if workflowRunID != "" || workflowStepID != "" || workflowStepType != "" {
+		if strings.TrimSpace(task.ParentTaskID) == "" {
+			warnings = append(warnings, "workflow child task has workflow metadata but no parent_task_id")
+		}
+		if workflowStepID == "" {
+			warnings = append(warnings, "workflow child task is missing workflow_step_id")
+		}
+		if workflowStepType == "" {
+			warnings = append(warnings, "workflow child task is missing workflow_step_type")
+		}
+		if strings.TrimSpace(task.CurrentRunID) == "" && strings.TrimSpace(task.LastRunID) == "" && len(runs) == 0 {
+			warnings = append(warnings, "workflow child task has no linked task run")
+		}
+	}
+
 	return warnings
+}
+
+func runStatusForID(runs []state.TaskRun, runID string) state.TaskRunStatus {
+	runID = strings.TrimSpace(runID)
+	for _, run := range runs {
+		if strings.TrimSpace(run.RunID) == runID {
+			return run.Status
+		}
+	}
+	return ""
 }
 
 // ─── tasks.summary ───────────────────────────────────────────────────────────
@@ -297,6 +429,17 @@ func formatDurationApprox(seconds int64) string {
 	default:
 		return itoa(seconds/86400) + "d"
 	}
+}
+
+func metaString(meta map[string]any, key string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	raw, ok := meta[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(raw))
 }
 
 func itoa(v int64) string {

@@ -29,8 +29,9 @@ func ExtractFromTurn(sessionID, role, sourceRef, text string, unix int64) []stat
 		unix = time.Now().Unix()
 	}
 
-	// Always store turns that are substantive enough — the retrieval layer
-	// handles relevance. Short acks and noise are filtered by minTurnLen.
+	// Automatic turn capture is salience-gated. Raw turns default to ephemeral
+	// episodes and are only indexed when they contain reusable facts,
+	// preferences, constraints, decisions, corrections, or diagnostics.
 	const maxMemoryLen = 1024
 	candidate := trimmed
 	if len(candidate) < minTurnLen {
@@ -38,6 +39,11 @@ func ExtractFromTurn(sessionID, role, sourceRef, text string, unix int64) []stat
 	}
 	if len(candidate) > maxMemoryLen {
 		candidate = candidate[:maxMemoryLen]
+	}
+
+	decision := ShouldIndexAutomaticTurn(candidate, role)
+	if !decision.Promote {
+		return nil
 	}
 
 	keywords := extractKeywords(candidate)
@@ -48,16 +54,23 @@ func ExtractFromTurn(sessionID, role, sourceRef, text string, unix int64) []stat
 
 	memoryID := fmt.Sprintf("%s:%s:%d", sessionID, sourceRef, unix)
 	return []state.MemoryDoc{{
-		Version:   1,
-		MemoryID:  memoryID,
-		Type:      "fact",
-		SessionID: sessionID,
-		Role:      role,
-		SourceRef: sourceRef,
-		Text:      candidate,
-		Keywords:  keywords,
-		Topic:     topic,
-		Unix:      unix,
+		Version:    1,
+		MemoryID:   memoryID,
+		Type:       NormalizeMemoryRecordType(decision.ProposedType),
+		SessionID:  sessionID,
+		Role:       role,
+		SourceRef:  sourceRef,
+		Text:       candidate,
+		Keywords:   keywords,
+		Topic:      topic,
+		Unix:       unix,
+		Confidence: 0.6,
+		Source:     MemorySourceKindTurn,
+		Meta: map[string]any{
+			"salience":        decision.Score,
+			"salience_reason": decision.Reason,
+			"durable":         decision.Durable,
+		},
 	}}
 }
 

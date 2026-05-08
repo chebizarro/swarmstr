@@ -26,6 +26,7 @@ import (
 	pluginmanager "metiq/internal/plugins/manager"
 	"metiq/internal/policy"
 	"metiq/internal/store/state"
+	taskspkg "metiq/internal/tasks"
 )
 
 type controlRPCDeps struct {
@@ -37,6 +38,7 @@ type controlRPCDeps struct {
 	logBuffer         *runtimeLogBuffer
 	channelState      *channelRuntimeState
 	docsRepo          *state.DocsRepository
+	taskService       *taskspkg.Service
 	transcriptRepo    *state.TranscriptRepository
 	memoryIndex       memory.Store
 	configState       *runtimeConfigStore

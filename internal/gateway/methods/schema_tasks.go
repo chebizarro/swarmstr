@@ -34,8 +34,9 @@ type TasksCancelRequest struct {
 }
 
 type TasksResumeRequest struct {
-	TaskID string `json:"task_id"`
-	Reason string `json:"reason,omitempty"`
+	TaskID   string                     `json:"task_id"`
+	Decision state.TaskApprovalDecision `json:"decision,omitempty"`
+	Reason   string                     `json:"reason,omitempty"`
 }
 
 type TasksGetResponse struct {
@@ -129,11 +130,25 @@ func DecodeTasksCancelParams(params json.RawMessage) (TasksCancelRequest, error)
 func (r TasksResumeRequest) Normalize() (TasksResumeRequest, error) {
 	r.TaskID = strings.TrimSpace(r.TaskID)
 	r.Reason = strings.TrimSpace(r.Reason)
+	decision, ok := state.ParseTaskApprovalDecision(string(r.Decision))
+	if !ok {
+		return r, fmt.Errorf("decision must be omitted/empty or one of resume, approved, rejected, amended")
+	}
+	r.Decision = decision
 	if r.TaskID == "" {
 		return r, fmt.Errorf("task_id is required")
 	}
 	if r.Reason == "" {
-		r.Reason = "resumed via control rpc"
+		switch r.Decision {
+		case state.TaskApprovalDecisionApproved:
+			r.Reason = "approved via control rpc"
+		case state.TaskApprovalDecisionRejected:
+			r.Reason = "rejected via control rpc"
+		case state.TaskApprovalDecisionAmended:
+			r.Reason = "amended via control rpc"
+		default:
+			r.Reason = "resumed via control rpc"
+		}
 	}
 	return r, nil
 }
