@@ -2,6 +2,7 @@ package agent
 
 import (
 	"log"
+	"strconv"
 	"strings"
 )
 
@@ -40,10 +41,10 @@ type PreflightResult struct {
 // messages + tools and trims to fit within the context window.
 //
 // Trimming priority (least important first):
-//  1. History messages (oldest non-system first, preserving most recent + user)
-//  2. Tool definitions (largest non-critical first)
-//  3. Dynamic context portion of system prompt
-//  4. System prompt itself (last resort)
+//  1. Late synthetic dynamic context messages, when present
+//  2. History messages (oldest non-system first, preserving the real current user)
+//  3. Tool definitions (largest non-critical first)
+//  4. Static system prompt (last resort)
 //
 // When contextWindowTokens <= 0, returns inputs unchanged.
 func EnforceTotalContextBudget(
@@ -63,8 +64,8 @@ func EnforceTotalContextBudget(
 	}
 
 	result := PreflightResult{
-		Messages:    messages,
-		Tools:       tools,
+		Messages:     messages,
+		Tools:        tools,
 		BudgetTokens: budgetTokens,
 	}
 
@@ -80,10 +81,28 @@ func EnforceTotalContextBudget(
 	overageTokens := estTokens - budgetTokens
 	logPrefix := "context-preflight"
 
-	// 1. Trim history messages (oldest first, skip system and last user message)
 	result.Messages = make([]LLMMessage, len(messages))
 	copy(result.Messages, messages)
 
+	// 1. Truncate late synthetic dynamic context before touching stable prefix
+	// material or ordinary conversation history. This lane is volatile by
+	// design, so trimming it first preserves provider prefix-cache reuse.
+	ctxTrimmed := truncateDynamicContextMessages(result.Messages, overageTokens)
+	result.ContextTruncated = ctxTrimmed.Truncated
+	if ctxTrimmed.Truncated {
+		result.Messages = ctxTrimmed.Messages
+		log.Printf("%s: truncated %d dynamic context messages (~%d tokens freed)",
+			logPrefix, ctxTrimmed.Count, ctxTrimmed.TokensFreed)
+		overageTokens -= ctxTrimmed.TokensFreed
+	}
+
+	if overageTokens <= 0 {
+		result.EstimatedTokens = estimateTotalTokens(result.Messages, result.Tools)
+		return result
+	}
+
+	// 2. Trim history messages (oldest first, skip system, dynamic context,
+	// and the real current user message).
 	trimmed := trimHistoryMessages(result.Messages, overageTokens)
 	result.HistoryTrimmed = trimmed.Count
 	if trimmed.Count > 0 {
@@ -98,7 +117,7 @@ func EnforceTotalContextBudget(
 		return result
 	}
 
-	// 2. Drop tool definitions (largest non-critical first)
+	// 3. Drop tool definitions (largest non-critical first)
 	result.Tools = make([]ToolDefinition, len(tools))
 	copy(result.Tools, tools)
 
@@ -121,7 +140,7 @@ func EnforceTotalContextBudget(
 		return result
 	}
 
-	// 3. Truncate system prompt
+	// 4. Truncate static system prompt
 	for i, msg := range result.Messages {
 		if msg.Role != "system" {
 			continue
@@ -187,68 +206,169 @@ func estimateTotalTokens(messages []LLMMessage, tools []ToolDefinition) int {
 	return messageTokens + toolTokens
 }
 
+// dynamicContextTrimResult reports what dynamic-context truncation did.
+type dynamicContextTrimResult struct {
+	Messages    []LLMMessage
+	Count       int
+	TokensFreed int
+	Truncated   bool
+}
+
+const dynamicContextPreflightTruncationMarker = "\n\n⚠️ [Dynamic context truncated by pre-flight budget gate]"
+
+// Dynamic context often contains structured memory, JSON, and code-like data.
+// Use a safety margin beyond the package-wide mixed-content estimate so the
+// volatile context lane is trimmed enough before we sacrifice stable cacheable
+// history/tools/system prompt material.
+const dynamicContextCharsPerTokenEstimate = charsPerTokenMixed * 1.25
+
+// truncateDynamicContextMessages truncates only synthetic dynamic-context lane
+// messages. It preserves the stable wrapper header so the message remains
+// clearly system-supplied context rather than ordinary user history.
+func truncateDynamicContextMessages(messages []LLMMessage, targetTokenReduction int) dynamicContextTrimResult {
+	if len(messages) == 0 || targetTokenReduction <= 0 {
+		return dynamicContextTrimResult{Messages: messages}
+	}
+
+	result := make([]LLMMessage, len(messages))
+	copy(result, messages)
+
+	freedTokens := 0
+	truncated := 0
+	for i, msg := range result {
+		if msg.Lane != PromptLaneDynamicContext || msg.Content == "" || freedTokens >= targetTokenReduction {
+			continue
+		}
+
+		header, body := splitDynamicContextMessage(msg.Content)
+		if body == "" {
+			continue
+		}
+
+		remainingTokens := targetTokenReduction - freedTokens
+		charsToFree := int(float64(remainingTokens) * dynamicContextCharsPerTokenEstimate)
+		if charsToFree < 1 {
+			charsToFree = 1
+		}
+
+		maxFreedChars := len(msg.Content) - (len(header) + len(dynamicContextPreflightTruncationMarker))
+		if maxFreedChars <= 0 {
+			continue
+		}
+		if charsToFree > maxFreedChars {
+			charsToFree = maxFreedChars
+		}
+
+		newContentLen := len(msg.Content) - charsToFree
+		maxBodyChars := newContentLen - len(header) - len(dynamicContextPreflightTruncationMarker)
+		if maxBodyChars < 0 {
+			maxBodyChars = 0
+		}
+
+		newContent := header + truncateUTF8(body, maxBodyChars) + dynamicContextPreflightTruncationMarker
+		if len(newContent) >= len(msg.Content) {
+			continue
+		}
+
+		clone := msg
+		clone.Content = newContent
+		result[i] = clone
+
+		freedChars := len(msg.Content) - len(newContent)
+		freed := int(float64(freedChars) / charsPerTokenMixed)
+		if freed == 0 && freedChars > 0 {
+			freed = 1
+		}
+		freedTokens += freed
+		truncated++
+	}
+
+	return dynamicContextTrimResult{
+		Messages:    result,
+		Count:       truncated,
+		TokensFreed: freedTokens,
+		Truncated:   truncated > 0,
+	}
+}
+
+func splitDynamicContextMessage(content string) (header, body string) {
+	expectedHeader := syntheticDynamicContextPrefix + "\n\n"
+	if strings.HasPrefix(content, expectedHeader) {
+		body = strings.TrimPrefix(content, expectedHeader)
+		return expectedHeader, strings.TrimSuffix(body, dynamicContextPreflightTruncationMarker)
+	}
+	return "", strings.TrimSuffix(content, dynamicContextPreflightTruncationMarker)
+}
+
 // historyTrimResult reports what history trimming did.
 type historyTrimResult struct {
-	Messages   []LLMMessage
-	Count      int
+	Messages    []LLMMessage
+	Count       int
 	TokensFreed int
 }
 
-// trimHistoryMessages removes the oldest non-system, non-final-user messages
-// until the target token reduction is achieved.
+// trimHistoryMessages removes the oldest non-system, non-current-user,
+// non-dynamic-context messages until the target token reduction is achieved.
 func trimHistoryMessages(messages []LLMMessage, targetTokenReduction int) historyTrimResult {
 	if len(messages) <= 2 || targetTokenReduction <= 0 {
 		return historyTrimResult{Messages: messages}
 	}
 
-	// Find the range of trimmable messages (not first system, not last user).
-	firstTrimmable := 0
-	for i, msg := range messages {
-		if msg.Role == "system" {
-			firstTrimmable = i + 1
-		} else {
+	currentUserIdx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Lane == PromptLaneCurrentUser {
+			currentUserIdx = i
 			break
 		}
 	}
-
-	// Find the last user message (which we always preserve).
-	lastUserIdx := len(messages) - 1
-	for lastUserIdx > firstTrimmable && messages[lastUserIdx].Role != "user" {
-		lastUserIdx--
+	if currentUserIdx == -1 {
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == "user" {
+				currentUserIdx = i
+				break
+			}
+		}
 	}
 
-	// Nothing to trim if the trimmable range is empty.
-	if firstTrimmable >= lastUserIdx {
-		return historyTrimResult{Messages: messages}
-	}
-
-	// Trim oldest first, tracking freed tokens.
 	freedTokens := 0
-	trimmed := 0
-	keepFrom := firstTrimmable
-
-	for i := firstTrimmable; i < lastUserIdx && freedTokens < targetTokenReduction; i++ {
-		msg := messages[i]
+	dropSet := make(map[int]bool)
+	for i, msg := range messages {
+		if freedTokens >= targetTokenReduction {
+			break
+		}
+		// Only trim ordinary history before the current-user boundary. Messages
+		// after that boundary are part of the active agentic-loop exchange and are
+		// handled by the dedicated context-pruning pipeline. Old tool-result
+		// exchanges before the current turn are intentionally treated as trimmable
+		// history to preserve the current turn and stable prompt prefix first.
+		if currentUserIdx >= 0 && i >= currentUserIdx {
+			continue
+		}
+		if msg.Role == "system" || msg.Lane == PromptLaneDynamicContext {
+			continue
+		}
 		msgTokens := int(float64(len(msg.Content)+60) / charsPerTokenMixed)
+		if msgTokens == 0 {
+			msgTokens = 1
+		}
 		freedTokens += msgTokens
-		trimmed++
-		keepFrom = i + 1
+		dropSet[i] = true
 	}
 
-	if trimmed == 0 {
+	if len(dropSet) == 0 {
 		return historyTrimResult{Messages: messages}
 	}
 
-	// Build new message slice: system messages + surviving history + final user.
-	result := make([]LLMMessage, 0, len(messages)-trimmed)
-	result = append(result, messages[:firstTrimmable]...)
-	if keepFrom < len(messages) {
-		result = append(result, messages[keepFrom:]...)
+	result := make([]LLMMessage, 0, len(messages)-len(dropSet))
+	for i, msg := range messages {
+		if !dropSet[i] {
+			result = append(result, msg)
+		}
 	}
 
 	return historyTrimResult{
 		Messages:    result,
-		Count:       trimmed,
+		Count:       len(dropSet),
 		TokensFreed: freedTokens,
 	}
 }
@@ -350,15 +470,21 @@ func MustFitContext(turn Turn) bool {
 
 // contextPreflightLogSummary builds a one-line summary of what the preflight did.
 func contextPreflightLogSummary(r PreflightResult) string {
-	if r.HistoryTrimmed == 0 && r.ToolsDropped == 0 && !r.SystemTruncated {
+	if r.HistoryTrimmed == 0 && !r.ContextTruncated && r.ToolsDropped == 0 && !r.SystemTruncated {
 		return ""
 	}
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if r.HistoryTrimmed > 0 {
-		parts = append(parts, strings.Repeat("", 0)+
-			"history=-"+strings.TrimSpace(strings.Replace(
-				string(rune('0'+r.HistoryTrimmed%10)), "", "", 0)))
+		parts = append(parts, "history=-"+strconv.Itoa(r.HistoryTrimmed))
 	}
-	// Simple summary is logged by the callers
+	if r.ContextTruncated {
+		parts = append(parts, "context=truncated")
+	}
+	if r.ToolsDropped > 0 {
+		parts = append(parts, "tools=-"+strconv.Itoa(r.ToolsDropped))
+	}
+	if r.SystemTruncated {
+		parts = append(parts, "system=truncated")
+	}
 	return strings.Join(parts, ", ")
 }

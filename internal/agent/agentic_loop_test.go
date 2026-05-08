@@ -46,6 +46,67 @@ func (p *capturingChatProvider) Chat(_ context.Context, messages []LLMMessage, _
 	return resp, nil
 }
 
+type promptCacheCapturingProvider struct {
+	profile PromptCacheProfile
+	calls   [][]LLMMessage
+	opts    []ChatOptions
+}
+
+func (p *promptCacheCapturingProvider) PromptCacheProfile() PromptCacheProfile {
+	return p.profile
+}
+
+func (p *promptCacheCapturingProvider) Chat(_ context.Context, messages []LLMMessage, _ []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
+	captured := make([]LLMMessage, len(messages))
+	copy(captured, messages)
+	p.calls = append(p.calls, captured)
+	p.opts = append(p.opts, opts)
+	return &LLMResponse{Content: "ok"}, nil
+}
+
+func TestGenerateWithAgenticLoop_UsesPromptCacheProfileForPromptAssembly(t *testing.T) {
+	provider := &promptCacheCapturingProvider{profile: PromptCacheProfile{
+		Enabled:                 true,
+		Backend:                 PromptCacheBackendVLLM,
+		DynamicContextPlacement: DynamicContextPlacementLateUser,
+	}}
+
+	result, err := generateWithAgenticLoop(context.Background(), provider, Turn{
+		UserText:           "current user",
+		StaticSystemPrompt: "turn static",
+		Context:            "dynamic runtime context",
+		History: []ConversationMessage{
+			{Role: "user", Content: "previous user"},
+			{Role: "assistant", Content: "previous assistant"},
+		},
+	}, "provider static", "test-prefix-cache")
+	if err != nil {
+		t.Fatalf("generateWithAgenticLoop returned error: %v", err)
+	}
+	if result.Text != "ok" {
+		t.Fatalf("unexpected result text: %q", result.Text)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("expected one provider call, got %d", len(provider.calls))
+	}
+	msgs := provider.calls[0]
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "system" || msgs[0].Lane != PromptLaneSystemStatic || strings.Contains(msgs[0].Content, "dynamic runtime context") {
+		t.Fatalf("expected stable static system prefix, got %+v", msgs[0])
+	}
+	if msgs[3].Role != "user" || msgs[3].Lane != PromptLaneDynamicContext || !strings.Contains(msgs[3].Content, "dynamic runtime context") {
+		t.Fatalf("expected late dynamic-context user message, got %+v", msgs[3])
+	}
+	if msgs[4].Role != "user" || msgs[4].Lane != PromptLaneCurrentUser || msgs[4].Content != "current user" {
+		t.Fatalf("expected real current user last, got %+v", msgs[4])
+	}
+	if len(provider.opts) != 1 || provider.opts[0].CacheSystem || provider.opts[0].CacheTools {
+		t.Fatalf("expected non-Anthropic prefix profile to disable Anthropic cache flags, got %+v", provider.opts)
+	}
+}
+
 // mockToolExecutor counts executions and returns a fixed result.
 type mockToolExecutor struct {
 	execCount    atomic.Int32

@@ -99,6 +99,62 @@ func TestOpenAIChatProvider_OllamaParams(t *testing.T) {
 	}
 }
 
+type openAIRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f openAIRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestOpenAIChatProvider_OllamaEndpointInjectsRequestParams(t *testing.T) {
+	var capturedBody map[string]any
+	client := &http.Client{Transport: openAIRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "localhost:11434" {
+			t.Fatalf("expected Ollama request host, got %s", req.URL.Host)
+		}
+		if err := json.NewDecoder(req.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"id":"test",
+				"object":"chat.completion",
+				"choices":[{"index":0,"message":{"role":"assistant","content":"from ollama"},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+			}`)),
+		}, nil
+	})}
+
+	provider := &OpenAIChatProviderChat{
+		BaseURL:             "http://localhost:11434/v1",
+		Model:               "ollama/llama3",
+		Client:              client,
+		ContextWindowTokens: 8192,
+		KeepAlive:           "30m",
+	}
+	resp, err := provider.Chat(context.Background(), []LLMMessage{{Role: "user", Content: "test"}}, nil, ChatOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "from ollama" {
+		t.Fatalf("unexpected response: %q", resp.Content)
+	}
+	options, ok := capturedBody["options"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected Ollama options object, got %#v", capturedBody["options"])
+	}
+	if numCtx, ok := options["num_ctx"].(float64); !ok || numCtx != 8192 {
+		t.Fatalf("expected options.num_ctx=8192, got %#v", options["num_ctx"])
+	}
+	if keepAlive, ok := capturedBody["keep_alive"].(string); !ok || keepAlive != "30m" {
+		t.Fatalf("expected keep_alive=30m, got %#v", capturedBody["keep_alive"])
+	}
+	if _, exists := capturedBody["cache_prompt"]; exists {
+		t.Fatalf("Ollama params should not imply llama-server cache_prompt, got body %#v", capturedBody)
+	}
+}
+
 func TestOpenAIChatProvider_OllamaEndpointInjectsParams(t *testing.T) {
 	// Test that isOllamaEndpoint correctly identifies Ollama URLs and that
 	// the Chat method would inject params. We verify by checking the logic path.
@@ -197,6 +253,221 @@ func TestOpenAIChatProvider_StoreParam(t *testing.T) {
 	}
 	if _, ok := body2["store"]; ok {
 		t.Errorf("store should not be present when disabled, got %v", body2["store"])
+	}
+}
+
+func TestOpenAIChatProvider_LlamaServerPromptCacheParam(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = body
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"id": "test",
+			"object": "chat.completion",
+			"choices": [{"index": 0, "message": {"role": "assistant", "content": "cached"}, "finish_reason": "stop"}],
+			"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+		}`))
+	}))
+	defer srv.Close()
+
+	provider := &OpenAIChatProviderChat{
+		BaseURL: srv.URL,
+		Model:   "local-model",
+		PromptCache: &PromptCacheProfile{
+			Enabled:                 true,
+			Backend:                 PromptCacheBackendLlamaServer,
+			DynamicContextPlacement: DynamicContextPlacementLateUser,
+			SendLlamaCachePrompt:    true,
+		},
+	}
+	_, err := provider.Chat(context.Background(), []LLMMessage{{Role: "user", Content: "test"}}, nil, ChatOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(capturedBody, &body); err != nil {
+		t.Fatal(err)
+	}
+	if cachePrompt, ok := body["cache_prompt"].(bool); !ok || !cachePrompt {
+		t.Fatalf("expected cache_prompt=true for llama-server profile, got %#v", body["cache_prompt"])
+	}
+	if _, exists := body["options"]; exists {
+		t.Fatalf("llama-server cache_prompt should not disturb Ollama options for non-Ollama endpoints, got %#v", body["options"])
+	}
+}
+
+func TestOpenAIChatProvider_VLLMPromptCacheIsLayoutOnly(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = body
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"id": "test",
+			"object": "chat.completion",
+			"choices": [{"index": 0, "message": {"role": "assistant", "content": "vllm"}, "finish_reason": "stop"}],
+			"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+		}`))
+	}))
+	defer srv.Close()
+
+	provider := &OpenAIChatProviderChat{
+		BaseURL: srv.URL,
+		Model:   "local-model",
+		PromptCache: &PromptCacheProfile{
+			Enabled:                 true,
+			Backend:                 PromptCacheBackendVLLM,
+			DynamicContextPlacement: DynamicContextPlacementLateUser,
+		},
+	}
+	messages := []LLMMessage{
+		{Role: "system", Content: "stable system prefix", Lane: PromptLaneSystemStatic},
+		{Role: "user", Content: "previous user"},
+		{Role: "assistant", Content: "previous assistant"},
+		buildSyntheticDynamicContextMessage("volatile turn context"),
+		{Role: "user", Content: "real current question", Lane: PromptLaneCurrentUser},
+	}
+	_, err := provider.Chat(context.Background(), messages, nil, ChatOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(capturedBody, &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := body["cache_prompt"]; exists {
+		t.Fatalf("vLLM profile should be layout-only and omit cache_prompt, got body %#v", body)
+	}
+	requestMessages, ok := body["messages"].([]any)
+	if !ok {
+		t.Fatalf("expected request messages array, got %#v", body["messages"])
+	}
+	if len(requestMessages) != len(messages) {
+		t.Fatalf("expected %d encoded messages, got %d: %#v", len(messages), len(requestMessages), requestMessages)
+	}
+	if got := requestMessages[3].(map[string]any)["content"].(string); !strings.Contains(got, "volatile turn context") {
+		t.Fatalf("expected late dynamic context to remain before current user, got %#v", requestMessages)
+	}
+	if got := requestMessages[4].(map[string]any)["content"].(string); got != "real current question" {
+		t.Fatalf("expected real current user last, got %#v", requestMessages)
+	}
+}
+
+func openAIStreamResponseBody() string {
+	return "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"local\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"local\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+}
+
+func TestOpenAIChatProvider_StreamLlamaServerPromptCacheParam(t *testing.T) {
+	var capturedBody map[string]any
+	client := &http.Client{Transport: openAIRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode stream request body: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(openAIStreamResponseBody())),
+		}, nil
+	})}
+
+	provider := &OpenAIChatProvider{
+		BaseURL: "http://localhost:8080/v1",
+		Model:   "local-model",
+		Client:  client,
+		PromptCache: &PromptCacheProfile{
+			Enabled:                 true,
+			Backend:                 PromptCacheBackendLlamaServer,
+			DynamicContextPlacement: DynamicContextPlacementLateUser,
+			SendLlamaCachePrompt:    true,
+		},
+	}
+	result, err := provider.Stream(context.Background(), Turn{UserText: "test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "hi" {
+		t.Fatalf("unexpected stream text %q", result.Text)
+	}
+	if cachePrompt, ok := capturedBody["cache_prompt"].(bool); !ok || !cachePrompt {
+		t.Fatalf("expected stream cache_prompt=true for llama-server profile, got %#v", capturedBody["cache_prompt"])
+	}
+}
+
+func TestOpenAIChatProvider_StreamVLLMPromptCacheIsLayoutOnly(t *testing.T) {
+	var capturedBody map[string]any
+	client := &http.Client{Transport: openAIRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode stream request body: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(openAIStreamResponseBody())),
+		}, nil
+	})}
+
+	provider := &OpenAIChatProvider{
+		BaseURL: "http://localhost:8080/v1",
+		Model:   "local-model",
+		Client:  client,
+		PromptCache: &PromptCacheProfile{
+			Enabled:                 true,
+			Backend:                 PromptCacheBackendVLLM,
+			DynamicContextPlacement: DynamicContextPlacementLateUser,
+		},
+	}
+	_, err := provider.Stream(context.Background(), Turn{UserText: "test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := capturedBody["cache_prompt"]; exists {
+		t.Fatalf("vLLM stream profile should omit cache_prompt, got body %#v", capturedBody)
+	}
+}
+
+func TestOpenAIChatProvider_StreamOllamaEndpointInjectsRequestParams(t *testing.T) {
+	var capturedBody map[string]any
+	client := &http.Client{Transport: openAIRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "localhost:11434" {
+			t.Fatalf("expected Ollama request host, got %s", req.URL.Host)
+		}
+		if err := json.NewDecoder(req.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode stream request body: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(openAIStreamResponseBody())),
+		}, nil
+	})}
+
+	provider := &OpenAIChatProvider{
+		BaseURL:   "http://localhost:11434/v1",
+		Model:     "ollama/llama3",
+		Client:    client,
+		KeepAlive: "30m",
+	}
+	_, err := provider.Stream(context.Background(), Turn{UserText: "test", ContextWindowTokens: 8192}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, ok := capturedBody["options"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected Ollama stream options object, got %#v", capturedBody["options"])
+	}
+	if numCtx, ok := options["num_ctx"].(float64); !ok || numCtx != 8192 {
+		t.Fatalf("expected stream options.num_ctx=8192, got %#v", options["num_ctx"])
+	}
+	if keepAlive, ok := capturedBody["keep_alive"].(string); !ok || keepAlive != "30m" {
+		t.Fatalf("expected stream keep_alive=30m, got %#v", capturedBody["keep_alive"])
+	}
+	if _, exists := capturedBody["cache_prompt"]; exists {
+		t.Fatalf("Ollama stream params should not imply cache_prompt, got body %#v", capturedBody)
 	}
 }
 

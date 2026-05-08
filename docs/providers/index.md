@@ -96,3 +96,37 @@ Supply multiple keys via `api_keys` array — metiq rotates on 429 (rate limit):
   "agent": { "default_model": "my-provider/my-model-id" }
 }
 ```
+
+## Prompt-cache configuration
+
+`prompt_cache` is an optional provider-level block for backends that can reuse an identical prompt prefix across requests. metiq uses it to keep invariant system instructions and history ahead of volatile per-turn context, improving the chance that GPU KV/prefix caches are reused.
+
+```json
+{
+  "providers": {
+    "local-llama": {
+      "base_url": "http://localhost:8080/v1",
+      "api_key": "none",
+      "prompt_cache": {
+        "backend": "llama_server",
+        "dynamic_context_placement": "late_user"
+      }
+    },
+    "vllm": {
+      "base_url": "http://localhost:8000/v1",
+      "api_key": "none",
+      "prompt_cache": {
+        "backend": "vllm",
+        "dynamic_context_placement": "late_user"
+      }
+    }
+  }
+}
+```
+
+Supported backends:
+
+- `llama_server` — sends `cache_prompt: true` on OpenAI-compatible chat requests and uses cache-friendly prompt layout.
+- `vllm` — layout-only; vLLM must have Automatic Prefix Caching enabled on the server.
+
+Set `enabled: false` to disable prompt-cache behavior for a provider. See [Additional Providers](/providers/remaining) for llama-server/vLLM examples and smoke-validation guidance.

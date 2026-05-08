@@ -16,6 +16,8 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
+
+	"metiq/internal/store/state"
 )
 
 func init() {
@@ -284,6 +286,11 @@ type AnthropicProvider struct {
 	Model        string
 	SystemPrompt string
 	Client       *http.Client
+	PromptCache  *PromptCacheProfile
+}
+
+func (p *AnthropicProvider) PromptCacheProfile() PromptCacheProfile {
+	return promptCacheProfileOrDefault(p.PromptCache, PromptCacheProviderAnthropic)
 }
 
 func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
@@ -303,10 +310,11 @@ func isAnthropicAuthError(err error) bool {
 // Also compatible with Ollama and other OpenAI-compatible endpoints.
 // Set OPENAI_API_KEY (or ANTHROPIC_API_KEY is not used for this provider).
 type OpenAIChatProvider struct {
-	BaseURL string // defaults to https://api.openai.com
-	APIKey  string
-	Model   string
-	Client  *http.Client
+	BaseURL     string // defaults to https://api.openai.com
+	APIKey      string
+	Model       string
+	Client      *http.Client
+	PromptCache *PromptCacheProfile
 	// KeepAlive is an Ollama-specific parameter controlling how long the model
 	// stays loaded in memory after a request (e.g. "30m", "1h"). Empty means
 	// use the Ollama server default (typically 5m).
@@ -334,8 +342,13 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 		ContextWindowTokens: turn.ContextWindowTokens,
 		KeepAlive:           keepAlive,
 		Store:               store,
+		PromptCache:         promptCacheProfilePtr(p.PromptCacheProfile()),
 	}
 	return generateWithAgenticLoop(ctx, chatProvider, turn, "", "openai")
+}
+
+func (p *OpenAIChatProvider) PromptCacheProfile() PromptCacheProfile {
+	return promptCacheProfileOrDefault(p.PromptCache, PromptCacheProviderOpenAICompatible)
 }
 
 // resolveModel returns the effective model name.
@@ -386,8 +399,9 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 
 	client := openai.NewClient(clientOpts...)
 
+	profile := p.PromptCacheProfile()
 	// Build messages using the same converter as the ChatProvider.
-	llmMsgs := buildLLMMessagesFromTurn(turn, "")
+	llmMsgs := buildLLMMessagesFromTurnWithProfile(turn, "", profile)
 	sdkMsgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(llmMsgs))
 	for _, m := range llmMsgs {
 		switch m.Role {
@@ -410,8 +424,14 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 		params.Tools = translateToolsToOpenAISDK(turn.Tools)
 	}
 
-	// Ollama-specific: inject num_ctx and keep_alive via extra body params.
+	// Provider-specific extra body params. llama-server accepts cache_prompt;
+	// vLLM prefix caching is layout-only and sends no extra request field.
 	var streamOpts []option.RequestOption
+	if profile.Enabled && profile.SendLlamaCachePrompt {
+		streamOpts = append(streamOpts, option.WithJSONSet("cache_prompt", true))
+	}
+
+	// Ollama-specific: inject num_ctx and keep_alive via extra body params.
 	if isOllamaEndpoint(baseURL) {
 		if turn.ContextWindowTokens > 0 {
 			streamOpts = append(streamOpts, option.WithJSONSet("options.num_ctx", turn.ContextWindowTokens))
@@ -501,9 +521,14 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 // API key is read from GEMINI_API_KEY (or GOOGLE_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY).
 // Default model: "gemini-2.0-flash".
 type GoogleGeminiProvider struct {
-	Model  string
-	APIKey string
-	Client *http.Client
+	Model       string
+	APIKey      string
+	Client      *http.Client
+	PromptCache *PromptCacheProfile
+}
+
+func (p *GoogleGeminiProvider) PromptCacheProfile() PromptCacheProfile {
+	return promptCacheProfileOrDefault(p.PromptCache, PromptCacheProviderGemini)
 }
 
 type geminiContent struct {
@@ -657,9 +682,10 @@ func buildGeminiParts(text string, images []ImageRef) []geminiPart {
 
 func (p *GoogleGeminiProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
 	chatProvider := &GeminiChatProvider{
-		APIKey: p.APIKey,
-		Model:  p.Model,
-		Client: p.Client,
+		APIKey:      p.APIKey,
+		Model:       p.Model,
+		Client:      p.Client,
+		PromptCache: promptCacheProfilePtr(p.PromptCacheProfile()),
 	}
 	return generateWithAgenticLoop(ctx, chatProvider, turn, "", "gemini")
 }
@@ -942,6 +968,11 @@ type ProviderOverride struct {
 	APIKey       string
 	Model        string
 	SystemPrompt string // injected as system context for every turn
+	PromptCache  *state.ProviderPromptCacheConfig
+}
+
+func resolvePromptCacheProfileValue(providerClass PromptCacheProviderClass, cfg *state.ProviderPromptCacheConfig) (PromptCacheProfile, error) {
+	return ResolvePromptCacheProfile(providerClass, cfg)
 }
 
 // BuildProviderWithOverride constructs a Provider using explicit provider
@@ -952,7 +983,7 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 	overrideAPIKey := strings.TrimSpace(override.APIKey)
 
 	// If no override is specified, delegate to the standard env-based builder.
-	if overrideBaseURL == "" && overrideAPIKey == "" && strings.TrimSpace(override.Model) == "" && strings.TrimSpace(override.SystemPrompt) == "" {
+	if overrideBaseURL == "" && overrideAPIKey == "" && strings.TrimSpace(override.Model) == "" && strings.TrimSpace(override.SystemPrompt) == "" && override.PromptCache == nil {
 		return NewProviderForModel(model)
 	}
 
@@ -963,6 +994,9 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 	norm := strings.ToLower(effectiveModel)
 
 	if norm == "echo" {
+		if _, err := ResolvePromptCacheProfile(PromptCacheProviderUnsupported, override.PromptCache); err != nil {
+			return nil, err
+		}
 		return EchoProvider{}, nil
 	}
 
@@ -986,7 +1020,11 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 		if baseURL == "" {
 			baseURL = "https://api.githubcopilot.com"
 		}
-		return &OpenAIChatProvider{BaseURL: baseURL, APIKey: apiKey, Model: effectiveModel}, nil
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderOpenAICompatible, override.PromptCache)
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIChatProvider{BaseURL: baseURL, APIKey: apiKey, Model: effectiveModel, PromptCache: promptCacheProfilePtr(profile)}, nil
 	}
 
 	// Anthropic (claude-* models).
@@ -995,7 +1033,11 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 		if err != nil {
 			return nil, err
 		}
-		return &AnthropicProvider{Model: effectiveModel, APIKey: apiKey, SystemPrompt: override.SystemPrompt}, nil
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderAnthropic, override.PromptCache)
+		if err != nil {
+			return nil, err
+		}
+		return &AnthropicProvider{Model: effectiveModel, APIKey: apiKey, SystemPrompt: override.SystemPrompt, PromptCache: promptCacheProfilePtr(profile)}, nil
 	}
 
 	// Google Gemini.
@@ -1004,13 +1046,20 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 		if err != nil {
 			return nil, err
 		}
-		return &GoogleGeminiProvider{Model: effectiveModel, APIKey: apiKey}, nil
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderGemini, override.PromptCache)
+		if err != nil {
+			return nil, err
+		}
+		return &GoogleGeminiProvider{Model: effectiveModel, APIKey: apiKey, PromptCache: promptCacheProfilePtr(profile)}, nil
 	}
 
 	// Cohere.
 	if norm == "cohere" || strings.HasPrefix(norm, "command-") {
 		apiKey, err := requireProviderCredential("Cohere", effectiveModel, overrideAPIKey, "COHERE_API_KEY")
 		if err != nil {
+			return nil, err
+		}
+		if _, err := ResolvePromptCacheProfile(PromptCacheProviderUnsupported, override.PromptCache); err != nil {
 			return nil, err
 		}
 		return &CohereProvider{Model: effectiveModel, APIKey: apiKey}, nil
@@ -1042,10 +1091,15 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 		if err != nil {
 			return nil, err
 		}
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderOpenAICompatible, override.PromptCache)
+		if err != nil {
+			return nil, err
+		}
 		return &OpenAIChatProvider{
-			BaseURL: baseURL,
-			APIKey:  apiKey,
-			Model:   effectiveModel,
+			BaseURL:     baseURL,
+			APIKey:      apiKey,
+			Model:       effectiveModel,
+			PromptCache: promptCacheProfilePtr(profile),
 		}, nil
 	}
 
@@ -1056,7 +1110,11 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 		if err != nil {
 			return nil, err
 		}
-		return &OpenAIChatProvider{BaseURL: overrideBaseURL, APIKey: apiKey, Model: effectiveModel}, nil
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderOpenAICompatible, override.PromptCache)
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIChatProvider{BaseURL: overrideBaseURL, APIKey: apiKey, Model: effectiveModel, PromptCache: promptCacheProfilePtr(profile)}, nil
 	}
 
 	// Generic HTTP-compatible endpoint (Ollama, custom servers, etc.)
@@ -1073,6 +1131,9 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 	}
 	if apiKey == "" && !isLocalBaseURL(baseURL) {
 		return nil, fmt.Errorf("provider api_key is required for non-local provider base_url %q", baseURL)
+	}
+	if _, err := ResolvePromptCacheProfile(PromptCacheProviderUnsupported, override.PromptCache); err != nil {
+		return nil, err
 	}
 	return &HTTPProvider{URL: baseURL, APIKey: apiKey}, nil
 }

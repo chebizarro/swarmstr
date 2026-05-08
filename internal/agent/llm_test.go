@@ -36,8 +36,69 @@ func TestBuildLLMMessagesFromTurn_BuildsSplitSystemMessage(t *testing.T) {
 	if len(msgs[0].SystemParts) != 2 {
 		t.Fatalf("expected 2 system parts, got %d", len(msgs[0].SystemParts))
 	}
-	if msgs[1].Role != "user" || msgs[1].Content != "hello" {
+	if msgs[0].Lane != PromptLaneSystemStatic {
+		t.Fatalf("expected system lane, got %q", msgs[0].Lane)
+	}
+	if msgs[1].Role != "user" || msgs[1].Content != "hello" || msgs[1].Lane != PromptLaneCurrentUser {
 		t.Fatalf("unexpected user message: %+v", msgs[1])
+	}
+}
+
+func TestBuildLLMMessagesFromTurnWithProfile_LateUserDynamicContext(t *testing.T) {
+	msgs := buildLLMMessagesFromTurnWithProfile(Turn{
+		UserText:           "current user",
+		StaticSystemPrompt: "turn static",
+		Context:            "dynamic memory for this turn",
+		History: []ConversationMessage{
+			{Role: "user", Content: "previous user"},
+			{Role: "assistant", Content: "previous assistant"},
+		},
+	}, "provider static", PromptCacheProfile{
+		Enabled:                 true,
+		Backend:                 PromptCacheBackendVLLM,
+		DynamicContextPlacement: DynamicContextPlacementLateUser,
+	})
+
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "system" || msgs[0].Lane != PromptLaneSystemStatic {
+		t.Fatalf("expected static system message first, got %+v", msgs[0])
+	}
+	if strings.Contains(msgs[0].Content, "dynamic memory") {
+		t.Fatalf("late-user profile should not place dynamic context in system prompt: %q", msgs[0].Content)
+	}
+	if msgs[0].Content != "provider static\n\nturn static" {
+		t.Fatalf("unexpected system content: %q", msgs[0].Content)
+	}
+	if msgs[1].Content != "previous user" || msgs[2].Content != "previous assistant" {
+		t.Fatalf("history not preserved before dynamic context: %+v", msgs)
+	}
+	dynamic := msgs[3]
+	if dynamic.Role != "user" || dynamic.Lane != PromptLaneDynamicContext {
+		t.Fatalf("expected synthetic dynamic-context user message before current user, got %+v", dynamic)
+	}
+	if !strings.HasPrefix(dynamic.Content, syntheticDynamicContextPrefix) || !strings.Contains(dynamic.Content, "dynamic memory for this turn") {
+		t.Fatalf("unexpected synthetic dynamic context content: %q", dynamic.Content)
+	}
+	current := msgs[4]
+	if current.Role != "user" || current.Content != "current user" || current.Lane != PromptLaneCurrentUser {
+		t.Fatalf("expected real current user to remain last, got %+v", current)
+	}
+}
+
+func TestChatOptionsFromTurn_HonorsPromptCacheProfile(t *testing.T) {
+	anthropicOpts := chatOptionsFromTurn(Turn{ThinkingBudget: 1000}, PromptCacheProfile{UseAnthropicCacheControl: true})
+	if !anthropicOpts.CacheSystem || !anthropicOpts.CacheTools {
+		t.Fatalf("expected Anthropic cache flags enabled, got %+v", anthropicOpts)
+	}
+	if anthropicOpts.MaxTokens != 16000 || anthropicOpts.ThinkingBudget != 1000 {
+		t.Fatalf("unexpected thinking options: %+v", anthropicOpts)
+	}
+
+	disabledOpts := chatOptionsFromTurn(Turn{}, disabledPromptCacheProfile())
+	if disabledOpts.CacheSystem || disabledOpts.CacheTools {
+		t.Fatalf("expected cache flags disabled, got %+v", disabledOpts)
 	}
 }
 

@@ -285,15 +285,27 @@ type ControlAdmin struct {
 
 // ── Typed config sections ──────────────────────────────────────────────────────
 
+// ProviderPromptCacheConfig holds provider-level prompt-cache behavior knobs.
+// Enabled nil means provider default/auto; Backend selects an OpenAI-compatible
+// prefix-cache backend such as "llama_server" or "vllm"; DynamicContextPlacement
+// selects where per-turn dynamic context is placed once prompt assembly becomes
+// cache-aware.
+type ProviderPromptCacheConfig struct {
+	Enabled                 *bool  `json:"enabled,omitempty"`
+	Backend                 string `json:"backend,omitempty"`
+	DynamicContextPlacement string `json:"dynamic_context_placement,omitempty"`
+}
+
 // ProviderEntry holds per-provider settings (API key, base URL, default model…).
 // Unknown fields are preserved in Extra so new OpenClaw provider keys survive round-trips.
 type ProviderEntry struct {
-	Enabled bool           `json:"enabled,omitempty"`
-	APIKey  string         `json:"api_key,omitempty"`  // redacted on read; first key used by default
-	APIKeys []string       `json:"api_keys,omitempty"` // multi-key pool for round-robin rotation
-	BaseURL string         `json:"base_url,omitempty"`
-	Model   string         `json:"model,omitempty"`
-	Extra   map[string]any `json:"extra,omitempty"`
+	Enabled     bool                       `json:"enabled,omitempty"`
+	APIKey      string                     `json:"api_key,omitempty"`  // redacted on read; first key used by default
+	APIKeys     []string                   `json:"api_keys,omitempty"` // multi-key pool for round-robin rotation
+	BaseURL     string                     `json:"base_url,omitempty"`
+	Model       string                     `json:"model,omitempty"`
+	PromptCache *ProviderPromptCacheConfig `json:"prompt_cache,omitempty"`
+	Extra       map[string]any             `json:"extra,omitempty"`
 }
 
 // ProvidersConfig is a map of named provider configurations.

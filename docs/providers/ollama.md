@@ -47,6 +47,13 @@ ollama pull mistral-nemo
 
 No API key needed.
 
+Ollama-specific runtime knobs are separate from prompt-cache configuration:
+
+- `context_window` / turn context limits are passed to Ollama as `num_ctx` when metiq calls an Ollama endpoint.
+- `keep_alive` keeps the model loaded between requests.
+- The `providers.<name>.prompt_cache` block is for llama-server and vLLM, not Ollama. Do not use it to tune Ollama `num_ctx` or model residency.
+- Avoid running llama-server on Ollama's default port (`11434`) unless you also adjust provider config carefully; metiq treats Ollama endpoints specially for `num_ctx` / `keep_alive` compatibility.
+
 ## Remote Ollama
 
 If Ollama runs on another machine (e.g., a beefy desktop):
@@ -93,7 +100,8 @@ Good Ollama models for Nostr agent tasks:
 
 ## Limitations
 
-- No prompt caching (local models don't support it)
+- Ollama does not use metiq's `prompt_cache` backend settings; use llama-server or vLLM if you need explicit prefix-cache guidance.
+- `num_ctx` controls context size and `keep_alive` controls model residency; neither is prompt/prefix caching.
 - Thinking mode not available (no extended thinking support)
 - Slower than cloud APIs on CPU; GPU needed for reasonable speed
 - Context length varies by model

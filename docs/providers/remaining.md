@@ -87,19 +87,76 @@ AWS_REGION=us-east-1
 
 ## vLLM (Self-Hosted)
 
-Run inference on your own GPU cluster:
+Run inference on your own GPU cluster. For prompt-cache optimization, start vLLM with Automatic Prefix Caching enabled, then tell metiq to use the vLLM prompt layout:
+
+```bash
+vllm serve meta-llama/Llama-3.3-70B-Instruct \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --enable-prefix-caching
+```
 
 ```json
 {
   "providers": {
     "vllm": {
-      "base_url": "http://your-vllm-server:8000",
-      "api_key": "none"
+      "base_url": "http://your-vllm-server:8000/v1",
+      "api_key": "none",
+      "prompt_cache": {
+        "backend": "vllm",
+        "dynamic_context_placement": "late_user"
+      }
     }
   },
   "agent": { "default_model": "vllm/meta-llama/Llama-3.3-70B-Instruct" }
 }
 ```
+
+metiq does not enable vLLM prefix caching by request parameter. The `prompt_cache.backend = "vllm"` setting optimizes prompt layout only: stable provider/system prompt, static agent prompt, tools, and history stay before volatile per-turn context. Prefix reuse still depends on the vLLM server-side cache being enabled and sized appropriately.
+
+Smoke validation:
+
+1. Run two similar metiq turns with the same agent/system prompt and different user text.
+2. Confirm the OpenAI-compatible request body does **not** include `cache_prompt`; vLLM should not need a per-request flag.
+3. Watch vLLM metrics/logs for prefix-cache hits or reduced prefill/TTFT on the second turn.
+4. If no hit appears, verify `--enable-prefix-caching`, model compatibility, cache capacity, and that no changing data is being injected into the static system prompt.
+
+## llama-server / llama.cpp (Self-Hosted)
+
+Use `llama_server` for llama.cpp's OpenAI-compatible `llama-server` endpoint:
+
+```bash
+llama-server \
+  --model ./models/model.gguf \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --ctx-size 32768
+```
+
+```json
+{
+  "providers": {
+    "local-llama": {
+      "base_url": "http://localhost:8080/v1",
+      "api_key": "none",
+      "prompt_cache": {
+        "backend": "llama_server",
+        "dynamic_context_placement": "late_user"
+      }
+    }
+  },
+  "agent": { "default_model": "local-llama/qwen3-coder" }
+}
+```
+
+For this backend, metiq sends `cache_prompt: true` on OpenAI-compatible chat requests and uses the same cache-friendly prompt layout as vLLM. Keep `agent.system_prompt` and provider instructions stable; put changing recall/session data in runtime context so metiq can place it late.
+
+Smoke validation:
+
+1. Run one turn to warm the llama-server slot/cache, then run a second turn with the same static prompt and a different user request.
+2. Capture or log the request body and confirm `cache_prompt: true` is present.
+3. Watch llama-server logs/metrics for prompt-cache or slot reuse messages and lower prefill/TTFT on the second turn.
+4. If reuse is poor, check context size, slot/cache settings, model-specific cache limitations, and whether dynamic data was added to the static prompt.
 
 ## Together AI
 

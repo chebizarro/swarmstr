@@ -73,6 +73,102 @@ func TestEnforceTotalContextBudget_TrimsHistoryFirst(t *testing.T) {
 	}
 }
 
+func TestEnforceTotalContextBudget_TruncatesDynamicContextBeforeHistory(t *testing.T) {
+	dynamicContext := strings.Repeat("volatile dynamic context ", 900)
+	oldHistory := strings.Repeat("stable historical exchange ", 60)
+	messages := []LLMMessage{
+		{Role: "system", Content: strings.Repeat("stable system prefix ", 20), Lane: PromptLaneSystemStatic},
+		{Role: "user", Content: oldHistory},
+		{Role: "assistant", Content: strings.Repeat("stable assistant response ", 60)},
+		buildSyntheticDynamicContextMessage(dynamicContext),
+		{Role: "user", Content: "real current question", Lane: PromptLaneCurrentUser},
+	}
+
+	result := EnforceTotalContextBudget(messages, nil, 4096, nil)
+
+	if !result.ContextTruncated {
+		t.Fatal("expected dynamic context to be truncated")
+	}
+	if result.HistoryTrimmed != 0 {
+		t.Fatalf("expected dynamic context to absorb overage before history trimming, trimmed %d history messages", result.HistoryTrimmed)
+	}
+	if result.Messages[1].Content != oldHistory {
+		t.Fatal("ordinary history should be preserved when dynamic context can satisfy the overage")
+	}
+
+	var dynamic LLMMessage
+	for _, msg := range result.Messages {
+		if msg.Lane == PromptLaneDynamicContext {
+			dynamic = msg
+			break
+		}
+	}
+	if dynamic.Content == "" {
+		t.Fatal("expected dynamic-context message to remain present")
+	}
+	if len(dynamic.Content) >= len(messages[3].Content) {
+		t.Fatal("dynamic-context content should be shorter after truncation")
+	}
+	if !strings.HasPrefix(dynamic.Content, syntheticDynamicContextPrefix) {
+		t.Fatal("dynamic-context truncation should preserve the synthetic wrapper prefix")
+	}
+	if !strings.Contains(dynamic.Content, "Dynamic context truncated by pre-flight budget gate") {
+		t.Fatal("dynamic-context truncation should include the preflight marker")
+	}
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Lane != PromptLaneCurrentUser || lastMsg.Content != "real current question" {
+		t.Fatalf("real current user message should remain last, got %+v", lastMsg)
+	}
+}
+
+func TestTruncateDynamicContextMessages_DoesNotDuplicateMarker(t *testing.T) {
+	messages := []LLMMessage{
+		buildSyntheticDynamicContextMessage(strings.Repeat("volatile ", 1200)),
+	}
+
+	first := truncateDynamicContextMessages(messages, 500)
+	if !first.Truncated {
+		t.Fatal("expected first dynamic-context truncation")
+	}
+	second := truncateDynamicContextMessages(first.Messages, 700)
+	if !second.Truncated {
+		t.Fatal("expected second dynamic-context truncation")
+	}
+
+	content := second.Messages[0].Content
+	if got := strings.Count(content, "Dynamic context truncated by pre-flight budget gate"); got != 1 {
+		t.Fatalf("expected exactly one truncation marker after repeated preflight, got %d in %q", got, content)
+	}
+	if !strings.HasPrefix(content, syntheticDynamicContextPrefix) {
+		t.Fatal("repeated truncation should preserve the synthetic wrapper prefix")
+	}
+}
+
+func TestTrimHistoryMessages_SkipsDynamicContextAndCurrentUserLane(t *testing.T) {
+	messages := []LLMMessage{
+		{Role: "system", Content: "stable system", Lane: PromptLaneSystemStatic},
+		{Role: "user", Content: "old history"},
+		{Role: "assistant", Content: "old answer"},
+		{Role: "user", Content: "synthetic context", Lane: PromptLaneDynamicContext},
+		{Role: "user", Content: "real current question", Lane: PromptLaneCurrentUser},
+	}
+
+	result := trimHistoryMessages(messages, 10000)
+
+	if result.Count != 2 {
+		t.Fatalf("expected only ordinary history messages to be trimmed, got %d", result.Count)
+	}
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected system, dynamic context, and current user to remain; got %d messages", len(result.Messages))
+	}
+	if result.Messages[1].Lane != PromptLaneDynamicContext {
+		t.Fatalf("dynamic context should not be treated as trimmable history, got %+v", result.Messages[1])
+	}
+	if result.Messages[2].Lane != PromptLaneCurrentUser || result.Messages[2].Content != "real current question" {
+		t.Fatalf("real current user should be preserved by lane, got %+v", result.Messages[2])
+	}
+}
+
 func TestEnforceTotalContextBudget_DropsToolsAfterHistory(t *testing.T) {
 	// Small system prompt, no trimmable history, many large tools.
 	messages := []LLMMessage{

@@ -19,8 +19,8 @@ import (
 
 // FallbackCandidate is a named ChatProvider with a model identifier.
 type FallbackCandidate struct {
-	Name     string       // e.g. "anthropic-primary", "anthropic-backup"
-	Model    string       // e.g. "claude-sonnet-4-5"
+	Name     string // e.g. "anthropic-primary", "anthropic-backup"
+	Model    string // e.g. "claude-sonnet-4-5"
 	Provider ChatProvider
 }
 
@@ -67,6 +67,19 @@ func NewFallbackChain(candidates []FallbackCandidate, cooldown *CooldownTracker)
 	return &FallbackChain{candidates: candidates, cooldown: cooldown}
 }
 
+// PromptCacheProfile returns the primary candidate's policy. Prompt assembly
+// happens before fallback selection, so fallback chains optimize layout for the
+// primary provider and pass that same request shape to later candidates if needed.
+func (fc *FallbackChain) PromptCacheProfile() PromptCacheProfile {
+	if fc == nil || len(fc.candidates) == 0 {
+		return disabledPromptCacheProfile()
+	}
+	if provider, ok := fc.candidates[0].Provider.(promptCacheProfileProvider); ok {
+		return provider.PromptCacheProfile()
+	}
+	return disabledPromptCacheProfile()
+}
+
 // FallbackResult holds the result of a fallback chain execution.
 type FallbackResult struct {
 	Response *LLMResponse
@@ -81,22 +94,28 @@ func (fc *FallbackChain) Chat(ctx context.Context, messages []LLMMessage, tools 
 		return nil, fmt.Errorf("fallback chain: no candidates configured")
 	}
 
-	// Single candidate: skip fallback logic.
+	// Single candidate: skip fallback logic, but still honor that candidate's
+	// provider-native cache toggles.
 	if len(fc.candidates) == 1 {
-		return fc.candidates[0].Provider.Chat(ctx, messages, tools, opts)
+		candidate := fc.candidates[0]
+		return candidate.Provider.Chat(ctx, messages, tools, chatOptionsForCandidate(opts, candidate.Provider))
 	}
 
 	var lastErr error
 	attempts := 0
 
-	for _, candidate := range fc.candidates {
+	primaryProfile := fc.PromptCacheProfile()
+	for idx, candidate := range fc.candidates {
+		if idx > 0 {
+			warnIfFallbackPromptCacheProfileMismatch(primaryProfile, candidate)
+		}
 		if fc.cooldown.IsOnCooldown(candidate.Name) {
 			log.Printf("fallback: skipping %s (on cooldown)", candidate.Name)
 			continue
 		}
 
 		attempts++
-		resp, err := candidate.Provider.Chat(ctx, messages, tools, opts)
+		resp, err := candidate.Provider.Chat(ctx, messages, tools, chatOptionsForCandidate(opts, candidate.Provider))
 		if err == nil {
 			if attempts > 1 {
 				log.Printf("fallback: succeeded with %s/%s after %d attempts", candidate.Name, candidate.Model, attempts)
@@ -227,6 +246,30 @@ var (
 		529: true,
 	}
 )
+
+// chatOptionsForCandidate keeps the primary prompt layout/option envelope but
+// reapplies provider-native cache toggles for the candidate being called.
+func chatOptionsForCandidate(opts ChatOptions, provider ChatProvider) ChatOptions {
+	candidateOpts := opts
+	if profileProvider, ok := provider.(promptCacheProfileProvider); ok {
+		profile := profileProvider.PromptCacheProfile()
+		candidateOpts.CacheSystem = profile.UseAnthropicCacheControl
+		candidateOpts.CacheTools = profile.UseAnthropicCacheControl
+	}
+	return candidateOpts
+}
+
+func warnIfFallbackPromptCacheProfileMismatch(primary PromptCacheProfile, candidate FallbackCandidate) {
+	profileProvider, ok := candidate.Provider.(promptCacheProfileProvider)
+	if !ok {
+		return
+	}
+	candidateProfile := profileProvider.PromptCacheProfile()
+	if candidateProfile == primary {
+		return
+	}
+	log.Printf("fallback: %s/%s prompt-cache profile differs from primary; using primary prompt layout with candidate-native cache flags", candidate.Name, candidate.Model)
+}
 
 // classifyError classifies an error into a failover reason.
 // Context.Canceled returns reasonUnknown (non-retriable by convention).
