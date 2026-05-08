@@ -629,18 +629,18 @@ func TestDMBus_NIP04EncryptKeyer_FallsBackToSignKeyer(t *testing.T) {
 
 func TestChunkDMText_ShortText(t *testing.T) {
 	text := "Hello, world!"
-	chunks := chunkDMText(text)
+	chunks := chunkNIP04DMText(text)
 	if len(chunks) != 1 || chunks[0] != text {
 		t.Errorf("expected single chunk %q, got %v", text, chunks)
 	}
 }
 
 func TestChunkDMText_EmptyText(t *testing.T) {
-	chunks := chunkDMText("")
+	chunks := chunkNIP04DMText("")
 	if len(chunks) != 0 {
 		t.Errorf("expected no chunks for empty text, got %v", chunks)
 	}
-	chunks = chunkDMText("   ")
+	chunks = chunkNIP04DMText("   ")
 	if len(chunks) != 0 {
 		t.Errorf("expected no chunks for whitespace, got %v", chunks)
 	}
@@ -649,7 +649,7 @@ func TestChunkDMText_EmptyText(t *testing.T) {
 func TestChunkDMText_LongText(t *testing.T) {
 	// Create text longer than maxDMPlaintextRunes
 	long := strings.Repeat("word ", maxDMPlaintextRunes/4) // ~5 chars per word
-	chunks := chunkDMText(long)
+	chunks := chunkNIP04DMText(long)
 	if len(chunks) < 2 {
 		t.Errorf("expected multiple chunks for long text, got %d", len(chunks))
 	}
@@ -665,7 +665,7 @@ func TestChunkDMText_PrefersParagraphBreak(t *testing.T) {
 	// Build text with paragraph break - total must exceed limit
 	part := strings.Repeat("x", maxDMPlaintextRunes*2/3)
 	text := part + "\n\n" + part
-	chunks := chunkDMText(text)
+	chunks := chunkNIP04DMText(text)
 	if len(chunks) < 2 {
 		t.Errorf("expected at least 2 chunks split at paragraph, got %d", len(chunks))
 	}
@@ -679,7 +679,7 @@ func TestChunkDMText_PrefersSentenceBreak(t *testing.T) {
 	// Build text with sentence break - total must exceed limit
 	sentence := strings.Repeat("x", maxDMPlaintextRunes*2/3) + ". "
 	text := sentence + strings.Repeat("y", maxDMPlaintextRunes*2/3)
-	chunks := chunkDMText(text)
+	chunks := chunkNIP04DMText(text)
 	if len(chunks) < 2 {
 		t.Errorf("expected at least 2 chunks split at sentence, got %d", len(chunks))
 	}

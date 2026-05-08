@@ -193,8 +193,12 @@ func (b *NIP17Bus) SendDM(ctx context.Context, toPubKey string, text string) err
 	if err != nil {
 		return err
 	}
+	// Normalize outbound text: trim whitespace and reject empty messages.
+	// Unlike NIP-04, NIP-17 does not enforce a fixed plaintext size limit
+	// because gift-wrap overhead is different and relay acceptance depends
+	// on the final serialized event size, not plaintext rune count.
 	var textErr error
-	text, textErr = sanitizeDMText(text)
+	text, textErr = normalizeOutboundDMText(text)
 	if textErr != nil {
 		return textErr
 	}
@@ -512,13 +516,10 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 		return
 	}
 
-	text := rumor.Content
-	var err error
-	text, err = sanitizeDMText(text)
-	if err != nil {
-		b.emitErr(fmt.Errorf("reject nip17 rumor %s: %w", eventID, err))
-		return
-	}
+	// Deliver the rumor content as-is without size validation or trimming.
+	// If the gift-wrap was successfully unwrapped and decrypted, we should
+	// deliver the full message to the handler. Any size-based filtering
+	// belongs in the application layer, not the transport layer.
 	if b.onMessage == nil {
 		return
 	}
@@ -527,7 +528,7 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 	msg := InboundDM{
 		EventID:    eventID,
 		FromPubKey: senderPubkey.Hex(),
-		Text:       text,
+		Text:       rumor.Content,
 		RelayURL:   "", // gift wraps hide relay; not available here
 		CreatedAt:  int64(rumor.CreatedAt),
 		Scheme:     "nip17",
