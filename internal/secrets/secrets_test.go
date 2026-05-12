@@ -91,6 +91,7 @@ func TestStore_reload(t *testing.T) {
 	p := writeEnvFile(t, dir, ".env", "SECRET_A=alpha\nSECRET_B=beta\n")
 
 	s := NewStore([]string{p})
+	s.SetBackend(nil)
 	count, warnings := s.Reload()
 	if count != 2 {
 		t.Errorf("count = %d, want 2", count)
@@ -105,6 +106,7 @@ func TestStore_reload(t *testing.T) {
 
 func TestStore_reloadMissingFile(t *testing.T) {
 	s := NewStore([]string{"/nonexistent/.env"})
+	s.SetBackend(nil)
 	count, warnings := s.Reload()
 	if count != 0 {
 		t.Errorf("count = %d, want 0", count)
