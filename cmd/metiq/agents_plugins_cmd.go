@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	
+	"metiq/internal/logging"
 )
 
 // ─── agents ───────────────────────────────────────────────────────────────────
@@ -51,12 +53,12 @@ func runAgentsList(args []string) error {
 
 	agents, _ := result["agents"].([]any)
 	if len(agents) == 0 {
-		fmt.Println("no agents configured")
+		printMuted("No agents configured")
 		return nil
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tMODEL\tSTATUS")
+	fmt.Fprintln(w, logging.Theme.Heading("ID\tMODEL\tSTATUS"))
 	for _, a := range agents {
 		ag, ok := a.(map[string]any)
 		if !ok {
@@ -65,7 +67,18 @@ func runAgentsList(args []string) error {
 		id := stringField(ag, "id")
 		model := stringField(ag, "model")
 		status := stringField(ag, "status")
-		fmt.Fprintf(w, "%s\t%s\t%s\n", id, model, status)
+		
+		statusColor := logging.Theme.Info
+		if status == "active" || status == "running" {
+			statusColor = logging.Theme.Success
+		} else if status == "error" || status == "failed" {
+			statusColor = logging.Theme.Error
+		}
+		
+		fmt.Fprintf(w, "%s\t%s\t%s\n",
+			logging.Theme.AccentBright(id),
+			logging.Theme.Muted(model),
+			statusColor(status))
 	}
 	return w.Flush()
 }

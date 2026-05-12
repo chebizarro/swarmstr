@@ -35,10 +35,13 @@ func runQR(args []string) error {
 
 	// Print nostr: URI and a minimal block-char QR representation.
 	nostrURI := "nostr:" + pubkey
-	fmt.Printf("Agent pubkey: %s\n\n", pubkey)
-	fmt.Printf("Nostr URI: %s\n\n", nostrURI)
-	fmt.Println("(Install a QR-capable terminal or scan the URI with a Nostr client)")
-	fmt.Println()
+	printBlankLine()
+	printField("Agent pubkey", pubkey)
+	printBlankLine()
+	printField("Nostr URI", nostrURI)
+	printBlankLine()
+	printMuted("(Install a QR-capable terminal or scan the URI with a Nostr client)")
+	printBlankLine()
 	printTerminalQR(nostrURI)
 	return nil
 }
