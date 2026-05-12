@@ -6571,9 +6571,14 @@ func main() {
 					return applyTTSConvert(ctx, ops, req)
 				},
 				GetConfig: func(ctx context.Context) (state.ConfigDoc, error) {
-					return docsRepo.GetConfig(ctx)
+					// Use runtime config state instead of fetching from relay on every call.
+					// This ensures the file config (set at startup) is authoritative and not
+					// overridden by potentially stale/empty relay-stored config.
+					return configState.Get(), nil
 				},
 				GetConfigWithEvent: func(ctx context.Context) (state.ConfigDoc, state.Event, error) {
+					// For event-aware config fetch, still use relay but this is only called
+					// for config management operations, not authentication checks.
 					return docsRepo.GetConfigWithEvent(ctx)
 				},
 				SupportedMethods: func(_ context.Context) ([]string, error) {
@@ -6808,10 +6813,14 @@ func ensureRuntimeConfig(ctx context.Context, repo *state.DocsRepository, relays
 				next = policy.NormalizeConfig(next)
 			}
 		} else {
-			return state.ConfigDoc{}, currentErr
+			// If relay config fetch fails (relay unavailable, network error, etc.),
+			// continue with preferred file config rather than failing startup.
+			// This ensures daemon can start even when relays are temporarily unreachable.
+			log.Printf("runtime config: relay fetch failed (%v); using file config", currentErr)
 		}
 		if _, err := repo.PutConfig(ctx, next); err != nil {
-			return state.ConfigDoc{}, err
+			// If relay config persist fails, log but continue - file config is already valid
+			log.Printf("runtime config: relay persist failed (%v); daemon will use file config", err)
 		}
 		return next, nil
 	}
