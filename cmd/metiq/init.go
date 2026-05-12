@@ -43,29 +43,32 @@ func runInit(args []string) error {
 	for name, content := range files {
 		path := filepath.Join(wsDir, name)
 		if _, err := os.Stat(path); err == nil && !force {
-			fmt.Printf("  skip  %s (already exists; use --force to overwrite)\n", name)
+			printMuted("  skip  %s (already exists; use --force to overwrite)", name)
 			skipped++
 			continue
 		}
 		if err := os.WriteFile(path, []byte(strings.TrimLeft(content, "\n")), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", name, err)
 		}
-		fmt.Printf("  wrote %s\n", name)
+		printSuccess("  ✓ wrote %s", name)
 		created++
 	}
 
-	fmt.Printf("\nWorkspace initialised at: %s\n", wsDir)
+	printBlankLine()
+	printSuccess("⚡ Workspace initialised at: %s", wsDir)
 	if created > 0 {
-		fmt.Println("\nNext steps:")
-		fmt.Println("  1. Edit SOUL.md    — define who your agent is")
-		fmt.Println("  2. Edit IDENTITY.md — name, vibe, emoji")
-		fmt.Println("  3. Edit USER.md     — who they're helping")
-		fmt.Println("  4. Start the daemon: metiqd --bootstrap ~/.metiq/bootstrap.json")
-		fmt.Println("  5. Send your agent a DM — BOOTSTRAP.md guides the first conversation")
-		fmt.Println("  6. Delete BOOTSTRAP.md once identity is established")
+		printBlankLine()
+		printHeading("Next steps:")
+		printInfo("  1. Edit SOUL.md     — define who your agent is")
+		printInfo("  2. Edit IDENTITY.md — name, vibe, emoji")
+		printInfo("  3. Edit USER.md     — who they're helping")
+		printInfo("  4. Start the daemon: %s", printCommand("metiqd --bootstrap ~/.metiq/bootstrap.json"))
+		printInfo("  5. Send your agent a DM — BOOTSTRAP.md guides the first conversation")
+		printInfo("  6. Delete BOOTSTRAP.md once identity is established")
 	}
 	if skipped > 0 {
-		fmt.Printf("\n%d file(s) skipped (already exist)\n", skipped)
+		printBlankLine()
+		printMuted("%d file(s) skipped (already exist)", skipped)
 	}
 	return nil
 }

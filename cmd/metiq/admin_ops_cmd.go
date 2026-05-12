@@ -40,12 +40,13 @@ func runUpdate(args []string) error {
 	latest := stringField(result, "latest_version")
 	hasUpdate, _ := result["has_update"].(bool)
 
-	fmt.Printf("current: %s\n", current)
-	fmt.Printf("latest:  %s\n", latest)
+	printField("current", current)
+	printField("latest", latest)
 	if hasUpdate {
-		fmt.Printf("update available — run: curl -fsSL https://raw.githubusercontent.com/metiq/metiq/main/scripts/install.sh | bash\n")
+		printWarn("⚡ Update available!")
+		printMuted("  Run: curl -fsSL https://raw.githubusercontent.com/metiq/metiq/main/scripts/install.sh | bash")
 	} else {
-		fmt.Println("up to date")
+		printSuccess("✓ Up to date")
 	}
 	return nil
 }
@@ -83,7 +84,7 @@ func runSecurityAudit(args []string) error {
 	}
 
 	if len(findings) == 0 {
-		fmt.Println("✓ No security issues found")
+		printSuccess("✓ No security issues found")
 		return nil
 	}
 
@@ -105,17 +106,25 @@ func runSecurityAudit(args []string) error {
 		case "critical":
 			icon = "✗"
 			critical++
+			printError("%s [%s] %s: %s", icon, f.Severity, f.CheckID, f.Message)
 		case "warn":
 			icon = "!"
 			warns++
+			printWarn("%s [%s] %s: %s", icon, f.Severity, f.CheckID, f.Message)
+		default:
+			printInfo("%s [%s] %s: %s", icon, f.Severity, f.CheckID, f.Message)
 		}
-		fmt.Printf("%s [%s] %s: %s\n", icon, f.Severity, f.CheckID, f.Message)
 		if f.Remediation != "" {
-			fmt.Printf("  → %s\n", f.Remediation)
+			printMuted("  → %s", f.Remediation)
 		}
 	}
 
-	fmt.Printf("\n%d findings (%d critical, %d warn)\n", len(findings), critical, warns)
+	printBlankLine()
+	if critical > 0 {
+		printError("⚠ %d findings (%d critical, %d warn)", len(findings), critical, warns)
+	} else {
+		printWarn("%d findings (%d critical, %d warn)", len(findings), critical, warns)
+	}
 	if critical > 0 {
 		return fmt.Errorf("security audit failed: %d critical issue(s)", critical)
 	}
@@ -152,13 +161,13 @@ func runHealth(args []string) error {
 
 	result, err := cl.get("/health")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "daemon unreachable:", err)
+		printError("✗ Daemon unreachable: %v", err)
 		os.Exit(1)
 	}
 	if ok, _ := result["ok"].(bool); ok {
-		fmt.Println("ok")
+		printSuccess("✓ Daemon healthy")
 	} else {
-		fmt.Fprintln(os.Stderr, "daemon returned unhealthy status")
+		printError("✗ Daemon returned unhealthy status")
 		os.Exit(1)
 	}
 	return nil

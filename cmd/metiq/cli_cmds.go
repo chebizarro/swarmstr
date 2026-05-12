@@ -56,7 +56,7 @@ func runStatus(args []string) error {
 // ─── version ─────────────────────────────────────────────────────────────────
 
 func runVersion(_ []string) error {
-	fmt.Printf("metiq %s\n", version)
+	printVersion(version)
 	return nil
 }
 
