@@ -87,9 +87,13 @@ func (a *ActiveRecallAssembler) AssembleActiveRecallForContext(ctx context.Conte
 	if maxChars > 0 {
 		cfg.MaxContextChars = maxChars
 	}
-	clone := *a
-	clone.cfg = cfg
-	result, err := clone.Recall(ctx, ActiveRecallRequest{SessionID: sessionID, LatestMessage: latest.Content, RecentTurns: turns})
+	// Create temporary assembler with modified config (avoid copying mutex)
+	temp := &ActiveRecallAssembler{
+		cfg:      cfg,
+		searcher: a.searcher,
+		cache:    make(map[string]activeRecallCacheEntry),
+	}
+	result, err := temp.Recall(ctx, ActiveRecallRequest{SessionID: sessionID, LatestMessage: latest.Content, RecentTurns: turns})
 	if err != nil || result.Context == "" {
 		return "", err
 	}
