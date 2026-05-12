@@ -31,6 +31,9 @@ type AgenticLoopConfig struct {
 	Tools []ToolDefinition
 	// Executor runs tool calls. If nil, the loop is skipped.
 	Executor ToolExecutor
+	// LoopDetectionConfig configures assistant response-text loop detection
+	// sensitivity for this turn. Nil uses toolloop defaults.
+	LoopDetectionConfig *toolloop.Config
 	// Options configures each LLM call (max_tokens, thinking, caching).
 	Options ChatOptions
 	// MaxIterations caps the number of tool→LLM round-trips.
@@ -124,6 +127,12 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	if cfg.LogPrefix == "" {
 		cfg.LogPrefix = "agentic"
 	}
+	loopDetectionConfig := cfg.LoopDetectionConfig
+	if loopDetectionConfig == nil {
+		defaultLoopConfig := toolloop.DefaultConfig()
+		loopDetectionConfig = &defaultLoopConfig
+	}
+	textThrashState := toolloop.NewTextThrashState()
 
 	messages := cfg.InitialMessages
 
@@ -231,29 +240,37 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		}
 		log.Printf("%s: agentic loop iter=%d/%d tools=%v", cfg.LogPrefix, iter+1, cfg.MaxIterations, toolNames)
 
-		// Build the assistant tool-call ConversationMessage for history delta.
-		// On the first iteration, include the saved preamble text; on
-		// subsequent iterations use resp.Content (which is cleared to "").
+		assistantText := resp.Content
+		if iter == 0 && toolPreamble != "" {
+			assistantText = toolPreamble
+		}
+		thrashResult := toolloop.ObserveTextThrash(textThrashState, assistantText, toolPlanKeyFromToolCalls(calls), loopDetectionConfig)
+		if thrashResult.Stuck {
+			blocked := thrashResult.Level == toolloop.Critical
+			log.Printf("%s: assistant text thrash %s detector=%s count=%d tools=%v", cfg.LogPrefix, thrashResult.Level, thrashResult.Detector, thrashResult.Count, toolNames)
+			emitAssistantTextThrashEvents(ctx, cfg, calls, thrashResult, blocked)
+			if blocked {
+				deltaContent := resp.Content
+				if iter == 0 && toolPreamble != "" {
+					deltaContent = toolPreamble
+				}
+				messages, historyDelta = appendAssistantToolCallMessages(messages, historyDelta, calls, resp.Content, deltaContent)
+				messages, historyDelta = appendBlockedToolResults(messages, historyDelta, calls, thrashResult)
+				loopBlocked = true
+				calls = nil
+				resp.Content = ""
+				break
+			}
+		}
+
+		// Build and append the assistant tool-call messages. On the first
+		// iteration, include the saved preamble text in persisted history while
+		// preserving the existing provider-facing assistant content semantics.
 		deltaContent := resp.Content
 		if iter == 0 && toolPreamble != "" {
 			deltaContent = toolPreamble
 		}
-		refs := make([]ToolCallRef, len(calls))
-		for i, c := range calls {
-			refs[i] = ToolCallToRef(c)
-		}
-		historyDelta = append(historyDelta, ConversationMessage{
-			Role:      "assistant",
-			Content:   deltaContent,
-			ToolCalls: refs,
-		})
-
-		// Append the assistant's tool-use message.
-		messages = append(messages, LLMMessage{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: calls,
-		})
+		messages, historyDelta = appendAssistantToolCallMessages(messages, historyDelta, calls, resp.Content, deltaContent)
 
 		// Execute tool calls using src-shaped batch partitioning: consecutive
 		// concurrency-safe calls run together, others run serially.
@@ -278,6 +295,8 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		}
 
 		if loopBlocked {
+			calls = nil
+			resp.Content = ""
 			break
 		}
 
@@ -364,8 +383,12 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			return resp, nil
 		}
 
-		// Clear preamble text for next iteration.
-		resp.Content = ""
+		// If the next response still requests tools but we have no remaining
+		// iterations to execute them, clear its preamble so the exhausted-loop
+		// path does not mistake tool-call text for a completed answer.
+		if iter+1 >= cfg.MaxIterations {
+			resp.Content = ""
+		}
 	}
 
 	// Loop exhausted or blocked — attempt force-summary.
@@ -448,6 +471,102 @@ func turnCancellationCause(ctx context.Context, err error) error {
 		}
 	}
 	return err
+}
+
+func toolPlanKeyFromToolCalls(calls []ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, call := range calls {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(toolloop.HashToolCall(call.Name, call.Args))
+	}
+	return b.String()
+}
+
+func appendAssistantToolCallMessages(messages []LLMMessage, historyDelta []ConversationMessage, calls []ToolCall, messageContent, deltaContent string) ([]LLMMessage, []ConversationMessage) {
+	refs := make([]ToolCallRef, len(calls))
+	for i, c := range calls {
+		refs[i] = ToolCallToRef(c)
+	}
+	historyDelta = append(historyDelta, ConversationMessage{
+		Role:      "assistant",
+		Content:   deltaContent,
+		ToolCalls: refs,
+	})
+	messages = append(messages, LLMMessage{
+		Role:      "assistant",
+		Content:   messageContent,
+		ToolCalls: calls,
+	})
+	return messages, historyDelta
+}
+
+func appendBlockedToolResults(messages []LLMMessage, historyDelta []ConversationMessage, calls []ToolCall, loopResult toolloop.Result) ([]LLMMessage, []ConversationMessage) {
+	content := "error: " + loopResult.Message
+	for _, call := range calls {
+		messages = append(messages, LLMMessage{
+			Role:       "tool",
+			Content:    content,
+			ToolCallID: call.ID,
+		})
+		historyDelta = append(historyDelta, ConversationMessage{
+			Role:       "tool",
+			Content:    content,
+			ToolCallID: call.ID,
+		})
+	}
+	return messages, historyDelta
+}
+
+func assistantTextThrashDecision(loopResult toolloop.Result, blocked bool) ToolLoopDecision {
+	return ToolLoopDecision{
+		Kind:       ToolDecisionKindLoopDetection,
+		Scope:      "assistant_text",
+		Pattern:    "self_correction",
+		Blocked:    blocked,
+		Level:      string(loopResult.Level),
+		Detector:   string(loopResult.Detector),
+		Count:      loopResult.Count,
+		WarningKey: loopResult.WarningKey,
+		Message:    loopResult.Message,
+	}
+}
+
+func emitAssistantTextThrashEvents(ctx context.Context, cfg AgenticLoopConfig, calls []ToolCall, loopResult toolloop.Result, blocked bool) {
+	sessionID := cfg.SessionID
+	if sessionID == "" {
+		sessionID = SessionIDFromContext(ctx)
+	}
+	decision := assistantTextThrashDecision(loopResult, blocked)
+	for _, call := range calls {
+		emitToolLifecycleEvent(cfg.ToolEventSink, ToolLifecycleEvent{
+			Type:       ToolLifecycleEventProgress,
+			TS:         time.Now().UnixMilli(),
+			SessionID:  sessionID,
+			TurnID:     cfg.TurnID,
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Trace:      cfg.Trace,
+			Data:       decision,
+		})
+		if blocked {
+			emitToolLifecycleEvent(cfg.ToolEventSink, ToolLifecycleEvent{
+				Type:       ToolLifecycleEventError,
+				TS:         time.Now().UnixMilli(),
+				SessionID:  sessionID,
+				TurnID:     cfg.TurnID,
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Trace:      cfg.Trace,
+				Error:      loopResult.Message,
+				Data:       decision,
+			})
+		}
+	}
 }
 
 func pruneContextBeforeLLM(messages []LLMMessage, logPrefix string, contextWindowTokens int) []LLMMessage {
@@ -655,6 +774,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		if loopEnabled && loopResult.Stuck {
 			decision := ToolLoopDecision{
 				Kind:           ToolDecisionKindLoopDetection,
+				Scope:          "tool_call",
 				Blocked:        loopResult.Level == toolloop.Critical,
 				Level:          string(loopResult.Level),
 				Detector:       string(loopResult.Detector),
@@ -934,11 +1054,17 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 
 	// Run the agentic loop.
 	maxIter := turn.MaxAgenticIterations // 0 = use model-tier default in RunAgenticLoop
+	var loopDetectionConfig *toolloop.Config
+	if provider, ok := turn.Executor.(loopDetectionConfigProvider); ok {
+		loopDetectionConfig = provider.LoopDetectionConfig()
+	}
+
 	resp, err := RunAgenticLoop(ctx, AgenticLoopConfig{
 		Provider:            provider,
 		InitialMessages:     messages,
 		Tools:               tools,
 		Executor:            turn.Executor,
+		LoopDetectionConfig: loopDetectionConfig,
 		Options:             opts,
 		MaxIterations:       maxIter,
 		ForceText:           true,

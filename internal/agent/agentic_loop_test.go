@@ -922,7 +922,7 @@ func TestRunAgenticLoop_LoopCritical_BlocksExecution(t *testing.T) {
 			errorEvent = &copy
 		}
 	}
-	if loopDecision.Kind != ToolDecisionKindLoopDetection || !loopDecision.Blocked || loopDecision.Level != string(toolloop.Critical) {
+	if loopDecision.Kind != ToolDecisionKindLoopDetection || loopDecision.Scope != "tool_call" || !loopDecision.Blocked || loopDecision.Level != string(toolloop.Critical) {
 		t.Fatalf("unexpected loop decision: %+v", loopDecision)
 	}
 	if errorEvent == nil {
@@ -939,6 +939,292 @@ func TestRunAgenticLoop_LoopCritical_BlocksExecution(t *testing.T) {
 			t.Fatalf("expected consistent session id, got event %+v", evt)
 		}
 	}
+}
+
+func TestRunAgenticLoop_TextThrashWarning_EmitsEventsAndExecutesTools(t *testing.T) {
+	provider := &mockChatProvider{responses: []*LLMResponse{
+		{Content: "Actually, I should check this first.", ToolCalls: []ToolCall{{ID: "tc1", Name: "lookup", Args: map[string]any{"q": "same"}}}, NeedsToolResults: true},
+		{Content: "Actually, let me check the same thing again.", ToolCalls: []ToolCall{{ID: "tc2", Name: "lookup", Args: map[string]any{"q": "same"}}}, NeedsToolResults: true},
+		{Content: "done", NeedsToolResults: false},
+	}}
+	executor := &mockToolExecutor{results: map[string]string{"lookup": "tool output"}}
+	capture := &capturedToolLifecycle{}
+	cfg := toolloop.DefaultConfig()
+	cfg.TextThrash.WarningThreshold = 2
+	cfg.TextThrash.CriticalThreshold = 4
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:            provider,
+		InitialMessages:     []LLMMessage{{Role: "user", Content: "lookup"}},
+		Executor:            executor,
+		MaxIterations:       5,
+		ForceText:           false,
+		LogPrefix:           "test-text-warning",
+		ToolEventSink:       capture.sink,
+		LoopDetectionConfig: &cfg,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("got %q, want done", resp.Content)
+	}
+	if got := executor.execCount.Load(); got != 2 {
+		t.Fatalf("warning-level text thrash should still execute tools, got %d executions", got)
+	}
+	decision, ok := findTextThrashDecision(capture.snapshot(), ToolLifecycleEventProgress, string(toolloop.Warning))
+	if !ok {
+		t.Fatalf("expected assistant-text warning decision, events=%+v", capture.snapshot())
+	}
+	if decision.Scope != "assistant_text" || decision.Pattern != "self_correction" || decision.Blocked || decision.Detector != string(toolloop.TextDecisionThrash) {
+		t.Fatalf("unexpected text-thrash warning decision: %+v", decision)
+	}
+}
+
+func TestRunAgenticLoop_TextThrashCritical_BlocksExecution(t *testing.T) {
+	provider := &mockChatProvider{responses: []*LLMResponse{
+		{Content: "Actually, I should inspect it.", ToolCalls: []ToolCall{{ID: "tc1", Name: "lookup", Args: map[string]any{"q": "same"}}}, NeedsToolResults: true},
+		{Content: "Actually, I should inspect it again.", ToolCalls: []ToolCall{{ID: "tc2", Name: "lookup", Args: map[string]any{"q": "same"}}}, NeedsToolResults: true},
+		{Content: "Actually, I should inspect it one more time.", ToolCalls: []ToolCall{{ID: "tc3", Name: "lookup", Args: map[string]any{"q": "same"}}}, NeedsToolResults: true},
+	}}
+	executor := &mockToolExecutor{results: map[string]string{"lookup": "tool output"}}
+	capture := &capturedToolLifecycle{}
+	cfg := toolloop.DefaultConfig()
+	cfg.TextThrash.WarningThreshold = 2
+	cfg.TextThrash.CriticalThreshold = 3
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:            provider,
+		InitialMessages:     []LLMMessage{{Role: "user", Content: "lookup"}},
+		Executor:            executor,
+		MaxIterations:       10,
+		ForceText:           false,
+		LogPrefix:           "test-text-critical",
+		ToolEventSink:       capture.sink,
+		LoopDetectionConfig: &cfg,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := executor.execCount.Load(); got != 2 {
+		t.Fatalf("critical text thrash should block third execution, got %d executions", got)
+	}
+	if resp.Outcome != TurnOutcomeBlocked || resp.StopReason != TurnStopReasonLoopBlocked {
+		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", resp.Outcome, resp.StopReason)
+	}
+	if !historyContainsToolResult(resp.HistoryDelta, "tc3", "CRITICAL: Repeated assistant self-correction") {
+		t.Fatalf("expected synthetic blocked result for tc3, history=%+v", resp.HistoryDelta)
+	}
+	decision, ok := findTextThrashDecision(capture.snapshot(), ToolLifecycleEventError, string(toolloop.Critical))
+	if !ok || !decision.Blocked || decision.Scope != "assistant_text" {
+		t.Fatalf("expected assistant-text critical error decision, got %+v ok=%v", decision, ok)
+	}
+	for _, evt := range capture.snapshot() {
+		if evt.Type == ToolLifecycleEventStart && evt.ToolCallID == "tc3" {
+			t.Fatalf("blocked text-thrash call should not start execution: %+v", evt)
+		}
+	}
+}
+
+func TestRunAgenticLoop_TextThrashCriticalForceSummary_DoesNotReexecuteBlockedCalls(t *testing.T) {
+	provider := &textThrashForceSummaryProvider{responses: []*LLMResponse{
+		{Content: "Actually, I should inspect it.", ToolCalls: []ToolCall{{ID: "tc1", Name: "lookup", Args: map[string]any{"q": "same"}}}, NeedsToolResults: true},
+		{Content: "Actually, I should inspect it again.", ToolCalls: []ToolCall{{ID: "tc2", Name: "lookup", Args: map[string]any{"q": "same"}}}, NeedsToolResults: true},
+		{Content: "Actually, I should inspect it one more time.", ToolCalls: []ToolCall{{ID: "tc3", Name: "lookup", Args: map[string]any{"q": "same"}}}, NeedsToolResults: true},
+	}}
+	executor := &mockToolExecutor{results: map[string]string{"lookup": "tool output"}}
+	cfg := toolloop.DefaultConfig()
+	cfg.TextThrash.WarningThreshold = 2
+	cfg.TextThrash.CriticalThreshold = 3
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:            provider,
+		InitialMessages:     []LLMMessage{{Role: "user", Content: "lookup"}},
+		Tools:               []ToolDefinition{{Name: "lookup"}},
+		Executor:            executor,
+		MaxIterations:       10,
+		ForceText:           true,
+		LogPrefix:           "test-text-force-summary",
+		LoopDetectionConfig: &cfg,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := executor.execCount.Load(); got != 2 {
+		t.Fatalf("force summary must not re-execute blocked pending call, got %d executions", got)
+	}
+	if resp.Outcome != TurnOutcomeForcedSummary || resp.StopReason != TurnStopReasonForcedSummary || resp.Content != "forced summary response" {
+		t.Fatalf("unexpected forced summary result: content=%q outcome=%q stop_reason=%q", resp.Content, resp.Outcome, resp.StopReason)
+	}
+	if !messagesContainToolResult(provider.summaryMessages, "tc3", "CRITICAL: Repeated assistant self-correction") {
+		t.Fatalf("summary call should include synthetic blocked tool result for tc3, messages=%+v", provider.summaryMessages)
+	}
+}
+
+func TestRunAgenticLoop_ToolLoopBlockedSecondIterationClearsPendingCalls(t *testing.T) {
+	makeResponses := func() []*LLMResponse {
+		return []*LLMResponse{
+			{ToolCalls: []ToolCall{{ID: "tc1", Name: "lookup"}}, NeedsToolResults: true},
+			{Content: "Actually, retrying with the same tool.", ToolCalls: []ToolCall{{ID: "tc2", Name: "lookup"}}, NeedsToolResults: true},
+		}
+	}
+
+	t.Run("force summary does not reexecute current blocked call", func(t *testing.T) {
+		provider := &textThrashForceSummaryProvider{responses: makeResponses()}
+		var executions atomic.Int32
+		executor := toolExecutorFunc(func(_ context.Context, call ToolCall) (string, error) {
+			executions.Add(1)
+			if call.ID == "tc2" {
+				return "", fmt.Errorf("CRITICAL: tool loop detected")
+			}
+			return "tool output", nil
+		})
+
+		resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+			Provider:        provider,
+			InitialMessages: []LLMMessage{{Role: "user", Content: "lookup"}},
+			Tools:           []ToolDefinition{{Name: "lookup"}},
+			Executor:        executor,
+			MaxIterations:   10,
+			ForceText:       true,
+			LogPrefix:       "test-tool-block-force-summary",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := executions.Load(); got != 2 {
+			t.Fatalf("blocked current call should not be executed again by forceSummary, got %d executions", got)
+		}
+		if resp.Outcome != TurnOutcomeForcedSummary || resp.StopReason != TurnStopReasonForcedSummary {
+			t.Fatalf("unexpected forced summary classification: outcome=%q stop_reason=%q", resp.Outcome, resp.StopReason)
+		}
+		if !messagesContainToolResult(provider.summaryMessages, "tc2", "CRITICAL: tool loop detected") {
+			t.Fatalf("summary call should include existing blocked tool result for tc2, messages=%+v", provider.summaryMessages)
+		}
+	})
+
+	t.Run("no force summary returns blocked failure instead of tool preamble", func(t *testing.T) {
+		provider := &mockChatProvider{responses: makeResponses()}
+		var executions atomic.Int32
+		executor := toolExecutorFunc(func(_ context.Context, call ToolCall) (string, error) {
+			executions.Add(1)
+			if call.ID == "tc2" {
+				return "", fmt.Errorf("CRITICAL: tool loop detected")
+			}
+			return "tool output", nil
+		})
+
+		resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+			Provider:        provider,
+			InitialMessages: []LLMMessage{{Role: "user", Content: "lookup"}},
+			Executor:        executor,
+			MaxIterations:   10,
+			ForceText:       false,
+			LogPrefix:       "test-tool-block-no-summary",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := executions.Load(); got != 2 {
+			t.Fatalf("expected two executions before block, got %d", got)
+		}
+		if resp.Outcome != TurnOutcomeBlocked || resp.StopReason != TurnStopReasonLoopBlocked {
+			t.Fatalf("unexpected blocked classification: outcome=%q stop_reason=%q content=%q", resp.Outcome, resp.StopReason, resp.Content)
+		}
+		if resp.Content == "Actually, retrying with the same tool." {
+			t.Fatal("blocked loop returned tool-call preamble as final answer")
+		}
+	})
+}
+
+func TestRunAgenticLoop_TextThrashToolPlanChangeResetsStreak(t *testing.T) {
+	provider := &mockChatProvider{responses: []*LLMResponse{
+		{Content: "Actually, I should inspect A.", ToolCalls: []ToolCall{{ID: "tc1", Name: "lookup", Args: map[string]any{"q": "a"}}}, NeedsToolResults: true},
+		{Content: "Actually, I should inspect B.", ToolCalls: []ToolCall{{ID: "tc2", Name: "lookup", Args: map[string]any{"q": "b"}}}, NeedsToolResults: true},
+		{Content: "Actually, I should inspect A again.", ToolCalls: []ToolCall{{ID: "tc3", Name: "lookup", Args: map[string]any{"q": "a"}}}, NeedsToolResults: true},
+		{Content: "done", NeedsToolResults: false},
+	}}
+	executor := &mockToolExecutor{results: map[string]string{"lookup": "tool output"}}
+	capture := &capturedToolLifecycle{}
+	cfg := toolloop.DefaultConfig()
+	cfg.TextThrash.WarningThreshold = 2
+	cfg.TextThrash.CriticalThreshold = 3
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:            provider,
+		InitialMessages:     []LLMMessage{{Role: "user", Content: "lookup"}},
+		Executor:            executor,
+		MaxIterations:       10,
+		ForceText:           false,
+		LogPrefix:           "test-text-reset",
+		ToolEventSink:       capture.sink,
+		LoopDetectionConfig: &cfg,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("got %q, want done", resp.Content)
+	}
+	if got := executor.execCount.Load(); got != 3 {
+		t.Fatalf("tool-plan changes should keep execution flowing, got %d executions", got)
+	}
+	if decision, ok := findTextThrashDecision(capture.snapshot(), ToolLifecycleEventProgress, string(toolloop.Warning)); ok {
+		t.Fatalf("tool-plan changes should reset streak; unexpected decision %+v", decision)
+	}
+}
+
+func findTextThrashDecision(events []ToolLifecycleEvent, eventType ToolLifecycleEventType, level string) (ToolLoopDecision, bool) {
+	for _, evt := range events {
+		if evt.Type != eventType {
+			continue
+		}
+		decision, ok := evt.Data.(ToolLoopDecision)
+		if !ok || decision.Scope != "assistant_text" {
+			continue
+		}
+		if level == "" || decision.Level == level {
+			return decision, true
+		}
+	}
+	return ToolLoopDecision{}, false
+}
+
+func historyContainsToolResult(history []ConversationMessage, toolCallID, needle string) bool {
+	for _, msg := range history {
+		if msg.Role == "tool" && msg.ToolCallID == toolCallID && strings.Contains(msg.Content, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func messagesContainToolResult(messages []LLMMessage, toolCallID, needle string) bool {
+	for _, msg := range messages {
+		if msg.Role == "tool" && msg.ToolCallID == toolCallID && strings.Contains(msg.Content, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+type textThrashForceSummaryProvider struct {
+	responses       []*LLMResponse
+	callCount       int
+	summaryMessages []LLMMessage
+}
+
+func (p *textThrashForceSummaryProvider) Chat(_ context.Context, messages []LLMMessage, tools []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
+	if tools == nil {
+		p.summaryMessages = append([]LLMMessage(nil), messages...)
+		return &LLMResponse{Content: "forced summary response"}, nil
+	}
+	if p.callCount >= len(p.responses) {
+		return &LLMResponse{Content: "unexpected completion", NeedsToolResults: false}, nil
+	}
+	resp := p.responses[p.callCount]
+	p.callCount++
+	return resp, nil
 }
 
 func TestRunAgenticLoop_MaxIterationsExhausted(t *testing.T) {
