@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -72,6 +73,9 @@ type Turn struct {
 	// ToolEventSink receives start/progress/result/error events emitted by the
 	// shared tool loop. Leave nil when runtime tool events are not needed.
 	ToolEventSink ToolLifecycleSink
+	// RuntimeEventSink receives canonical runtime lifecycle events spanning
+	// provider streaming, tool lifecycle, transcript, and usage surfaces.
+	RuntimeEventSink RuntimeEventSink
 	// ContextWindowTokens is the approximate context window available to the
 	// provider. Shared history/tool-result guards use this to bound prompt size.
 	ContextWindowTokens int
@@ -87,6 +91,11 @@ type Turn struct {
 	LastAssistantTime time.Time
 	// HookInvoker emits OpenClaw before_tool_call/after_tool_call hooks.
 	HookInvoker *pluginhooks.HookInvoker
+	// PostSamplingHooks run after provider sampling/tool execution has produced
+	// a complete TurnResult. Hooks are called at the natural turn boundary and
+	// must not block waiting for future user input; use them to enqueue
+	// best-effort post-turn work such as autonomous session-memory extraction.
+	PostSamplingHooks []PostSamplingHook
 
 	// SteeringDrain non-blockingly returns additional user input that arrived
 	// while this turn was active. Agentic loops drain it at model boundaries.
@@ -276,6 +285,22 @@ type Runtime interface {
 	ProcessTurn(context.Context, Turn) (TurnResult, error)
 }
 
+// PostSamplingHook observes a completed turn after model sampling and tool
+// execution have settled. Implementations should return quickly or enqueue
+// asynchronous work; runtime calls hooks only for successful turns.
+type PostSamplingHook interface {
+	AfterSampling(context.Context, Turn, TurnResult)
+}
+
+// PostSamplingHookFunc adapts a function into a PostSamplingHook.
+type PostSamplingHookFunc func(context.Context, Turn, TurnResult)
+
+func (f PostSamplingHookFunc) AfterSampling(ctx context.Context, turn Turn, result TurnResult) {
+	if f != nil {
+		f(ctx, turn, result)
+	}
+}
+
 // StreamingRuntime extends Runtime with incremental text delivery.
 // Implementations call onChunk for each text token (or small group) as it
 // arrives from the provider, enabling real-time display of partial responses.
@@ -335,6 +360,7 @@ func (r *ProviderRuntime) Filtered(allowed map[string]bool) Runtime {
 }
 
 func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResult, error) {
+	turn.ToolEventSink = toolLifecycleSinkForRuntime(turn.ToolEventSink, turn.RuntimeEventSink)
 	ctx = ensureMutationTrackingContext(ctx)
 	turn.UserText = strings.TrimSpace(turn.UserText)
 	if turn.UserText == "" {
@@ -362,7 +388,13 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 	if err != nil {
 		return TurnResult{}, turnCancellationCause(ctx, err)
 	}
-	return r.buildResult(ctx, gen, trackedTools)
+	result, err := r.buildResult(ctx, turn, gen, trackedTools)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	emitTurnUsageRuntimeEvent(turn, result.Usage)
+	runPostSamplingHooks(ctx, turn, result)
+	return result, nil
 }
 
 // ProcessTurnStreaming processes a turn with incremental text delivery.
@@ -371,6 +403,8 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 // the full text is delivered in one onChunk call.  Tool calls are executed
 // after streaming completes using the configured ToolExecutor.
 func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, onChunk func(text string)) (TurnResult, error) {
+	turn.ToolEventSink = toolLifecycleSinkForRuntime(turn.ToolEventSink, turn.RuntimeEventSink)
+	onChunk = runtimeEventStreamingCallback(turn, onChunk)
 	ctx = ensureMutationTrackingContext(ctx)
 	turn.UserText = strings.TrimSpace(turn.UserText)
 	if turn.UserText == "" {
@@ -426,11 +460,51 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		}
 	}
 
-	return r.buildResult(ctx, gen, trackedTools)
+	result, err := r.buildResult(ctx, turn, gen, trackedTools)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	emitTurnUsageRuntimeEvent(turn, result.Usage)
+	runPostSamplingHooks(ctx, turn, result)
+	return result, nil
+}
+
+func runtimeEventStreamingCallback(turn Turn, onChunk func(text string)) func(string) {
+	if turn.RuntimeEventSink == nil {
+		return onChunk
+	}
+	return func(text string) {
+		if onChunk != nil {
+			onChunk(text)
+		}
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{
+			Type:      RuntimeEventAssistantDelta,
+			SessionID: turn.SessionID,
+			TurnID:    turn.TurnID,
+			Delta:     text,
+			Trace:     turn.Trace,
+		})
+	}
+}
+
+func emitTurnUsageRuntimeEvent(turn Turn, usage TurnUsage) {
+	if turn.RuntimeEventSink == nil || !hasUsage(usage) {
+		return
+	}
+	emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{
+		Type:      RuntimeEventUsage,
+		SessionID: turn.SessionID,
+		TurnID:    turn.TurnID,
+		Usage:     usage,
+		Trace:     turn.Trace,
+	})
 }
 
 // buildResult executes any tool calls from gen and assembles the TurnResult.
-func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult, tools ToolExecutor) (TurnResult, error) {
+func (r *ProviderRuntime) buildResult(ctx context.Context, turn Turn, gen ProviderResult, tools ToolExecutor) (TurnResult, error) {
 	result := TurnResult{
 		Text:         strings.TrimSpace(gen.Text),
 		ToolTraces:   nil,
@@ -451,11 +525,11 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult, t
 			result.ToolTraces = append(result.ToolTraces, trace)
 			continue
 		}
-		value, err := tools.Execute(ctx, call)
-		if err != nil {
-			trace.Error = err.Error()
+		execResult := executeSingleToolCall(ctx, tools, call, turn.SessionID, turn.TurnID, turn.ToolEventSink, turn.Trace, turn.HookInvoker)
+		if strings.HasPrefix(execResult.Content, "error: ") {
+			trace.Error = strings.TrimPrefix(execResult.Content, "error: ")
 		} else {
-			trace.Result = value
+			trace.Result = execResult.Content
 		}
 		result.ToolTraces = append(result.ToolTraces, trace)
 	}
@@ -496,6 +570,24 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, gen ProviderResult, t
 		}
 	}
 	return result, nil
+}
+
+func runPostSamplingHooks(ctx context.Context, turn Turn, result TurnResult) {
+	for _, hook := range turn.PostSamplingHooks {
+		if hook == nil {
+			continue
+		}
+		hook := hook
+		hookCtx := context.WithoutCancel(ctx)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("post-sampling hook panic session=%s turn=%s panic=%v", turn.SessionID, turn.TurnID, r)
+				}
+			}()
+			hook.AfterSampling(hookCtx, turn, result)
+		}()
+	}
 }
 
 func inferTurnClassification(result TurnResult) (TurnOutcome, TurnStopReason) {

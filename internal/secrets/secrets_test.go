@@ -205,11 +205,79 @@ func TestStore_envOverrideDotenv(t *testing.T) {
 	}
 }
 
+type memoryBackend struct {
+	items map[string]string
+	fail  bool
+}
+
+func (m *memoryBackend) Name() string { return "memory" }
+func (m *memoryBackend) Get(key string) (string, bool, error) {
+	if m.fail {
+		return "", false, os.ErrPermission
+	}
+	v, ok := m.items[key]
+	return v, ok, nil
+}
+func (m *memoryBackend) Set(key, value string) error {
+	if m.fail {
+		return os.ErrPermission
+	}
+	if m.items == nil {
+		m.items = map[string]string{}
+	}
+	m.items[key] = value
+	return nil
+}
+func (m *memoryBackend) Delete(key string) error {
+	delete(m.items, key)
+	return nil
+}
+
+func TestStore_mcpCredentialUsesBackendAndRemovesFallback(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "mcp-auth.json")
+	backend := &memoryBackend{items: map[string]string{}}
+	s := NewStore(nil)
+	s.SetMCPAuthPath(authPath)
+	s.SetBackend(backend)
+	if err := s.PutMCPCredential("demo", MCPAuthCredential{AccessToken: "token-a"}); err != nil {
+		t.Fatalf("PutMCPCredential error: %v", err)
+	}
+	if _, err := os.Stat(authPath); !os.IsNotExist(err) {
+		t.Fatalf("expected no plaintext fallback file, stat err=%v", err)
+	}
+	reloaded := NewStore(nil)
+	reloaded.SetMCPAuthPath(authPath)
+	reloaded.SetBackend(backend)
+	if _, warnings := reloaded.Reload(); len(warnings) != 0 {
+		t.Fatalf("unexpected reload warnings: %v", warnings)
+	}
+	got, ok := reloaded.GetMCPCredential("demo")
+	if !ok || got.AccessToken != "token-a" {
+		t.Fatalf("unexpected backend credential: %#v ok=%v", got, ok)
+	}
+}
+
+func TestStore_mcpCredentialFallsBackWhenBackendFails(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "mcp-auth.json")
+	s := NewStore(nil)
+	s.SetMCPAuthPath(authPath)
+	s.SetBackend(&memoryBackend{fail: true})
+	if err := s.PutMCPCredential("demo", MCPAuthCredential{AccessToken: "token-a"}); err != nil {
+		t.Fatalf("PutMCPCredential error: %v", err)
+	}
+	if _, err := os.Stat(authPath); err != nil {
+		t.Fatalf("expected plaintext fallback file: %v", err)
+	}
+}
+
 func TestStore_mcpCredentialPersistence(t *testing.T) {
 	dir := t.TempDir()
 	authPath := filepath.Join(dir, "mcp-auth.json")
 	s := NewStore(nil)
 	s.SetMCPAuthPath(authPath)
+	s.SetBackend(nil)
 	expiry := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
 	if err := s.PutMCPCredential("demo", MCPAuthCredential{
 		AccessToken:  "token-a",
@@ -230,6 +298,7 @@ func TestStore_mcpCredentialPersistence(t *testing.T) {
 	}
 	reloaded := NewStore(nil)
 	reloaded.SetMCPAuthPath(authPath)
+	reloaded.SetBackend(nil)
 	if _, warnings := reloaded.Reload(); len(warnings) != 0 {
 		t.Fatalf("unexpected reload warnings: %v", warnings)
 	}

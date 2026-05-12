@@ -221,6 +221,13 @@ var adminDispatchRegistry = []struct {
 		MethodACPPeers,
 		MethodACPDispatch,
 		MethodACPPipeline,
+		MethodACPSessionInit,
+		MethodACPSessionRun,
+		MethodACPSessionSpawn,
+		MethodACPSessionCancel,
+		MethodACPSessionClose,
+		MethodACPSessionStatus,
+		MethodACPManagerStatus,
 	}},
 }
 

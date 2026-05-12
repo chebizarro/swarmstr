@@ -28,6 +28,13 @@ type stubPlugin struct {
 	lastOnMessage func(sdk.InboundChannelMessage)
 }
 
+type mapResolver map[string]string
+
+func (r mapResolver) Resolve(ref string) (string, bool) {
+	v, ok := r[ref]
+	return v, ok
+}
+
 func (p *stubPlugin) ID() string                   { return "stub" }
 func (p *stubPlugin) Type() string                 { return "stub" }
 func (p *stubPlugin) ConfigSchema() map[string]any { return nil }
@@ -217,6 +224,71 @@ func TestEncryptedChannelPlugin_NoKeys_PlaintextPassthrough(t *testing.T) {
 	inner.lastOnMessage(sdk.InboundChannelMessage{Text: "world", SenderID: "x"})
 	if received != "world" {
 		t.Errorf("expected plaintext inbound %q, got %q", "world", received)
+	}
+}
+
+func TestEncryptedChannelPlugin_WithKeys_FailClosedOnPlaintextInbound(t *testing.T) {
+	inner := &stubPlugin{handle: &stubHandle{id: "ch-fail-closed"}}
+	plugin := secure.NewEncryptedChannelPlugin(inner)
+
+	bobPubHex, err := secure.PubKeyHexFromPrivKeyHex(bobPrivHex)
+	if err != nil {
+		t.Fatalf("derive bob pubkey: %v", err)
+	}
+
+	called := false
+	cfg := map[string]any{
+		"e2e_private_key": alicePrivHex,
+		"e2e_peer_pubkey": bobPubHex,
+		"e2e.required":    true,
+	}
+	_, err = plugin.Connect(context.Background(), "ch-fail-closed", cfg, func(msg sdk.InboundChannelMessage) {
+		called = true
+	})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	inner.lastOnMessage(sdk.InboundChannelMessage{Text: "plaintext downgrade", SenderID: "mallory"})
+	if called {
+		t.Fatal("plaintext inbound should be dropped when E2E is configured")
+	}
+}
+
+func TestEncryptedChannelPlugin_RequiredMissingKeysReturnsError(t *testing.T) {
+	inner := &stubPlugin{handle: &stubHandle{id: "ch-required"}}
+	plugin := secure.NewEncryptedChannelPlugin(inner)
+
+	_, err := plugin.Connect(context.Background(), "ch-required", map[string]any{"e2e.required": true}, func(sdk.InboundChannelMessage) {})
+	if err == nil {
+		t.Fatal("expected error when e2e.required is true without keys")
+	}
+}
+
+func TestEncryptedChannelPlugin_ResolvesE2EKeysFromSecrets(t *testing.T) {
+	inner := &stubPlugin{handle: &stubHandle{id: "ch-secrets"}}
+	bobPubHex, err := secure.PubKeyHexFromPrivKeyHex(bobPrivHex)
+	if err != nil {
+		t.Fatalf("derive bob pubkey: %v", err)
+	}
+	plugin := secure.NewEncryptedChannelPluginWithSecrets(inner, mapResolver{
+		"env:E2E_PRIVATE": alicePrivHex,
+		"env:E2E_PEER":    bobPubHex,
+	})
+
+	handle, err := plugin.Connect(context.Background(), "ch-secrets", map[string]any{
+		"e2e_private_key": "env:E2E_PRIVATE",
+		"e2e_peer_pubkey": "env:E2E_PEER",
+		"e2e.required":    true,
+	}, func(sdk.InboundChannelMessage) {})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := handle.Send(context.Background(), "secret via resolver"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if len(inner.handle.lastSent) < 7 || inner.handle.lastSent[:6] != "nip44:" {
+		t.Errorf("expected nip44: prefix in %q", inner.handle.lastSent)
 	}
 }
 

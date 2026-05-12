@@ -108,6 +108,30 @@ func TestWindowedEngineSlidingWindow(t *testing.T) {
 	}
 }
 
+type testActiveRecallProvider struct{}
+
+func (testActiveRecallProvider) AssembleActiveRecall(ctx context.Context, sessionID string, latest ctxengine.Message, recent []ctxengine.Message, maxChars int) (string, error) {
+	return "## Active Memory Recall\n- remembered context", nil
+}
+
+func TestWindowedEngineActiveRecallProvider(t *testing.T) {
+	eng, err := ctxengine.NewEngine("windowed", "sess-active", map[string]any{
+		"active_recall": testActiveRecallProvider{},
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer eng.Close()
+	_, _ = eng.Ingest(context.Background(), "sess-active", ctxengine.Message{Role: "user", Content: "what should I remember?"})
+	assembled, err := eng.Assemble(context.Background(), "sess-active", 0)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if assembled.SystemPromptAddition == "" {
+		t.Fatal("expected active recall prompt addition")
+	}
+}
+
 func TestListContextEngines(t *testing.T) {
 	engines := ctxengine.ListContextEngines()
 	found := false

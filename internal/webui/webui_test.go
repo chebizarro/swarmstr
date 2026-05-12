@@ -71,6 +71,25 @@ func TestHandler_DefaultWSPath(t *testing.T) {
 	}
 }
 
+func TestHandler_IncludesMarkdownRenderingAssets(t *testing.T) {
+	h := Handler("/ws", "")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"marked.min.js", "purify.min.js", "highlight.min.js", "copy-code-btn", "renderMarkdown"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response body should contain %q", want)
+		}
+	}
+}
+
 func TestHandler_TokenIncludedForLoopback(t *testing.T) {
 	h := Handler("/ws", "secret-token-123")
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

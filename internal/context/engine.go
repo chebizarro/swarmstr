@@ -26,6 +26,12 @@ import (
 	"sync"
 )
 
+// ActiveRecallProvider optionally supplies per-turn memory context during
+// Assemble. Implementations should be fast and honor ctx cancellation.
+type ActiveRecallProvider interface {
+	AssembleActiveRecall(ctx context.Context, sessionID string, latest Message, recent []Message, maxChars int) (string, error)
+}
+
 // ─── Core types ───────────────────────────────────────────────────────────────
 
 // ToolCallRef identifies a tool invocation within an assistant message.
@@ -177,10 +183,11 @@ func (NoOpCompact) Compact(_ context.Context, _ string) (CompactResult, error) {
 // N messages without any compaction.
 type WindowedEngine struct {
 	NoOpCompact
-	mu        sync.Mutex
-	sessions  map[string][]Message
-	summaries map[string]string
-	maxMsgs   int
+	mu           sync.Mutex
+	sessions     map[string][]Message
+	summaries    map[string]string
+	maxMsgs      int
+	activeRecall ActiveRecallProvider
 }
 
 // NewWindowedEngine creates a WindowedEngine keeping up to maxMsgs messages per session.
@@ -189,6 +196,12 @@ func NewWindowedEngine(maxMsgs int) *WindowedEngine {
 		maxMsgs = 50
 	}
 	return &WindowedEngine{sessions: map[string][]Message{}, summaries: map[string]string{}, maxMsgs: maxMsgs}
+}
+
+func (e *WindowedEngine) SetActiveRecallProvider(provider ActiveRecallProvider) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.activeRecall = provider
 }
 
 func (e *WindowedEngine) Ingest(_ context.Context, sessionID string, msg Message) (IngestResult, error) {
@@ -211,21 +224,48 @@ func (e *WindowedEngine) Ingest(_ context.Context, sessionID string, msg Message
 	return IngestResult{Ingested: true}, nil
 }
 
-func (e *WindowedEngine) Assemble(_ context.Context, sessionID string, _ int) (AssembleResult, error) {
+func (e *WindowedEngine) Assemble(ctx context.Context, sessionID string, _ int) (AssembleResult, error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	msgs := make([]Message, len(e.sessions[sessionID]))
 	copy(msgs, e.sessions[sessionID])
+	summary := e.summaries[sessionID]
+	activeRecall := e.activeRecall
+	e.mu.Unlock()
+
 	estTokens := 0
 	for _, msg := range msgs {
 		estTokens += estimateMessageTokens(msg)
 	}
 	result := AssembleResult{Messages: msgs, EstimatedTokens: estTokens}
-	if summary := e.summaries[sessionID]; summary != "" {
+	if summary != "" {
 		result.SystemPromptAddition = summary
 		result.EstimatedTokens += (len(summary) + 3) / 4
 	}
+	if activeRecall != nil {
+		if latest, ok := latestUserMessage(msgs); ok {
+			recallText, err := activeRecall.AssembleActiveRecall(ctx, sessionID, latest, msgs, 0)
+			if err != nil {
+				return result, err
+			}
+			if recallText != "" {
+				if result.SystemPromptAddition != "" {
+					result.SystemPromptAddition += "\n\n"
+				}
+				result.SystemPromptAddition += recallText
+				result.EstimatedTokens += (len(recallText) + 3) / 4
+			}
+		}
+	}
 	return result, nil
+}
+
+func latestUserMessage(messages []Message) (Message, bool) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" && messages[i].Content != "" {
+			return messages[i], true
+		}
+	}
+	return Message{}, false
 }
 
 func (e *WindowedEngine) Bootstrap(_ context.Context, sessionID string, messages []Message) (BootstrapResult, error) {
@@ -250,6 +290,10 @@ func init() {
 		if v, ok := opts["max_messages"].(float64); ok {
 			maxMsgs = int(v)
 		}
-		return NewWindowedEngine(maxMsgs), nil
+		engine := NewWindowedEngine(maxMsgs)
+		if provider, ok := opts["active_recall"].(ActiveRecallProvider); ok {
+			engine.SetActiveRecallProvider(provider)
+		}
+		return engine, nil
 	})
 }

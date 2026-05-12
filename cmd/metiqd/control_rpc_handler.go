@@ -61,6 +61,7 @@ type controlRPCDeps struct {
 	sessionMemoryRuntime *sessionMemoryRuntime
 	acpPeers             *acppkg.PeerRegistry
 	acpDispatcher        *acppkg.Dispatcher
+	acpManager           *acppkg.Manager
 
 	// services provides access to the consolidated daemonServices struct.
 	// Extracted handler files and RPC sub-handlers can use this instead of
@@ -462,6 +463,96 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 			"results": out,
 			"text":    aggregate,
 		}}, nil
+
+	case methods.MethodACPSessionInit:
+		if h.deps.acpManager == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.init: ACP manager not configured")
+		}
+		var req acppkg.InitializeSessionInput
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.init: invalid params: %w", err)
+		}
+		handle, err := h.deps.acpManager.InitializeSession(ctx, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.init: %w", err)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "handle": handle}}, nil
+
+	case methods.MethodACPSessionRun:
+		if h.deps.acpManager == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.run: ACP manager not configured")
+		}
+		var req acppkg.RunSessionTurnInput
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.run: invalid params: %w", err)
+		}
+		events, err := h.deps.acpManager.RunTurn(ctx, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.run: %w", err)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "events": events}}, nil
+
+	case methods.MethodACPSessionSpawn:
+		if h.deps.acpManager == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.spawn: ACP manager not configured")
+		}
+		var req acppkg.SpawnSessionInput
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.spawn: invalid params: %w", err)
+		}
+		spawn, err := h.deps.acpManager.SpawnSession(ctx, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.spawn: %w", err)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "spawn": spawn}}, nil
+
+	case methods.MethodACPSessionCancel:
+		if h.deps.acpManager == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.cancel: ACP manager not configured")
+		}
+		var req acppkg.CancelSessionInput
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.cancel: invalid params: %w", err)
+		}
+		if err := h.deps.acpManager.CancelSession(ctx, req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.cancel: %w", err)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+
+	case methods.MethodACPSessionClose:
+		if h.deps.acpManager == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.close: ACP manager not configured")
+		}
+		var req acppkg.CloseSessionInput
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.close: invalid params: %w", err)
+		}
+		if err := h.deps.acpManager.CloseSession(ctx, req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.close: %w", err)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+
+	case methods.MethodACPSessionStatus:
+		if h.deps.acpManager == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.status: ACP manager not configured")
+		}
+		var req struct {
+			SessionKey string `json:"session_key"`
+		}
+		if err := json.Unmarshal(in.Params, &req); err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.status: invalid params: %w", err)
+		}
+		status, err := h.deps.acpManager.GetSessionStatus(ctx, req.SessionKey)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.session.status: %w", err)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "session": status}}, nil
+
+	case methods.MethodACPManagerStatus:
+		if h.deps.acpManager == nil {
+			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.manager.status: ACP manager not configured")
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "manager": h.deps.acpManager.Status(ctx)}}, nil
 
 	default:
 		return nostruntime.ControlRPCResult{}, fmt.Errorf("unknown method %q", method)

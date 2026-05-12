@@ -690,61 +690,7 @@ func (p *GoogleGeminiProvider) Generate(ctx context.Context, turn Turn) (Provide
 	return generateWithAgenticLoop(ctx, chatProvider, turn, "", "gemini")
 }
 
-// ─── Provider table for OpenAI-compatible endpoints ───────────────────────────
-
-// openAICompatProviders maps model prefixes / aliases to their base URL and env key name.
-// All of these use the OpenAI Chat Completions API format.
-var openAICompatProviders = []struct {
-	prefix  string // lowercase prefix (or exact alias) to match
-	alias   string // exact alias (e.g. "groq", "mistral")
-	base    string // default base URL
-	envKey  string // primary env var name for the API key
-	baseEnv string // optional env var that overrides base URL (for local servers)
-}{
-	{prefix: "grok-", alias: "xai", base: "https://api.x.ai/v1", envKey: "XAI_API_KEY"},
-	{prefix: "", alias: "groq", base: "https://api.groq.com/openai/v1", envKey: "GROQ_API_KEY"},
-	{prefix: "groq/", alias: "", base: "https://api.groq.com/openai/v1", envKey: "GROQ_API_KEY"},
-	{prefix: "mistral-", alias: "mistral", base: "https://api.mistral.ai/v1", envKey: "MISTRAL_API_KEY"},
-	{prefix: "", alias: "together", base: "https://api.together.xyz/v1", envKey: "TOGETHER_API_KEY"},
-	{prefix: "together/", alias: "", base: "https://api.together.xyz/v1", envKey: "TOGETHER_API_KEY"},
-	{prefix: "", alias: "openrouter", base: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY"},
-	{prefix: "openrouter/", alias: "", base: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY"},
-	// Ollama: local inference server with OpenAI-compatible API.
-	// Base URL defaults to http://localhost:11434/v1; override with OLLAMA_BASE_URL.
-	// No API key required for local Ollama (OLLAMA_API_KEY optional for remote).
-	{prefix: "ollama/", alias: "ollama", base: "http://localhost:11434/v1", envKey: "OLLAMA_API_KEY", baseEnv: "OLLAMA_BASE_URL"},
-	// LM Studio: OpenAI-compatible local server, typically on :1234.
-	{prefix: "lmstudio/", alias: "lmstudio", base: "http://localhost:1234/v1", envKey: "", baseEnv: "LMSTUDIO_BASE_URL"},
-	// Fireworks AI: fast inference for open-source models.
-	{prefix: "fireworks/", alias: "fireworks", base: "https://api.fireworks.ai/inference/v1", envKey: "FIREWORKS_API_KEY"},
-	// DeepInfra: affordable hosted inference.
-	{prefix: "deepinfra/", alias: "deepinfra", base: "https://api.deepinfra.com/v1/openai", envKey: "DEEPINFRA_API_KEY"},
-	// Perplexity: search-augmented chat.
-	{prefix: "pplx-", alias: "perplexity", base: "https://api.perplexity.ai", envKey: "PERPLEXITY_API_KEY"},
-}
-
-// resolveOpenAICompat checks whether a model string matches one of the known
-// OpenAI-compatible provider aliases/prefixes.  On match it returns the base URL
-// and env key name; otherwise returns empty strings.
-func resolveOpenAICompat(norm string) (baseURL, envKey string) {
-	for _, p := range openAICompatProviders {
-		matched := (p.alias != "" && norm == p.alias) ||
-			(p.prefix != "" && strings.HasPrefix(norm, p.prefix))
-		if !matched {
-			continue
-		}
-		base := p.base
-		// Allow base URL override via environment variable (e.g. OLLAMA_BASE_URL).
-		if p.baseEnv != "" {
-			if override := strings.TrimRight(strings.TrimSpace(os.Getenv(p.baseEnv)), "/"); override != "" {
-				base = override
-			}
-		}
-		return base, p.envKey
-	}
-	return "", ""
-}
-
+// OpenAI-compatible provider descriptors live in provider_registry.go.
 // NewProviderForModel constructs a Provider for the given model identifier.
 //
 //   - "echo"                              → EchoProvider (explicit dev/test construction)
@@ -829,17 +775,9 @@ func NewProviderForModel(model string) (Provider, error) {
 		}
 		return &CohereProvider{Model: strings.TrimSpace(model), APIKey: apiKey}, nil
 	}
-	// OpenAI-compatible providers by prefix/alias.
-	if baseURL, envKey := resolveOpenAICompat(norm); baseURL != "" {
-		apiKey, err := requireOpenAICompatibleCredential("OpenAI-compatible provider", strings.TrimSpace(model), "", envKey, baseURL)
-		if err != nil {
-			return nil, err
-		}
-		return &OpenAIChatProvider{
-			BaseURL: baseURL,
-			APIKey:  apiKey,
-			Model:   strings.TrimSpace(model),
-		}, nil
+	// OpenAI-compatible providers by registry descriptor prefix/alias.
+	if provider, matched, err := DefaultProviderRegistry().Build(model, ProviderOverride{}); matched {
+		return provider, err
 	}
 	// Provide a targeted hint for local model files (.gguf, .bin, etc.).
 	if strings.HasSuffix(norm, ".gguf") || strings.HasSuffix(norm, ".bin") {
@@ -1071,21 +1009,21 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 	isOpenAIClass := norm == "openai" || strings.HasPrefix(norm, "gpt-") ||
 		strings.HasPrefix(norm, "o1-") || strings.HasPrefix(norm, "o3-") || strings.HasPrefix(norm, "o4-")
 
-	compatBase, compatEnvKey := resolveOpenAICompat(norm)
-	if isOpenAIClass || compatBase != "" {
+	compatDesc, compatMatched := DefaultProviderRegistry().Match(norm)
+	if isOpenAIClass || compatMatched {
 		baseURL := overrideBaseURL
 		if baseURL == "" {
-			if compatBase != "" {
-				baseURL = compatBase
+			if compatMatched {
+				baseURL = compatDesc.resolvedBaseURL()
 			} else {
 				baseURL = "https://api.openai.com/v1"
 			}
 		}
 		envKey := "OPENAI_API_KEY"
 		providerName := "OpenAI"
-		if compatBase != "" {
-			envKey = compatEnvKey
-			providerName = "OpenAI-compatible provider"
+		if compatMatched {
+			envKey = compatDesc.APIKeyEnv
+			providerName = compatDesc.Name
 		}
 		apiKey, err := requireOpenAICompatibleCredential(providerName, effectiveModel, overrideAPIKey, envKey, baseURL)
 		if err != nil {

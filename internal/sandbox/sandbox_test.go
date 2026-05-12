@@ -17,13 +17,18 @@ func TestNew_DefaultDriver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New default: %v", err)
 	}
-	if s.Driver() != "nop" {
-		t.Errorf("expected driver=nop, got %q", s.Driver())
+	if s.Driver() != "docker" {
+		t.Errorf("expected driver=docker, got %q", s.Driver())
 	}
 }
 
-func TestNew_NopDriver(t *testing.T) {
-	s, err := sandbox.New(sandbox.Config{Driver: "nop"})
+func TestNew_NopDriverRequiresUnsafeOptIn(t *testing.T) {
+	_, err := sandbox.New(sandbox.Config{Driver: "nop"})
+	if err == nil {
+		t.Fatal("expected nop without allow_unsafe_nop to fail")
+	}
+
+	s, err := sandbox.New(sandbox.Config{Driver: "nop", AllowUnsafeNop: true})
 	if err != nil {
 		t.Fatalf("New nop: %v", err)
 	}
@@ -55,7 +60,7 @@ func TestNopSandbox_EchoCommand(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
 	}
-	s, _ := sandbox.New(sandbox.Config{})
+	s, _ := sandbox.New(sandbox.Config{Driver: "nop", AllowUnsafeNop: true})
 	res, err := s.Run(context.Background(), []string{"echo", "hello sandbox"}, nil, "")
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -69,13 +74,16 @@ func TestNopSandbox_EchoCommand(t *testing.T) {
 	if res.Driver != "nop" {
 		t.Errorf("driver: %q", res.Driver)
 	}
+	if !res.Unsafe {
+		t.Errorf("expected nop result to be marked unsafe")
+	}
 }
 
 func TestNopSandbox_ExitCode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
 	}
-	s, _ := sandbox.New(sandbox.Config{})
+	s, _ := sandbox.New(sandbox.Config{Driver: "nop", AllowUnsafeNop: true})
 	res, err := s.Run(context.Background(), []string{"sh", "-c", "exit 42"}, nil, "")
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -89,7 +97,7 @@ func TestNopSandbox_Timeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
 	}
-	s, _ := sandbox.New(sandbox.Config{TimeoutSeconds: 1})
+	s, _ := sandbox.New(sandbox.Config{Driver: "nop", AllowUnsafeNop: true, TimeoutSeconds: 1})
 	start := time.Now()
 	res, err := s.Run(context.Background(), []string{"sleep", "10"}, nil, "")
 	if err != nil {
@@ -105,7 +113,7 @@ func TestNopSandbox_Timeout(t *testing.T) {
 }
 
 func TestNopSandbox_EmptyCommand(t *testing.T) {
-	s, _ := sandbox.New(sandbox.Config{})
+	s, _ := sandbox.New(sandbox.Config{Driver: "nop", AllowUnsafeNop: true})
 	_, err := s.Run(context.Background(), nil, nil, "")
 	if err == nil {
 		t.Error("expected error for empty command")
@@ -116,7 +124,7 @@ func TestNopSandbox_Stderr(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
 	}
-	s, _ := sandbox.New(sandbox.Config{})
+	s, _ := sandbox.New(sandbox.Config{Driver: "nop", AllowUnsafeNop: true})
 	res, err := s.Run(context.Background(), []string{"sh", "-c", "echo err >&2"}, nil, "")
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -130,7 +138,7 @@ func TestNopSandbox_EnvOverride(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
 	}
-	s, _ := sandbox.New(sandbox.Config{})
+	s, _ := sandbox.New(sandbox.Config{Driver: "nop", AllowUnsafeNop: true})
 	res, err := s.Run(context.Background(), []string{"sh", "-c", "echo $MY_VAR"}, []string{"MY_VAR=testvalue"}, "")
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -145,7 +153,7 @@ func TestNopSandbox_OutputLimit(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 	// Limit to 100 bytes total.
-	s, _ := sandbox.New(sandbox.Config{MaxOutputBytes: 100})
+	s, _ := sandbox.New(sandbox.Config{Driver: "nop", AllowUnsafeNop: true, MaxOutputBytes: 100})
 	// Write 200 bytes to stdout.
 	res, err := s.Run(context.Background(), []string{"sh", "-c", "printf '%200s' x | tr ' ' 'x'"}, nil, "")
 	if err != nil {
@@ -162,6 +170,21 @@ func TestNewFromMap_EmptyMap(t *testing.T) {
 	s, err := sandbox.NewFromMap(nil)
 	if err != nil {
 		t.Fatalf("NewFromMap nil: %v", err)
+	}
+	if s.Driver() != "docker" {
+		t.Errorf("expected docker driver, got %q", s.Driver())
+	}
+}
+
+func TestNewFromMap_NopDriverRequiresExplicitConfig(t *testing.T) {
+	_, err := sandbox.NewFromMap(map[string]any{"driver": "nop"})
+	if err == nil {
+		t.Fatal("expected nop without allow_unsafe_nop to fail")
+	}
+
+	s, err := sandbox.NewFromMap(map[string]any{"driver": "nop", "allow_unsafe_nop": true})
+	if err != nil {
+		t.Fatalf("NewFromMap nop: %v", err)
 	}
 	if s.Driver() != "nop" {
 		t.Errorf("expected nop driver, got %q", s.Driver())
@@ -198,7 +221,7 @@ func TestNopSandbox_DefaultTimeoutPreventsRunaway(t *testing.T) {
 	// With no explicit timeout, NopSandbox should still enforce
 	// DefaultNopTimeoutSeconds. We verify by checking that a process
 	// runs within the sandbox context (which has a deadline).
-	s, _ := sandbox.New(sandbox.Config{})
+	s, _ := sandbox.New(sandbox.Config{Driver: "nop", AllowUnsafeNop: true})
 	// Run a fast command — it should succeed because the default timeout
 	// is much longer than the command duration.
 	res, err := s.Run(context.Background(), []string{"echo", "timeout-test"}, nil, "")

@@ -135,3 +135,60 @@ func TestLoadNodePlugin_unknownToolErrors(t *testing.T) {
 		t.Error("expected error for unknown tool")
 	}
 }
+
+func TestLoadNodePlugin_openClawSDKImportPackageEntrypointAndAsyncTool(t *testing.T) {
+	skipIfNoNode(t)
+
+	dir := t.TempDir()
+	dist := filepath.Join(dir, "dist")
+	if err := os.Mkdir(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"openclaw-node-fixture","version":"1.2.3","main":"dist/plugin.js"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pluginJS := `
+'use strict';
+const api = require('@openclaw/plugin-sdk');
+module.exports = {
+  description: 'OpenClaw package fixture',
+  async register() {
+    api.registerTool({
+      name: 'double',
+      description: 'double a number',
+      parameters: { type: 'object', properties: { n: { type: 'number' } } },
+      async execute(_id, args) {
+        await Promise.resolve();
+        return { value: args.n * 2, root: api.resolvePath('x').endsWith('/x') };
+      }
+    });
+  }
+};
+`
+	if err := os.WriteFile(filepath.Join(dist, "plugin.js"), []byte(pluginJS), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := LoadNodePlugin(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("LoadNodePlugin: %v", err)
+	}
+	defer p.Close()
+
+	mf := p.Manifest()
+	if mf.ID != "openclaw-node-fixture" || mf.Version != "1.2.3" {
+		t.Fatalf("unexpected manifest identity: %+v", mf)
+	}
+	if len(mf.Tools) != 1 || mf.Tools[0].Name != "double" {
+		t.Fatalf("unexpected tools: %+v", mf.Tools)
+	}
+
+	result, err := p.Invoke(context.Background(), sdk.InvokeRequest{Tool: "double", Args: map[string]any{"n": 21}})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	got, ok := result.Value.(map[string]any)
+	if !ok || got["value"] != float64(42) || got["root"] != true {
+		t.Fatalf("unexpected result: %#v", result.Value)
+	}
+}

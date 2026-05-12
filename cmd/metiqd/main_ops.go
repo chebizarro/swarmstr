@@ -288,10 +288,21 @@ func applySandboxRun(ctx context.Context, configState *runtimeConfigStore, req m
 	daemonCfg := configState.Get()
 	if daemonCfg.Extra != nil {
 		if rawSandbox, ok := daemonCfg.Extra["sandbox"].(map[string]any); ok {
-			cfg.Driver = getString(rawSandbox, "driver")
-			cfg.MemoryLimit = getString(rawSandbox, "memory_limit")
-			cfg.CPULimit = getString(rawSandbox, "cpu_limit")
-			cfg.DockerImage = getString(rawSandbox, "docker_image")
+			if v, ok := rawSandbox["driver"].(string); ok {
+				cfg.Driver = strings.TrimSpace(v)
+			}
+			if v, ok := rawSandbox["allow_unsafe_nop"].(bool); ok {
+				cfg.AllowUnsafeNop = v
+			}
+			if v, ok := rawSandbox["memory_limit"].(string); ok {
+				cfg.MemoryLimit = strings.TrimSpace(v)
+			}
+			if v, ok := rawSandbox["cpu_limit"].(string); ok {
+				cfg.CPULimit = strings.TrimSpace(v)
+			}
+			if v, ok := rawSandbox["docker_image"].(string); ok {
+				cfg.DockerImage = strings.TrimSpace(v)
+			}
 			if v, ok := rawSandbox["timeout_s"].(float64); ok {
 				cfg.TimeoutSeconds = int(v)
 			}
@@ -300,9 +311,16 @@ func applySandboxRun(ctx context.Context, configState *runtimeConfigStore, req m
 			}
 		}
 	}
-	// Request overrides.
-	if req.Driver != "" {
-		cfg.Driver = req.Driver
+	configuredDriver := strings.ToLower(strings.TrimSpace(cfg.Driver))
+
+	// Request overrides. Host execution may not be enabled by request alone;
+	// the daemon config must explicitly opt into driver="nop".
+	if strings.TrimSpace(req.Driver) != "" {
+		reqDriver := strings.ToLower(strings.TrimSpace(req.Driver))
+		if reqDriver == "nop" && configuredDriver != "nop" {
+			return nil, fmt.Errorf("sandbox.run: driver \"nop\" requires extra.sandbox.driver=\"nop\" and allow_unsafe_nop=true in daemon config")
+		}
+		cfg.Driver = reqDriver
 	}
 	if req.TimeoutSeconds > 0 {
 		cfg.TimeoutSeconds = req.TimeoutSeconds
@@ -324,6 +342,7 @@ func applySandboxRun(ctx context.Context, configState *runtimeConfigStore, req m
 		"exit_code": result.ExitCode,
 		"timed_out": result.TimedOut,
 		"driver":    result.Driver,
+		"unsafe":    result.Unsafe,
 	}, nil
 }
 

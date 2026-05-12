@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // streamingEchoProvider is a Provider that also implements StreamingProvider,
@@ -55,6 +56,40 @@ func TestProviderRuntime_ProcessTurn(t *testing.T) {
 	}
 	if result.Outcome != TurnOutcomeCompleted || result.StopReason != TurnStopReasonModelText {
 		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", result.Outcome, result.StopReason)
+	}
+}
+
+func TestProviderRuntime_ProcessTurn_RunsPostSamplingHooks(t *testing.T) {
+	rt, _ := NewProviderRuntime(EchoProvider{}, nil)
+	done := make(chan string, 1)
+	result, err := rt.ProcessTurn(context.Background(), Turn{
+		SessionID: "hook-session",
+		UserText:  "hello hook",
+		PostSamplingHooks: []PostSamplingHook{PostSamplingHookFunc(func(_ context.Context, turn Turn, result TurnResult) {
+			if turn.SessionID != "hook-session" {
+				done <- "bad session: " + turn.SessionID
+				return
+			}
+			if !strings.Contains(result.Text, "hello hook") {
+				done <- "bad result: " + result.Text
+				return
+			}
+			done <- "ok"
+		})},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text == "" {
+		t.Fatalf("expected result text")
+	}
+	select {
+	case got := <-done:
+		if got != "ok" {
+			t.Fatal(got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("post-sampling hook was not called")
 	}
 }
 
