@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
-	"metiq/internal/policy"
 )
 
 func TestLMStudioLive_DaemonHarness(t *testing.T) {
@@ -1152,13 +1151,12 @@ func (h *liveDaemonHarness) call(t *testing.T, method string, params map[string]
 	}
 	req.Header.Set("Authorization", "Bearer "+h.token)
 	req.Header.Set("Content-Type", "application/json")
-	if policy.IsSensitiveControlMethod(method) {
-		header, err := buildControlAdminAuthHeader(http.MethodPost, req.URL.String(), payload, h.adminSecret)
-		if err != nil {
-			t.Fatalf("sign %s request: %v", method, err)
-		}
-		req.Header.Set("X-Nostr-Authorization", header)
+	// Always use Nostr authorization for test harness to avoid relying on legacy token fallback
+	header, err := buildControlAdminAuthHeader(http.MethodPost, req.URL.String(), payload, h.adminSecret)
+	if err != nil {
+		t.Fatalf("sign %s request: %v", method, err)
 	}
+	req.Header.Set("X-Nostr-Authorization", header)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("call %s: %v", method, err)
@@ -1430,9 +1428,9 @@ func liveHarnessConfigJSONWithApprovals(relayURL, model, workspaceDir string, re
 		approvalsJSON = strings.Join(quoted, ", ")
 	}
 	enabledToolsJSON := `["my_identity", "write_file", "read_file", "file_tree", "memory_store", "memory_search", "bash_exec", "nostr_publish", "nostr_fetch"]`
-	controlJSON := fmt.Sprintf(`{"require_auth": %t}`, requireAuth)
+	controlJSON := fmt.Sprintf(`{"require_auth": %t, "legacy_token_fallback": true}`, requireAuth)
 	if strings.TrimSpace(adminPubKey) != "" {
-		controlJSON = fmt.Sprintf(`{"require_auth": %t, "admins": [{"pubkey": %q}]}`, requireAuth, adminPubKey)
+		controlJSON = fmt.Sprintf(`{"require_auth": %t, "legacy_token_fallback": true, "admins": [{"pubkey": %q}]}`, requireAuth, adminPubKey)
 	}
 	if len(enabledTools) > 0 {
 		quoted := make([]string, 0, len(enabledTools))
