@@ -1,7 +1,7 @@
 // Package toolloop implements tool-call loop detection for agentic LLM tool
 // loops.  It is a Go port of OpenClaw's tool-loop-detection.ts, providing
-// three detectors (generic repeat, known-poll no-progress, ping-pong) plus a
-// global circuit breaker.
+// tool-call detectors (generic repeat, known-poll no-progress, ping-pong), a
+// global circuit breaker, and per-turn assistant-text decision thrashing checks.
 //
 // Usage:
 //
@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,6 +37,7 @@ const (
 	KnownPollNoProgress  DetectorKind = "known_poll_no_progress"
 	GlobalCircuitBreaker DetectorKind = "global_circuit_breaker"
 	PingPong             DetectorKind = "ping_pong"
+	TextDecisionThrash   DetectorKind = "text_decision_thrash"
 )
 
 // Level indicates severity: warning allows the call but injects a message,
@@ -66,6 +68,7 @@ type Config struct {
 	CriticalThreshold             int
 	GlobalCircuitBreakerThreshold int
 	Detectors                     DetectorsConfig
+	TextThrash                    TextThrashConfig
 }
 
 // DetectorsConfig toggles individual detectors.
@@ -73,6 +76,14 @@ type DetectorsConfig struct {
 	GenericRepeat       bool
 	KnownPollNoProgress bool
 	PingPong            bool
+}
+
+// TextThrashConfig controls response-text decision-thrashing detection.
+type TextThrashConfig struct {
+	Enabled           bool
+	WarningThreshold  int
+	CriticalThreshold int
+	PrefixWindowChars int
 }
 
 // DefaultConfig returns the default configuration (enabled, with all detectors on).
@@ -88,6 +99,7 @@ func DefaultConfig() Config {
 			KnownPollNoProgress: true,
 			PingPong:            true,
 		},
+		TextThrash: defaultTextThrashConfig(),
 	}
 }
 
@@ -98,6 +110,9 @@ const (
 	defaultWarningThreshold              = 10
 	defaultCriticalThreshold             = 20
 	defaultGlobalCircuitBreakerThreshold = 30
+	defaultTextThrashWarningThreshold    = 2
+	defaultTextThrashCriticalThreshold   = 3
+	defaultTextThrashPrefixWindowChars   = 80
 )
 
 // ─── Call record ──────────────────────────────────────────────────────────────
@@ -120,9 +135,23 @@ type State struct {
 	history []CallRecord
 }
 
+// TextThrashState holds per-turn state for response-text decision-thrashing
+// detection. It is intentionally not stored in Registry because the detector
+// only reasons about repeated assistant responses within one agentic turn.
+type TextThrashState struct {
+	ConsecutiveCount  int
+	LastToolPlanKey   string
+	LastPatternFamily string
+}
+
 // NewState creates an empty loop detection state.
 func NewState() *State {
 	return &State{}
+}
+
+// NewTextThrashState creates empty per-turn text-thrash detector state.
+func NewTextThrashState() *TextThrashState {
+	return &TextThrashState{}
 }
 
 // Reset clears the history (e.g. on /new or session reset).
@@ -196,6 +225,34 @@ func hashOutcome(result, errStr string) string {
 
 // ─── Config resolution ────────────────────────────────────────────────────────
 
+func defaultTextThrashConfig() TextThrashConfig {
+	return TextThrashConfig{
+		Enabled:           true,
+		WarningThreshold:  defaultTextThrashWarningThreshold,
+		CriticalThreshold: defaultTextThrashCriticalThreshold,
+		PrefixWindowChars: defaultTextThrashPrefixWindowChars,
+	}
+}
+
+func resolveTextThrashConfig(cfg TextThrashConfig) TextThrashConfig {
+	if cfg == (TextThrashConfig{}) {
+		return defaultTextThrashConfig()
+	}
+	if cfg.WarningThreshold <= 0 {
+		cfg.WarningThreshold = defaultTextThrashWarningThreshold
+	}
+	if cfg.CriticalThreshold <= 0 {
+		cfg.CriticalThreshold = defaultTextThrashCriticalThreshold
+	}
+	if cfg.CriticalThreshold <= cfg.WarningThreshold {
+		cfg.CriticalThreshold = cfg.WarningThreshold + 1
+	}
+	if cfg.PrefixWindowChars <= 0 {
+		cfg.PrefixWindowChars = defaultTextThrashPrefixWindowChars
+	}
+	return cfg
+}
+
 func resolveConfig(cfg *Config) Config {
 	if cfg == nil {
 		return DefaultConfig()
@@ -219,6 +276,7 @@ func resolveConfig(cfg *Config) Config {
 	if c.GlobalCircuitBreakerThreshold <= c.CriticalThreshold {
 		c.GlobalCircuitBreakerThreshold = c.CriticalThreshold + 1
 	}
+	c.TextThrash = resolveTextThrashConfig(c.TextThrash)
 	return c
 }
 
@@ -346,6 +404,116 @@ func isKnownPollToolCall(toolName string, params map[string]any) bool {
 	}
 	action, _ := params["action"].(string)
 	return action == "poll" || action == "log"
+}
+
+func resetTextThrashState(state *TextThrashState) {
+	if state == nil {
+		return
+	}
+	state.ConsecutiveCount = 0
+	state.LastToolPlanKey = ""
+	state.LastPatternFamily = ""
+}
+
+func compactHash(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])[:12]
+}
+
+func normalizeTextThrashPrefix(text string, windowChars int) string {
+	text = strings.TrimSpace(strings.ToLower(text))
+	text = strings.TrimLeft(text, " \t\r\n>\\\"'`*_~-:;,.!?()[]{}")
+	text = strings.Join(strings.Fields(text), " ")
+	if windowChars <= 0 {
+		windowChars = defaultTextThrashPrefixWindowChars
+	}
+	runes := []rune(text)
+	if len(runes) > windowChars {
+		text = string(runes[:windowChars])
+	}
+	return text
+}
+
+func hasLeadingTextThrashMarker(prefix, marker string) bool {
+	if !strings.HasPrefix(prefix, marker) {
+		return false
+	}
+	if len(prefix) == len(marker) {
+		return true
+	}
+	next := prefix[len(marker)]
+	return next == ' ' || strings.ContainsRune(",.:;!?)]}-", rune(next))
+}
+
+func recognizeTextThrashPattern(prefix string) (family string, ok bool) {
+	markers := []string{
+		"actually",
+		"wait",
+		"hold on",
+		"on second thought",
+		"let me try again",
+		"let me correct",
+		"i should instead",
+	}
+	for _, marker := range markers {
+		if hasLeadingTextThrashMarker(prefix, marker) {
+			return "self_correction", true
+		}
+	}
+	return "", false
+}
+
+// ObserveTextThrash updates per-turn text-thrash state for one assistant
+// response and reports warning/critical severity when a self-correction preamble
+// repeats with an unchanged ordered tool plan. Callers should pass an empty
+// toolPlanKey when there are no planned tool calls, which resets the detector.
+func ObserveTextThrash(state *TextThrashState, assistantText string, toolPlanKey string, cfg *Config) Result {
+	if state == nil {
+		return Result{}
+	}
+	rc := resolveConfig(cfg)
+	if !rc.Enabled || !rc.TextThrash.Enabled {
+		resetTextThrashState(state)
+		return Result{}
+	}
+
+	toolPlanKey = strings.TrimSpace(toolPlanKey)
+	prefix := normalizeTextThrashPrefix(assistantText, rc.TextThrash.PrefixWindowChars)
+	patternFamily, ok := recognizeTextThrashPattern(prefix)
+	if toolPlanKey == "" || prefix == "" || !ok {
+		resetTextThrashState(state)
+		return Result{}
+	}
+
+	if state.LastToolPlanKey == toolPlanKey && state.LastPatternFamily == patternFamily {
+		state.ConsecutiveCount++
+	} else {
+		state.ConsecutiveCount = 1
+		state.LastToolPlanKey = toolPlanKey
+		state.LastPatternFamily = patternFamily
+	}
+
+	if state.ConsecutiveCount < rc.TextThrash.WarningThreshold {
+		return Result{}
+	}
+
+	level := Warning
+	messagePrefix := "WARNING"
+	messageSuffix := "Continue only if the tool plan is still useful; otherwise stop retrying and report the issue."
+	if state.ConsecutiveCount >= rc.TextThrash.CriticalThreshold {
+		level = Critical
+		messagePrefix = "CRITICAL"
+		messageSuffix = "Execution blocked to prevent repeated decision thrashing without tool-call progress."
+	}
+
+	return Result{
+		Stuck:      true,
+		Level:      level,
+		Detector:   TextDecisionThrash,
+		Count:      state.ConsecutiveCount,
+		Message:    fmt.Sprintf("%s: Repeated assistant self-correction text with an unchanged tool plan %d times. %s", messagePrefix, state.ConsecutiveCount, messageSuffix),
+		WarningKey: fmt.Sprintf("text_thrash:%s:%s", patternFamily, compactHash(toolPlanKey)),
+	}
 }
 
 // ─── Main detection function ──────────────────────────────────────────────────

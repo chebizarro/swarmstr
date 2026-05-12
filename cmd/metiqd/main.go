@@ -1564,6 +1564,32 @@ func main() {
 		// global circuit breaker. Ported from OpenClaw's tool-loop-detection.ts.
 		loopRegistry := toolloop.NewRegistry()
 		loopConfig := toolloop.DefaultConfig()
+
+		if raw, ok := os.LookupEnv("METIQ_TOOL_LOOP_TEXT_THRASH_ENABLED"); ok {
+			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+			if err != nil {
+				log.Printf("warn: invalid METIQ_TOOL_LOOP_TEXT_THRASH_ENABLED=%q; using default %t", raw, loopConfig.TextThrash.Enabled)
+			} else {
+				loopConfig.TextThrash.Enabled = parsed
+			}
+		}
+		if raw, ok := os.LookupEnv("METIQ_TOOL_LOOP_TEXT_THRASH_WARNING_THRESHOLD"); ok {
+			parsed, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil {
+				log.Printf("warn: invalid METIQ_TOOL_LOOP_TEXT_THRASH_WARNING_THRESHOLD=%q; using default %d", raw, loopConfig.TextThrash.WarningThreshold)
+			} else {
+				loopConfig.TextThrash.WarningThreshold = parsed
+			}
+		}
+		if raw, ok := os.LookupEnv("METIQ_TOOL_LOOP_TEXT_THRASH_CRITICAL_THRESHOLD"); ok {
+			parsed, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil {
+				log.Printf("warn: invalid METIQ_TOOL_LOOP_TEXT_THRASH_CRITICAL_THRESHOLD=%q; using default %d", raw, loopConfig.TextThrash.CriticalThreshold)
+			} else {
+				loopConfig.TextThrash.CriticalThreshold = parsed
+			}
+		}
+
 		tools.SetLoopDetection(loopRegistry, loopConfig)
 
 		tools.SetMiddleware(func(ctx context.Context, call agent.ToolCall, next func(context.Context, agent.ToolCall) (string, error)) (string, error) {

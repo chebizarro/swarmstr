@@ -65,6 +65,8 @@ type ToolSchedulerDecision struct {
 // or is blocked.
 type ToolLoopDecision struct {
 	Kind           ToolDecisionKind `json:"kind"`
+	Scope          string           `json:"scope,omitempty"`
+	Pattern        string           `json:"pattern,omitempty"`
 	Blocked        bool             `json:"blocked"`
 	Level          string           `json:"level,omitempty"`
 	Detector       string           `json:"detector,omitempty"`

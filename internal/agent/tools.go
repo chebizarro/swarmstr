@@ -144,6 +144,10 @@ type ToolExecutor interface {
 	Execute(context.Context, ToolCall) (string, error)
 }
 
+type loopDetectionConfigProvider interface {
+	LoopDetectionConfig() *toolloop.Config
+}
+
 type ToolFunc func(context.Context, map[string]any) (string, error)
 
 // ToolSemanticValidator is the Go analogue of src validateInput. It runs after
@@ -349,18 +353,25 @@ func (r *ToolRegistry) AddExecuteErrorHook(h ToolExecuteErrorHook) {
 	}
 }
 
-// SetLoopDetection configures per-session loop detection for shared agentic tool loops.
+// SetLoopDetection configures per-session loop detection for shared agentic loops.
+// The config covers both pre-execution tool-call loop detection and
+// assistant-text thrashing sensitivity used by the shared loop.
 func (r *ToolRegistry) SetLoopDetection(registry *toolloop.Registry, cfg toolloop.Config) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if registry == nil {
-		r.loopRegistry = nil
-		r.loopConfig = nil
-		return
-	}
 	cfgCopy := cfg
 	r.loopRegistry = registry
 	r.loopConfig = &cfgCopy
+}
+
+func (r *ToolRegistry) LoopDetectionConfig() *toolloop.Config {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.loopConfig == nil {
+		return nil
+	}
+	cfgCopy := *r.loopConfig
+	return &cfgCopy
 }
 
 func (r *ToolRegistry) Register(name string, fn ToolFunc) {

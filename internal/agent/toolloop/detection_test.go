@@ -280,3 +280,167 @@ func TestState_Reset(t *testing.T) {
 		t.Fatal("expected empty history after reset")
 	}
 }
+
+func TestObserveTextThrash_WarningSameToolPlan(t *testing.T) {
+	state := NewTextThrashState()
+	cfg := DefaultConfig()
+	cfg.TextThrash.WarningThreshold = 2
+	cfg.TextThrash.CriticalThreshold = 3
+	planKey := "read:{file:a}"
+
+	if r := ObserveTextThrash(state, "Actually, I should inspect the file first.", planKey, &cfg); r.Stuck {
+		t.Fatalf("first matching response should not warn: %+v", r)
+	}
+	r := ObserveTextThrash(state, "Wait, I need to inspect the file first.", planKey, &cfg)
+	if !r.Stuck {
+		t.Fatal("expected warning on repeated self-correction with unchanged plan")
+	}
+	if r.Level != Warning {
+		t.Fatalf("expected warning, got %s", r.Level)
+	}
+	if r.Detector != TextDecisionThrash {
+		t.Fatalf("expected text_decision_thrash, got %s", r.Detector)
+	}
+	if r.Count != 2 {
+		t.Fatalf("expected count 2, got %d", r.Count)
+	}
+	if r.WarningKey == "" {
+		t.Fatal("expected warning key")
+	}
+}
+
+func TestObserveTextThrash_CriticalSameToolPlan(t *testing.T) {
+	state := NewTextThrashState()
+	cfg := DefaultConfig()
+	cfg.TextThrash.WarningThreshold = 2
+	cfg.TextThrash.CriticalThreshold = 3
+	planKey := "read:{file:a}"
+
+	ObserveTextThrash(state, "Actually, I'll read it.", planKey, &cfg)
+	ObserveTextThrash(state, "Wait, I'll read it.", planKey, &cfg)
+	r := ObserveTextThrash(state, "Hold on, I'll read it.", planKey, &cfg)
+	if !r.Stuck {
+		t.Fatal("expected critical on third repeated self-correction")
+	}
+	if r.Level != Critical {
+		t.Fatalf("expected critical, got %s", r.Level)
+	}
+	if r.Detector != TextDecisionThrash {
+		t.Fatalf("expected text_decision_thrash, got %s", r.Detector)
+	}
+	if r.Count != 3 {
+		t.Fatalf("expected count 3, got %d", r.Count)
+	}
+}
+
+func TestObserveTextThrash_ResetOnToolPlanChange(t *testing.T) {
+	state := NewTextThrashState()
+	cfg := DefaultConfig()
+	cfg.TextThrash.WarningThreshold = 2
+	cfg.TextThrash.CriticalThreshold = 3
+
+	ObserveTextThrash(state, "Actually, I'll read it.", "plan-a", &cfg)
+	r := ObserveTextThrash(state, "Wait, I'll search instead.", "plan-b", &cfg)
+	if r.Stuck {
+		t.Fatalf("expected reset on changed tool plan, got %+v", r)
+	}
+	if state.ConsecutiveCount != 1 || state.LastToolPlanKey != "plan-b" {
+		t.Fatalf("expected streak to restart on plan-b, state=%+v", state)
+	}
+
+	r = ObserveTextThrash(state, "Actually, I'll search instead.", "plan-b", &cfg)
+	if !r.Stuck || r.Level != Warning || r.Count != 2 {
+		t.Fatalf("expected warning after second matching plan-b response, got %+v", r)
+	}
+}
+
+func TestObserveTextThrash_ResetOnNonCorrectionText(t *testing.T) {
+	state := NewTextThrashState()
+	cfg := DefaultConfig()
+	cfg.TextThrash.WarningThreshold = 2
+	cfg.TextThrash.CriticalThreshold = 3
+	planKey := "plan-a"
+
+	ObserveTextThrash(state, "Actually, I'll read it.", planKey, &cfg)
+	r := ObserveTextThrash(state, "I will read the file now.", planKey, &cfg)
+	if r.Stuck {
+		t.Fatalf("expected non-correction text to be ignored, got %+v", r)
+	}
+	if state.ConsecutiveCount != 0 || state.LastToolPlanKey != "" {
+		t.Fatalf("expected non-correction text to reset state, state=%+v", state)
+	}
+
+	r = ObserveTextThrash(state, "Actually, I'll read it.", planKey, &cfg)
+	if r.Stuck {
+		t.Fatalf("expected streak to restart after reset, got %+v", r)
+	}
+	if state.ConsecutiveCount != 1 {
+		t.Fatalf("expected restarted streak count 1, got %d", state.ConsecutiveCount)
+	}
+}
+
+func TestObserveTextThrash_PatternMatching(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.TextThrash.WarningThreshold = 1
+	cfg.TextThrash.CriticalThreshold = 3
+	planKey := "plan-a"
+
+	matches := []string{
+		"Actually, I should inspect this first.",
+		"  > **Wait,** let me inspect this first.",
+		"Hold on: let me inspect this first.",
+		"On second thought, I should inspect this first.",
+		"Let me try again with the same call.",
+		"Let me correct that with the same call.",
+		"I should instead inspect this first.",
+	}
+	for _, text := range matches {
+		state := NewTextThrashState()
+		r := ObserveTextThrash(state, text, planKey, &cfg)
+		if !r.Stuck || r.Level != Warning {
+			t.Fatalf("expected %q to match self-correction marker, got %+v", text, r)
+		}
+	}
+
+	nonMatches := []string{
+		"Waiting for the command to finish.",
+		"Here is the plan. Actually, I should inspect this first.",
+		"The actual result is ready.",
+	}
+	for _, text := range nonMatches {
+		state := NewTextThrashState()
+		r := ObserveTextThrash(state, text, planKey, &cfg)
+		if r.Stuck {
+			t.Fatalf("expected %q not to match self-correction marker, got %+v", text, r)
+		}
+	}
+}
+
+func TestObserveTextThrash_ConfigNormalization(t *testing.T) {
+	rc := resolveConfig(&Config{
+		Enabled: true,
+		TextThrash: TextThrashConfig{
+			Enabled:           true,
+			WarningThreshold:  0,
+			CriticalThreshold: 1,
+			PrefixWindowChars: 0,
+		},
+	})
+	if rc.TextThrash.WarningThreshold != defaultTextThrashWarningThreshold {
+		t.Fatalf("expected default warning threshold %d, got %d", defaultTextThrashWarningThreshold, rc.TextThrash.WarningThreshold)
+	}
+	if rc.TextThrash.CriticalThreshold != defaultTextThrashWarningThreshold+1 {
+		t.Fatalf("expected critical threshold adjusted above warning, got %d", rc.TextThrash.CriticalThreshold)
+	}
+	if rc.TextThrash.PrefixWindowChars != defaultTextThrashPrefixWindowChars {
+		t.Fatalf("expected default prefix window %d, got %d", defaultTextThrashPrefixWindowChars, rc.TextThrash.PrefixWindowChars)
+	}
+
+	rc = resolveConfig(&Config{Enabled: true})
+	if !rc.TextThrash.Enabled {
+		t.Fatal("expected zero nested text-thrash config to resolve to enabled defaults")
+	}
+	if rc.TextThrash.WarningThreshold != defaultTextThrashWarningThreshold || rc.TextThrash.CriticalThreshold != defaultTextThrashCriticalThreshold {
+		t.Fatalf("expected default text-thrash thresholds, got %+v", rc.TextThrash)
+	}
+}

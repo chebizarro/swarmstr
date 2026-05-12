@@ -612,6 +612,14 @@ func (e *mutationTrackingToolExecutor) PrepareLoopExecution(ctx context.Context,
 	return resolver.PrepareLoopExecution(ctx, call)
 }
 
+func (e *mutationTrackingToolExecutor) LoopDetectionConfig() *toolloop.Config {
+	provider, ok := e.base.(loopDetectionConfigProvider)
+	if !ok {
+		return nil
+	}
+	return provider.LoopDetectionConfig()
+}
+
 func (e *mutationTrackingToolExecutor) RecordLoopOutcome(ctx context.Context, call ToolCall, result, errStr string) {
 	resolver, ok := e.base.(interface {
 		RecordLoopOutcome(context.Context, ToolCall, string, string)
