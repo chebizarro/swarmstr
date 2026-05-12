@@ -46,8 +46,87 @@ func clearProviderCredentialEnv(t *testing.T) {
 	}
 }
 
+type providerRegistryTestProvider struct{}
+
+func (providerRegistryTestProvider) Generate(context.Context, Turn) (ProviderResult, error) {
+	return ProviderResult{Text: "ok"}, nil
+}
+
 func (s *stubRuntime) ProcessTurn(_ context.Context, turn Turn) (TurnResult, error) {
 	return TurnResult{Text: s.id + ":" + turn.UserText}, nil
+}
+
+// ─── ProviderRegistry ────────────────────────────────────────────────────────
+
+func TestProviderRegistry_RegisterMatchBuild(t *testing.T) {
+	reg := NewProviderRegistry()
+	err := reg.Register(ProviderDescriptor{
+		ID:       "custom",
+		Name:     "Custom Provider",
+		Aliases:  []string{"custom"},
+		Prefixes: []string{"custom/"},
+		AuthMethods: []AuthMethod{
+			AuthMethodAPIKey,
+		},
+		Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true},
+		Factory: func(model string, override ProviderOverride) (Provider, error) {
+			if model != "custom/model" {
+				t.Fatalf("factory got model %q", model)
+			}
+			if override.APIKey != "secret" {
+				t.Fatalf("factory got api key %q", override.APIKey)
+			}
+			return providerRegistryTestProvider{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	desc, ok := reg.Match("custom/model")
+	if !ok {
+		t.Fatal("expected prefix match")
+	}
+	if desc.ID != "custom" || !desc.Capabilities.SupportsTools || !desc.Capabilities.SupportsStreaming {
+		t.Fatalf("unexpected descriptor: %#v", desc)
+	}
+	provider, matched, err := reg.Build("custom/model", ProviderOverride{APIKey: "secret"})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !matched {
+		t.Fatal("expected registry build to match")
+	}
+	if _, ok := provider.(providerRegistryTestProvider); !ok {
+		t.Fatalf("expected test provider, got %T", provider)
+	}
+}
+
+func TestDefaultProviderRegistry_OpenAICompatibleDescriptor(t *testing.T) {
+	desc, ok := DefaultProviderRegistry().Match("groq/llama-3.1-70b-versatile")
+	if !ok {
+		t.Fatal("expected groq descriptor match")
+	}
+	if desc.ID != "groq" {
+		t.Fatalf("expected groq descriptor, got %q", desc.ID)
+	}
+	if desc.APIKeyEnv != "GROQ_API_KEY" {
+		t.Fatalf("expected GROQ_API_KEY, got %q", desc.APIKeyEnv)
+	}
+	if !desc.Capabilities.SupportsTools || !desc.Capabilities.SupportsStreaming || !desc.Capabilities.SupportsPromptCaching {
+		t.Fatalf("expected OpenAI-compatible capabilities, got %#v", desc.Capabilities)
+	}
+}
+
+func TestDefaultProviderRegistry_BaseURLEnvOverride(t *testing.T) {
+	t.Setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11435/v1/")
+	baseURL, envKey := resolveOpenAICompat("ollama/llama3")
+	if baseURL != "http://127.0.0.1:11435/v1" {
+		t.Fatalf("expected env base URL override, got %q", baseURL)
+	}
+	if envKey != "OLLAMA_API_KEY" {
+		t.Fatalf("expected OLLAMA_API_KEY, got %q", envKey)
+	}
 }
 
 // ─── AgentRuntimeRegistry ────────────────────────────────────────────────────

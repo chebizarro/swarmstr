@@ -16,7 +16,13 @@ const (
 )
 
 type SessionMemoryConfig struct {
-	Enabled                 bool
+	Enabled bool
+	// InitTokens and UpdateTokens are preferred trigger thresholds. When unset,
+	// the legacy character thresholds below are used with a conservative local
+	// estimate so callers do not need a provider tokenizer in the hot path.
+	InitTokens   int
+	UpdateTokens int
+	// InitChars and UpdateChars remain supported for config compatibility.
 	InitChars               int
 	UpdateChars             int
 	ToolCallsBetweenUpdates int
@@ -26,8 +32,10 @@ type SessionMemoryConfig struct {
 
 var DefaultSessionMemoryConfig = SessionMemoryConfig{
 	Enabled:                 true,
-	InitChars:               3_000,   // Lowered from 8K to be more responsive
-	UpdateChars:             1_500,   // Lowered from 4K
+	InitTokens:              750, // Roughly 3K chars; keeps extraction token-threshold based.
+	UpdateTokens:            375, // Roughly 1.5K chars.
+	InitChars:               3_000,
+	UpdateChars:             1_500,
 	ToolCallsBetweenUpdates: 3,
 	MaxExcerptChars:         16_000,
 	MaxOutputBytes:          MaxSessionMemoryBytes,
@@ -42,12 +50,12 @@ func ComputeScaledSessionMemoryConfig(base SessionMemoryConfig, contextWindowTok
 		return base
 	}
 	const (
-		baselineContext = 8_192    // 8K context baseline
-		maxContext      = 200_000  // Cap scaling at 200K
+		baselineContext = 8_192   // 8K context baseline
+		maxContext      = 200_000 // Cap scaling at 200K
 		minMultiplier   = 1.0
 		maxMultiplier   = 5.0
 	)
-	
+
 	// Clamp context window to scaling range
 	ctx := contextWindowTokens
 	if ctx < baselineContext {
@@ -56,12 +64,18 @@ func ComputeScaledSessionMemoryConfig(base SessionMemoryConfig, contextWindowTok
 	if ctx > maxContext {
 		ctx = maxContext
 	}
-	
+
 	// Linear interpolation between 1x and 5x multiplier
 	ratio := float64(ctx-baselineContext) / float64(maxContext-baselineContext)
 	multiplier := minMultiplier + (ratio * (maxMultiplier - minMultiplier))
-	
+
 	scaled := base
+	if base.InitTokens > 0 {
+		scaled.InitTokens = int(float64(base.InitTokens) * multiplier)
+	}
+	if base.UpdateTokens > 0 {
+		scaled.UpdateTokens = int(float64(base.UpdateTokens) * multiplier)
+	}
 	if base.InitChars > 0 {
 		scaled.InitChars = int(float64(base.InitChars) * multiplier)
 	}
@@ -82,7 +96,11 @@ type SessionMemoryProgress struct {
 }
 
 type SessionMemoryObservation struct {
-	DeltaChars           int
+	DeltaChars int
+	// DeltaTokens is optional; when zero, token thresholds use a rough estimate
+	// from DeltaChars. This keeps extraction autonomous even when providers do not
+	// report usage for every post-turn hook.
+	DeltaTokens          int
 	ToolCalls            int
 	LastTurnHadToolCalls bool
 }
@@ -138,9 +156,13 @@ _Step by step, what was attempted, done? Very terse summary for each step_
 `
 
 func AccumulateSessionMemoryProgress(progress SessionMemoryProgress, obs SessionMemoryObservation) SessionMemoryProgress {
-	if obs.DeltaChars > 0 {
-		progress.ObservedChars += obs.DeltaChars
-		progress.PendingChars += obs.DeltaChars
+	deltaChars := obs.DeltaChars
+	if obs.DeltaTokens > 0 {
+		deltaChars = obs.DeltaTokens * estimatedCharsPerToken
+	}
+	if deltaChars > 0 {
+		progress.ObservedChars += deltaChars
+		progress.PendingChars += deltaChars
 	}
 	if obs.ToolCalls > 0 {
 		progress.PendingToolCalls += obs.ToolCalls
@@ -152,22 +174,51 @@ func ShouldExtractSessionMemory(cfg SessionMemoryConfig, progress SessionMemoryP
 	if !cfg.Enabled {
 		return false
 	}
-	if cfg.InitChars <= 0 {
+	cfg = normalizeSessionMemoryConfig(cfg)
+	if !progress.Initialized {
+		return sessionMemoryThresholdMet(progress.ObservedChars, cfg.InitChars, cfg.InitTokens)
+	}
+	if !sessionMemoryThresholdMet(progress.PendingChars, cfg.UpdateChars, cfg.UpdateTokens) {
+		return false
+	}
+	return progress.PendingToolCalls >= cfg.ToolCallsBetweenUpdates || !obs.LastTurnHadToolCalls
+}
+
+func normalizeSessionMemoryConfig(cfg SessionMemoryConfig) SessionMemoryConfig {
+	if cfg.InitTokens <= 0 && cfg.InitChars <= 0 {
+		cfg.InitTokens = DefaultSessionMemoryConfig.InitTokens
 		cfg.InitChars = DefaultSessionMemoryConfig.InitChars
 	}
-	if cfg.UpdateChars <= 0 {
+	if cfg.UpdateTokens <= 0 && cfg.UpdateChars <= 0 {
+		cfg.UpdateTokens = DefaultSessionMemoryConfig.UpdateTokens
 		cfg.UpdateChars = DefaultSessionMemoryConfig.UpdateChars
 	}
 	if cfg.ToolCallsBetweenUpdates <= 0 {
 		cfg.ToolCallsBetweenUpdates = DefaultSessionMemoryConfig.ToolCallsBetweenUpdates
 	}
-	if !progress.Initialized {
-		return progress.ObservedChars >= cfg.InitChars
+	if cfg.MaxExcerptChars <= 0 {
+		cfg.MaxExcerptChars = DefaultSessionMemoryConfig.MaxExcerptChars
 	}
-	if progress.PendingChars < cfg.UpdateChars {
-		return false
+	if cfg.MaxOutputBytes <= 0 {
+		cfg.MaxOutputBytes = DefaultSessionMemoryConfig.MaxOutputBytes
 	}
-	return progress.PendingToolCalls >= cfg.ToolCallsBetweenUpdates || !obs.LastTurnHadToolCalls
+	return cfg
+}
+
+const estimatedCharsPerToken = 4
+
+func EstimateSessionMemoryTokens(chars int) int {
+	if chars <= 0 {
+		return 0
+	}
+	return chars / estimatedCharsPerToken
+}
+
+func sessionMemoryThresholdMet(chars, charThreshold, tokenThreshold int) bool {
+	if tokenThreshold > 0 {
+		return EstimateSessionMemoryTokens(chars) >= tokenThreshold
+	}
+	return charThreshold > 0 && chars >= charThreshold
 }
 
 func ResetSessionMemoryProgressAfterExtraction(progress SessionMemoryProgress) SessionMemoryProgress {

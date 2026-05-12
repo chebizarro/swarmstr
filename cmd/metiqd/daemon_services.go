@@ -105,6 +105,7 @@ type relayPolicyServices struct {
 	transportSelector   *nostruntime.TransportSelector
 	acpPeers            *acppkg.PeerRegistry
 	acpDispatcher       *acppkg.Dispatcher
+	acpManager          *acppkg.Manager
 	hub                 *nostruntime.NostrHub
 	channels            *channels.Registry
 	presenceHeartbeat38 *nip38.Heartbeat

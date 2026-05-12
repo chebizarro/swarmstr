@@ -15,6 +15,7 @@ package secrets
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,7 +33,22 @@ type Store struct {
 	warnings    []string
 	mcpAuthPath string
 	mcpAuth     map[string]MCPAuthCredential
+	backend     SecretBackend
+	fallback    SecretBackend
 }
+
+// SecretBackend persists named secret values. OS-backed implementations should
+// keep bytes out of metiq-managed plaintext files.
+type SecretBackend interface {
+	Name() string
+	Get(key string) (string, bool, error)
+	Set(key, value string) error
+	Delete(key string) error
+}
+
+const mcpAuthBackendKey = "mcp-auth"
+
+var errSecretNotFound = errors.New("secret not found")
 
 type MCPAuthCredential struct {
 	AccessToken  string    `json:"access_token,omitempty"`
@@ -54,11 +70,14 @@ func NewStore(paths []string) *Store {
 	if len(paths) == 0 {
 		paths = defaultPaths()
 	}
+	fallback := NewFileBackend(defaultMCPAuthPath())
 	return &Store{
 		sources:     paths,
 		values:      map[string]string{},
 		mcpAuthPath: defaultMCPAuthPath(),
 		mcpAuth:     map[string]MCPAuthCredential{},
+		backend:     NewOSBackend(),
+		fallback:    fallback,
 	}
 }
 
@@ -106,9 +125,11 @@ func (s *Store) Reload() (int, []string) {
 
 	s.values = newValues
 	s.loaded = count
+	s.warnings = nil
 	if err := s.loadMCPAuthLocked(); err != nil {
 		warnings = append(warnings, fmt.Sprintf("mcp auth: %v", err))
 	}
+	warnings = append(warnings, s.warnings...)
 	s.warnings = warnings
 	return count, warnings
 }
@@ -183,6 +204,15 @@ func (s *Store) SetMCPAuthPath(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mcpAuthPath = strings.TrimSpace(path)
+	s.fallback = NewFileBackend(s.mcpAuthPath)
+}
+
+// SetBackend overrides the primary secret backend. Passing nil disables the
+// primary backend and uses the file fallback. Primarily useful for tests.
+func (s *Store) SetBackend(backend SecretBackend) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.backend = backend
 }
 
 func (s *Store) GetMCPCredential(key string) (MCPAuthCredential, bool) {
@@ -343,18 +373,39 @@ func trimStringSlice(items []string) []string {
 }
 
 func (s *Store) loadMCPAuthLocked() error {
-	if strings.TrimSpace(s.mcpAuthPath) == "" {
+	if s.backend != nil {
+		raw, found, err := s.backend.Get(mcpAuthBackendKey)
+		if err == nil && found {
+			return s.loadMCPAuthJSONLocked([]byte(raw))
+		}
+		if err != nil && !errors.Is(err, errSecretNotFound) {
+			s.warnings = append(s.warnings, fmt.Sprintf("secret backend %s unavailable, using plaintext fallback: %v", s.backend.Name(), err))
+		}
+	}
+	if s.fallback == nil {
 		s.mcpAuth = map[string]MCPAuthCredential{}
 		return nil
 	}
-	raw, err := os.ReadFile(s.mcpAuthPath)
+	raw, found, err := s.fallback.Get(mcpAuthBackendKey)
 	if err != nil {
-		if os.IsNotExist(err) {
-			s.mcpAuth = map[string]MCPAuthCredential{}
-			return nil
-		}
 		return err
 	}
+	if !found {
+		s.mcpAuth = map[string]MCPAuthCredential{}
+		return nil
+	}
+	if err := s.loadMCPAuthJSONLocked([]byte(raw)); err != nil {
+		return err
+	}
+	if s.backend != nil {
+		if err := s.backend.Set(mcpAuthBackendKey, raw); err == nil {
+			s.warnings = append(s.warnings, "mcp auth migrated to OS-backed secret storage; plaintext fallback file remains for rollback")
+		}
+	}
+	return nil
+}
+
+func (s *Store) loadMCPAuthJSONLocked(raw []byte) error {
 	file := mcpAuthFile{}
 	if err := json.Unmarshal(raw, &file); err != nil {
 		return err
@@ -372,15 +423,27 @@ func (s *Store) loadMCPAuthLocked() error {
 }
 
 func (s *Store) saveMCPAuthLocked() error {
-	if strings.TrimSpace(s.mcpAuthPath) == "" {
-		return nil
+	raw, err := s.mcpAuthJSONLocked()
+	if err != nil {
+		return err
 	}
-	dir := filepath.Dir(s.mcpAuthPath)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
+	if s.backend != nil {
+		if err := s.backend.Set(mcpAuthBackendKey, string(raw)); err == nil {
+			if s.fallback != nil {
+				_ = s.fallback.Delete(mcpAuthBackendKey)
+			}
+			return nil
+		} else {
+			s.warnings = append(s.warnings, fmt.Sprintf("secret backend %s unavailable, using plaintext fallback: %v", s.backend.Name(), err))
 		}
 	}
+	if s.fallback == nil {
+		return nil
+	}
+	return s.fallback.Set(mcpAuthBackendKey, string(raw))
+}
+
+func (s *Store) mcpAuthJSONLocked() ([]byte, error) {
 	file := mcpAuthFile{Records: map[string]MCPAuthCredential{}}
 	for key, cred := range s.mcpAuth {
 		key = strings.TrimSpace(key)
@@ -389,29 +452,5 @@ func (s *Store) saveMCPAuthLocked() error {
 		}
 		file.Records[key] = normalizeMCPAuthCredential(cred)
 	}
-	raw, err := json.MarshalIndent(file, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".mcp-auth-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, s.mcpAuthPath)
+	return json.MarshalIndent(file, "", "  ")
 }

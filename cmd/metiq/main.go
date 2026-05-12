@@ -31,178 +31,13 @@ func main() {
 		return
 	}
 
-	// run dispatches to a named handler; exits with code 1 on error, 2 on unknown.
-	run := func(name string, fn func([]string) error, fnArgs []string) {
-		if err := fn(fnArgs); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
-			os.Exit(1)
-		}
+	registry := newCommandRegistry(bootstrapPath)
+	handled, err := registry.dispatch(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", args[0], err)
+		os.Exit(1)
 	}
-
-	switch args[0] {
-	// ── version ──────────────────────────────────────────────────────────────
-	case "version", "--version", "-version":
-		run("version", runVersion, args[1:])
-
-	// ── status / health ───────────────────────────────────────────────────────
-	case "status":
-		run("status", runStatus, args[1:])
-	case "health":
-		run("health", runHealth, args[1:])
-
-	// ── logs / observability ────────────────────────────────────────────────
-	case "logs":
-		run("logs", runLogs, args[1:])
-	case "observe":
-		run("observe", runObserve, args[1:])
-
-	// ── models ───────────────────────────────────────────────────────────────
-	case "models":
-		run("models", runModels, args[1:])
-
-	// ── channels ─────────────────────────────────────────────────────────────
-	case "channels":
-		run("channels", runChannels, args[1:])
-
-	// ── agents ───────────────────────────────────────────────────────────────
-	case "agents":
-		run("agents", runAgents, args[1:])
-
-	// ── skills ───────────────────────────────────────────────────────────────
-	case "skills":
-		run("skills", runSkills, args[1:])
-
-	// ── hooks ────────────────────────────────────────────────────────────────
-	case "hooks":
-		run("hooks", runHooks, args[1:])
-
-	// ── secrets ──────────────────────────────────────────────────────────────
-	case "secrets":
-		run("secrets", runSecrets, args[1:])
-	case "mcp":
-		run("mcp", runMCP, args[1:])
-
-	// ── update ───────────────────────────────────────────────────────────────
-	case "update":
-		run("update", runUpdate, args[1:])
-
-	// ── security ─────────────────────────────────────────────────────────────
-	case "security":
-		run("security", runSecurity, args[1:])
-
-	// ── plugins (rich sub-CLI) ────────────────────────────────────────────────
-	case "plugins":
-		run("plugins", runPlugins, args[1:])
-
-	// ── config sub-CLI ────────────────────────────────────────────────────────
-	case "config":
-		if len(args) < 2 {
-			fmt.Fprintf(os.Stderr, "config subcommands: get, validate, path, import, export\n")
-			os.Exit(2)
-		}
-		switch args[1] {
-		case "get":
-			run("config get", runConfigGet, args[2:])
-		case "validate":
-			run("config validate", runConfigValidate, args[2:])
-		case "path":
-			run("config path", runConfigPath, args[2:])
-		case "import":
-			run("config import", runConfigImport, args[2:])
-		case "export":
-			run("config export", runConfigExport, args[2:])
-		default:
-			fmt.Fprintf(os.Stderr, "config subcommands: get, validate, path, import, export\n")
-			os.Exit(2)
-		}
-
-	case "lists", "list":
-		run("lists", runLists, args[1:])
-
-	// ── nodes ────────────────────────────────────────────────────────────────
-	case "nodes", "node":
-		run("nodes", runNodes, args[1:])
-	case "sessions", "session":
-		run("sessions", runSessions, args[1:])
-	case "cron":
-		run("cron", runCron, args[1:])
-	case "approvals", "approval":
-		run("approvals", runApprovals, args[1:])
-	case "tasks", "task":
-		run("tasks", runTasks, args[1:])
-	case "doctor":
-		run("doctor", runDoctor, args[1:])
-	case "qr":
-		run("qr", runQR, args[1:])
-	case "completion":
-		run("completion", runCompletion, args[1:])
-	case "daemon":
-		run("daemon", runDaemon, args[1:])
-	case "gw":
-		run("gw", runGW, args[1:])
-
-	// ── migrate (OpenClaw → Metiq) ───────────────────────────────────────────
-	case "migrate":
-		run("migrate", runMigrate, args[1:])
-
-	// ── memory management ────────────────────────────────────────────────────
-	case "memory":
-		run("memory", runMemory, args[1:])
-
-	// ── keygen ───────────────────────────────────────────────────────────────
-	case "keygen":
-		run("keygen", runKeygen, args[1:])
-
-	// ── legacy flat commands (kept for backward compat) ───────────────────────
-	case "plan":
-		fmt.Println("docs/PORT_PLAN.md")
-	case "init":
-		run("init", runInit, args[1:])
-
-	case "bootstrap-check":
-		cfg, err := config.LoadBootstrap(bootstrapPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "bootstrap invalid: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("bootstrap ok: relays=%d state_kind=%d transcript_kind=%d\n",
-			len(cfg.Relays), cfg.EffectiveStateKind(), cfg.EffectiveTranscriptKind())
-	case "dm-send":
-		if err := runDMSend(bootstrapPath, args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "dm-send failed: %v\n", err)
-			os.Exit(1)
-		}
-	case "memory-search":
-		if err := runMemorySearch(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "memory-search failed: %v\n", err)
-			os.Exit(1)
-		}
-	case "config-export":
-		if err := runConfigExport(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "config-export failed: %v\n", err)
-			os.Exit(1)
-		}
-	case "config-import":
-		if err := runConfigImport(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "config-import failed: %v\n", err)
-			os.Exit(1)
-		}
-	case "plugin-publish":
-		if err := runPluginPublish(bootstrapPath, args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "plugin-publish failed: %v\n", err)
-			os.Exit(1)
-		}
-	case "plugin-search":
-		if err := runPluginSearch(bootstrapPath, args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "plugin-search failed: %v\n", err)
-			os.Exit(1)
-		}
-	case "plugin-install":
-		if err := runPluginInstall(bootstrapPath, args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "plugin-install failed: %v\n", err)
-			os.Exit(1)
-		}
-	default:
+	if !handled {
 		usage()
 		os.Exit(2)
 	}
@@ -522,99 +357,27 @@ func usage() {
 	printBlankLine()
 	printInfo("Usage: %s", printCommand("metiq <command> [flags]"))
 	printBlankLine()
-	
-	printListHeader("Daemon Status")
-	printMuted("  status             show daemon status (pubkey, uptime, relays)")
-	printMuted("  health             ping daemon health endpoint")
-	printMuted("  logs               tail recent daemon log lines (--lines N)")
-	printMuted("  observe            inspect structured runtime events/logs (--event, --wait)")
-	printBlankLine()
-	
-	printListHeader("Agent Management")
-	printMuted("  agents list        list configured agents")
-	printMuted("  models list        list available models (--agent)")
-	printMuted("  models set <id>    set default model for an agent")
-	printBlankLine()
-	
-	printListHeader("Channels & Skills")
-	printMuted("  channels list      list configured channels and their status")
-	printMuted("  skills list        list installed skills")
-	printMuted("  skills status      detailed skills status")
-	printMuted("  skills check       check skill readiness")
-	printMuted("  skills info <id>   show one skill in detail")
-	printMuted("  skills install     install a skill option")
-	printMuted("  skills enable <id> enable a skill")
-	printMuted("  skills disable <id> disable a skill")
-	printMuted("  hooks list         list installed hooks")
-	printBlankLine()
-	
-	printListHeader("Config")
-	printMuted("  config get [key]   get config value (dot-notation key optional)")
-	printMuted("  config validate    validate live config file")
-	printMuted("  config path        print config file path")
-	printMuted("  config import      import config from file (--file --path --dry-run)")
-	printMuted("  config export      export config (--path --out --redact)")
-	printMuted("  lists get          read a runtime list doc from Nostr state (--name)")
-	printMuted("  lists put          write a runtime list doc (--name --item/--file)")
-	printBlankLine()
-	
-	printListHeader("Secrets")
-	printMuted("  secrets list       list secret keys")
-	printMuted("  secrets get <key>  get a secret value")
-	printMuted("  secrets set <k> <v> set a secret value")
-	printBlankLine()
-	
-	printListHeader("Plugins")
-	printMuted("  plugins list       list installed plugins")
-	printMuted("  plugins info <id>  show plugin manifest and capabilities")
-	printMuted("  plugins caps       show aggregate plugin capabilities summary")
-	printMuted("  plugins install    install plugin from Nostr (--pubkey --id)")
-	printMuted("  plugins search     search Nostr plugin registry (--q)")
-	printMuted("  plugins publish    publish plugin manifest (--manifest)")
-	printBlankLine()
-	
-	printListHeader("Tasks")
-	printMuted("  tasks list         list tasks (--source --status --limit)")
-	printMuted("  tasks show <id>    show task details")
-	printMuted("  tasks runs         list task runs (--task --limit)")
-	printMuted("  tasks audit        show task ledger statistics")
-	printMuted("  tasks cancel <id>  cancel a running task (--reason)")
-	printMuted("  tasks resume <id>  resume/approve/reject task (--decision --reason)")
-	printBlankLine()
-	
-	printListHeader("Daemon Lifecycle")
-	printMuted("  daemon start       start metiqd in background (--bin --bootstrap)")
-	printMuted("  daemon stop        send SIGTERM to running daemon")
-	printMuted("  daemon restart     stop then start daemon")
-	printMuted("  daemon status      show daemon liveness and uptime")
-	printBlankLine()
-	
-	printListHeader("Gateway Passthrough")
-	printMuted("  gw <method> [params]  call any gateway method and print JSON result (--transport auto|http|nostr)")
-	printMuted("                        params: JSON object or key=value pairs")
-	printBlankLine()
-	
-	printListHeader("Migration")
-	printMuted("  migrate            migrate OpenClaw agent to Metiq (--source --target --apply)")
-	printBlankLine()
-	
-	printListHeader("Memory")
-	printMuted("  memory import      import memories from OpenClaw (--source --backend)")
-	printMuted("  memory search      search memories (--q [--limit])")
-	printMuted("  memory stats       show memory backend statistics")
-	printMuted("  memory list        list recent memories (--limit)")
-	printMuted("  memory backends    list available memory backends")
-	printBlankLine()
-	
-	printListHeader("Other")
-	printMuted("  security audit     run local security posture checks")
-	printMuted("  update             check for daemon updates")
-	printMuted("  version            print version")
-	printMuted("  dm-send            send a NIP-17 DM (--to --text)")
-	printMuted("  memory-search      search local memory index (--q [--limit])")
-	printMuted("  bootstrap-check    validate bootstrap config")
-	printBlankLine()
-	
+
+	groups := currentRegistry().commandsByGroup()
+	order := []string{"Daemon Status", "Agent Management", "Channels & Skills", "Config", "Secrets", "Plugins", "Tasks", "Daemon Lifecycle", "Gateway Passthrough", "Migration", "Memory", "Other"}
+	for _, group := range order {
+		commands := groups[group]
+		if len(commands) == 0 {
+			continue
+		}
+		printListHeader(group)
+		for _, cmd := range commands {
+			if len(cmd.Details) == 0 {
+				printMuted("  %-18s %s", cmd.Name, cmd.Summary)
+				continue
+			}
+			for _, detail := range cmd.Details {
+				printMuted("  %s", detail)
+			}
+		}
+		printBlankLine()
+	}
+
 	printListHeader("Global Flags")
 	printMuted("  --admin-addr <host:port>  admin API address")
 	printMuted("  --admin-token <token>     admin API bearer token")

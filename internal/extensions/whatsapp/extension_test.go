@@ -246,3 +246,108 @@ func TestWhatsAppSend_RejectsAmbiguousUntargetedReply(t *testing.T) {
 		t.Fatal("expected error without reply target or explicit default recipient")
 	}
 }
+
+func TestWhatsAppSend_UsesNamedAccountReplyTarget(t *testing.T) {
+	var captured map[string]any
+	bot := &whatsappBot{
+		channelID: "wa-main",
+		accounts: map[string]whatsappAccount{
+			"default": {ID: "default", Token: "default-token", PhoneNumberID: "default-phone", DefaultRecipient: "+100"},
+			"sales":   {ID: "sales", Token: "sales-token", PhoneNumberID: "sales-phone", DefaultRecipient: "+200"},
+		},
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/v18.0/sales-phone/messages" {
+				t.Fatalf("unexpected path: %s", req.URL.Path)
+			}
+			if got := req.Header.Get("Authorization"); got != "Bearer sales-token" {
+				t.Fatalf("unexpected authorization: %s", got)
+			}
+			if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			return jsonResponse(req, http.StatusOK, `{"messages":[{"id":"wamid.sales"}]}`), nil
+		})},
+		done: make(chan struct{}),
+	}
+
+	ctx := sdk.WithChannelReplyTarget(context.Background(), "sales:+15551112222")
+	if err := bot.Send(ctx, "sales reply"); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+	if captured["to"] != "+15551112222" {
+		t.Fatalf("expected named-account recipient, got %#v", captured)
+	}
+}
+
+func TestHandleWebhook_DeliversMediaAndReactionMessages(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	bot := &whatsappBot{
+		channelID:     "wa-main",
+		phoneNumberID: "phone-123",
+		appSecret:     "app-secret",
+		onMessage: func(msg sdk.InboundChannelMessage) {
+			delivered = append(delivered, msg)
+		},
+		done: make(chan struct{}),
+	}
+	registerWebhook("wa-main", bot)
+	defer func() {
+		webhookMu.Lock()
+		delete(webhookHandlers, "wa-main")
+		webhookMu.Unlock()
+	}()
+
+	payload := `{
+		"object":"whatsapp_business_account",
+		"entry":[{"changes":[{"value":{
+			"metadata":{"phone_number_id":"phone-123"},
+			"messages":[
+				{"id":"wamid-img","from":"15551234567","timestamp":"1712300001","type":"image","image":{"id":"media-1","mime_type":"image/jpeg","caption":"photo"}},
+				{"id":"wamid-react","from":"15551234567","timestamp":"1712300002","type":"reaction","reaction":{"message_id":"wamid-img","emoji":"👍"}}
+			]
+		}}]}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/whatsapp/wa-main", strings.NewReader(payload))
+	req.Header.Set("X-Hub-Signature-256", signWebhook(payload, "app-secret"))
+	w := httptest.NewRecorder()
+	HandleWebhook("wa-main", w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(delivered) != 2 {
+		t.Fatalf("expected 2 messages, got %+v", delivered)
+	}
+	if delivered[0].MediaURL != "whatsapp://media/media-1" || delivered[0].MediaMIME != "image/jpeg" || delivered[0].Text != "photo" {
+		t.Fatalf("unexpected media message: %+v", delivered[0])
+	}
+	if delivered[1].Text != ":reaction:👍" || delivered[1].ReplyToEventID != "wa-wamid-img" {
+		t.Fatalf("unexpected reaction message: %+v", delivered[1])
+	}
+}
+
+func TestWhatsAppSendMediaAndReactionPayloads(t *testing.T) {
+	var payloads []map[string]any
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		payloads = append(payloads, payload)
+		return jsonResponse(req, http.StatusOK, `{"messages":[{"id":"wamid.out"}]}`), nil
+	})}
+
+	if _, err := sendWhatsAppMedia(context.Background(), client, "token", "phone-id", "12345-678@g.us", "image", "https://example.com/a.jpg", "", "caption"); err != nil {
+		t.Fatalf("send media: %v", err)
+	}
+	if _, err := sendWhatsAppReaction(context.Background(), client, "token", "phone-id", "+1555", "wa-wamid.in", "🔥"); err != nil {
+		t.Fatalf("send reaction: %v", err)
+	}
+	if payloads[0]["recipient_type"] != "group" || payloads[0]["type"] != "image" {
+		t.Fatalf("unexpected media payload: %#v", payloads[0])
+	}
+	reaction, _ := payloads[1]["reaction"].(map[string]any)
+	if payloads[1]["type"] != "reaction" || reaction["message_id"] != "wamid.in" || reaction["emoji"] != "🔥" {
+		t.Fatalf("unexpected reaction payload: %#v", payloads[1])
+	}
+}

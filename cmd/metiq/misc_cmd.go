@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"strings"
 
 	"github.com/skip2/go-qrcode"
 )
@@ -95,64 +96,48 @@ func runCompletion(args []string) error {
 	}
 	switch shell {
 	case "bash":
-		fmt.Print(bashCompletion)
+		fmt.Print(bashCompletion())
 	case "zsh":
-		fmt.Print(zshCompletion)
+		fmt.Print(zshCompletion())
 	case "fish":
-		fmt.Print(fishCompletion)
+		fmt.Print(fishCompletion())
 	default:
 		return fmt.Errorf("unknown shell %q; supported: bash, zsh, fish", shell)
 	}
 	return nil
 }
 
-const bashCompletion = `# metiq bash completion
+func bashCompletion() string {
+	commands := strings.Join(currentRegistry().commandNames(), " ")
+	return fmt.Sprintf(`# metiq bash completion
 # Add to ~/.bashrc:  source <(metiq completion bash)
 _metiq_completions() {
-	local commands="version status health logs observe models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw plan bootstrap-check dm-send memory-search"
+	local commands=%q
   local cur="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=($(compgen -W "${commands}" -- "${cur}"))
 }
 complete -F _metiq_completions metiq
-`
-
-const zshCompletion = `# metiq zsh completion
-# Add to ~/.zshrc:  source <(metiq completion zsh)
-_metiq() {
-  local commands=(
-    'version:show version'
-    'status:show daemon status'
-    'health:health check'
-    'logs:stream logs'
-    'observe:structured runtime observability'
-    'models:model management'
-    'channels:channel management'
-    'agents:agent management'
-    'skills:skill management'
-    'hooks:hook management'
-    'secrets:secret management'
-    'update:update metiq'
-    'security:security audit'
-    'plugins:plugin management'
-    'config:config management'
-    'nodes:remote node management'
-    'sessions:session management'
-    'cron:scheduled task management'
-    'approvals:exec approval management'
-    'doctor:system health diagnostics'
-    'qr:display agent QR code'
-    'completion:generate shell completions'
-	'daemon:daemon lifecycle management'
-	'gw:gateway method passthrough'
-  )
-  _describe 'commands' commands
+`, commands)
 }
-compdef _metiq metiq
-`
 
-const fishCompletion = `# metiq fish completion
-# Add to ~/.config/fish/completions/metiq.fish or: metiq completion fish | source
-for cmd in version status health logs observe models channels agents skills hooks secrets update security plugins config nodes sessions cron approvals doctor qr completion daemon gw
-  complete -c metiq -f -n '__fish_use_subcommand' -a $cmd
-end
-`
+func zshCompletion() string {
+	var b strings.Builder
+	b.WriteString("# metiq zsh completion\n")
+	b.WriteString("# Add to ~/.zshrc:  source <(metiq completion zsh)\n")
+	b.WriteString("_metiq() {\n  local commands=(\n")
+	for _, cmd := range currentRegistry().visibleCommands() {
+		fmt.Fprintf(&b, "    '%s:%s'\n", cmd.Name, cmd.Summary)
+	}
+	b.WriteString("  )\n  _describe 'commands' commands\n}\ncompdef _metiq metiq\n")
+	return b.String()
+}
+
+func fishCompletion() string {
+	var b strings.Builder
+	b.WriteString("# metiq fish completion\n")
+	b.WriteString("# Add to ~/.config/fish/completions/metiq.fish or: metiq completion fish | source\n")
+	for _, cmd := range currentRegistry().commandNames() {
+		fmt.Fprintf(&b, "complete -c metiq -f -n '__fish_use_subcommand' -a %s\n", cmd)
+	}
+	return b.String()
+}

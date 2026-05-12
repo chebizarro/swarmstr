@@ -145,6 +145,25 @@ type RuntimeCapabilities struct {
 	ConfigOptionKeys []string
 }
 
+// RuntimeControl describes a runtime-specific control operation to apply before
+// a managed session turn (for example, setting mode or model options).
+type RuntimeControl struct {
+	Name    string         `json:"name"`
+	Options map[string]any `json:"options,omitempty"`
+}
+
+// RuntimeControlInput is passed to runtimes that support manager-applied controls.
+type RuntimeControlInput struct {
+	Handle   RuntimeHandle    `json:"handle"`
+	Controls []RuntimeControl `json:"controls,omitempty"`
+}
+
+// RuntimeControlApplier is optionally implemented by backends that support
+// runtime controls coordinated by Manager.
+type RuntimeControlApplier interface {
+	ApplyRuntimeControls(ctx context.Context, input RuntimeControlInput) error
+}
+
 // CapabilitiesProvider is optionally implemented by backends that advertise
 // their supported controls and config options.
 type CapabilitiesProvider interface {

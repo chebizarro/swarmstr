@@ -174,3 +174,49 @@ func TestRunConfigImport_rejectsInvalidSourcePath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestRunConfigSetSupportsArrayPathAndJSON5Value(t *testing.T) {
+	path := writeTmpConfig(t, sampleConfigJSON)
+	if err := runConfigSet([]string{"--path", path, "relays.read[0]", "\"wss://new.example.com\""}); err != nil {
+		t.Fatalf("runConfigSet error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), "wss://new.example.com") {
+		t.Fatalf("config was not updated: %s", data)
+	}
+}
+
+func TestRunConfigSetDryRunDoesNotWrite(t *testing.T) {
+	path := writeTmpConfig(t, sampleConfigJSON)
+	if err := runConfigSet([]string{"--path", path, "--dry-run", "relays.read[0]", "\"wss://dry.example.com\""}); err != nil {
+		t.Fatalf("runConfigSet dry-run error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(data), "wss://dry.example.com") {
+		t.Fatal("dry-run wrote config")
+	}
+}
+
+func TestRunConfigPatchMergesJSON5Object(t *testing.T) {
+	path := writeTmpConfig(t, sampleConfigJSON)
+	patchPath := filepath.Join(t.TempDir(), "patch.json5")
+	if err := os.WriteFile(patchPath, []byte(`{ "relays": { "write": ["wss://patched.example.com"] } }`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runConfigPatch([]string{"--path", path, "--file", patchPath}); err != nil {
+		t.Fatalf("runConfigPatch error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), "wss://patched.example.com") {
+		t.Fatalf("config was not patched: %s", data)
+	}
+}

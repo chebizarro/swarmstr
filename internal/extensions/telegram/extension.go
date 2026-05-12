@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
@@ -74,6 +75,10 @@ func (t *TelegramPlugin) ConfigSchema() map[string]any {
 				"items":       map[string]any{"type": "integer"},
 				"description": "Optional: list of Telegram user IDs allowed to send messages.",
 			},
+			"default_parse_mode": map[string]any{
+				"type":        "string",
+				"description": "Optional parse mode for outbound messages (MarkdownV2, HTML, or Markdown).",
+			},
 		},
 		"required": []string{"token"},
 	}
@@ -83,9 +88,9 @@ func (t *TelegramPlugin) ConfigSchema() map[string]any {
 func (t *TelegramPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
 		Typing:       true,
-		Reactions:    false,
+		Reactions:    true,
 		Threads:      true,
-		Audio:        false,
+		Audio:        true,
 		Edit:         true,
 		MultiAccount: true,
 	}
@@ -100,10 +105,47 @@ func (t *TelegramPlugin) GatewayMethods() []sdk.GatewayMethod {
 				token, _ := params["token"].(string)
 				chatID, _ := params["chat_id"].(string)
 				text, _ := params["text"].(string)
+				parseMode, _ := params["parse_mode"].(string)
+				buttons, _ := params["buttons"].([]any)
 				if token == "" || chatID == "" || text == "" {
 					return nil, fmt.Errorf("telegram.send: token, chat_id, and text are required")
 				}
-				if err := sendTelegramMessage(ctx, token, chatID, text); err != nil {
+				if err := sendTelegramMessageWithOptions(ctx, token, chatID, text, parseMode, buttons, nil); err != nil {
+					return nil, err
+				}
+				return map[string]any{"ok": true}, nil
+			},
+		},
+		{
+			Method:      "telegram.sendMedia",
+			Description: "Send photo, video, audio, voice, document, or animation media to a Telegram chat",
+			Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+				token, _ := params["token"].(string)
+				chatID, _ := params["chat_id"].(string)
+				mediaType, _ := params["type"].(string)
+				mediaURL, _ := params["media_url"].(string)
+				caption, _ := params["caption"].(string)
+				if token == "" || chatID == "" || mediaType == "" || mediaURL == "" {
+					return nil, fmt.Errorf("telegram.sendMedia: token, chat_id, type, and media_url are required")
+				}
+				if err := sendTelegramMedia(ctx, nil, token, chatID, mediaType, mediaURL, caption); err != nil {
+					return nil, err
+				}
+				return map[string]any{"ok": true}, nil
+			},
+		},
+		{
+			Method:      "telegram.sendPoll",
+			Description: "Send a native Telegram poll",
+			Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+				token, _ := params["token"].(string)
+				chatID, _ := params["chat_id"].(string)
+				question, _ := params["question"].(string)
+				options, _ := params["options"].([]any)
+				if token == "" || chatID == "" || question == "" || len(options) == 0 {
+					return nil, fmt.Errorf("telegram.sendPoll: token, chat_id, question, and options are required")
+				}
+				if err := sendTelegramPoll(ctx, nil, token, chatID, question, options); err != nil {
 					return nil, err
 				}
 				return map[string]any{"ok": true}, nil
@@ -124,6 +166,8 @@ func (t *TelegramPlugin) Connect(
 	}
 	webhookURL, _ := cfg["webhook_url"].(string)
 	webhookURL = strings.TrimSpace(webhookURL)
+	defaultParseMode, _ := cfg["default_parse_mode"].(string)
+	defaultParseMode = strings.TrimSpace(defaultParseMode)
 
 	var allowedUsers []int64
 	if users, ok := cfg["allowed_users"].([]any); ok {
@@ -135,13 +179,14 @@ func (t *TelegramPlugin) Connect(
 	}
 
 	bot := &telegramBot{
-		channelID:     channelID,
-		token:         token,
-		allowedUsers:  allowedUsers,
-		onMessage:     onMessage,
-		done:          make(chan struct{}),
-		webhookURL:    webhookURL,
-		webhookSecret: deriveTelegramWebhookSecret(token, channelID),
+		channelID:        channelID,
+		token:            token,
+		allowedUsers:     allowedUsers,
+		onMessage:        onMessage,
+		done:             make(chan struct{}),
+		webhookURL:       webhookURL,
+		webhookSecret:    deriveTelegramWebhookSecret(token, channelID),
+		defaultParseMode: defaultParseMode,
 	}
 
 	if webhookURL != "" {
@@ -165,14 +210,16 @@ func (t *TelegramPlugin) Connect(
 }
 
 type telegramUpdate struct {
-	UpdateID int64            `json:"update_id"`
-	Message  *telegramMessage `json:"message"`
+	UpdateID      int64                  `json:"update_id"`
+	Message       *telegramMessage       `json:"message"`
+	CallbackQuery *telegramCallbackQuery `json:"callback_query,omitempty"`
 }
 
 type telegramMessage struct {
 	MessageID       int64  `json:"message_id"`
 	MessageThreadID int64  `json:"message_thread_id,omitempty"`
 	Text            string `json:"text"`
+	Caption         string `json:"caption,omitempty"`
 	Date            int64  `json:"date"`
 	ReplyToMessage  *struct {
 		MessageID int64 `json:"message_id"`
@@ -184,6 +231,37 @@ type telegramMessage struct {
 	Chat *struct {
 		ID int64 `json:"id"`
 	} `json:"chat"`
+	Photo     []telegramPhotoSize `json:"photo,omitempty"`
+	Document  *telegramFile       `json:"document,omitempty"`
+	Audio     *telegramFile       `json:"audio,omitempty"`
+	Voice     *telegramFile       `json:"voice,omitempty"`
+	Video     *telegramFile       `json:"video,omitempty"`
+	Animation *telegramFile       `json:"animation,omitempty"`
+}
+
+type telegramPhotoSize struct {
+	FileID   string `json:"file_id"`
+	FileSize int64  `json:"file_size,omitempty"`
+	Width    int64  `json:"width,omitempty"`
+	Height   int64  `json:"height,omitempty"`
+}
+
+type telegramFile struct {
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+}
+
+type telegramCallbackQuery struct {
+	ID      string           `json:"id"`
+	Data    string           `json:"data,omitempty"`
+	From    *telegramUser    `json:"from,omitempty"`
+	Message *telegramMessage `json:"message,omitempty"`
+}
+
+type telegramUser struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
 }
 
 var (
@@ -217,17 +295,18 @@ func deriveTelegramWebhookSecret(token, channelID string) string {
 // ─── Bot implementation ───────────────────────────────────────────────────────
 
 type telegramBot struct {
-	mu            sync.Mutex
-	channelID     string
-	token         string
-	allowedUsers  []int64
-	onMessage     func(sdk.InboundChannelMessage)
-	lastUpdateID  int64
-	lastChatID    string
-	done          chan struct{}
-	httpClient    *http.Client
-	webhookURL    string
-	webhookSecret string
+	mu               sync.Mutex
+	channelID        string
+	token            string
+	allowedUsers     []int64
+	onMessage        func(sdk.InboundChannelMessage)
+	lastUpdateID     int64
+	lastChatID       string
+	done             chan struct{}
+	httpClient       *http.Client
+	webhookURL       string
+	webhookSecret    string
+	defaultParseMode string
 }
 
 func (b *telegramBot) ID() string { return b.channelID }
@@ -244,11 +323,12 @@ func (b *telegramBot) Send(ctx context.Context, text string) error {
 	// For direct sends, the caller should use telegram.send gateway method.
 	b.mu.Lock()
 	chatID := b.lastChatID
+	parseMode := b.defaultParseMode
 	b.mu.Unlock()
 	if chatID == "" {
 		return fmt.Errorf("telegram %s: no chat ID known yet (no messages received)", b.channelID)
 	}
-	return sendTelegramMessage(ctx, b.token, chatID, text)
+	return sendTelegramMessageWithOptions(ctx, b.token, chatID, text, parseMode, nil, b.client(15*time.Second))
 }
 
 func (b *telegramBot) Close() {
@@ -371,14 +451,36 @@ func (b *telegramBot) processUpdate(update telegramUpdate) {
 	}
 
 	msg := update.Message
-	if msg == nil || msg.Text == "" {
+	if msg == nil && update.CallbackQuery != nil {
+		msg = update.CallbackQuery.Message
+	}
+	if msg == nil {
 		return
 	}
 
-	if len(b.allowedUsers) > 0 && msg.From != nil {
+	text := msg.Text
+	if text == "" {
+		text = msg.Caption
+	}
+	if update.CallbackQuery != nil && strings.TrimSpace(update.CallbackQuery.Data) != "" {
+		text = "/callback " + strings.TrimSpace(update.CallbackQuery.Data)
+	}
+	mediaURL, mediaMIME := telegramMessageMedia(msg)
+	if text == "" && mediaURL == "" {
+		return
+	}
+
+	fromID := int64(0)
+	if msg.From != nil {
+		fromID = msg.From.ID
+	}
+	if update.CallbackQuery != nil && update.CallbackQuery.From != nil {
+		fromID = update.CallbackQuery.From.ID
+	}
+	if len(b.allowedUsers) > 0 && fromID != 0 {
 		allowed := false
 		for _, uid := range b.allowedUsers {
-			if msg.From.ID == uid {
+			if fromID == uid {
 				allowed = true
 				break
 			}
@@ -390,8 +492,8 @@ func (b *telegramBot) processUpdate(update telegramUpdate) {
 
 	senderID := ""
 	chatIDStr := ""
-	if msg.From != nil {
-		senderID = fmt.Sprintf("%d", msg.From.ID)
+	if fromID != 0 {
+		senderID = fmt.Sprintf("%d", fromID)
 	}
 	if msg.Chat != nil {
 		chatIDStr = fmt.Sprintf("%d", msg.Chat.ID)
@@ -409,15 +511,117 @@ func (b *telegramBot) processUpdate(update telegramUpdate) {
 		threadID = fmt.Sprintf("%d", msg.MessageThreadID)
 	}
 
+	eventID := fmt.Sprintf("tg-%d", msg.MessageID)
+	if update.CallbackQuery != nil && update.CallbackQuery.ID != "" {
+		eventID = "tg-callback-" + update.CallbackQuery.ID
+		replyToEventID = fmt.Sprintf("tg-%d", msg.MessageID)
+	}
+
 	b.onMessage(sdk.InboundChannelMessage{
 		ChannelID:      b.channelID,
 		SenderID:       senderID,
-		Text:           msg.Text,
-		EventID:        fmt.Sprintf("tg-%d", msg.MessageID),
+		Text:           text,
+		EventID:        eventID,
 		CreatedAt:      msg.Date,
 		ThreadID:       threadID,
 		ReplyToEventID: replyToEventID,
+		MediaURL:       mediaURL,
+		MediaMIME:      mediaMIME,
 	})
+}
+
+func telegramMessageMedia(msg *telegramMessage) (string, string) {
+	if msg == nil {
+		return "", ""
+	}
+	if len(msg.Photo) > 0 {
+		best := msg.Photo[0]
+		for _, p := range msg.Photo[1:] {
+			if p.FileSize > best.FileSize || (p.FileSize == 0 && p.Width*p.Height > best.Width*best.Height) {
+				best = p
+			}
+		}
+		if best.FileID != "" {
+			return "telegram:file/" + best.FileID, "image/jpeg"
+		}
+	}
+	for _, candidate := range []struct {
+		file *telegramFile
+		mime string
+	}{
+		{msg.Document, "application/octet-stream"},
+		{msg.Audio, "audio/mpeg"},
+		{msg.Voice, "audio/ogg"},
+		{msg.Video, "video/mp4"},
+		{msg.Animation, "image/gif"},
+	} {
+		if candidate.file != nil && candidate.file.FileID != "" {
+			mime := strings.TrimSpace(candidate.file.MimeType)
+			if mime == "" {
+				mime = candidate.mime
+			}
+			return "telegram:file/" + candidate.file.FileID, mime
+		}
+	}
+	return "", ""
+}
+
+// ─── ReactionHandle ──────────────────────────────────────────────────────────
+
+// AddReaction adds an emoji reaction to a Telegram message.
+// eventID must be of the form "tg-{message_id}".
+func (b *telegramBot) AddReaction(ctx context.Context, eventID, emoji string) error {
+	return b.setReaction(ctx, eventID, emoji)
+}
+
+// RemoveReaction removes the bot's reaction from a Telegram message.
+func (b *telegramBot) RemoveReaction(ctx context.Context, eventID, _ string) error {
+	return b.setReaction(ctx, eventID, "")
+}
+
+func (b *telegramBot) setReaction(ctx context.Context, eventID, emoji string) error {
+	b.mu.Lock()
+	chatID := b.lastChatID
+	b.mu.Unlock()
+	if chatID == "" {
+		return fmt.Errorf("telegram %s: no chat ID known", b.channelID)
+	}
+	msgID, err := telegramEventMessageID(eventID)
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"chat_id":    chatID,
+		"message_id": msgID,
+	}
+	if strings.TrimSpace(emoji) != "" {
+		payload["reaction"] = []map[string]string{{"type": "emoji", "emoji": emoji}}
+	} else {
+		payload["reaction"] = []map[string]string{}
+	}
+	return telegramPostJSON(ctx, b.client(10*time.Second), b.token, "setMessageReaction", payload)
+}
+
+// ─── AudioHandle ─────────────────────────────────────────────────────────────
+
+// SendAudio delivers raw audio bytes as a Telegram audio file.
+func (b *telegramBot) SendAudio(ctx context.Context, audio []byte, format string) error {
+	b.mu.Lock()
+	chatID := b.lastChatID
+	b.mu.Unlock()
+	if chatID == "" {
+		return fmt.Errorf("telegram %s: no chat ID known", b.channelID)
+	}
+	return sendTelegramAudioBytes(ctx, b.client(30*time.Second), b.token, chatID, audio, format)
+}
+
+func telegramEventMessageID(eventID string) (int64, error) {
+	msgIDStr := strings.TrimPrefix(eventID, "tg-")
+	msgID, err := strconv.ParseInt(msgIDStr, 10, 64)
+	if err != nil || msgID == 0 {
+		return 0, fmt.Errorf("telegram: invalid eventID %q", eventID)
+	}
+	return msgID, nil
 }
 
 // ─── TypingHandle ─────────────────────────────────────────────────────────────
@@ -574,25 +778,178 @@ func (b *telegramBot) fetchUpdates(ctx context.Context) {
 
 // sendTelegramMessage sends a text message to a Telegram chat.
 func sendTelegramMessage(ctx context.Context, token, chatID, text string) error {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-	body, _ := json.Marshal(map[string]any{
+	return sendTelegramMessageWithOptions(ctx, token, chatID, text, "", nil, nil)
+}
+
+func sendTelegramMessageWithOptions(ctx context.Context, token, chatID, text, parseMode string, buttons []any, httpClient *http.Client) error {
+	payload := map[string]any{
 		"chat_id": chatID,
 		"text":    text,
+	}
+	if strings.TrimSpace(parseMode) != "" {
+		payload["parse_mode"] = strings.TrimSpace(parseMode)
+	}
+	if len(buttons) > 0 {
+		payload["reply_markup"] = map[string]any{"inline_keyboard": normalizeTelegramButtons(buttons)}
+	}
+	return telegramPostJSON(ctx, httpClient, token, "sendMessage", payload)
+}
+
+func sendTelegramMedia(ctx context.Context, httpClient *http.Client, token, chatID, mediaType, mediaURL, caption string) error {
+	method, field, err := telegramMediaMethod(mediaType)
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"chat_id": chatID,
+		field:     mediaURL,
+	}
+	if strings.TrimSpace(caption) != "" {
+		payload["caption"] = caption
+	}
+	return telegramPostJSON(ctx, httpClient, token, method, payload)
+}
+
+func sendTelegramPoll(ctx context.Context, httpClient *http.Client, token, chatID, question string, options []any) error {
+	texts := make([]string, 0, len(options))
+	for _, opt := range options {
+		if s := strings.TrimSpace(fmt.Sprint(opt)); s != "" {
+			texts = append(texts, s)
+		}
+	}
+	if len(texts) == 0 {
+		return fmt.Errorf("telegram sendPoll: at least one non-empty option is required")
+	}
+	return telegramPostJSON(ctx, httpClient, token, "sendPoll", map[string]any{
+		"chat_id":  chatID,
+		"question": question,
+		"options":  texts,
 	})
+}
+
+func sendTelegramAudioBytes(ctx context.Context, httpClient *http.Client, token, chatID string, audio []byte, format string) error {
+	if len(audio) == 0 {
+		return fmt.Errorf("telegram sendAudio: audio bytes are required")
+	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	ext := strings.Trim(strings.TrimSpace(format), ".")
+	if ext == "" {
+		ext = "ogg"
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("chat_id", chatID)
+	part, err := writer.CreateFormFile("audio", "audio."+ext)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(audio); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendAudio", token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return telegramDo(req, httpClient, "telegram sendAudio")
+}
+
+func telegramPostJSON(ctx context.Context, httpClient *http.Client, token, method string, payload map[string]any) error {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	body, _ := json.Marshal(payload)
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", token, method)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	return telegramDo(req, httpClient, "telegram "+method)
+}
 
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+func telegramDo(req *http.Request, httpClient *http.Client, label string) error {
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("telegram sendMessage: %w", err)
+		return fmt.Errorf("%s: %w", label, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("telegram sendMessage: HTTP %d: %s", resp.StatusCode, raw)
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("%s: HTTP %d: %s", label, resp.StatusCode, raw)
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description,omitempty"`
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(raw, &result); err == nil && !result.OK {
+		return fmt.Errorf("%s: %s", label, strings.TrimSpace(result.Description))
 	}
 	return nil
+}
+
+func telegramMediaMethod(mediaType string) (method, field string, err error) {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "photo", "image":
+		return "sendPhoto", "photo", nil
+	case "video":
+		return "sendVideo", "video", nil
+	case "audio":
+		return "sendAudio", "audio", nil
+	case "voice":
+		return "sendVoice", "voice", nil
+	case "document", "file":
+		return "sendDocument", "document", nil
+	case "animation", "gif":
+		return "sendAnimation", "animation", nil
+	default:
+		return "", "", fmt.Errorf("telegram media: unsupported type %q", mediaType)
+	}
+}
+
+func normalizeTelegramButtons(buttons []any) [][]map[string]string {
+	var rows [][]map[string]string
+	for _, rowAny := range buttons {
+		var row []map[string]string
+		if rowSlice, ok := rowAny.([]any); ok {
+			for _, buttonAny := range rowSlice {
+				if button := normalizeTelegramButton(buttonAny); len(button) > 0 {
+					row = append(row, button)
+				}
+			}
+		} else if button := normalizeTelegramButton(rowAny); len(button) > 0 {
+			row = append(row, button)
+		}
+		if len(row) > 0 {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+func normalizeTelegramButton(v any) map[string]string {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	text := strings.TrimSpace(fmt.Sprint(m["text"]))
+	if text == "" {
+		return nil
+	}
+	button := map[string]string{"text": text}
+	if url, _ := m["url"].(string); strings.TrimSpace(url) != "" {
+		button["url"] = strings.TrimSpace(url)
+	} else if data, _ := m["callback_data"].(string); strings.TrimSpace(data) != "" {
+		button["callback_data"] = strings.TrimSpace(data)
+	}
+	return button
 }

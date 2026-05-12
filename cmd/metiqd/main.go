@@ -158,6 +158,8 @@ var (
 	controlACPPeers *acppkg.PeerRegistry
 	// controlACPDispatcher routes incoming ACP result DMs to waiting Dispatch() callers.
 	controlACPDispatcher *acppkg.Dispatcher
+	// controlACPManager coordinates local ACP runtime sessions and turns.
+	controlACPManager *acppkg.Manager
 	// controlTransportSelector is the FIPS-aware composite transport that routes
 	// messages through FIPS mesh or relay transports based on the configured
 	// preference. Nil when FIPS is not enabled.
@@ -1469,8 +1471,15 @@ func main() {
 	keyRings := agent.NewProviderKeyRingRegistry()
 	acpPeers := acppkg.NewPeerRegistry()
 	acpDispatcher := acppkg.NewDispatcher()
+	acpSessionStore, acpStoreErr := acppkg.NewFileSessionStore(filepath.Join(filepath.Dir(state.DefaultSessionStorePath()), "acp-sessions"))
+	if acpStoreErr != nil {
+		log.Printf("acp session store init failed (non-fatal): %v", acpStoreErr)
+		acpSessionStore = nil
+	}
+	acpManager := acppkg.NewManager(nil, acpSessionStore, nil, acpDispatcher, acppkg.ManagerOptions{})
 	controlACPPeers = acpPeers
 	controlACPDispatcher = acpDispatcher
+	controlACPManager = acpManager
 	if n := prepopulateACPPeersFromConfig(acpPeers, configState.Get()); n > 0 {
 		log.Printf("acp peer registry pre-populated from config: %d peer(s)", n)
 	}
@@ -4603,6 +4612,7 @@ func main() {
 			transportSelector:   controlTransportSelector,
 			acpPeers:            controlACPPeers,
 			acpDispatcher:       controlACPDispatcher,
+			acpManager:          controlACPManager,
 			hub:                 controlHub,
 			channels:            channelReg,
 			presenceHeartbeat38: controlPresenceHeartbeat38,
@@ -7061,6 +7071,7 @@ func handleControlRPCRequest(
 			relay: relayPolicyServices{
 				acpPeers:      controlACPPeers,
 				acpDispatcher: controlACPDispatcher,
+				acpManager:    controlACPManager,
 			},
 			handlers: handlerServices{
 				mcpOps:          controlMCPOps,
@@ -7098,6 +7109,7 @@ func handleControlRPCRequest(
 		sessionMemoryRuntime: svc.session.sessionMemRuntime,
 		acpPeers:             svc.relay.acpPeers,
 		acpDispatcher:        svc.relay.acpDispatcher,
+		acpManager:           svc.relay.acpManager,
 
 		services: controlServices,
 

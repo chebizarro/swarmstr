@@ -54,7 +54,7 @@ func TestPlugin_ConfigSchemaNoUnusedFields(t *testing.T) {
 	if !ok {
 		t.Fatal("expected properties map in schema")
 	}
-	allowed := map[string]bool{"bot_token": true, "channel_id": true}
+	allowed := map[string]bool{"bot_token": true, "channel_id": true, "guild_id": true}
 	for key := range props {
 		if !allowed[key] {
 			t.Errorf("ConfigSchema exposes %q which is not used by Connect/poll/send — remove it or implement support", key)
@@ -157,11 +157,7 @@ func TestConnect_MissingChannelID(t *testing.T) {
 func TestClose_Idempotent(t *testing.T) {
 	b := &discordBot{channelID: "d1", done: make(chan struct{})}
 	b.Close()
-	// second close should not panic — guard with recover
-	func() {
-		defer func() { recover() }()
-		b.Close()
-	}()
+	b.Close()
 }
 
 func TestSendTyping_PostsToAPI(t *testing.T) {
@@ -281,14 +277,42 @@ func TestAddReaction_APIError(t *testing.T) {
 	}
 }
 
-func TestFetchMessages_SkipsBotMessages(t *testing.T) {
+func TestGatewayMessage_DeliversMediaAndReply(t *testing.T) {
 	var delivered []sdk.InboundChannelMessage
 	b := &discordBot{
 		channelID:        "d1",
-		token:            "Bot tok",
 		discordChannelID: "ch-123",
 		onMessage:        func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
 		done:             make(chan struct{}),
+	}
+	b.handleGatewayMessage([]byte(`{
+		"id":"msg-2",
+		"channel_id":"ch-123",
+		"content":"see this",
+		"timestamp":"2026-04-05T09:00:00Z",
+		"message_reference":{"message_id":"msg-1"},
+		"attachments":[{"url":"https://cdn.example/a.png","content_type":"image/png"}],
+		"author":{"id":"u1","username":"alice","bot":false}
+	}`))
+	if len(delivered) != 1 {
+		t.Fatalf("expected 1 delivered message, got %d", len(delivered))
+	}
+	if delivered[0].MediaURL != "https://cdn.example/a.png" || delivered[0].MediaMIME != "image/png" {
+		t.Fatalf("expected media fields, got %+v", delivered[0])
+	}
+	if delivered[0].ReplyToEventID != "discord-msg-1" {
+		t.Fatalf("expected reply metadata, got %+v", delivered[0])
+	}
+}
+
+func TestFetchMessages_SkipsBotMessages(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	b := &discordBot{
+		channelID:         "d1",
+		token:             "Bot tok",
+		discordChannelID:  "ch-123",
+		onMessage:         func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
+		done:              make(chan struct{}),
 		channelMetaLoaded: true,
 		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return jsonResponse(req, `[

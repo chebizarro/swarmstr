@@ -39,6 +39,10 @@ type AgentEntry struct {
 	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
 	// Tags holds arbitrary key/value metadata (capabilities, region, etc.).
 	Tags map[string]string `json:"tags,omitempty"`
+	// MaxSpawnDepth optionally overrides the manager's spawn depth for this agent.
+	MaxSpawnDepth int `json:"max_spawn_depth,omitempty"`
+	// MaxChildren optionally overrides the manager's direct child limit for this agent.
+	MaxChildren int `json:"max_children,omitempty"`
 }
 
 // ── Agent registry ──────────────────────────────────────────────────────────

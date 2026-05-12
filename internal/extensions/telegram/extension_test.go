@@ -194,7 +194,7 @@ func TestPlugin_ConfigSchema(t *testing.T) {
 func TestPlugin_Capabilities(t *testing.T) {
 	p := &TelegramPlugin{}
 	caps := p.Capabilities()
-	if !caps.Threads || !caps.Typing || !caps.Edit {
+	if !caps.Threads || !caps.Typing || !caps.Edit || !caps.Reactions || !caps.Audio {
 		t.Fatalf("unexpected capabilities: %+v", caps)
 	}
 }
@@ -231,6 +231,48 @@ func TestProcessUpdate_SkipsEmptyText(t *testing.T) {
 	})
 	if called {
 		t.Fatal("should skip empty text")
+	}
+}
+
+func TestProcessUpdate_DeliversMediaCaptionAndCallback(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	bot := &telegramBot{
+		channelID: "tg-1",
+		onMessage: func(m sdk.InboundChannelMessage) { delivered = append(delivered, m) },
+		done:      make(chan struct{}),
+	}
+	bot.processUpdate(telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 7,
+			Caption:   "see attached",
+			Date:      1000,
+			Photo: []telegramPhotoSize{
+				{FileID: "small", FileSize: 10, Width: 10, Height: 10},
+				{FileID: "large", FileSize: 20, Width: 20, Height: 20},
+			},
+		},
+	})
+	bot.processUpdate(telegramUpdate{
+		UpdateID: 2,
+		CallbackQuery: &telegramCallbackQuery{
+			ID:   "cb1",
+			Data: "approve",
+			From: &telegramUser{ID: 123},
+			Message: &telegramMessage{
+				MessageID: 8,
+				Date:      1001,
+			},
+		},
+	})
+	if len(delivered) != 2 {
+		t.Fatalf("expected 2 delivered messages, got %d", len(delivered))
+	}
+	if delivered[0].Text != "see attached" || delivered[0].MediaURL != "telegram:file/large" || delivered[0].MediaMIME != "image/jpeg" {
+		t.Fatalf("unexpected media message: %+v", delivered[0])
+	}
+	if delivered[1].Text != "/callback approve" || delivered[1].EventID != "tg-callback-cb1" || delivered[1].ReplyToEventID != "tg-8" {
+		t.Fatalf("unexpected callback message: %+v", delivered[1])
 	}
 }
 
@@ -370,6 +412,48 @@ func TestEditMessage_PostsEditAPI(t *testing.T) {
 	}
 	if !strings.Contains(gotPath, "/editMessageText") {
 		t.Fatalf("expected /editMessageText path, got %s", gotPath)
+	}
+}
+
+func TestAddReaction_PostsSetMessageReaction(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	bot := &telegramBot{
+		channelID:  "tg-1",
+		token:      "tok",
+		lastChatID: "42",
+		done:       make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotPath = req.URL.Path
+			json.NewDecoder(req.Body).Decode(&gotBody)
+			return jsonResponse(req, `{"ok":true}`), nil
+		})},
+	}
+	if err := bot.AddReaction(context.Background(), "tg-123", "👍"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotPath, "/setMessageReaction") {
+		t.Fatalf("expected /setMessageReaction path, got %s", gotPath)
+	}
+	if gotBody["message_id"] != float64(123) {
+		t.Fatalf("expected message_id=123, got %#v", gotBody)
+	}
+}
+
+func TestSendMediaAndPollHelpers_PostExpectedMethods(t *testing.T) {
+	var paths []string
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		return jsonResponse(req, `{"ok":true}`), nil
+	})}
+	if err := sendTelegramMedia(context.Background(), client, "tok", "42", "photo", "https://example.test/a.jpg", "caption"); err != nil {
+		t.Fatalf("send media: %v", err)
+	}
+	if err := sendTelegramPoll(context.Background(), client, "tok", "42", "Question?", []any{"A", "B"}); err != nil {
+		t.Fatalf("send poll: %v", err)
+	}
+	if len(paths) != 2 || !strings.Contains(paths[0], "/sendPhoto") || !strings.Contains(paths[1], "/sendPoll") {
+		t.Fatalf("unexpected paths: %v", paths)
 	}
 }
 

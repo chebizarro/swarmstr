@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -220,54 +221,59 @@ func TestSendInThread_PostsToThreadAPI(t *testing.T) {
 	}
 }
 
-// ─── fetchMessages ────────────────────────────────────────────────────────────
+// ─── Events API webhook ──────────────────────────────────────────────────────
 
-func TestFetchMessages_SkipsBotMessages(t *testing.T) {
-	var delivered []sdk.InboundChannelMessage
-	bot := &slackBot{
-		channelID:      "slack-ch",
-		token:          "xoxb-test",
-		slackChannelID: "C123",
-		botUserID:      "UBOT",
-		onMessage:      func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
-		done:           make(chan struct{}),
-		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			return jsonResponse(req, `{
-				"ok": true,
-				"messages": [
-					{"type":"message","user":"UBOT","text":"from bot","ts":"1.001"},
-					{"type":"message","bot_id":"B123","text":"bot msg","ts":"1.002"},
-					{"type":"message","user":"U123","text":"real msg","ts":"1.003"}
-				]
-			}`), nil
-		})},
-	}
-	bot.fetchMessages(context.Background())
-	if len(delivered) != 1 || delivered[0].Text != "real msg" {
-		t.Fatalf("expected only real msg, got %+v", delivered)
+func TestHandleWebhook_UrlVerification(t *testing.T) {
+	bot := &slackBot{channelID: "slack-ch", slackChannelID: "C123", done: make(chan struct{}), onMessage: func(sdk.InboundChannelMessage) {}}
+	registerWebhook("slack-ch", bot)
+	defer bot.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/slack/slack-ch", strings.NewReader(`{"type":"url_verification","challenge":"abc123"}`))
+	w := httptest.NewRecorder()
+	HandleWebhook("slack-ch", w, req)
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "abc123" {
+		t.Fatalf("unexpected url verification response: code=%d body=%q", w.Code, w.Body.String())
 	}
 }
 
-func TestFetchMessages_TracksLastTS(t *testing.T) {
+func TestHandleWebhook_MessageEvent(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
 	bot := &slackBot{
 		channelID:      "slack-ch",
-		token:          "xoxb-test",
 		slackChannelID: "C123",
-		onMessage:      func(sdk.InboundChannelMessage) {},
+		botUserID:      "UBOT",
 		done:           make(chan struct{}),
-		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			return jsonResponse(req, `{
-				"ok": true,
-				"messages": [
-					{"type":"message","user":"U1","text":"a","ts":"1.500"},
-					{"type":"message","user":"U1","text":"b","ts":"1.300"}
-				]
-			}`), nil
-		})},
+		onMessage:      func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
 	}
-	bot.fetchMessages(context.Background())
-	if bot.lastTS != "1.500" {
-		t.Fatalf("expected lastTS=1.500, got %s", bot.lastTS)
+	registerWebhook("slack-ch", bot)
+	defer bot.Close()
+
+	body := `{"type":"event_callback","event_id":"Ev1","event":{"type":"message","channel":"C123","user":"U123","text":"real msg","ts":"171.003"}}`
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/slack/slack-ch", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	HandleWebhook("slack-ch", w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(delivered) != 1 || delivered[0].Text != "real msg" || delivered[0].CreatedAt != 171 {
+		t.Fatalf("expected delivered event, got %+v", delivered)
+	}
+}
+
+func TestHandleWebhook_DeduplicatesEventID(t *testing.T) {
+	count := 0
+	bot := &slackBot{channelID: "slack-ch", slackChannelID: "C123", done: make(chan struct{}), onMessage: func(sdk.InboundChannelMessage) { count++ }}
+	registerWebhook("slack-ch", bot)
+	defer bot.Close()
+
+	body := `{"type":"event_callback","event_id":"Ev1","event":{"type":"message","channel":"C123","user":"U123","text":"real msg","ts":"171.003"}}`
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/slack/slack-ch", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		HandleWebhook("slack-ch", w, req)
+	}
+	if count != 1 {
+		t.Fatalf("expected one delivered event, got %d", count)
 	}
 }
 
@@ -280,34 +286,20 @@ func TestBotID(t *testing.T) {
 	}
 }
 
-// ─── fetchMessages (existing test) ───────────────────────────────────────────
+// ─── Events API thread metadata ──────────────────────────────────────────────
 
-func TestSlackFetchMessages_PopulatesThreadMetadata(t *testing.T) {
+func TestSlackEvents_PopulatesThreadMetadata(t *testing.T) {
 	var delivered []sdk.InboundChannelMessage
 	bot := &slackBot{
 		channelID:      "slack-main",
-		token:          "xoxb-test",
 		slackChannelID: "C123",
-		onMessage: func(msg sdk.InboundChannelMessage) {
-			delivered = append(delivered, msg)
-		},
-		done: make(chan struct{}),
-		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Path != "/api/conversations.history" {
-				t.Fatalf("unexpected path: %s", req.URL.Path)
-			}
-			return jsonResponse(req, `{
-				"ok": true,
-				"messages": [
-					{"type":"message","user":"U123","text":"thread reply","ts":"171.200","thread_ts":"171.100"},
-					{"type":"message","user":"U123","text":"thread root","ts":"171.100","thread_ts":"171.100"},
-					{"type":"message","user":"U123","text":"root message","ts":"171.050"}
-				]
-			}`), nil
-		})},
+		onMessage:      func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
+		done:           make(chan struct{}),
 	}
 
-	bot.fetchMessages(context.Background())
+	bot.processSlackEvent(slackEvent{Type: "message", Channel: "C123", User: "U123", Text: "root message", Ts: "171.050"})
+	bot.processSlackEvent(slackEvent{Type: "message", Channel: "C123", User: "U123", Text: "thread root", Ts: "171.100", ThreadTS: "171.100"})
+	bot.processSlackEvent(slackEvent{Type: "message", Channel: "C123", User: "U123", Text: "thread reply", Ts: "171.200", ThreadTS: "171.100"})
 
 	if len(delivered) != 3 {
 		t.Fatalf("expected 3 delivered messages, got %d", len(delivered))
@@ -318,10 +310,7 @@ func TestSlackFetchMessages_PopulatesThreadMetadata(t *testing.T) {
 	if delivered[1].ThreadID != "" || delivered[1].ReplyToEventID != "" {
 		t.Fatalf("expected top-level thread root to stay unthreaded in inbound metadata, got %+v", delivered[1])
 	}
-	if delivered[2].ThreadID != "171.100" {
-		t.Fatalf("expected threaded reply to use root ts as ThreadID, got %+v", delivered[2])
-	}
-	if delivered[2].ReplyToEventID != "slack-171.100" {
-		t.Fatalf("expected threaded reply to point at root event, got %+v", delivered[2])
+	if delivered[2].ThreadID != "171.100" || delivered[2].ReplyToEventID != "slack-171.100" {
+		t.Fatalf("expected threaded reply metadata, got %+v", delivered[2])
 	}
 }
