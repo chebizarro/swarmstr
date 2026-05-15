@@ -1,0 +1,25 @@
+{
+  "feature_id": "METIQ_CUSTOMIZATION_HANDLERS",
+  "tests": [
+    {
+      "criterion": "AC1",
+      "command": "go test ./internal/gateway/methods",
+      "coverage": "TestSoulFactoryMethodsIncludesCustomizationSurface"
+    },
+    {
+      "criterion": "AC2",
+      "command": "go test ./cmd/metiqd",
+      "coverage": "TestSoulFactoryRuntimeExecutionCoversAllMethods"
+    },
+    {
+      "criterion": "AC3",
+      "command": "go test ./cmd/metiqd",
+      "coverage": "TestSoulFactoryRuntimeExecutionCoversAllMethods metadata assertions"
+    },
+    {
+      "criterion": "AC4",
+      "command": "go test ./cmd/metiqd ./internal/gateway/methods",
+      "coverage": "Targeted package tests including TestSoulFactoryCustomizationDoesNotResumeSuspendedAgent"
+    }
+  ]
+}
