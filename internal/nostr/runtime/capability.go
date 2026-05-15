@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -15,6 +16,21 @@ import (
 )
 
 const capabilityRuntimeTag = "runtime"
+
+const (
+	SoulFactoryRuntimeCapabilitySchema = "soulfactory-runtime-capability/v1"
+	SoulFactoryRuntimeControlSchema    = "soulfactory-runtime-control/v1"
+)
+
+// SoulFactoryCapability describes optional SoulFactory runtime-control support
+// carried in the existing kind:30317 capability announcement content.
+type SoulFactoryCapability struct {
+	Schema            string   `json:"schema,omitempty"`
+	Runtime           string   `json:"runtime,omitempty"`
+	Methods           []string `json:"methods,omitempty"`
+	ControlSchema     string   `json:"control_schema,omitempty"`
+	ControllerPubKeys []string `json:"controller_pubkeys,omitempty"`
+}
 
 func canonicalCapabilityDTag(pubkey string) string {
 	return strings.TrimSpace(strings.ToLower(pubkey))
@@ -33,6 +49,7 @@ type CapabilityAnnouncement struct {
 	Relays            []string
 	EventID           string
 	CreatedAt         int64
+	SoulFactory       SoulFactoryCapability
 	// FIPS mesh transport capability.
 	FIPSEnabled   bool
 	FIPSTransport string // e.g. "udp:2121"
@@ -54,6 +71,7 @@ func normalizeCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnoun
 	in.ContextVMFeatures = normalizeCapabilityStrings(in.ContextVMFeatures)
 	in.Relays = normalizeRelayURLs(in.Relays)
 	in.EventID = strings.TrimSpace(strings.ToLower(in.EventID))
+	in.SoulFactory = normalizeSoulFactoryCapability(in.SoulFactory, in.Runtime)
 	in.FIPSTransport = strings.TrimSpace(in.FIPSTransport)
 	return in
 }
@@ -91,6 +109,105 @@ func normalizeCapabilityStrings(values []string) []string {
 		out = append(out, seen[key])
 	}
 	return out
+}
+
+func normalizeCapabilityPubKeys(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.ToLower(strings.TrimSpace(value))
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeSoulFactoryCapability(in SoulFactoryCapability, runtimeName string) SoulFactoryCapability {
+	in.Schema = strings.TrimSpace(in.Schema)
+	in.Runtime = strings.TrimSpace(in.Runtime)
+	in.ControlSchema = strings.TrimSpace(in.ControlSchema)
+	in.Methods = normalizeCapabilityStrings(in.Methods)
+	in.ControllerPubKeys = normalizeCapabilityPubKeys(in.ControllerPubKeys)
+	if in.Schema == "" && in.ControlSchema == "" && len(in.Methods) == 0 && len(in.ControllerPubKeys) == 0 {
+		return SoulFactoryCapability{}
+	}
+	if in.Schema == "" {
+		in.Schema = SoulFactoryRuntimeCapabilitySchema
+	}
+	if in.Runtime == "" {
+		in.Runtime = strings.TrimSpace(runtimeName)
+	}
+	if in.ControlSchema == "" {
+		in.ControlSchema = SoulFactoryRuntimeControlSchema
+	}
+	return in
+}
+
+type capabilityContent struct {
+	Schema            string               `json:"schema,omitempty"`
+	Runtime           string               `json:"runtime,omitempty"`
+	Methods           []string             `json:"methods,omitempty"`
+	ControlSchema     string               `json:"control_schema,omitempty"`
+	ControllerPubKeys []string             `json:"controller_pubkeys,omitempty"`
+	RelayHints        capabilityRelayHints `json:"relay_hints,omitempty"`
+}
+
+type capabilityRelayHints struct {
+	Read    []string `json:"read,omitempty"`
+	Write   []string `json:"write,omitempty"`
+	Control []string `json:"control,omitempty"`
+}
+
+// BuildCapabilityContent encodes optional JSON metadata for kind:30317.
+func BuildCapabilityContent(cap CapabilityAnnouncement) string {
+	cap = normalizeCapabilityAnnouncement(cap)
+	if cap.SoulFactory.Schema == "" {
+		return ""
+	}
+	raw, err := json.Marshal(capabilityContent{
+		Schema:            cap.SoulFactory.Schema,
+		Runtime:           cap.SoulFactory.Runtime,
+		Methods:           cap.SoulFactory.Methods,
+		ControlSchema:     cap.SoulFactory.ControlSchema,
+		ControllerPubKeys: cap.SoulFactory.ControllerPubKeys,
+		RelayHints: capabilityRelayHints{
+			Read:    cap.Relays,
+			Write:   cap.Relays,
+			Control: cap.Relays,
+		},
+	})
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func parseCapabilityContent(content string) SoulFactoryCapability {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return SoulFactoryCapability{}
+	}
+	var decoded capabilityContent
+	if err := json.Unmarshal([]byte(content), &decoded); err != nil {
+		return SoulFactoryCapability{}
+	}
+	return normalizeSoulFactoryCapability(SoulFactoryCapability{
+		Schema:            decoded.Schema,
+		Runtime:           decoded.Runtime,
+		Methods:           decoded.Methods,
+		ControlSchema:     decoded.ControlSchema,
+		ControllerPubKeys: decoded.ControllerPubKeys,
+	}, decoded.Runtime)
 }
 
 // BuildCapabilityTags encodes a capability announcement into Nostr tags.
@@ -163,6 +280,7 @@ func ParseCapabilityEvent(ev *nostr.Event) (CapabilityAnnouncement, error) {
 		EventID:   ev.ID.Hex(),
 		CreatedAt: int64(ev.CreatedAt),
 	}
+	out.SoulFactory = parseCapabilityContent(ev.Content)
 	for _, tag := range ev.Tags {
 		if len(tag) < 2 {
 			continue
@@ -223,7 +341,7 @@ func PublishCapability(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer,
 		Kind:      nostr.Kind(events.KindCapability),
 		CreatedAt: nostr.Now(),
 		Tags:      BuildCapabilityTags(cap),
-		Content:   "",
+		Content:   BuildCapabilityContent(cap),
 	}
 	if err := keyer.SignEvent(ctx, &evt); err != nil {
 		return "", fmt.Errorf("publish capability: sign event: %w", err)
@@ -341,7 +459,12 @@ func capabilitySemanticEqual(a, b CapabilityAnnouncement) bool {
 		relaySliceEqual(a.DMSchemes, b.DMSchemes) &&
 		relaySliceEqual(a.Tools, b.Tools) &&
 		relaySliceEqual(a.ContextVMFeatures, b.ContextVMFeatures) &&
-		relaySliceEqual(a.Relays, b.Relays)
+		relaySliceEqual(a.Relays, b.Relays) &&
+		a.SoulFactory.Schema == b.SoulFactory.Schema &&
+		a.SoulFactory.Runtime == b.SoulFactory.Runtime &&
+		a.SoulFactory.ControlSchema == b.SoulFactory.ControlSchema &&
+		relaySliceEqual(a.SoulFactory.Methods, b.SoulFactory.Methods) &&
+		relaySliceEqual(a.SoulFactory.ControllerPubKeys, b.SoulFactory.ControllerPubKeys)
 }
 
 func cloneCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnouncement {
@@ -349,6 +472,8 @@ func cloneCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnounceme
 	in.Tools = append([]string{}, in.Tools...)
 	in.ContextVMFeatures = append([]string{}, in.ContextVMFeatures...)
 	in.Relays = append([]string{}, in.Relays...)
+	in.SoulFactory.Methods = append([]string{}, in.SoulFactory.Methods...)
+	in.SoulFactory.ControllerPubKeys = append([]string{}, in.SoulFactory.ControllerPubKeys...)
 	return in
 }
 

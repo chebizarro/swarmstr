@@ -130,7 +130,11 @@ func EvaluateControlCall(callerPubKey, method string, authenticated bool, cfg st
 }
 
 func IsSensitiveControlMethod(method string) bool {
-	switch normalizeControlMethod(method) {
+	method = normalizeControlMethod(method)
+	if strings.HasPrefix(method, "soulfactory.") {
+		return true
+	}
+	switch method {
 	case "config.put", "config.set", "config.apply", "config.patch", "list.put":
 		return true
 	case "agents.create", "agents.update", "agents.delete", "agents.assign", "agents.unassign", "agents.files.set":

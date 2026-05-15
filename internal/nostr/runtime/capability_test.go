@@ -10,6 +10,44 @@ import (
 	"metiq/internal/testutil"
 )
 
+func TestCapabilitySoulFactoryContentRoundTrip(t *testing.T) {
+	cap := CapabilityAnnouncement{
+		PubKey:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Runtime: "metiq",
+		Relays:  []string{"wss://relay.example"},
+		SoulFactory: SoulFactoryCapability{
+			Runtime:           "metiq",
+			Methods:           []string{"soulfactory.resume", "soulfactory.provision", "soulfactory.provision"},
+			ControllerPubKeys: []string{"BBBB", "bbbb"},
+		},
+	}
+	content := BuildCapabilityContent(cap)
+	if content == "" {
+		t.Fatal("expected SoulFactory capability content")
+	}
+	pk, err := ParsePubKey(cap.PubKey)
+	if err != nil {
+		t.Fatalf("ParsePubKey: %v", err)
+	}
+	evt := nostr.Event{Kind: nostr.Kind(events.KindCapability), PubKey: pk, CreatedAt: nostr.Timestamp(100), Tags: BuildCapabilityTags(cap), Content: content}
+	parsed, err := ParseCapabilityEvent(&evt)
+	if err != nil {
+		t.Fatalf("ParseCapabilityEvent: %v", err)
+	}
+	if parsed.SoulFactory.Schema != SoulFactoryRuntimeCapabilitySchema {
+		t.Fatalf("schema = %q", parsed.SoulFactory.Schema)
+	}
+	if parsed.SoulFactory.ControlSchema != SoulFactoryRuntimeControlSchema {
+		t.Fatalf("control schema = %q", parsed.SoulFactory.ControlSchema)
+	}
+	if !relaySliceEqual(parsed.SoulFactory.Methods, []string{"soulfactory.provision", "soulfactory.resume"}) {
+		t.Fatalf("methods = %v", parsed.SoulFactory.Methods)
+	}
+	if !relaySliceEqual(parsed.SoulFactory.ControllerPubKeys, []string{"bbbb"}) {
+		t.Fatalf("controller pubkeys = %v", parsed.SoulFactory.ControllerPubKeys)
+	}
+}
+
 func TestBuildAndParseCapabilityEventRoundTrip(t *testing.T) {
 	sk, err := ParseSecretKey("1111111111111111111111111111111111111111111111111111111111111111")
 	if err != nil {

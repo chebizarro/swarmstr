@@ -11,7 +11,11 @@ const (
 )
 
 func MethodPolicy(method string) Policy {
-	switch strings.TrimSpace(method) {
+	method = strings.TrimSpace(method)
+	if strings.HasPrefix(method, "soulfactory.") {
+		return EventAndRequest
+	}
+	switch method {
 	case "secrets.resolve":
 		return None
 	case "supportedmethods",

@@ -29,6 +29,13 @@ func buildLocalCapabilityAnnouncement(ctx context.Context, cfg state.ConfigDoc, 
 		Tools:             surface.ToolNames,
 		ContextVMFeatures: surface.ContextVMFeatures,
 		Relays:            currentCapabilityPublishRelays(cfg),
+		SoulFactory: nostruntime.SoulFactoryCapability{
+			Schema:            nostruntime.SoulFactoryRuntimeCapabilitySchema,
+			Runtime:           "metiq",
+			Methods:           soulFactoryMethods(),
+			ControlSchema:     nostruntime.SoulFactoryRuntimeControlSchema,
+			ControllerPubKeys: soulFactoryControllerPubKeys(cfg),
+		},
 	}
 }
 
@@ -201,7 +208,10 @@ func applyCapabilityRuntimeState(cfg state.ConfigDoc) {
 	}
 	capabilityMonitor.UpdatePublishRelays(currentCapabilityPublishRelays(cfg))
 	capabilityMonitor.UpdateSubscribeRelays(currentCapabilitySubscriptionRelays(cfg))
-	var dr *state.DocsRepository; if controlServices != nil { dr = controlServices.docsRepo }
+	var dr *state.DocsRepository
+	if controlServices != nil {
+		dr = controlServices.docsRepo
+	}
 	capabilityMonitor.UpdateLocal(buildLocalCapabilityAnnouncement(context.Background(), cfg, dr))
 	capabilityMonitor.TriggerPublish()
 }

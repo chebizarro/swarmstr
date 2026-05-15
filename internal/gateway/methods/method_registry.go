@@ -10,20 +10,21 @@ import (
 type AdminDispatchGroup string
 
 const (
-	AdminDispatchAgents   AdminDispatchGroup = "agents"
-	AdminDispatchChannels AdminDispatchGroup = "channels"
-	AdminDispatchConfig   AdminDispatchGroup = "config"
-	AdminDispatchCron     AdminDispatchGroup = "cron"
-	AdminDispatchExec     AdminDispatchGroup = "exec"
-	AdminDispatchMCP      AdminDispatchGroup = "mcp"
-	AdminDispatchMedia    AdminDispatchGroup = "media"
-	AdminDispatchNodes    AdminDispatchGroup = "nodes"
-	AdminDispatchPlugins  AdminDispatchGroup = "plugins"
-	AdminDispatchRuntime  AdminDispatchGroup = "runtime"
-	AdminDispatchSessions AdminDispatchGroup = "sessions"
-	AdminDispatchTasks    AdminDispatchGroup = "tasks"
-	AdminDispatchSystem   AdminDispatchGroup = "system"
-	AdminDispatchACP      AdminDispatchGroup = "acp"
+	AdminDispatchAgents      AdminDispatchGroup = "agents"
+	AdminDispatchChannels    AdminDispatchGroup = "channels"
+	AdminDispatchConfig      AdminDispatchGroup = "config"
+	AdminDispatchCron        AdminDispatchGroup = "cron"
+	AdminDispatchExec        AdminDispatchGroup = "exec"
+	AdminDispatchMCP         AdminDispatchGroup = "mcp"
+	AdminDispatchMedia       AdminDispatchGroup = "media"
+	AdminDispatchNodes       AdminDispatchGroup = "nodes"
+	AdminDispatchPlugins     AdminDispatchGroup = "plugins"
+	AdminDispatchRuntime     AdminDispatchGroup = "runtime"
+	AdminDispatchSessions    AdminDispatchGroup = "sessions"
+	AdminDispatchTasks       AdminDispatchGroup = "tasks"
+	AdminDispatchSystem      AdminDispatchGroup = "system"
+	AdminDispatchACP         AdminDispatchGroup = "acp"
+	AdminDispatchSoulFactory AdminDispatchGroup = "soulfactory"
 )
 
 var adminDispatchRegistry = []struct {
@@ -229,6 +230,7 @@ var adminDispatchRegistry = []struct {
 		MethodACPSessionStatus,
 		MethodACPManagerStatus,
 	}},
+	{AdminDispatchSoulFactory, SoulFactoryMethods()},
 }
 
 type ControlReplayPolicy = controlreplay.Policy
@@ -241,6 +243,30 @@ const (
 
 func ControlMethodReplayPolicy(method string) ControlReplayPolicy {
 	return controlreplay.MethodPolicy(method)
+}
+
+func SoulFactoryMethods() []string {
+	return []string{
+		MethodSoulFactoryProvision,
+		MethodSoulFactoryUpdate,
+		MethodSoulFactorySuspend,
+		MethodSoulFactoryResume,
+		MethodSoulFactoryRedeploy,
+		MethodSoulFactoryRevoke,
+	}
+}
+
+func IsSoulFactoryMethod(method string) bool {
+	method = strings.TrimSpace(method)
+	if method == "" {
+		return false
+	}
+	for _, candidate := range SoulFactoryMethods() {
+		if method == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func SupportedMethods() []string {
