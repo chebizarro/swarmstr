@@ -1,0 +1,11 @@
+{
+  "feature_id": "METIQ_CUSTOMIZATION_HANDLERS",
+  "bead": "bahia-b86x",
+  "title": "Metiq SoulFactory customization method handlers",
+  "observed_behavior_before": "Metiq SoulFactory bridge handled lifecycle methods only: provision, update, suspend, resume, redeploy, revoke.",
+  "intended_behavior": "Metiq recognizes SoulFactory avatar, voice, memory, persona, and config reload runtime control methods and persists Go runtime customization state via the existing control bus bridge/idempotency flow.",
+  "scope": [
+    "cmd/metiqd/soulfactory_bridge.go",
+    "internal/gateway/methods/*"
+  ]
+}

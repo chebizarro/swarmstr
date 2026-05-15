@@ -1,0 +1,21 @@
+{
+  "feature_id": "METIQ_CUSTOMIZATION_HANDLERS",
+  "criteria": [
+    {
+      "id": "AC1",
+      "text": "Metiq registers SoulFactory avatar, voice, memory, persona, and config reload methods."
+    },
+    {
+      "id": "AC2",
+      "text": "Metiq bridge accepts customization methods through the existing SoulFactory control envelope validation and idempotency flow."
+    },
+    {
+      "id": "AC3",
+      "text": "Avatar set and persona update persist runtime metadata; provider-backed generation/sample/reindex methods are explicit TODO stubs with warnings."
+    },
+    {
+      "id": "AC4",
+      "text": "Tests cover method registration, bridge execution, suspended-state preservation, and metadata preservation."
+    }
+  ]
+}
