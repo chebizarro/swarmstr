@@ -184,8 +184,11 @@ func (h controlRPCHandler) applySoulFactorySideEffect(ctx context.Context, in no
 
 	params := soulFactoryParamsMap(env.Params)
 	now := time.Now().Unix()
+	customizationResult := map[string]any(nil)
+	customizationWarnings := []string(nil)
 	doc, err := repo.GetAgent(ctx, agentID)
 	found := err == nil
+	previousState := soulFactoryStateFromMeta(doc.Meta)
 	if err != nil && !errors.Is(err, state.ErrNotFound) {
 		return nil, soulFactoryValidationError("runtime_unavailable", "load managed agent failed", map[string]any{"agent_id": agentID, "error": err.Error()})
 	}
@@ -254,12 +257,34 @@ func (h controlRPCHandler) applySoulFactorySideEffect(ctx context.Context, in no
 		if err := h.disableSoulFactoryLiveAgent(ctx, repo, agentID, true); err != nil {
 			return nil, soulFactoryValidationError("execution_failed", "revoke managed agent runtime bindings failed", map[string]any{"agent_id": agentID, "error": err.Error()})
 		}
+	case methods.MethodSoulFactoryAvatarGenerate,
+		methods.MethodSoulFactoryAvatarSet,
+		methods.MethodSoulFactoryVoiceConfigure,
+		methods.MethodSoulFactoryVoiceSample,
+		methods.MethodSoulFactoryMemoryConfigure,
+		methods.MethodSoulFactoryMemoryReindex,
+		methods.MethodSoulFactoryPersonaUpdate,
+		methods.MethodSoulFactoryConfigReload:
+		if !found || doc.Deleted {
+			return nil, soulFactoryValidationError("execution_failed", "managed agent does not exist", map[string]any{"agent_id": agentID})
+		}
+		var errShape *soulFactoryError
+		customizationResult, customizationWarnings, errShape = soulFactoryApplyCustomization(method, params, &doc, cfg, now)
+		if errShape != nil {
+			return nil, errShape
+		}
 	default:
 		return nil, soulFactoryValidationError("unsupported_method", "unsupported SoulFactory method", map[string]any{"method": method})
 	}
 
 	stateValue := soulFactoryStateForMethod(method)
+	if previousState == "suspended" && !soulFactoryMethodActivatesRuntime(method) {
+		stateValue = "suspended"
+	}
 	meta := soulFactoryRuntimeMeta(in, method, env, params, stateValue, now)
+	if customization := soulFactoryCustomizationFromMeta(doc.Meta); len(customization) > 0 {
+		meta["customization"] = customization
+	}
 	doc.Meta = mergeSessionMeta(doc.Meta, map[string]any{"soulfactory": meta})
 	if doc.Version == 0 {
 		doc.Version = 1
@@ -267,7 +292,7 @@ func (h controlRPCHandler) applySoulFactorySideEffect(ctx context.Context, in no
 	if _, err := repo.PutAgent(ctx, agentID, doc); err != nil {
 		return nil, soulFactoryValidationError("execution_failed", "persist managed agent failed", map[string]any{"agent_id": agentID, "error": err.Error()})
 	}
-	if h.deps.agentRegistry != nil && !doc.Deleted && strings.TrimSpace(doc.Model) != "" {
+	if h.deps.agentRegistry != nil && !doc.Deleted && stateValue == "running" && strings.TrimSpace(doc.Model) != "" {
 		if rt, rtErr := agent.BuildRuntimeForModel(doc.Model, h.deps.tools); rtErr == nil && rt != nil {
 			h.deps.agentRegistry.Set(agentID, rt)
 		}
@@ -281,12 +306,169 @@ func (h controlRPCHandler) applySoulFactorySideEffect(ctx context.Context, in no
 		"spec_hash":       soulFactoryTagValue(in.Tags, "spec-hash"),
 		"capability_ref":  soulFactoryTagValue(in.Tags, "capability"),
 		"observed_at":     now,
-		"warnings":        []string{},
+		"warnings":        customizationWarnings,
+	}
+	if customizationResult != nil {
+		result["customization"] = customizationResult
 	}
 	if method == methods.MethodSoulFactoryRedeploy {
 		result["deployment_generation"] = soulFactoryDeploymentGeneration(doc.Meta)
 	}
 	return result, nil
+}
+
+func soulFactoryApplyCustomization(method string, params map[string]any, doc *state.AgentDoc, cfg state.ConfigDoc, observedAt int64) (map[string]any, []string, *soulFactoryError) {
+	_ = cfg
+	customization := soulFactoryCustomizationFromMeta(doc.Meta)
+	if customization == nil {
+		customization = map[string]any{}
+	}
+	warnings := []string{}
+	result := map[string]any{"status": "applied", "applied": []string{}}
+	setSection := func(section string, value map[string]any) {
+		if value == nil {
+			value = map[string]any{}
+		}
+		value["updated_at"] = observedAt
+		customization[section] = value
+	}
+	setApplied := func(values ...string) {
+		applied := make([]string, 0, len(values))
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				applied = append(applied, value)
+			}
+		}
+		result["applied"] = applied
+	}
+
+	switch method {
+	case methods.MethodSoulFactoryAvatarGenerate:
+		avatar := soulFactorySectionParams(params, "avatar")
+		if generation := soulFactoryNestedMap(params, "generation"); generation != nil && soulFactoryNestedMap(avatar, "generation") == nil {
+			avatar["generation"] = soulFactoryCloneMap(generation)
+		}
+		avatar["status"] = "generation_requested"
+		setSection("avatar", avatar)
+		result["section"] = "avatar"
+		result["status"] = "accepted"
+		setApplied("avatar.generation")
+		warnings = append(warnings, "TODO(metiq): avatar image generation provider is not wired; request was persisted for the runtime/backend worker")
+	case methods.MethodSoulFactoryAvatarSet:
+		avatar := soulFactorySectionParams(params, "avatar")
+		ref := soulFactoryFirstString(params, "avatar_ref", "ref", "uploaded_ref", "generated_ref")
+		if ref == "" {
+			ref = soulFactoryFirstString(avatar, "avatar_ref", "ref", "uploaded_ref", "generated_ref")
+		}
+		if ref == "" {
+			return nil, nil, soulFactoryValidationError("missing_required_param", "missing required avatar ref param", map[string]any{"param": "avatar_ref|ref|uploaded_ref|generated_ref"})
+		}
+		current := soulFactoryFirstString(params, "current", "source")
+		if current == "" {
+			current = soulFactoryFirstString(avatar, "current", "source")
+		}
+		if current == "" {
+			current = "uploaded"
+		}
+		avatar["ref"] = ref
+		avatar["current"] = current
+		avatar["status"] = "set"
+		setSection("avatar", avatar)
+		result["section"] = "avatar"
+		result["avatar_ref"] = ref
+		setApplied("avatar.ref")
+	case methods.MethodSoulFactoryVoiceConfigure:
+		voice := soulFactorySectionParams(params, "voice")
+		voice["status"] = "configured"
+		setSection("voice", voice)
+		result["section"] = "voice"
+		setApplied("voice.config")
+		warnings = append(warnings, "TODO(metiq): live TTS provider hot-reload is not wired; voice config was persisted")
+	case methods.MethodSoulFactoryVoiceSample:
+		sample := map[string]any{"request": soulFactoryCloneMap(params), "status": "sample_requested"}
+		setSection("voice_sample", sample)
+		result["section"] = "voice"
+		result["status"] = "accepted"
+		setApplied("voice.sample")
+		warnings = append(warnings, "TODO(metiq): voice sample generation is not wired; sample request was persisted")
+	case methods.MethodSoulFactoryMemoryConfigure:
+		memory := soulFactorySectionParams(params, "memory")
+		memory["status"] = "configured"
+		setSection("memory", memory)
+		result["section"] = "memory"
+		setApplied("memory.config")
+		warnings = append(warnings, "TODO(metiq): live memory backend reconfiguration is not wired; memory config was persisted")
+	case methods.MethodSoulFactoryMemoryReindex:
+		reindex := map[string]any{"request": soulFactoryCloneMap(params), "status": "reindex_requested"}
+		setSection("memory_reindex", reindex)
+		result["section"] = "memory"
+		result["status"] = "accepted"
+		setApplied("memory.reindex")
+		warnings = append(warnings, "TODO(metiq): memory reindex orchestration is not wired; reindex request was persisted")
+	case methods.MethodSoulFactoryPersonaUpdate:
+		persona := soulFactorySectionParams(params, "persona")
+		if identity := soulFactoryNestedMap(params, "identity"); identity != nil {
+			persona["identity"] = soulFactoryCloneMap(identity)
+			if name := soulFactoryString(identity, "name"); name != "" {
+				doc.Name = name
+			}
+		}
+		if prompt := soulFactoryString(params, "system_prompt"); prompt != "" {
+			persona["system_prompt"] = prompt
+		}
+		if sections := soulFactoryNestedMap(params, "system_prompt_sections"); sections != nil {
+			persona["system_prompt_sections"] = soulFactoryCloneMap(sections)
+		}
+		persona["status"] = "updated"
+		setSection("persona", persona)
+		result["section"] = "persona"
+		setApplied("persona.config")
+	case methods.MethodSoulFactoryConfigReload:
+		patch := soulFactoryFirstNestedMap(params, "resolved_spec", "config", "patch")
+		if patch == nil {
+			patch = params
+		}
+		applied := []string{}
+		if identity := soulFactoryNestedMap(patch, "identity"); identity != nil {
+			identityCopy := soulFactoryCloneMap(identity)
+			identityCopy["updated_at"] = observedAt
+			customization["identity"] = identityCopy
+			applied = append(applied, "identity")
+			if name := soulFactoryString(identity, "name"); name != "" {
+				doc.Name = name
+			}
+		}
+		if runtimeSpec := soulFactoryNestedMap(patch, "runtime"); runtimeSpec != nil {
+			if model := soulFactoryString(runtimeSpec, "model"); model != "" {
+				doc.Model = model
+				applied = append(applied, "runtime.model")
+			}
+		}
+		for _, section := range []string{"avatar", "voice", "memory", "persona"} {
+			if value := soulFactoryNestedMap(patch, section); value != nil {
+				copyValue := soulFactoryCloneMap(value)
+				copyValue["status"] = "reloaded"
+				setSection(section, copyValue)
+				applied = append(applied, section)
+			}
+		}
+		result["section"] = "config"
+		if len(applied) == 0 {
+			result["status"] = "accepted"
+			warnings = append(warnings, "Metiq config reload found no avatar, voice, memory, persona, identity, or runtime model fields to apply")
+		} else {
+			result["applied"] = applied
+		}
+		warnings = append(warnings, "TODO(metiq): provider-specific hot-reload hooks are not wired; applicable config was persisted")
+	default:
+		return nil, nil, soulFactoryValidationError("unsupported_method", "unsupported SoulFactory customization method", map[string]any{"method": method})
+	}
+
+	soulFactorySetCustomizationMeta(doc, customization)
+	result["runtime_model"] = doc.Model
+	result["agent_name"] = doc.Name
+	return result, warnings, nil
 }
 
 func soulFactoryRuntimeMeta(in nostruntime.ControlRPCInbound, method string, env soulFactoryControlEnvelope, params map[string]any, stateValue string, observedAt int64) map[string]any {
@@ -535,6 +717,15 @@ func validateSoulFactoryParams(method string, raw json.RawMessage) *soulFactoryE
 		return require("reason", "strategy")
 	case methods.MethodSoulFactoryRevoke:
 		return require("reason", "revoke_runtime_credentials")
+	case methods.MethodSoulFactoryAvatarGenerate,
+		methods.MethodSoulFactoryAvatarSet,
+		methods.MethodSoulFactoryVoiceConfigure,
+		methods.MethodSoulFactoryVoiceSample,
+		methods.MethodSoulFactoryMemoryConfigure,
+		methods.MethodSoulFactoryMemoryReindex,
+		methods.MethodSoulFactoryPersonaUpdate,
+		methods.MethodSoulFactoryConfigReload:
+		return nil
 	default:
 		return soulFactoryValidationError("unsupported_method", "unsupported SoulFactory method", map[string]any{"method": method})
 	}
@@ -610,13 +801,42 @@ func soulFactoryStateForMethod(method string) string {
 	switch method {
 	case methods.MethodSoulFactorySuspend:
 		return "suspended"
-	case methods.MethodSoulFactoryResume, methods.MethodSoulFactoryProvision, methods.MethodSoulFactoryRedeploy, methods.MethodSoulFactoryUpdate:
+	case methods.MethodSoulFactoryResume,
+		methods.MethodSoulFactoryProvision,
+		methods.MethodSoulFactoryRedeploy,
+		methods.MethodSoulFactoryUpdate,
+		methods.MethodSoulFactoryAvatarGenerate,
+		methods.MethodSoulFactoryAvatarSet,
+		methods.MethodSoulFactoryVoiceConfigure,
+		methods.MethodSoulFactoryVoiceSample,
+		methods.MethodSoulFactoryMemoryConfigure,
+		methods.MethodSoulFactoryMemoryReindex,
+		methods.MethodSoulFactoryPersonaUpdate,
+		methods.MethodSoulFactoryConfigReload:
 		return "running"
 	case methods.MethodSoulFactoryRevoke:
 		return "revoked"
 	default:
 		return "accepted"
 	}
+}
+
+func soulFactoryMethodActivatesRuntime(method string) bool {
+	switch method {
+	case methods.MethodSoulFactoryProvision, methods.MethodSoulFactoryResume, methods.MethodSoulFactoryRedeploy:
+		return true
+	default:
+		return false
+	}
+}
+
+func soulFactoryStateFromMeta(meta map[string]any) string {
+	if meta == nil {
+		return ""
+	}
+	sf, _ := meta["soulfactory"].(map[string]any)
+	stateValue, _ := sf["state"].(string)
+	return strings.TrimSpace(stateValue)
 }
 
 func soulFactoryLoadRuntimeCheckpoint(ctx context.Context, repo *state.DocsRepository) (state.CheckpointDoc, error) {
@@ -761,6 +981,80 @@ func soulFactoryNestedString(m map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func soulFactoryFirstString(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := soulFactoryString(m, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func soulFactoryFirstNestedMap(m map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		if value := soulFactoryNestedMap(m, key); value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func soulFactorySectionParams(params map[string]any, section string) map[string]any {
+	if nested := soulFactoryNestedMap(params, section); nested != nil {
+		return soulFactoryCloneMap(nested)
+	}
+	return soulFactoryCloneMap(params)
+}
+
+func soulFactoryCustomizationFromMeta(meta map[string]any) map[string]any {
+	if meta == nil {
+		return nil
+	}
+	sf, _ := meta["soulfactory"].(map[string]any)
+	customization, _ := sf["customization"].(map[string]any)
+	return soulFactoryCloneMap(customization)
+}
+
+func soulFactorySetCustomizationMeta(doc *state.AgentDoc, customization map[string]any) {
+	if doc == nil {
+		return
+	}
+	sf := map[string]any{}
+	if doc.Meta != nil {
+		if existing, ok := doc.Meta["soulfactory"].(map[string]any); ok {
+			sf = soulFactoryCloneMap(existing)
+		}
+	}
+	sf["customization"] = soulFactoryCloneMap(customization)
+	doc.Meta = mergeSessionMeta(doc.Meta, map[string]any{"soulfactory": sf})
+}
+
+func soulFactoryCloneMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = soulFactoryCloneValue(value)
+	}
+	return out
+}
+
+func soulFactoryCloneValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return soulFactoryCloneMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = soulFactoryCloneValue(item)
+		}
+		return out
+	default:
+		return typed
+	}
 }
 
 func soulFactoryWorkspaceValue(params map[string]any) string {
