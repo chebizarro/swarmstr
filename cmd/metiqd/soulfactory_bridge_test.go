@@ -147,7 +147,15 @@ func TestSoulFactoryRuntimeExecutionCoversAllMethods(t *testing.T) {
 		{method: methods.MethodSoulFactorySuspend, idem: "idem-suspend", spec: "sha256:spec-2", params: map[string]any{"reason": "maintenance"}, state: "suspended"},
 		{method: methods.MethodSoulFactoryResume, idem: "idem-resume", spec: "sha256:spec-2", params: map[string]any{"reason": "maintenance complete"}, state: "running"},
 		{method: methods.MethodSoulFactoryRedeploy, idem: "idem-redeploy", spec: "sha256:spec-2", params: map[string]any{"reason": "refresh", "strategy": "restart"}, state: "running"},
-		{method: methods.MethodSoulFactoryRevoke, idem: "idem-revoke", spec: "sha256:spec-2", params: map[string]any{"reason": "operator revoke", "revoke_runtime_credentials": true}, state: "revoked"},
+		{method: methods.MethodSoulFactoryAvatarGenerate, idem: "idem-avatar-generate", spec: "sha256:spec-3", params: map[string]any{"generation": map[string]any{"prompt": "pixel owl", "style_preset": "pixel-art"}}, state: "running"},
+		{method: methods.MethodSoulFactoryAvatarSet, idem: "idem-avatar-set", spec: "sha256:spec-3", params: map[string]any{"avatar_ref": "blossom:avatar-hash", "current": "generated"}, state: "running"},
+		{method: methods.MethodSoulFactoryVoiceConfigure, idem: "idem-voice-configure", spec: "sha256:spec-3", params: map[string]any{"voice": map[string]any{"provider": "elevenlabs", "persona_id": "alice-voice"}}, state: "running"},
+		{method: methods.MethodSoulFactoryVoiceSample, idem: "idem-voice-sample", spec: "sha256:spec-3", params: map[string]any{"sample_text": "hello from Alice"}, state: "running"},
+		{method: methods.MethodSoulFactoryMemoryConfigure, idem: "idem-memory-configure", spec: "sha256:spec-3", params: map[string]any{"memory": map[string]any{"embedding_provider": "voyage", "strategy": "session-aware"}}, state: "running"},
+		{method: methods.MethodSoulFactoryMemoryReindex, idem: "idem-memory-reindex", spec: "sha256:spec-3", params: map[string]any{"mode": "full"}, state: "running"},
+		{method: methods.MethodSoulFactoryPersonaUpdate, idem: "idem-persona-update", spec: "sha256:spec-3", params: map[string]any{"identity": map[string]any{"name": "Alice Persona"}, "persona": map[string]any{"traits": []any{"curious", "patient"}, "tone": "warm"}}, state: "running"},
+		{method: methods.MethodSoulFactoryConfigReload, idem: "idem-config-reload", spec: "sha256:spec-3", params: map[string]any{"patch": map[string]any{"runtime": map[string]any{"model": "echo"}, "persona": map[string]any{"style": "concise"}}}, state: "running"},
+		{method: methods.MethodSoulFactoryRevoke, idem: "idem-revoke", spec: "sha256:spec-3", params: map[string]any{"reason": "operator revoke", "revoke_runtime_credentials": true}, state: "revoked"},
 	}
 	for i, tc := range cases {
 		t.Run(tc.method, func(t *testing.T) {
@@ -174,12 +182,55 @@ func TestSoulFactoryRuntimeExecutionCoversAllMethods(t *testing.T) {
 	if sf["state"] != "revoked" || sf["reason"] != "operator revoke" {
 		t.Fatalf("unexpected soulfactory meta: %#v", sf)
 	}
+	customization, _ := sf["customization"].(map[string]any)
+	avatar, _ := customization["avatar"].(map[string]any)
+	persona, _ := customization["persona"].(map[string]any)
+	if avatar["ref"] != "blossom:avatar-hash" || persona["style"] != "concise" {
+		t.Fatalf("customization metadata not preserved: %#v", customization)
+	}
 	session, err := docs.GetSession(ctx, "session-1")
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
 	if session.Meta != nil && session.Meta["agent_id"] != nil {
 		t.Fatalf("revoke should clear persisted session assignment: %#v", session.Meta)
+	}
+}
+
+func TestSoulFactoryCustomizationDoesNotResumeSuspendedAgent(t *testing.T) {
+	h, docs := testSoulFactoryHandler(t)
+	ctx := context.Background()
+	provision := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryProvision, testSoulFactoryProvisionParams(), "idem-provision", "sha256:spec-1", "event-provision", "agent-alice")
+	res, err := h.Handle(ctx, provision)
+	if err != nil {
+		t.Fatalf("provision Handle: %v", err)
+	}
+	requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
+	suspend := testSoulFactoryInboundWith(t, methods.MethodSoulFactorySuspend, map[string]any{"reason": "maintenance"}, "idem-suspend", "sha256:spec-1", "event-suspend", "agent-alice")
+	res, err = h.Handle(ctx, suspend)
+	if err != nil {
+		t.Fatalf("suspend Handle: %v", err)
+	}
+	requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
+
+	customize := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryAvatarSet, map[string]any{"avatar_ref": "blossom:suspended-avatar"}, "idem-avatar", "sha256:spec-2", "event-avatar", "agent-alice")
+	res, err = h.Handle(ctx, customize)
+	if err != nil {
+		t.Fatalf("customize Handle: %v", err)
+	}
+	result := requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
+	if result["state"] != "suspended" {
+		t.Fatalf("customization resumed suspended agent: %#v", result)
+	}
+	doc, err := docs.GetAgent(ctx, "agent-alice")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	sf, _ := doc.Meta["soulfactory"].(map[string]any)
+	customization, _ := sf["customization"].(map[string]any)
+	avatar, _ := customization["avatar"].(map[string]any)
+	if sf["state"] != "suspended" || avatar["ref"] != "blossom:suspended-avatar" {
+		t.Fatalf("unexpected suspended customization meta: %#v", sf)
 	}
 }
 

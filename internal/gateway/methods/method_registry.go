@@ -253,6 +253,14 @@ func SoulFactoryMethods() []string {
 		MethodSoulFactoryResume,
 		MethodSoulFactoryRedeploy,
 		MethodSoulFactoryRevoke,
+		MethodSoulFactoryAvatarGenerate,
+		MethodSoulFactoryAvatarSet,
+		MethodSoulFactoryVoiceConfigure,
+		MethodSoulFactoryVoiceSample,
+		MethodSoulFactoryMemoryConfigure,
+		MethodSoulFactoryMemoryReindex,
+		MethodSoulFactoryPersonaUpdate,
+		MethodSoulFactoryConfigReload,
 	}
 }
 
