@@ -80,6 +80,55 @@ func soulFactoryMethods() []string {
 	return methods.SoulFactoryMethods()
 }
 
+func soulFactoryFeatureCapabilities() []nostruntime.SoulFactoryFeatureCapability {
+	return []nostruntime.SoulFactoryFeatureCapability{
+		{
+			Name:           "avatar",
+			Methods:        []string{methods.MethodSoulFactoryAvatarGenerate, methods.MethodSoulFactoryAvatarSet},
+			Status:         "partial",
+			OpenClawParity: "partial",
+			Notes:          []string{"avatar.set applies stored refs", "avatar.generate is accepted but persisted for a backend worker"},
+		},
+		{
+			Name:           "voice",
+			Methods:        []string{methods.MethodSoulFactoryVoiceConfigure, methods.MethodSoulFactoryVoiceSample},
+			Status:         "stubbed",
+			OpenClawParity: "partial",
+			Notes:          []string{"voice configuration and sample requests are persisted; live TTS provider hot-reload is not wired"},
+		},
+		{
+			Name:           "memory",
+			Methods:        []string{methods.MethodSoulFactoryMemoryConfigure, methods.MethodSoulFactoryMemoryReindex},
+			Status:         "stubbed",
+			OpenClawParity: "partial",
+			Notes:          []string{"memory configuration and reindex requests are persisted; live memory backend reconfiguration is not wired"},
+		},
+		{
+			Name:           "persona",
+			Methods:        []string{methods.MethodSoulFactoryPersonaUpdate},
+			Status:         "partial",
+			OpenClawParity: "partial",
+			Notes:          []string{"persona metadata and identity updates are persisted on the managed agent document; live system-prompt hot-reload is not wired"},
+		},
+		{
+			Name:           "config_reload",
+			Methods:        []string{methods.MethodSoulFactoryConfigReload},
+			Status:         "partial",
+			OpenClawParity: "partial",
+			Notes:          []string{"config reload applies supported fields and persists provider-specific patches; provider-specific hot-reload hooks are not wired"},
+		},
+	}
+}
+
+func soulFactoryOpenClawParity() nostruntime.SoulFactoryFeatureParity {
+	return nostruntime.SoulFactoryFeatureParity{
+		Runtime:      "openclaw",
+		Status:       "partial",
+		MethodParity: true,
+		Notes:        []string{"Metiq advertises the same SoulFactory customization method names as OpenClaw; several provider-specific live hooks are currently persisted/stubbed"},
+	}
+}
+
 func soulFactoryControllerPubKeys(cfg state.ConfigDoc) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(cfg.Control.Admins))

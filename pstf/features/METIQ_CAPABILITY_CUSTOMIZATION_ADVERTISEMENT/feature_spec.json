@@ -1,0 +1,11 @@
+{
+  "feature_id": "METIQ_CAPABILITY_CUSTOMIZATION_ADVERTISEMENT",
+  "title": "Metiq advertises SoulFactory customization capabilities",
+  "beads_issue": "bahia-ra3q",
+  "intended_behavior": "Metiq kind:30317 capability content uses the v2 SoulFactory runtime capability schema, lists all customization runtime-control methods, and declares feature availability plus OpenClaw parity metadata so controllers can feature-gate partial/stubbed support.",
+  "observed_baseline": "Metiq already returned the customization method list through SoulFactoryMethods(), but the capability content only carried v1 method/controller metadata and no feature availability or parity block.",
+  "scope": [
+    "swarmstr/cmd/metiqd capability announcement construction",
+    "swarmstr/internal/nostr/runtime capability content encode/decode"
+  ]
+}

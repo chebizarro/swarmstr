@@ -18,18 +18,40 @@ import (
 const capabilityRuntimeTag = "runtime"
 
 const (
-	SoulFactoryRuntimeCapabilitySchema = "soulfactory-runtime-capability/v1"
+	SoulFactoryRuntimeCapabilitySchema = "soulfactory-runtime-capability/v2"
 	SoulFactoryRuntimeControlSchema    = "soulfactory-runtime-control/v1"
 )
+
+// SoulFactoryFeatureCapability advertises availability for a SoulFactory
+// customization feature family. Status values are intentionally coarse
+// (available, partial, stubbed) so controller UIs can feature-gate safely.
+type SoulFactoryFeatureCapability struct {
+	Name           string   `json:"name,omitempty"`
+	Methods        []string `json:"methods,omitempty"`
+	Status         string   `json:"status,omitempty"`
+	OpenClawParity string   `json:"openclaw_parity,omitempty"`
+	Notes          []string `json:"notes,omitempty"`
+}
+
+// SoulFactoryFeatureParity summarizes whether the runtime's advertised
+// customization surface is at feature parity with another runtime.
+type SoulFactoryFeatureParity struct {
+	Runtime      string   `json:"runtime,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	MethodParity bool     `json:"method_parity,omitempty"`
+	Notes        []string `json:"notes,omitempty"`
+}
 
 // SoulFactoryCapability describes optional SoulFactory runtime-control support
 // carried in the existing kind:30317 capability announcement content.
 type SoulFactoryCapability struct {
-	Schema            string   `json:"schema,omitempty"`
-	Runtime           string   `json:"runtime,omitempty"`
-	Methods           []string `json:"methods,omitempty"`
-	ControlSchema     string   `json:"control_schema,omitempty"`
-	ControllerPubKeys []string `json:"controller_pubkeys,omitempty"`
+	Schema            string                         `json:"schema,omitempty"`
+	Runtime           string                         `json:"runtime,omitempty"`
+	Methods           []string                       `json:"methods,omitempty"`
+	ControlSchema     string                         `json:"control_schema,omitempty"`
+	ControllerPubKeys []string                       `json:"controller_pubkeys,omitempty"`
+	Features          []SoulFactoryFeatureCapability `json:"features,omitempty"`
+	FeatureParity     SoulFactoryFeatureParity       `json:"feature_parity,omitempty"`
 }
 
 func canonicalCapabilityDTag(pubkey string) string {
@@ -138,7 +160,9 @@ func normalizeSoulFactoryCapability(in SoulFactoryCapability, runtimeName string
 	in.ControlSchema = strings.TrimSpace(in.ControlSchema)
 	in.Methods = normalizeCapabilityStrings(in.Methods)
 	in.ControllerPubKeys = normalizeCapabilityPubKeys(in.ControllerPubKeys)
-	if in.Schema == "" && in.ControlSchema == "" && len(in.Methods) == 0 && len(in.ControllerPubKeys) == 0 {
+	in.Features = normalizeSoulFactoryFeatureCapabilities(in.Features)
+	in.FeatureParity = normalizeSoulFactoryFeatureParity(in.FeatureParity)
+	if in.Schema == "" && in.ControlSchema == "" && len(in.Methods) == 0 && len(in.ControllerPubKeys) == 0 && len(in.Features) == 0 && soulFactoryFeatureParityEmpty(in.FeatureParity) {
 		return SoulFactoryCapability{}
 	}
 	if in.Schema == "" {
@@ -153,13 +177,64 @@ func normalizeSoulFactoryCapability(in SoulFactoryCapability, runtimeName string
 	return in
 }
 
+func normalizeSoulFactoryFeatureCapabilities(values []SoulFactoryFeatureCapability) []SoulFactoryFeatureCapability {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]SoulFactoryFeatureCapability, len(values))
+	for _, value := range values {
+		value.Name = strings.ToLower(strings.TrimSpace(value.Name))
+		value.Status = strings.ToLower(strings.TrimSpace(value.Status))
+		value.OpenClawParity = strings.ToLower(strings.TrimSpace(value.OpenClawParity))
+		value.Methods = normalizeCapabilityStrings(value.Methods)
+		value.Notes = normalizeCapabilityStrings(value.Notes)
+		if value.Name == "" && value.Status == "" && value.OpenClawParity == "" && len(value.Methods) == 0 && len(value.Notes) == 0 {
+			continue
+		}
+		key := value.Name
+		if key == "" {
+			key = strings.Join(value.Methods, "\x00")
+		}
+		seen[key] = value
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]SoulFactoryFeatureCapability, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, seen[key])
+	}
+	return out
+}
+
+func normalizeSoulFactoryFeatureParity(in SoulFactoryFeatureParity) SoulFactoryFeatureParity {
+	in.Runtime = strings.TrimSpace(in.Runtime)
+	in.Status = strings.ToLower(strings.TrimSpace(in.Status))
+	in.Notes = normalizeCapabilityStrings(in.Notes)
+	if in.Runtime == "" && (in.Status != "" || in.MethodParity || len(in.Notes) > 0) {
+		in.Runtime = "openclaw"
+	}
+	return in
+}
+
+func soulFactoryFeatureParityEmpty(in SoulFactoryFeatureParity) bool {
+	return strings.TrimSpace(in.Runtime) == "" && strings.TrimSpace(in.Status) == "" && !in.MethodParity && len(in.Notes) == 0
+}
+
 type capabilityContent struct {
-	Schema            string               `json:"schema,omitempty"`
-	Runtime           string               `json:"runtime,omitempty"`
-	Methods           []string             `json:"methods,omitempty"`
-	ControlSchema     string               `json:"control_schema,omitempty"`
-	ControllerPubKeys []string             `json:"controller_pubkeys,omitempty"`
-	RelayHints        capabilityRelayHints `json:"relay_hints,omitempty"`
+	Schema            string                         `json:"schema,omitempty"`
+	Runtime           string                         `json:"runtime,omitempty"`
+	Methods           []string                       `json:"methods,omitempty"`
+	ControlSchema     string                         `json:"control_schema,omitempty"`
+	ControllerPubKeys []string                       `json:"controller_pubkeys,omitempty"`
+	Features          []SoulFactoryFeatureCapability `json:"features,omitempty"`
+	FeatureParity     SoulFactoryFeatureParity       `json:"feature_parity,omitempty"`
+	RelayHints        capabilityRelayHints           `json:"relay_hints,omitempty"`
 }
 
 type capabilityRelayHints struct {
@@ -180,6 +255,8 @@ func BuildCapabilityContent(cap CapabilityAnnouncement) string {
 		Methods:           cap.SoulFactory.Methods,
 		ControlSchema:     cap.SoulFactory.ControlSchema,
 		ControllerPubKeys: cap.SoulFactory.ControllerPubKeys,
+		Features:          cap.SoulFactory.Features,
+		FeatureParity:     cap.SoulFactory.FeatureParity,
 		RelayHints: capabilityRelayHints{
 			Read:    cap.Relays,
 			Write:   cap.Relays,
@@ -207,6 +284,8 @@ func parseCapabilityContent(content string) SoulFactoryCapability {
 		Methods:           decoded.Methods,
 		ControlSchema:     decoded.ControlSchema,
 		ControllerPubKeys: decoded.ControllerPubKeys,
+		Features:          decoded.Features,
+		FeatureParity:     decoded.FeatureParity,
 	}, decoded.Runtime)
 }
 
@@ -464,7 +543,25 @@ func capabilitySemanticEqual(a, b CapabilityAnnouncement) bool {
 		a.SoulFactory.Runtime == b.SoulFactory.Runtime &&
 		a.SoulFactory.ControlSchema == b.SoulFactory.ControlSchema &&
 		relaySliceEqual(a.SoulFactory.Methods, b.SoulFactory.Methods) &&
-		relaySliceEqual(a.SoulFactory.ControllerPubKeys, b.SoulFactory.ControllerPubKeys)
+		relaySliceEqual(a.SoulFactory.ControllerPubKeys, b.SoulFactory.ControllerPubKeys) &&
+		soulFactoryFeatureCapabilitiesEqual(a.SoulFactory.Features, b.SoulFactory.Features) &&
+		soulFactoryFeatureParityEqual(a.SoulFactory.FeatureParity, b.SoulFactory.FeatureParity)
+}
+
+func soulFactoryFeatureCapabilitiesEqual(a, b []SoulFactoryFeatureCapability) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name || a[i].Status != b[i].Status || a[i].OpenClawParity != b[i].OpenClawParity || !relaySliceEqual(a[i].Methods, b[i].Methods) || !relaySliceEqual(a[i].Notes, b[i].Notes) {
+			return false
+		}
+	}
+	return true
+}
+
+func soulFactoryFeatureParityEqual(a, b SoulFactoryFeatureParity) bool {
+	return a.Runtime == b.Runtime && a.Status == b.Status && a.MethodParity == b.MethodParity && relaySliceEqual(a.Notes, b.Notes)
 }
 
 func cloneCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnouncement {
@@ -474,7 +571,22 @@ func cloneCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnounceme
 	in.Relays = append([]string{}, in.Relays...)
 	in.SoulFactory.Methods = append([]string{}, in.SoulFactory.Methods...)
 	in.SoulFactory.ControllerPubKeys = append([]string{}, in.SoulFactory.ControllerPubKeys...)
+	in.SoulFactory.Features = cloneSoulFactoryFeatureCapabilities(in.SoulFactory.Features)
+	in.SoulFactory.FeatureParity.Notes = append([]string{}, in.SoulFactory.FeatureParity.Notes...)
 	return in
+}
+
+func cloneSoulFactoryFeatureCapabilities(in []SoulFactoryFeatureCapability) []SoulFactoryFeatureCapability {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]SoulFactoryFeatureCapability, len(in))
+	for i, feature := range in {
+		out[i] = feature
+		out[i].Methods = append([]string{}, feature.Methods...)
+		out[i].Notes = append([]string{}, feature.Notes...)
+	}
+	return out
 }
 
 // CapabilityMonitor keeps the local capability event published and watches

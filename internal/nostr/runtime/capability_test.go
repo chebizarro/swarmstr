@@ -19,6 +19,10 @@ func TestCapabilitySoulFactoryContentRoundTrip(t *testing.T) {
 			Runtime:           "metiq",
 			Methods:           []string{"soulfactory.resume", "soulfactory.provision", "soulfactory.provision"},
 			ControllerPubKeys: []string{"BBBB", "bbbb"},
+			Features: []SoulFactoryFeatureCapability{
+				{Name: "voice", Methods: []string{"soulfactory.voice.sample", "soulfactory.voice.configure"}, Status: "stubbed", OpenClawParity: "partial", Notes: []string{"persisted only"}},
+			},
+			FeatureParity: SoulFactoryFeatureParity{Runtime: "openclaw", Status: "partial", MethodParity: true, Notes: []string{"method names match"}},
 		},
 	}
 	content := BuildCapabilityContent(cap)
@@ -45,6 +49,44 @@ func TestCapabilitySoulFactoryContentRoundTrip(t *testing.T) {
 	}
 	if !relaySliceEqual(parsed.SoulFactory.ControllerPubKeys, []string{"bbbb"}) {
 		t.Fatalf("controller pubkeys = %v", parsed.SoulFactory.ControllerPubKeys)
+	}
+	if len(parsed.SoulFactory.Features) != 1 {
+		t.Fatalf("features = %#v", parsed.SoulFactory.Features)
+	}
+	feature := parsed.SoulFactory.Features[0]
+	if feature.Name != "voice" || feature.Status != "stubbed" || feature.OpenClawParity != "partial" || !relaySliceEqual(feature.Methods, []string{"soulfactory.voice.configure", "soulfactory.voice.sample"}) {
+		t.Fatalf("feature = %#v", feature)
+	}
+	if parsed.SoulFactory.FeatureParity.Runtime != "openclaw" || parsed.SoulFactory.FeatureParity.Status != "partial" || !parsed.SoulFactory.FeatureParity.MethodParity {
+		t.Fatalf("feature parity = %#v", parsed.SoulFactory.FeatureParity)
+	}
+}
+
+func TestParseSoulFactoryV1CapabilityContentKeepsExplicitSchema(t *testing.T) {
+	cap := CapabilityAnnouncement{
+		PubKey:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Runtime: "metiq",
+		SoulFactory: SoulFactoryCapability{
+			Schema:        "soulfactory-runtime-capability/v1",
+			Runtime:       "metiq",
+			Methods:       []string{"soulfactory.provision", "soulfactory.resume"},
+			ControlSchema: SoulFactoryRuntimeControlSchema,
+		},
+	}
+	pk, err := ParsePubKey(cap.PubKey)
+	if err != nil {
+		t.Fatalf("ParsePubKey: %v", err)
+	}
+	evt := nostr.Event{Kind: nostr.Kind(events.KindCapability), PubKey: pk, CreatedAt: nostr.Timestamp(100), Tags: BuildCapabilityTags(cap), Content: BuildCapabilityContent(cap)}
+	parsed, err := ParseCapabilityEvent(&evt)
+	if err != nil {
+		t.Fatalf("ParseCapabilityEvent: %v", err)
+	}
+	if parsed.SoulFactory.Schema != "soulfactory-runtime-capability/v1" {
+		t.Fatalf("schema = %q, want explicit v1 preserved", parsed.SoulFactory.Schema)
+	}
+	if len(parsed.SoulFactory.Features) != 0 || parsed.SoulFactory.FeatureParity.Runtime != "" {
+		t.Fatalf("v1 feature metadata should be absent by default: %#v", parsed.SoulFactory)
 	}
 }
 

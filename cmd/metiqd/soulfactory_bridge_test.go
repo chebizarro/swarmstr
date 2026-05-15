@@ -361,13 +361,96 @@ func TestLocalCapabilityAnnouncementAdvertisesSoulFactoryControllers(t *testing.
 	if cap.SoulFactory.Schema != nostruntime.SoulFactoryRuntimeCapabilitySchema {
 		t.Fatalf("schema = %q", cap.SoulFactory.Schema)
 	}
+	if cap.SoulFactory.Schema != "soulfactory-runtime-capability/v2" {
+		t.Fatalf("schema version = %q", cap.SoulFactory.Schema)
+	}
 	if cap.SoulFactory.ControlSchema != nostruntime.SoulFactoryRuntimeControlSchema {
 		t.Fatalf("control schema = %q", cap.SoulFactory.ControlSchema)
 	}
-	if len(cap.SoulFactory.Methods) != len(methods.SoulFactoryMethods()) {
-		t.Fatalf("methods = %v", cap.SoulFactory.Methods)
+	methodSet := map[string]struct{}{}
+	for _, method := range cap.SoulFactory.Methods {
+		methodSet[method] = struct{}{}
+	}
+	for _, method := range methods.SoulFactoryMethods() {
+		if _, ok := methodSet[method]; !ok {
+			t.Fatalf("missing advertised method %s in %v", method, cap.SoulFactory.Methods)
+		}
+	}
+	for _, method := range []string{
+		methods.MethodSoulFactoryAvatarGenerate,
+		methods.MethodSoulFactoryAvatarSet,
+		methods.MethodSoulFactoryVoiceConfigure,
+		methods.MethodSoulFactoryVoiceSample,
+		methods.MethodSoulFactoryMemoryConfigure,
+		methods.MethodSoulFactoryMemoryReindex,
+		methods.MethodSoulFactoryPersonaUpdate,
+		methods.MethodSoulFactoryConfigReload,
+	} {
+		if _, ok := methodSet[method]; !ok {
+			t.Fatalf("missing customization method %s in %v", method, cap.SoulFactory.Methods)
+		}
 	}
 	if len(cap.SoulFactory.ControllerPubKeys) != 1 || cap.SoulFactory.ControllerPubKeys[0] != "controller-b" {
 		t.Fatalf("controllers = %v", cap.SoulFactory.ControllerPubKeys)
 	}
+	if cap.SoulFactory.FeatureParity.Runtime != "openclaw" || cap.SoulFactory.FeatureParity.Status != "partial" || !cap.SoulFactory.FeatureParity.MethodParity {
+		t.Fatalf("feature parity = %#v", cap.SoulFactory.FeatureParity)
+	}
+	features := map[string]nostruntime.SoulFactoryFeatureCapability{}
+	for _, feature := range cap.SoulFactory.Features {
+		features[feature.Name] = feature
+	}
+	wantStatus := map[string]string{
+		"avatar":        "partial",
+		"voice":         "stubbed",
+		"memory":        "stubbed",
+		"persona":       "partial",
+		"config_reload": "partial",
+	}
+	wantFeatureMethods := map[string][]string{
+		"avatar":        {methods.MethodSoulFactoryAvatarGenerate, methods.MethodSoulFactoryAvatarSet},
+		"voice":         {methods.MethodSoulFactoryVoiceConfigure, methods.MethodSoulFactoryVoiceSample},
+		"memory":        {methods.MethodSoulFactoryMemoryConfigure, methods.MethodSoulFactoryMemoryReindex},
+		"persona":       {methods.MethodSoulFactoryPersonaUpdate},
+		"config_reload": {methods.MethodSoulFactoryConfigReload},
+	}
+	for name, status := range wantStatus {
+		feature, ok := features[name]
+		if !ok {
+			t.Fatalf("missing feature %s in %#v", name, cap.SoulFactory.Features)
+		}
+		if feature.Status != status || feature.OpenClawParity != "partial" {
+			t.Fatalf("feature %s = %#v", name, feature)
+		}
+		for _, method := range wantFeatureMethods[name] {
+			found := false
+			for _, got := range feature.Methods {
+				if got == method {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("feature %s missing method %s in %#v", name, method, feature)
+			}
+		}
+		if len(feature.Notes) == 0 {
+			t.Fatalf("feature %s has no availability notes", name)
+		}
+	}
+	content := nostruntime.BuildCapabilityContent(cap)
+	parsed := testParseSoulFactoryCapabilityContent(t, content)
+	if parsed.Schema != "soulfactory-runtime-capability/v2" || len(parsed.Features) != len(wantStatus) || parsed.FeatureParity.Runtime != "openclaw" {
+		t.Fatalf("serialized SoulFactory capability = %#v content=%s", parsed, content)
+	}
+}
+
+func testParseSoulFactoryCapabilityContent(t *testing.T, content string) nostruntime.SoulFactoryCapability {
+	t.Helper()
+	evt := nostr.Event{Kind: 30317, Content: content}
+	cap, err := nostruntime.ParseCapabilityEvent(&evt)
+	if err != nil {
+		t.Fatalf("ParseCapabilityEvent: %v", err)
+	}
+	return cap.SoulFactory
 }
