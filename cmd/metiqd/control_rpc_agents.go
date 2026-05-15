@@ -58,6 +58,9 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		if sessionRouter != nil {
 			activeAgentID = sessionRouter.Get(req.SessionID)
 		}
+		if disabledState, disabled := soulFactoryAgentRuntimeDisabled(ctx, docsRepo, activeAgentID); disabled {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("agent %q is %s by SoulFactory runtime control", activeAgentID, disabledState)
+		}
 		rt = applyAgentProfileFilter(ctx, rt, req.SessionID, cfg, docsRepo)
 		var fallbackRuntimes []agent.Runtime
 		primaryLabel := strings.TrimSpace(cfg.Agent.DefaultModel)

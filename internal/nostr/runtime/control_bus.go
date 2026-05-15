@@ -383,7 +383,7 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 			return
 		}
 	}
-	if replayPolicy == controlreplay.EventAndRequest && requestID != eventID {
+	if replayPolicy == controlreplay.EventAndRequest && requestID != eventID && !isSoulFactoryControlMethod(call.Method) {
 		requestCacheKey := controlResponseCacheKey(callerPubKey, requestID)
 		if cached, ok := b.lookupCachedResponse(requestCacheKey, callerPubKey, requestID); ok {
 			if !controlReplayFingerprintMatches(cached, call.Method, paramsHash) {
@@ -1152,16 +1152,52 @@ func decodeControlCallRequest(content string) (controlCallRequest, error) {
 	var call controlCallRequest
 	dec := json.NewDecoder(bytes.NewReader([]byte(content)))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&call); err != nil {
+	if err := dec.Decode(&call); err == nil {
+		if err := dec.Decode(&struct{}{}); err != io.EOF {
+			if err == nil {
+				err = fmt.Errorf("multiple JSON values")
+			}
+			return controlCallRequest{}, err
+		}
+		return call, nil
+	} else if envCall, envErr := decodeSoulFactoryControlEnvelopeRequest(content); envErr == nil {
+		return envCall, nil
+	} else {
+		return controlCallRequest{}, err
+	}
+}
+
+func decodeSoulFactoryControlEnvelopeRequest(content string) (controlCallRequest, error) {
+	var env struct {
+		Schema string          `json:"schema"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	dec := json.NewDecoder(bytes.NewReader([]byte(content)))
+	if err := dec.Decode(&env); err != nil {
 		return controlCallRequest{}, err
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		if err == nil {
-			return controlCallRequest{}, fmt.Errorf("invalid control request body: multiple JSON values")
+			err = fmt.Errorf("multiple JSON values")
 		}
 		return controlCallRequest{}, err
 	}
-	return call, nil
+	method := trimMethod(env.Method)
+	if !isSoulFactoryControlMethod(method) {
+		return controlCallRequest{}, fmt.Errorf("unsupported envelope method")
+	}
+	if strings.TrimSpace(env.Schema) != SoulFactoryRuntimeControlSchema {
+		return controlCallRequest{}, fmt.Errorf("unsupported SoulFactory control schema")
+	}
+	if len(env.Params) == 0 {
+		env.Params = json.RawMessage(`{}`)
+	}
+	return controlCallRequest{Method: method, Params: env.Params}, nil
+}
+
+func isSoulFactoryControlMethod(method string) bool {
+	return strings.HasPrefix(strings.TrimSpace(method), "soulfactory.")
 }
 
 func trimMethod(method string) string {

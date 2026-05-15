@@ -2,19 +2,30 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
 
+	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
 )
 
-const soulFactoryRuntimeName = "metiq"
+const (
+	soulFactoryRuntimeName            = "metiq"
+	soulFactoryRuntimeCheckpointName  = "soulfactory_runtime"
+	soulFactoryRuntimeCheckpointLimit = 512
+)
+
+var soulFactoryRuntimeMu sync.Mutex
 
 type soulFactoryControlEnvelope struct {
 	Schema         string                        `json:"schema"`
@@ -55,6 +66,14 @@ type soulFactoryError struct {
 	Message   string         `json:"message"`
 	Retryable bool           `json:"retryable"`
 	Details   map[string]any `json:"details,omitempty"`
+}
+
+type soulFactoryReplaySignature struct {
+	Method        string
+	RuntimePubKey string
+	AgentID       string
+	SpecHash      string
+	ParamsHash    string
 }
 
 func soulFactoryMethods() []string {
@@ -102,18 +121,305 @@ func (h controlRPCHandler) handleSoulFactoryRPC(ctx context.Context, in nostrunt
 		return soulFactoryRawControlResult(in, method, env, "rejected", nil, errShape), true, nil
 	}
 
+	return h.executeSoulFactoryRPC(ctx, in, method, env, cfg), true, nil
+}
+
+func (h controlRPCHandler) executeSoulFactoryRPC(ctx context.Context, in nostruntime.ControlRPCInbound, method string, env soulFactoryControlEnvelope, cfg state.ConfigDoc) nostruntime.ControlRPCResult {
+	repo := h.deps.docsRepo
+	if repo == nil {
+		errShape := soulFactoryValidationError("runtime_unavailable", "Metiq docs repository is not configured", map[string]any{"runtime": soulFactoryRuntimeName})
+		return soulFactoryRawControlResult(in, method, env, "failed", nil, errShape)
+	}
+
+	controller := strings.ToLower(strings.TrimSpace(soulFactoryTagValue(in.Tags, "controller")))
+	idempotencyKey := strings.TrimSpace(env.IdempotencyKey)
+	sig := soulFactoryReplaySignatureFor(in, method, env)
+
+	soulFactoryRuntimeMu.Lock()
+	defer soulFactoryRuntimeMu.Unlock()
+
+	checkpoint, err := soulFactoryLoadRuntimeCheckpoint(ctx, repo)
+	if err != nil {
+		errShape := soulFactoryValidationError("runtime_unavailable", "load SoulFactory runtime checkpoint failed", map[string]any{"error": err.Error()})
+		return soulFactoryRawControlResult(in, method, env, "failed", nil, errShape)
+	}
+	if prior, ok := soulFactoryFindIdempotencyRecord(checkpoint, controller, idempotencyKey); ok {
+		if soulFactoryReplayMatches(prior, sig) {
+			return nostruntime.ControlRPCResult{RawPayload: prior.Payload, RawStatus: soulFactoryRecordStatus(prior)}
+		}
+		errShape := soulFactoryValidationError("duplicate_conflict", "idempotency key was already used for a different SoulFactory request", map[string]any{
+			"idempotency_key": idempotencyKey,
+			"method":          method,
+			"agent_id":        sig.AgentID,
+			"spec_hash":       sig.SpecHash,
+		})
+		return soulFactoryRawControlResult(in, method, env, "rejected", nil, errShape)
+	}
+
+	result, errShape := h.applySoulFactorySideEffect(ctx, in, method, env, cfg)
+	if errShape != nil {
+		return soulFactoryRawControlResult(in, method, env, "failed", result, errShape)
+	}
+
+	out := soulFactoryRawControlResult(in, method, env, "success", result, nil)
+	if strings.TrimSpace(out.RawPayload) == "" {
+		return out
+	}
+	if err := soulFactoryPersistIdempotencyRecord(ctx, repo, checkpoint, controller, idempotencyKey, in, sig, out.RawPayload, out.RawStatus); err != nil {
+		errShape := soulFactoryValidationError("publish_failed", "persist SoulFactory idempotency state failed", map[string]any{"error": err.Error()})
+		return soulFactoryRawControlResult(in, method, env, "failed", result, errShape)
+	}
+	return out
+}
+
+func (h controlRPCHandler) applySoulFactorySideEffect(ctx context.Context, in nostruntime.ControlRPCInbound, method string, env soulFactoryControlEnvelope, cfg state.ConfigDoc) (map[string]any, *soulFactoryError) {
+	repo := h.deps.docsRepo
+	agentID := strings.TrimSpace(env.Target.AgentID)
+	if agentID == "" {
+		agentID = soulFactoryTagValue(in.Tags, "agent-id")
+	}
+	if agentID == "" {
+		return nil, soulFactoryValidationError("invalid_schema", "agent id is required", nil)
+	}
+
+	params := soulFactoryParamsMap(env.Params)
+	now := time.Now().Unix()
+	doc, err := repo.GetAgent(ctx, agentID)
+	found := err == nil
+	if err != nil && !errors.Is(err, state.ErrNotFound) {
+		return nil, soulFactoryValidationError("runtime_unavailable", "load managed agent failed", map[string]any{"agent_id": agentID, "error": err.Error()})
+	}
+
+	switch method {
+	case methods.MethodSoulFactoryProvision:
+		if !found || doc.AgentID == "" {
+			doc = state.AgentDoc{Version: 1, AgentID: agentID}
+		}
+		doc.Deleted = false
+		if name := soulFactoryNestedString(params, "identity", "name"); name != "" {
+			doc.Name = name
+		} else if doc.Name == "" {
+			doc.Name = agentID
+		}
+		if workspace := soulFactoryWorkspaceValue(params); workspace != "" {
+			doc.Workspace = workspace
+		}
+		if doc.Model == "" {
+			doc.Model = strings.TrimSpace(cfg.Agent.DefaultModel)
+		}
+		if doc.Model == "" {
+			doc.Model = soulFactoryNestedString(params, "runtime", "model")
+		}
+	case methods.MethodSoulFactoryUpdate:
+		if !found || doc.Deleted {
+			return nil, soulFactoryValidationError("execution_failed", "managed agent does not exist", map[string]any{"agent_id": agentID})
+		}
+		previousSpecHash := soulFactoryString(params, "previous_spec_hash")
+		currentSpecHash := soulFactorySpecHashFromAgent(doc)
+		if previousSpecHash != "" && currentSpecHash != "" && previousSpecHash != currentSpecHash {
+			return nil, soulFactoryValidationError("spec_hash_mismatch", "previous_spec_hash does not match the managed agent's current spec hash", map[string]any{"agent_id": agentID, "previous_spec_hash": previousSpecHash, "current_spec_hash": currentSpecHash})
+		}
+		newSpecHash := soulFactoryString(params, "new_spec_hash")
+		if newSpecHash != "" && newSpecHash != soulFactoryTagValue(in.Tags, "spec-hash") {
+			return nil, soulFactoryValidationError("spec_hash_mismatch", "new_spec_hash must match the request spec-hash tag", map[string]any{"agent_id": agentID, "new_spec_hash": newSpecHash, "spec_hash": soulFactoryTagValue(in.Tags, "spec-hash")})
+		}
+		resolvedSpec := soulFactoryNestedMap(params, "resolved_spec")
+		patchSpec := soulFactoryNestedMap(params, "patch")
+		if name := soulFactoryNestedString(resolvedSpec, "identity", "name"); name != "" {
+			doc.Name = name
+		} else if name := soulFactoryNestedString(patchSpec, "identity", "name"); name != "" {
+			doc.Name = name
+		}
+		if workspace := soulFactoryWorkspaceValueFrom(resolvedSpec); workspace != "" {
+			doc.Workspace = workspace
+		} else if workspace := soulFactoryWorkspaceValueFrom(patchSpec); workspace != "" {
+			doc.Workspace = workspace
+		}
+	case methods.MethodSoulFactorySuspend:
+		if !found || doc.Deleted {
+			return nil, soulFactoryValidationError("execution_failed", "managed agent does not exist", map[string]any{"agent_id": agentID})
+		}
+		if err := h.disableSoulFactoryLiveAgent(ctx, repo, agentID, false); err != nil {
+			return nil, soulFactoryValidationError("execution_failed", "suspend managed agent failed", map[string]any{"agent_id": agentID, "error": err.Error()})
+		}
+	case methods.MethodSoulFactoryResume, methods.MethodSoulFactoryRedeploy:
+		if !found || doc.Deleted {
+			return nil, soulFactoryValidationError("execution_failed", "managed agent does not exist", map[string]any{"agent_id": agentID})
+		}
+	case methods.MethodSoulFactoryRevoke:
+		if !found {
+			return nil, soulFactoryValidationError("execution_failed", "managed agent does not exist", map[string]any{"agent_id": agentID})
+		}
+		doc.Deleted = true
+		if err := h.disableSoulFactoryLiveAgent(ctx, repo, agentID, true); err != nil {
+			return nil, soulFactoryValidationError("execution_failed", "revoke managed agent runtime bindings failed", map[string]any{"agent_id": agentID, "error": err.Error()})
+		}
+	default:
+		return nil, soulFactoryValidationError("unsupported_method", "unsupported SoulFactory method", map[string]any{"method": method})
+	}
+
+	stateValue := soulFactoryStateForMethod(method)
+	meta := soulFactoryRuntimeMeta(in, method, env, params, stateValue, now)
+	doc.Meta = mergeSessionMeta(doc.Meta, map[string]any{"soulfactory": meta})
+	if doc.Version == 0 {
+		doc.Version = 1
+	}
+	if _, err := repo.PutAgent(ctx, agentID, doc); err != nil {
+		return nil, soulFactoryValidationError("execution_failed", "persist managed agent failed", map[string]any{"agent_id": agentID, "error": err.Error()})
+	}
+	if h.deps.agentRegistry != nil && !doc.Deleted && strings.TrimSpace(doc.Model) != "" {
+		if rt, rtErr := agent.BuildRuntimeForModel(doc.Model, h.deps.tools); rtErr == nil && rt != nil {
+			h.deps.agentRegistry.Set(agentID, rt)
+		}
+	}
+
 	result := map[string]any{
-		"agent_id":        soulFactoryTagValue(in.Tags, "agent-id"),
+		"agent_id":        agentID,
 		"runtime":         soulFactoryRuntimeName,
-		"runtime_binding": fmt.Sprintf("metiq://agents/%s", soulFactoryTagValue(in.Tags, "agent-id")),
-		"state":           soulFactoryStateForMethod(method),
+		"runtime_binding": fmt.Sprintf("metiq://agents/%s", agentID),
+		"state":           stateValue,
 		"spec_hash":       soulFactoryTagValue(in.Tags, "spec-hash"),
 		"capability_ref":  soulFactoryTagValue(in.Tags, "capability"),
-		"observed_at":     time.Now().Unix(),
-		"warnings":        []string{"Metiq SoulFactory bridge scaffold validated request; local runtime mutation is deferred to execution work."},
+		"observed_at":     now,
+		"warnings":        []string{},
 	}
-	errShape = soulFactoryValidationError("execution_failed", "Metiq SoulFactory bridge validated request; execution is not implemented in this scaffold", map[string]any{"runtime": soulFactoryRuntimeName})
-	return soulFactoryRawControlResult(in, method, env, "failed", result, errShape), true, nil
+	if method == methods.MethodSoulFactoryRedeploy {
+		result["deployment_generation"] = soulFactoryDeploymentGeneration(doc.Meta)
+	}
+	return result, nil
+}
+
+func soulFactoryRuntimeMeta(in nostruntime.ControlRPCInbound, method string, env soulFactoryControlEnvelope, params map[string]any, stateValue string, observedAt int64) map[string]any {
+	meta := map[string]any{
+		"schema":                 nostruntime.SoulFactoryRuntimeControlSchema,
+		"runtime":                soulFactoryRuntimeName,
+		"method":                 method,
+		"state":                  stateValue,
+		"spec_hash":              soulFactoryTagValue(in.Tags, "spec-hash"),
+		"idempotency_key":        strings.TrimSpace(env.IdempotencyKey),
+		"request_event":          in.EventID,
+		"operator_request_event": soulFactoryTagValue(in.Tags, "e"),
+		"controller":             soulFactoryTagValue(in.Tags, "controller"),
+		"runtime_pubkey":         soulFactoryTagValue(in.Tags, "p"),
+		"soul":                   soulFactoryTagValue(in.Tags, "soul"),
+		"observed_at":            observedAt,
+	}
+	if env.Soul.Draft != "" {
+		meta["draft"] = env.Soul.Draft
+	}
+	if env.Soul.Event != "" {
+		meta["soul_event"] = env.Soul.Event
+	}
+	if capability := soulFactoryTagValue(in.Tags, "capability"); capability != "" {
+		meta["capability_ref"] = capability
+	}
+	if reason := soulFactoryString(params, "reason"); reason != "" {
+		meta["reason"] = reason
+	}
+	if strategy := soulFactoryString(params, "strategy"); strategy != "" {
+		meta["redeploy_strategy"] = strategy
+	}
+	if method == methods.MethodSoulFactoryRedeploy {
+		meta["deployment_generation"] = observedAt
+	}
+	if method == methods.MethodSoulFactoryRevoke {
+		meta["revoked_at"] = observedAt
+		if value, ok := params["revoke_runtime_credentials"]; ok {
+			meta["revoke_runtime_credentials"] = value
+		}
+		if value, ok := params["delete_workspace"]; ok {
+			meta["delete_workspace"] = value
+		}
+	}
+	return meta
+}
+
+func soulFactoryDeploymentGeneration(meta map[string]any) any {
+	if meta == nil {
+		return nil
+	}
+	if sf, ok := meta["soulfactory"].(map[string]any); ok {
+		return sf["deployment_generation"]
+	}
+	return nil
+}
+
+func soulFactorySpecHashFromAgent(doc state.AgentDoc) string {
+	if doc.Meta == nil {
+		return ""
+	}
+	if sf, ok := doc.Meta["soulfactory"].(map[string]any); ok {
+		if specHash, ok := sf["spec_hash"].(string); ok {
+			return strings.TrimSpace(specHash)
+		}
+	}
+	return ""
+}
+
+func soulFactoryAgentRuntimeDisabled(ctx context.Context, repo *state.DocsRepository, agentID string) (string, bool) {
+	agentID = strings.TrimSpace(agentID)
+	if repo == nil || agentID == "" {
+		return "", false
+	}
+	doc, err := repo.GetAgent(ctx, agentID)
+	if err != nil || doc.Meta == nil {
+		return "", false
+	}
+	sf, _ := doc.Meta["soulfactory"].(map[string]any)
+	stateValue, _ := sf["state"].(string)
+	stateValue = strings.TrimSpace(stateValue)
+	return stateValue, stateValue == "suspended" || stateValue == "revoked"
+}
+
+func (h controlRPCHandler) disableSoulFactoryLiveAgent(ctx context.Context, repo *state.DocsRepository, agentID string, clearPersistentSessions bool) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil
+	}
+	if h.deps.agentRegistry != nil {
+		h.deps.agentRegistry.Remove(agentID)
+	}
+	if h.deps.sessionRouter != nil {
+		for sessionID, activeAgentID := range h.deps.sessionRouter.List() {
+			if activeAgentID == agentID {
+				if h.deps.chatCancels != nil {
+					h.deps.chatCancels.AbortWithCause(sessionID, fmt.Errorf("SoulFactory agent %s disabled", agentID))
+				}
+				if clearPersistentSessions {
+					h.deps.sessionRouter.Unassign(sessionID)
+				}
+			}
+		}
+	}
+	if !clearPersistentSessions || repo == nil {
+		return nil
+	}
+	sessions, err := repo.ListSessions(ctx, 5000)
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+	for _, sess := range sessions {
+		if sess.Meta == nil {
+			continue
+		}
+		assignedAgent, _ := sess.Meta["agent_id"].(string)
+		if assignedAgent != agentID {
+			continue
+		}
+		sessionID := strings.TrimSpace(sess.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		if _, err := updateExistingSessionDoc(ctx, repo, sessionID, sess.PeerPubKey, func(session *state.SessionDoc) error {
+			if session.Meta != nil {
+				delete(session.Meta, "agent_id")
+			}
+			return nil
+		}); err != nil && !errors.Is(err, state.ErrNotFound) {
+			return fmt.Errorf("clear session %q assignment: %w", sessionID, err)
+		}
+	}
+	return nil
 }
 
 func validateSoulFactoryRequest(in nostruntime.ControlRPCInbound, method string, cfg state.ConfigDoc) (soulFactoryControlEnvelope, *soulFactoryError) {
@@ -311,4 +617,164 @@ func soulFactoryStateForMethod(method string) string {
 	default:
 		return "accepted"
 	}
+}
+
+func soulFactoryLoadRuntimeCheckpoint(ctx context.Context, repo *state.DocsRepository) (state.CheckpointDoc, error) {
+	doc, err := repo.GetCheckpoint(ctx, soulFactoryRuntimeCheckpointName)
+	if err == nil {
+		if doc.Name == "" {
+			doc.Name = soulFactoryRuntimeCheckpointName
+		}
+		if doc.Version == 0 {
+			doc.Version = 1
+		}
+		return doc, nil
+	}
+	if errors.Is(err, state.ErrNotFound) {
+		return state.CheckpointDoc{Version: 1, Name: soulFactoryRuntimeCheckpointName}, nil
+	}
+	return state.CheckpointDoc{}, err
+}
+
+func soulFactoryFindIdempotencyRecord(doc state.CheckpointDoc, controller string, idempotencyKey string) (state.ControlResponseCacheDoc, bool) {
+	controller = strings.ToLower(strings.TrimSpace(controller))
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if controller == "" || idempotencyKey == "" {
+		return state.ControlResponseCacheDoc{}, false
+	}
+	for i := len(doc.ControlResponses) - 1; i >= 0; i-- {
+		entry := doc.ControlResponses[i]
+		if strings.EqualFold(strings.TrimSpace(entry.CallerPubKey), controller) && strings.TrimSpace(entry.RequestID) == idempotencyKey {
+			return entry, true
+		}
+	}
+	return state.ControlResponseCacheDoc{}, false
+}
+
+func soulFactoryPersistIdempotencyRecord(ctx context.Context, repo *state.DocsRepository, checkpoint state.CheckpointDoc, controller string, idempotencyKey string, in nostruntime.ControlRPCInbound, sig soulFactoryReplaySignature, payload string, rawStatus string) error {
+	controller = strings.ToLower(strings.TrimSpace(controller))
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	status := strings.TrimSpace(rawStatus)
+	if status == "" {
+		status = "ok"
+	}
+	entry := state.ControlResponseCacheDoc{
+		CallerPubKey: controller,
+		RequestID:    idempotencyKey,
+		Payload:      payload,
+		EventUnix:    time.Now().Unix(),
+		Tags: [][]string{
+			{"e", in.EventID},
+			{"status", status},
+			{"method", sig.Method},
+			{"runtime_pubkey", sig.RuntimePubKey},
+			{"agent-id", sig.AgentID},
+			{"spec-hash", sig.SpecHash},
+			{"params_sha256", sig.ParamsHash},
+			{"idempotency-key", idempotencyKey},
+		},
+	}
+	kept := checkpoint.ControlResponses[:0]
+	for _, existing := range checkpoint.ControlResponses {
+		if strings.EqualFold(existing.CallerPubKey, controller) && strings.TrimSpace(existing.RequestID) == idempotencyKey {
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	checkpoint.ControlResponses = append(kept, entry)
+	if len(checkpoint.ControlResponses) > soulFactoryRuntimeCheckpointLimit {
+		checkpoint.ControlResponses = append([]state.ControlResponseCacheDoc{}, checkpoint.ControlResponses[len(checkpoint.ControlResponses)-soulFactoryRuntimeCheckpointLimit:]...)
+	}
+	checkpoint.Version = 1
+	checkpoint.Name = soulFactoryRuntimeCheckpointName
+	checkpoint.LastEvent = in.EventID
+	checkpoint.LastUnix = entry.EventUnix
+	_, err := repo.PutCheckpoint(ctx, soulFactoryRuntimeCheckpointName, checkpoint)
+	return err
+}
+
+func soulFactoryReplaySignatureFor(in nostruntime.ControlRPCInbound, method string, env soulFactoryControlEnvelope) soulFactoryReplaySignature {
+	return soulFactoryReplaySignature{
+		Method:        strings.TrimSpace(method),
+		RuntimePubKey: soulFactoryTagValue(in.Tags, "p"),
+		AgentID:       soulFactoryTagValue(in.Tags, "agent-id"),
+		SpecHash:      soulFactoryTagValue(in.Tags, "spec-hash"),
+		ParamsHash:    soulFactoryParamsHash(env.Params),
+	}
+}
+
+func soulFactoryReplayMatches(entry state.ControlResponseCacheDoc, sig soulFactoryReplaySignature) bool {
+	return controlResponseDocFirstTagValue(entry.Tags, "method") == sig.Method &&
+		controlResponseDocFirstTagValue(entry.Tags, "runtime_pubkey") == sig.RuntimePubKey &&
+		controlResponseDocFirstTagValue(entry.Tags, "agent-id") == sig.AgentID &&
+		controlResponseDocFirstTagValue(entry.Tags, "spec-hash") == sig.SpecHash &&
+		controlResponseDocFirstTagValue(entry.Tags, "params_sha256") == sig.ParamsHash
+}
+
+func soulFactoryRecordStatus(entry state.ControlResponseCacheDoc) string {
+	status := controlResponseDocFirstTagValue(entry.Tags, "status")
+	if status == "" {
+		status = "ok"
+	}
+	return status
+}
+
+func soulFactoryParamsHash(params json.RawMessage) string {
+	sum := sha256.Sum256([]byte(params))
+	return hex.EncodeToString(sum[:])
+}
+
+func soulFactoryParamsMap(raw json.RawMessage) map[string]any {
+	out := map[string]any{}
+	if len(raw) == 0 || string(raw) == "null" {
+		return out
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
+func soulFactoryString(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, _ := m[key].(string)
+	return strings.TrimSpace(v)
+}
+
+func soulFactoryNestedMap(m map[string]any, key string) map[string]any {
+	if m == nil {
+		return nil
+	}
+	v, _ := m[key].(map[string]any)
+	return v
+}
+
+func soulFactoryNestedString(m map[string]any, keys ...string) string {
+	current := m
+	for i, key := range keys {
+		if i == len(keys)-1 {
+			return soulFactoryString(current, key)
+		}
+		current = soulFactoryNestedMap(current, key)
+		if current == nil {
+			return ""
+		}
+	}
+	return ""
+}
+
+func soulFactoryWorkspaceValue(params map[string]any) string {
+	return soulFactoryWorkspaceValueFrom(soulFactoryNestedMap(params, "workspace"))
+}
+
+func soulFactoryWorkspaceValueFrom(workspace map[string]any) string {
+	if workspace == nil {
+		return ""
+	}
+	for _, key := range []string{"repo", "environment", "branch"} {
+		if v := soulFactoryString(workspace, key); v != "" {
+			return v
+		}
+	}
+	return ""
 }

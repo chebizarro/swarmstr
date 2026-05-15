@@ -1038,6 +1038,19 @@ func TestDecodeControlCallRequest_Valid(t *testing.T) {
 	}
 }
 
+func TestDecodeControlCallRequest_SoulFactoryEnvelope(t *testing.T) {
+	req, err := decodeControlCallRequest(`{"schema":"soulfactory-runtime-control/v1","method":"soulfactory.provision","idempotency_key":"idem-1","params":{"identity":{"name":"Alice"}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Method != "soulfactory.provision" {
+		t.Fatalf("method = %q", req.Method)
+	}
+	if string(req.Params) != `{"identity":{"name":"Alice"}}` {
+		t.Fatalf("params = %s", req.Params)
+	}
+}
+
 func TestDecodeControlCallRequest_NoParams(t *testing.T) {
 	req, err := decodeControlCallRequest(`{"method":"ping"}`)
 	if err != nil {
