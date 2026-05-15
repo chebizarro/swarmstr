@@ -1,0 +1,21 @@
+{
+  "feature_id": "METIQ_CAPABILITY_CUSTOMIZATION_ADVERTISEMENT",
+  "criteria": [
+    {
+      "id": "AC1",
+      "statement": "Metiq's 30317 SoulFactory capability announcement advertises all avatar, voice, memory, persona, and config reload customization methods."
+    },
+    {
+      "id": "AC2",
+      "statement": "The announcement declares feature availability, distinguishing available, partial, and stubbed customization families."
+    },
+    {
+      "id": "AC3",
+      "statement": "The announcement includes an explicit OpenClaw parity indication."
+    },
+    {
+      "id": "AC4",
+      "statement": "The SoulFactory runtime capability schema is versioned as v2 and round-trips through capability content parsing."
+    }
+  ]
+}
