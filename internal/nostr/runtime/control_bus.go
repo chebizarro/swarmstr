@@ -24,16 +24,20 @@ type ControlRPCInbound struct {
 	RelayURL      string
 	Method        string
 	Params        json.RawMessage
+	RawContent    json.RawMessage
+	Tags          nostr.Tags
 	CreatedAt     int64
 	Authenticated bool
 	Internal      bool
 }
 
 type ControlRPCResult struct {
-	Result    any
-	Error     string
-	ErrorCode int
-	ErrorData map[string]any
+	Result     any
+	Error      string
+	ErrorCode  int
+	ErrorData  map[string]any
+	RawPayload string
+	RawStatus  string
 }
 
 type controlCallRequest struct {
@@ -342,6 +346,9 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 	}
 	requestID := firstTagValue(evt.Tags, "req")
 	if requestID == "" {
+		requestID = firstTagValue(evt.Tags, "idempotency-key")
+	}
+	if requestID == "" {
 		requestID = evt.ID.Hex()
 	}
 	if len(requestID) > 256 {
@@ -421,6 +428,8 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 			RelayURL:      relayURL,
 			Method:        call.Method,
 			Params:        call.Params,
+			RawContent:    json.RawMessage(evt.Content),
+			Tags:          cloneTags(evt.Tags),
 			CreatedAt:     int64(evt.CreatedAt),
 			Authenticated: true,
 		})
@@ -435,19 +444,26 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		}
 	}
 
-	payloadMap := map[string]any{"result": result.Result}
 	status := "ok"
-	if result.Error != "" {
-		payloadMap = map[string]any{"error": buildControlRPCError(result.Error, result.ErrorCode, result.ErrorData)}
-		status = "error"
-	}
-	payloadRaw, err := json.Marshal(payloadMap)
-	if err != nil {
-		payloadRaw = []byte(`{"error":"internal error: invalid result payload"}`)
-		status = "error"
+	payload := strings.TrimSpace(result.RawPayload)
+	if payload != "" {
+		if rawStatus := strings.TrimSpace(result.RawStatus); rawStatus != "" {
+			status = rawStatus
+		}
+	} else {
+		payloadMap := map[string]any{"result": result.Result}
+		if result.Error != "" {
+			payloadMap = map[string]any{"error": buildControlRPCError(result.Error, result.ErrorCode, result.ErrorData)}
+			status = "error"
+		}
+		payloadRaw, err := json.Marshal(payloadMap)
+		if err != nil {
+			payloadRaw = []byte(`{"error":"internal error: invalid result payload"}`)
+			status = "error"
+		}
+		payload = string(payloadRaw)
 	}
 	tags := controlResponseBaseTags(eventID, evt.PubKey.Hex(), requestID, status, call.Method, paramsHash)
-	payload := string(payloadRaw)
 	cached := ControlRPCCachedResponse{Payload: payload, Tags: tags}
 	if replayPolicy != controlreplay.None {
 		b.setCachedResponse(controlResponseCacheKey(callerPubKey, eventID), cached)
@@ -1049,6 +1065,19 @@ func firstTagValue(tags nostr.Tags, key string) string {
 		}
 	}
 	return ""
+}
+
+func cloneTags(tags nostr.Tags) nostr.Tags {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make(nostr.Tags, 0, len(tags))
+	for _, tag := range tags {
+		copyTag := make(nostr.Tag, len(tag))
+		copy(copyTag, tag)
+		out = append(out, copyTag)
+	}
+	return out
 }
 
 func controlResponseCacheKey(callerPubKey, replayID string) string {

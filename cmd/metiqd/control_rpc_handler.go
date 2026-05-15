@@ -128,6 +128,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		return nostruntime.ControlRPCResult{}, errors.New(reason)
 	}
 
+	if result, handled, err := h.handleSoulFactoryRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
 	if result, handled, err := h.handleAgentRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
