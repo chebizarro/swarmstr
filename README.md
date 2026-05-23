@@ -376,6 +376,39 @@ Remote agents participate in ACP pipelines the same way as local agents — just
 
 ---
 
+## Experimental: FIPS Mesh Transport
+
+Metiq has experimental support for [FIPS](https://github.com/jmcorgan/fips)
+(Free Internetworking Peering System) — a self-organizing encrypted mesh
+network that uses Nostr keypairs as native node identities.
+
+**Build with FIPS support:**
+
+```sh
+go build -tags experimental_fips ./cmd/metiqd ./cmd/metiq
+```
+
+**Deployment model:** FIPS runs as a **sidecar daemon** alongside metiqd,
+sharing the same network namespace. The agent communicates through the FIPS
+`fips0` TUN interface using standard IPv6 sockets — no FIPS protocol code is
+compiled into metiqd itself.
+
+**Key points:**
+- Agents communicate directly over the mesh (~10–100ms) instead of relay round-trips (~200–1000ms)
+- Relay transport remains the default; FIPS is an additional transport option with automatic fallback
+- Requires a persistent Nostr identity (`nsec`) shared between metiqd and the FIPS daemon
+- Transport selection uses optimistic FIPS send with relay fallback on failure
+
+> ⚠️ **Not stable / not the default transport.** FIPS integration is gated
+> behind the `experimental_fips` build tag and a runtime `fips.enabled: true`
+> config flag. The protocol and integration surface are subject to change.
+
+See [FIPS Integration Architecture](docs/experiments/fips-integration-architecture.md)
+for the full design, and [Sidecar Setup Guide](docs/experiments/fips-sidecar-setup.md)
+for deployment instructions.
+
+---
+
 ## Development
 
 ```sh
