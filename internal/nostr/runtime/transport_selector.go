@@ -299,6 +299,8 @@ func (ts *TransportSelector) activeFIPSFailure(pubkey string) (fipsFailureState,
 	ts.failureMu.Lock()
 	// Re-check under the write lock so a concurrent send can refresh the entry.
 	entry, ok = ts.failures[pubkey]
+	// Recapture time for fresh timestamp in deletion check
+	now = time.Now()
 	if ok && !now.Before(entry.Until) {
 		delete(ts.failures, pubkey)
 		ok = false

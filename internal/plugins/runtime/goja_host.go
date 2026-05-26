@@ -75,6 +75,14 @@ func (p *GojaPlugin) Invoke(ctx context.Context, req sdk.InvokeRequest) (sdk.Inv
 			default:
 				p.vm.Interrupt("context cancelled")
 			}
+		case <-time.After(10 * time.Minute):
+			// Timeout - interrupt the VM to prevent indefinite hangs
+			select {
+			case <-interruptStop:
+				return
+			default:
+				p.vm.Interrupt("plugin execution timeout")
+			}
 		case <-interruptStop:
 			return
 		}

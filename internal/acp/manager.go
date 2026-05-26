@@ -1148,8 +1148,26 @@ func (m *Manager) recordError(code string) {
 	m.mu.Unlock()
 }
 
+// lockSession acquires a per-session lock and returns an unlock function.
+//
+// Lock ordering invariant:
+//   - Acquisition: m.mu → l.mu
+//   - Release: l.mu → m.mu (LIFO)
+//
+// This two-level locking pattern allows:
+//   - m.mu protects the map of per-session locks (short critical section)
+//   - l.mu serializes operations on a specific session (can be held longer)
+//   - pending counter tracks waiters to clean up unused locks
+//
+// Safety properties:
+//   - LIFO ordering (acquire m.mu first, release it last) prevents deadlock
+//   - The unlock function re-acquires m.mu AFTER releasing l.mu to update pending count
+//   - No other code path acquires l.mu before m.mu, maintaining the invariant
+//
+// Callers must invoke the returned unlock function exactly once, typically via defer.
 func (m *Manager) lockSession(key string) func() {
 	key = canonicalSessionKey(key)
+	// Acquire global lock to access the locks map
 	m.mu.Lock()
 	l := m.locks[key]
 	if l == nil {
@@ -1158,9 +1176,15 @@ func (m *Manager) lockSession(key string) func() {
 	}
 	l.pending++
 	m.mu.Unlock()
+	
+	// Acquire per-session lock (can be held for duration of session operation)
 	l.mu.Lock()
+	
 	return func() {
+		// Release in LIFO order: l.mu first, then m.mu
 		l.mu.Unlock()
+		
+		// Re-acquire global lock to update pending count and clean up if needed
 		m.mu.Lock()
 		l.pending--
 		if l.pending <= 0 {
