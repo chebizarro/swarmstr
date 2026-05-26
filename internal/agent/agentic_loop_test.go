@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"metiq/internal/agent/toolloop"
+	"metiq/internal/policy"
 )
 
 // mockChatProvider is a ChatProvider that returns preconfigured responses.
@@ -1854,4 +1855,21 @@ func (p *capturingForceSummaryProvider) Chat(_ context.Context, messages []LLMMe
 		ToolCalls:        []ToolCall{{ID: fmt.Sprintf("tc%d", p.callCount), Name: "tool"}},
 		NeedsToolResults: true,
 	}, nil
+}
+
+func TestExecuteSingleToolCall_EnforcesToolPolicy(t *testing.T) {
+	executed := false
+	executor := toolExecutorFunc(func(context.Context, ToolCall) (string, error) {
+		executed = true
+		return "should not run", nil
+	})
+	p := &policy.ToolPolicy{Rules: []policy.ToolPolicyRule{{ID: "deny-shell", ToolName: "bash", Action: policy.ToolPolicyDeny}}}
+	ctx := ContextWithToolPolicy(context.Background(), p, "")
+	res := executeSingleToolCall(ctx, executor, ToolCall{ID: "call-1", Name: "bash"}, "sess", "turn", nil, TraceContext{})
+	if executed {
+		t.Fatal("executor ran despite deny policy")
+	}
+	if !strings.Contains(res.Content, "rejected by policy") {
+		t.Fatalf("content = %q, want policy rejection", res.Content)
+	}
 }

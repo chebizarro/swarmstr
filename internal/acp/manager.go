@@ -8,7 +8,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	ctxengine "metiq/internal/context"
 )
 
 const (
@@ -37,6 +40,26 @@ type ManagerOptions struct {
 	MaxSpawnDepth int
 	// MaxChildrenPerSession limits direct managed children per parent. <=0 uses the default.
 	MaxChildrenPerSession int
+	// TurnTimeoutGrace allows a backend to emit cleanup/terminal events after the
+	// primary turn deadline before the manager gives up waiting.
+	TurnTimeoutGrace time.Duration
+	// TurnTimeoutCleanupGrace bounds the backend Cancel call made on timeout.
+	TurnTimeoutCleanupGrace time.Duration
+	// SessionRateLimitMax limits InitializeSession calls per fixed window. <=0 disables.
+	SessionRateLimitMax int
+	// SessionRateLimitWindow is the fixed window for SessionRateLimitMax.
+	SessionRateLimitWindow time.Duration
+	// EventLedger records runtime events for replay/audit.
+	EventLedger EventLedger
+	// ContextEngine is notified when managed child sessions are spawned so
+	// subagent context can be forked or isolated before the backend starts.
+	ContextEngine ctxengine.Engine
+	// FlowRegistry exposes flow orchestration state in Manager.Status.
+	FlowRegistry *FlowRegistry
+	// ProcessLeases tracks backend process leases for observability/reaping.
+	ProcessLeases *ProcessLeaseRegistry
+	// ApprovalRouter forwards runtime approval requests to supervising sessions.
+	ApprovalRouter ApprovalRouter
 	// Now supplies the current time. Defaults to time.Now.
 	Now func() time.Time
 }
@@ -55,6 +78,12 @@ type Manager struct {
 	activeTurns  map[string]*managerActiveTurn
 	counters     ManagerCounters
 	errorsByCode map[string]int
+	ledger       EventLedger
+	flows        *FlowRegistry
+	processes    *ProcessLeaseRegistry
+	rateLimiter  *FixedWindowRateLimiter
+	approval     ApprovalRouter
+	latencies    []int64
 }
 
 type sessionActorLock struct {
@@ -79,33 +108,90 @@ type managerActiveTurn struct {
 	RequestID string
 	StartedAt time.Time
 	TimedOut  bool
+	Canceled  atomic.Bool
 }
 
 // ManagerCounters captures cumulative manager activity.
 type ManagerCounters struct {
-	SessionsInitialized int64 `json:"sessions_initialized"`
-	SessionsClosed      int64 `json:"sessions_closed"`
-	RuntimeCacheHits    int64 `json:"runtime_cache_hits"`
-	RuntimeCacheMisses  int64 `json:"runtime_cache_misses"`
-	RuntimeEvicted      int64 `json:"runtime_evicted"`
-	TurnsStarted        int64 `json:"turns_started"`
-	TurnsCompleted      int64 `json:"turns_completed"`
-	TurnsFailed         int64 `json:"turns_failed"`
-	TurnsCanceled       int64 `json:"turns_canceled"`
-	TurnsTimedOut       int64 `json:"turns_timed_out"`
-	ControlsApplied     int64 `json:"controls_applied"`
-	SessionsSpawned     int64 `json:"sessions_spawned"`
+	SessionsInitialized int64            `json:"sessions_initialized"`
+	SessionsClosed      int64            `json:"sessions_closed"`
+	RuntimeCacheHits    int64            `json:"runtime_cache_hits"`
+	RuntimeCacheMisses  int64            `json:"runtime_cache_misses"`
+	RuntimeEvicted      int64            `json:"runtime_evicted"`
+	TurnsStarted        int64            `json:"turns_started"`
+	TurnsCompleted      int64            `json:"turns_completed"`
+	TurnsFailed         int64            `json:"turns_failed"`
+	TurnsCanceled       int64            `json:"turns_canceled"`
+	TurnsTimedOut       int64            `json:"turns_timed_out"`
+	ControlsApplied     int64            `json:"controls_applied"`
+	SessionsSpawned     int64            `json:"sessions_spawned"`
+	TurnLatency         TurnLatencyStats `json:"turn_latency"`
+}
+
+// TurnLatencyStats tracks coarse turn duration metrics in milliseconds. P95MS
+// is computed over a bounded rolling sample window; the other fields are
+// lifetime aggregates.
+type TurnLatencyStats struct {
+	Count   int64 `json:"count"`
+	TotalMS int64 `json:"total_ms"`
+	MinMS   int64 `json:"min_ms"`
+	MaxMS   int64 `json:"max_ms"`
+	P95MS   int64 `json:"p95_ms"`
+}
+
+func (s TurnLatencyStats) MeanMS() int64 {
+	if s.Count == 0 {
+		return 0
+	}
+	return s.TotalMS / s.Count
+}
+
+// ApprovalRoute is the explicit supervisor routing envelope for a runtime
+// approval request emitted by a worker/child session.
+type ApprovalRoute struct {
+	Request              ApprovalRequest `json:"request"`
+	WorkerSessionKey     string          `json:"worker_session_key"`
+	SupervisorSessionKey string          `json:"supervisor_session_key"`
+	RequestID            string          `json:"request_id,omitempty"`
+	ThreadID             string          `json:"thread_id,omitempty"`
+	Event                RuntimeEvent    `json:"event"`
+}
+
+// ApprovalRouter forwards approval requests to the supervising agent/session.
+type ApprovalRouter interface {
+	RouteApprovalRequest(ctx context.Context, route ApprovalRoute) error
+}
+
+type ApprovalRouterFunc func(ctx context.Context, route ApprovalRoute) error
+
+func (f ApprovalRouterFunc) RouteApprovalRequest(ctx context.Context, route ApprovalRoute) error {
+	return f(ctx, route)
+}
+
+// PendingPrompt records a prompt that was interrupted by a client disconnect
+// before a terminal event was observed. It can be replayed on reconnect.
+type PendingPrompt struct {
+	Text        string           `json:"text"`
+	Mode        string           `json:"mode,omitempty"`
+	RequestID   string           `json:"request_id,omitempty"`
+	TimeoutMS   int64            `json:"timeout_ms,omitempty"`
+	Attachments []TurnAttachment `json:"attachments,omitempty"`
+	CreatedAt   int64            `json:"created_at"`
 }
 
 // ManagerStatus is an observability snapshot for the manager.
 type ManagerStatus struct {
-	RuntimeCacheSize int               `json:"runtime_cache_size"`
-	ActiveTurns      int               `json:"active_turns"`
-	QueueDepth       int               `json:"queue_depth"`
-	Counters         ManagerCounters   `json:"counters"`
-	ErrorsByCode     map[string]int    `json:"errors_by_code,omitempty"`
-	Sessions         []SessionStatus   `json:"sessions,omitempty"`
-	Backends         []BackendSnapshot `json:"backends,omitempty"`
+	RuntimeCacheSize int                `json:"runtime_cache_size"`
+	ActiveTurns      int                `json:"active_turns"`
+	QueueDepth       int                `json:"queue_depth"`
+	Counters         ManagerCounters    `json:"counters"`
+	ErrorsByCode     map[string]int     `json:"errors_by_code,omitempty"`
+	Sessions         []SessionStatus    `json:"sessions,omitempty"`
+	Backends         []BackendSnapshot  `json:"backends,omitempty"`
+	Tasks            *TaskStoreStats    `json:"tasks,omitempty"`
+	EventLedger      *EventLedgerStats  `json:"event_ledger,omitempty"`
+	Flows            []FlowRecord       `json:"flows,omitempty"`
+	ProcessLeases    *ProcessLeaseStats `json:"process_leases,omitempty"`
 }
 
 // BackendSnapshot is a redacted backend registry entry for status output.
@@ -116,20 +202,21 @@ type BackendSnapshot struct {
 
 // SessionRuntimeMeta is persisted in SessionRecord.State by Manager.
 type SessionRuntimeMeta struct {
-	Backend            string      `json:"backend,omitempty"`
-	Agent              string      `json:"agent,omitempty"`
-	Mode               SessionMode `json:"mode,omitempty"`
-	RuntimeSessionName string      `json:"runtime_session_name,omitempty"`
-	CWD                string      `json:"cwd,omitempty"`
-	AcpxRecordID       string      `json:"acpx_record_id,omitempty"`
-	State              string      `json:"state,omitempty"`
-	LastError          string      `json:"last_error,omitempty"`
-	LastActivityAt     int64       `json:"last_activity_at,omitempty"`
-	ParentSessionKey   string      `json:"parent_session_key,omitempty"`
-	SpawnDepth         int         `json:"spawn_depth,omitempty"`
-	ThreadID           string      `json:"thread_id,omitempty"`
-	SpawnedBy          string      `json:"spawned_by,omitempty"`
-	ChildSessionKeys   []string    `json:"child_session_keys,omitempty"`
+	Backend            string         `json:"backend,omitempty"`
+	Agent              string         `json:"agent,omitempty"`
+	Mode               SessionMode    `json:"mode,omitempty"`
+	RuntimeSessionName string         `json:"runtime_session_name,omitempty"`
+	CWD                string         `json:"cwd,omitempty"`
+	AcpxRecordID       string         `json:"acpx_record_id,omitempty"`
+	State              string         `json:"state,omitempty"`
+	LastError          string         `json:"last_error,omitempty"`
+	LastActivityAt     int64          `json:"last_activity_at,omitempty"`
+	ParentSessionKey   string         `json:"parent_session_key,omitempty"`
+	SpawnDepth         int            `json:"spawn_depth,omitempty"`
+	ThreadID           string         `json:"thread_id,omitempty"`
+	SpawnedBy          string         `json:"spawned_by,omitempty"`
+	ChildSessionKeys   []string       `json:"child_session_keys,omitempty"`
+	PendingPrompt      *PendingPrompt `json:"pending_prompt,omitempty"`
 }
 
 // InitializeSessionInput creates or resumes an ACP runtime session.
@@ -212,6 +299,12 @@ func NewManager(backends *BackendRegistry, sessions SessionStore, agents *AgentR
 	if opts.MaxChildrenPerSession <= 0 {
 		opts.MaxChildrenPerSession = defaultManagerMaxChildrenPerKey
 	}
+	if opts.TurnTimeoutGrace == 0 {
+		opts.TurnTimeoutGrace = 5 * time.Second
+	}
+	if opts.TurnTimeoutCleanupGrace == 0 {
+		opts.TurnTimeoutCleanupGrace = 2 * time.Second
+	}
 	return &Manager{
 		backends:     backends,
 		sessions:     sessions,
@@ -222,6 +315,11 @@ func NewManager(backends *BackendRegistry, sessions SessionStore, agents *AgentR
 		runtimeCache: make(map[string]*managerRuntimeState),
 		activeTurns:  make(map[string]*managerActiveTurn),
 		errorsByCode: make(map[string]int),
+		ledger:       opts.EventLedger,
+		flows:        opts.FlowRegistry,
+		processes:    opts.ProcessLeases,
+		rateLimiter:  NewFixedWindowRateLimiter(opts.SessionRateLimitMax, opts.SessionRateLimitWindow, opts.Now),
+		approval:     opts.ApprovalRouter,
 	}
 }
 
@@ -237,6 +335,22 @@ func (m *Manager) InitializeSession(ctx context.Context, input InitializeSession
 	}
 	if mode != SessionModePersistent && mode != SessionModeOneshot {
 		return RuntimeHandle{}, fmt.Errorf("acp manager: unsupported session mode %q", mode)
+	}
+	chargeRateLimit := true
+	if cached := m.getCached(key); cached != nil {
+		requestedBackendID := normalizeBackendID(input.Backend)
+		if requestedBackendID == "" || requestedBackendID == cached.Backend {
+			chargeRateLimit = false
+		}
+	}
+	if chargeRateLimit {
+		if rec, _ := m.loadRecord(ctx, key); rec != nil {
+			chargeRateLimit = false
+		}
+	}
+	if chargeRateLimit && !m.rateLimiter.Allow() {
+		m.recordError("rate_limited")
+		return RuntimeHandle{}, AcpError{Code: "rate_limited", Message: "ACP session creation rate limit exceeded", Retryable: true}
 	}
 
 	unlock := m.lockSession(key)
@@ -283,6 +397,9 @@ func (m *Manager) InitializeSession(ctx context.Context, input InitializeSession
 		m.recordError("store")
 		return RuntimeHandle{}, err
 	}
+	if m.ledger != nil {
+		_ = m.ledger.StartSession(ctx, key, handle.CWD)
+	}
 	m.mu.Lock()
 	m.counters.SessionsInitialized++
 	m.mu.Unlock()
@@ -308,16 +425,10 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 		return nil, err
 	}
 
-	turnCtx := ctx
-	var cancel context.CancelFunc
+	turnCtx, cancel := context.WithCancel(ctx)
 	timeout := time.Duration(input.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = m.opts.DefaultTurnTimeout
-	}
-	if timeout > 0 {
-		turnCtx, cancel = context.WithTimeout(ctx, timeout)
-	} else {
-		turnCtx, cancel = context.WithCancel(ctx)
 	}
 	defer cancel()
 
@@ -326,15 +437,22 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 	m.mu.Lock()
 	m.counters.TurnsStarted++
 	m.mu.Unlock()
-	if err := m.saveMeta(ctx, key, state.Agent, state.Mode, state.Handle, "running", ""); err != nil {
+	pending := &PendingPrompt{
+		Text:        input.Text,
+		Mode:        strings.TrimSpace(input.Mode),
+		RequestID:   strings.TrimSpace(input.RequestID),
+		TimeoutMS:   input.TimeoutMS,
+		Attachments: append([]TurnAttachment(nil), input.Attachments...),
+		CreatedAt:   active.StartedAt.Unix(),
+	}
+	if err := m.saveMetaWithPending(ctx, key, state.Agent, state.Mode, state.Handle, "running", "", pending, false); err != nil {
 		m.clearActive(key, active)
 		return nil, err
 	}
 
-	events, runErr := m.consumeTurn(turnCtx, state, input)
-	if errors.Is(turnCtx.Err(), context.DeadlineExceeded) {
+	events, runErr := m.consumeTurn(turnCtx, cancel, state, input, timeout, active)
+	if errors.Is(runErr, context.DeadlineExceeded) {
 		active.TimedOut = true
-		_ = state.Runtime.Cancel(context.Background(), CancelInput{Handle: state.Handle, Reason: "turn-timeout"})
 	}
 	m.clearActive(key, active)
 
@@ -350,13 +468,18 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 	}
 
 	state.LastUsedAt = m.now()
+	m.recordTurnLatency(state.LastUsedAt.Sub(active.StartedAt))
 	m.setCached(key, state)
 	if runErr != nil {
 		m.recordTurnFailure(active, runErr)
 		if state.Mode == SessionModeOneshot {
 			m.closeOneShot(key, state, "oneshot-error")
 		} else {
-			_ = m.saveMeta(context.Background(), key, state.Agent, state.Mode, state.Handle, "error", runErr.Error())
+			clearPending := true
+			if errors.Is(runErr, context.Canceled) && active != nil && !active.Canceled.Load() {
+				clearPending = false
+			}
+			_ = m.saveMetaWithPending(context.Background(), key, state.Agent, state.Mode, state.Handle, "error", runErr.Error(), nil, clearPending)
 		}
 		return events, runErr
 	}
@@ -366,7 +489,7 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 	if state.Mode == SessionModeOneshot {
 		m.closeOneShot(key, state, "oneshot-complete")
 	} else {
-		_ = m.saveMeta(context.Background(), key, state.Agent, state.Mode, state.Handle, "idle", "")
+		_ = m.saveMetaWithPending(context.Background(), key, state.Agent, state.Mode, state.Handle, "idle", "", nil, true)
 	}
 	return events, nil
 }
@@ -382,6 +505,7 @@ func (m *Manager) CancelSession(ctx context.Context, input CancelSessionInput) e
 		reason = "cancelled"
 	}
 	if active := m.getActive(key); active != nil {
+		active.Canceled.Store(true)
 		active.Cancel()
 		return active.Runtime.Cancel(ctx, CancelInput{Handle: active.Handle, Reason: reason})
 	}
@@ -432,7 +556,7 @@ func (m *Manager) CloseSession(ctx context.Context, input CloseSessionInput) err
 			}
 		}
 	} else if state != nil {
-		_ = m.saveMeta(ctx, key, state.Agent, state.Mode, state.Handle, "closed", "")
+		_ = m.saveMetaWithPending(ctx, key, state.Agent, state.Mode, state.Handle, "closed", "", nil, true)
 	}
 	m.mu.Lock()
 	m.counters.SessionsClosed++
@@ -484,6 +608,24 @@ func (m *Manager) Status(ctx context.Context) ManagerStatus {
 			sort.Slice(status.Sessions, func(i, j int) bool { return status.Sessions[i].SessionKey < status.Sessions[j].SessionKey })
 		}
 	}
+	if m.dispatcher != nil && m.dispatcher.TaskStore() != nil {
+		if stats, err := m.dispatcher.TaskStore().Stats(ctx); err == nil {
+			status.Tasks = &stats
+		}
+	}
+	if m.ledger != nil {
+		stats := m.ledger.Stats(ctx)
+		status.EventLedger = &stats
+	}
+	if m.flows != nil {
+		if flows, err := m.flows.List(ctx, FlowFilter{Limit: 100}); err == nil {
+			status.Flows = flows
+		}
+	}
+	if m.processes != nil {
+		stats := m.processes.Stats(ctx)
+		status.ProcessLeases = &stats
+	}
 	return status
 }
 
@@ -515,20 +657,31 @@ func (m *Manager) CleanupIdleRuntimeHandles(ctx context.Context) error {
 			unlock()
 			continue
 		}
-		delete(m.runtimeCache, key)
-		m.counters.RuntimeEvicted++
 		stateCopy := *state
 		m.mu.Unlock()
-		if err := stateCopy.Runtime.Close(ctx, CloseInput{Handle: stateCopy.Handle, Reason: "idle-evicted"}); err != nil && ctx.Err() != nil {
+
+		// Try to close the runtime before removing from cache
+		if err := stateCopy.Runtime.Close(ctx, CloseInput{Handle: stateCopy.Handle, Reason: "idle-evicted"}); err != nil {
 			unlock()
-			return err
+			// Only return error if it's a real error, not context cancellation
+			if ctx.Err() == nil {
+				return err
+			}
+			// Context was cancelled, ignore this Close error and continue cleanup
+			continue
 		}
+
+		// Close succeeded, now remove from cache
+		m.mu.Lock()
+		delete(m.runtimeCache, key)
+		m.counters.RuntimeEvicted++
+		m.mu.Unlock()
 		unlock()
 	}
 	return nil
 }
 
-func (m *Manager) consumeTurn(ctx context.Context, state *managerRuntimeState, input RunSessionTurnInput) ([]RuntimeEvent, error) {
+func (m *Manager) consumeTurn(ctx context.Context, cancelTurn context.CancelFunc, state *managerRuntimeState, input RunSessionTurnInput, timeout time.Duration, active *managerActiveTurn) ([]RuntimeEvent, error) {
 	mode := strings.TrimSpace(input.Mode)
 	if mode == "" {
 		mode = "prompt"
@@ -546,10 +699,28 @@ func (m *Manager) consumeTurn(ctx context.Context, state *managerRuntimeState, i
 	var events []RuntimeEvent
 	recordEvent := func(ev RuntimeEvent) bool {
 		events = append(events, ev)
+		if m.ledger != nil {
+			_ = m.ledger.RecordEvent(context.Background(), state.Handle.SessionKey, strings.TrimSpace(input.RequestID), ev)
+		}
+		if m.dispatcher != nil && strings.TrimSpace(input.RequestID) != "" && !ev.Kind.IsTerminal() {
+			m.dispatcher.RecordProgress(context.Background(), input.RequestID, firstNonEmpty(ev.Text, ev.Title, string(ev.Kind)))
+		}
+		if ev.Kind == EventApprovalRequest && ev.ApprovalRequest != nil {
+			if err := m.routeApprovalRequest(context.Background(), state.Handle.SessionKey, strings.TrimSpace(input.RequestID), ev); err != nil {
+				m.recordError(AcpErrorApprovalRoute)
+			}
+		}
 		if input.OnEvent != nil {
 			input.OnEvent(ev)
 		}
 		return ev.Kind.IsTerminal()
+	}
+	var timeoutC <-chan time.Time
+	var timeoutTimer *time.Timer
+	if timeout > 0 {
+		timeoutTimer = time.NewTimer(timeout)
+		defer timeoutTimer.Stop()
+		timeoutC = timeoutTimer.C
 	}
 	for {
 		select {
@@ -570,6 +741,12 @@ func (m *Manager) consumeTurn(ctx context.Context, state *managerRuntimeState, i
 			if recordEvent(ev) {
 				return events, nil
 			}
+		case <-timeoutC:
+			if cancelTurn != nil {
+				cancelTurn()
+			}
+			m.cancelTimedOutTurn(state)
+			return m.drainTurnGrace(ch, &events, recordEvent)
 		case <-ctx.Done():
 			select {
 			case ev, ok := <-ch:
@@ -578,9 +755,78 @@ func (m *Manager) consumeTurn(ctx context.Context, state *managerRuntimeState, i
 				}
 			default:
 			}
+			if active == nil || !active.Canceled.Load() {
+				if cancelTurn != nil {
+					cancelTurn()
+				}
+				m.cancelDisconnectedTurn(state)
+			}
 			return events, ctx.Err()
 		}
 	}
+}
+
+// ReconcilePendingPrompt resumes a prompt that was interrupted before a
+// terminal event, typically because a gateway/client disconnected. Call this
+// after InitializeSession reconnects the runtime session.
+func (m *Manager) ReconcilePendingPrompt(ctx context.Context, sessionKey string) ([]RuntimeEvent, error) {
+	key := canonicalSessionKey(sessionKey)
+	if key == "" {
+		return nil, ErrSessionKeyRequired
+	}
+	rec, err := m.loadRecord(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if rec == nil {
+		return nil, ErrSessionNotFound
+	}
+	meta := decodeSessionRuntimeMeta(rec)
+	if meta.PendingPrompt == nil {
+		return nil, nil
+	}
+	pending := meta.PendingPrompt
+	return m.RunTurn(ctx, RunSessionTurnInput{
+		SessionKey:  key,
+		Backend:     meta.Backend,
+		Agent:       meta.Agent,
+		Mode:        pending.Mode,
+		Text:        pending.Text,
+		RequestID:   pending.RequestID,
+		TimeoutMS:   pending.TimeoutMS,
+		Attachments: append([]TurnAttachment(nil), pending.Attachments...),
+	})
+}
+
+func (m *Manager) routeApprovalRequest(ctx context.Context, workerSessionKey, requestID string, ev RuntimeEvent) error {
+	if ev.ApprovalRequest == nil {
+		return nil
+	}
+	workerSessionKey = canonicalSessionKey(workerSessionKey)
+	supervisor := workerSessionKey
+	threadID := ""
+	if rec, _ := m.loadRecord(ctx, workerSessionKey); rec != nil {
+		meta := decodeSessionRuntimeMeta(rec)
+		if meta.ParentSessionKey != "" {
+			supervisor = meta.ParentSessionKey
+		}
+		threadID = meta.ThreadID
+	}
+	route := ApprovalRoute{
+		Request:              cloneApprovalRequest(*ev.ApprovalRequest),
+		WorkerSessionKey:     workerSessionKey,
+		SupervisorSessionKey: supervisor,
+		RequestID:            strings.TrimSpace(requestID),
+		ThreadID:             threadID,
+		Event:                cloneRuntimeEvent(ev),
+	}
+	if m.ledger != nil && supervisor != "" && supervisor != workerSessionKey {
+		_ = m.ledger.RecordEvent(ctx, supervisor, route.RequestID, route.Event)
+	}
+	if m.approval == nil {
+		return nil
+	}
+	return m.approval.RouteApprovalRequest(ctx, route)
 }
 
 func (m *Manager) ensureRuntimeState(ctx context.Context, key, requestedBackend, requestedAgent string) (*managerRuntimeState, error) {
@@ -660,6 +906,48 @@ func (m *Manager) ensureRuntimeState(ctx context.Context, key, requestedBackend,
 	return state, nil
 }
 
+func (m *Manager) cancelTimedOutTurn(state *managerRuntimeState) {
+	if state == nil || state.Runtime == nil {
+		return
+	}
+	cleanupCtx := context.Background()
+	var cancel context.CancelFunc
+	if m.opts.TurnTimeoutCleanupGrace > 0 {
+		cleanupCtx, cancel = context.WithTimeout(cleanupCtx, m.opts.TurnTimeoutCleanupGrace)
+		defer cancel()
+	}
+	_ = state.Runtime.Cancel(cleanupCtx, CancelInput{Handle: state.Handle, Reason: "turn-timeout"})
+}
+
+func (m *Manager) cancelDisconnectedTurn(state *managerRuntimeState) {
+	if state == nil || state.Runtime == nil {
+		return
+	}
+	_ = state.Runtime.Cancel(context.Background(), CancelInput{Handle: state.Handle, Reason: "turn-disconnect"})
+}
+
+func (m *Manager) drainTurnGrace(ch <-chan RuntimeEvent, events *[]RuntimeEvent, recordEvent func(RuntimeEvent) bool) ([]RuntimeEvent, error) {
+	grace := m.opts.TurnTimeoutGrace
+	if grace <= 0 {
+		return *events, context.DeadlineExceeded
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return *events, context.DeadlineExceeded
+			}
+			if recordEvent(ev) {
+				return *events, context.DeadlineExceeded
+			}
+		case <-timer.C:
+			return *events, context.DeadlineExceeded
+		}
+	}
+}
+
 func (m *Manager) applyRuntimeControls(ctx context.Context, runtime BackendRuntime, handle RuntimeHandle, controls []RuntimeControl) error {
 	if len(controls) == 0 {
 		return nil
@@ -737,10 +1025,15 @@ func (m *Manager) closeOneShot(key string, state *managerRuntimeState, reason st
 }
 
 func (m *Manager) saveMeta(ctx context.Context, key, agent string, mode SessionMode, handle RuntimeHandle, state, lastErr string) error {
+	return m.saveMetaWithPending(ctx, key, agent, mode, handle, state, lastErr, nil, false)
+}
+
+func (m *Manager) saveMetaWithPending(ctx context.Context, key, agent string, mode SessionMode, handle RuntimeHandle, state, lastErr string, pending *PendingPrompt, clearPending bool) error {
 	if m.sessions == nil {
 		return nil
 	}
 	existing, _ := m.sessions.Load(ctx, key)
+	existingMeta := decodeSessionRuntimeMeta(existing)
 	meta := SessionRuntimeMeta{
 		Backend:            handle.Backend,
 		Agent:              agent,
@@ -751,6 +1044,18 @@ func (m *Manager) saveMeta(ctx context.Context, key, agent string, mode SessionM
 		State:              state,
 		LastError:          strings.TrimSpace(lastErr),
 		LastActivityAt:     m.now().Unix(),
+		ParentSessionKey:   existingMeta.ParentSessionKey,
+		SpawnDepth:         existingMeta.SpawnDepth,
+		ThreadID:           existingMeta.ThreadID,
+		SpawnedBy:          existingMeta.SpawnedBy,
+		ChildSessionKeys:   append([]string(nil), existingMeta.ChildSessionKeys...),
+	}
+	if pending != nil {
+		cp := *pending
+		cp.Attachments = append([]TurnAttachment(nil), pending.Attachments...)
+		meta.PendingPrompt = &cp
+	} else if !clearPending {
+		meta.PendingPrompt = existingMeta.PendingPrompt
 	}
 	raw, err := json.Marshal(meta)
 	if err != nil {
@@ -778,6 +1083,50 @@ func decodeSessionRuntimeMeta(rec *SessionRecord) SessionRuntimeMeta {
 	var meta SessionRuntimeMeta
 	_ = json.Unmarshal(rec.State, &meta)
 	return meta
+}
+
+func (m *Manager) recordTurnLatency(d time.Duration) {
+	ms := d.Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	m.mu.Lock()
+	stats := &m.counters.TurnLatency
+	stats.Count++
+	stats.TotalMS += ms
+	if stats.Count == 1 || ms < stats.MinMS {
+		stats.MinMS = ms
+	}
+	if ms > stats.MaxMS {
+		stats.MaxMS = ms
+	}
+	m.latencies = append(m.latencies, ms)
+	const maxLatencySamples = 2048
+	if len(m.latencies) > maxLatencySamples {
+		copy(m.latencies, m.latencies[len(m.latencies)-maxLatencySamples:])
+		m.latencies = m.latencies[:maxLatencySamples]
+	}
+	stats.P95MS = percentileNearestRank(m.latencies, 0.95)
+	m.mu.Unlock()
+}
+
+func percentileNearestRank(samples []int64, p float64) int64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	cp := append([]int64(nil), samples...)
+	sort.Slice(cp, func(i, j int) bool { return cp[i] < cp[j] })
+	rank := int(p * float64(len(cp)))
+	if float64(rank) < p*float64(len(cp)) {
+		rank++
+	}
+	if rank < 1 {
+		rank = 1
+	}
+	if rank > len(cp) {
+		rank = len(cp)
+	}
+	return cp[rank-1]
 }
 
 func (m *Manager) recordTurnFailure(active *managerActiveTurn, err error) {
@@ -917,6 +1266,17 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+func cloneApprovalRequest(in ApprovalRequest) ApprovalRequest {
+	out := in
+	if len(in.Metadata) > 0 {
+		out.Metadata = make(map[string]any, len(in.Metadata))
+		for k, v := range in.Metadata {
+			out.Metadata[k] = v
+		}
+	}
+	return out
+}
+
 func mergeStringMaps(base, override map[string]string) map[string]string {
 	out := cloneStringMap(base)
 	if out == nil && len(override) > 0 {
@@ -948,6 +1308,14 @@ func errorCode(err error) string {
 	}
 	if errors.Is(err, context.Canceled) {
 		return "canceled"
+	}
+	var acpErr AcpError
+	if errors.As(err, &acpErr) && acpErr.Code != "" {
+		return acpErr.Code
+	}
+	var acpErrPtr *AcpError
+	if errors.As(err, &acpErrPtr) && acpErrPtr != nil && acpErrPtr.Code != "" {
+		return acpErrPtr.Code
 	}
 	return "error"
 }

@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -56,10 +57,36 @@ func TestDockerRunArgs_ConfigurableHardening(t *testing.T) {
 	}
 }
 
+func TestDockerRunArgs_EnforcedEgressWrapsCommand(t *testing.T) {
+	s := &DockerSandbox{cfg: Config{AllowNetwork: true, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}, AllowedCIDRs: []string{"203.0.113.0/24"}}}
+	args := s.dockerRunArgs("alpine:3", []string{"wget", "https://api.example.com"}, nil, "")
+	for _, want := range []string{"--cap-add=NET_ADMIN", "--user=0:0", "--env=METIQ_SANDBOX_EGRESS_ENFORCED=true"} {
+		if !contains(args, want) {
+			t.Fatalf("enforced egress args missing %s in %#v", want, args)
+		}
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "iptables -P OUTPUT DROP") || !strings.Contains(joined, "api.example.com") || !strings.Contains(joined, "203.0.113.0/24") {
+		t.Fatalf("iptables egress wrapper missing from args: %#v", args)
+	}
+}
+
+func TestNopSandboxRestrictedEnvSetsProxyGuard(t *testing.T) {
+	s := &NopSandbox{cfg: Config{EgressEnforced: true, AllowedDomains: []string{"api.example.com"}}}
+	env := s.restrictedEnv([]string{"HTTP_PROXY=http://operator-proxy:8080"})
+	if !contains(env, "METIQ_SANDBOX_EGRESS_ENFORCED=true") || !contains(env, "NO_PROXY=api.example.com") {
+		t.Fatalf("restricted env missing guard entries: %#v", env)
+	}
+	if contains(env, "HTTP_PROXY=http://operator-proxy:8080") || !contains(env, "HTTP_PROXY=http://127.0.0.1:9") {
+		t.Fatalf("guard proxy should override caller env: %#v", env)
+	}
+}
+
 func TestNewFromMap_DockerHardeningConfig(t *testing.T) {
 	runner, err := NewFromMap(map[string]any{
 		"driver":          "docker",
 		"allow_network":   true,
+		"allowed_domains": []any{"api.example.com"},
 		"writable_rootfs": true,
 		"cap_drop":        []any{"NET_RAW"},
 		"security_opt":    []any{"seccomp=/tmp/seccomp.json"},
@@ -77,6 +104,13 @@ func TestNewFromMap_DockerHardeningConfig(t *testing.T) {
 	}
 	if !docker.cfg.AllowNetwork || !docker.cfg.WritableRootFS || docker.cfg.PidsLimit != 64 || docker.cfg.User != "1000:1000" {
 		t.Fatalf("unexpected config: %+v", docker.cfg)
+	}
+	if !reflect.DeepEqual(docker.cfg.AllowedDomains, []string{"api.example.com"}) {
+		t.Fatalf("AllowedDomains = %#v", docker.cfg.AllowedDomains)
+	}
+	args := docker.dockerRunArgs("alpine:3", []string{"echo", "ok"}, nil, "")
+	if !contains(args, "--env=METIQ_SANDBOX_ALLOWED_DOMAINS=api.example.com") {
+		t.Fatalf("egress allowlist env missing in args: %#v", args)
 	}
 	if !reflect.DeepEqual(docker.cfg.CapDrop, []string{"NET_RAW"}) {
 		t.Fatalf("CapDrop = %#v", docker.cfg.CapDrop)

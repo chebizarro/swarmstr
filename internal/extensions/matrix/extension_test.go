@@ -215,6 +215,39 @@ func TestMatrixBot_EditMessage(t *testing.T) {
 	}
 }
 
+func TestMatrixBot_SendMedia_UploadsMXCAndSendsMediaMessage(t *testing.T) {
+	var uploaded bool
+	var sent map[string]any
+	srv, bot := newTestMatrixServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/_matrix/media/v3/upload"):
+			uploaded = true
+			if got := r.Header.Get("Content-Type"); got != "image/png" {
+				t.Fatalf("expected image/png upload content-type, got %q", got)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"content_uri":"mxc://server/media1"}`))
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/send/m.room.message/"):
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"event_id":"$media"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	receipt, err := bot.SendMedia(context.Background(), "caption", []byte("png"), "image/png", "pic.png")
+	if err != nil {
+		t.Fatalf("SendMedia: %v", err)
+	}
+	if !uploaded || receipt.MessageID != "$media" {
+		t.Fatalf("expected upload and receipt, uploaded=%v receipt=%+v", uploaded, receipt)
+	}
+	if sent["msgtype"] != "m.image" || sent["url"] != "mxc://server/media1" || sent["body"] != "caption" {
+		t.Fatalf("unexpected media content: %+v", sent)
+	}
+}
+
 // ── handleEvent ───────────────────────────────────────────────────────────────
 
 func TestHandleEvent_Delivers(t *testing.T) {

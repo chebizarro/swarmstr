@@ -29,8 +29,12 @@ function createPluginApi(pluginId, pluginConfig = {}, runtimeConfig = {}) {
   const registrations = [];
   const rootDir = pluginConfig.rootDir || runtimeConfig.rootDir || process.cwd();
   const runContext = new Map();
+  let registrationOpen = true;
 
   function addRegistration(registration) {
+    if (!registrationOpen) {
+      throw new Error(`plugin registration window is closed for ${pluginId}`);
+    }
     const reg = sanitize({ pluginId, ...registration });
     registrations.push(reg);
     if (!registries.generic.has(reg.type)) registries.generic.set(reg.type, []);
@@ -229,7 +233,13 @@ function createPluginApi(pluginId, pluginConfig = {}, runtimeConfig = {}) {
     storeGenericHandler(type, pluginId, provider, { id });
   }
 
-  return { api, getRegistrations: () => registrations };
+  return {
+    api,
+    getRegistrations: () => {
+      registrationOpen = false;
+      return registrations;
+    }
+  };
 }
 
 async function invokeTool(pluginId, tool, args, meta = {}) {

@@ -46,6 +46,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -157,6 +158,7 @@ func (s *SlackPlugin) Connect(
 		defaultBlocks:  defaultBlocks,
 		onMessage:      onMessage,
 		done:           make(chan struct{}),
+		restScheduler:  channels.NewRESTScheduler(1, 1),
 	}
 
 	registerWebhook(channelID, bot)
@@ -203,6 +205,7 @@ type slackBot struct {
 	seenEvents     map[string]struct{}
 	done           chan struct{}
 	httpClient     *http.Client
+	restScheduler  *channels.RESTScheduler
 }
 
 func (b *slackBot) ID() string { return b.channelID }
@@ -215,8 +218,30 @@ func (b *slackBot) client(timeout time.Duration) *http.Client {
 }
 
 func (b *slackBot) Send(ctx context.Context, text string) error {
-	_, err := postSlackMessage(ctx, b.token, b.slackChannelID, text, b.defaultBlocks)
+	_, err := b.SendWithReceipt(ctx, text)
 	return err
+}
+
+func (b *slackBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
+	ts, err := postSlackMessageWithClient(ctx, b.client(15*time.Second), b.restScheduler, b.token, b.slackChannelID, text, b.defaultBlocks)
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "slack", Attempts: 1, CreatedAt: time.Now()}
+	if ts != "" {
+		receipt.MessageID = "slack-" + ts
+	}
+	if err != nil {
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
+}
+
+func (b *slackBot) DeleteMessage(ctx context.Context, eventID string) error {
+	ts := strings.TrimPrefix(eventID, "slack-")
+	body, _ := json.Marshal(map[string]any{"channel": b.slackChannelID, "ts": ts})
+	return b.slackPost(ctx, slackAPIBase+"/chat.delete", body)
 }
 
 func (b *slackBot) Close() {
@@ -290,7 +315,7 @@ func (b *slackBot) slackPost(ctx context.Context, apiURL string, body []byte) er
 	}
 	req.Header.Set("Authorization", "Bearer "+b.token)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	resp, err := b.client(15 * time.Second).Do(req)
+	resp, err := slackDo(ctx, b.client(15*time.Second), b.restScheduler, req)
 	if err != nil {
 		return err
 	}
@@ -329,6 +354,13 @@ func (b *slackBot) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		values, err := url.ParseQuery(string(body))
 		if err != nil {
 			http.Error(w, "parse form", http.StatusBadRequest)
+			return
+		}
+		if command := strings.TrimSpace(values.Get("command")); command != "" {
+			b.handleSlashCommand(values)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"response_type":"ephemeral","text":"Command received."}`))
 			return
 		}
 		b.handleInteractionPayload(values.Get("payload"))
@@ -383,6 +415,33 @@ func (b *slackBot) markSeen(eventID string) bool {
 	}
 	b.seenEvents[eventID] = struct{}{}
 	return true
+}
+
+func (b *slackBot) handleSlashCommand(values url.Values) {
+	command := strings.TrimSpace(values.Get("command"))
+	if command == "" {
+		return
+	}
+	text := strings.TrimSpace(values.Get("text"))
+	if text != "" {
+		text = command + " " + text
+	} else {
+		text = command
+	}
+	channelID := strings.TrimSpace(values.Get("channel_id"))
+	if channelID != "" && channelID != b.slackChannelID {
+		return
+	}
+	eventID := "slack-command-" + strings.TrimSpace(values.Get("trigger_id"))
+	if eventID == "slack-command-" {
+		eventID = "slack-command-" + fmt.Sprint(time.Now().UnixNano())
+	}
+	b.onMessage(sdk.InboundChannelMessage{
+		ChannelID: b.channelID,
+		SenderID:  strings.TrimSpace(values.Get("user_id")),
+		Text:      text,
+		EventID:   eventID,
+	})
 }
 
 func (b *slackBot) handleInteractionPayload(raw string) {
@@ -549,6 +608,10 @@ func slackTimestampUnix(ts string) int64 {
 // postSlackMessage sends text and optional Block Kit blocks to a Slack channel via chat.postMessage.
 // Returns the message timestamp (ts) on success.
 func postSlackMessage(ctx context.Context, token, channelID, text string, blocks []map[string]any) (string, error) {
+	return postSlackMessageWithClient(ctx, &http.Client{Timeout: 15 * time.Second}, nil, token, channelID, text, blocks)
+}
+
+func postSlackMessageWithClient(ctx context.Context, client *http.Client, scheduler *channels.RESTScheduler, token, channelID, text string, blocks []map[string]any) (string, error) {
 	payload := map[string]any{
 		"channel": channelID,
 		"text":    fallbackSlackText(text, blocks),
@@ -566,8 +629,7 @@ func postSlackMessage(ctx context.Context, token, channelID, text string, blocks
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 
-	cl := &http.Client{Timeout: 15 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := slackDo(ctx, client, scheduler, req)
 	if err != nil {
 		return "", fmt.Errorf("slack postMessage: %w", err)
 	}
@@ -586,4 +648,14 @@ func postSlackMessage(ctx context.Context, token, channelID, text string, blocks
 		return "", fmt.Errorf("slack postMessage: %s", result.Err)
 	}
 	return result.Ts, nil
+}
+
+func slackDo(ctx context.Context, client *http.Client, scheduler *channels.RESTScheduler, req *http.Request) (*http.Response, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if scheduler == nil {
+		return client.Do(req)
+	}
+	return scheduler.Do(ctx, client, req.Method+" "+req.URL.Path, req)
 }

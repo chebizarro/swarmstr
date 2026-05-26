@@ -56,7 +56,7 @@ func runMCPList(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func runMCPGet(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -158,7 +158,7 @@ func runMCPRemove(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -223,7 +223,7 @@ func runMCPReconnect(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -287,7 +287,7 @@ func runMCPAuthStart(args []string) error {
 	fs.StringVar(&clientSecret, "client-secret", "", "optional oauth client secret to persist outside config")
 	fs.IntVar(&timeoutMS, "timeout-ms", 0, "optional auth flow timeout in milliseconds")
 	fs.BoolVar(&openBrowser, "open", true, "open the returned authorize URL in the default browser")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -335,7 +335,7 @@ func runMCPAuthRefresh(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -366,7 +366,7 @@ func runMCPAuthClear(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -408,7 +408,7 @@ func prepareMCPMutationCommand(name string, args []string) (string, map[string]a
 	fs.StringVar(&command, "command", "", "stdio command")
 	fs.StringVar(&url, "url", "", "remote MCP URL")
 	fs.BoolVar(&disabled, "disabled", false, "store the server disabled in config")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	fs.Var(&argList, "arg", "repeatable stdio arg")
 	fs.Var(&env, "env", "repeatable KEY=VALUE environment override")
 	fs.Var(&headers, "header", "repeatable KEY=VALUE request header")
@@ -456,7 +456,7 @@ func prepareMCPProbeCommand(name string, args []string) (string, map[string]any,
 	fs.StringVar(&command, "command", "", "stdio command")
 	fs.StringVar(&url, "url", "", "remote MCP URL")
 	fs.IntVar(&timeoutMS, "timeout-ms", 0, "optional test timeout in milliseconds")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	fs.Var(&argList, "arg", "repeatable stdio arg")
 	fs.Var(&env, "env", "repeatable KEY=VALUE environment override")
 	fs.Var(&headers, "header", "repeatable KEY=VALUE request header")

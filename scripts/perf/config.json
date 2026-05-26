@@ -1,0 +1,7 @@
+{
+  "cold_start_budget_ms": 1500,
+  "rule_eval_budget_ns": 500000,
+  "trajectory_write_budget_ns": 1000000,
+  "compaction_budget_ns": 2000000,
+  "relay_subscription_events_per_sec": 1000
+}

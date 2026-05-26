@@ -28,6 +28,21 @@ func (p *GeminiChatProvider) PromptCacheProfile() PromptCacheProfile {
 	return promptCacheProfileOrDefault(p.PromptCache, PromptCacheProviderGemini)
 }
 
+func (p *GeminiChatProvider) NormalizeToolSchema(defs []ToolDefinition) []ToolDefinition {
+	return NormalizeGeminiToolSchema(defs)
+}
+
+func geminiResponseFormatGenerationConfig(format *ResponseFormatConfig) map[string]any {
+	if format == nil || format.Type == "" || format.Type == ResponseFormatText {
+		return nil
+	}
+	cfg := map[string]any{"responseMimeType": "application/json"}
+	if format.Type == ResponseFormatJSONSchema && len(format.Schema) > 0 {
+		cfg["responseSchema"] = geminiSchemaMap(cloneJSONMap(format.Schema))
+	}
+	return cfg
+}
+
 // Chat implements ChatProvider.
 func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
 	messages = PrepareTranscriptMessages(messages, ResolveGeminiTranscriptPolicy(p.Model))
@@ -120,6 +135,7 @@ func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, to
 	req := geminiRequest{
 		Contents:          contents,
 		SystemInstruction: systemInstruction,
+		GenerationConfig:  geminiResponseFormatGenerationConfig(opts.ResponseFormat),
 		Tools:             geminiTools,
 	}
 	profile := p.PromptCacheProfile()

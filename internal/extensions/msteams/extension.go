@@ -36,16 +36,22 @@ package msteams
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -58,6 +64,12 @@ type botJWTClaims struct {
 	Iss string `json:"iss"`
 	Exp int64  `json:"exp"`
 	Nbf int64  `json:"nbf"`
+}
+
+type botJWTHeader struct {
+	Alg string `json:"alg"`
+	Kid string `json:"kid"`
+	X5T string `json:"x5t"`
 }
 
 func (c botJWTClaims) HasAudience(appID string) bool {
@@ -75,6 +87,22 @@ func (c botJWTClaims) HasAudience(appID string) bool {
 		}
 	}
 	return false
+}
+
+func parseJWTHeader(token string) (botJWTHeader, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return botJWTHeader{}, fmt.Errorf("invalid jwt format")
+	}
+	header, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return botJWTHeader{}, err
+	}
+	var h botJWTHeader
+	if err := json.Unmarshal(header, &h); err != nil {
+		return botJWTHeader{}, err
+	}
+	return h, nil
 }
 
 func parseJWTClaims(token string) (botJWTClaims, error) {
@@ -127,6 +155,7 @@ func (p *MSTeamsPlugin) ConfigSchema() map[string]any {
 
 func (p *MSTeamsPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
+		Typing:    true,
 		Reactions: true,
 		Threads:   true,
 		Edit:      true,
@@ -150,6 +179,8 @@ func (p *MSTeamsPlugin) Connect(
 	appID, _ := cfg["app_id"].(string)
 	appSecret, _ := cfg["app_secret"].(string)
 	serviceURL, _ := cfg["service_url"].(string)
+	jwksURL, _ := cfg["jwks_url"].(string)
+	metadataURL, _ := cfg["openid_metadata_url"].(string)
 
 	if appID == "" || appSecret == "" {
 		return nil, fmt.Errorf("msteams channel %q: app_id and app_secret are required", channelID)
@@ -174,6 +205,8 @@ func (p *MSTeamsPlugin) Connect(
 		onMessage:      onMessage,
 		done:           make(chan struct{}),
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
+		jwksURL:        strings.TrimSpace(jwksURL),
+		metadataURL:    strings.TrimSpace(metadataURL),
 	}
 
 	// Register the webhook handler in the global Teams webhook registry.
@@ -228,8 +261,13 @@ type botFrameworkActivity struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"recipient"`
-	ReplyToID string `json:"replyToId,omitempty"`
-	ChannelID string `json:"channelId"`
+	ReplyToID   string `json:"replyToId,omitempty"`
+	ChannelID   string `json:"channelId"`
+	Attachments []struct {
+		ContentType string `json:"contentType,omitempty"`
+		ContentURL  string `json:"contentUrl,omitempty"`
+		Name        string `json:"name,omitempty"`
+	} `json:"attachments,omitempty"`
 }
 
 type teamsBot struct {
@@ -244,6 +282,11 @@ type teamsBot struct {
 	// lastActivity stores the most recent inbound activity for reply routing.
 	lastActivity *botFrameworkActivity
 	activityMu   sync.Mutex
+	jwksURL      string
+	metadataURL  string
+	jwksMu       sync.Mutex
+	jwksKeys     map[string]*rsa.PublicKey
+	jwksExpires  time.Time
 }
 
 func (b *teamsBot) ID() string { return b.channelID }
@@ -259,42 +302,222 @@ func (b *teamsBot) Close() {
 	webhookMu.Unlock()
 }
 
-// verifyInboundAuth performs lightweight bearer token checks for inbound
-// Bot Framework activities. This intentionally keeps dependencies minimal and
-// validates required JWT claims (aud/exp/nbf/iss), but does not yet perform
-// full signature validation against Bot Framework OIDC keys.
+// verifyInboundAuth validates Bot Framework bearer JWTs, including RS256
+// signatures against the Microsoft OpenID/JWKS keys.
 func (b *teamsBot) verifyInboundAuth(r *http.Request) bool {
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		return false
 	}
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	if strings.TrimSpace(token) == "" {
+	token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	if token == "" {
 		return false
 	}
-
-	claims, err := parseJWTClaims(token)
-	if err != nil {
-		return false
-	}
-	if !claims.HasAudience(b.appID) {
-		return false
-	}
-	now := time.Now().Unix()
-	if claims.Exp > 0 && now >= claims.Exp {
-		return false
-	}
-	if claims.Nbf > 0 && now < claims.Nbf {
-		return false
-	}
-	issuer := strings.ToLower(strings.TrimSpace(claims.Iss))
-	if issuer == "" {
-		return false
-	}
-	if !strings.Contains(issuer, "botframework") && !strings.Contains(issuer, "microsoft") {
+	if err := b.verifyJWT(r.Context(), token); err != nil {
+		log.Printf("msteams: inbound JWT rejected channel=%s: %v", b.channelID, err)
 		return false
 	}
 	return true
+}
+
+func (b *teamsBot) verifyJWT(ctx context.Context, token string) error {
+	header, err := parseJWTHeader(token)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(header.Alg, "RS256") {
+		return fmt.Errorf("unsupported jwt alg %q", header.Alg)
+	}
+	claims, err := parseJWTClaims(token)
+	if err != nil {
+		return err
+	}
+	if err := b.validateJWTClaims(claims); err != nil {
+		return err
+	}
+	keyID := header.Kid
+	if keyID == "" {
+		keyID = header.X5T
+	}
+	key, err := b.jwksKey(ctx, keyID)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid jwt format")
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], sig); err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
+	}
+	return nil
+}
+
+func (b *teamsBot) validateJWTClaims(claims botJWTClaims) error {
+	if !claims.HasAudience(b.appID) {
+		return fmt.Errorf("audience mismatch")
+	}
+	now := time.Now().Unix()
+	if claims.Exp > 0 && now >= claims.Exp {
+		return fmt.Errorf("token expired")
+	}
+	if claims.Nbf > 0 && now < claims.Nbf {
+		return fmt.Errorf("token not valid yet")
+	}
+	issuer := strings.ToLower(strings.TrimSpace(claims.Iss))
+	if issuer == "" || (!strings.Contains(issuer, "botframework") && !strings.Contains(issuer, "microsoft")) {
+		return fmt.Errorf("issuer %q not allowed", claims.Iss)
+	}
+	return nil
+}
+
+func (b *teamsBot) jwksKey(ctx context.Context, kid string) (*rsa.PublicKey, error) {
+	if strings.TrimSpace(kid) == "" {
+		return nil, fmt.Errorf("jwt missing kid")
+	}
+	if err := b.refreshJWKS(ctx); err != nil {
+		return nil, err
+	}
+	b.jwksMu.Lock()
+	defer b.jwksMu.Unlock()
+	key := b.jwksKeys[kid]
+	if key == nil {
+		return nil, fmt.Errorf("jwks key %q not found", kid)
+	}
+	return key, nil
+}
+
+func (b *teamsBot) refreshJWKS(ctx context.Context) error {
+	b.jwksMu.Lock()
+	if time.Now().Before(b.jwksExpires) && len(b.jwksKeys) > 0 {
+		b.jwksMu.Unlock()
+		return nil
+	}
+	b.jwksMu.Unlock()
+	jwksURL := strings.TrimSpace(b.jwksURL)
+	if jwksURL == "" {
+		metadataURL := strings.TrimSpace(b.metadataURL)
+		if metadataURL == "" {
+			metadataURL = "https://login.botframework.com/v1/.well-known/openidconfiguration"
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := b.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("fetch oidc metadata: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("fetch oidc metadata: status %d", resp.StatusCode)
+		}
+		var meta struct {
+			JWKSURI string `json:"jwks_uri"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&meta); err != nil {
+			return err
+		}
+		jwksURL = strings.TrimSpace(meta.JWKSURI)
+	}
+	if jwksURL == "" {
+		return fmt.Errorf("jwks_uri unavailable")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch jwks: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("fetch jwks: status %d", resp.StatusCode)
+	}
+	keys, err := decodeJWKS(resp.Body)
+	if err != nil {
+		return err
+	}
+	b.jwksMu.Lock()
+	b.jwksKeys = keys
+	b.jwksExpires = time.Now().Add(24 * time.Hour)
+	b.jwksURL = jwksURL
+	b.jwksMu.Unlock()
+	return nil
+}
+
+func decodeJWKS(r io.Reader) (map[string]*rsa.PublicKey, error) {
+	var doc struct {
+		Keys []struct {
+			Kid string   `json:"kid"`
+			Kty string   `json:"kty"`
+			Use string   `json:"use,omitempty"`
+			N   string   `json:"n"`
+			E   string   `json:"e"`
+			X5T string   `json:"x5t,omitempty"`
+			X5C []string `json:"x5c,omitempty"`
+		} `json:"keys"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r, 2<<20)).Decode(&doc); err != nil {
+		return nil, err
+	}
+	out := map[string]*rsa.PublicKey{}
+	for _, key := range doc.Keys {
+		if !strings.EqualFold(key.Kty, "RSA") {
+			continue
+		}
+		pub, err := jwkRSAKey(key.N, key.E, key.X5C)
+		if err != nil {
+			continue
+		}
+		if key.Kid != "" {
+			out[key.Kid] = pub
+		}
+		if key.X5T != "" {
+			out[key.X5T] = pub
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("jwks contains no RSA keys")
+	}
+	return out, nil
+}
+
+func jwkRSAKey(nRaw, eRaw string, certs []string) (*rsa.PublicKey, error) {
+	if len(certs) > 0 && certs[0] != "" {
+		der, err := base64.StdEncoding.DecodeString(certs[0])
+		if err == nil {
+			cert, err := x509.ParseCertificate(der)
+			if err == nil {
+				if pub, ok := cert.PublicKey.(*rsa.PublicKey); ok {
+					return pub, nil
+				}
+			}
+		}
+	}
+	nBytes, err := base64.RawURLEncoding.DecodeString(nRaw)
+	if err != nil {
+		return nil, err
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(eRaw)
+	if err != nil {
+		return nil, err
+	}
+	n := new(big.Int).SetBytes(nBytes)
+	e := 0
+	for _, b := range eBytes {
+		e = e<<8 + int(b)
+	}
+	if e == 0 {
+		e = 65537
+	}
+	return &rsa.PublicKey{N: n, E: e}, nil
 }
 
 func (b *teamsBot) handleActivity(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +564,16 @@ func (b *teamsBot) handleActivity(w http.ResponseWriter, r *http.Request) {
 	text := strings.TrimSpace(activity.Text)
 	// Strip HTML tags that Teams sometimes includes.
 	text = stripSimpleHTML(text)
-	if text == "" {
+	mediaURL := ""
+	mediaMIME := ""
+	if len(activity.Attachments) > 0 {
+		mediaURL = activity.Attachments[0].ContentURL
+		mediaMIME = activity.Attachments[0].ContentType
+		if text == "" {
+			text = activity.Attachments[0].Name
+		}
+	}
+	if text == "" && mediaURL == "" {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -351,6 +583,8 @@ func (b *teamsBot) handleActivity(w http.ResponseWriter, r *http.Request) {
 		SenderID:  activity.From.ID,
 		Text:      text,
 		EventID:   activity.ID,
+		MediaURL:  mediaURL,
+		MediaMIME: mediaMIME,
 	})
 
 	w.WriteHeader(http.StatusOK)
@@ -359,56 +593,155 @@ func (b *teamsBot) handleActivity(w http.ResponseWriter, r *http.Request) {
 // ─── Outbound messaging ───────────────────────────────────────────────────────
 
 func (b *teamsBot) Send(ctx context.Context, text string) error {
+	_, err := b.SendWithReceipt(ctx, text)
+	return err
+}
+
+func (b *teamsBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "msteams", Attempts: 1, CreatedAt: time.Now()}
 	b.activityMu.Lock()
 	last := b.lastActivity
 	svcURL := b.serviceURL
 	b.activityMu.Unlock()
 
 	if last == nil || svcURL == "" {
-		return fmt.Errorf("msteams: no conversation context available for channel %s", b.channelID)
+		err := fmt.Errorf("msteams: no conversation context available for channel %s", b.channelID)
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
 	}
 
-	// Extract conversation ID from the last activity.
 	var conv struct {
 		ID string `json:"id"`
 	}
 	_ = json.Unmarshal(last.Conversation, &conv)
 	if conv.ID == "" {
-		return fmt.Errorf("msteams: no conversation ID available")
+		err := fmt.Errorf("msteams: no conversation ID available")
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
 	}
 
-	return b.postActivity(ctx, svcURL, conv.ID, last.Recipient.ID, map[string]any{
-		"type":       "message",
-		"text":       text,
-		"textFormat": "plain",
-	})
+	msgID, err := b.postActivityWithID(ctx, svcURL, conv.ID, last.Recipient.ID, map[string]any{"type": "message", "text": text, "textFormat": "plain"})
+	if msgID != "" {
+		receipt.MessageID = msgID
+	}
+	if err != nil {
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
+}
+
+func (b *teamsBot) SendAttachment(ctx context.Context, text, contentURL, contentType, name string) (channels.DeliveryReceipt, error) {
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "msteams", Attempts: 1, CreatedAt: time.Now()}
+	b.activityMu.Lock()
+	last := b.lastActivity
+	svcURL := b.serviceURL
+	b.activityMu.Unlock()
+	if last == nil || svcURL == "" {
+		err := fmt.Errorf("msteams: no conversation context available for channel %s", b.channelID)
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	if strings.TrimSpace(contentURL) == "" {
+		err := fmt.Errorf("msteams: contentURL is required")
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	var conv struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(last.Conversation, &conv)
+	if conv.ID == "" {
+		err := fmt.Errorf("msteams: no conversation ID available")
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	attachment := map[string]any{"contentUrl": contentURL}
+	if strings.TrimSpace(contentType) != "" {
+		attachment["contentType"] = contentType
+	} else {
+		attachment["contentType"] = "application/octet-stream"
+	}
+	if strings.TrimSpace(name) != "" {
+		attachment["name"] = name
+	}
+	payload := map[string]any{
+		"type":        "message",
+		"text":        text,
+		"textFormat":  "plain",
+		"attachments": []map[string]any{attachment},
+	}
+	msgID, err := b.postActivityWithID(ctx, svcURL, conv.ID, last.Recipient.ID, payload)
+	if msgID != "" {
+		receipt.MessageID = msgID
+	}
+	if err != nil {
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
+}
+
+func (b *teamsBot) SendTyping(ctx context.Context, _ int) error {
+	b.activityMu.Lock()
+	last := b.lastActivity
+	svcURL := b.serviceURL
+	b.activityMu.Unlock()
+	if last == nil || svcURL == "" {
+		return fmt.Errorf("msteams: no conversation context")
+	}
+	var conv struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(last.Conversation, &conv)
+	return b.postActivity(ctx, svcURL, conv.ID, last.Recipient.ID, map[string]any{"type": "typing"})
 }
 
 func (b *teamsBot) postActivity(ctx context.Context, serviceURL, conversationID, botID string, payload map[string]any) error {
+	_, err := b.postActivityWithID(ctx, serviceURL, conversationID, botID, payload)
+	return err
+}
+
+func (b *teamsBot) postActivityWithID(ctx context.Context, serviceURL, conversationID, botID string, payload map[string]any) (string, error) {
 	token, err := b.acquireToken(ctx)
 	if err != nil {
-		return fmt.Errorf("msteams: acquire token: %w", err)
+		return "", fmt.Errorf("msteams: acquire token: %w", err)
 	}
 
 	endpoint := fmt.Sprintf("%s/v3/conversations/%s/activities", serviceURL, conversationID)
 	data, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("msteams: post activity: status %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("msteams: post activity: status %d: %s", resp.StatusCode, string(raw))
 	}
-	return nil
+	var result struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(raw, &result)
+	return result.ID, nil
 }
 
 // acquireToken fetches an AAD access token for the Bot Framework API using
@@ -444,6 +777,39 @@ func (b *teamsBot) acquireToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("AAD token error: %s: %s", result.Error, result.ErrorDesc)
 	}
 	return result.AccessToken, nil
+}
+
+func (b *teamsBot) DeleteMessage(ctx context.Context, eventID string) error {
+	b.activityMu.Lock()
+	last := b.lastActivity
+	svcURL := b.serviceURL
+	b.activityMu.Unlock()
+	if last == nil || svcURL == "" {
+		return fmt.Errorf("msteams: no conversation context")
+	}
+	var conv struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(last.Conversation, &conv)
+	token, err := b.acquireToken(ctx)
+	if err != nil {
+		return fmt.Errorf("msteams: acquire token: %w", err)
+	}
+	endpoint := fmt.Sprintf("%s/v3/conversations/%s/activities/%s", svcURL, conv.ID, eventID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("msteams: delete message: status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // ─── ReactionHandle ───────────────────────────────────────────────────────────

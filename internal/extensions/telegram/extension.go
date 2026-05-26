@@ -41,6 +41,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -319,16 +320,34 @@ func (b *telegramBot) client(timeout time.Duration) *http.Client {
 }
 
 func (b *telegramBot) Send(ctx context.Context, text string) error {
-	// When used as a reply-to-all bot, we need to track the last chat ID.
-	// For direct sends, the caller should use telegram.send gateway method.
+	_, err := b.SendWithReceipt(ctx, text)
+	return err
+}
+
+func (b *telegramBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
 	b.mu.Lock()
 	chatID := b.lastChatID
 	parseMode := b.defaultParseMode
 	b.mu.Unlock()
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "telegram", Attempts: 1, CreatedAt: time.Now()}
 	if chatID == "" {
-		return fmt.Errorf("telegram %s: no chat ID known yet (no messages received)", b.channelID)
+		err := fmt.Errorf("telegram %s: no chat ID known yet (no messages received)", b.channelID)
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
 	}
-	return sendTelegramMessageWithOptions(ctx, b.token, chatID, text, parseMode, nil, b.client(15*time.Second))
+	msgID, err := sendTelegramMessageWithReceipt(ctx, b.token, chatID, text, parseMode, nil, b.client(15*time.Second))
+	if msgID != "" {
+		receipt.MessageID = "tg-" + msgID
+	}
+	if err != nil {
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
 }
 
 func (b *telegramBot) Close() {
@@ -727,21 +746,30 @@ func (b *telegramBot) SendInThread(ctx context.Context, threadID, text string) e
 }
 
 func (b *telegramBot) poll(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	backoff := 2 * time.Second
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-b.done:
 			return
-		case <-ticker.C:
-			b.fetchUpdates(ctx)
+		case <-time.After(backoff):
 		}
+		if err := b.fetchUpdates(ctx); err != nil {
+			log.Printf("telegram: polling error channel=%s: %v", b.channelID, err)
+			if backoff < 60*time.Second {
+				backoff *= 2
+				if backoff > 60*time.Second {
+					backoff = 60 * time.Second
+				}
+			}
+			continue
+		}
+		backoff = 2 * time.Second
 	}
 }
 
-func (b *telegramBot) fetchUpdates(ctx context.Context) {
+func (b *telegramBot) fetchUpdates(ctx context.Context) error {
 	b.mu.Lock()
 	offset := b.lastUpdateID + 1
 	b.mu.Unlock()
@@ -749,17 +777,17 @@ func (b *telegramBot) fetchUpdates(ctx context.Context) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=1&limit=100", b.token, offset)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return
+		return err
 	}
 
 	resp, err := b.client(10 * time.Second).Do(req)
 	if err != nil {
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return
+		return err
 	}
 
 	var result struct {
@@ -767,13 +795,17 @@ func (b *telegramBot) fetchUpdates(ctx context.Context) {
 		Result []telegramUpdate `json:"result"`
 	}
 
-	if err := json.Unmarshal(raw, &result); err != nil || !result.OK {
-		return
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("getUpdates returned ok=false")
 	}
 
 	for _, update := range result.Result {
 		b.processUpdate(update)
 	}
+	return nil
 }
 
 // sendTelegramMessage sends a text message to a Telegram chat.
@@ -782,6 +814,11 @@ func sendTelegramMessage(ctx context.Context, token, chatID, text string) error 
 }
 
 func sendTelegramMessageWithOptions(ctx context.Context, token, chatID, text, parseMode string, buttons []any, httpClient *http.Client) error {
+	_, err := sendTelegramMessageWithReceipt(ctx, token, chatID, text, parseMode, buttons, httpClient)
+	return err
+}
+
+func sendTelegramMessageWithReceipt(ctx context.Context, token, chatID, text, parseMode string, buttons []any, httpClient *http.Client) (string, error) {
 	payload := map[string]any{
 		"chat_id": chatID,
 		"text":    text,
@@ -792,7 +829,7 @@ func sendTelegramMessageWithOptions(ctx context.Context, token, chatID, text, pa
 	if len(buttons) > 0 {
 		payload["reply_markup"] = map[string]any{"inline_keyboard": normalizeTelegramButtons(buttons)}
 	}
-	return telegramPostJSON(ctx, httpClient, token, "sendMessage", payload)
+	return telegramPostJSONMessageID(ctx, httpClient, token, "sendMessage", payload)
 }
 
 func sendTelegramMedia(ctx context.Context, httpClient *http.Client, token, chatID, mediaType, mediaURL, caption string) error {
@@ -861,6 +898,11 @@ func sendTelegramAudioBytes(ctx context.Context, httpClient *http.Client, token,
 }
 
 func telegramPostJSON(ctx context.Context, httpClient *http.Client, token, method string, payload map[string]any) error {
+	_, err := telegramPostJSONMessageID(ctx, httpClient, token, method, payload)
+	return err
+}
+
+func telegramPostJSONMessageID(ctx context.Context, httpClient *http.Client, token, method string, payload map[string]any) (string, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
@@ -868,10 +910,37 @@ func telegramPostJSON(ctx context.Context, httpClient *http.Client, token, metho
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", token, method)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return telegramDo(req, httpClient, "telegram "+method)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("telegram %s: %w", method, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("telegram %s: HTTP %d: %s", method, resp.StatusCode, raw)
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description,omitempty"`
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return "", nil
+	}
+	if err := json.Unmarshal(raw, &result); err == nil {
+		if !result.OK {
+			return "", fmt.Errorf("telegram %s: %s", method, strings.TrimSpace(result.Description))
+		}
+		if result.Result.MessageID > 0 {
+			return fmt.Sprintf("%d", result.Result.MessageID), nil
+		}
+	}
+	return "", nil
 }
 
 func telegramDo(req *http.Request, httpClient *http.Client, label string) error {

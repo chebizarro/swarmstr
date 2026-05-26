@@ -38,8 +38,14 @@ type BootstrapConfig struct {
 	// daemon on startup. Requires the experimental_fips build tag.
 	FIPSEnabled bool `json:"fips_enabled,omitempty"`
 
-	// FIPSControlSocket overrides the default FIPS daemon control socket path.
+	// FIPSControlSocket overrides the default FIPS daemon control endpoint.
+	// Despite the legacy field name, this may be a Unix socket path, unix://
+	// endpoint, TCP host:port, or tcp:// endpoint. Empty means auto-resolve.
 	FIPSControlSocket string `json:"fips_control_socket,omitempty"`
+
+	// ManagedSettings are trusted local lockdown controls merged into runtime
+	// config with precedence over operator-editable settings.
+	ManagedSettings *ManagedSettings `json:"managed_settings,omitempty"`
 }
 
 func (c BootstrapConfig) EffectiveStateKind() events.Kind {

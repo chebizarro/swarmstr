@@ -3,6 +3,7 @@ package webui
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -86,6 +87,131 @@ func TestHandler_IncludesMarkdownRenderingAssets(t *testing.T) {
 	for _, want := range []string{"marked.min.js", "purify.min.js", "highlight.min.js", "copy-code-btn", "renderMarkdown"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("response body should contain %q", want)
+		}
+	}
+}
+
+func TestHandler_IncludesParityRunControlsAndToolActivity(t *testing.T) {
+	h := Handler("/ws", "")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"id=\"abort-run\"",
+		"chat.abort",
+		"sessions.reset",
+		"sessions.compact",
+		"tool.start",
+		"renderToolActivity",
+		"plugin.approval.requested",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response body should contain %q", want)
+		}
+	}
+}
+
+func TestHandler_IncludesMobileResumeRunwayUI(t *testing.T) {
+	h := Handler("/ws", "")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"id=\"mobile-menu-btn\"",
+		"@media (max-width: 900px)",
+		"sidebar-open",
+		"safe-area-inset-bottom",
+		"Resuming session history",
+		"loadSessionHistory(sessionID)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response body should contain %q", want)
+		}
+	}
+}
+
+func TestHandler_IncludesManagementViews(t *testing.T) {
+	h := Handler("/ws", "")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"data-view=\"dashboard\"",
+		"showDashboardView",
+		"showAgentsView",
+		"showChannelsView",
+		"showConfigView",
+		"showUsageView",
+		"config.put",
+		"usage.cost",
+		"channels.status",
+		"logs.tail",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response body should contain %q", want)
+		}
+	}
+}
+
+func TestHandler_IncludesThemeLocalizationAndComposerPolish(t *testing.T) {
+	h := Handler("/ws", "")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"theme-light",
+		"locale-select",
+		"I18N",
+		"slash-menu",
+		"slashCommands",
+		"attach-input",
+		"pendingAttachments",
+		"exportChatMarkdown",
+		"searchChat",
+		"metiq_input_history",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response body should contain %q", want)
+		}
+	}
+}
+
+func TestArchitectureRunwayDocumented(t *testing.T) {
+	body, err := os.ReadFile("ARCHITECTURE.md")
+	if err != nil {
+		t.Fatalf("read ARCHITECTURE.md: %v", err)
+	}
+	for _, want := range []string{"component", "Gateway client", "ToolCard", "embedded handler contract"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("architecture doc should contain %q", want)
 		}
 	}
 }

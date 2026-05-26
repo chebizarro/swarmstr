@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -54,7 +55,7 @@ func TestPlugin_ConfigSchemaNoUnusedFields(t *testing.T) {
 	if !ok {
 		t.Fatal("expected properties map in schema")
 	}
-	allowed := map[string]bool{"bot_token": true, "channel_id": true, "guild_id": true}
+	allowed := map[string]bool{"bot_token": true, "channel_id": true, "guild_id": true, "application_id": true, "slash_command": true}
 	for key := range props {
 		if !allowed[key] {
 			t.Errorf("ConfigSchema exposes %q which is not used by Connect/poll/send — remove it or implement support", key)
@@ -349,6 +350,86 @@ func TestEnsureChannelMetadata_SetsThreadFlag(t *testing.T) {
 	}
 	if !b.channelMetaLoaded {
 		t.Fatal("expected channelMetaLoaded=true")
+	}
+}
+
+func TestGatewayInteraction_DeliversSlashCommandAndResponds(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	var callbackPath, callbackBody string
+	bot := &discordBot{
+		channelID:        "discord-main",
+		discordChannelID: "ch-123",
+		onMessage:        func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
+		restScheduler:    nil,
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			callbackPath = req.URL.Path
+			raw, _ := io.ReadAll(req.Body)
+			callbackBody = string(raw)
+			return jsonResponse(req, `{}`), nil
+		})},
+	}
+	bot.handleGatewayInteraction(context.Background(), []byte(`{
+		"id":"inter-1",
+		"token":"tok-1",
+		"channel_id":"ch-123",
+		"data":{"name":"metiq","options":[{"name":"text","value":"status"}]},
+		"member":{"user":{"id":"u1","username":"alice"}}
+	}`))
+	if len(delivered) != 1 {
+		t.Fatalf("expected slash command delivery, got %d", len(delivered))
+	}
+	if delivered[0].Text != "/metiq text=status" || delivered[0].SenderID != "alice#u1" {
+		t.Fatalf("unexpected delivered command: %+v", delivered[0])
+	}
+	if !strings.Contains(callbackPath, "/interactions/inter-1/tok-1/callback") || !strings.Contains(callbackBody, "Command received") {
+		t.Fatalf("expected interaction callback, path=%s body=%s", callbackPath, callbackBody)
+	}
+}
+
+func TestRegisterApplicationCommands_PostsSlashCommand(t *testing.T) {
+	var gotPath, gotBody string
+	bot := &discordBot{
+		token:         "Bot tok",
+		applicationID: "app-1",
+		guildID:       "guild-1",
+		slashCommand:  "metiq",
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotPath = req.URL.Path
+			raw, _ := io.ReadAll(req.Body)
+			gotBody = string(raw)
+			return jsonResponse(req, `{}`), nil
+		})},
+	}
+	if err := bot.registerApplicationCommands(context.Background()); err != nil {
+		t.Fatalf("registerApplicationCommands: %v", err)
+	}
+	if !strings.Contains(gotPath, "/applications/app-1/guilds/guild-1/commands") {
+		t.Fatalf("unexpected path: %s", gotPath)
+	}
+	if !strings.Contains(gotBody, `"name":"metiq"`) || !strings.Contains(gotBody, `"name":"text"`) {
+		t.Fatalf("unexpected command body: %s", gotBody)
+	}
+}
+
+func TestDiscordDo_RestSchedulerRetries429(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			h := make(http.Header)
+			h.Set("Retry-After", "0.001")
+			return &http.Response{StatusCode: http.StatusTooManyRequests, Header: h, Body: io.NopCloser(strings.NewReader(`rate limited`)), Request: req}, nil
+		}
+		return jsonResponse(req, `{}`), nil
+	})}
+	req, _ := http.NewRequest(http.MethodPost, discordAPIBase+"/channels/ch-123/messages", nil)
+	resp, err := discordDo(context.Background(), client, channels.NewRESTScheduler(10, 10), req)
+	if err != nil {
+		t.Fatalf("discordDo: %v", err)
+	}
+	defer resp.Body.Close()
+	if calls != 2 || resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected scheduled retry, calls=%d status=%d", calls, resp.StatusCode)
 	}
 }
 

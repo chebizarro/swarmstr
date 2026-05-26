@@ -107,6 +107,9 @@ type Config struct {
 	// SearchLimit is how many memory hits to examine per search.
 	SearchLimit int
 
+	// CitationsMode controls whether recall summaries include provenance labels.
+	CitationsMode memory.CitationsMode
+
 	// RecentUserTurns is how many recent user turns to include as search context.
 	RecentUserTurns int
 
@@ -177,24 +180,28 @@ type Result struct {
 
 	// HitCount is the number of memory search hits examined.
 	HitCount int
+
+	// Citations contains compact provenance labels for recalled memories when
+	// citation mode is enabled.
+	Citations []memory.MemoryCitation
 }
 
 // ── No-recall value detection ───────────────────────────────────────────────
 
 // noRecallValues is a set of strings that indicate the recall found nothing useful.
 var noRecallValues = map[string]bool{
-	"":                      true,
-	"none":                  true,
-	"no_reply":              true,
-	"no reply":              true,
-	"nothing useful":        true,
-	"no relevant memory":    true,
-	"no relevant memories":  true,
-	"timeout":               true,
-	"[]":                    true,
-	"{}":                    true,
-	"null":                  true,
-	"n/a":                   true,
+	"":                     true,
+	"none":                 true,
+	"no_reply":             true,
+	"no reply":             true,
+	"nothing useful":       true,
+	"no relevant memory":   true,
+	"no relevant memories": true,
+	"timeout":              true,
+	"[]":                   true,
+	"{}":                   true,
+	"null":                 true,
+	"n/a":                  true,
 }
 
 // isNoRecallValue returns true if the text represents a "nothing found" response.
@@ -451,6 +458,9 @@ func (e *Engine) Recall(ctx context.Context, req RecallRequest) Result {
 		return Result{Status: StatusTimeout, DurationMS: elapsed(start)}
 	case sr := <-resultCh:
 		summary := e.buildSummary(sr.hits)
+		if memory.NormalizeCitationsMode(e.cfg.CitationsMode) == memory.CitationsModeOn {
+			summary = memory.FormatMemorySummaryWithCitations(summary, sr.hits, e.cfg.CitationsMode)
+		}
 		status := StatusOK
 		if isNoRecallValue(summary) || summary == "" {
 			status = StatusEmpty
@@ -462,6 +472,9 @@ func (e *Engine) Recall(ctx context.Context, req RecallRequest) Result {
 			Summary:    summary,
 			DurationMS: elapsed(start),
 			HitCount:   len(sr.hits),
+		}
+		if status == StatusOK && memory.NormalizeCitationsMode(e.cfg.CitationsMode) == memory.CitationsModeOn {
+			result.Citations = memory.BuildMemoryCitations(sr.hits)
 		}
 
 		// Cache the result.
@@ -484,10 +497,26 @@ type searchResult struct {
 // FormatContextInjection formats a recall result for injection into the
 // agent's system prompt as ExtraSystemPrompt.
 func FormatContextInjection(result Result) string {
+	return FormatContextInjectionWithCitations(result, memory.CitationsModeOff)
+}
+
+func FormatContextInjectionWithCitations(result Result, mode memory.CitationsMode) string {
 	if result.Status != StatusOK || result.Summary == "" {
 		return ""
 	}
-	return "🧩 Active memory: " + result.Summary
+	text := result.Summary
+	if memory.NormalizeCitationsMode(mode) == memory.CitationsModeOn && len(result.Citations) > 0 && !strings.Contains(text, "Citations:") {
+		parts := make([]string, 0, len(result.Citations))
+		for _, citation := range result.Citations {
+			if formatted := memory.FormatMemoryCitation(citation); formatted != "" {
+				parts = append(parts, formatted)
+			}
+		}
+		if len(parts) > 0 {
+			text += "\nCitations: " + strings.Join(parts, "; ")
+		}
+	}
+	return "🧩 Active memory: " + text
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────

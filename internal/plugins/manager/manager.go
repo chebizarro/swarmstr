@@ -87,6 +87,11 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 			m.log.Warn("plugin skipped during load", "plugin", pluginID, "err", err)
 			continue
 		}
+		if err := installer.VerifyPluginIntegrity(installPath); err != nil {
+			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
+			m.log.Warn("plugin integrity verification failed", "plugin", pluginID, "err", err)
+			continue
+		}
 
 		// Node.js compat bridge: activated when plugin_type is "node"/"nodejs"
 		// OR when the trusted install path contains a node_modules directory.

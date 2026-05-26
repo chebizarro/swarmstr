@@ -9,13 +9,13 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 	"sort"
 	"strings"
 
 	"metiq/internal/agent"
-	mediapkg "metiq/internal/media"
+	"metiq/internal/catalog"
 	"metiq/internal/gateway/methods"
+	mediapkg "metiq/internal/media"
 	pluginmanager "metiq/internal/plugins/manager"
 	"metiq/internal/store/state"
 	"metiq/internal/workspace"
@@ -26,62 +26,11 @@ import (
 // ---------------------------------------------------------------------------
 
 func defaultModelsCatalog(configProviders map[string]state.ProviderEntry) []map[string]any {
-	catalog := []map[string]any{
-		{"id": "echo", "name": "Echo (built-in)", "provider": "echo", "context_window": 8192, "reasoning": false},
+	providers := make(map[string]catalog.ProviderConfig, len(configProviders))
+	for providerID, entry := range configProviders {
+		providers[providerID] = catalog.ProviderConfig{Enabled: entry.Enabled, Model: entry.Model}
 	}
-
-	// HTTP provider — available when METIQ_AGENT_HTTP_URL is set.
-	if strings.TrimSpace(os.Getenv("METIQ_AGENT_HTTP_URL")) != "" {
-		catalog = append(catalog, map[string]any{"id": "http-default", "name": "HTTP Provider", "provider": "http", "context_window": 16384, "reasoning": true, "configured": true})
-	}
-
-	// Well-known LLM providers — listed when their API key env var is set.
-	type providerEntry struct {
-		id, name, envKey string
-		contextWindow    int
-		reasoning        bool
-	}
-	knownProviders := []providerEntry{
-		{"claude-sonnet-4-20250514", "Anthropic Claude", "ANTHROPIC_API_KEY", 200000, true},
-		{"gpt-4o", "OpenAI GPT-4o", "OPENAI_API_KEY", 128000, true},
-		{"gemini-2.5-pro", "Google Gemini", "GEMINI_API_KEY", 1000000, true},
-		{"grok-3", "xAI Grok", "XAI_API_KEY", 131072, true},
-		{"command-r-plus", "Cohere Command", "COHERE_API_KEY", 128000, false},
-		{"groq/llama-4-scout-17b-16e-instruct", "Groq", "GROQ_API_KEY", 131072, false},
-		{"mistral-large-latest", "Mistral AI", "MISTRAL_API_KEY", 128000, true},
-		{"together/meta-llama/Llama-4-Scout-17B-16E-Instruct", "Together AI", "TOGETHER_API_KEY", 131072, false},
-		{"openrouter/anthropic/claude-sonnet-4", "OpenRouter", "OPENROUTER_API_KEY", 200000, true},
-	}
-	for _, p := range knownProviders {
-		configured := strings.TrimSpace(os.Getenv(p.envKey)) != ""
-		catalog = append(catalog, map[string]any{
-			"id": p.id, "name": p.name, "provider": strings.SplitN(p.id, "/", 2)[0],
-			"context_window": p.contextWindow, "reasoning": p.reasoning, "configured": configured,
-		})
-	}
-
-	// Providers from runtime config (extra entries from providers[] config section).
-	if configProviders != nil {
-		for providerID := range configProviders {
-			// Skip if already covered by known entries.
-			found := false
-			for _, c := range catalog {
-				id, _ := c["id"].(string)
-				provider, _ := c["provider"].(string)
-				if id == providerID || provider == providerID || strings.HasPrefix(id, providerID+"/") {
-					found = true
-					break
-				}
-			}
-			if !found {
-				catalog = append(catalog, map[string]any{
-					"id": providerID, "name": providerID + " (config)", "provider": providerID,
-					"context_window": 128000, "reasoning": true, "configured": true,
-				})
-			}
-		}
-	}
-	return catalog
+	return catalog.ToMaps(catalog.DefaultRegistry(providers).List())
 }
 
 func defaultToolProfiles() []map[string]any {
@@ -255,7 +204,6 @@ func extensionPolicyList(rawExt map[string]any, key string) ([]string, bool) {
 		return nil, false
 	}
 }
-
 
 type coreToolSection struct {
 	ID    string

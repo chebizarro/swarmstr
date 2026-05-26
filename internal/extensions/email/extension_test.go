@@ -191,6 +191,37 @@ func TestParseSimpleMessage_Basic(t *testing.T) {
 	}
 }
 
+func TestParseSimpleMessage_ThreadCorrelationHeaders(t *testing.T) {
+	lines := []string{
+		"From: alice@example.com",
+		"Subject: Re: Thread",
+		"Message-ID: <child@example.com>",
+		"In-Reply-To: <root@example.com>",
+		"References: <root@example.com> <parent@example.com>",
+		"",
+		"reply body",
+	}
+	msg := parseSimpleMessage("7", lines)
+	if msg.messageID != "<child@example.com>" || msg.inReplyTo != "<root@example.com>" || msg.references == "" {
+		t.Fatalf("headers not parsed: %+v", msg)
+	}
+	if got := emailThreadID(msg); got != "<root@example.com>" {
+		t.Fatalf("expected in-reply-to thread id, got %q", got)
+	}
+	if got := firstNonEmpty(msg.messageID, msg.uid); got != "<child@example.com>" {
+		t.Fatalf("expected message-id event id, got %q", got)
+	}
+}
+
+func TestEmailThreadID_UsesReferencesThenMessageID(t *testing.T) {
+	if got := emailThreadID(imapMessage{references: "<root@example.com> <parent@example.com>", messageID: "<child@example.com>"}); got != "<root@example.com>" {
+		t.Fatalf("expected first reference, got %q", got)
+	}
+	if got := emailThreadID(imapMessage{messageID: "<solo@example.com>"}); got != "<solo@example.com>" {
+		t.Fatalf("expected message-id fallback, got %q", got)
+	}
+}
+
 func TestParseSimpleMessage_CaseInsensitiveHeaders(t *testing.T) {
 	lines := []string{
 		"from: Alice <alice@test.com>",

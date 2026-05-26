@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	ctxengine "metiq/internal/context"
 )
 
 // SpawnSessionInput creates a managed child ACP runtime session.
@@ -86,6 +88,23 @@ func (m *Manager) SpawnSession(ctx context.Context, input SpawnSessionInput) (Sp
 		return SpawnSessionResult{}, fmt.Errorf("acp spawn: child session %q already exists", childKey)
 	}
 
+	var contextPrep *ctxengine.SubagentPreparation
+	if m.opts.ContextEngine != nil {
+		contextPrep, err = ctxengine.PrepareSubagentSpawn(ctx, m.opts.ContextEngine, ctxengine.SubagentSpawnParams{
+			ParentSessionID: parentKey,
+			ChildSessionID:  childKey,
+			ContextMode:     "fork",
+		})
+		if err != nil {
+			return SpawnSessionResult{}, fmt.Errorf("acp spawn: prepare subagent context: %w", err)
+		}
+	}
+	rollbackContext := func() {
+		if contextPrep != nil && contextPrep.Rollback != nil {
+			_ = contextPrep.Rollback()
+		}
+	}
+
 	handle, err := m.InitializeSession(ctx, InitializeSessionInput{
 		SessionKey: childKey,
 		Agent:      agentID,
@@ -96,6 +115,7 @@ func (m *Manager) SpawnSession(ctx context.Context, input SpawnSessionInput) (Sp
 		Controls:   input.Controls,
 	})
 	if err != nil {
+		rollbackContext()
 		_ = m.sessionsDelete(ctx, childKey)
 		m.clearCached(childKey)
 		return SpawnSessionResult{}, err
@@ -105,10 +125,12 @@ func (m *Manager) SpawnSession(ctx context.Context, input SpawnSessionInput) (Sp
 		threadID = parentMeta.ThreadID
 	}
 	if err := m.saveSpawnChildMeta(ctx, childKey, parentKey, agentID, firstNonEmptyMode(input.Mode, parentMeta.Mode, SessionModePersistent), handle, depth, threadID); err != nil {
+		rollbackContext()
 		_ = m.CloseSession(ctx, CloseSessionInput{SessionKey: childKey, Reason: "spawn-metadata-failed", DiscardPersistentState: true})
 		return SpawnSessionResult{}, err
 	}
 	if err := m.saveSpawnParentMeta(ctx, parentKey, parentMeta, childKey); err != nil {
+		rollbackContext()
 		_ = m.CloseSession(ctx, CloseSessionInput{SessionKey: childKey, Reason: "spawn-parent-link-failed", DiscardPersistentState: true})
 		return SpawnSessionResult{}, err
 	}

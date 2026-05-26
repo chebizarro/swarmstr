@@ -163,7 +163,7 @@ func (p *IRCPlugin) Connect(
 		return nil, fmt.Errorf("irc channel %q: connect: %w", channelID, err)
 	}
 
-	go bot.readLoop(ctx)
+	go bot.run(ctx)
 	log.Printf("irc: connected to %s:%d as %s, joined %v", host, port, nick, ircChannels)
 	return bot, nil
 }
@@ -278,24 +278,68 @@ func (b *ircBot) Close() {
 	b.mu.Unlock()
 }
 
-func (b *ircBot) readLoop(ctx context.Context) {
-	defer b.Close()
-	scanner := bufio.NewScanner(b.conn)
-	joined := false
+func (b *ircBot) run(ctx context.Context) {
+	backoff := 250 * time.Millisecond
 	for {
+		if b.readLoop(ctx) {
+			return
+		}
+		b.closeConn()
 		select {
 		case <-ctx.Done():
 			return
 		case <-b.done:
 			return
+		case <-time.After(backoff):
+		}
+		if err := b.connect(ctx); err != nil {
+			log.Printf("irc: reconnect failed for channel %s: %v", b.channelID, err)
+			if backoff < 60*time.Second {
+				backoff *= 2
+				if backoff > 60*time.Second {
+					backoff = 60 * time.Second
+				}
+			}
+			continue
+		}
+		backoff = 250 * time.Millisecond
+		log.Printf("irc: reconnected channel %s to %s:%d", b.channelID, b.host, b.port)
+	}
+}
+
+func (b *ircBot) closeConn() {
+	b.mu.Lock()
+	if b.conn != nil {
+		_ = b.conn.Close()
+		b.conn = nil
+		b.writer = nil
+	}
+	b.mu.Unlock()
+}
+
+func (b *ircBot) readLoop(ctx context.Context) (stop bool) {
+	b.mu.Lock()
+	conn := b.conn
+	b.mu.Unlock()
+	if conn == nil {
+		return false
+	}
+	scanner := bufio.NewScanner(conn)
+	joined := false
+	for {
+		select {
+		case <-ctx.Done():
+			return true
+		case <-b.done:
+			return true
 		default:
 		}
-		_ = b.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		if !scanner.Scan() {
 			if ctx.Err() == nil {
 				log.Printf("irc: connection lost for channel %s: %v", b.channelID, scanner.Err())
 			}
-			return
+			return false
 		}
 		line := scanner.Text()
 		b.handleLine(line, &joined)

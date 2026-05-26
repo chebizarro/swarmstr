@@ -81,12 +81,13 @@ func BuildChatProviderForModel(model string, apiKey string, baseURL string, prom
 	}
 
 	// Try OpenAI-compatible providers by prefix/alias.
-	if compatBase, compatEnvKey := resolveOpenAICompat(norm); compatBase != "" {
+	if desc, ok := DefaultProviderRegistry().Match(norm); ok && desc.ID != "openai" && desc.ID != "anthropic" && desc.ID != "gemini" {
+		compatBase := desc.resolvedBaseURL()
 		effectiveBase := baseURL
 		if effectiveBase == "" {
 			effectiveBase = compatBase
 		}
-		credential, err := requireOpenAICompatibleCredential("OpenAI-compatible provider", model, apiKey, compatEnvKey, effectiveBase)
+		credential, err := requireOpenAICompatibleCredential("OpenAI-compatible provider", model, apiKey, desc.APIKeyEnv, effectiveBase)
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +95,7 @@ func BuildChatProviderForModel(model string, apiKey string, baseURL string, prom
 		if err != nil {
 			return nil, err
 		}
-		return &OpenAIChatProviderChat{BaseURL: effectiveBase, APIKey: credential, Model: model, PromptCache: promptCacheProfilePtr(profile)}, nil
+		return &OpenAIChatProviderChat{BaseURL: effectiveBase, APIKey: credential, Model: model, Client: desc.HTTPClient(nil), PromptCache: promptCacheProfilePtr(profile), ToolSchemaNormalizer: desc.NormalizeToolSchema}, nil
 	}
 
 	return nil, fmt.Errorf("cannot create ChatProvider for model %q", model)

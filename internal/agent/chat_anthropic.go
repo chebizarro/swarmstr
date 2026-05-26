@@ -105,6 +105,8 @@ func NewAnthropicChatProviderOAuth(initialToken string, tokenSource func() (stri
 	return p
 }
 
+const anthropicStructuredOutputToolName = "structured_output"
+
 // Chat implements ChatProvider. It converts LLMMessage to the Anthropic format,
 // makes a single API call, and converts the response back.
 func (p *AnthropicChatProvider) Chat(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
@@ -165,7 +167,12 @@ func (p *AnthropicChatProvider) Chat(ctx context.Context, messages []LLMMessage,
 	}
 
 	// Tools
-	if len(tools) > 0 {
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type != "" && opts.ResponseFormat.Type != ResponseFormatText && len(tools) == 0 {
+		params.Tools = translateToolsToSDK([]ToolDefinition{anthropicStructuredOutputTool(opts.ResponseFormat)}, opts.CacheTools)
+		params.ToolChoice = anthropic.ToolChoiceUnionParam{OfTool: &anthropic.ToolChoiceToolParam{Name: anthropicStructuredOutputToolName}}
+	} else if len(tools) > 0 {
+		// Do not force the synthetic structured-output tool while real tools are
+		// available; the agentic loop must be able to execute those tools first.
 		params.Tools = translateToolsToSDK(tools, opts.CacheTools)
 	}
 
@@ -179,29 +186,9 @@ func (p *AnthropicChatProvider) Chat(ctx context.Context, messages []LLMMessage,
 	}
 
 	// Build request options.
-	var reqOpts []option.RequestOption
-
-	if p.tokenSource != nil {
-		// OAuth path: use Bearer token auth and include the full set of beta
-		// flags required for Claude Code OAuth sessions.  The old HTTP-based
-		// implementation set "claude-code-20250219,oauth-2025-04-20" plus the
-		// x-app and user-agent headers — replicate that here so the API
-		// doesn't reject the request with a generic 400 "Error".
-		tok, err := p.tokenSource()
-		if err != nil {
-			return nil, fmt.Errorf("anthropic oauth: refreshing token: %w", err)
-		}
-		reqOpts = append(reqOpts,
-			option.WithAuthToken(tok),
-			option.WithHeader("anthropic-beta", anthropicOAuthBeta+","+buildAnthropicBetaHeader(opts)),
-			option.WithHeader("x-app", "cli"),
-			option.WithHeader("user-agent", anthropicOAuthUserAgent),
-		)
-	} else {
-		// API-key path: standard beta header only.
-		reqOpts = append(reqOpts,
-			option.WithHeader("anthropic-beta", buildAnthropicBetaHeader(opts)),
-		)
+	reqOpts, err := p.requestOptions(opts)
+	if err != nil {
+		return nil, err
 	}
 
 	// Make the API call.
@@ -219,7 +206,166 @@ func (p *AnthropicChatProvider) Chat(ctx context.Context, messages []LLMMessage,
 		return nil, fmt.Errorf("anthropic API: %w", err)
 	}
 
-	return parseAnthropicSDKResponse(resp), nil
+	return parseAnthropicSDKResponseWithOptions(resp, opts), nil
+}
+
+func (p *AnthropicChatProvider) requestOptions(opts ChatOptions) ([]option.RequestOption, error) {
+	if p.tokenSource != nil {
+		// OAuth path: use Bearer token auth and include the full set of beta
+		// flags required for Claude Code OAuth sessions.
+		tok, err := p.tokenSource()
+		if err != nil {
+			return nil, fmt.Errorf("anthropic oauth: refreshing token: %w", err)
+		}
+		return []option.RequestOption{
+			option.WithAuthToken(tok),
+			option.WithHeader("anthropic-beta", anthropicOAuthBeta+","+buildAnthropicBetaHeader(opts)),
+			option.WithHeader("x-app", "cli"),
+			option.WithHeader("user-agent", anthropicOAuthUserAgent),
+		}, nil
+	}
+	// API-key path: standard beta header only.
+	return []option.RequestOption{option.WithHeader("anthropic-beta", buildAnthropicBetaHeader(opts))}, nil
+}
+
+// StreamMessages streams a single Anthropic Messages request. It is intentionally
+// separate from the agentic loop; ProcessTurnStreaming falls back to Generate
+// when tool calls are returned so tool execution remains centralized.
+func (p *AnthropicChatProvider) StreamMessages(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions, sessionID, turnID string, sink RuntimeEventSink, onChunk func(string)) (ProviderResult, error) {
+	messages = PrepareTranscriptMessages(messages, ResolveAnthropicTranscriptPolicy(p.modelOrDefault()))
+	var system []anthropic.TextBlockParam
+	var anthropicMessages []anthropic.MessageParam
+	for _, msg := range messages {
+		switch msg.Role {
+		case "system":
+			if len(msg.SystemParts) > 0 && opts.CacheSystem {
+				for _, part := range msg.SystemParts {
+					block := anthropic.TextBlockParam{Text: part.Text}
+					if part.CacheControl != nil && part.CacheControl.Type == "ephemeral" {
+						block.CacheControl = anthropic.NewCacheControlEphemeralParam()
+					}
+					system = append(system, block)
+				}
+			} else if msg.Content != "" {
+				block := anthropic.TextBlockParam{Text: msg.Content}
+				if opts.CacheSystem {
+					block.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				}
+				system = append(system, block)
+			}
+		case "user":
+			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(buildAnthropicSDKUserContent(msg)...))
+		case "assistant":
+			anthropicMessages = append(anthropicMessages, anthropic.NewAssistantMessage(buildAnthropicSDKAssistantContent(msg)...))
+		case "tool":
+			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false)))
+		}
+	}
+
+	maxTokens := int64(opts.MaxTokens)
+	if maxTokens <= 0 {
+		maxTokens = 4096
+	}
+	params := anthropic.MessageNewParams{Model: anthropic.Model(p.modelOrDefault()), Messages: anthropicMessages, MaxTokens: maxTokens}
+	if len(system) > 0 {
+		params.System = system
+	}
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type != "" && opts.ResponseFormat.Type != ResponseFormatText && len(tools) == 0 {
+		params.Tools = translateToolsToSDK([]ToolDefinition{anthropicStructuredOutputTool(opts.ResponseFormat)}, opts.CacheTools)
+		params.ToolChoice = anthropic.ToolChoiceUnionParam{OfTool: &anthropic.ToolChoiceToolParam{Name: anthropicStructuredOutputToolName}}
+	} else if len(tools) > 0 {
+		params.Tools = translateToolsToSDK(tools, opts.CacheTools)
+	}
+	if opts.ThinkingBudget > 0 {
+		budget := int64(opts.ThinkingBudget)
+		if budget >= maxTokens {
+			budget = maxTokens - 1
+		}
+		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(budget)
+	}
+	reqOpts, err := p.requestOptions(opts)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+
+	stream := p.client.Messages.NewStreaming(ctx, params, reqOpts...)
+	defer stream.Close()
+
+	type toolCallAcc struct {
+		ID        string
+		Name      string
+		Arguments strings.Builder
+	}
+	blockTypes := map[int64]string{}
+	toolAcc := map[int64]*toolCallAcc{}
+	var maxToolIndex int64 = -1
+	var textBuf strings.Builder
+	var usage ProviderUsage
+
+	for stream.Next() {
+		evt := stream.Current()
+		switch evt.Type {
+		case "content_block_start":
+			start := evt.AsContentBlockStart()
+			blockTypes[start.Index] = start.ContentBlock.Type
+			if start.ContentBlock.Type == "tool_use" {
+				toolAcc[start.Index] = &toolCallAcc{ID: start.ContentBlock.ID, Name: start.ContentBlock.Name}
+				if start.Index > maxToolIndex {
+					maxToolIndex = start.Index
+				}
+			}
+			if start.ContentBlock.Type == "thinking" && start.ContentBlock.Thinking != "" {
+				emitRuntimeEvent(sink, RuntimeEvent{Type: RuntimeEventThinkingDelta, SessionID: sessionID, TurnID: turnID, Delta: start.ContentBlock.Thinking})
+			}
+		case "content_block_delta":
+			delta := evt.AsContentBlockDelta()
+			switch delta.Delta.Type {
+			case "text_delta":
+				if delta.Delta.Text != "" {
+					textBuf.WriteString(delta.Delta.Text)
+					if onChunk != nil {
+						onChunk(delta.Delta.Text)
+					}
+				}
+			case "thinking_delta":
+				if delta.Delta.Thinking != "" {
+					emitRuntimeEvent(sink, RuntimeEvent{Type: RuntimeEventThinkingDelta, SessionID: sessionID, TurnID: turnID, Delta: delta.Delta.Thinking})
+				}
+			case "input_json_delta":
+				if blockTypes[delta.Index] == "tool_use" {
+					acc := toolAcc[delta.Index]
+					if acc == nil {
+						acc = &toolCallAcc{}
+						toolAcc[delta.Index] = acc
+					}
+					acc.Arguments.WriteString(delta.Delta.PartialJSON)
+					if delta.Index > maxToolIndex {
+						maxToolIndex = delta.Index
+					}
+				}
+			}
+		case "message_delta":
+			md := evt.AsMessageDelta()
+			usage.OutputTokens = int64(md.Usage.OutputTokens)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return ProviderResult{}, fmt.Errorf("anthropic stream: %w", err)
+	}
+
+	var toolCalls []ToolCall
+	for idx := int64(0); idx <= maxToolIndex; idx++ {
+		acc := toolAcc[idx]
+		if acc == nil || acc.Name == "" {
+			continue
+		}
+		var args map[string]any
+		if raw := acc.Arguments.String(); raw != "" {
+			_ = json.Unmarshal([]byte(raw), &args)
+		}
+		toolCalls = append(toolCalls, ToolCall{ID: acc.ID, Name: acc.Name, Args: args})
+	}
+	return ProviderResult{Text: textBuf.String(), ToolCalls: toolCalls, Usage: usage}, nil
 }
 
 // ─── SDK format converters ───────────────────────────────────────────────────
@@ -287,6 +433,18 @@ func translateToolsToSDK(defs []ToolDefinition, cacheLastTool bool) []anthropic.
 	return result
 }
 
+func anthropicStructuredOutputTool(format *ResponseFormatConfig) ToolDefinition {
+	schema := cloneJSONMap(format.Schema)
+	if len(schema) == 0 || format.Type == ResponseFormatJSONObject {
+		schema = map[string]any{"type": "object", "additionalProperties": true}
+	}
+	return ToolDefinition{
+		Name:            anthropicStructuredOutputToolName,
+		Description:     "Return the final answer as JSON matching the requested response format.",
+		InputJSONSchema: schema,
+	}
+}
+
 // buildSDKInputSchema converts ToolParameters to the SDK's input schema format.
 //
 // NOTE: Properties is always set (even as an empty map) to ensure the returned
@@ -319,18 +477,27 @@ func buildAnthropicBetaHeader(opts ChatOptions) string {
 
 // parseAnthropicSDKResponse converts an SDK response to an LLMResponse.
 func parseAnthropicSDKResponse(resp *anthropic.Message) *LLMResponse {
+	return parseAnthropicSDKResponseWithOptions(resp, ChatOptions{})
+}
+
+func parseAnthropicSDKResponseWithOptions(resp *anthropic.Message, opts ChatOptions) *LLMResponse {
 	var content strings.Builder
 	var toolCalls []ToolCall
+	structuredOutput := opts.ResponseFormat != nil && opts.ResponseFormat.Type != "" && opts.ResponseFormat.Type != ResponseFormatText
 
 	for _, block := range resp.Content {
 		switch block.Type {
 		case "thinking":
-			// Extended-thinking internal reasoning — intentionally skipped.
+			// Extended-thinking internal reasoning — intentionally skipped in non-streaming responses.
 		case "text":
 			tb := block.AsText()
 			content.WriteString(tb.Text)
 		case "tool_use":
 			tu := block.AsToolUse()
+			if structuredOutput && tu.Name == anthropicStructuredOutputToolName {
+				content.WriteString(string(tu.Input))
+				continue
+			}
 			var args map[string]any
 			if err := json.Unmarshal(tu.Input, &args); err != nil {
 				log.Printf("anthropic: failed to decode tool input for %q: %v", tu.Name, err)
@@ -344,7 +511,7 @@ func parseAnthropicSDKResponse(resp *anthropic.Message) *LLMResponse {
 		}
 	}
 
-	needsToolResults := resp.StopReason == anthropic.StopReasonToolUse
+	needsToolResults := resp.StopReason == anthropic.StopReasonToolUse && !(structuredOutput && len(toolCalls) == 0 && content.Len() > 0)
 
 	var usage ProviderUsage
 	usage.InputTokens = int64(resp.Usage.InputTokens)
@@ -365,6 +532,20 @@ func parseAnthropicSDKResponse(resp *anthropic.Message) *LLMResponse {
 // These methods add ChatProvider support to the existing AnthropicProvider,
 // allowing it to use the shared agentic loop while keeping the Provider
 // interface backwards-compatible.
+
+// Stream implements StreamingProvider for Anthropic. It emits user-visible text
+// through onChunk and emits extended-thinking deltas on turn.RuntimeEventSink as
+// RuntimeEventThinkingDelta when Anthropic sends thinking_delta blocks.
+func (p *AnthropicProvider) Stream(ctx context.Context, turn Turn, onChunk func(text string)) (ProviderResult, error) {
+	chat, ok := p.chatProvider().(*AnthropicChatProvider)
+	if !ok || chat == nil {
+		return ProviderResult{}, fmt.Errorf("anthropic stream: chat provider unavailable")
+	}
+	profile := p.PromptCacheProfile()
+	messages := buildLLMMessagesFromTurnWithProfile(turn, p.SystemPrompt, profile)
+	opts := chatOptionsFromTurn(turn, profile)
+	return chat.StreamMessages(ctx, messages, turn.Tools, opts, turn.SessionID, turn.TurnID, turn.RuntimeEventSink, onChunk)
+}
 
 // chatProvider returns a ChatProvider for this AnthropicProvider.
 // It handles both API-key and OAuth authentication.

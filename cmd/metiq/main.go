@@ -23,7 +23,10 @@ var version = "0.0.0-dev"
 func main() {
 	var bootstrapPath string
 	flag.StringVar(&bootstrapPath, "bootstrap", "", "path to bootstrap config JSON")
+	flag.BoolVar(&cliGlobalJSON, "json", jsonFlagDefault(), "output raw JSON where supported")
+	flag.BoolVar(&cliNoColor, "no-color", false, "disable colored/styled output")
 	flag.Parse()
+	applyCLIOutputMode()
 
 	args := flag.Args()
 	if len(args) == 0 {
@@ -38,6 +41,10 @@ func main() {
 		os.Exit(1)
 	}
 	if !handled {
+		printError("unknown command: %s", args[0])
+		if suggestions := registry.suggestions(args[0], 3); len(suggestions) > 0 {
+			printInfo("Did you mean: %s?", strings.Join(suggestions, ", "))
+		}
 		usage()
 		os.Exit(2)
 	}
@@ -382,4 +389,6 @@ func usage() {
 	printMuted("  --admin-addr <host:port>  admin API address")
 	printMuted("  --admin-token <token>     admin API bearer token")
 	printMuted("  --bootstrap <path>        bootstrap config path")
+	printMuted("  --json                    output raw JSON where supported")
+	printMuted("  --no-color                disable colored/styled output")
 }

@@ -5,6 +5,7 @@
 package checkpoint
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -24,10 +25,10 @@ const MaxCheckpointsPerSession = 25
 type Reason string
 
 const (
-	ReasonManual         Reason = "manual"
-	ReasonAutoThreshold  Reason = "auto-threshold"
-	ReasonOverflowRetry  Reason = "overflow-retry"
-	ReasonTimeoutRetry   Reason = "timeout-retry"
+	ReasonManual        Reason = "manual"
+	ReasonAutoThreshold Reason = "auto-threshold"
+	ReasonOverflowRetry Reason = "overflow-retry"
+	ReasonTimeoutRetry  Reason = "timeout-retry"
 )
 
 // ResolveReason maps compaction trigger parameters to a Reason.
@@ -47,6 +48,22 @@ func ResolveReason(trigger string, timedOut bool) Reason {
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+// TurnCheckpoint captures a mid-turn agent runtime state snapshot. Payloads are
+// raw JSON so the checkpoint package stays independent of agent runtime types.
+type TurnCheckpoint struct {
+	CheckpointID         string          `json:"checkpoint_id,omitempty"`
+	SessionID            string          `json:"session_id"`
+	TurnID               string          `json:"turn_id,omitempty"`
+	CreatedAt            int64           `json:"created_at"`
+	Status               string          `json:"status"`
+	Iteration            int             `json:"iteration,omitempty"`
+	MessagesJSON         json.RawMessage `json:"messages_json,omitempty"`
+	HistoryDeltaJSON     json.RawMessage `json:"history_delta_json,omitempty"`
+	PendingToolCallsJSON json.RawMessage `json:"pending_tool_calls_json,omitempty"`
+	UsageJSON            json.RawMessage `json:"usage_json,omitempty"`
+	PartialText          string          `json:"partial_text,omitempty"`
+}
+
 // TranscriptRef is a lightweight reference to pre- or post-compaction state.
 // Unlike openclaw (which copies session files), swarmstr stores transcripts as
 // individual nostr events, so we reference entry IDs and counts.
@@ -59,19 +76,19 @@ type TranscriptRef struct {
 
 // Checkpoint records a single compaction event for a session.
 type Checkpoint struct {
-	CheckpointID    string        `json:"checkpoint_id"`
-	SessionKey      string        `json:"session_key"`
-	SessionID       string        `json:"session_id"`
-	CreatedAt       int64         `json:"created_at"`        // unix millis
-	Reason          Reason        `json:"reason"`
-	TokensBefore    int           `json:"tokens_before,omitempty"`
-	TokensAfter     int           `json:"tokens_after,omitempty"`
-	Summary         string        `json:"summary,omitempty"`
-	FirstKeptEntry  string        `json:"first_kept_entry_id,omitempty"`
-	DroppedEntries  int           `json:"dropped_entries,omitempty"`
-	KeptEntries     int           `json:"kept_entries,omitempty"`
-	PreCompaction   TranscriptRef `json:"pre_compaction"`
-	PostCompaction  TranscriptRef `json:"post_compaction"`
+	CheckpointID   string        `json:"checkpoint_id"`
+	SessionKey     string        `json:"session_key"`
+	SessionID      string        `json:"session_id"`
+	CreatedAt      int64         `json:"created_at"` // unix millis
+	Reason         Reason        `json:"reason"`
+	TokensBefore   int           `json:"tokens_before,omitempty"`
+	TokensAfter    int           `json:"tokens_after,omitempty"`
+	Summary        string        `json:"summary,omitempty"`
+	FirstKeptEntry string        `json:"first_kept_entry_id,omitempty"`
+	DroppedEntries int           `json:"dropped_entries,omitempty"`
+	KeptEntries    int           `json:"kept_entries,omitempty"`
+	PreCompaction  TranscriptRef `json:"pre_compaction"`
+	PostCompaction TranscriptRef `json:"post_compaction"`
 }
 
 // Snapshot captures pre-compaction transcript state.  It is created before
@@ -129,8 +146,8 @@ type PersistParams struct {
 // The caller is responsible for persistence (serialising the checkpoint slices
 // to/from the session store).
 type Store struct {
-	mu          sync.Mutex
-	bySession   map[string][]Checkpoint
+	mu        sync.Mutex
+	bySession map[string][]Checkpoint
 }
 
 // NewStore returns an empty Store.

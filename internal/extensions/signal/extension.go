@@ -42,6 +42,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -83,6 +84,7 @@ func (p *SignalPlugin) ConfigSchema() map[string]any {
 
 func (p *SignalPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
+		Typing:       true,
 		Reactions:    true,
 		MultiAccount: true,
 	}
@@ -166,16 +168,31 @@ func (b *signalBot) Close() {
 // ─── Polling ──────────────────────────────────────────────────────────────────
 
 func (b *signalBot) poll(ctx context.Context) {
-	ticker := time.NewTicker(b.pollInterval)
-	defer ticker.Stop()
+	backoff := b.pollInterval
+	if backoff <= 0 {
+		backoff = 3 * time.Second
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-b.done:
 			return
-		case <-ticker.C:
-			b.receive(ctx)
+		case <-time.After(backoff):
+		}
+		if err := b.receive(ctx); err != nil {
+			log.Printf("signal: receive error channel=%s: %v", b.channelID, err)
+			if backoff < 60*time.Second {
+				backoff *= 2
+				if backoff > 60*time.Second {
+					backoff = 60 * time.Second
+				}
+			}
+			continue
+		}
+		backoff = b.pollInterval
+		if backoff <= 0 {
+			backoff = 3 * time.Second
 		}
 	}
 }
@@ -186,30 +203,39 @@ type signalEnvelope struct {
 		Source      string `json:"source"`
 		Timestamp   int64  `json:"timestamp"`
 		DataMessage *struct {
-			Message   string `json:"message"`
-			Timestamp int64  `json:"timestamp"`
+			Message     string             `json:"message"`
+			Timestamp   int64              `json:"timestamp"`
+			Attachments []signalAttachment `json:"attachments"`
 		} `json:"dataMessage"`
 	} `json:"envelope"`
 }
 
-func (b *signalBot) receive(ctx context.Context) {
+type signalAttachment struct {
+	ID           string `json:"id"`
+	AttachmentID string `json:"attachmentId"`
+	Filename     string `json:"filename"`
+	ContentType  string `json:"contentType"`
+	MIMEType     string `json:"mimeType"`
+}
+
+func (b *signalBot) receive(ctx context.Context) error {
 	url := fmt.Sprintf("%s/v1/receive/%s", b.apiURL, b.account)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return
+		return err
 	}
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return
+		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return
+		return err
 	}
 
 	// The sidecar may return a JSON array of envelopes or a newline-delimited
@@ -231,20 +257,28 @@ func (b *signalBot) receive(ctx context.Context) {
 
 	for _, env := range envelopes {
 		dm := env.Envelope.DataMessage
-		if dm == nil || dm.Message == "" {
+		if dm == nil {
 			continue
 		}
 		sender := env.Envelope.Source
 		if len(b.allowedSenders) > 0 && !b.allowedSenders[sender] {
 			continue
 		}
+		text := strings.TrimSpace(dm.Message)
+		mediaURL, mediaMIME := firstSignalAttachment(dm.Attachments)
+		if text == "" && mediaURL == "" {
+			continue
+		}
 		b.onMessage(sdk.InboundChannelMessage{
 			ChannelID: b.channelID,
 			SenderID:  sender,
-			Text:      dm.Message,
+			Text:      text,
 			EventID:   fmt.Sprintf("signal-%s-%d", sender, env.Envelope.Timestamp),
+			MediaURL:  mediaURL,
+			MediaMIME: mediaMIME,
 		})
 	}
+	return nil
 }
 
 // ─── Send ─────────────────────────────────────────────────────────────────────
@@ -257,32 +291,128 @@ type signalSendRequest struct {
 }
 
 func (b *signalBot) Send(ctx context.Context, text string) error {
-	// Determine recipient from the channel config.  The channel_id in metiq
-	// config should be set to the recipient number or group ID.  Fall back to
-	// the account itself for self-tests.
+	_, err := b.SendWithReceipt(ctx, text)
+	return err
+}
+
+func (b *signalBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
 	recipient := b.channelID
 	if recipient == "" {
 		recipient = b.account
 	}
-	body, _ := json.Marshal(signalSendRequest{
-		Number:     b.account,
-		Recipients: []string{recipient},
-		Message:    text,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		b.apiURL+"/v2/send", bytes.NewReader(body))
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "signal", Attempts: 1, CreatedAt: time.Now()}
+	body, _ := json.Marshal(signalSendRequest{Number: b.account, Recipients: []string{recipient}, Message: text})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiURL+"/v2/send", bytes.NewReader(body))
+	if err != nil {
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		err = fmt.Errorf("signal send: %w", err)
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		err := fmt.Errorf("signal send: status %d: %s", resp.StatusCode, string(raw))
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	var result struct {
+		Timestamp int64  `json:"timestamp"`
+		ID        string `json:"id"`
+	}
+	_ = json.Unmarshal(raw, &result)
+	if result.ID != "" {
+		receipt.MessageID = result.ID
+	} else if result.Timestamp > 0 {
+		receipt.MessageID = fmt.Sprintf("signal-%s-%d", recipient, result.Timestamp)
+	}
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
+}
+
+func firstSignalAttachment(attachments []signalAttachment) (string, string) {
+	for _, a := range attachments {
+		id := strings.TrimSpace(firstNonEmptySignal(a.ID, a.AttachmentID))
+		if id == "" {
+			continue
+		}
+		mime := strings.TrimSpace(firstNonEmptySignal(a.ContentType, a.MIMEType))
+		return "signal://attachment/" + id, mime
+	}
+	return "", ""
+}
+
+func firstNonEmptySignal(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func (b *signalBot) ResolveMedia(ctx context.Context, ref string) (channels.MediaBlob, error) {
+	id := strings.TrimSpace(strings.TrimPrefix(ref, "signal://attachment/"))
+	if id == "" || id == ref {
+		return channels.MediaBlob{}, fmt.Errorf("signal media: invalid attachment ref %q", ref)
+	}
+	apiURL := fmt.Sprintf("%s/v1/attachments/%s", b.apiURL, urlPathEscapeSignal(id))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return channels.MediaBlob{}, err
+	}
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return channels.MediaBlob{}, fmt.Errorf("signal media: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return channels.MediaBlob{}, fmt.Errorf("signal media: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 25<<20+1))
+	if err != nil {
+		return channels.MediaBlob{}, err
+	}
+	if len(data) > 25<<20 {
+		return channels.MediaBlob{}, fmt.Errorf("signal media: attachment exceeds 25MiB")
+	}
+	return channels.MediaBlob{URL: ref, MIME: resp.Header.Get("Content-Type"), Data: data}, nil
+}
+
+func urlPathEscapeSignal(s string) string {
+	r := strings.NewReplacer("%", "%25", "/", "%2F", "?", "%3F", "#", "%23")
+	return r.Replace(s)
+}
+
+func (b *signalBot) SendTyping(ctx context.Context, _ int) error {
+	recipient := b.channelID
+	if recipient == "" {
+		recipient = b.account
+	}
+	body, _ := json.Marshal(map[string]any{"recipient": recipient})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiURL+"/v1/typing-indicator/"+b.account, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("signal send: %w", err)
+		return fmt.Errorf("signal typing: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("signal send: status %d: %s", resp.StatusCode, string(raw))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("signal typing: status %d: %s", resp.StatusCode, string(raw))
 	}
 	return nil
 }

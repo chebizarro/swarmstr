@@ -161,6 +161,10 @@ func LoadNodePlugin(ctx context.Context, installPath string) (*NodePlugin, error
 		p.Close()
 		return nil, err
 	}
+	if _, err := p.call(initCtx, "set_permissions", map[string]any{"permissions": p.manifest.Permissions}); err != nil {
+		p.Close()
+		return nil, fmt.Errorf("node plugin permission setup: %w", err)
+	}
 
 	return p, nil
 }

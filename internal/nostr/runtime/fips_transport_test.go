@@ -72,21 +72,13 @@ func TestFIPSIPv6FromPubkey_invalid(t *testing.T) {
 	}
 }
 
-func TestFIPSIPv6FromPubkey_strips_compressed_prefix(t *testing.T) {
-	// 33-byte compressed key (with 02 prefix) should produce same result as 32-byte x-only.
+func TestFIPSIPv6FromPubkey_rejects_compressed_pubkey(t *testing.T) {
+	// FIPS hashes the 32-byte x-only pubkey, not a 33-byte compressed pubkey.
 	xonly := "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 	compressed := "02" + xonly
 
-	ip1, err := FIPSIPv6FromPubkey(xonly)
-	if err != nil {
-		t.Fatalf("x-only: %v", err)
-	}
-	ip2, err := FIPSIPv6FromPubkey(compressed)
-	if err != nil {
-		t.Fatalf("compressed: %v", err)
-	}
-	if !ip1.Equal(ip2) {
-		t.Fatalf("compressed prefix should be stripped: %s vs %s", ip1, ip2)
+	if _, err := FIPSIPv6FromPubkey(compressed); err == nil {
+		t.Fatal("expected compressed pubkey to be rejected")
 	}
 }
 

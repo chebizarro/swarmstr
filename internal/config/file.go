@@ -744,7 +744,7 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 
 	// ── pass-through sections (unknown / rarely accessed as typed) ────────────
 	passThrough := []string{
-		"skills", "memory", "update", "wizard", "pairing", "logging",
+		"skills", "memory", "update", "wizard", "pairing", "logging", "managed_settings",
 	}
 	for _, key := range passThrough {
 		if v, ok := raw[key]; ok {
@@ -933,7 +933,7 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 		"version", "dm", "relays", "agent", "control", "acp", "agents", "nostr_channels",
 		"providers", "session", "storage", "heartbeat", "tts", "secrets", "cron",
 		"hooks", "timeouts", "agent_list", "fips", "extra", "channels", "plugins", "grpc",
-		"skills", "memory", "update", "wizard", "pairing", "logging", "permissions",
+		"skills", "memory", "update", "wizard", "pairing", "logging", "permissions", "managed_settings",
 	}
 	for key, value := range raw {
 		if !slices.Contains(allowedTop, key) {
@@ -982,6 +982,8 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 			errs = append(errs, detectUnknownNostrChannelKeys(value)...)
 		case "permissions":
 			errs = append(errs, detectUnknownPermissionsKeys(value)...)
+		case "managed_settings":
+			errs = append(errs, detectUnknownMapKeys("managed_settings", value, []string{"disable_bypass_permissions_mode", "require_tool_approval", "managed_hooks_only", "allow_managed_permission_rules_only", "permissions", "locked_paths"})...)
 		case "providers":
 			errs = append(errs, detectUnknownProviderPromptCacheKeys(value)...)
 		}

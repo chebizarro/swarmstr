@@ -158,7 +158,8 @@ type emailBot struct {
 	seenUIDs map[string]bool
 	closed   bool
 	// lastReplyTo tracks the most recent sender's address for outbound reply.
-	lastReplyTo string
+	lastReplyTo  string
+	lastThreadID string
 }
 
 func (b *emailBot) ID() string { return b.channelID }
@@ -254,17 +255,21 @@ func (b *emailBot) checkMail(ctx context.Context) {
 			continue
 		}
 
+		threadID := emailThreadID(m)
 		b.mu.Lock()
 		b.lastReplyTo = m.from
+		b.lastThreadID = threadID
 		b.mu.Unlock()
 
 		log.Printf("email channel %s: message from=%s subject=%q", b.channelID, from, m.subject)
 		b.onMessage(sdk.InboundChannelMessage{
-			ChannelID: b.channelID,
-			SenderID:  m.from,
-			Text:      strings.TrimSpace(m.subject + "\n" + m.body),
-			EventID:   uid,
-			CreatedAt: m.date.Unix(),
+			ChannelID:      b.channelID,
+			SenderID:       m.from,
+			Text:           strings.TrimSpace(m.subject + "\n" + m.body),
+			EventID:        firstNonEmpty(m.messageID, uid),
+			CreatedAt:      m.date.Unix(),
+			ThreadID:       threadID,
+			ReplyToEventID: strings.TrimSpace(m.inReplyTo),
 		})
 	}
 }
@@ -272,11 +277,14 @@ func (b *emailBot) checkMail(ctx context.Context) {
 // ─── Minimal IMAP client ──────────────────────────────────────────────────────
 
 type imapMessage struct {
-	uid     string
-	from    string
-	subject string
-	body    string
-	date    time.Time
+	uid        string
+	from       string
+	subject    string
+	body       string
+	date       time.Time
+	messageID  string
+	inReplyTo  string
+	references string
 }
 
 // imapFetchUnseen connects to the IMAP server over TLS and fetches unseen
@@ -392,6 +400,26 @@ func parseSearchResult(lines []string) []string {
 	return nil
 }
 
+func emailThreadID(m imapMessage) string {
+	if strings.TrimSpace(m.inReplyTo) != "" {
+		return strings.TrimSpace(m.inReplyTo)
+	}
+	refs := strings.Fields(m.references)
+	if len(refs) > 0 {
+		return refs[0]
+	}
+	return strings.TrimSpace(m.messageID)
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
 func parseSimpleMessage(uid string, lines []string) imapMessage {
 	msg := imapMessage{uid: uid, date: time.Now()}
 	body := strings.Join(lines, "\n")
@@ -402,6 +430,12 @@ func parseSimpleMessage(uid string, lines []string) imapMessage {
 			msg.from = strings.TrimSpace(line[6:])
 		} else if strings.HasPrefix(lower, "subject: ") {
 			msg.subject = strings.TrimSpace(line[9:])
+		} else if strings.HasPrefix(lower, "message-id: ") {
+			msg.messageID = strings.TrimSpace(line[len("message-id: "):])
+		} else if strings.HasPrefix(lower, "in-reply-to: ") {
+			msg.inReplyTo = strings.TrimSpace(line[len("in-reply-to: "):])
+		} else if strings.HasPrefix(lower, "references: ") {
+			msg.references = strings.TrimSpace(line[len("references: "):])
 		}
 	}
 	// Body: everything after the first blank line.

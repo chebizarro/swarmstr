@@ -247,6 +247,8 @@ func conversationMessageFromContext(m ctxengine.Message) agent.ConversationMessa
 		Role:       m.Role,
 		Content:    annotateConversationContentTimestamp(m),
 		ToolCallID: m.ToolCallID,
+		ID:         m.ID,
+		Unix:       m.Unix,
 	}
 	for _, tc := range m.ToolCalls {
 		cm.ToolCalls = append(cm.ToolCalls, agent.ToolCallRef{
@@ -1293,6 +1295,7 @@ func main() {
 					log.Printf("openclaw registration failed (%s): %v", result.PluginID, err)
 				}
 			}
+			unified.CloseRegistrationWindow()
 			pluginServiceMgr = pluginservice.NewManager(unified.Services(), openClawHost)
 			if err := pluginServiceMgr.StartAll(ctx); err != nil {
 				log.Printf("plugin service auto-start warning: %v", err)
@@ -1476,7 +1479,7 @@ func main() {
 		log.Printf("acp session store init failed (non-fatal): %v", acpStoreErr)
 		acpSessionStore = nil
 	}
-	acpManager := acppkg.NewManager(nil, acpSessionStore, nil, acpDispatcher, acppkg.ManagerOptions{})
+	acpManager := acppkg.NewManager(nil, acpSessionStore, nil, acpDispatcher, acppkg.ManagerOptions{ContextEngine: controlContextEngine})
 	controlACPPeers = acpPeers
 	controlACPDispatcher = acpDispatcher
 	controlACPManager = acpManager
@@ -1850,6 +1853,7 @@ func main() {
 				SessionID:           sessionID,
 				TurnID:              nextDeterministicRecallTurnID(),
 				UserText:            text,
+				ContextEngine:       controlContextEngine,
 				StaticSystemPrompt:  promptEnvelope.StaticSystemPrompt,
 				Context:             promptEnvelope.Context,
 				History:             turnHistory,
@@ -4016,6 +4020,9 @@ func main() {
 			SessionID:            sessionID,
 			TurnID:               eventID,
 			UserText:             combinedText,
+			UserMessageID:        entryID,
+			UserUnix:             createdAt,
+			ContextEngine:        controlContextEngine,
 			StaticSystemPrompt:   staticSystemPrompt,
 			Context:              turnContext,
 			History:              turnHistory,
@@ -5330,6 +5337,8 @@ func main() {
 			SessionID:            sessionID,
 			TurnID:               eventID,
 			UserText:             text,
+			UserMessageID:        eventID,
+			ContextEngine:        controlServices.session.contextEngine,
 			StaticSystemPrompt:   promptEnvelope.StaticSystemPrompt,
 			Context:              promptEnvelope.Context,
 			History:              chTurnHistory,

@@ -23,7 +23,7 @@ func runConfigGet(args []string) error {
 	var configPath string
 	var jsonOut bool
 	fs.StringVar(&configPath, "path", "", "config file path")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -200,6 +200,90 @@ func runConfigValidate(args []string) error {
 
 	fmt.Printf("config valid: %s\n", configPath)
 	return nil
+}
+
+func runConfigWizard(args []string) error {
+	fs := flag.NewFlagSet("config wizard", flag.ContinueOnError)
+	var configPath, dmPolicy, model, workspaceDir string
+	var dryRun bool
+	var relays stringListFlag
+	fs.StringVar(&configPath, "path", "", "config file path")
+	fs.StringVar(&dmPolicy, "dm-policy", "", "DM policy: pairing, allowlist, open, or disabled")
+	fs.StringVar(&model, "model", "", "default model ID")
+	fs.StringVar(&workspaceDir, "workspace", "", "workspace directory")
+	fs.Var(&relays, "relay", "relay URL (repeatable)")
+	fs.BoolVar(&dryRun, "dry-run", false, "validate and print without writing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if dmPolicy == "" {
+		var err error
+		dmPolicy, err = promptText(os.Stdin, os.Stdout, "DM policy", "pairing", false)
+		if err != nil {
+			return err
+		}
+	}
+	if model == "" {
+		var err error
+		model, err = promptText(os.Stdin, os.Stdout, "Default model", "", false)
+		if err != nil {
+			return err
+		}
+	}
+	if len(relays.Values()) == 0 {
+		relayCSV, err := promptText(os.Stdin, os.Stdout, "Relay URLs (comma-separated)", "wss://relay.damus.io", false)
+		if err != nil {
+			return err
+		}
+		for _, relay := range strings.Split(relayCSV, ",") {
+			relay = strings.TrimSpace(relay)
+			if relay != "" {
+				relays = append(relays, relay)
+			}
+		}
+	}
+	if workspaceDir == "" {
+		var err error
+		workspaceDir, err = promptText(os.Stdin, os.Stdout, "Workspace directory", "", false)
+		if err != nil {
+			return err
+		}
+	}
+
+	return mutateConfig(configPath, dryRun, func(m map[string]any) error {
+		if dmPolicy = strings.TrimSpace(dmPolicy); dmPolicy != "" {
+			if err := setPath(m, "dm.policy", dmPolicy); err != nil {
+				return err
+			}
+		}
+		if model = strings.TrimSpace(model); model != "" {
+			if err := setPath(m, "agent.default_model", model); err != nil {
+				return err
+			}
+		}
+		if relayValues := relays.Values(); len(relayValues) > 0 {
+			relayAny := make([]any, 0, len(relayValues))
+			for _, relay := range relayValues {
+				relayAny = append(relayAny, relay)
+			}
+			if err := setPath(m, "relays.read", relayAny); err != nil {
+				return err
+			}
+			if err := setPath(m, "relays.write", relayAny); err != nil {
+				return err
+			}
+		}
+		if workspaceDir = strings.TrimSpace(workspaceDir); workspaceDir != "" {
+			extra, _ := m["extra"].(map[string]any)
+			if extra == nil {
+				extra = map[string]any{}
+				m["extra"] = extra
+			}
+			extra["workspace_dir"] = workspaceDir
+		}
+		return nil
+	})
 }
 
 func runConfigPath(args []string) error {

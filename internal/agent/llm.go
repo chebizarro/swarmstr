@@ -80,12 +80,31 @@ type ChatProvider interface {
 	Chat(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error)
 }
 
+// ResponseFormatType identifies a provider-agnostic structured output mode.
+type ResponseFormatType string
+
+const (
+	ResponseFormatText       ResponseFormatType = "text"
+	ResponseFormatJSONObject ResponseFormatType = "json_object"
+	ResponseFormatJSONSchema ResponseFormatType = "json_schema"
+)
+
+// ResponseFormatConfig requests structured model output for providers that
+// support JSON mode or schema-constrained generation.
+type ResponseFormatConfig struct {
+	Type   ResponseFormatType `json:"type"`
+	Name   string             `json:"name,omitempty"`
+	Schema map[string]any     `json:"schema,omitempty"`
+	Strict bool               `json:"strict,omitempty"`
+}
+
 // ChatOptions configures a single LLM API call.
 type ChatOptions struct {
 	MaxTokens      int
 	ThinkingBudget int
 	CacheSystem    bool // apply cache_control to system prompt blocks
 	CacheTools     bool // apply cache_control to the last tool definition
+	ResponseFormat *ResponseFormatConfig
 }
 
 // PromptAssembly preserves the canonical src split between static system prompt
@@ -226,6 +245,7 @@ func chatOptionsFromTurn(turn Turn, profile PromptCacheProfile) ChatOptions {
 		ThinkingBudget: turn.ThinkingBudget,
 		CacheSystem:    profile.UseAnthropicCacheControl,
 		CacheTools:     profile.UseAnthropicCacheControl,
+		ResponseFormat: cloneResponseFormatConfig(turn.ResponseFormat),
 	}
 }
 
@@ -239,6 +259,15 @@ func llmResponseToProviderResult(resp *LLMResponse) ProviderResult {
 		Outcome:      resp.Outcome,
 		StopReason:   resp.StopReason,
 	}
+}
+
+func cloneResponseFormatConfig(src *ResponseFormatConfig) *ResponseFormatConfig {
+	if src == nil {
+		return nil
+	}
+	clone := *src
+	clone.Schema = cloneJSONMap(src.Schema)
+	return &clone
 }
 
 func trimOrEmpty(s string) string {

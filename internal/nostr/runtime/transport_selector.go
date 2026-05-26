@@ -8,6 +8,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -16,16 +17,18 @@ import (
 
 // TransportPref enumerates the routing strategies for TransportSelector.
 const (
-	// TransportPrefFIPSFirst tries FIPS, falls back to relay on failure.
+	// TransportPrefFIPSFirst optimistically tries FIPS, then falls back to relay
+	// only when the FIPS error is a transport/path failure.
 	TransportPrefFIPSFirst = "fips-first"
-	// TransportPrefRelayFirst uses relay by default, FIPS only for explicitly reachable peers.
+	// TransportPrefRelayFirst uses relay by default, then attempts FIPS only when
+	// the relay send fails and FIPS is not in the negative failure cache.
 	TransportPrefRelayFirst = "relay-first"
 	// TransportPrefFIPSOnly uses FIPS exclusively — no relay fallback.
 	TransportPrefFIPSOnly = "fips-only"
 )
 
-// ReachabilityChecker tests whether a pubkey is reachable over FIPS.
-// Returns true if the peer has an active FIPS session or is known-reachable.
+// ReachabilityChecker observes whether a pubkey is known reachable over FIPS.
+// It is advisory only; TransportSelector does not synchronously gate sends on it.
 type ReachabilityChecker func(pubkeyHex string) bool
 
 // TransportSelectorOptions configures a TransportSelector.
@@ -37,11 +40,11 @@ type TransportSelectorOptions struct {
 	Relay DMTransport
 	// Pref is the routing preference (fips-first, relay-first, fips-only).
 	Pref string
-	// Reachable checks whether a destination pubkey is reachable via FIPS.
-	// If nil, FIPS sends are always attempted (optimistic).
+	// Reachable is retained for advisory/control-query compatibility. It is not
+	// consulted by the send path because FIPS discovery is asynchronous.
 	Reachable ReachabilityChecker
-	// ReachCacheTTL controls how long positive reachability results are cached.
-	// Default: 30s.
+	// ReachCacheTTL controls how long FIPS transport failures suppress optimistic
+	// FIPS attempts for a peer. Default: 30s.
 	ReachCacheTTL time.Duration
 	// OnFallback is called when a send falls back from the preferred transport.
 	// Optional; used for observability / logging.
@@ -49,24 +52,26 @@ type TransportSelectorOptions struct {
 }
 
 // TransportSelector is a composite DMTransport that routes messages through
-// FIPS or relay transports based on a configured preference and reachability.
+// FIPS or relay transports based on a configured preference and learned FIPS
+// transport failures.
 type TransportSelector struct {
 	fips  DMTransport
 	relay DMTransport
 	pref  string
 
+	// reachable is advisory only and intentionally not used to gate SendDM.
 	reachable  ReachabilityChecker
 	onFallback func(toPubKey string, preferredTransport string, err error)
 
-	// Reachability cache: pubkey → entry
-	cacheMu  sync.RWMutex
-	cache    map[string]reachCacheEntry
-	cacheTTL time.Duration
+	failureMu sync.RWMutex
+	failures  map[string]fipsFailureState
+	cacheTTL  time.Duration
 }
 
-type reachCacheEntry struct {
-	reachable bool
-	expiresAt time.Time
+type fipsFailureState struct {
+	Until   time.Time
+	Reason  FIPSErrorKind
+	LastErr error
 }
 
 // NewTransportSelector creates a TransportSelector with the given options.
@@ -106,7 +111,7 @@ func NewTransportSelector(opts TransportSelectorOptions) (*TransportSelector, er
 		pref:       pref,
 		reachable:  opts.Reachable,
 		onFallback: opts.OnFallback,
-		cache:      make(map[string]reachCacheEntry),
+		failures:   make(map[string]fipsFailureState),
 		cacheTTL:   cacheTTL,
 	}, nil
 }
@@ -114,7 +119,8 @@ func NewTransportSelector(opts TransportSelectorOptions) (*TransportSelector, er
 // ── DMTransport interface ─────────────────────────────────────────────────────
 
 // SendDM routes the message through the preferred transport, falling back
-// to the alternate transport on failure.
+// to the alternate transport only when that is valid for the selected mode and
+// FIPS error classification.
 func (ts *TransportSelector) SendDM(ctx context.Context, toPubKey string, text string) error {
 	switch ts.pref {
 	case TransportPrefFIPSFirst:
@@ -183,124 +189,212 @@ func (ts *TransportSelector) HasRelay() bool {
 // ── Routing strategies ────────────────────────────────────────────────────────
 
 func (ts *TransportSelector) sendFIPSFirst(ctx context.Context, toPubKey string, text string) error {
-	// If FIPS is available and peer is reachable (or reachability unknown), try FIPS first.
-	if ts.fips != nil && ts.isPeerFIPSReachable(toPubKey) {
-		err := ts.fips.SendDM(ctx, toPubKey, text)
-		if err == nil {
-			// Successful FIPS send — cache positive reachability.
-			ts.cacheReachability(toPubKey, true)
-			return nil
-		}
-
-		// FIPS failed — cache negative reachability and fall back.
-		ts.cacheReachability(toPubKey, false)
-		ts.emitFallback(toPubKey, "fips", err)
-
+	if ts.fips == nil {
 		if ts.relay != nil {
 			return ts.relay.SendDM(ctx, toPubKey, text)
 		}
-		return fmt.Errorf("fips send failed and no relay fallback: %w", err)
+		return fmt.Errorf("transport selector: no transport available")
 	}
 
-	// FIPS not available or peer known-unreachable — use relay.
+	if state, ok := ts.activeFIPSFailure(toPubKey); ok {
+		cachedErr := cachedFIPSFailureError(toPubKey, state)
+		if ts.relay != nil {
+			ts.emitFallback(toPubKey, "fips", cachedErr)
+			return ts.relay.SendDM(ctx, toPubKey, text)
+		}
+		return cachedErr
+	}
+
+	err := ts.fips.SendDM(ctx, toPubKey, text)
+	if err == nil {
+		ts.clearFIPSFailure(toPubKey)
+		return nil
+	}
+	fallback, cache := fipsFallbackDecision(ctx, err)
+	if !fallback {
+		return err
+	}
+
+	if cache {
+		ts.cacheFIPSFailure(toPubKey, err)
+	}
 	if ts.relay != nil {
+		ts.emitFallback(toPubKey, "fips", err)
 		return ts.relay.SendDM(ctx, toPubKey, text)
 	}
-
-	// Neither transport available.
-	if ts.fips != nil {
-		// FIPS exists but peer unreachable, and no relay. Try FIPS as last resort.
-		return ts.fips.SendDM(ctx, toPubKey, text)
-	}
-	return fmt.Errorf("transport selector: no transport available")
+	return fmt.Errorf("fips send failed and no relay fallback: %w", err)
 }
 
 func (ts *TransportSelector) sendRelayFirst(ctx context.Context, toPubKey string, text string) error {
-	// In relay-first mode, only use FIPS for peers known to be reachable via FIPS.
-	if ts.fips != nil && ts.isPeerExplicitlyReachable(toPubKey) {
-		err := ts.fips.SendDM(ctx, toPubKey, text)
-		if err == nil {
-			return nil
-		}
-		// FIPS failed for explicitly-reachable peer — fall back to relay.
-		ts.emitFallback(toPubKey, "fips", err)
+	if ts.relay == nil {
+		return fmt.Errorf("transport selector: relay transport not available")
 	}
 
-	if ts.relay != nil {
-		return ts.relay.SendDM(ctx, toPubKey, text)
+	relayErr := ts.relay.SendDM(ctx, toPubKey, text)
+	if relayErr == nil {
+		return nil
 	}
-	return fmt.Errorf("transport selector: relay transport not available")
+	if ctxErr := contextFailure(ctx, relayErr); ctxErr != nil {
+		return ctxErr
+	}
+	if ts.fips == nil {
+		return relayErr
+	}
+	if _, ok := ts.activeFIPSFailure(toPubKey); ok {
+		return relayErr
+	}
+
+	ts.emitFallback(toPubKey, "relay", relayErr)
+	fipsErr := ts.fips.SendDM(ctx, toPubKey, text)
+	if fipsErr == nil {
+		ts.clearFIPSFailure(toPubKey)
+		return nil
+	}
+	fallback, cache := fipsFallbackDecision(ctx, fipsErr)
+	if !fallback {
+		return fipsErr
+	}
+
+	if cache {
+		ts.cacheFIPSFailure(toPubKey, fipsErr)
+	}
+	return fmt.Errorf("relay send failed and fips fallback failed: relay error: %v; fips error: %w", relayErr, fipsErr)
 }
 
 func (ts *TransportSelector) sendFIPSOnly(ctx context.Context, toPubKey string, text string) error {
 	if ts.fips == nil {
 		return fmt.Errorf("transport selector: fips-only mode but no FIPS transport")
 	}
-	return ts.fips.SendDM(ctx, toPubKey, text)
+	if state, ok := ts.activeFIPSFailure(toPubKey); ok {
+		return cachedFIPSFailureError(toPubKey, state)
+	}
+
+	err := ts.fips.SendDM(ctx, toPubKey, text)
+	if err == nil {
+		ts.clearFIPSFailure(toPubKey)
+		return nil
+	}
+	_, cache := fipsFallbackDecision(ctx, err)
+	if cache {
+		ts.cacheFIPSFailure(toPubKey, err)
+	}
+	return err
 }
 
-// ── Reachability ──────────────────────────────────────────────────────────────
+// ── FIPS failure cache ────────────────────────────────────────────────────────
 
-// isPeerFIPSReachable returns true if the peer is known-reachable or if
-// reachability is unknown (optimistic for fips-first mode).
-func (ts *TransportSelector) isPeerFIPSReachable(pubkey string) bool {
-	// Check cache first.
-	ts.cacheMu.RLock()
-	entry, ok := ts.cache[pubkey]
-	ts.cacheMu.RUnlock()
+func (ts *TransportSelector) activeFIPSFailure(pubkey string) (fipsFailureState, bool) {
+	now := time.Now()
 
-	if ok && time.Now().Before(entry.expiresAt) {
-		return entry.reachable
+	ts.failureMu.RLock()
+	entry, ok := ts.failures[pubkey]
+	ts.failureMu.RUnlock()
+	if !ok {
+		return fipsFailureState{}, false
+	}
+	if now.Before(entry.Until) {
+		return entry, true
 	}
 
-	// Cache miss or expired — check reachability function.
-	if ts.reachable != nil {
-		r := ts.reachable(pubkey)
-		ts.cacheReachability(pubkey, r)
-		return r
+	ts.failureMu.Lock()
+	// Re-check under the write lock so a concurrent send can refresh the entry.
+	entry, ok = ts.failures[pubkey]
+	if ok && !now.Before(entry.Until) {
+		delete(ts.failures, pubkey)
+		ok = false
 	}
-
-	// No reachability checker — optimistically try FIPS.
-	return true
+	ts.failureMu.Unlock()
+	if ok {
+		return entry, true
+	}
+	return fipsFailureState{}, false
 }
 
-// isPeerExplicitlyReachable returns true only if the reachability checker
-// confirms the peer is reachable. Used in relay-first mode.
-func (ts *TransportSelector) isPeerExplicitlyReachable(pubkey string) bool {
-	// Check cache first.
-	ts.cacheMu.RLock()
-	entry, ok := ts.cache[pubkey]
-	ts.cacheMu.RUnlock()
-
-	if ok && time.Now().Before(entry.expiresAt) {
-		return entry.reachable
+func (ts *TransportSelector) cacheFIPSFailure(pubkey string, err error) {
+	until := time.Now().Add(ts.cacheTTL)
+	state := fipsFailureState{
+		Until:   until,
+		Reason:  fipsErrorReason(err),
+		LastErr: err,
 	}
 
-	// No reachability checker means we can't confirm — default to not reachable.
-	if ts.reachable == nil {
-		return false
+	ts.failureMu.Lock()
+	if existing, ok := ts.failures[pubkey]; ok && existing.Until.After(until) {
+		state.Until = existing.Until
 	}
-
-	r := ts.reachable(pubkey)
-	ts.cacheReachability(pubkey, r)
-	return r
+	ts.failures[pubkey] = state
+	ts.failureMu.Unlock()
 }
 
-func (ts *TransportSelector) cacheReachability(pubkey string, reachable bool) {
-	ts.cacheMu.Lock()
-	ts.cache[pubkey] = reachCacheEntry{
-		reachable: reachable,
-		expiresAt: time.Now().Add(ts.cacheTTL),
-	}
-	ts.cacheMu.Unlock()
+func (ts *TransportSelector) clearFIPSFailure(pubkey string) {
+	ts.failureMu.Lock()
+	delete(ts.failures, pubkey)
+	ts.failureMu.Unlock()
 }
 
-// ClearReachabilityCache evicts all cached reachability entries.
-// Useful when the network topology changes (e.g., new peer joins mesh).
+// ClearReachabilityCache evicts all learned FIPS failure entries.
+// Kept for API compatibility with callers that clear selector network state.
 func (ts *TransportSelector) ClearReachabilityCache() {
-	ts.cacheMu.Lock()
-	ts.cache = make(map[string]reachCacheEntry)
-	ts.cacheMu.Unlock()
+	ts.failureMu.Lock()
+	ts.failures = make(map[string]fipsFailureState)
+	ts.failureMu.Unlock()
+}
+
+func cachedFIPSFailureError(pubkey string, state fipsFailureState) error {
+	if state.LastErr != nil {
+		return fmt.Errorf("fips send to %s skipped until %s due to cached %s failure: %w",
+			truncatePubkey(pubkey), state.Until.Format(time.RFC3339), state.Reason, state.LastErr)
+	}
+	return fmt.Errorf("fips send to %s skipped until %s due to cached %s failure",
+		truncatePubkey(pubkey), state.Until.Format(time.RFC3339), state.Reason)
+}
+
+func fipsFallbackDecision(ctx context.Context, err error) (fallback bool, cache bool) {
+	if err == nil {
+		return false, false
+	}
+	if contextFailure(ctx, err) != nil {
+		return false, false
+	}
+
+	var fipsErr *FIPSError
+	if errors.As(err, &fipsErr) {
+		if fipsErr.AllowFallback() {
+			return true, true
+		}
+		return false, false
+	}
+
+	// Real FIPSTransport errors should be classified. Preserve relay fallback
+	// compatibility for unclassified legacy/mock errors, but do not poison the
+	// per-peer negative cache without an explicit transport classification.
+	return true, false
+}
+
+func contextFailure(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	if ctx != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+	}
+	return nil
+}
+
+func fipsErrorReason(err error) FIPSErrorKind {
+	var fipsErr *FIPSError
+	if errors.As(err, &fipsErr) && fipsErr.Kind != "" {
+		return fipsErr.Kind
+	}
+	return FIPSErrorKindTransport
 }
 
 func (ts *TransportSelector) emitFallback(toPubKey, preferredTransport string, err error) {
@@ -325,11 +419,11 @@ func (ts *TransportSelector) Preference() string {
 	return ts.pref
 }
 
-// ReachabilityCacheSize returns the number of entries in the reachability cache.
+// ReachabilityCacheSize returns the number of learned FIPS failure entries.
 func (ts *TransportSelector) ReachabilityCacheSize() int {
-	ts.cacheMu.RLock()
-	defer ts.cacheMu.RUnlock()
-	return len(ts.cache)
+	ts.failureMu.RLock()
+	defer ts.failureMu.RUnlock()
+	return len(ts.failures)
 }
 
 var _ DMTransport = (*TransportSelector)(nil)

@@ -78,6 +78,10 @@ func canonicalInstallField(field string) (string, bool) {
 		return "source", true
 	case "spec":
 		return "spec", true
+	case "url":
+		return "url", true
+	case "ref":
+		return "ref", true
 	case "sourcePath", "source_path":
 		return "sourcePath", true
 	case "installPath", "install_path":
@@ -133,9 +137,9 @@ func applyInstallRecordField(entry map[string]any, field string, value any) erro
 	if canonical == "source" {
 		s = strings.ToLower(s)
 		switch s {
-		case "npm", "archive", "path":
+		case "npm", "archive", "path", "url", "git":
 		default:
-			return fmt.Errorf("plugins.installs field %q must be one of npm, archive, path", canonical)
+			return fmt.Errorf("plugins.installs field %q must be one of npm, archive, path, url, git", canonical)
 		}
 	}
 	entry[canonical] = s
@@ -476,14 +480,19 @@ func ApplyPluginUpdateOperation(cfg state.ConfigDoc, pluginIDs []string, dryRun 
 			continue
 		}
 		source, _ := record["source"].(string)
-		if source != "npm" {
+		if source != "npm" && source != "git" {
 			outcomes = append(outcomes, PluginUpdateOutcome{PluginID: pluginID, Status: PluginUpdateStatusSkipped, Message: fmt.Sprintf("Skipping %q (source: %s).", pluginID, source)})
 			continue
 		}
 		spec, _ := record["spec"].(string)
 		spec = strings.TrimSpace(spec)
+		if source == "git" && spec == "" {
+			if gitURL, _ := record["url"].(string); strings.TrimSpace(gitURL) != "" {
+				spec = strings.TrimSpace(gitURL)
+			}
+		}
 		if spec == "" {
-			outcomes = append(outcomes, PluginUpdateOutcome{PluginID: pluginID, Status: PluginUpdateStatusSkipped, Message: fmt.Sprintf("Skipping %q (missing npm spec).", pluginID)})
+			outcomes = append(outcomes, PluginUpdateOutcome{PluginID: pluginID, Status: PluginUpdateStatusSkipped, Message: fmt.Sprintf("Skipping %q (missing %s spec).", pluginID, source)})
 			continue
 		}
 		currentVersion, _ := record["version"].(string)

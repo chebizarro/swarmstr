@@ -35,7 +35,15 @@ type OpenAIChatProviderChat struct {
 	// Store enables OpenAI's stored completions feature. When true, identical
 	// requests may return cached responses. Opt-in because it has data retention
 	// implications (stored completions are retained by OpenAI for 30 days).
-	Store bool
+	Store                bool
+	ToolSchemaNormalizer ToolSchemaNormalizer
+}
+
+func (p *OpenAIChatProviderChat) NormalizeToolSchema(defs []ToolDefinition) []ToolDefinition {
+	if p.ToolSchemaNormalizer != nil {
+		return p.ToolSchemaNormalizer(defs)
+	}
+	return defs
 }
 
 func (p *OpenAIChatProviderChat) PromptCacheProfile() PromptCacheProfile {
@@ -131,13 +139,14 @@ func (p *OpenAIChatProviderChat) Chat(ctx context.Context, messages []LLMMessage
 
 	// Convert tool definitions.
 	if len(tools) > 0 {
-		params.Tools = translateToolsToOpenAISDK(tools)
+		params.Tools = translateToolsToOpenAISDK(p.NormalizeToolSchema(tools))
 	}
 
 	// Provider-specific extra body params. llama-server accepts cache_prompt
 	// on OpenAI-compatible chat completions; vLLM prefix caching is layout-only
 	// and intentionally sends no unsupported request field.
 	var extraOpts []option.RequestOption
+	extraOpts = append(extraOpts, openAIResponseFormatOptions(opts.ResponseFormat)...)
 	if profile := p.PromptCacheProfile(); profile.Enabled && profile.SendLlamaCachePrompt {
 		extraOpts = append(extraOpts, option.WithJSONSet("cache_prompt", true))
 	}
@@ -159,6 +168,29 @@ func (p *OpenAIChatProviderChat) Chat(ctx context.Context, messages []LLMMessage
 	}
 
 	return parseOpenAISDKResponse(completion), nil
+}
+
+func openAIResponseFormatOptions(format *ResponseFormatConfig) []option.RequestOption {
+	if format == nil || format.Type == "" || format.Type == ResponseFormatText {
+		return nil
+	}
+	switch format.Type {
+	case ResponseFormatJSONObject:
+		return []option.RequestOption{option.WithJSONSet("response_format.type", "json_object")}
+	case ResponseFormatJSONSchema:
+		name := strings.TrimSpace(format.Name)
+		if name == "" {
+			name = "structured_output"
+		}
+		return []option.RequestOption{
+			option.WithJSONSet("response_format.type", "json_schema"),
+			option.WithJSONSet("response_format.json_schema.name", name),
+			option.WithJSONSet("response_format.json_schema.schema", cloneJSONMap(format.Schema)),
+			option.WithJSONSet("response_format.json_schema.strict", format.Strict),
+		}
+	default:
+		return nil
+	}
 }
 
 // buildOpenAISDKUserContent converts a user LLMMessage to the SDK format.

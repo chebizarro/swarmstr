@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +14,8 @@ import (
 
 	"metiq/internal/agent/toolloop"
 	pluginhooks "metiq/internal/plugins/hooks"
+	"metiq/internal/policy"
+	sessioncheckpoint "metiq/internal/session/checkpoint"
 )
 
 // ─── Shared agentic tool loop ─────────────────────────────────────────────────
@@ -70,6 +73,11 @@ type AgenticLoopConfig struct {
 	TimeBasedMCConfig *TimeBasedMCConfig
 	// HookInvoker emits OpenClaw before_tool_call/after_tool_call hooks.
 	HookInvoker *pluginhooks.HookInvoker
+	// ToolPolicy gates every tool call before execution. Nil preserves the
+	// profile/default behavior.
+	ToolPolicy *policy.ToolPolicy
+	// ToolPolicyAgentID scopes per-agent policy rules when set.
+	ToolPolicyAgentID string
 
 	// SteeringDrain non-blockingly returns additional user input to inject at
 	// safe model boundaries. The drain must not wait for future input.
@@ -80,6 +88,14 @@ type AgenticLoopConfig struct {
 	// built-in tool and dynamically adds discovered tools to subsequent LLM
 	// calls. Callers should populate this via PartitionTools.
 	DeferredTools *DeferredToolSet
+	// MaxOverflowRetries caps context-overflow recovery attempts. Zero defaults
+	// to one retry; negative disables automatic recovery.
+	MaxOverflowRetries int
+	// CheckpointStore records overflow retry checkpoints when provided.
+	CheckpointStore *sessioncheckpoint.Store
+	// Turn checkpoint hooks support mid-turn resume across runtime restarts.
+	TurnCheckpointSink func(context.Context, sessioncheckpoint.TurnCheckpoint) error
+	ResumeCheckpoint   *sessioncheckpoint.TurnCheckpoint
 }
 
 // InjectedUserInput is additional user-visible input drained into an active
@@ -102,6 +118,10 @@ type toolTraitResolver interface {
 type toolLoopResolver interface {
 	PrepareLoopExecution(context.Context, ToolCall) (toolloop.Result, bool)
 	RecordLoopOutcome(context.Context, ToolCall, string, string)
+}
+
+type toolSchemaNormalizerProvider interface {
+	NormalizeToolSchema([]ToolDefinition) []ToolDefinition
 }
 
 type toolCallBatch struct {
@@ -133,6 +153,10 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		loopDetectionConfig = &defaultLoopConfig
 	}
 	textThrashState := toolloop.NewTextThrashState()
+	overflowRetriesRemaining := cfg.MaxOverflowRetries
+	if overflowRetriesRemaining == 0 {
+		overflowRetriesRemaining = 1
+	}
 
 	messages := cfg.InitialMessages
 
@@ -192,43 +216,68 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	// historyDelta accumulates the ordered assistant/tool messages produced
 	// during this turn so callers can persist them for future context.
 	var historyDelta []ConversationMessage
+	var resp *LLMResponse
+	var calls []ToolCall
+	var totalUsage ProviderUsage
+	var err error
+	toolPreamble := ""
+	resumeFirstIteration := false
 
-	// Initial LLM call — prune old tool context, drain steering, then apply
-	// pre-flight gate to catch total overflow in the actual sent request.
-	{
-		messages = pruneContextBeforeLLM(messages, cfg.LogPrefix, cfg.ContextWindowTokens)
-		messages, _ = appendDrainedSteeringInput(ctx, messages, cfg.SessionID, cfg.SteeringDrain)
-		pf := EnforceTotalContextBudget(
-			GuardToolResultMessages(messages, cfg.ContextWindowTokens),
-			activeTools, cfg.ContextWindowTokens, DefaultCriticalToolNames())
-		messages = pf.Messages
-		activeTools = pf.Tools
-	}
-	resp, err := cfg.Provider.Chat(ctx, messages, activeTools, cfg.Options)
-	if err != nil {
-		return nil, turnCancellationCause(ctx, err)
-	}
-
-	totalUsage := resp.Usage
-
-	// If no tool calls or no executor, return immediately.
-	// For plain text responses, emit a single assistant message in the delta.
-	if !resp.NeedsToolResults || len(resp.ToolCalls) == 0 || cfg.Executor == nil {
-		if resp.Content != "" {
-			resp.HistoryDelta = []ConversationMessage{{Role: "assistant", Content: resp.Content}}
+	if resume, ok := restoreTurnCheckpoint(cfg.ResumeCheckpoint); ok {
+		messages = resume.Messages
+		historyDelta = resume.HistoryDelta
+		calls = resume.PendingToolCalls
+		totalUsage = resume.Usage
+		toolPreamble = resume.PartialText
+		resumeFirstIteration = true
+		resp = &LLMResponse{}
+		log.Printf("%s: resuming turn checkpoint session=%s turn=%s iter=%d pending_tools=%d", cfg.LogPrefix, resume.SessionID, resume.TurnID, resume.Iteration, len(calls))
+	} else {
+		// Initial LLM call — prune old tool context, drain steering, then apply
+		// pre-flight gate to catch total overflow in the actual sent request.
+		{
+			messages = pruneContextBeforeLLM(messages, cfg.LogPrefix, cfg.ContextWindowTokens)
+			messages, _ = appendDrainedSteeringInput(ctx, messages, cfg.SessionID, cfg.SteeringDrain)
+			pf := EnforceTotalContextBudget(
+				GuardToolResultMessages(messages, cfg.ContextWindowTokens),
+				activeTools, cfg.ContextWindowTokens, DefaultCriticalToolNames())
+			messages = pf.Messages
+			activeTools = pf.Tools
 		}
-		resp.Outcome = TurnOutcomeCompleted
-		resp.StopReason = TurnStopReasonModelText
-		return resp, nil
+		resp, err = cfg.Provider.Chat(ctx, messages, normalizeToolsForProvider(cfg.Provider, activeTools), cfg.Options)
+		if err != nil {
+			var recovered bool
+			resp, messages, activeTools, overflowRetriesRemaining, recovered, err = retryAfterContextOverflow(ctx, cfg, messages, activeTools, err, overflowRetriesRemaining)
+			if !recovered {
+				return nil, turnCancellationCause(ctx, err)
+			}
+		}
+
+		totalUsage = resp.Usage
+
+		// If no tool calls or no executor, return immediately.
+		// For plain text responses, emit a single assistant message in the delta.
+		if !resp.NeedsToolResults || len(resp.ToolCalls) == 0 || cfg.Executor == nil {
+			if resp.Content != "" {
+				resp.HistoryDelta = []ConversationMessage{{Role: "assistant", Content: resp.Content}}
+			}
+			resp.Outcome = TurnOutcomeCompleted
+			resp.StopReason = TurnStopReasonModelText
+			return resp, nil
+		}
+
+		// Save the preamble text for history (e.g. "Let me check...") before
+		// clearing it from the user-visible reply.  The preamble is preserved in
+		// HistoryDelta so future turns can see what the model said alongside its
+		// tool calls, but it is NOT returned as the final reply text.
+		toolPreamble = resp.Content
+		resp.Content = ""
+		calls = resp.ToolCalls
 	}
 
-	// Save the preamble text for history (e.g. "Let me check...") before
-	// clearing it from the user-visible reply.  The preamble is preserved in
-	// HistoryDelta so future turns can see what the model said alongside its
-	// tool calls, but it is NOT returned as the final reply text.
-	toolPreamble := resp.Content
-	resp.Content = ""
-	calls := resp.ToolCalls
+	if len(calls) == 0 || cfg.Executor == nil {
+		return &LLMResponse{Content: toolPreamble, Usage: totalUsage, HistoryDelta: historyDelta, Outcome: TurnOutcomeCompleted, StopReason: TurnStopReasonModelText}, nil
+	}
 
 	loopBlocked := false
 
@@ -240,41 +289,48 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		}
 		log.Printf("%s: agentic loop iter=%d/%d tools=%v", cfg.LogPrefix, iter+1, cfg.MaxIterations, toolNames)
 
-		assistantText := resp.Content
-		if iter == 0 && toolPreamble != "" {
-			assistantText = toolPreamble
-		}
-		thrashResult := toolloop.ObserveTextThrash(textThrashState, assistantText, toolPlanKeyFromToolCalls(calls), loopDetectionConfig)
-		if thrashResult.Stuck {
-			blocked := thrashResult.Level == toolloop.Critical
-			log.Printf("%s: assistant text thrash %s detector=%s count=%d tools=%v", cfg.LogPrefix, thrashResult.Level, thrashResult.Detector, thrashResult.Count, toolNames)
-			emitAssistantTextThrashEvents(ctx, cfg, calls, thrashResult, blocked)
-			if blocked {
-				deltaContent := resp.Content
-				if iter == 0 && toolPreamble != "" {
-					deltaContent = toolPreamble
-				}
-				messages, historyDelta = appendAssistantToolCallMessages(messages, historyDelta, calls, resp.Content, deltaContent)
-				messages, historyDelta = appendBlockedToolResults(messages, historyDelta, calls, thrashResult)
-				loopBlocked = true
-				calls = nil
-				resp.Content = ""
-				break
+		if !(resumeFirstIteration && iter == 0) {
+			assistantText := resp.Content
+			if iter == 0 && toolPreamble != "" {
+				assistantText = toolPreamble
 			}
-		}
+			thrashResult := toolloop.ObserveTextThrash(textThrashState, assistantText, toolPlanKeyFromToolCalls(calls), loopDetectionConfig)
+			if thrashResult.Stuck {
+				blocked := thrashResult.Level == toolloop.Critical
+				log.Printf("%s: assistant text thrash %s detector=%s count=%d tools=%v", cfg.LogPrefix, thrashResult.Level, thrashResult.Detector, thrashResult.Count, toolNames)
+				emitAssistantTextThrashEvents(ctx, cfg, calls, thrashResult, blocked)
+				if blocked {
+					deltaContent := resp.Content
+					if iter == 0 && toolPreamble != "" {
+						deltaContent = toolPreamble
+					}
+					messages, historyDelta = appendAssistantToolCallMessages(messages, historyDelta, calls, resp.Content, deltaContent)
+					messages, historyDelta = appendBlockedToolResults(messages, historyDelta, calls, thrashResult)
+					loopBlocked = true
+					calls = nil
+					resp.Content = ""
+					break
+				}
+			}
 
-		// Build and append the assistant tool-call messages. On the first
-		// iteration, include the saved preamble text in persisted history while
-		// preserving the existing provider-facing assistant content semantics.
-		deltaContent := resp.Content
-		if iter == 0 && toolPreamble != "" {
-			deltaContent = toolPreamble
+			// Build and append the assistant tool-call messages. On the first
+			// iteration, include the saved preamble text in persisted history while
+			// preserving the existing provider-facing assistant content semantics.
+			deltaContent := resp.Content
+			if iter == 0 && toolPreamble != "" {
+				deltaContent = toolPreamble
+			}
+			messages, historyDelta = appendAssistantToolCallMessages(messages, historyDelta, calls, resp.Content, deltaContent)
+
+			// Persist a resumable checkpoint before tool execution so a restarted
+			// runtime can resume from this model boundary without re-sampling.
+			persistTurnCheckpoint(ctx, cfg, iter+1, messages, historyDelta, calls, resp.Content, totalUsage)
 		}
-		messages, historyDelta = appendAssistantToolCallMessages(messages, historyDelta, calls, resp.Content, deltaContent)
 
 		// Execute tool calls using src-shaped batch partitioning: consecutive
 		// concurrency-safe calls run together, others run serially.
-		results := executeToolBatches(ctx, cfg.Executor, calls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace, cfg.HookInvoker)
+		toolCtx := ContextWithToolPolicy(ctx, cfg.ToolPolicy, cfg.ToolPolicyAgentID)
+		results := executeToolBatches(toolCtx, cfg.Executor, calls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace, cfg.HookInvoker)
 
 		// Append tool results and check for loop blocking.
 		for _, r := range results {
@@ -334,31 +390,38 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 				messages = pf.Messages
 				activeTools = pf.Tools
 			}
-			resp, err = cfg.Provider.Chat(ctx, pf.Messages, pf.Tools, cfg.Options)
+			providerMessages := promotePreemptiveCompactionToHardClear(pf.Messages)
+			resp, err = cfg.Provider.Chat(ctx, providerMessages, normalizeToolsForProvider(cfg.Provider, pf.Tools), cfg.Options)
 		}
 		if err != nil {
-			classifiedErr := turnCancellationCause(ctx, err)
-			log.Printf("%s: agentic loop LLM error iter=%d: %v", cfg.LogPrefix, iter+1, classifiedErr)
-			// Return partial history so callers can persist completed tool work.
-			outcome := TurnOutcomeFailed
-			stopReason := TurnStopReasonProviderError
-			if errors.Is(classifiedErr, context.Canceled) || errors.Is(classifiedErr, context.DeadlineExceeded) || errors.Is(classifiedErr, ErrTurnInterrupted) {
-				outcome = TurnOutcomeAborted
-				stopReason = TurnStopReasonCancelled
-			}
-			return nil, &TurnExecutionError{
-				Cause: classifiedErr,
-				Partial: TurnResult{
-					HistoryDelta: historyDelta,
-					Outcome:      outcome,
-					StopReason:   stopReason,
-					Usage: TurnUsage{
-						InputTokens:         totalUsage.InputTokens,
-						OutputTokens:        totalUsage.OutputTokens,
-						CacheReadTokens:     totalUsage.CacheReadTokens,
-						CacheCreationTokens: totalUsage.CacheCreationTokens,
+			var recovered bool
+			resp, messages, activeTools, overflowRetriesRemaining, recovered, err = retryAfterContextOverflow(ctx, cfg, messages, activeTools, err, overflowRetriesRemaining)
+			if recovered {
+				// Continue with the recovered response as if the provider call succeeded.
+			} else {
+				classifiedErr := turnCancellationCause(ctx, err)
+				log.Printf("%s: agentic loop LLM error iter=%d: %v", cfg.LogPrefix, iter+1, classifiedErr)
+				// Return partial history so callers can persist completed tool work.
+				outcome := TurnOutcomeFailed
+				stopReason := TurnStopReasonProviderError
+				if errors.Is(classifiedErr, context.Canceled) || errors.Is(classifiedErr, context.DeadlineExceeded) || errors.Is(classifiedErr, ErrTurnInterrupted) {
+					outcome = TurnOutcomeAborted
+					stopReason = TurnStopReasonCancelled
+				}
+				return nil, &TurnExecutionError{
+					Cause: classifiedErr,
+					Partial: TurnResult{
+						HistoryDelta: historyDelta,
+						Outcome:      outcome,
+						StopReason:   stopReason,
+						Usage: TurnUsage{
+							InputTokens:         totalUsage.InputTokens,
+							OutputTokens:        totalUsage.OutputTokens,
+							CacheReadTokens:     totalUsage.CacheReadTokens,
+							CacheCreationTokens: totalUsage.CacheCreationTokens,
+						},
 					},
-				},
+				}
 			}
 		}
 
@@ -459,6 +522,146 @@ func appendDrainedSteeringInput(ctx context.Context, messages []LLMMessage, sess
 		return messages, false
 	}
 	return out, true
+}
+
+func persistTurnCheckpoint(ctx context.Context, cfg AgenticLoopConfig, iter int, messages []LLMMessage, history []ConversationMessage, pending []ToolCall, partialText string, usage ProviderUsage) {
+	if cfg.TurnCheckpointSink == nil || cfg.SessionID == "" {
+		return
+	}
+	messagesJSON, _ := json.Marshal(messages)
+	historyJSON, _ := json.Marshal(history)
+	pendingJSON, _ := json.Marshal(pending)
+	usageJSON, _ := json.Marshal(usage)
+	cp := sessioncheckpoint.TurnCheckpoint{
+		SessionID:            cfg.SessionID,
+		TurnID:               cfg.TurnID,
+		CreatedAt:            time.Now().UnixMilli(),
+		Status:               "before_tool_execution",
+		Iteration:            iter,
+		MessagesJSON:         messagesJSON,
+		HistoryDeltaJSON:     historyJSON,
+		PendingToolCallsJSON: pendingJSON,
+		UsageJSON:            usageJSON,
+		PartialText:          partialText,
+	}
+	if err := cfg.TurnCheckpointSink(ctx, cp); err != nil {
+		log.Printf("%s: turn checkpoint persist failed: %v", cfg.LogPrefix, err)
+	}
+}
+
+type restoredTurnCheckpoint struct {
+	SessionID        string
+	TurnID           string
+	Iteration        int
+	Messages         []LLMMessage
+	HistoryDelta     []ConversationMessage
+	PendingToolCalls []ToolCall
+	Usage            ProviderUsage
+	PartialText      string
+}
+
+func restoreTurnCheckpoint(cp *sessioncheckpoint.TurnCheckpoint) (restoredTurnCheckpoint, bool) {
+	if cp == nil || strings.TrimSpace(cp.SessionID) == "" || strings.TrimSpace(cp.Status) != "before_tool_execution" || len(cp.PendingToolCallsJSON) == 0 || len(cp.MessagesJSON) == 0 {
+		return restoredTurnCheckpoint{}, false
+	}
+	var out restoredTurnCheckpoint
+	out.SessionID = cp.SessionID
+	out.TurnID = cp.TurnID
+	out.Iteration = cp.Iteration
+	out.PartialText = cp.PartialText
+	if err := json.Unmarshal(cp.MessagesJSON, &out.Messages); err != nil || len(out.Messages) == 0 {
+		return restoredTurnCheckpoint{}, false
+	}
+	if len(cp.HistoryDeltaJSON) > 0 {
+		if err := json.Unmarshal(cp.HistoryDeltaJSON, &out.HistoryDelta); err != nil {
+			return restoredTurnCheckpoint{}, false
+		}
+	}
+	if err := json.Unmarshal(cp.PendingToolCallsJSON, &out.PendingToolCalls); err != nil || len(out.PendingToolCalls) == 0 {
+		return restoredTurnCheckpoint{}, false
+	}
+	if len(cp.UsageJSON) > 0 {
+		if err := json.Unmarshal(cp.UsageJSON, &out.Usage); err != nil {
+			return restoredTurnCheckpoint{}, false
+		}
+	}
+	return out, true
+}
+
+func retryAfterContextOverflow(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMessage, tools []ToolDefinition, cause error, remaining int) (*LLMResponse, []LLMMessage, []ToolDefinition, int, bool, error) {
+	classified := turnCancellationCause(ctx, cause)
+	if remaining <= 0 || !isContextOverflowError(classified) {
+		return nil, messages, tools, remaining, false, classified
+	}
+	compacted, compactResult := compactMessagesForOverflow(messages, cfg.ContextWindowTokens)
+	pf := EnforceTotalContextBudget(GuardToolResultMessages(compacted, cfg.ContextWindowTokens), tools, cfg.ContextWindowTokens, DefaultCriticalToolNames())
+	checkpointOverflowRetry(cfg, compactResult, pf)
+	log.Printf("%s: context overflow detected; compacted prompt (cleared=%d chars=%d→%d), retrying LLM call", cfg.LogPrefix, compactResult.Cleared, compactResult.CharsBefore, compactResult.CharsAfter)
+	resp, err := cfg.Provider.Chat(ctx, pf.Messages, normalizeToolsForProvider(cfg.Provider, pf.Tools), cfg.Options)
+	if err != nil {
+		return nil, pf.Messages, pf.Tools, remaining - 1, false, turnCancellationCause(ctx, err)
+	}
+	return resp, pf.Messages, pf.Tools, remaining - 1, true, nil
+}
+
+func promotePreemptiveCompactionToHardClear(messages []LLMMessage) []LLMMessage {
+	placeholder := DefaultContextPruningConfig().HardClear.Placeholder
+	var out []LLMMessage
+	for i, msg := range messages {
+		if msg.Content != preemptiveToolResultCompactionPlaceholder {
+			continue
+		}
+		if out == nil {
+			out = append([]LLMMessage(nil), messages...)
+		}
+		out[i].Content = placeholder
+	}
+	if out == nil {
+		return messages
+	}
+	return out
+}
+
+func compactMessagesForOverflow(messages []LLMMessage, contextWindowTokens int) ([]LLMMessage, MicroCompactResult) {
+	budget := ComputeContextBudget(ProfileFromContextWindowTokens(max(contextWindowTokens, 1)))
+	targetChars := budget.EffectiveChars * 60 / 100
+	if targetChars <= 0 {
+		targetChars = estimateMessageChars(messages) / 2
+	}
+	result := MicroCompactMessages(messages, MicroCompactOptions{KeepRecent: budget.MicroCompactKeepRecent, TargetChars: targetChars})
+	if result.Cleared == 0 {
+		pruned := pruneContextBeforeLLM(messages, "overflow-retry", contextWindowTokens)
+		charsBefore := estimateMessageChars(messages)
+		charsAfter := estimateMessageChars(pruned)
+		result = MicroCompactResult{Messages: pruned, CharsBefore: charsBefore, CharsAfter: charsAfter}
+	}
+	return result.Messages, result
+}
+
+func checkpointOverflowRetry(cfg AgenticLoopConfig, comp MicroCompactResult, pf PreflightResult) {
+	if cfg.CheckpointStore == nil || cfg.SessionID == "" {
+		return
+	}
+	summary := fmt.Sprintf("context overflow retry: cleared=%d estimated_tokens=%d budget=%d", comp.Cleared, pf.EstimatedTokens, pf.BudgetTokens)
+	cfg.CheckpointStore.Persist(sessioncheckpoint.PersistParams{
+		SessionKey:     cfg.SessionID,
+		SessionID:      cfg.SessionID,
+		Reason:         sessioncheckpoint.ReasonOverflowRetry,
+		Summary:        summary,
+		TokensBefore:   comp.CharsBefore / 4,
+		TokensAfter:    comp.CharsAfter / 4,
+		PostEntryCount: len(pf.Messages),
+	})
+}
+
+func normalizeToolsForProvider(provider ChatProvider, tools []ToolDefinition) []ToolDefinition {
+	if len(tools) == 0 || provider == nil {
+		return tools
+	}
+	if normalizer, ok := provider.(toolSchemaNormalizerProvider); ok {
+		return normalizer.NormalizeToolSchema(tools)
+	}
+	return tools
 }
 
 func turnCancellationCause(ctx context.Context, err error) error {
@@ -833,6 +1036,23 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 			InterruptBehavior: interruptBehavior,
 		},
 	})
+	if policyPtr, agentID := ToolPolicyFromContext(ctx); policyPtr != nil {
+		decision := policyPtr.Evaluate(policy.ToolPolicyRequest{ToolName: call.Name, AgentID: agentID, Args: call.Args})
+		if decision.Action == policy.ToolPolicyDeny || decision.Action == policy.ToolPolicyAsk {
+			reason := decision.Reason
+			if reason == "" {
+				reason = fmt.Sprintf("tool policy returned %s", decision.Action)
+			}
+			prefix := "Tool call rejected by policy: "
+			if decision.Action == policy.ToolPolicyAsk {
+				prefix = "Tool call requires approval by policy: "
+			}
+			result.Content = "error: " + prefix + reason
+			emitToolLifecycleEvent(sink, ToolLifecycleEvent{Type: ToolLifecycleEventError, TS: time.Now().UnixMilli(), SessionID: sessionID, TurnID: turnID, ToolCallID: call.ID, ToolName: call.Name, Trace: trace, Error: reason, Data: decision})
+			return result
+		}
+	}
+
 	execCtx := contextWithMutationTrackingSuppressed(ctx)
 	execCtx = ContextWithToolLifecycle(execCtx, ToolLifecycleContext{Sink: sink, SessionID: sessionID, TurnID: turnID, ToolCallID: call.ID, ToolName: call.Name, Trace: trace})
 	value, execErr := executor.Execute(execCtx, call)
@@ -893,6 +1113,26 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 	if loopEnabled && loopResult.Stuck && loopResult.Level == toolloop.Warning {
 		value = "[LOOP DETECTION] " + loopResult.Message + "\n\n" + value
 	}
+	compaction := toolloop.CompactToolOutput(call.Name, value, toolloop.DefaultCompactionConfig())
+	if compaction.Compacted {
+		value = compaction.Output
+		emitToolLifecycleEvent(sink, ToolLifecycleEvent{
+			Type:       ToolLifecycleEventProgress,
+			TS:         time.Now().UnixMilli(),
+			SessionID:  sessionID,
+			TurnID:     turnID,
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Trace:      trace,
+			Data: map[string]any{
+				"kind":                  "tokenjuice_compaction",
+				"original_bytes":        compaction.OriginalBytes,
+				"compacted_bytes":       compaction.CompactedBytes,
+				"preserved_error_lines": compaction.PreservedErrorLines,
+				"notice":                compaction.Notice,
+			},
+		})
+	}
 	result.Content = value
 	emitToolLifecycleEvent(sink, ToolLifecycleEvent{
 		Type:       ToolLifecycleEventResult,
@@ -941,7 +1181,8 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 			ToolCalls: pendingCalls,
 		})
 
-		results := executeToolBatches(ctx, cfg.Executor, pendingCalls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace, cfg.HookInvoker)
+		toolCtx := ContextWithToolPolicy(ctx, cfg.ToolPolicy, cfg.ToolPolicyAgentID)
+		results := executeToolBatches(toolCtx, cfg.Executor, pendingCalls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace, cfg.HookInvoker)
 		for _, r := range results {
 			messages = append(messages, LLMMessage{
 				Role:       "tool",
@@ -1045,7 +1286,7 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 
 	// If no executor or no tools, just do a single call.
 	if turn.Executor == nil || len(tools) == 0 {
-		resp, err := provider.Chat(ctx, messages, tools, opts)
+		resp, err := provider.Chat(ctx, messages, normalizeToolsForProvider(provider, tools), opts)
 		if err != nil {
 			return ProviderResult{}, turnCancellationCause(ctx, err)
 		}
@@ -1077,7 +1318,11 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 		LastAssistantTime:   turn.LastAssistantTime,
 		DeferredTools:       turn.DeferredTools,
 		HookInvoker:         turn.HookInvoker,
+		ToolPolicy:          turn.ToolPolicy,
+		ToolPolicyAgentID:   turn.ToolPolicyAgentID,
 		SteeringDrain:       turn.SteeringDrain,
+		TurnCheckpointSink:  turn.TurnCheckpointSink,
+		ResumeCheckpoint:    turn.ResumeCheckpoint,
 	})
 	if err != nil {
 		return ProviderResult{}, err

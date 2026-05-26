@@ -17,6 +17,7 @@
     "plugin.loaded",
     "presence.updated",
     "relay.health",
+    "thinking.delta",
     "tool.error",
     "tool.progress",
     "tool.result",

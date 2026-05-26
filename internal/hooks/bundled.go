@@ -1,6 +1,6 @@
 package hooks
 
-// RegisterBundledHandlers wires the Go implementations of the 4 bundled hooks
+// RegisterBundledHandlers wires the Go implementations of bundled hooks
 // into the given Manager.  The Hook entries must already be registered (via
 // LoadBundledHooks); this function only attaches the Handler field.
 func RegisterBundledHandlers(mgr *Manager, opts BundledHandlerOpts) {
@@ -20,6 +20,8 @@ func RegisterBundledHandlers(mgr *Manager, opts BundledHandlerOpts) {
 			h.Handler = makeCommandLoggerHandler(opts)
 		case "boot-md":
 			h.Handler = makeBootMDHandler(opts)
+		case "security-guidance":
+			h.Handler = makeSecurityGuidanceHandler(opts)
 		}
 	}
 }

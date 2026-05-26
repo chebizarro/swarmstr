@@ -187,7 +187,7 @@ func TestHandlePush_DeliversTextMessage(t *testing.T) {
 	}
 }
 
-func TestHandlePush_SkipsNonTextEvents(t *testing.T) {
+func TestHandlePush_DeliversMediaEvents(t *testing.T) {
 	secret := "sec"
 	var delivered []sdk.InboundChannelMessage
 	bot := &lineBot{
@@ -205,8 +205,11 @@ func TestHandlePush_SkipsNonTextEvents(t *testing.T) {
 	req.Header.Set("X-Line-Signature", signBody(secret, body))
 	w := httptest.NewRecorder()
 	bot.handlePush(w, req)
-	if len(delivered) != 0 {
-		t.Fatalf("expected 0 (non-text), got %d", len(delivered))
+	if len(delivered) != 1 {
+		t.Fatalf("expected media event delivery, got %d", len(delivered))
+	}
+	if delivered[0].MediaURL != "line://message/img-1/content" {
+		t.Fatalf("unexpected media URL: %+v", delivered[0])
 	}
 }
 
@@ -373,6 +376,30 @@ func TestSend_ErrorOnHTTPFailure(t *testing.T) {
 	err := bot.Send(ctx, "fail")
 	if err == nil {
 		t.Fatal("expected error on 500")
+	}
+}
+
+func TestResolveMedia_DownloadsContentEndpoint(t *testing.T) {
+	var gotPath, gotAuth string
+	bot := &lineBot{
+		accessToken: "at",
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotPath = req.URL.Path
+			gotAuth = req.Header.Get("Authorization")
+			h := make(http.Header)
+			h.Set("Content-Type", "image/jpeg")
+			return &http.Response{StatusCode: 200, Header: h, Body: io.NopCloser(strings.NewReader("jpeg-data")), Request: req}, nil
+		})},
+	}
+	blob, err := bot.ResolveMedia(context.Background(), "line://message/msg-1/content")
+	if err != nil {
+		t.Fatalf("ResolveMedia: %v", err)
+	}
+	if gotPath != "/v2/bot/message/msg-1/content" || gotAuth != "Bearer at" {
+		t.Fatalf("unexpected request path=%s auth=%s", gotPath, gotAuth)
+	}
+	if blob.MIME != "image/jpeg" || string(blob.Data) != "jpeg-data" {
+		t.Fatalf("unexpected blob: %+v", blob)
 	}
 }
 

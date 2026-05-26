@@ -8,6 +8,7 @@ type RuntimeEventType string
 
 const (
 	RuntimeEventAssistantDelta RuntimeEventType = "assistant_delta"
+	RuntimeEventThinkingDelta  RuntimeEventType = "thinking_delta"
 	RuntimeEventToolStart      RuntimeEventType = "tool_start"
 	RuntimeEventToolProgress   RuntimeEventType = "tool_progress"
 	RuntimeEventToolResult     RuntimeEventType = "tool_result"

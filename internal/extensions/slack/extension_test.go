@@ -260,6 +260,36 @@ func TestHandleWebhook_MessageEvent(t *testing.T) {
 	}
 }
 
+func TestHandleWebhook_SlashCommand(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	bot := &slackBot{
+		channelID:      "slack-ch",
+		slackChannelID: "C123",
+		done:           make(chan struct{}),
+		onMessage:      func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
+	}
+	registerWebhook("slack-ch", bot)
+	defer bot.Close()
+
+	body := "command=%2Fmetiq&text=status+please&channel_id=C123&user_id=U123&trigger_id=TRIG1"
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/slack/slack-ch", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	HandleWebhook("slack-ch", w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(delivered) != 1 {
+		t.Fatalf("expected slash command delivery, got %d", len(delivered))
+	}
+	if delivered[0].Text != "/metiq status please" || delivered[0].SenderID != "U123" || delivered[0].EventID != "slack-command-TRIG1" {
+		t.Fatalf("unexpected command message: %+v", delivered[0])
+	}
+	if !strings.Contains(w.Body.String(), "Command received") {
+		t.Fatalf("expected ephemeral ack, got %s", w.Body.String())
+	}
+}
+
 func TestHandleWebhook_DeduplicatesEventID(t *testing.T) {
 	count := 0
 	bot := &slackBot{channelID: "slack-ch", slackChannelID: "C123", done: make(chan struct{}), onMessage: func(sdk.InboundChannelMessage) { count++ }}

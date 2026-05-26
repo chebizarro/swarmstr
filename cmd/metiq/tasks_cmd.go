@@ -51,7 +51,7 @@ func runTasksList(args []string) error {
 	fs.StringVar(&source, "source", "", "filter by source metadata (best-effort from task meta.source)")
 	fs.StringVar(&status, "status", "", "filter by status")
 	fs.IntVar(&limit, "limit", 50, "max results")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func runTasksShow(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func runTasksAudit(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -320,7 +320,7 @@ func runTasksRuns(args []string) error {
 	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
 	fs.StringVar(&taskID, "task", "", "filter by task ID")
 	fs.IntVar(&limit, "limit", 50, "max results")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

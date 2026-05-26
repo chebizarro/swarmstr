@@ -76,6 +76,15 @@ type Config struct {
 	NetworkDisabled bool
 	// AllowNetwork enables Docker container network access when true.
 	AllowNetwork bool
+	// AllowedDomains documents the domain-level egress allowlist expected by
+	// network-aware sandbox wrappers/proxies. When set, audit requires network
+	// access to be constrained to these domains instead of unrestricted egress.
+	AllowedDomains []string
+	// AllowedCIDRs documents IP/CIDR egress allowlist entries for sandbox network policy.
+	AllowedCIDRs []string
+	// EgressEnforced activates best-effort backend enforcement for AllowedDomains
+	// and AllowedCIDRs instead of treating them as advisory metadata.
+	EgressEnforced bool
 	// ReadOnlyRootFS mounts the container root filesystem read-only. Docker only.
 	// Defaults to true.
 	ReadOnlyRootFS bool
@@ -208,6 +217,9 @@ func NewFromMap(m map[string]any) (SandboxRunner, error) {
 		DockerImage:      getString(m, "docker_image"),
 		NetworkDisabled:  getBool(m, "network_disabled"),
 		AllowNetwork:     getBool(m, "allow_network"),
+		AllowedDomains:   firstStringSlice(m, "allowed_domains", "egress_allowed_domains"),
+		AllowedCIDRs:     firstStringSlice(m, "allowed_cidrs", "egress_allowed_cidrs"),
+		EgressEnforced:   getBool(m, "egress_enforced"),
 		ReadOnlyRootFS:   getBool(m, "read_only_rootfs"),
 		WritableRootFS:   getBool(m, "writable_rootfs"),
 		CapDrop:          getStringSlice(m, "cap_drop"),
@@ -246,6 +258,24 @@ type NopSandbox struct {
 
 func (s *NopSandbox) Driver() string { return "nop" }
 
+func (s *NopSandbox) restrictedEnv(env []string) []string {
+	if !s.cfg.EgressEnforced || (len(s.cfg.AllowedDomains) == 0 && len(s.cfg.AllowedCIDRs) == 0) {
+		return buildEnv(env)
+	}
+	guard := []string{
+		"HTTP_PROXY=http://127.0.0.1:9",
+		"HTTPS_PROXY=http://127.0.0.1:9",
+		"ALL_PROXY=socks5://127.0.0.1:9",
+		"http_proxy=http://127.0.0.1:9",
+		"https_proxy=http://127.0.0.1:9",
+		"all_proxy=socks5://127.0.0.1:9",
+		"NO_PROXY=" + strings.Join(append(cleanStrings(s.cfg.AllowedDomains), cleanStrings(s.cfg.AllowedCIDRs)...), ","),
+		"no_proxy=" + strings.Join(append(cleanStrings(s.cfg.AllowedDomains), cleanStrings(s.cfg.AllowedCIDRs)...), ","),
+		"METIQ_SANDBOX_EGRESS_ENFORCED=true",
+	}
+	return buildEnv(append(env, guard...))
+}
+
 func (s *NopSandbox) Run(ctx context.Context, cmd []string, env []string, workdir string) (Result, error) {
 	if len(cmd) == 0 {
 		return Result{}, fmt.Errorf("sandbox: empty command")
@@ -264,7 +294,7 @@ func (s *NopSandbox) Run(ctx context.Context, cmd []string, env []string, workdi
 	}
 
 	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
-	c.Env = buildEnv(env)
+	c.Env = s.restrictedEnv(env)
 	if workdir != "" {
 		c.Dir = workdir
 	}
@@ -312,7 +342,7 @@ func (s *DockerSandbox) Driver() string { return "docker" }
 func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, workdir string) []string {
 	dockerArgs := []string{"run", "--rm", "--interactive=false"}
 
-	if s.cfg.dockerNetworkDisabled() {
+	if s.cfg.dockerNetworkDisabled() || (s.cfg.EgressEnforced && len(s.cfg.AllowedDomains) == 0 && len(s.cfg.AllowedCIDRs) == 0) {
 		dockerArgs = append(dockerArgs, "--network=none")
 	}
 	if s.cfg.dockerReadOnlyRootFS() {
@@ -331,7 +361,9 @@ func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, 
 	if pids := s.cfg.dockerPidsLimit(); pids > 0 {
 		dockerArgs = append(dockerArgs, fmt.Sprintf("--pids-limit=%d", pids))
 	}
-	if user := s.cfg.dockerUser(); user != "" {
+	if s.cfg.EgressEnforced && (len(s.cfg.AllowedDomains) > 0 || len(s.cfg.AllowedCIDRs) > 0) {
+		dockerArgs = append(dockerArgs, "--cap-add=NET_ADMIN", "--user=0:0", "--env=METIQ_SANDBOX_EGRESS_ENFORCED=true")
+	} else if user := s.cfg.dockerUser(); user != "" {
 		dockerArgs = append(dockerArgs, "--user="+user)
 	}
 	if s.cfg.MemoryLimit != "" {
@@ -350,6 +382,12 @@ func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, 
 			dockerArgs = append(dockerArgs, "--ulimit="+strings.TrimSpace(ulimit))
 		}
 	}
+	if len(s.cfg.AllowedDomains) > 0 {
+		dockerArgs = append(dockerArgs, "--env=METIQ_SANDBOX_ALLOWED_DOMAINS="+strings.Join(cleanStrings(s.cfg.AllowedDomains), ","))
+	}
+	if len(s.cfg.AllowedCIDRs) > 0 {
+		dockerArgs = append(dockerArgs, "--env=METIQ_SANDBOX_ALLOWED_CIDRS="+strings.Join(cleanStrings(s.cfg.AllowedCIDRs), ","))
+	}
 	for _, e := range env {
 		dockerArgs = append(dockerArgs, "--env="+e)
 	}
@@ -363,9 +401,43 @@ func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, 
 	if workdir != "" {
 		dockerArgs = append(dockerArgs, "--workdir="+workdir)
 	}
+	if s.cfg.EgressEnforced && (len(s.cfg.AllowedDomains) > 0 || len(s.cfg.AllowedCIDRs) > 0) {
+		cmd = s.egressWrappedCommand(cmd)
+	}
 	dockerArgs = append(dockerArgs, image)
 	dockerArgs = append(dockerArgs, cmd...)
 	return dockerArgs
+}
+
+func (s *DockerSandbox) egressWrappedCommand(cmd []string) []string {
+	script := `set -eu
+if ! command -v iptables >/dev/null 2>&1; then
+	echo "metiq sandbox egress enforcement requires iptables in the container" >&2
+	exit 126
+fi
+iptables -P OUTPUT DROP
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+for cidr in ` + shellQuote(strings.Join(cleanStrings(s.cfg.AllowedCIDRs), " ")) + `; do
+	[ -n "$cidr" ] && iptables -A OUTPUT -d "$cidr" -j ACCEPT
+	done
+for domain in ` + shellQuote(strings.Join(cleanStrings(s.cfg.AllowedDomains), " ")) + `; do
+	[ -n "$domain" ] || continue
+	for ip in $(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u); do
+	iptables -A OUTPUT -d "$ip" -j ACCEPT
+	done
+	done
+exec "$@"`
+	return append([]string{"/bin/sh", "-c", script, "metiq-egress"}, cmd...)
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func (s *DockerSandbox) Run(ctx context.Context, cmd []string, env []string, workdir string) (Result, error) {
@@ -464,6 +536,15 @@ func getBool(m map[string]any, key string) bool {
 	return false
 }
 
+func firstStringSlice(m map[string]any, keys ...string) []string {
+	for _, key := range keys {
+		if values := getStringSlice(m, key); len(values) > 0 {
+			return values
+		}
+	}
+	return nil
+}
+
 func getStringSlice(m map[string]any, key string) []string {
 	v, ok := m[key]
 	if !ok {
@@ -471,23 +552,30 @@ func getStringSlice(m map[string]any, key string) []string {
 	}
 	switch value := v.(type) {
 	case []string:
-		return value
+		return cleanStrings(value)
 	case []any:
 		out := make([]string, 0, len(value))
 		for _, item := range value {
 			if s, ok := item.(string); ok {
-				out = append(out, strings.TrimSpace(s))
+				out = append(out, s)
 			}
 		}
-		return out
+		return cleanStrings(out)
 	case string:
-		if strings.TrimSpace(value) == "" {
-			return nil
-		}
-		return []string{strings.TrimSpace(value)}
+		return cleanStrings([]string{value})
 	default:
 		return nil
 	}
+}
+
+func cleanStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if s := strings.TrimSpace(value); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func numberAsInt(v any) (int, bool) {

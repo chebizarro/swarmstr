@@ -20,6 +20,7 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -28,6 +29,10 @@ import (
 type contextKey string
 
 const channelReplyTargetContextKey contextKey = "channel-reply-target"
+
+// HostAPIVersion identifies the stable plugin host API surface exposed by this
+// package. Bump this only when plugin-visible namespace contracts change.
+const HostAPIVersion = "metiq.plugin.host.v1"
 
 // WithChannelReplyTarget stores a channel-specific recipient/session hint in ctx.
 // ChannelHandle implementations that need explicit recipient routing (for
@@ -110,6 +115,33 @@ type AgentHost interface {
 	Complete(ctx context.Context, prompt string, opts CompletionOpts) (string, error)
 }
 
+// SessionHost exposes narrow session inspection/control primitives to plugins.
+// Implementations should only surface data scoped to the invoking user/session.
+type SessionHost interface {
+	List(ctx context.Context, filter map[string]any) ([]map[string]any, error)
+	Get(ctx context.Context, sessionID string) (map[string]any, error)
+	Append(ctx context.Context, sessionID string, message map[string]any) error
+}
+
+// TaskHost exposes task/workflow metadata to plugins.
+type TaskHost interface {
+	List(ctx context.Context, filter map[string]any) ([]map[string]any, error)
+	Get(ctx context.Context, taskID string) (map[string]any, error)
+	Update(ctx context.Context, taskID string, patch map[string]any) (map[string]any, error)
+}
+
+// MemoryHost exposes memory search/store operations to plugins.
+type MemoryHost interface {
+	Search(ctx context.Context, query string, opts map[string]any) ([]map[string]any, error)
+	Store(ctx context.Context, item map[string]any) (map[string]any, error)
+}
+
+// WebSearchHost exposes policy-aware web search/fetch operations to plugins.
+type WebSearchHost interface {
+	Search(ctx context.Context, query string, opts map[string]any) ([]map[string]any, error)
+	Fetch(ctx context.Context, url string, opts map[string]any) (map[string]any, error)
+}
+
 // ─── Supporting types ─────────────────────────────────────────────────────────
 
 // CompletionOpts controls how a plugin-initiated completion is run.
@@ -128,12 +160,25 @@ type CompletionOpts struct {
 
 // Host bundles all namespace APIs passed to a plugin VM on initialisation.
 type Host struct {
-	Nostr   NostrHost
-	Config  ConfigHost
-	HTTP    HTTPHost
-	Storage StorageHost
-	Log     LogHost
-	Agent   AgentHost
+	Nostr     NostrHost
+	Config    ConfigHost
+	HTTP      HTTPHost
+	Storage   StorageHost
+	Log       LogHost
+	Agent     AgentHost
+	Session   SessionHost
+	Task      TaskHost
+	Memory    MemoryHost
+	WebSearch WebSearchHost
+}
+
+type HostAPIInfo struct {
+	Version    string   `json:"version"`
+	Namespaces []string `json:"namespaces"`
+}
+
+func (p Permissions) APIInfo() HostAPIInfo {
+	return HostAPIInfo{Version: HostAPIVersion, Namespaces: p.AllowedNamespaces()}
 }
 
 // ─── Plugin manifest & invocation ────────────────────────────────────────────
@@ -144,6 +189,125 @@ type Manifest struct {
 	Version     string       `json:"version"`
 	Description string       `json:"description,omitempty"`
 	Tools       []ToolSchema `json:"tools,omitempty"`
+	Permissions Permissions  `json:"permissions,omitempty"`
+}
+
+// Permissions declares which sensitive SDK host namespaces a plugin may use.
+//
+// JSON accepts either an object, e.g.
+//
+//	{"network":{"allow_all":true},"storage":true}
+//
+// or a string array for development compatibility, e.g. ["*"] or
+// ["network", "storage"].
+type Permissions struct {
+	All       bool               `json:"all,omitempty"`
+	Network   *NetworkPermission `json:"network,omitempty"`
+	HTTP      bool               `json:"http,omitempty"`
+	Config    bool               `json:"config,omitempty"`
+	Storage   bool               `json:"storage,omitempty"`
+	Nostr     *NostrPermission   `json:"nostr,omitempty"`
+	Agent     bool               `json:"agent,omitempty"`
+	Session   bool               `json:"session,omitempty"`
+	Task      bool               `json:"task,omitempty"`
+	Memory    bool               `json:"memory,omitempty"`
+	WebSearch bool               `json:"web_search,omitempty"`
+}
+
+type NetworkPermission struct {
+	Hosts    []string `json:"hosts,omitempty"`
+	AllowAll bool     `json:"allow_all,omitempty"`
+}
+
+type NostrPermission struct {
+	Publish   bool `json:"publish,omitempty"`
+	Subscribe bool `json:"subscribe,omitempty"`
+	Encrypt   bool `json:"encrypt,omitempty"`
+	Sign      bool `json:"sign,omitempty"`
+}
+
+func (p *Permissions) UnmarshalJSON(data []byte) error {
+	var names []string
+	if err := json.Unmarshal(data, &names); err == nil {
+		for _, name := range names {
+			p.allowName(name)
+		}
+		return nil
+	}
+	type alias Permissions
+	var obj alias
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	*p = Permissions(obj)
+	return nil
+}
+
+func (p *Permissions) allowName(name string) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "*", "all":
+		p.All = true
+	case "network", "http":
+		p.Network = &NetworkPermission{AllowAll: true}
+		p.HTTP = true
+	case "config":
+		p.Config = true
+	case "storage":
+		p.Storage = true
+	case "nostr":
+		p.Nostr = &NostrPermission{Publish: true, Subscribe: true, Encrypt: true, Sign: true}
+	case "agent":
+		p.Agent = true
+	case "session", "sessions":
+		p.Session = true
+	case "task", "tasks":
+		p.Task = true
+	case "memory":
+		p.Memory = true
+	case "web_search", "websearch", "web-search":
+		p.WebSearch = true
+	}
+}
+
+func (p Permissions) Allows(namespace string) bool {
+	if p.All {
+		return true
+	}
+	switch namespace {
+	case "log":
+		return true
+	case "config":
+		return p.Config
+	case "http":
+		return p.HTTP || p.Network != nil
+	case "storage":
+		return p.Storage
+	case "nostr":
+		return p.Nostr != nil
+	case "agent":
+		return p.Agent
+	case "session":
+		return p.Session
+	case "task":
+		return p.Task
+	case "memory":
+		return p.Memory
+	case "webSearch":
+		return p.WebSearch || p.Network != nil
+	default:
+		return false
+	}
+}
+
+func (p Permissions) AllowedNamespaces() []string {
+	candidates := []string{"log", "config", "http", "storage", "nostr", "agent", "session", "task", "memory", "webSearch"}
+	out := make([]string, 0, len(candidates))
+	for _, namespace := range candidates {
+		if p.Allows(namespace) {
+			out = append(out, namespace)
+		}
+	}
+	return out
 }
 
 // ValidateManifest checks the basic plugin manifest contract expected by the
@@ -340,6 +504,14 @@ type EditHandle interface {
 	ChannelHandle
 	// EditMessage replaces the content of a previously sent message.
 	EditMessage(ctx context.Context, eventID, newText string) error
+}
+
+// DeleteMessageHandle is implemented by channels that support deleting or
+// retracting previously sent messages.
+type DeleteMessageHandle interface {
+	ChannelHandle
+	// DeleteMessage deletes the platform-native message identified by eventID.
+	DeleteMessage(ctx context.Context, eventID string) error
 }
 
 // ThreadHandle is implemented by channels that support threaded replies.

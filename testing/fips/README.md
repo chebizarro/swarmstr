@@ -34,6 +34,11 @@ FIPS daemon required.
 | 8 | `TestIntegration_DualPort_DM_And_Control` | DM + control on same agent (separate ports) |
 | 9 | `TestIntegration_IdentityDerivation_Consistency` | 3 agents → 3 unique fd00::/8 addresses |
 | 10 | `TestIntegration_ConnectionPool_Eviction` | Pool cap behaviour under load |
+| 11 | `TestIntegration_DelayedDiscovery_EventualFIPSSuccessClearsNegativeCache` | Discovery not ready → relay fallback, later FIPS success clears cache |
+| 12 | `TestIntegration_SustainedDMExchange_DuringDaemonRekey` | Sustained bidirectional exchange across a hitless rekey window |
+| 13 | `TestIntegration_NegativeCacheTTLExpiry_RetriesFIPS` | Negative cache expires and FIPS is retried |
+
+Manual daemon-side soak coverage is documented in `manual-soak-scenarios.md`, including daemon restart with pooled TCP connections.
 
 Run directly:
 ```bash

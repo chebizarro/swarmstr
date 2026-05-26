@@ -78,6 +78,8 @@ type TaskPayload struct {
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 	// ReplyTo is the Nostr pubkey the worker should send its result DM to.
 	ReplyTo string `json:"reply_to,omitempty"`
+	// Artifacts carries typed inputs from prior flow/pipeline steps.
+	Artifacts []ArtifactPayload `json:"artifacts,omitempty"`
 }
 
 // ResultPayload is the Payload for messages with ACPType = "result".
@@ -121,6 +123,8 @@ type ResultPayload struct {
 	// Worker carries the worker-side session/history/completion metadata needed
 	// to correlate parent/worker execution after the fact.
 	Worker *WorkerMetadata `json:"worker,omitempty"`
+	// Artifacts carries structured outputs produced by the worker.
+	Artifacts []ArtifactPayload `json:"artifacts,omitempty"`
 }
 
 // PingPayload is the Payload for messages with ACPType = "ping".
@@ -148,6 +152,7 @@ func NewTask(taskID, senderPubKey string, p TaskPayload) Message {
 		"parent_context":   p.ParentContext,
 		"timeout_ms":       p.TimeoutMS,
 		"reply_to":         p.ReplyTo,
+		"artifacts":        p.Artifacts,
 	}
 	if eventEnvelope, err := BuildUnsignedTaskEvent(senderPubKey, env); err == nil {
 		payload["task_event"] = eventEnvelope
@@ -210,6 +215,9 @@ func DecodeTaskPayload(payload map[string]any) (TaskPayload, error) {
 			out.ReplyTo = env.ReplyTo
 		}
 	}
+	if len(out.Artifacts) > 0 {
+		out.Artifacts = cloneArtifacts(out.Artifacts)
+	}
 	if out.Task != nil {
 		task := out.Task.Normalize()
 		if task.Title == "" {
@@ -257,6 +265,7 @@ func NewResult(taskID, senderPubKey string, p ResultPayload) Message {
 			"tokens_used":  p.TokensUsed,
 			"completed_at": p.CompletedAt,
 			"worker":       p.Worker,
+			"artifacts":    p.Artifacts,
 		},
 		CreatedAt: time.Now().Unix(),
 	}
@@ -274,6 +283,9 @@ func DecodeResultPayload(payload map[string]any) (ResultPayload, error) {
 	var out ResultPayload
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return ResultPayload{}, err
+	}
+	if len(out.Artifacts) > 0 {
+		out.Artifacts = cloneArtifacts(out.Artifacts)
 	}
 	return out, nil
 }

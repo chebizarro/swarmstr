@@ -17,7 +17,7 @@ import (
 func runKeygen(args []string) error {
 	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
 	var jsonOut bool
-	fs.BoolVar(&jsonOut, "json", false, "output JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

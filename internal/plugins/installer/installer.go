@@ -36,6 +36,10 @@ type Installer interface {
 	UpdateNPM(ctx context.Context, spec, installPath string) (Result, error)
 	// ExtractArchive extracts a .tar.gz or .zip archive from sourcePath to installPath.
 	ExtractArchive(ctx context.Context, sourcePath, installPath string) (Result, error)
+	// InstallGit clones a git repository/ref into installPath.
+	InstallGit(ctx context.Context, repo, ref, installPath string) (Result, error)
+	// UpdateGit refreshes a git installation by re-cloning the configured ref.
+	UpdateGit(ctx context.Context, repo, ref, installPath string) (Result, error)
 }
 
 // New returns the default real Installer backed by npm CLI and stdlib archive support.
@@ -46,15 +50,43 @@ func New() Installer {
 type defaultInstaller struct{}
 
 func (d *defaultInstaller) InstallNPM(ctx context.Context, spec, installPath string) (Result, error) {
-	return installNPM(ctx, spec, installPath)
+	res, err := installNPM(ctx, spec, installPath)
+	if err != nil {
+		return res, err
+	}
+	return recordIntegrityForResult(res, installPath)
 }
 
 func (d *defaultInstaller) UpdateNPM(ctx context.Context, spec, installPath string) (Result, error) {
-	return updateNPM(ctx, spec, installPath)
+	res, err := updateNPM(ctx, spec, installPath)
+	if err != nil {
+		return res, err
+	}
+	return recordIntegrityForResult(res, installPath)
 }
 
 func (d *defaultInstaller) ExtractArchive(ctx context.Context, sourcePath, installPath string) (Result, error) {
-	return extractArchive(ctx, sourcePath, installPath)
+	res, err := extractArchive(ctx, sourcePath, installPath)
+	if err != nil {
+		return res, err
+	}
+	return recordIntegrityForResult(res, installPath)
+}
+
+func (d *defaultInstaller) InstallGit(ctx context.Context, repo, ref, installPath string) (Result, error) {
+	res, err := installGit(ctx, repo, ref, installPath)
+	if err != nil {
+		return res, err
+	}
+	return recordIntegrityForResult(res, installPath)
+}
+
+func (d *defaultInstaller) UpdateGit(ctx context.Context, repo, ref, installPath string) (Result, error) {
+	res, err := installGit(ctx, repo, ref, installPath)
+	if err != nil {
+		return res, err
+	}
+	return recordIntegrityForResult(res, installPath)
 }
 
 // ResolveManagedPath checks that targetPath is within the managed extensions root

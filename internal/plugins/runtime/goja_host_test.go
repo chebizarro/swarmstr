@@ -146,7 +146,7 @@ exports.invoke = function(){};
 
 func TestLoadPlugin_configAccess(t *testing.T) {
 	src := `
-exports.manifest = { id: "cfg-plugin", version: "1.0.0" };
+exports.manifest = { id: "cfg-plugin", version: "1.0.0", permissions: { config: true } };
 exports.invoke = function(tool, args) {
 	return { model: config.get("agent.default_model") };
 };
@@ -276,7 +276,7 @@ func (h *blockingHTTPHost) Post(ctx context.Context, _ string, _ []byte, _ map[s
 
 func TestInvoke_HTTPHostReceivesInvokeContextCancellation(t *testing.T) {
 	src := `
-exports.manifest = { id: "http-cancel-plugin", version: "1.0.0" };
+exports.manifest = { id: "http-cancel-plugin", version: "1.0.0", permissions: { network: { allow_all: true } } };
 exports.invoke = function() { return http.get("https://example.com"); };
 `
 	httpHost := &blockingHTTPHost{entered: make(chan struct{})}
@@ -294,5 +294,86 @@ exports.invoke = function() { return http.get("https://example.com"); };
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation from HTTP host, got: %T %v", err, err)
+	}
+}
+
+type stubSessionHost struct{}
+
+func (stubSessionHost) List(context.Context, map[string]any) ([]map[string]any, error) {
+	return []map[string]any{{"id": "s1"}}, nil
+}
+func (stubSessionHost) Get(context.Context, string) (map[string]any, error) {
+	return map[string]any{"id": "s1", "title": "Session"}, nil
+}
+func (stubSessionHost) Append(context.Context, string, map[string]any) error { return nil }
+
+type stubTaskHost struct{}
+
+func (stubTaskHost) List(context.Context, map[string]any) ([]map[string]any, error) {
+	return []map[string]any{{"id": "t1"}}, nil
+}
+func (stubTaskHost) Get(context.Context, string) (map[string]any, error) {
+	return map[string]any{"id": "t1", "status": "open"}, nil
+}
+func (stubTaskHost) Update(context.Context, string, map[string]any) (map[string]any, error) {
+	return map[string]any{"id": "t1", "status": "done"}, nil
+}
+
+type stubMemoryHost struct{}
+
+func (stubMemoryHost) Search(context.Context, string, map[string]any) ([]map[string]any, error) {
+	return []map[string]any{{"text": "memory-hit"}}, nil
+}
+func (stubMemoryHost) Store(context.Context, map[string]any) (map[string]any, error) {
+	return map[string]any{"ok": true}, nil
+}
+
+type stubWebSearchHost struct{}
+
+func (stubWebSearchHost) Search(context.Context, string, map[string]any) ([]map[string]any, error) {
+	return []map[string]any{{"title": "result"}}, nil
+}
+func (stubWebSearchHost) Fetch(context.Context, string, map[string]any) (map[string]any, error) {
+	return map[string]any{"status": 200}, nil
+}
+
+func TestLoadPlugin_expandedVersionedSDKHostAPIs(t *testing.T) {
+	src := `
+exports.manifest = {
+	id: "expanded-sdk-plugin",
+	version: "1.0.0",
+	permissions: { session: true, task: true, memory: true, web_search: true }
+};
+exports.invoke = function() {
+	return {
+		version: metiq.sdk.version,
+		namespaces: metiq.sdk.namespaces,
+		session: session.get("s1").title,
+		task: task.update("t1", { status: "done" }).status,
+		memory: memory.search("hello", {})[0].text,
+		web: webSearch.fetch("https://example.com", {}).status
+	};
+};
+`
+	p, err := LoadPlugin(context.Background(), []byte(src), &sdk.Host{
+		Log:       &stubLog{},
+		Session:   stubSessionHost{},
+		Task:      stubTaskHost{},
+		Memory:    stubMemoryHost{},
+		WebSearch: stubWebSearchHost{},
+	})
+	if err != nil {
+		t.Fatalf("LoadPlugin: %v", err)
+	}
+	res, err := p.Invoke(context.Background(), sdk.InvokeRequest{Tool: "x"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	m, ok := res.Value.(map[string]any)
+	if !ok {
+		t.Fatalf("not a map: %#v", res.Value)
+	}
+	if m["version"] != sdk.HostAPIVersion || m["session"] != "Session" || m["task"] != "done" || m["memory"] != "memory-hit" || m["web"] != int64(200) {
+		t.Fatalf("unexpected expanded SDK result: %#v", m)
 	}
 }

@@ -322,7 +322,8 @@ type OpenAIChatProvider struct {
 	// Store enables OpenAI's stored completions feature (store:true in API).
 	// Opt-in via config; stored completions are retained by OpenAI for 30 days.
 	// Read from OPENAI_STORE_COMPLETIONS env var if not set explicitly.
-	Store bool
+	Store                bool
+	ToolSchemaNormalizer ToolSchemaNormalizer
 }
 
 func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
@@ -335,14 +336,15 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 		store = true
 	}
 	chatProvider := &OpenAIChatProviderChat{
-		BaseURL:             p.BaseURL,
-		APIKey:              p.resolveAPIKey(),
-		Model:               p.resolveModel(),
-		Client:              p.Client,
-		ContextWindowTokens: turn.ContextWindowTokens,
-		KeepAlive:           keepAlive,
-		Store:               store,
-		PromptCache:         promptCacheProfilePtr(p.PromptCacheProfile()),
+		BaseURL:              p.BaseURL,
+		APIKey:               p.resolveAPIKey(),
+		Model:                p.resolveModel(),
+		Client:               p.Client,
+		ContextWindowTokens:  turn.ContextWindowTokens,
+		KeepAlive:            keepAlive,
+		Store:                store,
+		ToolSchemaNormalizer: p.ToolSchemaNormalizer,
+		PromptCache:          promptCacheProfilePtr(p.PromptCacheProfile()),
 	}
 	return generateWithAgenticLoop(ctx, chatProvider, turn, "", "openai")
 }
@@ -620,7 +622,8 @@ type geminiUsageMetadata struct {
 func toolDefsToGemini(defs []ToolDefinition) []geminiToolBundle {
 	decls := make([]geminiFuncDecl, 0, len(defs))
 	for _, d := range defs {
-		params, _ := geminiSchemaMap(toolInputSchemaMap(d)).(map[string]any)
+		effective := sanitizeSchemaMap(toolInputSchemaMap(d), geminiUnsupportedSchemaKeywords())
+		params, _ := geminiSchemaMap(effective).(map[string]any)
 		decls = append(decls, geminiFuncDecl{
 			Name:        d.Name,
 			Description: d.Description,

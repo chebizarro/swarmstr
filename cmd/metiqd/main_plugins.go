@@ -121,6 +121,43 @@ func (s *daemonServices) applyPluginInstallRuntime(ctx context.Context, docsRepo
 			install["integrity"] = installResult.Integrity
 		}
 		install["installPath"] = installPath
+	case "git":
+		repo := strings.TrimSpace(getString(install, "url"))
+		if repo == "" {
+			repo = sourcePath
+		}
+		if repo == "" {
+			repo = spec
+		}
+		if repo == "" {
+			return nil, fmt.Errorf("install.url or install.spec is required for source=git")
+		}
+		ref := strings.TrimSpace(getString(install, "ref"))
+		if installPath == "" {
+			installPath = "./extensions/" + req.PluginID
+		}
+		managedPath, ok := resolveManagedInstallPath(installPath)
+		if !ok {
+			return nil, fmt.Errorf("install.installPath for source=git must be within managed extensions directory")
+		}
+		installPath = managedPath
+		res, err := inst.InstallGit(ctx, repo, ref, installPath)
+		if err != nil {
+			log.Printf("plugins.install git error for %s: %v\nstdout: %s\nstderr: %s", req.PluginID, err, res.Stdout, res.Stderr)
+			return nil, fmt.Errorf("git install failed: %w", err)
+		}
+		installResult = res
+		install["url"] = repo
+		if ref != "" {
+			install["ref"] = ref
+		}
+		if installResult.ResolvedVersion != "" {
+			install["version"] = installResult.ResolvedVersion
+		}
+		if installResult.ResolvedSpec != "" {
+			install["resolvedSpec"] = installResult.ResolvedSpec
+		}
+		install["installPath"] = installPath
 	case "url":
 		srcURL := strings.TrimSpace(getString(install, "url"))
 		if srcURL == "" {
@@ -273,8 +310,15 @@ func applyPluginUpdateRuntime(ctx context.Context, docsRepo *state.DocsRepositor
 	cfg := configState.Get()
 	runner := func(pluginID string, record map[string]any, dryRun bool) methods.PluginUpdateResult {
 		currentVersion := strings.TrimSpace(getString(record, "version"))
+		source := strings.ToLower(strings.TrimSpace(getString(record, "source")))
 		spec := strings.TrimSpace(getString(record, "spec"))
-		pinned := parsePinnedNPMVersion(spec)
+		if source == "git" && spec == "" {
+			spec = strings.TrimSpace(getString(record, "url"))
+		}
+		pinned := ""
+		if source != "git" {
+			pinned = parsePinnedNPMVersion(spec)
+		}
 		if pinned != "" && pinned == currentVersion {
 			return methods.PluginUpdateResult{
 				Status:      methods.PluginUpdateStatusUnchanged,
@@ -298,10 +342,16 @@ func applyPluginUpdateRuntime(ctx context.Context, docsRepo *state.DocsRepositor
 			return methods.PluginUpdateResult{Status: methods.PluginUpdateStatusError, Message: fmt.Sprintf("installPath for %s is outside managed directory.", pluginID)}
 		}
 		inst := installer.New()
-		res, err := inst.UpdateNPM(ctx, spec, installPath)
+		var res installer.Result
+		var err error
+		if source == "git" {
+			res, err = inst.UpdateGit(ctx, spec, strings.TrimSpace(getString(record, "ref")), installPath)
+		} else {
+			res, err = inst.UpdateNPM(ctx, spec, installPath)
+		}
 		if err != nil {
-			log.Printf("plugins.update npm error for %s: %v\nstdout: %s\nstderr: %s", pluginID, err, res.Stdout, res.Stderr)
-			return methods.PluginUpdateResult{Status: methods.PluginUpdateStatusError, Message: fmt.Sprintf("npm update failed: %v", err)}
+			log.Printf("plugins.update %s error for %s: %v\nstdout: %s\nstderr: %s", source, pluginID, err, res.Stdout, res.Stderr)
+			return methods.PluginUpdateResult{Status: methods.PluginUpdateStatusError, Message: fmt.Sprintf("%s update failed: %v", source, err)}
 		}
 		nextVersion := res.ResolvedVersion
 		if nextVersion == "" {

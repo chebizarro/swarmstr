@@ -295,7 +295,7 @@ func TestWireHTTP_JSGet(t *testing.T) {
 	defer srv.Close()
 
 	src := fmt.Sprintf(`
-exports.manifest = { id: "http-test", version: "1.0.0" };
+exports.manifest = { id: "http-test", version: "1.0.0", permissions: { network: { allow_all: true } } };
 exports.invoke = function(tool, args) {
 	var resp = http.get("%s", {});
 	return { status: resp.status, body: resp.body };
@@ -335,7 +335,7 @@ func TestWireHTTP_JSPost(t *testing.T) {
 	defer srv.Close()
 
 	src := fmt.Sprintf(`
-exports.manifest = { id: "http-post-test", version: "1.0.0" };
+exports.manifest = { id: "http-post-test", version: "1.0.0", permissions: { network: { allow_all: true } } };
 exports.invoke = function(tool, args) {
 	var resp = http.post("%s", "hello body", {"Content-Type": "text/plain"});
 	return { status: resp.status, body: resp.body };
@@ -370,7 +370,7 @@ exports.invoke = function(tool, args) {
 func TestWireStorage_SetGetDel(t *testing.T) {
 	store := &stubStorage{data: make(map[string][]byte)}
 	src := `
-exports.manifest = { id: "storage-test", version: "1.0.0" };
+exports.manifest = { id: "storage-test", version: "1.0.0", permissions: { storage: true } };
 exports.invoke = function(tool, args) {
 	storage.set("mykey", "myvalue");
 	var v = storage.get("mykey");
@@ -428,7 +428,7 @@ exports.invoke = function() {
 
 func TestWireStorage_GetError(t *testing.T) {
 	src := `
-exports.manifest = { id: "storage-err-test", version: "1.0.0" };
+exports.manifest = { id: "storage-err-test", version: "1.0.0", permissions: { storage: true } };
 exports.invoke = function() {
 	var v = storage.get("key");
 	return { val: v };
@@ -455,7 +455,7 @@ exports.invoke = function() {
 
 func TestWireStorage_SetError(t *testing.T) {
 	src := `
-exports.manifest = { id: "storage-set-err", version: "1.0.0" };
+exports.manifest = { id: "storage-set-err", version: "1.0.0", permissions: { storage: true } };
 exports.invoke = function() {
 	try {
 		storage.set("key", "value");
@@ -485,7 +485,7 @@ exports.invoke = function() {
 
 func TestWireStorage_DelError(t *testing.T) {
 	src := `
-exports.manifest = { id: "storage-del-err", version: "1.0.0" };
+exports.manifest = { id: "storage-del-err", version: "1.0.0", permissions: { storage: true } };
 exports.invoke = function() {
 	try {
 		storage.del("key");
@@ -520,7 +520,7 @@ exports.invoke = function() {
 func TestWireNostr_PublishAndFetch(t *testing.T) {
 	ns := &stubNostr{events: []map[string]any{{"id": "abc", "kind": 1}}}
 	src := `
-exports.manifest = { id: "nostr-test", version: "1.0.0" };
+exports.manifest = { id: "nostr-test", version: "1.0.0", permissions: { nostr: { publish: true, subscribe: true } } };
 exports.invoke = function() {
 	nostr.publish({ kind: 1, content: "hello" });
 	var evts = nostr.fetch({ kinds: [1] }, 10);
@@ -551,7 +551,7 @@ exports.invoke = function() {
 func TestWireNostr_EncryptDecrypt(t *testing.T) {
 	ns := &stubNostr{}
 	src := `
-exports.manifest = { id: "nostr-enc-test", version: "1.0.0" };
+exports.manifest = { id: "nostr-enc-test", version: "1.0.0", permissions: { nostr: { encrypt: true } } };
 exports.invoke = function() {
 	var cipher = nostr.encrypt("pubkey123", "secret");
 	var plain = nostr.decrypt("pubkey123", cipher);
@@ -611,7 +611,7 @@ exports.invoke = function() {
 func TestWireAgent_Complete(t *testing.T) {
 	agent := &stubAgent{reply: "I am a helpful assistant"}
 	src := `
-exports.manifest = { id: "agent-test", version: "1.0.0" };
+exports.manifest = { id: "agent-test", version: "1.0.0", permissions: { agent: true } };
 exports.invoke = function() {
 	var reply = agent.complete("Hello!", { model: "claude-opus-4", max_tokens: 100 });
 	return { reply: reply };
@@ -929,7 +929,7 @@ exports.invoke = function() {
 
 func TestWireConfig_GetMissingKeyReturnsNull(t *testing.T) {
 	src := `
-exports.manifest = { id: "config-null-test", version: "1.0.0" };
+exports.manifest = { id: "config-null-test", version: "1.0.0", permissions: { config: true } };
 exports.invoke = function() {
 	var val = config.get("nonexistent.key");
 	return { isNull: val === null };

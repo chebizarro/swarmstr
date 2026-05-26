@@ -15,14 +15,17 @@
 package security
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strings"
 
 	"metiq/internal/nostr/runtime"
 	"metiq/internal/policy"
+	"metiq/internal/secrets"
 	"metiq/internal/store/state"
 )
 
@@ -48,10 +51,30 @@ type Finding struct {
 // AuditReport is the result of running all security checks.
 type AuditReport struct {
 	Findings []Finding `json:"findings"`
+	// SuppressedFindings are matched by AuditOptions.Suppressions and excluded
+	// from severity counts while preserving audit evidence.
+	SuppressedFindings []SuppressedFinding `json:"suppressed_findings,omitempty"`
+	// AttestationHash is a stable SHA-256 digest over active findings and config
+	// posture metadata. It intentionally excludes secret values.
+	AttestationHash  string `json:"attestation_hash,omitempty"`
+	AttestationDrift bool   `json:"attestation_drift,omitempty"`
 	// Counts by severity.
 	Critical int `json:"critical"`
 	Warn     int `json:"warn"`
 	Info     int `json:"info"`
+}
+
+// AuditSuppression suppresses accepted findings by check ID and optional title
+// substring. Reason is required for accountability.
+type AuditSuppression struct {
+	CheckID    string `json:"check_id"`
+	TitleMatch string `json:"title_match,omitempty"`
+	Reason     string `json:"reason"`
+}
+
+type SuppressedFinding struct {
+	Finding Finding `json:"finding"`
+	Reason  string  `json:"reason"`
 }
 
 // AuditOptions controls what the auditor checks.
@@ -64,6 +87,12 @@ type AuditOptions struct {
 	// SecretPaths are plaintext secret files to audit. If nil, default metiq
 	// plaintext fallback locations are checked when present.
 	SecretPaths []string
+	// PluginPaths are installed plugin roots to verify and scan.
+	PluginPaths []string
+	// Suppressions move accepted findings out of active counts.
+	Suppressions []AuditSuppression
+	// ExpectedAttestation, when set, is compared to the generated attestation.
+	ExpectedAttestation string
 }
 
 // Audit runs all security checks and returns a report.
@@ -82,6 +111,9 @@ func Audit(opts AuditOptions) AuditReport {
 	findings = append(findings, checkPrivateKeyStrength(bs)...)
 	findings = append(findings, checkGatewayWSTrustedProxyAuth(bs)...)
 	findings = append(findings, checkGatewayWSInsecureControlUI(bs)...)
+	findings = append(findings, checkSecretPlaintextContent(opts.SecretPaths)...)
+	findings = append(findings, auditPluginIntegrity(opts.PluginPaths)...)
+	findings = append(findings, auditPluginSafety(opts.PluginPaths)...)
 
 	findings = append(findings, checkStateDocEncryption(bs, opts.ConfigDoc)...)
 	findings = append(findings, checkPublishGuardPolicy(bs, opts.ConfigDoc)...)
@@ -96,18 +128,20 @@ func Audit(opts AuditOptions) AuditReport {
 		findings = append(findings, checkOpenDMPolicy(*opts.ConfigDoc)...)
 		findings = append(findings, checkChannelSecrets(*opts.ConfigDoc)...)
 		findings = append(findings, checkE2EChannelPolicy(*opts.ConfigDoc)...)
+		findings = append(findings, checkSecretRefsAndScopes(*opts.ConfigDoc)...)
+		findings = append(findings, checkToolPolicyConfig(*opts.ConfigDoc)...)
+		findings = append(findings, checkManagedSettings(*opts.ConfigDoc)...)
+		findings = append(findings, checkSandboxEgressPolicy(*opts.ConfigDoc)...)
 	}
 
-	report := AuditReport{Findings: findings}
-	for _, f := range findings {
-		switch f.Severity {
-		case SeverityCritical:
-			report.Critical++
-		case SeverityWarn:
-			report.Warn++
-		default:
-			report.Info++
-		}
+	active, suppressed := applySuppressions(findings, opts.Suppressions)
+	report := AuditReport{Findings: active, SuppressedFindings: suppressed}
+	report.recount()
+	report.AttestationHash = attestationHash(bs, opts.ConfigDoc, report.Findings, report.SuppressedFindings)
+	if strings.TrimSpace(opts.ExpectedAttestation) != "" && !strings.EqualFold(strings.TrimSpace(opts.ExpectedAttestation), report.AttestationHash) {
+		report.AttestationDrift = true
+		report.Findings = append(report.Findings, Finding{CheckID: "audit-attestation-drift", Severity: SeverityWarn, Message: "security audit attestation does not match expected posture hash", Remediation: "Review active findings and managed policy before accepting the new attestation."})
+		report.recount()
 	}
 	return report
 }
@@ -584,6 +618,290 @@ func checkSandboxNopDriver(bs map[string]any, cfg *state.ConfigDoc) []Finding {
 		Message:     message,
 		Remediation: "Remove the nop opt-in or set extra.sandbox.driver to \"docker\". Use nop only for isolated local development.",
 	}}
+}
+
+func checkSecretPlaintextContent(paths []string) []Finding {
+	if paths == nil {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		paths = []string{home + "/.metiq/.env", home + "/.metiq/mcp-auth.json"}
+	}
+	var findings []Finding
+	for _, path := range paths {
+		data, err := os.ReadFile(strings.TrimSpace(path))
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		text := string(data)
+		if strings.Contains(strings.ToLower(text), "private_key") || strings.Contains(strings.ToLower(text), "api_key") || strings.Contains(strings.ToLower(text), "access_token") || strings.Contains(strings.ToLower(text), "client_secret") {
+			findings = append(findings, Finding{CheckID: "plaintext-secret-content", Severity: SeverityWarn, Message: fmt.Sprintf("plaintext secret file %s contains credential-looking keys", path), Remediation: "Move plaintext values into the OS-backed secret store and replace config values with env: or $ references."})
+		}
+	}
+	return findings
+}
+
+func checkSecretRefsAndScopes(cfg state.ConfigDoc) []Finding {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return nil
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+	var findings []Finding
+	walkConfigStrings("", root, func(path, value string) {
+		refs := secrets.SecretRefs(value)
+		if len(refs) == 0 {
+			if sensitiveConfigPath(path) && len(strings.TrimSpace(value)) >= 16 {
+				findings = append(findings, Finding{CheckID: "plaintext-secret-in-config", Severity: SeverityCritical, Message: fmt.Sprintf("config field %s appears to contain a plaintext secret", path), Remediation: "Store the value in the OS-backed secret store and replace it with an env: or $ reference."})
+			}
+			return
+		}
+		for _, ref := range refs {
+			name := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(ref, "env:"), "secret:"), "$")
+			if name == "" {
+				continue
+			}
+			// Only explicit env: references can be checked from this process. Other
+			// forms may resolve through the OS-backed store at runtime.
+			if strings.HasPrefix(ref, "env:") {
+				if _, ok := os.LookupEnv(name); !ok {
+					findings = append(findings, Finding{CheckID: "secret-ref-unresolved", Severity: SeverityWarn, Message: fmt.Sprintf("config field %s references unresolved environment secret %s", path, ref), Remediation: "Set the referenced environment variable or update the config reference."})
+				}
+			}
+			if cfg.Secrets != nil {
+				if mapped, exists := cfg.Secrets[name]; exists && strings.TrimSpace(mapped) != "" && mapped != ref {
+					findings = append(findings, Finding{CheckID: "secret-ref-shadowed", Severity: SeverityWarn, Message: fmt.Sprintf("config field %s references %s but secrets.%s maps to %s", path, ref, name, mapped), Remediation: "Use one canonical secret reference per field to avoid shadowing between env and configured secret registry."})
+				}
+			}
+		}
+	})
+	return findings
+}
+
+func checkToolPolicyConfig(cfg state.ConfigDoc) []Finding {
+	if len(cfg.Permissions.Rules) == 0 && len(cfg.Permissions.Agents) == 0 {
+		return []Finding{{CheckID: "tool-policy-empty", Severity: SeverityInfo, Message: "no per-tool permission rules are configured", Remediation: "Configure permissions.rules with allow/ask/deny entries for dangerous tools and agent-scoped exceptions."}}
+	}
+	var findings []Finding
+	if strings.EqualFold(cfg.Permissions.DefaultBehavior, "allow") && len(cfg.Permissions.Rules) == 0 {
+		findings = append(findings, Finding{CheckID: "tool-policy-default-allow", Severity: SeverityWarn, Message: "tool permission default behavior is allow without explicit rules", Remediation: "Add deny/ask rules for exec, network, plugin, and MCP tools or set default_behavior to ask."})
+	}
+	for _, rule := range cfg.Permissions.Rules {
+		if strings.TrimSpace(rule.ID) == "" || strings.TrimSpace(rule.Tool) == "" || strings.TrimSpace(rule.Behavior) == "" {
+			findings = append(findings, Finding{CheckID: "tool-policy-invalid-rule", Severity: SeverityWarn, Message: fmt.Sprintf("tool permission rule %q is missing id/tool/behavior", rule.ID), Remediation: "Ensure each permissions.rules entry has id, behavior, and tool."})
+		}
+	}
+	return findings
+}
+
+func checkManagedSettings(cfg state.ConfigDoc) []Finding {
+	managed, ok := asStringAnyMap(cfg.Extra["managed_settings"])
+	if !ok {
+		return []Finding{{CheckID: "managed-settings-absent", Severity: SeverityInfo, Message: "managed settings lockdown is not configured", Remediation: "For enterprise deployments, set extra.managed_settings flags such as disable_bypass, require_tool_approval, and managed_hooks_only."}}
+	}
+	if boolValue(managed["allow_managed_permission_rules_only"]) && !boolValue(managed["require_tool_approval"]) {
+		return []Finding{{CheckID: "managed-settings-incomplete", Severity: SeverityWarn, Message: "managed settings restrict permission rules but do not require tool approval", Remediation: "Enable extra.managed_settings.require_tool_approval for lockdown deployments."}}
+	}
+	return nil
+}
+
+func checkSandboxEgressPolicy(cfg state.ConfigDoc) []Finding {
+	sandboxMap := sandboxConfigMap(nil, &cfg)
+	if sandboxMap == nil || !(boolValue(sandboxMap["allow_network"]) || boolValue(sandboxMap["network_enabled"])) {
+		return nil
+	}
+	allowedDomains := stringSliceValue(firstPresent(sandboxMap, "allowed_domains", "egress_allowed_domains"))
+	allowedCIDRs := stringSliceValue(firstPresent(sandboxMap, "allowed_cidrs", "egress_allowed_cidrs"))
+	if len(allowedDomains) == 0 && len(allowedCIDRs) == 0 {
+		return []Finding{{CheckID: "sandbox-egress-unrestricted", Severity: SeverityWarn, Message: "Docker sandbox network access is enabled without an egress allowlist", Remediation: "Set extra.sandbox.allowed_domains/allowed_cidrs with an enforcing wrapper/proxy, or disable allow_network."}}
+	}
+	var findings []Finding
+	if !boolValue(sandboxMap["egress_enforced"]) {
+		findings = append(findings, Finding{CheckID: "sandbox-egress-allowlist-advisory", Severity: SeverityWarn, Message: "Docker sandbox egress allowlist is configured as metadata but no enforcing backend is declared", Remediation: "Set extra.sandbox.egress_enforced=true only when DNS/firewall/proxy enforcement is active; otherwise treat allow_network as unrestricted."})
+	}
+	for _, domain := range allowedDomains {
+		d := strings.TrimSpace(domain)
+		if d == "*" || strings.HasPrefix(d, "*.") {
+			findings = append(findings, Finding{CheckID: "sandbox-egress-broad-allowlist", Severity: SeverityWarn, Message: fmt.Sprintf("Docker sandbox egress allowlist includes broad domain pattern %q", domain), Remediation: "Use exact domains for sandbox egress whenever possible."})
+		}
+	}
+	return findings
+}
+
+func walkConfigStrings(prefix string, value any, fn func(string, string)) {
+	switch x := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			path := k
+			if prefix != "" {
+				path = prefix + "." + k
+			}
+			walkConfigStrings(path, x[k], fn)
+		}
+	case []any:
+		for i, v := range x {
+			walkConfigStrings(fmt.Sprintf("%s[%d]", prefix, i), v, fn)
+		}
+	case string:
+		fn(prefix, x)
+	}
+}
+
+func sensitiveConfigPath(path string) bool {
+	lower := strings.ToLower(path)
+	for _, token := range []string{"secret", "token", "password", "private_key", "api_key", "credential"} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstPresent(m map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if v, ok := m[key]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+func applySuppressions(findings []Finding, suppressions []AuditSuppression) ([]Finding, []SuppressedFinding) {
+	if len(suppressions) == 0 {
+		return findings, nil
+	}
+	active := make([]Finding, 0, len(findings))
+	var suppressed []SuppressedFinding
+	for _, finding := range findings {
+		if reason, ok := suppressionReason(finding, suppressions); ok {
+			suppressed = append(suppressed, SuppressedFinding{Finding: finding, Reason: reason})
+			continue
+		}
+		active = append(active, finding)
+	}
+	if len(suppressed) > 0 {
+		active = append(active, Finding{CheckID: "audit-suppressions-active", Severity: SeverityInfo, Message: fmt.Sprintf("%d audit finding(s) suppressed by configured suppressions", len(suppressed)), Remediation: "Review suppression reasons regularly and remove them once remediated."})
+	}
+	return active, suppressed
+}
+
+func suppressionReason(f Finding, suppressions []AuditSuppression) (string, bool) {
+	for _, s := range suppressions {
+		if strings.TrimSpace(s.Reason) == "" {
+			continue
+		}
+		if s.CheckID != "" && s.CheckID != f.CheckID {
+			continue
+		}
+		if s.TitleMatch != "" && !strings.Contains(strings.ToLower(f.Message), strings.ToLower(s.TitleMatch)) {
+			continue
+		}
+		return s.Reason, true
+	}
+	return "", false
+}
+
+func (r *AuditReport) recount() {
+	r.Critical, r.Warn, r.Info = 0, 0, 0
+	for _, f := range r.Findings {
+		switch f.Severity {
+		case SeverityCritical:
+			r.Critical++
+		case SeverityWarn:
+			r.Warn++
+		default:
+			r.Info++
+		}
+	}
+}
+
+func attestationHash(bs map[string]any, cfg *state.ConfigDoc, findings []Finding, suppressed []SuppressedFinding) string {
+	findings = sortedFindings(findings)
+	suppressed = sortedSuppressedFindings(suppressed)
+	payload := map[string]any{
+		"schema":     "metiq-security-audit-v1",
+		"bootstrap":  redactedMap(bs),
+		"findings":   findings,
+		"suppressed": suppressed,
+	}
+	if cfg != nil {
+		payload["config_hash"] = cfg.Hash()
+		payload["permissions"] = cfg.Permissions
+		payload["storage_encrypt"] = cfg.StorageEncryptEnabled()
+	}
+	data, _ := json.Marshal(payload)
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func redactedMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out, _ := redactSensitiveKeys("", in).(map[string]any)
+	return out
+}
+
+func sortedFindings(in []Finding) []Finding {
+	out := append([]Finding(nil), in...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CheckID != out[j].CheckID {
+			return out[i].CheckID < out[j].CheckID
+		}
+		if out[i].Severity != out[j].Severity {
+			return out[i].Severity < out[j].Severity
+		}
+		return out[i].Message < out[j].Message
+	})
+	return out
+}
+
+func sortedSuppressedFindings(in []SuppressedFinding) []SuppressedFinding {
+	out := append([]SuppressedFinding(nil), in...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Finding.CheckID != out[j].Finding.CheckID {
+			return out[i].Finding.CheckID < out[j].Finding.CheckID
+		}
+		return out[i].Finding.Message < out[j].Finding.Message
+	})
+	return out
+}
+
+func redactSensitiveKeys(path string, value any) any {
+	switch x := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, v := range x {
+			childPath := k
+			if path != "" {
+				childPath = path + "." + k
+			}
+			out[k] = redactSensitiveKeys(childPath, v)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, v := range x {
+			out[i] = redactSensitiveKeys(path, v)
+		}
+		return out
+	case string:
+		if sensitiveConfigPath(path) {
+			return "[REDACTED]"
+		}
+		return secrets.NewRedactor(nil).RedactString(x)
+	default:
+		return value
+	}
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

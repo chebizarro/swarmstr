@@ -1,11 +1,15 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // AuthMethod describes how a provider obtains credentials.
@@ -25,7 +29,37 @@ type ProviderCapabilities struct {
 	SupportsVision        bool
 	SupportsPromptCaching bool
 	SupportsThinking      bool
+	ContextWindowTokens   int
+	CostPer1KInput        float64
+	CostPer1KOutput       float64
 }
+
+// ModelInfo describes a model exposed by a provider catalog.
+type ModelInfo struct {
+	ID                  string               `json:"id"`
+	Name                string               `json:"name,omitempty"`
+	ProviderID          string               `json:"provider_id,omitempty"`
+	ContextWindowTokens int                  `json:"context_window_tokens,omitempty"`
+	Capabilities        ProviderCapabilities `json:"capabilities,omitempty"`
+	Metadata            map[string]any       `json:"metadata,omitempty"`
+}
+
+// ToolSchemaNormalizer rewrites provider-facing tool schemas for provider
+// compatibility without mutating the caller's definitions.
+type ToolSchemaNormalizer func([]ToolDefinition) []ToolDefinition
+
+// ModelCatalogFunc fetches a provider's current model catalog.
+type ModelCatalogFunc func(ctx context.Context) ([]ModelInfo, error)
+
+// ProviderPrepareRequestFunc mutates an outbound provider HTTP request before
+// it is sent. It is intended for provider-specific headers, beta flags, service
+// tiers, and other transport policy that should not be hard-coded in callers.
+type ProviderPrepareRequestFunc func(req *http.Request) error
+
+// ProviderTransportWrapper wraps the RoundTripper used for provider HTTP calls.
+// Providers can use it for tracing, custom auth transports, proxy policy, or
+// provider-specific retry/accounting layers.
+type ProviderTransportWrapper func(base http.RoundTripper) http.RoundTripper
 
 // ProviderFactory constructs a Provider for a matched model and optional
 // explicit config override.
@@ -33,16 +67,20 @@ type ProviderFactory func(model string, override ProviderOverride) (Provider, er
 
 // ProviderDescriptor describes an inference provider plugin/adapter.
 type ProviderDescriptor struct {
-	ID           string
-	Name         string
-	Aliases      []string
-	Prefixes     []string
-	BaseURL      string
-	BaseURLEnv   string
-	APIKeyEnv    string
-	AuthMethods  []AuthMethod
-	Capabilities ProviderCapabilities
-	Factory      ProviderFactory
+	ID                  string
+	Name                string
+	Aliases             []string
+	Prefixes            []string
+	BaseURL             string
+	BaseURLEnv          string
+	APIKeyEnv           string
+	AuthMethods         []AuthMethod
+	Capabilities        ProviderCapabilities
+	NormalizeToolSchema ToolSchemaNormalizer
+	PrepareRequest      ProviderPrepareRequestFunc
+	WrapTransport       ProviderTransportWrapper
+	ListModels          ModelCatalogFunc
+	Factory             ProviderFactory
 }
 
 func (d ProviderDescriptor) normalizedID() string { return strings.ToLower(strings.TrimSpace(d.ID)) }
@@ -71,15 +109,68 @@ func (d ProviderDescriptor) resolvedBaseURL() string {
 	return base
 }
 
+// HTTPClient returns base decorated with descriptor transport hooks. A nil
+// result means the caller can use its SDK/default client unchanged.
+func (d ProviderDescriptor) HTTPClient(base *http.Client) *http.Client {
+	if d.PrepareRequest == nil && d.WrapTransport == nil {
+		return base
+	}
+	client := &http.Client{}
+	if base != nil {
+		*client = *base
+	}
+	rt := client.Transport
+	if rt == nil {
+		rt = http.DefaultTransport
+	}
+	if d.WrapTransport != nil {
+		rt = d.WrapTransport(rt)
+		if rt == nil {
+			rt = http.DefaultTransport
+		}
+	}
+	if d.PrepareRequest != nil {
+		rt = providerPrepareRoundTripper{base: rt, prepare: d.PrepareRequest}
+	}
+	client.Transport = rt
+	return client
+}
+
+type providerPrepareRoundTripper struct {
+	base    http.RoundTripper
+	prepare ProviderPrepareRequestFunc
+}
+
+func (t providerPrepareRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.prepare != nil {
+		if err := t.prepare(req); err != nil {
+			return nil, err
+		}
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
+}
+
 // ProviderRegistry is a goroutine-safe registry of inference provider descriptors.
 type ProviderRegistry struct {
 	mu          sync.RWMutex
 	descriptors map[string]ProviderDescriptor
 	order       []string
+	modelCache  map[string]modelCatalogCacheEntry
+}
+
+const modelCatalogTTL = 5 * time.Minute
+
+type modelCatalogCacheEntry struct {
+	models    []ModelInfo
+	expiresAt time.Time
 }
 
 func NewProviderRegistry() *ProviderRegistry {
-	return &ProviderRegistry{descriptors: make(map[string]ProviderDescriptor)}
+	return &ProviderRegistry{descriptors: make(map[string]ProviderDescriptor), modelCache: make(map[string]modelCatalogCacheEntry)}
 }
 
 func (r *ProviderRegistry) Register(desc ProviderDescriptor) error {
@@ -139,6 +230,43 @@ func (r *ProviderRegistry) Build(model string, override ProviderOverride) (Provi
 	return provider, true, err
 }
 
+// ListModels returns a provider's model catalog, using a short in-memory cache.
+func (r *ProviderRegistry) ListModels(ctx context.Context, providerID string) ([]ModelInfo, error) {
+	id := strings.ToLower(strings.TrimSpace(providerID))
+	if id == "" {
+		return nil, fmt.Errorf("provider id is required")
+	}
+	r.mu.RLock()
+	cached, cachedOK := r.modelCache[id]
+	desc, ok := r.descriptors[id]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("provider %q not registered", providerID)
+	}
+	if cachedOK && time.Now().Before(cached.expiresAt) {
+		return cloneModelInfoSlice(cached.models), nil
+	}
+	if desc.ListModels == nil {
+		return nil, fmt.Errorf("provider %q does not support dynamic model listing", providerID)
+	}
+	models, err := desc.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range models {
+		if models[i].ProviderID == "" {
+			models[i].ProviderID = desc.ID
+		}
+		if models[i].Capabilities == (ProviderCapabilities{}) {
+			models[i].Capabilities = desc.Capabilities
+		}
+	}
+	r.mu.Lock()
+	r.modelCache[id] = modelCatalogCacheEntry{models: cloneModelInfoSlice(models), expiresAt: time.Now().Add(modelCatalogTTL)}
+	r.mu.Unlock()
+	return cloneModelInfoSlice(models), nil
+}
+
 var defaultProviderRegistry = newDefaultProviderRegistry()
 
 func DefaultProviderRegistry() *ProviderRegistry { return defaultProviderRegistry }
@@ -154,19 +282,80 @@ func newDefaultProviderRegistry() *ProviderRegistry {
 }
 
 func builtinProviderDescriptors() []ProviderDescriptor {
+	// Prices are USD per 1K tokens. They intentionally live in capabilities so
+	// routing and budgeting code can reason about cost without a separate catalog.
+	openAIGPT4oCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 128000, CostPer1KInput: 0.0025, CostPer1KOutput: 0.0100}
+	anthropicClaudeCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 200000, CostPer1KInput: 0.0030, CostPer1KOutput: 0.0150}
+	geminiFlashCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: false, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 1000000, CostPer1KInput: 0.0003, CostPer1KOutput: 0.0025}
 	openAICompatCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true}
+
 	mkOpenAICompat := func(id, name string, aliases, prefixes []string, baseURL, apiKeyEnv, baseURLEnv string) ProviderDescriptor {
-		return ProviderDescriptor{
+		desc := ProviderDescriptor{
 			ID: id, Name: name, Aliases: aliases, Prefixes: prefixes, BaseURL: baseURL, APIKeyEnv: apiKeyEnv, BaseURLEnv: baseURLEnv,
 			AuthMethods: []AuthMethod{AuthMethodAPIKey}, Capabilities: openAICompatCaps,
-			Factory: func(model string, override ProviderOverride) (Provider, error) {
-				return buildOpenAICompatibleProvider(model, override, ProviderDescriptor{
-					ID: id, Name: name, BaseURL: baseURL, APIKeyEnv: apiKeyEnv, BaseURLEnv: baseURLEnv,
-				})
-			},
 		}
+		desc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+			return buildOpenAICompatibleProvider(model, override, desc)
+		}
+		switch id {
+		case "ollama":
+			desc.ListModels = func(ctx context.Context) ([]ModelInfo, error) {
+				return listOllamaModels(ctx, desc.resolvedBaseURL(), desc.Capabilities, desc.HTTPClient(nil))
+			}
+		case "lmstudio":
+			desc.ListModels = func(ctx context.Context) ([]ModelInfo, error) {
+				return listOpenAICompatibleModels(ctx, desc.resolvedBaseURL(), desc.ID, desc.Capabilities, desc.HTTPClient(nil))
+			}
+		case "xai":
+			desc.NormalizeToolSchema = NormalizeStrictOpenAIToolSchema
+		}
+		return desc
 	}
+
+	openaiDesc := ProviderDescriptor{
+		ID: "openai", Name: "OpenAI", Aliases: []string{"openai"}, Prefixes: []string{"gpt-", "o1-", "o3-", "o4-"}, BaseURL: "https://api.openai.com/v1", APIKeyEnv: "OPENAI_API_KEY",
+		AuthMethods: []AuthMethod{AuthMethodAPIKey}, Capabilities: openAIGPT4oCaps,
+	}
+	openaiDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+		return buildOpenAICompatibleProvider(model, override, openaiDesc)
+	}
+
+	anthropicDesc := ProviderDescriptor{
+		ID: "anthropic", Name: "Anthropic", Aliases: []string{"anthropic"}, Prefixes: []string{"claude-"}, APIKeyEnv: "ANTHROPIC_API_KEY",
+		AuthMethods: []AuthMethod{AuthMethodAPIKey, AuthMethodOAuth}, Capabilities: anthropicClaudeCaps,
+	}
+	anthropicDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+		credential, err := requireProviderCredential("Anthropic", model, strings.TrimSpace(override.APIKey), "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN")
+		if err != nil {
+			return nil, err
+		}
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderAnthropic, override.PromptCache)
+		if err != nil {
+			return nil, err
+		}
+		return &AnthropicProvider{Model: strings.TrimSpace(model), APIKey: credential, PromptCache: promptCacheProfilePtr(profile), Client: anthropicDesc.HTTPClient(nil)}, nil
+	}
+
+	geminiDesc := ProviderDescriptor{
+		ID: "gemini", Name: "Google Gemini", Aliases: []string{"gemini"}, Prefixes: []string{"gemini-"}, APIKeyEnv: "GEMINI_API_KEY",
+		AuthMethods: []AuthMethod{AuthMethodAPIKey}, Capabilities: geminiFlashCaps, NormalizeToolSchema: NormalizeGeminiToolSchema,
+	}
+	geminiDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+		credential, err := requireProviderCredential("Gemini", model, strings.TrimSpace(override.APIKey), "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		profile, err := resolvePromptCacheProfileValue(PromptCacheProviderGemini, override.PromptCache)
+		if err != nil {
+			return nil, err
+		}
+		return &GoogleGeminiProvider{Model: strings.TrimSpace(model), APIKey: credential, PromptCache: promptCacheProfilePtr(profile), Client: geminiDesc.HTTPClient(nil)}, nil
+	}
+
 	return []ProviderDescriptor{
+		openaiDesc,
+		anthropicDesc,
+		geminiDesc,
 		mkOpenAICompat("xai", "xAI", []string{"xai"}, []string{"grok-"}, "https://api.x.ai/v1", "XAI_API_KEY", ""),
 		mkOpenAICompat("groq", "Groq", []string{"groq"}, []string{"groq/"}, "https://api.groq.com/openai/v1", "GROQ_API_KEY", ""),
 		mkOpenAICompat("mistral", "Mistral", []string{"mistral"}, []string{"mistral-"}, "https://api.mistral.ai/v1", "MISTRAL_API_KEY", ""),
@@ -197,7 +386,7 @@ func buildOpenAICompatibleProvider(model string, override ProviderOverride, desc
 	if err != nil {
 		return nil, err
 	}
-	return &OpenAIChatProvider{BaseURL: baseURL, APIKey: apiKey, Model: effectiveModel, PromptCache: promptCacheProfilePtr(profile)}, nil
+	return &OpenAIChatProvider{BaseURL: baseURL, APIKey: apiKey, Model: effectiveModel, Client: desc.HTTPClient(nil), PromptCache: promptCacheProfilePtr(profile), ToolSchemaNormalizer: desc.NormalizeToolSchema}, nil
 }
 
 func resolveOpenAICompat(norm string) (baseURL, envKey string) {
@@ -220,4 +409,114 @@ func registeredProviderHint() string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ", ")
+}
+
+func cloneModelInfoSlice(src []ModelInfo) []ModelInfo {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]ModelInfo, len(src))
+	copy(out, src)
+	for i := range out {
+		out[i].Metadata = cloneJSONMap(out[i].Metadata)
+	}
+	return out
+}
+
+func listOllamaModels(ctx context.Context, baseURL string, caps ProviderCapabilities, client *http.Client) ([]ModelInfo, error) {
+	root := strings.TrimRight(strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/v1"), "/")
+	if root == "" {
+		root = "http://localhost:11434"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, root+"/api/tags", nil)
+	if err != nil {
+		return nil, err
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("ollama model catalog returned %s", resp.Status)
+	}
+	var body struct {
+		Models []struct {
+			Name       string         `json:"name"`
+			Model      string         `json:"model"`
+			ModifiedAt string         `json:"modified_at"`
+			Size       int64          `json:"size"`
+			Details    map[string]any `json:"details"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	models := make([]ModelInfo, 0, len(body.Models))
+	for _, m := range body.Models {
+		id := strings.TrimSpace(m.Model)
+		if id == "" {
+			id = strings.TrimSpace(m.Name)
+		}
+		if id == "" {
+			continue
+		}
+		models = append(models, ModelInfo{ID: id, Name: m.Name, ProviderID: "ollama", Capabilities: caps, Metadata: map[string]any{"modified_at": m.ModifiedAt, "size": m.Size, "details": m.Details}})
+	}
+	return models, nil
+}
+
+func listOpenAICompatibleModels(ctx context.Context, baseURL, providerID string, caps ProviderCapabilities, client *http.Client) ([]ModelInfo, error) {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return nil, fmt.Errorf("%s base URL is not configured", providerID)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s model catalog returned %s", providerID, resp.Status)
+	}
+	var body struct {
+		Data []struct {
+			ID      string         `json:"id"`
+			Object  string         `json:"object"`
+			OwnedBy string         `json:"owned_by"`
+			Meta    map[string]any `json:"metadata"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	models := make([]ModelInfo, 0, len(body.Data))
+	for _, m := range body.Data {
+		id := strings.TrimSpace(m.ID)
+		if id == "" {
+			continue
+		}
+		meta := cloneJSONMap(m.Meta)
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		if m.Object != "" {
+			meta["object"] = m.Object
+		}
+		if m.OwnedBy != "" {
+			meta["owned_by"] = m.OwnedBy
+		}
+		models = append(models, ModelInfo{ID: id, ProviderID: providerID, Capabilities: caps, Metadata: meta})
+	}
+	return models, nil
 }

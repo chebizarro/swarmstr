@@ -357,6 +357,8 @@ func TestConfigSchemaContainsCoreFields(t *testing.T) {
 		"plugins.installs.<id>":                    {},
 		"plugins.installs.<id>.source":             {},
 		"plugins.installs.<id>.spec":               {},
+		"plugins.installs.<id>.url":                {},
+		"plugins.installs.<id>.ref":                {},
 		"plugins.installs.<id>.sourcePath":         {},
 		"plugins.installs.<id>.installPath":        {},
 		"plugins.installs.<id>.version":            {},
@@ -563,11 +565,11 @@ func TestApplyConfigSetPluginsInstallsLifecycleParity(t *testing.T) {
 
 func TestApplyConfigSetPluginsInstallsSourceValidation(t *testing.T) {
 	cfg := state.ConfigDoc{Version: 1}
-	_, err := ApplyConfigSet(cfg, "plugins.installs.codegen.source", "git")
+	_, err := ApplyConfigSet(cfg, "plugins.installs.codegen.source", "bad")
 	if err == nil {
 		t.Fatal("expected source enum validation error")
 	}
-	if !strings.Contains(err.Error(), "one of npm, archive, path") {
+	if !strings.Contains(err.Error(), "one of npm, archive, path, url, git") {
 		t.Fatalf("unexpected source validation error: %v", err)
 	}
 

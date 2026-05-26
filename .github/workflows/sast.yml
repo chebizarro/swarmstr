@@ -1,0 +1,30 @@
+name: SAST
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  semgrep:
+    name: Semgrep / OpenGrep rules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Semgrep
+        run: python -m pip install --upgrade semgrep
+
+      - name: Run security rulepack
+        run: semgrep scan --config security/opengrep --sarif --output semgrep.sarif --error
+
+      - name: Upload SARIF
+        if: always() && hashFiles('semgrep.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif

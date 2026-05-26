@@ -18,11 +18,14 @@ type managerTestRuntime struct {
 
 	blockRun bool
 	started  chan struct{}
+	events   []RuntimeEvent
+	ensured  []EnsureInput
 }
 
 func (r *managerTestRuntime) EnsureSession(_ context.Context, input EnsureInput) (RuntimeHandle, error) {
 	r.mu.Lock()
 	r.ensures++
+	r.ensured = append(r.ensured, input)
 	r.mu.Unlock()
 	return RuntimeHandle{SessionKey: input.SessionKey, Backend: "test", RuntimeSessionName: "rt-" + input.SessionKey, CWD: input.CWD, AcpxRecordID: "rec-" + input.SessionKey}, nil
 }
@@ -32,6 +35,7 @@ func (r *managerTestRuntime) RunTurn(ctx context.Context, input TurnInput) (<-ch
 	r.runs++
 	started := r.started
 	block := r.blockRun
+	events := append([]RuntimeEvent(nil), r.events...)
 	r.mu.Unlock()
 	ch := make(chan RuntimeEvent, 3)
 	go func() {
@@ -41,6 +45,12 @@ func (r *managerTestRuntime) RunTurn(ctx context.Context, input TurnInput) (<-ch
 		}
 		if block {
 			<-ctx.Done()
+			return
+		}
+		if len(events) > 0 {
+			for _, ev := range events {
+				ch <- ev
+			}
 			return
 		}
 		ch <- RuntimeEvent{Kind: EventStatus, Text: "running"}
@@ -75,6 +85,12 @@ func (r *managerTestRuntime) counts() (ensures, runs, cancels, closes, controls 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.ensures, r.runs, r.cancels, r.closes, r.controls
+}
+
+func (r *managerTestRuntime) ensureInputs() []EnsureInput {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]EnsureInput(nil), r.ensured...)
 }
 
 func newTestManager(t *testing.T, rt *managerTestRuntime, opts ManagerOptions) (*Manager, *FileSessionStore) {
@@ -246,5 +262,134 @@ func TestManagerSpawnSessionEnforcesLimits(t *testing.T) {
 	}
 	if _, err := mgr.SpawnSession(ctx, SpawnSessionInput{ParentSessionKey: "child-1", ChildSessionKey: "grandchild"}); err == nil {
 		t.Fatal("grandchild spawn succeeded, want depth limit error")
+	}
+}
+
+func TestManagerRoutesApprovalRequestToSupervisor(t *testing.T) {
+	req := &ApprovalRequest{ID: "approval-1", Action: "write", Path: "file.txt", Metadata: map[string]any{"scope": "repo"}}
+	rt := &managerTestRuntime{events: []RuntimeEvent{
+		{Kind: EventApprovalRequest, ApprovalRequest: req},
+		{Kind: EventDone, StopReason: "complete"},
+	}}
+	var routed []ApprovalRoute
+	router := ApprovalRouterFunc(func(_ context.Context, route ApprovalRoute) error {
+		routed = append(routed, route)
+		return nil
+	})
+	mgr, _ := newTestManager(t, rt, ManagerOptions{ApprovalRouter: router})
+	ctx := context.Background()
+	if _, err := mgr.InitializeSession(ctx, InitializeSessionInput{SessionKey: "parent", Backend: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.SpawnSession(ctx, SpawnSessionInput{ParentSessionKey: "parent", ChildSessionKey: "child", Backend: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.RunTurn(ctx, RunSessionTurnInput{SessionKey: "child", Text: "needs approval", RequestID: "task-approval"}); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(routed) != 1 {
+		t.Fatalf("routed approvals = %d, want 1", len(routed))
+	}
+	route := routed[0]
+	if route.SupervisorSessionKey != "parent" || route.WorkerSessionKey != "child" || route.RequestID != "task-approval" {
+		t.Fatalf("unexpected route: %+v", route)
+	}
+	if route.Request.ID != "approval-1" || route.Request.Metadata["scope"] != "repo" {
+		t.Fatalf("unexpected request clone: %+v", route.Request)
+	}
+}
+
+func TestManagerTurnLatencyStatsIncludeP95(t *testing.T) {
+	mgr := NewManager(nil, nil, nil, nil, ManagerOptions{})
+	for i := 1; i <= 100; i++ {
+		mgr.recordTurnLatency(time.Duration(i) * time.Millisecond)
+	}
+	stats := mgr.Status(context.Background()).Counters.TurnLatency
+	if stats.Count != 100 || stats.MinMS != 1 || stats.MaxMS != 100 || stats.MeanMS() != 50 || stats.P95MS != 95 {
+		t.Fatalf("unexpected latency stats: %+v mean=%d", stats, stats.MeanMS())
+	}
+}
+
+func TestManagerReconnectReconcilesPendingPrompt(t *testing.T) {
+	started := make(chan struct{})
+	rt := &managerTestRuntime{blockRun: true, started: started}
+	mgr, store := newTestManager(t, rt, ManagerOptions{DefaultTurnTimeout: time.Minute})
+	ctx := context.Background()
+	if _, err := mgr.InitializeSession(ctx, InitializeSessionInput{SessionKey: "sess-reconnect", Backend: "test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	disconnectCtx, disconnect := context.WithCancel(ctx)
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.RunTurn(disconnectCtx, RunSessionTurnInput{SessionKey: "sess-reconnect", Text: "resume me", RequestID: "task-resume"})
+		runDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("turn did not start")
+	}
+	disconnect()
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("run err = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish after disconnect")
+	}
+	rec, err := store.Load(ctx, "sess-reconnect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := decodeSessionRuntimeMeta(rec)
+	if meta.PendingPrompt == nil || meta.PendingPrompt.Text != "resume me" || meta.PendingPrompt.RequestID != "task-resume" {
+		t.Fatalf("pending prompt not persisted: %+v", meta.PendingPrompt)
+	}
+
+	rt.mu.Lock()
+	rt.blockRun = false
+	rt.started = nil
+	rt.mu.Unlock()
+	mgr.clearCached("sess-reconnect")
+	if _, err := mgr.InitializeSession(ctx, InitializeSessionInput{SessionKey: "sess-reconnect", Backend: "test"}); err != nil {
+		t.Fatalf("reconnect InitializeSession: %v", err)
+	}
+	events, err := mgr.ReconcilePendingPrompt(ctx, "sess-reconnect")
+	if err != nil {
+		t.Fatalf("ReconcilePendingPrompt: %v", err)
+	}
+	if len(events) == 0 || events[len(events)-1].Kind != EventDone {
+		t.Fatalf("unexpected reconciled events: %+v", events)
+	}
+	rec, _ = store.Load(ctx, "sess-reconnect")
+	if pending := decodeSessionRuntimeMeta(rec).PendingPrompt; pending != nil {
+		t.Fatalf("pending prompt was not cleared: %+v", pending)
+	}
+	inputs := rt.ensureInputs()
+	if len(inputs) < 2 || inputs[len(inputs)-1].ResumeSessionID == "" {
+		t.Fatalf("expected reconnect ensure to use resume id, inputs=%+v", inputs)
+	}
+}
+
+func TestManagerRateLimiterDoesNotRejectReconnect(t *testing.T) {
+	now := time.Unix(500, 0)
+	rt := &managerTestRuntime{}
+	mgr, _ := newTestManager(t, rt, ManagerOptions{
+		SessionRateLimitMax:    1,
+		SessionRateLimitWindow: time.Minute,
+		Now:                    func() time.Time { return now },
+	})
+	ctx := context.Background()
+	if _, err := mgr.InitializeSession(ctx, InitializeSessionInput{SessionKey: "existing", Backend: "test"}); err != nil {
+		t.Fatalf("initial session: %v", err)
+	}
+	mgr.clearCached("existing")
+	if _, err := mgr.InitializeSession(ctx, InitializeSessionInput{SessionKey: "existing", Backend: "test"}); err != nil {
+		t.Fatalf("reconnect should not be rate limited: %v", err)
+	}
+	if _, err := mgr.InitializeSession(ctx, InitializeSessionInput{SessionKey: "new", Backend: "test"}); err == nil {
+		t.Fatal("new session should be rate limited")
 	}
 }

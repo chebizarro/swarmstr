@@ -50,6 +50,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -81,6 +82,7 @@ func (p *MatrixPlugin) ConfigSchema() map[string]any {
 
 func (p *MatrixPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
+		Typing:       true,
 		Reactions:    true,
 		Threads:      true,
 		Edit:         true,
@@ -203,6 +205,10 @@ func (b *matrixBot) csURL(path string) string {
 	return b.hsURL + "/_matrix/client/v3" + path
 }
 
+func (b *matrixBot) mediaURL(path string) string {
+	return b.hsURL + "/_matrix/media/v3" + path
+}
+
 func (b *matrixBot) doRequest(ctx context.Context, method, rawURL string, body io.Reader) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
@@ -295,6 +301,7 @@ func (b *matrixBot) resolveRoomAlias(ctx context.Context, alias string) (string,
 // ─── /sync loop ───────────────────────────────────────────────────────────────
 
 func (b *matrixBot) syncLoop(ctx context.Context) {
+	backoff := 250 * time.Millisecond
 	for {
 		select {
 		case <-ctx.Done():
@@ -309,13 +316,21 @@ func (b *matrixBot) syncLoop(ctx context.Context) {
 			}
 			log.Printf("matrix: sync error channel=%s: %v", b.channelID, err)
 			select {
-			case <-time.After(5 * time.Second):
+			case <-time.After(backoff):
 			case <-ctx.Done():
 				return
 			case <-b.done:
 				return
 			}
+			if backoff < 60*time.Second {
+				backoff *= 2
+				if backoff > 60*time.Second {
+					backoff = 60 * time.Second
+				}
+			}
+			continue
 		}
+		backoff = 250 * time.Millisecond
 	}
 }
 
@@ -403,6 +418,10 @@ func (b *matrixBot) handleEvent(ev matrixEvent) {
 	var content struct {
 		MsgType string `json:"msgtype"`
 		Body    string `json:"body"`
+		URL     string `json:"url,omitempty"`
+		Info    *struct {
+			MimeType string `json:"mimetype,omitempty"`
+		} `json:"info,omitempty"`
 		// Relation for threaded/edited messages.
 		RelatesTo *struct {
 			RelType string `json:"rel_type"`
@@ -412,7 +431,22 @@ func (b *matrixBot) handleEvent(ev matrixEvent) {
 	if err := json.Unmarshal(ev.Content, &content); err != nil {
 		return
 	}
-	if content.MsgType != "m.text" || content.Body == "" {
+	mediaURL := ""
+	mediaMIME := ""
+	switch content.MsgType {
+	case "m.text", "m.notice", "m.emote":
+	case "m.image", "m.file", "m.audio", "m.video":
+		if strings.TrimSpace(content.URL) == "" {
+			return
+		}
+		mediaURL = content.URL
+		if content.Info != nil {
+			mediaMIME = content.Info.MimeType
+		}
+	default:
+		return
+	}
+	if content.Body == "" && mediaURL == "" {
 		return
 	}
 	// Skip edits (m.replace relation).
@@ -425,6 +459,8 @@ func (b *matrixBot) handleEvent(ev matrixEvent) {
 		SenderID:  ev.Sender,
 		Text:      content.Body,
 		EventID:   ev.EventID,
+		MediaURL:  mediaURL,
+		MediaMIME: mediaMIME,
 	})
 }
 
@@ -435,13 +471,133 @@ func (b *matrixBot) joinRoom(ctx context.Context, roomID string) error {
 // ─── Send ─────────────────────────────────────────────────────────────────────
 
 func (b *matrixBot) Send(ctx context.Context, text string) error {
+	_, err := b.SendWithReceipt(ctx, text)
+	return err
+}
+
+func (b *matrixBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
+	return b.sendRoomMessage(ctx, map[string]any{"msgtype": "m.text", "body": text})
+}
+
+func (b *matrixBot) SendMedia(ctx context.Context, text string, data []byte, mimeType, filename string) (channels.DeliveryReceipt, error) {
+	mxcURL, err := b.uploadMedia(ctx, data, mimeType, filename)
+	if err != nil {
+		receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "matrix", Attempts: 1, CreatedAt: time.Now(), Status: channels.DeliveryFailed, Error: err.Error()}
+		return receipt, err
+	}
+	msgType := matrixMsgTypeForMIME(mimeType)
+	body := strings.TrimSpace(text)
+	if body == "" {
+		body = strings.TrimSpace(filename)
+	}
+	if body == "" {
+		body = "attachment"
+	}
+	content := map[string]any{
+		"msgtype": msgType,
+		"body":    body,
+		"url":     mxcURL,
+	}
+	if strings.TrimSpace(mimeType) != "" {
+		content["info"] = map[string]any{"mimetype": mimeType, "size": len(data)}
+	}
+	return b.sendRoomMessage(ctx, content)
+}
+
+func (b *matrixBot) sendRoomMessage(ctx context.Context, content map[string]any) (channels.DeliveryReceipt, error) {
 	txn := b.txnCounter.Add(1)
-	path := fmt.Sprintf("/rooms/%s/send/m.room.message/%d",
-		url.PathEscape(b.roomID), txn)
-	return b.doJSON(ctx, http.MethodPut, path, map[string]any{
-		"msgtype": "m.text",
-		"body":    text,
-	}, nil)
+	path := fmt.Sprintf("/rooms/%s/send/m.room.message/%d", url.PathEscape(b.roomID), txn)
+	var resp struct {
+		EventID string `json:"event_id"`
+	}
+	err := b.doJSON(ctx, http.MethodPut, path, content, &resp)
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "matrix", Attempts: 1, CreatedAt: time.Now(), MessageID: resp.EventID}
+	if err != nil {
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
+}
+
+func (b *matrixBot) uploadMedia(ctx context.Context, data []byte, mimeType, filename string) (string, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("matrix media: empty attachment")
+	}
+	params := url.Values{}
+	if strings.TrimSpace(filename) != "" {
+		params.Set("filename", filename)
+	}
+	endpoint := b.mediaURL("/upload")
+	if encoded := params.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+b.accessToken)
+	if strings.TrimSpace(mimeType) != "" {
+		req.Header.Set("Content-Type", mimeType)
+	} else {
+		req.Header.Set("Content-Type", "application/octet-stream")
+	}
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("matrix media upload: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var result struct {
+		ContentURI string `json:"content_uri"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(result.ContentURI) == "" {
+		return "", fmt.Errorf("matrix media upload: missing content_uri")
+	}
+	return result.ContentURI, nil
+}
+
+func matrixMsgTypeForMIME(mimeType string) string {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return "m.image"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "m.audio"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "m.video"
+	default:
+		return "m.file"
+	}
+}
+
+func (b *matrixBot) DeleteMessage(ctx context.Context, eventID string) error {
+	txn := b.txnCounter.Add(1)
+	path := fmt.Sprintf("/rooms/%s/redact/%s/%d", url.PathEscape(b.roomID), url.PathEscape(eventID), txn)
+	return b.doJSON(ctx, http.MethodPut, path, map[string]any{}, nil)
+}
+
+func (b *matrixBot) SendTyping(ctx context.Context, durationMS int) error {
+	if durationMS <= 0 {
+		durationMS = 5000
+	}
+	userID := b.selfUserID
+	if strings.TrimSpace(userID) == "" {
+		if err := b.fetchSelfID(ctx); err != nil {
+			return err
+		}
+		userID = b.selfUserID
+	}
+	path := fmt.Sprintf("/rooms/%s/typing/%s", url.PathEscape(b.roomID), url.PathEscape(userID))
+	return b.doJSON(ctx, http.MethodPut, path, map[string]any{"typing": true, "timeout": durationMS}, nil)
 }
 
 // ─── ReactionHandle ───────────────────────────────────────────────────────────

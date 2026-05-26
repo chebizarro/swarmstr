@@ -53,8 +53,9 @@ type RuntimeOptions struct {
 	// EventBufferSize bounds each client's async broadcast queue. When a
 	// subscribed client cannot keep up and its queue fills, the runtime drops
 	// that client instead of blocking fanout to other subscribers.
-	EventBufferSize int
-	HandleRequest   RequestHandler
+	EventBufferSize       int
+	DeltaCoalesceInterval time.Duration
+	HandleRequest         RequestHandler
 	// StaticHandler, when non-nil, is mounted at "/" in the same HTTP server
 	// as the WebSocket endpoint.  It is called only when the request path
 	// does not match Path (the WS path).
@@ -67,11 +68,20 @@ type Runtime struct {
 
 	mu      sync.RWMutex
 	clients map[string]*client
-	seq     int64
+	seq     int64 // state-version counter (event delivery uses per-client seq)
 
 	rateMu         sync.Mutex
 	rateState      map[string]rateWindow
 	allowedMethods map[string]struct{}
+	coalesceMu     sync.Mutex
+	chatCoalesce   map[string]*chatChunkCoalescer
+}
+
+const defaultDeltaCoalesceInterval = 100 * time.Millisecond
+
+type chatChunkCoalescer struct {
+	payload ChatChunkPayload
+	timer   *time.Timer
 }
 
 type client struct {
@@ -90,6 +100,7 @@ type client struct {
 
 	authMu       sync.Mutex
 	unauthorized int
+	seq          int64
 }
 
 type rateWindow struct {
@@ -132,6 +143,9 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	if opts.EventBufferSize <= 0 {
 		opts.EventBufferSize = defaultClientEventBufferSize
 	}
+	if opts.DeltaCoalesceInterval < 0 {
+		opts.DeltaCoalesceInterval = 0
+	}
 
 	if err := validateExposure(opts.Addr, opts.Token); err != nil {
 		return nil, err
@@ -142,6 +156,7 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 		clients:        map[string]*client{},
 		rateState:      map[string]rateWindow{},
 		allowedMethods: buildAllowedMethods(opts.Methods),
+		chatCoalesce:   map[string]*chatChunkCoalescer{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(opts.Path, r.handleWS)
@@ -186,6 +201,19 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 }
 
 func (r *Runtime) Broadcast(event string, payload any) {
+	if event == EventChatChunk && r.opts.DeltaCoalesceInterval > 0 {
+		if p, ok := payload.(ChatChunkPayload); ok && p.TurnID != "" && !p.Done {
+			r.enqueueCoalescedChatChunk(p)
+			return
+		}
+		if p, ok := payload.(ChatChunkPayload); ok && p.TurnID != "" && p.Done {
+			r.flushCoalescedChatChunk(chatChunkCoalesceKey(p.SessionID, p.TurnID))
+		}
+	}
+	r.broadcastImmediate(event, payload)
+}
+
+func (r *Runtime) broadcastImmediate(event string, payload any) {
 	r.mu.RLock()
 	clients := make([]*client, 0, len(r.clients))
 	for _, c := range r.clients {
@@ -198,7 +226,7 @@ func (r *Runtime) Broadcast(event string, payload any) {
 			if !c.isSubscribed(name) {
 				continue
 			}
-			seq := atomic.AddInt64(&r.seq, 1)
+			seq := atomic.AddInt64(&c.seq, 1)
 			frame := map[string]any{
 				"type":    protocol.FrameTypeEvent,
 				"event":   name,
@@ -215,6 +243,51 @@ func (r *Runtime) Broadcast(event string, payload any) {
 	for _, proj := range compatibilityEventProjections(event, payload) {
 		emit(proj.Event, proj.Payload)
 	}
+}
+
+func (r *Runtime) enqueueCoalescedChatChunk(payload ChatChunkPayload) {
+	key := chatChunkCoalesceKey(payload.SessionID, payload.TurnID)
+	r.coalesceMu.Lock()
+	entry := r.chatCoalesce[key]
+	if entry == nil {
+		entry = &chatChunkCoalescer{payload: payload}
+		entry.timer = time.AfterFunc(r.opts.DeltaCoalesceInterval, func() { r.flushCoalescedChatChunk(key) })
+		r.chatCoalesce[key] = entry
+		r.coalesceMu.Unlock()
+		return
+	}
+	entry.payload.Text += payload.Text
+	entry.payload.TS = payload.TS
+	if payload.AgentID != "" {
+		entry.payload.AgentID = payload.AgentID
+	}
+	r.coalesceMu.Unlock()
+}
+
+func chatChunkCoalesceKey(sessionID, turnID string) string {
+	if sessionID == "" {
+		sessionID = "__global__"
+	}
+	return sessionID + "\x00" + turnID
+}
+
+func (r *Runtime) flushCoalescedChatChunk(key string) {
+	r.coalesceMu.Lock()
+	entry := r.chatCoalesce[key]
+	if entry == nil {
+		r.coalesceMu.Unlock()
+		return
+	}
+	delete(r.chatCoalesce, key)
+	if entry.timer != nil {
+		entry.timer.Stop()
+	}
+	payload := entry.payload
+	r.coalesceMu.Unlock()
+	if strings.TrimSpace(payload.Text) == "" {
+		return
+	}
+	r.broadcastImmediate(EventChatChunk, payload)
 }
 
 func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
@@ -510,6 +583,7 @@ func (r *Runtime) snapshot() protocol.Snapshot {
 }
 
 func (r *Runtime) broadcastPresence() {
+	atomic.AddInt64(&r.seq, 1)
 	r.Broadcast("presence.updated", map[string]any{"presence": r.snapshot().Presence})
 }
 

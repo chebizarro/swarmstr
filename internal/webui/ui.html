@@ -30,6 +30,22 @@
   --font: ui-sans-serif, system-ui, -apple-system, sans-serif;
   --mono: ui-monospace, SFMono-Regular, monospace;
 }
+body.theme-light {
+  --bg: #f8f7fb;
+  --surface: #ffffff;
+  --border: #d8d3e6;
+  --accent: #7A1CAC;
+  --accent-bright: #4f1280;
+  --accent-dim: #b892d7;
+  --accent-hover: #63208e;
+  --accent-glow: rgba(122, 28, 172, 0.16);
+  --text: #181525;
+  --text-muted: #625b73;
+  --user-bubble: #f0e6ff;
+  --user-border: #d5bdf2;
+  --agent-bubble: #f5f8ff;
+  --agent-border: #d4dcee;
+}
 body {
   background: var(--bg);
   background-image:
@@ -55,6 +71,13 @@ header h1 {
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+.mobile-menu-btn {
+  display: none;
+  width: 38px; height: 38px; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: 0.45rem;
+  background: rgba(10, 10, 15, 0.45); color: var(--accent-bright);
+  font-size: 1.1rem; cursor: pointer;
+}
 .status-dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--text-muted); flex-shrink: 0; transition: background 0.3s, box-shadow 0.3s;
@@ -67,7 +90,20 @@ header h1 {
   background: var(--error);
   box-shadow: 0 0 8px var(--error), 0 0 4px var(--error);
 }
-.header-info { color: var(--text-muted); font-size: 0.72rem; margin-left: auto; display: flex; gap: 0.75rem; align-items: center; }
+.header-actions { margin-left: auto; display: flex; gap: 0.4rem; align-items: center; }
+.icon-btn, .locale-select {
+  border: 1px solid var(--border); border-radius: 0.4rem;
+  background: rgba(10, 10, 15, 0.35); color: var(--text-muted);
+  min-height: 32px; padding: 0.25rem 0.45rem; cursor: pointer; font-size: 0.72rem;
+}
+.icon-btn:hover, .locale-select:hover { color: var(--accent-bright); border-color: var(--accent); }
+.search-box {
+  display: none; width: min(220px, 32vw); min-height: 32px;
+  border: 1px solid var(--border); border-radius: 0.4rem; background: var(--bg); color: var(--text);
+  padding: 0.25rem 0.5rem; font-size: 0.72rem;
+}
+.search-box.visible { display: block; }
+.header-info { color: var(--text-muted); font-size: 0.72rem; display: flex; gap: 0.75rem; align-items: center; }
 .badge {
   background: rgba(122, 28, 172, 0.15);
   border: 1px solid var(--accent-dim);
@@ -83,6 +119,11 @@ header h1 {
 
 /* ── Layout ── */
 .layout { flex: 1; display: flex; overflow: hidden; }
+.sidebar-backdrop {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(1px);
+  z-index: 70;
+}
 
 /* ── Sidebar ── */
 .sidebar {
@@ -93,10 +134,10 @@ header h1 {
   display: flex; flex-direction: column; overflow: hidden;
 }
 .sidebar-tabs {
-  display: flex; border-bottom: 1px solid var(--border);
+  display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--border);
 }
 .tab-btn {
-  flex: 1; padding: 0.55rem 0.4rem; font-size: 0.7rem; font-weight: 600;
+  flex: 1 1 33.333%; padding: 0.55rem 0.4rem; font-size: 0.7rem; font-weight: 600;
   color: var(--text-muted); background: none; border: none; cursor: pointer;
   letter-spacing: 0.04em; transition: color 0.15s, border-bottom 0.15s, text-shadow 0.15s;
   border-bottom: 2px solid transparent;
@@ -319,11 +360,115 @@ header h1 {
   40%{transform:scale(1);opacity:1;box-shadow:0 0 10px var(--accent-glow)}
 }
 
+.tool-card {
+  align-self: flex-start;
+  width: min(760px, calc(100% - 2.5rem));
+  margin-left: 1.25rem;
+  background: rgba(10, 10, 15, 0.72);
+  border: 1px solid var(--agent-border);
+  border-left: 3px solid var(--info);
+  border-radius: 0.65rem;
+  box-shadow: 0 2px 12px rgba(0, 212, 255, 0.08);
+  overflow: hidden;
+}
+.tool-card.running { border-left-color: var(--warn); }
+.tool-card.error { border-left-color: var(--error); box-shadow: 0 2px 12px rgba(255, 0, 110, 0.1); }
+.tool-card details { width: 100%; }
+.tool-card summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.55rem 0.75rem;
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  font-size: 0.76rem;
+}
+.tool-card summary::-webkit-details-marker { display: none; }
+.tool-card summary::before { content: '▸'; color: var(--text-muted); transition: transform 0.15s; }
+.tool-card details[open] summary::before { transform: rotate(90deg); }
+.tool-name { color: var(--accent-bright); font-family: var(--mono); font-weight: 700; }
+.tool-status { color: var(--text-muted); font-family: var(--mono); font-size: 0.68rem; }
+.tool-status.running { color: var(--warn); }
+.tool-status.done { color: var(--success); }
+.tool-status.error { color: var(--error); }
+.tool-meta-line { color: var(--text-muted); font-family: var(--mono); font-size: 0.66rem; margin-left: auto; }
+.tool-body { border-top: 1px solid var(--border); padding: 0.6rem 0.75rem 0.75rem; }
+.tool-section + .tool-section { margin-top: 0.55rem; }
+.tool-label { color: var(--text-muted); font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.22rem; }
+.tool-pre {
+  background: #0d1117;
+  border: 1px solid rgba(42, 48, 72, 0.75);
+  border-radius: 0.45rem;
+  padding: 0.55rem 0.65rem;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.management-view {
+  width: min(980px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 0.5rem 0 1rem;
+}
+.management-view h2 { color: var(--accent-bright); font-size: 1.05rem; margin-bottom: 0.25rem; }
+.management-subtitle { color: var(--text-muted); font-size: 0.78rem; margin-bottom: 0.85rem; }
+.mgmt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; }
+.mgmt-card {
+  background: rgba(10, 10, 15, 0.62);
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  padding: 0.85rem;
+  box-shadow: 0 2px 12px rgba(0, 212, 255, 0.06);
+}
+.mgmt-card h3 { color: var(--info); font-size: 0.82rem; margin-bottom: 0.55rem; }
+.kv { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 0.32rem 0.6rem; font-size: 0.72rem; }
+.kv dt { color: var(--text-muted); }
+.kv dd { color: var(--text); font-family: var(--mono); word-break: break-word; }
+.mgmt-list { display: flex; flex-direction: column; gap: 0.45rem; }
+.mgmt-row { border: 1px solid rgba(42, 42, 56, 0.8); border-radius: 0.5rem; padding: 0.5rem; font-size: 0.74rem; }
+.mgmt-row strong { color: var(--accent-bright); }
+.mgmt-row .sub { color: var(--text-muted); font-family: var(--mono); font-size: 0.68rem; margin-top: 0.18rem; }
+.config-editor {
+  width: 100%; min-height: 320px; resize: vertical;
+  background: #0d1117; color: var(--text); border: 1px solid var(--border); border-radius: 0.55rem;
+  padding: 0.75rem; font-family: var(--mono); font-size: 0.72rem; line-height: 1.45;
+}
+.action-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 0.6rem; }
+.mini-btn {
+  border: 1px solid var(--accent-dim); background: rgba(176, 38, 255, 0.12); color: var(--accent-bright);
+  border-radius: 0.38rem; padding: 0.35rem 0.65rem; cursor: pointer; font-size: 0.72rem; font-weight: 600;
+}
+.mini-btn:hover { border-color: var(--accent); box-shadow: 0 0 10px rgba(176, 38, 255, 0.18); }
+.mgmt-error { color: var(--error); font-size: 0.76rem; margin-top: 0.5rem; }
+.mgmt-ok { color: var(--success); font-size: 0.76rem; margin-top: 0.5rem; }
+
 /* ── Input area ── */
 footer {
   padding: 0.75rem 1.25rem;
   background: var(--surface); border-top: 1px solid var(--border); flex-shrink: 0;
 }
+.run-controls {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  margin-bottom: 0.55rem;
+}
+.run-controls .spacer { flex: 1; }
+.control-btn {
+  border: 1px solid var(--border);
+  background: rgba(10, 10, 15, 0.55);
+  color: var(--text-muted);
+  border-radius: 0.4rem;
+  padding: 0.32rem 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, box-shadow 0.15s, opacity 0.15s;
+}
+.control-btn:hover:not(:disabled) { color: var(--accent-bright); border-color: var(--accent); box-shadow: 0 0 10px rgba(176, 38, 255, 0.18); }
+.control-btn.stop { color: var(--error); border-color: rgba(255, 0, 110, 0.55); }
+.control-btn.stop:hover:not(:disabled) { box-shadow: 0 0 10px rgba(255, 0, 110, 0.2); }
+.control-btn:disabled { opacity: 0.38; cursor: not-allowed; }
 .input-row { display: flex; gap: 0.5rem; }
 #input {
   flex: 1; background: var(--bg); border: 1px solid var(--border);
@@ -360,6 +505,18 @@ footer {
   margin-top: 0.35rem;
   font-style: italic;
 }
+.slash-menu {
+  display: none; position: absolute; bottom: calc(100% + 0.35rem); left: 1.25rem;
+  width: min(420px, calc(100% - 2.5rem)); background: var(--surface); border: 1px solid var(--accent-dim);
+  border-radius: 0.55rem; box-shadow: 0 8px 24px rgba(0,0,0,0.35); overflow: hidden; z-index: 20;
+}
+.slash-menu.visible { display: block; }
+.slash-item { padding: 0.45rem 0.65rem; cursor: pointer; font-size: 0.76rem; border-bottom: 1px solid rgba(42,42,56,0.5); }
+.slash-item:hover, .slash-item.active { background: rgba(176, 38, 255, 0.12); color: var(--accent-bright); }
+.attachment-tray { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.45rem; }
+.attachment-chip { border: 1px solid var(--border); border-radius: 999px; padding: 0.2rem 0.5rem; color: var(--text-muted); font-size: 0.68rem; }
+footer { position: relative; }
+footer.drag-over { outline: 2px dashed var(--info); outline-offset: -0.35rem; }
 
 /* ── Approval modal ── */
 .modal-overlay {
@@ -447,12 +604,65 @@ footer {
 .btn:active:not(:disabled) {
   transform: translateY(0);
 }
+
+@media (max-width: 900px) {
+  body { min-width: 0; }
+  header {
+    padding-top: max(0.6rem, env(safe-area-inset-top));
+    gap: 0.5rem;
+  }
+  .mobile-menu-btn { display: flex; min-width: 44px; min-height: 44px; }
+  .header-info { gap: 0.45rem; font-size: 0.66rem; }
+  .badge { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .layout { position: relative; }
+  .sidebar {
+    position: fixed; top: 0; bottom: 0; left: 0;
+    width: min(86vw, 320px);
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    z-index: 80;
+    transform: translateX(-105%);
+    transition: transform 0.22s ease;
+  }
+  body.sidebar-open .sidebar { transform: translateX(0); }
+  body.sidebar-open .sidebar-backdrop { display: block; }
+  .tab-btn, .new-session-btn, .sidebar-item { min-height: 44px; }
+  .main { min-width: 0; width: 100%; }
+  #messages { padding: 0.75rem 0; }
+  .msg, .tool-card { max-width: calc(100% - 1rem); width: auto; margin-left: 0.5rem; margin-right: 0.5rem; }
+  .msg.user { margin-left: auto; }
+  .msg.agent, .thinking, .tool-card { margin-left: 0.5rem; }
+  footer {
+    padding: 0.6rem max(0.75rem, env(safe-area-inset-right)) max(0.75rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+  }
+  .control-btn, #send { min-height: 44px; }
+  #input { min-height: 44px; max-height: 32dvh; }
+}
+
+@media (max-width: 560px) {
+  header h1 { font-size: 0.88rem; }
+  .header-info { margin-left: 0; }
+  .run-controls .spacer { display: none; }
+  .run-controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.4rem; }
+  .control-btn { padding: 0.35rem 0.45rem; }
+  .input-row { gap: 0.4rem; }
+  #send { padding: 0.6rem 0.8rem; }
+  .approval-meta { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
 <header>
+  <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Open navigation" aria-expanded="false">☰</button>
   <div class="status-dot" id="dot"></div>
   <h1>Metiq</h1>
+  <div class="header-actions">
+    <input class="search-box" id="search-box" type="search" placeholder="Search chat…" aria-label="Search chat">
+    <button class="icon-btn" id="search-toggle" title="Search chat">⌕</button>
+    <button class="icon-btn" id="export-chat" title="Export chat as Markdown">Export</button>
+    <button class="icon-btn" id="theme-toggle" title="Toggle theme">Theme</button>
+    <select class="locale-select" id="locale-select" aria-label="Language"><option value="en">EN</option><option value="es">ES</option><option value="fr">FR</option><option value="de">DE</option><option value="ja">JA</option><option value="zh-CN">ZH-CN</option><option value="pt-BR">PT-BR</option><option value="ko">KO</option></select>
+  </div>
   <div class="header-info">
     <span class="badge" id="agent-badge">agent: main</span>
     <span class="badge warn" id="approvals-badge" style="display:none">⚠ approval pending</span>
@@ -461,30 +671,24 @@ footer {
 </header>
 
 <div class="layout">
-  <!-- Sidebar -->
-  <aside class="sidebar">
-    <div class="sidebar-tabs">
-      <button class="tab-btn active" data-tab="sessions">Sessions</button>
-      <button class="tab-btn" data-tab="channels">Channels</button>
-      <button class="tab-btn" data-tab="agents">Agents</button>
-    </div>
-    <div class="tab-panel active" id="tab-sessions">
-      <button class="new-session-btn" id="new-session-btn">+ New session</button>
-      <div id="sessions-list"><div class="sidebar-empty">Loading…</div></div>
-    </div>
-    <div class="tab-panel" id="tab-channels">
-      <div id="channels-list"><div class="sidebar-empty">Loading…</div></div>
-    </div>
-    <div class="tab-panel" id="tab-agents">
-      <div id="agents-list"><div class="sidebar-empty">Loading…</div></div>
-    </div>
-  </aside>
+  <!-- Sidebar component -->
+  {{component "session_sidebar"}}
 
   <!-- Main conversation -->
   <div class="main">
     <div id="messages"></div>
     <footer>
+      <div class="run-controls" aria-label="Run controls">
+        <button class="control-btn stop" id="abort-run" disabled>Stop run</button>
+        <span class="spacer"></span>
+        <button class="control-btn" id="compact-session" disabled>Compact</button>
+        <button class="control-btn" id="clear-session" disabled>Clear</button>
+      </div>
+      <div class="slash-menu" id="slash-menu" role="listbox" aria-label="Slash commands"></div>
+      <div class="attachment-tray" id="attachment-tray"></div>
       <div class="input-row">
+        <button class="control-btn" id="attach-btn" type="button" title="Attach files">＋</button>
+        <input id="attach-input" type="file" multiple hidden>
         <textarea id="input" rows="1" placeholder="Send a message… (Shift+Enter for newline)" disabled></textarea>
         <button id="send" disabled>Send</button>
       </div>
@@ -492,12 +696,17 @@ footer {
     </footer>
   </div>
 </div>
+<div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
 
-<!-- Exec approval modal -->
+<!-- Extracted component templates -->
+{{component "chat_message"}}
+{{component "tool_card"}}
+
+<!-- Approval modal -->
 <div class="modal-overlay" id="approval-modal">
   <div class="modal">
-    <h2>⚠ Exec Approval Required</h2>
-    <p style="font-size:0.82rem;color:var(--text-muted)">Review the command metadata before deciding:</p>
+    <h2 id="approval-title">⚠ Approval Required</h2>
+    <p id="approval-subtitle" style="font-size:0.82rem;color:var(--text-muted)">Review the request metadata before deciding:</p>
     <div class="approval-summary">
       <span class="approval-pill warn" id="approval-queue-count">queue: 1</span>
       <span class="approval-pill warn" id="approval-countdown">expires: —</span>
@@ -526,11 +735,25 @@ const TOKEN   = '{{.Token}}';
   const msgs      = $('messages');
   const input     = $('input');
   const sendBtn   = $('send');
+  const attachBtn = $('attach-btn');
+  const attachInput = $('attach-input');
+  const attachmentTray = $('attachment-tray');
+  const slashMenu = $('slash-menu');
+  const searchBox = $('search-box');
+  const searchToggle = $('search-toggle');
+  const exportChatBtn = $('export-chat');
+  const themeToggle = $('theme-toggle');
+  const localeSelect = $('locale-select');
+  const abortBtn  = $('abort-run');
+  const compactBtn = $('compact-session');
+  const clearBtn  = $('clear-session');
   const dot       = $('dot');
   const connLabel = $('conn-label');
   const agentBadge      = $('agent-badge');
   const approvalsBadge  = $('approvals-badge');
   const approvalModal   = $('approval-modal');
+  const approvalTitle   = $('approval-title');
+  const approvalSubtitle = $('approval-subtitle');
   const approvalCmd     = $('approval-cmd');
   const approvalMeta    = $('approval-meta');
   const approvalQueueCount = $('approval-queue-count');
@@ -541,6 +764,8 @@ const TOKEN   = '{{.Token}}';
   const sessionsList    = $('sessions-list');
   const channelsList    = $('channels-list');
   const agentsList      = $('agents-list');
+  const mobileMenuBtn   = $('mobile-menu-btn');
+  const sidebarBackdrop = $('sidebar-backdrop');
 
   // ── State ─────────────────────────────────────────────────────────────────
   let ws, reconnectDelay = 1500;
@@ -553,13 +778,240 @@ const TOKEN   = '{{.Token}}';
   let streamingBubble = null;
   let streamingText = '';
   let thinkingEl = null;
-  // Approval queue: pending exec approval payloads.
+  // Approval queue: pending exec/plugin approval payloads.
   let approvalQueue = [];
   let currentApprovalID = null;
+  let currentApproval = null;
+  let activeRun = false;
+  let activeRunSessionID = null;
+  let toolCards = {};
+  let historyLoadingSessionID = null;
+  let bufferedLiveEvents = [];
+  let mainView = 'chat';
+  let viewSeq = 0;
+  let pendingAttachments = [];
+  let attachmentReadsPending = 0;
+  let attachmentReadGeneration = 0;
+  const maxAttachments = 6;
+  const maxAttachmentBytes = 8 * 1024 * 1024;
+  const maxAttachmentTotalBytes = 20 * 1024 * 1024;
+  let inputHistory = JSON.parse(localStorage.getItem('metiq_input_history') || '[]');
+  let inputHistoryIndex = inputHistory.length;
+  let historyBrowsing = false;
+  let locale = localStorage.getItem('metiq_locale') || 'en';
+  const slashCommands = [
+    { cmd: '/help', text: '/help', desc: 'Show available commands' },
+    { cmd: '/status', text: '/status', desc: 'Show gateway status' },
+    { cmd: '/agents', text: '/agents', desc: 'List agents' },
+    { cmd: '/channels', text: '/channels', desc: 'List channels' },
+    { cmd: '/compact', text: '/compact', desc: 'Compact current session' },
+  ];
+  const I18N = {
+    en: {
+      send: 'Send', placeholder: 'Send a message… (Shift+Enter for newline)', connected: 'Connected. Type /help for commands.', connecting: 'connecting…',
+      sessions: 'Sessions', channels: 'Channels', agents: 'Agents', dashboard: 'Dashboard', config: 'Config', usage: 'Usage',
+      newSession: '+ New session', loading: 'Loading…', noSessions: 'No sessions yet', noChannels: 'No channels connected', noAgents: 'No agents configured', noItems: 'No items',
+      stopRun: 'Stop run', compact: 'Compact', clear: 'Clear', tip: 'Tip: /help for slash commands', search: 'Search chat…', export: 'Export', theme: 'Theme', approvalPending: '⚠ approval pending',
+      errorLoadHistory: 'Could not load session history', noMessages: 'No messages in this session yet.'
+    },
+    es: {
+      send: 'Enviar', placeholder: 'Envía un mensaje… (Shift+Enter para nueva línea)', connected: 'Conectado. Escribe /help para comandos.', connecting: 'conectando…',
+      sessions: 'Sesiones', channels: 'Canales', agents: 'Agentes', dashboard: 'Panel', config: 'Config', usage: 'Uso',
+      newSession: '+ Nueva sesión', loading: 'Cargando…', noSessions: 'Aún no hay sesiones', noChannels: 'No hay canales conectados', noAgents: 'No hay agentes configurados', noItems: 'Sin elementos',
+      stopRun: 'Detener', compact: 'Compactar', clear: 'Borrar', tip: 'Consejo: /help para comandos', search: 'Buscar chat…', export: 'Exportar', theme: 'Tema', approvalPending: '⚠ aprobación pendiente',
+      errorLoadHistory: 'No se pudo cargar el historial', noMessages: 'Esta sesión aún no tiene mensajes.'
+    },
+    fr: {
+      send: 'Envoyer', placeholder: 'Envoyer un message… (Maj+Entrée pour une nouvelle ligne)', connected: 'Connecté. Tapez /help pour les commandes.', connecting: 'connexion…',
+      sessions: 'Sessions', channels: 'Canaux', agents: 'Agents', dashboard: 'Tableau', config: 'Config', usage: 'Utilisation',
+      newSession: '+ Nouvelle session', loading: 'Chargement…', noSessions: 'Aucune session', noChannels: 'Aucun canal connecté', noAgents: 'Aucun agent configuré', noItems: 'Aucun élément',
+      stopRun: 'Arrêter', compact: 'Compacter', clear: 'Effacer', tip: 'Astuce : /help pour les commandes', search: 'Rechercher…', export: 'Exporter', theme: 'Thème', approvalPending: '⚠ approbation en attente',
+      errorLoadHistory: 'Impossible de charger l’historique', noMessages: 'Aucun message dans cette session.'
+    },
+    de: {
+      send: 'Senden', placeholder: 'Nachricht senden… (Umschalt+Enter für neue Zeile)', connected: 'Verbunden. /help zeigt Befehle.', connecting: 'verbinden…',
+      sessions: 'Sitzungen', channels: 'Kanäle', agents: 'Agenten', dashboard: 'Übersicht', config: 'Konfig', usage: 'Nutzung',
+      newSession: '+ Neue Sitzung', loading: 'Laden…', noSessions: 'Noch keine Sitzungen', noChannels: 'Keine Kanäle verbunden', noAgents: 'Keine Agenten konfiguriert', noItems: 'Keine Elemente',
+      stopRun: 'Stoppen', compact: 'Kompakt', clear: 'Leeren', tip: 'Tipp: /help für Befehle', search: 'Chat suchen…', export: 'Export', theme: 'Design', approvalPending: '⚠ Genehmigung ausstehend',
+      errorLoadHistory: 'Verlauf konnte nicht geladen werden', noMessages: 'Noch keine Nachrichten in dieser Sitzung.'
+    },
+    ja: {
+      send: '送信', placeholder: 'メッセージを送信…（Shift+Enterで改行）', connected: '接続済み。/help でコマンドを表示。', connecting: '接続中…',
+      sessions: 'セッション', channels: 'チャンネル', agents: 'エージェント', dashboard: 'ダッシュボード', config: '設定', usage: '使用量',
+      newSession: '+ 新規セッション', loading: '読み込み中…', noSessions: 'セッションはまだありません', noChannels: '接続済みチャンネルなし', noAgents: '設定済みエージェントなし', noItems: '項目なし',
+      stopRun: '停止', compact: '圧縮', clear: 'クリア', tip: 'ヒント: /help でコマンド', search: 'チャット検索…', export: 'エクスポート', theme: 'テーマ', approvalPending: '⚠ 承認待ち',
+      errorLoadHistory: '履歴を読み込めません', noMessages: 'このセッションにはまだメッセージがありません。'
+    },
+    'zh-CN': {
+      send: '发送', placeholder: '发送消息…（Shift+Enter 换行）', connected: '已连接。输入 /help 查看命令。', connecting: '连接中…',
+      sessions: '会话', channels: '频道', agents: '智能体', dashboard: '仪表盘', config: '配置', usage: '用量',
+      newSession: '+ 新建会话', loading: '加载中…', noSessions: '暂无会话', noChannels: '未连接频道', noAgents: '未配置智能体', noItems: '无项目',
+      stopRun: '停止', compact: '压缩', clear: '清除', tip: '提示：/help 查看命令', search: '搜索聊天…', export: '导出', theme: '主题', approvalPending: '⚠ 待审批',
+      errorLoadHistory: '无法加载会话历史', noMessages: '此会话暂无消息。'
+    },
+    'pt-BR': {
+      send: 'Enviar', placeholder: 'Envie uma mensagem… (Shift+Enter para nova linha)', connected: 'Conectado. Digite /help para comandos.', connecting: 'conectando…',
+      sessions: 'Sessões', channels: 'Canais', agents: 'Agentes', dashboard: 'Painel', config: 'Config', usage: 'Uso',
+      newSession: '+ Nova sessão', loading: 'Carregando…', noSessions: 'Nenhuma sessão ainda', noChannels: 'Nenhum canal conectado', noAgents: 'Nenhum agente configurado', noItems: 'Nenhum item',
+      stopRun: 'Parar', compact: 'Compactar', clear: 'Limpar', tip: 'Dica: /help para comandos', search: 'Buscar chat…', export: 'Exportar', theme: 'Tema', approvalPending: '⚠ aprovação pendente',
+      errorLoadHistory: 'Não foi possível carregar o histórico', noMessages: 'Ainda não há mensagens nesta sessão.'
+    },
+    ko: {
+      send: '보내기', placeholder: '메시지 보내기… (Shift+Enter로 줄바꿈)', connected: '연결됨. /help로 명령을 확인하세요.', connecting: '연결 중…',
+      sessions: '세션', channels: '채널', agents: '에이전트', dashboard: '대시보드', config: '설정', usage: '사용량',
+      newSession: '+ 새 세션', loading: '불러오는 중…', noSessions: '아직 세션이 없습니다', noChannels: '연결된 채널 없음', noAgents: '설정된 에이전트 없음', noItems: '항목 없음',
+      stopRun: '중지', compact: '압축', clear: '지우기', tip: '팁: /help로 명령 보기', search: '채팅 검색…', export: '내보내기', theme: '테마', approvalPending: '⚠ 승인 대기',
+      errorLoadHistory: '기록을 불러올 수 없습니다', noMessages: '이 세션에는 아직 메시지가 없습니다.'
+    },
+  };
   let approvalCountdownTimer = null;
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function nextID() { return 'ui-' + (++seq); }
+
+  function t(key) {
+    return (I18N[locale] && I18N[locale][key]) || I18N.en[key] || key;
+  }
+
+  function applyLocale() {
+    localeSelect.value = locale;
+    input.placeholder = t('placeholder');
+    searchBox.placeholder = t('search');
+    sendBtn.textContent = t('send');
+    abortBtn.textContent = t('stopRun');
+    compactBtn.textContent = t('compact');
+    clearBtn.textContent = t('clear');
+    exportChatBtn.textContent = t('export');
+    themeToggle.textContent = t('theme');
+    const hint = document.querySelector('footer .hint');
+    if (hint) hint.textContent = t('tip');
+    const tabLabels = { sessions: 'sessions', channels: 'channels', agents: 'agents', dashboard: 'dashboard', config: 'config', usage: 'usage' };
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      const key = tabLabels[btn.dataset.tab];
+      if (key) btn.textContent = t(key);
+    });
+    const newSession = $('new-session-btn');
+    if (newSession) newSession.textContent = t('newSession');
+    if (connected) connLabel.textContent = t('connected');
+  }
+
+  function applyTheme(theme) {
+    document.body.classList.toggle('theme-light', theme === 'light');
+    localStorage.setItem('metiq_theme', theme);
+  }
+
+  function attachmentType(file) {
+    if ((file.type || '').startsWith('image/')) return 'image';
+    if ((file.type || '').startsWith('audio/')) return 'audio';
+    if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) return 'pdf';
+    return 'file';
+  }
+
+  function composerError(message) {
+    if (mainView === 'chat') addMsg('⚠️ ' + message, 'error-msg');
+  }
+
+  function updateComposerState() {
+    sendBtn.disabled = !connected || attachmentReadsPending > 0;
+  }
+
+  function renderAttachments() {
+    attachmentTray.innerHTML = '';
+    if (attachmentReadsPending > 0) {
+      const chip = document.createElement('span');
+      chip.className = 'attachment-chip';
+      chip.textContent = `loading ${attachmentReadsPending}…`;
+      attachmentTray.appendChild(chip);
+    }
+    pendingAttachments.forEach((att, idx) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'attachment-chip';
+      chip.textContent = `${att.filename} ×`;
+      chip.addEventListener('click', () => {
+        pendingAttachments.splice(idx, 1);
+        renderAttachments();
+      });
+      attachmentTray.appendChild(chip);
+    });
+  }
+
+  function addFiles(files) {
+    const batch = Array.from(files || []);
+    if (!batch.length) return;
+    const currentBytes = pendingAttachments.reduce((sum, att) => sum + (att.size || 0), 0);
+    let acceptedBytes = 0;
+    batch.forEach(file => {
+      const type = attachmentType(file);
+      if (type === 'file') { composerError(`Unsupported attachment type: ${file.name}`); return; }
+      if (pendingAttachments.length + attachmentReadsPending >= maxAttachments) { composerError(`Attachment limit is ${maxAttachments} files.`); return; }
+      if (file.size > maxAttachmentBytes || currentBytes + acceptedBytes + file.size > maxAttachmentTotalBytes) { composerError(`Attachment too large: ${file.name}`); return; }
+      acceptedBytes += file.size;
+      const generation = attachmentReadGeneration;
+      attachmentReadsPending++;
+      updateComposerState();
+      renderAttachments();
+      const reader = new FileReader();
+      const finish = () => { attachmentReadsPending = Math.max(0, attachmentReadsPending - 1); updateComposerState(); renderAttachments(); };
+      reader.onload = () => {
+        if (generation !== attachmentReadGeneration) { finish(); return; }
+        const dataURL = String(reader.result || '');
+        const base64 = dataURL.includes(',') ? dataURL.split(',').pop() : dataURL;
+        pendingAttachments.push({ type, base64, mime_type: file.type, filename: file.name, size: file.size });
+        finish();
+      };
+      reader.onerror = () => { composerError(`Could not read attachment: ${file.name}`); finish(); };
+      reader.onabort = () => { composerError(`Attachment read cancelled: ${file.name}`); finish(); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function saveInputHistory(text) {
+    if (!text) return;
+    inputHistory = inputHistory.filter(item => item !== text).concat(text).slice(-50);
+    inputHistoryIndex = inputHistory.length;
+    localStorage.setItem('metiq_input_history', JSON.stringify(inputHistory));
+  }
+
+  function renderSlashMenu() {
+    const q = input.value.trim().toLowerCase();
+    if (!q.startsWith('/')) { slashMenu.classList.remove('visible'); return; }
+    const matches = slashCommands.filter(item => item.cmd.startsWith(q) || item.desc.toLowerCase().includes(q.slice(1))).slice(0, 6);
+    slashMenu.innerHTML = '';
+    matches.forEach(item => {
+      const el = document.createElement('div');
+      el.className = 'slash-item';
+      el.textContent = `${item.cmd} — ${item.desc}`;
+      el.addEventListener('click', () => {
+        input.value = item.text + ' ';
+        slashMenu.classList.remove('visible');
+        input.focus();
+      });
+      slashMenu.appendChild(el);
+    });
+    slashMenu.classList.toggle('visible', matches.length > 0);
+  }
+
+  function searchChat(query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) return;
+    const hit = Array.from(msgs.querySelectorAll('.msg, .tool-card')).find(el => (el.textContent || '').toLowerCase().includes(q));
+    if (hit) hit.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function exportChatMarkdown() {
+    const lines = Array.from(msgs.querySelectorAll('.msg, .tool-card')).map(el => {
+      const role = el.classList.contains('user') ? 'User' : el.classList.contains('system') ? 'System' : el.classList.contains('tool-card') ? 'Tool' : 'Agent';
+      return `## ${role}\n\n${(el.textContent || '').trim()}`;
+    }).filter(Boolean).join('\n\n');
+    const blob = new Blob([lines || '# Metiq chat export\n'], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `metiq-chat-${sessionID || 'new'}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   function escapeHTML(text) {
     return String(text || '').replace(/[&<>"']/g, ch => ({
@@ -610,13 +1062,406 @@ const TOKEN   = '{{.Token}}';
     el.textContent = text;
   }
 
-  function addMsg(text, role) {
+  function cloneComponentTemplate(id, fallbackClass) {
+    const tpl = $(id);
+    if (tpl && tpl.content && tpl.content.firstElementChild) {
+      return tpl.content.firstElementChild.cloneNode(true);
+    }
     const el = document.createElement('div');
+    el.className = fallbackClass || '';
+    return el;
+  }
+
+  function addMsg(text, role) {
+    const el = cloneComponentTemplate('chat-message-template', 'msg');
     el.className = 'msg ' + role;
     setMessageContent(el, text, role);
     msgs.appendChild(el);
     msgs.scrollTop = msgs.scrollHeight;
     return el;
+  }
+
+  function formatValue(value) {
+    if (value === undefined || value === null || value === '') return '';
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+        try { return JSON.stringify(JSON.parse(trimmed), null, 2); } catch { /* keep original */ }
+      }
+      return value;
+    }
+    try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+  }
+
+  function firstPresent(...values) {
+    return values.find(v => v !== undefined && v !== null && v !== '');
+  }
+
+  function toolKey(payload) {
+    return payload.tool_call_id || payload.toolCallID || payload.call_id || payload.id ||
+      [payload.tool_name || payload.name || 'tool', payload.turn_id || payload.ts_ms || Date.now()].join(':');
+  }
+
+  function toolName(payload) {
+    return payload.tool_name || payload.toolName || payload.name || payload.tool || 'tool';
+  }
+
+  function toolSessionMatches(payload) {
+    return !payload || !payload.session_id || !sessionID || payload.session_id === sessionID;
+  }
+
+  function addToolSection(body, label, value) {
+    const rendered = formatValue(value);
+    if (!rendered) return;
+    const section = document.createElement('div');
+    section.className = 'tool-section';
+    const title = document.createElement('div');
+    title.className = 'tool-label';
+    title.textContent = label;
+    const pre = document.createElement('pre');
+    pre.className = 'tool-pre';
+    pre.textContent = rendered;
+    section.appendChild(title);
+    section.appendChild(pre);
+    body.appendChild(section);
+  }
+
+  function renderToolActivity(payload, status) {
+    if (!payload || !toolSessionMatches(payload)) return;
+    hideThinking();
+    const key = toolKey(payload);
+    let state = toolCards[key];
+    if (!state) {
+      const el = cloneComponentTemplate('tool-card-template', 'tool-card');
+      el.className = 'tool-card';
+      msgs.appendChild(el);
+      state = toolCards[key] = { el, payload: {}, progress: [], status: 'started' };
+    }
+    state.payload = Object.assign({}, state.payload, payload);
+    state.status = status || state.status;
+    if (status === 'progress') {
+      const progress = firstPresent(payload.result, payload.message, payload.text, payload.progress, payload.data);
+      if (progress !== undefined && progress !== null && progress !== '') state.progress.push(progress);
+    }
+    updateToolCard(state);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function updateToolCard(state) {
+    const payload = state.payload || {};
+    const status = state.status || 'started';
+    const isRunning = status === 'started' || status === 'progress';
+    const isError = status === 'error' || !!payload.error;
+    const displayStatus = isError ? 'error' : (status === 'result' ? 'done' : (isRunning ? 'running' : status));
+    const el = state.el;
+    el.className = 'tool-card' + (isRunning ? ' running' : '') + (isError ? ' error' : '');
+    el.innerHTML = '';
+
+    const details = document.createElement('details');
+    details.open = isRunning || isError;
+    const summary = document.createElement('summary');
+    summary.innerHTML = `<span class="tool-name">${escapeHTML(toolName(payload))}</span>` +
+      `<span class="tool-status ${escapeHTML(displayStatus)}">${escapeHTML(displayStatus)}</span>` +
+      `<span class="tool-meta-line">${escapeHTML(truncate(payload.tool_call_id || payload.id || payload.turn_id || '', 34))}</span>`;
+    details.appendChild(summary);
+
+    const body = document.createElement('div');
+    body.className = 'tool-body';
+    const args = firstPresent(payload.args, payload.arguments, payload.tool_args, payload.toolArgs, payload.input,
+      (state.status === 'started' ? payload.data : undefined));
+    addToolSection(body, 'Input', args);
+    if (state.progress && state.progress.length) addToolSection(body, 'Progress', state.progress);
+    addToolSection(body, 'Result', payload.result);
+    addToolSection(body, 'Error', payload.error);
+    addToolSection(body, 'Raw event', payload);
+    details.appendChild(body);
+    el.appendChild(details);
+  }
+
+  function renderHistoryEntry(entry) {
+    const meta = entry.meta || entry.metadata || {};
+    const text = entry.text || entry.content || entry.message || '';
+    const messageKind = meta.message_kind || entry.message_kind;
+    const toolCalls = meta.tool_calls || entry.tool_calls || entry.toolCalls;
+    const toolCallID = meta.tool_call_id || entry.tool_call_id || entry.toolCallID;
+
+    if (Array.isArray(toolCalls) && toolCalls.length) {
+      toolCalls.forEach(call => renderToolActivity({
+        tool_call_id: call.id || call.tool_call_id,
+        tool_name: call.name || call.tool_name || call.function_name,
+        args: call.args || call.arguments || call.args_json || call.input,
+        session_id: entry.session_id || sessionID,
+        turn_id: entry.turn_id || entry.entry_id,
+      }, 'result'));
+      if (text && messageKind !== 'tool_call') addMsg(text, entry.role === 'system' ? 'system' : 'agent');
+      return;
+    }
+
+    if (toolCallID || entry.role === 'tool' || messageKind === 'tool_result') {
+      renderToolActivity({
+        tool_call_id: toolCallID || entry.entry_id,
+        tool_name: meta.tool_name || entry.tool_name || 'tool result',
+        result: text || meta.tool_result,
+        error: meta.tool_error || entry.error,
+        session_id: entry.session_id || sessionID,
+        turn_id: entry.turn_id || entry.entry_id,
+      }, meta.tool_error || entry.error ? 'error' : 'result');
+      return;
+    }
+
+    const role = entry.role === 'user' ? 'user' : (entry.role === 'system' ? 'system' : 'agent');
+    if (text) addMsg(text, role);
+  }
+
+  function beginManagementView(title, subtitle) {
+    finalizeStreaming();
+    toolCards = {};
+    msgs.innerHTML = '';
+    const root = document.createElement('div');
+    root.className = 'management-view';
+    const h = document.createElement('h2');
+    h.textContent = title;
+    const sub = document.createElement('div');
+    sub.className = 'management-subtitle';
+    sub.textContent = subtitle || '';
+    const grid = document.createElement('div');
+    grid.className = 'mgmt-grid';
+    root.appendChild(h);
+    root.appendChild(sub);
+    root.appendChild(grid);
+    msgs.appendChild(root);
+    return { root, grid };
+  }
+
+  function addMgmtCard(grid, title) {
+    const card = document.createElement('section');
+    card.className = 'mgmt-card';
+    const h = document.createElement('h3');
+    h.textContent = title;
+    card.appendChild(h);
+    grid.appendChild(card);
+    return card;
+  }
+
+  function addKV(card, rows) {
+    const dl = document.createElement('dl');
+    dl.className = 'kv';
+    rows.forEach(([label, value]) => {
+      const dt = document.createElement('dt');
+      const dd = document.createElement('dd');
+      dt.textContent = label;
+      dd.textContent = value === undefined || value === null || value === '' ? '—' : (typeof value === 'object' ? formatValue(value) : String(value));
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    });
+    card.appendChild(dl);
+  }
+
+  function addRows(card, items, render) {
+    const list = document.createElement('div');
+    list.className = 'mgmt-list';
+    if (!items || !items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'sidebar-empty';
+      empty.textContent = 'No items';
+      card.appendChild(empty);
+      return;
+    }
+    items.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'mgmt-row';
+      render(row, item);
+      list.appendChild(row);
+    });
+    card.appendChild(list);
+  }
+
+  async function callSafe(method, params) {
+    try { return await callMethod(method, params || {}); }
+    catch (err) { return { error: err && err.message ? err.message : 'request failed' }; }
+  }
+
+  function resultItems(res, key) {
+    if (!res || res.error) return [];
+    return res[key] || res.items || [];
+  }
+
+  function isViewCurrent(view, token) {
+    return mainView === view && viewSeq === token;
+  }
+
+  async function showDashboardView(token) {
+    const { grid } = beginManagementView('Dashboard', 'Connection, inventory, health, and recent daemon activity.');
+    const loading = addMgmtCard(grid, 'Loading');
+    loading.textContent = 'Loading dashboard…';
+    const [status, sessions, agents, channels, skills, cron, logs] = await Promise.all([
+      callSafe('status.get', { verbose: true }),
+      callSafe('sessions.list', { limit: 20 }),
+      callSafe('agents.list', {}),
+      callSafe('channels.list', {}),
+      callSafe('skills.status', {}),
+      callSafe('cron.status', {}),
+      callSafe('logs.tail', { lines: 8 }),
+    ]);
+    if (!isViewCurrent('dashboard', token)) return;
+    const view = beginManagementView('Dashboard', 'Connection, inventory, health, and recent daemon activity.');
+    addKV(addMgmtCard(view.grid, 'Gateway'), [
+      ['Connection', connected ? 'connected' : 'offline'],
+      ['Version', status.version],
+      ['Uptime ms', status.uptime_ms || status.uptimeMs],
+      ['Agent', activeAgentID],
+      ['Status error', status.error],
+    ]);
+    addKV(addMgmtCard(view.grid, 'Inventory'), [
+      ['Sessions', resultItems(sessions, 'sessions').length],
+      ['Agents', resultItems(agents, 'agents').length],
+      ['Channels', resultItems(channels, 'channels').length],
+      ['Skills', (skills.skills || []).length],
+    ]);
+    addKV(addMgmtCard(view.grid, 'Schedulers'), [
+      ['Cron enabled', cron.enabled],
+      ['Cron jobs', Array.isArray(cron.jobs) ? cron.jobs.length : (cron.job ? 1 : 0)],
+      ['Cron error', cron.error],
+    ]);
+    const logCard = addMgmtCard(view.grid, 'Recent logs');
+    addRows(logCard, logs.lines || [], (row, line) => { row.textContent = line; });
+  }
+
+  async function showAgentsView(selected, token) {
+    const { grid } = beginManagementView('Agents', 'Configured agents, models, tools, skills, and runtime metadata.');
+    const res = await callSafe('agents.list', {});
+    if (token && !isViewCurrent('agents', token)) return;
+    const agents = resultItems(res, 'agents');
+    const card = addMgmtCard(grid, 'Agent roster');
+    addRows(card, agents, (row, a) => {
+      row.innerHTML = `<strong>${escapeHTML(a.id || a.agent_id || 'agent')}</strong><div class="sub">model: ${escapeHTML(a.model || '—')} · tools: ${escapeHTML((a.tool_profile || a.toolProfile || 'default'))}</div>`;
+    });
+    const detail = addMgmtCard(grid, selected ? 'Selected agent' : 'Agent details');
+    const agent = selected || agents.find(a => (a.id || a.agent_id) === activeAgentID) || agents[0];
+    addKV(detail, [
+      ['ID', agent && (agent.id || agent.agent_id)],
+      ['Name', agent && agent.name],
+      ['Model', agent && agent.model],
+      ['Tool profile', agent && (agent.tool_profile || agent.toolProfile)],
+      ['Workspace', agent && (agent.workspace_dir || agent.workspaceDir)],
+      ['Raw', agent],
+      ['Error', res.error],
+    ]);
+  }
+
+  async function showChannelsView(selected, token) {
+    const { grid } = beginManagementView('Channels', 'Channel status, routing metadata, and health details.');
+    const [listRes, statusRes] = await Promise.all([callSafe('channels.list', {}), callSafe('channels.status', {})]);
+    if (token && !isViewCurrent('channels', token)) return;
+    const channels = resultItems(listRes, 'channels');
+    const card = addMgmtCard(grid, 'Connected channels');
+    addRows(card, channels, (row, c) => {
+      row.innerHTML = `<strong>${escapeHTML(c.id || c.name || 'channel')}</strong><div class="sub">type: ${escapeHTML(c.type || c.kind || '—')} · status: ${escapeHTML(c.status || '—')}</div>`;
+    });
+    const detail = addMgmtCard(grid, selected ? 'Selected channel' : 'Channel health');
+    addKV(detail, [
+      ['Selected', selected && (selected.id || selected.name)],
+      ['Status', statusRes.status || statusRes.state],
+      ['Connected', statusRes.connected],
+      ['Health', statusRes.health],
+      ['Raw status', statusRes],
+      ['Error', listRes.error || statusRes.error],
+    ]);
+  }
+
+  async function showConfigView(token) {
+    const { grid } = beginManagementView('Config', 'Schema-guided configuration view with guarded JSON save.');
+    const [cfgRes, schemaRes] = await Promise.all([callSafe('config.get', {}), callSafe('config.schema', {})]);
+    if (!isViewCurrent('config', token)) return;
+    const editorCard = addMgmtCard(grid, 'Config JSON');
+    const editor = document.createElement('textarea');
+    editor.className = 'config-editor';
+    const configHash = cfgRes.base_hash || cfgRes.hash;
+    const canSaveConfig = !!(cfgRes && !cfgRes.error && cfgRes.config && configHash);
+    editor.value = canSaveConfig ? formatValue(cfgRes.config) : (cfgRes.error ? 'Could not load config: ' + cfgRes.error : 'Config unavailable; save disabled.');
+    editor.readOnly = !canSaveConfig;
+    const status = document.createElement('div');
+    if (!canSaveConfig) {
+      status.className = 'mgmt-error';
+      status.textContent = 'Config save disabled until config.get returns a config and base hash.';
+    }
+    const actions = document.createElement('div');
+    actions.className = 'action-row';
+    const save = document.createElement('button');
+    save.className = 'mini-btn';
+    save.textContent = 'Save config';
+    save.disabled = !canSaveConfig;
+    save.addEventListener('click', async () => {
+      status.className = '';
+      status.textContent = 'Saving…';
+      try {
+        if (!canSaveConfig) throw new Error('config.get did not return a saveable config');
+        const parsed = JSON.parse(editor.value || '{}');
+        const res = await callMethod('config.put', { config: parsed, baseHash: configHash });
+        status.className = 'mgmt-ok';
+        status.textContent = res.restart_pending ? 'Saved. Restart pending.' : 'Saved.';
+      } catch (err) {
+        status.className = 'mgmt-error';
+        status.textContent = err && err.message ? err.message : 'Could not save config';
+      }
+    });
+    actions.appendChild(save);
+    editorCard.appendChild(editor);
+    editorCard.appendChild(actions);
+    editorCard.appendChild(status);
+    const schemaCard = addMgmtCard(grid, 'Schema fields');
+    addRows(schemaCard, (schemaRes.fields || []).slice(0, 80), (row, field) => { row.textContent = field; });
+  }
+
+  async function showUsageView(token) {
+    const { grid } = beginManagementView('Usage', 'Token, tool, delegation, and cost metrics.');
+    const [status, cost] = await Promise.all([callSafe('usage.status', {}), callSafe('usage.cost', {})]);
+    if (!isViewCurrent('usage', token)) return;
+    addKV(addMgmtCard(grid, 'Usage status'), Object.keys(status).sort().map(k => [k, status[k]]));
+    addKV(addMgmtCard(grid, 'Cost'), Object.keys(cost).sort().map(k => [k, cost[k]]));
+  }
+
+  function openManagementView(view) {
+    closeSidebarOnMobile();
+    mainView = view;
+    const token = ++viewSeq;
+    if (view === 'dashboard') return showDashboardView(token);
+    if (view === 'agents') return showAgentsView(null, token);
+    if (view === 'channels') return showChannelsView(null, token);
+    if (view === 'config') return showConfigView(token);
+    if (view === 'usage') return showUsageView(token);
+  }
+
+  function setRunActive(active, ownerSessionID) {
+    if (active) {
+      activeRun = true;
+      activeRunSessionID = ownerSessionID || activeRunSessionID || sessionID || null;
+    } else if (!ownerSessionID || !activeRunSessionID || ownerSessionID === activeRunSessionID) {
+      activeRun = false;
+      activeRunSessionID = null;
+    }
+    updateRunControls();
+  }
+
+  function selectedSessionHasActiveRun() {
+    return !!(activeRun && activeRunSessionID && sessionID && activeRunSessionID === sessionID);
+  }
+
+  function updateRunControls() {
+    const selectedActive = selectedSessionHasActiveRun();
+    abortBtn.disabled = !connected || !selectedActive;
+    compactBtn.disabled = !connected || !sessionID || selectedActive;
+    clearBtn.disabled = !connected || !sessionID || selectedActive;
+  }
+
+  function setSidebarOpen(open) {
+    document.body.classList.toggle('sidebar-open', !!open);
+    mobileMenuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    mobileMenuBtn.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+  }
+
+  function closeSidebarOnMobile() {
+    if (window.matchMedia && window.matchMedia('(max-width: 900px)').matches) setSidebarOpen(false);
   }
 
   function showThinking() {
@@ -635,8 +1480,10 @@ const TOKEN   = '{{.Token}}';
   function setConnected(ok, label) {
     dot.className = 'status-dot' + (ok ? ' connected' : ok === false ? ' error' : '');
     connLabel.textContent = label;
+    connected = !!ok;
     input.disabled = !ok;
-    sendBtn.disabled = !ok;
+    updateComposerState();
+    updateRunControls();
     if (ok) input.focus();
   }
 
@@ -680,6 +1527,10 @@ const TOKEN   = '{{.Token}}';
 
   function callMethod(method, params) {
     return new Promise((resolve, reject) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        reject({ message: 'gateway is not connected' });
+        return;
+      }
       const id = nextID();
       pendingResolvers[id] = { resolve, reject };
       sendFrame({ type: 'request', id, method, params: params || {} });
@@ -696,7 +1547,7 @@ const TOKEN   = '{{.Token}}';
       const res = await callMethod('sessions.list', { limit: 40 });
       const sessions = res && (res.sessions || res.items || []);
       if (!sessions || !sessions.length) {
-        sessionsList.innerHTML = '<div class="sidebar-empty">No sessions yet</div>';
+        sessionsList.innerHTML = `<div class="sidebar-empty">${escapeHTML(t('noSessions'))}</div>`;
         return;
       }
       sessionsList.innerHTML = '';
@@ -705,7 +1556,10 @@ const TOKEN   = '{{.Token}}';
         el.className = 'sidebar-item' + (s.session_id === sessionID ? ' active' : '');
         el.dataset.sid = s.session_id;
         el.innerHTML = `<div>${truncate(s.session_id, 22)}</div><div class="sub">${s.preview || ''}</div>`;
-        el.addEventListener('click', () => switchSession(s.session_id));
+        el.addEventListener('click', () => {
+          switchSession(s.session_id);
+          closeSidebarOnMobile();
+        });
         sessionsList.appendChild(el);
       });
     } catch { sessionsList.innerHTML = '<div class="sidebar-empty">—</div>'; }
@@ -716,7 +1570,7 @@ const TOKEN   = '{{.Token}}';
       const res = await callMethod('channels.list', {});
       const chans = res && (res.channels || res.items || []);
       if (!chans || !chans.length) {
-        channelsList.innerHTML = '<div class="sidebar-empty">No channels connected</div>';
+        channelsList.innerHTML = `<div class="sidebar-empty">${escapeHTML(t('noChannels'))}</div>`;
         return;
       }
       channelsList.innerHTML = '';
@@ -724,6 +1578,11 @@ const TOKEN   = '{{.Token}}';
         const el = document.createElement('div');
         el.className = 'sidebar-item';
         el.innerHTML = `<span class="channel-dot"></span>${c.id || '—'}<div class="sub">${c.type || ''}</div>`;
+        el.addEventListener('click', () => {
+          mainView = 'channels';
+          showChannelsView(c, ++viewSeq);
+          closeSidebarOnMobile();
+        });
         channelsList.appendChild(el);
       });
     } catch { channelsList.innerHTML = '<div class="sidebar-empty">—</div>'; }
@@ -734,7 +1593,7 @@ const TOKEN   = '{{.Token}}';
       const res = await callMethod('agents.list', {});
       const ags = res && (res.agents || res.items || []);
       if (!ags || !ags.length) {
-        agentsList.innerHTML = '<div class="sidebar-empty">No agents configured</div>';
+        agentsList.innerHTML = `<div class="sidebar-empty">${escapeHTML(t('noAgents'))}</div>`;
         return;
       }
       agentsList.innerHTML = '';
@@ -742,6 +1601,11 @@ const TOKEN   = '{{.Token}}';
         const el = document.createElement('div');
         el.className = 'sidebar-item' + (a.id === activeAgentID ? ' active' : '');
         el.innerHTML = `<div>${a.id || a.agent_id}</div><div class="sub">${a.model || ''}</div>`;
+        el.addEventListener('click', () => {
+          mainView = 'agents';
+          showAgentsView(a, ++viewSeq);
+          closeSidebarOnMobile();
+        });
         agentsList.appendChild(el);
       });
     } catch { agentsList.innerHTML = '<div class="sidebar-empty">—</div>'; }
@@ -750,33 +1614,49 @@ const TOKEN   = '{{.Token}}';
   function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : (s || ''); }
 
   async function loadSessionHistory(sid) {
+    historyLoadingSessionID = sid;
+    bufferedLiveEvents = bufferedLiveEvents.filter(item => !(item.payload && item.payload.session_id === sid));
     try {
       const res = await callMethod('chat.history', { session_id: sid, limit: 200 });
       if (sid !== sessionID) return;
       const entries = res && (res.entries || res.items || res.transcript || []);
       msgs.innerHTML = '';
+      toolCards = {};
       if (!entries || !entries.length) {
-        addMsg('No messages in this session yet.', 'system');
+        addMsg(t('noMessages'), 'system');
         return;
       }
-      entries.forEach(entry => {
-        const text = entry.text || entry.content || entry.message || '';
-        const role = entry.role === 'user' ? 'user' : (entry.role === 'system' ? 'system' : 'agent');
-        if (text) addMsg(text, role);
-      });
+      entries.forEach(renderHistoryEntry);
     } catch (err) {
       if (sid !== sessionID) return;
       msgs.innerHTML = '';
-      addMsg('⚠️ Could not load session history: ' + (err && err.message ? err.message : 'request failed'), 'error-msg');
+      addMsg('⚠️ ' + t('errorLoadHistory') + ': ' + (err && err.message ? err.message : 'request failed'), 'error-msg');
+    } finally {
+      if (historyLoadingSessionID === sid) {
+        historyLoadingSessionID = null;
+        const replay = [];
+        bufferedLiveEvents = bufferedLiveEvents.filter(item => {
+          if (item.payload && item.payload.session_id === sid) {
+            replay.push(item);
+            return false;
+          }
+          return true;
+        });
+        replay.forEach(item => onEvent(item.event, item.payload));
+      }
     }
   }
 
   function switchSession(sid) {
     sessionID = sid;
     localStorage.setItem('metiq_session', sid);
+    mainView = 'chat';
+    viewSeq++;
+    updateRunControls();
     finalizeStreaming();
+    toolCards = {};
     msgs.innerHTML = '';
-    addMsg('Loading session history…', 'system');
+    addMsg(t('loading') + ' session history…', 'system');
     // Update active state in sidebar.
     document.querySelectorAll('#sessions-list .sidebar-item').forEach(el => {
       el.classList.toggle('active', el.dataset.sid === sid);
@@ -785,11 +1665,14 @@ const TOKEN   = '{{.Token}}';
   }
 
   // ── Approval queue management ─────────────────────────────────────────────
-  function enqueueApproval(payloadOrID, command) {
+  function enqueueApproval(payloadOrID, command, kind) {
     const payload = typeof payloadOrID === 'object' && payloadOrID !== null
-      ? payloadOrID
+      ? Object.assign({}, payloadOrID)
       : { id: payloadOrID, command };
+    payload.kind = payload.kind || payload.approval_kind || kind || 'exec';
+    payload.id = payload.id || payload.request_id || payload.approval_id;
     if (!payload.id) return;
+    if (approvalQueue.some(a => a.id === payload.id)) return;
     approvalQueue.push(payload);
     updateApprovalBadge();
     if (!currentApprovalID) showNextApproval();
@@ -799,7 +1682,7 @@ const TOKEN   = '{{.Token}}';
     approvalsBadge.style.display = approvalQueue.length ? '' : 'none';
     approvalsBadge.textContent = approvalQueue.length > 1
       ? `⚠ ${approvalQueue.length} approvals pending`
-      : '⚠ approval pending';
+      : t('approvalPending');
     approvalQueueCount.textContent = `queue: ${approvalQueue.length}`;
   }
 
@@ -810,12 +1693,14 @@ const TOKEN   = '{{.Token}}';
     }
     if (!approvalQueue.length) {
       currentApprovalID = null;
+      currentApproval = null;
       approvalModal.classList.remove('visible');
       approvalsBadge.style.display = 'none';
       return;
     }
     const a = approvalQueue[0];
     currentApprovalID = a.id;
+    currentApproval = a;
     approvalError.classList.remove('visible');
     approvalError.textContent = '';
     setApprovalBusy(false);
@@ -825,10 +1710,19 @@ const TOKEN   = '{{.Token}}';
 
   function renderApproval(a) {
     updateApprovalBadge();
+    const isPlugin = a.kind === 'plugin';
+    approvalTitle.textContent = isPlugin ? '⚠ Plugin Approval Required' : '⚠ Exec Approval Required';
+    approvalSubtitle.textContent = isPlugin
+      ? 'Review plugin identity, permissions, and requested operation before deciding:'
+      : 'Review the command metadata before deciding:';
     approvalIDLabel.textContent = 'id: ' + truncate(a.id, 28);
-    approvalCmd.innerHTML = highlightCommand(resolveApprovalCommand(a));
+    approvalCmd.innerHTML = isPlugin ? escapeHTML(resolveApprovalCommand(a)) : highlightCommand(resolveApprovalCommand(a));
     approvalMeta.innerHTML = '';
     [
+      ['Type', a.kind || 'exec'],
+      ['Plugin', a.plugin_id || a.pluginId || a.name],
+      ['Operation', a.operation || a.action || a.requested_action],
+      ['Permissions', a.permissions || a.requested_permissions || a.scopes],
       ['Agent', a.agent_id || a.agentId || (a.system_run_plan && a.system_run_plan.agentId)],
       ['Session', a.session_id || a.sessionKey || (a.system_run_plan && a.system_run_plan.sessionKey)],
       ['CWD', a.cwd || (a.system_run_plan && a.system_run_plan.cwd)],
@@ -845,12 +1739,19 @@ const TOKEN   = '{{.Token}}';
     const dt = document.createElement('dt');
     const dd = document.createElement('dd');
     dt.textContent = label;
-    dd.textContent = String(value || '—');
+    dd.textContent = typeof value === 'object' ? formatValue(value) : String(value || '—');
     approvalMeta.appendChild(dt);
     approvalMeta.appendChild(dd);
   }
 
   function resolveApprovalCommand(a) {
+    if (a.kind === 'plugin') {
+      return a.summary || a.reason || a.description || formatValue({
+        plugin: a.plugin_id || a.pluginId || a.name,
+        operation: a.operation || a.action,
+        permissions: a.permissions || a.requested_permissions || a.scopes,
+      });
+    }
     if (a.system_run_plan) {
       return a.system_run_plan.commandPreview || a.system_run_plan.commandText || (a.system_run_plan.argv || []).join(' ');
     }
@@ -890,11 +1791,18 @@ const TOKEN   = '{{.Token}}';
     approvalError.classList.remove('visible');
     approvalError.textContent = '';
     try {
-      const params = { id, decision: decision === 'approve_always' ? 'approve' : decision };
+      const approval = currentApproval || approvalQueue.find(a => a.id === id) || {};
+      const normalizedDecision = decision === 'approve_always' ? 'approve' : decision;
+      const params = { id, decision: normalizedDecision };
+      if (approval.plugin_id || approval.pluginId) params.plugin_id = approval.plugin_id || approval.pluginId;
       if (decision === 'approve_always') params.reason = 'always allow selected in web UI';
-      await callMethod('exec.approval.resolve', params);
+      const method = approval.kind === 'plugin'
+        ? (approval.resolve_method || approval.method || 'plugins.approval.resolve')
+        : 'exec.approval.resolve';
+      await callMethod(method, params);
       approvalQueue = approvalQueue.filter(a => a.id !== id);
       currentApprovalID = null;
+      currentApproval = null;
       approvalModal.classList.remove('visible');
       showNextApproval();
     } catch (e) {
@@ -931,29 +1839,105 @@ const TOKEN   = '{{.Token}}';
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
       btn.classList.add('active');
       $('tab-' + btn.dataset.tab).classList.add('active');
+      if (btn.dataset.view && btn.dataset.view !== 'chat') {
+        openManagementView(btn.dataset.view);
+      } else {
+        mainView = 'chat';
+        viewSeq++;
+        closeSidebarOnMobile();
+        if (sessionID) loadSessionHistory(sessionID);
+        else if (!msgs.textContent.trim()) addMsg('New conversation started.', 'system');
+      }
     });
   });
 
   $('new-session-btn').addEventListener('click', () => {
     sessionID = null;
     localStorage.removeItem('metiq_session');
+    mainView = 'chat';
+    viewSeq++;
+    finalizeStreaming();
+    toolCards = {};
     msgs.innerHTML = '';
     addMsg('New conversation started.', 'system');
     document.querySelectorAll('#sessions-list .sidebar-item').forEach(el => el.classList.remove('active'));
+    updateRunControls();
     input.focus();
   });
 
+  async function abortCurrentRun() {
+    if (!connected || !selectedSessionHasActiveRun()) return;
+    const runSessionID = activeRunSessionID;
+    abortBtn.disabled = true;
+    try {
+      await callMethod('chat.abort', { session_id: runSessionID });
+      finalizeStreaming();
+      setRunActive(false, runSessionID);
+      addMsg('Run stopped.', 'system');
+    } catch (err) {
+      abortBtn.disabled = false;
+      addMsg('⚠️ Could not stop run: ' + (err && err.message ? err.message : 'request failed'), 'error-msg');
+    }
+  }
+
+  async function clearCurrentSession() {
+    if (!sessionID || !connected || selectedSessionHasActiveRun()) return;
+    if (!confirm('Clear this session transcript?')) return;
+    const sid = sessionID;
+    clearBtn.disabled = true;
+    try {
+      await callMethod('sessions.reset', { session_id: sid });
+      if (sid !== sessionID) return;
+      finalizeStreaming();
+      toolCards = {};
+      msgs.innerHTML = '';
+      addMsg('Session cleared.', 'system');
+      loadSessions();
+    } catch (err) {
+      addMsg('⚠️ Could not clear session: ' + (err && err.message ? err.message : 'request failed'), 'error-msg');
+    } finally {
+      updateRunControls();
+    }
+  }
+
+  async function compactCurrentSession() {
+    if (!sessionID || !connected || selectedSessionHasActiveRun()) return;
+    compactBtn.disabled = true;
+    try {
+      const res = await callMethod('sessions.compact', { session_id: sessionID });
+      const dropped = res && (res.dropped || res.dropped_count || res.droppedCount);
+      addMsg(dropped ? `Session compacted; dropped ${dropped} entries.` : 'Session compacted.', 'system');
+      loadSessionHistory(sessionID);
+      loadSessions();
+    } catch (err) {
+      addMsg('⚠️ Could not compact session: ' + (err && err.message ? err.message : 'request failed'), 'error-msg');
+    } finally {
+      updateRunControls();
+    }
+  }
+
   // ── WS event dispatcher ───────────────────────────────────────────────────
+  function shouldBufferLiveEvent(event, payload) {
+    if (mainView !== 'chat' || !historyLoadingSessionID || !payload || payload.session_id !== historyLoadingSessionID) return false;
+    return event === 'agent.status' || event === 'chat.chunk' || event === 'chat.message' ||
+      event === 'tool.start' || event === 'tool.progress' || event === 'tool.result' || event === 'tool.error' ||
+      event === 'turn.result' || event === 'turn.finish' || event === 'turn.error';
+  }
+
   function onEvent(event, payload) {
+    if (shouldBufferLiveEvent(event, payload)) {
+      bufferedLiveEvents.push({ event, payload });
+      return;
+    }
     switch (event) {
       case 'agent.status':
         if (payload) {
           activeAgentID = payload.agent_id || activeAgentID;
           agentBadge.textContent = 'agent: ' + activeAgentID;
-          if (payload.status === 'thinking' && payload.session_id === sessionID) {
+          if (mainView === 'chat' && payload.status === 'thinking' && payload.session_id === sessionID) {
             if (!streamingBubble) showThinking();
           }
-          if (payload.status === 'idle') {
+          if (mainView === 'chat' && payload.status === 'idle' && payload.session_id === sessionID) {
             if (!streamingBubble) hideThinking();
           }
         }
@@ -961,21 +1945,64 @@ const TOKEN   = '{{.Token}}';
       case 'chat.chunk':
         if (payload && payload.session_id === sessionID) {
           if (payload.done) {
-            finalizeStreaming();
+            if (mainView === 'chat') finalizeStreaming();
+            setRunActive(false, payload.session_id);
             loadSessions(); // Refresh session list after reply.
           } else if (payload.text) {
-            appendChunk(payload.text);
+            setRunActive(true, payload.session_id);
+            if (mainView === 'chat') appendChunk(payload.text);
           }
         }
         break;
       case 'chat.message':
-        if (payload && payload.direction === 'outbound' && !streamingBubble) {
+        if (mainView === 'chat' && payload && (!payload.session_id || payload.session_id === sessionID) && payload.direction === 'outbound' && !streamingBubble) {
           hideThinking();
           if (payload.text) addMsg(payload.text, 'agent');
         }
         break;
+      case 'tool.start':
+        setRunActive(true, payload && payload.session_id);
+        if (mainView === 'chat') renderToolActivity(payload, 'started');
+        break;
+      case 'tool.progress':
+        if (mainView === 'chat') renderToolActivity(payload, 'progress');
+        break;
+      case 'tool.result':
+        if (mainView === 'chat') renderToolActivity(payload, 'result');
+        break;
+      case 'tool.error':
+        if (mainView === 'chat') renderToolActivity(payload, 'error');
+        break;
+      case 'turn.result':
+      case 'turn.finish':
+      case 'turn.error':
+        setRunActive(false, payload && payload.session_id);
+        if (!payload || toolSessionMatches(payload)) {
+          if (mainView === 'chat') finalizeStreaming();
+          loadSessions();
+          if (mainView === 'chat' && payload && payload.error) addMsg('⚠️ ' + payload.error, 'error-msg');
+        }
+        break;
       case 'exec.approval.requested':
-        if (payload) enqueueApproval(payload);
+        if (payload) enqueueApproval(payload, null, 'exec');
+        break;
+      case 'exec.approval.resolved':
+        if (payload && payload.id) {
+          approvalQueue = approvalQueue.filter(a => a.id !== payload.id);
+          if (currentApprovalID === payload.id) { currentApprovalID = null; currentApproval = null; showNextApproval(); }
+          updateApprovalBadge();
+        }
+        break;
+      case 'plugin.approval.requested':
+        if (payload) enqueueApproval(payload, null, 'plugin');
+        break;
+      case 'plugin.approval.resolved':
+        if (payload && (payload.id || payload.request_id || payload.approval_id)) {
+          const id = payload.id || payload.request_id || payload.approval_id;
+          approvalQueue = approvalQueue.filter(a => a.id !== id);
+          if (currentApprovalID === id) { currentApprovalID = null; currentApproval = null; showNextApproval(); }
+          updateApprovalBadge();
+        }
         break;
       case 'config.updated':
         addMsg('Config reloaded.', 'system');
@@ -1014,8 +2041,16 @@ const TOKEN   = '{{.Token}}';
               connected = true;
               reconnectDelay = 1500;
               setConnected(true, 'connected');
-              addMsg('Connected. Type /help for commands.', 'system');
               loadSidebar();
+              if (sessionID && mainView === 'chat') {
+                toolCards = {};
+                msgs.innerHTML = '';
+                addMsg('Resuming session history…', 'system');
+                updateRunControls();
+                loadSessionHistory(sessionID);
+              } else if (!sessionID && mainView === 'chat') {
+                addMsg(t('connected'), 'system');
+              }
             },
             reject: (err) => {
               setConnected(false, 'auth failed');
@@ -1042,6 +2077,7 @@ const TOKEN   = '{{.Token}}';
     ws.onclose = () => {
       connected = false;
       finalizeStreaming();
+      setRunActive(false);
       setConnected(null, 'reconnecting in ' + (reconnectDelay / 1000).toFixed(1) + 's…');
       pendingResolvers = {};
       hideThinking();
@@ -1055,48 +2091,119 @@ const TOKEN   = '{{.Token}}';
   // ── Sending messages ──────────────────────────────────────────────────────
   async function sendMessage() {
     const text = input.value.trim();
-    if (!text || !connected) return;
+    if (attachmentReadsPending > 0) { composerError('Attachments are still loading.'); return; }
+    if ((!text && !pendingAttachments.length) || !connected) return;
+    const attachments = pendingAttachments.slice();
+    attachmentReadGeneration++;
+    pendingAttachments = [];
+    renderAttachments();
+    saveInputHistory(text);
     input.value = '';
     input.style.height = '';
-    addMsg(text, 'user');
+    addMsg(text || `[${attachments.length} attachment(s)]`, 'user');
     sendBtn.disabled = true;
+    setRunActive(true, sessionID);
 
     // Show thinking indicator; streaming chunks will replace it.
     showThinking();
 
     try {
-      const result = await callMethod('chat.send', { message: text, session_id: sessionID || undefined });
+      const result = await callMethod('chat.send', { message: text, text, session_id: sessionID || undefined, attachments });
       if (result && result.session_id && result.session_id !== sessionID) {
         sessionID = result.session_id;
         localStorage.setItem('metiq_session', sessionID);
+        if (activeRun && !activeRunSessionID) activeRunSessionID = sessionID;
+        updateRunControls();
       }
       // If no streaming chunks arrived, render the final response from result.text.
       if (!streamingBubble && result && result.text) {
         hideThinking();
         addMsg(result.text, 'agent');
+        setRunActive(false, sessionID);
         loadSessions();
+      } else if (result && (result.done || result.completed || result.status === 'done')) {
+        setRunActive(false, sessionID);
       }
     } catch (err) {
       finalizeStreaming();
       hideThinking();
+      setRunActive(false, activeRunSessionID || sessionID);
       addMsg('⚠️ ' + (err && err.message ? err.message : 'Request failed'), 'error-msg');
     } finally {
-      sendBtn.disabled = !connected;
+      updateComposerState();
       input.focus();
     }
   }
 
   // ── Event listeners ───────────────────────────────────────────────────────
   sendBtn.addEventListener('click', sendMessage);
+  attachBtn.addEventListener('click', () => attachInput.click());
+  attachInput.addEventListener('change', () => { addFiles(attachInput.files); attachInput.value = ''; });
+  themeToggle.addEventListener('click', () => applyTheme(document.body.classList.contains('theme-light') ? 'dark' : 'light'));
+  localeSelect.addEventListener('change', () => {
+    locale = localeSelect.value || 'en';
+    localStorage.setItem('metiq_locale', locale);
+    applyLocale();
+  });
+  searchToggle.addEventListener('click', () => {
+    searchBox.classList.toggle('visible');
+    if (searchBox.classList.contains('visible')) searchBox.focus();
+  });
+  searchBox.addEventListener('keydown', e => {
+    if (e.key === 'Enter') searchChat(searchBox.value);
+    if (e.key === 'Escape') searchBox.classList.remove('visible');
+  });
+  exportChatBtn.addEventListener('click', exportChatMarkdown);
+  mobileMenuBtn.addEventListener('click', () => setSidebarOpen(!document.body.classList.contains('sidebar-open')));
+  sidebarBackdrop.addEventListener('click', () => setSidebarOpen(false));
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Escape') setSidebarOpen(false);
+  });
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 900) setSidebarOpen(false);
+  });
+  abortBtn.addEventListener('click', abortCurrentRun);
+  compactBtn.addEventListener('click', compactCurrentSession);
+  clearBtn.addEventListener('click', clearCurrentSession);
   input.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); slashMenu.classList.remove('visible'); sendMessage(); }
+    if (e.key === 'ArrowUp' && inputHistory.length && (!input.value || historyBrowsing)) {
+      e.preventDefault();
+      if (!historyBrowsing) inputHistoryIndex = inputHistory.length;
+      historyBrowsing = true;
+      inputHistoryIndex = Math.max(0, inputHistoryIndex - 1);
+      input.value = inputHistory[inputHistoryIndex] || '';
+    }
+    if (e.key === 'ArrowDown' && historyBrowsing) {
+      e.preventDefault();
+      inputHistoryIndex = Math.min(inputHistory.length, inputHistoryIndex + 1);
+      input.value = inputHistory[inputHistoryIndex] || '';
+      if (inputHistoryIndex >= inputHistory.length) historyBrowsing = false;
+    }
+    if (e.key === 'Escape') slashMenu.classList.remove('visible');
   });
   input.addEventListener('input', () => {
+    historyBrowsing = false;
     input.style.height = 'auto';
     input.style.height = input.scrollHeight + 'px';
+    renderSlashMenu();
+  });
+  document.querySelector('footer').addEventListener('dragover', e => { e.preventDefault(); e.currentTarget.classList.add('drag-over'); });
+  document.querySelector('footer').addEventListener('dragleave', e => { e.currentTarget.classList.remove('drag-over'); });
+  document.querySelector('footer').addEventListener('drop', e => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+    addFiles(e.dataTransfer && e.dataTransfer.files);
+  });
+  document.addEventListener('paste', e => {
+    if (document.activeElement !== input) return;
+    const files = e.clipboardData && e.clipboardData.files;
+    if (files && files.length) addFiles(files);
   });
 
   // ── Boot ──────────────────────────────────────────────────────────────────
+  applyTheme(localStorage.getItem('metiq_theme') || 'dark');
+  applyLocale();
   setConnected(null, 'connecting…');
   connect();
 })();

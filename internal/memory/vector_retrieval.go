@@ -98,6 +98,20 @@ func (b *SQLiteBackend) ConfigureVectorRetrieval(cfg MemoryVectorRetrievalConfig
 	return nil
 }
 
+// ConfigureVectorRetrievalProvider resolves a registered embedding provider and
+// installs it for vector retrieval. ConfigureVectorRetrieval remains available
+// for direct provider injection.
+func (b *SQLiteBackend) ConfigureVectorRetrievalProvider(cfg MemoryVectorRetrievalConfig, providerName string, opts map[string]any) error {
+	if !cfg.Enabled {
+		return b.ConfigureVectorRetrieval(cfg, nil)
+	}
+	provider, err := NewMemoryEmbeddingProvider(providerName, opts)
+	if err != nil {
+		return err
+	}
+	return b.ConfigureVectorRetrieval(cfg, provider)
+}
+
 func (b *SQLiteBackend) vectorRetrievalState() (MemoryVectorRetrievalConfig, MemoryEmbeddingProvider, EmbeddingProvider, bool) {
 	if b == nil {
 		return MemoryVectorRetrievalConfig{}, nil, EmbeddingProvider{}, false

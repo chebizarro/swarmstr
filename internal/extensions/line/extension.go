@@ -34,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -70,7 +71,7 @@ func (p *LINEPlugin) ConfigSchema() map[string]any {
 }
 
 func (p *LINEPlugin) Capabilities() sdk.ChannelCapabilities {
-	return sdk.ChannelCapabilities{MultiAccount: true}
+	return sdk.ChannelCapabilities{Typing: true, MultiAccount: true}
 }
 
 func (p *LINEPlugin) GatewayMethods() []sdk.GatewayMethod { return nil }
@@ -156,9 +157,11 @@ type lineSource struct {
 }
 
 type lineMessage struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
-	Text string `json:"text"`
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	ContentType string `json:"contentType,omitempty"`
+	FileName    string `json:"fileName,omitempty"`
 }
 
 // ─── Bot ──────────────────────────────────────────────────────────────────────
@@ -175,6 +178,7 @@ type lineBot struct {
 	// replyTokens stores the latest reply token per user for fast reply.
 	replyTokensMu sync.Mutex
 	replyTokens   map[string]string
+	lastSenderID  string
 }
 
 func (b *lineBot) ID() string { return b.channelID }
@@ -223,11 +227,27 @@ func (b *lineBot) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, ev := range wb.Events {
-		if ev.Type != "message" || ev.Message.Type != "text" {
+		if ev.Type != "message" {
 			continue
 		}
 		text := strings.TrimSpace(ev.Message.Text)
-		if text == "" {
+		mediaURL := ""
+		mediaMIME := ""
+		switch ev.Message.Type {
+		case "text":
+		case "image", "video", "audio", "file":
+			if strings.TrimSpace(ev.Message.ID) == "" {
+				continue
+			}
+			mediaURL = "line://message/" + ev.Message.ID + "/content"
+			mediaMIME = ev.Message.ContentType
+			if text == "" {
+				text = ev.Message.FileName
+			}
+		default:
+			continue
+		}
+		if text == "" && mediaURL == "" {
 			continue
 		}
 		senderID := ev.Source.UserID
@@ -242,6 +262,11 @@ func (b *lineBot) handlePush(w http.ResponseWriter, r *http.Request) {
 				b.replyTokens = map[string]string{}
 			}
 			b.replyTokens[senderID] = ev.ReplyToken
+			b.lastSenderID = senderID
+			b.replyTokensMu.Unlock()
+		} else {
+			b.replyTokensMu.Lock()
+			b.lastSenderID = senderID
 			b.replyTokensMu.Unlock()
 		}
 
@@ -251,6 +276,8 @@ func (b *lineBot) handlePush(w http.ResponseWriter, r *http.Request) {
 			Text:      text,
 			EventID:   ev.Message.ID,
 			CreatedAt: ev.Timestamp / 1000,
+			MediaURL:  mediaURL,
+			MediaMIME: mediaMIME,
 		})
 	}
 	w.WriteHeader(http.StatusOK)
@@ -259,6 +286,43 @@ func (b *lineBot) handlePush(w http.ResponseWriter, r *http.Request) {
 // Send posts a text message via LINE Messaging API.
 // Uses reply endpoint if a cached reply token exists; falls back to push.
 func (b *lineBot) Send(ctx context.Context, text string) error {
+	_, err := b.SendWithReceipt(ctx, text)
+	return err
+}
+
+func (b *lineBot) ResolveMedia(ctx context.Context, ref string) (channels.MediaBlob, error) {
+	id := strings.TrimSpace(strings.TrimPrefix(ref, "line://message/"))
+	id = strings.TrimSuffix(id, "/content")
+	if id == "" || id == ref {
+		return channels.MediaBlob{}, fmt.Errorf("line media: invalid content ref %q", ref)
+	}
+	apiURL := "https://api-data.line.me/v2/bot/message/" + id + "/content"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return channels.MediaBlob{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+b.accessToken)
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return channels.MediaBlob{}, fmt.Errorf("line media: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return channels.MediaBlob{}, fmt.Errorf("line media: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 25<<20+1))
+	if err != nil {
+		return channels.MediaBlob{}, err
+	}
+	if len(data) > 25<<20 {
+		return channels.MediaBlob{}, fmt.Errorf("line media: content exceeds 25MiB")
+	}
+	return channels.MediaBlob{URL: ref, MIME: resp.Header.Get("Content-Type"), Data: data}, nil
+}
+
+func (b *lineBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "line", Attempts: 1, CreatedAt: time.Now()}
 	// Prefer push to the first known user if no specific target.
 	// For proper per-user routing wire sdk.WithChannelReplyTarget.
 	replyTarget := sdk.ChannelReplyTarget(ctx)
@@ -272,16 +336,21 @@ func (b *lineBot) Send(ctx context.Context, text string) error {
 		}
 		b.replyTokensMu.Unlock()
 		if rt != "" {
-			return b.sendReply(ctx, rt, text)
+			err := b.sendReply(ctx, rt, text)
+			return finishLineReceipt(receipt, "", err)
 		}
-		return b.sendPush(ctx, replyTarget, text)
+		err := b.sendPush(ctx, replyTarget, text)
+		return finishLineReceipt(receipt, "", err)
 	}
 
 	// No target: best-effort reply using most-recently cached token.
 	b.replyTokensMu.Lock()
 	if len(b.replyTokens) != 1 {
 		b.replyTokensMu.Unlock()
-		return fmt.Errorf("line: ambiguous reply target; set channel reply target explicitly")
+		err := fmt.Errorf("line: ambiguous reply target; set channel reply target explicitly")
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
 	}
 	var onlyUser, onlyToken string
 	for u, t := range b.replyTokens {
@@ -293,9 +362,51 @@ func (b *lineBot) Send(ctx context.Context, text string) error {
 	b.replyTokensMu.Unlock()
 
 	if onlyToken != "" {
-		return b.sendReply(ctx, onlyToken, text)
+		err := b.sendReply(ctx, onlyToken, text)
+		return finishLineReceipt(receipt, "", err)
 	}
-	return fmt.Errorf("line: no reply token or push target available")
+	err := fmt.Errorf("line: no reply token or push target available")
+	receipt.Status = channels.DeliveryFailed
+	receipt.Error = err.Error()
+	return receipt, err
+}
+
+func finishLineReceipt(receipt channels.DeliveryReceipt, id string, err error) (channels.DeliveryReceipt, error) {
+	if id != "" {
+		receipt.MessageID = id
+	}
+	if err != nil {
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
+}
+
+func (b *lineBot) SendTyping(ctx context.Context, durationMS int) error {
+	chatID := sdk.ChannelReplyTarget(ctx)
+	if chatID == "" {
+		b.replyTokensMu.Lock()
+		chatID = b.lastSenderID
+		b.replyTokensMu.Unlock()
+	}
+	if chatID == "" {
+		return nil
+	}
+	seconds := 5
+	if durationMS > 0 {
+		seconds = durationMS / 1000
+		if seconds < 5 {
+			seconds = 5
+		}
+		if seconds > 60 {
+			seconds = 60
+		}
+	}
+	payload, _ := json.Marshal(map[string]any{"chatId": chatID, "loadingSeconds": seconds})
+	return b.lineAPI(ctx, "POST", "https://api.line.me/v2/bot/chat/loading/start", payload)
 }
 
 func (b *lineBot) sendReply(ctx context.Context, replyToken, text string) error {

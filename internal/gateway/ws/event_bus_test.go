@@ -67,6 +67,32 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 	}
 }
 
+func TestRuntimeCoalescesChatChunksUntilFlush(t *testing.T) {
+	c := &client{id: "c1", subscriptions: map[string]struct{}{EventChatChunk: {}}, eventQueue: make(chan any, 4), eventDone: make(chan struct{})}
+	r := &Runtime{opts: RuntimeOptions{DeltaCoalesceInterval: time.Hour}, clients: map[string]*client{"c1": c}, chatCoalesce: map[string]*chatChunkCoalescer{}}
+	r.Broadcast(EventChatChunk, ChatChunkPayload{SessionID: "sess", TurnID: "turn", Text: "hel", TS: 1})
+	r.Broadcast(EventChatChunk, ChatChunkPayload{SessionID: "sess", TurnID: "turn", Text: "lo", TS: 2})
+	select {
+	case frame := <-c.eventQueue:
+		t.Fatalf("chunk emitted before coalesce flush: %#v", frame)
+	default:
+	}
+	r.flushCoalescedChatChunk(chatChunkCoalesceKey("sess", "turn"))
+	select {
+	case frame := <-c.eventQueue:
+		m := frame.(map[string]any)
+		payload := m["payload"].(ChatChunkPayload)
+		if payload.Text != "hello" {
+			t.Fatalf("coalesced text = %q", payload.Text)
+		}
+		if m["seq"].(int64) != 1 {
+			t.Fatalf("seq = %#v", m["seq"])
+		}
+	default:
+		t.Fatal("expected coalesced chunk after flush")
+	}
+}
+
 func TestEmitTick(t *testing.T) {
 	e := &captureEmitter{}
 	start := time.Now().Add(-5 * time.Second)

@@ -261,6 +261,37 @@ func TestCompletionOpts_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPermissions_ArrayWildcardAndAPIInfo(t *testing.T) {
+	var perms Permissions
+	if err := json.Unmarshal([]byte(`["*", "storage"]`), &perms); err != nil {
+		t.Fatalf("unmarshal permissions: %v", err)
+	}
+	if !perms.Allows("http") || !perms.Allows("session") {
+		t.Fatalf("wildcard should allow all namespaces: %+v", perms)
+	}
+	info := perms.APIInfo()
+	if info.Version != HostAPIVersion || len(info.Namespaces) == 0 {
+		t.Fatalf("unexpected api info: %+v", info)
+	}
+}
+
+func TestPermissions_ObjectAllowsExpectedNamespaces(t *testing.T) {
+	var m Manifest
+	if err := json.Unmarshal([]byte(`{
+		"id":"p",
+		"version":"1.0.0",
+		"permissions":{"network":{"hosts":["example.com"]},"storage":true,"web_search":true}
+	}`), &m); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if !m.Permissions.Allows("http") || !m.Permissions.Allows("storage") || !m.Permissions.Allows("webSearch") {
+		t.Fatalf("expected network/storage/web search permissions: %+v", m.Permissions)
+	}
+	if m.Permissions.Allows("agent") {
+		t.Fatal("agent should not be allowed")
+	}
+}
+
 func TestChannelCapabilities_Defaults(t *testing.T) {
 	var caps ChannelCapabilities
 	if caps.Typing || caps.Reactions || caps.Threads || caps.Audio || caps.Edit || caps.MultiAccount || caps.E2EEncryption {

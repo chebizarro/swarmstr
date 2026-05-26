@@ -151,7 +151,7 @@ func (ft *FIPSTransport) Start() error {
 func (ft *FIPSTransport) SendDM(ctx context.Context, toPubKey string, text string) error {
 	pk, err := ParsePubKey(toPubKey)
 	if err != nil {
-		return fmt.Errorf("fips send: %w", err)
+		return newFIPSPermanentError(toPubKey, "parse pubkey", err)
 	}
 	hexPub := pk.Hex()
 
@@ -163,10 +163,10 @@ func (ft *FIPSTransport) SendDM(ctx context.Context, toPubKey string, text strin
 	}
 	payload, err := json.Marshal(env)
 	if err != nil {
-		return fmt.Errorf("fips send: marshal envelope: %w", err)
+		return newFIPSPermanentError(hexPub, "marshal envelope", err)
 	}
 	if len(payload) > fipsMaxPayloadBytes {
-		return fmt.Errorf("fips send: payload too large (%d bytes, max %d)", len(payload), fipsMaxPayloadBytes)
+		return newFIPSPermanentError(hexPub, "payload too large", fmt.Errorf("%d bytes, max %d", len(payload), fipsMaxPayloadBytes))
 	}
 
 	return ft.sendFrame(ctx, hexPub, fipsFrameDM, payload)
@@ -210,7 +210,7 @@ func (ft *FIPSTransport) Close() {
 func (ft *FIPSTransport) sendFrame(ctx context.Context, toPubkeyHex string, frameType fipsFrameType, payload []byte) error {
 	conn, err := ft.getOrDial(ctx, toPubkeyHex)
 	if err != nil {
-		return fmt.Errorf("fips send: dial %s: %w", toPubkeyHex[:12], err)
+		return classifyFIPSError(ctx, toPubkeyHex, "dial", FIPSErrorKindTransport, err)
 	}
 
 	// Populate identity cache for the return path.
@@ -230,11 +230,14 @@ func (ft *FIPSTransport) sendFrame(ctx context.Context, toPubkeyHex string, fram
 	}
 
 	if _, err := conn.Write(frame); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		// Connection broken — evict from pool and retry once.
 		ft.evictConn(toPubkeyHex)
 		conn2, err2 := ft.getOrDial(ctx, toPubkeyHex)
 		if err2 != nil {
-			return fmt.Errorf("fips send: reconnect to %s: %w", toPubkeyHex[:12], err2)
+			return classifyFIPSError(ctx, toPubkeyHex, "reconnect", FIPSErrorKindTransport, err2)
 		}
 		if deadline, ok := ctx.Deadline(); ok {
 			conn2.SetWriteDeadline(deadline)
@@ -243,7 +246,7 @@ func (ft *FIPSTransport) sendFrame(ctx context.Context, toPubkeyHex string, fram
 		}
 		if _, err3 := conn2.Write(frame); err3 != nil {
 			ft.evictConn(toPubkeyHex)
-			return fmt.Errorf("fips send: write retry to %s: %w", toPubkeyHex[:12], err3)
+			return classifyFIPSError(ctx, toPubkeyHex, "write retry", FIPSErrorKindTransport, err3)
 		}
 	}
 
@@ -270,7 +273,7 @@ func (ft *FIPSTransport) getOrDial(ctx context.Context, toPubkeyHex string) (net
 	// Dial a new connection.
 	addr, err := FIPSAddrString(toPubkeyHex, ft.agentPort)
 	if err != nil {
-		return nil, err
+		return nil, newFIPSPermanentError(toPubkeyHex, "derive address", err)
 	}
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, ft.dialTTL)
@@ -279,7 +282,7 @@ func (ft *FIPSTransport) getOrDial(ctx context.Context, toPubkeyHex string) (net
 	var d net.Dialer
 	conn, err := d.DialContext(dialCtx, "tcp6", addr)
 	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", addr, err)
+		return nil, classifyFIPSError(ctx, toPubkeyHex, "dial "+addr, FIPSErrorKindTransport, err)
 	}
 
 	ft.connMu.Lock()

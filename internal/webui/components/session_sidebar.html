@@ -1,0 +1,29 @@
+<aside class="sidebar" data-component="session-sidebar">
+  <div class="sidebar-tabs">
+    <button class="tab-btn active" data-tab="sessions" data-view="chat">Sessions</button>
+    <button class="tab-btn" data-tab="channels" data-view="channels">Channels</button>
+    <button class="tab-btn" data-tab="agents" data-view="agents">Agents</button>
+    <button class="tab-btn" data-tab="dashboard" data-view="dashboard">Dashboard</button>
+    <button class="tab-btn" data-tab="config" data-view="config">Config</button>
+    <button class="tab-btn" data-tab="usage" data-view="usage">Usage</button>
+  </div>
+  <div class="tab-panel active" id="tab-sessions">
+    <button class="new-session-btn" id="new-session-btn">+ New session</button>
+    <div id="sessions-list"><div class="sidebar-empty">Loading…</div></div>
+  </div>
+  <div class="tab-panel" id="tab-channels">
+    <div id="channels-list"><div class="sidebar-empty">Loading…</div></div>
+  </div>
+  <div class="tab-panel" id="tab-agents">
+    <div id="agents-list"><div class="sidebar-empty">Loading…</div></div>
+  </div>
+  <div class="tab-panel" id="tab-dashboard">
+    <div class="sidebar-empty">Overview, status, and recent activity</div>
+  </div>
+  <div class="tab-panel" id="tab-config">
+    <div class="sidebar-empty">Schema-guided configuration</div>
+  </div>
+  <div class="tab-panel" id="tab-usage">
+    <div class="sidebar-empty">Cost and token metrics</div>
+  </div>
+</aside>

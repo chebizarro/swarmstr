@@ -38,6 +38,7 @@ type UnifiedRegistry struct {
 
 	generic *GenericCapabilityRegistry
 	plugins map[string]*PluginRecord
+	closed  bool
 }
 
 func NewUnifiedRegistry() *UnifiedRegistry {
@@ -60,6 +61,22 @@ func NewUnifiedRegistry() *UnifiedRegistry {
 		generic:                NewGenericCapabilityRegistry(),
 		plugins:                map[string]*PluginRecord{},
 	}
+}
+
+// CloseRegistrationWindow prevents further capability registrations. Daemon
+// startup calls this after synchronous plugin loading so late/async registerX
+// attempts fail deterministically instead of racing the live capability graph.
+// UnregisterPlugin remains allowed for unload/disable workflows.
+func (r *UnifiedRegistry) CloseRegistrationWindow() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+}
+
+func (r *UnifiedRegistry) RegistrationClosed() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.closed
 }
 
 // RegisterFromOpenClawPlugin processes captured registerX metadata from a
@@ -100,6 +117,9 @@ func (r *UnifiedRegistry) registerRegistrations(pluginID, name, version string, 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return fmt.Errorf("plugin registration window is closed")
+	}
 
 	if _, exists := r.plugins[pluginID]; exists {
 		r.unregisterPluginLocked(pluginID)
@@ -131,6 +151,9 @@ func (r *UnifiedRegistry) RegisterNativeChannel(p sdk.ChannelPlugin) error {
 	pluginID := nativeChannelPluginPrefix + p.ID()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return fmt.Errorf("plugin registration window is closed")
+	}
 	if _, exists := r.plugins[pluginID]; exists {
 		r.unregisterPluginLocked(pluginID)
 	}

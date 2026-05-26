@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
+
+	"metiq/internal/secrets"
 )
 
 // ─── hooks ────────────────────────────────────────────────────────────────────
@@ -30,7 +33,7 @@ func runHooksList(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -77,7 +80,7 @@ func runHooksList(args []string) error {
 
 func runSecrets(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "secrets subcommands: list, get, set\n")
+		fmt.Fprintf(os.Stderr, "secrets subcommands: list, get, set, migrate\n")
 		return fmt.Errorf("missing subcommand")
 	}
 	switch args[0] {
@@ -87,8 +90,10 @@ func runSecrets(args []string) error {
 		return runSecretsGet(args[1:])
 	case "set":
 		return runSecretsSet(args[1:])
+	case "migrate":
+		return runSecretsMigrate(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "secrets subcommands: list, get, set\n")
+		fmt.Fprintf(os.Stderr, "secrets subcommands: list, get, set, migrate\n")
 		return fmt.Errorf("unknown subcommand: %s", args[0])
 	}
 }
@@ -195,4 +200,43 @@ func runSecretsSet(args []string) error {
 
 	_ = value
 	return fmt.Errorf("secrets set is not supported by the daemon API; set %q in your environment or .env and run `metiq secrets list` (reload)", key)
+}
+
+func runSecretsMigrate(args []string) error {
+	fs := flag.NewFlagSet("secrets migrate", flag.ContinueOnError)
+	var configPath string
+	var jsonOut bool
+	fs.StringVar(&configPath, "config", "", "config JSON file to scan")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "print migration plan as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if configPath == "" && fs.NArg() > 0 {
+		configPath = fs.Arg(0)
+	}
+	if configPath == "" {
+		return fmt.Errorf("usage: metiq secrets migrate --config <config.json> [--json]")
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	plan := secrets.PlanMigration(root)
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(plan)
+	}
+	if len(plan.Changes) == 0 {
+		fmt.Println("no inline secrets detected")
+		return nil
+	}
+	for _, change := range plan.Changes {
+		fmt.Printf("%s -> %s (store as %s)\n", change.Path, change.Replacement, change.SecretName)
+	}
+	return nil
 }

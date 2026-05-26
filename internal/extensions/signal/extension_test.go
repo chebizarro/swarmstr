@@ -81,29 +81,12 @@ func newTestSignalServer(handler http.Handler) (*httptest.Server, *signalBot) {
 
 func TestReceive_JSONArray(t *testing.T) {
 	var delivered []sdk.InboundChannelMessage
-	envelopes := []signalEnvelope{
-		{Envelope: struct {
-			Source      string `json:"source"`
-			Timestamp   int64  `json:"timestamp"`
-			DataMessage *struct {
-				Message   string `json:"message"`
-				Timestamp int64  `json:"timestamp"`
-			} `json:"dataMessage"`
-		}{
-			Source:    "+15559876543",
-			Timestamp: 1000,
-			DataMessage: &struct {
-				Message   string `json:"message"`
-				Timestamp int64  `json:"timestamp"`
-			}{Message: "hello signal", Timestamp: 1000},
-		}},
-	}
+	rawEnvelopes := `[{"envelope":{"source":"+15559876543","timestamp":1000,"dataMessage":{"message":"hello signal","timestamp":1000}}}]`
 
 	srv, bot := newTestSignalServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/v1/receive/") {
-			raw, _ := json.Marshal(envelopes)
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(raw)
+			_, _ = w.Write([]byte(rawEnvelopes))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -182,6 +165,45 @@ func TestReceive_AllowedSendersFilter(t *testing.T) {
 
 	if len(delivered) != 1 || delivered[0].SenderID != "+allowed" {
 		t.Fatalf("expected only +allowed, got %+v", delivered)
+	}
+}
+
+func TestReceive_AttachmentMetadata(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	srv, bot := newTestSignalServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/v1/receive/") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"envelope":{"source":"+111","timestamp":3,"dataMessage":{"message":"photo","timestamp":3,"attachments":[{"id":"att-1","contentType":"image/png"}]}}}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	bot.onMessage = func(m sdk.InboundChannelMessage) { delivered = append(delivered, m) }
+	if err := bot.receive(context.Background()); err != nil {
+		t.Fatalf("receive: %v", err)
+	}
+	if len(delivered) != 1 || delivered[0].MediaURL != "signal://attachment/att-1" || delivered[0].MediaMIME != "image/png" {
+		t.Fatalf("expected media metadata, got %+v", delivered)
+	}
+}
+
+func TestResolveMedia_DownloadsAttachment(t *testing.T) {
+	srv, bot := newTestSignalServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/attachments/att-1" {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("png-data"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	blob, err := bot.ResolveMedia(context.Background(), "signal://attachment/att-1")
+	if err != nil {
+		t.Fatalf("ResolveMedia: %v", err)
+	}
+	if blob.MIME != "image/png" || string(blob.Data) != "png-data" {
+		t.Fatalf("unexpected blob: %+v", blob)
 	}
 }
 

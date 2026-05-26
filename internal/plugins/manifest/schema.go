@@ -456,12 +456,21 @@ var semverPattern = regexp.MustCompile(`^\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?(\+[a-zA
 
 // ValidationError represents a manifest validation failure.
 type ValidationError struct {
-	Field   string `json:"field"`
-	Message string `json:"message"`
+	Field         string   `json:"field"`
+	Message       string   `json:"message"`
+	AllowedValues []string `json:"allowed_values,omitempty"`
+	Hint          string   `json:"hint,omitempty"`
 }
 
 func (e ValidationError) Error() string {
-	return fmt.Sprintf("%s: %s", e.Field, e.Message)
+	msg := fmt.Sprintf("%s: %s", e.Field, e.Message)
+	if len(e.AllowedValues) > 0 {
+		msg += fmt.Sprintf(" (allowed: %s)", strings.Join(e.AllowedValues, ", "))
+	}
+	if e.Hint != "" {
+		msg += "; hint: " + e.Hint
+	}
+	return msg
 }
 
 // ValidationErrors is a collection of validation errors.
@@ -492,8 +501,10 @@ func Validate(m *Manifest) error {
 	// Schema version
 	if m.SchemaVersion < MinSupportedVersion {
 		errs = append(errs, ValidationError{
-			Field:   "schema_version",
-			Message: fmt.Sprintf("must be >= %d (got %d)", MinSupportedVersion, m.SchemaVersion),
+			Field:         "schema_version",
+			Message:       fmt.Sprintf("must be >= %d (got %d)", MinSupportedVersion, m.SchemaVersion),
+			AllowedValues: []string{fmt.Sprintf(">=%d", MinSupportedVersion)},
+			Hint:          "set schema_version to the current manifest schema version",
 		})
 	}
 
@@ -520,8 +531,10 @@ func Validate(m *Manifest) error {
 	// Runtime
 	if !m.Runtime.Valid() {
 		errs = append(errs, ValidationError{
-			Field:   "runtime",
-			Message: fmt.Sprintf("must be one of: goja, node, native (got %q)", m.Runtime),
+			Field:         "runtime",
+			Message:       fmt.Sprintf("must be one of: goja, node, native (got %q)", m.Runtime),
+			AllowedValues: []string{string(RuntimeGoja), string(RuntimeNode), string(RuntimeNative)},
+			Hint:          "choose the runtime that matches the plugin entry point",
 		})
 	}
 

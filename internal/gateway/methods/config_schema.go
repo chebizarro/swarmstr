@@ -39,6 +39,8 @@ func ConfigSchema(cfg ...state.ConfigDoc) map[string]any {
 			"plugins.installs.<id>",
 			"plugins.installs.<id>.source",
 			"plugins.installs.<id>.spec",
+			"plugins.installs.<id>.url",
+			"plugins.installs.<id>.ref",
 			"plugins.installs.<id>.sourcePath",
 			"plugins.installs.<id>.installPath",
 			"plugins.installs.<id>.version",

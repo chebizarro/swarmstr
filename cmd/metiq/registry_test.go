@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/fatih/color"
 )
 
 func TestCommandRegistryDispatchesAliases(t *testing.T) {
@@ -23,6 +25,33 @@ func TestCommandRegistryDispatchesAliases(t *testing.T) {
 	}
 	if !handled || !called {
 		t.Fatalf("expected alias dispatch to run handler")
+	}
+}
+
+func TestCommandRegistryConsumesGlobalFlags(t *testing.T) {
+	oldJSON := cliGlobalJSON
+	oldNoColor := cliNoColor
+	oldColor := color.NoColor
+	defer func() { cliGlobalJSON = oldJSON; cliNoColor = oldNoColor; color.NoColor = oldColor }()
+	cliGlobalJSON = false
+	cliNoColor = false
+
+	var gotArgs []string
+	r := &commandRegistry{byName: map[string]*cliCommand{}}
+	r.add(cliCommand{Name: "primary", Run: func(args []string) error {
+		gotArgs = append([]string(nil), args...)
+		return nil
+	}})
+
+	handled, err := r.dispatch([]string{"--json", "primary", "--no-color", "arg"})
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+	if !handled || !cliGlobalJSON || !cliNoColor {
+		t.Fatalf("expected global flags to be consumed and applied")
+	}
+	if len(gotArgs) != 1 || gotArgs[0] != "arg" {
+		t.Fatalf("unexpected command args: %#v", gotArgs)
 	}
 }
 

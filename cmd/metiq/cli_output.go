@@ -5,11 +5,27 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/fatih/color"
 	"metiq/internal/logging"
 )
 
 // CLI Output Helpers with Cyberwave Theme
 // These functions provide colored, themed output for the metiq CLI.
+
+var (
+	cliGlobalJSON bool
+	cliNoColor    bool
+)
+
+func jsonFlagDefault() bool { return cliGlobalJSON }
+
+func applyCLIOutputMode() {
+	if !cliNoColor {
+		return
+	}
+	color.NoColor = true
+	_ = os.Setenv("NO_COLOR", "1")
+}
 
 // ─── Styled Output ────────────────────────────────────────────────────────────
 

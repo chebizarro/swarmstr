@@ -72,6 +72,12 @@ type AssembleResult struct {
 	// as non-cacheable prompt material so per-turn context churn does not bust
 	// the reusable system-prompt cache prefix.
 	SystemPromptAddition string `json:"system_prompt_addition,omitempty"`
+	// ContextProjection describes whether this assembly should be projected into
+	// the model call every turn or can be treated as persistent bootstrap context
+	// by runtimes with backend threads.
+	ContextProjection *ContextProjection `json:"context_projection,omitempty"`
+	// PromptCache reports basic cache-stability telemetry for this assembly.
+	PromptCache *PromptCacheInfo `json:"prompt_cache,omitempty"`
 }
 
 // IngestResult is returned by Engine.Ingest().
@@ -183,11 +189,12 @@ func (NoOpCompact) Compact(_ context.Context, _ string) (CompactResult, error) {
 // N messages without any compaction.
 type WindowedEngine struct {
 	NoOpCompact
-	mu           sync.Mutex
-	sessions     map[string][]Message
-	summaries    map[string]string
-	maxMsgs      int
-	activeRecall ActiveRecallProvider
+	mu              sync.Mutex
+	sessions        map[string][]Message
+	summaries       map[string]string
+	promptCacheLast map[string]string
+	maxMsgs         int
+	activeRecall    ActiveRecallProvider
 }
 
 // NewWindowedEngine creates a WindowedEngine keeping up to maxMsgs messages per session.
@@ -195,7 +202,7 @@ func NewWindowedEngine(maxMsgs int) *WindowedEngine {
 	if maxMsgs <= 0 {
 		maxMsgs = 50
 	}
-	return &WindowedEngine{sessions: map[string][]Message{}, summaries: map[string]string{}, maxMsgs: maxMsgs}
+	return &WindowedEngine{sessions: map[string][]Message{}, summaries: map[string]string{}, promptCacheLast: map[string]string{}, maxMsgs: maxMsgs}
 }
 
 func (e *WindowedEngine) SetActiveRecallProvider(provider ActiveRecallProvider) {
@@ -256,6 +263,7 @@ func (e *WindowedEngine) Assemble(ctx context.Context, sessionID string, _ int) 
 			}
 		}
 	}
+	e.annotateAssembleResult(sessionID, &result)
 	return result, nil
 }
 
@@ -278,6 +286,7 @@ func (e *WindowedEngine) Bootstrap(_ context.Context, sessionID string, messages
 	}
 	e.sessions[sessionID] = msgs
 	delete(e.summaries, sessionID)
+	delete(e.promptCacheLast, sessionID)
 	return BootstrapResult{Bootstrapped: true, ImportedMessages: len(msgs)}, nil
 }
 

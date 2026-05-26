@@ -30,6 +30,10 @@ type Step struct {
 	ParentContext *ParentContext `json:"parent_context,omitempty"`
 	// TimeoutMS is the per-step timeout in milliseconds.  0 = 60 s default.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
+	// Artifacts are typed inputs made available to this step.
+	Artifacts []ArtifactPayload `json:"artifacts,omitempty"`
+	// Label is an optional human-readable step name for task records.
+	Label string `json:"label,omitempty"`
 }
 
 // PipelineResult captures the outcome of a single pipeline step.
@@ -50,6 +54,8 @@ type PipelineResult struct {
 	TokensUsed int `json:"tokens_used,omitempty"`
 	// CompletedAt is the worker-reported completion timestamp.
 	CompletedAt int64 `json:"completed_at,omitempty"`
+	// Artifacts are typed outputs produced by this step.
+	Artifacts []ArtifactPayload `json:"artifacts,omitempty"`
 }
 
 // SendFunc is the callback that actually sends an ACP task DM.
@@ -60,6 +66,15 @@ type SendFunc func(ctx context.Context, peerPubKey, taskID string, payload TaskP
 // Pipeline orchestrates a sequence of ACP sub-tasks.
 type Pipeline struct {
 	Steps []Step
+	// FlowRegistry, when set, records pipeline orchestration state with
+	// wait/resume/block-capable FlowRecord semantics.
+	FlowRegistry *FlowRegistry
+	// FlowID optionally reuses an existing flow record; otherwise one is created.
+	FlowID string
+	// OwnerSessionKey identifies the parent/supervisor session for flow queries.
+	OwnerSessionKey string
+	// Goal describes the pipeline objective in the flow record.
+	Goal string
 }
 
 // stepTimeout returns the effective per-step deadline.
@@ -75,21 +90,32 @@ func stepTimeout(ms int64) time.Duration {
 // It blocks until all steps complete or the context is cancelled.
 func (p *Pipeline) RunSequential(ctx context.Context, d *Dispatcher, send SendFunc) ([]PipelineResult, error) {
 	results := make([]PipelineResult, 0, len(p.Steps))
+	flowID, _ := p.ensureFlow(ctx)
 	var prevResult string
+	var prevArtifacts []ArtifactPayload
+	var allArtifacts []ArtifactPayload
 
 	for i, step := range p.Steps {
 		taskID := GenerateTaskID()
+		p.markFlowRunning(ctx, flowID, i)
 
-		// Optionally prepend previous result as context.
+		// Optionally prepend previous result as legacy text context while also
+		// passing it as a typed artifact for ACP-aware workers.
 		instructions := step.Instructions
 		if prevResult != "" {
 			instructions = "[Previous result]\n" + prevResult + "\n\n[New task]\n" + instructions
 		}
+		stepArtifacts := append(cloneArtifacts(prevArtifacts), cloneArtifacts(step.Artifacts)...)
 
 		if step.Task != nil && strings.TrimSpace(step.Task.TaskID) != "" {
 			taskID = strings.TrimSpace(step.Task.TaskID)
 		}
-		ch := d.Register(taskID)
+		ch, err := d.RegisterTaskWithError(ctx, TaskRecord{TaskID: taskID, FlowID: flowID, StepIndex: i, RequesterSessionKey: p.OwnerSessionKey, Instructions: instructions, Label: step.Label, Worker: &WorkerTaskMetadata{PubKey: step.PeerPubKey}, Artifacts: stepArtifacts})
+		if err != nil {
+			p.blockFlow(ctx, flowID, taskID, err.Error())
+			return results, fmt.Errorf("pipeline step %d register: %w", i, err)
+		}
+		p.appendFlowTask(ctx, flowID, taskID)
 		if err := send(ctx, step.PeerPubKey, taskID, TaskPayload{
 			Instructions:    instructions,
 			Task:            step.Task,
@@ -99,10 +125,13 @@ func (p *Pipeline) RunSequential(ctx context.Context, d *Dispatcher, send SendFu
 			EnabledTools:    cloneStrings(step.EnabledTools),
 			ParentContext:   cloneParentContext(step.ParentContext),
 			TimeoutMS:       step.TimeoutMS,
+			Artifacts:       stepArtifacts,
 		}); err != nil {
 			d.Cancel(taskID)
+			p.blockFlow(ctx, flowID, taskID, err.Error())
 			return results, fmt.Errorf("pipeline step %d send: %w", i, err)
 		}
+		d.MarkRunning(ctx, taskID)
 
 		res, err := d.Wait(ctx, taskID, stepTimeout(step.TimeoutMS))
 		_ = ch // ch was consumed by Wait
@@ -110,17 +139,23 @@ func (p *Pipeline) RunSequential(ctx context.Context, d *Dispatcher, send SendFu
 			results = append(results, PipelineResult{
 				StepIndex: i, TaskID: taskID, Error: err.Error(),
 			})
+			p.blockFlow(ctx, flowID, taskID, err.Error())
 			return results, fmt.Errorf("pipeline step %d: %w", i, err)
 		}
 
+		artifacts := resultArtifacts(res)
 		results = append(results, PipelineResult{
-			StepIndex: i, TaskID: taskID, Text: res.Text, Error: res.Error, SenderPubKey: res.SenderPubKey, Worker: cloneWorkerMetadata(res.Worker), TokensUsed: res.TokensUsed, CompletedAt: res.CompletedAt,
+			StepIndex: i, TaskID: taskID, Text: res.Text, Error: res.Error, SenderPubKey: res.SenderPubKey, Worker: cloneWorkerMetadata(res.Worker), TokensUsed: res.TokensUsed, CompletedAt: res.CompletedAt, Artifacts: artifacts,
 		})
 		if res.Error != "" {
+			p.blockFlow(ctx, flowID, taskID, res.Error)
 			return results, fmt.Errorf("pipeline step %d worker error: %s", i, res.Error)
 		}
 		prevResult = res.Text
+		prevArtifacts = artifacts
+		allArtifacts = append(allArtifacts, cloneArtifacts(artifacts)...)
 	}
+	p.finishFlow(ctx, flowID, allArtifacts)
 	return results, nil
 }
 
@@ -130,6 +165,8 @@ func (p *Pipeline) RunSequential(ctx context.Context, d *Dispatcher, send SendFu
 func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc) ([]PipelineResult, error) {
 	results := make([]PipelineResult, len(p.Steps))
 	taskIDs := make([]string, len(p.Steps))
+	flowID, _ := p.ensureFlow(ctx)
+	p.markFlowRunning(ctx, flowID, 0)
 
 	// Register and dispatch all tasks.
 	for i, step := range p.Steps {
@@ -138,7 +175,12 @@ func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc
 			taskID = strings.TrimSpace(step.Task.TaskID)
 		}
 		taskIDs[i] = taskID
-		d.Register(taskID)
+		stepArtifacts := cloneArtifacts(step.Artifacts)
+		if _, err := d.RegisterTaskWithError(ctx, TaskRecord{TaskID: taskID, FlowID: flowID, StepIndex: i, RequesterSessionKey: p.OwnerSessionKey, Instructions: step.Instructions, Label: step.Label, Worker: &WorkerTaskMetadata{PubKey: step.PeerPubKey}, Artifacts: stepArtifacts}); err != nil {
+			p.blockFlow(ctx, flowID, taskID, err.Error())
+			return nil, fmt.Errorf("pipeline step %d register: %w", i, err)
+		}
+		p.appendFlowTask(ctx, flowID, taskID)
 		if err := send(ctx, step.PeerPubKey, taskID, TaskPayload{
 			Instructions:    step.Instructions,
 			Task:            step.Task,
@@ -148,7 +190,9 @@ func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc
 			EnabledTools:    cloneStrings(step.EnabledTools),
 			ParentContext:   cloneParentContext(step.ParentContext),
 			TimeoutMS:       step.TimeoutMS,
+			Artifacts:       stepArtifacts,
 		}); err != nil {
+			p.blockFlow(ctx, flowID, taskID, err.Error())
 			// Cancel all already-registered sibling tasks on send failure.
 			for j := 0; j <= i; j++ {
 				if taskIDs[j] != "" {
@@ -157,6 +201,7 @@ func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc
 			}
 			return nil, fmt.Errorf("pipeline step %d send: %w", i, err)
 		}
+		d.MarkRunning(ctx, taskID)
 	}
 
 	// Wait for all results concurrently.
@@ -178,7 +223,8 @@ func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc
 					firstErr = err
 				}
 			} else {
-				results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Text: res.Text, Error: res.Error, SenderPubKey: res.SenderPubKey, Worker: cloneWorkerMetadata(res.Worker), TokensUsed: res.TokensUsed, CompletedAt: res.CompletedAt}
+				artifacts := resultArtifacts(res)
+				results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Text: res.Text, Error: res.Error, SenderPubKey: res.SenderPubKey, Worker: cloneWorkerMetadata(res.Worker), TokensUsed: res.TokensUsed, CompletedAt: res.CompletedAt, Artifacts: artifacts}
 				if res.Error != "" && firstErr == nil {
 					firstErr = fmt.Errorf("pipeline step %d worker error: %s", i, res.Error)
 				}
@@ -186,6 +232,15 @@ func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc
 		}()
 	}
 	wg.Wait()
+	if firstErr != nil {
+		p.failFlow(ctx, flowID, firstErr.Error())
+	} else {
+		var allArtifacts []ArtifactPayload
+		for _, result := range results {
+			allArtifacts = append(allArtifacts, cloneArtifacts(result.Artifacts)...)
+		}
+		p.finishFlow(ctx, flowID, allArtifacts)
+	}
 	return results, firstErr
 }
 
@@ -199,6 +254,66 @@ func AggregateResults(results []PipelineResult) string {
 		}
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func (p *Pipeline) ensureFlow(ctx context.Context) (string, error) {
+	if p == nil || p.FlowRegistry == nil {
+		return "", nil
+	}
+	flowID := strings.TrimSpace(p.FlowID)
+	if flowID != "" {
+		if rec, err := p.FlowRegistry.Get(ctx, flowID); err != nil {
+			return "", err
+		} else if rec != nil {
+			return flowID, nil
+		}
+	} else {
+		flowID = GenerateFlowID()
+		p.FlowID = flowID
+	}
+	_, err := p.FlowRegistry.Create(ctx, FlowRecord{FlowID: flowID, OwnerSessionKey: p.OwnerSessionKey, Goal: p.Goal, Status: FlowStatusQueued})
+	return flowID, err
+}
+
+func (p *Pipeline) markFlowRunning(ctx context.Context, flowID string, step int) {
+	if p != nil && p.FlowRegistry != nil && strings.TrimSpace(flowID) != "" {
+		_, _ = p.FlowRegistry.Start(ctx, flowID, step)
+	}
+}
+
+func (p *Pipeline) appendFlowTask(ctx context.Context, flowID, taskID string) {
+	if p != nil && p.FlowRegistry != nil && strings.TrimSpace(flowID) != "" {
+		_, _ = p.FlowRegistry.AppendTask(ctx, flowID, taskID)
+	}
+}
+
+func (p *Pipeline) blockFlow(ctx context.Context, flowID, taskID, summary string) {
+	if p != nil && p.FlowRegistry != nil && strings.TrimSpace(flowID) != "" {
+		_, _ = p.FlowRegistry.Block(ctx, flowID, taskID, summary)
+	}
+}
+
+func (p *Pipeline) failFlow(ctx context.Context, flowID, summary string) {
+	if p != nil && p.FlowRegistry != nil && strings.TrimSpace(flowID) != "" {
+		_, _ = p.FlowRegistry.Fail(ctx, flowID, summary)
+	}
+}
+
+func (p *Pipeline) finishFlow(ctx context.Context, flowID string, artifacts []ArtifactPayload) {
+	if p != nil && p.FlowRegistry != nil && strings.TrimSpace(flowID) != "" {
+		_, _ = p.FlowRegistry.Finish(ctx, flowID, artifacts)
+	}
+}
+
+func resultArtifacts(res TaskResult) []ArtifactPayload {
+	if len(res.Artifacts) > 0 {
+		return cloneArtifacts(res.Artifacts)
+	}
+	if strings.TrimSpace(res.Text) == "" {
+		return nil
+	}
+	artifact := ArtifactPayload{Type: "text", Text: res.Text}.Normalize()
+	return []ArtifactPayload{artifact}
 }
 
 func cloneStrings(items []string) []string {
@@ -250,6 +365,7 @@ func cloneWorkerMetadata(worker *WorkerMetadata) *WorkerMetadata {
 		ParentContext:   cloneParentContext(worker.ParentContext),
 		HistoryEntryIDs: cloneStrings(worker.HistoryEntryIDs),
 		Result:          worker.Result,
+		TransportUsed:   worker.TransportUsed,
 	}
 	if worker.TurnResult != nil {
 		turnResult := *worker.TurnResult

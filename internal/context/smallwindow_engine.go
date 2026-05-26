@@ -131,8 +131,9 @@ type SmallWindowEngine struct {
 }
 
 type swSession struct {
-	messages []Message
-	summary  string // LLM-generated session summary
+	messages        []Message
+	summary         string // LLM-generated session summary
+	promptCacheLast string
 }
 
 // NewSmallWindowEngine creates a SmallWindowEngine for the given tier.
@@ -173,6 +174,7 @@ func (e *SmallWindowEngine) Assemble(_ stdctx.Context, sessionID string, maxToke
 		if sess.summary != "" {
 			result.SystemPromptAddition = sess.summary
 		}
+		e.annotateAssembleResultLocked(sess, &result)
 		return result, nil
 	}
 
@@ -198,6 +200,7 @@ func (e *SmallWindowEngine) Assemble(_ stdctx.Context, sessionID string, maxToke
 	if sess.summary != "" {
 		result.SystemPromptAddition = sess.summary
 	}
+	e.annotateAssembleResultLocked(sess, &result)
 	return result, nil
 }
 
@@ -216,6 +219,7 @@ func (e *SmallWindowEngine) Bootstrap(_ stdctx.Context, sessionID string, messag
 
 	sess.messages = msgs
 	sess.summary = ""
+	sess.promptCacheLast = ""
 	return BootstrapResult{Bootstrapped: true, ImportedMessages: len(msgs)}, nil
 }
 

@@ -137,7 +137,7 @@ func runSkillsList(args []string) error {
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
 	fs.StringVar(&agentID, "agent", "", "agent id")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -196,7 +196,7 @@ func runSkillsCheck(args []string) error {
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
 	fs.StringVar(&agentID, "agent", "", "agent id")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -260,7 +260,7 @@ func runSkillsInfo(args []string) error {
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
 	fs.StringVar(&agentID, "agent", "", "agent id")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -314,7 +314,7 @@ func runSkillsInstall(args []string) error {
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
 	fs.StringVar(&installID, "install-id", "", "installer option id")
 	fs.StringVar(&agentID, "agent", "main", "agent id")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -361,7 +361,7 @@ func runSkillsSetEnabled(args []string, enabled bool) error {
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
 	fs.StringVar(&agentID, "agent", "main", "agent id")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

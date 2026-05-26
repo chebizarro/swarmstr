@@ -19,6 +19,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -54,33 +56,51 @@ type PromotionConfig struct {
 
 	// SummaryModel is the LLM model to use for summaries (default: "").
 	SummaryModel string `json:"summary_model,omitempty"`
+
+	// MemoryFileBudgetChars caps auto-promoted memory file sections. User-authored
+	// content outside auto-promotion markers is preserved. Default: 10000.
+	MemoryFileBudgetChars int `json:"memory_file_budget_chars,omitempty"`
+
+	// PromotionFilePath optionally points at a MEMORY.md-style file where
+	// promoted memories are appended as auto-promoted sections and compacted to
+	// MemoryFileBudgetChars.
+	PromotionFilePath string `json:"promotion_file_path,omitempty"`
+
+	// DreamingPhases enables light/REM phase reporting around promotion sweeps.
+	DreamingPhases bool `json:"dreaming_phases,omitempty"`
+
+	// DreamingNarratives enables deterministic narrative reports for phase runs.
+	DreamingNarratives bool `json:"dreaming_narratives,omitempty"`
 }
 
 // DefaultPromotionConfig returns sensible defaults.
 func DefaultPromotionConfig() PromotionConfig {
 	return PromotionConfig{
-		Enabled:          true,
-		MinRecallCount:   3,
-		MinUniqueQueries: 2,
-		MinScore:         0.75,
-		RecencyHalfLife:  14,
-		MaxBatchSize:     100,
-		PromotedTopic:    "consolidated",
-		EnableSummary:    false,
+		Enabled:               true,
+		MinRecallCount:        3,
+		MinUniqueQueries:      2,
+		MinScore:              0.75,
+		RecencyHalfLife:       14,
+		MaxBatchSize:          100,
+		PromotedTopic:         "consolidated",
+		EnableSummary:         false,
+		MemoryFileBudgetChars: DefaultPromotionFileBudgetChars,
+		DreamingPhases:        false,
+		DreamingNarratives:    false,
 	}
 }
 
 // RecallRecord represents tracking data for a single memory.
 type RecallRecord struct {
-	MemoryID       string   `json:"memory_id"`
-	RecallCount    int      `json:"recall_count"`
-	UniqueQueries  int      `json:"unique_queries"`
-	QueryHashes    []string `json:"query_hashes"`
-	LastRecallUnix int64    `json:"last_recall_unix"`
-	FirstRecallUnix int64   `json:"first_recall_unix"`
-	AvgScore       float64  `json:"avg_score"`
-	PromotedAt     int64    `json:"promoted_at,omitempty"`
-	PromotedTo     string   `json:"promoted_to,omitempty"`
+	MemoryID        string   `json:"memory_id"`
+	RecallCount     int      `json:"recall_count"`
+	UniqueQueries   int      `json:"unique_queries"`
+	QueryHashes     []string `json:"query_hashes"`
+	LastRecallUnix  int64    `json:"last_recall_unix"`
+	FirstRecallUnix int64    `json:"first_recall_unix"`
+	AvgScore        float64  `json:"avg_score"`
+	PromotedAt      int64    `json:"promoted_at,omitempty"`
+	PromotedTo      string   `json:"promoted_to,omitempty"`
 }
 
 // PromotionCandidate represents a memory eligible for promotion.
@@ -579,6 +599,11 @@ func (m *PromotionManager) promoteGroup(topic string, candidates []PromotionCand
 				}
 				promoted++
 			}
+			if promoted > 0 {
+				if err := m.appendPromotionFile(topic, fmt.Sprintf("Consolidated %s", topic), summary, timestamp); err != nil {
+					return promoted, err
+				}
+			}
 
 			return promoted, nil
 		}
@@ -606,8 +631,55 @@ func (m *PromotionManager) promoteGroup(topic string, candidates []PromotionCand
 		}
 		promoted++
 	}
+	if promoted > 0 {
+		body := formatPromotedMemoryFileBody(candidates[:promoted])
+		if err := m.appendPromotionFile(topic, fmt.Sprintf("Promoted %s memories", topic), body, timestamp); err != nil {
+			return promoted, err
+		}
+	}
 
 	return promoted, nil
+}
+
+func (m *PromotionManager) appendPromotionFile(topic, title, body string, timestamp int64) error {
+	path := strings.TrimSpace(m.cfg.PromotionFilePath)
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return nil
+	}
+	if strings.TrimSpace(topic) != "" {
+		body = "Topic: " + strings.TrimSpace(topic) + "\n\n" + body
+	}
+	section := FormatAutoPromotedSection(title, body, timestamp)
+	content := strings.TrimRight(string(existing), "\n")
+	if content != "" {
+		content += "\n\n"
+	}
+	content += section + "\n"
+	compacted, _ := CompactPromotionFile(content, m.cfg.MemoryFileBudgetChars)
+	return os.WriteFile(path, []byte(compacted), 0o600)
+}
+
+func formatPromotedMemoryFileBody(candidates []PromotionCandidate) string {
+	lines := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		text := strings.TrimSpace(c.Memory.Text)
+		if text == "" {
+			continue
+		}
+		lines = append(lines, "- "+text)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // markPromoted updates the recall tracking to indicate a memory was promoted.
@@ -762,7 +834,8 @@ func NewPromotionJob(manager *PromotionManager, schedule string) *PromotionJob {
 	}
 }
 
-// Run executes the promotion job.
+// Run executes the promotion job. When DreamingPhases is enabled, the scheduled
+// job runs the light/REM dreaming scheduler instead of a plain promotion sweep.
 func (j *PromotionJob) Run() (*PromotionResult, error) {
 	j.mu.Lock()
 	if j.Running {
@@ -779,6 +852,24 @@ func (j *PromotionJob) Run() (*PromotionResult, error) {
 		j.mu.Unlock()
 	}()
 
+	if j.Manager == nil {
+		return &PromotionResult{StartTime: time.Now().Unix(), EndTime: time.Now().Unix()}, nil
+	}
+	if j.Manager.cfg.DreamingPhases {
+		dreaming, err := RunDreamingPhases(j.Manager, DreamingConfig{Enabled: true, Narratives: j.Manager.cfg.DreamingNarratives}, nil)
+		if err != nil {
+			return nil, err
+		}
+		result := &PromotionResult{StartTime: time.Now().Unix(), EndTime: time.Now().Unix()}
+		if dreaming != nil {
+			for _, phase := range dreaming.Phases {
+				result.Candidates += phase.Candidates
+			}
+			result.Promoted = dreaming.Promoted
+			result.DurationMs = dreaming.DurationMS
+		}
+		return result, nil
+	}
 	return j.Manager.Promote()
 }
 

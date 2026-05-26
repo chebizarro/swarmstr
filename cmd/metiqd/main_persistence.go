@@ -278,16 +278,18 @@ func persistAndIngestTurnHistory(
 	entryIDs := make([]string, 0, len(delta))
 	for i, m := range delta {
 		// Build a deterministic entry ID.
-		var entryID string
-		switch {
-		case m.Role == "assistant" && len(m.ToolCalls) > 0:
-			entryID = fmt.Sprintf("turn:%s:toolcall:%d", requestEventID, i)
-		case m.Role == "tool" && m.ToolCallID != "":
-			entryID = fmt.Sprintf("turn:%s:tool:%s", requestEventID, m.ToolCallID)
-		case m.Role == "assistant":
-			entryID = fmt.Sprintf("turn:%s:assistant:%d", requestEventID, i)
-		default:
-			entryID = fmt.Sprintf("turn:%s:msg:%d", requestEventID, i)
+		entryID := strings.TrimSpace(m.ID)
+		if entryID == "" {
+			switch {
+			case m.Role == "assistant" && len(m.ToolCalls) > 0:
+				entryID = fmt.Sprintf("turn:%s:toolcall:%d", requestEventID, i)
+			case m.Role == "tool" && m.ToolCallID != "":
+				entryID = fmt.Sprintf("turn:%s:tool:%s", requestEventID, m.ToolCallID)
+			case m.Role == "assistant":
+				entryID = fmt.Sprintf("turn:%s:assistant:%d", requestEventID, i)
+			default:
+				entryID = fmt.Sprintf("turn:%s:msg:%d", requestEventID, i)
+			}
 		}
 
 		entryIDs = append(entryIDs, entryID)
@@ -313,6 +315,11 @@ func persistAndIngestTurnHistory(
 			meta["tool_call_id"] = m.ToolCallID
 		}
 
+		entryUnix := m.Unix
+		if entryUnix == 0 {
+			entryUnix = nowUnix
+		}
+
 		// Persist to transcript store.
 		if transcriptRepo != nil {
 			// Tool-call messages carry data in ToolCalls, not Content.
@@ -332,7 +339,7 @@ func persistAndIngestTurnHistory(
 				EntryID:   entryID,
 				Role:      m.Role,
 				Text:      entryText,
-				Unix:      nowUnix,
+				Unix:      entryUnix,
 				Meta:      meta,
 			}); err != nil {
 				log.Printf("persist turn history entry=%s err=%v", entryID, err)
@@ -346,7 +353,7 @@ func persistAndIngestTurnHistory(
 				Content:    m.Content,
 				ToolCallID: m.ToolCallID,
 				ID:         entryID,
-				Unix:       nowUnix,
+				Unix:       entryUnix,
 			}
 			// Convert tool call refs to context engine format.
 			for _, tc := range m.ToolCalls {

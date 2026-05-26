@@ -19,7 +19,7 @@ func runNodesList(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -100,7 +100,7 @@ func runNodesStatus(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -198,7 +198,7 @@ func runNodesPending(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	fs.BoolVar(&includePaired, "include-paired", false, "also print currently paired nodes")
 	if err := fs.Parse(args); err != nil {
 		return err

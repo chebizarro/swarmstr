@@ -105,7 +105,7 @@ func runMemoryImportOpenClaw(args []string) error {
 	fs.BoolVar(&dryRun, "dry-run", false, "Preview import without writing")
 	fs.BoolVar(&dedupe, "dedupe", true, "Skip duplicate entries by content hash")
 	fs.BoolVar(&verbose, "verbose", false, "Verbose output")
-	fs.BoolVar(&jsonOut, "json", false, "Output results as JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "Output results as JSON")
 	fs.BoolVar(&classify, "classify", false, "Use LLM to classify memories (topic, type, keywords)")
 	fs.StringVar(&classifyModel, "classify-model", "", "Model for classification (default: gpt-4o-mini or claude-3-haiku)")
 	fs.IntVar(&classifyBatch, "classify-batch", 10, "Batch size for classification")
@@ -308,7 +308,7 @@ func runMemorySearchCmd(args []string) error {
 	fs.StringVar(&query, "q", "", "search query")
 	fs.IntVar(&limit, "limit", 10, "max results")
 	fs.StringVar(&backend, "backend", "sqlite", "memory backend (sqlite, json-fts)")
-	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output as JSON")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -369,7 +369,7 @@ func runMemoryStats(args []string) error {
 	var jsonOut bool
 
 	fs.StringVar(&backend, "backend", "sqlite", "memory backend (sqlite, json-fts)")
-	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output as JSON")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -429,7 +429,7 @@ func runMemoryCompact(args []string) error {
 	var dedupe bool
 	var expireStale bool
 	fs.StringVar(&backendPath, "path", "", "sqlite memory db path (default: ~/.metiq/memory.sqlite)")
-	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output as JSON")
 	fs.IntVar(&ttlDays, "episode-ttl-days", 30, "expire non-durable episode memories older than this many days")
 	fs.BoolVar(&dedupe, "dedupe", true, "deduplicate exact duplicate memories")
 	fs.BoolVar(&expireStale, "expire-stale", true, "expire/flag stale records")
@@ -472,7 +472,7 @@ func runMemoryRepair(args []string) error {
 	var jsonOut bool
 	var supersession bool
 	fs.StringVar(&backendPath, "path", "", "sqlite memory db path (default: ~/.metiq/memory.sqlite)")
-	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output as JSON")
 	fs.BoolVar(&supersession, "supersession", false, "repair dangling or cyclic supersession links")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -512,7 +512,7 @@ func runMemoryHealth(args []string) error {
 	var fixAll bool
 	var yes bool
 	fs.StringVar(&backendPath, "path", "", "sqlite memory db path (default: ~/.metiq/memory.sqlite)")
-	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output as JSON")
 	fs.BoolVar(&report, "report", false, "print a read-only health report")
 	fs.BoolVar(&fixSafe, "fix-safe", false, "apply only unambiguous safe repairs")
 	fs.BoolVar(&fixAll, "fix-all", false, "apply broader repairs; requires --yes confirmation")
@@ -620,7 +620,7 @@ func runMemoryEval(args []string) error {
 	var updateBaseline bool
 	var approveBaselineUpdate bool
 	fs.StringVar(&backendPath, "path", "", "sqlite memory db path (default: ~/.metiq/memory.sqlite)")
-	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output as JSON")
 	fs.BoolVar(&enableTrace, "trace", false, "capture retrieval traces for this run")
 	fs.IntVar(&traceCap, "trace-cap", 128, "max traces retained in memory")
 	fs.BoolVar(&updateBaseline, "update-baseline", false, "write/update dated eval baseline file")
@@ -716,7 +716,7 @@ func runMemoryList(args []string) error {
 	fs.StringVar(&topic, "topic", "", "filter by topic")
 	fs.StringVar(&memType, "type", "", "filter by type")
 	fs.StringVar(&backend, "backend", "sqlite", "memory backend")
-	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output as JSON")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -795,7 +795,7 @@ func runMemorySync(args []string) error {
 	fs.StringVar(&backendPath, "path", "", "sqlite memory db path (default: ~/.metiq/memory.sqlite)")
 	fs.BoolVar(&forceRepublish, "force-republish", false, "reset failed/deferred outbox events so the next sync publisher can retry them")
 	fs.BoolVar(&files, "files", false, "check file-backed memory sync/index status")
-	fs.BoolVar(&jsonOut, "json", false, "output as JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output as JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

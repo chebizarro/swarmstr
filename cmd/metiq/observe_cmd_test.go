@@ -96,6 +96,34 @@ func TestRunObserveCallsRuntimeObserve(t *testing.T) {
 	}
 }
 
+func TestRunObserveStreamPrintsNDJSON(t *testing.T) {
+	oldResolver := resolveGWClientFn
+	defer func() { resolveGWClientFn = oldResolver }()
+
+	stub := &stubGatewayClient{result: map[string]any{
+		"events": map[string]any{"cursor": 42, "events": []map[string]any{{"id": 42, "event": "tool.start"}}},
+		"logs":   map[string]any{"cursor": 7, "lines": []string{"123 [info] hello"}},
+	}}
+	var gotParams map[string]any
+	resolveGWClientFn = func(transport, addrFlag, tokenFlag, bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+		return stub, nil
+	}
+
+	out, err := captureStdout(t, func() error {
+		return runObserve([]string{"--stream", "--max-batches", "1"})
+	})
+	if err != nil {
+		t.Fatalf("runObserve stream: %v", err)
+	}
+	gotParams, _ = stub.params.(map[string]any)
+	if gotParams["wait_timeout_ms"].(int) != 15000 {
+		t.Fatalf("expected default stream wait timeout, got %#v", gotParams["wait_timeout_ms"])
+	}
+	if !strings.Contains(out, `"type":"event"`) || !strings.Contains(out, `"event":"tool.start"`) || !strings.Contains(out, `"type":"log"`) {
+		t.Fatalf("expected NDJSON event and log lines, got: %s", out)
+	}
+}
+
 func TestRunObserveUsesGatewayTransport(t *testing.T) {
 	oldResolver := resolveGWClientFn
 	defer func() { resolveGWClientFn = oldResolver }()

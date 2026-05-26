@@ -2,6 +2,10 @@ package msteams
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -62,6 +66,8 @@ func newTestTeamsBot(allowedSenders ...string) (*teamsBot, *[]sdk.InboundChannel
 		allowedSenders: allowed,
 		done:           make(chan struct{}),
 		httpClient:     &http.Client{},
+		jwksKeys:       map[string]*rsa.PublicKey{testJWTKID: &testJWTKey.PublicKey},
+		jwksExpires:    time.Now().Add(time.Hour),
 	}
 	bot.onMessage = func(m sdk.InboundChannelMessage) {
 		msgs = append(msgs, m)
@@ -80,8 +86,13 @@ func postActivity(t *testing.T, bot *teamsBot, activity botFrameworkActivity) *h
 	return w
 }
 
+var (
+	testJWTKID    = "test-key"
+	testJWTKey, _ = rsa.GenerateKey(rand.Reader, 1024)
+)
+
 func makeTestJWT(aud, iss string, exp, nbf time.Time) string {
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT","kid":"test-key"}`))
 	payloadMap := map[string]any{
 		"aud": aud,
 		"iss": iss,
@@ -90,7 +101,10 @@ func makeTestJWT(aud, iss string, exp, nbf time.Time) string {
 	}
 	payload, _ := json.Marshal(payloadMap)
 	encPayload := base64.RawURLEncoding.EncodeToString(payload)
-	return header + "." + encPayload + ".sig"
+	signingInput := header + "." + encPayload
+	digest := sha256.Sum256([]byte(signingInput))
+	sig, _ := rsa.SignPKCS1v15(rand.Reader, testJWTKey, crypto.SHA256, digest[:])
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
 func makeActivity(fromID, text string) botFrameworkActivity {
@@ -325,6 +339,8 @@ func newMockTeamsBot(handler roundTripFunc) *teamsBot {
 		done:         make(chan struct{}),
 		httpClient:   &http.Client{Transport: handler},
 		lastActivity: act,
+		jwksKeys:     map[string]*rsa.PublicKey{testJWTKID: &testJWTKey.PublicKey},
+		jwksExpires:  time.Now().Add(time.Hour),
 	}
 	bot.onMessage = func(sdk.InboundChannelMessage) {}
 	return bot
@@ -350,6 +366,32 @@ func TestSend_PostsActivity(t *testing.T) {
 	}
 	if !strings.Contains(gotPath, "/v3/conversations/conv1/activities") {
 		t.Fatalf("unexpected path: %s", gotPath)
+	}
+}
+
+func TestSendAttachment_PostsFileAttachmentActivity(t *testing.T) {
+	var gotBody map[string]any
+	bot := newMockTeamsBot(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/oauth2/v2.0/token") {
+			return okJSON(`{"access_token":"tok"}`), nil
+		}
+		json.NewDecoder(req.Body).Decode(&gotBody)
+		return okJSON(`{"id":"act-file"}`), nil
+	})
+	receipt, err := bot.SendAttachment(context.Background(), "see file", "https://files.example.com/report.pdf", "application/pdf", "report.pdf")
+	if err != nil {
+		t.Fatalf("SendAttachment: %v", err)
+	}
+	if receipt.MessageID != "act-file" {
+		t.Fatalf("expected activity id receipt, got %+v", receipt)
+	}
+	attachments, _ := gotBody["attachments"].([]any)
+	if len(attachments) != 1 {
+		t.Fatalf("expected one attachment, body=%+v", gotBody)
+	}
+	att, _ := attachments[0].(map[string]any)
+	if att["contentUrl"] != "https://files.example.com/report.pdf" || att["contentType"] != "application/pdf" || att["name"] != "report.pdf" {
+		t.Fatalf("unexpected attachment: %+v", att)
 	}
 }
 

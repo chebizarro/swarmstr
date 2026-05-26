@@ -131,6 +131,7 @@ exports.manifest = {
 	id: "` + id + `",
 	version: "1.0.0",
 	description: "storage probe",
+	permissions: { storage: true },
 	tools: [{ name: "state", description: "set/get state" }],
 };
 exports.invoke = function(tool, args) {

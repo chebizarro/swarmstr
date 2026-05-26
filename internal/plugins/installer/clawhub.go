@@ -138,16 +138,24 @@ func (c *ClawHubClient) getJSON(ctx context.Context, relPath string, out any) er
 
 func installClawHubPlugin(ctx context.Context, p *ClawHubPlugin, installPath string) error {
 	if spec := strings.TrimSpace(p.Package); spec != "" {
-		_, err := installNPM(ctx, spec, installPath)
+		res, err := installNPM(ctx, spec, installPath)
+		if err != nil {
+			return err
+		}
+		_, err = recordIntegrityForResult(res, installPath)
 		return err
 	}
-	if dist := strings.TrimSpace(p.DistURL); dist != "" {
-		tmp, err := DownloadURL(ctx, dist)
+	if distURL := strings.TrimSpace(p.DistURL); distURL != "" {
+		tmp, err := DownloadURL(ctx, distURL)
 		if err != nil {
 			return err
 		}
 		defer removeFile(tmp)
-		_, err = extractArchive(ctx, tmp, installPath)
+		res, err := extractArchive(ctx, tmp, installPath)
+		if err != nil {
+			return err
+		}
+		_, err = recordIntegrityForResult(res, installPath)
 		return err
 	}
 	return fmt.Errorf("clawhub plugin %q missing install package or distUrl", p.ID)
@@ -155,7 +163,11 @@ func installClawHubPlugin(ctx context.Context, p *ClawHubPlugin, installPath str
 
 func updateClawHubPlugin(ctx context.Context, p *ClawHubPlugin, installPath string) error {
 	if spec := strings.TrimSpace(p.Package); spec != "" {
-		_, err := updateNPM(ctx, spec, installPath)
+		res, err := updateNPM(ctx, spec, installPath)
+		if err != nil {
+			return err
+		}
+		_, err = recordIntegrityForResult(res, installPath)
 		return err
 	}
 	// For archive-style plugins, update is equivalent to reinstall latest.

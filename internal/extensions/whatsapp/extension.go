@@ -55,6 +55,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -108,7 +109,7 @@ func (w *WhatsAppPlugin) ConfigSchema() map[string]any {
 // Capabilities declares the features supported by the WhatsApp Business channel.
 func (w *WhatsAppPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
-		Typing:       false,
+		Typing:       true,
 		Reactions:    true,
 		Threads:      true,
 		Audio:        true,
@@ -289,6 +290,7 @@ type whatsappBot struct {
 	onMessage        func(sdk.InboundChannelMessage)
 	httpClient       *http.Client
 	done             chan struct{}
+	lastInboundID    string
 }
 
 type whatsappWebhookEvent struct {
@@ -435,15 +437,51 @@ func splitReplyTarget(target string) (accountID, to string) {
 }
 
 func (b *whatsappBot) Send(ctx context.Context, text string) error {
+	_, err := b.SendWithReceipt(ctx, text)
+	return err
+}
+
+func (b *whatsappBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
 	accountID, to := splitReplyTarget(sdk.ChannelReplyTarget(ctx))
 	account := b.accountForID(accountID)
 	if to == "" {
 		to = account.DefaultRecipient
 	}
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "whatsapp", Attempts: 1, CreatedAt: time.Now()}
 	if to == "" {
-		return fmt.Errorf("whatsapp %s: no reply target set; configure default_recipient or use sdk.WithChannelReplyTarget", b.channelID)
+		err := fmt.Errorf("whatsapp %s: no reply target set; configure default_recipient or use sdk.WithChannelReplyTarget", b.channelID)
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
 	}
-	_, err := b.sendMessageWithAccount(ctx, account, to, text)
+	msgID, err := b.sendMessageWithAccount(ctx, account, to, text)
+	if msgID != "" {
+		receipt.MessageID = "wa-" + msgID
+	}
+	if err != nil {
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
+}
+
+func (b *whatsappBot) SendTyping(ctx context.Context, _ int) error {
+	b.mu.Lock()
+	messageID := b.lastInboundID
+	b.mu.Unlock()
+	if messageID == "" {
+		return nil
+	}
+	payload := map[string]any{
+		"messaging_product": "whatsapp",
+		"status":            "read",
+		"message_id":        strings.TrimPrefix(messageID, "wa-"),
+		"typing_indicator":  map[string]string{"type": "text"},
+	}
+	_, err := postWhatsAppMessage(ctx, b.httpClient, b.token, b.phoneNumberID, payload, "typingIndicator")
 	return err
 }
 
@@ -611,6 +649,9 @@ func (b *whatsappBot) handleEvent(w http.ResponseWriter, r *http.Request) {
 				if inbound.Text == "" && inbound.MediaURL == "" {
 					continue
 				}
+				b.mu.Lock()
+				b.lastInboundID = inbound.EventID
+				b.mu.Unlock()
 				b.onMessage(inbound)
 			}
 		}

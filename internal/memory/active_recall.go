@@ -31,6 +31,7 @@ type ActiveRecallConfig struct {
 	RecentUserTurns      int
 	RecentAssistantTurns int
 	MaxTurnChars         int
+	CitationsMode        CitationsMode
 }
 
 type ActiveRecallTurn struct {
@@ -137,7 +138,7 @@ func (a *ActiveRecallAssembler) Recall(ctx context.Context, req ActiveRecallRequ
 		return out, nil
 	case hits := <-ch:
 		out.HitCount = len(hits)
-		out.Context = FormatActiveRecallContext(hits, cfg.MaxContextChars)
+		out.Context = FormatActiveRecallContextWithCitations(hits, cfg.MaxContextChars, cfg.CitationsMode)
 		a.setCached(key, out, cfg.CacheTTL)
 		return out, nil
 	}
@@ -176,12 +177,17 @@ func BuildActiveRecallQuery(req ActiveRecallRequest, cfg ActiveRecallConfig) str
 }
 
 func FormatActiveRecallContext(hits []IndexedMemory, maxChars int) string {
+	return FormatActiveRecallContextWithCitations(hits, maxChars, CitationsModeOff)
+}
+
+func FormatActiveRecallContextWithCitations(hits []IndexedMemory, maxChars int, mode CitationsMode) string {
 	if len(hits) == 0 || maxChars == 0 {
 		return ""
 	}
 	if maxChars < 0 {
 		maxChars = DefaultActiveRecallMaxContextChars
 	}
+	mode = NormalizeCitationsMode(mode)
 	parts := []string{}
 	used := 0
 	for _, hit := range hits {
@@ -190,6 +196,11 @@ func FormatActiveRecallContext(hits []IndexedMemory, maxChars int) string {
 			continue
 		}
 		line := "- " + text
+		if mode == CitationsModeOn {
+			if citation := FormatIndexedMemoryCitation(hit); citation != "" {
+				line += " " + citation
+			}
+		}
 		if used+len(line)+1 > maxChars {
 			remaining := maxChars - used
 			if remaining > 8 {
@@ -203,7 +214,11 @@ func FormatActiveRecallContext(hits []IndexedMemory, maxChars int) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "## Active Memory Recall\nRelevant session memory and durable memories:\n" + strings.Join(parts, "\n")
+	header := "## Active Memory Recall\nRelevant session memory and durable memories:"
+	if mode == CitationsModeOn {
+		header += " cite bracketed memory references when using them."
+	}
+	return header + "\n" + strings.Join(parts, "\n")
 }
 
 var activeRecallNoisePatterns = []*regexp.Regexp{

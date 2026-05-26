@@ -82,11 +82,12 @@ type CloseInput struct {
 type EventKind string
 
 const (
-	EventTextDelta EventKind = "text_delta"
-	EventStatus    EventKind = "status"
-	EventToolCall  EventKind = "tool_call"
-	EventDone      EventKind = "done"
-	EventError     EventKind = "error"
+	EventTextDelta       EventKind = "text_delta"
+	EventStatus          EventKind = "status"
+	EventToolCall        EventKind = "tool_call"
+	EventApprovalRequest EventKind = "approval_request"
+	EventDone            EventKind = "done"
+	EventError           EventKind = "error"
 )
 
 // IsTerminal reports whether this event kind signals the end of a turn.
@@ -116,6 +117,19 @@ type RuntimeEvent struct {
 	Title string
 	// Used/Size are progress indicators for status events.
 	Used, Size int
+	// ApprovalRequest carries interactive permission requests from a runtime.
+	ApprovalRequest *ApprovalRequest `json:"approval_request,omitempty"`
+}
+
+// ApprovalRequest is emitted by runtimes that need supervisor/user approval
+// before continuing a tool operation inside an ACP task.
+type ApprovalRequest struct {
+	ID          string         `json:"id"`
+	Action      string         `json:"action"`
+	Description string         `json:"description,omitempty"`
+	Risk        string         `json:"risk,omitempty"`
+	Path        string         `json:"path,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 // ── Runtime interface ───────────────────────────────────────────────────────

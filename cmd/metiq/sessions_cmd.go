@@ -43,7 +43,7 @@ func runSessionsList(args []string) error {
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
 	fs.IntVar(&limit, "limit", 20, "max sessions to show")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func runSessionsGet(args []string) error {
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
 	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
-	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

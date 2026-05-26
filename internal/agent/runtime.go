@@ -9,7 +9,10 @@ import (
 	"strings"
 	"time"
 
+	ctxengine "metiq/internal/context"
 	pluginhooks "metiq/internal/plugins/hooks"
+	"metiq/internal/policy"
+	sessioncheckpoint "metiq/internal/session/checkpoint"
 )
 
 // ErrTurnInterrupted marks an intentional user interrupt of an active turn.
@@ -34,6 +37,10 @@ type ConversationMessage struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	// ToolCalls is set on role="assistant" messages that requested tool use.
 	ToolCalls []ToolCallRef `json:"tool_calls,omitempty"`
+	// ID is an optional stable transcript/context entry ID.
+	ID string `json:"id,omitempty"`
+	// Unix is an optional message timestamp in seconds.
+	Unix int64 `json:"unix,omitempty"`
 }
 
 type Turn struct {
@@ -42,6 +49,10 @@ type Turn struct {
 	// observability. metiq maps Nostr event IDs into this field.
 	TurnID   string
 	UserText string
+	// UserMessageID/Unix optionally identify the current user message when the
+	// runtime calls the context engine AfterTurn hook.
+	UserMessageID string
+	UserUnix      int64
 	// StaticSystemPrompt carries long-lived system prompt additions that should
 	// remain in the cacheable/static prompt lane (for example pinned knowledge
 	// or workspace bootstrap material). Providers that support prompt caching
@@ -62,6 +73,9 @@ type Turn struct {
 	// History is the prior conversation for multi-turn context.
 	// Messages are ordered oldest-first.
 	History []ConversationMessage
+	// ContextEngine receives the post-turn lifecycle hook after a successful
+	// runtime turn. Leave nil when the caller manages context lifecycle itself.
+	ContextEngine ctxengine.Engine
 	// Executor is the tool executor for agentic loops inside providers.
 	Executor ToolExecutor
 	// ThinkingBudget enables extended thinking for providers that support it.
@@ -79,6 +93,9 @@ type Turn struct {
 	// ContextWindowTokens is the approximate context window available to the
 	// provider. Shared history/tool-result guards use this to bound prompt size.
 	ContextWindowTokens int
+	// ResponseFormat requests provider-native structured output / JSON mode for
+	// this turn when supported by the selected provider.
+	ResponseFormat *ResponseFormatConfig
 	// Trace carries task/run/step correlation IDs for observability. When a
 	// turn runs inside a task context, all emitted events inherit these IDs.
 	Trace TraceContext
@@ -91,6 +108,11 @@ type Turn struct {
 	LastAssistantTime time.Time
 	// HookInvoker emits OpenClaw before_tool_call/after_tool_call hooks.
 	HookInvoker *pluginhooks.HookInvoker
+	// ToolPolicy gates every tool call before execution. Nil preserves the
+	// profile/default behavior.
+	ToolPolicy *policy.ToolPolicy
+	// ToolPolicyAgentID scopes per-agent policy rules when set.
+	ToolPolicyAgentID string
 	// PostSamplingHooks run after provider sampling/tool execution has produced
 	// a complete TurnResult. Hooks are called at the natural turn boundary and
 	// must not block waiting for future user input; use them to enqueue
@@ -105,7 +127,9 @@ type Turn struct {
 	// sending. When non-nil and non-empty, the agentic loop registers a
 	// tool_search built-in tool that lets the model discover deferred tools
 	// on demand, reducing per-request context usage.
-	DeferredTools *DeferredToolSet
+	DeferredTools      *DeferredToolSet
+	TurnCheckpointSink func(context.Context, sessioncheckpoint.TurnCheckpoint) error
+	ResumeCheckpoint   *sessioncheckpoint.TurnCheckpoint
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.
@@ -393,6 +417,7 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 		return TurnResult{}, err
 	}
 	emitTurnUsageRuntimeEvent(turn, result.Usage)
+	runContextAfterTurn(ctx, turn, result)
 	runPostSamplingHooks(ctx, turn, result)
 	return result, nil
 }
@@ -465,6 +490,7 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		return TurnResult{}, err
 	}
 	emitTurnUsageRuntimeEvent(turn, result.Usage)
+	runContextAfterTurn(ctx, turn, result)
 	runPostSamplingHooks(ctx, turn, result)
 	return result, nil
 }
@@ -503,6 +529,68 @@ func emitTurnUsageRuntimeEvent(turn Turn, usage TurnUsage) {
 	})
 }
 
+func runContextAfterTurn(ctx context.Context, turn Turn, result TurnResult) {
+	if turn.ContextEngine == nil || strings.TrimSpace(turn.SessionID) == "" {
+		return
+	}
+	params := ctxengine.AfterTurnParams{
+		Messages:       buildAfterTurnContextMessages(turn, result),
+		PrePromptCount: len(turn.History),
+		TokenBudget:    turn.ContextWindowTokens,
+		CurrentTokens:  int(result.Usage.InputTokens + result.Usage.OutputTokens),
+	}
+	if err := ctxengine.RunAfterTurn(ctx, turn.ContextEngine, turn.SessionID, params); err != nil {
+		log.Printf("context engine after-turn session=%s turn=%s err=%v", turn.SessionID, turn.TurnID, err)
+	}
+}
+
+func buildAfterTurnContextMessages(turn Turn, result TurnResult) []ctxengine.Message {
+	messages := make([]ctxengine.Message, 0, len(turn.History)+1+len(result.HistoryDelta))
+	for _, m := range turn.History {
+		messages = append(messages, contextMessageFromConversation(m))
+	}
+	if strings.TrimSpace(turn.UserText) != "" {
+		messages = append(messages, ctxengine.Message{Role: "user", Content: turn.UserText, ID: strings.TrimSpace(turn.UserMessageID), Unix: turn.UserUnix})
+	}
+	nowUnix := time.Now().Unix()
+	for i, m := range result.HistoryDelta {
+		ctxMsg := contextMessageFromConversation(m)
+		if ctxMsg.ID == "" {
+			ctxMsg.ID = synthesizeTurnHistoryContextID(turn.TurnID, i, m)
+		}
+		if ctxMsg.Unix == 0 {
+			ctxMsg.Unix = nowUnix
+		}
+		messages = append(messages, ctxMsg)
+	}
+	return messages
+}
+
+func contextMessageFromConversation(m ConversationMessage) ctxengine.Message {
+	msg := ctxengine.Message{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID, ID: strings.TrimSpace(m.ID), Unix: m.Unix}
+	for _, tc := range m.ToolCalls {
+		msg.ToolCalls = append(msg.ToolCalls, ctxengine.ToolCallRef{ID: tc.ID, Name: tc.Name, ArgsJSON: tc.ArgsJSON})
+	}
+	return msg
+}
+
+func synthesizeTurnHistoryContextID(turnID string, index int, m ConversationMessage) string {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		turnID = fmt.Sprintf("anon:%d", time.Now().UnixNano())
+	}
+	switch {
+	case m.Role == "assistant" && len(m.ToolCalls) > 0:
+		return fmt.Sprintf("turn:%s:toolcall:%d", turnID, index)
+	case m.Role == "tool" && m.ToolCallID != "":
+		return fmt.Sprintf("turn:%s:tool:%s", turnID, m.ToolCallID)
+	case m.Role == "assistant":
+		return fmt.Sprintf("turn:%s:assistant:%d", turnID, index)
+	default:
+		return fmt.Sprintf("turn:%s:msg:%d", turnID, index)
+	}
+}
+
 // buildResult executes any tool calls from gen and assembles the TurnResult.
 func (r *ProviderRuntime) buildResult(ctx context.Context, turn Turn, gen ProviderResult, tools ToolExecutor) (TurnResult, error) {
 	result := TurnResult{
@@ -525,7 +613,8 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, turn Turn, gen Provid
 			result.ToolTraces = append(result.ToolTraces, trace)
 			continue
 		}
-		execResult := executeSingleToolCall(ctx, tools, call, turn.SessionID, turn.TurnID, turn.ToolEventSink, turn.Trace, turn.HookInvoker)
+		toolCtx := ContextWithToolPolicy(ctx, turn.ToolPolicy, turn.ToolPolicyAgentID)
+		execResult := executeSingleToolCall(toolCtx, tools, call, turn.SessionID, turn.TurnID, turn.ToolEventSink, turn.Trace, turn.HookInvoker)
 		if strings.HasPrefix(execResult.Content, "error: ") {
 			trace.Error = strings.TrimPrefix(execResult.Content, "error: ")
 		} else {

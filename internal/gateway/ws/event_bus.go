@@ -72,6 +72,9 @@ const (
 	// EventChatChunk is emitted during streaming generation, delivering a single
 	// text token or token group as it arrives from the provider.
 	EventChatChunk = "chat.chunk"
+	// EventThinkingDelta is emitted for provider reasoning/thinking deltas when
+	// available separately from user-visible assistant text.
+	EventThinkingDelta = "thinking.delta"
 
 	// EventCanvasUpdate is emitted when an agent writes to a named canvas.
 	EventCanvasUpdate = "canvas.update"
@@ -126,6 +129,7 @@ var AllPushEvents = []string{
 	"presence.updated",
 	"connect.challenge",
 	EventChatChunk,
+	EventThinkingDelta,
 	EventCanvasUpdate,
 	EventToolStart,
 	EventToolProgress,
@@ -483,8 +487,18 @@ type ChatChunkPayload struct {
 	TS        int64  `json:"ts_ms"`
 	AgentID   string `json:"agent_id,omitempty"`
 	SessionID string `json:"session_id"`
+	TurnID    string `json:"turn_id,omitempty"`
 	Text      string `json:"text"`
 	Done      bool   `json:"done,omitempty"` // true on the final chunk
+}
+
+// ThinkingDeltaPayload is the payload for EventThinkingDelta events.
+type ThinkingDeltaPayload struct {
+	TS        int64  `json:"ts_ms"`
+	AgentID   string `json:"agent_id,omitempty"`
+	SessionID string `json:"session_id"`
+	TurnID    string `json:"turn_id,omitempty"`
+	Text      string `json:"text"`
 }
 
 // CanvasUpdatePayload is the payload for EventCanvasUpdate events.

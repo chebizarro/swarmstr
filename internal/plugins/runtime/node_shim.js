@@ -16,6 +16,35 @@ const readline = require('readline');
 let plugin = null;
 let manifest = { tools: [] };
 let registrations = null;
+let allowedPermissions = {};
+let pluginRootDir = process.cwd();
+let registrationOpen = false;
+
+function permissionsAllow(namespace) {
+  if (allowedPermissions === true) return true;
+  if (Array.isArray(allowedPermissions)) {
+    return allowedPermissions.includes('*') || allowedPermissions.includes(namespace) || (namespace === 'http' && allowedPermissions.includes('network'));
+  }
+  const p = allowedPermissions || {};
+  if (p.all === true || p['*'] === true) return true;
+  if (namespace === 'http') return p.http === true || !!p.network;
+  return p[namespace] === true || !!p[namespace];
+}
+
+function deniedNamespace(namespace) {
+  const fail = () => { throw new Error(`plugin host namespace "${namespace}" is not permitted`); };
+  return new Proxy({ available: false, reason: 'permission not declared in plugin manifest' }, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      return fail;
+    },
+    apply: fail
+  });
+}
+
+function allow(namespace, value) {
+  return permissionsAllow(namespace) ? value : deniedNamespace(namespace);
+}
 
 function makeRegistrations() {
   return {
@@ -28,18 +57,28 @@ function makeRegistrations() {
   };
 }
 
+function ensureRegistrationOpen(name) {
+  if (!registrationOpen) throw new Error(`plugin registration window is closed for ${name || 'registration'}`);
+}
+
 function createSDK() {
   const sdk = {
     id: 'metiq-node-plugin',
     name: 'Metiq Node Plugin Host',
+    version: 'metiq.plugin.host.v1',
+    api: { version: 'metiq.plugin.host.v1', permissions: allowedPermissions || {} },
     registrationMode: 'runtime',
     log: { info: console.error, warn: console.error, error: console.error },
     logger: { info: console.error, warn: console.error, error: console.error },
-    config: { get: () => null, set: () => {} },
-    nostr: { publish: () => Promise.resolve(), subscribe: () => ({}) },
-    agent: { send: () => Promise.resolve('') },
-    storage: { get: () => null, set: () => {}, delete: () => {} },
-    http: {
+    config: allow('config', { get: () => null, set: () => {} }),
+    nostr: allow('nostr', { publish: () => Promise.resolve(), subscribe: () => ({}) }),
+    agent: allow('agent', { send: () => Promise.resolve('') }),
+    storage: allow('storage', { get: () => null, set: () => {}, delete: () => {} }),
+    session: allow('session', { list: () => [], get: () => null, append: () => {} }),
+    task: allow('task', { list: () => [], get: () => null, update: () => ({}) }),
+    memory: allow('memory', { search: () => [], store: () => ({}) }),
+    webSearch: allow('web_search', { search: () => [], fetch: () => ({}) }),
+    http: allow('http', {
       fetch: (url, opts) => {
         const httpMod = url.startsWith('https') ? require('https') : require('http');
         return new Promise((resolve, reject) => {
@@ -59,10 +98,11 @@ function createSDK() {
           req.end();
         });
       }
-    },
+    }),
     resolvePath: (input) => path.resolve(process.cwd(), input),
     on: () => {},
     registerTool: (tool) => {
+      ensureRegistrationOpen('registerTool');
       if (!tool || !tool.name) return;
       registrations.toolSchemas.push({
         name: tool.name,
@@ -71,10 +111,10 @@ function createSDK() {
       });
       if (typeof tool.execute === 'function') registrations.tools[tool.name] = tool.execute;
     },
-    registerHook: (event, handler, opts) => registrations.hooks.push({ event, handler, opts: opts || {} }),
-    registerChannel: (channel) => registrations.channels.push(channel),
-    registerProvider: (provider) => registrations.providers.push(provider),
-    registerService: (service) => registrations.services.push(service),
+    registerHook: (event, handler, opts) => { ensureRegistrationOpen('registerHook'); registrations.hooks.push({ event, handler, opts: opts || {} }); },
+    registerChannel: (channel) => { ensureRegistrationOpen('registerChannel'); registrations.channels.push(channel); },
+    registerProvider: (provider) => { ensureRegistrationOpen('registerProvider'); registrations.providers.push(provider); },
+    registerService: (service) => { ensureRegistrationOpen('registerService'); registrations.services.push(service); },
     registerHttpRoute: () => {},
     registerHostedMediaResolver: () => {},
     registerGatewayMethod: () => {},
@@ -172,12 +212,15 @@ function manifestFromEntry(entry, pluginPath) {
     id: entry.id || entry.name || pkg.name || path.basename(pluginPath),
     version: entry.version || pkg.version || '',
     description: entry.description || pkg.description || '',
+    permissions: entry.permissions || pkg.metiq?.permissions || pkg.openclaw?.permissions || undefined,
     tools: registrations.toolSchemas.length ? registrations.toolSchemas : (entry.tools && !Array.isArray(entry.tools) ? [] : (entry.tools || []))
   };
 }
 
 async function initialisePlugin(pluginPath) {
   registrations = makeRegistrations();
+  registrationOpen = true;
+  pluginRootDir = pluginPath;
   sdk = createSDK();
   sdk.rootDir = pluginPath;
   sdk.resolvePath = (input) => path.resolve(pluginPath, input);
@@ -206,6 +249,11 @@ async function initialisePlugin(pluginPath) {
   }
 
   plugin = entry;
+  registrationOpen = false;
+  allowedPermissions = manifest.permissions || {};
+  sdk = createSDK();
+  sdk.rootDir = pluginPath;
+  sdk.resolvePath = (input) => path.resolve(pluginPath, input);
   return { manifest };
 }
 
@@ -220,6 +268,14 @@ async function handleRequest(req) {
         } catch (e) {
           sendResponse(id, null, `require failed: ${e.message}`);
         }
+        break;
+      }
+      case 'set_permissions': {
+        allowedPermissions = params && params.permissions ? params.permissions : {};
+        sdk = createSDK();
+        sdk.rootDir = pluginRootDir;
+        sdk.resolvePath = (input) => path.resolve(pluginRootDir, input);
+        sendResponse(id, { ok: true });
         break;
       }
       case 'invoke': {

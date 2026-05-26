@@ -110,6 +110,26 @@ func TestUnifiedRegistryOpenClawLoadResultAndGojaManifest(t *testing.T) {
 	}
 }
 
+func TestUnifiedRegistryRegistrationWindowCloseRejectsLateRegisters(t *testing.T) {
+	r := NewUnifiedRegistry()
+	if err := r.RegisterFromGojaManifest(sdk.Manifest{ID: "early", Version: "1.0.0"}); err != nil {
+		t.Fatalf("early register: %v", err)
+	}
+	r.CloseRegistrationWindow()
+	if !r.RegistrationClosed() {
+		t.Fatal("registration window should be closed")
+	}
+	if err := r.RegisterFromGojaManifest(sdk.Manifest{ID: "late", Version: "1.0.0"}); err == nil || !strings.Contains(err.Error(), "registration window is closed") {
+		t.Fatalf("expected late registration guard, got %v", err)
+	}
+	if err := r.RegisterNativeChannel(testChannelPlugin{id: "late-native"}); err == nil || !strings.Contains(err.Error(), "registration window is closed") {
+		t.Fatalf("expected native late registration guard, got %v", err)
+	}
+	if err := r.UnregisterPlugin("early"); err != nil {
+		t.Fatalf("unregister should remain allowed after close: %v", err)
+	}
+}
+
 func TestRegistryInternalCoverageHelpers(t *testing.T) {
 	md := metadataFromRegistration("plug", PluginSourceOpenClaw, Registration{PluginID: "override", Name: "Name", Label: "Label", Description: "Desc", Raw: map[string]any{"nested": map[string]any{"k": "v"}}}, "cap")
 	if md.PluginID != "override" || md.ID != "cap" || md.Name != "Name" || md.Label != "Label" || md.Description != "Desc" || md.Source != PluginSourceOpenClaw {

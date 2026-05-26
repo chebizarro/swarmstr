@@ -95,10 +95,10 @@ type FIPSConfig struct {
 	// and a persistent identity (nsec must be set in bootstrap config).
 	Enabled bool `json:"enabled"`
 
-	// ControlSocket is the path to the FIPS daemon's control socket.
-	// Used to query mesh state (peer reachability, sessions, bloom filters).
-	// If empty, searches default paths: $XDG_RUNTIME_DIR/fips/control.sock,
-	// /run/fips/control.sock, /tmp/fips-control.sock.
+	// ControlSocket is the FIPS daemon control endpoint. Despite the legacy
+	// field name, it may be a Unix socket path, unix:// endpoint, TCP host:port,
+	// or tcp:// endpoint. Empty means auto-resolve using FIPS-compatible defaults.
+	// Used to query advisory mesh state without gating optimistic FIPS sends.
 	ControlSocket string `json:"control_socket,omitempty"`
 
 	// AgentPort is the FSP port for agent-to-agent messages over the mesh.
@@ -110,9 +110,10 @@ type FIPSConfig struct {
 	ControlPort int `json:"control_port,omitempty"`
 
 	// TransportPref controls routing priority when both FIPS and relay
-	// transports are available.
-	//   fips-first  — try FIPS, fall back to relay (default)
-	//   relay-first — use relay by default, FIPS for tagged peers only
+	// transports are available. FIPS attempts are optimistic: selector decisions
+	// do not require positive control-plane reachability before sending.
+	//   fips-first  — try FIPS, fall back to relay on transport/path failure (default)
+	//   relay-first — use relay first, with FIPS as a fallback when appropriate
 	//   fips-only   — FIPS mesh only, no relay fallback
 	TransportPref string `json:"transport_pref,omitempty"`
 
@@ -123,7 +124,9 @@ type FIPSConfig struct {
 	// ConnTimeout is the connection timeout for FIPS sends. Default: "5s".
 	ConnTimeout string `json:"conn_timeout,omitempty"`
 
-	// ReachCacheTTL is the TTL for FIPS reachability cache entries. Default: "30s".
+	// ReachCacheTTL is the cooldown TTL for selector transport decisions after
+	// FIPS transport/path failures. It controls negative-cache fallback behavior,
+	// not a required positive reachability proof. Default: "30s".
 	ReachCacheTTL string `json:"reach_cache_ttl,omitempty"`
 }
 

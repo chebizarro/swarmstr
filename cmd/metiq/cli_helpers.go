@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +33,17 @@ func (f *csvListFlag) Set(value string) error {
 }
 
 type stringListFlag []string
+
+func (f stringListFlag) Values() []string {
+	out := make([]string, 0, len(f))
+	for _, value := range f {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
 
 func (f *stringListFlag) String() string {
 	if f == nil {
@@ -171,6 +184,52 @@ func stringSliceAny(v any) []string {
 		return out
 	default:
 		return nil
+	}
+}
+
+func promptText(in io.Reader, out io.Writer, label, def string, secret bool) (string, error) {
+	if out == nil {
+		out = io.Discard
+	}
+	if in == nil {
+		in = strings.NewReader("")
+	}
+	prompt := label
+	if strings.TrimSpace(def) != "" {
+		prompt = fmt.Sprintf("%s [%s]", label, def)
+	}
+	if secret {
+		prompt += " (input hidden in shell history only if your terminal supports it)"
+	}
+	fmt.Fprintf(out, "%s: ", prompt)
+	reader := bufio.NewReader(in)
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	value := strings.TrimSpace(line)
+	if value == "" {
+		value = strings.TrimSpace(def)
+	}
+	return value, nil
+}
+
+func promptConfirm(in io.Reader, out io.Writer, label string, def bool) (bool, error) {
+	defText := "y"
+	if !def {
+		defText = "n"
+	}
+	value, err := promptText(in, out, label+" (y/n)", defText, false)
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "y", "yes", "true", "1", "on":
+		return true, nil
+	case "n", "no", "false", "0", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("expected yes or no")
 	}
 }
 

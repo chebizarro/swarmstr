@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -190,6 +191,17 @@ func NewManager(cfg LifecycleConfig, projectDir string) *Manager {
 		registry:   manifest.NewCapabilityRegistry(),
 		projectDir: projectDir,
 		removeAll:  os.RemoveAll,
+	}
+}
+
+func traceLifecycle(op, pluginID string) func() {
+	if os.Getenv("METIQ_PLUGIN_TRACE") == "" {
+		return func() {}
+	}
+	start := time.Now()
+	log.Printf("plugin lifecycle trace: op=%s plugin=%s start", op, pluginID)
+	return func() {
+		log.Printf("plugin lifecycle trace: op=%s plugin=%s duration_ms=%d", op, pluginID, time.Since(start).Milliseconds())
 	}
 }
 
@@ -402,6 +414,7 @@ type InstallOptions struct {
 
 // Install installs a plugin at the specified scope.
 func (m *Manager) Install(ctx context.Context, mf manifest.Manifest, installPath string, opts InstallOptions) (*InstalledPlugin, error) {
+	defer traceLifecycle("install", mf.ID)()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -538,6 +551,7 @@ func (m *Manager) EnableByScope(ctx context.Context, pluginID string, scope Scop
 }
 
 func (m *Manager) enable(ctx context.Context, pluginID string, scope *Scope) error {
+	defer traceLifecycle("enable", pluginID)()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -578,6 +592,7 @@ func (m *Manager) DisableByScope(ctx context.Context, pluginID string, scope Sco
 }
 
 func (m *Manager) disable(ctx context.Context, pluginID string, scope *Scope) error {
+	defer traceLifecycle("disable", pluginID)()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -609,6 +624,7 @@ func (m *Manager) UpdateByScope(ctx context.Context, pluginID string, scope Scop
 }
 
 func (m *Manager) update(ctx context.Context, pluginID string, scope *Scope, newManifest manifest.Manifest, newInstallPath string) error {
+	defer traceLifecycle("update", pluginID)()
 	m.mu.Lock()
 
 	plugin, err := m.resolveTargetLocked(pluginID, scope)
@@ -991,6 +1007,7 @@ func removePluginsStateFile(dir string) error {
 
 // Load restores plugin state from disk.
 func (m *Manager) Load() error {
+	defer traceLifecycle("load", "*")()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

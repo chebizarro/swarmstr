@@ -11,6 +11,7 @@ import (
 
 	jsonschema "github.com/google/jsonschema-go/jsonschema"
 	"metiq/internal/agent/toolloop"
+	"metiq/internal/policy"
 )
 
 // ─── Tool definition types ────────────────────────────────────────────────────
@@ -738,6 +739,12 @@ func (r *ToolRegistry) Execute(ctx context.Context, call ToolCall) (string, erro
 			prepared.Name = call.Name
 		}
 	}
+	if policyPtr, agentID := ToolPolicyFromContext(ctx); policyPtr != nil {
+		decision := policyPtr.Evaluate(policy.ToolPolicyRequest{ToolName: prepared.Name, AgentID: agentID, Args: prepared.Args})
+		if decision.Action == policy.ToolPolicyDeny || decision.Action == policy.ToolPolicyAsk {
+			return "", newToolExecutionError(call.Name, ToolExecutionPhasePreExecute, fmt.Errorf("tool policy %s: %s", decision.Action, decision.Reason))
+		}
+	}
 
 	rawExec := func(ctx context.Context, c ToolCall) (string, error) {
 		return entry.fn(ctx, c.Args)
@@ -1213,4 +1220,96 @@ func newToolExecutionError(name string, phase ToolExecutionPhase, err error) err
 		return existing
 	}
 	return &ToolExecutionError{ToolName: name, Phase: phase, Cause: err}
+}
+
+// NormalizeGeminiToolSchema removes JSON Schema constructs rejected by Gemini's
+// function declaration schema while preserving the object/property structure.
+func NormalizeGeminiToolSchema(defs []ToolDefinition) []ToolDefinition {
+	return normalizeToolSchemas(defs, geminiUnsupportedSchemaKeywords())
+}
+
+func geminiUnsupportedSchemaKeywords() map[string]bool {
+	return map[string]bool{
+		"$schema": true, "$id": true, "$defs": true, "definitions": true,
+		"oneOf": true, "anyOf": true, "allOf": true, "$ref": true,
+		"nullable": true, "examples": true, "default": true,
+	}
+}
+
+// NormalizeStrictOpenAIToolSchema strips schema metadata commonly rejected by
+// strict OpenAI-compatible providers while leaving validation-relevant fields.
+func NormalizeStrictOpenAIToolSchema(defs []ToolDefinition) []ToolDefinition {
+	return normalizeToolSchemas(defs, map[string]bool{
+		"$schema": true, "$id": true, "$defs": true, "definitions": true,
+	})
+}
+
+func normalizeToolSchemas(defs []ToolDefinition, strip map[string]bool) []ToolDefinition {
+	if len(defs) == 0 {
+		return nil
+	}
+	out := make([]ToolDefinition, len(defs))
+	for i, def := range defs {
+		out[i] = def
+		out[i].Parameters = cloneToolParameters(def.Parameters)
+		out[i].InputJSONSchema = sanitizeSchemaMap(cloneJSONMap(def.InputJSONSchema), strip)
+		out[i].ParamAliases = cloneStringMap(def.ParamAliases)
+		if len(out[i].InputJSONSchema) > 0 {
+			sanitizeRequiredAgainstProperties(out[i].InputJSONSchema)
+		}
+	}
+	return out
+}
+
+func sanitizeSchemaMap(schema map[string]any, strip map[string]bool) map[string]any {
+	if len(schema) == 0 {
+		return schema
+	}
+	out := make(map[string]any, len(schema))
+	for k, v := range schema {
+		if strip[k] {
+			continue
+		}
+		out[k] = sanitizeSchemaValue(v, strip)
+	}
+	return out
+}
+
+func sanitizeSchemaValue(v any, strip map[string]bool) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return sanitizeSchemaMap(t, strip)
+	case []any:
+		out := make([]any, 0, len(t))
+		for _, item := range t {
+			out = append(out, sanitizeSchemaValue(item, strip))
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func sanitizeRequiredAgainstProperties(schema map[string]any) {
+	props, _ := schema["properties"].(map[string]any)
+	if len(props) == 0 {
+		delete(schema, "required")
+		return
+	}
+	required, ok := schema["required"].([]any)
+	if !ok {
+		return
+	}
+	filtered := make([]any, 0, len(required))
+	for _, item := range required {
+		name, ok := item.(string)
+		if ok && props[name] != nil {
+			filtered = append(filtered, name)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(schema, "required")
+		return
+	}
+	schema["required"] = filtered
 }

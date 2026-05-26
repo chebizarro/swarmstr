@@ -90,7 +90,7 @@ func (p *FeishuPlugin) ConfigSchema() map[string]any {
 }
 
 func (p *FeishuPlugin) Capabilities() sdk.ChannelCapabilities {
-	return sdk.ChannelCapabilities{Typing: true, Threads: true}
+	return sdk.ChannelCapabilities{Reactions: true, Threads: true}
 }
 
 func (p *FeishuPlugin) GatewayMethods() []sdk.GatewayMethod { return nil }
@@ -548,12 +548,69 @@ func (b *feishuBot) AddReaction(ctx context.Context, msgID, emoji string) error 
 
 // RemoveReaction removes an emoji reaction from a message.
 func (b *feishuBot) RemoveReaction(ctx context.Context, msgID, emoji string) error {
-	// Feishu requires the reaction_id to delete; we skip the extra GET roundtrip
-	// and return nil to satisfy the interface without error.
+	reactionID, err := b.findReactionID(ctx, msgID, emoji)
+	if err != nil {
+		return err
+	}
+	if reactionID == "" {
+		return nil
+	}
+	apiURL := fmt.Sprintf("%s/open-apis/im/v1/messages/%s/reactions/%s", b.baseURL, msgID, reactionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, apiURL, nil)
+	if err != nil {
+		return fmt.Errorf("feishu remove reaction: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+b.getToken())
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("feishu remove reaction: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("feishu remove reaction: status %d", resp.StatusCode)
+	}
 	return nil
 }
 
+func (b *feishuBot) findReactionID(ctx context.Context, msgID, emoji string) (string, error) {
+	if b.httpClient == nil {
+		return "", nil
+	}
+	apiURL := fmt.Sprintf("%s/open-apis/im/v1/messages/%s/reactions", b.baseURL, msgID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+b.getToken())
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("feishu list reactions: status %d", resp.StatusCode)
+	}
+	var result struct {
+		Data struct {
+			Items []struct {
+				ReactionID   string `json:"reaction_id"`
+				ReactionType struct {
+					EmojiType string `json:"emoji_type"`
+				} `json:"reaction_type"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+		return "", err
+	}
+	for _, item := range result.Data.Items {
+		if item.ReactionType.EmojiType == emoji {
+			return item.ReactionID, nil
+		}
+	}
+	return "", nil
+}
+
 // Ensure feishuBot satisfies the optional handle interfaces.
-var _ sdk.TypingHandle = (*feishuBot)(nil)
 var _ sdk.ReactionHandle = (*feishuBot)(nil)
 var _ sdk.ThreadHandle = (*feishuBot)(nil)

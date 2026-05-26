@@ -105,5 +105,12 @@ func extractKeywords(text string) []string {
 			break
 		}
 	}
+	for _, concept := range ConceptKeywords(text) {
+		if _, ok := seen[concept]; ok {
+			continue
+		}
+		seen[concept] = struct{}{}
+		out = append(out, concept)
+	}
 	return out
 }

@@ -19,9 +19,17 @@ import (
 
 // FallbackCandidate is a named ChatProvider with a model identifier.
 type FallbackCandidate struct {
-	Name     string // e.g. "anthropic-primary", "anthropic-backup"
-	Model    string // e.g. "claude-sonnet-4-5"
-	Provider ChatProvider
+	Name        string // e.g. "anthropic-primary", "anthropic-backup"
+	Model       string // e.g. "claude-sonnet-4-5"
+	Provider    ChatProvider
+	RetryConfig RetryConfig
+}
+
+// RetryConfig controls retries against the current provider before falling back.
+type RetryConfig struct {
+	MaxRetries      int
+	Deadline        time.Duration
+	RetryableErrors []failoverReason
 }
 
 // CooldownTracker tracks which providers are on cooldown after failures.
@@ -98,7 +106,8 @@ func (fc *FallbackChain) Chat(ctx context.Context, messages []LLMMessage, tools 
 	// provider-native cache toggles.
 	if len(fc.candidates) == 1 {
 		candidate := fc.candidates[0]
-		return candidate.Provider.Chat(ctx, messages, tools, chatOptionsForCandidate(opts, candidate.Provider))
+		resp, err, _ := fc.chatCandidateWithRetry(ctx, candidate, messages, tools, opts)
+		return resp, err
 	}
 
 	var lastErr error
@@ -114,8 +123,8 @@ func (fc *FallbackChain) Chat(ctx context.Context, messages []LLMMessage, tools 
 			continue
 		}
 
-		attempts++
-		resp, err := candidate.Provider.Chat(ctx, messages, tools, chatOptionsForCandidate(opts, candidate.Provider))
+		resp, err, usedAttempts := fc.chatCandidateWithRetry(ctx, candidate, messages, tools, opts)
+		attempts += usedAttempts
 		if err == nil {
 			if attempts > 1 {
 				log.Printf("fallback: succeeded with %s/%s after %d attempts", candidate.Name, candidate.Model, attempts)
@@ -143,6 +152,61 @@ func (fc *FallbackChain) Chat(ctx context.Context, messages []LLMMessage, tools 
 	return nil, fmt.Errorf("fallback chain: all candidates failed: %w", lastErr)
 }
 
+func (fc *FallbackChain) chatCandidateWithRetry(ctx context.Context, candidate FallbackCandidate, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error, int) {
+	cfg := effectiveRetryConfig(candidate.RetryConfig)
+	attempts := 0
+	var lastErr error
+	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
+		attempts++
+		callCtx := ctx
+		cancel := func() {}
+		if cfg.Deadline > 0 {
+			callCtx, cancel = context.WithTimeout(ctx, cfg.Deadline)
+		}
+		candidateTools := normalizeToolsForProvider(candidate.Provider, tools)
+		resp, err := candidate.Provider.Chat(callCtx, messages, candidateTools, chatOptionsForCandidate(opts, candidate.Provider))
+		cancel()
+		if err == nil {
+			if attempt > 0 {
+				log.Printf("fallback: %s/%s succeeded after provider retry %d", candidate.Name, candidate.Model, attempt)
+			}
+			return resp, nil, attempts
+		}
+		lastErr = err
+		reason := classifyError(err)
+		if attempt >= cfg.MaxRetries || !retryConfigAllowsReason(cfg, reason) || !isRetriableReason(reason) {
+			return nil, err, attempts
+		}
+		log.Printf("fallback: retrying %s/%s after first-response error (attempt=%d reason=%s): %v", candidate.Name, candidate.Model, attempt+1, reason, err)
+	}
+	return nil, lastErr, attempts
+}
+
+func effectiveRetryConfig(cfg RetryConfig) RetryConfig {
+	if cfg.MaxRetries == 0 && cfg.Deadline == 0 && len(cfg.RetryableErrors) == 0 {
+		return RetryConfig{MaxRetries: 1, Deadline: 45 * time.Second, RetryableErrors: []failoverReason{reasonTimeout, reasonOverloaded}}
+	}
+	if cfg.MaxRetries < 0 {
+		cfg.MaxRetries = 0
+	}
+	if cfg.Deadline == 0 {
+		cfg.Deadline = 45 * time.Second
+	}
+	return cfg
+}
+
+func retryConfigAllowsReason(cfg RetryConfig, reason failoverReason) bool {
+	if len(cfg.RetryableErrors) == 0 {
+		return reason == reasonTimeout || reason == reasonOverloaded
+	}
+	for _, allowed := range cfg.RetryableErrors {
+		if allowed == reason {
+			return true
+		}
+	}
+	return false
+}
+
 // ─── Error classification ────────────────────────────────────────────────────
 //
 // Comprehensive error classification adapted from picoclaw/OpenClaw (~40 patterns).
@@ -157,6 +221,7 @@ const (
 	reasonBilling    failoverReason = "billing"
 	reasonOverloaded failoverReason = "overloaded"
 	reasonTimeout    failoverReason = "timeout"
+	reasonOverflow   failoverReason = "context_overflow"
 	reasonFormat     failoverReason = "format"
 	reasonUnknown    failoverReason = "unknown"
 )
@@ -225,6 +290,19 @@ var (
 		errSubstr("no api key found"),
 	}
 
+	overflowPatterns = []errorPattern{
+		errSubstr("context length exceeded"),
+		errSubstr("context_length_exceeded"),
+		errSubstr("context window"),
+		errSubstr("maximum context length"),
+		errSubstr("prompt is too long"),
+		errSubstr("input is too long"),
+		errSubstr("too many input tokens"),
+		errSubstr("token limit exceeded"),
+		errRxp(`exceeds?.*context`),
+		errRxp(`exceeds?.*token.*limit`),
+	}
+
 	formatPatterns = []errorPattern{
 		errSubstr("string should match pattern"),
 		errSubstr("tool_use.id"),
@@ -290,6 +368,9 @@ func classifyError(err error) failoverReason {
 	}
 
 	msg := strings.ToLower(err.Error())
+	if matchesAnyPattern(msg, overflowPatterns) {
+		return reasonOverflow
+	}
 
 	// Try HTTP status code extraction first.
 	if status := extractHTTPStatus(msg); status > 0 {
@@ -334,6 +415,9 @@ func classifyByMessage(msg string) failoverReason {
 	}
 	if matchesAnyPattern(msg, timeoutPatterns) {
 		return reasonTimeout
+	}
+	if matchesAnyPattern(msg, overflowPatterns) {
+		return reasonOverflow
 	}
 	if matchesAnyPattern(msg, authPatterns) {
 		return reasonAuth
@@ -393,6 +477,8 @@ func cooldownForReason(reason failoverReason) time.Duration {
 		return 60 * time.Second
 	case reasonTimeout:
 		return 10 * time.Second
+	case reasonOverflow:
+		return 0
 	case reasonFormat:
 		return 0 // format errors won't fix themselves
 	default:
@@ -402,4 +488,8 @@ func cooldownForReason(reason failoverReason) time.Duration {
 
 func isRetriableReason(reason failoverReason) bool {
 	return reason != reasonFormat && reason != reasonCanceled
+}
+
+func isContextOverflowError(err error) bool {
+	return classifyError(err) == reasonOverflow
 }

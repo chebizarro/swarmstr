@@ -8,7 +8,9 @@
 //	{
 //	  "bot_token":  "Bot <token>",      // required: Discord bot token (include "Bot " prefix)
 //	  "channel_id": "1234567890",       // required: Discord channel ID to listen/send on
-//	  "guild_id":   "1234567890",       // optional: enables guild directory methods
+//	  "guild_id":        "1234567890",   // optional: enables guild directory methods
+//	  "application_id": "1234567890",    // optional: enables slash command registration
+//	  "slash_command":  "metiq"          // optional: slash command name
 //	}
 //
 // To add a Discord channel to your metiq config:
@@ -42,6 +44,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -71,6 +74,14 @@ func (d *DiscordPlugin) ConfigSchema() map[string]any {
 				"type":        "string",
 				"description": "Optional Discord guild ID used by directory and thread-list gateway methods.",
 			},
+			"application_id": map[string]any{
+				"type":        "string",
+				"description": "Optional Discord application ID used to register slash commands.",
+			},
+			"slash_command": map[string]any{
+				"type":        "string",
+				"description": "Optional slash command name to register. Defaults to 'metiq'.",
+			},
 		},
 		"required": []string{"bot_token", "channel_id"},
 	}
@@ -82,7 +93,7 @@ func (d *DiscordPlugin) Capabilities() sdk.ChannelCapabilities {
 		Typing:       true,
 		Reactions:    true,
 		Threads:      true,
-		Audio:        true,
+		Audio:        false,
 		Edit:         true,
 		MultiAccount: true,
 	}
@@ -213,6 +224,11 @@ func (d *DiscordPlugin) Connect(
 	token, _ := cfg["bot_token"].(string)
 	discordChannelID, _ := cfg["channel_id"].(string)
 	guildID, _ := cfg["guild_id"].(string)
+	applicationID, _ := cfg["application_id"].(string)
+	commandName, _ := cfg["slash_command"].(string)
+	if strings.TrimSpace(commandName) == "" {
+		commandName = "metiq"
+	}
 
 	if token == "" {
 		return nil, fmt.Errorf("discord channel %q: config.bot_token is required", channelID)
@@ -226,11 +242,19 @@ func (d *DiscordPlugin) Connect(
 		token:            token,
 		discordChannelID: discordChannelID,
 		guildID:          guildID,
+		applicationID:    strings.TrimSpace(applicationID),
+		slashCommand:     strings.TrimSpace(commandName),
 		onMessage:        onMessage,
 		done:             make(chan struct{}),
 		gatewayURL:       discordGatewayURL,
+		restScheduler:    channels.NewRESTScheduler(5, 5),
 	}
 
+	if bot.applicationID != "" {
+		if err := bot.registerApplicationCommands(ctx); err != nil {
+			log.Printf("discord: slash command registration failed channel=%s: %v", channelID, err)
+		}
+	}
 	go bot.runGateway(ctx)
 	log.Printf("discord: gateway started for channel %s (discord_channel=%s)", channelID, discordChannelID)
 	return bot, nil
@@ -243,12 +267,16 @@ const (
 	discordGatewayURL = "wss://gateway.discord.gg/?v=10&encoding=json"
 )
 
+var defaultDiscordRESTScheduler = channels.NewRESTScheduler(5, 5)
+
 type discordBot struct {
 	mu                sync.Mutex
 	channelID         string
 	token             string
 	discordChannelID  string
 	guildID           string
+	applicationID     string
+	slashCommand      string
 	onMessage         func(sdk.InboundChannelMessage)
 	lastMessageID     string
 	done              chan struct{}
@@ -256,6 +284,7 @@ type discordBot struct {
 	gatewayURL        string
 	channelMetaLoaded bool
 	isThreadChannel   bool
+	restScheduler     *channels.RESTScheduler
 }
 
 func (b *discordBot) ID() string { return b.channelID }
@@ -291,7 +320,7 @@ func (b *discordBot) ensureChannelMetadata(ctx context.Context) {
 	}
 	req.Header.Set("Authorization", b.token)
 
-	resp, err := b.client(10 * time.Second).Do(req)
+	resp, err := discordDo(ctx, b.client(10*time.Second), b.restScheduler, req)
 	if err != nil {
 		return
 	}
@@ -314,7 +343,44 @@ func (b *discordBot) ensureChannelMetadata(ctx context.Context) {
 }
 
 func (b *discordBot) Send(ctx context.Context, text string) error {
-	return sendDiscordMessage(ctx, b.token, b.discordChannelID, text)
+	_, err := b.SendWithReceipt(ctx, text)
+	return err
+}
+
+func (b *discordBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
+	msgID, err := sendDiscordPayloadWithClient(ctx, b.client(15*time.Second), b.restScheduler, b.token, b.discordChannelID, map[string]any{"content": text})
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "discord", Attempts: 1, CreatedAt: time.Now()}
+	if msgID != "" {
+		receipt.MessageID = "discord-" + msgID
+	}
+	if err != nil {
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
+}
+
+func (b *discordBot) DeleteMessage(ctx context.Context, eventID string) error {
+	msgID := strings.TrimPrefix(eventID, "discord-")
+	apiURL := fmt.Sprintf("%s/channels/%s/messages/%s", discordAPIBase, b.discordChannelID, msgID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", b.token)
+	resp, err := discordDo(ctx, b.client(15*time.Second), b.restScheduler, req)
+	if err != nil {
+		return fmt.Errorf("discord deleteMessage: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("discord deleteMessage: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	return nil
 }
 
 func (b *discordBot) Close() {
@@ -335,7 +401,7 @@ func (b *discordBot) SendTyping(ctx context.Context, _ int) error {
 		return err
 	}
 	req.Header.Set("Authorization", b.token)
-	resp, err := b.client(10 * time.Second).Do(req)
+	resp, err := discordDo(ctx, b.client(10*time.Second), b.restScheduler, req)
 	if err != nil {
 		return fmt.Errorf("discord sendTyping: %w", err)
 	}
@@ -356,7 +422,7 @@ func (b *discordBot) AddReaction(ctx context.Context, eventID, emoji string) err
 		return err
 	}
 	req.Header.Set("Authorization", b.token)
-	resp, err := b.client(10 * time.Second).Do(req)
+	resp, err := discordDo(ctx, b.client(10*time.Second), b.restScheduler, req)
 	if err != nil {
 		return fmt.Errorf("discord addReaction: %w", err)
 	}
@@ -378,7 +444,7 @@ func (b *discordBot) RemoveReaction(ctx context.Context, eventID, emoji string) 
 		return err
 	}
 	req.Header.Set("Authorization", b.token)
-	resp, err := b.client(10 * time.Second).Do(req)
+	resp, err := discordDo(ctx, b.client(10*time.Second), b.restScheduler, req)
 	if err != nil {
 		return fmt.Errorf("discord removeReaction: %w", err)
 	}
@@ -404,7 +470,7 @@ func (b *discordBot) EditMessage(ctx context.Context, eventID, newText string) e
 	}
 	req.Header.Set("Authorization", b.token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := b.client(15 * time.Second).Do(req)
+	resp, err := discordDo(ctx, b.client(15*time.Second), b.restScheduler, req)
 	if err != nil {
 		return fmt.Errorf("discord editMessage: %w", err)
 	}
@@ -421,7 +487,8 @@ func (b *discordBot) EditMessage(ctx context.Context, eventID, newText string) e
 // SendInThread posts a message to a Discord thread channel.
 // threadID is the Discord channel ID of the thread (threads are channels in Discord).
 func (b *discordBot) SendInThread(ctx context.Context, threadID, text string) error {
-	return sendDiscordMessage(ctx, b.token, threadID, text)
+	_, err := sendDiscordPayloadWithClient(ctx, b.client(15*time.Second), b.restScheduler, b.token, threadID, map[string]any{"content": text})
+	return err
 }
 
 // SendAudio delivers an audio attachment URL as a Discord message. Discord voice
@@ -593,8 +660,11 @@ func (b *discordBot) gatewaySession(ctx context.Context) error {
 		}
 		switch env.Op {
 		case 0:
-			if env.T == "MESSAGE_CREATE" {
+			switch env.T {
+			case "MESSAGE_CREATE":
 				b.handleGatewayMessage(env.D)
+			case "INTERACTION_CREATE":
+				b.handleGatewayInteraction(ctx, env.D)
 			}
 		case 1:
 			if err := conn.WriteJSON(map[string]any{"op": 1, "d": seq}); err != nil {
@@ -664,6 +734,111 @@ func (b *discordBot) handleGatewayMessage(raw json.RawMessage) {
 		MediaURL:       mediaURL,
 		MediaMIME:      mediaMIME,
 	})
+}
+
+type discordGatewayInteraction struct {
+	ID        string `json:"id"`
+	Token     string `json:"token"`
+	ChannelID string `json:"channel_id"`
+	GuildID   string `json:"guild_id,omitempty"`
+	Type      int    `json:"type"`
+	Data      struct {
+		Name    string `json:"name"`
+		Options []struct {
+			Name  string `json:"name"`
+			Value any    `json:"value"`
+		} `json:"options,omitempty"`
+	} `json:"data"`
+	Member *struct {
+		User *struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+		} `json:"user"`
+	} `json:"member,omitempty"`
+	User *struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+	} `json:"user,omitempty"`
+}
+
+func (b *discordBot) handleGatewayInteraction(ctx context.Context, raw json.RawMessage) {
+	var interaction discordGatewayInteraction
+	if err := json.Unmarshal(raw, &interaction); err != nil {
+		return
+	}
+	if interaction.ChannelID != "" && interaction.ChannelID != b.discordChannelID {
+		return
+	}
+	name := strings.TrimSpace(interaction.Data.Name)
+	if name == "" {
+		return
+	}
+	parts := []string{"/" + name}
+	for _, opt := range interaction.Data.Options {
+		if opt.Name != "" {
+			parts = append(parts, fmt.Sprintf("%s=%v", opt.Name, opt.Value))
+		}
+	}
+	senderID := ""
+	if interaction.Member != nil && interaction.Member.User != nil {
+		senderID = interaction.Member.User.Username + "#" + interaction.Member.User.ID
+	} else if interaction.User != nil {
+		senderID = interaction.User.Username + "#" + interaction.User.ID
+	}
+	if b.onMessage != nil {
+		b.onMessage(sdk.InboundChannelMessage{
+			ChannelID: b.channelID,
+			SenderID:  senderID,
+			Text:      strings.Join(parts, " "),
+			EventID:   "discord-interaction-" + interaction.ID,
+		})
+	}
+	if interaction.ID != "" && interaction.Token != "" {
+		_ = b.respondInteraction(ctx, interaction.ID, interaction.Token, "Command received.")
+	}
+}
+
+func (b *discordBot) respondInteraction(ctx context.Context, interactionID, token, text string) error {
+	apiURL := fmt.Sprintf("%s/interactions/%s/%s/callback", discordAPIBase, interactionID, token)
+	body, _ := json.Marshal(map[string]any{"type": 4, "data": map[string]any{"content": text, "flags": 64}})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := discordDo(ctx, b.client(10*time.Second), b.restScheduler, req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("discord interaction callback: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	return nil
+}
+
+func (b *discordBot) registerApplicationCommands(ctx context.Context) error {
+	command := strings.TrimSpace(b.slashCommand)
+	if command == "" {
+		command = "metiq"
+	}
+	apiURL := fmt.Sprintf("%s/applications/%s/commands", discordAPIBase, b.applicationID)
+	if b.guildID != "" {
+		apiURL = fmt.Sprintf("%s/applications/%s/guilds/%s/commands", discordAPIBase, b.applicationID, b.guildID)
+	}
+	payload := map[string]any{
+		"name":        command,
+		"description": "Send a prompt or command to metiq",
+		"options": []map[string]any{{
+			"type":        3,
+			"name":        "text",
+			"description": "Prompt or command text",
+			"required":    false,
+		}},
+	}
+	_, err := discordRESTJSONWithClient(ctx, b.client(15*time.Second), b.restScheduler, b.token, http.MethodPost, apiURL, payload)
+	return err
 }
 
 func (b *discordBot) poll(ctx context.Context) {
@@ -806,6 +981,10 @@ func discordSendRich(ctx context.Context, params map[string]any, method string, 
 }
 
 func discordRESTJSON(ctx context.Context, token, method, apiURL string, payload map[string]any) (map[string]any, error) {
+	return discordRESTJSONWithClient(ctx, &http.Client{Timeout: 15 * time.Second}, nil, token, method, apiURL, payload)
+}
+
+func discordRESTJSONWithClient(ctx context.Context, client *http.Client, scheduler *channels.RESTScheduler, token, method, apiURL string, payload map[string]any) (map[string]any, error) {
 	var body io.Reader
 	if payload != nil {
 		raw, _ := json.Marshal(payload)
@@ -819,7 +998,7 @@ func discordRESTJSON(ctx context.Context, token, method, apiURL string, payload 
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := discordDo(ctx, client, scheduler, req)
 	if err != nil {
 		return nil, fmt.Errorf("discord API: %w", err)
 	}
@@ -839,6 +1018,10 @@ func discordRESTJSON(ctx context.Context, token, method, apiURL string, payload 
 }
 
 func sendDiscordPayload(ctx context.Context, token, channelID string, payload map[string]any) (string, error) {
+	return sendDiscordPayloadWithClient(ctx, &http.Client{Timeout: 15 * time.Second}, nil, token, channelID, payload)
+}
+
+func sendDiscordPayloadWithClient(ctx context.Context, client *http.Client, scheduler *channels.RESTScheduler, token, channelID string, payload map[string]any) (string, error) {
 	url := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, channelID)
 	rawBody, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
@@ -848,8 +1031,7 @@ func sendDiscordPayload(ctx context.Context, token, channelID string, payload ma
 	req.Header.Set("Authorization", token)
 	req.Header.Set("Content-Type", "application/json")
 
-	cl := &http.Client{Timeout: 15 * time.Second}
-	resp, err := cl.Do(req)
+	resp, err := discordDo(ctx, client, scheduler, req)
 	if err != nil {
 		return "", fmt.Errorf("discord sendMessage: %w", err)
 	}
@@ -865,6 +1047,13 @@ func sendDiscordPayload(ctx context.Context, token, channelID string, payload ma
 		_ = json.Unmarshal(raw, &result)
 	}
 	return result.ID, nil
+}
+
+func discordDo(ctx context.Context, client *http.Client, scheduler *channels.RESTScheduler, req *http.Request) (*http.Response, error) {
+	if scheduler == nil {
+		scheduler = defaultDiscordRESTScheduler
+	}
+	return scheduler.Do(ctx, client, channels.DiscordRESTRoute(req.Method, req.URL.Path), req)
 }
 
 // sendDiscordMessage posts a message to a Discord channel via REST API.

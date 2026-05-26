@@ -48,8 +48,11 @@ func TestPlugin_ConfigSchema(t *testing.T) {
 func TestPlugin_Capabilities(t *testing.T) {
 	p := &FeishuPlugin{}
 	caps := p.Capabilities()
-	if !caps.Typing {
-		t.Error("expected Typing capability")
+	if caps.Typing {
+		t.Error("did not expect Typing capability for Feishu bot API")
+	}
+	if !caps.Reactions {
+		t.Error("expected Reactions capability")
 	}
 	if !caps.Threads {
 		t.Error("expected Threads capability")
@@ -473,11 +476,35 @@ func TestSendTyping_NoOp(t *testing.T) {
 	}
 }
 
-func TestRemoveReaction_NoOp(t *testing.T) {
-	bot := &feishuBot{}
+func TestRemoveReaction_DeletesMatchingReaction(t *testing.T) {
+	var methods []string
+	var paths []string
+	bot := &feishuBot{
+		baseURL:     "http://feishu.test",
+		accessToken: "tok",
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			methods = append(methods, req.Method)
+			paths = append(paths, req.URL.Path)
+			switch req.Method {
+			case http.MethodGet:
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":{"items":[{"reaction_id":"react-1","reaction_type":{"emoji_type":"thumbsup"}}]}}`))}, nil
+			case http.MethodDelete:
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+			default:
+				t.Fatalf("unexpected method: %s", req.Method)
+				return nil, nil
+			}
+		})},
+	}
 	err := bot.RemoveReaction(context.Background(), "msg-1", "thumbsup")
 	if err != nil {
-		t.Fatalf("RemoveReaction should be no-op, got %v", err)
+		t.Fatalf("RemoveReaction: %v", err)
+	}
+	if len(methods) != 2 || methods[0] != http.MethodGet || methods[1] != http.MethodDelete {
+		t.Fatalf("expected GET then DELETE, got %v", methods)
+	}
+	if !strings.Contains(paths[1], "/messages/msg-1/reactions/react-1") {
+		t.Fatalf("expected delete of reaction id, got paths %v", paths)
 	}
 }
 

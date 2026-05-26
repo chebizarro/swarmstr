@@ -18,11 +18,33 @@ import (
 //go:embed ui.html
 var rawHTML string
 
+//go:embed components/session_sidebar.html
+var sessionSidebarHTML string
+
+//go:embed components/chat_message.html
+var chatMessageHTML string
+
+//go:embed components/tool_card.html
+var toolCardHTML string
+
+var componentTemplates = map[string]string{
+	"session_sidebar": sessionSidebarHTML,
+	"chat_message":    chatMessageHTML,
+	"tool_card":       toolCardHTML,
+}
+
 // tmplOnce is the parsed template (lazy-initialised on first request).
 var uiTemplate *template.Template
 
 func init() {
-	uiTemplate = template.Must(template.New("ui").Parse(rawHTML))
+	uiTemplate = template.Must(template.New("ui").Funcs(template.FuncMap{
+		"component": func(name string) template.HTML {
+			if html, ok := componentTemplates[name]; ok {
+				return template.HTML(html)
+			}
+			return template.HTML("<!-- missing component: " + template.HTMLEscapeString(name) + " -->")
+		},
+	}).Parse(rawHTML))
 }
 
 // templateData holds the values injected into the HTML template.

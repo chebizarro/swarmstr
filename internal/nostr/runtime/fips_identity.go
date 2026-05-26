@@ -24,12 +24,12 @@ const FIPSDefaultAgentPort = 1337
 //
 // The address is in the fd00::/8 ULA range:
 //
-//	fd + SHA-256(pubkey_bytes)[0..15]
+//	fd || SHA-256(xonly_pubkey_32_bytes)[0..15]
 //
 // pubkeyHex must be a 64-character hex-encoded x-only public key (32 bytes),
-// which is the standard Nostr representation.
+// which is the standard Nostr representation. Compressed 33-byte keys are not
+// accepted because FIPS hashes only the x-only public key bytes.
 func FIPSIPv6FromPubkey(pubkeyHex string) (net.IP, error) {
-	pubkeyHex = normalizeHexPubkey(pubkeyHex)
 	if len(pubkeyHex) != 64 {
 		return nil, fmt.Errorf("fips: pubkey must be 64 hex chars (32 bytes), got %d", len(pubkeyHex))
 	}
@@ -56,11 +56,3 @@ func FIPSAddrString(pubkeyHex string, port int) (string, error) {
 // FIPSPubkeyFromIPv6 is NOT possible — the SHA-256 truncation is one-way.
 // Callers must maintain a local identity cache (IPv6 → pubkey) populated
 // from DNS lookups, inbound sessions, or fleet directory entries.
-
-func normalizeHexPubkey(s string) string {
-	if len(s) == 66 && (s[:2] == "02" || s[:2] == "03") {
-		// Strip compressed prefix if accidentally passed.
-		return s[2:]
-	}
-	return s
-}
