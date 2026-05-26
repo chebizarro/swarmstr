@@ -493,6 +493,11 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			Content: resp.Content,
 		})
 	}
+	
+	// Compress oversized tool results in historyDelta to prevent unbounded growth
+	// in turns with many iterations and large tool outputs.
+	historyDelta = compressLargeToolResults(historyDelta)
+	
 	resp.Usage = totalUsage
 	resp.HistoryDelta = historyDelta
 	resp.Outcome = TurnOutcomeCompletedWithTools
@@ -1247,6 +1252,34 @@ func blockedStopReason(loopBlocked bool) TurnStopReason {
 		return TurnStopReasonLoopBlocked
 	}
 	return TurnStopReasonMaxIterations
+}
+
+// compressLargeToolResults truncates overly large tool result content to prevent
+// historyDelta from consuming excessive memory in turns with many tool calls.
+// Tool results larger than 20KB are replaced with a truncated summary.
+func compressLargeToolResults(history []ConversationMessage) []ConversationMessage {
+	const maxToolResultSize = 20 * 1024 // 20KB threshold
+	const keepPrefix = 5000               // Keep first 5KB
+	const keepSuffix = 1000               // Keep last 1KB
+	
+	for i := range history {
+		if history[i].Role != "tool" {
+			continue
+		}
+		if len(history[i].Content) <= maxToolResultSize {
+			continue
+		}
+		
+		// Compress large tool result: keep prefix + truncation notice + suffix
+		prefix := history[i].Content[:keepPrefix]
+		suffix := history[i].Content[len(history[i].Content)-keepSuffix:]
+		truncated := len(history[i].Content) - keepPrefix - keepSuffix
+		
+		history[i].Content = fmt.Sprintf("%s\n\n[... %d characters truncated for history compression ...]\n\n%s",
+			prefix, truncated, suffix)
+	}
+	
+	return history
 }
 
 func isCriticalToolError(err error) bool {
