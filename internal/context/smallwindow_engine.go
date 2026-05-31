@@ -171,8 +171,9 @@ func (e *SmallWindowEngine) Assemble(_ stdctx.Context, sessionID string, maxToke
 	sess := e.getOrCreateSession(sessionID)
 	if len(sess.messages) == 0 {
 		result := AssembleResult{}
-		if sess.summary != "" {
-			result.SystemPromptAddition = sess.summary
+		if summary := normalizePromptCacheSummary(sess.summary); summary != "" {
+			result.SystemPromptAddition = summary
+			result.EstimatedTokens += (len(summary) + 3) / 4
 		}
 		e.annotateAssembleResultLocked(sess, &result)
 		return result, nil
@@ -197,8 +198,9 @@ func (e *SmallWindowEngine) Assemble(_ stdctx.Context, sessionID string, maxToke
 		Messages:        msgs,
 		EstimatedTokens: estTokens,
 	}
-	if sess.summary != "" {
-		result.SystemPromptAddition = sess.summary
+	if summary := normalizePromptCacheSummary(sess.summary); summary != "" {
+		result.SystemPromptAddition = summary
+		result.EstimatedTokens += (len(summary) + 3) / 4
 	}
 	e.annotateAssembleResultLocked(sess, &result)
 	return result, nil

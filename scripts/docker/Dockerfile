@@ -8,6 +8,11 @@
 # Build args are forwarded from docker-compose.yml — see .env.example.
 # Task is installed by default via the official installer; override with
 # METIQ_TASK_VERSION if you need to pin a different release.
+#
+# Supported runtime profiles (see docs/install/runtime-profiles.md):
+#   minimal         — no optional language/browser/Docker layers (~450-650 MB)
+#   full            — Python+uv + Node.js, optional Docker CLI (~650-900 MB)
+#   browser-enabled — full runtime plus Chromium+Xvfb (~950 MB-1.2 GB)
 
 ARG METIQ_VARIANT=default
 ARG VERSION=dev

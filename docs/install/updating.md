@@ -163,5 +163,6 @@ metiq is derived from OpenClaw. If you're migrating an existing OpenClaw agent:
 
 - [Install Overview](/install/)
 - [Docker](/install/docker)
+- [Runtime Profiles](/install/runtime-profiles)
 - [Configuration](/gateway/configuration)
 - [Getting Started](/start/getting-started)

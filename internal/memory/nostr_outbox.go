@@ -21,6 +21,7 @@ var memoryOutboxRetryBackoff = []time.Duration{
 const (
 	memoryOutboxTerminalFailureAfter = 7 * 24 * time.Hour
 	memoryOutboxFailedRetention      = 30 * 24 * time.Hour
+	memoryOutboxMaxPendingDepth      = 10000
 )
 
 type MemoryOutboxEvent struct {
@@ -42,6 +43,7 @@ type MemoryOutboxStats struct {
 	PublishFailures int            `json:"publish_failures"`
 	RetryCounts     map[string]int `json:"retry_counts,omitempty"`
 	OldestPending   string         `json:"oldest_pending,omitempty"`
+	MaxPending      int            `json:"max_pending,omitempty"`
 }
 
 func ensureMemoryOutboxColumns(db *sql.DB) error {
@@ -126,8 +128,55 @@ func (b *SQLiteBackend) EnqueueMemoryOutboxEvent(ctx context.Context, recordID, 
 		return 0, err
 	}
 	id, _ := res.LastInsertId()
-	recordMemoryTelemetry("outbox", start, map[string]any{"ok": true, "op": "enqueue", "id": id, "event_kind": eventKind})
+	failedForDepth, enforceErr := enforceMemoryOutboxPendingLimitLocked(b.db, now.UTC(), id)
+	if enforceErr != nil {
+		recordMemoryTelemetry("outbox", start, map[string]any{"ok": false, "op": "enqueue", "id": id, "error": enforceErr.Error()})
+		return id, enforceErr
+	}
+	recordMemoryTelemetry("outbox", start, map[string]any{"ok": true, "op": "enqueue", "id": id, "event_kind": eventKind, "depth_failed": failedForDepth})
 	return id, nil
+}
+
+func enforceMemoryOutboxPendingLimitLocked(db *sql.DB, now time.Time, newestID int64) (int, error) {
+	var pending int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_events_outbox WHERE publish_failed = 0`).Scan(&pending); err != nil {
+		return 0, err
+	}
+	if pending <= memoryOutboxMaxPendingDepth {
+		return 0, nil
+	}
+	excess := pending - memoryOutboxMaxPendingDepth
+	rows, err := db.Query(`
+		SELECT id FROM memory_events_outbox
+		WHERE publish_failed = 0 AND id != ?
+		ORDER BY created_at ASC, id ASC
+		LIMIT ?
+	`, newestID, excess)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, excess)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		if _, err := db.Exec(`
+			UPDATE memory_events_outbox
+			SET publish_failed = 1, failed_at = ?, next_attempt_at = NULL, last_error = ?
+			WHERE id = ? AND publish_failed = 0
+		`, now.Unix(), "outbox pending depth exceeded; marked failed rather than dropping newest event", id); err != nil {
+			return len(ids), err
+		}
+	}
+	return len(ids), nil
 }
 
 func normalizeOutboxPayload(payload any) (string, error) {
@@ -310,6 +359,7 @@ func (b *SQLiteBackend) ForceRepublishMemoryOutbox(ctx context.Context, now time
 		if rows, rerr := res.RowsAffected(); rerr == nil {
 			n = int(rows)
 		}
+		_, err = enforceMemoryOutboxPendingLimitLocked(b.db, now.UTC(), 0)
 	}
 	recordMemoryTelemetry("outbox", start, map[string]any{"ok": err == nil, "op": "force_republish", "reset": n})
 	return n, err
@@ -351,7 +401,7 @@ func (b *SQLiteBackend) MemoryOutboxStats(ctx context.Context) (MemoryOutboxStat
 	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	stats := MemoryOutboxStats{RetryCounts: map[string]int{}}
+	stats := MemoryOutboxStats{RetryCounts: map[string]int{}, MaxPending: memoryOutboxMaxPendingDepth}
 	_ = b.db.QueryRow(`SELECT COUNT(*) FROM memory_events_outbox WHERE publish_failed = 0`).Scan(&stats.OutboxDepth)
 	_ = b.db.QueryRow(`SELECT COUNT(*) FROM memory_events_outbox WHERE publish_failed != 0`).Scan(&stats.PublishFailures)
 	var oldest sql.NullInt64

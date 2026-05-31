@@ -9,6 +9,11 @@
 # Cross-platform:
 #   docker buildx build --platform linux/amd64,linux/arm64 .
 #
+# Supported runtime profiles (see docs/install/runtime-profiles.md):
+#   minimal         — no optional language/browser/Docker layers (~450-650 MB)
+#   full            — Python+uv + Node.js, optional Docker CLI (~650-900 MB)
+#   browser-enabled — full runtime plus Chromium+Xvfb (~950 MB-1.2 GB)
+#
 # Build args:
 #   VERSION                      — version string injected into binary (default: dev)
 #   METIQ_VARIANT                — runtime base: "default" (bookworm) or "slim" (bookworm-slim)

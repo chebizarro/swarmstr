@@ -63,7 +63,8 @@ type SQLiteBackend struct {
 	vectorLastQueryAt      time.Time
 	vectorIdleReindexTimer *time.Timer
 
-	recovery SQLiteRecoveryOptions
+	recovery       SQLiteRecoveryOptions
+	recoveryReport SQLiteRecoveryReport
 }
 
 func init() {
@@ -86,11 +87,14 @@ func OpenSQLiteBackendWithRecoveryOptions(path string, opts SQLiteRecoveryOption
 		return nil, err
 	}
 	opts = normalizeSQLiteRecoveryOptions(path, opts)
+	report := SQLiteRecoveryReport{Path: path, IntegrityChecked: true, IntegrityOK: true}
 	if err := checkSQLiteIntegrity(path); err != nil {
+		report.IntegrityOK = false
+		report.IntegrityError = err.Error()
 		if !isSQLiteCorruptionError(err) {
 			return nil, fmt.Errorf("sqlite startup integrity_check: %w", err)
 		}
-		if recoverErr := recoverSQLiteDatabase(context.Background(), path, opts, err); recoverErr != nil {
+		if recoverErr := recoverSQLiteDatabase(context.Background(), path, opts, err, &report); recoverErr != nil {
 			return nil, recoverErr
 		}
 	}
@@ -99,6 +103,7 @@ func OpenSQLiteBackendWithRecoveryOptions(path string, opts SQLiteRecoveryOption
 		return nil, err
 	}
 	backend.recovery = opts
+	backend.recoveryReport = report
 	if err := backend.backupIfDue(); err != nil {
 		opts.Logf("memory sqlite weekly backup warning path=%q err=%v", path, err)
 	}
@@ -649,10 +654,22 @@ func (b *SQLiteBackend) MemoryStatus() StoreStatus {
 			available = false
 		}
 	}
+	recovery := b.RecoveryReport()
 	return StoreStatus{
-		Kind:    "sqlite",
-		Primary: BackendStatus{Name: "sqlite", Available: available},
+		Kind:     "sqlite",
+		Primary:  BackendStatus{Name: "sqlite", Available: available},
+		Recovery: &recovery,
 	}
+}
+
+// RecoveryReport returns the SQLite startup integrity/recovery outcome.
+func (b *SQLiteBackend) RecoveryReport() SQLiteRecoveryReport {
+	if b == nil {
+		return SQLiteRecoveryReport{}
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.recoveryReport
 }
 
 // BackendStatus returns the health status of the backend.

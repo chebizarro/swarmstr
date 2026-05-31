@@ -20,15 +20,15 @@ import (
 
 const (
 	pinnedKnowledgeTopic = "agent_knowledge"
-	
+
 	// Baseline recall limits for 8K context window
 	// These scale proportionally with context size (1x-5x for 8K-200K)
-	baselineMemoryRecallLimit        = 10    // Increased from 6 for better recall
-	baselineCrossSessionRecallLimit  = 5     // Increased from 3
-	baselineMemorySnippetRunes       = 400   // Increased from 280 (~100 words per block)
-	baselineFileMemoryRecallLimit    = 3     // Increased from 2
-	baselineFileMemoryContentRunes   = 1200  // Increased from 900 (~300 words)
-	baselineSessionMemoryContentRunes = 2400  // Increased from 1600 (~600 words)
+	baselineMemoryRecallLimit         = 10   // Increased from 6 for better recall
+	baselineCrossSessionRecallLimit   = 5    // Increased from 3
+	baselineMemorySnippetRunes        = 400  // Increased from 280 (~100 words per block)
+	baselineFileMemoryRecallLimit     = 3    // Increased from 2
+	baselineFileMemoryContentRunes    = 1200 // Increased from 900 (~300 words)
+	baselineSessionMemoryContentRunes = 2400 // Increased from 1600 (~600 words)
 )
 
 // memoryActionHint captures whether the current turn requires active memory tool usage.
@@ -115,16 +115,16 @@ func buildMemoryActionHintPrompt(hint memoryActionHint) string {
 func computeScaledRecallLimits(contextWindowTokens int) (memoryBlocks, snippetRunes, fileMemRunes, sessionMemRunes int) {
 	if contextWindowTokens <= 0 {
 		return baselineMemoryRecallLimit, baselineMemorySnippetRunes,
-		baselineFileMemoryContentRunes, baselineSessionMemoryContentRunes
+			baselineFileMemoryContentRunes, baselineSessionMemoryContentRunes
 	}
-	
+
 	const (
 		baselineContext = 8_192
 		maxContext      = 200_000
 		minMultiplier   = 1.0
 		maxMultiplier   = 5.0
 	)
-	
+
 	ctx := contextWindowTokens
 	if ctx < baselineContext {
 		ctx = baselineContext
@@ -132,14 +132,14 @@ func computeScaledRecallLimits(contextWindowTokens int) (memoryBlocks, snippetRu
 	if ctx > maxContext {
 		ctx = maxContext
 	}
-	
+
 	ratio := float64(ctx-baselineContext) / float64(maxContext-baselineContext)
 	multiplier := minMultiplier + (ratio * (maxMultiplier - minMultiplier))
-	
+
 	return int(float64(baselineMemoryRecallLimit) * multiplier),
-	int(float64(baselineMemorySnippetRunes) * multiplier),
-	int(float64(baselineFileMemoryContentRunes) * multiplier),
-	int(float64(baselineSessionMemoryContentRunes) * multiplier)
+		int(float64(baselineMemorySnippetRunes) * multiplier),
+		int(float64(baselineFileMemoryContentRunes) * multiplier),
+		int(float64(baselineSessionMemoryContentRunes) * multiplier)
 }
 
 // assembleMemorySystemPrompt packages the stable, model-facing memory contract
@@ -331,7 +331,7 @@ func buildDynamicMemoryRecallContext(ctx context.Context, index memory.Store, sc
 	// Compute scaled limits based on context window
 	memoryBlocks, _, _, sessionMemRunes := computeScaledRecallLimits(contextWindowTokens)
 	// Note: fileMemRunes and snippetRunes use baseline constants in their respective functions
-	
+
 	// Compute budget-proportional limits when context window is known.
 	var budget *agent.ContextBudget
 	if contextWindowTokens > 0 {
@@ -361,7 +361,7 @@ func buildDynamicMemoryRecallContext(ctx context.Context, index memory.Store, sc
 			combined = enforced
 		}
 	}
-	return combined, fileRecall.Surfaced, &state.MemoryRecallSample{
+	sample := &state.MemoryRecallSample{
 		Strategy:             "deterministic",
 		QueryHash:            memoryRecallQueryHash(userText),
 		QueryRuneCount:       utf8.RuneCountInString(strings.TrimSpace(userText)),
@@ -385,6 +385,22 @@ func buildDynamicMemoryRecallContext(ctx context.Context, index memory.Store, sc
 		SessionInjected:      sessionRecall.Injected,
 		InjectedAny:          indexedRecall.Injected || sessionRecall.Injected || fileRecall.Injected,
 	}
+	agent.EmitTurnSpan(ctx, "memory_recall_query", time.Since(startedAt), map[string]any{
+		"query_hash":                     sample.QueryHash,
+		"scope":                          sample.Scope,
+		"caller":                         "buildDynamicMemoryRecallContext",
+		"caller_side_memoization_needed": false,
+		"caller_duplicate_finding":       "hot_path_invokes_recall_once_per_turn; watch duplicate_query_this_turn for regressions",
+		"indexed_latency_ms":             sample.IndexedLatencyMS,
+		"session_latency_ms":             sample.SessionLatencyMS,
+		"file_latency_ms":                sample.FileLatencyMS,
+		"indexed_session_hits":           len(sample.IndexedSession),
+		"indexed_global_hits":            len(sample.IndexedGlobal),
+		"file_hits":                      len(sample.FileSelected),
+		"injected_any":                   sample.InjectedAny,
+		"total_block_runes":              sample.TotalBlockRunes,
+	})
+	return combined, fileRecall.Surfaced, sample
 }
 
 func assembleFileMemoryRecallContext(scope memory.ScopedContext, workspaceDir, sessionID, userText string, sessionStore *state.SessionStore) (string, map[string]string) {

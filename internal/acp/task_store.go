@@ -130,6 +130,18 @@ func (r TaskRecord) Normalize(now time.Time) TaskRecord {
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = now
 	}
+	if r.Status.Terminal() {
+		if r.EndedAt == nil {
+			ended := now
+			r.EndedAt = &ended
+		}
+		if r.CleanupAfter == nil {
+			cleanup := now.Add(acpTaskTerminalRetentionTTL)
+			r.CleanupAfter = &cleanup
+		}
+	} else {
+		r.CleanupAfter = nil
+	}
 	if r.Worker != nil {
 		worker := *r.Worker
 		worker.PubKey = strings.TrimSpace(worker.PubKey)
@@ -187,6 +199,10 @@ type TaskStoreStats struct {
 	ByDelivery map[string]int `json:"by_delivery"`
 }
 
+type TaskRestartRecoveryStats struct {
+	MarkedLost int `json:"marked_lost"`
+}
+
 // TaskStore persists ACP task lifecycle records.
 type TaskStore interface {
 	Create(ctx context.Context, record TaskRecord) error
@@ -196,6 +212,7 @@ type TaskStore interface {
 	Delete(ctx context.Context, taskID string) error
 	RecordProgress(ctx context.Context, taskID, summary string) error
 	Stats(ctx context.Context) (TaskStoreStats, error)
+	MarkNonTerminalLost(ctx context.Context, reason string) (TaskRestartRecoveryStats, error)
 }
 
 // InMemoryTaskStore is a concurrent-safe TaskStore. It is useful for tests and
@@ -258,14 +275,15 @@ func (s *InMemoryTaskStore) Update(_ context.Context, taskID string, patch TaskP
 }
 
 func (s *InMemoryTaskStore) List(_ context.Context, filter TaskFilter) ([]TaskRecord, error) {
-	s.mu.RLock()
+	s.mu.Lock()
+	s.pruneExpiredLocked(s.now())
 	out := make([]TaskRecord, 0, len(s.tasks))
 	for _, rec := range s.tasks {
 		if matchTaskRecord(rec, filter) {
 			out = append(out, cloneTaskRecord(rec))
 		}
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	if filter.Limit > 0 && len(out) > filter.Limit {
 		out = out[:filter.Limit]
@@ -286,8 +304,9 @@ func (s *InMemoryTaskStore) RecordProgress(ctx context.Context, taskID, summary 
 }
 
 func (s *InMemoryTaskStore) Stats(_ context.Context) (TaskStoreStats, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneExpiredLocked(s.now())
 	stats := TaskStoreStats{ByStatus: make(map[string]int), ByDelivery: make(map[string]int)}
 	for _, rec := range s.tasks {
 		stats.Total++
@@ -295,6 +314,47 @@ func (s *InMemoryTaskStore) Stats(_ context.Context) (TaskStoreStats, error) {
 		stats.ByDelivery[string(rec.DeliveryStatus)]++
 	}
 	return stats, nil
+}
+
+func (s *InMemoryTaskStore) MarkNonTerminalLost(_ context.Context, reason string) (TaskRestartRecoveryStats, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "terminated by daemon restart"
+	}
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stats := TaskRestartRecoveryStats{}
+	for id, rec := range s.tasks {
+		if rec.Status.Terminal() {
+			continue
+		}
+		rec.Status = TaskStatusLost
+		rec.DeliveryStatus = DeliveryFailed
+		rec.EndedAt = &now
+		rec.LastEventAt = &now
+		rec.Error = reason
+		rec.TerminalSummary = reason
+		cleanup := now.Add(acpTaskTerminalRetentionTTL)
+		rec.CleanupAfter = &cleanup
+		s.tasks[id] = rec.Normalize(now)
+		stats.MarkedLost++
+	}
+	return stats, nil
+}
+
+func (s *InMemoryTaskStore) pruneExpiredLocked(now time.Time) int {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	removed := 0
+	for id, rec := range s.tasks {
+		if rec.Status.Terminal() && rec.CleanupAfter != nil && !rec.CleanupAfter.After(now) {
+			delete(s.tasks, id)
+			removed++
+		}
+	}
+	return removed
 }
 
 // FileTaskStore persists all task records to one JSON document using atomic writes.
@@ -311,7 +371,10 @@ type taskStoreDoc struct {
 	UpdatedAt int64                 `json:"updated_at"`
 }
 
-const taskStoreVersion = 1
+const (
+	taskStoreVersion            = 1
+	acpTaskTerminalRetentionTTL = 30 * 24 * time.Hour
+)
 
 func NewFileTaskStore(dir string) (*FileTaskStore, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -373,6 +436,16 @@ func (s *FileTaskStore) Stats(ctx context.Context) (TaskStoreStats, error) {
 	return s.mem.Stats(ctx)
 }
 
+func (s *FileTaskStore) MarkNonTerminalLost(ctx context.Context, reason string) (TaskRestartRecoveryStats, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stats, err := s.mem.MarkNonTerminalLost(ctx, reason)
+	if err != nil || stats.MarkedLost == 0 {
+		return stats, err
+	}
+	return stats, s.saveLocked()
+}
+
 func (s *FileTaskStore) load() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
@@ -393,17 +466,22 @@ func (s *FileTaskStore) load() error {
 	for id, rec := range doc.Tasks {
 		s.mem.tasks[id] = rec.Normalize(s.mem.now())
 	}
+	pruned := s.mem.pruneExpiredLocked(s.mem.now())
 	s.mem.mu.Unlock()
+	if pruned > 0 {
+		return s.saveLocked()
+	}
 	return nil
 }
 
 func (s *FileTaskStore) saveLocked() error {
-	s.mem.mu.RLock()
+	s.mem.mu.Lock()
+	s.mem.pruneExpiredLocked(s.mem.now())
 	tasks := make(map[string]TaskRecord, len(s.mem.tasks))
 	for id, rec := range s.mem.tasks {
 		tasks[id] = cloneTaskRecord(rec)
 	}
-	s.mem.mu.RUnlock()
+	s.mem.mu.Unlock()
 	data, err := json.MarshalIndent(taskStoreDoc{Version: taskStoreVersion, Tasks: tasks, UpdatedAt: time.Now().Unix()}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("acp task store: encode: %w", err)

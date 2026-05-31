@@ -74,6 +74,32 @@ func (u *usageTracker) Status() map[string]any {
 	}
 }
 
+func recoveryStatusSnapshot() map[string]any {
+	controlRecoveryMu.RLock()
+	defer controlRecoveryMu.RUnlock()
+	if len(controlRecoveryStatus) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(controlRecoveryStatus))
+	for k, v := range controlRecoveryStatus {
+		out[k] = v
+	}
+	return out
+}
+
+func setRecoveryStatusField(key string, value any) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	controlRecoveryMu.Lock()
+	defer controlRecoveryMu.Unlock()
+	if controlRecoveryStatus == nil {
+		controlRecoveryStatus = map[string]any{}
+	}
+	controlRecoveryStatus[key] = value
+}
+
 func (u *usageTracker) Cost() map[string]any {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -273,7 +299,10 @@ func (c *channelRuntimeState) IsLoggedOut() bool {
 
 // ── SubagentRegistry ─────────────────────────────────────────────────────────
 
-const maxSubagentDepth = 5
+const (
+	maxSubagentDepth        = 5
+	defaultMaxLiveSubagents = 20
+)
 
 // SubagentRecord tracks a spawned sub-session.
 type SubagentRecord struct {
@@ -321,9 +350,7 @@ func subagentLivenessRecord(rec *SubagentRecord) agent.SubagentRunRecord {
 	}
 }
 
-// CleanupStale removes stale child links from the registry. It is called from
-// normal orchestration paths so stale liveness handling does not rely on a
-// polling cleanup loop.
+// CleanupStale removes stale child links from the registry.
 func (r *SubagentRegistry) CleanupStale(now time.Time) int {
 	if r == nil {
 		return 0
@@ -380,10 +407,10 @@ func (r *SubagentRegistry) CleanupStale(now time.Time) int {
 	return removed
 }
 
-// Spawn creates a new SubagentRecord if depth limits allow.
+// Spawn creates a new SubagentRecord if depth/count limits allow.
 // Returns the record and whether the spawn was permitted.
-func (r *SubagentRegistry) Spawn(runID, sessionID, parentSessionID string, depth int, message string) (*SubagentRecord, bool) {
-	if depth > maxSubagentDepth {
+func (r *SubagentRegistry) Spawn(runID, sessionID, parentSessionID string, depth int, message string, maxLive int) (*SubagentRecord, bool) {
+	if r == nil || depth > maxSubagentDepth {
 		return nil, false
 	}
 	now := time.Now().UnixMilli()
@@ -398,9 +425,40 @@ func (r *SubagentRegistry) Spawn(runID, sessionID, parentSessionID string, depth
 		UpdatedAt:       now,
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if maxLive > 0 && r.liveCountLocked() >= maxLive {
+		return nil, false
+	}
 	r.records[runID] = rec
-	r.mu.Unlock()
 	return rec, true
+}
+
+func (r *SubagentRegistry) liveCountLocked() int {
+	count := 0
+	for _, rec := range r.records {
+		if rec != nil && rec.Status == "running" {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *SubagentRegistry) LiveCount() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.liveCountLocked()
+}
+
+func (r *SubagentRegistry) Count() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.records)
 }
 
 // Finish marks a sub-session as done or errored.
@@ -462,6 +520,8 @@ type agentJobSnapshot struct {
 	FallbackReason string
 }
 
+const agentJobRetention = 5 * time.Minute
+
 type agentJobRegistry struct {
 	mu   sync.Mutex
 	jobs map[string]*agentJobHandle
@@ -488,14 +548,19 @@ func (r *agentJobRegistry) Begin(runID string, sessionID string) agentJobSnapsho
 }
 
 func (r *agentJobRegistry) Finish(runID string, result string, err error) {
+	if r == nil {
+		return
+	}
+	now := time.Now()
 	r.mu.Lock()
 	h := r.jobs[runID]
 	if h == nil {
+		r.cleanupFinishedLocked(now)
 		r.mu.Unlock()
 		return
 	}
 	h.mu.Lock()
-	h.snapshot.EndedAt = time.Now().UnixMilli()
+	h.snapshot.EndedAt = now.UnixMilli()
 	if err != nil {
 		h.snapshot.Status = "error"
 		h.snapshot.Err = strings.TrimSpace(err.Error())
@@ -508,15 +573,38 @@ func (r *agentJobRegistry) Finish(runID string, result string, err error) {
 		h.closed = true
 	}
 	h.mu.Unlock()
+	r.cleanupFinishedLocked(now)
 	r.mu.Unlock()
+}
 
-	// Schedule cleanup after 5 minutes to prevent memory leak
-	go func() {
-		time.Sleep(5 * time.Minute)
-		r.mu.Lock()
-		delete(r.jobs, runID)
-		r.mu.Unlock()
-	}()
+func (r *agentJobRegistry) CleanupFinished(now time.Time) int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cleanupFinishedLocked(now)
+}
+
+func (r *agentJobRegistry) cleanupFinishedLocked(now time.Time) int {
+	cutoff := now.Add(-agentJobRetention).UnixMilli()
+	removed := 0
+	for runID, h := range r.jobs {
+		if h == nil {
+			delete(r.jobs, runID)
+			removed++
+			continue
+		}
+		h.mu.Lock()
+		endedAt := h.snapshot.EndedAt
+		status := h.snapshot.Status
+		h.mu.Unlock()
+		if status != "pending" && endedAt > 0 && endedAt <= cutoff {
+			delete(r.jobs, runID)
+			removed++
+		}
+	}
+	return removed
 }
 
 func (r *agentJobRegistry) SetFallback(runID, from, to, reason string) {

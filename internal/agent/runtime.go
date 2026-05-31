@@ -127,9 +127,10 @@ type Turn struct {
 	// sending. When non-nil and non-empty, the agentic loop registers a
 	// tool_search built-in tool that lets the model discover deferred tools
 	// on demand, reducing per-request context usage.
-	DeferredTools      *DeferredToolSet
-	TurnCheckpointSink func(context.Context, sessioncheckpoint.TurnCheckpoint) error
-	ResumeCheckpoint   *sessioncheckpoint.TurnCheckpoint
+	DeferredTools        *DeferredToolSet
+	TurnCheckpointSink   func(context.Context, sessioncheckpoint.TurnCheckpoint) error
+	ResumeCheckpoint     *sessioncheckpoint.TurnCheckpoint
+	ResumeCheckpointSafe bool
 }
 
 // ImageRef is a resolved image reference for passing to vision providers.
@@ -454,9 +455,13 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	var err error
 
 	if sp, ok := r.provider.(StreamingProvider); ok {
+		startedAt := time.Now()
 		gen, err = sp.Stream(ctx, turn, onChunk)
+		emitProviderRoundtripSpan(ctx, "stream", turn, startedAt, err)
 	} else {
+		startedAt := time.Now()
 		gen, err = r.provider.Generate(ctx, turn)
+		emitProviderRoundtripSpan(ctx, "stream_generate", turn, startedAt, err)
 		if err == nil && onChunk != nil {
 			onChunk(gen.Text)
 		}
@@ -476,7 +481,9 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	// complete synthesised response in gen.Text and emits it to onChunk so
 	// the client can display the final answer.
 	if len(gen.ToolCalls) > 0 && trackedTools != nil {
+		startedAt := time.Now()
 		gen, err = r.provider.Generate(ctx, turn)
+		emitProviderRoundtripSpan(ctx, "stream_tool_fallback", turn, startedAt, err)
 		if err != nil {
 			return TurnResult{}, turnCancellationCause(ctx, err)
 		}
@@ -493,6 +500,22 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	runContextAfterTurn(ctx, turn, result)
 	runPostSamplingHooks(ctx, turn, result)
 	return result, nil
+}
+
+func emitProviderRoundtripSpan(ctx context.Context, phase string, turn Turn, startedAt time.Time, callErr error) {
+	fields := map[string]any{
+		"phase": phase,
+	}
+	if turn.SessionID != "" {
+		fields["session_id"] = turn.SessionID
+	}
+	if turn.TurnID != "" {
+		fields["turn_id"] = turn.TurnID
+	}
+	if callErr != nil {
+		fields["error"] = callErr.Error()
+	}
+	EmitTurnSpan(ctx, "provider_call", time.Since(startedAt), fields)
 }
 
 func runtimeEventStreamingCallback(turn Turn, onChunk func(text string)) func(string) {

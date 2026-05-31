@@ -229,6 +229,10 @@ func (e *resumeExecutor) Execute(context.Context, ToolCall) (string, error) {
 	return "tool result", nil
 }
 
+func (e *resumeExecutor) EffectiveTraits(ToolCall) (ToolTraits, bool) {
+	return ToolTraits{ReadOnly: true}, true
+}
+
 func TestRunAgenticLoop_ResumeCheckpointExecutesPendingToolsWithoutReplay(t *testing.T) {
 	messages := []LLMMessage{{Role: "user", Content: "hi"}, {Role: "assistant", ToolCalls: []ToolCall{{ID: "tc1", Name: "lookup", Args: map[string]any{"q": "x"}}}}}
 	history := []ConversationMessage{{Role: "assistant", ToolCalls: []ToolCallRef{{ID: "tc1", Name: "lookup", ArgsJSON: `{"q":"x"}`}}}}
@@ -242,7 +246,7 @@ func TestRunAgenticLoop_ResumeCheckpointExecutesPendingToolsWithoutReplay(t *tes
 
 	provider := &resumeProvider{}
 	exec := &resumeExecutor{}
-	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{Provider: provider, InitialMessages: []LLMMessage{{Role: "user", Content: "should not replay"}}, Executor: exec, ResumeCheckpoint: cp, SessionID: "sess", TurnID: "turn", MaxIterations: 3})
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{Provider: provider, InitialMessages: []LLMMessage{{Role: "user", Content: "should not replay"}}, Executor: exec, ResumeCheckpoint: cp, ResumeCheckpointSafe: true, SessionID: "sess", TurnID: "turn", MaxIterations: 3})
 	if err != nil {
 		t.Fatalf("RunAgenticLoop: %v", err)
 	}

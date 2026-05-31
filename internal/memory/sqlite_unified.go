@@ -19,14 +19,24 @@ type CompactionConfig struct {
 }
 
 type CompactionResult struct {
-	Expired         int      `json:"expired"`
-	Deduped         int      `json:"deduped"`
-	Superseded      int      `json:"superseded"`
-	StaleFlagged    int      `json:"stale_flagged,omitempty"`
-	SupersessionFix int      `json:"supersession_fix,omitempty"`
-	OutboxCompacted int      `json:"outbox_compacted,omitempty"`
-	Warnings        []string `json:"warnings,omitempty"`
+	Expired               int      `json:"expired"`
+	Deduped               int      `json:"deduped"`
+	Superseded            int      `json:"superseded"`
+	StaleFlagged          int      `json:"stale_flagged,omitempty"`
+	SupersessionFix       int      `json:"supersession_fix,omitempty"`
+	OutboxCompacted       int      `json:"outbox_compacted,omitempty"`
+	NostrProvenancePruned int      `json:"nostr_provenance_pruned,omitempty"`
+	NostrConflictPruned   int      `json:"nostr_conflict_pruned,omitempty"`
+	Vacuumed              bool     `json:"vacuumed,omitempty"`
+	Warnings              []string `json:"warnings,omitempty"`
 }
+
+const (
+	memoryNostrProvenanceRetention = 90 * 24 * time.Hour
+	memoryNostrConflictRetention   = 90 * 24 * time.Hour
+	memoryNostrConflictMaxRows     = 1000
+	memorySQLiteVacuumInterval     = 7 * 24 * time.Hour
+)
 
 type MemoryEvalCase struct {
 	ID              string   `json:"id"`
@@ -540,11 +550,80 @@ func (b *SQLiteBackend) CompactMemoryRecords(ctx context.Context, cfg Compaction
 	if n, err := compactMemoryOutboxLocked(b.db, cfg.Now); err == nil {
 		result.OutboxCompacted = n
 	}
+	provenancePruned, conflictPruned, err := b.compactMemoryNostrRetentionLocked(cfg.Now)
+	if err != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("nostr retention: %v", err))
+	} else {
+		result.NostrProvenancePruned = provenancePruned
+		result.NostrConflictPruned = conflictPruned
+	}
+	vacuumed, err := b.vacuumMemorySQLiteIfDueLocked(cfg.Now)
+	if err != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("vacuum: %v", err))
+	} else {
+		result.Vacuumed = vacuumed
+	}
 
 	b.recordMemoryCompactedLocked(cfg.Now, cfg.Reason)
 	b.clearCacheLocked()
-	recordMemoryTelemetry("compaction", start, map[string]any{"ok": true, "expired": result.Expired, "deduped": result.Deduped, "superseded": result.Superseded, "stale": result.StaleFlagged, "repair": result.SupersessionFix, "outbox_compacted": result.OutboxCompacted, "reason": cfg.Reason})
+	recordMemoryTelemetry("compaction", start, map[string]any{"ok": true, "expired": result.Expired, "deduped": result.Deduped, "superseded": result.Superseded, "stale": result.StaleFlagged, "repair": result.SupersessionFix, "outbox_compacted": result.OutboxCompacted, "nostr_provenance_pruned": result.NostrProvenancePruned, "nostr_conflict_pruned": result.NostrConflictPruned, "vacuumed": result.Vacuumed, "reason": cfg.Reason})
 	return result, nil
+}
+
+func (b *SQLiteBackend) compactMemoryNostrRetentionLocked(now time.Time) (int, int, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	provenanceCutoff := now.Add(-memoryNostrProvenanceRetention).Unix()
+	res, err := b.db.Exec(`DELETE FROM memory_nostr_provenance WHERE ingested_at < ?`, provenanceCutoff)
+	if err != nil {
+		return 0, 0, err
+	}
+	provenancePruned64, _ := res.RowsAffected()
+
+	if err := b.ensureReflectionSchema(); err != nil {
+		return int(provenancePruned64), 0, err
+	}
+	conflictCutoff := now.Add(-memoryNostrConflictRetention).Unix()
+	res, err = b.db.Exec(`
+		DELETE FROM memory_reflection_candidates
+		WHERE metadata LIKE '%"nostr_conflict":true%'
+		AND status NOT IN (?, ?)
+		AND updated_at < ?
+	`, ReflectionCandidateStatusPending, ReflectionCandidateStatusApplying, conflictCutoff)
+	if err != nil {
+		return int(provenancePruned64), 0, err
+	}
+	conflictPruned64, _ := res.RowsAffected()
+	res, err = b.db.Exec(`
+		DELETE FROM memory_reflection_candidates
+		WHERE id IN (
+			SELECT id FROM memory_reflection_candidates
+			WHERE metadata LIKE '%"nostr_conflict":true%'
+			ORDER BY updated_at ASC, created_at ASC
+			LIMIT max((SELECT COUNT(*) FROM memory_reflection_candidates WHERE metadata LIKE '%"nostr_conflict":true%') - ?, 0)
+		)
+	`, memoryNostrConflictMaxRows)
+	if err != nil {
+		return int(provenancePruned64), int(conflictPruned64), err
+	}
+	boundedPruned64, _ := res.RowsAffected()
+	return int(provenancePruned64), int(conflictPruned64 + boundedPruned64), nil
+}
+
+func (b *SQLiteBackend) vacuumMemorySQLiteIfDueLocked(now time.Time) (bool, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	last := unixTimeFromMaintenance(b.db, "last_vacuum_at")
+	if !last.IsZero() && now.Sub(last) < memorySQLiteVacuumInterval {
+		return false, nil
+	}
+	if _, err := b.db.Exec(`VACUUM`); err != nil {
+		return false, err
+	}
+	maintenanceSet(b.db, "last_vacuum_at", fmt.Sprintf("%d", now.Unix()), now)
+	return true, nil
 }
 
 func (b *SQLiteBackend) MemoryCompactionState(ctx context.Context) (MemoryCompactionState, error) {

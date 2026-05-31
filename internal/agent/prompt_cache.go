@@ -110,6 +110,9 @@ func ResolvePromptCacheProfile(providerClass PromptCacheProviderClass, cfg *stat
 		return profile, nil
 
 	case PromptCacheProviderOpenAICompatible:
+		if placement == "" {
+			placement = DynamicContextPlacementLateUser
+		}
 		if cfg.Enabled != nil && *cfg.Enabled && backend == PromptCacheBackendNone {
 			return PromptCacheProfile{}, fmt.Errorf("prompt_cache.backend is required when prompt_cache.enabled=true for OpenAI-compatible providers")
 		}
@@ -120,10 +123,9 @@ func ResolvePromptCacheProfile(providerClass PromptCacheProviderClass, cfg *stat
 			return disabledPromptCacheProfile(), nil
 		}
 		if backend == PromptCacheBackendNone {
-			return disabledPromptCacheProfile(), nil
-		}
-		if placement == "" {
-			placement = DynamicContextPlacementLateUser
+			profile = disabledPromptCacheProfile()
+			profile.DynamicContextPlacement = placement
+			return profile, nil
 		}
 		profile.Enabled = true
 		profile.UseAnthropicCacheControl = false
@@ -147,6 +149,10 @@ func defaultPromptCacheProfile(providerClass PromptCacheProviderClass) PromptCac
 		return PromptCacheProfile{Enabled: true, UseAnthropicCacheControl: true, DynamicContextPlacement: DynamicContextPlacementSystem}
 	case PromptCacheProviderGemini:
 		return PromptCacheProfile{Enabled: true, UseGeminiCachedContent: true, DynamicContextPlacement: DynamicContextPlacementSystem}
+	case PromptCacheProviderOpenAICompatible:
+		profile := disabledPromptCacheProfile()
+		profile.DynamicContextPlacement = DynamicContextPlacementLateUser
+		return profile
 	default:
 		return disabledPromptCacheProfile()
 	}

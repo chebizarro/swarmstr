@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -426,12 +427,52 @@ func (s *SessionStore) Delete(key string) error {
 // cacheRead and cacheWrite track provider prompt-cache hit/creation tokens.
 func (s *SessionStore) AddTokens(key string, input, output, cacheRead, cacheWrite int64) error {
 	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
-		e.InputTokens += input
-		e.OutputTokens += output
-		e.TotalTokens += input + output
-		e.CacheRead += cacheRead
-		e.CacheWrite += cacheWrite
-		e.UpdatedAt = time.Now().UTC()
+		applySessionTokenDelta(e, input, output, cacheRead, cacheWrite)
+		return nil
+	})
+}
+
+type DeferredTurnPersistence struct {
+	TaskState        *TaskState
+	MemoryRecallTurn string
+	MemoryRecall     *MemoryRecallSample
+	SurfacedMemory   map[string]string
+	TurnTelemetry    *TurnTelemetry
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+}
+
+func (b DeferredTurnPersistence) Empty() bool {
+	return b.TaskState == nil && b.MemoryRecall == nil && len(b.SurfacedMemory) == 0 && b.TurnTelemetry == nil && b.InputTokens == 0 && b.OutputTokens == 0 && b.CacheReadTokens == 0 && b.CacheWriteTokens == 0
+}
+
+// ApplyDeferredTurnPersistence batches deferrable turn-end SessionStore fields
+// into a single journal write. Crash-critical transcript/reply/checkpoint writes
+// remain outside this path.
+func (s *SessionStore) ApplyDeferredTurnPersistence(key string, batch DeferredTurnPersistence) error {
+	if s == nil || strings.TrimSpace(key) == "" || batch.Empty() {
+		return nil
+	}
+	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
+		now := time.Now().UTC()
+		if e.SessionID == "" {
+			e.SessionID = key
+		}
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
+		}
+		if batch.TaskState != nil {
+			e.TaskState = cloneTaskState(batch.TaskState)
+		}
+		applyMemoryRecall(e, strings.TrimSpace(batch.MemoryRecallTurn), batch.MemoryRecall, batch.SurfacedMemory, now)
+		if batch.TurnTelemetry != nil {
+			telemetry := *batch.TurnTelemetry
+			applyTurnTelemetry(e, telemetry)
+		}
+		applySessionTokenDelta(e, batch.InputTokens, batch.OutputTokens, batch.CacheReadTokens, batch.CacheWriteTokens)
+		e.UpdatedAt = now
 		return nil
 	})
 }
@@ -798,6 +839,103 @@ func (s *SessionStore) RecordWorkerEvent(key string, sample WorkerEventTelemetry
 	})
 }
 
+func applySessionTokenDelta(e *SessionEntry, input, output, cacheRead, cacheWrite int64) {
+	e.InputTokens += input
+	e.OutputTokens += output
+	e.TotalTokens += input + output
+	e.CacheRead += cacheRead
+	e.CacheWrite += cacheWrite
+	e.UpdatedAt = time.Now().UTC()
+}
+
+func applyTurnTelemetry(e *SessionEntry, telemetry TurnTelemetry) {
+	if strings.TrimSpace(telemetry.TaskID) == "" {
+		if strings.TrimSpace(e.ActiveTaskID) != "" {
+			telemetry.TaskID = e.ActiveTaskID
+		} else {
+			telemetry.TaskID = e.LastCompletedTaskID
+		}
+	}
+	if strings.TrimSpace(telemetry.RunID) == "" {
+		if strings.TrimSpace(e.ActiveRunID) != "" {
+			telemetry.RunID = e.ActiveRunID
+		} else {
+			telemetry.RunID = e.LastCompletedRunID
+		}
+	}
+	if strings.TrimSpace(telemetry.ParentTaskID) == "" {
+		telemetry.ParentTaskID = e.ParentTaskID
+	}
+	if strings.TrimSpace(telemetry.ParentRunID) == "" {
+		telemetry.ParentRunID = e.ParentRunID
+	}
+	if isZeroTaskResultRef(telemetry.Result) {
+		telemetry.Result = e.LastTaskResult
+	}
+	e.LastTurn = &telemetry
+}
+
+func applyMemoryRecall(e *SessionEntry, turnID string, sample *MemoryRecallSample, surfaced map[string]string, now time.Time) {
+	if len(surfaced) > 0 {
+		merged := make(map[string]string, len(e.FileMemorySurfaced)+len(surfaced))
+		for key, signal := range e.FileMemorySurfaced {
+			key = strings.TrimSpace(key)
+			signal = strings.TrimSpace(signal)
+			if key == "" || signal == "" {
+				continue
+			}
+			merged[key] = signal
+		}
+		for key, signal := range surfaced {
+			key = strings.TrimSpace(key)
+			signal = strings.TrimSpace(signal)
+			if key == "" || signal == "" {
+				continue
+			}
+			merged[key] = signal
+		}
+		if len(merged) > sessionFileMemorySurfacedCap {
+			type keyOrder struct {
+				key    string
+				recent bool
+			}
+			ordered := make([]keyOrder, 0, len(merged))
+			for k := range merged {
+				_, isRecent := surfaced[k]
+				ordered = append(ordered, keyOrder{key: k, recent: isRecent})
+			}
+			sort.Slice(ordered, func(i, j int) bool {
+				if ordered[i].recent != ordered[j].recent {
+					return ordered[i].recent
+				}
+				return ordered[i].key < ordered[j].key
+			})
+			trimmed := make(map[string]string, sessionFileMemorySurfacedCap)
+			for _, entry := range ordered[:sessionFileMemorySurfacedCap] {
+				trimmed[entry.key] = merged[entry.key]
+			}
+			merged = trimmed
+		}
+		e.FileMemorySurfaced = merged
+	}
+	if sample != nil {
+		copied := cloneMemoryRecallSample(*sample)
+		if copied.RecordedAtMS == 0 {
+			copied.RecordedAtMS = now.UnixMilli()
+		}
+		if strings.TrimSpace(copied.TurnID) == "" {
+			copied.TurnID = strings.TrimSpace(turnID)
+		}
+		if strings.TrimSpace(copied.Strategy) == "" {
+			copied.Strategy = "deterministic"
+		}
+		e.RecentMemoryRecall = append(e.RecentMemoryRecall, copied)
+		if len(e.RecentMemoryRecall) > memoryRecallSampleCap {
+			e.RecentMemoryRecall = append([]MemoryRecallSample(nil), e.RecentMemoryRecall[len(e.RecentMemoryRecall)-memoryRecallSampleCap:]...)
+		}
+	}
+}
+
 // Save persists all entries to disk atomically.
 func (s *SessionStore) Save() error {
 	s.mu.Lock()
@@ -873,7 +1011,10 @@ func (s *SessionStore) appendJournalLocked(record sessionStoreJournalRecord) err
 	if statErr != nil {
 		return statErr
 	}
-	if err := persist(journalPath, data); err != nil {
+	startedAt := time.Now()
+	err = persist(journalPath, data)
+	emitSessionStoreJournalSpan(record, journalPath, len(data), existed, time.Since(startedAt), err)
+	if err != nil {
 		if restoreErr := restoreSessionStoreJournal(journalPath, existed, size); restoreErr != nil {
 			return fmt.Errorf("%w; additionally failed to restore journal: %v", err, restoreErr)
 		}
@@ -884,6 +1025,32 @@ func (s *SessionStore) appendJournalLocked(record sessionStoreJournalRecord) err
 
 func (s *SessionStore) journalPath() string {
 	return s.path + sessionStoreJournalSuffix
+}
+
+func emitSessionStoreJournalSpan(record sessionStoreJournalRecord, journalPath string, bytes int, existed bool, duration time.Duration, writeErr error) {
+	event := map[string]any{
+		"event":           "daemon_turn_span",
+		"category":        "session_store_journal_write",
+		"duration_ms":     duration.Milliseconds(),
+		"duration_ns":     duration.Nanoseconds(),
+		"ts_unix_ms":      time.Now().UnixMilli(),
+		"op":              strings.TrimSpace(record.Op),
+		"session_id":      strings.TrimSpace(record.Key),
+		"bytes":           bytes,
+		"journal_existed": existed,
+	}
+	if journalPath != "" {
+		event["journal_path"] = journalPath
+	}
+	if writeErr != nil {
+		event["error"] = writeErr.Error()
+	}
+	b, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("daemon_turn_span marshal failed category=session_store_journal_write err=%v", err)
+		return
+	}
+	log.Printf("daemon_turn_span %s", string(b))
 }
 
 func (s *SessionStore) persistLocked() error {

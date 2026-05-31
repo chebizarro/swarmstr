@@ -128,6 +128,7 @@ type relayPublishDebounce struct {
 type sessionServices struct {
 	sessionTurns      *autoreply.SessionTurns
 	chatCancels       *chatAbortRegistry
+	dmQueues          *autoreply.SessionQueueRegistry
 	steeringMailboxes *autoreply.SteeringMailboxRegistry
 	agentRuntime      agent.Runtime
 	agentRegistry     *agent.AgentRuntimeRegistry

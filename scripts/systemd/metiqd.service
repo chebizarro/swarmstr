@@ -7,10 +7,14 @@ Wants=network-online.target
 [Service]
 Type=simple
 
-# Load configuration from ~/.metiq/.env
+# Bare-metal profile assumptions:
+# - Binary: ~/.local/bin/metiqd (install or symlink the daemon there)
+# - Env file: optional ~/.metiq/.env for secrets and runtime configuration
+# - Writable paths: ~/.metiq, ~/.local/share/metiq, and this unit's private /tmp
+# - Optional dependencies such as Python+uv, Node.js, Chromium/Xvfb, and Docker CLI
+#   are provided by the host OS when tools/plugins require them.
 EnvironmentFile=-%h/.metiq/.env
 
-# The binary is expected to be on PATH or at ~/.local/bin/metiqd
 ExecStart=%h/.local/bin/metiqd
 
 # Restart policy

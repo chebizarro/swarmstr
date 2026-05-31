@@ -37,6 +37,25 @@ type SQLiteRecoveryOptions struct {
 	Logf                 func(format string, args ...any)
 }
 
+// SQLiteRecoveryReport records the startup recovery path taken for the memory
+// SQLite database. It is intentionally JSON-friendly so daemon health/status
+// APIs can expose recovery outcomes instead of relying on logs only.
+type SQLiteRecoveryReport struct {
+	Path                 string `json:"path,omitempty"`
+	IntegrityChecked     bool   `json:"integrity_checked"`
+	IntegrityOK          bool   `json:"integrity_ok"`
+	IntegrityError       string `json:"integrity_error,omitempty"`
+	CorruptionDetected   bool   `json:"corruption_detected,omitempty"`
+	QuarantinedPath      string `json:"quarantined_path,omitempty"`
+	BackupRestored       bool   `json:"backup_restored,omitempty"`
+	RestoredBackupPath   string `json:"restored_backup_path,omitempty"`
+	BackupRestoreError   string `json:"backup_restore_error,omitempty"`
+	RebuiltFromFiles     bool   `json:"rebuilt_from_files,omitempty"`
+	RebuildError         string `json:"rebuild_error,omitempty"`
+	RecoveryCompleted    bool   `json:"recovery_completed,omitempty"`
+	RecoveryCompletedVia string `json:"recovery_completed_via,omitempty"`
+}
+
 func defaultSQLiteRecoveryOptions() SQLiteRecoveryOptions {
 	return SQLiteRecoveryOptions{
 		BackupEnabled:        true,
@@ -167,23 +186,47 @@ func isSQLiteCorruptionError(err error) bool {
 	return errors.As(err, &corruption)
 }
 
-func recoverSQLiteDatabase(ctx context.Context, path string, opts SQLiteRecoveryOptions, integrityErr error) error {
+func recoverSQLiteDatabase(ctx context.Context, path string, opts SQLiteRecoveryOptions, integrityErr error, report *SQLiteRecoveryReport) error {
+	if report != nil {
+		report.CorruptionDetected = true
+		report.IntegrityError = integrityErr.Error()
+	}
 	opts.Logf("memory sqlite corruption detected path=%q err=%v stacktrace=\n%s", path, integrityErr, debug.Stack())
 	quarantined, err := quarantineSQLiteDatabase(path, sqliteNowUTC(opts))
 	if err != nil {
 		return fmt.Errorf("quarantine corrupted sqlite database: %w", err)
 	}
 	if quarantined != "" {
+		if report != nil {
+			report.QuarantinedPath = quarantined
+		}
 		opts.Logf("memory sqlite corrupted database quarantined path=%q quarantine=%q", path, quarantined)
 	}
 	if restored, err := restoreLatestSQLiteBackup(path, opts); err != nil {
+		if report != nil {
+			report.BackupRestoreError = err.Error()
+		}
 		opts.Logf("memory sqlite backup restore failed path=%q err=%v", path, err)
 	} else if restored != "" {
+		if report != nil {
+			report.BackupRestored = true
+			report.RestoredBackupPath = restored
+			report.RecoveryCompleted = true
+			report.RecoveryCompletedVia = "backup_restore"
+		}
 		opts.Logf("memory sqlite restored from backup path=%q backup=%q", path, restored)
 		return nil
 	}
 	if err := rebuildSQLiteDatabaseFromFiles(ctx, path, opts); err != nil {
+		if report != nil {
+			report.RebuildError = err.Error()
+		}
 		return fmt.Errorf("rebuild sqlite memory database from markdown/session summaries: %w", err)
+	}
+	if report != nil {
+		report.RebuiltFromFiles = true
+		report.RecoveryCompleted = true
+		report.RecoveryCompletedVia = "rebuild_from_files"
 	}
 	return nil
 }

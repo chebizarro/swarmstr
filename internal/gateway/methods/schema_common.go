@@ -66,6 +66,24 @@ type StatusResponse struct {
 	// FIPS reports FIPS mesh transport health when the experimental_fips
 	// build tag is enabled and the transport is active.
 	FIPS any `json:"fips,omitempty"`
+
+	// Queue reports aggregate turn queue pressure without changing queue behavior.
+	Queue *QueuePressureStatus `json:"queue,omitempty"`
+
+	// Recovery reports startup crash/restart and local-store recovery outcomes.
+	Recovery map[string]any `json:"recovery,omitempty"`
+}
+
+type QueuePressureStatus struct {
+	ActiveTurns            int `json:"active_turns"`
+	PendingTurns           int `json:"pending_turns"`
+	QueueDepth             int `json:"queue_depth"`
+	QueuedSessions         int `json:"queued_sessions"`
+	SteeringPendingTurns   int `json:"steering_pending_turns"`
+	SteeringQueuedSessions int `json:"steering_queued_sessions"`
+	LiveSubagents          int `json:"live_subagents"`
+	TrackedSubagents       int `json:"tracked_subagents"`
+	MaxLiveSubagents       int `json:"max_live_subagents"`
 }
 
 // SubHealthInfo is the JSON-friendly representation of a subscription health

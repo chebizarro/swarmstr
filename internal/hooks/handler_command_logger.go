@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+const (
+	commandLoggerMaxBytes = 10 * 1024 * 1024
+	commandLoggerBackups  = 3
+)
+
 func makeCommandLoggerHandler(opts BundledHandlerOpts) HookHandler {
 	return func(ev *Event) error {
 		logDir := opts.LogDir
@@ -44,6 +49,7 @@ func makeCommandLoggerHandler(opts BundledHandlerOpts) HookHandler {
 		line = append(line, '\n')
 
 		logFile := filepath.Join(logDir, "commands.log")
+		rotateCommandLogIfNeeded(logFile, int64(len(line)))
 		f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
 		if err != nil {
 			return fmt.Errorf("command-logger: open: %w", err)
@@ -53,4 +59,20 @@ func makeCommandLoggerHandler(opts BundledHandlerOpts) HookHandler {
 		_, _ = f.Write(line)
 		return nil
 	}
+}
+
+func rotateCommandLogIfNeeded(logFile string, incomingBytes int64) {
+	info, err := os.Stat(logFile)
+	if err != nil || info.Size()+incomingBytes <= commandLoggerMaxBytes {
+		return
+	}
+	for i := commandLoggerBackups; i >= 1; i-- {
+		oldPath := fmt.Sprintf("%s.%d", logFile, i)
+		if i == commandLoggerBackups {
+			_ = os.Remove(oldPath)
+			continue
+		}
+		_ = os.Rename(oldPath, fmt.Sprintf("%s.%d", logFile, i+1))
+	}
+	_ = os.Rename(logFile, logFile+".1")
 }

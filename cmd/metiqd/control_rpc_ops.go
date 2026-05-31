@@ -16,6 +16,36 @@ import (
 	"metiq/internal/store/state"
 )
 
+func queuePressureStatusPayload(svc *daemonServices, cfg state.ConfigDoc) *methods.QueuePressureStatus {
+	if svc == nil || (svc.session.dmQueues == nil && svc.session.steeringMailboxes == nil) {
+		return nil
+	}
+	dmStats := svc.session.dmQueues.Stats()
+	steeringStats := svc.session.steeringMailboxes.Stats()
+	activeTurns := 0
+	if svc.session.sessionTurns != nil {
+		activeTurns = svc.session.sessionTurns.ActiveCount()
+	}
+	liveSubagents := 0
+	trackedSubagents := 0
+	if svc.session.subagents != nil {
+		liveSubagents = svc.session.subagents.LiveCount()
+		trackedSubagents = svc.session.subagents.Count()
+	}
+	pendingTurns := dmStats.PendingTurns + steeringStats.PendingTurns
+	return &methods.QueuePressureStatus{
+		ActiveTurns:            activeTurns,
+		PendingTurns:           pendingTurns,
+		QueueDepth:             dmStats.PendingTurns,
+		QueuedSessions:         dmStats.Sessions,
+		SteeringPendingTurns:   steeringStats.PendingTurns,
+		SteeringQueuedSessions: steeringStats.Sessions,
+		LiveSubagents:          liveSubagents,
+		TrackedSubagents:       trackedSubagents,
+		MaxLiveSubagents:       resolveMaxLiveSubagents(cfg),
+	}
+}
+
 func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.ControlRPCInbound, method string, cfg state.ConfigDoc) (nostruntime.ControlRPCResult, bool, error) {
 	dmBus := h.deps.dmBus
 	controlBus := h.deps.controlBus
@@ -100,6 +130,8 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 			RelaySets:     relaySets,
 			MCP:           mcpSnapshot,
 			FIPS:          fipsHealth,
+			Queue:         queuePressureStatusPayload(h.deps.services, cfg),
+			Recovery:      recoveryStatusSnapshot(),
 		}}, true, nil
 	case methods.MethodUsageStatus:
 		if usageState == nil {

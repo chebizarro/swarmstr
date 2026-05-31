@@ -160,6 +160,10 @@ var (
 	controlACPDispatcher *acppkg.Dispatcher
 	// controlACPManager coordinates local ACP runtime sessions and turns.
 	controlACPManager *acppkg.Manager
+	// controlRecoveryStatus captures boot-time crash/restart recovery outcomes
+	// for operator health/status visibility.
+	controlRecoveryMu     sync.RWMutex
+	controlRecoveryStatus map[string]any
 	// controlTransportSelector is the FIPS-aware composite transport that routes
 	// messages through FIPS mesh or relay transports based on the configured
 	// preference. Nil when FIPS is not enabled.
@@ -1195,6 +1199,9 @@ func main() {
 				Logf:                 log.Printf,
 			}
 			sqliteMemoryBackend, beErr = memory.OpenSQLiteBackendWithRecoveryOptions(memoryBackendPath, sqliteOpts)
+			if sqliteMemoryBackend != nil {
+				setRecoveryStatusField("sqlite", sqliteMemoryBackend.RecoveryReport())
+			}
 			be = sqliteMemoryBackend
 		} else {
 			be, beErr = memory.OpenBackend(memoryBackendName, memoryBackendPath)
@@ -1452,6 +1459,27 @@ func main() {
 		log.Printf("dm checkpoint: last_unix=%d last_event=%s recent_ids=%d (%ds %s wall clock)",
 			checkpoint.LastUnix, checkpoint.LastEvent, len(checkpoint.RecentEventIDs), delta, label)
 	}
+	setRecoveryStatusField("boot", map[string]any{
+		"turns": map[string]any{
+			"recoverable": 0,
+			"lost":        0,
+			"mode":        "lost_but_visible",
+			"resume":      "disabled_by_default; only explicit resume-safe read-only tool checkpoints may resume",
+		},
+		"dm_ingest": map[string]any{
+			"last_unix":  checkpoint.LastUnix,
+			"last_event": checkpoint.LastEvent,
+			"recent_ids": len(checkpoint.RecentEventIDs),
+			"replay":     "recent relay events may be replayed through AlreadyProcessed; in-flight mutating turns are not auto-replayed",
+		},
+		"lost_background": map[string]any{
+			"agent_jobs": 0,
+			"subagents":  0,
+			"note":       "agent job and subagent registries are in-memory; unfinished runs from a prior process are terminal/lost after restart",
+		},
+	})
+	log.Printf("restart recovery: turns recoverable=0 lost=0 mode=lost_but_visible resume=explicit_read_only_only")
+	log.Printf("restart recovery: background agent_jobs_lost=0 subagents_lost=0 note=in_memory_registries_reset")
 	memoryCheckpoint, err := ensureMemoryIndexCheckpoint(ctx, docsRepo)
 	if err != nil {
 		log.Fatalf("load memory index checkpoint: %v", err)
@@ -1473,7 +1501,25 @@ func main() {
 	subagents := newSubagentRegistry()
 	keyRings := agent.NewProviderKeyRingRegistry()
 	acpPeers := acppkg.NewPeerRegistry()
-	acpDispatcher := acppkg.NewDispatcher()
+	acpTaskStore, acpTaskStoreErr := acppkg.NewFileTaskStore(filepath.Join(filepath.Dir(state.DefaultSessionStorePath()), "acp-tasks"))
+	if acpTaskStoreErr != nil {
+		log.Printf("acp task store init failed (non-fatal): %v", acpTaskStoreErr)
+	}
+	var acpDispatcher *acppkg.Dispatcher
+	if acpTaskStore != nil {
+		stats, markErr := acpTaskStore.MarkNonTerminalLost(ctx, "terminated by daemon restart before ACP task completed")
+		if markErr != nil {
+			log.Printf("acp task restart recovery failed: %v", markErr)
+		}
+		setRecoveryStatusField("acp_tasks", map[string]any{"lost": stats.MarkedLost, "reason": "terminated_by_daemon_restart"})
+		if stats.MarkedLost > 0 {
+			log.Printf("restart recovery: acp tasks marked lost=%d reason=terminated_by_daemon_restart", stats.MarkedLost)
+		}
+		acpDispatcher = acppkg.NewDispatcherWithStore(acpTaskStore)
+	} else {
+		setRecoveryStatusField("acp_tasks", map[string]any{"lost": 0, "store": "in_memory", "warning": "persistent task store unavailable"})
+		acpDispatcher = acppkg.NewDispatcher()
+	}
 	acpSessionStore, acpStoreErr := acppkg.NewFileSessionStore(filepath.Join(filepath.Dir(state.DefaultSessionStorePath()), "acp-sessions"))
 	if acpStoreErr != nil {
 		log.Printf("acp session store init failed (non-fatal): %v", acpStoreErr)
@@ -1504,6 +1550,23 @@ func main() {
 	controlSubagents = subagents
 	controlOps = ops
 	ops.SyncHeartbeatConfig(configState.Get().Heartbeat)
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if removed := subagents.CleanupStale(now); removed > 0 {
+					log.Printf("subagent registry periodic stale cleanup removed=%d", removed)
+				}
+				if removed := agentJobs.CleanupFinished(now); removed > 0 {
+					log.Printf("agent job registry periodic cleanup removed=%d", removed)
+				}
+			}
+		}
+	}()
 
 	// ── Permission engine + exec approval middleware ─────────────────────────
 	// The permission engine layers on top of tool profiles:
@@ -3757,6 +3820,7 @@ func main() {
 		if strings.TrimSpace(overrideAgentID) == "" {
 			activeAgentID = defaultAgentID(sessionRouter.Get(sessionID))
 		}
+		ctx = agent.WithTurnSpanMetadata(ctx, agent.TurnSpanMetadata{SessionID: sessionID, TurnID: eventID, AgentID: activeAgentID, Channel: "nostr"})
 		turnCtxBase, releaseTurn := chatCancels.Begin(sessionID, ctx)
 		// Default turn timeout matches OpenClaw's generous 48-hour default.
 		// This is important for users running large local models with long context windows.
@@ -3804,12 +3868,12 @@ func main() {
 		}
 
 		if controlContextEngine != nil {
-			if _, ingErr := controlContextEngine.Ingest(ctx, sessionID, ctxengine.Message{
+			if _, ingErr := ingestContextWithTurnSpan(turnCtx, controlContextEngine, sessionID, ctxengine.Message{
 				Role:    "user",
 				Content: combinedText,
 				ID:      entryID,
 				Unix:    createdAt,
-			}); ingErr != nil {
+			}, "initial_user"); ingErr != nil {
 				log.Printf("context engine ingest user session=%s err=%v", sessionID, ingErr)
 			}
 		}
@@ -3832,7 +3896,7 @@ func main() {
 					}
 				}
 			}
-			assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
+			assembled, asmErr := assembleContextWithTurnSpan(turnCtx, controlContextEngine, sessionID, maxCtxTokens, "initial")
 			if asmErr == nil {
 				threshold := int(float64(maxCtxTokens) * 0.80)
 				if assembled.EstimatedTokens > 0 && threshold > 0 && assembled.EstimatedTokens > threshold {
@@ -3851,14 +3915,14 @@ func main() {
 							if smOK {
 								recordSessionCompaction(sessionStore, sessionID, true, time.Now())
 								log.Printf("context engine auto-compact (session-memory) session=%s tokens_before=%d tokens_after=%d", sessionID, smCR.TokensBefore, smCR.TokensAfter)
-								assembled, _ = controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
+								assembled, _ = assembleContextWithTurnSpan(turnCtx, controlContextEngine, sessionID, maxCtxTokens, "after_session_memory_compact")
 								compacted = true
 								runPostCompactCleanup(sessionID)
 							} else if cr, cErr := controlContextEngine.Compact(turnCtx, sessionID); cErr == nil && cr.Compacted {
 								// Fall back to regular compaction.
 								recordSessionCompaction(sessionStore, sessionID, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
 								log.Printf("context engine auto-compact session=%s tokens_before=%d tokens_after=%d", sessionID, cr.TokensBefore, cr.TokensAfter)
-								assembled, _ = controlContextEngine.Assemble(turnCtx, sessionID, maxCtxTokens)
+								assembled, _ = assembleContextWithTurnSpan(turnCtx, controlContextEngine, sessionID, maxCtxTokens, "after_compact")
 								compacted = true
 								runPostCompactCleanup(sessionID)
 							}
@@ -4135,12 +4199,25 @@ func main() {
 			}
 		}
 
-		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
-			log.Printf("persist tool traces failed session=%s err=%v", sessionID, err)
+		postTurnPersistenceStartedAt := time.Now()
+		postTurnPersistenceDone := false
+		deferredPersistence := deferredPostTurnPersistenceEnabled(configState.Get())
+		deferredSessionBatch := deferredTurnSessionPersistence{}
+		defer func() {
+			if !postTurnPersistenceDone {
+				emitPostTurnPersistenceSpan(ctx, postTurnPersistenceStartedAt, "aborted")
+			}
+		}()
+		if !deferredPersistence {
+			if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
+				log.Printf("persist tool traces failed session=%s err=%v", sessionID, err)
+			}
 		}
 		// Persist the full tool-call/tool-result history so future turns can
 		// see prior tool usage — fixes the "announce and forget" behaviour.
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
+		// Session-memory runtime updates feed extraction thresholds and may be read
+		// by the next same-session turn, so keep this synchronous even in deferred mode.
 		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, activeAgentID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), resolveAgentContextWindow(configState.Get(), activeAgentID), turnResult.HistoryDelta)
 		// Distill structured episodic memory from the completed turn.
 		if turnStateDocs := scopedMemoryDocs(distillTurnState(sessionID, eventID, turnResult.ToolTraces, turnResult.HistoryDelta, false), scopeCtx); len(turnStateDocs) > 0 {
@@ -4150,8 +4227,18 @@ func main() {
 				persistMemories(pCtx, docsRepo, memoryRepo, memoryIndex, memoryTracker, docs)
 			}(turnStateDocs)
 		}
-		updateSessionTaskState(sessionStore, sessionID, turnResult.ToolTraces, turnResult.HistoryDelta, false)
-		commitMemoryRecallArtifacts(sessionStore, sessionID, eventID, memoryRecallSample, surfacedFileMemory)
+		if deferredPersistence {
+			// TaskState is prompt rehydration metadata read on the next turn. With one
+			// active turn per session, flushing it in the end-of-turn batch preserves
+			// that ordering while avoiding a separate hot-path journal write.
+			deferredSessionBatch.TaskState = buildDeferredTaskState(sessionStore, sessionID, turnResult.ToolTraces, turnResult.HistoryDelta, false)
+			deferredSessionBatch.MemoryRecallTurn = eventID
+			deferredSessionBatch.MemoryRecall = memoryRecallSample
+			deferredSessionBatch.SurfacedMemory = surfacedFileMemory
+		} else {
+			updateSessionTaskState(sessionStore, sessionID, turnResult.ToolTraces, turnResult.HistoryDelta, false)
+			commitMemoryRecallArtifacts(sessionStore, sessionID, eventID, memoryRecallSample, surfacedFileMemory)
+		}
 		wsEmitter.Emit(gatewayws.EventAgentStatus, gatewayws.AgentStatusPayload{
 			TS:      time.Now().UnixMilli(),
 			AgentID: activeAgentID,
@@ -4165,7 +4252,12 @@ func main() {
 			Done:      true,
 		})
 		turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, nil, false, "", "", "")
-		persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
+		if deferredPersistence {
+			deferredSessionBatch.TurnTelemetry = turnTelemetry
+			deferredSessionBatch.HasTelemetry = true
+		} else {
+			persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
+		}
 		emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
 
 		if replyFn != nil {
@@ -4225,7 +4317,11 @@ func main() {
 			}(assistantMemoryDocs)
 		}
 		if sessionStore != nil && (turnResult.Usage.InputTokens > 0 || turnResult.Usage.OutputTokens > 0) {
-			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens, turnResult.Usage.CacheReadTokens, turnResult.Usage.CacheCreationTokens)
+			if deferredPersistence {
+				deferredSessionBatch.Usage = turnResult.Usage
+			} else {
+				_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens, turnResult.Usage.CacheReadTokens, turnResult.Usage.CacheCreationTokens)
+			}
 		}
 		// Note: assistant text is already ingested via persistAndIngestTurnHistory
 		// above (as part of HistoryDelta), so we don't duplicate it here.
@@ -4246,6 +4342,20 @@ func main() {
 				log.Printf("checkpoint update failed inline steering event=%s err=%v", steered.EventID, err)
 			}
 		}
+		if deferredPersistence {
+			applyDeferredTurnSessionPersistence(sessionStore, sessionID, deferredSessionBatch)
+			if len(turnResult.ToolTraces) > 0 {
+				go func(traces []agent.ToolTrace) {
+					pCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					if err := persistToolTraces(pCtx, transcriptRepo, sessionID, eventID, traces); err != nil {
+						log.Printf("deferred persist tool traces failed session=%s err=%v", sessionID, err)
+					}
+				}(turnResult.ToolTraces)
+			}
+		}
+		emitPostTurnPersistenceSpan(ctx, postTurnPersistenceStartedAt, "success")
+		postTurnPersistenceDone = true
 		steeringDrainCommitted = true
 		drainedSteering.Clear()
 	}
@@ -4630,6 +4740,7 @@ func main() {
 		session: sessionServices{
 			sessionTurns:      controlSessionTurns,
 			chatCancels:       chatCancels,
+			dmQueues:          dmQueues,
 			steeringMailboxes: steeringMailboxes,
 			agentRuntime:      controlAgentRuntime,
 			agentRegistry:     controlAgentRegistry,
@@ -6039,6 +6150,9 @@ func main() {
 						"uptime_seconds": int(time.Since(startedAt).Seconds()),
 						"version":        version,
 					}
+					if recovery := recoveryStatusSnapshot(); recovery != nil {
+						body["recovery"] = recovery
+					}
 					if controlServices.handlers.mcpOps != nil {
 						if snapshot := controlServices.handlers.mcpOps.telemetrySnapshotPtr(); snapshot != nil {
 							body["mcp"] = map[string]any{
@@ -6719,7 +6833,9 @@ func main() {
 	}
 
 	// Boot-time session pruning honors the configured age- and idle-based
-	// policies when PruneOnBoot is set in the session config.
+	// policies when PruneOnBoot is set in the session config. Runtime session
+	// cardinality is observed in dry-run mode first so operators can see cap
+	// pressure before destructive enforcement is enabled.
 	if configState != nil {
 		sessCfg := configState.Get().Session
 		if sessCfg.PruneOnBoot && sessCfg.PruneAfterDays > 0 {
@@ -6732,6 +6848,32 @@ func main() {
 				pruneIdleSessions(ctx, docsRepo, transcriptRepo, sessCfg.PruneIdleAfterDays)
 			}()
 		}
+		go func() {
+			const maxRuntimeSessionsDryRun = 10000
+			emitSessionCountMetric := func() {
+				sessions, err := docsRepo.ListSessions(ctx, maxRuntimeSessionsDryRun+1)
+				if err != nil {
+					log.Printf("session count dry-run: list sessions: %v", err)
+					return
+				}
+				over := len(sessions) - maxRuntimeSessionsDryRun
+				if over < 0 {
+					over = 0
+				}
+				log.Printf("session count dry-run: sessions=%d cap=%d over_cap=%d enforcement=false", len(sessions), maxRuntimeSessionsDryRun, over)
+			}
+			emitSessionCountMetric()
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					emitSessionCountMetric()
+				}
+			}
+		}()
 	}
 
 	<-ctx.Done()

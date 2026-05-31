@@ -3,6 +3,8 @@ package context
 import (
 	stdctx "context"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -28,12 +30,13 @@ type ContextProjection struct {
 // context. Provider token counters can be recorded elsewhere; this exposes the
 // context engine's cacheability hints and break detection.
 type PromptCacheInfo struct {
-	Retention     string  `json:"retention"` // none, short, long
-	LastHitRate   float64 `json:"last_hit_rate,omitempty"`
-	CacheBroken   bool    `json:"cache_broken,omitempty"`
-	BreakReason   string  `json:"break_reason,omitempty"`
-	StaticTokens  int     `json:"static_tokens,omitempty"`
-	DynamicTokens int     `json:"dynamic_tokens,omitempty"`
+	Retention     string   `json:"retention"` // none, short, long
+	LastHitRate   float64  `json:"last_hit_rate,omitempty"`
+	CacheBroken   bool     `json:"cache_broken,omitempty"`
+	BreakReason   string   `json:"break_reason,omitempty"`
+	BreakReasons  []string `json:"break_reasons,omitempty"`
+	StaticTokens  int      `json:"static_tokens,omitempty"`
+	DynamicTokens int      `json:"dynamic_tokens,omitempty"`
 }
 
 // AfterTurnParams is passed to context engines after a successful turn so they
@@ -429,6 +432,10 @@ func (e *SmallWindowEngine) invalidateSessionSummary(sessionID string) {
 }
 
 func (e *WindowedEngine) annotateAssembleResult(sessionID string, result *AssembleResult) {
+	e.annotateAssembleResultWithParts(sessionID, result, promptCacheParts{Summary: result.SystemPromptAddition})
+}
+
+func (e *WindowedEngine) annotateAssembleResultWithParts(sessionID string, result *AssembleResult, parts promptCacheParts) {
 	if result == nil || e == nil {
 		return
 	}
@@ -438,8 +445,8 @@ func (e *WindowedEngine) annotateAssembleResult(sessionID string, result *Assemb
 		e.promptCacheLast = map[string]string{}
 	}
 	prev := e.promptCacheLast[sessionID]
-	info := buildPromptCacheInfo(prev, result.SystemPromptAddition, result.EstimatedTokens)
-	e.promptCacheLast[sessionID] = result.SystemPromptAddition
+	info := buildPromptCacheInfo(prev, result.SystemPromptAddition, result.EstimatedTokens, parts)
+	e.promptCacheLast[sessionID] = parts.fingerprint(result.SystemPromptAddition)
 	result.PromptCache = &info
 	result.ContextProjection = buildContextProjection(result.SystemPromptAddition, len(result.Messages), result.EstimatedTokens)
 }
@@ -448,13 +455,64 @@ func (e *SmallWindowEngine) annotateAssembleResultLocked(sess *swSession, result
 	if result == nil || sess == nil {
 		return
 	}
-	info := buildPromptCacheInfo(sess.promptCacheLast, result.SystemPromptAddition, result.EstimatedTokens)
-	sess.promptCacheLast = result.SystemPromptAddition
+	parts := promptCacheParts{Summary: result.SystemPromptAddition}
+	info := buildPromptCacheInfo(sess.promptCacheLast, result.SystemPromptAddition, result.EstimatedTokens, parts)
+	sess.promptCacheLast = parts.fingerprint(result.SystemPromptAddition)
 	result.PromptCache = &info
 	result.ContextProjection = buildContextProjection(result.SystemPromptAddition, len(result.Messages), result.EstimatedTokens)
 }
 
-func buildPromptCacheInfo(prev, addition string, estimatedTokens int) PromptCacheInfo {
+type promptCacheParts struct {
+	Summary                 string
+	Recall                  string
+	DynamicContextPlacement string
+	ProviderProfile         string
+}
+
+const promptCacheFingerprintVersion = "prompt-cache-v2"
+
+func (p promptCacheParts) fingerprint(addition string) string {
+	if p.Summary == "" && p.Recall == "" && p.DynamicContextPlacement == "" && p.ProviderProfile == "" {
+		p.Summary = addition
+	}
+	return strings.Join([]string{
+		promptCacheFingerprintVersion,
+		"summary=" + strconv.Quote(p.Summary),
+		"recall=" + strconv.Quote(p.Recall),
+		"dynamic_context_placement=" + strconv.Quote(p.DynamicContextPlacement),
+		"provider_profile=" + strconv.Quote(p.ProviderProfile),
+	}, "\n")
+}
+
+func parsePromptCacheFingerprint(raw string) (promptCacheParts, bool) {
+	if !strings.HasPrefix(raw, promptCacheFingerprintVersion+"\n") {
+		return promptCacheParts{}, false
+	}
+	parts := promptCacheParts{}
+	for _, line := range strings.Split(raw, "\n")[1:] {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		unquoted, err := strconv.Unquote(value)
+		if err != nil {
+			unquoted = value
+		}
+		switch key {
+		case "summary":
+			parts.Summary = unquoted
+		case "recall":
+			parts.Recall = unquoted
+		case "dynamic_context_placement":
+			parts.DynamicContextPlacement = unquoted
+		case "provider_profile":
+			parts.ProviderProfile = unquoted
+		}
+	}
+	return parts, true
+}
+
+func buildPromptCacheInfo(prev, addition string, estimatedTokens int, parts promptCacheParts) PromptCacheInfo {
 	dynamicTokens := (len(addition) + 3) / 4
 	info := PromptCacheInfo{
 		Retention:     "long",
@@ -471,12 +529,102 @@ func buildPromptCacheInfo(prev, addition string, estimatedTokens int) PromptCach
 	if addition == "" && estimatedTokens == 0 {
 		info.Retention = "none"
 	}
-	if prev != "" && prev != addition {
-		info.CacheBroken = true
-		info.BreakReason = "system_prompt_addition_changed"
-		info.LastHitRate = 0
+	if prev == "" {
+		return info
 	}
+	currentFingerprint := parts.fingerprint(addition)
+	if prev == currentFingerprint {
+		return info
+	}
+	reasons := promptCacheBreakReasons(prev, parts, addition)
+	if len(reasons) == 0 {
+		return info
+	}
+	info.CacheBroken = true
+	info.BreakReasons = reasons
+	info.BreakReason = strings.Join(reasons, ",")
+	info.LastHitRate = 0
 	return info
+}
+
+func promptCacheBreakReasons(prev string, current promptCacheParts, addition string) []string {
+	previous, ok := parsePromptCacheFingerprint(prev)
+	if !ok {
+		if prev != current.fingerprint(addition) && prev != addition {
+			return []string{"system_prompt_addition_changed"}
+		}
+		return nil
+	}
+	reasons := make([]string, 0, 4)
+	if previous.Summary != current.Summary {
+		reasons = append(reasons, "summary_changed")
+	}
+	if previous.Recall != current.Recall {
+		reasons = append(reasons, "recall_changed")
+	}
+	if previous.DynamicContextPlacement != current.DynamicContextPlacement {
+		reasons = append(reasons, "dynamic_context_placement_changed")
+	}
+	if previous.ProviderProfile != current.ProviderProfile {
+		reasons = append(reasons, "provider_profile_changed")
+	}
+	return reasons
+}
+
+func normalizePromptCacheSummary(text string) string {
+	return normalizePromptCacheText(text)
+}
+
+func normalizePromptCacheRecall(text string) string {
+	text = normalizePromptCacheText(text)
+	if text == "" {
+		return ""
+	}
+	blocks := strings.Split(text, "\n\n")
+	for i, block := range blocks {
+		lines := strings.Split(block, "\n")
+		if len(lines) < 2 || !strings.HasPrefix(strings.TrimSpace(lines[0]), "#") {
+			continue
+		}
+		bullets := lines[1:]
+		allBullets := true
+		for _, line := range bullets {
+			trimmed := strings.TrimSpace(line)
+			if !(strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ")) {
+				allBullets = false
+				break
+			}
+		}
+		if allBullets {
+			sort.Strings(bullets)
+			blocks[i] = strings.Join(append(lines[:1], bullets...), "\n")
+		}
+	}
+	return strings.Join(blocks, "\n\n")
+}
+
+func normalizePromptCacheText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	blank := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if !blank && len(out) > 0 {
+				out = append(out, "")
+			}
+			blank = true
+			continue
+		}
+		out = append(out, strings.Join(strings.Fields(trimmed), " "))
+		blank = false
+	}
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
 }
 
 func buildContextProjection(addition string, messageCount, estimatedTokens int) *ContextProjection {

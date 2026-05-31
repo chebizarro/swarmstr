@@ -210,6 +210,32 @@ func (r *SessionQueueRegistry) Delete(sessionID string) {
 	delete(r.queues, sessionID)
 }
 
+// QueueRegistryStats is a point-in-time snapshot of queue pressure.
+type QueueRegistryStats struct {
+	Sessions     int
+	PendingTurns int
+}
+
+// Stats returns aggregate pending-turn pressure without mutating queues.
+func (r *SessionQueueRegistry) Stats() QueueRegistryStats {
+	if r == nil {
+		return QueueRegistryStats{}
+	}
+	r.mu.Lock()
+	queues := make([]*SessionQueue, 0, len(r.queues))
+	for _, q := range r.queues {
+		if q != nil {
+			queues = append(queues, q)
+		}
+	}
+	r.mu.Unlock()
+	stats := QueueRegistryStats{Sessions: len(queues)}
+	for _, q := range queues {
+		stats.PendingTurns += q.Len()
+	}
+	return stats
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 func (q *SessionQueue) pruneRecentIDs(now time.Time) {

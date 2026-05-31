@@ -16,8 +16,9 @@ import (
 // The implementation uses a per-session *sync.Mutex stored in a sync.Map.
 // Go 1.18+ sync.Mutex.TryLock is required.
 type SessionTurns struct {
-	locks sync.Map // map[string]*sync.Mutex
-	known sync.Map // map[string]*sessionRecord — sessions registered via Track()
+	locks  sync.Map // map[string]*sync.Mutex
+	known  sync.Map // map[string]*sessionRecord — sessions registered via Track()
+	active sync.Map // map[string]struct{} — sessions with an acquired turn slot
 }
 
 // NewSessionTurns creates an empty SessionTurns registry.
@@ -75,7 +76,24 @@ func (s *SessionTurns) TryAcquire(sessionID string) (release func(), acquired bo
 	if !m.TryLock() {
 		return nil, false
 	}
-	return func() { m.Unlock() }, true
+	s.active.Store(sessionID, struct{}{})
+	return func() {
+		s.active.Delete(sessionID)
+		m.Unlock()
+	}, true
+}
+
+// ActiveCount returns the number of session turn slots currently acquired.
+func (s *SessionTurns) ActiveCount() int {
+	if s == nil {
+		return 0
+	}
+	count := 0
+	s.active.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
 }
 
 // Acquire waits until the processing slot for sessionID is available or the

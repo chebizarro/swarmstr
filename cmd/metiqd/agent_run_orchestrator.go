@@ -99,6 +99,42 @@ func applySessionsSpawn(ctx context.Context, req methods.SessionsSpawnRequest, c
 	return currentAgentRunController().applySessionsSpawn(ctx, req, cfg, docsRepo, memoryIndex)
 }
 
+func resolveMaxLiveSubagents(cfg state.ConfigDoc) int {
+	maxLive := defaultMaxLiveSubagents
+	if extra, ok := cfg.Extra["multitasking"].(map[string]any); ok {
+		if v := positiveConfigInt(extra["max_live_subagents"]); v > 0 {
+			maxLive = v
+		}
+	}
+	if extra, ok := cfg.Extra["subagents"].(map[string]any); ok {
+		if v := positiveConfigInt(extra["max_live"]); v > 0 {
+			maxLive = v
+		}
+		if v := positiveConfigInt(extra["max_live_count"]); v > 0 {
+			maxLive = v
+		}
+	}
+	return maxLive
+}
+
+func positiveConfigInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		if n > 0 {
+			return n
+		}
+	case int64:
+		if n > 0 {
+			return int(n)
+		}
+	case float64:
+		if n > 0 {
+			return int(n)
+		}
+	}
+	return 0
+}
+
 func (c agentRunController) applySessionsSpawn(ctx context.Context, req methods.SessionsSpawnRequest, cfg state.ConfigDoc, docsRepo *state.DocsRepository, memoryIndex memory.Store) (map[string]any, error) {
 	if c.defaultRuntime == nil || c.jobs == nil {
 		return nil, fmt.Errorf("agent runtime not configured")
@@ -109,6 +145,7 @@ func (c agentRunController) applySessionsSpawn(ctx context.Context, req methods.
 	if removed := c.subagents.CleanupStale(time.Now()); removed > 0 {
 		log.Printf("subagent registry stale cleanup removed=%d", removed)
 	}
+	maxLiveSubagents := resolveMaxLiveSubagents(cfg)
 
 	parentDepth := 0
 	if req.ParentSessionID != "" {
@@ -122,9 +159,12 @@ func (c agentRunController) applySessionsSpawn(ctx context.Context, req methods.
 	runID := fmt.Sprintf("spawn-%d", time.Now().UnixNano())
 	sessionID := fmt.Sprintf("spawn-sess-%d", time.Now().UnixNano())
 
-	rec, ok := c.subagents.Spawn(runID, sessionID, req.ParentSessionID, childDepth, req.Message)
+	rec, ok := c.subagents.Spawn(runID, sessionID, req.ParentSessionID, childDepth, req.Message, maxLiveSubagents)
 	if !ok {
-		return nil, fmt.Errorf("subagent depth limit %d exceeded", maxSubagentDepth)
+		if childDepth > maxSubagentDepth {
+			return nil, fmt.Errorf("subagent depth limit %d exceeded", maxSubagentDepth)
+		}
+		return nil, fmt.Errorf("subagent live count limit %d exceeded", maxLiveSubagents)
 	}
 
 	var rt agent.Runtime

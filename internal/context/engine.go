@@ -244,9 +244,10 @@ func (e *WindowedEngine) Assemble(ctx context.Context, sessionID string, _ int) 
 		estTokens += estimateMessageTokens(msg)
 	}
 	result := AssembleResult{Messages: msgs, EstimatedTokens: estTokens}
-	if summary != "" {
-		result.SystemPromptAddition = summary
-		result.EstimatedTokens += (len(summary) + 3) / 4
+	cacheParts := promptCacheParts{Summary: normalizePromptCacheSummary(summary)}
+	if cacheParts.Summary != "" {
+		result.SystemPromptAddition = cacheParts.Summary
+		result.EstimatedTokens += (len(cacheParts.Summary) + 3) / 4
 	}
 	if activeRecall != nil {
 		if latest, ok := latestUserMessage(msgs); ok {
@@ -254,16 +255,17 @@ func (e *WindowedEngine) Assemble(ctx context.Context, sessionID string, _ int) 
 			if err != nil {
 				return result, err
 			}
-			if recallText != "" {
+			cacheParts.Recall = normalizePromptCacheRecall(recallText)
+			if cacheParts.Recall != "" {
 				if result.SystemPromptAddition != "" {
 					result.SystemPromptAddition += "\n\n"
 				}
-				result.SystemPromptAddition += recallText
-				result.EstimatedTokens += (len(recallText) + 3) / 4
+				result.SystemPromptAddition += cacheParts.Recall
+				result.EstimatedTokens += (len(cacheParts.Recall) + 3) / 4
 			}
 		}
 	}
-	e.annotateAssembleResult(sessionID, &result)
+	e.annotateAssembleResultWithParts(sessionID, &result, cacheParts)
 	return result, nil
 }
 

@@ -229,9 +229,25 @@ func TestHandleOpsRPCCronAddSurfacesPersistenceFailure(t *testing.T) {
 	}
 }
 
+func TestAgentJobRegistryCleanupFinishedUsesSweepNoSleeper(t *testing.T) {
+	jobs := newAgentJobRegistry()
+	jobs.Begin("run-old", "session-old")
+	jobs.Finish("run-old", "ok", nil)
+	if _, ok := jobs.Get("run-old"); !ok {
+		t.Fatal("finished job should remain available during retention window")
+	}
+	removed := jobs.CleanupFinished(time.Now().Add(agentJobRetention + time.Second))
+	if removed != 1 {
+		t.Fatalf("CleanupFinished removed %d, want 1", removed)
+	}
+	if _, ok := jobs.Get("run-old"); ok {
+		t.Fatal("finished job should be swept after retention")
+	}
+}
+
 func TestSubagentRegistryGetReturnsSnapshot(t *testing.T) {
 	reg := newSubagentRegistry()
-	if _, ok := reg.Spawn("run-1", "sess-1", "", 0, "message"); !ok {
+	if _, ok := reg.Spawn("run-1", "sess-1", "", 0, "message", defaultMaxLiveSubagents); !ok {
 		t.Fatal("spawn rejected")
 	}
 	snap := reg.Get("run-1")

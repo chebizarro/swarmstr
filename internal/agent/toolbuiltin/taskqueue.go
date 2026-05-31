@@ -36,7 +36,13 @@ type Task struct {
 	Notes       string `json:"notes,omitempty"`
 	CreatedAt   int64  `json:"created_at"`
 	UpdatedAt   int64  `json:"updated_at"`
+	CompletedAt int64  `json:"completed_at,omitempty"`
 }
+
+const (
+	taskQueueTerminalRetention = 30 * 24 * time.Hour
+	taskQueueMaxTasks          = 1000
+)
 
 // taskStore is the in-process task store.
 type taskStore struct {
@@ -82,6 +88,9 @@ func (s *taskStore) loadLocked() error {
 			s.seq = n
 		}
 	}
+	if s.pruneLocked(time.Now()) > 0 {
+		s.saveLocked()
+	}
 	return nil
 }
 
@@ -104,6 +113,52 @@ func (s *taskStore) saveLocked() {
 func (s *taskStore) nextID() string {
 	s.seq++
 	return fmt.Sprintf("task-%d", s.seq)
+}
+
+func taskStatusTerminal(status string) bool {
+	return status == "done" || status == "cancelled"
+}
+
+func (s *taskStore) pruneLocked(now time.Time) int {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	removed := 0
+	cutoff := now.Add(-taskQueueTerminalRetention).Unix()
+	for id, t := range s.tasks {
+		if t == nil {
+			delete(s.tasks, id)
+			removed++
+			continue
+		}
+		if taskStatusTerminal(t.Status) {
+			completedAt := t.CompletedAt
+			if completedAt == 0 {
+				completedAt = t.UpdatedAt
+			}
+			if completedAt > 0 && completedAt < cutoff {
+				delete(s.tasks, id)
+				removed++
+			}
+		}
+	}
+	if len(s.tasks) <= taskQueueMaxTasks {
+		return removed
+	}
+	terminal := make([]*Task, 0, len(s.tasks))
+	for _, t := range s.tasks {
+		if t != nil && taskStatusTerminal(t.Status) {
+			terminal = append(terminal, t)
+		}
+	}
+	sort.Slice(terminal, func(i, j int) bool { return terminal[i].UpdatedAt < terminal[j].UpdatedAt })
+	for len(s.tasks) > taskQueueMaxTasks && len(terminal) > 0 {
+		oldest := terminal[0]
+		terminal = terminal[1:]
+		delete(s.tasks, oldest.ID)
+		removed++
+	}
+	return removed
 }
 
 // ─── Tool definitions ─────────────────────────────────────────────────────────
@@ -217,6 +272,11 @@ func TaskAddTool(_ context.Context, args map[string]any) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.pruneLocked(time.Now())
+	if len(s.tasks) >= taskQueueMaxTasks {
+		return "", fmt.Errorf("task_add: task queue is full (%d tasks); complete or remove existing tasks before adding more", taskQueueMaxTasks)
+	}
+
 	id := s.nextID()
 	now := time.Now().Unix()
 	t := &Task{
@@ -241,8 +301,12 @@ func TaskListTool(_ context.Context, args map[string]any) (string, error) {
 	priorityFilter := agent.ArgString(args, "priority")
 
 	s := defaultTaskStore
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	pruned := s.pruneLocked(time.Now())
+	if pruned > 0 {
+		s.saveLocked()
+	}
+	defer s.mu.Unlock()
 
 	var out []*Task
 	for _, t := range s.tasks {
@@ -276,7 +340,13 @@ func TaskUpdateTool(_ context.Context, args map[string]any) (string, error) {
 		return "", fmt.Errorf("task_update: task %q not found", id)
 	}
 	if status := agent.ArgString(args, "status"); status != "" {
+		wasTerminal := taskStatusTerminal(t.Status)
 		t.Status = status
+		if taskStatusTerminal(status) && !wasTerminal {
+			t.CompletedAt = time.Now().Unix()
+		} else if !taskStatusTerminal(status) {
+			t.CompletedAt = 0
+		}
 	}
 	if priority := agent.ArgString(args, "priority"); priority != "" {
 		t.Priority = priority
@@ -289,6 +359,7 @@ func TaskUpdateTool(_ context.Context, args map[string]any) (string, error) {
 		}
 	}
 	t.UpdatedAt = time.Now().Unix()
+	s.pruneLocked(time.Now())
 	s.saveLocked()
 
 	b, _ := json.Marshal(t)

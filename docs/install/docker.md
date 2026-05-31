@@ -10,6 +10,8 @@ title: "Docker"
 
 metiq can run in Docker as a stateless Go binary with mounted config and state volumes.
 
+For supported image profiles and Docker-vs-systemd assumptions, see [Runtime Profiles](/install/runtime-profiles).
+
 ## Quick start
 
 ### With environment variables (easiest)

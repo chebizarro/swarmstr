@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,8 +96,11 @@ type AgenticLoopConfig struct {
 	// CheckpointStore records overflow retry checkpoints when provided.
 	CheckpointStore *sessioncheckpoint.Store
 	// Turn checkpoint hooks support mid-turn resume across runtime restarts.
-	TurnCheckpointSink func(context.Context, sessioncheckpoint.TurnCheckpoint) error
-	ResumeCheckpoint   *sessioncheckpoint.TurnCheckpoint
+	// Resume is disabled unless ResumeCheckpointSafe is true; callers must only
+	// set it for explicit resume-safe turns because pending tools may mutate state.
+	TurnCheckpointSink   func(context.Context, sessioncheckpoint.TurnCheckpoint) error
+	ResumeCheckpoint     *sessioncheckpoint.TurnCheckpoint
+	ResumeCheckpointSafe bool
 }
 
 // InjectedUserInput is additional user-visible input drained into an active
@@ -222,8 +227,9 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	var err error
 	toolPreamble := ""
 	resumeFirstIteration := false
+	lastTurnCheckpointHash := ""
 
-	if resume, ok := restoreTurnCheckpoint(cfg.ResumeCheckpoint); ok {
+	if resume, ok := restoreTurnCheckpoint(cfg.ResumeCheckpoint, cfg.ResumeCheckpointSafe); ok {
 		messages = resume.Messages
 		historyDelta = resume.HistoryDelta
 		calls = resume.PendingToolCalls
@@ -244,7 +250,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			messages = pf.Messages
 			activeTools = pf.Tools
 		}
-		resp, err = cfg.Provider.Chat(ctx, messages, normalizeToolsForProvider(cfg.Provider, activeTools), cfg.Options)
+		resp, err = chatWithTurnSpan(ctx, cfg, "initial", 0, messages, activeTools, cfg.Options)
 		if err != nil {
 			var recovered bool
 			resp, messages, activeTools, overflowRetriesRemaining, recovered, err = retryAfterContextOverflow(ctx, cfg, messages, activeTools, err, overflowRetriesRemaining)
@@ -324,7 +330,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 
 			// Persist a resumable checkpoint before tool execution so a restarted
 			// runtime can resume from this model boundary without re-sampling.
-			persistTurnCheckpoint(ctx, cfg, iter+1, messages, historyDelta, calls, resp.Content, totalUsage)
+			lastTurnCheckpointHash = persistTurnCheckpoint(ctx, cfg, iter+1, messages, historyDelta, calls, resp.Content, totalUsage, lastTurnCheckpointHash)
 		}
 
 		// Execute tool calls using src-shaped batch partitioning: consecutive
@@ -391,7 +397,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 				activeTools = pf.Tools
 			}
 			providerMessages := promotePreemptiveCompactionToHardClear(pf.Messages)
-			resp, err = cfg.Provider.Chat(ctx, providerMessages, normalizeToolsForProvider(cfg.Provider, pf.Tools), cfg.Options)
+			resp, err = chatWithTurnSpan(ctx, cfg, "tool_iteration", iter+1, providerMessages, pf.Tools, cfg.Options)
 		}
 		if err != nil {
 			var recovered bool
@@ -493,11 +499,11 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			Content: resp.Content,
 		})
 	}
-	
+
 	// Compress oversized tool results in historyDelta to prevent unbounded growth
 	// in turns with many iterations and large tool outputs.
 	historyDelta = compressLargeToolResults(historyDelta)
-	
+
 	resp.Usage = totalUsage
 	resp.HistoryDelta = historyDelta
 	resp.Outcome = TurnOutcomeCompletedWithTools
@@ -529,14 +535,21 @@ func appendDrainedSteeringInput(ctx context.Context, messages []LLMMessage, sess
 	return out, true
 }
 
-func persistTurnCheckpoint(ctx context.Context, cfg AgenticLoopConfig, iter int, messages []LLMMessage, history []ConversationMessage, pending []ToolCall, partialText string, usage ProviderUsage) {
-	if cfg.TurnCheckpointSink == nil || cfg.SessionID == "" {
-		return
+func persistTurnCheckpoint(ctx context.Context, cfg AgenticLoopConfig, iter int, messages []LLMMessage, history []ConversationMessage, pending []ToolCall, partialText string, usage ProviderUsage, previousHash string) string {
+	if cfg.TurnCheckpointSink == nil || strings.TrimSpace(cfg.SessionID) == "" {
+		return previousHash
+	}
+	if !pendingToolCallsResumeSafe(cfg.Executor, pending) {
+		return previousHash
 	}
 	messagesJSON, _ := json.Marshal(messages)
 	historyJSON, _ := json.Marshal(history)
 	pendingJSON, _ := json.Marshal(pending)
 	usageJSON, _ := json.Marshal(usage)
+	stateHash := turnCheckpointStateHash(iter, messagesJSON, historyJSON, pendingJSON, usageJSON, partialText)
+	if stateHash == previousHash {
+		return previousHash
+	}
 	cp := sessioncheckpoint.TurnCheckpoint{
 		SessionID:            cfg.SessionID,
 		TurnID:               cfg.TurnID,
@@ -551,7 +564,41 @@ func persistTurnCheckpoint(ctx context.Context, cfg AgenticLoopConfig, iter int,
 	}
 	if err := cfg.TurnCheckpointSink(ctx, cp); err != nil {
 		log.Printf("%s: turn checkpoint persist failed: %v", cfg.LogPrefix, err)
+		return previousHash
 	}
+	return stateHash
+}
+
+func pendingToolCallsResumeSafe(executor ToolExecutor, pending []ToolCall) bool {
+	if len(pending) == 0 {
+		return false
+	}
+	resolver, _ := executor.(toolTraitResolver)
+	if resolver == nil {
+		return false
+	}
+	for _, call := range pending {
+		traits, ok := resolver.EffectiveTraits(call)
+		if !ok || !traits.ReadOnly || traits.Destructive {
+			return false
+		}
+	}
+	return true
+}
+
+func turnCheckpointStateHash(iter int, messagesJSON, historyJSON, pendingJSON, usageJSON []byte, partialText string) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%d\x00", iter)
+	_, _ = h.Write(messagesJSON)
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(historyJSON)
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(pendingJSON)
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(usageJSON)
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(partialText))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 type restoredTurnCheckpoint struct {
@@ -565,8 +612,24 @@ type restoredTurnCheckpoint struct {
 	PartialText      string
 }
 
-func restoreTurnCheckpoint(cp *sessioncheckpoint.TurnCheckpoint) (restoredTurnCheckpoint, bool) {
-	if cp == nil || strings.TrimSpace(cp.SessionID) == "" || strings.TrimSpace(cp.Status) != "before_tool_execution" || len(cp.PendingToolCallsJSON) == 0 || len(cp.MessagesJSON) == 0 {
+func chatWithTurnSpan(ctx context.Context, cfg AgenticLoopConfig, phase string, iter int, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
+	startedAt := time.Now()
+	resp, err := cfg.Provider.Chat(ctx, messages, normalizeToolsForProvider(cfg.Provider, tools), opts)
+	fields := map[string]any{
+		"phase":          phase,
+		"iteration":      iter,
+		"messages_count": len(messages),
+		"tools_count":    len(tools),
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+	}
+	EmitTurnSpan(ctx, "provider_call", time.Since(startedAt), fields)
+	return resp, err
+}
+
+func restoreTurnCheckpoint(cp *sessioncheckpoint.TurnCheckpoint, resumeSafe bool) (restoredTurnCheckpoint, bool) {
+	if !resumeSafe || cp == nil || strings.TrimSpace(cp.SessionID) == "" || strings.TrimSpace(cp.Status) != "before_tool_execution" || len(cp.PendingToolCallsJSON) == 0 || len(cp.MessagesJSON) == 0 {
 		return restoredTurnCheckpoint{}, false
 	}
 	var out restoredTurnCheckpoint
@@ -602,7 +665,7 @@ func retryAfterContextOverflow(ctx context.Context, cfg AgenticLoopConfig, messa
 	pf := EnforceTotalContextBudget(GuardToolResultMessages(compacted, cfg.ContextWindowTokens), tools, cfg.ContextWindowTokens, DefaultCriticalToolNames())
 	checkpointOverflowRetry(cfg, compactResult, pf)
 	log.Printf("%s: context overflow detected; compacted prompt (cleared=%d chars=%d→%d), retrying LLM call", cfg.LogPrefix, compactResult.Cleared, compactResult.CharsBefore, compactResult.CharsAfter)
-	resp, err := cfg.Provider.Chat(ctx, pf.Messages, normalizeToolsForProvider(cfg.Provider, pf.Tools), cfg.Options)
+	resp, err := chatWithTurnSpan(ctx, cfg, "overflow_retry", 0, pf.Messages, pf.Tools, cfg.Options)
 	if err != nil {
 		return nil, pf.Messages, pf.Tools, remaining - 1, false, turnCancellationCause(ctx, err)
 	}
@@ -820,11 +883,30 @@ func executeToolBatches(ctx context.Context, executor ToolExecutor, calls []Tool
 	concurrencyLimit := getMaxToolUseConcurrency()
 	for batchIndex, batch := range batches {
 		emitSchedulerEvents(batch, batchIndex, len(batches), concurrencyLimit, sessionID, turnID, sink, trace)
+		batchStartedAt := time.Now()
+		mode := "serial"
 		if batch.isConcurrencySafe {
-			results = append(results, executeToolBatchParallel(ctx, executor, batch.calls, concurrencyLimit, sessionID, turnID, sink, trace, hooks)...)
+			mode = "parallel"
+			batchResults := executeToolBatchParallel(ctx, executor, batch.calls, concurrencyLimit, sessionID, turnID, sink, trace, hooks)
+			EmitTurnSpan(ctx, "tool_execution_batch", time.Since(batchStartedAt), map[string]any{
+				"batch_index":       batchIndex,
+				"batch_count":       len(batches),
+				"batch_size":        len(batch.calls),
+				"mode":              mode,
+				"concurrency_limit": concurrencyLimit,
+			})
+			results = append(results, batchResults...)
 			continue
 		}
-		results = append(results, executeToolBatchSerial(ctx, executor, batch.calls, sessionID, turnID, sink, trace, hooks)...)
+		batchResults := executeToolBatchSerial(ctx, executor, batch.calls, sessionID, turnID, sink, trace, hooks)
+		EmitTurnSpan(ctx, "tool_execution_batch", time.Since(batchStartedAt), map[string]any{
+			"batch_index":       batchIndex,
+			"batch_count":       len(batches),
+			"batch_size":        len(batch.calls),
+			"mode":              mode,
+			"concurrency_limit": 0,
+		})
+		results = append(results, batchResults...)
 	}
 	return results
 }
@@ -1215,7 +1297,7 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 	// Call without tools so the model MUST produce text.
 	messages = pruneContextBeforeLLM(messages, cfg.LogPrefix, cfg.ContextWindowTokens)
 	opts := cfg.Options
-	summaryResp, err := cfg.Provider.Chat(ctx, GuardToolResultMessages(messages, cfg.ContextWindowTokens), nil, opts)
+	summaryResp, err := chatWithTurnSpan(ctx, cfg, "force_summary", 0, GuardToolResultMessages(messages, cfg.ContextWindowTokens), nil, opts)
 	if err != nil {
 		log.Printf("%s: force-summary error: %v", cfg.LogPrefix, err)
 		return nil, nil
@@ -1259,9 +1341,9 @@ func blockedStopReason(loopBlocked bool) TurnStopReason {
 // Tool results larger than 20KB are replaced with a truncated summary.
 func compressLargeToolResults(history []ConversationMessage) []ConversationMessage {
 	const maxToolResultSize = 20 * 1024 // 20KB threshold
-	const keepPrefix = 5000               // Keep first 5KB
-	const keepSuffix = 1000               // Keep last 1KB
-	
+	const keepPrefix = 5000             // Keep first 5KB
+	const keepSuffix = 1000             // Keep last 1KB
+
 	for i := range history {
 		if history[i].Role != "tool" {
 			continue
@@ -1269,16 +1351,16 @@ func compressLargeToolResults(history []ConversationMessage) []ConversationMessa
 		if len(history[i].Content) <= maxToolResultSize {
 			continue
 		}
-		
+
 		// Compress large tool result: keep prefix + truncation notice + suffix
 		prefix := history[i].Content[:keepPrefix]
 		suffix := history[i].Content[len(history[i].Content)-keepSuffix:]
 		truncated := len(history[i].Content) - keepPrefix - keepSuffix
-		
+
 		history[i].Content = fmt.Sprintf("%s\n\n[... %d characters truncated for history compression ...]\n\n%s",
 			prefix, truncated, suffix)
 	}
-	
+
 	return history
 }
 
@@ -1319,7 +1401,8 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 
 	// If no executor or no tools, just do a single call.
 	if turn.Executor == nil || len(tools) == 0 {
-		resp, err := provider.Chat(ctx, messages, normalizeToolsForProvider(provider, tools), opts)
+		spanCfg := AgenticLoopConfig{Provider: provider, SessionID: turn.SessionID, TurnID: turn.TurnID, LogPrefix: logPrefix}
+		resp, err := chatWithTurnSpan(ctx, spanCfg, "single_call", 0, messages, tools, opts)
 		if err != nil {
 			return ProviderResult{}, turnCancellationCause(ctx, err)
 		}
@@ -1334,28 +1417,29 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 	}
 
 	resp, err := RunAgenticLoop(ctx, AgenticLoopConfig{
-		Provider:            provider,
-		InitialMessages:     messages,
-		Tools:               tools,
-		Executor:            turn.Executor,
-		LoopDetectionConfig: loopDetectionConfig,
-		Options:             opts,
-		MaxIterations:       maxIter,
-		ForceText:           true,
-		LogPrefix:           logPrefix,
-		SessionID:           turn.SessionID,
-		TurnID:              turn.TurnID,
-		ToolEventSink:       turn.ToolEventSink,
-		ContextWindowTokens: turn.ContextWindowTokens,
-		Trace:               turn.Trace,
-		LastAssistantTime:   turn.LastAssistantTime,
-		DeferredTools:       turn.DeferredTools,
-		HookInvoker:         turn.HookInvoker,
-		ToolPolicy:          turn.ToolPolicy,
-		ToolPolicyAgentID:   turn.ToolPolicyAgentID,
-		SteeringDrain:       turn.SteeringDrain,
-		TurnCheckpointSink:  turn.TurnCheckpointSink,
-		ResumeCheckpoint:    turn.ResumeCheckpoint,
+		Provider:             provider,
+		InitialMessages:      messages,
+		Tools:                tools,
+		Executor:             turn.Executor,
+		LoopDetectionConfig:  loopDetectionConfig,
+		Options:              opts,
+		MaxIterations:        maxIter,
+		ForceText:            true,
+		LogPrefix:            logPrefix,
+		SessionID:            turn.SessionID,
+		TurnID:               turn.TurnID,
+		ToolEventSink:        turn.ToolEventSink,
+		ContextWindowTokens:  turn.ContextWindowTokens,
+		Trace:                turn.Trace,
+		LastAssistantTime:    turn.LastAssistantTime,
+		DeferredTools:        turn.DeferredTools,
+		HookInvoker:          turn.HookInvoker,
+		ToolPolicy:           turn.ToolPolicy,
+		ToolPolicyAgentID:    turn.ToolPolicyAgentID,
+		SteeringDrain:        turn.SteeringDrain,
+		TurnCheckpointSink:   turn.TurnCheckpointSink,
+		ResumeCheckpoint:     turn.ResumeCheckpoint,
+		ResumeCheckpointSafe: turn.ResumeCheckpointSafe,
 	})
 	if err != nil {
 		return ProviderResult{}, err

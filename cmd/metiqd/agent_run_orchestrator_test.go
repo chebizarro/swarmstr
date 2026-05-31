@@ -254,6 +254,20 @@ func TestAgentRunControllerApplySessionsSpawn_InheritsParentTaskLinkage(t *testi
 	}
 }
 
+func TestAgentRunControllerApplySessionsSpawn_EnforcesLiveSubagentCountCap(t *testing.T) {
+	ctrl, _, _, subagents := newTestAgentRunController(t)
+	now := time.Now().UnixMilli()
+	subagents.records["live-run"] = &SubagentRecord{RunID: "live-run", SessionID: "live-session", Status: "running", StartedAt: now, UpdatedAt: now}
+
+	_, err := ctrl.applySessionsSpawn(context.Background(), methods.SessionsSpawnRequest{
+		Message:   "spawn over cap",
+		TimeoutMS: 500,
+	}, state.ConfigDoc{Extra: map[string]any{"multitasking": map[string]any{"max_live_subagents": float64(1)}}}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "live count limit 1 exceeded") {
+		t.Fatalf("expected live count cap error, got %v", err)
+	}
+}
+
 func TestAgentRunControllerApplySessionsSpawn_CleansStaleSubagentLinks(t *testing.T) {
 	ctrl, _, jobs, subagents := newTestAgentRunController(t)
 	now := time.Now()

@@ -160,7 +160,11 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 	case methods.MethodSupportedMethods:
 		return nostruntime.ControlRPCResult{Result: supportedMethods(cfg)}, nil
 	case methods.MethodHealth:
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true}}, nil
+		result := map[string]any{"ok": true}
+		if recovery := recoveryStatusSnapshot(); recovery != nil {
+			result["recovery"] = recovery
+		}
+		return nostruntime.ControlRPCResult{Result: result}, nil
 	case methods.MethodDoctorMemoryStatus:
 		indexAvailable := memoryIndex != nil
 		entryCount := 0

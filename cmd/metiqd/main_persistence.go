@@ -253,9 +253,127 @@ func nostrWatchDeliveryMeta(name string, event map[string]any) (string, int64) {
 // Turn history persistence + context engine ingestion
 // ---------------------------------------------------------------------------
 
+// deferredPostTurnPersistenceEnabled gates WI-3's non-crash-critical
+// persistence split. Synchronous journaling remains the default unless config
+// sets Extra["durability"]["deferred_post_turn"] = true.
+func deferredPostTurnPersistenceEnabled(cfg state.ConfigDoc) bool {
+	if extra, ok := cfg.Extra["durability"].(map[string]any); ok {
+		if enabled, ok := extra["deferred_post_turn"].(bool); ok {
+			return enabled
+		}
+	}
+	return false
+}
+
+type deferredTurnSessionPersistence struct {
+	TaskState        *state.TaskState
+	MemoryRecallTurn string
+	MemoryRecall     *state.MemoryRecallSample
+	SurfacedMemory   map[string]string
+	TurnTelemetry    agent.TurnTelemetry
+	HasTelemetry     bool
+	Usage            agent.TurnUsage
+}
+
+func applyDeferredTurnSessionPersistence(sessionStore *state.SessionStore, sessionID string, batch deferredTurnSessionPersistence) {
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	var turnTelemetry *state.TurnTelemetry
+	if batch.HasTelemetry {
+		turnTelemetry = &state.TurnTelemetry{
+			TurnID:         batch.TurnTelemetry.TurnID,
+			TaskID:         batch.TurnTelemetry.Trace.TaskID,
+			RunID:          batch.TurnTelemetry.Trace.RunID,
+			ParentTaskID:   batch.TurnTelemetry.Trace.ParentTaskID,
+			ParentRunID:    batch.TurnTelemetry.Trace.ParentRunID,
+			StartedAtMS:    batch.TurnTelemetry.StartedAtMS,
+			EndedAtMS:      batch.TurnTelemetry.EndedAtMS,
+			DurationMS:     batch.TurnTelemetry.DurationMS,
+			Outcome:        string(batch.TurnTelemetry.Outcome),
+			StopReason:     string(batch.TurnTelemetry.StopReason),
+			LoopBlocked:    batch.TurnTelemetry.LoopBlocked,
+			Error:          batch.TurnTelemetry.Error,
+			FallbackUsed:   batch.TurnTelemetry.FallbackUsed,
+			FallbackFrom:   batch.TurnTelemetry.FallbackFrom,
+			FallbackTo:     batch.TurnTelemetry.FallbackTo,
+			FallbackReason: batch.TurnTelemetry.FallbackReason,
+			InputTokens:    batch.TurnTelemetry.Usage.InputTokens,
+			OutputTokens:   batch.TurnTelemetry.Usage.OutputTokens,
+		}
+	}
+	if err := sessionStore.ApplyDeferredTurnPersistence(sessionID, state.DeferredTurnPersistence{
+		TaskState:        batch.TaskState,
+		MemoryRecallTurn: batch.MemoryRecallTurn,
+		MemoryRecall:     batch.MemoryRecall,
+		SurfacedMemory:   batch.SurfacedMemory,
+		TurnTelemetry:    turnTelemetry,
+		InputTokens:      batch.Usage.InputTokens,
+		OutputTokens:     batch.Usage.OutputTokens,
+		CacheReadTokens:  batch.Usage.CacheReadTokens,
+		CacheWriteTokens: batch.Usage.CacheCreationTokens,
+	}); err != nil {
+		log.Printf("deferred session persistence failed session=%s: %v", sessionID, err)
+	}
+}
+
+func buildDeferredTaskState(sessionStore *state.SessionStore, sessionID string, traces []agent.ToolTrace, delta []agent.ConversationMessage, turnFailed bool) *state.TaskState {
+	if sessionStore == nil || strings.TrimSpace(sessionID) == "" || (len(traces) == 0 && !turnFailed) {
+		return nil
+	}
+	entry := sessionStore.GetOrNew(sessionID)
+	ts := entry.TaskState
+	if ts == nil {
+		ts = &state.TaskState{}
+	} else {
+		copy := *ts
+		copy.Decisions = append([]string(nil), ts.Decisions...)
+		copy.Constraints = append([]string(nil), ts.Constraints...)
+		copy.OpenQuestions = append([]string(nil), ts.OpenQuestions...)
+		copy.ArtifactRefs = append([]string(nil), ts.ArtifactRefs...)
+		ts = &copy
+	}
+	now := time.Now().Unix()
+	toolNames := uniqueToolNames(traces)
+	if turnFailed {
+		ts.CurrentStage = truncateField(fmt.Sprintf("failed turn (tools: %s)", strings.Join(toolNames, ", ")))
+	} else if len(toolNames) > 0 {
+		ts.CurrentStage = truncateField(fmt.Sprintf("completed turn using %s", strings.Join(toolNames, ", ")))
+	}
+	for _, t := range traces {
+		if t.Error == "" {
+			continue
+		}
+		errText := t.Error
+		if len(errText) > 200 {
+			errText = errText[:200]
+		}
+		ts.Constraints = state.AppendCapped(ts.Constraints, fmt.Sprintf("%s: %s", t.Call.Name, errText), state.TaskStateMaxListItems)
+	}
+	for _, t := range traces {
+		if t.Error != "" {
+			continue
+		}
+		if ref := extractArtifactRef(t); ref != "" {
+			ts.ArtifactRefs = state.AppendCapped(ts.ArtifactRefs, ref, state.TaskStateMaxListItems)
+		}
+	}
+	if snippet := distillAssistantSnippet(delta, 200); snippet != "" {
+		ts.NextAction = truncateField(snippet)
+		ts.HandoffNote = truncateField(snippet)
+	}
+	if ts.Brief == "" {
+		if userText := extractFirstUserText(delta); userText != "" {
+			ts.Brief = truncateField(userText)
+		}
+	}
+	ts.UpdatedAt = now
+	return ts
+}
+
 // persistAndIngestTurnHistory writes the ordered HistoryDelta from a completed
 // (or partially completed) turn into both the transcript store and context
-// engine.  This makes tool interactions visible to future turns.
+// engine. This makes tool interactions visible to future turns.
 func persistAndIngestTurnHistory(
 	ctx context.Context,
 	transcriptRepo *state.TranscriptRepository,
@@ -443,14 +561,24 @@ func pendingTurnsShareExecutionContext(pending []autoreply.PendingTurn) bool {
 // Session turn handoff / event dedup registries
 // ---------------------------------------------------------------------------
 
+const (
+	sessionTurnHandoffTTL = 30 * time.Minute
+	eventInFlightTTL      = 30 * time.Minute
+)
+
+type sessionTurnHandoffToken struct {
+	ID         uint64
+	ReservedAt time.Time
+}
+
 type sessionTurnHandoffRegistry struct {
 	mu     sync.Mutex
 	nextID uint64
-	tokens map[string]uint64
+	tokens map[string]sessionTurnHandoffToken
 }
 
 func newSessionTurnHandoffRegistry() *sessionTurnHandoffRegistry {
-	return &sessionTurnHandoffRegistry{tokens: map[string]uint64{}}
+	return &sessionTurnHandoffRegistry{tokens: map[string]sessionTurnHandoffToken{}}
 }
 
 func (r *sessionTurnHandoffRegistry) Reserve(sessionID string) uint64 {
@@ -459,8 +587,9 @@ func (r *sessionTurnHandoffRegistry) Reserve(sessionID string) uint64 {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.cleanupLocked(time.Now())
 	r.nextID++
-	r.tokens[sessionID] = r.nextID
+	r.tokens[sessionID] = sessionTurnHandoffToken{ID: r.nextID, ReservedAt: time.Now()}
 	return r.nextID
 }
 
@@ -470,6 +599,7 @@ func (r *sessionTurnHandoffRegistry) Has(sessionID string) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.cleanupLocked(time.Now())
 	_, ok := r.tokens[sessionID]
 	return ok
 }
@@ -480,20 +610,37 @@ func (r *sessionTurnHandoffRegistry) ConsumeIfMatch(sessionID string, token uint
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if current, ok := r.tokens[sessionID]; ok && current == token {
+	r.cleanupLocked(time.Now())
+	if current, ok := r.tokens[sessionID]; ok && current.ID == token {
 		delete(r.tokens, sessionID)
 		return true
 	}
 	return false
 }
 
+func (r *sessionTurnHandoffRegistry) cleanupLocked(now time.Time) int {
+	removed := 0
+	for sessionID, token := range r.tokens {
+		if token.ReservedAt.IsZero() || now.Sub(token.ReservedAt) > sessionTurnHandoffTTL {
+			delete(r.tokens, sessionID)
+			removed++
+		}
+	}
+	return removed
+}
+
+type eventInFlightEntry struct {
+	Count     int
+	StartedAt time.Time
+}
+
 type eventInFlightRegistry struct {
 	mu   sync.Mutex
-	keys map[string]int
+	keys map[string]eventInFlightEntry
 }
 
 func newEventInFlightRegistry() *eventInFlightRegistry {
-	return &eventInFlightRegistry{keys: map[string]int{}}
+	return &eventInFlightRegistry{keys: map[string]eventInFlightEntry{}}
 }
 
 func (r *eventInFlightRegistry) Begin(key string) bool {
@@ -502,10 +649,11 @@ func (r *eventInFlightRegistry) Begin(key string) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.keys[key] > 0 {
+	r.cleanupLocked(time.Now())
+	if r.keys[key].Count > 0 {
 		return false
 	}
-	r.keys[key] = 1
+	r.keys[key] = eventInFlightEntry{Count: 1, StartedAt: time.Now()}
 	return true
 }
 
@@ -515,11 +663,24 @@ func (r *eventInFlightRegistry) End(key string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.keys[key] <= 1 {
+	entry := r.keys[key]
+	if entry.Count <= 1 {
 		delete(r.keys, key)
 		return
 	}
-	r.keys[key]--
+	entry.Count--
+	r.keys[key] = entry
+}
+
+func (r *eventInFlightRegistry) cleanupLocked(now time.Time) int {
+	removed := 0
+	for key, entry := range r.keys {
+		if entry.StartedAt.IsZero() || now.Sub(entry.StartedAt) > eventInFlightTTL {
+			delete(r.keys, key)
+			removed++
+		}
+	}
+	return removed
 }
 
 // ---------------------------------------------------------------------------

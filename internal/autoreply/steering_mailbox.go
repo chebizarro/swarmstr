@@ -336,6 +336,26 @@ func (r *SteeringMailboxRegistry) Delete(sessionID string) {
 	delete(r.mailboxes, sessionID)
 }
 
+// Stats returns aggregate active-run steering pressure without mutating mailboxes.
+func (r *SteeringMailboxRegistry) Stats() QueueRegistryStats {
+	if r == nil {
+		return QueueRegistryStats{}
+	}
+	r.mu.Lock()
+	mailboxes := make([]*SteeringMailbox, 0, len(r.mailboxes))
+	for _, mailbox := range r.mailboxes {
+		if mailbox != nil {
+			mailboxes = append(mailboxes, mailbox)
+		}
+	}
+	r.mu.Unlock()
+	stats := QueueRegistryStats{Sessions: len(mailboxes)}
+	for _, mailbox := range mailboxes {
+		stats.PendingTurns += mailbox.Len()
+	}
+	return stats
+}
+
 // Clear removes staged steering state for sessionID without deleting the
 // mailbox object. It is a no-op when no mailbox exists.
 func (r *SteeringMailboxRegistry) Clear(sessionID string) {
