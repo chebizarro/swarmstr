@@ -361,6 +361,57 @@ func TestDecodeControlCallRequest_StrictUnknownField(t *testing.T) {
 	}
 }
 
+func TestDecodeControlCallRequest_ContextVMJSONRPC(t *testing.T) {
+	req, err := decodeControlCallRequest(`{"jsonrpc":"2.0","id":1,"method":"agent/spawn","params":{"role":"worker"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.JSONRPC != "2.0" {
+		t.Fatalf("jsonrpc = %q", req.JSONRPC)
+	}
+	if string(req.ID) != "1" {
+		t.Fatalf("id = %s", req.ID)
+	}
+	if req.Method != "agent/spawn" {
+		t.Fatalf("method = %q", req.Method)
+	}
+	if string(req.Params) != `{"role":"worker"}` {
+		t.Fatalf("params = %s", req.Params)
+	}
+}
+
+func TestBuildControlResponsePayload_ContextVMResult(t *testing.T) {
+	payload, status := buildControlResponsePayload(json.RawMessage(`"req-1"`), ControlRPCResult{Result: map[string]any{"ok": true}}, true)
+	if status != "ok" {
+		t.Fatalf("status = %q", status)
+	}
+	var decoded struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      string `json:"id"`
+		Result  struct {
+			OK bool `json:"ok"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.JSONRPC != "2.0" || decoded.ID != "req-1" || !decoded.Result.OK {
+		t.Fatalf("unexpected payload: %s", payload)
+	}
+}
+
+func TestControlFilterSubscribesContextVMAndLegacyControl(t *testing.T) {
+	pk := mustControlPubKey(t, testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111"))
+	b := &ControlRPCBus{public: pk}
+	filter := b.controlFilter(123)
+	if len(filter.Kinds) != 2 {
+		t.Fatalf("kinds = %v", filter.Kinds)
+	}
+	if filter.Kinds[0] != nostr.Kind(events.KindContextVM) || filter.Kinds[1] != nostr.Kind(events.KindControl) {
+		t.Fatalf("unexpected kinds: %v", filter.Kinds)
+	}
+}
+
 func TestDecodeControlCallRequest_TooLarge(t *testing.T) {
 	tooLarge := strings.Repeat("a", maxControlRequestContentBytes+1)
 	_, err := decodeControlCallRequest(tooLarge)

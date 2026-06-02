@@ -13,6 +13,7 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+	"metiq/internal/contextvm"
 	"metiq/internal/gateway/controlreplay"
 	"metiq/internal/nostr/events"
 )
@@ -41,8 +42,10 @@ type ControlRPCResult struct {
 }
 
 type controlCallRequest struct {
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params,omitempty"`
+	JSONRPC string          `json:"jsonrpc,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
 }
 
 type ControlRPCBusOptions struct {
@@ -328,7 +331,7 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		relayURL = strings.TrimSpace(re.Relay.URL)
 	}
 	evt := re.Event
-	if evt.Kind != nostr.Kind(events.KindControl) {
+	if !isControlRequestKind(evt.Kind) {
 		return
 	}
 	if b.subHealth != nil {
@@ -363,6 +366,13 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 			return
 		}
 		b.respondError(re, "invalid control request body", requestID)
+		return
+	}
+	if isContextVMKind(evt.Kind) && strings.TrimSpace(call.JSONRPC) != "2.0" {
+		if b.markSeen(eventID) {
+			return
+		}
+		b.respondErrorCode(re, "invalid JSON-RPC version", requestID, -32600, nil)
 		return
 	}
 	call.Method = trimMethod(call.Method)
@@ -444,25 +454,7 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 		}
 	}
 
-	status := "ok"
-	payload := strings.TrimSpace(result.RawPayload)
-	if payload != "" {
-		if rawStatus := strings.TrimSpace(result.RawStatus); rawStatus != "" {
-			status = rawStatus
-		}
-	} else {
-		payloadMap := map[string]any{"result": result.Result}
-		if result.Error != "" {
-			payloadMap = map[string]any{"error": buildControlRPCError(result.Error, result.ErrorCode, result.ErrorData)}
-			status = "error"
-		}
-		payloadRaw, err := json.Marshal(payloadMap)
-		if err != nil {
-			payloadRaw = []byte(`{"error":"internal error: invalid result payload"}`)
-			status = "error"
-		}
-		payload = string(payloadRaw)
-	}
+	payload, status := buildControlResponsePayload(call.ID, result, isContextVMKind(evt.Kind))
 	tags := controlResponseBaseTags(eventID, evt.PubKey.Hex(), requestID, status, call.Method, paramsHash)
 	cached := ControlRPCCachedResponse{Payload: payload, Tags: tags}
 	if replayPolicy != controlreplay.None {
@@ -478,7 +470,22 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 }
 
 func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey string, requestID string, payload string, tags nostr.Tags) {
-	evt := nostr.Event{Kind: nostr.Kind(events.KindMCPResult), CreatedAt: nostr.Now(), Tags: tags, Content: payload}
+	kind := nostr.Kind(events.KindContextVM)
+	if re.Event.Kind == nostr.Kind(events.KindControl) {
+		kind = nostr.Kind(events.KindMCPResult)
+	} else {
+		var id json.RawMessage
+		if call, err := decodeControlCallRequest(re.Event.Content); err == nil {
+			id = call.ID
+		}
+		if len(id) == 0 {
+			if rawID, err := json.Marshal(requestID); err == nil {
+				id = rawID
+			}
+		}
+		payload = normalizeControlJSONRPCPayload(id, payload)
+	}
+	evt := nostr.Event{Kind: kind, CreatedAt: nostr.Now(), Tags: tags, Content: payload}
 	if err := b.keyer.SignEvent(b.ctx, &evt); err != nil {
 		b.emitErr(fmt.Errorf("sign control response req=%s: %w", requestID, err))
 		return
@@ -563,7 +570,7 @@ type controlRelayRetry struct {
 
 func (b *ControlRPCBus) controlFilter(since int64) nostr.Filter {
 	return nostr.Filter{
-		Kinds: []nostr.Kind{nostr.Kind(events.KindControl)},
+		Kinds: []nostr.Kind{nostr.Kind(events.KindContextVM), nostr.Kind(events.KindControl)},
 		Tags:  nostr.TagMap{"p": {b.public.Hex()}},
 		Since: nostr.Timestamp(since),
 	}
@@ -983,7 +990,13 @@ func (b *ControlRPCBus) respondErrorCode(re nostr.RelayEvent, msg string, reques
 		requestID = re.Event.ID.Hex()
 	}
 	tags := nostr.Tags{{"e", re.Event.ID.Hex()}, {"p", re.Event.PubKey.Hex()}, {"req", requestID}, {"status", "error"}, {"t", "control_rpc"}}
-	payloadRaw, _ := json.Marshal(map[string]any{"error": buildControlRPCError(msg, code, data)})
+	var id json.RawMessage
+	if isContextVMKind(re.Event.Kind) {
+		if call, err := decodeControlCallRequest(re.Event.Content); err == nil {
+			id = call.ID
+		}
+	}
+	payloadRaw := buildControlErrorPayload(id, msg, code, data, isContextVMKind(re.Event.Kind))
 	b.publishResponse(re, re.Event.PubKey.Hex(), requestID, string(payloadRaw), tags)
 }
 
@@ -1080,6 +1093,14 @@ func cloneTags(tags nostr.Tags) nostr.Tags {
 	return out
 }
 
+func isContextVMKind(kind nostr.Kind) bool {
+	return kind == nostr.Kind(events.KindContextVM)
+}
+
+func isControlRequestKind(kind nostr.Kind) bool {
+	return isContextVMKind(kind) || kind == nostr.Kind(events.KindControl)
+}
+
 func controlResponseCacheKey(callerPubKey, replayID string) string {
 	return strings.TrimSpace(callerPubKey) + ":" + strings.TrimSpace(replayID)
 }
@@ -1118,6 +1139,94 @@ func buildControlRPCError(message string, code int, data map[string]any) control
 		Message: message,
 		Data:    data,
 	}
+}
+
+func buildControlResponsePayload(id json.RawMessage, result ControlRPCResult, useJSONRPC bool) (string, string) {
+	status := "ok"
+	payload := strings.TrimSpace(result.RawPayload)
+	if payload != "" {
+		if rawStatus := strings.TrimSpace(result.RawStatus); rawStatus != "" {
+			status = rawStatus
+		} else if rawPayloadHasError(payload) {
+			status = "error"
+		}
+		if useJSONRPC {
+			payload = normalizeControlJSONRPCPayload(id, payload)
+		}
+		return payload, status
+	}
+	if result.Error != "" {
+		status = "error"
+		return string(buildControlErrorPayload(id, result.Error, result.ErrorCode, result.ErrorData, useJSONRPC)), status
+	}
+	if useJSONRPC {
+		payloadRaw, err := contextvm.MarshalResultResponse(id, result.Result)
+		if err != nil {
+			return string(buildControlErrorPayload(id, "internal error: invalid result payload", -32000, nil, true)), "error"
+		}
+		return string(payloadRaw), status
+	}
+	payloadRaw, err := json.Marshal(map[string]any{"result": result.Result})
+	if err != nil {
+		payloadRaw = []byte(`{"error":"internal error: invalid result payload"}`)
+		status = "error"
+	}
+	return string(payloadRaw), status
+}
+
+func buildControlErrorPayload(id json.RawMessage, message string, code int, data map[string]any, useJSONRPC bool) []byte {
+	errObj := buildControlRPCError(message, code, data)
+	if useJSONRPC {
+		payloadRaw, err := contextvm.MarshalErrorResponse(id, contextvm.JSONRPCError{Code: errObj.Code, Message: errObj.Message, Data: errObj.Data})
+		if err == nil {
+			return payloadRaw
+		}
+	}
+	payloadRaw, err := json.Marshal(map[string]any{"error": errObj})
+	if err != nil {
+		return []byte(`{"error":"internal error: invalid error payload"}`)
+	}
+	return payloadRaw
+}
+
+func normalizeControlJSONRPCPayload(id json.RawMessage, payload string) string {
+	var env struct {
+		JSONRPC string                  `json:"jsonrpc"`
+		Result  json.RawMessage         `json:"result"`
+		Error   *contextvm.JSONRPCError `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &env); err == nil {
+		if strings.TrimSpace(env.JSONRPC) == "2.0" {
+			return payload
+		}
+		if env.Error != nil {
+			if raw, err := contextvm.MarshalErrorResponse(id, *env.Error); err == nil {
+				return string(raw)
+			}
+		}
+		if env.Result != nil {
+			if raw, err := contextvm.MarshalResultResponse(id, env.Result); err == nil {
+				return string(raw)
+			}
+		}
+	}
+	var arbitrary any
+	if err := json.Unmarshal([]byte(payload), &arbitrary); err == nil {
+		if raw, err := contextvm.MarshalResultResponse(id, arbitrary); err == nil {
+			return string(raw)
+		}
+	}
+	return string(buildControlErrorPayload(id, "internal error: invalid raw response payload", -32000, nil, true))
+}
+
+func rawPayloadHasError(payload string) bool {
+	var env struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &env); err != nil {
+		return false
+	}
+	return len(env.Error) > 0 && string(env.Error) != "null"
 }
 
 func (b *ControlRPCBus) allowCaller(caller string, now time.Time) bool {

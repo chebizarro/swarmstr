@@ -25,8 +25,6 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
-
-	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // Event kinds.
@@ -63,6 +61,84 @@ type ToolDef struct {
 type CallResult struct {
 	Content []map[string]any `json:"content"`
 	IsError bool             `json:"isError,omitempty"`
+}
+
+// JSONRPCRequest is the ContextVM message envelope carried in kind 25910 events.
+type JSONRPCRequest struct {
+	JSONRPC string          `json:"jsonrpc,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+// JSONRPCError is a JSON-RPC 2.0 error object.
+type JSONRPCError struct {
+	Code    int            `json:"code"`
+	Message string         `json:"message"`
+	Data    map[string]any `json:"data,omitempty"`
+}
+
+// JSONRPCResultResponse is a JSON-RPC 2.0 success response.
+type JSONRPCResultResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  any             `json:"result"`
+}
+
+// JSONRPCErrorResponse is a JSON-RPC 2.0 error response.
+type JSONRPCErrorResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Error   JSONRPCError    `json:"error"`
+}
+
+// IDOrNull returns the request id or JSON null when absent/invalid for response envelopes.
+func (r JSONRPCRequest) IDOrNull() json.RawMessage {
+	return IDOrNull(r.ID)
+}
+
+// IDOrNull returns id when it is valid JSON, otherwise JSON null.
+func IDOrNull(id json.RawMessage) json.RawMessage {
+	trimmed := bytesTrimSpace(id)
+	if len(trimmed) == 0 || !json.Valid(trimmed) {
+		return json.RawMessage(`null`)
+	}
+	return trimmed
+}
+
+// IDString returns a stable string representation of a JSON-RPC id for tags/cache keys.
+func IDString(id json.RawMessage) string {
+	trimmed := bytesTrimSpace(id)
+	if len(trimmed) == 0 || string(trimmed) == "null" || !json.Valid(trimmed) {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	return string(trimmed)
+}
+
+// MarshalResultResponse wraps result in a JSON-RPC 2.0 response envelope.
+func MarshalResultResponse(id json.RawMessage, result any) ([]byte, error) {
+	return json.Marshal(JSONRPCResultResponse{JSONRPC: "2.0", ID: IDOrNull(id), Result: result})
+}
+
+// MarshalErrorResponse wraps err in a JSON-RPC 2.0 error response envelope.
+func MarshalErrorResponse(id json.RawMessage, err JSONRPCError) ([]byte, error) {
+	return json.Marshal(JSONRPCErrorResponse{JSONRPC: "2.0", ID: IDOrNull(id), Error: err})
+}
+
+func bytesTrimSpace(in json.RawMessage) json.RawMessage {
+	return json.RawMessage(strings.TrimSpace(string(in)))
+}
+
+type nip04Encrypter interface {
+	EncryptNIP04(ctx context.Context, plaintext string, recipient nostr.PubKey) (string, error)
+}
+
+type nip04Decrypter interface {
+	DecryptNIP04(ctx context.Context, ciphertext string, sender nostr.PubKey) (string, error)
 }
 
 var sendContextVMRequest = sendRequest
@@ -516,7 +592,7 @@ func encryptForServer(ctx context.Context, keyer nostr.Keyer, serverPubKey nostr
 		}
 		return ct, nil
 	case "nip04":
-		enc, ok := keyer.(nostruntime.NIP04Encrypter)
+		enc, ok := keyer.(nip04Encrypter)
 		if !ok {
 			return "", fmt.Errorf("contextvm encrypt nip04: keyer does not support NIP-04")
 		}
@@ -529,7 +605,7 @@ func encryptForServer(ctx context.Context, keyer nostr.Keyer, serverPubKey nostr
 		if ct, err := keyer.Encrypt(ctx, plaintext, serverPubKey); err == nil {
 			return ct, nil
 		}
-		if enc, ok := keyer.(nostruntime.NIP04Encrypter); ok {
+		if enc, ok := keyer.(nip04Encrypter); ok {
 			ct, err := enc.EncryptNIP04(ctx, plaintext, serverPubKey)
 			if err == nil {
 				return ct, nil
@@ -545,7 +621,7 @@ func decryptFromServer(ctx context.Context, keyer nostr.Keyer, senderPubKey nost
 	if pt, err := keyer.Decrypt(ctx, ciphertext, senderPubKey); err == nil {
 		return pt, nil
 	}
-	if dec, ok := keyer.(nostruntime.NIP04Decrypter); ok {
+	if dec, ok := keyer.(nip04Decrypter); ok {
 		if pt04, err04 := dec.DecryptNIP04(ctx, ciphertext, senderPubKey); err04 == nil {
 			return pt04, nil
 		}

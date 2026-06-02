@@ -9,8 +9,6 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
-
-	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -79,8 +77,8 @@ func (m *mockNIP04Keyer) DecryptNIP04(_ context.Context, _ string, _ nostr.PubKe
 // Ensure interface compliance
 var _ nostr.Keyer = (*mockKeyer)(nil)
 var _ nostr.Keyer = (*mockNIP04Keyer)(nil)
-var _ nostruntime.NIP04Encrypter = (*mockNIP04Keyer)(nil)
-var _ nostruntime.NIP04Decrypter = (*mockNIP04Keyer)(nil)
+var _ nip04Encrypter = (*mockNIP04Keyer)(nil)
+var _ nip04Decrypter = (*mockNIP04Keyer)(nil)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ListTools / SendRaw go through sendRequest() directly (not the mockable

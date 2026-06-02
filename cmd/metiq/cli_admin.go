@@ -317,8 +317,10 @@ func (c *nostrControlClient) call(method string, params any) (map[string]any, er
 	}
 
 	body, err := json.Marshal(map[string]any{
-		"method": method,
-		"params": params,
+		"jsonrpc": "2.0",
+		"id":      requestID,
+		"method":  method,
+		"params":  params,
 	})
 	if err != nil {
 		return nil, err
@@ -342,20 +344,41 @@ func (c *nostrControlClient) call(method string, params any) (map[string]any, er
 		}
 	}
 
+	evt := nostr.Event{
+		Kind:      nostr.Kind(events.KindContextVM),
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"p", c.targetPubKey},
+			{"req", requestID},
+			{"t", "control_rpc"},
+		},
+		Content: string(body),
+	}
+	if err := c.hub.SignEvent(ctx, &evt); err != nil {
+		return nil, fmt.Errorf("sign control request: %w", err)
+	}
+	requestEventID := evt.ID.Hex()
+
 	subscriptionID := "gw-control-" + requestID
 	_, err = c.hub.Subscribe(ctx, nostruntime.SubOpts{
 		ID:     subscriptionID,
 		Relays: append([]string{}, responseRelaySet...),
 		Filter: nostr.Filter{
-			Kinds:   []nostr.Kind{nostr.Kind(events.KindMCPResult)},
+			Kinds:   []nostr.Kind{nostr.Kind(events.KindContextVM)},
 			Authors: []nostr.PubKey{c.targetPub},
 			Tags: nostr.TagMap{
-				"p":   []string{c.callerPubKey},
-				"req": []string{requestID},
+				"e": []string{requestEventID},
+				"p": []string{c.callerPubKey},
 			},
 		},
 		OnEvent: func(re nostr.RelayEvent) {
 			evt := re.Event
+			if evt.Kind != nostr.Kind(events.KindContextVM) || evt.PubKey != c.targetPub {
+				return
+			}
+			if !evt.Tags.ContainsAny("e", []string{requestEventID}) || !evt.Tags.ContainsAny("p", []string{c.callerPubKey}) {
+				return
+			}
 			if !evt.CheckID() || !evt.VerifySignature() {
 				return
 			}
@@ -393,19 +416,6 @@ func (c *nostrControlClient) call(method string, params any) (map[string]any, er
 	}
 	defer c.hub.Unsubscribe(subscriptionID)
 
-	evt := nostr.Event{
-		Kind:      nostr.Kind(events.KindControl),
-		CreatedAt: nostr.Now(),
-		Tags: nostr.Tags{
-			{"p", c.targetPubKey},
-			{"req", requestID},
-			{"t", "control_rpc"},
-		},
-		Content: string(body),
-	}
-	if err := c.hub.SignEvent(ctx, &evt); err != nil {
-		return nil, fmt.Errorf("sign control request: %w", err)
-	}
 	if err := c.publishRequest(ctx, evt, requestID, requestRelays); err != nil {
 		return nil, err
 	}

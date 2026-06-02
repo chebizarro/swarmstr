@@ -5,17 +5,61 @@ import (
 	"time"
 
 	"metiq/internal/commitments"
+	"metiq/internal/nostr/events"
 )
 
 const (
-	KindTeamPolicy          = 30382
-	KindTrajectoryAudit     = 30383
-	KindCommitmentSync      = 30384
-	KindWorkerAdvertisement = 10100
-	KindQACredentialLease   = 30385
-	KindNodeCapability      = 30386
+	KindTeamPolicy          = int(events.CAS_CP_STATE)
+	KindTrajectoryAudit     = int(events.CAS_AUDIT)
+	KindCommitmentSync      = int(events.CAS_CP_STATE)
+	KindWorkerAdvertisement = int(events.CAS_WORKER_AD)
+	KindQACredentialLease   = int(events.CAS_CP_STATE)
+	KindNodeCapability      = 30004
 	KindSkillMarketplace    = 30387
 )
+
+const (
+	// DTagPatternTeamPolicy identifies team policy state in CAS_CP_STATE events.
+	DTagPatternTeamPolicy = "policy:team:<namespace>"
+	// DTagPatternCommitmentSync identifies commitment sync state in CAS_CP_STATE events.
+	DTagPatternCommitmentSync = "commitment:<commitment_id>"
+	// DTagPatternQACredentialLease identifies QA credential leases in CAS_CP_STATE events.
+	DTagPatternQACredentialLease = "lease:qa:<lease_id>"
+	// DTagPatternTrajectoryAudit identifies trajectory audit summaries in CAS_AUDIT events.
+	DTagPatternTrajectoryAudit = "adoption:trajectory-audit:<session_id>"
+	// DTagPatternNodeCapability identifies node capability curation sets in NIP-51 kind 30004 events.
+	DTagPatternNodeCapability = "capabilities:<node_id>"
+	// DTagPatternWorkerAdvertisement identifies worker advertisements in CAS_WORKER_AD events.
+	DTagPatternWorkerAdvertisement = "worker:<worker_id>"
+	// DTagPatternSkillMarketplace identifies skill marketplace entries while this contract remains on its legacy kind.
+	DTagPatternSkillMarketplace = "skill:<skill_id>"
+)
+
+const (
+	SchemaTeamPolicy          = "cascadia.team.policy.v1"
+	SchemaTrajectoryAudit     = "cascadia.trajectory.audit.v1"
+	SchemaCommitmentSync      = "cascadia.commitment.sync.v1"
+	SchemaWorkerAdvertisement = "cascadia.worker.advertisement.v1"
+	SchemaQACredentialLease   = "cascadia.qa.credential.lease.v1"
+	SchemaNodeCapability      = "cascadia.node.capability.v1"
+	SchemaSkillMarketplace    = "cascadia.skill.marketplace.v1"
+)
+
+func TeamPolicyDTag(namespace string) string { return "policy:team:" + namespace }
+func TrajectoryAuditDTag(sessionID string) string {
+	return "adoption:trajectory-audit:" + sessionID
+}
+func CommitmentSyncDTag(commitmentID string) string {
+	return "commitment:" + commitmentID
+}
+func WorkerAdvertisementDTag(workerID string) string { return "worker:" + workerID }
+func QACredentialLeaseDTag(leaseID string) string {
+	return "lease:qa:" + leaseID
+}
+func NodeCapabilityDTag(nodeID string) string { return "capabilities:" + nodeID }
+func SkillMarketplaceDTag(skillID string) string {
+	return "skill:" + skillID
+}
 
 type DraftEvent struct {
 	Kind      int        `json:"kind"`
@@ -94,10 +138,10 @@ func EventFor(kind int, d string, content any, tags ...[]string) (DraftEvent, er
 }
 
 func TeamPolicyEvent(c TeamPolicyContract) (DraftEvent, error) {
-	return EventFor(KindTeamPolicy, c.Namespace, c, []string{"t", "metiq-policy"})
+	return EventFor(KindTeamPolicy, TeamPolicyDTag(c.Namespace), c, []string{"schema", SchemaTeamPolicy}, []string{"t", "metiq-policy"})
 }
 func TrajectoryAuditEvent(c TrajectoryAuditContract) (DraftEvent, error) {
-	return EventFor(KindTrajectoryAudit, c.SessionID, c, []string{"t", "metiq-trajectory"})
+	return EventFor(KindTrajectoryAudit, TrajectoryAuditDTag(c.SessionID), c, []string{"schema", SchemaTrajectoryAudit}, []string{"domain", "agent"}, []string{"type", "trajectory"}, []string{"t", "metiq-trajectory"})
 }
 func CommitmentSyncContractFrom(c commitments.Commitment) CommitmentSyncContract {
 	dueAt := int64(0)
@@ -108,21 +152,21 @@ func CommitmentSyncContractFrom(c commitments.Commitment) CommitmentSyncContract
 }
 
 func CommitmentSyncEvent(c CommitmentSyncContract) (DraftEvent, error) {
-	return EventFor(KindCommitmentSync, c.CommitmentID, c, []string{"t", "metiq-commitment"})
+	return EventFor(KindCommitmentSync, CommitmentSyncDTag(c.CommitmentID), c, []string{"schema", SchemaCommitmentSync}, []string{"t", "metiq-commitment"})
 }
 
 func CommitmentEventFromTracked(c commitments.Commitment) (DraftEvent, error) {
 	return CommitmentSyncEvent(CommitmentSyncContractFrom(c))
 }
 func WorkerAdvertisementEvent(c WorkerAdvertisementContract) (DraftEvent, error) {
-	return EventFor(KindWorkerAdvertisement, c.WorkerID, c, []string{"t", "loom-worker"})
+	return EventFor(KindWorkerAdvertisement, WorkerAdvertisementDTag(c.WorkerID), c, []string{"schema", SchemaWorkerAdvertisement}, []string{"t", "loom-worker"})
 }
 func QACredentialLeaseEvent(c QACredentialLeaseContract) (DraftEvent, error) {
-	return EventFor(KindQACredentialLease, c.LeaseID, c, []string{"t", "qa-credential-lease"})
+	return EventFor(KindQACredentialLease, QACredentialLeaseDTag(c.LeaseID), c, []string{"schema", SchemaQACredentialLease}, []string{"t", "qa-credential-lease"})
 }
 func NodeCapabilityEvent(c NodeCapabilityContract) (DraftEvent, error) {
-	return EventFor(KindNodeCapability, c.NodeID, c, []string{"t", "metiq-node"})
+	return EventFor(KindNodeCapability, NodeCapabilityDTag(c.NodeID), c, []string{"schema", SchemaNodeCapability}, []string{"t", "metiq-node"})
 }
 func SkillMarketplaceEvent(c SkillMarketplaceContract) (DraftEvent, error) {
-	return EventFor(KindSkillMarketplace, c.SkillID, c, []string{"t", "metiq-skill"})
+	return EventFor(KindSkillMarketplace, SkillMarketplaceDTag(c.SkillID), c, []string{"schema", SchemaSkillMarketplace}, []string{"t", "metiq-skill"})
 }

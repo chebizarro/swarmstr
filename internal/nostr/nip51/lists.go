@@ -31,6 +31,8 @@ const (
 	KindPeopleList  = 30000 // Categorized people list (replaceable, d-tag)
 	KindBookmarkSet = 30001 // Categorized bookmark set
 	KindRelaySet    = 30002 // Categorized relay set (replaceable, d-tag)
+	KindFollowSet   = 30003 // Categorized follow set (replaceable, d-tag)
+	KindCurationSet = 30004 // Categorized curation set (replaceable, d-tag)
 	KindBlockList   = 30000 // Alias: use d-tag "blocklist" for blocking
 	KindAllowList   = 30000 // Alias: use d-tag "allowlist" for allowing
 )
