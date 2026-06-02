@@ -74,10 +74,10 @@ func insertFakeStateDoc(t *testing.T, store *fakeStateStore, author, dTag, typ s
 	tags = append(tags, extraTags...)
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.repl[Address{Kind: events.KindStateDoc, PubKey: author, DTag: dTag}] = Event{
+	store.repl[Address{Kind: events.KindAppData, PubKey: author, DTag: dTag}] = Event{
 		ID:        id,
 		PubKey:    author,
-		Kind:      events.KindStateDoc,
+		Kind:      events.KindAppData,
 		CreatedAt: createdAt,
 		Tags:      tags,
 		Content:   content,
@@ -563,7 +563,7 @@ func TestDocsRepositoryConfigMigratesPlaintextToEncryptedOnWrite(t *testing.T) {
 		t.Fatalf("PutConfig plaintext: %v", err)
 	}
 
-	addr := Address{Kind: events.KindStateDoc, PubKey: "author-pub", DTag: "metiq:config"}
+	addr := Address{Kind: events.KindAppData, PubKey: "author-pub", DTag: "metiq:config"}
 	store.mu.Lock()
 	legacyContent := store.repl[addr].Content
 	store.mu.Unlock()
@@ -749,12 +749,12 @@ func TestDocsRepositoryPlanRevisionUpdate(t *testing.T) {
 func TestDocsRepositoryConfigReadsLegacyRawJSON(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStateStore()
-	addr := Address{Kind: events.KindStateDoc, PubKey: "author-pub", DTag: "metiq:config"}
+	addr := Address{Kind: events.KindAppData, PubKey: "author-pub", DTag: "metiq:config"}
 	store.mu.Lock()
 	store.repl[addr] = Event{
 		ID:        "legacy-1",
 		PubKey:    "author-pub",
-		Kind:      events.KindStateDoc,
+		Kind:      events.KindAppData,
 		CreatedAt: time.Now().Unix(),
 		Tags:      [][]string{{"d", "metiq:config"}},
 		Content:   `{"version":1,"dm":{"policy":"open"}}`,

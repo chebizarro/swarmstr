@@ -78,7 +78,7 @@ func (r *DocsRepository) ListSessions(ctx context.Context, limit int) ([]Session
 	pageLimit := limit * 4
 	var cursor *EventPageCursor
 	for {
-		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, "t", "session", pageLimit, cursor)
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, "t", "session", pageLimit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +182,7 @@ func (r *DocsRepository) ListAgents(ctx context.Context, limit int) ([]AgentDoc,
 	pageLimit := limit * 4
 	var cursor *EventPageCursor
 	for {
-		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, "t", "agent", pageLimit, cursor)
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, "t", "agent", pageLimit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -267,7 +267,7 @@ func (r *DocsRepository) ListTasks(ctx context.Context, limit int) ([]TaskSpec, 
 	pageLimit := limit * 4
 	var cursor *EventPageCursor
 	for {
-		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, "t", "task", pageLimit, cursor)
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, "t", "task", pageLimit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -352,7 +352,7 @@ func (r *DocsRepository) ListTaskRuns(ctx context.Context, taskID string, limit 
 	pageLimit := limit * 4
 	var cursor *EventPageCursor
 	for {
-		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagFilterValue, pageLimit, cursor)
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, tagKey, tagFilterValue, pageLimit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -442,7 +442,7 @@ func (r *DocsRepository) ListPlans(ctx context.Context, goalID string, limit int
 	pageLimit := limit * 4
 	var cursor *EventPageCursor
 	for {
-		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagFilterValue, pageLimit, cursor)
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, tagKey, tagFilterValue, pageLimit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -526,7 +526,7 @@ func (r *DocsRepository) ListWorkflowDefinitions(ctx context.Context, limit int)
 	pageLimit := limit * 4
 	var cursor *EventPageCursor
 	for {
-		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, "t", "workflow_definition", pageLimit, cursor)
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, "t", "workflow_definition", pageLimit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -622,7 +622,7 @@ func (r *DocsRepository) ListWorkflowRuns(ctx context.Context, workflowID string
 	pageLimit := limit * 4
 	var cursor *EventPageCursor
 	for {
-		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagFilterValue, pageLimit, cursor)
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, tagKey, tagFilterValue, pageLimit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -707,7 +707,7 @@ func (r *DocsRepository) ListWorkflowJournals(ctx context.Context, taskID string
 	pageLimit := limit * 4
 	var cursor *EventPageCursor
 	for {
-		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagFilterValue, pageLimit, cursor)
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, tagKey, tagFilterValue, pageLimit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -771,7 +771,7 @@ func (r *DocsRepository) ListAgentFiles(ctx context.Context, agentID string, lim
 	pageLimit := limit * 4
 	var cursor *EventPageCursor
 	for {
-		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, "t", "agent_file", pageLimit, cursor)
+		page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, "t", "agent_file", pageLimit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -938,7 +938,7 @@ func (r *DocsRepository) listFeedbackByTag(ctx context.Context, tagKey, tagValue
 	// store implementations, avoiding the "limit-before-sort" bug that
 	// would occur with ListByTagForAuthor on stores without built-in
 	// newest-first ordering.
-	page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagValue, limit, nil)
+	page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, tagKey, tagValue, limit, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list feedback by %s=%s: %w", tagKey, tagValue, err)
 	}
@@ -1009,7 +1009,7 @@ func (r *DocsRepository) listProposalsByTag(ctx context.Context, tagKey, tagValu
 	if limit <= 0 {
 		limit = 50
 	}
-	page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagValue, limit, nil)
+	page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, tagKey, tagValue, limit, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list proposals by %s=%s: %w", tagKey, tagValue, err)
 	}
@@ -1090,7 +1090,7 @@ func (r *DocsRepository) listRetrosByTag(ctx context.Context, tagKey, tagValue s
 	if limit <= 0 {
 		limit = 50
 	}
-	page, err := r.store.ListByTagForAuthorPage(ctx, events.KindStateDoc, r.author, tagKey, tagValue, limit, nil)
+	page, err := r.store.ListByTagForAuthorPage(ctx, events.KindAppData, r.author, tagKey, tagValue, limit, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list retros by %s=%s: %w", tagKey, tagValue, err)
 	}
@@ -1116,7 +1116,7 @@ func (r *DocsRepository) putStateDocWithTags(ctx context.Context, dTag string, t
 		return Event{}, err
 	}
 	return r.store.PutReplaceable(ctx, Address{
-		Kind:   events.KindStateDoc,
+		Kind:   events.KindAppData,
 		PubKey: r.author,
 		DTag:   dTag,
 	}, raw, extraTags)
@@ -1129,7 +1129,7 @@ func (r *DocsRepository) getStateDoc(ctx context.Context, dTag string, out any) 
 
 func (r *DocsRepository) getStateDocWithEvent(ctx context.Context, dTag string, out any) (Event, error) {
 	evt, err := r.store.GetLatestReplaceable(ctx, Address{
-		Kind:   events.KindStateDoc,
+		Kind:   events.KindAppData,
 		PubKey: r.author,
 		DTag:   dTag,
 	})

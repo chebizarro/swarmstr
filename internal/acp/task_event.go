@@ -14,7 +14,7 @@ import (
 
 const TaskEnvelopeVersion = 1
 
-// TaskEnvelope is the canonical content payload for a kind:38383 task event.
+// TaskEnvelope is the canonical content payload for a ContextVM task event.
 type TaskEnvelope struct {
 	Version         int              `json:"version"`
 	Task            state.TaskSpec   `json:"task"`
@@ -25,7 +25,7 @@ type TaskEnvelope struct {
 	SenderPubKey    string           `json:"sender_pubkey,omitempty"`
 }
 
-// TaskEventEnvelope is the JSON-safe transport form of a kind:38383 event.
+// TaskEventEnvelope is the JSON-safe transport form of a ContextVM task event.
 type TaskEventEnvelope struct {
 	ID        string     `json:"id,omitempty"`
 	PubKey    string     `json:"pubkey,omitempty"`
@@ -65,7 +65,7 @@ func BuildUnsignedTaskEvent(senderPubKey string, env TaskEnvelope) (TaskEventEnv
 	return TaskEventEnvelope{
 		PubKey:    strings.TrimSpace(strings.ToLower(senderPubKey)),
 		CreatedAt: time.Now().Unix(),
-		Kind:      int(events.KindTask),
+		Kind:      int(events.KindContextVM),
 		Tags:      BuildTaskEventTags(env.Task),
 		Content:   string(content),
 	}, nil
@@ -108,7 +108,7 @@ func ParseTaskEvent(ev *nostr.Event) (TaskEnvelope, error) {
 	if ev == nil {
 		return TaskEnvelope{}, fmt.Errorf("task event is nil")
 	}
-	if ev.Kind != nostr.Kind(events.KindTask) {
+	if ev.Kind != nostr.Kind(events.KindContextVM) {
 		return TaskEnvelope{}, fmt.Errorf("unexpected task kind %d", ev.Kind)
 	}
 	if strings.TrimSpace(ev.Content) == "" {

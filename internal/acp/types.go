@@ -61,7 +61,7 @@ type TaskPayload struct {
 	// shared GoalSpec/TaskSpec model. When omitted, callers may still provide the
 	// legacy top-level instruction/memory/tool fields and metiq derives a TaskSpec.
 	Task *state.TaskSpec `json:"task,omitempty"`
-	// TaskEvent carries a JSON-safe kind:38383 task event envelope for external
+	// TaskEvent carries a JSON-safe ContextVM task event envelope for external
 	// agents that want a concrete Nostr-native task contract inside ACP transport.
 	TaskEvent *TaskEventEnvelope `json:"task_event,omitempty"`
 	// ContextMessages is an optional slice of prior messages to seed context.

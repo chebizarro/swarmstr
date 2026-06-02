@@ -2,7 +2,7 @@
 
 ## Kind
 
-- `30080` (`KindMemoryDoc`): parameterized memory documents.
+- `30078` (`KindAppData`): NIP-78 application-specific data events with `type:memory` tag for parameterized memory documents.
 
 Each memory event uses a unique `d` tag value:
 - `metiq:mem:<memory-id>`
@@ -37,6 +37,7 @@ Memory payloads are wrapped in `events.Envelope`:
 
 To optimize relay-side filtering, each memory document includes:
 
+- `type=memory` (KindAppData discriminator)
 - `t=memory` (record classification)
 - `session=<protected-session-hash>`
 - `role=<role>`

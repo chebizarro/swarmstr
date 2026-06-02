@@ -106,44 +106,4 @@ const (
 	KindStatusApplied    Kind = 1631
 	KindStatusClosed     Kind = 1632
 	KindStatusDraft      Kind = 1633
-
-	// ─────────────────────────────────────────────────────────────────────────
-	// Legacy/Deprecated Kinds
-	// These are preserved for backward compatibility during migration.
-	// New code should use canonical constants above.
-	// ─────────────────────────────────────────────────────────────────────────
-
-	// KindTask is DEPRECATED. Conflicts with NIP-69.
-	// Migrate to ContextVM Intent Layer (KindContextVM).
-	KindTask Kind = 38383
-
-	// KindControl is DEPRECATED.
-	// Migrate to ContextVM Intent Layer (KindContextVM).
-	KindControl Kind = 38384
-
-	// KindMCPCall is DEPRECATED.
-	// Migrate to ContextVM (KindContextVM with tools/call method).
-	KindMCPCall Kind = 38385
-
-	// KindMCPResult is DEPRECATED.
-	// Migrate to ContextVM responses or NIP-90 DVM results.
-	KindMCPResult Kind = 38386
-
-	// KindLogStatus is DEPRECATED. Use KindNIP38Status instead.
-	KindLogStatus Kind = KindNIP38Status
-
-	// KindLifecycle is DEPRECATED. Use CAS_AGENT_HEARTBEAT instead.
-	KindLifecycle Kind = CAS_AGENT_HEARTBEAT
-
-	// KindCapability is DEPRECATED. Use CAS_AGENT_CAPABILITY instead.
-	KindCapability Kind = CAS_AGENT_CAPABILITY
-
-	// KindStateDoc is DEPRECATED. Use KindAppData instead.
-	KindStateDoc Kind = KindAppData
-
-	// KindTranscriptDoc is DEPRECATED. Use KindAppData with type:transcript.
-	KindTranscriptDoc Kind = 30079
-
-	// KindMemoryDoc is DEPRECATED. Use KindAppData with type:memory.
-	KindMemoryDoc Kind = 30080
 )

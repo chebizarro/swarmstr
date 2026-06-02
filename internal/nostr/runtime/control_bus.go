@@ -470,22 +470,17 @@ func (b *ControlRPCBus) handleInbound(re nostr.RelayEvent) {
 }
 
 func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey string, requestID string, payload string, tags nostr.Tags) {
-	kind := nostr.Kind(events.KindContextVM)
-	if re.Event.Kind == nostr.Kind(events.KindControl) {
-		kind = nostr.Kind(events.KindMCPResult)
-	} else {
-		var id json.RawMessage
-		if call, err := decodeControlCallRequest(re.Event.Content); err == nil {
-			id = call.ID
-		}
-		if len(id) == 0 {
-			if rawID, err := json.Marshal(requestID); err == nil {
-				id = rawID
-			}
-		}
-		payload = normalizeControlJSONRPCPayload(id, payload)
+	var id json.RawMessage
+	if call, err := decodeControlCallRequest(re.Event.Content); err == nil {
+		id = call.ID
 	}
-	evt := nostr.Event{Kind: kind, CreatedAt: nostr.Now(), Tags: tags, Content: payload}
+	if len(id) == 0 {
+		if rawID, err := json.Marshal(requestID); err == nil {
+			id = rawID
+		}
+	}
+	payload = normalizeControlJSONRPCPayload(id, payload)
+	evt := nostr.Event{Kind: nostr.Kind(events.KindContextVM), CreatedAt: nostr.Now(), Tags: tags, Content: payload}
 	if err := b.keyer.SignEvent(b.ctx, &evt); err != nil {
 		b.emitErr(fmt.Errorf("sign control response req=%s: %w", requestID, err))
 		return
@@ -570,7 +565,7 @@ type controlRelayRetry struct {
 
 func (b *ControlRPCBus) controlFilter(since int64) nostr.Filter {
 	return nostr.Filter{
-		Kinds: []nostr.Kind{nostr.Kind(events.KindContextVM), nostr.Kind(events.KindControl)},
+		Kinds: []nostr.Kind{nostr.Kind(events.KindContextVM)},
 		Tags:  nostr.TagMap{"p": {b.public.Hex()}},
 		Since: nostr.Timestamp(since),
 	}
@@ -1098,7 +1093,7 @@ func isContextVMKind(kind nostr.Kind) bool {
 }
 
 func isControlRequestKind(kind nostr.Kind) bool {
-	return isContextVMKind(kind) || kind == nostr.Kind(events.KindControl)
+	return isContextVMKind(kind)
 }
 
 func controlResponseCacheKey(callerPubKey, replayID string) string {

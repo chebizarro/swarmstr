@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	nostr "fiatjaf.com/nostr"
+	"metiq/internal/nostr/events"
 	"metiq/internal/store/state"
 )
 
@@ -47,7 +48,7 @@ func TestBuildUnsignedTaskEventAndParseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildUnsignedTaskEvent: %v", err)
 	}
-	if evtEnv.Kind != 38383 {
+	if evtEnv.Kind != int(events.KindContextVM) {
 		t.Fatalf("unexpected event kind %d", evtEnv.Kind)
 	}
 	ev, err := evtEnv.ToNostrEvent()
@@ -168,7 +169,7 @@ func TestTaskEventParseRejectsWrongKind(t *testing.T) {
 }
 
 func TestTaskEventEnvelopeToNostrEventRejectsBadSig(t *testing.T) {
-	_, err := (TaskEventEnvelope{Kind: 38383, Content: `{}`, Sig: "deadbeef"}).ToNostrEvent()
+	_, err := (TaskEventEnvelope{Kind: int(events.KindContextVM), Content: `{}`, Sig: "deadbeef"}).ToNostrEvent()
 	if err == nil || !strings.Contains(err.Error(), "expected 64 bytes") {
 		t.Fatalf("expected bad signature length error, got %v", err)
 	}
@@ -176,7 +177,7 @@ func TestTaskEventEnvelopeToNostrEventRejectsBadSig(t *testing.T) {
 
 func TestTaskEventEnvelopeFromSignedEventCarriesIdentity(t *testing.T) {
 	sk := mustTaskSecretKey(t)
-	ev := &nostr.Event{Kind: nostr.Kind(38383), CreatedAt: nostr.Now(), Content: `{"version":1,"task":{"task_id":"task-identity","title":"Identity","instructions":"Verify identity"}}`}
+	ev := &nostr.Event{Kind: nostr.Kind(events.KindContextVM), CreatedAt: nostr.Now(), Content: `{"version":1,"task":{"task_id":"task-identity","title":"Identity","instructions":"Verify identity"}}`}
 	if err := ev.Sign(sk); err != nil {
 		t.Fatalf("Sign: %v", err)
 	}

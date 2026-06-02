@@ -54,8 +54,8 @@ Receives control-plane RPC requests from authorised callers.
 
 | Field | Value |
 |-------|-------|
-| **NIP** | Custom (kind 38384) |
-| **Kind** | `38384` (KindControl) |
+| **NIP** | Custom ContextVM (kind 25910) |
+| **Kind** | `25910` (KindContextVM) |
 | **Tags** | `#p` = `[<own-pubkey-hex>]` |
 | **Since** | `now() − 10 minutes` |
 | **Relays** | Config `relays.read` |
@@ -260,12 +260,11 @@ All event kinds the agent subscribes to or produces, for quick reference:
 | `30000` | NIP-51 | Read/Write | Categorised people list |
 | `30002` | NIP-51 | Read/Write | Categorised relay set (purpose-specific relay lists) |
 | `30023` | NIP-23 | Read (on-demand) | Long-form content |
-| `30078` | NIP-78 | Read/Write | Application-specific data (state docs) |
+| `30078` | NIP-78 | Read/Write | Application-specific data (state, transcript, and memory docs, discriminated by `type` tag) |
 | `30315` | Custom | Write | Log / status |
 | `30316` | Custom | Write | Lifecycle |
 | `30317` | Custom | Read/Write | Capability advertisement and fleet discovery |
-| `38384` | Custom | Read | Control RPC request |
-| `38386` | Custom | Write | Control RPC result |
+| `25910` | Custom ContextVM | Read/Write | Control RPC request/response messages |
 
 ---
 

@@ -122,8 +122,10 @@ func mustControlPubKey(t *testing.T, k nostr.Keyer) nostr.PubKey {
 func mustSignedControlRequestEvent(t *testing.T, caller nostr.Keyer, targetPubKey string, createdAt time.Time, requestID string, method string) nostr.Event {
 	t.Helper()
 	contentRaw, err := json.Marshal(map[string]any{
-		"method": method,
-		"params": map[string]any{"probe": true},
+		"jsonrpc": "2.0",
+		"id":      requestID,
+		"method":  method,
+		"params":  map[string]any{"probe": true},
 	})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
@@ -134,7 +136,7 @@ func mustSignedControlRequestEvent(t *testing.T, caller nostr.Keyer, targetPubKe
 func mustSignedControlRawEvent(t *testing.T, caller nostr.Keyer, targetPubKey string, createdAt time.Time, requestID string, content string) nostr.Event {
 	t.Helper()
 	evt := nostr.Event{
-		Kind:      nostr.Kind(events.KindControl),
+		Kind:      nostr.Kind(events.KindContextVM),
 		CreatedAt: nostr.Timestamp(createdAt.Unix()),
 		Tags: nostr.Tags{
 			{"p", targetPubKey},
@@ -400,14 +402,14 @@ func TestBuildControlResponsePayload_ContextVMResult(t *testing.T) {
 	}
 }
 
-func TestControlFilterSubscribesContextVMAndLegacyControl(t *testing.T) {
+func TestControlFilterSubscribesContextVMOnly(t *testing.T) {
 	pk := mustControlPubKey(t, testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111"))
 	b := &ControlRPCBus{public: pk}
 	filter := b.controlFilter(123)
-	if len(filter.Kinds) != 2 {
+	if len(filter.Kinds) != 1 {
 		t.Fatalf("kinds = %v", filter.Kinds)
 	}
-	if filter.Kinds[0] != nostr.Kind(events.KindContextVM) || filter.Kinds[1] != nostr.Kind(events.KindControl) {
+	if filter.Kinds[0] != nostr.Kind(events.KindContextVM) {
 		t.Fatalf("unexpected kinds: %v", filter.Kinds)
 	}
 }
@@ -1199,7 +1201,7 @@ func TestHandleInboundMarksMalformedEventsSeenBeforeResponding(t *testing.T) {
 		t.Fatal("invalid control body event should be marked seen on first delivery")
 	}
 
-	missingMethod := mustSignedControlRawEvent(t, caller, responderPub.Hex(), time.Now(), "req-missing-method", `{"method":"   ","params":{"probe":true}}`)
+	missingMethod := mustSignedControlRawEvent(t, caller, responderPub.Hex(), time.Now(), "req-missing-method", `{"jsonrpc":"2.0","id":"req-missing-method","method":"   ","params":{"probe":true}}`)
 	b.handleInbound(nostr.RelayEvent{Event: missingMethod, Relay: &nostr.Relay{}})
 	if !b.markSeen(missingMethod.ID.Hex()) {
 		t.Fatal("missing-method event should be marked seen on first delivery")

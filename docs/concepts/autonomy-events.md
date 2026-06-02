@@ -1,20 +1,20 @@
 ---
-summary: "Nostr event kinds, ACP task envelopes, lifecycle events, and delegation protocol"
+summary: "Nostr event kinds, ContextVM messages, lifecycle events, and delegation protocol"
 read_when:
   - Working with Nostr events for autonomous task execution
-  - Understanding ACP (Agent Communication Protocol) task delegation
-  - Debugging task lifecycle events on the wire
-  - Building integrations that interact with metiq task events
+  - Understanding ContextVM-based task delegation
+  - Debugging lifecycle events on the wire
+  - Building integrations that interact with metiq autonomy events
 title: "Autonomy Events & Wire Protocol"
 ---
 
 # Autonomy Events & Wire Protocol
 
-Last updated: 2026-04-12
+Last updated: 2026-06-02
 
-This document describes the Nostr event kinds, tag conventions, content formats,
-and lifecycle semantics used by metiq's autonomy layer. For the object model and
-state machines, see [Autonomy Architecture](autonomy.md).
+This document describes the canonical Nostr event kinds, tag conventions,
+content formats, and lifecycle semantics used by metiq's autonomy layer. For
+the object model and state machines, see [Autonomy Architecture](autonomy.md).
 
 ---
 
@@ -33,15 +33,6 @@ state machines, see [Autonomy Architecture](autonomy.md).
 | 30900 | `CAS_CP_STATE` | Parameterized-replaceable | Control-plane state projection |
 | 25910 | `KindContextVM` | Ephemeral | ContextVM JSON-RPC 2.0 messages |
 
-### Legacy kinds (deprecated)
-
-| Kind | Deprecated Name | Migrates To |
-|------|-----------------|-------------|
-| 38383 | `KindTask` | `KindContextVM` (Intent Layer) |
-| 38384 | `KindControl` | `KindContextVM` |
-| 30079 | `KindTranscriptDoc` | `KindAppData` with `type:transcript` |
-| 30080 | `KindMemoryDoc` | `KindAppData` with `type:memory` |
-
 ### NIP-78 type discrimination
 
 Kind 30078 (`KindAppData`) uses the `type` tag to discriminate document types:
@@ -52,104 +43,92 @@ Kind 30078 (`KindAppData`) uses the `type` tag to discriminate document types:
 | `transcript` | Session transcript entries |
 | `memory` | Memory records |
 
-All autonomy-related events use **parameterized-replaceable** event types (kind 30000–39999),
-meaning newer events with the same `d` tag replace older ones.
+Autonomy data is split by Nostr semantics: durable documents and projections use
+parameterized-replaceable kinds with latest-wins `d` tags; worker ads use a
+replaceable kind; audit records are append-only regular events; and ContextVM
+transport messages use an ephemeral kind.
 
 ---
 
-## 2. Task envelope (kind 38383)
+## 2. ContextVM messages (kind 25910)
 
 ### Purpose
 
-The task envelope is the wire format for ACP task delegation — one agent sending
-a task to another agent (or receiving results back).
+Kind 25910 (`KindContextVM`) is the ephemeral transport for ContextVM JSON-RPC
+2.0 messages. It carries intent, control, and result traffic between agents
+without creating durable task/control event kinds.
 
 ### Structure
 
 ```json
 {
-  "kind": 38383,
+  "kind": 25910,
   "pubkey": "<sender-pubkey>",
   "created_at": 1712966400,
   "tags": [
-    ["d", "<task-id>"],
-    ["t", "<task-id>"],
     ["p", "<recipient-pubkey>"],
-    ["agent", "<assigned-agent-id>"],
-    ["goal", "<goal-id>"],
-    ["run", "<run-id>"],
+    ["request", "<json-rpc-id>"],
     ["session", "<session-id>"],
-    ["stage", "request|result"]
+    ["goal", "<goal-id>"],
+    ["task_id", "<task-id>"],
+    ["run", "<run-id>"]
   ],
-  "content": "<encrypted-json-envelope>"
+  "content": "<json-rpc-2.0-message>"
 }
 ```
 
 ### Tag reference
 
-| Tag | Key | Required | Description |
-|-----|-----|----------|-------------|
-| `d` | `d` | Yes | Task ID (makes event replaceable per-task) |
-| `t` | `t` | Yes | Task ID (for queries) |
-| `p` | `p` | Yes | Recipient pubkey |
-| `agent` | `agent` | No | Assigned agent ID |
-| `goal` | `goal` | No | Parent goal ID |
-| `run` | `run` | No | Run ID |
-| `session` | `session` | No | Session context |
-| `stage` | `stage` | Yes | `request` (delegation) or `result` (response) |
-| `k` | `k` | No | Task kind hint |
-| `role` | `role` | No | Agent role |
+| Tag | Required | Description |
+|-----|----------|-------------|
+| `p` | Yes | Recipient pubkey |
+| `request` | For requests/responses | JSON-RPC correlation ID |
+| `session` | No | Session context |
+| `goal` | No | Parent goal ID |
+| `task_id` | No | Task ID for task-scoped messages |
+| `run` | No | Run ID for run-scoped messages |
 
-### Content: TaskEnvelope (request)
-
-The encrypted content decodes to:
+### Content: JSON-RPC request
 
 ```json
 {
-  "version": 1,
-  "task": {
-    "task_id": "task-abc",
-    "title": "Summarize this paper",
-    "instructions": "Read and summarize the key findings...",
-    "priority": "medium",
-    "authority": {
-      "autonomy_mode": "full",
-      "risk_class": "low",
-      "allowed_tools": ["web_search", "nostr_fetch"]
+  "jsonrpc": "2.0",
+  "id": "req-abc",
+  "method": "tasks.create",
+  "params": {
+    "task": {
+      "task_id": "task-abc",
+      "title": "Summarize this paper",
+      "instructions": "Read and summarize the key findings...",
+      "priority": "medium",
+      "authority": {
+        "autonomy_mode": "full",
+        "risk_class": "low",
+        "allowed_tools": ["web_search", "nostr_fetch"]
+      },
+      "budget": {
+        "max_total_tokens": 50000,
+        "max_tool_calls": 10
+      }
     },
-    "budget": {
-      "max_total_tokens": 50000,
-      "max_tool_calls": 10
+    "parent_context": {
+      "session_id": "parent-session",
+      "agent_id": "orchestrator"
     },
-    "verification": {
-      "policy": "required",
-      "checks": [
-        {"check_id": "length-check", "type": "assertion", "required": true}
-      ]
-    }
-  },
-  "context_messages": [
-    {"role": "user", "content": "Previous context..."}
-  ],
-  "parent_context": {
-    "session_id": "parent-session",
-    "agent_id": "orchestrator"
-  },
-  "timeout_ms": 60000,
-  "reply_to": "<event-id-to-reply-to>",
-  "sender_pub_key": "<sender-hex-pubkey>"
+    "timeout_ms": 60000
+  }
 }
 ```
 
-### Content: ResultPayload (response)
+### Content: JSON-RPC response
 
 ```json
 {
-  "acp_type": "result",
-  "task_id": "task-abc",
-  "payload": {
+  "jsonrpc": "2.0",
+  "id": "req-abc",
+  "result": {
+    "task_id": "task-abc",
     "text": "The paper found that...",
-    "error": "",
     "tokens_used": 12500,
     "completed_at": 1712966500,
     "worker": {
@@ -261,12 +240,13 @@ Each object type emits tags for efficient filtered queries:
 
 ---
 
-## 4. Lifecycle events (kind 30316)
+## 4. Agent heartbeats (kind 30316)
 
 ### Purpose
 
-Lifecycle events announce task and run status changes. They allow external
-observers to track execution progress without polling state documents.
+Kind 30316 (`CAS_AGENT_HEARTBEAT`) announces that an agent is alive and reports
+its current lifecycle status. Heartbeats are parameterized-replaceable with
+`d=<agent-id>`, so subscribers can track the latest status for each agent.
 
 ### Structure
 
@@ -275,62 +255,45 @@ observers to track execution progress without polling state documents.
   "kind": 30316,
   "pubkey": "<agent-pubkey>",
   "tags": [
-    ["d", "<task-id>:<run-id>"],
-    ["t", "<task-id>"],
-    ["task_id", "<task-id>"],
-    ["run", "<run-id>"],
-    ["goal", "<goal-id>"],
-    ["stage", "<status>"]
+    ["d", "<agent-id>"],
+    ["agent", "<agent-id>"],
+    ["status", "idle|busy|draining|offline"],
+    ["capability", "research"],
+    ["run", "<run-id>"]
   ],
   "content": "<json-payload>"
 }
 ```
 
-The `d` tag is `<task-id>:<run-id>` for run-scoped events, retaining the
-latest lifecycle state for that run. Task-scoped events that do not have a run
-use `d=<task-id>`, retaining the latest task lifecycle state.
-
 ### Content payload
 
 ```json
 {
-  "event_type": "run.started",
-  "task_id": "task-abc",
-  "run_id": "run-456",
-  "from_status": "queued",
-  "to_status": "running",
-  "actor": "agent-main",
+  "agent_id": "agent-research",
+  "status": "busy",
+  "current_run_id": "run-456",
+  "load": 0.72,
+  "heartbeat_ms": 30000,
   "source": "runtime",
-  "reason": "started execution",
-  "usage": {
-    "total_tokens": 0,
-    "wall_clock_ms": 0
-  },
   "timestamp": 1712966400
 }
 ```
 
-### Lifecycle event sequences
+### Status sequences
 
-**Happy path (full autonomy):**
+**Available worker:**
 ```
-queued → running → completed
-```
-
-**With verification:**
-```
-queued → running → verifying → completed
+idle → busy → idle
 ```
 
-**Failure and retry:**
+**Graceful shutdown:**
 ```
-queued → running → failed
-  (new run) queued → running → completed
+idle → draining → offline
 ```
 
-**Plan approval:**
+**Lost worker:**
 ```
-pending → planned → awaiting_approval → ready → in_progress → completed
+busy → timed_out
 ```
 
 ---
@@ -424,30 +387,30 @@ Violations can trigger automatic actions:
 
 ---
 
-## 6. ACP delegation semantics
+## 6. ContextVM delegation semantics
 
 ### Delegation flow
 
 ```
 Orchestrator                          Worker
     │                                    │
-    │── kind:38383 (task request) ──────▶│
-    │   stage=request                    │
+    │── kind:25910 JSON-RPC request ────▶│
+    │   method=tasks.create              │
     │                                    │── WorkerEvent: accepted
     │                                    │── WorkerEvent: running
     │                                    │── WorkerEvent: progress (×N)
-    │◀── kind:38383 (task result) ──────│
-    │    stage=result                    │── WorkerEvent: done
+    │◀── kind:25910 JSON-RPC response ──│
+    │                                    │── WorkerEvent: done
     │                                    │
 ```
 
 ### Task routing
 
-1. Orchestrator builds a `TaskEnvelope` with the task spec and context
-2. Event is published to relays with `p` tag = worker's pubkey
-3. Worker receives the event, parses the `TaskEnvelope`
+1. Orchestrator builds a ContextVM JSON-RPC request with the task spec and context
+2. Event is published as kind 25910 with `p` tag = worker's pubkey
+3. Worker receives the event and parses the JSON-RPC request
 4. Worker creates a session (keyed `dvm:<taskID>`) and processes the turn
-5. Worker publishes the result as a kind 38383 event with `stage=result`
+5. Worker publishes the result as a correlated kind 25910 JSON-RPC response
 
 ### Parent context propagation
 
@@ -511,34 +474,37 @@ of the previous step as context.
 
 - **DM conversations**: unchanged. Kind 4 / NIP-17 encrypted DMs continue to work
   as before. No new event kinds are required for session-based interactions.
-- **Control RPC**: kind 38384 is unchanged. All existing control methods still work.
-- **New methods**: `tasks.create`, `tasks.get`, `tasks.list`, `tasks.cancel`,
+- **Control and task RPC**: JSON-RPC methods are carried over kind 25910
+  ContextVM messages.
+- **Task methods**: `tasks.create`, `tasks.get`, `tasks.list`, `tasks.cancel`,
   `tasks.resume`, `tasks.doctor`, `tasks.summary`, `tasks.trace`,
-  `tasks.audit_export` — all additive, no breaking changes.
+  `tasks.audit_export` are carried as ContextVM method calls.
 
 ### Relay requirements
 
-Autonomy events use parameterized-replaceable kinds (30000–39999 range). Relays
-must support:
+Autonomy events use a mix of regular, replaceable, parameterized-replaceable,
+and ephemeral kinds. Relays must support:
 - NIP-01 basic event handling
-- `d` tag replacement semantics
+- `d` tag replacement semantics for parameterized-replaceable kinds
+- Replaceable-event latest-wins semantics
+- Ephemeral event handling for ContextVM traffic
 - Tag-based filtering (for efficient queries)
 
-Most modern relays support these features. Legacy relays that don't support
-replaceable events will store all versions, leading to increased storage but
-no correctness issues (the client always takes the latest by `created_at`).
+Most modern relays support these features. Relays that don't support replaceable
+semantics will store all versions, leading to increased storage but no
+correctness issues for clients that take the latest by `created_at`.
 
 ### Event encryption
 
-- **Task envelopes** (kind 38383): content is encrypted (NIP-44) between sender and recipient
+- **ContextVM messages** (kind 25910): content may be encrypted between sender and recipient when the transport requires confidentiality
 - **State documents** (kind 30078): content may be encrypted if `storage.encrypt` is enabled
-- **Lifecycle events** (kind 30316): content is not encrypted (status updates are observable)
+- **Agent heartbeats** (kind 30316): content is not encrypted (status updates are observable)
 
 ### Migration from session-only mode
 
 No migration is required. The autonomy event kinds are only emitted when:
 1. A task is explicitly created via `tasks.create`
-2. A task is delegated via ACP
+2. A task is delegated via ContextVM
 3. The `default_autonomy` config is set to a non-empty value
 
 Operators running in session-only mode will see zero autonomy events on their relays.

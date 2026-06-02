@@ -61,9 +61,9 @@ The `bootstrap.json` file contains startup configuration loaded **before** conne
   "enable_nip17": true,
   "enable_ai_hub_kinds": false,
   
-  // === Config/Transcript Kinds ===
+  // === Config/Transcript Kinds (NIP-78 KindAppData) ===
   "state_kind": 30078,
-  "transcript_kind": 30079,
+  "transcript_kind": 30078,
   
   // === Model Context Overrides ===
   "model_context_overrides": {

@@ -55,7 +55,7 @@ func TestBuildLifecycleNostrEventRunProjection(t *testing.T) {
 		t.Fatalf("BuildLifecycleNostrEvent: %v", err)
 	}
 	if evt.Kind != nostr.Kind(events.CAS_AGENT_HEARTBEAT) {
-		t.Fatalf("kind = %d, want %d", evt.Kind, events.KindLifecycle)
+		t.Fatalf("kind = %d, want %d", evt.Kind, events.CAS_AGENT_HEARTBEAT)
 	}
 	wantTags := map[string]string{
 		"d":         "task-1:run-1",
@@ -149,7 +149,7 @@ func TestLifecyclePublisherEmitterHandlerIsNonBlockingWhenPublishStalls(t *testi
 	select {
 	case evt := <-publishCalls:
 		if evt.Kind != nostr.Kind(events.CAS_AGENT_HEARTBEAT) {
-			t.Fatalf("published kind = %d, want %d", evt.Kind, events.KindLifecycle)
+			t.Fatalf("published kind = %d, want %d", evt.Kind, events.CAS_AGENT_HEARTBEAT)
 		}
 	default:
 		t.Fatal("expected at least one publish call")

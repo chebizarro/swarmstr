@@ -49,15 +49,15 @@ func TestTagConstants_NonEmpty(t *testing.T) {
 		"TagDecision": TagDecision,
 
 		// Cascadia Discovery Tags
-		"TagCap":             TagCap,
-		"TagRuntime":         TagRuntime,
-		"TagModel":           TagModel,
-		"TagTools":           TagTools,
-		"TagTool":            TagTool,
-		"TagBackend":         TagBackend,
-		"TagScope":           TagScope,
-		"TagDMSchemes":       TagDMSchemes,
-		"TagACPVersion":      TagACPVersion,
+		"TagCap":               TagCap,
+		"TagRuntime":           TagRuntime,
+		"TagModel":             TagModel,
+		"TagTools":             TagTools,
+		"TagTool":              TagTool,
+		"TagBackend":           TagBackend,
+		"TagScope":             TagScope,
+		"TagDMSchemes":         TagDMSchemes,
+		"TagACPVersion":        TagACPVersion,
 		"TagContextVMFeatures": TagContextVMFeatures,
 
 		// Application Tags
@@ -212,14 +212,6 @@ func TestKindConstants_Values(t *testing.T) {
 		{"StatusApplied", KindStatusApplied, 1631},
 		{"StatusClosed", KindStatusClosed, 1632},
 		{"StatusDraft", KindStatusDraft, 1633},
-
-		// Legacy/Deprecated Kinds (still need specific values during migration)
-		{"Task (deprecated)", KindTask, 38383},
-		{"Control (deprecated)", KindControl, 38384},
-		{"MCPCall (deprecated)", KindMCPCall, 38385},
-		{"MCPResult (deprecated)", KindMCPResult, 38386},
-		{"TranscriptDoc (deprecated)", KindTranscriptDoc, 30079},
-		{"MemoryDoc (deprecated)", KindMemoryDoc, 30080},
 	}
 	for _, tt := range tests {
 		if int(tt.kind) != tt.want {
@@ -253,10 +245,6 @@ func TestKindConstants_Unique(t *testing.T) {
 		// NIP-34
 		KindRepoAnnouncement, KindRepoState, KindPatch, KindPR, KindPRUpdate,
 		KindIssue, KindStatusOpen, KindStatusApplied, KindStatusClosed, KindStatusDraft,
-
-		// Legacy kinds with unique values (not aliases)
-		KindTask, KindControl, KindMCPCall, KindMCPResult,
-		KindTranscriptDoc, KindMemoryDoc,
 	}
 	seen := make(map[Kind]bool, len(kinds))
 	for _, k := range kinds {
@@ -264,25 +252,6 @@ func TestKindConstants_Unique(t *testing.T) {
 			t.Errorf("duplicate kind: %d", k)
 		}
 		seen[k] = true
-	}
-}
-
-func TestKindConstants_Aliases(t *testing.T) {
-	// Verify deprecated aliases point to canonical constants
-	tests := []struct {
-		name      string
-		alias     Kind
-		canonical Kind
-	}{
-		{"KindLogStatus -> KindNIP38Status", KindLogStatus, KindNIP38Status},
-		{"KindLifecycle -> CAS_AGENT_HEARTBEAT", KindLifecycle, CAS_AGENT_HEARTBEAT},
-		{"KindCapability -> CAS_AGENT_CAPABILITY", KindCapability, CAS_AGENT_CAPABILITY},
-		{"KindStateDoc -> KindAppData", KindStateDoc, KindAppData},
-	}
-	for _, tt := range tests {
-		if tt.alias != tt.canonical {
-			t.Errorf("%s: alias %d != canonical %d", tt.name, tt.alias, tt.canonical)
-		}
 	}
 }
 
