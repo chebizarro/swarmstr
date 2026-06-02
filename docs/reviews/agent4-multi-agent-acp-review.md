@@ -23,7 +23,7 @@
 | `internal/acp/registry.go` | Remote peer agent registry (PeerRegistry by pubkey) |
 | `internal/acp/permissions.go` | Permission modes: approve-all, approve-reads, deny-all |
 | `internal/acp/doctor.go` | Health checks, doctor reports, MCP bridge config |
-| `internal/acp/task_event.go` | kind:38383 Nostr task events — envelope build/parse |
+| `internal/acp/task_event.go` | kind:25910 (KindContextVM) Nostr JSON-RPC messages — envelope build/parse |
 | `internal/agent/subagent/registry.go` | In-memory subagent run lifecycle registry |
 | `internal/agent/subagent/reactivate.go` | Reactivation of ended subagent runs |
 | `internal/agent/toolbuiltin/fleet.go` | Fleet agent directory and `nostr_agent_rpc` tool |
@@ -107,7 +107,7 @@
 | **Health checks** | ✅ `HealthChecker` + `DoctorReport` | ✅ `doctor()` + startup probes | Comparable |
 | **Backend registry** | ✅ `BackendRegistry` | ✅ `AcpRuntimeBackend` registry | Comparable |
 | **Agent registry** | ✅ `AgentRegistry` (local) + `PeerRegistry` (remote) | ✅ `AcpAgentRegistry` | metiq uniquely has both local and remote registries |
-| **Nostr-native transport** | ✅ Encrypted DMs, kind:38383 task events, NIP-51 fleet directory | ❌ | Unique metiq strength |
+| **Nostr-native transport** | ✅ Encrypted DMs, kind:25910 (KindContextVM) JSON-RPC messages, NIP-51 fleet directory | ❌ | Unique metiq strength |
 | **FIPS mesh transport** | ✅ IPv6 mesh for fleet agents | ❌ | Unique metiq strength |
 | **Fleet discovery** | ✅ NIP-51 agent list with capability metadata | ❌ | Unique metiq strength |
 | **Ping/pong health** | ✅ ACP ping/pong messages | ❌ | Unique metiq advantage for distributed agents |
@@ -559,7 +559,7 @@ The `subagent.Registry` in `internal/agent/subagent/` and the ACP `Manager` in `
 - **FIPS mesh** — IPv6 mesh transport for low-latency fleet communication
 - **Ping/pong health** — ACP-level liveness probing for distributed agents
 - **Peer registry** — separation of local agent configs and remote peer agents
-- **kind:38383 task events** — Nostr-native task contracts publishable to relays
+- **kind:25910 (KindContextVM) JSON-RPC messages** — Nostr-native ContextVM task delegation over relays
 
 ---
 

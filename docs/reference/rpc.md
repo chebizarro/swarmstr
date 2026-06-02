@@ -263,7 +263,7 @@ When `acp.dispatch` or `acp.pipeline` resolves a target peer, metiq applies thes
 2. the peer must advertise a compatible DM family for the active ACP transport mode
 3. if the request carries `tool_profile` and/or `enabled_tools`, metiq derives the required worker tool surface from that contract and compares it against discovered capability metadata
 
-Capability comparison uses the discovered `kind:30317` metadata:
+Capability comparison uses the discovered `CAS_AGENT_CAPABILITY` (`kind:30317`) metadata:
 - `tools` is treated as the broad provider-visible tool set
 - `contextvm_features` is treated as the precise MCP/ContextVM surface
 - when `contextvm_features` is absent, metiq still derives a compatibility fallback from advertised `contextvm_*` tool names

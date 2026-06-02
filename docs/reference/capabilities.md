@@ -1,16 +1,16 @@
 ---
-summary: "kind:30317 capability advertisement schema for metiq-compatible runtimes"
+summary: "CAS_AGENT_CAPABILITY capability advertisement schema for metiq-compatible runtimes"
 read_when:
   - Implementing Nostr-native capability publishing in another runtime
   - Debugging fleet capability discovery
-  - Looking up the kind:30317 tag schema
+  - Looking up the CAS_AGENT_CAPABILITY tag schema
 title: "Capability Advertisement"
 sidebarTitle: "Capabilities"
 ---
 
 # Capability Advertisement
 
-metiq publishes a parameterized replaceable `kind:30317` event so fleet peers can discover runtime metadata without relying on a manually maintained `TOOLS.md` file.
+metiq publishes a parameterized replaceable `CAS_AGENT_CAPABILITY` (`kind:30317`) event so fleet peers can discover runtime metadata without relying on a manually maintained `TOOLS.md` file.
 
 ## Event Shape
 
@@ -81,7 +81,7 @@ The event is authored by the agent pubkey and uses that same pubkey as its `d` t
 
 ## Discovery Rules
 
-- Fleet members subscribe to known peers' `kind:30317` events and should filter on the canonical `d=<peer-pubkey-hex>` value.
+- Fleet members subscribe to known peers' `CAS_AGENT_CAPABILITY` (`kind:30317`) events and should filter on the canonical `d=<peer-pubkey-hex>` value.
 - Consumers should keep the newest event per pubkey using `created_at`, with event ID as a deterministic tie-breaker for same-second collisions.
 - Relay subscriptions should include both the local fleet relays and any per-peer relay hints already learned from directory events.
 - Unknown tags must be ignored so runtimes can extend the schema safely.

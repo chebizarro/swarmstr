@@ -98,4 +98,4 @@ When using NIP-17 gift-wrapped DMs, reaction events are published as plain kind:
 
 - [Reactions Tool](../tools/reactions.md) — `nostr_publish` for custom reactions
 - [Messages](messages.md) — full inbound/outbound message flow
-- [Presence](presence.md) — NIP-38 kind:30315 user status events (separate from reactions)
+- [Presence](presence.md) — NIP-38 user/entity status events (KindNIP38Status, kind:30315; separate from reactions)

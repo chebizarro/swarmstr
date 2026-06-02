@@ -52,7 +52,7 @@ Configure the runner with the top-level `heartbeat` block:
 
 ## Status (NIP-38 presence)
 
-Status publishes **NIP-38 kind 30315 user status events** so Nostr clients can see whether the agent is idle, typing, running tools, or offline. It does **not** trigger agent turns.
+Status publishes **NIP-38 KindNIP38Status (kind 30315) user/entity status events** so Nostr clients can see whether the agent is idle, typing, running tools, or offline. It does **not** trigger agent turns.
 
 Configure status via `extra.status` (preferred) or the legacy alias `extra.heartbeat`:
 

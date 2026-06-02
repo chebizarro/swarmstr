@@ -59,7 +59,7 @@ Common signatures:
 
 ## Heartbeat silent
 
-The heartbeat (`extra.heartbeat.*`) publishes NIP-38 status events (kind:30315).
+The heartbeat (`extra.heartbeat.*`) publishes NIP-38 user/entity status events (KindNIP38Status, kind:30315).
 It does **not** run agent turns. If you see no presence updates:
 
 ```bash

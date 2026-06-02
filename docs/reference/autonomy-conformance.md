@@ -35,7 +35,7 @@ and the epic/bead that delivered it.
 | GoalSpec persistence model | ✅ | JSON round-trip, normalize, validate | `models.go`, `models_test.go` |
 | TaskSpec persistence model | ✅ | JSON round-trip, normalize, validate | `models.go`, `models_test.go` |
 | TaskRun persistence model | ✅ | JSON round-trip, normalize, validate | `models.go`, `models_test.go` |
-| Kind 38383 task envelope build/parse | ✅ | Build, parse, round-trip | `task_event.go`, `task_event_test.go` |
+| Kind 25910 (KindContextVM) task envelope build/parse | ✅ | Build, parse, round-trip | `task_event.go`, `task_event_test.go` |
 | Task lifecycle state machine | ✅ | All valid/invalid transitions | `task_lifecycle.go`, `task_lifecycle_test.go` |
 | Task run lifecycle state machine | ✅ | All valid/invalid transitions | `task_lifecycle.go`, `task_lifecycle_test.go` |
 | Durable transition recording | ✅ | Append-only audit trail | `task_lifecycle.go` |

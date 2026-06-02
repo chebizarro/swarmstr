@@ -196,7 +196,7 @@ These are explicitly deferred per the conformance doc and should NOT be addresse
 | `internal/tasks/store.go` | File-based persistence |
 | `internal/tasks/workflow.go` | Workflow orchestrator |
 | `internal/acp/types.go` | ACP message types |
-| `internal/acp/task_event.go` | Kind:38383 Nostr task events |
+| `internal/acp/task_event.go` | Kind:25910 (KindContextVM) Nostr JSON-RPC messages |
 | `internal/acp/dispatcher.go` | In-flight task tracking |
 | `internal/acp/backend.go` | Runtime backend registry |
 | `internal/acp/pipeline.go` | Multi-agent pipeline orchestration |

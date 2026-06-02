@@ -47,7 +47,7 @@ title: "Features"
 
 ### Automation & Scheduling
 - Built-in cron scheduler (persistent, systemd-compatible)
-- NIP-38 heartbeat for Nostr presence (kind:30315)
+- NIP-38 user/entity status for Nostr presence (KindNIP38Status, kind:30315)
 - Event hooks for /new, /reset, lifecycle events
 - Webhook endpoints (`/hooks/wake`, `/hooks/agent`)
 - Gmail Pub/Sub bridge
