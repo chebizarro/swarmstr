@@ -133,7 +133,7 @@ func TestKeypairFromHex_WrongLength(t *testing.T) {
 
 func TestEffectiveStateKind(t *testing.T) {
 	cfg := BootstrapConfig{}
-	if got := cfg.EffectiveStateKind(); got != events.KindStateDoc {
+	if got := cfg.EffectiveStateKind(); got != events.KindAppData {
 		t.Errorf("default: %d", got)
 	}
 	cfg.StateKind = 30078
@@ -144,7 +144,7 @@ func TestEffectiveStateKind(t *testing.T) {
 
 func TestEffectiveTranscriptKind(t *testing.T) {
 	cfg := BootstrapConfig{}
-	if got := cfg.EffectiveTranscriptKind(); got != events.KindTranscriptDoc {
+	if got := cfg.EffectiveTranscriptKind(); got != events.KindAppData {
 		t.Errorf("default: %d", got)
 	}
 	cfg.TranscriptKind = 31234

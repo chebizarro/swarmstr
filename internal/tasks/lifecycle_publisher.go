@@ -257,6 +257,7 @@ func BuildLifecycleNostrEvent(event Event, createdAt time.Time) (nostr.Event, er
 	}
 	tags := nostr.Tags{
 		{"d", LifecycleDTag(taskID, payload.RunID)},
+		{"schema", events.SchemaCascadiaAgentHeartbeatV1},
 		{"t", taskID},
 		{"task_id", taskID},
 		{"lifecycle", string(event.Type)},
@@ -279,7 +280,7 @@ func BuildLifecycleNostrEvent(event Event, createdAt time.Time) (nostr.Event, er
 		tags = append(tags, nostr.Tag{"source", string(event.Source)})
 	}
 	return nostr.Event{
-		Kind:      nostr.Kind(events.KindLifecycle),
+		Kind:      nostr.Kind(events.CAS_AGENT_HEARTBEAT),
 		CreatedAt: nostr.Timestamp(createdAt.Unix()),
 		Tags:      tags,
 		Content:   string(content),

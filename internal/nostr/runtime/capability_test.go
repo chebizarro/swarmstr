@@ -33,7 +33,7 @@ func TestCapabilitySoulFactoryContentRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePubKey: %v", err)
 	}
-	evt := nostr.Event{Kind: nostr.Kind(events.KindCapability), PubKey: pk, CreatedAt: nostr.Timestamp(100), Tags: BuildCapabilityTags(cap), Content: content}
+	evt := nostr.Event{Kind: nostr.Kind(events.CAS_AGENT_CAPABILITY), PubKey: pk, CreatedAt: nostr.Timestamp(100), Tags: BuildCapabilityTags(cap), Content: content}
 	parsed, err := ParseCapabilityEvent(&evt)
 	if err != nil {
 		t.Fatalf("ParseCapabilityEvent: %v", err)
@@ -77,7 +77,7 @@ func TestParseSoulFactoryV1CapabilityContentKeepsExplicitSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePubKey: %v", err)
 	}
-	evt := nostr.Event{Kind: nostr.Kind(events.KindCapability), PubKey: pk, CreatedAt: nostr.Timestamp(100), Tags: BuildCapabilityTags(cap), Content: BuildCapabilityContent(cap)}
+	evt := nostr.Event{Kind: nostr.Kind(events.CAS_AGENT_CAPABILITY), PubKey: pk, CreatedAt: nostr.Timestamp(100), Tags: BuildCapabilityTags(cap), Content: BuildCapabilityContent(cap)}
 	parsed, err := ParseCapabilityEvent(&evt)
 	if err != nil {
 		t.Fatalf("ParseCapabilityEvent: %v", err)
@@ -111,7 +111,7 @@ func TestBuildAndParseCapabilityEventRoundTrip(t *testing.T) {
 		Relays:            []string{"wss://b", "wss://a", "wss://a"},
 	}
 	evt := nostr.Event{
-		Kind:      nostr.Kind(events.KindCapability),
+		Kind:      nostr.Kind(events.CAS_AGENT_CAPABILITY),
 		CreatedAt: nostr.Timestamp(1234),
 		Tags:      BuildCapabilityTags(want),
 		Content:   "",
@@ -236,7 +236,7 @@ func TestBuildAndParseCapabilityFIPSTags(t *testing.T) {
 		t.Fatalf("ParsePubKey: %v", err)
 	}
 	evt := nostr.Event{
-		Kind:      nostr.Kind(events.KindCapability),
+		Kind:      nostr.Kind(events.CAS_AGENT_CAPABILITY),
 		PubKey:    pk,
 		CreatedAt: nostr.Timestamp(100),
 		Tags:      tags,
@@ -286,14 +286,14 @@ func TestCapabilitySemanticEqual_FIPS(t *testing.T) {
 func TestCapabilityValidationFailureRejectsWrongAuthor(t *testing.T) {
 	valid := mustSignedMetadataEvent(t,
 		"1111111111111111111111111111111111111111111111111111111111111111",
-		nostr.Kind(events.KindCapability),
+		nostr.Kind(events.CAS_AGENT_CAPABILITY),
 		nostr.Timestamp(10),
 		nostr.Tags{{"d", canonicalCapabilityDTag(mustControlPubKey(t, testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")).Hex())}},
 	)
 	allowed := map[string]struct{}{valid.PubKey.Hex(): {}}
 	wrongAuthor := mustSignedMetadataEvent(t,
 		"2222222222222222222222222222222222222222222222222222222222222222",
-		nostr.Kind(events.KindCapability),
+		nostr.Kind(events.CAS_AGENT_CAPABILITY),
 		nostr.Timestamp(20),
 		nostr.Tags{{"d", canonicalCapabilityDTag("2222222222222222222222222222222222222222222222222222222222222222")}},
 	)
@@ -305,14 +305,14 @@ func TestCapabilityValidationFailureRejectsWrongAuthor(t *testing.T) {
 func TestCapabilityValidationFailureRejectsInvalidSignature(t *testing.T) {
 	valid := mustSignedMetadataEvent(t,
 		"1111111111111111111111111111111111111111111111111111111111111111",
-		nostr.Kind(events.KindCapability),
+		nostr.Kind(events.CAS_AGENT_CAPABILITY),
 		nostr.Timestamp(10),
 		nostr.Tags{{"d", "cap"}},
 	)
 	allowed := map[string]struct{}{valid.PubKey.Hex(): {}}
 	invalidSig := mustSignedMetadataEvent(t,
 		"1111111111111111111111111111111111111111111111111111111111111111",
-		nostr.Kind(events.KindCapability),
+		nostr.Kind(events.CAS_AGENT_CAPABILITY),
 		nostr.Timestamp(20),
 		nostr.Tags{{"d", "cap"}},
 	)

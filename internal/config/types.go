@@ -52,12 +52,12 @@ func (c BootstrapConfig) EffectiveStateKind() events.Kind {
 	if c.StateKind > 0 {
 		return events.Kind(c.StateKind)
 	}
-	return events.KindStateDoc
+	return events.KindAppData
 }
 
 func (c BootstrapConfig) EffectiveTranscriptKind() events.Kind {
 	if c.TranscriptKind > 0 {
 		return events.Kind(c.TranscriptKind)
 	}
-	return events.KindTranscriptDoc
+	return events.KindAppData
 }

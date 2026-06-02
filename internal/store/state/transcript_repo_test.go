@@ -553,14 +553,14 @@ func seedTranscriptEventDirect(t *testing.T, store *memStateStore, author string
 	if err != nil {
 		t.Fatalf("encode transcript event: %v", err)
 	}
-	addr := Address{Kind: events.KindTranscriptDoc, PubKey: author, DTag: fmt.Sprintf("metiq:tx:%s:%s", doc.SessionID, doc.EntryID)}
+	addr := Address{Kind: events.KindAppData, PubKey: author, DTag: fmt.Sprintf("metiq:tx:%s:%s", doc.SessionID, doc.EntryID)}
 	store.mu.Lock()
 	store.replaceable[store.storeKey(addr)] = Event{
 		ID:        fmt.Sprintf("evt:%s", store.storeKey(addr)),
 		PubKey:    author,
-		Kind:      events.KindTranscriptDoc,
+		Kind:      events.KindAppData,
 		CreatedAt: doc.Unix,
-		Tags:      [][]string{{"session", protectedTagValue(doc.SessionID)}, {"entry", doc.EntryID}, {"role", doc.Role}, {"t", "transcript"}, {"d", addr.DTag}},
+		Tags:      [][]string{{"type", events.AppDataTypeTranscript}, {"session", protectedTagValue(doc.SessionID)}, {"entry", doc.EntryID}, {"role", doc.Role}, {"t", "transcript"}, {"d", addr.DTag}},
 		Content:   raw,
 	}
 	store.mu.Unlock()

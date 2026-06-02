@@ -292,7 +292,10 @@ func parseCapabilityContent(content string) SoulFactoryCapability {
 // BuildCapabilityTags encodes a capability announcement into Nostr tags.
 func BuildCapabilityTags(cap CapabilityAnnouncement) nostr.Tags {
 	cap = normalizeCapabilityAnnouncement(cap)
-	tags := nostr.Tags{{"d", cap.DTag}}
+	tags := nostr.Tags{
+		{"d", cap.DTag},
+		{"schema", events.SchemaCascadiaAgentCapabilityV1},
+	}
 	if cap.Runtime != "" || cap.RuntimeVersion != "" {
 		tag := []string{capabilityRuntimeTag}
 		if cap.Runtime != "" {
@@ -329,7 +332,7 @@ func BuildCapabilityTags(cap CapabilityAnnouncement) nostr.Tags {
 
 // ParseCapabilityEvent decodes a kind:30317 capability event.
 func capabilityValidationFailure(ev nostr.Event, allowedAuthors map[string]struct{}) string {
-	if ev.Kind != nostr.Kind(events.KindCapability) {
+	if ev.Kind != nostr.Kind(events.CAS_AGENT_CAPABILITY) {
 		return fmt.Sprintf("unexpected_kind:%d", ev.Kind)
 	}
 	if _, ok := allowedAuthors[ev.PubKey.Hex()]; !ok {
@@ -351,7 +354,7 @@ func ParseCapabilityEvent(ev *nostr.Event) (CapabilityAnnouncement, error) {
 	if ev == nil {
 		return CapabilityAnnouncement{}, fmt.Errorf("capability event is nil")
 	}
-	if ev.Kind != nostr.Kind(events.KindCapability) {
+	if ev.Kind != nostr.Kind(events.CAS_AGENT_CAPABILITY) {
 		return CapabilityAnnouncement{}, fmt.Errorf("unexpected capability kind %d", ev.Kind)
 	}
 	out := CapabilityAnnouncement{
@@ -417,7 +420,7 @@ func PublishCapability(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer,
 	cap.PubKey = pk.Hex()
 	cap = normalizeCapabilityAnnouncement(cap)
 	evt := nostr.Event{
-		Kind:      nostr.Kind(events.KindCapability),
+		Kind:      nostr.Kind(events.CAS_AGENT_CAPABILITY),
 		CreatedAt: nostr.Now(),
 		Tags:      BuildCapabilityTags(cap),
 		Content:   BuildCapabilityContent(cap),
@@ -744,7 +747,7 @@ func (m *CapabilityMonitor) runSubscriber(ctx context.Context) {
 		}
 		subCtx, cancel := context.WithCancel(ctx)
 		eventsCh, eoseCh := m.pool.SubscribeManyNotifyEOSE(subCtx, relays, nostr.Filter{
-			Kinds:   []nostr.Kind{nostr.Kind(events.KindCapability)},
+			Kinds:   []nostr.Kind{nostr.Kind(events.CAS_AGENT_CAPABILITY)},
 			Authors: authors,
 			Tags:    nostr.TagMap{"d": dTags},
 		}, nostr.SubscriptionOptions{})

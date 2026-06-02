@@ -9,24 +9,73 @@ import (
 // ─── Tag constants ────────────────────────────────────────────────────────────
 
 func TestTagConstants_NonEmpty(t *testing.T) {
+	// Canonical tags only (excludes deprecated aliases)
 	tags := map[string]string{
-		"TagTaskID":           TagTaskID,
-		"TagAgent":            TagAgent,
-		"TagStage":            TagStage,
-		"TagRecipient":        TagRecipient,
-		"TagDedupe":           TagDedupe,
-		"TagRef":              TagRef,
-		"TagSession":          TagSession,
-		"TagKind":             TagKind,
-		"TagRole":             TagRole,
-		"TagTopic":            TagTopic,
-		"TagKeyword":          TagKeyword,
-		"TagSource":           TagSource,
-		"TagGoal":             TagGoal,
-		"TagRunID":            TagRunID,
-		"TagMemType":          TagMemType,
-		"TagMemTaskID":        TagMemTaskID,
-		"TagMemSource":        TagMemSource,
+		// Standard NIP Tags
+		"TagEventRef":   TagEventRef,
+		"TagPubkey":     TagPubkey,
+		"TagDTag":       TagDTag,
+		"TagKind":       TagKind,
+		"TagExpiration": TagExpiration,
+
+		// Cascadia Routing Tags
+		"TagDomain":      TagDomain,
+		"TagOp":          TagOp,
+		"TagService":     TagService,
+		"TagEnvironment": TagEnvironment,
+		"TagWorker":      TagWorker,
+		"TagAgent":       TagAgent,
+		"TagRoute":       TagRoute,
+		"TagRelease":     TagRelease,
+
+		// Cascadia Correlation Tags
+		"TagSession": TagSession,
+		"TagRun":     TagRun,
+		"TagIntent":  TagIntent,
+
+		// Cascadia Lineage Tags
+		"TagSchema":     TagSchema,
+		"TagType":       TagType,
+		"TagArtifact":   TagArtifact,
+		"TagProject":    TagProject,
+		"TagWorkflow":   TagWorkflow,
+		"TagVersion":    TagVersion,
+		"TagSupersedes": TagSupersedes,
+
+		// Cascadia State Tags
+		"TagStatus":   TagStatus,
+		"TagStage":    TagStage,
+		"TagStep":     TagStep,
+		"TagDecision": TagDecision,
+
+		// Cascadia Discovery Tags
+		"TagCap":             TagCap,
+		"TagRuntime":         TagRuntime,
+		"TagModel":           TagModel,
+		"TagTools":           TagTools,
+		"TagTool":            TagTool,
+		"TagBackend":         TagBackend,
+		"TagScope":           TagScope,
+		"TagDMSchemes":       TagDMSchemes,
+		"TagACPVersion":      TagACPVersion,
+		"TagContextVMFeatures": TagContextVMFeatures,
+
+		// Application Tags
+		"TagClient":  TagClient,
+		"TagRelay":   TagRelay,
+		"TagTopic":   TagTopic,
+		"TagKeyword": TagKeyword,
+		"TagSource":  TagSource,
+		"TagGoal":    TagGoal,
+		"TagRef":     TagRef,
+		"TagRole":    TagRole,
+
+		// Memory Tags
+		"TagMemType":   TagMemType,
+		"TagMemTaskID": TagMemTaskID,
+		"TagMemSource": TagMemSource,
+
+		// Feedback/Proposal Tags
 		"TagFeedback":         TagFeedback,
 		"TagFeedbackSource":   TagFeedbackSource,
 		"TagFeedbackSeverity": TagFeedbackSeverity,
@@ -47,10 +96,36 @@ func TestTagConstants_NonEmpty(t *testing.T) {
 }
 
 func TestTagConstants_Unique(t *testing.T) {
+	// Canonical tags only - deprecated aliases intentionally duplicate canonical values
 	tags := []string{
-		TagTaskID, TagAgent, TagStage, TagRecipient, TagDedupe, TagRef,
-		TagSession, TagKind, TagRole, TagTopic, TagKeyword, TagSource,
-		TagGoal, TagRunID, TagMemType, TagMemTaskID, TagMemSource,
+		// Standard NIP Tags
+		TagEventRef, TagPubkey, TagDTag, TagKind, TagExpiration,
+
+		// Cascadia Routing Tags
+		TagDomain, TagOp, TagService, TagEnvironment, TagWorker,
+		TagAgent, TagRoute, TagRelease,
+
+		// Cascadia Correlation Tags
+		TagSession, TagRun, TagIntent,
+
+		// Cascadia Lineage Tags
+		TagSchema, TagType, TagArtifact, TagProject, TagWorkflow,
+		TagVersion, TagSupersedes,
+
+		// Cascadia State Tags
+		TagStatus, TagStage, TagStep, TagDecision,
+
+		// Cascadia Discovery Tags
+		TagCap, TagRuntime, TagModel, TagTools, TagTool,
+		TagBackend, TagScope, TagDMSchemes, TagACPVersion, TagContextVMFeatures,
+
+		// Application Tags
+		TagClient, TagRelay, TagTopic, TagKeyword, TagSource, TagGoal, TagRef, TagRole,
+
+		// Memory Tags
+		TagMemType, TagMemTaskID, TagMemSource,
+
+		// Feedback/Proposal Tags
 		TagFeedback, TagFeedbackSource, TagFeedbackSeverity, TagFeedbackCategory,
 		TagStepID, TagProposal, TagProposalKind, TagProposalStatus,
 		TagRetro, TagRetroTrigger, TagRetroOutcome,
@@ -64,6 +139,24 @@ func TestTagConstants_Unique(t *testing.T) {
 	}
 }
 
+func TestTagConstants_Aliases(t *testing.T) {
+	// Verify deprecated aliases point to canonical constants
+	tests := []struct {
+		name      string
+		alias     string
+		canonical string
+	}{
+		{"TagRecipient -> TagPubkey", TagRecipient, TagPubkey},
+		{"TagDedupe -> TagDTag", TagDedupe, TagDTag},
+		{"TagRunID -> TagRun", TagRunID, TagRun},
+	}
+	for _, tt := range tests {
+		if tt.alias != tt.canonical {
+			t.Errorf("%s: alias %q != canonical %q", tt.name, tt.alias, tt.canonical)
+		}
+	}
+}
+
 // ─── Kind constants ───────────────────────────────────────────────────────────
 
 func TestKindConstants_Values(t *testing.T) {
@@ -72,25 +165,61 @@ func TestKindConstants_Values(t *testing.T) {
 		kind Kind
 		want int
 	}{
+		// Standard NIP Kinds
 		{"DM NIP-04", KindDMNIP04, 4},
 		{"Seal", KindSeal, 13},
 		{"DM NIP-44", KindDMNIP44, 44},
 		{"GiftWrap", KindGiftWrap, 1059},
-		{"Task", KindTask, 38383},
-		{"Control", KindControl, 38384},
-		{"MCPCall", KindMCPCall, 38385},
-		{"MCPResult", KindMCPResult, 38386},
-		{"LogStatus", KindLogStatus, 30315},
-		{"Lifecycle", KindLifecycle, 30316},
-		{"Capability", KindCapability, 30317},
+
+		// Cascadia Canonical Kinds
+		{"CAS_AUDIT", CAS_AUDIT, 4903},
+		{"CAS_WORKER_AD", CAS_WORKER_AD, 10100},
+		{"CAS_AGENT_HEARTBEAT", CAS_AGENT_HEARTBEAT, 30316},
+		{"CAS_AGENT_CAPABILITY", CAS_AGENT_CAPABILITY, 30317},
+		{"CAS_CP_STATE", CAS_CP_STATE, 30900},
+
+		// NIP-38 User Status
+		{"NIP38Status", KindNIP38Status, 30315},
+
+		// NIP-78 App-Specific Data
+		{"AppData", KindAppData, 30078},
+
+		// ContextVM Kinds
+		{"ContextVM", KindContextVM, 25910},
+		{"ContextVMServerAnnouncement", KindContextVMServerAnnouncement, 11316},
+		{"ContextVMToolsList", KindContextVMToolsList, 11317},
+		{"ContextVMResourcesList", KindContextVMResourcesList, 11318},
+		{"ContextVMResourceTemplatesList", KindContextVMResourceTemplatesList, 11319},
+		{"ContextVMPromptsList", KindContextVMPromptsList, 11320},
+
+		// NIP-60 Cashu Wallet
 		{"NIP60UnspentToken", KindNIP60UnspentToken, 7375},
 		{"NIP60TokenHistory", KindNIP60TokenHistory, 7376},
 		{"NIP60Wallet", KindNIP60Wallet, 37375},
+
+		// NIP-61 Nutzap
 		{"NIP61NutzapInfo", KindNIP61NutzapInfo, 10019},
 		{"NIP61Nutzap", KindNIP61Nutzap, 9321},
-		{"StateDoc", KindStateDoc, 30078},
-		{"TranscriptDoc", KindTranscriptDoc, 30079},
-		{"MemoryDoc", KindMemoryDoc, 30080},
+
+		// NIP-34 Repository Collaboration
+		{"RepoAnnouncement", KindRepoAnnouncement, 30617},
+		{"RepoState", KindRepoState, 30618},
+		{"Patch", KindPatch, 1617},
+		{"PR", KindPR, 1618},
+		{"PRUpdate", KindPRUpdate, 1619},
+		{"Issue", KindIssue, 1621},
+		{"StatusOpen", KindStatusOpen, 1630},
+		{"StatusApplied", KindStatusApplied, 1631},
+		{"StatusClosed", KindStatusClosed, 1632},
+		{"StatusDraft", KindStatusDraft, 1633},
+
+		// Legacy/Deprecated Kinds (still need specific values during migration)
+		{"Task (deprecated)", KindTask, 38383},
+		{"Control (deprecated)", KindControl, 38384},
+		{"MCPCall (deprecated)", KindMCPCall, 38385},
+		{"MCPResult (deprecated)", KindMCPResult, 38386},
+		{"TranscriptDoc (deprecated)", KindTranscriptDoc, 30079},
+		{"MemoryDoc (deprecated)", KindMemoryDoc, 30080},
 	}
 	for _, tt := range tests {
 		if int(tt.kind) != tt.want {
@@ -100,15 +229,34 @@ func TestKindConstants_Values(t *testing.T) {
 }
 
 func TestKindConstants_Unique(t *testing.T) {
+	// Canonical kinds only - excludes deprecated aliases that intentionally share values
 	kinds := []Kind{
+		// Standard NIP Kinds
 		KindDMNIP04, KindSeal, KindDMNIP44, KindGiftWrap,
-		KindTask, KindControl, KindMCPCall, KindMCPResult,
-		KindLogStatus, KindLifecycle, KindCapability,
+
+		// Cascadia Canonical Kinds
+		CAS_AUDIT, CAS_WORKER_AD, CAS_AGENT_HEARTBEAT, CAS_AGENT_CAPABILITY, CAS_CP_STATE,
+
+		// NIP-38/NIP-78
+		KindNIP38Status, KindAppData,
+
+		// ContextVM
+		KindContextVM, KindContextVMServerAnnouncement, KindContextVMToolsList,
+		KindContextVMResourcesList, KindContextVMResourceTemplatesList, KindContextVMPromptsList,
+
+		// NIP-60
 		KindNIP60UnspentToken, KindNIP60TokenHistory, KindNIP60Wallet,
+
+		// NIP-61
 		KindNIP61NutzapInfo, KindNIP61Nutzap,
+
+		// NIP-34
 		KindRepoAnnouncement, KindRepoState, KindPatch, KindPR, KindPRUpdate,
 		KindIssue, KindStatusOpen, KindStatusApplied, KindStatusClosed, KindStatusDraft,
-		KindStateDoc, KindTranscriptDoc, KindMemoryDoc,
+
+		// Legacy kinds with unique values (not aliases)
+		KindTask, KindControl, KindMCPCall, KindMCPResult,
+		KindTranscriptDoc, KindMemoryDoc,
 	}
 	seen := make(map[Kind]bool, len(kinds))
 	for _, k := range kinds {
@@ -116,6 +264,25 @@ func TestKindConstants_Unique(t *testing.T) {
 			t.Errorf("duplicate kind: %d", k)
 		}
 		seen[k] = true
+	}
+}
+
+func TestKindConstants_Aliases(t *testing.T) {
+	// Verify deprecated aliases point to canonical constants
+	tests := []struct {
+		name      string
+		alias     Kind
+		canonical Kind
+	}{
+		{"KindLogStatus -> KindNIP38Status", KindLogStatus, KindNIP38Status},
+		{"KindLifecycle -> CAS_AGENT_HEARTBEAT", KindLifecycle, CAS_AGENT_HEARTBEAT},
+		{"KindCapability -> CAS_AGENT_CAPABILITY", KindCapability, CAS_AGENT_CAPABILITY},
+		{"KindStateDoc -> KindAppData", KindStateDoc, KindAppData},
+	}
+	for _, tt := range tests {
+		if tt.alias != tt.canonical {
+			t.Errorf("%s: alias %d != canonical %d", tt.name, tt.alias, tt.canonical)
+		}
 	}
 }
 

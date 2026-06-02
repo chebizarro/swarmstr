@@ -20,16 +20,37 @@ state machines, see [Autonomy Architecture](autonomy.md).
 
 ## 1. Event kinds overview
 
+### Canonical kinds (Cascadia conventions)
+
 | Kind | Name | Type | Purpose |
 |------|------|------|---------|
-| 38383 | `KindTask` | Parameterized-replaceable | ACP task envelope (delegation) |
-| 38384 | `KindControl` | Parameterized-replaceable | Control RPC request/response |
-| 30078 | `KindStateDoc` | Parameterized-replaceable | Persisted autonomy objects (goals, tasks, runs, etc.) |
-| 30079 | `KindTranscriptDoc` | Parameterized-replaceable | Session transcript entries |
-| 30080 | `KindMemoryDoc` | Parameterized-replaceable | Memory records |
-| 30315 | `KindLogStatus` | Parameterized-replaceable | Agent status updates |
-| 30316 | `KindLifecycle` | Parameterized-replaceable | Task/run lifecycle events |
-| 30317 | `KindCapability` | Parameterized-replaceable | Agent capability announcements |
+| 30078 | `KindAppData` | Parameterized-replaceable | NIP-78 app-specific data (state, transcript, memory) |
+| 30315 | `KindNIP38Status` | Parameterized-replaceable | NIP-38 user/entity status |
+| 30316 | `CAS_AGENT_HEARTBEAT` | Parameterized-replaceable | Agent lifecycle heartbeat |
+| 30317 | `CAS_AGENT_CAPABILITY` | Parameterized-replaceable | Agent capability descriptor |
+| 10100 | `CAS_WORKER_AD` | Replaceable | Worker advertisement |
+| 4903 | `CAS_AUDIT` | Regular | Audit trail / attestation |
+| 30900 | `CAS_CP_STATE` | Parameterized-replaceable | Control-plane state projection |
+| 25910 | `KindContextVM` | Ephemeral | ContextVM JSON-RPC 2.0 messages |
+
+### Legacy kinds (deprecated)
+
+| Kind | Deprecated Name | Migrates To |
+|------|-----------------|-------------|
+| 38383 | `KindTask` | `KindContextVM` (Intent Layer) |
+| 38384 | `KindControl` | `KindContextVM` |
+| 30079 | `KindTranscriptDoc` | `KindAppData` with `type:transcript` |
+| 30080 | `KindMemoryDoc` | `KindAppData` with `type:memory` |
+
+### NIP-78 type discrimination
+
+Kind 30078 (`KindAppData`) uses the `type` tag to discriminate document types:
+
+| Type Tag | Purpose |
+|----------|---------|
+| `state` | Persisted autonomy objects (goals, tasks, runs) |
+| `transcript` | Session transcript entries |
+| `memory` | Memory records |
 
 All autonomy-related events use **parameterized-replaceable** event types (kind 30000–39999),
 meaning newer events with the same `d` tag replace older ones.

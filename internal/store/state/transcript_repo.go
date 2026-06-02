@@ -66,6 +66,7 @@ func (r *TranscriptRepository) PutEntry(ctx context.Context, entry TranscriptEnt
 
 	dTag := fmt.Sprintf("metiq:tx:%s:%s", entry.SessionID, entry.EntryID)
 	tags := [][]string{
+		{"type", events.AppDataTypeTranscript},
 		{"session", protectedTagValue(entry.SessionID)},
 		{"entry", entry.EntryID},
 		{"role", entry.Role},
@@ -73,7 +74,7 @@ func (r *TranscriptRepository) PutEntry(ctx context.Context, entry TranscriptEnt
 	}
 
 	return r.store.PutReplaceable(ctx, Address{
-		Kind:   events.KindTranscriptDoc,
+		Kind:   events.KindAppData,
 		PubKey: r.author,
 		DTag:   dTag,
 	}, raw, tags)
@@ -87,7 +88,7 @@ func (r *TranscriptRepository) HasEntry(ctx context.Context, sessionID, entryID 
 		return false, fmt.Errorf("entry_id is required")
 	}
 	_, err := r.store.GetLatestReplaceable(ctx, Address{
-		Kind:   events.KindTranscriptDoc,
+		Kind:   events.KindAppData,
 		PubKey: r.author,
 		DTag:   fmt.Sprintf("metiq:tx:%s:%s", sessionID, entryID),
 	})
@@ -184,7 +185,7 @@ func (r *TranscriptRepository) listSessionOrdered(ctx context.Context, sessionID
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindTranscriptDoc, r.author, "session", protectedTagValue(sessionID), limit)
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindAppData, r.author, "session", protectedTagValue(sessionID), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +203,7 @@ func (r *TranscriptRepository) listSessionOrderedAll(ctx context.Context, sessio
 	for {
 		page, err := r.store.ListByTagForAuthorPage(
 			ctx,
-			events.KindTranscriptDoc,
+			events.KindAppData,
 			r.author,
 			"session",
 			protectedTagValue(sessionID),
@@ -223,6 +224,10 @@ func (r *TranscriptRepository) listSessionOrderedAll(ctx context.Context, sessio
 func (r *TranscriptRepository) decodeOrderedSessionRows(sessionID string, rows []Event) []TranscriptEntryDoc {
 	byEntryID := make(map[string]TranscriptEntryDoc, len(rows))
 	for _, row := range rows {
+		// Filter for transcript documents only (NIP-78 type discrimination)
+		if !hasTagValue(row.Tags, "type", events.AppDataTypeTranscript) {
+			continue
+		}
 		doc, err := r.decodeTranscriptEvent(row)
 		if err != nil || doc.SessionID != sessionID {
 			continue
@@ -278,7 +283,7 @@ func (r *TranscriptRepository) DeleteEntry(ctx context.Context, sessionID, entry
 		{"t", "transcript"},
 	}
 	_, err = r.store.PutReplaceable(ctx, Address{
-		Kind:   events.KindTranscriptDoc,
+		Kind:   events.KindAppData,
 		PubKey: r.author,
 		DTag:   dTag,
 	}, raw, tags)

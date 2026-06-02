@@ -54,7 +54,7 @@ func TestBuildLifecycleNostrEventRunProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildLifecycleNostrEvent: %v", err)
 	}
-	if evt.Kind != nostr.Kind(events.KindLifecycle) {
+	if evt.Kind != nostr.Kind(events.CAS_AGENT_HEARTBEAT) {
 		t.Fatalf("kind = %d, want %d", evt.Kind, events.KindLifecycle)
 	}
 	wantTags := map[string]string{
@@ -148,7 +148,7 @@ func TestLifecyclePublisherEmitterHandlerIsNonBlockingWhenPublishStalls(t *testi
 	close(releasePublish)
 	select {
 	case evt := <-publishCalls:
-		if evt.Kind != nostr.Kind(events.KindLifecycle) {
+		if evt.Kind != nostr.Kind(events.CAS_AGENT_HEARTBEAT) {
 			t.Fatalf("published kind = %d, want %d", evt.Kind, events.KindLifecycle)
 		}
 	default:

@@ -10,6 +10,11 @@
 //   - "dnd"        – agent is busy and will not respond
 //   - "offline"    – agent is shutting down or pausing
 //
+// Cascadia Status Categories (d-tag):
+//   - "cascadia:agent"   – Agent status (online, busy, paused, draining, offline, error)
+//   - "cascadia:worker"  – Worker status (available, busy, cordoned, draining, maintenance, offline)
+//   - "cascadia:service" – Service status (healthy, degraded, unhealthy, deploying, rollback, offline)
+//
 // Usage:
 //
 //	ctrl := nip38.NewHeartbeat(nip38.HeartbeatOptions{Keyer: kr, Relays: relays})
@@ -26,17 +31,115 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
+	"metiq/internal/nostr/events"
 	nostruntime "metiq/internal/nostr/runtime"
 )
 
-// Status values for NIP-38 kind 30315 events.
+// ─────────────────────────────────────────────────────────────────────────────
+// Cascadia Status Categories (d-tag values)
+// ─────────────────────────────────────────────────────────────────────────────
+
 const (
-	StatusIdle     = "idle"
-	StatusTyping   = "typing"
-	StatusUpdating = "updating"
-	StatusDND      = "dnd"
-	StatusOffline  = "offline"
+	// CategoryAgent is the d-tag for agent status events.
+	CategoryAgent = "cascadia:agent"
+
+	// CategoryWorker is the d-tag for worker status events.
+	CategoryWorker = "cascadia:worker"
+
+	// CategoryService is the d-tag for service status events.
+	CategoryService = "cascadia:service"
+
+	// CategoryGeneral is the default d-tag for backward compatibility.
+	CategoryGeneral = "general"
 )
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Agent Status Values
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	// StatusIdle indicates the agent is available and not processing anything.
+	StatusIdle = "idle"
+
+	// StatusTyping indicates the agent is composing a response to a DM.
+	StatusTyping = "typing"
+
+	// StatusUpdating indicates the agent is executing a tool or background task.
+	StatusUpdating = "updating"
+
+	// StatusDND indicates the agent is busy and will not respond.
+	StatusDND = "dnd"
+
+	// StatusOffline indicates the agent is shutting down or pausing.
+	StatusOffline = "offline"
+
+	// StatusOnline indicates the agent is online and ready.
+	StatusOnline = "online"
+
+	// StatusBusy indicates the agent is processing a request.
+	StatusBusy = "busy"
+
+	// StatusPaused indicates the agent is temporarily paused.
+	StatusPaused = "paused"
+
+	// StatusDraining indicates the agent is draining (finishing current work before shutdown).
+	StatusDraining = "draining"
+
+	// StatusError indicates the agent encountered an error.
+	StatusError = "error"
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Worker Status Values
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	// WorkerAvailable indicates the worker is available for new tasks.
+	WorkerAvailable = "available"
+
+	// WorkerBusy indicates the worker is processing a task.
+	WorkerBusy = "busy"
+
+	// WorkerCordoned indicates the worker is cordoned off (no new work).
+	WorkerCordoned = "cordoned"
+
+	// WorkerDraining indicates the worker is draining (finishing current work).
+	WorkerDraining = "draining"
+
+	// WorkerMaintenance indicates the worker is under maintenance.
+	WorkerMaintenance = "maintenance"
+
+	// WorkerOffline indicates the worker is offline.
+	WorkerOffline = "offline"
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service Status Values
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	// ServiceHealthy indicates the service is healthy.
+	ServiceHealthy = "healthy"
+
+	// ServiceDegraded indicates the service is degraded (partial functionality).
+	ServiceDegraded = "degraded"
+
+	// ServiceUnhealthy indicates the service is unhealthy.
+	ServiceUnhealthy = "unhealthy"
+
+	// ServiceDeploying indicates the service is deploying.
+	ServiceDeploying = "deploying"
+
+	// ServiceRollback indicates the service is rolling back.
+	ServiceRollback = "rollback"
+
+	// ServiceOffline indicates the service is offline.
+	ServiceOffline = "offline"
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Heartbeat Controller
+// ─────────────────────────────────────────────────────────────────────────────
 
 // HeartbeatOptions configures the NIP-38 heartbeat controller.
 type HeartbeatOptions struct {
@@ -48,6 +151,8 @@ type HeartbeatOptions struct {
 	IdleInterval time.Duration
 	// DefaultContent is optional free-form text published with the idle status.
 	DefaultContent string
+	// Category is the d-tag category (default: CategoryAgent).
+	Category string
 	// Enabled can be set to false to skip all publishing (no-op mode).
 	Enabled bool
 }
@@ -82,6 +187,9 @@ func NewHeartbeat(parent context.Context, opts HeartbeatOptions) (*Heartbeat, er
 	}
 	if opts.IdleInterval <= 0 {
 		opts.IdleInterval = 5 * time.Minute
+	}
+	if opts.Category == "" {
+		opts.Category = CategoryAgent
 	}
 
 	pk, err := opts.Keyer.GetPublicKey(parent)
@@ -140,6 +248,21 @@ func (h *Heartbeat) SetUpdating(ctx context.Context, note string) {
 	h.SetStatus(ctx, StatusUpdating, note, 0)
 }
 
+// SetOnline transitions to online status (agent is ready).
+func (h *Heartbeat) SetOnline(ctx context.Context, note string) {
+	h.SetStatus(ctx, StatusOnline, note, 0)
+}
+
+// SetBusy transitions to busy status (agent is processing).
+func (h *Heartbeat) SetBusy(ctx context.Context, note string) {
+	h.SetStatus(ctx, StatusBusy, note, 0)
+}
+
+// SetDraining transitions to draining status (finishing current work before shutdown).
+func (h *Heartbeat) SetDraining(ctx context.Context, note string) {
+	h.SetStatus(ctx, StatusDraining, note, 0)
+}
+
 // Stop publishes an offline status and shuts down the heartbeat.
 // Safe to call on a nil receiver (no-op).
 func (h *Heartbeat) Stop() {
@@ -179,7 +302,7 @@ func (h *Heartbeat) loop() {
 
 func (h *Heartbeat) publish(ctx context.Context, status, content string, expiry int64) {
 	tags := nostr.Tags{
-		{"d", "general"},
+		{"d", h.opts.Category},
 		{"status", status},
 	}
 	if expiry > 0 {
@@ -187,7 +310,7 @@ func (h *Heartbeat) publish(ctx context.Context, status, content string, expiry 
 	}
 
 	evt := nostr.Event{
-		Kind:      30315,
+		Kind:      nostr.Kind(events.KindNIP38Status),
 		Content:   content,
 		CreatedAt: nostr.Now(),
 		Tags:      tags,

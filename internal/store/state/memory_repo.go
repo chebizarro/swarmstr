@@ -67,7 +67,7 @@ func (r *MemoryRepository) Put(ctx context.Context, doc MemoryDoc) (Event, error
 		return Event{}, err
 	}
 
-	tags := [][]string{{"t", "memory"}}
+	tags := [][]string{{"type", events.AppDataTypeMemory}, {"t", "memory"}}
 	if doc.Role != "" {
 		tags = append(tags, []string{events.TagRole, doc.Role})
 	}
@@ -100,7 +100,7 @@ func (r *MemoryRepository) Put(ctx context.Context, doc MemoryDoc) (Event, error
 	}
 
 	dTag := fmt.Sprintf("metiq:mem:%s", doc.MemoryID)
-	return r.store.PutReplaceable(ctx, Address{Kind: events.KindMemoryDoc, PubKey: r.author, DTag: dTag}, raw, tags)
+	return r.store.PutReplaceable(ctx, Address{Kind: events.KindAppData, PubKey: r.author, DTag: dTag}, raw, tags)
 }
 
 func (r *MemoryRepository) ListSession(ctx context.Context, sessionID string, limit int) ([]MemoryDoc, error) {
@@ -110,7 +110,7 @@ func (r *MemoryRepository) ListSession(ctx context.Context, sessionID string, li
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindMemoryDoc, r.author, events.TagSession, protectedTagValue(sessionID), limit)
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindAppData, r.author, events.TagSession, protectedTagValue(sessionID), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +125,7 @@ func (r *MemoryRepository) SearchKeyword(ctx context.Context, keyword string, li
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindMemoryDoc, r.author, events.TagKeyword, keyword, limit)
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindAppData, r.author, events.TagKeyword, keyword, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func (r *MemoryRepository) ListByType(ctx context.Context, memType string, limit
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindMemoryDoc, r.author, events.TagMemType, memType, limit)
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindAppData, r.author, events.TagMemType, memType, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ func (r *MemoryRepository) ListByTaskID(ctx context.Context, taskID string, limi
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindMemoryDoc, r.author, events.TagMemTaskID, taskID, limit)
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindAppData, r.author, events.TagMemTaskID, taskID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ func (r *MemoryRepository) ListBySource(ctx context.Context, source string, limi
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.store.ListByTagForAuthor(ctx, events.KindMemoryDoc, r.author, events.TagMemSource, source, limit)
+	rows, err := r.store.ListByTagForAuthor(ctx, events.KindAppData, r.author, events.TagMemSource, source, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +178,10 @@ func (r *MemoryRepository) decodeAndSortMemories(rows []Event, author string, li
 	byID := map[string]MemoryDoc{}
 	for _, row := range rows {
 		if row.PubKey != author {
+			continue
+		}
+		// Filter for memory documents only (NIP-78 type discrimination)
+		if !hasTagValue(row.Tags, "type", events.AppDataTypeMemory) {
 			continue
 		}
 		doc, err := r.decodeMemoryEvent(row)
