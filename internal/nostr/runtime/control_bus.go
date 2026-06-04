@@ -767,6 +767,7 @@ func (b *ControlRPCBus) runControlRelaySubscription(ctx context.Context, relayUR
 						if b.subHealth != nil {
 							b.subHealth.RecordReconnect()
 						}
+						sub.Unsub()
 						goto resubscribe
 					}
 				}

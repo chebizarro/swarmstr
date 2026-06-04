@@ -481,6 +481,7 @@ func (b *NIP17Bus) perRelaySubscribe(
 					})
 					if authErr == nil {
 						hasAuthed = true
+						sub.Unsub()
 						goto subscribe
 					}
 					log.Printf("nip17: AUTH to %s failed: %v", relayURL, authErr)

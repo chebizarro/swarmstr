@@ -740,6 +740,7 @@ func (b *DMBus) runDMRelaySubscription(ctx context.Context, relayURL string, fil
 						if b.subHealth != nil {
 							b.subHealth.RecordReconnect()
 						}
+						sub.Unsub()
 						goto resubscribe
 					}
 				}
