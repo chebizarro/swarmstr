@@ -124,6 +124,9 @@ func TestManagerInitializeRunAndStatus(t *testing.T) {
 	if handle.SessionKey != "sess-1" || handle.Backend != "test" || handle.CWD != "/workspace" {
 		t.Fatalf("unexpected handle: %+v", handle)
 	}
+	if handle.BackendSessionID != "rec-sess-1" || handle.AgentSessionID != "rt-sess-1" {
+		t.Fatalf("unexpected stable handle IDs: %+v", handle)
+	}
 
 	events, err := mgr.RunTurn(ctx, RunSessionTurnInput{SessionKey: "sess-1", Text: "hello"})
 	if err != nil {
@@ -143,6 +146,9 @@ func TestManagerInitializeRunAndStatus(t *testing.T) {
 	}
 	if !status.Cached || status.ActiveTurn || status.State != "idle" || status.Agent != "planner" {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+	if status.RuntimeHandle == nil || status.RuntimeHandle.BackendSessionID != "rec-sess-1" || status.RuntimeHandle.AgentSessionID != "rt-sess-1" {
+		t.Fatalf("unexpected reconciled status handle: %+v", status.RuntimeHandle)
 	}
 	if rec, err := store.Load(ctx, "sess-1"); err != nil || rec == nil {
 		t.Fatalf("expected persisted record, rec=%+v err=%v", rec, err)

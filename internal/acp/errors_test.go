@@ -26,6 +26,30 @@ func TestAcpErrorFormattingByCategory(t *testing.T) {
 	}
 }
 
+func TestToAcpRuntimeErrorMapsCoreCodes(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"missing", ErrBackendMissing, AcpCodeBackendMissing},
+		{"unavailable", ErrBackendUnavailable, AcpCodeBackendUnavailable},
+		{"session", ErrSessionNotFound, AcpCodeSessionInitFailed},
+		{"fallback", errors.New("boom"), AcpCodeTurnFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ToAcpRuntimeError(tc.err, AcpCodeTurnFailed, "turn failed")
+			if got.Code != tc.want {
+				t.Fatalf("code = %q, want %q", got.Code, tc.want)
+			}
+			if !errors.Is(got, tc.err) {
+				t.Fatalf("mapped error does not wrap source: %+v", got)
+			}
+		})
+	}
+}
+
 func TestAcpErrorWrappingAndTypeChecking(t *testing.T) {
 	cause := errors.New("dial refused")
 	err := AcpError{Code: AcpErrorBackendUnavailable, Message: "backend unavailable", Err: cause}
