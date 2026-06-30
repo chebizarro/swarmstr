@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"metiq/internal/plugins/manifest"
+	"metiq/internal/store/state"
 )
 
 func testManifest(id string) manifest.Manifest {
@@ -173,6 +174,87 @@ func TestInstallDuplicate(t *testing.T) {
 		t.Errorf("force install should succeed: %v", err)
 	}
 }
+
+func TestUnifiedConfigLifecycleInstallEnableDisableUninstall(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.AutoEnable = false
+	mgr := NewManager(cfg, t.TempDir())
+	ctx := context.Background()
+
+	installed, err := mgr.Install(ctx, testManifest("unified-plugin"), "/tmp/unified-plugin", InstallOptions{Scope: ScopeProject, AutoEnable: ptrBool(false)})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if installed.State != StateInstalled {
+		t.Fatalf("expected installed state, got %s", installed.State)
+	}
+	if err := mgr.Enable(ctx, "unified-plugin"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if active := mgr.ActiveRuntimeRegistry(); active["unified-plugin"] == nil {
+		t.Fatalf("expected enabled plugin in active runtime registry: %#v", active)
+	}
+	if err := mgr.Disable(ctx, "unified-plugin"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if active := mgr.ActiveRuntimeRegistry(); len(active) != 0 {
+		t.Fatalf("expected disabled plugin removed from active runtime registry: %#v", active)
+	}
+	if err := mgr.Uninstall(ctx, "unified-plugin"); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if got := mgr.List(); len(got) != 0 {
+		t.Fatalf("expected no lifecycle state after uninstall, got %#v", got)
+	}
+}
+
+func TestLoadFromConfigDerivesLegacyExtensions(t *testing.T) {
+	cfg := state.ConfigDoc{Version: 1, Extra: map[string]any{"extensions": map[string]any{
+		"entries":  map[string]any{"legacy-plugin": map[string]any{"enabled": true, "install_path": "/tmp/legacy", "plugin_type": "goja"}},
+		"installs": map[string]any{"legacy-plugin": map[string]any{"source": "path", "sourcePath": "/tmp/legacy", "installPath": "/tmp/legacy", "version": "1.2.3"}},
+	}}}
+	mgr := NewManager(DefaultLifecycleConfig(), t.TempDir())
+	if err := mgr.LoadFromConfig(cfg); err != nil {
+		t.Fatalf("LoadFromConfig: %v", err)
+	}
+	plugin, ok := mgr.Resolve("legacy-plugin")
+	if !ok {
+		t.Fatal("expected legacy plugin to be derived into lifecycle state")
+	}
+	if plugin.State != StateEnabled || plugin.Source.Type != "path" || plugin.Manifest.Version != "1.2.3" {
+		t.Fatalf("unexpected derived plugin: %#v", plugin)
+	}
+}
+
+func TestApplyToConfigHasNoDuplicateConflictingState(t *testing.T) {
+	mgr := NewManager(DefaultLifecycleConfig(), t.TempDir())
+	ctx := context.Background()
+	if _, err := mgr.Install(ctx, testManifest("single-source"), "/tmp/single", InstallOptions{Scope: ScopeProject, Enable: true, Force: true}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	cfg := mgr.ApplyToConfig(state.ConfigDoc{Version: 1, Extra: map[string]any{"extensions": map[string]any{
+		"entries":  map[string]any{"single-source": map[string]any{"enabled": false}},
+		"installs": map[string]any{"single-source": map[string]any{"source": "path", "installPath": "/tmp/stale"}},
+	}}})
+	rawExt := cfg.Extra["extensions"].(map[string]any)
+	entries := rawExt["entries"].(map[string]any)
+	entry := entries["single-source"].(map[string]any)
+	if enabled, _ := entry["enabled"].(bool); !enabled {
+		t.Fatalf("expected compatibility entry to mirror lifecycle enabled state, got %#v", entry)
+	}
+	installs := rawExt["installs"].(map[string]any)
+	install := installs["single-source"].(map[string]any)
+	if install["installPath"] != "/tmp/single" {
+		t.Fatalf("expected compatibility install to mirror lifecycle installPath, got %#v", install)
+	}
+	lifecycleState := rawExt["lifecycle"].(map[string]any)
+	plugins := lifecycleState["plugins"].([]any)
+	if len(plugins) != 1 || len(entries) != 1 || len(installs) != 1 {
+		t.Fatalf("expected one authoritative lifecycle state and one compatibility mirror, got lifecycle=%#v entries=%#v installs=%#v", plugins, entries, installs)
+	}
+}
+
+func ptrBool(v bool) *bool { return &v }
 
 func TestEnableDisable(t *testing.T) {
 	cfg := DefaultLifecycleConfig()

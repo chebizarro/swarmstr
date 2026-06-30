@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -18,6 +17,8 @@ import (
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/plugins/installer"
+	"metiq/internal/plugins/lifecycle"
+	"metiq/internal/plugins/manifest"
 	"metiq/internal/store/state"
 )
 
@@ -218,9 +219,25 @@ func (s *daemonServices) applyPluginInstallRuntime(ctx context.Context, docsRepo
 	default:
 		return nil, fmt.Errorf("unsupported install.source %q", source)
 	}
-	next, err := methods.ApplyPluginInstallOperation(cfg, req.PluginID, install, enableEntry, includeLoadPath)
+	lc := lifecycle.NewManager(lifecycle.DefaultLifecycleConfig(), ".")
+	if err := lc.LoadFromConfig(cfg); err != nil {
+		return nil, err
+	}
+	mf := lifecycleManifestFromInstall(req.PluginID, install)
+	autoEnable := false
+	installed, err := lc.Install(ctx, mf, installPath, lifecycle.InstallOptions{
+		Scope:      lifecycle.ScopeProject,
+		Source:     lifecycleInstallSource(install),
+		Enable:     enableEntry,
+		AutoEnable: &autoEnable,
+		Force:      true,
+	})
 	if err != nil {
 		return nil, err
+	}
+	next := lc.ApplyToConfig(cfg)
+	if includeLoadPath && source == "path" && sourcePath != "" {
+		next = appendPluginLoadPath(next, sourcePath)
 	}
 	if err := persistRuntimeConfigFile(next); err != nil {
 		return nil, err
@@ -229,12 +246,7 @@ func (s *daemonServices) applyPluginInstallRuntime(ctx context.Context, docsRepo
 		return nil, err
 	}
 	configState.Set(next)
-	rawExt, _ := next.Extra["extensions"].(map[string]any)
-	rawInstalls, _ := rawExt["installs"].(map[string]any)
-	record, _ := rawInstalls[req.PluginID].(map[string]any)
-	if record == nil {
-		return nil, fmt.Errorf("install operation succeeded but record not found in config")
-	}
+	record := lifecycleInstallRecord(installed)
 	result := map[string]any{
 		"ok":       true,
 		"pluginId": req.PluginID,
@@ -272,13 +284,17 @@ func applyPluginUninstallRuntime(ctx context.Context, docsRepo *state.DocsReposi
 			}
 		}
 	}
-	next, actions, err := methods.ApplyPluginUninstallOperation(cfg, req.PluginID)
-	if err != nil {
-		if errors.Is(err, methods.ErrPluginNotFound) {
-			return nil, state.ErrNotFound
-		}
+	lc := lifecycle.NewManager(lifecycle.DefaultLifecycleConfig(), ".")
+	if err := lc.LoadFromConfig(cfg); err != nil {
 		return nil, err
 	}
+	if err := lc.Uninstall(ctx, req.PluginID); err != nil {
+		return nil, state.ErrNotFound
+	}
+	next := lc.ApplyToConfig(cfg)
+	var actions methods.PluginUninstallActions
+	actions.Entry = true
+	actions.Install = true
 	if err := persistRuntimeConfigFile(next); err != nil {
 		return nil, err
 	}
@@ -379,8 +395,18 @@ func applyPluginUpdateRuntime(ctx context.Context, docsRepo *state.DocsRepositor
 			RecordPatch: patch,
 		}
 	}
-	next, changed, outcomes := methods.ApplyPluginUpdateOperation(cfg, req.PluginIDs, req.DryRun, runner)
-	if changed {
+	lc := lifecycle.NewManager(lifecycle.DefaultLifecycleConfig(), ".")
+	if err := lc.LoadFromConfig(cfg); err != nil {
+		return nil, err
+	}
+	compatCfg := lc.ApplyToConfig(cfg)
+	next, changed, outcomes := methods.ApplyPluginUpdateOperation(compatCfg, req.PluginIDs, req.DryRun, runner)
+	if changed && !req.DryRun {
+		removePluginLifecycleConfig(next)
+		if err := lc.LoadFromConfig(next); err != nil {
+			return nil, err
+		}
+		next = lc.ApplyToConfig(cfg)
 		if err := persistRuntimeConfigFile(next); err != nil {
 			return nil, err
 		}
@@ -390,6 +416,97 @@ func applyPluginUpdateRuntime(ctx context.Context, docsRepo *state.DocsRepositor
 		configState.Set(next)
 	}
 	return map[string]any{"ok": true, "changed": changed, "outcomes": outcomes}, nil
+}
+
+func lifecycleManifestFromInstall(pluginID string, install map[string]any) manifest.Manifest {
+	version := strings.TrimSpace(getString(install, "version"))
+	if version == "" {
+		version = "0.0.0"
+	}
+	runtime := manifest.RuntimeGoja
+	if pluginType := strings.TrimSpace(getString(install, "plugin_type")); strings.EqualFold(pluginType, "node") || strings.EqualFold(pluginType, "nodejs") {
+		runtime = manifest.RuntimeNode
+	}
+	return manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		ID:            pluginID,
+		Version:       version,
+		Name:          pluginID,
+		Runtime:       runtime,
+	}
+}
+
+func lifecycleInstallSource(install map[string]any) lifecycle.InstallSource {
+	sourceType := strings.ToLower(strings.TrimSpace(getString(install, "source")))
+	return lifecycle.InstallSource{
+		Type:    sourceType,
+		URL:     strings.TrimSpace(getString(install, "url")),
+		Package: strings.TrimSpace(getString(install, "spec")),
+		Version: strings.TrimSpace(getString(install, "version")),
+		Path:    strings.TrimSpace(getString(install, "sourcePath")),
+	}
+}
+
+func lifecycleInstallRecord(plugin *lifecycle.InstalledPlugin) map[string]any {
+	if plugin == nil {
+		return map[string]any{}
+	}
+	record := map[string]any{
+		"source":      plugin.Source.Type,
+		"installPath": plugin.InstallPath,
+	}
+	if plugin.Source.Path != "" {
+		record["sourcePath"] = plugin.Source.Path
+	}
+	if plugin.Source.Package != "" {
+		record["spec"] = plugin.Source.Package
+	}
+	if plugin.Source.URL != "" {
+		record["url"] = plugin.Source.URL
+	}
+	if plugin.Source.Version != "" {
+		record["version"] = plugin.Source.Version
+	} else if plugin.Manifest.Version != "" {
+		record["version"] = plugin.Manifest.Version
+	}
+	return record
+}
+
+func appendPluginLoadPath(cfg state.ConfigDoc, pathValue string) state.ConfigDoc {
+	if cfg.Extra == nil {
+		cfg.Extra = map[string]any{}
+	}
+	rawExt, _ := cfg.Extra["extensions"].(map[string]any)
+	if rawExt == nil {
+		rawExt = map[string]any{}
+		cfg.Extra["extensions"] = rawExt
+	}
+	loadPaths := []any{}
+	seen := map[string]struct{}{}
+	if existing, ok := rawExt["load_paths"].([]any); ok {
+		for _, item := range existing {
+			if s := strings.TrimSpace(getString(map[string]any{"v": item}, "v")); s != "" {
+				if _, dup := seen[s]; !dup {
+					seen[s] = struct{}{}
+					loadPaths = append(loadPaths, s)
+				}
+			}
+		}
+	}
+	if _, dup := seen[pathValue]; !dup {
+		loadPaths = append(loadPaths, pathValue)
+	}
+	rawExt["load_paths"] = loadPaths
+	return cfg
+}
+
+func removePluginLifecycleConfig(cfg state.ConfigDoc) {
+	if cfg.Extra == nil {
+		return
+	}
+	if rawExt, ok := cfg.Extra["extensions"].(map[string]any); ok {
+		delete(rawExt, "lifecycle")
+	}
 }
 
 // ─── Plugin registry handlers ──────────────────────────────────────────────────

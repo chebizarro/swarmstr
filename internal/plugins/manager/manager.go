@@ -22,6 +22,7 @@ import (
 
 	"metiq/internal/agent"
 	"metiq/internal/plugins/installer"
+	"metiq/internal/plugins/lifecycle"
 	"metiq/internal/plugins/runtime"
 	"metiq/internal/plugins/sdk"
 	"metiq/internal/plugins/trust"
@@ -60,9 +61,14 @@ func New(host *sdk.Host) *GojaPluginManager {
 	}
 }
 
-// Load reads all enabled Goja plugins from cfg and compiles them.
+// Load reads all enabled Goja plugins from lifecycle state and compiles them.
 // It is idempotent — subsequent calls replace the previous set.
 func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error {
+	lc := lifecycle.NewManager(lifecycle.DefaultLifecycleConfig(), ".")
+	if err := lc.LoadFromConfig(cfg); err != nil {
+		return err
+	}
+	cfg = lc.ApplyToConfig(cfg)
 	entries := pluginEntries(cfg)
 	if len(entries) == 0 {
 		m.mu.Lock()
