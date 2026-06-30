@@ -436,6 +436,44 @@ type InboundChannelMessage struct {
 	MediaMIME string
 }
 
+// ─── Shared outbound media contract ──────────────────────────────────────────
+
+// MediaPayloadInput describes one outbound media reference for channel plugins.
+type MediaPayloadInput struct {
+	Path        string `json:"path"`
+	ContentType string `json:"content_type,omitempty"`
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+}
+
+// MediaPayload is the legacy-compatible media field shape consumed by channel
+// send helpers. Single-item fields mirror the first media entry; plural fields
+// carry the full media sequence.
+type MediaPayload struct {
+	MediaPath  string   `json:"media_path,omitempty"`
+	MediaType  string   `json:"media_type,omitempty"`
+	MediaURL   string   `json:"media_url,omitempty"`
+	MediaPaths []string `json:"media_paths,omitempty"`
+	MediaURLs  []string `json:"media_urls,omitempty"`
+	MediaTypes []string `json:"media_types,omitempty"`
+}
+
+// MediaLimits declares host-enforced channel media validation limits.
+type MediaLimits struct {
+	MaxBytes     int64    `json:"max_bytes,omitempty"`
+	MaxItems     int      `json:"max_items,omitempty"`
+	AllowedMIMEs []string `json:"allowed_mimes,omitempty"`
+}
+
+// DirectTextMediaPayload is the shared outbound contract for direct channels
+// that send text plus optional media references to one recipient.
+type DirectTextMediaPayload struct {
+	To        string              `json:"to"`
+	Text      string              `json:"text,omitempty"`
+	Media     []MediaPayloadInput `json:"media,omitempty"`
+	ReplyToID string              `json:"reply_to_id,omitempty"`
+	AccountID string              `json:"account_id,omitempty"`
+}
+
 // ─── Channel capabilities ─────────────────────────────────────────────────────
 
 // ChannelCapabilities declares which optional features a channel plugin supports.
@@ -456,6 +494,11 @@ type ChannelCapabilities struct {
 	// E2EEncryption indicates the channel supports end-to-end encrypted messages
 	// via NIP-44. When true the runtime will wrap the handle with EncryptedHandle.
 	E2EEncryption bool
+	// Media indicates the channel can deliver outbound media payloads.
+	Media bool
+	// DirectTextMedia indicates the channel supports the shared direct text/media
+	// outbound contract (text plus one or more media references).
+	DirectTextMedia bool
 }
 
 // ChannelPluginWithCapabilities is an optional extension of ChannelPlugin.
@@ -497,6 +540,14 @@ type AudioHandle interface {
 	// SendAudio delivers raw audio bytes to the channel.
 	// format is the audio format (e.g. "mp3", "ogg", "wav").
 	SendAudio(ctx context.Context, audio []byte, format string) error
+}
+
+// MediaHandle is implemented by channels that support the shared direct
+// text/media outbound contract.
+type MediaHandle interface {
+	ChannelHandle
+	// SendMedia delivers text plus one or more media references to the channel.
+	SendMedia(ctx context.Context, payload DirectTextMediaPayload) error
 }
 
 // EditHandle is implemented by channels that support message editing.
