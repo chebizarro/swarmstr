@@ -7,6 +7,7 @@
 // Built-in backends:
 //   - "memory"   – in-process JSON inverted index (default, zero config)
 //   - "json-fts" – alias for "memory" (same implementation, different name)
+//   - "lancedb"  – embedded LanceDB-compatible cosine vector index
 //
 // Third-party backends can register themselves via RegisterBackend before
 // the daemon initialises its index.
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 
+	"metiq/internal/memory/lancedb"
 	"metiq/internal/store/state"
 )
 
@@ -147,6 +149,9 @@ func init() {
 	}
 	RegisterBackend("memory", factory)
 	RegisterBackend("json-fts", factory)
+	RegisterBackend("lancedb", func(path string) (Backend, error) {
+		return OpenLanceDBBackend(path)
+	})
 }
 
 // IndexBackend adapts the existing *Index to the Backend interface.
@@ -197,6 +202,313 @@ func (b *IndexBackend) ListByTaskID(taskID string, limit int) []IndexedMemory {
 }
 func (b *IndexBackend) Save() error  { return b.idx.Save() }
 func (b *IndexBackend) Close() error { return b.idx.Save() }
+
+// LanceDBBackend adapts the embedded LanceDB-compatible vector store to the
+// memory Backend interface. It uses the memory embedding provider contract so
+// stored documents carry vectors and searches embed the query text.
+type LanceDBBackend struct {
+	store    lancedb.Backend
+	provider MemoryEmbeddingProvider
+}
+
+// OpenLanceDBBackend opens the embedded LanceDB-compatible memory backend.
+func OpenLanceDBBackend(path string) (*LanceDBBackend, error) {
+	store, err := lancedb.New(lancedb.Options{Path: path})
+	if err != nil {
+		return nil, err
+	}
+	return &LanceDBBackend{
+		store: store,
+		provider: StaticMemoryEmbeddingProvider{
+			Provider: EmbeddingProvider{ID: "local", Model: "static-memory", Version: "v1"},
+			Dims:     1536,
+		},
+	}, nil
+}
+
+func (b *LanceDBBackend) Add(doc state.MemoryDoc) { b.AddWithContext(context.Background(), doc) }
+
+func (b *LanceDBBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
+	if strings.TrimSpace(doc.MemoryID) == "" || strings.TrimSpace(doc.Text) == "" {
+		return
+	}
+	vec, err := b.provider.Embed(ctx, doc.Text)
+	if err != nil {
+		return
+	}
+	_ = b.store.Upsert(ctx, []lancedb.VectorDocument{{
+		ID:       doc.MemoryID,
+		Text:     doc.Text,
+		Vector:   vec,
+		Metadata: memoryDocMetadata(doc),
+	}})
+}
+
+func (b *LanceDBBackend) Search(query string, limit int) []IndexedMemory {
+	return b.SearchWithContext(context.Background(), query, limit)
+}
+
+func (b *LanceDBBackend) SearchWithContext(ctx context.Context, query string, limit int) []IndexedMemory {
+	if limit <= 0 {
+		limit = 20
+	}
+	vec, err := b.provider.Embed(ctx, query)
+	if err != nil {
+		return nil
+	}
+	docs, err := b.store.Search(ctx, vec, limit)
+	if err != nil {
+		return nil
+	}
+	return vectorDocsToIndexed(docs)
+}
+
+func (b *LanceDBBackend) SearchSession(sessionID, query string, limit int) []IndexedMemory {
+	return b.SearchSessionWithContext(context.Background(), sessionID, query, limit)
+}
+
+func (b *LanceDBBackend) SearchSessionWithContext(ctx context.Context, sessionID, query string, limit int) []IndexedMemory {
+	if limit <= 0 {
+		limit = 8
+	}
+	results := b.SearchWithContext(ctx, query, limit*4)
+	out := make([]IndexedMemory, 0, limit)
+	for _, result := range results {
+		if result.SessionID == sessionID {
+			out = append(out, result)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func (b *LanceDBBackend) ListSession(sessionID string, limit int) []IndexedMemory {
+	return b.filter(func(m IndexedMemory) bool { return m.SessionID == sessionID }, limit)
+}
+func (b *LanceDBBackend) ListByTopic(topic string, limit int) []IndexedMemory {
+	return b.filter(func(m IndexedMemory) bool { return m.Topic == topic }, limit)
+}
+func (b *LanceDBBackend) ListByType(memType string, limit int) []IndexedMemory {
+	return b.filter(func(m IndexedMemory) bool { return m.Type == memType }, limit)
+}
+func (b *LanceDBBackend) ListByTaskID(taskID string, limit int) []IndexedMemory {
+	return b.filter(func(m IndexedMemory) bool { return m.TaskID == taskID }, limit)
+}
+
+func (b *LanceDBBackend) Count() int {
+	docs, err := b.store.Search(context.Background(), oneHotQuery(), int(^uint(0)>>1))
+	if err != nil {
+		return 0
+	}
+	return len(docs)
+}
+
+func (b *LanceDBBackend) SessionCount() int {
+	sessions := map[string]struct{}{}
+	for _, m := range vectorDocsToIndexed(b.allDocs()) {
+		if m.SessionID != "" {
+			sessions[m.SessionID] = struct{}{}
+		}
+	}
+	return len(sessions)
+}
+
+func (b *LanceDBBackend) Compact(maxEntries int) int {
+	if maxEntries < 0 {
+		maxEntries = 0
+	}
+	memories := vectorDocsToIndexed(b.allDocs())
+	if len(memories) <= maxEntries {
+		return 0
+	}
+	for i := 1; i < len(memories); i++ {
+		for j := i; j > 0 && memories[j].Unix < memories[j-1].Unix; j-- {
+			memories[j], memories[j-1] = memories[j-1], memories[j]
+		}
+	}
+	remove := len(memories) - maxEntries
+	ids := make([]string, 0, remove)
+	for i := 0; i < remove; i++ {
+		ids = append(ids, memories[i].MemoryID)
+	}
+	if err := b.store.Delete(context.Background(), ids); err != nil {
+		return 0
+	}
+	return remove
+}
+
+func (b *LanceDBBackend) Save() error { return b.store.Health(context.Background()) }
+
+func (b *LanceDBBackend) Store(sessionID, text string, tags []string) string {
+	id := GenerateMemoryID()
+	b.Add(state.MemoryDoc{MemoryID: id, SessionID: sessionID, Text: text, Keywords: append([]string(nil), tags...)})
+	return id
+}
+
+func (b *LanceDBBackend) Delete(id string) bool {
+	before := b.Count()
+	if err := b.store.Delete(context.Background(), []string{id}); err != nil {
+		return false
+	}
+	return b.Count() < before
+}
+
+func (b *LanceDBBackend) Close() error {
+	if closer, ok := b.store.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
+func (b *LanceDBBackend) BackendStatus() BackendStatus {
+	if err := b.store.Health(context.Background()); err != nil {
+		return BackendStatus{Name: "lancedb", Available: false, LastError: err.Error()}
+	}
+	return BackendStatus{Name: "lancedb", Available: true}
+}
+
+func (b *LanceDBBackend) MemoryStatus() StoreStatus {
+	primary := b.BackendStatus()
+	return StoreStatus{Kind: "lancedb", Primary: primary}
+}
+
+func (b *LanceDBBackend) filter(keep func(IndexedMemory) bool, limit int) []IndexedMemory {
+	if limit <= 0 {
+		limit = 20
+	}
+	out := make([]IndexedMemory, 0, limit)
+	for _, m := range vectorDocsToIndexed(b.allDocs()) {
+		if keep(m) {
+			out = append(out, m)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func (b *LanceDBBackend) allDocs() []lancedb.VectorDocument {
+	docs, err := b.store.Search(context.Background(), oneHotQuery(), int(^uint(0)>>1))
+	if err != nil {
+		return nil
+	}
+	return docs
+}
+
+func oneHotQuery() []float32 {
+	v := make([]float32, 1536)
+	v[0] = 1
+	return v
+}
+
+func memoryDocMetadata(doc state.MemoryDoc) map[string]any {
+	return map[string]any{
+		"session_id":        doc.SessionID,
+		"role":              doc.Role,
+		"topic":             doc.Topic,
+		"keywords":          append([]string(nil), doc.Keywords...),
+		"unix":              doc.Unix,
+		"type":              doc.Type,
+		"goal_id":           doc.GoalID,
+		"task_id":           doc.TaskID,
+		"run_id":            doc.RunID,
+		"episode_kind":      doc.EpisodeKind,
+		"confidence":        doc.Confidence,
+		"source":            doc.Source,
+		"reviewed_at":       doc.ReviewedAt,
+		"reviewed_by":       doc.ReviewedBy,
+		"expires_at":        doc.ExpiresAt,
+		"mem_status":        doc.MemStatus,
+		"superseded_by":     doc.SupersededBy,
+		"invalidated_at":    doc.InvalidatedAt,
+		"invalidated_by":    doc.InvalidatedBy,
+		"invalidate_reason": doc.InvalidateReason,
+	}
+}
+
+func vectorDocsToIndexed(docs []lancedb.VectorDocument) []IndexedMemory {
+	out := make([]IndexedMemory, 0, len(docs))
+	for _, doc := range docs {
+		m := IndexedMemory{MemoryID: doc.ID, Text: doc.Text}
+		if md := doc.Metadata; md != nil {
+			m.SessionID = stringMeta(md, "session_id")
+			m.Role = stringMeta(md, "role")
+			m.Topic = stringMeta(md, "topic")
+			m.Keywords = stringSliceMeta(md, "keywords")
+			m.Unix = int64Meta(md, "unix")
+			m.Type = stringMeta(md, "type")
+			m.GoalID = stringMeta(md, "goal_id")
+			m.TaskID = stringMeta(md, "task_id")
+			m.RunID = stringMeta(md, "run_id")
+			m.EpisodeKind = stringMeta(md, "episode_kind")
+			m.Confidence = float64Meta(md, "confidence")
+			m.Source = stringMeta(md, "source")
+			m.ReviewedAt = int64Meta(md, "reviewed_at")
+			m.ReviewedBy = stringMeta(md, "reviewed_by")
+			m.ExpiresAt = int64Meta(md, "expires_at")
+			m.MemStatus = stringMeta(md, "mem_status")
+			m.SupersededBy = stringMeta(md, "superseded_by")
+			m.InvalidatedAt = int64Meta(md, "invalidated_at")
+			m.InvalidatedBy = stringMeta(md, "invalidated_by")
+			m.InvalidateReason = stringMeta(md, "invalidate_reason")
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func stringMeta(md map[string]any, key string) string {
+	if s, ok := md[key].(string); ok {
+		return s
+	}
+	return ""
+}
+
+func int64Meta(md map[string]any, key string) int64 {
+	switch v := md[key].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
+func float64Meta(md map[string]any, key string) float64 {
+	switch v := md[key].(type) {
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	default:
+		return 0
+	}
+}
+
+func stringSliceMeta(md map[string]any, key string) []string {
+	switch v := md[key].(type) {
+	case []string:
+		return append([]string(nil), v...)
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
 
 type contextAdder interface {
 	AddWithContext(context.Context, state.MemoryDoc)
