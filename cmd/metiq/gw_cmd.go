@@ -32,9 +32,23 @@ func runGW(args []string) error {
 
 	positional := fs.Args()
 	if len(positional) == 0 {
-		return fmt.Errorf("usage: metiq gw <method> [json-params]")
+		return fmt.Errorf("usage: metiq gw [call] <method> [json-params] | run|dev|discover [json-params]")
 	}
 	method := positional[0]
+	if mapped, ok := map[string]string{
+		"run":      "gateway.run",
+		"dev":      "gateway.dev",
+		"discover": "gateway.discover",
+	}[method]; ok {
+		method = mapped
+		positional = append([]string{method}, positional[1:]...)
+	} else if method == "call" {
+		if len(positional) < 2 {
+			return fmt.Errorf("usage: metiq gw call <method> [json-params]")
+		}
+		positional = positional[1:]
+		method = positional[0]
+	}
 
 	// Collect JSON params: remaining positional args joined, or '{}' if none.
 	var rawParams json.RawMessage

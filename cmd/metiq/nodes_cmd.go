@@ -183,10 +183,18 @@ func runNodes(args []string) error {
 		return runNodesDescribe(args[1:])
 	case "invoke":
 		return runNodesInvoke(args[1:])
+	case "notify":
+		return runNodesInvokeAlias(args[1:], "notify")
+	case "push":
+		return runNodesInvokeAlias(args[1:], "push")
+	case "screen":
+		return runNodesInvokeAlias(args[1:], "screen")
+	case "location":
+		return runNodesInvokeAlias(args[1:], "location")
 	case "rename":
 		return runNodesRename(args[1:])
 	default:
-		return fmt.Errorf("unknown nodes sub-command %q (list|add|status|send|pending|approve|reject|describe|invoke|rename)", args[0])
+		return fmt.Errorf("unknown nodes sub-command %q (list|add|status|send|pending|approve|reject|describe|invoke|notify|push|screen|location|rename)", args[0])
 	}
 }
 
@@ -355,6 +363,48 @@ func runNodesInvoke(args []string) error {
 	}
 	if nodeID == "" || command == "" {
 		return fmt.Errorf("usage: metiq nodes invoke --node <id> --command <cmd> [--args '{...}']")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{
+		"node_id":    nodeID,
+		"command":    command,
+		"timeout_ms": timeoutSeconds * 1000,
+	}
+	if rawArgs != "" {
+		var argsMap map[string]any
+		if err := json.Unmarshal([]byte(rawArgs), &argsMap); err != nil {
+			return fmt.Errorf("invalid --args JSON: %w", err)
+		}
+		body["args"] = argsMap
+	}
+	result, err := cl.call("node.invoke", body)
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
+}
+
+func runNodesInvokeAlias(args []string, command string) error {
+	fs := flag.NewFlagSet("nodes "+command, flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath, nodeID, rawArgs string
+	var timeoutSeconds int
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.StringVar(&nodeID, "node", "", "node ID (required)")
+	fs.StringVar(&rawArgs, "args", "", "JSON args to pass to the command")
+	fs.IntVar(&timeoutSeconds, "timeout", 30, "timeout in seconds")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if nodeID == "" {
+		if fs.NArg() == 0 {
+			return fmt.Errorf("usage: metiq nodes %s --node <id> [--args '{...}']", command)
+		}
+		nodeID = fs.Arg(0)
 	}
 	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
 	if err != nil {

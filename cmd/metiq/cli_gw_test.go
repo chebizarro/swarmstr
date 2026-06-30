@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,6 +158,83 @@ func TestResolveNostrControlClientPrefersExplicitControlSigner(t *testing.T) {
 	}
 	if client.targetPubKey != targetPubKey {
 		t.Fatalf("unexpected target pubkey: got %s want %s", client.targetPubKey, targetPubKey)
+	}
+}
+
+func newCallCaptureServer(t *testing.T) (*httptest.Server, *string, *map[string]any) {
+	t.Helper()
+	var gotMethod string
+	var gotParams map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/call" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var req struct {
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		gotMethod = req.Method
+		gotParams = req.Params
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"ok":true}}`))
+	}))
+	return srv, &gotMethod, &gotParams
+}
+
+func TestRunGW_NewSubcommands(t *testing.T) {
+	oldResolver := resolveGWClientFn
+	defer func() { resolveGWClientFn = oldResolver }()
+	stub := &stubGatewayClient{result: map[string]any{"ok": true}}
+	resolveGWClientFn = func(transport, addrFlag, tokenFlag, bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
+		return stub, nil
+	}
+	if _, err := captureStdout(t, func() error { return runGW([]string{"run", `{"port":8787}`}) }); err != nil {
+		t.Fatalf("runGW run error: %v", err)
+	}
+	if stub.method != "gateway.run" {
+		t.Fatalf("unexpected run method: %s", stub.method)
+	}
+	if _, err := captureStdout(t, func() error { return runGW([]string{"call", "status.get"}) }); err != nil {
+		t.Fatalf("runGW call error: %v", err)
+	}
+	if stub.method != "status.get" {
+		t.Fatalf("unexpected call method: %s", stub.method)
+	}
+}
+
+func TestNewCommandWrappers_CallExpectedMethods(t *testing.T) {
+	srv, gotMethod, gotParams := newCallCaptureServer(t)
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	if _, err := captureStdout(t, func() error {
+		return runCron([]string{"edit", "--admin-addr", addr, "--schedule", "@daily", "--disable", "job-1"})
+	}); err != nil {
+		t.Fatalf("cron edit error: %v", err)
+	}
+	if *gotMethod != "cron.update" || (*gotParams)["id"] != "job-1" {
+		t.Fatalf("unexpected cron call: %s %#v", *gotMethod, *gotParams)
+	}
+
+	if _, err := captureStdout(t, func() error {
+		return runNodes([]string{"notify", "--admin-addr", addr, "--node", "node-1", "--args", `{"title":"hi"}`})
+	}); err != nil {
+		t.Fatalf("nodes notify error: %v", err)
+	}
+	if *gotMethod != "node.invoke" || (*gotParams)["command"] != "notify" || (*gotParams)["node_id"] != "node-1" {
+		t.Fatalf("unexpected nodes call: %s %#v", *gotMethod, *gotParams)
+	}
+
+	if _, err := captureStdout(t, func() error {
+		return runUpdate([]string{"wizard", "--admin-addr", addr})
+	}); err != nil {
+		t.Fatalf("update wizard error: %v", err)
+	}
+	if *gotMethod != "update.wizard" {
+		t.Fatalf("unexpected update call: %s", *gotMethod)
 	}
 }
 

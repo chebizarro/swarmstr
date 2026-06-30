@@ -131,7 +131,7 @@ func runDaemon(args []string) error {
 
 	sub := fs.Args()
 	if len(sub) == 0 {
-		fmt.Fprintf(os.Stderr, "daemon subcommands: start, stop, restart, status\n")
+		fmt.Fprintf(os.Stderr, "daemon subcommands: start, stop, restart, status, status-repair, install, register-service, unregister-service\n")
 		return fmt.Errorf("subcommand required")
 	}
 
@@ -153,8 +153,14 @@ func runDaemon(args []string) error {
 		return daemonStart(bin, pidFile, logFile, bootstrapPath, sub[1:])
 	case "status":
 		return daemonStatus(pidFile, adminAddr, adminToken, bootstrapPath)
+	case "status-repair", "repair-status":
+		return daemonStatusRepair(pidFile, adminAddr, adminToken, bootstrapPath)
+	case "install", "register-service":
+		return daemonInstallService(bin, pidFile, logFile, bootstrapPath)
+	case "uninstall", "unregister-service":
+		return daemonUninstallService()
 	default:
-		return fmt.Errorf("unknown daemon subcommand %q; use start|stop|restart|status", sub[0])
+		return fmt.Errorf("unknown daemon subcommand %q; use start|stop|restart|status|status-repair|install|register-service|unregister-service", sub[0])
 	}
 }
 
@@ -250,6 +256,52 @@ func daemonStop(pidFile string) error {
 	// Force kill if still alive.
 	_ = proc.Signal(syscall.SIGKILL)
 	fmt.Printf("daemon killed   pid=%d (did not stop within 10s)\n", pid)
+	return nil
+}
+
+func daemonStatusRepair(pidFile, adminAddr, adminToken, bootstrapPath string) error {
+	pid, err := readPID(pidFile)
+	if err != nil {
+		return err
+	}
+	if pid > 0 && !pidAlive(pid) {
+		if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale pid file: %w", err)
+		}
+		fmt.Printf("removed stale pid file %s (pid=%d)\n", pidFile, pid)
+	}
+	return daemonStatus(pidFile, adminAddr, adminToken, bootstrapPath)
+}
+
+func daemonInstallService(bin, pidFile, logFile, bootstrapPath string) error {
+	metiqd, err := resolveDaemonBin(bin)
+	if err != nil {
+		return fmt.Errorf("cannot find metiqd binary: %w", err)
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		fmt.Printf("launchd registration (best effort): create a LaunchAgent/LaunchDaemon for %s --pid-file %s --bootstrap %s; log=%s\n", metiqd, pidFile, bootstrapPath, logFile)
+	case "linux":
+		fmt.Printf("systemd registration (best effort): create metiqd.service for %s --pid-file %s --bootstrap %s; log=%s\n", metiqd, pidFile, bootstrapPath, logFile)
+	case "windows":
+		fmt.Printf("Windows service registration (best effort): register %s with service manager\n", metiqd)
+	default:
+		return fmt.Errorf("daemon service install is not supported on %s", runtime.GOOS)
+	}
+	return nil
+}
+
+func daemonUninstallService() error {
+	switch runtime.GOOS {
+	case "darwin":
+		fmt.Println("launchd unregister (best effort): unload/remove the metiqd plist")
+	case "linux":
+		fmt.Println("systemd unregister (best effort): disable/remove metiqd.service")
+	case "windows":
+		fmt.Println("Windows service unregister (best effort): remove metiqd service")
+	default:
+		return fmt.Errorf("daemon service unregister is not supported on %s", runtime.GOOS)
+	}
 	return nil
 }
 
