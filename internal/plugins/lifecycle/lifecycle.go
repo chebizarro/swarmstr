@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"metiq/internal/plugins/manifest"
+	"metiq/internal/plugins/trust"
 )
 
 // ─── Installation Scope ──────────────────────────────────────────────────────
@@ -116,6 +117,9 @@ type InstalledPlugin struct {
 
 	// Config holds plugin-specific configuration.
 	Config map[string]any `json:"config,omitempty"`
+
+	// Trust is the resolved trust classification for this installation.
+	Trust trust.Level `json:"trust"`
 }
 
 // InstallSource describes the origin of a plugin installation.
@@ -137,6 +141,9 @@ type InstallSource struct {
 
 	// Checksum is the archive checksum (for archive installs).
 	Checksum string `json:"checksum,omitempty"`
+
+	// Trust optionally overrides the default trust classification.
+	Trust trust.Level `json:"trust,omitempty"`
 }
 
 // ─── Lifecycle Manager ───────────────────────────────────────────────────────
@@ -446,6 +453,10 @@ func (m *Manager) Install(ctx context.Context, mf manifest.Manifest, installPath
 	}
 
 	now := time.Now()
+	pluginTrust := opts.Source.Trust
+	if pluginTrust == "" {
+		pluginTrust = trust.FromSource(opts.Source.Type)
+	}
 	plugin := &InstalledPlugin{
 		PluginID:     mf.ID,
 		Scope:        opts.Scope,
@@ -456,7 +467,9 @@ func (m *Manager) Install(ctx context.Context, mf manifest.Manifest, installPath
 		Source:       opts.Source,
 		ExportSkills: exportSkills,
 		Config:       cloneMap(opts.Config),
+		Trust:        pluginTrust,
 	}
+	plugin.Manifest.Trust = pluginTrust.String()
 
 	// Enable if explicitly requested or if auto-enable applies. opts.AutoEnable
 	// provides a tri-state override so callers can opt out when config auto-enable
@@ -1047,6 +1060,10 @@ func (m *Manager) loadPluginsFromDir(dir string, scope Scope) error {
 		}
 		cp := cloneInstalledPlugin(p)
 		cp.Scope = scope
+		if cp.Trust == "" {
+			cp.Trust = trust.FromSource(cp.Source.Type)
+		}
+		cp.Manifest.Trust = cp.Trust.String()
 		m.putPluginLocked(cp)
 	}
 
