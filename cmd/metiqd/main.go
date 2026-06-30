@@ -2596,62 +2596,87 @@ func main() {
 		}
 	}()
 
-	// Background context engine compaction: every 30 minutes, compact the
-	// shared engine (which handles all sessions internally).
-	go func() {
-		compactInterval := 30 * time.Minute
-		if v, ok := configState.Get().Extra["context_compact_interval_minutes"].(float64); ok && v > 0 {
-			compactInterval = time.Duration(v) * time.Minute
+	startBoundedMaintenance := func(name string, interval, timeout time.Duration, run func(context.Context)) {
+		if interval <= 0 {
+			return
 		}
-		ticker := time.NewTicker(compactInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if controlContextEngine == nil {
-					continue
-				}
-				if cr, cErr := controlContextEngine.Compact(ctx, ""); cErr == nil && cr.Compacted {
-					log.Printf("context engine background compact: %s", cr.Summary)
+		if timeout <= 0 || timeout > interval {
+			timeout = interval
+		}
+		go func() {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			done := make(chan struct{}, 1)
+			inFlight := false
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-done:
+					inFlight = false
+				case <-ticker.C:
+					if inFlight {
+						log.Printf("%s: previous run still in flight; skipping tick", name)
+						continue
+					}
+					inFlight = true
+					go func() {
+						runCtx, cancel := context.WithTimeout(ctx, timeout)
+						defer cancel()
+						run(runCtx)
+						select {
+						case done <- struct{}{}:
+						case <-ctx.Done():
+						}
+					}()
 				}
 			}
+		}()
+	}
+
+	// Background context engine compaction: every 30 minutes, compact the
+	// shared engine (which handles all sessions internally). Runs are bounded
+	// and coalesced so they do not pile up behind per-turn compaction.
+	compactInterval := 30 * time.Minute
+	if v, ok := configState.Get().Extra["context_compact_interval_minutes"].(float64); ok && v > 0 {
+		compactInterval = time.Duration(v) * time.Minute
+	}
+	startBoundedMaintenance("context engine background compact", compactInterval, compactInterval/2, func(runCtx context.Context) {
+		if controlContextEngine == nil {
+			return
 		}
-	}()
+		if cr, cErr := controlContextEngine.Compact(runCtx, ""); cErr == nil && cr.Compacted {
+			log.Printf("context engine background compact: %s", cr.Summary)
+		} else if cErr != nil && runCtx.Err() == nil {
+			log.Printf("context engine background compact failed: %v", cErr)
+		}
+	})
 
 	// Background memory index compaction: every 6 hours, trim the raw JSON-FTS
 	// memory index to prevent unbounded disk/memory growth.
 	// Default max is 50 000 entries; configurable via extra.memory.max_entries.
-	go func() {
+	startBoundedMaintenance("memory index compaction", 6*time.Hour, 30*time.Minute, func(runCtx context.Context) {
 		const defaultMaxMemoryEntries = 50_000
-		const compactCycle = 6 * time.Hour
-		ticker := time.NewTicker(compactCycle)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if memoryIndex == nil {
-					continue
-				}
-				maxEntries := defaultMaxMemoryEntries
-				if extra, ok := configState.Get().Extra["memory"].(map[string]any); ok {
-					if mv, ok := extra["max_entries"].(float64); ok && mv > 0 {
-						maxEntries = int(mv)
-					}
-				}
-				removed := memoryIndex.Compact(maxEntries)
-				if removed > 0 {
-					log.Printf("memory index compaction: removed %d oldest entries (max=%d)", removed, maxEntries)
-					if saveErr := memoryIndex.Save(); saveErr != nil {
-						log.Printf("memory index save after compaction failed: %v", saveErr)
-					}
-				}
+		if runCtx.Err() != nil || memoryIndex == nil {
+			return
+		}
+		maxEntries := defaultMaxMemoryEntries
+		if extra, ok := configState.Get().Extra["memory"].(map[string]any); ok {
+			if mv, ok := extra["max_entries"].(float64); ok && mv > 0 {
+				maxEntries = int(mv)
 			}
 		}
-	}()
+		removed := memoryIndex.Compact(maxEntries)
+		if runCtx.Err() != nil {
+			return
+		}
+		if removed > 0 {
+			log.Printf("memory index compaction: removed %d oldest entries (max=%d)", removed, maxEntries)
+			if saveErr := memoryIndex.Save(); saveErr != nil {
+				log.Printf("memory index save after compaction failed: %v", saveErr)
+			}
+		}
+	})
 
 	// wsEmitter pushes typed events to connected WebSocket clients.
 	// It starts as a no-op and is upgraded to the real runtime emitter once the

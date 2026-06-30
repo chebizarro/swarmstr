@@ -554,3 +554,71 @@ func containsString(s, sub string) bool {
 	}
 	return false
 }
+
+type partialStubSearcher struct {
+	hits []memory.IndexedMemory
+}
+
+func (s *partialStubSearcher) Search(query string, limit int) []memory.IndexedMemory { return nil }
+func (s *partialStubSearcher) SearchPartial(ctx context.Context, query string, limit int) ([]memory.IndexedMemory, error) {
+	<-ctx.Done()
+	return s.hits, ctx.Err()
+}
+
+func TestRecall_StatusPersistence(t *testing.T) {
+	cfg := DefaultConfig()
+	e := NewEngine(cfg, &stubSearcher{hits: []memory.IndexedMemory{{Text: "status context"}}})
+	r := e.Recall(context.Background(), RecallRequest{AgentID: "main", SessionKey: "sess-status", ChatType: ChatTypeDirect, LatestMessage: "status?"})
+	got, ok := e.LastStatus("sess-status")
+	if !ok || got.Status != r.Status || got.Summary == "" || got.DurationMS < 0 {
+		t.Fatalf("last status not persisted: ok=%v got=%+v result=%+v", ok, got, r)
+	}
+}
+
+func TestRecall_CircuitBreakerOpenAndCooldown(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Provider = "p"
+	cfg.Model = "m"
+	cfg.TimeoutMS = 1
+	cfg.CircuitBreakerFailureThreshold = 1
+	cfg.CircuitBreakerCooldown = 5 * time.Millisecond
+	e := NewEngine(cfg, &stubSearcher{delay: 20 * time.Millisecond})
+	first := e.Recall(context.Background(), RecallRequest{AgentID: "main", SessionKey: "sess-cb", ChatType: ChatTypeDirect, LatestMessage: "one"})
+	if first.Status != StatusTimeout {
+		t.Fatalf("first status=%q, want timeout", first.Status)
+	}
+	open := e.Recall(context.Background(), RecallRequest{AgentID: "main", SessionKey: "sess-cb", ChatType: ChatTypeDirect, LatestMessage: "two"})
+	if open.Status != StatusCircuitOpen {
+		t.Fatalf("breaker status=%q, want circuit_open", open.Status)
+	}
+	time.Sleep(8 * time.Millisecond)
+	after := e.Recall(context.Background(), RecallRequest{AgentID: "main", SessionKey: "sess-cb", ChatType: ChatTypeDirect, LatestMessage: "three"})
+	if after.Status == StatusCircuitOpen {
+		t.Fatalf("breaker should allow probe after cooldown: %+v", after)
+	}
+}
+
+func TestRecall_PartialTimeoutReturnsPartialResults(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.TimeoutMS = 1
+	e := NewEngine(cfg, &partialStubSearcher{hits: []memory.IndexedMemory{{Text: "partial context"}}})
+	r := e.Recall(context.Background(), RecallRequest{AgentID: "main", SessionKey: "sess-partial", ChatType: ChatTypeDirect, LatestMessage: "partial?"})
+	if r.Status != StatusOK || !r.Partial || r.Summary == "" || r.HitCount != 1 {
+		t.Fatalf("expected partial ok result, got %+v", r)
+	}
+}
+
+func TestRecall_ToggleStateRoundTrip(t *testing.T) {
+	e := NewEngine(DefaultConfig(), nil)
+	e.SetEnabled("a", false)
+	e.SetEnabled("b", true)
+	state := e.ExportToggleState()
+	if state.Version != 1 || state.Sessions["a"] || len(state.Sessions) != 1 {
+		t.Fatalf("unexpected state: %+v", state)
+	}
+	e2 := NewEngine(DefaultConfig(), nil)
+	e2.ImportToggleState(state)
+	if e2.IsEnabled("a") || !e2.IsEnabled("b") {
+		t.Fatalf("toggle round trip failed: a=%v b=%v", e2.IsEnabled("a"), e2.IsEnabled("b"))
+	}
+}
