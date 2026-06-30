@@ -801,12 +801,12 @@ func TestNewProviderForModel_mistralPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	oai, ok := p.(*OpenAIChatProvider)
+	mistral, ok := p.(*MistralChatProvider)
 	if !ok {
-		t.Fatalf("expected OpenAIChatProvider, got %T", p)
+		t.Fatalf("expected MistralChatProvider, got %T", p)
 	}
-	if !containsStr(oai.BaseURL, "mistral.ai") {
-		t.Errorf("expected mistral.ai base URL, got %q", oai.BaseURL)
+	if !containsStr(mistral.BaseURL, "mistral.ai") {
+		t.Errorf("expected mistral.ai base URL, got %q", mistral.BaseURL)
 	}
 }
 
