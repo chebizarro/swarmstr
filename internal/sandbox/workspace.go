@@ -20,6 +20,14 @@ type workspaceMount struct {
 	Access  string
 }
 
+// ReadOnlyWorkspaceSkillMount describes a skill source mounted into the
+// workspace as read-only. The container path is resolved under the workspace
+// target and is treated as a more-specific mount by the filesystem bridge.
+type ReadOnlyWorkspaceSkillMount struct {
+	Source string
+	Target string
+}
+
 func (c Config) workspaceMount() (workspaceMount, error) {
 	source := strings.TrimSpace(c.WorkspaceDir)
 	if source == "" {
@@ -94,4 +102,38 @@ func (m workspaceMount) DockerArgs() []string {
 		mode = "ro"
 	}
 	return []string{"--mount=type=bind,source=" + m.Source + ",target=" + m.Target + "," + mode}
+}
+
+func (m ReadOnlyWorkspaceSkillMount) DockerArgs() []string {
+	return []string{"--mount=type=bind,source=" + m.Source + ",target=" + m.Target + ",ro"}
+}
+
+// NewReadOnlyWorkspaceSkillMount validates a host skills directory and returns
+// a read-only bind mount rooted under the workspace container target.
+func NewReadOnlyWorkspaceSkillMount(source, workspaceTarget, relativeTarget string) (ReadOnlyWorkspaceSkillMount, error) {
+	absSource, err := filepath.Abs(strings.TrimSpace(source))
+	if err != nil {
+		return ReadOnlyWorkspaceSkillMount{}, fmt.Errorf("sandbox skill mount source: %w", err)
+	}
+	info, err := os.Stat(absSource)
+	if err != nil {
+		return ReadOnlyWorkspaceSkillMount{}, fmt.Errorf("sandbox skill mount source %q: %w", absSource, err)
+	}
+	if !info.IsDir() {
+		return ReadOnlyWorkspaceSkillMount{}, fmt.Errorf("sandbox skill mount source %q is not a directory", absSource)
+	}
+
+	targetRoot := strings.TrimSpace(workspaceTarget)
+	if targetRoot == "" {
+		targetRoot = defaultContainerWorkdir
+	}
+	targetRoot = filepath.ToSlash(filepath.Clean(targetRoot))
+	if err := validateWorkspaceTarget(targetRoot); err != nil {
+		return ReadOnlyWorkspaceSkillMount{}, err
+	}
+	rel := filepath.ToSlash(filepath.Clean(strings.TrimSpace(relativeTarget)))
+	if rel == "." || strings.HasPrefix(rel, "../") || rel == ".." || strings.HasPrefix(rel, "/") {
+		return ReadOnlyWorkspaceSkillMount{}, fmt.Errorf("sandbox skill mount target %q must be relative and stay under workspace", relativeTarget)
+	}
+	return ReadOnlyWorkspaceSkillMount{Source: absSource, Target: targetRoot + "/" + rel}, nil
 }
