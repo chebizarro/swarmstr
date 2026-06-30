@@ -33,19 +33,27 @@ const (
 
 // Commitment is a tracked promise made in an agent response.
 type Commitment struct {
-	ID             string    `json:"id"`
-	SessionID      string    `json:"session_id"`
-	TurnID         string    `json:"turn_id,omitempty"`
-	Kind           Kind      `json:"kind"`
-	Text           string    `json:"text"`
-	Source         string    `json:"source"` // regex, llm, or merged
-	Status         Status    `json:"status"`
-	DueAt          time.Time `json:"due_at,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	FulfilledBy    string    `json:"fulfilled_by,omitempty"`
-	BrokenReason   string    `json:"broken_reason,omitempty"`
-	ExtractedMatch string    `json:"extracted_match,omitempty"`
+	ID                string    `json:"id"`
+	SessionID         string    `json:"session_id"`
+	TurnID            string    `json:"turn_id,omitempty"`
+	Kind              Kind      `json:"kind"`
+	Text              string    `json:"text"`
+	Source            string    `json:"source"` // regex, llm, or merged
+	Status            Status    `json:"status"`
+	DueAt             time.Time `json:"due_at,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	FulfilledBy       string    `json:"fulfilled_by,omitempty"`
+	BrokenReason      string    `json:"broken_reason,omitempty"`
+	ExtractedMatch    string    `json:"extracted_match,omitempty"`
+	Confidence        float64   `json:"confidence,omitempty"`
+	Channel           string    `json:"channel,omitempty"`
+	To                string    `json:"to,omitempty"`
+	DeliverySessionID string    `json:"delivery_session_id,omitempty"`
+	Attempts          int       `json:"attempts,omitempty"`
+	LastAttemptAt     time.Time `json:"last_attempt_at,omitempty"`
+	NextAttemptAt     time.Time `json:"next_attempt_at,omitempty"`
+	SentAt            time.Time `json:"sent_at,omitempty"`
 }
 
 // SessionMessage is a minimal representation of a conversation turn used by
@@ -61,9 +69,10 @@ type SessionMessage struct {
 
 // ExtractedCommitment is returned by model-backed extractors before tracking.
 type ExtractedCommitment struct {
-	Kind  Kind
-	Text  string
-	DueAt time.Time
+	Kind       Kind
+	Text       string
+	DueAt      time.Time
+	Confidence float64
 }
 
 // LLMExtractor optionally provides model-backed structured extraction. The
@@ -76,8 +85,9 @@ type LLMExtractor interface {
 // extractor. Model results are de-duplicated with regex results by normalized
 // text and due time.
 type Extractor struct {
-	LLM LLMExtractor
-	Now func() time.Time
+	LLM    LLMExtractor
+	Now    func() time.Time
+	Config Config
 }
 
 var regexPatterns = []struct {
@@ -96,9 +106,16 @@ var dueDateRE = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2}|tomorrow|tonight)\b`)
 // configured, LLM-extracted structured candidates.
 func (e Extractor) Extract(sessionID, turnID, text string) ([]Commitment, error) {
 	now := e.now()
+	cfg := e.Config.withDefaults()
 	var out []Commitment
 	seen := map[string]int{}
-	add := func(src string, kind Kind, body string, due time.Time) {
+	add := func(src string, kind Kind, body string, due time.Time, confidence float64) {
+		if confidence == 0 {
+			confidence = 1
+		}
+		if confidence < cfg.ConfidenceThreshold {
+			return
+		}
 		body = normalizeWhitespace(body)
 		if body == "" {
 			return
@@ -122,6 +139,7 @@ func (e Extractor) Extract(sessionID, turnID, text string) ([]Commitment, error)
 			CreatedAt:      now,
 			UpdatedAt:      now,
 			ExtractedMatch: body,
+			Confidence:     confidence,
 		}
 		seen[key] = len(out)
 		out = append(out, c)
@@ -129,7 +147,7 @@ func (e Extractor) Extract(sessionID, turnID, text string) ([]Commitment, error)
 
 	for _, p := range regexPatterns {
 		for _, match := range p.re.FindAllString(text, -1) {
-			add("regex", p.kind, match, parseDue(match, now))
+			add("regex", p.kind, match, parseDue(match, now), 1)
 		}
 	}
 	if e.LLM != nil {
@@ -142,7 +160,7 @@ func (e Extractor) Extract(sessionID, turnID, text string) ([]Commitment, error)
 			if kind == "" {
 				kind = KindOpenLoop
 			}
-			add("llm", kind, item.Text, item.DueAt)
+			add("llm", kind, item.Text, item.DueAt, item.Confidence)
 		}
 	}
 	return out, nil
@@ -159,9 +177,19 @@ func (e Extractor) now() time.Time {
 type Store struct {
 	mu          sync.Mutex
 	commitments map[string]Commitment
+	path        string
 }
 
 func NewStore() *Store { return &Store{commitments: map[string]Commitment{}} }
+
+func NewFileStore(path string) (*Store, error) {
+	s := NewStore()
+	s.path = path
+	if err := s.load(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
 
 func (s *Store) Add(items ...Commitment) {
 	s.mu.Lock()
@@ -182,6 +210,7 @@ func (s *Store) Add(items ...Commitment) {
 		c.UpdatedAt = nonZeroTime(c.UpdatedAt, c.CreatedAt)
 		s.commitments[c.ID] = c
 	}
+	_ = s.saveLocked()
 }
 
 func (s *Store) Get(id string) (Commitment, bool) {
@@ -227,7 +256,7 @@ func (s *Store) UpdateStatus(id string, status Status, reason, fulfilledBy strin
 	}
 	c.UpdatedAt = at.UTC()
 	s.commitments[id] = c
-	return nil
+	return s.saveLocked()
 }
 
 // CheckSessionHistory evaluates pending commitments against session history.
