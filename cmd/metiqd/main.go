@@ -52,6 +52,7 @@ import (
 	pluginservice "metiq/internal/plugins/service"
 	"metiq/internal/policy"
 	secretspkg "metiq/internal/secrets"
+	"metiq/internal/security/commandanalysis"
 	"metiq/internal/social"
 	"metiq/internal/store/state"
 	taskspkg "metiq/internal/tasks"
@@ -1780,17 +1781,56 @@ func main() {
 				return next(ctx, call)
 			}
 
+			commandText, commandArgv := approvalCommandDisplay(call.Name, call.Args)
+			analysis := commandanalysis.Analyze(commandText, commandArgv)
+			if commandanalysis.IsAllowAlwaysSafe(analysis) && execApprovalSignatureAllowed(execApprovals.GetGlobal(), analysis.Signature) {
+				log.Printf("exec approval skipped id=allow-always tool=%s signature=%s", call.Name, analysis.Signature)
+				metricspkg.ToolCalls.Inc()
+				return next(ctx, call)
+			}
+			cwd, _ := os.Getwd()
+			host, _ := os.Hostname()
+			approvalMode := "allow_once"
+			allowAlwaysReason := "only available for safe-bin commands without shell wrappers, inline eval, or pipe-to-shell"
+			if analysis.AllowAlways {
+				approvalMode = "allow_once_or_always"
+				allowAlwaysReason = "safe-bin command with stable argv signature"
+			}
+
 			// Build an approval request.
 			rec := execApprovals.Request(methods.ExecApprovalRequestRequest{
-				Command:   call.Name,
-				Args:      call.Args,
-				TimeoutMS: approvalTimeoutMS,
+				Command:              commandText,
+				CommandArgv:          commandArgv,
+				Args:                 call.Args,
+				CWD:                  &cwd,
+				Host:                 &host,
+				AnalysisWarnings:     analysis.Warnings,
+				AnalysisSummary:      analysis.Summary,
+				AnalysisSignature:    analysis.Signature,
+				AllowAlwaysAvailable: analysis.AllowAlways,
+				AllowAlwaysReason:    allowAlwaysReason,
+				ApprovalMode:         approvalMode,
+				TimeoutMS:            approvalTimeoutMS,
 			})
 
 			// Emit a WS event so the UI / operator can see the pending request.
 			emitControlWSEvent(gatewayws.EventExecApprovalRequested, gatewayws.ExecApprovalRequestedPayload{
-				ID:     rec.ID,
-				NodeID: rec.NodeID,
+				TS:                   time.Now().UnixMilli(),
+				ID:                   rec.ID,
+				NodeID:               rec.NodeID,
+				Command:              rec.Command,
+				CommandArgv:          rec.CommandArgv,
+				CWD:                  rec.CWD,
+				Host:                 rec.Host,
+				AnalysisWarnings:     rec.AnalysisWarnings,
+				AnalysisSummary:      rec.AnalysisSummary,
+				AnalysisSignature:    rec.AnalysisSignature,
+				AllowAlwaysAvailable: rec.AllowAlwaysAvailable,
+				AllowAlwaysReason:    rec.AllowAlwaysReason,
+				ApprovalMode:         rec.ApprovalMode,
+				RequestedAt:          rec.Requested,
+				ExpiresAt:            rec.ExpiresAt,
+				TimeoutMS:            rec.TimeoutMS,
 			})
 			log.Printf("exec approval requested id=%s tool=%s", rec.ID, call.Name)
 
@@ -1813,6 +1853,9 @@ func main() {
 				return "", fmt.Errorf("tool %q execution denied by approval gate: %s", call.Name, reason)
 			}
 
+			if decided.Reason == "always allow selected in web UI" && commandanalysis.IsAllowAlwaysSafe(analysis) {
+				execApprovalRememberSignature(execApprovals, analysis.Signature)
+			}
 			log.Printf("exec approval granted id=%s tool=%s", rec.ID, call.Name)
 			metricspkg.ToolCalls.Inc()
 			return next(ctx, call)

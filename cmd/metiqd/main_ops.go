@@ -221,11 +221,22 @@ func (s *daemonServices) applyExecApprovalRequest(reg *execApprovalsRegistry, re
 	}
 	rec := reg.Request(req)
 	s.emitWSEvent(gatewayws.EventExecApprovalRequested, gatewayws.ExecApprovalRequestedPayload{
-		TS:        time.Now().UnixMilli(),
-		ID:        rec.ID,
-		NodeID:    rec.NodeID,
-		Command:   rec.Command,
-		ExpiresAt: rec.ExpiresAt,
+		TS:                   time.Now().UnixMilli(),
+		ID:                   rec.ID,
+		NodeID:               rec.NodeID,
+		Command:              rec.Command,
+		CommandArgv:          rec.CommandArgv,
+		CWD:                  rec.CWD,
+		Host:                 rec.Host,
+		AnalysisWarnings:     rec.AnalysisWarnings,
+		AnalysisSummary:      rec.AnalysisSummary,
+		AnalysisSignature:    rec.AnalysisSignature,
+		AllowAlwaysAvailable: rec.AllowAlwaysAvailable,
+		AllowAlwaysReason:    rec.AllowAlwaysReason,
+		ApprovalMode:         rec.ApprovalMode,
+		RequestedAt:          rec.Requested,
+		ExpiresAt:            rec.ExpiresAt,
+		TimeoutMS:            rec.TimeoutMS,
 	})
 	return map[string]any{"id": rec.ID, "status": "accepted", "requested": rec}, nil
 }

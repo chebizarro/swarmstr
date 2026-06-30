@@ -382,11 +382,22 @@ type MCPLifecyclePayload struct {
 
 // ExecApprovalRequestedPayload is the payload for EventExecApprovalRequested.
 type ExecApprovalRequestedPayload struct {
-	TS        int64  `json:"ts_ms"`
-	ID        string `json:"id"`
-	NodeID    string `json:"node_id,omitempty"`
-	Command   string `json:"command,omitempty"`
-	ExpiresAt int64  `json:"expires_at,omitempty"`
+	TS                   int64    `json:"ts_ms"`
+	ID                   string   `json:"id"`
+	NodeID               string   `json:"node_id,omitempty"`
+	Command              string   `json:"command,omitempty"`
+	CommandArgv          []string `json:"command_argv,omitempty"`
+	CWD                  *string  `json:"cwd,omitempty"`
+	Host                 *string  `json:"host,omitempty"`
+	AnalysisWarnings     []string `json:"analysis_warnings,omitempty"`
+	AnalysisSummary      string   `json:"analysis_summary,omitempty"`
+	AnalysisSignature    string   `json:"analysis_signature,omitempty"`
+	AllowAlwaysAvailable bool     `json:"allow_always_available,omitempty"`
+	AllowAlwaysReason    string   `json:"allow_always_reason,omitempty"`
+	ApprovalMode         string   `json:"approval_mode,omitempty"`
+	RequestedAt          int64    `json:"requested_at,omitempty"`
+	ExpiresAt            int64    `json:"expires_at,omitempty"`
+	TimeoutMS            int      `json:"timeout_ms,omitempty"`
 }
 
 // ExecApprovalResolvedPayload is the payload for EventExecApprovalResolved.

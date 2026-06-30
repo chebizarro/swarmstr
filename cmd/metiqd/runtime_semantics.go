@@ -1068,17 +1068,26 @@ func (r *cronRegistry) Load(ctx context.Context, repo *state.DocsRepository) err
 }
 
 type execApprovalPendingRecord struct {
-	ID         string         `json:"id"`
-	NodeID     string         `json:"node_id,omitempty"`
-	Command    string         `json:"command"`
-	Args       map[string]any `json:"args,omitempty"`
-	TimeoutMS  int            `json:"timeout_ms"`
-	Status     string         `json:"status"`
-	Decision   string         `json:"decision,omitempty"`
-	Reason     string         `json:"reason,omitempty"`
-	Requested  int64          `json:"requested_at"`
-	ResolvedAt int64          `json:"resolved_at,omitempty"`
-	ExpiresAt  int64          `json:"expires_at,omitempty"`
+	ID                   string         `json:"id"`
+	NodeID               string         `json:"node_id,omitempty"`
+	Command              string         `json:"command"`
+	CommandArgv          []string       `json:"command_argv,omitempty"`
+	Args                 map[string]any `json:"args,omitempty"`
+	CWD                  *string        `json:"cwd,omitempty"`
+	Host                 *string        `json:"host,omitempty"`
+	AnalysisWarnings     []string       `json:"analysis_warnings,omitempty"`
+	AnalysisSummary      string         `json:"analysis_summary,omitempty"`
+	AnalysisSignature    string         `json:"analysis_signature,omitempty"`
+	AllowAlwaysAvailable bool           `json:"allow_always_available,omitempty"`
+	AllowAlwaysReason    string         `json:"allow_always_reason,omitempty"`
+	ApprovalMode         string         `json:"approval_mode,omitempty"`
+	TimeoutMS            int            `json:"timeout_ms"`
+	Status               string         `json:"status"`
+	Decision             string         `json:"decision,omitempty"`
+	Reason               string         `json:"reason,omitempty"`
+	Requested            int64          `json:"requested_at"`
+	ResolvedAt           int64          `json:"resolved_at,omitempty"`
+	ExpiresAt            int64          `json:"expires_at,omitempty"`
 }
 
 type execApprovalsRegistry struct {
@@ -1158,14 +1167,23 @@ func (r *execApprovalsRegistry) Request(req methods.ExecApprovalRequestRequest) 
 	now := time.Now().UnixMilli()
 	id := fmt.Sprintf("approval-%d-%d", now, r.pendingID)
 	rec := execApprovalPendingRecord{
-		ID:        id,
-		NodeID:    req.NodeID,
-		Command:   req.Command,
-		Args:      req.Args,
-		TimeoutMS: req.TimeoutMS,
-		Status:    "pending",
-		Requested: now,
-		ExpiresAt: now + int64(req.TimeoutMS),
+		ID:                   id,
+		NodeID:               req.NodeID,
+		Command:              req.Command,
+		CommandArgv:          append([]string(nil), req.CommandArgv...),
+		Args:                 req.Args,
+		CWD:                  req.CWD,
+		Host:                 req.Host,
+		AnalysisWarnings:     append([]string(nil), req.AnalysisWarnings...),
+		AnalysisSummary:      req.AnalysisSummary,
+		AnalysisSignature:    req.AnalysisSignature,
+		AllowAlwaysAvailable: req.AllowAlwaysAvailable,
+		AllowAlwaysReason:    req.AllowAlwaysReason,
+		ApprovalMode:         req.ApprovalMode,
+		TimeoutMS:            req.TimeoutMS,
+		Status:               "pending",
+		Requested:            now,
+		ExpiresAt:            now + int64(req.TimeoutMS),
 	}
 	r.pending[id] = rec
 	return rec
