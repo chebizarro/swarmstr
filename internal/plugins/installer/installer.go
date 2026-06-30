@@ -26,6 +26,8 @@ type Result struct {
 	Stdout string `json:"stdout,omitempty"`
 	// Stderr captured from the subprocess.
 	Stderr string `json:"stderr,omitempty"`
+	// OpenClawCompatibility stores normalized external package compatibility metadata.
+	OpenClawCompatibility *OpenClawCompatibility `json:"openclawCompatibility,omitempty"`
 }
 
 // Installer is the interface for plugin installation backends.

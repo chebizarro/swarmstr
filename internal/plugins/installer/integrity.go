@@ -151,6 +151,11 @@ func recordIntegrityForResult(res Result, fallbackPath string) (Result, error) {
 	if installPath == "" {
 		return res, nil
 	}
+	compat, err := validateOpenClawPackageContract(installPath)
+	if err != nil {
+		return res, err
+	}
+	res.OpenClawCompatibility = &compat
 	record, err := RecordPluginIntegrity(installPath)
 	if err != nil {
 		return res, err

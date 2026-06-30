@@ -367,10 +367,21 @@ type ProviderCapability struct {
 type ProviderType string
 
 const (
-	ProviderTypeLLM       ProviderType = "llm"
-	ProviderTypeEmbedding ProviderType = "embedding"
-	ProviderTypeStorage   ProviderType = "storage"
-	ProviderTypeSecret    ProviderType = "secret"
+	ProviderTypeLLM                   ProviderType = "llm"
+	ProviderTypeEmbedding             ProviderType = "embedding"
+	ProviderTypeStorage               ProviderType = "storage"
+	ProviderTypeSecret                ProviderType = "secret"
+	ProviderTypeSpeech                ProviderType = "speech"
+	ProviderTypeRealtimeTranscription ProviderType = "realtime_transcription"
+	ProviderTypeRealtimeVoice         ProviderType = "realtime_voice"
+	ProviderTypeMediaUnderstanding    ProviderType = "media_understanding"
+	ProviderTypeTranscriptSource      ProviderType = "transcript_source"
+	ProviderTypeImageGeneration       ProviderType = "image_generation"
+	ProviderTypeVideoGeneration       ProviderType = "video_generation"
+	ProviderTypeMusicGeneration       ProviderType = "music_generation"
+	ProviderTypeWebSearch             ProviderType = "web_search"
+	ProviderTypeWebFetch              ProviderType = "web_fetch"
+	ProviderTypeMemoryEmbedding       ProviderType = "memory_embedding"
 )
 
 // ─── Permissions ─────────────────────────────────────────────────────────────

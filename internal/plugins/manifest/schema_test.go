@@ -45,12 +45,12 @@ func TestValidateMissingID(t *testing.T) {
 
 func TestValidateInvalidID(t *testing.T) {
 	cases := []string{
-		"My-Plugin",   // uppercase
-		"my_plugin",   // underscore
-		"123-plugin",  // starts with number
-		"my--plugin",  // double hyphen (actually valid per regex)
-		"-my-plugin",  // starts with hyphen
-		"my-plugin-",  // ends with hyphen
+		"My-Plugin",  // uppercase
+		"my_plugin",  // underscore
+		"123-plugin", // starts with number
+		"my--plugin", // double hyphen (actually valid per regex)
+		"-my-plugin", // starts with hyphen
+		"my-plugin-", // ends with hyphen
 	}
 	for _, id := range cases {
 		m := &Manifest{
@@ -381,6 +381,46 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestProviderCapabilityTaxonomyRoundTrip(t *testing.T) {
+	providerTypes := []ProviderType{
+		ProviderTypeLLM,
+		ProviderTypeEmbedding,
+		ProviderTypeStorage,
+		ProviderTypeSecret,
+		ProviderTypeSpeech,
+		ProviderTypeRealtimeTranscription,
+		ProviderTypeRealtimeVoice,
+		ProviderTypeMediaUnderstanding,
+		ProviderTypeTranscriptSource,
+		ProviderTypeImageGeneration,
+		ProviderTypeVideoGeneration,
+		ProviderTypeMusicGeneration,
+		ProviderTypeWebSearch,
+		ProviderTypeWebFetch,
+		ProviderTypeMemoryEmbedding,
+	}
+	m := &Manifest{SchemaVersion: 2, ID: "taxonomy", Version: "1.0.0", Runtime: RuntimeGoja}
+	for _, typ := range providerTypes {
+		m.Capabilities.Providers = append(m.Capabilities.Providers, ProviderCapability{Type: typ, ID: string(typ) + "-provider"})
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(parsed.Capabilities.Providers) != len(providerTypes) {
+		t.Fatalf("providers=%d want %d", len(parsed.Capabilities.Providers), len(providerTypes))
+	}
+	for i, typ := range providerTypes {
+		if parsed.Capabilities.Providers[i].Type != typ {
+			t.Fatalf("provider[%d]=%q want %q", i, parsed.Capabilities.Providers[i].Type, typ)
+		}
+	}
 }
 
 func TestIsCompatible(t *testing.T) {
