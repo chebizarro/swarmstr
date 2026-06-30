@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"metiq/internal/agent/toolloop"
+	"metiq/internal/agent/toolrepair"
 	pluginhooks "metiq/internal/plugins/hooks"
 	"metiq/internal/policy"
 	sessioncheckpoint "metiq/internal/session/checkpoint"
@@ -260,6 +261,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		}
 
 		totalUsage = resp.Usage
+		promoteLeakedToolCalls(resp, activeTools)
 
 		// If no tool calls or no executor, return immediately.
 		// For plain text responses, emit a single assistant message in the delta.
@@ -435,6 +437,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		totalUsage.OutputTokens += resp.Usage.OutputTokens
 		totalUsage.CacheReadTokens += resp.Usage.CacheReadTokens
 		totalUsage.CacheCreationTokens += resp.Usage.CacheCreationTokens
+		promoteLeakedToolCalls(resp, activeTools)
 		calls = resp.ToolCalls
 
 		// If the model produced text (no more tool calls), we're done.
@@ -509,6 +512,27 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	resp.Outcome = TurnOutcomeCompletedWithTools
 	resp.StopReason = TurnStopReasonModelText
 	return resp, nil
+}
+
+func promoteLeakedToolCalls(resp *LLMResponse, defs []ToolDefinition) {
+	if resp == nil || resp.Content == "" || len(resp.ToolCalls) > 0 {
+		return
+	}
+	repairDefs := make([]toolrepair.ToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		repairDefs = append(repairDefs, toolrepair.ToolDefinition{Name: def.Name})
+	}
+	cleaned, repairedCalls, repaired := toolrepair.Promote(resp.Content, repairDefs)
+	if !repaired || len(repairedCalls) == 0 {
+		return
+	}
+	calls := make([]ToolCall, 0, len(repairedCalls))
+	for _, call := range repairedCalls {
+		calls = append(calls, ToolCall{ID: call.ID, Name: call.Name, Args: call.Args})
+	}
+	resp.Content = cleaned
+	resp.ToolCalls = calls
+	resp.NeedsToolResults = true
 }
 
 func appendDrainedSteeringInput(ctx context.Context, messages []LLMMessage, sessionID string, drain func(context.Context) []InjectedUserInput) ([]LLMMessage, bool) {

@@ -177,6 +177,43 @@ func (f toolExecutorFunc) Execute(ctx context.Context, call ToolCall) (string, e
 	return f(ctx, call)
 }
 
+func TestRunAgenticLoop_PromotesLeakedToolCallText(t *testing.T) {
+	provider := &capturingChatProvider{
+		responses: []*LLMResponse{
+			{Content: "```json\n{\"name\":\"read_file\",\"arguments\":{\"path\":\"main.go\"}}\n```", NeedsToolResults: false},
+			{Content: "done", NeedsToolResults: false},
+		},
+	}
+	executor := &mockToolExecutor{results: map[string]string{"read_file": "file contents"}}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "read main"}},
+		Tools:           []ToolDefinition{{Name: "read_file"}},
+		Executor:        executor,
+		MaxIterations:   1,
+		LogPrefix:       "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("got %q, want done", resp.Content)
+	}
+	if executor.execCount.Load() != 1 {
+		t.Fatalf("expected promoted tool execution, got %d", executor.execCount.Load())
+	}
+	if len(resp.HistoryDelta) < 2 || len(resp.HistoryDelta[0].ToolCalls) != 1 {
+		t.Fatalf("expected assistant tool-call history delta, got %+v", resp.HistoryDelta)
+	}
+	if resp.HistoryDelta[0].Content != "" {
+		t.Fatalf("expected leaked text scrubbed from tool-call message, got %q", resp.HistoryDelta[0].Content)
+	}
+	if len(provider.calls) != 2 {
+		t.Fatalf("expected second provider call after tool execution, got %d", len(provider.calls))
+	}
+}
+
 func TestRunAgenticLoop_PrunesContextBeforeInitialCall(t *testing.T) {
 	provider := &capturingChatProvider{
 		responses: []*LLMResponse{{Content: "direct answer", NeedsToolResults: false}},
