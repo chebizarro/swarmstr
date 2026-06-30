@@ -157,3 +157,75 @@ func TestTokenHistoryKind(t *testing.T) {
 		t.Errorf("expected kind %d, got %d", nip60.KindTokenHistory, ev.Kind)
 	}
 }
+
+func TestPublishWalletUsesNIP60EncryptedTagArray(t *testing.T) {
+	ctx := context.Background()
+	var published nostr.Event
+	client := nip60.NewWalletClient(&stubEncryptor{pubkey: hexPubkey}, &stubSigner{pubkey: hexPubkey}, func(_ context.Context, ev nostr.Event) error {
+		published = ev
+		return nil
+	}, func(_ context.Context, _ nostr.Filter) ([]*nostr.Event, error) { return nil, nil })
+
+	ev, err := client.PublishWalletWithPrivkey(ctx, "wallet-privkey", []nip60.MintEntry{{URL: "https://mint.example.com", Units: []string{"sat", "usd"}}}, "sat")
+	if err != nil {
+		t.Fatalf("PublishWalletWithPrivkey error: %v", err)
+	}
+	if int(ev.Kind) != 17375 {
+		t.Fatalf("wallet kind = %d, want 17375", ev.Kind)
+	}
+	if len(ev.Tags) != 0 {
+		t.Fatalf("wallet event should not have public d tag: %v", ev.Tags)
+	}
+	want := `enc:[["privkey","wallet-privkey"],["mint","https://mint.example.com","sat","usd"]]`
+	if published.Content != want {
+		t.Fatalf("wallet content = %q, want %q", published.Content, want)
+	}
+}
+
+func TestPublishTokenRolloverAndDeletion(t *testing.T) {
+	ctx := context.Background()
+	var published []nostr.Event
+	client := nip60.NewWalletClient(&stubEncryptor{pubkey: hexPubkey}, &stubSigner{pubkey: hexPubkey}, func(_ context.Context, ev nostr.Event) error {
+		published = append(published, ev)
+		return nil
+	}, func(_ context.Context, _ nostr.Filter) ([]*nostr.Event, error) { return nil, nil })
+
+	_, err := client.PublishUnspentTokenWithRollover(ctx, "https://mint.example.com", "sat", []nip60.Proof{{Amount: 1, ID: "ks", Secret: "s", C: "c"}}, []string{"old-token"})
+	if err != nil {
+		t.Fatalf("PublishUnspentTokenWithRollover error: %v", err)
+	}
+	if published[0].Content != `enc:{"mint":"https://mint.example.com","unit":"sat","proofs":[{"amount":1,"id":"ks","secret":"s","C":"c"}],"del":["old-token"]}` {
+		t.Fatalf("unexpected token content: %q", published[0].Content)
+	}
+
+	del, err := client.PublishTokenDeletion(ctx, "old-token")
+	if err != nil {
+		t.Fatalf("PublishTokenDeletion error: %v", err)
+	}
+	if int(del.Kind) != 5 {
+		t.Fatalf("deletion kind = %d, want 5", del.Kind)
+	}
+	if len(del.Tags) < 2 || del.Tags[0][0] != "k" || del.Tags[0][1] != "7375" || del.Tags[1][0] != "e" || del.Tags[1][1] != "old-token" {
+		t.Fatalf("unexpected deletion tags: %v", del.Tags)
+	}
+}
+
+func TestPublishTokenHistoryEncryptedTagsAndPublicRedeemed(t *testing.T) {
+	ctx := context.Background()
+	var published nostr.Event
+	client := nip60.NewWalletClient(&stubEncryptor{pubkey: hexPubkey}, &stubSigner{pubkey: hexPubkey}, func(_ context.Context, ev nostr.Event) error {
+		published = ev
+		return nil
+	}, func(_ context.Context, _ nostr.Filter) ([]*nostr.Event, error) { return nil, nil })
+
+	_, err := client.PublishTokenHistoryTags(ctx, [][]string{{"direction", "in"}, {"amount", "1"}, {"unit", "sat"}, {"e", "new-token", "", "created"}}, nostr.Tags{{"e", "nutzap-event", "wss://relay", "redeemed"}})
+	if err != nil {
+		t.Fatalf("PublishTokenHistoryTags error: %v", err)
+	}
+	if published.Content != `enc:[["direction","in"],["amount","1"],["unit","sat"],["e","new-token","","created"]]` {
+		t.Fatalf("unexpected history content: %q", published.Content)
+	}
+	if len(published.Tags) != 1 || published.Tags[0][3] != "redeemed" {
+		t.Fatalf("expected public redeemed e tag, got %v", published.Tags)
+	}
+}

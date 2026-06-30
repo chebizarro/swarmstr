@@ -155,3 +155,43 @@ func TestVerifyRejectsTampering(t *testing.T) {
 		t.Fatal("expected tampered event to fail verification")
 	}
 }
+
+func TestProfileBadgesAndBadgeSetEvents(t *testing.T) {
+	kr := testKeyer(t)
+	badge := BadgeReference{BadgeAddress: "30009:issuer:bravery", AwardEventID: "award-id", Relay: "wss://relay.example"}
+
+	profile := NewProfileBadgesEvent([]BadgeReference{badge}, []string{"30008:user:favorites"})
+	if profile.Kind != nostr.Kind(KindProfileBadges) {
+		t.Fatalf("profile kind = %d, want %d", profile.Kind, KindProfileBadges)
+	}
+	signEvent(t, kr, &profile)
+	parsedProfile, err := VerifyProfileBadges(&profile)
+	if err != nil {
+		t.Fatalf("VerifyProfileBadges: %v", err)
+	}
+	if len(parsedProfile.Badges) != 1 || parsedProfile.Badges[0] != badge {
+		t.Fatalf("unexpected profile badges: %+v", parsedProfile.Badges)
+	}
+	if len(parsedProfile.Sets) != 1 || parsedProfile.Sets[0] != "30008:user:favorites" {
+		t.Fatalf("unexpected profile sets: %+v", parsedProfile.Sets)
+	}
+
+	set, err := NewBadgeSetEvent("favorites", "Favorite Badges", []BadgeReference{badge})
+	if err != nil {
+		t.Fatalf("NewBadgeSetEvent: %v", err)
+	}
+	if set.Kind != nostr.Kind(KindBadgeSet) {
+		t.Fatalf("badge set kind = %d, want %d", set.Kind, KindBadgeSet)
+	}
+	signEvent(t, kr, &set)
+	parsedSet, err := VerifyBadgeSet(&set)
+	if err != nil {
+		t.Fatalf("VerifyBadgeSet: %v", err)
+	}
+	if parsedSet.DTag != "favorites" || parsedSet.Title != "Favorite Badges" {
+		t.Fatalf("unexpected set metadata: %+v", parsedSet)
+	}
+	if len(parsedSet.Badges) != 1 || parsedSet.Badges[0] != badge {
+		t.Fatalf("unexpected set badges: %+v", parsedSet.Badges)
+	}
+}

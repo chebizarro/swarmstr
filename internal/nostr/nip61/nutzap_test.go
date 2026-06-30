@@ -48,7 +48,7 @@ func TestPublishAndFetchNutzapInfo(t *testing.T) {
 		{URL: "https://mint.example.com", Units: []string{"sat"}},
 	}
 
-	ev, err := client.PublishNutzapInfo(ctx, mints, "p2pkpubkey123", "sat")
+	ev, err := client.PublishNutzapInfoWithRelays(ctx, []string{"wss://relay.example"}, mints, "p2pkpubkey123", "sat")
 	if err != nil {
 		t.Fatalf("PublishNutzapInfo error: %v", err)
 	}
@@ -62,6 +62,12 @@ func TestPublishAndFetchNutzapInfo(t *testing.T) {
 	}
 	if info.P2PKPubkey != "p2pkpubkey123" {
 		t.Errorf("expected p2pk 'p2pkpubkey123', got %q", info.P2PKPubkey)
+	}
+	if len(info.Relays) != 1 || info.Relays[0] != "wss://relay.example" {
+		t.Errorf("unexpected relays: %+v", info.Relays)
+	}
+	if ev.Content != "" {
+		t.Errorf("expected empty info content, got %q", ev.Content)
 	}
 }
 
@@ -103,22 +109,28 @@ func TestSendNutzap(t *testing.T) {
 	if tagMap["u"] != "https://mint.example.com" {
 		t.Errorf("expected u tag 'https://mint.example.com', got %q", tagMap["u"])
 	}
-	if tagMap["amount"] != "21" {
-		t.Errorf("expected amount tag '21', got %q", tagMap["amount"])
+	if _, ok := tagMap["amount"]; ok {
+		t.Errorf("unexpected non-spec amount tag: %q", tagMap["amount"])
+	}
+	if tagMap["unit"] != "sat" {
+		t.Errorf("expected unit tag 'sat', got %q", tagMap["unit"])
+	}
+	if ev.Content != "hello!" {
+		t.Errorf("expected plaintext comment, got %q", ev.Content)
 	}
 }
 
 func TestParseNutzap(t *testing.T) {
-	proofsJSON := `[{"amount":100,"id":"ks1","secret":"sec1","C":"sig1"}]`
+	proofJSON := `{"amount":100,"id":"ks1","secret":"sec1","C":"sig1"}`
 
 	ev := &nostr.Event{
 		Kind:    nostr.Kind(nip61.KindNutzap),
-		Content: `{"comment":"test nutzap"}`,
+		Content: "test nutzap",
 		Tags: nostr.Tags{
 			{"p", hexPubkey},
 			{"u", "https://mint.example.com"},
-			{"proof", proofsJSON},
-			{"amount", "100"},
+			{"proof", proofJSON},
+			{"unit", "sat"},
 		},
 	}
 
