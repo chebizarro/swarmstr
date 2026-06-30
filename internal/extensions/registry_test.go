@@ -9,6 +9,9 @@ import (
 	// Blank-import at least one extension so its init() registers a
 	// constructor and AvailableKinds / RegisterConfigured have something
 	// to work with.
+	_ "metiq/internal/extensions/imessage"
+	_ "metiq/internal/extensions/nextcloud"
+	_ "metiq/internal/extensions/qqbot"
 	_ "metiq/internal/extensions/telegram"
 )
 
@@ -19,17 +22,18 @@ func TestAvailableKinds_NonEmpty(t *testing.T) {
 	}
 }
 
-func TestAvailableKinds_ContainsTelegram(t *testing.T) {
+func TestAvailableKinds_ContainsCompiledAndAliasKinds(t *testing.T) {
 	kinds := extensions.AvailableKinds()
-	found := false
+	want := map[string]bool{"telegram": false, "qqbot": false, "imessage": false, "nextcloud": false, "nextcloud-talk": false}
 	for _, k := range kinds {
-		if k == "telegram" {
-			found = true
-			break
+		if _, ok := want[k]; ok {
+			want[k] = true
 		}
 	}
-	if !found {
-		t.Errorf("expected 'telegram' in available kinds, got %v", kinds)
+	for kind, found := range want {
+		if !found {
+			t.Errorf("expected %q in available kinds, got %v", kind, kinds)
+		}
 	}
 }
 
