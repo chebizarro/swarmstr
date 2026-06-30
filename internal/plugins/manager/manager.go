@@ -24,6 +24,8 @@ import (
 	"metiq/internal/plugins/installer"
 	"metiq/internal/plugins/runtime"
 	"metiq/internal/plugins/sdk"
+	"metiq/internal/plugins/trust"
+	"metiq/internal/sandbox"
 	"metiq/internal/store/state"
 )
 
@@ -70,6 +72,7 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 	}
 
 	rawExt := extensionsConfig(cfg)
+	sandboxCfg, sandboxEnabled := pluginSandboxConfig(rawExt)
 	next := map[string]pluginInstance{}
 	var issues []string
 
@@ -92,6 +95,8 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 			m.log.Warn("plugin integrity verification failed", "plugin", pluginID, "err", err)
 			continue
 		}
+		pluginTrust := resolvePluginTrust(rawExt, pluginID, entry)
+		sandboxDecision := NodeSandboxDecision(pluginTrust, sandboxEnabled, sandboxCfg != nil)
 
 		// Node.js compat bridge: activated when plugin_type is "node"/"nodejs"
 		// OR when the trusted install path contains a node_modules directory.
@@ -101,6 +106,17 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 				issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
 				m.log.Warn("node plugin entry resolution failed", "plugin", pluginID, "err", err)
 			} else {
+				m.log.Info("loading node.js plugin", "plugin", pluginID, "trust", pluginTrust, "sandbox", sandboxDecision.Action, "reason", sandboxDecision.Reason)
+				if sandboxDecision.Action == SandboxActionFailOpen {
+					m.log.Warn("untrusted node plugin running without sandbox; falling back to current subprocess behavior", "plugin", pluginID, "trust", pluginTrust, "reason", sandboxDecision.Reason)
+				}
+				if sandboxDecision.Action == SandboxActionUse {
+					if _, err := sandbox.New(*sandboxCfg); err != nil {
+						issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
+						m.log.Warn("node plugin sandbox configuration invalid", "plugin", pluginID, "trust", pluginTrust, "err", err)
+						continue
+					}
+				}
 				np, err := runtime.LoadNodePlugin(ctx, entryPath)
 				if err != nil {
 					issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
@@ -110,7 +126,7 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 					m.log.Warn("node plugin manifest mismatch", "plugin", pluginID, "err", err)
 				} else {
 					next[pluginID] = np
-					m.log.Info("loaded node.js plugin", "plugin", pluginID, "tools", len(np.Manifest().Tools))
+					m.log.Info("loaded node.js plugin", "plugin", pluginID, "tools", len(np.Manifest().Tools), "trust", pluginTrust, "sandbox", sandboxDecision.Action)
 					continue
 				}
 			}
@@ -125,13 +141,14 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 			m.log.Error("read plugin script", "plugin", pluginID, "err", err)
 			continue
 		}
+		m.log.Info("loading goja plugin", "plugin", pluginID, "trust", pluginTrust, "sandbox", "in-process-deny-sensitive")
 		host, err := cloneHostForPlugin(m.host, pluginID)
 		if err != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
 			m.log.Error("build plugin host failed", "plugin", pluginID, "err", err)
 			continue
 		}
-		p, err := runtime.LoadPlugin(ctx, src, host)
+		p, err := runtime.LoadPluginWithOptions(ctx, src, host, runtime.LoadOptions{Trust: pluginTrust.String()})
 		if err != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
 			m.log.Error("load plugin failed", "plugin", pluginID, "err", err)
@@ -143,7 +160,7 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 			continue
 		}
 		next[pluginID] = p
-		m.log.Info("loaded goja plugin", "plugin", pluginID, "tools", len(p.Manifest().Tools))
+		m.log.Info("loaded goja plugin", "plugin", pluginID, "tools", len(p.Manifest().Tools), "trust", pluginTrust, "sandbox", "in-process-deny-sensitive")
 	}
 
 	m.mu.Lock()
@@ -280,6 +297,71 @@ func pluginInstallRecord(rawExt map[string]any, pluginID string) map[string]any 
 	rawInstalls, _ := rawExt["installs"].(map[string]any)
 	record, _ := rawInstalls[pluginID].(map[string]any)
 	return record
+}
+
+type SandboxAction string
+
+const (
+	SandboxActionSkip     SandboxAction = "skip"
+	SandboxActionUse      SandboxAction = "use"
+	SandboxActionFailOpen SandboxAction = "fail-open"
+)
+
+type SandboxDecision struct {
+	Action SandboxAction
+	Reason string
+}
+
+func NodeSandboxDecision(level trust.Level, enabled bool, configured bool) SandboxDecision {
+	if level.IsTrusted() {
+		return SandboxDecision{Action: SandboxActionSkip, Reason: "trusted plugin"}
+	}
+	if !enabled {
+		return SandboxDecision{Action: SandboxActionSkip, Reason: "sandbox disabled"}
+	}
+	if !configured {
+		return SandboxDecision{Action: SandboxActionFailOpen, Reason: "sandbox enabled without configuration"}
+	}
+	return SandboxDecision{Action: SandboxActionUse, Reason: "untrusted plugin with sandbox configured"}
+}
+
+func resolvePluginTrust(rawExt map[string]any, pluginID string, entry map[string]any) trust.Level {
+	if level := trust.FromInstallRecord(entry); entry != nil && (entry["trust"] != nil || entry["source"] != nil || entry["type"] != nil) {
+		return level
+	}
+	return trust.FromInstallRecord(pluginInstallRecord(rawExt, pluginID))
+}
+
+func pluginSandboxConfig(rawExt map[string]any) (*sandbox.Config, bool) {
+	if rawExt == nil {
+		return nil, false
+	}
+	raw, _ := rawExt["sandbox"].(map[string]any)
+	if raw == nil {
+		return nil, false
+	}
+	enabled, _ := raw["enabled"].(bool)
+	rawCfg, _ := raw["config"].(map[string]any)
+	if rawCfg == nil {
+		rawCfg = raw
+	}
+	cfg := sandbox.Config{
+		Driver:          firstNonEmptyString(rawCfg["driver"]),
+		AllowUnsafeNop:  boolValue(rawCfg["allow_unsafe_nop"]),
+		MemoryLimit:     firstNonEmptyString(rawCfg["memory_limit"]),
+		CPULimit:        firstNonEmptyString(rawCfg["cpu_limit"]),
+		DockerImage:     firstNonEmptyString(rawCfg["docker_image"]),
+		AllowNetwork:    boolValue(rawCfg["allow_network"]),
+		NetworkDisabled: boolValue(rawCfg["network_disabled"]),
+		ReadOnlyRootFS:  boolValue(rawCfg["read_only_rootfs"]),
+		WritableRootFS:  boolValue(rawCfg["writable_rootfs"]),
+	}
+	return &cfg, enabled
+}
+
+func boolValue(raw any) bool {
+	v, _ := raw.(bool)
+	return v
 }
 
 func pluginLoadRoots(rawExt map[string]any) []string {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/dop251/goja"
 	"metiq/internal/plugins/sdk"
+	"metiq/internal/plugins/trust"
 )
 
 // GojaPlugin is a compiled, host-wired Goja plugin instance.
@@ -123,7 +124,15 @@ func (p *GojaPlugin) Invoke(ctx context.Context, req sdk.InvokeRequest) (sdk.Inv
 
 // LoadPlugin compiles src as a CommonJS-style module, wires the host APIs into
 // the VM global scope, reads exports.manifest, and returns a ready GojaPlugin.
+type LoadOptions struct {
+	Trust string
+}
+
 func LoadPlugin(ctx context.Context, src []byte, host *sdk.Host) (*GojaPlugin, error) {
+	return LoadPluginWithOptions(ctx, src, host, LoadOptions{Trust: trust.LevelTrusted.String()})
+}
+
+func LoadPluginWithOptions(ctx context.Context, src []byte, host *sdk.Host, opts LoadOptions) (*GojaPlugin, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -193,6 +202,7 @@ func LoadPlugin(ctx context.Context, src []byte, host *sdk.Host) (*GojaPlugin, e
 	if err := sdk.ValidateManifest(manifest); err != nil {
 		return nil, err
 	}
+	manifest.Permissions = permissionsForTrust(manifest.Permissions, opts.Trust)
 	if err := wirePermittedHostNamespaces(vm, host, hostCtx, log, manifest.Permissions); err != nil {
 		return nil, err
 	}
@@ -217,6 +227,27 @@ func LoadPlugin(ctx context.Context, src []byte, host *sdk.Host) (*GojaPlugin, e
 }
 
 // ─── Host wiring helpers ──────────────────────────────────────────────────────
+
+func permissionsForTrust(perms sdk.Permissions, level string) sdk.Permissions {
+	if trust.Level(level).IsTrusted() {
+		return perms
+	}
+	// In-process untrusted Goja plugins do not get sensitive host namespaces even
+	// when requested. They may still use less privileged HTTP/web search surfaces
+	// when explicitly permitted by their manifest.
+	perms.All = false
+	perms.Config = false
+	perms.Storage = false
+	perms.Agent = false
+	perms.Session = false
+	perms.Task = false
+	perms.Memory = false
+	if perms.Nostr != nil {
+		perms.Nostr.Encrypt = false
+		perms.Nostr.Sign = false
+	}
+	return perms
+}
 
 func wirePermittedHostNamespaces(vm *goja.Runtime, host *sdk.Host, hostCtx *pluginHostContext, log *slog.Logger, perms sdk.Permissions) error {
 	if host == nil {

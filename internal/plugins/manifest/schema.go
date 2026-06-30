@@ -102,6 +102,10 @@ type Manifest struct {
 
 	// Keywords are searchable tags for discovery (optional).
 	Keywords []string `json:"keywords,omitempty"`
+
+	// Trust records the resolved trust classification for this installed plugin.
+	// Empty means the loader should derive trust from install source metadata.
+	Trust string `json:"trust,omitempty"`
 }
 
 // ─── Supporting Types ────────────────────────────────────────────────────────
