@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	pluginmanifest "metiq/internal/plugins/manifest"
 )
 
 // OpenClawPluginManifest represents an openclaw.plugin.json file.
@@ -26,6 +28,21 @@ type OpenClawPluginManifest struct {
 	} `json:"capabilities"`
 
 	ConfigSchema map[string]any `json:"configSchema"`
+}
+
+// OpenClawCompatibility is normalized compatibility metadata from the external
+// OpenClaw package contract.
+type OpenClawCompatibility struct {
+	PluginAPIRange           string `json:"pluginApiRange,omitempty"`
+	BuiltWithOpenClawVersion string `json:"builtWithOpenClawVersion,omitempty"`
+	PluginSDKVersion         string `json:"pluginSdkVersion,omitempty"`
+	MinGatewayVersion        string `json:"minGatewayVersion,omitempty"`
+}
+
+// OpenClawValidationIssue describes a package-contract validation problem.
+type OpenClawValidationIssue struct {
+	FieldPath string `json:"fieldPath"`
+	Message   string `json:"message"`
 }
 
 // LoadOpenClawManifest reads and parses an OpenClaw plugin manifest.
@@ -102,4 +119,81 @@ func loadFromPackageJSON(pluginPath string) (*OpenClawPluginManifest, error) {
 		mf.Name = mf.ID
 	}
 	return mf, nil
+}
+
+func validateOpenClawPackageContract(pluginPath string) (OpenClawCompatibility, error) {
+	pkgPath := filepath.Join(pluginPath, "package.json")
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return OpenClawCompatibility{}, nil
+		}
+		return OpenClawCompatibility{}, fmt.Errorf("read package.json for OpenClaw contract: %w", err)
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return OpenClawCompatibility{}, fmt.Errorf("parse package.json for OpenClaw contract: %w", err)
+	}
+	if _, ok := pkg["openclaw"]; !ok {
+		return OpenClawCompatibility{}, nil
+	}
+	compat, issues := normalizeOpenClawCompatibility(pkg)
+	if len(issues) > 0 {
+		parts := make([]string, len(issues))
+		for i, issue := range issues {
+			parts[i] = issue.Message
+		}
+		return compat, fmt.Errorf("incompatible OpenClaw plugin package: %s", strings.Join(parts, "; "))
+	}
+	return compat, nil
+}
+
+func normalizeOpenClawCompatibility(pkg map[string]any) (OpenClawCompatibility, []OpenClawValidationIssue) {
+	openclaw := mapValue(pkg["openclaw"])
+	compatBlock := mapValue(openclaw["compat"])
+	build := mapValue(openclaw["build"])
+	install := mapValue(openclaw["install"])
+
+	out := OpenClawCompatibility{
+		PluginAPIRange:           normalizedString(compatBlock["pluginApi"]),
+		BuiltWithOpenClawVersion: normalizedString(build["openclawVersion"]),
+		PluginSDKVersion:         normalizedString(build["pluginSdkVersion"]),
+		MinGatewayVersion:        normalizedString(compatBlock["minGatewayVersion"]),
+	}
+	if out.MinGatewayVersion == "" {
+		out.MinGatewayVersion = normalizedString(install["minHostVersion"])
+	}
+	if out.BuiltWithOpenClawVersion == "" {
+		out.BuiltWithOpenClawVersion = normalizedString(pkg["version"])
+	}
+
+	var issues []OpenClawValidationIssue
+	if out.PluginAPIRange == "" {
+		issues = append(issues, OpenClawValidationIssue{FieldPath: "openclaw.compat.pluginApi", Message: "openclaw.compat.pluginApi is required for external code plugin packages"})
+	}
+	if normalizedString(build["openclawVersion"]) == "" {
+		issues = append(issues, OpenClawValidationIssue{FieldPath: "openclaw.build.openclawVersion", Message: "openclaw.build.openclawVersion is required for external code plugin packages"})
+	}
+	return out, issues
+}
+
+func mapValue(v any) map[string]any {
+	if m, ok := v.(map[string]any); ok {
+		return m
+	}
+	return map[string]any{}
+}
+
+func normalizedString(v any) string {
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+func authorInfoFromClaude(author ClaudeAuthor) *pluginmanifest.AuthorInfo {
+	if strings.TrimSpace(author.Name) == "" && strings.TrimSpace(author.Email) == "" {
+		return nil
+	}
+	return &pluginmanifest.AuthorInfo{Name: strings.TrimSpace(author.Name), Email: strings.TrimSpace(author.Email)}
 }
