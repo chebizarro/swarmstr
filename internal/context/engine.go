@@ -61,11 +61,39 @@ type Message struct {
 }
 
 // AssembleResult is returned by Engine.Assemble().
+type PromptAuthority string
+
+const (
+	PromptAuthorityAssembled              PromptAuthority = "assembled"
+	PromptAuthorityPreassemblyMayOverflow PromptAuthority = "preassembly_may_overflow"
+)
+
+func ResolvePromptAuthority(authority PromptAuthority) PromptAuthority {
+	switch authority {
+	case PromptAuthorityPreassemblyMayOverflow:
+		return PromptAuthorityPreassemblyMayOverflow
+	default:
+		return PromptAuthorityAssembled
+	}
+}
+
+// AuthoritativePromptTokens returns the token count runners should compare
+// against overflow thresholds for this assembly.
+func AuthoritativePromptTokens(result AssembleResult, preassemblyTokens int) int {
+	if ResolvePromptAuthority(result.PromptAuthority) == PromptAuthorityPreassemblyMayOverflow && preassemblyTokens > result.EstimatedTokens {
+		return preassemblyTokens
+	}
+	return result.EstimatedTokens
+}
+
 type AssembleResult struct {
 	// Messages are ordered messages ready to pass to the model.
 	Messages []Message `json:"messages"`
 	// EstimatedTokens is a rough token count estimate.
 	EstimatedTokens int `json:"estimated_tokens"`
+	// PromptAuthority controls which token estimate the runner treats as authoritative
+	// for overflow prechecks. Defaults to "assembled".
+	PromptAuthority PromptAuthority `json:"prompt_authority,omitempty"`
 	// SystemPromptAddition is optional engine-supplied dynamic text appended to
 	// the runtime system prompt at turn assembly time (e.g. memory context).
 	// Unlike the static provider/system prompt prefix, this addition is treated
@@ -86,6 +114,34 @@ type IngestResult struct {
 	Ingested bool `json:"ingested"`
 }
 
+// IngestBatchResult is returned by optional batch ingest implementations.
+type IngestBatchResult struct {
+	IngestedCount int `json:"ingested_count"`
+}
+
+// IngestBatcher is implemented by engines that can ingest a completed turn atomically.
+type IngestBatcher interface {
+	IngestBatch(ctx context.Context, sessionID string, messages []Message) (IngestBatchResult, error)
+}
+
+// RunIngestBatch invokes batch ingest when available, otherwise falls back to Ingest.
+func RunIngestBatch(ctx context.Context, engine Engine, sessionID string, messages []Message) (IngestBatchResult, error) {
+	if batcher, ok := engine.(IngestBatcher); ok {
+		return batcher.IngestBatch(ctx, sessionID, messages)
+	}
+	result := IngestBatchResult{}
+	for _, msg := range messages {
+		ingested, err := engine.Ingest(ctx, sessionID, msg)
+		if err != nil {
+			return result, err
+		}
+		if ingested.Ingested {
+			result.IngestedCount++
+		}
+	}
+	return result, nil
+}
+
 // CompactResult is returned by Engine.Compact().
 type CompactResult struct {
 	// OK reports whether compaction succeeded.
@@ -94,9 +150,26 @@ type CompactResult struct {
 	Compacted bool `json:"compacted"`
 	// Summary is a human-readable description of what was compacted.
 	Summary string `json:"summary,omitempty"`
+	// Reason optionally explains why compaction did not run or failed.
+	Reason string `json:"reason,omitempty"`
 	// TokensBefore / TokensAfter report the token counts pre and post compaction.
 	TokensBefore int `json:"tokens_before"`
 	TokensAfter  int `json:"tokens_after,omitempty"`
+	// FirstKeptMessageID identifies the first transcript message retained after compaction.
+	FirstKeptMessageID string `json:"first_kept_message_id,omitempty"`
+	// CutPoint is the original message index where retained context begins.
+	CutPoint int `json:"cut_point,omitempty"`
+	// DroppedMessages and KeptMessages report pruning counts.
+	DroppedMessages int `json:"dropped_messages,omitempty"`
+	KeptMessages    int `json:"kept_messages,omitempty"`
+	// PreviousSummaryTokens is non-zero when existing summary context was carried forward.
+	PreviousSummaryTokens int `json:"previous_summary_tokens,omitempty"`
+	// SummaryTokens estimates the active summary token count after compaction.
+	SummaryTokens int `json:"summary_tokens,omitempty"`
+	// LLMAssisted reports whether compaction used model inference.
+	LLMAssisted bool `json:"llm_assisted,omitempty"`
+	// Details carries implementation-specific planner metadata.
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // BootstrapResult is returned by Engine.Bootstrap().

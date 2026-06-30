@@ -35,6 +35,9 @@ type SessionMemoryCompactConfig struct {
 	// MaxTokens is the hard cap on tokens to preserve. Once this is reached
 	// the algorithm stops expanding backwards.
 	MaxTokens int
+
+	// PreviousSummary is optional previously compacted summary context to carry forward.
+	PreviousSummary string
 }
 
 // DefaultSessionMemoryCompactConfig provides safe defaults matching the
@@ -238,6 +241,104 @@ func resolveLastSummarizedIndex(messages []Message, state *SessionMemoryCompactS
 	return -1
 }
 
+// CompactionPlan describes the deterministic cut-point chosen before applying compaction.
+type CompactionPlan struct {
+	CutPoint                 int
+	AdjustedCutPoint         int
+	LastSummarizedIndex      int
+	TokensBefore             int
+	TokensAfter              int
+	KeptTokens               int
+	SummaryTokens            int
+	PreviousSummaryTokens    int
+	DroppedMessages          int
+	KeptMessages             int
+	TextBlockMessages        int
+	FirstKeptMessageID       string
+	LastAssistantUsageTokens int
+}
+
+func estimateMessagesTokens(messages []Message) int {
+	total := 0
+	for _, msg := range messages {
+		total += estimateMessageTokens(msg)
+	}
+	return total
+}
+
+func estimateTextTokens(text string) int {
+	if text == "" {
+		return 0
+	}
+	return (len(text) + 3) / 4
+}
+
+func getLastAssistantUsage(messages []Message) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" {
+			return estimateMessageTokens(messages[i])
+		}
+	}
+	return 0
+}
+
+func mergeSessionSummaries(previousSummary, sessionMemory string) string {
+	previousSummary = strings.TrimSpace(previousSummary)
+	sessionMemory = strings.TrimSpace(sessionMemory)
+	if previousSummary == "" {
+		return sessionMemory
+	}
+	if sessionMemory == "" || sessionMemory == previousSummary || strings.Contains(sessionMemory, previousSummary) {
+		return previousSummary
+	}
+	return previousSummary + "\n\n" + sessionMemory
+}
+
+func planSessionMemoryCompaction(messages []Message, existingSummary, sessionMemory string, lastSummarizedIndex int, config SessionMemoryCompactConfig) CompactionPlan {
+	beforeSummary := existingSummary
+	previousSummary := config.PreviousSummary
+	if previousSummary == "" {
+		previousSummary = existingSummary
+	}
+	mergedSummary := mergeSessionSummaries(previousSummary, sessionMemory)
+	rawCutPoint := calculateMessagesToKeepIndex(messages, lastSummarizedIndex, config)
+	cutPoint := rawCutPoint
+	if cutPoint < 0 {
+		cutPoint = 0
+	}
+	if cutPoint > len(messages) {
+		cutPoint = len(messages)
+	}
+	kept := messages[cutPoint:]
+	textBlocks := 0
+	for _, msg := range kept {
+		if hasTextContent(msg) {
+			textBlocks++
+		}
+	}
+	firstKept := ""
+	if len(kept) > 0 {
+		firstKept = kept[0].ID
+	}
+	keptTokens := estimateMessagesTokens(kept)
+	summaryTokens := estimateTextTokens(mergedSummary)
+	return CompactionPlan{
+		CutPoint:                 rawCutPoint,
+		AdjustedCutPoint:         cutPoint,
+		LastSummarizedIndex:      lastSummarizedIndex,
+		TokensBefore:             estimateMessagesTokens(messages) + estimateTextTokens(beforeSummary),
+		TokensAfter:              keptTokens + summaryTokens,
+		KeptTokens:               keptTokens,
+		SummaryTokens:            summaryTokens,
+		PreviousSummaryTokens:    estimateTextTokens(previousSummary),
+		DroppedMessages:          cutPoint,
+		KeptMessages:             len(kept),
+		TextBlockMessages:        textBlocks,
+		FirstKeptMessageID:       firstKept,
+		LastAssistantUsageTokens: getLastAssistantUsage(messages),
+	}
+}
+
 // ─── SmallWindowEngine: session memory compaction ──────────��──────────────────
 
 // CompactWithSessionMemory implements SessionMemoryCompacter for
@@ -260,17 +361,15 @@ func (e *SmallWindowEngine) CompactWithSessionMemoryState(ctx stdctx.Context, se
 		return CompactResult{OK: true, Compacted: false}, nil
 	}
 
-	// Estimate pre-compact tokens.
-	tokensBefore := 0
-	for _, msg := range sess.messages {
-		tokensBefore += estimateMessageTokens(msg)
-	}
-	if sess.summary != "" {
-		tokensBefore += (len(sess.summary) + 3) / 4
-	}
-
 	lastSummarizedIndex := resolveLastSummarizedIndex(sess.messages, state, sessionID)
-	startIndex := calculateMessagesToKeepIndex(sess.messages, lastSummarizedIndex, config)
+	plan := planSessionMemoryCompaction(sess.messages, sess.summary, sessionMemory, lastSummarizedIndex, config)
+	startIndex := plan.AdjustedCutPoint
+	mergedSummary := mergeSessionSummaries(func() string {
+		if config.PreviousSummary != "" {
+			return config.PreviousSummary
+		}
+		return sess.summary
+	}(), sessionMemory)
 
 	// Nothing to compact if we're keeping everything.
 	if startIndex == 0 && sess.summary == sessionMemory {
@@ -283,21 +382,9 @@ func (e *SmallWindowEngine) CompactWithSessionMemoryState(ctx stdctx.Context, se
 	pruned := len(sess.messages) - len(kept)
 
 	sess.messages = kept
-	sess.summary = sessionMemory
+	sess.summary = mergedSummary
 
-	// Estimate post-compact tokens.
-	tokensAfter := (len(sessionMemory) + 3) / 4
-	for _, msg := range kept {
-		tokensAfter += estimateMessageTokens(msg)
-	}
-
-	return CompactResult{
-		OK:           true,
-		Compacted:    true,
-		Summary:      fmt.Sprintf("session memory compact: pruned %d messages, kept %d, summary %d chars", pruned, len(kept), len(sessionMemory)),
-		TokensBefore: tokensBefore,
-		TokensAfter:  tokensAfter,
-	}, nil
+	return compactResultFromPlan(plan, pruned, len(kept), len(mergedSummary)), nil
 }
 
 // ─── WindowedEngine: session memory compaction ────────────────────────────────
@@ -323,16 +410,15 @@ func (e *WindowedEngine) CompactWithSessionMemoryState(ctx stdctx.Context, sessi
 		e.summaries = map[string]string{}
 	}
 
-	tokensBefore := 0
-	for _, msg := range msgs {
-		tokensBefore += estimateMessageTokens(msg)
-	}
-	if summary := e.summaries[sessionID]; summary != "" {
-		tokensBefore += (len(summary) + 3) / 4
-	}
-
 	lastSummarizedIndex := resolveLastSummarizedIndex(msgs, state, sessionID)
-	startIndex := calculateMessagesToKeepIndex(msgs, lastSummarizedIndex, config)
+	plan := planSessionMemoryCompaction(msgs, e.summaries[sessionID], sessionMemory, lastSummarizedIndex, config)
+	startIndex := plan.AdjustedCutPoint
+	mergedSummary := mergeSessionSummaries(func() string {
+		if config.PreviousSummary != "" {
+			return config.PreviousSummary
+		}
+		return e.summaries[sessionID]
+	}(), sessionMemory)
 	if startIndex == 0 && e.summaries[sessionID] == sessionMemory {
 		return CompactResult{OK: true, Compacted: false}, nil
 	}
@@ -341,20 +427,33 @@ func (e *WindowedEngine) CompactWithSessionMemoryState(ctx stdctx.Context, sessi
 	copy(kept, msgs[startIndex:])
 	pruned := len(msgs) - len(kept)
 	e.sessions[sessionID] = kept
-	e.summaries[sessionID] = sessionMemory
+	e.summaries[sessionID] = mergedSummary
 
-	tokensAfter := (len(sessionMemory) + 3) / 4
-	for _, msg := range kept {
-		tokensAfter += estimateMessageTokens(msg)
-	}
+	return compactResultFromPlan(plan, pruned, len(kept), len(mergedSummary)), nil
+}
 
+func compactResultFromPlan(plan CompactionPlan, pruned, kept, summaryChars int) CompactResult {
 	return CompactResult{
-		OK:           true,
-		Compacted:    true,
-		Summary:      fmt.Sprintf("session memory compact: pruned %d messages, kept %d, summary %d chars", pruned, len(kept), len(sessionMemory)),
-		TokensBefore: tokensBefore,
-		TokensAfter:  tokensAfter,
-	}, nil
+		OK:                    true,
+		Compacted:             true,
+		Summary:               fmt.Sprintf("session memory compact: pruned %d messages, kept %d, summary %d chars", pruned, kept, summaryChars),
+		TokensBefore:          plan.TokensBefore,
+		TokensAfter:           plan.TokensAfter,
+		FirstKeptMessageID:    plan.FirstKeptMessageID,
+		CutPoint:              plan.AdjustedCutPoint,
+		DroppedMessages:       pruned,
+		KeptMessages:          kept,
+		PreviousSummaryTokens: plan.PreviousSummaryTokens,
+		SummaryTokens:         plan.SummaryTokens,
+		LLMAssisted:           false,
+		Details: map[string]any{
+			"raw_cut_point":               plan.CutPoint,
+			"last_summarized_index":       plan.LastSummarizedIndex,
+			"kept_tokens":                 plan.KeptTokens,
+			"text_block_messages":         plan.TextBlockMessages,
+			"last_assistant_usage_tokens": plan.LastAssistantUsageTokens,
+		},
+	}
 }
 
 // ─── Compile-time interface assertions ─────────────────────��──────────────────
