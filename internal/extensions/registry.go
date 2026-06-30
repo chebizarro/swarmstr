@@ -31,7 +31,7 @@ func RegisterConfigured(cfg state.ConfigDoc) int {
 		}
 	}
 
-	ctors := sdk.ChannelConstructors()
+	ctors := aliasedChannelConstructors()
 	registered := 0
 	for kind := range needed {
 		ctor, ok := ctors[kind]
@@ -47,10 +47,25 @@ func RegisterConfigured(cfg state.ConfigDoc) int {
 // AvailableKinds returns the set of built-in channel plugin kinds that have
 // been compiled into this binary (i.e. whose packages were imported).
 func AvailableKinds() []string {
-	ctors := sdk.ChannelConstructors()
+	ctors := aliasedChannelConstructors()
 	kinds := make([]string, 0, len(ctors))
 	for k := range ctors {
 		kinds = append(kinds, k)
 	}
 	return kinds
+}
+
+func aliasedChannelConstructors() map[string]func() sdk.ChannelPlugin {
+	ctors := sdk.ChannelConstructors()
+	if ctor, ok := ctors["nextcloud-talk"]; ok {
+		if _, exists := ctors["nextcloud"]; !exists {
+			ctors["nextcloud"] = ctor
+		}
+	}
+	if ctor, ok := ctors["nextcloud"]; ok {
+		if _, exists := ctors["nextcloud-talk"]; !exists {
+			ctors["nextcloud-talk"] = ctor
+		}
+	}
+	return ctors
 }
