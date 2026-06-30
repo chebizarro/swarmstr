@@ -23,6 +23,7 @@ const (
 	TaskStatusSucceeded TaskStatus = "succeeded"
 	TaskStatusFailed    TaskStatus = "failed"
 	TaskStatusTimedOut  TaskStatus = "timed_out"
+	TaskStatusBlocked   TaskStatus = "blocked"
 	TaskStatusCancelled TaskStatus = "cancelled"
 	TaskStatusLost      TaskStatus = "lost"
 )
@@ -30,7 +31,7 @@ const (
 // Terminal reports whether no further worker execution is expected.
 func (s TaskStatus) Terminal() bool {
 	switch s {
-	case TaskStatusSucceeded, TaskStatusFailed, TaskStatusTimedOut, TaskStatusCancelled, TaskStatusLost:
+	case TaskStatusSucceeded, TaskStatusFailed, TaskStatusTimedOut, TaskStatusBlocked, TaskStatusCancelled, TaskStatusLost:
 		return true
 	default:
 		return false

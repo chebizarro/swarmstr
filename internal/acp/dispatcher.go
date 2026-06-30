@@ -112,10 +112,7 @@ func (d *Dispatcher) Deliver(result TaskResult) bool {
 	}
 	d.mu.Unlock()
 
-	status := TaskStatusSucceeded
-	if strings.TrimSpace(result.Error) != "" {
-		status = TaskStatusFailed
-	}
+	status := classifyTaskResultStatus(result)
 	endedAt := d.now()
 	if result.CompletedAt > 0 {
 		endedAt = time.Unix(result.CompletedAt, 0)
@@ -145,6 +142,68 @@ func (d *Dispatcher) Deliver(result TaskResult) bool {
 // a zero TaskResult).
 func (d *Dispatcher) Cancel(taskID string) {
 	d.finishPending(taskID, TaskStatusCancelled, "cancelled", true)
+}
+
+func classifyTaskResultStatus(result TaskResult) TaskStatus {
+	if strings.TrimSpace(result.Error) != "" {
+		if isBlockedTerminalText(result.Error) {
+			return TaskStatusBlocked
+		}
+		return TaskStatusFailed
+	}
+	if result.Worker != nil && result.Worker.TurnResult != nil {
+		outcome := strings.ToLower(strings.TrimSpace(string(result.Worker.TurnResult.Outcome)))
+		stopReason := strings.ToLower(strings.TrimSpace(string(result.Worker.TurnResult.StopReason)))
+		switch outcome {
+		case "blocked":
+			return TaskStatusBlocked
+		case "failed":
+			return TaskStatusFailed
+		case "aborted", "cancelled", "canceled":
+			return TaskStatusTimedOut
+		}
+		if strings.Contains(stopReason, "blocked") || strings.Contains(stopReason, "permission") || strings.Contains(stopReason, "authorization") {
+			return TaskStatusBlocked
+		}
+	}
+	if isProgressOnlyTerminalText(result.Text) {
+		return TaskStatusBlocked
+	}
+	return TaskStatusSucceeded
+}
+
+func isProgressOnlyTerminalText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	progressMarkers := []string{
+		"i'll ", "i will ", "i’m going to", "i am going to", "i need to", "i'm going to",
+		"let me ", "next,", "next i", "plan:", "todo", "working on", "in progress", "i’ll now",
+	}
+	for _, marker := range progressMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBlockedTerminalText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	blockedMarkers := []string{
+		"permission denied", "permission required", "permission failure", "authorization failed", "authorization required",
+		"not authorized", "unauthorized", "requires approval", "approval required", "tool authorization", "blocked",
+	}
+	for _, marker := range blockedMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Dispatcher) finishPending(taskID string, status TaskStatus, reason string, closeChannel bool) {

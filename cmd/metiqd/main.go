@@ -161,6 +161,8 @@ var (
 	controlACPDispatcher *acppkg.Dispatcher
 	// controlACPManager coordinates local ACP runtime sessions and turns.
 	controlACPManager *acppkg.Manager
+	// controlACPFlowRegistry persists ACP pipeline flow orchestration state.
+	controlACPFlowRegistry *acppkg.FlowRegistry
 	// controlRecoveryStatus captures boot-time crash/restart recovery outcomes
 	// for operator health/status visibility.
 	controlRecoveryMu     sync.RWMutex
@@ -1526,10 +1528,16 @@ func main() {
 		log.Printf("acp session store init failed (non-fatal): %v", acpStoreErr)
 		acpSessionStore = nil
 	}
-	acpManager := acppkg.NewManager(nil, acpSessionStore, nil, acpDispatcher, acppkg.ManagerOptions{ContextEngine: controlContextEngine})
+	acpFlowStore, acpFlowStoreErr := acppkg.NewFileFlowStore(filepath.Join(filepath.Dir(state.DefaultSessionStorePath()), "acp-flows"))
+	if acpFlowStoreErr != nil {
+		log.Printf("acp flow store init failed (non-fatal): %v", acpFlowStoreErr)
+	}
+	acpFlowRegistry := acppkg.NewFlowRegistry(acpFlowStore)
+	acpManager := acppkg.NewManager(nil, acpSessionStore, nil, acpDispatcher, acppkg.ManagerOptions{ContextEngine: controlContextEngine, FlowRegistry: acpFlowRegistry})
 	controlACPPeers = acpPeers
 	controlACPDispatcher = acpDispatcher
 	controlACPManager = acpManager
+	controlACPFlowRegistry = acpFlowRegistry
 	if n := prepopulateACPPeersFromConfig(acpPeers, configState.Get()); n > 0 {
 		log.Printf("acp peer registry pre-populated from config: %d peer(s)", n)
 	}
@@ -7313,6 +7321,7 @@ func handleControlRPCRequest(
 		acpPeers:             svc.relay.acpPeers,
 		acpDispatcher:        svc.relay.acpDispatcher,
 		acpManager:           svc.relay.acpManager,
+		acpFlowRegistry:      controlACPFlowRegistry,
 
 		services: controlServices,
 
@@ -7392,6 +7401,21 @@ func handleACPMessage(
 			return sendResult(acppkg.NewResult(msg.TaskID, "", acppkg.ResultPayload{Error: "instructions are required"}))
 		}
 		log.Printf("acp task from=%s task_id=%s instructions=%q", fromPubKey, msg.TaskID, instructions)
+		mirroredChildTask := false
+		if taskPayload.ParentContext != nil && controlServices != nil && controlServices.relay.acpDispatcher != nil {
+			if _, err := controlServices.relay.acpDispatcher.RegisterTaskWithError(ctx, acppkg.TaskRecord{
+				TaskID:              msg.TaskID,
+				RequesterSessionKey: strings.TrimSpace(taskPayload.ParentContext.SessionID),
+				Instructions:        instructions,
+				Worker:              &acppkg.WorkerTaskMetadata{PubKey: fromPubKey},
+			}); err == nil {
+				mirroredChildTask = true
+				controlServices.relay.acpDispatcher.MarkRunning(ctx, msg.TaskID)
+				controlServices.relay.acpDispatcher.RecordProgress(ctx, msg.TaskID, "child turn started")
+			} else {
+				log.Printf("acp child task mirror register failed task_id=%s err=%v", msg.TaskID, err)
+			}
+		}
 
 		// Route to the assigned agent for this peer, falling back to "main".
 		agentID := ""
@@ -7555,6 +7579,21 @@ func handleACPMessage(
 				senderPubKey = (*controlServices.relay.dmBus).PublicKey()
 			}
 			controlServices.relay.dmBusMu.RUnlock()
+		}
+
+		if mirroredChildTask && controlServices != nil && controlServices.relay.acpDispatcher != nil {
+			mirrorResult := acppkg.TaskResult{
+				TaskID:       msg.TaskID,
+				Text:         result.Text,
+				SenderPubKey: senderPubKey,
+				Worker:       worker,
+				TokensUsed:   int(result.Usage.InputTokens + result.Usage.OutputTokens),
+				CompletedAt:  time.Now().Unix(),
+			}
+			if procErr != nil {
+				mirrorResult.Error = procErr.Error()
+			}
+			controlServices.relay.acpDispatcher.Deliver(mirrorResult)
 		}
 
 		// Build and send result DM back to the sender.
