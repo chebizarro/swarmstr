@@ -204,6 +204,54 @@ func TestHandler_IncludesThemeLocalizationAndComposerPolish(t *testing.T) {
 	}
 }
 
+func TestHandler_ServesCommandCatalog(t *testing.T) {
+	h := Handler("/ws", "")
+	req := httptest.NewRequest(http.MethodGet, "/command-catalog.json", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"commands", "/help", "gateway"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("catalog should contain %q", want)
+		}
+	}
+}
+
+func TestHandler_IncludesExpandedWebUIViewsAndCatalog(t *testing.T) {
+	h := Handler("/ws", "")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"data-view=\"cron\"", "showCronView", "cron.add", "cron.run", "cron.remove",
+		"data-view=\"nodes\"", "showNodesView", "nodes.invoke", "nodes.rename",
+		"data-view=\"mcp\"", "showMCPView", "mcp.test", "mcp.auth.start", "mcp.reconnect",
+		"data-view=\"skills\"", "showSkillsView", "skills.install", "skills.enable", "skills.disable",
+		"sessions.export", "sessions.prune", "command.catalog", "/command-catalog.json", "loadCommandCatalog",
+		"Relay URLs", "Nostr pubkey", "Agent roster", "Files", "Tools", "Skills",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response body should contain %q", want)
+		}
+	}
+}
+
 func TestArchitectureRunwayDocumented(t *testing.T) {
 	body, err := os.ReadFile("ARCHITECTURE.md")
 	if err != nil {

@@ -441,6 +441,7 @@ header h1 {
   border-radius: 0.38rem; padding: 0.35rem 0.65rem; cursor: pointer; font-size: 0.72rem; font-weight: 600;
 }
 .mini-btn:hover { border-color: var(--accent); box-shadow: 0 0 10px rgba(176, 38, 255, 0.18); }
+.mini-input { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.38rem; padding: 0.35rem 0.5rem; font-size: 0.72rem; min-width: 9rem; }
 .mgmt-error { color: var(--error); font-size: 0.76rem; margin-top: 0.5rem; }
 .mgmt-ok { color: var(--success); font-size: 0.76rem; margin-top: 0.5rem; }
 
@@ -799,17 +800,11 @@ const TOKEN   = '{{.Token}}';
   let inputHistoryIndex = inputHistory.length;
   let historyBrowsing = false;
   let locale = localStorage.getItem('metiq_locale') || 'en';
-  const slashCommands = [
-    { cmd: '/help', text: '/help', desc: 'Show available commands' },
-    { cmd: '/status', text: '/status', desc: 'Show gateway status' },
-    { cmd: '/agents', text: '/agents', desc: 'List agents' },
-    { cmd: '/channels', text: '/channels', desc: 'List channels' },
-    { cmd: '/compact', text: '/compact', desc: 'Compact current session' },
-  ];
+  let slashCommands = [];
   const I18N = {
     en: {
       send: 'Send', placeholder: 'Send a message… (Shift+Enter for newline)', connected: 'Connected. Type /help for commands.', connecting: 'connecting…',
-      sessions: 'Sessions', channels: 'Channels', agents: 'Agents', dashboard: 'Dashboard', config: 'Config', usage: 'Usage',
+      sessions: 'Sessions', channels: 'Channels', agents: 'Agents', dashboard: 'Dashboard', config: 'Config', usage: 'Usage', cron: 'Cron', nodes: 'Nodes', mcp: 'MCP', skills: 'Skills',
       newSession: '+ New session', loading: 'Loading…', noSessions: 'No sessions yet', noChannels: 'No channels connected', noAgents: 'No agents configured', noItems: 'No items',
       stopRun: 'Stop run', compact: 'Compact', clear: 'Clear', tip: 'Tip: /help for slash commands', search: 'Search chat…', export: 'Export', theme: 'Theme', approvalPending: '⚠ approval pending',
       errorLoadHistory: 'Could not load session history', noMessages: 'No messages in this session yet.'
@@ -885,7 +880,7 @@ const TOKEN   = '{{.Token}}';
     themeToggle.textContent = t('theme');
     const hint = document.querySelector('footer .hint');
     if (hint) hint.textContent = t('tip');
-    const tabLabels = { sessions: 'sessions', channels: 'channels', agents: 'agents', dashboard: 'dashboard', config: 'config', usage: 'usage' };
+    const tabLabels = { sessions: 'sessions', cron: 'cron', nodes: 'nodes', mcp: 'mcp', skills: 'skills', channels: 'channels', agents: 'agents', dashboard: 'dashboard', config: 'config', usage: 'usage' };
     document.querySelectorAll('.tab-btn').forEach(btn => {
       const key = tabLabels[btn.dataset.tab];
       if (key) btn.textContent = t(key);
@@ -973,6 +968,23 @@ const TOKEN   = '{{.Token}}';
     localStorage.setItem('metiq_input_history', JSON.stringify(inputHistory));
   }
 
+  async function loadCommandCatalog() {
+    const fallback = [
+      { command: '/help', text: '/help', desc: 'Show available commands', source: 'gateway' },
+      { command: '/status', text: '/status', desc: 'Show gateway status', source: 'gateway' },
+    ];
+    try {
+      const res = connected ? await callSafe('command.catalog', {}) : await fetch('/command-catalog.json').then(r => r.json());
+      const items = res.commands || res.items || res.slash_commands || fallback;
+      slashCommands = items.map(item => ({
+        cmd: item.cmd || item.command || item.name,
+        text: item.text || item.insert || item.command || item.cmd || item.name,
+        desc: item.desc || item.description || item.summary || item.source || '',
+        source: item.source || item.provider || 'catalog',
+      })).filter(item => item.cmd && item.cmd.startsWith('/'));
+    } catch { slashCommands = fallback.map(item => ({ cmd: item.command, text: item.text, desc: item.desc, source: item.source })); }
+  }
+
   function renderSlashMenu() {
     const q = input.value.trim().toLowerCase();
     if (!q.startsWith('/')) { slashMenu.classList.remove('visible'); return; }
@@ -981,7 +993,7 @@ const TOKEN   = '{{.Token}}';
     matches.forEach(item => {
       const el = document.createElement('div');
       el.className = 'slash-item';
-      el.textContent = `${item.cmd} — ${item.desc}`;
+      el.textContent = `${item.cmd} — ${item.desc}${item.source ? ' [' + item.source + ']' : ''}`;
       el.addEventListener('click', () => {
         input.value = item.text + ' ';
         slashMenu.classList.remove('visible');
@@ -1327,46 +1339,145 @@ const TOKEN   = '{{.Token}}';
     addRows(logCard, logs.lines || [], (row, line) => { row.textContent = line; });
   }
 
+
+  function addActionButton(container, label, method, paramsFn, refreshFn) {
+    const btn = document.createElement('button');
+    btn.className = 'mini-btn';
+    btn.textContent = label;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const old = btn.textContent;
+      btn.textContent = 'Working…';
+      try { await callMethod(method, paramsFn ? paramsFn() : {}); btn.textContent = 'Done'; if (refreshFn) setTimeout(refreshFn, 250); }
+      catch (err) { btn.textContent = (err && err.message) || 'Failed'; }
+      finally { setTimeout(() => { btn.disabled = false; btn.textContent = old; }, 1200); }
+    });
+    container.appendChild(btn);
+    return btn;
+  }
+
+  function sessionIDOf(s) { return s && (s.session_id || s.id || s.key); }
+  function nodeIDOf(n) { return n && (n.id || n.node_id || n.device_id || n.name); }
+  function serverIDOf(m) { return m && (m.server || m.name || m.id); }
+  function skillKeyOf(k) { return k && (k.skill_key || k.key || k.name || k.id); }
+
   async function showAgentsView(selected, token) {
-    const { grid } = beginManagementView('Agents', 'Configured agents, models, tools, skills, and runtime metadata.');
-    const res = await callSafe('agents.list', {});
+    const { grid } = beginManagementView('Agents', 'Configured agents with status, files, tools, and skills panels.');
+    const [res, statusRes, skillsRes] = await Promise.all([callSafe('agents.list', {}), callSafe('agents.status', {}), callSafe('skills.status', {})]);
     if (token && !isViewCurrent('agents', token)) return;
     const agents = resultItems(res, 'agents');
-    const card = addMgmtCard(grid, 'Agent roster');
-    addRows(card, agents, (row, a) => {
-      row.innerHTML = `<strong>${escapeHTML(a.id || a.agent_id || 'agent')}</strong><div class="sub">model: ${escapeHTML(a.model || '—')} · tools: ${escapeHTML((a.tool_profile || a.toolProfile || 'default'))}</div>`;
+    const agent = selected || agents.find(a => (a.id || a.agent_id) === activeAgentID) || agents[0] || {};
+    addRows(addMgmtCard(grid, 'Agent roster'), agents, (row, a) => {
+      row.innerHTML = `<strong>${escapeHTML(a.id || a.agent_id || 'agent')}</strong><div class="sub">model: ${escapeHTML(a.model || '—')} · tools: ${escapeHTML(a.tool_profile || a.toolProfile || 'default')}</div>`;
     });
-    const detail = addMgmtCard(grid, selected ? 'Selected agent' : 'Agent details');
-    const agent = selected || agents.find(a => (a.id || a.agent_id) === activeAgentID) || agents[0];
-    addKV(detail, [
-      ['ID', agent && (agent.id || agent.agent_id)],
-      ['Name', agent && agent.name],
-      ['Model', agent && agent.model],
-      ['Tool profile', agent && (agent.tool_profile || agent.toolProfile)],
-      ['Workspace', agent && (agent.workspace_dir || agent.workspaceDir)],
-      ['Raw', agent],
-      ['Error', res.error],
-    ]);
+    addKV(addMgmtCard(grid, 'Status'), [['ID', agent.id || agent.agent_id], ['Name', agent.name], ['Model', agent.model], ['Runtime', agent.runtime], ['Status raw', statusRes], ['Error', res.error || statusRes.error]]);
+    addRows(addMgmtCard(grid, 'Files'), agent.files || agent.open_files || agent.workspace_files || [], (row, f) => { row.textContent = typeof f === 'string' ? f : formatValue(f); });
+    addRows(addMgmtCard(grid, 'Tools'), agent.tools || agent.tool_names || agent.enabled_tools || [], (row, tool) => { row.innerHTML = `<strong>${escapeHTML(tool.name || tool.id || tool)}</strong><div class="sub">${escapeHTML(tool.description || tool.source || '')}</div>`; });
+    addRows(addMgmtCard(grid, 'Skills'), agent.skills || skillsRes.skills || [], (row, sk) => { row.innerHTML = `<strong>${escapeHTML(skillKeyOf(sk) || sk)}</strong><div class="sub">${escapeHTML(sk.status || sk.enabled || sk.source || '')}</div>`; });
   }
 
   async function showChannelsView(selected, token) {
-    const { grid } = beginManagementView('Channels', 'Channel status, routing metadata, and health details.');
+    const { grid } = beginManagementView('Channels', 'Channel config, status actions, and Nostr relay/profile fields.');
     const [listRes, statusRes] = await Promise.all([callSafe('channels.list', {}), callSafe('channels.status', {})]);
     if (token && !isViewCurrent('channels', token)) return;
     const channels = resultItems(listRes, 'channels');
-    const card = addMgmtCard(grid, 'Connected channels');
-    addRows(card, channels, (row, c) => {
+    addRows(addMgmtCard(grid, 'Connected channels'), channels, (row, c) => {
       row.innerHTML = `<strong>${escapeHTML(c.id || c.name || 'channel')}</strong><div class="sub">type: ${escapeHTML(c.type || c.kind || '—')} · status: ${escapeHTML(c.status || '—')}</div>`;
     });
-    const detail = addMgmtCard(grid, selected ? 'Selected channel' : 'Channel health');
-    addKV(detail, [
-      ['Selected', selected && (selected.id || selected.name)],
-      ['Status', statusRes.status || statusRes.state],
-      ['Connected', statusRes.connected],
-      ['Health', statusRes.health],
-      ['Raw status', statusRes],
-      ['Error', listRes.error || statusRes.error],
-    ]);
+    const c = selected || channels[0] || {};
+    const detail = addMgmtCard(grid, 'Selected channel config/status');
+    addKV(detail, [['ID', c.id || c.name], ['Type', c.type || c.kind], ['Status', c.status || statusRes.status], ['Relay URLs', c.relays || c.relay_urls || c.relayURLs], ['Nostr pubkey', c.pubkey || c.nostr_pubkey], ['Profile', c.profile || c.nostr_profile], ['Raw status', statusRes], ['Error', listRes.error || statusRes.error]]);
+    const actions = document.createElement('div'); actions.className = 'action-row'; detail.appendChild(actions);
+    addActionButton(actions, 'Refresh status', 'channels.status', () => ({ channel_id: c.id || c.name }), () => showChannelsView(c, ++viewSeq));
+    addActionButton(actions, 'Reconnect', 'channels.reconnect', () => ({ channel_id: c.id || c.name }), () => showChannelsView(c, ++viewSeq));
+  }
+
+  async function showSessionsView(token) {
+    const { grid } = beginManagementView('Sessions', 'List, detail, delete, export, reset, compact, and prune sessions.');
+    const res = await callSafe('sessions.list', { limit: 100 });
+    if (!isViewCurrent('sessions', token)) return;
+    const sessions = resultItems(res, 'sessions');
+    const card = addMgmtCard(grid, 'Sessions');
+    addRows(card, sessions, (row, sess) => {
+      const sid = sessionIDOf(sess);
+      row.innerHTML = `<strong>${escapeHTML(truncate(sid, 42))}</strong><div class="sub">${escapeHTML(sess.preview || sess.title || sess.updated_at || '')}</div>`;
+      const actions = document.createElement('div'); actions.className = 'action-row'; row.appendChild(actions);
+      addActionButton(actions, 'Open', 'sessions.preview', () => ({ session_id: sid }), async () => { sessionID = sid; localStorage.setItem('metiq_session', sid); mainView='chat'; loadSessionHistory(sid); });
+      addActionButton(actions, 'Export', 'sessions.export', () => ({ session_id: sid }));
+      addActionButton(actions, 'Reset', 'sessions.reset', () => ({ session_id: sid }), () => showSessionsView(++viewSeq));
+      addActionButton(actions, 'Delete', 'sessions.delete', () => ({ session_id: sid }), () => { loadSessions(); showSessionsView(++viewSeq); });
+    });
+    const prune = addMgmtCard(grid, 'Prune'); const actions = document.createElement('div'); actions.className='action-row'; prune.appendChild(actions);
+    addActionButton(actions, 'Prune all empty/old', 'sessions.prune', () => ({ all: true }), () => { loadSessions(); showSessionsView(++viewSeq); });
+  }
+
+  async function showCronView(token) {
+    const { grid } = beginManagementView('Cron', 'Scheduled jobs: list, add, run, and remove.');
+    const [listRes, runsRes] = await Promise.all([callSafe('cron.list', {}), callSafe('cron.runs', {})]);
+    if (!isViewCurrent('cron', token)) return;
+    const jobs = resultItems(listRes, 'jobs');
+    const add = addMgmtCard(grid, 'Add job');
+    const schedule = document.createElement('input'); schedule.className='mini-input'; schedule.placeholder='*/15 * * * *';
+    const method = document.createElement('input'); method.className='mini-input'; method.placeholder='status.get';
+    const actions = document.createElement('div'); actions.className='action-row'; actions.append(schedule, method); add.appendChild(actions);
+    addActionButton(actions, 'Add', 'cron.add', () => ({ schedule: schedule.value, method: method.value, params: {} }), () => showCronView(++viewSeq));
+    addRows(addMgmtCard(grid, 'Jobs'), jobs, (row, job) => {
+      const id = job.id || job.job_id; row.innerHTML = `<strong>${escapeHTML(id || 'job')}</strong><div class="sub">${escapeHTML(job.schedule || '')} → ${escapeHTML(job.method || '')}</div>`;
+      const a=document.createElement('div'); a.className='action-row'; row.appendChild(a);
+      addActionButton(a, 'Run now', 'cron.run', () => ({ id }), () => showCronView(++viewSeq));
+      addActionButton(a, 'Remove', 'cron.remove', () => ({ id }), () => showCronView(++viewSeq));
+    });
+    addRows(addMgmtCard(grid, 'Recent runs'), resultItems(runsRes, 'runs'), (row, run) => { row.textContent = formatValue(run); });
+  }
+
+  async function showNodesView(token) {
+    const { grid } = beginManagementView('Nodes', 'Pairing, pending approvals, status, invoke, rename, and device exec approvals.');
+    const [listRes, pendingRes, statusRes] = await Promise.all([callSafe('nodes.list', {}), callSafe('nodes.pending', {}), callSafe('nodes.status', {})]);
+    if (!isViewCurrent('nodes', token)) return;
+    const nodes = resultItems(listRes, 'nodes');
+    addRows(addMgmtCard(grid, 'Nodes'), nodes, (row, n) => {
+      const id=nodeIDOf(n); row.innerHTML = `<strong>${escapeHTML(id || 'node')}</strong><div class="sub">${escapeHTML(n.status || n.kind || '')}</div>`;
+      const a=document.createElement('div'); a.className='action-row'; row.appendChild(a);
+      addActionButton(a, 'Status', 'nodes.status', () => ({ node_id: id }));
+      addActionButton(a, 'Invoke status', 'nodes.invoke', () => ({ node_id: id, method: 'status.get', params: {} }));
+      addActionButton(a, 'Rename', 'nodes.rename', () => ({ node_id: id, name: prompt('New node name', n.name || id) || n.name || id }), () => showNodesView(++viewSeq));
+    });
+    addRows(addMgmtCard(grid, 'Pending approvals'), resultItems(pendingRes, 'approvals'), (row, a) => {
+      row.innerHTML = `<strong>${escapeHTML(a.id || a.node_id || 'approval')}</strong><div class="sub">${escapeHTML(a.summary || a.command || a.status || '')}</div>`;
+      const ar=document.createElement('div'); ar.className='action-row'; row.appendChild(ar);
+      addActionButton(ar, 'Approve exec', 'nodes.approval.resolve', () => ({ id: a.id, decision: 'approve' }), () => showNodesView(++viewSeq));
+      addActionButton(ar, 'Deny', 'nodes.approval.resolve', () => ({ id: a.id, decision: 'deny' }), () => showNodesView(++viewSeq));
+    });
+    addKV(addMgmtCard(grid, 'Status'), Object.keys(statusRes).sort().map(k => [k, statusRes[k]]));
+  }
+
+  async function showMCPView(token) {
+    const { grid } = beginManagementView('MCP', 'MCP servers: list, test, auth, and reconnect.');
+    const res = await callSafe('mcp.list', {});
+    if (!isViewCurrent('mcp', token)) return;
+    addRows(addMgmtCard(grid, 'Servers'), resultItems(res, 'servers'), (row, m) => {
+      const server=serverIDOf(m); row.innerHTML = `<strong>${escapeHTML(server || 'server')}</strong><div class="sub">${escapeHTML(m.status || m.command || m.url || '')}</div>`;
+      const a=document.createElement('div'); a.className='action-row'; row.appendChild(a);
+      addActionButton(a, 'Test', 'mcp.test', () => ({ server }));
+      addActionButton(a, 'Auth', 'mcp.auth.start', () => ({ server }));
+      addActionButton(a, 'Reconnect', 'mcp.reconnect', () => ({ server }), () => showMCPView(++viewSeq));
+    });
+  }
+
+  async function showSkillsView(token) {
+    const { grid } = beginManagementView('Skills', 'Skills: list, check status, install, enable, and disable.');
+    const [statusRes, binsRes] = await Promise.all([callSafe('skills.status', {}), callSafe('skills.bins', {})]);
+    if (!isViewCurrent('skills', token)) return;
+    addRows(addMgmtCard(grid, 'Installed skills'), statusRes.skills || statusRes.items || [], (row, sk) => {
+      const key=skillKeyOf(sk); row.innerHTML = `<strong>${escapeHTML(key || 'skill')}</strong><div class="sub">${escapeHTML(sk.status || sk.enabled || sk.description || '')}</div>`;
+      const a=document.createElement('div'); a.className='action-row'; row.appendChild(a);
+      addActionButton(a, 'Check', 'skills.status', () => ({ skill_key: key }));
+      addActionButton(a, 'Enable', 'skills.enable', () => ({ skill_key: key }), () => showSkillsView(++viewSeq));
+      addActionButton(a, 'Disable', 'skills.disable', () => ({ skill_key: key }), () => showSkillsView(++viewSeq));
+    });
+    const install=addMgmtCard(grid, 'Install'); const name=document.createElement('input'); name.className='mini-input'; name.placeholder='skill name'; const a=document.createElement('div'); a.className='action-row'; a.appendChild(name); install.appendChild(a);
+    addActionButton(a, 'Install', 'skills.install', () => ({ name: name.value, install_id: 'webui-' + Date.now() }), () => showSkillsView(++viewSeq));
+    addRows(addMgmtCard(grid, 'Available bins/catalog'), binsRes.bins || binsRes.skills || [], (row, b) => { row.textContent = formatValue(b); });
   }
 
   async function showConfigView(token) {
@@ -1425,6 +1536,11 @@ const TOKEN   = '{{.Token}}';
     closeSidebarOnMobile();
     mainView = view;
     const token = ++viewSeq;
+    if (view === 'sessions') return showSessionsView(token);
+    if (view === 'cron') return showCronView(token);
+    if (view === 'nodes') return showNodesView(token);
+    if (view === 'mcp') return showMCPView(token);
+    if (view === 'skills') return showSkillsView(token);
     if (view === 'dashboard') return showDashboardView(token);
     if (view === 'agents') return showAgentsView(null, token);
     if (view === 'channels') return showChannelsView(null, token);
@@ -1850,7 +1966,10 @@ const TOKEN   = '{{.Token}}';
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
       btn.classList.add('active');
       $('tab-' + btn.dataset.tab).classList.add('active');
-      if (btn.dataset.view && btn.dataset.view !== 'chat') {
+      if (btn.dataset.view === 'sessions') {
+        mainView = 'sessions';
+        openManagementView('sessions');
+      } else if (btn.dataset.view && btn.dataset.view !== 'chat') {
         openManagementView(btn.dataset.view);
       } else {
         mainView = 'chat';
@@ -2053,6 +2172,7 @@ const TOKEN   = '{{.Token}}';
               reconnectDelay = 1500;
               setConnected(true, 'connected');
               loadSidebar();
+              loadCommandCatalog();
               if (sessionID && mainView === 'chat') {
                 toolCards = {};
                 msgs.innerHTML = '';
@@ -2216,6 +2336,7 @@ const TOKEN   = '{{.Token}}';
   applyTheme(localStorage.getItem('metiq_theme') || 'dark');
   applyLocale();
   setConnected(null, 'connecting…');
+  loadCommandCatalog();
   connect();
 })();
 </script>
