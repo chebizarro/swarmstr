@@ -21,11 +21,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"metiq/internal/plugins/manifest"
 	"metiq/internal/plugins/trust"
+	"metiq/internal/store/state"
 )
 
 // ─── Installation Scope ──────────────────────────────────────────────────────
@@ -1016,6 +1018,279 @@ func removePluginsStateFile(dir string) error {
 		return nil
 	}
 	return err
+}
+
+// ActiveRuntimeRegistry returns the resolved enabled plugin installations that
+// should be active at runtime. It is derived from lifecycle state, not directly
+// from legacy config entries.
+func (m *Manager) ActiveRuntimeRegistry() map[string]*InstalledPlugin {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	active := map[string]*InstalledPlugin{}
+	ids := make([]string, 0, len(m.plugins))
+	for id := range m.plugins {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		p, ok := m.resolveLocked(id)
+		if !ok || p.State != StateEnabled {
+			continue
+		}
+		active[id] = cloneInstalledPlugin(p)
+	}
+	return active
+}
+
+// LoadFromConfig restores lifecycle state from config. The lifecycle section is
+// authoritative when present; otherwise existing extra.extensions entries and
+// installs are migrated into project-scope lifecycle state for compatibility.
+func (m *Manager) LoadFromConfig(cfg state.ConfigDoc) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.plugins = make(map[string]map[Scope]*InstalledPlugin)
+	m.registry = manifest.NewCapabilityRegistry()
+
+	rawExt := lifecycleExtensionsConfig(cfg)
+	if rawExt == nil {
+		return nil
+	}
+	if rawLifecycle, ok := rawExt["lifecycle"].(map[string]any); ok {
+		if err := m.loadPluginsFromConfigLifecycleLocked(rawLifecycle); err != nil {
+			return err
+		}
+		return m.rebuildRegistryLocked(context.Background())
+	}
+	m.loadPluginsFromLegacyConfigLocked(rawExt)
+	return m.rebuildRegistryLocked(context.Background())
+}
+
+// ApplyToConfig writes lifecycle state into cfg and refreshes legacy
+// extensions.installs/extensions.entries compatibility mirrors. Existing
+// non-lifecycle extension settings are preserved.
+func (m *Manager) ApplyToConfig(cfg state.ConfigDoc) state.ConfigDoc {
+	m.mu.RLock()
+	plugins := m.allPluginsLocked()
+	m.mu.RUnlock()
+
+	if cfg.Extra == nil {
+		cfg.Extra = map[string]any{}
+	}
+	rawExt, _ := cfg.Extra["extensions"].(map[string]any)
+	if rawExt == nil {
+		rawExt = map[string]any{}
+		cfg.Extra["extensions"] = rawExt
+	}
+
+	statePlugins := make([]any, 0, len(plugins))
+	installs := map[string]any{}
+	entries := map[string]any{}
+	for _, p := range plugins {
+		statePlugins = append(statePlugins, installedPluginToConfigMap(p))
+		install := installRecordFromPlugin(p)
+		installs[p.PluginID] = install
+		entry := map[string]any{
+			"enabled":      p.State == StateEnabled,
+			"install_path": p.InstallPath,
+		}
+		if p.Manifest.Runtime != "" {
+			entry["plugin_type"] = string(p.Manifest.Runtime)
+		}
+		entries[p.PluginID] = entry
+	}
+	rawExt["lifecycle"] = map[string]any{"version": 1, "plugins": statePlugins}
+	if len(installs) == 0 {
+		delete(rawExt, "installs")
+	} else {
+		rawExt["installs"] = installs
+	}
+	if len(entries) == 0 {
+		delete(rawExt, "entries")
+	} else {
+		rawExt["entries"] = entries
+	}
+	return cfg
+}
+
+func lifecycleExtensionsConfig(cfg state.ConfigDoc) map[string]any {
+	if cfg.Extra == nil {
+		return nil
+	}
+	rawExt, _ := cfg.Extra["extensions"].(map[string]any)
+	return rawExt
+}
+
+func (m *Manager) loadPluginsFromConfigLifecycleLocked(rawLifecycle map[string]any) error {
+	data, err := json.Marshal(rawLifecycle)
+	if err != nil {
+		return err
+	}
+	var state PluginStateFile
+	if err := json.Unmarshal(data, &state); err != nil {
+		return err
+	}
+	for _, p := range state.Plugins {
+		if p == nil || p.PluginID == "" {
+			continue
+		}
+		cp := cloneInstalledPlugin(p)
+		if !cp.Scope.IsValid() {
+			cp.Scope = ScopeProject
+		}
+		if cp.State == "" {
+			cp.State = StateInstalled
+		}
+		if cp.Trust == "" {
+			cp.Trust = trust.FromSource(cp.Source.Type)
+		}
+		cp.Manifest.Trust = cp.Trust.String()
+		m.putPluginLocked(cp)
+	}
+	return nil
+}
+
+func (m *Manager) loadPluginsFromLegacyConfigLocked(rawExt map[string]any) {
+	rawInstalls, _ := rawExt["installs"].(map[string]any)
+	rawEntries, _ := rawExt["entries"].(map[string]any)
+	ids := map[string]struct{}{}
+	for id := range rawInstalls {
+		ids[id] = struct{}{}
+	}
+	for id := range rawEntries {
+		ids[id] = struct{}{}
+	}
+	for id := range ids {
+		record, _ := rawInstalls[id].(map[string]any)
+		entry, _ := rawEntries[id].(map[string]any)
+		p := legacyConfigPlugin(id, record, entry)
+		if p != nil {
+			m.putPluginLocked(p)
+		}
+	}
+}
+
+func legacyConfigPlugin(pluginID string, record, entry map[string]any) *InstalledPlugin {
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return nil
+	}
+	installPath := firstLifecycleString(entry, "install_path", "installPath")
+	if installPath == "" {
+		installPath = firstLifecycleString(record, "installPath", "install_path", "sourcePath", "source_path")
+	}
+	sourceType := strings.ToLower(firstLifecycleString(record, "source"))
+	version := firstLifecycleString(record, "version")
+	if version == "" {
+		version = "0.0.0"
+	}
+	rawRuntime := firstLifecycleString(entry, "plugin_type")
+	runtime := manifest.RuntimeType(rawRuntime)
+	if !runtime.Valid() {
+		if rawRuntime == "" || strings.EqualFold(rawRuntime, "js") {
+			runtime = manifest.RuntimeGoja
+		} else {
+			runtime = manifest.RuntimeNative
+		}
+	}
+	state := StateInstalled
+	if enabled, ok := entry["enabled"].(bool); ok {
+		if enabled {
+			state = StateEnabled
+		} else {
+			state = StateDisabled
+		}
+	}
+	now := time.Now()
+	p := &InstalledPlugin{
+		PluginID:    pluginID,
+		Scope:       ScopeProject,
+		State:       state,
+		InstallPath: installPath,
+		InstalledAt: now,
+		Manifest: manifest.Manifest{
+			SchemaVersion: manifest.SchemaVersion,
+			ID:            pluginID,
+			Version:       version,
+			Name:          pluginID,
+			Runtime:       runtime,
+		},
+		Source: installSourceFromRecord(record),
+	}
+	if p.Source.Type == "" {
+		p.Source.Type = sourceType
+	}
+	if p.Source.Version == "" {
+		p.Source.Version = version
+	}
+	p.Trust = p.Source.Trust
+	if p.Trust == "" {
+		p.Trust = trust.FromSource(p.Source.Type)
+	}
+	p.Manifest.Trust = p.Trust.String()
+	if state == StateEnabled {
+		p.EnabledAt = &now
+	}
+	if state == StateDisabled {
+		p.DisabledAt = &now
+	}
+	return p
+}
+
+func installSourceFromRecord(record map[string]any) InstallSource {
+	return InstallSource{
+		Type:    strings.ToLower(firstLifecycleString(record, "source")),
+		URL:     firstLifecycleString(record, "url"),
+		Package: firstLifecycleString(record, "spec", "package"),
+		Version: firstLifecycleString(record, "version"),
+		Path:    firstLifecycleString(record, "sourcePath", "source_path", "installPath", "install_path"),
+		Trust:   trust.FromInstallRecord(record),
+	}
+}
+
+func installedPluginToConfigMap(p *InstalledPlugin) map[string]any {
+	data, _ := json.Marshal(p)
+	out := map[string]any{}
+	_ = json.Unmarshal(data, &out)
+	return out
+}
+
+func installRecordFromPlugin(p *InstalledPlugin) map[string]any {
+	record := map[string]any{
+		"source":      p.Source.Type,
+		"installPath": p.InstallPath,
+	}
+	if p.Source.Path != "" {
+		record["sourcePath"] = p.Source.Path
+	}
+	if p.Source.Package != "" {
+		record["spec"] = p.Source.Package
+	}
+	if p.Source.URL != "" {
+		record["url"] = p.Source.URL
+	}
+	if p.Source.Version != "" {
+		record["version"] = p.Source.Version
+	} else if p.Manifest.Version != "" {
+		record["version"] = p.Manifest.Version
+	}
+	if p.Trust != "" {
+		record["trust"] = p.Trust.String()
+	}
+	return record
+}
+
+func firstLifecycleString(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if m == nil {
+			continue
+		}
+		if s, ok := m[key].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
 }
 
 // Load restores plugin state from disk.
