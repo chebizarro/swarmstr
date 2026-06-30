@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 
+	"metiq/internal/netpolicy"
 	"metiq/internal/nostr/runtime"
 	"metiq/internal/policy"
 	"metiq/internal/secrets"
@@ -720,13 +721,22 @@ func checkSandboxEgressPolicy(cfg state.ConfigDoc) []Finding {
 		return []Finding{{CheckID: "sandbox-egress-unrestricted", Severity: SeverityWarn, Message: "Docker sandbox network access is enabled without an egress allowlist", Remediation: "Set extra.sandbox.allowed_domains/allowed_cidrs with an enforcing wrapper/proxy, or disable allow_network."}}
 	}
 	var findings []Finding
-	if !boolValue(sandboxMap["egress_enforced"]) {
-		findings = append(findings, Finding{CheckID: "sandbox-egress-allowlist-advisory", Severity: SeverityWarn, Message: "Docker sandbox egress allowlist is configured as metadata but no enforcing backend is declared", Remediation: "Set extra.sandbox.egress_enforced=true only when DNS/firewall/proxy enforcement is active; otherwise treat allow_network as unrestricted."})
+	policy, err := netpolicy.NormalizePolicy(netpolicy.Policy{AllowedDomains: allowedDomains, AllowedCIDRs: allowedCIDRs})
+	if err != nil {
+		findings = append(findings, Finding{CheckID: "sandbox-egress-invalid-allowlist", Severity: SeverityWarn, Message: fmt.Sprintf("Docker sandbox egress allowlist is invalid: %v", err), Remediation: "Use valid domains and CIDR/IP entries in extra.sandbox.allowed_domains/allowed_cidrs."})
 	}
-	for _, domain := range allowedDomains {
-		d := strings.TrimSpace(domain)
-		if d == "*" || strings.HasPrefix(d, "*.") {
+	if !boolValue(sandboxMap["egress_enforced"]) {
+		findings = append(findings, Finding{CheckID: "sandbox-egress-allowlist-advisory", Severity: SeverityWarn, Message: "Docker sandbox egress allowlist is configured as metadata but no enforcing backend is declared", Remediation: "Set extra.sandbox.egress_enforced=true to enforce the allowlist with sandbox egress controls."})
+	}
+	for _, domain := range policy.Domains {
+		if domain == "*" || strings.HasPrefix(domain, "*.") {
 			findings = append(findings, Finding{CheckID: "sandbox-egress-broad-allowlist", Severity: SeverityWarn, Message: fmt.Sprintf("Docker sandbox egress allowlist includes broad domain pattern %q", domain), Remediation: "Use exact domains for sandbox egress whenever possible."})
+		}
+	}
+	for _, cidr := range policy.CIDRs {
+		addr := cidr.Addr().String()
+		if netpolicy.IsBlockedIP(addr) {
+			findings = append(findings, Finding{CheckID: "sandbox-egress-private-allowlist", Severity: SeverityWarn, Message: fmt.Sprintf("Docker sandbox egress allowlist includes private/bogon CIDR %q", cidr.String()), Remediation: "Avoid allowing private, link-local, loopback, or documentation ranges from sandbox egress."})
 		}
 	}
 	return findings

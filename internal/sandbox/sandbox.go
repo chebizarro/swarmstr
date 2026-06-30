@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"metiq/internal/netpolicy"
 )
 
 // ─── Result ──────────────────────────────────────────────────────────────────
@@ -231,13 +233,13 @@ func NewFromMap(m map[string]any) (SandboxRunner, error) {
 		ContainerWorkdir: getString(m, "container_workdir"),
 		WorkspaceAccess:  getString(m, "workspace_access"),
 	}
+	if ts, ok := numberAsInt(m["timeout_s"]); ok {
+		cfg.TimeoutSeconds = ts
+	}
 	if pids, ok := numberAsInt(m["pids_limit"]); ok {
 		cfg.PidsLimit = pids
 	}
-	if ts, ok := m["timeout_s"].(float64); ok {
-		cfg.TimeoutSeconds = int(ts)
-	}
-	if mo, ok := m["max_output_bytes"].(float64); ok {
+	if mo, ok := numberAsInt(m["max_output_bytes"]); ok {
 		cfg.MaxOutputBytes = int64(mo)
 	}
 	return New(cfg)
@@ -410,6 +412,12 @@ func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, 
 }
 
 func (s *DockerSandbox) egressWrappedCommand(cmd []string) []string {
+	policy, _ := netpolicy.NormalizePolicy(netpolicy.Policy{AllowedDomains: s.cfg.AllowedDomains, AllowedCIDRs: s.cfg.AllowedCIDRs})
+	domains := strings.Join(policy.Domains, " ")
+	cidrs := make([]string, 0, len(policy.CIDRs))
+	for _, cidr := range policy.CIDRs {
+		cidrs = append(cidrs, cidr.String())
+	}
 	script := `set -eu
 if ! command -v iptables >/dev/null 2>&1; then
 	echo "metiq sandbox egress enforcement requires iptables in the container" >&2
@@ -420,10 +428,10 @@ iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
 iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
 iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
-for cidr in ` + shellQuote(strings.Join(cleanStrings(s.cfg.AllowedCIDRs), " ")) + `; do
+for cidr in ` + shellQuote(strings.Join(cidrs, " ")) + `; do
 	[ -n "$cidr" ] && iptables -A OUTPUT -d "$cidr" -j ACCEPT
 	done
-for domain in ` + shellQuote(strings.Join(cleanStrings(s.cfg.AllowedDomains), " ")) + `; do
+for domain in ` + shellQuote(domains) + `; do
 	[ -n "$domain" ] || continue
 	for ip in $(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u); do
 	iptables -A OUTPUT -d "$ip" -j ACCEPT
@@ -457,7 +465,7 @@ func (s *DockerSandbox) Run(ctx context.Context, cmd []string, env []string, wor
 		defer cancel()
 	}
 
-	if _, err := s.cfg.workspaceMount(); err != nil {
+	if err := ValidateSandboxSecurity(s.cfg); err != nil {
 		return Result{Driver: "docker"}, err
 	}
 	dockerArgs := s.dockerRunArgs(image, cmd, env, workdir)
