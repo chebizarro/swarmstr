@@ -208,6 +208,8 @@ type SessionRuntimeMeta struct {
 	RuntimeSessionName string         `json:"runtime_session_name,omitempty"`
 	CWD                string         `json:"cwd,omitempty"`
 	AcpxRecordID       string         `json:"acpx_record_id,omitempty"`
+	BackendSessionID   string         `json:"backend_session_id,omitempty"`
+	AgentSessionID     string         `json:"agent_session_id,omitempty"`
 	State              string         `json:"state,omitempty"`
 	LastError          string         `json:"last_error,omitempty"`
 	LastActivityAt     int64          `json:"last_activity_at,omitempty"`
@@ -357,8 +359,9 @@ func (m *Manager) InitializeSession(ctx context.Context, input InitializeSession
 	defer unlock()
 	backend, err := m.backends.Require(input.Backend)
 	if err != nil {
-		m.recordError("backend")
-		return RuntimeHandle{}, err
+		acpErr := ToAcpRuntimeError(err, AcpCodeBackendUnavailable, "ACP runtime backend unavailable")
+		m.recordError(acpErr.Code)
+		return RuntimeHandle{}, acpErr
 	}
 	agentID, env := m.resolveAgent(input.Agent, input.Env)
 	resumeID := strings.TrimSpace(input.ResumeSessionID)
@@ -383,8 +386,9 @@ func (m *Manager) InitializeSession(ctx context.Context, input InitializeSession
 		Env:             env,
 	})
 	if err != nil {
-		m.recordError("init")
-		return RuntimeHandle{}, fmt.Errorf("acp manager: ensure session: %w", err)
+		acpErr := ToAcpRuntimeError(fmt.Errorf("acp manager: ensure session: %w", err), AcpCodeSessionInitFailed, "ACP session initialization failed")
+		m.recordError(acpErr.Code)
+		return RuntimeHandle{}, acpErr
 	}
 	handle = normalizeHandle(handle, key, backend.ID, input.CWD)
 	if err := m.applyRuntimeControls(ctx, backend.Runtime, handle, input.Controls); err != nil {
@@ -417,12 +421,14 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 
 	state, err := m.ensureRuntimeState(ctx, key, input.Backend, input.Agent)
 	if err != nil {
-		m.recordError("init")
-		return nil, err
+		acpErr := ToAcpRuntimeError(err, AcpCodeSessionInitFailed, "ACP session initialization failed")
+		m.recordError(acpErr.Code)
+		return nil, acpErr
 	}
 	if err := m.applyRuntimeControls(ctx, state.Runtime, state.Handle, input.Controls); err != nil {
-		m.recordError("control")
-		return nil, err
+		acpErr := ToAcpRuntimeError(err, AcpCodeBackendUnsupportedControl, "ACP runtime backend control failed")
+		m.recordError(acpErr.Code)
+		return nil, acpErr
 	}
 
 	turnCtx, cancel := context.WithCancel(ctx)
@@ -977,12 +983,17 @@ func (m *Manager) sessionStatusFromRecord(ctx context.Context, key string, rec *
 	if cached := m.getCached(key); cached != nil {
 		status.Cached = true
 		h := cached.Handle
+		h.BackendSessionID = firstNonEmpty(h.BackendSessionID, meta.BackendSessionID, meta.AcpxRecordID, h.AcpxRecordID, h.RuntimeSessionName, h.SessionKey)
+		h.AgentSessionID = firstNonEmpty(h.AgentSessionID, meta.AgentSessionID, h.RuntimeSessionName, h.BackendSessionID)
 		status.RuntimeHandle = &h
 		status.Backend = firstNonEmpty(status.Backend, cached.Backend)
 		status.Agent = firstNonEmpty(status.Agent, cached.Agent)
 		status.Mode = cached.Mode
 		if sp, ok := cached.Runtime.(StatusProvider); ok {
 			if runtimeStatus, err := sp.GetStatus(ctx, cached.Handle); err == nil {
+				runtimeStatus.AcpxRecordID = firstNonEmpty(runtimeStatus.AcpxRecordID, h.AcpxRecordID, meta.AcpxRecordID)
+				runtimeStatus.BackendSessionID = firstNonEmpty(runtimeStatus.BackendSessionID, h.BackendSessionID, meta.BackendSessionID)
+				runtimeStatus.AgentSessionID = firstNonEmpty(runtimeStatus.AgentSessionID, h.AgentSessionID, meta.AgentSessionID)
 				status.RuntimeStatus = &runtimeStatus
 			}
 		}
@@ -991,6 +1002,9 @@ func (m *Manager) sessionStatusFromRecord(ctx context.Context, key string, rec *
 				status.Capabilities = &caps
 			}
 		}
+	} else if meta.BackendSessionID != "" || meta.AgentSessionID != "" || meta.AcpxRecordID != "" || meta.RuntimeSessionName != "" {
+		h := normalizeHandle(RuntimeHandle{SessionKey: key, Backend: meta.Backend, RuntimeSessionName: meta.RuntimeSessionName, CWD: meta.CWD, AcpxRecordID: meta.AcpxRecordID, BackendSessionID: meta.BackendSessionID, AgentSessionID: meta.AgentSessionID}, key, meta.Backend, meta.CWD)
+		status.RuntimeHandle = &h
 	}
 	if status.State == "" {
 		if status.ActiveTurn {
@@ -1041,6 +1055,8 @@ func (m *Manager) saveMetaWithPending(ctx context.Context, key, agent string, mo
 		RuntimeSessionName: handle.RuntimeSessionName,
 		CWD:                handle.CWD,
 		AcpxRecordID:       handle.AcpxRecordID,
+		BackendSessionID:   handle.BackendSessionID,
+		AgentSessionID:     handle.AgentSessionID,
 		State:              state,
 		LastError:          strings.TrimSpace(lastErr),
 		LastActivityAt:     m.now().Unix(),
@@ -1176,14 +1192,14 @@ func (m *Manager) lockSession(key string) func() {
 	}
 	l.pending++
 	m.mu.Unlock()
-	
+
 	// Acquire per-session lock (can be held for duration of session operation)
 	l.mu.Lock()
-	
+
 	return func() {
 		// Release in LIFO order: l.mu first, then m.mu
 		l.mu.Unlock()
-		
+
 		// Re-acquire global lock to update pending count and clean up if needed
 		m.mu.Lock()
 		l.pending--
@@ -1266,6 +1282,12 @@ func normalizeHandle(handle RuntimeHandle, sessionKey, backend, cwd string) Runt
 	}
 	if handle.CWD == "" {
 		handle.CWD = strings.TrimSpace(cwd)
+	}
+	if handle.BackendSessionID == "" {
+		handle.BackendSessionID = firstNonEmpty(handle.AcpxRecordID, handle.RuntimeSessionName, handle.SessionKey)
+	}
+	if handle.AgentSessionID == "" {
+		handle.AgentSessionID = firstNonEmpty(handle.RuntimeSessionName, handle.BackendSessionID)
 	}
 	return handle
 }

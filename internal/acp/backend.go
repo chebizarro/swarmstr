@@ -22,6 +22,10 @@ type RuntimeHandle struct {
 	CWD string `json:"cwd,omitempty"`
 	// AcpxRecordID is a backend-local record identifier (optional).
 	AcpxRecordID string `json:"acpx_record_id,omitempty"`
+	// BackendSessionID is the stable backend-level ACP session identifier (optional).
+	BackendSessionID string `json:"backend_session_id,omitempty"`
+	// AgentSessionID is the upstream harness session identifier (optional).
+	AgentSessionID string `json:"agent_session_id,omitempty"`
 }
 
 // ── Session mode ────────────────────────────────────────────────────────────
@@ -189,6 +193,7 @@ type RuntimeStatus struct {
 	Summary          string
 	AcpxRecordID     string
 	BackendSessionID string
+	AgentSessionID   string
 	Details          map[string]any
 }
 

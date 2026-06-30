@@ -11,6 +11,11 @@
       "id": "nostr-signed-request-reply",
       "scope": "transport metadata",
       "reason": "Nostr control uses signed request/result events, requester pubkeys, req correlation IDs, and relay routing outside the JSON method payload."
+    },
+    {
+      "id": "acp-over-fips-transport-only",
+      "scope": "dm transport",
+      "reason": "ACP-over-FIPS preserves the same ACP {acp_type: task|result} envelope and semantics; only the encrypted DM transport differs from NIP-17/NIP-04 delivery."
     }
   ]
 }
