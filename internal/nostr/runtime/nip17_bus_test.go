@@ -2,10 +2,13 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip59"
 )
 
 func TestNormalizeNIP17SinceDefaultsToGiftWrapBackfillWindow(t *testing.T) {
@@ -69,7 +72,7 @@ func TestNIP17ValidateGiftWrapEvent(t *testing.T) {
 
 func TestNIP17ValidateRumorEvent(t *testing.T) {
 	bus, keyer, recipient := newTestNIP17BusIdentity(t)
-	
+
 	// Test 1: Incoming message (we are the recipient)
 	rumor := unsignedRumorEvent(t, keyer, nostr.Event{
 		Kind:      nostr.KindDirectMessage,
@@ -88,7 +91,7 @@ func TestNIP17ValidateRumorEvent(t *testing.T) {
 	selfSentRumor := unsignedRumorEvent(t, keyer, nostr.Event{
 		Kind:      nostr.KindDirectMessage,
 		CreatedAt: nostr.Now(),
-		Tags:      nostr.Tags{{"p", otherPub.Hex()}},  // Sent to someone else
+		Tags:      nostr.Tags{{"p", otherPub.Hex()}}, // Sent to someone else
 		Content:   "hello from me",
 	})
 	if err := bus.validateRumorEvent(selfSentRumor, time.Now()); err != nil {
@@ -100,7 +103,7 @@ func TestNIP17ValidateRumorEvent(t *testing.T) {
 	unrelatedRumor := unsignedRumorEvent(t, thirdPartyKeyer, nostr.Event{
 		Kind:      nostr.KindDirectMessage,
 		CreatedAt: nostr.Now(),
-		Tags:      nostr.Tags{{"p", otherPub.Hex()}},  // Between other parties
+		Tags:      nostr.Tags{{"p", otherPub.Hex()}}, // Between other parties
 		Content:   "not for us",
 	})
 	if err := bus.validateRumorEvent(unrelatedRumor, time.Now()); err == nil {
@@ -215,6 +218,115 @@ func TestStartNIP17BusRejectsMismatchedHubPubKey(t *testing.T) {
 	})
 	if err == nil || err.Error() != "nip17 bus: hub pubkey does not match keyer pubkey" {
 		t.Fatalf("expected hub mismatch error, got %v", err)
+	}
+}
+
+func TestNIP17SendDMRequiresRecipientKind10050(t *testing.T) {
+	bus, keyer, recipientPubKey := newTestNIP17BusIdentity(t)
+	bus.kr = keyer
+	bus.relays = []string{"wss://configured-write.example"}
+	bus.testLookupDMRelays = func(context.Context, nostr.PubKey) []string { return nil }
+
+	err := bus.SendDM(context.Background(), recipientPubKey.Hex(), "hello")
+	if !errors.Is(err, ErrRecipientNotNIP17Ready) {
+		t.Fatalf("SendDM error = %v, want ErrRecipientNotNIP17Ready", err)
+	}
+}
+
+func TestNIP17SendDMUsesAdvertisedKind10050Relays(t *testing.T) {
+	bus, keyer, recipientPubKey := newTestNIP17BusIdentity(t)
+	bus.kr = keyer
+	bus.pool = NewPoolNIP42(keyer)
+	bus.pool.Close("test")
+	bus.relays = []string{"wss://configured-write.example"}
+	bus.testLookupDMRelays = func(context.Context, nostr.PubKey) []string {
+		return []string{"wss://recipient-dm.example"}
+	}
+
+	err := bus.SendDM(context.Background(), recipientPubKey.Hex(), "hello")
+	if errors.Is(err, ErrRecipientNotNIP17Ready) {
+		t.Fatalf("SendDM should not return readiness error when recipient advertises 10050 relays: %v", err)
+	}
+	if err == nil {
+		t.Fatal("expected publish to fail without a pool, got nil")
+	}
+}
+
+func TestNIP59GiftWrapUnwrapInvariants(t *testing.T) {
+	sender := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	recipient := testControlKeyer(t, "3333333333333333333333333333333333333333333333333333333333333333")
+	senderPub, err := sender.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatalf("sender pubkey: %v", err)
+	}
+	recipientPub, err := recipient.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatalf("recipient pubkey: %v", err)
+	}
+
+	rumor := nostr.Event{
+		Kind:      nostr.KindDirectMessage,
+		PubKey:    senderPub,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"p", recipientPub.Hex()}},
+		Content:   "hello nip59",
+	}
+	rumor.ID = rumor.GetID()
+
+	wrap, err := nip59.GiftWrap(
+		rumor,
+		recipientPub,
+		func(plaintext string) (string, error) {
+			return sender.Encrypt(context.Background(), plaintext, recipientPub)
+		},
+		func(evt *nostr.Event) error { return sender.SignEvent(context.Background(), evt) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("GiftWrap: %v", err)
+	}
+	if !wrap.Tags.ContainsAny("p", []string{recipientPub.Hex()}) {
+		t.Fatalf("gift wrap missing p tag for local pubkey %s: %v", recipientPub.Hex(), wrap.Tags)
+	}
+
+	sealJSON, err := recipient.Decrypt(context.Background(), wrap.Content, wrap.PubKey)
+	if err != nil {
+		t.Fatalf("decrypt seal: %v", err)
+	}
+	var seal nostr.Event
+	if err := json.Unmarshal([]byte(sealJSON), &seal); err != nil {
+		t.Fatalf("unmarshal seal: %v", err)
+	}
+	if seal.Kind != nostr.KindSeal {
+		t.Fatalf("seal kind = %d, want %d", seal.Kind, nostr.KindSeal)
+	}
+	if len(seal.Tags) != 0 {
+		t.Fatalf("seal tags = %v, want empty", seal.Tags)
+	}
+	if seal.PubKey != rumor.PubKey {
+		t.Fatalf("seal pubkey = %s, want rumor pubkey %s", seal.PubKey.Hex(), rumor.PubKey.Hex())
+	}
+
+	rumorJSON, err := recipient.Decrypt(context.Background(), seal.Content, seal.PubKey)
+	if err != nil {
+		t.Fatalf("decrypt rumor: %v", err)
+	}
+	var innerRumor nostr.Event
+	if err := json.Unmarshal([]byte(rumorJSON), &innerRumor); err != nil {
+		t.Fatalf("unmarshal rumor: %v", err)
+	}
+	if innerRumor.Sig != ([64]byte{}) {
+		t.Fatalf("rumor signature = %x, want zero unsigned signature", innerRumor.Sig)
+	}
+
+	unwrapped, err := nip59.GiftUnwrap(wrap, func(pk nostr.PubKey, ciphertext string) (string, error) {
+		return recipient.Decrypt(context.Background(), ciphertext, pk)
+	})
+	if err != nil {
+		t.Fatalf("GiftUnwrap: %v", err)
+	}
+	if unwrapped.PubKey != seal.PubKey || unwrapped.PubKey != rumor.PubKey {
+		t.Fatalf("unwrapped pubkey = %s, seal=%s rumor=%s", unwrapped.PubKey.Hex(), seal.PubKey.Hex(), rumor.PubKey.Hex())
 	}
 }
 
