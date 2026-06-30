@@ -23,15 +23,20 @@ const (
 )
 
 type ActiveRecallConfig struct {
-	Enabled              bool
-	Timeout              time.Duration
-	CacheTTL             time.Duration
-	SearchLimit          int
-	MaxContextChars      int
-	RecentUserTurns      int
-	RecentAssistantTurns int
-	MaxTurnChars         int
-	CitationsMode        CitationsMode
+	Enabled                        bool
+	Timeout                        time.Duration
+	CacheTTL                       time.Duration
+	SearchLimit                    int
+	MaxContextChars                int
+	RecentUserTurns                int
+	RecentAssistantTurns           int
+	MaxTurnChars                   int
+	CitationsMode                  CitationsMode
+	ToolAllowlist                  []string
+	Provider                       string
+	Model                          string
+	CircuitBreakerFailureThreshold int
+	CircuitBreakerCooldown         time.Duration
 }
 
 type ActiveRecallTurn struct {
@@ -51,10 +56,24 @@ type ActiveRecallResult struct {
 	HitCount int
 	Cached   bool
 	TimedOut bool
+	Status   string
+	Error    string
+	Provider string
+	Model    string
+	Partial  bool
 }
 
 type ActiveRecallSearcher interface {
 	Search(query string, limit int) []IndexedMemory
+}
+
+type ActiveRecallPartialSearcher interface {
+	SearchPartial(ctx context.Context, query string, limit int) ([]IndexedMemory, error)
+}
+
+type activeRecallBreaker struct {
+	Failures int
+	OpenedAt time.Time
 }
 
 type activeRecallCacheEntry struct {
@@ -67,14 +86,16 @@ type ActiveRecallAssembler struct {
 	searcher ActiveRecallSearcher
 	mu       sync.Mutex
 	cache    map[string]activeRecallCacheEntry
+	last     map[string]ActiveRecallResult
+	breakers map[string]activeRecallBreaker
 }
 
 func NewActiveRecallAssembler(cfg ActiveRecallConfig, searcher ActiveRecallSearcher) *ActiveRecallAssembler {
-	if cfg == (ActiveRecallConfig{}) {
+	if !cfg.Enabled && cfg.Timeout == 0 && cfg.CacheTTL == 0 && cfg.SearchLimit == 0 && cfg.MaxContextChars == 0 && cfg.RecentUserTurns == 0 && cfg.RecentAssistantTurns == 0 && cfg.MaxTurnChars == 0 && cfg.CitationsMode == "" && len(cfg.ToolAllowlist) == 0 && cfg.Provider == "" && cfg.Model == "" && cfg.CircuitBreakerFailureThreshold == 0 && cfg.CircuitBreakerCooldown == 0 {
 		cfg.Enabled = true
 	}
 	cfg = normalizeActiveRecallConfig(cfg)
-	return &ActiveRecallAssembler{cfg: cfg, searcher: searcher, cache: map[string]activeRecallCacheEntry{}}
+	return &ActiveRecallAssembler{cfg: cfg, searcher: searcher, cache: map[string]activeRecallCacheEntry{}, last: map[string]ActiveRecallResult{}, breakers: map[string]activeRecallBreaker{}}
 }
 
 func (a *ActiveRecallAssembler) AssembleActiveRecallForContext(ctx context.Context, sessionID string, latest ctxengine.Message, recent []ctxengine.Message, maxChars int) (string, error) {
@@ -93,6 +114,8 @@ func (a *ActiveRecallAssembler) AssembleActiveRecallForContext(ctx context.Conte
 		cfg:      cfg,
 		searcher: a.searcher,
 		cache:    make(map[string]activeRecallCacheEntry),
+		last:     map[string]ActiveRecallResult{},
+		breakers: map[string]activeRecallBreaker{},
 	}
 	result, err := temp.Recall(ctx, ActiveRecallRequest{SessionID: sessionID, LatestMessage: latest.Content, RecentTurns: turns})
 	if err != nil || result.Context == "" {
@@ -106,13 +129,34 @@ func (a *ActiveRecallAssembler) AssembleActiveRecall(ctx context.Context, sessio
 	return a.AssembleActiveRecallForContext(ctx, sessionID, latest, recent, maxChars)
 }
 
-func (a *ActiveRecallAssembler) Recall(ctx context.Context, req ActiveRecallRequest) (ActiveRecallResult, error) {
-	var out ActiveRecallResult
+func (a *ActiveRecallAssembler) Recall(ctx context.Context, req ActiveRecallRequest) (out ActiveRecallResult, err error) {
+	defer func() {
+		out.Provider = normalizeActiveRecallConfig(a.cfg).Provider
+		out.Model = normalizeActiveRecallConfig(a.cfg).Model
+		if out.Status == "" {
+			if out.Context != "" {
+				out.Status = "ok"
+			} else if out.TimedOut {
+				out.Status = "timeout"
+			} else {
+				out.Status = "empty"
+			}
+		}
+		if a != nil {
+			a.recordLast(req.SessionID, out)
+		}
+	}()
 	if a == nil || a.searcher == nil {
 		return out, nil
 	}
 	cfg := normalizeActiveRecallConfig(a.cfg)
 	if !cfg.Enabled {
+		out.Status = "disabled"
+		return out, nil
+	}
+	if a.breakerOpen(cfg) {
+		out.Status = "circuit_open"
+		out.Error = "active recall circuit breaker open"
 		return out, nil
 	}
 	query := BuildActiveRecallQuery(req, cfg)
@@ -130,15 +174,56 @@ func (a *ActiveRecallAssembler) Recall(ctx context.Context, req ActiveRecallRequ
 	}
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	ch := make(chan []IndexedMemory, 1)
-	go func() { ch <- a.searcher.Search(query, cfg.SearchLimit) }()
+	type sr struct {
+		hits []IndexedMemory
+		err  error
+	}
+	ch := make(chan sr, 1)
+	if ps, ok := a.searcher.(ActiveRecallPartialSearcher); ok {
+		go func() { hits, err := ps.SearchPartial(ctx, query, cfg.SearchLimit); ch <- sr{hits: hits, err: err} }()
+		got := <-ch
+		if ctx.Err() != nil {
+			out.TimedOut = true
+			out.Partial = len(got.hits) > 0
+			out.Error = errStringMemory(got.err, ctx.Err())
+			out.HitCount = len(got.hits)
+			out.Context = FormatActiveRecallContextWithCitations(got.hits, cfg.MaxContextChars, cfg.CitationsMode)
+			a.recordActiveRecallFailure(cfg)
+			return out, nil
+		}
+		hits := got.hits
+		out.HitCount = len(hits)
+		out.Context = FormatActiveRecallContextWithCitations(hits, cfg.MaxContextChars, cfg.CitationsMode)
+		if got.err != nil {
+			out.Error = got.err.Error()
+		}
+		if out.Context != "" {
+			a.recordActiveRecallSuccess(cfg)
+		} else {
+			a.recordActiveRecallFailure(cfg)
+		}
+		a.setCached(key, out, cfg.CacheTTL)
+		return out, nil
+	}
+	go func() { ch <- sr{hits: a.searcher.Search(query, cfg.SearchLimit)} }()
 	select {
 	case <-ctx.Done():
 		out.TimedOut = true
+		out.Error = ctx.Err().Error()
+		a.recordActiveRecallFailure(cfg)
 		return out, nil
-	case hits := <-ch:
+	case got := <-ch:
+		hits := got.hits
 		out.HitCount = len(hits)
 		out.Context = FormatActiveRecallContextWithCitations(hits, cfg.MaxContextChars, cfg.CitationsMode)
+		if got.err != nil {
+			out.Error = got.err.Error()
+		}
+		if out.Context != "" {
+			a.recordActiveRecallSuccess(cfg)
+		} else {
+			a.recordActiveRecallFailure(cfg)
+		}
 		a.setCached(key, out, cfg.CacheTTL)
 		return out, nil
 	}
@@ -298,4 +383,107 @@ func truncateActiveRecall(s string, max int) string {
 		return s[:max]
 	}
 	return s[:max-3] + "..."
+}
+
+func (a *ActiveRecallAssembler) LastStatus(sessionID string) (ActiveRecallResult, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	r, ok := a.last[sessionID]
+	return r, ok
+}
+
+func (a *ActiveRecallAssembler) recordLast(sessionID string, r ActiveRecallResult) {
+	if sessionID == "" {
+		sessionID = "default"
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.last == nil {
+		a.last = map[string]ActiveRecallResult{}
+	}
+	a.last[sessionID] = r
+}
+
+func (a *ActiveRecallAssembler) activeRecallBreakerKey(cfg ActiveRecallConfig) string {
+	return strings.ToLower(strings.TrimSpace(cfg.Provider)) + "/" + strings.ToLower(strings.TrimSpace(cfg.Model))
+}
+
+func (a *ActiveRecallAssembler) breakerOpen(cfg ActiveRecallConfig) bool {
+	key := a.activeRecallBreakerKey(cfg)
+	if key == "/" {
+		return false
+	}
+	threshold := cfg.CircuitBreakerFailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	cooldown := cfg.CircuitBreakerCooldown
+	if cooldown <= 0 {
+		cooldown = time.Minute
+	}
+	a.mu.Lock()
+	b := a.breakers[key]
+	a.mu.Unlock()
+	return b.Failures >= threshold && time.Since(b.OpenedAt) < cooldown
+}
+
+func (a *ActiveRecallAssembler) recordActiveRecallFailure(cfg ActiveRecallConfig) {
+	key := a.activeRecallBreakerKey(cfg)
+	if key == "/" {
+		return
+	}
+	threshold := cfg.CircuitBreakerFailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.breakers == nil {
+		a.breakers = map[string]activeRecallBreaker{}
+	}
+	b := a.breakers[key]
+	b.Failures++
+	if b.Failures >= threshold && b.OpenedAt.IsZero() {
+		b.OpenedAt = time.Now()
+	}
+	a.breakers[key] = b
+}
+
+func (a *ActiveRecallAssembler) recordActiveRecallSuccess(cfg ActiveRecallConfig) {
+	key := a.activeRecallBreakerKey(cfg)
+	if key == "/" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.breakers, key)
+}
+
+func errStringMemory(errs ...error) string {
+	for _, err := range errs {
+		if err != nil {
+			return err.Error()
+		}
+	}
+	return ""
+}
+
+func (a *ActiveRecallAssembler) ToolAllowed(tool string) bool {
+	if a == nil {
+		return false
+	}
+	return activeRecallToolAllowed(a.cfg.ToolAllowlist, tool)
+}
+
+func activeRecallToolAllowed(allowlist []string, tool string) bool {
+	if len(allowlist) == 0 {
+		return true
+	}
+	tool = strings.TrimSpace(tool)
+	for _, allowed := range allowlist {
+		if strings.EqualFold(strings.TrimSpace(allowed), tool) {
+			return true
+		}
+	}
+	return false
 }

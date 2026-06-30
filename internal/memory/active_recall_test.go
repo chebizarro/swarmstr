@@ -95,3 +95,58 @@ func TestActiveRecallAssemblerTimeout(t *testing.T) {
 		t.Fatalf("expected timeout without context, got %+v", result)
 	}
 }
+
+type activeRecallPartialTestSearcher struct {
+	hits []IndexedMemory
+}
+
+func (s *activeRecallPartialTestSearcher) Search(query string, limit int) []IndexedMemory { return nil }
+func (s *activeRecallPartialTestSearcher) SearchPartial(ctx context.Context, query string, limit int) ([]IndexedMemory, error) {
+	<-ctx.Done()
+	return s.hits, ctx.Err()
+}
+
+func TestActiveRecallAssemblerStatusPersistence(t *testing.T) {
+	searcher := &activeRecallTestSearcher{hits: []IndexedMemory{{Text: "debug status"}}}
+	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true}, searcher)
+	result, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess-status", LatestMessage: "status?"})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	got, ok := assembler.LastStatus("sess-status")
+	if !ok || got.Status != result.Status || got.Context == "" {
+		t.Fatalf("last status not persisted: ok=%v got=%+v result=%+v", ok, got, result)
+	}
+}
+
+func TestActiveRecallAssemblerCircuitBreakerOpenAndCooldown(t *testing.T) {
+	searcher := &activeRecallTestSearcher{delay: 20 * time.Millisecond}
+	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, Timeout: time.Millisecond, Provider: "p", Model: "m", CircuitBreakerFailureThreshold: 1, CircuitBreakerCooldown: 5 * time.Millisecond}, searcher)
+	first, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess-cb", LatestMessage: "one"})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if !first.TimedOut {
+		t.Fatalf("first should time out: %+v", first)
+	}
+	open, _ := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess-cb", LatestMessage: "two"})
+	if open.Status != "circuit_open" {
+		t.Fatalf("breaker status=%q, want circuit_open", open.Status)
+	}
+	time.Sleep(8 * time.Millisecond)
+	after, _ := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess-cb", LatestMessage: "three"})
+	if after.Status == "circuit_open" {
+		t.Fatalf("breaker should allow probe after cooldown: %+v", after)
+	}
+}
+
+func TestActiveRecallAssemblerPartialTimeoutReturnsPartial(t *testing.T) {
+	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, Timeout: time.Millisecond}, &activeRecallPartialTestSearcher{hits: []IndexedMemory{{Text: "partial memory"}}})
+	result, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess-partial", LatestMessage: "partial?"})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if !result.TimedOut || !result.Partial || result.Context == "" || result.HitCount != 1 {
+		t.Fatalf("expected partial timeout context, got %+v", result)
+	}
+}
