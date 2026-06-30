@@ -114,6 +114,48 @@ func (testActiveRecallProvider) AssembleActiveRecall(ctx context.Context, sessio
 	return "## Active Memory Recall\n- remembered context", nil
 }
 
+func TestRunIngestBatchFallsBackToSingleIngest(t *testing.T) {
+	eng, err := ctxengine.NewEngine("windowed", "sess-batch", map[string]any{"max_messages": float64(10)})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer eng.Close()
+
+	res, err := ctxengine.RunIngestBatch(context.Background(), eng, "sess-batch", []ctxengine.Message{
+		{Role: "user", Content: "one", ID: "one"},
+		{Role: "assistant", Content: "two", ID: "two"},
+		{Role: "assistant", Content: "two", ID: "two"},
+	})
+	if err != nil {
+		t.Fatalf("RunIngestBatch: %v", err)
+	}
+	if res.IngestedCount != 2 {
+		t.Fatalf("expected 2 ingested messages after duplicate fallback, got %d", res.IngestedCount)
+	}
+}
+
+func TestRuntimeSettingsDefaultsAndPromptAuthority(t *testing.T) {
+	eng := ctxengine.NewWindowedEngine(10)
+	settings := ctxengine.ResolveRuntimeSettings(eng)
+	if settings.SchemaVersion != 1 {
+		t.Fatalf("expected schema version 1, got %d", settings.SchemaVersion)
+	}
+	if settings.Runtime.Mode != ctxengine.ContextEngineRuntimeNormal {
+		t.Fatalf("expected normal runtime mode, got %q", settings.Runtime.Mode)
+	}
+	if got := ctxengine.ResolvePromptAuthority(""); got != ctxengine.PromptAuthorityAssembled {
+		t.Fatalf("expected default assembled prompt authority, got %q", got)
+	}
+	assembled := ctxengine.AssembleResult{EstimatedTokens: 100}
+	if got := ctxengine.AuthoritativePromptTokens(assembled, 250); got != 100 {
+		t.Fatalf("assembled authority should ignore preassembly tokens, got %d", got)
+	}
+	assembled.PromptAuthority = ctxengine.PromptAuthorityPreassemblyMayOverflow
+	if got := ctxengine.AuthoritativePromptTokens(assembled, 250); got != 250 {
+		t.Fatalf("preassembly authority should use max token estimate, got %d", got)
+	}
+}
+
 func TestWindowedEngineActiveRecallProvider(t *testing.T) {
 	eng, err := ctxengine.NewEngine("windowed", "sess-active", map[string]any{
 		"active_recall": testActiveRecallProvider{},

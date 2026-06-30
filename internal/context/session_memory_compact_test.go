@@ -339,6 +339,49 @@ func TestSWE_CompactWithSM_PrunesOldMessages(t *testing.T) {
 	}
 }
 
+func TestSWE_CompactWithSM_EnrichedMetadataAndPreviousSummary(t *testing.T) {
+	e := NewSmallWindowEngine(TierStandardSW, DefaultSmallWindowBudget(TierStandardSW))
+	ctx := stdctx.Background()
+	for i := 0; i < 12; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		if _, err := e.Ingest(ctx, "sess-meta", Message{ID: fmt.Sprintf("msg-%02d", i), Role: role, Content: strings.Repeat("x", 400)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := NewSessionMemoryCompactState()
+	state.SetLastSummarized("sess-meta", "msg-05")
+	cfg := SessionMemoryCompactConfig{MinTokens: 1, MinTextBlockMessages: 1, MaxTokens: 40_000, PreviousSummary: "# Previous\nAlready summarized"}
+	cr, err := e.CompactWithSessionMemoryState(ctx, "sess-meta", "# New\nFresh facts", cfg, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cr.Compacted || cr.CutPoint != 6 || cr.DroppedMessages != 6 || cr.KeptMessages != 6 {
+		t.Fatalf("unexpected enriched metadata: compacted=%v cut=%d dropped=%d kept=%d", cr.Compacted, cr.CutPoint, cr.DroppedMessages, cr.KeptMessages)
+	}
+	if cr.FirstKeptMessageID != "msg-06" {
+		t.Fatalf("expected first kept msg-06, got %q", cr.FirstKeptMessageID)
+	}
+	if cr.PreviousSummaryTokens == 0 || cr.SummaryTokens <= cr.PreviousSummaryTokens {
+		t.Fatalf("expected previous summary to be carried forward: previous=%d summary=%d", cr.PreviousSummaryTokens, cr.SummaryTokens)
+	}
+	if cr.LLMAssisted {
+		t.Fatal("session-memory compaction should report LLMAssisted=false")
+	}
+	if cr.Details["last_assistant_usage_tokens"] == nil {
+		t.Fatal("expected assistant usage metadata")
+	}
+	assembled, err := e.Assemble(ctx, "sess-meta", 100_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(assembled.SystemPromptAddition, "# Previous") || !strings.Contains(assembled.SystemPromptAddition, "# New") {
+		t.Fatalf("expected previous and new summaries to be preserved, got %q", assembled.SystemPromptAddition)
+	}
+}
+
 func TestSWE_CompactWithSM_SummaryAppearsInAssemble(t *testing.T) {
 	e := NewSmallWindowEngine(TierStandardSW, DefaultSmallWindowBudget(TierStandardSW))
 	ctx := stdctx.Background()
