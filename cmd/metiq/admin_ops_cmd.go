@@ -11,7 +11,21 @@ import (
 // ─── update ───────────────────────────────────────────────────────────────────
 
 func runUpdate(args []string) error {
-	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	if len(args) > 0 {
+		switch args[0] {
+		case "status":
+			return runUpdateStatus(args[1:])
+		case "wizard":
+			return runUpdateCall("update.wizard", args[1:])
+		case "progress":
+			return runUpdateCall("update.progress", args[1:])
+		}
+	}
+	return runUpdateStatus(args)
+}
+
+func runUpdateStatus(args []string) error {
+	fs := flag.NewFlagSet("update status", flag.ContinueOnError)
 	var adminAddr, adminToken, bootstrapPath string
 	var jsonOut bool
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
@@ -47,6 +61,34 @@ func runUpdate(args []string) error {
 		printMuted("  Run: curl -fsSL https://raw.githubusercontent.com/metiq/metiq/main/scripts/install.sh | bash")
 	} else {
 		printSuccess("✓ Up to date")
+	}
+	return nil
+}
+
+func runUpdateCall(method string, args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call(method, map[string]any{})
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(result)
+	}
+	for k, v := range result {
+		printField(k, fmt.Sprintf("%v", v))
 	}
 	return nil
 }

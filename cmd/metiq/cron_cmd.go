@@ -22,10 +22,20 @@ func runCron(args []string) error {
 		return runCronAdd(args[1:])
 	case "remove", "rm", "delete":
 		return runCronRemove(args[1:])
+	case "edit":
+		return runCronEdit(args[1:])
+	case "enable":
+		return runCronToggle(args[1:], true)
+	case "disable":
+		return runCronToggle(args[1:], false)
+	case "show", "get":
+		return runCronShow(args[1:])
+	case "runs", "history":
+		return runCronRuns(args[1:])
 	case "run":
 		return runCronRun(args[1:])
 	default:
-		return fmt.Errorf("unknown cron sub-command %q (list|add|remove|run)", args[0])
+		return fmt.Errorf("unknown cron sub-command %q (list|add|edit|enable|disable|show|runs|remove|run)", args[0])
 	}
 }
 
@@ -123,6 +133,130 @@ func runCronAdd(args []string) error {
 	result, err := cl.call("cron.add", body)
 	if err != nil {
 		return fmt.Errorf("cron.add: %w", err)
+	}
+	return printJSON(result)
+}
+
+func runCronEdit(args []string) error {
+	fs := flag.NewFlagSet("cron edit", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath, schedule, method, rawParams, description string
+	var enable, disable bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
+	fs.StringVar(&schedule, "schedule", "", "new cron schedule expression")
+	fs.StringVar(&method, "method", "", "new gateway method to call")
+	fs.StringVar(&rawParams, "params", "", "new JSON params for the method")
+	fs.StringVar(&description, "description", "", "new job description")
+	fs.BoolVar(&enable, "enable", false, "enable job")
+	fs.BoolVar(&disable, "disable", false, "disable job")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: metiq cron edit <job-id> [--schedule <expr>] [--method <method>] [--params '{...}'] [--enable|--disable]")
+	}
+	if enable && disable {
+		return fmt.Errorf("use either --enable or --disable, not both")
+	}
+	patch := map[string]any{}
+	if schedule != "" {
+		patch["schedule"] = schedule
+	}
+	if method != "" {
+		patch["method"] = method
+	}
+	if rawParams != "" {
+		patch["params"] = json.RawMessage(rawParams)
+	}
+	if description != "" {
+		patch["description"] = description
+	}
+	if enable || disable {
+		patch["enabled"] = enable
+	}
+	if len(patch) == 0 {
+		return fmt.Errorf("no changes specified")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("cron.update", map[string]any{"id": fs.Arg(0), "patch": patch})
+	if err != nil {
+		return fmt.Errorf("cron.update: %w", err)
+	}
+	return printJSON(result)
+}
+
+func runCronToggle(args []string, enabled bool) error {
+	fs := flag.NewFlagSet("cron toggle", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: metiq cron enable|disable <job-id>")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("cron.update", map[string]any{"id": fs.Arg(0), "patch": map[string]any{"enabled": enabled}})
+	if err != nil {
+		return fmt.Errorf("cron.update: %w", err)
+	}
+	return printJSON(result)
+}
+
+func runCronShow(args []string) error {
+	fs := flag.NewFlagSet("cron show", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: metiq cron show <job-id>")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("cron.get", map[string]any{"id": fs.Arg(0)})
+	if err != nil {
+		return fmt.Errorf("cron.get: %w", err)
+	}
+	return printJSON(result)
+}
+
+func runCronRuns(args []string) error {
+	fs := flag.NewFlagSet("cron runs", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var limit int
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
+	fs.IntVar(&limit, "limit", 20, "maximum run entries to return")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	body := map[string]any{"limit": limit}
+	if fs.NArg() > 0 {
+		body["id"] = fs.Arg(0)
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("cron.runs", body)
+	if err != nil {
+		return fmt.Errorf("cron.runs: %w", err)
 	}
 	return printJSON(result)
 }
