@@ -62,6 +62,7 @@ type controlRPCDeps struct {
 	acpPeers             *acppkg.PeerRegistry
 	acpDispatcher        *acppkg.Dispatcher
 	acpManager           *acppkg.Manager
+	acpFlowRegistry      *acppkg.FlowRegistry
 
 	// services provides access to the consolidated daemonServices struct.
 	// Extracted handler files and RPC sub-handlers can use this instead of
@@ -94,6 +95,13 @@ type controlRPCHandler struct {
 
 func newControlRPCHandler(deps controlRPCDeps) controlRPCHandler {
 	return controlRPCHandler{deps: deps}
+}
+
+func requesterSessionKeyFromParent(parent *acppkg.ParentContext, fallback string) string {
+	if parent != nil && strings.TrimSpace(parent.SessionID) != "" {
+		return strings.TrimSpace(parent.SessionID)
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPCInbound) (nostruntime.ControlRPCResult, error) {
@@ -323,8 +331,15 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: marshal: %w", err)
 		}
 		waitRegistered := false
-		if req.Wait {
-			h.deps.acpDispatcher.Register(taskID)
+		if req.Wait || parentContext != nil {
+			if _, err := h.deps.acpDispatcher.RegisterTaskWithError(ctx, acppkg.TaskRecord{
+				TaskID:              taskID,
+				RequesterSessionKey: requesterSessionKeyFromParent(parentContext, in.FromPubKey),
+				Instructions:        req.Instructions,
+				Worker:              &acppkg.WorkerTaskMetadata{PubKey: target},
+			}); err != nil {
+				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: register task: %w", err)
+			}
 			waitRegistered = true
 		}
 		if err := sendACPDMWithTransport(ctx, dmBus, dmScheme, target, string(payload)); err != nil {
@@ -332,6 +347,11 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 				h.deps.acpDispatcher.Cancel(taskID)
 			}
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: send DM: %w", err)
+		}
+
+		if parentContext != nil {
+			h.deps.acpDispatcher.MarkRunning(ctx, taskID)
+			h.deps.acpDispatcher.RecordProgress(ctx, taskID, "dispatched to child agent")
 		}
 
 		// If wait==true, block until result arrives.
@@ -428,7 +448,15 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 				TimeoutMS:       s.TimeoutMS,
 			})
 		}
-		pipeline := &acppkg.Pipeline{Steps: steps}
+		ownerSessionKey := strings.TrimSpace(in.FromPubKey)
+		goal := "ACP pipeline"
+		if len(steps) > 0 {
+			goal = strings.TrimSpace(steps[0].Instructions)
+			if goal == "" {
+				goal = "ACP pipeline"
+			}
+		}
+		pipeline := &acppkg.Pipeline{Steps: steps, FlowRegistry: h.deps.acpFlowRegistry, OwnerSessionKey: ownerSessionKey, Goal: goal}
 
 		var pipelineResults []acppkg.PipelineResult
 		var pipelineErr error
@@ -467,6 +495,7 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{
 			"ok":      true,
+			"flow_id": pipeline.FlowID,
 			"results": out,
 			"text":    aggregate,
 		}}, nil
