@@ -21,6 +21,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -49,6 +50,8 @@ const (
 
 	nip17MaxPastAge = nip17GiftWrapBackfill + time.Hour
 )
+
+var ErrRecipientNotNIP17Ready = errors.New("recipient is not NIP-17 ready: no kind:10050 DM relay list")
 
 // NIP17BusOptions mirrors DMBusOptions so the two buses are interchangeable.
 type NIP17BusOptions struct {
@@ -94,6 +97,9 @@ type NIP17Bus struct {
 	// testListenGiftWraps is an unexported seam used by runtime tests to drive
 	// deterministic gift-wrap stream closure/rebind behavior.
 	testListenGiftWraps func(ctx context.Context, relays []string, since nostr.Timestamp) <-chan nostr.Event
+	// testLookupDMRelays is an unexported seam used by runtime tests to avoid
+	// network relay-list lookup when exercising SendDM routing behavior.
+	testLookupDMRelays func(ctx context.Context, pk nostr.PubKey) []string
 }
 
 // StartNIP17Bus creates and starts a NIP17Bus.  It mirrors StartDMBus.
@@ -187,7 +193,7 @@ func (b *NIP17Bus) Close() {
 
 // SendDM sends a NIP-17 gift-wrapped DM to toPubKey.
 // It first attempts to discover the recipient's DM relay list (kind 10050);
-// if not found it falls back to the configured write relays.
+// if not found the recipient is not considered ready for NIP-17 DMs.
 func (b *NIP17Bus) SendDM(ctx context.Context, toPubKey string, text string) error {
 	pk, err := ParsePubKey(toPubKey)
 	if err != nil {
@@ -203,7 +209,10 @@ func (b *NIP17Bus) SendDM(ctx context.Context, toPubKey string, text string) err
 		return textErr
 	}
 
-	theirRelays := b.lookupDMRelays(ctx, pk)
+	theirRelays, err := b.lookupDMRelays(ctx, pk)
+	if err != nil {
+		return err
+	}
 	ourRelays := b.currentRelays()
 
 	return nip17.PublishMessage(
@@ -550,15 +559,21 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 }
 
 // lookupDMRelays queries the recipient's DM relay list (kind 10050).
-// Falls back to our own relays if not found.
-func (b *NIP17Bus) lookupDMRelays(ctx context.Context, pk nostr.PubKey) []string {
+func (b *NIP17Bus) lookupDMRelays(ctx context.Context, pk nostr.PubKey) ([]string, error) {
+	if b.testLookupDMRelays != nil {
+		relays := sanitizeRelayList(b.testLookupDMRelays(ctx, pk))
+		if len(relays) == 0 {
+			return nil, ErrRecipientNotNIP17Ready
+		}
+		return relays, nil
+	}
 	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	relays := nip17.GetDMRelays(lookupCtx, pk, b.pool, b.currentRelays())
+	relays := sanitizeRelayList(nip17.GetDMRelays(lookupCtx, pk, b.pool, b.currentRelays()))
 	if len(relays) == 0 {
-		return b.currentRelays()
+		return nil, ErrRecipientNotNIP17Ready
 	}
-	return relays
+	return relays, nil
 }
 
 func (b *NIP17Bus) currentRelays() []string {
@@ -601,7 +616,7 @@ func (b *NIP17Bus) validateRumorEvent(rumor nostr.Event, now time.Time) error {
 	if rumor.Kind != nostr.KindDirectMessage {
 		return fmt.Errorf("unexpected rumor kind=%d", rumor.Kind)
 	}
-	
+
 	// NIP-17 requires at least one p tag identifying a recipient.
 	hasRecipientTag := false
 	for _, tag := range rumor.Tags {
@@ -613,7 +628,7 @@ func (b *NIP17Bus) validateRumorEvent(rumor nostr.Event, now time.Time) error {
 	if !hasRecipientTag {
 		return fmt.Errorf("rumor missing recipient tag")
 	}
-	
+
 	// Accept rumors where we are the recipient (incoming message) OR where we are
 	// the sender (backup copy of our own sent message). When sending a DM to Bob,
 	// the library creates a rumor with Bob's pubkey in the p tag, then gift-wraps
@@ -625,7 +640,7 @@ func (b *NIP17Bus) validateRumorEvent(rumor nostr.Event, now time.Time) error {
 	if !isRecipient && !isSender {
 		return fmt.Errorf("rumor not addressed to us (recipient check) and not sent by us (sender check)")
 	}
-	
+
 	if !rumor.CheckID() {
 		return fmt.Errorf("invalid rumor id")
 	}
