@@ -5,9 +5,10 @@
 //	Kind 10000 – Mute list          (replaces follows who are muted)
 //	Kind 10001 – Pin list           (pinned notes)
 //	Kind 10002 – Relay list metadata (see also NIP-65)
-//	Kind 30000 – Categorized people list (replaceable, d-tag = list name)
-//	Kind 30001 – Categorized bookmark set
-//	Kind 30003 – Bookmark set (private bookmarks via NIP-04 encrypted content)
+//	Kind 30000 – Follow sets (replaceable, d-tag = list name)
+//	Kind 30002 – Relay sets
+//	Kind 30003 – Bookmark sets (private entries via NIP-44 encrypted content)
+//	Kind 30001 – Deprecated legacy sets
 //
 // This package focuses on the kinds most relevant to agent allow/block flows.
 package nip51
@@ -26,15 +27,16 @@ import (
 
 // Kind constants for NIP-51 list events.
 const (
-	KindMuteList    = 10000 // Muted pubkeys
-	KindPinList     = 10001 // Pinned note IDs
-	KindPeopleList  = 30000 // Categorized people list (replaceable, d-tag)
-	KindBookmarkSet = 30001 // Categorized bookmark set
-	KindRelaySet    = 30002 // Categorized relay set (replaceable, d-tag)
-	KindFollowSet   = 30003 // Categorized follow set (replaceable, d-tag)
-	KindCurationSet = 30004 // Categorized curation set (replaceable, d-tag)
-	KindBlockList   = 30000 // Alias: use d-tag "blocklist" for blocking
-	KindAllowList   = 30000 // Alias: use d-tag "allowlist" for allowing
+	KindMuteList      = 10000 // Muted pubkeys
+	KindPinList       = 10001 // Pinned note IDs
+	KindPeopleList    = 30000 // Alias for follow sets / categorized people lists (replaceable, d-tag)
+	KindFollowSet     = 30000 // Follow sets (replaceable, d-tag)
+	KindDeprecatedSet = 30001 // Deprecated legacy categorized set
+	KindRelaySet      = 30002 // Relay sets (replaceable, d-tag)
+	KindBookmarkSet   = 30003 // Bookmark sets (replaceable, d-tag)
+	KindCurationSet   = 30004 // Categorized curation set (replaceable, d-tag)
+	KindBlockList     = 30000 // Alias: use d-tag "blocklist" for blocking
+	KindAllowList     = 30000 // Alias: use d-tag "allowlist" for allowing
 )
 
 // Well-known d-tag identifiers for relay sets (kind 30002).

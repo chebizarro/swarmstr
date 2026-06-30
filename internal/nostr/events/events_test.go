@@ -195,11 +195,17 @@ func TestKindConstants_Values(t *testing.T) {
 		// NIP-60 Cashu Wallet
 		{"NIP60UnspentToken", KindNIP60UnspentToken, 7375},
 		{"NIP60TokenHistory", KindNIP60TokenHistory, 7376},
-		{"NIP60Wallet", KindNIP60Wallet, 37375},
+		{"NIP60Wallet", KindNIP60Wallet, 17375},
 
 		// NIP-61 Nutzap
 		{"NIP61NutzapInfo", KindNIP61NutzapInfo, 10019},
 		{"NIP61Nutzap", KindNIP61Nutzap, 9321},
+
+		// NIP-58 Badges
+		{"NIP58BadgeAward", KindNIP58BadgeAward, 8},
+		{"NIP58ProfileBadges", KindNIP58ProfileBadges, 10008},
+		{"NIP58BadgeSet", KindNIP58BadgeSet, 30008},
+		{"NIP58BadgeDefinition", KindNIP58BadgeDefinition, 30009},
 
 		// NIP-34 Repository Collaboration
 		{"RepoAnnouncement", KindRepoAnnouncement, 30617},

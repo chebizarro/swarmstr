@@ -94,7 +94,7 @@ func TestCascadiaListStoreQueries(t *testing.T) {
 }
 
 func TestKindConstantsIncludesNIP51ParameterizedRange(t *testing.T) {
-	if KindPeopleList != 30000 || KindBookmarkSet != 30001 || KindRelaySet != 30002 || KindFollowSet != 30003 || KindCurationSet != 30004 {
+	if KindPeopleList != 30000 || KindFollowSet != 30000 || KindRelaySet != 30002 || KindBookmarkSet != 30003 || KindCurationSet != 30004 {
 		t.Fatalf("unexpected parameterized kind constants: %d %d %d %d %d", KindPeopleList, KindBookmarkSet, KindRelaySet, KindFollowSet, KindCurationSet)
 	}
 }

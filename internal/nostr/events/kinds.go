@@ -83,7 +83,7 @@ const (
 
 	KindNIP60UnspentToken Kind = 7375  // encrypted unspent token bundle
 	KindNIP60TokenHistory Kind = 7376  // encrypted token history entry
-	KindNIP60Wallet       Kind = 37375 // encrypted wallet metadata (parameterized-replaceable)
+	KindNIP60Wallet       Kind = 17375 // encrypted wallet metadata (replaceable)
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// NIP-61 Nutzap Event Kinds
@@ -91,6 +91,15 @@ const (
 
 	KindNIP61NutzapInfo Kind = 10019 // replaceable: advertise supported mints + P2PK pubkey
 	KindNIP61Nutzap     Kind = 9321  // nutzap: send Cashu proofs to a recipient
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// NIP-58 Badge Event Kinds
+	// ─────────────────────────────────────────────────────────────────────────
+
+	KindNIP58BadgeAward      Kind = 8     // badge award
+	KindNIP58ProfileBadges   Kind = 10008 // replaceable profile badges list
+	KindNIP58BadgeSet        Kind = 30008 // addressable badge set
+	KindNIP58BadgeDefinition Kind = 30009 // addressable badge definition
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// NIP-34 Repository Collaboration Kinds
