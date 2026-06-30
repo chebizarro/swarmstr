@@ -75,20 +75,27 @@ type TranscriptRef struct {
 }
 
 // Checkpoint records a single compaction event for a session.
+type FileOperations struct {
+	ReadFiles    []string `json:"read_files,omitempty"`
+	WrittenFiles []string `json:"written_files,omitempty"`
+	EditedFiles  []string `json:"edited_files,omitempty"`
+}
+
 type Checkpoint struct {
-	CheckpointID   string        `json:"checkpoint_id"`
-	SessionKey     string        `json:"session_key"`
-	SessionID      string        `json:"session_id"`
-	CreatedAt      int64         `json:"created_at"` // unix millis
-	Reason         Reason        `json:"reason"`
-	TokensBefore   int           `json:"tokens_before,omitempty"`
-	TokensAfter    int           `json:"tokens_after,omitempty"`
-	Summary        string        `json:"summary,omitempty"`
-	FirstKeptEntry string        `json:"first_kept_entry_id,omitempty"`
-	DroppedEntries int           `json:"dropped_entries,omitempty"`
-	KeptEntries    int           `json:"kept_entries,omitempty"`
-	PreCompaction  TranscriptRef `json:"pre_compaction"`
-	PostCompaction TranscriptRef `json:"post_compaction"`
+	CheckpointID   string         `json:"checkpoint_id"`
+	SessionKey     string         `json:"session_key"`
+	SessionID      string         `json:"session_id"`
+	CreatedAt      int64          `json:"created_at"` // unix millis
+	Reason         Reason         `json:"reason"`
+	TokensBefore   int            `json:"tokens_before,omitempty"`
+	TokensAfter    int            `json:"tokens_after,omitempty"`
+	Summary        string         `json:"summary,omitempty"`
+	FirstKeptEntry string         `json:"first_kept_entry_id,omitempty"`
+	DroppedEntries int            `json:"dropped_entries,omitempty"`
+	KeptEntries    int            `json:"kept_entries,omitempty"`
+	PreCompaction  TranscriptRef  `json:"pre_compaction"`
+	PostCompaction TranscriptRef  `json:"post_compaction"`
+	FileOps        FileOperations `json:"file_ops,omitempty"`
 }
 
 // Snapshot captures pre-compaction transcript state.  It is created before
@@ -138,6 +145,7 @@ type PersistParams struct {
 	PostFirstEntry string
 	PostLastEntry  string
 	CreatedAt      int64 // unix millis; 0 = use time.Now()
+	FileOps        FileOperations
 }
 
 // ─── Store ──────────────────────────────────────────────────────────────────
@@ -193,6 +201,7 @@ func (s *Store) Persist(p PersistParams) Checkpoint {
 			FirstEntry: strings.TrimSpace(p.PostFirstEntry),
 			LastEntry:  strings.TrimSpace(p.PostLastEntry),
 		},
+		FileOps: p.FileOps,
 	}
 
 	s.mu.Lock()
@@ -362,5 +371,8 @@ func (c Checkpoint) ToMap() map[string]any {
 		post["last_entry_id"] = c.PostCompaction.LastEntry
 	}
 	m["post_compaction"] = post
+	if len(c.FileOps.ReadFiles) > 0 || len(c.FileOps.WrittenFiles) > 0 || len(c.FileOps.EditedFiles) > 0 {
+		m["file_ops"] = c.FileOps
+	}
 	return m
 }
