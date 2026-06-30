@@ -64,6 +64,104 @@ type FIPSRoutingSummary struct {
 	RecentRequests         int
 	RetriesCount           int
 	Retries                []FIPSRoutingRetry
+	Forwarding             FIPSForwardingCounters
+	Discovery              FIPSDiscoveryCounters
+	ErrorSignals           FIPSErrorSignalCounters
+	Congestion             FIPSCongestionCounters
+}
+
+// FIPSStatusSummary mirrors the FIPS v0.4.0 show_status data payload.
+type FIPSStatusSummary struct {
+	Version             string                 `json:"version"`
+	Npub                string                 `json:"npub"`
+	NodeAddr            string                 `json:"node_addr"`
+	IPv6Addr            string                 `json:"ipv6_addr"`
+	State               string                 `json:"state"`
+	IsLeafOnly          bool                   `json:"is_leaf_only"`
+	IsRoot              bool                   `json:"is_root"`
+	Root                string                 `json:"root"`
+	Persistent          bool                   `json:"persistent"`
+	PeerCount           int                    `json:"peer_count"`
+	SessionCount        int                    `json:"session_count"`
+	LinkCount           int                    `json:"link_count"`
+	TransportCount      int                    `json:"transport_count"`
+	ConnectionCount     int                    `json:"connection_count"`
+	TransportPeerCounts map[string]int         `json:"transport_peer_counts"`
+	TUNState            string                 `json:"tun_state"`
+	TUNName             string                 `json:"tun_name"`
+	EffectiveIPv6MTU    int                    `json:"effective_ipv6_mtu"`
+	ControlSocket       string                 `json:"control_socket"`
+	PID                 json.RawMessage        `json:"pid"`
+	ExePath             string                 `json:"exe_path"`
+	UptimeSecs          json.RawMessage        `json:"uptime_secs"`
+	EstimatedMeshSize   *int                   `json:"estimated_mesh_size"`
+	Forwarding          FIPSForwardingCounters `json:"forwarding"`
+	Sparklines          map[string][]*float64  `json:"sparklines"`
+}
+
+type FIPSForwardingCounters struct {
+	DecodeErrorBytes       int64 `json:"decode_error_bytes"`
+	DecodeErrorPackets     int64 `json:"decode_error_packets"`
+	DeliveredBytes         int64 `json:"delivered_bytes"`
+	DeliveredPackets       int64 `json:"delivered_packets"`
+	DropMTUExceededBytes   int64 `json:"drop_mtu_exceeded_bytes"`
+	DropMTUExceededPackets int64 `json:"drop_mtu_exceeded_packets"`
+	DropNoRouteBytes       int64 `json:"drop_no_route_bytes"`
+	DropNoRoutePackets     int64 `json:"drop_no_route_packets"`
+	DropSendErrorBytes     int64 `json:"drop_send_error_bytes"`
+	DropSendErrorPackets   int64 `json:"drop_send_error_packets"`
+	ForwardedBytes         int64 `json:"forwarded_bytes"`
+	ForwardedPackets       int64 `json:"forwarded_packets"`
+	OriginatedBytes        int64 `json:"originated_bytes"`
+	OriginatedPackets      int64 `json:"originated_packets"`
+	ReceivedBytes          int64 `json:"received_bytes"`
+	ReceivedPackets        int64 `json:"received_packets"`
+	RouteCrosslinkAscend   int64 `json:"route_crosslink_ascend"`
+	RouteCrosslinkDescend  int64 `json:"route_crosslink_descend"`
+	RouteDirectPeer        int64 `json:"route_direct_peer"`
+	RouteTreeDown          int64 `json:"route_tree_down"`
+	RouteTreeDownCross     int64 `json:"route_tree_down_cross"`
+	RouteTreeUp            int64 `json:"route_tree_up"`
+	TTLExhaustedBytes      int64 `json:"ttl_exhausted_bytes"`
+	TTLExhaustedPackets    int64 `json:"ttl_exhausted_packets"`
+}
+
+type FIPSDiscoveryCounters struct {
+	ReqBackoffSuppressed  int64 `json:"req_backoff_suppressed"`
+	ReqBloomMiss          int64 `json:"req_bloom_miss"`
+	ReqDecodeError        int64 `json:"req_decode_error"`
+	ReqDedupCacheFull     int64 `json:"req_dedup_cache_full"`
+	ReqDeduplicated       int64 `json:"req_deduplicated"`
+	ReqDuplicate          int64 `json:"req_duplicate"`
+	ReqFallbackForwarded  int64 `json:"req_fallback_forwarded"`
+	ReqForwardRateLimited int64 `json:"req_forward_rate_limited"`
+	ReqForwarded          int64 `json:"req_forwarded"`
+	ReqInitiated          int64 `json:"req_initiated"`
+	ReqNoTreePeer         int64 `json:"req_no_tree_peer"`
+	ReqReceived           int64 `json:"req_received"`
+	ReqTargetIsUs         int64 `json:"req_target_is_us"`
+	ReqTTLExhausted       int64 `json:"req_ttl_exhausted"`
+	RespAccepted          int64 `json:"resp_accepted"`
+	RespDecodeError       int64 `json:"resp_decode_error"`
+	RespForwarded         int64 `json:"resp_forwarded"`
+	RespIdentityMiss      int64 `json:"resp_identity_miss"`
+	RespNoRoute           int64 `json:"resp_no_route"`
+	RespProofFailed       int64 `json:"resp_proof_failed"`
+	RespReceived          int64 `json:"resp_received"`
+	RespTimedOut          int64 `json:"resp_timed_out"`
+}
+
+type FIPSErrorSignalCounters struct {
+	CoordsRequired int64 `json:"coords_required"`
+	MTUExceeded    int64 `json:"mtu_exceeded"`
+	PathBroken     int64 `json:"path_broken"`
+}
+
+type FIPSCongestionCounters struct {
+	CEForwarded        int64 `json:"ce_forwarded"`
+	CEReceived         int64 `json:"ce_received"`
+	CongestionDetected int64 `json:"congestion_detected"`
+	KernelDropEvents   int64 `json:"kernel_drop_events"`
 }
 
 type FIPSPendingLookup struct {
@@ -81,6 +179,140 @@ type FIPSRoutingRetry struct {
 	RetryCount    int    `json:"retry_count"`
 	RetryAfterMS  int64  `json:"retry_after_ms"`
 	AutoReconnect bool   `json:"auto_reconnect"`
+}
+
+type FIPSMetricsSummary struct {
+	Forwarding map[string]int64 `json:"forwarding"`
+	Discovery  map[string]int64 `json:"discovery"`
+	Tree       map[string]int64 `json:"tree"`
+	Bloom      map[string]int64 `json:"bloom"`
+	Congestion map[string]int64 `json:"congestion"`
+	Errors     map[string]int64 `json:"errors"`
+}
+
+type FIPSTreeSummary struct {
+	MyNodeAddr          string         `json:"my_node_addr"`
+	Root                string         `json:"root"`
+	RootNpub            string         `json:"root_npub"`
+	IsRoot              bool           `json:"is_root"`
+	Depth               int            `json:"depth"`
+	MyCoords            []string       `json:"my_coords"`
+	Parent              string         `json:"parent"`
+	ParentDisplayName   string         `json:"parent_display_name"`
+	DeclarationSequence int64          `json:"declaration_sequence"`
+	DeclarationSigned   bool           `json:"declaration_signed"`
+	PeerTreeCount       int            `json:"peer_tree_count"`
+	Peers               []FIPSTreePeer `json:"peers"`
+	Stats               FIPSTreeStats  `json:"stats"`
+}
+
+type FIPSTreePeer struct {
+	NodeAddr       string   `json:"node_addr"`
+	DisplayName    string   `json:"display_name"`
+	Parent         string   `json:"parent"`
+	Root           string   `json:"root"`
+	Depth          int      `json:"depth"`
+	Coords         []string `json:"coords"`
+	Sequence       int64    `json:"sequence"`
+	AgeMS          int64    `json:"age_ms"`
+	EffectiveDepth *float64 `json:"effective_depth"`
+}
+
+type FIPSTreeStats struct {
+	Accepted           int64 `json:"accepted"`
+	AddrMismatch       int64 `json:"addr_mismatch"`
+	AncestryChanged    int64 `json:"ancestry_changed"`
+	AncestryInvalid    int64 `json:"ancestry_invalid"`
+	DecodeError        int64 `json:"decode_error"`
+	FlapDampened       int64 `json:"flap_dampened"`
+	LoopDetected       int64 `json:"loop_detected"`
+	OutboundSignFailed int64 `json:"outbound_sign_failed"`
+	ParentLosses       int64 `json:"parent_losses"`
+	ParentSwitched     int64 `json:"parent_switched"`
+	ParentSwitches     int64 `json:"parent_switches"`
+	RateLimited        int64 `json:"rate_limited"`
+	Received           int64 `json:"received"`
+	SendFailed         int64 `json:"send_failed"`
+	Sent               int64 `json:"sent"`
+	SigFailed          int64 `json:"sig_failed"`
+	Stale              int64 `json:"stale"`
+	UnknownPeer        int64 `json:"unknown_peer"`
+}
+
+type FIPSBloomSummary struct {
+	OwnNodeAddr          string                `json:"own_node_addr"`
+	IsLeafOnly           bool                  `json:"is_leaf_only"`
+	Sequence             int64                 `json:"sequence"`
+	LeafDependentCount   int                   `json:"leaf_dependent_count"`
+	LeafDependents       []string              `json:"leaf_dependents"`
+	PeerFilters          []FIPSBloomPeerFilter `json:"peer_filters"`
+	UptreeFillRatio      *float64              `json:"uptree_fill_ratio"`
+	UptreeEstimatedCount *int64                `json:"uptree_estimated_count"`
+	Stats                FIPSBloomStats        `json:"stats"`
+}
+
+type FIPSBloomPeerFilter struct {
+	NodeAddr       string  `json:"node_addr"`
+	DisplayName    string  `json:"display_name"`
+	FillRatio      float64 `json:"fill_ratio"`
+	EstimatedCount int64   `json:"estimated_count"`
+	Sequence       int64   `json:"sequence"`
+	AgeMS          int64   `json:"age_ms"`
+}
+
+type FIPSBloomStats struct {
+	Accepted           int64 `json:"accepted"`
+	DebounceSuppressed int64 `json:"debounce_suppressed"`
+	DecodeError        int64 `json:"decode_error"`
+	FillExceeded       int64 `json:"fill_exceeded"`
+	Invalid            int64 `json:"invalid"`
+	NonV1              int64 `json:"non_v1"`
+	Received           int64 `json:"received"`
+	SendFailed         int64 `json:"send_failed"`
+	Sent               int64 `json:"sent"`
+	Stale              int64 `json:"stale"`
+	UnknownPeer        int64 `json:"unknown_peer"`
+}
+
+type FIPSPeersSummary struct {
+	Peers []FIPSPeerSummary `json:"peers"`
+}
+
+type FIPSPeerSummary struct {
+	NodeAddr       string          `json:"node_addr"`
+	Npub           string          `json:"npub"`
+	DisplayName    string          `json:"display_name"`
+	IPv6Addr       string          `json:"ipv6_addr"`
+	Connectivity   string          `json:"connectivity"`
+	LinkID         string          `json:"link_id"`
+	Direction      string          `json:"direction"`
+	TransportAddr  string          `json:"transport_addr"`
+	TransportType  string          `json:"transport_type"`
+	IsParent       bool            `json:"is_parent"`
+	IsChild        bool            `json:"is_child"`
+	TreeDepth      *int            `json:"tree_depth"`
+	EffectiveDepth *float64        `json:"effective_depth"`
+	Stats          json.RawMessage `json:"stats"`
+	Noise          json.RawMessage `json:"noise"`
+	CurrentKBit    *int            `json:"current_k_bit"`
+	MMP            json.RawMessage `json:"mmp"`
+}
+
+type FIPSTransportsSummary struct {
+	Transports []FIPSTransportSummary `json:"transports"`
+}
+
+type FIPSTransportSummary struct {
+	TransportID   string          `json:"transport_id"`
+	Type          string          `json:"type"`
+	State         string          `json:"state"`
+	MTU           int             `json:"mtu"`
+	Name          string          `json:"name"`
+	LocalAddr     string          `json:"local_addr"`
+	TorMode       string          `json:"tor_mode,omitempty"`
+	OnionAddress  string          `json:"onion_address,omitempty"`
+	TorMonitoring *bool           `json:"tor_monitoring,omitempty"`
+	Stats         json.RawMessage `json:"stats"`
 }
 
 func NewFIPSControlClient(opts FIPSControlClientOptions) (*FIPSControlClient, error) {
@@ -111,6 +343,30 @@ func (c *FIPSControlClient) ShowCache(ctx context.Context) (FIPSCacheSummary, er
 	return parseFIPSCacheSummary(data)
 }
 
+func (c *FIPSControlClient) ShowStatus(ctx context.Context) (FIPSStatusSummary, error) {
+	var out FIPSStatusSummary
+	data, err := c.query(ctx, "show_status", nil)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c *FIPSControlClient) ShowMetrics(ctx context.Context) (FIPSMetricsSummary, error) {
+	var out FIPSMetricsSummary
+	data, err := c.query(ctx, "show_metrics", nil)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
 func (c *FIPSControlClient) ShowRouting(ctx context.Context) (FIPSRoutingSummary, error) {
 	var out FIPSRoutingSummary
 	data, err := c.query(ctx, "show_routing", nil)
@@ -118,6 +374,54 @@ func (c *FIPSControlClient) ShowRouting(ctx context.Context) (FIPSRoutingSummary
 		return out, err
 	}
 	return parseFIPSRoutingSummary(data)
+}
+
+func (c *FIPSControlClient) ShowTree(ctx context.Context) (FIPSTreeSummary, error) {
+	var out FIPSTreeSummary
+	data, err := c.query(ctx, "show_tree", nil)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c *FIPSControlClient) ShowBloom(ctx context.Context) (FIPSBloomSummary, error) {
+	var out FIPSBloomSummary
+	data, err := c.query(ctx, "show_bloom", nil)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c *FIPSControlClient) ShowPeers(ctx context.Context) (FIPSPeersSummary, error) {
+	var out FIPSPeersSummary
+	data, err := c.query(ctx, "show_peers", nil)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c *FIPSControlClient) ShowTransports(ctx context.Context) (FIPSTransportsSummary, error) {
+	var out FIPSTransportsSummary
+	data, err := c.query(ctx, "show_transports", nil)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 func (c *FIPSControlClient) query(ctx context.Context, command string, params any) (json.RawMessage, error) {
@@ -267,15 +571,19 @@ func parseFIPSCacheSummary(data json.RawMessage) (FIPSCacheSummary, error) {
 
 func parseFIPSRoutingSummary(data json.RawMessage) (FIPSRoutingSummary, error) {
 	var raw struct {
-		CoordCacheEntries      int             `json:"coord_cache_entries"`
-		IdentityCacheEntries   int             `json:"identity_cache_entries"`
-		PendingLookupsCount    *int            `json:"pending_lookups_count"`
-		PendingLookups         json.RawMessage `json:"pending_lookups"`
-		PendingTUNDestinations int             `json:"pending_tun_destinations"`
-		PendingTUNPackets      int             `json:"pending_tun_packets"`
-		RecentRequests         int             `json:"recent_requests"`
-		RetriesCount           *int            `json:"retries_count"`
-		Retries                json.RawMessage `json:"retries"`
+		CoordCacheEntries      int                     `json:"coord_cache_entries"`
+		IdentityCacheEntries   int                     `json:"identity_cache_entries"`
+		PendingLookupsCount    *int                    `json:"pending_lookups_count"`
+		PendingLookups         json.RawMessage         `json:"pending_lookups"`
+		PendingTUNDestinations int                     `json:"pending_tun_destinations"`
+		PendingTUNPackets      int                     `json:"pending_tun_packets"`
+		RecentRequests         int                     `json:"recent_requests"`
+		RetriesCount           *int                    `json:"retries_count"`
+		Retries                json.RawMessage         `json:"retries"`
+		Forwarding             FIPSForwardingCounters  `json:"forwarding"`
+		Discovery              FIPSDiscoveryCounters   `json:"discovery"`
+		ErrorSignals           FIPSErrorSignalCounters `json:"error_signals"`
+		Congestion             FIPSCongestionCounters  `json:"congestion"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return FIPSRoutingSummary{}, err
@@ -310,6 +618,10 @@ func parseFIPSRoutingSummary(data json.RawMessage) (FIPSRoutingSummary, error) {
 		RecentRequests:         raw.RecentRequests,
 		RetriesCount:           retryCount,
 		Retries:                retries,
+		Forwarding:             raw.Forwarding,
+		Discovery:              raw.Discovery,
+		ErrorSignals:           raw.ErrorSignals,
+		Congestion:             raw.Congestion,
 	}, nil
 }
 
