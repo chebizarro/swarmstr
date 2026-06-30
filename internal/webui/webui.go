@@ -9,6 +9,7 @@ package webui
 
 import (
 	_ "embed"
+	"encoding/json"
 	"html/template"
 	"net"
 	"net/http"
@@ -47,6 +48,25 @@ func init() {
 	}).Parse(rawHTML))
 }
 
+// Command describes a slash command advertised to the embedded UI.
+type Command struct {
+	Command string `json:"command"`
+	Text    string `json:"text"`
+	Source  string `json:"source"`
+	Desc    string `json:"desc"`
+}
+
+// commandCatalog is intentionally data-driven metadata rather than hardcoded in
+// ui.html. Gateway/plugin/skill providers can supersede this through the WS
+// command.catalog method; this endpoint is the embedded Web UI fallback.
+var commandCatalog = []Command{
+	{Command: "/help", Text: "/help", Source: "gateway", Desc: "Show available commands"},
+	{Command: "/status", Text: "/status", Source: "gateway", Desc: "Show gateway status"},
+	{Command: "/agents", Text: "/agents", Source: "gateway", Desc: "List agents"},
+	{Command: "/channels", Text: "/channels", Source: "gateway", Desc: "List channels"},
+	{Command: "/compact", Text: "/compact", Source: "gateway", Desc: "Compact current session"},
+}
+
 // templateData holds the values injected into the HTML template.
 type templateData struct {
 	WSPath string // e.g. "/ws"
@@ -68,6 +88,17 @@ func Handler(wsPath, token string) http.Handler {
 	data := templateData{WSPath: wsPath, Token: token}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/command-catalog.json" {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			_ = json.NewEncoder(w).Encode(map[string]any{"commands": commandCatalog})
+			return
+		}
+
 		// Only serve from the root path; let unknown paths 404.
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
