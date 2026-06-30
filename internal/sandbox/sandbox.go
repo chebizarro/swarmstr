@@ -118,6 +118,13 @@ type Config struct {
 	// WorkspaceAccess controls the workspace mount mode: "read_only" or "read_write".
 	// Empty defaults to "read_write" when WorkspaceDir is set.
 	WorkspaceAccess string
+	// PersistentRuntime opts into reusable runtime containers managed by RuntimeRegistry.
+	// Empty/false preserves the one-shot backend behavior.
+	PersistentRuntime bool
+	// RuntimeScope groups persistent runtimes: "session", "agent", or "shared".
+	RuntimeScope string
+	// RuntimeKey identifies the caller-owned scope instance (session id, agent id, etc.).
+	RuntimeKey string
 }
 
 func (c Config) maxOutput() int64 {
@@ -190,19 +197,14 @@ func (c Config) nopTimeout() time.Duration {
 // Empty driver defaults to "docker". The unsafe "nop" driver must be requested
 // explicitly via config and requires AllowUnsafeNop.
 func New(cfg Config) (SandboxRunner, error) {
-	switch strings.ToLower(strings.TrimSpace(cfg.Driver)) {
-	case "":
-		return &DockerSandbox{cfg: cfg}, nil
-	case "nop":
-		if !cfg.AllowUnsafeNop {
-			return nil, fmt.Errorf("sandbox driver \"nop\" requires explicit allow_unsafe_nop=true")
-		}
-		return &NopSandbox{cfg: cfg}, nil
-	case "docker":
-		return &DockerSandbox{cfg: cfg}, nil
-	default:
-		return nil, fmt.Errorf("unknown sandbox driver %q (valid: docker, nop)", cfg.Driver)
+	runner, err := NewBackendRunner(cfg)
+	if err != nil {
+		return nil, err
 	}
+	if !cfg.PersistentRuntime {
+		return runner, nil
+	}
+	return DefaultRuntimeRegistry().Manage(RuntimeSpec{Config: cfg, Backend: runner})
 }
 
 // NewFromMap constructs a Config from a map[string]any (config doc sub-tree)
