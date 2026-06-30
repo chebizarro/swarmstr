@@ -87,6 +87,32 @@ func newCommandRegistry(bootstrapPath string) *commandRegistry {
 	addLazy(cliCommand{Name: "qa", Summary: "run deterministic QA scenario packs", Group: "Tasks"}, runQA)
 	addLazy(cliCommand{Name: "daemon", Summary: "daemon lifecycle management", Group: "Daemon Lifecycle"}, runDaemon)
 	addLazy(cliCommand{Name: "gw", Summary: "gateway method passthrough", Group: "Gateway Passthrough"}, runGW)
+	addLazy(cliCommand{Name: "acp", Summary: "run and inspect ACP-backed coding agents", Group: "Gateway Passthrough", Details: []string{
+		"acp dispatch --target-pubkey <pubkey> --instructions <text>",
+		"acp pipeline '{\"steps\":[...]}'",
+		"acp status",
+	}}, runACP)
+	addLazy(cliCommand{Name: "commitments", Summary: "list and manage inferred follow-up commitments", Group: "Gateway Passthrough", Details: []string{
+		"commitments list [--all] [--agent <id>] [--status <status>]",
+		"commitments add --text <text> [--agent <id>] [--due-at <time>]",
+		"commitments status",
+	}}, runCommitments)
+	addLazy(cliCommand{Name: "sandbox", Summary: "manage sandbox containers for agent isolation", Group: "Gateway Passthrough", Details: []string{
+		"sandbox run <command> [args...]",
+		"sandbox status",
+	}}, runSandbox)
+	addLazy(cliCommand{Name: "message", Summary: "send messages through the gateway", Group: "Gateway Passthrough", Details: []string{
+		"message send --to <target> --text <message>",
+	}}, runMessage)
+	addLazy(cliCommand{Name: "send", Summary: "send a message through the gateway", Group: "Gateway Passthrough"}, runSend)
+	addLazy(cliCommand{Name: "transcripts", Summary: "inspect and export stored transcripts", Group: "Gateway Passthrough", Details: []string{
+		"transcripts list [--limit N]",
+		"transcripts export <session-id> [--output path]",
+	}}, runTranscripts)
+	addLazy(cliCommand{Name: "system", Summary: "system status and info aggregate", Group: "Gateway Passthrough", Details: []string{
+		"system status",
+		"system info",
+	}}, runSystem)
 	addLazy(cliCommand{Name: "migrate", Summary: "migrate OpenClaw agent to Metiq", Group: "Migration"}, runMigrate)
 	addLazy(cliCommand{Name: "memory", Summary: "memory management", Group: "Memory"}, runMemory)
 
