@@ -1705,6 +1705,8 @@ const TOKEN   = '{{.Token}}';
     approvalError.textContent = '';
     setApprovalBusy(false);
     renderApproval(a);
+    const alwaysBtn = $('approval-approve-always');
+    if (alwaysBtn) alwaysBtn.disabled = !a.allow_always_available;
     approvalModal.classList.add('visible');
   }
 
@@ -1728,6 +1730,11 @@ const TOKEN   = '{{.Token}}';
       ['CWD', a.cwd || (a.system_run_plan && a.system_run_plan.cwd)],
       ['Host', a.host],
       ['Node', a.node_id || a.nodeId],
+      ['Summary', a.analysis_summary],
+      ['Warnings', a.analysis_warnings],
+      ['Signature', a.analysis_signature],
+      ['Mode', a.approval_mode],
+      ['Allow always', a.allow_always_available ? (a.allow_always_reason || 'available') : (a.allow_always_reason || 'not available')],
     ].forEach(([label, value]) => addApprovalMeta(label, value || '—'));
     updateApprovalCountdown(a);
     if (a.expires_at) {
@@ -1782,6 +1789,10 @@ const TOKEN   = '{{.Token}}';
 
   function setApprovalBusy(busy) {
     approvalButtons.forEach(btn => { btn.disabled = busy; });
+    if (!busy && currentApproval) {
+      const alwaysBtn = $('approval-approve-always');
+      if (alwaysBtn) alwaysBtn.disabled = !currentApproval.allow_always_available;
+    }
   }
 
   async function resolveApproval(decision) {

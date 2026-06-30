@@ -47,7 +47,7 @@ type ExecApprovalRequestRequest struct {
 	NodeID               string                     `json:"node_id,omitempty"`
 	Command              string                     `json:"command"`
 	CommandArgv          []string                   `json:"command_argv,omitempty"`
-	SystemRunPlan        *ExecApprovalSystemRunPlan  `json:"system_run_plan,omitempty"`
+	SystemRunPlan        *ExecApprovalSystemRunPlan `json:"system_run_plan,omitempty"`
 	Args                 map[string]any             `json:"args,omitempty"`
 	Env                  map[string]string          `json:"env,omitempty"`
 	CWD                  *string                    `json:"cwd,omitempty"`
@@ -62,6 +62,12 @@ type ExecApprovalRequestRequest struct {
 	TurnSourceAccountID  *string                    `json:"turn_source_account_id,omitempty"`
 	TurnSourceThreadID   *string                    `json:"turn_source_thread_id,omitempty"`
 	TimeoutMS            int                        `json:"timeout_ms,omitempty"`
+	AnalysisWarnings     []string                   `json:"analysis_warnings,omitempty"`
+	AnalysisSummary      string                     `json:"analysis_summary,omitempty"`
+	AnalysisSignature    string                     `json:"analysis_signature,omitempty"`
+	AllowAlwaysAvailable bool                       `json:"allow_always_available,omitempty"`
+	AllowAlwaysReason    string                     `json:"allow_always_reason,omitempty"`
+	ApprovalMode         string                     `json:"approval_mode,omitempty"`
 	TwoPhase             *bool                      `json:"two_phase,omitempty"`
 }
 
