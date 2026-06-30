@@ -566,11 +566,11 @@ func (b *teamsBot) handleActivity(w http.ResponseWriter, r *http.Request) {
 	text = stripSimpleHTML(text)
 	mediaURL := ""
 	mediaMIME := ""
-	if len(activity.Attachments) > 0 {
-		mediaURL = activity.Attachments[0].ContentURL
-		mediaMIME = activity.Attachments[0].ContentType
+	if attachment, ok := teamsAttachmentFromActivity(activity); ok {
+		mediaURL = attachment.ContentURL
+		mediaMIME = attachment.ContentType
 		if text == "" {
-			text = activity.Attachments[0].Name
+			text = attachment.Name
 		}
 	}
 	if text == "" && mediaURL == "" {

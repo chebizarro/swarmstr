@@ -98,6 +98,26 @@ func newTestMatrixServer(handler http.Handler) (*httptest.Server, *matrixBot) {
 	return srv, bot
 }
 
+func TestMatrixPlugin_GatewayMethodsIncludeActions(t *testing.T) {
+	methods := map[string]bool{}
+	for _, method := range (&MatrixPlugin{}).GatewayMethods() {
+		methods[method.Method] = true
+	}
+	for _, want := range []string{"matrix.send", "matrix.send_media", "matrix.typing", "matrix.redact", "matrix.react", "matrix.thread_reply", "matrix.edit"} {
+		if !methods[want] {
+			t.Fatalf("missing gateway method %s", want)
+		}
+	}
+}
+
+func TestNewMatrixClient(t *testing.T) {
+	bot := newMatrixClient("ch", "https://matrix.example/", "tok", "!room:example")
+	if bot.hsURL != "https://matrix.example" || bot.accessToken != "tok" || bot.roomID != "!room:example" {
+		t.Fatalf("unexpected bot: %+v", bot)
+	}
+	bot.Close()
+}
+
 func TestMatrixBot_Send(t *testing.T) {
 	var received map[string]any
 	srv, bot := newTestMatrixServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -433,6 +433,44 @@ func TestDiscordDo_RestSchedulerRetries429(t *testing.T) {
 	}
 }
 
+func TestDiscordRouteBuilders_NewActions(t *testing.T) {
+	url, payload, err := discordCreateThreadRoute(map[string]any{"channel_id": "ch1", "name": "topic"})
+	if err != nil {
+		t.Fatalf("create thread route: %v", err)
+	}
+	if !strings.Contains(url, "/channels/ch1/threads") || payload["name"] != "topic" {
+		t.Fatalf("unexpected thread route url=%s payload=%+v", url, payload)
+	}
+
+	url, payload, err = discordChannelPayloadRoute("discord.update_channel")(map[string]any{"channel_id": "ch1", "name": "new", "topic": "subject"})
+	if err != nil {
+		t.Fatalf("channel payload route: %v", err)
+	}
+	if !strings.Contains(url, "/channels/ch1") || payload["name"] != "new" || payload["topic"] != "subject" {
+		t.Fatalf("unexpected channel route url=%s payload=%+v", url, payload)
+	}
+
+	url, _, err = discordMessagePinRoute("discord.pin_message")(map[string]any{"channel_id": "ch1", "message_id": "msg1"})
+	if err != nil {
+		t.Fatalf("pin route: %v", err)
+	}
+	if !strings.HasSuffix(url, "/channels/ch1/messages/msg1/pin") {
+		t.Fatalf("unexpected pin url: %s", url)
+	}
+}
+
+func TestDiscordGatewayMethods_IncludeDepthActions(t *testing.T) {
+	methods := map[string]bool{}
+	for _, method := range (&DiscordPlugin{}).GatewayMethods() {
+		methods[method.Method] = true
+	}
+	for _, want := range []string{"discord.guild", "discord.create_channel", "discord.update_channel", "discord.list_archived_threads", "discord.reopen_thread", "discord.pin_message", "discord.list_pins", "discord.fetch_message", "discord.fetch_reactions"} {
+		if !methods[want] {
+			t.Fatalf("missing gateway method %s", want)
+		}
+	}
+}
+
 func TestDiscordFetchMessages_PopulatesReplyAndThreadMetadata(t *testing.T) {
 	var delivered []sdk.InboundChannelMessage
 	bot := &discordBot{

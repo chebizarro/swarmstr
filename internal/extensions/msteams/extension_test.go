@@ -369,6 +369,41 @@ func TestSend_PostsActivity(t *testing.T) {
 	}
 }
 
+func TestTeamsAttachmentFromActivity(t *testing.T) {
+	act := makeActivity("u1", "")
+	act.Attachments = append(act.Attachments, struct {
+		ContentType string `json:"contentType,omitempty"`
+		ContentURL  string `json:"contentUrl,omitempty"`
+		Name        string `json:"name,omitempty"`
+	}{ContentType: "image/png", ContentURL: "https://files.example/a.png", Name: "a.png"})
+	att, ok := teamsAttachmentFromActivity(act)
+	if !ok || att.ContentURL != "https://files.example/a.png" || att.ContentType != "image/png" || att.Name != "a.png" {
+		t.Fatalf("unexpected attachment ok=%v att=%+v", ok, att)
+	}
+}
+
+func TestSendFileAttachment_PostsFileAttachmentActivity(t *testing.T) {
+	var gotBody map[string]any
+	bot := newMockTeamsBot(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/oauth2/v2.0/token") {
+			return okJSON(`{"access_token":"tok"}`), nil
+		}
+		json.NewDecoder(req.Body).Decode(&gotBody)
+		return okJSON(`{"id":"act-file-helper"}`), nil
+	})
+	receipt, err := bot.SendFileAttachment(context.Background(), "see file", teamsAttachment{ContentURL: "https://files.example.com/report.pdf", ContentType: "application/pdf", Name: "report.pdf"})
+	if err != nil {
+		t.Fatalf("SendFileAttachment: %v", err)
+	}
+	if receipt.MessageID != "act-file-helper" {
+		t.Fatalf("expected activity id receipt, got %+v", receipt)
+	}
+	attachments, _ := gotBody["attachments"].([]any)
+	if len(attachments) != 1 {
+		t.Fatalf("expected one attachment, body=%+v", gotBody)
+	}
+}
+
 func TestSendAttachment_PostsFileAttachmentActivity(t *testing.T) {
 	var gotBody map[string]any
 	bot := newMockTeamsBot(func(req *http.Request) (*http.Response, error) {

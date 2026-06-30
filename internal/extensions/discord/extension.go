@@ -166,52 +166,91 @@ func (d *DiscordPlugin) GatewayMethods() []sdk.GatewayMethod {
 				})
 			},
 		},
-		{
-			Method:      "discord.create_thread",
-			Description: "Create a Discord thread from a message",
-			Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
-				token, channelID, err := discordRequiredAuth(params, "discord.create_thread")
-				if err != nil {
-					return nil, err
-				}
-				messageID, _ := params["message_id"].(string)
-				name, _ := params["name"].(string)
-				if messageID == "" || name == "" {
-					return nil, fmt.Errorf("discord.create_thread: message_id and name are required")
-				}
-				return discordRESTJSON(ctx, token, http.MethodPost, fmt.Sprintf("%s/channels/%s/messages/%s/threads", discordAPIBase, channelID, messageID), map[string]any{"name": name, "auto_archive_duration": 1440})
-			},
-		},
-		{
-			Method:      "discord.list_threads",
-			Description: "List active Discord threads for a guild",
-			Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
-				token, _, err := discordRequiredAuth(params, "discord.list_threads")
-				if err != nil {
-					return nil, err
-				}
-				guildID, _ := params["guild_id"].(string)
-				if guildID == "" {
-					return nil, fmt.Errorf("discord.list_threads: guild_id is required")
-				}
-				return discordRESTJSON(ctx, token, http.MethodGet, fmt.Sprintf("%s/guilds/%s/threads/active", discordAPIBase, guildID), nil)
-			},
-		},
-		{
-			Method:      "discord.directory",
-			Description: "List Discord guild channels",
-			Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
-				token, _, err := discordRequiredAuth(params, "discord.directory")
-				if err != nil {
-					return nil, err
-				}
-				guildID, _ := params["guild_id"].(string)
-				if guildID == "" {
-					return nil, fmt.Errorf("discord.directory: guild_id is required")
-				}
-				return discordRESTJSON(ctx, token, http.MethodGet, fmt.Sprintf("%s/guilds/%s/channels", discordAPIBase, guildID), nil)
-			},
-		},
+		discordRESTMethod("discord.guild", "Fetch a Discord guild", http.MethodGet, func(params map[string]any) (string, map[string]any, error) {
+			guildID, _ := params["guild_id"].(string)
+			if guildID == "" {
+				return "", nil, fmt.Errorf("discord.guild: guild_id is required")
+			}
+			return fmt.Sprintf("%s/guilds/%s", discordAPIBase, guildID), nil, nil
+		}),
+		discordRESTMethod("discord.list_guilds", "List guilds visible to the Discord bot", http.MethodGet, func(params map[string]any) (string, map[string]any, error) {
+			return discordAPIBase + "/users/@me/guilds", nil, nil
+		}),
+		discordRESTMethod("discord.list_channels", "List Discord guild channels", http.MethodGet, discordGuildChannelsRoute("discord.list_channels")),
+		discordRESTMethod("discord.directory", "List Discord guild channels", http.MethodGet, discordGuildChannelsRoute("discord.directory")),
+		discordRESTMethod("discord.create_channel", "Create a Discord guild channel", http.MethodPost, func(params map[string]any) (string, map[string]any, error) {
+			guildID, _ := params["guild_id"].(string)
+			name, _ := params["name"].(string)
+			if guildID == "" || strings.TrimSpace(name) == "" {
+				return "", nil, fmt.Errorf("discord.create_channel: guild_id and name are required")
+			}
+			payload := map[string]any{"name": name}
+			if typ, ok := params["type"].(float64); ok {
+				payload["type"] = int(typ)
+			} else if typ, ok := params["type"].(int); ok {
+				payload["type"] = typ
+			}
+			if parentID, _ := params["parent_id"].(string); parentID != "" {
+				payload["parent_id"] = parentID
+			}
+			if topic, _ := params["topic"].(string); topic != "" {
+				payload["topic"] = topic
+			}
+			return fmt.Sprintf("%s/guilds/%s/channels", discordAPIBase, guildID), payload, nil
+		}),
+		discordRESTMethod("discord.update_channel", "Update a Discord channel/category", http.MethodPatch, discordChannelPayloadRoute("discord.update_channel")),
+		discordRESTMethod("discord.delete_channel", "Delete a Discord channel/category", http.MethodDelete, func(params map[string]any) (string, map[string]any, error) {
+			channelID, _ := params["channel_id"].(string)
+			if channelID == "" {
+				return "", nil, fmt.Errorf("discord.delete_channel: channel_id is required")
+			}
+			return fmt.Sprintf("%s/channels/%s", discordAPIBase, channelID), nil, nil
+		}),
+		discordRESTMethod("discord.create_thread", "Create a Discord thread from a message or channel", http.MethodPost, discordCreateThreadRoute),
+		discordRESTMethod("discord.list_threads", "List active Discord threads for a guild", http.MethodGet, func(params map[string]any) (string, map[string]any, error) {
+			guildID, _ := params["guild_id"].(string)
+			if guildID == "" {
+				return "", nil, fmt.Errorf("discord.list_threads: guild_id is required")
+			}
+			return fmt.Sprintf("%s/guilds/%s/threads/active", discordAPIBase, guildID), nil, nil
+		}),
+		discordRESTMethod("discord.list_archived_threads", "List archived Discord threads for a channel", http.MethodGet, func(params map[string]any) (string, map[string]any, error) {
+			channelID, _ := params["channel_id"].(string)
+			if channelID == "" {
+				return "", nil, fmt.Errorf("discord.list_archived_threads: channel_id is required")
+			}
+			kind, _ := params["kind"].(string)
+			if kind == "" {
+				kind = "public"
+			}
+			return fmt.Sprintf("%s/channels/%s/threads/archived/%s", discordAPIBase, channelID, kind), nil, nil
+		}),
+		discordRESTMethod("discord.reopen_thread", "Reopen/unarchive a Discord thread", http.MethodPatch, func(params map[string]any) (string, map[string]any, error) {
+			threadID, _ := params["thread_id"].(string)
+			if threadID == "" {
+				return "", nil, fmt.Errorf("discord.reopen_thread: thread_id is required")
+			}
+			return fmt.Sprintf("%s/channels/%s", discordAPIBase, threadID), map[string]any{"archived": false, "locked": false}, nil
+		}),
+		discordRESTMethod("discord.pin_message", "Pin a Discord message", http.MethodPut, discordMessagePinRoute("discord.pin_message")),
+		discordRESTMethod("discord.unpin_message", "Unpin a Discord message", http.MethodDelete, discordMessagePinRoute("discord.unpin_message")),
+		discordRESTMethod("discord.list_pins", "List pinned Discord messages", http.MethodGet, func(params map[string]any) (string, map[string]any, error) {
+			channelID, _ := params["channel_id"].(string)
+			if channelID == "" {
+				return "", nil, fmt.Errorf("discord.list_pins: channel_id is required")
+			}
+			return fmt.Sprintf("%s/channels/%s/pins", discordAPIBase, channelID), nil, nil
+		}),
+		discordRESTMethod("discord.fetch_message", "Fetch a Discord message", http.MethodGet, discordMessageRoute("discord.fetch_message")),
+		discordRESTMethod("discord.fetch_reactions", "Fetch reactions for a Discord message", http.MethodGet, func(params map[string]any) (string, map[string]any, error) {
+			channelID, _ := params["channel_id"].(string)
+			messageID, _ := params["message_id"].(string)
+			emoji, _ := params["emoji"].(string)
+			if channelID == "" || messageID == "" || emoji == "" {
+				return "", nil, fmt.Errorf("discord.fetch_reactions: channel_id, message_id, and emoji are required")
+			}
+			return fmt.Sprintf("%s/channels/%s/messages/%s/reactions/%s", discordAPIBase, channelID, messageID, url.PathEscape(emoji)), nil, nil
+		}),
 	}
 }
 
@@ -978,6 +1017,92 @@ func discordSendRich(ctx context.Context, params map[string]any, method string, 
 		return nil, err
 	}
 	return map[string]any{"ok": true, "message_id": msgID}, nil
+}
+
+type discordRouteBuilder func(map[string]any) (string, map[string]any, error)
+
+func discordRESTMethod(method, description, httpMethod string, build discordRouteBuilder) sdk.GatewayMethod {
+	return sdk.GatewayMethod{
+		Method:      method,
+		Description: description,
+		Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+			token, _, err := discordRequiredAuth(params, method)
+			if err != nil {
+				return nil, err
+			}
+			apiURL, payload, err := build(params)
+			if err != nil {
+				return nil, err
+			}
+			return discordRESTJSON(ctx, token, httpMethod, apiURL, payload)
+		},
+	}
+}
+
+func discordGuildChannelsRoute(method string) discordRouteBuilder {
+	return func(params map[string]any) (string, map[string]any, error) {
+		guildID, _ := params["guild_id"].(string)
+		if guildID == "" {
+			return "", nil, fmt.Errorf("%s: guild_id is required", method)
+		}
+		return fmt.Sprintf("%s/guilds/%s/channels", discordAPIBase, guildID), nil, nil
+	}
+}
+
+func discordChannelPayloadRoute(method string) discordRouteBuilder {
+	return func(params map[string]any) (string, map[string]any, error) {
+		channelID, _ := params["channel_id"].(string)
+		if channelID == "" {
+			return "", nil, fmt.Errorf("%s: channel_id is required", method)
+		}
+		payload := map[string]any{}
+		for _, key := range []string{"name", "topic", "parent_id", "archived"} {
+			if v, ok := params[key]; ok {
+				payload[key] = v
+			}
+		}
+		return fmt.Sprintf("%s/channels/%s", discordAPIBase, channelID), payload, nil
+	}
+}
+
+func discordCreateThreadRoute(params map[string]any) (string, map[string]any, error) {
+	channelID, _ := params["channel_id"].(string)
+	messageID, _ := params["message_id"].(string)
+	name, _ := params["name"].(string)
+	if channelID == "" || strings.TrimSpace(name) == "" {
+		return "", nil, fmt.Errorf("discord.create_thread: channel_id and name are required")
+	}
+	payload := map[string]any{"name": name, "auto_archive_duration": 1440}
+	if duration, ok := params["auto_archive_duration"].(float64); ok {
+		payload["auto_archive_duration"] = int(duration)
+	} else if duration, ok := params["auto_archive_duration"].(int); ok {
+		payload["auto_archive_duration"] = duration
+	}
+	if messageID != "" {
+		return fmt.Sprintf("%s/channels/%s/messages/%s/threads", discordAPIBase, channelID, messageID), payload, nil
+	}
+	return fmt.Sprintf("%s/channels/%s/threads", discordAPIBase, channelID), payload, nil
+}
+
+func discordMessageRoute(method string) discordRouteBuilder {
+	return func(params map[string]any) (string, map[string]any, error) {
+		channelID, _ := params["channel_id"].(string)
+		messageID, _ := params["message_id"].(string)
+		if channelID == "" || messageID == "" {
+			return "", nil, fmt.Errorf("%s: channel_id and message_id are required", method)
+		}
+		return fmt.Sprintf("%s/channels/%s/messages/%s", discordAPIBase, channelID, messageID), nil, nil
+	}
+}
+
+func discordMessagePinRoute(method string) discordRouteBuilder {
+	return func(params map[string]any) (string, map[string]any, error) {
+		apiURL, _, err := discordMessageRoute(method)(params)
+		if err != nil {
+			return "", nil, err
+		}
+		return apiURL + "/pin", nil, nil
+	}
 }
 
 func discordRESTJSON(ctx context.Context, token, method, apiURL string, payload map[string]any) (map[string]any, error) {
