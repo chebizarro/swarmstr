@@ -16,6 +16,21 @@
       "id": "acp-over-fips-transport-only",
       "scope": "dm transport",
       "reason": "ACP-over-FIPS preserves the same ACP {acp_type: task|result} envelope and semantics; only the encrypted DM transport differs from NIP-17/NIP-04 delivery."
+    },
+    {
+      "id": "fips-sidecar-consumer",
+      "scope": "fips integration boundary",
+      "reason": "swarmstr consumes the FIPS daemon as a sidecar and tracks its control-socket and observability read surface; swarmstr does not reimplement FIPS protocol internals."
+    },
+    {
+      "id": "fips0-application-framing",
+      "scope": "application framing",
+      "reason": "The [u32 len][u8 type][JSON] framing used by swarmstr is swarmstr application framing carried over fips0, not the canonical FMP/FSP wire format owned by the FIPS daemon."
+    },
+    {
+      "id": "daemon-owned-fips-config",
+      "scope": "configuration ownership",
+      "reason": "Daemon-owned settings such as transports.nym, node.discovery.lan.*, Nostr discovery kinds 37195/21059/10050, and bloom max_inbound_fpr live in the FIPS daemon configuration, not in swarmstr."
     }
   ]
 }
