@@ -288,6 +288,9 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 	anthropicClaudeCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 200000, CostPer1KInput: 0.0030, CostPer1KOutput: 0.0150}
 	geminiFlashCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: false, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 1000000, CostPer1KInput: 0.0003, CostPer1KOutput: 0.0025}
 	openAICompatCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true}
+	mistralCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, ContextWindowTokens: 128000}
+	responsesCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1047576}
+	vertexCaps := ProviderCapabilities{SupportsTools: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1000000}
 
 	mkOpenAICompat := func(id, name string, aliases, prefixes []string, baseURL, apiKeyEnv, baseURLEnv string) ProviderDescriptor {
 		desc := ProviderDescriptor{
@@ -352,13 +355,85 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 		return &GoogleGeminiProvider{Model: strings.TrimSpace(model), APIKey: credential, PromptCache: promptCacheProfilePtr(profile), Client: geminiDesc.HTTPClient(nil)}, nil
 	}
 
+	mistralDesc := ProviderDescriptor{ID: "mistral", Name: "Mistral", Aliases: []string{"mistral"}, Prefixes: []string{"mistral-"}, BaseURL: "https://api.mistral.ai/v1", APIKeyEnv: "MISTRAL_API_KEY", AuthMethods: []AuthMethod{AuthMethodAPIKey}, Capabilities: mistralCaps, ListModels: func(context.Context) ([]ModelInfo, error) { return catalogRowsForProvider("mistral", mistralCaps), nil }}
+	mistralDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+		baseURL := strings.TrimSpace(override.BaseURL)
+		if baseURL == "" {
+			baseURL = mistralDesc.resolvedBaseURL()
+		}
+		credential, err := requireProviderCredential("Mistral", model, strings.TrimSpace(override.APIKey), "MISTRAL_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		return &MistralChatProvider{BaseURL: baseURL, APIKey: credential, Model: strings.TrimSpace(model), Client: mistralDesc.HTTPClient(nil)}, nil
+	}
+
+	moonshotDesc := mkOpenAICompat("moonshot", "Moonshot/Kimi", []string{"moonshot", "kimi", "kimicode"}, []string{"moonshot/", "kimi/", "kimicode/", "kimi-"}, "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY", "")
+	moonshotDesc.APIKeyEnv = "MOONSHOT_API_KEY"
+	moonshotDesc.PrepareRequest = moonshotPrepareRequest
+	moonshotDesc.ListModels = func(context.Context) ([]ModelInfo, error) {
+		return catalogRowsForProvider("moonshot", moonshotDesc.Capabilities), nil
+	}
+	moonshotDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+		return buildOpenAICompatibleProvider(normalizeKimiModelID(model), override, moonshotDesc)
+	}
+
+	openAIResponsesDesc := ProviderDescriptor{ID: "openai-responses", Name: "OpenAI Responses", Aliases: []string{"openai-responses", "responses"}, Prefixes: []string{"responses/"}, BaseURL: "https://api.openai.com/v1", APIKeyEnv: "OPENAI_API_KEY", AuthMethods: []AuthMethod{AuthMethodAPIKey}, Capabilities: responsesCaps, ListModels: func(context.Context) ([]ModelInfo, error) {
+		return catalogRowsForProvider("openai-responses", responsesCaps), nil
+	}}
+	openAIResponsesDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+		baseURL := strings.TrimSpace(override.BaseURL)
+		if baseURL == "" {
+			baseURL = openAIResponsesDesc.resolvedBaseURL()
+		}
+		credential, err := requireProviderCredential("OpenAI Responses", model, strings.TrimSpace(override.APIKey), "OPENAI_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIResponsesProvider{BaseURL: baseURL, APIKey: credential, Model: strings.TrimPrefix(strings.TrimSpace(model), "responses/"), Client: openAIResponsesDesc.HTTPClient(nil)}, nil
+	}
+
+	azureResponsesDesc := ProviderDescriptor{ID: "azure-responses", Name: "Azure OpenAI Responses", Aliases: []string{"azure-responses", "azure"}, Prefixes: []string{"azure/"}, BaseURLEnv: "AZURE_OPENAI_ENDPOINT", APIKeyEnv: "AZURE_OPENAI_API_KEY", AuthMethods: []AuthMethod{AuthMethodAPIKey}, Capabilities: responsesCaps, ListModels: func(context.Context) ([]ModelInfo, error) {
+		return catalogRowsForProvider("azure-responses", responsesCaps), nil
+	}}
+	azureResponsesDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+		baseURL := strings.TrimSpace(override.BaseURL)
+		if baseURL == "" {
+			baseURL = azureResponsesDesc.resolvedBaseURL()
+		}
+		credential, err := requireProviderCredential("Azure OpenAI Responses", model, strings.TrimSpace(override.APIKey), "AZURE_OPENAI_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		return &AzureResponsesProvider{BaseURL: baseURL, APIKey: credential, Model: strings.TrimPrefix(strings.TrimSpace(model), "azure/"), Client: azureResponsesDesc.HTTPClient(nil)}, nil
+	}
+
+	vertexDesc := ProviderDescriptor{ID: "vertex", Name: "Google Vertex AI", Aliases: []string{"vertex", "google-vertex"}, Prefixes: []string{"vertex/"}, BaseURL: "https://aiplatform.googleapis.com/v1", BaseURLEnv: "VERTEX_BASE_URL", APIKeyEnv: "GOOGLE_APPLICATION_CREDENTIALS", AuthMethods: []AuthMethod{AuthMethodAPIKey, AuthMethodOAuth}, Capabilities: vertexCaps, NormalizeToolSchema: NormalizeGeminiToolSchema, ListModels: func(context.Context) ([]ModelInfo, error) { return catalogRowsForProvider("vertex", vertexCaps), nil }}
+	vertexDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+		baseURL := strings.TrimSpace(override.BaseURL)
+		if baseURL == "" {
+			baseURL = vertexDesc.resolvedBaseURL()
+		}
+		credential, err := requireProviderCredential("Vertex", model, strings.TrimSpace(override.APIKey), "VERTEX_ACCESS_TOKEN", "GOOGLE_ACCESS_TOKEN")
+		if err != nil {
+			return nil, err
+		}
+		return &VertexChatProvider{BaseURL: baseURL, APIKey: credential, Model: normalizeVertexModel(model), Client: vertexDesc.HTTPClient(nil)}, nil
+	}
+
 	return []ProviderDescriptor{
 		openaiDesc,
 		anthropicDesc,
 		geminiDesc,
+		mistralDesc,
+		moonshotDesc,
+		openAIResponsesDesc,
+		azureResponsesDesc,
+		vertexDesc,
 		mkOpenAICompat("xai", "xAI", []string{"xai"}, []string{"grok-"}, "https://api.x.ai/v1", "XAI_API_KEY", ""),
 		mkOpenAICompat("groq", "Groq", []string{"groq"}, []string{"groq/"}, "https://api.groq.com/openai/v1", "GROQ_API_KEY", ""),
-		mkOpenAICompat("mistral", "Mistral", []string{"mistral"}, []string{"mistral-"}, "https://api.mistral.ai/v1", "MISTRAL_API_KEY", ""),
+		mkOpenAICompat("minimax", "Minimax", []string{"minimax"}, []string{"minimax/"}, "https://api.minimax.io/v1", "MINIMAX_API_KEY", ""),
+		mkOpenAICompat("minimax-cn", "Minimax CN", []string{"minimax-cn", "minimax_cn"}, []string{"minimax-cn/"}, "https://api.minimaxi.com/v1", "MINIMAX_CN_API_KEY", ""),
 		mkOpenAICompat("together", "Together AI", []string{"together"}, []string{"together/"}, "https://api.together.xyz/v1", "TOGETHER_API_KEY", ""),
 		mkOpenAICompat("openrouter", "OpenRouter", []string{"openrouter"}, []string{"openrouter/"}, "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", ""),
 		mkOpenAICompat("ollama", "Ollama", []string{"ollama"}, []string{"ollama/"}, "http://localhost:11434/v1", "OLLAMA_API_KEY", "OLLAMA_BASE_URL"),
