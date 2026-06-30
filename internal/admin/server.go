@@ -196,6 +196,9 @@ type ServerOptions struct {
 	Metrics func(context.Context) string
 	// HealthExtra is an optional callback that adds extra fields to /healthz.
 	HealthExtra func(context.Context) map[string]any
+
+	// NIP86 optionally mounts the canonical relay management API.
+	NIP86 NIP86Options
 }
 
 func Start(ctx context.Context, opts ServerOptions) error {
@@ -289,6 +292,9 @@ func Start(ctx context.Context, opts ServerOptions) error {
 
 	// MCP loopback server — POST /mcp (JSON-RPC 2.0)
 	mountMCPLoopback(mux, opts)
+
+	// NIP-86 relay management API — optional/config-gated.
+	mountNIP86(mux, opts)
 
 	mux.HandleFunc("/health", withAuth(opts.Token, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
