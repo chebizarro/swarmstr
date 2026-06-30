@@ -6,32 +6,43 @@ import "time"
 // operations and projected by gateway SSE/WS transports.
 type RuntimeEventType string
 
+// AssistantMessage is the incrementally reconstructed assistant stream message.
+type AssistantMessage struct {
+	Content   string     `json:"content,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
 const (
-	RuntimeEventAssistantDelta RuntimeEventType = "assistant_delta"
-	RuntimeEventThinkingDelta  RuntimeEventType = "thinking_delta"
-	RuntimeEventToolStart      RuntimeEventType = "tool_start"
-	RuntimeEventToolProgress   RuntimeEventType = "tool_progress"
-	RuntimeEventToolResult     RuntimeEventType = "tool_result"
-	RuntimeEventToolError      RuntimeEventType = "tool_error"
-	RuntimeEventUsage          RuntimeEventType = "usage"
+	RuntimeEventAssistantDelta         RuntimeEventType = "assistant_delta"
+	RuntimeEventAssistantToolCallDelta RuntimeEventType = "assistant_tool_call_delta"
+	RuntimeEventAssistantMessage       RuntimeEventType = "assistant_message"
+	RuntimeEventThinkingDelta          RuntimeEventType = "thinking_delta"
+	RuntimeEventToolStart              RuntimeEventType = "tool_start"
+	RuntimeEventToolProgress           RuntimeEventType = "tool_progress"
+	RuntimeEventToolResult             RuntimeEventType = "tool_result"
+	RuntimeEventToolError              RuntimeEventType = "tool_error"
+	RuntimeEventUsage                  RuntimeEventType = "usage"
 )
 
 // RuntimeEvent is the provider/tool/session-neutral schema for runtime
 // lifecycle events. Type-specific fields are optional so transports can forward
 // a single stable envelope without bespoke per-event wrappers.
 type RuntimeEvent struct {
-	Type       RuntimeEventType `json:"type"`
-	TS         int64            `json:"ts_ms"`
-	SessionID  string           `json:"session_id,omitempty"`
-	TurnID     string           `json:"turn_id,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
-	ToolName   string           `json:"tool_name,omitempty"`
-	Delta      string           `json:"delta,omitempty"`
-	Result     string           `json:"result,omitempty"`
-	Error      string           `json:"error,omitempty"`
-	Usage      TurnUsage        `json:"usage,omitempty"`
-	Data       any              `json:"data,omitempty"`
-	Trace      TraceContext     `json:"trace,omitempty"`
+	Type              RuntimeEventType  `json:"type"`
+	TS                int64             `json:"ts_ms"`
+	SessionID         string            `json:"session_id,omitempty"`
+	TurnID            string            `json:"turn_id,omitempty"`
+	ToolCallID        string            `json:"tool_call_id,omitempty"`
+	ToolName          string            `json:"tool_name,omitempty"`
+	ContentBlockIndex int               `json:"content_block_index,omitempty"`
+	Delta             string            `json:"delta,omitempty"`
+	ToolCall          ToolCall          `json:"tool_call,omitempty"`
+	Message           *AssistantMessage `json:"message,omitempty"`
+	Result            string            `json:"result,omitempty"`
+	Error             string            `json:"error,omitempty"`
+	Usage             TurnUsage         `json:"usage,omitempty"`
+	Data              any               `json:"data,omitempty"`
+	Trace             TraceContext      `json:"trace,omitempty"`
 }
 
 // RuntimeEventSink receives canonical structured runtime lifecycle events.

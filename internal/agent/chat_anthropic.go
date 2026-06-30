@@ -229,8 +229,8 @@ func (p *AnthropicChatProvider) requestOptions(opts ChatOptions) ([]option.Reque
 }
 
 // StreamMessages streams a single Anthropic Messages request. It is intentionally
-// separate from the agentic loop; ProcessTurnStreaming falls back to Generate
-// when tool calls are returned so tool execution remains centralized.
+// separate from the agentic loop; callers execute any streamed tool calls from
+// the returned ProviderResult.
 func (p *AnthropicChatProvider) StreamMessages(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions, sessionID, turnID string, sink RuntimeEventSink, onChunk func(string)) (ProviderResult, error) {
 	messages = PrepareTranscriptMessages(messages, ResolveAnthropicTranscriptPolicy(p.modelOrDefault()))
 	var system []anthropic.TextBlockParam
@@ -342,11 +342,13 @@ func (p *AnthropicChatProvider) StreamMessages(ctx context.Context, messages []L
 					if delta.Index > maxToolIndex {
 						maxToolIndex = delta.Index
 					}
+					emitRuntimeEvent(sink, RuntimeEvent{Type: RuntimeEventAssistantToolCallDelta, SessionID: sessionID, TurnID: turnID, ContentBlockIndex: int(delta.Index), ToolCallID: acc.ID, ToolName: acc.Name, Delta: delta.Delta.PartialJSON})
 				}
 			}
 		case "message_delta":
 			md := evt.AsMessageDelta()
 			usage.OutputTokens = int64(md.Usage.OutputTokens)
+			emitRuntimeEvent(sink, RuntimeEvent{Type: RuntimeEventUsage, SessionID: sessionID, TurnID: turnID, Usage: TurnUsage{OutputTokens: usage.OutputTokens}})
 		}
 	}
 	if err := stream.Err(); err != nil {

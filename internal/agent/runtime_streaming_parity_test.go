@@ -289,7 +289,7 @@ func TestAnthropicStreamEmitsThinkingDelta(t *testing.T) {
 	if res.Text != "hi" || len(chunks) != 1 || chunks[0] != "hi" {
 		t.Fatalf("res=%q chunks=%#v", res.Text, chunks)
 	}
-	if len(events) != 1 || events[0].Type != RuntimeEventThinkingDelta || events[0].Delta != "plan" {
+	if len(events) != 2 || events[0].Type != RuntimeEventThinkingDelta || events[0].Delta != "plan" || events[1].Type != RuntimeEventUsage || events[1].Usage.OutputTokens != 1 {
 		t.Fatalf("thinking events=%#v", events)
 	}
 }

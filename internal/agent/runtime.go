@@ -470,26 +470,16 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		return TurnResult{}, turnCancellationCause(ctx, err)
 	}
 
-	// When the streaming response produced tool calls, the single-shot stream
-	// bypassed the agentic tool→LLM→tool cycle. Fall back to the non-streaming
-	// Generate path which runs the full agentic loop (tool execution → model
-	// synthesis → repeat until text). This re-processes the prompt but
-	// correctly handles tool execution and produces a complete text response.
-	//
-	// The streaming response may have already emitted partial text tokens via
-	// onChunk (e.g. "Let me look that up…"). The Generate path produces the
-	// complete synthesised response in gen.Text and emits it to onChunk so
-	// the client can display the final answer.
-	if len(gen.ToolCalls) > 0 && trackedTools != nil {
-		startedAt := time.Now()
-		gen, err = r.provider.Generate(ctx, turn)
-		emitProviderRoundtripSpan(ctx, "stream_tool_fallback", turn, startedAt, err)
-		if err != nil {
-			return TurnResult{}, turnCancellationCause(ctx, err)
+	if len(gen.ToolCalls) > 0 && len(gen.HistoryDelta) == 0 {
+		refs := make([]ToolCallRef, 0, len(gen.ToolCalls))
+		for _, call := range gen.ToolCalls {
+			refs = append(refs, ToolCallToRef(call))
 		}
-		if onChunk != nil && gen.Text != "" {
-			onChunk(gen.Text)
-		}
+		gen.HistoryDelta = append(gen.HistoryDelta, ConversationMessage{
+			Role:      "assistant",
+			Content:   strings.TrimSpace(gen.Text),
+			ToolCalls: refs,
+		})
 	}
 
 	result, err := r.buildResult(ctx, turn, gen, trackedTools)
@@ -497,6 +487,7 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		return TurnResult{}, err
 	}
 	emitTurnUsageRuntimeEvent(turn, result.Usage)
+	emitAssistantMessageRuntimeEvent(turn, gen)
 	runContextAfterTurn(ctx, turn, result)
 	runPostSamplingHooks(ctx, turn, result)
 	return result, nil
@@ -530,11 +521,12 @@ func runtimeEventStreamingCallback(turn Turn, onChunk func(text string)) func(st
 			return
 		}
 		emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{
-			Type:      RuntimeEventAssistantDelta,
-			SessionID: turn.SessionID,
-			TurnID:    turn.TurnID,
-			Delta:     text,
-			Trace:     turn.Trace,
+			Type:              RuntimeEventAssistantDelta,
+			SessionID:         turn.SessionID,
+			TurnID:            turn.TurnID,
+			ContentBlockIndex: 0,
+			Delta:             text,
+			Trace:             turn.Trace,
 		})
 	}
 }
@@ -549,6 +541,22 @@ func emitTurnUsageRuntimeEvent(turn Turn, usage TurnUsage) {
 		TurnID:    turn.TurnID,
 		Usage:     usage,
 		Trace:     turn.Trace,
+	})
+}
+
+func emitAssistantMessageRuntimeEvent(turn Turn, gen ProviderResult) {
+	if turn.RuntimeEventSink == nil {
+		return
+	}
+	emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{
+		Type:      RuntimeEventAssistantMessage,
+		SessionID: turn.SessionID,
+		TurnID:    turn.TurnID,
+		Message: &AssistantMessage{
+			Content:   strings.TrimSpace(gen.Text),
+			ToolCalls: append([]ToolCall(nil), gen.ToolCalls...),
+		},
+		Trace: turn.Trace,
 	})
 }
 

@@ -216,30 +216,35 @@ func TestClassifyTurnResult(t *testing.T) {
 
 // ─── Streaming tool-call fallback ────────────────────────────────────────────
 
-// streamingToolProvider returns tool calls from Stream() but produces text
-// from Generate() (simulating the agentic loop's synthesis behaviour).
-type streamingToolProvider struct{}
-
-func (streamingToolProvider) Generate(_ context.Context, turn Turn) (ProviderResult, error) {
-	return ProviderResult{Text: "synthesised answer from agentic loop"}, nil
+// streamingToolProvider returns tool calls from Stream() and records whether
+// Generate() was invoked.
+type streamingToolProvider struct {
+	generateCalls int
 }
 
-func (streamingToolProvider) Stream(_ context.Context, _ Turn, _ func(string)) (ProviderResult, error) {
+func (p *streamingToolProvider) Generate(_ context.Context, _ Turn) (ProviderResult, error) {
+	p.generateCalls++
+	return ProviderResult{Text: "unexpected generate call"}, nil
+}
+
+func (p *streamingToolProvider) Stream(_ context.Context, _ Turn, _ func(string)) (ProviderResult, error) {
 	return ProviderResult{
+		Text:      "looking up",
 		ToolCalls: []ToolCall{{ID: "tc1", Name: "search", Args: map[string]any{"q": "test"}}},
 	}, nil
 }
 
-func TestProviderRuntime_ProcessTurnStreaming_ToolCallFallsBackToGenerate(t *testing.T) {
-	// When the streaming response returns tool calls, ProcessTurnStreaming
-	// should fall back to Generate (the agentic loop) and produce a real
-	// text response instead of the old "tool execution complete" placeholder.
+func TestProviderRuntime_ProcessTurnStreaming_ToolCallDoesNotFallbackToGenerate(t *testing.T) {
+	// When the streaming response returns tool calls, ProcessTurnStreaming uses
+	// the streamed ProviderResult directly instead of replaying the prompt with
+	// Generate().
 	tools := NewToolRegistry()
 	tools.RegisterWithDef("search", func(_ context.Context, _ map[string]any) (string, error) {
 		return "search result", nil
 	}, ToolDefinition{Name: "search", Description: "search tool"})
 
-	rt, _ := NewProviderRuntime(streamingToolProvider{}, tools)
+	provider := &streamingToolProvider{}
+	rt, _ := NewProviderRuntime(provider, tools)
 	var chunks []string
 	result, err := rt.ProcessTurnStreaming(context.Background(), Turn{UserText: "hello"}, func(chunk string) {
 		chunks = append(chunks, chunk)
@@ -247,15 +252,20 @@ func TestProviderRuntime_ProcessTurnStreaming_ToolCallFallsBackToGenerate(t *tes
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Text == "tool execution complete" {
-		t.Fatal("should not produce dead-end 'tool execution complete' placeholder")
+	if provider.generateCalls != 0 {
+		t.Fatalf("Generate calls = %d, want 0", provider.generateCalls)
 	}
-	if !strings.Contains(result.Text, "synthesised answer") {
-		t.Fatalf("expected synthesised answer from Generate fallback, got %q", result.Text)
+	if !strings.Contains(result.Text, "looking up") {
+		t.Fatalf("expected streamed text, got %q", result.Text)
 	}
-	// The Generate response text should have been streamed to onChunk.
-	if len(chunks) == 0 {
-		t.Fatal("expected at least one chunk from the Generate fallback")
+	if len(result.ToolTraces) != 1 || result.ToolTraces[0].Call.Name != "search" || result.ToolTraces[0].Result != "search result" {
+		t.Fatalf("expected streamed tool call to execute, got %#v", result.ToolTraces)
+	}
+	if len(result.HistoryDelta) == 0 || len(result.HistoryDelta[0].ToolCalls) != 1 {
+		t.Fatalf("expected assistant tool-call history from streamed result, got %#v", result.HistoryDelta)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("did not expect Generate fallback chunks, got %#v", chunks)
 	}
 }
 

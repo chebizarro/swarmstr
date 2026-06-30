@@ -487,6 +487,16 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 			if tc.Function.Arguments != "" {
 				acc.Arguments.WriteString(tc.Function.Arguments)
 			}
+			emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{
+				Type:              RuntimeEventAssistantToolCallDelta,
+				SessionID:         turn.SessionID,
+				TurnID:            turn.TurnID,
+				ContentBlockIndex: idx,
+				ToolCallID:        acc.ID,
+				ToolName:          acc.Name,
+				Delta:             tc.Function.Arguments,
+				Trace:             turn.Trace,
+			})
 		}
 	}
 	if err := stream.Err(); err != nil {
