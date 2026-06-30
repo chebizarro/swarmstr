@@ -60,8 +60,10 @@ func runSecurity(args []string) error {
 	switch args[0] {
 	case "audit":
 		return runSecurityAudit(args[1:])
+	case "doctor", "policy-doctor":
+		return runSecurityDoctor(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "security subcommands: audit\n")
+		fmt.Fprintf(os.Stderr, "security subcommands: audit, doctor\n")
 		return fmt.Errorf("unknown subcommand: %s", args[0])
 	}
 }
