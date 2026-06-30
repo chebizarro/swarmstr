@@ -101,7 +101,10 @@ func newCommandRegistry(bootstrapPath string) *commandRegistry {
 	addLazy(cliCommand{Name: "qr", Summary: "display agent QR code", Group: "Other"}, runQR)
 	addLazy(cliCommand{Name: "completion", Summary: "generate shell completions", Group: "Other"}, runCompletion)
 	addLazy(cliCommand{Name: "update", Summary: "check for daemon updates", Group: "Other"}, runUpdate)
-	addLazy(cliCommand{Name: "security", Summary: "run local security posture checks", Group: "Other"}, runSecurity)
+	addLazy(cliCommand{Name: "security", Summary: "run local security posture checks", Group: "Other", Details: []string{
+		"security audit              run local security audit",
+		"security doctor            run policy conformance doctor",
+	}}, runSecurity)
 	addLazy(cliCommand{Name: "keygen", Summary: "generate keys", Group: "Other"}, runKeygen)
 
 	addLazy(cliCommand{Name: "plan", Summary: "print port plan path", Group: "Other", Legacy: true}, func(_ []string) error { fmt.Println("docs/PORT_PLAN.md"); return nil })
