@@ -189,7 +189,11 @@ func copyRecord(record map[string]any) map[string]any {
 }
 
 func getString(record map[string]any, key string) string {
-	return strings.TrimSpace(fmt.Sprintf("%v", record[key]))
+	v, ok := record[key]
+	if !ok || v == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", v))
 }
 
 func getStringSlice(record map[string]any, key string) []string {
