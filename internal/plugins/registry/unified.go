@@ -90,6 +90,52 @@ func (r *UnifiedRegistry) RegisterOpenClawLoadResult(result runtime.OpenClawLoad
 	return r.registerRegistrations(result.PluginID, result.Name, result.Version, PluginSourceOpenClaw, result.Registrations)
 }
 
+// RegisterFromNodePlugin registers the media/search/memory provider
+// capabilities captured from a Node.js compat-bridge plugin (NodePlugin) into
+// the unified capability registry. Each NodeCapability becomes a typed provider
+// registration keyed by its capability namespace (speech/transcription/voice/
+// image/video/music/web-search/web-fetch/memory-embedding) so higher-level
+// subsystems can discover and resolve node-plugin providers the same way they
+// resolve OpenClaw and built-in providers. The plugin id and invokable handler
+// method names are preserved in each registration's Raw payload so callers can
+// route invocations back through NodePlugin.InvokeProvider.
+func (r *UnifiedRegistry) RegisterFromNodePlugin(pluginID, name, version string, caps []runtime.NodeCapability) error {
+	regs := make([]Registration, 0, len(caps))
+	for _, c := range caps {
+		regs = append(regs, nodeCapabilityRegistration(pluginID, c))
+	}
+	return r.registerRegistrations(pluginID, name, version, PluginSourceNode, regs)
+}
+
+// nodeCapabilityRegistration converts a runtime.NodeCapability descriptor into a
+// normalized Registration understood by processRegistrationLocked.
+func nodeCapabilityRegistration(pluginID string, c runtime.NodeCapability) Registration {
+	name := firstNonEmpty(c.Name, c.ID)
+	raw := map[string]any{
+		"id":       c.ID,
+		"name":     name,
+		"pluginId": pluginID,
+	}
+	if c.Description != "" {
+		raw["description"] = c.Description
+	}
+	if len(c.Methods) > 0 {
+		methods := make([]any, len(c.Methods))
+		for i, m := range c.Methods {
+			methods[i] = m
+		}
+		raw["methods"] = methods
+	}
+	return Registration{
+		Type:        c.Type,
+		PluginID:    pluginID,
+		ID:          c.ID,
+		Name:        name,
+		Description: c.Description,
+		Raw:         raw,
+	}
+}
+
 // RegisterFromGojaManifest registers tool metadata from a Goja plugin manifest.
 func (r *UnifiedRegistry) RegisterFromGojaManifest(m sdk.Manifest) error {
 	regs := make([]Registration, 0, len(m.Tools))

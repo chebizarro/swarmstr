@@ -424,16 +424,23 @@ func (r *taskRunner) executeQueuedRun(ctx context.Context, queued taskRunnerQueu
 
 	result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
 	if turnErr != nil {
+		var partialEntryIDs []string
 		if partial, ok := agent.PartialTurnResult(turnErr); ok {
 			if r.transcriptRepo != nil {
 				if err := persistToolTraces(ctx, r.transcriptRepo, queued.SessionID, queued.Run.RunID, partial.ToolTraces); err != nil {
 					log.Printf("task runner: persist partial tool traces failed session=%s run=%s err=%v", queued.SessionID, queued.Run.RunID, err)
 				}
 			}
-			persistAndIngestTurnHistory(ctx, r.transcriptRepo, r.contextEngine, queued.SessionID, queued.Run.RunID, partial.HistoryDelta, turnResultMetadataPtr(result, turnErr))
+			// Capture the persisted partial-history entry IDs and thread them into
+			// finishQueuedRun so the failed run's result ref links to the transcript
+			// entry holding its partial output (swarmstr-sxq0). This mirrors both the
+			// success path below and the ACP task path (main.go), which link partial
+			// output on error; without it a failed task run would fall back to a bare
+			// task_run ref and lose transcript linkage.
+			partialEntryIDs = persistAndIngestTurnHistory(ctx, r.transcriptRepo, r.contextEngine, queued.SessionID, queued.Run.RunID, partial.HistoryDelta, turnResultMetadataPtr(result, turnErr))
 			updateSessionTaskState(r.sessionStore, queued.SessionID, partial.ToolTraces, partial.HistoryDelta, true)
 		}
-		r.finishQueuedRun(ctx, queued, trace, result, prepared.MemoryRecallSample, turnErr, startedAt, nil, budgetGuard)
+		r.finishQueuedRun(ctx, queued, trace, result, prepared.MemoryRecallSample, turnErr, startedAt, partialEntryIDs, budgetGuard)
 		return
 	}
 
@@ -452,6 +459,10 @@ func (r *taskRunner) executeQueuedRun(ctx context.Context, queued taskRunnerQueu
 	if len(delta) == 0 && strings.TrimSpace(result.Text) != "" {
 		delta = []agent.ConversationMessage{{Role: "assistant", Content: strings.TrimSpace(result.Text)}}
 	}
+	// Capture the persisted history entry IDs: finishQueuedRun links the last
+	// one into the run's result ref (state.TaskResultRef{Kind: "transcript_entry"})
+	// and the task's result_history_entry_id meta, so the task record points at
+	// the transcript entry holding this run's output (swarmstr-sxq0).
 	historyEntryIDs := persistAndIngestTurnHistory(ctx, r.transcriptRepo, r.contextEngine, queued.SessionID, queued.Run.RunID, delta, turnResultMetadataPtr(result, nil))
 	updateSessionTaskState(r.sessionStore, queued.SessionID, result.ToolTraces, delta, false)
 	r.finishQueuedRun(ctx, queued, trace, result, prepared.MemoryRecallSample, nil, startedAt, historyEntryIDs, budgetGuard)

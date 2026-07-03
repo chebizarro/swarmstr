@@ -4257,6 +4257,9 @@ func main() {
 						log.Printf("persist partial tool traces session=%s err=%v", sessionID, err)
 					}
 				}
+				// The entry IDs returned here are intentionally ignored (swarmstr-sxq0):
+				// a DM turn has no task-result record to link them to, unlike the
+				// ACP/task_runner paths which wire them into a TaskResultRef.
 				persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
 				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, activeAgentID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), resolveAgentContextWindow(configState.Get(), activeAgentID), partial.HistoryDelta)
 				// Distill structured episodic memory from the partial turn.
@@ -4346,6 +4349,9 @@ func main() {
 		}
 		// Persist the full tool-call/tool-result history so future turns can
 		// see prior tool usage — fixes the "announce and forget" behaviour.
+		// The returned entry IDs are intentionally ignored (swarmstr-sxq0): a DM
+		// turn has no task-result record to link them to, unlike the ACP/task_runner
+		// paths which wire them into a TaskResultRef.
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlContextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
 		// Session-memory runtime updates feed extraction thresholds and may be read
 		// by the next same-session turn, so keep this synchronous even in deferred mode.
@@ -5630,6 +5636,9 @@ func main() {
 						log.Printf("persist partial tool traces (channel) session=%s err=%v", sessionID, err)
 					}
 				}
+				// The entry IDs returned here are intentionally ignored (swarmstr-sxq0):
+				// a channel turn has no task-result record to link them to, unlike the
+				// ACP/task_runner paths which wire them into a TaskResultRef.
 				persistAndIngestTurnHistory(ctx, transcriptRepo, controlServices.session.contextEngine, sessionID, eventID, partial.HistoryDelta, turnResultMetadataPtr(turnResult, turnErr))
 				sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, activeAgentID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), resolveAgentContextWindow(configState.Get(), activeAgentID), partial.HistoryDelta)
 				// Distill structured episodic memory from the partial channel turn.
@@ -5666,6 +5675,9 @@ func main() {
 		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
 			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
 		}
+		// The returned entry IDs are intentionally ignored (swarmstr-sxq0): a
+		// channel turn has no task-result record to link them to, unlike the
+		// ACP/task_runner paths which wire them into a TaskResultRef.
 		persistAndIngestTurnHistory(ctx, transcriptRepo, controlServices.session.contextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
 		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, activeAgentID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), resolveAgentContextWindow(configState.Get(), activeAgentID), turnResult.HistoryDelta)
 		// Distill structured episodic memory from the completed channel turn.

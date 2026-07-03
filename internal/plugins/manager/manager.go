@@ -23,6 +23,7 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/plugins/installer"
 	"metiq/internal/plugins/lifecycle"
+	"metiq/internal/plugins/registry"
 	"metiq/internal/plugins/runtime"
 	"metiq/internal/plugins/sdk"
 	"metiq/internal/plugins/trust"
@@ -194,6 +195,87 @@ func (m *GojaPluginManager) RegisterTools(registry *agent.ToolRegistry) {
 			m.log.Debug("registered plugin tool", "tool", toolName)
 		}
 	}
+}
+
+// capabilityLister is implemented by plugin instances (currently
+// runtime.NodePlugin) that expose media/search/memory provider capabilities
+// captured from the plugin at load time.
+type capabilityLister interface {
+	Capabilities() []runtime.NodeCapability
+}
+
+// providerInvoker is implemented by plugin instances (currently
+// runtime.NodePlugin) that can route a call to a registered capability
+// provider's handler method.
+type providerInvoker interface {
+	InvokeProvider(ctx context.Context, capType, id, method string, args map[string]any) (any, error)
+}
+
+// RegisterCapabilities registers the media/search/memory provider capabilities
+// of every loaded node plugin into the unified capability registry, mirroring
+// how RegisterTools wires plugin tools into the agent ToolRegistry. After this
+// call a node plugin's registered providers (speech/transcription/voice/image/
+// video/music/web-search/web-fetch/memory-embedding) are discoverable and
+// resolvable through the unified registry the same way built-in and OpenClaw
+// providers are, and invokable via InvokeProvider. Plugins that expose no
+// capabilities (all Goja plugins, and node plugins that registered none) are
+// skipped. It returns a combined error if any plugin's registration failed.
+func (m *GojaPluginManager) RegisterCapabilities(unified *registry.UnifiedRegistry) error {
+	if unified == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	ids := make([]string, 0, len(m.plugins))
+	for id := range m.plugins {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	var issues []string
+	for _, pluginID := range ids {
+		p := m.plugins[pluginID]
+		lister, ok := p.(capabilityLister)
+		if !ok {
+			continue
+		}
+		caps := lister.Capabilities()
+		if len(caps) == 0 {
+			continue
+		}
+		mf := p.Manifest()
+		if err := unified.RegisterFromNodePlugin(pluginID, mf.ID, mf.Version, caps); err != nil {
+			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
+			m.log.Warn("register node plugin capabilities failed", "plugin", pluginID, "err", err)
+			continue
+		}
+		m.log.Debug("registered node plugin capabilities", "plugin", pluginID, "count", len(caps))
+	}
+	if len(issues) > 0 {
+		return fmt.Errorf("capability registration issues: %s", strings.Join(issues, "; "))
+	}
+	return nil
+}
+
+// InvokeProvider routes a provider-capability call to the loaded node plugin
+// identified by pluginID and returns the handler's result. capType and
+// providerID must match a capability the plugin reported via Capabilities()
+// (and registered through RegisterCapabilities); method must be one of that
+// capability's handler methods. It mirrors the tool-dispatch path but targets
+// media/search/memory provider handlers instead of tools.
+func (m *GojaPluginManager) InvokeProvider(ctx context.Context, pluginID, capType, providerID, method string, args map[string]any) (any, error) {
+	m.mu.RLock()
+	p, ok := m.plugins[pluginID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("plugin %q not loaded", pluginID)
+	}
+	invoker, ok := p.(providerInvoker)
+	if !ok {
+		return nil, fmt.Errorf("plugin %q does not support provider invocation", pluginID)
+	}
+	return invoker.InvokeProvider(ctx, capType, providerID, method, args)
 }
 
 // CatalogGroups returns tool catalog group entries for all loaded plugins.

@@ -52,9 +52,11 @@ type postTurnPersistenceParams struct {
 // They now call this helper so their persistence is equivalent to the DM path.
 //
 // The []string entry IDs returned by persistAndIngestTurnHistory are
-// intentionally discarded here (swarmstr-sxq0): unlike the ACP task path, which
-// links history entries to a task-result record, DM and channel turns have no
-// such record to wire them to, so ignoring the IDs matches the DM path.
+// intentionally discarded here (swarmstr-sxq0): unlike the ACP task path
+// (main.go) and the task_runner path (task_runner.go) — which link the entry
+// IDs into a task-result record (TaskResultRef / result_history_entry_id) on
+// both success and partial-failure turns — DM and channel turns have no such
+// record to wire them to, so ignoring the IDs matches the DM path.
 func persistPostTurn(svc postTurnPersistenceServices, p postTurnPersistenceParams) {
 	ctx := p.Ctx
 	if ctx == nil {

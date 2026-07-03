@@ -274,6 +274,53 @@ func TestTaskRunnerExecutesQueuedRunThroughAgentPipeline(t *testing.T) {
 	}
 }
 
+func TestTaskRunnerLinksPartialHistoryEntryOnFailedRun(t *testing.T) {
+	ctx := context.Background()
+	runner, queued, docsRepo, sessionStore := newExecutableTestTaskRunner(t, taskRunnerRuntimeFunc(func(context.Context, agent.Turn) (agent.TurnResult, error) {
+		// A turn that fails after producing partial output. The runtime surfaces
+		// the completed work via a TurnExecutionError so the caller can persist it.
+		return agent.TurnResult{}, &agent.TurnExecutionError{
+			Cause: errors.New("provider timeout"),
+			Partial: agent.TurnResult{
+				HistoryDelta: []agent.ConversationMessage{{Role: "assistant", Content: "partial progress"}},
+			},
+		}
+	}))
+
+	runner.executeQueuedRun(ctx, queued)
+
+	gotRun, err := docsRepo.GetTaskRun(ctx, queued.Run.RunID)
+	if err != nil {
+		t.Fatalf("GetTaskRun: %v", err)
+	}
+	if gotRun.Status != state.TaskRunStatusFailed {
+		t.Fatalf("expected failed run, got status=%q", gotRun.Status)
+	}
+	// swarmstr-sxq0: the failed run's result ref must link to the transcript
+	// entry holding its partial output rather than fall back to a bare task_run
+	// ref, matching the success path and the ACP task path.
+	if gotRun.Result.Kind != "transcript_entry" || gotRun.Result.ID == "" {
+		t.Fatalf("expected transcript_entry result linkage on failed run, got %+v", gotRun.Result)
+	}
+
+	// The linked entry ID must reference a real persisted transcript entry.
+	entries, err := runner.transcriptRepo.ListSession(ctx, queued.SessionID, 10)
+	if err != nil {
+		t.Fatalf("ListSession: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.EntryID == gotRun.Result.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("result ref %q matches no persisted transcript entry (%d entries)", gotRun.Result.ID, len(entries))
+	}
+	_ = sessionStore
+}
+
 func TestTaskRunnerCancelsActiveRunThroughLedgerCancellation(t *testing.T) {
 	ctx := context.Background()
 	entered := make(chan struct{})

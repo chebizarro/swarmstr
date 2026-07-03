@@ -42,6 +42,7 @@ const (
 	PluginSourceNative   PluginSource = "native"
 	PluginSourceOpenClaw PluginSource = "openclaw"
 	PluginSourceGoja     PluginSource = "goja"
+	PluginSourceNode     PluginSource = "node"
 )
 
 // PluginRecord tracks a loaded plugin and every capability it contributed.
